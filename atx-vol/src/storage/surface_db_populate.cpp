@@ -453,10 +453,52 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   std::mutex progress_mu;
   std::condition_variable progress_cv;
   bool scheduler_complete = false;
+  // ── FIX-W2: an explicit budget of ONE is a budget, not the outer-serial mode ──
+  //
+  // `--fit-workers 2` measured 63% SLOWER than `--fit-workers 1`. That is not a
+  // scaling curve, and the cause is not the sharing arithmetic — it is that the two
+  // flags did not mean the same KIND of thing.
+  //
+  //   w=2 -> worker_budget 2 -> share 2 -> inner = 2/2 = 1 -> 2 outer x 1 inner
+  //          = 2 threads, which is exactly the documented shared-pool contract
+  //          ("the slices sum to the budget"), i.e. CORRECT.
+  //   w=1 -> worker_budget 1 -> the `inner_budget > 1u` test below is FALSE, so the
+  //          board was offered 0 = AUTO = the FULL machine width, i.e. one outer
+  //          worker with an unbounded inner fan-out. NOT the contract.
+  //
+  // So w=1 was silently ignoring the budget and using the whole box, and the
+  // "regression" was an apples-to-oranges comparison against it. The trap is real
+  // either way: the flag's MEANING changed between 1 and 2.
+  //
+  // WHY NOT "FIX" IT THE OTHER WAY. Widening w=2 to the whole P-core pool (divide
+  // the inner pool instead of the budget) makes w=2 fast, but it destroys the
+  // ability to CAP the fitter — which is the flag's whole purpose and the explicit
+  // P-core-lease guidance in scripts/atx-build.ps1 ("cap fit fan-out with
+  // ATX_VOL_FIT_WORKERS ... so a background fit does not oversubscribe the leased
+  // cores"). A budget that silently expands to the machine is a worse defect than a
+  // budget that is honoured. It would also break the two gates that pin this
+  // contract: SharedWorkerBudgetSizesInnerFromSharedPool (12/n) and the inner == 4
+  // assertion in SharedWorkerBudgetKeepsOutputByteIdentical.
+  //
+  // So: honour the budget at 1 as well. `cfg.n_threads == 0` remains SurfaceDb's
+  // documented outer-serial mode and keeps auto sizing — that case is resolved to
+  // `requested_budget = 1` above, so it must be distinguished HERE, from
+  // cfg.n_threads itself, rather than from worker_budget which fuses the two. This
+  // also makes surface_db_build.cpp:102's `sp.fit_workers = 1u; // single board;
+  // never nest a fan-out here` true; today that path nests a full machine-wide
+  // fan-out, the exact opposite of what its comment claims.
+  //
+  // Result: monotone and honest — w=1 -> 1 core, w=2 -> 2, w=N -> N, w=0 (CLI)
+  // still resolves to the P-core count upstream and is bit- and timing-unchanged.
+  // Widths are a PERF knob only: every atx-vol fan-out is bit-identical for any
+  // worker count, gated by SurfaceDbPopulate.SharedWorkerBudgetKeepsOutputByteIdentical.
+  const bool explicit_single_worker = (cfg.n_threads == 1u);
   const auto offer_inner_fit_workers = [&](const std::string &symbol) -> unsigned {
     const std::size_t left = boards_outstanding.load(std::memory_order_acquire);
     unsigned inner = 0u; // 0 = auto sizing, the documented outer-serial mode
-    if (inner_budget > 1u && n_fit_boards > 0u) {
+    if (explicit_single_worker) {
+      inner = 1u; // an explicit budget of one core, honoured as one
+    } else if (inner_budget > 1u && n_fit_boards > 0u) {
       const std::size_t share = std::max<std::size_t>(
           1u, std::min<std::size_t>(inner_budget, std::max<std::size_t>(1u, left)));
       inner = std::max<unsigned>(1u, inner_budget / static_cast<unsigned>(share));

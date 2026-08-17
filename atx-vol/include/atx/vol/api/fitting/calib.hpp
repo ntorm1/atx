@@ -277,6 +277,63 @@ struct CalibOpts {
   double min_otm_shortcut_T{7.0 / 365.25};
   double min_otm_shortcut_vega{1.0e-4};
   double max_otm_shortcut_abs_k{0.50};
+
+  // ── Three-tier exercise ladder (perf/exercise-ladder) ────────────────────
+  //
+  // The de-Am inversion's cost is dominated by the Andersen-Lake boundary
+  // solve, and for most OTM rows that boundary buys nothing: the early-exercise
+  // premium is below the noise floor of the quote it is being recovered from.
+  // The ladder prices that judgement PER QUOTE rather than from a maturity or
+  // moneyness box, using the one quantity the decision actually turns on —
+  // the early-exercise premium expressed in VOL POINTS:
+  //
+  //     eep_vol_pts = (baw_american(S,K,T,σ₀,r,q_eff,side)
+  //                    − black76(F,K,T,σ₀,df,side)) / vega
+  //
+  // with σ₀ the row's Black-76 IV of its own American mid (already computed by
+  // the filter cascade) and `vega` its Black-76 vega. This is exactly the vol
+  // error that treating the quote as European would incur, to first order, and
+  // it costs one BAW evaluation (~150 ns) — the same call the OTM shortcut
+  // already makes. Rows are then routed:
+  //
+  //   Tier 0 (European)  eep_vol_pts + margin ≤ tier0 budget
+  //                      → keep σ₀; ZERO boundary solves.
+  //   Tier 1 (Analytic)  eep_vol_pts + margin ≤ tier1 budget
+  //                      → invert against the analytic BAW map
+  //                        (`AmericanMethod::Baw`); still zero boundary solves.
+  //   Tier 2 (Full)      otherwise → the existing cold Andersen-Lake inversion.
+  //
+  // Tier 0 and Tier 1 emit PROPOSALS, never verdicts: both are routed through
+  // the same batched reference reprice + accurate-Andersen-Lake fallback that
+  // already governs the shortcut/cache/fast routes, so a misrouted quote costs
+  // time, never accuracy. `max_inversion_residual_half_spreads` remains the
+  // hard ceiling.
+  //
+  // BOTH DEFAULT 0.0 = LADDER OFF => bit-identical to the full-AL path. A
+  // budget is a VOL-POINT figure in absolute vol units (0.001 = 0.1 vol pts).
+  double deam_tier0_max_eep_vol_pts{0.0};
+  double deam_tier1_max_eep_vol_pts{0.0};
+  // Fail-safe margin. A row is admitted to a tier only if its estimated premium
+  // clears that tier's budget by this much, so a quote sitting ON a boundary
+  // escalates to the more accurate tier rather than the cheaper one. Absolute
+  // vol units, applied to both boundaries.
+  double deam_tier_escalate_margin_vol_pts{0.0};
+  // Dividend-proximity pocket. The one OTM regime where a European treatment
+  // is documented to break down badly is a cash dividend landing shortly before
+  // expiry on the CALL side. This engine carries no discrete ex-dividend
+  // calendar at this seam — dividends reach it only as the continuous
+  // `q_eff = r − ln(F/S)/T` implied by the forward — so the pocket cannot be
+  // detected by date here and is bounded conservatively instead: a call row
+  // whose implied dividend over the option's life,
+  //     div_frac = 1 − e^{−q_eff·T},
+  // exceeds `deam_tier_div_call_max_div_frac` while T is under
+  // `deam_tier_div_call_max_T` is refused Tier 0 and Tier 1 outright. Because
+  // the bound uses the TOTAL implied dividend it cannot miss a dividend the
+  // forward knows about, whatever its date. 0.0 disables each test
+  // independently (and the whole guard is inert while the ladder is off).
+  double deam_tier_div_call_max_T{0.0};
+  double deam_tier_div_call_max_div_frac{0.0};
+
   // Inversion certification tolerates DROPPED nodes (failed inversion or an
   // over-budget residual — both excluded from the fit set and counted in
   // diagnostics) up to this fraction of the rows entering the de-Am stage.
@@ -346,6 +403,33 @@ struct CalibOpts {
   // Asymmetric ρ in the eSSVI backbone (Sprint 15). Off ⇒ symmetric 3D LM.
   bool essvi_asymmetric_rho{false};
 
+  // ── Anchored eSSVI (Corbetta et al. 2019; src/fitting/essvi_anchored.hpp) ──
+  //
+  // OPT-IN. FALSE (default) leaves every calibration on the cube-space
+  // Levenberg-Marquardt fitter, byte for byte — this flag is read only where a
+  // driver explicitly branches on it, and no default anywhere else changes.
+  //
+  // TRUE routes per-slice eSSVI calibration through the anchored
+  // parameterization: two free parameters, no starting point, and both
+  // no-arbitrage classes expressed as interval constraints on psi so a
+  // calibrated slice is admissible BY CONSTRUCTION rather than by post-hoc
+  // audit. Currently honored by `run_surface_parity` (the served eSSVI path).
+  bool essvi_anchored{false};
+
+  // Interpolate quote-starved expiries from their calibrated neighbours instead
+  // of dropping them. INERT unless `essvi_anchored` is set, because linear
+  // interpolation of slice parameters is only provably arbitrage-free in the
+  // anchored (theta, psi, rho*psi) coordinates. Interpolation is STRICTLY
+  // bracketed — an expiry outside the calibrated tenor domain stays dropped and
+  // is never extrapolated.
+  bool essvi_anchored_interpolate_thin{false};
+
+  // Row floor for a slice to be calibrated INDEPENDENTLY. Distinct from the
+  // floor for a slice to EXIST at all (`min_prepared_rows_to_exist`): with
+  // interpolation available the two questions are no longer the same one. 0 =
+  // use `kMinPreparedFitRows`.
+  std::uint32_t min_rows_to_fit_independently{0};
+
   // Robustness guards (Sprint 24). `min_obs_per_slice` gates the fitter;
   // `max_post_fit_sigma` rejects a blown-up slice; `max_spread_to_mid_pct` is
   // an extra observation-builder filter on (ask − bid) / mid (0 disables it).
@@ -367,6 +451,38 @@ struct CalibOpts {
   // DEFAULT FALSE => byte-identical to the historical drop-the-slice behavior;
   // ConvexDense / Svi / eSSVI paths stay bit-identical.
   bool per_slice_linear_fallback{false};
+
+  // Opt-in per-slice PARAMETRIC demotion on a k-coverage refusal (fitter
+  // stability). `SliceKCoverage::admissible` (detail/prepared_fitting.hpp) is a
+  // hard boolean over an ORDER STATISTIC of the surviving quote set — it asks
+  // whether the admitted rows straddle the forward and leave no central
+  // adjacent-row hole wider than `kCoverageMaxCentralGap`. Dropping one row
+  // MERGES two adjacent gaps, so the predicate can flip on a single quote, and
+  // the historical response to a failure is to delete the whole EXPIRY.
+  //
+  // Measured (SP100, 2025-09-11, populate preset): perturbing the de-Am inputs
+  // by a provably-negligible amount moved 45 of 939 expiry fits across that
+  // boolean, and every one of those flips was a ConvexDense slice entering or
+  // leaving the served surface. An expiry appearing or vanishing re-rolls every
+  // tenor-interpolated quantity read off the surface, which is a far larger
+  // perturbation than any curve-shape difference.
+  //
+  // When TRUE and the configured kind is ConvexDense, a coverage-refused slice
+  // is DEMOTED to the parsimonious parametric backbone (eSSVI) instead of being
+  // dropped. That keeps the safety property the predicate exists for — the dense
+  // price-space chord/tails are still never drawn across the hole — while making
+  // the surface's COMPOSITION independent of which side of the boolean a single
+  // quote lands on. The demoted slice goes through the SAME `fit_slice_curve`
+  // admission (including the calendar floor against the prior slice) as any
+  // eSSVI slice; no numerical-sanity check is bypassed, and a demoted slice that
+  // fails to fit is dropped exactly as before.
+  //
+  // This removes the DISCONTINUITY IN COMPOSITION, not every discontinuity: the
+  // served curve SHAPE still switches families at the predicate boundary. It is
+  // a strict improvement in stability, not a proof of continuity.
+  //
+  // DEFAULT FALSE => byte-identical to the historical drop-the-expiry behavior.
+  bool per_slice_uncovered_parametric{false};
 };
 
 // The calibration defaults (`ats_vol_calib_default_opts`). Equal to a

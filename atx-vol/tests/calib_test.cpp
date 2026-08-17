@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
 #include <string>
 #include <utility>
@@ -1634,6 +1635,206 @@ TEST(BuildObservationsEuropean, UltraShortTenorBypassesShortcut) {
   EXPECT_EQ(result->deam_audit.shortcut.n_proposed, 0u);
   EXPECT_GT(result->deam_audit.n_forced_short_tenor, 0u);
   EXPECT_EQ(result->deam_audit.accurate.n_accepted, result->obs.size());
+}
+
+// ── Three-tier exercise ladder ───────────────────────────────────────────
+//
+// The ladder routes each de-Am row to the cheapest forward map whose ESTIMATED
+// early-exercise premium, expressed in vol points, clears a stated budget. The
+// contract these tests pin is not "the tiers are fast" (that is a call-count
+// measurement, not a unit test) but the three things that make the trade safe:
+// it is inert by default, it never moves a published sigma further than the
+// budget it was granted, and it fails toward accuracy at every boundary.
+
+namespace {
+
+// One representative short-dated OTM board. Deliberately NOT ultra-short: the
+// ladder shares the shortcut's `min_otm_shortcut_T` precondition, so a 1-day
+// fixture would be refused for a reason that has nothing to do with the ladder.
+struct LadderFixture {
+  static constexpr double kS = 100.0;
+  static constexpr double kTenor = 30.0 / 365.25;
+  static constexpr double kRate = 0.043;
+  static constexpr double kYield = 0.0;
+  double F{kS * std::exp((kRate - kYield) * kTenor)};
+  double df{std::exp(-kRate * kTenor)};
+  Chain chain{make_american_chain({90.0, 95.0, 97.5, 100.0, 102.5, 105.0, 110.0}, kTenor, kRate,
+                                  kYield, 0.35)};
+
+  [[nodiscard]] static CalibOpts base_opts() {
+    CalibOpts o = calib_default_opts();
+    o.max_spread_vol = 5.0;
+    o.min_vega_weight = 0.0;
+    return o;
+  }
+
+  [[nodiscard]] atx::core::Result<ObsSet> build(const CalibOpts &o) const {
+    return build_observations_european(chain, kS, kRate, F, kTenor, df, o, {}, std::nullopt, 1.0e-7,
+                                       64, AmericanMethod::AndersenLake);
+  }
+};
+
+// Published sigma per strike/side, so two runs can be compared row-wise.
+[[nodiscard]] std::map<std::pair<double, int>, double> sigma_by_row(const ObsSet &s) {
+  std::map<std::pair<double, int>, double> m;
+  for (const FitObs &o : s.obs) {
+    m.emplace(std::pair<double, int>{o.K, static_cast<int>(o.side)}, o.sigma_mkt);
+  }
+  return m;
+}
+
+} // namespace
+
+TEST(DeamLadder, DefaultOptionsLeaveTheLadderInert) {
+  const LadderFixture fx;
+  const CalibOpts opts = LadderFixture::base_opts();
+  // The ladder is opt-in: both budgets default to zero, which is what makes the
+  // shipped default path bit-identical to the historical full-Andersen-Lake one.
+  EXPECT_EQ(opts.deam_tier0_max_eep_vol_pts, 0.0);
+  EXPECT_EQ(opts.deam_tier1_max_eep_vol_pts, 0.0);
+
+  const auto res = fx.build(opts);
+  ASSERT_TRUE(res.has_value()) << (res ? std::string{} : res.error().to_string());
+  ASSERT_FALSE(res->obs.empty());
+  // With the ladder off and no shortcut configured, every row is an accurate
+  // cold inversion — no proposal route may claim any row.
+  EXPECT_EQ(res->deam_audit.shortcut.n_proposed, 0u);
+  EXPECT_EQ(res->deam_audit.fast.n_proposed, 0u);
+  EXPECT_EQ(res->deam_audit.accurate.n_proposed, res->obs.size());
+}
+
+TEST(DeamLadder, Tier0ClaimsRowsAndPublishesTheRawEuropeanIv) {
+  const LadderFixture fx;
+  CalibOpts opts = LadderFixture::base_opts();
+  // 5 vol points is far above anything a 30-day OTM row can carry, so Tier 0
+  // should claim the board outright.
+  opts.deam_tier0_max_eep_vol_pts = 0.05;
+
+  const auto res = fx.build(opts);
+  ASSERT_TRUE(res.has_value()) << (res ? std::string{} : res.error().to_string());
+  ASSERT_FALSE(res->obs.empty());
+  EXPECT_GT(res->deam_audit.shortcut.n_proposed, 0u)
+      << "a generous Tier-0 budget must claim rows on a short-dated OTM board";
+  // A Tier-0 row is served the Black-76 IV of its own American mid, which the
+  // filter cascade already computed. It is a PROPOSAL, so it must still have
+  // been repriced against the accurate reference.
+  EXPECT_GT(res->deam_audit.shortcut.n_reference_reprices, 0u)
+      << "Tier 0 must be audited, never trusted";
+}
+
+TEST(DeamLadder, Tier1ClaimsWhatTier0RefusesAndUsesTheAnalyticMap) {
+  const LadderFixture fx;
+  CalibOpts opts = LadderFixture::base_opts();
+  // A budget below any real premium forces every row past Tier 0; a generous
+  // Tier-1 budget then catches them on the analytic map.
+  opts.deam_tier0_max_eep_vol_pts = 1.0e-12;
+  opts.deam_tier1_max_eep_vol_pts = 0.05;
+
+  const auto res = fx.build(opts);
+  ASSERT_TRUE(res.has_value()) << (res ? std::string{} : res.error().to_string());
+  ASSERT_FALSE(res->obs.empty());
+  EXPECT_GT(res->deam_audit.fast.n_proposed, 0u) << "Tier 1 must claim the rows Tier 0 refused";
+  EXPECT_GT(res->deam_audit.fast.n_reference_reprices, 0u) << "Tier 1 must be audited, never trusted";
+  // The fixture pays no dividend, and an American CALL on a non-dividend-paying
+  // underlier is never exercised early — its early-exercise premium is exactly
+  // zero, so those rows clear even a 1e-12 budget and stay on Tier 0. That is
+  // the estimator reproducing the theorem, not a leak in the budget, and it is
+  // asserted here so a regression that inflated the call-side premium would be
+  // caught rather than silently costing boundary solves.
+  const std::size_t call_rows = static_cast<std::size_t>(
+      std::count_if(res->obs.begin(), res->obs.end(),
+                    [](const FitObs &o) { return o.side == Side::Call; }));
+  EXPECT_EQ(res->deam_audit.shortcut.n_proposed, call_rows)
+      << "only the zero-premium call rows may clear a 1e-12 Tier-0 budget";
+}
+
+TEST(DeamLadder, LadderedSigmasStayInsideTheGrantedVolBudget) {
+  const LadderFixture fx;
+  const CalibOpts off = LadderFixture::base_opts();
+  CalibOpts on = off;
+  constexpr double kBudget = 0.002; // 0.2 vol points
+  on.deam_tier0_max_eep_vol_pts = kBudget;
+  on.deam_tier1_max_eep_vol_pts = kBudget;
+
+  const auto ref = fx.build(off);
+  const auto lad = fx.build(on);
+  ASSERT_TRUE(ref.has_value());
+  ASSERT_TRUE(lad.has_value());
+  const auto a = sigma_by_row(*ref);
+  const auto b = sigma_by_row(*lad);
+  ASSERT_FALSE(a.empty());
+
+  std::size_t compared = 0;
+  for (const auto &[key, sigma_ref] : a) {
+    const auto it = b.find(key);
+    if (it == b.end()) {
+      continue; // the audit may drop a row under either configuration
+    }
+    ++compared;
+    // The budget bounds the FIRST-ORDER premium estimate, so the realized error
+    // is allowed a modest multiple of it before the claim is unsupported. This
+    // is the economic contract; the session-level distribution is what decides
+    // the shipped budget.
+    EXPECT_NEAR(it->second, sigma_ref, 4.0 * kBudget)
+        << "K=" << key.first << " side=" << key.second;
+  }
+  EXPECT_GT(compared, 0u);
+}
+
+TEST(DeamLadder, EscalationMarginNeverAdmitsMoreRowsThanTheBareBudget) {
+  const LadderFixture fx;
+  CalibOpts bare = LadderFixture::base_opts();
+  bare.deam_tier0_max_eep_vol_pts = 0.0005; // a budget the board sits near
+  CalibOpts guarded = bare;
+  guarded.deam_tier_escalate_margin_vol_pts = 0.0005;
+
+  const auto a = fx.build(bare);
+  const auto b = fx.build(guarded);
+  ASSERT_TRUE(a.has_value());
+  ASSERT_TRUE(b.has_value());
+  // The margin is a one-way ratchet toward accuracy: it can only ever move rows
+  // OFF the cheap tier, never onto it.
+  EXPECT_LE(b->deam_audit.shortcut.n_proposed, a->deam_audit.shortcut.n_proposed);
+}
+
+TEST(DeamLadder, CallSideDividendPocketIsRefusedTheCheapTiers) {
+  // A call board with a large implied dividend and a short tenor — the one OTM
+  // regime where a European treatment is documented to break down. The guard is
+  // stated on the TOTAL implied dividend because this seam carries no ex-date.
+  constexpr double S = 100.0;
+  constexpr double T = 20.0 / 365.25;
+  constexpr double r = 0.043;
+  // ~0.33% of spot over the option's life — small enough that the cheap tiers
+  // would otherwise claim the board, which is exactly what makes the guard the
+  // thing under test rather than the budget.
+  constexpr double q = 0.06;
+  const double F = S * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  // Every strike sits above the forward, so every surviving row is a CALL — the
+  // side the guard is scoped to.
+  const Chain chain =
+      make_american_chain({100.0, 102.5, 105.0, 107.5, 110.0, 115.0}, T, r, q, 0.35);
+
+  CalibOpts opts = LadderFixture::base_opts();
+  opts.deam_tier0_max_eep_vol_pts = 0.05;
+  opts.deam_tier1_max_eep_vol_pts = 0.05;
+  const auto open = build_observations_european(chain, S, r, F, T, df, opts, {}, std::nullopt,
+                                                1.0e-7, 64, AmericanMethod::AndersenLake);
+  ASSERT_TRUE(open.has_value()) << (open ? std::string{} : open.error().to_string());
+
+  opts.deam_tier_div_call_max_T = 45.0 / 365.25;
+  // Below the fixture's ~0.33% implied dividend, so the guard must fire.
+  opts.deam_tier_div_call_max_div_frac = 0.002;
+  const auto fenced = build_observations_european(chain, S, r, F, T, df, opts, {}, std::nullopt,
+                                                  1.0e-7, 64, AmericanMethod::AndersenLake);
+  ASSERT_TRUE(fenced.has_value()) << (fenced ? std::string{} : fenced.error().to_string());
+
+  const std::size_t claimed_open =
+      open->deam_audit.shortcut.n_proposed + open->deam_audit.fast.n_proposed;
+  const std::size_t claimed_fenced =
+      fenced->deam_audit.shortcut.n_proposed + fenced->deam_audit.fast.n_proposed;
+  EXPECT_GT(claimed_open, 0u) << "fixture must be claimable before the guard is armed";
+  EXPECT_EQ(claimed_fenced, 0u) << "the dividend guard must refuse both cheap tiers";
 }
 
 // ── obs_accepted: agreement with the builder ─────────────────────────────

@@ -17,10 +17,14 @@ from pathlib import Path
 
 from vrp_panel_qa import (
     COLUMNS,
+    COLUMNS_V2,
     HORIZON_SESSIONS,
+    MAX_PLAUSIBLE_RV_FWD,
     build_report,
+    check_implausible_rv,
     check_label_identity,
     check_t21_successors,
+    compute_implied_leg_stability,
     find_duplicates,
     load_rows,
     main,
@@ -91,6 +95,60 @@ def _write_panel(tmp: Path, name: str, rows: list[str]) -> Path:
     return path
 
 
+# ── vrp_panel_v2 fixtures (v1 row + the appended ATM-forward leg) ──────────
+
+_META_V2 = "# schema=vrp_panel_v2\n# horizon_days=21\n"
+_HEADER_V2 = "\t".join(COLUMNS_V2)
+
+
+def _panel_row_v2(
+    symbol: str,
+    date: str,
+    ts: int,
+    iv: float = 0.2,
+    rv: float | None = 0.25,
+    iv_atmf: float = 0.19,
+    label_override: str | None = None,
+) -> str:
+    """One v2 row: the frozen v1 fields, then iv_atmf_21d. The ATMF default
+    sits BELOW iv (as it must on a skewed smile), so a test that confuses the
+    two legs fails loudly."""
+    return (
+        _panel_row(symbol, date, ts, iv=iv, rv=rv, label_override=label_override)
+        + "\t"
+        + repr(iv_atmf)
+    )
+
+
+def _symbol_rows_v2(
+    symbol: str, n_rows: int, n_labeled: int, ts0: int = 1_000, rv_at: dict[int, float] | None = None
+) -> list[str]:
+    """v2 sibling of _symbol_rows. `rv_at` overrides rv_fwd_21d at given row
+    indices (used to plant an implausible value)."""
+    overrides = rv_at or {}
+    rows = []
+    for i in range(n_rows):
+        rv = overrides.get(i, 0.25 if i < n_labeled else None)
+        rows.append(
+            _panel_row_v2(
+                symbol,
+                f"2024-{i:03d}",
+                ts0 + i,
+                rv=rv,
+                # A drifting ATMF so the day-over-day |delta| section has
+                # something non-degenerate to summarise.
+                iv_atmf=0.19 + 0.001 * i,
+            )
+        )
+    return rows
+
+
+def _write_panel_v2(tmp: Path, name: str, rows: list[str]) -> Path:
+    path = tmp / name
+    path.write_text(_META_V2 + _HEADER_V2 + "\n" + "\n".join(rows) + "\n", encoding="utf-8")
+    return path
+
+
 class _TmpDirCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir_obj = tempfile.TemporaryDirectory()
@@ -103,9 +161,12 @@ class _TmpDirCase(unittest.TestCase):
 class TestParseTsvFile(_TmpDirCase):
     def test_parses_clean_panel(self) -> None:
         path = _write_panel(self.tmp, "a.tsv", _symbol_rows("AAA", 30, 9))
-        header, rows = parse_tsv_file(path)
+        header, rows, schema = parse_tsv_file(path)
         self.assertEqual(tuple(header), COLUMNS)
+        self.assertEqual(schema, "# schema=vrp_panel_v1")
         self.assertEqual(len(rows), 30)
+        # A v1 row is widened with a NaN ATMF leg so mixed inputs share a shape.
+        self.assertEqual(rows[0]["iv_atmf_21d"], "nan")
 
     def test_rejects_reordered_header(self) -> None:
         path = self.tmp / "bad.tsv"
@@ -120,12 +181,36 @@ class TestParseTsvFile(_TmpDirCase):
         with self.assertRaises(ValueError):
             parse_tsv_file(path)
 
+    def test_parses_v2_panel_and_reads_the_atmf_leg(self) -> None:
+        path = _write_panel_v2(self.tmp, "v2.tsv", _symbol_rows_v2("AAA", 30, 9))
+        header, rows, schema = parse_tsv_file(path)
+        self.assertEqual(tuple(header), COLUMNS_V2)
+        self.assertEqual(schema, "# schema=vrp_panel_v2")
+        self.assertEqual(len(rows), 30)
+        self.assertNotEqual(rows[0]["iv_atmf_21d"], "nan")
+
+    def test_rejects_v2_header_under_a_v1_schema_line(self) -> None:
+        # The schema line is the authority: a file that says v1 must carry 18
+        # columns, and a v2 header under it is malformed, not auto-detected.
+        path = self.tmp / "mismatch.tsv"
+        path.write_text(_META + "\t".join(COLUMNS_V2) + "\n", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            parse_tsv_file(path)
+
+    def test_rejects_unknown_schema_version(self) -> None:
+        path = self.tmp / "v9.tsv"
+        path.write_text(
+            "# schema=vrp_panel_v9\n# horizon_days=21\n" + _HEADER + "\n", encoding="utf-8"
+        )
+        with self.assertRaises(ValueError):
+            parse_tsv_file(path)
+
 
 class TestT21Successors(_TmpDirCase):
     def test_clean_panel_has_no_violations(self) -> None:
         # 30 rows, 9 labeled: labeled row p=8 has exactly 21 later rows.
         path = _write_panel(self.tmp, "clean.tsv", _symbol_rows("AAA", 30, 9))
-        rows, _counts = load_rows([path])
+        rows, _counts, _schemas = load_rows([path])
         result = check_t21_successors(rows)
         self.assertEqual(result["n_checked"], 9)
         self.assertEqual(result["violations"], [])
@@ -135,7 +220,7 @@ class TestT21Successors(_TmpDirCase):
         # 20 -- exactly two violations, the earlier labeled rows stay clean.
         rows_txt = _symbol_rows("AAA", 30, 9)[:-2]
         path = _write_panel(self.tmp, "trunc.tsv", rows_txt)
-        rows, _counts = load_rows([path])
+        rows, _counts, _schemas = load_rows([path])
         result = check_t21_successors(rows)
         self.assertEqual(len(result["violations"]), 2)
         self.assertIn("AAA/2024-008", result["violations"][1])
@@ -148,7 +233,7 @@ class TestT21Successors(_TmpDirCase):
         rows_txt = _symbol_rows("AAA", 31, 9)
         del rows_txt[12]
         path = _write_panel(self.tmp, "hole.tsv", rows_txt)
-        rows, _counts = load_rows([path])
+        rows, _counts, _schemas = load_rows([path])
         result = check_t21_successors(rows)
         self.assertEqual(result["violations"], [])
 
@@ -156,7 +241,7 @@ class TestT21Successors(_TmpDirCase):
         # BBB is truncated, AAA is clean: only BBB rows violate.
         rows_txt = _symbol_rows("AAA", 30, 9) + _symbol_rows("BBB", 25, 9, ts0=10_000)
         path = _write_panel(self.tmp, "two.tsv", rows_txt)
-        rows, _counts = load_rows([path])
+        rows, _counts, _schemas = load_rows([path])
         result = check_t21_successors(rows)
         self.assertEqual(len(result["violations"]), 5)
         for v in result["violations"]:
@@ -225,7 +310,7 @@ class TestHardTierWiring(_TmpDirCase):
     def test_duplicate_keys_still_exit_one(self) -> None:
         a = _write_panel(self.tmp, "a.tsv", _symbol_rows("AAA", 30, 9))
         b = _write_panel(self.tmp, "b.tsv", _symbol_rows("AAA", 30, 9))
-        rows, _counts = load_rows([a, b])
+        rows, _counts, _schemas = load_rows([a, b])
         self.assertTrue(find_duplicates(rows))
         out_md = self.tmp / "report.md"
         self.assertEqual(main([str(a), str(b), "--out-md", str(out_md)]), 1)
@@ -234,7 +319,7 @@ class TestHardTierWiring(_TmpDirCase):
         rows_txt = _symbol_rows("AAA", 30, 9)
         rows_txt[0] = _panel_row("AAA", "2024-000", 1_000, label_override="0.999")
         path = _write_panel(self.tmp, "ident.tsv", rows_txt)
-        rows, _counts = load_rows([path])
+        rows, _counts, _schemas = load_rows([path])
         self.assertEqual(len(check_label_identity(rows)["violations"]), 1)
         out_md = self.tmp / "report.md"
         self.assertEqual(main([str(path), "--out-md", str(out_md)]), 1)
@@ -262,6 +347,100 @@ class TestHardTierWiring(_TmpDirCase):
         )
         self.assertFalse(hard)
         self.assertEqual(n_t21, 0)
+
+
+class TestImplausibleRvTier(_TmpDirCase):
+    """Tier 6 -- the PERMANENT guard. It has no opt-out flag on purpose, so
+    these tests also pin that a violating panel cannot be talked into exit 0."""
+
+    def test_clean_panel_has_no_violations(self) -> None:
+        path = _write_panel_v2(self.tmp, "clean.tsv", _symbol_rows_v2("AAA", 30, 9))
+        rows, _counts, _schemas = load_rows([path])
+        result = check_implausible_rv(rows)
+        self.assertEqual(result["n_checked"], 9)
+        self.assertEqual(result["violations"], [])
+        self.assertEqual(result["per_symbol"], {})
+
+    def test_split_corrupted_row_exits_one_and_names_the_symbol(self) -> None:
+        # 8.22 is the NFLX 10-for-1 signature from the round-1 SP100 panel.
+        rows_txt = _symbol_rows_v2("AAA", 30, 9, rv_at={3: 8.22, 4: 5.79})
+        path = _write_panel_v2(self.tmp, "corrupt.tsv", rows_txt)
+        rows, _counts, _schemas = load_rows([path])
+        result = check_implausible_rv(rows)
+        self.assertEqual(len(result["violations"]), 2)
+        self.assertEqual(result["per_symbol"], {"AAA": 2})
+        self.assertAlmostEqual(result["worst"], 8.22)
+
+        out_md = self.tmp / "report.md"
+        self.assertEqual(main([str(path), "--out-md", str(out_md)]), 1)
+        report = out_md.read_text(encoding="utf-8")
+        self.assertIn("## 6. Realized-vol plausibility (hard tripwire)", report)
+        self.assertIn("AAA: 2 row(s)", report)
+        self.assertIn("--splits", report)
+
+    def test_the_tier_also_gates_a_frozen_v1_panel(self) -> None:
+        # The C++ builder's gate cannot reach v1 artifacts retroactively, so
+        # this checker must be the one that refuses them.
+        rows_txt = _symbol_rows("AAA", 30, 9)
+        fields = rows_txt[2].split("\t")
+        fields[6] = "11.1527"  # rv_fwd_21d -- the BKNG 25-for-1 signature
+        fields[7] = repr((11.1527**2 - 0.2**2) * _HORIZON_YEARS)  # keep 4a happy
+        rows_txt[2] = "\t".join(fields)
+        path = _write_panel(self.tmp, "v1corrupt.tsv", rows_txt)
+        out_md = self.tmp / "report.md"
+        self.assertEqual(main([str(path), "--out-md", str(out_md)]), 1)
+        self.assertIn("11.1527", out_md.read_text(encoding="utf-8"))
+
+    def test_a_value_just_under_the_ceiling_passes(self) -> None:
+        # Boundary: the tier fires strictly ABOVE the threshold.
+        rows_txt = _symbol_rows_v2("AAA", 30, 9, rv_at={1: MAX_PLAUSIBLE_RV_FWD})
+        path = _write_panel_v2(self.tmp, "edge.tsv", rows_txt)
+        rows, _counts, _schemas = load_rows([path])
+        self.assertEqual(check_implausible_rv(rows)["violations"], [])
+
+
+class TestImpliedLegStability(_TmpDirCase):
+    def test_reports_both_legs_over_the_same_row_pairs(self) -> None:
+        path = _write_panel_v2(self.tmp, "v2.tsv", _symbol_rows_v2("AAA", 30, 9))
+        rows, _counts, _schemas = load_rows([path])
+        stats = compute_implied_leg_stability(rows)
+        # 30 rows -> 29 consecutive pairs, both legs finite throughout.
+        self.assertEqual(stats["iv_fair_21d"]["n"], 29.0)
+        self.assertEqual(stats["iv_atmf_21d"]["n"], 29.0)
+        # The fixture's iv is constant and its ATMF drifts 0.001/session.
+        self.assertAlmostEqual(stats["iv_fair_21d"]["median"], 0.0, places=9)
+        self.assertAlmostEqual(stats["iv_atmf_21d"]["median"], 0.1, places=6)
+
+    def test_v1_panel_reports_no_atmf_deltas(self) -> None:
+        path = _write_panel(self.tmp, "v1.tsv", _symbol_rows("AAA", 30, 9))
+        rows, _counts, _schemas = load_rows([path])
+        stats = compute_implied_leg_stability(rows)
+        self.assertEqual(stats["iv_fair_21d"]["n"], 29.0)
+        self.assertEqual(stats["iv_atmf_21d"]["n"], 0.0)
+
+    def test_symbols_do_not_bleed_into_each_other(self) -> None:
+        rows_txt = _symbol_rows_v2("AAA", 5, 0) + _symbol_rows_v2("BBB", 5, 0, ts0=10_000)
+        path = _write_panel_v2(self.tmp, "two.tsv", rows_txt)
+        rows, _counts, _schemas = load_rows([path])
+        # 2 symbols x 4 within-symbol pairs; a cross-symbol pair would make 9.
+        self.assertEqual(compute_implied_leg_stability(rows)["iv_atmf_21d"]["n"], 8.0)
+
+
+class TestMixedSchemaInputs(_TmpDirCase):
+    def test_v1_and_v2_panels_load_together(self) -> None:
+        v1 = _write_panel(self.tmp, "v1.tsv", _symbol_rows("AAA", 30, 9))
+        v2 = _write_panel_v2(self.tmp, "v2.tsv", _symbol_rows_v2("BBB", 30, 9, ts0=10_000))
+        rows, counts, schemas = load_rows([v1, v2])
+        self.assertEqual(len(rows), 60)
+        self.assertEqual(set(counts.values()), {30})
+        self.assertEqual(sorted(schemas.values()), ["vrp_panel_v1", "vrp_panel_v2"])
+        out_md = self.tmp / "report.md"
+        self.assertEqual(main([str(v1), str(v2), "--out-md", str(out_md)]), 0)
+        report = out_md.read_text(encoding="utf-8")
+        self.assertIn("vrp_panel_v1, vrp_panel_v2", report)
+        # Coverage is reported over the v2 column set; the v1 file's rows are
+        # honestly counted as missing the ATMF leg.
+        self.assertIn("| iv_atmf_21d | 30 | 60 |", report)
 
 
 if __name__ == "__main__":

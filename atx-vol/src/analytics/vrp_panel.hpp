@@ -1,7 +1,8 @@
 #pragma once
 
-// vrp_panel.hpp — round-1 versioned VRP label/feature panel builder
-// (FROZEN CONTRACT `vrp_panel_v1`; 2026-08-15 vrp-ml sprint, lane vrp-panel).
+// vrp_panel.hpp — versioned VRP label/feature panel builder.
+// Contracts: `vrp_panel_v1` (FROZEN, 18 columns; 2026-08-15 vrp-ml sprint,
+// lane vrp-panel) and `vrp_panel_v2` (round 4, lane vrp-panel-v2).
 //
 // Header-only core behind the `bev_label_factory --vrp-panel` mode: walks one
 // or MORE SurfaceDb roots (the SPY corpus is one root per year, so spot/iv
@@ -11,6 +12,8 @@
 //
 //   iv_fair   = sqrt(var_swap_fair_strike(PricedSurface, T).fair_strike_dec)
 //               at T = 21/252 (and 63/252 for the term-slope feature only)
+//   iv_atmf   = PricedSurface::iv(F(T), T) at T = 21/252 — the ATM-FORWARD
+//               implied vol (v2 only; see "The two implied legs" below)
 //   rv_fwd    = realized_vol(CloseToClose, 252) over the spot-mirror bars of
 //               sessions t+1 .. t+21 (a 21-bar span => 20 close-to-close
 //               return terms; the span deliberately starts at t+1, so session
@@ -19,6 +22,49 @@
 //   label     = (rv_fwd^2 - iv_fair^2) * (21/252)      [variance units, the
 //               LONG-VOL sign convention of the vrp-portfolio digest:
 //               negative on average = the short side collects the carry]
+//
+// ## Schema versions — `vrp_panel_v1` vs `vrp_panel_v2`
+//
+// `VrpPanelConfig::schema` selects the emitted contract; **v2 is the default**
+// and v1 is retained behind the flag so every round-1..3 regression anchor
+// reproduces BYTE-IDENTICALLY. Consumers detect the version from the file
+// itself: line 1 is always `# schema=vrp_panel_v<N>`.
+//
+// v2 is a strict PREFIX-EXTENSION of v1 in both blocks, which is what makes a
+// v1/v2 diff a one-column diff instead of a re-alignment:
+//   * columns  — v1's 18 in the frozen order, then `iv_atmf_21d` appended;
+//   * meta     — v1's 12 lines in the frozen order, then the v2 counters
+//                (`n_atmf21_unavailable`, `n_split_events_applied`,
+//                `n_split_symbols_adjusted`, `n_rv_fwd_implausible`).
+// The ROW SET is identical between the two versions for the same corpus and
+// the same (absent) split reference: the drop policy below is unchanged, so a
+// row lives or dies on the 21d strip exactly as it did in v1. Only the split
+// adjustment (v2-only, and only when `--splits` is supplied) moves a v1 cell.
+//
+// ## The two implied legs, and why BOTH ship
+//
+// `iv_fair_21d` is the variance-swap fair strike `K_var` — an OTM-strip
+// quadrature over our own fitted MID surface at a synthetic 21/252 tenor no
+// listed contract expires on. `iv_atmf_21d` is the ATM-forward implied vol at
+// that same tenor: `iv(F(T), T)`, the single point a `StrikeSelector::Kind::
+// AtmForward` straddle (the instrument `VolEdgeStrategy` actually trades) is
+// struck and marked at. On any non-flat smile `K_var > sigma_ATMF^2` strictly,
+// and the gap scales with each name's skew — `derivatives.hpp`'s forward-
+// variance entry states the same fact in the library's own words. A label
+// built on `K_var` therefore credits the straddle with skew/convexity premium
+// it never receives. v2 emits BOTH columns and changes NEITHER the label nor
+// the row policy, so the next round can race the two targets head to head on
+// one panel rather than on two runs that differ in more than the target.
+//
+// ## Split / corporate-action adjustment (v2 only)
+//
+// A SurfaceDb spot is the raw session spot: it steps discontinuously across a
+// split ex-date, and `rv_fwd` reads that step as a genuine return. Supplying
+// `VrpPanelConfig::splits` (a `symbol/ex_date/price_factor` TSV — see
+// `load_vrp_split_factors`) BACK-ADJUSTS the spot series so those steps
+// vanish. The adjustment is pure reference data: this header applies exactly
+// the factors it is handed, with no detection threshold and no classification
+// rule of its own.
 //
 // Row policy (frozen):
 //   * a session whose 21d strip is unavailable (surface missing / invalid
@@ -73,6 +119,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <limits>
 #include <span>
@@ -92,6 +139,8 @@ namespace atx::vol {
 // ── Frozen contract constants (vrp_panel_v1) ─────────────────────────────
 
 inline constexpr std::string_view kVrpPanelSchemaV1 = "vrp_panel_v1";
+inline constexpr std::string_view kVrpPanelSchemaV2 = "vrp_panel_v2";
+inline constexpr std::string_view kVrpPanelSchemaV3 = "vrp_panel_v3";
 inline constexpr std::size_t kVrpHorizonSessions = 21;    // forward-RV window
 inline constexpr double kVrpTenor21Years = 21.0 / 252.0;  // strip tenor + label scale
 inline constexpr double kVrpTenor63Years = 63.0 / 252.0;  // slope tenor
@@ -101,7 +150,30 @@ inline constexpr double kVrpJumpSigmaMultiple = 4.0;      // f8 threshold
 inline constexpr std::size_t kVrpSigmaWindowSessions = 63; // f8 sigma window
 inline constexpr std::size_t kVrpVovWindowSessions = 63;   // f9 delta count
 
-// Column names in EXACTLY the emitted order. Any change is a schema v2 bump.
+// PERMANENT DATA-INTEGRITY GATE (v2): the largest forward realized vol this
+// panel will accept, annualized decimal. A v2 run whose `rv_fwd_21d` exceeds
+// it FAILS — the defect class it exists to catch (an unadjusted corporate
+// action read as a genuine return) is silent, cross-sectionally concentrated,
+// and dominates a squared-error objective, so it must not be a warning.
+//
+// Why 3.0 and not a looser number, on measured evidence from the round-1
+// SP100 panel (19,042 labeled rows, 102 names, 2025-08..2026-07):
+//   * the largest CLEAN value in the panel is 1.222 (ORCL, 2025-08-27) — the
+//     gate sits 2.5x above the worst honest observation;
+//   * every CORRUPT row sits at 5.79 or above (NOW 5.79, NFLX 8.22, BKNG
+//     11.15) — the gate sits 1.9x below the mildest corruption. The two
+//     populations are separated by a factor of 4.7 with nothing in between,
+//     so the threshold is not fitted to either edge.
+// Why 3.0 and not a tighter number, on economics: over a 21-bar (20-return)
+// window, 300% annualized needs sum(r^2) >= 0.714 — one session of |r| >=
+// 0.845 (a -57% day) or twenty consecutive +-19% sessions. The most extreme
+// single-session large-cap collapse on record (AIG, 2008-09-16, -61%, |r| =
+// 0.94) lands near 3.35, so a genuine event of that severity trips the gate
+// and demands a human confirmation rather than silent ingestion. That is the
+// intended behaviour for a data-integrity tier on an S&P-100 panel.
+inline constexpr double kVrpMaxPlausibleRvFwd = 3.0;
+
+// Column names in EXACTLY the emitted order. v1 is FROZEN; v2 appends.
 inline constexpr std::array<std::string_view, 18> kVrpPanelColumnsV1{
     "symbol",        "date",         "entry_ts_ns", "spot",
     "iv_fair_21d",   "iv_fair_63d",  "rv_fwd_21d",  "label",
@@ -109,6 +181,108 @@ inline constexpr std::array<std::string_view, 18> kVrpPanelColumnsV1{
     "f4_term_slope", "f5_hv_iv_gap", "f6_vrp_lag",  "f7_ret_21d",
     "f8_jump_recent", "f9_vov_63d"};
 inline constexpr std::size_t kVrpPanelColumnCount = kVrpPanelColumnsV1.size();
+
+// v2 = v1's 18 columns in the frozen order, then the ATM-forward implied leg.
+// Appended (not interleaved) so a v2 row is a strict prefix-extension of the
+// v1 row it corresponds to.
+inline constexpr std::array<std::string_view, 19> kVrpPanelColumnsV2{
+    "symbol",        "date",         "entry_ts_ns", "spot",
+    "iv_fair_21d",   "iv_fair_63d",  "rv_fwd_21d",  "label",
+    "f0_log_rv1",    "f1_log_rv5",   "f2_log_rv21", "f3_iv_level",
+    "f4_term_slope", "f5_hv_iv_gap", "f6_vrp_lag",  "f7_ret_21d",
+    "f8_jump_recent", "f9_vov_63d",  "iv_atmf_21d"};
+inline constexpr std::size_t kVrpPanelColumnCountV2 = kVrpPanelColumnsV2.size();
+
+// v3 = v2's 19 columns in the frozen order, then the two LIQUIDITY columns.
+// Appended, never interleaved, so a v3 row is a strict prefix-extension of the
+// v2 row and a v2 reader can be pointed at a v3 file's prefix unchanged.
+//
+// `liq_hspread_frac` — the MEASURED ATM one-way relative QUOTED half-spread,
+//   (ask-bid)/2/mid, for the expiry nearest 21 calendar days, at the ATM strike
+//   located by put-call parity. It comes from the reference TSV
+//   `atx-vol/scripts/vrp_hive_liquidity.py` emits off the SAME opra-hive
+//   snapshot the surface corpus was fit from, so it is a measurement of the
+//   corpus's own market, not an outside estimate. NaN where the reference file
+//   has no (symbol, date) row.
+//   IT IS NOT: an EFFECTIVE spread (a patient order pays less — that discount
+//   belongs in the trainer's `crossing` knob); a size/depth measure; an
+//   intraday average (one snapshot per session); or a statement about the wings.
+//
+// `liq_strikes_fit` — the archive-side breadth PROXY: the number of quoted
+//   strikes that survived board fitting summed over every expiry of that
+//   session's surface (sum of `SliceContext::n_used`). It costs nothing because
+//   ATXVSA2 already persists it per slice (`col_nused_off`), and it covers every
+//   surface ever written. IT IS A WEAK PROXY AND IS CARRIED AS A DIAGNOSTIC, NOT
+//   AS THE COST INPUT: measured against `liq_hspread_frac` over the 614-name
+//   corpus its rank correlation is only -0.42 (log-log R^2 0.21), so it explains
+//   about a fifth of the cross-sectional spread variation. It PROXIES how broad
+//   a strike ladder a vendor quoted well enough to fit; it does NOT proxy the
+//   width of the market, the size at the touch, or what a trade costs.
+inline constexpr std::array<std::string_view, 21> kVrpPanelColumnsV3{
+    "symbol",        "date",         "entry_ts_ns", "spot",
+    "iv_fair_21d",   "iv_fair_63d",  "rv_fwd_21d",  "label",
+    "f0_log_rv1",    "f1_log_rv5",   "f2_log_rv21", "f3_iv_level",
+    "f4_term_slope", "f5_hv_iv_gap", "f6_vrp_lag",  "f7_ret_21d",
+    "f8_jump_recent", "f9_vov_63d",  "iv_atmf_21d", "liq_hspread_frac",
+    "liq_strikes_fit"};
+inline constexpr std::size_t kVrpPanelColumnCountV3 = kVrpPanelColumnsV3.size();
+
+enum class VrpPanelSchema : std::uint8_t { V1 = 0, V2 = 1, V3 = 2 };
+
+[[nodiscard]] inline constexpr std::string_view schema_name(VrpPanelSchema s) noexcept {
+  switch (s) {
+  case VrpPanelSchema::V1:
+    return kVrpPanelSchemaV1;
+  case VrpPanelSchema::V2:
+    return kVrpPanelSchemaV2;
+  case VrpPanelSchema::V3:
+    return kVrpPanelSchemaV3;
+  }
+  return kVrpPanelSchemaV2; // unreachable for a valid enumerator
+}
+
+[[nodiscard]] inline constexpr std::size_t schema_column_count(VrpPanelSchema s) noexcept {
+  switch (s) {
+  case VrpPanelSchema::V1:
+    return kVrpPanelColumnCount;
+  case VrpPanelSchema::V2:
+    return kVrpPanelColumnCountV2;
+  case VrpPanelSchema::V3:
+    return kVrpPanelColumnCountV3;
+  }
+  return kVrpPanelColumnCountV2; // unreachable for a valid enumerator
+}
+
+// Column name at index `i` under `s`. v3 is a prefix extension of v2 which is a
+// prefix extension of v1, so one table answers for all three.
+[[nodiscard]] inline constexpr std::string_view schema_column(VrpPanelSchema s,
+                                                              std::size_t i) noexcept {
+  return s == VrpPanelSchema::V3   ? kVrpPanelColumnsV3[i]
+         : s == VrpPanelSchema::V2 ? kVrpPanelColumnsV2[i]
+                                   : kVrpPanelColumnsV1[i];
+}
+
+// ── Split / corporate-action reference data (v2) ──────────────────────────
+
+// One back-adjustment event. `price_factor` is the multiplier applied to every
+// session STRICTLY BEFORE `ex_date`, i.e. the standard back-adjusted-series
+// convention: a 10-for-1 split carries 0.1, a 1-for-10 reverse split 10.0.
+// This header never derives a factor and never classifies an event; it applies
+// exactly what the reference file states.
+// One MEASURED (symbol, session) option-market width. `half_spread_frac` is
+// (ask-bid)/2/mid at the ATM strike of the expiry nearest 21 calendar days —
+// a QUOTED one-way relative half-spread, finite and > 0.
+struct VrpLiquidityRef {
+  std::string symbol;
+  std::string date;
+  double half_spread_frac{0.0};
+};
+
+struct VrpSplitFactor {
+  std::string symbol;
+  std::string ex_date; // ISO date, sorts lexicographically == chronologically
+  double price_factor{1.0};
+};
 
 // ── Config / counters / row / series ─────────────────────────────────────
 
@@ -124,6 +298,16 @@ struct VrpPanelConfig {
   std::string entry_start;
   std::string entry_end;
   std::string out; // TSV path
+  // Emitted contract. V2 by default; V1 reproduces the frozen round-1..3
+  // artifact byte-for-byte and therefore REFUSES every v2-only input below.
+  VrpPanelSchema schema{VrpPanelSchema::V2};
+  // Optional split/corporate-action reference TSV (v2 only; empty = the raw
+  // SurfaceDb spot series is used unadjusted, exactly as v1 does).
+  std::string splits;
+  // Optional MEASURED liquidity reference TSV (v3 only; empty = every
+  // `liq_hspread_frac` is NaN and the row still carries the archive-side
+  // `liq_strikes_fit` proxy). Generated by `scripts/vrp_hive_liquidity.py`.
+  std::string liquidity;
 };
 
 struct VrpPanelCounters {
@@ -137,6 +321,14 @@ struct VrpPanelCounters {
   std::size_t n_63d_unavailable{0};    // 63d strip missing (row kept, f4 NaN)
   std::size_t n_rows_tail_nan_label{0}; // kept rows with NaN forward window
   std::size_t n_rows_written{0};
+  // ── v2-only (never emitted into a v1 meta header) ──────────────────────
+  std::size_t n_atmf21_unavailable{0};   // ATMF leg missing (row kept, col NaN)
+  std::size_t n_split_events_applied{0}; // reference events folded into a series
+  std::size_t n_split_symbols_adjusted{0}; // symbols with >= 1 folded event
+  std::size_t n_rv_fwd_implausible{0};   // rows above kVrpMaxPlausibleRvFwd
+  // ── v3-only (never emitted into a v1/v2 meta header) ───────────────────
+  std::size_t n_liq_ref_missing{0}; // bars with no (symbol, date) reference row
+  std::size_t n_liq_ref_matched{0}; // bars a reference half-spread was found for
 };
 
 // One symbol's stitched per-session history (the "bar axis"): parallel
@@ -149,6 +341,16 @@ struct VrpSeries {
   std::vector<double> spot;        // finite, > 0
   std::vector<double> iv21;
   std::vector<double> iv63;
+  // ATM-forward implied vol at kVrpTenor21Years (v2's `iv_atmf_21d`). NaN
+  // where the surface could not answer; carried on the bar axis like iv21/
+  // iv63 so the same parallel-array invariant covers it.
+  std::vector<double> iv_atmf21;
+  // v3 liquidity, both on the same bar axis. `liq_strikes_fit` is read out of
+  // the archive with the surface (never NaN — a loaded surface always has
+  // slices); `liq_hspread` is joined from the reference TSV afterwards and is
+  // NaN until/unless that join finds the (symbol, date) row.
+  std::vector<double> liq_strikes_fit;
+  std::vector<double> liq_hspread;
 };
 
 // One emitted panel row (symbol lives beside the row batch, not in it).
@@ -170,6 +372,10 @@ struct VrpPanelRow {
   double f7_ret_21d{0.0};
   double f8_jump_recent{0.0};
   double f9_vov_63d{0.0};
+  double iv_atmf_21d{0.0}; // v2 only; NaN when the surface had no ATMF answer
+  // v3 only. See kVrpPanelColumnsV3 for what each one does and does not mean.
+  double liq_hspread_frac{0.0};
+  double liq_strikes_fit{0.0};
 };
 
 namespace vrp_detail {
@@ -276,6 +482,299 @@ inline void append_meta_count(std::string &out, std::string_view key, std::size_
 
 } // namespace vrp_detail
 
+// ── Split / corporate-action back-adjustment (v2) ─────────────────────────
+
+// Parse a split-factor reference TSV. Grammar (see
+// `atx-vol/scripts/vrp_split_factors.py`, which generates it):
+//
+//   `#`-prefixed comment/provenance lines (anywhere), then exactly one header
+//   line `symbol<TAB>ex_date<TAB>price_factor`, then data rows. Blank lines
+//   are skipped. Extra trailing columns are IGNORED so a generator may carry
+//   provenance (source, raw close, implied ratio) beside the three fields this
+//   loader contracts on.
+//
+// Validation is strict at this boundary — the interior applies factors with no
+// further checks: `price_factor` must parse fully, be finite and > 0;
+// `symbol`/`ex_date` must be non-empty; a (symbol, ex_date) pair must be
+// unique. Output is sorted by (symbol, ex_date) so the applier can walk it.
+//
+// Errors: IoError (unreadable), ParseError (missing/mis-spelled header, short
+// row, unparseable or non-positive factor), InvalidArgument (duplicate key).
+[[nodiscard]] inline Result<std::vector<VrpSplitFactor>>
+load_vrp_split_factors(std::string_view path) {
+  std::ifstream is{std::string(path), std::ios::binary};
+  if (!is) {
+    return atx::core::Err(ErrorCode::IoError, "load_vrp_split_factors: cannot open '" +
+                                                  std::string(path) + "'");
+  }
+  std::vector<VrpSplitFactor> out;
+  std::string line;
+  bool header_seen = false;
+  std::size_t line_no = 0;
+  // Bounded by the file's line count.
+  while (std::getline(is, line)) {
+    ++line_no;
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back(); // tolerate CRLF reference files
+    }
+    if (line.empty() || line[0] == '#') {
+      continue;
+    }
+    std::array<std::string_view, 3> field{};
+    std::size_t n_field = 0;
+    std::size_t start = 0;
+    const std::string_view sv{line};
+    // Bounded by the line length; keeps only the first three fields.
+    while (n_field < field.size()) {
+      const std::size_t tab = sv.find('\t', start);
+      field[n_field++] = sv.substr(start, tab == std::string_view::npos ? tab : tab - start);
+      if (tab == std::string_view::npos) {
+        break;
+      }
+      start = tab + 1;
+    }
+    if (!header_seen) {
+      if (n_field != 3 || field[0] != "symbol" || field[1] != "ex_date" ||
+          field[2] != "price_factor") {
+        return atx::core::Err(ErrorCode::ParseError,
+                              "load_vrp_split_factors: '" + std::string(path) + "' line " +
+                                  std::to_string(line_no) +
+                                  ": expected header 'symbol<TAB>ex_date<TAB>price_factor'");
+      }
+      header_seen = true;
+      continue;
+    }
+    if (n_field != 3 || field[0].empty() || field[1].empty()) {
+      return atx::core::Err(ErrorCode::ParseError,
+                            "load_vrp_split_factors: '" + std::string(path) + "' line " +
+                                std::to_string(line_no) + ": need non-empty symbol/ex_date and a "
+                                                          "price_factor field");
+    }
+    const std::string factor_text{field[2]};
+    char *end = nullptr;
+    const double factor = std::strtod(factor_text.c_str(), &end);
+    if (end != factor_text.c_str() + factor_text.size() || !std::isfinite(factor) ||
+        !(factor > 0.0)) {
+      return atx::core::Err(ErrorCode::ParseError,
+                            "load_vrp_split_factors: '" + std::string(path) + "' line " +
+                                std::to_string(line_no) + ": price_factor '" + factor_text +
+                                "' is not a finite positive number");
+    }
+    out.push_back(VrpSplitFactor{std::string(field[0]), std::string(field[1]), factor});
+  }
+  if (!header_seen) {
+    return atx::core::Err(ErrorCode::ParseError, "load_vrp_split_factors: '" + std::string(path) +
+                                                     "' has no header line");
+  }
+  std::sort(out.begin(), out.end(), [](const VrpSplitFactor &a, const VrpSplitFactor &b) {
+    return a.symbol != b.symbol ? a.symbol < b.symbol : a.ex_date < b.ex_date;
+  });
+  // Bounded by out.size().
+  for (std::size_t i = 1; i < out.size(); ++i) {
+    if (out[i].symbol == out[i - 1].symbol && out[i].ex_date == out[i - 1].ex_date) {
+      return atx::core::Err(ErrorCode::InvalidArgument,
+                            "load_vrp_split_factors: duplicate (symbol, ex_date) '" +
+                                out[i].symbol + "' / '" + out[i].ex_date + "'");
+    }
+  }
+  return atx::core::Ok(std::move(out));
+}
+
+// ── Measured liquidity reference data (v3) ────────────────────────────────
+
+// Parse the liquidity reference TSV `scripts/vrp_hive_liquidity.py` emits.
+//
+// Grammar: `#`-prefixed comment lines and blank lines anywhere; one header line
+// whose FIRST THREE fields are `date`, `underlying`, and whose columns include
+// `atm_rel_hspread`; then data rows. The header is located by NAME rather than
+// by position for the half-spread column, because the generator carries several
+// provenance columns beside it (dte, strike counts, depth) and their order is
+// not part of this contract — but `date` and `underlying` are pinned to
+// positions 0 and 1 so a wholly unrelated file cannot be mistaken for this one.
+//
+// Rows whose `atm_rel_hspread` is `nan` are SKIPPED rather than rejected: the
+// generator legitimately emits one for a session where no ATM pair was quoted,
+// and the panel's own missing-reference path (NaN column, counted) is the right
+// handling. Any other unparseable value IS a hard error — a silently-dropped
+// malformed width would understate cost.
+//
+// Errors: IoError (unreadable), ParseError (missing header, absent
+// `atm_rel_hspread` column, short row, unparseable or non-positive width),
+// InvalidArgument (duplicate (symbol, date)). Output sorted by (symbol, date).
+[[nodiscard]] inline Result<std::vector<VrpLiquidityRef>>
+load_vrp_liquidity_ref(std::string_view path) {
+  std::ifstream is{std::string(path), std::ios::binary};
+  if (!is) {
+    return atx::core::Err(ErrorCode::IoError,
+                          "load_vrp_liquidity_ref: cannot open '" + std::string(path) + "'");
+  }
+  std::vector<VrpLiquidityRef> out;
+  std::string line;
+  std::size_t hs_col = 0;
+  bool header_seen = false;
+  std::size_t line_no = 0;
+  // Bounded by the file's line count.
+  while (std::getline(is, line)) {
+    ++line_no;
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back(); // tolerate CRLF reference files
+    }
+    if (line.empty() || line[0] == '#') {
+      continue;
+    }
+    std::vector<std::string_view> field;
+    {
+      const std::string_view sv{line};
+      std::size_t start = 0;
+      // Bounded by the line length.
+      while (true) {
+        const std::size_t tab = sv.find('\t', start);
+        field.push_back(sv.substr(start, tab == std::string_view::npos ? tab : tab - start));
+        if (tab == std::string_view::npos) {
+          break;
+        }
+        start = tab + 1;
+      }
+    }
+    if (!header_seen) {
+      if (field.size() < 3 || field[0] != "date" || field[1] != "underlying") {
+        return atx::core::Err(ErrorCode::ParseError,
+                              "load_vrp_liquidity_ref: '" + std::string(path) + "' line " +
+                                  std::to_string(line_no) +
+                                  ": expected a header starting 'date<TAB>underlying'");
+      }
+      bool found = false;
+      // Bounded by the header width.
+      for (std::size_t i = 2; i < field.size(); ++i) {
+        if (field[i] == "atm_rel_hspread") {
+          hs_col = i;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        return atx::core::Err(ErrorCode::ParseError,
+                              "load_vrp_liquidity_ref: '" + std::string(path) +
+                                  "' header has no 'atm_rel_hspread' column");
+      }
+      header_seen = true;
+      continue;
+    }
+    if (field.size() <= hs_col || field[0].empty() || field[1].empty()) {
+      return atx::core::Err(ErrorCode::ParseError,
+                            "load_vrp_liquidity_ref: '" + std::string(path) + "' line " +
+                                std::to_string(line_no) +
+                                ": need non-empty date/underlying and an atm_rel_hspread field");
+    }
+    const std::string text{field[hs_col]};
+    if (text == "nan" || text == "NaN" || text.empty()) {
+      continue; // no ATM pair quoted that session; the panel's NaN path owns it
+    }
+    char *end = nullptr;
+    const double hs = std::strtod(text.c_str(), &end);
+    if (end != text.c_str() + text.size() || !std::isfinite(hs) || !(hs > 0.0)) {
+      return atx::core::Err(ErrorCode::ParseError,
+                            "load_vrp_liquidity_ref: '" + std::string(path) + "' line " +
+                                std::to_string(line_no) + ": atm_rel_hspread '" + text +
+                                "' is not a finite positive number");
+    }
+    out.push_back(VrpLiquidityRef{std::string(field[1]), std::string(field[0]), hs});
+  }
+  if (!header_seen) {
+    return atx::core::Err(ErrorCode::ParseError,
+                          "load_vrp_liquidity_ref: '" + std::string(path) + "' has no header line");
+  }
+  std::sort(out.begin(), out.end(), [](const VrpLiquidityRef &a, const VrpLiquidityRef &b) {
+    return a.symbol != b.symbol ? a.symbol < b.symbol : a.date < b.date;
+  });
+  // Bounded by out.size().
+  for (std::size_t i = 1; i < out.size(); ++i) {
+    if (out[i].symbol == out[i - 1].symbol && out[i].date == out[i - 1].date) {
+      return atx::core::Err(ErrorCode::InvalidArgument,
+                            "load_vrp_liquidity_ref: duplicate (symbol, date) '" + out[i].symbol +
+                                "' / '" + out[i].date + "'");
+    }
+  }
+  return atx::core::Ok(std::move(out));
+}
+
+// Join one symbol's measured widths onto its bar axis, in place. `events` are
+// this symbol's reference rows, ascending by date; `s.liq_hspread` is sized to
+// the bar axis and left NaN wherever no row matches. Counters record both sides
+// so a silently-empty join is visible in the meta header.
+//
+// @return the number of bars matched.
+inline std::size_t apply_vrp_liquidity_ref(VrpSeries &s,
+                                           std::span<const VrpLiquidityRef> events) {
+  const std::size_t n = s.dates.size();
+  s.liq_hspread.assign(n, vrp_detail::nan_d());
+  std::size_t matched = 0;
+  std::size_t j = 0;
+  // Merge walk: both sides are ascending by date, so this is linear and needs
+  // no map. Bounded by n + events.size().
+  for (std::size_t i = 0; i < n; ++i) {
+    while (j < events.size() && events[j].date < s.dates[i]) {
+      ++j;
+    }
+    if (j < events.size() && events[j].date == s.dates[i]) {
+      s.liq_hspread[i] = events[j].half_spread_frac;
+      ++matched;
+    }
+  }
+  return matched;
+}
+
+// Back-adjust one symbol's spot series in place for the supplied events
+// (ascending `ex_date`, all belonging to `s`).
+//
+// Convention: the session ON the ex-date already trades post-event, so every
+// session STRICTLY BEFORE it is multiplied by `price_factor`, cumulatively
+// across later events. Two consequences worth stating because callers rely on
+// them: (a) the MOST RECENT session is never rescaled, so the adjusted series
+// stays anchored to the live price rather than drifting with the event count;
+// (b) only the spot LEVEL moves — every quantity the panel derives from spot
+// is a ratio of two adjusted closes, so a window that does not straddle an
+// ex-date is bit-identical to its unadjusted self.
+//
+// Events outside `(dates.front(), dates.back()]` are ignored: one at or before
+// the first session has no earlier session to scale, and one after the last
+// would rescale the entire series uniformly — a no-op on every return, but a
+// gratuitous change to the emitted `spot` column.
+//
+// @return the number of events actually folded in.
+inline std::size_t apply_vrp_split_adjustment(VrpSeries &s,
+                                              std::span<const VrpSplitFactor> events) {
+  const std::size_t n = s.spot.size();
+  if (n == 0 || events.empty()) {
+    return 0;
+  }
+  const std::string &first = s.dates.front();
+  const std::string &last = s.dates.back();
+  std::vector<const VrpSplitFactor *> in_range;
+  in_range.reserve(events.size());
+  // Bounded by events.size().
+  for (const VrpSplitFactor &e : events) {
+    if (e.ex_date > first && e.ex_date <= last) {
+      in_range.push_back(&e);
+    }
+  }
+  if (in_range.empty()) {
+    return 0;
+  }
+  // One descending pass: the qualifying event set grows monotonically as the
+  // session index falls, so each event is folded into `cum` exactly once.
+  double cum = 1.0;
+  std::size_t j = in_range.size();
+  for (std::size_t i = n; i-- > 0;) {
+    while (j > 0 && in_range[j - 1]->ex_date > s.dates[i]) {
+      cum *= in_range[j - 1]->price_factor;
+      --j;
+    }
+    s.spot[i] *= cum;
+  }
+  return in_range.size();
+}
+
 // ── Row building (pure; the gate tests drive this without a SurfaceDb) ───
 
 // Series -> panel rows. Bars with NaN iv21 are the already-counted dropped
@@ -287,7 +786,8 @@ inline void append_meta_count(std::string &out, std::string_view key, std::size_
 [[nodiscard]] inline Result<std::vector<VrpPanelRow>> build_vrp_rows(const VrpSeries &s,
                                                                      VrpPanelCounters &counters) {
   const std::size_t n = s.spot.size();
-  if (s.dates.size() != n || s.ts_ns.size() != n || s.iv21.size() != n || s.iv63.size() != n) {
+  if (s.dates.size() != n || s.ts_ns.size() != n || s.iv21.size() != n || s.iv63.size() != n ||
+      s.iv_atmf21.size() != n) {
     return atx::core::Err(ErrorCode::InvalidArgument,
                           "build_vrp_rows: parallel series arrays disagree in size");
   }
@@ -343,6 +843,15 @@ inline void append_meta_count(std::string &out, std::string_view key, std::size_
     row.label = std::isfinite(rv_fwd)
                     ? (rv_fwd * rv_fwd - iv21 * iv21) * kVrpTenor21Years
                     : vrp_detail::nan_d();
+    row.iv_atmf_21d = s.iv_atmf21[i];
+    // v3 liquidity. Both are read straight off the bar axis; the vectors are
+    // sized defensively because v1/v2 callers never populate `liq_hspread`.
+    row.liq_strikes_fit =
+        i < s.liq_strikes_fit.size() ? s.liq_strikes_fit[i] : vrp_detail::nan_d();
+    row.liq_hspread_frac = i < s.liq_hspread.size() ? s.liq_hspread[i] : vrp_detail::nan_d();
+    if (rv_fwd > kVrpMaxPlausibleRvFwd) { // NaN-safe: a NaN compare is false
+      ++counters.n_rv_fwd_implausible;
+    }
 
     const double r1 = (i >= 1) ? std::log(s.spot[i] / s.spot[i - 1]) : vrp_detail::nan_d();
     row.f0_log_rv1 = std::isfinite(r1)
@@ -476,11 +985,40 @@ load_vrp_series(std::span<const SurfaceDb> dbs, std::span<const VrpSessionRef> s
           ++counters.n_63d_unavailable; // row kept; f4 NaN
         }
       }
+      // The tradeable implied leg: the surface's OWN ATM-forward point at the
+      // strip tenor — the single (K, T) an AtmForward straddle is struck and
+      // marked at. `forward_at` returns 0 for an invalid T and `iv` returns
+      // NaN off-domain, so both are checked rather than trusted.
+      double iv_atmf21 = vrp_detail::nan_d();
+      {
+        const double F = surf->forward_at(kVrpTenor21Years);
+        if (std::isfinite(F) && F > 0.0) {
+          const double sigma = surf->iv(F, kVrpTenor21Years);
+          if (std::isfinite(sigma) && sigma > 0.0) {
+            iv_atmf21 = sigma;
+          }
+        }
+        if (!std::isfinite(iv_atmf21)) {
+          ++counters.n_atmf21_unavailable; // row kept; iv_atmf_21d NaN
+        }
+      }
+      // v3 archive-side breadth proxy. ATXVSA2 persists `n_used` per slice
+      // (`col_nused_off`) and `reconstruct_v2` restores it into SliceContext,
+      // so this is a read of data already on disk for every surface ever
+      // written — no refit, no new dependency. Summed as a double because the
+      // panel's emitted columns are all doubles; the counts here are O(100)
+      // per slice and O(1e3) per surface, far inside exact f64 integers.
+      double strikes_fit = 0.0;
+      for (const SliceContext &sc : surf->context()) {
+        strikes_fit += static_cast<double>(sc.n_used);
+      }
       s.dates.push_back(sr.date);
       s.ts_ns.push_back(ts);
       s.spot.push_back(S);
       s.iv21.push_back(iv21);
       s.iv63.push_back(iv63);
+      s.iv_atmf21.push_back(iv_atmf21);
+      s.liq_strikes_fit.push_back(strikes_fit);
     }
   }
   return atx::core::Ok(std::move(series));
@@ -492,13 +1030,23 @@ load_vrp_series(std::span<const SurfaceDb> dbs, std::span<const VrpSessionRef> s
 // deterministic run counters ONLY: no paths, no timestamps, no root list, so
 // a stitched run and its concatenated-root twin are byte-identical), the
 // column header, then rows sorted (symbol, session).
+//
+// v2 appends to BOTH blocks and rewrites neither, so a v1 file is a byte-exact
+// prefix-shaped sibling of the v2 file the same corpus produces. The v1 branch
+// touches no v2 state at all: that is what keeps the frozen anchor frozen.
 [[nodiscard]] inline Status
-write_vrp_panel_tsv(std::string_view path, std::span<const std::string> symbols,
+write_vrp_panel_tsv(std::string_view path, VrpPanelSchema schema,
+                    std::span<const std::string> symbols,
                     std::span<const std::vector<VrpPanelRow>> rows_per_symbol,
                     const VrpPanelCounters &c) {
+  // v2-and-above / v3-and-above gates. Written as >= comparisons on the
+  // enumerator ORDER (V1 < V2 < V3) so adding a v4 prefix extension keeps the
+  // v2 block emitting rather than silently dropping it.
+  const bool v2 = schema != VrpPanelSchema::V1;
+  const bool v3 = schema == VrpPanelSchema::V3;
   std::string out;
   out += "# schema=";
-  out += kVrpPanelSchemaV1;
+  out += schema_name(schema);
   out += '\n';
   vrp_detail::append_meta_count(out, "horizon_days", kVrpHorizonSessions);
   vrp_detail::append_meta_count(out, "n_symbols", symbols.size());
@@ -512,12 +1060,23 @@ write_vrp_panel_tsv(std::string_view path, std::span<const std::string> symbols,
   vrp_detail::append_meta_count(out, "n_63d_unavailable", c.n_63d_unavailable);
   vrp_detail::append_meta_count(out, "n_rows_tail_nan_label", c.n_rows_tail_nan_label);
   vrp_detail::append_meta_count(out, "n_rows", c.n_rows_written);
+  if (v2) {
+    vrp_detail::append_meta_count(out, "n_atmf21_unavailable", c.n_atmf21_unavailable);
+    vrp_detail::append_meta_count(out, "n_split_events_applied", c.n_split_events_applied);
+    vrp_detail::append_meta_count(out, "n_split_symbols_adjusted", c.n_split_symbols_adjusted);
+    vrp_detail::append_meta_count(out, "n_rv_fwd_implausible", c.n_rv_fwd_implausible);
+  }
+  if (v3) {
+    vrp_detail::append_meta_count(out, "n_liq_ref_matched", c.n_liq_ref_matched);
+    vrp_detail::append_meta_count(out, "n_liq_ref_missing", c.n_liq_ref_missing);
+  }
 
-  for (std::size_t i = 0; i < kVrpPanelColumnCount; ++i) {
+  const std::size_t n_col = schema_column_count(schema);
+  for (std::size_t i = 0; i < n_col; ++i) {
     if (i > 0) {
       out += '\t';
     }
-    out += kVrpPanelColumnsV1[i];
+    out += schema_column(schema, i);
   }
   out += '\n';
 
@@ -537,6 +1096,16 @@ write_vrp_panel_tsv(std::string_view path, std::span<const std::string> symbols,
       for (const double v : doubles) {
         out += '\t';
         vrp_detail::append_double(out, v);
+      }
+      if (v2) {
+        out += '\t';
+        vrp_detail::append_double(out, r.iv_atmf_21d);
+      }
+      if (v3) {
+        out += '\t';
+        vrp_detail::append_double(out, r.liq_hspread_frac);
+        out += '\t';
+        vrp_detail::append_double(out, r.liq_strikes_fit);
       }
       out += '\n';
     }
@@ -569,6 +1138,30 @@ write_vrp_panel_tsv(std::string_view path, std::span<const std::string> symbols,
   if (!cfg.entry_start.empty() && !cfg.entry_end.empty() && cfg.entry_end < cfg.entry_start) {
     return atx::core::Err(ErrorCode::InvalidArgument,
                           "run_vrp_panel: --entry-end precedes --entry-start");
+  }
+  // v1 is the frozen artifact: it must be reproducible from the corpus alone,
+  // so it refuses the one input that would silently move a v1 cell.
+  if (cfg.schema == VrpPanelSchema::V1 && !cfg.splits.empty()) {
+    return atx::core::Err(ErrorCode::InvalidArgument,
+                          "run_vrp_panel: --splits requires --panel-schema v2 (vrp_panel_v1 is a "
+                          "frozen unadjusted contract)");
+  }
+  // Same rule one schema up: v1 and v2 are both frozen regression anchors, so
+  // neither may be handed the v3-only reference file. A v2 run with
+  // --liquidity would otherwise LOOK adjusted and emit a byte-identical file,
+  // which is the worst of both.
+  if (cfg.schema != VrpPanelSchema::V3 && !cfg.liquidity.empty()) {
+    return atx::core::Err(ErrorCode::InvalidArgument,
+                          "run_vrp_panel: --liquidity requires --panel-schema v3 (vrp_panel_v1/v2 "
+                          "are frozen contracts with no liquidity column)");
+  }
+  std::vector<VrpSplitFactor> splits;
+  if (!cfg.splits.empty()) {
+    ATX_TRY(splits, load_vrp_split_factors(cfg.splits));
+  }
+  std::vector<VrpLiquidityRef> liq;
+  if (!cfg.liquidity.empty()) {
+    ATX_TRY(liq, load_vrp_liquidity_ref(cfg.liquidity));
   }
   std::vector<SurfaceDb> dbs;
   dbs.reserve(cfg.db_roots.size());
@@ -609,14 +1202,83 @@ write_vrp_panel_tsv(std::string_view path, std::span<const std::string> symbols,
   ATX_TRY(std::vector<VrpSeries> series, load_vrp_series(dbs, sessions, symbols, counters));
 
   std::vector<std::vector<VrpPanelRow>> rows_per_symbol(symbols.size());
+  // Worst offender, carried only to name it in the plausibility gate's message
+  // — a gate that says "56 rows" without saying WHICH costs an investigation.
+  double worst_rv = 0.0;
+  std::string worst_sym;
+  std::string worst_date;
   // Bounded by symbol count.
   for (std::size_t k = 0; k < symbols.size(); ++k) {
+    // Split adjustment BEFORE row building: every window the builder opens
+    // must already read the adjusted series (`splits` is sorted by (symbol,
+    // ex_date), so one equal_range yields this symbol's events in order).
+    if (!splits.empty()) {
+      const auto lo = std::lower_bound(splits.begin(), splits.end(), symbols[k],
+                                       [](const VrpSplitFactor &e, const std::string &sym) {
+                                         return e.symbol < sym;
+                                       });
+      const auto hi = std::upper_bound(lo, splits.end(), symbols[k],
+                                       [](const std::string &sym, const VrpSplitFactor &e) {
+                                         return sym < e.symbol;
+                                       });
+      const std::size_t applied = apply_vrp_split_adjustment(
+          series[k], std::span<const VrpSplitFactor>{splits.data() + (lo - splits.begin()),
+                                                     static_cast<std::size_t>(hi - lo)});
+      if (applied > 0) {
+        counters.n_split_events_applied += applied;
+        ++counters.n_split_symbols_adjusted;
+      }
+    }
+    // Liquidity join, likewise before row building. Under v3 this runs even
+    // when no --liquidity file was given, so `liq_hspread` is always sized to
+    // the bar axis and the missing-reference count is honest rather than zero
+    // by omission.
+    if (cfg.schema == VrpPanelSchema::V3) {
+      const auto lo = std::lower_bound(liq.begin(), liq.end(), symbols[k],
+                                       [](const VrpLiquidityRef &e, const std::string &sym) {
+                                         return e.symbol < sym;
+                                       });
+      const auto hi = std::upper_bound(lo, liq.end(), symbols[k],
+                                       [](const std::string &sym, const VrpLiquidityRef &e) {
+                                         return sym < e.symbol;
+                                       });
+      const std::size_t matched = apply_vrp_liquidity_ref(
+          series[k], std::span<const VrpLiquidityRef>{liq.data() + (lo - liq.begin()),
+                                                      static_cast<std::size_t>(hi - lo)});
+      counters.n_liq_ref_matched += matched;
+      counters.n_liq_ref_missing += series[k].dates.size() - matched;
+    }
     Result<std::vector<VrpPanelRow>> rows = build_vrp_rows(series[k], counters);
     if (!rows.has_value()) {
       return atx::core::Err(rows.error().code(), "run_vrp_panel: symbol '" + symbols[k] +
                                                      "': " + rows.error().to_string());
     }
     rows_per_symbol[k] = std::move(*rows);
+    // Bounded by this symbol's row count.
+    for (const VrpPanelRow &r : rows_per_symbol[k]) {
+      if (r.rv_fwd_21d > worst_rv) { // NaN-safe: a NaN compare is false
+        worst_rv = r.rv_fwd_21d;
+        worst_sym = symbols[k];
+        worst_date = r.date;
+      }
+    }
+  }
+  // PERMANENT DATA-INTEGRITY TIER (v2). See kVrpMaxPlausibleRvFwd for the
+  // threshold's justification. Loud and unconditional: the only supported fix
+  // is to supply the missing reference factor, which is exactly the incentive
+  // this gate exists to create.
+  if (cfg.schema == VrpPanelSchema::V2 && counters.n_rv_fwd_implausible > 0) {
+    char worst_buf[64];
+    const int len = std::snprintf(worst_buf, sizeof worst_buf, "%.6g", worst_rv);
+    return atx::core::Err(
+        ErrorCode::OutOfRange,
+        "run_vrp_panel: " + std::to_string(counters.n_rv_fwd_implausible) +
+            " row(s) carry rv_fwd_21d above the plausibility gate " +
+            std::to_string(kVrpMaxPlausibleRvFwd) + " (worst " +
+            std::string(worst_buf, static_cast<std::size_t>(len > 0 ? len : 0)) + " at " +
+            worst_sym + " " + worst_date +
+            ") — the spot series carries an unadjusted corporate action; supply its factor via "
+            "--splits");
   }
   if (counters.n_rows_written == 0) {
     return atx::core::Err(
@@ -630,16 +1292,20 @@ write_vrp_panel_tsv(std::string_view path, std::span<const std::string> symbols,
             " var21_nonfinite=" + std::to_string(counters.n_var21_nonfinite) + ")");
   }
 
-  ATX_TRY_VOID(write_vrp_panel_tsv(cfg.out, symbols, rows_per_symbol, counters));
+  ATX_TRY_VOID(write_vrp_panel_tsv(cfg.out, cfg.schema, symbols, rows_per_symbol, counters));
 
   // The brief's "per-reason counts printed" — one deterministic line.
-  std::printf("[vrp_panel] sessions=%zu symbol_sessions=%zu no_surface=%zu bad_spot=%zu "
-              "var21_oor=%zu var21_err=%zu var21_nonfinite=%zu slope63_unavailable=%zu "
-              "tail_nan_label=%zu rows=%zu -> %s\n",
+  std::printf("[vrp_panel] schema=%.*s sessions=%zu symbol_sessions=%zu no_surface=%zu "
+              "bad_spot=%zu var21_oor=%zu var21_err=%zu var21_nonfinite=%zu "
+              "slope63_unavailable=%zu atmf21_unavailable=%zu split_events=%zu "
+              "split_symbols=%zu tail_nan_label=%zu rows=%zu -> %s\n",
+              static_cast<int>(schema_name(cfg.schema).size()), schema_name(cfg.schema).data(),
               counters.n_sessions, counters.n_symbol_sessions, counters.n_no_surface,
               counters.n_bad_spot, counters.n_var21_out_of_range, counters.n_var21_error,
               counters.n_var21_nonfinite, counters.n_63d_unavailable,
-              counters.n_rows_tail_nan_label, counters.n_rows_written, cfg.out.c_str());
+              counters.n_atmf21_unavailable, counters.n_split_events_applied,
+              counters.n_split_symbols_adjusted, counters.n_rows_tail_nan_label,
+              counters.n_rows_written, cfg.out.c_str());
   return atx::core::Ok(counters);
 }
 

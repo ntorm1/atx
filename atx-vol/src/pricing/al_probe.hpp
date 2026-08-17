@@ -85,6 +85,21 @@ enum class Zone : unsigned {
   AlSeedBawAcc,
   AlSweepJnAcc,
   AlSweepFpAcc,
+  // The COLD reference polish at the tail of american_implied_vol_impl: up to two
+  // full `american_price` re-solves per inversion, run to lock the returned iv to
+  // andersen_lake(iv) == price. It nests inside AmericanIv but NOT inside
+  // AloPricerPrice, so no existing zone separates it from the bracket-and-Newton
+  // search. They are the two halves of an inversion's cost and the optimizations
+  // available to each are completely different, so they need separate meters.
+  IvColdPolish,
+  // The PCP borrow fixed point — `resolve_chain_carry`'s American route, from the
+  // hybrid-forward base through the robust aggregation. INCLUSIVE: every American
+  // solve the carry costs nests inside it, so its share against BoardFit is the
+  // direct answer to "how much of the fit is the borrow solve", and its share
+  // against AmericanIv separates carry inversions from de-Am row inversions.
+  // pricer_fitter.cpp's Bulk-preset comment attributes ~66% of a populate date's
+  // fast-tier AL boundary solves here; no counter measured it before.
+  CarryChain,
   Count_
 };
 
@@ -102,6 +117,57 @@ enum class Event : unsigned {
   SharedSideRejected,        // built + solved, then invalidated (whole side back to scalar)
   SharedRowsLaned,           // rows served by the interpolant
   SharedRowsFallback,        // rows that fell back to the per-row scalar inverter
+  // Guard-skip REASONS. SharedSideGuardSkip alone cannot be acted on: the four
+  // conditions it fuses have opposite remedies. A narrow side is a threshold
+  // question (does 9 boundary solves amortise over n rows?); a non-positive
+  // internal rate is a REGIME question (McDonald-Schroder maps the call side's
+  // rate to q, and classify_regime calls rate <= 0 European — those rows never
+  // solve a boundary at all, so "engaging" them would replace a Black-76
+  // evaluation with nine AL solves). The `*Rows` companions carry the row counts,
+  // which is what decides whether a reason is worth any work.
+  SharedSideSkipNarrow,      // side_rows < kSharedMinSideRows
+  SharedSideSkipShortT,      // T < kSharedMinT
+  SharedSideSkipRate,        // internal_rate <= 0 — the non-American (European) regime
+  SharedSideSkipBox,         // degenerate / too-wide sigma box
+  SharedRowsSkipNarrow,
+  SharedRowsSkipShortT,
+  SharedRowsSkipRate,
+  SharedRowsSkipBox,
+  // Three-tier exercise-ladder routing (perf/exercise-ladder). One bump per
+  // de-Am row, in the tier the router assigned it, plus the reasons a row was
+  // refused the cheap tiers. `LadderRefusedDiv` is the dividend-proximity
+  // pocket and is counted separately from the ordinary budget refusal because
+  // the two have different remedies: a budget refusal is a threshold question,
+  // a dividend refusal is a data question (this seam sees no ex-div calendar).
+  LadderTier0,
+  LadderTier1,
+  LadderTier2,
+  LadderRefusedGuard,  // vega / |k| / T / anchor / method precondition
+  LadderRefusedDiv,    // call-side dividend-proximity pocket
+  LadderRefusedBudget, // estimated premium over the Tier-1 budget
+  LadderEscalatedByMargin, // cleared a budget outright but not by the margin
+  // PCP borrow fixed point (perf/pcp-borrow). The carry is a per-(symbol, expiry)
+  // quantity, but nothing memoized it, so every surface build / fallback rung /
+  // selector probe on one cell re-solved the SAME fixed point. `CarryChainSolve`
+  // counts entries to the American carry route; `CarryChainMemoHit` counts the
+  // ones served from the per-board memo. Their ratio IS the redundancy factor.
+  CarryChainSolve,     // resolve_chain_carry entered on the American (imply) route
+  CarryChainMemoHit,   // served from the board-scoped carry memo (no solve)
+  CarryChainMemoStore, // a solved carry published into the memo
+  CarryPairSolve,      // imply_term_borrow_from_base entered (one co-terminal pair)
+  CarryPairOk,         // ... and it converged
+  // Fixed-point iteration histogram, one bump per CONVERGED pair. The whole
+  // point of measuring it: if the map converges in 1-2 iterations the cost is
+  // the inner American inversions, not the outer loop, and warm-starting the
+  // outer loop cannot be the lever.
+  CarryFpIters,        // total iterations summed over pairs (mean = /CarryPairOk)
+  CarryFpIter1,
+  CarryFpIter2,
+  CarryFpIter3,
+  CarryFpIter4,
+  CarryFpIter5to8,
+  CarryFpIter9plus,
+  CarryFpNoConverge,   // hit kBorrowMaxIter without |Δborrow| < kBorrowFpTol
   Count_
 };
 

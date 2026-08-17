@@ -1,48 +1,77 @@
 #pragma once
 
-// THE SpiderRock convention layer for atx-vol-oracle-bench
-// (bench/oracle/CHARTER.md stage 2).
-//
-// EVERYTHING that maps between SpiderRock's units/semantics and the atx-vol
-// engine's lives in THIS one translation unit and nowhere else. Charter stage
-// 3 (iteration 0, convention resolution) will rewrite oracle_conventions.cpp
-// against the measured round-trip residual; the rest of the tool depends only
-// on the three function contracts below and must not care.
-//
-// The stage-2 mappings in the .cpp are INITIAL HYPOTHESES (documented per
-// mapping there), good enough to stand the tool up — they are exactly what
-// iteration 0 exists to falsify or confirm.
+// The isolated SpiderRock <-> atx-vol translation layer. Stage 3 resolves a
+// single ConventionMap on aggregate smoke+tune data; production Mode A uses
+// winning_convention() and never exposes a runtime convention flag.
 
-#include "atx/vol/api/core/types.hpp"      // Side
-#include "atx/vol/api/pricing/american.hpp" // AmericanGreeks
-#include "oracle_cohort_reader.hpp"         // OracleRow
+#include <string_view>
+
+#include "atx/vol/api/core/types.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "oracle_cohort_reader.hpp"
 
 namespace atx::vol::oracle {
 
-// Engine-facing pricing inputs assembled from SpiderRock's OWN row inputs
-// (Mode A: uPrc, rate, sdiv, ddiv, years; vol = srVol).
+enum class InputModel {
+  CurrentSpotSdivYield,
+  DiscreteDividendPvSdivYield,
+  DiscreteForwardNetCarry,
+  DiscreteForwardRateSdivYield,
+  DiscreteForwardNetRate,
+  DiscreteForwardZeroRates,
+  DiscreteDividendPvNetRate,
+  DiscreteDividendPvRatePlusSdiv,
+};
+
+enum class GreekSource { Delta, Gamma, Theta, Vega, Rho, CarryRho, Volga, Vanna, Charm };
+
+struct ConventionMap {
+  InputModel input_model = InputModel::CurrentSpotSdivYield;
+  double price_scale = 1.0;
+  // Calendar days-to-expiry, used ONLY for the scorecard's 0-7/8-30/31-90/90+
+  // banding. SpiderRock's theta day count is an unrelated convention, so the
+  // sweep never writes this field: re-bucketing every band as a side effect of
+  // a theta unit pick would silently change what the bands mean.
+  double days_per_year = 365.0;
+  // Day count implied by theta_scale; this is what the receipt reports as
+  // `day_count`.
+  double theta_days_per_year = 365.0;
+  double delta_scale = 1.0;
+  double gamma_scale = 1.0;
+  double theta_scale = 1.0 / 365.0;
+  double vega_scale = 0.01;
+  double rho_scale = 0.01;
+  double phi_scale = 0.01;
+  GreekSource volga_source = GreekSource::Volga;
+  double volga_scale = 0.01;
+  GreekSource vanna_source = GreekSource::Vanna;
+  double vanna_scale = 0.01;
+  double delta_decay_scale = 1.0 / 365.0;
+};
+
+[[nodiscard]] const ConventionMap &baseline_convention() noexcept;
+[[nodiscard]] const ConventionMap &winning_convention() noexcept;
+[[nodiscard]] std::string_view input_model_id(InputModel model) noexcept;
+[[nodiscard]] std::string_view greek_source_id(GreekSource source) noexcept;
+
 struct EnginePricingInputs {
   double spot = 0.0;
   double strike = 0.0;
   double years = 0.0;
   double sigma = 0.0;
   double rate = 0.0;
-  double carry = 0.0; // the continuous yield q handed to the American pricer
+  double carry = 0.0;
   Side side = Side::Call;
 };
 
+[[nodiscard]] EnginePricingInputs mode_a_inputs(const OracleRow &row,
+                                                const ConventionMap &map) noexcept;
 [[nodiscard]] EnginePricingInputs mode_a_inputs(const OracleRow &row) noexcept;
-
-// SpiderRock `years` -> calendar days-to-expiry for dte-band assignment.
+[[nodiscard]] double dte_days(double years, const ConventionMap &map) noexcept;
 [[nodiscard]] double dte_days(double years) noexcept;
-
-// Engine premium -> SpiderRock srPrc units.
+[[nodiscard]] double price_to_oracle_units(double engine_price, const ConventionMap &map) noexcept;
 [[nodiscard]] double price_to_oracle_units(double engine_price) noexcept;
 
-// Engine greeks -> SpiderRock's de/ga/th/ve/rh/ph/vo/va/deDecay units.
-// `dp_dq` is the carry sensitivity from american_carry_greeks_* (the ph
-// hypothesis); pass NaN when unavailable — ph is then NaN and the caller
-// skips that one metric.
 struct OracleUnitGreeks {
   double de = 0.0;
   double ga = 0.0;
@@ -55,6 +84,8 @@ struct OracleUnitGreeks {
   double de_decay = 0.0;
 };
 
+[[nodiscard]] OracleUnitGreeks to_oracle_units(const AmericanGreeks &g, double dp_dq,
+                                               const ConventionMap &map) noexcept;
 [[nodiscard]] OracleUnitGreeks to_oracle_units(const AmericanGreeks &g, double dp_dq) noexcept;
 
 } // namespace atx::vol::oracle

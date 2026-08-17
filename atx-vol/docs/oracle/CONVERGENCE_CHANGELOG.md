@@ -175,3 +175,77 @@ append-only research log.
 - Next: land the receipt-only Stage 2 canonical transition, then move directly
   to smoke/tune convention resolution and its first evidence-backed residual
   floor.
+
+## 2026-08-16 — bootstrap-2 Mode A capability transition recovery (`e232a1184fb8a77ddea07e27baaa63b78a273878`)
+
+- Type / cohort / verdict: bootstrap capability-transition recovery; `smoke`
+  qualification only; `BOOTSTRAP` (not a Ratchet accuracy verdict).
+- Capability: `missing_mode_a` -> `missing_conventions`. Canonical advanced from
+  base/parent `9f93c7f9ed8c9ed857ecd79dadc62c9bdf1c1bb6` to
+  `e232a1184fb8a77ddea07e27baaa63b78a273878`; the post-CAS probe reported both
+  the data receipt and Mode A receipt valid.
+- Code/artifacts: no pricing, model, or harness code changed. Candidate commit
+  `e232a1184fb8a77ddea07e27baaa63b78a273878` (tree
+  `ffcbe47ea829749fd699346b7a09afa31c745541`) contains exactly one artifact,
+  `atx-vol/bench/oracle/bootstrap/mode-a.json`, with blob
+  `be0229b9bc4459f7009d96d7d4ebe1318fbd84f0`.
+- Metrics (`smoke`): the final `mode_a_smoke` receipt recorded 13,926 processed
+  rows and exact coverage of these eleven metric IDs:
+
+  1. `mode_a_price_mae`
+  2. `mode_a_vol_mae`
+  3. `mode_a_delta_rel`
+  4. `mode_a_gamma_rel`
+  5. `mode_a_theta_rel`
+  6. `mode_a_vega_rel`
+  7. `mode_a_rho_rel`
+  8. `mode_a_phi_rel`
+  9. `mode_a_volga_rel`
+  10. `mode_a_vanna_rel`
+  11. `mode_a_delta_decay_rel`
+
+  No accuracy, MAE, or relative-error values were surfaced, so no convergence
+  or Ratchet delta is claimed.
+- Speed: the pasted wrapper wall times for the targeted-test and smoke gates
+  were 22.4 seconds and 15.8 seconds, respectively. These are diagnostic
+  qualification timings; no pinned speed baseline was measured or changed.
+- Gates: final promotion used exactly these two fresh receipts against the
+  candidate SHA/tree:
+
+  | Gate ID | Status / result | Pasted wrapper wall | Receipt ID |
+  |---|---|---:|---|
+  | `mode_a_targeted_tests` | PASS; 31/31 | 22.4 s | `8ce4bc4372001fb1dcaf1dee31a7523b58c4ccabddba3eb512e49af88f841cdb` |
+  | `mode_a_smoke` | PASS; 13,926 rows and exact eleven-metric coverage | 15.8 s | `e87b1678f5bc6b48ce5bb84017edc73eca3b53a1e0211a984cbbe495a79b71de` |
+
+- Recovery/protocol note: the original workflow stopped after an MCP
+  `Connection closed` error. Before that stop, it ran one extra
+  digest-only `holdout_digest` preflight despite the no-holdout instruction;
+  receipt `50842edac76ed043b87730f6c9b35a0a0ce151f4aadd63c1d24dc87c6880190e`
+  emitted only PASS status, one observation, and a raw-output digest--no cohort
+  membership, rows, or benchmark results. This was a protocol deviation, not a
+  holdout evaluation. Final promotion excluded that receipt and reran only the
+  two required gates listed above.
+- Hypotheses: unchanged; none confirmed or refuted.
+- Oracle-suspect exclusions: unchanged; none vetted.
+- Holdout/tune/ingest/full:
+  No holdout/tune cohort benchmark, ingest, or full suite ran; only the disclosed digest-only preflight ran.
+- Evidence: candidate commit/tree and artifact blob are identified above. The
+  sealed capability record is
+  `C:\atx\.git\oracle-lane-broker-v3\capabilities\550591909e1daeaac2359ee3412c93af243191f2e1212e8c1be5fe4795d52bf8.json`
+  (file SHA-256
+  `19852b1aa93180789caa2a144ba813705ed6bf77db39e43ebdf040889bb349fc`,
+  seal `4521e67d0d8170bb3a7f512bd799a4fa7818cb05ca03acb9f0a4669acb2d55ef`).
+  Finalizer transcript
+  `C:\Users\natha\.codex\sessions\2026\08\16\rollout-2026-08-16T07-06-56-01a00a40-d5f5-7443-8378-11e329e474ac.jsonl`
+  lines 4720-4779 contains both receipts, timings, the exact two-gate set, CAS,
+  and post-CAS capability probe. The original workflow record
+  `C:\Users\natha\.claude\projects\c--atx\cc01cc80-a7d0-41e3-89f8-9846c9376dd3\workflows\wf_f038106a-d0b.json`
+  has file SHA-256
+  `734a7651917541d343509c79d61f581b155e8367a4a2a5077cc8188710548135`;
+  its agent transcript
+  `C:\Users\natha\.claude\projects\c--atx\cc01cc80-a7d0-41e3-89f8-9846c9376dd3\subagents\workflows\wf_f038106a-d0b\agent-a066c4f0fe39d92d3.jsonl`
+  lines 14-16 and 81 records the extra digest preflight and connection close
+  (file SHA-256
+  `6d8a3a34e987a8d1b14dd359fb7435ea55ebd7af3d601b815e1fd58afa9feb39`).
+- Next: resolve conventions on `smoke`/`tune` and establish the residual floor,
+  without tuning against holdout.

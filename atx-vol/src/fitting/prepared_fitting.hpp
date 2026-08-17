@@ -72,6 +72,23 @@ using ObservationRejectionReason = ObsRejectionReason;
 
 inline constexpr std::size_t kMinPreparedFitRows = 5u;
 
+// Row floor for an expiry to EXIST when the caller can serve it WITHOUT fitting
+// it — i.e. anchored eSSVI with thin-slice parameter interpolation enabled.
+//
+// `kMinPreparedFitRows` conflates two different questions: "does this expiry
+// carry enough information to be calibrated on its own?" and "does this expiry
+// exist at all?". They are only the same question when the only way to obtain a
+// slice is to fit one. Corbetta et al. (arXiv:1804.04924) prove that linear
+// interpolation of eSSVI slice parameters between two calibrated maturities is
+// arbitrage-free, so a bracketed expiry needs NO fit — and gating its existence
+// on a fitting floor converts a solved problem into a coverage outage.
+//
+// One row is the true floor for EXISTENCE: it is what a carry solve, a forward,
+// and a de-Americanization certificate need. Whether the slice is then
+// calibrated independently is decided separately, against
+// `CalibOpts::min_rows_to_fit_independently` (default `kMinPreparedFitRows`).
+inline constexpr std::size_t kMinPreparedRowsWithInterpolation = 1u;
+
 // ── k-coverage slice admission (stress-day starvation guard) ─────────────────
 // Count alone (kMinPreparedFitRows) admits two defective populations the
 // ConvexDense price-space fit then extrapolates:
@@ -191,6 +208,13 @@ struct PreparedSliceInputs {
   // slice (rows + audit drops would have met the floor) from a genuinely
   // sparse one even when create() fails the floor. Configured preparation
   // leaves them untouched (its audit ledger lives in `deam_audit()`).
+  // Minimum surviving fit rows for the prepared slice to EXIST. 0 selects
+  // `kMinPreparedFitRows` — the historical floor, and the only value the legacy
+  // path ever uses. A caller that can serve a thin expiry WITHOUT fitting it
+  // (anchored eSSVI parameter interpolation) lowers this so the expiry survives
+  // preparation with its carry, forward and de-Am certification intact; whether
+  // it is then fit independently is a separate decision made by that caller.
+  std::uint32_t min_fit_rows{0};
   std::uint32_t *out_legacy_fit_rows{nullptr};
   std::uint32_t *out_legacy_audit_dropped{nullptr};
 };

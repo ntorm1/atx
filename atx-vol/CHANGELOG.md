@@ -5,6 +5,307 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — the dispersion book, and the regime split that settles the vol-beta question (round 7, lane vrp-dispersion)
+
+**What was added.** `--index-symbol <sym>` turns on an additive dispersion block
+on the pooled OOS rows of `atx-vol-vrp-train`: long free-rule-selected
+single-name vega against short index vega, plus the long-only control the
+structure has to beat. `--index-cost-scale` prices the index leg (default 1.0,
+the conservative corner — the panel carries no index-specific spread
+measurement, so the index is charged the single-name effective spread, which
+overstates it) and `--disp-beta-min-dates` sets how many settled cohorts the
+causal hedge ratio requires. **With `--index-symbol` unset nothing runs and all
+five artifacts are byte-identical to round 6** (verified by SHA-256 against
+`vrp-ml-r6-freerule/sp100-lag2`).
+
+**The finding the flag exists to produce.** Round 6 left the free-rule long leg
+standing with an excess over long-everything at t_nw +4.08/+3.68 and an absolute
+return at only t_nw +1.75/+2.07, and named the gap vol beta. Splitting the
+sample ex post by the sign of the cross-sectional mean raw iv change over each
+cohort's own hold (79 rising / 32 falling of 111): **the SELECTION excess
+survives falling vol and is if anything larger there** — `bench_hv_iv_gap`
++1.825 (t_nw +4.45), `bench_term_slope` +2.887 (+7.72), the equal-rank blend
++3.995 (+10.83), against +2.275 / +2.852 / +2.906 rising. **The ABSOLUTE return
+does not** — `hv_iv_gap` goes to −1.240 (t_nw −2.84), because the
+long-everything floor goes to −3.065 (t_nw −11.55) against +1.197 (+4.19)
+rising. Selection is alpha; the absolute return is the floor's beta.
+
+**What the index hedge buys, and what it cannot.** Shorting SPY vega at the OLS
+hedge ratio (0.328–0.416, estimated on gross series so the cost leg's own IV
+dependence cannot masquerade as beta) drives the residual vol beta to
+0.028–0.046 with |t_nw| ≤ 0.43, from an unhedged 0.359–0.450 at t_nw > 4, and
+roughly halves the drawdown. It buys **no alpha at all**: when the book and its
+zero-selection floor carry the same index leg, that leg cancels exactly in the
+paired per-date difference, so the hedged excess is identically the unhedged
+one. That identity is pinned to 1e-9 by
+`VrpTrainDispersion.ACommonIndexLegCancelsExactlyInTheSelectionExcess` rather
+than left as a remark, because it is the single fact most likely to be
+mis-reported as a dispersion overlay "improving the alpha".
+
+**Two conventions callers must not confuse.** Every dispersion figure is quoted
+**per 1 unit of single-name LONG vega**, never per unit of gross — the structure
+is deliberately not vega-neutral and a gross denominator would let the hedge
+ratio silently rescale the return. And the named index symbol is excluded from
+the ranked universe **and** from the long-everything floor: SPY sits inside the
+fitted panel, so without the exclusion it is rankable into its own hedge, and
+the floor is 1/102 index.
+
+### FIXED — the crossing fraction is reachable, and correcting it raises costs (round 6, lane vrp-freerule-cost)
+
+**The defect.** `FrictionModel::crossing_fraction_complex = 0.53`
+(`api/backtest/backtest.hpp:863`, ORATS-derived) was readable only under
+`SpreadKind::QuoteSide`, while `vol_edge_frictions` hardwires
+`SpreadKind::VolTicks`, whose half-spread carried no crossing factor at all — so
+the vol-edge book crossed **100%** of its assumed spread while the repo's own
+calibration sat two files away, dead. Fixed at the wiring rather than by
+switching to `QuoteSide`, which needs per-fill recorded quotes this book does
+not have; a constant reachable only from a path nothing selects is how it came
+to be dead in the first place.
+
+**Behaviour change, and it is not the flattering one.** `VolEdgeConfig` gains
+`cost_crossing_fraction` (default **0.55**, validated to `(0, 1]`; `0` is
+rejected because it reads as a calibration and behaves as "every option fill is
+free"), and `cost_half_spread_vol_pts` is re-documented from an EFFECTIVE to a
+**QUOTED** width — `vol_edge_frictions` now emits
+`vol_tick = vol_pts * crossing / 100`. The same crossed round trip enters
+`vol_edge_cost_gate_admits`, so the admission predicate and the charge cannot
+drift apart. **Migration: `--cost-crossing-fraction 1.0` alongside the previous
+`--cost-vol-pts` value reproduces every round-2/3 cost column exactly.**
+`VolEdgeConfig`'s arity pin moves 20 → 21.
+
+Applying 0.53 to the old 0.5 vol-point width would have been the flattering half
+of the correction. Reconciled against the literature instead: Christoffersen et
+al. (*RFS* 2018) measure an ATM **effective** relative spread of 6.41% of
+premium, i.e. 3.205% one-way ≈ **0.96 vol points** at σ = 30%; dividing by
+Zhan et al.'s (*RFS* 2022) realized effective/quoted of 0.55, measured on actual
+OPRA prints 2003–16, gives a **quoted** one-way half of 5.827%, which re-crossed
+at the ORATS 0.53 returns **0.93 vol points** — two independent roads agreeing
+to 3.7%. The engine was charging **0.50**. The corrected model is therefore
+**~1.86x more expensive**, and the understatement was in the WIDTH, not the
+crossing.
+
+**The vega book's charge is UNCHANGED, and deliberately so.** 6.41% is an
+*effective* spread measured against the prevailing mid, so the crossing discount
+is already inside it and multiplying by 0.53 would count the same discount twice
+— a free 47% cost cut. `tools/vrp_train.hpp` now takes
+`--cost-crossing-fraction` and computes `effective_measured * (f_cross / 0.55)`,
+written that way rather than `quoted * f_cross` so the default returns the
+measurement **bit-exactly** (`x/x` is exactly 1.0), asserted with `EXPECT_EQ`.
+New meta lines publish the crossing fraction, the derived quoted width, the
+measured effective width, and a provenance line naming the double-counting trap.
+
+### FIXED — `bench_term_slope` was never feature-lagged, so its lag-2 figure saw session t (round 6)
+
+The Vasquez free rule was read from the TARGET-SIDE row
+(`row.iv_fair_63d - row.iv_fair_21d`), which `--feature-lag` does not move.
+Round 5 flagged this and did not fix it. It is now read from `f4_term_slope`,
+which `apply_vrp_feature_lag` shifts and which `analytics/vrp_panel.hpp:637`
+builds as *exactly* the same difference — so the lag-0 ranking, and therefore
+every round-5 number, is byte-unchanged (5,576 anchor meta lines, **0 changed**
+at lag 0), while lag 2 finally means what it says. **Migration: SP100 lag-2
+`bench_term_slope` statistics move** — traded-row IC +0.3817 → +0.2568,
+IV-neutralised excess over the vega floor −0.179 → −0.789. 552 meta lines change
+at lag 2 and every one of them is a `term_slope` line. `bench_neg_iv_atmf_21d`
+has no feature-side twin and remains target-side; the new EIV diagnostic below
+reaches it instead.
+
+### NEW — book implementability columns and a runnable EIV target rebuild (round 6)
+
+Every vega book now publishes `names_per_day`, `turnover_frac_of_gross`
+(fraction of GROSS replaced between consecutive formation dates, on signed
+per-1u-gross weights, so a name that stays but flips side counts as full
+turnover), and `max_drawdown_vol_pts` for the pair and for each leg, each beside
+the same-direction zero-selection alternative's own drawdown. maxDD is a path
+statistic with no per-date series and is therefore emitted **without** a t-stat
+rather than a fabricated one. Turnover is a capacity statement, not a cost
+statement: the cost column charges one round trip per **cohort**, which is what
+the roll-adjusted axis marks.
+
+`--eiv-target-entry-lag N` rebuilds the iv-change target with its ENTRY leg read
+N same-symbol sessions earlier and its exit leg unmoved — round 5's decisive
+errors-in-variables swap, promoted from a one-off table to a runnable
+diagnostic. It is not a tradeable configuration (N > 0 is a 21+N session hold);
+it discriminates. A row without an N-th predecessor is UNDEFINED, never
+substituted.
+
+### NEW — the tradeable vol-change target, a cost-charged VEGA book, and a second gate (round 5, lane vrp-volchg)
+
+**What shipped.** `atx-vol-vrp-train` reads `vrp_panel_v2` (v1's 18 columns
+then `iv_atmf_21d`) and grades every score column on two further target axes.
+`iv_chg_21d_raw` is `100*(iv_atmf_21d[t+21] - iv_atmf_21d[t])` in vol points,
+joined to the same symbol's row at exactly +21 pooled sessions — a missing exit
+row is undefined, never interpolated. `iv_chg_21d_roll` subtracts the
+term-structure roll a constant-maturity 21d vega position pays over the same
+window, `100*(iv_fair_63d[t] - iv_fair_21d[t])/2`, and is the ONLY iv-change
+axis the money is graded on. `vrp_build_iv_chg`, `vrp_vega_book_per_date`,
+`vrp_vega_iv_neutral_per_date`, `vrp_vega_floor`, `vrp_vega_agg`,
+`vrp_vega_report` and `vrp_vega_gate_verdict` are new in `tools/vrp_train.hpp`.
+
+**Why the raw axis is reported and never gated.** `iv_atmf_21d` is a
+constant-maturity index; the 21d option bought at t has expired by t+21, so
+nobody is marked at `iv_atmf_21d[t+21]`. Measured on the SP100 OOS rows,
+`f4_term_slope` scores rank IC **+0.4764 (t_nw +17.51)** against the raw axis
+and **+0.2038 (t_nw +5.62)** against the roll-adjusted one: more than half of
+the strongest apparent predictor of the raw axis is carry accounting. A gate on
+it would have crowned a roll identity exactly as round 4's crowned an algebraic
+one.
+
+**Costs are charged, not assumed away.** One-way 3.205% of premium
+(Christoffersen–Goyenko–Jacobs–Karoui, *RFS* 2018, ATM effective relative
+spread 6.41%, halved) times `100*iv`, at entry AND exit (Zhan–Han–Cao–Tong,
+*RFS* 2022). On the SP100 traded rows that is **2.12–2.59 vol points per 1u
+gross vega per cycle**, against gross books of +2.2 to +3.4.
+
+**The floor is not "short everything".** A cross-sectionally neutral vega book
+is not structurally short vol, so its zero-selection bar is the better of LONG
+everything and SHORT everything, chosen once from the run's own rows and
+published with both. On SP100 the binding bar is long-everything at **−0.048
+vol pts net of costs** (short-everything: −4.266).
+
+**Two new zero-parameter benchmarks and one new contaminated column.**
+`bench_neg_iv_atmf_21d` (cross-sectional vol mean reversion) and
+`bench_term_slope` (Vasquez, *JFQA* 2017) join `bench_hv_iv_gap`;
+`contaminated_iv63_minus_iv_atmf21` is scored, published, and structurally
+unable to decide a verdict because it contains the iv-change target's own entry
+mark.
+
+**Asymmetric objective (`--short-vega-haircut`, default 0.50).** A POSITIVE
+short-vega aggregate edge is discounted; a short-vega LOSS is not. The
+multiplier is decided once from the whole-sample short-leg mean, so the
+objective has a real per-date series and a real t-stat. Every vega figure is
+emitted with its long-leg and short-leg split, each with its own `t_nw` and its
+own excess over the SAME-DIRECTION zero-selection alternative.
+
+**MIGRATION.** `# gate_n_benchmarks` changes from **1 to 3** — the only
+non-additive line in `vrp_metrics.tsv`; every other round-4/5 line is present
+unchanged and ~4,020 lines are added. `kVrpGateColumnCount` 5 → 8 and
+`kVrpTargetAxes` 3 → 5, so `gate.pooled` is now 40 entries (column-major,
+5 axes per column) and the ranked column moves from index 3 to index 5.
+`vrp_signal_v1`, `vrp_fold_stats_v1` and the model files are UNCHANGED: a v1
+panel reproduces `vrp-ml-r5-gatefix/sp100-flagoff-final` byte for byte on all
+four non-metrics artifacts.
+
+**Verdict: DO-NOT-SHIP, both corpora, both feature lags.** See
+`.superpowers/sdd/2026-08-15-vrp-ml/task-vrp-volchg-report.md`.
+
+### BREAKING - SpiderRock convention sweep tool, sweep-pinned production map, and v2 convention gate contract
+
+Mode A still prices through one hard-cut, worktree-local `winning_convention()`
+map with no runtime selection flag and no legacy convention shim, but that map
+is no longer hand-authored: it is PINNED from the deterministic aggregate
+smoke+tune sweep.
+
+The previous values are the Stage-2 hypothesis map at `f619d3b4`
+(`atx-vol/tools/oracle_conventions.cpp`, `kDaysPerYear = 365.0`,
+`kPerPoint = 0.01`, `in.spot = row.uprc` with `ddiv` unused). Measured against
+that baseline, four things move and every one of them silently changes a number
+a caller already depends on:
+
+- `input_model` `uprc_spot__rate__sdiv_yield` -> `discrete_forward_pv__rate__sdiv_yield`.
+  The pricing spot goes from `row.uprc` to `(uprc*exp(rate*T) - ddiv)*exp(-rate*T)`,
+  so on any row with `ddiv != 0` EVERY price and EVERY Greek changes. This is not
+  a search candidate note: it is the production map. There is no single scalar
+  factor — the shift is `-ddiv*exp(-rate*T)` in spot, and each output moves by
+  its own sensitivity to that shift. Rows with `ddiv == 0` are unchanged.
+- `theta_scale` `1/365` -> `1/252` (`ACT_365F` -> `BUS_252`). Every `th` is now
+  `365/252 = 1.44841270x` its previous value.
+- `volga_scale` `1e-2` -> `1e-4` (`per_point` -> `per_point_squared`). Every `vo`
+  is now `0.01x` — one hundredth of — its previous value.
+- `delta_decay_scale` `1/365` -> `1/252` (`ACT_365F` -> `BUS_252`). Every
+  `deDecay` is now `365/252 = 1.44841270x` its previous value.
+
+`phi_scale` did NOT move: it was `0.01` (`kPerPoint`) at `f619d3b4` and is
+`0.01` (`per_point`) now, so `ph` is unchanged. `price_scale`, `delta_scale`,
+`gamma_scale`, `vega_scale`, `rho_scale`, `vanna_scale`, the volga/vanna sources
+and every sign are likewise unchanged.
+
+Migration: nothing else in the tree reads these units, and no committed residual
+floor described the old ones, so there is no stored number to restate. A caller
+holding its own comparison constants must multiply `th` by 1.44841270, `vo` by
+0.01 and `deDecay` by 1.44841270, and must RE-DERIVE rather than rescale
+anything computed from a `ddiv != 0` row, because the input model changed the
+priced spot itself.
+
+Theta moved a SECOND time inside this same unreleased entry, and a caller who
+already migrated against the first number must apply the difference. This entry
+previously pinned production theta at `ACT_365_25` (`1/365.25`); the resolved
+Stage 3 winner is `BUS_252` (`1/252`), and production is now pinned to it. Every
+`th` a caller reads therefore changes by a further factor of
+`365.25/252 = 1.44940476` relative to what this entry described before. A caller
+starting from the `f619d3b4` `ACT_365F` (`1/365`) units applies the single
+`365/252 = 1.44841270` above instead; the two are alternatives, never composed.
+Nothing else in the map moved with it — `theta_basis` stays `per_day`,
+`theta_sign` stays `positive`, and the scorecard's separate
+`dte_banding_day_count` stays `ACT_365F`, so no DTE band re-buckets.
+
+Nothing asserts that pin on trust; the gate re-derives it.
+`convention_sweep_json` re-emits the production map as `production_conventions`
+on every run beside the `conventions` the sweep just resolved, and the gate
+FAILS CLOSED while the two differ, so the pinned literal is checked against a
+fresh sweep each time. `OracleConvention.ProductionMapIsTheResolvedHardCut`
+additionally pins the exact published rendering and asserts the map is a fixed
+point of the sweep on synthetic rows authored by it.
+
+No residual floor is claimed. The gate-produced `iter-000` artifact still does
+not exist, so nothing here commits a Mode A residual floor or a speed pin; this
+entry records the map and the contract that verifies it, not a measured floor.
+
+New: `atx-vol-oracle-bench --convention-sweep` runs a closed deterministic
+aggregate smoke+tune search — the documented discrete-dividend forward
+`uPrc * exp(rate*T) - ddiv`, bounded rate/carry treatments, theta day counts,
+price/share and sign scaling, and all nine Greek source/unit/sign mappings, with
+no Cartesian product. Every row is priced under both the winner and the baseline
+map before either accumulator sees it, so the two floors always describe one row
+population. Scale selection excludes rows with `|oracle| < kSelectionAbsFloor`
+(whose floored relative denominator otherwise rewards the smallest candidate
+scale); those rows still count toward the reported floor, and every metric now
+publishes both `count` and `selection_count`. `kSelectionAbsFloor` is the
+sweep's own constant, currently `1e-4` — the same value the scorecard's
+`kGreekAbsFloor` reporting tolerance carries, but no longer the same constant,
+so retuning that tolerance cannot silently move the selection population. Every
+validator additionally requires `selection_count >= count / 10`, and the gate
+receipt's `audit_summary` gains `min_selection_pct`.
+
+A sweep whose metric or input candidate admitted no observation at all now
+returns an error NAMING it. Previously the empty accumulator's infinite mean was
+written through `%.17g` as a bare `inf`, and a twelve-minute aggregate run
+failed as "sweep is not JSON".
+
+Convention bootstrap receipts and iter-000 residual floors are schema version 2
+and carry all eleven numeric metrics with both counts, baseline, winning AND
+`production_conventions` maps, deltas, bounded candidate attribution, artifact
+blob IDs, and a quiet rel-avx2 speed pin; legacy convention receipts now fail
+closed. Receipt and scorecard values are compared FIELD BY FIELD with numbers
+compared as doubles: the previous re-serialized-text comparison compared source
+digits under Windows PowerShell 5.1, where an authored `0.0` and the sweep's
+`%.17g` rendering of the same number (`0`) are different strings.
+
+The bootstrap gate registry builds only the convention test and oracle-bench
+targets. It runs the isolated convention suite (discovered per test case, so a
+filter that matches nothing fails instead of reporting 1/1 passed), executes one
+smoke+tune sweep, verifies that exact-SHA artifact against the committed floor
+without repricing it, and runs two quiet tune speed gates: `convention_speed_measure`
+emits the measured rel-avx2 rate with no pin comparison (it is the only
+sanctioned producer of the number iter-000's speed floor is DERIVED from —
+`speed.baseline` is that measurement and `speed.pin` is
+`floor(baseline * 0.90)`; a verbatim copy would make the re-measurement a coin
+flip, so validators reject any pin above `baseline * 0.95`), and
+`convention_speed` then re-measures against that committed pin. The declared
+Stage 3 gate order is `convention_tests`, `mode_a_smoke_tune`,
+`convention_speed_measure`, `residual_floor`, `convention_speed` — measure
+precedes the residual gate because the residual gate requires the iter-000 the
+measurement feeds. Holdout and broad/full test suites remain outside convention
+resolution.
+
+`ConventionMap` gains `theta_days_per_year`. The map's reported `day_count` is
+the theta day count, derived from `theta_scale` (the multiplier production
+applies) rather than from the descriptive field, so a map whose two theta fields
+disagree can no longer render identically to a correct one. `days_per_year` is
+now solely the scorecard's calendar DTE-banding day count and the sweep never
+writes it, so a theta unit pick no longer silently re-buckets every DTE band; it
+is published as `dte_banding_day_count`, taking the convention map to 31 keys
+across all five layers that pin it.
+
 ### BREAKING - later oracle bootstrap stages advance an existing canonical ref
 
 Stage 2 Mode A and the ordered convention/Mode B bootstrap stages now finalize
@@ -43,6 +344,151 @@ so both values are independently recomputed before Stage 2 accepts them.
 Stripped or synthesized legacy precheck receipts fail closed.
 There is no compatibility flag or legacy receipt shim; regenerate the bootstrap
 receipt through the fixed targeted gates.
+
+### CHANGED (gate semantics) — VRP round 5: the gate graded the wrong target (lane vrp-gate-fix)
+
+**Every round-4 gate verdict is VOID. Do not quote a `gate_verdict=` line from a
+round-4 artifact.** The round-4 gate scored every column against the composite
+label `(rv_fwd_21d^2 − iv_fair_21d^2)·21/252` and admitted `-iv_fair_21d` as a
+zero-parameter benchmark. `iv_fair_21d` sits INSIDE that label with a negative
+sign and `load_vrp_panel` enforces it positive on every labeled row, so
+`x ↦ −x²` is strictly monotone on the domain and `-iv_fair_21d` is a PERFECT
+rank transform of the label's own implied leg: rank IC **exactly +1.0000**, by
+algebra, on any dataset, forever. Against the forecastable leg it is a strong
+ANTI-forecaster: **−0.6128 (t_nw −22.93)** on SP100, **−0.7870 (t_nw −53.28)**
+on clean25. Full derivation:
+`.superpowers/sdd/2026-08-15-vrp-ml/audit-benchmark-contamination.md`.
+
+- **REMOVED: `bench_neg_iv_fair_21d`.** The column survives as
+  `contaminated_neg_iv_fair_21d` under the new `VrpScoreKind::Contaminated`,
+  which the verdict cannot read — scored and published so the evidence
+  survives, structurally unable to decide anything. `bench_hv_iv_gap` is KEPT
+  at full strength and is now the sole benchmark. **MIGRATION:** every
+  `# gate_*_bench_neg_iv_fair_21d_*` meta key is gone; the same statistics are
+  emitted under `contaminated_neg_iv_fair_21d`, and `# gate_n_benchmarks` drops
+  from 2 to 1. The generalisation is recorded at `kVrpScoreContamNegIv` in
+  `vrp_train.hpp` because it is not specific to that column: ANY score shaped
+  `(variance_forecast − iv_fair²)` inherits the free component — a zero-skill
+  `(rv_trail² − iv²)·H` scores +0.3501 against the composite label, and the
+  fitted `baseline_log_har` scores +0.4124 against it while measuring
+  **−0.5880** against realized vol.
+- **CHANGED: every score column is now graded on THREE targets, and every meta
+  key names its target.** `rv_fwd_21d` (the realized leg — **the only gating
+  axis**), `ln(rv_fwd_21d / rv_trail_21d)` (vol change, the one axis with no
+  `iv_fair` in it), and the composite label (reported, labelled contaminated,
+  never gated). **MIGRATION:** `# gate_pooled_<col>_<stat>` becomes
+  `# gate_pooled_<col>_<axis>_<stat>` with `axis ∈ {rv_fwd_21d, vol_chg_21d,
+  label_contaminated}`; a round-4 reader's keys map to the
+  `label_contaminated` ones. MSE / Mincer–Zarnowitz are emitted on the label
+  axis only — a level loss against `rv_fwd_21d` is a category error and is
+  refused rather than fabricated.
+- **NEW: money is a pass condition, quoted as excess over a zero-selection
+  floor.** `ppv = 100·(rv_fwd² − iv_fair²)/(2·iv_fair)` vol points, per **1
+  unit of GROSS vega**, as a top/bottom-decile book and as the
+  IV-quintile-neutralised book (5 IV quintiles per date, rank inside each,
+  long/short the top/bottom 20%, average the five). **Every P&L figure is
+  emitted with `excess_over_floor` on the same key stem**, where the floor is
+  shorting the whole cross-section blind, computed from the run's own rows and
+  never a constant (SP100: **+3.706 vol pts, t_nw +2.89**). Short-vol beta was
+  read as selection skill for three rounds; the pairing is the structural fix.
+  `|ppv|` is winsorized at 60 with the affected row count published, because
+  the unadjusted-split rows still own 78% of Σ|ppv| on SP100.
+- **CHANGED: the pass rule.** `# gate_rule=` now requires the model to beat
+  every zero-parameter benchmark on `rv_fwd_21d` Pearson IC, `rv_fwd_21d`
+  Spearman IC **and** IV-neutralised P&L excess over the floor, with the
+  model's own excess itself positive. Still fail-closed on ties, NaN, a missing
+  model, zero benchmarks and — new — missing money.
+- Flag-off byte-identity is unaffected: `--edge-norm per-symbol --feature-lag 0`
+  still reproduces `vrp_signal.tsv`, `vrp_gbt_model.tsv`,
+  `vrp_baseline_model.tsv` and `vrp_fold_stats.tsv` byte-for-byte against the
+  round-3 SP100 anchor, and `vrp_metrics.tsv` stays strictly additive against
+  it (all 41 anchor lines survive unchanged).
+
+### CHANGED (default) + NEW — VRP round 4: the evaluation gate (lane vrp-eval-gate)
+
+**One default CHANGES A NUMBER a caller depends on: `pred_edge_norm` in
+`vrp_signal.tsv`.** Everything else in this entry is additive. Migration and
+the byte-identity escape hatch are in the first bullet.
+
+- **`--edge-norm {cross-section|per-symbol}` (default `cross-section`) — the
+  ranking column.** `pred_edge_norm` is now the WITHIN-DATE cross-sectional
+  z-score of `pred_label` across the symbols scored on that date. It was the
+  per-symbol z-score `(pred_label - label_mean[sym]) / label_sd[sym]`, which
+  subtracts each name's own average variance premium — the persistent
+  cross-sectional VRP the book exists to harvest — and then divides by a
+  `label_sd` spanning three orders of magnitude, reordering the cross-section
+  instead of rescaling it. Measured on the same rows, dates and 21d horizon
+  through an equal-weighted decile long/short book with all sizing stripped:
+  per-symbol **−1.63 vol pts/cycle** (29% of phase offsets positive) against
+  ranking on `pred_label` **+1.74** (76% positive). Re-measured in-trainer on
+  clean-25 OOS test rows, ranking-column statistics: decile Spearman rho
+  **+0.32 → +0.72**, decile spread **+0.00058 → +0.00413** (t_nw 0.51 → 2.25),
+  traded-tail Pearson IC **−0.025 → +0.262**, per-date rank IC
+  **+0.0845 → +0.2240**. Within a date the new map is affine with positive
+  scale, so it is exactly order-preserving on `pred_label`.
+  **MIGRATION:** the `vrp_signal_v1` header and column grammar are unchanged
+  and the file still loads under the unmodified frozen loader; only the values
+  in that one column move. Pass `--edge-norm per-symbol` to restore the
+  round-3 column — verified byte-identical `vrp_signal.tsv`,
+  `vrp_gbt_model.tsv`, `vrp_baseline_model.tsv` and `vrp_fold_stats.tsv`
+  against the round-3 SP100 gate anchor. **NOTE:** under `cross-section` the
+  sidecar's `label_mean`/`label_sd` no longer reproduce `pred_edge_norm` from
+  one row — it is a within-date transform and needs the whole date's
+  cross-section. `pred_label` remains reproducible from
+  {model file + sidecar} alone, and `--edge-norm per-symbol` restores the
+  single-row derivation of `pred_edge_norm`.
+
+- **NEW: a mandatory zero-parameter benchmark gate, reported on every run.**
+  **SUPERSEDED by round 5 above — `-iv_fair_21d` was not a benchmark and every
+  verdict this bullet describes is void. The gate machinery below survives; the
+  target and the benchmark set do not.**
+  The model is scored against `-iv_fair_21d` (known at t) and `f5_hv_iv_gap`
+  (Goyal–Saretto HV–IV) on the same rows, dates and folds, plus the fitted
+  log-HAR baseline for reference and — new — the column the book actually
+  RANKS on. PASS requires the model to beat every zero-parameter benchmark on
+  BOTH mean per-date Pearson and Spearman IC, strictly; ties, NaN, a missing
+  model and zero benchmarks all FAIL. The verdict is written to
+  `vrp_metrics.tsv` (`# gate_verdict=`), stdout and stderr. It is not behind a
+  flag: three rounds shipped on a +0.22 IC that no free rule was ever asked to
+  beat.
+
+- **NEW: honest metrics.** Every IC and P&L aggregate carries an i.i.d.
+  t-stat and a Newey–West/Bartlett t at the 20-session overlap lag. The sizing
+  IC is out-of-sample **Pearson** (Grinold `alpha = IC·sigma_y·z`), reported
+  on all OOS rows and on the decile tails a book would hold; Spearman is
+  reported beside it and is never the sizing input. Per-date decile buckets,
+  top-minus-bottom spread with t-stats, and Spearman rho publish the TAIL
+  statement a pooled IC cannot make. Every statistic is labelled with its
+  **corpus** (`--corpus`, default the panel file stem) and emitted per fold AND
+  pooled. Unlabeled-tail coverage is published as a count and a fraction.
+
+- **DEPRECATED: QLIKE.** `L(F,P) = P/F − ln(P/F) − 1` is a VARIANCE loss
+  requiring `F > 0` and `P > 0`; the label is a SIGNED variance spread,
+  negative about half the time, which is the entire source of the round-1
+  1e6..3e7 readings. The round-4 gate scores **MSE + Mincer–Zarnowitz** and
+  never reads QLIKE. The legacy `qlike` column in the `vrp_train_metrics_v1`
+  table is retained unchanged so round-3 artifacts stay comparable, and is
+  explicitly disowned by a `# qlike_status=...` meta line. Do not read it as a
+  model-quality metric.
+
+- **NEW: `--feature-lag <n>` (default `0`, cap 21).** Reads every FEATURE from
+  the row's n-th same-symbol predecessor so a stale same-session quote cannot
+  manufacture IC. Targets are never shifted, so the observation set and fold
+  plan are identical at every lag. Rows without an n-th predecessor get NaN
+  features (routed through the existing z = 0 imputation) and are counted in
+  `# feature_lag_rows_unavailable`. Default 0 preserves round-3 behaviour.
+
+- **CHANGED: `fmt_double` canonicalizes every NaN spelling to `nan`.** MSVC
+  `to_chars` prints the x87 indefinite quiet NaN (what `0.0/0.0` yields) as
+  `-nan(ind)` and a signalling one as `nan(snan)`, so artifact bytes would
+  otherwise depend on which instruction produced an undefined value. No
+  round-3 artifact contains a `nan(` spelling, so every anchored byte is
+  unchanged.
+
+`vrp_metrics.tsv` grows ~340–420 `# key=value` meta lines and its tabular
+block keeps its round-1 shape: diffed against the round-3 SP100 anchor,
+**0 lines removed or changed, 417 added**. The `vrp_fold_stats_v1` sidecar
+grammar is untouched.
 
 ### NEW — VRP round 3: flagged isotonic forecast recalibration + metrics honesty (lane vrp-recalibration)
 

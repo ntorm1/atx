@@ -3420,6 +3420,46 @@ TEST(VolEdge, StrategyOpensRankedVegaTargetedStraddleBook) {
   EXPECT_EQ(strat.hedge_spec().kind, HedgeSpec::Kind::DeltaToZero);
 }
 
+// ROUND 6: the ORATS-class crossing fraction reaches the charge the vol-edge
+// book actually pays. `audit-cost-model.md` defect #2 was that
+// `crossing_fraction_complex = 0.53` was only readable under
+// `SpreadKind::QuoteSide` while this wiring hardwires `VolTicks`, whose
+// half-spread carried no crossing factor at all.
+TEST(VolEdge, CrossingFractionReachesTheVolTicksChargeAndOneReproducesTheOldOne) {
+  VolEdgeConfig cfg{};
+  cfg.cost_half_spread_vol_pts = 2.0;
+  cfg.cost_crossing_fraction = 1.0;
+  // 1.00 is exactly the pre-round-6 charge, so prior runs stay reproducible.
+  EXPECT_EQ(vol_edge_frictions(cfg).spread_kind, FrictionModel::SpreadKind::VolTicks);
+  EXPECT_DOUBLE_EQ(vol_edge_frictions(cfg).vol_tick, 0.02);
+  // The repo's own complex-order constant now multiplies the QUOTED width.
+  cfg.cost_crossing_fraction = FrictionModel{}.crossing_fraction_complex;
+  EXPECT_DOUBLE_EQ(cfg.cost_crossing_fraction, 0.53);
+  EXPECT_DOUBLE_EQ(vol_edge_frictions(cfg).vol_tick, 0.02 * 0.53);
+  // The default is the Zhan et al. realized effective/quoted ratio.
+  EXPECT_DOUBLE_EQ(VolEdgeConfig{}.cost_crossing_fraction, 0.55);
+  // The admission predicate uses the SAME crossed round trip as the charge, so
+  // a gate can never admit at a cost the engine does not actually take.
+  VolEdgeConfig gate{};
+  gate.cost_half_spread_vol_pts = 0.5;
+  gate.cost_crossing_fraction = 0.5; // round trip 0.005, k=1.5 bar = 0.0075
+  gate.cost_gate_k = 1.5;
+  EXPECT_TRUE(vol_edge_cost_gate_admits(gate, 0.0005));  // 0.012 > 0.0075
+  EXPECT_FALSE(vol_edge_cost_gate_admits(gate, 0.0002)); // 0.0048 < 0.0075
+  // Fail closed: (0, 1] and not [0, 1]. Zero would make every option fill free
+  // while still reading as a calibration.
+  VolEdgeConfig bad{};
+  bad.cost_half_spread_vol_pts = 2.0;
+  bad.cost_crossing_fraction = 0.0;
+  EXPECT_FALSE(validate_vol_edge_config(bad).has_value());
+  EXPECT_EQ(vol_edge_frictions(bad).spread_kind, FrictionModel::SpreadKind::None);
+  bad.cost_crossing_fraction = 1.5;
+  EXPECT_FALSE(validate_vol_edge_config(bad).has_value());
+  bad.cost_crossing_fraction = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(validate_vol_edge_config(bad).has_value());
+  EXPECT_EQ(vol_edge_frictions(bad).spread_kind, FrictionModel::SpreadKind::None);
+}
+
 TEST(VolEdge, CostsChargedPerOptionLegAtConfiguredHalfSpread) {
   const std::vector<std::string> symbols = {"AAA", "BBB"};
   const VolEdgeCorpus corpus = make_vol_edge_corpus(2, symbols, "vol-edge-costs");
@@ -3432,6 +3472,7 @@ TEST(VolEdge, CostsChargedPerOptionLegAtConfiguredHalfSpread) {
   cfg.risk_budget_vega = 5'000.0;
   cfg.vov_floor = 0.05;
   cfg.cost_half_spread_vol_pts = 2.0; // vol_tick = 0.02
+  cfg.cost_crossing_fraction = 1.0; // round-6: full quoted cross == the old charge
   cfg.stock_half_spread_bps = 0.0;
   cfg.delta_hedge = false; // isolate the option-leg charge
   cfg.rebalance_every_n_steps = 100; // one entry, then hold
@@ -3484,6 +3525,7 @@ TEST(VolEdge, DeltaRebalanceChargedAtStockHalfSpread) {
   cfg.risk_budget_vega = 5'000.0;
   cfg.vov_floor = 0.05;
   cfg.cost_half_spread_vol_pts = 0.0; // isolate the stock-hedge charge
+  cfg.cost_crossing_fraction = 1.0; // round-6: full quoted cross == the old charge
   cfg.stock_half_spread_bps = 4.0;
   cfg.delta_hedge = true;
   cfg.delta_hedge_band = 0.0;
@@ -3540,6 +3582,7 @@ TEST(VolEdge, DeterministicRunsProduceBitIdenticalNav) {
   cfg.risk_budget_vega = 5'000.0;
   cfg.vov_floor = 0.05;
   cfg.cost_half_spread_vol_pts = 1.5;
+  cfg.cost_crossing_fraction = 1.0; // round-6: full quoted cross == the old charge
   cfg.stock_half_spread_bps = 2.0;
   cfg.delta_hedge = true;
   cfg.rebalance_every_n_steps = 1; // re-rank and roll daily: the busiest path
@@ -3889,6 +3932,7 @@ TEST(VolEdge, CostGateAdmitsOnlyEdgeClearingRoundTripFriction) {
   //   edge_vol = 24 |label|, round trip 0.01, k=1.5 bar = 0.015.
   VolEdgeConfig cfg{};
   cfg.cost_half_spread_vol_pts = 0.5;
+  cfg.cost_crossing_fraction = 1.0; // round-6: full quoted cross == the old charge
   cfg.cost_gate_k = 1.5;
   EXPECT_TRUE(vol_edge_cost_gate_admits(cfg, 0.001));   // 0.024 > 0.015
   EXPECT_TRUE(vol_edge_cost_gate_admits(cfg, -0.001));  // sign-symmetric
@@ -4033,6 +4077,7 @@ TEST(VolEdge, HoldToHorizonKeepsNamesAcrossTicksWithoutRechurn) {
   cfg.vov_floor = 0.05;
   cfg.delta_hedge = false;
   cfg.cost_half_spread_vol_pts = 2.0;
+  cfg.cost_crossing_fraction = 1.0; // round-6: full quoted cross == the old charge
   cfg.rebalance_every_n_steps = 1; // daily re-rank — the round-2 churn shape
   cfg.hold_to_horizon = true;
   std::vector<VrpSignalRow> signal;
@@ -4087,6 +4132,7 @@ TEST(VolEdge, HoldToHorizonRollsExpiringNamesPerNameAndSurvivesSignalGaps) {
   cfg.vov_floor = 0.05;
   cfg.delta_hedge = false;
   cfg.cost_half_spread_vol_pts = 2.0;
+  cfg.cost_crossing_fraction = 1.0; // round-6: full quoted cross == the old charge
   cfg.horizon_days = 10.0;         // tenor = 10/252 * 365.25 = 14.494 calendar days
   cfg.rebalance_every_n_steps = 1; // every gap session is a held tick (the F3 shape)
   cfg.hold_to_horizon = true;
@@ -4134,6 +4180,7 @@ TEST(VolEdge, SelectiveModeDualRunsBitIdentical) {
   cfg.exit_short_fraction = 1.0 / 3.0;
   cfg.hold_to_horizon = true;
   cfg.cost_half_spread_vol_pts = 2.0; // round trip 0.04/vega
+  cfg.cost_crossing_fraction = 1.0; // round-6: full quoted cross == the old charge
   cfg.cost_gate_k = 1.5;              // bar: |label| * 24 > 0.06 → |label| > 0.0025
   cfg.stock_half_spread_bps = 2.0;
   cfg.delta_hedge = true;

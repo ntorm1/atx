@@ -11,6 +11,12 @@ $dataRoot = 'C:\atx-cache\oracle\spiderrock'
 $oracleRoot = 'atx-vol/bench/oracle'
 $targetA = @('mode_a_price_mae', 'mode_a_vol_mae', 'mode_a_delta_rel', 'mode_a_gamma_rel', 'mode_a_theta_rel', 'mode_a_vega_rel', 'mode_a_rho_rel', 'mode_a_phi_rel', 'mode_a_volga_rel', 'mode_a_vanna_rel', 'mode_a_delta_decay_rel')
 $targetB = @('mode_b_price_mae', 'mode_b_vol_mae', 'mode_b_delta_rel', 'mode_b_gamma_rel', 'mode_b_theta_rel', 'mode_b_vega_rel', 'mode_b_rho_rel', 'mode_b_phi_rel', 'mode_b_volga_rel', 'mode_b_vanna_rel', 'mode_b_delta_decay_rel')
+# The BOUNDED no-regression rule, as a multiplier on the baseline value. Stated
+# as the multiplier and not as `1 + fraction` because five layers in three
+# languages re-evaluate this same comparison and `1.0 + 0.01` is not required to
+# be the same double as `1.01`. Mirrors kRegressionBoundMultiplier in
+# atx-vol/tools/oracle_convention_sweep.hpp, which carries the full rationale.
+$regressionBoundMultiplier = 1.01
 
 function Invoke-GitText([string[]]$GitArgs) {
   $savedPreference = $ErrorActionPreference
@@ -168,23 +174,261 @@ function Test-ModeReceipt([string]$Sha, [string]$Mode, $DataReceipt) {
   return $Mode -eq 'A' -or $receipt.tune_blob_oid -eq $DataReceipt.tune_blob_oid
 }
 
+function Test-FiniteNumber($Value) {
+  if ($null -eq $Value) { return $false }
+  $number = 0.0
+  return [double]::TryParse(([string]$Value), [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$number) -and -not [double]::IsNaN($number) -and -not [double]::IsInfinity($number)
+}
+
+function Test-PositiveInteger($Value) {
+  $number = 0L
+  return $null -ne $Value -and [long]::TryParse(([string]$Value), [ref]$number) -and $number -gt 0 -and [double]$Value -eq [double]$number
+}
+
+function Test-FloorMetrics($Metrics) {
+  $items = @($Metrics)
+  if ($items.Count -ne $targetA.Count -or -not (Test-StringSet @($items.metric_id) $targetA)) { return $false }
+  foreach ($metric in $items) {
+    # selection_count is the population the scale search ran on; count is the
+    # full reported population. The symmetric selection objective excludes
+    # nothing, so the two are now equal — but both stay pinned, and the ratio
+    # stays checked, so an objective that ever narrowed selection again would
+    # have to move this committed number instead of doing it silently.
+    if (-not (Test-ExactKeys $metric @('metric_id', 'value', 'count', 'selection_count', 'unit')) -or -not (Test-FiniteNumber $metric.value) -or [double]$metric.value -lt 0 -or
+        -not (Test-PositiveInteger $metric.count) -or -not (Test-PositiveInteger $metric.selection_count) -or [long]$metric.selection_count -gt [long]$metric.count -or
+        (10L * [long]$metric.selection_count) -lt [long]$metric.count) { return $false }
+    $unit = if ($metric.metric_id -eq 'mode_a_price_mae') { 'ticks' } elseif ($metric.metric_id -eq 'mode_a_vol_mae') { 'bp' } else { 'relative' }
+    if ($metric.unit -ne $unit) { return $false }
+  }
+  return $true
+}
+
+# Candidate and baseline floors must describe ONE row population per metric,
+# otherwise the committed deltas compare two different samples.
+function Test-FloorPopulationParity($Metrics, $BaselineMetrics) {
+  $baselineById = @{}
+  foreach ($metric in @($BaselineMetrics)) { $baselineById[[string]$metric.metric_id] = $metric }
+  foreach ($metric in @($Metrics)) {
+    $baseline = $baselineById[[string]$metric.metric_id]
+    if (-not $baseline -or [long]$metric.count -ne [long]$baseline.count -or
+        [long]$metric.selection_count -ne [long]$baseline.selection_count) { return $false }
+  }
+  return $true
+}
+
+# BOUNDED no-regression gate on the COMMITTED receipt, stated against the
+# SYMMETRIC-RELATIVE arrays: a symmetric metric may be worse than its baseline
+# only while `candidate <= baseline * $regressionBoundMultiplier`, and every
+# regression the bound permits must appear in the receipt's
+# `accepted_regressions`. Past the bound, or unpublished, this fails closed.
+#
+# Why a bound rather than `candidate <= baseline`: the convention fit is
+# multi-objective over ELEVEN targets sharing ONE map, and no point in the
+# closed candidate grid strictly dominates every other on all eleven, so a
+# strict per-metric rule cannot be met by anything the search can reach. Why 1%:
+# it is the charter's own Mode A Greek tolerance, so a regression inside it
+# cannot flip a scorecard cell's verdict.
+#
+# The check runs in BOTH directions — no entry that is not a real within-bound
+# regression, no within-bound regression without an entry — which is what stops
+# the array from becoming a rubber stamp. There is still no bypass flag and no
+# per-metric allowlist.
+#
+# The symmetric loss is the one the scale SELECTION minimises: bounded, with no
+# smallest-scale gradient. The standard-relative array pins its denominator on
+# near-zero-oracle rows, so gating it would systematically reward the smaller
+# multiplier and contradict the selector rather than catch a defect. The
+# standard array is still validated for shape, non-negativity, population parity
+# and delta arithmetic; it is simply not the criterion. The committed symmetric
+# array is also the RATCHET BASELINE a later iteration must not be worse than.
+#
+# Duplicated from the targeted gate on purpose: the targeted gate runs before the
+# commit, this one runs after, and the one place a regression must not be
+# recoverable-only-by-hand is the committed floor.
+function Test-FloorNoRegression($Metrics, $BaselineMetrics, $AcceptedRegressions) {
+  $baselineById = @{}
+  foreach ($metric in @($BaselineMetrics)) { $baselineById[[string]$metric.metric_id] = $metric }
+  # Metric ids that MUST be published: strictly worse, and within the bound. A
+  # zero baseline needs no special case — `candidate <= 0 * 1.01` holds only at
+  # candidate == 0, which is not a regression — so nothing divides by zero.
+  $wanted = @{}
+  foreach ($metric in @($Metrics)) {
+    $baseline = $baselineById[[string]$metric.metric_id]
+    if (-not $baseline) { return $false }
+    $candidateValue = [double]$metric.value
+    $baselineValue = [double]$baseline.value
+    if ($candidateValue -gt ($baselineValue * $regressionBoundMultiplier)) { return $false }
+    if ($candidateValue -gt $baselineValue) {
+      $wanted[[string]$metric.metric_id] = [pscustomobject]@{
+        Candidate = $candidateValue; Baseline = $baselineValue
+        Pct = ($candidateValue - $baselineValue) / $baselineValue
+      }
+    }
+  }
+  $seen = @{}
+  foreach ($entry in @($AcceptedRegressions)) {
+    if (-not (Test-ExactKeys $entry @('metric_id', 'candidate', 'baseline', 'pct_of_baseline')) -or
+        -not (Test-FiniteNumber $entry.candidate) -or -not (Test-FiniteNumber $entry.baseline) -or
+        -not (Test-FiniteNumber $entry.pct_of_baseline)) { return $false }
+    $id = [string]$entry.metric_id
+    if ($seen.ContainsKey($id) -or -not $wanted.ContainsKey($id)) { return $false }
+    $seen[$id] = $true
+    $match = $wanted[$id]
+    # `pct_of_baseline` gets the 1e-12 tolerance the delta arrays already use:
+    # it is a derived quotient, not a copied value.
+    if ([double]$entry.candidate -ne $match.Candidate -or [double]$entry.baseline -ne $match.Baseline -or
+        [Math]::Abs([double]$entry.pct_of_baseline - $match.Pct) -gt 1.0e-12) { return $false }
+  }
+  return $seen.Count -eq $wanted.Count
+}
+
+# The nine Greek metric ids input_model_regressed_greeks may name. Price and vol
+# are absolute floors and are not part of the input-model Greek comparison.
+function Test-InputModelRegressedGreeks($Value) {
+  if ($null -eq $Value) { return $false }
+  $items = @($Value | ForEach-Object { [string]$_ })
+  $greekIds = @($targetA | Where-Object { $_ -ne 'mode_a_price_mae' -and $_ -ne 'mode_a_vol_mae' })
+  if (@($items | Select-Object -Unique).Count -ne $items.Count) { return $false }
+  return @($items | Where-Object { $greekIds -notcontains $_ }).Count -eq 0
+}
+
+function Test-MetricDeltas($Deltas) {
+  $items = @($Deltas)
+  if ($items.Count -ne $targetA.Count -or -not (Test-StringSet @($items.metric_id) $targetA)) { return $false }
+  foreach ($delta in $items) {
+    if (-not (Test-ExactKeys $delta @('metric_id', 'candidate', 'baseline', 'delta', 'count', 'unit')) -or
+        -not (Test-FiniteNumber $delta.candidate) -or -not (Test-FiniteNumber $delta.baseline) -or -not (Test-FiniteNumber $delta.delta) -or
+        -not (Test-PositiveInteger $delta.count) -or [Math]::Abs(([double]$delta.candidate - [double]$delta.baseline) - [double]$delta.delta) -gt 1.0e-12) { return $false }
+  }
+  return $true
+}
+
+function Test-ConventionMap($Map) {
+  $keys = @('input_model', 'forward_formula', 'rate_model', 'carry_model', 'dividend_model', 'day_count', 'dte_banding_day_count', 'price_scale', 'price_sign', 'vol_scale', 'delta_scale', 'delta_sign', 'gamma_scale', 'gamma_sign', 'theta_basis', 'theta_sign', 'vega_scale', 'vega_sign', 'rho_scale', 'rho_sign', 'phi_scale', 'phi_sign', 'volga_source', 'volga_scale', 'volga_sign', 'vanna_source', 'vanna_scale', 'vanna_sign', 'delta_decay_basis', 'delta_decay_day_count', 'delta_decay_sign')
+  if (-not (Test-ExactKeys $Map $keys)) { return $false }
+  $inputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
+  if ($inputModels -notcontains $Map.input_model -or @('none', 'uprc_exp_rate_t_minus_ddiv') -notcontains $Map.forward_formula -or
+      @('continuous_row_rate', 'continuous_rate_minus_sdiv', 'continuous_rate_plus_sdiv', 'zero') -notcontains $Map.rate_model -or
+      @('sdiv_as_yield', 'zero') -notcontains $Map.carry_model -or @('continuous_yield_only', 'discrete_cash_forward') -notcontains $Map.dividend_model -or
+      @('ACT_365F', 'ACT_365_25', 'ACT_360', 'BUS_252') -notcontains $Map.day_count -or
+      @('ACT_365F', 'ACT_365_25', 'ACT_360', 'BUS_252') -notcontains $Map.dte_banding_day_count -or
+      @('per_share', 'per_contract_100', 'per_share_from_contract') -notcontains $Map.price_scale -or
+      $Map.vol_scale -ne 'decimal_identity' -or @('volga', 'vanna') -notcontains $Map.volga_source -or @('volga', 'vanna') -notcontains $Map.vanna_source -or
+      @('per_day', 'per_year') -notcontains $Map.theta_basis -or @('per_day', 'per_year') -notcontains $Map.delta_decay_basis -or
+      @('ACT_365F', 'ACT_365_25', 'ACT_360', 'BUS_252') -notcontains $Map.delta_decay_day_count) { return $false }
+  foreach ($name in @('price_sign', 'delta_sign', 'gamma_sign', 'theta_sign', 'vega_sign', 'rho_sign', 'phi_sign', 'volga_sign', 'vanna_sign', 'delta_decay_sign')) {
+    if (@('positive', 'negative') -notcontains $Map.$name) { return $false }
+  }
+  foreach ($name in @('delta_scale', 'gamma_scale', 'vega_scale', 'rho_scale', 'phi_scale', 'volga_scale', 'vanna_scale')) {
+    if (@('per_unit', 'per_point', 'per_point_squared', 'per_contract_100') -notcontains $Map.$name) { return $false }
+  }
+  return $true
+}
+
+function Test-CandidatePrices($Candidates) {
+  $items = @($Candidates)
+  if ($items.Count -ne 8 -or @($items.candidate_id | Select-Object -Unique).Count -ne 8) { return $false }
+  foreach ($candidate in $items) {
+    if (-not (Test-ExactKeys $candidate @('candidate_id', 'smoke_price_mae_ticks', 'smoke_count', 'tune_sample_price_mae_ticks', 'tune_sample_count')) -or
+        -not (Test-FiniteNumber $candidate.smoke_price_mae_ticks) -or -not (Test-PositiveInteger $candidate.smoke_count) -or
+        -not (Test-FiniteNumber $candidate.tune_sample_price_mae_ticks)) { return $false }
+    $tuneCount = 0L
+    if (-not [long]::TryParse(([string]$candidate.tune_sample_count), [ref]$tuneCount) -or $tuneCount -lt 0) { return $false }
+  }
+  return @($items | Where-Object { [long]$_.tune_sample_count -gt 0 }).Count -eq 2
+}
+
+# The pin is DERIVED from the convention_speed_measure baseline as
+# floor(baseline * 0.90), never copied from it: `pin -le baseline` admits
+# pin == baseline, which turns the convention_speed re-measurement into a coin
+# flip on ordinary run-to-run noise. A 5% margin is the loosest pin this accepts.
+function Test-SpeedFloor($Speed) {
+  return (Test-ExactKeys $Speed @('metric_id', 'baseline', 'pin', 'unit', 'preset', 'quiet_host')) -and
+    $Speed.metric_id -eq 'rel_avx2_rows_per_second' -and $Speed.unit -eq 'rows_per_second' -and $Speed.preset -eq 'rel-avx2' -and $Speed.quiet_host -and
+    (Test-FiniteNumber $Speed.baseline) -and [double]$Speed.baseline -gt 0 -and (Test-FiniteNumber $Speed.pin) -and [double]$Speed.pin -gt 0 -and
+    [double]$Speed.pin -le ([double]$Speed.baseline * 0.95)
+}
+
+# Value-by-value comparison of two parsed JSON documents. Windows PowerShell
+# 5.1's ConvertFrom-Json parses JSON numbers into System.Decimal and
+# ConvertTo-Json re-emits the SOURCE DIGITS, so comparing re-serialized text made
+# an authored `0.0` differ from the same number written by `%.17g` as `0`: a
+# digit comparison wearing the costume of a value comparison.
+function Test-JsonValueEqual($Left, $Right) {
+  if ($null -eq $Left -or $null -eq $Right) { return ($null -eq $Left) -and ($null -eq $Right) }
+  if ($Left -is [bool] -or $Right -is [bool]) { return ($Left -is [bool]) -and ($Right -is [bool]) -and ([bool]$Left -eq [bool]$Right) }
+  if ($Left -is [string] -or $Right -is [string]) { return ($Left -is [string]) -and ($Right -is [string]) -and ([string]$Left -ceq [string]$Right) }
+  if ($Left -is [array] -or $Right -is [array]) {
+    if (-not ($Left -is [array]) -or -not ($Right -is [array]) -or $Left.Count -ne $Right.Count) { return $false }
+    for ($index = 0; $index -lt $Left.Count; $index++) {
+      if (-not (Test-JsonValueEqual $Left[$index] $Right[$index])) { return $false }
+    }
+    return $true
+  }
+  if ($Left -is [System.Management.Automation.PSCustomObject] -or $Right -is [System.Management.Automation.PSCustomObject]) {
+    if (-not ($Left -is [System.Management.Automation.PSCustomObject]) -or -not ($Right -is [System.Management.Automation.PSCustomObject])) { return $false }
+    $leftNames = @($Left.PSObject.Properties.Name)
+    if (-not (Test-StringSet $leftNames @($Right.PSObject.Properties.Name))) { return $false }
+    foreach ($name in $leftNames) {
+      if (-not (Test-JsonValueEqual $Left.$name $Right.$name)) { return $false }
+    }
+    return $true
+  }
+  return (Test-FiniteNumber $Left) -and (Test-FiniteNumber $Right) -and ([double]$Left -eq [double]$Right)
+}
+
 function Test-ConventionsReceipt([string]$Sha, $DataReceipt) {
   $receipt = Get-CommittedJson $Sha ($oracleRoot + '/bootstrap/conventions.json')
-  $keys = @('schema_version', 'transition', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'smoke_blob_oid', 'tune_blob_oid', 'conventions_blob_oid', 'scorecard_blob_oid', 'conventions')
-  if (-not (Test-ExactKeys $receipt $keys) -or $receipt.schema_version -ne 1 -or $receipt.transition -ne 'conventions' -or $receipt.command_id -ne 'oracle_conventions_smoke_tune' -or $receipt.exit_code -ne 0 -or
+  # `production_conventions` is part of both committed artifacts: without it the
+  # receipt records the map the sweep RESOLVED but never the map production
+  # actually prices with, and the two are only compared while a sweep is running.
+  # Both floor arrays are committed. `symmetric_metrics` is the ratchet baseline
+  # and the no-regression criterion (it is the loss selection minimises);
+  # `metrics` is committed beside it so the floor stays directly comparable to
+  # the charter's "greeks within 1% rel" target. Never unify them.
+  $keys = @('schema_version', 'transition', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'smoke_blob_oid', 'tune_blob_oid', 'conventions_blob_oid', 'scorecard_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'accepted_regressions', 'candidate_prices', 'input_model_regressed_greeks', 'speed')
+  if (-not (Test-ExactKeys $receipt $keys) -or $receipt.schema_version -ne 2 -or $receipt.transition -ne 'conventions' -or $receipt.command_id -ne 'oracle_conventions_smoke_tune' -or $receipt.exit_code -ne 0 -or
       -not (Test-Provenance $receipt $Sha ($oracleRoot + '/bootstrap/mode-a.json')) -or $receipt.smoke_blob_oid -ne $DataReceipt.smoke_blob_oid -or $receipt.tune_blob_oid -ne $DataReceipt.tune_blob_oid) { return $false }
-  $map = $receipt.conventions
-  if (-not (Test-ExactKeys $map @('theta_basis', 'vega_basis', 'rate_model', 'dividend_model', 'day_count', 'sign_model')) -or @('per_day', 'per_year') -notcontains $map.theta_basis -or
-      @('per_vol_point', 'per_unit_vol') -notcontains $map.vega_basis -or @('continuous', 'simple') -notcontains $map.rate_model -or @('continuous_yield', 'discrete_cash') -notcontains $map.dividend_model -or
-      @('ACT_365F', 'ACT_360', 'BUS_252') -notcontains $map.day_count -or $map.sign_model -ne 'spiderrock') { return $false }
+  if (-not (Test-ConventionMap $receipt.production_conventions) -or
+      -not (Test-JsonValueEqual $receipt.production_conventions $receipt.conventions) -or
+      -not (Test-ConventionMap $receipt.conventions) -or -not (Test-ConventionMap $receipt.baseline_conventions) -or
+      -not (Test-FloorMetrics $receipt.metrics) -or -not (Test-FloorMetrics $receipt.baseline_metrics) -or
+      -not (Test-FloorMetrics $receipt.symmetric_metrics) -or -not (Test-FloorMetrics $receipt.baseline_symmetric_metrics) -or
+      -not (Test-FloorPopulationParity $receipt.metrics $receipt.baseline_metrics) -or
+      -not (Test-FloorPopulationParity $receipt.symmetric_metrics $receipt.baseline_symmetric_metrics) -or
+      -not (Test-FloorPopulationParity $receipt.symmetric_metrics $receipt.metrics) -or
+      -not (Test-FloorNoRegression $receipt.symmetric_metrics $receipt.baseline_symmetric_metrics $receipt.accepted_regressions) -or
+      -not (Test-InputModelRegressedGreeks $receipt.input_model_regressed_greeks) -or
+      -not (Test-MetricDeltas $receipt.metric_deltas) -or -not (Test-MetricDeltas $receipt.symmetric_metric_deltas) -or
+      -not (Test-CandidatePrices $receipt.candidate_prices) -or
+      -not (Test-SpeedFloor $receipt.speed) -or -not (Test-PositiveInteger $receipt.rows_processed) -or
+      -not (Test-StringSet $receipt.target_metric_ids $targetA)) { return $false }
   $conventionsPath = $oracleRoot + '/CONVENTIONS.md'; $scorecardPath = $oracleRoot + '/scorecards/iter-000.json'
   if ((Get-BlobOid $Sha $conventionsPath) -ne $receipt.conventions_blob_oid -or (Get-BlobOid $Sha $scorecardPath) -ne $receipt.scorecard_blob_oid) { return $false }
   $scorecard = Get-CommittedJson $Sha $scorecardPath
-  if (-not (Test-ExactKeys $scorecard @('schema_version', 'kind', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'mode', 'cohorts', 'rows_processed', 'target_metric_ids')) -or $scorecard.schema_version -ne 1 -or
+  $scorecardKeys = @('schema_version', 'kind', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'mode', 'cohorts', 'smoke_blob_oid', 'tune_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'accepted_regressions', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed', 'speed')
+  if (-not (Test-ExactKeys $scorecard $scorecardKeys) -or $scorecard.schema_version -ne 2 -or
       $scorecard.kind -ne 'residual_floor' -or $scorecard.command_id -ne 'mode_a_residual_floor' -or $scorecard.exit_code -ne 0 -or $scorecard.mode -ne 'A' -or
       -not (Test-StringSet $scorecard.cohorts @('smoke', 'tune')) -or -not (Test-StringSet $scorecard.target_metric_ids $targetA) -or [long]$scorecard.rows_processed -le 0 -or
-      -not (Test-Ancestor ([string]$scorecard.base_sha) ([string]$scorecard.tested_sha)) -or -not (Test-Ancestor ([string]$scorecard.tested_sha) $Sha)) { return $false }
-  return $true
+      -not (Test-Ancestor ([string]$scorecard.base_sha) ([string]$scorecard.tested_sha)) -or -not (Test-Ancestor ([string]$scorecard.tested_sha) $Sha) -or
+      $scorecard.smoke_blob_oid -ne $DataReceipt.smoke_blob_oid -or $scorecard.tune_blob_oid -ne $DataReceipt.tune_blob_oid -or
+      @($scorecard.oracle_suspect_candidates).Count -ne 0 -or $scorecard.market_evidence_status -ne 'not_evaluated_no_nbbo_gate' -or
+      -not (Test-ConventionMap $scorecard.conventions) -or -not (Test-ConventionMap $scorecard.baseline_conventions) -or
+      -not (Test-ConventionMap $scorecard.production_conventions) -or
+      -not (Test-JsonValueEqual $scorecard.production_conventions $scorecard.conventions) -or
+      -not (Test-FloorMetrics $scorecard.metrics) -or -not (Test-FloorMetrics $scorecard.baseline_metrics) -or
+      -not (Test-FloorMetrics $scorecard.symmetric_metrics) -or -not (Test-FloorMetrics $scorecard.baseline_symmetric_metrics) -or
+      -not (Test-FloorPopulationParity $scorecard.metrics $scorecard.baseline_metrics) -or
+      -not (Test-FloorPopulationParity $scorecard.symmetric_metrics $scorecard.baseline_symmetric_metrics) -or
+      -not (Test-FloorPopulationParity $scorecard.symmetric_metrics $scorecard.metrics) -or
+      -not (Test-FloorNoRegression $scorecard.symmetric_metrics $scorecard.baseline_symmetric_metrics $scorecard.accepted_regressions) -or
+      -not (Test-InputModelRegressedGreeks $scorecard.input_model_regressed_greeks) -or
+      -not (Test-MetricDeltas $scorecard.metric_deltas) -or -not (Test-MetricDeltas $scorecard.symmetric_metric_deltas) -or
+      -not (Test-CandidatePrices $scorecard.candidate_prices) -or -not (Test-SpeedFloor $scorecard.speed)) { return $false }
+  foreach ($name in @('baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'accepted_regressions', 'candidate_prices', 'input_model_regressed_greeks', 'speed')) {
+    if (-not (Test-JsonValueEqual $receipt.$name $scorecard.$name)) { return $false }
+  }
+  return [long]$receipt.rows_processed -eq [long]$scorecard.rows_processed
 }
 
 # Pester imports the closed validators without running command mode.

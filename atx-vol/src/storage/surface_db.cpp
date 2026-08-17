@@ -17,8 +17,9 @@
 #include <utility>
 #include <vector>
 
-#include "storage/archive_util.hpp" // crc32c, align_up, canonicalize_symbol
-#include "storage/writer_lock.hpp"  // Task D3: cross-process manifest writer lock
+#include "fitting/essvi_anchored.hpp" // apply_anchored_env_policy (opt-in)
+#include "storage/archive_util.hpp"  // crc32c, align_up, canonicalize_symbol
+#include "storage/writer_lock.hpp"   // Task D3: cross-process manifest writer lock
 
 namespace atx::vol {
 
@@ -475,6 +476,10 @@ void apply_symbol_config(const SymbolFitConfig &cfg, SessionInputs &in) {
   if (cfg.pin_curve) {
     in.curve = cfg.curve;
     in.calib = cfg.curve.parametric;
+    // The STORED parametric block predates the anchored flags, so this
+    // assignment would silently clear what `apply_fit_preset` just armed.
+    // Re-arm from the same seam.
+    apply_anchored_env_policy(in.calib);
   }
   if (cfg.al_override) {
     in.deam.al_opts = cfg.al;

@@ -8,7 +8,17 @@ are stdlib-only (`argparse`, `json`, `subprocess`, `pathlib`, `csv`, `math`,
 ...); the only allowed test dependency is `pytest`. Tests are self-contained
 (tmp-dir fixtures, no network, no real corpus/driver dependency -- driver
 invocations are exercised against small Python stub scripts, never the real
-binary). Run the suite from the repo root:
+binary).
+
+**One documented exception to stdlib-only**: `vrp_split_factors.py` imports
+`duckdb`, because reading the atx-db warehouse requires it. It is a one-shot
+reference-data generator whose OUTPUT is checked in (under
+`atx-vol/data/corporate-actions/`), so neither the build, the panel, nor the
+QA tier ever imports it. The import is local to the query function, so the
+rest of the module -- and its entire stdlib-only, warehouse-free test suite --
+runs without `duckdb` installed.
+
+Run the suite from the repo root:
 
 ```
 python -m pytest atx-vol/scripts/ -q
@@ -25,3 +35,11 @@ python -m pytest atx-vol/scripts/ -q
   tenor x delta bucket, feature-column NaN coverage, cross-file
   duplicate-key detection, and a report-only leakage tripwire. See the
   module docstring for the CLI and exit codes.
+- `vrp_panel_qa.py` -- markdown QA report over one or more `vrp_panel_v1`/
+  `vrp_panel_v2` TSVs (schema read from each file). Hard tiers: duplicate
+  keys, the per-row label identity, and realized-vol plausibility. See the
+  module docstring for the tier list and exit codes.
+- `vrp_split_factors.py` -- emits the `--splits` corporate-action reference
+  from the atx-db warehouse (the one non-stdlib script; see the note above).
+  Provenance for the checked-in output is in
+  `atx-vol/data/corporate-actions/vrp_split_factors_sp100.md`.
