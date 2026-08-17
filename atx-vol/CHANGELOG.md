@@ -5,6 +5,84 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### FIXED — the crossing fraction is reachable, and correcting it raises costs (round 6, lane vrp-freerule-cost)
+
+**The defect.** `FrictionModel::crossing_fraction_complex = 0.53`
+(`api/backtest/backtest.hpp:863`, ORATS-derived) was readable only under
+`SpreadKind::QuoteSide`, while `vol_edge_frictions` hardwires
+`SpreadKind::VolTicks`, whose half-spread carried no crossing factor at all — so
+the vol-edge book crossed **100%** of its assumed spread while the repo's own
+calibration sat two files away, dead. Fixed at the wiring rather than by
+switching to `QuoteSide`, which needs per-fill recorded quotes this book does
+not have; a constant reachable only from a path nothing selects is how it came
+to be dead in the first place.
+
+**Behaviour change, and it is not the flattering one.** `VolEdgeConfig` gains
+`cost_crossing_fraction` (default **0.55**, validated to `(0, 1]`; `0` is
+rejected because it reads as a calibration and behaves as "every option fill is
+free"), and `cost_half_spread_vol_pts` is re-documented from an EFFECTIVE to a
+**QUOTED** width — `vol_edge_frictions` now emits
+`vol_tick = vol_pts * crossing / 100`. The same crossed round trip enters
+`vol_edge_cost_gate_admits`, so the admission predicate and the charge cannot
+drift apart. **Migration: `--cost-crossing-fraction 1.0` alongside the previous
+`--cost-vol-pts` value reproduces every round-2/3 cost column exactly.**
+`VolEdgeConfig`'s arity pin moves 20 → 21.
+
+Applying 0.53 to the old 0.5 vol-point width would have been the flattering half
+of the correction. Reconciled against the literature instead: Christoffersen et
+al. (*RFS* 2018) measure an ATM **effective** relative spread of 6.41% of
+premium, i.e. 3.205% one-way ≈ **0.96 vol points** at σ = 30%; dividing by
+Zhan et al.'s (*RFS* 2022) realized effective/quoted of 0.55, measured on actual
+OPRA prints 2003–16, gives a **quoted** one-way half of 5.827%, which re-crossed
+at the ORATS 0.53 returns **0.93 vol points** — two independent roads agreeing
+to 3.7%. The engine was charging **0.50**. The corrected model is therefore
+**~1.86x more expensive**, and the understatement was in the WIDTH, not the
+crossing.
+
+**The vega book's charge is UNCHANGED, and deliberately so.** 6.41% is an
+*effective* spread measured against the prevailing mid, so the crossing discount
+is already inside it and multiplying by 0.53 would count the same discount twice
+— a free 47% cost cut. `tools/vrp_train.hpp` now takes
+`--cost-crossing-fraction` and computes `effective_measured * (f_cross / 0.55)`,
+written that way rather than `quoted * f_cross` so the default returns the
+measurement **bit-exactly** (`x/x` is exactly 1.0), asserted with `EXPECT_EQ`.
+New meta lines publish the crossing fraction, the derived quoted width, the
+measured effective width, and a provenance line naming the double-counting trap.
+
+### FIXED — `bench_term_slope` was never feature-lagged, so its lag-2 figure saw session t (round 6)
+
+The Vasquez free rule was read from the TARGET-SIDE row
+(`row.iv_fair_63d - row.iv_fair_21d`), which `--feature-lag` does not move.
+Round 5 flagged this and did not fix it. It is now read from `f4_term_slope`,
+which `apply_vrp_feature_lag` shifts and which `analytics/vrp_panel.hpp:637`
+builds as *exactly* the same difference — so the lag-0 ranking, and therefore
+every round-5 number, is byte-unchanged (5,576 anchor meta lines, **0 changed**
+at lag 0), while lag 2 finally means what it says. **Migration: SP100 lag-2
+`bench_term_slope` statistics move** — traded-row IC +0.3817 → +0.2568,
+IV-neutralised excess over the vega floor −0.179 → −0.789. 552 meta lines change
+at lag 2 and every one of them is a `term_slope` line. `bench_neg_iv_atmf_21d`
+has no feature-side twin and remains target-side; the new EIV diagnostic below
+reaches it instead.
+
+### NEW — book implementability columns and a runnable EIV target rebuild (round 6)
+
+Every vega book now publishes `names_per_day`, `turnover_frac_of_gross`
+(fraction of GROSS replaced between consecutive formation dates, on signed
+per-1u-gross weights, so a name that stays but flips side counts as full
+turnover), and `max_drawdown_vol_pts` for the pair and for each leg, each beside
+the same-direction zero-selection alternative's own drawdown. maxDD is a path
+statistic with no per-date series and is therefore emitted **without** a t-stat
+rather than a fabricated one. Turnover is a capacity statement, not a cost
+statement: the cost column charges one round trip per **cohort**, which is what
+the roll-adjusted axis marks.
+
+`--eiv-target-entry-lag N` rebuilds the iv-change target with its ENTRY leg read
+N same-symbol sessions earlier and its exit leg unmoved — round 5's decisive
+errors-in-variables swap, promoted from a one-off table to a runnable
+diagnostic. It is not a tradeable configuration (N > 0 is a 21+N session hold);
+it discriminates. A row without an N-th predecessor is UNDEFINED, never
+substituted.
+
 ### NEW — the tradeable vol-change target, a cost-charged VEGA book, and a second gate (round 5, lane vrp-volchg)
 
 **What shipped.** `atx-vol-vrp-train` reads `vrp_panel_v2` (v1's 18 columns

@@ -3368,7 +3368,12 @@ TEST(VrpTrainVega, VegaBookChargesARoundTripOnBothLegsAndSplitsByVegaSign) {
     score.push_back(static_cast<double>(i));
     target.push_back(static_cast<double>(i) - 4.5); // -4.5 .. +4.5 vol pts
   }
-  const vrp::VrpVegaLegs legs = vrp::vrp_vega_book_per_date(ts, score, target, iv);
+  std::vector<std::size_t> sym(10);
+  for (std::size_t i = 0; i < 10; ++i) {
+    sym[i] = i;
+  }
+  const vrp::VrpVegaLegs legs = vrp::vrp_vega_book_per_date(
+      ts, score, target, iv, sym, vrp::kVrpDefaultCrossingFraction, true);
   ASSERT_EQ(legs.net.size(), 1u);
   // Round-trip cost at iv = 0.40: 2 * 0.03205 * 40 = 2.564 vol pts per leg.
   const double rt = 2.0 * vrp::vrp_vega_cost_one_way(0.40);
@@ -3379,8 +3384,8 @@ TEST(VrpTrainVega, VegaBookChargesARoundTripOnBothLegsAndSplitsByVegaSign) {
   EXPECT_NEAR(legs.cost[0], rt, 1e-12);
   EXPECT_NEAR(legs.net[0], 4.5 - rt, 1e-12);
   // Costs off reproduces the gross figure exactly, so the charge is visible.
-  const vrp::VrpVegaLegs free_legs =
-      vrp::vrp_vega_book_per_date(ts, score, target, iv, false);
+  const vrp::VrpVegaLegs free_legs = vrp::vrp_vega_book_per_date(
+      ts, score, target, iv, sym, vrp::kVrpDefaultCrossingFraction, false);
   EXPECT_NEAR(free_legs.net[0], 4.5, 1e-12);
   EXPECT_NEAR(free_legs.cost[0], 0.0, 1e-12);
 }
@@ -3400,7 +3405,8 @@ TEST(VrpTrainVega, VegaFloorIsTheBetterOfLongAndShortEverythingChosenOnce) {
       iv.push_back(0.40);
     }
   }
-  const vrp::VrpVegaFloor f = vrp::vrp_vega_floor(ts, target, iv);
+  const vrp::VrpVegaFloor f =
+      vrp::vrp_vega_floor(ts, target, iv, vrp::kVrpDefaultCrossingFraction, true);
   const double rt = 2.0 * vrp::vrp_vega_cost_one_way(0.40);
   ASSERT_EQ(f.per_date_long.size(), 2u);
   EXPECT_NEAR(f.per_date_long[0], 10.0 - rt, 1e-12);
@@ -3449,6 +3455,187 @@ TEST(VrpTrainVega, ShortVegaHaircutDiscountsOnlyAPositiveShortLegEdge) {
   const vrp::VrpVegaAgg c = vrp::vrp_vega_agg(legs, floor, 0.0);
   EXPECT_NEAR(c.short_multiplier, 1.0, 1e-12);
   EXPECT_NEAR(c.objective.mean, -4.0, 1e-12);
+}
+
+// ── ROUND 6: the cost model ─────────────────────────────────────────────────
+
+// The crossing fraction is REACHABLE and multiplicative, and the DEFAULT
+// returns the measured Christoffersen effective charge bit-exactly -- so
+// making the constant reachable is not a silent re-pricing of round 5.
+TEST(VrpTrainCost, CrossingFractionIsReachableAndTheDefaultIsTheMeasuredEffectiveSpread) {
+  // 6.41% of premium ATM effective, halved one-way, x 100 x iv = vol points.
+  const double one_way_at_40 = vrp::vrp_vega_cost_one_way(0.40);
+  EXPECT_NEAR(one_way_at_40, 1.282, 1e-12); // 0.03205 * 40
+  // BIT-EXACT, not merely close: the default must not move a single ulp of any
+  // round-5 figure, or "unchanged at default" would be a guess.
+  EXPECT_EQ(vrp::vrp_vega_cost_one_way(0.40, vrp::kVrpDefaultCrossingFraction), one_way_at_40);
+  EXPECT_EQ(vrp::kVrpDefaultCrossingFraction, 0.55);
+  // The quoted width is DERIVED, so re-crossing it at 1.00 charges the full
+  // quoted spread: 0.03205 / 0.55 = 5.827% of premium one-way.
+  EXPECT_NEAR(vrp::vrp_vega_cost_one_way(0.40, 1.0),
+              vrp::kVrpVegaQuotedOneWayFracOfPremium * 100.0 * 0.40, 1e-12);
+  EXPECT_NEAR(vrp::kVrpVegaQuotedOneWayFracOfPremium, 0.0582727272727, 1e-12);
+  // Strictly multiplicative in the crossing fraction, so a sensitivity grid is
+  // a scaling of one measured number rather than five unrelated calibrations.
+  EXPECT_NEAR(vrp::vrp_vega_cost_one_way(0.40, 0.275), 0.5 * one_way_at_40, 1e-12);
+  // THE TRAP THIS TEST EXISTS TO PIN: the ORATS complex-order 0.53 applied on
+  // top of the already-effective 3.205% would cut the charge by 47%. Under the
+  // corrected parameterisation 0.53 lands within 4% of the measured effective
+  // charge instead, because it is crossed against the QUOTED width.
+  EXPECT_NEAR(vrp::vrp_vega_cost_one_way(0.40, 0.53) / one_way_at_40, 0.53 / 0.55, 1e-12);
+  EXPECT_GT(vrp::vrp_vega_cost_one_way(0.40, 0.53), 0.9 * one_way_at_40);
+  // Cost scales with the name's own IV (research digest Q2.1), so a high-vol
+  // name is NOT cheaper in vol terms.
+  EXPECT_NEAR(vrp::vrp_vega_cost_one_way(0.80), 2.0 * one_way_at_40, 1e-12);
+  // NaN-hostile on both arguments: an unpriceable leg is not a free one, and a
+  // nonsense knob never trades free.
+  EXPECT_TRUE(
+      std::isnan(vrp::vrp_vega_cost_one_way(std::numeric_limits<double>::quiet_NaN(), 0.55)));
+  EXPECT_TRUE(std::isnan(vrp::vrp_vega_cost_one_way(0.40, -0.1)));
+  EXPECT_TRUE(
+      std::isnan(vrp::vrp_vega_cost_one_way(0.40, std::numeric_limits<double>::quiet_NaN())));
+}
+
+// A book that cannot be held is not a strategy: turnover, names/day and the
+// drawdown path are hand-computed against a fixture whose membership is known.
+TEST(VrpTrainVega, VegaBookReportsTurnoverNamesPerDayAndMaxDrawdown) {
+  // Two dates, 10 names each. Date 1 ranks symbols 0..9 ascending; date 2
+  // REVERSES the score, so the long and short deciles swap symbol entirely.
+  std::vector<std::int64_t> ts;
+  std::vector<double> score;
+  std::vector<double> target;
+  std::vector<double> iv;
+  std::vector<std::size_t> sym;
+  for (std::size_t d = 0; d < 2; ++d) {
+    for (std::size_t i = 0; i < 10; ++i) {
+      ts.push_back(static_cast<std::int64_t>(d) + 1);
+      sym.push_back(i);
+      iv.push_back(0.40);
+      score.push_back(d == 0 ? static_cast<double>(i) : -static_cast<double>(i));
+      // Flat within each date, so gross is 0 and the cost charge is visible.
+      target.push_back(0.0);
+    }
+  }
+  const vrp::VrpVegaLegs legs = vrp::vrp_vega_book_per_date(
+      ts, score, target, iv, sym, vrp::kVrpDefaultCrossingFraction, true);
+  ASSERT_EQ(legs.net.size(), 2u);
+  // One name per decile bucket on each side: 2 names a day.
+  EXPECT_NEAR(legs.names[0], 2.0, 1e-12);
+  EXPECT_NEAR(legs.names[1], 2.0, 1e-12);
+  // Turnover is UNDEFINED on the first formation date -- there is no previous
+  // book, and calling that "zero turnover" would understate every cost.
+  EXPECT_TRUE(std::isnan(legs.turnover[0]));
+  // Date 1 holds {+sym9, -sym0}; date 2 holds {+sym0, -sym9}. All of it moved.
+  EXPECT_NEAR(legs.turnover[1], 1.0, 1e-12);
+
+  vrp::VrpVegaFloor floor;
+  floor.per_date_long = {0.0, 0.0};
+  floor.per_date_short = {0.0, 0.0};
+  floor.per_date_best = {0.0, 0.0};
+  const vrp::VrpVegaAgg a = vrp::vrp_vega_agg(legs, floor, 0.0);
+  EXPECT_NEAR(a.names_per_day.mean, 2.0, 1e-12);
+  // The mean turnover is over the ONE date that has a predecessor.
+  EXPECT_EQ(a.turnover.n, 1u);
+  EXPECT_NEAR(a.turnover.mean, 1.0, 1e-12);
+  const double rt = 2.0 * vrp::vrp_vega_cost_one_way(0.40);
+  EXPECT_NEAR(legs.net[0], -rt, 1e-12);
+  EXPECT_NEAR(legs.net[1], -rt, 1e-12);
+  // Cumulative curve: -rt then -2rt. Peak is 0 at the start, so maxDD = 2rt.
+  EXPECT_NEAR(a.max_drawdown, 2.0 * rt, 1e-12);
+  // Each LEG carries its own drawdown against its own zero-selection
+  // alternative: a long-only reading of this book is a different instrument and
+  // must not borrow the pair's risk statistics.
+  EXPECT_NEAR(a.long_max_drawdown, 2.0 * rt, 1e-12);
+  EXPECT_NEAR(a.short_max_drawdown, 2.0 * rt, 1e-12);
+  EXPECT_NEAR(a.floor_long_max_drawdown, 0.0, 1e-12);
+  // A monotonically rising curve has NO drawdown, and an all-NaN one has no
+  // MEASURED drawdown rather than a comforting zero.
+  const std::array<double, 3> up{1.0, 2.0, 3.0};
+  EXPECT_NEAR(vrp::detail::max_drawdown(std::span<const double>{up}), 0.0, 1e-12);
+  const std::array<double, 2> none{std::numeric_limits<double>::quiet_NaN(),
+                                   std::numeric_limits<double>::quiet_NaN()};
+  EXPECT_TRUE(std::isnan(vrp::detail::max_drawdown(std::span<const double>{none})));
+}
+
+// Turnover is computed on SIGNED weights, so a name that stays in the book but
+// FLIPS SIDE is full turnover on that name, not zero.
+TEST(VrpTrainVega, TurnoverCountsASideFlipAsAFullReplacementOfThatName) {
+  const std::map<std::size_t, double> a{{0, 0.5}, {1, -0.5}};
+  const std::map<std::size_t, double> b{{0, -0.5}, {1, 0.5}};
+  EXPECT_NEAR(vrp::detail::weight_turnover(a, a), 0.0, 1e-12);
+  EXPECT_NEAR(vrp::detail::weight_turnover(a, b), 1.0, 1e-12);
+  // Half the long leg rotates to a new name: a quarter of gross moves.
+  const std::map<std::size_t, double> c{{0, 0.25}, {1, -0.5}, {2, 0.25}};
+  EXPECT_NEAR(vrp::detail::weight_turnover(a, c), 0.25, 1e-12);
+}
+
+// ── ROUND 6: the EIV guards on the columns actually gated ───────────────────
+
+// The free Vasquez term-slope rule must MOVE under --feature-lag. Round 5 read
+// it off the target-side row, so its "lag 2" figure still saw session t, and a
+// free rule cannot be gated on a lag it never took.
+TEST(VrpTrainVega, TermSlopeBenchmarkIsReadFromTheLaggedFeatureNotTheTargetSideRow) {
+  vrp::VrpPanel panel;
+  panel.symbols = {"AAA"};
+  for (std::size_t i = 0; i < 4; ++i) {
+    vrp::VrpPanelRow r;
+    r.symbol = "AAA";
+    r.entry_ts_ns = static_cast<std::int64_t>(i) + 1;
+    r.iv_fair_21d = 0.20;
+    r.iv_fair_63d = 0.20 + 0.01 * static_cast<double>(i);
+    r.f.fill(0.0);
+    r.f[vrp::kVrpFeatTermSlope] = r.iv_fair_63d - r.iv_fair_21d;
+    panel.rows.push_back(r);
+    panel.row_symbol.push_back(0);
+  }
+  // The feature slot IS the target-side difference, so at lag 0 the two reads
+  // agree exactly -- which is why this fix leaves every round-5 number alone.
+  for (const vrp::VrpPanelRow &r : panel.rows) {
+    EXPECT_NEAR(r.f[vrp::kVrpFeatTermSlope], r.iv_fair_63d - r.iv_fair_21d, 1e-15);
+  }
+  const std::size_t unavailable = vrp::apply_vrp_feature_lag(panel, 2);
+  EXPECT_EQ(unavailable, 2u);
+  // After lagging, the FEATURE has moved back two sessions while the
+  // target-side columns have not. Row 3 now carries row 1's slope.
+  EXPECT_NEAR(panel.rows[3].f[vrp::kVrpFeatTermSlope], 0.01, 1e-15);
+  EXPECT_NEAR(panel.rows[3].iv_fair_63d - panel.rows[3].iv_fair_21d, 0.03, 1e-15);
+  EXPECT_TRUE(std::isnan(panel.rows[0].f[vrp::kVrpFeatTermSlope]));
+}
+
+// The EIV target rebuild: the ENTRY leg moves back, the EXIT leg does not, and
+// a row without a lagged entry mark is UNDEFINED rather than silently unlagged.
+TEST(VrpTrainVega, EivTargetEntryLagMovesOnlyTheEntryLegAndNeverSubstitutes) {
+  vrp::VrpPanel panel;
+  panel.symbols = {"AAA"};
+  // 6 sessions, iv_atmf rising 1 vol point per session, flat 63d/21d so the
+  // roll leg is identically zero and the raw axis equals the roll axis.
+  for (std::size_t i = 0; i < 6; ++i) {
+    vrp::VrpPanelRow r;
+    r.symbol = "AAA";
+    r.entry_ts_ns = static_cast<std::int64_t>(i) + 1;
+    r.iv_fair_21d = 0.20;
+    r.iv_fair_63d = 0.20;
+    r.iv_atmf_21d = 0.20 + 0.01 * static_cast<double>(i);
+    r.f.fill(0.0);
+    panel.rows.push_back(r);
+    panel.row_symbol.push_back(0);
+  }
+  // Horizon 3 sessions, no entry lag: row 0 marks 0.23 against 0.20 => +3.
+  const vrp::VrpIvChgTargets t0 = vrp::vrp_build_iv_chg(panel, 3, 0);
+  EXPECT_NEAR(t0.raw[0], 3.0, 1e-9);
+  EXPECT_NEAR(t0.roll[0], 3.0, 1e-9);
+  EXPECT_NEAR(t0.raw[2], 3.0, 1e-9);
+  // Entry lag 2: row 2's entry mark comes from row 0 (0.20) while its exit is
+  // still row 5 (0.25), so the target lengthens to +5 -- reported as the
+  // diagnostic it is, never as a tradeable hold.
+  const vrp::VrpIvChgTargets t2 = vrp::vrp_build_iv_chg(panel, 3, 2);
+  EXPECT_NEAR(t2.raw[2], 5.0, 1e-9);
+  // Rows 0 and 1 have no 2nd predecessor: UNDEFINED, not the unlagged value.
+  EXPECT_TRUE(std::isnan(t2.raw[0]));
+  EXPECT_TRUE(std::isnan(t2.raw[1]));
+  EXPECT_TRUE(std::isnan(t2.roll[0]));
+  // The exit leg is untouched: the same rows still have no exit at all.
+  EXPECT_EQ(t2.n_rows_no_exit, t0.n_rows_no_exit);
 }
 
 namespace {

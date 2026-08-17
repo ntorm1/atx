@@ -246,10 +246,39 @@ struct VolEdgeConfig {
   // No-trade band on the SIGNAL: a selected name with |pred_edge_norm| <= band
   // is suppressed (no position) rather than traded at noise-level edge.
   double no_trade_band{0.0};
-  // Effective option half-spread in VOL POINTS (1.0 = one vol point of IV).
+  // QUOTED option half-spread in VOL POINTS (1.0 = one vol point of IV).
   // Mapped onto FrictionModel::vol_tick by `vol_edge_frictions`, so the engine
-  // charges half-spread = vega * (vol_pts / 100) per share, per leg, per fill.
+  // charges half-spread = vega * (vol_pts * crossing / 100) per share, per leg,
+  // per fill.
+  //
+  // ROUND-6 SEMANTIC CORRECTION. This used to be documented as an EFFECTIVE
+  // half-spread and was charged with no crossing factor -- the run crossed
+  // 100% of it while the repo's own ORATS calibration
+  // (`FrictionModel::crossing_fraction_complex = 0.53`) sat unreachable under
+  // `SpreadKind::VolTicks` (audit-cost-model.md defect #2). The field is now a
+  // QUOTED width and `cost_crossing_fraction` below is the discount, so both
+  // halves of the correction are visible together. THEY DO NOT CANCEL AND THEY
+  // DO NOT POINT THE SAME WAY: a crossing below 1.00 makes the charge cheaper,
+  // but the 0.5 vol-point width this book ran with was already ~1.9x too cheap
+  // as an EFFECTIVE charge (Christoffersen et al., RFS 2018, measure ~0.96
+  // one-way vol points on an S&P 500 ATM name at sigma = 30%). Applying 0.53 to
+  // 0.5 without restating the width is the flattering half of the correction,
+  // and is what this comment exists to prevent.
+  //
+  // KNOWN LIMITATION, stated rather than buried: this charge is a FLAT number
+  // of vol points, but option cost in vol points is (fraction of premium) x
+  // sigma, so it scales with the name's own IV. A flat width undercharges
+  // high-vol names and overcharges low-vol ones. The vega book in
+  // tools/vrp_train.hpp charges the premium-fraction form directly.
   double cost_half_spread_vol_pts{0.0};
+  // Fraction of the quoted half-spread above that a fill actually crosses.
+  // 1.00 reproduces the pre-round-6 charge exactly for a given width. The
+  // default is Zhan-Han-Cao-Tong (RFS 2022) realized effective/quoted, measured
+  // on actual OPRA prints 2003-2016; the ORATS complex-order constant 0.53 for
+  // a two-leg order is within 4% of it. Must lie in (0, 1] -- "no option cost"
+  // is expressed by leaving `cost_half_spread_vol_pts` at 0, never by a zero
+  // crossing fraction, which would silently make every fill free.
+  double cost_crossing_fraction{0.55};
   // Stock half-spread for the delta-hedge overlay, in bps of spot per share
   // traded (FrictionModel::hedge_slippage_bps verbatim).
   double stock_half_spread_bps{0.0};
@@ -292,8 +321,12 @@ struct VolEdgeConfig {
   // COST-GATED ADMISSION, per unit of position vega (the vega cancels, so the
   // gate is a pure per-name predicate on pred_label): admit an entry only if
   //   |pred_label| * (252 / horizon_days) / (2 * cost_gate_ref_vol)
-  //     > cost_gate_k * (2 * cost_half_spread_vol_pts / 100
+  //     > cost_gate_k * (2 * cost_half_spread_vol_pts * cost_crossing_fraction
+  //                        / 100
   //                      + cost_gate_hedge_per_vega).
+  // ROUND 6: the crossing fraction enters the ADMISSION predicate too, so the
+  // gate and the CHARGE cannot drift apart -- a gate that admits at a cost the
+  // engine does not charge is worse than no gate at all.
   // The left side maps the signal's total-variance-unit label to an expected
   // vol-point move through a REFERENCE vol level — a crude pre-recalibration
   // conversion, deliberately: currency-correct labels await the recalibration
@@ -306,7 +339,7 @@ struct VolEdgeConfig {
 };
 
 // Field-count drift pin: a new knob must be appended AND documented above.
-static_assert(detail::aggregate_arity_is_v<VolEdgeConfig, 20>,
+static_assert(detail::aggregate_arity_is_v<VolEdgeConfig, 21>,
               "VolEdgeConfig field count changed: update this pin and the doc block.");
 
 [[nodiscard]] inline Status validate_vol_edge_config(const VolEdgeConfig &cfg) {
@@ -344,6 +377,13 @@ static_assert(detail::aggregate_arity_is_v<VolEdgeConfig, 20>,
   if (!(std::isfinite(cfg.cost_half_spread_vol_pts) && cfg.cost_half_spread_vol_pts >= 0.0) ||
       !(std::isfinite(cfg.stock_half_spread_bps) && cfg.stock_half_spread_bps >= 0.0)) {
     return bad("cost half-spreads must be finite and >= 0");
+  }
+  // (0, 1] and not [0, 1]: a zero crossing fraction reads as a calibration and
+  // behaves as "every option fill is free", which is the single most flattering
+  // silent error this cost model can make.
+  if (!(std::isfinite(cfg.cost_crossing_fraction) && cfg.cost_crossing_fraction > 0.0 &&
+        cfg.cost_crossing_fraction <= 1.0)) {
+    return bad("cost_crossing_fraction must be finite and in (0, 1]");
   }
   if (!(std::isfinite(cfg.delta_hedge_band) && cfg.delta_hedge_band >= 0.0)) {
     return bad("delta_hedge_band must be finite and >= 0");
@@ -397,7 +437,8 @@ static_assert(detail::aggregate_arity_is_v<VolEdgeConfig, 20>,
   const double edge_vol_per_vega =
       std::fabs(pred_label) * (252.0 / cfg.horizon_days) / (2.0 * cfg.cost_gate_ref_vol);
   const double round_trip_per_vega =
-      2.0 * (cfg.cost_half_spread_vol_pts / 100.0) + cfg.cost_gate_hedge_per_vega;
+      2.0 * (cfg.cost_half_spread_vol_pts * cfg.cost_crossing_fraction / 100.0) +
+      cfg.cost_gate_hedge_per_vega;
   return edge_vol_per_vega > cfg.cost_gate_k * round_trip_per_vega;
 }
 
@@ -651,16 +692,29 @@ plan_vol_edge_book(std::span<const VrpSignalRow> day, const VolEdgeConfig &cfg,
 
 // Map the config's cost knobs onto the engine's OWN friction model, so the
 // charge flows through `BacktestResult::cost` like every other run:
-//   * option legs: SpreadKind::VolTicks with vol_tick = vol_pts / 100 — the
-//     engine charges |qty| * multiplier * (vega * vol_tick) per leg per fill,
-//     which IS "effective half-spread in vol points x vega traded";
+//   * option legs: SpreadKind::VolTicks with
+//     vol_tick = vol_pts * crossing / 100 — the engine charges
+//     |qty| * multiplier * (vega * vol_tick) per leg per fill, which IS
+//     "crossed half-spread in vol points x vega traded";
 //   * delta rebalances: hedge_slippage_bps verbatim — the overlay charges
 //     |shares| * spot * bps/1e4 per rebalance into the same cost column.
+//
+// ROUND 6: the crossing fraction is applied HERE rather than left to
+// `SpreadKind::QuoteSide`, because QuoteSide needs per-fill recorded quotes
+// this book does not have, and leaving the constant reachable only from a code
+// path nothing selects is how it came to be dead in the first place. A
+// non-finite or out-of-range crossing fraction is clamped OUT of the friction
+// model entirely (no option spread charged) rather than silently trusted --
+// `validate_vol_edge_config` rejects it first, so reaching that branch means a
+// caller bypassed validation, and charging nothing is the loud outcome.
 [[nodiscard]] inline FrictionModel vol_edge_frictions(const VolEdgeConfig &cfg) noexcept {
   FrictionModel f{};
-  if (cfg.cost_half_spread_vol_pts > 0.0) {
+  const bool crossing_ok = std::isfinite(cfg.cost_crossing_fraction) &&
+                           cfg.cost_crossing_fraction > 0.0 &&
+                           cfg.cost_crossing_fraction <= 1.0;
+  if (cfg.cost_half_spread_vol_pts > 0.0 && crossing_ok) {
     f.spread_kind = FrictionModel::SpreadKind::VolTicks;
-    f.vol_tick = cfg.cost_half_spread_vol_pts / 100.0;
+    f.vol_tick = cfg.cost_half_spread_vol_pts * cfg.cost_crossing_fraction / 100.0;
   }
   f.hedge_slippage_bps = cfg.stock_half_spread_bps;
   return f;

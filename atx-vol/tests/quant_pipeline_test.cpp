@@ -359,7 +359,7 @@ TEST(QuantPipeline, VrpBacktestArgsParseDefaultsAndOverrides) {
       "--stock-bps",     "3",             "--hedge-band",   "50",
       "--rebalance-steps", "5",           "--horizon-days", "10",
       "--long-frac",     "0.2",           "--short-frac",   "0.3",
-      "--expiry-guard",  "4",
+      "--expiry-guard",  "4",           "--cost-crossing-fraction", "0.53",
   };
   const auto spec = parse_vrp_backtest_args(args);
   ASSERT_TRUE(spec.has_value()) << spec.error().to_string();
@@ -374,6 +374,8 @@ TEST(QuantPipeline, VrpBacktestArgsParseDefaultsAndOverrides) {
   EXPECT_DOUBLE_EQ(spec->config.net_short_tilt, 0.2);
   EXPECT_DOUBLE_EQ(spec->config.no_trade_band, 0.25);
   EXPECT_DOUBLE_EQ(spec->config.cost_half_spread_vol_pts, 1.5);
+  // ROUND 6: the ORATS crossing fraction is reachable from the CLI at last.
+  EXPECT_DOUBLE_EQ(spec->config.cost_crossing_fraction, 0.53);
   EXPECT_DOUBLE_EQ(spec->config.stock_half_spread_bps, 3.0);
   EXPECT_DOUBLE_EQ(spec->config.delta_hedge_band, 50.0);
   EXPECT_EQ(spec->config.rebalance_every_n_steps, 5u);

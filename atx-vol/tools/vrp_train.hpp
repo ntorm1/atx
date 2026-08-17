@@ -211,6 +211,11 @@ inline constexpr std::size_t kVrpMaxFeatureLag = kVrpHorizonSessions;
 // Named feature slots this file reads directly out of VrpPanelRow::f.
 // f2_log_rv21 = ln(rv_trail_21d^2); f5_hv_iv_gap = ln(rv_trail_21d/iv_fair_21d).
 inline constexpr std::size_t kVrpFeatLogRv21 = 2;
+// f4_term_slope = iv_fair_63d - iv_fair_21d, IDENTICAL to the quantity the
+// Vasquez benchmark wants (vrp_panel.hpp:637). ROUND 6 reads the BENCHMARK out
+// of the feature vector rather than off the target-side row, which is what
+// makes it move under --feature-lag; see the bench_term_slope push_back.
+inline constexpr std::size_t kVrpFeatTermSlope = 4;
 inline constexpr std::size_t kVrpFeatHvIvGap = 5;
 
 inline constexpr std::array<std::string_view, kVrpPanelColumnCount> kVrpPanelColumns{
@@ -1427,8 +1432,19 @@ struct VrpIvChgTargets {
   return ord;
 }
 
+// ROUND 6, `entry_lag`: read the target's ENTRY leg from the row's
+// `entry_lag`-th same-symbol predecessor session, leaving the exit leg at
+// session[i] + horizon. This is round 5's decisive errors-in-variables swap,
+// promoted from a one-off table to a runnable diagnostic (`--eiv-target-entry-
+// lag 2`). The point is not realism -- a t-2 entry with a t+21 exit is a
+// 23-session hold, and the report says so -- it is discrimination: a predictor
+// read at t that scores only because the TARGET also contains the t read will
+// hand its advantage to the t-2 read when the target's entry moves, whereas a
+// predictor with a real forecast will keep it. A row whose symbol has no
+// `entry_lag`-th predecessor is UNDEFINED, never substituted.
 [[nodiscard]] inline VrpIvChgTargets vrp_build_iv_chg(const VrpPanel &panel,
-                                                      std::size_t horizon = kVrpHorizonSessions) {
+                                                      std::size_t horizon = kVrpHorizonSessions,
+                                                      std::size_t entry_lag = 0) {
   VrpIvChgTargets out;
   const std::size_t n = panel.rows.size();
   out.raw.assign(n, std::numeric_limits<double>::quiet_NaN());
@@ -1440,16 +1456,28 @@ struct VrpIvChgTargets {
   for (std::size_t i = 0; i < n; ++i) {
     at.emplace(std::pair<std::size_t, std::size_t>{panel.row_symbol[i], session[i]}, i);
   }
+  const auto row_at = [&](std::size_t i, std::size_t ordinal) -> const VrpPanelRow * {
+    const auto it = at.find(std::pair<std::size_t, std::size_t>{panel.row_symbol[i], ordinal});
+    return it == at.end() ? nullptr : &panel.rows[it->second];
+  };
   for (std::size_t i = 0; i < n; ++i) {
-    const auto it =
-        at.find(std::pair<std::size_t, std::size_t>{panel.row_symbol[i], session[i] + horizon});
-    if (it == at.end()) {
+    const VrpPanelRow *exit_row = row_at(i, session[i] + horizon);
+    if (exit_row == nullptr) {
       ++out.n_rows_no_exit;
       continue;
     }
     ++out.n_rows_with_exit;
-    const VrpPanelRow &entry = panel.rows[i];
-    const VrpPanelRow &exit = panel.rows[it->second];
+    // The entry leg: this row at lag 0, else the lag-th predecessor session.
+    // Session ordinals are dense and >= 0, so the subtraction is guarded.
+    const VrpPanelRow *entry_row = &panel.rows[i];
+    if (entry_lag != 0) {
+      entry_row = session[i] < entry_lag ? nullptr : row_at(i, session[i] - entry_lag);
+      if (entry_row == nullptr) {
+        continue; // no lagged entry mark: undefined, never the unlagged one
+      }
+    }
+    const VrpPanelRow &entry = *entry_row;
+    const VrpPanelRow &exit = *exit_row;
     if (!(std::isfinite(entry.iv_atmf_21d) && std::isfinite(exit.iv_atmf_21d))) {
       continue; // v1 panel, or an unavailable ATMF read: undefined, not zero
     }
@@ -1903,7 +1931,54 @@ vrp_pnl_report(std::string name, VrpScoreKind kind, std::span<const std::int64_t
 // and would pay ~21 round trips, not one. One round trip prices the honest
 // alternative -- buy a longer-dated straddle once and let its maturity drift --
 // which is also what the iv_chg_roll axis is constructed to mark.
-inline constexpr double kVrpVegaOneWayCostFracOfPremium = 0.03205;
+//
+// ── ROUND 6: THE CROSSING FRACTION, MADE REACHABLE ─────────────────────────
+//
+// The audit `audit-cost-model.md` (defect #2) found the engine's option charge
+// crossing 100% of an assumed QUOTED spread while the repo's own ORATS
+// calibration (`crossing_fraction_complex = 0.53`, api/backtest/backtest.hpp)
+// sat unreachable under `SpreadKind::VolTicks`. That defect is REAL and it is
+// an ENGINE defect. It is NOT a defect of the number above, and the difference
+// decides whether costs go up or down -- so it is spelled out rather than
+// asserted:
+//
+//   * 6.41% (Christoffersen et al.) is an EFFECTIVE relative spread, measured
+//     from intraday trade prints against the prevailing mid. The crossing
+//     fraction is ALREADY INSIDE IT. Multiplying it by 0.53 would count the
+//     same discount twice and hand the book a free 47% cost cut.
+//   * The engine's `cost_half_spread_vol_pts` is an operator-supplied width
+//     with no measurement behind it, crossed at 1.00. THAT is where 0.53
+//     belongs -- and applying it there without also restating the width as a
+//     QUOTED one is exactly the flattering half of the correction.
+//
+// So the model is restated as an explicit two-factor product, with the quoted
+// width DERIVED from the two measurements rather than asserted:
+//
+//     one-way frac of premium  =  quoted_half_spread_frac  x  f_cross
+//     quoted_half_spread_frac  =  3.205%  /  0.55  =  5.827% of premium
+//
+// where 0.55 is Zhan-Han-Cao-Tong (RFS 2022) realized effective/quoted measured
+// on ACTUAL OPRA prints 2003-16 -- the best-measured ratio in the digest, and
+// the one the sprint's research doc names as the honest central case. Two
+// independent roads then agree to within 4%: the ORATS complex-order constant
+// 0.53 on the same derived quoted width gives 3.09% one-way (0.93 vol pts at
+// sigma = 30%) against Christoffersen's 3.205% (0.96 vol pts).
+//
+// The charge is computed as `effective x (f_cross / 0.55)` rather than
+// `quoted x f_cross` so that the DEFAULT returns the measured effective spread
+// BIT-EXACTLY (x/x is exactly 1.0), i.e. this restatement is not a silent
+// re-pricing of round 5. `--cost-crossing-fraction 1.00` is the stress corner
+// and reproduces a full-quoted-spread crossing; 0.38 is Muravyev-Pearson's
+// patient-algo bound; anything below 0.30 is unsupported by any published
+// measurement (research-vrp-premise.md, "Do not tune costs down").
+inline constexpr double kVrpVegaEffectiveOneWayFracOfPremium = 0.0641 / 2.0;
+inline constexpr double kVrpVegaCrossingFractionMeasured = 0.55;
+inline constexpr double kVrpVegaQuotedOneWayFracOfPremium =
+    kVrpVegaEffectiveOneWayFracOfPremium / kVrpVegaCrossingFractionMeasured;
+inline constexpr double kVrpDefaultCrossingFraction = kVrpVegaCrossingFractionMeasured;
+// Retained name for the DEFAULT one-way charge, so the meta line and every
+// round-5 reader keep meaning the same thing.
+inline constexpr double kVrpVegaOneWayCostFracOfPremium = kVrpVegaEffectiveOneWayFracOfPremium;
 
 // ASYMMETRIC OBJECTIVE (user directive; research-vrp-premise.md Q3.3).
 // Long vega and short vega are not worth the same per unit of measured edge:
@@ -1921,12 +1996,25 @@ inline constexpr double kVrpVegaOneWayCostFracOfPremium = 0.03205;
 inline constexpr double kVrpDefaultShortVegaHaircut = 0.50;
 
 // One-way cost of one unit of vega on a name marked at `iv` (a DECIMAL vol),
-// in vol points. NaN in, NaN out -- an unpriceable leg is not a free one.
-[[nodiscard]] inline double vrp_vega_cost_one_way(double iv) noexcept {
-  if (!std::isfinite(iv) || !(iv > 0.0)) {
+// in vol points, crossing `crossing` of the derived QUOTED width. NaN in, NaN
+// out -- an unpriceable leg is not a free one; a non-finite or negative
+// crossing fraction is also NaN, so a bad knob cannot silently trade free.
+//
+// Note the identity the research digest supplies (Q2.1): cost in vol points is
+// (frac of premium) * sigma, so the charge SCALES WITH THE NAME'S OWN IV. A
+// flat vol-point charge -- what the engine's `cost_half_spread_vol_pts` is --
+// systematically undercharges high-vol names and overcharges low-vol ones.
+[[nodiscard]] inline double vrp_vega_cost_one_way(double iv, double crossing) noexcept {
+  if (!std::isfinite(iv) || !(iv > 0.0) || !std::isfinite(crossing) || crossing < 0.0) {
     return std::numeric_limits<double>::quiet_NaN();
   }
-  return kVrpVegaOneWayCostFracOfPremium * 100.0 * iv;
+  const double frac =
+      kVrpVegaEffectiveOneWayFracOfPremium * (crossing / kVrpVegaCrossingFractionMeasured);
+  return frac * 100.0 * iv;
+}
+
+[[nodiscard]] inline double vrp_vega_cost_one_way(double iv) noexcept {
+  return vrp_vega_cost_one_way(iv, kVrpDefaultCrossingFraction);
 }
 
 // Per-date series of one long/short vega book, all per 1u GROSS vega except
@@ -1939,9 +2027,78 @@ struct VrpVegaLegs {
   std::vector<double> net;       // gross - cost
   std::vector<double> long_leg;  // net, per 1u LONG vega
   std::vector<double> short_leg; // net, per 1u SHORT vega
+  // ROUND 6 IMPLEMENTABILITY COLUMNS. A net figure says nothing about whether
+  // the book can be held: 4 names a day is not a strategy however good its t.
+  std::vector<double> names;    // long members + short members on this date
+  std::vector<double> turnover; // fraction of GROSS replaced vs the previous
+                                // formation date; 1.0 = complete replacement,
+                                // 0.0 = identical book. NaN on the first date.
+  // Signed per-1u-gross weights of this date's book, kept only long enough to
+  // difference against the next date. Empty where the date could not fill.
+  std::vector<std::map<std::size_t, double>> weights;
 };
 
 namespace detail {
+
+// Signed weights per 1 unit of GROSS vega: each of `L` long names carries
+// +1/(2L) and each of `S` short names -1/(2S), so sum|w| == 1 and the series
+// is in the same unit as the P&L above. A symbol appearing on both sides
+// (impossible for a decile book, possible in principle for the quintile-
+// neutral one) nets, which is the economically correct thing to trade.
+inline void add_weight(std::map<std::size_t, double> &w, std::size_t sym, double v) {
+  w[sym] += v;
+}
+
+// One-way fraction of GROSS replaced going from `prev` to `cur`, in [0, 1].
+// Half the L1 distance, because sum|w| == 1 on each side and a complete
+// replacement moves 1 unit out and 1 unit in.
+[[nodiscard]] inline double weight_turnover(const std::map<std::size_t, double> &prev,
+                                            const std::map<std::size_t, double> &cur) noexcept {
+  double l1 = 0.0;
+  for (const auto &[sym, w] : cur) {
+    const auto it = prev.find(sym);
+    l1 += std::abs(w - (it == prev.end() ? 0.0 : it->second));
+  }
+  for (const auto &[sym, w] : prev) {
+    if (cur.find(sym) == cur.end()) {
+      l1 += std::abs(w);
+    }
+  }
+  return 0.5 * l1;
+}
+
+// Fill `legs.turnover` from `legs.weights`: NaN wherever either endpoint has no
+// book, so a gap never reads as a zero-turnover hold.
+inline void fill_turnover(VrpVegaLegs &legs) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  legs.turnover.assign(legs.weights.size(), nan);
+  for (std::size_t i = 1; i < legs.weights.size(); ++i) {
+    if (!legs.weights[i].empty() && !legs.weights[i - 1].empty()) {
+      legs.turnover[i] = weight_turnover(legs.weights[i - 1], legs.weights[i]);
+    }
+  }
+}
+
+// Worst peak-to-trough of the cumulative per-date series, as a POSITIVE
+// magnitude in the series' own unit. NaN dates are skipped (the curve holds
+// flat), so a missing date never manufactures a drawdown. NaN when no finite
+// entry exists at all -- an unmeasurable path has no measured drawdown.
+[[nodiscard]] inline double max_drawdown(std::span<const double> per_date) noexcept {
+  double cum = 0.0;
+  double peak = 0.0;
+  double worst = 0.0;
+  bool any = false;
+  for (const double x : per_date) {
+    if (!std::isfinite(x)) {
+      continue;
+    }
+    any = true;
+    cum += x;
+    peak = std::max(peak, cum);
+    worst = std::max(worst, peak - cum);
+  }
+  return any ? worst : std::numeric_limits<double>::quiet_NaN();
+}
 
 // Mean of the finite entries of `v`, NaN when there are none.
 [[nodiscard]] inline double mean_finite(std::span<const double> v) noexcept {
@@ -1961,36 +2118,43 @@ namespace detail {
 // Rank by `score` inside each date, long the top decile / short the bottom
 // decile, hold to horizon, mark at `target` (the iv-change axis, vol points per
 // 1u vega), charge a round trip on each leg at that leg's own entry IV.
-[[nodiscard]] inline VrpVegaLegs vrp_vega_book_per_date(std::span<const std::int64_t> ts,
-                                                        std::span<const double> score,
-                                                        std::span<const double> target,
-                                                        std::span<const double> iv,
-                                                        bool charge_costs = true) {
+[[nodiscard]] inline VrpVegaLegs
+vrp_vega_book_per_date(std::span<const std::int64_t> ts, std::span<const double> score,
+                       std::span<const double> target, std::span<const double> iv,
+                       std::span<const std::size_t> sym, double crossing, bool charge_costs) {
   VrpVegaLegs out;
-  if (ts.size() != score.size() || ts.size() != target.size() || ts.size() != iv.size()) {
+  if (ts.size() != score.size() || ts.size() != target.size() || ts.size() != iv.size() ||
+      ts.size() != sym.size()) {
     return out;
   }
   const double nan = std::numeric_limits<double>::quiet_NaN();
+  const auto empty_date = [&](VrpVegaLegs &o) {
+    o.gross.push_back(nan);
+    o.cost.push_back(nan);
+    o.net.push_back(nan);
+    o.long_leg.push_back(nan);
+    o.short_leg.push_back(nan);
+    o.names.push_back(nan);
+    o.weights.emplace_back();
+  };
   std::size_t begin = 0;
   while (begin < ts.size()) {
     std::size_t end = begin;
     while (end < ts.size() && ts[end] == ts[begin]) {
       ++end;
     }
-    std::vector<std::array<double, 3>> rows; // (score, target, iv)
+    // (score, target, iv, symbol) -- symbol last so the ordering of the first
+    // three, and therefore every round-5 figure, is unchanged.
+    std::vector<std::array<double, 4>> rows;
     rows.reserve(end - begin);
     for (std::size_t i = begin; i < end; ++i) {
       if (std::isfinite(score[i]) && std::isfinite(target[i]) && std::isfinite(iv[i])) {
-        rows.push_back({score[i], target[i], iv[i]});
+        rows.push_back({score[i], target[i], iv[i], static_cast<double>(sym[i])});
       }
     }
     begin = end;
     if (rows.size() < kVrpDecileMinNames) {
-      out.gross.push_back(nan);
-      out.cost.push_back(nan);
-      out.net.push_back(nan);
-      out.long_leg.push_back(nan);
-      out.short_leg.push_back(nan);
+      empty_date(out);
       continue;
     }
     std::sort(rows.begin(), rows.end());
@@ -2000,27 +2164,36 @@ namespace detail {
     double bot_cost = 0.0;
     std::size_t top_n = 0;
     std::size_t bot_n = 0;
+    std::vector<std::size_t> top_sym;
+    std::vector<std::size_t> bot_sym;
     for (std::size_t i = 0; i < rows.size(); ++i) {
       const std::size_t d = i * kVrpDecileCount / rows.size();
-      const double rt = charge_costs ? 2.0 * vrp_vega_cost_one_way(rows[i][2]) : 0.0;
+      const double rt = charge_costs ? 2.0 * vrp_vega_cost_one_way(rows[i][2], crossing) : 0.0;
       if (d == 0) {
         bot_pnl += rows[i][1];
         bot_cost += rt;
         ++bot_n;
+        bot_sym.push_back(static_cast<std::size_t>(rows[i][3]));
       } else if (d == kVrpDecileCount - 1) {
         top_pnl += rows[i][1];
         top_cost += rt;
         ++top_n;
+        top_sym.push_back(static_cast<std::size_t>(rows[i][3]));
       }
     }
     if (top_n == 0 || bot_n == 0) {
-      out.gross.push_back(nan);
-      out.cost.push_back(nan);
-      out.net.push_back(nan);
-      out.long_leg.push_back(nan);
-      out.short_leg.push_back(nan);
+      empty_date(out);
       continue;
     }
+    std::map<std::size_t, double> w;
+    for (const std::size_t s : top_sym) {
+      detail::add_weight(w, s, 0.5 / static_cast<double>(top_n));
+    }
+    for (const std::size_t s : bot_sym) {
+      detail::add_weight(w, s, -0.5 / static_cast<double>(bot_n));
+    }
+    out.names.push_back(static_cast<double>(top_n + bot_n));
+    out.weights.push_back(std::move(w));
     const auto avg = [](double s, std::size_t k) { return s / static_cast<double>(k); };
     // LONG vega earns +target; SHORT vega earns -target. Costs are paid by both.
     const double lg_gross = avg(top_pnl, top_n);
@@ -2036,6 +2209,7 @@ namespace detail {
     out.cost.push_back(0.5 * (lg_cost + sh_cost));
     out.net.push_back(0.5 * (lg_gross + sh_gross - lg_cost - sh_cost));
   }
+  detail::fill_turnover(out);
   return out;
 }
 
@@ -2061,8 +2235,8 @@ struct VrpVegaFloor {
 
 [[nodiscard]] inline VrpVegaFloor vrp_vega_floor(std::span<const std::int64_t> ts,
                                                  std::span<const double> target,
-                                                 std::span<const double> iv,
-                                                 bool charge_costs = true) {
+                                                 std::span<const double> iv, double crossing,
+                                                 bool charge_costs) {
   VrpVegaFloor out;
   if (ts.size() != target.size() || ts.size() != iv.size()) {
     return out;
@@ -2078,7 +2252,7 @@ struct VrpVegaFloor {
     double cost = 0.0;
     std::size_t n = 0;
     for (std::size_t i = begin; i < end; ++i) {
-      const double rt = charge_costs ? 2.0 * vrp_vega_cost_one_way(iv[i]) : 0.0;
+      const double rt = charge_costs ? 2.0 * vrp_vega_cost_one_way(iv[i], crossing) : 0.0;
       if (std::isfinite(target[i]) && std::isfinite(rt)) {
         pnl += target[i];
         cost += rt;
@@ -2130,6 +2304,20 @@ struct VrpVegaAgg {
   double short_excess_t_nw{std::numeric_limits<double>::quiet_NaN()};
   double haircut{kVrpDefaultShortVegaHaircut};
   double short_multiplier{1.0};
+  // ROUND 6: can this book be held at all? Reported for every column, because
+  // "excess over the floor" is a claim about money and these are the claims
+  // about implementability that a money number cannot make on its own.
+  VrpStatAgg names_per_day;
+  VrpStatAgg turnover; // fraction of GROSS replaced per formation date, [0, 1]
+  double max_drawdown{std::numeric_limits<double>::quiet_NaN()};
+  double floor_max_drawdown{std::numeric_limits<double>::quiet_NaN()};
+  // Per-leg drawdown against the same-direction zero-selection alternative,
+  // because a long-only reading of this book is a different instrument from
+  // the paired one and must not borrow the pair's risk statistics.
+  double long_max_drawdown{std::numeric_limits<double>::quiet_NaN()};
+  double short_max_drawdown{std::numeric_limits<double>::quiet_NaN()};
+  double floor_long_max_drawdown{std::numeric_limits<double>::quiet_NaN()};
+  double floor_short_max_drawdown{std::numeric_limits<double>::quiet_NaN()};
 };
 
 namespace detail {
@@ -2181,6 +2369,16 @@ namespace detail {
                           std::span<const double>{floor.per_date_short});
   out.short_excess = sex.mean;
   out.short_excess_t_nw = sex.t_nw;
+  out.names_per_day = vrp_aggregate_series(std::span<const double>{legs.names}, kVrpOverlapLag);
+  out.turnover = vrp_aggregate_series(std::span<const double>{legs.turnover}, kVrpOverlapLag);
+  out.max_drawdown = detail::max_drawdown(std::span<const double>{legs.net});
+  out.floor_max_drawdown = detail::max_drawdown(std::span<const double>{floor.per_date_best});
+  out.long_max_drawdown = detail::max_drawdown(std::span<const double>{legs.long_leg});
+  out.short_max_drawdown = detail::max_drawdown(std::span<const double>{legs.short_leg});
+  out.floor_long_max_drawdown =
+      detail::max_drawdown(std::span<const double>{floor.per_date_long});
+  out.floor_short_max_drawdown =
+      detail::max_drawdown(std::span<const double>{floor.per_date_short});
   return out;
 }
 
@@ -2200,34 +2398,40 @@ struct VrpVegaReport {
 [[nodiscard]] inline VrpVegaLegs
 vrp_vega_iv_neutral_per_date(std::span<const std::int64_t> ts, std::span<const double> score,
                              std::span<const double> target, std::span<const double> iv,
-                             std::span<const double> iv_fair, bool charge_costs = true) {
+                             std::span<const double> iv_fair, std::span<const std::size_t> sym,
+                             double crossing, bool charge_costs) {
   VrpVegaLegs out;
   if (ts.size() != score.size() || ts.size() != target.size() || ts.size() != iv.size() ||
-      ts.size() != iv_fair.size()) {
+      ts.size() != iv_fair.size() || ts.size() != sym.size()) {
     return out;
   }
   const double nan = std::numeric_limits<double>::quiet_NaN();
+  const auto empty_date = [&](VrpVegaLegs &o) {
+    o.gross.push_back(nan);
+    o.cost.push_back(nan);
+    o.net.push_back(nan);
+    o.long_leg.push_back(nan);
+    o.short_leg.push_back(nan);
+    o.names.push_back(nan);
+    o.weights.emplace_back();
+  };
   std::size_t begin = 0;
   while (begin < ts.size()) {
     std::size_t end = begin;
     while (end < ts.size() && ts[end] == ts[begin]) {
       ++end;
     }
-    std::vector<std::array<double, 4>> rows; // (iv_fair, score, target, iv)
+    std::vector<std::array<double, 5>> rows; // (iv_fair, score, target, iv, symbol)
     rows.reserve(end - begin);
     for (std::size_t i = begin; i < end; ++i) {
       if (std::isfinite(score[i]) && std::isfinite(target[i]) && std::isfinite(iv[i]) &&
           std::isfinite(iv_fair[i])) {
-        rows.push_back({iv_fair[i], score[i], target[i], iv[i]});
+        rows.push_back({iv_fair[i], score[i], target[i], iv[i], static_cast<double>(sym[i])});
       }
     }
     begin = end;
     if (rows.size() < kVrpIvNeutralMinNames) {
-      out.gross.push_back(nan);
-      out.cost.push_back(nan);
-      out.net.push_back(nan);
-      out.long_leg.push_back(nan);
-      out.short_leg.push_back(nan);
+      empty_date(out);
       continue;
     }
     std::sort(rows.begin(), rows.end());
@@ -2236,6 +2440,11 @@ vrp_vega_iv_neutral_per_date(std::span<const std::int64_t> ts, std::span<const d
     double lg_c = 0.0;
     double sh_c = 0.0;
     std::size_t q_n = 0;
+    std::size_t n_long = 0;
+    std::size_t n_short = 0;
+    // Weights accumulate as (per-quintile 1/side) / q_n, so sum|w| == 1 across
+    // the whole book; q_n is only known after the loop, hence the rescale.
+    std::map<std::size_t, double> w;
     for (std::size_t q = 0; q < kVrpIvNeutralQuintiles; ++q) {
       const std::size_t lo = q * rows.size() / kVrpIvNeutralQuintiles;
       const std::size_t hi = (q + 1) * rows.size() / kVrpIvNeutralQuintiles;
@@ -2243,10 +2452,10 @@ vrp_vega_iv_neutral_per_date(std::span<const std::int64_t> ts, std::span<const d
       if (m < 2) {
         continue;
       }
-      std::vector<std::array<double, 3>> in_q; // (score, target, iv)
+      std::vector<std::array<double, 4>> in_q; // (score, target, iv, symbol)
       in_q.reserve(m);
       for (std::size_t i = lo; i < hi; ++i) {
-        in_q.push_back({rows[i][1], rows[i][2], rows[i][3]});
+        in_q.push_back({rows[i][1], rows[i][2], rows[i][3], rows[i][4]});
       }
       std::sort(in_q.begin(), in_q.end());
       const std::size_t side = std::max<std::size_t>(1, m / kVrpIvNeutralQuintiles);
@@ -2258,10 +2467,16 @@ vrp_vega_iv_neutral_per_date(std::span<const std::int64_t> ts, std::span<const d
         bot += in_q[k][1];
         top += in_q[m - 1 - k][1];
         if (charge_costs) {
-          bot_c += 2.0 * vrp_vega_cost_one_way(in_q[k][2]);
-          top_c += 2.0 * vrp_vega_cost_one_way(in_q[m - 1 - k][2]);
+          bot_c += 2.0 * vrp_vega_cost_one_way(in_q[k][2], crossing);
+          top_c += 2.0 * vrp_vega_cost_one_way(in_q[m - 1 - k][2], crossing);
         }
+        detail::add_weight(w, static_cast<std::size_t>(in_q[m - 1 - k][3]),
+                           0.5 / static_cast<double>(side));
+        detail::add_weight(w, static_cast<std::size_t>(in_q[k][3]),
+                           -0.5 / static_cast<double>(side));
       }
+      n_long += side;
+      n_short += side;
       const auto sd = static_cast<double>(side);
       lg += top / sd;
       sh += -bot / sd;
@@ -2270,20 +2485,23 @@ vrp_vega_iv_neutral_per_date(std::span<const std::int64_t> ts, std::span<const d
       ++q_n;
     }
     if (q_n == 0) {
-      out.gross.push_back(nan);
-      out.cost.push_back(nan);
-      out.net.push_back(nan);
-      out.long_leg.push_back(nan);
-      out.short_leg.push_back(nan);
+      empty_date(out);
       continue;
     }
     const auto qn = static_cast<double>(q_n);
+    for (auto &[unused_sym, wv] : w) {
+      (void)unused_sym;
+      wv /= qn;
+    }
+    out.names.push_back(static_cast<double>(n_long + n_short));
+    out.weights.push_back(std::move(w));
     out.long_leg.push_back((lg - lg_c) / qn);
     out.short_leg.push_back((sh - sh_c) / qn);
     out.gross.push_back(0.5 * (lg + sh) / qn);
     out.cost.push_back(0.5 * (lg_c + sh_c) / qn);
     out.net.push_back(0.5 * (lg + sh - lg_c - sh_c) / qn);
   }
+  detail::fill_turnover(out);
   return out;
 }
 
@@ -2291,13 +2509,16 @@ vrp_vega_iv_neutral_per_date(std::span<const std::int64_t> ts, std::span<const d
 vrp_vega_report(std::string name, VrpScoreKind kind, std::span<const std::int64_t> ts,
                 std::span<const double> score, std::span<const double> target,
                 std::span<const double> iv, std::span<const double> iv_fair,
-                const VrpVegaFloor &floor, double haircut) {
+                std::span<const std::size_t> sym, const VrpVegaFloor &floor, double haircut,
+                double crossing) {
   VrpVegaReport rep;
   rep.name = std::move(name);
   rep.kind = kind;
-  rep.decile = vrp_vega_agg(vrp_vega_book_per_date(ts, score, target, iv), floor, haircut);
+  rep.decile = vrp_vega_agg(vrp_vega_book_per_date(ts, score, target, iv, sym, crossing, true),
+                            floor, haircut);
   rep.iv_neutral = vrp_vega_agg(
-      vrp_vega_iv_neutral_per_date(ts, score, target, iv, iv_fair), floor, haircut);
+      vrp_vega_iv_neutral_per_date(ts, score, target, iv, iv_fair, sym, crossing, true), floor,
+      haircut);
   return rep;
 }
 
@@ -2628,6 +2849,11 @@ struct VrpGateReport {
   std::size_t n_iv_chg_rows_no_exit{0};
   std::size_t n_iv_chg_rows_roll_undefined{0};
   double short_vega_haircut{kVrpDefaultShortVegaHaircut};
+  // ROUND 6: the cost parameterisation and the EIV target this run graded on,
+  // both stamped into the artifact because a cost figure whose crossing
+  // fraction is not published is not a reproducible cost figure.
+  double cost_crossing_fraction{kVrpDefaultCrossingFraction};
+  std::size_t eiv_target_entry_lag{0};
   // The data defect the P&L block has to survive: unadjusted-split rows whose
   // raw carry runs to +16465 vol points. Published, not hidden.
   std::size_t n_ppv_rows_priced{0};
@@ -2658,6 +2884,9 @@ struct VrpGradeRows {
   std::vector<double> iv_chg_raw;
   std::vector<double> iv_chg_roll;
   std::vector<double> iv_atmf;
+  // ROUND 6: the panel symbol index of each row, so a book can be differenced
+  // against the previous formation date and report its own turnover.
+  std::vector<std::size_t> symbol;
 };
 
 // One column to grade. `score` is a non-owning view over storage the caller
@@ -2689,10 +2918,11 @@ inline constexpr std::array<VrpTargetAxis, 5> kVrpTargetAxes{
 
 [[nodiscard]] inline VrpGraded vrp_grade(const VrpGradeRows &rows,
                                          std::span<const VrpGradeColumn> cols,
-                                         double short_vega_haircut =
-                                             kVrpDefaultShortVegaHaircut) {
+                                         double short_vega_haircut = kVrpDefaultShortVegaHaircut,
+                                         double crossing = kVrpDefaultCrossingFraction) {
   VrpGraded out;
   const std::span<const std::int64_t> ts{rows.ts};
+  const std::span<const std::size_t> sym{rows.symbol};
   const VrpPpvSeries ppv = vrp_build_ppv(std::span<const double>{rows.rv_fwd},
                                          std::span<const double>{rows.iv_fair});
   out.n_ppv_rows_priced = ppv.n_priced;
@@ -2701,7 +2931,7 @@ inline constexpr std::array<VrpTargetAxis, 5> kVrpTargetAxes{
   // The vega book is graded on iv_chg_roll -- the holdable axis -- because
   // iv_chg_raw's strongest free predictor is the term-structure roll itself.
   out.vega_floor = vrp_vega_floor(ts, std::span<const double>{rows.iv_chg_roll},
-                                  std::span<const double>{rows.iv_atmf});
+                                  std::span<const double>{rows.iv_atmf}, crossing, true);
   out.scores.reserve(cols.size() * kVrpTargetAxes.size());
   out.pnl.reserve(cols.size());
   out.vega.reserve(cols.size());
@@ -2731,11 +2961,10 @@ inline constexpr std::array<VrpTargetAxis, 5> kVrpTargetAxes{
     out.pnl.push_back(vrp_pnl_report(c.name, c.kind, ts, c.score,
                                      std::span<const double>{ppv.ppv},
                                      std::span<const double>{rows.iv_fair}, out.floor));
-    out.vega.push_back(vrp_vega_report(c.name, c.kind, ts, c.score,
-                                       std::span<const double>{rows.iv_chg_roll},
-                                       std::span<const double>{rows.iv_atmf},
-                                       std::span<const double>{rows.iv_fair}, out.vega_floor,
-                                       short_vega_haircut));
+    out.vega.push_back(vrp_vega_report(
+        c.name, c.kind, ts, c.score, std::span<const double>{rows.iv_chg_roll},
+        std::span<const double>{rows.iv_atmf}, std::span<const double>{rows.iv_fair}, sym,
+        out.vega_floor, short_vega_haircut, crossing));
   }
   return out;
 }
@@ -2978,6 +3207,19 @@ struct VrpTrainConfig {
   // POSITIVE short-vega edge. See kVrpDefaultShortVegaHaircut -- 0.50 is a
   // stated judgement, and 0 reproduces the undiscounted book.
   double short_vega_haircut{kVrpDefaultShortVegaHaircut};
+  // ROUND-6 (--cost-crossing-fraction): the fraction of the derived QUOTED
+  // option spread the book actually crosses. The default returns the measured
+  // Christoffersen effective spread bit-exactly; see the block above
+  // kVrpVegaEffectiveOneWayFracOfPremium for why applying the ORATS 0.53 to
+  // an already-effective number would have been a free 47% cost cut.
+  double cost_crossing_fraction{kVrpDefaultCrossingFraction};
+  // ROUND-6 (--eiv-target-entry-lag): rebuild the iv-change TARGET with its
+  // ENTRY leg read from the row's `n`-th same-symbol predecessor, exit leg
+  // unmoved. 0 is the round-5 target. This is round 5's decisive
+  // errors-in-variables swap made runnable: whichever surface read sits inside
+  // the target is the one that scores, so a predictor whose edge is real must
+  // keep it when the target's entry read moves away from the predictor's.
+  std::size_t eiv_target_entry_lag{0};
 };
 
 struct VrpFoldMetrics {
@@ -3733,6 +3975,18 @@ inline void append_vega_book_meta(std::string &body, const std::string &stem,
   num("short_vega_haircut", a.haircut);
   num("short_leg_multiplier_applied", a.short_multiplier);
   agg("haircut_objective_vol_pts", a.objective);
+  // ROUND 6 IMPLEMENTABILITY. maxDD is a PATH statistic -- it has no per-date
+  // series, so it gets no t-stat and is not given a fabricated one; the floor's
+  // own maxDD is emitted beside it so the number can be read as a comparison
+  // rather than as an absolute.
+  agg("names_per_day", a.names_per_day);
+  agg("turnover_frac_of_gross", a.turnover);
+  num("max_drawdown_vol_pts", a.max_drawdown);
+  num("floor_max_drawdown_vol_pts", a.floor_max_drawdown);
+  num("long_leg_max_drawdown_vol_pts", a.long_max_drawdown);
+  num("short_leg_max_drawdown_vol_pts", a.short_max_drawdown);
+  num("floor_long_everything_max_drawdown_vol_pts", a.floor_long_max_drawdown);
+  num("floor_short_everything_max_drawdown_vol_pts", a.floor_short_max_drawdown);
   body += stem + "n_dates=" + std::to_string(a.net.n) + "\n";
 }
 
@@ -3861,7 +4115,32 @@ inline void append_vega_floor_meta(std::string &body, const std::string &prefix,
   body += "# vega_cost_model=christoffersen_goyenko_jacobs_karoui_rfs_2018_atm_call_effective_"
           "relative_spread_6.41pct_of_premium_halved_one_way_charged_at_entry_and_exit\n";
   body += "# vega_cost_one_way_frac_of_premium=" +
-          fmt_double(kVrpVegaOneWayCostFracOfPremium) + "\n";
+          fmt_double(kVrpVegaOneWayCostFracOfPremium * (gate.cost_crossing_fraction /
+                                                        kVrpVegaCrossingFractionMeasured)) +
+          "\n";
+  // ROUND 6: the crossing fraction, made reachable. The measured input is the
+  // EFFECTIVE spread; the quoted width is DERIVED from it by dividing out
+  // Zhan-Han-Cao-Tong's realized effective/quoted, so a reader can re-cross it
+  // at any fraction without double-counting the discount already inside the
+  // Christoffersen measurement.
+  body += "# vega_cost_crossing_fraction=" + fmt_double(gate.cost_crossing_fraction) + "\n";
+  body += "# vega_cost_crossing_fraction_default=" + fmt_double(kVrpDefaultCrossingFraction) +
+          "\n";
+  body += "# vega_cost_quoted_one_way_frac_of_premium=" +
+          fmt_double(kVrpVegaQuotedOneWayFracOfPremium) + "\n";
+  body += "# vega_cost_effective_one_way_frac_of_premium_measured=" +
+          fmt_double(kVrpVegaEffectiveOneWayFracOfPremium) + "\n";
+  body += "# vega_cost_crossing_provenance=quoted_width_is_derived_by_dividing_the_measured_"
+          "christoffersen_effective_spread_by_zhan_han_cao_tong_rfs_2022_realized_effective_"
+          "over_quoted_0.55_measured_on_actual_opra_prints_2003_2016_so_the_default_returns_"
+          "the_measured_effective_charge_and_the_orats_complex_order_0.53_at_backtest_hpp_863_"
+          "must_never_be_applied_on_top_of_it\n";
+  body += "# vega_cost_scales_with_iv=one_way_vol_points_equals_frac_of_premium_times_100x_iv_"
+          "so_a_flat_vol_point_charge_undercharges_high_vol_names\n";
+  body += "# vega_book_turnover_unit=fraction_of_gross_replaced_between_consecutive_formation_"
+          "dates_1.0_is_a_complete_replacement_and_the_cost_column_charges_one_round_trip_per_"
+          "cohort_not_per_formation_date\n";
+  body += "# eiv_target_entry_lag=" + std::to_string(gate.eiv_target_entry_lag) + "\n";
   body += "# vega_short_haircut=" + fmt_double(gate.short_vega_haircut) + "\n";
   body += "# vega_short_haircut_contract=applied_to_the_short_legs_aggregate_edge_only_when_"
           "that_edge_is_positive_never_to_a_short_vega_loss\n";
@@ -3987,6 +4266,22 @@ inline void append_vega_floor_meta(std::string &body, const std::string &prefix,
                "run_vrp_train: --feature-lag " + std::to_string(cfg.feature_lag) +
                    " exceeds the " + std::to_string(kVrpMaxFeatureLag) + "-session cap");
   }
+  // FAIL CLOSED ON THE COST KNOB. A crossing fraction outside (0, 1] is not a
+  // sensitivity, it is a free lunch or a sign error, and five rounds of this
+  // sprint died on cost. Zero is excluded explicitly: "costs off" is what the
+  // gross column already reports, and it must never be reachable by a knob a
+  // reader would mistake for a calibration.
+  if (!(cfg.cost_crossing_fraction > 0.0) || !(cfg.cost_crossing_fraction <= 1.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_vrp_train: --cost-crossing-fraction must lie in (0, 1]; the published "
+               "measurements bracket 0.38 (patient algo) to 1.00 (full quoted cross)");
+  }
+  if (cfg.eiv_target_entry_lag > kVrpMaxFeatureLag) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_vrp_train: --eiv-target-entry-lag " +
+                   std::to_string(cfg.eiv_target_entry_lag) + " exceeds the " +
+                   std::to_string(kVrpMaxFeatureLag) + "-session cap");
+  }
   auto panel_r = load_vrp_panel(cfg.panel_path);
   if (!panel_r.has_value()) {
     return Err(panel_r.error());
@@ -4007,11 +4302,14 @@ inline void append_vega_floor_meta(std::string &body, const std::string &prefix,
   // ROUND-5: the tradeable iv-change target and its roll leg, both built from
   // TARGET-SIDE columns on the RAW panel for the same reason as above -- the
   // roll a position pays is the ENTRY date's curve, not a lagged read of it.
-  const VrpIvChgTargets iv_chg = vrp_build_iv_chg(report.panel);
+  const VrpIvChgTargets iv_chg =
+      vrp_build_iv_chg(report.panel, kVrpHorizonSessions, cfg.eiv_target_entry_lag);
   report.gate.n_iv_chg_rows = iv_chg.n_rows_with_exit;
   report.gate.n_iv_chg_rows_no_exit = iv_chg.n_rows_no_exit;
   report.gate.n_iv_chg_rows_roll_undefined = iv_chg.n_rows_roll_undefined;
   report.gate.short_vega_haircut = cfg.short_vega_haircut;
+  report.gate.cost_crossing_fraction = cfg.cost_crossing_fraction;
+  report.gate.eiv_target_entry_lag = cfg.eiv_target_entry_lag;
   // ROUND-4 F4: shift the feature vectors before ANYTHING reads them, so the
   // standardization, both models, signal_vov and the HV-IV benchmark all face
   // one information set. Targets are untouched, so the fold plan below is
@@ -4223,6 +4521,7 @@ inline void append_vega_floor_meta(std::string &body, const std::string &prefix,
     std::vector<double> tgt_iv_chg_raw;
     std::vector<double> tgt_iv_chg_roll;
     std::vector<double> row_iv_atmf;
+    std::vector<std::size_t> row_sym;
     std::vector<double> bench_neg_iv_atmf;
     std::vector<double> bench_term_slope;
     std::vector<double> contam_iv_slope;
@@ -4288,11 +4587,24 @@ inline void append_vega_floor_meta(std::string &body, const std::string &prefix,
       tgt_iv_chg_raw.push_back(iv_chg.raw[r]);
       tgt_iv_chg_roll.push_back(iv_chg.roll[r]);
       row_iv_atmf.push_back(row.iv_atmf_21d);
-      // Zero-parameter free rules for the iv-change axes. Both are read from
-      // TARGET-SIDE columns, so --feature-lag does not move them; the EIV
-      // caveat on kVrpScoreContamIvSlope is the reason that matters.
+      row_sym.push_back(report.panel.row_symbol[r]);
+      // Zero-parameter free rules for the iv-change axes.
+      //
+      // ROUND 6 EIV FIX. `bench_term_slope` used to be read off the TARGET-SIDE
+      // row (`row.iv_fair_63d - row.iv_fair_21d`), so --feature-lag did not
+      // move it and its "lag 2" figure still saw the entry session's own
+      // surface read. Round 5 flagged that and did not fix it. It is now read
+      // from `f4_term_slope`, which apply_vrp_feature_lag shifts and which the
+      // panel builds as EXACTLY the same difference -- so the lag-0 ranking,
+      // and therefore every round-5 number, is unchanged, while lag 2 finally
+      // means what it says. A free rule cannot be gated on a lag it never took.
+      //
+      // `bench_neg_iv_atmf` has NO feature-side twin (the panel carries no
+      // lagged iv_atmf_21d), so it remains target-side and its lag-2 figure
+      // remains optimistic. It is reported, and it is not what anything ships
+      // on.
       bench_neg_iv_atmf.push_back(-row.iv_atmf_21d);
-      bench_term_slope.push_back(row.iv_fair_63d - row.iv_fair_21d);
+      bench_term_slope.push_back(row.f[kVrpFeatTermSlope]);
       // Contaminated on the iv-change axes: contains the target's own entry
       // mark, hence its measurement error with the target's own sign.
       contam_iv_slope.push_back(row.iv_fair_63d - row.iv_atmf_21d);
@@ -4353,7 +4665,8 @@ inline void append_vega_floor_meta(std::string &body, const std::string &prefix,
                                                 .iv_fair = row_iv_fair,
                                                 .iv_chg_raw = tgt_iv_chg_raw,
                                                 .iv_chg_roll = tgt_iv_chg_roll,
-                                                .iv_atmf = row_iv_atmf},
+                                                .iv_atmf = row_iv_atmf,
+                                                .symbol = row_sym},
                         .pred_model = pred_recal,
                         .pred_baseline = pred_base,
                         .bench_hv_iv = bench_hv_iv,
@@ -4489,7 +4802,7 @@ inline void append_vega_floor_meta(std::string &body, const std::string &prefix,
       const std::array<VrpGradeColumn, kVrpGateColumnCount> cols =
           columns(fi, fi.pred_model, ranked);
       VrpGraded g = vrp_grade(fi.targets, std::span<const VrpGradeColumn>{cols},
-                              cfg.short_vega_haircut);
+                              cfg.short_vega_haircut, cfg.cost_crossing_fraction);
       report.gate.per_fold.push_back(VrpGateFold{.fold_id = fi.fold_id,
                                                  .scores = std::move(g.scores),
                                                  .pnl = std::move(g.pnl),
@@ -4507,6 +4820,8 @@ inline void append_vega_floor_meta(std::string &body, const std::string &prefix,
       cat(pooled_rows.iv_chg_raw, fi.targets.iv_chg_raw);
       cat(pooled_rows.iv_chg_roll, fi.targets.iv_chg_roll);
       cat(pooled_rows.iv_atmf, fi.targets.iv_atmf);
+      pooled_rows.symbol.insert(pooled_rows.symbol.end(), fi.targets.symbol.begin(),
+                                fi.targets.symbol.end());
       cat(pool_model, fi.pred_model);
       cat(pool_baseline, fi.pred_baseline);
       cat(pool_hv_iv, fi.bench_hv_iv);
@@ -4548,6 +4863,13 @@ inline void append_vega_floor_meta(std::string &body, const std::string &prefix,
       permute(pooled_rows.iv_chg_raw);
       permute(pooled_rows.iv_chg_roll);
       permute(pooled_rows.iv_atmf);
+      {
+        std::vector<std::size_t> tmp(pooled_rows.symbol.size());
+        for (std::size_t i = 0; i < ord.size(); ++i) {
+          tmp[i] = pooled_rows.symbol[ord[i]];
+        }
+        pooled_rows.symbol.swap(tmp);
+      }
       permute(pool_model);
       permute(pool_baseline);
       permute(pool_hv_iv);
@@ -4567,7 +4889,7 @@ inline void append_vega_floor_meta(std::string &body, const std::string &prefix,
     const std::array<VrpGradeColumn, kVrpGateColumnCount> pooled_cols =
         columns(pooled_in, pool_model, pool_ranked);
     VrpGraded pg = vrp_grade(pooled_rows, std::span<const VrpGradeColumn>{pooled_cols},
-                             cfg.short_vega_haircut);
+                             cfg.short_vega_haircut, cfg.cost_crossing_fraction);
     report.gate.pooled = std::move(pg.scores);
     report.gate.pooled_pnl = std::move(pg.pnl);
     report.gate.pooled_vega = std::move(pg.vega);
