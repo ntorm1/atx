@@ -5,6 +5,99 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### Stage 3 conventions RESOLVED — committed floor, speed pin, and an honest residual
+
+**What landed.** `atx-vol/bench/oracle/CONVENTIONS.md`,
+`atx-vol/bench/oracle/scorecards/iter-000.json` (the committed ratchet floor)
+and `atx-vol/bench/oracle/bootstrap/conventions.json` (the capability receipt),
+resolved by the closed staged sweep over aggregate smoke+tune: 277,952 rows
+priced, 0 engine errors, 100% selection coverage on all eleven metrics.
+
+**The map.** `discrete_forward_pv__rate__sdiv_yield` — discount the discrete
+dividend to present value rather than subtracting it from the forward
+undiscounted. Against the prior map this moved price MAE 421.24 -> 376.06 ticks
+and volga 132.20 -> 0.52 relative. Volga was not a tuning gain: the prior map
+had the wrong scale.
+
+**This is a floor, not a result.** Not one greek meets the charter's 1%
+relative target, and price MAE is 376x the 1-tick target. `mode_a_vol_mae = 0`
+is an IDENTITY, not an achievement — Mode A prices AT `srVol`, so the vol it
+reports is the vol it was handed; it becomes a real measurement only under Mode
+B. Theta, rho, phi and delta-decay remain materially wrong under the standard
+relative convention (12.68, 0.85, 1.20, 1.32).
+
+**Accepted regression**, published rather than tolerated: `mode_a_vega_rel`
+0.081233446188804986 -> 0.081468501930500911, +0.29% of baseline, inside the 1%
+bound. One entry, and the validators cross-check the array in both directions.
+
+**Speed pin.** rel-avx2 on a quiet host measured 3469.47 rows/s over 264,026
+rows; the committed pin is 3122 = `floor(baseline * 0.90)`. The pin is DERIVED,
+never copied — a pin equal to baseline makes re-measurement a coin flip on
+run-to-run noise. The sweep's own `diagnostic_speed` (dev preset, 770 rows/s)
+is marked `citable: false` and is not the pin.
+
+
+### BREAKING — `atx-vol-oracle-bench` now satisfies the frozen oracle-loop CLI (lane oracle-bench-cli-contract)
+
+**Why.** Five command strings are frozen contract in
+`.claude/workflows/vol-oracle-iter.js` (`RATCHET_GATE_COMMANDS`,
+`READY_MEASURE_GATES`) and in `scripts/oracle-targeted-gate.ps1` (gate
+`mode_b_smoke_tune`). Every one of them invoked flags the binary did not have,
+so all five died in `parse_bench_args` before touching data. The binary was
+changed to satisfy the strings; not one string was edited.
+
+**What changed.**
+
+- `--cohort` accepts a COMMA-SEPARATED LIST. An element is a cohort NAME when
+  it is a bare token (no `/`, `\`, `:` and no `.json` suffix) and resolves to
+  `<repo>/atx-vol/bench/oracle/cohorts/<name>.json`; anything else is a PATH
+  used verbatim. A list runs as ONE pass over the concatenated rows.
+- `--mode A|B` (default `A`), `--scorecard`, `--aggregate-only`,
+  `--benchmark-speed`, `--preset <name>`, `--quiet-host` are new.
+- `--store` defaults to `C:\atx-cache\oracle\spiderrock` and `--out` defaults
+  to **stdout** — but ONLY under `--aggregate-only`. Both stay required on the
+  legacy scorecard and convention-sweep shapes.
+- `--aggregate-only` is a CONFIDENTIALITY boundary, not a formatting option: it
+  emits run-level aggregates only and suppresses the per-partition stderr
+  evidence, because the downstream analyst stage is deliberately tool-less and
+  must never receive frozen holdout membership.
+- `--quiet-host` refuses to publish a timing number while a competing
+  build/bench process is running. The busy-name registry mirrors `$busyNames`
+  in `scripts/oracle-targeted-gate.ps1` and is pinned by test.
+- `--mode B` PARSES and then fails at RUN time with `NotImplemented`, before
+  any store read. There is deliberately no Mode B stub: a stub returning
+  plausible numbers is strictly worse than an honest refusal, because the loop
+  would ratchet on it.
+
+**Migration.**
+
+- `BenchArgs::cohort_path` (a `std::string`) became `BenchArgs::cohort_paths`
+  (a `std::vector<std::string>`).
+- `parse_bench_args` gained a second, non-defaulted parameter: the cohort
+  manifest directory used to resolve bare names. Pass
+  `discover_cohort_dir(argv[0])` for the real repository, or `{}` to admit
+  filesystem paths only.
+- `run_oracle_bench` returns `Result<BenchRun>` (scorecard + aggregates +
+  `ModeStats` + cohort names) instead of `Result<Scorecard>`.
+- `ModeRunner::run` gained an `AggregateMetrics &` out-parameter. The Mode B
+  seam is otherwise unchanged, and still has no stub.
+- **A bare extensionless `--cohort` value is now a NAME, not a relative path.**
+  `--cohort c` used to load `./c`; it now resolves `<cohorts>/c.json` and fails
+  loudly if that does not exist. No caller in the tree used that shape — every
+  Stage 3 gate passes an absolute `...\smoke.json`, which is unaffected.
+- The pinned OracleBench closure moved from **31 to 49** tests, in both
+  `$script:OracleBenchTestIds` (`scripts/oracle-targeted-gate.ps1`, matched as
+  an exact ID SET) and `ORACLE_BENCH_TEST_COUNT`
+  (`.claude/workflows/vol-oracle-iter.js`). Those two must always move
+  together.
+
+**Not fixed here, and deliberately.** `mode_b_smoke_tune` in
+`scripts/oracle-targeted-gate.ps1` still cannot pass even with a working
+binary: its spec sets `OutputPath = ''` while the non-ctest arm requires an
+output file, and `ConvertFrom-OracleBenchScorecard` throws "has no production
+scorecard adapter yet" for that gate id. That adapter belongs to the Mode B
+lane, which owns the numbers it would validate.
+
 ### NEW — the dispersion book, and the regime split that settles the vol-beta question (round 7, lane vrp-dispersion)
 
 **What was added.** `--index-symbol <sym>` turns on an additive dispersion block

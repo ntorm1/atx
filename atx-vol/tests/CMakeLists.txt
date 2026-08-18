@@ -243,15 +243,19 @@ add_executable(atx-vol-tests
     vrp_model_test.cpp
 )
 
-# Oracle RSI charter stage 2: the three non-driver TUs of atx-vol-oracle-bench
+# Oracle RSI charter stage 2: the non-driver TUs of atx-vol-oracle-bench
 # (headers + implementations under ../tools) compile into the test exe so
 # OracleBench* exercises the shipped implementation, not a copy. tools/ is
 # already a PRIVATE quoted-include root of this target (see
 # target_include_directories below), which is how oracle_bench_test.cpp
 # resolves both the headers and its textual #include of the driver TU.
+# oracle_host_probe.cpp is here for the same reason it is a separate TU at all:
+# --quiet-host needs <windows.h>, which must not reach the textually-included
+# driver beside the Arrow headers.
 target_sources(atx-vol-tests PRIVATE
     ../tools/oracle_convention_sweep.cpp
     ../tools/oracle_conventions.cpp
+    ../tools/oracle_host_probe.cpp
     ../tools/oracle_scorecard.cpp
     ../tools/oracle_cohort_reader.cpp)
 

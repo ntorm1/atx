@@ -38,10 +38,38 @@ $script:OracleBenchTestIds = @(
   'OracleBenchArgs.RejectsMissingRequiredFlag',
   'OracleBenchArgs.RejectsUnknownFlag',
   'OracleBenchArgs.RejectsNonIntegerIter',
+  # The FROZEN oracle-loop command lines, asserted verbatim against
+  # parse_bench_args. RATCHET_GATE_COMMANDS / READY_MEASURE_GATES in
+  # .claude/workflows/vol-oracle-iter.js and mode_b_smoke_tune below are the
+  # definition sites; these cases are what stops a flag rename from killing the
+  # loop at argument parsing three layers from its cause. The two holdout
+  # commands are asserted at PARSE ONLY -- nothing here benchmarks holdout.
+  'OracleBenchArgs.ParsesFrozenMeasureModeACommand',
+  'OracleBenchArgs.ParsesFrozenMeasureModeBCommand',
+  'OracleBenchArgs.ParsesFrozenSpeedCommand',
+  'OracleBenchArgs.ParsesFrozenHoldoutCommandsWithoutRunningThem',
+  'OracleBenchArgs.RejectsUnknownModeValue',
+  'OracleBenchArgs.AggregateOnlyDefaultsStoreAndStdout',
+  'OracleBenchArgs.ScorecardPathStillRequiresStoreAndOut',
+  'OracleBenchArgs.ConventionSweepRejectsTheNewFlags',
+  'OracleBenchArgs.RejectsScorecardTogetherWithBenchmarkSpeed',
+  'OracleBenchCohortSpec.ResolvesNamesAndKeepsPathsVerbatim',
+  'OracleBenchCohortSpec.RejectsUnresolvableNameAndDuplicates',
+  'OracleBenchCohortSpec.FindsTheManifestDirByWalkingUp',
+  'OracleBenchQuietHost.RefusesWhenACompetingProcessIsRunning',
+  'OracleBenchSpeedMetric.IdIsDerivedFromThePreset',
   'OracleBenchReader.OpensOnlyCohortNamedPartitionsAndFiltersUnderlier',
   'OracleBenchReader.CrossesUnderliersAndBuckets',
   'OracleBenchReader.MissingPartitionDirIsNotFound',
-  'OracleBenchE2E.SyntheticCohortProducesCharterScorecard'
+  'OracleBenchE2E.SyntheticCohortProducesCharterScorecard',
+  # --aggregate-only is a CONFIDENTIALITY boundary, not a formatting option:
+  # these three assert that no cell key, band, date, bucket or underlier
+  # reaches the aggregate receipt or stderr, and ModeB asserts the honest
+  # run-time refusal that keeps an unimplemented mode out of the ratchet.
+  'OracleBenchAggregate.PublishesTheElevenTargetsAndNoMembership',
+  'OracleBenchAggregate.WritesToStdoutWhenOutIsAbsent',
+  'OracleBenchAggregate.BenchmarkSpeedPublishesRowsPerSecondOnly',
+  'OracleBenchModeB.FailsAtRunTimeWithADistinctActionableError'
 )
 # Pinned exactly like the OracleBench registry above: the Stage 3 suite is
 # discovered per gtest case, so a vanished or renamed case fails the gate
