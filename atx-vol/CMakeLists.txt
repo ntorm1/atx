@@ -958,6 +958,7 @@ if(ATX_BUILD_TOOLS)
         tools/oracle_bench_main.cpp
         tools/oracle_convention_sweep.cpp
         tools/oracle_conventions.cpp
+        tools/oracle_host_probe.cpp
         tools/oracle_scorecard.cpp
         tools/oracle_cohort_reader.cpp)
     target_link_libraries(atx-vol-oracle-bench PRIVATE atx::vol atx::core atx_warnings)

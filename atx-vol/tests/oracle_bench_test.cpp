@@ -502,14 +502,22 @@ TEST(OracleBenchCohort, RejectsMalformedJson) {
 }
 
 // ── Bench args ──────────────────────────────────────────────────────────
+//
+// Every --cohort value below is a PATH (it carries the ".json" suffix or a
+// separator), which is the shape the Stage 3 gates pass. Bare NAMES are the
+// new list form and are covered by OracleBenchCohortSpec with an injected
+// manifest directory — parse_bench_args never probes the real repository.
+
+// No manifest directory: only filesystem paths are admissible.
+const fs::path kNoCohortDir{};
 
 TEST(OracleBenchArgs, ParsesAllFlags) {
   const std::vector<std::string> argv{"--cohort", "c.json", "--store", "s",
                                       "--out",    "o.json", "--iter",  "3",
                                       "--git-sha", "abc123"};
-  const auto args = parse_bench_args(argv);
+  const auto args = parse_bench_args(argv, kNoCohortDir);
   ASSERT_TRUE(args.has_value()) << args.error().to_string();
-  EXPECT_EQ(args->cohort_path, "c.json");
+  EXPECT_EQ(args->cohort_paths, std::vector<std::string>{"c.json"});
   EXPECT_EQ(args->store_root, "s");
   EXPECT_EQ(args->out_path, "o.json");
   EXPECT_EQ(args->iter, 3);
@@ -517,27 +525,255 @@ TEST(OracleBenchArgs, ParsesAllFlags) {
 }
 
 TEST(OracleBenchArgs, DefaultsIterZeroShaUnknown) {
-  const std::vector<std::string> argv{"--cohort", "c", "--store", "s", "--out", "o"};
-  const auto args = parse_bench_args(argv);
-  ASSERT_TRUE(args.has_value());
+  const std::vector<std::string> argv{"--cohort", "c.json", "--store", "s", "--out", "o"};
+  const auto args = parse_bench_args(argv, kNoCohortDir);
+  ASSERT_TRUE(args.has_value()) << args.error().to_string();
   EXPECT_EQ(args->iter, 0);
   EXPECT_EQ(args->git_sha, "unknown");
+  EXPECT_EQ(args->mode, BenchMode::A); // --mode absent defaults to A
+  EXPECT_FALSE(args->aggregate_only);
 }
 
 TEST(OracleBenchArgs, RejectsMissingRequiredFlag) {
-  const std::vector<std::string> argv{"--cohort", "c", "--store", "s"};
-  ASSERT_FALSE(parse_bench_args(argv).has_value());
+  const std::vector<std::string> argv{"--cohort", "c.json", "--store", "s"};
+  ASSERT_FALSE(parse_bench_args(argv, kNoCohortDir).has_value());
 }
 
 TEST(OracleBenchArgs, RejectsUnknownFlag) {
-  const std::vector<std::string> argv{"--cohort", "c", "--store", "s", "--out", "o", "--nope", "x"};
-  ASSERT_FALSE(parse_bench_args(argv).has_value());
+  const std::vector<std::string> argv{"--cohort", "c.json", "--store", "s",
+                                      "--out",    "o",      "--nope",  "x"};
+  ASSERT_FALSE(parse_bench_args(argv, kNoCohortDir).has_value());
 }
 
 TEST(OracleBenchArgs, RejectsNonIntegerIter) {
-  const std::vector<std::string> argv{"--cohort", "c", "--store", "s", "--out", "o",
+  const std::vector<std::string> argv{"--cohort", "c.json", "--store", "s", "--out", "o",
                                       "--iter",   "7q"};
-  ASSERT_FALSE(parse_bench_args(argv).has_value());
+  ASSERT_FALSE(parse_bench_args(argv, kNoCohortDir).has_value());
+}
+
+// ── The FROZEN oracle-loop command lines ────────────────────────────────
+//
+// These five strings are contract: RATCHET_GATE_COMMANDS and
+// READY_MEASURE_GATES in .claude/workflows/vol-oracle-iter.js, plus the
+// mode_b_smoke_tune gate in scripts/oracle-targeted-gate.ps1. They are
+// asserted here VERBATIM because a parse regression on any of them kills the
+// loop at argument parsing, three layers from the cause.
+//
+// The two `--cohort holdout` lines are asserted at PARSE only, and this is the
+// only place holdout appears in the suite: benchmarking frozen holdout data
+// outside a ratchet gate is exactly what the charter forbids.
+
+// A manifest directory carrying the three real cohort names, so name
+// resolution is exercised without reading the repository's own manifests.
+// Resolution only tests for the file's existence, so the contents are inert.
+[[nodiscard]] fs::path make_cohort_dir(const char *slug) {
+  const fs::path dir = fresh_dir(slug);
+  for (const std::string_view name : {"smoke", "tune", "holdout"}) {
+    write_file(dir / (std::string{name} + ".json"), "{}");
+  }
+  return dir;
+}
+
+// Splits a frozen command STRING on spaces and drops argv[0], so the tests
+// below can quote the workflow's own text instead of a hand-transcribed vector
+// (transcription is exactly how a frozen string stops being frozen).
+[[nodiscard]] std::vector<std::string> split_argv(std::string_view command) {
+  std::vector<std::string> argv;
+  std::size_t begin = 0;
+  while (begin < command.size()) {
+    const std::size_t space = command.find(' ', begin);
+    const std::size_t end = space == std::string_view::npos ? command.size() : space;
+    if (end > begin) {
+      argv.emplace_back(command.substr(begin, end - begin));
+    }
+    begin = end + 1;
+  }
+  if (!argv.empty()) {
+    argv.erase(argv.begin());
+  }
+  return argv;
+}
+
+TEST(OracleBenchArgs, ParsesFrozenMeasureModeACommand) {
+  const fs::path dir = make_cohort_dir("frozen-a");
+  const auto args = parse_bench_args(
+      split_argv("atx-vol-oracle-bench --cohort smoke,tune --mode A --scorecard --aggregate-only"),
+      dir);
+  ASSERT_TRUE(args.has_value()) << args.error().to_string();
+  EXPECT_EQ(args->cohort_paths, (std::vector<std::string>{(dir / "smoke.json").string(),
+                                                          (dir / "tune.json").string()}));
+  EXPECT_EQ(args->mode, BenchMode::A);
+  EXPECT_TRUE(args->scorecard);
+  EXPECT_TRUE(args->aggregate_only);
+  // --store/--out are absent: the store defaults to the licensed root and the
+  // aggregate goes to stdout.
+  EXPECT_EQ(args->store_root, std::string{kDefaultStoreRoot});
+  EXPECT_TRUE(args->out_path.empty());
+}
+
+TEST(OracleBenchArgs, ParsesFrozenMeasureModeBCommand) {
+  const fs::path dir = make_cohort_dir("frozen-b");
+  const auto args = parse_bench_args(
+      split_argv("atx-vol-oracle-bench --cohort smoke,tune --mode B --scorecard --aggregate-only"),
+      dir);
+  ASSERT_TRUE(args.has_value()) << args.error().to_string();
+  EXPECT_EQ(args->mode, BenchMode::B);
+  EXPECT_TRUE(args->aggregate_only);
+}
+
+TEST(OracleBenchArgs, ParsesFrozenSpeedCommand) {
+  const fs::path dir = make_cohort_dir("frozen-speed");
+  const auto args = parse_bench_args(
+      split_argv("atx-vol-oracle-bench --cohort tune --benchmark-speed --preset rel-avx2 "
+                 "--quiet-host --aggregate-only"),
+      dir);
+  ASSERT_TRUE(args.has_value()) << args.error().to_string();
+  EXPECT_EQ(args->cohort_paths, std::vector<std::string>{(dir / "tune.json").string()});
+  EXPECT_TRUE(args->benchmark_speed);
+  EXPECT_TRUE(args->quiet_host);
+  EXPECT_EQ(args->preset, "rel-avx2");
+  EXPECT_TRUE(args->aggregate_only);
+  // The gate layers name this metric; it is DERIVED from --preset.
+  EXPECT_EQ(speed_metric_id(args->preset), "rel_avx2_rows_per_second");
+}
+
+TEST(OracleBenchArgs, ParsesFrozenHoldoutCommandsWithoutRunningThem) {
+  const fs::path dir = make_cohort_dir("frozen-holdout");
+  for (const std::string_view command :
+       {std::string_view{"atx-vol-oracle-bench --cohort holdout --mode A --aggregate-only"},
+        std::string_view{"atx-vol-oracle-bench --cohort holdout --mode B --aggregate-only"}}) {
+    const auto args = parse_bench_args(split_argv(command), dir);
+    ASSERT_TRUE(args.has_value()) << command << ": " << args.error().to_string();
+    EXPECT_EQ(args->cohort_paths, std::vector<std::string>{(dir / "holdout.json").string()});
+    EXPECT_TRUE(args->aggregate_only);
+    EXPECT_FALSE(args->scorecard);
+  }
+}
+
+// ── New flag semantics ──────────────────────────────────────────────────
+
+TEST(OracleBenchArgs, RejectsUnknownModeValue) {
+  const auto args = parse_bench_args(
+      split_argv("x --cohort c.json --mode C --aggregate-only"), kNoCohortDir);
+  ASSERT_FALSE(args.has_value());
+  EXPECT_EQ(args.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(args.error().to_string().find("--mode"), std::string::npos)
+      << args.error().to_string();
+}
+
+TEST(OracleBenchArgs, AggregateOnlyDefaultsStoreAndStdout) {
+  const auto args =
+      parse_bench_args(split_argv("x --cohort c.json --aggregate-only"), kNoCohortDir);
+  ASSERT_TRUE(args.has_value()) << args.error().to_string();
+  EXPECT_EQ(args->store_root, std::string{kDefaultStoreRoot});
+  EXPECT_TRUE(args->out_path.empty());
+}
+
+TEST(OracleBenchArgs, ScorecardPathStillRequiresStoreAndOut) {
+  // Without --aggregate-only the LEGACY shape is unchanged: both are required.
+  EXPECT_FALSE(
+      parse_bench_args(split_argv("x --cohort c.json --scorecard"), kNoCohortDir).has_value());
+  EXPECT_FALSE(parse_bench_args(split_argv("x --cohort c.json --scorecard --store s"), kNoCohortDir)
+                   .has_value());
+  EXPECT_TRUE(parse_bench_args(split_argv("x --cohort c.json --scorecard --store s --out o.json"),
+                               kNoCohortDir)
+                  .has_value());
+}
+
+TEST(OracleBenchArgs, ConventionSweepRejectsTheNewFlags) {
+  const std::string base = "x --convention-sweep --smoke s.json --tune t.json --store s --out o";
+  ASSERT_TRUE(parse_bench_args(split_argv(base), kNoCohortDir).has_value());
+  for (const std::string_view added :
+       {" --mode B", " --scorecard", " --aggregate-only", " --benchmark-speed", " --quiet-host",
+        " --preset rel-avx2"}) {
+    EXPECT_FALSE(parse_bench_args(split_argv(base + std::string{added}), kNoCohortDir).has_value())
+        << added;
+  }
+}
+
+TEST(OracleBenchArgs, RejectsScorecardTogetherWithBenchmarkSpeed) {
+  ASSERT_FALSE(parse_bench_args(
+                   split_argv("x --cohort c.json --scorecard --benchmark-speed --aggregate-only"),
+                   kNoCohortDir)
+                   .has_value());
+}
+
+TEST(OracleBenchCohortSpec, ResolvesNamesAndKeepsPathsVerbatim) {
+  const fs::path dir = make_cohort_dir("spec");
+  const auto named =
+      parse_bench_args(split_argv("x --cohort smoke --aggregate-only"), dir);
+  ASSERT_TRUE(named.has_value()) << named.error().to_string();
+  EXPECT_EQ(named->cohort_paths, std::vector<std::string>{(dir / "smoke.json").string()});
+
+  // An absolute path (what the Stage 3 gates pass) is used byte-for-byte, and
+  // is NOT looked up in the manifest directory.
+  const std::string absolute = (fs::path{"C:/somewhere/else"} / "smoke.json").string();
+  const std::vector<std::string> argv{"--cohort", absolute, "--store", "s", "--out", "o.json"};
+  const auto by_path = parse_bench_args(argv, dir);
+  ASSERT_TRUE(by_path.has_value()) << by_path.error().to_string();
+  EXPECT_EQ(by_path->cohort_paths, std::vector<std::string>{absolute});
+}
+
+TEST(OracleBenchCohortSpec, RejectsUnresolvableNameAndDuplicates) {
+  const fs::path dir = make_cohort_dir("spec-neg");
+  const auto missing =
+      parse_bench_args(split_argv("x --cohort smoke,nosuch --aggregate-only"), dir);
+  ASSERT_FALSE(missing.has_value());
+  EXPECT_EQ(missing.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(missing.error().to_string().find("nosuch"), std::string::npos)
+      << missing.error().to_string();
+
+  // A cohort counted twice would double its weight in every aggregate.
+  EXPECT_FALSE(
+      parse_bench_args(split_argv("x --cohort smoke,smoke --aggregate-only"), dir).has_value());
+  // Empty list element.
+  EXPECT_FALSE(
+      parse_bench_args(split_argv("x --cohort smoke, --aggregate-only"), dir).has_value());
+  // A bare name with NO manifest directory says so instead of silently
+  // treating it as a relative path.
+  EXPECT_FALSE(
+      parse_bench_args(split_argv("x --cohort smoke --aggregate-only"), kNoCohortDir).has_value());
+}
+
+TEST(OracleBenchCohortSpec, FindsTheManifestDirByWalkingUp) {
+  const fs::path root = fresh_dir("repo-walk");
+  const fs::path cohorts = root / "atx-vol" / "bench" / "oracle" / "cohorts";
+  fs::create_directories(cohorts);
+  const fs::path deep = root / "build-rel-avx2" / "bin";
+  fs::create_directories(deep);
+  EXPECT_EQ(find_cohort_dir(deep).lexically_normal(), cohorts.lexically_normal());
+  EXPECT_EQ(find_cohort_dir(root).lexically_normal(), cohorts.lexically_normal());
+  // A tree with no manifest directory yields an empty path, never a guess.
+  EXPECT_TRUE(find_cohort_dir(fresh_dir("repo-walk-none")).empty());
+}
+
+TEST(OracleBenchQuietHost, RefusesWhenACompetingProcessIsRunning) {
+  EXPECT_TRUE(require_quiet_host({}).has_value());
+  const std::vector<std::string> busy{"ninja", "clang-cl"};
+  const auto refused = require_quiet_host(busy);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().code(), ErrorCode::InvalidArgument);
+  const std::string text = refused.error().to_string();
+  EXPECT_NE(text.find("ninja"), std::string::npos) << text;
+  EXPECT_NE(text.find("clang-cl"), std::string::npos) << text;
+  // The registry MIRRORS $busyNames in scripts/oracle-targeted-gate.ps1; a
+  // divergence means the in-binary check and the gate disagree about "quiet".
+  const std::span<const std::string_view> names = quiet_host_busy_names();
+  const std::set<std::string_view> actual(names.begin(), names.end());
+  const std::set<std::string_view> expected{"clang-cl", "cl",      "link",
+                                            "lld-link", "ninja",   "msbuild",
+                                            "atx-vol-oracle-bench"};
+  EXPECT_EQ(actual, expected);
+  // The bench excludes ITSELF: this process is atx-vol-oracle-bench's TU under
+  // test, and a probe that reported the caller could never pass.
+  const auto probed = running_busy_processes();
+  ASSERT_TRUE(probed.has_value()) << probed.error().to_string();
+}
+
+TEST(OracleBenchSpeedMetric, IdIsDerivedFromThePreset) {
+  EXPECT_EQ(speed_metric_id("rel-avx2"), "rel_avx2_rows_per_second");
+  EXPECT_EQ(speed_metric_id("rel"), "rel_rows_per_second");
+  EXPECT_EQ(speed_metric_id(""), "rows_per_second");
 }
 
 // ── Cohort reader over a synthetic store ────────────────────────────────
@@ -719,16 +955,17 @@ TEST(OracleBenchE2E, SyntheticCohortProducesCharterScorecard) {
   })"));
 
   BenchArgs args;
-  args.cohort_path = cohort_path.string();
+  args.cohort_paths = {cohort_path.string()};
   args.store_root = root.string();
   args.out_path = out_path.string();
   args.git_sha = "deadbeef";
   args.iter = 7;
 
   ::testing::internal::CaptureStderr();
-  const auto card = run_oracle_bench(args);
+  const auto run = run_oracle_bench(args);
   const std::string err_text = ::testing::internal::GetCapturedStderr();
-  ASSERT_TRUE(card.has_value()) << card.error().to_string();
+  ASSERT_TRUE(run.has_value()) << run.error().to_string();
+  const Scorecard *const card = &run->card;
 
   // rows/s reported on stderr, plus the opened-partition evidence lines.
   EXPECT_NE(err_text.find("rows/s"), std::string::npos) << err_text;
@@ -771,6 +1008,155 @@ TEST(OracleBenchE2E, SyntheticCohortProducesCharterScorecard) {
   EXPECT_NE(json.find("\"rows_per_second\""), std::string::npos);
   EXPECT_NE(json.find("\"tolerances\""), std::string::npos);
   EXPECT_NE(json.find("\"a.price.deep-itm.0-7.c\""), std::string::npos);
+}
+
+// ── --aggregate-only, the confidentiality boundary ──────────────────────
+
+// Two named cohorts over one synthetic store: enough to exercise the --cohort
+// list, the aggregate metric set, and the leak assertions below. Returns the
+// store root; writes <root>/<name>.json manifests beside it.
+[[nodiscard]] fs::path build_aggregate_store(const char *tag) {
+  const fs::path root = fresh_dir(tag);
+  std::vector<FixtureRow> rows;
+  for (const Side side : {Side::Call, Side::Put}) {
+    for (const double strike : {90.0, 100.0, 110.0}) {
+      FixtureRow r;
+      r.cp = (side == Side::Call) ? "Call" : "Put";
+      r.strike = strike;
+      if (!fill_oracle_outputs(r)) {
+        return {};
+      }
+      rows.push_back(r);
+    }
+  }
+  write_fixture_partition(root / "date=2026-08-14" / "bucket_et=1000", rows);
+  write_fixture_partition(root / "date=2026-08-14" / "bucket_et=1330", rows);
+  write_file(root / "alpha.json", R"({"name": "alpha", "dates": ["2026-08-14"],
+    "underliers": ["AAA"], "buckets_et": ["1000"], "notes": "synthetic"})");
+  write_file(root / "beta.json", R"({"name": "beta", "dates": ["2026-08-14"],
+    "underliers": ["AAA"], "buckets_et": ["1330"], "notes": "synthetic"})");
+  return root;
+}
+
+TEST(OracleBenchAggregate, PublishesTheElevenTargetsAndNoMembership) {
+  const fs::path root = build_aggregate_store("agg");
+  ASSERT_FALSE(root.empty());
+  ASSERT_FALSE(::testing::Test::HasFatalFailure());
+  const fs::path out_path = root / "aggregate.json";
+
+  BenchArgs args;
+  args.cohort_paths = {(root / "alpha.json").string(), (root / "beta.json").string()};
+  args.store_root = root.string();
+  args.out_path = out_path.string();
+  args.aggregate_only = true;
+  args.scorecard = true;
+  args.git_sha = "deadbeef";
+
+  ::testing::internal::CaptureStderr();
+  const auto run = run_oracle_bench(args);
+  const std::string err_text = ::testing::internal::GetCapturedStderr();
+  ASSERT_TRUE(run.has_value()) << run.error().to_string();
+  // Both cohorts' rows are ONE population.
+  EXPECT_EQ(run->stats.rows_priced, 12);
+  EXPECT_EQ(run->cohort_names, (std::vector<std::string>{"alpha", "beta"}));
+
+  // MEMBERSHIP NEVER LEAVES: no partition line on stderr under --aggregate-only.
+  EXPECT_EQ(err_text.find("bucket_et="), std::string::npos) << err_text;
+  EXPECT_EQ(err_text.find("date="), std::string::npos) << err_text;
+  EXPECT_EQ(err_text.find("partition"), std::string::npos) << err_text;
+
+  const std::string json = read_file(out_path);
+  ASSERT_FALSE(json.empty());
+  EXPECT_NE(json.find("\"kind\": \"oracle_aggregate\""), std::string::npos) << json;
+  EXPECT_NE(json.find("\"mode\": \"A\""), std::string::npos) << json;
+  EXPECT_NE(json.find("\"cohorts\": [\"alpha\", \"beta\"]"), std::string::npos) << json;
+  for (const std::string_view metric_id :
+       {"mode_a_price_mae", "mode_a_vol_mae", "mode_a_delta_rel", "mode_a_gamma_rel",
+        "mode_a_theta_rel", "mode_a_vega_rel", "mode_a_rho_rel", "mode_a_phi_rel",
+        "mode_a_volga_rel", "mode_a_vanna_rel", "mode_a_delta_decay_rel"}) {
+    EXPECT_NE(json.find(std::string{"\"metric_id\": \""} + std::string{metric_id} + "\""),
+              std::string::npos)
+        << metric_id << " missing from " << json;
+  }
+  EXPECT_NE(json.find("\"unit\": \"ticks\""), std::string::npos) << json;
+  EXPECT_NE(json.find("\"unit\": \"bp\""), std::string::npos) << json;
+  EXPECT_NE(json.find("\"unit\": \"relative\""), std::string::npos) << json;
+
+  // NOTHING row-addressable: no cell key, no band token, no date, no bucket, no
+  // underlier, no per-cell stats. This is the assertion the analyst stage's
+  // tool-less confidentiality rests on.
+  for (const std::string_view leak :
+       {"a.price", "deep-itm", "0-7", "date=", "bucket_et=", "AAA", "cells", "within_tol_rate",
+        "partitions"}) {
+    EXPECT_EQ(json.find(leak), std::string::npos) << leak << " leaked into " << json;
+  }
+}
+
+TEST(OracleBenchAggregate, WritesToStdoutWhenOutIsAbsent) {
+  const fs::path root = build_aggregate_store("agg-stdout");
+  ASSERT_FALSE(root.empty());
+  ASSERT_FALSE(::testing::Test::HasFatalFailure());
+
+  BenchArgs args;
+  args.cohort_paths = {(root / "alpha.json").string()};
+  args.store_root = root.string();
+  args.aggregate_only = true;
+
+  ::testing::internal::CaptureStdout();
+  const auto run = run_oracle_bench(args);
+  const std::string out_text = ::testing::internal::GetCapturedStdout();
+  ASSERT_TRUE(run.has_value()) << run.error().to_string();
+  EXPECT_NE(out_text.find("\"kind\": \"oracle_aggregate\""), std::string::npos) << out_text;
+  EXPECT_NE(out_text.find("\"cohorts\": [\"alpha\"]"), std::string::npos) << out_text;
+}
+
+TEST(OracleBenchAggregate, BenchmarkSpeedPublishesRowsPerSecondOnly) {
+  const fs::path root = build_aggregate_store("agg-speed");
+  ASSERT_FALSE(root.empty());
+  ASSERT_FALSE(::testing::Test::HasFatalFailure());
+  const fs::path out_path = root / "speed.json";
+
+  BenchArgs args;
+  args.cohort_paths = {(root / "beta.json").string()};
+  args.store_root = root.string();
+  args.out_path = out_path.string();
+  args.aggregate_only = true;
+  args.benchmark_speed = true;
+  args.preset = "rel-avx2";
+
+  const auto run = run_oracle_bench(args);
+  ASSERT_TRUE(run.has_value()) << run.error().to_string();
+  const std::string json = read_file(out_path);
+  ASSERT_FALSE(json.empty());
+  // The SAME metric name and units the existing convention_speed gates read off
+  // the scorecard (modes.a.rows_per_second), so the two are comparable.
+  EXPECT_NE(json.find("\"metric_id\": \"rel_avx2_rows_per_second\""), std::string::npos) << json;
+  EXPECT_NE(json.find("\"unit\": \"rows_per_second\""), std::string::npos) << json;
+  EXPECT_NE(json.find("\"preset\": \"rel-avx2\""), std::string::npos) << json;
+  // Speed publishes ONLY speed: no accuracy target rides along.
+  EXPECT_EQ(json.find("mode_a_price_mae"), std::string::npos) << json;
+}
+
+TEST(OracleBenchModeB, FailsAtRunTimeWithADistinctActionableError) {
+  BenchArgs args;
+  // A store path that does not exist: proves the refusal happens BEFORE any
+  // read, so --mode B over holdout can never touch frozen data.
+  args.cohort_paths = {"no-such-cohort.json"};
+  args.store_root = "C:/no-such-store-root";
+  args.aggregate_only = true;
+  args.mode = BenchMode::B;
+
+  const auto run = run_oracle_bench(args);
+  ASSERT_FALSE(run.has_value());
+  EXPECT_EQ(run.error().code(), ErrorCode::NotImplemented);
+  const std::string text = run.error().to_string();
+  EXPECT_NE(text.find("--mode B"), std::string::npos) << text;
+  // DISTINCT from a parse failure: the loop must be able to tell "the flag is
+  // wrong" from "the mode is not built yet".
+  EXPECT_EQ(text.find("unknown or valueless flag"), std::string::npos) << text;
+  EXPECT_EQ(text.find("expected A or B"), std::string::npos) << text;
+  // And it is emphatically not a number.
+  EXPECT_EQ(text.find("rows_per_second"), std::string::npos) << text;
 }
 
 } // namespace

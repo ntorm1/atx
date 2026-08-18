@@ -74,7 +74,13 @@ const BOOTSTRAP_GATE_COMMANDS = Object.freeze({
   mode_b_smoke_tune: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_b_smoke_tune',
 })
 const TARGETED_BOOTSTRAP_GATE_IDS = Object.freeze(['mode_a_targeted_tests', 'mode_a_smoke', 'convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'convention_speed_measure', 'convention_speed', 'mode_b_targeted_tests', 'mode_b_smoke_tune'])
-const ORACLE_BENCH_TEST_COUNT = 31
+// Pinned closure of the OracleBench gate suite. Moved 31 -> 49 by the CLI
+// contract lane: the frozen command lines above are now asserted verbatim
+// against parse_bench_args, and --aggregate-only's confidentiality boundary is
+// asserted rather than merely documented. Mirror of $script:OracleBenchTestIds
+// in scripts/oracle-targeted-gate.ps1 — the gate matches the ID SET, this
+// matches the count, and both must move together.
+const ORACLE_BENCH_TEST_COUNT = 49
 const ORACLE_CONVENTION_TEST_COUNT = 18
 // The BOUNDED no-regression rule, as a multiplier on the baseline value. Stated
 // as the multiplier and not as `1 + fraction` because five layers in three
