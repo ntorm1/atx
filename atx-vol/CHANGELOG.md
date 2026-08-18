@@ -5,6 +5,38 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### Stage 3 conventions RESOLVED — committed floor, speed pin, and an honest residual
+
+**What landed.** `atx-vol/bench/oracle/CONVENTIONS.md`,
+`atx-vol/bench/oracle/scorecards/iter-000.json` (the committed ratchet floor)
+and `atx-vol/bench/oracle/bootstrap/conventions.json` (the capability receipt),
+resolved by the closed staged sweep over aggregate smoke+tune: 277,952 rows
+priced, 0 engine errors, 100% selection coverage on all eleven metrics.
+
+**The map.** `discrete_forward_pv__rate__sdiv_yield` — discount the discrete
+dividend to present value rather than subtracting it from the forward
+undiscounted. Against the prior map this moved price MAE 421.24 -> 376.06 ticks
+and volga 132.20 -> 0.52 relative. Volga was not a tuning gain: the prior map
+had the wrong scale.
+
+**This is a floor, not a result.** Not one greek meets the charter's 1%
+relative target, and price MAE is 376x the 1-tick target. `mode_a_vol_mae = 0`
+is an IDENTITY, not an achievement — Mode A prices AT `srVol`, so the vol it
+reports is the vol it was handed; it becomes a real measurement only under Mode
+B. Theta, rho, phi and delta-decay remain materially wrong under the standard
+relative convention (12.68, 0.85, 1.20, 1.32).
+
+**Accepted regression**, published rather than tolerated: `mode_a_vega_rel`
+0.081233446188804986 -> 0.081468501930500911, +0.29% of baseline, inside the 1%
+bound. One entry, and the validators cross-check the array in both directions.
+
+**Speed pin.** rel-avx2 on a quiet host measured 3469.47 rows/s over 264,026
+rows; the committed pin is 3122 = `floor(baseline * 0.90)`. The pin is DERIVED,
+never copied — a pin equal to baseline makes re-measurement a coin flip on
+run-to-run noise. The sweep's own `diagnostic_speed` (dev preset, 770 rows/s)
+is marked `citable: false` and is not the pin.
+
+
 ### BREAKING — `atx-vol-oracle-bench` now satisfies the frozen oracle-loop CLI (lane oracle-bench-cli-contract)
 
 **Why.** Five command strings are frozen contract in
