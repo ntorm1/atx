@@ -18,12 +18,14 @@
 // a legal, uncontaminated predictor and has to come back silent.
 
 #include <algorithm>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "atx/vol/alpha/audit.hpp"
+#include "atx/vol/alpha/frame.hpp"
 #include "atx/vol/alpha/registry.hpp"
 #include "atx/vol/alpha/schema.hpp"
 #include "atx/vol/alpha/spec.hpp"
@@ -37,6 +39,7 @@ using atx::vol::alpha::builtin_targets;
 using atx::vol::alpha::FeatureRegistry;
 using atx::vol::alpha::FeatureSpec;
 using atx::vol::alpha::FindingKind;
+using atx::vol::alpha::PanelFrame;
 using atx::vol::alpha::glob_match;
 using atx::vol::alpha::PanelSchema;
 using atx::vol::alpha::Severity;
@@ -519,6 +522,105 @@ TEST(AlphaAudit, TheChannelCensusIsTheNumberTheGateShouldPrint) {
       "f9_vov_63d",     "f13_term_curv",  "f17_slope_126d", "f18_slope_189d",
       "f19_slope_252d"};
   EXPECT_EQ(subjects, expected);
+}
+
+
+// ── PanelFrame ──────────────────────────────────────────────────────────────
+
+namespace {
+PanelFrame load(const std::string &text) {
+  std::istringstream in(text);
+  auto got = PanelFrame::read_tsv(in);
+  EXPECT_TRUE(got) << (got ? "" : got.error().to_string());
+  return got ? std::move(*got) : PanelFrame{};
+}
+} // namespace
+
+TEST(AlphaFrame, InfersNumericAndTextColumns) {
+  const PanelFrame f = load("symbol\tdate\tf3_iv_level\n"
+                            "AAPL\t2026-01-02\t-1.5\n"
+                            "MSFT\t2026-01-02\t-1.25\n");
+  EXPECT_EQ(f.rows(), 2U);
+  EXPECT_EQ(f.cols(), 3U);
+  const auto syms = f.strings("symbol");
+  ASSERT_TRUE(syms);
+  EXPECT_EQ((*syms)[0], "AAPL");
+  const auto vals = f.numbers("f3_iv_level");
+  ASSERT_TRUE(vals);
+  EXPECT_DOUBLE_EQ((*vals)[1], -1.25);
+  // Asking for the wrong kind is an error, not a silent empty span.
+  EXPECT_FALSE(f.numbers("symbol"));
+  EXPECT_FALSE(f.strings("f3_iv_level"));
+}
+
+TEST(AlphaFrame, NanIsNumericAndCountedSeparately) {
+  // The panel writes the canonical spelling "nan" for a warmup row and for an
+  // unavailable strip. It must stay in the numeric column, not demote it.
+  const PanelFrame f = load("date\tf9_vov_63d\n"
+                            "2026-01-02\tnan\n"
+                            "2026-01-05\t0.045\n"
+                            "2026-01-06\tnan\n");
+  const auto st = f.column_stats("f9_vov_63d");
+  ASSERT_TRUE(st);
+  EXPECT_TRUE((*st)->numeric);
+  EXPECT_EQ((*st)->n_finite, 1U);
+  EXPECT_EQ((*st)->n_nan, 2U);
+  EXPECT_NEAR((*st)->finite_fraction(), 1.0 / 3.0, 1e-12);
+}
+
+TEST(AlphaFrame, RetainsMetaLinesAndStillFindsTheHeader) {
+  const PanelFrame f = load("# schema=vrp_panel_v2\n"
+                            "# horizon_days=21\n"
+                            "symbol\tlabel\n"
+                            "AAPL\t0.01\n");
+  ASSERT_EQ(f.meta().size(), 2U);
+  EXPECT_EQ(f.meta()[0], "# schema=vrp_panel_v2");
+  EXPECT_EQ(f.rows(), 1U);
+  EXPECT_TRUE(f.schema().has("label"));
+}
+
+TEST(AlphaFrame, AShortRowIsAnErrorNotAPad) {
+  // A row that disagrees with the header means writer and reader disagree
+  // about the schema. Padding it with NaN is how that survives to a fit.
+  std::istringstream in("a\tb\tc\n1\t2\n");
+  const auto got = PanelFrame::read_tsv(in);
+  ASSERT_FALSE(got);
+  EXPECT_EQ(got.error().code(), atx::core::ErrorCode::ParseError);
+}
+
+TEST(AlphaFrame, ALongRowIsAlsoAnError) {
+  std::istringstream in("a\tb\n1\t2\t3\n");
+  const auto got = PanelFrame::read_tsv(in);
+  ASSERT_FALSE(got);
+  EXPECT_EQ(got.error().code(), atx::core::ErrorCode::ParseError);
+}
+
+TEST(AlphaFrame, FlagsAllMissingAndConstantColumns) {
+  const PanelFrame f = load("date\tdead\tflat\tlive\n"
+                            "2026-01-02\tnan\t1\t0.5\n"
+                            "2026-01-05\tnan\t1\t0.7\n");
+  const std::vector<std::string> unusable = f.unusable_columns();
+  ASSERT_EQ(unusable.size(), 2U);
+  EXPECT_EQ(unusable[0], "dead");
+  EXPECT_EQ(unusable[1], "flat");
+  const auto live = f.column_stats("live");
+  ASSERT_TRUE(live);
+  EXPECT_FALSE((*live)->all_missing());
+  EXPECT_FALSE((*live)->constant());
+}
+
+TEST(AlphaFrame, ANewColumnDoesNotDisturbAnOlderReader) {
+  // The end-to-end statement of the whole layer: a panel that gained twelve
+  // columns is still read by code that only knows four, with no version
+  // branch, no recompile, and no column-count constant.
+  const PanelFrame wide = load(
+      "symbol\tdate\tlabel\tf4_term_slope\tf16_iv_vov_21d\tliq_hspread_frac\n"
+      "AAPL\t2026-01-02\t0.01\t-0.02\t0.11\t0.004\n");
+  const auto idx = wide.schema().require({"symbol", "date", "label", "f4_term_slope"});
+  ASSERT_TRUE(idx) << idx.error().message();
+  const auto slope = wide.numbers("f4_term_slope");
+  ASSERT_TRUE(slope);
+  EXPECT_DOUBLE_EQ((*slope)[0], -0.02);
 }
 
 } // namespace

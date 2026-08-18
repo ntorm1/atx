@@ -945,6 +945,16 @@ if(ATX_BUILD_TOOLS)
     add_executable(atx-vol-vrp-train tools/vrp_train_main.cpp)
     target_link_libraries(atx-vol-vrp-train PRIVATE atx::vol atx::core atx-engine atx_warnings)
 
+    # alpha layer CLI: adjudicate a panel's inputs and target BEFORE a fit.
+    # Reads the panel's header as its schema (columns by NAME, no version
+    # enum), reports the per-column finite/NaN census and the all-NaN or
+    # constant columns a fit would consume silently, then runs
+    # include/atx/vol/alpha/audit.hpp over the selected feature set. Links only
+    # atx::vol + atx::core -- the layer is header-only and deliberately has no
+    # atx-engine edge, so this tool builds and runs without the learn layer.
+    add_executable(atx-vol-alpha-audit tools/alpha_audit_main.cpp)
+    target_link_libraries(atx-vol-alpha-audit PRIVATE atx::vol atx::core atx_warnings)
+
     # Oracle RSI loop (bench/oracle/CHARTER.md stage 2): the SpiderRock parity
     # benchmark. Reads ONLY the cohort-named date=/bucket_et= partitions of the
     # parquet oracle store through atx-core's LazyParquet (Arrow/Parquet arrive
