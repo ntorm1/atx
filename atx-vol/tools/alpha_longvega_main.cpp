@@ -1,0 +1,444 @@
+// atx-vol-longvega — the long single-name vega strategy, end to end on a panel.
+//
+//   atx-vol-longvega --panel <tsv> [--features PAT[,PAT...]] [--market SYM]
+//                    [--names N] [--horizon H] [--max-hspread F]
+//                    [--cost-liquid VP] [--cost-illiquid VP] [--crossings X]
+//                    [--liquid-cut F] [--require-measured-liq]
+//                    [--per-date FILE]
+//
+// Six stages, each of which can fail loudly rather than degrade quietly:
+//
+//   1. LOAD     panel by name (no schema version), per-column finite census.
+//   2. COMPUTE  every selected feature from the panel's own series through the
+//               registry -- including features the panel never emitted.
+//   3. VERIFY   recomputed vs emitted, column by column, for every feature the
+//               panel DOES carry. An independent reimplementation agreeing to
+//               1e-9 is evidence about the emitter that reading either
+//               implementation cannot supply. A disagreement stops the run.
+//   4. ADJUDICATE  leaks and entry-mark channels against the money axis, plus
+//               the decontaminated cross-read axis.
+//   5. BLEND    equal-weight oriented within-date ranks. Orientation comes
+//               from the catalogue's published sign priors; a feature with no
+//               prior is refused, not fitted.
+//   6. RUN      admission, selection, equal-vega book, paired excess over the
+//               long-everything floor, raw / Newey-West / non-overlapping
+//               phase-sweep significance.
+//
+// Exit 1 on a load failure, a verification mismatch, or a fatal audit finding.
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <fstream>
+#include <limits>
+#include <string>
+#include <vector>
+
+#include "atx/vol/alpha/audit.hpp"
+#include "atx/vol/alpha/compute.hpp"
+#include "atx/vol/alpha/frame.hpp"
+#include "atx/vol/alpha/registry.hpp"
+#include "atx/vol/alpha/strategy.hpp"
+
+namespace {
+
+using namespace atx::vol::alpha; // NOLINT — a tool TU, not a header
+
+struct Args {
+  std::string panel;
+  std::vector<std::string> features{"f5_hv_iv_gap", "f4_term_slope", "f16_iv_vov_21d",
+                                    "f15_idio_share", "liq_hspread_frac"};
+  std::string market{"SPY"};
+  // "dh" = the delta-hedged money axis. "rv" = the decontaminated cross-read:
+  // forward realized vol alone, no implied leg, not a P&L.
+  std::string axis{"dh"};
+  std::string per_date;
+  std::size_t names{20};
+  std::size_t horizon{21};
+  double max_hspread{0.20};
+  double liquid_cut{0.05};
+  double cost_liquid{0.10};
+  double cost_illiquid{0.25};
+  double crossings{1.0};
+  bool require_measured_liq{false};
+  double verify_tol{1.0e-9};
+};
+
+void usage() {
+  std::fprintf(
+      stderr,
+      "usage: atx-vol-longvega --panel <tsv> [options]\n"
+      "  --features PAT[,PAT...]  catalogue globs (default: the five-signal long-vega set)\n"
+      "  --market SYM             market proxy for f15_idio_share (default SPY)\n"
+      "  --axis dh|rv             dh = delta-hedged straddle P&L, 100*(rv_fwd - iv_entry),\n"
+      "                           the money axis (default). rv = 100*rv_fwd alone, the\n"
+      "                           DECONTAMINATED cross-read: no implied leg, so a selection\n"
+      "                           excess that survives it is forecasting skill rather than\n"
+      "                           the entry-mark channel. Not a P&L; never headline it.\n"
+      "  --names N                names held per date (default 20)\n"
+      "  --horizon H              holding sessions; sets the NW lag and phase count (21)\n"
+      "  --max-hspread F          admission cap on measured ATM half-spread (0.20)\n"
+      "  --liquid-cut F           half-spread at or below which the liquid tier applies (0.05)\n"
+      "  --cost-liquid VP         vol points charged per crossing, liquid tier (0.10)\n"
+      "  --cost-illiquid VP       ... illiquid tier (0.25)\n"
+      "  --crossings X            crossings charged per position (1.0)\n"
+      "  --require-measured-liq   exclude a name whose width was never measured\n"
+      "  --per-date FILE          write the per-date series as TSV\n");
+}
+
+std::vector<std::string> split_commas(const std::string &s) {
+  std::vector<std::string> out;
+  std::size_t start = 0;
+  for (std::size_t i = 0; i <= s.size(); ++i) {
+    if (i == s.size() || s[i] == ',') {
+      if (i > start) {
+        out.push_back(s.substr(start, i - start));
+      }
+      start = i + 1;
+    }
+  }
+  return out;
+}
+
+bool parse_args(int argc, char **argv, Args &a) {
+  for (int i = 1; i < argc; ++i) {
+    const std::string flag = argv[i];
+    std::string v;
+    const auto next = [&]() {
+      if (i + 1 >= argc) {
+        return false;
+      }
+      v = argv[++i];
+      return true;
+    };
+    if (flag == "--panel" && next()) {
+      a.panel = v;
+    } else if (flag == "--features" && next()) {
+      a.features = split_commas(v);
+    } else if (flag == "--market" && next()) {
+      a.market = v;
+    } else if (flag == "--axis" && next()) {
+      if (v != "dh" && v != "rv") {
+        std::fprintf(stderr, "--axis must be 'dh' or 'rv' (got '%s')\n", v.c_str());
+        return false;
+      }
+      a.axis = v;
+    } else if (flag == "--per-date" && next()) {
+      a.per_date = v;
+    } else if (flag == "--names" && next()) {
+      a.names = static_cast<std::size_t>(std::stoull(v));
+    } else if (flag == "--horizon" && next()) {
+      a.horizon = static_cast<std::size_t>(std::stoull(v));
+    } else if (flag == "--max-hspread" && next()) {
+      a.max_hspread = std::stod(v);
+    } else if (flag == "--liquid-cut" && next()) {
+      a.liquid_cut = std::stod(v);
+    } else if (flag == "--cost-liquid" && next()) {
+      a.cost_liquid = std::stod(v);
+    } else if (flag == "--cost-illiquid" && next()) {
+      a.cost_illiquid = std::stod(v);
+    } else if (flag == "--crossings" && next()) {
+      a.crossings = std::stod(v);
+    } else if (flag == "--require-measured-liq") {
+      a.require_measured_liq = true;
+    } else {
+      std::fprintf(stderr, "unknown or incomplete flag: %s\n", flag.c_str());
+      return false;
+    }
+  }
+  if (a.panel.empty()) {
+    std::fprintf(stderr, "--panel is required\n");
+    return false;
+  }
+  return true;
+}
+
+// Recomputed vs emitted, for a column the panel carries. Compares only rows
+// where BOTH are finite, and separately counts the rows where one is finite
+// and the other is not -- a missingness disagreement is a real finding even
+// when every shared row matches to the last bit.
+struct VerifyResult {
+  std::size_t n_both{0};
+  std::size_t n_only_emitted{0};
+  std::size_t n_only_computed{0};
+  double max_abs_diff{0.0};
+  double max_rel_diff{0.0};
+};
+
+VerifyResult verify_column(std::span<const double> emitted, const std::vector<double> &computed) {
+  VerifyResult v;
+  for (std::size_t r = 0; r < emitted.size() && r < computed.size(); ++r) {
+    const bool fe = std::isfinite(emitted[r]);
+    const bool fc = std::isfinite(computed[r]);
+    if (fe && fc) {
+      ++v.n_both;
+      const double d = std::fabs(emitted[r] - computed[r]);
+      v.max_abs_diff = std::max(v.max_abs_diff, d);
+      const double scale = std::max(1.0, std::fabs(emitted[r]));
+      v.max_rel_diff = std::max(v.max_rel_diff, d / scale);
+    } else if (fe) {
+      ++v.n_only_emitted;
+    } else if (fc) {
+      ++v.n_only_computed;
+    }
+  }
+  return v;
+}
+
+} // namespace
+
+int main(int argc, char **argv) {
+  Args args;
+  if (!parse_args(argc, argv, args)) {
+    usage();
+    return 2;
+  }
+
+  const FeatureRegistry freg = builtin_features();
+  const TargetRegistry treg = builtin_targets();
+
+  // ── 1. LOAD ───────────────────────────────────────────────────────────────
+  std::ifstream in(args.panel, std::ios::binary);
+  if (!in) {
+    std::fprintf(stderr, "cannot open panel '%s'\n", args.panel.c_str());
+    return 1;
+  }
+  auto loaded = PanelFrame::read_tsv(in);
+  if (!loaded) {
+    std::fprintf(stderr, "panel load failed: %s\n", loaded.error().to_string().c_str());
+    return 1;
+  }
+  const PanelFrame &frame = *loaded;
+  std::printf("PANEL   %s\n  rows=%zu cols=%zu fingerprint=%016llx\n", args.panel.c_str(),
+              frame.rows(), frame.cols(),
+              static_cast<unsigned long long>(frame.schema().fingerprint()));
+
+  auto dates = group_by_date(frame);
+  if (!dates) {
+    std::fprintf(stderr, "date grouping failed: %s\n", dates.error().to_string().c_str());
+    return 1;
+  }
+  std::printf("  sessions=%zu  %s .. %s\n", dates->size(),
+              dates->empty() ? "-" : dates->front().date.c_str(),
+              dates->empty() ? "-" : dates->back().date.c_str());
+
+  const auto selected = freg.select(args.features);
+  if (!selected) {
+    std::fprintf(stderr, "--features: %s\n", selected.error().to_string().c_str());
+    return 2;
+  }
+
+  // ── 2. COMPUTE ────────────────────────────────────────────────────────────
+  auto series = group_by_symbol(frame);
+  if (!series) {
+    std::fprintf(stderr, "symbol grouping failed: %s\n", series.error().to_string().c_str());
+    return 1;
+  }
+  MarketSeries market;
+  bool have_market = false;
+  if (auto m = market_from(*series, args.market, dates->size())) {
+    market = std::move(*m);
+    have_market = true;
+    // The proxy obeys the same row policy as every other symbol, and
+    // `f15_idio_share` needs it present on EVERY date of a 63-session window.
+    // At coverage c that is roughly c^63, so a proxy at 86% yields the feature
+    // on essentially no row. Say so here rather than let an all-NaN column be
+    // discovered three stages later.
+    const double cov = market.coverage_fraction();
+    std::printf("\nMARKET  proxy %s covers %zu / %zu sessions (%.1f%%); "
+                "P(63-session window intact) ~ %.2g\n",
+                market.symbol.c_str(), market.date.size(), dates->size(), 100.0 * cov,
+                std::pow(cov, 63.0));
+    if (std::pow(cov, 63.0) < 0.01) {
+      std::printf("        f15_idio_share will be near-empty on this panel — it needs a "
+                  "gap-free market series.\n");
+    }
+  } else {
+    std::printf("\nNOTE  market proxy '%s' is not in this panel; f15_idio_share will be NaN.\n",
+                args.market.c_str());
+  }
+
+  auto computed = evaluate(frame, *selected, have_market ? &market : nullptr);
+  if (!computed) {
+    std::fprintf(stderr, "feature evaluation failed: %s\n", computed.error().to_string().c_str());
+    return 1;
+  }
+  std::printf("\nFEATURES  %zu selected, %zu evaluated from panel series, %zu need the surface DB\n",
+              selected->size(), computed->values.size(), computed->needs_surface.size());
+  for (const std::string &n : computed->needs_surface) {
+    std::printf("  needs-surface  %s\n", n.c_str());
+  }
+
+  // ── 3. VERIFY ─────────────────────────────────────────────────────────────
+  std::printf("\nVERIFY  recomputed vs emitted (rows where both are finite)\n");
+  bool verify_failed = false;
+  std::size_t n_checked = 0;
+  for (const FeatureSpec *spec : *selected) {
+    const auto it = computed->values.find(spec->name);
+    if (it == computed->values.end() || !frame.schema().has(spec->name)) {
+      continue;
+    }
+    const auto emitted = frame.numbers(spec->name);
+    if (!emitted) {
+      continue;
+    }
+    const VerifyResult v = verify_column(*emitted, it->second);
+    ++n_checked;
+    // The pass criterion is EXACT agreement wherever both are finite, plus no
+    // row where this reimplementation produced a value the emitter did not.
+    // `only_emitted > 0` is EXPECTED and is not a failure: the emitter owns the
+    // full bar axis and this reimplementation only sees the emitted subset, so
+    // it deliberately declines every window that spans a dropped session. That
+    // is coverage loss, not disagreement.
+    const bool ok = v.max_abs_diff <= args.verify_tol && v.n_only_computed == 0;
+    std::printf("  %-20s n=%-6zu max|diff|=%.3e  only-emitted=%zu only-computed=%zu  %s\n",
+                spec->name.c_str(), v.n_both, v.max_abs_diff, v.n_only_emitted, v.n_only_computed,
+                ok ? "OK" : "MISMATCH");
+    if (!ok) {
+      verify_failed = true;
+    }
+  }
+  if (n_checked == 0) {
+    std::printf("  (no selected feature is present in the panel to check against)\n");
+  }
+  if (verify_failed) {
+    std::fprintf(stderr,
+                 "\nRESULT  VERIFY FAILED — the independent reimplementation disagrees with the\n"
+                 "        emitted panel. One of the two is wrong; do not fit until it is settled.\n");
+    return 1;
+  }
+
+  // ── 4. ADJUDICATE ─────────────────────────────────────────────────────────
+  const char *axis_target = args.axis == "rv" ? "rv_fwd_21d" : "dh_straddle_pnl_21d";
+  const TargetSpec *money = treg.find(axis_target);
+  if (money == nullptr) {
+    std::fprintf(stderr, "catalogue is missing %s\n", axis_target);
+    return 1;
+  }
+  AuditConfig acfg;
+  // Only a tradeable axis may sit in the headline seat; asking the adjudicator
+  // about a forecast axis in that seat is how the reminder gets printed.
+  acfg.target_is_headline = true;
+  const AuditReport report = audit(*selected, *money, acfg);
+  std::printf("\nADJUDICATION  target=%s (%s)\n", money->name.c_str(),
+              money->tradeable ? "TRADEABLE" : "forecast-only, NOT a P&L");
+  if (report.clean()) {
+    std::printf("  CLEAN\n");
+  } else {
+    for (const std::string &line : format_report(report)) {
+      std::printf("  %s\n", line.c_str());
+    }
+  }
+  if (report.has_fatal()) {
+    std::fprintf(stderr, "\nRESULT  FATAL audit finding — refusing to run the book.\n");
+    return 1;
+  }
+  if (report.count(FindingKind::EntryMarkChannel) > 0) {
+    const std::string axis = cross_read_axis(*selected, treg.all(), *money, 0);
+    std::printf("  cross-read axis: %s\n", axis.empty() ? "(none clean for this set)" : axis.c_str());
+  }
+
+  // ── 5. BLEND ──────────────────────────────────────────────────────────────
+  BlendConfig bcfg;
+  auto blended = blend(frame, *dates, *selected, computed->values, bcfg);
+  if (!blended) {
+    std::fprintf(stderr, "\nblend failed: %s\n", blended.error().to_string().c_str());
+    return 1;
+  }
+  std::printf("\nBLEND   equal-weight oriented within-date ranks, %zu signal(s), %zu rows scored "
+              "(>= %zu finite feature(s)/row)\n",
+              blended->used.size(), blended->n_scored, blended->required_per_row);
+  for (std::size_t k = 0; k < blended->used.size(); ++k) {
+    const std::string &n = blended->used[k];
+    const FeatureSpec *sp = freg.find(n);
+    std::printf("  use     %-20s %-9s coverage %6zu / %zu rows\n", n.c_str(),
+                sp == nullptr ? "" : std::string(to_string(sp->prior)).c_str(),
+                blended->used_coverage[k], frame.rows());
+  }
+  for (const std::string &n : blended->refused) {
+    std::printf("  REFUSE  %-20s no published sign prior — not fitted\n", n.c_str());
+  }
+  for (const std::string &n : blended->missing) {
+    std::printf("  absent  %-20s no values available\n", n.c_str());
+  }
+
+  if (blended->n_scored == 0) {
+    std::fprintf(stderr,
+                 "\nRESULT  NO ROW SCORED. The blend needs %zu finite feature(s) per row; the\n"
+                 "        coverage line above names the binding input. A zero-coverage feature is\n"
+                 "        not a defect in the blend -- it is a feature this panel cannot support.\n",
+                 blended->required_per_row);
+    return 1;
+  }
+
+  // ── 6. RUN ────────────────────────────────────────────────────────────────
+  auto pnl = args.axis == "rv" ? forward_rv_vol_points(frame) : dh_straddle_pnl_vol_points(frame);
+  if (!pnl) {
+    std::fprintf(stderr, "\nP&L construction failed: %s\n", pnl.error().to_string().c_str());
+    return 1;
+  }
+  StrategyConfig scfg;
+  scfg.horizon_sessions = args.horizon;
+  scfg.max_names = args.names;
+  scfg.max_hspread_frac = args.max_hspread;
+  scfg.liquid_hspread_cut = args.liquid_cut;
+  scfg.cost_vp_liquid = args.cost_liquid;
+  scfg.cost_vp_illiquid = args.cost_illiquid;
+  scfg.crossings = args.crossings;
+  scfg.require_measured_liquidity = args.require_measured_liq;
+
+  auto card = run(frame, *dates, blended->score, *pnl, scfg);
+  if (!card) {
+    std::fprintf(stderr, "\nbook failed: %s\n", card.error().to_string().c_str());
+    return 1;
+  }
+
+  std::printf("\nBOOK    long %zu names/date, equal vega, horizon %zu, cost %.2f/%.2f vp x %.1f "
+              "crossing(s)\n",
+              args.names, args.horizon, args.cost_liquid, args.cost_illiquid, args.crossings);
+  std::printf("  dates formed        %zu\n", card->n_dates);
+  std::printf("  selected  net       %+8.4f vol pts   t_nw %+6.2f\n", card->mean_selected_net,
+              card->t_nw_selected_net);
+  std::printf("  floor     net       %+8.4f vol pts   (long every admitted name)\n",
+              card->mean_floor_net);
+  std::printf("  EXCESS    net       %+8.4f vol pts   t_raw %+6.2f   t_nw %+6.2f\n",
+              card->mean_excess_net, card->t_raw_excess_net, card->t_nw_excess_net);
+  std::printf("  excess    gross     %+8.4f vol pts\n", card->mean_excess_gross);
+  std::printf("  phase sweep (%zu disjoint non-overlapping sub-series, no HAC needed)\n",
+              card->phase_mean_excess_net.size());
+  std::printf("    positive phases   %.0f%%   min %+.4f   max %+.4f\n",
+              100.0 * card->phase_positive_fraction, card->phase_min_mean, card->phase_max_mean);
+
+  // Goyal-Saretto's 5% FDR bound for this literature. Stated so a reader does
+  // not have to remember which hurdle applies.
+  constexpr double kFdrHurdle = 2.44;
+  std::printf("\nVERDICT  hurdle t = %.2f (Goyal-Saretto 5%% FDR). ", kFdrHurdle);
+  if (!std::isfinite(card->t_nw_excess_net)) {
+    std::printf("t_nw is undefined.\n");
+  } else if (card->t_nw_excess_net >= kFdrHurdle && card->phase_positive_fraction >= 0.6) {
+    std::printf("CLEARS on both the HAC t and the phase sweep.\n");
+  } else if (card->t_nw_excess_net >= kFdrHurdle) {
+    std::printf("Clears the HAC t but only %.0f%% of non-overlapping phases are positive —\n"
+                "         believe the phase sweep.\n",
+                100.0 * card->phase_positive_fraction);
+  } else {
+    std::printf("DOES NOT CLEAR.\n");
+  }
+
+  if (!args.per_date.empty()) {
+    std::ofstream out(args.per_date, std::ios::binary);
+    if (!out) {
+      std::fprintf(stderr, "cannot write '%s'\n", args.per_date.c_str());
+      return 1;
+    }
+    out << "date\tn_rows\tn_admitted\tn_selected\tselected_gross\tselected_net\tfloor_gross\t"
+           "floor_net\texcess_gross\texcess_net\n";
+    for (const DateResult &r : card->per_date) {
+      out << r.date << '\t' << r.n_rows << '\t' << r.n_admitted << '\t' << r.n_selected << '\t'
+          << r.selected_gross << '\t' << r.selected_net << '\t' << r.floor_gross << '\t'
+          << r.floor_net << '\t' << r.excess_gross << '\t' << r.excess_net << '\n';
+    }
+    std::printf("\nwrote %s\n", args.per_date.c_str());
+  }
+  return 0;
+}

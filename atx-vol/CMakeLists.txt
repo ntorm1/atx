@@ -955,6 +955,15 @@ if(ATX_BUILD_TOOLS)
     add_executable(atx-vol-alpha-audit tools/alpha_audit_main.cpp)
     target_link_libraries(atx-vol-alpha-audit PRIVATE atx::vol atx::core atx_warnings)
 
+    # The long single-name vega strategy, end to end on a panel: compute the
+    # selected features from the panel's own series through the registry,
+    # CROSS-CHECK the recomputed columns against the emitted ones, adjudicate
+    # against the delta-hedged money axis, blend equal-weight oriented ranks,
+    # and run the equal-vega book with the paired selection excess and the
+    # non-overlapping phase sweep. Same link surface as the audit tool.
+    add_executable(atx-vol-longvega tools/alpha_longvega_main.cpp)
+    target_link_libraries(atx-vol-longvega PRIVATE atx::vol atx::core atx_warnings)
+
     # Oracle RSI loop (bench/oracle/CHARTER.md stage 2): the SpiderRock parity
     # benchmark. Reads ONLY the cohort-named date=/bucket_et= partitions of the
     # parquet oracle store through atx-core's LazyParquet (Arrow/Parquet arrive

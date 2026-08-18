@@ -570,7 +570,8 @@ set_tests_properties(VarswapCompareColumns PROPERTIES LABELS "atx_vol;atx_vol_fa
 # build is the whole iterate loop for it. Folding it into the 200-source
 # monolith would trade that for a link of the entire vol library.
 add_executable(atx-vol-alpha-tests
-    alpha_registry_test.cpp)
+    alpha_registry_test.cpp
+    alpha_strategy_test.cpp)
 target_link_libraries(atx-vol-alpha-tests PRIVATE
     atx::vol atx::core GTest::gtest_main atx_warnings)
 add_test(NAME AlphaRegistry COMMAND atx-vol-alpha-tests)
