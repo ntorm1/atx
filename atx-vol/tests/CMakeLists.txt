@@ -559,3 +559,15 @@ set_tests_properties(VarswapCompareColumns PROPERTIES LABELS "atx_vol;atx_vol_fa
 # The gap between "enumerated" and "executed" is gtest-`DISABLED_` entries, which
 # `ctest -N` lists but no run counts; runtime SKIPs (absent real-data fixtures)
 # execute and count as passed.
+
+# ── alpha layer (include/atx/vol/alpha/**) ──────────────────────────────────
+# Its own binary rather than another source in `atx-vol-tests`: the layer is
+# header-only and links nothing but atx::core, so a 2-second target-scoped
+# build is the whole iterate loop for it. Folding it into the 200-source
+# monolith would trade that for a link of the entire vol library.
+add_executable(atx-vol-alpha-tests
+    alpha_registry_test.cpp)
+target_link_libraries(atx-vol-alpha-tests PRIVATE
+    atx::vol atx::core GTest::gtest_main atx_warnings)
+add_test(NAME AlphaRegistry COMMAND atx-vol-alpha-tests)
+set_tests_properties(AlphaRegistry PROPERTIES LABELS "atx_vol;atx_vol_fast")
