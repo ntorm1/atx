@@ -444,6 +444,34 @@ gtest_discover_tests(atx-vol-tests
     PROPERTIES LABELS atx_vol_slow
     DISCOVERY_MODE PRE_TEST)
 
+# Oracle RSI charter stage 4 (Mode B). scripts/oracle-targeted-gate.ps1
+# -Gate mode_b_targeted_tests runs `ctest -R ^mode_b_targeted_tests$`, so a
+# ctest case must carry EXACTLY that name. Neither mechanism above can provide
+# one: gtest_discover_tests registers each case under its fully-qualified gtest
+# name (OracleBenchModeB.X), which that anchored -R cannot match, and ctest
+# LABELS are not selectable by -R at all. Hence one explicit add_test ALONGSIDE
+# the discovery, not instead of it — every OracleBenchModeB case is therefore
+# run twice in a full sweep, once under its own discovered id (pinned in
+# $script:OracleBenchTestIds) and once inside this aggregate gate case. The
+# duplication is deliberate; the alternative is a gate that selects nothing.
+#
+# The bare --gtest_filter case is exactly the hazard the convention-tests
+# comment above describes: gtest exits 0 and reports "1/1 passed" when the
+# filter matches ZERO tests, which the charter treats as a contract failure.
+# PASS_REGULAR_EXPRESSION pins the exact case COUNT, so a renamed or vanished
+# Mode B case fails this gate instead of passing it vacuously.
+# FAIL_REGULAR_EXPRESSION is required beside it because setting a pass pattern
+# makes ctest IGNORE the process exit code — without it a genuine assertion
+# failure would still match "[  PASSED  ] 5 tests." never being printed... and
+# in the partial-failure case gtest prints a LOWER passed count, so the pair
+# closes both doors. Adding a Mode B case means bumping the 5 here.
+add_test(NAME mode_b_targeted_tests
+         COMMAND atx-vol-tests --gtest_filter=OracleBenchModeB.*)
+set_tests_properties(mode_b_targeted_tests PROPERTIES
+    PASS_REGULAR_EXPRESSION "\\[  PASSED  \\] 5 tests\\."
+    FAIL_REGULAR_EXPRESSION "\\[  FAILED  \\]"
+    LABELS atx_vol_fast)
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     add_test(

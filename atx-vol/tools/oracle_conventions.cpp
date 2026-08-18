@@ -191,6 +191,14 @@ double price_to_oracle_units(double engine_price) noexcept {
   return price_to_oracle_units(engine_price, winning_convention());
 }
 
+double price_from_oracle_units(double oracle_price, const ConventionMap &map) noexcept {
+  return oracle_price / map.price_scale; // 0 scale -> inf/nan, screened by callers
+}
+
+double price_from_oracle_units(double oracle_price) noexcept {
+  return price_from_oracle_units(oracle_price, winning_convention());
+}
+
 OracleUnitGreeks to_oracle_units(const AmericanGreeks &g, double dp_dq,
                                  const ConventionMap &map) noexcept {
   OracleUnitGreeks out;

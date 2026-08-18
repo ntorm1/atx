@@ -29,7 +29,9 @@
 // not warrant a header). That test TU is the only place this file is
 // #included, so there is no ODR hazard.
 
+#include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -38,6 +40,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -48,6 +51,7 @@
 
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/american_iv.hpp" // Mode B: AMERICAN vol inversion
 #include "oracle_cohort_reader.hpp"
 #include "oracle_convention_sweep.hpp"
 #include "oracle_conventions.hpp"
@@ -540,12 +544,306 @@ public:
   }
 };
 
+// ── Mode B: volatility MEASURED from raw NBBO ────────────────────────────
+//
+// Mode A prices AT srVol, so the vol it reports back is the vol it was handed
+// and mode_a_vol_mae is 0 by identity — worthless as evidence. Mode B is where
+// vol becomes a real measurement: for each `underlier x expiry x bucket` group
+// it inverts the group's own NBBO mids to volatility, then prices price + all
+// nine Greeks FROM that fitted vol through the same pinned convention map Mode
+// A uses. The only difference between the two modes is where sigma comes from.
+//
+// WHAT IS INVERTED, AND WHY IT IS NOT "LET'S BE RATIONAL". These are AMERICAN
+// equity options. Jäckel's four-branch/Householder(3) inversion is exact and
+// fast for the BLACK forward map and is the right tool there, but running it
+// against an American premium inverts the wrong function: the early-exercise
+// premium is charged to volatility, so it returns a plausible, biased-low
+// sigma that re-prices to the wrong number. Every layer downstream would then
+// inherit a fiction that looks like a measurement. This uses the library's
+// `american_implied_vol` (american_iv.hpp) instead — a safeguarded Newton
+// (rtsafe) whose forward map is the SAME Andersen-Lake pricer, at the SAME
+// `al_fast_opts` rung, that this file prices with. Because forward and inverse
+// share one map, the round trip is self-consistent by construction rather than
+// by assumption, and it is asserted per row below.
+//
+// WHY THE SEAM IS BATCH-LEVEL. The group is the unit of work, not the row: it
+// pins one snapshot's pricing context, it orders the chain by strike so each
+// inversion warm-starts from its neighbour's converged root (documented to
+// move only the Newton PATH, never the root), and it is the scope the charter
+// states the fit in. A per-row hook could provide none of that.
+//
+// NO SMILE MODEL, DELIBERATELY. The vol published per row is the vol inverted
+// from THAT row's own mid — not a smoothed value read off a curve fitted to
+// the group. A smoothed vol would be a modelled quantity reported as a
+// measurement, and it would let a bad row borrow credibility from its
+// neighbours. Iteration 1+ may add a smile; iteration 0 must be able to say
+// exactly what each number is.
+//
+// EXPIRY KEY: the exact `years` double, compared by IEEE BIT PATTERN. Rows
+// carry no expiry date. Within one (date, bucket) partition `years` is computed
+// from a single snapshot timestamp to the contract's expiry, so it is discrete
+// per expiry and byte-identical across every contract on that expiry. Bit
+// equality is therefore exact where an epsilon compare would be a guess in both
+// directions — wide enough to merge two nearby expiries, narrow enough to split
+// one. If ingest ever perturbed `years` per row this key would over-split, which
+// shows up honestly as more groups and fewer rows each, never as a wrong fit.
+struct ModeBStats {
+  // Groups fitted: distinct (date, bucket_et, underlier, years) keys. A COUNT,
+  // never the keys themselves — partition names are membership.
+  std::int64_t groups_fitted = 0;
+  // ── Rows that yielded NO volatility, by reason. Every one of these is an
+  // honest refusal that is counted and published, never a silent 0 or NaN: a
+  // fabricated vol is strictly worse than a missing one, because the oracle
+  // loop ratchets on whatever it is given.
+  std::int64_t rows_no_quote = 0;          // NBBO absent, crossed, or non-finite
+  std::int64_t rows_below_lo_bound = 0;    // mid at/under the zero-vol American floor
+  std::int64_t rows_above_up_bound = 0;    // mid at/over the no-arbitrage ceiling
+  std::int64_t rows_iv_no_solution = 0;    // inverter returned Err (incl. T <= 0)
+  std::int64_t rows_iv_at_floor = 0;       // inverter reported kIvMin: the clamp, not a root
+  std::int64_t rows_vega_below_floor = 0;  // quote cannot resolve a vol at all
+  std::int64_t rows_round_trip_failed = 0; // re-pricing the fitted vol missed the mid
+
+  [[nodiscard]] std::int64_t rows_unfitted() const noexcept {
+    return rows_no_quote + rows_below_lo_bound + rows_above_up_bound + rows_iv_no_solution +
+           rows_iv_at_floor + rows_vega_below_floor + rows_round_trip_failed;
+  }
+};
+
+namespace {
+// Inversion tolerance in VOL units. 1e-6 is 0.01 bp — two orders below the 5 bp
+// vol tolerance the scorecard reports against, so it cannot move a published
+// digit, and materially cheaper than the entry point's 1e-7 default across
+// hundreds of thousands of cold Andersen-Lake inversions.
+constexpr double kModeBIvTol = 1.0e-6;
+constexpr std::uint16_t kModeBIvMaxIter = 64;
+
+// A fitted vol this close to the inverter's reported floor IS the floor clamp.
+// american_implied_vol returns Ok(kIvMin) — a SUCCESS — both for a price at or
+// below intrinsic and for a quote whose root sits under the floor. Taking that
+// at face value would publish 0.005 as a measured volatility for every dead
+// deep-wing quote in the cohort. It is refused and counted instead.
+constexpr double kModeBVolFloorSlack = 1.0e-9;
+
+// IV IDENTIFIABILITY. A quote pins vol only as tightly as vega converts price
+// into vol: moving the mid by half a tick moves the fitted vol by about
+// (tick/2)/vega. Where that exceeds kModeBMaxVolResolution the returned root is
+// an artifact of the quote's last digit rather than a measurement of anything,
+// which is what "IV is not identified where vega -> 0" means numerically. The
+// bound is deliberately loose (5 vol POINTS of resolution per half tick): it is
+// here to refuse the hopeless, not to grade accuracy.
+constexpr double kModeBMaxVolResolution = 0.05;
+
+// Self-consistency of the round trip. The inverse and forward maps are the same
+// Andersen-Lake rung, so re-pricing at the fitted vol must land back on the mid
+// to within the solver's own tolerance; half a tick is slack of two orders. A
+// row that misses it did not actually invert — commonly a collapsed-vega corner
+// the screens above did not catch — and is refused rather than published.
+constexpr double kModeBRoundTripTicks = 0.5;
+
+// The ZERO-VOL American price: the correct lower bracket for an American
+// inversion, and NOT the same thing as immediate intrinsic. At sigma = 0 the
+// spot follows the deterministic path S_t = S e^{(r-q)t} and the holder may
+// exercise at any t in [0, T], so the value is max over t of the discounted
+// deterministic payoff. Both endpoints are evaluated:
+//   t = 0  immediate intrinsic,      max(0, S - K)      / max(0, K - S)
+//   t = T  discounted forward value, max(0, S e^{-qT} - K e^{-rT}) / mirrored
+// The t = T leg is what plain intrinsic misses: for a call that is out of the
+// money on spot but in the money on the FORWARD (the ordinary case under
+// positive rates, and the everyday case on the hard-to-borrow names in this
+// cohort where q < 0), the forward leg is strictly the larger, and a quote
+// between the two admits no volatility at all. The library's own band screens
+// only immediate intrinsic, so a mid in that gap would reach the solver, find
+// no root, and come back clamped to the vol floor as a SUCCESS.
+//
+// The interior of [0, T] can hold the maximum for some (r, q) sign
+// combinations; ignoring it leaves this a slightly LOOSE lower bound, which is
+// the safe direction — a row it wrongly admits is caught by the floor-clamp and
+// round-trip screens rather than published.
+[[nodiscard]] double mode_b_lo_bound(double spot, double strike, double years, double rate,
+                                     double q, Side side) noexcept {
+  const double spot_leg = spot * std::exp(-q * years);
+  const double strike_leg = strike * std::exp(-rate * years);
+  const double now = side == Side::Call ? spot - strike : strike - spot;
+  const double fwd = side == Side::Call ? spot_leg - strike_leg : strike_leg - spot_leg;
+  return std::max(0.0, std::max(now, fwd));
+}
+
+// The no-arbitrage ceiling the American price cannot reach: the underlying for
+// a call, the strike for a put. Mirrors american_iv.cpp's own upper band.
+[[nodiscard]] double mode_b_up_bound(double spot, double strike, Side side) noexcept {
+  return side == Side::Call ? spot : strike;
+}
+
+// Stable ordering key for one fit group. The three string members are VIEWS
+// into the rows the runner was handed, which outlive the grouping.
+struct ModeBGroupKey {
+  std::string_view date;
+  std::string_view bucket_et;
+  std::string_view underlier;
+  std::uint64_t years_bits = 0; // exact IEEE pattern; see the banner above
+  [[nodiscard]] auto operator<=>(const ModeBGroupKey &) const = default;
+};
+} // namespace
+
+class ModeBRunner final : public ModeRunner {
+public:
+  explicit ModeBRunner(ModeBStats &fit_stats) noexcept : fit_{&fit_stats} {}
+
+  [[nodiscard]] std::string_view name() const noexcept override { return "b"; }
+
+  [[nodiscard]] Status run(std::span<const OracleRow> rows, Scorecard &card, ModeStats &stats,
+                           AggregateMetrics &agg) override {
+    // GROUPING. An ordered map keyed by the four coordinates, holding row
+    // INDICES: the fit is per `underlier x expiry x bucket`, and the flat span
+    // this seam receives has already lost those boundaries (which is why
+    // OracleRow now carries date/bucket_et at all).
+    std::map<ModeBGroupKey, std::vector<std::uint32_t>> groups;
+    for (std::uint32_t i = 0; i < rows.size(); ++i) {
+      const OracleRow &row = rows[i];
+      const ModeBGroupKey key{row.date, row.bucket_et, row.underlier,
+                              std::bit_cast<std::uint64_t>(row.years)};
+      groups[key].push_back(i);
+    }
+    fit_->groups_fitted = static_cast<std::int64_t>(groups.size());
+
+    const double tick_engine = price_from_oracle_units(kPriceTick);
+    const double half_tick = 0.5 * tick_engine;
+    const double min_vega = half_tick / kModeBMaxVolResolution;
+    const double round_trip_tol = kModeBRoundTripTicks * tick_engine;
+
+    for (auto &[key, members] : groups) {
+      // Strike-then-side order makes the warm-start chain meaningful: adjacent
+      // strikes in one expiry carry near-equal vols, so each inversion seeds
+      // from its neighbour's converged root. The library documents this as
+      // moving the Newton PATH only — the root, and therefore every number
+      // published below, is unchanged.
+      std::sort(members.begin(), members.end(),
+                [&rows](std::uint32_t l, std::uint32_t r) {
+                  const OracleRow &a = rows[l];
+                  const OracleRow &b = rows[r];
+                  if (a.strike != b.strike) {
+                    return a.strike < b.strike;
+                  }
+                  return static_cast<int>(a.side) < static_cast<int>(b.side);
+                });
+
+      double warm_start = 0.0; // 0 == "no warm start; use the European seed"
+      for (const std::uint32_t index : members) {
+        const OracleRow &row = rows[index];
+        EnginePricingInputs in = mode_a_inputs(row); // same pinned map as Mode A
+        // ...everything except sigma, which Mode B MEASURES rather than reads.
+        in.sigma = 0.0;
+
+        // ── Quote admission. A mid needs two live, uncrossed sides.
+        if (!(row.bid_prc > 0.0) || !(row.ask_prc > 0.0) || !(row.ask_prc >= row.bid_prc)) {
+          ++fit_->rows_no_quote;
+          continue;
+        }
+        const double mid = price_from_oracle_units(0.5 * (row.bid_prc + row.ask_prc));
+        if (!std::isfinite(mid) || !(in.years > 0.0) || !(in.spot > 0.0) || !(in.strike > 0.0)) {
+          ++fit_->rows_no_quote;
+          continue;
+        }
+
+        // ── Identifiability brackets (see mode_b_lo_bound's banner).
+        const double lo = mode_b_lo_bound(in.spot, in.strike, in.years, in.rate, in.carry, in.side);
+        if (mid <= lo + half_tick) {
+          ++fit_->rows_below_lo_bound;
+          continue;
+        }
+        if (mid >= mode_b_up_bound(in.spot, in.strike, in.side) - half_tick) {
+          ++fit_->rows_above_up_bound;
+          continue;
+        }
+
+        // ── The inversion. AMERICAN, through the same Andersen-Lake rung this
+        // file prices with; `in.carry` is the engine's q slot.
+        const Result<double> fitted = american_implied_vol(
+            mid, in.spot, in.strike, in.years, in.rate, in.carry, in.side,
+            AmericanMethod::AndersenLake, kModeBIvTol, kModeBIvMaxIter, mode_a_al_opts(),
+            /*correction=*/nullptr, warm_start);
+        if (!fitted.has_value() || !std::isfinite(*fitted)) {
+          ++fit_->rows_iv_no_solution;
+          continue;
+        }
+        if (*fitted <= kIvMin + kModeBVolFloorSlack) {
+          ++fit_->rows_iv_at_floor; // the documented clamp, not a measured root
+          continue;
+        }
+        in.sigma = *fitted;
+
+        const Result<AmericanGreeks> greeks = american_greeks_al(
+            in.spot, in.strike, in.years, in.sigma, in.rate, in.carry, in.side, mode_a_al_opts());
+        if (!greeks.has_value()) {
+          ++stats.rows_engine_error; // same meaning as Mode A's: the pricer refused
+          continue;
+        }
+        if (!std::isfinite(greeks->vega) || greeks->vega < min_vega) {
+          ++fit_->rows_vega_below_floor;
+          continue;
+        }
+        if (!std::isfinite(greeks->price) || std::abs(greeks->price - mid) > round_trip_tol) {
+          ++fit_->rows_round_trip_failed;
+          continue;
+        }
+        // Only a row that survived every screen seeds its neighbour.
+        warm_start = in.sigma;
+        ++stats.rows_priced;
+
+        const MoneynessBand mband = moneyness_band(row.strike / row.uprc, in.side);
+        const DteBand dband = dte_band(dte_days(row.years));
+        auto observe = [&](std::string_view metric, double model, double oracle_val, double tol) {
+          const double err = model - oracle_val;
+          if (!std::isfinite(err)) {
+            return;
+          }
+          card.observe(name(), metric, mband, dband, in.side, err, std::abs(err) <= tol);
+        };
+
+        const double model_price = price_to_oracle_units(greeks->price);
+        observe("price", model_price, row.sr_prc, price_tolerance(row.bid_prc, row.ask_prc));
+        agg.price.absolute(model_price, row.sr_prc);
+        // THE measurement this whole mode exists for: a vol fitted from the
+        // market, compared against SpiderRock's. Unlike Mode A's, this is not
+        // an identity — the two numbers were produced independently.
+        observe("vol", in.sigma, row.sr_vol, vol_tolerance());
+        agg.vol.absolute(in.sigma, row.sr_vol);
+
+        double dp_dq = std::numeric_limits<double>::quiet_NaN();
+        const Result<CarryGreeks> carry = american_carry_greeks_al(
+            in.spot, in.strike, in.years, in.sigma, in.rate, in.carry, in.side, mode_a_al_opts());
+        if (carry.has_value()) {
+          dp_dq = carry->dP_dq;
+        }
+        const OracleUnitGreeks g = to_oracle_units(*greeks, dp_dq);
+        const std::array<std::pair<double, double>, 9> greek_pairs{
+            std::pair{g.de, row.de}, std::pair{g.ga, row.ga}, std::pair{g.th, row.th},
+            std::pair{g.ve, row.ve}, std::pair{g.rh, row.rh}, std::pair{g.ph, row.ph},
+            std::pair{g.vo, row.vo}, std::pair{g.va, row.va},
+            std::pair{g.de_decay, row.de_decay}};
+        for (std::size_t i = 0; i < greek_pairs.size(); ++i) {
+          const auto [model, oracle_val] = greek_pairs[i];
+          observe(kGreekCellMetric[i], model, oracle_val, greek_tolerance(oracle_val));
+          agg.greeks[i].relative(model, oracle_val);
+        }
+      }
+    }
+    return Ok();
+  }
+
+private:
+  ModeBStats *fit_; // non-owning; outlives this runner (a BenchRun member)
+};
+
 // One completed bench run. Returned whole so the gate test can assert on typed
 // cell stats AND on the aggregates instead of re-parsing JSON.
 struct BenchRun {
   Scorecard card;
   AggregateMetrics aggregate;
   ModeStats stats;
+  // Mode B's fit accounting. Left all-zero on a Mode A run and emitted only
+  // under --mode B, so Mode A's aggregate receipt keeps its exact key set.
+  ModeBStats mode_b;
   // Cohort NAMES as the manifests declare them, in --cohort order. Names, never
   // membership: they are already on the command line.
   std::vector<std::string> cohort_names;
@@ -615,6 +913,35 @@ struct BenchRun {
   append_json_int(out, run.stats.rows_bad_input);
   out.append(",\n  \"rows_engine_error\": ");
   append_json_int(out, run.stats.rows_engine_error);
+  if (args.mode == BenchMode::B) {
+    // Mode B's REFUSALS, published rather than absorbed. Without this block the
+    // eleven metrics would silently describe whatever subset of the cohort
+    // happened to yield a vol, and the difference would be invisible. Every
+    // field is a whole-run COUNT — no cell key, band, date, bucket or underlier
+    // — so it stays inside the --aggregate-only confidentiality boundary. Only
+    // emitted under --mode B, which keeps Mode A's receipt key set exact.
+    const ModeBStats &fit = run.mode_b;
+    out.append(",\n  \"mode_b_fit\": {");
+    out.append("\n    \"groups_fitted\": ");
+    append_json_int(out, fit.groups_fitted);
+    out.append(",\n    \"rows_unfitted\": ");
+    append_json_int(out, fit.rows_unfitted());
+    out.append(",\n    \"rows_no_quote\": ");
+    append_json_int(out, fit.rows_no_quote);
+    out.append(",\n    \"rows_below_lo_bound\": ");
+    append_json_int(out, fit.rows_below_lo_bound);
+    out.append(",\n    \"rows_above_up_bound\": ");
+    append_json_int(out, fit.rows_above_up_bound);
+    out.append(",\n    \"rows_iv_no_solution\": ");
+    append_json_int(out, fit.rows_iv_no_solution);
+    out.append(",\n    \"rows_iv_at_floor\": ");
+    append_json_int(out, fit.rows_iv_at_floor);
+    out.append(",\n    \"rows_vega_below_floor\": ");
+    append_json_int(out, fit.rows_vega_below_floor);
+    out.append(",\n    \"rows_round_trip_failed\": ");
+    append_json_int(out, fit.rows_round_trip_failed);
+    out.append("\n  }");
+  }
   out.append(",\n  \"wall_seconds\": ");
   append_json_double(out, run.stats.wall_seconds);
   out.append(",\n  \"rows_per_second\": ");
@@ -631,16 +958,12 @@ struct BenchRun {
 // and returns the populated scorecard + aggregates. Writes nothing: emission is
 // the caller's, because the two output shapes differ in what they may reveal.
 [[nodiscard]] Result<BenchRun> run_oracle_bench_core(const BenchArgs &args) {
-  if (args.mode == BenchMode::B) {
-    // Deliberately NOT a stub. A Mode B that returned plausible numbers would
-    // be ratcheted on by the oracle loop, which is strictly worse than a run
-    // that refuses: the seam above is the whole contract until the Mode B lane
-    // implements it.
-    return Err(ErrorCode::NotImplemented,
-               "--mode B has no runner in this binary: the Mode B seam (fit from raw NBBO per "
-               "underlier x expiry x bucket) is a later charter stage, deliberately left "
-               "unimplemented so no number can be ratcheted on. Run --mode A.");
-  }
+  // The Stage-4 run-time refusal that used to stand here is GONE because a real
+  // Mode B now stands behind it (ModeBRunner above). It was never a stub: a
+  // Mode B returning plausible numbers would have been ratcheted on by the
+  // oracle loop, which is strictly worse than a run that refuses. The same
+  // principle now lives one level down, per row — every row Mode B cannot fit
+  // is counted in ModeBStats and published, never guessed at.
   if (args.quiet_host) {
     ATX_TRY_VOID(enforce_quiet_host());
   }
@@ -669,7 +992,15 @@ struct BenchRun {
   }
 
   ModeARunner mode_a;
-  ModeRunner *const runners[] = {&mode_a}; // Mode B registers here (later stage)
+  ModeBRunner mode_b{run.mode_b};
+  // ONE runner per invocation, selected by --mode. The loop below publishes
+  // run.stats and the scorecard's mode stats from the runner it ran, so running
+  // both in one pass would leave the scorecard describing the second mode and
+  // the aggregate describing a mixture of the two.
+  ModeRunner *const selected = args.mode == BenchMode::A
+                                   ? static_cast<ModeRunner *>(&mode_a)
+                                   : static_cast<ModeRunner *>(&mode_b);
+  ModeRunner *const runners[] = {selected};
   for (ModeRunner *const runner : runners) {
     ModeStats stats;
     stats.rows_null_sentinel = run.stats.rows_null_sentinel;
@@ -688,6 +1019,26 @@ struct BenchRun {
     std::fprintf(stderr, "oracle-bench: mode %.*s: %lld row(s) priced in %.3f s (%.0f rows/s)\n",
                  static_cast<int>(runner->name().size()), runner->name().data(),
                  static_cast<long long>(stats.rows_priced), stats.wall_seconds, rows_per_s);
+    if (args.mode == BenchMode::B) {
+      // Scalar COUNTS only — safe under --aggregate-only for the same reason
+      // rows/s is: a count is not membership. Named on stderr so a run whose
+      // vol coverage collapsed says so while it is running, instead of only in
+      // the receipt someone reads later.
+      const ModeBStats &fit = run.mode_b;
+      std::fprintf(stderr,
+                   "oracle-bench: mode b fit: %lld group(s); %lld row(s) unfitted "
+                   "(no-quote %lld, below-lo-bound %lld, above-up-bound %lld, no-solution %lld, "
+                   "at-vol-floor %lld, vega-below-floor %lld, round-trip %lld)\n",
+                   static_cast<long long>(fit.groups_fitted),
+                   static_cast<long long>(fit.rows_unfitted()),
+                   static_cast<long long>(fit.rows_no_quote),
+                   static_cast<long long>(fit.rows_below_lo_bound),
+                   static_cast<long long>(fit.rows_above_up_bound),
+                   static_cast<long long>(fit.rows_iv_no_solution),
+                   static_cast<long long>(fit.rows_iv_at_floor),
+                   static_cast<long long>(fit.rows_vega_below_floor),
+                   static_cast<long long>(fit.rows_round_trip_failed));
+    }
   }
   return Ok(std::move(run));
 }

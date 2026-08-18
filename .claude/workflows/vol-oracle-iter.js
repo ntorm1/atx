@@ -77,10 +77,16 @@ const TARGETED_BOOTSTRAP_GATE_IDS = Object.freeze(['mode_a_targeted_tests', 'mod
 // Pinned closure of the OracleBench gate suite. Moved 31 -> 49 by the CLI
 // contract lane: the frozen command lines above are now asserted verbatim
 // against parse_bench_args, and --aggregate-only's confidentiality boundary is
-// asserted rather than merely documented. Mirror of $script:OracleBenchTestIds
-// in scripts/oracle-targeted-gate.ps1 — the gate matches the ID SET, this
-// matches the count, and both must move together.
-const ORACLE_BENCH_TEST_COUNT = 49
+// asserted rather than merely documented. Moved 49 -> 53 by the Stage 4 Mode B
+// lane: OracleBenchModeB.FailsAtRunTimeWithADistinctActionableError asserted a
+// run-time refusal that a real Mode B runner retired, and five Mode B cases
+// replaced it (vol recovery against a known generating vol, the underlier x
+// expiry x bucket grouping, refusal-instead-of-vol-floor-clamp, the Mode B
+// confidentiality boundary, and the surviving "no data, no number" property).
+// Mirror of $script:OracleBenchTestIds in scripts/oracle-targeted-gate.ps1 —
+// the gate matches the ID SET, this matches the count, and both must move
+// together.
+const ORACLE_BENCH_TEST_COUNT = 53
 const ORACLE_CONVENTION_TEST_COUNT = 18
 // The BOUNDED no-regression rule, as a multiplier on the baseline value. Stated
 // as the multiplier and not as `1 + fraction` because five layers in three
