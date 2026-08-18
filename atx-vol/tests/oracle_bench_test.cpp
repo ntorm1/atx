@@ -51,6 +51,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <memory>
 #include <regex>
 #include <set>
@@ -869,6 +870,20 @@ TEST(OracleBenchReader, CrossesUnderliersAndBuckets) {
   // AAA: 3 + 2 across the buckets; BBB: 2 in bucket 1000, absent from 1330
   // (an underlier missing from a partition yields zero rows, NOT an error).
   EXPECT_EQ(scan->rows.size(), 7u);
+  // PARTITION IDENTITY survives the flattening. read_cohort_rows concatenates
+  // both partitions into one vector, so without these per-row fields a caller
+  // cannot tell a 1000 row from a 1330 row — which is precisely the grouping
+  // Mode B fits on. The srPrc markers are the fixture's partition witness:
+  // 11/12/13 + 21/22 were written to bucket 1000, 31/32 to bucket 1330.
+  std::map<std::string, std::set<double>> markers_by_bucket;
+  for (const OracleRow &row : scan->rows) {
+    EXPECT_EQ(row.date, "2026-08-14");
+    markers_by_bucket[row.bucket_et].insert(row.sr_prc);
+  }
+  const std::map<std::string, std::set<double>> want{
+      {"1000", {11.0, 12.0, 13.0, 21.0, 22.0}},
+      {"1330", {31.0, 32.0}}};
+  EXPECT_EQ(markers_by_bucket, want);
 }
 
 TEST(OracleBenchReader, MissingPartitionDirIsNotFound) {

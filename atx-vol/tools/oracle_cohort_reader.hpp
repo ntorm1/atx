@@ -52,8 +52,25 @@ struct Cohort {
 
 // One admitted store row: SpiderRock's own inputs + oracle outputs, exactly
 // the columns Mode A compares. All values validated finite by the reader.
+//
+// PARTITION IDENTITY (`date` + `bucket_et`) is carried per ROW, not merely per
+// scan. read_cohort_rows() concatenates every partition into one flat vector
+// and run_oracle_bench_core() concatenates every COHORT on top of that, so by
+// the time a ModeRunner sees the rows the partition boundaries are gone. Mode
+// B's contract is a fit per `underlier x expiry x bucket`, which is
+// unimplementable without these two fields: they are what keeps a row's
+// snapshot identity recoverable downstream. Mode A ignores them.
+//
+// These fields are MEMBERSHIP. They may key a grouping and they may be counted,
+// but they must never reach an --aggregate-only receipt or its stderr.
 struct OracleRow {
   std::string underlier;
+  // The partition this row was read from, verbatim: `date=<d>` -> "YYYY-MM-DD",
+  // `bucket_et=<b>` -> "HHMM". Copied from the cohort-declared strings that
+  // formed the path, never re-derived from row contents, so a grouping key
+  // built from them cannot drift from the directory that was actually opened.
+  std::string date;
+  std::string bucket_et;
   Side side = Side::Call;
   double strike = 0.0; // okey_xx
   double uprc = 0.0;
