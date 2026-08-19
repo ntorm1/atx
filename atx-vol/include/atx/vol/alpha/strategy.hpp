@@ -323,6 +323,10 @@ struct DateResult {
 
 struct Scorecard {
   std::vector<DateResult> per_date;
+  // Frame row indices the book actually held, aligned with `per_date`. This
+  // is what makes per-name attribution a readout instead of a re-derivation
+  // that could disagree with the ranking that ran.
+  std::vector<std::vector<std::size_t>> selected_rows;
   std::size_t n_dates{0};
 
   double mean_selected_net{0.0};
@@ -430,11 +434,15 @@ run(const PanelFrame &frame, std::span<const DateSlice> dates, std::span<const d
 
     double sg = 0.0;
     double sn = 0.0;
+    std::vector<std::size_t> held;
+    held.reserve(take);
     for (std::size_t k = 0; k < take; ++k) {
       const std::size_t r = ranked[k];
+      held.push_back(r);
       sg += pnl[r];
       sn += pnl[r] - cost_of(r);
     }
+    card.selected_rows.push_back(std::move(held));
     row.selected_gross = sg / static_cast<double>(take);
     row.selected_net = sn / static_cast<double>(take);
 

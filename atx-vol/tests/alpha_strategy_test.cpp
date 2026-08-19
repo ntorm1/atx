@@ -763,6 +763,12 @@ TEST(AlphaStrategy, PerfectForesightSelectsTheTopAndBeatsTheFloor) {
   EXPECT_NEAR(card->per_date[0].selected_gross, 9.0, 1e-12);
   EXPECT_NEAR(card->per_date[0].floor_gross, 5.0, 1e-12);
   EXPECT_NEAR(card->mean_excess_gross, 4.0, 1e-12);
+  // The held rows are recorded, aligned with per_date — attribution reads
+  // them instead of re-deriving the ranking.
+  ASSERT_EQ(card->selected_rows.size(), card->per_date.size());
+  ASSERT_EQ(card->selected_rows[0].size(), 2U);
+  EXPECT_NEAR((*pnl)[card->selected_rows[0][0]], 10.0, 1e-12);
+  EXPECT_NEAR((*pnl)[card->selected_rows[0][1]], 8.0, 1e-12);
 }
 
 TEST(AlphaStrategy, AVetoedNameLeavesBothBooksNotJustTheSelection) {

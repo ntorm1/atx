@@ -54,6 +54,7 @@ struct Args {
   double avoid_earn_days{0.0}; // >0: veto names within N days of their print
   bool keep_cheap_prints{false}; // exempt prints priced below the name's own history (f31 < 0)
   std::vector<std::string> flip; // features traded AGAINST their catalogue prior
+  bool per_name{false}; // per-symbol attribution of the held book
   // "dh" = the delta-hedged money axis. "rv" = the decontaminated cross-read:
   // forward realized vol alone, no implied leg, not a P&L.
   std::string axis{"dh"};
@@ -166,6 +167,8 @@ bool parse_args(int argc, char **argv, Args &a) {
       for (const std::string &n : split_commas(v)) {
         a.flip.push_back(n);
       }
+    } else if (flag == "--per-name") {
+      a.per_name = true;
     } else if (flag == "--axis" && next()) {
       if (v != "dh" && v != "rv" && v != "volchg" && v != "dh63" && v != "dhev") {
         std::fprintf(stderr, "--axis must be 'dh', 'rv', 'volchg', 'dh63' or 'dhev' (got '%s')\n",
@@ -574,6 +577,50 @@ int main(int argc, char **argv) {
               card->phase_mean_excess_net.size());
   std::printf("    positive phases   %.0f%%   min %+.4f   max %+.4f\n",
               100.0 * card->phase_positive_fraction, card->phase_min_mean, card->phase_max_mean);
+
+  if (args.per_name) {
+    // Attribution reads the recorded holdings; it never re-derives the
+    // ranking. Gross P&L (costs are a uniform tier and cancel in the excess).
+    auto sym_col = frame.strings("symbol");
+    if (!sym_col) {
+      std::fprintf(stderr, "--per-name: %s\n", sym_col.error().to_string().c_str());
+      return 1;
+    }
+    struct Agg {
+      std::size_t held{0};
+      double gross{0.0};
+    };
+    std::unordered_map<std::string, Agg> by_name;
+    for (const std::vector<std::size_t> &day : card->selected_rows) {
+      for (const std::size_t r : day) {
+        Agg &a = by_name[std::string((*sym_col)[r])];
+        a.held += 1;
+        a.gross += (*pnl)[r];
+      }
+    }
+    std::vector<std::pair<std::string, Agg>> rows(by_name.begin(), by_name.end());
+    std::sort(rows.begin(), rows.end(), [](const auto &a, const auto &b) {
+      return std::abs(a.second.gross) > std::abs(b.second.gross);
+    });
+    double top5 = 0.0;
+    for (std::size_t k = 0; k < rows.size() && k < 5; ++k) {
+      top5 += std::abs(rows[k].second.gross);
+    }
+    double abs_total = 0.0;
+    for (const auto &[n, a] : rows) {
+      abs_total += std::abs(a.gross);
+    }
+    std::printf("\nPER-NAME  %zu names ever held; top-5 |gross| share %.1f%%%s\n", rows.size(),
+                abs_total > 0.0 ? 100.0 * top5 / abs_total : 0.0,
+                abs_total > 0.0 && top5 / abs_total > 0.5
+                    ? "  — CONCENTRATED: the book is a few names, not a cross-section"
+                    : "");
+    std::printf("  %-8s %6s %12s\n", "name", "held", "gross vp*d");
+    for (std::size_t k = 0; k < rows.size() && k < 12; ++k) {
+      std::printf("  %-8s %6zu %+12.2f\n", rows[k].first.c_str(), rows[k].second.held,
+                  rows[k].second.gross);
+    }
+  }
 
   // Goyal-Saretto's 5% FDR bound for this literature. Stated so a reader does
   // not have to remember which hurdle applies.
