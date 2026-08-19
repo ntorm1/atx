@@ -878,6 +878,60 @@ inline std::size_t apply_vrp_split_adjustment(VrpSeries &s,
   return in_range.size();
 }
 
+// ── The meta block must ADD UP ─────────────────────────────────────────────
+//
+// A shipped panel was found carrying counters from a DIFFERENT run. Its header
+// said n_symbols=25 / n_rows=5848 while also claiming n_symbol_sessions=24888
+// (= 244 x 102, a 102-name corpus) and n_var21_out_of_range=3544. Nothing
+// detected it, and a reader who took the header at face value concluded the
+// drop rate was 14.2% when the file's own rate was 2.31% -- a 6x error, in the
+// number that decides whether a schema change is worth making.
+//
+// The arithmetic that catches it is trivial and was simply never written down:
+// every attempted (symbol, session) ends in EXACTLY ONE bucket, so the buckets
+// must sum to the attempts. It runs in the emitter rather than in a QA script
+// because a header that lies is worse than a run that fails -- the run's author
+// is present to fix it; the header's reader, months later, is not.
+//
+// Pure and free-standing so it can be tested against hand-built counters. The
+// two identities:
+//   n_rows == n_symbol_sessions - no_surface - bad_spot   [- var21_* pre-v4]
+//   n_symbol_sessions == n_sessions * n_symbols
+[[nodiscard]] inline Status check_vrp_counters(const VrpPanelCounters &c, VrpPanelSchema schema,
+                                               std::size_t n_symbols) {
+  const std::size_t no_bar = c.n_no_surface + c.n_bad_spot;
+  const std::size_t no_strip =
+      c.n_var21_out_of_range + c.n_var21_error + c.n_var21_nonfinite;
+  // v4 KEEPS the strip-less rows; every earlier schema drops them.
+  const bool v4 = schema == VrpPanelSchema::V4;
+  const std::size_t accounted = v4 ? no_bar : no_bar + no_strip;
+  if (accounted > c.n_symbol_sessions) {
+    return atx::core::Err(ErrorCode::Internal,
+                          "check_vrp_counters: drop buckets (" + std::to_string(accounted) +
+                              ") exceed attempted symbol-sessions (" +
+                              std::to_string(c.n_symbol_sessions) + ")");
+  }
+  const std::size_t expected = c.n_symbol_sessions - accounted;
+  if (c.n_rows_written != expected) {
+    return atx::core::Err(
+        ErrorCode::Internal,
+        "check_vrp_counters: accounting does not close -- n_rows=" +
+            std::to_string(c.n_rows_written) + " but n_symbol_sessions(" +
+            std::to_string(c.n_symbol_sessions) + ") - no_surface(" +
+            std::to_string(c.n_no_surface) + ") - bad_spot(" + std::to_string(c.n_bad_spot) +
+            ")" + (v4 ? std::string{} : " - var21(" + std::to_string(no_strip) + ")") + " = " +
+            std::to_string(expected) + ". The emitted meta header would misreport this run.");
+  }
+  if (c.n_symbol_sessions != c.n_sessions * n_symbols) {
+    return atx::core::Err(ErrorCode::Internal,
+                          "check_vrp_counters: n_symbol_sessions(" +
+                              std::to_string(c.n_symbol_sessions) + ") != n_sessions(" +
+                              std::to_string(c.n_sessions) + ") * n_symbols(" +
+                              std::to_string(n_symbols) + ")");
+  }
+  return atx::core::Ok();
+}
+
 // ── Row building (pure; the gate tests drive this without a SurfaceDb) ───
 
 // Series -> panel rows. Bars with NaN iv21 are the already-counted dropped
@@ -1498,6 +1552,7 @@ write_vrp_panel_tsv(std::string_view path, VrpPanelSchema schema,
             ") — the spot series carries an unadjusted corporate action; supply its factor via "
             "--splits");
   }
+  ATX_TRY_VOID(check_vrp_counters(counters, cfg.schema, symbols.size()));
   if (counters.n_rows_written == 0) {
     return atx::core::Err(
         ErrorCode::NotFound,

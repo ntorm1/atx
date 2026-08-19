@@ -190,6 +190,73 @@ TEST(AlphaCompute, StepThresholdMatchesTheEmitterDerivation) {
   EXPECT_NEAR(kAlphaImplausibleStepReturn, derived, 1e-15);
 }
 
+// ── Round 11: the semivariance decomposition ────────────────────────────────
+//
+// A 26-session single-name panel with a deterministic path that genuinely
+// changes sign, so RS+ and RS- are both non-trivial. bar_index makes the axis
+// exact so no window is gated away.
+[[nodiscard]] std::string make_semivar_panel(int n) {
+  std::string out = "symbol\tdate\tspot\tiv_fair_21d\tiv_fair_63d\trv_fwd_21d\tbar_index\n";
+  double s = 100.0;
+  for (int i = 0; i < n; ++i) {
+    // Alternating-magnitude drift: down moves are deliberately LARGER than up
+    // moves, so RS- > RS+ and a test that mixed them up fails loudly.
+    const double r = (i % 3 == 0) ? -0.03 : 0.01;
+    s *= std::exp(r);
+    char buf[256];
+    std::snprintf(buf, sizeof buf, "AAA\t2026-%02d-%02d\t%.10f\t0.20\t0.22\t0.25\t%d\n",
+                  1 + i / 28, 1 + i % 28, s, i);
+    out += buf;
+  }
+  return out;
+}
+
+// THE IDENTITY THE DECOMPOSITION RESTS ON: RS+ + RS- == RV, exactly. If it
+// does not hold, the signed jump variation is not a jump measure -- the
+// continuous part fails to cancel in the difference and f24 is measuring the
+// vol level instead.
+TEST(AlphaCompute, UpsideAndDownsideSemivarianceSumToTotalVariance) {
+  const PanelFrame f = load(make_semivar_panel(40));
+  const FeatureRegistry reg = builtin_features();
+  const std::vector<std::string> pats{"f2_log_rv21", "f22_semivar_dn_21d", "f23_semivar_up_21d",
+                                      "f24_signed_jump_21d"};
+  const auto sel = reg.select(pats);
+  ASSERT_TRUE(sel);
+  auto out = evaluate(f, *sel);
+  ASSERT_TRUE(out) << out.error().to_string();
+  const std::vector<double> &rv = out->values.at("f2_log_rv21");
+  const std::vector<double> &dn = out->values.at("f22_semivar_dn_21d");
+  const std::vector<double> &up = out->values.at("f23_semivar_up_21d");
+  const std::vector<double> &sj = out->values.at("f24_signed_jump_21d");
+
+  std::size_t checked = 0;
+  for (std::size_t i = 21; i < f.rows(); ++i) {
+    ASSERT_TRUE(std::isfinite(rv[i])) << i;
+    ASSERT_TRUE(std::isfinite(dn[i]) && std::isfinite(up[i])) << i;
+    // The features are logs; the identity lives in variance space.
+    const double v_dn = std::exp(dn[i]);
+    const double v_up = std::exp(up[i]);
+    EXPECT_NEAR(v_dn + v_up, std::exp(rv[i]), 1e-12 * std::exp(rv[i])) << i;
+    // ...and f24 is that same pair, scaled to a share.
+    EXPECT_NEAR(sj[i], (v_up - v_dn) / (v_up + v_dn), 1e-12) << i;
+    ++checked;
+  }
+  ASSERT_GT(checked, 0u);
+}
+
+TEST(AlphaCompute, DownsideSemivarianceIsTheLargerLegOnADownwardSkewedPath) {
+  // Anti-vacuity for the test above: the identity would hold even if the two
+  // legs were swapped, so pin which is which on a path built to be asymmetric.
+  const PanelFrame f = load(make_semivar_panel(40));
+  const FeatureRegistry reg = builtin_features();
+  const std::vector<std::string> pats{"f22_semivar_dn_21d", "f23_semivar_up_21d"};
+  const auto sel = reg.select(pats);
+  ASSERT_TRUE(sel);
+  auto out = evaluate(f, *sel);
+  ASSERT_TRUE(out) << out.error().to_string();
+  EXPECT_GT(out->values.at("f22_semivar_dn_21d")[30], out->values.at("f23_semivar_up_21d")[30]);
+}
+
 TEST(AlphaCompute, AGapNaNsEveryWindowSpanningIt) {
   const PanelFrame f = load(kGappy);
   const FeatureRegistry reg = builtin_features();
@@ -464,6 +531,46 @@ TEST(AlphaStrategy, TheDecontaminatedAxisCarriesNoImpliedLeg) {
   // The difference is exactly the entry mark, which is the shared leg the
   // adjudicator reports and the cross-read removes.
   EXPECT_NEAR((*rv)[0] - (*dh)[0], 20.0, 1e-9);
+}
+
+// The THIRD axis. `rv` removes the implied leg but keeps the VOL LEVEL, and
+// volatility is persistent, so a top-N book sorted on any trailing-variance
+// feature beats an equal-weight floor on `rv` almost by construction. Measured
+// on the 616-name panel, f22_semivar_dn_21d scored +32.998 vol points of
+// forward-RV excess with 100% of phases positive while LOSING 1.974 on the
+// money axis with 0% positive. `volchg` subtracts the trailing leg so what is
+// left is the CHANGE.
+TEST(AlphaStrategy, TheVolChangeAxisCarriesNeitherTheImpliedLegNorTheVolLevel) {
+  // rv_fwd 0.30 against a trailing 21d vol of exactly 0.25: f2 = ln(0.25^2).
+  const double f2 = std::log(0.25 * 0.25);
+  char buf[512];
+  std::snprintf(buf, sizeof buf,
+                "symbol\tdate\tspot\tiv_fair_21d\tiv_fair_63d\trv_fwd_21d\tf2_log_rv21\n"
+                "AAA\t2026-01-05\t100\t0.20\t0.22\t0.30\t%.17g\n",
+                f2);
+  const PanelFrame f = load(buf);
+  auto dh = dh_straddle_pnl_vol_points(f);
+  auto rv = forward_rv_vol_points(f);
+  auto vc = vol_change_vol_points(f);
+  ASSERT_TRUE(dh);
+  ASSERT_TRUE(rv);
+  ASSERT_TRUE(vc) << vc.error().to_string();
+  EXPECT_NEAR((*dh)[0], 10.0, 1e-9); // 100 * (0.30 - 0.20), carries the mark
+  EXPECT_NEAR((*rv)[0], 30.0, 1e-9); // 100 * 0.30,          carries the level
+  EXPECT_NEAR((*vc)[0], 5.0, 1e-9);  // 100 * (0.30 - 0.25), carries neither
+  // The trailing leg it removes is exp(f2/2), read from the panel's own column
+  // rather than recomputed -- so the axis is the emitter's trailing vol, not a
+  // second opinion about it.
+  EXPECT_NEAR((*rv)[0] - (*vc)[0], 100.0 * std::exp(0.5 * f2), 1e-9);
+}
+
+// A panel with no f2 column cannot form this axis, and must say so rather than
+// emit an all-NaN column that reads as "no signal".
+TEST(AlphaStrategy, TheVolChangeAxisRefusesAPanelWithoutTheTrailingColumn) {
+  const PanelFrame f = load(kBook);
+  ASSERT_FALSE(f.schema().has("f2_log_rv21"));
+  const auto vc = vol_change_vol_points(f);
+  EXPECT_FALSE(vc.has_value());
 }
 
 TEST(AlphaStrategy, ADateThatCannotFormBothBooksFormsNeither) {

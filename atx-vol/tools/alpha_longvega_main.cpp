@@ -70,7 +70,12 @@ void usage() {
       "usage: atx-vol-longvega --panel <tsv> [options]\n"
       "  --features PAT[,PAT...]  catalogue globs (default: the five-signal long-vega set)\n"
       "  --market SYM             market proxy for f15_idio_share (default SPY)\n"
-      "  --axis dh|rv             dh = delta-hedged straddle P&L, 100*(rv_fwd - iv_entry),\n"
+      "  --axis dh|rv|volchg      volchg = 100*(rv_fwd - rv_trail), the VOL-CHANGE\n"
+    "                           axis: no implied leg AND no vol level, so it is\n"
+    "                           immune to both the entry-mark channel and to\n"
+    "                           volatility persistence. It carries its own\n"
+    "                           -rv_trail leg, which the adjudicator names.\n"
+    "  --axis dh|rv             dh = delta-hedged straddle P&L, 100*(rv_fwd - iv_entry),\n"
       "                           the money axis (default). rv = 100*rv_fwd alone, the\n"
       "                           DECONTAMINATED cross-read: no implied leg, so a selection\n"
       "                           excess that survives it is forecasting skill rather than\n"
@@ -118,8 +123,8 @@ bool parse_args(int argc, char **argv, Args &a) {
     } else if (flag == "--market" && next()) {
       a.market = v;
     } else if (flag == "--axis" && next()) {
-      if (v != "dh" && v != "rv") {
-        std::fprintf(stderr, "--axis must be 'dh' or 'rv' (got '%s')\n", v.c_str());
+      if (v != "dh" && v != "rv" && v != "volchg") {
+        std::fprintf(stderr, "--axis must be 'dh', 'rv' or 'volchg' (got '%s')\n", v.c_str());
         return false;
       }
       a.axis = v;
@@ -309,7 +314,9 @@ int main(int argc, char **argv) {
   }
 
   // ── 4. ADJUDICATE ─────────────────────────────────────────────────────────
-  const char *axis_target = args.axis == "rv" ? "rv_fwd_21d" : "dh_straddle_pnl_21d";
+  const char *axis_target = args.axis == "rv"       ? "rv_fwd_21d"
+                            : args.axis == "volchg" ? "vol_chg_21d"
+                                                    : "dh_straddle_pnl_21d";
   const TargetSpec *money = treg.find(axis_target);
   if (money == nullptr) {
     std::fprintf(stderr, "catalogue is missing %s\n", axis_target);
@@ -372,7 +379,9 @@ int main(int argc, char **argv) {
   }
 
   // ── 6. RUN ────────────────────────────────────────────────────────────────
-  auto pnl = args.axis == "rv" ? forward_rv_vol_points(frame) : dh_straddle_pnl_vol_points(frame);
+  auto pnl = args.axis == "rv"       ? forward_rv_vol_points(frame)
+             : args.axis == "volchg" ? vol_change_vol_points(frame)
+                                     : dh_straddle_pnl_vol_points(frame);
   if (!pnl) {
     std::fprintf(stderr, "\nP&L construction failed: %s\n", pnl.error().to_string().c_str());
     return 1;

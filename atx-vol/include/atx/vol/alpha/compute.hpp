@@ -271,6 +271,31 @@ namespace compute_detail {
 // must be ADJACENT in the market series. That rule is what stops a symbol that
 // missed a session from regressing its 2-day return on the market's 1-day one
 // — the defect a naive positional zip produces exactly on the days that matter.
+// Realized SEMIvariance over the k returns ending at and including i:
+// `want_down` selects sum(r^2 | r < 0), otherwise sum(r^2 | r > 0). Annualized
+// on the SAME k denominator as `c2c_vol`, not on the count of qualifying
+// sessions -- RS+ + RS- must equal RV, which is the identity the signed jump
+// variation is built on, and normalizing each side by its own count breaks it.
+// A zero return contributes to neither side, matching Patton & Sheppard's
+// indicator convention.
+[[nodiscard]] inline double semivar(std::span<const double> spot, std::size_t i, std::size_t k,
+                                    bool want_down) noexcept {
+  if (k == 0 || i < k) {
+    return nan_d();
+  }
+  double sum = 0.0;
+  for (std::size_t j = i + 1 - k; j <= i; ++j) {
+    const double r = logret(spot, j);
+    if (!std::isfinite(r)) {
+      return nan_d();
+    }
+    if (want_down ? (r < 0.0) : (r > 0.0)) {
+      sum += r * r;
+    }
+  }
+  return sum / static_cast<double>(k) * kTradingDays;
+}
+
 [[nodiscard]] inline double idio_share(const SymbolSeries &sym, const MarketSeries &mkt,
                                        std::size_t i, std::size_t w) noexcept {
   if (mkt.empty() || w < 3 || i < w) {
@@ -342,6 +367,7 @@ using FeatureFn = double (*)(const EvalInputs &, std::size_t);
   using compute_detail::logret;
   using compute_detail::nan_d;
   using compute_detail::own_rank;
+  using compute_detail::semivar;
 
   static const std::unordered_map<std::string, FeatureFn> kMap = {
       {"f0_log_rv1",
@@ -456,6 +482,73 @@ using FeatureFn = double (*)(const EvalInputs &, std::size_t);
            return nan_d();
          }
          return diff_stdev(in.sym->atmf21, i, 63, /*log_scale=*/false);
+       }},
+      // ── Round 11: realized-vol predictors ───────────────────────────────
+      {"f22_semivar_dn_21d",
+       [](const EvalInputs &in, std::size_t i) {
+         if (!in.sym->window_contiguous(i, 21)) {
+           return nan_d();
+         }
+         // Floored, not guarded: a 21-session window with no down close is
+         // rare but real, and ln(0) would emit -inf into a rank. The floor is
+         // f0's, so the two log-variance features share one convention.
+         return std::log(std::max(semivar(in.sym->spot, i, 21, /*want_down=*/true), kLogRv1Floor));
+       }},
+      {"f23_semivar_up_21d",
+       [](const EvalInputs &in, std::size_t i) {
+         if (!in.sym->window_contiguous(i, 21)) {
+           return nan_d();
+         }
+         return std::log(std::max(semivar(in.sym->spot, i, 21, /*want_down=*/false), kLogRv1Floor));
+       }},
+      {"f24_signed_jump_21d",
+       [](const EvalInputs &in, std::size_t i) {
+         if (!in.sym->window_contiguous(i, 21)) {
+           return nan_d();
+         }
+         const double up = semivar(in.sym->spot, i, 21, /*want_down=*/false);
+         const double dn = semivar(in.sym->spot, i, 21, /*want_down=*/true);
+         const double rv = up + dn; // the identity: RS+ + RS- == RV
+         if (!(std::isfinite(rv) && rv > 0.0)) {
+           return nan_d();
+         }
+         // Scaled to a share so it is a JUMP ASYMMETRY and not a restatement
+         // of the variance level, which f2 already carries.
+         return (up - dn) / rv;
+       }},
+      {"f25_leverage_21d",
+       [](const EvalInputs &in, std::size_t i) {
+         if (!in.sym->window_contiguous(i, 21)) {
+           return nan_d();
+         }
+         const double r = logret(in.sym->spot, i);
+         if (!std::isfinite(r)) {
+           return nan_d();
+         }
+         const double v = c2c_vol(in.sym->spot, i, 21);
+         // The source's RV_t * 1{r_t < 0}: the variance on down closes, the
+         // floor otherwise. Emitting 0 instead of the floor would put the
+         // no-leverage rows ABOVE the quietest down-close rows in a rank.
+         return r < 0.0 ? std::log(std::max(v * v, kLogRv1Floor)) : std::log(kLogRv1Floor);
+       }},
+      {"f26_gs_hviv_252d",
+       [](const EvalInputs &in, std::size_t i) {
+         if (!in.sym->window_contiguous(i, 252)) {
+           return nan_d();
+         }
+         const double v = c2c_vol(in.sym->spot, i, 252);
+         const double iv = in.sym->iv21[i];
+         return (v > 0.0 && iv > 0.0) ? std::log(v / iv) : nan_d();
+       }},
+      {"f27_sysvol_share_63d",
+       [](const EvalInputs &in, std::size_t i) {
+         if (in.market == nullptr || !in.sym->window_contiguous(i, 63)) {
+           return nan_d();
+         }
+         const double idio = idio_share(*in.sym, *in.market, i, 63);
+         // 1 - idio, not a second regression: computing it separately would
+         // let the two features disagree about the same fit.
+         return std::isfinite(idio) ? 1.0 - idio : nan_d();
        }},
       {"liq_hspread_frac",
        [](const EvalInputs &in, std::size_t i) { return in.sym->liq_hspread[i]; }},

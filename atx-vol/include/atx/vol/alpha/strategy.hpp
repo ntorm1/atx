@@ -494,6 +494,40 @@ run(const PanelFrame &frame, std::span<const DateSlice> dates, std::span<const d
 // that go on to REALIZE more vol, or does it only pick names whose entry mark
 // was low? A selection excess that survives here is forecasting skill. One that
 // evaporates was the entry-mark channel all along.
+// The VOL-CHANGE axis: 100 * (rv_fwd_21d - rv_trail_21d), vol points.
+//
+// WHY A THIRD AXIS. The raw forward-RV cross-read decontaminates the money
+// axis of its implied leg, but it is not itself clean -- it carries the VOL
+// LEVEL. Selecting the highest-trailing-variance names beats an
+// equal-weight-everything floor on forward RV almost by definition, because
+// realized vol is persistent. Measured on the 616-name panel, a top-50 book
+// sorted on trailing downside semivariance scored +32.998 vol points of
+// forward-RV excess with 100% of phases positive -- and LOST 1.974 vol points
+// on the money axis with 0% of phases positive. Volatility persistence is the
+// most forecastable thing in the panel and it is already in the mark.
+//
+// Subtracting the trailing leg removes the level and leaves the CHANGE, which
+// is the part a long-vega book is actually paid for. This is not a free lunch
+// either: the axis now carries an explicit -rv_trail leg, so every trailing-
+// realized-vol feature is mechanically related to it in the same way f3/f4/f5
+// are related to the money axis. That is a channel, it is the mirror image of
+// the entry-mark channel, and the honest move is to say so and report all
+// three axes rather than to pick the flattering one.
+[[nodiscard]] inline Result<std::vector<double>> vol_change_vol_points(const PanelFrame &frame) {
+  ATX_TRY(const auto rv_fwd, frame.numbers("rv_fwd_21d"));
+  ATX_TRY(const auto f2, frame.numbers("f2_log_rv21"));
+  std::vector<double> out(frame.rows(), std::numeric_limits<double>::quiet_NaN());
+  for (std::size_t r = 0; r < frame.rows(); ++r) {
+    // f2 is ln(trailing 21-session annualized variance), so the trailing vol
+    // is exp(f2/2). Read from the emitted column rather than recomputed, so
+    // the axis is the panel's own trailing leg and not a second opinion.
+    if (std::isfinite(rv_fwd[r]) && std::isfinite(f2[r])) {
+      out[r] = 100.0 * (rv_fwd[r] - std::exp(0.5 * f2[r]));
+    }
+  }
+  return Ok(std::move(out));
+}
+
 [[nodiscard]] inline Result<std::vector<double>> forward_rv_vol_points(const PanelFrame &frame) {
   ATX_TRY(const auto rv_fwd, frame.numbers("rv_fwd_21d"));
   std::vector<double> out(frame.rows(), std::numeric_limits<double>::quiet_NaN());

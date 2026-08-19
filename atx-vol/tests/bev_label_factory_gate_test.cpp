@@ -1046,6 +1046,86 @@ TEST(VrpPanelV4, SchemaTableIsAPrefixExtensionOfV3PlusBarIndex) {
   EXPECT_EQ(schema_name(VrpPanelSchema::V4), "vrp_panel_v4");
 }
 
+// ── The meta block must add up ───────────────────────────────────────────
+//
+// Reproduces the defect that motivated the guard: a real shipped panel carried
+// n_symbols=25 / n_rows=5848 beside n_symbol_sessions=24888 (= 244 x 102) and
+// n_var21_out_of_range=3544. Those numbers cannot describe one run, and every
+// reader of that header -- including this project -- believed them.
+TEST(VrpPanelCounters, RejectsTheShippedPanelHeaderThatDescribedADifferentRun) {
+  VrpPanelCounters c;
+  c.n_sessions = 244;
+  c.n_symbol_sessions = 24888; // 244 * 102, but the file claimed 25 symbols
+  c.n_no_surface = 683;
+  c.n_var21_out_of_range = 3544;
+  c.n_rows_written = 5848;
+  const Status st = check_vrp_counters(c, VrpPanelSchema::V2, /*n_symbols=*/25);
+  ASSERT_FALSE(st.has_value());
+  EXPECT_EQ(st.error().code(), ErrorCode::Internal);
+  // 24888 - 683 - 3544 = 20661, nowhere near the 5848 rows the file held.
+  EXPECT_NE(st.error().to_string().find("20661"), std::string::npos)
+      << st.error().to_string();
+}
+
+TEST(VrpPanelCounters, AcceptsACoherentRunUnderEverySchema) {
+  // The real 25-name run: 6100 = 244 * 25, and 6100 - 111 - 141 = 5848.
+  VrpPanelCounters c;
+  c.n_sessions = 244;
+  c.n_symbol_sessions = 6100;
+  c.n_no_surface = 111;
+  c.n_var21_out_of_range = 141;
+  c.n_rows_written = 5848;
+  EXPECT_TRUE(check_vrp_counters(c, VrpPanelSchema::V1, 25).has_value());
+  EXPECT_TRUE(check_vrp_counters(c, VrpPanelSchema::V2, 25).has_value());
+  EXPECT_TRUE(check_vrp_counters(c, VrpPanelSchema::V3, 25).has_value());
+  // v4 keeps the strip-less rows, so the SAME drops imply a different row
+  // count -- and the real 616-name v4 run closes on exactly that identity:
+  // 153384 - 13606 = 139778.
+  EXPECT_FALSE(check_vrp_counters(c, VrpPanelSchema::V4, 25).has_value());
+  VrpPanelCounters v4 = c;
+  v4.n_rows_written = 6100 - 111; // v4 emits the var21 rows too
+  EXPECT_TRUE(check_vrp_counters(v4, VrpPanelSchema::V4, 25).has_value());
+}
+
+TEST(VrpPanelCounters, CatchesASymbolCountThatDoesNotDivideTheAttempts) {
+  VrpPanelCounters c;
+  c.n_sessions = 244;
+  c.n_symbol_sessions = 6100;
+  c.n_no_surface = 111;
+  c.n_var21_out_of_range = 141;
+  c.n_rows_written = 5848;
+  // Rows close, but 244 * 26 != 6100 -- the second identity is what pins the
+  // header's `n_symbols` to the run that produced it.
+  const Status st = check_vrp_counters(c, VrpPanelSchema::V2, /*n_symbols=*/26);
+  ASSERT_FALSE(st.has_value());
+  EXPECT_NE(st.error().to_string().find("n_symbol_sessions"), std::string::npos);
+}
+
+// A guard that only ever passes is not a guard. Every run this suite builds
+// goes through it, so this test asserts the SHAPE the real emitter produces
+// rather than a fixture -- it fails if the row policy and the counters ever
+// stop agreeing.
+TEST(VrpPanelCounters, TheRealEmitterClosesItsOwnAccounting) {
+  const VrpSeries s = make_vrp_series_with_strip_holes(120);
+  std::size_t holes = 0;
+  for (const double v : s.iv21) {
+    holes += std::isnan(v) ? 1U : 0U;
+  }
+  for (const VrpPanelSchema schema : {VrpPanelSchema::V2, VrpPanelSchema::V4}) {
+    VrpPanelCounters c;
+    // One symbol, one session per bar, nothing absent: the loader's own
+    // bookkeeping for a series with no missing surfaces.
+    c.n_sessions = s.spot.size();
+    c.n_symbol_sessions = s.spot.size();
+    c.n_var21_out_of_range = holes;
+    const auto rows = build_vrp_rows(s, c, schema);
+    ASSERT_TRUE(rows.has_value()) << rows.error().to_string();
+    EXPECT_TRUE(check_vrp_counters(c, schema, /*n_symbols=*/1).has_value())
+        << "schema " << schema_name(schema) << ": "
+        << check_vrp_counters(c, schema, 1).error().to_string();
+  }
+}
+
 // ── Quarantine: the unit of the defect is a STEP ─────────────────────────
 //
 // An unadjusted corporate action puts one impossible return in the middle of

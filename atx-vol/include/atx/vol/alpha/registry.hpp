@@ -319,6 +319,77 @@ using TargetRegistry = Registry<TargetSpec>;
        "A CONTINUOUS PROXY for AGKR front-smile concavity, NOT their dummy. "
        "Prior is None on purpose: AGKR conclude the earnings premium is priced "
        "in GAMMA, not vega."});
+
+  // ── Round 11: predictors of REALIZED vol, not of implied richness ───────
+  //
+  // Everything above f22 is, in the end, some statement about whether IV is
+  // cheap. The measured consequence on this book was f4_term_slope: best
+  // signal on the money axis, ZERO of 21 non-overlapping phases positive
+  // against forward realized vol. Campasano & Linn (SSRN 2871616, 2017) give
+  // the mechanism in so many words -- "the term structure inverts due largely
+  // to an increase in one month implied volatility as opposed to an increase
+  // in volatility of the underlying asset" -- so that whole family is an
+  // IV-overreaction signal wearing a realized-vol costume. The block below is
+  // deliberately the other kind.
+  //
+  // READ THE PRIORS CAREFULLY. f22/f23/f25 are calibrated against FORWARD
+  // REALIZED VOL, because that is what their source regresses. Whether IV
+  // already prices them is the MEASUREMENT, not the prior -- a feature can
+  // forecast realized vol perfectly and still lose money if the mark already
+  // reflects it. f24/f26/f27 come from sources whose dependent variable is a
+  // delta-hedged P&L, so their priors are money-axis priors.
+  put({"f22_semivar_dn_21d", Unit::LogVariance, SignPrior::BuyHigh,
+       "Patton & Sheppard, REStat 97(3) 2015 (daily-return proxy for 5-min RS-)",
+       {spot(-21, 0)},
+       "ln of the trailing 21-session DOWNSIDE realized variance, sum of r^2 "
+       "over negative-return sessions only, annualized. In the cited panel of "
+       "105 individual names at h=22 -- this exact horizon -- the downside "
+       "semivariance coefficient is 0.388 (t 12.8) against 0.091 (t 7.3) for "
+       "the upside one: 3-4x the loading. DEGRADED: the source uses 5-minute "
+       "returns and we have daily closes, so this is the coarse analogue."});
+  put({"f23_semivar_up_21d", Unit::LogVariance, SignPrior::BuyHigh,
+       "Patton & Sheppard, REStat 97(3) 2015 (daily-return proxy for 5-min RS+)",
+       {spot(-21, 0)},
+       "ln of the trailing 21-session UPSIDE realized variance. Ships beside "
+       "f22 rather than folded into it because the whole point of the "
+       "decomposition is that the two carry DIFFERENT coefficients; a single "
+       "combined feature would assert they do not."});
+  put({"f24_signed_jump_21d", Unit::Dimensionless, SignPrior::BuyLow,
+       "Patton & Sheppard, REStat 97(3) 2015 (signed jump variation)",
+       {spot(-21, 0)},
+       "(RS+ - RS-) / RV, the signed jump variation scaled to a share. The "
+       "continuous part cancels in the difference, leaving the jump asymmetry. "
+       "BuyLow: downside-dominated jumps predict HIGHER forward realized vol, "
+       "so the cheap-vega side is the negative tail of this feature."});
+  put({"f25_leverage_21d", Unit::LogVariance, SignPrior::BuyHigh,
+       "Patton & Sheppard, REStat 97(3) 2015 (RV * 1{r<0} leverage term)",
+       {spot(-21, 0)},
+       "ln(trailing 21d variance) on down-close sessions, ln(floor) otherwise "
+       "-- the source's RV_t * 1{r_t < 0} interaction, which enters their h=22 "
+       "panel at +0.036 (t 5.1) ON TOP of both semivariances. It is an "
+       "interaction, so it is only meaningful WITH f22/f23 in the same fit."});
+  put({"f26_gs_hviv_252d", Unit::LogRatio, SignPrior::BuyHigh,
+       "Goyal & Saretto, JFE 94(2) 2009 (the AS-PUBLISHED 252-session window)",
+       {spot(-252, 0), strip(21, 0, 0)},
+       "ln(rv_trail_252d / iv_fair_21d). THE CITED SIGNAL. f5_hv_iv_gap uses a "
+       "21-session realized leg, which is NOT what Goyal & Saretto sort on -- "
+       "they use one YEAR of daily returns against one-month IV. Since this "
+       "panel also carries f2 = ln(rv_21^2) and f3 = ln(iv^2), f5 is close to "
+       "collinear with f2 - f3 and the published feature was simply missing. "
+       "Campasano & Linn corroborate the long window independently: front IV "
+       "is more sensitive to the previous YEAR's realized vol than the "
+       "previous month's."});
+  put({"f27_sysvol_share_63d", Unit::Dimensionless, SignPrior::BuyHigh,
+       "Cao & Han, JFE 108(1) 2013 (SysVOL, the complement of their IVOL)",
+       {spot(-63, 0), market(-63, 0)},
+       "Systematic share of trailing variance, 1 - resid_var/total_var from a "
+       "63-session regression on the market proxy -- exactly what f15_idio_"
+       "share is one minus. It ships as its OWN feature because Cao & Han "
+       "report the two with OPPOSITE signs in the same Fama-MacBeth: IVOL at "
+       "-0.0405 (t -15.46) and SysVOL at +0.016 (t +3.79). The vol you are "
+       "PAID to own is market-correlated; the vol you are CHARGED to own is "
+       "idiosyncratic, because a dealer cannot hedge it. Reading that as one "
+       "signed axis throws away the asymmetry."});
   return reg;
 }
 

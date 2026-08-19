@@ -406,10 +406,24 @@ TEST(AlphaAudit, TheCatalogueCarriesExactlyTwoSharedFootprintPairs) {
   for (const FeatureSpec &spec : freg.all()) {
     all.push_back(&spec);
   }
+  //
+  // ROUND 11 restated it, 2 pairs -> 17. Two new clusters:
+  //   f2/f7/f22/f23/f24/f25 -- all six read exactly spot[-21..0]. This one is
+  //     ON PURPOSE and must not be "fixed" by merging them: Patton & Sheppard's
+  //     entire claim is that upside and downside semivariance carry DIFFERENT
+  //     coefficients over the SAME window (0.091 vs 0.388 at h=22). A
+  //     decomposition whose parts did not share a footprint would not be a
+  //     decomposition.
+  //   f15/f27 -- idio_share and sysvol_share read the same 63-session
+  //     (spot, market) pair and are literally 1 - each other. They ship as two
+  //     because Cao & Han report them with OPPOSITE SIGNS in one regression.
   const AuditReport rep = run_audit(all, targ(treg, "rv_fwd_21d"));
-  EXPECT_EQ(rep.count(FindingKind::SharedInputFootprint), 2U);
+  EXPECT_EQ(rep.count(FindingKind::SharedInputFootprint), 17U);
   const std::vector<std::string> subjects = rep.subjects(FindingKind::SharedInputFootprint);
-  const std::vector<std::string> expected{"f2_log_rv21", "f5_hv_iv_gap"};
+  const std::vector<std::string> expected{"f2_log_rv21",        "f5_hv_iv_gap",
+                                          "f7_ret_21d",         "f15_idio_share",
+                                          "f22_semivar_dn_21d", "f23_semivar_up_21d",
+                                          "f24_signed_jump_21d"};
   EXPECT_EQ(subjects, expected);
 }
 
@@ -496,7 +510,14 @@ TEST(AlphaAudit, NoCataloguedFeatureLeaksAgainstAnyCataloguedTarget) {
     EXPECT_FALSE(rep.has_fatal()) << "fatal finding against target '" << target.name << "'";
     // Shared input footprints are Info and are pinned by their own test; the
     // standing invariant here is only that nothing LEAKS.
-    EXPECT_EQ(rep.count(FindingKind::SharedInputFootprint), 2U)
+    // 17 as of round 11, up from 2. The jump is the semivariance block: f22,
+    // f23, f24 and f25 all read exactly spot[-21..0], the same footprint as f2
+    // and f7, so the six of them contribute C(6,2) = 15 pairs, plus the
+    // long-standing f5/f6 and f2/f7-family pairs. That is the finding working,
+    // not a defect -- Patton & Sheppard's whole claim is that RS+ and RS-
+    // carry DIFFERENT coefficients over the SAME window, so a decomposition
+    // that did not share a footprint would not be their decomposition.
+    EXPECT_EQ(rep.count(FindingKind::SharedInputFootprint), 17U)
         << "the shared-footprint census moved against target '" << target.name << "'";
   }
 }
@@ -509,6 +530,14 @@ TEST(AlphaAudit, TheChannelCensusIsTheNumberTheGateShouldPrint) {
   // vol-of-vol window INCLUDES session t, which a reader scanning the feature
   // list for "reads iv at entry" would miss because the entry read is buried
   // inside a rolling stdev.
+  //
+  // ROUND 11 adds f26_gs_hviv_252d, and that addition is the most useful thing
+  // this census has produced. f26 is the AS-PUBLISHED Goyal & Saretto signal,
+  // ln(rv_252 / iv_21) -- so it is ln(rv_252) MINUS ln(iv_21), and the entry
+  // mark is inside it by construction. A feature can be the single most cited
+  // predictor in the literature and still be, mechanically, partly a bet that
+  // the entry mark is low. It stays in the catalogue and it stays flagged: the
+  // remedy for a channel is the decontaminated cross-read, never deletion.
   const FeatureRegistry freg = builtin_features();
   const auto treg = builtin_targets();
   std::vector<const FeatureSpec *> all;
@@ -520,7 +549,7 @@ TEST(AlphaAudit, TheChannelCensusIsTheNumberTheGateShouldPrint) {
   const std::vector<std::string> expected{
       "f3_iv_level",    "f4_term_slope",  "f5_hv_iv_gap",   "f6_vrp_lag",
       "f9_vov_63d",     "f13_term_curv",  "f17_slope_126d", "f18_slope_189d",
-      "f19_slope_252d"};
+      "f19_slope_252d", "f26_gs_hviv_252d"};
   EXPECT_EQ(subjects, expected);
 }
 
