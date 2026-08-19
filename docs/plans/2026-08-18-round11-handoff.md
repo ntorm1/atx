@@ -262,3 +262,43 @@ superseded by this state.
 2. **σ_E richness vs history** (Dubinsky proper): compare implied σ_E to the name's own realized past earnings moves — the RELATIVE signal, likely two-sided. Needs per-name realized event-move history from the panel + calendar (computable now).
 3. §7 item 6 (lengthen corpus past 252 sessions so f26 computes) — fitter-coverage gated, hours of surface builds.
 4. Round-6 IV-neutral conflict still UNRESOLVED; B1/B3/B5, trainer's fixed array, pool-15 round-9 features, xsec ops verification queue — all still open.
+
+---
+
+# ADDENDUM 2 — goal-loop continuation, 2026-08-19 (evening)
+
+## The cleared long-vega book (headline)
+
+`f16_iv_vov_21d + f5_hv_iv_gap` equal-rank blend, `--avoid-earn-days 31`, 40–60 names, 0.10/0.25 vp costs:
+
+| axis | excess net | t_nw | phases |
+|---|---|---|---|
+| dh21 | +1.47 (40nm) / +1.33 (60nm) | +4.37 / **+5.27** | 100% |
+| dh63 (out-of-construction) | +0.87 | +2.59 | 83% |
+
+Excess is cost-invariant under the uniform tier (pinned by test); deeper books are better. **Honest frame**: absolute net of the selected book is negative — the floor (long everything) lost ~4.6 vp this year; the alpha is selection excess on a mandated vega budget. f5 is a declared entry-mark channel: stale-low marks inflate signal and P&L together; real-quote validation is the open boundary.
+
+## New machinery this loop (commits `101f9029`, `461b19fa`, `eb58baa6`, `2b5c5740`, `96a8b115`)
+
+- `--flip` (axis-specific published directions only, loudly reported, typo-refused)
+- `dh63` back-month axis (forward leg from spot under the full contiguity gate)
+- `dhev` event-sleeve axis (entry-scheduled pre-print straddles; floor = GXZ unconditional)
+- `f31_earn_move_rich` (Milian-validated relative event value; all-three-axes positive, power-bound)
+- `--keep-cheap-prints` two-sleeve veto
+
+## Measured and REJECTED on this panel (kept in LEDGER with numbers)
+
+- Campasano-Linn long-only back-month pocket: both slope tails lose to the floor on dh63 (only the relative ordering matches; their null is zero, ours is the paired floor).
+- GXZ unconditional pre-print straddle: floor −7.95 vp net at 2-before/2-after timing — the crush dominates the jump on our fitted marks.
+- Cao-Han SysVOL (f27), f16+f20 blend, f22-family on money axes — earlier this round.
+
+## THE decision on the table (user's, priced, not executed)
+
+Corpus extension 2024-08→2025-08 for the 616-name universe: **$196.11** Databento estimate (free preflight, 153,384 sym-days, cap $300). Command in LEDGER. Unblocks: f31 at ~2× dates (the best clean long-vega candidate), f26, and a second-year out-of-sample pass on the cleared book. 2024/2025 hive is SPY-only — no free path.
+
+## Next levers
+
+1. Corpus purchase decision (above) → then surface-db builds for the new window (background, hours) → re-run the whole gauntlet out-of-sample.
+2. Per-name attribution dump in alpha-longvega (`--per-name`): is the +1.47 concentrated in few names?
+3. Real-quote mark validation on the selected book's names (the f5 channel risk).
+4. Older open items unchanged (round-6 IV-neutral conflict, B1/B3/B5, pool-15, xsec ops queue).
