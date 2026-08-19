@@ -101,8 +101,14 @@ struct SymbolSeries {
   std::vector<double> atmf21;
   std::vector<double> liq_hspread;
   std::vector<double> liq_strikes;
-  // contiguous[i]: this row's date is the global session immediately after
-  // row i-1's. Always true at i == 0 (nothing precedes it to be adjacent to).
+  // The emitter's own bar-axis position (vrp_panel_v4's `bar_index`), or NaN
+  // on a panel that predates it. Carried as a double because the frame stores
+  // every numeric column as one; the values are small exact integers.
+  std::vector<double> bar_index;
+  // contiguous[i]: this row's session is immediately after row i-1's -- read
+  // from `bar_index` when the panel has one, inferred on the global date axis
+  // when it does not.
+  // Always true at i == 0 (nothing precedes it to be adjacent to).
   // `unsigned char` rather than `bool` so a `std::span` over it is valid --
   // `std::vector<bool>` is a bit proxy with no contiguous storage.
   std::vector<unsigned char> contiguous;
@@ -472,6 +478,18 @@ using FeatureFn = double (*)(const EvalInputs &, std::size_t);
     ATX_TRY(strikes, frame.numbers("liq_strikes_fit"));
   }
 
+  // `bar_index` (vrp_panel_v4) is the emitter's OWN bar-axis position for the
+  // row. When the panel carries it, adjacency is EXACT and per-symbol: no
+  // trading calendar, no union heuristic, no degradation on a one-name panel.
+  // It also means the emitted axis is the bar axis, so the gate below stops
+  // costing coverage -- which is the entire reason v4 exists. Prefer it
+  // whenever present and fall back to the date-union axis otherwise.
+  const bool has_bar_index = frame.schema().has("bar_index");
+  std::span<const double> bar_index;
+  if (has_bar_index) {
+    ATX_TRY(bar_index, frame.numbers("bar_index"));
+  }
+
   // The GLOBAL session axis: the union of dates across every symbol, sorted.
   // A symbol missing one of these dates had that session DROPPED by the
   // emitter's row policy, and every window spanning the hole is unknowable
@@ -512,15 +530,24 @@ using FeatureFn = double (*)(const EvalInputs &, std::size_t);
                  "alpha::group_by_symbol: rows for '" + sym + "' are not date-ascending at '" +
                      dates[r] + "' (the panel's (symbol, session) sort is a contract)");
     }
-    // Adjacency on the GLOBAL axis, not on this symbol's own rows.
+    // Adjacency: exact from the emitter's own bar index when the panel carries
+    // one, otherwise inferred on the GLOBAL date axis rather than on this
+    // symbol's own rows.
     unsigned char contig = 1U;
     if (!s.date.empty()) {
-      const auto cur = axis_at.find(dates[r]);
-      const auto prev = axis_at.find(s.date.back());
-      contig = (cur != axis_at.end() && prev != axis_at.end() && cur->second == prev->second + 1)
-                   ? 1U
-                   : 0U;
+      if (has_bar_index) {
+        const double cur = bar_index[r];
+        const double prev = s.bar_index.back();
+        contig = (std::isfinite(cur) && std::isfinite(prev) && cur == prev + 1.0) ? 1U : 0U;
+      } else {
+        const auto cur = axis_at.find(dates[r]);
+        const auto prev = axis_at.find(s.date.back());
+        contig = (cur != axis_at.end() && prev != axis_at.end() && cur->second == prev->second + 1)
+                     ? 1U
+                     : 0U;
+      }
     }
+    s.bar_index.push_back(has_bar_index ? bar_index[r] : nan_v);
     s.contiguous.push_back(contig);
     s.row.push_back(r);
     s.date.push_back(dates[r]);

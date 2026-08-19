@@ -75,6 +75,84 @@ TEST(AlphaCompute, GlobalAxisAdjacencyNotOwnRowAdjacency) {
   EXPECT_EQ(bbb->contiguous[2], 1U);
 }
 
+// vrp_panel_v4 carries the emitter's own bar-axis position. When it is there,
+// adjacency is read rather than inferred -- which is not a refinement but a
+// capability: the date-union heuristic is BLIND on a one-symbol panel, since
+// the union collapses to that symbol's own rows and every step looks adjacent.
+// A single name is exactly the case a per-name study runs.
+const char *const kOneSymbolWithBarIndex =
+    "symbol\tdate\tspot\tiv_fair_21d\tiv_fair_63d\trv_fwd_21d\tbar_index\n"
+    "AAA\t2026-01-05\t100\t0.20\t0.22\t0.25\t0\n"
+    "AAA\t2026-01-06\t101\t0.21\t0.23\t0.26\t1\n"
+    "AAA\t2026-01-08\t102\t0.22\t0.24\t0.27\t3\n"  // bar 2 missing: a real hole
+    "AAA\t2026-01-09\t103\t0.23\t0.25\t0.28\t4\n";
+
+TEST(AlphaCompute, BarIndexDetectsAGapTheDateUnionAxisCannotSee) {
+  const PanelFrame f = load(kOneSymbolWithBarIndex);
+  auto series = group_by_symbol(f);
+  ASSERT_TRUE(series) << series.error().to_string();
+  ASSERT_EQ(series->size(), 1U);
+  const SymbolSeries &s = (*series)[0];
+  ASSERT_EQ(s.size(), 4U);
+  EXPECT_EQ(s.contiguous[0], 1U);
+  EXPECT_EQ(s.contiguous[1], 1U);
+  EXPECT_EQ(s.contiguous[2], 0U) << "bar_index jumped 1 -> 3 and the gate missed it";
+  EXPECT_EQ(s.contiguous[3], 1U);
+}
+
+// The control that makes the test above mean something: strip the column and
+// the identical rows report NO gap, because on a one-symbol panel the global
+// date axis IS that symbol's rows. This is the blindness v4 removes.
+TEST(AlphaCompute, WithoutBarIndexTheSameOneSymbolPanelLooksGapFree) {
+  std::string text = kOneSymbolWithBarIndex;
+  // Drop the trailing bar_index field from the header and every row.
+  std::string stripped;
+  std::istringstream in(text);
+  std::string line;
+  while (std::getline(in, line)) {
+    const std::size_t tab = line.rfind('\t');
+    ASSERT_NE(tab, std::string::npos);
+    stripped += line.substr(0, tab);
+    stripped += '\n';
+  }
+  const PanelFrame f = load(stripped);
+  auto series = group_by_symbol(f);
+  ASSERT_TRUE(series) << series.error().to_string();
+  ASSERT_EQ(series->size(), 1U);
+  const SymbolSeries &s = (*series)[0];
+  ASSERT_EQ(s.size(), 4U);
+  for (std::size_t i = 0; i < s.size(); ++i) {
+    EXPECT_EQ(s.contiguous[i], 1U) << i;
+  }
+}
+
+// A v4 panel's whole promise: the emitted axis IS the bar axis, so a symbol
+// present on every emitted session reports contiguous everywhere and windows
+// stop being gated away. Dates here deliberately SKIP a weekend, which the
+// date-union axis handles only because every symbol skips it too -- bar_index
+// makes that independent of the calendar.
+const char *const kV4Contiguous =
+    "symbol\tdate\tspot\tiv_fair_21d\tiv_fair_63d\trv_fwd_21d\tbar_index\n"
+    "AAA\t2026-01-09\t100\t0.20\t0.22\t0.25\t7\n"
+    "AAA\t2026-01-12\t101\t0.21\t0.23\t0.26\t8\n"
+    "AAA\t2026-01-13\t102\t0.22\t0.24\t0.27\t9\n"
+    "BBB\t2026-01-09\t50\tnan\tnan\t0.35\t7\n" // strip-less v4 row: iv NaN, spot good
+    "BBB\t2026-01-12\t52\t0.32\t0.33\t0.36\t8\n"
+    "BBB\t2026-01-13\t53\t0.33\t0.34\t0.37\t9\n";
+
+TEST(AlphaCompute, V4PanelIsContiguousEverywhereIncludingStriplessRows) {
+  const PanelFrame f = load(kV4Contiguous);
+  auto series = group_by_symbol(f);
+  ASSERT_TRUE(series) << series.error().to_string();
+  ASSERT_EQ(series->size(), 2U);
+  for (const SymbolSeries &s : *series) {
+    ASSERT_EQ(s.size(), 3U) << s.symbol;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+      EXPECT_EQ(s.contiguous[i], 1U) << s.symbol << " " << i;
+    }
+  }
+}
+
 TEST(AlphaCompute, AGapNaNsEveryWindowSpanningIt) {
   const PanelFrame f = load(kGappy);
   const FeatureRegistry reg = builtin_features();
