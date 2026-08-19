@@ -90,6 +90,14 @@ $script:OracleBenchTestIds = @(
 # instead of passing a filter that matched nothing.
 $script:OracleConventionTestIds = @(
   'OracleConvention.DiscreteDividendForwardIsAppliedExactly',
+  # The exercise-style convention axis: which PRICER a row is entitled to.
+  # Three cases pin the three load-bearing facts — the European leg is the
+  # independent European rung (no American intrinsic floor), each rule routes
+  # exactly its named roots and nothing else, and an ingested per-row style
+  # outranks the root-list rule.
+  'OracleConvention.EuropeanLegMatchesTheIndependentRungWithNoIntrinsicFloor',
+  'OracleConvention.ExerciseStyleRulesRouteOnlyTheirNamedRoots',
+  'OracleConvention.IngestedExerciseStyleOutranksTheRootListRule',
   'OracleConvention.ProductionMapIsTheResolvedHardCut',
   'OracleConvention.BestScaleRanksOnTheSelectionObjective',
   'OracleConvention.SymmetricObjectiveHasNoSmallestScaleGradient',
@@ -501,6 +509,15 @@ function Test-OracleMetricPopulationParity($Metrics, $BaselineMetrics) {
 # i.e. AFTER the commit, which is the one place the failure cannot be undone.
 function Test-OracleConventionMap($Map) {
   $keys = @('input_model', 'forward_formula', 'rate_model', 'carry_model', 'dividend_model', 'day_count', 'dte_banding_day_count', 'price_scale', 'price_sign', 'vol_scale', 'delta_scale', 'delta_sign', 'gamma_scale', 'gamma_sign', 'theta_basis', 'theta_sign', 'vega_scale', 'vega_sign', 'rho_scale', 'rho_sign', 'phi_scale', 'phi_sign', 'volga_source', 'volga_scale', 'volga_sign', 'vanna_source', 'vanna_scale', 'vanna_sign', 'delta_decay_basis', 'delta_decay_day_count', 'delta_decay_sign')
+  # `exercise_style` is OPTIONAL: maps committed before the axis existed omit it,
+  # and absence means `american_all` (the historical behaviour — every root gets
+  # the American pricer). The value domain is closed like every other key. It is
+  # never required here, because this validator also runs against committed
+  # receipts that predate the axis and MUST keep validating them.
+  if ($Map -and @($Map.PSObject.Properties.Name) -contains 'exercise_style') {
+    if (@('american_all', 'european_cash_settled_index', 'european_cash_settled_index_plus_empirical') -notcontains $Map.exercise_style) { return $false }
+    $keys = @($keys) + 'exercise_style'
+  }
   if (-not (Test-OracleExactKeys $Map $keys)) { return $false }
   foreach ($key in $keys) { if (-not ($Map.$key -is [string]) -or -not $Map.$key) { return $false } }
   $inputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
@@ -553,6 +570,25 @@ function Test-OracleJsonValueEqual($Left, $Right) {
     return $true
   }
   return (Test-OracleFiniteNumber $Left) -and (Test-OracleFiniteNumber $Right) -and ([double]$Left -eq [double]$Right)
+}
+
+# NAMED normalization for the exercise-style axis, not generic key-dropping: a
+# convention map that OMITS `exercise_style` and one that says `american_all`
+# mean the same pricing — absence predates the axis, whose default is the
+# historical American-everywhere behaviour. Comparisons of a freshly-computed
+# sweep map (new format, key always present) against a committed floor map (old
+# format, key absent) must go through this so the two forms compare EQUAL when
+# they mean the same thing, and still compare UNEQUAL when the sweep resolved a
+# non-default style the committed floor never priced with.
+function ConvertTo-OracleConventionMapWithExplicitExerciseStyle($Map) {
+  if ($null -eq $Map -or -not ($Map -is [System.Management.Automation.PSCustomObject])) { return $Map }
+  if (@($Map.PSObject.Properties.Name) -contains 'exercise_style') { return $Map }
+  $explicit = [pscustomobject]@{}
+  foreach ($property in $Map.PSObject.Properties) {
+    Add-Member -InputObject $explicit -MemberType NoteProperty -Name $property.Name -Value $property.Value
+  }
+  Add-Member -InputObject $explicit -MemberType NoteProperty -Name 'exercise_style' -Value 'american_all'
+  return $explicit
 }
 
 function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$GateId, $Identity, [string]$ExpectedFloorPath) {
@@ -656,8 +692,18 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
         [long]$floor.rows_processed -ne [long]$sweep.rows_priced -or -not (Test-OracleExactStringSet @($floor.cohorts) @('smoke', 'tune')) -or
         -not (Test-OracleConventionMap $floor.production_conventions) -or
         -not (Test-OracleExactStringSet @($floor.target_metric_ids) @($script:ModeAMetricMap.Values))) { throw 'residual floor receipt schema mismatch' }
+    $conventionMapFields = @('baseline_conventions', 'conventions', 'production_conventions')
     foreach ($name in @('baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'accepted_regressions', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status')) {
-      if (-not (Test-OracleJsonValueEqual $floor.$name $sweep.$name)) {
+      $floorValue = $floor.$name
+      $sweepValue = $sweep.$name
+      if ($conventionMapFields -contains $name) {
+        # Old-format committed floors omit `exercise_style`; the fresh sweep
+        # always writes it. Normalize BOTH sides to the explicit form so the
+        # comparison is about pricing meaning, not key-set vintage.
+        $floorValue = ConvertTo-OracleConventionMapWithExplicitExerciseStyle $floorValue
+        $sweepValue = ConvertTo-OracleConventionMapWithExplicitExerciseStyle $sweepValue
+      }
+      if (-not (Test-OracleJsonValueEqual $floorValue $sweepValue)) {
         throw ('residual floor differs from recomputed sweep: ' + $name +
                ' (fields compare by VALUE, numbers as doubles; look for a real value change, a differing key set or array order,' +
                ' or a number written as a string / with digits that do not round-trip)')

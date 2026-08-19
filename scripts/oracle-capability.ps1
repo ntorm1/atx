@@ -305,6 +305,16 @@ function Test-MetricDeltas($Deltas) {
 
 function Test-ConventionMap($Map) {
   $keys = @('input_model', 'forward_formula', 'rate_model', 'carry_model', 'dividend_model', 'day_count', 'dte_banding_day_count', 'price_scale', 'price_sign', 'vol_scale', 'delta_scale', 'delta_sign', 'gamma_scale', 'gamma_sign', 'theta_basis', 'theta_sign', 'vega_scale', 'vega_sign', 'rho_scale', 'rho_sign', 'phi_scale', 'phi_sign', 'volga_source', 'volga_scale', 'volga_sign', 'vanna_source', 'vanna_scale', 'vanna_sign', 'delta_decay_basis', 'delta_decay_day_count', 'delta_decay_sign')
+  # `exercise_style` is OPTIONAL, mirroring Test-OracleConventionMap in
+  # oracle-targeted-gate.ps1 (the domains are duplicated by design — see the
+  # comment there): maps committed before the axis existed omit the key, and
+  # absence means `american_all`, the historical American-everywhere default.
+  # It must stay optional here because this probe validates committed receipts
+  # that predate the axis and MUST keep reporting them valid.
+  if ($Map -and @($Map.PSObject.Properties.Name) -contains 'exercise_style') {
+    if (@('american_all', 'european_cash_settled_index', 'european_cash_settled_index_plus_empirical') -notcontains $Map.exercise_style) { return $false }
+    $keys = @($keys) + 'exercise_style'
+  }
   if (-not (Test-ExactKeys $Map $keys)) { return $false }
   $inputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
   if ($inputModels -notcontains $Map.input_model -or @('none', 'uprc_exp_rate_t_minus_ddiv') -notcontains $Map.forward_formula -or
