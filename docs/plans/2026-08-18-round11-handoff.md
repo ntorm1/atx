@@ -224,3 +224,41 @@ Two subagents completed this round: the prop-shop vol research (§5) and the var
 - Build only via `powershell scripts\atx-build.ps1`, target-scoped, `powershell` (5.1) not `pwsh`. Never bare `cmake --build` / `ninja`.
 - The `rtk` hook rewrites shell `grep` output into a compressed form — prefer `sed -n` / `awk` / the Grep tool.
 - **Bash heredocs mangle backslash escapes** (`\\n` collapses to `\n`) — a python patch script silently no-op'd twice this round. Use the Edit tool for anything containing escape sequences.
+
+---
+
+# ADDENDUM — round-11 continuation, 2026-08-19
+
+Everything below happened after the handoff above was written; the §7 list is
+superseded by this state.
+
+## What landed (all on main)
+
+| commit | what |
+|---|---|
+| `b9773b4e` | §7 item 1: f22–f27 + volchg axis + counter guard (the staged work, committed) |
+| `1cb4eac0` | §7 item 2: `@xsec` cross-sectional market proxy (now the CLI default), f15/f27 unblocked |
+| `cf90b855` | §7 item 5: earnings family f28–f30 + `fetch_earnings_calendar.py` tracked; calendar at `C:\atx-data\earnings\earnings_dates_v1.tsv` (5,384 events, 609 names, QA'd) |
+| `ac12b096` | admission veto column in `run()` + `--avoid-earn-days` |
+| `68da3d8a`, `a4d55ef6`, `be2962a8`, `1f8750ab` | LEDGER appends (see `atx-vol/docs/LEDGER.md` tail) |
+
+## New measurements (616-name panel, all three axes)
+
+- **f27 SysVOL does NOT replicate**: rv-only signature (+3.51 t 2.39 rv / −1.24 dh / −0.64 volchg) — vol-level channel, same trap as f22. Infra works (coverage 0 → 21,380); the signal fails.
+- **f16+f20 blend rejected**: strictly worse than f16 alone on every axis (volchg t +2.41 vs +6.11; rv −13.86). §7 item 4 done, negative result. f16 standalone remains the only survivor.
+- **f28 days-to-earn is the round's second real signal**: buy imminent prints = dh −4.47 (t −6.58, 0/21 phases), rv +0.33 (NEUTRAL), volchg +4.48 (t +3.06). The decomposition says the whole dh loss is the implied leg overpricing the event. Adjudication CLEAN (event-only read). SignPrior shipped as BuyHigh with the hold-through rationale.
+- **f30 σ_E**: predicts forward rv (+13.72 t +4.71) and implied overpays anyway (dh −5.44 t −5.01). Entry-mark channel vs dh (reads both strips) — flagged, cross-read done.
+- **The t=6.58 edge is SHORT-side.** Long-only avoidance overlay = +0.75 t +1.05 (90% phases). With `--avoid-earn-days 31`, the f16 dh book gains +1.06 vp net and its excess flips −0.19 (38% phases) → +0.65 (t +1.24, 95% phases).
+
+## State of the tree
+
+- `pricer_fitter.cpp` still dirty (+31 lines): the fit-fallback subagent's env-gate (`ATX_VOL_FIT_LINEAR_FALLBACK`). **The user stopped that agent; harness ruled its work cancelled.** Do not commit or extend without the user's say-so; the A/B (baseline/fallback dirs) never ran — only `diag/` and `famprobe/` probes exist under `C:\atx-data\surface-db\fitfallback-ab\`.
+- Untracked, not mine: `qdfp.*`, `qdplus.*` (other session), `atx-datalogsxsec-fit/`, `scripts/sweep-worktree-builds.ps1`, `tmp/`.
+- Tests: 78/78 alpha suite green at `1f8750ab`.
+
+## Next levers, in order
+
+1. **Short-vega event book** — the −6.58 is only monetizable short; needs a short-book mode in `run()` (sign flip + short-side costs). The user's mandate prizes LONG-vega alpha, so ask before building a short book as a product; as a hedging overlay it may still count.
+2. **σ_E richness vs history** (Dubinsky proper): compare implied σ_E to the name's own realized past earnings moves — the RELATIVE signal, likely two-sided. Needs per-name realized event-move history from the panel + calendar (computable now).
+3. §7 item 6 (lengthen corpus past 252 sessions so f26 computes) — fitter-coverage gated, hours of surface builds.
+4. Round-6 IV-neutral conflict still UNRESOLVED; B1/B3/B5, trainer's fixed array, pool-15 round-9 features, xsec ops verification queue — all still open.
