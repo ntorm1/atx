@@ -4208,3 +4208,43 @@ vendor feed (both data-acquisition items, roadmap §5 — the `--events` TSV
 format and the RV panel exist, but nothing produces either input from a
 real source yet); the S3 trainer and purged-CV/embargo validation harness
 (Python-side, unbuilt).
+
+## Oracle RSI bootstrap — Stage 4: Mode B (volatility measured from raw NBBO)
+
+- `OracleRow` now carries partition identity (`date`, `bucket_et`), stamped from
+  the cohort-declared strings that formed the partition path. Mode B's contract
+  is a fit per `underlier x expiry x bucket`, and the reader flattens every
+  partition (and `run_oracle_bench_core` every cohort) into one vector, so
+  without these fields the grouping was unrecoverable. Mode A is unchanged and
+  proven so: the full smoke+tune cell scorecard (277,952 priced rows) and the
+  smoke aggregate are byte-identical across the change apart from `wall_seconds`
+  and `rows_per_second`.
+- `--mode B` implemented. For each `underlier x expiry x bucket` group it
+  inverts that group's own NBBO mids to volatility with `american_implied_vol`
+  — an AMERICAN inversion whose forward map is the same Andersen-Lake rung
+  (`al_fast_opts`) the bench prices with — then prices price and all nine Greeks
+  FROM the fitted vol through the pinned Stage 3 convention map. Expiry is keyed
+  by the exact IEEE bit pattern of `years`. Rows are ordered by strike so each
+  inversion warm-starts from its neighbour's converged root (path only, not the
+  root). No smile smoothing: the vol published for a row is the vol inverted
+  from that row's own mid.
+- Rows where implied vol is not identified are REFUSED and COUNTED, never
+  clamped to a floor value: `mode_b_fit` in the aggregate receipt publishes
+  `groups_fitted` plus seven refusal reasons (`rows_no_quote`,
+  `rows_below_lo_bound`, `rows_above_up_bound`, `rows_iv_no_solution`,
+  `rows_iv_at_floor`, `rows_vega_below_floor`, `rows_round_trip_failed`). The
+  lower bracket is the zero-vol American price, which is not immediate
+  intrinsic — `american_implied_vol` screens only the latter and returns
+  `Ok(kIvMin)` as a SUCCESS for a quote below the true floor.
+- The `--mode B` run-time refusal in `run_oracle_bench_core` is deleted, now
+  that a real runner stands behind it.
+- `price_from_oracle_units` added beside `price_to_oracle_units`.
+- New ctest case `mode_b_targeted_tests` (`atx-vol/tests/CMakeLists.txt`) with
+  its case count pinned by `PASS_REGULAR_EXPRESSION`, so a vacuous
+  `--gtest_filter` cannot pass it. OracleBench closure moved 49 -> 53.
+- `scripts/oracle-targeted-gate.ps1`: new `oracle_aggregate` gate kind that
+  parses the `--aggregate-only` receipt from STDOUT (the shape the frozen
+  ready-state and ratchet Mode B commands use), validating metric coverage,
+  units, the refusal-reason sum, full row-accounting closure, and absence of
+  membership. `mode_b_smoke_tune` now runs the worktree-local binary instead of
+  a bare PATH lookup.

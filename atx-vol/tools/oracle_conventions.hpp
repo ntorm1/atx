@@ -72,6 +72,16 @@ struct EnginePricingInputs {
 [[nodiscard]] double price_to_oracle_units(double engine_price, const ConventionMap &map) noexcept;
 [[nodiscard]] double price_to_oracle_units(double engine_price) noexcept;
 
+// The INVERSE map, which Mode B needs: raw NBBO arrives in ORACLE price units
+// and must reach the engine's inverter in ENGINE units. Declared beside its
+// forward so the two cannot drift — a Mode B that divided by a locally written
+// literal would disagree with the pinned map the moment price_scale moves.
+// Returns a non-finite value on a zero/non-finite scale instead of inventing
+// one; callers screen finiteness at the boundary.
+[[nodiscard]] double price_from_oracle_units(double oracle_price,
+                                             const ConventionMap &map) noexcept;
+[[nodiscard]] double price_from_oracle_units(double oracle_price) noexcept;
+
 struct OracleUnitGreeks {
   double de = 0.0;
   double ga = 0.0;

@@ -440,12 +440,21 @@ constexpr std::array<std::string_view, 3> kSentinelCols{"bidIV", "askIV", "error
   return id == arrow::Type::STRING || id == arrow::Type::LARGE_STRING;
 }
 
+// The partition dir a scan is reading, as the COHORT declared it. Passed down
+// rather than parsed back out of the file path: these two strings are what
+// formed the path, so stamping them onto each row cannot disagree with the
+// directory that was opened.
+struct PartitionKey {
+  std::string_view date;      // YYYY-MM-DD
+  std::string_view bucket_et; // HHMM
+};
+
 // Scans ONE parquet file for ONE underlier: row groups pruned via the
 // undSecKey_tk column statistics, only the compared columns decoded, then an
 // exact per-row tk filter and the sentinel / bad-input admission screens.
 // Handles BOTH utf8 and large_utf8 string columns (polars writes the latter).
 [[nodiscard]] Status scan_file_for_underlier(const std::string &file, const std::string &tk,
-                                             CohortScan &out) {
+                                             const PartitionKey &partition, CohortScan &out) {
   auto in_res = arrow::io::ReadableFile::Open(file);
   if (!in_res.ok()) {
     return Err(from_arrow(in_res.status(), "oracle store: open " + file));
@@ -574,6 +583,8 @@ constexpr std::array<std::string_view, 3> kSentinelCols{"bidIV", "askIV", "error
     }
     OracleRow row;
     row.underlier = tk;
+    row.date = partition.date;
+    row.bucket_et = partition.bucket_et;
     row.side = *side;
     row.strike = num_arr[kOkeyXx]->Value(i);
     row.uprc = num_arr[kUPrc]->Value(i);
@@ -630,9 +641,10 @@ Result<CohortScan> read_cohort_rows(const Cohort &cohort, std::string_view store
       if (files.empty()) {
         return Err(ErrorCode::NotFound, "no parquet files in cohort partition: " + part.string());
       }
+      const PartitionKey key{date, bucket};
       for (const fs::path &file : files) {
         for (const std::string &tk : cohort.underliers) {
-          ATX_TRY_VOID(scan_file_for_underlier(file.string(), tk, out));
+          ATX_TRY_VOID(scan_file_for_underlier(file.string(), tk, key, out));
         }
       }
     }

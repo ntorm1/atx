@@ -64,12 +64,26 @@ $script:OracleBenchTestIds = @(
   'OracleBenchE2E.SyntheticCohortProducesCharterScorecard',
   # --aggregate-only is a CONFIDENTIALITY boundary, not a formatting option:
   # these three assert that no cell key, band, date, bucket or underlier
-  # reaches the aggregate receipt or stderr, and ModeB asserts the honest
-  # run-time refusal that keeps an unimplemented mode out of the ratchet.
+  # reaches the aggregate receipt or stderr.
   'OracleBenchAggregate.PublishesTheElevenTargetsAndNoMembership',
   'OracleBenchAggregate.WritesToStdoutWhenOutIsAbsent',
   'OracleBenchAggregate.BenchmarkSpeedPublishesRowsPerSecondOnly',
-  'OracleBenchModeB.FailsAtRunTimeWithADistinctActionableError'
+  # Stage 4, Mode B: volatility MEASURED from raw NBBO. These five REPLACE
+  # OracleBenchModeB.FailsAtRunTimeWithADistinctActionableError, which asserted
+  # the run-time refusal a real Mode B runner has now retired. That test's load-
+  # bearing property -- no Mode B invocation may hand the ratchet a number it did
+  # not measure -- survives in WithoutRealDataItFailsInsteadOfPublishingNumbers,
+  # and the confidentiality boundary above is RE-ASSERTED for Mode B rather than
+  # assumed inherited (Mode B added both a stderr line and a receipt block).
+  # These are also exactly the five the mode_b_targeted_tests ctest case runs,
+  # whose PASS_REGULAR_EXPRESSION pins that count (atx-vol/tests/CMakeLists.txt).
+  # A sixth Mode B case therefore moves THREE definition sites: this set, that
+  # regex, and ORACLE_BENCH_TEST_COUNT in .claude/workflows/vol-oracle-iter.js.
+  'OracleBenchModeB.RecoversTheVolThatGeneratedTheQuote',
+  'OracleBenchModeB.GroupsByUnderlierExpiryAndBucket',
+  'OracleBenchModeB.RefusesUnidentifiedRowsInsteadOfClampingToTheVolFloor',
+  'OracleBenchModeB.AggregatePublishesTheElevenTargetsAndNoMembership',
+  'OracleBenchModeB.WithoutRealDataItFailsInsteadOfPublishingNumbers'
 )
 # Pinned exactly like the OracleBench registry above: the Stage 3 suite is
 # discovered per gtest case, so a vanished or renamed case fails the gate
@@ -217,8 +231,44 @@ function Get-OracleTargetedGateSpec([string]$GateId, $Identity) {
         Arguments = @('--cohort', $tuneCohort, '--store', $script:OracleStoreRoot, '--out', $out, '--iter', '0', '--git-sha', $Identity.Sha)
       }
     }
-    'mode_b_targeted_tests' { return [pscustomobject]@{ Kind = 'ctest'; Program = 'powershell'; OutputPath = ''; RequiredExecutables = @($testExe); Arguments = @('-NoProfile', '-File', $buildScript, '-Preset', 'dev', '-Ctest', '-R', '^mode_b_targeted_tests$', '--no-tests=error') } }
-    'mode_b_smoke_tune' { return [pscustomobject]@{ Kind = 'oracle_bench'; Program = 'atx-vol-oracle-bench'; OutputPath = ''; RequiredExecutables = @(); Arguments = @('--cohort', 'smoke,tune', '--mode', 'B', '--aggregate-only') } }
+    'mode_b_targeted_tests' {
+      # PrepareArguments matches every other ctest gate here (mode_a_targeted_tests,
+      # convention_tests): without a build step the gate validates whatever
+      # atx-vol-tests.exe happens to be on disk, which for a source-level gate is
+      # the difference between "the Mode B tests pass" and "they passed once".
+      # It also regenerates the build tree, which the `mode_b_targeted_tests`
+      # ctest case needs to exist at all. The gate's own Arguments are untouched.
+      return [pscustomobject]@{
+        Kind = 'ctest'; Program = 'powershell'; OutputPath = ''
+        RequiredExecutables = @($testExe)
+        PrepareProgram = 'powershell'
+        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', 'build', 'atx-vol-tests', '--parallel', '2')
+        Arguments = @('-NoProfile', '-File', $buildScript, '-Preset', 'dev', '-Ctest', '-R', '^mode_b_targeted_tests$', '--no-tests=error')
+      }
+    }
+    'mode_b_smoke_tune' {
+      # KIND 'oracle_aggregate', not 'oracle_bench': this command writes its
+      # receipt to STDOUT, because the two verbatim-frozen Mode B command lines
+      # -- READY_MEASURE_GATES.measure_mode_b and RATCHET_GATE_COMMANDS
+      # .holdout_mode_b in .claude/workflows/vol-oracle-iter.js -- both use
+      # --aggregate-only with NO --out. Giving this gate the easier --out shape
+      # would leave the stdout path unexercised by any gate until the ready-state
+      # run depended on it, so the ARGUMENTS below stay byte-identical to that
+      # shape deliberately. The distinct kind is what keeps the output-file
+      # preparation in Invoke-OracleTargetedGate (which cannot take an empty
+      # OutputPath) from running at all, rather than papering over it.
+      #
+      # Program is the WORKTREE-LOCAL binary. It was a bare 'atx-vol-oracle-bench'
+      # PATH lookup, which this script's own banner forbids -- a gate that
+      # resolves its binary off PATH can validate a build from another tree.
+      return [pscustomobject]@{
+        Kind = 'oracle_aggregate'; Program = $benchExe; OutputPath = ''
+        RequiredExecutables = @($benchExe)
+        PrepareProgram = 'powershell'
+        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', 'build', 'atx-vol-oracle-bench', '--parallel', '2')
+        Arguments = @('--cohort', 'smoke,tune', '--mode', 'B', '--aggregate-only')
+      }
+    }
     'sprint_american_greeks_delta_put' { return [pscustomobject]@{ Kind = 'ctest'; Program = 'powershell'; OutputPath = ''; RequiredExecutables = @($testExe); Arguments = @('-NoProfile', '-File', $buildScript, '-Preset', 'dev', '-Ctest', '-R', '^AmericanGreeks.Delta_MatchesFd_Put$', '--no-tests=error') } }
     'sprint_adjusted_greeks_flat_smile' { return [pscustomobject]@{ Kind = 'ctest'; Program = 'powershell'; OutputPath = ''; RequiredExecutables = @($testExe); Arguments = @('-NoProfile', '-File', $buildScript, '-Preset', 'dev', '-Ctest', '-R', '^AdjustedGreeks.FlatSmileLeavesDeltaUnchanged$', '--no-tests=error') } }
     default { throw "unknown oracle targeted gate: $GateId" }
@@ -679,10 +729,89 @@ function ConvertFrom-OracleSpeed([string]$ScorecardText, $Identity, [string]$Exp
   }
 }
 
+# The --aggregate-only receipt (`kind: oracle_aggregate`), read from STDOUT.
+#
+# The frozen Mode B command lines carry no --git-sha and no --iter, so this
+# adapter deliberately does NOT compare git_sha to the tested SHA the way the
+# scorecard adapters do -- the aggregate would have to fail on 'unknown', which
+# is what the binary correctly writes when it was not told. Identity is instead
+# pinned by Invoke-OracleTargetedGate's Get-OracleGitIdentity calls BEFORE and
+# AFTER the run: the gate refuses a dirty tree and refuses a HEAD/tree that
+# moved while executing, so the receipt cannot describe a different commit.
+#
+# ROW ACCOUNTING IS THE POINT OF THIS ADAPTER. Mode B's eleven metrics describe
+# only the rows that yielded a volatility. Without the closure check below, a
+# run that fitted 2% of the cohort and refused the rest would publish eleven
+# flattering numbers and PASS, and nothing downstream would be able to tell.
+function ConvertFrom-OracleAggregate([string]$AggregateText, [string]$GateId, [string]$ExpectedMode, [string[]]$ExpectedMetricIds) {
+  try { $aggregate = $AggregateText | ConvertFrom-Json } catch { throw "oracle targeted gate $GateId aggregate is not JSON" }
+  $keys = @('schema_version', 'kind', 'mode', 'cohorts', 'iter', 'git_sha', 'preset', 'quiet_host', 'rows_total', 'rows_priced', 'rows_null_sentinel', 'rows_bad_input', 'rows_engine_error', 'mode_b_fit', 'wall_seconds', 'rows_per_second', 'metrics')
+  if (-not (Test-OracleExactKeys $aggregate $keys) -or $aggregate.schema_version -ne 1 -or
+      $aggregate.kind -ne 'oracle_aggregate' -or $aggregate.mode -ne $ExpectedMode -or
+      -not (Test-OracleExactStringSet @($aggregate.cohorts) @('smoke', 'tune'))) { throw "oracle targeted gate $GateId aggregate schema mismatch" }
+  foreach ($name in @('rows_total', 'rows_priced', 'rows_null_sentinel', 'rows_bad_input', 'rows_engine_error')) {
+    if (-not (Test-OracleNonnegativeInteger $aggregate.$name)) { throw "oracle targeted gate $GateId aggregate has invalid $name" }
+  }
+  if ([long]$aggregate.rows_priced -le 0 -or -not (Test-OracleFiniteNumber $aggregate.wall_seconds) -or [double]$aggregate.wall_seconds -le 0 -or
+      -not (Test-OracleFiniteNumber $aggregate.rows_per_second) -or [double]$aggregate.rows_per_second -le 0) {
+    throw "oracle targeted gate $GateId aggregate reports empty/inconsistent priced work"
+  }
+  # Mode B's REFUSALS, validated rather than trusted: the seven reasons must sum
+  # to the published total (so a reason cannot be dropped from the sum), and at
+  # least one group must have been fitted.
+  $fit = $aggregate.mode_b_fit
+  $fitKeys = @('groups_fitted', 'rows_unfitted', 'rows_no_quote', 'rows_below_lo_bound', 'rows_above_up_bound', 'rows_iv_no_solution', 'rows_iv_at_floor', 'rows_vega_below_floor', 'rows_round_trip_failed')
+  if (-not (Test-OracleExactKeys $fit $fitKeys)) { throw "oracle targeted gate $GateId mode_b_fit schema mismatch" }
+  foreach ($name in $fitKeys) {
+    if (-not (Test-OracleNonnegativeInteger $fit.$name)) { throw "oracle targeted gate $GateId mode_b_fit has invalid $name" }
+  }
+  if ([long]$fit.groups_fitted -le 0) { throw "oracle targeted gate $GateId fitted no underlier x expiry x bucket group" }
+  $reasonSum = 0L
+  foreach ($name in @('rows_no_quote', 'rows_below_lo_bound', 'rows_above_up_bound', 'rows_iv_no_solution', 'rows_iv_at_floor', 'rows_vega_below_floor', 'rows_round_trip_failed')) {
+    $reasonSum += [long]$fit.$name
+  }
+  if ($reasonSum -ne [long]$fit.rows_unfitted) { throw "oracle targeted gate $GateId mode_b_fit reasons do not sum to rows_unfitted" }
+  # THE CLOSURE. Every row the cohort selected is priced, skipped at the reader,
+  # refused by the engine, or refused by the fit -- in exactly one bucket.
+  $accounted = [long]$aggregate.rows_priced + [long]$aggregate.rows_null_sentinel + [long]$aggregate.rows_bad_input +
+               [long]$aggregate.rows_engine_error + [long]$fit.rows_unfitted
+  if ([long]$aggregate.rows_total -ne $accounted) {
+    throw ("oracle targeted gate $GateId aggregate row accounting does not close: rows_total=" + [long]$aggregate.rows_total + ' accounted=' + $accounted)
+  }
+  $metrics = @($aggregate.metrics)
+  if ($metrics.Count -ne $ExpectedMetricIds.Count -or -not (Test-OracleExactStringSet @($metrics.metric_id) $ExpectedMetricIds)) {
+    throw "oracle targeted gate $GateId aggregate metric coverage mismatch"
+  }
+  foreach ($metric in $metrics) {
+    if (-not (Test-OracleExactKeys $metric @('metric_id', 'value', 'count', 'unit')) -or -not (Test-OracleFiniteNumber $metric.value) -or
+        [double]$metric.value -lt 0 -or -not (Test-OracleNonnegativeInteger $metric.count) -or [long]$metric.count -le 0) {
+      throw "oracle targeted gate $GateId aggregate metric schema mismatch"
+    }
+    $wantedUnit = if ($metric.metric_id -like '*_price_mae') { 'ticks' } elseif ($metric.metric_id -like '*_vol_mae') { 'bp' } else { 'relative' }
+    if ($metric.unit -ne $wantedUnit) { throw "oracle targeted gate $GateId aggregate metric unit mismatch on $($metric.metric_id)" }
+  }
+  # CONFIDENTIALITY, checked at the gate and not only in the C++ tests: the
+  # --aggregate-only receipt is what reaches the tool-less analyst stage, and
+  # partition names ARE membership. A raw-text scan catches a leak arriving in a
+  # field this adapter's key check does not yet know about.
+  foreach ($leak in @('date=', 'bucket_et=', 'within_tol_rate', 'deep-itm', 'partitions')) {
+    if ($AggregateText.Contains($leak)) { throw "oracle targeted gate $GateId aggregate leaked membership: $leak" }
+  }
+  return [pscustomobject]@{
+    RowsProcessed = [long]$aggregate.rows_priced
+    RowsTotal = [long]$aggregate.rows_total
+    EngineErrors = [long]$aggregate.rows_engine_error
+    MetricIds = @($metrics.metric_id | ForEach-Object { [string]$_ })
+    ModeBMetrics = $metrics
+    ModeBFit = $fit
+  }
+}
+
 function ConvertFrom-OracleBenchScorecard([string]$ScorecardText, [string]$GateId, $Identity) {
   $spec = Get-OracleTargetedGateSpec $GateId $Identity
   if ($GateId -in @('mode_a_smoke_tune', 'residual_floor')) { return ConvertFrom-OracleConventionSweep $ScorecardText $GateId $Identity $spec.ExpectedFloorPath }
   if ($GateId -in @('convention_speed_measure', 'convention_speed')) { return ConvertFrom-OracleSpeed $ScorecardText $Identity $spec.ExpectedFloorPath }
+  if ($GateId -eq 'mode_b_smoke_tune') { return ConvertFrom-OracleAggregate $ScorecardText $GateId 'B' @(Get-OracleRequiredMetricIds $GateId) }
   try { $scorecard = $ScorecardText | ConvertFrom-Json } catch { throw "oracle targeted gate $GateId scorecard is not JSON" }
   if ($GateId -ne 'mode_a_smoke') { throw "oracle targeted gate $GateId has no production scorecard adapter yet" }
   if (-not (Test-OracleExactKeys $scorecard @('iter', 'git_sha', 'cohort', 'modes', 'tolerances', 'cells')) -or
@@ -749,6 +878,15 @@ function Invoke-OracleTargetedGate([string]$GateId, [scriptblock]$Invoker) {
       New-Item -ItemType Directory -Force (Split-Path -Parent $spec.OutputPath) | Out-Null
       if (Test-Path -LiteralPath $spec.OutputPath) { Remove-Item -LiteralPath $spec.OutputPath -Force }
     }
+    # 'oracle_aggregate' reads the licensed store like the kinds above but
+    # publishes to STDOUT, so it deliberately shares the store check and skips
+    # the output-file preparation entirely -- `Split-Path -Parent ''` is a
+    # terminating error under this script's Stop policy, which is exactly why
+    # this is a separate kind rather than an empty-path special case inside the
+    # branch above.
+    if ($spec.Kind -eq 'oracle_aggregate') {
+      if (-not (Test-Path -LiteralPath $script:OracleStoreRoot -PathType Container)) { throw 'licensed aggregate oracle store is missing' }
+    }
     if ($spec.Kind -eq 'oracle_speed') { Assert-OracleQuietHost }
   }
   if ($Invoker) {
@@ -804,6 +942,18 @@ function Invoke-OracleTargetedGate([string]$GateId, [scriptblock]$Invoker) {
   } else {
     if ($Invoker -and $execution.PSObject.Properties.Name -contains 'ScorecardJson') {
       $scorecardText = [string]$execution.ScorecardJson
+    } elseif ($spec.Kind -eq 'oracle_aggregate') {
+      # STDOUT receipt. The captured stream interleaves the aggregate JSON with
+      # the bench's own stderr progress lines (Invoke-OracleNativeProcess merges
+      # both by design, so a native process's ordinary stderr does not abort the
+      # gate), so the document is carved out by its own delimiters rather than
+      # assumed to be the whole stream: first '{' through last '}'. Both must
+      # exist and be ordered, and what is between them must parse -- a run that
+      # printed only progress lines fails here instead of reaching the adapter.
+      $open = $raw.IndexOf('{')
+      $close = $raw.LastIndexOf('}')
+      if ($open -lt 0 -or $close -le $open) { throw "oracle targeted gate $GateId produced no aggregate JSON on stdout" }
+      $scorecardText = $raw.Substring($open, $close - $open + 1)
     } else {
       if (-not $spec.OutputPath -or -not (Test-Path -LiteralPath $spec.OutputPath -PathType Leaf)) { throw "oracle targeted gate $GateId did not produce a scorecard" }
       $scorecardText = [System.IO.File]::ReadAllText($spec.OutputPath)
@@ -864,6 +1014,17 @@ function Invoke-OracleTargetedGate([string]$GateId, [scriptblock]$Invoker) {
     $result.diagnostic_speed = $aggregate.DiagnosticSpeed
   }
   if ($aggregate -and $aggregate.PSObject.Properties.Name -contains 'Speed') { $result.speed = $aggregate.Speed }
+  # Mode B's eleven targets and its fit accounting, carried into the typed
+  # receipt. The refusal counts travel WITH the metrics on purpose: the eleven
+  # numbers describe only the rows that yielded a volatility, and a reader who
+  # cannot see how many rows did not is being shown a filtered sample without
+  # being told. They are whole-run counts, so they carry no membership.
+  if ($aggregate -and $aggregate.PSObject.Properties.Name -contains 'ModeBMetrics') {
+    $result.rows_total = [long]$aggregate.RowsTotal
+    $result.engine_errors = [long]$aggregate.EngineErrors
+    $result.mode_b_metrics = @($aggregate.ModeBMetrics)
+    $result.mode_b_fit = $aggregate.ModeBFit
+  }
   return $result
 }
 
