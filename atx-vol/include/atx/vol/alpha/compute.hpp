@@ -66,6 +66,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <span>
 #include <string>
@@ -162,6 +163,38 @@ struct MarketSeries {
                : static_cast<double>(date.size()) / static_cast<double>(global_sessions);
   }
 };
+
+// ── Earnings calendar ───────────────────────────────────────────────────────
+//
+// Scheduled-event dates joined onto the bar axis — the `SeriesId::EventFlag`
+// input. The audit models a calendar read as a SNAPSHOT OF THE SCHEDULE at t
+// (window {0,0}): the dates of already-announced future prints are entry-time
+// information, the same way an option's expiry date is. The caveat that
+// keeps this honest: the fetched file carries the dates prints ACTUALLY
+// happened, not the schedule as it stood at t, so a company that moved its
+// date is represented by hindsight. The QA report bounds that risk (spacing
+// anomalies 0.17% of gaps); it is a data limitation, not a license.
+struct EarningsEvents {
+  std::vector<std::string> date;  // ascending announcement dates (ISO)
+  std::vector<unsigned char> amc; // parallel: 1 = after market close
+};
+
+struct EarningsCalendar {
+  std::unordered_map<std::string, EarningsEvents> by_symbol;
+  std::size_t n_events{0};
+
+  [[nodiscard]] bool empty() const noexcept { return by_symbol.empty(); }
+  [[nodiscard]] const EarningsEvents *find(std::string_view symbol) const noexcept {
+    const auto it = by_symbol.find(std::string(symbol));
+    return it == by_symbol.end() ? nullptr : &it->second;
+  }
+};
+
+// A quarterly reporter is never more than ~91 calendar days from its next
+// print. Days-to-earnings beyond this bound means the calendar has a hole
+// (missed quarter, delisting, coverage end), and ranking on the hole would
+// reward the worst-covered names — so the feature declines instead.
+inline constexpr double kEarnMaxDaysToNext = 120.0;
 
 namespace compute_detail {
 
@@ -346,13 +379,79 @@ namespace compute_detail {
   return 1.0 - r2;
 }
 
+// "YYYY-MM-DD" -> days since 1970-01-01 (Howard Hinnant's civil-days
+// algorithm), or -1 on anything malformed. String comparison orders ISO dates;
+// this exists for the one place that needs actual day ARITHMETIC.
+[[nodiscard]] inline std::int64_t day_serial(std::string_view iso) noexcept {
+  if (iso.size() != 10 || iso[4] != '-' || iso[7] != '-') {
+    return -1;
+  }
+  std::int64_t y = 0;
+  std::int64_t m = 0;
+  std::int64_t d = 0;
+  for (const std::size_t k : {0U, 1U, 2U, 3U}) {
+    if (iso[k] < '0' || iso[k] > '9') {
+      return -1;
+    }
+    y = y * 10 + (iso[k] - '0');
+  }
+  for (const std::size_t k : {5U, 6U}) {
+    if (iso[k] < '0' || iso[k] > '9') {
+      return -1;
+    }
+    m = m * 10 + (iso[k] - '0');
+  }
+  for (const std::size_t k : {8U, 9U}) {
+    if (iso[k] < '0' || iso[k] > '9') {
+      return -1;
+    }
+    d = d * 10 + (iso[k] - '0');
+  }
+  if (m < 1 || m > 12 || d < 1 || d > 31) {
+    return -1;
+  }
+  y -= m <= 2;
+  const std::int64_t era = y / 400; // y > 0 always here (4-digit year)
+  const std::int64_t yoe = y - era * 400;
+  const std::int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  const std::int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + doe - 719468;
+}
+
+// Row index of the session whose close-to-close return CONTAINS the event's
+// jump: a bmo (or intraday) print on day D lands in the return INTO the first
+// session >= D; an amc print lands in the return into the first session > D.
+// Returns size() when the anchor falls past the series.
+[[nodiscard]] inline std::size_t earn_anchor_row(const SymbolSeries &s, const std::string &d,
+                                                 bool is_amc) noexcept {
+  const auto it = is_amc ? std::upper_bound(s.date.begin(), s.date.end(), d)
+                         : std::lower_bound(s.date.begin(), s.date.end(), d);
+  return static_cast<std::size_t>(it - s.date.begin());
+}
+
+// Number of events whose anchor session lies in rows (i, i+k]. The caller has
+// already established i+k < size and forward-window contiguity; a per-symbol
+// calendar holds ~10 rows, so this is a plain scan.
+[[nodiscard]] inline std::size_t earn_count_fwd(const SymbolSeries &s, const EarningsEvents &ev,
+                                                std::size_t i, std::size_t k) noexcept {
+  std::size_t n = 0;
+  for (std::size_t e = 0; e < ev.date.size(); ++e) {
+    const std::size_t a = earn_anchor_row(s, ev.date[e], ev.amc[e] != 0);
+    if (a > i && a <= i + k) {
+      ++n;
+    }
+  }
+  return n;
+}
+
 } // namespace compute_detail
 
 // ── Evaluators ──────────────────────────────────────────────────────────────
 
 struct EvalInputs {
   const SymbolSeries *sym{nullptr};
-  const MarketSeries *market{nullptr}; // may be null; f15 then yields NaN
+  const MarketSeries *market{nullptr}; // may be null; f15/f27 then yield NaN
+  const EarningsCalendar *earnings{nullptr}; // may be null; f28..f30 then yield NaN
 };
 
 using FeatureFn = double (*)(const EvalInputs &, std::size_t);
@@ -549,6 +648,78 @@ using FeatureFn = double (*)(const EvalInputs &, std::size_t);
          // 1 - idio, not a second regression: computing it separately would
          // let the two features disagree about the same fit.
          return std::isfinite(idio) ? 1.0 - idio : nan_d();
+       }},
+      {"f28_days_to_earn",
+       [](const EvalInputs &in, std::size_t i) {
+         const EarningsEvents *ev =
+             in.earnings == nullptr ? nullptr : in.earnings->find(in.sym->symbol);
+         if (ev == nullptr) {
+           return nan_d();
+         }
+         const std::string &cur = in.sym->date[i];
+         // Upcoming means strictly after this session's CLOSE: an amc print
+         // dated today is still ahead; a bmo print dated today already hit.
+         auto it = std::lower_bound(ev->date.begin(), ev->date.end(), cur);
+         while (it != ev->date.end() && *it == cur &&
+                ev->amc[static_cast<std::size_t>(it - ev->date.begin())] == 0) {
+           ++it;
+         }
+         if (it == ev->date.end()) {
+           return nan_d(); // calendar exhausted, not "no earnings coming"
+         }
+         const std::int64_t a = compute_detail::day_serial(*it);
+         const std::int64_t b = compute_detail::day_serial(cur);
+         if (a < 0 || b < 0) {
+           return nan_d();
+         }
+         const double days = static_cast<double>(a - b);
+         return days > kEarnMaxDaysToNext ? nan_d() : days;
+       }},
+      {"f29_earn_n_21d",
+       [](const EvalInputs &in, std::size_t i) {
+         const EarningsEvents *ev =
+             in.earnings == nullptr ? nullptr : in.earnings->find(in.sym->symbol);
+         // The forward window must exist and be gap-free, or "0 events in it"
+         // is a claim about sessions this series does not have.
+         if (ev == nullptr || i + 21 >= in.sym->size() ||
+             !in.sym->window_contiguous(i + 21, 21)) {
+           return nan_d();
+         }
+         return static_cast<double>(compute_detail::earn_count_fwd(*in.sym, *ev, i, 21));
+       }},
+      {"f30_earn_sigma_e",
+       [](const EvalInputs &in, std::size_t i) {
+         const EarningsEvents *ev =
+             in.earnings == nullptr ? nullptr : in.earnings->find(in.sym->symbol);
+         if (ev == nullptr || i + 63 >= in.sym->size() ||
+             !in.sym->window_contiguous(i + 63, 63)) {
+           return nan_d();
+         }
+         const double s1 = in.sym->iv21[i];
+         const double s2 = in.sym->iv63[i];
+         if (!(s1 > 0.0) || !(s2 > 0.0)) {
+           return nan_d();
+         }
+         // Two-tenor Dubinsky-Johannes extraction (Leung & Santoli eq 5.2):
+         //   sigma1^2 T1 = sigma_d^2 T1 + n1 sigma_E^2
+         //   sigma2^2 T2 = sigma_d^2 T2 + n2 sigma_E^2
+         // => sigma_E^2 = T1 (sigma1^2 - sigma2^2) / (n1 - n2 T1/T2).
+         // sigma_E is the ONE-EVENT move stdev in absolute return terms, not
+         // an annualized vol. Needs an event inside the short window and a
+         // positive denominator (n1=1, n2=1 gives 2/3 -- the everyday case);
+         // an upward-sloping structure with an event in the short window
+         // yields a negative sigma_E^2 and is declined, not clamped.
+         const double n1 = static_cast<double>(compute_detail::earn_count_fwd(*in.sym, *ev, i, 21));
+         const double n2 = static_cast<double>(compute_detail::earn_count_fwd(*in.sym, *ev, i, 63));
+         if (n1 < 1.0) {
+           return nan_d();
+         }
+         const double denom = n1 - n2 * (21.0 / 63.0);
+         if (!(denom > 0.0)) {
+           return nan_d();
+         }
+         const double sig2 = (21.0 / 252.0) * (s1 * s1 - s2 * s2) / denom;
+         return sig2 > 0.0 ? std::sqrt(sig2) : nan_d();
        }},
       {"liq_hspread_frac",
        [](const EvalInputs &in, std::size_t i) { return in.sym->liq_hspread[i]; }},
@@ -792,6 +963,104 @@ market_from_cross_section(std::span<const SymbolSeries> series, std::size_t glob
   return Ok(std::move(m));
 }
 
+// Parse the earnings-calendar TSV emitted by scripts/fetch_earnings_calendar.py
+// (`ticker / earn_date / session_hint / ...`; column order discovered from the
+// header, extra columns ignored). `intraday` is bucketed with `bmo`: a print
+// during session D moves the price WITHIN D, so the return into D is the one
+// that carries it — same anchor rule as a morning print. An unrecognised hint
+// is an error, not a guess: the session bucket shifts the event window a full
+// day and can flip the sign of a pre-announcement signal.
+[[nodiscard]] inline Result<EarningsCalendar> earnings_from_tsv(std::string_view text) {
+  EarningsCalendar cal;
+  std::size_t line_no = 0;
+  std::ptrdiff_t c_ticker = -1;
+  std::ptrdiff_t c_date = -1;
+  std::ptrdiff_t c_hint = -1;
+  std::size_t pos = 0;
+  while (pos <= text.size()) {
+    const std::size_t eol = std::min(text.find('\n', pos), text.size());
+    std::string_view line = text.substr(pos, eol - pos);
+    if (!line.empty() && line.back() == '\r') {
+      line.remove_suffix(1);
+    }
+    pos = eol + 1;
+    if (line.empty()) {
+      continue;
+    }
+    ++line_no;
+    std::vector<std::string_view> cells;
+    std::size_t start = 0;
+    for (std::size_t i = 0; i <= line.size(); ++i) {
+      if (i == line.size() || line[i] == '\t') {
+        cells.push_back(line.substr(start, i - start));
+        start = i + 1;
+      }
+    }
+    if (line_no == 1) {
+      for (std::size_t c = 0; c < cells.size(); ++c) {
+        if (cells[c] == "ticker") {
+          c_ticker = static_cast<std::ptrdiff_t>(c);
+        } else if (cells[c] == "earn_date") {
+          c_date = static_cast<std::ptrdiff_t>(c);
+        } else if (cells[c] == "session_hint") {
+          c_hint = static_cast<std::ptrdiff_t>(c);
+        }
+      }
+      if (c_ticker < 0 || c_date < 0 || c_hint < 0) {
+        return Err(atx::core::ErrorCode::InvalidArgument,
+                   "alpha::earnings_from_tsv: header lacks ticker/earn_date/session_hint");
+      }
+      continue;
+    }
+    const std::size_t need =
+        static_cast<std::size_t>(std::max({c_ticker, c_date, c_hint})) + 1;
+    if (cells.size() < need) {
+      return Err(atx::core::ErrorCode::InvalidArgument,
+                 "alpha::earnings_from_tsv: line " + std::to_string(line_no) + " has " +
+                     std::to_string(cells.size()) + " cells, header needs " +
+                     std::to_string(need));
+    }
+    const std::string_view hint = cells[static_cast<std::size_t>(c_hint)];
+    bool is_amc = false;
+    if (hint == "amc") {
+      is_amc = true;
+    } else if (hint != "bmo" && hint != "intraday") {
+      return Err(atx::core::ErrorCode::InvalidArgument,
+                 "alpha::earnings_from_tsv: line " + std::to_string(line_no) +
+                     " has session_hint '" + std::string(hint) + "'");
+    }
+    const std::string_view d = cells[static_cast<std::size_t>(c_date)];
+    if (compute_detail::day_serial(d) < 0) {
+      return Err(atx::core::ErrorCode::InvalidArgument,
+                 "alpha::earnings_from_tsv: line " + std::to_string(line_no) +
+                     " has earn_date '" + std::string(d) + "'");
+    }
+    EarningsEvents &ev = cal.by_symbol[std::string(cells[static_cast<std::size_t>(c_ticker)])];
+    ev.date.emplace_back(d);
+    ev.amc.push_back(is_amc ? 1U : 0U);
+    ++cal.n_events;
+  }
+  // Anchor resolution binary-searches these; sort by date, keeping the amc
+  // flags glued to their dates.
+  for (auto &[sym, ev] : cal.by_symbol) {
+    std::vector<std::size_t> ord(ev.date.size());
+    for (std::size_t k = 0; k < ord.size(); ++k) {
+      ord[k] = k;
+    }
+    std::sort(ord.begin(), ord.end(),
+              [&ev](std::size_t a, std::size_t b) { return ev.date[a] < ev.date[b]; });
+    EarningsEvents sorted;
+    sorted.date.reserve(ev.date.size());
+    sorted.amc.reserve(ev.amc.size());
+    for (const std::size_t k : ord) {
+      sorted.date.push_back(std::move(ev.date[k]));
+      sorted.amc.push_back(ev.amc[k]);
+    }
+    ev = std::move(sorted);
+  }
+  return Ok(std::move(cal));
+}
+
 // ── Evaluation ──────────────────────────────────────────────────────────────
 
 struct ComputedFeatures {
@@ -805,7 +1074,7 @@ struct ComputedFeatures {
 
 [[nodiscard]] inline Result<ComputedFeatures>
 evaluate(const PanelFrame &frame, std::span<const FeatureSpec *const> features,
-         const MarketSeries *market = nullptr) {
+         const MarketSeries *market = nullptr, const EarningsCalendar *earnings = nullptr) {
   ATX_TRY(auto series, group_by_symbol(frame));
   const auto &evals = panel_evaluators();
 
@@ -828,7 +1097,7 @@ evaluate(const PanelFrame &frame, std::span<const FeatureSpec *const> features,
     out.values.emplace(name, std::vector<double>(frame.rows(), nan_v));
   }
   for (const SymbolSeries &s : series) {
-    EvalInputs in{&s, market};
+    EvalInputs in{&s, market, earnings};
     for (const auto &[name, fn] : todo) {
       std::vector<double> &col = out.values[name];
       for (std::size_t i = 0; i < s.size(); ++i) {

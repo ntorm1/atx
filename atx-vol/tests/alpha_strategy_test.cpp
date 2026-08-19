@@ -416,6 +416,151 @@ TEST(AlphaCompute, IdioAndSysvolShareAreFiniteUnderTheCrossSectionProxy) {
   EXPECT_EQ(checked, 14U);
 }
 
+// ── Earnings calendar (f28..f30) ────────────────────────────────────────────
+
+namespace {
+
+// EEE: inverted term structure (0.30/0.25) — sigma_E extractable. FFF: upward
+// (0.20/0.22) — sigma_E^2 would be negative and must be declined.
+[[nodiscard]] std::string make_earner_panel(int n) {
+  std::string out = "symbol\tdate\tspot\tiv_fair_21d\tiv_fair_63d\trv_fwd_21d\tbar_index\n";
+  struct Row {
+    const char *sym;
+    double iv21;
+    double iv63;
+  };
+  for (const Row rr : {Row{"EEE", 0.30, 0.25}, Row{"FFF", 0.20, 0.22}}) {
+    double s = 100.0;
+    for (int i = 0; i < n; ++i) {
+      s *= std::exp(0.005 * static_cast<double>(i % 3 - 1));
+      char buf[256];
+      std::snprintf(buf, sizeof buf, "%s\t2026-%02d-%02d\t%.10f\t%.4f\t%.4f\t0.25\t%d\n", rr.sym,
+                    1 + i / 28, 1 + i % 28, s, rr.iv21, rr.iv63, i);
+      out += buf;
+    }
+  }
+  return out;
+}
+
+const char *const kEarnCal =
+    "ticker\tearn_date\tsession_hint\tannounce_ts_et\tsource\tfetched_utc\n"
+    "EEE\t2026-01-11\tbmo\t2026-01-11T07:00:00-05:00\tsec_edgar_8k_item202\tx\n"
+    "FFF\t2026-01-11\tamc\t2026-01-11T16:30:00-05:00\tsec_edgar_8k_item202\tx\n";
+
+} // namespace
+
+TEST(AlphaEarnings, TsvParserSortsPerSymbolAndFailsClosed) {
+  // Out-of-order dates arrive sorted with their amc flags still glued on.
+  auto cal = earnings_from_tsv("ticker\tearn_date\tsession_hint\n"
+                               "AAA\t2026-04-20\tamc\n"
+                               "AAA\t2026-01-15\tbmo\n"
+                               "AAA\t2026-07-21\tintraday\n");
+  ASSERT_TRUE(cal) << cal.error().to_string();
+  const EarningsEvents *ev = cal->find("AAA");
+  ASSERT_NE(ev, nullptr);
+  ASSERT_EQ(ev->date.size(), 3U);
+  EXPECT_EQ(ev->date[0], "2026-01-15");
+  EXPECT_EQ(ev->date[1], "2026-04-20");
+  EXPECT_EQ(ev->amc[0], 0U);
+  EXPECT_EQ(ev->amc[1], 1U);
+  EXPECT_EQ(ev->amc[2], 0U); // intraday buckets with bmo
+  EXPECT_EQ(cal->n_events, 3U);
+  EXPECT_EQ(cal->find("ZZZ"), nullptr);
+
+  // A hint outside {bmo, amc, intraday} shifts the event window a full day if
+  // guessed, so it is refused, as is an unparseable date.
+  EXPECT_FALSE(earnings_from_tsv("ticker\tearn_date\tsession_hint\nAAA\t2026-01-15\tdunno\n"));
+  EXPECT_FALSE(earnings_from_tsv("ticker\tearn_date\tsession_hint\nAAA\t01/15/2026\tbmo\n"));
+  EXPECT_FALSE(earnings_from_tsv("symbol\tdate\thint\nAAA\t2026-01-15\tbmo\n"));
+}
+
+TEST(AlphaEarnings, DaysToEarnRespectsTheCloseBoundary) {
+  const PanelFrame f = load(make_two_symbol_panel(30));
+  auto series = group_by_symbol(f);
+  ASSERT_TRUE(series);
+  // AAA prints AFTER the close of 01-05; BBB prints BEFORE its open.
+  auto cal = earnings_from_tsv("ticker\tearn_date\tsession_hint\n"
+                               "AAA\t2026-01-05\tamc\n"
+                               "BBB\t2026-01-05\tbmo\n");
+  ASSERT_TRUE(cal);
+
+  const FeatureRegistry reg = builtin_features();
+  const auto sel = reg.select(std::vector<std::string>{"f28_days_to_earn"});
+  ASSERT_TRUE(sel);
+  auto out = evaluate(f, *sel, nullptr, &*cal);
+  ASSERT_TRUE(out) << out.error().to_string();
+  const std::vector<double> &d = out->values.at("f28_days_to_earn");
+
+  // AAA rows are frame rows 0..29; row 4 is 2026-01-05.
+  EXPECT_NEAR(d[3], 1.0, 1e-12);
+  EXPECT_NEAR(d[4], 0.0, 1e-12); // amc today: still ahead at the close
+  EXPECT_TRUE(std::isnan(d[5])); // calendar exhausted, not "no print coming"
+  // BBB rows are frame rows 30..59; its bmo print on 01-05 already hit by the
+  // close of 01-05.
+  EXPECT_NEAR(d[30 + 3], 1.0, 1e-12);
+  EXPECT_TRUE(std::isnan(d[30 + 4]));
+}
+
+TEST(AlphaEarnings, ForwardCountAnchorsBmoIntoTheDateAndAmcPastIt) {
+  const PanelFrame f = load(make_earner_panel(70));
+  auto cal = earnings_from_tsv(kEarnCal);
+  ASSERT_TRUE(cal);
+  const FeatureRegistry reg = builtin_features();
+  const auto sel = reg.select(std::vector<std::string>{"f29_earn_n_21d"});
+  ASSERT_TRUE(sel);
+  auto out = evaluate(f, *sel, nullptr, &*cal);
+  ASSERT_TRUE(out) << out.error().to_string();
+  const std::vector<double> &n = out->values.at("f29_earn_n_21d");
+
+  // The print is dated row 10's session (2026-01-11). bmo lands in the return
+  // INTO row 10: inside (i, i+21] for i in [0, 9]. amc lands in the return
+  // into row 11: inside for i in [0, 10]. Row 10 is where they differ.
+  EXPECT_NEAR(n[0], 1.0, 1e-12);        // EEE, bmo
+  EXPECT_NEAR(n[9], 1.0, 1e-12);
+  EXPECT_NEAR(n[10], 0.0, 1e-12);       // bmo already realized by row 10's close
+  EXPECT_NEAR(n[70 + 10], 1.0, 1e-12);  // FFF, amc: still inside the window
+  EXPECT_NEAR(n[70 + 11], 0.0, 1e-12);
+  // The forward window must exist: the last 21 rows decline.
+  EXPECT_TRUE(std::isnan(n[49]));
+  EXPECT_FALSE(std::isnan(n[48]));
+}
+
+TEST(AlphaEarnings, SigmaEMatchesTheTwoTenorDecompositionAndDeclinesNegative) {
+  const PanelFrame f = load(make_earner_panel(70));
+  auto cal = earnings_from_tsv(kEarnCal);
+  ASSERT_TRUE(cal);
+  const FeatureRegistry reg = builtin_features();
+  const auto sel = reg.select(std::vector<std::string>{"f30_earn_sigma_e"});
+  ASSERT_TRUE(sel);
+  auto out = evaluate(f, *sel, nullptr, &*cal);
+  ASSERT_TRUE(out) << out.error().to_string();
+  const std::vector<double> &se = out->values.at("f30_earn_sigma_e");
+
+  // EEE at i in [0, 6]: n1 = n2 = 1 (the one print sits in both windows), so
+  //   sigma_E^2 = T1 (0.30^2 - 0.25^2) / (1 - 1/3).
+  const double expect =
+      std::sqrt((21.0 / 252.0) * (0.30 * 0.30 - 0.25 * 0.25) / (1.0 - 21.0 / 63.0));
+  for (const std::size_t i : {0U, 6U}) {
+    EXPECT_NEAR(se[i], expect, 1e-12) << i;
+  }
+  EXPECT_TRUE(std::isnan(se[7]));       // i + 63 runs off the series
+  EXPECT_TRUE(std::isnan(se[70 + 0]));  // FFF: upward structure, sigma_E^2 < 0
+}
+
+TEST(AlphaEarnings, WithoutACalendarTheFamilyDeclinesRatherThanGuessing) {
+  const PanelFrame f = load(make_earner_panel(70));
+  const FeatureRegistry reg = builtin_features();
+  const auto sel = reg.select(std::vector<std::string>{"f28*", "f29*", "f30*"});
+  ASSERT_TRUE(sel);
+  auto out = evaluate(f, *sel);
+  ASSERT_TRUE(out) << out.error().to_string();
+  for (const auto &[name, col] : out->values) {
+    for (const double v : col) {
+      ASSERT_TRUE(std::isnan(v)) << name;
+    }
+  }
+}
+
 // ── Ranking and blending ────────────────────────────────────────────────────
 
 TEST(AlphaStrategy, RankWithinIsMidRankAndSkipsNonFinite) {

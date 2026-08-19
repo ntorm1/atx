@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <vector>
@@ -49,6 +50,7 @@ struct Args {
   std::vector<std::string> features{"f5_hv_iv_gap", "f4_term_slope", "f16_iv_vov_21d",
                                     "f15_idio_share", "liq_hspread_frac"};
   std::string market{"@xsec"};
+  std::string earnings; // empty = no calendar; f28..f30 evaluate to NaN
   // "dh" = the delta-hedged money axis. "rv" = the decontaminated cross-read:
   // forward realized vol alone, no implied leg, not a P&L.
   std::string axis{"dh"};
@@ -72,6 +74,8 @@ void usage() {
       "  --market SYM|@xsec       market proxy for f15/f27: a panel symbol, or @xsec\n"
 "                           for the cross-sectional mean return (default @xsec —\n"
 "                           a single-symbol proxy with gaps starves both features)\n"
+"  --earnings TSV           earnings calendar (fetch_earnings_calendar.py output);\n"
+"                           enables f28_days_to_earn/f29_earn_n_21d/f30_earn_sigma_e\n"
       "  --axis dh|rv|volchg      volchg = 100*(rv_fwd - rv_trail), the VOL-CHANGE\n"
     "                           axis: no implied leg AND no vol level, so it is\n"
     "                           immune to both the entry-mark channel and to\n"
@@ -124,6 +128,8 @@ bool parse_args(int argc, char **argv, Args &a) {
       a.features = split_commas(v);
     } else if (flag == "--market" && next()) {
       a.market = v;
+    } else if (flag == "--earnings" && next()) {
+      a.earnings = v;
     } else if (flag == "--axis" && next()) {
       if (v != "dh" && v != "rv" && v != "volchg") {
         std::fprintf(stderr, "--axis must be 'dh', 'rv' or 'volchg' (got '%s')\n", v.c_str());
@@ -267,7 +273,38 @@ int main(int argc, char **argv) {
                 args.market.c_str());
   }
 
-  auto computed = evaluate(frame, *selected, have_market ? &market : nullptr);
+  EarningsCalendar earnings;
+  if (!args.earnings.empty()) {
+    std::ifstream ein(args.earnings, std::ios::binary);
+    if (!ein) {
+      std::fprintf(stderr, "cannot open earnings calendar '%s'\n", args.earnings.c_str());
+      return 1;
+    }
+    std::string text((std::istreambuf_iterator<char>(ein)), std::istreambuf_iterator<char>());
+    auto cal = earnings_from_tsv(text);
+    if (!cal) {
+      std::fprintf(stderr, "earnings load failed: %s\n", cal.error().to_string().c_str());
+      return 1;
+    }
+    earnings = std::move(*cal);
+    // Coverage against the PANEL's names is the number that matters: a rich
+    // calendar that misses this panel's universe still starves f28..f30.
+    std::size_t covered = 0;
+    for (const SymbolSeries &s : *series) {
+      if (earnings.find(s.symbol) != nullptr) {
+        ++covered;
+      }
+    }
+    std::printf("\nEARNINGS  %zu events across %zu names; calendar covers %zu / %zu panel "
+                "names (%.1f%%)\n",
+                earnings.n_events, earnings.by_symbol.size(), covered, series->size(),
+                series->empty() ? 0.0
+                                : 100.0 * static_cast<double>(covered) /
+                                      static_cast<double>(series->size()));
+  }
+
+  auto computed = evaluate(frame, *selected, have_market ? &market : nullptr,
+                           earnings.empty() ? nullptr : &earnings);
   if (!computed) {
     std::fprintf(stderr, "feature evaluation failed: %s\n", computed.error().to_string().c_str());
     return 1;

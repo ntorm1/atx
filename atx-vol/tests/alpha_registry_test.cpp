@@ -417,13 +417,19 @@ TEST(AlphaAudit, TheCatalogueCarriesExactlyTwoSharedFootprintPairs) {
   //   f15/f27 -- idio_share and sysvol_share read the same 63-session
   //     (spot, market) pair and are literally 1 - each other. They ship as two
   //     because Cao & Han report them with OPPOSITE SIGNS in one regression.
+  //
+  // The earnings family restated it again, 17 -> 18: f28/f29 both read exactly
+  // {event@[0,0]} -- one schedule snapshot, transformed as days-to-print vs
+  // prints-in-window. Deliberate, same rationale as the semivariance block.
+  // f30 pairs with NEITHER: its read set adds the two implied strips, and the
+  // census fires on full-set equality, not overlap.
   const AuditReport rep = run_audit(all, targ(treg, "rv_fwd_21d"));
-  EXPECT_EQ(rep.count(FindingKind::SharedInputFootprint), 17U);
+  EXPECT_EQ(rep.count(FindingKind::SharedInputFootprint), 18U);
   const std::vector<std::string> subjects = rep.subjects(FindingKind::SharedInputFootprint);
   const std::vector<std::string> expected{"f2_log_rv21",        "f5_hv_iv_gap",
                                           "f7_ret_21d",         "f15_idio_share",
                                           "f22_semivar_dn_21d", "f23_semivar_up_21d",
-                                          "f24_signed_jump_21d"};
+                                          "f24_signed_jump_21d", "f28_days_to_earn"};
   EXPECT_EQ(subjects, expected);
 }
 
@@ -510,14 +516,19 @@ TEST(AlphaAudit, NoCataloguedFeatureLeaksAgainstAnyCataloguedTarget) {
     EXPECT_FALSE(rep.has_fatal()) << "fatal finding against target '" << target.name << "'";
     // Shared input footprints are Info and are pinned by their own test; the
     // standing invariant here is only that nothing LEAKS.
-    // 17 as of round 11, up from 2. The jump is the semivariance block: f22,
-    // f23, f24 and f25 all read exactly spot[-21..0], the same footprint as f2
-    // and f7, so the six of them contribute C(6,2) = 15 pairs, plus the
-    // long-standing f5/f6 and f2/f7-family pairs. That is the finding working,
-    // not a defect -- Patton & Sheppard's whole claim is that RS+ and RS-
-    // carry DIFFERENT coefficients over the SAME window, so a decomposition
-    // that did not share a footprint would not be their decomposition.
-    EXPECT_EQ(rep.count(FindingKind::SharedInputFootprint), 17U)
+    // 18 as of the round-11 earnings family, up from 17, up from 2. The 17 is
+    // the semivariance block: f22, f23, f24 and f25 all read exactly
+    // spot[-21..0], the same footprint as f2 and f7, so the six of them
+    // contribute C(6,2) = 15 pairs, plus the long-standing f5/f6 and
+    // f2/f7-family pairs. That is the finding working, not a defect --
+    // Patton & Sheppard's whole claim is that RS+ and RS- carry DIFFERENT
+    // coefficients over the SAME window, so a decomposition that did not
+    // share a footprint would not be their decomposition.
+    // The 18th is f28/f29: both read exactly {event@[0,0]} -- the same
+    // schedule snapshot transformed two ways (proximity vs in-window count).
+    // f30 does NOT pair with them: its reads also carry the two implied
+    // strips, and the census fires on full-set EQUALITY, not overlap.
+    EXPECT_EQ(rep.count(FindingKind::SharedInputFootprint), 18U)
         << "the shared-footprint census moved against target '" << target.name << "'";
   }
 }
@@ -538,6 +549,12 @@ TEST(AlphaAudit, TheChannelCensusIsTheNumberTheGateShouldPrint) {
   // predictor in the literature and still be, mechanically, partly a bet that
   // the entry mark is low. It stays in the catalogue and it stays flagged: the
   // remedy for a channel is the decontaminated cross-read, never deletion.
+  //
+  // The earnings family adds f30_earn_sigma_e: the extraction reads both
+  // implied strips AT t (they are its sigma1/sigma2 inputs), so against a
+  // target that pays -iv^2 it inherits exactly f4's channel, reweighted by
+  // event placement. f28 and f29 read only the schedule and stay OUT of the
+  // list -- an earnings date carries no entry mark.
   const FeatureRegistry freg = builtin_features();
   const auto treg = builtin_targets();
   std::vector<const FeatureSpec *> all;
@@ -547,9 +564,9 @@ TEST(AlphaAudit, TheChannelCensusIsTheNumberTheGateShouldPrint) {
   const AuditReport rep = run_audit(all, targ(treg, "dh_straddle_pnl_21d"));
   const std::vector<std::string> subjects = rep.subjects(FindingKind::EntryMarkChannel);
   const std::vector<std::string> expected{
-      "f3_iv_level",    "f4_term_slope",  "f5_hv_iv_gap",   "f6_vrp_lag",
-      "f9_vov_63d",     "f13_term_curv",  "f17_slope_126d", "f18_slope_189d",
-      "f19_slope_252d", "f26_gs_hviv_252d"};
+      "f3_iv_level",      "f4_term_slope",  "f5_hv_iv_gap",   "f6_vrp_lag",
+      "f9_vov_63d",       "f13_term_curv",  "f17_slope_126d", "f18_slope_189d",
+      "f19_slope_252d",   "f26_gs_hviv_252d", "f30_earn_sigma_e"};
   EXPECT_EQ(subjects, expected);
 }
 

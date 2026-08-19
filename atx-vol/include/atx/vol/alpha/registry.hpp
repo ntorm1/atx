@@ -180,6 +180,17 @@ using TargetRegistry = Registry<TargetSpec>;
 [[nodiscard]] inline SeriesRef wing_put(std::int32_t tenor, std::ptrdiff_t first, std::ptrdiff_t last) {
   return SeriesRef{SeriesId::IvWingPut, tenor, Window{first, last}};
 }
+// A calendar read is declared at {0,0} even though the DATES it returns lie
+// ahead of t: the quantity read is the SCHEDULE AS KNOWN AT t — public,
+// entry-time information, like an option's expiry date — not a future
+// session's market data. Declaring the event dates' own sessions as the
+// window would grade every earnings feature a ForwardLeak and erase the
+// distinction the audit exists to draw. The honest residual risk (the fetched
+// file is hindsight, not a point-in-time schedule snapshot) is documented on
+// `EarningsCalendar`, and is a property of the DATA, not of these specs.
+[[nodiscard]] inline SeriesRef event() {
+  return SeriesRef{SeriesId::EventFlag, 0, Window{0, 0}};
+}
 
 // ── The built-in feature catalogue ──────────────────────────────────────────
 //
@@ -390,6 +401,52 @@ using TargetRegistry = Registry<TargetSpec>;
        "PAID to own is market-correlated; the vol you are CHARGED to own is "
        "idiosyncratic, because a dealer cannot hedge it. Reading that as one "
        "signed axis throws away the asymmetry."});
+  // ── f28-f30: the earnings-calendar family (round 11) ──────────────────────
+  //
+  // All three read `event()` — the schedule snapshot at t (see the helper's
+  // comment for why that window is {0,0}). None reads the spot path at all,
+  // so none can carry the entry mark through the realized leg; f30 reads the
+  // same two implied strips as f4 and inherits f4's channel against any
+  // target that pays -iv^2.
+  put({"f28_days_to_earn", Unit::Dimensionless, SignPrior::BuyHigh,
+       "Dubinsky, Johannes, Kaeck & Seeger, Mgmt Sci 65(9) 2019 (the premium "
+       "is rich held through); Gao, Xing & Zhang, JFQA 53(6) 2018 (the run-up "
+       "trade EXITS before the print)",
+       {event()},
+       "Calendar days from t to the name's next scheduled print. An amc print "
+       "dated t is still ahead at the close; a bmo print dated t already hit. "
+       "Declines (NaN) past 120 days: a quarterly reporter is never that far "
+       "from its next print, so a larger value is a calendar hole and ranking "
+       "on it would reward the worst-covered names. THE PRIOR IS FOR A "
+       "HOLD-THROUGH BOOK: the published long-side result buys the run-up and "
+       "exits BEFORE the announcement, which a 21-session hold cannot do; "
+       "held through, the event premium is systematically rich (measured on "
+       "the r11 xsec panel: buying imminent prints costs -4.47 vp excess, "
+       "t_nw -6.58, 0/21 phases, with rv NEUTRAL (+0.13) and volchg POSITIVE "
+       "(+3.06) -- the whole loss is the implied leg). BuyHigh = keep the "
+       "long-vega book in names AWAY from their print."});
+  put({"f29_earn_n_21d", Unit::Dimensionless, SignPrior::BuyHigh,
+       "Dubinsky, Johannes, Kaeck & Seeger, Mgmt Sci 65(9) 2019",
+       {event()},
+       "Number of prints whose jump lands inside the label's own forward "
+       "window — the anchor rule (bmo D -> return into D, amc D -> return "
+       "into D+1) matches the calendar builder's. Almost always 0 or 1; it "
+       "exists as much as a REGIME SPLITTER for every other feature as a "
+       "signal itself, and as n1 of the f30 extraction. Requires the forward "
+       "window to exist and be gap-free, or the count would be a claim about "
+       "sessions the series does not have."});
+  put({"f30_earn_sigma_e", Unit::VolDecimal, SignPrior::BuyHigh,
+       "Dubinsky, Johannes, Kaeck & Seeger, Mgmt Sci 65(9) 2019; Leung & "
+       "Santoli, IJTAF 17(1) 2014, eq 5.2",
+       {event(), strip(21, 0, 0), strip(63, 0, 0)},
+       "Implied one-event move stdev (absolute return terms, NOT annualized) "
+       "from the two-tenor decomposition: sigma_E^2 = T1(sigma1^2 - sigma2^2) "
+       "/ (n1 - n2 T1/T2), with n1/n2 the prints inside the 21/63-session "
+       "windows. Needs n1 >= 1 and a positive denominator; a negative "
+       "sigma_E^2 (upward term structure despite an event in the short "
+       "window) is declined, not clamped. Same two strips as f4_term_slope, "
+       "REWEIGHTED by event placement — the pair is only evidence of skill "
+       "where they disagree."});
   return reg;
 }
 
