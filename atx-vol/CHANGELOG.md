@@ -5,6 +5,57 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### BREAKING — the ready-state oracle transaction is broker-only (lane oracle-ready-migration)
+
+**What changed.** Measure → Attribute → Improve → Ratchet now runs entirely
+through v3 lane-broker capabilities, the same protocol the bootstrap path
+already used. `vol-sprint` is rewritten from a fail-closed stub into a
+dispatchable broker-only DAG (freeze → plan → scope-pinned build lanes with
+fresh exact-SHA review → isolated integration gate) with a deterministic run
+identity and holdout taint filters on both sides of the workflow boundary.
+
+**Migration.** The `READY_BROKER_MIGRATION_REQUIRED` refusal and the
+`ORACLE_BROKER_MIGRATION_REQUIRED` sprint stub are RETIRED, together with every
+lease-script and raw-git mutation in the ready path. Callers that keyed on
+those failure strings must key on the typed results instead; no stage leases a
+worktree, runs a shell, or names a physical path any more.
+
+**Five latent bugs in the retired ready path**, fixed by the migrated
+contracts and pinned by `scripts/tests/oracle-ready-contracts.test.mjs`:
+
+1. ACCEPT could never land: `casReceiptError` requires `new_tree` and the
+   retired path never supplied one, so every valid CAS receipt was rejected.
+2. The plaintext holdout-digest receipt was unsatisfiable — no broker command
+   prints the digest. The Ratchet now proves `sha256("<sha>:<digest>")`
+   through the frozen `holdout_digest` gate; the digest itself never crosses
+   an agent boundary.
+3. `metric_evidence` was unsatisfiable for a broker-only worker — no command
+   prints a metric's baseline and delta. Metrics now cite the broker gate
+   receipt they were measured from via `evidence_index`.
+4. Suspect exclusion was unreachable — it required a parameterized
+   market-check gate the broker registry does not contain. It is retired;
+   `oracle_suspects_excluded` must be `[]` and the whole holdout cohort is
+   benchmarked, which only removes evidence in the candidate's favour.
+5. `scripts/tests/oracle-receipt-adoption.test.mjs` is a PRE-EXISTING 8/8-red
+   orphan suite; it is recorded here and deliberately left untouched.
+
+**Holdout scoping (security).** Ratchet memory — `bench/oracle/scorecards/`,
+`docs/LEDGER.md`, `docs/oracle/NORTHSTAR.md`, the convergence changelog —
+carries holdout-derived numbers. The broker's three read doors
+(`repo_search`, `repo_read`, `commit_inspect`) now withhold those paths from
+every operation except `ratchet` and the bootstrap stages; a caller with no
+capability is fail-closed, and `commit_inspect` names its `withheld_paths` so
+the omission is auditable. A tuning lane can no longer read last iteration's
+holdout aggregates out of committed memory.
+
+**canonical_discard.** `lane_release` mints the ratchet finalize capability
+before the verdict exists, so every non-landing branch of the transaction
+(contract failure, verdict disagreement, REJECT, invalid CAS) now destroys the
+token through the new `canonical_discard` broker tool and the single-tool
+`vol-ref-discarder` agent. A REJECT whose discard failed is a failed
+transaction; a token that could move canonical to a rejected SHA never
+outlives the transaction that minted it.
+
 ### Stage 3 conventions RESOLVED — committed floor, speed pin, and an honest residual
 
 **What landed.** `atx-vol/bench/oracle/CONVENTIONS.md`,
