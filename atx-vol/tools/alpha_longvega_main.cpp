@@ -51,6 +51,7 @@ struct Args {
                                     "f15_idio_share", "liq_hspread_frac"};
   std::string market{"@xsec"};
   std::string earnings; // empty = no calendar; f28..f30 evaluate to NaN
+  double avoid_earn_days{0.0}; // >0: veto names within N days of their print
   // "dh" = the delta-hedged money axis. "rv" = the decontaminated cross-read:
   // forward realized vol alone, no implied leg, not a P&L.
   std::string axis{"dh"};
@@ -76,6 +77,9 @@ void usage() {
 "                           a single-symbol proxy with gaps starves both features)\n"
 "  --earnings TSV           earnings calendar (fetch_earnings_calendar.py output);\n"
 "                           enables f28_days_to_earn/f29_earn_n_21d/f30_earn_sigma_e\n"
+"  --avoid-earn-days N      veto names within N calendar days of their next print\n"
+"                           from BOTH books (needs --earnings). Measured r11: held\n"
+"                           through the print the event premium costs -4.47 vp.\n"
       "  --axis dh|rv|volchg      volchg = 100*(rv_fwd - rv_trail), the VOL-CHANGE\n"
     "                           axis: no implied leg AND no vol level, so it is\n"
     "                           immune to both the entry-mark channel and to\n"
@@ -130,6 +134,8 @@ bool parse_args(int argc, char **argv, Args &a) {
       a.market = v;
     } else if (flag == "--earnings" && next()) {
       a.earnings = v;
+    } else if (flag == "--avoid-earn-days" && next()) {
+      a.avoid_earn_days = std::stod(v);
     } else if (flag == "--axis" && next()) {
       if (v != "dh" && v != "rv" && v != "volchg") {
         std::fprintf(stderr, "--axis must be 'dh', 'rv' or 'volchg' (got '%s')\n", v.c_str());
@@ -437,7 +443,40 @@ int main(int argc, char **argv) {
   scfg.crossings = args.crossings;
   scfg.require_measured_liquidity = args.require_measured_liq;
 
-  auto card = run(frame, *dates, blended->score, *pnl, scfg);
+  std::vector<double> veto;
+  if (args.avoid_earn_days > 0.0) {
+    if (earnings.empty()) {
+      std::fprintf(stderr, "--avoid-earn-days needs --earnings\n");
+      return 2;
+    }
+    const auto vsel = freg.select(std::vector<std::string>{"f28_days_to_earn"});
+    if (!vsel) {
+      std::fprintf(stderr, "--avoid-earn-days: %s\n", vsel.error().to_string().c_str());
+      return 1;
+    }
+    auto vcomp = evaluate(frame, *vsel, nullptr, &earnings);
+    if (!vcomp) {
+      std::fprintf(stderr, "--avoid-earn-days: %s\n", vcomp.error().to_string().c_str());
+      return 1;
+    }
+    const std::vector<double> &d2e = vcomp->values.at("f28_days_to_earn");
+    veto.resize(frame.rows(), 0.0);
+    std::size_t vetoed = 0;
+    for (std::size_t r = 0; r < frame.rows(); ++r) {
+      // NaN days = no calendar information; an unknown print date is not an
+      // imminent one, so it does not veto.
+      if (std::isfinite(d2e[r]) && d2e[r] < args.avoid_earn_days) {
+        veto[r] = 1.0;
+        ++vetoed;
+      }
+    }
+    std::printf("\nVETO    %zu / %zu rows within %.0f days of their print — excluded from both "
+                "books\n",
+                vetoed, frame.rows(), args.avoid_earn_days);
+  }
+
+  auto card = run(frame, *dates, blended->score, *pnl, scfg,
+                  veto.empty() ? std::span<const double>{} : std::span<const double>(veto));
   if (!card) {
     std::fprintf(stderr, "\nbook failed: %s\n", card.error().to_string().c_str());
     return 1;

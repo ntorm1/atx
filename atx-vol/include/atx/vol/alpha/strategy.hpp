@@ -323,11 +323,25 @@ struct Scorecard {
 // position ENTERED on that row -- e.g. 100*(rv_fwd_21d - iv_fair_21d) for a
 // delta-hedged straddle. Supplied by the caller rather than computed here so
 // the strategy layer never hardcodes a target.
+//
+// `veto`, when non-empty, is row-aligned with the frame and removes a row
+// from ADMISSION when its value is finite and nonzero -- from the floor as
+// well as the selection, because a veto changes the universe, and a floor
+// computed on a different set than the selection would not be a paired
+// comparison. NaN does not veto: it means "no information", and an unknown
+// hazard is not a present one. The motivating column is imminent-earnings
+// exclusion (f28 below a threshold), but the mechanism is any row predicate.
 [[nodiscard]] inline Result<Scorecard>
 run(const PanelFrame &frame, std::span<const DateSlice> dates, std::span<const double> score,
-    std::span<const double> pnl, const StrategyConfig &cfg) {
+    std::span<const double> pnl, const StrategyConfig &cfg,
+    std::span<const double> veto = {}) {
   if (cfg.max_names == 0) {
     return Err(atx::core::ErrorCode::InvalidArgument, "alpha::run: max_names must be positive");
+  }
+  if (!veto.empty() && veto.size() != frame.rows()) {
+    return Err(atx::core::ErrorCode::InvalidArgument,
+               "alpha::run: veto column has " + std::to_string(veto.size()) + " rows, frame has " +
+                   std::to_string(frame.rows()));
   }
   const bool has_liq = frame.schema().has("liq_hspread_frac");
   std::span<const double> hspread;
@@ -355,6 +369,9 @@ run(const PanelFrame &frame, std::span<const DateSlice> dates, std::span<const d
     admitted.reserve(d.rows.size());
     for (const std::size_t r : d.rows) {
       if (!std::isfinite(score[r]) || !std::isfinite(pnl[r])) {
+        continue;
+      }
+      if (!veto.empty() && std::isfinite(veto[r]) && veto[r] != 0.0) {
         continue;
       }
       const double w = has_liq ? hspread[r] : std::numeric_limits<double>::quiet_NaN();

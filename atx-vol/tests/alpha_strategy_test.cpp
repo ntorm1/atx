@@ -704,6 +704,44 @@ TEST(AlphaStrategy, PerfectForesightSelectsTheTopAndBeatsTheFloor) {
   EXPECT_NEAR(card->mean_excess_gross, 4.0, 1e-12);
 }
 
+TEST(AlphaStrategy, AVetoedNameLeavesBothBooksNotJustTheSelection) {
+  const PanelFrame f = load(kBook);
+  auto dates = group_by_date(f);
+  ASSERT_TRUE(dates);
+  auto pnl = dh_straddle_pnl_vol_points(f);
+  ASSERT_TRUE(pnl);
+  StrategyConfig cfg;
+  cfg.max_names = 2;
+  cfg.horizon_sessions = 1;
+  // Veto AAA (the best name) on every date. NaN means "no information" and
+  // must NOT veto -- an unknown earnings date is not an imminent one.
+  std::vector<double> veto(f.rows(), 0.0);
+  auto series = group_by_symbol(f);
+  ASSERT_TRUE(series);
+  for (const SymbolSeries &s : *series) {
+    for (std::size_t i = 0; i < s.size(); ++i) {
+      if (s.symbol == "AAA") {
+        veto[s.row[i]] = 1.0;
+      } else if (s.symbol == "DDD") {
+        veto[s.row[i]] = std::nan("");
+      }
+    }
+  }
+  auto card = run(f, *dates, *pnl, *pnl, cfg, veto);
+  ASSERT_TRUE(card) << card.error().to_string();
+  // Admission drops to {BBB +8, CCC +2, DDD 0}: the oracle's top-2 is
+  // {BBB, CCC}, mean 5; the floor is the same three names, mean 10/3. The
+  // floor moving too is the point: a veto changes the UNIVERSE, and a floor
+  // computed on a different set would not be a paired comparison.
+  EXPECT_NEAR(card->per_date[0].selected_gross, 5.0, 1e-12);
+  EXPECT_NEAR(card->per_date[0].floor_gross, 10.0 / 3.0, 1e-12);
+  EXPECT_EQ(card->per_date[0].n_admitted, 3U);
+
+  // A veto column of the wrong length is a programming error, refused.
+  const std::vector<double> short_veto(2, 0.0);
+  EXPECT_FALSE(run(f, *dates, *pnl, *pnl, cfg, short_veto));
+}
+
 TEST(AlphaStrategy, AConstantScoreEarnsExactlyTheFloor) {
   // No selection information at all: the top-N of a tied ranking is still a
   // subset, but with n = N the two books coincide and the excess must be 0.
