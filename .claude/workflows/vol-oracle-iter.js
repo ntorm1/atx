@@ -375,10 +375,17 @@ const RECOVERY_QUERY = {
     found: { type: 'boolean' }, recovery_id: { type: 'string' }, result: SEALED_RECOVERY_RESULT, broker_evidence: BROKER_EVIDENCE,
   },
 }
+// Measure and Ratchet gate receipts are now the broker's own gate receipts, so
+// they carry the same identity fields the bootstrap path already binds:
+// receipt_id, the SHA/tree the gate actually ran against, and the broker
+// evidence whose command/exit/output must equal the receipt's own.
 const MEASURE_GATE_RECEIPT = {
-  type: 'object', additionalProperties: false, required: ['gate_id', 'command', 'exit_code', 'output', 'result'],
+  type: 'object', additionalProperties: false,
+  required: ['receipt_id', 'gate_id', 'tested_sha', 'tested_tree', 'command', 'exit_code', 'output', 'result', 'broker_evidence'],
   properties: {
-    gate_id: { type: 'string', enum: Object.keys(READY_MEASURE_GATES) }, command: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' },
+    receipt_id: { type: 'string' }, gate_id: { type: 'string', enum: Object.keys(READY_MEASURE_GATES) },
+    tested_sha: { type: 'string' }, tested_tree: { type: 'string' },
+    command: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' },
     result: {
       type: 'object', additionalProperties: false, required: ['schema_version', 'status', 'command_id', 'observations', 'metrics'],
       properties: {
@@ -387,12 +394,16 @@ const MEASURE_GATE_RECEIPT = {
         metrics: { type: 'array', items: NUMERIC_GATE_METRIC },
       },
     },
+    broker_evidence: BROKER_EVIDENCE,
   },
 }
 const RATCHET_GATE_RECEIPT = {
-  type: 'object', additionalProperties: false, required: ['gate_id', 'command', 'exit_code', 'output', 'result'],
+  type: 'object', additionalProperties: false,
+  required: ['receipt_id', 'gate_id', 'tested_sha', 'tested_tree', 'command', 'exit_code', 'output', 'result', 'broker_evidence'],
   properties: {
-    gate_id: { type: 'string', enum: RATCHET_GATE_IDS }, command: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' },
+    receipt_id: { type: 'string' }, gate_id: { type: 'string', enum: RATCHET_GATE_IDS },
+    tested_sha: { type: 'string' }, tested_tree: { type: 'string' },
+    command: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' },
     result: {
       type: 'object', additionalProperties: false, required: ['schema_version', 'status', 'command_id', 'observations', 'metrics'],
       properties: {
@@ -401,6 +412,29 @@ const RATCHET_GATE_RECEIPT = {
         metrics: { type: 'array', items: NUMERIC_GATE_METRIC },
       },
     },
+    broker_evidence: BROKER_EVIDENCE,
+  },
+}
+// The Ratchet's holdout-digest proof. The frozen preflight gate deliberately
+// publishes NO digest: it emits raw_output_sha256 = sha256("<HEAD sha>:<the
+// recomputed holdout membership digest>") so the recomputation is provable
+// without the digest ever crossing an agent boundary. The workflow already holds
+// both inputs, so it recomputes that hash itself in ratchetDigestReceiptError.
+const HOLDOUT_DIGEST_GATE_RECEIPT = {
+  type: 'object', additionalProperties: false,
+  required: ['receipt_id', 'gate_id', 'tested_sha', 'tested_tree', 'command', 'exit_code', 'output', 'result', 'broker_evidence'],
+  properties: {
+    receipt_id: { type: 'string' }, gate_id: { type: 'string', enum: ['holdout_digest'] },
+    tested_sha: { type: 'string' }, tested_tree: { type: 'string' },
+    command: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' },
+    result: {
+      type: 'object', additionalProperties: false, required: ['schema_version', 'status', 'observations', 'command_id', 'raw_output_sha256'],
+      properties: {
+        schema_version: { type: 'integer', enum: [1] }, status: { type: 'string', enum: ['PASS'] }, observations: { type: 'integer' },
+        command_id: { type: 'string', enum: ['holdout_digest'] }, raw_output_sha256: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+      },
+    },
+    broker_evidence: BROKER_EVIDENCE,
   },
 }
 const INTEGRATION_RECEIPT = {
@@ -581,14 +615,23 @@ const ANALYSIS_CONTEXT = {
 }
 const MEASURE = {
   type: 'object', additionalProperties: false,
-  required: ['status', 'iter', 'scorecard_path', 'branch', 'sha', 'base_sha', 'worktree', 'lease_name', 'lease_run_id', 'heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'acquisition_receipt', 'release_receipt', 'lease_released', 'analysis_context', 'gate_receipts', 'evidence'],
+  // Measure is now a READ-ONLY broker stage. The three frozen commands are
+  // `--aggregate-only` with no `--out`, so the bench writes its JSON to stdout
+  // and touches no file; the lane therefore never commits and the Measure agent
+  // never needs patch_apply or lane_commit. Iteration numbering still advances
+  // exactly once per landed Ratchet, which is the only writer of a scorecard.
+  // The lease is acquired and released by the workflow itself, so the worker
+  // reports only the identity it was handed plus its typed broker receipts.
+  required: ['status', 'iter', 'tested_sha', 'tested_tree', 'branch', 'base_sha', 'worktree', 'lease_name', 'lease_run_id', 'heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'acquisition_receipt', 'analysis_context', 'gate_receipts', 'evidence', 'broker_evidence'],
   properties: {
-    status: { type: 'string', enum: ['ok', 'failed'] }, iter: { type: 'string' }, scorecard_path: { type: 'string' }, branch: { type: 'string' },
-    sha: { type: 'string' }, base_sha: { type: 'string' }, worktree: { type: 'string' }, lease_name: { type: 'string' }, lease_run_id: { type: 'string' },
+    status: { type: 'string', enum: ['ok', 'failed'] }, iter: { type: 'string' }, branch: { type: 'string' },
+    tested_sha: { type: 'string' }, tested_tree: { type: 'string' },
+    base_sha: { type: 'string' }, worktree: { type: 'string' }, lease_name: { type: 'string' }, lease_run_id: { type: 'string' },
     heartbeat_id: { type: 'string' }, keeper_pid: { type: 'integer' }, keeper_process_started_utc: { type: 'string' },
-    acquisition_receipt: LEASE_RECEIPT, release_receipt: LEASE_RECEIPT, lease_released: { type: 'boolean' }, analysis_context: ANALYSIS_CONTEXT,
+    acquisition_receipt: LEASE_RECEIPT, analysis_context: ANALYSIS_CONTEXT,
     gate_receipts: { type: 'array', items: MEASURE_GATE_RECEIPT },
     evidence: { type: 'array', items: EVIDENCE_ITEM }, diagnostics: { type: 'array', items: EVIDENCE_ITEM },
+    broker_evidence: { type: 'array', minItems: 1, items: BROKER_EVIDENCE },
   },
 }
 const ATTR = {
@@ -613,37 +656,34 @@ const RATCHET_METRIC = {
     pin: { type: 'number' }, unit: { type: 'string' }, evidence_index: { type: 'integer' },
   },
 }
-const DIGEST_RECEIPT = {
-  type: 'object', additionalProperties: false, required: ['expected_digest', 'actual_digest', 'command', 'exit_code', 'output'],
-  properties: {
-    expected_digest: { type: 'string' }, actual_digest: { type: 'string' }, command: { type: 'string' },
-    exit_code: { type: 'integer' }, output: { type: 'string' },
-  },
-}
-const MARKET_RECEIPT = {
-  type: 'object', additionalProperties: false,
-  required: ['cell_id', 'nbbo_bid_mean', 'nbbo_ask_mean', 'atx_price_mean', 'oracle_price_mean', 'atx_nbbo_distance', 'oracle_nbbo_distance', 'sample_count', 'command', 'exit_code', 'output'],
-  properties: {
-    cell_id: { type: 'integer', minimum: 0, maximum: 2147483647 }, nbbo_bid_mean: { type: 'number' }, nbbo_ask_mean: { type: 'number' },
-    atx_price_mean: { type: 'number' }, oracle_price_mean: { type: 'number' }, atx_nbbo_distance: { type: 'number' },
-    oracle_nbbo_distance: { type: 'number' }, sample_count: { type: 'integer' }, command: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' },
-  },
-}
+// Paths the Ratchet lane is allowed to commit. Mirror of
+// OPERATION_REGISTRY.ratchet in scripts/oracle-lane-broker.mjs, which is the
+// enforcing copy; scripts/tests/workflow-contracts.test.mjs keeps the two equal.
+const RATCHET_MEMORY_PATHS = Object.freeze(['atx-vol/docs/LEDGER.md', 'atx-vol/docs/oracle/NORTHSTAR.md'])
+const RATCHET_SCORECARD_PREFIXES = Object.freeze(['atx-vol/bench/oracle/scorecards/', 'atx-vol/docs/oracle/scorecards/'])
 const RATCHET_PREPARE = {
   type: 'object', additionalProperties: false,
-  required: ['tested_branch', 'tested_sha', 'base_sha', 'ratchet_branch', 'ratchet_sha', 'worktree', 'lease_name', 'lease_run_id', 'heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'acquisition_receipt', 'release_receipt', 'digest_receipt', 'applicable_modes', 'metrics', 'metric_evidence', 'gate_receipts', 'oracle_suspects_excluded', 'market_evidence', 'memory_verdict', 'holdout_summary', 'hypotheses_confirmed', 'hypotheses_refuted', 'ledger_appended', 'northstar_updated', 'evidence'],
+  // `release_receipt` is gone: the workflow opens and releases the Ratchet lane
+  // itself, so a worker-supplied release receipt would only be an unbound copy
+  // of something the workflow already holds. `metric_evidence` and
+  // `market_evidence` are gone too - see ratchetPrepareContractError.
+  required: ['tested_branch', 'tested_sha', 'tested_tree', 'base_sha', 'ratchet_branch', 'ratchet_sha', 'ratchet_tree', 'worktree', 'lease_name', 'lease_run_id', 'heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'acquisition_receipt', 'digest_receipt', 'applicable_modes', 'metrics', 'gate_receipts', 'oracle_suspects_excluded', 'files_changed', 'memory_verdict', 'holdout_summary', 'hypotheses_confirmed', 'hypotheses_refuted', 'ledger_appended', 'northstar_updated', 'evidence', 'broker_evidence'],
   properties: {
-    tested_branch: { type: 'string' }, tested_sha: { type: 'string' }, base_sha: { type: 'string' }, ratchet_branch: { type: 'string' },
-    ratchet_sha: { type: 'string' }, worktree: { type: 'string' }, lease_name: { type: 'string' }, lease_run_id: { type: 'string' },
+    tested_branch: { type: 'string' }, tested_sha: { type: 'string' }, tested_tree: { type: 'string' }, base_sha: { type: 'string' },
+    ratchet_branch: { type: 'string' }, ratchet_sha: { type: 'string' }, ratchet_tree: { type: 'string' },
+    worktree: { type: 'string' }, lease_name: { type: 'string' }, lease_run_id: { type: 'string' },
     heartbeat_id: { type: 'string' }, keeper_pid: { type: 'integer' }, keeper_process_started_utc: { type: 'string' },
-    acquisition_receipt: LEASE_RECEIPT, release_receipt: LEASE_RECEIPT, digest_receipt: DIGEST_RECEIPT,
+    acquisition_receipt: LEASE_RECEIPT, digest_receipt: HOLDOUT_DIGEST_GATE_RECEIPT,
     applicable_modes: { type: 'array', items: { type: 'string', enum: ['A', 'B'] } }, metrics: { type: 'array', items: RATCHET_METRIC },
-    metric_evidence: { type: 'array', items: EVIDENCE_ITEM }, gate_receipts: { type: 'array', items: RATCHET_GATE_RECEIPT },
-    oracle_suspects_excluded: { type: 'array', items: { type: 'integer', minimum: 0, maximum: 2147483647 } }, market_evidence: { type: 'array', items: MARKET_RECEIPT },
+    gate_receipts: { type: 'array', items: RATCHET_GATE_RECEIPT },
+    // Retired, and required to stay empty: see ratchetPrepareContractError.
+    oracle_suspects_excluded: { type: 'array', items: { type: 'integer', minimum: 0, maximum: 2147483647 } },
+    files_changed: { type: 'array', items: { type: 'string' } },
     memory_verdict: { type: 'string', enum: ['ACCEPT', 'REJECT'] }, holdout_summary: { type: 'string' },
     hypotheses_confirmed: { type: 'array', items: { type: 'string' } }, hypotheses_refuted: { type: 'array', items: { type: 'string' } },
     ledger_appended: { type: 'array', items: { type: 'string' } }, northstar_updated: { type: 'boolean' },
     evidence: { type: 'array', items: EVIDENCE_ITEM }, diagnostics: { type: 'array', items: EVIDENCE_ITEM },
+    broker_evidence: { type: 'array', minItems: 1, items: BROKER_EVIDENCE },
   },
 }
 
@@ -1040,8 +1080,22 @@ function validNumericMetric(metric, metricId, requirePin) {
   return keys === 'count,metric_id,unit,value'
 }
 
-function validMeasureGateReceipt(receipt, gateId) {
+// `expected` is the workflow-owned {operation_id, sha, tree, worktree} the gate
+// must have run against. It is optional only so the pure-payload path in
+// measurePayloadError stays exercisable on its own; every live call supplies it.
+function validBrokerGateBinding(receipt, gateId, expected) {
+  if (!expected) return true
+  return /^[0-9a-f]{64}$/.test(receipt.receipt_id || '') && receipt.tested_sha === expected.sha && receipt.tested_tree === expected.tree &&
+    validBrokerEvidence(receipt.broker_evidence, `gate:${gateId}`, expected.worktree) &&
+    receipt.broker_evidence.command === receipt.command && receipt.broker_evidence.output === receipt.output &&
+    receipt.broker_evidence.exit_code === receipt.exit_code &&
+    receipt.broker_evidence.raw_output_sha256 === brokerGateOutputSha256(receipt.output) &&
+    receipt.receipt_id === brokerGateReceiptId(expected.operation_id, receipt)
+}
+
+function validMeasureGateReceipt(receipt, gateId, expected) {
   if (!receipt || receipt.gate_id !== gateId || receipt.command !== READY_MEASURE_GATES[gateId] || receipt.exit_code !== 0) return false
+  if (!validBrokerGateBinding(receipt, gateId, expected)) return false
   const result = receipt.result
   const wanted = expectedMeasureMetricIds(gateId)
   if (!result || result.schema_version !== 1 || result.status !== 'PASS' || result.command_id !== gateId ||
@@ -1051,12 +1105,13 @@ function validMeasureGateReceipt(receipt, gateId) {
   return sameJsonPayload(receipt.output, result)
 }
 
-function measurePayloadError(measure) {
+function measurePayloadError(measure, expected = null) {
   if (!measure || Object.prototype.hasOwnProperty.call(measure, 'attribution_payload')) return 'Measure may not self-report baseline payload'
   if (!Array.isArray(measure.gate_receipts) || measure.gate_receipts.length !== Object.keys(READY_MEASURE_GATES).length) return 'Measure gate receipt set mismatch'
+  if (new Set(measure.gate_receipts.map(receipt => receipt && receipt.receipt_id)).size !== measure.gate_receipts.length) return 'Measure gate receipt IDs are duplicated'
   for (const gateId of Object.keys(READY_MEASURE_GATES)) {
     const matches = measure.gate_receipts.filter(receipt => receipt && receipt.gate_id === gateId)
-    if (matches.length !== 1 || !validMeasureGateReceipt(matches[0], gateId)) return `Measure gate receipt invalid: ${gateId}`
+    if (matches.length !== 1 || !validMeasureGateReceipt(matches[0], gateId, expected)) return `Measure gate receipt invalid: ${gateId}`
   }
   const context = measure.analysis_context
   const candidate = { schema_version: 2, iteration: Number(String(measure.iter || '').replace(/^iter-/, '')), target_metrics: [], aggregate_metrics: [], speed: null,
@@ -1076,8 +1131,9 @@ function attributionPayloadFromMeasure(measure, candidate = null) {
   return payload
 }
 
-function validRatchetGateReceipt(receipt, gateId) {
+function validRatchetGateReceipt(receipt, gateId, expected) {
   if (!receipt || receipt.gate_id !== gateId || receipt.command !== RATCHET_GATE_COMMANDS[gateId] || receipt.exit_code !== 0 || !String(receipt.output || '').trim()) return false
+  if (!validBrokerGateBinding(receipt, gateId, expected)) return false
   const result = receipt.result
   const wanted = expectedGateMetricIds(gateId)
   return !!result && result.schema_version === 1 && result.status === 'PASS' && result.command_id === gateId && Number.isInteger(result.observations) && result.observations > 0 &&
@@ -1366,30 +1422,77 @@ function sameNumber(left, right) {
   return Math.abs(left - right) <= Number.EPSILON * Math.max(1, Math.abs(left), Math.abs(right)) * 16
 }
 
-function distanceToInterval(value, low, high) {
-  if (value < low) return low - value
-  if (value > high) return value - high
-  return 0
-}
+// -- Holdout confinement for the Improve stage --------------------------------
+//
+// Improve is the only ready-state stage that WRITES pricing code, and it is a
+// tuning stage: it must never see the holdout cohort. Four independent layers
+// hold that, and none of them is "the sub-agent was told not to":
+//
+//   1. Its only input is `attribution.hypotheses`, produced by the tool-less
+//      `vol-analyst` from ATTR_PAYLOAD - a closed schema of enumerated metric
+//      IDs, numbers and a convention enum map that this workflow builds from
+//      smoke+tune gate receipts only. There is no field in it a holdout value
+//      could travel in.
+//   2. improveRequestError below re-checks the serialized request for holdout
+//      identity before dispatch, and vol-sprint re-checks it on receipt, so
+//      neither side of the workflow boundary trusts the other.
+//   3. SPRINT_GATE_IDS is a closed allowlist; sprintResultError rejects a sprint
+//      that reports any gate outside it and re-runs the taint filter over every
+//      published gate command.
+//   4. The trusted broker refuses `holdout_mode_a`, `holdout_mode_b` and
+//      `rel_avx2_speed` for any operation_id other than `ratchet`, and never
+//      serves cohort membership JSON or Parquet rows through repo_read.
+//
+// Holdout is benchmarked in exactly one place: the Ratchet, through the frozen
+// RATCHET_GATE_COMMANDS, after the candidate SHA is already sealed.
+const HOLDOUT_TAINT_RULES = Object.freeze([
+  [/holdout/i, 'names the holdout cohort'],
+  [/\bcohorts?[\\/]/i, 'names a cohort membership path'],
+  [/\bmembership\b/i, 'names cohort membership'],
+  [/\.(?:parquet|zip)\b/i, 'names a row-data artifact'],
+  [/\b[0-9a-f]{32,}\b/, 'carries a raw digest or blob identity'],
+  [/\bnbbo\b|\bcell_id\b/i, 'carries per-cell market data'],
+])
 
-function marketCommand(cellId) {
-  return `atx-vol-oracle-bench --cohort holdout --market-check ${cellId} --aggregate-only`
-}
-
-function marketReceiptError(receipt, cellId) {
-  if (!receipt || receipt.cell_id !== cellId || receipt.command !== marketCommand(cellId) || receipt.exit_code !== 0 || !String(receipt.output || '').trim()) return 'identity/command invalid'
-  const numbers = [receipt.nbbo_bid_mean, receipt.nbbo_ask_mean, receipt.atx_price_mean, receipt.oracle_price_mean, receipt.atx_nbbo_distance, receipt.oracle_nbbo_distance]
-  if (!numbers.every(Number.isFinite) || receipt.nbbo_bid_mean > receipt.nbbo_ask_mean || !Number.isInteger(receipt.sample_count) || receipt.sample_count <= 0) return 'typed NBBO fields invalid'
-  const atxDistance = distanceToInterval(receipt.atx_price_mean, receipt.nbbo_bid_mean, receipt.nbbo_ask_mean)
-  const oracleDistance = distanceToInterval(receipt.oracle_price_mean, receipt.nbbo_bid_mean, receipt.nbbo_ask_mean)
-  if (!sameNumber(receipt.atx_nbbo_distance, atxDistance) || !sameNumber(receipt.oracle_nbbo_distance, oracleDistance) || !(atxDistance < oracleDistance)) return 'market does not mechanically side with atx-vol'
-  const expectedOutput = JSON.stringify({
-    cell_id: receipt.cell_id, nbbo_bid_mean: receipt.nbbo_bid_mean, nbbo_ask_mean: receipt.nbbo_ask_mean,
-    atx_price_mean: receipt.atx_price_mean, oracle_price_mean: receipt.oracle_price_mean,
-    atx_nbbo_distance: receipt.atx_nbbo_distance, oracle_nbbo_distance: receipt.oracle_nbbo_distance, sample_count: receipt.sample_count,
-  })
-  if (receipt.output !== expectedOutput) return 'market output does not bind typed fields'
+function holdoutTaintError(text) {
+  const value = String(text === null || text === undefined ? '' : text)
+  for (const rule of HOLDOUT_TAINT_RULES) if (rule[0].test(value)) return `payload ${rule[1]}`
   return null
+}
+
+// The CLOSED set of broker gate IDs the Improve stage may run. Mirror of the
+// sprint-reachable subset of GATE_REGISTRY in scripts/oracle-lane-broker.mjs and
+// of SPRINT_GATE_REGISTRY in .claude/workflows/vol-sprint.js. Every holdout
+// gate, every Measure gate and the holdout-digest preflight are absent by
+// construction, so a sprint that ran one cannot report it and still pass.
+const SPRINT_GATE_IDS = Object.freeze([
+  'unit-build:atx-vol-tests', 'pch-off:atx-vol-tests',
+  'unit-test:^AmericanGreeks.Delta_MatchesFd_Put$', 'unit-test:^AdjustedGreeks.FlatSmileLeavesDeltaUnchanged$',
+  'oracle-test:american-rsi', 'oracle-test:american-price-rsi', 'oracle-test:american-greeks-rsi', 'oracle-test:american-simd-rsi',
+  'scorecard:mode_a_smoke_tune', 'scorecard:mode_b_smoke_tune', 'speed:rel_avx2_quiet',
+])
+
+function improveRequestError(request) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) return 'Improve request missing'
+  if (Object.keys(request).sort().join(',') !== 'base,run_key,task') return 'Improve request keys invalid'
+  if (typeof request.task !== 'string' || !request.task.trim()) return 'Improve request task missing'
+  if (typeof request.run_key !== 'string' || !request.run_key.trim()) return 'Improve request run key missing'
+  if (!/^[0-9a-f]{40}$/.test(request.base || '')) return 'Improve base is not an exact lowercase commit'
+  const taint = holdoutTaintError(request.task)
+  return taint ? `Improve request ${taint}` : null
+}
+
+function sprintResultError(sprint, expected) {
+  if (!sprint || typeof sprint !== 'object' || Array.isArray(sprint)) return 'Improve returned no typed result'
+  if (sprint.passed !== true) return `Improve failed: ${sprint.failure || (Array.isArray(sprint.blocked) ? sprint.blocked.join('; ') : 'unknown')}`
+  if (!/^integration\//.test(sprint.integration_branch || '')) return 'Improve integration branch is not an integration lane'
+  if (!/^[0-9a-f]{40}$/i.test(sprint.integration_sha || '') || !/^[0-9a-f]{40}$/i.test(sprint.integration_tree || '')) return 'Improve integration SHA/tree is not exact'
+  if (sprint.base_sha !== expected.base_sha) return 'Improve did not build on the frozen canonical base'
+  if (!Array.isArray(sprint.gate_ids) || !sprint.gate_ids.length ||
+      sprint.gate_ids.some(id => !SPRINT_GATE_IDS.includes(id))) return 'Improve ran a gate outside the closed sprint registry'
+  if (!validSuccessEvidence(sprint.gate_evidence)) return 'Improve gate evidence missing/failed/forbidden'
+  const taint = sprint.gate_evidence.map(item => holdoutTaintError(item.command)).find(Boolean)
+  return taint ? `Improve gate ${taint}` : null
 }
 
 function relativeRegression(metric) {
@@ -1418,21 +1521,84 @@ function ratchetMetricsFromReceipts(ratchet) {
   })
 }
 
+// The Measure lane is workflow-opened and workflow-released, so this only has to
+// bind the worker's report to the lane the workflow already owns, and its gate
+// receipts to the broker receipts that lane can actually have produced.
+function measureContractError(measure, acquire, expected) {
+  if (!measure || typeof measure !== 'object' || Array.isArray(measure)) return 'Measure returned no typed report'
+  if (measure.status !== 'ok') return 'Measure did not complete'
+  if (measure.iter !== expected.iter || measure.branch !== expected.branch || measure.base_sha !== expected.base_sha ||
+      measure.lease_run_id !== expected.run_id || measure.heartbeat_id !== expected.heartbeat_id) return 'Measure lease identity mismatch'
+  if (measure.lease_name !== acquire.lease_name || measure.worktree !== acquire.worktree || measure.keeper_pid !== acquire.keeper_pid ||
+      measure.keeper_process_started_utc !== acquire.keeper_process_started_utc) return 'Measure report is not the workflow-owned lane'
+  if (!validLeaseReceipt(measure.acquisition_receipt, {
+    lease_name: acquire.lease_name, run_id: expected.run_id, branch: expected.branch, base_sha: expected.base_sha,
+    worktree: acquire.worktree, heartbeat_id: expected.heartbeat_id, keeper_pid: acquire.keeper_pid,
+    keeper_process_started_utc: acquire.keeper_process_started_utc,
+  }, 'acquire')) return 'Measure acquisition receipt invalid'
+  // The Measure lane never commits, so its gates ran against the frozen base
+  // itself; anything else means the lane moved under the measurement.
+  if (measure.tested_sha !== expected.base_sha || measure.tested_tree !== expected.base_tree) return 'Measure did not test the frozen canonical base tree'
+  if (!Array.isArray(measure.broker_evidence) || !measure.broker_evidence.length ||
+      !measure.broker_evidence.every(item => validBrokerEvidence(item, null, measure.worktree))) return 'Measure broker evidence invalid'
+  if (!exactEvidenceSet(measure.evidence, READY_MEASURE_COMMANDS) || diagnosticsUseForbiddenCommand(measure.diagnostics)) return 'Measure evidence is not the exact frozen command set'
+  return measurePayloadError(measure, { operation_id: 'measure', sha: expected.base_sha, tree: expected.base_tree, worktree: measure.worktree })
+}
+
+// The holdout digest is proved WITHOUT ever transporting it. The frozen
+// `holdout_digest` preflight recomputes the cohort membership digest from the
+// committed holdout cohort at the lane's own HEAD, cross-checks it against the
+// committed holdout.sha256 and the committed data receipt, and then publishes
+// only sha256("<HEAD sha>:<digest>"). The workflow holds both inputs already -
+// the tested SHA it pinned and the digest the capability probe returned - so it
+// recomputes that hash here. A lane whose holdout membership had drifted cannot
+// produce a matching hash, and a worker that never saw the digest cannot forge
+// one. This replaces the retired plaintext-digest receipt, which no broker
+// command could ever have satisfied because none of them prints the digest.
+function ratchetDigestReceiptError(receipt, expected) {
+  if (!receipt || receipt.gate_id !== 'holdout_digest' || receipt.command !== BOOTSTRAP_GATE_COMMANDS.holdout_digest ||
+      receipt.exit_code !== 0 || !String(receipt.output || '').trim()) return 'Ratchet holdout digest gate receipt invalid'
+  if (!validBrokerGateBinding(receipt, 'holdout_digest', expected)) return 'Ratchet holdout digest receipt is not bound to the tested SHA/tree'
+  const result = receipt.result
+  if (!result || result.schema_version !== 1 || result.status !== 'PASS' || result.command_id !== 'holdout_digest' ||
+      !Number.isInteger(result.observations) || result.observations <= 0 || !sameJsonPayload(receipt.output, result)) return 'Ratchet holdout digest result invalid'
+  if (Object.keys(result).sort().join(',') !== ['schema_version', 'status', 'observations', 'command_id', 'raw_output_sha256'].sort().join(',')) return 'Ratchet holdout digest result carries unexpected fields'
+  if (result.raw_output_sha256 !== sha256HexUtf8(`${expected.sha}:${expected.holdout_digest}`)) return 'Ratchet holdout digest recomputation does not match the frozen membership digest'
+  return null
+}
+
+const RATCHET_EVIDENCE_COMMANDS = Object.freeze([BOOTSTRAP_GATE_COMMANDS.holdout_digest, ...Object.values(RATCHET_GATE_COMMANDS)])
+
 function ratchetPrepareContractError(ratchet, expected) {
-  if (!ratchet || !validSuccessEvidence(ratchet.evidence) || diagnosticsUseForbiddenCommand(ratchet.diagnostics)) return 'Ratchet evidence missing/failed'
-  if (ratchet.tested_sha !== expected.tested_sha || ratchet.tested_branch !== expected.tested_branch || ratchet.base_sha !== expected.tested_sha ||
-      ratchet.ratchet_branch !== expected.ratchet_branch || ratchet.lease_run_id !== expected.run_id || ratchet.heartbeat_id !== expected.heartbeat_id ||
-      !/^[0-9a-f]{40}$/i.test(ratchet.ratchet_sha || '')) return 'Ratchet exact integration/base identity mismatch'
+  // Exactly the four frozen commands, once each - the same discipline Measure
+  // gets from exactEvidenceSet, so a Ratchet cannot quietly run a fifth thing.
+  if (!ratchet || !exactEvidenceSet(ratchet.evidence, RATCHET_EVIDENCE_COMMANDS) ||
+      diagnosticsUseForbiddenCommand(ratchet.diagnostics)) return 'Ratchet evidence is not the exact frozen gate command set'
+  if (ratchet.tested_sha !== expected.tested_sha || ratchet.tested_tree !== expected.tested_tree || ratchet.tested_branch !== expected.tested_branch ||
+      ratchet.base_sha !== expected.tested_sha || ratchet.ratchet_branch !== expected.ratchet_branch || ratchet.lease_run_id !== expected.run_id ||
+      ratchet.heartbeat_id !== expected.heartbeat_id || !/^[0-9a-f]{40}$/.test(ratchet.ratchet_sha || '') ||
+      !/^[0-9a-f]{40}$/.test(ratchet.ratchet_tree || '') || ratchet.ratchet_sha === expected.tested_sha) return 'Ratchet exact integration/base identity mismatch'
   if (!/^pool-[0-9]+$/.test(ratchet.lease_name || '') || !/[\\/]atx-wt[\\/]pool-[0-9]+$/i.test(ratchet.worktree || '') ||
       !ratchet.worktree.replace(/\//g, '\\').toLowerCase().endsWith(`\\${ratchet.lease_name.toLowerCase()}`)) return 'Ratchet lease/worktree invalid'
+  if (ratchet.lease_name !== expected.lease_name || ratchet.worktree !== expected.worktree || ratchet.keeper_pid !== expected.keeper_pid ||
+      ratchet.keeper_process_started_utc !== expected.keeper_process_started_utc) return 'Ratchet report is not the workflow-owned lane'
   const lease = { lease_name: ratchet.lease_name, run_id: expected.run_id, branch: expected.ratchet_branch, base_sha: expected.tested_sha, worktree: ratchet.worktree, heartbeat_id: expected.heartbeat_id, keeper_pid: ratchet.keeper_pid, keeper_process_started_utc: ratchet.keeper_process_started_utc }
   if (!validLeaseReceipt(ratchet.acquisition_receipt, lease, 'acquire')) return 'Ratchet acquisition receipt invalid'
-  if (!validLeaseReceipt(ratchet.release_receipt, lease, 'release')) return 'Ratchet release receipt invalid'
-  const digest = ratchet.digest_receipt
-  if (!digest || digest.expected_digest !== expected.holdout_digest || digest.actual_digest !== expected.holdout_digest || digest.exit_code !== 0 ||
-      !/holdout/i.test(digest.command || '') || !/digest/i.test(digest.command || '') || !String(digest.output || '').includes(expected.holdout_digest)) return 'Ratchet digest recomputation receipt invalid'
+  if (!Array.isArray(ratchet.broker_evidence) || !ratchet.broker_evidence.length ||
+      !ratchet.broker_evidence.every(item => validBrokerEvidence(item, null, ratchet.worktree))) return 'Ratchet broker evidence invalid'
+  // Every Ratchet gate executed BEFORE the lane's own memory commit, so each
+  // receipt binds to the sealed integration SHA/tree it was asked to test.
+  const gateBinding = { operation_id: 'ratchet', sha: expected.tested_sha, tree: expected.tested_tree, worktree: ratchet.worktree }
+  const digestError = ratchetDigestReceiptError(ratchet.digest_receipt, { ...gateBinding, holdout_digest: expected.holdout_digest })
+  if (digestError) return digestError
   if (!Array.isArray(ratchet.applicable_modes) || ratchet.applicable_modes.length !== expected.applicable_modes.length || !expected.applicable_modes.every(mode => ratchet.applicable_modes.includes(mode))) return 'Ratchet applicable modes mismatch'
-  if (!Array.isArray(ratchet.metrics) || !ratchet.metrics.length || !Array.isArray(ratchet.metric_evidence)) return 'Ratchet typed metrics missing'
+  if (!Array.isArray(ratchet.gate_receipts) || ratchet.gate_receipts.length !== RATCHET_GATE_IDS.length) return 'Ratchet gate receipt set mismatch'
+  if (new Set([...ratchet.gate_receipts.map(receipt => receipt && receipt.receipt_id), ratchet.digest_receipt.receipt_id]).size !== RATCHET_GATE_IDS.length + 1) return 'Ratchet gate receipt IDs are duplicated'
+  for (const gateId of RATCHET_GATE_IDS) {
+    const matches = ratchet.gate_receipts.filter(receipt => receipt && receipt.gate_id === gateId)
+    if (matches.length !== 1 || !validRatchetGateReceipt(matches[0], gateId, gateBinding)) return `Ratchet required gate receipt invalid: ${gateId}`
+  }
+  if (!Array.isArray(ratchet.metrics) || !ratchet.metrics.length) return 'Ratchet typed metrics missing'
   const expectedMetrics = expectedRatchetMetrics(expected.baseline_contract)
   if (ratchet.metrics.length !== expectedMetrics.length) return 'Ratchet metric registry incomplete/extra'
   const metricById = new Map(ratchet.metrics.map(metric => [metric && metric.metric_id, metric]))
@@ -1444,26 +1610,39 @@ function ratchetPrepareContractError(ratchet, expected) {
     const measuredCandidate = ratchetCandidateValue(ratchet, registryMetric.metric_id)
     if (!Number.isFinite(measuredCandidate) || !sameNumber(metric.candidate, measuredCandidate)) return `Ratchet candidate is not bound to typed gate output: ${registryMetric.metric_id}`
     if (!metricDeltaConsistent(metric)) return 'Ratchet metric delta inconsistent'
-    if (!Number.isInteger(metric.evidence_index) || metric.evidence_index < 0 || metric.evidence_index >= ratchet.metric_evidence.length) return 'Ratchet metric shape/evidence index invalid'
-    const evidence = ratchet.metric_evidence[metric.evidence_index]
-    if (!evidence || evidence.exit_code !== 0 || !/holdout|speed/i.test(evidence.command || '') || !String(evidence.output || '').includes(metric.metric_id) ||
-        !String(evidence.output || '').includes(String(metric.baseline)) || !String(evidence.output || '').includes(String(metric.candidate)) ||
-        !String(evidence.output || '').includes(String(metric.delta))) return 'Ratchet metric not supported by referenced output'
+    // `evidence_index` now points into the broker gate receipts instead of a
+    // free-text `metric_evidence` array. The retired contract demanded a pasted
+    // line containing the metric's baseline AND delta, neither of which any
+    // broker command emits - the baseline comes from Measure and the delta is
+    // computed here - so it was unsatisfiable by a broker-only worker. Citing
+    // the receipt that actually carries the candidate proves the same binding
+    // and is reachable.
+    if (!Number.isInteger(metric.evidence_index) || metric.evidence_index < 0 || metric.evidence_index >= ratchet.gate_receipts.length) return 'Ratchet metric shape/evidence index invalid'
+    const cited = ratchet.gate_receipts[metric.evidence_index]
+    if (!cited || cited.gate_id !== ratchetGateIdForMetric(registryMetric.metric_id) ||
+        !cited.result.metrics.some(item => item && item.metric_id === registryMetric.metric_id && sameNumber(item.value, metric.candidate))) return `Ratchet metric does not cite the receipt it was measured from: ${registryMetric.metric_id}`
   }
-  if (!Array.isArray(ratchet.gate_receipts) || ratchet.gate_receipts.length !== RATCHET_GATE_IDS.length) return 'Ratchet gate receipt set mismatch'
-  for (const gateId of RATCHET_GATE_IDS) {
-    const matches = ratchet.gate_receipts.filter(receipt => receipt && receipt.gate_id === gateId)
-    if (matches.length !== 1 || !validRatchetGateReceipt(matches[0], gateId)) return `Ratchet required gate receipt invalid: ${gateId}`
-  }
-  if (!Array.isArray(ratchet.oracle_suspects_excluded) || !Array.isArray(ratchet.market_evidence) || ratchet.market_evidence.length !== ratchet.oracle_suspects_excluded.length) return 'Ratchet suspect market evidence missing'
-  if (new Set(ratchet.oracle_suspects_excluded).size !== ratchet.oracle_suspects_excluded.length ||
-      !ratchet.oracle_suspects_excluded.every(cell => expected.suspect_candidates.includes(cell))) return 'Ratchet suspect exclusion not frozen by Measure'
-  for (const cell of ratchet.oracle_suspects_excluded) {
-    const matches = ratchet.market_evidence.filter(receipt => receipt && receipt.cell_id === cell)
-    if (matches.length !== 1) return `Ratchet suspect evidence invalid: ${cell}`
-    const marketError = marketReceiptError(matches[0], cell)
-    if (marketError) return `Ratchet suspect evidence invalid: ${cell}: ${marketError}`
-  }
+  // Suspect exclusion is RETIRED, not merely unused. Excluding a cell required a
+  // typed NBBO market receipt from `atx-vol-oracle-bench --cohort holdout
+  // --market-check <cell>`, and the broker gate registry is a fixed map with no
+  // parameterized market-check entry, so no broker-only worker can produce that
+  // proof. Until such a gate exists the Ratchet benchmarks the WHOLE holdout,
+  // which is the conservative direction: an exclusion can only ever remove
+  // evidence against the candidate, and computeRatchetVerdict reads candidates
+  // straight from the gate receipts, so nothing about the verdict changes.
+  if (!Array.isArray(ratchet.oracle_suspects_excluded) || ratchet.oracle_suspects_excluded.length) return 'Ratchet suspect exclusion is retired until the broker registers a market-check gate'
+  const confirmed = ratchet.hypotheses_confirmed
+  const refuted = ratchet.hypotheses_refuted
+  if (!Array.isArray(confirmed) || !Array.isArray(refuted) || new Set([...confirmed, ...refuted]).size !== confirmed.length + refuted.length ||
+      [...confirmed, ...refuted].some(id => !expected.hypothesis_ids.includes(id))) return 'Ratchet hypothesis verdicts are not a disjoint subset of the attributed hypotheses'
+  // Memory is a committed fact, not a self-report: the lane must have committed
+  // the ledger, the north star and one scorecard, and nothing outside the
+  // broker's ratchet scope.
+  const files = ratchet.files_changed
+  if (!Array.isArray(files) || !files.length || new Set(files).size !== files.length) return 'Ratchet changed-file report missing/duplicated'
+  if (files.some(path => !RATCHET_MEMORY_PATHS.includes(path) && !RATCHET_SCORECARD_PREFIXES.some(prefix => path.startsWith(prefix)))) return 'Ratchet committed a path outside its broker scope'
+  if (!RATCHET_MEMORY_PATHS.every(path => files.includes(path)) ||
+      !files.some(path => RATCHET_SCORECARD_PREFIXES.some(prefix => path.startsWith(prefix)))) return 'Ratchet did not commit the ledger, north star and scorecard'
   if (!ratchet.northstar_updated || !Array.isArray(ratchet.ledger_appended) || !ratchet.ledger_appended.length || typeof ratchet.holdout_summary !== 'string' || !ratchet.holdout_summary.trim()) return 'Ratchet memory/summary incomplete'
   return null
 }
@@ -1639,99 +1818,213 @@ if (capability.state !== 'ready') {
   return { iteration: `bootstrap-${lane.stage}`, capability_state: capability.state, verdict: landed ? 'BOOTSTRAP' : 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: null, ledger: [], ratchet_evidence: [], bootstrap: { acquire: buildAcquire, report, review, release: buildRelease, integration_acquire: integrationAcquire, verify: verified, integration_release: integrationRelease, prepare, finalize, audit }, failure: landed ? null : (finalizeThrown || finalizeError || auditError || 'post-CAS canonical mismatch'), landing_status: landed ? 'COMMITTED' : (canonicalAfter === report.sha ? 'LANDED_AUDITED_WITH_INVALID_RECEIPT' : 'NOT_COMMITTED'), run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: canonicalAfter }
 }
 
-// Hard cut: the bootstrap/recovery transaction is broker-only.  The ready-state
-// Measure/Sprint/Ratchet transaction remains unavailable until every mutation in
-// that path has been migrated to the same capability protocol.  Keeping this
-// refusal ahead of the retired implementation makes the legacy shell path
-// mechanically unreachable.
-return {
-  iteration: capability.next_iter,
-  capability_state: 'ready',
-  verdict: 'FAILED',
-  holdout: null,
-  confirmed: [],
-  refuted: [],
-  sprint: null,
-  ledger: [],
-  ratchet_evidence: [],
-  failure: 'READY_BROKER_MIGRATION_REQUIRED',
-  run_id: RUN_ID,
-  base_sha: BASE_SHA,
-  canonical_after: BASE_SHA,
-}
-
-/* RETIRED_READY_PATH: unreachable until replaced by broker-only transactions.
+// ---------------------------------------------------------------------------
+// READY: Measure -> Attribute -> Improve -> Ratchet.
+//
+// Every mutation below goes through the same broker capability protocol the
+// bootstrap path above uses: `vol-lane-opener` opens exactly one registry lane,
+// a tool-restricted worker acts only inside that opaque capability, and
+// `vol-lane-releaser` closes it. No stage leases a worktree, runs a shell, or
+// chooses a physical path, and only the Ratchet lane is ever issued a canonical
+// finalize capability.
+//
+// Holdout confinement, stage by stage:
+//   Measure   operation_id=measure    - broker refuses every holdout gate here.
+//   Attribute vol-analyst, no tools   - sees one closed aggregate payload.
+//   Improve   sprint_build/_integration - broker refuses every holdout gate, and
+//                                       the request is taint-checked on both
+//                                       sides of the workflow boundary.
+//   Ratchet   operation_id=ratchet    - the ONLY operation the broker will run
+//                                       holdout_mode_a/holdout_mode_b/
+//                                       rel_avx2_speed for, and it runs after
+//                                       the candidate SHA is already sealed.
 if (!capability.canonical_exists) throw new Error('ready requires existing canonical ref')
-phase('Measure')
-const measureBranch = `lane/oracle-measure-${capability.next_iter}-${RUN_SLUG}`
+const ITER = capability.next_iter
+const readyFailure = (failure, extra = {}) => ({
+  iteration: ITER, capability_state: 'ready', verdict: 'FAILED', holdout: null, confirmed: [], refuted: [],
+  sprint: null, ledger: [], ratchet_evidence: [], failure, run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null, ...extra,
+})
+
+phase('Measure Acquire')
+const measureBranch = `lane/oracle-measure-${ITER}-${RUN_SLUG}`
 const measureHeartbeat = `${RUN_SLUG}-measure`
-const measure = await agent(`Measure ${capability.next_iter} from ${BASE_SHA} in keeper-backed ${measureBranch}, RunId=${RUN_ID}, HeartbeatId=${measureHeartbeat}. Run exactly these three small aggregate commands, once each and no other test/build command: ${JSON.stringify(READY_MEASURE_GATES)}; commit/release. Return one exact typed JSON gate receipt per command with every workflow-registry metric numeric value/count/unit and the speed pin emitted by the pinned benchmark. Return only numeric/enumerated analysis_context; never return an attribution_payload, prose, paths, hashes, membership, rows, or encoded blobs. Return typed acquire/release.`, { schema: MEASURE, label: 'measure' })
-const measureLease = measure && { lease_name: measure.lease_name, run_id: RUN_ID, branch: measureBranch, base_sha: BASE_SHA, worktree: measure.worktree, heartbeat_id: measureHeartbeat, keeper_pid: measure.keeper_pid, keeper_process_started_utc: measure.keeper_process_started_utc }
-const measureError = !measure || measure.status !== 'ok' || measure.iter !== capability.next_iter || measure.branch !== measureBranch || measure.base_sha !== BASE_SHA || measure.lease_run_id !== RUN_ID || measure.heartbeat_id !== measureHeartbeat || !/^[0-9a-f]{40}$/i.test(measure.sha || '') || !measure.lease_released || !exactEvidenceSet(measure.evidence, READY_MEASURE_COMMANDS) || diagnosticsUseForbiddenCommand(measure.diagnostics) || !validLeaseReceipt(measure.acquisition_receipt, measureLease || {}, 'acquire') || !validLeaseReceipt(measure.release_receipt, measureLease || {}, 'release') || measurePayloadError(measure)
-if (measureError) return { iteration: capability.next_iter, capability_state: 'ready', verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: null, ledger: [], ratchet_evidence: [], failure: 'Measure failed strict contract; no holdout', run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
+const measureExpected = { operation_id: 'measure', stage: 'measure', run_id: RUN_ID, branch: measureBranch, base_sha: BASE_SHA, heartbeat_id: measureHeartbeat }
+let measureAcquire = null
+let measureAcquireThrown = null
+try {
+  measureAcquire = await agent(
+    `Call broker lane_open exactly once with ${JSON.stringify(measureExpected)}; return the broker result unchanged.`,
+    { agentType: 'vol-lane-opener', schema: BROKER_ACQUIRE, label: 'measure-acquire' },
+  )
+} catch (error) { measureAcquireThrown = String(error) }
+const measureAcquireError = measureAcquireThrown || brokerAcquireError(measureAcquire, measureExpected)
+if (measureAcquireError) return readyFailure(`Measure lane unavailable: ${measureAcquireError}`)
+
+phase('Measure')
+// vol-verifier carries gate_run and lane_integrate only: it cannot patch or
+// commit, which is exactly right because the three frozen Measure commands are
+// `--aggregate-only` with no `--out` and therefore write nothing at all.
+let measure = null
+let measureThrown = null
+try {
+  measure = await agent(
+    `ONE preleased broker lane; read-only measurement. Immutable acquisition: ${JSON.stringify(measureAcquire)}. Use only capability=${measureAcquire.capability}. Run exactly these three fixed broker gate IDs, once each and nothing else: ${JSON.stringify(Object.keys(READY_MEASURE_GATES))}, whose frozen commands are ${JSON.stringify(READY_MEASURE_GATES)}. Do not call lane_integrate. Return status=ok, iter=${ITER}, tested_sha=${BASE_SHA}, tested_tree=${capability.base_tree}, lease identity copied from the acquisition, every broker gate receipt unchanged (receipt_id, tested_sha, tested_tree, command, exit_code, output, parsed typed result, broker_evidence), evidence containing exactly one command/exit/output triple per frozen command, and every broker evidence object under broker_evidence. analysis_context must contain ONLY bounded nonnegative integers and the closed convention enum map; never return an attribution_payload, prose, paths, hashes, cohort membership, rows, or encoded blobs.`,
+    { agentType: 'vol-verifier', schema: MEASURE, label: 'measure' },
+  )
+} catch (error) { measureThrown = String(error) }
+
+phase('Measure Release')
+let measureRelease = null
+let measureReleaseThrown = null
+try {
+  measureRelease = await agent(`Call broker lane_release exactly once with capability=${measureAcquire.capability}; return the result unchanged.`,
+    { agentType: 'vol-lane-releaser', schema: BROKER_RELEASE, label: 'measure-release' })
+} catch (error) { measureReleaseThrown = String(error) }
+const measureReleaseError = measureReleaseThrown || brokerReleaseError(measureRelease, measureAcquire, false) ||
+  (measureRelease.sha !== BASE_SHA || measureRelease.tree !== capability.base_tree ? 'Measure lane moved off the frozen canonical base' : null)
+const measureError = measureThrown ||
+  measureContractError(measure, measureAcquire, { iter: ITER, branch: measureBranch, base_sha: BASE_SHA, base_tree: capability.base_tree, run_id: RUN_ID, heartbeat_id: measureHeartbeat }) ||
+  measureReleaseError
+if (measureError) return readyFailure(`Measure failed strict contract; no holdout: ${measureError}`)
 const attributionPayload = attributionPayloadFromMeasure(measure)
+const attributionPayloadError = aggregatePayloadError(attributionPayload)
+if (attributionPayloadError) return readyFailure(`Measure aggregate payload invalid; no holdout: ${attributionPayloadError}`)
 
 phase('Attribute')
-const attribution = await agent(`Tool-less aggregate attribution. Strict payload:\n${JSON.stringify(attributionPayload)}\nRank 1-3 falsifiable hypotheses and reference only registry target_metric_ids. Never request tools, paths, hashes, membership, rows, or encoded data.`, { agentType: 'vol-analyst', schema: ATTR, label: 'attribute' })
-if (!attribution || !Array.isArray(attribution.hypotheses) || !attribution.hypotheses.length || attribution.hypotheses.some(item => !Array.isArray(item.target_metric_ids) || !item.target_metric_ids.length || item.target_metric_ids.some(id => !TARGET_REGISTRY.some(target => target.metric_id === id)))) return { iteration: measure.iter, capability_state: 'ready', verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: null, ledger: [], ratchet_evidence: [], failure: 'Attribution failed; no holdout', run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
+let attribution = null
+let attributionThrown = null
+try {
+  attribution = await agent(
+    `Tool-less aggregate attribution. Strict payload:\n${JSON.stringify(attributionPayload)}\nRank 1-3 falsifiable hypotheses and reference only registry target_metric_ids. Never request tools, paths, hashes, cohort membership, rows, or encoded data.`,
+    { agentType: 'vol-analyst', schema: ATTR, label: 'attribute' },
+  )
+} catch (error) { attributionThrown = String(error) }
+if (attributionThrown || !attribution || !Array.isArray(attribution.hypotheses) || !attribution.hypotheses.length ||
+    new Set(attribution.hypotheses.map(item => item && item.id)).size !== attribution.hypotheses.length ||
+    attribution.hypotheses.some(item => !Array.isArray(item.target_metric_ids) || !item.target_metric_ids.length ||
+      item.target_metric_ids.some(id => !TARGET_REGISTRY.some(target => target.metric_id === id)))) {
+  return readyFailure(`Attribution failed; no holdout: ${attributionThrown || 'invalid typed hypotheses'}`)
+}
+const hypothesisIds = attribution.hypotheses.map(item => item.id)
 const applicableModes = ['A', 'B']
 
 phase('Improve')
-let sprint
-try { sprint = await workflow('vol-sprint', { task: `Oracle RSI ${measure.iter}; typed aggregate hypotheses:\n${JSON.stringify(attribution.hypotheses)}\nHard cutover; CHANGELOG BREAKING; no flags/shims/licensed rows.`, base: measure.sha, run_key: `${RUN_ID}-improve` }) }
-catch (error) { sprint = { passed: false, error: String(error) } }
-const sprintValid = sprint && sprint.passed && /^integration\//.test(sprint.integration_branch || '') && /^[0-9a-f]{40}$/i.test(sprint.integration_sha || '') && validSuccessEvidence(sprint.gate_evidence)
-if (!sprintValid) return { iteration: measure.iter, capability_state: 'ready', verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: sprint || null, ledger: [], ratchet_evidence: [], failure: 'Sprint incomplete/invalid; no holdout and no REJECT increment', run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
+// The ONLY thing that crosses into the tuning sprint is the tool-less analyst's
+// typed hypotheses. improveRequestError re-checks the serialized request for
+// holdout identity before dispatch, and vol-sprint re-checks it on receipt.
+const improveRequest = {
+  task: `Oracle RSI ${ITER}; typed aggregate hypotheses:\n${JSON.stringify(attribution.hypotheses)}\nHard cutover; CHANGELOG BREAKING; no flags/shims/licensed rows.`,
+  base: BASE_SHA,
+  run_key: `${RUN_ID}-improve`,
+}
+const improveRequestFailure = improveRequestError(improveRequest)
+let sprint = null
+let sprintThrown = null
+if (!improveRequestFailure) {
+  try { sprint = await workflow('vol-sprint', improveRequest) } catch (error) { sprintThrown = String(error) }
+}
+const sprintError = improveRequestFailure || sprintThrown || sprintResultError(sprint, { base_sha: BASE_SHA })
+if (sprintError) return readyFailure(`Sprint incomplete/invalid; no holdout and no REJECT increment: ${sprintError}`, { sprint: sprint || null })
 
-phase('Ratchet Prepare')
+phase('Ratchet Acquire')
 const ratchetBranch = `lane/oracle-ratchet-${RUN_SLUG}`
 const ratchetHeartbeat = `${RUN_SLUG}-ratchet`
-const ratchet = await agent(`PREPARE ONLY; never update canonical or choose authoritative verdict. Lease keeper-backed ${ratchetBranch} at exact ${sprint.integration_branch}@${sprint.integration_sha}, RunId=${RUN_ID}, HeartbeatId=${ratchetHeartbeat}. Recompute digest=${capability.holdout_digest_receipt}. Run these exact gate commands: ${JSON.stringify(RATCHET_GATE_COMMANDS)}. Return every metric in the workflow-frozen contract ${JSON.stringify(expectedRatchetMetrics(attributionPayload))}; candidate values must be copied from the exact typed gate JSON and deltas computed from them. For suspect exclusions use only frozen candidates ${JSON.stringify(attributionPayload.oracle_suspect_cells)} and typed NBBO means/distances from exact market-check commands. Prepare/commit scorecard and memory with memory_verdict derived from rules, release. Workflow independently validates and computes verdict/CAS.`, { agentType: 'vol-verifier', schema: RATCHET_PREPARE, label: 'ratchet-prepare' })
-const ratchetError = ratchetPrepareContractError(ratchet, { tested_sha: sprint.integration_sha, tested_branch: sprint.integration_branch, ratchet_branch: ratchetBranch, holdout_digest: capability.holdout_digest_receipt, run_id: RUN_ID, heartbeat_id: ratchetHeartbeat, applicable_modes: applicableModes, baseline_contract: attributionPayload, suspect_candidates: attributionPayload.oracle_suspect_cells })
-if (ratchetError) return { iteration: measure.iter, capability_state: 'ready', verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: { passed: true, integration_branch: sprint.integration_branch, integration_sha: sprint.integration_sha }, ledger: [], ratchet_evidence: [], ratchet: null, failure: ratchetError, run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
+const sprintSummary = { passed: true, integration_branch: sprint.integration_branch, integration_sha: sprint.integration_sha, integration_tree: sprint.integration_tree }
+const ratchetExpectedAcquire = { operation_id: 'ratchet', stage: 'ratchet', run_id: RUN_ID, branch: ratchetBranch, base_sha: sprint.integration_sha, heartbeat_id: ratchetHeartbeat }
+let ratchetAcquire = null
+let ratchetAcquireThrown = null
+try {
+  ratchetAcquire = await agent(
+    `Call broker lane_open exactly once with ${JSON.stringify(ratchetExpectedAcquire)}; return the broker result unchanged.`,
+    { agentType: 'vol-lane-opener', schema: BROKER_ACQUIRE, label: 'ratchet-acquire' },
+  )
+} catch (error) { ratchetAcquireThrown = String(error) }
+const ratchetAcquireError = ratchetAcquireThrown || brokerAcquireError(ratchetAcquire, ratchetExpectedAcquire)
+if (ratchetAcquireError) return readyFailure(`Ratchet lane unavailable: ${ratchetAcquireError}`, { sprint: sprintSummary })
+
+phase('Ratchet Prepare')
+// PREPARE ONLY. The worker proposes `memory_verdict`; computeRatchetVerdict
+// below owns the authoritative one and a disagreement fails the transaction
+// closed. The worker has no canonical capability at all: the finalize token is
+// issued to the WORKFLOW by lane_release and consumed by vol-ref-finalizer.
+let ratchet = null
+let ratchetThrown = null
+try {
+  ratchet = await agent(
+    `PREPARE ONLY; never update canonical or choose the authoritative verdict. ONE preleased broker lane at the exact sealed integration ${sprint.integration_branch}@${sprint.integration_sha} (tree ${sprint.integration_tree}). Immutable acquisition: ${JSON.stringify(ratchetAcquire)}. Use only capability=${ratchetAcquire.capability}. Run these fixed broker gate IDs exactly once each, BEFORE any patch: ${JSON.stringify(['holdout_digest', ...RATCHET_GATE_IDS])}, whose frozen commands are ${JSON.stringify({ holdout_digest: BOOTSTRAP_GATE_COMMANDS.holdout_digest, ...RATCHET_GATE_COMMANDS })}. Return the holdout_digest receipt unchanged as digest_receipt and the other three unchanged as gate_receipts, each with receipt_id, tested_sha, tested_tree, command, exit_code, output, parsed typed result and broker_evidence, all bound to ${sprint.integration_sha}/${sprint.integration_tree}. Return every metric in the workflow-frozen contract ${JSON.stringify(expectedRatchetMetrics(attributionPayload))}; each candidate must be copied from the exact typed gate JSON, each delta computed as candidate minus baseline, and evidence_index must be the index in gate_receipts of the receipt that carries it. Then write the iteration scorecard plus atx-vol/docs/LEDGER.md and atx-vol/docs/oracle/NORTHSTAR.md with patch_apply and lane_commit with message_id=ratchet; report files_changed exactly as lane_commit returned it and ratchet_sha/ratchet_tree from that commit. evidence must contain exactly one command/exit/output triple per gate you ran, and nothing else. hypotheses_confirmed and hypotheses_refuted must be disjoint subsets of ${JSON.stringify(hypothesisIds)}. oracle_suspects_excluded must be []: suspect exclusion needs a parameterized market-check gate the broker does not register, so the whole holdout cohort is benchmarked. Derive memory_verdict from the rules; the workflow recomputes it independently and fails closed on disagreement. Do not release, quarantine, or finalize.`,
+    { agentType: 'vol-builder', schema: RATCHET_PREPARE, label: 'ratchet-prepare' },
+  )
+} catch (error) { ratchetThrown = String(error) }
+
+phase('Ratchet Release')
+let ratchetRelease = null
+let ratchetReleaseThrown = null
+try {
+  ratchetRelease = await agent(`Call broker lane_release exactly once with capability=${ratchetAcquire.capability}; return the result unchanged.`,
+    { agentType: 'vol-lane-releaser', schema: BROKER_RELEASE, label: 'ratchet-release' })
+} catch (error) { ratchetReleaseThrown = String(error) }
+const ratchetReleaseError = ratchetReleaseThrown || brokerReleaseError(ratchetRelease, ratchetAcquire, true)
+
+const ratchetError = ratchetThrown || ratchetPrepareContractError(ratchet, {
+  tested_sha: sprint.integration_sha, tested_tree: sprint.integration_tree, tested_branch: sprint.integration_branch,
+  ratchet_branch: ratchetBranch, holdout_digest: capability.holdout_digest_receipt, run_id: RUN_ID, heartbeat_id: ratchetHeartbeat,
+  lease_name: ratchetAcquire.lease_name, worktree: ratchetAcquire.worktree, keeper_pid: ratchetAcquire.keeper_pid,
+  keeper_process_started_utc: ratchetAcquire.keeper_process_started_utc,
+  applicable_modes: applicableModes, baseline_contract: attributionPayload, hypothesis_ids: hypothesisIds,
+}) || ratchetReleaseError ||
+  (ratchetRelease.sha !== ratchet.ratchet_sha || ratchetRelease.tree !== ratchet.ratchet_tree ? 'released Ratchet SHA/tree differs from the prepared commit' : null)
+if (ratchetError) return readyFailure(ratchetError, { sprint: sprintSummary, ratchet: null })
+
+// Verdict authority is the workflow's, not the worker's.
 const computedVerdict = computeRatchetVerdict(ratchet)
-if (ratchet.memory_verdict !== computedVerdict) return { iteration: measure.iter, capability_state: 'ready', verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: { passed: true, integration_branch: sprint.integration_branch, integration_sha: sprint.integration_sha }, ledger: [], ratchet_evidence: [], ratchet: null, failure: 'prepared memory verdict disagrees with workflow computation', run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
+if (ratchet.memory_verdict !== computedVerdict) return readyFailure('prepared memory verdict disagrees with workflow computation', { sprint: sprintSummary, ratchet: null })
 
 let finalize = null
 let finalizeError = null
 let finalizeThrown = null
 if (computedVerdict === 'ACCEPT') {
   phase('Ratchet Finalize')
-  const expected = { ref: CANONICAL_REF, new_sha: ratchet.ratchet_sha, expected_old_sha: BASE_SHA }
+  const casExpected = { ref: CANONICAL_REF, new_sha: ratchet.ratchet_sha, new_tree: ratchet.ratchet_tree, expected_old_sha: BASE_SHA }
   try {
-    finalize = await agent(`Run exactly git update-ref ${CANONICAL_REF} ${ratchet.ratchet_sha} ${BASE_SHA}; do nothing else; return typed receipt.`, { agentType: 'vol-ref-finalizer', schema: CAS_RECEIPT, label: 'ratchet-cas-finalizer' })
+    finalize = await agent(
+      `Call broker canonical_finalize exactly once with finalize_capability=${ratchetRelease.finalize_capability}, expected_sha=${ratchet.ratchet_sha}, expected_tree=${ratchet.ratchet_tree}; return the typed receipt unchanged.`,
+      { agentType: 'vol-ref-finalizer', schema: CAS_RECEIPT, label: 'ratchet-cas-finalizer' },
+    )
   } catch (error) { finalizeThrown = String(error) }
-  finalizeError = casReceiptError(finalize, expected)
+  finalizeError = finalizeThrown || casReceiptError(finalize, casExpected)
 }
 phase('Ratchet Audit')
 let audit = null
 let auditThrown = null
 try {
-  audit = await agent(`Read-only: run exactly git rev-parse ${CANONICAL_REF}; return actual full SHA.`, { agentType: 'vol-ref-auditor', schema: HEAD_RECEIPT, label: 'ratchet-post-decision-audit' })
+  audit = await agent('Call broker canonical_audit exactly once with {}; return its typed result unchanged.',
+    { agentType: 'vol-ref-auditor', schema: HEAD_RECEIPT, label: 'ratchet-post-decision-audit' })
 } catch (error) { auditThrown = String(error) }
 const auditError = auditThrown || auditReceiptError(audit, CANONICAL_REF)
 const canonicalAfter = auditError || audit.sha === 'MISSING' ? null : audit.sha
-const transactionOk = computedVerdict === 'ACCEPT' ? !finalizeError && !auditError && canonicalAfter === ratchet.ratchet_sha : !auditError && canonicalAfter === BASE_SHA
+const transactionOk = computedVerdict === 'ACCEPT'
+  ? !finalizeError && !auditError && canonicalAfter === ratchet.ratchet_sha
+  : !auditError && canonicalAfter === BASE_SHA
 const verdict = transactionOk ? computedVerdict : 'FAILED'
 const transactionEvidence = [
   ...ratchet.evidence,
   { command: ratchet.acquisition_receipt.action, exit_code: ratchet.acquisition_receipt.exit_code, output: ratchet.acquisition_receipt.output },
   { command: ratchet.digest_receipt.command, exit_code: ratchet.digest_receipt.exit_code, output: ratchet.digest_receipt.output },
-  ...ratchet.metric_evidence,
   ...ratchet.gate_receipts.map(receipt => ({ command: receipt.command, exit_code: receipt.exit_code, output: receipt.output })),
-  ...ratchet.market_evidence.map(receipt => ({ command: receipt.command, exit_code: receipt.exit_code, output: receipt.output })),
-  { command: ratchet.release_receipt.action, exit_code: ratchet.release_receipt.exit_code, output: ratchet.release_receipt.output },
+  { command: ratchetRelease.release_receipt.action, exit_code: ratchetRelease.release_receipt.exit_code, output: ratchetRelease.release_receipt.output },
   ...(finalize ? [{ command: finalize.command, exit_code: finalize.exit_code, output: finalize.output }] : []),
   ...(audit ? [{ command: audit.command, exit_code: audit.exit_code, output: audit.output }] : []),
 ]
 return {
-  iteration: measure.iter, capability_state: 'ready', verdict,
+  iteration: ITER, capability_state: 'ready', verdict,
   holdout: verdict === 'FAILED' ? null : { summary: ratchet.holdout_summary, metrics: ratchet.metrics, oracle_suspects_excluded: ratchet.oracle_suspects_excluded },
   confirmed: verdict === 'FAILED' ? [] : ratchet.hypotheses_confirmed, refuted: verdict === 'FAILED' ? [] : ratchet.hypotheses_refuted,
-  sprint: { passed: true, integration_branch: sprint.integration_branch, integration_sha: sprint.integration_sha }, ledger: verdict === 'FAILED' ? [] : ratchet.ledger_appended,
-  ratchet_evidence: transactionEvidence, ratchet: { prepare: ratchet, computed_verdict: computedVerdict, finalize, audit },
+  sprint: sprintSummary, ledger: verdict === 'FAILED' ? [] : ratchet.ledger_appended,
+  ratchet_evidence: transactionEvidence,
+  ratchet: { acquire: ratchetAcquire, prepare: ratchet, release: ratchetRelease, computed_verdict: computedVerdict, finalize, audit },
+  measure: { acquire: measureAcquire, report: measure, release: measureRelease },
+  attribution,
   failure: transactionOk ? null : (finalizeThrown || finalizeError || auditError || 'canonical post-decision mismatch'),
   landing_status: transactionOk ? (computedVerdict === 'ACCEPT' ? 'COMMITTED' : 'UNCHANGED_REJECT') : (canonicalAfter === ratchet.ratchet_sha ? 'LANDED_AUDITED_WITH_INVALID_RECEIPT' : 'CANONICAL_MISMATCH'),
   run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: canonicalAfter,
 }
-*/

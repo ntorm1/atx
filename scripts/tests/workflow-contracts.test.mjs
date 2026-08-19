@@ -212,36 +212,54 @@ async function runStage1Scenario(mode) {
   return { result, labels, phases }
 }
 
-test('standalone vol-sprint is a typed fail-closed workflow with no dispatch', async () => {
+test('vol-sprint refuses a holdout-tainted task before dispatching anything', async () => {
   let calls = 0
-  const result = await compileWorkflow(sprint)({ task: 'oracle improvement' }, async () => { calls += 1 }, () => {}, async () => {}, async () => {})
-  assert.deepEqual(result, {
-    passed: false, blocked: ['ORACLE_BROKER_MIGRATION_REQUIRED'], failure: 'ORACLE_BROKER_MIGRATION_REQUIRED',
-    integration_branch: null, integration_sha: null, gate_evidence: [],
-  })
-  assert.equal(calls, 0)
-  assert.doesNotMatch(sprint, /\bagent\s*\(/)
-  assert.doesNotMatch(sprint, /\bworkflow\s*\(/)
+  const count = async () => { calls += 1 }
+  const result = await compileWorkflow(sprint)({ task: 'raise the holdout cohort score' }, count, count, count, count)
+  assert.equal(result.passed, false)
+  assert.match(result.failure, /names the holdout cohort/)
+  assert.deepEqual(result.gate_evidence, [])
+  assert.equal(result.integration_sha, null)
+  assert.equal(calls, 0, 'a tainted task must not reach any agent, phase, or nested workflow')
 })
 
-test('ready oracle capability fails closed before Measure, Sprint, Ratchet, or holdout', async () => {
-  const base = 'b'.repeat(40)
-  const labels = []
-  const agent = async (_prompt, options) => {
-    labels.push(options.label)
-    assert.equal(options.agentType, 'vol-capability-inspector')
-    return {
-      state: 'ready', canonical_ref: 'refs/heads/oracle/canonical', canonical_exists: true,
-      base_ref: 'refs/heads/oracle/canonical', base_sha: base, base_tree: 'c'.repeat(40), holdout_digest_receipt: 'd'.repeat(64), next_iter: 'iter-1',
-      evidence: [{ command: 'powershell scripts\\oracle-capability.ps1', exit_code: 0, output: `state=ready\ncanonical_exists=true\nbase_ref=refs/heads/oracle/canonical\nbase_sha=${base}\nbase_tree=${'c'.repeat(40)}` }],
-      broker_evidence: brokerEvidence('capability_probe', base),
-    }
+test('vol-sprint is broker-only: no shell, no lease script, no gate outside its closed registry', () => {
+  assert.doesNotMatch(sprint, /lease-worktree\.ps1|git\s+commit|git\s+update-ref/)
+  // Holdout, Measure and holdout-digest gate IDs may appear in prose explaining
+  // why they are unreachable, but never in executable source.
+  const executable = sprint.split('\n').filter(line => !/^\s*\/\//.test(line)).join('\n')
+  assert.doesNotMatch(executable, /holdout_mode_a|holdout_mode_b|rel_avx2_speed|measure_mode_a|measure_mode_b|measure_speed|holdout_digest/)
+  for (const operation of ["operation_id: 'sprint_build'", "operation_id: 'sprint_integration'"]) assert.ok(sprint.includes(operation), operation)
+  // the only mutating tools the sprint can reach are patch_apply/lane_commit
+  // inside a scope-pinned sprint_build lane
+  assert.match(sprint, /scope_paths: lane\.files_in_scope/)
+  assert.match(sprint, /message_id=sprint_lane/)
+  // and a sprint lane must never be handed a canonical finalize capability
+  assert.match(sprint, /sprint lane must not be issued a canonical finalize capability/)
+})
+
+test('the ready oracle path is live, broker-native, and keeps holdout in the Ratchet alone', () => {
+  const ready = oracle.slice(oracle.indexOf('// READY: Measure'))
+  assert.ok(ready.length > 0, 'the ready path is missing')
+  assert.doesNotMatch(oracle, /READY_BROKER_MIGRATION_REQUIRED|RETIRED_READY_PATH/)
+  for (const stage of ['measure', 'ratchet']) {
+    assert.ok(ready.includes(`operation_id: '${stage}'`), `${stage} lane is not opened through the broker registry`)
+    assert.ok(ready.includes(`label: '${stage}-acquire'`), `${stage} lane has no vol-lane-opener step`)
+    assert.ok(ready.includes(`label: '${stage}-release'`), `${stage} lane has no vol-lane-releaser step`)
   }
-  const result = await compileWorkflow(oracle)({}, agent, () => {}, async () => { throw new Error('nested workflow reached') }, async () => {})
-  assert.equal(result.failure, 'READY_BROKER_MIGRATION_REQUIRED')
-  assert.equal(result.verdict, 'FAILED')
-  assert.equal(result.holdout, null)
-  assert.deepEqual(labels, ['capability'])
+  assert.match(ready, /agentType: 'vol-lane-opener'/)
+  assert.match(ready, /agentType: 'vol-lane-releaser'/)
+  // Measure runs on a tool set that cannot mutate; Ratchet is the only stage
+  // that commits, and the only stage whose gates touch holdout.
+  assert.match(ready, /agentType: 'vol-verifier', schema: MEASURE/)
+  assert.match(ready, /agentType: 'vol-builder', schema: RATCHET_PREPARE/)
+  assert.equal(/RATCHET_GATE_COMMANDS/.test(ready.slice(0, ready.indexOf("phase('Ratchet Acquire')"))), false,
+    'a holdout gate command appears before the Ratchet lane is opened')
+  // verdict authority stays with the workflow
+  assert.match(ready, /const computedVerdict = computeRatchetVerdict\(ratchet\)/)
+  assert.match(ready, /ratchet\.memory_verdict !== computedVerdict/)
+  assert.match(ready, /agentType: 'vol-ref-finalizer'/)
+  assert.match(ready, /canonical_finalize exactly once with finalize_capability=\$\{ratchetRelease\.finalize_capability\}/)
 })
 
 test('Stage 1 recovery and integration agents have operation-specific broker tools', () => {
@@ -263,7 +281,7 @@ test('Stage 1 recovery and integration agents have operation-specific broker too
 })
 
 test('active bootstrap workflow owns acquisition, quarantine, immutable verify, and exact SHA/tree finalization', () => {
-  const active = oracle.slice(0, oracle.indexOf('/* RETIRED_READY_PATH'))
+  const active = oracle.slice(0, oracle.indexOf('// READY: Measure'))
   assert.match(active, /CANONICAL_EXPECTED_OLD = capability\.canonical_exists \? BASE_SHA : ZERO_SHA/)
   assert.match(active, /buildAgentType = capability\.state === 'missing_data' \? 'vol-stage1-recovery' : 'vol-builder'/)
   assert.match(active, /label: 'bootstrap-build-quarantine'/)
