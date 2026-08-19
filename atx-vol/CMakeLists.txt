@@ -599,6 +599,19 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(spy_carry_diag examples/spy_carry_diag.cpp)
     target_link_libraries(spy_carry_diag PRIVATE atx::vol atx::core atx_warnings)
 
+    # DIAGNOSTIC (lane/oracle-exercise-style-20260819): per-underlier evidence
+    # for the exercise-style convention axis — does srPrc reproduce the American
+    # premium or the European one on our exact convention inputs? Compiles the
+    # oracle cohort reader and convention layer directly (the same TUs
+    # atx-vol-oracle-bench links) so it measures what production prices with.
+    add_executable(oracle_exercise_style_diag
+        examples/oracle_exercise_style_diag.cpp
+        tools/oracle_conventions.cpp
+        tools/oracle_cohort_reader.cpp)
+    target_link_libraries(oracle_exercise_style_diag PRIVATE atx::vol atx::core atx_warnings)
+    target_include_directories(oracle_exercise_style_diag
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tools")
+
     # Out-of-sample honesty check: leave-every-other-strike-out generalization of
     # the convex-QP dense fit. See examples/spy_oos_check.cpp.
     add_executable(spy_oos_check examples/spy_oos_check.cpp)

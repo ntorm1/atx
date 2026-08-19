@@ -489,15 +489,20 @@ public:
   [[nodiscard]] Status run(std::span<const OracleRow> rows, Scorecard &card, ModeStats &stats,
                            AggregateMetrics &agg) override {
     for (const OracleRow &row : rows) {
-      const EnginePricingInputs in = mode_a_inputs(row);
-      const Result<AmericanGreeks> greeks = american_greeks_al(
-          in.spot, in.strike, in.years, in.sigma, in.rate, in.carry, in.side, mode_a_al_opts());
-      if (!greeks.has_value()) {
+      // ONE entry point for inputs, exercise-style routing, Greeks and the
+      // carry leg — the same `mode_a_price_row` the Stage 3 sweep resolves the
+      // map with, so production cannot price with a different pricer than the
+      // one the published floor was measured on.
+      const Result<ModeAPricing> priced =
+          mode_a_price_row(row, winning_convention(), mode_a_al_opts());
+      if (!priced.has_value()) {
         // Expected on corner regimes (double-continuation, degenerate T/sigma
         // the reader could not know about): counted, not fatal.
         ++stats.rows_engine_error;
         continue;
       }
+      const EnginePricingInputs &in = priced->inputs;
+      const AmericanGreeks &greeks = priced->greeks;
       ++stats.rows_priced;
 
       const MoneynessBand mband = moneyness_band(row.strike / row.uprc, in.side);
@@ -510,7 +515,7 @@ public:
         card.observe(name(), metric, mband, dband, in.side, err, std::abs(err) <= tol);
       };
 
-      const double model_price = price_to_oracle_units(greeks->price);
+      const double model_price = price_to_oracle_units(greeks.price);
       observe("price", model_price, row.sr_prc, price_tolerance(row.bid_prc, row.ask_prc));
       agg.price.absolute(model_price, row.sr_prc);
       // Mode A deliberately prices at SpiderRock's own vol. Record that
@@ -519,15 +524,10 @@ public:
       observe("vol", in.sigma, row.sr_vol, vol_tolerance());
       agg.vol.absolute(in.sigma, row.sr_vol);
 
-      // ph rides the carry-greeks route; its corner-regime failures skip ONLY
-      // the ph observation (cell n per metric reflects it), never the row.
-      double dp_dq = std::numeric_limits<double>::quiet_NaN();
-      const Result<CarryGreeks> carry = american_carry_greeks_al(
-          in.spot, in.strike, in.years, in.sigma, in.rate, in.carry, in.side, mode_a_al_opts());
-      if (carry.has_value()) {
-        dp_dq = carry->dP_dq;
-      }
-      const OracleUnitGreeks g = to_oracle_units(*greeks, dp_dq);
+      // ph rides the carry-greeks route; on the American leg its corner-regime
+      // failures leave dp_dq non-finite and skip ONLY the ph observation (cell
+      // n per metric reflects it), never the row.
+      const OracleUnitGreeks g = to_oracle_units(greeks, priced->dp_dq);
       // Slot order is kGreekMetricSuffix's / kGreekCellMetric's.
       const std::array<std::pair<double, double>, 9> greek_pairs{
           std::pair{g.de, row.de}, std::pair{g.ga, row.ga}, std::pair{g.th, row.th},
@@ -733,6 +733,15 @@ public:
         EnginePricingInputs in = mode_a_inputs(row); // same pinned map as Mode A
         // ...everything except sigma, which Mode B MEASURES rather than reads.
         in.sigma = 0.0;
+        // SCOPE, stated rather than left to be discovered: the map's
+        // `exercise_style` key is NOT honoured below. Mode B inverts and
+        // re-prices through the AMERICAN rung unconditionally, so a
+        // European-routed root is inverted against the wrong functional here
+        // even though Mode A now prices it correctly. Closing that needs a
+        // European inverter plus its own Mode B gate evidence, and it is
+        // deliberately not smuggled in on the back of a Mode A price fix — the
+        // Mode B numbers this file publishes are unchanged by that axis, which
+        // is why they stay comparable across it.
 
         // ── Quote admission. A mid needs two live, uncrossed sides.
         if (!(row.bid_prc > 0.0) || !(row.ask_prc > 0.0) || !(row.ask_prc >= row.bid_prc)) {

@@ -17,11 +17,14 @@ using namespace atx::vol;
 using namespace atx::vol::oracle;
 
 // Synthesizes a row whose oracle columns were produced BY `map`, so a sweep
-// over such rows must resolve back to `map`'s input model.
+// over such rows must resolve back to `map`'s input model AND its exercise
+// style. It authors through `mode_a_price_row` — the same entry point the sweep
+// and production Mode A price with — so the synthetic oracle honours the map's
+// exercise-style rule instead of being unconditionally American.
 OracleRow make_row(double strike, Side side, const ConventionMap &map, double ddiv = 0.0,
-                   double sdiv = 0.0) {
+                   double sdiv = 0.0, std::string_view underlier = "SYNTH") {
   OracleRow row;
-  row.underlier = "SYNTH";
+  row.underlier = std::string(underlier);
   row.side = side;
   row.strike = strike;
   row.uprc = 100.0;
@@ -32,22 +35,14 @@ OracleRow make_row(double strike, Side side, const ConventionMap &map, double dd
   row.sr_vol = 0.25;
   row.bid_prc = 1.0;
   row.ask_prc = 1.1;
-  const EnginePricingInputs inputs = mode_a_inputs(row, map);
-  const auto greeks = american_greeks_al(inputs.spot, inputs.strike, inputs.years, inputs.sigma,
-                                         inputs.rate, inputs.carry, inputs.side, al_fast_opts());
-  EXPECT_TRUE(greeks.has_value());
-  if (!greeks.has_value()) {
+  const Result<ModeAPricing> priced = mode_a_price_row(row, map, al_fast_opts());
+  EXPECT_TRUE(priced.has_value());
+  if (!priced.has_value()) {
     return row;
   }
-  const auto carry =
-      american_carry_greeks_al(inputs.spot, inputs.strike, inputs.years, inputs.sigma, inputs.rate,
-                               inputs.carry, inputs.side, al_fast_opts());
-  EXPECT_TRUE(carry.has_value());
-  if (!carry.has_value()) {
-    return row;
-  }
-  row.sr_prc = price_to_oracle_units(greeks->price, map);
-  const OracleUnitGreeks units = to_oracle_units(*greeks, carry->dP_dq, map);
+  EXPECT_TRUE(std::isfinite(priced->dp_dq));
+  row.sr_prc = price_to_oracle_units(priced->greeks.price, map);
+  const OracleUnitGreeks units = to_oracle_units(priced->greeks, priced->dp_dq, map);
   row.de = units.de;
   row.ga = units.ga;
   row.th = units.th;
@@ -78,13 +73,49 @@ std::vector<OracleRow> distinct_arm_rows(double first_strike, double second_stri
           make_row(second_strike, Side::Put, map, 2.5, 0.01)};
 }
 
-// A cohort authored under the PRODUCTION map, so a sweep over it must resolve
-// back to winning_convention(). Non-zero ddiv/sdiv keep the production input
-// model distinguishable from the other seven.
-std::vector<OracleRow> production_rows(double first_strike, double second_strike) {
-  const ConventionMap &map = winning_convention();
+// A cohort spanning the roots the exercise-style rules disagree about, authored
+// under `map`. A sweep over it must resolve back to `map`'s exercise style.
+//
+// THREE roots, because two of the three rules are indistinguishable on any
+// narrower cohort: an unrouted equity (SYNTH), a contract-spec European index
+// root (SPX), and the empirically-routed root (MGTN) that separates
+// `european_cash_settled_index` from its `_plus_empirical` superset. The
+// deep-in-the-money puts are what make the two legs separable at all — that is
+// where the early-exercise premium is worth ~0.9 per share rather than ~0.
+//
+// Non-zero ddiv/sdiv keep the production input model distinguishable from the
+// other seven at the same time.
+std::vector<OracleRow> rows_under(const ConventionMap &map, double first_strike,
+                                  double second_strike) {
   return {make_row(first_strike, Side::Call, map, 2.5, 0.01),
-          make_row(second_strike, Side::Put, map, 2.5, 0.01)};
+          make_row(second_strike, Side::Put, map, 2.5, 0.01),
+          make_row(200.0, Side::Put, map, 2.5, 0.01, "SPX"),
+          make_row(200.0, Side::Put, map, 2.5, 0.01, "MGTN")};
+}
+
+// A cohort authored under the PRODUCTION map, so a sweep over it must resolve
+// back to winning_convention().
+std::vector<OracleRow> production_rows(double first_strike, double second_strike) {
+  return rows_under(winning_convention(), first_strike, second_strike);
+}
+
+// erf-based Black-Scholes, deliberately NOT the repo's own Black-76 kernel: it
+// is the independent rung `european_greeks` is checked against, and a check
+// that reused the kernel under test would only prove the kernel equals itself.
+[[nodiscard]] double independent_ncdf(double x) {
+  return 0.5 * std::erfc(-x * 0.70710678118654752440);
+}
+
+[[nodiscard]] double independent_euro(double S, double K, double T, double sigma, double r,
+                                      double q, Side side) {
+  const double v = sigma * std::sqrt(T);
+  const double d1 = (std::log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / v;
+  const double d2 = d1 - v;
+  const double df = std::exp(-r * T);
+  const double dq = std::exp(-q * T);
+  return side == Side::Call
+             ? S * dq * independent_ncdf(d1) - K * df * independent_ncdf(d2)
+             : K * df * independent_ncdf(-d2) - S * dq * independent_ncdf(-d1);
 }
 
 // The exact bytes `convention_sweep_json` publishes as `production_conventions`,
@@ -97,6 +128,7 @@ constexpr std::string_view kResolvedWinnerJson =
     R"({"input_model":"discrete_forward_pv__rate__sdiv_yield",)"
     R"("forward_formula":"uprc_exp_rate_t_minus_ddiv","rate_model":"continuous_row_rate",)"
     R"("carry_model":"sdiv_as_yield","dividend_model":"discrete_cash_forward",)"
+    R"("exercise_style":"european_cash_settled_index_plus_empirical",)"
     R"("day_count":"BUS_252","dte_banding_day_count":"ACT_365F",)"
     R"("price_scale":"per_share","price_sign":"positive",)"
     R"("vol_scale":"decimal_identity","delta_scale":"per_unit","delta_sign":"positive",)"
@@ -124,9 +156,78 @@ TEST(OracleConvention, DiscreteDividendForwardIsAppliedExactly) {
   EXPECT_DOUBLE_EQ(inputs.carry, row.sdiv);
 }
 
+TEST(OracleConvention, EuropeanLegMatchesTheIndependentRungWithNoIntrinsicFloor) {
+  constexpr double S = 100.0;
+  constexpr double T = 0.75;
+  constexpr double sigma = 0.24;
+  constexpr double r = 0.043;
+  constexpr double q = 0.012;
+  for (const Side side : {Side::Call, Side::Put}) {
+    for (const double strike : {60.0, 100.0, 140.0}) {
+      double dp_dq = std::numeric_limits<double>::quiet_NaN();
+      const Result<AmericanGreeks> leg = european_greeks(S, strike, T, sigma, r, q, side, &dp_dq);
+      ASSERT_TRUE(leg.has_value());
+      EXPECT_NEAR(leg->price, independent_euro(S, strike, T, sigma, r, q, side), 1e-9);
+      EXPECT_TRUE(std::isfinite(dp_dq));
+    }
+  }
+  // The case the axis exists for: a deep-ITM European put is entitled to sit
+  // BELOW intrinsic — exactly what the intrinsic-flooring null-cache path would
+  // have destroyed — and the leg must reproduce it, not floor it.
+  const Result<AmericanGreeks> deep = european_greeks(S, 200.0, T, sigma, r, q, Side::Put);
+  ASSERT_TRUE(deep.has_value());
+  EXPECT_LT(deep->price, 200.0 - S);
+  EXPECT_NEAR(deep->price, independent_euro(S, 200.0, T, sigma, r, q, Side::Put), 1e-9);
+  // american_greeks_al's admission contract, verbatim: which leg a row takes
+  // must not change whether the row is admitted.
+  EXPECT_FALSE(european_greeks(S, 200.0, 0.0, sigma, r, q, Side::Put).has_value());
+}
+
+TEST(OracleConvention, ExerciseStyleRulesRouteOnlyTheirNamedRoots) {
+  constexpr auto kAmerican = ExerciseStyleRule::AmericanAll;
+  constexpr auto kIndex = ExerciseStyleRule::EuropeanCashSettledIndex;
+  constexpr auto kPlus = ExerciseStyleRule::EuropeanCashSettledIndexPlusEmpirical;
+  // OEX is the standing counterexample to "index => European" — cash-settled
+  // but AMERICAN by contract; SPY and SYNTH are the unrouted equity controls.
+  for (const std::string_view root : {"SPY", "OEX", "SYNTH"}) {
+    EXPECT_FALSE(routes_european(root, kAmerican)) << root;
+    EXPECT_FALSE(routes_european(root, kIndex)) << root;
+    EXPECT_FALSE(routes_european(root, kPlus)) << root;
+  }
+  // The contract-fact roots: routed by both European rules, never the baseline.
+  for (const std::string_view root : {"SPX", "XSP"}) {
+    EXPECT_FALSE(routes_european(root, kAmerican)) << root;
+    EXPECT_TRUE(routes_european(root, kIndex)) << root;
+    EXPECT_TRUE(routes_european(root, kPlus)) << root;
+  }
+  // MGTN is measured, not contract fact: only the rule that carries that
+  // distinction in its own identity routes it.
+  EXPECT_FALSE(routes_european("MGTN", kAmerican));
+  EXPECT_FALSE(routes_european("MGTN", kIndex));
+  EXPECT_TRUE(routes_european("MGTN", kPlus));
+}
+
+TEST(OracleConvention, IngestedExerciseStyleOutranksTheRootListRule) {
+  ConventionMap map = baseline_convention();
+  map.exercise_style = ExerciseStyleRule::EuropeanCashSettledIndexPlusEmpirical;
+  OracleRow row;
+  row.underlier = "SPX";
+  // `oracle::` throughout: atx::vol already carries an unrelated ExerciseStyle
+  // and this file imports both namespaces.
+  // Unknown (today, every row): the map's rule answers.
+  EXPECT_EQ(exercise_style_for(row, map), oracle::ExerciseStyle::European);
+  // An ingested style is fact and outranks the rule — in both directions.
+  row.ingested_exercise_style = oracle::ExerciseStyle::American;
+  EXPECT_EQ(exercise_style_for(row, map), oracle::ExerciseStyle::American);
+  row.underlier = "SPY";
+  row.ingested_exercise_style = oracle::ExerciseStyle::European;
+  EXPECT_EQ(exercise_style_for(row, map), oracle::ExerciseStyle::European);
+}
+
 TEST(OracleConvention, ProductionMapIsTheResolvedHardCut) {
   const ConventionMap &map = winning_convention();
   EXPECT_EQ(map.input_model, InputModel::DiscreteDividendPvSdivYield);
+  EXPECT_EQ(map.exercise_style, ExerciseStyleRule::EuropeanCashSettledIndexPlusEmpirical);
   EXPECT_DOUBLE_EQ(map.price_scale, 1.0);
   // Never searched: the DTE-banding day count, not a unit the sweep may pick.
   EXPECT_DOUBLE_EQ(map.days_per_year, 365.0);
@@ -256,6 +357,7 @@ TEST(OracleConvention, CompleteMapNamesEveryGreekSignAndScale) {
                                 "rate_model",
                                 "carry_model",
                                 "dividend_model",
+                                "exercise_style",
                                 "day_count",
                                 "dte_banding_day_count",
                                 "price_scale",
@@ -291,7 +393,7 @@ TEST(OracleConvention, CompleteMapNamesEveryGreekSignAndScale) {
   // ':' in it, so counting colons counts keys.
   EXPECT_EQ(static_cast<std::size_t>(std::count(json.begin(), json.end(), ':')),
             std::size(tokens));
-  EXPECT_EQ(std::size(tokens), 31u);
+  EXPECT_EQ(std::size(tokens), 32u);
 }
 
 TEST(OracleConvention, ThetaDayCountNeverRebucketsDteBands) {
@@ -326,12 +428,16 @@ TEST(OracleConvention, SweepIsClosedDeterministicAndCoversElevenMetrics) {
     EXPECT_EQ(first->baseline_symmetric_metrics[index].metric_id,
               first->baseline_metrics[index].metric_id);
   }
-  ASSERT_EQ(first->candidate_prices.size(), 8u);
+  // The CROSS PRODUCT of the two searched axes: eight input models x three
+  // exercise-style rules. The tune sample is paid for by the survivors of the
+  // smoke cut alone — two input models times the full exercise fan, because
+  // smoke cannot separate the exercise axis at all.
+  ASSERT_EQ(first->candidate_prices.size(), 24u);
   EXPECT_EQ(std::count_if(first->candidate_prices.begin(), first->candidate_prices.end(),
                           [](const CandidatePriceMetric &candidate) {
                             return candidate.tune_sample_count > 0;
                           }),
-            2);
+            6);
   EXPECT_EQ(convention_map_json(first->winner), convention_map_json(second->winner));
   const std::string json = convention_sweep_json(*first, "0123456789abcdef");
   EXPECT_NE(json.find("\"cohorts\":[\"smoke\",\"tune\"]"), std::string::npos);
