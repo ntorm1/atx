@@ -141,6 +141,7 @@ namespace atx::vol {
 inline constexpr std::string_view kVrpPanelSchemaV1 = "vrp_panel_v1";
 inline constexpr std::string_view kVrpPanelSchemaV2 = "vrp_panel_v2";
 inline constexpr std::string_view kVrpPanelSchemaV3 = "vrp_panel_v3";
+inline constexpr std::string_view kVrpPanelSchemaV4 = "vrp_panel_v4";
 inline constexpr std::size_t kVrpHorizonSessions = 21;    // forward-RV window
 inline constexpr double kVrpTenor21Years = 21.0 / 252.0;  // strip tenor + label scale
 inline constexpr double kVrpTenor63Years = 63.0 / 252.0;  // slope tenor
@@ -227,7 +228,58 @@ inline constexpr std::array<std::string_view, 21> kVrpPanelColumnsV3{
     "liq_strikes_fit"};
 inline constexpr std::size_t kVrpPanelColumnCountV3 = kVrpPanelColumnsV3.size();
 
-enum class VrpPanelSchema : std::uint8_t { V1 = 0, V2 = 1, V3 = 2 };
+// v4 = v3's 21 columns in the frozen order, then `bar_index`. It is a prefix
+// extension like every predecessor, but it is the FIRST schema that also
+// changes the ROW POLICY, and that is the whole point of it:
+//
+//   THE BAR AXIS IS NOT THE EMITTED AXIS. v1/v2/v3 DROP a session whose 21d
+//   strip is unavailable while KEEPING that session's spot in its neighbours'
+//   trailing/forward windows (see "Row policy (frozen)" above). So those
+//   panels compute on the full bar axis and emit a strict SUBSET of it. On
+//   the shipped 25-name v2 panel the subset is missing 14.2% of all
+//   (symbol, session) pairs — 3544 of 24888 — essentially all of them
+//   `var21_out_of_range`, i.e. sessions with a PRESENT surface and a VALID
+//   SPOT whose 21d tenor simply fell outside the fitted pillars.
+//
+//   The consequence is silent and severe for any DOWNSTREAM feature work: a
+//   consumer that reads an emitted panel and computes its own trailing
+//   21-session window is stepping over holes, so its window spans more
+//   calendar than it thinks and its value is WRONG — measured up to 1.261e+01
+//   in log-variance units against the panel's own column. Worse, the error
+//   is invisible: only windowed features move, row-local ones agree exactly.
+//   Gating on emitted-row contiguity restores correctness but destroys
+//   coverage: at a 14% hole rate a contiguous 63-session run survives with
+//   probability 0.86^63, which is why a 63-session feature measured ZERO
+//   usable rows.
+//
+//   v4 fixes it at the source rather than gating around it. A session is
+//   emitted whenever the SURFACE LOADED AND THE SPOT WAS VALID — exactly the
+//   bar-axis membership test — so the emitted axis IS the bar axis and a
+//   downstream trailing window over emitted rows reproduces the panel's own
+//   column. Sessions the 21d strip failed on are emitted with `iv_fair_21d`
+//   NaN, which propagates through `label`/`f3`/`f4`/`f5`/`f6` by ordinary
+//   NaN arithmetic; the spot-derived columns (`f0`/`f1`/`f2`/`f7`/`f8`,
+//   `rv_fwd_21d`) are FULLY VALID on those rows and are the coverage this
+//   schema exists to recover. `n_no_surface` and `n_bad_spot` sessions are
+//   still absent — there is no bar for them to be on.
+//
+//   `bar_index` is the row's 0-based position on that symbol's bar axis. It
+//   is emitted so the invariant is CHECKABLE rather than merely asserted: a
+//   consumer verifies adjacency with `bar_index[i] == bar_index[i-1] + 1`
+//   instead of inferring it from dates and a trading calendar it does not
+//   have. Under v4 the check must pass for every consecutive pair of a
+//   symbol's rows; under v1/v2/v3 the column does not exist precisely
+//   because the property does not hold.
+inline constexpr std::array<std::string_view, 22> kVrpPanelColumnsV4{
+    "symbol",        "date",         "entry_ts_ns", "spot",
+    "iv_fair_21d",   "iv_fair_63d",  "rv_fwd_21d",  "label",
+    "f0_log_rv1",    "f1_log_rv5",   "f2_log_rv21", "f3_iv_level",
+    "f4_term_slope", "f5_hv_iv_gap", "f6_vrp_lag",  "f7_ret_21d",
+    "f8_jump_recent", "f9_vov_63d",  "iv_atmf_21d", "liq_hspread_frac",
+    "liq_strikes_fit", "bar_index"};
+inline constexpr std::size_t kVrpPanelColumnCountV4 = kVrpPanelColumnsV4.size();
+
+enum class VrpPanelSchema : std::uint8_t { V1 = 0, V2 = 1, V3 = 2, V4 = 3 };
 
 [[nodiscard]] inline constexpr std::string_view schema_name(VrpPanelSchema s) noexcept {
   switch (s) {
@@ -237,6 +289,8 @@ enum class VrpPanelSchema : std::uint8_t { V1 = 0, V2 = 1, V3 = 2 };
     return kVrpPanelSchemaV2;
   case VrpPanelSchema::V3:
     return kVrpPanelSchemaV3;
+  case VrpPanelSchema::V4:
+    return kVrpPanelSchemaV4;
   }
   return kVrpPanelSchemaV2; // unreachable for a valid enumerator
 }
@@ -249,15 +303,18 @@ enum class VrpPanelSchema : std::uint8_t { V1 = 0, V2 = 1, V3 = 2 };
     return kVrpPanelColumnCountV2;
   case VrpPanelSchema::V3:
     return kVrpPanelColumnCountV3;
+  case VrpPanelSchema::V4:
+    return kVrpPanelColumnCountV4;
   }
   return kVrpPanelColumnCountV2; // unreachable for a valid enumerator
 }
 
-// Column name at index `i` under `s`. v3 is a prefix extension of v2 which is a
-// prefix extension of v1, so one table answers for all three.
+// Column name at index `i` under `s`. Each schema is a prefix extension of its
+// predecessor, so one table answers for all of them.
 [[nodiscard]] inline constexpr std::string_view schema_column(VrpPanelSchema s,
                                                               std::size_t i) noexcept {
-  return s == VrpPanelSchema::V3   ? kVrpPanelColumnsV3[i]
+  return s == VrpPanelSchema::V4   ? kVrpPanelColumnsV4[i]
+         : s == VrpPanelSchema::V3 ? kVrpPanelColumnsV3[i]
          : s == VrpPanelSchema::V2 ? kVrpPanelColumnsV2[i]
                                    : kVrpPanelColumnsV1[i];
 }
@@ -376,6 +433,12 @@ struct VrpPanelRow {
   // v3 only. See kVrpPanelColumnsV3 for what each one does and does not mean.
   double liq_hspread_frac{0.0};
   double liq_strikes_fit{0.0};
+  // v4 only: 0-based position on this symbol's BAR AXIS. Under v4 the emitted
+  // axis IS the bar axis, so consecutive emitted rows of one symbol always
+  // differ by exactly 1 and a downstream window over emitted rows is the
+  // panel's own window. Carried as an integer, not a double, because it is an
+  // index a consumer compares for exact adjacency, not a measurement.
+  std::int64_t bar_index{0};
 };
 
 namespace vrp_detail {
@@ -778,13 +841,17 @@ inline std::size_t apply_vrp_split_adjustment(VrpSeries &s,
 // ── Row building (pure; the gate tests drive this without a SurfaceDb) ───
 
 // Series -> panel rows. Bars with NaN iv21 are the already-counted dropped
-// sessions: skipped here, but their spots still feed every window (they are
-// in `s`). Counts n_rows_written / n_rows_tail_nan_label into `counters`.
+// sessions: under v1/v2/v3 they are skipped here, but their spots still feed
+// every window (they are in `s`). Under v4 they are EMITTED instead, carrying
+// a NaN implied leg and a fully valid spot-derived block — see
+// kVrpPanelColumnsV4 for why the emitted-axis/bar-axis gap is a defect worth
+// a schema. Counts n_rows_written / n_rows_tail_nan_label into `counters`.
 // Errors (InvalidArgument) only on a malformed series: mismatched parallel
 // arrays, non-ascending ts, or an invalid spot — the loader guarantees all
 // three, so an error here means a caller bug, not data quality.
 [[nodiscard]] inline Result<std::vector<VrpPanelRow>> build_vrp_rows(const VrpSeries &s,
-                                                                     VrpPanelCounters &counters) {
+                                                                     VrpPanelCounters &counters,
+                                                                     VrpPanelSchema schema) {
   const std::size_t n = s.spot.size();
   if (s.dates.size() != n || s.ts_ns.size() != n || s.iv21.size() != n || s.iv63.size() != n ||
       s.iv_atmf21.size() != n) {
@@ -815,10 +882,11 @@ inline std::size_t apply_vrp_split_adjustment(VrpSeries &s,
   // Bounded by n — one pass over the bar axis.
   for (std::size_t i = 0; i < n; ++i) {
     const double iv21 = s.iv21[i];
-    if (!std::isfinite(iv21)) {
+    if (!std::isfinite(iv21) && schema != VrpPanelSchema::V4) {
       continue; // dropped session (reason counted at load time); bar kept above
     }
     VrpPanelRow row;
+    row.bar_index = static_cast<std::int64_t>(i);
     row.date = s.dates[i];
     row.entry_ts_ns = s.ts_ns[i];
     row.spot = s.spot[i];
@@ -1043,7 +1111,8 @@ write_vrp_panel_tsv(std::string_view path, VrpPanelSchema schema,
   // enumerator ORDER (V1 < V2 < V3) so adding a v4 prefix extension keeps the
   // v2 block emitting rather than silently dropping it.
   const bool v2 = schema != VrpPanelSchema::V1;
-  const bool v3 = schema == VrpPanelSchema::V3;
+  const bool v3 = schema == VrpPanelSchema::V3 || schema == VrpPanelSchema::V4;
+  const bool v4 = schema == VrpPanelSchema::V4;
   std::string out;
   out += "# schema=";
   out += schema_name(schema);
@@ -1107,6 +1176,10 @@ write_vrp_panel_tsv(std::string_view path, VrpPanelSchema schema,
         out += '\t';
         vrp_detail::append_double(out, r.liq_strikes_fit);
       }
+      if (v4) {
+        out += '\t';
+        vrp_detail::append_i64(out, r.bar_index);
+      }
       out += '\n';
     }
   }
@@ -1150,10 +1223,11 @@ write_vrp_panel_tsv(std::string_view path, VrpPanelSchema schema,
   // neither may be handed the v3-only reference file. A v2 run with
   // --liquidity would otherwise LOOK adjusted and emit a byte-identical file,
   // which is the worst of both.
-  if (cfg.schema != VrpPanelSchema::V3 && !cfg.liquidity.empty()) {
+  if (cfg.schema != VrpPanelSchema::V3 && cfg.schema != VrpPanelSchema::V4 &&
+      !cfg.liquidity.empty()) {
     return atx::core::Err(ErrorCode::InvalidArgument,
-                          "run_vrp_panel: --liquidity requires --panel-schema v3 (vrp_panel_v1/v2 "
-                          "are frozen contracts with no liquidity column)");
+                          "run_vrp_panel: --liquidity requires --panel-schema v3 or v4 "
+                          "(vrp_panel_v1/v2 are frozen contracts with no liquidity column)");
   }
   std::vector<VrpSplitFactor> splits;
   if (!cfg.splits.empty()) {
@@ -1207,6 +1281,8 @@ write_vrp_panel_tsv(std::string_view path, VrpPanelSchema schema,
   double worst_rv = 0.0;
   std::string worst_sym;
   std::string worst_date;
+  // Every gate offender, "SYM DATE rv_fwd=X", in (symbol, session) order.
+  std::vector<std::string> implausible;
   // Bounded by symbol count.
   for (std::size_t k = 0; k < symbols.size(); ++k) {
     // Split adjustment BEFORE row building: every window the builder opens
@@ -1248,7 +1324,7 @@ write_vrp_panel_tsv(std::string_view path, VrpPanelSchema schema,
       counters.n_liq_ref_matched += matched;
       counters.n_liq_ref_missing += series[k].dates.size() - matched;
     }
-    Result<std::vector<VrpPanelRow>> rows = build_vrp_rows(series[k], counters);
+    Result<std::vector<VrpPanelRow>> rows = build_vrp_rows(series[k], counters, cfg.schema);
     if (!rows.has_value()) {
       return atx::core::Err(rows.error().code(), "run_vrp_panel: symbol '" + symbols[k] +
                                                      "': " + rows.error().to_string());
@@ -1261,13 +1337,30 @@ write_vrp_panel_tsv(std::string_view path, VrpPanelSchema schema,
         worst_sym = symbols[k];
         worst_date = r.date;
       }
+      // Every offender, not only the worst. The gate below reports one name
+      // per run, which costs one full rebuild per missing split factor; on a
+      // 600-name corpus that is the difference between one iteration and
+      // dozens. Bounded by n_rv_fwd_implausible, which a passing run leaves
+      // at zero.
+      if (r.rv_fwd_21d > kVrpMaxPlausibleRvFwd) { // NaN-safe
+        char rv_buf[32];
+        const int rv_len = std::snprintf(rv_buf, sizeof rv_buf, "%.6g", r.rv_fwd_21d);
+        implausible.push_back(symbols[k] + " " + r.date + " rv_fwd=" +
+                              std::string(rv_buf, static_cast<std::size_t>(rv_len > 0 ? rv_len : 0)));
+      }
     }
   }
-  // PERMANENT DATA-INTEGRITY TIER (v2). See kVrpMaxPlausibleRvFwd for the
-  // threshold's justification. Loud and unconditional: the only supported fix
-  // is to supply the missing reference factor, which is exactly the incentive
-  // this gate exists to create.
-  if (cfg.schema == VrpPanelSchema::V2 && counters.n_rv_fwd_implausible > 0) {
+  // PERMANENT DATA-INTEGRITY TIER (v2, and v4 which sees strictly more rows).
+  // See kVrpMaxPlausibleRvFwd for the threshold's justification. Loud and
+  // unconditional: the only supported fix is to supply the missing reference
+  // factor, which is exactly the incentive this gate exists to create.
+  if ((cfg.schema == VrpPanelSchema::V2 || cfg.schema == VrpPanelSchema::V4) &&
+      counters.n_rv_fwd_implausible > 0) {
+    // Name EVERY offender on stderr before failing, so one run yields the
+    // complete list of missing factors instead of one per rebuild.
+    for (const std::string &e : implausible) {
+      std::fprintf(stderr, "[vrp_panel] IMPLAUSIBLE %s\n", e.c_str());
+    }
     char worst_buf[64];
     const int len = std::snprintf(worst_buf, sizeof worst_buf, "%.6g", worst_rv);
     return atx::core::Err(

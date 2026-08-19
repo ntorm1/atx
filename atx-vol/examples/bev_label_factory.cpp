@@ -216,8 +216,11 @@ bool parse_vrp_panel_args(int argc, char **argv, VrpPanelConfig &cfg) {
         cfg.schema = VrpPanelSchema::V2;
       } else if (v == "v3") {
         cfg.schema = VrpPanelSchema::V3;
+      } else if (v == "v4") {
+        cfg.schema = VrpPanelSchema::V4;
       } else {
-        std::fprintf(stderr, "--panel-schema must be 'v1', 'v2' or 'v3' (got '%s')\n", v.c_str());
+        std::fprintf(stderr, "--panel-schema must be 'v1', 'v2', 'v3' or 'v4' (got '%s')\n",
+                     v.c_str());
         return false;
       }
     } else {
@@ -240,8 +243,9 @@ bool parse_vrp_panel_args(int argc, char **argv, VrpPanelConfig &cfg) {
     std::fprintf(stderr, "--splits requires --panel-schema v2\n");
     return false;
   }
-  if (cfg.schema != VrpPanelSchema::V3 && !cfg.liquidity.empty()) {
-    std::fprintf(stderr, "--liquidity requires --panel-schema v3\n");
+  if (cfg.schema != VrpPanelSchema::V3 && cfg.schema != VrpPanelSchema::V4 &&
+      !cfg.liquidity.empty()) {
+    std::fprintf(stderr, "--liquidity requires --panel-schema v3 or v4\n");
     return false;
   }
   return true;

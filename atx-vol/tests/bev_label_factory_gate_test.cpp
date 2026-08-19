@@ -819,7 +819,7 @@ TEST(VrpPanel, CliParseCollectsRepeatedRootsAndSymbols) {
 TEST(VrpPanel, LabelArithmeticMatchesHandComputedFixture) {
   const VrpSeries s = make_vrp_series(60);
   VrpPanelCounters c;
-  const Result<std::vector<VrpPanelRow>> rows_r = build_vrp_rows(s, c);
+  const Result<std::vector<VrpPanelRow>> rows_r = build_vrp_rows(s, c, VrpPanelSchema::V2);
   ASSERT_TRUE(rows_r.has_value()) << rows_r.error().to_string();
   const std::vector<VrpPanelRow> &rows = *rows_r;
   ASSERT_EQ(rows.size(), 60u);
@@ -854,6 +854,198 @@ TEST(VrpPanel, LabelArithmeticMatchesHandComputedFixture) {
   EXPECT_NEAR(rows[t].f7_ret_21d, std::log(s.spot[t] / s.spot[t - 21]), 1e-15);
 }
 
+// ── v4: the emitted axis IS the bar axis ─────────────────────────────────
+//
+// A real corpus punches holes in `iv21` wherever the 21d strip was
+// unavailable — 14.2% of all (symbol, session) pairs on the shipped 25-name
+// v2 panel, essentially all `var21_out_of_range`, i.e. sessions with a
+// present surface and a valid spot. v1/v2/v3 DROP those rows while keeping
+// their spots in every window, so the emitted file is a strict subset of the
+// axis its own feature columns were computed on. This fixture reproduces
+// that: same series, strip punched out on a scattered index set.
+[[nodiscard]] VrpSeries make_vrp_series_with_strip_holes(int n) {
+  VrpSeries s = make_vrp_series(n);
+  // Bounded by n. `i % 7 == 3` is a deterministic scatter, not a run: it puts
+  // holes INSIDE every 21-session window without ever making two adjacent, so
+  // a consumer that merely skips them still lands on plausible-looking dates.
+  for (std::size_t i = 0; i < s.iv21.size(); ++i) {
+    if (i % 7 == 3) {
+      s.iv21[i] = std::numeric_limits<double>::quiet_NaN();
+    }
+  }
+  return s;
+}
+
+TEST(VrpPanelV4, EmitsEveryBarAxisSessionWhereV2DropsTheStriplessOnes) {
+  const VrpSeries s = make_vrp_series_with_strip_holes(60);
+  std::size_t holes = 0;
+  for (const double v : s.iv21) {
+    holes += std::isnan(v) ? 1U : 0U;
+  }
+  ASSERT_GT(holes, 0u) << "fixture must actually punch holes";
+
+  VrpPanelCounters c2;
+  const Result<std::vector<VrpPanelRow>> v2 = build_vrp_rows(s, c2, VrpPanelSchema::V2);
+  ASSERT_TRUE(v2.has_value()) << v2.error().to_string();
+  VrpPanelCounters c4;
+  const Result<std::vector<VrpPanelRow>> v4 = build_vrp_rows(s, c4, VrpPanelSchema::V4);
+  ASSERT_TRUE(v4.has_value()) << v4.error().to_string();
+
+  EXPECT_EQ(v2->size(), 60u - holes);
+  EXPECT_EQ(v4->size(), 60u);
+  EXPECT_EQ(c4.n_rows_written, 60u);
+}
+
+TEST(VrpPanelV4, BarIndexIsTheBarAxisPositionAndIsGapFree) {
+  const VrpSeries s = make_vrp_series_with_strip_holes(60);
+  VrpPanelCounters c;
+  const Result<std::vector<VrpPanelRow>> rows_r = build_vrp_rows(s, c, VrpPanelSchema::V4);
+  ASSERT_TRUE(rows_r.has_value()) << rows_r.error().to_string();
+  const std::vector<VrpPanelRow> &rows = *rows_r;
+  ASSERT_EQ(rows.size(), 60u);
+  // Bounded by row count. The whole point of the column: adjacency is
+  // CHECKABLE, not inferred from dates and a trading calendar.
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    EXPECT_EQ(rows[i].bar_index, static_cast<std::int64_t>(i));
+    EXPECT_EQ(rows[i].date, s.dates[i]);
+  }
+}
+
+// v4 must be a pure SUPERSET: every row v2 emits, v4 emits byte-identically.
+// Otherwise "additive schema" is a claim rather than a property.
+TEST(VrpPanelV4, RowsV2AlsoEmitsAreBitIdenticalUnderV4) {
+  const VrpSeries s = make_vrp_series_with_strip_holes(60);
+  VrpPanelCounters c2;
+  const Result<std::vector<VrpPanelRow>> v2 = build_vrp_rows(s, c2, VrpPanelSchema::V2);
+  ASSERT_TRUE(v2.has_value()) << v2.error().to_string();
+  VrpPanelCounters c4;
+  const Result<std::vector<VrpPanelRow>> v4 = build_vrp_rows(s, c4, VrpPanelSchema::V4);
+  ASSERT_TRUE(v4.has_value()) << v4.error().to_string();
+
+  std::size_t matched = 0;
+  // Bounded by v2 row count; v4 is date-sorted so a linear scan suffices.
+  std::size_t j = 0;
+  for (const VrpPanelRow &a : *v2) {
+    while (j < v4->size() && (*v4)[j].date != a.date) {
+      ++j;
+    }
+    ASSERT_LT(j, v4->size()) << "v4 dropped a row v2 emitted: " << a.date;
+    const VrpPanelRow &b = (*v4)[j];
+    EXPECT_EQ(a.entry_ts_ns, b.entry_ts_ns);
+    EXPECT_TRUE(same_bits(a.spot, b.spot)) << a.date;
+    EXPECT_TRUE(same_bits(a.iv_fair_21d, b.iv_fair_21d)) << a.date;
+    EXPECT_TRUE(same_bits(a.iv_fair_63d, b.iv_fair_63d)) << a.date;
+    EXPECT_TRUE(same_bits(a.rv_fwd_21d, b.rv_fwd_21d)) << a.date;
+    EXPECT_TRUE(same_bits(a.label, b.label)) << a.date;
+    EXPECT_TRUE(same_bits(a.f0_log_rv1, b.f0_log_rv1)) << a.date;
+    EXPECT_TRUE(same_bits(a.f1_log_rv5, b.f1_log_rv5)) << a.date;
+    EXPECT_TRUE(same_bits(a.f2_log_rv21, b.f2_log_rv21)) << a.date;
+    EXPECT_TRUE(same_bits(a.f3_iv_level, b.f3_iv_level)) << a.date;
+    EXPECT_TRUE(same_bits(a.f4_term_slope, b.f4_term_slope)) << a.date;
+    EXPECT_TRUE(same_bits(a.f5_hv_iv_gap, b.f5_hv_iv_gap)) << a.date;
+    EXPECT_TRUE(same_bits(a.f6_vrp_lag, b.f6_vrp_lag)) << a.date;
+    EXPECT_TRUE(same_bits(a.f7_ret_21d, b.f7_ret_21d)) << a.date;
+    EXPECT_TRUE(same_bits(a.f8_jump_recent, b.f8_jump_recent)) << a.date;
+    EXPECT_TRUE(same_bits(a.f9_vov_63d, b.f9_vov_63d)) << a.date;
+    EXPECT_TRUE(same_bits(a.iv_atmf_21d, b.iv_atmf_21d)) << a.date;
+    ++matched;
+  }
+  EXPECT_EQ(matched, v2->size());
+}
+
+// The recovered rows must be honestly labelled: the implied leg and
+// everything downstream of it is NaN, the spot-derived block is FULLY VALID.
+// That block is the coverage v4 exists to recover — if it were NaN too the
+// schema would buy nothing.
+TEST(VrpPanelV4, StriplessRowsCarryNaNImpliedLegAndAValidSpotBlock) {
+  // 120, not 60: f9's window is 63 sessions and the forward label eats 21
+  // more, so a 60-session fixture leaves NO row that is past warmup AND has a
+  // label — the trim would be vacuously empty and the test would pass on
+  // nothing. The ASSERT_GT at the bottom is what caught that.
+  const VrpSeries s = make_vrp_series_with_strip_holes(120);
+  VrpPanelCounters c;
+  const Result<std::vector<VrpPanelRow>> rows_r = build_vrp_rows(s, c, VrpPanelSchema::V4);
+  ASSERT_TRUE(rows_r.has_value()) << rows_r.error().to_string();
+  const std::vector<VrpPanelRow> &rows = *rows_r;
+
+  std::size_t checked = 0;
+  // Bounded by row count. Warmup/tail rows are excluded so "valid" means the
+  // feature had its inputs, not that it happened to be defined.
+  for (std::size_t i = 63; i + kVrpHorizonSessions < rows.size(); ++i) {
+    if (!std::isnan(s.iv21[i])) {
+      continue;
+    }
+    const VrpPanelRow &r = rows[i];
+    EXPECT_TRUE(std::isnan(r.iv_fair_21d)) << i;
+    EXPECT_TRUE(std::isnan(r.label)) << i;
+    EXPECT_TRUE(std::isnan(r.f3_iv_level)) << i;
+    EXPECT_TRUE(std::isnan(r.f4_term_slope)) << i;
+    EXPECT_TRUE(std::isnan(r.f5_hv_iv_gap)) << i;
+    EXPECT_TRUE(std::isnan(r.f6_vrp_lag)) << i;
+    // ...and the spot side is intact.
+    EXPECT_TRUE(std::isfinite(r.spot)) << i;
+    EXPECT_TRUE(std::isfinite(r.rv_fwd_21d)) << i;
+    EXPECT_TRUE(std::isfinite(r.f0_log_rv1)) << i;
+    EXPECT_TRUE(std::isfinite(r.f1_log_rv5)) << i;
+    EXPECT_TRUE(std::isfinite(r.f2_log_rv21)) << i;
+    EXPECT_TRUE(std::isfinite(r.f7_ret_21d)) << i;
+    EXPECT_TRUE(std::isfinite(r.f8_jump_recent)) << i;
+    ++checked;
+  }
+  ASSERT_GT(checked, 0u) << "no strip-hole row survived the warmup/tail trim";
+}
+
+// THE DEFECT ITSELF, as a test. A downstream consumer reads the emitted file
+// and recomputes a trailing 21-session window from the emitted `spot` column
+// of the 22 preceding EMITTED rows. Under v4 that reproduces the panel's own
+// f2_log_rv21 exactly, because the emitted axis IS the bar axis. Under v2 it
+// does not — the window silently spans more sessions than it counts. The v2
+// half is the anti-vacuity control: without it this test would pass on a
+// schema that fixed nothing.
+TEST(VrpPanelV4, TrailingWindowOverEmittedRowsReproducesTheColumnOnlyUnderV4) {
+  const VrpSeries s = make_vrp_series_with_strip_holes(60);
+
+  // Recompute f2 from a row batch's OWN spot column, treating consecutive
+  // emitted rows as consecutive sessions — exactly what a consumer that never
+  // saw the bar axis must assume. Returns the max |recomputed - emitted| over
+  // every row with 21 predecessors, and the count of rows compared.
+  const auto max_abs_gap = [](const std::vector<VrpPanelRow> &rows) {
+    double worst = 0.0;
+    // Bounded by row count.
+    for (std::size_t i = 21; i < rows.size(); ++i) {
+      double sum = 0.0;
+      for (std::size_t j = i - 20; j <= i; ++j) {
+        const double r = std::log(rows[j].spot / rows[j - 1].spot);
+        sum += r * r;
+      }
+      const double got = std::log(sum / 21.0 * 252.0);
+      worst = std::max(worst, std::abs(got - rows[i].f2_log_rv21));
+    }
+    return worst;
+  };
+
+  VrpPanelCounters c4;
+  const Result<std::vector<VrpPanelRow>> v4 = build_vrp_rows(s, c4, VrpPanelSchema::V4);
+  ASSERT_TRUE(v4.has_value()) << v4.error().to_string();
+  EXPECT_LT(max_abs_gap(*v4), 1e-12) << "v4's emitted axis is not the bar axis";
+
+  VrpPanelCounters c2;
+  const Result<std::vector<VrpPanelRow>> v2 = build_vrp_rows(s, c2, VrpPanelSchema::V2);
+  ASSERT_TRUE(v2.has_value()) << v2.error().to_string();
+  EXPECT_GT(max_abs_gap(*v2), 1e-6)
+      << "v2 recomputation agreed — the fixture stopped reproducing the defect";
+}
+
+TEST(VrpPanelV4, SchemaTableIsAPrefixExtensionOfV3PlusBarIndex) {
+  ASSERT_EQ(schema_column_count(VrpPanelSchema::V4), kVrpPanelColumnCountV3 + 1);
+  // Bounded by v3's column count.
+  for (std::size_t i = 0; i < kVrpPanelColumnCountV3; ++i) {
+    EXPECT_EQ(schema_column(VrpPanelSchema::V4, i), schema_column(VrpPanelSchema::V3, i)) << i;
+  }
+  EXPECT_EQ(schema_column(VrpPanelSchema::V4, kVrpPanelColumnCountV3), "bar_index");
+  EXPECT_EQ(schema_name(VrpPanelSchema::V4), "vrp_panel_v4");
+}
+
 // Done-criterion (3): the forward-RV window is EXACTLY sessions t+1..t+21 —
 // a spike planted at t and one planted at t+22 each leave the label at t
 // byte-identical, while a row whose window genuinely contains the spiked
@@ -863,14 +1055,14 @@ TEST(VrpPanel, ForwardWindowIsExactlySessionsTPlus1ToTPlus21) {
   const std::size_t t = 5;
   const VrpSeries base = make_vrp_series(n);
   VrpPanelCounters c0;
-  const Result<std::vector<VrpPanelRow>> rows0_r = build_vrp_rows(base, c0);
+  const Result<std::vector<VrpPanelRow>> rows0_r = build_vrp_rows(base, c0, VrpPanelSchema::V2);
   ASSERT_TRUE(rows0_r.has_value()) << rows0_r.error().to_string();
   const std::vector<VrpPanelRow> &rows0 = *rows0_r;
 
   VrpSeries spike_at_t = base;
   spike_at_t.spot[t] *= 1.25;
   VrpPanelCounters ca;
-  const Result<std::vector<VrpPanelRow>> rows_a_r = build_vrp_rows(spike_at_t, ca);
+  const Result<std::vector<VrpPanelRow>> rows_a_r = build_vrp_rows(spike_at_t, ca, VrpPanelSchema::V2);
   ASSERT_TRUE(rows_a_r.has_value()) << rows_a_r.error().to_string();
   const std::vector<VrpPanelRow> &rows_a = *rows_a_r;
   EXPECT_TRUE(same_bits(rows_a[t].rv_fwd_21d, rows0[t].rv_fwd_21d))
@@ -882,7 +1074,7 @@ TEST(VrpPanel, ForwardWindowIsExactlySessionsTPlus1ToTPlus21) {
   VrpSeries spike_past_window = base;
   spike_past_window.spot[t + 22] *= 1.25;
   VrpPanelCounters cb;
-  const Result<std::vector<VrpPanelRow>> rows_b_r = build_vrp_rows(spike_past_window, cb);
+  const Result<std::vector<VrpPanelRow>> rows_b_r = build_vrp_rows(spike_past_window, cb, VrpPanelSchema::V2);
   ASSERT_TRUE(rows_b_r.has_value()) << rows_b_r.error().to_string();
   const std::vector<VrpPanelRow> &rows_b = *rows_b_r;
   EXPECT_TRUE(same_bits(rows_b[t].rv_fwd_21d, rows0[t].rv_fwd_21d))
@@ -900,7 +1092,7 @@ TEST(VrpPanel, PerturbingFutureSessionsLeavesFeaturesByteIdentical) {
   const std::size_t t = 70; // >= 63 so f8/f9 are real values, not warmup NaN
   const VrpSeries base = make_vrp_series(n);
   VrpPanelCounters c0;
-  const Result<std::vector<VrpPanelRow>> rows0_r = build_vrp_rows(base, c0);
+  const Result<std::vector<VrpPanelRow>> rows0_r = build_vrp_rows(base, c0, VrpPanelSchema::V2);
   ASSERT_TRUE(rows0_r.has_value()) << rows0_r.error().to_string();
   const std::vector<VrpPanelRow> &rows0 = *rows0_r;
   ASSERT_TRUE(std::isfinite(rows0[t].f9_vov_63d)) << "t chosen past the f9 warmup";
@@ -913,7 +1105,7 @@ TEST(VrpPanel, PerturbingFutureSessionsLeavesFeaturesByteIdentical) {
     fut.iv63[s2] += 0.006;
   }
   VrpPanelCounters c1;
-  const Result<std::vector<VrpPanelRow>> rows1_r = build_vrp_rows(fut, c1);
+  const Result<std::vector<VrpPanelRow>> rows1_r = build_vrp_rows(fut, c1, VrpPanelSchema::V2);
   ASSERT_TRUE(rows1_r.has_value()) << rows1_r.error().to_string();
   const std::vector<VrpPanelRow> &rows1 = *rows1_r;
   ASSERT_EQ(rows1.size(), rows0.size());
@@ -946,7 +1138,7 @@ TEST(VrpPanel, TailRowsKeepNaNLabelAndAreCounted) {
   const int n = 30;
   const VrpSeries s = make_vrp_series(n);
   VrpPanelCounters c;
-  const Result<std::vector<VrpPanelRow>> rows_r = build_vrp_rows(s, c);
+  const Result<std::vector<VrpPanelRow>> rows_r = build_vrp_rows(s, c, VrpPanelSchema::V2);
   ASSERT_TRUE(rows_r.has_value()) << rows_r.error().to_string();
   const std::vector<VrpPanelRow> &rows = *rows_r;
   ASSERT_EQ(rows.size(), 30u);
@@ -1353,8 +1545,8 @@ TEST(VrpPanelV2, SplitAdjustmentRestoresEveryRatioQuantityBitExactly) {
 
   VrpPanelCounters c_unsplit;
   VrpPanelCounters c_adjusted;
-  const Result<std::vector<VrpPanelRow>> a = build_vrp_rows(unsplit, c_unsplit);
-  const Result<std::vector<VrpPanelRow>> b = build_vrp_rows(adjusted, c_adjusted);
+  const Result<std::vector<VrpPanelRow>> a = build_vrp_rows(unsplit, c_unsplit, VrpPanelSchema::V2);
+  const Result<std::vector<VrpPanelRow>> b = build_vrp_rows(adjusted, c_adjusted, VrpPanelSchema::V2);
   ASSERT_TRUE(a.has_value() && b.has_value());
   ASSERT_EQ(a->size(), b->size());
   for (std::size_t i = 0; i < a->size(); ++i) {
@@ -1385,7 +1577,7 @@ TEST(VrpPanelV2, SplitAdjustmentClearsTheImplausibleRealizedVolCounter) {
     raw.spot[i] *= 0.1;
   }
   VrpPanelCounters c_raw;
-  const Result<std::vector<VrpPanelRow>> rows_raw = build_vrp_rows(raw, c_raw);
+  const Result<std::vector<VrpPanelRow>> rows_raw = build_vrp_rows(raw, c_raw, VrpPanelSchema::V2);
   ASSERT_TRUE(rows_raw.has_value());
   // Row i's forward window carries the returns r_{i+2}..r_{i+21}, so the
   // corrupt return at bar kEx lands in every labeled row (i <= kN-22 == 18).
@@ -1396,11 +1588,11 @@ TEST(VrpPanelV2, SplitAdjustmentClearsTheImplausibleRealizedVolCounter) {
   const std::vector<VrpSplitFactor> events{{"SPY", unsplit.dates[kEx], 0.1}};
   ASSERT_EQ(apply_vrp_split_adjustment(adjusted, events), 1u);
   VrpPanelCounters c_adj;
-  const Result<std::vector<VrpPanelRow>> rows_adj = build_vrp_rows(adjusted, c_adj);
+  const Result<std::vector<VrpPanelRow>> rows_adj = build_vrp_rows(adjusted, c_adj, VrpPanelSchema::V2);
   ASSERT_TRUE(rows_adj.has_value());
   EXPECT_EQ(c_adj.n_rv_fwd_implausible, 0u);
   VrpPanelCounters c_ref;
-  const Result<std::vector<VrpPanelRow>> rows_ref = build_vrp_rows(unsplit, c_ref);
+  const Result<std::vector<VrpPanelRow>> rows_ref = build_vrp_rows(unsplit, c_ref, VrpPanelSchema::V2);
   ASSERT_TRUE(rows_ref.has_value());
   for (std::size_t i = 0; i < rows_ref->size(); ++i) {
     // The tail rows are NaN by design (no forward window) — assert the NaN
