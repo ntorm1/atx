@@ -52,6 +52,7 @@ struct Args {
   std::string market{"@xsec"};
   std::string earnings; // empty = no calendar; f28..f30 evaluate to NaN
   double avoid_earn_days{0.0}; // >0: veto names within N days of their print
+  bool keep_cheap_prints{false}; // exempt prints priced below the name's own history (f31 < 0)
   // "dh" = the delta-hedged money axis. "rv" = the decontaminated cross-read:
   // forward realized vol alone, no implied leg, not a P&L.
   std::string axis{"dh"};
@@ -80,6 +81,10 @@ void usage() {
 "  --avoid-earn-days N      veto names within N calendar days of their next print\n"
 "                           from BOTH books (needs --earnings). Measured r11: held\n"
 "                           through the print the event premium costs -4.47 vp.\n"
+"  --keep-cheap-prints      exempt from that veto the prints priced BELOW the\n"
+"                           name's own delivered history (f31 < 0) — the long-vega\n"
+"                           side of the event premium. Zero is the principled\n"
+"                           threshold, not a tuned one.\n"
       "  --axis dh|rv|volchg      volchg = 100*(rv_fwd - rv_trail), the VOL-CHANGE\n"
     "                           axis: no implied leg AND no vol level, so it is\n"
     "                           immune to both the entry-mark channel and to\n"
@@ -136,6 +141,8 @@ bool parse_args(int argc, char **argv, Args &a) {
       a.earnings = v;
     } else if (flag == "--avoid-earn-days" && next()) {
       a.avoid_earn_days = std::stod(v);
+    } else if (flag == "--keep-cheap-prints") {
+      a.keep_cheap_prints = true;
     } else if (flag == "--axis" && next()) {
       if (v != "dh" && v != "rv" && v != "volchg") {
         std::fprintf(stderr, "--axis must be 'dh', 'rv' or 'volchg' (got '%s')\n", v.c_str());
@@ -449,7 +456,11 @@ int main(int argc, char **argv) {
       std::fprintf(stderr, "--avoid-earn-days needs --earnings\n");
       return 2;
     }
-    const auto vsel = freg.select(std::vector<std::string>{"f28_days_to_earn"});
+    std::vector<std::string> vpats{"f28_days_to_earn"};
+    if (args.keep_cheap_prints) {
+      vpats.push_back("f31_earn_move_rich");
+    }
+    const auto vsel = freg.select(vpats);
     if (!vsel) {
       std::fprintf(stderr, "--avoid-earn-days: %s\n", vsel.error().to_string().c_str());
       return 1;
@@ -460,19 +471,35 @@ int main(int argc, char **argv) {
       return 1;
     }
     const std::vector<double> &d2e = vcomp->values.at("f28_days_to_earn");
+    const std::vector<double> *rich =
+        args.keep_cheap_prints ? &vcomp->values.at("f31_earn_move_rich") : nullptr;
     veto.resize(frame.rows(), 0.0);
     std::size_t vetoed = 0;
+    std::size_t kept_cheap = 0;
     for (std::size_t r = 0; r < frame.rows(); ++r) {
       // NaN days = no calendar information; an unknown print date is not an
       // imminent one, so it does not veto.
-      if (std::isfinite(d2e[r]) && d2e[r] < args.avoid_earn_days) {
-        veto[r] = 1.0;
-        ++vetoed;
+      if (!std::isfinite(d2e[r]) || d2e[r] >= args.avoid_earn_days) {
+        continue;
       }
+      // A print priced BELOW the name's own delivered history is the event
+      // the long-vega book exists to own; NaN richness (no history) does NOT
+      // exempt -- an unmeasured premium is not a cheap one.
+      if (rich != nullptr && std::isfinite((*rich)[r]) && (*rich)[r] < 0.0) {
+        ++kept_cheap;
+        continue;
+      }
+      veto[r] = 1.0;
+      ++vetoed;
     }
     std::printf("\nVETO    %zu / %zu rows within %.0f days of their print — excluded from both "
                 "books\n",
                 vetoed, frame.rows(), args.avoid_earn_days);
+    if (args.keep_cheap_prints) {
+      std::printf("        %zu imminent-print rows KEPT: priced below the name's own history "
+                  "(f31 < 0)\n",
+                  kept_cheap);
+    }
   }
 
   auto card = run(frame, *dates, blended->score, *pnl, scfg,
