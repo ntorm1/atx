@@ -943,6 +943,40 @@ TEST(AlphaStrategy, TheBackMonthAxisComputesItsForwardLegFromSpotUnderTheGate) {
   EXPECT_TRUE(std::isnan((*pnl)[69]));
 }
 
+TEST(AlphaStrategy, TheEventAxisPaysOnlyOnTheEntryScheduleAndSumsItsTwoLegs) {
+  const PanelFrame f = load(make_earner_panel(70));
+  auto cal = earnings_from_tsv(kEarnCal); // EEE bmo row 10; FFF amc -> row 11
+  ASSERT_TRUE(cal);
+  auto pnl = event_straddle_pnl_vol_points(f, *cal);
+  ASSERT_TRUE(pnl) << pnl.error().to_string();
+
+  // EEE's anchor is row 10, so the one entry row is 10 - kEventEntryLead = 8.
+  // Hand-build both legs from the fixture: iv is constant per symbol, so the
+  // raw mark change is zero and the vega leg is MINUS the roll share.
+  double sum = 0.0;
+  for (int j = 9; j <= 12; ++j) {
+    const double r = 0.005 * static_cast<double>(j % 3 - 1);
+    sum += r * r;
+  }
+  const double rv_w = std::sqrt(sum / 4.0 * 252.0);
+  const double frac = 4.0 / 21.0;
+  const double vega_leg = 0.0 - frac * (100.0 * (0.25 - 0.30) / 2.0);
+  const double gamma_leg = frac * 100.0 * (rv_w - 0.30);
+  EXPECT_NEAR((*pnl)[8], vega_leg + gamma_leg, 1e-6);
+
+  // FFF's amc print anchors one session later; its entry row is 9.
+  EXPECT_TRUE(std::isfinite((*pnl)[70 + 9]));
+  EXPECT_TRUE(std::isnan((*pnl)[70 + 8]));
+  // Off the schedule there is no trade, hence no number.
+  std::size_t finite = 0;
+  for (const double v : *pnl) {
+    if (std::isfinite(v)) {
+      ++finite;
+    }
+  }
+  EXPECT_EQ(finite, 2U);
+}
+
 TEST(AlphaStrategy, TheBackMonthAxisRefusesAPanelWithoutTheBackStrip) {
   const PanelFrame f = load("symbol\tdate\tspot\tiv_fair_21d\trv_fwd_21d\n"
                             "AAA\t2026-01-05\t100\t0.20\t0.25\n");

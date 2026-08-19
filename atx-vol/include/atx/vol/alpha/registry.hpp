@@ -518,6 +518,16 @@ using TargetRegistry = Registry<TargetSpec>;
        "monetized in the 63d leg. Registered LAST so it never displaces "
        "rv_fwd_21d as anyone's suggested cross-read. Same entry-mark caveat "
        "as the 21d money axis, at the 63d strip."});
+  put({"event_straddle_pnl_4d", Unit::VolPoints, 4, true,
+       {strip(21, 0, 0), strip(21, 4, 4), strip(63, 0, 0), spot(1, 4)},
+       "The event sleeve: 21d-tenor straddle P&L per unit vega entered 2 "
+       "sessions before the name's print anchor and exited 2 after — vega leg "
+       "(roll-corrected mark change) plus the holding-period share of the "
+       "realized-vs-implied carry. NaN off the entry schedule, so the floor "
+       "is Gao-Xing-Zhang's unconditional pre-print straddle and the excess "
+       "tests Milian's WHICH-prints selection. The strip(21) read at +4 is "
+       "the exit mark — tradeable, same shape as iv_chg_21d_roll's exit "
+       "read."});
   return reg;
 }
 

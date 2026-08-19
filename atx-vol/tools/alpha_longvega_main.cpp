@@ -92,6 +92,12 @@ void usage() {
 "                           (Vasquez buys steep-slope FRONT month, Campasano-Linn\n"
 "                           buy the inverted name's BACK month — both are right);\n"
 "                           flipping because the backtest liked it is sign-mining.\n"
+      "  --axis ... dhev          dhev = the EVENT sleeve (needs --earnings): 21d-tenor\n"
+      "                           straddle P&L entered 2 sessions before the print\n"
+      "                           anchor, exited 2 after (horizon auto-set to 4). NaN off\n"
+      "                           the schedule, so the FLOOR is the unconditional\n"
+      "                           pre-print straddle (Gao-Xing-Zhang) and the EXCESS is\n"
+      "                           print selection (Milian).\n"
       "  --axis ... dh63          dh63 = 100*(rv_fwd_63d - iv_fair_63d), the BACK-month\n"
       "                           money axis, 63-session hold (horizon auto-set to 63).\n"
       "                           The back mark is re-marked late (Campasano-Linn), so a\n"
@@ -161,8 +167,8 @@ bool parse_args(int argc, char **argv, Args &a) {
         a.flip.push_back(n);
       }
     } else if (flag == "--axis" && next()) {
-      if (v != "dh" && v != "rv" && v != "volchg" && v != "dh63") {
-        std::fprintf(stderr, "--axis must be 'dh', 'rv', 'volchg' or 'dh63' (got '%s')\n",
+      if (v != "dh" && v != "rv" && v != "volchg" && v != "dh63" && v != "dhev") {
+        std::fprintf(stderr, "--axis must be 'dh', 'rv', 'volchg', 'dh63' or 'dhev' (got '%s')\n",
                      v.c_str());
         return false;
       }
@@ -244,6 +250,16 @@ int main(int argc, char **argv) {
   if (args.axis == "dh63" && !args.horizon_explicit) {
     args.horizon = 63;
     std::printf("NOTE  --axis dh63: horizon set to 63 sessions (pass --horizon to override)\n");
+  }
+  if (args.axis == "dhev") {
+    if (args.earnings.empty()) {
+      std::fprintf(stderr, "--axis dhev needs --earnings (the entry schedule IS the calendar)\n");
+      return 2;
+    }
+    if (!args.horizon_explicit) {
+      args.horizon = 4;
+      std::printf("NOTE  --axis dhev: horizon set to 4 sessions (pass --horizon to override)\n");
+    }
   }
 
   const FeatureRegistry freg = builtin_features();
@@ -397,6 +413,7 @@ int main(int argc, char **argv) {
   const char *axis_target = args.axis == "rv"       ? "rv_fwd_21d"
                             : args.axis == "volchg" ? "vol_chg_21d"
                             : args.axis == "dh63"   ? "dh_straddle_pnl_63d"
+                            : args.axis == "dhev"   ? "event_straddle_pnl_4d"
                                                     : "dh_straddle_pnl_21d";
   const TargetSpec *money = treg.find(axis_target);
   if (money == nullptr) {
@@ -467,6 +484,7 @@ int main(int argc, char **argv) {
   auto pnl = args.axis == "rv"       ? forward_rv_vol_points(frame)
              : args.axis == "volchg" ? vol_change_vol_points(frame)
              : args.axis == "dh63"   ? dh63_straddle_pnl_vol_points(frame)
+             : args.axis == "dhev"   ? event_straddle_pnl_vol_points(frame, earnings)
                                      : dh_straddle_pnl_vol_points(frame);
   if (!pnl) {
     std::fprintf(stderr, "\nP&L construction failed: %s\n", pnl.error().to_string().c_str());

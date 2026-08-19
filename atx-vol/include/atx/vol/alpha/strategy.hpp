@@ -594,6 +594,77 @@ run(const PanelFrame &frame, std::span<const DateSlice> dates, std::span<const d
   return Ok(std::move(out));
 }
 
+// ── The event sleeve ─────────────────────────────────────────────────────────
+//
+// Gao, Xing & Zhang (JFQA 2018) find the LONG side of event vol lives in a
+// short window AROUND the print — entered days early it bleeds the rich
+// premium our f28 measurement priced at -4.47 vp held through. So the event
+// axis bakes the entry rule in: P&L exists ONLY on rows exactly
+// `kEventEntryLead` sessions before the name's next print anchor, and holds
+// `kEventHoldSessions` — enter the close 2 sessions before the jump lands,
+// exit the close 2 sessions after. Every other row is NaN, so run()'s floor
+// is "buy EVERY pre-print straddle" (the GXZ unconditional trade) and the
+// selection excess on top tests WHICH prints were worth buying (Milian).
+inline constexpr std::size_t kEventEntryLead = 2;
+inline constexpr std::size_t kEventHoldSessions = 4;
+
+// Per unit vega, entering the close of row i and exiting the close of i+w on
+// a 21d-tenor position:
+//   vega leg  = 100*(iv21[i+w] - iv21[i]) - (w/21)*roll, the same
+//               constant-maturity roll correction iv_chg_21d_roll uses
+//               (roll = 100*(iv_fair_63d - iv_fair_21d)/2 per 21 sessions);
+//   gamma leg = (w/21)*100*(rv_w - iv21[i]), the holding-period share of the
+//               realized-vs-implied carry, rv_w realized over (i, i+w].
+// The same first-order book approximations as the other axes — internally
+// consistent across the cross-section, which is what a rank book needs.
+[[nodiscard]] inline Result<std::vector<double>>
+event_straddle_pnl_vol_points(const PanelFrame &frame, const EarningsCalendar &earnings) {
+  ATX_TRY(const auto iv63, frame.numbers("iv_fair_63d"));
+  ATX_TRY(const auto series, group_by_symbol(frame));
+  const double nan_v = std::numeric_limits<double>::quiet_NaN();
+  std::vector<double> out(frame.rows(), nan_v);
+  constexpr std::size_t w = kEventHoldSessions;
+  for (const SymbolSeries &s : series) {
+    const EarningsEvents *ev = earnings.find(s.symbol);
+    if (ev == nullptr) {
+      continue;
+    }
+    for (std::size_t i = 0; i + w < s.size(); ++i) {
+      if (!s.window_contiguous(i + w, w)) {
+        continue;
+      }
+      // Entry rule: the NEXT print's jump lands exactly kEventEntryLead
+      // sessions ahead. Scanning the (~10-row) calendar per row is fine.
+      bool on_schedule = false;
+      for (std::size_t e = 0; e < ev->date.size(); ++e) {
+        const std::size_t a =
+            compute_detail::earn_anchor_row(s, ev->date[e], ev->amc[e] != 0);
+        if (a == i + kEventEntryLead) {
+          on_schedule = true;
+          break;
+        }
+      }
+      if (!on_schedule) {
+        continue;
+      }
+      const double iv_in = s.iv21[i];
+      const double iv_out = s.iv21[i + w];
+      const double iv_back = iv63[s.row[i]];
+      const double rv_w = compute_detail::c2c_vol(s.spot, i + w, w);
+      if (!(iv_in > 0.0) || !std::isfinite(iv_out) || !std::isfinite(iv_back) ||
+          !std::isfinite(rv_w)) {
+        continue;
+      }
+      const double frac = static_cast<double>(w) / 21.0;
+      const double roll = 100.0 * (iv_back - iv_in) / 2.0;
+      const double vega_leg = 100.0 * (iv_out - iv_in) - frac * roll;
+      const double gamma_leg = frac * 100.0 * (rv_w - iv_in);
+      out[s.row[i]] = vega_leg + gamma_leg;
+    }
+  }
+  return Ok(std::move(out));
+}
+
 // The 63-session money axis: 100*(rv_fwd_63d - iv_fair_63d), the back-month
 // leg Campasano & Linn (SSRN 2871616) show is re-marked LATE — the published
 // escape from the front mark absorbing a vol forecast.
