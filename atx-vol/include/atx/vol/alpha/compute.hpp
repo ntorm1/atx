@@ -444,6 +444,64 @@ namespace compute_detail {
   return n;
 }
 
+// The two-tenor Dubinsky-Johannes extraction (Leung & Santoli eq 5.2). ONE
+// implementation shared by f30 and f31 — computing it twice would let the
+// level and the richness ratio disagree about the same quantity. sigma_E is
+// the one-event move stdev in absolute return terms, not an annualized vol.
+// NaN unless the 63-session forward window exists gap-free, both strips are
+// positive, an event sits in the short window, the denominator is positive,
+// and sigma_E^2 comes out positive.
+[[nodiscard]] inline double earn_sigma_e(const SymbolSeries &s, const EarningsEvents &ev,
+                                         std::size_t i) noexcept {
+  if (i + 63 >= s.size() || !s.window_contiguous(i + 63, 63)) {
+    return nan_d();
+  }
+  const double s1 = s.iv21[i];
+  const double s2 = s.iv63[i];
+  if (!(s1 > 0.0) || !(s2 > 0.0)) {
+    return nan_d();
+  }
+  const double n1 = static_cast<double>(earn_count_fwd(s, ev, i, 21));
+  const double n2 = static_cast<double>(earn_count_fwd(s, ev, i, 63));
+  if (n1 < 1.0) {
+    return nan_d();
+  }
+  const double denom = n1 - n2 * (21.0 / 63.0);
+  if (!(denom > 0.0)) {
+    return nan_d();
+  }
+  const double sig2 = (21.0 / 252.0) * (s1 * s1 - s2 * s2) / denom;
+  return sig2 > 0.0 ? std::sqrt(sig2) : nan_d();
+}
+
+// RMS of the symbol's own realized moves on its PAST event anchors (anchor
+// <= i, so every leg is history at entry). An anchor return qualifies only
+// when the step into it is a real session-to-session move (`contiguous[a]`)
+// — across a gap or a corporate action it is not a return. Requires at least
+// `min_events` qualifying anchors: one print is an anecdote, not a history.
+[[nodiscard]] inline double earn_hist_move(const SymbolSeries &s, const EarningsEvents &ev,
+                                           std::size_t i, std::size_t min_events) noexcept {
+  double sum = 0.0;
+  std::size_t n = 0;
+  for (std::size_t e = 0; e < ev.date.size(); ++e) {
+    const std::size_t a = earn_anchor_row(s, ev.date[e], ev.amc[e] != 0);
+    if (a == 0 || a > i || a >= s.size() || s.contiguous[a] == 0) {
+      continue;
+    }
+    const double r = logret(s.spot, a);
+    if (!std::isfinite(r)) {
+      continue;
+    }
+    sum += r * r;
+    ++n;
+  }
+  if (n < min_events) {
+    return nan_d();
+  }
+  const double rms = std::sqrt(sum / static_cast<double>(n));
+  return rms > 0.0 ? rms : nan_d();
+}
+
 } // namespace compute_detail
 
 // ── Evaluators ──────────────────────────────────────────────────────────────
@@ -691,35 +749,31 @@ using FeatureFn = double (*)(const EvalInputs &, std::size_t);
        [](const EvalInputs &in, std::size_t i) {
          const EarningsEvents *ev =
              in.earnings == nullptr ? nullptr : in.earnings->find(in.sym->symbol);
-         if (ev == nullptr || i + 63 >= in.sym->size() ||
-             !in.sym->window_contiguous(i + 63, 63)) {
+         if (ev == nullptr) {
            return nan_d();
          }
-         const double s1 = in.sym->iv21[i];
-         const double s2 = in.sym->iv63[i];
-         if (!(s1 > 0.0) || !(s2 > 0.0)) {
+         return compute_detail::earn_sigma_e(*in.sym, *ev, i);
+       }},
+      {"f31_earn_move_rich",
+       [](const EvalInputs &in, std::size_t i) {
+         const EarningsEvents *ev =
+             in.earnings == nullptr ? nullptr : in.earnings->find(in.sym->symbol);
+         if (ev == nullptr) {
            return nan_d();
          }
-         // Two-tenor Dubinsky-Johannes extraction (Leung & Santoli eq 5.2):
-         //   sigma1^2 T1 = sigma_d^2 T1 + n1 sigma_E^2
-         //   sigma2^2 T2 = sigma_d^2 T2 + n2 sigma_E^2
-         // => sigma_E^2 = T1 (sigma1^2 - sigma2^2) / (n1 - n2 T1/T2).
-         // sigma_E is the ONE-EVENT move stdev in absolute return terms, not
-         // an annualized vol. Needs an event inside the short window and a
-         // positive denominator (n1=1, n2=1 gives 2/3 -- the everyday case);
-         // an upward-sloping structure with an event in the short window
-         // yields a negative sigma_E^2 and is declined, not clamped.
-         const double n1 = static_cast<double>(compute_detail::earn_count_fwd(*in.sym, *ev, i, 21));
-         const double n2 = static_cast<double>(compute_detail::earn_count_fwd(*in.sym, *ev, i, 63));
-         if (n1 < 1.0) {
+         const double se = compute_detail::earn_sigma_e(*in.sym, *ev, i);
+         if (!std::isfinite(se)) {
            return nan_d();
          }
-         const double denom = n1 - n2 * (21.0 / 63.0);
-         if (!(denom > 0.0)) {
+         // The name's own realized print history is the yardstick: two past
+         // anchored moves minimum. On a one-year panel this ramps in over the
+         // first two quarters -- coverage concentrates in the back half, and
+         // that is a data limitation to report, not to paper over.
+         const double hist = compute_detail::earn_hist_move(*in.sym, *ev, i, 2);
+         if (!std::isfinite(hist)) {
            return nan_d();
          }
-         const double sig2 = (21.0 / 252.0) * (s1 * s1 - s2 * s2) / denom;
-         return sig2 > 0.0 ? std::sqrt(sig2) : nan_d();
+         return std::log(se / hist);
        }},
       {"liq_hspread_frac",
        [](const EvalInputs &in, std::size_t i) { return in.sym->liq_hspread[i]; }},

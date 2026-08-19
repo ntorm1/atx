@@ -547,10 +547,42 @@ TEST(AlphaEarnings, SigmaEMatchesTheTwoTenorDecompositionAndDeclinesNegative) {
   EXPECT_TRUE(std::isnan(se[70 + 0]));  // FFF: upward structure, sigma_E^2 < 0
 }
 
+TEST(AlphaEarnings, MoveRichnessIsSigmaEOverTheNamesOwnDeliveredHistory) {
+  const PanelFrame f = load(make_earner_panel(70));
+  // EEE's fixture returns are 0.005*(i%3 - 1), so the anchored moves at rows
+  // 2 and 4 are +0.005 and exactly 0 -- a zero move is still a delivered
+  // print, it counts in the RMS.
+  auto cal = earnings_from_tsv("ticker\tearn_date\tsession_hint\n"
+                               "EEE\t2026-01-03\tbmo\n"
+                               "EEE\t2026-01-05\tbmo\n"
+                               "EEE\t2026-01-16\tbmo\n");
+  ASSERT_TRUE(cal);
+  const FeatureRegistry reg = builtin_features();
+  const auto sel = reg.select(std::vector<std::string>{"f31_earn_move_rich"});
+  ASSERT_TRUE(sel);
+  auto out = evaluate(f, *sel, nullptr, &*cal);
+  ASSERT_TRUE(out) << out.error().to_string();
+  const std::vector<double> &rich = out->values.at("f31_earn_move_rich");
+
+  // i = 5: upcoming anchor is row 15 (inside both windows, n1 = n2 = 1), and
+  // the history is the two past anchors.
+  const double se =
+      std::sqrt((21.0 / 252.0) * (0.30 * 0.30 - 0.25 * 0.25) / (1.0 - 21.0 / 63.0));
+  const double hist = std::sqrt((0.005 * 0.005 + 0.0) / 2.0);
+  // 1e-9, not 1e-12: the fixture's spots round-trip through %.10f TSV text,
+  // so the anchored move is 0.005 only to the panel's own precision.
+  EXPECT_NEAR(rich[5], std::log(se / hist), 1e-9);
+  // i = 3: sigma_E is computable (anchors 4 and 15 are both ahead) but only
+  // ONE print is history -- an anecdote, not a yardstick. Declined.
+  EXPECT_TRUE(std::isnan(rich[3]));
+  // FFF has no calendar rows at all.
+  EXPECT_TRUE(std::isnan(rich[70 + 5]));
+}
+
 TEST(AlphaEarnings, WithoutACalendarTheFamilyDeclinesRatherThanGuessing) {
   const PanelFrame f = load(make_earner_panel(70));
   const FeatureRegistry reg = builtin_features();
-  const auto sel = reg.select(std::vector<std::string>{"f28*", "f29*", "f30*"});
+  const auto sel = reg.select(std::vector<std::string>{"f28*", "f29*", "f30*", "f31*"});
   ASSERT_TRUE(sel);
   auto out = evaluate(f, *sel);
   ASSERT_TRUE(out) << out.error().to_string();

@@ -447,6 +447,20 @@ using TargetRegistry = Registry<TargetSpec>;
        "window) is declined, not clamped. Same two strips as f4_term_slope, "
        "REWEIGHTED by event placement — the pair is only evidence of skill "
        "where they disagree."});
+  put({"f31_earn_move_rich", Unit::LogRatio, SignPrior::BuyLow,
+       "Dubinsky, Johannes, Kaeck & Seeger, Mgmt Sci 65(9) 2019 (implied vs "
+       "realized earnings moves); Gao, Xing & Zhang, JFQA 53(6) 2018 (the "
+       "long side of event vol)",
+       {event(), strip(21, 0, 0), strip(63, 0, 0), spot(-252, 0)},
+       "ln(sigma_E / rms of the name's OWN past anchored print moves), the "
+       "relative form of f30: is THIS name's event premium rich against what "
+       "its prints actually deliver? Requires >= 2 past anchored moves (one "
+       "print is an anecdote), each across a real session step. The spot "
+       "window is the whole causal panel: past anchors are scattered, not "
+       "rolling. BuyLow is the long-vega side — buy the prints priced CHEAP "
+       "against the name's own delivered history. f30 measured that the "
+       "LEVEL of sigma_E is rich on average (dh -5.44 buying big moves); the "
+       "richness RATIO is the two-sided value axis on top of it."});
   return reg;
 }
 

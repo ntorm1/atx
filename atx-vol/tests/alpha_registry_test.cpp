@@ -554,7 +554,9 @@ TEST(AlphaAudit, TheChannelCensusIsTheNumberTheGateShouldPrint) {
   // implied strips AT t (they are its sigma1/sigma2 inputs), so against a
   // target that pays -iv^2 it inherits exactly f4's channel, reweighted by
   // event placement. f28 and f29 read only the schedule and stay OUT of the
-  // list -- an earnings date carries no entry mark.
+  // list -- an earnings date carries no entry mark. f31_earn_move_rich is
+  // sigma_E over the name's delivered history, so it carries f30's strips
+  // and the same channel.
   const FeatureRegistry freg = builtin_features();
   const auto treg = builtin_targets();
   std::vector<const FeatureSpec *> all;
@@ -564,9 +566,10 @@ TEST(AlphaAudit, TheChannelCensusIsTheNumberTheGateShouldPrint) {
   const AuditReport rep = run_audit(all, targ(treg, "dh_straddle_pnl_21d"));
   const std::vector<std::string> subjects = rep.subjects(FindingKind::EntryMarkChannel);
   const std::vector<std::string> expected{
-      "f3_iv_level",      "f4_term_slope",  "f5_hv_iv_gap",   "f6_vrp_lag",
-      "f9_vov_63d",       "f13_term_curv",  "f17_slope_126d", "f18_slope_189d",
-      "f19_slope_252d",   "f26_gs_hviv_252d", "f30_earn_sigma_e"};
+      "f3_iv_level",      "f4_term_slope",    "f5_hv_iv_gap",   "f6_vrp_lag",
+      "f9_vov_63d",       "f13_term_curv",    "f17_slope_126d", "f18_slope_189d",
+      "f19_slope_252d",   "f26_gs_hviv_252d", "f30_earn_sigma_e",
+      "f31_earn_move_rich"};
   EXPECT_EQ(subjects, expected);
 }
 
