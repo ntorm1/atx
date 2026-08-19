@@ -122,6 +122,7 @@ test('production broker surface has fixed IDs, no raw command tool, and exact re
     'vol-verifier': 'tools: mcp__oracle_lane_broker__lane_integrate, mcp__oracle_lane_broker__gate_run',
     'vol-reviewer': 'tools: mcp__oracle_lane_broker__repo_search, mcp__oracle_lane_broker__repo_read, mcp__oracle_lane_broker__commit_inspect, mcp__oracle_lane_broker__gate_run',
     'vol-ref-finalizer': 'tools: mcp__oracle_lane_broker__canonical_finalize',
+    'vol-ref-discarder': 'tools: mcp__oracle_lane_broker__canonical_discard',
     'vol-ref-auditor': 'tools: mcp__oracle_lane_broker__ref_resolve, mcp__oracle_lane_broker__canonical_audit',
     'vol-capability-inspector': 'tools: mcp__oracle_lane_broker__capability_probe',
     'vol-planner': 'tools: mcp__oracle_lane_broker__repo_search, mcp__oracle_lane_broker__repo_read',

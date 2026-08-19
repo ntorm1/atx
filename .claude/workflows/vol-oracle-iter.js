@@ -202,6 +202,17 @@ const CAS_RECEIPT = {
     exit_code: { type: 'integer' }, output: { type: 'string' }, broker_evidence: BROKER_EVIDENCE,
   },
 }
+// Receipt for destroying a finalize capability the workflow decided not to use.
+// `discarded:false` means the token was already gone, which is a legitimate
+// outcome on a branch where the compare-and-swap had already consumed it.
+const DISCARD_RECEIPT = {
+  type: 'object', additionalProperties: false,
+  required: ['discarded', 'ref', 'new_sha', 'operation_id', 'command', 'exit_code', 'output', 'broker_evidence'],
+  properties: {
+    discarded: { type: 'boolean' }, ref: { type: 'string' }, new_sha: { type: 'string' }, operation_id: { type: 'string' },
+    command: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' }, broker_evidence: BROKER_EVIDENCE,
+  },
+}
 const NUMERIC_GATE_METRIC = {
   type: 'object', additionalProperties: false, required: ['metric_id', 'value', 'count', 'unit'],
   properties: {
@@ -1155,6 +1166,17 @@ function casReceiptError(receipt, expected) {
   return null
 }
 
+// A discard must prove it destroyed the right token and moved nothing. The
+// default validBrokerEvidence forbids a canonical change, so a "discard" that
+// actually landed the ref cannot validate.
+function discardReceiptError(receipt, expected) {
+  if (!receipt) return 'finalize discard receipt missing'
+  if (receipt.ref !== expected.ref || receipt.exit_code !== 0 || !String(receipt.output || '').trim()) return 'finalize discard receipt invalid'
+  if (receipt.discarded && (receipt.new_sha !== expected.new_sha || receipt.operation_id !== 'ratchet')) return 'finalize discard destroyed the wrong capability'
+  if (!validBrokerEvidence(receipt.broker_evidence, 'canonical_discard')) return 'finalize discard evidence invalid'
+  return null
+}
+
 function auditReceiptError(receipt, ref) {
   if (!receipt) return 'canonical audit missing'
   if (receipt.ref !== ref || receipt.command.trim() !== `git rev-parse ${ref}` ||
@@ -1965,6 +1987,28 @@ try {
 } catch (error) { ratchetReleaseThrown = String(error) }
 const ratchetReleaseError = ratchetReleaseThrown || brokerReleaseError(ratchetRelease, ratchetAcquire, true)
 
+// `lane_release` mints the ratchet finalize capability BEFORE the verdict exists,
+// because the verdict is computed here from the released report. A token that
+// could compare-and-swap canonical to a SHA this transaction is about to REJECT
+// must therefore be destroyed on every branch that does not land it. "It goes
+// inert once canonical moves" is a race, not a guarantee: across consecutive
+// REJECTs canonical never moves at all.
+const finalizeCapability = ratchetRelease && /^[0-9a-f]{64}$/.test(ratchetRelease.finalize_capability || '') ? ratchetRelease.finalize_capability : null
+let discard = null
+let discardError = null
+const discardFinalizeCapability = async reason => {
+  if (!finalizeCapability || discard) return
+  phase('Ratchet Discard')
+  let thrown = null
+  try {
+    discard = await agent(
+      `The oracle transaction will not land this candidate (${reason}). Call broker canonical_discard exactly once with finalize_capability=${finalizeCapability}; return the typed receipt unchanged. Never finalize, read, or otherwise touch the canonical ref.`,
+      { agentType: 'vol-ref-discarder', schema: DISCARD_RECEIPT, label: 'ratchet-finalize-discard' },
+    )
+  } catch (error) { thrown = String(error) }
+  discardError = thrown || discardReceiptError(discard, { ref: CANONICAL_REF, new_sha: ratchet && ratchet.ratchet_sha ? ratchet.ratchet_sha : '' })
+}
+
 const ratchetError = ratchetThrown || ratchetPrepareContractError(ratchet, {
   tested_sha: sprint.integration_sha, tested_tree: sprint.integration_tree, tested_branch: sprint.integration_branch,
   ratchet_branch: ratchetBranch, holdout_digest: capability.holdout_digest_receipt, run_id: RUN_ID, heartbeat_id: ratchetHeartbeat,
@@ -1973,11 +2017,17 @@ const ratchetError = ratchetThrown || ratchetPrepareContractError(ratchet, {
   applicable_modes: applicableModes, baseline_contract: attributionPayload, hypothesis_ids: hypothesisIds,
 }) || ratchetReleaseError ||
   (ratchetRelease.sha !== ratchet.ratchet_sha || ratchetRelease.tree !== ratchet.ratchet_tree ? 'released Ratchet SHA/tree differs from the prepared commit' : null)
-if (ratchetError) return readyFailure(ratchetError, { sprint: sprintSummary, ratchet: null })
+if (ratchetError) {
+  await discardFinalizeCapability(`Ratchet prepare failed its contract: ${ratchetError}`)
+  return readyFailure(ratchetError, { sprint: sprintSummary, ratchet: null, finalize_discard: discard, finalize_discard_error: discardError })
+}
 
 // Verdict authority is the workflow's, not the worker's.
 const computedVerdict = computeRatchetVerdict(ratchet)
-if (ratchet.memory_verdict !== computedVerdict) return readyFailure('prepared memory verdict disagrees with workflow computation', { sprint: sprintSummary, ratchet: null })
+if (ratchet.memory_verdict !== computedVerdict) {
+  await discardFinalizeCapability('prepared memory verdict disagrees with workflow computation')
+  return readyFailure('prepared memory verdict disagrees with workflow computation', { sprint: sprintSummary, ratchet: null, finalize_discard: discard, finalize_discard_error: discardError })
+}
 
 let finalize = null
 let finalizeError = null
@@ -1992,6 +2042,12 @@ if (computedVerdict === 'ACCEPT') {
     )
   } catch (error) { finalizeThrown = String(error) }
   finalizeError = finalizeThrown || casReceiptError(finalize, casExpected)
+  // An ACCEPT whose CAS did not validate has not landed, so its capability must
+  // not survive either. The broker reports discarded:false when the swap already
+  // consumed the token, which is the benign case.
+  if (finalizeError) await discardFinalizeCapability(`canonical finalize did not validate: ${finalizeError}`)
+} else {
+  await discardFinalizeCapability(`workflow verdict is ${computedVerdict}`)
 }
 phase('Ratchet Audit')
 let audit = null
@@ -2002,9 +2058,11 @@ try {
 } catch (error) { auditThrown = String(error) }
 const auditError = auditThrown || auditReceiptError(audit, CANONICAL_REF)
 const canonicalAfter = auditError || audit.sha === 'MISSING' ? null : audit.sha
+// A REJECT that left a usable finalize capability behind has not completed
+// safely, so a failed discard is a failed transaction rather than a footnote.
 const transactionOk = computedVerdict === 'ACCEPT'
   ? !finalizeError && !auditError && canonicalAfter === ratchet.ratchet_sha
-  : !auditError && canonicalAfter === BASE_SHA
+  : !auditError && !discardError && canonicalAfter === BASE_SHA
 const verdict = transactionOk ? computedVerdict : 'FAILED'
 const transactionEvidence = [
   ...ratchet.evidence,
@@ -2021,10 +2079,10 @@ return {
   confirmed: verdict === 'FAILED' ? [] : ratchet.hypotheses_confirmed, refuted: verdict === 'FAILED' ? [] : ratchet.hypotheses_refuted,
   sprint: sprintSummary, ledger: verdict === 'FAILED' ? [] : ratchet.ledger_appended,
   ratchet_evidence: transactionEvidence,
-  ratchet: { acquire: ratchetAcquire, prepare: ratchet, release: ratchetRelease, computed_verdict: computedVerdict, finalize, audit },
+  ratchet: { acquire: ratchetAcquire, prepare: ratchet, release: ratchetRelease, computed_verdict: computedVerdict, finalize, discard, audit },
   measure: { acquire: measureAcquire, report: measure, release: measureRelease },
   attribution,
-  failure: transactionOk ? null : (finalizeThrown || finalizeError || auditError || 'canonical post-decision mismatch'),
+  failure: transactionOk ? null : (finalizeThrown || finalizeError || discardError || auditError || 'canonical post-decision mismatch'),
   landing_status: transactionOk ? (computedVerdict === 'ACCEPT' ? 'COMMITTED' : 'UNCHANGED_REJECT') : (canonicalAfter === ratchet.ratchet_sha ? 'LANDED_AUDITED_WITH_INVALID_RECEIPT' : 'CANONICAL_MISMATCH'),
   run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: canonicalAfter,
 }

@@ -510,6 +510,11 @@ async function runReady({ scale = 0.9, verdict = 'ACCEPT', sprintOverrides = {},
       case 'ratchet-acquire': return ratchetAcquire
       case 'ratchet-prepare': return ratchetReport(ratchetAcquire, payload, ratchetBase, { scale, verdict, overrides: ratchetOverrides })
       case 'ratchet-release': return { ...releaseReceipt(ratchetAcquire), sha: SHA.ratchet, tree: SHA.ratchetTree, finalize_capability: '8'.repeat(64) }
+      case 'ratchet-finalize-discard': return {
+        discarded: true, ref: O.CANONICAL_REF, new_sha: SHA.ratchet, operation_id: 'ratchet',
+        command: 'discard-finalizer:ratchet', exit_code: 0, output: `DISCARDED ratchet ${SHA.ratchet}`,
+        broker_evidence: evidence('canonical_discard', { cwd: 'C:\\atx', command: 'discard-finalizer:ratchet', output: `DISCARDED ratchet ${SHA.ratchet}` }),
+      }
       case 'ratchet-cas-finalizer': return {
         ref: O.CANONICAL_REF, new_sha: SHA.ratchet, new_tree: SHA.ratchetTree, expected_old_sha: SHA.base,
         command: `git update-ref ${O.CANONICAL_REF} ${SHA.ratchet} ${SHA.base}`, exit_code: 0, output: SHA.ratchet,
@@ -565,6 +570,7 @@ test('a REJECT verdict leaves canonical untouched and never reaches the finalize
   assert.equal(result.landing_status, 'UNCHANGED_REJECT')
   assert.equal(result.canonical_after, SHA.base)
   assert.equal(labels.includes('ratchet-cas-finalizer'), false, 'a REJECT must never consume the finalize capability')
+  assert.equal(labels.includes('ratchet-finalize-discard'), true, 'a REJECT must destroy the unused finalize capability')
   assert.equal(result.failure, null)
   // A completed REJECT still publishes its holdout summary to the caller; what
   // it must never do is move canonical or increment the iteration.

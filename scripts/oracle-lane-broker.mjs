@@ -1255,6 +1255,38 @@ export class OracleLaneBroker {
     return { ref: CANONICAL_REF, new_sha: finalizer.new_sha, new_tree: finalizer.new_tree, expected_old_sha: finalizer.expected_old_sha, command: `git update-ref ${CANONICAL_REF} ${finalizer.new_sha} ${finalizer.expected_old_sha}`, exit_code: 0, output: finalizer.new_sha, broker_evidence: this.#evidence('canonical_finalize', this.root, `canonical-cas:${finalizer.operation_id}`, result, before, after) }
   }
 
+  // Destroys an unused finalize capability without touching the canonical ref.
+  //
+  // `lane_release` mints the ratchet finalize token before the verdict exists -
+  // the verdict is computed by the workflow from the released report - so the
+  // token cannot be minted "only when needed" without the broker learning the
+  // verdict. Instead the workflow consumes it on ACCEPT and discards it on every
+  // other branch, so a token that could move canonical to a REJECTED SHA never
+  // outlives the transaction that created it. "It goes inert once canonical
+  // moves" was a race, not a guarantee: across consecutive REJECTs canonical
+  // does not move at all.
+  //
+  // Absent is reported as discarded:false rather than thrown, so the workflow
+  // can call this on any non-landed branch - including one where the CAS already
+  // consumed the token - without inventing a second failure.
+  canonicalDiscard(input) {
+    assertExactKeys(input, ['finalize_capability'])
+    const target = this.#finalizePath(input.finalize_capability)
+    const before = this.rootGuard()
+    const present = existsSync(target)
+    const sealed = present ? this.#verifySealed(JSON.parse(readFileSync(target, 'utf8'))) : null
+    if (present) rmSync(target)
+    const after = this.rootGuard()
+    this.#assertGuard(before, after)
+    const output = present ? `DISCARDED ${sealed.operation_id} ${sealed.new_sha}` : 'ABSENT'
+    const result = { exit_code: 0, output, stdout: output, stderr: '' }
+    return {
+      discarded: present, ref: CANONICAL_REF, new_sha: present ? sealed.new_sha : '',
+      operation_id: present ? sealed.operation_id : '', command: `discard-finalizer:${present ? sealed.operation_id : 'absent'}`,
+      exit_code: 0, output, broker_evidence: this.#evidence('canonical_discard', this.root, 'discard-finalizer', result, before, after),
+    }
+  }
+
   canonicalAudit() {
     const before = this.rootGuard()
     const result = processResult('git', ['rev-parse', '--verify', `${CANONICAL_REF}^{commit}`], this.root)
@@ -1282,6 +1314,7 @@ const TOOL_DEFINITIONS = Object.freeze([
   { name: 'lane_release', description: 'Release only the capability-bound clean lease and optionally issue a bound finalize capability.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
   { name: 'lane_quarantine', description: 'Stop and remove a failed Stage 1 lease while preserving its dirty branch/worktree for audit.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
   { name: 'canonical_finalize', description: 'Consume a broker-issued finalize capability only when workflow expected SHA/tree matches the sealed integration.', inputSchema: { type: 'object', additionalProperties: false, required: ['finalize_capability', 'expected_sha', 'expected_tree'], properties: { finalize_capability: { type: 'string', pattern: '^[0-9a-f]{64}$' }, expected_sha: { type: 'string', pattern: '^[0-9a-f]{40}$' }, expected_tree: { type: 'string', pattern: '^[0-9a-f]{40}$' } } } },
+  { name: 'canonical_discard', description: 'Destroy an unused broker-issued finalize capability without touching the canonical ref.', inputSchema: { type: 'object', additionalProperties: false, required: ['finalize_capability'], properties: { finalize_capability: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
   { name: 'canonical_audit', description: 'Read only refs/heads/oracle/canonical under the root guard.', inputSchema: { type: 'object', additionalProperties: false, properties: {} } },
 ])
 
@@ -1290,7 +1323,8 @@ function dispatch(broker, name, input) {
     capability_probe: () => broker.capabilityProbe(), ref_resolve: () => broker.refResolve(input), repo_search: () => broker.repoSearch(input), repo_read: () => broker.repoRead(input),
     lane_open: () => broker.openLane(input), workspace_list: () => broker.listWorkspace(input), patch_apply: () => broker.applyPatch(input), gate_run: () => broker.runGate(input),
     lane_commit: () => broker.commitLane(input), commit_inspect: () => broker.inspectCommit(input), lane_integrate: () => broker.integrate(input), recover_stage1: () => broker.recoverStage1(input), recovery_result: () => broker.recoveryResult(input),
-    lane_release: () => broker.releaseLane(input), lane_quarantine: () => broker.quarantineLane(input), canonical_finalize: () => broker.canonicalFinalize(input), canonical_audit: () => broker.canonicalAudit(),
+    lane_release: () => broker.releaseLane(input), lane_quarantine: () => broker.quarantineLane(input), canonical_finalize: () => broker.canonicalFinalize(input),
+    canonical_discard: () => broker.canonicalDiscard(input), canonical_audit: () => broker.canonicalAudit(),
   }
   if (!routes[name]) throw new Error(`unknown broker tool: ${name}`)
   return routes[name]()
