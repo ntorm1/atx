@@ -633,6 +633,35 @@ TEST(AlphaStrategy, BuyLowIsFlippedSoHighAlwaysMeansAttractive) {
   EXPECT_EQ(res->required_per_row, 1U);
 }
 
+TEST(AlphaStrategy, AFlipInvertsThePublishedPriorAndATypoIsRefused) {
+  const PanelFrame f = load(kGappy);
+  auto dates = group_by_date(f);
+  ASSERT_TRUE(dates);
+  const FeatureRegistry reg = builtin_features();
+
+  std::unordered_map<std::string, std::vector<double>> vals;
+  std::vector<double> col(f.rows(), std::nan(""));
+  col[0] = 0.10; // AAA low
+  col[4] = 0.90; // BBB high
+  vals.emplace("f16_iv_vov_21d", col); // prior BuyLow
+  const auto sel = reg.select(std::vector<std::string>{"f16_iv_vov_21d"});
+  ASSERT_TRUE(sel);
+
+  BlendConfig cfg;
+  cfg.flip = {"f16_iv_vov_21d"};
+  auto res = blend(f, *dates, *sel, vals, cfg);
+  ASSERT_TRUE(res) << res.error().to_string();
+  // Flipped BuyLow behaves as BuyHigh: the HIGH raw value wins.
+  EXPECT_GT(res->score[4], res->score[0]);
+  ASSERT_EQ(res->flipped.size(), 1U);
+  EXPECT_EQ(res->flipped[0], "f16_iv_vov_21d");
+
+  // A flip that matches nothing would ship the OPPOSITE of the intended
+  // direction on one leg. Refused, not ignored.
+  cfg.flip = {"f16_iv_vov_21"};
+  EXPECT_FALSE(blend(f, *dates, *sel, vals, cfg));
+}
+
 TEST(AlphaStrategy, AFeatureWithNoPublishedPriorIsRefusedNotFitted) {
   const PanelFrame f = load(kGappy);
   auto dates = group_by_date(f);

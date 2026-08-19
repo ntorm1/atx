@@ -130,6 +130,14 @@ struct BlendConfig {
   // features are mostly missing would otherwise be scored off whichever one or
   // two happened to be present, which is a different signal per row.
   std::size_t min_features_per_row{2};
+  // Features whose published prior is INVERTED for this run. This exists for
+  // the one legitimate case: a direction that flips with the AXIS — Vasquez
+  // buys the steep-slope FRONT month while Campasano-Linn buy the inverted
+  // name's BACK month, and both are right. A flip must cite an axis-specific
+  // published direction; flipping a sign because the backtest liked it better
+  // is sign-mining, and the loud FLIPPED report downstream exists to make
+  // that visible. A name here that matches no selected feature is an error.
+  std::vector<std::string> flip;
 };
 
 struct BlendResult {
@@ -137,6 +145,7 @@ struct BlendResult {
   std::vector<std::string> used;     // features that carried a usable prior
   std::vector<std::string> refused;  // features with SignPrior::None
   std::vector<std::string> missing;  // features with no values supplied
+  std::vector<std::string> flipped;  // used features whose prior was inverted
   // Rows on which each USED feature produced a finite oriented rank, in `used`
   // order. The blend's coverage is set by its narrowest input, and printing
   // this is how a caller sees WHICH one rather than only that the score is
@@ -162,6 +171,7 @@ blend(const PanelFrame &frame, std::span<const DateSlice> dates,
   res.score.assign(frame.rows(), nan_v);
 
   std::vector<std::vector<double>> oriented;
+  std::vector<bool> flip_hit(cfg.flip.size(), false);
   for (const FeatureSpec *spec : features) {
     if (spec == nullptr) {
       continue;
@@ -184,7 +194,15 @@ blend(const PanelFrame &frame, std::span<const DateSlice> dates,
     }
     // BuyLow means a long-vega book wants the bottom of the cross-section, so
     // the rank is flipped to keep "high == attractive" true for every column.
-    if (spec->prior == SignPrior::BuyLow) {
+    bool buy_low = spec->prior == SignPrior::BuyLow;
+    for (std::size_t k = 0; k < cfg.flip.size(); ++k) {
+      if (cfg.flip[k] == spec->name) {
+        buy_low = !buy_low;
+        flip_hit[k] = true;
+        res.flipped.push_back(spec->name);
+      }
+    }
+    if (buy_low) {
       for (double &v : ranks) {
         if (std::isfinite(v)) {
           v = 1.0 - v;
@@ -206,6 +224,14 @@ blend(const PanelFrame &frame, std::span<const DateSlice> dates,
     return Err(atx::core::ErrorCode::InvalidArgument,
                "alpha::blend: no selected feature carries a published sign prior; "
                "the blend would have to learn its own directions");
+  }
+  for (std::size_t k = 0; k < cfg.flip.size(); ++k) {
+    // A typo'd flip that silently matched nothing would ship the book with
+    // the OPPOSITE of its intended direction on one leg.
+    if (!flip_hit[k]) {
+      return Err(atx::core::ErrorCode::InvalidArgument,
+                 "alpha::blend: --flip '" + cfg.flip[k] + "' matched no blended feature");
+    }
   }
 
   // Clamped: asking for 2 finite features out of a 1-feature set would score

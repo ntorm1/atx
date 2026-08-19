@@ -53,6 +53,7 @@ struct Args {
   std::string earnings; // empty = no calendar; f28..f30 evaluate to NaN
   double avoid_earn_days{0.0}; // >0: veto names within N days of their print
   bool keep_cheap_prints{false}; // exempt prints priced below the name's own history (f31 < 0)
+  std::vector<std::string> flip; // features traded AGAINST their catalogue prior
   // "dh" = the delta-hedged money axis. "rv" = the decontaminated cross-read:
   // forward realized vol alone, no implied leg, not a P&L.
   std::string axis{"dh"};
@@ -86,6 +87,11 @@ void usage() {
 "                           name's own delivered history (f31 < 0) — the long-vega\n"
 "                           side of the event premium. Zero is the principled\n"
 "                           threshold, not a tuned one.\n"
+"  --flip NAME[,NAME...]    trade the named feature(s) AGAINST their catalogue\n"
+"                           prior. ONLY for a published axis-specific direction\n"
+"                           (Vasquez buys steep-slope FRONT month, Campasano-Linn\n"
+"                           buy the inverted name's BACK month — both are right);\n"
+"                           flipping because the backtest liked it is sign-mining.\n"
       "  --axis ... dh63          dh63 = 100*(rv_fwd_63d - iv_fair_63d), the BACK-month\n"
       "                           money axis, 63-session hold (horizon auto-set to 63).\n"
       "                           The back mark is re-marked late (Campasano-Linn), so a\n"
@@ -150,6 +156,10 @@ bool parse_args(int argc, char **argv, Args &a) {
       a.avoid_earn_days = std::stod(v);
     } else if (flag == "--keep-cheap-prints") {
       a.keep_cheap_prints = true;
+    } else if (flag == "--flip" && next()) {
+      for (const std::string &n : split_commas(v)) {
+        a.flip.push_back(n);
+      }
     } else if (flag == "--axis" && next()) {
       if (v != "dh" && v != "rv" && v != "volchg" && v != "dh63") {
         std::fprintf(stderr, "--axis must be 'dh', 'rv', 'volchg' or 'dh63' (got '%s')\n",
@@ -418,6 +428,7 @@ int main(int argc, char **argv) {
 
   // ── 5. BLEND ──────────────────────────────────────────────────────────────
   BlendConfig bcfg;
+  bcfg.flip = args.flip;
   auto blended = blend(frame, *dates, *selected, computed->values, bcfg);
   if (!blended) {
     std::fprintf(stderr, "\nblend failed: %s\n", blended.error().to_string().c_str());
@@ -429,9 +440,12 @@ int main(int argc, char **argv) {
   for (std::size_t k = 0; k < blended->used.size(); ++k) {
     const std::string &n = blended->used[k];
     const FeatureSpec *sp = freg.find(n);
-    std::printf("  use     %-20s %-9s coverage %6zu / %zu rows\n", n.c_str(),
+    const bool flipped = std::find(blended->flipped.begin(), blended->flipped.end(), n) !=
+                         blended->flipped.end();
+    std::printf("  use     %-20s %-9s coverage %6zu / %zu rows%s\n", n.c_str(),
                 sp == nullptr ? "" : std::string(to_string(sp->prior)).c_str(),
-                blended->used_coverage[k], frame.rows());
+                blended->used_coverage[k], frame.rows(),
+                flipped ? "   FLIPPED — trading AGAINST the catalogue prior" : "");
   }
   for (const std::string &n : blended->refused) {
     std::printf("  REFUSE  %-20s no published sign prior — not fitted\n", n.c_str());
