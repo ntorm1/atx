@@ -9,15 +9,15 @@ record in `docs/superpowers/specs/2026-08-17-oracle-rsi-v2-design.md`.
 
 | | |
 |---|---|
-| Capability state | `missing_mode_b` — bootstrap stages 1, 2 and 3 COMPLETE. `data_receipt_valid=true mode_a_receipt_valid=true conventions_receipt_valid=true mode_b_receipt_valid=false` |
-| Canonical | `refs/heads/oracle/canonical` @ `a1c984e5`, merged to `main` @ `11155df9`. Pre-move backup at `backup/oracle-canonical-20260817` @ `e232a118` |
-| Last verdict | BOOTSTRAP stage 3 PASS (2026-08-18; holdout untouched by design) |
+| Capability state | **`ready`** — bootstrap stages 1-4 ALL COMPLETE, all four receipts valid. `next_iter = iter-001` |
+| Canonical | `refs/heads/oracle/canonical` @ `abed0a9c`, merged to `main` @ `087fc8a1`. Backups: `backup/oracle-canonical-20260817` @ `e232a118`, `backup/oracle-canonical-stage4-20260818` @ `a1c984e5` |
+| Last verdict | BOOTSTRAP stage 4 PASS (2026-08-18; holdout untouched by design). No ratchet iteration has run |
 | Consecutive rejects | 0 (ESCALATE to user at 3) |
 | Data | INGESTED — `C:\atx-cache\oracle\spiderrock\date=2026-08-14`: 31,771,788 rows (post-0930-drop), 19 `bucket_et` partitions, 3.10 GB zstd |
-| Bench tool | BUILT — `atx-vol-oracle-bench`; 49/49 `OracleBench*` cases pass. The six frozen `vol-oracle-iter` gate command strings now parse and run |
+| Bench tool | BUILT — `atx-vol-oracle-bench`; 53/53 `OracleBench*` cases pass. The six frozen `vol-oracle-iter` gate command strings now parse and run |
 | Conventions | **RESOLVED** — `discrete_forward_pv__rate__sdiv_yield`. Full map + rationale in `atx-vol/bench/oracle/CONVENTIONS.md` |
 | Ratchet baseline | PINNED — `atx-vol/bench/oracle/scorecards/iter-000.json`, aggregate smoke+tune, 277,952 rows, 0 engine errors, 100% selection coverage |
-| Mode B | NOT IMPLEMENTED. `--mode B` parses then refuses at run time with `ErrorCode::NotImplemented` before any store read. Deliberately not stubbed |
+| Mode B | IMPLEMENTED — vol MEASURED from raw NBBO per underlier x expiry x bucket via `american_implied_vol`. 241,052 of 299,798 rows fitted; 36,900 refused and counted |
 
 ## Targets (from spec)
 
@@ -34,7 +34,8 @@ record in `docs/superpowers/specs/2026-08-17-oracle-rsi-v2-design.md`.
 | Mode A volga | <= 1% rel | 0.1091 | 0.5228 | NO |
 | Mode A vanna | <= 1% rel | 0.0989 | 0.1573 | NO |
 | Mode A deDecay | <= 1% rel | 0.1507 | 1.3189 | NO |
-| Mode B | <= 2x Mode A floor | — | — | not implemented |
+| Mode B vol | <= 10 bp | **442.79 bp** | | NO |
+| Mode B price | <= 2 ticks | **35.52 ticks** | | NO |
 | Speed | >= pinned baseline | 3857.54 rows/s vs pin 3122 | | YES |
 
 **Not one accuracy target is met.** Price MAE is 376x its target. The loop has
@@ -95,10 +96,37 @@ NOT performance evidence.
 NBBO gate has run. The oracle is the north star, not truth; that list stays honest by
 staying empty until evidence fills it.
 
+## Mode B — the first REAL vol measurement
+
+`mode_b_vol_mae = 442.79 bp` against a 10 bp target. Unlike Mode A's 0 bp, this is a
+measurement and not an identity.
+
+SAFETY, load-bearing: `american_implied_vol` screens only IMMEDIATE intrinsic and
+returns `Ok(kIvMin)` — a SUCCESS — for a quote below the true floor. Taken at face
+value it publishes 0.005 as a measured volatility for every dead deep-wing quote. The
+correct bracket is the zero-vol American price = max(immediate intrinsic, DISCOUNTED
+FORWARD intrinsic); the forward leg is larger for a call OTM on spot but ITM on the
+forward, the everyday case on hard-to-borrow names. Mode B brackets itself and the
+gate validates row-accounting closure, so a run that fits 2% and refuses the rest can
+no longer publish eleven flattering numbers and pass.
+
+Refusals, 36,900 of 299,798: below-lo-bound 35,477 | round-trip-failed 1,299 |
+vega-below-floor 109 | above-up-bound 15 | at-floor 0. `at-floor = 0` proves nothing
+reaches the library clamp.
+
+`mode_b_price_mae = 35.52` is NOT our pricing improving. Mode B re-prices the mid it
+inverted, so the metric is近 an identity for `|mid - srPrc|` — a property of
+SpiderRock's smoothing. Never cite it as our accuracy.
+
 ## Next
 
-Stage 4 — implement Mode B (fit vol from raw NBBO per underlier x expiry x bucket),
-then `bootstrap/mode-b.json` and the state advances to `ready`. The ready-state
-Measure/Attribute/Improve/Ratchet path is still RETIRED behind
-`READY_BROKER_MIGRATION_REQUIRED` and the `vol-sprint` workflow is a fail-closed stub;
-both must be migrated to the broker capability protocol before any iteration can run.
+**Iteration 1 target: the PRICE LEG.** Our model at `srVol` sits ~$3.76 from `srPrc`
+while the market mid sits ~$0.36 from it — we are the outlier by ~10x. Delta-P over
+vega at cohort vega 50-100 gives ~380-750 bp, bracketing Mode B's measured 442.79, so
+vol accuracy is floored by the price leg and tuning the inversion cannot move it.
+Diagnostic lane in flight, leading with a QuantLib Andersen-Lake cross-check to split
+"our pricer is wrong" from "our inputs/conventions are wrong".
+
+BLOCKER for any ratchet iteration: the ready-state Measure/Improve path is still
+RETIRED behind `READY_BROKER_MIGRATION_REQUIRED` and `vol-sprint` is a fail-closed
+stub. Migration lane in flight. Reaching `ready` does NOT mean the loop runs.
