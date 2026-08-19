@@ -10,10 +10,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import { spawnSync } from 'node:child_process'
 import vm from 'node:vm'
-import { GATE_REGISTRY, OPERATION_REGISTRY, brokerGateOutputSha256, brokerGateReceiptId } from '../oracle-lane-broker.mjs'
+import { GATE_REGISTRY, OPERATION_REGISTRY, OracleLaneBroker, brokerGateOutputSha256, brokerGateReceiptId, isRatchetMemoryPath, operationReadsRatchetMemory } from '../oracle-lane-broker.mjs'
 
 const read = relative => readFileSync(resolve(process.cwd(), relative), 'utf8')
 const oracleSource = read('.claude/workflows/vol-oracle-iter.js')
@@ -735,4 +737,91 @@ test('no holdout command or cohort identity reaches any stage before the Ratchet
   // and the Ratchet prompt is the only one that may name a holdout gate
   assert.match(prompts.get('ratchet-prepare'), holdoutShaped)
   for (const command of Object.values(O.RATCHET_GATE_COMMANDS)) assert.ok(prompts.get('ratchet-prepare').includes(command), command)
+})
+
+// ── holdout leak scoping (the broker's three read doors) ────────────────────
+//
+// Ratchet memory - the iteration scorecards, the research ledger, the north
+// star and the convergence changelog - carries holdout-derived numbers, and a
+// tuning stage that can read last iteration's holdout aggregates is tuning
+// against the test set. The broker therefore scopes repo_search, repo_read and
+// commit_inspect BY OPERATION: only a ratchet or bootstrap capability sees
+// those paths, and a caller with no capability at all is the fail-closed case.
+// These tests run against a real broker on a real repository, so reverting the
+// scoping in scripts/oracle-lane-broker.mjs makes them fail.
+
+const RATCHET_MEMORY_FIXTURE_PATHS = Object.freeze([
+  'atx-vol/bench/oracle/scorecards/iter-001.json', 'atx-vol/docs/LEDGER.md',
+  'atx-vol/docs/oracle/NORTHSTAR.md', 'atx-vol/docs/oracle/CONVERGENCE_CHANGELOG.md',
+])
+
+function leakFixture() {
+  const sandbox = mkdtempSync(join(tmpdir(), 'atx-oracle-leak-scope-'))
+  const root = join(sandbox, 'repo')
+  mkdirSync(root, { recursive: true })
+  const git = (...args) => {
+    const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true })
+    assert.equal(result.status, 0, `git ${args.join(' ')} failed: ${result.stdout || ''}${result.stderr || ''}`)
+    return String(result.stdout || '').trim()
+  }
+  git('init', '-b', 'main')
+  git('config', 'user.email', 'leak-scope-test@example.invalid')
+  git('config', 'user.name', 'Leak Scope Test')
+  const write = (rel, content) => {
+    const target = join(root, ...rel.split('/'))
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, content, 'utf8')
+  }
+  write('atx-vol/src/pricing/american.cpp', 'int visible_pricing_marker() { return 41; }\n')
+  git('add', '--', 'atx-vol')
+  git('commit', '-m', 'fixture base')
+  const base = git('rev-parse', 'HEAD')
+  write('atx-vol/docs/LEDGER.md', 'holdout_leak_marker ledger 0.83\n')
+  write('atx-vol/docs/oracle/NORTHSTAR.md', 'holdout_leak_marker northstar 0.83\n')
+  write('atx-vol/docs/oracle/CONVERGENCE_CHANGELOG.md', 'holdout_leak_marker convergence 0.83\n')
+  write('atx-vol/bench/oracle/scorecards/iter-001.json', '{"holdout_leak_marker":0.83}\n')
+  write('atx-vol/src/pricing/visible_change.cpp', 'int visible_change_marker() { return 42; }\n')
+  git('add', '--', 'atx-vol')
+  git('commit', '-m', 'ratchet memory plus one visible change')
+  const candidate = git('rev-parse', 'HEAD')
+  const broker = new OracleLaneBroker({ root, poolRoot: join(sandbox, 'atx-wt'), testMode: true })
+  return { sandbox, broker, base, candidate }
+}
+
+test('ratchet memory classification matches its writers and fails closed on the unidentified reader', () => {
+  for (const path of RATCHET_MEMORY_FIXTURE_PATHS) assert.equal(isRatchetMemoryPath(path), true, path)
+  assert.equal(isRatchetMemoryPath('atx-vol/src/pricing/american.cpp'), false)
+  assert.equal(isRatchetMemoryPath('atx-vol/CHANGELOG.md'), false)
+  for (const reader of ['ratchet', 'bootstrap_data', 'bootstrap_mode_a', 'bootstrap_conventions', 'bootstrap_mode_b', 'bootstrap_integration']) {
+    assert.equal(operationReadsRatchetMemory(reader), true, reader)
+    assert.ok(Object.hasOwn(OPERATION_REGISTRY, reader), `${reader} is not a registered broker operation`)
+  }
+  for (const tuner of ['measure', 'sprint_build', 'sprint_integration', 'unknown', '', null, undefined]) {
+    assert.equal(operationReadsRatchetMemory(tuner), false, String(tuner))
+  }
+})
+
+test('repo_search and repo_read withhold ratchet memory from a caller with no capability', () => {
+  const { sandbox, broker } = leakFixture()
+  try {
+    assert.deepEqual(broker.repoSearch({ query: 'holdout_leak_marker' }).hits, [], 'a capability-less search served ratchet memory')
+    const visible = broker.repoSearch({ query: 'visible_pricing_marker' })
+    assert.equal(visible.hits.length, 1)
+    assert.equal(visible.hits[0].path, 'atx-vol/src/pricing/american.cpp')
+    const read = broker.repoRead({ file_id: visible.hits[0].file_id })
+    assert.match(read.content, /visible_pricing_marker/)
+    // an id the filtered listing cannot produce cannot open the read door either
+    assert.throws(() => broker.repoRead({ file_id: 'f'.repeat(64) }), /unknown repository artifact id/)
+  } finally { rmSync(sandbox, { recursive: true, force: true }) }
+})
+
+test('commit_inspect withholds ratchet memory by name from a caller with no capability', () => {
+  const { sandbox, broker, base, candidate } = leakFixture()
+  try {
+    const inspection = broker.inspectCommit({ base_sha: base, candidate_sha: candidate })
+    assert.deepEqual([...inspection.withheld_paths].sort(), [...RATCHET_MEMORY_FIXTURE_PATHS].sort(), 'withheld ratchet-memory paths must be named for audit')
+    assert.deepEqual(inspection.paths, ['atx-vol/src/pricing/visible_change.cpp'])
+    assert.match(inspection.diff, /visible_change_marker/)
+    assert.doesNotMatch(inspection.diff, /holdout_leak_marker/, 'the diff leaked ratchet memory to a tuning-stage reviewer')
+  } finally { rmSync(sandbox, { recursive: true, force: true }) }
 })

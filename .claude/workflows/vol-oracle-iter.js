@@ -1731,7 +1731,7 @@ if (capability.state !== 'ready') {
   if (!reportError) {
     phase('Bootstrap Review')
     try {
-      review = await agent(`Fresh exact-SHA broker review ${BASE_SHA}...${report.sha}. Use commit_inspect; Stage 1 must not call generic gate_run because recover_stage1 already owns all four fixed gates atomically. Verify exact recovery source/path closure, SHA/tree ${report.sha}/${report.tree}, and no adoption/ingest/disk. Return command evidence plus every broker evidence unchanged.`, { agentType: 'vol-reviewer', schema: REVIEW, label: `bootstrap-review:${capability.state}` })
+      review = await agent(`Fresh exact-SHA broker review ${BASE_SHA}...${report.sha}. Use commit_inspect with capability=${buildAcquire.capability} so the bootstrap lane's own scope - including the iteration-0 floor a Stage 3 candidate commits - stays fully review-readable; without it the broker withholds ratchet-memory paths from every diff. Stage 1 must not call generic gate_run because recover_stage1 already owns all four fixed gates atomically. Verify exact recovery source/path closure, SHA/tree ${report.sha}/${report.tree}, and no adoption/ingest/disk. Return command evidence plus every broker evidence unchanged.`, { agentType: 'vol-reviewer', schema: REVIEW, label: `bootstrap-review:${capability.state}` })
       reportError = reviewContractError(review, report.sha)
     } catch (error) { reportError = `bootstrap review failed: ${String(error)}` }
   }
@@ -1746,7 +1746,7 @@ if (capability.state !== 'ready') {
     if (!reportError) {
       phase('Bootstrap Re-review')
       try {
-        review = await agent(`FRESH broker post-Fix review of ${BASE_SHA}...${report.sha} using commit_inspect and capability=${buildAcquire.capability}; never reuse prior verdict.`, { agentType: 'vol-reviewer', schema: REVIEW, label: `bootstrap-rereview:${capability.state}` })
+        review = await agent(`FRESH broker post-Fix review of ${BASE_SHA}...${report.sha} using commit_inspect with capability=${buildAcquire.capability}; never reuse prior verdict.`, { agentType: 'vol-reviewer', schema: REVIEW, label: `bootstrap-rereview:${capability.state}` })
         reportError = reviewContractError(review, report.sha)
       } catch (error) { reportError = `bootstrap re-review failed: ${String(error)}` }
     }

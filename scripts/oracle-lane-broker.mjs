@@ -56,6 +56,47 @@ const CONVENTION_CHANGE_PATHS = Object.freeze([
   'scripts/tests/workflow-contracts.test.mjs',
 ])
 
+// Files the Ratchet writes, and therefore the files that carry holdout-derived
+// numbers: the iteration scorecards, the research ledger, the north-star
+// dashboard, and the convergence changelog (whose own record invariants state
+// that it labels every metric by cohort and records holdout results from
+// Ratchet evidence).
+//
+// Holdout is the ONLY unbiased estimate this project will ever have, and its
+// membership is frozen. Improve is the tuning stage. If a tuning lane could read
+// last iteration's holdout aggregates out of committed ratchet memory, then
+// every ratchet after the first would be tuned against the test set - silently,
+// with every gate still green, producing confident numbers that are wrong.
+//
+// So visibility is scoped BY OPERATION rather than denied outright: a blanket
+// filter would also hide `scorecards/iter-000.json` from the Stage 3 bootstrap
+// lane that has to read and commit it.
+const RATCHET_MEMORY_PATTERNS = Object.freeze([
+  /^atx-vol\/bench\/oracle\/scorecards\//i,
+  /^atx-vol\/docs\/oracle\/scorecards\//i,
+  /^atx-vol\/docs\/LEDGER\.md$/i,
+  /^atx-vol\/docs\/oracle\/NORTHSTAR\.md$/i,
+  /^atx-vol\/docs\/oracle\/CONVERGENCE_CHANGELOG\.md$/i,
+])
+// The only operations that may read ratchet memory. `ratchet` must, because it
+// appends to it; the bootstrap operations must, because Stage 3 resolves and
+// commits the iteration-0 floor. Everything else - `measure`, `sprint_build`,
+// `sprint_integration`, and any caller that supplies no capability at all - is
+// treated as a tuning stage and cannot see these files. Unidentified is the
+// fail-closed case on purpose: an agent holding no lane is a planner or a
+// reviewer, and neither has business reading the test-set scoreboard.
+const RATCHET_MEMORY_READERS = Object.freeze([
+  'ratchet', 'bootstrap_data', 'bootstrap_mode_a', 'bootstrap_conventions', 'bootstrap_mode_b', 'bootstrap_integration',
+])
+
+export function isRatchetMemoryPath(relPath) {
+  return RATCHET_MEMORY_PATTERNS.some(pattern => pattern.test(String(relPath || '')))
+}
+
+export function operationReadsRatchetMemory(operationId) {
+  return RATCHET_MEMORY_READERS.includes(String(operationId || ''))
+}
+
 const OPERATION_REGISTRY = Object.freeze({
   bootstrap_data: {
     stage: 'bootstrap-1', branch: /^lane\/oracle-bootstrap-data-/, finalize: false,
@@ -739,9 +780,20 @@ export class OracleLaneBroker {
     return { capability: input.capability, files: paths.map(path => ({ path, file_id: this.#fileId(path), sha256: sha256(readFileSync(join(cap.worktree, ...path.split('/')))) })) }
   }
 
-  #repoFiles() {
+  // `operationId` is the lane the caller holds, or null when it holds none.
+  // Null is the most restrictive case, not the most permissive.
+  #repoFiles(operationId = null) {
     const result = this.#git(['ls-files', '-z', '--', 'atx-vol', '.claude', 'scripts', 'docs'], this.root)
-    return result.stdout.split('\0').filter(Boolean).map(normalizeRel).filter(path => !/\/cohorts\/(?:holdout|tune|smoke)\.json$/i.test(path) && !/\.(?:parquet|zip)$/i.test(path))
+    const readsMemory = operationReadsRatchetMemory(operationId)
+    return result.stdout.split('\0').filter(Boolean).map(normalizeRel).filter(path =>
+      !/\/cohorts\/(?:holdout|tune|smoke)\.json$/i.test(path) && !/\.(?:parquet|zip)$/i.test(path) &&
+      (readsMemory || !isRatchetMemoryPath(path)))
+  }
+
+  // The operation behind an optional capability. Resolving it through #loadCap
+  // means a stale or forged capability cannot buy visibility.
+  #readerOperation(capability) {
+    return capability === undefined || capability === null ? null : this.#loadCap(capability).operation_id
   }
 
   #fileId(relPath) {
@@ -749,12 +801,13 @@ export class OracleLaneBroker {
   }
 
   repoSearch(input) {
-    assertExactKeys(input, ['query'])
+    assertExactKeys(input, ['query', 'capability'], ['query'])
+    const operationId = this.#readerOperation(input.capability)
     const query = String(input.query || '')
     if (!query || query.length > 160 || /[\r\n\0]/.test(query)) throw new Error('query must be a short literal string')
     const before = this.rootGuard()
     const hits = []
-    for (const path of this.#repoFiles()) {
+    for (const path of this.#repoFiles(operationId)) {
       const absolute = assertNoReparse(this.root, join(this.root, ...path.split('/')))
       if (statSync(absolute).size > 1024 * 1024) continue
       const text = readFileSync(absolute, 'utf8')
@@ -774,8 +827,12 @@ export class OracleLaneBroker {
   }
 
   repoRead(input) {
-    assertExactKeys(input, ['file_id'])
-    const file = this.#repoFiles().find(path => this.#fileId(path) === input.file_id)
+    assertExactKeys(input, ['file_id', 'capability'], ['file_id'])
+    const operationId = this.#readerOperation(input.capability)
+    // Resolved against the SAME filtered list repo_search offers, so a file_id
+    // an operation cannot list is also a file_id it cannot read. Closing only
+    // the search door would leave the read door open.
+    const file = this.#repoFiles(operationId).find(path => this.#fileId(path) === input.file_id)
     if (!file) throw new Error('unknown repository artifact id')
     const absolute = assertNoReparse(this.root, join(this.root, ...file.split('/')))
     if (statSync(absolute).size > 512 * 1024) throw new Error('artifact exceeds reader limit')
@@ -908,20 +965,34 @@ export class OracleLaneBroker {
   }
 
   inspectCommit(input) {
-    assertExactKeys(input, ['base_sha', 'candidate_sha'])
+    assertExactKeys(input, ['base_sha', 'candidate_sha', 'capability'], ['base_sha', 'candidate_sha'])
+    const operationId = this.#readerOperation(input.capability)
     const base = String(input.base_sha || '').toLowerCase(); const candidate = String(input.candidate_sha || '').toLowerCase()
     if (!SHA_RE.test(base) || !SHA_RE.test(candidate) || !this.#ref(base) || !this.#ref(candidate)) throw new Error('commit inspection requires exact existing SHAs')
     const before = this.rootGuard()
     const pathsResult = processResult('git', ['diff', '--name-only', '-z', `${base}...${candidate}`], this.root)
     requireSuccess(pathsResult, 'commit path inspection')
-    const paths = pathsResult.stdout.split('\0').filter(Boolean).map(normalizeRel)
-    if (paths.some(path => /\/cohorts\/(?:holdout|tune|smoke)\.json$/i.test(path))) throw new Error('cohort membership diff is not review-readable')
-    const diff = processResult('git', ['diff', '--no-ext-diff', '--unified=40', `${base}...${candidate}`, '--', ...paths], this.root)
+    const allPaths = pathsResult.stdout.split('\0').filter(Boolean).map(normalizeRel)
+    if (allPaths.some(path => /\/cohorts\/(?:holdout|tune|smoke)\.json$/i.test(path))) throw new Error('cohort membership diff is not review-readable')
+    // Third read door, closed the same way as repo_search and repo_read: a diff
+    // that spans a ratchet commit would otherwise hand a tuning-stage reviewer
+    // the holdout aggregates the ratchet just recorded. Withheld rather than
+    // refused, so a legitimate review of an in-scope lane still returns, and
+    // reported by name so the omission is auditable instead of silent.
+    const readsMemory = operationReadsRatchetMemory(operationId)
+    const withheld = readsMemory ? [] : allPaths.filter(path => isRatchetMemoryPath(path))
+    const paths = readsMemory ? allPaths : allPaths.filter(path => !isRatchetMemoryPath(path))
+    const diff = paths.length
+      ? processResult('git', ['diff', '--no-ext-diff', '--unified=40', `${base}...${candidate}`, '--', ...paths], this.root)
+      : { exit_code: 0, output: '', stdout: '', stderr: '' }
     const after = this.rootGuard()
     this.#assertGuard(before, after)
     requireSuccess(diff, 'commit diff inspection')
     if (Buffer.byteLength(diff.output) > 2 * 1024 * 1024) throw new Error('review diff exceeds broker limit')
-    return { base_sha: base, candidate_sha: candidate, paths, diff: diff.output, broker_evidence: this.#evidence('commit_inspect', this.root, `git diff ${base}...${candidate} -- <validated paths>`, diff, before, after) }
+    return {
+      base_sha: base, candidate_sha: candidate, paths, withheld_paths: withheld, diff: diff.output,
+      broker_evidence: this.#evidence('commit_inspect', this.root, `git diff ${base}...${candidate} -- <validated paths>`, diff, before, after),
+    }
   }
 
   integrate(input) {
@@ -1197,14 +1268,14 @@ export class OracleLaneBroker {
 const TOOL_DEFINITIONS = Object.freeze([
   { name: 'capability_probe', description: 'Run the one fixed aggregate-only oracle capability probe under a canonical-root guard.', inputSchema: { type: 'object', additionalProperties: false, properties: {} } },
   { name: 'ref_resolve', description: 'Resolve only main, oracle canonical, or an exact commit SHA without mutation.', inputSchema: { type: 'object', additionalProperties: false, required: ['ref_id'], properties: { ref_id: { type: 'string' } } } },
-  { name: 'repo_search', description: 'Literal search of tracked non-membership repository artifacts; returns opaque file IDs.', inputSchema: { type: 'object', additionalProperties: false, required: ['query'], properties: { query: { type: 'string', maxLength: 160 } } } },
-  { name: 'repo_read', description: 'Read one broker-issued opaque repository artifact ID.', inputSchema: { type: 'object', additionalProperties: false, required: ['file_id'], properties: { file_id: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
+  { name: 'repo_search', description: 'Literal search of tracked non-membership repository artifacts; returns opaque file IDs. Ratchet memory is visible only to a supplied ratchet or bootstrap capability.', inputSchema: { type: 'object', additionalProperties: false, required: ['query'], properties: { query: { type: 'string', maxLength: 160 }, capability: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
+  { name: 'repo_read', description: 'Read one broker-issued opaque repository artifact ID, resolved against the same operation-scoped listing repo_search offers.', inputSchema: { type: 'object', additionalProperties: false, required: ['file_id'], properties: { file_id: { type: 'string', pattern: '^[0-9a-f]{64}$' }, capability: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
   { name: 'lane_open', description: 'Acquire one fixed-registry keeper-backed v3 lane and issue an opaque capability.', inputSchema: { type: 'object', additionalProperties: false, required: ['operation_id', 'stage', 'run_id', 'branch', 'base_sha', 'heartbeat_id'], properties: { operation_id: { type: 'string', enum: Object.keys(OPERATION_REGISTRY) }, stage: { type: 'string' }, run_id: { type: 'string' }, branch: { type: 'string' }, base_sha: { type: 'string', pattern: '^[0-9a-f]{40}$' }, heartbeat_id: { type: 'string' }, scope_paths: { type: 'array', items: { type: 'string' } } } } },
   { name: 'workspace_list', description: 'List only artifacts bound to an active lane capability.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
   { name: 'patch_apply', description: 'Apply a unified text patch only after scope, containment, and reparse validation in the leased lane.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability', 'patch'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' }, patch: { type: 'string', maxLength: 2097152 } } } },
   { name: 'gate_run', description: 'Run one fixed registered targeted gate in the capability-bound leased root.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability', 'gate_id'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' }, gate_id: { type: 'string', enum: Object.keys(GATE_REGISTRY) } } } },
   { name: 'lane_commit', description: 'Commit exactly the validated scoped lane paths with a fixed message ID.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability', 'message_id'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' }, message_id: { type: 'string', enum: Object.keys(MESSAGE_REGISTRY) } } } },
-  { name: 'commit_inspect', description: 'Read an exact commit diff without exposing frozen cohort membership.', inputSchema: { type: 'object', additionalProperties: false, required: ['base_sha', 'candidate_sha'], properties: { base_sha: { type: 'string', pattern: '^[0-9a-f]{40}$' }, candidate_sha: { type: 'string', pattern: '^[0-9a-f]{40}$' } } } },
+  { name: 'commit_inspect', description: 'Read an exact commit diff without exposing frozen cohort membership; ratchet-memory paths are withheld and named unless a ratchet or bootstrap capability is supplied.', inputSchema: { type: 'object', additionalProperties: false, required: ['base_sha', 'candidate_sha'], properties: { base_sha: { type: 'string', pattern: '^[0-9a-f]{40}$' }, candidate_sha: { type: 'string', pattern: '^[0-9a-f]{40}$' }, capability: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
   { name: 'lane_integrate', description: 'Integrate 1-4 exact reviewed SHAs through the fixed broker merge path.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability', 'reviewed_shas'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' }, reviewed_shas: { type: 'array', minItems: 1, maxItems: 4, items: { type: 'string', pattern: '^[0-9a-f]{40}$' } } } } },
   { name: 'recover_stage1', description: 'Validate and replay the pinned Stage 1 source commit, run four fixed gates, and commit without adoption rerun.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
   { name: 'recovery_result', description: 'Query and replay only the sealed durable Stage 1 result bound to an active deterministic capability.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
