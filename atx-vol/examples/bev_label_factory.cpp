@@ -209,6 +209,16 @@ bool parse_vrp_panel_args(int argc, char **argv, VrpPanelConfig &cfg) {
       cfg.splits = v;
     } else if (flag == "--liquidity" && next(v)) {
       cfg.liquidity = v;
+    } else if (flag == "--on-implausible" && next(v)) {
+      if (v == "fail") {
+        cfg.on_implausible = VrpImplausiblePolicy::Fail;
+      } else if (v == "quarantine") {
+        cfg.on_implausible = VrpImplausiblePolicy::Quarantine;
+      } else {
+        std::fprintf(stderr, "--on-implausible must be 'fail' or 'quarantine' (got '%s')\n",
+                     v.c_str());
+        return false;
+      }
     } else if (flag == "--panel-schema" && next(v)) {
       if (v == "v1") {
         cfg.schema = VrpPanelSchema::V1;

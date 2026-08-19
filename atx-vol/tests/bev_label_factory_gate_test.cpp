@@ -1046,6 +1046,130 @@ TEST(VrpPanelV4, SchemaTableIsAPrefixExtensionOfV3PlusBarIndex) {
   EXPECT_EQ(schema_name(VrpPanelSchema::V4), "vrp_panel_v4");
 }
 
+// ── Quarantine: the unit of the defect is a STEP ─────────────────────────
+//
+// An unadjusted corporate action puts one impossible return in the middle of
+// the spot series. The rv_fwd gate sees only part of the damage — the 21 rows
+// whose FORWARD window spans it — while the 63 rows whose TRAILING windows
+// span it carry a perfectly plausible rv_fwd and were never flagged at all.
+// Quarantine works on the step, so it reaches both.
+[[nodiscard]] VrpSeries make_vrp_series_with_split(int n, std::size_t ex_bar, double factor) {
+  VrpSeries s = make_vrp_series(n);
+  // Bounded by n. Everything from `ex_bar` on is divided, exactly as an
+  // unadjusted vendor series looks after a forward split.
+  for (std::size_t i = ex_bar; i < s.spot.size(); ++i) {
+    s.spot[i] /= factor;
+  }
+  return s;
+}
+
+TEST(VrpPanelQuarantine, NaNsTheForwardLegOfEveryRowWhoseWindowSpansTheSplitStep) {
+  constexpr std::size_t kEx = 120;
+  const VrpSeries s = make_vrp_series_with_split(240, kEx, 10.0);
+  VrpPanelCounters c;
+  const Result<std::vector<VrpPanelRow>> rows_r =
+      build_vrp_rows(s, c, VrpPanelSchema::V4, VrpImplausiblePolicy::Quarantine);
+  ASSERT_TRUE(rows_r.has_value()) << rows_r.error().to_string();
+  const std::vector<VrpPanelRow> &rows = *rows_r;
+  EXPECT_EQ(c.n_implausible_steps, 1u);
+
+  // The forward window of row i is bars i+1..i+21, whose RETURNS are steps
+  // i+2..i+21. So step kEx is inside exactly rows kEx-21 .. kEx-2.
+  for (std::size_t i = kEx - 21; i <= kEx - 2; ++i) {
+    EXPECT_TRUE(std::isnan(rows[i].rv_fwd_21d)) << "row " << i << " kept a fictional label";
+    EXPECT_TRUE(std::isnan(rows[i].label)) << i;
+  }
+  // Immediately outside that band the forward window is clean and must SURVIVE
+  // — a quarantine that swallowed the neighbourhood would pass the test above
+  // while destroying good data.
+  EXPECT_FALSE(std::isnan(rows[kEx - 22].rv_fwd_21d));
+  EXPECT_FALSE(std::isnan(rows[kEx - 1].rv_fwd_21d));
+}
+
+TEST(VrpPanelQuarantine, NaNsTrailingFeaturesTheRvGateNeverSees) {
+  constexpr std::size_t kEx = 120;
+  const VrpSeries s = make_vrp_series_with_split(240, kEx, 10.0);
+  VrpPanelCounters c;
+  const Result<std::vector<VrpPanelRow>> rows_r =
+      build_vrp_rows(s, c, VrpPanelSchema::V4, VrpImplausiblePolicy::Quarantine);
+  ASSERT_TRUE(rows_r.has_value()) << rows_r.error().to_string();
+  const std::vector<VrpPanelRow> &rows = *rows_r;
+
+  // Row kEx+10 sits ten sessions PAST the split: its rv_fwd is clean and the
+  // gate would never flag it, but its trailing 21 window still spans the step.
+  const VrpPanelRow &after = rows[kEx + 10];
+  EXPECT_FALSE(std::isnan(after.rv_fwd_21d)) << "the forward leg here is genuinely clean";
+  EXPECT_TRUE(std::isnan(after.f2_log_rv21));
+  EXPECT_TRUE(std::isnan(after.f5_hv_iv_gap));
+  EXPECT_TRUE(std::isnan(after.f6_vrp_lag));
+  EXPECT_TRUE(std::isnan(after.f7_ret_21d));
+  EXPECT_TRUE(std::isnan(after.f8_jump_recent));
+  // Implied vol is scale-invariant: a share-count change does not move it, so
+  // masking these would be superstition, not caution.
+  EXPECT_FALSE(std::isnan(after.f3_iv_level));
+  EXPECT_FALSE(std::isnan(after.f4_term_slope));
+
+  // 63 sessions past the split every trailing window has cleared it.
+  const VrpPanelRow &clear = rows[kEx + 63];
+  EXPECT_FALSE(std::isnan(clear.f2_log_rv21));
+  EXPECT_FALSE(std::isnan(clear.f8_jump_recent));
+}
+
+// The anti-vacuity control. Quarantine must be INERT on data with no
+// implausible step: same rows, bit for bit, as the default policy. Without
+// this a quarantine that NaN'd everything would pass both tests above.
+TEST(VrpPanelQuarantine, IsBitIdenticalToFailOnASeriesWithNoImplausibleStep) {
+  const VrpSeries s = make_vrp_series(240);
+  VrpPanelCounters cf;
+  const Result<std::vector<VrpPanelRow>> f =
+      build_vrp_rows(s, cf, VrpPanelSchema::V4, VrpImplausiblePolicy::Fail);
+  ASSERT_TRUE(f.has_value()) << f.error().to_string();
+  VrpPanelCounters cq;
+  const Result<std::vector<VrpPanelRow>> q =
+      build_vrp_rows(s, cq, VrpPanelSchema::V4, VrpImplausiblePolicy::Quarantine);
+  ASSERT_TRUE(q.has_value()) << q.error().to_string();
+
+  ASSERT_EQ(f->size(), q->size());
+  EXPECT_EQ(cq.n_implausible_steps, 0u);
+  EXPECT_EQ(cq.n_quarantined_forward, 0u);
+  EXPECT_EQ(cq.n_quarantined_trailing, 0u);
+  // Bounded by row count.
+  for (std::size_t i = 0; i < f->size(); ++i) {
+    const VrpPanelRow &a = (*f)[i];
+    const VrpPanelRow &b = (*q)[i];
+    EXPECT_TRUE(same_bits(a.rv_fwd_21d, b.rv_fwd_21d)) << i;
+    EXPECT_TRUE(same_bits(a.label, b.label)) << i;
+    EXPECT_TRUE(same_bits(a.f0_log_rv1, b.f0_log_rv1)) << i;
+    EXPECT_TRUE(same_bits(a.f1_log_rv5, b.f1_log_rv5)) << i;
+    EXPECT_TRUE(same_bits(a.f2_log_rv21, b.f2_log_rv21)) << i;
+    EXPECT_TRUE(same_bits(a.f5_hv_iv_gap, b.f5_hv_iv_gap)) << i;
+    EXPECT_TRUE(same_bits(a.f6_vrp_lag, b.f6_vrp_lag)) << i;
+    EXPECT_TRUE(same_bits(a.f7_ret_21d, b.f7_ret_21d)) << i;
+    EXPECT_TRUE(same_bits(a.f8_jump_recent, b.f8_jump_recent)) << i;
+  }
+}
+
+// Detection is not the policy. The gate's own counter must be unmoved by
+// quarantine, so the meta header reports the same honest number either way and
+// a quarantined run cannot be mistaken for a clean corpus.
+TEST(VrpPanelQuarantine, DetectionCountIsIdenticalUnderBothPolicies) {
+  const VrpSeries s = make_vrp_series_with_split(240, 120, 10.0);
+  VrpPanelCounters cf;
+  ASSERT_TRUE(build_vrp_rows(s, cf, VrpPanelSchema::V4, VrpImplausiblePolicy::Fail).has_value());
+  VrpPanelCounters cq;
+  ASSERT_TRUE(
+      build_vrp_rows(s, cq, VrpPanelSchema::V4, VrpImplausiblePolicy::Quarantine).has_value());
+  EXPECT_EQ(cf.n_rv_fwd_implausible, cq.n_rv_fwd_implausible);
+  EXPECT_GT(cf.n_rv_fwd_implausible, 0u);
+}
+
+// The step threshold is DERIVED from the rv gate, not chosen independently.
+TEST(VrpPanelQuarantine, StepThresholdIsDerivedFromTheRvPlausibilityGate) {
+  const double derived = std::sqrt(kVrpMaxPlausibleRvFwd * kVrpMaxPlausibleRvFwd *
+                                   static_cast<double>(kVrpHorizonSessions - 1) / 252.0);
+  EXPECT_NEAR(kVrpImplausibleStepReturn, derived, 1e-15);
+}
+
 // Done-criterion (3): the forward-RV window is EXACTLY sessions t+1..t+21 —
 // a spike planted at t and one planted at t+22 each leave the label at t
 // byte-identical, while a row whose window genuinely contains the spiked

@@ -88,6 +88,12 @@ namespace atx::vol::alpha {
 inline constexpr double kTradingDays = 252.0;
 inline constexpr double kLogRv1Floor = 1.0e-8;
 inline constexpr double kJumpSigmaMultiple = 4.0;
+// sqrt(3.0^2 * 20 / 252) — the smallest |log return| that on its own pushes a
+// 21-session realized-vol window past 300% annualized. It is `vrp_panel`'s
+// kVrpImplausibleStepReturn, restated because this layer links only
+// atx::core; AlphaComputeStepThresholdMatchesTheEmitter pins the two equal.
+// A move this large in a RAW spot series is a corporate action, not a return.
+inline constexpr double kAlphaImplausibleStepReturn = 0.8451542547285166;
 
 // One symbol's rows, in date order, with a back-pointer to the frame row each
 // came from so a computed column can be written back row-aligned.
@@ -105,9 +111,19 @@ struct SymbolSeries {
   // on a panel that predates it. Carried as a double because the frame stores
   // every numeric column as one; the values are small exact integers.
   std::vector<double> bar_index;
-  // contiguous[i]: this row's session is immediately after row i-1's -- read
-  // from `bar_index` when the panel has one, inferred on the global date axis
-  // when it does not.
+  // contiguous[i]: the step from row i-1 to row i is a USABLE session step.
+  // Two things can make it not one:
+  //   * the sessions are not adjacent -- read from `bar_index` when the panel
+  //     has one, inferred on the global date axis when it does not; or
+  //   * the step is not a return. A spot series is RAW: across the ex-date of
+  //     a corporate action no supplied factor covers, spot[i]/spot[i-1] is a
+  //     share-count ratio. `vrp_panel` quarantines its OWN columns against
+  //     that (VrpImplausiblePolicy) but cannot repair the `spot` column, which
+  //     is contractually the unadjusted series -- so a consumer recomputing
+  //     from spot would read a -222% "return" and every window over it would
+  //     be fiction. Folding it in here means one flag protects every windowed
+  //     feature, present and future, with no new machinery: the step simply is
+  //     not a session-to-session move, which is what this flag already means.
   // Always true at i == 0 (nothing precedes it to be adjacent to).
   // `unsigned char` rather than `bool` so a `std::span` over it is valid --
   // `std::vector<bool>` is a bit proxy with no contiguous storage.
@@ -545,6 +561,18 @@ using FeatureFn = double (*)(const EvalInputs &, std::size_t);
         contig = (cur != axis_at.end() && prev != axis_at.end() && cur->second == prev->second + 1)
                      ? 1U
                      : 0U;
+      }
+    }
+    // A step that is not a return is not a step. Threshold DERIVED, not
+    // chosen: it is `vrp_panel`'s own kVrpImplausibleStepReturn, the smallest
+    // |log return| that alone pushes a 21-session window past that header's
+    // rv plausibility gate ("a -57% day"). Duplicated as a literal rather than
+    // included, because this layer links only atx::core -- the test pins the
+    // two together so they cannot drift.
+    if (contig == 1U && !s.spot.empty()) {
+      const double step = std::log(spot[r] / s.spot.back());
+      if (std::isfinite(step) && std::abs(step) >= kAlphaImplausibleStepReturn) {
+        contig = 0U;
       }
     }
     s.bar_index.push_back(has_bar_index ? bar_index[r] : nan_v);

@@ -153,6 +153,43 @@ TEST(AlphaCompute, V4PanelIsContiguousEverywhereIncludingStriplessRows) {
   }
 }
 
+// A raw spot series steps across an unadjusted corporate action. That step is
+// a share-count ratio, not a return, and every window over it is fiction --
+// so the axis gate must treat it exactly like a missing session. Here bar 1
+// -> 2 is a 10:1 split: adjacent on the bar axis, NOT a usable step.
+const char *const kUnadjustedSplit =
+    "symbol\tdate\tspot\tiv_fair_21d\tiv_fair_63d\trv_fwd_21d\tbar_index\n"
+    "AAA\t2026-01-05\t2400\t0.20\t0.22\t0.25\t0\n"
+    "AAA\t2026-01-06\t2416\t0.21\t0.23\t0.26\t1\n"
+    "AAA\t2026-01-07\t252\t0.22\t0.24\t0.27\t2\n"
+    "AAA\t2026-01-08\t257\t0.23\t0.25\t0.28\t3\n";
+
+TEST(AlphaCompute, AnUnadjustedCorporateActionStepIsNotAnAdjacency) {
+  const PanelFrame f = load(kUnadjustedSplit);
+  auto series = group_by_symbol(f);
+  ASSERT_TRUE(series) << series.error().to_string();
+  ASSERT_EQ(series->size(), 1U);
+  const SymbolSeries &s = (*series)[0];
+  ASSERT_EQ(s.size(), 4U);
+  EXPECT_EQ(s.contiguous[1], 1U) << "an ordinary +0.7% step must stay usable";
+  EXPECT_EQ(s.contiguous[2], 0U) << "the split step passed the gate";
+  EXPECT_EQ(s.contiguous[3], 1U) << "the step AFTER the split is a real return";
+  // bar_index says adjacent everywhere — so the split is caught by the return
+  // magnitude, not by the axis, which is the point of carrying both.
+  for (std::size_t i = 0; i < s.size(); ++i) {
+    EXPECT_EQ(s.bar_index[i], static_cast<double>(i));
+  }
+}
+
+// The threshold is DERIVED from vrp_panel's rv plausibility gate, not chosen.
+// Restating it in this layer (which links only atx::core) is only safe while
+// the derivation still holds, so pin it.
+TEST(AlphaCompute, StepThresholdMatchesTheEmitterDerivation) {
+  // 3.0 = kVrpMaxPlausibleRvFwd; 20 = the return terms in a 21-session window.
+  const double derived = std::sqrt(3.0 * 3.0 * 20.0 / 252.0);
+  EXPECT_NEAR(kAlphaImplausibleStepReturn, derived, 1e-15);
+}
+
 TEST(AlphaCompute, AGapNaNsEveryWindowSpanningIt) {
   const PanelFrame f = load(kGappy);
   const FeatureRegistry reg = builtin_features();
