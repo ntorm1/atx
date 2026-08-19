@@ -48,7 +48,7 @@ struct Args {
   std::string panel;
   std::vector<std::string> features{"f5_hv_iv_gap", "f4_term_slope", "f16_iv_vov_21d",
                                     "f15_idio_share", "liq_hspread_frac"};
-  std::string market{"SPY"};
+  std::string market{"@xsec"};
   // "dh" = the delta-hedged money axis. "rv" = the decontaminated cross-read:
   // forward realized vol alone, no implied leg, not a P&L.
   std::string axis{"dh"};
@@ -69,7 +69,9 @@ void usage() {
       stderr,
       "usage: atx-vol-longvega --panel <tsv> [options]\n"
       "  --features PAT[,PAT...]  catalogue globs (default: the five-signal long-vega set)\n"
-      "  --market SYM             market proxy for f15_idio_share (default SPY)\n"
+      "  --market SYM|@xsec       market proxy for f15/f27: a panel symbol, or @xsec\n"
+"                           for the cross-sectional mean return (default @xsec —\n"
+"                           a single-symbol proxy with gaps starves both features)\n"
       "  --axis dh|rv|volchg      volchg = 100*(rv_fwd - rv_trail), the VOL-CHANGE\n"
     "                           axis: no implied leg AND no vol level, so it is\n"
     "                           immune to both the entry-mark channel and to\n"
@@ -241,7 +243,9 @@ int main(int argc, char **argv) {
   }
   MarketSeries market;
   bool have_market = false;
-  if (auto m = market_from(*series, args.market, dates->size())) {
+  if (auto m = args.market == "@xsec"
+                   ? market_from_cross_section(*series, dates->size())
+                   : market_from(*series, args.market, dates->size())) {
     market = std::move(*m);
     have_market = true;
     // The proxy obeys the same row policy as every other symbol, and

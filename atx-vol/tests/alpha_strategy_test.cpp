@@ -315,6 +315,107 @@ TEST(AlphaCompute, MarketCoverageIsReportedAgainstTheGlobalAxis) {
   EXPECT_FALSE(market_from(*series, "ZZZ", 4));
 }
 
+// A cross-sectional proxy's step return is the mean of the one-session log
+// returns of exactly the symbols that SAW that session pair as adjacent bars.
+// On kGappy: BBB is missing 2026-01-06, so its 01-05 -> 01-07 two-day return
+// must contribute to NEITHER of the two steps it spans.
+TEST(AlphaCompute, CrossSectionProxyAveragesOnlyTheReturnsThatSpanOneSession) {
+  const PanelFrame f = load(kGappy);
+  auto series = group_by_symbol(f);
+  ASSERT_TRUE(series);
+  auto m = market_from_cross_section(*series, /*global_sessions=*/4, /*min_names=*/1);
+  ASSERT_TRUE(m) << m.error().to_string();
+  EXPECT_EQ(m->symbol, "@xsec");
+  // The proxy lives on the UNION calendar, so its coverage is 100% by
+  // construction — the property the single-symbol proxy could not deliver.
+  ASSERT_EQ(m->date.size(), 4U);
+  EXPECT_NEAR(m->coverage_fraction(), 1.0, 1e-12);
+
+  const double into_0106 = std::log(m->spot[1] / m->spot[0]);
+  const double into_0107 = std::log(m->spot[2] / m->spot[1]);
+  const double into_0108 = std::log(m->spot[3] / m->spot[2]);
+  EXPECT_NEAR(into_0106, std::log(101.0 / 100.0), 1e-12);          // AAA alone
+  EXPECT_NEAR(into_0107, std::log(102.0 / 101.0), 1e-12);          // AAA alone
+  EXPECT_NEAR(into_0108,
+              0.5 * (std::log(103.0 / 102.0) + std::log(53.0 / 52.0)), 1e-12);
+}
+
+// A step with fewer than `min_names` contributors is refused, not fabricated:
+// the spot at that session is NaN, so any regression window that touches the
+// step reads a NaN return and declines. The union axis itself is kept intact —
+// dropping the DATE would silently glue the two neighbouring sessions into a
+// fake one-session interval.
+TEST(AlphaCompute, CrossSectionProxyRefusesAnUnderpopulatedStep) {
+  const PanelFrame f = load(kGappy);
+  auto series = group_by_symbol(f);
+  ASSERT_TRUE(series);
+  auto m = market_from_cross_section(*series, /*global_sessions=*/4, /*min_names=*/2);
+  ASSERT_TRUE(m);
+  ASSERT_EQ(m->date.size(), 4U); // the axis survives even where the data don't
+  EXPECT_TRUE(std::isfinite(m->spot[0]));
+  EXPECT_TRUE(std::isnan(m->spot[1])); // only AAA saw 01-05 -> 01-06
+  EXPECT_TRUE(std::isnan(m->spot[2])); // only AAA saw 01-06 -> 01-07
+  EXPECT_TRUE(std::isfinite(m->spot[3])); // both saw 01-07 -> 01-08
+}
+
+namespace {
+
+// Two symbols, n shared sessions, deterministic but decorrelated return
+// paths — enough structure for a 63-window regression to have positive
+// variance on both legs.
+[[nodiscard]] std::string make_two_symbol_panel(int n) {
+  std::string out = "symbol\tdate\tspot\tiv_fair_21d\tiv_fair_63d\trv_fwd_21d\tbar_index\n";
+  for (const char *sym : {"AAA", "BBB"}) {
+    double s = 100.0;
+    for (int i = 0; i < n; ++i) {
+      const double r = (sym[0] == 'A') ? 0.01 * static_cast<double>(i % 5 - 2)
+                                       : 0.008 * static_cast<double>(i % 7 - 3);
+      s *= std::exp(r);
+      char buf[256];
+      std::snprintf(buf, sizeof buf, "%s\t2026-%02d-%02d\t%.10f\t0.20\t0.22\t0.25\t%d\n", sym,
+                    1 + i / 28, 1 + i % 28, s, i);
+      out += buf;
+    }
+  }
+  return out;
+}
+
+} // namespace
+
+// End to end: the cross-sectional proxy is what makes f15/f27 computable on a
+// panel with no designated market symbol. This is the round-11 fix for the
+// SPY proxy covering 207/249 sessions and starving both features.
+TEST(AlphaCompute, IdioAndSysvolShareAreFiniteUnderTheCrossSectionProxy) {
+  const PanelFrame f = load(make_two_symbol_panel(70));
+  auto series = group_by_symbol(f);
+  ASSERT_TRUE(series);
+  auto m = market_from_cross_section(*series, /*global_sessions=*/70, /*min_names=*/2);
+  ASSERT_TRUE(m);
+
+  const FeatureRegistry reg = builtin_features();
+  const std::vector<std::string> pats{"f15_idio_share", "f27_sysvol_share_63d"};
+  const auto sel = reg.select(pats);
+  ASSERT_TRUE(sel);
+  auto out = evaluate(f, *sel, &*m);
+  ASSERT_TRUE(out) << out.error().to_string();
+  const std::vector<double> &idio = out->values.at("f15_idio_share");
+  const std::vector<double> &sys = out->values.at("f27_sysvol_share_63d");
+
+  std::size_t checked = 0;
+  for (std::size_t r = 0; r < f.rows(); ++r) {
+    if (!std::isfinite(idio[r])) {
+      continue;
+    }
+    EXPECT_GE(idio[r], 0.0) << r;
+    EXPECT_LE(idio[r], 1.0) << r;
+    ASSERT_TRUE(std::isfinite(sys[r])) << r;
+    EXPECT_NEAR(sys[r], 1.0 - idio[r], 1e-12) << r;
+    ++checked;
+  }
+  // Rows 63.. of each 70-row symbol qualify: 7 per symbol.
+  EXPECT_EQ(checked, 14U);
+}
+
 // ── Ranking and blending ────────────────────────────────────────────────────
 
 TEST(AlphaStrategy, RankWithinIsMidRankAndSkipsNonFinite) {

@@ -714,6 +714,84 @@ using FeatureFn = double (*)(const EvalInputs &, std::size_t);
              "alpha::market_from: symbol '" + std::string(symbol) + "' is not in the panel");
 }
 
+// A market proxy built from the panel's own cross-section: each step return is
+// the equal-weight mean of the one-session log returns of every symbol that
+// saw that session pair as ADJACENT bars. A symbol that skipped the session
+// contributes its multi-day return to NEITHER of the steps it spans — the same
+// same-interval rule `idio_share` enforces on the regression side.
+//
+// This exists because the single-symbol proxy fails on coverage: SPY covered
+// 207/249 sessions of the round-11 xsec panel, and at coverage c a 63-session
+// window survives with probability ~c^63, so f15/f27 were unmeasurable. The
+// cross-section lives on the UNION calendar and covers it 100% by
+// construction. The synthetic spot path starts at 100 and chains the mean
+// returns; the level is arbitrary — only returns are ever read from it.
+//
+// A step with fewer than `min_names` contributors is refused, not fabricated:
+// its session keeps its place on the axis (dropping the DATE would glue the
+// neighbours into a fake one-session interval) but its spot is NaN, which
+// poisons the returns into that session and out of it. The next populated
+// step restarts the chain at 100. On a 616-name panel the floor never binds;
+// it is there for thin panels and fixture-sized tests.
+[[nodiscard]] inline Result<MarketSeries>
+market_from_cross_section(std::span<const SymbolSeries> series, std::size_t global_sessions,
+                          std::size_t min_names = 10) {
+  std::vector<std::string> dates;
+  for (const SymbolSeries &s : series) {
+    dates.insert(dates.end(), s.date.begin(), s.date.end());
+  }
+  std::sort(dates.begin(), dates.end());
+  dates.erase(std::unique(dates.begin(), dates.end()), dates.end());
+  if (dates.empty()) {
+    return Err(atx::core::ErrorCode::InvalidArgument,
+               "alpha::market_from_cross_section: the panel has no rows");
+  }
+
+  std::unordered_map<std::string, std::size_t> axis;
+  axis.reserve(dates.size());
+  for (std::size_t k = 0; k < dates.size(); ++k) {
+    axis.emplace(dates[k], k);
+  }
+
+  // sum/cnt[k] accumulate the returns INTO session k. k == 0 has no step.
+  std::vector<double> sum(dates.size(), 0.0);
+  std::vector<std::size_t> cnt(dates.size(), 0);
+  for (const SymbolSeries &s : series) {
+    for (std::size_t j = 1; j < s.size(); ++j) {
+      const std::size_t cur = axis.at(s.date[j]);
+      if (cur != axis.at(s.date[j - 1]) + 1) {
+        continue; // the symbol's bar pair spans more than one union session
+      }
+      const double r = compute_detail::logret(s.spot, j);
+      if (!std::isfinite(r)) {
+        continue;
+      }
+      sum[cur] += r;
+      cnt[cur] += 1;
+    }
+  }
+
+  MarketSeries m;
+  m.symbol = "@xsec";
+  m.date = std::move(dates);
+  m.spot.resize(m.date.size());
+  m.spot[0] = 100.0;
+  for (std::size_t k = 1; k < m.spot.size(); ++k) {
+    if (cnt[k] < min_names) {
+      m.spot[k] = compute_detail::nan_d();
+      continue;
+    }
+    const double base = std::isfinite(m.spot[k - 1]) ? m.spot[k - 1] : 100.0;
+    m.spot[k] = base * std::exp(sum[k] / static_cast<double>(cnt[k]));
+  }
+  m.index.reserve(m.date.size());
+  for (std::size_t k = 0; k < m.date.size(); ++k) {
+    m.index.emplace(m.date[k], k);
+  }
+  m.global_sessions = global_sessions;
+  return Ok(std::move(m));
+}
+
 // ── Evaluation ──────────────────────────────────────────────────────────────
 
 struct ComputedFeatures {
