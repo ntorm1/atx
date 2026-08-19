@@ -509,6 +509,15 @@ using TargetRegistry = Registry<TargetSpec>;
        "-- so any feature reading iv_fair_21d[t] scores against it through a "
        "channel as well as through skill, and must be cross-read on rv_fwd_21d "
        "to separate the two."});
+  put({"dh_straddle_pnl_63d", Unit::VolPoints, 63, true,
+       {spot(1, 63), strip(63, 0, 0)},
+       "Delta-hedged straddle P&L per unit vega at the BACK tenor, ~ "
+       "(rv_fwd_63d - iv_fair_63d) in vol points, 63-session hold. Exists "
+       "because the back-month mark is re-marked late (Campasano & Linn, SSRN "
+       "2871616): a vol forecast the 21d mark has already priced can still be "
+       "monetized in the 63d leg. Registered LAST so it never displaces "
+       "rv_fwd_21d as anyone's suggested cross-read. Same entry-mark caveat "
+       "as the 21d money axis, at the 63d strip."});
   return reg;
 }
 

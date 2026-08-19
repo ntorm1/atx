@@ -889,6 +889,37 @@ TEST(AlphaStrategy, TheVolChangeAxisRefusesAPanelWithoutTheTrailingColumn) {
   EXPECT_FALSE(vc.has_value());
 }
 
+TEST(AlphaStrategy, TheBackMonthAxisComputesItsForwardLegFromSpotUnderTheGate) {
+  const PanelFrame f = load(make_earner_panel(70));
+  auto pnl = dh63_straddle_pnl_vol_points(f);
+  ASSERT_TRUE(pnl) << pnl.error().to_string();
+
+  // The fixture's return into row j is 0.005*(j%3 - 1); each residue class
+  // appears 21 times in any 63-step window, so the forward leg is the same
+  // for every valid entry row.
+  double sum = 0.0;
+  for (int j = 1; j <= 63; ++j) {
+    const double r = 0.005 * static_cast<double>(j % 3 - 1);
+    sum += r * r;
+  }
+  const double rv63 = std::sqrt(sum / 63.0 * 252.0);
+
+  // EEE rows are frame rows 0..69 with iv_fair_63d = 0.25; FFF 70..139 at
+  // 0.22. 1e-6, not 1e-12: spot round-trips through %.10f panel text.
+  EXPECT_NEAR((*pnl)[0], 100.0 * (rv63 - 0.25), 1e-6);
+  EXPECT_NEAR((*pnl)[6], 100.0 * (rv63 - 0.25), 1e-6);
+  EXPECT_NEAR((*pnl)[70], 100.0 * (rv63 - 0.22), 1e-6);
+  // Row 7's forward window runs off the series: no fiction, a NaN.
+  EXPECT_TRUE(std::isnan((*pnl)[7]));
+  EXPECT_TRUE(std::isnan((*pnl)[69]));
+}
+
+TEST(AlphaStrategy, TheBackMonthAxisRefusesAPanelWithoutTheBackStrip) {
+  const PanelFrame f = load("symbol\tdate\tspot\tiv_fair_21d\trv_fwd_21d\n"
+                            "AAA\t2026-01-05\t100\t0.20\t0.25\n");
+  EXPECT_FALSE(dh63_straddle_pnl_vol_points(f));
+}
+
 TEST(AlphaStrategy, ADateThatCannotFormBothBooksFormsNeither) {
   const PanelFrame f = load("symbol\tdate\tspot\tiv_fair_21d\tiv_fair_63d\trv_fwd_21d\n"
                             "AAA\t2026-01-05\t100\t0.20\t0.22\t0.30\n"

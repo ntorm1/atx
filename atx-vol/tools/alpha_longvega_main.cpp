@@ -59,6 +59,7 @@ struct Args {
   std::string per_date;
   std::size_t names{20};
   std::size_t horizon{21};
+  bool horizon_explicit{false};
   double max_hspread{0.20};
   double liquid_cut{0.05};
   double cost_liquid{0.10};
@@ -85,6 +86,12 @@ void usage() {
 "                           name's own delivered history (f31 < 0) — the long-vega\n"
 "                           side of the event premium. Zero is the principled\n"
 "                           threshold, not a tuned one.\n"
+      "  --axis ... dh63          dh63 = 100*(rv_fwd_63d - iv_fair_63d), the BACK-month\n"
+      "                           money axis, 63-session hold (horizon auto-set to 63).\n"
+      "                           The back mark is re-marked late (Campasano-Linn), so a\n"
+      "                           forecast the 21d mark absorbed can still pay here. The\n"
+      "                           forward leg is computed from the panel's spot under the\n"
+      "                           full contiguity + corporate-action gate.\n"
       "  --axis dh|rv|volchg      volchg = 100*(rv_fwd - rv_trail), the VOL-CHANGE\n"
     "                           axis: no implied leg AND no vol level, so it is\n"
     "                           immune to both the entry-mark channel and to\n"
@@ -144,8 +151,9 @@ bool parse_args(int argc, char **argv, Args &a) {
     } else if (flag == "--keep-cheap-prints") {
       a.keep_cheap_prints = true;
     } else if (flag == "--axis" && next()) {
-      if (v != "dh" && v != "rv" && v != "volchg") {
-        std::fprintf(stderr, "--axis must be 'dh', 'rv' or 'volchg' (got '%s')\n", v.c_str());
+      if (v != "dh" && v != "rv" && v != "volchg" && v != "dh63") {
+        std::fprintf(stderr, "--axis must be 'dh', 'rv', 'volchg' or 'dh63' (got '%s')\n",
+                     v.c_str());
         return false;
       }
       a.axis = v;
@@ -155,6 +163,7 @@ bool parse_args(int argc, char **argv, Args &a) {
       a.names = static_cast<std::size_t>(std::stoull(v));
     } else if (flag == "--horizon" && next()) {
       a.horizon = static_cast<std::size_t>(std::stoull(v));
+      a.horizon_explicit = true;
     } else if (flag == "--max-hspread" && next()) {
       a.max_hspread = std::stod(v);
     } else if (flag == "--liquid-cut" && next()) {
@@ -218,6 +227,13 @@ int main(int argc, char **argv) {
   if (!parse_args(argc, argv, args)) {
     usage();
     return 2;
+  }
+
+  // A 63-session hold gets a 63-session overlap correction and phase split; a
+  // silent 21 would overstate the t by ~sqrt(3).
+  if (args.axis == "dh63" && !args.horizon_explicit) {
+    args.horizon = 63;
+    std::printf("NOTE  --axis dh63: horizon set to 63 sessions (pass --horizon to override)\n");
   }
 
   const FeatureRegistry freg = builtin_features();
@@ -370,6 +386,7 @@ int main(int argc, char **argv) {
   // ── 4. ADJUDICATE ─────────────────────────────────────────────────────────
   const char *axis_target = args.axis == "rv"       ? "rv_fwd_21d"
                             : args.axis == "volchg" ? "vol_chg_21d"
+                            : args.axis == "dh63"   ? "dh_straddle_pnl_63d"
                                                     : "dh_straddle_pnl_21d";
   const TargetSpec *money = treg.find(axis_target);
   if (money == nullptr) {
@@ -435,6 +452,7 @@ int main(int argc, char **argv) {
   // ── 6. RUN ────────────────────────────────────────────────────────────────
   auto pnl = args.axis == "rv"       ? forward_rv_vol_points(frame)
              : args.axis == "volchg" ? vol_change_vol_points(frame)
+             : args.axis == "dh63"   ? dh63_straddle_pnl_vol_points(frame)
                                      : dh_straddle_pnl_vol_points(frame);
   if (!pnl) {
     std::fprintf(stderr, "\nP&L construction failed: %s\n", pnl.error().to_string().c_str());

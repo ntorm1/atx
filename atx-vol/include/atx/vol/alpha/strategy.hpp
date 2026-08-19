@@ -568,4 +568,34 @@ run(const PanelFrame &frame, std::span<const DateSlice> dates, std::span<const d
   return Ok(std::move(out));
 }
 
+// The 63-session money axis: 100*(rv_fwd_63d - iv_fair_63d), the back-month
+// leg Campasano & Linn (SSRN 2871616) show is re-marked LATE — the published
+// escape from the front mark absorbing a vol forecast.
+//
+// The panel carries no rv_fwd_63d column, so the forward leg is computed here
+// from the panel's own spot series. Two gates make that safe: the window must
+// exist inside the series, and `window_contiguous` must hold over all 63
+// forward steps — which folds in BOTH session adjacency and the consumer-side
+// corporate-action step check, exactly the fictions a raw unadjusted spot
+// series could otherwise smuggle into a 63-session variance.
+[[nodiscard]] inline Result<std::vector<double>>
+dh63_straddle_pnl_vol_points(const PanelFrame &frame) {
+  ATX_TRY(const auto iv63, frame.numbers("iv_fair_63d"));
+  ATX_TRY(const auto series, group_by_symbol(frame));
+  std::vector<double> out(frame.rows(), std::numeric_limits<double>::quiet_NaN());
+  for (const SymbolSeries &s : series) {
+    for (std::size_t i = 0; i + 63 < s.size(); ++i) {
+      if (!s.window_contiguous(i + 63, 63)) {
+        continue;
+      }
+      const double rv = compute_detail::c2c_vol(s.spot, i + 63, 63);
+      const double iv = iv63[s.row[i]];
+      if (std::isfinite(rv) && std::isfinite(iv)) {
+        out[s.row[i]] = 100.0 * (rv - iv);
+      }
+    }
+  }
+  return Ok(std::move(out));
+}
+
 } // namespace atx::vol::alpha
