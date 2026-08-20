@@ -55,6 +55,7 @@ struct Args {
   bool keep_cheap_prints{false}; // exempt prints priced below the name's own history (f31 < 0)
   std::vector<std::string> flip; // features traded AGAINST their catalogue prior
   bool per_name{false}; // per-symbol attribution of the held book
+  std::size_t signal_lag{0}; // trade today on the score computed N sessions ago
   // "dh" = the delta-hedged money axis. "rv" = the decontaminated cross-read:
   // forward realized vol alone, no implied leg, not a P&L.
   std::string axis{"dh"};
@@ -169,6 +170,8 @@ bool parse_args(int argc, char **argv, Args &a) {
       }
     } else if (flag == "--per-name") {
       a.per_name = true;
+    } else if (flag == "--signal-lag" && next()) {
+      a.signal_lag = static_cast<std::size_t>(std::stoull(v));
     } else if (flag == "--axis" && next()) {
       if (v != "dh" && v != "rv" && v != "volchg" && v != "dh63" && v != "dhev") {
         std::fprintf(stderr, "--axis must be 'dh', 'rv', 'volchg', 'dh63' or 'dhev' (got '%s')\n",
@@ -454,6 +457,32 @@ int main(int argc, char **argv) {
     std::fprintf(stderr, "\nblend failed: %s\n", blended.error().to_string().c_str());
     return 1;
   }
+  if (args.signal_lag > 0) {
+    // Execution-latency robustness: trade today's book on the score as it
+    // stood N sessions ago. The shift is per-symbol along its own bar axis
+    // and refuses to bridge a non-contiguous step — a stale signal is one
+    // thing, a stale signal from across a gap or a corporate action is
+    // fiction. A live desk always has SOME latency; an edge that dies at one
+    // session of it was never tradeable.
+    auto lag_series = group_by_symbol(frame);
+    if (!lag_series) {
+      std::fprintf(stderr, "--signal-lag: %s\n", lag_series.error().to_string().c_str());
+      return 1;
+    }
+    std::vector<double> lagged(frame.rows(), std::numeric_limits<double>::quiet_NaN());
+    for (const SymbolSeries &s : *lag_series) {
+      for (std::size_t i = args.signal_lag; i < s.size(); ++i) {
+        if (!s.window_contiguous(i, args.signal_lag)) {
+          continue;
+        }
+        lagged[s.row[i]] = blended->score[s.row[i - args.signal_lag]];
+      }
+    }
+    blended->score = std::move(lagged);
+    std::printf("\nSIGNAL-LAG  trading on the score from %zu session(s) earlier\n",
+                args.signal_lag);
+  }
+
   std::printf("\nBLEND   equal-weight oriented within-date ranks, %zu signal(s), %zu rows scored "
               "(>= %zu finite feature(s)/row)\n",
               blended->used.size(), blended->n_scored, blended->required_per_row);
