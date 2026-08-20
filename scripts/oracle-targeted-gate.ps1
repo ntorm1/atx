@@ -648,7 +648,18 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
     throw "oracle targeted gate $GateId input_model_regressed_greeks is not a unique subset of the nine Greek metric ids"
   }
   $candidatePrices = @($sweep.candidate_prices)
-  if ($candidatePrices.Count -ne 8 -or @($candidatePrices.candidate_id | Select-Object -Unique).Count -ne 8) { throw "oracle targeted gate $GateId candidate registry mismatch" }
+  # The candidate registry is the CLOSED two-axis grid the sweep searches: every
+  # input model crossed with every exercise-style rule, with candidate_id
+  # rendered as '<input_model_id>|<exercise_style_id>' (candidate_id_of in
+  # atx-vol/tools/oracle_convention_sweep.cpp; the C++ side pins the same 24 in
+  # OracleConvention.SweepIsClosedDeterministicAndCoversElevenMetrics). Pinned
+  # as the exact id SET, not a count: a dropped, duplicated, or renamed grid
+  # point fails here instead of passing as a silently narrower search. The id
+  # domains are the same closed enums Test-OracleConventionMap enforces.
+  $candidateInputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
+  $candidateExerciseStyles = @('american_all', 'european_cash_settled_index', 'european_cash_settled_index_plus_empirical')
+  $expectedCandidateIds = @(foreach ($model in $candidateInputModels) { foreach ($style in $candidateExerciseStyles) { $model + '|' + $style } })
+  if (-not (Test-OracleExactStringSet @($candidatePrices.candidate_id) $expectedCandidateIds)) { throw "oracle targeted gate $GateId candidate registry mismatch" }
   foreach ($candidate in $candidatePrices) {
     if (-not (Test-OracleExactKeys $candidate @('candidate_id', 'smoke_price_mae_ticks', 'smoke_count', 'tune_sample_price_mae_ticks', 'tune_sample_count')) -or
         -not ($candidate.candidate_id -is [string]) -or -not (Test-OracleFiniteNumber $candidate.smoke_price_mae_ticks) -or
