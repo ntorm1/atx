@@ -577,6 +577,23 @@ int main(int argc, char **argv) {
               card->phase_mean_excess_net.size());
   std::printf("    positive phases   %.0f%%   min %+.4f   max %+.4f\n",
               100.0 * card->phase_positive_fraction, card->phase_min_mean, card->phase_max_mean);
+  if (std::isfinite(card->mean_day_overlap)) {
+    // At overlap p, a name's expected selected streak is 1/(1-p) sessions.
+    // The cost model charges `crossings` per H-session hold; a streak much
+    // shorter than H means the real crossing count is H/streak times that.
+    const double streak = card->mean_day_overlap < 1.0
+                              ? 1.0 / (1.0 - card->mean_day_overlap)
+                              : std::numeric_limits<double>::infinity();
+    std::printf("  turnover: %.1f%% of the book re-selected next session (expected streak "
+                "~%.0f sessions vs %zu-session hold)\n",
+                100.0 * card->mean_day_overlap, streak, args.horizon);
+    if (std::isfinite(streak) && streak < 0.5 * static_cast<double>(args.horizon)) {
+      std::printf("  NOTE turnover: fine for a TRANCHE book (each entered row is charged its "
+                  "own crossing here), but a rebalance-to-target implementation would churn "
+                  "~%.0fx the assumed crossings. Run tranches.\n",
+                  static_cast<double>(args.horizon) / streak);
+    }
+  }
 
   if (args.per_name) {
     // Attribution reads the recorded holdings; it never re-derives the

@@ -52,6 +52,7 @@
 #include <numeric>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "atx/core/error.hpp"
@@ -345,6 +346,13 @@ struct Scorecard {
   double phase_positive_fraction{0.0};
   double phase_min_mean{0.0};
   double phase_max_mean{0.0};
+
+  // Fraction of today's held names that were also held on the PREVIOUS formed
+  // date, averaged over consecutive date pairs. The cost model charges
+  // `crossings` per H-session hold; a book that turns its names over daily is
+  // paying far more crossings than that, and this is the number that says so.
+  // NaN when fewer than two dates formed or the frame has no symbol column.
+  double mean_day_overlap{std::numeric_limits<double>::quiet_NaN()};
 };
 
 // Run the book over a scored panel.
@@ -464,6 +472,36 @@ run(const PanelFrame &frame, std::span<const DateSlice> dates, std::span<const d
   if (card.n_dates == 0) {
     return Err(atx::core::ErrorCode::OutOfRange,
                "alpha::run: no date formed both a selected book and a floor");
+  }
+
+  if (card.n_dates >= 2) {
+    if (auto syms = frame.strings("symbol")) {
+      double sum_overlap = 0.0;
+      std::size_t pairs = 0;
+      for (std::size_t d = 1; d < card.selected_rows.size(); ++d) {
+        const std::vector<std::size_t> &prev = card.selected_rows[d - 1];
+        const std::vector<std::size_t> &cur = card.selected_rows[d];
+        if (prev.empty() || cur.empty()) {
+          continue;
+        }
+        std::vector<std::string_view> held_prev;
+        held_prev.reserve(prev.size());
+        for (const std::size_t r : prev) {
+          held_prev.push_back((*syms)[r]);
+        }
+        std::size_t kept = 0;
+        for (const std::size_t r : cur) {
+          if (std::find(held_prev.begin(), held_prev.end(), (*syms)[r]) != held_prev.end()) {
+            ++kept;
+          }
+        }
+        sum_overlap += static_cast<double>(kept) / static_cast<double>(cur.size());
+        ++pairs;
+      }
+      if (pairs > 0) {
+        card.mean_day_overlap = sum_overlap / static_cast<double>(pairs);
+      }
+    }
   }
 
   std::vector<double> excess_net;

@@ -769,6 +769,8 @@ TEST(AlphaStrategy, PerfectForesightSelectsTheTopAndBeatsTheFloor) {
   ASSERT_EQ(card->selected_rows[0].size(), 2U);
   EXPECT_NEAR((*pnl)[card->selected_rows[0][0]], 10.0, 1e-12);
   EXPECT_NEAR((*pnl)[card->selected_rows[0][1]], 8.0, 1e-12);
+  // The oracle picks the same two names on both dates: full persistence.
+  EXPECT_NEAR(card->mean_day_overlap, 1.0, 1e-12);
 }
 
 TEST(AlphaStrategy, AVetoedNameLeavesBothBooksNotJustTheSelection) {
