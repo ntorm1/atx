@@ -158,6 +158,34 @@ struct EnginePricingInputs {
                                                      double r, double q, Side side,
                                                      double *dp_dq_out = nullptr) noexcept;
 
+// The INVERSE of `european_greeks`'s price: implied volatility measured from a
+// EUROPEAN premium, for the rows `exercise_style_for` routes European. Declared
+// beside its forward map for the same reason `price_from_oracle_units` sits
+// beside `price_to_oracle_units`: both build F = S*e^{(r-q)T} and df = e^{-rT}
+// from the same inputs, and a Mode B that derived them locally could drift from
+// the leg it re-prices with.
+//
+// It is the library's closed-form Black-76 inverse (implied_vol.hpp:
+// Stefanica-Radoicic seed + Halley polish) on exactly that forward/discount
+// pair — the inverse of the same `black76_greeks` kernel `european_greeks`
+// prices with, so the round trip closes to machine precision by construction.
+//
+// ADMISSION mirrors `american_implied_vol` leg-for-leg, with the EUROPEAN
+// no-arbitrage band: the lower bound is the DISCOUNTED FORWARD intrinsic
+// df*max(F-K, 0) (mirrored for puts) and the ceiling is df*F (call) / df*K
+// (put). There is NO early-exercise floor — a deep-ITM premium below IMMEDIATE
+// intrinsic is a legitimate European quote and inverts.
+//   InvalidArgument — S/K/T <= 0 (the shared-input slice of the forward map's
+//                     own contract; sigma is the unknown here)
+//   OutOfRange      — non-finite input, or price outside the band
+//   Unavailable     — deep-wing / near-expiry vega collapse
+// A price at (or below) the discounted forward intrinsic reports Ok(kIvMin) —
+// the library's documented clamp, NOT a measurement. Mode B never publishes it:
+// its lower-bound screen refuses such a mid before the inverter runs, and its
+// floor-clamp screen refuses any residual kIvMin result.
+[[nodiscard]] Result<double> european_implied_vol(double price, double S, double K, double T,
+                                                  double r, double q, Side side) noexcept;
+
 // One priced row: the inputs used, the nine raw engine Greeks, the carry
 // sensitivity, and WHICH leg produced them. `dp_dq` is non-finite when the
 // carry solve refused — only the phi metric reads it, so the row keeps its

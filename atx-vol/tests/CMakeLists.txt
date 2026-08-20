@@ -462,13 +462,14 @@ gtest_discover_tests(atx-vol-tests
 # Mode B case fails this gate instead of passing it vacuously.
 # FAIL_REGULAR_EXPRESSION is required beside it because setting a pass pattern
 # makes ctest IGNORE the process exit code — without it a genuine assertion
-# failure would still match "[  PASSED  ] 5 tests." never being printed... and
+# failure would still match "[  PASSED  ] 9 tests." never being printed... and
 # in the partial-failure case gtest prints a LOWER passed count, so the pair
-# closes both doors. Adding a Mode B case means bumping the 5 here.
+# closes both doors. Adding a Mode B case means bumping the 9 here (moved 5 -> 9
+# when the European-leg inversion landed its four cases).
 add_test(NAME mode_b_targeted_tests
          COMMAND atx-vol-tests --gtest_filter=OracleBenchModeB.*)
 set_tests_properties(mode_b_targeted_tests PROPERTIES
-    PASS_REGULAR_EXPRESSION "\\[  PASSED  \\] 5 tests\\."
+    PASS_REGULAR_EXPRESSION "\\[  PASSED  \\] 9 tests\\."
     FAIL_REGULAR_EXPRESSION "\\[  FAILED  \\]"
     LABELS atx_vol_fast)
 

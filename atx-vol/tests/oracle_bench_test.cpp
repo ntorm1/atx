@@ -1412,4 +1412,237 @@ TEST(OracleBenchModeB, WithoutRealDataItFailsInsteadOfPublishingNumbers) {
   EXPECT_EQ(text.find("mode_b_"), std::string::npos) << text;
 }
 
+// ── Mode B, the EUROPEAN leg ─────────────────────────────────────────────
+//
+// The four cases below pin the exercise-style routing INSIDE Mode B: European
+// rows invert and re-price through the European leg, with the European
+// admission band (discounted forward intrinsic, no early-exercise floor), and
+// American rows keep the American inverter and its bounds byte-for-byte.
+
+// Authors one row's oracle outputs through the same `mode_a_price_row` entry
+// production routes European roots through, so a Mode B run over the pinned map
+// must reproduce them exactly. Returns false when the row does not price or is
+// not routed European (a fixture whose root stopped routing is a defect the
+// caller must FAIL on, never silently author as American).
+[[nodiscard]] bool fill_european_outputs(FixtureRow &r) {
+  const auto priced = mode_a_price_row(to_oracle_row(r), winning_convention(), mode_a_al_opts());
+  if (!priced.has_value() || priced->style != ExerciseStyle::European) {
+    return false;
+  }
+  r.srPrc = price_to_oracle_units(priced->greeks.price);
+  const OracleUnitGreeks g = to_oracle_units(priced->greeks, priced->dp_dq);
+  r.de = g.de;
+  r.ga = g.ga;
+  r.th = g.th;
+  r.ve = g.ve;
+  r.rh = g.rh;
+  r.ph = g.ph;
+  r.vo = g.vo;
+  r.va = g.va;
+  r.deDecay = g.de_decay;
+  return true;
+}
+
+void write_mode_b_cohort(const fs::path &root, const std::vector<FixtureRow> &rows,
+                         std::string_view underlier) {
+  write_fixture_partition(root / "date=2026-08-14" / "bucket_et=1000", rows);
+  if (::testing::Test::HasFatalFailure()) {
+    return;
+  }
+  write_file(root / "modeb.json",
+             std::string{R"({"name": "modeb", "dates": ["2026-08-14"], "underliers": [")"} +
+                 std::string{underlier} +
+                 R"("], "buckets_et": ["1000"], "notes": "synthetic"})");
+}
+
+[[nodiscard]] BenchArgs mode_b_args_at(const fs::path &root) {
+  BenchArgs args;
+  args.cohort_paths = {(root / "modeb.json").string()};
+  args.store_root = root.string();
+  args.aggregate_only = true;
+  args.mode = BenchMode::B;
+  args.out_path = (root / "b.json").string();
+  return args;
+}
+
+// A EUROPEAN-routed store (SPX, a contract-fact root of the pinned map): the
+// quote IS the European model price at a KNOWN per-strike vol, so the true
+// implied vol of every row is srVol by construction. The anchor bites: these
+// quotes carry NO early-exercise premium, so an American inversion of them
+// charges that absence to volatility and misses srVol by far more than the
+// bound below — recovery proves the ROUTING, not merely that something
+// inverted.
+TEST(OracleBenchModeB, EuropeanRowsInvertAgainstTheEuropeanLeg) {
+  const fs::path root = fresh_dir("mode-b-euro-roundtrip");
+  std::vector<FixtureRow> rows;
+  for (const Side side : {Side::Call, Side::Put}) {
+    for (const double strike : {95.0, 100.0, 105.0}) {
+      FixtureRow r;
+      r.tk = "SPX";
+      r.cp = (side == Side::Call) ? "Call" : "Put";
+      r.strike = strike;
+      r.years = 60.0 / 365.0;
+      r.srVol = strike < 97.5 ? 0.30 : (strike > 102.5 ? 0.22 : 0.25);
+      ASSERT_TRUE(fill_european_outputs(r)) << "fixture pricing failed";
+      r.bidPrc = r.srPrc;
+      r.askPrc = r.srPrc;
+      rows.push_back(r);
+    }
+  }
+  write_mode_b_cohort(root, rows, "SPX");
+  ASSERT_FALSE(::testing::Test::HasFatalFailure());
+
+  const auto run = run_oracle_bench(mode_b_args_at(root));
+  ASSERT_TRUE(run.has_value()) << run.error().to_string();
+  EXPECT_EQ(run->stats.rows_priced, 6);
+  EXPECT_EQ(run->mode_b.rows_unfitted(), 0);
+  EXPECT_EQ(run->stats.rows_engine_error, 0);
+  // Same bound as the American anchor: the inverter's own tolerance with an
+  // order of slack. An American inversion of these European premia misses by
+  // orders more — the put rows' absent early-exercise premium alone is worth
+  // vol points here.
+  ASSERT_EQ(run->aggregate.vol.count, 6);
+  EXPECT_LT(run->aggregate.vol.mean(), 1.0e-5) << "European inversion did not recover srVol";
+  ASSERT_EQ(run->aggregate.price.count, 6);
+  EXPECT_LT(run->aggregate.price.mean(), 1.0e-4);
+  for (std::size_t i = 0; i < kGreekMetricSuffix.size(); ++i) {
+    EXPECT_EQ(run->aggregate.greeks[i].count, 6) << kGreekMetricSuffix[i];
+    EXPECT_LT(run->aggregate.greeks[i].mean(), 1.0e-3) << kGreekMetricSuffix[i];
+  }
+}
+
+// A European mid AT the discounted forward intrinsic admits no volatility: the
+// inverter's documented behaviour there is Ok(kIvMin) — a clamp, not a root —
+// and Mode B must refuse and COUNT the row instead of publishing 0.005 as a
+// measurement. The refusal lands in the existing taxonomy
+// (rows_below_lo_bound) and the row accounting still closes.
+TEST(OracleBenchModeB, RefusesAEuropeanMidAtTheDiscountedForwardIntrinsic) {
+  const fs::path root = fresh_dir("mode-b-euro-refusal");
+  std::vector<FixtureRow> rows;
+  // A healthy control row, so the refusal below is visibly selective.
+  {
+    FixtureRow r;
+    r.tk = "SPX";
+    ASSERT_TRUE(fill_european_outputs(r)) << "fixture pricing failed";
+    r.bidPrc = r.srPrc;
+    r.askPrc = r.srPrc;
+    rows.push_back(r);
+  }
+  // A deep-ITM call quoted AT the European lower bound — the discounted
+  // forward intrinsic, the only floor a European premium has.
+  {
+    FixtureRow r;
+    r.tk = "SPX";
+    r.strike = 40.0;
+    ASSERT_TRUE(fill_european_outputs(r)) << "fixture pricing failed";
+    const EnginePricingInputs in = mode_a_inputs(to_oracle_row(r));
+    const double lo = in.spot * std::exp(-in.carry * in.years) -
+                      in.strike * std::exp(-in.rate * in.years);
+    r.bidPrc = price_to_oracle_units(lo);
+    r.askPrc = r.bidPrc;
+    rows.push_back(r);
+  }
+  write_mode_b_cohort(root, rows, "SPX");
+  ASSERT_FALSE(::testing::Test::HasFatalFailure());
+
+  const auto run = run_oracle_bench(mode_b_args_at(root));
+  ASSERT_TRUE(run.has_value()) << run.error().to_string();
+  EXPECT_EQ(run->stats.rows_priced, 1);
+  EXPECT_EQ(run->mode_b.rows_below_lo_bound, 1);
+  // NEVER a fabricated kIvMin success.
+  EXPECT_EQ(run->mode_b.rows_iv_at_floor, 0);
+  EXPECT_EQ(run->mode_b.rows_unfitted(), 1);
+  EXPECT_EQ(run->stats.rows_total, run->stats.rows_priced + run->stats.rows_null_sentinel +
+                                       run->stats.rows_bad_input + run->stats.rows_engine_error +
+                                       run->mode_b.rows_unfitted());
+}
+
+// The case the European lower bound exists for: a deep-ITM European put's fair
+// premium sits BELOW immediate intrinsic (the holder cannot exercise now, so
+// the value is anchored to the discounted forward payoff). The American
+// zero-vol floor would refuse this quote as sub-intrinsic; the European leg
+// must invert it and recover the generating vol.
+TEST(OracleBenchModeB, DeepItmEuropeanPutBelowIntrinsicStillInverts) {
+  const fs::path root = fresh_dir("mode-b-euro-below-intrinsic");
+  std::vector<FixtureRow> rows;
+  FixtureRow r;
+  r.tk = "SPX";
+  r.cp = "Put";
+  r.strike = 140.0;
+  r.years = 1.0;
+  r.srVol = 0.30;
+  ASSERT_TRUE(fill_european_outputs(r)) << "fixture pricing failed";
+  {
+    // The premise the test rests on, asserted rather than assumed: the fair
+    // European premium sits below immediate intrinsic, where the American
+    // lower-bound screen would refuse it.
+    const EnginePricingInputs in = mode_a_inputs(to_oracle_row(r));
+    ASSERT_LT(r.srPrc, in.strike - in.spot);
+  }
+  r.bidPrc = r.srPrc;
+  r.askPrc = r.srPrc;
+  rows.push_back(r);
+  write_mode_b_cohort(root, rows, "SPX");
+  ASSERT_FALSE(::testing::Test::HasFatalFailure());
+
+  const auto run = run_oracle_bench(mode_b_args_at(root));
+  ASSERT_TRUE(run.has_value()) << run.error().to_string();
+  EXPECT_EQ(run->stats.rows_priced, 1);
+  EXPECT_EQ(run->mode_b.rows_below_lo_bound, 0);
+  EXPECT_EQ(run->mode_b.rows_unfitted(), 0);
+  ASSERT_EQ(run->aggregate.vol.count, 1);
+  EXPECT_LT(run->aggregate.vol.mean(), 1.0e-5) << "sub-intrinsic European put did not invert";
+}
+
+// The other direction of the routing seam: an UNROUTED root keeps the American
+// inverter AND the American admission band, both unchanged by the European
+// addition.
+TEST(OracleBenchModeB, AmericanRowsKeepTheAmericanBoundsAndInverter) {
+  const fs::path root = fresh_dir("mode-b-american-unchanged");
+  std::vector<FixtureRow> rows;
+  // (1) An American-priced put quote: the safeguarded Newton recovers srVol.
+  // A European inversion of this AMERICAN premium would overstate vol (the
+  // early-exercise premium would be charged to sigma), so recovery also proves
+  // the row was NOT re-routed.
+  {
+    FixtureRow r;
+    r.cp = "Put";
+    r.years = 60.0 / 365.0;
+    ASSERT_TRUE(fill_oracle_outputs(r)) << "fixture pricing failed";
+    r.bidPrc = r.srPrc;
+    r.askPrc = r.srPrc;
+    rows.push_back(r);
+  }
+  // (2) The deep-ITM put premium a EUROPEAN leg would admit (it sits below
+  // immediate intrinsic): on an American row the immediate-intrinsic floor
+  // still applies and the quote stays refused. This is the bound that must NOT
+  // have been loosened by the European admission change.
+  {
+    FixtureRow r;
+    r.cp = "Put";
+    r.strike = 140.0;
+    r.years = 1.0;
+    r.srVol = 0.30;
+    ASSERT_TRUE(fill_oracle_outputs(r)) << "fixture pricing failed";
+    const EnginePricingInputs in = mode_a_inputs(to_oracle_row(r));
+    const auto euro =
+        european_greeks(in.spot, in.strike, in.years, r.srVol, in.rate, in.carry, in.side);
+    ASSERT_TRUE(euro.has_value());
+    ASSERT_LT(euro->price, in.strike - in.spot); // premise: sub-intrinsic quote
+    r.bidPrc = price_to_oracle_units(euro->price);
+    r.askPrc = r.bidPrc;
+    rows.push_back(r);
+  }
+  write_mode_b_cohort(root, rows, "AAA");
+  ASSERT_FALSE(::testing::Test::HasFatalFailure());
+
+  const auto run = run_oracle_bench(mode_b_args_at(root));
+  ASSERT_TRUE(run.has_value()) << run.error().to_string();
+  EXPECT_EQ(run->stats.rows_priced, 1);
+  EXPECT_EQ(run->mode_b.rows_below_lo_bound, 1);
+  EXPECT_EQ(run->mode_b.rows_unfitted(), 1);
+  ASSERT_EQ(run->aggregate.vol.count, 1);
+  EXPECT_LT(run->aggregate.vol.mean(), 1.0e-5) << "American inversion did not recover srVol";
+}
+
 } // namespace

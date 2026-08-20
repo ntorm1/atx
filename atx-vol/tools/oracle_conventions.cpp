@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "atx/vol/api/pricing/greeks.hpp"
+#include "atx/vol/api/pricing/implied_vol.hpp"
 
 namespace atx::vol::oracle {
 
@@ -325,6 +326,20 @@ Result<AmericanGreeks> european_greeks(double S, double K, double T, double sigm
     *dp_dq_out = -T * F * D;
   }
   return Ok(out);
+}
+
+Result<double> european_implied_vol(double price, double S, double K, double T, double r,
+                                    double q, Side side) noexcept {
+  // The shared-input slice of european_greeks' admission contract; sigma is
+  // what this function measures, so it is absent from the check.
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "european_implied_vol: S, K, T must be > 0");
+  }
+  // EXACTLY european_greeks' forward and discount, so the inverse and the
+  // forward map cannot disagree about what F and df are.
+  const double F = S * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  return implied_vol(price, F, K, T, df, side);
 }
 
 Result<ModeAPricing> mode_a_price_row(const OracleRow &row, const ConventionMap &map,

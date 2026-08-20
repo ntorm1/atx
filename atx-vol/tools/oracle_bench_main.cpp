@@ -51,7 +51,9 @@
 
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/pricing/american.hpp"
-#include "atx/vol/api/pricing/american_iv.hpp" // Mode B: AMERICAN vol inversion
+#include "atx/vol/api/pricing/american_iv.hpp" // Mode B: the AMERICAN-leg inversion
+// (the European-leg inversion, european_implied_vol, comes with the convention
+// layer via oracle_conventions.hpp — declared beside its forward map there)
 #include "oracle_cohort_reader.hpp"
 #include "oracle_convention_sweep.hpp"
 #include "oracle_conventions.hpp"
@@ -553,18 +555,32 @@ public:
 // nine Greeks FROM that fitted vol through the same pinned convention map Mode
 // A uses. The only difference between the two modes is where sigma comes from.
 //
-// WHAT IS INVERTED, AND WHY IT IS NOT "LET'S BE RATIONAL". These are AMERICAN
-// equity options. Jäckel's four-branch/Householder(3) inversion is exact and
-// fast for the BLACK forward map and is the right tool there, but running it
-// against an American premium inverts the wrong function: the early-exercise
-// premium is charged to volatility, so it returns a plausible, biased-low
-// sigma that re-prices to the wrong number. Every layer downstream would then
-// inherit a fiction that looks like a measurement. This uses the library's
-// `american_implied_vol` (american_iv.hpp) instead — a safeguarded Newton
-// (rtsafe) whose forward map is the SAME Andersen-Lake pricer, at the SAME
-// `al_fast_opts` rung, that this file prices with. Because forward and inverse
-// share one map, the round trip is self-consistent by construction rather than
-// by assumption, and it is asserted per row below.
+// WHAT IS INVERTED — THE LEG THE ROW IS ENTITLED TO. The map's exercise-style
+// key routes each inversion exactly as it routes Mode A's pricing, through the
+// same `exercise_style_for` decision:
+//
+//   AMERICAN rows (every root the map does not route): a closed-form Black
+//   inversion is exact and fast for the BLACK forward map, but running it
+//   against an American premium inverts the wrong function — the
+//   early-exercise premium is charged to volatility, returning a plausible,
+//   biased-low sigma that re-prices to the wrong number. These rows use the
+//   library's `american_implied_vol` (american_iv.hpp) — a safeguarded Newton
+//   (rtsafe) whose forward map is the SAME Andersen-Lake pricer, at the SAME
+//   `al_fast_opts` rung, this file re-prices with.
+//
+//   EUROPEAN rows (SPX/XSP/MGTN, by contract fact): the same argument,
+//   mirrored. An option that cannot be exercised early has no early-exercise
+//   premium, and inverting its premium through the American rung charges the
+//   ABSENCE of that premium to volatility — tail-dominant on this population's
+//   deep-ITM index puts, whose European premium legitimately sits below
+//   immediate intrinsic where an American inversion has no root at all. These
+//   rows use `european_implied_vol` (oracle_conventions.hpp): the library's
+//   closed-form Black-76 inverse on exactly the forward/discount pair
+//   `european_greeks` re-prices with.
+//
+// Each leg's forward and inverse share one map, so both round trips are
+// self-consistent by construction rather than by assumption — and the round
+// trip is asserted per row below regardless of leg.
 //
 // WHY THE SEAM IS BATCH-LEVEL. The group is the unit of work, not the row: it
 // pins one snapshot's pricing context, it orders the chain by strike so each
@@ -596,8 +612,11 @@ struct ModeBStats {
   // fabricated vol is strictly worse than a missing one, because the oracle
   // loop ratchets on whatever it is given.
   std::int64_t rows_no_quote = 0;          // NBBO absent, crossed, or non-finite
-  std::int64_t rows_below_lo_bound = 0;    // mid at/under the zero-vol American floor
-  std::int64_t rows_above_up_bound = 0;    // mid at/over the no-arbitrage ceiling
+  std::int64_t rows_below_lo_bound = 0;    // mid at/under the LEG's zero-vol floor
+                                           // (American: max of immediate and
+                                           // discounted-forward intrinsic;
+                                           // European: discounted-forward alone)
+  std::int64_t rows_above_up_bound = 0;    // mid at/over the LEG's no-arb ceiling
   std::int64_t rows_iv_no_solution = 0;    // inverter returned Err (incl. T <= 0)
   std::int64_t rows_iv_at_floor = 0;       // inverter reported kIvMin: the clamp, not a root
   std::int64_t rows_vega_below_floor = 0;  // quote cannot resolve a vol at all
@@ -618,10 +637,11 @@ constexpr double kModeBIvTol = 1.0e-6;
 constexpr std::uint16_t kModeBIvMaxIter = 64;
 
 // A fitted vol this close to the inverter's reported floor IS the floor clamp.
-// american_implied_vol returns Ok(kIvMin) — a SUCCESS — both for a price at or
-// below intrinsic and for a quote whose root sits under the floor. Taking that
-// at face value would publish 0.005 as a measured volatility for every dead
-// deep-wing quote in the cohort. It is refused and counted instead.
+// BOTH inverters return Ok(kIvMin) — a SUCCESS — for a price at or below their
+// leg's intrinsic floor and for a quote whose root sits under kIvMin (the
+// documented unified floor, types.hpp). Taking that at face value would
+// publish 0.005 as a measured volatility for every dead deep-wing quote in the
+// cohort. It is refused and counted instead, on either leg.
 constexpr double kModeBVolFloorSlack = 1.0e-9;
 
 // IV IDENTIFIABILITY. A quote pins vol only as tightly as vega converts price
@@ -633,14 +653,16 @@ constexpr double kModeBVolFloorSlack = 1.0e-9;
 // here to refuse the hopeless, not to grade accuracy.
 constexpr double kModeBMaxVolResolution = 0.05;
 
-// Self-consistency of the round trip. The inverse and forward maps are the same
-// Andersen-Lake rung, so re-pricing at the fitted vol must land back on the mid
-// to within the solver's own tolerance; half a tick is slack of two orders. A
-// row that misses it did not actually invert — commonly a collapsed-vega corner
-// the screens above did not catch — and is refused rather than published.
+// Self-consistency of the round trip, asserted on BOTH legs. Each leg's inverse
+// and forward share one map (American: the same Andersen-Lake rung; European:
+// the same Black-76 kernel), so re-pricing at the fitted vol must land back on
+// the mid to within the solver's own tolerance; half a tick is slack of two
+// orders. A row that misses it did not actually invert — commonly a
+// collapsed-vega corner the screens above did not catch — and is refused
+// rather than published.
 constexpr double kModeBRoundTripTicks = 0.5;
 
-// The ZERO-VOL American price: the correct lower bracket for an American
+// The ZERO-VOL AMERICAN price: the correct lower bracket for an AMERICAN
 // inversion, and NOT the same thing as immediate intrinsic. At sigma = 0 the
 // spot follows the deterministic path S_t = S e^{(r-q)t} and the holder may
 // exercise at any t in [0, T], so the value is max over t of the discounted
@@ -659,8 +681,8 @@ constexpr double kModeBRoundTripTicks = 0.5;
 // combinations; ignoring it leaves this a slightly LOOSE lower bound, which is
 // the safe direction — a row it wrongly admits is caught by the floor-clamp and
 // round-trip screens rather than published.
-[[nodiscard]] double mode_b_lo_bound(double spot, double strike, double years, double rate,
-                                     double q, Side side) noexcept {
+[[nodiscard]] double mode_b_american_lo_bound(double spot, double strike, double years,
+                                              double rate, double q, Side side) noexcept {
   const double spot_leg = spot * std::exp(-q * years);
   const double strike_leg = strike * std::exp(-rate * years);
   const double now = side == Side::Call ? spot - strike : strike - spot;
@@ -670,8 +692,36 @@ constexpr double kModeBRoundTripTicks = 0.5;
 
 // The no-arbitrage ceiling the American price cannot reach: the underlying for
 // a call, the strike for a put. Mirrors american_iv.cpp's own upper band.
-[[nodiscard]] double mode_b_up_bound(double spot, double strike, Side side) noexcept {
+[[nodiscard]] double mode_b_american_up_bound(double spot, double strike, Side side) noexcept {
   return side == Side::Call ? spot : strike;
+}
+
+// The EUROPEAN admission band: the same no-arbitrage band the closed-form
+// inverse enforces internally (implied_vol.cpp no_arb_band), restated in the
+// spot terms this file screens in. The lower bound is the DISCOUNTED FORWARD
+// intrinsic ALONE — a European holder cannot exercise early, so there is no
+// t = 0 leg and no max over exercise times, and a deep-ITM premium BELOW
+// immediate intrinsic is a legitimate quote that admits a volatility (the
+// American screen above would wrongly refuse it; on this population it did,
+// wholesale, on the deep-ITM index puts). Applying the American zero-vol floor
+// to a European row is exactly the silent misclassification this pair of
+// functions exists to prevent.
+[[nodiscard]] double mode_b_european_lo_bound(double spot, double strike, double years,
+                                              double rate, double q, Side side) noexcept {
+  const double spot_leg = spot * std::exp(-q * years);
+  const double strike_leg = strike * std::exp(-rate * years);
+  const double fwd = side == Side::Call ? spot_leg - strike_leg : strike_leg - spot_leg;
+  return std::max(0.0, fwd);
+}
+
+// The European ceiling is the DISCOUNTED FORWARD itself: df*F = S*e^{-qT} for a
+// call, K*e^{-rT} for a put — NOT spot/strike. Under negative carry (q < 0, the
+// everyday case on hard-to-borrow names) S*e^{-qT} exceeds S, and a European
+// call is entitled to trade above spot; the American ceiling would refuse the
+// row a volatility it genuinely admits.
+[[nodiscard]] double mode_b_european_up_bound(double spot, double strike, double years,
+                                              double rate, double q, Side side) noexcept {
+  return side == Side::Call ? spot * std::exp(-q * years) : strike * std::exp(-rate * years);
 }
 
 // Stable ordering key for one fit group. The three string members are VIEWS
@@ -727,21 +777,25 @@ public:
                   return static_cast<int>(a.side) < static_cast<int>(b.side);
                 });
 
-      double warm_start = 0.0; // 0 == "no warm start; use the European seed"
+      // Feeds only the AMERICAN inverter (the closed-form European inverse
+      // needs no seed); 0 == "no warm start; use the European seed". Routing
+      // is per root and a group is one underlier, so a chain never crosses
+      // legs.
+      double warm_start = 0.0;
       for (const std::uint32_t index : members) {
         const OracleRow &row = rows[index];
         EnginePricingInputs in = mode_a_inputs(row); // same pinned map as Mode A
         // ...everything except sigma, which Mode B MEASURES rather than reads.
         in.sigma = 0.0;
-        // SCOPE, stated rather than left to be discovered: the map's
-        // `exercise_style` key is NOT honoured below. Mode B inverts and
-        // re-prices through the AMERICAN rung unconditionally, so a
-        // European-routed root is inverted against the wrong functional here
-        // even though Mode A now prices it correctly. Closing that needs a
-        // European inverter plus its own Mode B gate evidence, and it is
-        // deliberately not smuggled in on the back of a Mode A price fix — the
-        // Mode B numbers this file publishes are unchanged by that axis, which
-        // is why they stay comparable across it.
+        // The map's `exercise_style` key IS honoured here, through the same
+        // `exercise_style_for` decision Mode A prices with: a European-routed
+        // row is admitted, inverted, and re-priced through the European leg;
+        // an American row keeps the American rung exactly as before. One
+        // decision site for both modes, so Mode B can never measure a row's
+        // volatility against a different functional than the one Mode A
+        // prices it with.
+        const bool is_european =
+            exercise_style_for(row, winning_convention()) == ExerciseStyle::European;
 
         // ── Quote admission. A mid needs two live, uncrossed sides.
         if (!(row.bid_prc > 0.0) || !(row.ask_prc > 0.0) || !(row.ask_prc >= row.bid_prc)) {
@@ -754,23 +808,43 @@ public:
           continue;
         }
 
-        // ── Identifiability brackets (see mode_b_lo_bound's banner).
-        const double lo = mode_b_lo_bound(in.spot, in.strike, in.years, in.rate, in.carry, in.side);
+        // ── Identifiability brackets, PER LEG (see the two banners above): a
+        // European row is screened against the European band, never against
+        // the American zero-vol floor.
+        const double lo =
+            is_european
+                ? mode_b_european_lo_bound(in.spot, in.strike, in.years, in.rate, in.carry,
+                                           in.side)
+                : mode_b_american_lo_bound(in.spot, in.strike, in.years, in.rate, in.carry,
+                                           in.side);
         if (mid <= lo + half_tick) {
           ++fit_->rows_below_lo_bound;
           continue;
         }
-        if (mid >= mode_b_up_bound(in.spot, in.strike, in.side) - half_tick) {
+        const double up =
+            is_european
+                ? mode_b_european_up_bound(in.spot, in.strike, in.years, in.rate, in.carry,
+                                           in.side)
+                : mode_b_american_up_bound(in.spot, in.strike, in.side);
+        if (mid >= up - half_tick) {
           ++fit_->rows_above_up_bound;
           continue;
         }
 
-        // ── The inversion. AMERICAN, through the same Andersen-Lake rung this
-        // file prices with; `in.carry` is the engine's q slot.
-        const Result<double> fitted = american_implied_vol(
-            mid, in.spot, in.strike, in.years, in.rate, in.carry, in.side,
-            AmericanMethod::AndersenLake, kModeBIvTol, kModeBIvMaxIter, mode_a_al_opts(),
-            /*correction=*/nullptr, warm_start);
+        // ── The inversion, through the LEG the row is entitled to. American:
+        // the safeguarded Newton on the same Andersen-Lake rung this file
+        // re-prices with, warm-started along the strike chain. European: the
+        // closed-form Black-76 inverse of the exact kernel european_greeks
+        // re-prices with, which needs no seed. `in.carry` is the engine's q
+        // slot on both.
+        const Result<double> fitted =
+            is_european
+                ? european_implied_vol(mid, in.spot, in.strike, in.years, in.rate, in.carry,
+                                       in.side)
+                : american_implied_vol(mid, in.spot, in.strike, in.years, in.rate, in.carry,
+                                       in.side, AmericanMethod::AndersenLake, kModeBIvTol,
+                                       kModeBIvMaxIter, mode_a_al_opts(),
+                                       /*correction=*/nullptr, warm_start);
         if (!fitted.has_value() || !std::isfinite(*fitted)) {
           ++fit_->rows_iv_no_solution;
           continue;
@@ -781,8 +855,15 @@ public:
         }
         in.sigma = *fitted;
 
-        const Result<AmericanGreeks> greeks = american_greeks_al(
-            in.spot, in.strike, in.years, in.sigma, in.rate, in.carry, in.side, mode_a_al_opts());
+        // Re-price through the SAME leg that was inverted. The European leg's
+        // carry sensitivity comes with the same call (shared d1/d2); the
+        // American leg's needs its own solve, made only after the screens.
+        double dp_dq = std::numeric_limits<double>::quiet_NaN();
+        const Result<AmericanGreeks> greeks =
+            is_european ? european_greeks(in.spot, in.strike, in.years, in.sigma, in.rate,
+                                          in.carry, in.side, &dp_dq)
+                        : american_greeks_al(in.spot, in.strike, in.years, in.sigma, in.rate,
+                                             in.carry, in.side, mode_a_al_opts());
         if (!greeks.has_value()) {
           ++stats.rows_engine_error; // same meaning as Mode A's: the pricer refused
           continue;
@@ -818,11 +899,17 @@ public:
         observe("vol", in.sigma, row.sr_vol, vol_tolerance());
         agg.vol.absolute(in.sigma, row.sr_vol);
 
-        double dp_dq = std::numeric_limits<double>::quiet_NaN();
-        const Result<CarryGreeks> carry = american_carry_greeks_al(
-            in.spot, in.strike, in.years, in.sigma, in.rate, in.carry, in.side, mode_a_al_opts());
-        if (carry.has_value()) {
-          dp_dq = carry->dP_dq;
+        // The European leg's dp_dq was filled by the pricing call above; the
+        // American leg pays for its own carry solve only for a row that
+        // survived every screen. A failed solve leaves dp_dq non-finite and
+        // skips ONLY the ph observation, never the row — Mode A's convention.
+        if (!is_european) {
+          const Result<CarryGreeks> carry = american_carry_greeks_al(
+              in.spot, in.strike, in.years, in.sigma, in.rate, in.carry, in.side,
+              mode_a_al_opts());
+          if (carry.has_value()) {
+            dp_dq = carry->dP_dq;
+          }
         }
         const OracleUnitGreeks g = to_oracle_units(*greeks, dp_dq);
         const std::array<std::pair<double, double>, 9> greek_pairs{
