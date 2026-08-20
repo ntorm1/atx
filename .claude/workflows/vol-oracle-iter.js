@@ -86,7 +86,7 @@ const TARGETED_BOOTSTRAP_GATE_IDS = Object.freeze(['mode_a_targeted_tests', 'mod
 // Mirror of $script:OracleBenchTestIds in scripts/oracle-targeted-gate.ps1 —
 // the gate matches the ID SET, this matches the count, and both must move
 // together.
-const ORACLE_BENCH_TEST_COUNT = 53
+const ORACLE_BENCH_TEST_COUNT = 57
 const ORACLE_CONVENTION_TEST_COUNT = 18
 // The BOUNDED no-regression rule, as a multiplier on the baseline value. Stated
 // as the multiplier and not as `1 + fraction` because five layers in three

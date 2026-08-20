@@ -68,22 +68,30 @@ $script:OracleBenchTestIds = @(
   'OracleBenchAggregate.PublishesTheElevenTargetsAndNoMembership',
   'OracleBenchAggregate.WritesToStdoutWhenOutIsAbsent',
   'OracleBenchAggregate.BenchmarkSpeedPublishesRowsPerSecondOnly',
-  # Stage 4, Mode B: volatility MEASURED from raw NBBO. These five REPLACE
+  # Stage 4, Mode B: volatility MEASURED from raw NBBO. The first five REPLACED
   # OracleBenchModeB.FailsAtRunTimeWithADistinctActionableError, which asserted
   # the run-time refusal a real Mode B runner has now retired. That test's load-
   # bearing property -- no Mode B invocation may hand the ratchet a number it did
   # not measure -- survives in WithoutRealDataItFailsInsteadOfPublishingNumbers,
   # and the confidentiality boundary above is RE-ASSERTED for Mode B rather than
   # assumed inherited (Mode B added both a stderr line and a receipt block).
-  # These are also exactly the five the mode_b_targeted_tests ctest case runs,
+  # These are also exactly the cases the mode_b_targeted_tests ctest case runs,
   # whose PASS_REGULAR_EXPRESSION pins that count (atx-vol/tests/CMakeLists.txt).
-  # A sixth Mode B case therefore moves THREE definition sites: this set, that
+  # Another Mode B case therefore moves THREE definition sites: this set, that
   # regex, and ORACLE_BENCH_TEST_COUNT in .claude/workflows/vol-oracle-iter.js.
   'OracleBenchModeB.RecoversTheVolThatGeneratedTheQuote',
   'OracleBenchModeB.GroupsByUnderlierExpiryAndBucket',
   'OracleBenchModeB.RefusesUnidentifiedRowsInsteadOfClampingToTheVolFloor',
   'OracleBenchModeB.AggregatePublishesTheElevenTargetsAndNoMembership',
-  'OracleBenchModeB.WithoutRealDataItFailsInsteadOfPublishingNumbers'
+  'OracleBenchModeB.WithoutRealDataItFailsInsteadOfPublishingNumbers',
+  # Mode B, the EUROPEAN leg (iter-002): the exercise-style axis honoured inside
+  # the inversion. European rows invert against the European pricing leg with
+  # the European admission band (discounted forward intrinsic, no early-exercise
+  # floor); American rows keep the American inverter and bounds byte-for-byte.
+  'OracleBenchModeB.EuropeanRowsInvertAgainstTheEuropeanLeg',
+  'OracleBenchModeB.RefusesAEuropeanMidAtTheDiscountedForwardIntrinsic',
+  'OracleBenchModeB.DeepItmEuropeanPutBelowIntrinsicStillInverts',
+  'OracleBenchModeB.AmericanRowsKeepTheAmericanBoundsAndInverter'
 )
 # Pinned exactly like the OracleBench registry above: the Stage 3 suite is
 # discovered per gtest case, so a vanished or renamed case fails the gate
