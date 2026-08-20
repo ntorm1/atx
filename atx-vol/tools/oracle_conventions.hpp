@@ -52,11 +52,16 @@ enum class ExerciseStyleRule {
   // listing specification (kEuropeanIndexRoots in the .cpp names them and cites
   // what makes each one a contract fact). Nothing here is fitted.
   EuropeanCashSettledIndex,
-  // The above PLUS roots that only REPRODUCE European and cannot be justified
-  // from any contract fact or any column we ingest. The distinction is carried
-  // in the rule's own identity — and therefore into the receipt — precisely so
-  // that "we measured this and cannot explain it" is never mistaken for "this
-  // is how the contract works".
+  // The above PLUS any roots that only REPRODUCE European and cannot (yet) be
+  // justified from a contract fact or an ingested column. The empirical table
+  // is EMPTY today — MGTN, its only historical member, moved to
+  // kEuropeanIndexRoots once the Cboe contract specification was located (the
+  // .cpp carries the citation) — but the rule keeps its own identity so a
+  // future measured, unexplained root lands here and its receipt says so:
+  // "we measured this and cannot explain it" must never be mistaken for "this
+  // is how the contract works". While the table is empty this rule routes
+  // exactly the contract-fact set, and the sweep's deterministic identity
+  // tie-break prefers the plain `european_cash_settled_index` id.
   EuropeanCashSettledIndexPlusEmpirical,
 };
 

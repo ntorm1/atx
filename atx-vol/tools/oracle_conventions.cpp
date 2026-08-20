@@ -34,7 +34,13 @@ constexpr ConventionMap kBaseline{};
 // parameter-swap waiting to happen.
 constexpr ConventionMap kWinner{
     .input_model = InputModel::DiscreteDividendPvSdivYield,
-    .exercise_style = ExerciseStyleRule::EuropeanCashSettledIndexPlusEmpirical,
+    // Resolved by the sweep's identity tie-break since MGTN's reclassification:
+    // with the empirical table empty the two European rules route identical
+    // root sets, every metric ties bit-for-bit, and the deterministic
+    // source-then-identity ordering picks the lexicographically smaller
+    // `european_cash_settled_index` — which is also the honest name for a
+    // routing that now rests on contract facts alone.
+    .exercise_style = ExerciseStyleRule::EuropeanCashSettledIndex,
     .price_scale = 1.0,
     .days_per_year = 365.0,
     .theta_days_per_year = 252.0,
@@ -64,6 +70,13 @@ constexpr ConventionMap kWinner{
 // CONTRACT FACTS, one line each:
 //   SPX  Cboe S&P 500 Index option. Cash-settled, EUROPEAN exercise.
 //   XSP  Cboe Mini-SPX (1/10 SPX). Cash-settled, EUROPEAN exercise.
+//   MGTN Cboe Magnificent 10 Index option (options launched Dec 2025).
+//        Cash-settled, EUROPEAN exercise by its listing specification:
+//        https://cdn.cboe.com/resources/membership/MGTN-Index-Options-Contract-Specifications.pdf
+//        RECLASSIFIED from kEmpiricalEuropeanRoots: it was routed on measured
+//        reproduction alone while our ingest tagged it EQT / NMS / Stock and no
+//        contract fact had been located; the Cboe contract spec above settles
+//        it as a fact about the instrument, which is this table's bar.
 //
 // DELIBERATELY ABSENT, and why — the store's other index roots (RUT, NDX, OEX,
 // XEO, MRUT, XND) are NOT here:
@@ -82,16 +95,19 @@ constexpr ConventionMap kWinner{
 //     axis is held to — the bar is a MEASURED reproduction — so they stay out
 //     until a sanctioned cohort can show them. Adding one is one line here plus
 //     a re-sweep; adding one on faith is what this comment exists to prevent.
-constexpr std::array<std::string_view, 2> kEuropeanIndexRoots = {"SPX", "XSP"};
+constexpr std::array<std::string_view, 3> kEuropeanIndexRoots = {"SPX", "XSP", "MGTN"};
 
-// MEASURED, UNEXPLAINED. MGTN is tagged EQT / NMS / Stock everywhere our ingest
-// can see, and nothing in any column we read says it should price European —
-// yet its srPrc reproduces the European premium on our exact convention inputs
-// and does not reproduce the American one. There is no contract fact behind
-// this entry; it is an empirical observation about SpiderRock's output, and it
-// is quarantined in its own table and its own rule id so no reader can mistake
-// it for one.
-constexpr std::array<std::string_view, 1> kEmpiricalEuropeanRoots = {"MGTN"};
+// MEASURED, UNEXPLAINED — the quarantine table, EMPTY today. MGTN lived here
+// while its European behaviour was only a measured reproduction (ingest tags it
+// EQT / NMS / Stock, and no column we read says European); the Cboe contract
+// specification cited in kEuropeanIndexRoots settled it as a contract fact and
+// it moved there. The table and the `..._plus_empirical` rule id survive so the
+// NEXT measured, unexplained root has a home whose receipt says, in the rule's
+// own identity, "we measured this and cannot explain it" — which must never be
+// filed as "this is how the contract works". While this table is empty the two
+// European rules route identical root sets and the sweep's identity tie-break
+// deterministically prefers the plain `european_cash_settled_index` id.
+constexpr std::array<std::string_view, 0> kEmpiricalEuropeanRoots{};
 
 [[nodiscard]] bool contains_root(std::span<const std::string_view> roots,
                                  std::string_view underlier) noexcept {

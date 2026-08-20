@@ -73,15 +73,18 @@ std::vector<OracleRow> distinct_arm_rows(double first_strike, double second_stri
           make_row(second_strike, Side::Put, map, 2.5, 0.01)};
 }
 
-// A cohort spanning the roots the exercise-style rules disagree about, authored
-// under `map`. A sweep over it must resolve back to `map`'s exercise style.
+// A cohort spanning routed and unrouted roots, authored under `map`. A sweep
+// over it must resolve back to `map`'s exercise style.
 //
-// THREE roots, because two of the three rules are indistinguishable on any
-// narrower cohort: an unrouted equity (SYNTH), a contract-spec European index
-// root (SPX), and the empirically-routed root (MGTN) that separates
-// `european_cash_settled_index` from its `_plus_empirical` superset. The
-// deep-in-the-money puts are what make the two legs separable at all — that is
-// where the early-exercise premium is worth ~0.9 per share rather than ~0.
+// THREE roots: an unrouted equity (SYNTH) that keeps the American arm honest,
+// and two contract-fact European roots (SPX, and MGTN since its Cboe spec was
+// located). With the empirical table empty the two European rules route
+// identical sets, so they tie bit-for-bit on every metric and the sweep's
+// deterministic identity tie-break resolves the plain
+// `european_cash_settled_index` id — which is exactly what the production map
+// pins. The deep-in-the-money puts are what make the European and American
+// legs separable at all — that is where the early-exercise premium is worth
+// ~0.9 per share rather than ~0.
 //
 // Non-zero ddiv/sdiv keep the production input model distinguishable from the
 // other seven at the same time.
@@ -128,7 +131,7 @@ constexpr std::string_view kResolvedWinnerJson =
     R"({"input_model":"discrete_forward_pv__rate__sdiv_yield",)"
     R"("forward_formula":"uprc_exp_rate_t_minus_ddiv","rate_model":"continuous_row_rate",)"
     R"("carry_model":"sdiv_as_yield","dividend_model":"discrete_cash_forward",)"
-    R"("exercise_style":"european_cash_settled_index_plus_empirical",)"
+    R"("exercise_style":"european_cash_settled_index",)"
     R"("day_count":"BUS_252","dte_banding_day_count":"ACT_365F",)"
     R"("price_scale":"per_share","price_sign":"positive",)"
     R"("vol_scale":"decimal_identity","delta_scale":"per_unit","delta_sign":"positive",)"
@@ -195,16 +198,14 @@ TEST(OracleConvention, ExerciseStyleRulesRouteOnlyTheirNamedRoots) {
     EXPECT_FALSE(routes_european(root, kPlus)) << root;
   }
   // The contract-fact roots: routed by both European rules, never the baseline.
-  for (const std::string_view root : {"SPX", "XSP"}) {
+  // MGTN is one of them since the Cboe Magnificent 10 contract specification
+  // was located (kEuropeanIndexRoots carries the citation); the empirical table
+  // is empty, so `_plus_empirical` routes exactly the contract-fact set today.
+  for (const std::string_view root : {"SPX", "XSP", "MGTN"}) {
     EXPECT_FALSE(routes_european(root, kAmerican)) << root;
     EXPECT_TRUE(routes_european(root, kIndex)) << root;
     EXPECT_TRUE(routes_european(root, kPlus)) << root;
   }
-  // MGTN is measured, not contract fact: only the rule that carries that
-  // distinction in its own identity routes it.
-  EXPECT_FALSE(routes_european("MGTN", kAmerican));
-  EXPECT_FALSE(routes_european("MGTN", kIndex));
-  EXPECT_TRUE(routes_european("MGTN", kPlus));
 }
 
 TEST(OracleConvention, IngestedExerciseStyleOutranksTheRootListRule) {
@@ -227,7 +228,7 @@ TEST(OracleConvention, IngestedExerciseStyleOutranksTheRootListRule) {
 TEST(OracleConvention, ProductionMapIsTheResolvedHardCut) {
   const ConventionMap &map = winning_convention();
   EXPECT_EQ(map.input_model, InputModel::DiscreteDividendPvSdivYield);
-  EXPECT_EQ(map.exercise_style, ExerciseStyleRule::EuropeanCashSettledIndexPlusEmpirical);
+  EXPECT_EQ(map.exercise_style, ExerciseStyleRule::EuropeanCashSettledIndex);
   EXPECT_DOUBLE_EQ(map.price_scale, 1.0);
   // Never searched: the DTE-banding day count, not a unit the sweep may pick.
   EXPECT_DOUBLE_EQ(map.days_per_year, 365.0);
