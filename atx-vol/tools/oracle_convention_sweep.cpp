@@ -9,6 +9,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "atx/vol/api/pricing/american.hpp"
@@ -76,24 +77,69 @@ static_assert(static_cast<std::size_t>(ExerciseStyleRule::EuropeanCashSettledInd
 static_assert(enumerates_every_exercise_style(),
               "kExerciseStyleRules must list each ExerciseStyleRule exactly once");
 
-// The stage-1 grid is the CROSS PRODUCT of the two searched axes, never two
-// independent one-axis searches: the input model moves the FORWARD and the
-// exercise style moves WHICH FUNCTIONAL that forward is fed to, so a model that
-// wins on price under the American leg need not win under the European one.
-// Nothing here assumes the axes separate.
-constexpr std::size_t kCandidateCount = kInputModels.size() * kExerciseStyleRules.size();
+// The TIME-DECAY axis, searched as a closed grid beside the other two. Same
+// contract again: the array and the enum must not drift.
+constexpr std::array<TimeDecayMethod, 2> kTimeDecayMethods = {
+    TimeDecayMethod::AnalyticDerivative,
+    TimeDecayMethod::Secant252,
+};
+static_assert(static_cast<std::size_t>(TimeDecayMethod::Secant252) + 1 ==
+                  kTimeDecayMethods.size(),
+              "kTimeDecayMethods must enumerate every TimeDecayMethod");
+
+[[nodiscard]] constexpr bool enumerates_every_time_decay_method() noexcept {
+  for (std::size_t index = 0; index < kTimeDecayMethods.size(); ++index) {
+    const auto wanted = static_cast<TimeDecayMethod>(index);
+    bool found = false;
+    for (const TimeDecayMethod method : kTimeDecayMethods) {
+      found = found || method == wanted;
+    }
+    if (!found) {
+      return false;
+    }
+  }
+  return true;
+}
+static_assert(enumerates_every_time_decay_method(),
+              "kTimeDecayMethods must list each TimeDecayMethod exactly once");
+
+// The stage-1 grid is the CROSS PRODUCT of all three searched axes, never three
+// independent one-axis searches: the input model moves the FORWARD, the exercise
+// style moves WHICH FUNCTIONAL that forward is fed to, and the time-decay method
+// moves how two of the nine Greeks are FORMED — so a model that wins on price
+// under the American leg need not win under the European one. Nothing here
+// assumes the axes separate.
+constexpr std::size_t kCandidateCount =
+    kInputModels.size() * kExerciseStyleRules.size() * kTimeDecayMethods.size();
+
+// How many candidates the stage-1 PRICE cut ranks identically, per input model.
+//
+// Both non-input-model axes are invisible to that ranking, for two independent
+// reasons that happen to arrive at the same place:
+//   * exercise style — the smoke cohort is a SINGLE underlier that no rule
+//     routes, so every style prices every smoke row through the identical code
+//     path;
+//   * time-decay method — it changes only how theta and delta decay are
+//     REPORTED. It never touches a price, on smoke or anywhere else, so the two
+//     decay arms tie bit-for-bit on ANY price ranking, on any cohort.
+// So one input model contributes exactly this many candidates that stage 1
+// cannot tell apart, and their relative order there is pure candidate-id
+// lexicography.
+constexpr std::size_t kTiedArmsPerInputModel =
+    kExerciseStyleRules.size() * kTimeDecayMethods.size();
 
 // How many candidates survive the smoke cut into the tune-sample stage.
 //
-// Two per exercise style, NOT two overall. The smoke cohort is a SINGLE
-// underlier and no rule routes it, so every exercise style prices every smoke
-// row through the identical code path and their smoke price MAEs are bit-equal
-// by construction: smoke carries ZERO evidence about this axis. A two-survivor
-// cut would drop two thirds of the exercise grid on a tie-break over candidate
-// ids — an arbitrary answer to the question the axis was added to ask. Keeping
-// the full exercise fan of the top two input models defers that decision to the
-// tune sample, the only cohort here that contains a routed root at all.
-constexpr std::size_t kFinalistCount = 2 * kExerciseStyleRules.size();
+// The full tied fan of the top TWO input models, NOT two candidates overall.
+// This number must be a whole multiple of kTiedArmsPerInputModel or the cut
+// slices a tied block in half and lexicography — not evidence — decides which
+// arms are still alive when stage 2 finally gets a cohort that can separate
+// them. Worse, a cut SMALLER than one block silently drops the second input
+// model entirely: the first model's tied arms would fill every slot. Scaling it
+// with the grid is what keeps the winner unreachable by luck.
+constexpr std::size_t kFinalistCount = 2 * kTiedArmsPerInputModel;
+static_assert(kFinalistCount % kTiedArmsPerInputModel == 0,
+              "the smoke cut must never slice a bit-for-bit tied block in half");
 static_assert(kCandidateCount >= kFinalistCount, "the smoke cut needs its survivors");
 
 // The receipt's preset label is DERIVED from the translation unit, never passed
@@ -120,21 +166,62 @@ constexpr std::array<double, 10> kTimeScales = {
     1.0 / 365.0,  -1.0 / 365.0, 1.0 / 365.25, -1.0 / 365.25, 1.0 / 360.0,
     -1.0 / 360.0, 1.0 / 252.0,  -1.0 / 252.0, 1.0,           -1.0};
 
-// The published identity of a grid point: both searched axes, joined. Every
-// tie-break in this file orders on THIS string, so a candidate's rank never
-// depends on which axis happens to be the outer loop.
-[[nodiscard]] std::string candidate_id_of(InputModel model, ExerciseStyleRule rule) {
+// The published identity of a grid point: all three searched axes, joined.
+// Every tie-break in this file orders on THIS string — field by field, see
+// `less_candidate_identity` — so a candidate's rank never depends on which axis
+// happens to be the outer loop.
+constexpr char kCandidateIdSeparator = '|';
+
+[[nodiscard]] std::string candidate_id_of(InputModel model, ExerciseStyleRule rule,
+                                          TimeDecayMethod method) {
   std::string out{input_model_id(model)};
-  out.push_back('|');
+  out.push_back(kCandidateIdSeparator);
   out.append(exercise_style_id(rule));
+  out.push_back(kCandidateIdSeparator);
+  out.append(time_decay_method_id(method));
   return out;
 }
 
-// One point of the two-axis grid. `candidate_id` is materialised once at
+// THE total order on a published candidate id: FIELD BY FIELD on the separator,
+// never as one flat string.
+//
+// The trap this exists for, found by ProductionMapIsTheResolvedHardCut the hour
+// the third axis was added. '|' is 0x7C and '_' is 0x5F, so the separator sorts
+// ABOVE an id character — and one exercise-style id is a strict PREFIX of
+// another ("european_cash_settled_index" / "..._plus_empirical"). While the
+// style was the LAST field the two orders agreed, because a prefix sorts first
+// with nothing after it. Appending the time-decay field made the comparison at
+// the prefix boundary read '|' against '_' and SILENTLY REVERSED that pair: an
+// arm the sweep is meant to resolve only when the evidence separates it changed
+// hands on a tie-break, purely because a THIRD axis was added. Both orders are
+// deterministic; only this one keeps a tie on two axes independent of how many
+// axes exist. So the order is stated on the fields the id is built from, and the
+// separator stays a free choice rather than load-bearing punctuation.
+[[nodiscard]] bool less_candidate_identity(std::string_view left,
+                                           std::string_view right) noexcept {
+  // Bounded by the field count: each pass consumes one whole field plus its
+  // separator from BOTH views, and the pass that exhausts either one returns.
+  while (!left.empty() && !right.empty()) {
+    const std::size_t left_end = std::min(left.find(kCandidateIdSeparator), left.size());
+    const std::size_t right_end = std::min(right.find(kCandidateIdSeparator), right.size());
+    const std::string_view left_field = left.substr(0, left_end);
+    const std::string_view right_field = right.substr(0, right_end);
+    if (left_field != right_field) {
+      return left_field < right_field;
+    }
+    left.remove_prefix(std::min(left_end + 1, left.size()));
+    right.remove_prefix(std::min(right_end + 1, right.size()));
+  }
+  // Equal on every field they share: the one with fewer fields sorts first.
+  return left.empty() && !right.empty();
+}
+
+// One point of the three-axis grid. `candidate_id` is materialised once at
 // construction and outlives every rank that borrows it.
 struct PriceCandidate {
   InputModel model{};
   ExerciseStyleRule exercise_style{};
+  TimeDecayMethod time_decay_method{};
   std::string candidate_id;
   Accumulator smoke;
   Accumulator tune;
@@ -143,10 +230,14 @@ struct PriceCandidate {
 // Are two maps the same on the axes the sweep SEARCHES? Used only to reuse an
 // already-priced arm. It must name every searched axis: a comparison that still
 // checked the input model alone would silently price the baseline arm's Greeks
-// with the candidate's exercise style the moment this axis was added.
+// with the candidate's exercise style the moment that axis was added, and the
+// same argument carries the time-decay method here. Reuse is admitted only when
+// the two maps are provably the same evaluation, never when they merely agree
+// on the axes this function happened to be written for.
 [[nodiscard]] bool same_searched_axes(const ConventionMap &left,
                                       const ConventionMap &right) noexcept {
-  return left.input_model == right.input_model && left.exercise_style == right.exercise_style;
+  return left.input_model == right.input_model && left.exercise_style == right.exercise_style &&
+         left.time_decay_method == right.time_decay_method;
 }
 
 // The price/share search has no Greek source to pick, so it carries none: a
@@ -227,16 +318,17 @@ enum class PriceStage { Smoke, TuneSample };
   if (left_mean != right_mean) {
     return left_mean < right_mean;
   }
-  return left.candidate_id < right.candidate_id;
+  return less_candidate_identity(left.candidate_id, right.candidate_id);
 }
 
-// The convention map a grid point stands for: the baseline map with BOTH
+// The convention map a grid point stands for: the baseline map with ALL THREE
 // searched axes overwritten. One definition, so no stage can evaluate a
 // candidate on a map a later stage would not reproduce.
 [[nodiscard]] ConventionMap candidate_map(const PriceCandidate &candidate) noexcept {
   ConventionMap map = baseline_convention();
   map.input_model = candidate.model;
   map.exercise_style = candidate.exercise_style;
+  map.time_decay_method = candidate.time_decay_method;
   return map;
 }
 
@@ -717,7 +809,7 @@ bool less_finalist(const FinalistRank &left, const FinalistRank &right) noexcept
   if (left.tune_price_mae != right.tune_price_mae) {
     return left.tune_price_mae < right.tune_price_mae;
   }
-  return left.candidate_id < right.candidate_id;
+  return less_candidate_identity(left.candidate_id, right.candidate_id);
 }
 
 Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> smoke,
@@ -730,8 +822,11 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
   prices.reserve(kCandidateCount);
   for (const InputModel model : kInputModels) {
     for (const ExerciseStyleRule rule : kExerciseStyleRules) {
-      prices.push_back(PriceCandidate{model, rule, candidate_id_of(model, rule), {}, {}});
-      evaluate_price_rows(smoke, 1, prices.back(), PriceStage::Smoke);
+      for (const TimeDecayMethod method : kTimeDecayMethods) {
+        prices.push_back(
+            PriceCandidate{model, rule, method, candidate_id_of(model, rule, method), {}, {}});
+        evaluate_price_rows(smoke, 1, prices.back(), PriceStage::Smoke);
+      }
     }
   }
   assert(prices.size() == kCandidateCount);
@@ -749,8 +844,8 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
     evaluate_price_rows(tune, tune_stride, prices[index], PriceStage::TuneSample);
   }
   ConventionSweepResult out;
-  // Stage 2 is the ONLY place Greeks enter the input-model / exercise-style
-  // choice. Nine-Greek attribution for all twenty-four grid points is
+  // Stage 2 is the ONLY place Greeks enter the input-model / exercise-style /
+  // time-decay choice. Nine-Greek attribution for all forty-eight grid points is
   // prohibitively expensive, so only the finalists — and the baseline they are
   // measured against — pay for it. Ranking the whole grid on price alone is how
   // a Greek regression used to reach the winner unnoticed.
@@ -926,9 +1021,11 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
             candidate.tune.count > 0 ? candidate.tune.mean() * 100.0 : 0.0,
         .tune_sample_count = candidate.tune.count});
   }
+  // The SAME field-by-field order every rank above used, so the published array
+  // order and the tie-break order can never disagree about what "next" means.
   std::sort(out.candidate_prices.begin(), out.candidate_prices.end(),
             [](const CandidatePriceMetric &left, const CandidatePriceMetric &right) {
-              return left.candidate_id < right.candidate_id;
+              return less_candidate_identity(left.candidate_id, right.candidate_id);
             });
   out.diagnostic_wall_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -1017,6 +1114,15 @@ std::string convention_map_json(const ConventionMap &map) {
   // names, in the receipt itself, that the rule routes at least one root on
   // measured behaviour rather than on a contract fact.
   field("exercise_style", exercise_style_id(map.exercise_style));
+  // HOW the two time-decay Greeks are FORMED. Structural for the same reason
+  // `exercise_style` is: an analytic tangent and a one-business-day secant are
+  // different QUANTITIES, and no entry in the scale grid relates them. It is
+  // emitted beside `exercise_style` and ahead of `day_count` deliberately —
+  // `day_count`, `theta_basis` and `delta_decay_basis` below describe the
+  // MULTIPLIER, which this key can render inert (see kTimeDecayStepYears in
+  // oracle_conventions.hpp), so a reader meets the method before the scale it
+  // governs.
+  field("time_decay_method", time_decay_method_id(map.time_decay_method));
   // Derived from the MULTIPLIER PRODUCTION APPLIES, not from the descriptive
   // `theta_days_per_year` field: a map whose two theta fields disagree must
   // render differently from a correct one, or the divergence check between

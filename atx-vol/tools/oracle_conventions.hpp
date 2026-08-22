@@ -4,6 +4,7 @@
 // single ConventionMap on aggregate smoke+tune data; production Mode A uses
 // winning_convention() and never exposes a runtime convention flag.
 
+#include <limits>
 #include <optional>
 #include <string_view>
 
@@ -65,12 +66,60 @@ enum class ExerciseStyleRule {
   EuropeanCashSettledIndexPlusEmpirical,
 };
 
+// HOW the two time-decay Greeks are FORMED — the time-decay axis.
+//
+// It is a convention key and not a tuning knob for the same reason
+// `exercise_style` is: the two arms compute DIFFERENT QUANTITIES, not one
+// quantity at two scales. A tangent and a secant over a finite step are not
+// related by any multiplier, so no entry in the scale grid can turn one into
+// the other, and a scale search asked to bridge them silently reports the
+// closest wrong unit instead of the right quantity.
+//
+// THE EVIDENCE, two independent lines:
+//   1. SpiderRock's own documentation says theta "is always measured
+//      numerically, by calculating the difference between the current option
+//      price and the option price calculated with volatility time decreased by
+//      1/252 years", reported as a POSITIVE decay; `deDecay` is documented as
+//      "how much the delta will change for a one-day decrease in time to
+//      expiration" — the same finite difference taken on delta.
+//   2. atx-vol/docs/LEDGER.md, 2026-08-18, recorded independently that theta
+//      and deDecay "CARRY A BASIS ERROR, NOT A RESIDUAL": both moved the WRONG
+//      way under standard-relative error while IMPROVING under the symmetric
+//      one, which is the fingerprint of a basis/scale mismatch rather than of
+//      a residual the fit could shrink.
+//
+// The vendor document explains the ledger entry: we report a scaled TANGENT
+// where SpiderRock reports a SECANT. This axis puts both on the grid and lets
+// the sweep answer on measured evidence, exactly as `exercise_style` does.
+enum class TimeDecayMethod {
+  // theta = the engine's analytic dP/dt jet times `theta_scale`, delta decay =
+  // the analytic charm times `delta_decay_scale`. The historical behaviour, and
+  // the baseline arm every published theta/deDecay number is measured against.
+  AnalyticDerivative,
+  // theta = P(T) - P(T - 1/252), delta decay = delta(T) - delta(T - 1/252),
+  // both positive for a decaying position. `theta_scale` and
+  // `delta_decay_scale` are INERT under this method — the secant is already a
+  // one-day quantity, and multiplying it by a per-day scale would divide by a
+  // day count twice.
+  Secant252,
+};
+
+// The step `Secant252` differences over: ONE BUSINESS DAY out of 252, which is
+// SpiderRock's own numeric theta step ("volatility time decreased by 1/252
+// years"). Exposed so a test pins the same number the pricer bumps by instead
+// of restating a literal that could drift from it.
+inline constexpr double kTimeDecayStepYears = 1.0 / 252.0;
+
 struct ConventionMap {
   InputModel input_model = InputModel::CurrentSpotSdivYield;
   // Which pricer each row is entitled to. Defaults to the historical
   // all-American behaviour so `baseline_convention()` keeps meaning exactly
   // what it meant before this axis existed.
   ExerciseStyleRule exercise_style = ExerciseStyleRule::AmericanAll;
+  // How theta and delta decay are formed. Defaults to the historical analytic
+  // derivative, for the same reason `exercise_style` defaults to AmericanAll:
+  // `baseline_convention()` must keep meaning what it meant before the axis.
+  TimeDecayMethod time_decay_method = TimeDecayMethod::AnalyticDerivative;
   double price_scale = 1.0;
   // Calendar days-to-expiry, used ONLY for the scorecard's 0-7/8-30/31-90/90+
   // banding. SpiderRock's theta day count is an unrelated convention, so the
@@ -78,7 +127,8 @@ struct ConventionMap {
   // a theta unit pick would silently change what the bands mean.
   double days_per_year = 365.0;
   // Day count implied by theta_scale; this is what the receipt reports as
-  // `day_count`.
+  // `day_count`. Under `Secant252` it is implied by the METHOD instead — the
+  // step is one business day out of 252 — because `theta_scale` is inert there.
   double theta_days_per_year = 365.0;
   double delta_scale = 1.0;
   double gamma_scale = 1.0;
@@ -98,6 +148,7 @@ struct ConventionMap {
 [[nodiscard]] std::string_view input_model_id(InputModel model) noexcept;
 [[nodiscard]] std::string_view greek_source_id(GreekSource source) noexcept;
 [[nodiscard]] std::string_view exercise_style_id(ExerciseStyleRule rule) noexcept;
+[[nodiscard]] std::string_view time_decay_method_id(TimeDecayMethod method) noexcept;
 
 // THE routing decision, in one place.
 //
@@ -195,11 +246,32 @@ struct ModeAPricing {
   AmericanGreeks greeks{};
   double dp_dq = 0.0;
   ExerciseStyle style = ExerciseStyle::American;
+  // The ONE-BUSINESS-DAY SECANTS, populated only under
+  // `TimeDecayMethod::Secant252` and left non-finite otherwise — there is no
+  // bumped valuation to report when the map never asked for one, and a 0.0
+  // sentinel would read as a measured "no decay".
+  //
+  //   theta_secant       = P(T) - P(T - 1/252)
+  //   delta_decay_secant = delta(T) - delta(T - 1/252)
+  //
+  // Both positive for a decaying position, matching SpiderRock's positive
+  // decay convention. A bumped valuation that refuses leaves them non-finite
+  // rather than discarding the row — exactly `dp_dq`'s policy above — so a
+  // corner-regime row still reports its other seven Greeks.
+  double theta_secant = std::numeric_limits<double>::quiet_NaN();
+  double delta_decay_secant = std::numeric_limits<double>::quiet_NaN();
 };
 
 // Prices one row end to end under `map`: `mode_a_inputs` for the inputs,
 // `exercise_style_for` for the leg. Err exactly where the chosen leg errs, so
 // `rows_engine_error` keeps counting the same thing.
+//
+// Under `TimeDecayMethod::Secant252` it additionally evaluates the BUMPED leg
+// one business day closer to expiry and fills `theta_secant` /
+// `delta_decay_secant`. That second valuation asks for price+delta only
+// (`american_greeks_al`'s reduced first-order tier), so it costs one boundary
+// solve rather than five. A refusal there leaves the two secants non-finite and
+// does NOT fail the row.
 [[nodiscard]] Result<ModeAPricing> mode_a_price_row(const OracleRow &row, const ConventionMap &map,
                                                     const std::optional<AlOpts> &opts);
 
@@ -235,8 +307,23 @@ struct OracleUnitGreeks {
   double de_decay = 0.0;
 };
 
+// The ANALYTIC-DERIVATIVE form. An `AmericanGreeks` jet carries no bumped
+// valuation, so this overload cannot honour `Secant252` and does not pretend
+// to: it asserts `map` is on the analytic arm rather than silently scaling a
+// tangent where the map asked for a secant. Any caller holding a `ModeAPricing`
+// must use the overload below, which honours the axis.
 [[nodiscard]] OracleUnitGreeks to_oracle_units(const AmericanGreeks &g, double dp_dq,
                                                const ConventionMap &map) noexcept;
 [[nodiscard]] OracleUnitGreeks to_oracle_units(const AmericanGreeks &g, double dp_dq) noexcept;
+
+// THE axis-aware conversion, and the one every Mode A / sweep reporting path
+// should call. Under `AnalyticDerivative` it is the overload above; under
+// `Secant252` it publishes `theta_secant` / `delta_decay_secant` RAW, with
+// `theta_scale` and `delta_decay_scale` deliberately NOT applied — the secant
+// is already the one-day quantity, and applying a per-day scale on top of it
+// would divide by a day count twice.
+[[nodiscard]] OracleUnitGreeks to_oracle_units(const ModeAPricing &priced,
+                                               const ConventionMap &map) noexcept;
+[[nodiscard]] OracleUnitGreeks to_oracle_units(const ModeAPricing &priced) noexcept;
 
 } // namespace atx::vol::oracle

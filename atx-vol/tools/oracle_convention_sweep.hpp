@@ -226,7 +226,11 @@ struct FinalistRank {
 };
 
 // Strict weak ordering, "better first": no Greek regression, then lower
-// tune-sample price MAE, then the stable candidate identity.
+// tune-sample price MAE, then the stable candidate identity — the last compared
+// FIELD BY FIELD on '|', never as one flat string, so that adding a searched
+// axis cannot reorder a tie on the axes that already existed. The
+// '|'-sorts-above-'_' prefix trap that forces this is written out at
+// `less_candidate_identity` in oracle_convention_sweep.cpp.
 [[nodiscard]] bool less_finalist(const FinalistRank &left, const FinalistRank &right) noexcept;
 
 } // namespace atx::vol::oracle

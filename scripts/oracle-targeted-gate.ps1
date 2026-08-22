@@ -106,10 +106,24 @@ $script:OracleConventionTestIds = @(
   'OracleConvention.EuropeanLegMatchesTheIndependentRungWithNoIntrinsicFloor',
   'OracleConvention.ExerciseStyleRulesRouteOnlyTheirNamedRoots',
   'OracleConvention.IngestedExerciseStyleOutranksTheRootListRule',
+  # The time-decay convention axis: HOW theta and delta decay are formed. Three
+  # cases pin the three load-bearing facts — the secant is the one-business-day
+  # difference of price and delta (and the axis never moves a price), the two
+  # per-day scales are INERT under it because the secant is already a one-day
+  # quantity, and the expiration-day boundary resolves to the intrinsic payoff
+  # rather than to an invented epsilon.
+  'OracleConvention.SecantDecayIsTheOneDayDifferenceOfPriceAndDelta',
+  'OracleConvention.SecantDecayIgnoresTheThetaAndDecayScales',
+  'OracleConvention.ExpirationDayDecayLegIsTheIntrinsicPayoff',
   'OracleConvention.ProductionMapIsTheResolvedHardCut',
   'OracleConvention.BestScaleRanksOnTheSelectionObjective',
   'OracleConvention.SymmetricObjectiveHasNoSmallestScaleGradient',
   'OracleConvention.FinalistRankPrefersNoGreekRegressionOverLowerPriceMae',
+  # A candidate id is ordered FIELD BY FIELD on '|', never as one flat string:
+  # '|' sorts above '_' and one exercise-style id is a strict prefix of another,
+  # so a flat comparison reversed that pair the moment the time-decay field was
+  # appended after it.
+  'OracleConvention.CandidateIdentityOrdersFieldByFieldNotAsAFlatString',
   'OracleConvention.BestScaleTieBreaksOnSourceThenNumericScale',
   'OracleConvention.BestScaleWithoutSelectionEvidenceUsesCandidateIdentity',
   'OracleConvention.CompleteMapNamesEveryGreekSignAndScale',
@@ -547,6 +561,17 @@ function Test-OracleConventionMap($Map) {
     if (@('american_all', 'european_cash_settled_index', 'european_cash_settled_index_plus_empirical') -notcontains $Map.exercise_style) { return $false }
     $keys = @($keys) + 'exercise_style'
   }
+  # `time_decay_method` is OPTIONAL for exactly the same reason, one axis later:
+  # maps committed before the axis existed omit it, and absence means
+  # `analytic_derivative` (the historical behaviour — theta and delta decay are
+  # the analytic dP/dt and charm jets times their per-day scales). Under
+  # `secant_252` those two scales are inert, which is why this key must be read
+  # before `theta_basis` / `delta_decay_basis` are believed to describe a
+  # multiplier that was actually applied.
+  if ($Map -and @($Map.PSObject.Properties.Name) -contains 'time_decay_method') {
+    if (@('analytic_derivative', 'secant_252') -notcontains $Map.time_decay_method) { return $false }
+    $keys = @($keys) + 'time_decay_method'
+  }
   if (-not (Test-OracleExactKeys $Map $keys)) { return $false }
   foreach ($key in $keys) { if (-not ($Map.$key -is [string]) -or -not $Map.$key) { return $false } }
   $inputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
@@ -620,6 +645,25 @@ function ConvertTo-OracleConventionMapWithExplicitExerciseStyle($Map) {
   return $explicit
 }
 
+# The same NAMED normalization, one axis later: a convention map that OMITS
+# `time_decay_method` and one that says `analytic_derivative` describe the same
+# reported Greeks — absence predates the axis, whose default is the historical
+# analytic dP/dt and charm jets. Kept as a second named function rather than
+# folded into a generic "fill in missing keys" helper, because the DEFAULT is the
+# whole content of each: a generic helper would silently invent a default for
+# whatever key is added next, which is exactly the way a real difference gets
+# normalized away.
+function ConvertTo-OracleConventionMapWithExplicitTimeDecayMethod($Map) {
+  if ($null -eq $Map -or -not ($Map -is [System.Management.Automation.PSCustomObject])) { return $Map }
+  if (@($Map.PSObject.Properties.Name) -contains 'time_decay_method') { return $Map }
+  $explicit = [pscustomobject]@{}
+  foreach ($property in $Map.PSObject.Properties) {
+    Add-Member -InputObject $explicit -MemberType NoteProperty -Name $property.Name -Value $property.Value
+  }
+  Add-Member -InputObject $explicit -MemberType NoteProperty -Name 'time_decay_method' -Value 'analytic_derivative'
+  return $explicit
+}
+
 function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$GateId, $Identity, [string]$ExpectedFloorPath) {
   try { $sweep = $ScorecardText | ConvertFrom-Json } catch { throw "oracle targeted gate $GateId sweep is not JSON" }
   $keys = @('schema_version', 'kind', 'git_sha', 'cohorts', 'selection_strategy', 'smoke_rows', 'tune_rows', 'rows_priced', 'engine_errors', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'accepted_regressions', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed')
@@ -677,17 +721,22 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
     throw "oracle targeted gate $GateId input_model_regressed_greeks is not a unique subset of the nine Greek metric ids"
   }
   $candidatePrices = @($sweep.candidate_prices)
-  # The candidate registry is the CLOSED two-axis grid the sweep searches: every
-  # input model crossed with every exercise-style rule, with candidate_id
-  # rendered as '<input_model_id>|<exercise_style_id>' (candidate_id_of in
-  # atx-vol/tools/oracle_convention_sweep.cpp; the C++ side pins the same 24 in
-  # OracleConvention.SweepIsClosedDeterministicAndCoversElevenMetrics). Pinned
-  # as the exact id SET, not a count: a dropped, duplicated, or renamed grid
-  # point fails here instead of passing as a silently narrower search. The id
-  # domains are the same closed enums Test-OracleConventionMap enforces.
+  # The candidate registry is the CLOSED three-axis grid the sweep searches:
+  # every input model crossed with every exercise-style rule crossed with every
+  # time-decay method, with candidate_id rendered as
+  # '<input_model_id>|<exercise_style_id>|<time_decay_method_id>' (candidate_id_of
+  # in atx-vol/tools/oracle_convention_sweep.cpp; the C++ side pins the same 48
+  # in OracleConvention.SweepIsClosedDeterministicAndCoversElevenMetrics). THAT
+  # PAIRING IS A RECORDED TRAP: this set and that C++ pin must move in the SAME
+  # commit, or a gate run spends the whole sweep before failing on a registry
+  # mismatch. Pinned as the exact id SET, not a count: a dropped, duplicated, or
+  # renamed grid point fails here instead of passing as a silently narrower
+  # search. The id domains are the same closed enums Test-OracleConventionMap
+  # enforces.
   $candidateInputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
   $candidateExerciseStyles = @('american_all', 'european_cash_settled_index', 'european_cash_settled_index_plus_empirical')
-  $expectedCandidateIds = @(foreach ($model in $candidateInputModels) { foreach ($style in $candidateExerciseStyles) { $model + '|' + $style } })
+  $candidateTimeDecayMethods = @('analytic_derivative', 'secant_252')
+  $expectedCandidateIds = @(foreach ($model in $candidateInputModels) { foreach ($style in $candidateExerciseStyles) { foreach ($method in $candidateTimeDecayMethods) { $model + '|' + $style + '|' + $method } } })
   if (-not (Test-OracleExactStringSet @($candidatePrices.candidate_id) $expectedCandidateIds)) { throw "oracle targeted gate $GateId candidate registry mismatch" }
   foreach ($candidate in $candidatePrices) {
     if (-not (Test-OracleExactKeys $candidate @('candidate_id', 'smoke_price_mae_ticks', 'smoke_count', 'tune_sample_price_mae_ticks', 'tune_sample_count')) -or
@@ -737,11 +786,14 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
       $floorValue = $floor.$name
       $sweepValue = $sweep.$name
       if ($conventionMapFields -contains $name) {
-        # Old-format committed floors omit `exercise_style`; the fresh sweep
-        # always writes it. Normalize BOTH sides to the explicit form so the
-        # comparison is about pricing meaning, not key-set vintage.
+        # Old-format committed floors omit `exercise_style` and/or
+        # `time_decay_method`; the fresh sweep always writes both. Normalize BOTH
+        # sides to the explicit form, one axis at a time, so the comparison is
+        # about pricing meaning and not key-set vintage.
         $floorValue = ConvertTo-OracleConventionMapWithExplicitExerciseStyle $floorValue
         $sweepValue = ConvertTo-OracleConventionMapWithExplicitExerciseStyle $sweepValue
+        $floorValue = ConvertTo-OracleConventionMapWithExplicitTimeDecayMethod $floorValue
+        $sweepValue = ConvertTo-OracleConventionMapWithExplicitTimeDecayMethod $sweepValue
       }
       if (-not (Test-OracleJsonValueEqual $floorValue $sweepValue)) {
         throw ('residual floor differs from recomputed sweep: ' + $name +

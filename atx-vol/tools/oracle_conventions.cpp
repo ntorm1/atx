@@ -42,6 +42,11 @@ constexpr ConventionMap kWinner{
     // `european_cash_settled_index` — which is also the honest name for a
     // routing that now rests on contract facts alone.
     .exercise_style = ExerciseStyleRule::EuropeanCashSettledIndex,
+    // Resolved by the sweep on the time-decay axis. `AnalyticDerivative` is the
+    // historical arm; `Secant252` is on the grid beside it and the sweep is
+    // what decides between them — this literal is re-derived and checked by
+    // every gate run, like every other field here.
+    .time_decay_method = TimeDecayMethod::AnalyticDerivative,
     .price_scale = 1.0,
     .days_per_year = 365.0,
     .theta_days_per_year = 252.0,
@@ -141,6 +146,110 @@ constexpr std::array<std::string_view, 0> kEmpiricalEuropeanRoots{};
   return 0.0;
 }
 
+// The nine oracle-unit Greeks off the ANALYTIC jet alone. Both public
+// `to_oracle_units` overloads share this body so the eight axes the time-decay
+// axis does not touch cannot come to differ between them.
+[[nodiscard]] OracleUnitGreeks analytic_oracle_units(const AmericanGreeks &g, double dp_dq,
+                                                     const ConventionMap &map) noexcept {
+  OracleUnitGreeks out;
+  out.de = g.delta * map.delta_scale;
+  out.ga = g.gamma * map.gamma_scale;
+  out.th = g.theta * map.theta_scale;
+  out.ve = g.vega * map.vega_scale;
+  out.rh = g.rho * map.rho_scale;
+  out.ph = dp_dq * map.phi_scale;
+  out.vo = greek_value(g, dp_dq, map.volga_source) * map.volga_scale;
+  out.va = greek_value(g, dp_dq, map.vanna_source) * map.vanna_scale;
+  out.de_decay = g.charm * map.delta_decay_scale;
+  return out;
+}
+
+// ── The bumped valuation `TimeDecayMethod::Secant252` differences against ──
+//
+// Price and delta ONE BUSINESS DAY closer to expiry. Only `years` moves.
+// SpiderRock's theta is "the difference between the current option price and
+// the option price calculated with volatility time decreased by 1/252 years",
+// which is a RE-VALUATION of the same position at a shorter maturity, not a
+// re-derivation of its inputs: re-deriving the forward at T-h would fold a
+// day of dividend-PV drift into a number published as time decay.
+struct DecayLeg {
+  double price = 0.0;
+  double delta = 0.0;
+};
+
+// EXPIRATION-DAY valuation, for a row whose bumped maturity lands at or below
+// zero. Both pricing legs refuse T <= 0, so this case must be written down
+// rather than solved.
+//
+// THE RULE, and why this one is the rule: SpiderRock's companion expiration-day
+// convention (same document) switches American to European AND sets rate =
+// sdiv = carry = 0. At zero remaining time that European price collapses to the
+// payoff itself — max(S-K, 0) for a call, max(K-S, 0) for a put — because there
+// is no discounting left to apply, no carry left to accrue and no early-exercise
+// premium to add. Taking their stated rule to its own limit therefore IS the
+// intrinsic payoff, so the last day needs no second, independently-invented
+// convention. The alternative — clamping the bumped maturity to some epsilon
+// and solving — reports a decay that depends on the epsilon, which is a tuning
+// knob rather than a convention.
+//
+// The payoff's own slope is the bumped delta. Its kink at S == K is resolved to
+// the OUT-of-the-money side (delta 0), so an exactly-at-the-money row never
+// claims a one-sided derivative the payoff does not have.
+[[nodiscard]] DecayLeg expiration_day_leg(double spot, double strike, Side side) noexcept {
+  if (side == Side::Call) {
+    return DecayLeg{.price = std::max(spot - strike, 0.0), .delta = spot > strike ? 1.0 : 0.0};
+  }
+  return DecayLeg{.price = std::max(strike - spot, 0.0), .delta = spot < strike ? -1.0 : 0.0};
+}
+
+// @return nullopt when the bumped leg refuses; callers keep the row and lose
+//         only its two decay Greeks.
+[[nodiscard]] std::optional<DecayLeg> bumped_leg(const EnginePricingInputs &in, ExerciseStyle style,
+                                                 const std::optional<AlOpts> &opts) {
+  const double bumped_years = in.years - kTimeDecayStepYears;
+  if (!(bumped_years > 0.0)) {
+    return expiration_day_leg(in.spot, in.strike, in.side);
+  }
+  if (style == ExerciseStyle::European) {
+    const Result<AmericanGreeks> leg =
+        european_greeks(in.spot, in.strike, bumped_years, in.sigma, in.rate, in.carry, in.side);
+    if (!leg.has_value()) {
+      return std::nullopt;
+    }
+    return DecayLeg{.price = leg->price, .delta = leg->delta};
+  }
+  // Reduced first-order tier: price+delta+gamma+theta ride the BASE boundary
+  // solve alone, so the bumped leg costs ONE solve instead of five, and the
+  // columns it returns are bit-identical to the full bundle's (american.hpp's
+  // K4 contract).
+  const Result<AmericanGreeks> leg =
+      american_greeks_al(in.spot, in.strike, bumped_years, in.sigma, in.rate, in.carry, in.side,
+                         opts, /*need_vega=*/false, /*need_rho=*/false, /*need_charm=*/false);
+  if (!leg.has_value()) {
+    return std::nullopt;
+  }
+  return DecayLeg{.price = leg->price, .delta = leg->delta};
+}
+
+// Fills `out`'s two secants when — and only when — the map asks for them. Called
+// from the one function that already knows both the row's inputs and the leg it
+// took, so the bumped valuation cannot be taken against a different pricer than
+// the base one.
+void fill_time_decay_secants(ModeAPricing &out, const ConventionMap &map,
+                             const std::optional<AlOpts> &opts) {
+  if (map.time_decay_method != TimeDecayMethod::Secant252) {
+    return; // nothing asked for a bumped valuation; the secants stay non-finite
+  }
+  const std::optional<DecayLeg> bumped = bumped_leg(out.inputs, out.style, opts);
+  if (!bumped.has_value()) {
+    return; // a refused bumped leg costs the two decay Greeks, never the row
+  }
+  // POSITIVE = decay, which is SpiderRock's own sign for both fields: what the
+  // position LOSES when one day passes.
+  out.theta_secant = out.greeks.price - bumped->price;
+  out.delta_decay_secant = out.greeks.delta - bumped->delta;
+}
+
 } // namespace
 
 const ConventionMap &baseline_convention() noexcept { return kBaseline; }
@@ -178,6 +287,17 @@ std::string_view exercise_style_id(ExerciseStyleRule rule) noexcept {
     return "european_cash_settled_index";
   case ExerciseStyleRule::EuropeanCashSettledIndexPlusEmpirical:
     return "european_cash_settled_index_plus_empirical";
+  }
+  assert(false);
+  return "invalid";
+}
+
+std::string_view time_decay_method_id(TimeDecayMethod method) noexcept {
+  switch (method) {
+  case TimeDecayMethod::AnalyticDerivative:
+    return "analytic_derivative";
+  case TimeDecayMethod::Secant252:
+    return "secant_252";
   }
   assert(false);
   return "invalid";
@@ -357,6 +477,7 @@ Result<ModeAPricing> mode_a_price_row(const OracleRow &row, const ConventionMap 
       return Err(greeks.error());
     }
     out.greeks = *greeks;
+    fill_time_decay_secants(out, map, opts);
     return Ok(std::move(out));
   }
   const Result<AmericanGreeks> greeks = american_greeks_al(
@@ -373,6 +494,7 @@ Result<ModeAPricing> mode_a_price_row(const OracleRow &row, const ConventionMap 
   if (carry.has_value()) {
     out.dp_dq = carry->dP_dq;
   }
+  fill_time_decay_secants(out, map, opts);
   return Ok(std::move(out));
 }
 
@@ -414,21 +536,34 @@ double price_from_oracle_units(double oracle_price) noexcept {
 
 OracleUnitGreeks to_oracle_units(const AmericanGreeks &g, double dp_dq,
                                  const ConventionMap &map) noexcept {
-  OracleUnitGreeks out;
-  out.de = g.delta * map.delta_scale;
-  out.ga = g.gamma * map.gamma_scale;
-  out.th = g.theta * map.theta_scale;
-  out.ve = g.vega * map.vega_scale;
-  out.rh = g.rho * map.rho_scale;
-  out.ph = dp_dq * map.phi_scale;
-  out.vo = greek_value(g, dp_dq, map.volga_source) * map.volga_scale;
-  out.va = greek_value(g, dp_dq, map.vanna_source) * map.vanna_scale;
-  out.de_decay = g.charm * map.delta_decay_scale;
-  return out;
+  // An AmericanGreeks jet carries no bumped valuation, so this overload cannot
+  // honour Secant252 — fail loud in debug rather than publish a scaled tangent
+  // where the map asked for a secant.
+  assert(map.time_decay_method == TimeDecayMethod::AnalyticDerivative);
+  return analytic_oracle_units(g, dp_dq, map);
 }
 
 OracleUnitGreeks to_oracle_units(const AmericanGreeks &g, double dp_dq) noexcept {
   return to_oracle_units(g, dp_dq, winning_convention());
+}
+
+OracleUnitGreeks to_oracle_units(const ModeAPricing &priced, const ConventionMap &map) noexcept {
+  OracleUnitGreeks out = analytic_oracle_units(priced.greeks, priced.dp_dq, map);
+  if (map.time_decay_method == TimeDecayMethod::Secant252) {
+    // RAW, and this is the whole point of the axis: `theta_scale` and
+    // `delta_decay_scale` are NOT applied here. The secant is already
+    // SpiderRock's one-day quantity, so multiplying it by a per-day scale would
+    // divide by a day count a SECOND time — the silent bug this method exists
+    // to avoid, pinned by
+    // OracleConvention.SecantDecayIgnoresTheThetaAndDecayScales.
+    out.th = priced.theta_secant;
+    out.de_decay = priced.delta_decay_secant;
+  }
+  return out;
+}
+
+OracleUnitGreeks to_oracle_units(const ModeAPricing &priced) noexcept {
+  return to_oracle_units(priced, winning_convention());
 }
 
 } // namespace atx::vol::oracle

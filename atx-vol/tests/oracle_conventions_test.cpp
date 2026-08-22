@@ -42,7 +42,11 @@ OracleRow make_row(double strike, Side side, const ConventionMap &map, double dd
   }
   EXPECT_TRUE(std::isfinite(priced->dp_dq));
   row.sr_prc = price_to_oracle_units(priced->greeks.price, map);
-  const OracleUnitGreeks units = to_oracle_units(priced->greeks, priced->dp_dq, map);
+  // The AXIS-AWARE conversion, not the jet-only overload: a synthetic oracle
+  // authored under a `Secant252` map must carry that map's SECANTS in `th` and
+  // `de_decay`, or a sweep over these rows could not resolve back to the map
+  // that produced them — the property every fixed-point test here rests on.
+  const OracleUnitGreeks units = to_oracle_units(*priced, map);
   row.de = units.de;
   row.ga = units.ga;
   row.th = units.th;
@@ -132,6 +136,7 @@ constexpr std::string_view kResolvedWinnerJson =
     R"("forward_formula":"uprc_exp_rate_t_minus_ddiv","rate_model":"continuous_row_rate",)"
     R"("carry_model":"sdiv_as_yield","dividend_model":"discrete_cash_forward",)"
     R"("exercise_style":"european_cash_settled_index",)"
+    R"("time_decay_method":"analytic_derivative",)"
     R"("day_count":"BUS_252","dte_banding_day_count":"ACT_365F",)"
     R"("price_scale":"per_share","price_sign":"positive",)"
     R"("vol_scale":"decimal_identity","delta_scale":"per_unit","delta_sign":"positive",)"
@@ -223,6 +228,162 @@ TEST(OracleConvention, IngestedExerciseStyleOutranksTheRootListRule) {
   row.underlier = "SPY";
   row.ingested_exercise_style = oracle::ExerciseStyle::European;
   EXPECT_EQ(exercise_style_for(row, map), oracle::ExerciseStyle::European);
+}
+
+// The time-decay axis, fact 1: what the secant IS. SpiderRock measures theta
+// "by calculating the difference between the current option price and the option
+// price calculated with volatility time decreased by 1/252 years", and deDecay
+// is the same finite difference taken on delta. The independent rung here is a
+// second full `mode_a_price_row` on a row whose `years` has been moved by hand,
+// which reproduces the bumped leg without borrowing `bumped_leg`'s arithmetic.
+// The baseline input model derives no engine input from `years`, so moving the
+// row's maturity and moving the derived `EnginePricingInputs::years` are the
+// same bump — which is exactly what makes this rung independent AND exact.
+TEST(OracleConvention, SecantDecayIsTheOneDayDifferenceOfPriceAndDelta) {
+  EXPECT_DOUBLE_EQ(kTimeDecayStepYears, 1.0 / 252.0);
+  const ConventionMap analytic = baseline_convention();
+  ConventionMap secant = analytic;
+  secant.time_decay_method = TimeDecayMethod::Secant252;
+
+  const OracleRow row = make_row(100.0, Side::Call, secant);
+  const Result<ModeAPricing> priced = mode_a_price_row(row, secant, al_fast_opts());
+  ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
+
+  OracleRow bumped_row = row;
+  bumped_row.years -= kTimeDecayStepYears;
+  ASSERT_GT(bumped_row.years, 0.0);
+  const Result<ModeAPricing> bumped = mode_a_price_row(bumped_row, analytic, al_fast_opts());
+  ASSERT_TRUE(bumped.has_value()) << bumped.error().to_string();
+
+  EXPECT_DOUBLE_EQ(priced->theta_secant, priced->greeks.price - bumped->greeks.price);
+  EXPECT_DOUBLE_EQ(priced->delta_decay_secant, priced->greeks.delta - bumped->greeks.delta);
+  // POSITIVE = decay, SpiderRock's own sign: what a long at-the-money call loses
+  // when one business day passes.
+  EXPECT_GT(priced->theta_secant, 0.0);
+
+  // The analytic arm asks for no bumped valuation, so it publishes no secant —
+  // non-finite rather than a 0.0 that would read as a measured "no decay".
+  const Result<ModeAPricing> unbumped = mode_a_price_row(row, analytic, al_fast_opts());
+  ASSERT_TRUE(unbumped.has_value()) << unbumped.error().to_string();
+  EXPECT_FALSE(std::isfinite(unbumped->theta_secant));
+  EXPECT_FALSE(std::isfinite(unbumped->delta_decay_secant));
+  // THE INVARIANT THE AXIS RESTS ON: the decay method changes how two Greeks are
+  // reported and never how a price is formed. If this ever fails, a price move
+  // attributed to the sweep is a defect, not an improvement.
+  EXPECT_DOUBLE_EQ(priced->greeks.price, unbumped->greeks.price);
+  EXPECT_DOUBLE_EQ(priced->greeks.delta, unbumped->greeks.delta);
+}
+
+// The time-decay axis, fact 2, and the pin `to_oracle_units` names by test id:
+// `theta_scale` and `delta_decay_scale` are INERT under `Secant252`. The secant
+// is already SpiderRock's one-day quantity, so applying a per-day scale on top
+// of it divides by a day count a SECOND time — a silent order-of-magnitude bug
+// that no metric would identify as a unit error. Reintroducing either
+// multiplier fails here.
+TEST(OracleConvention, SecantDecayIgnoresTheThetaAndDecayScales) {
+  ConventionMap secant = baseline_convention();
+  secant.time_decay_method = TimeDecayMethod::Secant252;
+  const OracleRow row = make_row(100.0, Side::Call, secant);
+  const Result<ModeAPricing> priced = mode_a_price_row(row, secant, al_fast_opts());
+  ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
+  ASSERT_TRUE(std::isfinite(priced->theta_secant));
+  ASSERT_TRUE(std::isfinite(priced->delta_decay_secant));
+
+  // RAW: exactly the secant, with no multiplier of any kind applied.
+  const OracleUnitGreeks units = to_oracle_units(*priced, secant);
+  EXPECT_DOUBLE_EQ(units.th, priced->theta_secant);
+  EXPECT_DOUBLE_EQ(units.de_decay, priced->delta_decay_secant);
+
+  // Move BOTH per-day scales far off identity — including a sign flip — and the
+  // two published decay Greeks must not budge by a single ulp.
+  ConventionMap scaled = secant;
+  scaled.theta_scale = 1.0 / 252.0;
+  scaled.theta_days_per_year = 252.0;
+  scaled.delta_decay_scale = -100.0;
+  const OracleUnitGreeks scaled_units = to_oracle_units(*priced, scaled);
+  EXPECT_DOUBLE_EQ(scaled_units.th, units.th);
+  EXPECT_DOUBLE_EQ(scaled_units.de_decay, units.de_decay);
+
+  // The seven axes the decay method does not touch DO still scale, so this
+  // cannot pass by the conversion having gone inert altogether.
+  ConventionMap other = secant;
+  other.delta_scale = 100.0;
+  EXPECT_DOUBLE_EQ(to_oracle_units(*priced, other).de, 100.0 * units.de);
+
+  // And the analytic arm still scales its own theta and charm, so inertness is a
+  // property of THIS method rather than of the two fields.
+  ConventionMap analytic = baseline_convention();
+  analytic.theta_scale = 1.0 / 252.0;
+  analytic.theta_days_per_year = 252.0;
+  analytic.delta_decay_scale = 1.0 / 252.0;
+  const OracleUnitGreeks analytic_units = to_oracle_units(*priced, analytic);
+  EXPECT_DOUBLE_EQ(analytic_units.th, priced->greeks.theta * (1.0 / 252.0));
+  EXPECT_DOUBLE_EQ(analytic_units.de_decay, priced->greeks.charm * (1.0 / 252.0));
+  // A tangent and a secant are different QUANTITIES, which is the whole reason
+  // this is a convention axis and not another entry in the scale grid.
+  EXPECT_NE(analytic_units.th, units.th);
+  EXPECT_NE(analytic_units.de_decay, units.de_decay);
+}
+
+// The time-decay axis, fact 3: the EXPIRATION-DAY boundary, where the bumped
+// maturity lands at or below zero and both pricing legs refuse. SpiderRock's own
+// expiration-day convention (American -> European AND rate = sdiv = carry = 0)
+// collapses at zero remaining time to the payoff itself, so the bumped leg is
+// the intrinsic payoff and its slope — no epsilon knob, and the row keeps every
+// other Greek instead of being dropped.
+TEST(OracleConvention, ExpirationDayDecayLegIsTheIntrinsicPayoff) {
+  ConventionMap secant = baseline_convention();
+  secant.time_decay_method = TimeDecayMethod::Secant252;
+  OracleRow row;
+  row.underlier = "SYNTH";
+  row.side = Side::Call;
+  row.uprc = 100.0;
+  row.rate = 0.04;
+  row.sr_vol = 0.25;
+  row.years = 1.0 / 365.0;
+  ASSERT_LE(row.years, kTimeDecayStepYears);
+
+  // In the money: the payoff is 5 and its slope is 1, so the secant is the whole
+  // remaining premium over intrinsic.
+  row.strike = 95.0;
+  const Result<ModeAPricing> itm_call = mode_a_price_row(row, secant, al_fast_opts());
+  ASSERT_TRUE(itm_call.has_value()) << itm_call.error().to_string();
+  EXPECT_DOUBLE_EQ(itm_call->theta_secant, itm_call->greeks.price - 5.0);
+  EXPECT_DOUBLE_EQ(itm_call->delta_decay_secant, itm_call->greeks.delta - 1.0);
+  EXPECT_GT(itm_call->theta_secant, 0.0);
+  // The row is kept whole: the expiration-day rule costs it nothing else.
+  EXPECT_TRUE(std::isfinite(itm_call->greeks.vega));
+  EXPECT_TRUE(std::isfinite(itm_call->dp_dq));
+
+  // Out of the money: payoff and slope are both zero, so the secant is the whole
+  // price and the delta decay is the whole delta.
+  row.strike = 105.0;
+  const Result<ModeAPricing> otm_call = mode_a_price_row(row, secant, al_fast_opts());
+  ASSERT_TRUE(otm_call.has_value()) << otm_call.error().to_string();
+  EXPECT_DOUBLE_EQ(otm_call->theta_secant, otm_call->greeks.price);
+  EXPECT_DOUBLE_EQ(otm_call->delta_decay_secant, otm_call->greeks.delta);
+
+  // Exactly at the money: the payoff's kink resolves to the OUT-of-the-money
+  // side, so the bumped leg claims delta 0 and price 0 rather than a one-sided
+  // derivative the payoff does not have.
+  row.strike = 100.0;
+  const Result<ModeAPricing> atm_call = mode_a_price_row(row, secant, al_fast_opts());
+  ASSERT_TRUE(atm_call.has_value()) << atm_call.error().to_string();
+  EXPECT_DOUBLE_EQ(atm_call->theta_secant, atm_call->greeks.price);
+  EXPECT_DOUBLE_EQ(atm_call->delta_decay_secant, atm_call->greeks.delta);
+
+  // The put side, where the payoff slope is -1 rather than +1.
+  row.side = Side::Put;
+  row.strike = 105.0;
+  const Result<ModeAPricing> itm_put = mode_a_price_row(row, secant, al_fast_opts());
+  ASSERT_TRUE(itm_put.has_value()) << itm_put.error().to_string();
+  EXPECT_DOUBLE_EQ(itm_put->theta_secant, itm_put->greeks.price - 5.0);
+  EXPECT_DOUBLE_EQ(itm_put->delta_decay_secant, itm_put->greeks.delta + 1.0);
+  row.strike = 100.0;
+  const Result<ModeAPricing> atm_put = mode_a_price_row(row, secant, al_fast_opts());
+  ASSERT_TRUE(atm_put.has_value()) << atm_put.error().to_string();
+  EXPECT_DOUBLE_EQ(atm_put->theta_secant, atm_put->greeks.price);
+  EXPECT_DOUBLE_EQ(atm_put->delta_decay_secant, atm_put->greeks.delta);
 }
 
 TEST(OracleConvention, ProductionMapIsTheResolvedHardCut) {
@@ -327,6 +488,34 @@ TEST(OracleConvention, FinalistRankPrefersNoGreekRegressionOverLowerPriceMae) {
       FinalistRank{.regresses_any_greek = false, .tune_price_mae = 1.0, .candidate_id = "a"}));
 }
 
+// The trap the third axis sprang, pinned so it cannot spring again on a fourth.
+// '|' is 0x7C and '_' is 0x5F, so the separator sorts ABOVE an id character, and
+// one exercise-style id is a strict prefix of another. A FLAT string comparison
+// therefore reverses that pair the moment a field is appended after the style —
+// changing which arm the sweep resolves on a tie the evidence never decided.
+TEST(OracleConvention, CandidateIdentityOrdersFieldByFieldNotAsAFlatString) {
+  const std::string index = "m|european_cash_settled_index|analytic_derivative";
+  const std::string plus = "m|european_cash_settled_index_plus_empirical|analytic_derivative";
+  // The flat order, asserted so this test names the thing it forbids rather than
+  // merely asserting the thing it wants.
+  EXPECT_LT(plus, index);
+
+  const auto rank = [](std::string_view id) {
+    return FinalistRank{.regresses_any_greek = false, .tune_price_mae = 1.0, .candidate_id = id};
+  };
+  // Field order: the style field alone decides, and the prefix sorts first.
+  EXPECT_TRUE(less_finalist(rank(index), rank(plus)));
+  EXPECT_FALSE(less_finalist(rank(plus), rank(index)));
+  // The FIRST differing field decides, never a later one.
+  EXPECT_TRUE(less_finalist(rank("a|z|z"), rank("b|a|a")));
+  EXPECT_FALSE(less_finalist(rank("b|a|a"), rank("a|z|z")));
+  // Fewer fields sorts first, and equal ids are not less than one another — the
+  // sort would not be a strict weak ordering otherwise.
+  EXPECT_TRUE(less_finalist(rank("a|b"), rank("a|b|c")));
+  EXPECT_FALSE(less_finalist(rank("a|b|c"), rank("a|b")));
+  EXPECT_FALSE(less_finalist(rank(index), rank(index)));
+}
+
 TEST(OracleConvention, BestScaleTieBreaksOnSourceThenNumericScale) {
   std::vector<ScaleCandidate> candidates = {
       ScaleCandidate{GreekSource::Gamma, -1.0, {}},
@@ -359,6 +548,7 @@ TEST(OracleConvention, CompleteMapNamesEveryGreekSignAndScale) {
                                 "carry_model",
                                 "dividend_model",
                                 "exercise_style",
+                                "time_decay_method",
                                 "day_count",
                                 "dte_banding_day_count",
                                 "price_scale",
@@ -394,7 +584,7 @@ TEST(OracleConvention, CompleteMapNamesEveryGreekSignAndScale) {
   // ':' in it, so counting colons counts keys.
   EXPECT_EQ(static_cast<std::size_t>(std::count(json.begin(), json.end(), ':')),
             std::size(tokens));
-  EXPECT_EQ(std::size(tokens), 32u);
+  EXPECT_EQ(std::size(tokens), 33u);
 }
 
 TEST(OracleConvention, ThetaDayCountNeverRebucketsDteBands) {
@@ -429,16 +619,34 @@ TEST(OracleConvention, SweepIsClosedDeterministicAndCoversElevenMetrics) {
     EXPECT_EQ(first->baseline_symmetric_metrics[index].metric_id,
               first->baseline_metrics[index].metric_id);
   }
-  // The CROSS PRODUCT of the two searched axes: eight input models x three
-  // exercise-style rules. The tune sample is paid for by the survivors of the
-  // smoke cut alone — two input models times the full exercise fan, because
-  // smoke cannot separate the exercise axis at all.
-  ASSERT_EQ(first->candidate_prices.size(), 24u);
+  // The CROSS PRODUCT of the three searched axes: eight input models x three
+  // exercise-style rules x two time-decay methods. The tune sample is paid for
+  // by the survivors of the smoke cut alone — two input models times the FULL
+  // tied fan (3 x 2), because the stage-1 price ranking can separate neither the
+  // exercise axis (single unrouted smoke underlier) nor the decay axis (it never
+  // touches a price at all). This exact number is mirrored by the candidate-id
+  // set $expectedCandidateIds pins in scripts/oracle-targeted-gate.ps1; the two
+  // pins MUST move together or the smoke_tune gate fails on a registry mismatch
+  // after the full sweep has already run.
+  ASSERT_EQ(first->candidate_prices.size(), 48u);
   EXPECT_EQ(std::count_if(first->candidate_prices.begin(), first->candidate_prices.end(),
                           [](const CandidatePriceMetric &candidate) {
                             return candidate.tune_sample_count > 0;
                           }),
-            6);
+            12);
+  // Every published id names all three axes, in the order the gate reproduces
+  // them. A two-part id would still be unique and would still pass the count
+  // above, and the gate's exact-set pin is what would then fail.
+  for (const CandidatePriceMetric &candidate : first->candidate_prices) {
+    EXPECT_EQ(std::count(candidate.candidate_id.begin(), candidate.candidate_id.end(), '|'), 2)
+        << candidate.candidate_id;
+  }
+  EXPECT_NE(std::find_if(first->candidate_prices.begin(), first->candidate_prices.end(),
+                         [](const CandidatePriceMetric &candidate) {
+                           return candidate.candidate_id ==
+                                  "uprc_spot__rate__sdiv_yield|american_all|secant_252";
+                         }),
+            first->candidate_prices.end());
   EXPECT_EQ(convention_map_json(first->winner), convention_map_json(second->winner));
   const std::string json = convention_sweep_json(*first, "0123456789abcdef");
   EXPECT_NE(json.find("\"cohorts\":[\"smoke\",\"tune\"]"), std::string::npos);

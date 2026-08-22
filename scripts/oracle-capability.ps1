@@ -315,6 +315,16 @@ function Test-ConventionMap($Map) {
     if (@('american_all', 'european_cash_settled_index', 'european_cash_settled_index_plus_empirical') -notcontains $Map.exercise_style) { return $false }
     $keys = @($keys) + 'exercise_style'
   }
+  # `time_decay_method` is OPTIONAL for the same reason, one axis later, and
+  # mirrors Test-OracleConventionMap in oracle-targeted-gate.ps1: maps committed
+  # before the axis existed omit the key, and absence means
+  # `analytic_derivative`, the historical analytic-jet default. It must stay
+  # optional here because this probe validates committed receipts that predate
+  # the axis and MUST keep reporting them valid.
+  if ($Map -and @($Map.PSObject.Properties.Name) -contains 'time_decay_method') {
+    if (@('analytic_derivative', 'secant_252') -notcontains $Map.time_decay_method) { return $false }
+    $keys = @($keys) + 'time_decay_method'
+  }
   if (-not (Test-ExactKeys $Map $keys)) { return $false }
   $inputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
   if ($inputModels -notcontains $Map.input_model -or @('none', 'uprc_exp_rate_t_minus_ddiv') -notcontains $Map.forward_formula -or
