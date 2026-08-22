@@ -410,6 +410,29 @@ target_include_directories(atx-vol-oracle-convention-tests
 gtest_discover_tests(atx-vol-oracle-convention-tests
     DISCOVERY_MODE PRE_TEST)
 
+# Discrete-cash-dividend lane: the Vellekoop-Nieuwenhuis spliced CRR lattice
+# (atx::vol, src/pricing/american_discrete_div.cpp) plus the `ddiv` schedule
+# reconstructor (../tools/oracle_dividends.cpp, compiled straight in the way the
+# convention target above compiles its own tools TUs).
+#
+# A NEW target rather than two more sources on atx-vol-tests, deliberately: that
+# executable carries a PASS_REGULAR_EXPRESSION case-count pin (mode_b_targeted_tests,
+# below) and a README-checked public-header registry, and neither should move for
+# work that owns its own small target perfectly well. Nothing here is labelled, so
+# `-L atx_vol_fast` / `-L atx_vol_slow` select exactly what they selected before.
+add_executable(atx-vol-discrete-div-tests
+    discrete_div_american_test.cpp
+    oracle_dividends_test.cpp
+    ../tools/oracle_dividends.cpp)
+target_link_libraries(atx-vol-discrete-div-tests
+    PRIVATE atx::vol atx::core GTest::gtest_main atx_warnings)
+target_include_directories(atx-vol-discrete-div-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tools ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+# Same reason as the convention target: one ctest case per gtest case, so a
+# vanished suite reports "No tests were found" instead of a vacuous 1/1 pass.
+gtest_discover_tests(atx-vol-discrete-div-tests
+    DISCOVERY_MODE PRE_TEST)
+
 # Suites measured >10s (serial debug, 2026-07-11). Everything here still runs
 # under `ctest -L atx_vol`; `-L atx_vol_fast` is the developer inner loop.
 # Re-derive from build/Testing/Temporary/LastTest.log when the shape changes.

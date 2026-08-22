@@ -53,6 +53,11 @@ set(ATX_VOL_PRICING_SOURCES
     src/pricing/cboe_strip.cpp
     src/pricing/al_probe.cpp
     src/pricing/american.cpp
+    # Vellekoop-Nieuwenhuis spliced CRR lattice for DISCRETE CASH dividends. Its
+    # own TU rather than a section of american.cpp: it shares no state with the
+    # Andersen-Lake machinery, while its public entries sit beside them in
+    # api/pricing/american.hpp.
+    src/pricing/american_discrete_div.cpp
     src/pricing/american_batch.cpp
     src/pricing/adjoint_greeks.cpp
     src/pricing/boundary_interp.cpp

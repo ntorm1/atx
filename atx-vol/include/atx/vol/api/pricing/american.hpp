@@ -697,6 +697,135 @@ struct AssignmentRisk {
 assignment_risk(double S, double K, double T, double sigma, double r, double q, Side side,
                 const std::optional<AlOpts> &opts = std::nullopt);
 
+// ── Discrete CASH dividends: the Vellekoop-Nieuwenhuis spliced CRR lattice ──
+//
+// Everything above prices on a CONTINUOUS carry: cash dividends, if they enter
+// at all, do so escrowed out of spot (`forward_div_corrected`, dividend.hpp) or
+// absorbed into an effective yield. That is a model choice, and on an underlier
+// whose ex-dates land ON its option expiries it is a large one — measured on
+// 9,155 SPY rows with `ddiv > 0`, escrowing costs 142.60 ticks of price MAE
+// against the vendor mark where the spliced lattice below costs 6.96 (2.29 once
+// the two far-dated merged quarters are placed on their true ex-dates). On the
+// 5,202 `ddiv == 0` rows the same lattice sits at 0.09 ticks, which is what
+// establishes that the rate / vol / year-fraction conventions were never the
+// problem — only the dividend treatment was.
+//
+// The method is Vellekoop & Nieuwenhuis (2006), "Efficient Pricing of Derivatives
+// on Assets with Discrete Dividends", Applied Mathematical Finance 13(3): ONE
+// recombining Cox-Ross-Rubinstein lattice is built on the dividend-FREE process,
+// and each ex-date is handled during the rollback by shifting the stock levels
+// down by the cash amount, interpolating the continuation value back onto the
+// unshifted recombining grid, and continuing. The tree therefore stays
+// recombining (O(N^2) nodes) instead of splitting into a 2^d-branch forest.
+//
+// Three details are load-bearing; each was measured, and each is stated where it
+// is implemented as well as here:
+//
+//   1. A dividend landing exactly ON the terminal step is applied to the
+//      ANALYTIC payoff, never interpolated. The terminal payoff has a kink at
+//      the strike and linear interpolation across it is the one place this
+//      scheme carries avoidable O(grid-spacing) error. Applying the payoff
+//      directly took a European check from 0.042 error to BIT-EXACT agreement
+//      with the equivalent-strike lattice. It matters here rather than in
+//      theory because SPY's ex-dates ARE expiry dates.
+//   2. The American exercise test at an ex-step is applied against the
+//      POST-dividend stock level ONLY. Admitting cum-dividend exercise there was
+//      tried and made agreement with the vendor mark strictly worse.
+//   3. The post-dividend level is floored at 0: a cash amount exceeding the
+//      stock level at a low node would otherwise put the lattice at a negative
+//      stock price and hand back a nonsense payoff. (Under a continuous yield
+//      `q` the model-consistent present value of the removed cash is
+//      `sum_i D_i * exp(-r*tau_i) * exp(-q*(T - tau_i))` — `q` accrues on the
+//      escrowed cash too. That is a caller's parity identity, not this
+//      function's output, but getting it wrong reads as a constant offset.)
+//
+// SCOPE — price, delta and gamma ONLY. Delta and gamma are read off the first
+// two time steps of the lattice that was built anyway, so they are free. The
+// remaining seven greeks of the `AmericanGreeks` bundle are NOT provided here:
+// each would need its own re-solve or a bumped lattice, which is a separate
+// piece of work with its own accuracy budget. Do not widen this entry point
+// into a nine-greek bundle without that work.
+
+// One discrete CASH dividend on the option's own clock.
+//
+// `tau` is a year-fraction measured from the SAME valuation instant as the
+// option's `T`, so a schedule is reusable across every expiry of one chain.
+// Dividends outside `(0, T]` are IGNORED, not rejected — already-paid and
+// after-expiry events are a normal property of a shared chain-wide schedule,
+// and this mirrors `forward_div_corrected`'s documented window behaviour. A
+// `tau` marginally past `T` (within a relative 1e-12) still counts as landing
+// AT expiry, so a schedule whose ex-date was reconstructed from the same
+// year-fraction column as `T` is not silently dropped by one ulp.
+struct CashDividend {
+  double tau = 0.0;    // ex-date, year-fraction from valuation; admitted on (0, T]
+  double amount = 0.0; // cash per share, finite and >= 0 (0 is a no-op)
+};
+
+// The vendor documents 301 steps for this method, and 301 is what reproduces
+// its marks: on the dividend-free control rows the 301-vs-601 spread is 0.040
+// ticks, ~58x smaller than the residual the dividend treatment itself carries,
+// so the step count is not the binding constraint on agreement.
+inline constexpr int kDiscreteDivDefaultSteps = 301;
+
+// Bounded-loop / allocation guard (JPL rule 2). The rollback is O(steps^2) and
+// each lattice buffer is `steps + 1` doubles; a caller asking for more than this
+// gets InvalidArgument rather than an unbounded loop.
+inline constexpr int kDiscreteDivMaxSteps = 20001;
+
+// Price plus the two lattice-derived greeks. See the SCOPE note above: this is
+// deliberately not `AmericanGreeks`.
+struct DiscreteDivGreeks {
+  double price = 0.0; // == american_discrete_div_price(...) for the same inputs
+  double delta = 0.0; // (V1[1] - V1[0]) / (S1[1] - S1[0])           — step 1
+  double gamma = 0.0; // central second difference over step 2's three nodes
+};
+
+// V&N spliced-CRR price with discrete cash dividends.
+//
+// @param S,K      spot and strike (> 0)
+// @param T        year-fraction to expiry (> 0)
+// @param sigma    annualized lognormal vol (> 0)
+// @param r,q      continuously-compounded rate and residual continuous yield
+//                 (finite). `q` is the yield that remains AFTER the discrete
+//                 cash schedule — passing a yield that already contains the
+//                 cash dividends double-counts them.
+// @param side     Call or Put
+// @param dividends discrete cash schedule; any order, duplicates allowed
+//                 (amounts landing on one lattice step are summed). Events
+//                 outside (0, T] are ignored. An EMPTY span reduces BIT-EXACTLY
+//                 to the plain CRR lattice — the no-dividend path is the same
+//                 loop with an empty step map, not a second implementation.
+// @param steps    lattice steps, [1, kDiscreteDivMaxSteps]
+// @param exercise American (default) or European. European exists because the
+//                 identities that VALIDATE this engine — put-call parity and
+//                 Black-Scholes convergence — are European statements.
+// @return the option premium, or an Error:
+//   InvalidArgument — non-positive S/K/T/sigma, non-finite r/q, `steps` outside
+//                     its range, or a non-finite / negative dividend field
+//   OutOfRange      — the CRR risk-neutral probability left (0, 1): the step is
+//                     too coarse for this (r - q, sigma, T). Raise `steps`.
+[[nodiscard]] Result<double>
+american_discrete_div_price(double S, double K, double T, double sigma, double r, double q,
+                            Side side, std::span<const CashDividend> dividends,
+                            int steps = kDiscreteDivDefaultSteps,
+                            ExerciseStyle exercise = ExerciseStyle::American);
+
+// The same lattice, additionally reporting the delta and gamma its first two
+// time steps already carry. `price` is bit-identical to
+// `american_discrete_div_price` for the same inputs (one shared kernel).
+//
+// Both greeks are with respect to the DIVIDEND-FREE lattice level, which at
+// step 0 is `S` itself — the splice always interpolates back onto the
+// unshifted grid, so the step-1 and step-2 nodes are the plain CRR levels.
+//
+// Same error contract as above, plus: InvalidArgument when `steps < 2` (gamma
+// needs three step-2 nodes).
+[[nodiscard]] Result<DiscreteDivGreeks>
+american_discrete_div_greeks(double S, double K, double T, double sigma, double r, double q,
+                             Side side, std::span<const CashDividend> dividends,
+                             int steps = kDiscreteDivDefaultSteps,
+                             ExerciseStyle exercise = ExerciseStyle::American);
+
 namespace detail {
 
 // ── Early-exercise regime classification (Healy 2021 §2.2) ───────────────
