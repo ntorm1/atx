@@ -96,6 +96,24 @@ constexpr std::size_t kCandidateCount = kInputModels.size() * kExerciseStyleRule
 constexpr std::size_t kFinalistCount = 2 * kExerciseStyleRules.size();
 static_assert(kCandidateCount >= kFinalistCount, "the smoke cut needs its survivors");
 
+// The receipt's preset label is DERIVED from the translation unit, never passed
+// in: a CLI-supplied label can disagree with the binary that actually ran, and a
+// speed number attributed to the wrong build is worse than no speed number. The
+// sweep gate now builds this bench with rel-avx2, so a hard-coded "dev" here
+// would have made every receipt claim a Debug build it was not.
+//
+// The permitted label set is mirrored by SWEEP_PRESET_LABELS in
+// .claude/workflows/vol-oracle-iter.js, which validates this field; that file
+// and this one move together.
+constexpr const char *kBuildPresetLabel =
+#if defined(NDEBUG) && defined(__AVX2__)
+    "rel-avx2";
+#elif defined(NDEBUG)
+    "rel";
+#else
+    "dev";
+#endif
+
 constexpr std::array<double, 6> kUnitScales = {0.01, -0.01, 1.0, -1.0, 100.0, -100.0};
 constexpr std::array<double, 6> kPointScales = {0.0001, -0.0001, 0.01, -0.01, 1.0, -1.0};
 constexpr std::array<double, 10> kTimeScales = {
@@ -1132,9 +1150,14 @@ std::string convention_sweep_json(const ConventionSweepResult &result, std::stri
     }
     append_json_string(out, result.input_model_regressed_greeks[index]);
   }
+  // "citable" is hard-coded false: citability additionally requires a QUIET
+  // host, which this sweep never verifies. The citable rows/second number is
+  // owned by the dedicated convention_speed gate.
   out.append("],\"oracle_suspect_candidates\":[],"
              "\"market_evidence_status\":\"not_evaluated_no_nbbo_gate\","
-             "\"diagnostic_speed\":{\"preset\":\"dev\",\"citable\":false,"
+             "\"diagnostic_speed\":{\"preset\":\"");
+  out.append(kBuildPresetLabel);
+  out.append("\",\"citable\":false,"
              "\"wall_seconds\":");
   append_double(out, result.diagnostic_wall_seconds);
   out.append(",\"rows_per_second\":");

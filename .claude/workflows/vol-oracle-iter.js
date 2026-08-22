@@ -272,9 +272,18 @@ const STAGE3_SPEED = {
   type: 'object', additionalProperties: false, required: ['metric_id', 'value', 'count', 'unit', 'preset', 'quiet_host'],
   properties: { metric_id: { type: 'string' }, value: { type: 'number' }, count: { type: 'integer' }, unit: { type: 'string' }, pin: { type: 'number' }, preset: { type: 'string' }, quiet_host: { type: 'boolean' } },
 }
+// The sweep receipt's `preset` is DERIVED from the binary that produced it --
+// kBuildPresetLabel in atx-vol/tools/oracle_convention_sweep.cpp selects on
+// NDEBUG / __AVX2__ -- so it is never a free string the caller can assert. This
+// is the closed set of labels that constant can emit, and it is enumerated ONCE
+// here so the schema below and the runtime check in validGateReceipt cannot
+// drift apart. scripts/oracle-targeted-gate.ps1 and this file are a PAIR: the
+// gate now runs the sweep from rel-avx2, and widening only one of the two sites
+// would reject a perfectly good receipt.
+const SWEEP_PRESET_LABELS = Object.freeze(['dev', 'rel', 'rel-avx2'])
 const STAGE3_DIAGNOSTIC_SPEED = {
   type: 'object', additionalProperties: false, required: ['preset', 'citable', 'wall_seconds', 'rows_per_second'],
-  properties: { preset: { type: 'string', enum: ['dev'] }, citable: { type: 'boolean', enum: [false] }, wall_seconds: { type: 'number' }, rows_per_second: { type: 'number' } },
+  properties: { preset: { type: 'string', enum: [...SWEEP_PRESET_LABELS] }, citable: { type: 'boolean', enum: [false] }, wall_seconds: { type: 'number' }, rows_per_second: { type: 'number' } },
 }
 const GATE_RECEIPT = {
   type: 'object', additionalProperties: false, required: ['receipt_id', 'gate_id', 'tested_sha', 'tested_tree', 'command', 'exit_code', 'output', 'result', 'broker_evidence'],
@@ -939,7 +948,7 @@ function validGateReceipt(receipt, gateId, expectedSha, expectedTree) {
         !validStage3ConventionMap(result.production_conventions) ||
         !Array.isArray(result.metric_deltas) || result.metric_deltas.length !== wanted.length ||
         !Array.isArray(result.symmetric_metric_deltas) || result.symmetric_metric_deltas.length !== wanted.length || !Array.isArray(result.candidate_prices) || result.candidate_prices.length !== 8 ||
-        !result.diagnostic_speed || result.diagnostic_speed.preset !== 'dev' || result.diagnostic_speed.citable !== false || !(result.diagnostic_speed.rows_per_second > 0) || !(result.diagnostic_speed.wall_seconds > 0)) return false
+        !result.diagnostic_speed || !SWEEP_PRESET_LABELS.includes(result.diagnostic_speed.preset) || result.diagnostic_speed.citable !== false || !(result.diagnostic_speed.rows_per_second > 0) || !(result.diagnostic_speed.wall_seconds > 0)) return false
     // Row accounting must close: a sweep that lost 99% of its rows to engine
     // errors would otherwise report PASS on the 1% it managed to price.
     if (!Number.isInteger(result.rows_total) || !Number.isInteger(result.engine_errors) || result.engine_errors < 0 ||

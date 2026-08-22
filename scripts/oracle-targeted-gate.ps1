@@ -199,12 +199,24 @@ function Get-OracleTargetedGateSpec([string]$GateId, $Identity) {
       }
     }
     'mode_a_smoke_tune' {
+      # rel-avx2, NOT dev. The convention sweep is the single most expensive
+      # thing this gate set runs, and the Debug build made it unrunnable rather
+      # than merely slow: a full sweep took 74,711 s (20.7 h) from the dev
+      # binary against 193 s from rel-avx2 -- a 387x difference that turns a gate
+      # into an overnight job nobody waits for. The two runs are the SAME
+      # answer, not a speed/accuracy trade: identical winning convention map,
+      # metrics agreeing to <= 1.7e-9 relative, and price MAE identical to
+      # 6.7e-15. The optimization level cannot change the selection here, so the
+      # only thing Debug bought was the wall clock.
+      #
+      # Only the two sweep gates move. Every other gate below stays on dev,
+      # where the debug build is the point of the test.
       $out = Join-Path $outputRoot ('mode-a-smoke-tune-' + $Identity.Sha + '.json')
       return [pscustomobject]@{
-        Kind = 'oracle_convention'; Program = $benchExe; OutputPath = $out
-        RequiredExecutables = @($benchExe)
+        Kind = 'oracle_convention'; Program = $relBenchExe; OutputPath = $out
+        RequiredExecutables = @($relBenchExe)
         PrepareProgram = 'powershell'
-        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', 'build', 'atx-vol-oracle-bench', '--parallel', '2')
+        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'rel-avx2', 'build', 'atx-vol-oracle-bench', '--parallel', '2')
         Arguments = @('--convention-sweep', '--smoke', $smokeCohort, '--tune', $tuneCohort, '--store', $script:OracleStoreRoot, '--out', $out, '--git-sha', $Identity.Sha)
       }
     }
@@ -277,11 +289,20 @@ function Get-OracleTargetedGateSpec([string]$GateId, $Identity) {
       # Program is the WORKTREE-LOCAL binary. It was a bare 'atx-vol-oracle-bench'
       # PATH lookup, which this script's own banner forbids -- a gate that
       # resolves its binary off PATH can validate a build from another tree.
+      #
+      # That binary is now the rel-avx2 one, for the reason spelled out on
+      # mode_a_smoke_tune above: a full sweep costs 74,711 s (20.7 h) from the
+      # dev build and 193 s from rel-avx2, for the same winning convention map
+      # and metrics within 1.7e-9 relative (price MAE identical to 6.7e-15).
+      # Note that the PRESET moved and the ARGUMENTS did not, and must not: the
+      # freeze described above is on the command line, not on the build it runs
+      # from, so swapping the binary keeps the stdout/--aggregate-only shape
+      # byte-identical to the two verbatim-frozen Mode B command lines.
       return [pscustomobject]@{
-        Kind = 'oracle_aggregate'; Program = $benchExe; OutputPath = ''
-        RequiredExecutables = @($benchExe)
+        Kind = 'oracle_aggregate'; Program = $relBenchExe; OutputPath = ''
+        RequiredExecutables = @($relBenchExe)
         PrepareProgram = 'powershell'
-        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', 'build', 'atx-vol-oracle-bench', '--parallel', '2')
+        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'rel-avx2', 'build', 'atx-vol-oracle-bench', '--parallel', '2')
         Arguments = @('--cohort', 'smoke,tune', '--mode', 'B', '--aggregate-only')
       }
     }
