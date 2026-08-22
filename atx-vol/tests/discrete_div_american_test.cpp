@@ -23,14 +23,20 @@
 
 namespace {
 
+using atx::vol::american_discrete_div_greek_bundle;
 using atx::vol::american_discrete_div_greeks;
 using atx::vol::american_discrete_div_price;
 using atx::vol::black76_price;
 using atx::vol::CashDividend;
+using atx::vol::discrete_div_sigma_bump;
+using atx::vol::DiscreteDivGreekBundle;
 using atx::vol::DiscreteDivGreeks;
 using atx::vol::ErrorCode;
 using atx::vol::ExerciseStyle;
 using atx::vol::kDiscreteDivMaxSteps;
+using atx::vol::kDiscreteDivRateBump;
+using atx::vol::kDiscreteDivThetaSecantHorizon;
+using atx::vol::kDiscreteDivYieldBump;
 using atx::vol::Side;
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
@@ -503,5 +509,749 @@ TEST(DiscreteDivAmerican, RiskNeutralProbabilityOutsideZeroOne_IsOutOfRange) {
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), ErrorCode::OutOfRange);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  The nine-greek oracle bundle
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── An independent lattice reference for the five FREE greeks ────────────────
+//
+// `plain_crr` above exists so "the empty span reduces to the no-dividend path"
+// is a claim about two implementations rather than a tautology about one. The
+// bundle reads four more outputs off the same rollback, so the same claim needs
+// the same second implementation extended to carry them.
+struct PlainCrrGreeks {
+  double price = 0.0;
+  double delta = 0.0;
+  double gamma = 0.0;
+  double theta = 0.0;
+  double charm = 0.0;
+};
+
+[[nodiscard]] PlainCrrGreeks plain_crr_greeks(double S, double K, double T, double sigma, double r,
+                                              double q, Side side, int steps, bool american) {
+  const double dt = T / static_cast<double>(steps);
+  const double sqrt_dt = std::sqrt(dt);
+  const double u = std::exp(sigma * sqrt_dt);
+  const double d = 1.0 / u;
+  const double disc = std::exp(-r * dt);
+  const double p = (std::exp((r - q) * dt) - d) / (u - d);
+  const double pu = disc * p;
+  const double pd = disc * (1.0 - p);
+  const double sgn = (side == Side::Call) ? 1.0 : -1.0;
+
+  const std::size_t nodes = static_cast<std::size_t>(steps) + 1U;
+  std::vector<double> level(nodes);
+  std::vector<double> value(nodes);
+  for (std::size_t i = 0; i < nodes; ++i) {
+    const int rung = 2 * static_cast<int>(i) - steps;
+    level[i] = S * std::exp(sigma * sqrt_dt * static_cast<double>(rung));
+    value[i] = std::max(sgn * (level[i] - K), 0.0);
+  }
+
+  double lv1[2] = {0.0, 0.0};
+  double vv1[2] = {0.0, 0.0};
+  double lv2[3] = {0.0, 0.0, 0.0};
+  double vv2[3] = {0.0, 0.0, 0.0};
+  double lv3[4] = {0.0, 0.0, 0.0, 0.0};
+  double vv3[4] = {0.0, 0.0, 0.0, 0.0};
+  if (steps == 2) {
+    for (std::size_t i = 0; i < 3U; ++i) {
+      lv2[i] = level[i];
+      vv2[i] = value[i];
+    }
+  } else if (steps == 3) {
+    for (std::size_t i = 0; i < 4U; ++i) {
+      lv3[i] = level[i];
+      vv3[i] = value[i];
+    }
+  }
+
+  for (int k = steps - 1; k >= 0; --k) {
+    const std::size_t last = static_cast<std::size_t>(k);
+    for (std::size_t i = 0; i <= last; ++i) {
+      level[i] *= u;
+    }
+    for (std::size_t i = 0; i <= last; ++i) {
+      value[i] = pu * value[i + 1U] + pd * value[i];
+    }
+    if (american) {
+      for (std::size_t i = 0; i <= last; ++i) {
+        value[i] = std::max(value[i], std::max(sgn * (level[i] - K), 0.0));
+      }
+    }
+    if (k == 3) {
+      for (std::size_t i = 0; i < 4U; ++i) {
+        lv3[i] = level[i];
+        vv3[i] = value[i];
+      }
+    } else if (k == 2) {
+      for (std::size_t i = 0; i < 3U; ++i) {
+        lv2[i] = level[i];
+        vv2[i] = value[i];
+      }
+    } else if (k == 1) {
+      for (std::size_t i = 0; i < 2U; ++i) {
+        lv1[i] = level[i];
+        vv1[i] = value[i];
+      }
+    }
+  }
+
+  PlainCrrGreeks g;
+  g.price = value[0];
+  g.delta = (vv1[1] - vv1[0]) / (lv1[1] - lv1[0]);
+  const double slope_up = (vv2[2] - vv2[1]) / (lv2[2] - lv2[1]);
+  const double slope_dn = (vv2[1] - vv2[0]) / (lv2[1] - lv2[0]);
+  g.gamma = (slope_up - slope_dn) / (0.5 * (lv2[2] - lv2[0]));
+  g.theta = (vv2[1] - g.price) / (2.0 * dt);
+  const double delta_3 = (vv3[2] - vv3[1]) / (lv3[2] - lv3[1]);
+  g.charm = (delta_3 - g.delta) / (2.0 * dt);
+  return g;
+}
+
+// The whole bundle rebuilt on the independent lattice, using the bump rule and
+// the stencils the engine PUBLISHES rather than a second guess at them — the
+// point of this reference is the rollback, not the arithmetic around it.
+[[nodiscard]] DiscreteDivGreekBundle plain_crr_bundle(double S, double K, double T, double sigma,
+                                                      double r, double q, Side side, int steps,
+                                                      bool american, double horizon) {
+  const double hv = discrete_div_sigma_bump(sigma);
+  const double hr = kDiscreteDivRateBump;
+  const double hq = kDiscreteDivYieldBump;
+  const PlainCrrGreeks base = plain_crr_greeks(S, K, T, sigma, r, q, side, steps, american);
+  const PlainCrrGreeks vol_up = plain_crr_greeks(S, K, T, sigma + hv, r, q, side, steps, american);
+  const PlainCrrGreeks vol_dn = plain_crr_greeks(S, K, T, sigma - hv, r, q, side, steps, american);
+  const double rate_up = plain_crr(S, K, T, sigma, r + hr, q, side, steps, american);
+  const double rate_dn = plain_crr(S, K, T, sigma, r - hr, q, side, steps, american);
+  const double yield_up = plain_crr(S, K, T, sigma, r, q + hq, side, steps, american);
+  const double yield_dn = plain_crr(S, K, T, sigma, r, q - hq, side, steps, american);
+  const double sgn = (side == Side::Call) ? 1.0 : -1.0;
+  const double bumped_T = T - horizon;
+  const double bumped = (bumped_T > 0.0)
+                            ? plain_crr(S, K, bumped_T, sigma, r, q, side, steps, american)
+                            : std::max(sgn * (S - K), 0.0);
+
+  DiscreteDivGreekBundle b;
+  b.price = base.price;
+  b.delta = base.delta;
+  b.gamma = base.gamma;
+  b.theta = base.theta;
+  b.charm = base.charm;
+  b.vega = (vol_up.price - vol_dn.price) / (2.0 * hv);
+  b.volga = (vol_up.price - 2.0 * base.price + vol_dn.price) / (hv * hv);
+  b.vanna = (vol_up.delta - vol_dn.delta) / (2.0 * hv);
+  b.rho = (rate_up - rate_dn) / (2.0 * hr);
+  b.phi = (yield_up - yield_dn) / (2.0 * hq);
+  b.theta_secant = base.price - bumped;
+  return b;
+}
+
+// The same bundle off the CLOSED-FORM Black-Scholes price, with the engine's own
+// bump sizes on the sigma/r/q/T axes so the comparison isolates lattice error
+// instead of mixing in a stencil difference. Spot stencils are the library's
+// 1e-3*S; the time stencils for the analytic theta/charm are a tight 1e-4
+// because a closed form has no grid to fall off.
+[[nodiscard]] DiscreteDivGreekBundle bs_stencil_bundle(double S, double K, double T, double sigma,
+                                                       double r, double q, Side side,
+                                                       double horizon) {
+  const double hv = discrete_div_sigma_bump(sigma);
+  const double hr = kDiscreteDivRateBump;
+  const double hq = kDiscreteDivYieldBump;
+  const double hs = 1.0e-3 * S;
+  const double ht = 1.0e-4;
+  const auto P = [&](double ds, double dsig, double dr, double dq, double dT) {
+    return bs_price(S + ds, K, T + dT, sigma + dsig, r + dr, q + dq, side);
+  };
+  const double p0 = P(0.0, 0.0, 0.0, 0.0, 0.0);
+  const double p_sp = P(hs, 0.0, 0.0, 0.0, 0.0);
+  const double p_sm = P(-hs, 0.0, 0.0, 0.0, 0.0);
+  const double p_vp = P(0.0, hv, 0.0, 0.0, 0.0);
+  const double p_vm = P(0.0, -hv, 0.0, 0.0, 0.0);
+
+  DiscreteDivGreekBundle b;
+  b.price = p0;
+  b.delta = (p_sp - p_sm) / (2.0 * hs);
+  b.gamma = (p_sp - 2.0 * p0 + p_sm) / (hs * hs);
+  b.vega = (p_vp - p_vm) / (2.0 * hv);
+  b.volga = (p_vp - 2.0 * p0 + p_vm) / (hv * hv);
+  b.vanna = (P(hs, hv, 0.0, 0.0, 0.0) - P(-hs, hv, 0.0, 0.0, 0.0) - P(hs, -hv, 0.0, 0.0, 0.0) +
+             P(-hs, -hv, 0.0, 0.0, 0.0)) /
+            (4.0 * hs * hv);
+  b.rho = (P(0.0, 0.0, hr, 0.0, 0.0) - P(0.0, 0.0, -hr, 0.0, 0.0)) / (2.0 * hr);
+  b.phi = (P(0.0, 0.0, 0.0, hq, 0.0) - P(0.0, 0.0, 0.0, -hq, 0.0)) / (2.0 * hq);
+  // Calendar convention: dP/dt = -dP/dT, and charm = -d^2P/dS dT.
+  b.theta = -(P(0.0, 0.0, 0.0, 0.0, ht) - P(0.0, 0.0, 0.0, 0.0, -ht)) / (2.0 * ht);
+  b.charm = -(P(hs, 0.0, 0.0, 0.0, ht) - P(hs, 0.0, 0.0, 0.0, -ht) - P(-hs, 0.0, 0.0, 0.0, ht) +
+              P(-hs, 0.0, 0.0, 0.0, -ht)) /
+            (4.0 * hs * ht);
+  b.theta_secant = p0 - P(0.0, 0.0, 0.0, 0.0, -horizon);
+  return b;
+}
+
+// Named field access so a loop can report WHICH greek drifted.
+struct NamedGreek {
+  const char *name;
+  double DiscreteDivGreekBundle::*field;
+};
+
+constexpr NamedGreek kNamedGreeks[] = {
+    {"price", &DiscreteDivGreekBundle::price},
+    {"delta", &DiscreteDivGreekBundle::delta},
+    {"gamma", &DiscreteDivGreekBundle::gamma},
+    {"vega", &DiscreteDivGreekBundle::vega},
+    {"theta", &DiscreteDivGreekBundle::theta},
+    {"rho", &DiscreteDivGreekBundle::rho},
+    {"phi", &DiscreteDivGreekBundle::phi},
+    {"vanna", &DiscreteDivGreekBundle::vanna},
+    {"volga", &DiscreteDivGreekBundle::volga},
+    {"charm", &DiscreteDivGreekBundle::charm},
+    {"theta_secant", &DiscreteDivGreekBundle::theta_secant},
+};
+
+[[nodiscard]] DiscreteDivGreekBundle bundle_or_fail(double S, double K, double T, double sigma,
+                                                    double r, double q, Side side,
+                                                    std::span<const CashDividend> divs, int steps,
+                                                    ExerciseStyle exercise) {
+  const auto out = american_discrete_div_greek_bundle(S, K, T, sigma, r, q, side, divs, steps,
+                                                      exercise);
+  EXPECT_TRUE(out.has_value());
+  return out.has_value() ? *out : DiscreteDivGreekBundle{};
+}
+
+// ── The empty span: every greek, not just the price ─────────────────────────
+
+TEST(DiscreteDivAmerican, GreekBundle_EmptyDividendSpan_MatchesAnIndependentPlainCrrBundle) {
+  for (const Scenario &s : kV0) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      for (const bool american : {false, true}) {
+        const ExerciseStyle style = american ? ExerciseStyle::American : ExerciseStyle::European;
+        const DiscreteDivGreekBundle got =
+            bundle_or_fail(s.S, s.K, s.T, s.sigma, s.r, s.q, side, {}, 301, style);
+        const DiscreteDivGreekBundle want =
+            plain_crr_bundle(s.S, s.K, s.T, s.sigma, s.r, s.q, side, 301, american,
+                             kDiscreteDivThetaSecantHorizon);
+        for (const NamedGreek &g : kNamedGreeks) {
+          EXPECT_DOUBLE_EQ(got.*(g.field), want.*(g.field))
+              << g.name << " K=" << s.K << " american=" << american;
+        }
+      }
+    }
+  }
+}
+
+TEST(DiscreteDivAmerican, GreekBundle_OutOfWindowDividends_AreBitExactToTheEmptySpan) {
+  const Scenario s = kV0[1];
+  const std::vector<CashDividend> outside{{-0.25, 1.0}, {0.0, 1.0}, {s.T * 1.5, 1.0}, {0.5, 0.0}};
+  const DiscreteDivGreekBundle with = bundle_or_fail(s.S, s.K, s.T, s.sigma, s.r, s.q, Side::Put,
+                                                     outside, 301, ExerciseStyle::American);
+  const DiscreteDivGreekBundle without = bundle_or_fail(s.S, s.K, s.T, s.sigma, s.r, s.q, Side::Put,
+                                                        {}, 301, ExerciseStyle::American);
+  EXPECT_EQ(with, without);
+}
+
+// ── The cheap tier is a strict prefix of the bundle ─────────────────────────
+
+TEST(DiscreteDivAmerican, GreekBundle_PriceDeltaGamma_AreBitIdenticalToTheCheapTier) {
+  const std::vector<CashDividend> one{{0.20, 2.15}};
+  const auto cheap = american_discrete_div_greeks(775.8, 780.0, 0.35, 0.18, 0.041, 0.0, Side::Put,
+                                                  one, 301, ExerciseStyle::American);
+  ASSERT_TRUE(cheap.has_value()) << cheap.error().to_string();
+  const DiscreteDivGreekBundle wide = bundle_or_fail(775.8, 780.0, 0.35, 0.18, 0.041, 0.0,
+                                                     Side::Put, one, 301, ExerciseStyle::American);
+  EXPECT_EQ(wide.price, cheap->price);
+  EXPECT_EQ(wide.delta, cheap->delta);
+  EXPECT_EQ(wide.gamma, cheap->gamma);
+}
+
+// ── vanna is d(delta)/d(sigma), and must survive being computed that way twice ─
+
+TEST(DiscreteDivAmerican, GreekBundle_Vanna_MatchesAnIndependentDeltaOverSigmaDifference) {
+  const std::vector<CashDividend> schedule = parity_schedule();
+  constexpr double kStrike[] = {700.0, 775.0, 850.0};
+  for (const double K : kStrike) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const DiscreteDivGreekBundle wide = bundle_or_fail(kParityS, K, kParityT, kParitySigma,
+                                                         kParityR, kParityQ, side, schedule, 301,
+                                                         ExerciseStyle::American);
+      // A fully independent central difference of the LATTICE delta over the
+      // same sigma bump, built from whole `american_discrete_div_greeks` solves
+      // rather than from anything the bundle produced.
+      const double hv = discrete_div_sigma_bump(kParitySigma);
+      const auto up = american_discrete_div_greeks(kParityS, K, kParityT, kParitySigma + hv,
+                                                   kParityR, kParityQ, side, schedule, 301,
+                                                   ExerciseStyle::American);
+      const auto dn = american_discrete_div_greeks(kParityS, K, kParityT, kParitySigma - hv,
+                                                   kParityR, kParityQ, side, schedule, 301,
+                                                   ExerciseStyle::American);
+      ASSERT_TRUE(up.has_value() && dn.has_value());
+      const double want = (up->delta - dn->delta) / (2.0 * hv);
+      EXPECT_DOUBLE_EQ(wide.vanna, want) << "K=" << K;
+    }
+  }
+}
+
+// ── The European no-dividend control: every greek against closed-form BS ────
+
+// The European no-dividend control at 1201 steps. Every tolerance below is the
+// measured lattice error rounded up to about 2x, and the SPREAD across the
+// bundle is the finding, not any single number: eight of the ten greeks land
+// within 1e-3 relative of the closed form, and volga does not — it gets its own
+// two tests below because it is the only member whose accuracy claim has to be
+// hedged. Bump sizes are the engine's own on every axis, so what is measured
+// here is lattice error and not a stencil difference.
+TEST(DiscreteDivAmerican, GreekBundle_EuropeanNoDividend_MatchesTheBlackScholesStencil) {
+  constexpr double kS = 100.0;
+  constexpr double kT = 1.0;
+  constexpr double kSigma = 0.25;
+  constexpr double kR = 0.04;
+  constexpr double kQ = 0.01;
+  for (const double K : {97.0, 100.0, 103.0}) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const DiscreteDivGreekBundle got = bundle_or_fail(kS, K, kT, kSigma, kR, kQ, side, {}, 1201,
+                                                        ExerciseStyle::European);
+      const DiscreteDivGreekBundle want =
+          bs_stencil_bundle(kS, K, kT, kSigma, kR, kQ, side, kDiscreteDivThetaSecantHorizon);
+      EXPECT_NEAR(got.price, want.price, 4.0e-3) << "K=" << K;
+      EXPECT_NEAR(got.delta, want.delta, 5.0e-5) << "K=" << K;
+      EXPECT_NEAR(got.gamma, want.gamma, 2.0e-5) << "K=" << K;
+      EXPECT_NEAR(got.vega, want.vega, 8.0e-2) << "K=" << K;
+      EXPECT_NEAR(got.theta, want.theta, 3.0e-3) << "K=" << K;
+      EXPECT_NEAR(got.rho, want.rho, 1.0e-2) << "K=" << K;
+      EXPECT_NEAR(got.phi, want.phi, 5.0e-3) << "K=" << K;
+      EXPECT_NEAR(got.vanna, want.vanna, 1.0e-3) << "K=" << K;
+      EXPECT_NEAR(got.charm, want.charm, 2.0e-4) << "K=" << K;
+      EXPECT_NEAR(got.theta_secant, want.theta_secant, 1.0e-4) << "K=" << K;
+    }
+  }
+}
+
+// AT the money volga is the one place the second difference is clean, and the
+// reason is geometric rather than lucky: the terminal grid is
+// S*exp(sigma*sqrt(dt)*(2i - N)), so ln(K/S) = 0 sits at a FIXED position
+// between nodes no matter what sigma does, and the node-quantization ripple the
+// sigma bump would otherwise sweep through never moves. Measured error here is
+// 3.8e-3 on a value of -0.169 (2.3%).
+TEST(DiscreteDivAmerican, GreekBundle_AtTheMoneyVolga_MatchesTheClosedFormAndIsNegative) {
+  constexpr double kS = 100.0;
+  constexpr double kT = 1.0;
+  constexpr double kSigma = 0.25;
+  constexpr double kR = 0.04;
+  constexpr double kQ = 0.01;
+  for (const Side side : {Side::Call, Side::Put}) {
+    const DiscreteDivGreekBundle got = bundle_or_fail(kS, kS, kT, kSigma, kR, kQ, side, {}, 1201,
+                                                      ExerciseStyle::European);
+    const DiscreteDivGreekBundle want =
+        bs_stencil_bundle(kS, kS, kT, kSigma, kR, kQ, side, kDiscreteDivThetaSecantHorizon);
+    // Sign is a statement in its own right: volga = vega*d1*d2/sigma, and just
+    // above the forward-at-the-money point d1*d2 < 0. A lattice that took the
+    // second difference with the wrong sign would still pass a magnitude band.
+    EXPECT_LT(want.volga, 0.0);
+    EXPECT_LT(got.volga, 0.0);
+    EXPECT_NEAR(got.volga, want.volga, 2.0e-2);
+  }
+}
+
+// AWAY from the money the same second difference divides the ripple by h^2, and
+// this is the honest bound: at 1201 steps on a 100-spot option the volga error
+// is ~2.2 ABSOLUTE — an order of magnitude worse than any other member of the
+// bundle, and O(1/steps) like every other lattice error, so `steps` is the only
+// lever. The claim that survives is the SIGN plus an order of magnitude.
+TEST(DiscreteDivAmerican, GreekBundle_NearTheMoneyVolga_KeepsItsSignAndOrderOfMagnitude) {
+  constexpr double kS = 100.0;
+  constexpr double kT = 1.0;
+  constexpr double kSigma = 0.25;
+  constexpr double kR = 0.04;
+  constexpr double kQ = 0.01;
+  for (const Side side : {Side::Call, Side::Put}) {
+    const DiscreteDivGreekBundle got = bundle_or_fail(kS, 97.0, kT, kSigma, kR, kQ, side, {}, 1201,
+                                                      ExerciseStyle::European);
+    const DiscreteDivGreekBundle want =
+        bs_stencil_bundle(kS, 97.0, kT, kSigma, kR, kQ, side, kDiscreteDivThetaSecantHorizon);
+    EXPECT_GT(want.volga, 0.0) << "below the forward-at-the-money point d1*d2 > 0";
+    EXPECT_GT(got.volga, 0.0);
+    EXPECT_GT(got.volga, 0.3 * want.volga);
+    EXPECT_LT(got.volga, 2.0 * want.volga);
+    EXPECT_LT(std::abs(got.volga - want.volga), 3.0) << "the measured bound is 2.21";
+  }
+}
+
+// ── Convergence: 301 vs 1201 steps ─────────────────────────────────────────
+
+TEST(DiscreteDivAmerican, GreekBundle_IsStableBetween301And1201Steps) {
+  const std::vector<CashDividend> schedule = parity_schedule();
+  // Tolerances are RELATIVE to the 1201-step value except where the greek can
+  // sit at zero. They were measured, not guessed, and they are not uniform:
+  // the price/delta/gamma/theta/charm family comes off ONE lattice, so the
+  // O(1/steps) ripple largely cancels inside it, while every bumped greek
+  // differences two DIFFERENT lattices and keeps the ripple. volga divides that
+  // residue by h^2 and is the loosest member of the bundle by two orders of
+  // magnitude -- see the accuracy note at the bottom of this file.
+  struct Tol {
+    const char *name;
+    double DiscreteDivGreekBundle::*field;
+    double rel;
+  };
+  const Tol kTols[] = {
+      {"price", &DiscreteDivGreekBundle::price, 5.0e-3},        // measured 2.8e-3
+      {"delta", &DiscreteDivGreekBundle::delta, 1.0e-3},        // measured 3.4e-4
+      {"gamma", &DiscreteDivGreekBundle::gamma, 5.0e-3},        // measured 1.2e-3
+      {"vega", &DiscreteDivGreekBundle::vega, 2.0e-3},          // measured 7.2e-4
+      {"theta", &DiscreteDivGreekBundle::theta, 1.0e-2},        // measured 3.5e-3
+      {"rho", &DiscreteDivGreekBundle::rho, 5.0e-3},            // measured 2.1e-3
+      {"phi", &DiscreteDivGreekBundle::phi, 5.0e-3},            // measured 1.6e-3
+      {"vanna", &DiscreteDivGreekBundle::vanna, 5.0e-2},        // measured 1.9e-2
+      {"volga", &DiscreteDivGreekBundle::volga, 5.0e-1},        // measured 1.9e-1 -- the outlier
+      {"charm", &DiscreteDivGreekBundle::charm, 2.0e-2},        // measured 7.5e-3
+      {"theta_secant", &DiscreteDivGreekBundle::theta_secant, 1.0e-1}, // measured 4.6e-2
+  };
+  for (const Side side : {Side::Call, Side::Put}) {
+    const DiscreteDivGreekBundle coarse = bundle_or_fail(kParityS, 775.0, kParityT, kParitySigma,
+                                                         kParityR, kParityQ, side, schedule, 301,
+                                                         ExerciseStyle::American);
+    const DiscreteDivGreekBundle fine = bundle_or_fail(kParityS, 775.0, kParityT, kParitySigma,
+                                                       kParityR, kParityQ, side, schedule, 1201,
+                                                       ExerciseStyle::American);
+    for (const Tol &t : kTols) {
+      const double a = coarse.*(t.field);
+      const double b = fine.*(t.field);
+      ASSERT_TRUE(std::isfinite(a) && std::isfinite(b)) << t.name;
+      EXPECT_LE(std::abs(a - b), t.rel * std::abs(b))
+          << t.name << " 301=" << a << " 1201=" << b;
+    }
+  }
+}
+
+// ── The two thetas are two different numbers, on purpose ───────────────────
+
+TEST(DiscreteDivAmerican, GreekBundle_SecantTheta_IsAOneDayQuantityAndNotTheTangent) {
+  const std::vector<CashDividend> schedule = parity_schedule();
+  const DiscreteDivGreekBundle g = bundle_or_fail(kParityS, 775.0, kParityT, kParitySigma, kParityR,
+                                                  kParityQ, Side::Put, schedule, 301,
+                                                  ExerciseStyle::American);
+  // The secant is EXACTLY P(T) - P(T - 1/252) off the same engine, with the
+  // schedule re-anchored by the engine's own window.
+  const double at_T = price_or_fail(kParityS, 775.0, kParityT, kParitySigma, kParityR, kParityQ,
+                                    Side::Put, schedule, 301, ExerciseStyle::American);
+  const double at_bumped =
+      price_or_fail(kParityS, 775.0, kParityT - kDiscreteDivThetaSecantHorizon, kParitySigma,
+                    kParityR, kParityQ, Side::Put, schedule, 301, ExerciseStyle::American);
+  EXPECT_EQ(g.theta_secant, at_T - at_bumped);
+
+  // Decay: the secant is reported POSITIVE, the calendar tangent NEGATIVE.
+  EXPECT_GT(g.theta_secant, 0.0);
+  EXPECT_LT(g.theta, 0.0);
+
+  // THE DOUBLE-SCALING TRAP. The secant is already a one-day dollar amount; the
+  // per-year tangent divided by 252 is the number it is closest to, and the two
+  // must not be confused, but dividing the secant AGAIN by 252 puts it two
+  // orders of magnitude away from both.
+  const double tangent_per_day = -g.theta / 252.0;
+  EXPECT_NEAR(g.theta_secant, tangent_per_day, 0.25 * std::abs(tangent_per_day));
+  EXPECT_NE(g.theta_secant, tangent_per_day);
+  EXPECT_GT(std::abs(g.theta_secant - g.theta_secant / 252.0),
+            0.5 * std::abs(g.theta_secant))
+      << "a re-divided secant would be ~252x too small";
+}
+
+// WITHOUT dividends the option value depends only on the time REMAINING, so the
+// two theta forms are two estimates of one number: the secant's slope is
+// dP/dT + O(h) and the calendar tangent is -dP/dT, so |slope + theta| is pure
+// truncation and must halve when h halves. Measured 4.74e-3 -> 2.19e-3 ->
+// 9.13e-4 (ratios 0.46 and 0.42), so the bar below is 0.6 per halving.
+TEST(DiscreteDivAmerican, GreekBundle_SecantSlope_ApproachesTheTangentAsTheHorizonShrinks) {
+  constexpr int kSteps = 601;
+  constexpr double kS = 100.0;
+  constexpr double kT = 1.0;
+  constexpr double kSigma = 0.25;
+  constexpr double kR = 0.04;
+  constexpr double kQ = 0.01;
+  for (const ExerciseStyle style : {ExerciseStyle::European, ExerciseStyle::American}) {
+    const DiscreteDivGreekBundle base =
+        bundle_or_fail(kS, kS, kT, kSigma, kR, kQ, Side::Put, {}, kSteps, style);
+    double previous = std::numeric_limits<double>::infinity();
+    for (const double horizon : {1.0 / 252.0, 1.0 / 504.0, 1.0 / 1008.0}) {
+      const auto res = american_discrete_div_greek_bundle(kS, kS, kT, kSigma, kR, kQ, Side::Put, {},
+                                                          kSteps, style, horizon);
+      ASSERT_TRUE(res.has_value()) << res.error().to_string();
+      const double gap = std::abs(res->theta_secant / horizon + base.theta);
+      EXPECT_LT(gap, 0.6 * previous) << "horizon=1/" << 1.0 / horizon << " gap=" << gap;
+      previous = gap;
+    }
+    // Truncation that shrinks is still truncation that EXISTS: at the horizon
+    // that ships, the secant is not the tangent.
+    EXPECT_NE(base.theta_secant, -base.theta * kDiscreteDivThetaSecantHorizon);
+  }
+}
+
+// WITH discrete dividends the two forms stop being two estimates of one number,
+// and this is why the bundle ships both rather than picking one.
+//
+// The value depends on `t` and `T` SEPARATELY once the ex-dates are pinned to
+// absolute calendar time: writing V = f(T - t; {tau_i - t}),
+//   dV/dt + dV/dT = -sum_i dV/dtau_i,
+// which is zero only when there are no ex-dates. The calendar tangent advances
+// the CLOCK and carries the schedule with it (each ex-date keeps its distance to
+// expiry); the secant moves EXPIRY and leaves the schedule where it is (each
+// ex-date lands closer to expiry, and any ex-date past T - h is dropped
+// entirely). Measured on the schedule below: the gap is 0.146 European and
+// 0.419 American -- 4% and 12% of theta -- and unlike the dividend-free case it
+// does NOT shrink when the horizon shrinks, because it is not truncation.
+TEST(DiscreteDivAmerican, GreekBundle_WithDividends_TheTwoThetaFormsDivergeAndStayDiverged) {
+  constexpr int kSteps = 601;
+  constexpr double kS = 100.0;
+  constexpr double kT = 1.0;
+  constexpr double kSigma = 0.25;
+  constexpr double kR = 0.04;
+  constexpr double kQ = 0.01;
+  const std::vector<CashDividend> schedule{{0.30, 0.9}, {0.80, 0.9}};
+  for (const ExerciseStyle style : {ExerciseStyle::European, ExerciseStyle::American}) {
+    const DiscreteDivGreekBundle base =
+        bundle_or_fail(kS, kS, kT, kSigma, kR, kQ, Side::Put, schedule, kSteps, style);
+    // 1/252 and 1/504 are the asserted pair. 1/1008 is deliberately NOT
+    // asserted at the same bar: below about 1/500 the dividend STEP INDEX
+    // becomes the noise floor -- `nearbyint(tau/dt)` snaps each ex-date to a
+    // lattice step, dt moves with T, and the effective ex-date therefore jumps
+    // by up to dt/2 between the two legs while the price difference the secant
+    // is measuring has shrunk to a few thousandths of a dollar. The measured
+    // European gap drops to 0.053 there for that reason, not because the
+    // definitional divergence went away.
+    for (const double horizon : {1.0 / 252.0, 1.0 / 504.0}) {
+      const auto res = american_discrete_div_greek_bundle(kS, kS, kT, kSigma, kR, kQ, Side::Put,
+                                                          schedule, kSteps, style, horizon);
+      ASSERT_TRUE(res.has_value()) << res.error().to_string();
+      const double gap = std::abs(res->theta_secant / horizon + base.theta);
+      EXPECT_GT(gap, 0.10) << "horizon=1/" << 1.0 / horizon << " gap=" << gap;
+      // The dividend-free truncation at the SAME horizons is 4.7e-3 and 2.2e-3
+      // (test above). This gap is twenty times larger and does not halve.
+      EXPECT_GT(gap, 20.0 * 4.74e-3);
+    }
+    const auto fine = american_discrete_div_greek_bundle(kS, kS, kT, kSigma, kR, kQ, Side::Put,
+                                                         schedule, kSteps, style, 1.0 / 1008.0);
+    ASSERT_TRUE(fine.has_value()) << fine.error().to_string();
+    EXPECT_GT(std::abs(fine->theta_secant * 1008.0 + base.theta), 0.03)
+        << "even at the noise floor the two forms have not converged on each other";
+  }
+}
+
+// ── The expiration-day leg ─────────────────────────────────────────────────
+
+TEST(DiscreteDivAmerican, GreekBundle_ExpirationDayHorizon_TakesTheIntrinsicBumpedLeg) {
+  // T < 1/252, so `T - horizon <= 0` and the bumped leg is the intrinsic.
+  constexpr double kT = 1.0 / 504.0;
+  const std::vector<CashDividend> schedule{{kT, 0.5}};
+
+  // At the money the kink resolves to the OUT-of-the-money side: intrinsic 0,
+  // for BOTH sides, so the secant is the whole premium.
+  for (const Side side : {Side::Call, Side::Put}) {
+    const DiscreteDivGreekBundle g =
+        bundle_or_fail(100.0, 100.0, kT, 0.25, 0.04, 0.01, side, schedule, 301,
+                       ExerciseStyle::American);
+    EXPECT_EQ(g.theta_secant, g.price) << "the ATM intrinsic leg must be exactly 0";
+    EXPECT_GT(g.price, 0.0);
+  }
+
+  // In the money the leg is the intrinsic itself, exactly.
+  const DiscreteDivGreekBundle itm_call =
+      bundle_or_fail(110.0, 100.0, kT, 0.25, 0.04, 0.01, Side::Call, schedule, 301,
+                     ExerciseStyle::American);
+  EXPECT_EQ(itm_call.theta_secant, itm_call.price - 10.0);
+  const DiscreteDivGreekBundle itm_put =
+      bundle_or_fail(90.0, 100.0, kT, 0.25, 0.04, 0.01, Side::Put, schedule, 301,
+                     ExerciseStyle::American);
+  EXPECT_EQ(itm_put.theta_secant, itm_put.price - 10.0);
+
+  // Out of the money the leg is 0, so the secant is again the whole premium.
+  const DiscreteDivGreekBundle otm_call =
+      bundle_or_fail(90.0, 100.0, kT, 0.25, 0.04, 0.01, Side::Call, schedule, 301,
+                     ExerciseStyle::American);
+  EXPECT_EQ(otm_call.theta_secant, otm_call.price);
+
+  // Exactly at the boundary T == horizon the leg is still the intrinsic, not an
+  // epsilon-maturity lattice.
+  const DiscreteDivGreekBundle at_boundary =
+      bundle_or_fail(100.0, 100.0, kDiscreteDivThetaSecantHorizon, 0.25, 0.04, 0.01, Side::Call, {},
+                     301, ExerciseStyle::American);
+  EXPECT_EQ(at_boundary.theta_secant, at_boundary.price);
+}
+
+// ── Dividend re-anchoring under the maturity bump ──────────────────────────
+
+TEST(DiscreteDivAmerican, GreekBundle_MaturityBump_DropsDividendsOutsideTheBumpedWindow) {
+  constexpr double kT = 0.50;
+  constexpr double kH = 1.0 / 252.0;
+  constexpr double kBumped = kT - kH;
+  // Two ex-dates: one comfortably inside the bumped window, one ON expiry and
+  // therefore OUTSIDE it once the maturity is bumped down by a day.
+  const std::vector<CashDividend> schedule{{0.25, 1.10}, {kT, 2.35}};
+  const std::vector<CashDividend> survivors{{0.25, 1.10}};
+  const std::vector<CashDividend> clipped{{0.25, 1.10}, {kBumped, 2.35}};
+
+  for (const Side side : {Side::Call, Side::Put}) {
+    for (const ExerciseStyle style : {ExerciseStyle::European, ExerciseStyle::American}) {
+      const DiscreteDivGreekBundle g =
+          bundle_or_fail(100.0, 100.0, kT, 0.25, 0.04, 0.01, side, schedule, 301, style);
+      const double dropped =
+          price_or_fail(100.0, 100.0, kBumped, 0.25, 0.04, 0.01, side, survivors, 301, style);
+      EXPECT_EQ(g.theta_secant, g.price - dropped) << "the ex-date past T-h must be DROPPED";
+
+      // Clipping it onto the bumped terminal step instead prices a cash flow the
+      // option no longer lives to receive.
+      const double clamped =
+          price_or_fail(100.0, 100.0, kBumped, 0.25, 0.04, 0.01, side, clipped, 301, style);
+      EXPECT_NE(dropped, clamped);
+    }
+  }
+
+  // How big the mistake is, side by side. The EUROPEAN legs show it at full
+  // size (1.03 for the call, 1.27 for the put on a ~7 premium) because a
+  // European holder simply eats the terminal drop. The AMERICAN CALL is the one
+  // place it compresses -- to 0.024 -- and for a real reason rather than a
+  // cancellation: facing a 2.35 ex-dividend at expiry the holder exercises
+  // just before it, so most of the clipped cash never touches the value. That
+  // is exactly why this test does not assert one magnitude for all four legs.
+  const double euro_call_dropped =
+      price_or_fail(100.0, 100.0, kBumped, 0.25, 0.04, 0.01, Side::Call, survivors, 301,
+                    ExerciseStyle::European);
+  const double euro_call_clipped =
+      price_or_fail(100.0, 100.0, kBumped, 0.25, 0.04, 0.01, Side::Call, clipped, 301,
+                    ExerciseStyle::European);
+  EXPECT_GT(std::abs(euro_call_dropped - euro_call_clipped), 0.5) << "measured 1.03";
+  const double euro_put_dropped =
+      price_or_fail(100.0, 100.0, kBumped, 0.25, 0.04, 0.01, Side::Put, survivors, 301,
+                    ExerciseStyle::European);
+  const double euro_put_clipped =
+      price_or_fail(100.0, 100.0, kBumped, 0.25, 0.04, 0.01, Side::Put, clipped, 301,
+                    ExerciseStyle::European);
+  EXPECT_GT(std::abs(euro_put_dropped - euro_put_clipped), 0.5) << "measured 1.27";
+}
+
+// ── Degenerate inputs ──────────────────────────────────────────────────────
+
+TEST(DiscreteDivAmerican, GreekBundle_DegenerateInputs_AreInvalidArgument) {
+  const auto bad = [](double S, double K, double T, double sigma, double r, double q) {
+    return american_discrete_div_greek_bundle(S, K, T, sigma, r, q, Side::Put, {}, 301,
+                                              ExerciseStyle::American);
+  };
+  for (const auto &res : {bad(0.0, 100.0, 1.0, 0.2, 0.03, 0.0),
+                          bad(-1.0, 100.0, 1.0, 0.2, 0.03, 0.0),
+                          bad(100.0, 0.0, 1.0, 0.2, 0.03, 0.0),
+                          bad(100.0, 100.0, 0.0, 0.2, 0.03, 0.0),
+                          bad(100.0, 100.0, -1.0, 0.2, 0.03, 0.0),
+                          bad(100.0, 100.0, 1.0, 0.0, 0.03, 0.0),
+                          bad(100.0, 100.0, 1.0, -0.2, 0.03, 0.0),
+                          bad(kNaN, 100.0, 1.0, 0.2, 0.03, 0.0),
+                          bad(100.0, 100.0, 1.0, 0.2, kNaN, 0.0),
+                          bad(100.0, 100.0, 1.0, 0.2, 0.03, kNaN)}) {
+    ASSERT_FALSE(res.has_value());
+    EXPECT_EQ(res.error().code(), ErrorCode::InvalidArgument);
+  }
+
+  // Charm reads a step-3 delta, so the bundle's floor is one step above the
+  // cheap tier's: 2 steps price and carry a gamma, and still refuse here.
+  for (const int steps : {0, -1, 1, 2, kDiscreteDivMaxSteps + 1}) {
+    const auto res = american_discrete_div_greek_bundle(100.0, 100.0, 1.0, 0.2, 0.03, 0.0,
+                                                        Side::Put, {}, steps,
+                                                        ExerciseStyle::American);
+    ASSERT_FALSE(res.has_value()) << "steps=" << steps;
+    EXPECT_EQ(res.error().code(), ErrorCode::InvalidArgument) << "steps=" << steps;
+  }
+  const auto three = american_discrete_div_greek_bundle(100.0, 100.0, 1.0, 0.2, 0.03, 0.0,
+                                                        Side::Put, {}, 3,
+                                                        ExerciseStyle::American);
+  ASSERT_TRUE(three.has_value()) << three.error().to_string();
+  EXPECT_TRUE(std::isfinite(three->charm));
+
+  for (const double horizon : {0.0, -1.0 / 252.0, kNaN,
+                               std::numeric_limits<double>::infinity()}) {
+    const auto res = american_discrete_div_greek_bundle(100.0, 100.0, 1.0, 0.2, 0.03, 0.0,
+                                                        Side::Put, {}, 301,
+                                                        ExerciseStyle::American, horizon);
+    ASSERT_FALSE(res.has_value()) << "horizon=" << horizon;
+    EXPECT_EQ(res.error().code(), ErrorCode::InvalidArgument) << "horizon=" << horizon;
+  }
+
+  const std::vector<CashDividend> malformed{{0.5, -1.0}};
+  const auto bad_div = american_discrete_div_greek_bundle(100.0, 100.0, 1.0, 0.2, 0.03, 0.0,
+                                                          Side::Put, malformed, 301,
+                                                          ExerciseStyle::American);
+  ASSERT_FALSE(bad_div.has_value());
+  EXPECT_EQ(bad_div.error().code(), ErrorCode::InvalidArgument);
+}
+
+// ── Signs, on the dividend path that motivated the engine ──────────────────
+
+TEST(DiscreteDivAmerican, GreekBundle_SignsAreSaneOnTheDividendPath) {
+  const std::vector<CashDividend> schedule = parity_schedule();
+  const DiscreteDivGreekBundle call = bundle_or_fail(kParityS, 775.0, kParityT, kParitySigma,
+                                                     kParityR, kParityQ, Side::Call, schedule, 301,
+                                                     ExerciseStyle::American);
+  EXPECT_GT(call.delta, 0.0);
+  EXPECT_LT(call.delta, 1.0);
+  EXPECT_GT(call.gamma, 0.0);
+  EXPECT_GT(call.vega, 0.0);
+  EXPECT_GT(call.rho, 0.0) << "a call gains from a higher rate";
+  EXPECT_LT(call.phi, 0.0) << "a call loses from a higher carry yield";
+
+  const DiscreteDivGreekBundle put = bundle_or_fail(kParityS, 775.0, kParityT, kParitySigma,
+                                                    kParityR, kParityQ, Side::Put, schedule, 301,
+                                                    ExerciseStyle::American);
+  EXPECT_LT(put.delta, 0.0);
+  EXPECT_GT(put.delta, -1.0);
+  EXPECT_GT(put.gamma, 0.0);
+  EXPECT_GT(put.vega, 0.0);
+  EXPECT_LT(put.rho, 0.0) << "a put loses from a higher rate";
+  EXPECT_GT(put.phi, 0.0) << "a put gains from a higher carry yield";
+
+  // Gamma parity: differentiating C - P = S*exp(-qT) - PV(div) - K*exp(-rT)
+  // twice in S kills every term, so a EUROPEAN call and put at one strike must
+  // report the same gamma. The lattice does, to 2.0e-6 relative. The AMERICAN
+  // pair does NOT (measured 12% apart) and must not be asserted to -- early
+  // exercise is not linear in S, so there is no parity relation left to
+  // differentiate. This is the shape of a test that would silently pass on a
+  // broken engine if it were written on the American path with a loose bar.
+  const DiscreteDivGreekBundle euro_call = bundle_or_fail(kParityS, 775.0, kParityT, kParitySigma,
+                                                          kParityR, kParityQ, Side::Call, schedule,
+                                                          301, ExerciseStyle::European);
+  const DiscreteDivGreekBundle euro_put = bundle_or_fail(kParityS, 775.0, kParityT, kParitySigma,
+                                                         kParityR, kParityQ, Side::Put, schedule,
+                                                         301, ExerciseStyle::European);
+  EXPECT_NEAR(euro_call.gamma, euro_put.gamma, 1.0e-5 * euro_call.gamma);
+  EXPECT_GT(std::abs(call.gamma - put.gamma), 1.0e-2 * call.gamma)
+      << "American gamma parity does NOT hold; if it did, the exercise test is not firing";
+}
+
+// ── Measured accuracy of the bundle, collected in one place ──────────────────
+//
+// Every number here comes from the tests above, on the `dev` preset. Two
+// families behave differently, and the split is STRUCTURAL rather than
+// incidental — it follows from how many lattices each greek differences.
+//
+// FIVE FREE GREEKS (price, delta, gamma, theta, charm) come off ONE rollback,
+// so the lattice's O(1/steps) node-quantization error is COMMON to both nodes of
+// every difference and largely cancels. Against closed-form Black-Scholes at
+// 1201 steps (S=100, sigma=0.25, T=1, European, no dividends), absolute:
+// price 2.0e-3, delta 1.4e-5, gamma 4.0e-6, theta 1.3e-3, charm 5.8e-5.
+//
+// BUMPED GREEKS difference two DIFFERENT lattices and keep that error. A FIRST
+// difference divides it by h once, which is enough: at the same 1201 steps,
+// vega 3.8e-2 (0.1% of 38.3), rho 3.8e-3, phi 2.0e-3, vanna 2.6e-4,
+// theta_secant 1.8e-5.
+//
+// VOLGA is the exception, and the one number this bundle does not stand behind
+// away from the money: a SECOND difference divides the same error by h^2. AT the
+// money there is no ripple to divide — ln(K/S) = 0 holds a fixed position in the
+// terminal grid S*exp(sigma*sqrt(dt)*(2i - N)) however sigma moves — and the
+// error is 3.8e-3 on -0.169 (2.3%). ONE strike either side of the money it is
+// 2.2 ABSOLUTE: 35% of the K=97 value, 90% of the K=103 value. It is O(1/steps)
+// like every other lattice error, so `steps` is the only lever inside this
+// scheme; making volga materially better needs a strike-aligned tree
+// (Leisen-Reimer / Tian), which is a different PRICE and therefore a different
+// measurement against the vendor, not a tuning change here.
+//
+// STEP-COUNT STABILITY, 301 vs 1201, on the six-dividend American parity
+// scenario, relative: price 2.8e-3, delta 3.4e-4, gamma 1.2e-3, vega 7.2e-4,
+// theta 3.5e-3, rho 2.1e-3, phi 1.6e-3, charm 7.5e-3, vanna 1.9e-2,
+// theta_secant 4.6e-2, volga 1.9e-1. Same ordering, same reason.
 
 } // namespace

@@ -16,8 +16,10 @@
 // Everything here is a pure function of its arguments — the only state is the
 // per-call lattice buffers — so concurrent calls from any threads are safe.
 //
-// SCOPE: price, delta and gamma only. The seven remaining greeks of the
-// `AmericanGreeks` bundle are deliberately absent (see the header's SCOPE note).
+// Three tiers share ONE kernel (`run_lattice`): the price, the price plus the
+// two greeks the rollback already carries, and the nine-greek oracle bundle at
+// eight rollbacks. The bundle's solve accounting lives at its declaration in the
+// header; `run_lattice` is what makes five of those nine free.
 
 namespace atx::vol {
 
@@ -41,11 +43,16 @@ inline constexpr double kTauAtExpiryRelTol = 1.0e-12;
   return std::max(sgn * (level - strike), 0.0);
 }
 
-// Price + the two lattice greeks; `greeks_valid` is false when `steps < 2`.
+// Price + every greek ONE rollback can carry. `delta`/`gamma`/`theta` need
+// `steps >= 2` and `charm` needs `steps >= 3`; below those counts the field
+// stays 0 and the public entry that would expose it refuses first, so a
+// fabricated 0 never reaches a caller.
 struct LatticeOutcome {
   double price = 0.0;
   double delta = 0.0;
   double gamma = 0.0;
+  double theta = 0.0; // dP/dt, calendar convention, per year
+  double charm = 0.0; // d(delta)/dt, calendar convention
 };
 
 // Boundary validation (agent profile §4): every external input is checked ONCE,
@@ -197,18 +204,30 @@ void splice_dividend(std::span<double> level, std::span<double> value, std::span
     scratch.resize(n_nodes);
   }
 
-  // Step-1 and step-2 lattice state, captured on the way past for the greeks.
+  // Step-1, step-2 and step-3 lattice state, captured on the way past for the
+  // greeks. Step 3 is what makes charm free: because u*d == 1 its inner pair
+  // (i = 1, 2) sits at exactly the same two stock levels as step 1's pair
+  // (S*d and S*u), so the two deltas differ ONLY in remaining time and their
+  // difference is a clean d(delta)/dt with no second spot stencil.
   double level_1[2] = {0.0, 0.0};
   double value_1[2] = {0.0, 0.0};
   double level_2[3] = {0.0, 0.0, 0.0};
   double value_2[3] = {0.0, 0.0, 0.0};
-  // The rollback below visits steps N-1 .. 0, so at N == 2 step 2 IS the
-  // terminal state and the loop never sees it. Capturing it here is what keeps
-  // gamma a number instead of 0/0 at the smallest lattice that can carry one.
+  double level_3[4] = {0.0, 0.0, 0.0, 0.0};
+  double value_3[4] = {0.0, 0.0, 0.0, 0.0};
+  // The rollback below visits steps N-1 .. 0, so at N == 2 step 2 (and at
+  // N == 3 step 3) IS the terminal state and the loop never sees it. Capturing
+  // it here is what keeps gamma and charm numbers instead of 0/0 at the
+  // smallest lattice that can carry each.
   if (n_steps == 2) {
     for (std::size_t i = 0; i < 3U; ++i) {
       level_2[i] = level[i];
       value_2[i] = value[i];
+    }
+  } else if (n_steps == 3) {
+    for (std::size_t i = 0; i < 4U; ++i) {
+      level_3[i] = level[i];
+      value_3[i] = value[i];
     }
   }
 
@@ -232,7 +251,12 @@ void splice_dividend(std::span<double> level, std::span<double> value, std::span
       }
     }
 
-    if (k == 2) {
+    if (k == 3) {
+      for (std::size_t i = 0; i < 4U; ++i) {
+        level_3[i] = level[i];
+        value_3[i] = value[i];
+      }
+    } else if (k == 2) {
       for (std::size_t i = 0; i < 3U; ++i) {
         level_2[i] = level[i];
         value_2[i] = value[i];
@@ -252,8 +276,55 @@ void splice_dividend(std::span<double> level, std::span<double> value, std::span
     const double slope_up = (value_2[2] - value_2[1]) / (level_2[2] - level_2[1]);
     const double slope_dn = (value_2[1] - value_2[0]) / (level_2[1] - level_2[0]);
     out.gamma = (slope_up - slope_dn) / (0.5 * (level_2[2] - level_2[0]));
+    // theta = dP/dt at fixed spot, calendar convention (decay is negative).
+    // level_2[1] == S to within rounding — u*d == 1, so the middle step-2 node
+    // is the ROOT's own stock level two steps later — which is what makes this
+    // a pure time derivative and not a mixed spot/time one. It estimates theta
+    // at t = dt rather than t = 0, an O(dt) offset shared with every
+    // two-step-forward tree theta; the ripple that dominates a BUMPED greek
+    // largely cancels here because both nodes come from the SAME lattice.
+    out.theta = (value_2[1] - out.price) / (2.0 * dt);
+  }
+  if (n_steps >= 3) {
+    // charm = d(delta)/dt = -d^2P/dS dT. Step 3's inner pair spans the same two
+    // levels as step 1's, so this differences two deltas of the same spot
+    // stencil two steps apart; each keeps its own denominator rather than a
+    // shared S*u - S*d so the expression stays honest about rounding.
+    const double delta_3 = (value_3[2] - value_3[1]) / (level_3[2] - level_3[1]);
+    out.charm = (delta_3 - out.delta) / (2.0 * dt);
   }
   return Ok(out);
+}
+
+// Solve 8 of 8 — the bumped leg of the SpiderRock secant theta, P(T - horizon).
+//
+// The schedule is passed UNCHANGED and `run_lattice` re-applies its own
+// (0, T'] window, so an ex-date past the bumped expiry is DROPPED, never clipped
+// onto the new terminal step: the option no longer lives to receive that cash,
+// and moving it inside the window would price a flow that does not exist.
+//
+// At `T - horizon <= 0` there is NO eighth solve. SpiderRock's companion rule
+// (American -> European with rate = sdiv = carry = 0) taken to its limit at zero
+// remaining time IS the intrinsic payoff, so the intrinsic is the leg — not an
+// epsilon-maturity lattice, which would re-derive the same number at O(N^2) cost
+// and with grid error on top. `exercise_value` resolves the at-the-money kink to
+// the OUT-of-the-money side: at S == K it is 0. The whole schedule falls outside
+// the empty window (0, T'] there, which is the same drop rule taken to its own
+// limit rather than a second convention.
+[[nodiscard]] Result<double> secant_bumped_leg(double S, double K, double T, double sigma, double r,
+                                               double q, Side side,
+                                               std::span<const CashDividend> dividends, int steps,
+                                               ExerciseStyle exercise, double horizon) {
+  const double bumped_T = T - horizon;
+  if (!(bumped_T > 0.0)) {
+    return Ok(exercise_value(payoff_sign(side), S, K));
+  }
+  const Result<LatticeOutcome> leg =
+      run_lattice(S, K, bumped_T, sigma, r, q, side, dividends, steps, exercise);
+  if (!leg) {
+    return Err(leg.error());
+  }
+  return Ok(leg->price);
 }
 
 } // namespace
@@ -298,6 +369,82 @@ Result<DiscreteDivGreeks> american_discrete_div_greeks(double S, double K, doubl
   greeks.delta = out->delta;
   greeks.gamma = out->gamma;
   return Ok(greeks);
+}
+
+Result<DiscreteDivGreekBundle> american_discrete_div_greek_bundle(
+    double S, double K, double T, double sigma, double r, double q, Side side,
+    std::span<const CashDividend> dividends, int steps, ExerciseStyle exercise,
+    double theta_secant_horizon) {
+  const Status ok = validate(S, K, T, sigma, r, q, dividends, steps);
+  if (!ok) {
+    return Err(ok.error());
+  }
+  // Charm differences the step-1 and step-3 deltas; with two steps there is no
+  // step 3, so this fails closed rather than reporting a fabricated 0.
+  if (steps < 3) {
+    return Err(ErrorCode::InvalidArgument, "the greek bundle needs steps >= 3");
+  }
+  if (!std::isfinite(theta_secant_horizon) || !(theta_secant_horizon > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "theta secant horizon must be finite and > 0");
+  }
+
+  // The seven (sigma, r, q) states, tabulated so the solve COUNT is readable
+  // rather than inferred from a wall of named locals. Row 0 is the unbumped
+  // base and carries five of the nine greeks on its own.
+  struct BumpState {
+    double dsigma;
+    double dr;
+    double dq;
+  };
+  const double hv = discrete_div_sigma_bump(sigma);
+  constexpr double hr = kDiscreteDivRateBump;
+  constexpr double hq = kDiscreteDivYieldBump;
+  constexpr std::size_t kStates = 7U;
+  const BumpState bumps[kStates] = {{0.0, 0.0, 0.0},  {+hv, 0.0, 0.0}, {-hv, 0.0, 0.0},
+                                    {0.0, +hr, 0.0},  {0.0, -hr, 0.0}, {0.0, 0.0, +hq},
+                                    {0.0, 0.0, -hq}};
+  LatticeOutcome state[kStates];
+  for (std::size_t i = 0; i < kStates; ++i) {
+    const Result<LatticeOutcome> res =
+        run_lattice(S, K, T, sigma + bumps[i].dsigma, r + bumps[i].dr, q + bumps[i].dq, side,
+                    dividends, steps, exercise);
+    if (!res) {
+      return Err(res.error());
+    }
+    state[i] = *res;
+  }
+  const LatticeOutcome &base = state[0];
+  const LatticeOutcome &vol_up = state[1];
+  const LatticeOutcome &vol_dn = state[2];
+  const LatticeOutcome &rate_up = state[3];
+  const LatticeOutcome &rate_dn = state[4];
+  const LatticeOutcome &yield_up = state[5];
+  const LatticeOutcome &yield_dn = state[6];
+
+  const Result<double> bumped = secant_bumped_leg(S, K, T, sigma, r, q, side, dividends, steps,
+                                                  exercise, theta_secant_horizon);
+  if (!bumped) {
+    return Err(bumped.error());
+  }
+
+  DiscreteDivGreekBundle out;
+  out.price = base.price;
+  out.delta = base.delta;
+  out.gamma = base.gamma;
+  out.theta = base.theta;
+  out.charm = base.charm;
+  out.vega = (vol_up.price - vol_dn.price) / (2.0 * hv);
+  out.volga = (vol_up.price - 2.0 * base.price + vol_dn.price) / (hv * hv);
+  // vanna IS d(delta)/d(sigma): the two sigma-bumped rollbacks already carry
+  // their own lattice delta, so no spot x vol cross stencil is built.
+  out.vanna = (vol_up.delta - vol_dn.delta) / (2.0 * hv);
+  out.rho = (rate_up.price - rate_dn.price) / (2.0 * hr);
+  out.phi = (yield_up.price - yield_dn.price) / (2.0 * hq);
+  // A ONE-PERIOD dollar amount, positive as decay. It is NOT divided by a day
+  // count: `theta_secant_horizon` is already the day, and dividing again is the
+  // double-scaling trap the header names.
+  out.theta_secant = base.price - *bumped;
+  return Ok(out);
 }
 
 } // namespace atx::vol

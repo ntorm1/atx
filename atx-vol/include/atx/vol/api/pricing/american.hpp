@@ -739,12 +739,13 @@ assignment_risk(double S, double K, double T, double sigma, double r, double q, 
 //      escrowed cash too. That is a caller's parity identity, not this
 //      function's output, but getting it wrong reads as a constant offset.)
 //
-// SCOPE — price, delta and gamma ONLY. Delta and gamma are read off the first
-// two time steps of the lattice that was built anyway, so they are free. The
-// remaining seven greeks of the `AmericanGreeks` bundle are NOT provided here:
-// each would need its own re-solve or a bumped lattice, which is a separate
-// piece of work with its own accuracy budget. Do not widen this entry point
-// into a nine-greek bundle without that work.
+// THREE entry points, in increasing cost. `american_discrete_div_price` is one
+// rollback. `american_discrete_div_greeks` is the SAME rollback, additionally
+// reporting the delta and gamma its first two time steps already carry — both
+// free. `american_discrete_div_greek_bundle` is the nine greeks the oracle
+// scores, at EIGHT rollbacks rather than the nineteen a naive two-sided bump of
+// every axis would cost; its accounting, its bump sizes and its two theta
+// conventions are documented at its own declaration below.
 
 // One discrete CASH dividend on the option's own clock.
 //
@@ -772,8 +773,9 @@ inline constexpr int kDiscreteDivDefaultSteps = 301;
 // gets InvalidArgument rather than an unbounded loop.
 inline constexpr int kDiscreteDivMaxSteps = 20001;
 
-// Price plus the two lattice-derived greeks. See the SCOPE note above: this is
-// deliberately not `AmericanGreeks`.
+// Price plus the two FREE lattice-derived greeks — the cheap tier. Deliberately
+// not `AmericanGreeks`; the wide bundle is `DiscreteDivGreekBundle` below, and
+// it costs seven more rollbacks.
 struct DiscreteDivGreeks {
   double price = 0.0; // == american_discrete_div_price(...) for the same inputs
   double delta = 0.0; // (V1[1] - V1[0]) / (S1[1] - S1[0])           — step 1
@@ -825,6 +827,126 @@ american_discrete_div_greeks(double S, double K, double T, double sigma, double 
                              Side side, std::span<const CashDividend> dividends,
                              int steps = kDiscreteDivDefaultSteps,
                              ExerciseStyle exercise = ExerciseStyle::American);
+
+// ── The nine-greek bundle ────────────────────────────────────────────────
+//
+// The oracle scores NINE greeks, so the price-plus-two tier above cannot
+// replace the escrowed-spot path it beats on price. EIGHT rollbacks buy all
+// nine, versus the nineteen (one base + two per axis, plus two spot x vol and
+// two spot x time cross stencils) a naive bump-everything bundle would spend:
+//
+//   1 base solve       price, delta, gamma, theta, charm. FIVE outputs from one
+//                      rollback: delta off step 1, gamma off step 2, theta off
+//                      the step-2 node that sits at the ROOT's own stock level
+//                      (u*d == 1), charm off the step-1 and step-3 deltas, which
+//                      straddle that same node pair for the same reason.
+//   2 sigma solves     vega  — central first  difference of the PRICE
+//                      volga — central second difference of the PRICE
+//                      vanna — central first  difference of the lattice DELTA,
+//                              because vanna IS d(delta)/d(sigma) and each
+//                              sigma-bumped rollback already carries its delta.
+//                      Three greeks, one bump pair, no spot x vol cross stencil.
+//   2 rate solves      rho = dP/dr
+//   2 yield solves     phi = dP/dq
+//   1 maturity solve   the SECANT theta (below). SKIPPED — 7 solves, not 8 —
+//                      when `T - horizon <= 0` collapses the bumped leg to the
+//                      intrinsic.
+//
+// TWO thetas, deliberately, because the oracle is deciding between them on
+// measured evidence and a bundle that ships only one pre-empts that decision:
+//
+//   `theta`        the lattice's own time derivative, in the SAME calendar
+//                  convention and PER-YEAR units as `AmericanGreeks::theta`
+//                  (dP/dt = -dP/dT, so decay is NEGATIVE). Read as
+//                  (V[2][1] - V[0][0]) / (2*dt): node (2,1) is the same stock
+//                  level as the root, two steps later.
+//   `theta_secant` SpiderRock's documented definition — "the difference between
+//                  the current option price and the option price calculated
+//                  with volatility time decreased by 1/252 years", reported
+//                  POSITIVE as decay. It is P(T) - P(T - horizon), and it is
+//                  ALREADY a one-period quantity: dividing it by a day count a
+//                  second time is the double-scaling trap this field exists to
+//                  make visible, and the tests pin it.
+//
+// The two are not interchangeable and must not be averaged: `theta` is a rate
+// per year, `theta_secant` is a dollar amount per `horizon`, and the secant
+// carries the curvature of P in T across a whole day where the tangent does not.
+//
+// Dividend RE-ANCHORING under the maturity bump: the bumped leg re-solves at
+// `T - horizon` and passes the SAME schedule, so the engine's own `(0, T]`
+// window drops every ex-date past the bumped expiry. Dropped, never clipped
+// onto the new terminal step — a dividend the option no longer lives to receive
+// contributes nothing, and moving it to `T - horizon` would instead price a
+// cash flow that does not exist.
+struct DiscreteDivGreekBundle {
+  double price = 0.0; // == american_discrete_div_price(...), bit-identical
+  double delta = 0.0; // == american_discrete_div_greeks(...).delta
+  double gamma = 0.0; // == american_discrete_div_greeks(...).gamma
+  double vega = 0.0;  // dP/dsigma, per 1.0 of vol (NOT per vol point)
+  double theta = 0.0; // dP/dt, calendar convention, per YEAR (decay < 0)
+  double rho = 0.0;   // dP/dr
+  double phi = 0.0;   // dP/dq — the axis `AmericanGreeks` omits (see CarryGreeks)
+  double vanna = 0.0; // d(delta)/d(sigma) == d^2P/dS dsigma
+  double volga = 0.0; // d^2P/dsigma^2
+  double charm = 0.0; // d(delta)/dt == -d^2P/dS dT, calendar (delta decay)
+  double theta_secant = 0.0; // P(T) - P(T - horizon), POSITIVE as decay
+
+  [[nodiscard]] bool operator==(const DiscreteDivGreekBundle &) const = default;
+};
+
+// The sigma bump the vega / volga / vanna triple is differenced over, as a
+// FRACTION of sigma. It is deliberately two orders of magnitude coarser than
+// american.cpp's analytic-pricer `hv = 1e-3`, and the reason is the lattice:
+// a CRR price carries an O(S/steps) node-quantization ripple in sigma (the
+// strike's position between terminal nodes moves as the node spacing
+// sigma*sqrt(dt) moves), which a 1e-3 bump would divide by 2e-3 and report as
+// vega. A 10% RELATIVE bump keeps the central-difference truncation error
+// (O(h^2)) far below that ripple on every greek that divides by h, is
+// scale-free across the vol range, and can never drive `sigma - h` non-positive.
+// Second differences still divide the same ripple by h^2 — see the accuracy note
+// on `volga` in the tests: away from the money it is the noisy member of the
+// bundle, and that is a property of the lattice, not of the bump.
+inline constexpr double kDiscreteDivSigmaBumpRel = 0.10;
+
+// Rate / yield bumps, matching american_greeks_fd's `hr`/`hq`. Small is safe
+// here in a way it is not for sigma: `r` and `q` do not move a single lattice
+// node (levels are S*exp(sigma*sqrt(dt)*rung)), so they cannot move the ripple.
+inline constexpr double kDiscreteDivRateBump = 1.0e-4;
+inline constexpr double kDiscreteDivYieldBump = 1.0e-4;
+
+// One trading day of 252 — the horizon in SpiderRock's own theta definition.
+inline constexpr double kDiscreteDivThetaSecantHorizon = 1.0 / 252.0;
+
+// The absolute sigma bump for `sigma`. Exposed so a caller (or a test) can
+// reproduce the bundle's stencil exactly rather than re-deriving the rule.
+[[nodiscard]] constexpr double discrete_div_sigma_bump(double sigma) noexcept {
+  return kDiscreteDivSigmaBumpRel * sigma;
+}
+
+// The nine oracle greeks off the V&N spliced lattice. Same (S, K, T, sigma, r,
+// q, side, dividends, steps, exercise) contract as the two entries above, so
+// `price`, `delta` and `gamma` are bit-identical to theirs.
+//
+// @param theta_secant_horizon  the SpiderRock secant's time step, in years
+//        (> 0, finite). Defaults to 1/252. When `T - theta_secant_horizon <= 0`
+//        the bumped leg is NOT clamped to an epsilon maturity: SpiderRock's
+//        companion rule (American -> European with rate = sdiv = carry = 0)
+//        taken to its limit at zero remaining time IS the intrinsic payoff, so
+//        the intrinsic is what the leg uses, and its at-the-money kink resolves
+//        to the OUT-of-the-money side (max(sgn*(S - K), 0) is 0 at S == K).
+//
+// @return the bundle, or an Error:
+//   InvalidArgument — everything `american_discrete_div_price` rejects, plus
+//                     `steps < 3` (charm reads a step-3 delta) and a
+//                     non-finite / non-positive `theta_secant_horizon`
+//   OutOfRange      — propagated from ANY of the eight solves, including a
+//                     bumped one: a (r ± h, q ± h) state can leave the CRR
+//                     probability's (0, 1) window where the base state did not.
+[[nodiscard]] Result<DiscreteDivGreekBundle> american_discrete_div_greek_bundle(
+    double S, double K, double T, double sigma, double r, double q, Side side,
+    std::span<const CashDividend> dividends, int steps = kDiscreteDivDefaultSteps,
+    ExerciseStyle exercise = ExerciseStyle::American,
+    double theta_secant_horizon = kDiscreteDivThetaSecantHorizon);
 
 namespace detail {
 
