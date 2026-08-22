@@ -87,7 +87,12 @@ const TARGETED_BOOTSTRAP_GATE_IDS = Object.freeze(['mode_a_targeted_tests', 'mod
 // the gate matches the ID SET, this matches the count, and both must move
 // together.
 const ORACLE_BENCH_TEST_COUNT = 57
-const ORACLE_CONVENTION_TEST_COUNT = 18
+// Same contract for the Stage 3 suite: mirror of $script:OracleConventionTestIds
+// in scripts/oracle-targeted-gate.ps1, which pins the ID SET while this pins the
+// count, so the two must move together. Moved 18 -> 21 by the exercise-style
+// axis lane (be290aed) and 21 -> 25 by the time-decay axis lane (635f8bd8); this
+// constant tracked neither, so it is now stated beside the commits that moved it.
+const ORACLE_CONVENTION_TEST_COUNT = 25
 // The BOUNDED no-regression rule, as a multiplier on the baseline value. Stated
 // as the multiplier and not as `1 + fraction` because five layers in three
 // languages re-evaluate this same comparison and `1.0 + 0.01` is not required to
@@ -225,13 +230,30 @@ const NUMERIC_GATE_METRIC = {
 }
 const CONVENTION_MAP = {
   type: 'object', additionalProperties: false,
-  required: ['input_model', 'forward_formula', 'rate_model', 'carry_model', 'dividend_model', 'day_count', 'dte_banding_day_count', 'price_scale', 'price_sign', 'vol_scale', 'delta_scale', 'delta_sign', 'gamma_scale', 'gamma_sign', 'theta_basis', 'theta_sign', 'vega_scale', 'vega_sign', 'rho_scale', 'rho_sign', 'phi_scale', 'phi_sign', 'volga_source', 'volga_scale', 'volga_sign', 'vanna_source', 'vanna_scale', 'vanna_sign', 'delta_decay_basis', 'delta_decay_day_count', 'delta_decay_sign'],
+  // `exercise_style` and `time_decay_method` are REQUIRED, not optional. The
+  // sweep has emitted both on every map it resolves since 635f8bd8, and
+  // `validStage3ConventionMap` compares this list's LENGTH against the map's own
+  // key count — so leaving them out did not merely under-specify the schema, it
+  // rejected every current map for having two keys too many. Everything this
+  // list validates is a LIVE artifact (a gate receipt from the tested SHA, a
+  // Measure aggregate payload, an Attribute context); nothing here ever reads a
+  // committed pre-axis receipt, which is why this side can be strict while
+  // Test-ConventionMap in scripts/oracle-capability.ps1 must keep both keys
+  // optional. The two enums below are also the axis domains the candidate grid
+  // is counted from — see ORACLE_CANDIDATE_COUNT under this object.
+  required: ['input_model', 'forward_formula', 'rate_model', 'carry_model', 'dividend_model', 'exercise_style', 'time_decay_method', 'day_count', 'dte_banding_day_count', 'price_scale', 'price_sign', 'vol_scale', 'delta_scale', 'delta_sign', 'gamma_scale', 'gamma_sign', 'theta_basis', 'theta_sign', 'vega_scale', 'vega_sign', 'rho_scale', 'rho_sign', 'phi_scale', 'phi_sign', 'volga_source', 'volga_scale', 'volga_sign', 'vanna_source', 'vanna_scale', 'vanna_sign', 'delta_decay_basis', 'delta_decay_day_count', 'delta_decay_sign'],
   properties: {
     input_model: { type: 'string', enum: ['uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry'] },
     forward_formula: { type: 'string', enum: ['none', 'uprc_exp_rate_t_minus_ddiv'] },
     rate_model: { type: 'string', enum: ['continuous_row_rate', 'continuous_rate_minus_sdiv', 'continuous_rate_plus_sdiv', 'zero'] },
     carry_model: { type: 'string', enum: ['sdiv_as_yield', 'zero'] },
     dividend_model: { type: 'string', enum: ['continuous_yield_only', 'discrete_cash_forward'] },
+    // The two axes the sweep searches alongside `input_model`. Their enums are
+    // the same closed domains as kExerciseStyleRules and kTimeDecayMethods in
+    // atx-vol/tools/oracle_convention_sweep.cpp, and the candidate-grid
+    // constants below COUNT them rather than restating their sizes.
+    exercise_style: { type: 'string', enum: ['american_all', 'european_cash_settled_index', 'european_cash_settled_index_plus_empirical'] },
+    time_decay_method: { type: 'string', enum: ['analytic_derivative', 'secant_252'] },
     // `day_count` is theta's, derived from the multiplier production applies.
     // `dte_banding_day_count` is the scorecard's calendar banding day count,
     // outside the search but recorded so a silent change to it is visible.
@@ -250,6 +272,43 @@ const CONVENTION_MAP = {
     delta_decay_basis: { type: 'string', enum: ['per_day', 'per_year'] }, delta_decay_day_count: { type: 'string', enum: ['ACT_365F', 'ACT_365_25', 'ACT_360', 'BUS_252'] }, delta_decay_sign: { type: 'string', enum: ['positive', 'negative'] },
   },
 }
+// ── the stage-1 candidate grid, stated ONCE ─────────────────────────────────
+// The sweep searches the CROSS PRODUCT of three convention axes, so the
+// candidate count is a PRODUCT and never a list length anyone can eyeball. The
+// grid has already moved twice — 8 -> 24 when the exercise-style axis landed
+// (85797d0f pinned the 24-candidate registry) and 24 -> 48 when the time-decay
+// axis landed (635f8bd8) — and this file tracked NEITHER, because the arithmetic
+// was restated as a bare literal at each check site with nothing linking the
+// copies to the grid. It is now derived from the axis enums in
+// CONVENTION_MAP above, so widening an axis domain carries the counts with it,
+// and every check site below reads these names instead of a number.
+//
+// The AUTHORITATIVE values are the static_assert-guarded constants in
+// atx-vol/tools/oracle_convention_sweep.cpp:
+//   kCandidateCount        = kInputModels.size() * kExerciseStyleRules.size() * kTimeDecayMethods.size()
+//   kTiedArmsPerInputModel = kExerciseStyleRules.size() * kTimeDecayMethods.size()
+//   kFinalistCount         = 2 * kTiedArmsPerInputModel
+//
+// THESE MOVE TOGETHER, IN ONE COMMIT: the C++ grid above, this block, the
+// matching $script:Oracle*Count block in scripts/oracle-capability.ps1, and
+// `$expectedCandidateIds` in scripts/oracle-targeted-gate.ps1 (which pins the
+// exact id SET rather than a count). Adding or widening an axis while any one of
+// them lags does not fail loudly at the axis — it rejects a perfectly good
+// receipt later, at whichever layer was missed.
+const ORACLE_INPUT_MODEL_COUNT = CONVENTION_MAP.properties.input_model.enum.length
+const ORACLE_EXERCISE_STYLE_COUNT = CONVENTION_MAP.properties.exercise_style.enum.length
+const ORACLE_TIME_DECAY_METHOD_COUNT = CONVENTION_MAP.properties.time_decay_method.enum.length
+// kTiedArmsPerInputModel: neither non-input-model axis can move a stage-1 PRICE
+// (the smoke cohort is one unrouted underlier, and the decay method only changes
+// how theta and delta decay are REPORTED), so one input model contributes this
+// many candidates the price cut ranks bit-for-bit identically.
+const ORACLE_TIED_ARMS_PER_INPUT_MODEL = ORACLE_EXERCISE_STYLE_COUNT * ORACLE_TIME_DECAY_METHOD_COUNT
+// kCandidateCount = 8 x 3 x 2 = 48 at 635f8bd8.
+const ORACLE_CANDIDATE_COUNT = ORACLE_INPUT_MODEL_COUNT * ORACLE_TIED_ARMS_PER_INPUT_MODEL
+// kFinalistCount = 2 x 6 = 12 at 635f8bd8 — the FULL tied fan of the top TWO
+// input models, never two candidates overall, and therefore exactly the number
+// of candidates that carry a positive `tune_sample_count` on a sweep receipt.
+const ORACLE_FINALIST_COUNT = 2 * ORACLE_TIED_ARMS_PER_INPUT_MODEL
 const STAGE3_DELTA = {
   type: 'object', additionalProperties: false, required: ['metric_id', 'candidate', 'baseline', 'delta', 'count', 'unit'],
   properties: { metric_id: { type: 'string' }, candidate: { type: 'number' }, baseline: { type: 'number' }, delta: { type: 'number' }, count: { type: 'integer' }, unit: { type: 'string' } },
@@ -947,8 +1006,14 @@ function validGateReceipt(receipt, gateId, expectedSha, expectedTree) {
         !validStage3MetricArray(result.symmetric_metrics, wanted) || !validStage3MetricArray(result.baseline_symmetric_metrics, wanted) ||
         !validStage3ConventionMap(result.production_conventions) ||
         !Array.isArray(result.metric_deltas) || result.metric_deltas.length !== wanted.length ||
-        !Array.isArray(result.symmetric_metric_deltas) || result.symmetric_metric_deltas.length !== wanted.length || !Array.isArray(result.candidate_prices) || result.candidate_prices.length !== 8 ||
+        !Array.isArray(result.symmetric_metric_deltas) || result.symmetric_metric_deltas.length !== wanted.length || !Array.isArray(result.candidate_prices) || result.candidate_prices.length !== ORACLE_CANDIDATE_COUNT ||
         !result.diagnostic_speed || !SWEEP_PRESET_LABELS.includes(result.diagnostic_speed.preset) || result.diagnostic_speed.citable !== false || !(result.diagnostic_speed.rows_per_second > 0) || !(result.diagnostic_speed.wall_seconds > 0)) return false
+    // The smoke cut must have carried exactly kFinalistCount candidates into the
+    // tune sample, and no more: a cut that sliced a bit-for-bit tied block would
+    // let candidate-id lexicography, not evidence, decide which arms are still
+    // alive when stage 2 finally gets a cohort that can separate them. The same
+    // closure runs in Test-CandidatePrices in scripts/oracle-capability.ps1.
+    if (result.candidate_prices.filter(candidate => candidate && candidate.tune_sample_count > 0).length !== ORACLE_FINALIST_COUNT) return false
     // Row accounting must close: a sweep that lost 99% of its rows to engine
     // errors would otherwise report PASS on the 1% it managed to price.
     if (!Number.isInteger(result.rows_total) || !Number.isInteger(result.engine_errors) || result.engine_errors < 0 ||
