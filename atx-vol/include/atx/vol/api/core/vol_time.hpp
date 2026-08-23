@@ -25,20 +25,118 @@
 // `year_fraction` itself delegates to `time_to_expiry_years` internally, so
 // there is exactly one copy of the constant/expression in the codebase).
 //
-// ## Model (SpiderRock VolTimeCalc, verbatim)
+// ## Model (SpiderRock VolTimeCalc, constants FITTED to the vendor's own
+// ## published `years` DATA — not transcribed from their docs; see below)
 //
-//   Annual trading hours   = 1890  (252 trading days x 7.5h: the 09:30-16:00 ET
-//                             RTH session PLUS the hour after close).
-//   Annual non-trading hours = 6870  (8760 - 1890).
+//   Annual trading hours     = 1638  (252 sessions x 6.5h: the 09:30-16:00 ET
+//                               regular session, and nothing beyond it).
+//   Annual non-trading hours = 7122  (8760 - 1638).
 //   alpha = fraction of total annual variance attributed to trading time
-//           (default 0.7).
+//           (0.7).
 //
-//   T_vol = TradingHoursRemaining * alpha/1890
-//         + NonTradingHoursRemaining * (1-alpha)/6870
+//   T_vol = TradingHoursRemaining * alpha/1638
+//         + NonTradingHoursRemaining * (1-alpha)/7122
 //
-// Sanity identity: a full RTH session (7.5h, alpha weight) contributes
-// 7.5*alpha/1890 years; at alpha=1 a full trading day is therefore exactly
-// 1/252, matching the familiar "252 trading days a year" convention.
+// Sanity identity: a full RTH session (6.5h, alpha weight) contributes
+// 6.5*alpha/1638 years; at alpha=1 a full trading day is therefore exactly
+// 1/252 — because 1638 IS 252 x 6.5, so the identity is definitional, not a
+// coincidence to be read as confirmation of any particular session width.
+//
+// ## Why 1638/7122: the vendor's PROSE and the vendor's DATA disagree
+//
+// Read this before changing a constant here, because the honest framing is
+// narrower than "we found the right doc page", and an earlier version of this
+// header (and of `docs/plans/2026-08-17-oracle-v2-goal-prompt.md`) got it
+// wrong in BOTH directions in turn.
+//
+// WHAT THE DOCS SAY — 1890/6870, essentially unanimously. A full crawl of
+// docs.spiderrockconnect.com (1,439 pages, all three published versions)
+// found `1,890` and `6,870` stated on BOTH the VolTimeCalc and OptionPricing
+// pages, in every published version, ~13 and ~10 occurrences respectively.
+// `1,638` and `7122`/`7,122` appear ZERO times anywhere in that documentation.
+// The single `1638` is one prose sentence on VolTimeCalc, and it contradicts
+// the LaTeX equation printed directly beneath it
+// (`1,890 x 1/8,760 + 6,870 x 1/8,760 = 1`) — note also that 1638 + 6870 =
+// 8508, not 8760. Their V7->V8 migration page independently documents the
+// trading window being EXTENDED from 6.5h (08:30-15:00 CT) to 7.5h
+// (08:30-16:00 CT = 09:30-17:00 ET), with PM expiry moving to 17:00 ET.
+// So 1890/6870/7.5h is the documented convention, and this header does NOT
+// claim their docs contain a typo.
+//
+// WHAT THE DATA SAYS — 1638/7122/6.5h. Source: the vendor's own `years`
+// column in the licensed oracle store,
+// `C:\atx-cache\oracle\spiderrock\date=2026-08-14`, 74 expiries x 19 intraday
+// buckets. We match the DATA, because that is what we are reproducing.
+//
+// THE MOST LIKELY EXPLANATION, and it is a reading, not a fact: SpiderRock's
+// `MsgVolTimeCalculator` still exposes a `timeMetric` enum including `SRV6`,
+// the legacy alpha/6.5-hour convention, and 1638 = 252 x 6.5 is exactly that
+// V7 constant. The `years` column in `tblOptionIntradayHist` is plausibly
+// still produced on the V7-flavoured clock while the docs describe V8 — which
+// would also make the stray `1638` in their prose a remnant of the same
+// convention our data matches, rather than a typo.
+//
+// The five readings of the data, in the order that matters:
+//
+//  1. Differencing `years` across adjacent expiries yields two exact
+//     per-day constants: 0.003514930 yr per TRADING day and 0.001010952 yr per
+//     NON-TRADING day. They normalise:
+//     252*0.003514930 + 113*0.001010952 = 1.00002.
+//
+//  2. Solving those two increments for hourly rates gives alpha/1638 per
+//     trading hour and (1-alpha)/7122 per non-trading hour at alpha = 0.7:
+//     6.5*(0.7/1638) + 17.5*(0.3/7122) = 0.0035149303 (trading day) and
+//     24*(0.3/7122) = 0.0010109520 (non-trading day).
+//
+//  3. THE DISCRIMINATING EVIDENCE, because (1) and (2) alone do NOT identify
+//     the split: a 7.5h day with alpha = 0.710606 reproduces BOTH day
+//     increments to the same precision (7.5*0.710606/1890 + 16.5*0.289394/6870
+//     = 0.0035149, 24*0.289394/6870 = 0.0010110). Day-level arithmetic is
+//     degenerate in (alpha, session width); only an INTRADAY slope breaks it.
+//     Regressing `years` for a FIXED expiry against clock time across the 19
+//     in-session buckets — no expiry arithmetic, no holiday calendar — gives
+//     d(T)/d(trading hour) = 4.27088e-04. Against that: 0.7/1638 = 4.27350e-04
+//     (ratio 0.9994), 0.7/1890 = 3.70370e-04 (ratio 1.1531), and the
+//     degenerate 0.710606/1890 = 3.75982e-04 (ratio 1.1359). Two separate
+//     expiries (2027-03-19 and 2026-09-18) give the identical slope to 5
+//     digits, so it is the clock's, not one expiry's. Note that this rules out
+//     the DOCUMENTED convention too, not just the degenerate alternative.
+//
+//  4. ANNUAL NORMALISATION, which needs no docs and no slope comparison. With
+//     the measured hourly rates a = 4.27088e-4 (trading) and b = 4.21230e-5
+//     (non-trading), a 6.5h session gives
+//     252*(6.5a + 17.5b) + 113*24b = 0.99957 — a year. The same sum under a
+//     7.5h session (a 7.5/16.5 split) is 1.09658. Only the 6.5h split
+//     normalises.
+//
+//  5. THE WEEKEND INCREMENT rules out 7.5h independently of the intraday
+//     slope. Fix a = 4.27088e-4 and solve the per-trading-day increment
+//     0.003514930 for b: under a 7.5h day that forces b = 1.8895e-5, hence a
+//     non-trading DAY of 24b = 4.535e-4 — against 0.001010952 measured, off by
+//     more than a factor of two. Under a 6.5h day it gives b = 4.2221e-5,
+//     hence 0.00101331 vs 0.001010952 measured (0.23%).
+//
+//  6. Cross-bucket residual, as a second opinion on the same data: with
+//     1638/7122 the implied anchor lead is 0.94 min (range 0.90-2.82) and the
+//     median per-bucket offset is 6.7e-6 yr; with 1890/6870 the lead ranges
+//     -9.09 to +48.60 min and the offset is 1.1e-4 yr. Pooled median
+//     |relative error| 0.105% vs 0.181%.
+//
+// WHAT THIS HEADER CLAIMS, EXACTLY. Not that SpiderRock "uses" these numbers
+// in production — their docs present alpha = 0.7 as an illustration and never
+// state a production constant, and we cannot see their engine. Only this:
+// these constants reproduce the vendor's published `years` column FOR TRADE
+// DATE 2026-08-14 to 0.06% on the intraday slope and 0.1% pooled. That is one
+// trade date. A convention change on their side would not announce itself, so
+// re-measure before trusting this over a materially later store.
+//
+// Consequence for the session window: 1638 = 252 x 6.5 leaves no room for a
+// post-close carve-out, so `session_span_hours` is 6.5 and the session closes
+// at 16:00 ET — the regular-session close, which is also where PM settlement
+// lands (`settlement_instant_ns`). The vendor's prose about variance accruing
+// "additionally during the hour immediately after market close" describes
+// where variance comes from; whatever produced the `years` column we measured
+// does not put that hour in its trading-hour budget.
 //
 // ## Calendar
 //
@@ -61,7 +159,7 @@
 // (`ErrorCode::OutOfRange`) as soon as an uncovered day would accrue trading
 // time, and `vol_time_years` / `time_to_expiry_years` propagate that error;
 // the alternative is a silent full-session credit for every uncovered closure
-// (Memorial Day 2020 accrued a full 7.5h session before this guard existed),
+// (Memorial Day 2020 accrued a full trading session before this guard existed),
 // which corrupts every vol-time number derived from it without a single
 // visible symptom.
 //
@@ -91,8 +189,9 @@
 // ## Session window / DST
 //
 // The regular session is `[session_open_hour_et, session_open_hour_et +
-// session_span_hours)` in US/Eastern wall-clock time (default 09:30-17:00 ET:
-// the 09:30-16:00 RTH session plus VolTimeCalc's "hour after close"). US
+// session_span_hours)` in US/Eastern wall-clock time (default 09:30-16:00 ET —
+// the regular session, with no post-close carve-out: see the measurement at
+// the top of this header for why the budget admits none). US
 // Eastern civil-to-UTC conversion uses the modern (2007+) DST rule: EDT
 // (UTC-4) from the second Sunday of March 02:00 through the first Sunday of
 // November 02:00, else EST (UTC-5). Both transition instants fall on Sundays
@@ -114,14 +213,17 @@
 
 namespace atx::vol {
 
-// Tunable knobs for the hybrid clock. Defaults are SpiderRock VolTimeCalc's
-// published constants.
+// Tunable knobs for the hybrid clock. Defaults are FITTED to SpiderRock's
+// published `years` DATA (trade date 2026-08-14), not transcribed from their
+// documentation — which states 1890/6870/7.5h and disagrees with its own data.
+// The full derivation, the doc-crawl evidence, and the exact scope of what
+// this reproduces are at the top of this header. Read it before editing these.
 struct VolTimeParams {
   double alpha{0.7};                    // variance fraction in trading hours, in [0,1]
-  double trading_hours_per_year{1890.0};
-  double nontrading_hours_per_year{6870.0};
+  double trading_hours_per_year{1638.0};    // 252 x 6.5
+  double nontrading_hours_per_year{7122.0}; // 8760 - 1638
   double session_open_hour_et{9.5};     // 09:30 ET
-  double session_span_hours{7.5};       // 09:30-17:00 ET (RTH + 1h post-close)
+  double session_span_hours{6.5};       // 09:30-16:00 ET (the regular session)
 
   [[nodiscard]] bool operator==(const VolTimeParams&) const = default;
 };
@@ -161,7 +263,7 @@ class VolTimeCalendar {
   // covered — see `trading_hours_between` (accrual site) and
   // `advance_trading_days` (sr_tenor_grid.hpp, counting site). Reading an
   // out-of-window `false` as "open" is exactly how Memorial Day 2020 accrued a
-  // full 7.5h session (plan item 1.10) and how the trading-day stepper landed
+  // full trading session (plan item 1.10) and how the trading-day stepper landed
   // tenors on real NYSE closures.
   [[nodiscard]] bool is_holiday(std::int32_t day_since_epoch) const noexcept;
 

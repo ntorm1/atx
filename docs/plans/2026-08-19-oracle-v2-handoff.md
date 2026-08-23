@@ -193,10 +193,24 @@ Tool: `atx-vol/examples/oracle_price_leg_diag.cpp` on `lane/oracle-price-leg-202
 - **Volatility clock FALSIFIED as a cause** — `mode_a_inputs()` consumes SpiderRock's own
   `row.years` verbatim. `day_count: BUS_252` only scales theta/delta-decay; it never touches
   pricing.
-- **α recovered anyway, verified by independent arithmetic:** **α = 0.710606**, 7.5 h
-  trading day (7.5 × 252 = 1890 exactly). Weekday step `7.5α/1890 + 16.5(1−α)/6870` =
-  0.003515 vs measured 0.003514925; weekend `24(1−α)/6870` = 0.0010109 vs 0.001010988;
-  `252a + 113b = 1.000003`. **Pin this** for anything constructing its own year fraction.
+- **~~α recovered anyway, verified by independent arithmetic~~ — SUPERSEDED 2026-08-23, DO
+  NOT PIN.** This bullet read: *"α = 0.710606, 7.5 h trading day (7.5 × 252 = 1890 exactly).
+  Weekday step `7.5α/1890 + 16.5(1−α)/6870` = 0.003515 vs measured 0.003514925; weekend
+  `24(1−α)/6870` = 0.0010109 vs 0.001010988; `252a + 113b = 1.000003`. **Pin this** for
+  anything constructing its own year fraction."* The arithmetic is right and the conclusion
+  is wrong: the two DAY increments are DEGENERATE in (α, session width), so a 7.5 h day at
+  α = 0.710606 and a 6.5 h day at α = 0.7 fit them equally well. The INTRADAY slope breaks
+  the tie and picks the latter — regressing `years` for a fixed expiry across the 19
+  in-session buckets gives d(T)/d(trading hour) = 4.27088e-04 against `0.7/1638` =
+  4.27350e-04 (ratio 0.9994), `0.710606/1890` = 3.75982e-04 (ratio 1.1359) and the
+  DOCUMENTED `0.7/1890` = 3.70370e-04 (ratio 1.1531). Annual normalisation and the weekend
+  increment exclude 7.5h independently (see the goal-prompt correction). **What reproduces
+  the vendor's published `years` column for trade date 2026-08-14 is α = 0.7 with 1638
+  trading h/yr (252 × 6.5) and 7122 non-trading h/yr** — pin THAT, and note it is a fit to
+  their DATA, not to their DOCS, which state 1890/6870 with a 7.5h session. It is also one
+  trade date; re-measure against a materially later store. Full derivation in
+  `atx-vol/include/atx/vol/api/core/vol_time.hpp`, pinned by
+  `VolTime.VendorMeasuredDayIncrementsArePinned`.
 
 Error is a violent tail, not a bias: top 1% of rows carry 64.3% of total error; ITM
 long-dated **puts** dominate.

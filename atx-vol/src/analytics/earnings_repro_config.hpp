@@ -127,7 +127,16 @@ struct EarningsReproConfig {
   // pooled RMSE from 0.0301 -> 0.0121 and moved NVDA iEMove 0.045 -> 0.063 (vs
   // truth 0.0665, ~6% low) with the term-fit's `decay` no longer pinned at its
   // bound (fit_error 0.0437 -> 0.0074). See
-  // docs/reviews/2026-07-18-atmcen-reproduction-convention-sweep.md. NOTE: the
+  // docs/reviews/2026-07-18-atmcen-reproduction-convention-sweep.md.
+  //
+  // THOSE FOUR NUMBERS PREDATE THE 2026-08-23 CLOCK CORRECTION and have not
+  // been re-measured. They were produced under the superseded VolTimeParams
+  // (1890/6870, 7.5h session); the clock now ships the measured 1638/7122 with
+  // a 6.5h session (see vol_time.hpp's derivation block). The DECISION they
+  // support -- VolTime beats Calendar365 here -- is a comparison between two
+  // conventions and is not at risk from a correction WITHIN the vol-time
+  // clock, which only moved T by fractions of a percent. The magnitudes are
+  // stale; re-run the cohort sweep before quoting them as current. NOTE: the
   // 3-arg `run_earnings_repro` overload still OVERRIDES this with
   // `sess.inputs().time`, so the historical calendar smoke path is bit-preserved;
   // only the config-driven (4-arg) default picks VolTime up.

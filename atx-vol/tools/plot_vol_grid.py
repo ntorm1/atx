@@ -33,8 +33,10 @@ in the only sense that means anything across a $60 name and a $780 one.
 
 CAVEATS THIS PICTURE CANNOT DRAW, which any reading of it inherits:
   * SpiderRock's year fraction is a hybrid vol-time clock (trading hours
-    weighted 0.7/1890, non-trading 0.3/6870), not calendar time. Our tau is
-    calendar. A level difference between the two curves is partly that clock.
+    weighted 0.7/1638, non-trading 0.3/7122 -- fitted to their published
+    `years` for 2026-08-14; their DOCS say 1890/6870, see vol_time.hpp), not
+    calendar time. Our tau is calendar. A level difference between the two
+    curves is partly that clock.
   * A vendor "bucket" is a per-contract last-quote stamp, not a synchronised
     cross-section: the 2026-08-14 10:30 bucket's own stamps span 14:30:32.99 to
     14:31:03.42 UTC. Both curves are built from those same scattered quotes, so

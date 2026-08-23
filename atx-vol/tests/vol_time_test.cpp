@@ -81,8 +81,8 @@ TEST(VolTime, FullTradingDayAtAlphaOne) {
   // Wed 2026-07-08 00:00 ET -> Thu 2026-07-09 00:00 ET covers one full session.
   const auto t0 = ns_utc(2026, 7, 8, 4, 0);  // 00:00 EDT
   const auto t1 = t0 + kDayNs;
-  EXPECT_NEAR(ok(vol_time_years(t0, t1, p, VolTimeCalendar::us_default())), 7.5 / 1890.0,
-              1e-12);  // == 1/252
+  EXPECT_NEAR(ok(vol_time_years(t0, t1, p, VolTimeCalendar::us_default())), 6.5 / 1638.0,
+              1e-12);  // == 1/252 (1638 == 252 * 6.5)
 }
 
 TEST(VolTime, WeekendIsPureNonTrading) {
@@ -90,7 +90,7 @@ TEST(VolTime, WeekendIsPureNonTrading) {
   const auto sat0 = ns_utc(2026, 7, 11, 4, 0);  // Sat 00:00 EDT
   const auto mon0 = sat0 + 2 * kDayNs;          // Mon 00:00 EDT
   EXPECT_NEAR(ok(vol_time_years(sat0, mon0, p, VolTimeCalendar::us_default())),
-              48.0 * 0.3 / 6870.0, 1e-12);
+              48.0 * 0.3 / 7122.0, 1e-12);
 }
 
 TEST(VolTime, JulyFourthHolidayHasNoTradingHours) {
@@ -135,7 +135,7 @@ TEST(VolTime, MonotoneNonIncreasingAsNowAdvances) {
 }
 
 TEST(VolTime, IntradayDecayFasterThanOvernight) {
-  // 1 trading hour at alpha .7 outweighs 1 overnight hour: a/1890*.7 > .3/6870.
+  // 1 trading hour at alpha .7 outweighs 1 overnight hour: .7/1638 > .3/7122.
   VolTimeParams p;
   const auto& cal = VolTimeCalendar::us_default();
   const auto mid_session = ns_utc(2026, 7, 8, 16, 0);  // 12:00 ET
@@ -143,36 +143,89 @@ TEST(VolTime, IntradayDecayFasterThanOvernight) {
   const auto overnight = ns_utc(2026, 7, 9, 2, 0);  // 22:00 ET Wed
   const auto d_night = ok(vol_time_years(overnight, overnight + kHourNs, p, cal));
   EXPECT_GT(d_trading, d_night);
-  EXPECT_NEAR(d_trading, 0.7 / 1890.0, 1e-12);
-  EXPECT_NEAR(d_night, 0.3 / 6870.0, 1e-12);
+  EXPECT_NEAR(d_trading, 0.7 / 1638.0, 1e-12);
+  EXPECT_NEAR(d_night, 0.3 / 7122.0, 1e-12);
+}
+
+// ── Vendor-clock regression pins (measured, not derived) ─────────────────
+//
+// The three numbers below are REGRESSION PINS ON SPIDERROCK'S OWN CLOCK, not
+// on our arithmetic. They were measured by differencing the vendor's published
+// `years` column across adjacent expiries in the licensed oracle store
+// (C:\atx-cache\oracle\spiderrock\date=2026-08-14, 74 expiries x 19 intraday
+// buckets); vol_time.hpp's header carries the full derivation and the
+// independent intraday-slope confirmation. Their job here is to fail loudly if
+// anyone re-touches `VolTimeParams`' defaults: the previous 1890/6870 + 7.5h
+// values missed the trading-day increment by 0.47%, which is exactly the kind
+// of drift that hides inside a plausible-looking T.
+//
+// HONEST SCOPE, two parts, both important:
+//
+// (a) Day-level increments alone do NOT uniquely identify the (alpha,
+//     session-width) split -- a 7.5h day at alpha = 0.710606 reproduces the
+//     first two to ~1e-9 and the third to ~6e-8. What rules that alternative
+//     out is the intraday slope, the annual normalisation and the weekend
+//     increment (header evidence 3-5); the slope is a regression estimate and
+//     so cannot itself be pinned at this tolerance. These pins guard the clock
+//     we selected; the header records why we selected it.
+//
+// (b) These are NOT the constants SpiderRock DOCUMENTS. Their published pages
+//     state 1890/6870 with a 7.5h session, essentially unanimously. We match
+//     their published `years` DATA for trade date 2026-08-14, which disagrees
+//     with their prose. If these pins ever start failing against a freshly
+//     pulled store, the live question is whether the vendor's data moved onto
+//     its own documented convention -- not whether our arithmetic slipped.
+TEST(VolTime, VendorMeasuredDayIncrementsArePinned) {
+  VolTimeParams p;  // production defaults: alpha 0.7, 1638/7122, 09:30-16:00 ET
+  const auto& cal = VolTimeCalendar::us_default();
+
+  // One trading day, close to close: Tue 2026-07-07 16:00 ET -> Wed 07-08
+  // 16:00 ET (both regular EDT sessions, no closure between them).
+  // 6.5 trading h + 17.5 non-trading h.
+  const auto tue_close = ns_utc(2026, 7, 7, 20, 0);   // 16:00 EDT
+  const auto wed_close = ns_utc(2026, 7, 8, 20, 0);   // 16:00 EDT
+  EXPECT_NEAR(ok(vol_time_years(tue_close, wed_close, p, cal)), 0.003514930, 1e-9);
+
+  // One non-trading day: Sat 2026-07-11 16:00 ET -> Sun 07-12 16:00 ET.
+  // 0 trading h + 24 non-trading h.
+  const auto sat = ns_utc(2026, 7, 11, 20, 0);
+  EXPECT_NEAR(ok(vol_time_years(sat, sat + kDayNs, p, cal)), 0.001010952, 1e-9);
+
+  // Weekend roll: Fri 2026-07-10 16:00 ET -> Mon 07-13 16:00 ET == one trading
+  // day + two non-trading days (6.5 trading h + 65.5 non-trading h). This is
+  // the span most sensitive to where the session CLOSES: a wider session would
+  // credit post-close trading hours on the Friday leg.
+  const auto fri_close = ns_utc(2026, 7, 10, 20, 0);
+  const auto mon_close = ns_utc(2026, 7, 13, 20, 0);
+  EXPECT_NEAR(ok(vol_time_years(fri_close, mon_close, p, cal)), 0.005536834, 1e-9);
 }
 
 // ── DST / civil-date conversion (exercised through the public API) ───────
 
 TEST(VolTime, WinterSessionUsesEstOffset) {
   // Wed 2026-01-07 (regular trading day, EST, UTC-5). 13:00-14:00 ET winter ==
-  // 18:00-19:00 UTC, entirely inside the 09:30-17:00 ET session.
+  // 18:00-19:00 UTC, entirely inside the 09:30-16:00 ET session.
   VolTimeParams p;
   p.alpha = 1.0;
   const auto t0 = ns_utc(2026, 1, 7, 18, 0);
   const auto t1 = ns_utc(2026, 1, 7, 19, 0);
-  EXPECT_NEAR(ok(vol_time_years(t0, t1, p, VolTimeCalendar::us_default())), 1.0 / 1890.0,
+  EXPECT_NEAR(ok(vol_time_years(t0, t1, p, VolTimeCalendar::us_default())), 1.0 / 1638.0,
               1e-12);
 }
 
 TEST(VolTime, DstSpringForwardWeekSessionsAreExact) {
   // 2026 spring-forward: 2nd Sunday of March == 2026-03-08. Fri 2026-03-06 is
   // the last EST trading day, Mon 2026-03-09 the first EDT one. Both must
-  // still resolve to exactly one full 7.5h session -- day-granularity DST
+  // still resolve to exactly one full 6.5h session -- day-granularity DST
   // resolution is exact here because the transition instant itself falls on
   // the intervening (non-trading) Sunday.
   VolTimeParams p;
   p.alpha = 1.0;
   const auto& cal = VolTimeCalendar::us_default();
   const auto fri_est = ns_utc(2026, 3, 6, 4, 0);  // 00:00 EST Fri (winter offset)
-  EXPECT_NEAR(ok(trading_hours_between(fri_est, fri_est + kDayNs, p, cal)), 7.5, 1e-9);
+  EXPECT_NEAR(ok(trading_hours_between(fri_est, fri_est + kDayNs, p, cal)), 6.5, 1e-9);
   const auto mon_edt = ns_utc(2026, 3, 9, 4, 0);  // 00:00 EDT Mon (summer offset)
-  EXPECT_NEAR(ok(trading_hours_between(mon_edt, mon_edt + kDayNs, p, cal)), 7.5, 1e-9);
+  EXPECT_NEAR(ok(trading_hours_between(mon_edt, mon_edt + kDayNs, p, cal)), 6.5, 1e-9);
 }
 
 TEST(VolTime, DstFallBackWeekSessionsAreExact) {
@@ -182,9 +235,9 @@ TEST(VolTime, DstFallBackWeekSessionsAreExact) {
   p.alpha = 1.0;
   const auto& cal = VolTimeCalendar::us_default();
   const auto fri_edt = ns_utc(2026, 10, 30, 4, 0);  // 00:00 EDT Fri (summer offset)
-  EXPECT_NEAR(ok(trading_hours_between(fri_edt, fri_edt + kDayNs, p, cal)), 7.5, 1e-9);
+  EXPECT_NEAR(ok(trading_hours_between(fri_edt, fri_edt + kDayNs, p, cal)), 6.5, 1e-9);
   const auto mon_est = ns_utc(2026, 11, 2, 5, 0);  // 00:00 EST Mon (winter offset)
-  EXPECT_NEAR(ok(trading_hours_between(mon_est, mon_est + kDayNs, p, cal)), 7.5, 1e-9);
+  EXPECT_NEAR(ok(trading_hours_between(mon_est, mon_est + kDayNs, p, cal)), 6.5, 1e-9);
 }
 
 // ── expiry-before/at-now (degenerate interval) ────────────────────────────
@@ -211,7 +264,7 @@ TEST(VolTime, TradingHoursBetweenFullSessionIsSpanHours) {
   VolTimeParams p;
   const auto& cal = VolTimeCalendar::us_default();
   const auto t0 = ns_utc(2026, 7, 8, 4, 0);  // Wed 00:00 EDT
-  EXPECT_NEAR(ok(trading_hours_between(t0, t0 + kDayNs, p, cal)), 7.5, 1e-9);
+  EXPECT_NEAR(ok(trading_hours_between(t0, t0 + kDayNs, p, cal)), 6.5, 1e-9);
 }
 
 // ── VolTimeCalendar ────────────────────────────────────────────────────────
@@ -248,10 +301,10 @@ TEST(VolTime, CalendarConstructorSortsAndDedupes) {
 //
 // The defect: `us_default()` enumerates NYSE full closures for 2024-2028 ONLY,
 // yet was wired unconditionally into `time_to_expiry_years(VolTime)`. Outside
-// that span every real closure reads as "not in the table" -> a full 7.5h
+// that span every real closure reads as "not in the table" -> a full 6.5h
 // trading session, silently, with no diagnostic — corrupting every vol-time
 // number derived from it. Memorial Day 2020 (Mon 2020-05-25, NYSE fully
-// closed) accrued exactly 7.5 trading hours before this guard existed.
+// closed) accrued a full session's trading hours before this guard existed.
 
 TEST(VolTime, CalendarDeclaresItsUsDefaultCoverageWindow) {
   const auto& cal = VolTimeCalendar::us_default();
@@ -267,7 +320,7 @@ TEST(VolTime, TradingHoursBetweenBeforeWindowFailsClosed) {
   VolTimeParams p;
   p.alpha = 1.0;
   // Mon 2020-05-25 = Memorial Day, a full NYSE closure the 2024-2028 table
-  // cannot see. Pre-fix this returned 7.5 trading hours.
+  // cannot see. Pre-fix this returned a full session's trading hours.
   const auto t0 = ns_utc(2020, 5, 25, 4, 0);  // 00:00 EDT
   const auto res = trading_hours_between(t0, t0 + kDayNs, p, VolTimeCalendar::us_default());
   ASSERT_FALSE(res.has_value()) << "silently accrued " << *res << " trading hours";
@@ -311,11 +364,11 @@ TEST(VolTime, VolTimeYearsAtWindowBoundaryDaysSucceeds) {
   // First covered day 2024-01-01 is itself a listed closure, so the first
   // covered session is Tue 2024-01-02.
   const auto first_session = ns_utc(2024, 1, 2, 5, 0);  // 00:00 EST
-  EXPECT_NEAR(ok(trading_hours_between(first_session, first_session + kDayNs, p, cal)), 7.5,
+  EXPECT_NEAR(ok(trading_hours_between(first_session, first_session + kDayNs, p, cal)), 6.5,
               1e-9);
   // Last covered session: Fri 2028-12-29 (2028-12-30/31 are the weekend).
   const auto last_session = ns_utc(2028, 12, 29, 5, 0);
-  EXPECT_NEAR(ok(trading_hours_between(last_session, last_session + kDayNs, p, cal)), 7.5, 1e-9);
+  EXPECT_NEAR(ok(trading_hours_between(last_session, last_session + kDayNs, p, cal)), 6.5, 1e-9);
   // The very next weekday, Mon 2029-01-01, is one day past the window. Its
   // status is unknown to the table (it IS a real NYSE closure), so it fails
   // closed rather than accruing a full session.
@@ -378,10 +431,10 @@ TEST(VolTime, SpanBeyondTheDayLoopBoundFailsClosed) {
   EXPECT_EQ(res.error().code(), ErrorCode::OutOfRange);
 
   // Just inside the bound the same shape is answerable: 19 years of covered
-  // sessions accrue (a full session is 7.5h at alpha 1, ~252 a year).
+  // sessions accrue (a full session is 6.5h at alpha 1, ~252 a year).
   const auto in_bound_end = ns_utc(2019, 1, 3, 5, 0);
   const double hours = ok(trading_hours_between(start, in_bound_end, p, wide));
-  EXPECT_GT(hours, 19.0 * 250.0 * 7.5);
+  EXPECT_GT(hours, 19.0 * 250.0 * 6.5);
 }
 
 TEST(VolTime, DegenerateIntervalOutsideWindowStillReturnsZero) {
@@ -429,12 +482,18 @@ TEST(VolTime, InWindowVolTimeTIsUnchangedToTheLastBit) {
   // come back bit-for-bit what it always did. Pinned literal (not a tolerance)
   // over a 6.5-week span that crosses 6 weekends and no closure: Wed 2026-07-08
   // 09:30 ET -> Fri 2026-08-21 16:00 ET, alpha = 0.7 default.
+  //
+  // REPINNED 2026-08-23 with the measured hour budget (1638/7122, 6.5h
+  // session): 0.12692948406922205 -> 0.1273869699522606, +0.36%. The literal
+  // was only ever a bit-exactness guard on the coverage gate, and it was
+  // derived from the superseded 1890/6870 + 7.5h clock, so it moves with the
+  // constants by construction -- it is not independent evidence for either.
   VolTimeParams p;
   const auto now = ns_utc(2026, 7, 8, 13, 30);     // 09:30 EDT
   const auto expiry = ns_utc(2026, 8, 21, 20, 0);  // 16:00 EDT
   const auto res = vol_time_years(now, expiry, p, VolTimeCalendar::us_default());
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
-  EXPECT_EQ(*res, 0.12692948406922205);
+  EXPECT_EQ(*res, 0.1273869699522606);
 }
 
 TEST(VolTime, CustomCalendarWindowIsHonoredIndependentlyOfUsDefault) {
@@ -447,7 +506,7 @@ TEST(VolTime, CustomCalendarWindowIsHonoredIndependentlyOfUsDefault) {
   const auto closed = ns_utc(2020, 6, 19, 4, 0);
   EXPECT_NEAR(ok(trading_hours_between(closed, closed + kDayNs, p, cal)), 0.0, 1e-9);
   const auto open_day = ns_utc(2020, 6, 18, 4, 0);
-  EXPECT_NEAR(ok(trading_hours_between(open_day, open_day + kDayNs, p, cal)), 7.5, 1e-9);
+  EXPECT_NEAR(ok(trading_hours_between(open_day, open_day + kDayNs, p, cal)), 6.5, 1e-9);
   // One day past its declared window: unknown, therefore closed to queries.
   const auto outside = ns_utc(2020, 7, 1, 4, 0);
   EXPECT_FALSE(trading_hours_between(outside, outside + kDayNs, p, cal).has_value());
