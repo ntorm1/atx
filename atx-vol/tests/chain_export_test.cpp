@@ -21,7 +21,17 @@
 
 #include "atx/core/datetime.hpp"
 #include "atx/core/io/parquet.hpp"
+#include "atx/vol/api/backtest/panel.hpp"          // SynthPanelSpec, make_synthetic_american_panel
+#include "atx/vol/api/core/chain.hpp"              // OptionChain
+#include "atx/vol/api/core/market_env.hpp"         // MarketEnv
 #include "atx/vol/api/core/types.hpp"
+#include "atx/vol/api/fitting/pricer_fitter.hpp"   // PricerConfig, PricerFitter
+#include "atx/vol/api/fitting/s3.hpp"              // S3Params
+#include "atx/vol/api/fitting/session.hpp"         // SessionInputs
+#include "atx/vol/api/fitting/spline_curve.hpp"    // SplineVolParams
+#include "atx/vol/api/fitting/vol_curve.hpp"       // VolCurveKind, CurveSurface, SplineVolCurve
+#include "atx/vol/api/marketdata/data.hpp"         // iso_to_ns, year_fraction
+#include "atx/vol/api/storage/surface_db.hpp"      // SymbolFitConfig, apply_symbol_config
 #include "atx/vol/api/pricing/american.hpp"
 #include "chain_export.hpp"
 
@@ -677,6 +687,207 @@ TEST(ChainExport, WritingBeforeOpenIsRefusedRatherThanDroppedOnTheFloor) {
   const atx::core::Status st = writer.write_board(board);
   EXPECT_FALSE(st.has_value());
   EXPECT_EQ(writer.census().rows, 0u);
+}
+
+// ── --pin-curve: the pinned family and the family actually served ───────────
+
+using atx::vol::CurveSurface;
+using atx::vol::FitPreset;
+using atx::vol::SplineVolCurve;
+using atx::vol::SplineVolParams;
+using atx::vol::SymbolFitConfig;
+using atx::vol::VolCurveKind;
+
+TEST(ChainExport, PinCurveSpellingRoundTripsThroughTheOneCanonicalTable) {
+  // The flag parses with `parse_curve_kind` and nothing else: a second spelling
+  // table in the driver is exactly the defect that function exists to prevent.
+  const atx::core::Result<VolCurveKind> parsed = atx::vol::parse_curve_kind("spline-vol");
+  ASSERT_TRUE(parsed.has_value()) << parsed.error().to_string();
+  EXPECT_EQ(*parsed, VolCurveKind::SplineVol);
+  EXPECT_STREQ(atx::vol::to_string(VolCurveKind::SplineVol), "spline-vol");
+}
+
+TEST(ChainExport, PinCurveUnrecognizedSpellingIsInvalidArgumentNotASilentDefault) {
+  for (const char *bad : {"splinevol", "spline_vol", "SplineVol", "essvii", "", "spline-vol "}) {
+    const atx::core::Result<VolCurveKind> parsed = atx::vol::parse_curve_kind(bad);
+    ASSERT_FALSE(parsed.has_value()) << "accepted '" << bad << "'";
+    EXPECT_EQ(parsed.error().code(), atx::core::ErrorCode::InvalidArgument) << bad;
+  }
+}
+
+TEST(ChainExport, ApplyCurvePinUnsetLeavesTheStoredConfigUntouched) {
+  // The regression pin for the DEFAULT path: no --pin-curve must mean today's
+  // routing, bit-identical. Checked on a config that already carries a pin, so
+  // an unconditional write would be visible.
+  SymbolFitConfig cfg = atx::vol::symbol_config_from_preset(FitPreset::Populate);
+  ASSERT_FALSE(cfg.pin_curve);
+  cfg.pin_curve = true;
+  cfg.curve.kind = VolCurveKind::C8;
+
+  ce::apply_curve_pin(std::nullopt, cfg);
+  EXPECT_TRUE(cfg.pin_curve);
+  EXPECT_EQ(cfg.curve.kind, VolCurveKind::C8);
+
+  SymbolFitConfig plain = atx::vol::symbol_config_from_preset(FitPreset::Populate);
+  ce::apply_curve_pin(std::nullopt, plain);
+  EXPECT_FALSE(plain.pin_curve);
+}
+
+TEST(ChainExport, ApplyCurvePinForcesTheFamilyOnThePopulatePresetFallback) {
+  // A symbol absent from the SurfaceDb manifest is fitted from this config. It
+  // must be pinned too, or a run silently mixes two families.
+  SymbolFitConfig cfg = atx::vol::symbol_config_from_preset(FitPreset::Populate);
+  const SymbolFitConfig before = cfg;
+  ce::apply_curve_pin(VolCurveKind::SplineVol, cfg);
+
+  EXPECT_TRUE(cfg.pin_curve);
+  EXPECT_EQ(cfg.curve.kind, VolCurveKind::SplineVol);
+  // FAMILY only: nothing else about how the symbol is fitted moves.
+  EXPECT_EQ(cfg.preset, before.preset);
+  EXPECT_EQ(cfg.band_k, before.band_k);
+  EXPECT_EQ(cfg.calendar_repair, before.calendar_repair);
+  EXPECT_EQ(cfg.score_parity, before.score_parity);
+  EXPECT_EQ(cfg.enforce_calendar_floor, before.enforce_calendar_floor);
+  EXPECT_EQ(cfg.surface_policy.outputs, before.surface_policy.outputs);
+  EXPECT_EQ(cfg.surface_policy.risk_admission, before.surface_policy.risk_admission);
+}
+
+TEST(ChainExport, TallyServedCurvesNamesEverySlicesOwnFamily) {
+  CurveSurface surface;
+  SplineVolParams p;
+  p.atm_vol = 0.20;
+  p.z = {-1.0, 0.0, 1.0};
+  p.mult = {1.10, 1.00, 1.05};
+  p.z_lo_valid = -1.0;
+  p.z_hi_valid = 1.0;
+  surface.push(std::make_unique<SplineVolCurve>(p, /*T=*/0.25, /*F=*/100.0, /*df=*/1.0));
+  surface.push(std::make_unique<SplineVolCurve>(p, /*T=*/0.50, /*F=*/100.0, /*df=*/1.0));
+
+  const ce::ServedCurveTally tally = ce::tally_served_curves(&surface, /*n_essvi_slices=*/0u);
+  EXPECT_EQ(tally.total(), 2u);
+  EXPECT_EQ(tally.count(VolCurveKind::SplineVol), 2u);
+  EXPECT_EQ(tally.count(VolCurveKind::Essvi), 0u);
+  EXPECT_EQ(tally.describe(), "spline-vol:2");
+}
+
+TEST(ChainExport, TallyServedCurvesReportsTheDefaultEssviPathWithNoOverride) {
+  // `VolaSession::curve_override()` is null exactly when the eSSVI driver
+  // served the board -- that is a family, not an absence of one.
+  const ce::ServedCurveTally tally = ce::tally_served_curves(nullptr, /*n_essvi_slices=*/3u);
+  EXPECT_EQ(tally.count(VolCurveKind::Essvi), 3u);
+  EXPECT_EQ(tally.describe(), "essvi:3");
+  EXPECT_EQ(ce::tally_served_curves(nullptr, 0u).describe(), "-");
+}
+
+// A small synthetic board: enough strikes for the spline's own `min_obs` floor,
+// small enough for the fast lane.
+[[nodiscard]] atx::vol::OptionChain pin_test_chain() {
+  atx::vol::SynthPanelSpec spec;
+  spec.uid = "SYN";
+  spec.snapshot_iso = "2026-06-19";
+  spec.spot = 100.0;
+  spec.r = 0.043;
+  spec.borrow = 0.0;
+  struct Row {
+    const char *iso;
+    double sigma0;
+    double skew_k;
+    double c2;
+  };
+  const Row rows[] = {
+      {"2026-07-17", 0.22, -0.55, 0.30},
+      {"2026-08-21", 0.24, -0.52, 0.35},
+      {"2026-09-18", 0.26, -0.50, 0.40},
+  };
+  for (const Row &r : rows) {
+    atx::vol::SynthExpiry e;
+    e.expiry_iso = r.iso;
+    e.T = atx::vol::year_fraction(spec.snapshot_iso, r.iso);
+    e.truth = atx::vol::S3Params{r.sigma0, 2.0 * std::sqrt(e.T) * r.skew_k, r.c2};
+    spec.expiries.push_back(e);
+  }
+  for (double K = 80.0; K <= 120.0 + 1e-9; K += 2.0) {
+    spec.strikes.push_back(K);
+  }
+  spec.half_spread_frac = 0.02;
+  spec.min_half_spread = 0.02;
+  auto panel = atx::vol::make_synthetic_american_panel(spec);
+  EXPECT_TRUE(panel.has_value()) << (panel ? "" : panel.error().to_string());
+  const atx::vol::MarketEnv env =
+      atx::vol::MarketEnv::flat(spec.spot, spec.r, atx::vol::iso_to_ns(spec.snapshot_iso),
+                                spec.cash_divs);
+  atx::core::Result<atx::vol::OptionChain> chain =
+      atx::vol::OptionChain::from_frame(panel->frame, env);
+  EXPECT_TRUE(chain.has_value()) << (chain ? "" : chain.error().to_string());
+  return std::move(*chain);
+}
+
+// The driver's own SymbolFitConfig -> PricerConfig translation
+// (chain_export_main.cpp `pricer_config_for_symbol`), restated here for the
+// same reason mark_rescue_test restates populate's: the driver TU is argv/IO
+// and is not linked into this binary. Only the fields this test depends on.
+[[nodiscard]] atx::vol::PricerConfig pin_test_pricer_config(const SymbolFitConfig &cfg) {
+  atx::vol::PricerConfig out;
+  out.preset = cfg.preset;
+  out.quality_mode = cfg.surface_policy.quality_mode;
+  out.outputs = cfg.surface_policy.outputs;
+  out.risk_admission = cfg.surface_policy.risk_admission;
+  out.fallback = cfg.surface_policy.fallback;
+  if (cfg.pin_curve) {
+    out.curve = cfg.curve;
+  }
+  out.use_correction_cache = cfg.use_correction_cache;
+  out.score_parity = cfg.score_parity;
+  out.enforce_calendar_floor = cfg.enforce_calendar_floor;
+  out.use_deam_cache_for_fit = cfg.use_deam_cache_for_fit;
+  out.n_threads = 1;
+  out.fit_workers = 1;
+  return out;
+}
+
+// Fit `chain` exactly the way the driver does and report what it SERVED.
+[[nodiscard]] ce::ServedCurveTally serve_and_tally(const atx::vol::OptionChain &chain,
+                                                   const SymbolFitConfig &cfg) {
+  atx::vol::PricerFitter fitter(pin_test_pricer_config(cfg));
+  const atx::core::Status fit_status = fitter.fit(chain, [&cfg](atx::vol::SessionInputs &in) {
+    atx::vol::apply_symbol_config(cfg, in);
+    in.fit_workers = 1;
+  });
+  // Same fail-then-mark ladder as the driver: a rejected RISK surface still
+  // leaves a mark that prices the board, and the tally must name whichever one
+  // actually served.
+  const atx::vol::FittedSurface *surface =
+      fit_status.has_value() ? fitter.surface() : fitter.market_mark_surface();
+  if (surface == nullptr) {
+    surface = fitter.market_mark_surface();
+  }
+  if (surface == nullptr) {
+    return ce::ServedCurveTally{};
+  }
+  return ce::tally_served_curves(surface->session());
+}
+
+TEST(ChainExport, PinnedSplineVolIsTheFamilyActuallyServed) {
+  const atx::vol::OptionChain chain = pin_test_chain();
+  SymbolFitConfig cfg = atx::vol::symbol_config_from_preset(FitPreset::Populate);
+  ce::apply_curve_pin(VolCurveKind::SplineVol, cfg);
+
+  const ce::ServedCurveTally tally = serve_and_tally(chain, cfg);
+  EXPECT_GE(tally.count(VolCurveKind::SplineVol), 1u)
+      << "served: " << tally.describe();
+}
+
+TEST(ChainExport, TheUnpinnedDefaultPathStillServesItsAutoRoutedFamily) {
+  // The regression pin: without --pin-curve nothing about the served family
+  // changes, and in particular the tool does not start serving SplineVol --
+  // it is not in `default_selector_candidates()`.
+  const atx::vol::OptionChain chain = pin_test_chain();
+  const SymbolFitConfig cfg = atx::vol::symbol_config_from_preset(FitPreset::Populate);
+  ASSERT_FALSE(cfg.pin_curve);
+
+  const ce::ServedCurveTally tally = serve_and_tally(chain, cfg);
+  EXPECT_GE(tally.total(), 1u) << "nothing served";
+  EXPECT_EQ(tally.count(VolCurveKind::SplineVol), 0u) << "served: " << tally.describe();
 }
 
 } // namespace

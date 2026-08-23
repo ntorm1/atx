@@ -96,6 +96,7 @@ using atx::vol::SurfaceDb;
 using atx::vol::SurfacePurpose;
 using atx::vol::SymbolFitConfig;
 using atx::vol::VolaSession;
+using atx::vol::VolCurveKind;
 
 using atx::core::ErrorCode;
 using atx::core::Result;
@@ -119,6 +120,10 @@ struct Args {
   double r{0.0};
   bool r_seen{false};
   unsigned fit_workers{0}; // 0 = auto (hardware concurrency)
+  // --pin-curve. Unset is the default and means today's routing: each symbol
+  // keeps whatever family its stored SymbolFitConfig / the selector picks, and
+  // the run stays bit-identical to one built before this flag existed.
+  std::optional<VolCurveKind> pin_curve;
 };
 
 void usage() {
@@ -130,6 +135,7 @@ void usage() {
       "                       --date YYYY-MM-DD (--symbols A,B,C | --symbols-file <path>)\n"
       "                       --out <parquet> [--snapshot-suffix T19:55:00Z] [--r <rate>]\n"
       "                       [--fit-workers N]\n"
+      "                       [--pin-curve <kind>]\n"
       "\n"
       "  --hive             OPRA hive v2 root holding date=<YYYY-MM-DD>/data.parquet\n"
       "  --underlier        underlier NBBO hive root holding\n"
@@ -145,6 +151,12 @@ void usage() {
       "  --r                flat continuously-compounded fallback rate (required)\n"
       "  --out              output Parquet path (parent dirs created)\n"
       "  --fit-workers      symbol-level workers; 0 = hardware concurrency (default)\n"
+      "  --pin-curve        force ONE curve family for EVERY symbol, overriding both the\n"
+      "                     stored SymbolFitConfig and the Populate-preset fallback:\n"
+      "                     convex-dense | essvi | svi | linear-variance | c8-event |\n"
+      "                     spline-vol. Unset (default) keeps today's auto-routing.\n"
+      "                     A pinned family is a REQUEST: the census reports per symbol\n"
+      "                     which family was actually served.\n"
       "\n"
       "exit: 0 ok | 1 runtime failure | 2 usage | 3 ran but emitted nothing\n",
       stderr);
@@ -266,6 +278,22 @@ void usage() {
                      static_cast<int>(value.size()), value.data());
         return false;
       }
+    } else if (flag == "--pin-curve") {
+      if (!need_value(value)) {
+        return false;
+      }
+      // The ONE canonical spelling table (vol_curve.hpp), never a second one
+      // here. `parse_curve_kind` answers InvalidArgument for anything it does
+      // not recognise rather than defaulting, which is the whole reason it
+      // exists: the ad-hoc chain it replaced folded every typo into ConvexDense,
+      // so `--pin-kind essvii` silently fitted a 40-node dense curve.
+      const Result<VolCurveKind> kind = atx::vol::parse_curve_kind(value);
+      if (!kind.has_value()) {
+        std::fprintf(stderr, "error: --pin-curve: %s\n",
+                     std::string(kind.error().message()).c_str());
+        return false;
+      }
+      args.pin_curve = *kind;
     } else {
       std::fprintf(stderr, "error: unknown flag '%.*s'\n", static_cast<int>(flag.size()),
                    flag.data());
@@ -395,6 +423,13 @@ struct SymbolResult {
   bool risk_fit_rejected{false};      // fit() erred but a market mark was served
   bool index_namespace{false};        // okey_tk is a cash-settled index root
   std::size_t n_carry_solve_failed{0};
+  // The family every SERVED slice actually used, and which surface served it.
+  // Recorded separately from the pinned family because they can differ: a
+  // pinned risk candidate that admission refuses is not substituted, it is
+  // simply unserved, and the board is then priced off the mark arm. Empty
+  // tally + the default purpose while nothing was served.
+  ce::ServedCurveTally served_curves{};
+  SurfacePurpose served_purpose{SurfacePurpose::Risk};
 };
 
 // Translate the PricerConfig-representable subset of a stored SymbolFitConfig,
@@ -550,6 +585,7 @@ void emit_board_rows(const OptionChain &chain, const VolaSession &session,
 // book, and writes only its own result slot.
 void export_symbol(atx::vol::OpraBatchEntry &entry, const SurfaceDb *db,
                    const UnderlierBook &feed, const SymbolFitConfig &fallback_cfg,
+                   const std::optional<VolCurveKind> &pin_curve,
                    const std::string &date_stamp, unsigned inner_threads, SymbolResult &out) {
   out.symbol = entry.symbol;
   out.index_namespace = ce::is_cash_settled_index_root(entry.symbol);
@@ -579,6 +615,10 @@ void export_symbol(atx::vol::OpraBatchEntry &entry, const SurfaceDb *db,
       out.config_from_db = true;
     }
   }
+  // AFTER the config is resolved, so --pin-curve reaches BOTH branches above.
+  // Pinning only `fallback_cfg` would leave every symbol present in the
+  // manifest auto-routing, and the run would silently mix two families.
+  ce::apply_curve_pin(pin_curve, cfg);
 
   PricerFitter fitter(pricer_config_for_symbol(cfg, inner_threads));
   const Status fit_status =
@@ -628,6 +668,9 @@ void export_symbol(atx::vol::OpraBatchEntry &entry, const SurfaceDb *db,
                                        : std::string(valuation.error().message());
     return;
   }
+
+  out.served_purpose = surface->purpose();
+  out.served_curves = ce::tally_served_curves(surface->session());
 
   const auto feed_it = feed.find(entry.symbol);
   const BoardContext ctx{.symbol = entry.symbol,
@@ -748,8 +791,19 @@ private:
 
 // ── The census ──────────────────────────────────────────────────────────────
 
+[[nodiscard]] const char *purpose_name(SurfacePurpose p) noexcept {
+  switch (p) {
+  case SurfacePurpose::MarketMark:
+    return "mark";
+  case SurfacePurpose::Risk:
+    return "risk";
+  }
+  return "unknown";
+}
+
 void print_census(const std::vector<SymbolResult> &results, const ce::ExportCensus &census,
-                  const OpraBatchResult &batch, double load_s, double fit_s, double write_s) {
+                  const OpraBatchResult &batch, const std::optional<VolCurveKind> &pin_curve,
+                  double load_s, double fit_s, double write_s) {
   std::size_t n_ok = 0;
   std::size_t n_from_db = 0;
   std::size_t n_mark_fallback = 0;
@@ -757,10 +811,17 @@ void print_census(const std::vector<SymbolResult> &results, const ce::ExportCens
   std::size_t n_index_ns = 0;
   std::size_t n_index_rows = 0;
   std::size_t n_carry_failed = 0;
+  ce::ServedCurveTally served_all;
+  std::size_t n_off_pin = 0; // symbols served with ANY slice off the pinned family
   // Sized off the enum so a new reason cannot silently overflow the histogram.
   std::array<std::size_t, static_cast<std::size_t>(DropReason::ValueFailed) + 1> by_reason{};
   for (const SymbolResult &r : results) {
     n_carry_failed += r.n_carry_solve_failed;
+    served_all.merge(r.served_curves);
+    if (pin_curve.has_value() && r.drop == DropReason::None &&
+        r.served_curves.count(*pin_curve) != r.served_curves.total()) {
+      ++n_off_pin;
+    }
     // Counted for EVERY symbol: the config is resolved before the fit, so a
     // dropped symbol still answers "was this fitted the way the db says?".
     n_from_db += r.config_from_db ? 1u : 0u;
@@ -789,6 +850,26 @@ void print_census(const std::vector<SymbolResult> &results, const ce::ExportCens
   for (const SymbolResult &r : results) {
     if (r.risk_fit_rejected) {
       std::fprintf(stderr, "    %-10s %s\n", r.symbol.c_str(), r.detail.c_str());
+    }
+  }
+  // WHICH FAMILY PRODUCED THESE NUMBERS. `--pin-curve` is a request the fit can
+  // refuse: a pinned risk candidate that admission rejects is not substituted
+  // with another family (both fallback ladders are gated on an auto-routed fit),
+  // it is left unserved and the board is priced off the mark arm instead. So the
+  // pinned family and the served family are reported as two separate facts, and
+  // `off pin` counts the symbols where they disagree.
+  std::fprintf(stderr, "  curve pinned          %s\n",
+               pin_curve.has_value() ? atx::vol::to_string(*pin_curve)
+                                     : "(none -- stored config / auto-routed)");
+  std::fprintf(stderr, "  curve SERVED          %s  (fitted slices, all served surfaces)\n",
+               served_all.describe().c_str());
+  if (pin_curve.has_value()) {
+    std::fprintf(stderr, "  served off the pin    %zu symbols\n", n_off_pin);
+  }
+  for (const SymbolResult &r : results) {
+    if (r.drop == DropReason::None) {
+      std::fprintf(stderr, "    %-10s %-5s %s\n", r.symbol.c_str(),
+                   purpose_name(r.served_purpose), r.served_curves.describe().c_str());
     }
   }
   for (std::size_t i = 1; i < by_reason.size(); ++i) {
@@ -929,8 +1010,8 @@ int main(int argc, char **argv) {
         // case) must fail that CELL, not the run: the same rule
         // surface_db_populate applies to its fit workers.
         try {
-          export_symbol(batch->entries[i], &db.value(), *feed, fallback_cfg, date_stamp,
-                        inner_threads, results[i]);
+          export_symbol(batch->entries[i], &db.value(), *feed, fallback_cfg, args.pin_curve,
+                        date_stamp, inner_threads, results[i]);
         } catch (const std::exception &e) {
           results[i].symbol = batch->entries[i].symbol;
           results[i].drop = DropReason::FitFailed;
@@ -966,7 +1047,7 @@ int main(int argc, char **argv) {
   }
 
   const ce::ExportCensus &census = writer.census();
-  print_census(results, census, *batch, load_s, fit_s, write_s);
+  print_census(results, census, *batch, args.pin_curve, load_s, fit_s, write_s);
 
   // A run that emitted nothing, or one whose write failed, must leave NO file:
   // the stream was opened up front, so what is on disk is an empty or
