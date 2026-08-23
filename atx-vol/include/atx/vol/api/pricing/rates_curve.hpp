@@ -151,11 +151,18 @@ private:
 // Discrete-dividend forward correction (Battig & Jarrow 2017, "cash divs as
 // debt"):
 //
-//     F_T = (S - sum_{now<=ex_i<=expiry, t_i<=T} D_i * e^{-r*t_i}) * e^{r*T}
+//     F_T = (S - sum_{now<=ex_i<=expiry} D_i * e^{-r*t_i}) * e^{r*T}
 //
 // where t_i = (ex_date_ns - now_ts_ns) converted to years (365.25-day
 // year). Events already paid (ex_date_ns < now_ts_ns) or after expiry
 // (ex_date_ns > expiry_ns) are ignored.
+//
+// THE SUM'S WINDOW IS DECIDED ON INSTANTS ONLY, never against `T`. It used to
+// carry an extra `t_i <= T` condition, which was dead under the default
+// Calendar365 clock (it only restated `ex_i <= expiry`) and WRONG under a
+// vol-time `T`, where a calendar `t_i` and a weekend-compressed `T` are not
+// comparable. `t_i` remains on the calendar clock because it discounts CASH.
+// See the rationale in rates_curve.cpp; gated by DividendForward.VolTimeShortT*.
 //
 // @param S          spot (> 0)
 // @param r          continuously-compounded rate for [now, T]

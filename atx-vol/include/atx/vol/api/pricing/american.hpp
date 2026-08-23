@@ -752,8 +752,12 @@ assignment_risk(double S, double K, double T, double sigma, double r, double q, 
 // `tau` is a year-fraction measured from the SAME valuation instant as the
 // option's `T`, so a schedule is reusable across every expiry of one chain.
 // Dividends outside `(0, T]` are IGNORED, not rejected — already-paid and
-// after-expiry events are a normal property of a shared chain-wide schedule,
-// and this mirrors `forward_div_corrected`'s documented window behaviour. A
+// after-expiry events are a normal property of a shared chain-wide schedule.
+// That is the TAU-SPACE analogue of `forward_div_corrected`'s window, not the
+// same test: this type carries no instants, so `(0, T]` is the only window
+// expressible here, and it is sound ONLY while `tau` is on the option's own
+// clock as the paragraph above requires. `forward_div_corrected` compares
+// INSTANTS, which is clock-independent, and no longer screens on `T` at all. A
 // `tau` marginally past `T` (within a relative 1e-12) still counts as landing
 // AT expiry, so a schedule whose ex-date was reconstructed from the same
 // year-fraction column as `T` is not silently dropped by one ulp.

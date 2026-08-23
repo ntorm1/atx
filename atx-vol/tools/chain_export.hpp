@@ -59,13 +59,16 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
-#include "atx/core/datetime.hpp"            // time::Date, civil_from_days
-#include "atx/core/error.hpp"               // Status
-#include "atx/core/io/parquet_writer.hpp"   // WriteColumn, ParquetRowGroupWriter
-#include "atx/vol/api/core/types.hpp"       // Side
-#include "atx/vol/api/pricing/american.hpp" // AmericanGreeks
+#include "atx/core/datetime.hpp"               // time::Date, civil_from_days, days_from_civil
+#include "atx/core/error.hpp"                  // Status, Ok, Err
+#include "atx/core/io/parquet.hpp"             // read_parquet, ParquetTable (--dividends)
+#include "atx/core/io/parquet_writer.hpp"      // WriteColumn, ParquetRowGroupWriter
+#include "atx/vol/api/core/types.hpp"          // Side, Result, ErrorCode
+#include "atx/vol/api/pricing/american.hpp"    // AmericanGreeks
+#include "atx/vol/api/pricing/rates_curve.hpp" // DividendEvent (--dividends)
 
 namespace atx::vol::chainexport {
 
@@ -465,6 +468,171 @@ inline void append_symbol(std::string_view token, std::vector<std::string> &out)
   }
   out = std::move(parsed);
   return true;
+}
+
+// ── The discrete cash-dividend schedule (--dividends) ───────────────────────
+//
+// WHY THIS EXISTS. Without it every dividend folds into the single continuous
+// borrow the carry solve backs out. That borrow can reproduce the vendor's
+// forward exactly and still misprice the board, because an AMERICAN option's
+// early-exercise boundary depends on WHEN each cash dividend lands, not only on
+// the forward the dividends integrate to. Measured 2026-08-14 1030: GS matches
+// the vendor forward to −5.8 bp median yet prices to 721 ticks MAE at 50 DTE.
+//
+// THE FILE. One Parquet file, three required columns, extra columns ignored:
+//
+//   underlying : string  the hive `underlying` spelling this schedule belongs to
+//   ex_date    : string  "YYYY-MM-DD", the ex-dividend date
+//   amount     : double  cash per share, strictly positive
+//
+// One ROW per dividend; a symbol's rows need no particular order and need not be
+// contiguous. `ex_date` becomes `DividendEvent::ex_date_ns` at MIDNIGHT UTC of
+// that civil date, which is the convention `forward_div_corrected` windows
+// against: an ex-date equal to an expiry's own calendar date falls before that
+// expiry's 16:00-ET settlement instant and is therefore INCLUDED at that expiry,
+// and an ex-date equal to the snapshot date falls before the snapshot minute and
+// is therefore already paid.
+//
+// FAIL CLOSED, LOUDLY. Every defect below is `InvalidArgument` and NOTHING is
+// returned. An empty schedule is exactly the behaviour of not passing the flag
+// at all, so a file that silently parsed to nothing would make a broken flag
+// invisible — which is the one failure mode this feature cannot afford:
+//   * the file is unreadable, or lacks any of the three columns;
+//   * the three columns disagree on length;
+//   * a ZERO-ROW file (indistinguishable downstream from no flag at all);
+//   * an empty `underlying`;
+//   * an `ex_date` that is not a well-formed, real "YYYY-MM-DD" civil date;
+//   * an `amount` that is not finite and strictly positive;
+//   * a duplicate (underlying, ex_date) pair — one name cannot go ex twice on
+//     one day, so the two rows disagree and neither can be preferred.
+using DividendSchedules = std::unordered_map<std::string, std::vector<DividendEvent>>;
+
+// What a run should be able to say about the schedule it was given. The whole
+// point of the last two fields is that "no dividends supplied" and "dividends
+// supplied but none matched this symbol" are IDENTICAL downstream and mean
+// opposite things.
+struct DividendCensus {
+  bool supplied = false;         // --dividends was passed
+  std::string path;              // the file it was passed
+  std::size_t events = 0;        // dividends read from the file
+  std::size_t underliers = 0;    // distinct `underlying` values in the file
+  std::size_t symbols_matched = 0;  // requested symbols with a NON-EMPTY schedule
+  std::size_t events_attached = 0;  // dividends belonging to a matched symbol
+};
+
+namespace detail {
+
+// Epoch-ns at midnight UTC for a strict "YYYY-MM-DD", or -1 if `text` is not
+// one. Rejects a well-formed-looking date that is not a real calendar day
+// (2026-02-30) by round-tripping through the civil kernel.
+[[nodiscard]] inline std::int64_t midnight_ns_from_iso_date(std::string_view text) noexcept {
+  if (text.size() != 10 || text[4] != '-' || text[7] != '-') {
+    return -1;
+  }
+  int field[3]{0, 0, 0};
+  const std::size_t begin[3]{0, 5, 8};
+  const std::size_t width[3]{4, 2, 2};
+  for (std::size_t f = 0; f < 3; ++f) {
+    int value = 0;
+    for (std::size_t i = 0; i < width[f]; ++i) {
+      const char c = text[begin[f] + i];
+      if (c < '0' || c > '9') {
+        return -1;
+      }
+      value = value * 10 + (c - '0');
+    }
+    field[f] = value;
+  }
+  if (field[1] < 1 || field[1] > 12 || field[2] < 1 || field[2] > 31) {
+    return -1;
+  }
+  const std::int64_t days = atx::core::time::days_from_civil(
+      field[0], static_cast<std::uint32_t>(field[1]), static_cast<std::uint32_t>(field[2]));
+  const atx::core::time::Date back = atx::core::time::civil_from_days(days);
+  if (back.year != field[0] || static_cast<int>(back.month) != field[1] ||
+      static_cast<int>(back.day) != field[2]) {
+    return -1; // e.g. 2026-02-30
+  }
+  constexpr std::int64_t kNsPerDay = 86'400'000'000'000LL;
+  return days * kNsPerDay;
+}
+
+} // namespace detail
+
+// Read a dividend Parquet file into one schedule per underlier.
+//
+// @param path the Parquet file (see the column contract above).
+// @return one entry per underlier present in the file, each ascending in
+//         `ex_date_ns`; or `InvalidArgument` naming the first defect found.
+//         NEVER an Ok-but-empty result — see FAIL CLOSED above.
+[[nodiscard]] inline Result<DividendSchedules> load_dividend_schedules(const std::string &path) {
+  const auto reject = [&path](const std::string &why) {
+    return atx::core::Err(ErrorCode::InvalidArgument, "--dividends '" + path + "': " + why);
+  };
+
+  constexpr std::array<std::string_view, 3> kCols{"underlying", "ex_date", "amount"};
+  Result<atx::core::io::ParquetTable> table = atx::core::io::read_parquet(path, kCols);
+  if (!table.has_value()) {
+    // Deliberately re-coded to InvalidArgument: a missing file, a corrupt file
+    // and a wrong-schema file are all "this flag was given something it cannot
+    // use", and the caller must never confuse any of them with "no dividends".
+    return reject(std::string(table.error().message()));
+  }
+  Result<std::vector<std::string_view>> underlying = table->strings("underlying");
+  if (!underlying.has_value()) {
+    return reject("column 'underlying' is not a string column");
+  }
+  Result<std::vector<std::string_view>> ex_date = table->strings("ex_date");
+  if (!ex_date.has_value()) {
+    return reject("column 'ex_date' is not a string column");
+  }
+  Result<std::span<const double>> amount = table->column_view<double>("amount");
+  if (!amount.has_value()) {
+    return reject("column 'amount' is not a double column");
+  }
+  const std::size_t n = underlying->size();
+  if (ex_date->size() != n || amount->size() != n) {
+    return reject("columns disagree on length");
+  }
+  if (n == 0) {
+    return reject("holds no rows — an empty schedule is what omitting the flag "
+                  "already means, so it is refused rather than read as 'no dividends'");
+  }
+
+  DividendSchedules out;
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::string_view symbol = (*underlying)[i];
+    if (symbol.empty()) {
+      return reject("row " + std::to_string(i) + " has an empty 'underlying'");
+    }
+    const std::int64_t ex_ns = detail::midnight_ns_from_iso_date((*ex_date)[i]);
+    if (ex_ns < 0) {
+      return reject("row " + std::to_string(i) + " ('" + std::string(symbol) +
+                    "') has an 'ex_date' that is not a real YYYY-MM-DD date: '" +
+                    std::string((*ex_date)[i]) + "'");
+    }
+    const double cash = (*amount)[i];
+    if (!std::isfinite(cash) || !(cash > 0.0)) {
+      return reject("row " + std::to_string(i) + " ('" + std::string(symbol) +
+                    "') has a non-positive or non-finite 'amount'");
+    }
+    std::vector<DividendEvent> &events = out[std::string(symbol)];
+    for (const DividendEvent &prior : events) {
+      if (prior.ex_date_ns == ex_ns) {
+        return reject("'" + std::string(symbol) + "' has two dividends on ex-date '" +
+                      std::string((*ex_date)[i]) + "'");
+      }
+    }
+    events.push_back(DividendEvent{ex_ns, cash});
+  }
+  for (auto &[symbol, events] : out) {
+    (void)symbol;
+    std::sort(events.begin(), events.end(),
+              [](const DividendEvent &a, const DividendEvent &b) noexcept {
+                return a.ex_date_ns < b.ex_date_ns;
+              });
+  }
+  return atx::core::Ok(std::move(out));
 }
 
 // ── One emitted row ─────────────────────────────────────────────────────────

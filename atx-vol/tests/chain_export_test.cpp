@@ -14,6 +14,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <variant>
 #include <vector>
 
@@ -677,6 +678,161 @@ TEST(ChainExport, WritingBeforeOpenIsRefusedRatherThanDroppedOnTheFloor) {
   const atx::core::Status st = writer.write_board(board);
   EXPECT_FALSE(st.has_value());
   EXPECT_EQ(writer.census().rows, 0u);
+}
+
+
+// ── SR-DIVS: the --dividends schedule file ──────────────────────────────────
+//
+// The whole point of this loader is that it can NEVER hand back an empty
+// schedule: an empty schedule is byte-for-byte what omitting the flag already
+// does (every dividend folds into the solved continuous borrow), so a file that
+// quietly parsed to nothing would make a broken flag invisible. Every case
+// below therefore pins a REFUSAL, except the first.
+
+namespace divfx {
+
+namespace fs = std::filesystem;
+
+// One temp directory per case, removed on construction and destruction so a
+// crashed predecessor cannot poison the next run.
+class TempDir {
+public:
+  explicit TempDir(const char *name) : path_(fs::temp_directory_path() / name) {
+    fs::remove_all(path_);
+    fs::create_directories(path_);
+  }
+  ~TempDir() {
+    std::error_code ec;
+    fs::remove_all(path_, ec);
+  }
+  TempDir(const TempDir &) = delete;
+  TempDir &operator=(const TempDir &) = delete;
+  TempDir(TempDir &&) = delete;
+  TempDir &operator=(TempDir &&) = delete;
+
+  [[nodiscard]] std::string file(const char *leaf) const {
+    return (path_ / leaf).string();
+  }
+
+private:
+  fs::path path_;
+};
+
+// Write a three-column dividend file. `names` selects the column spellings so a
+// case can rename one away and exercise the missing-column refusal.
+void write_divs(const std::string &path, const std::vector<std::string> &underlying,
+                const std::vector<std::string> &ex_date, const std::vector<double> &amount,
+                const std::array<std::string, 3> &names = {"underlying", "ex_date", "amount"}) {
+  const std::vector<atx::core::io::WriteColumn> cols = {
+      {names[0], std::span<const std::string>(underlying)},
+      {names[1], std::span<const std::string>(ex_date)},
+      {names[2], std::span<const double>(amount)},
+  };
+  const atx::core::Status st = atx::core::io::write_parquet(cols, path);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+}
+
+} // namespace divfx
+
+TEST(ChainExportDividends, ValidFileGroupsEventsPerSymbolAscendingInExDate) {
+  const divfx::TempDir dir("atx_chain_export_divs_ok");
+  const std::string path = dir.file("divs.parquet");
+  // GS out of order and interleaved with LLY: neither grouping nor ordering may
+  // depend on how the emitter happened to lay the rows out.
+  divfx::write_divs(path, {"GS", "LLY", "GS", "GS"},
+                    {"2026-11-27", "2026-11-13", "2026-08-28", "2027-02-26"},
+                    {4.00, 1.50, 3.00, 4.50});
+
+  const atx::vol::Result<ce::DividendSchedules> loaded = ce::load_dividend_schedules(path);
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+  EXPECT_EQ(loaded->size(), 2u);
+
+  const auto gs = loaded->find("GS");
+  ASSERT_NE(gs, loaded->end());
+  ASSERT_EQ(gs->second.size(), 3u);
+  EXPECT_DOUBLE_EQ(gs->second[0].amount, 3.00); // 2026-08-28
+  EXPECT_DOUBLE_EQ(gs->second[1].amount, 4.00); // 2026-11-27
+  EXPECT_DOUBLE_EQ(gs->second[2].amount, 4.50); // 2027-02-26
+  EXPECT_LT(gs->second[0].ex_date_ns, gs->second[1].ex_date_ns);
+  EXPECT_LT(gs->second[1].ex_date_ns, gs->second[2].ex_date_ns);
+  // Midnight UTC of the civil ex-date, which is what puts an ex-date equal to an
+  // expiry's own calendar day INSIDE that expiry's 16:00-ET settlement window.
+  constexpr std::int64_t kNsPerDay = 86'400'000'000'000LL;
+  EXPECT_EQ(gs->second[0].ex_date_ns % kNsPerDay, 0);
+
+  const auto lly = loaded->find("LLY");
+  ASSERT_NE(lly, loaded->end());
+  ASSERT_EQ(lly->second.size(), 1u);
+  EXPECT_DOUBLE_EQ(lly->second[0].amount, 1.50);
+}
+
+TEST(ChainExportDividends, AbsentFileIsRefusedAsInvalidArgument) {
+  const divfx::TempDir dir("atx_chain_export_divs_absent");
+  const atx::vol::Result<ce::DividendSchedules> loaded =
+      ce::load_dividend_schedules(dir.file("nothing-here.parquet"));
+  ASSERT_FALSE(loaded.has_value());
+  EXPECT_EQ(loaded.error().code(), atx::vol::ErrorCode::InvalidArgument);
+}
+
+TEST(ChainExportDividends, MissingColumnIsRefusedRatherThanReadAsNoDividends) {
+  const divfx::TempDir dir("atx_chain_export_divs_schema");
+  const std::string path = dir.file("divs.parquet");
+  // "ex_dt" instead of "ex_date": a plausible emitter typo, and the exact defect
+  // that would otherwise silently restore the pre-SR-DIVS behaviour.
+  divfx::write_divs(path, {"GS"}, {"2026-11-27"}, {4.00},
+                    {"underlying", "ex_dt", "amount"});
+
+  const atx::vol::Result<ce::DividendSchedules> loaded = ce::load_dividend_schedules(path);
+  ASSERT_FALSE(loaded.has_value());
+  EXPECT_EQ(loaded.error().code(), atx::vol::ErrorCode::InvalidArgument);
+}
+
+TEST(ChainExportDividends, ZeroRowFileIsRefusedRatherThanReadAsNoDividends) {
+  const divfx::TempDir dir("atx_chain_export_divs_empty");
+  const std::string path = dir.file("divs.parquet");
+  divfx::write_divs(path, {}, {}, {});
+
+  const atx::vol::Result<ce::DividendSchedules> loaded = ce::load_dividend_schedules(path);
+  ASSERT_FALSE(loaded.has_value());
+  EXPECT_EQ(loaded.error().code(), atx::vol::ErrorCode::InvalidArgument);
+}
+
+TEST(ChainExportDividends, MalformedExDateIsRefused) {
+  const divfx::TempDir dir("atx_chain_export_divs_date");
+  // Both a wrong SHAPE and a well-shaped date that is not a real calendar day.
+  for (const char *bad : {"11/27/2026", "2026-02-30", "2026-11-2", ""}) {
+    const std::string path = dir.file("divs.parquet");
+    std::filesystem::remove(path);
+    divfx::write_divs(path, {"GS"}, {bad}, {4.00});
+    const atx::vol::Result<ce::DividendSchedules> loaded = ce::load_dividend_schedules(path);
+    ASSERT_FALSE(loaded.has_value()) << "accepted ex_date '" << bad << "'";
+    EXPECT_EQ(loaded.error().code(), atx::vol::ErrorCode::InvalidArgument) << bad;
+  }
+}
+
+TEST(ChainExportDividends, NonPositiveOrNonFiniteAmountIsRefused) {
+  const divfx::TempDir dir("atx_chain_export_divs_amount");
+  for (const double bad : {0.0, -1.25, std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::infinity()}) {
+    const std::string path = dir.file("divs.parquet");
+    std::filesystem::remove(path);
+    divfx::write_divs(path, {"GS"}, {"2026-11-27"}, {bad});
+    const atx::vol::Result<ce::DividendSchedules> loaded = ce::load_dividend_schedules(path);
+    ASSERT_FALSE(loaded.has_value()) << "accepted amount " << bad;
+    EXPECT_EQ(loaded.error().code(), atx::vol::ErrorCode::InvalidArgument) << bad;
+  }
+}
+
+TEST(ChainExportDividends, DuplicateExDateForOneSymbolIsRefused) {
+  const divfx::TempDir dir("atx_chain_export_divs_dupe");
+  const std::string path = dir.file("divs.parquet");
+  // One name cannot go ex twice on one day, so the two rows disagree and neither
+  // can be preferred — summing them would invent a dividend nobody declared.
+  divfx::write_divs(path, {"GS", "GS"}, {"2026-11-27", "2026-11-27"}, {4.00, 4.50});
+
+  const atx::vol::Result<ce::DividendSchedules> loaded = ce::load_dividend_schedules(path);
+  ASSERT_FALSE(loaded.has_value());
+  EXPECT_EQ(loaded.error().code(), atx::vol::ErrorCode::InvalidArgument);
 }
 
 } // namespace
