@@ -179,11 +179,40 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         print(f"WARNING: no rows for {','.join(missing)}", file=sys.stderr)
 
+    roots = (src.group_by("undSecKey_tk").agg(pl.col("okey_tk").n_unique().alias("n"))
+                .filter(pl.col("n") > 1).sort("undSecKey_tk"))
+    for r in roots.iter_rows(named=True):
+        got = sorted(src.filter(pl.col("undSecKey_tk") == r["undSecKey_tk"])
+                        ["okey_tk"].unique().to_list())
+        print(f"  {r['undSecKey_tk']} -> {r['n']} OSI roots, one board each: "
+              f"{', '.join(got)}", file=sys.stderr)
+
+    # A BOARD IS ONE OSI ROOT, NOT ONE VENDOR UNDERLIER KEY. SpiderRock files
+    # several roots under a single undSecKey_tk -- SPX carries SPX and SPXW, NDX
+    # carries NDX and NDXP, RUT carries RUT and RUTW, DJX carries DJX and DJXW,
+    # and among equities BABA carries BABA and BABA2. Those are genuinely
+    # different series: DJX is AM-settled monthly against DJXW PM-settled weekly,
+    # and BABA2 is an adjusted deliverable. They must not share a smile, and
+    # chain-export refuses a board whose rows disagree with its `underlying`
+    # column for exactly that reason -- which meant keying this on undSecKey_tk
+    # silently produced ZERO output for 9 of a 140-name cohort, including SPX,
+    # NDX and RUT, the three largest products in the store.
+    #
+    # Keying on okey_tk also fixes a second defect for free: chain-export derives
+    # its emitted okey_tk from this column, so a dotted ticker used to export
+    # okey_tk='BRK.B' where the vendor's own column says 'BRKB', and the rows
+    # could never be joined back. The OSI root is what that column means.
+    #
+    # uBid/uAsk are taken per ROOT rather than per underlier key, so each board
+    # carries the spot the vendor itself published against it. Where a root has
+    # no usable quote (a cash-settled index series), chain-export falls back to
+    # the board's own put-call-parity forward, which is what it already does for
+    # every root in kCashSettledIndexRoots.
     board = (src.with_columns([osi_symbol(),
                                to_fixed_point("bidPrc"), to_fixed_point("askPrc")])
                 .with_columns([
                     pl.lit(ts).cast(pl.Datetime("ns")).alias("ts"),
-                    pl.col("undSecKey_tk").alias("underlying"),
+                    pl.col("okey_tk").alias("underlying"),
                     pl.col("bidPrc").alias("bid_px"),
                     pl.col("askPrc").alias("ask_px"),
                     pl.col("bidSz").fill_null(0).cast(pl.Int64).clip(lower_bound=0).alias("bid_sz"),
@@ -198,15 +227,15 @@ def main(argv: list[str] | None = None) -> int:
     # row of a name; they are identical within the bucket by construction, and a
     # disagreement would mean the bucket mixes two underlier states -- so take
     # the first and report the spread of what was collapsed.
-    und_spread = (src.group_by("undSecKey_tk")
+    und_spread = (src.group_by("okey_tk")
                      .agg([(pl.col("uBid").max() - pl.col("uBid").min()).alias("ubid_span"),
                            (pl.col("uAsk").max() - pl.col("uAsk").min()).alias("uask_span")]))
-    under = (src.group_by("undSecKey_tk", maintain_order=True)
+    under = (src.group_by("okey_tk", maintain_order=True)
                 .agg([pl.col("uBid").first(), pl.col("uAsk").first()])
                 .with_columns([to_fixed_point("uBid"), to_fixed_point("uAsk")])
                 .with_columns([
                     pl.lit(ts).cast(pl.Datetime("ns")).alias("ts"),
-                    pl.col("undSecKey_tk").alias("underlying"),
+                    pl.col("okey_tk").alias("underlying"),
                     pl.col("uBid").alias("bid_px"),
                     pl.col("uAsk").alias("ask_px"),
                     pl.lit(0, dtype=pl.Int64).alias("bid_sz"),
@@ -228,8 +257,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"wrote {under.height} underlier rows -> {und_path}")
     print(f"snapshot ts = {ts.isoformat()}Z  "
           f"(pass --snapshot-suffix T{ts.strftime('%H:%M:%S')}Z)")
-    for row in und_spread.sort("undSecKey_tk").iter_rows(named=True):
-        print(f"  {row['undSecKey_tk']}: uBid span {row['ubid_span']:.6f}, "
+    for row in und_spread.sort("okey_tk").iter_rows(named=True):
+        print(f"  {row['okey_tk']}: uBid span {row['ubid_span']:.6f}, "
               f"uAsk span {row['uask_span']:.6f}")
     n_unset = int((board["bid_px"] == INT64_MIN).sum() + (board["ask_px"] == INT64_MIN).sum())
     print(f"  unset option quote sides: {n_unset}")
