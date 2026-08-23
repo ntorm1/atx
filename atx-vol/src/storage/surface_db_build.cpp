@@ -765,6 +765,14 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
   kv("coverage.cells_carried_disabled", fmt_u32(r.coverage.cells_carried_disabled));
   kv("coverage.cells_already_present", fmt_u32(r.coverage.cells_already_present));
   kv("coverage.cells_ok", fmt_u32(r.coverage.cells_ok));
+  // R1 (2026-08-23 top-of-book fit-refusal diagnosis, §4). A NAMED SUBSET of
+  // `cells_ok`: cells whose stored surface is a MARKET MARK, served because the
+  // independent risk-geometry oracle refused the risk candidate. Emitted next to
+  // its parent so all three dispositions -- risk-served (`cells_ok -
+  // cells_mark`), mark-served (`cells_mark`), failed (`cells_failed`) -- are
+  // readable off this file. The stored surface carries the same verdict as
+  // `SurfaceProvenance::purpose`, so a consumer never has to infer it from here.
+  kv("coverage.cells_mark", fmt_u32(r.coverage.cells_mark));
   kv("coverage.cells_failed", fmt_u32(r.coverage.cells_failed));
   kv("coverage.dates_total", fmt_u32(r.coverage.dates_total));
   kv("coverage.dates_written", fmt_u32(r.coverage.dates_written));
@@ -823,7 +831,10 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
   // attempted=1 ok=0 failed=0 disabled=0, which names no disposition at all. The
   // column is APPENDED so a positional reader of the first five fields is
   // unaffected; the header is a pinned contract and its test was updated with it.
-  out += "symbol,n_attempted,n_ok,n_failed,n_disabled,n_carried\n";
+  // R1: `n_mark` appended for exactly the same reason -- a positional reader of
+  // the older columns is unaffected -- and it is what tells a mark-served cell
+  // apart from a risk-served one inside this symbol's `n_ok`.
+  out += "symbol,n_attempted,n_ok,n_failed,n_disabled,n_carried,n_mark\n";
   for (const PopulateSymbolStats &s : r.coverage.per_symbol) {
     out += s.symbol;
     out += ',';
@@ -836,6 +847,8 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
     out += fmt_u32(s.n_disabled);
     out += ',';
     out += fmt_u32(s.n_carried);
+    out += ',';
+    out += fmt_u32(s.n_mark);
     out += '\n';
   }
 

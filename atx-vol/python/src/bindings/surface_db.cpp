@@ -597,6 +597,9 @@ namespace {
   // FIX-D fix-1 (I2): the third disposition of the same cells. Without it a
   // carried symbol reads attempted=1, ok=0, failed=0, disabled=0 in python too.
   d["n_carried"] = s.n_carried;
+  // R1: the SUBSET of n_ok served as a MARKET MARK after the risk oracle refused
+  // the risk candidate. `n_ok - n_mark` is the risk-served count.
+  d["n_mark"] = s.n_mark;
   d["mean_oos_in_band"] = s.mean_oos_in_band;
   return d;
 }
@@ -669,6 +672,11 @@ namespace {
   coverage["cells_carried_disabled"] = r.coverage.cells_carried_disabled;
   coverage["cells_already_present"] = r.coverage.cells_already_present;
   coverage["cells_ok"] = r.coverage.cells_ok;
+  // R1: the SUBSET of cells_ok whose stored surface is a MARKET MARK, served
+  // because the independent risk oracle refused the risk candidate. Mark-grade
+  // (fair value / fair vol / greeks), NOT arbitrage-certified. The stored
+  // surface carries the same verdict as `SurfaceProvenance::purpose`.
+  coverage["cells_mark"] = r.coverage.cells_mark;
   coverage["cells_failed"] = r.coverage.cells_failed;
   coverage["dates_total"] = r.coverage.dates_total;
   coverage["dates_written"] = r.coverage.dates_written;

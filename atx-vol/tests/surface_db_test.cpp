@@ -1796,7 +1796,10 @@ TEST(SurfaceDbApply, StoredPolicyAppliedOverPresetDefault) {
   ASSERT_TRUE(db.has_value());
   SymbolFitConfig cfg = symbol_config_from_preset(FitPreset::Robust);
   ASSERT_EQ(cfg.surface_policy.quality_mode, FitQualityMode::Balanced);
-  ASSERT_EQ(cfg.surface_policy.outputs, SurfaceOutputs::Risk);
+  // R1: a Risk-purpose preset asks for BOTH outputs so the mark arm is actually
+  // built (surface_db.cpp). `risk_admission` stays Required, so this is a WIDER
+  // request, not a weaker one.
+  ASSERT_EQ(cfg.surface_policy.outputs, SurfaceOutputs::MarketMarkAndRisk);
   // Accuracy + mark-only: differs from the Robust preset default on every
   // SurfacePolicy field.
   cfg.surface_policy.quality_mode = FitQualityMode::Accuracy;

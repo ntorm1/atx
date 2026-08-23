@@ -1694,15 +1694,16 @@ TEST(SurfaceDbPopulate, StatsCsvShape) {
   // FIX-D fix-1 (I2). The header is a pinned contract and it MOVED: `n_carried`
   // is APPENDED (so every older column keeps its position) because a carried
   // symbol's row otherwise names no disposition at all.
-  EXPECT_NE(
-      text.find(
-          "symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band,n_carried\n"),
-      std::string::npos)
+  // R1 appended `n_mark` behind it for the same reason: a mark-served cell is
+  // inside `n_ok` and nothing else in the row would say so.
+  EXPECT_NE(text.find("symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,"
+                      "mean_oos_in_band,n_carried,n_mark\n"),
+            std::string::npos)
       << text;
   EXPECT_NE(text.find("# n_carried=0\n"), std::string::npos) << text;
   // AAA: n_attempted=2, n_ok=2, n_failed=0, n_disabled=0 -> success_rate=1;
   // pinned curve -> no OOS score -> "nan" (the NaN-when-unavailable rule).
-  EXPECT_NE(text.find("AAA,2,2,0,0,1,nan,0\n"), std::string::npos) << text;
+  EXPECT_NE(text.find("AAA,2,2,0,0,1,nan,0,0\n"), std::string::npos) << text;
   // BBB: same counts, but it is the OTHER side of the same rule --
   // `oos_in_band_available` is tied to the selector having run at all, not to
   // pin_curve specifically, and BBB's unpinned board DOES cross-validate, so its
@@ -1714,10 +1715,10 @@ TEST(SurfaceDbPopulate, StatsCsvShape) {
   // the money it is a perfectly identifiable board, so it now reaches the
   // ambiguity check. W4 makes the board state that intent outright (above)
   // instead of depending on the classifier's confidence scale.
-  EXPECT_EQ(text.find("BBB,2,2,0,0,1,nan,0\n"), std::string::npos)
+  EXPECT_EQ(text.find("BBB,2,2,0,0,1,nan,0,0\n"), std::string::npos)
       << "BBB cross-validates now, so its OOS score is available\n"
       << text;
-  EXPECT_NE(text.find("BBB,2,2,0,0,1,1,0\n"), std::string::npos) << text;
+  EXPECT_NE(text.find("BBB,2,2,0,0,1,1,0,0\n"), std::string::npos) << text;
 
   std::filesystem::remove_all(root);
 }
@@ -2399,7 +2400,7 @@ TEST(SurfaceDbPopulate, CarriedCellsLeaveTheFitSuccessRateUndefinedNotZero) {
   // AAA and BBB: attempted=1, ok=0, failed=0, disabled=0, carried=1 -> the fit
   // denominator is empty -> nan, NOT 0.
   for (const char *symbol : {"AAA", "BBB"}) {
-    const std::string row = std::string(symbol) + ",1,0,0,0,nan,nan,1\n";
+    const std::string row = std::string(symbol) + ",1,0,0,0,nan,nan,1,0\n";
     EXPECT_NE(text.find(row), std::string::npos)
         << symbol << " must report an UNDEFINED fit rate and a carried count\n"
         << text;
@@ -2409,7 +2410,7 @@ TEST(SurfaceDbPopulate, CarriedCellsLeaveTheFitSuccessRateUndefinedNotZero) {
   }
   // CCC genuinely failed its one fit: a real 0% over a non-empty denominator,
   // which must stay 0 and must be distinguishable from the carried rows above.
-  EXPECT_NE(text.find("CCC,1,0,1,0,0,nan,0\n"), std::string::npos) << text;
+  EXPECT_NE(text.find("CCC,1,0,1,0,0,nan,0,0\n"), std::string::npos) << text;
   // The run-level counter reaches the meta block too.
   EXPECT_NE(text.find("# n_carried=2\n"), std::string::npos) << text;
 

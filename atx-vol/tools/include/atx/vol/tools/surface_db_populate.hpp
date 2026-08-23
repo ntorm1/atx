@@ -200,6 +200,17 @@ struct PopulateSymbolStats {
   std::string symbol;
   std::uint32_t n_attempted{0};
   std::uint32_t n_ok{0};
+  // R1 (2026-08-23 top-of-book fit-refusal diagnosis, §4). The SUBSET of `n_ok`
+  // whose stored surface is a MARKET MARK served because the independent risk
+  // oracle refused the risk candidate — mark-grade fair value / fair vol /
+  // greeks, NOT an arbitrage-certified risk surface. Deliberately a subset and
+  // not a fourth disposition: the cell really was fitted and really was written,
+  // which is what every `cells_ok` reader (the exit-code predicates in
+  // surface_db_build.cpp) asks. What it is NOT is risk-grade, and that is what
+  // this counter, the per-symbol CSV column, the run-report `n_mark` key and the
+  // `SurfacePurpose::MarketMark` tag on the stored surface itself all say. Read
+  // `n_ok - n_mark` for the risk-served count.
+  std::uint32_t n_mark{0};
   std::uint32_t n_failed{0};
   std::uint32_t n_disabled{0}; // skipped because manifest enabled=false
   // FIX-D: cells re-emitted from the existing partition instead of re-fitted.
@@ -295,6 +306,10 @@ struct CoverageRegressionCell {
 struct SurfaceDbPopulateStats {
   std::uint32_t n_boards{0};
   std::uint32_t n_ok{0};
+  // R1: the subset of `n_ok` served as a MARKET MARK after the risk oracle
+  // refused the risk candidate. See PopulateSymbolStats::n_mark for the full
+  // contract; `n_ok - n_mark` is the risk-served count.
+  std::uint32_t n_mark{0};
   std::uint32_t n_failed{0};
   std::uint32_t n_carried{0}; // FIX-D: cells re-emitted from the existing partition
   // FIX-E: present-but-DISABLED cells re-emitted verbatim so a rewrite does not
@@ -626,6 +641,15 @@ struct UniversePopulateCoverage {
   // did not land. `dates_refused_coverage_regression` is the authority on what
   // reached disk, which is why the CLI's verdict reads it separately.
   std::uint32_t cells_ok{0};
+  // R1 (2026-08-23 top-of-book fit-refusal diagnosis, §4). The SUBSET of
+  // `cells_ok` whose stored surface is a MARKET MARK, served because the
+  // independent risk-geometry oracle refused the risk candidate. Mark-grade:
+  // fair value / fair vol / greeks, market-following, NOT arbitrage-certified.
+  // `cells_ok - cells_mark` is the risk-served count; the CLI prints all three
+  // dispositions (risk / mark / failed) so a cell that used to be `failed` and
+  // now serves as a mark cannot be read as a risk surface. The surface carries
+  // the same verdict on disk as `SurfaceProvenance::purpose`.
+  std::uint32_t cells_mark{0};
   std::uint32_t cells_failed{0};
   std::uint32_t dates_total{0};              // distinct dates among the loaded boards
   // Dates this run really COMMITTED — taken from the populate's own write-site

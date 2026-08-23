@@ -75,8 +75,8 @@ admission_reason_mask(CorpusAdmissionReason reason) noexcept {
 
 [[nodiscard]] CorpusQualityMetrics
 collect_quality(const CorpusBoard &board, const OptionChain &chain, const PricerConfig &cfg,
-                const PricerFitter &fitter, const PricedSurface &surface,
-                const CorpusAdmissionPolicy *admission,
+                const PricerFitter &fitter, const FittedSurface &served,
+                const PricedSurface &surface, const CorpusAdmissionPolicy *admission,
                 const std::optional<FitDecision> &precomputed_classification) {
   CorpusQualityMetrics quality;
   quality.n_raw_quotes = saturated_u32(board.frame.rows.size());
@@ -125,7 +125,12 @@ collect_quality(const CorpusBoard &board, const OptionChain &chain, const Pricer
     }
   }
 
-  const VolaSession &session = fitter.surface()->session();
+  // R1: the SERVED surface, handed in — not re-derived through
+  // `fitter.surface()`. That accessor is fail-closed by design and answers
+  // NULLPTR whenever the request carried a Risk output the oracle refused, which
+  // is precisely the state the mark rescue in `fit_board` serves. Re-deriving it
+  // here would have dereferenced null on every rescued board.
+  const VolaSession &session = served.session();
   const SessionDiagnostics &diagnostics = session.diagnostics();
   std::size_t fit_scorable = 0u;
   std::size_t fit_in_band = 0u;
@@ -294,18 +299,67 @@ FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
         retain_consumed_fit_parity(*chain, admission, cfg);
     PricerFitter fitter{cfg};
     const Status st = fitter.fit(*chain, session_overlay);
+    const FittedSurface *fitted = nullptr;
     if (!st) {
-      slot.status = CorpusFitStatus::Failed;
+      // R1 (2026-08-23 top-of-book fit-refusal diagnosis, §4). The risk output
+      // was refused. Before asking the caller to accept nothing, ask whether
+      // the fitter ALSO published a market mark for this very build: on the
+      // dual mark/risk contract `finalize_mark()` runs BEFORE every risk `Err`
+      // return (pricer_fitter.cpp), and its own comment says why — "Mark
+      // publication is independent of risk admission". Until now that mark was
+      // built, published, and then dropped on the floor here, taking a
+      // serviceable fair-value/greek surface with it on 25 of 26 probed boards.
+      //
+      // THE GUARD IS THE WHOLE CONTRACT, so it is spelled out rather than
+      // implied:
+      //   * `ErrorCode::Unavailable` is the ONLY refusal a mark may answer. It
+      //     is the code the risk pipeline returns when a BUILT candidate is not
+      //     serviceable — "risk surface rejected: mask=..." — i.e. the board was
+      //     fit and the independent oracle (or the publish floor) declined the
+      //     geometry. Every other code is a different kind of problem and must
+      //     keep failing: in particular `InvalidArgument` / "invalid correctness
+      //     policy for requested risk surface" is a REQUEST defect — a symbol
+      //     config that pins LinearVariance under a mandatory risk admission,
+      //     say — and the operator has to see it, not have it papered over with
+      //     a mark. A malformed request is not a refused board.
+      //   * `market_mark_surface()` is null unless the request carried the
+      //     MarketMark bit — a RISK-ONLY caller therefore keeps its refusal,
+      //     with no code path able to substitute a mark for the risk surface it
+      //     asked for;
+      //   * `state == Healthy` refuses a Stale or Rejected mark. This is also
+      //     what keeps the LEGACY single-surface path out: there a failed fit
+      //     leaves the mark slot Rejected (or Stale), never Healthy.
+      //   * `serving_candidate()` refuses a LAST-KNOWN-GOOD mark retained from
+      //     an earlier generation. Only a mark built by THIS fit, from THIS
+      //     board's quotes, may be served. (`fit_board` builds a fresh fitter
+      //     per board so no prior generation exists today; the guard states the
+      //     invariant rather than relying on that.)
+      const SurfaceBundle refused = fitter.bundle();
+      const FittedSurface *mark = fitter.market_mark_surface();
+      const bool mark_serviceable = st.error().code() == ErrorCode::Unavailable &&
+                                    mark != nullptr &&
+                                    refused.market_mark_health.state == SurfaceState::Healthy &&
+                                    refused.market_mark_health.serving_candidate();
+      if (!mark_serviceable) {
+        slot.status = CorpusFitStatus::Failed;
+        slot.error_code = st.error().code();
+        // THE seam this whole diagnostic depends on: PricerFitter's rejection text
+        // is built here and nowhere else, and until now it died on this line.
+        slot.error_message = st.error().message();
+        slot.admission =
+            terminal_decision(CorpusDisposition::FitFailed, CorpusAdmissionReason::FitError);
+        return slot;
+      }
+      fitted = mark;
+      slot.mark_after_risk_refusal = true;
+      // Retained on a slot whose `status` will be Ok: this is the only record
+      // of WHY the risk candidate was refused on a cell that still produced a
+      // surface. See FitSlot::mark_after_risk_refusal for the full contract.
       slot.error_code = st.error().code();
-      // THE seam this whole diagnostic depends on: PricerFitter's rejection text
-      // is built here and nowhere else, and until now it died on this line.
       slot.error_message = st.error().message();
-      slot.admission =
-          terminal_decision(CorpusDisposition::FitFailed, CorpusAdmissionReason::FitError);
-      return slot;
+    } else {
+      fitted = fitter.surface();
     }
-
-    const FittedSurface *fitted = fitter.surface();
     if (fitted == nullptr) { // defensive: a successful fit always stores a surface
       slot.status = CorpusFitStatus::Failed;
       slot.error_code = ErrorCode::Internal;
@@ -337,8 +391,8 @@ FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
       slot.chosen_kind = ps->kind_at(0); // curve was pinned; no OOS score
     }
     if (admission != nullptr) {
-      slot.quality =
-          collect_quality(board, *chain, cfg, fitter, *ps, admission, board_classification);
+      slot.quality = collect_quality(board, *chain, cfg, fitter, *fitted, *ps, admission,
+                                     board_classification);
       if (admission->enabled) {
         const std::size_t profile_index = static_cast<std::size_t>(slot.quality.profile);
         if (profile_index >= admission->by_profile.size()) {

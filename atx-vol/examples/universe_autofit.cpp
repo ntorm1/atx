@@ -1085,10 +1085,14 @@ int main(int argc, char **argv) {
   // ── Resolve the fit contract ────────────────────────────────────────────
   // The production VALUES come from the seed `populate_universe_streaming`
   // actually writes (`seed_symbol_config` -> `symbol_config_from_preset`), not
-  // from a default-constructed `SurfacePolicy`. The two disagree: the seed maps
-  // a Risk-purpose preset to `SurfaceOutputs::Risk`, while `SurfacePolicy{}` is
-  // `MarketMarkAndRisk`. Reading the seed is what makes this the served config
-  // rather than a plausible-looking neighbour of it.
+  // from a default-constructed `SurfacePolicy`. Reading the seed is what makes
+  // this the served config rather than a plausible-looking neighbour of it.
+  //
+  // (R1 CLOSED THE ONE DISAGREEMENT THIS NOTE USED TO NAME. The seed mapped a
+  // Risk-purpose preset to `SurfaceOutputs::Risk` while `SurfacePolicy{}` is
+  // `MarketMarkAndRisk`; the seed now also requests the mark, so the two agree
+  // on `outputs`. They still differ on `risk_admission`/`fallback`, so reading
+  // the seed remains the point — do not substitute a default here.)
   const SymbolFitConfig production_symbol_cfg = symbol_config_from_preset(preset);
   FitPathSpec spec_build;
   if (fit_path_arg == "legacy") {

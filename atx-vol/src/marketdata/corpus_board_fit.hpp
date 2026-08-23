@@ -70,6 +70,26 @@ struct FitSlot {
   CorpusAdmissionDecision admission{CorpusDisposition::Admitted, CorpusAdmissionReason::None, 0u};
   std::optional<PricedSurface> surface{};        // present iff status == Ok
   std::optional<SurfaceProvenance> provenance{}; // the fitter's own health for `surface`
+  // R1 (2026-08-23 top-of-book fit-refusal diagnosis, §4): TRUE iff
+  // `PricerFitter::fit` REFUSED the risk surface and this slot is serving the
+  // fitter's independently-published MARKET MARK instead.
+  //
+  // What that means for a reader of this slot, precisely:
+  //   * `surface` is MARK-grade — market-following, pinned LinearVariance, fit
+  //     to the board's own quotes. Fair value / fair vol / greeks are what it
+  //     is for. It is NOT the arbitrage-certified risk surface and carries no
+  //     no-arbitrage guarantee.
+  //   * `provenance->purpose` is `SurfacePurpose::MarketMark` — and that is the
+  //     field that reaches the archive, so the label survives the write.
+  //   * `error_code` / `error_message` are RETAINED and carry the risk
+  //     refusal verbatim (PricerFitter's "risk surface rejected: mask=..."
+  //     string), even though `status` is `Ok`. They are the only record of WHY
+  //     risk was refused on a cell that nonetheless produced a surface.
+  //
+  // Always false when the caller did not request a MarketMark output: no mark
+  // is built, so there is nothing to serve and the refusal stands (a risk-only
+  // consumer is never silently downgraded).
+  bool mark_after_risk_refusal{false};
   // Task 3 (mark-domain-robustness observability, surface_db_populate.hpp).
   // Every NON-Fitted expiry from the PUBLISHED attempt's per-expiry outcome
   // list (`PricerFitter::last_attempt_report()->attempts.back().expiries`,

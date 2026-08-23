@@ -973,6 +973,16 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
         if (slot.status == CorpusFitStatus::Ok) {
           ++acc.stats.n_ok;
           ++stats.n_ok;
+          // R1: the cell WAS fitted and IS written, so it belongs in n_ok — but
+          // what it holds is a market mark, not the risk surface that was asked
+          // for, and the two must never be read as the same thing. Counted here
+          // as a named subset; the surface itself carries `provenance->purpose
+          // == MarketMark` into the archive (fit_board sets it), so the label
+          // survives independently of this counter.
+          if (slot.mark_after_risk_refusal) {
+            ++acc.stats.n_mark;
+            ++stats.n_mark;
+          }
           if (slot.oos_in_band_available) {
             acc.oos_sum += slot.oos_in_band;
             ++acc.oos_count;
@@ -1377,6 +1387,10 @@ Status write_populate_stats_csv(const SurfaceDbPopulateStats &s, const MetaKv &m
   MetaKv full_meta = meta;
   full_meta.emplace_back("n_boards", fmt_u32(s.n_boards));
   full_meta.emplace_back("n_ok", fmt_u32(s.n_ok));
+  // R1: beside n_ok because it is a NAMED SUBSET of it — the cells whose stored
+  // surface is a market mark served after the risk oracle refused. Without it a
+  // rescued cell is indistinguishable from a risk-served one in this file.
+  full_meta.emplace_back("n_mark", fmt_u32(s.n_mark));
   full_meta.emplace_back("n_failed", fmt_u32(s.n_failed));
   // FIX-D fix-1 (I2). Beside n_ok/n_failed because it is the third disposition of
   // the same cells and the only evidence that carry-over ran: a converged carry
@@ -1389,7 +1403,11 @@ Status write_populate_stats_csv(const SurfaceDbPopulateStats &s, const MetaKv &m
   // `n_carried` is APPENDED to the pinned header, not inserted, so a positional
   // reader of the older columns is unaffected. It goes last rather than beside
   // n_disabled for that reason, even though it reads better next to it.
-  body += "symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band,n_carried\n";
+  // R1: `n_mark` is APPENDED for the same reason `n_carried` was — a positional
+  // reader of the older columns is unaffected — and it is what tells a rescued
+  // mark cell apart from a risk-served one inside this symbol's `n_ok`.
+  body += "symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band,n_carried,"
+          "n_mark\n";
   for (const PopulateSymbolStats &sym : s.per_symbol) {
     // FIX-D fix-1 (I3): a CARRIED cell was never offered to the fitter, so it
     // belongs in neither half of a FIT success rate. Leaving it in the denominator
@@ -1424,6 +1442,8 @@ Status write_populate_stats_csv(const SurfaceDbPopulateStats &s, const MetaKv &m
     body += fmt_nan_aware10(sym.mean_oos_in_band);
     body += ',';
     body += fmt_u32(sym.n_carried);
+    body += ',';
+    body += fmt_u32(sym.n_mark);
     body += '\n';
   }
   return write_meta_body(full_meta, body, path, "write_populate_stats_csv");
@@ -1651,6 +1671,7 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
       return Err(st.error());
     }
     cov.cells_ok = st->n_ok;
+    cov.cells_mark = st->n_mark; // R1: the named mark-served subset of cells_ok
     cov.cells_failed = st->n_failed;
     // Cross-check the two halves of the carry decision: what the filter above
     // asked for must equal what the populate actually re-emitted, or the

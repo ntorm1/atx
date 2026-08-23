@@ -518,9 +518,47 @@ SymbolFitConfig symbol_config_from_preset(FitPreset preset) {
   cfg.use_deam_cache_for_fit = tmp.use_deam_cache_for_fit;
   const LegacyPresetMapping legacy = map_legacy_fit_preset(preset);
   cfg.surface_policy.quality_mode = legacy.quality_mode;
+  // R1 (2026-08-23 top-of-book fit-refusal diagnosis, §4). A Risk-purpose
+  // preset asks for BOTH outputs, not Risk alone.
+  //
+  // WHY. `SurfaceOutputs` is a bitmask and `PricerFitter::fit` engages the mark
+  // arm only when the MarketMark bit is set (pricer_fitter.cpp: `if
+  // (has_output(requested_outputs, SurfacePurpose::MarketMark))`). With Risk
+  // alone, `mark_future` is never launched and `finalize_mark()` returns
+  // immediately, so a board whose risk candidate the independent geometry
+  // oracle refuses produced NOTHING — even though the same board fits perfectly
+  // well as a market mark (measured: 25 ok / 1 fail as marks against 6 ok / 20
+  // fail as risk candidates, same boards, same date, same preset, every mark
+  // `mm_state = healthy`). The pipeline needs fair values, fair vols and greeks,
+  // which is a mark-grade need; refusing to BUILD the mark threw that away to
+  // protect a risk contract that is not weakened by building it.
+  //
+  // WHAT IS NOT WEAKENED. `risk_admission` stays `Required` below, so a Risk
+  // request is still served only through the independent oracle. Every
+  // fail-closed read seam is untouched: `PricerFitter::surface()` and the
+  // default-purpose `value_chain` overloads route to `risk_surface_` whenever
+  // the request carries the Risk bit and answer `nullptr`/`Unavailable` while
+  // risk is unserved — the mark is never silently substituted for risk. What
+  // changes is only that the mark now EXISTS to be asked for by name, and
+  // `fit_board` serves it explicitly tagged `SurfacePurpose::MarketMark`
+  // (corpus_board_fit.cpp).
+  //
+  // ON-DISK: NO FORMAT CHANGE. `outputs` is already persisted, in the
+  // `DbSurfacePolicyRecord` embedded in `DbSymbolRecord::reserved` (this file,
+  // top), and `surface_policy_record_valid` already admits `outputs` in 1..3 —
+  // `MarketMarkAndRisk` is 3. `sizeof(DbSymbolRecord)` is unchanged, so the
+  // compile-time schema fingerprint (surface_db.hpp) and
+  // `kSurfaceDbCarryOverFitSalt` both stand. The record BYTES do change, so
+  // `fold_symbol_configs` yields a different carry-over fingerprint and a
+  // partition fitted under the old contract is re-fitted rather than carried —
+  // which is exactly the intended behaviour for a changed fit config.
+  //
+  // A manifest that already stores `outputs = Risk` keeps it: the populate
+  // seeder leaves an existing symbol config untouched by design (an operator
+  // override wins). Re-configuring the symbol is what adopts the wider request.
   cfg.surface_policy.outputs = legacy.purpose == SurfacePurpose::MarketMark
                                    ? SurfaceOutputs::MarketMark
-                                   : SurfaceOutputs::Risk;
+                                   : SurfaceOutputs::MarketMarkAndRisk;
   cfg.surface_policy.risk_admission = legacy.purpose == SurfacePurpose::Risk
                                           ? RiskAdmission::Required
                                           : RiskAdmission::NotApplicable;
