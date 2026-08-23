@@ -6,10 +6,12 @@
 // contract of one session: the market slice we read, the fair value and fair
 // vol we fitted, and the nine SpiderRock greeks. This header owns every
 // decision that can silently corrupt such a row — the vendor column contract,
-// the pinned greek convention scales, the cash-settled-index spot fallback, and
-// the sentinel census — so each is reachable from `atx-vol-tests` without
-// spawning the CLI. `chain_export_main.cpp` keeps only argv parsing, I/O and
-// the fit loop. Gate: `ChainExport*` (tests/chain_export_test.cpp).
+// the pinned greek convention scales, the cash-settled-index spot fallback, the
+// sentinel census, WHICH SURFACE ARM served the row (`--serve`) and the
+// machine-readable receipt that states it (`--arm-census`) — so each is
+// reachable from `atx-vol-tests` without spawning the CLI.
+// `chain_export_main.cpp` keeps only argv parsing, I/O and the fit loop. Gate:
+// `ChainExport*` (tests/chain_export_test.cpp).
 //
 // ## The column contract
 //
@@ -55,12 +57,14 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <vector>
 
@@ -70,6 +74,7 @@
 #include "atx/core/io/parquet_writer.hpp"      // WriteColumn, ParquetRowGroupWriter
 #include "atx/vol/api/core/types.hpp"          // Side, Result, ErrorCode
 #include "atx/vol/api/fitting/session.hpp"     // VolaSession
+#include "atx/vol/api/fitting/surface_policy.hpp" // SurfacePurpose (--serve / --arm-census)
 #include "atx/vol/api/fitting/vol_curve.hpp"   // VolCurveKind, CurveSurface, IVolCurve
 #include "atx/vol/api/pricing/american.hpp"    // AmericanGreeks
 #include "atx/vol/api/pricing/rates_curve.hpp" // DividendEvent (--dividends)
@@ -1154,6 +1159,293 @@ struct ServedCurveTally {
 
 [[nodiscard]] inline ServedCurveTally tally_served_curves(const VolaSession &session) {
   return tally_served_curves(session.curve_override(), session.expiries().size());
+}
+
+// ── --serve: WHICH ARM answered, made an input and an output ────────────────
+//
+// Every symbol is served off one of TWO surfaces, and until this flag existed
+// which one was decided implicitly and reported only as human-readable census
+// prose:
+//
+//   * the RISK arm — our parametric surface (eSSVI / SVI / convex-dense /
+//     spline-vol), served only when risk admission accepts its geometry; and
+//   * the MARK arm — the `LinearVariance` market-mark interpolant, served as
+//     the FALLBACK when admission rejects.
+//
+// That implicitness has produced four separate misreadings of measurement
+// results in this project, and they share one shape: the mark interpolant is
+// quote-EXACT, so it scores better against the vendor than an arbitrage-free
+// risk surface does. Any change that improves surface geometry can therefore
+// flip a symbol from mark to risk and make the run look WORSE — three names
+// crossed that way and every one of them got worse; a fourth reading conflated
+// the curve FAMILY with the arm. A before/after that does not name the served
+// arm per symbol is uninterpretable, so the arm is now both an instruction
+// (`ServeMode`) and a receipt (`ArmCensus`) instead of an inference.
+//
+// `Auto` is today's behaviour EXACTLY, and it is the default: with `--serve`
+// absent the emitted Parquet is byte-identical to one produced before the flag
+// existed. `Risk` deliberately does NOT fall back — a rejected symbol is
+// dropped and counted by reason, because a silent fallback is precisely the
+// confound this flag exists to remove.
+enum class ServeMode : std::uint8_t {
+  Auto = 0, // risk arm if admitted, else the mark arm — today's routing
+  Mark = 1, // every symbol off the market mark; risk admission not consulted
+  Risk = 2, // every symbol off the risk arm; a rejection DROPS the symbol
+};
+
+// Spelling of a mode for the CLI, the echo line and the sidecar. Exhaustive
+// over the enum (no `default`), so a new mode fails the BUILD here rather than
+// publishing a receipt that misnames the run which produced it.
+[[nodiscard]] inline constexpr std::string_view serve_mode_name(ServeMode m) noexcept {
+  switch (m) {
+  case ServeMode::Auto:
+    return "auto";
+  case ServeMode::Mark:
+    return "mark";
+  case ServeMode::Risk:
+    return "risk";
+  }
+  return "unknown";
+}
+
+// Map `--serve`'s value onto the enum. An unrecognised spelling is an
+// `InvalidArgument` Err rather than a silent fall back to `auto`, for the same
+// reason `--time-convention` refuses one: a run that quietly ignored
+// `--serve risk` would publish mark-grade rows under a risk label, which is the
+// exact misattribution this flag was added to end.
+[[nodiscard]] inline Result<ServeMode> parse_serve_mode(std::string_view text) {
+  if (text == "auto") {
+    return ServeMode::Auto;
+  }
+  if (text == "mark") {
+    return ServeMode::Mark;
+  }
+  if (text == "risk") {
+    return ServeMode::Risk;
+  }
+  return atx::core::Err(ErrorCode::InvalidArgument,
+                        "--serve: expected auto|mark|risk, got '" + std::string(text) + "'");
+}
+
+// Which arms a mode permits for ONE symbol, given whether that symbol's risk
+// fit was rejected. The driver's serve ladder is exactly these two bits, so the
+// routing decision is testable without a board, a fit or a CLI.
+struct ArmPlan {
+  bool attempt_risk{false};
+  bool attempt_mark{false};
+};
+
+// The whole routing rule, in one place.
+//
+// `Auto` reproduces the driver's pre-flag ladder term for term: the risk arm is
+// attempted unless the fit already reported it rejected, and the mark arm stays
+// available whenever that attempt yields nothing. `Mark` never consults the
+// risk arm. `Risk` never falls back — both bits clear means the symbol drops.
+[[nodiscard]] inline constexpr ArmPlan arm_plan(ServeMode mode, bool risk_rejected) noexcept {
+  switch (mode) {
+  case ServeMode::Auto:
+    return ArmPlan{.attempt_risk = !risk_rejected, .attempt_mark = true};
+  case ServeMode::Mark:
+    return ArmPlan{.attempt_risk = false, .attempt_mark = true};
+  case ServeMode::Risk:
+    return ArmPlan{.attempt_risk = !risk_rejected, .attempt_mark = false};
+  }
+  return ArmPlan{};
+}
+
+// ── --arm-census: the machine-readable served-arm receipt ───────────────────
+//
+// The census the driver prints is prose for an operator; this is the same facts
+// as JSON so a scorecard can GROUP by served arm instead of guessing. It is
+// written whenever `--arm-census` is given, including on a run that dropped
+// nothing: "no symbol was dropped" is a measurement, and a receipt that only
+// appears when something went wrong cannot state it.
+//
+// The document names the `--serve` mode and the `--time-convention` it was
+// produced under at the TOP LEVEL, because a receipt that cannot be attributed
+// to its run is worse than none — that misattribution is one of the four
+// misreadings named above.
+
+// ONE arm-spelling table, shared by the sidecar and the driver's census line.
+// `dropped` is deliberately not a `SurfacePurpose`: it is the statement that NO
+// surface served the symbol, which a purpose enum cannot represent.
+inline constexpr std::string_view kArmDropped = "dropped";
+
+[[nodiscard]] inline constexpr std::string_view arm_name(SurfacePurpose p) noexcept {
+  switch (p) {
+  case SurfacePurpose::MarketMark:
+    return "mark";
+  case SurfacePurpose::Risk:
+    return "risk";
+  }
+  return "unknown";
+}
+
+// Bumped whenever a field CHANGES MEANING or is removed. Adding a field keeps
+// the version: a consumer keyed on `schema_version` must be able to read a
+// newer document it does not fully understand rather than refuse it.
+inline constexpr int kArmCensusSchemaVersion = 1;
+inline constexpr std::string_view kArmCensusSchemaName = "atx-vol.chain-export.arm-census";
+
+// One symbol's served-arm receipt.
+//
+// `reason` carries the SAME string the human census prints — for a rejected
+// risk arm that is the fitter's rejection line with its `admission=`, `carry=`,
+// `inversion=` and butterfly/calendar slack terms intact. It is empty when
+// there is nothing to report, never absent: a consumer reads one type per field
+// on every record.
+struct ArmCensusRecord {
+  std::string symbol;
+  std::string arm;              // "risk" | "mark" | "dropped"
+  std::string curve;            // ServedCurveTally::describe() of the SERVED surface
+  std::size_t fitted_slices{0}; // slices that tally counted
+  std::size_t rows{0};          // rows this symbol contributed to the Parquet
+  std::string drop_reason;      // the DropReason spelling; empty while served
+  std::string reason;           // rejection / drop detail; empty when none
+  bool risk_rejected{false};    // the risk fit erred, whatever ended up serving
+  bool config_from_db{false};   // false => the Populate-preset fallback config
+};
+
+struct ArmCensus {
+  std::string serve_mode;
+  std::string time_convention;
+  std::string date;
+  std::string out_path;
+  std::vector<ArmCensusRecord> symbols;
+};
+
+// JSON string-body escape (RFC 8259 §7). Bytes >= 0x80 pass through unchanged,
+// which is correct for the UTF-8 the inputs already are; every C0 control gets
+// a `\u00XX` form because the seven short escapes do not cover them all.
+[[nodiscard]] inline std::string json_escape(std::string_view s) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(s.size() + 8u);
+  for (const char c : s) {
+    switch (c) {
+    case '"':
+      out += "\\\"";
+      break;
+    case '\\':
+      out += "\\\\";
+      break;
+    case '\b':
+      out += "\\b";
+      break;
+    case '\f':
+      out += "\\f";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    case '\r':
+      out += "\\r";
+      break;
+    case '\t':
+      out += "\\t";
+      break;
+    default:
+      if (static_cast<unsigned char>(c) < 0x20u) {
+        out += "\\u00";
+        out += kHex[(static_cast<unsigned char>(c) >> 4u) & 0x0Fu];
+        out += kHex[static_cast<unsigned char>(c) & 0x0Fu];
+      } else {
+        out += c;
+      }
+      break;
+    }
+  }
+  return out;
+}
+
+// Render the receipt. Hand-rolled rather than pulled through a JSON dependency
+// because the document is a fixed shape of ten scalar keys plus one array, and
+// the only hazard — an unescaped quote or newline arriving inside a fitter
+// rejection string — is what `json_escape` above is pinned against.
+//
+// Key ORDER is stable, and the three arm counts are derived HERE rather than
+// passed in, so a caller cannot publish a total that disagrees with the records
+// beneath it.
+[[nodiscard]] inline std::string render_arm_census(const ArmCensus &census) {
+  const auto str = [](std::string_view key, std::string_view value) {
+    return "\"" + std::string(key) + "\": \"" + json_escape(value) + "\"";
+  };
+  const auto num = [](std::string_view key, std::size_t value) {
+    return "\"" + std::string(key) + "\": " + std::to_string(value);
+  };
+
+  std::size_t n_risk = 0;
+  std::size_t n_mark = 0;
+  std::size_t n_dropped = 0;
+  for (const ArmCensusRecord &r : census.symbols) {
+    if (r.arm == arm_name(SurfacePurpose::Risk)) {
+      ++n_risk;
+    } else if (r.arm == arm_name(SurfacePurpose::MarketMark)) {
+      ++n_mark;
+    } else {
+      ++n_dropped;
+    }
+  }
+
+  std::string out = "{\n";
+  out += "  " + str("schema", kArmCensusSchemaName) + ",\n";
+  out += "  \"schema_version\": " + std::to_string(kArmCensusSchemaVersion) + ",\n";
+  out += "  " + str("serve_mode", census.serve_mode) + ",\n";
+  out += "  " + str("time_convention", census.time_convention) + ",\n";
+  out += "  " + str("date", census.date) + ",\n";
+  out += "  " + str("out", census.out_path) + ",\n";
+  out += "  " + num("symbols_requested", census.symbols.size()) + ",\n";
+  out += "  " + num("served_risk", n_risk) + ",\n";
+  out += "  " + num("served_mark", n_mark) + ",\n";
+  out += "  " + num("dropped", n_dropped) + ",\n";
+  out += "  \"symbols\": [\n";
+  for (std::size_t i = 0; i < census.symbols.size(); ++i) {
+    const ArmCensusRecord &r = census.symbols[i];
+    out += "    {";
+    out += str("symbol", r.symbol) + ", ";
+    out += str("arm", r.arm) + ", ";
+    out += str("curve", r.curve) + ", ";
+    out += num("fitted_slices", r.fitted_slices) + ", ";
+    out += num("rows", r.rows) + ", ";
+    out += "\"risk_rejected\": " + std::string(r.risk_rejected ? "true" : "false") + ", ";
+    out += "\"config_from_db\": " + std::string(r.config_from_db ? "true" : "false") + ", ";
+    out += str("drop_reason", r.drop_reason) + ", ";
+    out += str("reason", r.reason);
+    out += (i + 1u == census.symbols.size()) ? "}\n" : "},\n";
+  }
+  out += "  ]\n";
+  out += "}\n";
+  return out;
+}
+
+// Write the receipt to `path`, creating parent directories the way `--out`
+// does.
+//
+// The stream is CLOSED before its state is read: a `good()` taken while the
+// buffer is still unflushed reports success on a receipt that never reached the
+// disk, and a truncated receipt is worse than a missing one because it still
+// parses as a partial document.
+[[nodiscard]] inline atx::core::Status write_arm_census(const std::string &path,
+                                                        const ArmCensus &census) {
+  const std::filesystem::path p{path};
+  if (p.has_parent_path()) {
+    // Ignored deliberately: an already-present directory is reported as an
+    // error here on some platforms, and the open below is the real verdict.
+    std::error_code ec;
+    std::filesystem::create_directories(p.parent_path(), ec);
+  }
+  std::ofstream f(p, std::ios::binary | std::ios::trunc);
+  if (!f) {
+    return atx::core::Err(ErrorCode::IoError,
+                          "--arm-census '" + path + "': cannot open for writing");
+  }
+  const std::string text = render_arm_census(census);
+  f.write(text.data(), static_cast<std::streamsize>(text.size()));
+  f.close();
+  if (!f) {
+    return atx::core::Err(ErrorCode::IoError, "--arm-census '" + path + "': write failed");
+  }
+  return atx::core::Ok();
 }
 
 } // namespace atx::vol::chainexport

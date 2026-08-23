@@ -10,11 +10,13 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -1044,6 +1046,258 @@ TEST(ChainExport, TheUnpinnedDefaultPathStillServesItsAutoRoutedFamily) {
   const ce::ServedCurveTally tally = serve_and_tally(chain, cfg);
   EXPECT_GE(tally.total(), 1u) << "nothing served";
   EXPECT_EQ(tally.count(VolCurveKind::SplineVol), 0u) << "served: " << tally.describe();
+}
+
+// ── --serve: the arm is an INSTRUCTION, not an inference ────────────────────
+//
+// `arm_plan` is the entire routing rule, so the pin that matters most is the
+// one below on `Auto`: it must reproduce the driver's pre-flag ladder term for
+// term, or an "unchanged default" claim is false.
+
+TEST(ChainExport, ServeModeSpellingsRoundTripThroughOneTable) {
+  const std::pair<const char *, ce::ServeMode> cases[] = {
+      {"auto", ce::ServeMode::Auto}, {"mark", ce::ServeMode::Mark}, {"risk", ce::ServeMode::Risk}};
+  for (const auto &[text, mode] : cases) {
+    const atx::core::Result<ce::ServeMode> parsed = ce::parse_serve_mode(text);
+    ASSERT_TRUE(parsed.has_value()) << text << ": " << parsed.error().to_string();
+    EXPECT_EQ(*parsed, mode) << text;
+    EXPECT_EQ(ce::serve_mode_name(mode), std::string_view(text));
+  }
+}
+
+TEST(ChainExport, ServeModeUnrecognizedValueIsInvalidArgumentNotASilentAuto) {
+  // The whole point of the flag is that the served arm is STATED. A typo that
+  // fell back to `auto` would publish mixed-arm rows under a single-arm label.
+  for (const char *bad : {"", "AUTO", "Mark", "risky", "market", "auto ", "both"}) {
+    const atx::core::Result<ce::ServeMode> parsed = ce::parse_serve_mode(bad);
+    ASSERT_FALSE(parsed.has_value()) << "accepted '" << bad << "'";
+    EXPECT_EQ(parsed.error().code(), atx::core::ErrorCode::InvalidArgument) << bad;
+  }
+}
+
+TEST(ChainExport, ServeAutoReproducesTheDriversPreFlagArmLadder) {
+  // The pre-flag driver, verbatim: the risk arm is attempted iff the fit did
+  // not already report it rejected, and the mark arm remains the fallback on
+  // any path that yields no valuation.
+  const ce::ArmPlan admitted = ce::arm_plan(ce::ServeMode::Auto, /*risk_rejected=*/false);
+  EXPECT_TRUE(admitted.attempt_risk);
+  EXPECT_TRUE(admitted.attempt_mark);
+
+  const ce::ArmPlan rejected = ce::arm_plan(ce::ServeMode::Auto, /*risk_rejected=*/true);
+  EXPECT_FALSE(rejected.attempt_risk);
+  EXPECT_TRUE(rejected.attempt_mark);
+}
+
+TEST(ChainExport, ServeMarkNeverConsultsTheRiskArm) {
+  for (const bool rejected : {false, true}) {
+    const ce::ArmPlan plan = ce::arm_plan(ce::ServeMode::Mark, rejected);
+    EXPECT_FALSE(plan.attempt_risk) << "risk_rejected=" << rejected;
+    EXPECT_TRUE(plan.attempt_mark) << "risk_rejected=" << rejected;
+  }
+}
+
+TEST(ChainExport, ServeRiskNeverFallsBackToTheMarkArm) {
+  // A silent mark fallback under `--serve risk` is exactly the confound this
+  // flag removes: the mark interpolant is quote-exact and scores BETTER against
+  // the vendor, so one substituted symbol makes a risk-arm measurement lie.
+  const ce::ArmPlan admitted = ce::arm_plan(ce::ServeMode::Risk, /*risk_rejected=*/false);
+  EXPECT_TRUE(admitted.attempt_risk);
+  EXPECT_FALSE(admitted.attempt_mark);
+
+  const ce::ArmPlan rejected = ce::arm_plan(ce::ServeMode::Risk, /*risk_rejected=*/true);
+  EXPECT_FALSE(rejected.attempt_risk);
+  EXPECT_FALSE(rejected.attempt_mark); // nothing left to serve => the symbol drops
+}
+
+// ── --arm-census: the sidecar schema ────────────────────────────────────────
+
+TEST(ChainExport, ArmNamesCoverBothPurposesAndDroppedIsNotOneOfThem) {
+  EXPECT_EQ(ce::arm_name(atx::vol::SurfacePurpose::Risk), "risk");
+  EXPECT_EQ(ce::arm_name(atx::vol::SurfacePurpose::MarketMark), "mark");
+  EXPECT_EQ(ce::kArmDropped, "dropped");
+  EXPECT_NE(ce::kArmDropped, ce::arm_name(atx::vol::SurfacePurpose::Risk));
+  EXPECT_NE(ce::kArmDropped, ce::arm_name(atx::vol::SurfacePurpose::MarketMark));
+}
+
+// The fitter's own rejection line, copied from a real 2026-08-14 run. Carried
+// verbatim into the sidecar so a scorecard reads the SAME reason the operator
+// census printed -- `admission=`, the butterfly/calendar slacks, `carry=` and
+// `inversion=` included.
+constexpr std::string_view kRealRejection =
+    "risk surface rejected: model=convex-dense mask=2096 admission=ok admission_failed=none "
+    "butterfly=2 butterfly_slack=0.000000 butterfly_k=0.020833 butterfly_slice=23 "
+    "slopes=-0.456954/-0.456954 calendar=5 calendar_slack=0.000000 calendar_k=0.437500 "
+    "calendar_slice=21 calendar_w=0.038857/0.038857 finite=0 first_k=0.000000 first_slice=0 "
+    "carry=failed inversion=ok";
+
+[[nodiscard]] ce::ArmCensus three_arm_census() {
+  ce::ArmCensus census;
+  census.serve_mode = "auto";
+  census.time_convention = "calendar365";
+  census.date = "2026-08-14";
+  census.out_path = "C:/tmp/chain.parquet";
+  census.symbols.push_back(ce::ArmCensusRecord{.symbol = "SPY",
+                                               .arm = "risk",
+                                               .curve = "convex-dense:33",
+                                               .fitted_slices = 33,
+                                               .rows = 12345,
+                                               .drop_reason = "",
+                                               .reason = "",
+                                               .risk_rejected = false,
+                                               .config_from_db = true});
+  census.symbols.push_back(ce::ArmCensusRecord{.symbol = "QQQ",
+                                               .arm = "mark",
+                                               .curve = "linear-variance:34",
+                                               .fitted_slices = 34,
+                                               .rows = 9876,
+                                               .drop_reason = "",
+                                               .reason = std::string(kRealRejection),
+                                               .risk_rejected = true,
+                                               .config_from_db = true});
+  census.symbols.push_back(ce::ArmCensusRecord{.symbol = "KMX",
+                                               .arm = "dropped",
+                                               .curve = "-",
+                                               .fitted_slices = 0,
+                                               .rows = 0,
+                                               .drop_reason = "risk_unserved",
+                                               .reason = std::string(kRealRejection),
+                                               .risk_rejected = true,
+                                               .config_from_db = false});
+  return census;
+}
+
+[[nodiscard]] std::size_t count_occurrences(std::string_view haystack, std::string_view needle) {
+  std::size_t n = 0;
+  for (std::size_t at = haystack.find(needle); at != std::string_view::npos;
+       at = haystack.find(needle, at + needle.size())) {
+    ++n;
+  }
+  return n;
+}
+
+TEST(ChainExport, ArmCensusNamesItsSchemaAndVersion) {
+  // Self-describing, so a receipt found on disk months later says what it is
+  // and a consumer can key on the version rather than sniffing fields.
+  const std::string doc = ce::render_arm_census(three_arm_census());
+  EXPECT_NE(doc.find("\"schema\": \"atx-vol.chain-export.arm-census\""), std::string::npos) << doc;
+  EXPECT_NE(doc.find("\"schema_version\": 1"), std::string::npos) << doc;
+  EXPECT_EQ(ce::kArmCensusSchemaVersion, 1);
+}
+
+TEST(ChainExport, ArmCensusCarriesTheRunsServeModeAndClockAtTopLevel) {
+  // A receipt that cannot be attributed to its run is worse than none: that
+  // misattribution is one of the four misreadings this sidecar exists to end.
+  const std::string doc = ce::render_arm_census(three_arm_census());
+  EXPECT_NE(doc.find("\"serve_mode\": \"auto\""), std::string::npos) << doc;
+  EXPECT_NE(doc.find("\"time_convention\": \"calendar365\""), std::string::npos) << doc;
+  EXPECT_NE(doc.find("\"date\": \"2026-08-14\""), std::string::npos) << doc;
+  EXPECT_NE(doc.find("\"out\": \"C:/tmp/chain.parquet\""), std::string::npos) << doc;
+}
+
+TEST(ChainExport, ArmCensusCountsAreDerivedFromTheRecordsThemselves) {
+  // Derived, never passed in, so a header total cannot disagree with the rows
+  // beneath it.
+  const std::string doc = ce::render_arm_census(three_arm_census());
+  EXPECT_NE(doc.find("\"symbols_requested\": 3"), std::string::npos) << doc;
+  EXPECT_NE(doc.find("\"served_risk\": 1"), std::string::npos) << doc;
+  EXPECT_NE(doc.find("\"served_mark\": 1"), std::string::npos) << doc;
+  EXPECT_NE(doc.find("\"dropped\": 1"), std::string::npos) << doc;
+}
+
+TEST(ChainExport, ArmCensusRecordCarriesTheServedFamilySliceCountAndRejectionReason) {
+  const std::string doc = ce::render_arm_census(three_arm_census());
+  EXPECT_NE(doc.find("\"symbol\": \"QQQ\""), std::string::npos) << doc;
+  EXPECT_NE(doc.find("\"arm\": \"mark\""), std::string::npos) << doc;
+  EXPECT_NE(doc.find("\"curve\": \"linear-variance:34\""), std::string::npos) << doc;
+  EXPECT_NE(doc.find("\"fitted_slices\": 34"), std::string::npos) << doc;
+  EXPECT_NE(doc.find("\"rows\": 9876"), std::string::npos) << doc;
+  EXPECT_NE(doc.find("\"risk_rejected\": true"), std::string::npos) << doc;
+  EXPECT_NE(doc.find("\"drop_reason\": \"risk_unserved\""), std::string::npos) << doc;
+  // The reason string is reproduced WHOLE; a truncated one loses exactly the
+  // terms an operator greps for.
+  EXPECT_EQ(count_occurrences(doc, kRealRejection), 2u) << doc;
+}
+
+TEST(ChainExport, ArmCensusIsAFullDocumentEvenWhenNothingWasDropped) {
+  // "zero dropped" is a MEASUREMENT. A receipt that only appears when something
+  // went wrong cannot state it.
+  ce::ArmCensus census = three_arm_census();
+  census.symbols.resize(1); // SPY, risk-served, clean
+  const std::string doc = ce::render_arm_census(census);
+  EXPECT_NE(doc.find("\"dropped\": 0"), std::string::npos) << doc;
+  EXPECT_NE(doc.find("\"served_risk\": 1"), std::string::npos) << doc;
+  EXPECT_NE(doc.find("\"symbol\": \"SPY\""), std::string::npos) << doc;
+}
+
+TEST(ChainExport, ArmCensusOfAnEmptyUniverseIsStillAWellFormedDocument) {
+  const ce::ArmCensus empty;
+  const std::string doc = ce::render_arm_census(empty);
+  EXPECT_NE(doc.find("\"symbols_requested\": 0"), std::string::npos) << doc;
+  EXPECT_NE(doc.find("\"symbols\": ["), std::string::npos) << doc;
+  EXPECT_NE(doc.find("]"), std::string::npos) << doc;
+}
+
+TEST(ChainExport, JsonEscapeCoversEveryCharacterJsonForbidsRaw) {
+  EXPECT_EQ(ce::json_escape("plain ASCII 0-9 /"), "plain ASCII 0-9 /");
+  EXPECT_EQ(ce::json_escape("a\"b"), "a\\\"b");
+  EXPECT_EQ(ce::json_escape("a\\b"), "a\\\\b");
+  EXPECT_EQ(ce::json_escape("a\nb"), "a\\nb");
+  EXPECT_EQ(ce::json_escape("a\rb"), "a\\rb");
+  EXPECT_EQ(ce::json_escape("a\tb"), "a\\tb");
+  EXPECT_EQ(ce::json_escape("a\bb"), "a\\bb");
+  EXPECT_EQ(ce::json_escape("a\fb"), "a\\fb");
+  EXPECT_EQ(ce::json_escape(std::string_view("a\x01"
+                                             "b",
+                                             3)),
+            "a\\u0001b");
+}
+
+TEST(ChainExport, ArmCensusEscapesAReasonThatWouldOtherwiseBreakTheDocument) {
+  // A fitter message is not a controlled vocabulary. One raw newline or quote
+  // reaching the file turns the receipt into unparseable text -- and the tool
+  // would have reported success writing it.
+  ce::ArmCensus census = three_arm_census();
+  census.symbols.resize(1);
+  census.symbols[0].reason = "said \"no\"\nnext\\line\ttab";
+
+  const std::string doc = ce::render_arm_census(census);
+  EXPECT_NE(doc.find("said \\\"no\\\"\\nnext\\\\line\\ttab"), std::string::npos) << doc;
+  // `{` + ten scalar keys + `"symbols": [` + one record + `]` + `}`: a raw
+  // newline inside a value would add a line, which is exactly the corruption
+  // described above.
+  EXPECT_EQ(count_occurrences(doc, "\n"), 15u) << doc;
+}
+
+TEST(ChainExport, ArmCensusWritesTheRenderedDocumentAndCreatesItsParentDirectory) {
+  const std::filesystem::path dir =
+      std::filesystem::temp_directory_path() / "chain_export_arm_census_dir";
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+  const std::filesystem::path path = dir / "arm_census.json";
+
+  const ce::ArmCensus census = three_arm_census();
+  const atx::core::Status wrote = ce::write_arm_census(path.string(), census);
+  ASSERT_TRUE(wrote.has_value()) << wrote.error().to_string();
+
+  std::ifstream in(path, std::ios::binary);
+  ASSERT_TRUE(in.good());
+  const std::string on_disk((std::istreambuf_iterator<char>(in)),
+                            std::istreambuf_iterator<char>());
+  EXPECT_EQ(on_disk, ce::render_arm_census(census));
+  std::filesystem::remove_all(dir, ec);
+}
+
+TEST(ChainExport, ArmCensusWriteReportsAnUnopenablePathRatherThanClaimingSuccess) {
+  // A silently-skipped receipt is the failure mode the sidecar exists to
+  // prevent, so the run must hear about it.
+  const std::filesystem::path dir =
+      std::filesystem::temp_directory_path() / "chain_export_arm_census_isdir";
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  const atx::core::Status wrote = ce::write_arm_census(dir.string(), three_arm_census());
+  ASSERT_FALSE(wrote.has_value());
+  EXPECT_EQ(wrote.error().code(), atx::core::ErrorCode::IoError);
+  std::filesystem::remove_all(dir, ec);
 }
 
 } // namespace
