@@ -62,10 +62,24 @@
 // been attributed to it yet; it is the first place to look if a voltime run
 // disagrees with the vendor by more than the discounting bound above.
 //
+// ## WHICH ARM SERVED (`--serve`, `--arm-census`)
+//
+// Each symbol is served off ONE of two surfaces: the parametric RISK arm, or
+// the quote-exact `LinearVariance` MARK interpolant that answers when risk
+// admission rejects. Because the mark arm is quote-exact it scores BETTER
+// against a vendor than an arbitrage-free risk surface does, so a change that
+// improves surface geometry can flip a symbol from mark to risk and make the
+// run look worse. `--serve auto|mark|risk` makes the choice an instruction
+// (`auto` is the historical routing and the default), and `--arm-census
+// <path.json>` writes the per-symbol receipt a scorecard groups on. The full
+// argument, and the four misreadings that motivated both, live beside
+// `ce::ServeMode` in tools/chain_export.hpp.
+//
 // ## Exit codes
 //
 //   0  rows were emitted and written
-//   1  a runtime failure (inputs unreadable, Parquet write failed)
+//   1  a runtime failure (inputs unreadable, Parquet write failed, or the
+//      requested --arm-census sidecar could not be written)
 //   2  a usage error (decided before any file is opened)
 //   3  the run completed and produced NOTHING — every symbol failed or the
 //      board was empty. The stderr census names which stage swallowed it.
@@ -163,6 +177,11 @@ struct Args {
   // keeps whatever family its stored SymbolFitConfig / the selector picks, and
   // the run stays bit-identical to one built before this flag existed.
   std::optional<VolCurveKind> pin_curve;
+  // --serve. `Auto` is today's ladder exactly and stays the default, so a
+  // command line built before this flag emits a byte-identical Parquet.
+  ce::ServeMode serve{ce::ServeMode::Auto};
+  // --arm-census. Empty = no sidecar, which is the historical behaviour.
+  std::string arm_census_path;
 };
 
 // Spelling of a convention for the CLI and the census. Exhaustive over the enum
@@ -189,7 +208,8 @@ void usage() {
       "                       [--fit-workers N] [--time-convention calendar365|voltime]\n"
       "                       [--dividends <parquet>] [--fit-workers N]\n"
       "                       [--fit-workers N]\n"
-      "                       [--pin-curve <kind>]\n"
+      "                       [--pin-curve <kind>] [--serve auto|mark|risk]\n"
+      "                       [--arm-census <path.json>]\n"
       "\n"
       "  --hive             OPRA hive v2 root holding date=<YYYY-MM-DD>/data.parquet\n"
       "  --underlier        underlier NBBO hive root holding\n"
@@ -223,6 +243,20 @@ void usage() {
       "                     spline-vol. Unset (default) keeps today's auto-routing.\n"
       "                     A pinned family is a REQUEST: the census reports per symbol\n"
       "                     which family was actually served.\n"
+      "  --serve            which SURFACE ARM serves every symbol (default auto):\n"
+      "                     auto = the risk arm when admission accepts it, else the\n"
+      "                            market mark — today's routing, unchanged;\n"
+      "                     mark = always the LinearVariance market mark; risk\n"
+      "                            admission is not consulted;\n"
+      "                     risk = always the parametric risk arm. A REJECTED symbol\n"
+      "                            is DROPPED and reported, never silently marked —\n"
+      "                            the mark arm is quote-exact and scores better\n"
+      "                            against a vendor, so one silent substitution makes\n"
+      "                            a risk-arm measurement lie.\n"
+      "  --arm-census       write a JSON sidecar naming the served arm, curve family,\n"
+      "                     fitted slice count and rejection reason PER SYMBOL, plus\n"
+      "                     the run's --serve mode and --time-convention. Written even\n"
+      "                     when nothing was dropped.\n"
       "\n"
       "exit: 0 ok | 1 runtime failure | 2 usage | 3 ran but emitted nothing\n",
       stderr);
@@ -378,6 +412,28 @@ void usage() {
         return false;
       }
       args.time_convention = *conv;
+    } else if (flag == "--serve") {
+      // Same shape as --time-convention above, and for the same reason: the
+      // spelling table lives once (chain_export.hpp, where the gate reaches it)
+      // and an unrecognised value is refused rather than folded into the
+      // default. `parse_serve_mode` answers InvalidArgument; the run stops here,
+      // before any file is opened.
+      if (!need_value(value)) {
+        return false;
+      }
+      const Result<ce::ServeMode> serve = ce::parse_serve_mode(value);
+      if (!serve.has_value()) {
+        std::fprintf(stderr, "error: %s\n", std::string(serve.error().message()).c_str());
+        return false;
+      }
+      args.serve = *serve;
+    } else if (flag == "--arm-census") {
+      // Only the PATH is taken here; the sidecar is written after the run, so a
+      // usage error still costs no file I/O.
+      if (!need_value(value)) {
+        return false;
+      }
+      args.arm_census_path = std::string(value);
     } else if (flag == "--pin-curve") {
       if (!need_value(value)) {
         return false;
@@ -490,6 +546,10 @@ enum class DropReason : std::uint8_t {
   ChainFailed,   // the frame installed no usable underlying
   FitFailed,     // PricerFitter::fit returned an error
   ValueFailed,   // no surface could price the board
+  // `--serve risk` only: the risk arm did not serve and the mark arm is not a
+  // permitted substitute. A DROP is the whole point — the pre-flag ladder would
+  // have marked this symbol and made a risk-arm measurement unreadable.
+  RiskUnserved,
 };
 
 [[nodiscard]] const char *drop_reason_name(DropReason r) noexcept {
@@ -506,6 +566,8 @@ enum class DropReason : std::uint8_t {
     return "fit_failed";
   case DropReason::ValueFailed:
     return "value_failed";
+  case DropReason::RiskUnserved:
+    return "risk_unserved";
   }
   return "unknown";
 }
@@ -685,7 +747,7 @@ void emit_board_rows(const OptionChain &chain, const VolaSession &session,
 // book, and writes only its own result slot.
 void export_symbol(atx::vol::OpraBatchEntry &entry, const SurfaceDb *db,
                    const UnderlierBook &feed, const SymbolFitConfig &fallback_cfg,
-                   const std::optional<VolCurveKind> &pin_curve,
+                   const std::optional<VolCurveKind> &pin_curve, ce::ServeMode serve,
                    const std::string &date_stamp, unsigned inner_threads, SymbolResult &out) {
   out.symbol = entry.symbol;
   out.index_namespace = ce::is_cash_settled_index_root(entry.symbol);
@@ -744,18 +806,31 @@ void export_symbol(atx::vol::OpraBatchEntry &entry, const SurfaceDb *db,
 
   constexpr OutputField kFields =
       OutputField::ModelPrice | OutputField::ModelIV | OutputField::Greeks;
-  // Default-purpose FIRST (fail-closed: a config requesting Risk is answered by
-  // the admitted risk surface or not at all). A rejected risk surface is not a
-  // reason to lose the whole board, so the mark interpolant is the explicit,
-  // COUNTED second attempt rather than a silent substitution.
+  // WHICH ARM serves, decided by `--serve` and nothing else. Under `Auto` this
+  // is the pre-flag ladder term for term (see ce::arm_plan): default-purpose
+  // FIRST — fail-closed, so a config requesting Risk is answered by the
+  // admitted risk surface or not at all — and the mark interpolant as the
+  // explicit, COUNTED second attempt rather than a silent substitution, because
+  // a rejected risk surface is not a reason to lose the whole board.
+  //
+  // `Risk` asks for the risk surface BY PURPOSE rather than through the
+  // default-purpose accessor: a symbol whose stored config requests mark output
+  // would otherwise be served off the mark under a `--serve risk` label, which
+  // is the misattribution this flag exists to end.
+  const ce::ArmPlan plan = ce::arm_plan(serve, out.risk_fit_rejected);
   Result<ChainValuation> valuation =
       atx::core::Err(ErrorCode::Unavailable, "risk surface rejected; mark attempted");
   const atx::vol::FittedSurface *surface = nullptr;
-  if (!out.risk_fit_rejected) {
-    valuation = fitter.value_chain(*chain, kFields, inner_threads);
-    surface = fitter.surface();
+  if (plan.attempt_risk) {
+    if (serve == ce::ServeMode::Risk) {
+      valuation = fitter.value_chain(*chain, kFields, SurfacePurpose::Risk, inner_threads);
+      surface = fitter.risk_surface();
+    } else {
+      valuation = fitter.value_chain(*chain, kFields, inner_threads);
+      surface = fitter.surface();
+    }
   }
-  if (!valuation.has_value()) {
+  if (!valuation.has_value() && plan.attempt_mark) {
     valuation = fitter.value_chain(*chain, kFields, SurfacePurpose::MarketMark, inner_threads);
     surface = fitter.market_mark_surface();
     if (valuation.has_value()) {
@@ -763,9 +838,15 @@ void export_symbol(atx::vol::OpraBatchEntry &entry, const SurfaceDb *db,
     }
   }
   if (!valuation.has_value() || surface == nullptr) {
-    out.drop = DropReason::ValueFailed;
-    out.detail = valuation.has_value() ? "no served surface to read carry from"
-                                       : std::string(valuation.error().message());
+    const bool risk_only = serve == ce::ServeMode::Risk;
+    out.drop = risk_only ? DropReason::RiskUnserved : DropReason::ValueFailed;
+    // A `--serve risk` drop keeps the ADMISSION reason the fit already recorded:
+    // the placeholder below would erase exactly the string this flag exists to
+    // expose (`admission=`, `carry=`, `inversion=`, the arb slacks).
+    if (!(risk_only && out.risk_fit_rejected)) {
+      out.detail = valuation.has_value() ? "no served surface to read carry from"
+                                         : std::string(valuation.error().message());
+    }
     return;
   }
 
@@ -891,20 +972,18 @@ private:
 
 // ── The census ──────────────────────────────────────────────────────────────
 
-[[nodiscard]] const char *purpose_name(SurfacePurpose p) noexcept {
-  switch (p) {
-  case SurfacePurpose::MarketMark:
-    return "mark";
-  case SurfacePurpose::Risk:
-    return "risk";
-  }
-  return "unknown";
+// The arm each symbol was served off, in the ONE spelling the sidecar
+// publishes (chain_export.hpp) — a second table here is how a census line and a
+// machine-readable receipt come to disagree about the same run.
+[[nodiscard]] std::string_view served_arm_name(const SymbolResult &r) noexcept {
+  return r.drop == DropReason::None ? ce::arm_name(r.served_purpose) : ce::kArmDropped;
 }
 
 void print_census(const std::vector<SymbolResult> &results, const ce::ExportCensus &census,
                   const OpraBatchResult &batch, TimeConvention time_convention,
-                  const ce::DividendCensus &divs, const std::optional<VolCurveKind> &pin_curve,
-                  double load_s, double fit_s, double write_s) {
+                  ce::ServeMode serve, const ce::DividendCensus &divs,
+                  const std::optional<VolCurveKind> &pin_curve, double load_s, double fit_s,
+                  double write_s) {
 
   std::size_t n_ok = 0;
   std::size_t n_from_db = 0;
@@ -915,8 +994,9 @@ void print_census(const std::vector<SymbolResult> &results, const ce::ExportCens
   std::size_t n_carry_failed = 0;
   ce::ServedCurveTally served_all;
   std::size_t n_off_pin = 0; // symbols served with ANY slice off the pinned family
-  // Sized off the enum so a new reason cannot silently overflow the histogram.
-  std::array<std::size_t, static_cast<std::size_t>(DropReason::ValueFailed) + 1> by_reason{};
+  // Sized off the LAST enumerator so a new reason cannot silently overflow the
+  // histogram — adding one means naming it here.
+  std::array<std::size_t, static_cast<std::size_t>(DropReason::RiskUnserved) + 1> by_reason{};
   for (const SymbolResult &r : results) {
     n_carry_failed += r.n_carry_solve_failed;
     served_all.merge(r.served_curves);
@@ -945,6 +1025,12 @@ void print_census(const std::vector<SymbolResult> &results, const ce::ExportCens
   // clock, so this line is the only record of which one produced the file.
   std::fprintf(stderr, "time convention         %s  (every Chain::T in this file)\n",
                time_convention_name(time_convention));
+  // Provenance for the same reason: the Parquet carries no column naming which
+  // ARM produced a row, and a mark-served row and a risk-served row are not
+  // comparable evidence.
+  const std::string_view serve_name = ce::serve_mode_name(serve);
+  std::fprintf(stderr, "serve mode              %.*s  (which arm served every symbol)\n",
+               static_cast<int>(serve_name.size()), serve_name.data());
   std::fprintf(stderr, "rows written            %zu\n", census.rows);
   std::fprintf(stderr, "symbols requested       %zu\n", results.size());
   std::fprintf(stderr, "  fitted + priced       %zu\n", n_ok);
@@ -974,8 +1060,10 @@ void print_census(const std::vector<SymbolResult> &results, const ce::ExportCens
   }
   for (const SymbolResult &r : results) {
     if (r.drop == DropReason::None) {
-      std::fprintf(stderr, "    %-10s %-5s %s\n", r.symbol.c_str(),
-                   purpose_name(r.served_purpose), r.served_curves.describe().c_str());
+      const std::string_view arm = served_arm_name(r);
+      std::fprintf(stderr, "    %-10s %-5.*s %s\n", r.symbol.c_str(),
+                   static_cast<int>(arm.size()), arm.data(),
+                   r.served_curves.describe().c_str());
     }
   }
   for (std::size_t i = 1; i < by_reason.size(); ++i) {
@@ -1042,6 +1130,39 @@ void print_census(const std::vector<SymbolResult> &results, const ce::ExportCens
   std::fprintf(stderr, "────────────────────────────────────────────────────────\n");
 }
 
+// The same facts `print_census` prints, as records a scorecard can GROUP BY.
+//
+// One record per REQUESTED symbol, dropped ones included — a receipt that lists
+// only what survived cannot answer "which names left the comparison, and why",
+// which is the question a mark/risk before-after actually turns on. Nothing is
+// derived here beyond the arm spelling; the counts are computed inside
+// `render_arm_census` so a header total cannot disagree with its records.
+[[nodiscard]] ce::ArmCensus build_arm_census(const std::vector<SymbolResult> &results,
+                                             const Args &args) {
+  ce::ArmCensus out;
+  out.serve_mode = std::string(ce::serve_mode_name(args.serve));
+  out.time_convention = time_convention_name(args.time_convention);
+  out.date = args.date;
+  out.out_path = args.out_path;
+  out.symbols.reserve(results.size());
+  for (const SymbolResult &r : results) {
+    out.symbols.push_back(ce::ArmCensusRecord{
+        .symbol = r.symbol,
+        .arm = std::string(served_arm_name(r)),
+        .curve = r.served_curves.describe(),
+        .fitted_slices = r.served_curves.total(),
+        .rows = r.n_rows_emitted,
+        .drop_reason = r.drop == DropReason::None ? std::string() : drop_reason_name(r.drop),
+        // The fitter's own rejection line, verbatim — `admission=`, `carry=`,
+        // `inversion=` and the butterfly/calendar slacks are what an operator
+        // greps, so a summarised copy here would be a second, weaker table.
+        .reason = r.detail,
+        .risk_rejected = r.risk_fit_rejected,
+        .config_from_db = r.config_from_db});
+  }
+  return out;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1060,6 +1181,14 @@ int main(int argc, char **argv) {
   // which clock it was asked for — the census at the end only reaches a run that
   // survived the loader.
   std::fprintf(stderr, "time convention: %s\n", time_convention_name(args.time_convention));
+  // Same contract as the line above: the RESOLVED mode, before any input is
+  // opened, so every run that gets past argv says which arm it was asked to
+  // serve — the census at the end only reaches a run that survived the loader.
+  {
+    const std::string_view serve_name = ce::serve_mode_name(args.serve);
+    std::fprintf(stderr, "serve mode: %.*s\n", static_cast<int>(serve_name.size()),
+                 serve_name.data());
+  }
   // SR-DIVS: the discrete cash-dividend schedule, read FIRST — before the
   // underlier feed, the SurfaceDb and the board — because it is pure input
   // validation and a malformed file should cost no I/O at all. A defect here is
@@ -1176,7 +1305,7 @@ int main(int argc, char **argv) {
         // surface_db_populate applies to its fit workers.
         try {
           export_symbol(batch->entries[i], &db.value(), *feed, fallback_cfg, args.pin_curve,
-                        date_stamp, inner_threads, results[i]);
+                        args.serve, date_stamp, inner_threads, results[i]);
         } catch (const std::exception &e) {
           results[i].symbol = batch->entries[i].symbol;
           results[i].drop = DropReason::FitFailed;
@@ -1212,8 +1341,26 @@ int main(int argc, char **argv) {
   }
 
   const ce::ExportCensus &census = writer.census();
-  print_census(results, census, *batch, args.time_convention, div_census, args.pin_curve,
-               load_s, fit_s, write_s);
+  print_census(results, census, *batch, args.time_convention, args.serve, div_census,
+               args.pin_curve, load_s, fit_s, write_s);
+
+  // The machine-readable half of the census. Written even when nothing dropped
+  // and even when the run emitted no rows at all: "zero dropped" and "every
+  // symbol dropped, here is why" are both measurements, and a receipt that only
+  // appears on trouble can state neither. A failure to write it is a RUNTIME
+  // failure — the sidecar is what lets a scorecard group by served arm, so
+  // silently skipping it re-creates the confound this lane removes.
+  bool arm_census_ok = true;
+  if (!args.arm_census_path.empty()) {
+    const Status wrote =
+        ce::write_arm_census(args.arm_census_path, build_arm_census(results, args));
+    if (!wrote.has_value()) {
+      std::fprintf(stderr, "error: %s\n", std::string(wrote.error().message()).c_str());
+      arm_census_ok = false;
+    } else {
+      std::fprintf(stderr, "arm census -> %s\n", args.arm_census_path.c_str());
+    }
+  }
 
   // A run that emitted nothing, or one whose write failed, must leave NO file:
   // the stream was opened up front, so what is on disk is an empty or
@@ -1226,7 +1373,7 @@ int main(int argc, char **argv) {
     std::fputs("error: the run produced no rows\n", stderr);
     return kExitNothingEmitted;
   }
-  if (!write_ok) {
+  if (!write_ok || !arm_census_ok) {
     return kExitRuntime;
   }
   std::fprintf(stderr, "wrote %zu rows in %lld row groups -> %s\n", census.rows,
