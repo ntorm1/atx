@@ -42,12 +42,26 @@ def snapshot_suffix(date: str, bucket: str) -> str:
     return et.astimezone(dt.UTC).strftime("T%H:%M:%SZ")
 
 
+# Lines a zero-exit run must NEVER swallow. chain-export reports a symbol it
+# could not build -- a missing hive cell, an OSI root that disagrees with its
+# own `underlying` column -- as a counted `dropped:` census entry and STILL
+# exits 0, because dropping one symbol out of many is not a failure of the run.
+# If this wrapper prints only on non-zero exit that census is invisible, and the
+# scorecard's inner join then silently narrows the cohort to whatever survived.
+# A 140-name run came back scoring 130 that way, with nothing anywhere saying so.
+_LOUD = ("dropped:", "load_failed", "REJECTED")
+
+
 def run(cmd: list[str], what: str) -> None:
     print(f"  $ {what}", flush=True)
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         sys.stderr.write(r.stdout[-4000:] + "\n" + r.stderr[-4000:] + "\n")
         raise SystemExit(f"FAILED ({r.returncode}): {what}")
+    for ln in r.stdout.splitlines():
+        s = ln.strip()
+        if any(m in s for m in _LOUD):
+            print(f"      ! {s}", flush=True)
 
 
 def main(argv=None) -> int:

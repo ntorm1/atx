@@ -256,6 +256,20 @@ def main(argv=None) -> int:
 
     print(f"chain rows {ours.height} | vendor rows {vendor.height} | joined {n_all} "
           f"| two-sided {n_q} ({100.0 * n_q / max(n_all, 1):.1f}%)")
+
+    # RECONCILE WHAT WAS ASKED FOR AGAINST WHAT GOT SCORED. Every join here is
+    # an INNER one, so a symbol that chain-export dropped, or that the store
+    # does not carry, simply is not in `pop` -- and every number below is then a
+    # real, correct figure for a population nobody chose. This is not
+    # hypothetical: a 140-name run reported 130 names and read as complete,
+    # because chain-export exits 0 when it drops a symbol it could not build.
+    scored = set(pop['underlier'].unique().to_list())
+    unscored = sorted(set(syms) - scored) if syms else []
+    if unscored:
+        print(f"WARNING: {len(unscored)} of {len(syms)} requested symbols scored "
+              f"NO rows and are absent from every number below: "
+              f"{', '.join(unscored)}", file=sys.stderr)
+
     print(f"scoring population: {scope} -> {pop.height} contracts\n")
 
     overall = stats(pop)
@@ -288,6 +302,7 @@ def main(argv=None) -> int:
                    "label": a.label, "date": a.date, "bucket_et": a.bucket,
                    "chain": str(a.chain), "scope": scope,
                    "rows_joined": n_all, "rows_two_sided": n_q,
+            "symbols_requested": sorted(syms), "symbols_unscored": unscored,
                    "rows_scored": pop.height, "overall": overall, **bands}
         a.out.parent.mkdir(parents=True, exist_ok=True)
         a.out.write_text(json.dumps(receipt, indent=2))
