@@ -73,9 +73,11 @@ Three readings follow, and they are not the same story:
    fastest in every one of 5 reps)". The same doc at `:229` says **"No default
    changes here"**, and L1 established the reason (below): this is not free.
 2. **American greeks are 3x to 9.6x off the AAD-implied cost model — the single
-   largest performance gap in the library.** It still pays 5 boundary solves +
-   13 price evaluations per bundle by finite difference
-   (`american_greeks_avx2.cpp:149-197`).
+   largest performance gap in the library.** Counted from the call sites by L5
+   (correcting an earlier "5 solves + 13 evals" estimate in this plan): the
+   adjoint path pays **3 boundary solves** (1 taped + 2 cold sigma-plus/minus for
+   volga), **2 tangent passes**, and **15 price evaluations** off a boundary
+   (5 spot-stencil + 2 vega + 2 rho + 4 vanna + 2 volga).
 3. **The AVX2 boundary kernel is leaving a documented 20-30% on the table**
    because the sweep-invariant geometry hoist the *scalar* path already has
    (`american.cpp:1032-1068`, `american_boundary.hpp:160-172`) was never ported
@@ -154,6 +156,40 @@ Owns `src/pricing/american.cpp`, `american_boundary*.hpp`, `boundary_interp.cpp`
 Owns `src/pricing/american_discrete_div.cpp`, `dividend.cpp`, and the pricing
 route inside `src/fitting/pricer_fitter.cpp`.
 
+**L2 OUTCOME — the wiring point moved, on a measurement.** The lattice cannot go
+where this section assumed. Measured per contract on the `dev` preset (ratios are
+the signal; the release AL band is 32.6 us):
+
+| route | us | x AL price |
+|---|---:|---:|
+| Andersen-Lake price, cold | 383 | 1.00 |
+| Andersen-Lake **implied vol** | 934 | 2.44 |
+| V&N lattice price, 301 steps | 1,276 | 3.33 |
+| **V&N implied vol, 301 steps** (15 solves) | **15,771** | **41.2** |
+| V&N implied vol, 101 steps | 1,892 | 4.94 |
+
+**The lattice inversion is 16.9x the AL inversion.** The only production pricing
+route inside L2's file ownership is `deamer.cpp`'s de-Americanization
+*inversion* — exactly where the measurement says the lattice must not go. A
+whole-board fit already spends 133 s on ~1.5M inversions and the dividend-bearing
+subset (42.1% of rows) only halves that. **Cutting steps is not a throughput
+lever either**: truncation against a 1201-step reference is 6.79 / 4.89 / 2.55
+ticks at 101 / 151 / 301 steps, and 6.79 ticks is the size of the entire 6.96-tick
+accuracy claim. Wiring it there would knowingly ship a 17x regression on the
+fit's hot path.
+
+**The affordable wiring point is the MARK path** — `session.cpp:2003/2010`
+(`american_price_cached` / `american_price`) and `projection.cpp:773`: one price
+per contract at 3.33x AL, i.e. ~109 us/contract against the 32.6 us band audit,
+about 86 s serial over the dividend-bearing subset of a 1.38M-contract board.
+Those files sit outside L2's ownership; this is now a scheduled follow-up, not a
+loose end. What L2 shipped instead is the decision itself: `discrete_div_route` /
+`DiscreteDivPolicy` / `DiscreteDivRoute` (`dividend.hpp:226-310`) — made once,
+explicit, switchable on one enum, observable, and reusing `forward_div_corrected`'s
+instant window byte-for-byte so both routes price the same cash. The decision is
+worth **10.61 ticks on an ATM call and 54.59 on the put**, same lattice, same step
+count on both sides.
+
 1. **The measured 20x win is implemented and unwired.** `american.hpp:704-710`
    records: on 9,155 SPY rows with `ddiv > 0`, escrowing costs **142.60 ticks**
    of price MAE where the Vellekoop-Nieuwenhuis spliced lattice costs **6.96**
@@ -176,6 +212,30 @@ route inside `src/fitting/pricer_fitter.cpp`.
    It is documented as intentional because admitting it "made agreement with the
    vendor mark strictly worse" — that is evidence about the vendor, not about
    the option.
+
+   **CORRECTED BY L2 — the omission did not remove American call exercise.** The
+   plain American max at the step *below* the ex-step already recovered it one
+   `dt` late, so the lattice converged from below with an **O(dt) bias** rather
+   than missing the feature outright. The fix is real and smaller than stated
+   above: error against an exact reference goes **-1.4539e-2 -> -2.1011e-3 at
+   301 steps (6.9x)**, -6.0211e-3 -> -1.3008e-3 at 601, -2.7829e-3 -> -9.4645e-4
+   at 1201. On the *terminal* step nothing could recover it, and there the effect
+   is absolute: a dividend on an American call's own expiry now moves its price
+   by **exactly 0** (was 0.0241).
+
+   L2 also declined to validate against Roll-Geske-Whaley, correctly: RGW is
+   exact for the **escrowed** model, so using it as the oracle would have
+   conflated the model gap with the bug. It built an exact reference for the same
+   model instead — one dividend gives the closed decomposition
+   `e^{-r*t1} * E[max(S_t1 - K, C_BS(S_t1 - D, T - t1))]`, quadrature plus
+   Black-Scholes — and pinned RGW's 0.1037 offset separately as a model gap.
+   Every American **put** anchor in the suite is bit-unchanged, which is the
+   check that isolates this fix from the next one.
+
+   The vendor-agreement claim could not be re-measured in this lane (no licensed
+   corpus). What is established is that the header's *justification* was
+   structurally wrong: it cited vendor agreement against a classical
+   no-arbitrage result.
 3. **`splice_dividend` flat-clamps continuation at the grid bottom.**
    `american_discrete_div.cpp:117` `if (post <= lo) cont = value[0];` fires on
    the low nodes at every splice with `amount > 0`. The American put's exercise
@@ -185,9 +245,34 @@ route inside `src/fitting/pricer_fitter.cpp`.
    exact answer is `K*e^{-rT} = 97.044553355`; the 0.897723 deficit equals
    `level[0]*e^{-r*0.900332}` to the last digit. **The pinned test value is the
    artifact.**
+
+   **L2 outcome: confirmed** — the pin is now `97.04455335484883` against an
+   exact `K*e^{-rT} = 97.044553354850808` (2e-12). And the defect is
+   **early-ex-date, not big-dividend**: corner nodes carry weight ~`(1-p)^k` at
+   step k, so a tau=0.5 ex-date hides it at machine precision in *both*
+   directions. L2's first parity test therefore measured nothing and was
+   rewritten. At tau=0.05: **3.2922e-03 -> 1.9966e-12** (D=6) and
+   **9.9558e-02 -> 4.9613e-05** (D=12, where the residual is the zero floor — a
+   model statement, not an error). Six-dividend parity 5.222871e-05 ->
+   5.1823e-05, with the European call and put moving 6.4e-8 / 3.4e-7 *toward*
+   each other, the direction the geometry requires.
 4. `dP/dD_i` collapses to the European forward-delta chain
    (`american.cpp:3788-3801`), so two schedules with equal PV and different
    timing get identical dividend sensitivities.
+
+   **L2 outcome: shipped on the lattice path, and the demonstration is sharper
+   than a same-PV pair.** New `american_discrete_div_dividend_sensitivities`
+   (`american.hpp:1019`, impl `american_discrete_div.cpp:487`), two rollbacks per
+   in-window event. On S=K=100, T=1, sigma=0.25, r=0.05 with 6.00@0.10 and
+   6.00@0.90, the lattice ranks early against late **18.4581x for a call and
+   0.9298x for a put** — *opposite orderings on one schedule* — where the shipped
+   `american_dividend_sensitivities` returns **1.0408 for both**, asserted
+   directly against it.
+   **Action carried to L1 / follow-up:** `american.cpp:3788` still composes
+   `dP/dD_i = (-dP/dq / (F*T)) * dF/dD_i`. Its two callers are
+   `src/backtest/portfolio_pricer.cpp:1625` and `tests/american_test.cpp:3863`.
+   It should delegate to the lattice entry whenever a chain carries a cash
+   schedule.
 
 ### L3 — Implied-vol inversion (`pool-19`)
 Owns `src/pricing/implied_vol.cpp`, `american_iv.cpp`.
@@ -279,6 +364,21 @@ Owns `src/pricing/derivatives.cpp`, `deriv_analytic_greeks.hpp`,
 4. `adjusted_greeks.cpp:15,32` computes `sqrt(wk/T)` **before** the `T > 0` guard
    that protects it; `:68` lets a NaN `vega_slope` silently convert a good delta
    into a NaN with no error channel.
+
+   **CORRECTED BY L5 — the "no error channel" half is false, and the remedy this
+   plan proposed is one the codebase explicitly rejected.**
+   `finite_vega_slope` (`src/backtest/portfolio_pricer.cpp:566-577`) screens the
+   slope and demotes the lane to `PriceStatus::NumericError` **before** the
+   Ok-stamp, so a NaN slope excludes its lane from every book total
+   (`portfolio_pricer.cpp:922-931, 946-955`), and the behaviour is pinned by
+   `AdjustedGreeks.NaNVegaSlopePropagatesToAdjustedDeltaOnly`. Its own comment
+   rules out the "return `g` unchanged" fallback this plan asked for:
+   *"Deliberately NOT a silent fallback to the UNADJUSTED delta — that would
+   publish a different economic quantity than the caller requested under a column
+   it cannot distinguish."* L5 declined the change and added the caller citation
+   to the public header so the finding is not re-filed. If it is ever wanted, it
+   is a portfolio-pricer decision, not a `skew_adjusted` one.
+   The compute-before-guard half was real and is fixed.
 5. `adjoint_greeks.cpp:387` hard-codes an absolute `hvol = 5e-3` against a regime
    guard admitting `sigma > 1e-6`, while `american_greeks_fd` and
    `american_greeks_al` both already handle this with `if (s-h <= 0) h = 0.5*s`.
