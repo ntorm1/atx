@@ -3,6 +3,16 @@
 Frozen base: `654a9206c5f9de045e008783921c6e5d0ad73eda` (main, clean tree).
 Run id: `atxvol-prod-sprint-20260823`.
 
+**Base state, stated precisely:** the tree BUILDS clean at the frozen base
+(`atx-vol-tests` is a ninja no-op). No full test run was made at the base, and
+one pre-existing failure is now known: `VolUmbrella.NoFixturePathResolvedOutsideTheSharedResolver`
+fails at `654a9206` on three absolute path literals introduced by `e79f2b8d`
+(2026-08-18) — `tests/oracle_bench_test.cpp:711`, `:1399`, and
+`tools/oracle_bench_main.cpp:86`. The first two are deliberately-nonexistent data
+in negative tests and belong in `kPathLiteralExempt`; the third is a real CLI
+default. It is not this sprint's regression and is not this sprint's to fix — the
+oracle lanes own that file.
+
 Priority order, as set by the request: **(1) correctness, (2) performance on par
 with state of the art, (3) feature breadth for trading American equity options.**
 
@@ -343,15 +353,25 @@ Owns `cmake/atx-vol-install.cmake`, `backtest/portfolio_pricer.hpp` +
 3. `abs_vega` is declared per risk bucket and **never populated** by
    `reduce_risk_buckets` — it returns NaN (`portfolio_pricer.hpp:533-536`).
 4. **Fixture-gated tests report PASS when they did not run.**
-   `tests/CMakeLists.txt:579` sets `SKIP_RETURN_CODE` for a **pytest** target
-   only; `gtest_discover_tests` never gets it. The real-board fixtures are absent
-   and gitignored (`find data -name "*.parquet"` returns zero; root `.gitignore`
-   excludes `/data/`), and there are **161 `GTEST_SKIP` sites across 46 files**.
-   So a fixture-gated C++ test exits 0 and ctest reports **PASS**. Every
-   end-to-end real-board fit-quality and no-arb gate is green-by-vacuity in a
-   clean checkout. `README.md:422-426` is honest that fixtures are optional; the
-   ctest wiring is not. This is the highest-leverage item on the lane — every
-   other lane in this sprint is relying on ctest telling the truth.
+   **CORRECTED BY L7 — the premise was false for per-case lanes, and this
+   matters, because the original claim would have discredited every green run in
+   this sprint.** CMake 3.29's own
+   `share/cmake-3.29/Modules/GoogleTestAddTests.cmake:196` writes
+   `SKIP_REGULAR_EXPRESSION "\[  SKIPPED \]"` onto **every** discovered case,
+   unconditionally. Measured: all 7 `AmznEarnings.*` cases already report
+   `***Skipped` and appear under "tests did not run". **No lane in this sprint is
+   green-by-vacuity in `atx-vol-tests`.** L7 restated the property explicitly on
+   all four `gtest_discover_tests` calls anyway — inheriting a gate contract from
+   whichever `cmake.exe` is on PATH is not a contract.
+
+   The genuine hole is narrower and real: the **hand-rolled aggregate
+   `--gtest_filter` lanes**. `atx-vol-tests.exe --gtest_filter=AmznEarnings.*`
+   with every case skipped **exits 0**, and ctest reported `Passed 0.10 sec`;
+   it now reports `***Failed  Error regular expression found in output`. L7 used
+   `FAIL_REGULAR_EXPRESSION` rather than `SKIP_REGULAR_EXPRESSION` there, because
+   CMake documents the latter as marking a test skipped *regardless of the
+   process exit code* — on an entry covering hundreds of cases, one fixture-gated
+   skip would have swallowed a co-occurring real failure.
 5. `docs/oracle/NORTHSTAR.md` publishes superseded numbers (see above).
 
 ## Phase 2 — performance, after Phase 1 integrates
