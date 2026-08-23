@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <utility>
@@ -45,6 +46,18 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   std::vector<double> h(n - 1);
   for (std::size_t i = 0; i + 1 < n; ++i) {
     h[i] = x[i + 1] - x[i];
+    // T2: every divisor below is a knot gap. `fit_spline_vol_slice` validates
+    // strict ascent at its boundary, but a HAND-BUILT or DESERIALIZED
+    // `SplineVolParams` reaches the curve constructor without passing that gate
+    // (`SplineVolParams::z` is documented strictly increasing and nothing
+    // enforced it), and one duplicated knot used to make every entry of M -- and
+    // therefore every served IV -- NaN. All-zero M is the natural-spline answer
+    // for data that cannot be differenced (the same answer n < 3 already gets),
+    // so the curve degrades to the piecewise-linear interpolant instead of
+    // poisoning the surface.
+    if (!(h[i] > 0.0) || !std::isfinite(h[i])) {
+      return M;
+    }
   }
   std::vector<double> a(K), b(K), c(K), d(K);
   for (std::size_t t = 0; t < K; ++t) {
@@ -55,10 +68,20 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
     d[t] = 6.0 * ((y[i + 1] - y[i]) / h[t + 1] - (y[i] - y[i - 1]) / h[t]);
   }
   std::vector<double> cp(K), dp(K);
+  // The interior system is strictly diagonally dominant for strictly ascending
+  // knots (b[t] = 2*(h[t]+h[t+1]) > |a[t]| + |c[t]|), so the Thomas pivots are
+  // bounded away from zero -- but only for FINITE y. A non-finite multiple
+  // poisons d, so the pivots are checked rather than assumed.
+  if (!(b[0] > 0.0)) {
+    return M;
+  }
   cp[0] = (K > 1) ? c[0] / b[0] : 0.0;
   dp[0] = d[0] / b[0];
   for (std::size_t t = 1; t < K; ++t) {
     const double denom = b[t] - a[t] * cp[t - 1];
+    if (!std::isfinite(denom) || denom == 0.0) {
+      return std::vector<double>(n, 0.0);
+    }
     cp[t] = (t + 1 < K) ? c[t] / denom : 0.0;
     dp[t] = (d[t] - a[t] * dp[t - 1]) / denom;
   }
@@ -394,6 +417,20 @@ Result<std::unique_ptr<IVolCurve>> fit_spline_vol_slice(std::span<const FitObs> 
   }
   if (opts.grid.size() < 4) {
     return Err(ErrorCode::InvalidArgument, "fit_spline_vol_slice: grid must have >= 4 knots");
+  }
+  // T2: the whole spline core divides by the knot gaps. `SplineVolParams::z` is
+  // documented strictly increasing and NOTHING enforced it, so a duplicated or
+  // unsorted grid used to produce an all-NaN second-derivative vector and an
+  // all-NaN served curve out of a fit that reported success. Validate at the
+  // boundary; interior code may then assume the invariant.
+  for (std::size_t i = 0; i < opts.grid.size(); ++i) {
+    if (!std::isfinite(opts.grid[i])) {
+      return Err(ErrorCode::InvalidArgument, "fit_spline_vol_slice: grid knot is not finite");
+    }
+    if (i > 0 && !(opts.grid[i] > opts.grid[i - 1])) {
+      return Err(ErrorCode::InvalidArgument,
+                 "fit_spline_vol_slice: grid must be strictly increasing");
+    }
   }
   if (obs_eu.size() < opts.min_obs) {
     return Err(ErrorCode::InvalidArgument, "fit_spline_vol_slice: fewer than min_obs observations");

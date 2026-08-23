@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -214,6 +215,66 @@ TEST(SplineVol, RejectsDegenerateInputs) {
   auto bad_df = fit_spline_vol_slice(obs, 100.0, 0.5, 0.0, opts);
   ASSERT_FALSE(bad_df.has_value());
   EXPECT_EQ(bad_df.error().code(), ErrorCode::InvalidArgument);
+}
+
+// T2: `natural_spline_m` divides by the knot gaps h[t] / h[t+1] (and by b[0],
+// and by the Thomas pivot) with no zero or pivot check, and the entry point
+// validated only `grid.size() >= 4` -- never that the grid ASCENDS, which
+// `SplineVolParams::z` is documented to do and nothing enforced. One duplicated
+// or unsorted knot made the whole second-derivative vector NaN and every served
+// IV NaN, out of a fit that reported SUCCESS. Validate at the boundary.
+TEST(SplineVol, RejectsNonAscendingKnotGrid) {
+  const std::vector<FitObs> obs = flat_smile_obs(0.20, 15, 0.5);
+
+  // The exact repro: a duplicated knot => h == 0 => division by zero.
+  const std::vector<double> duplicated{-1.0, 0.0, 0.0, 1.0};
+  SplineFitOpts dup_opts{};
+  dup_opts.grid = duplicated;
+  const auto dup = fit_spline_vol_slice(obs, 100.0, 0.5, 0.99, dup_opts);
+  ASSERT_FALSE(dup.has_value()) << "a duplicated knot must not fit";
+  EXPECT_EQ(dup.error().code(), ErrorCode::InvalidArgument);
+
+  const std::vector<double> unsorted{-1.0, 0.5, 0.0, 1.0};
+  SplineFitOpts unsorted_opts{};
+  unsorted_opts.grid = unsorted;
+  const auto out_unsorted = fit_spline_vol_slice(obs, 100.0, 0.5, 0.99, unsorted_opts);
+  ASSERT_FALSE(out_unsorted.has_value());
+  EXPECT_EQ(out_unsorted.error().code(), ErrorCode::InvalidArgument);
+
+  const std::vector<double> non_finite{-1.0, 0.0,
+                                       std::numeric_limits<double>::quiet_NaN(), 1.0};
+  SplineFitOpts non_finite_opts{};
+  non_finite_opts.grid = non_finite;
+  const auto out_non_finite = fit_spline_vol_slice(obs, 100.0, 0.5, 0.99, non_finite_opts);
+  ASSERT_FALSE(out_non_finite.has_value());
+  EXPECT_EQ(out_non_finite.error().code(), ErrorCode::InvalidArgument);
+
+  // Control: the same board on a strictly ascending grid still fits, so the
+  // guard rejects the degeneracy and not the fixture.
+  const std::vector<double> ascending{-1.0, -0.25, 0.25, 1.0};
+  SplineFitOpts ok_opts{};
+  ok_opts.grid = ascending;
+  const auto ok = fit_spline_vol_slice(obs, 100.0, 0.5, 0.99, ok_opts);
+  ASSERT_TRUE(ok.has_value()) << ok.error().to_string();
+  EXPECT_TRUE(std::isfinite(ok.value()->iv(0.0)));
+}
+
+// A hand-built or DESERIALIZED `SplineVolParams` never passes through the
+// fitter's entry guard, so the spline core itself must not divide by a zero
+// gap. It answers "no curvature" (the natural-spline answer for data it cannot
+// difference) instead of poisoning every served point with NaN.
+TEST(SplineVol, DegenerateParamsServeFiniteVolRatherThanNaN) {
+  atx::vol::SplineVolParams p;
+  p.atm_vol = 0.20;
+  p.z = {-1.0, 0.0, 0.0, 1.0}; // duplicated knot: NOT reachable through the fitter
+  p.mult = {1.0, 1.1, 1.1, 1.0};
+  p.z_lo_valid = -1.0;
+  p.z_hi_valid = 1.0;
+  const SplineVolCurve curve(p, /*T=*/0.25, /*F=*/100.0, /*df=*/0.98);
+
+  EXPECT_TRUE(std::isfinite(curve.iv(0.0)));
+  EXPECT_TRUE(std::isfinite(curve.iv(-0.10)));
+  EXPECT_TRUE(std::isfinite(curve.iv(0.10)));
 }
 
 TEST(SplineVol, ButterflyViolationCounterOnConvexData) {
