@@ -666,6 +666,154 @@ claimed "one Householder step reaches machine precision"; the gate is
 onto the Cody kernel that never landed — neither TU includes
 `src/pricing/scalar_erfc.hpp`, whose own STATUS banner already said so. No
 behaviour change.
+### FIXED — the discrete-dividend lattice now admits cum-dividend exercise, and extrapolates below the grid instead of clamping
+
+**The numbers that move.** Every one of these is a price the library already
+serves through `american_discrete_div_price` / `_greeks` / `_greek_bundle`
+(`src/pricing/american_discrete_div.cpp`); the pinned test values that changed
+are listed with their old value beside them in
+`tests/discrete_div_american_test.cpp`.
+
+| anchor | before | after |
+|---|---|---|
+| American call, one 5.00 dividend at tau=0.25 (S=100, K=90, T=0.5, sigma=0.20, r=0.04), error vs the exact decomposition at 301 / 601 / 1201 steps | -1.4539e-2 / -6.0211e-3 / -2.7829e-3 | -2.1011e-3 / -1.3008e-3 / -9.4645e-4 |
+| European put on a certainly-worthless stock (1e6 of cash at tau=0.9) | 96.146830494183135 | 97.04455335484883, against the exact `K*exp(-r*T)` = 97.044553354850808 |
+| European CALL, one 6.00 dividend three steps into a 300-step year, absolute error vs the exact European decomposition, K = 60 / 100 / 140 | +1.6784 / +0.8753 / +0.2336 | -0.0036 / -0.0073 / +0.0095 |
+| the PUT legs of the same | -0.0756 / -0.8787 / -1.5204 | -0.0036 / -0.0073 / +0.0095 |
+| the same at SPY scale (775.8 spot, 2.15 on step 1 of 300), call / put, ticks | +63.18 / -43.45 | -3.64 / -3.64 |
+| AMERICAN put, one 6.00 dividend three steps in (S=K=100, T=1, sigma=0.30, r=0.03) | 12.4610785657936, **below** its 12.9821859272407 European sibling | 13.3718937351702 |
+| European put-call parity, one 6.00 dividend at tau=0.05, worst over five strikes | 3.2922e-03 | 1.9966e-12 |
+| the same at 12.00 | 9.9558e-02 | 1.6804e-12 |
+| European parity, the six-dividend SPY-shaped schedule | 5.222871e-05 | 5.1822980566385013e-05 |
+| six-dividend European call price / delta / gamma | 75.222227622486884 / 0.59491123873539919 / 0.002374185751928035 | 75.222227565387954 / 0.59491124565685172 / 0.0023741850780676448 |
+| six-dividend European put price / delta | 51.21952913918814 / -0.39445568531088704 | 51.219529487817411 / -0.39445572220346636 |
+| six-dividend AMERICAN call bundle price | 75.222227622486997 | 75.222227565388096 |
+| American call, 20.00 of cash at tau=0.5 on a 100 stock | 9.3443758393719278 | 9.3833648543233199 |
+| American call, 1e6 of cash at tau=0.9 | 12.514058272121554 | 12.55950705605116 |
+| a dividend clipped onto an American call's own bumped expiry, price gap | 0.024071862276378 | exactly 0 |
+
+Every American PUT anchor that predates this entry is unchanged to the last bit,
+which separates the cum-dividend fix from the grid-bottom one — cum-dividend
+exercise is dominated for a put. It does NOT say the grid-bottom edit leaves puts
+alone, and an earlier revision of this entry claimed it did. That was false: every
+American-put anchor in the suite sat at tau=0.5, tau=0.9, or step 22 of the
+775-scale schedule, exactly where the corner weight `(1-p)^k` is negligible, so
+their invariance was a property of the anchor set rather than a discriminating
+check. Move the ex-date to step 3 and the same edit moves an American put by 91
+ticks — the row above, now anchored by
+`AmericanPutWithAnEarlyDividend_ClearsItsEuropeanSibling`.
+
+**Cum-dividend exercise.** `splice_dividend` tested exercise against the
+POST-dividend level only, and the terminal payoff was built on the post-dividend
+level for both styles. A holder standing at an ex-step may exercise before the
+cash comes off or an instant after it, so the value is
+`max(sgn*(S - K), sgn*(S - D - K), cont(S - D))`; the classical result (Roll
+1977 / Geske 1979 / Whaley 1981, re-confirmed numerically by Itkin
+arXiv:2510.18159 §6.4) is that the instant BEFORE an ex-date is the only place an
+American call exercises early at all. The header documented the omission as
+deliberate because admitting it "made agreement with the vendor mark strictly
+worse" — evidence about a vendor, not about the option. It was also never free:
+the plain American test at the step BELOW the ex-step recovered the exercise one
+`dt` late, so the price converged from below with an O(dt) bias, which is the
+6.9x error reduction at 301 steps in the table. On the TERMINAL step nothing
+below can recover it, and the consequence there is exact rather than O(dt): a
+dividend landing on an American call's own expiry cannot move its price, which is
+why the maturity-bump test's American-call leg is now an equality.
+
+**The grid bottom.** `post = level[i] - amount` is below `level[0]` for the low
+nodes at every splice with a positive amount, so the bottom-edge branch is the
+common case, not a corner. It held the continuation value FLAT there; it now
+extrapolates quadratically through the three lowest nodes (linearly when only two
+survive), and clamps nothing. The pinned `96.146830494183135` was the artefact:
+its deficit against `K*exp(-r*T)` was `level[0]*exp(-r*tau_grid)` to the last
+digit. Where it bites is a LATE-versus-EARLY question rather than a size
+question: the corner nodes carry binomial weight `~(1-p)^k` at step k, so a
+mid-tree ex-date hides the defect at machine precision and an early one does not.
+
+Two things about that branch are worth stating because both were got wrong once.
+
+**Put-call parity cannot test it.** The splice applies ONE LINEAR OPERATOR to the
+value vector and `cont_call - cont_put` is affine in the stock level, so any
+linear extrapolation reproduces the parity difference exactly while handing both
+legs the identical absolute error. Measured at step 1 of 300 with one 6.00
+dividend: call error -2.518e-01, put error -2.518e-01, parity residual 1.3e-12.
+Only an absolute reference sees it, so the suite now carries one
+(`vn_european_one_dividend`, the European sibling of the exact decomposition
+already used for the American call) and three tests built on it, including one
+whose entire job is to pin the blindness so nobody re-derives accuracy from
+parity here.
+
+**Nothing is clamped in it.** An earlier revision floored the extrapolated
+continuation at 0 and attributed the resulting 4.9613e-05 parity residual to the
+post-dividend ZERO floor, calling it "a model statement, not an error". It was
+neither. At that ex-step the lowest grid level is 77.119993, so
+`level[i] - 12.0 >= 65.12` and the zero floor never fires; the clamp that fired
+was the non-negativity one on the extrapolated continuation, which a LINEAR
+extension of a convex call curve needs and which is not a linear operation — so
+it desynchronised the two legs and was the only thing capable of breaking parity
+here. Quadratic extrapolation removes both the need and the residual: the
+divided-difference term is `>= 0` on convex data so it only ever adds to the
+linear lower bound, and the residual goes to 1.6804e-12.
+
+### NEW — `dP/dD_i` off the lattice, per event, priced where the event lands
+
+`american_discrete_div_dividend_sensitivities` (api/pricing/american.hpp)
+reports the derivative of the lattice price with respect to each cash amount, by
+a central difference in the amount (`discrete_div_amount_bump`, two rollbacks per
+in-window event; the ex-date's lattice step does not move with the bump so the
+step-rounding error cancels). Out-of-window events report exactly 0, matching
+`hybrid_forward_div_jacobian`.
+
+This exists because the escrowed composition cannot answer the question.
+`american_dividend_sensitivities` (`src/pricing/american.cpp:3788`) is
+`(-dP/dq / (F*T)) * dF/dD_i` — a fixed scalar times a pure discount factor — so
+the ratio between any two events is `exp(r*(t_j - t_i))` and nothing else: not
+the side, not the strike, not whether one of them triggers early exercise. On
+S=K=100, T=1, sigma=0.25, r=0.05 with 6.00 at tau=0.10 and 6.00 at tau=0.90, the
+lattice ranks the early event **18.4581x** the late one for a CALL and
+**0.9298x** for a PUT — opposite orderings on one schedule — where the chain rule
+hands both sides **1.0408**. The call's late ex-date is nearly free precisely
+because the holder exercises the instant before it.
+
+### NEW — the discrete-dividend route is a decision with a name, a switch, and a cost
+
+`discrete_div_route` / `DiscreteDivPolicy` / `DiscreteDivRoute`
+(api/pricing/dividend.hpp) resolve, in one place, whether a chain is priced
+through the escrowed forward or through the V&N spliced lattice. It builds the
+lattice's tau-space schedule from a `MarketEnv::cash_divs` span using the SAME
+instant window `forward_div_corrected` sums, reports the present value of the
+cash the decision is about, and COUNTS the events an instant window admits but
+the lattice's `(0, T]` tau window rejects — which is 0 under Calendar365 and is
+not under a vol-time `T`, and which is exactly when an escrow-versus-lattice
+comparison stops being like-for-like. The escrow policy returns no route at all,
+so a regression bisects on one enum.
+
+**The cost, which decides where the route may go.** Per contract on the `dev`
+preset (`/Od`, so the ratios are the number, not the absolutes; the release
+Andersen-Lake band is 32.6 us/contract, docs/LEDGER.md 2026-08-23):
+
+| route | us/call | x AL price |
+|---|---|---|
+| Andersen-Lake price, cold | 383 | 1.00 |
+| Andersen-Lake implied vol (1e-4, 48 iters) | 934 | 2.44 |
+| V&N lattice price, 301 steps | 1,276 | 3.33 |
+| V&N lattice price, 101 steps | 172 | 0.45 |
+| V&N lattice implied vol, 301 steps | 15,771 | 41.2 |
+| V&N lattice implied vol, 101 steps | 1,892 | 4.94 |
+
+(The inversion is a 1e-4 bisection over sigma in [0.005, 3.0]; its cost is not the iteration count times the price above, because the per-solve cost varies with the sigma the bracket is walking -- 15,771/1,276 = 12.4 and 1,892/172 = 11.0 against 15 iterations.)
+
+The lattice is affordable one price at a time and not inside a root find: against
+the Andersen-Lake inversion the lattice inversion is **16.9x** at the step count
+that reproduces the vendor, and a whole-board fit already spends 133 s on ~1.5M
+de-Americanization inversions. Dropping to 101 steps buys the cost back and hands
+it straight to the error — against a 1201-step reference the truncation is
+6.79 / 4.89 / 2.55 ticks at 101 / 151 / 301 steps, and 6.79 ticks is the size of
+the entire accuracy claim. **So: route marks and greeks through the lattice, keep
+the de-Americanization inversion on Andersen-Lake, and do not trade step count
+for throughput.** The route decision itself is worth 10.61 ticks on an
+at-the-money call and 54.59 on the put, measured on the SAME lattice at the SAME
+step count so the gap is the dividend treatment and nothing else.
 
 ### CHANGED — a Risk-purpose preset now requests the MARK too, and `fit_board` serves it when the risk oracle refuses
 

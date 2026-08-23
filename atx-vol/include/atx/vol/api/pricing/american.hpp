@@ -728,9 +728,28 @@ assignment_risk(double S, double K, double T, double sigma, double r, double q, 
 //      directly took a European check from 0.042 error to BIT-EXACT agreement
 //      with the equivalent-strike lattice. It matters here rather than in
 //      theory because SPY's ex-dates ARE expiry dates.
-//   2. The American exercise test at an ex-step is applied against the
-//      POST-dividend stock level ONLY. Admitting cum-dividend exercise there was
-//      tried and made agreement with the vendor mark strictly worse.
+//   2. The American exercise test at an ex-step is applied against BOTH stock
+//      levels — the CUM-dividend level and the post-dividend one — and the value
+//      is the better of the two against continuation. A holder standing at the
+//      ex-step may exercise before the cash comes off or an instant after it,
+//      and the classical result (Roll 1977 / Geske 1979 / Whaley 1981;
+//      re-confirmed numerically by Itkin, arXiv:2510.18159 §6.4) is that the
+//      instant BEFORE an ex-date is the only place an American call exercises
+//      early at all. Testing `post` alone understates a call's exercise value by
+//      exactly the dividend wherever exercise binds; it is a no-op on a put,
+//      whose cum-dividend exercise is dominated by the same exercise a moment
+//      later. An earlier revision claimed admitting the cum-dividend test "made
+//      agreement with the vendor mark strictly worse" — that is evidence about a
+//      vendor, not about the option, and the omission was never free: the
+//      exercise opportunity was recovered one lattice step early, so the price
+//      converged from BELOW with an O(dt) bias. Measured against the exact
+//      quadrature decomposition of this same model (S=100, K=90, T=0.5,
+//      sigma=0.20, r=0.04, one 5.00 dividend at tau=0.25; exact
+//      11.663913846210640) the error fell from -1.4539e-2 / -6.0211e-3 /
+//      -2.7829e-3 to -2.1011e-3 / -1.3008e-3 / -9.4645e-4 at 301 / 601 / 1201
+//      steps. The same right applies on the TERMINAL step, where no later step
+//      can recover it, and its consequence there is exact rather than O(dt): a
+//      dividend landing on an American CALL's own expiry cannot move its price.
 //   3. The post-dividend level is floored at 0: a cash amount exceeding the
 //      stock level at a low node would otherwise put the lattice at a negative
 //      stock price and hand back a nonsense payoff. (Under a continuous yield
@@ -738,6 +757,43 @@ assignment_risk(double S, double K, double T, double sigma, double r, double q, 
 //      `sum_i D_i * exp(-r*tau_i) * exp(-q*(T - tau_i))` — `q` accrues on the
 //      escrowed cash too. That is a caller's parity identity, not this
 //      function's output, but getting it wrong reads as a constant offset.)
+//      Distinct from that floor, and equally load-bearing: below the LOWEST grid
+//      node the continuation value is EXTRAPOLATED — quadratically through the
+//      three lowest nodes, or linearly when only two survive — and never held
+//      flat, and never clamped. `post = level[i] - amount` sits under `level[0]`
+//      for the low nodes at EVERY splice, so this is the common case and not a
+//      corner; a flat clamp says the option stops responding to spot there,
+//      which an American put's exercise floor hides and a European put does not.
+//      Measured against the exact European decomposition of this same model, one
+//      6.00 dividend three steps into a 300-step year on a 100 stock: the flat
+//      clamp cost +0.8753 on the call and -0.8787 on the put at the money, a
+//      linear extrapolation -0.0944 on both, the quadratic -0.0073 on both. At
+//      SPY scale (775.8 spot, 2.15 of cash on step 1 of 300) the flat clamp cost
+//      +63.18 ticks on the call and -43.45 on the put where the extrapolation
+//      costs -3.64 on each. It was also pinning the ruinous-dividend European put
+//      at 96.146830 where the only defensible value is K*exp(-r*T) = 97.044553.
+//
+//      NOTHING is clamped in that branch, and the reason is a property of the
+//      splice rather than a preference: it applies ONE LINEAR OPERATOR to the
+//      value vector, and `cont_call - cont_put` is affine in the stock level, so
+//      any linear extrapolation reproduces the parity difference EXACTLY while
+//      giving both legs the identical absolute error. A per-node
+//      `max(extrapolated, 0)` is not linear, desynchronises the two legs, and is
+//      the only thing that can make European put-call parity fail here — it
+//      measured a 4.96e-05 residual that vanishes to 1.68e-12 without it. The
+//      corollary is the trap this scheme sets for its own tests: PUT-CALL PARITY
+//      CANNOT SEE THIS BRANCH AT ALL. Both legs are wrong by the same amount and
+//      the residual stays at machine precision, so only an ABSOLUTE reference
+//      measures it (`vn_european_one_dividend` in the tests).
+//
+//      Quadratic rather than linear because option value is CONVEX in spot, so a
+//      linear extension from the lowest segment is a rigorous lower bound and
+//      undershoots — one-sidedly, by 12x more than the quadratic at an early
+//      ex-date. The quadratic's divided-difference term is >= 0 on convex data,
+//      so it only ever adds to the linear bound; where the true curvature decays
+//      faster than quadratic it can overshoot slightly (measured +0.043 against
+//      the linear -0.302 at K=140), which is a 7x improvement in magnitude and
+//      the reason it is not guarded.
 //
 // THREE entry points, in increasing cost. `american_discrete_div_price` is one
 // rollback. `american_discrete_div_greeks` is the SAME rollback, additionally
@@ -758,8 +814,8 @@ assignment_risk(double S, double K, double T, double sigma, double r, double q, 
 // expressible here, and it is sound ONLY while `tau` is on the option's own
 // clock as the paragraph above requires. `forward_div_corrected` compares
 // INSTANTS, which is clock-independent, and no longer screens on `T` at all. A
-// `tau` marginally past `T` (within a relative 1e-12) still counts as landing
-// AT expiry, so a schedule whose ex-date was reconstructed from the same
+// `tau` marginally past `T` (within `kTauAtExpiryRelTol`) still counts as
+// landing AT expiry, so a schedule whose ex-date was reconstructed from the same
 // year-fraction column as `T` is not silently dropped by one ulp.
 struct CashDividend {
   double tau = 0.0;    // ex-date, year-fraction from valuation; admitted on (0, T]
@@ -771,6 +827,12 @@ struct CashDividend {
 // ticks, ~58x smaller than the residual the dividend treatment itself carries,
 // so the step count is not the binding constraint on agreement.
 inline constexpr int kDiscreteDivDefaultSteps = 301;
+
+// A `tau` this far past `T` (relatively) is still treated as landing AT expiry.
+// PUBLIC because `discrete_div_route` (dividend.hpp) has to apply the SAME
+// window this engine applies — its whole contract is that the two routes see the
+// same cash — and a duplicated literal is how that quietly stops being true.
+inline constexpr double kTauAtExpiryRelTol = 1.0e-12;
 
 // Bounded-loop / allocation guard (JPL rule 2). The rollback is O(steps^2) and
 // each lattice buffer is `steps + 1` doubles; a caller asking for more than this
@@ -958,6 +1020,57 @@ inline constexpr double kDiscreteDivThetaSecantHorizon = 1.0 / 252.0;
     std::span<const CashDividend> dividends, int steps = kDiscreteDivDefaultSteps,
     ExerciseStyle exercise = ExerciseStyle::American,
     double theta_secant_horizon = kDiscreteDivThetaSecantHorizon);
+
+// ── Per-event dividend sensitivities off the lattice ─────────────────────
+//
+// dP/dD_i for EACH cash event, priced where the event actually lands.
+//
+// The escrowed route cannot do this, and the reason is structural rather than a
+// question of accuracy. It folds the whole schedule into one scalar carry
+// (q_eff = r - ln(F/S)/T) before any early-exercise boundary is touched, so an
+// individual event's only channel is the forward, and
+// `american_dividend_sensitivities` above accordingly composes
+//   dP/dD_i = (-dP/dq / (F*T)) * dF/dD_i,   dF/dD_i = -(1-blend)*exp(r*(T-t_i))
+// — a FIXED scalar times a pure discount factor. The ratio between any two
+// events is then exp(r*(t_j - t_i)) and NOTHING else: not the side, not the
+// strike, not whether one of them triggers early exercise. Two schedules with
+// the same present value and different timing get identical answers. Measured
+// on S=K=100, T=1, sigma=0.25, r=0.05 with 6.00 at tau=0.10 and 6.00 at
+// tau=0.90, the lattice ranks the early event 1.7509x the late one for a CALL
+// and 0.8214x for a PUT — opposite orderings on one schedule — where the chain
+// rule says 1.0408 for both.
+//
+// Cost: TWO rollbacks per in-window event, central-differenced in the amount.
+// The ex-date's lattice step does not move with the bump, so the step-rounding
+// error is common to both legs and cancels.
+//
+// @param dP_dDiv_out one slot per `dividends` element, same order; sizes must
+//        match exactly. An event outside (0, T] — which the engine drops from
+//        the price — reports exactly 0, the same convention
+//        `hybrid_forward_div_jacobian` uses for its own window.
+// @return Ok, or everything `american_discrete_div_price` rejects, plus
+//         InvalidArgument on a size mismatch.
+[[nodiscard]] Status american_discrete_div_dividend_sensitivities(
+    double S, double K, double T, double sigma, double r, double q, Side side,
+    std::span<const CashDividend> dividends, std::span<double> dP_dDiv_out,
+    int steps = kDiscreteDivDefaultSteps, ExerciseStyle exercise = ExerciseStyle::American);
+
+// The bump each amount is central-differenced over: a fraction of the amount,
+// with an absolute floor so a zero (or tiny) event still gets a usable step.
+// Unlike the sigma bump there is no lattice ripple to dodge here — a dividend
+// amount moves the interpolation ARGUMENT, not the node positions — so this is
+// an ordinary truncation-versus-roundoff choice and small is safe.
+inline constexpr double kDiscreteDivAmountBumpRel = 1.0e-3;
+inline constexpr double kDiscreteDivAmountBumpAbs = 1.0e-4;
+
+// Exposed so a caller (or a test) can reproduce the stencil exactly rather than
+// re-deriving the rule. A down-leg that would go negative is clamped at 0 and
+// the difference becomes one-sided over the true interval; that is why callers
+// must not assume the denominator is 2h.
+[[nodiscard]] constexpr double discrete_div_amount_bump(double amount) noexcept {
+  const double rel = kDiscreteDivAmountBumpRel * amount;
+  return (rel > kDiscreteDivAmountBumpAbs) ? rel : kDiscreteDivAmountBumpAbs;
+}
 
 namespace detail {
 

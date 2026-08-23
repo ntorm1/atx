@@ -29,11 +29,6 @@ using atx::core::Ok;
 
 namespace {
 
-// A `tau` this far past `T` (relatively) is still treated as landing AT expiry.
-// A dividend ex-date reconstructed from the same year-fraction column as `T`
-// must not be dropped by one ulp of that column.
-inline constexpr double kTauAtExpiryRelTol = 1.0e-12;
-
 // Turns "stock level minus strike" into the exercise payoff for either side.
 [[nodiscard]] constexpr double payoff_sign(Side side) noexcept {
   return (side == Side::Call) ? 1.0 : -1.0;
@@ -93,14 +88,44 @@ struct LatticeOutcome {
 }
 
 // Detail 1 of 3 (header): at an ex-step BELOW expiry the continuation value is
-// re-read on the shifted grid by LINEAR interpolation, clamped at both grid
-// edges, and the American exercise test is then applied against the POST-
-// dividend level ONLY — admitting cum-dividend exercise here was tried and made
-// agreement with the vendor mark strictly worse.
+// re-read on the shifted grid by LINEAR interpolation. Above the top node it is
+// clamped; BELOW the bottom node it is EXTRAPOLATED — quadratically through the
+// three lowest nodes, linearly when only two survive — because
+// `post = level[i] - amount` sits under `level[0]` for the low nodes at EVERY
+// splice with a positive amount, so the bottom edge is the common case here and
+// not a corner. A flat clamp there says the option stops responding to spot
+// below the grid; an American put's exercise floor hides that, a EUROPEAN put
+// does not. Measured: the ruinous-dividend European put moved 96.146830 ->
+// 97.044553, the latter being K*exp(-r*T) exactly, and the flat clamp's deficit
+// was level[0]*exp(-r*tau_grid) to the last digit.
+//
+// THREE properties of this branch are load-bearing and each is measured at the
+// header's declaration:
+//   * NOTHING is clamped in it. The splice is one LINEAR operator on the value
+//     vector and cont_call - cont_put is affine in the stock level, so a linear
+//     extrapolation reproduces put-call parity exactly and hands both legs the
+//     same absolute error. A per-node max(., 0) is not linear; it desynchronises
+//     the legs and is the ONLY thing that can break parity here.
+//   * Consequently PUT-CALL PARITY CANNOT TEST THIS BRANCH. An absolute
+//     reference must (tests/discrete_div_american_test.cpp).
+//   * Quadratic, because option value is convex in spot: a linear extension from
+//     the lowest segment is a rigorous lower bound and undershoots one-sidedly.
+//     The divided-difference term is >= 0 on convex data, so it only adds to
+//     that bound.
 //
 // Post-dividend levels are the same monotone sequence shifted down, so one
 // forward sweep of the bracket index `j` serves every node: a two-pointer merge,
 // O(nodes), not a binary search per node.
+//
+// Detail 2 of 3: the American exercise test is applied against BOTH stock
+// levels. The holder standing at this step before the cash comes off may
+// exercise at the CUM-dividend level `level[i]`, or wait an instant and exercise
+// at the POST-dividend level `post`; the option is worth the better of the two
+// against continuation. Taking only `post` understates a CALL's exercise value
+// by exactly `amount` wherever exercise binds, which is where American call
+// exercise happens at all (Roll/Geske/Whaley; Itkin arXiv:2510.18159 §6.4). It
+// is a no-op on a PUT, whose cum-dividend exercise is dominated by the same
+// exercise one instant later.
 //
 // Detail 3 of 3: the post-dividend level is FLOORED at zero. A cash amount
 // exceeding the stock level at a low node would otherwise price a negative
@@ -110,12 +135,32 @@ void splice_dividend(std::span<double> level, std::span<double> value, std::span
                      bool american) noexcept {
   const double lo = level[0];
   const double hi = level[last];
+  // The lowest segment's slope, held for the extrapolation below `lo`. At a
+  // single surviving node there is no segment and the flat clamp is all that
+  // exists; that step is the root, where `post <= lo` cannot bind on a node the
+  // caller reads (`value[0]` is the answer either way).
+  // Newton divided differences over the three lowest surviving nodes. At two
+  // nodes the second difference does not exist and `lo_curv` stays 0, which
+  // degrades the expression below to the linear extension; at one node there is
+  // no segment either and it degrades to the flat value, which is the whole
+  // answer at that step anyway (`value[0]` is what the caller reads).
+  const double lo_slope = (last >= 1U) ? ((value[1] - value[0]) / (level[1] - level[0])) : 0.0;
+  double lo_curv = 0.0;
+  double lo_next = lo;
+  if (last >= 2U) {
+    const double d12 = (value[2] - value[1]) / (level[2] - level[1]);
+    lo_curv = (d12 - lo_slope) / (level[2] - level[0]);
+    lo_next = level[1];
+  }
   std::size_t j = 0;
   for (std::size_t i = 0; i <= last; ++i) {
     const double post = std::max(level[i] - amount, 0.0);
     double cont = 0.0;
     if (post <= lo) {
-      cont = value[0];
+      // No max(., 0) here, deliberately: see the note above. Both factors of the
+      // quadratic term are negative below `lo`, so on convex data the term is
+      // >= 0 and the result never falls below the linear lower bound.
+      cont = value[0] + lo_slope * (post - lo) + lo_curv * (post - lo) * (post - lo_next);
     } else if (post >= hi) {
       cont = value[last];
     } else {
@@ -126,7 +171,8 @@ void splice_dividend(std::span<double> level, std::span<double> value, std::span
       cont = slope * (post - level[j]) + value[j];
     }
     if (american) {
-      cont = std::max(cont, exercise_value(sgn, post, strike));
+      cont = std::max({cont, exercise_value(sgn, post, strike),
+                       exercise_value(sgn, level[i], strike)});
     }
     scratch[i] = cont;
   }
@@ -192,11 +238,22 @@ void splice_dividend(std::span<double> level, std::span<double> value, std::span
   // and it is exactly the case that matters here — SPY's ex-dates ARE expiry
   // dates. Applying the payoff directly is what makes the equivalent-strike
   // identity hold BIT-EXACTLY.
+  //
+  // The same cum-dividend right the splice admits applies here: an AMERICAN
+  // holder facing an ex-date on the terminal step may exercise the instant
+  // before it against the un-shifted level. Without this the terminal ex-date
+  // is the one splice the step below cannot rescue — there is no later step to
+  // carry the exercise — and an American call in front of a large terminal
+  // dividend is mispriced by the whole amount rather than by O(dt).
   std::vector<double> value(n_nodes);
   const double terminal_amount = step_amount[static_cast<std::size_t>(n_steps)];
+  const bool terminal_cum_exercise = american && (terminal_amount > 0.0);
   for (std::size_t i = 0; i < n_nodes; ++i) {
     const double post = std::max(level[i] - terminal_amount, 0.0);
     value[i] = exercise_value(sgn, post, K);
+    if (terminal_cum_exercise) {
+      value[i] = std::max(value[i], exercise_value(sgn, level[i], K));
+    }
   }
 
   std::vector<double> scratch;
@@ -445,6 +502,64 @@ Result<DiscreteDivGreekBundle> american_discrete_div_greek_bundle(
   // double-scaling trap the header names.
   out.theta_secant = base.price - *bumped;
   return Ok(out);
+}
+
+// Per-event dP/dD_i. The declaration states WHY this cannot be composed from a
+// carry sensitivity and a forward Jacobian; this is the arithmetic.
+Status american_discrete_div_dividend_sensitivities(double S, double K, double T, double sigma,
+                                                    double r, double q, Side side,
+                                                    std::span<const CashDividend> dividends,
+                                                    std::span<double> dP_dDiv_out, int steps,
+                                                    ExerciseStyle exercise) {
+  const Status ok = validate(S, K, T, sigma, r, q, dividends, steps);
+  if (!ok) {
+    return Err(ok.error());
+  }
+  if (dP_dDiv_out.size() != dividends.size()) {
+    return Err(ErrorCode::InvalidArgument,
+               "dP_dDiv_out must carry exactly one slot per dividend event");
+  }
+  if (dividends.empty()) {
+    return Ok();
+  }
+
+  // One mutable copy of the schedule, re-pointed per event: the bumped legs
+  // differ from the base in a single amount, so nothing else is rebuilt and the
+  // loop allocates nothing.
+  std::vector<CashDividend> bumped(dividends.begin(), dividends.end());
+  const double tau_at_expiry = T * (1.0 + kTauAtExpiryRelTol);
+  for (std::size_t i = 0; i < dividends.size(); ++i) {
+    const CashDividend &dv = dividends[i];
+    // The SAME window `run_lattice` applies. An event the price never sees
+    // cannot move it, so its sensitivity is exactly 0 rather than lattice noise.
+    if (!(dv.tau > 0.0) || dv.tau > tau_at_expiry) {
+      dP_dDiv_out[i] = 0.0;
+      continue;
+    }
+    const double h = discrete_div_amount_bump(dv.amount);
+    // A negative cash amount is not a dividend, so the down leg is clamped at 0
+    // and the difference silently becomes one-sided over the TRUE interval —
+    // hence the explicit denominator rather than a hard-coded 2h.
+    const double lo_amount = std::max(dv.amount - h, 0.0);
+    const double hi_amount = dv.amount + h;
+    const double span = hi_amount - lo_amount;
+
+    bumped[i].amount = hi_amount;
+    const Result<LatticeOutcome> up =
+        run_lattice(S, K, T, sigma, r, q, side, bumped, steps, exercise);
+    if (!up) {
+      return Err(up.error());
+    }
+    bumped[i].amount = lo_amount;
+    const Result<LatticeOutcome> dn =
+        run_lattice(S, K, T, sigma, r, q, side, bumped, steps, exercise);
+    if (!dn) {
+      return Err(dn.error());
+    }
+    bumped[i].amount = dv.amount;
+    dP_dDiv_out[i] = (up->price - dn->price) / span;
+  }
+  return Ok();
 }
 
 } // namespace atx::vol

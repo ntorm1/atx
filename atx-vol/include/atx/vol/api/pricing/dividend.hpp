@@ -66,7 +66,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <vector>
 
+#include "atx/vol/api/pricing/american.hpp"    // CashDividend (the lattice's tau-space event)
 #include "atx/vol/api/pricing/rates_curve.hpp" // DividendEvent, forward_div_corrected, kQuietNaN
 #include "atx/vol/api/core/types.hpp" // Result / ErrorCode (atx::core, re-exported)
 
@@ -222,5 +224,114 @@ struct CoTermQuote {
 [[nodiscard]] atx::core::Result<double> imply_forward_atm_pcp(std::span<const CoTermQuote> quotes,
                                                               double S, double T, double r,
                                                               std::size_t n_atm = 3);
+
+// ── THE DISCRETE-DIVIDEND PRICING ROUTE ──────────────────────────────────
+//
+// Everything above this line is the ESCROWED route: the cash schedule is folded
+// into a forward and then into one scalar carry (q_eff = r - ln(F/S)/T) before
+// any early-exercise boundary is touched. `american_discrete_div_price`
+// (american.hpp) is the other route: one V&N spliced lattice that prices each
+// ex-date where it lands. This is the seam between them, stated once so a caller
+// picks a route explicitly and a reader can see which one served.
+//
+// The two are NOT interchangeable and the gap is large. Measured on 9,155 SPY
+// rows with ddiv > 0, escrowing costs 142.60 ticks of price MAE against the
+// vendor mark where the lattice costs 6.96; on the 5,202 ddiv == 0 rows the same
+// lattice sits at 0.09, which is what says the rate / vol / year-fraction
+// conventions were never the problem (american.hpp).
+//
+// WHAT THE ROUTE COSTS, measured, because this is the constraint that decides
+// where it can go. Per contract on the `dev` preset (/Od, so read the RATIOS,
+// not the absolutes; the release Andersen-Lake band is 32.6 us/contract,
+// docs/LEDGER.md 2026-08-23):
+//
+//   Andersen-Lake price, cold                          383 us      1.00x
+//   Andersen-Lake implied vol (1e-4, 48 iters)         934 us      2.44x
+//   V&N lattice price, 301 steps                     1,276 us      3.33x
+//   V&N lattice price, 101 steps                       172 us      0.45x
+//   V&N lattice implied vol, 301 steps              15,771 us     41.2x
+//   V&N lattice implied vol, 101 steps               1,892 us      4.94x
+//
+// (the inversion is a 1e-4 bisection; its cost is NOT the solve count times the
+// price above, because the bracket walks sigma across the whole [0.005, 3.0]
+// range and the per-solve cost varies with it — 15,771/1,276 = 12.4 and
+// 1,892/172 = 11.0 against a bisection that ran 15 iterations)
+//
+// So the route is affordable ONE PRICE AT A TIME and not inside a root find:
+// against the Andersen-Lake inversion the lattice inversion is 16.9x at the step
+// count that reproduces the vendor, and a whole-board fit already spends 133 s
+// on ~1.5M de-Americanization inversions. Dropping to 101 steps buys the cost
+// back and gives it straight to the error: against a 1201-step reference on a
+// three-dividend contract the truncation is 6.79 / 4.89 / 2.55 ticks at 101 /
+// 151 / 301 steps, and 6.79 ticks is the size of the entire accuracy claim.
+// THEREFORE: route MARKS and greeks through the lattice, keep the
+// de-Americanization inversion on Andersen-Lake, and do not trade step count for
+// throughput.
+enum class DiscreteDivPolicy : std::uint8_t {
+  // Fold the schedule into the forward. The shipped behaviour of every caller
+  // as of this writing, and the correct choice inside an inversion.
+  Escrow,
+  // Price through the V&N spliced lattice whenever the schedule puts at least
+  // one ex-date inside the option's life; escrow otherwise (there is nothing to
+  // splice, and the lattice reduces to plain CRR at a worse cost than AL).
+  Lattice,
+};
+
+// What the route decision resolved to, and the evidence for it. Returned rather
+// than logged so a caller can publish it as provenance and a regression can be
+// bisected on the route rather than on the price.
+struct DiscreteDivRoute {
+  // Tau-space schedule on the OPTION's own clock, ready to hand to
+  // `american_discrete_div_price`. Empty exactly when `applies()` is false.
+  std::vector<CashDividend> schedule;
+  // sum_i D_i*exp(-r*tau_i) over `schedule` — how much cash the route decision
+  // is actually about. A route that applies over 3 cents is a different
+  // proposition from one that applies over 3 dollars, and the caller can see it.
+  double pv = 0.0;
+  // Events the INSTANT window admitted (ex-date in [now, expiry], the window
+  // `forward_div_corrected` sums) that the lattice's TAU window (0, T] then
+  // rejected. Counted instead of silently dropped: a non-zero value means the
+  // two routes are pricing different cash and the escrow comparison is not
+  // like-for-like. TWO ways it becomes non-zero, and neither is exotic:
+  //   * an ex-date ON the valuation instant (`ex_date_ns == now_ts_ns`). The
+  //     escrowed forward admits it and subtracts the full UNDISCOUNTED amount;
+  //     the lattice's window is open at 0 and there is no step-0 splice, so the
+  //     lattice cannot price it at all. Reachable whenever both timestamps are
+  //     date-snapped to the same midnight — i.e. valuing on the morning of an
+  //     ex-date, which is exactly when the cash matters most.
+  //   * a vol-time `T`, where a calendar tau and a weekend-compressed `T` are
+  //     not comparable — see the note in `forward_div_corrected`.
+  // The CLOSING end is not a source: `ex_date_ns == expiry_ns` gives tau == T
+  // under Calendar365 and is admitted by both routes (the lattice applies it to
+  // the terminal payoff).
+  std::size_t n_outside_tau_window = 0;
+  [[nodiscard]] bool applies() const noexcept { return !schedule.empty(); }
+};
+
+// Resolve the route for one (expiry, valuation) pair.
+//
+// The instant window mirrors `forward_div_corrected` EXACTLY — an event is in
+// scope iff now_ts_ns <= ex_date_ns <= expiry_ns — so the lattice and the
+// escrowed forward always start from the same set of events, and any further
+// loss is reported in `n_outside_tau_window` rather than hidden. `tau` is then
+// (ex_date_ns - now_ts_ns) in 365.25-day years, the same conversion
+// `hybrid_forward_div_jacobian` uses, because it discounts CASH.
+//
+// A zero amount is dropped (it is a no-op for both routes). A NEGATIVE amount is
+// kept, so it reaches `american_discrete_div_price`'s validation and fails
+// closed there rather than being silently discarded here.
+//
+// The tau window is `american.hpp`'s own `kTauAtExpiryRelTol`, shared rather
+// than restated, because the header's promise that the two routes see the same
+// cash is only as good as the two windows staying identical.
+//
+// @param policy  Escrow returns an empty route unconditionally; that is the
+//                switch a bisection flips, and it is why this function is the
+//                only place the decision is made.
+// @return the route; `applies() == false` under Escrow, on non-finite/
+//         non-positive T, on a non-finite r, or when no event lands in (0, T].
+[[nodiscard]] DiscreteDivRoute discrete_div_route(std::span<const DividendEvent> cash_divs,
+                                                  std::int64_t expiry_ns, std::int64_t now_ts_ns,
+                                                  double T, double r, DiscreteDivPolicy policy);
 
 } // namespace atx::vol
