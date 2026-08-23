@@ -143,11 +143,42 @@ struct NewtonCriticalStats {
 // bisection midpoint the pre-fix loop returned on max_iter exhaustion.
 inline constexpr double kBawCriticalResidualGate = 1.0e2;
 
-[[nodiscard]] double newton_critical_put(double K, double T, double sigma, double r, double q,
-                                         double q1, std::uint16_t max_iter, double tol,
-                                         NewtonCriticalStats *stats = nullptr) noexcept {
-  double lo = 1.0e-3 * K;
-  double hi = K * (1.0 - 1.0e-6);
+// T3: the critical-price bracket is a RECOVERY domain, not a constant.
+//
+// The safeguarded Newton below can only find a root its bracket contains; outside
+// it, the safeguard pins the iterate at the edge and the residual gate above
+// rejects the answer. The historical brackets — [1e-3*K, K) for the put, (K, 50*K]
+// for the call — were hard-coded, and both ends have ordinary contracts whose root
+// falls outside:
+//   * put, K=100, r=1e-4, q=0.10: the admissible range is (0, K*r/q] = (0, 0.1],
+//     and the floor 1e-3*K IS 0.1 — the bracket excluded every admissible root and
+//     Newton pinned at 0.100009 with residual -1.5e-3.
+//   * call, K=100, r=0.05, q=0.001, sigma=0.2, T=1: as q -> 0 early exercise
+//     recedes and the critical price runs away; the root is past 50*K, so Newton
+//     pinned at 4999.7 with residual -0.65 and BAW returned Unavailable.
+// So the first bracket is kept exactly as it was — every cell that already
+// converged is byte-unchanged, and the extra work is paid only where the old code
+// failed — and it is WIDENED, geometrically and boundedly, whenever the attempt
+// fails its own convergence test. The residual's sign is what says whether the
+// root has been captured, which derives the domain from the problem instead of
+// asserting one. Exhausting the retries still fails closed through the gate.
+inline constexpr unsigned kBawBracketRetries = 6;
+inline constexpr double kBawPutFloorShrink = 1.0 / 16.0;  // 1e-3*K -> ~6e-11*K
+inline constexpr double kBawCallCeilGrow = 8.0;           // 50*K   -> ~1.3e7*K
+
+// One safeguarded-Newton attempt inside a FIXED bracket. Reports whether a
+// Newton/step tolerance test fired inside the loop; `stats` (optional) carries the
+// full convergence contract and is written only when non-null, so the production
+// seed path pays no extra residual evaluation.
+struct CriticalAttempt {
+  double Sx = 0.0;
+  bool converged = false;
+};
+
+[[nodiscard]] CriticalAttempt newton_critical_put_in(double lo, double hi, double K, double T,
+                                                     double sigma, double r, double q, double q1,
+                                                     std::uint16_t max_iter, double tol,
+                                                     NewtonCriticalStats *stats) noexcept {
   double Sx = K * q1 / (q1 - 1.0);
   if (!(Sx > lo && Sx < hi)) {
     Sx = 0.5 * (lo + hi);
@@ -165,7 +196,7 @@ inline constexpr double kBawCriticalResidualGate = 1.0e2;
       if (stats) {
         *stats = {static_cast<std::uint16_t>(it + 1), f, true};
       }
-      return Sx;
+      return {Sx, true};
     }
     double Sx_new = (std::fabs(fp) > 1.0e-15) ? (Sx - f / fp) : 0.5 * (lo + hi);
     if (Sx_new <= lo || Sx_new >= hi) {
@@ -178,19 +209,34 @@ inline constexpr double kBawCriticalResidualGate = 1.0e2;
         *stats = {static_cast<std::uint16_t>(it + 1),
                   put_residual(Sx, K, T, sigma, r, q, q1), true};
       }
-      return Sx;
+      return {Sx, true};
     }
   }
   if (stats) {
     *stats = {it, put_residual(Sx, K, T, sigma, r, q, q1), false};
   }
-  return Sx;
+  return {Sx, false};
 }
-[[nodiscard]] double newton_critical_call(double K, double T, double sigma, double r, double q,
-                                          double q2, std::uint16_t max_iter, double tol,
-                                          NewtonCriticalStats *stats = nullptr) noexcept {
-  double lo = K * (1.0 + 1.0e-6);
-  double hi = K * 50.0;
+
+// Historical bracket first; widen the FLOOR only if that attempt fails (see the
+// kBawBracketRetries note above). The reported stats always describe the attempt
+// whose Sx is returned.
+[[nodiscard]] double newton_critical_put(double K, double T, double sigma, double r, double q,
+                                         double q1, std::uint16_t max_iter, double tol,
+                                         NewtonCriticalStats *stats = nullptr) noexcept {
+  const double hi = K * (1.0 - 1.0e-6);
+  double lo = 1.0e-3 * K;
+  CriticalAttempt a = newton_critical_put_in(lo, hi, K, T, sigma, r, q, q1, max_iter, tol, stats);
+  for (unsigned k = 0; k < kBawBracketRetries && !a.converged; ++k) {
+    lo *= kBawPutFloorShrink;
+    a = newton_critical_put_in(lo, hi, K, T, sigma, r, q, q1, max_iter, tol, stats);
+  }
+  return a.Sx;
+}
+[[nodiscard]] CriticalAttempt newton_critical_call_in(double lo, double hi, double K, double T,
+                                                      double sigma, double r, double q, double q2,
+                                                      std::uint16_t max_iter, double tol,
+                                                      NewtonCriticalStats *stats) noexcept {
   double Sx = K * q2 / (q2 - 1.0);
   if (!(Sx > lo && Sx < hi)) {
     Sx = 0.5 * (lo + hi);
@@ -208,7 +254,7 @@ inline constexpr double kBawCriticalResidualGate = 1.0e2;
       if (stats) {
         *stats = {static_cast<std::uint16_t>(it + 1), f, true};
       }
-      return Sx;
+      return {Sx, true};
     }
     double Sx_new = (std::fabs(fp) > 1.0e-15) ? (Sx - f / fp) : 0.5 * (lo + hi);
     if (Sx_new <= lo || Sx_new >= hi) {
@@ -221,13 +267,29 @@ inline constexpr double kBawCriticalResidualGate = 1.0e2;
         *stats = {static_cast<std::uint16_t>(it + 1),
                   call_residual(Sx, K, T, sigma, r, q, q2), true};
       }
-      return Sx;
+      return {Sx, true};
     }
   }
   if (stats) {
     *stats = {it, call_residual(Sx, K, T, sigma, r, q, q2), false};
   }
-  return Sx;
+  return {Sx, false};
+}
+
+// Historical bracket first; widen the CEILING only if that attempt fails. A low
+// dividend yield pushes the call's critical price arbitrarily far out (as q -> 0
+// early exercise is never optimal), so no fixed multiple of K is a domain.
+[[nodiscard]] double newton_critical_call(double K, double T, double sigma, double r, double q,
+                                          double q2, std::uint16_t max_iter, double tol,
+                                          NewtonCriticalStats *stats = nullptr) noexcept {
+  const double lo = K * (1.0 + 1.0e-6);
+  double hi = K * 50.0;
+  CriticalAttempt a = newton_critical_call_in(lo, hi, K, T, sigma, r, q, q2, max_iter, tol, stats);
+  for (unsigned k = 0; k < kBawBracketRetries && !a.converged; ++k) {
+    hi *= kBawCallCeilGrow;
+    a = newton_critical_call_in(lo, hi, K, T, sigma, r, q, q2, max_iter, tol, stats);
+  }
+  return a.Sx;
 }
 
 // Put critical price S* — the Jacobi-Newton seed for the AL boundary. Returns
@@ -730,7 +792,17 @@ namespace amer {
     return s;
   }
   const AlOpts &o = *opts;
-  if (o.n_collocation >= 6 && o.n_collocation <= kAlMaxNodes) {
+  // T4: CLAMP, never fall through. The `>= 6 && <= kAlMaxNodes` guard used to skip
+  // the assignment on an out-of-range request, which left the ACCURATE default of
+  // 12 — the most expensive boundary in the ladder — standing for a caller who
+  // asked for 3. That is the same silent-ignore the n_quadrature floor below was
+  // added to remove (A9, core-review finding 9: "a caller asking for cheaper must
+  // not get more expensive"), so it gets the same treatment in both directions.
+  if (o.n_collocation < 6) {
+    s.n_boundary = 6; // cheapest supported boundary
+  } else if (o.n_collocation > kAlMaxNodes) {
+    s.n_boundary = kAlMaxNodes;
+  } else {
     s.n_boundary = o.n_collocation;
   }
   const unsigned n = o.n_quadrature;
@@ -1650,9 +1722,16 @@ namespace amer {
 // `bnd`/`ws` hold a converged boundary ready for al_put_price_from_boundary.
 [[nodiscard]] AlSolveStatus al_solve_put_boundary(double K, double T, double sigma, double r,
                                                   double q, const AlScheme &sch, AlBoundary &bnd,
-                                                  AlWorkspace &ws,
-                                                  bool specialize) noexcept { // default in header
+                                                  AlWorkspace &ws, bool specialize,
+                                                  AlSolveResid *resid_out) noexcept { // hdr dflts
   const alprobe::Scope probe_zone(alprobe::Zone::AlBoundarySolveCold);
+  // Publish the pessimistic evidence up front so EVERY early return below — the
+  // pre-sweep Collapsed/TableMissing corners included — leaves the caller holding a
+  // report that reads "not converged" rather than a default-constructed one.
+  AlSolveResid rep{/*resid=*/1.0, /*tol=*/sch.tol};
+  if (resid_out != nullptr) {
+    *resid_out = rep;
+  }
   al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
   if (!(bnd.xmax > 0.0)) {
     // Negative-rate/carry corner: AL cannot run. Flagged unsupported.
@@ -1713,6 +1792,15 @@ namespace amer {
       }
     }
   }
+  // T1: the achieved residual used to die here as an unread local, which made
+  // sch.tol an early-exit shortcut and nothing else — Ok was returned however far
+  // the fixed budget got. Ok still means "priceable" (a truncated budget is the fast
+  // tier's normal operating point, not a failure), but the evidence now leaves with
+  // it so a caller can gate on AlSolveResid::converged().
+  rep.resid = resid;
+  if (resid_out != nullptr) {
+    *resid_out = rep;
+  }
   return AlSolveStatus::Ok;
 }
 
@@ -1757,8 +1845,13 @@ namespace amer {
 [[nodiscard]] AlSolveStatus al_solve_put_boundary_warm(double K, double T, double sigma, double r,
                                                        double q, const AlScheme &sch,
                                                        const AlBoundary &seed, AlBoundary &bnd,
-                                                       AlWorkspace &ws) noexcept {
+                                                       AlWorkspace &ws,
+                                                       AlSolveResid *resid_out) noexcept {
   const alprobe::Scope probe_zone(alprobe::Zone::AlBoundarySolveWarm);
+  AlSolveResid rep{/*resid=*/1.0, /*tol=*/sch.tol};
+  if (resid_out != nullptr) {
+    *resid_out = rep;
+  }
   al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
   if (!(bnd.xmax > 0.0)) {
     return AlSolveStatus::Collapsed;
@@ -1803,6 +1896,10 @@ namespace amer {
     }
     resid = s.max_dy;
     if (resid <= sch.tol) {
+      // T1: the warm solve short-circuits on exactly the same residual test as the
+      // cold one, so it owes the same tally — an uncounted warm early exit made
+      // EarlyResidualExits an undercount of the thing it is named for.
+      ATX_VOL_COUNT(EarlyResidualExits);
       break;
     }
   }
@@ -1814,9 +1911,14 @@ namespace amer {
       }
       resid = s.max_dy;
       if (resid <= sch.tol) {
+        ATX_VOL_COUNT(EarlyResidualExits);
         break;
       }
     }
+  }
+  rep.resid = resid;
+  if (resid_out != nullptr) {
+    *resid_out = rep;
   }
   return AlSolveStatus::Ok;
 }
@@ -1894,8 +1996,12 @@ void al_put_boundary_residual(const AlBoundary &bnd, const AlWorkspace &ws, cons
 
 AlSolveStatus al_solve_put_boundary_tape(double K, double T, double sigma, double r, double q,
                                          const AlScheme &sch, AlBoundary &bnd, AlWorkspace &ws,
-                                         AlSolveTape &tape) noexcept {
+                                         AlSolveTape &tape, AlSolveResid *resid_out) noexcept {
   tape.n_steps = 0;
+  AlSolveResid rep{/*resid=*/1.0, /*tol=*/sch.tol};
+  if (resid_out != nullptr) {
+    *resid_out = rep;
+  }
   if (static_cast<int>(sch.n_iter_jn) + static_cast<int>(sch.n_iter_fp) > kAlMaxTapeSweeps) {
     return AlSolveStatus::TableMissing; // budget exceeds tape capacity — caller falls back to fd
   }
@@ -1968,6 +2074,10 @@ AlSolveStatus al_solve_put_boundary_tape(double K, double T, double sigma, doubl
     }
   }
   tape.n_steps = step;
+  rep.resid = resid;
+  if (resid_out != nullptr) {
+    *resid_out = rep;
+  }
   return AlSolveStatus::Ok;
 }
 
@@ -2432,6 +2542,9 @@ double AloPricer::price(double sigma) noexcept {
     }
     resid = sw.max_dy;
     if (resid <= s.sch.tol) {
+      // T1: this pricer runs its own copy of the sweep schedule, so its early
+      // exits belong in the same tally as al_solve_put_boundary's.
+      ATX_VOL_COUNT(EarlyResidualExits);
       break;
     }
   }
@@ -2443,6 +2556,7 @@ double AloPricer::price(double sigma) noexcept {
       }
       resid = sw.max_dy;
       if (resid <= s.sch.tol) {
+        ATX_VOL_COUNT(EarlyResidualExits);
         break;
       }
     }
@@ -2487,6 +2601,67 @@ AlOpts al_bulk_opts() noexcept {
 Result<double> andersen_lake(double S, double K, double T, double sigma, double r, double q,
                              Side side, const std::optional<AlOpts> &opts) {
   return andersen_lake_core(S, K, T, sigma, r, q, side, opts, /*specialize=*/true);
+}
+
+// T1: the residual seam. Deliberately mirrors andersen_lake_core's validation,
+// degenerate guards and regime switch line for line instead of factoring them out —
+// the report's whole value is that it describes the solve the PRICE ran, and a
+// shared helper that later diverged in only one of the two arms would be a silently
+// wrong convergence claim rather than a compile error. The three no-solve arms
+// return a converged report because there is no boundary to under-converge.
+Result<AlBoundaryConvergence> andersen_lake_convergence(double S, double K, double T, double sigma,
+                                                       double r, double q, Side side,
+                                                       const std::optional<AlOpts> &opts) {
+  if (!(K > 0.0 && S > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake_convergence: S and K must be > 0");
+  }
+  if (!(T >= 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake_convergence: T must be >= 0");
+  }
+  if (!(sigma >= 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake_convergence: sigma must be >= 0");
+  }
+  if (!(std::isfinite(r) && std::isfinite(q))) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake_convergence: r and q must be finite");
+  }
+
+  const AlScheme sch = scheme_from_opts(opts);
+  const AlBoundaryConvergence no_solve{/*resid=*/0.0, /*tol=*/sch.tol, /*converged=*/true,
+                                       /*sweep_budget=*/0};
+  if (T <= 1.0e-12 || sigma <= 1.0e-8) {
+    return Ok(no_solve);
+  }
+  const double rate = (side == Side::Put) ? r : q;
+  const double yield = (side == Side::Put) ? q : r;
+  switch (classify_regime(rate, yield)) {
+  case ExerciseRegime::European:
+    return Ok(no_solve);
+  case ExerciseRegime::Unsupported:
+    return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+  case ExerciseRegime::American:
+    break;
+  }
+
+  // McDonald-Schroder: a call rides the internal put's boundary (strike S, rate q,
+  // yield r) — the same swap al_solve_put's call arm makes.
+  const double Kb = (side == Side::Put) ? K : S;
+  AlBoundary bnd;
+  AlWorkspace ws;
+  AlSolveResid ev;
+  switch (al_solve_put_boundary(Kb, T, sigma, rate, yield, sch, bnd, ws, /*specialize=*/true,
+                                &ev)) {
+  case AlSolveStatus::Collapsed:
+    return Err(ErrorCode::NotImplemented,
+               "andersen_lake: asymptotic boundary collapsed (xmax <= 0)");
+  case AlSolveStatus::TableMissing:
+    return Err(ErrorCode::Internal, "andersen_lake: Gauss-Legendre table unavailable");
+  case AlSolveStatus::NotConverged:
+    return Err(ErrorCode::NotImplemented, kUnsolvableBoundaryMsg);
+  case AlSolveStatus::Ok:
+    break;
+  }
+  const auto budget = static_cast<std::uint16_t>(sch.n_iter_jn + sch.n_iter_fp);
+  return Ok(AlBoundaryConvergence{ev.resid, ev.tol, ev.converged(), budget});
 }
 
 Status andersen_lake_call_slice(double S, std::span<const double> strikes, double T, double sigma,
@@ -2590,6 +2765,7 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes, doubl
     }
     resid = s.max_dy;
     if (resid <= sch.tol) {
+      ATX_VOL_COUNT(EarlyResidualExits); // this slice runs its own sweep schedule
       break;
     }
   }
@@ -2601,6 +2777,7 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes, doubl
       }
       resid = s.max_dy;
       if (resid <= sch.tol) {
+        ATX_VOL_COUNT(EarlyResidualExits);
         break;
       }
     }

@@ -113,14 +113,42 @@ double YieldCurve::disc(double T) const noexcept {
   if (t_years_.empty()) {
     return 1.0;
   }
+  // A discount factor to the value date is 1 by definition, and zero() already
+  // reports no rate for T <= 0; the two have to agree, so this is not the pillar
+  // clamp's job.
+  if (!(T > 0.0)) {
+    return 1.0;
+  }
 
-  // Boundary clamp: extrapolation is flat.
+  // Boundary extrapolation is flat in the ZERO RATE, not in the discount factor.
+  // Clamping the DF flat made zero(T) = -log_df/T, which diverges like 1/T below
+  // the first pillar — on the test suite's own OIS pillars (t0 = 1 day, r0 = 4.05%)
+  // one hour read 97.2% and five minutes read 1108.8%, and every 0DTE/intraday path
+  // through MarketEnv::rate_at inherits zero(). Past the last pillar the same clamp
+  // is the symmetric error: a flat DF is a ZERO instantaneous forward rate, so
+  // zero(T) decayed as rN*tN/T. Flat rate is what this class's contract already
+  // reads as and what a market curve means by flat extrapolation.
+  //
+  // Written as log_df * (T / t_pillar) rather than exp(-r * T) so that T at the
+  // pillar reproduces that pillar's discount factor BIT-exactly (the ratio is
+  // exactly 1.0 there) — the knot-exactness the interior interpolant guarantees
+  // must not be lost to a rate round-trip.
   const std::size_t last = t_years_.size() - 1;
   if (T <= t_years_.front()) {
-    return std::exp(log_df_.front());
+    const double t0 = t_years_.front();
+    // A degenerate t = 0 first pillar carries no rate to extrapolate (r0 would be
+    // log_df/0); fall back to the flat-DF clamp rather than emit inf/NaN.
+    if (!(t0 > 0.0)) {
+      return std::exp(log_df_.front());
+    }
+    return std::exp(log_df_.front() * (T / t0));
   }
   if (T >= t_years_[last]) {
-    return std::exp(log_df_[last]);
+    const double tn = t_years_[last];
+    if (!(tn > 0.0)) {
+      return std::exp(log_df_[last]);
+    }
+    return std::exp(log_df_[last] * (T / tn));
   }
 
   // Binary search for the bracket.
@@ -155,6 +183,20 @@ double YieldCurve::disc(double T) const noexcept {
 double YieldCurve::zero(double T) const noexcept {
   if (T <= 0.0) {
     return 0.0;
+  }
+  // Outside the pillar range the rate is flat by construction (see disc), so read
+  // it straight off the pillar rather than through -log(disc(T))/T: that roundtrip
+  // is ill-conditioned as T -> 0 — measured 1.5e-12 of drift at five minutes — and
+  // there is nothing to interpolate out there to justify paying for it.
+  if (!t_years_.empty()) {
+    const double t0 = t_years_.front();
+    if (T <= t0 && t0 > 0.0) {
+      return -log_df_.front() / t0;
+    }
+    const double tn = t_years_.back();
+    if (T >= tn && tn > 0.0) {
+      return -log_df_.back() / tn;
+    }
   }
   return -std::log(disc(T)) / T;
 }

@@ -115,6 +115,94 @@ TEST(YieldCurve, Hermite_SmootherThanLinear_LowCurvature) {
   EXPECT_LT(curvature, 1.0e-6);
 }
 
+// ── T2: short/long-end extrapolation is flat RATE, not flat DF ────────────
+//
+// disc() used to clamp the DISCOUNT FACTOR flat outside the pillar range. Below
+// the first pillar that makes zero(T) = -log_df.front()/T = r0*t0/T, which blows
+// up as T -> 0: with this fixture's pillars (t0 = 1/365.25, r0 = 4.05%) one hour
+// read 97.2% and five minutes read 1108.8%. Every 0DTE/intraday path through
+// MarketEnv::rate_at inherits zero(), and no test used to call it below t0.
+// Above the last pillar the same clamp implies a ZERO instantaneous forward rate,
+// so zero(T) = rN*tN/T decays toward 0 — the symmetric error.
+//
+// Both ends are now flat ZERO RATE, which is what the class contract ("zero rate
+// at T", flat extrapolation) already reads as and what a market curve means by
+// flat extrapolation.
+
+// Sub-pillar year fractions: 5 min, 1 h, 12 h, 1 day (== the first pillar).
+constexpr double kMin5 = 5.0 / (60.0 * 24.0 * 365.25);
+constexpr double kHour1 = 1.0 / (24.0 * 365.25);
+constexpr double kHour12 = 12.0 / (24.0 * 365.25);
+
+TEST(YieldCurve, ZeroBelowFirstPillar_StaysAtTheFirstPillarRate) {
+  const auto built = make_treasury_curve();
+  ASSERT_TRUE(built.has_value());
+  const YieldCurve &c = *built;
+
+  for (const double T : {kMin5, kHour1, kHour12, kPillarT[0]}) {
+    const double z = c.zero(T);
+    EXPECT_NEAR(z, kPillarR[0], 1e-12)
+        << "zero(" << T << ") = " << z << " — flat-DF extrapolation divides by T";
+  }
+}
+
+TEST(YieldCurve, DiscBelowFirstPillar_IsFlatRateAndTendsToOne) {
+  const auto built = make_treasury_curve();
+  ASSERT_TRUE(built.has_value());
+  const YieldCurve &c = *built;
+
+  for (const double T : {kMin5, kHour1, kHour12}) {
+    EXPECT_NEAR(c.disc(T), std::exp(-kPillarR[0] * T), 1e-15);
+  }
+  // The value date discounts to itself, and T <= 0 has no rate (zero() already
+  // returns 0 there), so the two must agree: disc(0) == 1.
+  EXPECT_DOUBLE_EQ(c.disc(0.0), 1.0);
+  EXPECT_DOUBLE_EQ(c.disc(-1.0), 1.0);
+  EXPECT_DOUBLE_EQ(c.zero(0.0), 0.0);
+  // Continuity at the pillar: the flat-rate arm meets the pillar DF exactly.
+  EXPECT_DOUBLE_EQ(c.disc(kPillarT[0]), std::exp(-kPillarR[0] * kPillarT[0]));
+}
+
+TEST(YieldCurve, ZeroAboveLastPillar_StaysAtTheLastPillarRate) {
+  const auto built = make_treasury_curve();
+  ASSERT_TRUE(built.has_value());
+  const YieldCurve &c = *built;
+
+  constexpr std::size_t kLast = std::size(kPillarT) - 1;
+  for (const double T : {kPillarT[kLast], 3.0, 5.0, 10.0, 30.0}) {
+    EXPECT_NEAR(c.zero(T), kPillarR[kLast], 1e-12)
+        << "zero(" << T << ") — flat-DF extrapolation implies a zero forward rate";
+    EXPECT_NEAR(c.disc(T), std::exp(-kPillarR[kLast] * T), 1e-15);
+  }
+}
+
+// A single-pillar curve is flat everywhere: no interior bracket exists, so both
+// extrapolation arms have to carry it.
+TEST(YieldCurve, SinglePillar_IsFlatRateEverywhere) {
+  const double t[] = {1.0};
+  const double r[] = {0.042};
+  const auto built = YieldCurve::create(t, r);
+  ASSERT_TRUE(built.has_value());
+  const YieldCurve &c = *built;
+  for (const double T : {kMin5, 0.25, 1.0, 7.0}) {
+    EXPECT_NEAR(c.zero(T), 0.042, 1e-12);
+    EXPECT_NEAR(c.disc(T), std::exp(-0.042 * T), 1e-15);
+  }
+}
+
+// A degenerate t=0 first pillar has no rate to read off (r0 = -log_df/0), so the
+// short end keeps the old flat-DF clamp there rather than producing inf/NaN.
+TEST(YieldCurve, ZeroFirstPillar_DoesNotProduceNonFinite) {
+  const double t[] = {0.0, 1.0};
+  const double r[] = {0.04, 0.04};
+  const auto built = YieldCurve::create(t, r);
+  ASSERT_TRUE(built.has_value());
+  const YieldCurve &c = *built;
+  EXPECT_TRUE(std::isfinite(c.disc(-0.5)));
+  EXPECT_TRUE(std::isfinite(c.disc(0.0)));
+  EXPECT_TRUE(std::isfinite(c.zero(1.0e-6)));
+}
+
 TEST(YieldCurve, DefaultConstructed_DiscReturnsFlatOne) {
   const YieldCurve c;
   EXPECT_DOUBLE_EQ(c.disc(0.5), 1.0);

@@ -258,7 +258,11 @@ bool SigmaBoundaryInterp::build(double Kp_ref, double T, double rp, double qp, d
   // neighbour is a WORSE seed than the cold Barone-Adesi-Whaley approximation it
   // would replace, and because the sweep budget is fixed (n_iter_jn + n_iter_fp)
   // with only an early-exit on tol, the solve does not spend longer to recover —
-  // it returns AlSolveStatus::Ok carrying an under-converged boundary, silently.
+  // it returns AlSolveStatus::Ok carrying an under-converged boundary. That is no
+  // longer SILENT — al_solve_put_boundary's optional AlSolveResid out-parameter
+  // reports the achieved residual (T1) — but Ok still does not imply convergence,
+  // so a future warm-chaining attempt must gate on AlSolveResid::converged() rather
+  // than on the status, and the measurement below is still what decides the case.
   //
   // Measured worst |node price - cold per-strike andersen_lake| (the σ-nodes are
   // where barycentric evaluation is exact, so this is the seed's error alone):
