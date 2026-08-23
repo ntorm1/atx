@@ -56,6 +56,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -67,8 +69,11 @@
 #include "atx/core/io/parquet.hpp"             // read_parquet, ParquetTable (--dividends)
 #include "atx/core/io/parquet_writer.hpp"      // WriteColumn, ParquetRowGroupWriter
 #include "atx/vol/api/core/types.hpp"          // Side, Result, ErrorCode
+#include "atx/vol/api/fitting/session.hpp"     // VolaSession
+#include "atx/vol/api/fitting/vol_curve.hpp"   // VolCurveKind, CurveSurface, IVolCurve
 #include "atx/vol/api/pricing/american.hpp"    // AmericanGreeks
 #include "atx/vol/api/pricing/rates_curve.hpp" // DividendEvent (--dividends)
+#include "atx/vol/api/storage/surface_db.hpp"  // SymbolFitConfig
 
 namespace atx::vol::chainexport {
 
@@ -1022,5 +1027,133 @@ private:
   ExportColumns chunk_; // reused across boards; capacity survives, rows do not
   ExportCensus census_;
 };
+
+// ── --pin-curve: the pinned family, and the family actually SERVED ──────────
+//
+// The tool normally fits each symbol exactly the way its stored
+// `SymbolFitConfig` says, which leaves the curve FAMILY to the library's
+// auto-router. `--pin-curve <kind>` overrides that for the whole run so one
+// chain parquet is produced under ONE named family and its provenance says
+// which.
+//
+// Both seams live here rather than in the driver TU so `atx-vol-tests` can
+// reach them without spawning the CLI, and they answer two DIFFERENT questions:
+//
+//   * `apply_curve_pin` — what was ASKED for. An unset pin is a no-op, so the
+//     default run stays bit-identical to today's auto-routed one.
+//   * `tally_served_curves` — what was actually SERVED, which is not the same
+//     thing. A pinned risk candidate the independent geometry oracle refuses is
+//     NOT substituted with another family: both the validation fallback ladder
+//     and the strict ConvexDense recovery rung are gated on the fit being
+//     auto-routed (or on a ConvexDense pin), so a rejected `spline-vol` pin
+//     leaves the risk surface unserved and the row is priced off the MARK arm
+//     instead. Without this census a spline-fitted row and a rescued one are
+//     indistinguishable in the output, and a pin that never got served would
+//     read as "the change did nothing".
+
+// Force `cfg` onto the pinned family; no-op when `pin` is unset.
+//
+// Applied to the RESOLVED per-symbol config, so it covers both the stored
+// SurfaceDb config and the `symbol_config_from_preset(FitPreset::Populate)`
+// fallback a symbol missing from the manifest gets — otherwise that symbol
+// would silently keep auto-routing and the run would mix two families.
+//
+// Only `CurveConfig::kind` is replaced. The parametric mirror and the
+// family-specific knobs stay whatever the stored config (or the preset) carried,
+// so this changes the FAMILY and nothing else.
+inline void apply_curve_pin(const std::optional<VolCurveKind> &pin,
+                            SymbolFitConfig &cfg) noexcept {
+  if (!pin.has_value()) {
+    return;
+  }
+  cfg.pin_curve = true;
+  cfg.curve.kind = *pin;
+}
+
+// One past the last `VolCurveKind` enumerator — the tally's array width. Sized
+// off the enum, exactly like the driver's drop-reason histogram, so a widened
+// enum cannot overflow the array; a kind appended AFTER `SplineVol` still has to
+// be named here, and until it is, `ServedCurveTally::add` drops it rather than
+// writing out of bounds.
+inline constexpr std::size_t kCurveKindCount =
+    static_cast<std::size_t>(VolCurveKind::SplineVol) + 1u;
+
+// Fitted-slice counts per curve family for ONE served surface, indexed by
+// `VolCurveKind`. Aggregates by `merge` so the run census can report the same
+// shape over the whole universe.
+struct ServedCurveTally {
+  std::array<std::size_t, kCurveKindCount> by_kind{};
+
+  void add(VolCurveKind kind, std::size_t n = 1u) noexcept {
+    const auto i = static_cast<std::size_t>(kind);
+    if (i < by_kind.size()) {
+      by_kind[i] += n;
+    }
+  }
+
+  void merge(const ServedCurveTally &other) noexcept {
+    for (std::size_t i = 0; i < by_kind.size(); ++i) {
+      by_kind[i] += other.by_kind[i];
+    }
+  }
+
+  [[nodiscard]] std::size_t count(VolCurveKind kind) const noexcept {
+    const auto i = static_cast<std::size_t>(kind);
+    return i < by_kind.size() ? by_kind[i] : 0u;
+  }
+
+  [[nodiscard]] std::size_t total() const noexcept {
+    std::size_t n = 0;
+    for (const std::size_t v : by_kind) {
+      n += v;
+    }
+    return n;
+  }
+
+  // Census text: "spline-vol:12" / "essvi:9 svi:1", ascending by enumerator.
+  // "-" when nothing was served, which is a REFUSAL to report a family, not a
+  // family — a caller must not read it as eSSVI.
+  [[nodiscard]] std::string describe() const {
+    std::string out;
+    for (std::size_t i = 0; i < by_kind.size(); ++i) {
+      if (by_kind[i] == 0u) {
+        continue;
+      }
+      if (!out.empty()) {
+        out += ' ';
+      }
+      out += to_string(static_cast<VolCurveKind>(i));
+      out += ':';
+      out += std::to_string(by_kind[i]);
+    }
+    return out.empty() ? std::string("-") : out;
+  }
+};
+
+// The family of every served slice of `curves`, or — when `curves` is nullptr —
+// `n_essvi_slices` eSSVI slices.
+//
+// nullptr is NOT "unknown": `VolaSession` installs a polymorphic `CurveSurface`
+// override only for a non-eSSVI family, so the default path having no override
+// is exactly the statement that it served eSSVI slices (session.hpp,
+// `curve_override`).
+[[nodiscard]] inline ServedCurveTally tally_served_curves(const CurveSurface *curves,
+                                                          std::size_t n_essvi_slices) {
+  ServedCurveTally out;
+  if (curves == nullptr) {
+    out.add(VolCurveKind::Essvi, n_essvi_slices);
+    return out;
+  }
+  for (const std::unique_ptr<IVolCurve> &slice : curves->slices()) {
+    if (slice != nullptr) {
+      out.add(slice->kind());
+    }
+  }
+  return out;
+}
+
+[[nodiscard]] inline ServedCurveTally tally_served_curves(const VolaSession &session) {
+  return tally_served_curves(session.curve_override(), session.expiries().size());
+}
 
 } // namespace atx::vol::chainexport
