@@ -74,6 +74,13 @@ double essvi_residual_w(const EssviParams& s, double k_log) noexcept {
   if (s.resid_basis_kind == ResidualBasisKind::C2Bspline) {
     // Dense full-smile C2 bump basis (near-money capable). The identical
     // evaluator the calibrator fit against — see detail/resid_basis.hpp.
+    //
+    // T4: `resid_bump_basis` re-clamps the count to [4, 16] internally, so a
+    // params carrying `resid_n_basis` in {1, 2, 3} had FOUR bumps built while
+    // the dot product below summed only the first 1-3 — the surface SERVED a
+    // different total variance than was calibrated. The clamp is stated once,
+    // in resid_basis.hpp, and read here; `essvi_slice_dof` reads the same one.
+    n_basis = detail::resid_bump_count(n_basis);
     detail::resid_bump_basis(y, n_basis, basis);
   } else {
     // HINGE_QUAD (the shipped wing-only runtime basis): out[0] = 0; a clamped
@@ -119,12 +126,12 @@ std::size_t essvi_slice_dof(const EssviParams& s) noexcept {
   }
   if (s.resid_basis_kind == ResidualBasisKind::C2Bspline) {
     // `fit_dense_residual` writes exactly `resid_n_basis` fitted bump
-    // coefficients; mirror `essvi_residual_w`'s 0 => 5 default and clamp so a
-    // corrupted count can never explode the dof past the coefficient storage.
-    const std::size_t n_basis = (s.resid_n_basis != 0u)
-                                    ? static_cast<std::size_t>(s.resid_n_basis)
-                                    : std::size_t{5u};
-    dof += std::min<std::size_t>(n_basis, s.resid_coef.size());
+    // coefficients; mirror `essvi_residual_w`'s 0 => 5 default and go through
+    // THE clamp (`resid_bump_count`, resid_basis.hpp) so the dof counts exactly
+    // the bumps the evaluator serves. T4: a private `min(n, 16)` here reported 1
+    // to 3 for a params the evaluator serves on four bumps.
+    const int requested = (s.resid_n_basis != 0u) ? static_cast<int>(s.resid_n_basis) : 5;
+    dof += static_cast<std::size_t>(detail::resid_bump_count(std::clamp(requested, 1, 16)));
   } else {
     // HingeQuad (and the legacy tags that evaluate through its branch): the
     // fitter writes slots 1..4 ({yp, yp^2, yc, yc^2}); slot 0 is structurally
