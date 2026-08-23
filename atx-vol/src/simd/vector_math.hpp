@@ -124,13 +124,23 @@ ATX_FORCE_INLINE __m256d exp_pd(__m256d x) noexcept {
     // equal both orders return the same bits, and otherwise the ordering rule picks the
     // same operand. +/-inf also keep IEEE exp semantics (+inf -> +inf, -inf -> 0).
     // Gated by SimdNanSafety.ExpPd_* in tests/simd_nan_safety_test.cpp.
-    __m256d xc = _mm256_min_pd(_mm256_set1_pd(kExpHi),
-                               _mm256_max_pd(_mm256_set1_pd(kExpLo), x));
+    const __m256d xc = _mm256_max_pd(_mm256_set1_pd(kExpLo), x);
 
-    const __m256d Nf = _mm256_round_pd(
-        _mm256_mul_pd(xc, _mm256_set1_pd(kInvLn2)),
-        _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+    // The upper clamp is applied to N, not to x. It exists only to keep the
+    // _mm256_cvtpd_epi32 below in range; clamping x there instead DISCARDED the
+    // overflow — every argument above kExpHi collapsed onto kExpHi and shared its
+    // result. Clamping N keeps the Cody-Waite remainder r = x - N·ln2 growing with x,
+    // so an argument past ln(DBL_MAX) drives the polynomial through +inf on its own
+    // and exp_pd(+inf) stays +inf. Same NaN operand order as the max above: MINPD
+    // returns SRC2 when either operand is NaN, so a NaN Nf survives as NaN.
+    const __m256d Nf = _mm256_min_pd(
+        _mm256_set1_pd(1024.0),
+        _mm256_round_pd(_mm256_mul_pd(xc, _mm256_set1_pd(kInvLn2)),
+                        _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
 
+    // r = xc - N·ln2. With N clamped (above) rather than x, r GROWS past the
+    // reduction interval for an overflowing argument — which is exactly what drives
+    // the polynomial to +inf there instead of saturating at kExpHi's value.
     __m256d r = _mm256_fnmadd_pd(Nf, _mm256_set1_pd(kLn2Hi), xc);
     r = _mm256_fnmadd_pd(Nf, _mm256_set1_pd(kLn2Lo), r);
 
@@ -150,8 +160,32 @@ ATX_FORCE_INLINE __m256d exp_pd(__m256d x) noexcept {
     const __m128i N32 = _mm256_cvtpd_epi32(Nf);
     const __m256i N64 = _mm256_cvtepi32_epi64(N32);
     const __m256i biased = _mm256_add_epi64(N64, _mm256_set1_epi64x(1023));
-    const __m256d two_to_N = _mm256_castsi256_pd(_mm256_slli_epi64(biased, 52));
-    const __m256d result = _mm256_mul_pd(p, two_to_N);
+    // 2^N, with the ONE exponent the biased field cannot hold split off as a carry.
+    // N reaches 1024 for x in [1023.5·ln2, kExpHi] ≈ [709.4362, 709.7827], and
+    // biased = 2047 is the inf/NaN exponent pattern — so exp_pd(709.44) returned +inf
+    // where std::exp returns 1.2760780590224528e308, and exp_pd(kExpHi) returned +inf
+    // for 1.7976931348622732e308. (The scalar sibling exp_cody carried the identical
+    // defect; fixing only that one would have left the two divergent.)
+    //
+    // A CONSTANT split (always 2^(N-1)·2) cannot work: N spans [-1022, 1024] after the
+    // underflow flush, 2047 values, while the normal biased field holds 2046 — so any
+    // fixed offset that saves the top breaks the bottom binade (N = -1022 would encode
+    // as +0.0 and the deep Φ wings this kernel exists to reach would flush early).
+    // Hence the conditional. It is branchless and it costs no extra MULTIPLY: the
+    // missing factor of two is folded into `p` as a masked SELF-ADD (p + p is exact,
+    // and p + 0.0 is bit-identical to p for the 0.707..1.414 range p occupies), which
+    // measured cheaper than a blendv'd `carry` multiply — the latter lengthens the
+    // final dependency chain. Non-`over` lanes are therefore bit-identical.
+    // MEASURED (clang-cl 18 /O2 /arch:AVX2, standalone A/B, best-of-240 x 1Mi values,
+    // Alder Lake): exp_pd alone +3.7..13.3%, and inside norm_cdf_erfc_pd — the way it
+    // is actually consumed — +0.1..4.7%. The blendv+mul variant cost +14..25% and
+    // +6..10.5% for the same fix, so this shape is what ships.
+    const __m256i over = _mm256_cmpgt_epi64(biased, _mm256_set1_epi64x(2046));
+    const __m256d two_to_N = _mm256_castsi256_pd(
+        _mm256_slli_epi64(_mm256_add_epi64(biased, over), 52)); // -1 where over
+    const __m256d p_carry =
+        _mm256_add_pd(p, _mm256_and_pd(p, _mm256_castsi256_pd(over))); // 2p where over
+    const __m256d result = _mm256_mul_pd(p_carry, two_to_N);
     // Flush the underflow lanes (x < ln(DBL_MIN)) to 0: andnot(mask, v) clears the
     // lanes where mask is all-ones, keeps the rest bit-for-bit.
     return _mm256_andnot_pd(underflow, result);

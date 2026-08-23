@@ -80,9 +80,14 @@ void svi_qe_basis_batch(double m, double sigma, const double* k, double* u_out,
 // eSSVI backbone implied vol for each strike:
 // sigma_out[i] = sqrt(max(essvi_backbone_w(slice, k_log[i]), 0) / slice.T).
 // Shares the backbone work, then one extra max/div/sqrt — the shape a
-// residual-vs-market-vol fit consumes directly. Assumes slice.T > 0 and finite
-// inputs (the calibration regime); on those it matches the scalar reference to
-// the same ~1e-12 tolerance.
+// residual-vs-market-vol fit consumes directly. On a usable time axis it matches
+// the scalar reference to the same ~1e-12 tolerance.
+//
+// REFUSAL, not an assumption: slice.T is the divisor, so when
+// `!std::isfinite(slice.T) || slice.T <= 0.0` EVERY element of sigma_out is set to
+// NaN, identically on the AVX2 and scalar routes. This used to read "assumes
+// slice.T > 0", and the code assumed exactly that — T == 0 served +inf as a
+// volatility, T < 0 served NaN and T == -inf served -0.0, none of them flagged.
 void essvi_backbone_sigma_batch(const EssviParams& slice, const double* k_log,
                                 double* sigma_out, std::size_t n) noexcept;
 

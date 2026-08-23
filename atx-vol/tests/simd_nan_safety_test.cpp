@@ -13,8 +13,8 @@
 //
 // A finite wrong value is strictly worse than a NaN here, because every downstream
 // guard in this tree (nonfinite_mask, std::isfinite patch-outs, the eligibility masks)
-// tests finiteness and nothing else. exp_pd(NaN) returning -2.0 — which it did — is
-// invisible to all of them.
+// tests finiteness and nothing else. exp_pd(NaN) returning -7.9833612381487477e292 —
+// which it did, measured — is invisible to all of them.
 //
 // AVX2 IS REQUIRED. These kernels only exist on the vector path; on a host without
 // AVX2 the suites below SKIP and prove nothing. The skip messages say so.
@@ -22,6 +22,8 @@
 #include "simd/american_boundary_avx2.hpp" // bary_eval_pack_avx2 test probe
 #include "simd/essvi_batch.hpp"
 #include "simd/vector_math_probe.hpp"
+
+#include "pricing/scalar_erfc.hpp" // exp_cody — the scalar sibling of exp_pd
 
 #include "atx/vol/api/fitting/vol_surface.hpp"
 #include "atx/vol/api/pricing/american.hpp"
@@ -51,13 +53,14 @@ struct IsaGuard {
 // exp_pd clamps with _mm256_max_pd(x, kExpLo) / _mm256_min_pd(·, kExpHi). x86 MAXPD /
 // MINPD return their SECOND operand whenever EITHER operand is NaN, so with the
 // argument first a NaN lane was replaced by the clamp bound: N = -1075, biased = -52,
-// and the 2^N reconstruction _mm256_slli_epi64(-52, 52) rebuilt the double -2.0. The
-// separate `underflow` compare could not see it — _CMP_LT_OQ is false for NaN.
+// and _mm256_slli_epi64(-52, 52) keeps the low 12 bits (0xFCC), rebuilding the double
+// -2^973 = -7.9833612381487477e292. The separate `underflow` compare could not see it
+// either — _CMP_LT_OQ is false for NaN.
 //
-// Consequence at the surface: φ(NaN) came back as 0.3989·(−2.0) = −0.7979 — a finite
-// NEGATIVE probability density. Both are reachable from the American boundary kernel
-// (res_deriv / eqn_b_ND pass unmasked tau- and b-derived arguments) and from the Cody
-// erfc Φ.
+// Consequence at the surface: φ(NaN) came back as 0.3989·(−2^973) =
+// −3.1849003376154668e292 — a finite NEGATIVE probability density. Both are reachable
+// from the American boundary kernel (res_deriv / eqn_b_ND pass unmasked tau- and
+// b-derived arguments) and from the Cody erfc Φ.
 TEST(SimdNanSafety, ExpPd_NonFiniteArgument_IsNotFinite) {
     if (!simd::have_avx2()) {
         GTEST_SKIP() << "no AVX2 on this host — exp_pd never runs, this proves nothing";
@@ -80,7 +83,8 @@ TEST(SimdNanSafety, NormPdfPd_NonFiniteArgument_IsNotFinite) {
     simd::fd_norm_pdf_batch(x.data(), got.data(), x.size());
     EXPECT_TRUE(std::isnan(got[0])) << "phi(NaN) returned " << got[0];
     EXPECT_TRUE(std::isnan(got[2])) << "phi(NaN) returned " << got[2];
-    // A density is never negative — the pre-fix failure mode was exactly -0.7979.
+    // A density is never negative — the measured pre-fix value was
+    // -3.1849003376154668e292.
     EXPECT_FALSE(got[0] < 0.0);
     EXPECT_FALSE(got[2] < 0.0);
     // The finite neighbours in the same pack are untouched.
@@ -96,15 +100,24 @@ TEST(SimdNanSafety, ExpPd_FiniteDomain_MatchesLibmClosely) {
         GTEST_SKIP() << "no AVX2 on this host — exp_pd never runs, this proves nothing";
     }
     std::vector<double> x;
-    for (double v = -745.0; v <= 700.0; v += 0.25) {
+    // NOTE the top of the sweep. It used to stop at 700.0, which walked straight past
+    // the band where N rounds to 1024 — [1023.5·ln2, kExpHi] ≈ [709.4362, 709.7827] —
+    // and that is precisely where exp_pd returned +inf for a finite std::exp. A sweep
+    // that stops short of the last representable binade is not a range test.
+    for (double v = -745.0; v <= 709.75; v += 0.25) {
         x.push_back(v);
     }
     // The exact clamp bounds and their neighbourhood — the lanes the operand swap
-    // touches if it touches anything.
+    // touches if it touches anything — plus the overflow band, point by point.
     x.push_back(-745.13321910194);
     x.push_back(-708.3964185322641);
     x.push_back(0.0);
     x.push_back(-0.0);
+    x.push_back(709.4362);              // just inside N == 1024
+    x.push_back(709.5);
+    x.push_back(709.7);
+    x.push_back(709.78);
+    x.push_back(709.782712893384);      // kExpHi == ln(DBL_MAX)
     std::vector<double> got(x.size(), 0.0);
     simd::fd_exp_batch(x.data(), got.data(), x.size());
     for (std::size_t i = 0; i < x.size(); ++i) {
@@ -118,12 +131,36 @@ TEST(SimdNanSafety, ExpPd_FiniteDomain_MatchesLibmClosely) {
             EXPECT_LE(std::fabs(got[i] - want) / want, 1e-13) << "x=" << x[i];
         }
     }
-    // +/-inf keep IEEE exp semantics.
-    const std::vector<double> ends = {kInf, -kInf, kInf, -kInf};
+    // +/-inf keep IEEE exp semantics, and so does genuine OVERFLOW: past ln(DBL_MAX)
+    // exp_pd must go to +inf, not saturate at a finite DBL_MAX. Saturation is the same
+    // "finite answer to an unanswerable input" failure this suite exists to catch, and
+    // it is what a naive fix to the N == 1024 case would have introduced.
+    const std::vector<double> ends = {kInf, -kInf, 710.0, 1.0e300};
     std::vector<double> eg(4, 0.0);
     simd::fd_exp_batch(ends.data(), eg.data(), 4);
     EXPECT_EQ(eg[0], kInf);
     EXPECT_EQ(eg[1], 0.0);
+    EXPECT_EQ(eg[2], kInf) << "exp_pd(710) saturated instead of overflowing";
+    EXPECT_EQ(eg[3], kInf) << "exp_pd(1e300) saturated instead of overflowing";
+}
+
+// exp_pd and its scalar sibling exp_cody must agree at the top of the range. The two
+// carried the SAME N == 1024 defect; fixing one alone would have created a
+// scalar-vs-vector divergence across the last binade where none existed before.
+TEST(SimdNanSafety, ExpPd_TopOfRange_AgreesWithScalarSibling) {
+    if (!simd::have_avx2()) {
+        GTEST_SKIP() << "no AVX2 on this host — exp_pd never runs, this proves nothing";
+    }
+    const std::vector<double> x = {709.4362, 709.6, 709.782712893384, 710.0};
+    std::vector<double> got(x.size(), 0.0);
+    simd::fd_exp_batch(x.data(), got.data(), x.size());
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        const double scalar = detail::exp_cody(x[i]);
+        EXPECT_EQ(std::isfinite(got[i]), std::isfinite(scalar)) << "x=" << x[i];
+        if (std::isfinite(scalar)) {
+            EXPECT_LE(std::fabs(got[i] - scalar) / scalar, 1e-13) << "x=" << x[i];
+        }
+    }
 }
 
 // ── T2: the AVX2 barycentric interpolant at an EXACT collocation node ────────────
@@ -258,6 +295,70 @@ TEST(SimdNanSafety, AmericanBoundaryBatch_TinyTenor_MatchesScalarRoute) {
     for (std::size_t i = 0; i < n; ++i) {
         ASSERT_TRUE(std::isfinite(got[i])) << "i=" << i << " AVX2 price " << got[i];
         EXPECT_NEAR(got[i], want[i], 1e-9 * K[i]) << "i=" << i;
+    }
+}
+
+// ── F1: a non-finite INPUT lane must patch to scalar, not be served as +0.0 ──────
+//
+// The public contract (api/simd/american_boundary_batch.hpp) promises that "any
+// non-finite lane PATCH through the exact scalar andersen_lake, so parity holds
+// everywhere". It did not. Two ordered compares and one operand order defeated it:
+//
+//   1. eligibility tests `T[l] <= 1e-12 || sigma[l] <= 1e-8`, both FALSE for NaN, and
+//      checked isfinite() on r and q but never on T or sigma — so a NaN/+inf T or
+//      sigma was ELIGIBLE and took the vector path;
+//   2. the three terminal clamps `_mm256_max_pd(price, zero)` return their SECOND
+//      operand for a NaN price, normalising the NaN to +0.0;
+//   3. the driver's patch guard is `!std::isfinite(pr[l])`, which a +0.0 passes.
+//
+// Net: the batch SERVED 0 where the scalar route returns NaN. This is the same defect
+// class as exp_pd(NaN) — a finite answer to an unanswerable input — reached by the same
+// x86 min/max NaN rule.
+TEST(SimdNanSafety, AmericanBoundaryBatch_NonFiniteInput_PatchesToScalarRoute) {
+    if (!simd::have_avx2()) {
+        GTEST_SKIP() << "no AVX2 on this host — the AVX2 boundary route never runs";
+    }
+    IsaGuard guard;
+    constexpr double kInfL = std::numeric_limits<double>::infinity();
+    struct Bad { const char* what; double T; double sigma; };
+    const Bad cases[] = {
+        {"T=NaN", kNaN, 0.2},   {"T=+inf", kInfL, 0.2},
+        {"sigma=NaN", 1.0, kNaN}, {"sigma=+inf", 1.0, kInfL},
+    };
+    for (const Bad& c : cases) {
+        // Lane 0 is the poisoned one; lanes 1-3 are valid so the pack keeps ref >= 0
+        // and actually takes the vector path (an all-ineligible pack would trivially
+        // patch and prove nothing).
+        const std::vector<double> S = {100.0, 100.0, 100.0, 100.0};
+        const std::vector<double> K = {100.0, 100.0, 105.0, 95.0};
+        const std::vector<double> T = {c.T, 1.0, 0.5, 2.0};
+        const std::vector<double> sg = {c.sigma, 0.2, 0.3, 0.25};
+        const std::vector<double> r = {0.05, 0.05, 0.05, 0.05};
+        const std::vector<double> q = {0.0, 0.0, 0.0, 0.0};
+        const std::size_t n = S.size();
+
+        simd::set_simd_isa_override(simd::SimdIsa::ForceScalar);
+        std::vector<double> want(n, 0.0);
+        ASSERT_EQ(simd::american_put_boundary_batch(S.data(), K.data(), T.data(),
+                                                    sg.data(), r.data(), q.data(),
+                                                    want.data(), n),
+                  simd::SimdRoute::Scalar);
+
+        simd::set_simd_isa_override(simd::SimdIsa::ForceAvx2);
+        std::vector<double> got(n, 0.0);
+        ASSERT_EQ(simd::american_put_boundary_batch(S.data(), K.data(), T.data(),
+                                                    sg.data(), r.data(), q.data(),
+                                                    got.data(), n),
+                  simd::SimdRoute::Avx2);
+
+        // The poisoned lane must agree with the scalar oracle about being unanswerable.
+        EXPECT_EQ(std::isfinite(got[0]), std::isfinite(want[0]))
+            << c.what << " — AVX2 served " << got[0] << ", scalar " << want[0];
+        // And the healthy lanes it shares a pack with are unaffected.
+        for (std::size_t i = 1; i < n; ++i) {
+            ASSERT_TRUE(std::isfinite(want[i])) << c.what << " i=" << i;
+            EXPECT_NEAR(got[i], want[i], 1e-9 * K[i]) << c.what << " i=" << i;
+        }
     }
 }
 

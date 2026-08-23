@@ -74,9 +74,6 @@ inline constexpr double kLn2Hi = 0.6931471805599453;
 inline constexpr double kLn2Lo = 2.3190468138462996e-17;
 inline constexpr double kInvLn2 = 1.4426950408889634;
 inline constexpr double kExpHi = 709.782712893384;
-// ln(DBL_TRUE_MIN) — the point below which exp(x) is not representable at all.
-// Documentation only since the kExpMinNormal early-out in exp_cody subsumes it.
-inline constexpr double kExpLo = -745.13321910194;
 // ln(DBL_MIN): the 2^N reconstruction builds only NORMALIZED doubles, so an
 // argument below this (exp ≤ one denormal ULP) is flushed to exactly 0.
 inline constexpr double kExpMinNormal = -708.3964185322641;
@@ -143,8 +140,10 @@ ATX_SERFC_INLINE double pow2i(int n) noexcept {
   // reconstruction corrected (the pow2i split at the bottom) a clamp would instead
   // saturate and hand back a FINITE DBL_MAX for an argument that genuinely overflows.
   // The lower clamp that used to sit beside it (xc < kExpLo) is unreachable — the
-  // early-out above already returned for every x below kExpMinNormal, which is greater
-  // than kExpLo — so it is gone rather than left as dead code.
+  // early-out above already returned for every x below kExpMinNormal = ln(DBL_MIN),
+  // which is greater than the old kExpLo = ln(DBL_TRUE_MIN) = -745.13321910194 — so
+  // both the clamp and that now-unreferenced constant are gone rather than left as
+  // dead code (house style §9).
   if (x > serfc::kExpHi) {
     return std::numeric_limits<double>::infinity();
   }

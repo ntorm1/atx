@@ -394,13 +394,24 @@ void implied_vol_batch_avx2(const double *price, const double *F, const double *
     // overflows to +inf decodes to FINITE garbage near ±709 — which nonfinite_mask
     // cannot see — and that garbage lnFK feeds d1 in all four Halley steps.
     //
-    // MEASURED, so the guard is not mistaken for the thing that catches it today: the
-    // ill-conditioning floor already patches every lane in this band, and NOT by
-    // coincidence. |lnFK| ≈ 709 forces |d1| = |lnFK/v + v/2| >= sqrt(2·709) ≈ 37.7 for
-    // ANY v, so φ(d1) <= 1e-308 and vega <= F·df·√T·1e-308, while the floor is
-    // 0.005·(F+K)·df >= 0.005·F·df. The escape is therefore a REDUNDANT guard here, kept
-    // because it makes the three kernels state the same precondition in the same place
-    // rather than leaving one of them relying on a downstream accident.
+    // The escape is REDUNDANT here — the ill-conditioning floor already patches every
+    // lane in this band — but not by accident, and the proof needs BOTH signs of lnFK,
+    // by two DIFFERENT arguments. (An earlier version of this comment used the AM-GM
+    // argument for both signs. It is false for lnFK < 0: at v = sqrt(2·708) ≈ 37.63,
+    // d1 = lnFK/v + v/2 = 0 EXACTLY and φ(d1) = 0.3989, not ≤ 1e-308.)
+    //
+    //   lnFK >= +708 (F/K overflowed): AM-GM is valid because both terms are positive,
+    //     so d1 = lnFK/v + v/2 >= sqrt(2·708) = 37.63 for ANY v > 0, giving
+    //     φ(d1) <= 1.32e-308 and vega/vfloor <= φ(d1)·√T/0.005 <= 2.64e-306·√T.
+    //   lnFK <= -708 (F/K underflowed to a denormal/zero — the reachable sign): AM-GM
+    //     gives nothing, but the NOTIONAL scaling does. vfloor is 0.005·(F+K)·df, which
+    //     grows with max(F, K), while vega grows with F alone; and lnFK <= -708 means
+    //     F/K <= e^-708 = 3.31e-308. So
+    //     vega/vfloor <= (0.3989/0.005)·√T·F/(F+K) <= 79.79·√T·3.31e-308.
+    //
+    // Both bounds are under 1 for any T this library will ever see, so the lane is
+    // already ill-conditioned. The escape is kept so the three kernels state the same
+    // precondition in the same place, not because a served number moves.
     const __m256d abs_lnfk = _mm256_andnot_pd(abs_mask, lnFK);
     const __m256d lnfk_escape = _mm256_cmp_pd(abs_lnfk, _mm256_set1_pd(708.0), _CMP_GE_OQ);
     const __m256d not_valid = _mm256_andnot_pd(seed_valid, all_ones);

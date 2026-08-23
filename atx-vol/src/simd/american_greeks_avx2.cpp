@@ -172,7 +172,9 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
             // `lane_ok &&` chain rather than on the guard that exists to enforce it.
             // Reachable: sigma just above the kernel's 1e-8 floor makes hv = 0.5·sigma,
             // so sigma − hv lands AT 0.5·sigma and every lane of the sigma− solve
-            // refuses. Gated by SimdNanSafety.AmericanPutGreeksBatch_RefusedBumpSolve.
+            // refuses. NOT gated by a red test: SimdNanSafety.AmericanPutGreeksBatch_
+            // RefusedBumpSolve pins the behaviour but passes with and without this
+            // guard, because the refusal also clears `elig`. It is a pin, not a proof.
             // sigma+ boundary: price at S, S+hS, S-hS (vega, vanna+ leg).
             solve_put_boundary_pack_avx2(Sl, Kl, Tl, sig_p, rl, ql, m, sch, sc.bnd, sc.ws, pk, elig, ref);
             for (std::size_t l = 0; l < m; ++l) {
