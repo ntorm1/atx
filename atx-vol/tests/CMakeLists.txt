@@ -134,6 +134,13 @@ add_executable(atx-vol-tests
     surface_db_populate_test.cpp
     surface_db_build_test.cpp
     surface_db_admin_test.cpp
+    # atx-vol-chain-export: the per-contract fair-value/greek parquet emitter's
+    # schema + row-assembly seam (tools/chain_export.hpp). The driver TU
+    # (tools/chain_export_main.cpp) is argv/IO only and is NOT compiled here;
+    # every decision that can silently corrupt a published row lives in the
+    # header this suite includes (../tools is already a quoted-include root
+    # below, added for surface_db_build_cli.hpp).
+    chain_export_test.cpp
     mag7_dispersion_backtest_test.cpp
     spy_dispersion_pnl_test.cpp
     dispersion_run_test.cpp
@@ -201,6 +208,12 @@ add_executable(atx-vol-tests
     swap_leg_test.cpp                # swap-leg toolkit (contract bridge + signal probe)
     # stress-day fit-fidelity sprint (Task 2) — appended target:
     surface_db_populate_policy_test.cpp # populate publish gate: min_worst_frac_within_bidask=0.35
+    # R1 (top-of-book fit-refusal diagnosis): the MARK surface must be reachable
+    # when the risk-geometry oracle refuses -- the outputs contract
+    # (symbol_config_from_preset) and the fit_board rescue seam. Includes the
+    # src-private marketdata/corpus_board_fit.hpp (../src is already a PRIVATE
+    # quoted-include root below).
+    mark_rescue_test.cpp
     # THEO-1 — appended target: realized-vol estimator suite
     realized_vol_test.cpp
     # THEO-2 — appended target: breakeven replay suite

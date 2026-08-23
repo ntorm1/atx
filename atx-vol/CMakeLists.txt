@@ -890,6 +890,18 @@ if(ATX_BUILD_TOOLS)
     add_executable(atx-vol-surface-db-build tools/surface_db_build_main.cpp)
     target_link_libraries(atx-vol-surface-db-build PRIVATE atx::vol atx::core atx_warnings)
 
+    # Per-CONTRACT valuation export CLI: load one session's OPRA board, refit each
+    # symbol with its PERSISTED SurfaceDb SymbolFitConfig, price every listed leg,
+    # and write a `tblOptionIntradayHist`-shaped Parquet slice (market slice +
+    # srPrc/srVol + the nine SpiderRock greeks) that unions with the vendor store.
+    # The oracle bench emits JSON aggregates and surface-db-build emits SURFACES;
+    # this is the only per-contract emitter. Schema/row-assembly logic lives in
+    # tools/chain_export.hpp so it is testable without spawning the CLI; this TU
+    # is argv + I/O + the fit loop. Gate test: ChainExport
+    # (tests/chain_export_test.cpp).
+    add_executable(atx-vol-chain-export tools/chain_export_main.cpp)
+    target_link_libraries(atx-vol-chain-export PRIVATE atx::vol atx::core atx_warnings)
+
     # Surface-db MANAGEMENT/INSPECTION CLI: info / partitions / symbols / config
     # / query / verify over a built database, so verifying one needs no Python
     # binding. Thin shell over the surface_db_admin library
