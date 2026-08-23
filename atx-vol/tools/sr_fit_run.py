@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import pathlib
 import subprocess
 import sys
@@ -69,11 +70,23 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
 
     a.work.mkdir(parents=True, exist_ok=True)
+
+    # THE HIVE CACHE KEY MUST INCLUDE THE SYMBOL SET. A hive is a function of
+    # (date, bucket, symbols); keying it on (date, bucket) alone means a later
+    # run over a WIDER cohort silently reuses a NARROWER hive, and the score
+    # join then drops every symbol the first run did not transcode -- without a
+    # word, so the receipt carries a real number for the wrong population. This
+    # cost one 140-name breadth run that came back scoring 22.
+    sym_key = hashlib.sha1(
+        ",".join(sorted(s.strip().upper()
+                        for s in a.symbols.split(",") if s.strip())).encode()
+    ).hexdigest()[:8]
+
     receipts = []
     for bucket in [b.strip() for b in a.buckets.split(",") if b.strip()]:
         print(f"\n=== {a.tag} / bucket {bucket} ===", flush=True)
-        hive = a.work / f"hive-{a.date}-{bucket}"
-        und = a.work / f"und-{a.date}-{bucket}"
+        hive = a.work / f"hive-{a.date}-{bucket}-{sym_key}"
+        und = a.work / f"und-{a.date}-{bucket}-{sym_key}"
         if not (hive / f"date={a.date}" / "data.parquet").exists():
             run([sys.executable, str(TOOLS / "spiderrock_to_opra_hive.py"),
                  "--store", str(a.store), "--date", a.date, "--bucket-et", bucket,
