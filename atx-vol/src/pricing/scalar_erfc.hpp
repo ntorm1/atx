@@ -55,6 +55,7 @@
 #include <cmath>    // std::fabs, std::nearbyint
 #include <cstdint>  // std::uint64_t / int64_t
 #include <cstring>  // std::memcpy
+#include <limits>  // std::numeric_limits (exp overflow)
 
 #if defined(_MSC_VER)
 #  define ATX_SERFC_INLINE __forceinline
@@ -73,7 +74,6 @@ inline constexpr double kLn2Hi = 0.6931471805599453;
 inline constexpr double kLn2Lo = 2.3190468138462996e-17;
 inline constexpr double kInvLn2 = 1.4426950408889634;
 inline constexpr double kExpHi = 709.782712893384;
-inline constexpr double kExpLo = -745.13321910194;
 // ln(DBL_MIN): the 2^N reconstruction builds only NORMALIZED doubles, so an
 // argument below this (exp ≤ one denormal ULP) is flushed to exactly 0.
 inline constexpr double kExpMinNormal = -708.3964185322641;
@@ -122,21 +122,40 @@ ATX_SERFC_INLINE double pow2i(int n) noexcept {
 // r ∈ [−ln2/2, ln2/2], degree-11 Taylor, 2^N scaling. Arguments below
 // ln(DBL_MIN) flush to 0 (see kExpMinNormal). On this hot path x ≤ 0 always.
 [[nodiscard]] ATX_SERFC_INLINE double exp_cody(double x) noexcept {
-  if (x < serfc::kExpMinNormal) {
-    return 0.0; // underflow: exp(x) ≤ one denormal ULP
+  // SAFETY (UB): the compare is NEGATED, not `x < kExpMinNormal`. Every comparison in
+  // this function is ORDERED, so a NaN argument used to fall through the early-out AND
+  // both clamps, reach `Nf = nearbyint(NaN * kInvLn2)` = NaN, and hit
+  // `static_cast<int>(NaN)` at the bottom — a floating-to-integer conversion whose
+  // source is not representable, which is UNDEFINED BEHAVIOUR ([conv.fpint]/1), not
+  // merely an unspecified value. The path is real: norm_cdf_erfc(NaN) -> erfc_nonneg
+  // (y = NaN, so `y <= 0.46875` is false) -> exp_cody(-NaN). `!(x >= lo)` takes the
+  // branch for NaN as well as for genuine underflow; the two are then separated so a
+  // NaN still leaves as a NaN (std::exp semantics) instead of as a plausible 0.0.
+  if (!(x >= serfc::kExpMinNormal)) {
+    return (x != x) ? x : 0.0; // NaN in => NaN out; else underflow to exactly 0
   }
-  double xc = x;
-  if (xc > serfc::kExpHi) xc = serfc::kExpHi;
-  if (xc < serfc::kExpLo) xc = serfc::kExpLo;
+  // Overflow, matching std::exp. kExpHi IS ln(DBL_MAX) to the last bit, so nothing
+  // above it has a finite representation. This used to CLAMP to kExpHi and lean on the
+  // 2^N reconstruction accidentally producing +inf for N = 1024; with that
+  // reconstruction corrected (the pow2i split at the bottom) a clamp would instead
+  // saturate and hand back a FINITE DBL_MAX for an argument that genuinely overflows.
+  // The lower clamp that used to sit beside it (xc < kExpLo) is unreachable — the
+  // early-out above already returned for every x below kExpMinNormal = ln(DBL_MIN),
+  // which is greater than the old kExpLo = ln(DBL_TRUE_MIN) = -745.13321910194 — so
+  // both the clamp and that now-unreferenced constant are gone rather than left as
+  // dead code (house style §9).
+  if (x > serfc::kExpHi) {
+    return std::numeric_limits<double>::infinity();
+  }
 
-  const double Nf = std::nearbyint(xc * serfc::kInvLn2); // round-to-nearest-even
+  const double Nf = std::nearbyint(x * serfc::kInvLn2); // round-to-nearest-even
   // Cody-Waite two-part reduction, FUSED (std::fma) to mirror exp_pd's
   // _mm256_fnmadd_pd exactly. kLn2Hi is the full-width double for ln2 (not a
   // truncated hi part), so Nf·kLn2Hi is NOT exact for |Nf|>1; a NON-fused
   // subtraction would leak ~Nf·ULP (≈1e-14 in the deep wings, |Nf|~144),
   // dragging erfc/φ off the ≈1e-16 the fused AVX2 path holds. The single-
   // rounding fma keeps the product's low bits, restoring machine precision.
-  double r = std::fma(-Nf, serfc::kLn2Hi, xc);
+  double r = std::fma(-Nf, serfc::kLn2Hi, x);
   r = std::fma(-Nf, serfc::kLn2Lo, r);
 
   // Degree-13 Taylor (two terms past exp_pd's degree-11). At the reduction-
@@ -160,7 +179,19 @@ ATX_SERFC_INLINE double pow2i(int n) noexcept {
   p = std::fma(p, r, 1.0);
   p = std::fma(p, r, 1.0);
 
-  return p * serfc::pow2i(static_cast<int>(Nf));
+  // SAFETY (precondition): pow2i builds a NORMALIZED double from a biased exponent and
+  // is only defined for n in [-1022, 1023]. Nf reaches 1024 at the TOP of the clamped
+  // range — kExpHi = 709.782712893384 rounds to exactly 1024·ln2 — and pow2i(1024)
+  // lays down the inf/NaN exponent pattern, so exp_cody(kExpHi) returned +inf where
+  // std::exp returns ≈1.7976931348622732e308, just under DBL_MAX. Splitting the scale
+  // into 2^(n-1)·2 keeps every intermediate normalized and overflows only if the true
+  // result genuinely does. n < -1022 cannot occur: the early-out above already
+  // returned for every x below ln(DBL_MIN), whose Nf is ≥ -1022.
+  const int n = static_cast<int>(Nf);
+  if (n > 1023) {
+    return (p * serfc::pow2i(n - 1)) * 2.0;
+  }
+  return p * serfc::pow2i(n);
 }
 
 // erfc(y) for y ≥ 0, scalar (port of erfc_nonneg_pd) — branch-selects the ONE

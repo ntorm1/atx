@@ -18,6 +18,7 @@
 #include "atx/vol/api/pricing/american.hpp" // andersen_lake
 #include "fitting/counters.hpp" // BoundarySolves / AlBoundarySolves — per-contract ledger
 
+#include <cassert>
 #include <cstddef>
 #include <limits>
 #include <optional>
@@ -104,6 +105,23 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
     for (; i < n; ++i) {
         price_out[i] = scalar_put(S[i], K[i], T[i], sigma[i], r[i], q[i], opts);
     }
+}
+
+void bary_eval_pack_avx2(const double* znodes, const double* wbary, const double* y,
+                         unsigned nb, const double* zq, double* out) noexcept {
+    // Zero-initialised (house style §3: no uninitialised variables) even though every
+    // element below n_use is written before use — the probe must not depend on that.
+    __m256d Y[amer::kAlMaxNodes] = {};
+    // An over-long nb is a CALLER BUG, not something to silently reinterpolate on a
+    // truncated grid: clamping would quietly evaluate a DIFFERENT interpolant and
+    // return a plausible number. Assert in debug; the clamp only keeps release
+    // memory-safe.
+    assert(nb <= amer::kAlMaxNodes && "bary_eval_pack_avx2: nb exceeds kAlMaxNodes");
+    const unsigned n_use = (nb < amer::kAlMaxNodes) ? nb : amer::kAlMaxNodes;
+    for (unsigned j = 0; j < n_use; ++j) {
+        Y[j] = _mm256_set1_pd(y[j]);
+    }
+    _mm256_storeu_pd(out, cheb_eval_pd(znodes, wbary, Y, n_use, _mm256_loadu_pd(zq)));
 }
 
 } // namespace atx::vol::simd::detail

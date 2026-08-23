@@ -9,10 +9,16 @@ namespace atx::vol::simd {
 
 namespace {
 
-void greeks_batch_scalar(const double* F, const double* K, const double* T,
-                         const double* sigma, const double* r, const double* df,
-                         const Side* side, Greeks* greeks_out,
-                         double* price_out, std::size_t n) noexcept {
+// SAFETY (__restrict, T9): non-aliasing is already this API's documented precondition
+// ("the outputs must not alias the inputs"), but nothing in the code said so — there was
+// no `restrict` anywhere under src/simd or src/pricing. Only the file-local SCALAR
+// fallback is annotated; the AVX2 kernels use explicit loads/stores and are untouched,
+// so no number moves on either route. See pnl_batch.cpp for the full rationale.
+void greeks_batch_scalar(const double* __restrict F, const double* __restrict K,
+                         const double* __restrict T, const double* __restrict sigma,
+                         const double* __restrict r, const double* __restrict df,
+                         const Side* __restrict side, Greeks* __restrict greeks_out,
+                         double* __restrict price_out, std::size_t n) noexcept {
     for (std::size_t i = 0; i < n; ++i) {
         const Black76Greeks g =
             black76_greeks(F[i], K[i], T[i], sigma[i], r[i], df[i], side[i]);
@@ -29,10 +35,11 @@ void greeks_batch_scalar(const double* F, const double* K, const double* T,
 // SoA scalar reference: identical numbers to the AoS loop, scattered per column
 // (null columns skipped). The numerical source of truth the AVX2 SoA path grades
 // against and the fallback on a non-AVX2 host.
-void greeks_batch_soa_scalar(const double* F, const double* K, const double* T,
-                             const double* sigma, const double* r,
-                             const double* df, const Side* side,
-                             const GreeksBatchSoA& out, std::size_t n) noexcept {
+void greeks_batch_soa_scalar(const double* __restrict F, const double* __restrict K,
+                             const double* __restrict T, const double* __restrict sigma,
+                             const double* __restrict r, const double* __restrict df,
+                             const Side* __restrict side, const GreeksBatchSoA& out,
+                             std::size_t n) noexcept {
     for (std::size_t i = 0; i < n; ++i) {
         const Black76Greeks g =
             black76_greeks(F[i], K[i], T[i], sigma[i], r[i], df[i], side[i]);
