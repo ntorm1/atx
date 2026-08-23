@@ -41,12 +41,6 @@ $regressionBoundMultiplier = 1.01
 # them lags does not fail loudly at the axis — it rejects a perfectly good
 # receipt later, at whichever layer was missed.
 $script:OracleInputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry', 'discrete_dividend_tree__rate__sdiv_yield')
-# The input-model count BEFORE the discrete-dividend-tree arm widened the enum
-# (8 -> 9). The legacy grid rungs below are stated against THIS count, never
-# against $script:OracleInputModelCount: a committed pre-tree receipt carries a
-# 48/24/8-candidate registry, and deriving those rungs from the now-9-wide list
-# would silently turn them into 54/27/9 and reject every one of them.
-$script:OraclePreTreeInputModelCount = 8
 $script:OracleExerciseStyles = @('american_all', 'european_cash_settled_index', 'european_cash_settled_index_plus_empirical')
 $script:OracleTimeDecayMethods = @('analytic_derivative', 'secant_252')
 $script:OracleInputModelCount = $script:OracleInputModels.Count
@@ -64,21 +58,20 @@ $script:OracleCandidateCount = $script:OracleInputModelCount * $script:OracleTie
 # input models, never two candidates overall, and therefore exactly the number of
 # candidates carrying a positive `tune_sample_count` on a sweep receipt.
 $script:OracleFinalistCount = 2 * $script:OracleTiedArmsPerInputModel
-# The grids this probe accepts, newest first: the CURRENT one, then the three
-# narrower ones it grew from. Unlike the workflow validator — which only ever
-# sees a gate receipt freshly produced at the tested SHA and is therefore
-# pinned to the current grid alone — this probe validates receipts COMMITTED
-# before an axis (or the ninth input model) existed and MUST keep reporting
-# them valid, for exactly the reason Test-ConventionMap keeps `exercise_style`
-# and `time_decay_method` optional. The legacy rungs are stated against the
-# PRE-TREE input-model count on purpose — see $script:OraclePreTreeInputModelCount.
-# Retiring a rung here means regenerating the committed bootstrap receipts in
-# the same commit.
+# The grids this probe accepts: exactly the CURRENT one. The three narrower
+# legacy rungs this list once carried (48/12 pre-tree three-axis, 24/6
+# two-axis, 8/2 pre-axis) were RETIRED in the same commit that regenerated the
+# committed bootstrap receipts onto the current 54-candidate grid — the rule
+# this block has always stated. They existed only because the probe validates
+# receipts COMMITTED before an axis (or the ninth input model) existed;
+# with the receipts regenerated, a legacy rung would accept a registry no
+# committed receipt carries. The workflow validator stays pinned to the
+# current grid for its own reason: it only ever sees a receipt freshly
+# produced at the tested SHA. If a future axis widening cannot regenerate the
+# committed receipts in the same commit, the outgoing grid must be
+# re-introduced here as an explicit rung — never widened silently.
 $script:OracleAcceptedCandidateGrids = @(
-  @{ Candidates = $script:OracleCandidateCount; Finalists = $script:OracleFinalistCount },
-  @{ Candidates = $script:OraclePreTreeInputModelCount * $script:OracleTiedArmsPerInputModel; Finalists = $script:OracleFinalistCount },
-  @{ Candidates = $script:OraclePreTreeInputModelCount * $script:OracleExerciseStyleCount; Finalists = 2 * $script:OracleExerciseStyleCount },
-  @{ Candidates = $script:OraclePreTreeInputModelCount; Finalists = 2 }
+  @{ Candidates = $script:OracleCandidateCount; Finalists = $script:OracleFinalistCount }
 )
 
 function Invoke-GitText([string[]]$GitArgs) {
@@ -413,8 +406,8 @@ function Test-ConventionMap($Map) {
 # top TWO input models, never two candidates overall. Both numbers come from
 # $script:OracleAcceptedCandidateGrids at the top of this file, which is the ONE
 # place the grid arithmetic is written; see that block before changing anything
-# here, including the note on why this probe accepts the narrower pre-axis grids
-# and the workflow validator does not.
+# here, including the note on how the legacy pre-axis rungs were retired when
+# the committed receipts were regenerated onto the current grid.
 function Test-CandidatePrices($Candidates) {
   $items = @($Candidates)
   $finalists = -1
