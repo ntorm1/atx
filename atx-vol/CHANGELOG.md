@@ -58,9 +58,24 @@ count. `ByDelta` over a marks-only frame is `InvalidArgument`, not a book-wide
 unkeyed bucket: "no delta was computed" and "this position has no delta" are
 different facts.
 
-**No existing number moves.** The four-argument overload forwards to the new one
-with an empty ladder, so `ByUnderlier` / `ByExpiry` are bit-identical; a laddered
-key through it is `InvalidArgument` rather than an invented single-band ladder.
+**Bands are LOWER-CLOSED, `[edges[i-1], edges[i])`**, so a value landing exactly
+on an edge joins the band that edge OPENS. Worth stating in a changelog because
+it is not a corner case: an at-the-money strike makes `k = ln(K / F)` exactly
+`0.0`, so under the mirror convention every ATM lane on a ladder with a `0.0`
+edge reports as a put wing, and a lot at exactly 0.50 delta sits one band low on
+`default_delta_ladder()`.
+
+**No existing number moves *for this entry*** — and read the `abs_vega` entry
+below before quoting that, because it moves one in these same buckets. What holds
+here is bit-identity between the two OVERLOADS, not against the previous release:
+the four-argument form forwards to the new one with an empty ladder, so
+`ByUnderlier` / `ByExpiry` return column-for-column what they returned, with
+`abs_vega` the single exception the next entry describes. A laddered key through
+the four-argument form is `InvalidArgument` rather than an invented single-band
+ladder. The ladder is left UNVALIDATED as well as unread for the two
+contract-only keys: it is documented as ignored there, and validating something
+neither overload reads would make a malformed ladder reject a `ByUnderlier`
+reduction that the four-argument form accepts.
 Keying stays a pure function of `(contract, ladder)` with accumulation in fixed
 input order, so the laddered buckets are thread-count invariant for exactly the
 reason the original two were. `reduce_pnl_risk_buckets` refuses the new keys —

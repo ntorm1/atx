@@ -2564,8 +2564,21 @@ void PortfolioPricer::retained_marks(const PortfolioWorkspace &ws,
 namespace {
 
 // True for the two keys that need RiskBucketLadder edges to mean anything.
+//
+// An exhaustive switch with no `default` rather than the obvious two-term
+// disjunction (house style S3): a sixth enumerator must not be able to acquire
+// an answer here by falling off the end of a hand-written condition. The
+// compiler names every site that has to be revisited instead.
 [[nodiscard]] constexpr bool is_laddered_key(RiskBucketKey by) noexcept {
-  return by == RiskBucketKey::ByLogMoneyness || by == RiskBucketKey::ByDelta;
+  switch (by) {
+  case RiskBucketKey::ByLogMoneyness:
+  case RiskBucketKey::ByDelta:
+    return true;
+  case RiskBucketKey::ByUnderlier:
+  case RiskBucketKey::ByExpiry:
+    return false;
+  }
+  return false; // a value outside the enumeration, e.g. from a bad cast
 }
 
 [[nodiscard]] constexpr bool is_known_key(RiskBucketKey by) noexcept {
@@ -2579,12 +2592,37 @@ namespace {
   return false; // a value outside the enumeration, e.g. from a bad cast
 }
 
-// Band index of `x` on `edges`: the count of edges strictly below it, so band i
-// is the half-open [edges[i-1], edges[i]) and an exact hit on an edge belongs to
-// the band that edge OPENS. Pure, total over finite x, and independent of visit
-// order — which is the whole determinism argument for the laddered keys.
+// The keys `reduce_pnl_risk_buckets` can serve. Exhaustive for the same reason
+// as the two above: PnlFrame carries neither a reference forward nor a
+// base-frame delta, so the laddered keys are refused rather than approximated,
+// and a future enumerator must be classified here deliberately.
+[[nodiscard]] constexpr bool pnl_key_supported(RiskBucketKey by) noexcept {
+  switch (by) {
+  case RiskBucketKey::ByUnderlier:
+  case RiskBucketKey::ByExpiry:
+    return true;
+  case RiskBucketKey::ByLogMoneyness:
+  case RiskBucketKey::ByDelta:
+    return false;
+  }
+  return false; // a value outside the enumeration, e.g. from a bad cast
+}
+
+// Band index of `x` on `edges`: the count of edges `<= x`, so band i is the
+// half-open [edges[i-1], edges[i]) the header promises and an exact hit on an
+// edge belongs to the band that edge OPENS. Pure, total over finite x, and
+// independent of visit order — which is the whole determinism argument for the
+// laddered keys.
+//
+// upper_bound, NOT lower_bound, and the difference is not cosmetic. lower_bound
+// counts edges strictly below x, which is the MIRROR convention (edges[i-1],
+// edges[i]] — upper-CLOSED — and it silently misplaces exactly the lane that
+// matters most: an at-the-money strike gives k = ln(K/F) == 0.0 exactly, so with
+// a 0.0 edge every ATM lane would land in the put wing instead of the ATM band,
+// and a lot at exactly 0.50 delta would sit one band low on the shipped ladder.
+// Reachable, silent, and on the commonest input there is.
 [[nodiscard]] std::uint64_t ladder_band(std::span<const double> edges, double x) noexcept {
-  const auto it = std::lower_bound(edges.begin(), edges.end(), x);
+  const auto it = std::upper_bound(edges.begin(), edges.end(), x);
   return static_cast<std::uint64_t>(it - edges.begin());
 }
 
@@ -2607,6 +2645,14 @@ find_forward(std::span<const RiskBucketForward> forwards, std::uint32_t uid) noe
 // every failure here is InvalidArgument, so the code is not worth carrying.
 [[nodiscard]] const char *validate_ladder(const RiskBucketLadder &ladder,
                                           RiskBucketKey by) noexcept {
+  // A contract-only key reads NOTHING out of the ladder, and the header promises
+  // it is ignored for exactly that reason. Validating it anyway made the promise
+  // false: `ladder.edges = {0.10, -0.10}` turned a ByUnderlier reduction into
+  // InvalidArgument where the four-argument overload returns buckets, so the two
+  // spellings of the same reduction disagreed on a ladder neither of them reads.
+  if (!is_laddered_key(by)) {
+    return nullptr;
+  }
   for (std::size_t i = 0; i < ladder.edges.size(); ++i) {
     if (!std::isfinite(ladder.edges[i])) {
       return "reduce_risk_buckets: ladder edge is not finite";
@@ -2812,8 +2858,11 @@ Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, con
     return Err(ErrorCode::InvalidArgument,
                "reduce_risk_buckets: a laddered key needs the RiskBucketLadder overload");
   }
-  static const RiskBucketLadder kNoLadder{};
-  return reduce_risk_buckets(frame, pf, by, kNoLadder, grand);
+  // Not `static`: construction allocates nothing (two empty vectors), so a
+  // function-local static would buy a thread-safe-init guard and an exit-time
+  // destructor for a value cheaper than the guard that protects it.
+  const RiskBucketLadder no_ladder{};
+  return reduce_risk_buckets(frame, pf, by, no_ladder, grand);
 }
 
 RiskBucketLadder default_log_moneyness_ladder() {
@@ -2844,7 +2893,7 @@ reduce_pnl_risk_buckets(const PnlFrame &frame, const Portfolio &pf, RiskBucketKe
   // which PnlFrame does not carry, and inventing one from the shifted frame would
   // be a different (and wrong) statistic. Refused explicitly rather than silently
   // collapsing onto a whole-book bucket.
-  if (by != RiskBucketKey::ByUnderlier && by != RiskBucketKey::ByExpiry) {
+  if (!pnl_key_supported(by)) {
     return Err(ErrorCode::InvalidArgument,
                "reduce_pnl_risk_buckets: only ByUnderlier and ByExpiry are supported");
   }
@@ -2902,10 +2951,24 @@ reduce_pnl_risk_buckets(const PnlFrame &frame, const Portfolio &pf, RiskBucketKe
     if (frame.status[i] != PriceStatus::Ok) {
       continue;
     }
-    const double T = by == RiskBucketKey::ByExpiry ? positions[i].contract.T : 0.0;
-    const std::uint64_t key = by == RiskBucketKey::ByUnderlier
-                                  ? positions[i].contract.uid
-                                  : std::bit_cast<std::uint64_t>(T);
+    // Switched, not ternaried, for the same reason the price-side keying is:
+    // under an if-chain a new enumerator that slipped past the gate above would
+    // silently key as ByExpiry. `pnl_key_supported` has already refused every
+    // key this switch does not handle, so the unreachable arms assert that.
+    double T = 0.0;
+    std::uint64_t key = 0;
+    switch (by) {
+    case RiskBucketKey::ByUnderlier:
+      key = positions[i].contract.uid;
+      break;
+    case RiskBucketKey::ByExpiry:
+      T = positions[i].contract.T;
+      key = std::bit_cast<std::uint64_t>(T);
+      break;
+    case RiskBucketKey::ByLogMoneyness:
+    case RiskBucketKey::ByDelta:
+      return Err(ErrorCode::Internal, "reduce_pnl_risk_buckets: unsupported key reached keying");
+    }
     const auto [slot, inserted] = bucket_slots.try_emplace(key, buckets.size());
     if (inserted) {
       buckets.push_back(PnlRiskBucket{key, T, PnlTotals{}});

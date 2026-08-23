@@ -651,6 +651,13 @@ struct RiskBucketLadder {
   // Strictly increasing, all finite. `n` edges make `n + 1` bands, keyed 0..n:
   // band i is the half-open [edges[i-1], edges[i]) with edges[-1] = -inf and
   // edges[n] = +inf. An EMPTY edge list is legal and means one whole-book band.
+  //
+  // LOWER-CLOSED, upper-open: a value that lands exactly ON an edge belongs to
+  // the band that edge OPENS. This is the case to get right rather than the
+  // pedantic corner it looks like — an at-the-money strike gives
+  // `k = ln(K / F) == 0.0` exactly, so under the mirror convention every ATM
+  // lane on a ladder with a 0.0 edge would report as a put wing, and a lot at
+  // exactly 0.50 delta would sit one band low on `default_delta_ladder()`.
   std::vector<double> edges;
   // ByLogMoneyness only: ascending by `uid`, no duplicates, every F finite and
   // positive. Must be non-empty for ByLogMoneyness — an empty table would place
@@ -704,9 +711,13 @@ reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf, RiskBucketKey 
 // The laddered form. Identical contract to the overload above, plus:
 //
 //   * ByLogMoneyness bands `k = ln(K / F(uid))`, with F looked up in
-//     `ladder.forwards`. A lane whose uid is absent from that table keys to
-//     kRiskBucketUnkeyed. `forwards` must be ascending-unique with every F
-//     finite and positive, and non-empty, or the call is InvalidArgument.
+//     `ladder.forwards`. A lane keys to kRiskBucketUnkeyed when its uid is
+//     absent from that table, or when its strike is non-finite or not positive
+//     (the pricing path stamps such a contract InvalidContract rather than Ok,
+//     but this reduction accepts any Ok-stamped frame a caller hands it, so the
+//     log is guarded rather than assumed). `forwards` must be ascending-unique
+//     with every F finite and positive, and non-empty, or the call is
+//     InvalidArgument.
 //   * ByDelta bands the PER-SHARE delta, recovered as
 //     `frame.delta[i] / (qty * multiplier)` — the frame's Greek columns are
 //     position-scaled, and a delta ladder is a per-contract statement. It
@@ -715,9 +726,11 @@ reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf, RiskBucketKey 
 //     was computed" and "this position has no delta" are different facts. A lane
 //     whose position weight is zero or non-finite, or whose delta column value
 //     is non-finite, keys to kRiskBucketUnkeyed.
-//   * `ladder` is IGNORED for ByUnderlier and ByExpiry, so a caller that loops
-//     over every key with one ladder in hand gets the same numbers the overload
-//     above returns, bit for bit.
+//   * `ladder` is IGNORED for ByUnderlier and ByExpiry — not merely unread, but
+//     UNVALIDATED too, so a caller that loops over every key with one ladder in
+//     hand gets the same numbers the overload above returns, bit for bit, even
+//     if that ladder would be rejected for a laddered key. Validating a ladder
+//     nothing reads would make this sentence false rather than strict.
 //
 // Keying is a pure function of (contract, ladder) and, for ByDelta, of one frame
 // element — no accumulation and no dependence on visit order — so the ladder adds

@@ -44,7 +44,7 @@ comparability and is NEVER gated, so "Met?" is judged on symmetric.
 | Mode A deDecay | <= 1% rel | 0.0903 | 0.8085 | NO |
 | Mode B vol | <= 10 bp | **442.79 bp** | | NO |
 | Mode B price | <= 2 ticks | **35.52 ticks** | | NO |
-| Speed | >= pinned baseline | see Speed below | | YES |
+| Speed | >= pinned baseline | 9958.75 rows/s vs pin 8962 | | YES |
 
 **Delta is the first and so far only accuracy target met** (0.0022 against 0.01).
 Price MAE is 8.7x its target — down from 376x, on the strength of a resolved input
@@ -84,23 +84,35 @@ escrow-era floor the regeneration reset.
 
 ## Speed
 
-Two pins, on two different measurements, and they are NOT interchangeable — the
-rows/s figures are not comparable across them because the per-row work differs.
+**ONE pin, not two.** `speed.metric_id = rel_avx2_rows_per_second`, measured by
+`convention_speed_measure` on a quiet host, rel-avx2, 264,026 rows:
 
-- **Convention sweep pin (current, `54024add`)**, from `convention_speed_measure`
-  on a quiet host, rel-avx2, 264,026 rows: baseline **9958.75 rows/s**, pin **8962**
-  = `floor(baseline * 0.90)`. Source: `atx-vol/bench/oracle/CONVENTIONS.md`.
-- **Ratchet pin (iter-000)**, `rel_avx2_rows_per_second`: baseline
-  3469.4698564618907, pin 3122 = `floor(baseline * 0.90)`. Re-measured 3857.54
-  rows/s on a quiet host.
+- baseline: **9958.75 rows/s** (`9958.7451327843`)
+- pin: **8962 rows/s** = `floor(baseline * 0.90)`
 
-In both cases the pin is DERIVED, never copied — a pin equal to the baseline makes
-re-measurement a coin flip on run-to-run noise, and the validator rejects any pin
-above `baseline * 0.95`.
+The pin is DERIVED, never copied — a pin equal to the baseline turns
+re-measurement into a coin flip on run-to-run noise, so the 10% margin is part of
+the contract and the validator rejects any pin above `baseline * 0.95`.
 
-Neither `diagnostic_speed` figure is performance evidence: the iter-000 sweep's
-(dev preset, ~770 rows/s) and the convention sweep's (rel-avx2 full attribution,
-2646.7 rows/s over 105.0 s) both carry `citable: false`.
+`diagnostic_speed` is NOT the pin and is not performance evidence: rel-avx2 full
+attribution, 2646.7 rows/s over 105.0 s, committed with `citable: false`.
+
+Both objects are copied from `atx-vol/bench/oracle/scorecards/iter-000.json` —
+the same file the Ratchet-baseline row above names — and they agree cell for cell
+with the Speed-pin section of `atx-vol/bench/oracle/CONVENTIONS.md`. Re-derive:
+
+```
+python -c "import json;d=json.load(open('atx-vol/bench/oracle/scorecards/iter-000.json'));print(d['speed'],d['diagnostic_speed'])"
+```
+
+This section previously published a **second, invented pin** — baseline
+3469.4698564618907 / pin 3122, a "re-measured 3857.54 rows/s", and a "dev preset,
+~770 rows/s" diagnostic — attributed to iter-000. None of those four numbers
+appears in the scorecard or in `CONVENTIONS.md`; 3469.47 was an escrow-era
+convention-sweep figure, never a ratchet pin, and the scorecard carries exactly
+one `speed` object. Recorded rather than silently deleted, because a dashboard
+publishing numbers that exist in no source of record is the exact failure this
+file's regeneration was meant to end.
 
 ## Open leads, ranked
 

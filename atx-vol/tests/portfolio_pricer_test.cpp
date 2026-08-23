@@ -4360,6 +4360,46 @@ TEST(PortfolioPricer, I1_AdjointRouteAgreesWithTheFdRouteOnTheStamp) {
          bits_equal(a.charm, b.charm) && bits_equal(a.dP_dq, b.dP_dq) && a.n_ok == b.n_ok;
 }
 
+// L7-T2 fix round 1, F1. THE BAND ORACLE, WRITTEN AS THE DOCUMENTED INTERVAL
+// RATHER THAN AS A BOUND FUNCTION.
+//
+// The first version of this oracle called `std::lower_bound` — the same call the
+// implementation made — so when that call turned out to implement the MIRROR
+// convention (upper-closed `(lo, hi]` instead of the header's half-open
+// `[lo, hi)`) the oracle reproduced the bug and the suite stayed green. An
+// oracle that shares the implementation's spelling tests that the code equals
+// itself.
+//
+// So this scans EVERY band and selects the one whose interval actually contains
+// `x`, straight off the header's definition: band i is [edges[i-1], edges[i])
+// with edges[-1] = -inf and edges[n] = +inf. It also asserts that exactly one
+// band matches, which is what makes it an oracle rather than a second guess: a
+// ladder that is not a partition fails here instead of silently agreeing.
+[[nodiscard]] std::uint64_t documented_band(std::span<const double> edges, double x) {
+  const std::size_t n = edges.size();
+  std::uint64_t found = 0;
+  int matches = 0;
+  for (std::size_t i = 0; i <= n; ++i) {
+    const bool at_or_above_lower = (i == 0) || !(x < edges[i - 1]);
+    const bool below_upper = (i == n) || (x < edges[i]);
+    if (at_or_above_lower && below_upper) {
+      found = static_cast<std::uint64_t>(i);
+      ++matches;
+    }
+  }
+  EXPECT_EQ(matches, 1) << "the ladder does not partition the line at x = " << x;
+  return found;
+}
+
+// Mirrors `eff_multiplier` (src/backtest/portfolio_pricer.cpp): a non-finite or
+// non-positive deliverable falls back to 100. Spelled out rather than leaned on,
+// because every multiplier in the fixtures below happens to be 100.0 — so an
+// oracle that just multiplied by `multiplier` would agree with the pricer by
+// coincidence and diverge the moment a book exercised the fallback.
+[[nodiscard]] double eff_mult(double m) noexcept {
+  return (std::isfinite(m) && m > 0.0) ? m : 100.0;
+}
+
 // A two-underlier, three-expiry book (uid {1,2} x T {0.05,0.15,0.25}).
 [[nodiscard]] std::vector<Position> two_by_three_book() {
   return {
@@ -4625,14 +4665,11 @@ TEST(PortfolioPricer, G2_RiskBuckets_ByDelta_LaddersPerShareDeltaAndPartitionsTh
   const RiskBucketLadder ladder = default_delta_ladder();
   ASSERT_FALSE(ladder.edges.empty());
 
-  // Independent keying, written the way a caller would read the contract: band
-  // index = the number of edges strictly below the PER-SHARE delta.
+  // Independent keying, through the interval oracle rather than through the
+  // implementation's own bound call.
   const auto want_band = [&](std::size_t i) {
-    const double w = book[i].qty * book[i].multiplier;
-    const double per_share = f.delta[i] / w;
-    return static_cast<std::uint64_t>(
-        std::lower_bound(ladder.edges.begin(), ladder.edges.end(), per_share) -
-        ladder.edges.begin());
+    const double w = book[i].qty * eff_mult(book[i].multiplier);
+    return documented_band(ladder.edges, f.delta[i] / w);
   };
 
   PriceTotals grand{};
@@ -4727,9 +4764,7 @@ TEST(PortfolioPricer, G2_RiskBuckets_ByLogMoneyness_LaddersLnStrikeOverForward) 
   ladder.forwards = {RiskBucketForward{1, 100.0}, RiskBucketForward{2, 100.0}};
 
   const auto want_band = [&](std::size_t i) {
-    const double k = std::log(book[i].contract.K / 100.0);
-    return static_cast<std::uint64_t>(
-        std::lower_bound(ladder.edges.begin(), ladder.edges.end(), k) - ladder.edges.begin());
+    return documented_band(ladder.edges, std::log(book[i].contract.K / 100.0));
   };
 
   PriceTotals grand{};
@@ -4836,20 +4871,35 @@ TEST(PortfolioPricer, G2_RiskBuckets_LadderedKeysRejectMissingAndMalformedLadder
 
   // The ladder overload is a superset: handed a contract-only key it ignores the
   // ladder and returns exactly what the four-argument overload returns.
-  RiskBucketLadder ignored;
-  ignored.edges = {-0.10, 0.10};
-  for (const RiskBucketKey by : {RiskBucketKey::ByUnderlier, RiskBucketKey::ByExpiry}) {
-    PriceTotals plain_grand{}, laddered_grand{};
-    const auto plain = reduce_risk_buckets(f, pricer.portfolio(), by, &plain_grand);
-    const auto laddered = reduce_risk_buckets(f, pricer.portfolio(), by, ignored, &laddered_grand);
-    ASSERT_TRUE(plain.has_value() && laddered.has_value());
-    ASSERT_EQ(plain->size(), laddered->size());
-    for (std::size_t k = 0; k < plain->size(); ++k) {
-      EXPECT_EQ((*plain)[k].key, (*laddered)[k].key);
-      EXPECT_TRUE(totals_bits_equal((*plain)[k].totals, (*laddered)[k].totals));
+  //
+  // BOTH ladders, and the second one is the point. The header says the ladder is
+  // ignored for ByUnderlier / ByExpiry; validating it anyway made that false, so
+  // `{0.10, -0.10}` turned a ByUnderlier reduction into InvalidArgument while the
+  // four-argument overload returned buckets — two spellings of one reduction
+  // disagreeing over a ladder neither of them reads. A valid ladder cannot
+  // witness that, which is why the earlier version of this loop passed.
+  RiskBucketLadder well_formed;
+  well_formed.edges = {-0.10, 0.10};
+  RiskBucketLadder malformed;
+  malformed.edges = {0.10, -0.10};
+  const auto expect_superset = [&](const RiskBucketLadder &ladder, const char *scenario) {
+    SCOPED_TRACE(scenario);
+    for (const RiskBucketKey by : {RiskBucketKey::ByUnderlier, RiskBucketKey::ByExpiry}) {
+      PriceTotals plain_grand{}, laddered_grand{};
+      const auto plain = reduce_risk_buckets(f, pricer.portfolio(), by, &plain_grand);
+      const auto laddered = reduce_risk_buckets(f, pricer.portfolio(), by, ladder, &laddered_grand);
+      ASSERT_TRUE(plain.has_value()) << plain.error().to_string();
+      ASSERT_TRUE(laddered.has_value()) << laddered.error().to_string();
+      ASSERT_EQ(plain->size(), laddered->size());
+      for (std::size_t k = 0; k < plain->size(); ++k) {
+        EXPECT_EQ((*plain)[k].key, (*laddered)[k].key);
+        EXPECT_TRUE(totals_bits_equal((*plain)[k].totals, (*laddered)[k].totals));
+      }
+      EXPECT_TRUE(totals_bits_equal(plain_grand, laddered_grand));
     }
-    EXPECT_TRUE(totals_bits_equal(plain_grand, laddered_grand));
-  }
+  };
+  expect_superset(well_formed, "well-formed ladder");
+  expect_superset(malformed, "ladder a laddered key would REJECT");
 
   // P&L attribution has no forward and no base-frame delta, so it refuses the
   // laddered keys outright rather than inventing a statistic.
@@ -4860,6 +4910,120 @@ TEST(PortfolioPricer, G2_RiskBuckets_LadderedKeysRejectMissingAndMalformedLadder
     ASSERT_FALSE(rejected.has_value());
     EXPECT_EQ(rejected.error().code(), ErrorCode::InvalidArgument);
   }
+}
+
+// ── L7-T2 fix round 1, F1: on-edge placement ────────────────────────────────
+//
+// The band edges are LOWER-CLOSED: a value landing exactly on an edge belongs to
+// the band that edge OPENS. This test exists because the implementation shipped
+// the mirror convention and neither the docs nor the suite caught it — the
+// oracle called the same `std::lower_bound` the implementation did, so it tested
+// that the code equals itself.
+//
+// Every expected band index below is a LITERAL, counted by hand off the header's
+// definition (band i = the count of edges <= x). Nothing here recomputes the
+// answer, so no later change to the implementation OR to `documented_band` can
+// quietly move these numbers. The pre-fix value is written beside each one: every
+// on-edge lane sat exactly one band low.
+TEST(PortfolioPricer, G2_RiskBuckets_OnEdgeValueLandsInTheBandThatEdgeOpens) {
+  const PricedSurface s1 = make_essvi(1, 3);
+  const SurfaceSet surfaces = set_of({&s1});
+
+  // ── ByDelta: exact hits on -0.90 / -0.50 / 0.50 / 0.90, plus 0.0 ─────────
+  //
+  // The delta column is OVERWRITTEN with exact values after pricing (the same
+  // technique G2_RiskBuckets_OneHundredThousandHighCardinalityIsDeterministic
+  // uses on pv): a solved American delta will never land on an edge to the bit,
+  // and the property under test is the comparison, not the pricer. Every weight
+  // is qty*multiplier = 100 and each n/100 below is exact in IEEE double, so the
+  // per-share delta really is the edge value rather than a neighbour of it.
+  const std::vector<Position> delta_book = {
+      {/*id*/ 1, {1, 100.0, 0.05, Side::Call}, +1.0, 100.0},
+      {/*id*/ 2, {1, 101.0, 0.05, Side::Call}, +1.0, 100.0},
+      {/*id*/ 3, {1, 102.0, 0.05, Side::Call}, +1.0, 100.0},
+      {/*id*/ 4, {1, 103.0, 0.05, Side::Call}, +1.0, 100.0},
+      {/*id*/ 5, {1, 104.0, 0.05, Side::Call}, +1.0, 100.0},
+  };
+  auto dpf = Portfolio::create(delta_book);
+  ASSERT_TRUE(dpf.has_value()) << dpf.error().to_string();
+  const PortfolioPricer delta_pricer(std::move(*dpf));
+  auto dfr = delta_pricer.price(surfaces);
+  ASSERT_TRUE(dfr.has_value()) << dfr.error().to_string();
+  PriceFrame df = std::move(*dfr);
+  ASSERT_TRUE(df.greeks_materialized());
+  ASSERT_EQ(df.size(), 5u);
+  for (std::size_t i = 0; i < df.size(); ++i) {
+    ASSERT_EQ(df.status[i], PriceStatus::Ok) << i;
+  }
+  // per-share delta after the divide-by-100: -0.90, -0.50, 0.00, 0.50, 0.90
+  const std::array<double, 5> scaled{-90.0, -50.0, 0.0, 50.0, 90.0};
+  for (std::size_t i = 0; i < df.size(); ++i) {
+    df.delta[i] = scaled[i];
+  }
+
+  const RiskBucketLadder delta_ladder = default_delta_ladder();
+  // {-0.90, -0.75, -0.50, -0.25, -0.10, 0.10, 0.25, 0.50, 0.75, 0.90}
+  ASSERT_EQ(delta_ladder.edges.size(), 10u);
+  const auto delta_buckets =
+      reduce_risk_buckets(df, delta_pricer.portfolio(), RiskBucketKey::ByDelta, delta_ladder);
+  ASSERT_TRUE(delta_buckets.has_value()) << delta_buckets.error().to_string();
+
+  //   -0.90 -> 1 edge  <= it -> band  1   (was 0 pre-fix)
+  //   -0.50 -> 3 edges <= it -> band  3   (was 2)
+  //    0.00 -> 5 edges <= it -> band  5   (unchanged: not on an edge)
+  //    0.50 -> 8 edges <= it -> band  8   (was 7)
+  //    0.90 -> 10 edges <= it -> band 10  (was 9)
+  const std::array<std::uint64_t, 5> want_delta_bands{1, 3, 5, 8, 10};
+  ASSERT_EQ(delta_buckets->size(), 5u) << "five distinct per-share deltas, five bands";
+  for (std::size_t i = 0; i < want_delta_bands.size(); ++i) {
+    const RiskBucket &b = (*delta_buckets)[i];
+    EXPECT_EQ(b.key, want_delta_bands[i])
+        << "per-share delta " << (scaled[i] / 100.0) << " landed in band " << b.key
+        << ", expected " << want_delta_bands[i]
+        << " — an on-edge value must join the band its edge OPENS";
+    EXPECT_EQ(b.totals.n_ok, 1u);
+  }
+
+  // ── ByLogMoneyness: an at-the-money strike is k == 0.0 EXACTLY ────────────
+  //
+  // K == F makes `std::log(K / F)` the log of exactly 1.0, which IEEE requires to
+  // be exactly +0.0 — so this is the everyday case, not a contrived one, and it
+  // is why the convention matters at all: with a 0.0 edge the mirror convention
+  // reports every at-the-money lane as a put wing.
+  const std::vector<Position> k_book = {
+      {/*id*/ 1, {1, 98.0, 0.05, Side::Call}, +1.0, 100.0},  // ln(0.98) = -0.02020...
+      {/*id*/ 2, {1, 100.0, 0.05, Side::Call}, +1.0, 100.0}, // ln(1.00) = +0.0 EXACTLY
+      {/*id*/ 3, {1, 103.0, 0.05, Side::Call}, +1.0, 100.0}, // ln(1.03) = +0.02956...
+  };
+  auto kpf = Portfolio::create(k_book);
+  ASSERT_TRUE(kpf.has_value()) << kpf.error().to_string();
+  const PortfolioPricer k_pricer(std::move(*kpf));
+  const auto kfr = k_pricer.price(surfaces);
+  ASSERT_TRUE(kfr.has_value()) << kfr.error().to_string();
+  ASSERT_EQ(kfr->total.n_ok, 3u);
+  ASSERT_TRUE(bits_equal(std::log(100.0 / 100.0), 0.0));
+
+  RiskBucketLadder k_ladder;
+  k_ladder.edges = {-0.02, 0.0, 0.02}; // the middle edge is the one under test
+  k_ladder.forwards = {RiskBucketForward{1, 100.0}};
+  const auto k_buckets =
+      reduce_risk_buckets(*kfr, k_pricer.portfolio(), RiskBucketKey::ByLogMoneyness, k_ladder);
+  ASSERT_TRUE(k_buckets.has_value()) << k_buckets.error().to_string();
+
+  //   k = -0.02020 -> 0 edges <= it -> band 0   (unchanged: not on an edge)
+  //   k = +0.00000 -> 2 edges <= it -> band 2   (was 1 pre-fix: the put wing)
+  //   k = +0.02956 -> 3 edges <= it -> band 3   (unchanged)
+  const std::array<std::uint64_t, 3> want_k_bands{0, 2, 3};
+  ASSERT_EQ(k_buckets->size(), 3u);
+  for (std::size_t i = 0; i < want_k_bands.size(); ++i) {
+    EXPECT_EQ((*k_buckets)[i].key, want_k_bands[i])
+        << "strike " << k_book[i].contract.K << " landed in band " << (*k_buckets)[i].key
+        << ", expected " << want_k_bands[i];
+    EXPECT_EQ((*k_buckets)[i].totals.n_ok, 1u);
+  }
+  // Called out separately because it is THE case: the at-the-money lane belongs
+  // to the band the 0.0 edge OPENS — band 2 == [0.0, 0.02) — not band 1.
+  EXPECT_EQ((*k_buckets)[1].key, 2u) << "the at-the-money lane must not report as a put wing";
 }
 
 TEST(PortfolioPricer, G2_RiskBuckets_LadderedKeysAreThreadCountInvariant) {
