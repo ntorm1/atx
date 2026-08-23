@@ -127,9 +127,14 @@ test('frozen numeric contracts have not drifted', () => {
   //                       RefusesAEuropeanMidAtTheDiscountedForwardIntrinsic,
   //                       DeepItmEuropeanPutBelowIntrinsicStillInverts,
   //                       AmericanRowsKeepTheAmericanBoundsAndInverter
-  assert.equal(O.ORACLE_BENCH_TEST_COUNT, 57,
-    'ORACLE_BENCH_TEST_COUNT drifted. It is 57 because 6950132f pinned the four OracleBenchModeB European-leg ' +
-    'cases (iter-002) on top of the 53 that ca493cfe left. Adding or removing an OracleBench gtest case moves ' +
+  //   57 -> 60  cc8965e8  Mode B tree-leg lattice inversion, three cases:
+  //                       TreeRoutedDividendRowsInvertOnTheLattice,
+  //                       RefusesATreeMidAtTheDividendAdjustedZeroVolFloor,
+  //                       DividendFreeRowsKeepTheContinuousInverterBitForBit
+  assert.equal(O.ORACLE_BENCH_TEST_COUNT, 60,
+    'ORACLE_BENCH_TEST_COUNT drifted. It is 60 because the Mode B tree-leg commit pinned the three ' +
+    'OracleBenchModeB lattice-inversion cases on top of the 57 that 6950132f left. Adding or removing an ' +
+    'OracleBench gtest case moves ' +
     'FOUR definition sites in one commit: the TEST() macros in atx-vol/tests/oracle_bench_test.cpp, ' +
     '$script:OracleBenchTestIds in scripts/oracle-targeted-gate.ps1, the mode_b_targeted_tests ' +
     'PASS_REGULAR_EXPRESSION in atx-vol/tests/CMakeLists.txt, and ORACLE_BENCH_TEST_COUNT in ' +
