@@ -666,6 +666,35 @@ notebook is very likely to also import `pyarrow` (directly, or transitively via
 `pandas`), so this is a product-level limitation on the intended workflow, not just
 a test-environment quirk.
 
+**MEASURED UPDATE, 2026-08-23 — one order now works, and `pandas` is the real trap.**
+Re-measured on this box (Python 3.12.2, pyarrow 18.0.0, pandas 2.2.1, current
+`_core`) the symmetry claimed above **no longer holds**, and the symptom string
+has changed with it (`A dynamic link library (DLL) initialization routine
+failed`, not `The specified procedure could not be found`):
+
+```
+import atxvol   then  import pyarrow / import pandas   ->  BOTH WORK
+import pyarrow  then  import atxvol                    ->  _core dies
+import pandas   then  import atxvol                    ->  _core dies
+```
+
+Two consequences, and the second is the one that bites:
+
+* The "separate processes" workaround is stricter than necessary **today**. A
+  single process is fine provided `atxvol` is imported first. Treat that as a
+  measured property of this toolchain, not a guarantee — the two orders were
+  genuinely symmetric when this section was written, so re-measure after any
+  Arrow or wheel bump rather than assuming.
+* **The trap is not spelled `pyarrow`.** `import pandas` pulls pyarrow in
+  transitively (`pandas.compat.pyarrow` → `pyarrow.lib`), so an innocuous
+  `import pandas` at the top of a module poisons a later `import atxvol` with a
+  message that never mentions pandas. Any module that touches both must put
+  `import atxvol` **above numpy, pandas and pyarrow alike**, and must be marked
+  so an import sorter does not "tidy" it back into breakage.
+  `atxvol/chain.py` documents and enforces this ordering for callers that reach
+  chain data through it; `tests/test_chain.py` was written the wrong way round
+  first and failed to collect, which is how this was found.
+
 **Known real fixes (neither implemented yet):**
 - A `delvewheel`-style repair step on the built wheel/extension that renames the
   vendored DLLs (content-hash suffix) and patches `_core`'s import table to match,
