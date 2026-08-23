@@ -265,6 +265,10 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec& spec, const OpraBatch
       load.snapshot_iso = di.snapshot_iso;
       load.r = spec.r;
       load.provenance_mode = spec.provenance_mode;
+      // The board's clock. Forwarded verbatim so every cell of one hive load
+      // shares a convention; the panel then stamps it onto QuoteFrame::time and
+      // data_install bakes Chain::T from it (OpraHiveSpec::time).
+      load.time = spec.time;
 
       const obd::MarketResolve mr =
           obd::resolve_market_inputs(spec.market_inputs, spec.missing_market_inputs, di.date,
