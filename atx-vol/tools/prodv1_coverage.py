@@ -23,10 +23,18 @@ only when a board census is supplied via --census-dir; without one, a symbol is
 scored over the days it was served or not and the churn figure is an upper bound
 on real instability. Say which you ran.
 
+--from/--to BOUND THE SESSIONS SCORED, because the corpus now straddles a
+roughly three-week hole between a July block and an August block, and pooling
+straight across that hole makes a name that was listed in July, delisted, and
+never re-listed in August indistinguishable from a name that genuinely churns
+day to day; with both unset every session the DB holds is used, exactly as
+before.
+
 Usage:
   python atx-vol/tools/prodv1_coverage.py --db C:/atx-data/surface-db/prodv1 \
       --admin-exe build-rel/bin/atx-vol-surface-db.exe \
-      --reports C:/atx-data/logs/prodv1
+      --reports C:/atx-data/logs/prodv1 \
+      [--from 2026-07-01] [--to 2026-08-07]
 """
 
 from __future__ import annotations
@@ -83,12 +91,29 @@ def main() -> int:
     ap.add_argument("--churn-top", type=int, default=15)
     ap.add_argument("--out-served", type=pathlib.Path,
                     help="write the per-symbol served matrix as CSV")
+    ap.add_argument("--from", dest="from_date", metavar="DATE",
+                    help="inclusive lower bound YYYY-MM-DD; unset = every session")
+    ap.add_argument("--to", dest="to_date", metavar="DATE",
+                    help="inclusive upper bound YYYY-MM-DD; unset = every session")
     args = ap.parse_args()
 
-    dates = partition_dates(args.admin_exe, args.db)
-    if not dates:
+    all_dates = partition_dates(args.admin_exe, args.db)
+    if not all_dates:
         print(f"no partitions in {args.db}", file=sys.stderr)
         return 1
+    dates = [d for d in all_dates
+             if (not args.from_date or d >= args.from_date)
+             and (not args.to_date or d <= args.to_date)]
+    if not dates:
+        print(f"window [{args.from_date or '-inf'} .. {args.to_date or '+inf'}] selects no "
+              f"sessions; {args.db} holds: {', '.join(all_dates)}", file=sys.stderr)
+        return 1
+    if args.from_date or args.to_date:
+        print(f"window [{args.from_date or min(dates)} .. {args.to_date or max(dates)}] -- "
+              f"{len(dates)} of {len(all_dates)} session(s) scored")
+    else:
+        print(f"window unset -- all {len(dates)} session(s) scored")
+
     served = {d: served_symbols(args.admin_exe, args.db, d) for d in dates}
 
     print(f"{'date':<12}{'loaded':>8}{'risk':>8}{'mark':>7}{'served':>8}"

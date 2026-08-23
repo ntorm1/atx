@@ -24,11 +24,19 @@ the loader does: a board with no strike carrying a two-sided call AND a
 two-sided put on any expiry cannot imply a spot. That reproduces the loader's
 own precondition rather than trusting a counter.
 
+--from/--to BOUND THE SESSIONS SCORED, because the corpus now straddles a
+roughly three-week hole between a July block and an August block, and pooling
+straight across that hole makes a name that was listed in July, delisted, and
+never re-listed in August indistinguishable from a name that genuinely churns
+day to day; with both unset every session the DB holds is used, exactly as
+before.
+
 Usage:
   python atx-vol/tools/served_vs_listed.py \
       --db C:/atx-data/surface-db/prodv1 \
       --admin-exe C:/atx/build-rel/bin/atx-vol-surface-db.exe \
-      --board-root C:/atx-data/opra-all --out C:/atx-data/logs/prodv1/gap.csv
+      --board-root C:/atx-data/opra-all --out C:/atx-data/logs/prodv1/gap.csv \
+      [--from 2026-07-01] [--to 2026-08-07]
 """
 
 from __future__ import annotations
@@ -103,14 +111,30 @@ def main() -> int:
     ap.add_argument("--board-root", type=pathlib.Path, required=True)
     ap.add_argument("--out", type=pathlib.Path)
     ap.add_argument("--top", type=int, default=15)
+    ap.add_argument("--from", dest="from_date", metavar="DATE",
+                    help="inclusive lower bound YYYY-MM-DD; unset = every session")
+    ap.add_argument("--to", dest="to_date", metavar="DATE",
+                    help="inclusive upper bound YYYY-MM-DD; unset = every session")
     args = ap.parse_args()
 
-    dates = [m.group(1) for m in
-             (PARTITION_RE.match(l) for l in run(args.admin_exe, "partitions",
-                                                 "--db", args.db).splitlines()) if m]
-    if not dates:
+    all_dates = [m.group(1) for m in
+                 (PARTITION_RE.match(l) for l in run(args.admin_exe, "partitions",
+                                                     "--db", args.db).splitlines()) if m]
+    if not all_dates:
         print("no partitions", file=sys.stderr)
         return 1
+    dates = [d for d in all_dates
+             if (not args.from_date or d >= args.from_date)
+             and (not args.to_date or d <= args.to_date)]
+    if not dates:
+        print(f"window [{args.from_date or '-inf'} .. {args.to_date or '+inf'}] selects no "
+              f"sessions; {args.db} holds: {', '.join(all_dates)}", file=sys.stderr)
+        return 1
+    if args.from_date or args.to_date:
+        print(f"window [{args.from_date or min(dates)} .. {args.to_date or max(dates)}] -- "
+              f"{len(dates)} of {len(all_dates)} session(s) scored")
+    else:
+        print(f"window unset -- all {len(dates)} session(s) scored")
 
     rows = []
     listed_by_day: dict[str, set[str]] = {}
