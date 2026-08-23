@@ -43,8 +43,25 @@ comparability and is NEVER gated, so "Met?" is judged on symmetric.
 | Mode A vanna | <= 1% rel | 0.0277 | 0.0341 | NO |
 | Mode A deDecay | <= 1% rel | 0.0903 | 0.8085 | NO |
 | Mode B vol | <= 10 bp | **442.79 bp** | | NO |
-| Mode B price | <= 2 ticks | **35.52 ticks** | | NO |
-| Speed | >= pinned baseline | 9958.75 rows/s vs pin 8962 | | YES |
+| Mode B price | <= 2 ticks | **35.52 ticks** ‡ | | NO |
+| Speed | >= pinned baseline | 9958.75 rows/s = the baseline itself † | | n/a |
+
+† **NOT A PASSING GATE, and it is marked `n/a` rather than YES for exactly that
+reason.** `speed.baseline` and `speed.pin` are the only two speed numbers in
+`iter-000.json`; there is NO measured run beside them, and the pin is derived as
+`floor(baseline * 0.90)`. So printing the baseline in the Current column and
+comparing it to the pin evaluates `baseline >= 0.9 * baseline`, which cannot read
+NO no matter what the engine does. The cell had a YES in it, and that YES was a
+verdict this dashboard never computed. It goes back to YES the moment a
+re-measurement is taken and recorded; until then the honest reading is that the
+pin is SET and unverified. (The row is not deleted, because a target with no
+measurement is itself a fact about loop state.)
+
+‡ Not an accuracy result either, though for a different reason and the verdict
+stands: Mode B re-prices the mid it inverted, so `mode_b_price_mae` is near an
+identity for `|mid - srPrc|` — a property of SpiderRock's smoothing rather than of
+our pricing. See the Mode B section. Marked here so the table carries its own
+caveat instead of relying on a reader reaching the prose.
 
 **Delta is the first and so far only accuracy target met** (0.0022 against 0.01).
 Price MAE is 8.7x its target — down from 376x, on the strength of a resolved input
@@ -93,6 +110,16 @@ escrow-era floor the regeneration reset.
 The pin is DERIVED, never copied — a pin equal to the baseline turns
 re-measurement into a coin flip on run-to-run noise, so the 10% margin is part of
 the contract and the validator rejects any pin above `baseline * 0.95`.
+
+**And that is the whole speed record: a pin, with nothing measured against it
+yet.** The scorecard has no third field — no `measured`, no `current` — and
+`iter-000.json` is the only scorecard in `bench/oracle/scorecards/`. So the
+Targets table above reports Speed as `n/a`, not YES: the number in its Current
+column IS the baseline, and `baseline >= floor(baseline * 0.90)` is arithmetic,
+not a gate. The first genuine re-measurement turns that cell into a verdict; it
+is not one now. Anyone taking that measurement should record it in the scorecard
+first and let this file follow, in the direction this whole section is meant to
+flow.
 
 `diagnostic_speed` is NOT the pin and is not performance evidence: rel-avx2 full
 attribution, 2646.7 rows/s over 105.0 s, committed with `citable: false`.
