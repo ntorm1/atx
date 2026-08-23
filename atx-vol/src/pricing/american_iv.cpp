@@ -150,6 +150,8 @@ struct PolishTrace {
   double xh{0.0};
   bool ran{false};     // the cold-AL polish path executed
   bool clamped{false}; // a polish iterate was clamped/rejected back into [xl, xh]
+  bool bolted{false};  // price-unit extension evaluated a beyond-drift-cap iterate
+  bool bolt_reverted{false}; // ... and rejected one that failed to reduce the residual
 };
 
 struct ThreadAloSlot {
@@ -212,7 +214,7 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
                                          double q, Side side, AmericanMethod method, double tol,
                                          std::uint16_t max_iter, const std::optional<AlOpts> &opts,
                                          const Correction *correction, double warm_start,
-                                         PolishTrace *trace = nullptr) {
+                                         double price_tol = 0.0, PolishTrace *trace = nullptr) {
   const alprobe::Scope probe_zone(alprobe::Zone::AmericanIv);
   counters::lightweight::AmericanIvSample telemetry_sample;
   // Route price + vega through the cached hot path when the cache matches side.
@@ -516,7 +518,8 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
   // re-pricing. The cached and BAW paths already reprice through their own search
   // map, so they need no polish. The scheme's max_dy convergence flag cannot
   // reliably predict warm==cold (a damped sweep step under-reports), so this runs
-  // unconditionally; it is at most two cold solves, and the warm seed-centric
+  // unconditionally; it is at most two cold solves (four when the caller states a
+  // price_tol — see the price-unit extension below), and the warm seed-centric
   // bracket (one cold seed, not two far extremes) keeps the inversion well below
   // the cold-per-residual baseline.
   if (alo) {
@@ -527,8 +530,13 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
       trace->xh = xh;
     }
     const double rts0 = rts; // the converged rtsafe root; the polish stays near it
+    // The price-unit extension below shares one bounded cold-solve budget with
+    // this sigma-unit loop. The counter is dead on the price_tol == 0 path and
+    // changes no arithmetic there.
+    int polish_solves = 0;
     for (int k = 0; k < 2; ++k) {
       ATX_TRY(double pc, american_price(S, K, T, rts, r, q, side, method, opts));
+      ++polish_solves;
       const double v = newton_vega(S, K, T, rts, r, q, side, active_correction);
       if (!(v > 0.0)) {
         break;
@@ -562,6 +570,90 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
         break;
       }
     }
+
+    // ── Price-unit polish extension (price_tol > 0; 2026-08-23 diagnosis) ──
+    //
+    // The sigma-unit polish above has a hard authority ceiling: every accepted
+    // move is bounded by the bracket / the kPolishMaxDriftTols cap, i.e. a few×
+    // tol of the rtsafe root. But the rtsafe search ran on the WARM AloPricer
+    // forward map, whose 2-JN/4-FP boundary is seed-dependent at the hard
+    // corners (long-dated deep-ITM puts): the warm root sits 10-62× tol away
+    // from the COLD reference root (measured 1e-5..6.2e-5 sigma). A caller that
+    // re-prices through the cold map then misses by vega × gap — beyond any
+    // budget wherever dollar vega is large — and no sigma-unit step is allowed
+    // to close it. When the caller states a PRICE budget, verify the polished
+    // iterate on the cold map and, only if it misses, continue the same cold
+    // Newton unconstrained by the sigma cap. Each extension solve is
+    // american_greeks_al — the exact map Mode B re-prices with (its price is
+    // bit-identical to american_price on this route) — because ONE cold solve
+    // yields both the residual and the TRUE cold-map vega. The Black-76-proxy
+    // newton_vega the search uses is ~2-3× the real slope at the deep-ITM
+    // corners (early exercise kills vega), which under-steps Newton exactly
+    // where this extension is needed. The cap's collapsed-vega protection is
+    // preserved in price units: a candidate is kept ONLY if it strictly
+    // REDUCES the cold-map residual; the first non-reducing candidate is
+    // rejected and the best verified iterate is returned (so the result is
+    // never worse on the cold map than the sigma-polish result). Bounded: the
+    // sigma loop and this extension share one kPolishColdSolveBudget.
+    if (price_tol > 0.0) {
+      constexpr int kPolishColdSolveBudget = 4;
+      double cur = rts;
+      double cur_pc = 0.0;
+      double cur_vega = 0.0;
+      bool have_cur = false;
+      if (polish_solves < kPolishColdSolveBudget) {
+        const Result<AmericanGreeks> g0 = american_greeks_al(S, K, T, cur, r, q, side, opts);
+        ++polish_solves;
+        if (g0.has_value() && std::isfinite(g0->price)) {
+          cur_pc = g0->price;
+          cur_vega = g0->vega;
+          have_cur = true;
+        }
+      }
+      // Verification unavailable (budget spent or the pricer refused): keep
+      // the sigma-polish iterate rather than surfacing a new error class.
+      if (have_cur) {
+        double best = cur;
+        double best_resid = std::fabs(cur_pc - price);
+        while (best_resid > price_tol && polish_solves < kPolishColdSolveBudget) {
+          if (!(std::isfinite(cur_vega) && cur_vega > 0.0)) {
+            break;
+          }
+          double cand = cur - (cur_pc - price) / cur_vega;
+          if (!std::isfinite(cand)) {
+            break;
+          }
+          cand = std::fmin(std::fmax(cand, kSigmaLo), kSigmaHiCap);
+          if (cand == cur) {
+            break; // step vanished at this precision
+          }
+          const bool past_cap = std::fabs(cand - rts0) > kPolishMaxDriftTols * tol;
+          if (past_cap && trace != nullptr) {
+            trace->bolted = true;
+          }
+          const Result<AmericanGreeks> g = american_greeks_al(S, K, T, cand, r, q, side, opts);
+          ++polish_solves;
+          if (!g.has_value() || !std::isfinite(g->price)) {
+            break; // keep the best verified iterate
+          }
+          const double cand_resid = std::fabs(g->price - price);
+          if (!(cand_resid < best_resid)) {
+            // Failed to reduce the cold-map residual: the drift cap's
+            // collapsed-vega protection stands — reject the iterate and stop.
+            if (past_cap && trace != nullptr) {
+              trace->bolt_reverted = true;
+            }
+            break;
+          }
+          best = cand;
+          best_resid = cand_resid;
+          cur = cand;
+          cur_pc = g->price;
+          cur_vega = g->vega;
+        }
+        rts = best;
+      }
+    }
   }
   return Ok(rts);
 }
@@ -578,10 +670,11 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
 Result<double> american_implied_vol(double price, double S, double K, double T, double r, double q,
                                     Side side, AmericanMethod method, double tol,
                                     std::uint16_t max_iter, const std::optional<AlOpts> &opts,
-                                    const CorrectionCache *correction, double warm_start) noexcept {
+                                    const CorrectionCache *correction, double warm_start,
+                                    double price_tol) noexcept {
   try {
     return american_implied_vol_impl(price, S, K, T, r, q, side, method, tol, max_iter, opts,
-                                     correction, warm_start);
+                                     correction, warm_start, price_tol);
   } catch (const std::bad_alloc &) {
     return Err(ErrorCode::Internal);
   }
@@ -590,10 +683,11 @@ Result<double> american_implied_vol(double price, double S, double K, double T, 
 Result<double> american_implied_vol(double price, double S, double K, double T, double r, double q,
                                     Side side, const CorrectionBlend &correction,
                                     AmericanMethod method, double tol, std::uint16_t max_iter,
-                                    const std::optional<AlOpts> &opts, double warm_start) noexcept {
+                                    const std::optional<AlOpts> &opts, double warm_start,
+                                    double price_tol) noexcept {
   try {
     return american_implied_vol_impl(price, S, K, T, r, q, side, method, tol, max_iter, opts,
-                                     &correction, warm_start);
+                                     &correction, warm_start, price_tol);
   } catch (const std::bad_alloc &) {
     return Err(ErrorCode::Internal);
   }
@@ -601,23 +695,34 @@ Result<double> american_implied_vol(double price, double S, double K, double T, 
 
 // Test/measurement seam (declared in american_iv_test.cpp, not the public
 // header). Runs the cold Andersen-Lake inversion and additionally reports the
-// polish bracket [xl, xh] captured at polish entry and whether the A3
-// bracket-clamp engaged on any polish iterate, so the test can pin that the
-// polished IV never leaves the sign-change bracket.
+// polish bracket [xl, xh] captured at polish entry, whether the A3
+// bracket-clamp engaged on any polish iterate, and — for price_tol > 0 —
+// whether the price-unit extension evaluated a beyond-drift-cap iterate
+// (`bolted_out`) and whether it rejected one that failed to reduce the
+// cold-map residual (`bolt_reverted_out`), so the tests can pin both the
+// bracket invariant and the preserved collapsed-vega protection.
 Result<double> american_implied_vol_polish_traced(double price, double S, double K, double T,
                                                   double r, double q, Side side, double tol,
                                                   std::uint16_t max_iter,
                                                   const std::optional<AlOpts> &opts,
                                                   double warm_start, double &xl_out, double &xh_out,
-                                                  bool &polish_ran_out, bool &polish_clamped_out) {
+                                                  bool &polish_ran_out, bool &polish_clamped_out,
+                                                  double price_tol, bool *bolted_out,
+                                                  bool *bolt_reverted_out) {
   PolishTrace tr;
   Result<double> iv = american_implied_vol_impl<CorrectionCache>(
       price, S, K, T, r, q, side, AmericanMethod::AndersenLake, tol, max_iter, opts,
-      static_cast<const CorrectionCache *>(nullptr), warm_start, &tr);
+      static_cast<const CorrectionCache *>(nullptr), warm_start, price_tol, &tr);
   xl_out = tr.xl;
   xh_out = tr.xh;
   polish_ran_out = tr.ran;
   polish_clamped_out = tr.clamped;
+  if (bolted_out != nullptr) {
+    *bolted_out = tr.bolted;
+  }
+  if (bolt_reverted_out != nullptr) {
+    *bolt_reverted_out = tr.bolt_reverted;
+  }
   return iv;
 }
 

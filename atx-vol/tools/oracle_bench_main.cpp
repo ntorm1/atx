@@ -983,7 +983,18 @@ public:
                 : american_implied_vol(mid, in.spot, in.strike, in.years, in.rate, in.carry,
                                        in.side, AmericanMethod::AndersenLake, kModeBIvTol,
                                        kModeBIvMaxIter, mode_a_al_opts(),
-                                       /*correction=*/nullptr, warm_start);
+                                       /*correction=*/nullptr, warm_start,
+                                       // PRICE-unit polish demand at HALF the
+                                       // round-trip screen below: the inverter's
+                                       // warm search map is seed-dependent at the
+                                       // long-dated deep-ITM corners (warm->cold
+                                       // root gap 10-62x kModeBIvTol, 2026-08-23
+                                       // diagnosis), so on high-dollar-vega names
+                                       // the cold re-price otherwise misses the
+                                       // screen by vega x gap. Half the screen
+                                       // leaves the same slack the screen itself
+                                       // grants the solver.
+                                       /*price_tol=*/0.5 * round_trip_tol);
         if (!fitted.has_value() || !std::isfinite(*fitted)) {
           ++fit_->rows_iv_no_solution;
           continue;

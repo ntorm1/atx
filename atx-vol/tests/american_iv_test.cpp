@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -35,13 +36,19 @@
 // not identifiable, so only the price round-trip is checked there.
 
 namespace atx::vol {
-// Test seam defined in src/american_iv.cpp (not the public header).
+// Test seam defined in src/american_iv.cpp (not the public header). price_tol
+// and the two bolt outputs expose the price-unit polish extension: `bolted` is
+// set when the extension evaluated a beyond-drift-cap iterate, `bolt_reverted`
+// when it rejected one that failed to reduce the cold-map residual.
 Result<double> american_implied_vol_polish_traced(double price, double S, double K, double T,
                                                   double r, double q, Side side, double tol,
                                                   std::uint16_t max_iter,
                                                   const std::optional<AlOpts> &opts,
                                                   double warm_start, double &xl_out, double &xh_out,
-                                                  bool &polish_ran_out, bool &polish_clamped_out);
+                                                  bool &polish_ran_out, bool &polish_clamped_out,
+                                                  double price_tol = 0.0,
+                                                  bool *bolted_out = nullptr,
+                                                  bool *bolt_reverted_out = nullptr);
 } // namespace atx::vol
 
 namespace {
@@ -232,6 +239,211 @@ TEST(AmericanIv, ColdPolishStaysInBracket) {
   }
   EXPECT_GT(checked, 0);
   EXPECT_GT(clamped_count, 0) << "sweep never exercised the polish bracket-clamp path";
+}
+
+// ── Price-unit cold polish (price_tol; Mode B round-trip contract) ─────────
+//
+// Diagnosis (2026-08-23, Mode B breadth): american_implied_vol root-finds on a
+// WARM AloPricer forward map whose boundary is seed-dependent at the hard
+// corners (long-dated deep-ITM puts) — the warm root sits 1e-5..6.2e-5 sigma
+// (10-62x kModeBIvTol = 1e-6) from the COLD reference root, while the sigma-unit
+// polish is capped at kPolishMaxDriftTols x tol = 4e-6 of authority. A caller
+// re-pricing through the cold map (american_greeks_al) then misses by
+// vega x gap, tripping the $0.005 round-trip screen wherever dollar vega is
+// large. price_tol > 0 extends the polish: verify on the cold map and continue
+// the cold Newton past the sigma cap, accepting ONLY residual-reducing
+// iterates (the cap's collapsed-vega protection, restated in price units).
+//
+// The synthetic corners below reuse the diagnosis probe's NDX-like chain
+// (S=23800, r=0.043, q=0.02, sigma ~0.22 smile): index-scale notional makes
+// dollar vega 1,000-8,400 $/vol, so the measured warm/cold gap converts to a
+// 0.006-0.018 cold re-price miss — over the screen on all four corners. Each
+// case pins the exact warm-chain seed the sweep failed under, making the warm
+// map (and so the failure) deterministic.
+
+namespace {
+
+struct HardCorner {
+  double K, T, warm;
+};
+
+// Warm seeds captured from the 469d313c warm-chained sweep (pin_probe).
+constexpr HardCorner kNdxHardCorners[] = {
+    {30000.0, 0.494, 0.22757939019678425},
+    {26600.0, 0.998, 0.22161176316871997},
+    {27000.0, 0.998, 0.22211377754397438},
+    {27400.0, 0.998, 0.22267430734825416},
+};
+
+constexpr double kNdxS = 23800.0;
+constexpr double kNdxR = 0.043;
+constexpr double kNdxQ = 0.02;
+
+// The probe's smile and its half-cent mid rounding, reproduced exactly.
+double ndx_true_sigma(double K) {
+  const double lm = std::log(K / kNdxS);
+  return std::fmin(2.5, 0.22 + 0.15 * lm * lm);
+}
+
+} // namespace
+
+// CONTROL: the default (price_tol = 0) inversion is the pre-change binary,
+// BIT FOR BIT. Golden bit patterns captured from the 469d313c build with this
+// exact call shape (Mode B's leg: AndersenLake, tol 1e-6, max_iter 64,
+// al_fast_opts). A change here means the control property broke — the default
+// path must never move as a side effect of the price-unit extension.
+TEST(AmericanIv, PricePolishDefaultOffIsBitForBitControl) {
+  const std::optional<AlOpts> opts = atx::vol::al_fast_opts();
+  {
+    // Well-conditioned OTM put: the polish stays inside the bracket.
+    const double S = 100.0, K = 105.0, T = 0.75, r = 0.04, q = 0.01;
+    const double p = value_or_fail(
+        atx::vol::american_price(S, K, T, 0.22, r, q, Side::Put, AmericanMethod::AndersenLake, opts));
+    const auto iv = american_implied_vol(p, S, K, T, r, q, Side::Put,
+                                         AmericanMethod::AndersenLake, 1.0e-6, 64, opts,
+                                         /*correction=*/nullptr, /*warm_start=*/0.0);
+    ASSERT_TRUE(iv.has_value());
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(*iv), 0x3fcc28f341ddfb00ULL)
+        << "default-path IV moved: " << std::setprecision(17) << *iv;
+  }
+  {
+    // The diagnosed hard corner under the DEFAULT path: still the base bits
+    // (the drift-cap drop, not the extension, decides here).
+    const HardCorner c = kNdxHardCorners[3]; // K=27400, T=0.998
+    const auto g_true = atx::vol::american_greeks_al(kNdxS, c.K, c.T, ndx_true_sigma(c.K), kNdxR,
+                                                     kNdxQ, Side::Put, opts);
+    ASSERT_TRUE(g_true.has_value());
+    const double mid = std::nearbyint(g_true->price * 200.0) / 200.0;
+    const auto iv = american_implied_vol(mid, kNdxS, c.K, c.T, kNdxR, kNdxQ, Side::Put,
+                                         AmericanMethod::AndersenLake, 1.0e-6, 64, opts,
+                                         /*correction=*/nullptr, c.warm);
+    ASSERT_TRUE(iv.has_value());
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(*iv), 0x3fcc8a65a9ba178cULL)
+        << "default-path IV moved at the hard corner: " << std::setprecision(17) << *iv;
+  }
+}
+
+// CONTROL: where the sigma-unit polish already meets the price budget, the
+// price-unit extension is verification only — the returned IV is bit-identical
+// to the default path. This is the Mode B smoke/tune bit-identity property:
+// rows whose cold residual is already <= price_tol do not move.
+TEST(AmericanIv, PricePolishNoOpWhereSigmaPolishMeetsBudget) {
+  const std::optional<AlOpts> opts = atx::vol::al_fast_opts();
+  const double S = 100.0, K = 105.0, T = 0.75, r = 0.04, q = 0.01;
+  const double p = value_or_fail(
+      atx::vol::american_price(S, K, T, 0.22, r, q, Side::Put, AmericanMethod::AndersenLake, opts));
+  const auto base = american_implied_vol(p, S, K, T, r, q, Side::Put,
+                                         AmericanMethod::AndersenLake, 1.0e-6, 64, opts,
+                                         /*correction=*/nullptr, /*warm_start=*/0.0);
+  const auto polished = american_implied_vol(p, S, K, T, r, q, Side::Put,
+                                             AmericanMethod::AndersenLake, 1.0e-6, 64, opts,
+                                             /*correction=*/nullptr, /*warm_start=*/0.0,
+                                             /*price_tol=*/2.5e-3);
+  ASSERT_TRUE(base.has_value());
+  ASSERT_TRUE(polished.has_value());
+  EXPECT_EQ(std::bit_cast<std::uint64_t>(*base), std::bit_cast<std::uint64_t>(*polished));
+}
+
+// THE FIX: on every diagnosed hard corner the default inversion re-prices on
+// the cold map outside the $0.005 round-trip screen (the failure this lane
+// exists to close), and the SAME call with price_tol = half the screen
+// ($0.0025, exactly what Mode B now passes) re-prices within price_tol — at a
+// sigma drift bounded by the measured warm/cold gap scale.
+TEST(AmericanIv, PricePolishClosesWarmColdGapOnHighVegaPuts) {
+  const std::optional<AlOpts> opts = atx::vol::al_fast_opts();
+  constexpr double kRoundTripTol = 0.005; // kModeBRoundTripTicks x tick, in $
+  constexpr double kPriceTol = 0.5 * kRoundTripTol;
+  for (const HardCorner &c : kNdxHardCorners) {
+    const auto g_true = atx::vol::american_greeks_al(kNdxS, c.K, c.T, ndx_true_sigma(c.K), kNdxR,
+                                                     kNdxQ, Side::Put, opts);
+    ASSERT_TRUE(g_true.has_value()) << "K=" << c.K;
+    const double mid = std::nearbyint(g_true->price * 200.0) / 200.0;
+
+    const auto base = american_implied_vol(mid, kNdxS, c.K, c.T, kNdxR, kNdxQ, Side::Put,
+                                           AmericanMethod::AndersenLake, 1.0e-6, 64, opts,
+                                           /*correction=*/nullptr, c.warm);
+    ASSERT_TRUE(base.has_value()) << "K=" << c.K;
+    const auto g_base = atx::vol::american_greeks_al(kNdxS, c.K, c.T, *base, kNdxR, kNdxQ,
+                                                     Side::Put, opts);
+    ASSERT_TRUE(g_base.has_value()) << "K=" << c.K;
+    EXPECT_GT(std::fabs(g_base->price - mid), kRoundTripTol)
+        << "K=" << c.K << ": corner no longer trips the round-trip screen by default — "
+        << "the control construction has drifted; re-derive the pinned warm seeds";
+
+    const auto fixed = american_implied_vol(mid, kNdxS, c.K, c.T, kNdxR, kNdxQ, Side::Put,
+                                            AmericanMethod::AndersenLake, 1.0e-6, 64, opts,
+                                            /*correction=*/nullptr, c.warm, kPriceTol);
+    ASSERT_TRUE(fixed.has_value()) << "K=" << c.K;
+    const auto g_fixed = atx::vol::american_greeks_al(kNdxS, c.K, c.T, *fixed, kNdxR, kNdxQ,
+                                                      Side::Put, opts);
+    ASSERT_TRUE(g_fixed.has_value()) << "K=" << c.K;
+    EXPECT_LE(std::fabs(g_fixed->price - mid), kPriceTol)
+        << "K=" << c.K << ": polished sigma must re-price within price_tol on the cold map";
+    // The correction is the warm/cold root gap: 1e-5..6.2e-5 sigma measured,
+    // bounded well under 1e-4. A larger move would be a different defect.
+    EXPECT_LT(std::fabs(*fixed - *base), 1.0e-4) << "K=" << c.K;
+  }
+}
+
+// PROTECTION: the drift cap's collapsed-vega defence survives in price units.
+// At the A3 corners (long-dated near-intrinsic puts, vega ~1e-3) the cold map
+// is flat in sigma at its own noise floor, so an unreachably tight price_tol
+// (far below anything a production caller passes — Mode B's is 2.5e-3, which
+// these corners already meet without any extension step) forces the extension
+// to attempt Newton bolts across the flat plateau. The contract's protection
+// is the residual-reduction rule, and this pins its two observable halves:
+// the returned IV never re-prices WORSE on the cold map than the sigma-polish
+// result and never leaves the inverter's domain, and at least one corner must
+// actually exercise the non-reducing-bolt revert path (so the protection is
+// proven engaged, not vacuously passed). A reducing bolt across the plateau
+// IS accepted — that is the documented trade, not a defect: sigma was never
+// identifiable there, and the accepted iterate prices strictly closer.
+TEST(AmericanIv, PricePolishKeepsCollapsedVegaProtection) {
+  const double S = 100.0;
+  int checked = 0;
+  int reverted = 0;
+  for (double K : {110.0, 115.0, 120.0}) {
+    for (double sig : {0.08, 0.10}) {
+      const double T = 2.0, r = 0.05, q = 0.0;
+      const double p = value_or_fail(
+          atx::vol::american_price(S, K, T, sig, r, q, Side::Put, AmericanMethod::AndersenLake));
+      if (!std::isfinite(p)) {
+        continue;
+      }
+      double xl = 0.0, xh = 0.0;
+      bool ran = false, clamped = false;
+      const auto base = atx::vol::american_implied_vol_polish_traced(
+          p, S, K, T, r, q, Side::Put, 1.0e-7, 64, std::nullopt, /*warm_start=*/0.0, xl, xh, ran,
+          clamped);
+      bool bolted = false, bolt_reverted = false;
+      const auto tight = atx::vol::american_implied_vol_polish_traced(
+          p, S, K, T, r, q, Side::Put, 1.0e-7, 64, std::nullopt, /*warm_start=*/0.0, xl, xh, ran,
+          clamped, /*price_tol=*/1.0e-12, &bolted, &bolt_reverted);
+      if (!base.has_value() || !tight.has_value() || !ran) {
+        continue;
+      }
+      ++checked;
+      const double resid_base = std::fabs(
+          value_or_fail(atx::vol::american_price(S, K, T, *base, r, q, Side::Put,
+                                                 AmericanMethod::AndersenLake)) -
+          p);
+      const double resid_tight = std::fabs(
+          value_or_fail(atx::vol::american_price(S, K, T, *tight, r, q, Side::Put,
+                                                 AmericanMethod::AndersenLake)) -
+          p);
+      // Never worse on the cold map than the sigma-polish result, and never
+      // outside the inverter's own domain — the observable halves of the
+      // preserved protection (see the banner: reducing bolts are accepted).
+      EXPECT_LE(resid_tight, resid_base + 1.0e-12) << "K=" << K << " sig=" << sig;
+      EXPECT_GE(*tight, atx::vol::kIvMin) << "K=" << K << " sig=" << sig;
+      EXPECT_LE(*tight, 40.0) << "K=" << K << " sig=" << sig; // kSigmaHiCap
+      if (bolt_reverted) {
+        ++reverted;
+      }
+    }
+  }
+  EXPECT_GT(checked, 0);
+  EXPECT_GT(reverted, 0) << "sweep never exercised the residual-increasing-bolt revert path";
 }
 
 TEST(AmericanIv, RoundTrip_GridAndersenLake_RecoversSigma) {
