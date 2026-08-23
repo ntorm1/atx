@@ -89,11 +89,13 @@
 // cell.
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "atx/vol/api/marketdata/opra_batch.hpp" // OpraBatchResult, OpraBatchProgress, CorpusMarketInputTable,
                                   // MissingMarketInputPolicy
 #include "atx/vol/api/marketdata/opra_panel.hpp" // OpraProvenanceMode
+#include "atx/vol/api/pricing/rates_curve.hpp"   // DividendEvent (OpraHiveSpec::cash_divs)
 #include "atx/vol/api/core/types.hpp"      // Result
 
 namespace atx::vol {
@@ -117,6 +119,29 @@ struct OpraHiveSpec {
   // YieldCurve; empty or one pillar => flat `r`). The two arrays must be equal
   // length (a mismatch is a malformed-spec top-level Err).
   std::vector<double> yc_pillar_t, yc_pillar_r;
+
+  // ── Discrete cash dividends, per UNDERLIER (SR-DIVS) ─────────────────────
+  //
+  // A schedule keyed by the same `underlying` spelling `symbols` uses. The
+  // matched vector is copied onto that cell's `OpraLoadSpec::cash_divs`, which
+  // the panel loader stamps onto `QuoteFrame::divs` — so the carry solve and
+  // the de-Americanisation see the DISCRETE schedule instead of folding every
+  // dividend into one solved continuous borrow. A continuous borrow can
+  // reproduce the right forward and still misplace the American early-exercise
+  // boundary, because that boundary depends on WHEN each cash dividend lands,
+  // not only on the forward the dividends integrate to.
+  //
+  // A FALLBACK, ranked exactly like `yc_pillar_t/_r` above: a per-cell
+  // `CorpusMarketInputCell::cash_divs` from `market_inputs` always wins, and
+  // this map only fills a cell that resolution left with an empty schedule.
+  // A symbol absent from the map gets an EMPTY schedule, which is the
+  // historical behaviour — so a default-constructed spec (an empty map) is
+  // bit-identical to before this field existed.
+  //
+  // NOT a per-DATE structure: one entry serves every date in the range. A
+  // multi-date range whose schedules differ by date must go through
+  // `market_inputs`, which is keyed by (date, symbol).
+  std::unordered_map<std::string, std::vector<DividendEvent>> cash_divs{};
 
   CorpusMarketInputTable market_inputs{};
   MissingMarketInputPolicy missing_market_inputs{MissingMarketInputPolicy::UseFallback};

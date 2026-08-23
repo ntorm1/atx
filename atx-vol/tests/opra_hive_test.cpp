@@ -852,4 +852,94 @@ TEST(OpraHive, DiscoversUnionAcrossNonUniformDates) {
   fs::remove_all(tmp2);
 }
 
+
+// ── SR-DIVS: the discrete cash-dividend schedule reaches the frame ───────────
+//
+// `OpraHiveSpec::cash_divs` exists because folding every dividend into ONE
+// solved continuous borrow cannot reproduce an American early-exercise
+// boundary: that boundary depends on WHEN each cash dividend lands, not only on
+// the forward the dividends integrate to. The two cases below pin the only
+// things the loader itself owns — that a supplied schedule lands on the right
+// symbol's frame, and that the default is still EMPTY, which is the behaviour
+// every existing caller relies on.
+
+TEST(OpraHive, DefaultSpecLeavesEveryFrameCashDividendScheduleEmpty) {
+  const fs::path root = fs::temp_directory_path() / "atx_opra_hive_divs_default";
+  fs::remove_all(root);
+  tsupport::SyntheticHiveSpec fx;
+  fx.symbols = {"AAA", "BBB"};
+  fx.dates = {"2026-07-01"};
+  tsupport::write_synthetic_hive_v2(root, fx);
+
+  ahv::OpraHiveSpec spec;
+  spec.root_dir = root.string();
+  spec.date_lo = "2026-07-01";
+  spec.date_hi = "2026-07-01";
+  spec.symbols = {"AAA", "BBB"};
+  spec.r = 0.03;
+  spec.n_threads = 1;
+
+  const auto batch = ahv::load_opra_hive(spec);
+  ASSERT_TRUE(batch.has_value()) << batch.error().to_string();
+  ASSERT_EQ(batch->n_loaded, std::size_t{2});
+  for (const ahv::OpraBatchEntry &e : batch->entries) {
+    ASSERT_TRUE(e.panel.has_value()) << e.symbol << ": " << e.panel.error().to_string();
+    EXPECT_TRUE(e.panel->frame.divs.empty()) << e.symbol;
+  }
+
+  fs::remove_all(root);
+}
+
+TEST(OpraHive, SuppliedCashDividendScheduleReachesOnlyItsOwnSymbolsFrame) {
+  const fs::path root = fs::temp_directory_path() / "atx_opra_hive_divs_supplied";
+  fs::remove_all(root);
+  tsupport::SyntheticHiveSpec fx;
+  fx.symbols = {"AAA", "BBB"};
+  fx.dates = {"2026-07-01"};
+  tsupport::write_synthetic_hive_v2(root, fx);
+
+  // Two events, deliberately handed in DESCENDING ex-date order: the loader
+  // copies the schedule verbatim (forward_div_corrected scans linearly and
+  // requires no order), so this also pins that nothing silently re-sorts it.
+  const std::int64_t ex_late = ahv::iso_to_ns("2026-08-15");
+  const std::int64_t ex_early = ahv::iso_to_ns("2026-07-20");
+  ASSERT_GT(ex_early, 0);
+  ASSERT_GT(ex_late, ex_early);
+
+  ahv::OpraHiveSpec spec;
+  spec.root_dir = root.string();
+  spec.date_lo = "2026-07-01";
+  spec.date_hi = "2026-07-01";
+  spec.symbols = {"AAA", "BBB"};
+  spec.r = 0.03;
+  spec.n_threads = 1;
+  spec.cash_divs["AAA"] = {ahv::DividendEvent{ex_late, 0.75},
+                           ahv::DividendEvent{ex_early, 0.25}};
+  // A schedule for a symbol this run never asks for must not leak onto any cell.
+  spec.cash_divs["ZZZ"] = {ahv::DividendEvent{ex_early, 9.99}};
+
+  const auto batch = ahv::load_opra_hive(spec);
+  ASSERT_TRUE(batch.has_value()) << batch.error().to_string();
+  ASSERT_EQ(batch->n_loaded, std::size_t{2});
+
+  const ahv::OpraBatchEntry *aaa = find_cell(*batch, "AAA", "2026-07-01");
+  ASSERT_NE(aaa, nullptr);
+  ASSERT_TRUE(aaa->panel.has_value()) << aaa->panel.error().to_string();
+  ASSERT_EQ(aaa->panel->frame.divs.size(), std::size_t{2});
+  EXPECT_EQ(aaa->panel->frame.divs[0].ex_date_ns, ex_late);
+  EXPECT_DOUBLE_EQ(aaa->panel->frame.divs[0].amount, 0.75);
+  EXPECT_EQ(aaa->panel->frame.divs[1].ex_date_ns, ex_early);
+  EXPECT_DOUBLE_EQ(aaa->panel->frame.divs[1].amount, 0.25);
+
+  // BBB is in the SAME hive load and has no entry in the map: an unmatched
+  // symbol keeps the historical empty schedule rather than inheriting a
+  // neighbour's.
+  const ahv::OpraBatchEntry *bbb = find_cell(*batch, "BBB", "2026-07-01");
+  ASSERT_NE(bbb, nullptr);
+  ASSERT_TRUE(bbb->panel.has_value()) << bbb->panel.error().to_string();
+  EXPECT_TRUE(bbb->panel->frame.divs.empty());
+
+  fs::remove_all(root);
+}
+
 } // namespace

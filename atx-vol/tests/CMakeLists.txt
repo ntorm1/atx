@@ -539,6 +539,15 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/spy_dispersion_pnl_report_test.py
     )
     set_tests_properties(SpyDispersionPnlReport PROPERTIES LABELS atx_vol)
+    # SR-DIVS: the `ddiv` -> discrete-schedule emitter (tools/spiderrock_dividends.py)
+    # that feeds `atx-vol-chain-export --dividends`. Gated here because the emitter
+    # MIRRORS the validated C++ reconstructor (tools/oracle_dividends.*) and a mirror
+    # nobody runs is a copy that drifts. Pure tmp-dir fixtures -- no store, no network.
+    add_test(
+        NAME SpiderRockDividends
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/spiderrock_dividends_test.py
+    )
+    set_tests_properties(SpiderRockDividends PROPERTIES LABELS atx_vol)
     # vrp-ml round 2 gate: the panel-QA checker (scripts/vrp_panel_qa.py) grew a
     # stdlib-unittest suite (scripts/vrp_panel_qa_test.py, 14 cases, pure tmp-dir
     # fixtures). Registered here so the QA tool that guards the frozen

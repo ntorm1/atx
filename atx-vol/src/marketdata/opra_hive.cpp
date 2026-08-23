@@ -276,6 +276,17 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec& spec, const OpraBatch
         result.entries.push_back(std::move(entry)); // entry.panel already set
         continue;                                   // no read queued
       }
+      // SR-DIVS: the spec's per-underlier discrete schedule, ranked BELOW the
+      // per-cell market input exactly as `yc_pillar_t/_r` are — `resolve_market_inputs`
+      // has already written the cell's own `cash_divs` when it had one, so only an
+      // empty schedule is filled here. An empty `spec.cash_divs` (the default)
+      // therefore leaves every load spec untouched.
+      if (load.cash_divs.empty()) {
+        const auto div_it = spec.cash_divs.find(symbol);
+        if (div_it != spec.cash_divs.end()) {
+          load.cash_divs = div_it->second;
+        }
+      }
       task.loads.push_back(SymbolLoad{slot, std::move(load)});
       result.entries.push_back(std::move(entry));
     }

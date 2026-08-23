@@ -9,6 +9,9 @@
 #include "atx/vol/api/pricing/dividend.hpp"
 #include "atx/vol/api/pricing/rates_curve.hpp"
 #include "atx/vol/api/core/types.hpp"
+#include "atx/vol/api/core/vol_time.hpp"      // TimeSpec, time_to_expiry_years,
+                                              // kCalendarYearNs (the two clocks)
+#include "atx/vol/api/marketdata/data.hpp"    // iso_to_ns, expiry_instant_ns
 
 // Coverage for the hybrid dividend forward + European put-call-parity borrow
 // implication (atx/vol/dividend.hpp). The escrowed-cash reference is
@@ -322,6 +325,116 @@ TEST(ImpliedForwardStrip, EmptyStrip_ReturnsInvalidArgument) {
   const auto res = imply_forward_atm_pcp({}, 100.0, 0.5, 0.03);
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), ErrorCode::InvalidArgument);
+}
+
+
+// ── The clock the dividend WINDOW is decided on (SR-DIVS) ───────────────────
+//
+// `forward_div_corrected` computes each dividend's `t_i` on the CALENDAR clock
+// (it discounts cash, which no vol clock changes) but is handed the board's own
+// `T`, which under `TimeConvention::VolTime` is on a DIFFERENT clock. A
+// `t_i > T` screen therefore compares two clocks, and vol time compresses a
+// weekend while a calendar `t_i` does not — so a Monday ex-date off a Friday
+// snapshot was silently filtered out. Under Calendar365 that screen only ever
+// duplicated the `ex_date_ns > expiry_ns` instant test above it, which is why
+// nothing ever caught it: the code was dead until a discrete schedule and a
+// vol-time board met. These two cases pin the live combination.
+//
+// Real instants, because the defect is a calendar property: 2026-08-14 is a
+// FRIDAY and 2026-08-17 the following MONDAY, which SPY/QQQ/IWM list a weekly
+// expiry on — so a Monday upper-bracket ex-date is an ordinary output of the
+// schedule emitter, not a contrived one.
+
+namespace voltime_window {
+
+using atx::vol::expiry_instant_ns;
+using atx::vol::iso_to_ns;
+using atx::vol::kCalendarYearNs;
+using atx::vol::TimeConvention;
+using atx::vol::TimeSpec;
+using atx::vol::time_to_expiry_years;
+
+struct WeekendCase {
+  std::int64_t now_ns = iso_to_ns("2026-08-14T19:55:00Z");     // Friday pre-close
+  std::int64_t expiry_ns = expiry_instant_ns("2026-08-17");    // Monday weekly, 16:00 ET
+  std::int64_t ex_ns = iso_to_ns("2026-08-17");                // Monday, midnight UTC
+  double S = 100.0;
+  double r = 0.04;
+  double amount = 1.25;
+};
+
+// `T` on the vol clock, plus the calendar `t_i` of the Monday dividend. Both are
+// ASSERTed by the callers, not merely computed: the case only bites while
+// `t_vol < t_i`, and if the clock is ever retuned so that stops holding, the
+// tests must say so rather than quietly passing on a scenario that no longer
+// reproduces anything.
+struct Clocks {
+  double t_vol = 0.0;
+  double t_cal = 0.0;
+  double t_i = 0.0;
+};
+
+[[nodiscard]] Clocks clocks_for(const WeekendCase &c) {
+  TimeSpec vol;
+  vol.convention = TimeConvention::VolTime;
+  const auto years = time_to_expiry_years(c.now_ns, c.expiry_ns, vol);
+  EXPECT_TRUE(years.has_value())
+      << "vol-time calendar must cover 2026: " << (years.has_value() ? "" : years.error().to_string());
+  Clocks out;
+  out.t_vol = years.value_or(0.0);
+  out.t_cal = static_cast<double>(c.expiry_ns - c.now_ns) / kCalendarYearNs;
+  out.t_i = static_cast<double>(c.ex_ns - c.now_ns) / kCalendarYearNs;
+  return out;
+}
+
+} // namespace voltime_window
+
+TEST(DividendForward, VolTimeShortTKeepsAMondayExDateOffAFridaySnapshot) {
+  const voltime_window::WeekendCase c;
+  const voltime_window::Clocks clk = voltime_window::clocks_for(c);
+
+  // The dividend is INSIDE the option window on instants...
+  ASSERT_GE(c.ex_ns, c.now_ns);
+  ASSERT_LE(c.ex_ns, c.expiry_ns);
+  // ...and OUTSIDE it on the mixed-clock comparison the old screen made. Without
+  // this the case proves nothing.
+  ASSERT_LT(clk.t_vol, clk.t_i) << "vol-time T no longer compresses this weekend "
+                                   "below the Monday ex-date; pick another case";
+  ASSERT_LE(clk.t_i, clk.t_cal);
+
+  const std::vector<DividendEvent> divs{{c.ex_ns, c.amount}};
+  const double f = forward_div_corrected(c.S, c.r, clk.t_vol, divs, c.expiry_ns, c.now_ns);
+
+  const double expected =
+      (c.S - c.amount * std::exp(-c.r * clk.t_i)) * std::exp(c.r * clk.t_vol);
+  EXPECT_NEAR(f, expected, 1.0e-12);
+  // Stated as a property too, so a future rewrite that reintroduces the filter
+  // fails on meaning rather than on an arithmetic identity: the forward of a
+  // dividend-paying name must sit BELOW the pure-carry forward.
+  EXPECT_LT(f, c.S * std::exp(c.r * clk.t_vol));
+}
+
+TEST(DividendForward, VolTimeShortTJacobianKeepsTheSameMondayExDate) {
+  const voltime_window::WeekendCase c;
+  const voltime_window::Clocks clk = voltime_window::clocks_for(c);
+  ASSERT_LT(clk.t_vol, clk.t_i);
+
+  // The analytic ∂F/∂D must zero exactly the events the forward drops and no
+  // others, or it stops being the derivative of the thing it is paired with.
+  const std::vector<DividendEvent> divs{{c.ex_ns, c.amount}};
+  const HybridDivParams hyb{/*prop_div_yield=*/0.0, /*blend=*/0.0};
+  double jac[1] = {0.0};
+  atx::vol::hybrid_forward_div_jacobian(c.r, /*borrow=*/0.0, clk.t_vol, divs, c.expiry_ns,
+                                        c.now_ns, hyb, jac);
+  EXPECT_NEAR(jac[0], -std::exp(c.r * (clk.t_vol - clk.t_i)), 1.0e-12);
+
+  // And it agrees with a central-difference bump of the forward it differentiates.
+  const double h = 1.0e-6;
+  const std::vector<DividendEvent> up{{c.ex_ns, c.amount + h}};
+  const std::vector<DividendEvent> down{{c.ex_ns, c.amount - h}};
+  const double f_up = hybrid_forward(c.S, c.r, 0.0, clk.t_vol, up, c.expiry_ns, c.now_ns, hyb);
+  const double f_dn = hybrid_forward(c.S, c.r, 0.0, clk.t_vol, down, c.expiry_ns, c.now_ns, hyb);
+  EXPECT_NEAR(jac[0], (f_up - f_dn) / (2.0 * h), 1.0e-6);
 }
 
 } // namespace

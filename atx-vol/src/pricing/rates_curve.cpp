@@ -176,6 +176,22 @@ double forward_div_corrected(double S, double r, double T,
   }
 
   // sum_{ex_date_ns <= expiry_ns} D_i * DF(t_i), t_i = (ex - now) / year.
+  //
+  // THE WINDOW IS DECIDED ON INSTANTS, NEVER ON `T`. A `t_i < 0 || t_i > T`
+  // screen used to sit under the two guards below. Under Calendar365 it was
+  // provably dead code: a consistent caller's `T` is
+  // `(expiry_ns - now_ts_ns) / kCalendarYearNs`, and both int64->double
+  // conversion and division by a positive constant are monotone, so
+  // `now_ts_ns <= ex_date_ns <= expiry_ns` already implies `0 <= t_i <= T`.
+  // Under a VOL-TIME `T` the two clocks disagree and that screen became a live,
+  // WRONG filter: vol time compresses a weekend while the calendar `t_i` does
+  // not, so a Monday ex-date off a Friday snapshot was silently dropped —
+  // precisely the population a discrete schedule exists to price. It is deleted
+  // rather than made conditional because the instant comparisons are
+  // clock-independent and were always the real test; a conditional would leave
+  // two answers to one question. `t_i` itself stays on the CALENDAR clock
+  // deliberately: it discounts cash at a calendar rate, which no vol clock
+  // changes. Gated by DividendForward.VolTimeShortT*.
   double pv_divs = 0.0;
   for (const DividendEvent &ev : events) {
     if (ev.ex_date_ns < now_ts_ns) {
@@ -186,9 +202,6 @@ double forward_div_corrected(double S, double r, double T,
     }
     const double t_i =
         static_cast<double>(ev.ex_date_ns - now_ts_ns) / kCalendarYearNs;
-    if (t_i < 0.0 || t_i > T) {
-      continue;
-    }
     pv_divs += ev.amount * std::exp(-r * t_i);
   }
   return (S - pv_divs) * std::exp(r * T);

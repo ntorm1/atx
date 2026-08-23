@@ -75,11 +75,13 @@ void hybrid_forward_div_jacobian(double r, double borrow, double T,
       dF_dDiv_out[i] = 0.0; // paid already / after expiry — mirrors forward_div_corrected
       continue;
     }
+    // No `t_i > T` screen here either, for the reason spelled out in
+    // `forward_div_corrected` (rates_curve.cpp): the window is an INSTANT
+    // question, and comparing a calendar `t_i` against a possibly vol-time `T`
+    // silently drops dividends whose ex-date straddles a weekend. This
+    // Jacobian must zero exactly the events that forward drops and no others,
+    // or the analytic ∂F/∂Div stops matching a bump of `hybrid_forward`.
     const double t_i = static_cast<double>(ev.ex_date_ns - now_ts_ns) / kCalendarYearNs;
-    if (t_i < 0.0 || t_i > T) {
-      dF_dDiv_out[i] = 0.0;
-      continue;
-    }
     // ∂F_cash/∂D_i = −e^{−r·t_i}·e^{rT} = −e^{r(T−t_i)}, scaled by the escrowed-leg
     // prefactor above.
     dF_dDiv_out[i] = coeff * std::exp(r * (T - t_i));

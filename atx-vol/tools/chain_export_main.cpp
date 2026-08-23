@@ -114,6 +114,10 @@ struct Args {
   std::string db_root;
   std::string date;
   std::string out_path;
+  // SR-DIVS: optional Parquet discrete cash-dividend schedule (--dividends).
+  // Empty = none supplied, which is the historical behaviour — every dividend
+  // then folds into the solved continuous borrow.
+  std::string dividends_path;
   std::string snapshot_suffix{"T19:55:00Z"};
   std::vector<std::string> symbols;
   double r{0.0};
@@ -129,7 +133,7 @@ void usage() {
       "  atx-vol-chain-export --hive <root> --underlier <root> --db <surface-db-root>\n"
       "                       --date YYYY-MM-DD (--symbols A,B,C | --symbols-file <path>)\n"
       "                       --out <parquet> [--snapshot-suffix T19:55:00Z] [--r <rate>]\n"
-      "                       [--fit-workers N]\n"
+      "                       [--dividends <parquet>] [--fit-workers N]\n"
       "\n"
       "  --hive             OPRA hive v2 root holding date=<YYYY-MM-DD>/data.parquet\n"
       "  --underlier        underlier NBBO hive root holding\n"
@@ -143,6 +147,10 @@ void usage() {
       "  --snapshot-suffix  UTC stamp appended to --date (default T19:55:00Z; use\n"
       "                     T20:55:00Z on EST sessions)\n"
       "  --r                flat continuously-compounded fallback rate (required)\n"
+      "  --dividends        Parquet discrete cash-dividend schedule; columns\n"
+      "                     underlying:string, ex_date:string YYYY-MM-DD, amount:double.\n"
+      "                     Omitted, every dividend folds into the solved borrow. A\n"
+      "                     malformed or unreadable file is REFUSED, never read as empty.\n"
       "  --out              output Parquet path (parent dirs created)\n"
       "  --fit-workers      symbol-level workers; 0 = hardware concurrency (default)\n"
       "\n"
@@ -218,6 +226,13 @@ void usage() {
         return false;
       }
       args.out_path = std::string(value);
+    } else if (flag == "--dividends") {
+      // SR-DIVS. Only the PATH is taken here; the file itself is opened in main
+      // beside the other inputs, so a usage error still costs no file I/O.
+      if (!need_value(value)) {
+        return false;
+      }
+      args.dividends_path = std::string(value);
     } else if (flag == "--snapshot-suffix") {
       if (!need_value(value)) {
         return false;
@@ -749,7 +764,8 @@ private:
 // ── The census ──────────────────────────────────────────────────────────────
 
 void print_census(const std::vector<SymbolResult> &results, const ce::ExportCensus &census,
-                  const OpraBatchResult &batch, double load_s, double fit_s, double write_s) {
+                  const OpraBatchResult &batch, const ce::DividendCensus &divs, double load_s,
+                  double fit_s, double write_s) {
   std::size_t n_ok = 0;
   std::size_t n_from_db = 0;
   std::size_t n_mark_fallback = 0;
@@ -805,6 +821,23 @@ void print_census(const std::vector<SymbolResult> &results, const ce::ExportCens
   }
   std::fprintf(stderr, "hive cells              loaded=%zu missing=%zu error=%zu holes=%zu\n",
                batch.n_loaded, batch.n_missing, batch.n_error, batch.n_coverage_holes);
+  // SR-DIVS. Two lines, because "no schedule was supplied" and "a schedule was
+  // supplied and matched none of these symbols" produce IDENTICAL rows and mean
+  // opposite things — the first is the old continuous-borrow behaviour on
+  // purpose, the second is a symbol-spelling bug nobody would otherwise see.
+  if (!divs.supplied) {
+    std::fputs("discrete dividends      NONE supplied (--dividends omitted; every dividend "
+               "folds into the solved borrow)\n",
+               stderr);
+  } else {
+    std::fprintf(stderr, "discrete dividends      %zu loaded over %zu underliers from '%s'\n",
+                 divs.events, divs.underliers, divs.path.c_str());
+    std::fprintf(stderr,
+                 "  schedule attached to  %zu of %zu requested symbols (%zu dividends); the "
+                 "other %zu got an EMPTY schedule\n",
+                 divs.symbols_matched, results.size(), divs.events_attached,
+                 results.size() - std::min(divs.symbols_matched, results.size()));
+  }
   std::fprintf(stderr, "carry-rho solves failed %zu  (ph sentinel on those rows)\n",
                n_carry_failed);
   std::fprintf(stderr,
@@ -852,6 +885,39 @@ int main(int argc, char **argv) {
   }
   const std::string date_stamp = ce::vendor_stamp(args.date, args.snapshot_suffix);
 
+  // SR-DIVS: the discrete cash-dividend schedule, read FIRST — before the
+  // underlier feed, the SurfaceDb and the board — because it is pure input
+  // validation and a malformed file should cost no I/O at all. A defect here is
+  // fatal by construction: `load_dividend_schedules` never returns an empty
+  // schedule, since an empty one is indistinguishable from omitting the flag.
+  ce::DividendCensus div_census;
+  ce::DividendSchedules dividends;
+  if (!args.dividends_path.empty()) {
+    Result<ce::DividendSchedules> loaded = ce::load_dividend_schedules(args.dividends_path);
+    if (!loaded.has_value()) {
+      std::fprintf(stderr, "error: %s\n", std::string(loaded.error().message()).c_str());
+      return kExitRuntime;
+    }
+    dividends = std::move(*loaded);
+    div_census.supplied = true;
+    div_census.path = args.dividends_path;
+    div_census.underliers = dividends.size();
+    for (const auto &[symbol, events] : dividends) {
+      (void)symbol;
+      div_census.events += events.size();
+    }
+    // Counted over the REQUESTED universe, not over the file: the reader's
+    // question is "did MY symbols get a schedule", and a file covering names
+    // this run never asked for answers it with a misleading yes.
+    for (const std::string &symbol : args.symbols) {
+      const auto it = dividends.find(symbol);
+      if (it != dividends.end() && !it->second.empty()) {
+        ++div_census.symbols_matched;
+        div_census.events_attached += it->second.size();
+      }
+    }
+  }
+
   const Result<UnderlierBook> feed = load_underlier_book(args.underlier_root, args.date);
   if (!feed.has_value()) {
     std::fprintf(stderr, "error: %s\n", std::string(feed.error().message()).c_str());
@@ -873,6 +939,7 @@ int main(int argc, char **argv) {
   hive.symbols = args.symbols;
   hive.snapshot_suffix = args.snapshot_suffix;
   hive.r = args.r;
+  hive.cash_divs = std::move(dividends); // SR-DIVS; empty unless --dividends was given
   hive.n_threads = 1; // one date: the hive's fan-out is per-DATE, so it cannot help
 
   const auto t_load = clock::now();
@@ -966,7 +1033,7 @@ int main(int argc, char **argv) {
   }
 
   const ce::ExportCensus &census = writer.census();
-  print_census(results, census, *batch, load_s, fit_s, write_s);
+  print_census(results, census, *batch, div_census, load_s, fit_s, write_s);
 
   // A run that emitted nothing, or one whose write failed, must leave NO file:
   // the stream was opened up front, so what is on disk is an empty or
