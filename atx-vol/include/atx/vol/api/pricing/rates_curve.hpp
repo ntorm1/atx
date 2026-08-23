@@ -104,9 +104,11 @@ public:
   // which diverges like 1/T at the short end (measured on the test suite's own
   // pillars: 1 h -> 97.2%, 5 min -> 1108.8% off a 4.05% overnight rate) and
   // decays toward 0 at the long end, because a flat discount factor is a ZERO
-  // instantaneous forward rate. Pillar values are unchanged and still exact. A
-  // degenerate t = 0 first pillar has no rate to extrapolate and keeps the
-  // flat-DF clamp.
+  // instantaneous forward rate. `disc` at every pillar is bit-unchanged. A curve
+  // whose first pillar sits at t = 0 has no short end to extrapolate at all —
+  // every T > 0 is inside the pillar range — so the interior interpolant handles
+  // it; a curve whose LAST pillar is non-positive keeps the flat-DF clamp, since
+  // there is no positive maturity to read a rate off.
   [[nodiscard]] double disc(double T) const noexcept;
 
   // Continuously-compounded zero rate at year-fraction T. Returns 0.0 for

@@ -211,15 +211,20 @@ enum class AlSolveStatus { Ok, Collapsed, TableMissing, NotConverged };
 // is how far the solve actually got. Ok therefore still means "bnd/ws are safe to
 // price from"; `converged()` — never the status — is the accuracy claim.
 //
-// resid is the residual of the LAST sweep the budget ran. When no sweep runs at all
-// (Collapsed / TableMissing, both reported before the loop) it stays at the
-// pessimistic 1.0 the loop initialises with, so converged() is false and no caller
-// can read a pre-sweep failure as a converged boundary.
+// resid is the residual of the LAST sweep that produced one, and `sweeps` counts
+// those sweeps. REVL1: `sweeps` is what makes the report unambiguous — a
+// pre-sweep failure (Collapsed / TableMissing, both reported before the loop) and
+// the all-frozen corner leave sweeps == 0, and the pessimistic resid = 1.0 they
+// carry is a SENTINEL, not a measurement. Without the count a caller-supplied
+// tol >= 1.0 would make such a report read as converged.
 struct AlSolveResid {
-  double resid = 1.0;  // achieved max |Δy|; 1.0 == no sweep ran
-  double tol = 0.0;    // the sch.tol the budget was asked to reach
+  double resid = 1.0;        // achieved max |Δy| when sweeps > 0; else a sentinel
+  double tol = 0.0;          // the sch.tol the budget was asked to reach
+  std::uint16_t sweeps = 0;  // sweeps that produced a residual; 0 == nothing measured
 
-  [[nodiscard]] constexpr bool converged() const noexcept { return resid <= tol; }
+  [[nodiscard]] constexpr bool converged() const noexcept {
+    return sweeps > 0 && resid <= tol;
+  }
 };
 
 // ── Declarations (definitions live in american.cpp, namespace amer) ──────

@@ -135,16 +135,18 @@ double YieldCurve::disc(double T) const noexcept {
   // must not be lost to a rate round-trip.
   const std::size_t last = t_years_.size() - 1;
   if (T <= t_years_.front()) {
-    const double t0 = t_years_.front();
-    // A degenerate t = 0 first pillar carries no rate to extrapolate (r0 would be
-    // log_df/0); fall back to the flat-DF clamp rather than emit inf/NaN.
-    if (!(t0 > 0.0)) {
-      return std::exp(log_df_.front());
-    }
-    return std::exp(log_df_.front() * (T / t0));
+    // REVL1-F4: t0 > 0 is GUARANTEED here, not assumed — T > 0 was established
+    // above and this branch requires T <= t0, so t0 >= T > 0. A curve whose first
+    // pillar sits at t = 0 therefore has no short end at all: every T > 0 falls
+    // through to the interior interpolant below, which brackets it against that
+    // t = 0 pillar. An earlier `if (!(t0 > 0.0))` flat-DF fallback here was dead
+    // code asserting a contract it could not provide.
+    return std::exp(log_df_.front() * (T / t_years_.front()));
   }
   if (T >= t_years_[last]) {
     const double tn = t_years_[last];
+    // Reachable, unlike the short-end case: T > 0 >= tn holds whenever EVERY pillar
+    // is non-positive, and then there is no rate to extrapolate (rN = log_df/0).
     if (!(tn > 0.0)) {
       return std::exp(log_df_[last]);
     }
@@ -190,8 +192,8 @@ double YieldCurve::zero(double T) const noexcept {
   // there is nothing to interpolate out there to justify paying for it.
   if (!t_years_.empty()) {
     const double t0 = t_years_.front();
-    if (T <= t0 && t0 > 0.0) {
-      return -log_df_.front() / t0;
+    if (T <= t0) {
+      return -log_df_.front() / t0; // t0 >= T > 0 (REVL1-F4, same argument as disc)
     }
     const double tn = t_years_.back();
     if (T >= tn && tn > 0.0) {

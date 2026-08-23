@@ -190,17 +190,46 @@ TEST(YieldCurve, SinglePillar_IsFlatRateEverywhere) {
   }
 }
 
-// A degenerate t=0 first pillar has no rate to read off (r0 = -log_df/0), so the
-// short end keeps the old flat-DF clamp there rather than producing inf/NaN.
-TEST(YieldCurve, ZeroFirstPillar_DoesNotProduceNonFinite) {
+// REVL1-F4: a t = 0 first pillar has NO short end — every T > 0 is already inside
+// the pillar range, so the interior interpolant handles it and the short-end arm is
+// unreachable. The previous version of this test could not fail on any
+// implementation: disc(-0.5)/disc(0.0) return through the unconditional T <= 0
+// guard and zero(1e-6) exercises the Hermite interior either way. This one probes
+// the branch that actually runs.
+TEST(YieldCurve, ZeroFirstPillar_ShortEndIsTheInteriorInterpolant) {
   const double t[] = {0.0, 1.0};
   const double r[] = {0.04, 0.04};
   const auto built = YieldCurve::create(t, r);
   ASSERT_TRUE(built.has_value());
   const YieldCurve &c = *built;
-  EXPECT_TRUE(std::isfinite(c.disc(-0.5)));
-  EXPECT_TRUE(std::isfinite(c.disc(0.0)));
+
+  // log_df is (0, -0.04): a flat-DF clamp would return exp(log_df.front()) == 1.0
+  // for every T below the first pillar. There is no such T here, so 1e-6 must be
+  // interpolated, not clamped.
+  const double df = c.disc(1.0e-6);
+  ASSERT_TRUE(std::isfinite(df));
+  EXPECT_LT(df, 1.0);
+  EXPECT_NEAR(df, std::exp(-0.04 * 1.0e-6), 1.0e-12);
   EXPECT_TRUE(std::isfinite(c.zero(1.0e-6)));
+  EXPECT_NEAR(c.zero(1.0e-6), 0.04, 1.0e-6);
+
+  // T <= 0 still discounts to 1, and the long end still holds the rate flat.
+  EXPECT_DOUBLE_EQ(c.disc(-0.5), 1.0);
+  EXPECT_DOUBLE_EQ(c.disc(0.0), 1.0);
+  EXPECT_NEAR(c.zero(5.0), 0.04, 1.0e-12);
+}
+
+// The long-end guard IS reachable, unlike the short-end one: if every pillar is
+// non-positive there is no maturity to read a rate off, and disc must not divide by
+// it. (create() only requires strictly ascending pillars, not positive ones.)
+TEST(YieldCurve, AllNonPositivePillars_LongEndStaysFinite) {
+  const double t[] = {-2.0, -1.0};
+  const double r[] = {0.04, 0.04};
+  const auto built = YieldCurve::create(t, r);
+  ASSERT_TRUE(built.has_value());
+  const YieldCurve &c = *built;
+  EXPECT_TRUE(std::isfinite(c.disc(1.0)));
+  EXPECT_TRUE(std::isfinite(c.zero(1.0)));
 }
 
 TEST(YieldCurve, DefaultConstructed_DiscReturnsFlatOne) {

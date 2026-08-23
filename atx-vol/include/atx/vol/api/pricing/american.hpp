@@ -180,7 +180,11 @@ static_assert(detail::aggregate_arity_is_v<AlOpts, 5>,
 struct AlBoundaryConvergence {
   double resid = 0.0;              // achieved max |Δy| of the last sweep run
   double tol = 0.0;                // the scheme tolerance the budget was asked to reach
-  bool converged = false;          // resid <= tol
+  bool converged = false;          // resid <= tol, and a sweep actually measured it
+  // Sweeps that actually ran and produced a residual. 0 means NOTHING was measured
+  // and `resid` is not a measurement — which is the case for every regime that
+  // prices without solving a boundary (below). Read it before trusting `resid`.
+  std::uint16_t sweeps_run = 0;
   std::uint16_t sweep_budget = 0;  // sweeps the scheme affords (n_iter_jn + n_iter_fp)
 };
 
@@ -193,7 +197,8 @@ struct AlBoundaryConvergence {
 //
 // Regimes that price without solving a boundary at all (degenerate T ~ 0 or
 // sigma ~ 0, and the European no-early-exercise corner) report
-// {resid = 0, converged = true, sweep_budget = 0}: nothing was left unconverged.
+// {resid = 0, converged = true, sweeps_run = 0, sweep_budget = 0}: nothing was
+// left unconverged because nothing was solved.
 [[nodiscard]] Result<AlBoundaryConvergence>
 andersen_lake_convergence(double S, double K, double T, double sigma, double r, double q,
                           Side side, const std::optional<AlOpts> &opts = std::nullopt);

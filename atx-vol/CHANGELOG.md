@@ -21,7 +21,12 @@ r0 = 4.05%; last pillar 2y at 4.65%):
 | 30 y | 0.31% | 4.65% |
 
 `disc(T <= 0)` also moves, from `exp(log_df.front())` to exactly 1.0. Everything
-inside the pillar range, and every pillar value, is bit-unchanged.
+inside the pillar range is bit-unchanged, and `disc()` at every pillar is
+bit-unchanged (the extrapolation is written as `exp(log_df * (T / t_pillar))`, so
+the ratio is exactly 1.0 at the pillar). `zero()` at the FIRST and LAST pillar
+moves by <1e-14 — about 600 ulp on the fixture, `0.04049999999999577` to
+`0.0405` — because it now reads the pillar rate directly instead of through
+`-log(disc(T))/T`; it is exactly the pillar rate afterwards.
 
 **The defect.** `disc()` clamped the DISCOUNT FACTOR flat outside the pillars, so
 `zero(T) = -log_df.front()/T = r0*t0/T` diverged like 1/T at the short end — every
@@ -34,8 +39,11 @@ read as. `zero()` reads the flat rate straight off the pillar rather than throug
 `-log(disc(T))/T`, whose exp/log round trip drifts 1.5e-12 at five minutes.
 
 **Migration.** Anything that deliberately relied on a decaying long-end rate must
-add pillars instead. A curve whose first pillar is at t = 0 has no rate to
-extrapolate and keeps the old flat-DF clamp rather than emit inf/NaN.
+add pillars instead. A curve whose FIRST pillar sits at t = 0 has no short end at
+all — every T > 0 is already inside the pillar range — so the interior
+interpolant handles it and no extrapolation runs; a curve whose LAST pillar is
+non-positive keeps the flat-DF clamp, since there is no positive maturity to read
+a rate off.
 
 ### FIXED — the Andersen-Lake boundary solve stops discarding the residual it achieved
 
@@ -95,18 +103,41 @@ admissible root. For the call, early exercise recedes as q → 0 and the critica
 price runs away, so no fixed multiple of K is a domain.
 
 **What changed.** The historical bracket is tried first and kept byte-identical,
-so every cell that already converged is untouched and pays nothing; only if that
-attempt fails its own convergence test is the bracket widened geometrically
-(`kBawBracketRetries = 6`, floor ×1/16 / ceiling ×8) and retried. The residual's
-sign is what says whether the root has been captured, which derives the domain
-from the problem. Exhausting the retries still fails closed through the existing
-residual gate.
+so every cell it already served is untouched and pays nothing; only if that
+attempt is not ACCEPTABLE is the bracket widened geometrically
+(`kBawBracketRetries = 6`, floor ×1/16 / ceiling ×8) and retried. Exhausting the
+retries still fails closed through the existing residual gate.
+
+**Acceptable means the residual, never the step test.** `baw_critical_accepted`
+is `baw_american`'s own gate term, defined once and applied at both places. The
+step test `|dS| < tol*K` fires precisely when the safeguarded bisection collapses
+onto an EXCLUDED bracket edge — the step goes to zero because the iterate is
+pinned — so gating the widening on it disabled the widening exactly where it is
+needed and made a larger `max_iter` (public on `baw_american`, and a Python
+keyword argument) strictly worse: the put pinned at `Sx = 0.10000055`
+(resid -1.549e-3) for `max_iter` 32/40/64 while 16 recovered, and the call pinned
+at `Sx = 5000.0` (resid -0.652) at 64 while 16/32 recovered. The gate now holds
+at every `max_iter` in {16, 32, 64} on both cells.
+
+**Confined to `AmericanMethod::Baw`.** `al_seed_boundary` runs the same
+critical-price solve per collocation node of EVERY cold Andersen-Lake solve, with
+no residual gate, feeding a served price. It keeps the historical single bracket
+(`BracketRecovery::Off`) and is byte-identical to before. For the record, the
+exposure had it not been confined, measured over 576 cells of the affected regime
+(K=100, T in {0.05,0.25,1,2}, sigma in {0.15,0.2,0.4,0.8}, r in {1e-4,1e-3,5e-3},
+q in {0.02,0.05,0.1,0.3}, S in {80,100,120}, put): **33 of 192 nodes widen and the
+widened seed moves up to 53% relative after the `xmax` clamp, but only 3 of 576
+prices move at all and every one by ~1e-14 relative** — the sweeps absorb the seed
+difference. So the seed exposure is real in the seed and immaterial in the mark;
+it is fenced off anyway rather than shipped unmeasured.
 
 ### FIXED — a sub-minimum `n_collocation` request no longer resolves to the most expensive boundary
 
-**The number that moves** — for out-of-range requests only; every value in
-[6, 32] is unchanged, and a repository-wide sweep found no existing caller
-outside that range. `scheme_from_opts` (`src/pricing/american.cpp`) guarded
+**The number that moves** — for out-of-range requests only. Every value in
+[6, 32] is unchanged, and a sweep of every `n_collocation` literal in the
+repository found none outside it. That sweep sees SOURCE LITERALS only, so the
+one value that also arrives by decode is handled separately below.
+`scheme_from_opts` (`src/pricing/american.cpp`) guarded
 `n_collocation` with `>= 6 && <= kAlMaxNodes` and simply skipped the assignment
 otherwise, so `AlOpts{.n_collocation = 3}` silently kept the ACCURATE default of
 12 — the most expensive boundary in the ladder — for a caller who asked for the
@@ -114,6 +145,15 @@ cheapest. That is the same silent-ignore the `n_quadrature < 8` floor beside it
 was added to remove under the rule "a caller asking for cheaper must not get more
 expensive" (A9, core-review finding 9). It now CLAMPS in both directions:
 `< 6` → 6, `> kAlMaxNodes` → `kAlMaxNodes`.
+
+**Zero is the exception, and it does NOT move.** `n_collocation` also arrives
+straight off a stored record in three decoders (`src/storage/surface_db.cpp`,
+`src/storage/surface_archive.cpp`, `src/backtest/priced_surface_view.cpp`) and
+from the Python `AlOpts` constructor. A manifest written before the column
+existed decodes as 0 — exactly the case the `n_quad_price` line beside each of
+those three already documents — and such a surface has always priced off the
+12-node default. So 0 keeps meaning ABSENT, not "cheapest", matching
+`n_quad_price`'s own convention in the same struct. Only 1..5 floor to 6.
 
 ### CHANGED — a Risk-purpose preset now requests the MARK too, and `fit_board` serves it when the risk oracle refuses
 
