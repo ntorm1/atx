@@ -35,6 +35,7 @@ using atx::vol::ErrorCode;
 using atx::vol::ExerciseStyle;
 using atx::vol::kDiscreteDivMaxSteps;
 using atx::vol::kDiscreteDivRateBump;
+using atx::vol::kDiscreteDivSigmaBumpRel;
 using atx::vol::kDiscreteDivThetaSecantHorizon;
 using atx::vol::kDiscreteDivYieldBump;
 using atx::vol::Side;
@@ -46,6 +47,21 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 [[nodiscard]] double bs_price(double S, double K, double T, double sigma, double r, double q,
                               Side side) {
   return black76_price(S * std::exp((r - q) * T), K, T, sigma, std::exp(-r * T), side);
+}
+
+// The CLOSED-FORM d^2P/dsigma^2, volga = vega*d1*d2/sigma. Side-independent, as
+// every second-order Black-Scholes greek is. Needed wherever a stencil's own
+// bump is the variable under test: a same-bump reference moves with it and
+// would score a wider bump against a target that had shifted underneath it.
+[[nodiscard]] double bs_analytic_volga(double S, double K, double T, double sigma, double r,
+                                       double q) {
+  const double sq = sigma * std::sqrt(T);
+  const double F = S * std::exp((r - q) * T);
+  const double d1 = (std::log(F / K) + 0.5 * sigma * sigma * T) / sq;
+  const double d2 = d1 - sq;
+  const double pdf = std::exp(-0.5 * d1 * d1) / std::sqrt(2.0 * std::acos(-1.0));
+  const double vega = std::exp(-r * T) * F * pdf * std::sqrt(T);
+  return vega * d1 * d2 / sigma;
 }
 
 // An INDEPENDENT plain Cox-Ross-Rubinstein lattice, written out here so
@@ -855,8 +871,9 @@ TEST(DiscreteDivAmerican, GreekBundle_AtTheMoneyVolga_MatchesTheClosedFormAndIsN
 // AWAY from the money the same second difference divides the ripple by h^2, and
 // this is the honest bound: at 1201 steps on a 100-spot option the volga error
 // is ~2.2 ABSOLUTE — an order of magnitude worse than any other member of the
-// bundle, and O(1/steps) like every other lattice error, so `steps` is the only
-// lever. The claim that survives is the SIGN plus an order of magnitude.
+// bundle. It is NOT O(1/steps) (the next test measures that, and an earlier
+// version of this comment claimed it was), so `steps` is not a lever at all.
+// The claim that survives is the SIGN plus an order of magnitude.
 TEST(DiscreteDivAmerican, GreekBundle_NearTheMoneyVolga_KeepsItsSignAndOrderOfMagnitude) {
   constexpr double kS = 100.0;
   constexpr double kT = 1.0;
@@ -874,6 +891,138 @@ TEST(DiscreteDivAmerican, GreekBundle_NearTheMoneyVolga_KeepsItsSignAndOrderOfMa
     EXPECT_LT(got.volga, 2.0 * want.volga);
     EXPECT_LT(std::abs(got.volga - want.volga), 3.0) << "the measured bound is 2.21";
   }
+}
+
+// ── volga does NOT converge in the step count, and the bump is not a knob ────
+//
+// Both of these are NEGATIVE results, pinned because each one is a plausible
+// fix that costs real money to try and does not work.
+//
+// The off-the-money volga error is O(1), not O(1/steps). The mechanism says it
+// must be: the CRR node-quantisation ripple has amplitude O(1/n) and, read as a
+// function of sigma, its period is sigma/|p|, where
+//     p = ln(K/S) / (sigma*sqrt(dt)) == ln(K/S)*sqrt(n) / (sigma*sqrt(T))
+// is the strike's offset in TERMINAL NODES. A second difference in sigma
+// multiplies the ripple by (dp/dsigma)^2 = (p/sigma)^2, which grows like n. The
+// two powers of n cancel EXACTLY, so refining the lattice buys nothing here — it
+// only re-randomises the ripple's phase. The price off the very same lattices
+// does fall like 1/steps, and asserting both in one test is what makes this a
+// statement about the second difference rather than about the lattice.
+TEST(DiscreteDivAmerican, GreekBundle_OffTheMoneyVolgaError_IsOrderOneInTheStepCount) {
+  constexpr double kS = 100.0;
+  constexpr double kT = 1.0;
+  constexpr double kSigma = 0.25;
+  constexpr double kR = 0.04;
+  constexpr double kQ = 0.01;
+  constexpr int kCoarse = 301;
+  constexpr int kFine = 2401;
+  for (const double K : {97.0, 103.0}) {
+    // The SAME-bump Black-Scholes stencil, so what is measured is the lattice's
+    // own error and not the central difference's O(h^2) truncation.
+    const DiscreteDivGreekBundle want =
+        bs_stencil_bundle(kS, K, kT, kSigma, kR, kQ, Side::Call, kDiscreteDivThetaSecantHorizon);
+    double volga_err[3] = {0.0, 0.0, 0.0};
+    double price_err[3] = {0.0, 0.0, 0.0};
+    std::size_t slot = 0;
+    for (const int steps : {kCoarse, 1201, kFine}) {
+      const DiscreteDivGreekBundle got =
+          bundle_or_fail(kS, K, kT, kSigma, kR, kQ, Side::Call, {}, steps,
+                         ExerciseStyle::European);
+      volga_err[slot] = std::abs(got.volga - want.volga);
+      price_err[slot] = std::abs(got.price - want.price);
+      // Measured 2.221 / 2.212 / 2.215 at K=97 and 2.234 / 2.220 / 2.213 at
+      // K=103 — one band holds every step count, which is the whole point.
+      EXPECT_GT(volga_err[slot], 2.0) << "K=" << K << " steps=" << steps;
+      EXPECT_LT(volga_err[slot], 2.5) << "K=" << K << " steps=" << steps;
+      ++slot;
+    }
+    // An O(1/steps) error would shrink EIGHTFOLD over this range. Measured 0.997
+    // and 0.990 — it does not shrink at all.
+    EXPECT_GT(volga_err[2], 0.8 * volga_err[0])
+        << "K=" << K << " volga error must NOT decay with the step count";
+    // The price off the same eight solves does decay: measured 0.128 (K=97) and
+    // 0.115 (K=103) of its 301-step value, against the 0.125 a 1/steps law asks
+    // for. Without this leg the test above would also pass on a lattice that had
+    // simply stopped converging altogether.
+    EXPECT_LT(price_err[2], 0.25 * price_err[0])
+        << "K=" << K << " the PRICE error is O(1/steps) on the same lattices";
+  }
+}
+
+// The sigma bump is a fixed constant and not a tuning knob, and this pins WHY:
+// the error-versus-bump curve is not the U-shape a truncation/noise trade-off
+// would give, so there is no bump that is right everywhere. Widening it from
+// 10% to 30% of sigma makes the AT-THE-MONEY volga — the one place the bundle
+// is accurate — 11.6x worse, while off the money it moves in whichever
+// direction the ripple's phase happens to send it (worse at K=103, better at
+// K=97, on the same lattice). Anything read off this axis is a coincidence of
+// one (K, T, sigma, steps) and does not transfer.
+TEST(DiscreteDivAmerican, GreekBundle_AWiderSigmaBump_TradesTheAtTheMoneyVolgaForNothing) {
+  constexpr double kS = 100.0;
+  constexpr double kT = 1.0;
+  constexpr double kSigma = 0.25;
+  constexpr double kR = 0.04;
+  constexpr double kQ = 0.01;
+  constexpr double kWideBumpRel = 0.30;
+  // An independent second difference of the shipped PRICE entry at an arbitrary
+  // bump — the bundle's own stencil, with the constant replaced.
+  const auto volga_at = [&](double K, double bump_rel, int steps) {
+    const double h = bump_rel * kSigma;
+    const double up = price_or_fail(kS, K, kT, kSigma + h, kR, kQ, Side::Call, {}, steps,
+                                    ExerciseStyle::European);
+    const double base = price_or_fail(kS, K, kT, kSigma, kR, kQ, Side::Call, {}, steps,
+                                      ExerciseStyle::European);
+    const double dn = price_or_fail(kS, K, kT, kSigma - h, kR, kQ, Side::Call, {}, steps,
+                                    ExerciseStyle::European);
+    return (up - 2.0 * base + dn) / (h * h);
+  };
+  const auto rel_err = [&](double K, double bump_rel, int steps) {
+    // Against the ANALYTIC curvature, not a same-bump stencil: a wider bump
+    // changes its OWN truncation, so a same-bump reference would score the 30%
+    // stencil against a target that had moved with it.
+    const double exact = bs_analytic_volga(kS, K, kT, kSigma, kR, kQ);
+    return std::abs(volga_at(K, bump_rel, steps) - exact) / std::abs(exact);
+  };
+  // AT the money the shipped bump is the accurate one, by an order of magnitude.
+  const double atm_narrow = rel_err(100.0, kDiscreteDivSigmaBumpRel, 1201);
+  const double atm_wide = rel_err(100.0, kWideBumpRel, 1201);
+  EXPECT_LT(atm_narrow, 0.15) << "measured 0.098";
+  EXPECT_GT(atm_wide, 5.0 * atm_narrow) << "measured 11.6x worse: " << atm_wide;
+  // One strike up it is worse at the wider bump, one strike down it is better —
+  // same lattice, same bump pair. That is a phase, not an optimum.
+  EXPECT_GT(rel_err(103.0, kWideBumpRel, 301), rel_err(103.0, kDiscreteDivSigmaBumpRel, 301))
+      << "measured 0.992 vs 0.913";
+  EXPECT_LT(rel_err(97.0, kWideBumpRel, 301), rel_err(97.0, kDiscreteDivSigmaBumpRel, 301))
+      << "measured 0.226 vs 0.338 — the opposite direction at the adjacent strike";
+}
+
+// ── The price is the vendor-validated number: pin it against ANY volga work ──
+//
+// `price` is measured against SpiderRock's `srPrc` and against the Python
+// reference. A scheme change made to improve volga — a wider bump, a step-count
+// extrapolation, a strike-aligned tree — is only a bug fix while these four
+// literals hold; the moment one moves it is a NEW vendor measurement and has to
+// be re-validated before it ships. The literals were produced by the reference
+// implementation of this same scheme, so they also re-check the port.
+TEST(DiscreteDivAmerican, GreekBundle_Price_IsPinnedAgainstAnyGreekSchemeChange) {
+  const std::vector<CashDividend> schedule = parity_schedule();
+  const DiscreteDivGreekBundle call = bundle_or_fail(kParityS, 775.0, kParityT, kParitySigma,
+                                                     kParityR, kParityQ, Side::Call, schedule,
+                                                     301, ExerciseStyle::American);
+  const DiscreteDivGreekBundle put = bundle_or_fail(kParityS, 775.0, kParityT, kParitySigma,
+                                                    kParityR, kParityQ, Side::Put, schedule, 301,
+                                                    ExerciseStyle::American);
+  EXPECT_DOUBLE_EQ(call.price, 75.222227622486997);
+  EXPECT_DOUBLE_EQ(put.price, 54.128579425756222);
+
+  const DiscreteDivGreekBundle euro_call = bundle_or_fail(100.0, 97.0, 1.0, 0.25, 0.04, 0.01,
+                                                          Side::Call, {}, 1201,
+                                                          ExerciseStyle::European);
+  const DiscreteDivGreekBundle euro_put = bundle_or_fail(100.0, 103.0, 1.0, 0.25, 0.04, 0.01,
+                                                         Side::Put, {}, 1201,
+                                                         ExerciseStyle::European);
+  EXPECT_DOUBLE_EQ(euro_call.price, 12.742321369885115);
+  EXPECT_DOUBLE_EQ(euro_put.price, 9.8266034504230042);
 }
 
 // ── Convergence: 301 vs 1201 steps ─────────────────────────────────────────
@@ -1243,11 +1392,41 @@ TEST(DiscreteDivAmerican, GreekBundle_SignsAreSaneOnTheDividendPath) {
 // money there is no ripple to divide — ln(K/S) = 0 holds a fixed position in the
 // terminal grid S*exp(sigma*sqrt(dt)*(2i - N)) however sigma moves — and the
 // error is 3.8e-3 on -0.169 (2.3%). ONE strike either side of the money it is
-// 2.2 ABSOLUTE: 35% of the K=97 value, 90% of the K=103 value. It is O(1/steps)
-// like every other lattice error, so `steps` is the only lever inside this
-// scheme; making volga materially better needs a strike-aligned tree
-// (Leisen-Reimer / Tian), which is a different PRICE and therefore a different
-// measurement against the vendor, not a tuning change here.
+// 2.2 ABSOLUTE: 35% of the K=97 value, 90% of the K=103 value.
+//
+// NEITHER `steps` NOR the bump size is a lever, and both were measured rather
+// than argued (the two tests above pin each one):
+//   - the error is O(1) in the step count, not O(1/steps). 2.221 / 2.212 /
+//     2.215 at 301 / 1201 / 2401 steps at K=97; 2.234 / 2.220 / 2.213 at K=103.
+//     The ripple is O(1/n) but its PERIOD in sigma is sigma/|p| with
+//     p = ln(K/S)*sqrt(n)/(sigma*sqrt(T)), so the second difference multiplies
+//     it by (p/sigma)^2 ~ n and the two powers of n cancel. An earlier version
+//     of this note asserted O(1/steps); it was wrong, and a step-count
+//     refinement is a quadratic bill for nothing.
+//   - the error-versus-bump curve is not U-shaped, so there is no optimum to
+//     find. Swept 2%-90% of sigma at 301 and 1201 steps across
+//     K in {85, 97, 100, 103, 110}, T in {0.25, 1, 2}, sigma in {0.15, .25, .5}:
+//     the best bump is 0.05 at the money, 0.30 at K=97, 0.90 at K=103, 0.20 at
+//     K=110 — it is wherever the ripple's phase lands, and it does not transfer.
+//     A 30% bump costs the at-the-money volga 11.6x and costs vanna (which
+//     shares those two solves) 10-100x.
+//   - averaging or Richardson-extrapolating the sigma legs over step counts
+//     does not fix it either: (n, n+1) is worse than plain at K=103 (2.17 vs
+//     0.91 relative, sign flipped) and Richardson over (n, 2n) is worse at
+//     K=110 (2.28 vs 1.16, sign flipped). Even a 16-lattice average over
+//     [n, 2n) — 48 solves for one greek — leaves 0.24 at K=97 and 0.47 at
+//     K=103, because the residue is a bias and not an oscillation.
+//
+// Making volga materially better needs a strike-aligned tree (Leisen-Reimer /
+// Tian). Measured what that would buy, at 301 steps European: relative volga
+// error 0.0061 / 0.0133 / 0.1189 / 0.0000 / 0.0125 / 0.0043 at
+// K = 85 / 97 / 100 / 103 / 110 / 130, against this lattice's
+// 0.227 / 0.338 / 0.037 / 0.913 / 1.159 / 0.056 — one to two orders of
+// magnitude, everywhere except at the money where LR reproduces the stencil's
+// own truncation and this lattice happens to be clean. It is a different PRICE
+// (LR's 301-step price error is 5e-6 against Black-Scholes where this lattice's
+// is 7.4e-3) and therefore a different measurement against the vendor mark, not
+// a tuning change here.
 //
 // STEP-COUNT STABILITY, 301 vs 1201, on the six-dividend American parity
 // scenario, relative: price 2.8e-3, delta 3.4e-4, gamma 1.2e-3, vega 7.2e-4,

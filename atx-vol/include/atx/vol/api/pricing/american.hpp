@@ -906,6 +906,13 @@ struct DiscreteDivGreekBundle {
 // Second differences still divide the same ripple by h^2 — see the accuracy note
 // on `volga` in the tests: away from the money it is the noisy member of the
 // bundle, and that is a property of the lattice, not of the bump.
+//
+// This constant is NOT a tuning knob, and the tests pin why. Swept over 2%-90%
+// of sigma at two step counts and five strikes, the volga error versus bump is
+// not the U-shape a truncation/noise trade-off would give — it is the ripple's
+// phase, so the best bump is 0.05 at the money, 0.30 one strike below and 0.90
+// one strike above, and none of it transfers. Widening to 30% costs the
+// AT-THE-MONEY volga 11.6x and vanna, which shares these two solves, 10-100x.
 inline constexpr double kDiscreteDivSigmaBumpRel = 0.10;
 
 // Rate / yield bumps, matching american_greeks_fd's `hr`/`hq`. Small is safe
