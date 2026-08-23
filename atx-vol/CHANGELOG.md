@@ -5,6 +5,131 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### FIXED — the LinearVariance market mark is MEASURED now, not asserted arb-free
+
+**The claim that moves.** `detail::slice_butterfly_violations`
+(`src/fitting/curve_selector.cpp`) returned a hard-coded `0` for
+`VolCurveKind::LinearVariance` under the label *by-construction arb-free*, with a
+parenthetical conceding the check was out of scope. Piecewise-linear total
+variance is only C0: `w''` is a measure carrying a Dirac at every node, and the
+flat wings splice a concave kink onto both outer nodes, so the family is never
+butterfly-arb-free on any board. The market-mark arm pins that family
+(`FitPreset::Hft`, `src/fitting/session.cpp`) for SPY/QQQ/IWM and dense mega-cap
+event boards, and published `Healthy` with a DEFAULT-CONSTRUCTED
+`ValidationDigest` — every count zero, `admitted()` true — that no oracle had
+produced.
+
+**The numbers.** On the repo's own known-truth synthetic SPY panel a 6-slice mark
+carries **11 butterfly violations**, worst kink slope drop **0.20**. The
+codebase's own real-board number is that ~1/4 of a raw penny-quote SPY board is
+locally butterfly-violating (`src/fitting/essvi_calib.cpp`); a mark that
+interpolates the quotes reproduces every one of those.
+
+**What changed.** `arb_check_butterfly_linear_variance` (`arb.hpp`) decides the
+singular part EXACTLY from the node geometry — a finite-difference stencil only
+smears each Dirac over one grid cell, so what it reports depends on `dk` — and
+samples the smooth part where `w'' == 0`. It separates the two structural
+flat-wing splices from the violations the board's own quotes imply
+(`n_quote_implied()`). The selector seam now returns
+`SliceButterflyVerdict{n_violations, decided}` and an UNDECIDED slice
+disqualifies exactly like a violating one. **Selection behaviour moves:
+LinearVariance is now ~always disqualified as a selector candidate**, which
+agrees with the rest of the stack — a LinearVariance *risk* config is already
+refused outright and rewritten to ConvexDense (`src/fitting/pricer_fitter.cpp`).
+It stays a scored rung of `bounded_selector_candidates()` so its fit metrics
+remain comparable.
+
+**The mark is NOT gated and NOT repaired, and that is the decision.** Gating it
+would publish nothing for the most liquid names on most snapshots; repairing it
+would move the mark off the quotes it is defined to interpolate, and the repair
+already exists on the risk ladder. What changed is the claim: the published
+digest carries the measurement and its `Butterfly` bit, so
+`market_mark_health.validation.admitted()` is now **false** and the counts are
+reachable from the public bundle. Demoting `SurfaceHealth::state` to `Degraded`
+is opt-in via `PricerConfig::demote_mark_on_butterfly`, **default false** —
+`src/marketdata/corpus_board_fit.cpp` substitutes a mark for a risk-refused board
+only while `market_mark_health.state == Healthy`, so defaulting the demotion true
+would arm that refusal rather than report a fact.
+
+### FIXED — the spline knot grid is validated instead of divided by
+
+`natural_spline_m` (`src/fitting/spline_curve.cpp`) divides by the knot gaps
+`h[t]`/`h[t+1]`, by `b[0]` and by the Thomas pivot with no zero check, and
+`fit_spline_vol_slice` validated only `grid.size() >= 4` — never that the grid
+ASCENDS, which `SplineVolParams::z` is documented to do and nothing enforced. One
+duplicated or unsorted knot made the whole second-derivative vector NaN and every
+served IV NaN, **out of a fit that reported success**. The entry point now
+returns `InvalidArgument` for a non-ascending or non-finite grid (a caller that
+was silently serving NaN now gets an error), and the core returns all-zero second
+derivatives for an undecidable gap — the natural-spline answer for data it cannot
+difference — so a hand-built or deserialized params degrades to the
+piecewise-linear interpolant instead of poisoning the surface.
+`SplineFitOpts::grid` is a `std::span` MEMBER; its borrow contract is now stated
+on the field, with the dangling-temporary form spelled out.
+
+### FIXED — a single NaN vertex no longer wins the SVI Nelder-Mead search
+
+`nm_search` (`src/fitting/svi_calib.cpp`) picked its winner with
+`if (f[1] < f[best]) best = 1;`, which is false when `f[best]` is NaN. One NaN
+vertex therefore beat two finite vertices and `out_best_sse` returned non-finite,
+breaking the function's own stated contract (*non-finite iff EVERY vertex the
+simplex visited was unusable*) — on which the caller's decision to DISCARD the
+slice rests. Slices that were thrown away for one bad vertex now fit.
+`detail::nm_vertex_less` / `nm_best_vertex` state the rule once; the in-loop
+simplex sort uses the same predicate, so an unusable vertex sinks to `v[2]` — the
+slot Nelder-Mead replaces first — instead of sitting at `v[0]` driving the
+search.
+
+### FIXED — the eSSVI dense-residual clamp is single-sourced (the served w moves)
+
+`essvi_residual_w` (`src/fitting/vol_surface.cpp`) clamped its summation count to
+`[1, 16]` while the C2-Bspline basis it calls re-clamps to `[4, 16]`
+(`resid_bump_count`, `src/fitting/resid_basis.hpp`). For `resid_n_basis` in
+{1, 2, 3} the basis was built on FOUR bumps and the dot product summed only the
+first 1-3, so **the surface served a different total variance than was
+calibrated**. `essvi_slice_dof` carried a third, private copy of the clamp and
+reported 1-3 for a slice the evaluator serves on four bumps. Measured on a
+hand-built slice: `essvi_total_w` at k=0.40 moves `0.038219` → `0.041758` at
+`resid_n_basis == 3`, and the reported dof 6 → 7. `fit_dense_residual` always
+writes ≥ 4, so the drift is reachable only by deserialization or hand
+construction — which is what a persisted archive and a research caller do.
+
+### FIXED — `ConvexSliceFit::call_price` no longer falls off a cliff on a duplicated ladder strike
+
+`call_price` (`src/fitting/dense_slice.cpp`) divides by `u[1]-u[0]`, by
+`u[n-1]-u[n-2]` and by `u[hi]-u[lo]` with no strict-increase check. `u` is a
+PUBLIC member, so the no-duplicates invariant is established only by the 1e-9
+merge inside `fit_convex_slice`, never by the accessor. The observable defect is
+not a NaN price — `std::clamp`/`std::max` return their NaN argument's counterpart
+— but a silently wrong tail: an infinite right-edge slope drives the exponent to
+`+inf`, and `pow(K/Kn, -inf)` is exactly 0, so on a four-node ladder the price
+fell from **1.5 to 0.0** one ULP past the last node. That is the flat-clamp
+failure FIT-C11 exists to prevent, in a louder form. An unusable gap now means
+"no edge derivative": the right tail takes slope 0 and lands on the FIT-C11
+epsilon floor, the left tail falls back to `a == 1` (the straight put through the
+origin, C0 at the splice), and the interior bracket holds the lower node.
+
+### CHANGED — the disarmed bid/ask quality floor is now VISIBLE (no number armed)
+
+`FitAdmissionPolicy::min_worst_frac_within_bidask` defaults to `0.0`, and the
+admission predicate is `worst_frac_within_bidask < min` over a FRACTION in
+`[0, 1]` — so the default makes it `worst < 0.0`, which nothing satisfies.
+`QualityBelowFloor` cannot fire on either shipped policy, no admission path
+compares an RMSE to a tolerance (`rmse` appears nowhere in `fit_policy`), and the
+independent geometry oracle never reads a bid or an ask. An arb-free surface that
+reprices NOTHING inside the spread publishes as `Healthy`. **Nothing is armed**:
+arming it would start refusing production surfaces and would also switch on the
+second de-Am scoring pass on every route that had opted out. What lands is
+`fit_quality_floor_armed(policy)`, two `static_assert`s pinning BOTH shipped
+defaults as disarmed so arming one is a deliberate reviewed edit, and a field
+contract stating what a real floor needs (a per-consumer number — Mark and Risk
+cannot share one; the parity-evidence and latency cost; and a measured
+distribution over a real board population before any number is chosen; populate's
+0.35 is the only non-zero value in the repo). `SurfaceHealth::surface_age_ns` is
+documented as **declared and never assigned** — it always reads 0, i.e. "built
+just now", the most dangerous default a staleness field can carry.
+
+
 ### CHANGED — a Risk-purpose preset now requests the MARK too, and `fit_board` serves it when the risk oracle refuses
 
 **The number that moves.** A populate run over the full 2026-08-21 OPRA universe
