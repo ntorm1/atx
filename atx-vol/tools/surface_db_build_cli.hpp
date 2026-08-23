@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "atx/vol/api/marketdata/opra_batch.hpp" // CorpusMarketInputTable, read_corpus_spot_inputs
 #include "atx/vol/api/marketdata/opra_hive.hpp" // OpraHiveSpec (apply_snapshot_suffix_flag)
 #include "atx/vol/api/storage/surface_db.hpp"   // kSurfaceDbKeyMax (--symbols-file cap)
 
@@ -268,6 +269,83 @@ struct SymbolsFileOutcome {
            "the WHOLE trimmed line as one symbol. A tab/comma universe fixture (e.g. "
            "data/universe/xsec_2026-08.csv, 'SYM<TAB>weight') must have its symbol column cut "
            "out first, or every cell becomes a coverage hole under a name you never typed";
+  }
+  return {}; // unreachable: every enumerator returns above
+}
+
+// ── --spots (ATX_CORPUS_SPOTS overlay) ──────────────────────────────────────
+//
+// Same seam discipline as --symbols-file above: VALIDATE AND APPLY in one
+// function so the ASSIGNMENT onto the hive spec is unit-testable, not just the
+// parse. The flag exists because `atx-vol-surface-db-build` otherwise implies
+// every board's spot from put-call parity on that board's own quotes, and a
+// board with no strike carrying a two-sided call AND a two-sided put on any
+// expiry cannot imply one at all -- it refuses to LOAD, landing in neither
+// cells_ok nor cells_failed, named by no failed_cell line, visible only as
+// n_load_errors (943 of 6,189 underliers on the 2026-08-21 full-OPRA board).
+//
+// STRICTNESS, AND WHY IT IS NOT MERELY TASTE. Every failure below is a usage
+// error rather than a warning-and-continue, because the fallback for a spot
+// that did not arrive is not "no spot" -- it is the PCP-implied spot, which is
+// a DIFFERENT and silently plausible number. A run that lost its overlay
+// therefore looks completely clean while pricing an unknown fraction of the
+// board off the wrong underlier. That is the failure mode this refuses to have.
+// An overlay covering only PART of the board is fine and expected
+// (MissingMarketInputPolicy::UseFallback leaves uncovered cells on PCP); what
+// is rejected is an overlay that was ASKED FOR and did not take effect.
+enum class SpotsFlagError : std::uint8_t {
+  None = 0,
+  EmptyPath,   // --spots with no value, or the empty string
+  Unreadable,  // cannot open, or magic/header/rows malformed (reader's words)
+  NoRows,      // parses, but overlays nothing -- an overlay that does nothing
+};
+
+struct SpotsFlagOutcome {
+  SpotsFlagError error{SpotsFlagError::None};
+  std::string detail{};      // the reader's own message, for Unreadable
+  std::size_t n_cells{0};    // cells overlaid, on success
+};
+
+// Read `path` and, on success, MOVE the table onto `hive.market_inputs`.
+// `hive` is left untouched on every failure, so a rejected flag cannot
+// half-apply.
+[[nodiscard]] inline SpotsFlagOutcome apply_spots_flag(std::string_view path, OpraHiveSpec &hive) {
+  SpotsFlagOutcome outcome;
+  if (path.empty()) {
+    outcome.error = SpotsFlagError::EmptyPath;
+    return outcome;
+  }
+  Result<CorpusMarketInputTable> table = read_corpus_spot_inputs(std::string(path));
+  if (!table) {
+    outcome.error = SpotsFlagError::Unreadable;
+    outcome.detail = table.error().to_string();
+    return outcome;
+  }
+  if (table->cells().empty()) {
+    outcome.error = SpotsFlagError::NoRows;
+    return outcome;
+  }
+  outcome.n_cells = table->cells().size();
+  hive.market_inputs = std::move(*table);
+  return outcome;
+}
+
+[[nodiscard]] inline std::string spots_flag_diagnostic(std::string_view path,
+                                                       const SpotsFlagOutcome &out) {
+  const std::string quoted = "'" + std::string(path) + "'";
+  switch (out.error) {
+  case SpotsFlagError::None:
+    return {};
+  case SpotsFlagError::EmptyPath:
+    return "--spots expects a path. A dropped shell variable is not a choice: without the "
+           "overlay every board falls back to a PCP-implied spot, which is a different number "
+           "and not a missing one, so the run would look clean";
+  case SpotsFlagError::Unreadable:
+    return "--spots " + quoted + ": " + out.detail;
+  case SpotsFlagError::NoRows:
+    return "--spots " + quoted +
+           ": parses but carries no spot rows, so the overlay would do nothing while the run "
+           "reported success -- omit --spots entirely to imply every spot from put-call parity";
   }
   return {}; // unreachable: every enumerator returns above
 }

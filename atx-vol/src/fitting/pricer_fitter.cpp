@@ -226,6 +226,84 @@ struct DeamLadderEnv {
   return value;
 }
 
+// ── Carry-anchor budget rollout switch ──────────────────────────────────────
+//
+//   ATX_VOL_CARRY_LOO          overrides `DeAmOptions::max_carry_leave_one_out`
+//                              (default 0.005, annualized borrow-RATE units),
+//                              the tier-1 confidence gate.
+//   ATX_VOL_CARRY_MNY_SHIFT    overrides `DeAmOptions::max_carry_moneyness_shift`
+//                              (default 0.01, MONEYNESS units), the tier-2
+//                              `carry_moneyness_bounded` gate; the companion
+//                              dispersion budget is 4x this by construction.
+//
+// WHY THESE TWO AND NOT THE OTHERS. Measured on the 2026-08-21 full-OPRA board
+// with ATX_VOL_CARRY_TRACE: of 5,246 boards, 2,705 have a tier-1 anchor and 412
+// more have only a tier-2 one, leaving 2,129 with NO anchor -- which is EXACTLY
+// `cells_failed`, so carry anchoring accounts for the entire cell-failure set.
+// Splitting the 57,281 solved carries by which condition failed: the pair-count
+// floor rejects 38.7% (data absent, not tunable), the rate-unit dispersion
+// budget 14.7%, and the rate-unit LEAVE-ONE-OUT budget 33.7%. Of the 17,048
+// expiries that cleared the pair floor and still missed tier 1, the moneyness
+// leave-one-out budget rejects 66.1% and the moneyness dispersion budget 18.1%.
+// So the two leave-one-out budgets are what bind, and the overshoot is modest
+// -- median 3.2x the rate budget and 2.3x the moneyness one -- not orders of
+// magnitude. That is what makes a budget change worth MEASURING rather than
+// assuming; it is not a claim that widening them is correct.
+//
+// WIDENING THESE ADMITS LESS RELIABLE CARRIES, ON PURPOSE, AND THE RESULT STAYS
+// HONEST BY CONSTRUCTION: a tier-2 anchor is never `confident` and never
+// `CarrySource::Solved`, so the session counts it in `n_carry_fallback_expiries`
+// and admission publishes Degraded + CarryGap rather than Healthy. A wider
+// budget therefore buys COVERAGE at a stated grade, not silent quality.
+//
+// An environment gate rather than a `PricerConfig` field for the same reason the
+// exercise ladder is one: `PricerConfig` is serialized into the surface-db
+// symbol record, so a new field there is an on-disk format change for what is a
+// rollout switch. Read exactly once, on first use. A malformed, non-finite or
+// non-positive value is treated as ABSENT -- failing closed means keeping the
+// tighter shipped budget, which is the safe direction here (the opposite of the
+// ladder, where failing closed means the more expensive path). Unset => the
+// shipped defaults, bit-identical.
+struct CarryBudgetEnv {
+  double max_leave_one_out{0.0};  // 0 = unset, keep the DeAmOptions default
+  double max_moneyness_shift{0.0};
+};
+
+[[nodiscard]] const CarryBudgetEnv &carry_budget_env() noexcept {
+  static const CarryBudgetEnv value = []() noexcept {
+    CarryBudgetEnv e;
+    e.max_leave_one_out = ladder_env_double("ATX_VOL_CARRY_LOO");
+    e.max_moneyness_shift = ladder_env_double("ATX_VOL_CARRY_MNY_SHIFT");
+    return e;
+  }();
+  return value;
+}
+
+// ── Coverage-recovery rollout switch ────────────────────────────────────────
+//
+//   ATX_VOL_FIT_LINEAR_FALLBACK   > 0 arms
+//   `CalibOpts::per_slice_linear_fallback` (calib.hpp): a slice whose primary
+//   family FIT fails is retried as a >=2-node LinearVariance slice before the
+//   expiry is dropped.
+//
+// Same gate shape, and the same rationale, as `uncovered_parametric_armed`
+// above: a rollout switch must not become an on-disk `PricerConfig` field. This
+// is the only route to the flag from a surface-db build — the CLI carries no
+// calibration knobs, and `PreparationPolicyRequest::linear_fallback` is not
+// reachable from `PricerConfig` either. `VolaSession::build` (session.cpp)
+// folds a set `calib.per_slice_linear_fallback` into the preparation REQUEST as
+// `ThinSliceRescue::On`, so arming it here is exactly the documented opt-in and
+// nothing else. Read exactly once, on first use. Unset => the historical
+// drop-the-slice path, bit-identical.
+//
+// NOTE the standing restriction, which this gate does not (and must not) widen:
+// `resolve_preparation_policy` grants the rescue only on the polymorphic-driver
+// lane, so an eSSVI-served board is unaffected however this is set.
+[[nodiscard]] bool linear_fallback_armed() noexcept {
+  static const bool value = ladder_env_double("ATX_VOL_FIT_LINEAR_FALLBACK") > 0.0;
+  return value;
+}
+
 [[nodiscard]] SurfaceBuildAttemptReport
 failed_attempt_report(const Underlying &under, const CurveConfig &curve,
                       const atx::core::Error &failure,
@@ -1567,6 +1645,22 @@ Status PricerFitter::fit(const OptionChain &chain,
     // left on `in.calib`.
     if (detail::uncovered_parametric_armed()) {
       in.calib.per_slice_uncovered_parametric = true;
+    }
+    // Coverage recovery (see `linear_fallback_armed`). Same placement and the
+    // same reason: the live rollout switch wins over anything a per-symbol
+    // preset left on `in.calib`.
+    if (detail::linear_fallback_armed()) {
+      in.calib.per_slice_linear_fallback = true;
+    }
+    // Carry-anchor budgets (see `carry_budget_env`). These land on `in.deam`,
+    // not `in.calib`, because they are de-Americanization options; same
+    // placement so a live rollout switch still wins over the preset.
+    const detail::CarryBudgetEnv &carry_budget = detail::carry_budget_env();
+    if (carry_budget.max_leave_one_out > 0.0) {
+      in.deam.max_carry_leave_one_out = carry_budget.max_leave_one_out;
+    }
+    if (carry_budget.max_moneyness_shift > 0.0) {
+      in.deam.max_carry_moneyness_shift = carry_budget.max_moneyness_shift;
     }
   };
   apply_risk_policy();

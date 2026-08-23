@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>       // carry_trace_row's serializing lock
+#include <string_view> // carry_trace_row's ticker
 #include <exception>
 #include <functional>
 #include <limits>
@@ -594,6 +596,91 @@ void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &
 // Phase 1: per-chain de-Am (resolve_chain_forward + the European observation
 // build) fanned out over `n_threads` workers. Pure per-chain work, disjoint
 // output slots — see `ChainPrepass` above.
+
+// ── Env-gated per-expiry carry trace (measurement mode) ─────────────────────
+//
+// Writes one CSV row per expiry's carry resolution, carrying the diagnostics
+// BOTH anchor gates read plus the verdict each returned. Exists because those
+// diagnostics are computed, consulted and discarded: no report column, log line
+// or stored field carries `n_retained`, `dispersion` or the leave-one-out
+// shifts, so "which budget rejected this expiry" is currently unanswerable from
+// a build.
+//
+// It is the question that matters for the thin tail. Over the 10-session
+// 2026-08 full-OPRA corpus, 22,181 of 22,411 failed cells (99.0%) have
+// `carry_failed` accounting for every chain of the symbol; of the 2,127
+// failures on 2026-08-21, 936 (44%) have fewer than `min_confident_borrow_pairs`
+// two-sided parity pairs on even their best expiry -- the gate is unreachable
+// and no budget change can help those -- but 1,191 (56%) have three or more, so
+// the pairs existed and a filter rejected them. This says which one.
+//
+// OFF unless `ATX_VOL_CARRY_TRACE` names a writable path. Same shape and the
+// same rationale as `tier_trace_file` (calib.cpp): a measurement mode, never a
+// production one, serialized on a mutex because the consumer is offline
+// analysis rather than throughput.
+[[nodiscard]] std::FILE *carry_trace_file() noexcept {
+  static std::FILE *const file = []() noexcept -> std::FILE * {
+#if defined(_MSC_VER)
+    char *raw = nullptr;
+    std::size_t size = 0;
+    if (::_dupenv_s(&raw, &size, "ATX_VOL_CARRY_TRACE") != 0 || raw == nullptr) {
+      return nullptr;
+    }
+    std::FILE *handle = nullptr;
+    const bool opened = (::fopen_s(&handle, raw, "w") == 0);
+    std::free(raw);
+    if (!opened || handle == nullptr) {
+      return nullptr;
+    }
+#else
+    const char *raw = std::getenv("ATX_VOL_CARRY_TRACE");
+    if (raw == nullptr) {
+      return nullptr;
+    }
+    std::FILE *handle = std::fopen(raw, "w");
+    if (handle == nullptr) {
+      return nullptr;
+    }
+#endif
+    std::fputs("ticker,T,err,n_candidates,n_attempted,n_solved,n_retained,"
+               "eff_pairs,dispersion,loo_shift,half_width,disp_mny,loo_mny,"
+               "half_width_mny,atm_sigma,max_pcp_resid,confident,bounded,source"
+               "\n", handle);
+    return handle;
+  }();
+  return file;
+}
+
+// `err` is 0 on a solved carry and the ErrorCode otherwise; a row is
+// written either way, because an expiry whose solve ERRORED and one that solved
+// but missed a gate are different problems and the counts of each are the whole
+// point of the trace.
+void carry_trace_row(std::string_view ticker, double T, int err,
+                     const CarryDiagnostics *carry, bool bounded) noexcept {
+  std::FILE *const file = carry_trace_file();
+  if (file == nullptr) {
+    return;
+  }
+  static std::mutex carry_trace_mutex;
+  const std::lock_guard<std::mutex> lock(carry_trace_mutex);
+  if (carry == nullptr) {
+    std::fprintf(file, "%.*s,%.10g,%d,,,,,,,,,,,,,,,\n",
+                 static_cast<int>(ticker.size()), ticker.data(), T, err);
+    return;
+  }
+  std::fprintf(file,
+               "%.*s,%.10g,%d,%zu,%zu,%zu,%zu,%.10g,%.10g,%.10g,%.10g,%.10g,"
+               "%.10g,%.10g,%.10g,%.10g,%d,%d,%d\n",
+               static_cast<int>(ticker.size()), ticker.data(), T, err, carry->n_candidates,
+               carry->n_attempted, carry->n_solved, carry->n_retained,
+               carry->effective_pair_count, carry->dispersion,
+               carry->max_leave_one_out_shift, carry->confidence_half_width,
+               carry->dispersion_moneyness, carry->max_leave_one_out_moneyness,
+               carry->confidence_half_width_moneyness, carry->atm_sigma,
+               carry->max_pcp_residual, carry->confident ? 1 : 0, bounded ? 1 : 0,
+               static_cast<int>(carry->source));
+}
+
 [[nodiscard]] std::vector<ChainPrepass> run_deam_prepass(const Underlying &under,
                                                          const SurfaceParityInputs &in,
                                                          VolCurveKind kind, unsigned n_threads,
@@ -633,6 +720,8 @@ void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &
       slot.ms_forward_borrow = elapsed_ms(t_forward0, ProfileClock::now());
     }
     if (!d_res) {
+      carry_trace_row(under.ticker, T, static_cast<int>(d_res.error().code()), nullptr,
+                      false);
       // A real carry failure — NOT the confidence gate, which the probe disarmed.
       // T5c (B3ii). Split the failure by kind. `Unavailable` is the DATA-shaped
       // one — this expiry carries no quotable co-terminal pair, or every pair's
@@ -669,6 +758,8 @@ void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &
     const double q_eff = rate - std::log(F / in.S) / T;
     const double df = std::exp(-rate * T);
 
+    carry_trace_row(under.ticker, T, 0, &d_res->carry,
+                    carry_moneyness_bounded(d_res->carry, in.deam));
     slot.carry_confident = d_res->carry.confident;
     // Decision B: board-level confidence gate. Under the risk build
     // (require_carry_confidence), a NON-confident expiry is DEFERRED to the

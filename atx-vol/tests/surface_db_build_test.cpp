@@ -76,6 +76,18 @@ namespace tsupport = atx::vol::testsupport;
   return p;
 }
 
+[[nodiscard]] fs::path write_spots_file(std::string_view name, std::string_view content) {
+  const fs::path dir = fresh_dir(name);
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  EXPECT_FALSE(ec) << "could not create " << dir.string() << ": " << ec.message();
+  const fs::path p = dir / "spots.tsv";
+  std::ofstream os(p.string(), std::ios::binary | std::ios::trunc);
+  EXPECT_TRUE(os.good()) << "could not write " << p.string();
+  os.write(content.data(), static_cast<std::streamsize>(content.size()));
+  return p;
+}
+
 // Write the default 3-symbol x 3-date synthetic hive under `name`/hive and load
 // it into boards through the real loader path (load_opra_hive ->
 // corpus_board_from_opra), the exact ingest Task 5's build driver uses.
@@ -3029,6 +3041,127 @@ TEST(SurfaceDbTotalLoadFailure, OneCorruptDateBesideGoodOnesStillBuilds) {
   EXPECT_GT(rep->coverage.cells_ok, 0u) << "the readable dates must still have been built";
   EXPECT_FALSE(is_total_load_failure(*rep))
       << "a window that produced real surfaces is not a dead build";
+}
+
+
+// ── --spots (ATX_CORPUS_SPOTS overlay) ──────────────────────────────────────
+//
+// The flag exists because a board with no strike carrying a two-sided call AND
+// a two-sided put on any expiry cannot imply a spot from put-call parity, so it
+// refuses to LOAD -- landing in neither `cells_ok` nor `cells_failed`, named by
+// no `failed_cell` line, visible only as `n_load_errors` (943 of 6,189
+// underliers on the 2026-08-21 full-OPRA board; 626 of those do have an equity
+// NBBO). Same seam discipline as --symbols-file above: the header owns BOTH
+// halves -- validate AND apply -- so a deleted assignment cannot pass the suite.
+//
+// EVERY failure below is a usage error rather than a warn-and-continue, and
+// that is the load-bearing part. The fallback for a spot that did not arrive is
+// not "no spot", it is the PCP-implied spot: a different, silently plausible
+// number. A run that lost its overlay would look completely clean while pricing
+// an unknown fraction of the board off the wrong underlier.
+constexpr std::string_view kSpotsHeader = "ATX_CORPUS_SPOTS\t1\ndate\tsymbol\tspot\tsource\tas_of\n";
+
+TEST(SurfaceDbBuildCli, SpotsFileOverlaysTheHiveSpecAndReportsItsCellCount) {
+  const fs::path p = write_spots_file(
+      "spots_ok", std::string(kSpotsHeader) +
+                      "2026-08-21\tGNK\t25.40\tequity_nbbo\t2026-08-21T19:55:00Z\n"
+                      "2026-08-21\tKMX\t62.69\tequity_nbbo\t2026-08-21T19:55:00Z\n");
+
+  OpraHiveSpec hive;
+  ASSERT_TRUE(hive.market_inputs.cells().empty());
+  const SpotsFlagOutcome out = apply_spots_flag(p.string(), hive);
+  ASSERT_EQ(out.error, SpotsFlagError::None) << spots_flag_diagnostic(p.string(), out);
+  EXPECT_EQ(out.n_cells, std::size_t{2});
+  // The ASSIGNMENT is the point of the seam: assert the spec, not the outcome.
+  ASSERT_EQ(hive.market_inputs.cells().size(), std::size_t{2});
+  const CorpusMarketInputCell *kmx = hive.market_inputs.find("2026-08-21", "KMX");
+  ASSERT_NE(kmx, nullptr);
+  ASSERT_TRUE(kmx->spot_override.has_value());
+  EXPECT_DOUBLE_EQ(*kmx->spot_override, 62.69);
+}
+
+// A partial overlay is LEGITIMATE and must stay so: uncovered cells keep their
+// PCP-implied spot under `MissingMarketInputPolicy::UseFallback`, which is what
+// makes this artifact safe to ship for two thirds of a board rather than all of
+// it. Pinned so a future "the overlay must cover the universe" check cannot land.
+TEST(SurfaceDbBuildCli, SpotsFileMayCoverOnlyPartOfTheBoard) {
+  const fs::path p = write_spots_file(
+      "spots_partial", std::string(kSpotsHeader) +
+                           "2026-08-21\tGNK\t25.40\tequity_nbbo\t2026-08-21T19:55:00Z\n");
+  OpraHiveSpec hive;
+  const SpotsFlagOutcome out = apply_spots_flag(p.string(), hive);
+  ASSERT_EQ(out.error, SpotsFlagError::None) << spots_flag_diagnostic(p.string(), out);
+  EXPECT_EQ(hive.market_inputs.find("2026-08-21", "GNK")->spot_override.value(), 25.40);
+  EXPECT_EQ(hive.market_inputs.find("2026-08-21", "SPY"), nullptr)
+      << "an absent symbol must stay absent so the loader falls back to parity, "
+         "not be manufactured with some default spot";
+}
+
+TEST(SurfaceDbBuildCli, SpotsMissingPathIsAUsageErrorAndLeavesTheSpecUntouched) {
+  const fs::path missing = fresh_dir("spots_missing") / "no_such_spots.tsv";
+  OpraHiveSpec hive;
+  const SpotsFlagOutcome out = apply_spots_flag(missing.string(), hive);
+  EXPECT_EQ(out.error, SpotsFlagError::Unreadable);
+  EXPECT_TRUE(hive.market_inputs.cells().empty()) << "a rejected flag must not half-apply";
+  const std::string msg = spots_flag_diagnostic(missing.string(), out);
+  EXPECT_NE(msg.find(missing.string()), std::string::npos)
+      << "the diagnostic must name the path that failed: " << msg;
+}
+
+TEST(SurfaceDbBuildCli, SpotsEmptyPathIsAUsageErrorBecauseADroppedVariableIsNotAChoice) {
+  OpraHiveSpec hive;
+  const SpotsFlagOutcome out = apply_spots_flag("", hive);
+  EXPECT_EQ(out.error, SpotsFlagError::EmptyPath);
+  EXPECT_TRUE(hive.market_inputs.cells().empty());
+  EXPECT_FALSE(spots_flag_diagnostic("", out).empty());
+}
+
+// A header-only file PARSES. Accepting it would report success while overlaying
+// nothing -- the exact shape of "the run looked clean and priced off the wrong\n// spot", so it is rejected for the same reason an empty --symbols-file is.
+TEST(SurfaceDbBuildCli, SpotsFileWithNoRowsIsAnErrorNotASilentNoOp) {
+  const fs::path p = write_spots_file("spots_norows", std::string(kSpotsHeader));
+  OpraHiveSpec hive;
+  const SpotsFlagOutcome out = apply_spots_flag(p.string(), hive);
+  EXPECT_EQ(out.error, SpotsFlagError::NoRows);
+  EXPECT_TRUE(hive.market_inputs.cells().empty());
+}
+
+TEST(SurfaceDbBuildCli, SpotsFileRejectsAWrongMagicRatherThanReadingItAsData) {
+  const fs::path p = write_spots_file(
+      "spots_badmagic", "ATX_CORPUS_DIVS\t1\ndate\tsymbol\tspot\tsource\tas_of\n"
+                        "2026-08-21\tGNK\t25.40\tequity_nbbo\t2026-08-21T19:55:00Z\n");
+  OpraHiveSpec hive;
+  const SpotsFlagOutcome out = apply_spots_flag(p.string(), hive);
+  EXPECT_EQ(out.error, SpotsFlagError::Unreadable);
+  EXPECT_TRUE(hive.market_inputs.cells().empty());
+}
+
+// A zero spot is NOT "no opinion": the loader's presence test is
+// `spot_override > 0.0`, so a zero row would be read as absent while having
+// consumed the cell. The reader must reject it outright.
+TEST(SurfaceDbBuildCli, SpotsFileRejectsANonPositiveSpot) {
+  const fs::path p = write_spots_file(
+      "spots_zero", std::string(kSpotsHeader) +
+                        "2026-08-21\tGNK\t0.0\tequity_nbbo\t2026-08-21T19:55:00Z\n");
+  OpraHiveSpec hive;
+  const SpotsFlagOutcome out = apply_spots_flag(p.string(), hive);
+  EXPECT_EQ(out.error, SpotsFlagError::Unreadable);
+  EXPECT_TRUE(hive.market_inputs.cells().empty());
+}
+
+// Two rows for one (date, symbol) are two sources disagreeing about one number.
+// The table constructor rejects the whole file rather than picking; asserted
+// here because a producer that emits a duplicate would otherwise poison a build
+// silently at whichever row happened to land last.
+TEST(SurfaceDbBuildCli, SpotsFileRejectsADuplicateDateSymbolInsteadOfPickingOne) {
+  const fs::path p = write_spots_file(
+      "spots_dup", std::string(kSpotsHeader) +
+                       "2026-08-21\tGNK\t25.40\tequity_nbbo\t2026-08-21T19:55:00Z\n"
+                       "2026-08-21\tGNK\t25.90\tequity_nbbo\t2026-08-21T19:55:00Z\n");
+  OpraHiveSpec hive;
+  const SpotsFlagOutcome out = apply_spots_flag(p.string(), hive);
+  EXPECT_EQ(out.error, SpotsFlagError::Unreadable);
+  EXPECT_TRUE(hive.market_inputs.cells().empty());
 }
 
 } // namespace

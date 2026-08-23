@@ -15,7 +15,7 @@
 //       --from YYYY-MM-DD --to YYYY-MM-DD
 //       [--symbols A,B,C | --symbols-file <path>] [--index SPY]
 //       [--preset populate] [--r 0.045]
-//       [--snapshot-suffix T19:55:00Z]
+//       [--snapshot-suffix T19:55:00Z] [--spots <path>]
 //       [--deep-selection] [--retry-disabled] [--pin-curve-family true|false]
 //       [--fit-workers N] [--report out.csv] [--max-failures N]
 //       [--allow-coverage-regression] [--strict]
@@ -47,6 +47,50 @@
 //                   mode, so silently accepting one would swap the whole hive in
 //                   for the universe the operator asked for. See
 //                   apply_symbols_file_flag (surface_db_build_cli.hpp).
+//   --spots         ATX_CORPUS_SPOTS TSV overlaying a KNOWN spot onto the
+//                   matching (date, symbol) cells, so those boards stop
+//                   implying a spot from put-call parity on their own quotes.
+//                   Exists because PCP fails exactly where it is least
+//                   affordable: a board with no strike carrying a two-sided
+//                   call AND a two-sided put on any expiry cannot imply a spot
+//                   and refuses to LOAD, which is 943 of 6,189 underliers on
+//                   the 2026-08-21 full-OPRA board (15%). Those cells never
+//                   reach the fitter, so they land in neither cells_ok nor
+//                   cells_failed and no failed_cell line names them; they are
+//                   visible only as `n_load_errors`.
+//
+//                   READ THIS BEFORE REACHING FOR IT — MEASURED, NOT HOPED.
+//                   Overlaying the equity NBBO mid onto exactly those 943 does
+//                   what it says at the LOAD stage (n_load_errors 943 -> 364,
+//                   cells_loaded 5,246 -> 5,825) and recovers ZERO coverage:
+//                   cells_ok stays 3,117 and the served set is SET-EQUAL, 0
+//                   gained and 0 lost. A board with no parity pair anywhere has
+//                   almost no two-sided quotes, so it loads and then correctly
+//                   fails to fit. The flag is right, safe and does nothing for
+//                   this universe; it earns its place when a spot arrives that
+//                   is not the equity mid.
+//
+//                   AND DO NOT OVERLAY A BOARD THAT CAN ALREADY IMPLY ITS OWN
+//                   SPOT. The same overlay applied to every quotable name that
+//                   day moved cells_ok 3,117 -> 3,022, LOSING 208 served names
+//                   (AEE, ARCC, ARMK, AXTA among them) to gain 113. The parity
+//                   spot is solved FROM the option prices, so it already
+//                   absorbs borrow and the dividend the market is actually
+//                   discounting; the share mid does not, and that basis becomes
+//                   skew the surface cannot explain. `make_spot_inputs.py
+//                   --only-no-pcp` restricts the artifact to the set where
+//                   parity genuinely fails, which is the only supported use.
+//
+//                   Cells with NO row keep their PCP-implied spot
+//                   (MissingMarketInputPolicy::UseFallback), so the overlay is
+//                   strictly additive and a partial file is legitimate. A
+//                   missing/unreadable path, a wrong magic or header, a
+//                   malformed row, a duplicate (date, symbol) and a
+//                   non-finite/non-positive spot are each a usage error
+//                   (exit 2) — a spot silently dropped is not a missing spot,
+//                   it is a board quietly re-priced off a DIFFERENT one, and
+//                   the run would look clean. Produce the file with
+//                   tools/make_spot_inputs.py.
 //   --index         designated index leg, pinned to the dense index recipe.
 //   --preset        fast | accurate | robust | hft | populate | bulk (default
 //                   populate). `bulk` is the Perf-2b opt-in throughput tier: the
@@ -171,6 +215,7 @@
 #include <vector>
 
 #include "fitting/counters.hpp"            // counters::ledger (ATX_VOL_SOLVE_LEDGER dump)
+#include "atx/vol/api/marketdata/opra_batch.hpp"          // CorpusMarketInputTable
 #include "atx/vol/api/marketdata/opra_hive.hpp"           // OpraHiveSpec
 #include "atx/vol/api/fitting/session.hpp"             // FitPreset
 #include "atx/vol/tools/surface_db_build.hpp"    // SurfaceDbBuildSpec, build_surface_db, write_build_report_csv
@@ -208,7 +253,7 @@ void print_usage(std::FILE *out) {
   std::fprintf(out,
                "usage: atx-vol-surface-db-build --db <root> --hive <root> "
                "--from YYYY-MM-DD --to YYYY-MM-DD\n"
-               "         [--symbols A,B,C | --symbols-file <path>] [--index SPY] "
+               "         [--symbols A,B,C | --symbols-file <path>] [--spots <path>] [--index SPY] "
                "[--preset populate] [--r 0.045] "
                "[--snapshot-suffix T19:55:00Z] "
                "[--deep-selection] [--retry-disabled] [--pin-curve-family true|false] "
@@ -495,6 +540,8 @@ int run_build_cli(int argc, char **argv) {
   bool symbols_flag_seen = false;
   bool symbols_file_flag_seen = false;
   std::string symbols_file_path;
+  bool spots_flag_seen = false;
+  std::string spots_path;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -533,6 +580,13 @@ int run_build_cli(int argc, char **argv) {
       // once, after the loop, so the outcome cannot depend on flag order.
       symbols_file_path = nv();
       symbols_file_flag_seen = true;
+    } else if (a == "--spots") {
+      // Recorded, not read: the file is opened AFTER the loop so a parse
+      // diagnostic cannot be emitted before an argv error later in the line
+      // would have rejected the run anyway, and so the failure ordering does
+      // not depend on where --spots sits among the flags.
+      spots_path = nv();
+      spots_flag_seen = true;
     } else if (a == "--index") {
       spec.auto_config.index_symbol = nv();
     } else if (a == "--preset") {
@@ -630,6 +684,29 @@ int run_build_cli(int argc, char **argv) {
     std::fprintf(stderr, "atx-vol-surface-db-build: --db, --hive, --from and --to are required\n");
     print_usage(stderr);
     return 2;
+  }
+
+  // Spot overlay. Read here, after the required flags, so an operator who
+  // mistyped --db is told that first. An EMPTY --spots is a usage error for the
+  // same reason an empty --symbols-file is: a dropped shell variable would
+  // otherwise silently revert the whole board to PCP-implied spots and the run
+  // would look clean.
+  if (spots_flag_seen) {
+    // Validate AND apply in one seam (surface_db_build_cli.hpp) so the
+    // ASSIGNMENT onto the hive spec is unit-testable, not just the parse --
+    // the same rule --snapshot-suffix and --symbols-file already follow.
+    const SpotsFlagOutcome sp = apply_spots_flag(spots_path, spec.hive);
+    if (sp.error != SpotsFlagError::None) {
+      std::fprintf(stderr, "atx-vol-surface-db-build: %s\n",
+                   spots_flag_diagnostic(spots_path, sp).c_str());
+      print_usage(stderr);
+      return 2;
+    }
+    // Reported on stdout beside the other config lines: an operator reading a
+    // run's head must be able to see that the overlay took, and how much of
+    // the board it covers, without diffing coverage against a second run.
+    std::printf("spots.path %s\n", spots_path.c_str());
+    std::printf("spots.cells %zu\n", sp.n_cells);
   }
 
   // Preset drives BOTH the manifest seeding (auto_config.preset) and the populate
