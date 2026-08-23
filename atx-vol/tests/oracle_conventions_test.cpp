@@ -339,16 +339,24 @@ TEST(OracleConvention, ExerciseStyleRulesRouteOnlyTheirNamedRoots) {
   constexpr auto kPlus = ExerciseStyleRule::EuropeanCashSettledIndexPlusEmpirical;
   // OEX is the standing counterexample to "index => European" — cash-settled
   // but AMERICAN by contract; SPY and SYNTH are the unrouted equity controls.
-  for (const std::string_view root : {"SPY", "OEX", "SYNTH"}) {
+  // DJIA and BRR are the store's two index-LOOKING traps: DJIA is the Global X
+  // Dow 30 Covered Call ETF (the Dow index option is DJX) and BRR is ProCap
+  // Financial common stock — both American, neither an index option
+  // (kEuropeanIndexRoots' DELIBERATELY ABSENT block carries the citations).
+  for (const std::string_view root : {"SPY", "OEX", "SYNTH", "DJIA", "BRR"}) {
     EXPECT_FALSE(routes_european(root, kAmerican)) << root;
     EXPECT_FALSE(routes_european(root, kIndex)) << root;
     EXPECT_FALSE(routes_european(root, kPlus)) << root;
   }
   // The contract-fact roots: routed by both European rules, never the baseline.
-  // MGTN is one of them since the Cboe Magnificent 10 contract specification
-  // was located (kEuropeanIndexRoots carries the citation); the empirical table
-  // is empty, so `_plus_empirical` routes exactly the contract-fact set today.
-  for (const std::string_view root : {"SPX", "XSP", "MGTN"}) {
+  // Each is European-exercise cash-settled by its published listing
+  // specification (kEuropeanIndexRoots carries the per-root citations; the
+  // 2026-08-23 additions NDX/XND/RUT/MRUT/XEO/DJX/MXEA/MXEF/VIX are the
+  // documented-fact repair whose consistency evidence is the sanctioned
+  // breadth baseline at 6b245621). The empirical table is empty, so
+  // `_plus_empirical` routes exactly the contract-fact set today.
+  for (const std::string_view root : {"SPX", "XSP", "MGTN", "NDX", "XND", "RUT", "MRUT", "XEO",
+                                      "DJX", "MXEA", "MXEF", "VIX"}) {
     EXPECT_FALSE(routes_european(root, kAmerican)) << root;
     EXPECT_TRUE(routes_european(root, kIndex)) << root;
     EXPECT_TRUE(routes_european(root, kPlus)) << root;

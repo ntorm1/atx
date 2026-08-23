@@ -82,7 +82,10 @@ constexpr ConventionMap kWinner{
 // merely REPRODUCES European belongs in kEmpiricalEuropeanRoots, whose whole
 // purpose is to keep "measured, unexplained" from being filed as "contract".
 //
-// CONTRACT FACTS, one line each:
+// CONTRACT FACTS, one line each (exchange contract specification, web-cited;
+// matching is EXACT undSecKey_tk equality, and weekly roots roll up upstream —
+// SPXW->SPX, NDXP->NDX, RUTW->RUT, DJXW->DJX, MGTNW->MGTN, VIXW->VIX — so the
+// canonical roots below cover the weeklies; store-verified 2026-08-23):
 //   SPX  Cboe S&P 500 Index option. Cash-settled, EUROPEAN exercise.
 //   XSP  Cboe Mini-SPX (1/10 SPX). Cash-settled, EUROPEAN exercise.
 //   MGTN Cboe Magnificent 10 Index option (options launched Dec 2025).
@@ -92,25 +95,65 @@ constexpr ConventionMap kWinner{
 //        reproduction alone while our ingest tagged it EQT / NMS / Stock and no
 //        contract fact had been located; the Cboe contract spec above settles
 //        it as a fact about the instrument, which is this table's bar.
+//   NDX  Nasdaq-100 Index option. Cash-settled, EUROPEAN exercise:
+//        https://www.nasdaq.com/nasdaq-100-options-xnd-ndx
+//        https://www.nasdaqtrader.com/content/phlx/NDXProductSheet.pdf
+//   XND  Nasdaq-100 Micro Index option (1/100 NDX). Cash-settled, EUROPEAN
+//        exercise (same Nasdaq specification pages as NDX).
+//   RUT  Cboe Russell 2000 Index option. Cash-settled, EUROPEAN exercise:
+//        https://www.cboe.com/tradable_products/ftse_russell/russell_2000_index_options/
+//        https://cdn.cboe.com/resources/rut/rut-fact-sheet.pdf
+//   MRUT Cboe Mini-Russell 2000 (1/10 RUT). "European. MRUT Index Options may
+//        be exercised only on the expiration date"; cash delivery:
+//        https://www.cboe.com/tradable_products/ftse_russell/mini_russell_2000_index_options/mrut_specifications/
+//   XEO  Cboe S&P 100 EUROPEAN-exercise option, cash-settled — the European
+//        twin OEX exists to contrast with (see below):
+//        https://www.cboe.com/tradable-products/sp-100/sp-100-index-options
+//   DJX  Cboe Dow Jones Industrial Average (1/100 DJIA) option. Cash-settled,
+//        EUROPEAN exercise:
+//        https://www.cboe.com/tradable-products/dow-jones/dow-jones-industrial-average-options/djx-specifications/
+//   MXEA Cboe MSCI EAFE Index option. Cash-settled, EUROPEAN exercise:
+//        https://cdn.cboe.com/resources/education/research_publications/msci-index-options-fact-sheet.pdf
+//   MXEF Cboe MSCI Emerging Markets Index option. Cash-settled, EUROPEAN
+//        exercise (same Cboe MSCI specification fact sheet as MXEA).
+//   VIX  Cboe Volatility Index option. EUROPEAN exercise, cash-settled
+//        (A.M. SOQ exercise-settlement value; "Exercise will result in
+//        delivery of cash on the business day following expiration"):
+//        https://www.cboe.com/tradable-products/vix/vix-options/specifications
+//        https://cdn.cboe.com/resources/vix_options/VIX_fact_sheet_2019.pdf
+//        NOTE the exercise-style axis is all this row decides: what forward the
+//        input model builds for a mean-reverting non-tradable underlier is the
+//        input-model axis's problem on either routing.
 //
-// DELIBERATELY ABSENT, and why — the store's other index roots (RUT, NDX, OEX,
-// XEO, MRUT, XND) are NOT here:
+// DELIBERATELY ABSENT, and why — the store's remaining index-LOOKING roots are
+// NOT here:
 //   - OEX is the standing counterexample to a blanket "index root => European"
 //     rule: Cboe's S&P 100 option is cash-settled but AMERICAN exercise. XEO
 //     exists precisely because OEX is not European. A rule keyed on "it is an
 //     index" would price OEX wrong in the other direction, which is why this
 //     table is a list of named contracts and never a predicate on the root's
 //     shape.
-//   - RUT, NDX, XEO, MRUT and XND are European by contract spec, but NOT ONE OF
-//     THEM APPEARS IN THE smoke OR tune COHORT (smoke is SPY; tune is SPY, QQQ,
-//     SPX, XSP, GS, KLAC, BKNG, MGTN, MULL, DAVE). They are in the STORE, but
-//     the only place they could be measured is holdout, and reading holdout to
-//     decide a convention would destroy the one unbiased estimate this loop
-//     will ever have of the change. Contract facts alone are not the bar this
-//     axis is held to — the bar is a MEASURED reproduction — so they stay out
-//     until a sanctioned cohort can show them. Adding one is one line here plus
-//     a re-sweep; adding one on faith is what this comment exists to prevent.
-constexpr std::array<std::string_view, 3> kEuropeanIndexRoots = {"SPX", "XSP", "MGTN"};
+//   - DJIA is not the Dow index option (that is DJX above): it is the Global X
+//     Dow 30 Covered Call ETF (NYSE Arca), whose options are American-exercise
+//     physical-delivery ETF options: https://www.globalxetfs.com/funds/djia
+//   - BRR is ProCap Financial, Inc., a Nasdaq common stock — American-exercise
+//     equity options: https://www.nasdaq.com/market-activity/stocks/brr
+//
+// HISTORY OF THE DEFERRAL, kept because it is the table's discipline: RUT,
+// NDX, XEO, MRUT and XND were once listed here as "European by contract spec
+// but deliberately absent" because none of them appears in smoke or tune and
+// the only measurement then available was holdout. The SANCTIONED breadth
+// generalization baseline (2026-08-23 at 6b245621; breadth.json is
+// construction-only and NOT tune-class) then showed exactly the mispricing the
+// contract facts predict under American routing — Mode A price MAE: NDX 2,038
+// ticks, RUT 266, MXEF 224, against 0.08–13.5 on every correctly-routed
+// slice. The JUSTIFICATION for each row above is its published contract
+// specification; the breadth measurement is CONSISTENCY EVIDENCE, not a fit —
+// this is a documented-fact repair, and nothing here was tuned against the
+// breadth cohort. Adding a future root still takes a cited spec, one line
+// here, and a re-sweep.
+constexpr std::array<std::string_view, 12> kEuropeanIndexRoots = {
+    "SPX", "XSP", "MGTN", "NDX", "XND", "RUT", "MRUT", "XEO", "DJX", "MXEA", "MXEF", "VIX"};
 
 // MEASURED, UNEXPLAINED — the quarantine table, EMPTY today. MGTN lived here
 // while its European behaviour was only a measured reproduction (ingest tags it
