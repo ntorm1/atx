@@ -32,6 +32,7 @@
 #include "atx/vol/api/marketdata/data.hpp"       // QuoteFrame, data_install
 #include "atx/vol/api/core/market_env.hpp" // MarketEnv (spot / rate-curve / divs / ts)
 #include "atx/vol/api/core/types.hpp"      // Side, Result, Status
+#include "atx/vol/api/core/vol_time.hpp"   // TimeSpec
 #include "atx/vol/api/marketdata/universe.hpp"   // Universe, Uid, ContractId, Underlying
 
 namespace atx::vol {
@@ -97,6 +98,14 @@ public:
   [[nodiscard]] double rate() const noexcept { return r_repr_; }
   [[nodiscard]] std::int64_t now_ns() const noexcept { return env_.now_ns; }
   [[nodiscard]] const MarketEnv &env() const noexcept { return env_; }
+  // The clock every `Chain::T` on this board was baked under — a verbatim copy
+  // of the installing frame's `QuoteFrame::time`, retained because `Chain::T` is
+  // a NUMBER and a number does not say which clock produced it. Without this a
+  // downstream stage that needs to convert an instant to a year-fraction (or
+  // back) has no way to ask, and its only option is to assume Calendar365 —
+  // which is exactly how a vol-time board acquires a calendar-time consumer.
+  // Default `TimeSpec{}` (Calendar365) for every frame that does not set one.
+  [[nodiscard]] const TimeSpec &time() const noexcept { return time_; }
   [[nodiscard]] Uid uid() const noexcept { return uid_; }
   // Process-unique logical identity plus monotonically increasing quote
   // revisions. Revisions are provenance only; callers must still obey the
@@ -164,6 +173,7 @@ private:
   Universe u_{};
   Uid uid_{kInvalidUid};
   MarketEnv env_{};    // spot / rate-curve / divs / valuation time
+  TimeSpec time_{};    // the frame's T convention (see time())
   double r_repr_{0.0}; // representative pipeline rate (env_.rate_at(front T))
   std::uint64_t instance_id_{0u};
   std::uint64_t quote_revision_{0u};

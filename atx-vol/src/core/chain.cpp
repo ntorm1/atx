@@ -63,6 +63,10 @@ Result<OptionChain> OptionChain::from_frame(const QuoteFrame &frame, MarketEnv e
   }
   chain.uid_ = uid;
   chain.expiry_quote_revisions_.assign(under->chains.size(), 0u);
+  // Retain the clock `data_install` just baked every Chain::T under, so a later
+  // stage can ASK the board which convention its numbers are in rather than
+  // assuming the calendar default.
+  chain.time_ = frame.time;
   chain.env_ = std::move(env);
   if (!(chain.env_.spot > 0.0)) {
     chain.env_.spot = frame.spot; // fall back to the frame's spot

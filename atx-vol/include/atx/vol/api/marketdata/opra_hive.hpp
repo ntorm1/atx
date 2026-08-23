@@ -95,6 +95,7 @@
                                   // MissingMarketInputPolicy
 #include "atx/vol/api/marketdata/opra_panel.hpp" // OpraProvenanceMode
 #include "atx/vol/api/core/types.hpp"      // Result
+#include "atx/vol/api/core/vol_time.hpp"   // TimeSpec
 
 namespace atx::vol {
 
@@ -121,6 +122,24 @@ struct OpraHiveSpec {
   CorpusMarketInputTable market_inputs{};
   MissingMarketInputPolicy missing_market_inputs{MissingMarketInputPolicy::UseFallback};
   OpraProvenanceMode provenance_mode{OpraProvenanceMode::Compatibility};
+
+  // T convention every cell is loaded under: forwarded VERBATIM to each cell's
+  // `OpraLoadSpec::time`, which governs the loader's own year-fractions (PCP
+  // spot-implication forward T, the 0DTE/expired drop filter, the per-row term
+  // rate) AND is stamped onto the returned `QuoteFrame::time`, from which
+  // `data_install` bakes `Chain::T`. So a caller flips the whole board's clock
+  // here and nothing further down needs threading — see the `OpraLoadSpec::time`
+  // contract (opra_panel.hpp) for what a frame's convention reaches.
+  //
+  // Default-constructed = `TimeConvention::Calendar365`, which is BIT-IDENTICAL
+  // to the behavior before this field existed (`OpraLoadSpec::time` already
+  // defaulted the same way, and this loader simply left it at its default).
+  //
+  // `TimeConvention::VolTime` inherits the vol-time calendar's fail-closed
+  // coverage window (2024-2028, vol_time.hpp): a date/expiry pair outside it
+  // makes the CELL fail with `ErrorCode::OutOfRange` (an entry-level `Err`
+  // bumping `n_error`), never a silently-wrong T.
+  TimeSpec time{};
 
   // Per-date load fan-out (W4.3). 0 = auto (hardware concurrency), 1 = serial.
   // A PERF-ONLY knob: the result is byte-identical for any value.

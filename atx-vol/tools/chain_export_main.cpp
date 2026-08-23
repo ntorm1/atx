@@ -32,6 +32,36 @@
 //     definition we do not have (it is identically 0 in the drop we hold), and
 //     the census reports it as a whole-column refusal.
 //
+// ## ONE CLOCK WHERE THE VENDOR KEEPS TWO (`--time-convention voltime`)
+//
+// KNOWN AND ACCEPTED, measured rather than assumed. Do NOT "fix" this by adding
+// a second clock; read the numbers first.
+//
+// `tblOptionIntradayHist` publishes BOTH `years` ("SpiderRock volatility time to
+// expiration in years") AND `yearsC` ("Calendar time to expiration in years"),
+// because only VARIANCE belongs on the vol-time clock — DISCOUNTING and carry
+// belong on calendar time. Our board carries a SINGLE `Chain::T`, and
+// `hybrid_forward_base(S, r, T, ...)` feeds that same T to `exp(r*T)` and to the
+// borrow. So `--time-convention voltime` moves the discounting clock along with
+// the variance clock, which is not what the vendor does.
+//
+// Why that is tolerable here, in the order the argument actually runs:
+//   * The borrow is SOLVED from put-call parity using the SAME T, so the solved
+//     borrow absorbs the clock difference and the FORWARD comes out right. Read
+//     as the C-P parity zero crossing off each side's own `srPrc`, our forward
+//     already matches the vendor's to -0.20 bp median over 319 expiries under
+//     calendar T. The forward is self-correcting, not coincidentally close.
+//   * What is left is pure discounting error, `exp(-r*dT)`. At 7 DTE that is
+//     dT = 0.00217 yr at r = 0.043 — 0.9 bp of premium — and it shrinks toward
+//     nothing as tenor grows. Sub-basis-point on the shortest tenor we publish.
+//
+// Where it COULD actually matter, and the reason this note exists rather than a
+// silent acceptance: the AMERICAN early-exercise boundary. Exercise decisions
+// turn on dividend timing in real CALENDAR days, so a boundary solved against a
+// vol-time T is comparing a variance clock to a wall clock. Nothing measured has
+// been attributed to it yet; it is the first place to look if a voltime run
+// disagrees with the vendor by more than the discounting bound above.
+//
 // ## Exit codes
 //
 //   0  rows were emitted and written
@@ -66,6 +96,7 @@
 #include "atx/core/io/parquet.hpp"
 #include "atx/vol/api/core/chain.hpp"
 #include "atx/vol/api/core/types.hpp"
+#include "atx/vol/api/core/vol_time.hpp"
 #include "atx/vol/api/fitting/pricer_fitter.hpp"
 #include "atx/vol/api/fitting/session.hpp"
 #include "atx/vol/api/marketdata/opra_batch.hpp"
@@ -95,6 +126,7 @@ using atx::vol::SessionInputs;
 using atx::vol::SurfaceDb;
 using atx::vol::SurfacePurpose;
 using atx::vol::SymbolFitConfig;
+using atx::vol::TimeConvention;
 using atx::vol::VolaSession;
 
 using atx::core::ErrorCode;
@@ -119,7 +151,23 @@ struct Args {
   double r{0.0};
   bool r_seen{false};
   unsigned fit_workers{0}; // 0 = auto (hardware concurrency)
+  // The clock every chain's T is built on. Calendar365 is the historical
+  // behavior and stays the default, so an existing command line is unchanged.
+  TimeConvention time_convention{TimeConvention::Calendar365};
 };
+
+// Spelling of a convention for the CLI and the census. Exhaustive over the enum
+// (no `default`), so a new convention fails the build here rather than printing
+// a wrong provenance line.
+[[nodiscard]] const char *time_convention_name(TimeConvention c) noexcept {
+  switch (c) {
+  case TimeConvention::Calendar365:
+    return "calendar365";
+  case TimeConvention::VolTime:
+    return "voltime";
+  }
+  return "unknown";
+}
 
 void usage() {
   std::fputs(
@@ -129,7 +177,7 @@ void usage() {
       "  atx-vol-chain-export --hive <root> --underlier <root> --db <surface-db-root>\n"
       "                       --date YYYY-MM-DD (--symbols A,B,C | --symbols-file <path>)\n"
       "                       --out <parquet> [--snapshot-suffix T19:55:00Z] [--r <rate>]\n"
-      "                       [--fit-workers N]\n"
+      "                       [--fit-workers N] [--time-convention calendar365|voltime]\n"
       "\n"
       "  --hive             OPRA hive v2 root holding date=<YYYY-MM-DD>/data.parquet\n"
       "  --underlier        underlier NBBO hive root holding\n"
@@ -145,6 +193,14 @@ void usage() {
       "  --r                flat continuously-compounded fallback rate (required)\n"
       "  --out              output Parquet path (parent dirs created)\n"
       "  --fit-workers      symbol-level workers; 0 = hardware concurrency (default)\n"
+      "  --time-convention  clock every chain's T is built on (default calendar365):\n"
+      "                     calendar365 = (expiry - snapshot)/365.25d;\n"
+      "                     voltime     = SpiderRock's hybrid trading/non-trading\n"
+      "                     clock. voltime is only defined over the 2024-2028\n"
+      "                     holiday-calendar window; a session or expiry outside it\n"
+      "                     fails that cell rather than guessing. voltime also\n"
+      "                     moves the DISCOUNTING clock, which the vendor keeps\n"
+      "                     separate (years vs yearsC) — see the header note.\n"
       "\n"
       "exit: 0 ok | 1 runtime failure | 2 usage | 3 ran but emitted nothing\n",
       stderr);
@@ -170,6 +226,23 @@ void usage() {
   }
   out = static_cast<unsigned>(v);
   return true;
+}
+
+// Map `--time-convention`'s value onto the enum. An unrecognised spelling is an
+// `InvalidArgument` Err rather than a silent fall back to the default: which
+// clock produced a chain is not something a typo may decide, and a run that
+// silently ignored `--time-convention voltime` would publish calendar numbers
+// under a vol-time label.
+[[nodiscard]] Result<TimeConvention> parse_time_convention(std::string_view text) {
+  if (text == "calendar365") {
+    return TimeConvention::Calendar365;
+  }
+  if (text == "voltime") {
+    return TimeConvention::VolTime;
+  }
+  return atx::core::Err(ErrorCode::InvalidArgument,
+                        "--time-convention: expected calendar365|voltime, got '" +
+                            std::string(text) + "'");
 }
 
 // Parse argv. Every diagnostic goes to stderr; `false` means exit 2, decided
@@ -266,6 +339,16 @@ void usage() {
                      static_cast<int>(value.size()), value.data());
         return false;
       }
+    } else if (flag == "--time-convention") {
+      if (!need_value(value)) {
+        return false;
+      }
+      const Result<TimeConvention> conv = parse_time_convention(value);
+      if (!conv.has_value()) {
+        std::fprintf(stderr, "error: %s\n", std::string(conv.error().message()).c_str());
+        return false;
+      }
+      args.time_convention = *conv;
     } else {
       std::fprintf(stderr, "error: unknown flag '%.*s'\n", static_cast<int>(flag.size()),
                    flag.data());
@@ -749,7 +832,8 @@ private:
 // ── The census ──────────────────────────────────────────────────────────────
 
 void print_census(const std::vector<SymbolResult> &results, const ce::ExportCensus &census,
-                  const OpraBatchResult &batch, double load_s, double fit_s, double write_s) {
+                  const OpraBatchResult &batch, TimeConvention time_convention, double load_s,
+                  double fit_s, double write_s) {
   std::size_t n_ok = 0;
   std::size_t n_from_db = 0;
   std::size_t n_mark_fallback = 0;
@@ -778,6 +862,10 @@ void print_census(const std::vector<SymbolResult> &results, const ce::ExportCens
   }
 
   std::fprintf(stderr, "\n── chain-export census ─────────────────────────────────\n");
+  // Provenance, not statistics: a chain parquet carries no column naming its
+  // clock, so this line is the only record of which one produced the file.
+  std::fprintf(stderr, "time convention         %s  (every Chain::T in this file)\n",
+               time_convention_name(time_convention));
   std::fprintf(stderr, "rows written            %zu\n", census.rows);
   std::fprintf(stderr, "symbols requested       %zu\n", results.size());
   std::fprintf(stderr, "  fitted + priced       %zu\n", n_ok);
@@ -852,6 +940,11 @@ int main(int argc, char **argv) {
   }
   const std::string date_stamp = ce::vendor_stamp(args.date, args.snapshot_suffix);
 
+  // Printed before ANY input is opened, so every run that gets past argv says
+  // which clock it was asked for — the census at the end only reaches a run that
+  // survived the loader.
+  std::fprintf(stderr, "time convention: %s\n", time_convention_name(args.time_convention));
+
   const Result<UnderlierBook> feed = load_underlier_book(args.underlier_root, args.date);
   if (!feed.has_value()) {
     std::fprintf(stderr, "error: %s\n", std::string(feed.error().message()).c_str());
@@ -873,6 +966,10 @@ int main(int argc, char **argv) {
   hive.symbols = args.symbols;
   hive.snapshot_suffix = args.snapshot_suffix;
   hive.r = args.r;
+  // The ONE place this run's clock is chosen. Everything downstream — the
+  // loader's own year-fractions, QuoteFrame::time, and the Chain::T that
+  // data_install bakes from it — inherits it from here.
+  hive.time.convention = args.time_convention;
   hive.n_threads = 1; // one date: the hive's fan-out is per-DATE, so it cannot help
 
   const auto t_load = clock::now();
@@ -966,7 +1063,7 @@ int main(int argc, char **argv) {
   }
 
   const ce::ExportCensus &census = writer.census();
-  print_census(results, census, *batch, load_s, fit_s, write_s);
+  print_census(results, census, *batch, args.time_convention, load_s, fit_s, write_s);
 
   // A run that emitted nothing, or one whose write failed, must leave NO file:
   // the stream was opened up front, so what is on disk is an empty or

@@ -1244,6 +1244,15 @@ Status PricerFitter::fit(const OptionChain &chain,
   const FitQualityMode quality_mode = request.quality_mode;
 
   const auto configure_common = [&](SessionInputs &in) {
+    // The session must REPORT the clock its slice Ts are in. Every T the fit
+    // consumes is the already-baked `Chain::T` (see `in.expiry_rate_T` below,
+    // and `deamer.cpp`'s `const double T = chain.T`), so nothing here derives a
+    // year-fraction of its own -- but `SessionInputs::time` is what a downstream
+    // reader asks (`earnings_repro.cpp` copies it into its tenor grid), and left
+    // at its default it answered "Calendar365" for a vol-time board. It is a
+    // LABEL, not an input to the fit: for the Calendar365 default this assigns
+    // the value it already held, so every existing fit is bit-identical.
+    in.time = chain.time();
     in.fit_workers = cfg_.fit_workers;
     in.collect_stage_timings = cfg_.collect_stage_timings;
     if (chain.env().yield.size() > 0u) {

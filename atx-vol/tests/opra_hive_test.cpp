@@ -1,6 +1,7 @@
 #include "support/synthetic_opra_hive.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <span>
@@ -13,6 +14,8 @@
 #include <gtest/gtest.h>
 
 #include "atx/core/io/parquet.hpp" // read_parquet, ParquetTable
+#include "atx/vol/api/core/chain.hpp"             // OptionChain, OptionRef
+#include "atx/vol/api/core/vol_time.hpp"          // TimeConvention, vol_time_years
 #include "atx/vol/api/marketdata/opra_batch.hpp"  // OpraBatchSpec/Result, load_opra_daterange (parity ref)
 #include "atx/vol/api/marketdata/opra_hive.hpp"   // OpraHiveSpec, load_opra_hive
 #include "atx/vol/api/marketdata/opra_panel.hpp"  // OpraLoadSpec, load_opra_cbbo_from_table
@@ -850,6 +853,207 @@ TEST(OpraHive, DiscoversUnionAcrossNonUniformDates) {
 
   fs::remove_all(root);
   fs::remove_all(tmp2);
+}
+
+// ── OpraHiveSpec::time — which clock the board's T is built on ───────────────
+//
+// The hive is the only entry point production uses to build a board, and until
+// `OpraHiveSpec::time` existed it had no way to express anything but
+// Calendar365: `OpraLoadSpec::time` was reachable from the single-file seam and
+// nowhere else, so `atx-vol-chain-export` structurally could not fit on
+// SpiderRock's hybrid vol-time clock.
+//
+// Two things have to hold, and they pull in opposite directions:
+//   * the flag must actually MOVE `Chain::T` (otherwise it is decoration), and
+//   * the DEFAULT must not move at all (otherwise every existing chain parquet,
+//     surface archive and backtest repin silently).
+// So the calendar branch is pinned to an independently-written literal while the
+// vol-time branch is checked against the kernel itself.
+
+namespace {
+
+// One expiry's baked identity: the instants it was built from and the
+// year-fraction `data_install` assigned it. Enough to interrogate a clock
+// without re-deriving one.
+struct FrontExpiry {
+  std::int64_t snapshot_ns{0};
+  std::int64_t expiry_ns{0};
+  double T{0.0};
+};
+
+// Load ONE (date, symbol) cell of a synthetic hive under `convention` and decode
+// its FRONT listed expiry (`ids()` is ascending expiry, then strike, then side).
+// Every other field of the spec is held fixed, so a difference between two calls
+// is attributable to the clock and nothing else.
+//
+// Void + ASSERT_* so a loader failure aborts with its own message; call it under
+// ASSERT_NO_FATAL_FAILURE.
+void load_front_expiry(const fs::path &root, const std::string &date,
+                       ahv::TimeConvention convention, FrontExpiry &out) {
+  ahv::OpraHiveSpec spec;
+  spec.root_dir = root.string();
+  spec.date_lo = date;
+  spec.date_hi = date;
+  spec.symbols = {"AAA"};
+  spec.r = 0.03;
+  spec.n_threads = 1;
+  spec.time.convention = convention; // the ONLY field that varies
+
+  const auto batch = ahv::load_opra_hive(spec);
+  ASSERT_TRUE(batch.has_value()) << batch.error().to_string();
+  ASSERT_EQ(batch->entries.size(), std::size_t{1});
+  const ahv::OpraBatchEntry &cell = batch->entries.front();
+  ASSERT_TRUE(cell.panel.has_value()) << cell.panel.error().to_string();
+
+  // The hive must forward its convention to the panel, which stamps it on the
+  // frame; that stamp is the ONLY thing `data_install` reads for Chain::T, so
+  // asserting it here localizes a wiring break to the loader.
+  ASSERT_EQ(cell.panel->frame.time.convention, convention);
+  out.snapshot_ns = cell.panel->frame.snapshot_ts_ns;
+
+  const ahv::CorpusBoard board =
+      ahv::corpus_board_from_opra(cell.date, cell.symbol, *cell.panel);
+  const auto chain = ahv::OptionChain::from_frame(board.frame, board.env);
+  ASSERT_TRUE(chain.has_value()) << chain.error().to_string();
+  // ...and the installed chain must be able to SAY which clock it is on.
+  ASSERT_EQ(chain->time().convention, convention);
+
+  const std::vector<ahv::OptionId> ids = chain->ids();
+  ASSERT_FALSE(ids.empty());
+  const auto front = chain->at(ids.front());
+  ASSERT_TRUE(front.has_value()) << front.error().to_string();
+  out.expiry_ns = front->expiry_ns;
+  out.T = front->T;
+}
+
+} // namespace
+
+TEST(OpraHive, VolTimeConventionMovesChainTWhileCalendar365StaysPinned) {
+  const fs::path root = fs::temp_directory_path() / "atx_opra_hive_time_convention";
+  fs::remove_all(root);
+  tsupport::SyntheticHiveSpec fx;
+  fx.symbols = {"AAA"};
+  fx.dates = {"2026-07-01"};
+  tsupport::write_synthetic_hive_v2(root, fx);
+
+  FrontExpiry cal;
+  ASSERT_NO_FATAL_FAILURE(
+      load_front_expiry(root, "2026-07-01", ahv::TimeConvention::Calendar365, cal));
+  FrontExpiry vt;
+  ASSERT_NO_FATAL_FAILURE(
+      load_front_expiry(root, "2026-07-01", ahv::TimeConvention::VolTime, vt));
+
+  // Identical instants on both runs: the clock is the only moving part, so the
+  // T difference below cannot be an expiry-stamping or snapshot artifact.
+  EXPECT_EQ(cal.snapshot_ns, vt.snapshot_ns);
+  EXPECT_EQ(cal.expiry_ns, vt.expiry_ns);
+
+  // REGRESSION PIN on the untouched default. The front expiry is trade date +
+  // 28d settling 16:00 ET (20:00Z in July), read from the fixture's 19:55Z
+  // snapshot: 28 days and 5 minutes. Written as an independent literal instead
+  // of by calling the conversion under test, so it fails if EITHER the expiry
+  // instant or the 365.25-day year moves.
+  constexpr double kCal365FrontT = (28.0 * 86400.0 + 300.0) / (365.25 * 86400.0);
+  EXPECT_NEAR(cal.T, kCal365FrontT, 1e-15);
+
+  // ...and the vol-time clock genuinely produces a different number. Only the
+  // FACT of the difference is asserted: its size is a property of the
+  // VolTimeParams constants, which are owned by a different lane.
+  EXPECT_GT(std::abs(vt.T - cal.T), 1e-6)
+      << "calendar365=" << cal.T << " voltime=" << vt.T;
+
+  fs::remove_all(root);
+}
+
+TEST(OpraHive, VolTimeChainTIsExactlyVolTimeYearsForTheSameSpan) {
+  const fs::path root = fs::temp_directory_path() / "atx_opra_hive_time_kernel";
+  fs::remove_all(root);
+  tsupport::SyntheticHiveSpec fx;
+  fx.symbols = {"AAA"};
+  fx.dates = {"2026-07-01"};
+  tsupport::write_synthetic_hive_v2(root, fx);
+
+  FrontExpiry vt;
+  ASSERT_NO_FATAL_FAILURE(
+      load_front_expiry(root, "2026-07-01", ahv::TimeConvention::VolTime, vt));
+
+  // The wiring must PASS the value through, not rescale, clamp or re-round it.
+  // Checked against the kernel rather than a literal so this stays true when the
+  // VolTimeParams constants are recalibrated.
+  const ahv::TimeSpec defaults; // the VolTimeParams a convention-only spec carries
+  const auto direct = ahv::vol_time_years(vt.snapshot_ns, vt.expiry_ns, defaults.vol_time,
+                                          ahv::VolTimeCalendar::us_default());
+  ASSERT_TRUE(direct.has_value()) << direct.error().to_string();
+  EXPECT_DOUBLE_EQ(vt.T, *direct);
+
+  fs::remove_all(root);
+}
+
+// An expiry PAST the vol-time calendar's covered window must FAIL the cell, not
+// quietly shrink the board.
+//
+// This is the operationally dangerous case, and it is not hypothetical: the
+// store carries real 2029-2031 LEAPS and a 2099-01-01 sentinel expiry, all of
+// which sit outside `VolTimeCalendar::us_default()`'s 2024-2028 window. Three
+// outcomes were possible and only one is safe:
+//   * silently treat the uncovered days as OPEN — a wrong T with no symptom;
+//   * silently DROP the uncovered rows — a board that is short its long end and
+//     says so nowhere, i.e. a chain carrying two clocks' worth of coverage;
+//   * fail the cell.
+// The loader takes the third: the year-fraction the 0DTE/expired filter computes
+// per row is `ATX_TRY`d (opra_panel.cpp), so an uncovered expiry aborts the load
+// instead of being classified as expired. The whole symbol is then a visible
+// `n_error` entry the census names, never a partial board.
+//
+// The same fixture under Calendar365 loads fine, which is what makes this a
+// statement about the CLOCK rather than about the fixture.
+TEST(OpraHive, VolTimeFailsTheCellForAnExpiryPastTheCalendarWindow) {
+  const fs::path root = fs::temp_directory_path() / "atx_opra_hive_time_window";
+  fs::remove_all(root);
+  tsupport::SyntheticHiveSpec fx;
+  fx.symbols = {"AAA"};
+  // Trade date inside the window; the +56d expiry (2029-01-26) lands outside it,
+  // so this board straddles the boundary exactly like a real LEAPS-carrying name.
+  fx.dates = {"2028-12-01"};
+  tsupport::write_synthetic_hive_v2(root, fx);
+
+  const auto load = [&root](ahv::TimeConvention convention) {
+    ahv::OpraHiveSpec spec;
+    spec.root_dir = root.string();
+    spec.date_lo = "2028-12-01";
+    spec.date_hi = "2028-12-01";
+    spec.symbols = {"AAA"};
+    spec.r = 0.03;
+    spec.n_threads = 1;
+    spec.time.convention = convention;
+    return ahv::load_opra_hive(spec);
+  };
+
+  // Calendar365 reads the straddling board without complaint.
+  const auto cal = load(ahv::TimeConvention::Calendar365);
+  ASSERT_TRUE(cal.has_value()) << cal.error().to_string();
+  ASSERT_EQ(cal->entries.size(), std::size_t{1});
+  EXPECT_TRUE(cal->entries.front().panel.has_value())
+      << cal->entries.front().panel.error().to_string();
+  EXPECT_EQ(cal->n_loaded, std::size_t{1});
+  EXPECT_EQ(cal->n_error, std::size_t{0});
+
+  // VolTime refuses it. The batch itself is still Ok (an uncovered expiry is a
+  // CELL defect, not a malformed spec), so the failure is reported per symbol.
+  const auto vt = load(ahv::TimeConvention::VolTime);
+  ASSERT_TRUE(vt.has_value()) << vt.error().to_string();
+  ASSERT_EQ(vt->entries.size(), std::size_t{1});
+  const ahv::OpraBatchEntry &cell = vt->entries.front();
+  ASSERT_FALSE(cell.panel.has_value()) << "an uncovered expiry must not load";
+  EXPECT_EQ(cell.panel.error().code(), ahv::ErrorCode::OutOfRange);
+  // Not a coverage hole: the symbol IS in the file. It is a real defect, and the
+  // counters must say so or an operator reads it as a sparse universe.
+  EXPECT_FALSE(cell.coverage_hole);
+  EXPECT_EQ(vt->n_error, std::size_t{1});
+  EXPECT_EQ(vt->n_coverage_holes, std::size_t{0});
+  EXPECT_EQ(vt->n_loaded, std::size_t{0});
+
+  fs::remove_all(root);
 }
 
 } // namespace
