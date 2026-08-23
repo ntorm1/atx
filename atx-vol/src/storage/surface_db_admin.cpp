@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <iterator> // make_move_iterator (tenor_audit's per-symbol group append)
 #include <limits>   // quiet_NaN (tenor_audit's no-neighbors sentinel)
+#include <map>      // band_audit's suffix -> cells grouping
 #include <optional>
 #include <string>
 #include <system_error>
@@ -22,6 +23,7 @@
 #include "atx/vol/api/marketdata/universe.hpp"            // Chain, chain_index (band_audit)
 #include "atx/vol/api/core/vol_time.hpp"            // settlement_instant_ns (band_audit's DST-aware fallback)
 
+#include "core/parallel_for.hpp"     // parallel_for_dynamic (band_audit scoring)
 #include "marketdata/opra_batch_detail.hpp" // Civil, parse_civil, days_from_civil (band_audit snapshot math)
 
 namespace atx::vol {
@@ -820,12 +822,34 @@ Result<BandAuditReport> band_audit(const SurfaceDb &db, const BandAuditSpec &spe
     }
   };
 
+  // The hive load is per (date, SNAPSHOT SUFFIX) — never per symbol.
+  //
+  // `load_opra_hive` reads the date's WHOLE parquet: `io::read_parquet(path)`
+  // takes no symbol predicate and the loader does no row-group pruning, so a
+  // one-symbol request decodes all of the file's row groups (6,189 on a full
+  // OPRA session) and discards all but one. Requesting symbols one at a time
+  // therefore made the audit quadratic in the universe — measured at 1,554 s of
+  // CPU for ONE session, 0.50 s per symbol against a ~3.6 s whole-board load.
+  //
+  // The grouping is by suffix and not merely "everything on this date" because
+  // the suffix comes from each SURFACE's own stored valuation instant while
+  // `OpraHiveSpec` applies ONE suffix uniformly per call (opra_hive.cpp:
+  // `di.snapshot_iso = di.date + spec.snapshot_suffix`). Two symbols whose
+  // surfaces disagree about the snapshot minute cannot share a load without
+  // silently restamping one of them, which would move T-to-expiry for every one
+  // of its contracts. In production one group is expected; the grouping is what
+  // keeps the day it isn't correct rather than fast and wrong.
+  struct AuditCell {
+    std::size_t slot = 0; // index into `symbols`, so row order is preserved
+    PricedSurface surface;
+  };
   for (const std::string &date : dates) {
-    for (const std::string &symbol : symbols) {
-      // The surface is loaded FIRST (a local partition read, no hive IO) so
-      // its own stored valuation instant can pick the hive snapshot — see the
-      // fix-round-1 block above.
-      const Result<PricedSurface> surf = db.load_surface(date, symbol);
+    // Pass 1 — resolve every symbol's surface and its snapshot suffix. A local
+    // partition read, no hive IO, exactly as before.
+    std::map<std::string, std::vector<AuditCell>> by_suffix;
+    for (std::size_t si = 0; si < symbols.size(); ++si) {
+      const std::string &symbol = symbols[si];
+      Result<PricedSurface> surf = db.load_surface(date, symbol);
       if (!surf) {
         note(date + " " + symbol + ": surface: " + surf.error().to_string());
         continue;
@@ -839,30 +863,82 @@ Result<BandAuditReport> band_audit(const SurfaceDb &db, const BandAuditSpec &spe
                       std::to_string(surf->pricing().now_ts_ns) +
                       "); using DST-aware fallback snapshot suffix " + snapshot_suffix);
       }
+      by_suffix[snapshot_suffix].push_back(AuditCell{si, std::move(*surf)});
+    }
 
+    // Rows are collected per SYMBOL SLOT and appended in slot order below, so
+    // the emitted order is date-major x `symbols` order x chain order — byte
+    // for byte what the per-symbol walk produced, independent of how many
+    // suffix groups the date happens to have.
+    std::vector<std::vector<BandAuditRow>> slot_rows(symbols.size());
+
+    // Pass 2 — ONE hive load per suffix group.
+    for (auto &group : by_suffix) {
+      const std::string &snapshot_suffix = group.first;
+      std::vector<AuditCell> &cells = group.second;
       OpraHiveSpec hs;
       hs.root_dir = spec.hive_root;
       hs.date_lo = date;
       hs.date_hi = date;
-      hs.symbols = {symbol};
+      hs.symbols.reserve(cells.size());
+      for (const AuditCell &cell : cells) {
+        hs.symbols.push_back(symbols[cell.slot]);
+      }
       hs.snapshot_suffix = snapshot_suffix;
       hs.r = spec.r;
       Result<OpraBatchResult> loaded = load_opra_hive(hs);
       if (!loaded) {
-        note(date + " " + symbol + ": hive load failed: " + loaded.error().to_string());
+        // One diagnostic for the group rather than one per symbol: the failure
+        // is the DATE's file, and N identical lines would only crowd out the
+        // note budget.
+        note(date + ": hive load failed for " + std::to_string(cells.size()) +
+             " symbol(s) at snapshot " + snapshot_suffix + ": " + loaded.error().to_string());
         continue;
       }
-      for (OpraBatchEntry &entry : loaded->entries) {
+      // Per-entry scratch so the scoring below can run on many workers while
+      // the REPORT stays byte-identical: notes and counters are merged in entry
+      // order after the fan-out, never appended from a worker. Appending live
+      // would make the note budget (`max_skip_notes`) resolve differently run to
+      // run — a reproducibility break even though no individual note is wrong.
+      struct EntryScratch {
+        std::vector<std::string> notes;
+        std::size_t n_flagged = 0;
+        std::size_t n_scored = 0;
+      };
+      std::vector<EntryScratch> scratch(loaded->entries.size());
+
+      // `load_opra_hive` builds entries date-major x the REQUESTED symbol order
+      // (opra_hive.cpp phase B), and this is a single date, so entry k is
+      // cells[k]. Checked by name rather than assumed, because a silent
+      // misalignment would score every board against another board's surface.
+      //
+      // Disjoint-slot fan-out, the same contract `load_opra_hive` uses for its
+      // own date reads: task k touches only `loaded->entries[k]`, `scratch[k]`
+      // and `slot_rows[cells[k].slot]`, and each slot belongs to exactly one k.
+      // `fair_value` is a full Andersen-Lake boundary solve per contract on the
+      // cold tier, so this loop is where a whole-universe audit's time goes.
+      parallel_for_dynamic(loaded->entries.size(), spec.n_threads, [&](std::size_t k) {
+        OpraBatchEntry &entry = loaded->entries[k];
+        EntryScratch &sc = scratch[k];
+        const auto note = [&sc](std::string text) { sc.notes.push_back(std::move(text)); };
+        if (k >= cells.size() || entry.symbol != symbols[cells[k].slot]) {
+          note(date + " " + entry.symbol +
+               ": hive entry order does not match the requested symbols; skipped");
+          return;
+        }
+        const AuditCell &cell = cells[k];
+        const PricedSurface *surf = &cell.surface;
+        std::vector<BandAuditRow> &rows_here = slot_rows[cell.slot];
         if (!entry.panel.has_value()) {
           note(date + " " + entry.symbol + ": " + entry.panel.error().to_string());
-          continue;
+          return;
         }
         CorpusBoard board =
             corpus_board_from_opra(date, entry.symbol, std::move(*entry.panel));
         auto chain = OptionChain::from_frame(board.frame, board.env);
         if (!chain) {
           note(date + " " + entry.symbol + ": chain: " + chain.error().to_string());
-          continue;
+          return;
         }
         for (const Chain &c : chain->underlying().chains) {
           std::vector<double> model, cb, ca;
@@ -890,20 +966,36 @@ Result<BandAuditReport> band_audit(const SurfaceDb &db, const BandAuditSpec &spe
           row.symbol = entry.symbol;
           row.T = c.T;
           if (row.flagged) {
-            ++out.n_flagged;
+            ++sc.n_flagged;
           }
           // Final-review I1: an expiry that measured NOTHING (`row.n == 0` —
           // every listed quote one-sided/crossed, or every model price
           // non-finite) still emits a row and can never be flagged, so
           // `rows.size()` is not a measure of coverage. This is.
           if (row.n > 0) {
-            ++out.n_scored_expiries;
+            ++sc.n_scored;
           }
-          out.rows.push_back(std::move(row));
+          rows_here.push_back(std::move(row));
         } // for (Chain c : chain->underlying().chains)
-      }   // for (OpraBatchEntry &entry : loaded->entries)
-    }     // for (symbol : symbols)
-  }       // for (date : dates)
+      }); // parallel_for_dynamic over this suffix group's entries
+
+      // Merge in ENTRY ORDER so notes, the note budget and the counters are
+      // identical to a serial run.
+      for (EntryScratch &sc : scratch) {
+        for (std::string &text : sc.notes) {
+          note(std::move(text));
+        }
+        out.n_flagged += sc.n_flagged;
+        out.n_scored_expiries += sc.n_scored;
+      }
+    }     // for (suffix group)
+    // Append in `symbols` order, which is what makes the grouping invisible in
+    // the output.
+    for (std::vector<BandAuditRow> &rows : slot_rows) {
+      out.rows.insert(out.rows.end(), std::make_move_iterator(rows.begin()),
+                      std::make_move_iterator(rows.end()));
+    }
+  } // for (date : dates)
   return Ok(std::move(out));
 }
 

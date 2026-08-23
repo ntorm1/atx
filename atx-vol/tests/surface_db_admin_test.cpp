@@ -28,6 +28,7 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -2070,6 +2071,108 @@ TEST(BandAudit, EndToEndScoresTheFullRepricedChainAgainstTheStoredSurface) {
     EXPECT_TRUE(row.flagged);
   }
   EXPECT_EQ(breach_rep->n_flagged, breach_rep->rows.size());
+}
+
+// The hive load is per (date, snapshot suffix), NOT per symbol, and the scoring
+// fans out across workers. Both changes are invisible in the report by design,
+// which is exactly why they need pinning: nothing else in the suite would
+// notice if the fan-out started reordering rows or double-counting.
+//
+// The defect being guarded against was quadratic, not wrong: `load_opra_hive`
+// reads a date's WHOLE parquet (`io::read_parquet` takes no symbol predicate
+// and the loader does no row-group pruning), so asking for one symbol at a time
+// decoded the entire file once per symbol. On a full OPRA session that is 3,117
+// decodes of a 51 MB file with 6,189 row groups -- measured at 1,554 s of CPU
+// for ONE session, 0.50 s per symbol against a ~3.6 s whole-board load.
+TEST(BandAudit, ReportIsIdenticalForAnyWorkerCount) {
+  const AdminFixture f = make_fixture("band_audit_workers");
+  build_healthy_db(f);
+  const SurfaceDb db = open_db(f);
+
+  atx::vol::BandAuditSpec base;
+  base.hive_root = f.hive.string();
+  base.r = f.fx.r;
+  // A floor that some expiries miss, so `flagged` and `n_flagged` are exercised
+  // rather than being trivially zero for every worker count.
+  base.min_frac_in_band = 0.5;
+
+  atx::vol::BandAuditSpec serial = base;
+  serial.n_threads = 1;
+  const auto a = atx::vol::band_audit(db, serial);
+  ASSERT_TRUE(a.has_value()) << (a ? "" : a.error().to_string());
+
+  for (const unsigned nt : {0u, 2u, 8u}) {
+    atx::vol::BandAuditSpec parallel = base;
+    parallel.n_threads = nt;
+    const auto b = atx::vol::band_audit(db, parallel);
+    ASSERT_TRUE(b.has_value()) << (b ? "" : b.error().to_string());
+    ASSERT_EQ(a->rows.size(), b->rows.size()) << "n_threads=" << nt;
+    for (std::size_t i = 0; i < a->rows.size(); ++i) {
+      // ORDER, not just membership: `BandAuditReport::rows` is documented
+      // date-major, symbol-major within a date, ascending T within a cell, and
+      // the CLI prints it straight out, so a reordering is a silent diff in
+      // every downstream comparison.
+      EXPECT_EQ(a->rows[i].date, b->rows[i].date) << "n_threads=" << nt << " row " << i;
+      EXPECT_EQ(a->rows[i].symbol, b->rows[i].symbol) << "n_threads=" << nt << " row " << i;
+      EXPECT_DOUBLE_EQ(a->rows[i].T, b->rows[i].T) << "n_threads=" << nt << " row " << i;
+      EXPECT_EQ(a->rows[i].n, b->rows[i].n) << "n_threads=" << nt << " row " << i;
+      EXPECT_DOUBLE_EQ(a->rows[i].frac_in_band, b->rows[i].frac_in_band)
+          << "n_threads=" << nt << " row " << i;
+      EXPECT_EQ(a->rows[i].flagged, b->rows[i].flagged) << "n_threads=" << nt << " row " << i;
+    }
+    EXPECT_EQ(a->n_flagged, b->n_flagged) << "n_threads=" << nt;
+    EXPECT_EQ(a->n_scored_expiries, b->n_scored_expiries) << "n_threads=" << nt;
+    EXPECT_EQ(a->skip_notes, b->skip_notes) << "n_threads=" << nt;
+    EXPECT_EQ(a->n_skip_notes_elided, b->n_skip_notes_elided) << "n_threads=" << nt;
+  }
+}
+
+// Auditing N symbols in one call must produce exactly what N single-symbol
+// calls produce. This is the behavioural contract the per-date grouping has to
+// preserve: symbols are now handed to ONE `load_opra_hive` call together rather
+// than one at a time, so an entry/surface misalignment inside that call would
+// score a board against another board's surface -- a wrong number, not a
+// missing one, and one that no count would reveal.
+TEST(BandAudit, GroupedMultiSymbolAuditMatchesPerSymbolAudits) {
+  const AdminFixture f = make_fixture("band_audit_grouped");
+  build_healthy_db(f);
+  const SurfaceDb db = open_db(f);
+
+  atx::vol::BandAuditSpec all;
+  all.hive_root = f.hive.string();
+  all.r = f.fx.r;
+  all.min_frac_in_band = 0.5;
+  const auto grouped = atx::vol::band_audit(db, all);
+  ASSERT_TRUE(grouped.has_value()) << (grouped ? "" : grouped.error().to_string());
+
+  std::vector<BandAuditRow> one_at_a_time;
+  for (const std::string &sym : db.symbols()) {
+    atx::vol::BandAuditSpec single = all;
+    single.symbols = {sym};
+    const auto rep = atx::vol::band_audit(db, single);
+    ASSERT_TRUE(rep.has_value()) << sym << ": " << (rep ? "" : rep.error().to_string());
+    one_at_a_time.insert(one_at_a_time.end(), rep->rows.begin(), rep->rows.end());
+  }
+  // The grouped walk is date-major then symbol-major; the per-symbol walk above
+  // is symbol-major then date-major. Compare as multisets keyed by the identity
+  // of a row, so the test pins the VALUES without re-asserting the ordering the
+  // previous test already owns.
+  const auto key = [](const BandAuditRow &r) {
+    return r.date + "|" + r.symbol + "|" + std::to_string(r.T);
+  };
+  std::map<std::string, const BandAuditRow *> by_key;
+  for (const BandAuditRow &r : grouped->rows) {
+    by_key[key(r)] = &r;
+  }
+  ASSERT_EQ(by_key.size(), one_at_a_time.size());
+  for (const BandAuditRow &r : one_at_a_time) {
+    const auto it = by_key.find(key(r));
+    ASSERT_NE(it, by_key.end()) << "grouped audit lost " << key(r);
+    EXPECT_EQ(it->second->n, r.n) << key(r);
+    EXPECT_DOUBLE_EQ(it->second->frac_in_band, r.frac_in_band) << key(r);
+    EXPECT_DOUBLE_EQ(it->second->avg_signed_err_half_spreads, r.avg_signed_err_half_spreads) << key(r);
+    EXPECT_EQ(it->second->flagged, r.flagged) << key(r);
+  }
 }
 
 // Finding 1 (primary path). `opra_panel.cpp`'s FIX-C-1 guard already refuses

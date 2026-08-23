@@ -872,6 +872,11 @@ struct BandAuditSpec {
   double r{0.0};                           // flat fallback rate for the chain env
   double min_frac_in_band{0.30};           // per-expiry flag floor
   std::size_t max_skip_notes{kSurfaceDbVerifyMaxFailures};
+  // Scoring fan-out. 0 = auto (hardware concurrency), 1 = serial. A PERF-ONLY
+  // knob: `rows`, the notes, the note budget and every counter are identical for
+  // any value, because each worker writes a disjoint slot and the merge is done
+  // in entry order.
+  unsigned n_threads{0};
 };
 
 struct BandAuditReport {

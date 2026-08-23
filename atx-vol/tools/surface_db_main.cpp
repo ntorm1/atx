@@ -57,7 +57,7 @@
 //                              case it exits `3`. This is an AUDIT, not a gate:
 //                              nothing here refuses or quarantines a cell.
 //   band-audit --hive H [--symbol SYM] [--from D] [--to D] [--r X]
-//              [--min-frac X] [--fail-on-flagged]
+//              [--min-frac X] [--fail-on-flagged] [--workers N]
 //                              AFTER-THE-FACT full-chain quote-fidelity
 //                              inspector (Task 4, stress-day fit-fidelity): for
 //                              each requested (date, symbol) cell, load the
@@ -924,7 +924,7 @@ int run_tenor_audit(const SurfaceDb &db, const std::string &symbol, bool fail_on
 // `--fail-on-flagged`.
 int run_band_audit(const SurfaceDb &db, const std::string &symbol, const std::string &hive_root,
                    const std::string &from, const std::string &to, double r, double min_frac,
-                   bool fail_on_flagged) {
+                   bool fail_on_flagged, std::size_t workers) {
   BandAuditSpec spec;
   if (!symbol.empty()) {
     spec.symbols.push_back(symbol);
@@ -934,6 +934,7 @@ int run_band_audit(const SurfaceDb &db, const std::string &symbol, const std::st
   spec.date_hi = to;
   spec.r = r;
   spec.min_frac_in_band = min_frac;
+  spec.n_threads = static_cast<unsigned>(workers);
   const Result<BandAuditReport> rep = band_audit(db, spec);
   if (!rep) {
     std::fprintf(stderr, "atx-vol-surface-db: band_audit: %s\n", rep.error().to_string().c_str());
@@ -1041,6 +1042,9 @@ int main(int argc, char **argv) {
   double band_r = 0.0;             // band-audit only; --r, flat fallback carry rate
   double band_min_frac = 0.30;     // band-audit only; --min-frac, per-expiry flag floor
   bool fail_on_flagged = false;    // band-audit only
+  // band-audit only; --workers, scoring fan-out. 0 = auto (hardware
+  // concurrency), 1 = serial. PERF-ONLY: the report is identical for any value.
+  std::size_t band_workers = 0;
 
   for (int i = 2; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -1111,6 +1115,16 @@ int main(int argc, char **argv) {
       if (!missing_value && !parse_positive_double(text, band_min_frac)) {
         std::fprintf(stderr,
                      "atx-vol-surface-db: --min-frac expects a finite number > 0, got '%.*s'\n",
+                     static_cast<int>(text.size()), text.data());
+        print_usage(stderr);
+        return 2;
+      }
+    } else if (a == "--workers") {
+      const std::string_view text = nv();
+      if (!missing_value && !parse_count(text, band_workers)) {
+        std::fprintf(stderr,
+                     "atx-vol-surface-db: --workers expects a non-negative integer "
+                     "(0 = auto), got '%.*s'\n",
                      static_cast<int>(text.size()), text.data());
         print_usage(stderr);
         return 2;
@@ -1277,7 +1291,7 @@ int main(int argc, char **argv) {
   }
   if (subcommand == "band-audit") {
     return run_band_audit(*db, symbol, hive_root, verify_spec.key_lo, verify_spec.key_hi, band_r,
-                          band_min_frac, fail_on_flagged);
+                          band_min_frac, fail_on_flagged, band_workers);
   }
   // `verify` is the last of the ten `known_subcommand` names, so this is the
   // end of the dispatch — an unknown name already exited 2 above, before the open.
