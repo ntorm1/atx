@@ -916,9 +916,13 @@ TEST(MarkButterflyHonesty, MarkDigestCarriesItsOwnButterflyTally) {
   // family is structurally never butterfly-arb-free and the tally says so.
   EXPECT_GT(digest.n_butterfly_violations, 0u);
   EXPECT_GT(digest.max_butterfly_slack, 0.0);
-  EXPECT_TRUE(has_validation_failure(digest.failures, ValidationFailure::Butterfly));
-  // THE claim that moved: the mark no longer publishes an oracle-certified digest.
-  EXPECT_FALSE(digest.admitted());
+  EXPECT_GT(digest.first_butterfly_k, -1.0e9); // populated, not left at the default
+  // `failures` is the admission VERDICT, not the measurement, and stays None
+  // while the state is Healthy -- the archive record refuses any other pairing
+  // (`provenance_record_valid`, src/storage/surface_archive.cpp). The honest
+  // reading is the COUNT, which no longer defaults to zero for an unlooked-at
+  // surface; the top-level verdict moves under `demote_mark_on_butterfly`.
+  EXPECT_EQ(digest.failures, ValidationFailure::None);
   // The mark is still SERVED, and by default its state is unchanged -- gating or
   // demoting it by default would stop serving SPY/QQQ/IWM (and would arm the
   // `state == Healthy` mark-substitution gate in corpus_board_fit.cpp).
@@ -956,6 +960,11 @@ TEST(MarkButterflyHonesty, PolicyCanDemoteAButterflyCarryingMarkToDegraded) {
       has_validation_failure(bundle.market_mark_health.reasons, ValidationFailure::Butterfly));
   EXPECT_TRUE(bundle.market_mark_health.serving_candidate());
   EXPECT_GT(bundle.market_mark_health.validation.n_butterfly_violations, 0u);
+  // Demoted state and digest verdict move TOGETHER -- the pairing the archive
+  // record enforces at write time.
+  EXPECT_TRUE(has_validation_failure(bundle.market_mark_health.validation.failures,
+                                     ValidationFailure::Butterfly));
+  EXPECT_FALSE(bundle.market_mark_health.validation.admitted());
 }
 
 } // namespace
