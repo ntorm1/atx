@@ -843,6 +843,8 @@ TEST(ChainExportDividends, DuplicateExDateForOneSymbolIsRefused) {
   const atx::vol::Result<ce::DividendSchedules> loaded = ce::load_dividend_schedules(path);
   ASSERT_FALSE(loaded.has_value());
   EXPECT_EQ(loaded.error().code(), atx::vol::ErrorCode::InvalidArgument);
+}
+
 // ── --pin-curve: the pinned family and the family actually served ───────────
 
 using atx::vol::CurveSurface;

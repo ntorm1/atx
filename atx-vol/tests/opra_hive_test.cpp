@@ -1052,6 +1052,7 @@ TEST(OpraHive, VolTimeFailsTheCellForAnExpiryPastTheCalendarWindow) {
   EXPECT_EQ(vt->n_error, std::size_t{1});
   EXPECT_EQ(vt->n_coverage_holes, std::size_t{0});
   EXPECT_EQ(vt->n_loaded, std::size_t{0});
+}
 
 // ── SR-DIVS: the discrete cash-dividend schedule reaches the frame ───────────
 //
