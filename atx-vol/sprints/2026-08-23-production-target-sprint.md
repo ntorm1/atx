@@ -376,19 +376,24 @@ Owns `src/pricing/derivatives.cpp`, `deriv_analytic_greeks.hpp`,
    that protects it; `:68` lets a NaN `vega_slope` silently convert a good delta
    into a NaN with no error channel.
 
-   **CORRECTED BY L5 — the "no error channel" half is false, and the remedy this
-   plan proposed is one the codebase explicitly rejected.**
-   `finite_vega_slope` (`src/backtest/portfolio_pricer.cpp:566-577`) screens the
-   slope and demotes the lane to `PriceStatus::NumericError` **before** the
-   Ok-stamp, so a NaN slope excludes its lane from every book total
-   (`portfolio_pricer.cpp:922-931, 946-955`), and the behaviour is pinned by
-   `AdjustedGreeks.NaNVegaSlopePropagatesToAdjustedDeltaOnly`. Its own comment
-   rules out the "return `g` unchanged" fallback this plan asked for:
-   *"Deliberately NOT a silent fallback to the UNADJUSTED delta — that would
-   publish a different economic quantity than the caller requested under a column
-   it cannot distinguish."* L5 declined the change and added the caller citation
-   to the public header so the finding is not re-filed. If it is ever wanted, it
-   is a portfolio-pricer decision, not a `skew_adjusted` one.
+   **CORRECTED TWICE — the "no error channel" half is false, and the reason
+   given for that in the first correction was ALSO wrong.** L5 declined the
+   change citing `finite_vega_slope` (`portfolio_pricer.cpp:566-577`) as the
+   production screen, and this plan repeated that. L5's reviewer then established
+   that **`skew_adjusted` has no production caller at all**: `grep` returns only
+   its definition (`adjusted_greeks.cpp:84`) and four `tests/*_test.cpp` sites.
+   `portfolio_pricer` re-implements `delta + vega_slope*vega` **inline** at
+   `:1060` and `:1107` and never calls the function; `finite_vega_slope` guards
+   the duplicated expression's input, not this one.
+
+   The declination stands, on the corrected reason: this is a leaf whose only
+   in-tree consumers are tests, and the production path duplicates the arithmetic
+   and screens its own input. The latent hazard is the duplication itself, not
+   the missing screen. The "return `g` unchanged" remedy this plan originally
+   asked for remains wrong for the reason the codebase already states at
+   `portfolio_pricer.cpp:566-577`: *"Deliberately NOT a silent fallback to the
+   UNADJUSTED delta — that would publish a different economic quantity than the
+   caller requested under a column it cannot distinguish."*
    The compute-before-guard half was real and is fixed.
 5. `adjoint_greeks.cpp:387` hard-codes an absolute `hvol = 5e-3` against a regime
    guard admitting `sigma > 1e-6`, while `american_greeks_fd` and
