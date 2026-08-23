@@ -221,6 +221,56 @@ inline constexpr std::size_t kMaxStripNodes = 2049;
   return n > kMaxStripNodes ? kMaxStripNodes : n;
 }
 
+// ── FIX-E M-7: the SPAN-driven node rescale (the mirror of dk_floor_nodes) ──
+//
+// Widening the span at a fixed node count coarsens Δk, which is the resolution
+// a tier actually promises. Holding it means scaling the INTERVAL count by the
+// same factor the half-width grew by, `kh / floor_half`.
+//
+// This body used to live inline in `strip_fair_value_core` (derivatives.cpp),
+// and it was the one copy of this shape that never got the cap `dk_floor_nodes`
+// above carries -- the guard was written once and not mirrored. `kh` carries
+// `width_sigmas * sigma_atm * sqrt(T)` and nothing upstream bounds `sigma_atm`,
+// so the ratio is unbounded above and `intervals` runs away exactly as
+// `dk_floor_nodes`'s own demand does: at σ√T ≈ 100 a Standard-tier quote asked
+// for ~102 401 nodes, and past `size_t`'s range the `ceil()`→`size_t` cast is
+// UNDEFINED BEHAVIOUR, not a saturating truncation. Extracted here so the cap
+// sits beside the identical guard instead of being written a second time, and
+// so the out-of-range end is testable without paying for a quadrature.
+//
+// Capping costs nothing the caller does not already report: past
+// `kMaxStripNodes` the batched gather (whose stack buffers are exactly that
+// long) falls back to the scalar loop anyway, and the call site's own
+// `max_panel_spacing(split) > dk_max` check still raises LowT on the grid
+// ACTUALLY integrated -- so a capped rescale is flagged coarse, not silent.
+//
+// Returns `current_n` unchanged when the span did not widen, or when either
+// half-width is unusable -- the caller compares against `current_n` the same
+// way it does for `dk_floor_nodes`.
+[[nodiscard]] inline std::size_t span_rescaled_nodes(std::size_t current_n, double kh,
+                                                     double floor_half) noexcept {
+  if (current_n < 2u || !(floor_half > 0.0) || !(kh > floor_half)) {
+    return current_n;
+  }
+  const double intervals = static_cast<double>(current_n - 1u) * (kh / floor_half);
+  // Capped here, before the ceil()->size_t cast below, for the same reason
+  // `dk_floor_nodes` caps its own: the out-of-range double->size_t cast is UB.
+  // `!(intervals < cap)` rejects +inf and NaN on the same test.
+  if (!(intervals < static_cast<double>(kMaxStripNodes))) {
+    return current_n > kMaxStripNodes ? current_n : kMaxStripNodes;
+  }
+  std::size_t n = odd_nodes(static_cast<std::size_t>(std::ceil(intervals)) + 1u, current_n);
+  // Round up to 4m+1: the Richardson half-grid error estimate at the call site
+  // needs the half grid ((n+1)/2 nodes) to be odd again, which plain
+  // odd-forcing does not guarantee (e.g. n=99 halves to 50, even). The tier
+  // defaults are already 4m+1 (97/257/769/2049); only this adaptive rescale
+  // can land off that lattice, so only it needs the correction.
+  if ((n % 4u) != 1u) {
+    n += 2u;
+  }
+  return n > kMaxStripNodes ? kMaxStripNodes : n;
+}
+
 // Composite-Simpson weight for node i of n (n odd): end nodes 1, interior
 // alternating 4 / 2. The caller supplies the trailing Δk/3.
 [[nodiscard]] inline double simpson_weight(std::size_t i, std::size_t n) noexcept {

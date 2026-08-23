@@ -1672,18 +1672,14 @@ template <class SurfaceT>
     // truncation bias for a quadrature one. Hold Δk at the tier's own value
     // instead. Only when the caller has not pinned `strip_nodes`: an explicit
     // node count is a request, same as an explicit span.
-    if (cfg.strip_nodes == 0u && kh > floor_half && floor_half > 0.0) {
-      const double intervals = static_cast<double>(grid.n_nodes - 1) * (kh / floor_half);
-      grid.n_nodes = strip::odd_nodes(
-          static_cast<std::size_t>(std::ceil(intervals)) + 1u, grid.n_nodes);
-      // Round up to 4m+1: the Richardson half-grid error estimate below needs
-      // the half grid ((n+1)/2 nodes) to be odd again, which plain odd-forcing
-      // does not guarantee (e.g. n=99 halves to 50, even). The tier defaults
-      // are already 4m+1 (97/257/769/2049); only this adaptive rescale can
-      // land off that lattice, so only it needs the correction.
-      if ((grid.n_nodes % 4u) != 1u) {
-        grid.n_nodes += 2u;
-      }
+    //
+    // The rescale itself (including the 4m+1 Richardson rounding and the
+    // `kMaxStripNodes` cap that keeps the unbounded `kh / floor_half` ratio
+    // away from a `ceil()`->`size_t` cast that would be UB) lives in
+    // `strip::span_rescaled_nodes`, beside the identical `dk_floor_nodes`
+    // guard it used to be missing.
+    if (cfg.strip_nodes == 0u) {
+      grid.n_nodes = strip::span_rescaled_nodes(grid.n_nodes, kh, floor_half);
     }
   }
 
@@ -2101,12 +2097,12 @@ template <class SurfaceT>
   // test can prove the two are bit-identical on the exact same surface/grid.
   //
   // Review fix round 1, CRITICAL-1: `n` is NOT bounded by `kMaxStripNodes` on
-  // every path that can reach here. The adaptive span rescale above (unlike
-  // `strip::dk_floor_nodes`) never caps its own raise, and a caller-pinned
-  // `cfg.strip_nodes` is deliberately never clamped either (see that block's
-  // own comment) -- so an Audit-tier quote with sigma_atm*sqrt(T) high enough
-  // (e.g. ~0.55 at 1Y), or a directly pinned strip_nodes past the cap, can
-  // resolve a node count larger than the fixed-size gather buffers below.
+  // every path that can reach here. A caller-pinned `cfg.strip_nodes` is
+  // deliberately never clamped (see that block's own comment), so a directly
+  // pinned strip_nodes past the cap can still resolve a node count larger than
+  // the fixed-size gather buffers below. (The adaptive span rescale above used
+  // to be a second such path; L5 T1 gave it `strip::span_rescaled_nodes`'
+  // cap, so it can no longer exceed kMaxStripNodes on any input.)
   // The guard is structural, not an assert-only check: `x_read_buf`/
   // `sigma_buf` are never touched at all unless `n <= kMaxStripNodes`
   // (equivalently `gather_n <= kMaxStripNodes`, since `plan_strip_split`

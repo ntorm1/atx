@@ -1,5 +1,6 @@
 #include "atx/vol/api/pricing/adjusted_greeks.hpp"
 
+#include <cfenv>  // L5 T4: FE_INVALID / FE_DIVBYZERO on the early-return path
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -212,6 +213,58 @@ TEST(AdjustedGreeks, NonPositiveOrNonFiniteSpotYieldsNaN) {
   EXPECT_TRUE(std::isnan(vega_slope_per_spot(curve, k_log, kNaN)));
   EXPECT_TRUE(std::isnan(
       vega_slope_per_spot(curve, k_log, std::numeric_limits<double>::infinity())));
+}
+
+// ── L5 T4: the rejected inputs must not TOUCH the sqrt/divide ────────────
+//
+// `sigma = sqrt(w/T)` used to run ABOVE the `!(T > 0.0)` guard that exists to
+// protect it, so a T == 0 curve divided by zero and a negative-w node rooted a
+// negative -- FE_DIVBYZERO / FE_INVALID raised on a path the caller is told is
+// a clean early return. The RETURN VALUE was already NaN either way (the old
+// `!(sigma > 0.0)` caught it), so a value-only test could never have found
+// this; the FP status flags are the observable that distinguishes the two
+// orderings, which is why this test reads them.
+//
+// Reads flags rather than trapping: no `feenableexcept` on MSVC, and enabling
+// traps would fault unrelated suites in the same process. `FENV_ACCESS` is not
+// portably assertable under clang-cl, so this leans on the `dev` preset's /Od
+// (no FP reordering, no constant folding across the virtual `IVolCurve::w`
+// call). A compiler that elided the call would make this pass vacuously, never
+// fail spuriously.
+TEST(AdjustedGreeks, RejectedCurveInputsRaiseNoFpException) {
+  const std::vector<double> k{-1.0, 0.0, 1.0};
+
+  // T == 0: the old order evaluated w/T with T == 0.
+  const LinearVarianceCurve zero_t(0.0, 100.0, 0.99, k, std::vector<double>{0.04, 0.04, 0.04});
+  std::feclearexcept(FE_ALL_EXCEPT);
+  const double slope_zero_t = curve_skew_slope(zero_t, 0.3);
+  const int raised_zero_t = std::fetestexcept(FE_DIVBYZERO | FE_INVALID);
+  EXPECT_TRUE(std::isnan(slope_zero_t));
+  EXPECT_EQ(raised_zero_t, 0) << "T == 0 must be rejected before the divide";
+
+  // w < 0: the old order took sqrt of a negative.
+  const LinearVarianceCurve neg_w(0.5, 100.0, 0.99, k, std::vector<double>{-0.04, -0.04, -0.04});
+  std::feclearexcept(FE_ALL_EXCEPT);
+  const double slope_neg_w = curve_skew_slope(neg_w, 0.3);
+  const int raised_neg_w = std::fetestexcept(FE_INVALID);
+  EXPECT_TRUE(std::isnan(slope_neg_w));
+  EXPECT_EQ(raised_neg_w, 0) << "w < 0 must be rejected before the sqrt";
+
+  // The surface overload carries the identical ordering bug and the identical
+  // fix, so it gets the identical check.
+  const SviParams p{0.02, 0.15, -0.4, 0.05, 0.2, 0.5, 100.0};
+  auto created = VolSurface::create(/*uid=*/1, Parametrization::Svi, /*cap_slices=*/1);
+  ASSERT_TRUE(created.has_value());
+  VolSurface surf = std::move(created).value();
+  ASSERT_TRUE(surf.set_slice_svi(0, p).has_value());
+
+  std::feclearexcept(FE_ALL_EXCEPT);
+  const double slope_surface = surface_skew_slope(surf, 0.3, 0.0);
+  const int raised_surface = std::fetestexcept(FE_DIVBYZERO | FE_INVALID);
+  EXPECT_TRUE(std::isnan(slope_surface));
+  EXPECT_EQ(raised_surface, 0) << "T == 0 must be rejected before the divide";
+
+  std::feclearexcept(FE_ALL_EXCEPT);
 }
 
 TEST(AdjustedGreeks, NaNVegaSlopePropagatesToAdjustedDeltaOnly) {

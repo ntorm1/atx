@@ -97,6 +97,17 @@ struct StickyParams {
 // delta); every other field of `g` passes through unchanged. A non-finite
 // `vega_slope` propagates to a non-finite adjusted delta (no clamp — the
 // caller decides how to handle a degenerate input).
+//
+// That propagation is the DESIGNED error channel, not a missing check, and it
+// is deliberately not a silent fallback to the unadjusted `g.delta`: falling
+// back would publish a different economic quantity than the caller asked for,
+// under a column the caller cannot distinguish. The production consumer
+// screens the slope itself and quarantines the lane — `finite_vega_slope`
+// (backtest/portfolio_pricer.cpp) demotes a non-finite slope to
+// `PriceStatus::NumericError` BEFORE the Ok-stamp, so a NaN slope excludes its
+// lane from every book total instead of poisoning them. Read that function's
+// own comment before proposing a screen here; pinned by
+// `AdjustedGreeks.NaNVegaSlopePropagatesToAdjustedDeltaOnly`.
 [[nodiscard]] Greeks skew_adjusted(const Greeks& g, double vega_slope) noexcept;
 
 }  // namespace atx::vol

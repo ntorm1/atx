@@ -539,17 +539,21 @@ TEST(Strip, BatchedMatchesScalarViaDerivPriceAndGreeksAuditTier) {
 // ── Review fix round 1, CRITICAL-1 ────────────────────────────────────────
 //
 // `n` (== grid.n_nodes, the resolved distinct node count) is NOT bounded by
-// `strip::kMaxStripNodes` on every path: the adaptive span rescale can raise
-// it without a cap (unlike `dk_floor_nodes`), and a caller-PINNED
-// `cfg.strip_nodes` is deliberately never clamped at all (see that block's
-// own comment). Before this fix, either path resolving n > kMaxStripNodes
-// overflowed the batched gather's fixed 2049-element stack buffers with no
-// bound check and no assert. Pinning `strip_nodes` directly is the
-// deterministic way to force n past the cap regardless of this fixture's own
-// vol level (the adaptive-rescale route needs a high sigma*sqrt(T) Audit
-// quote to reach the same n and is exercised implicitly by
+// `strip::kMaxStripNodes` on every path: a caller-PINNED `cfg.strip_nodes` is
+// deliberately never clamped at all (see that block's own comment). Before
+// this fix, a path resolving n > kMaxStripNodes overflowed the batched
+// gather's fixed 2049-element stack buffers with no bound check and no
+// assert. Pinning `strip_nodes` directly is the deterministic way to force n
+// past the cap regardless of this fixture's own vol level.
+//
+// L5 T1 correction: the adaptive span rescale used to be the OTHER uncapped
+// path, and this comment claimed it was "exercised implicitly by
 // `StripResolution.DkFloorNodesCapsPastKMaxStripNodes` at the pure-function
-// level already).
+// level already" -- it was not: that test covers `dk_floor_nodes`, a
+// different function whose cap the rescale never had. The rescale now carries
+// its own cap and its own pins (`StripResolution.SpanRescaleCapsPast...`,
+// `...AdaptiveSpanRescaleIsCappedEndToEnd`), so a pinned count is the only
+// route left to n > kMaxStripNodes and this test is its sole coverage.
 //
 // `expect_batched_matches_scalar` is a strictly stronger check here than
 // "does not crash": var_swap_fair_strike's own `n <= kMaxStripNodes` guard
@@ -826,6 +830,74 @@ TEST(StripResolution, DkFloorNodesCapsPastKMaxStripNodes) {
       dk_floor_nodes(/*span=*/2.0, /*current_n=*/97u, /*dk_max=*/0.01, /*n_panels=*/4u);
   EXPECT_GT(small_raise, 97u);
   EXPECT_LT(small_raise, kMaxStripNodes);
+}
+
+// ── L5 T1: the SPAN rescale never carried the cap dk_floor_nodes has ──────
+//
+// `dk_floor_nodes` above was capped because an out-of-range double->size_t
+// cast is undefined behaviour. The FIX-E M-7 SPAN rescale is the same shape
+// -- `intervals = (n-1) * kh/floor_half`, then `ceil()` into a `size_t` --
+// and the guard was never mirrored onto it, so it ran uncapped and unbounded
+// from the day it was written until this test. Nothing about the input is
+// malformed: `kh` is `width_sigmas * sigma_atm * sqrt(T)` and the ratio is
+// simply unbounded above.
+//
+// Pure-function pin, because the UB end of the range cannot be reached
+// through a quadrature -- a strip that large never returns.
+TEST(StripResolution, SpanRescaleCapsPastKMaxStripNodes) {
+  using atx::vol::strip::kMaxStripNodes;
+  using atx::vol::strip::span_rescaled_nodes;
+
+  // Standard tier (257 nodes over +-1.5) at sigma*sqrt(T) ~ 2.5e17: kh is an
+  // ordinary finite double, but `intervals` = 256 * kh/1.5 ~ 2.6e20 is past
+  // size_t's 1.8e19 range, so the pre-fix cast was UB.
+  const std::size_t huge = span_rescaled_nodes(/*current_n=*/257u, /*kh=*/1.5e18,
+                                               /*floor_half=*/1.5);
+  EXPECT_EQ(huge, kMaxStripNodes);
+  EXPECT_EQ(huge % 4u, 1u) << "cap must stay on the 4m+1 Richardson lattice";
+
+  // +inf takes the same `!(intervals < cap)` branch, so no out-of-range value
+  // can reach the cast on any input the adaptive half-width can produce.
+  EXPECT_EQ(span_rescaled_nodes(257u, std::numeric_limits<double>::infinity(), 1.5),
+            kMaxStripNodes);
+
+  // The merely-expensive end the brief measured: sigma*sqrt(T) ~ 100 asked a
+  // Standard-tier quote for 102 401 nodes (256 * 600/1.5 + 1), which also
+  // disables the batched gather (its buffers are exactly kMaxStripNodes long).
+  EXPECT_EQ(span_rescaled_nodes(257u, /*kh=*/600.0, /*floor_half=*/1.5), kMaxStripNodes);
+
+  // An everyday widening is untouched: sigma*sqrt(T) = 0.5 doubles the span,
+  // so the interval count doubles too and lands on 513 -- well under the cap.
+  EXPECT_EQ(span_rescaled_nodes(257u, /*kh=*/3.0, /*floor_half=*/1.5), 513u);
+
+  // No widening, or an unusable floor, leaves the tier's own count alone.
+  EXPECT_EQ(span_rescaled_nodes(257u, /*kh=*/1.5, /*floor_half=*/1.5), 257u);
+  EXPECT_EQ(span_rescaled_nodes(257u, /*kh=*/24.0, /*floor_half=*/0.0), 257u);
+}
+
+// End-to-end companion to the pin above: a 400-vol 1Y quote is extreme but
+// perfectly finite, and the span rescale it triggers used to resolve 4097
+// nodes -- past `kMaxStripNodes`, so the batched gather fell back to the
+// scalar loop for a ~40x cost with no flag and no ceiling. The moderate case
+// beside it proves the cap bites only the pathological end.
+TEST(StripResolution, AdaptiveSpanRescaleIsCappedEndToEnd) {
+  const double T = 1.0;
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = DerivQuality::Standard;
+
+  // sigma*sqrt(T) = 4 => kh = 24, ratio 16, raw demand 4097 nodes.
+  const EssviSurface wild = make_flat_surface(4.0, 0.01, 1.00);
+  ASSERT_NEAR(wild.iv(0.0, T), 4.0, 1.0e-9);
+  const auto q_wild = var_swap_fair_strike(wild, cs, T, cfg);
+  ASSERT_TRUE(q_wild.has_value()) << q_wild.error().to_string();
+  EXPECT_EQ(q_wild->strip_nodes_used, atx::vol::strip::kMaxStripNodes);
+
+  // sigma*sqrt(T) = 0.5 => kh = 3, ratio 2, 513 nodes: unchanged by the cap.
+  const EssviSurface tame = make_flat_surface(0.5, 0.01, 1.00);
+  const auto q_tame = var_swap_fair_strike(tame, cs, T, cfg);
+  ASSERT_TRUE(q_tame.has_value()) << q_tame.error().to_string();
+  EXPECT_EQ(q_tame->strip_nodes_used, 513u);
 }
 
 // ── C-3 / LIT-10: kink-aligned composite Simpson panels ──────────────────
