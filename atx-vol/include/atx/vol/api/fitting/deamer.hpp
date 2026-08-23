@@ -283,8 +283,10 @@ enum class CarrySource : std::uint8_t {
   // though it misses the rate-unit confidence gate (see
   // `carry_moneyness_bounded`). Measured, not certified: `confident` is never
   // true for it, so admission publishes Degraded + CarryGap exactly like the
-  // two term-structure fallbacks. APPEND-ONLY: the enumerator values are
-  // persisted (surface archive / surface-db provenance).
+  // two term-structure fallbacks. APPEND-ONLY: public API, and persistence is
+  // the intent, so never renumber an enumerator. NOT PERSISTED TODAY —
+  // `carry_source` lives only on the in-memory `ExpiryFitReport`, so a stored
+  // surface cannot say whether its forward was solved or fabricated.
   MoneynessBounded,
 };
 
