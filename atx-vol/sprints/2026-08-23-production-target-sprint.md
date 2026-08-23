@@ -284,6 +284,17 @@ Owns `src/pricing/implied_vol.cpp`, `american_iv.cpp`.
    for a call OTM on spot but ITM on the forward — the everyday case on
    hard-to-borrow names. Mode B refuses **35,477** rows upstream rather than
    fixing the inverter.
+
+   **CORRECTED BY L3 — the two-term bound stated above is INCOMPLETE, and
+   implementing it as written would have left a residual hole.** The sigma->0
+   American value is a **sup over exercise dates**, not a max of two endpoints:
+   `max(0, max_{t in [0,T]} [ S*e^{-qt} - K*e^{-rt} ])`.
+   `f(t) = A*e^{-at} - B*e^{-bt}` has an interior stationary point at
+   `t* = ln(aA / bB) / (a - b)`, and it is a **maximum** when `a < b`. At
+   `S=409.4, K=100, T=5, r=0.10, q=0.02` that interior optimum clears **both**
+   endpoints by **1.76 price points**. Endpoint-only screening — exactly what
+   this plan specified — would have passed a quote that is provably
+   unidentifiable. L3 implemented the sup.
 2. **European IV has no `kIvMax` branch.** `implied_vol.cpp:373` clamps sigma to
    10.0; `:378` tests the *pre-clamp* step. Sigma sits motionless, burns all 16
    iterations, and returns `Err(Unavailable, "exhausted iterations")` — the wrong
@@ -522,6 +533,38 @@ correctness is the stated first priority. Fresh leases from the integrated SHA.
   prices vanilla American equity options with a network.
 - **No full test-suite runs.** Per the request and `atx-vol/CLAUDE.md`, lanes use
   `check <file>` -> `build <owning-target>` -> anchored `-Ctest -R <Suite>` only.
+
+## Required follow-ups opened BY this sprint
+
+These are consequences of Phase 1 fixes, in files the fixing lane did not own.
+They are obligations, not ideas.
+
+1. **`deamer.cpp`'s borrow fixed point must read a refusal as an inadmissible
+   iterate, not as fatal.** L3's zero-vol bound is correct and it changes
+   `deam_pcp_step` (`src/fitting/deamer.cpp:292-295`), which `ATX_TRY`s the
+   inverter at the **candidate** `q_eff` of each borrow iterate. The carry
+   solve's first probe is zero borrow, and a short-dated deep-ITM **call** whose
+   time value (~0.03 points at sigma=0.20, T=0.04) is smaller than `S*borrow*T`
+   (~0.09) sits below the zero-vol bound *at that probe* though not at the true
+   carry. It now errors where it used to be handed a fabricated 0.5%-vol leg.
+   Measured: `curve_fit_coverage`'s 15-day one-sided chain moved
+   `PrepUncovered -> CarryFailed` on 3 refused strikes. The refusal is right; the
+   search must treat it as a rejected iterate and continue.
+2. **`tools/oracle_conventions.cpp:640-658` restates the old immediate-intrinsic
+   screen verbatim** for `discrete_tree_implied_vol` and therefore now carries
+   the defect L3 removed from `american_iv.cpp`.
+3. **`american.cpp:3788` should delegate per-event dividend sensitivities to the
+   lattice** whenever a chain carries a cash schedule. It still composes
+   `dP/dD_i = (-dP/dq / (F*T)) * dF/dD_i`, which is the European answer. Callers:
+   `src/backtest/portfolio_pricer.cpp:1625`, `tests/american_test.cpp:3863`.
+4. **Wire the discrete-dividend lattice into the MARK path** —
+   `session.cpp:2003/2010` and `projection.cpp:773` — per L2's measurement above.
+   Not the de-Americanization inversion.
+5. **`american_boundary.hpp:267` and `american.cpp:1889`** carry the same
+   "reverse-accumulation-through-iterations" misnomer L5 corrected elsewhere, for
+   the same forward-mode seam.
+6. **The archive must persist `al_n_quad_price`** before any marks-tier preset
+   change is possible (see L1/T5).
 
 ## Recorded, not scheduled — the fitting audit's remaining findings
 
