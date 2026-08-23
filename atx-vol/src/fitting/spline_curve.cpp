@@ -59,6 +59,17 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
       return M;
     }
   }
+  // And the ORDINATES, which is the hazard the pivot checks below were written
+  // for and could never catch: `d[t]` is the only place `y` enters, and a single
+  // non-finite `y` makes every `dp` and therefore every M NaN while the pivots
+  // stay perfectly well conditioned. Repro that used to survive:
+  // `SplineVolParams{.z = {-1, -0.3, 0.3, 1}, .mult = {1, NaN, 1.1, 1}}` through
+  // the `SplineVolCurve` constructor yielded an all-NaN M.
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!std::isfinite(y[i])) {
+      return M;
+    }
+  }
   std::vector<double> a(K), b(K), c(K), d(K);
   for (std::size_t t = 0; t < K; ++t) {
     const std::size_t i = t + 1;
@@ -70,8 +81,11 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   std::vector<double> cp(K), dp(K);
   // The interior system is strictly diagonally dominant for strictly ascending
   // knots (b[t] = 2*(h[t]+h[t+1]) > |a[t]| + |c[t]|), so the Thomas pivots are
-  // bounded away from zero -- but only for FINITE y. A non-finite multiple
-  // poisons d, so the pivots are checked rather than assumed.
+  // bounded away from zero. `a`, `b` and `c` are functions of `h` ALONE, which
+  // the loop above has already validated finite and strictly positive, so both
+  // pivot checks are now provably unreachable -- `y` cannot reach them. They are
+  // kept as cheap defence against a future edit that widens the input contract,
+  // and are documented as unreachable rather than as the `y` guard they are not.
   if (!(b[0] > 0.0)) {
     return M;
   }

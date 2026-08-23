@@ -475,9 +475,14 @@ double ConvexSliceFit::call_price(double K) const noexcept {
   const std::size_t hi = static_cast<std::size_t>(it - u.begin());
   const std::size_t lo = hi - 1;
   // T5: the bracket cannot straddle an exact duplicate (both guards above have
-  // already returned by then), but a non-finite or unordered `u` -- reachable
-  // through the public member -- can still hand this a non-positive span. Hold
-  // the lower node rather than emit a non-finite price from a noexcept pricer.
+  // already returned by then), but a non-finite `u` -- reachable through the
+  // public member -- can still hand this a non-positive span. Hold the lower
+  // node rather than emit a non-finite price from a noexcept pricer.
+  //
+  // An UNORDERED `u` is deliberately NOT in that list: it violates
+  // `std::upper_bound`'s partitioning precondition at the call above, so such a
+  // curve is already undefined behaviour before reaching here. This guard cannot
+  // recover it and must not be read as claiming it does.
   const double span = u[hi] - u[lo];
   if (!(span > 0.0)) {
     return C[lo];

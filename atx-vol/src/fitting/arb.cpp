@@ -1212,7 +1212,15 @@ arb_check_butterfly_linear_variance(const LinearVarianceCurve &curve,
       const double k_at = k[j] + span * frac;
       const double w_at = w[j] + slope * (k_at - k[j]);
       if (!(w_at > detail::kButterflyStencilWFloor)) {
-        continue; // the 1/w terms carry no density information here
+        // The 1/w terms carry no density information here, so this point was
+        // NOT evaluated -- and an unevaluatable point is not a clean one. The
+        // caller (`slice_butterfly_violations`, src/fitting/curve_selector.cpp)
+        // is a GATE, and letting this fall through with `decided` still true
+        // would report `clean()` for geometry nothing ever read. This is the
+        // same rule `ButterflyStencilPolicy::MarkUnusable` applies in
+        // butterfly_density.hpp. Repro: every `w_nodes` entry at 1e-14.
+        out.decided = false;
+        return out;
       }
       const double inner = 1.0 - 0.5 * k_at * slope / w_at;
       const double density =

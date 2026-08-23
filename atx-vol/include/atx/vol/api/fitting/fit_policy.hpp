@@ -247,6 +247,15 @@ fit_admission_consumes_parity(const FitAdmissionPolicy &policy) noexcept {
 // you are here because one of these fired, you are arming a gate that will start
 // REFUSING production surfaces: read `min_worst_frac_within_bidask`'s contract
 // above, measure the distribution first, and change the assert deliberately.
+// `fit_quality_floor_armed` returns false for an OUT-OF-RANGE floor as well as
+// for an unarmed one, so on its own it cannot tell "no floor" from "a floor
+// nothing can satisfy". A shipped default of 1.5 (or NaN) would pass both
+// asserts below while `evaluate_surface_admission` refused every surface -- the
+// exact failure these asserts exist to prevent. Pin the value, not the predicate.
+static_assert(FitAdmissionPolicy{}.min_worst_frac_within_bidask == 0.0,
+              "the default Mark bid/ask floor must be exactly 0.0 (unarmed); an "
+              "out-of-range value reads as 'unarmed' to fit_quality_floor_armed but "
+              "refuses every surface at admission");
 static_assert(!fit_quality_floor_armed(FitAdmissionPolicy{}),
               "the default Mark admission policy publishes with NO bid/ask quality floor; "
               "arming it changes which production surfaces publish (see T6)");

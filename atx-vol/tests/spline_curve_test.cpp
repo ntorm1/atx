@@ -270,7 +270,7 @@ TEST(SplineVol, DegenerateParamsServeFiniteVolRatherThanNaN) {
   p.mult = {1.0, 1.1, 1.1, 1.0};
   p.z_lo_valid = -1.0;
   p.z_hi_valid = 1.0;
-  const SplineVolCurve curve(p, /*T=*/0.25, /*F=*/100.0, /*df=*/0.98);
+  const atx::vol::SplineVolCurve curve(p, /*T=*/0.25, /*F=*/100.0, /*df=*/0.98);
 
   EXPECT_TRUE(std::isfinite(curve.iv(0.0)));
   EXPECT_TRUE(std::isfinite(curve.iv(-0.10)));
@@ -423,6 +423,42 @@ TEST(SplineVol, LambdaZeroStillSolvesOnWellPosedData) {
   auto fitted = fit_spline_vol_slice(obs, F, T, df, opts);
   ASSERT_TRUE(fitted.has_value()) << fitted.error().to_string();
   EXPECT_TRUE(std::isfinite((*fitted)->iv(0.0)));
+}
+
+// The knot-gap guard covers `z`; this covers `mult`. They are not the same
+// hazard and only the first was handled. `y` enters the Thomas solve solely
+// through `d[t]`, so one non-finite ORDINATE makes every second derivative NaN
+// while the pivots stay perfectly well conditioned -- the pivot checks that
+// claimed to catch this are functions of the knot gaps alone and cannot see it.
+// `fit_spline_vol_slice` validates its inputs, but a hand-built or deserialized
+// `SplineVolParams` reaches the curve constructor without passing that gate.
+TEST(SplineVol, NonFiniteMultipleDegradesInsteadOfServingNaN) {
+  atx::vol::SplineVolParams p;
+  p.atm_vol = 0.20;
+  p.z = {-1.0, -0.3, 0.3, 1.0}; // strictly ascending: the gap guard is satisfied
+  p.mult = {1.0, std::numeric_limits<double>::quiet_NaN(), 1.1, 1.0};
+  p.z_lo_valid = -1.0;
+  p.z_hi_valid = 1.0;
+  const atx::vol::SplineVolCurve curve(p, /*T=*/0.25, /*F=*/100.0, /*df=*/0.98);
+
+  // `w()` takes LOG-MONEYNESS; z is standardized, z = k / (atm_vol*sqrt(T)), so
+  // the scale here is 0.20*0.5 = 0.1 and knot z maps to k = 0.1*z.
+  const double scale = 0.20 * 0.5;
+
+  // What the guard buys: the second-derivative solve degrades to all-zero (the
+  // natural-spline answer for data that cannot be differenced) instead of
+  // returning an all-NaN M. Before it, M was NaN at EVERY knot and the whole
+  // curve served NaN; now the segment between the two clean outer knots is
+  // finite, so a single bad multiple no longer destroys the surface.
+  EXPECT_TRUE(std::isfinite(curve.w(0.6 * scale)));  // strictly inside [z2, z3]
+  EXPECT_TRUE(std::isfinite(curve.w(1.0 * scale)));  // the last knot itself
+
+  // What it does NOT buy, pinned so the limit is not mistaken for a fix: `mult`
+  // also enters the interpolation DIRECTLY, and NaN*0 is NaN, so the segments
+  // touching the bad knot still serve NaN. Repairing that means sanitizing
+  // `mult` at construction -- a change to what `params()` reports, which is a
+  // measured decision and not made here.
+  EXPECT_FALSE(std::isfinite(curve.w(-1.0 * scale)));
 }
 
 }  // namespace

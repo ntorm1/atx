@@ -405,7 +405,7 @@ arb_check_butterfly(const VolSurface &s, double k_min, double k_max,
 arb_check_butterfly_slice(const std::function<double(double)> &w_of_k, double T,
                           double k_min, double k_max, std::uint32_t n_grid);
 
-// ── Piecewise-linear total variance: the EXACT butterfly tally ───────────────
+// ── Piecewise-linear total variance: exact singular part, sampled smooth part ─
 //
 // `LinearVarianceCurve` interpolates the quoted total variances linearly in k
 // and extends FLAT beyond the outer nodes, so w is only C0 and w'' is a MEASURE:
@@ -423,12 +423,23 @@ arb_check_butterfly_slice(const std::function<double(double)> &w_of_k, double T,
 // The tally deliberately separates two populations, because they answer
 // different questions and only one of them is board-dependent:
 //
-//   * `n_wing_kinks` — the flat-wing splice at the two OUTER nodes. Structural:
-//     the left wing goes flat above a first segment whose slope is normally
-//     negative, and the right wing goes flat below a last segment whose slope is
-//     normally positive, so this is ~always 2 and says nothing about the quotes.
-//     It is nevertheless REAL arbitrage, which is why the family can never be
-//     called butterfly-arb-free.
+//   * `n_wing_kinks` — the flat-wing splice at the two OUTER nodes. It is REAL
+//     arbitrage, which is why the family can never be called butterfly-arb-free.
+//
+//     READ THIS AS A POSITION, NOT A CAUSE. The split is made on WHERE the node
+//     sits, not on what put the kink there, and the two do not coincide: the
+//     splice magnitude IS the first/last segment slope, which is set entirely by
+//     the two outermost quotes. So a board whose only butterfly arbitrage is one
+//     stale OUTER quote scores `n_quote_implied() == 0` and does not arm
+//     `demote_mark_on_butterfly`, while the `max_butterfly_slack` the mark
+//     publishes may be drawn from exactly that excluded population. Keying the
+//     quote-implied count on kink MAGNITUDE relative to the interior population
+//     would classify by cause; that is a measured change, not made here.
+//
+//     Nor is it "always 2": a curve whose first segment slope is >= 0 has jump
+//     `s_right - 0 >= 0` at `j == 0` and therefore NO left wing kink. Two is the
+//     normal count for a smile with a negative first slope and positive last
+//     one, not an invariant, and no caller may assume it.
 //   * `n_interior_kinks` + `n_segment_points` — the board's OWN quotes implying
 //     a negative density (`n_quote_implied()`). This is the informative number:
 //     it is zero for a convex quoted smile and non-zero exactly when the raw
@@ -456,6 +467,12 @@ struct LinearVarianceButterflyTally {
   [[nodiscard]] constexpr std::uint32_t n_quote_implied() const noexcept {
     return n_interior_kinks + n_segment_points;
   }
+  // NOT a proof of butterfly-arb-freedom. The singular part is exact, but the
+  // smooth part is 8 interior samples per segment -- never at a node limit and
+  // never within the first or last ninth of a segment -- so a `g` dip confined
+  // to that region returns `decided == true` with `clean() == true`. Eight
+  // points on a rational function bound nothing. Read it as "nothing found by
+  // an exact node scan plus a coarse interior sweep".
   [[nodiscard]] constexpr bool clean() const noexcept {
     return decided && n_violations() == 0u;
   }

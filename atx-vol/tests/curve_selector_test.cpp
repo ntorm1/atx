@@ -10,7 +10,7 @@
 
 #include "atx/vol/api/pricing/american.hpp" // american_price, AmericanMethod
 #include "atx/vol/api/core/chain.hpp"
-#include "atx/vol/api/fitting/arb.hpp"           // arb_check_butterfly, LinearVarianceButterflyTally
+#include "atx/vol/api/fitting/arb.hpp" // arb_check_butterfly, LinearVarianceButterflyTally
 #include "atx/vol/api/fitting/curve_selector.hpp" // CandidateScore, select_candidate_index, select_curve
 #include "atx/vol/api/pricing/dividend.hpp"       // hybrid_forward, HybridDivParams, DividendEvent
 #include "atx/vol/api/fitting/fit_policy.hpp"
@@ -601,6 +601,45 @@ TEST(LinearVarianceButterfly, DegenerateNodesAreUndecidedNotClean) {
   EXPECT_FALSE(tally.decided);
   EXPECT_FALSE(tally.clean());
   EXPECT_FALSE(slice_butterfly_violations(curve, 0.25, -0.70, 0.70).clean());
+}
+
+// A slice whose total variance is positive but below the stencil floor cannot be
+// EVALUATED: the density's 1/w terms carry no information there. It used to
+// `continue` past those samples with `decided` still true, so the curve reported
+// `n_segment_points == 0` and `clean() == true` for points nothing had read --
+// the same "zero means clean" conflation the exact tally exists to remove, and
+// reached through a GATE (`slice_butterfly_violations`, a Roper IV4 gate role).
+TEST(LinearVarianceButterfly, SubFloorVarianceIsUndecidedNotClean) {
+  const std::vector<double> knots{-0.20, -0.10, 0.0, 0.10, 0.20};
+  const std::vector<double> total_variance(5, 1.0e-14); // positive, but unreadable
+  const atx::vol::LinearVarianceCurve curve(/*T=*/0.25, /*F=*/100.0, /*df=*/0.98, knots,
+                                            total_variance);
+
+  const auto tally = atx::vol::arb_check_butterfly_linear_variance(curve);
+  // Flat w means no slope jump anywhere, so the SINGULAR part is genuinely
+  // empty -- which is exactly why the old code reported a clean curve.
+  EXPECT_EQ(tally.n_violations(), 0u);
+  EXPECT_FALSE(tally.decided);
+  EXPECT_FALSE(tally.clean());
+  EXPECT_FALSE(slice_butterfly_violations(curve, 0.25, -0.70, 0.70).clean());
+}
+
+// `n_wing_kinks` is classified by POSITION (outer node), not by cause, and it is
+// NOT the invariant 2 the header used to claim. At j == 0 the left slope is 0 by
+// construction, so a first segment with a POSITIVE slope gives jump = +s >= 0 and
+// no left wing kink at all. Pinned so no caller re-derives "always 2".
+TEST(LinearVarianceButterfly, PositiveFirstSlopeHasNoLeftWingKink) {
+  // w strictly increasing across the whole grid, slopes +0.1, +0.1, +0.2, +0.3.
+  const std::vector<double> knots{-0.20, -0.10, 0.0, 0.10, 0.20};
+  const std::vector<double> total_variance{0.02, 0.03, 0.04, 0.06, 0.09};
+  const atx::vol::LinearVarianceCurve curve(/*T=*/0.25, /*F=*/100.0, /*df=*/0.98, knots,
+                                            total_variance);
+
+  const auto tally = atx::vol::arb_check_butterfly_linear_variance(curve);
+  ASSERT_TRUE(tally.decided);
+  // Left wing: jump = +0.1 - 0 > 0, no kink. Right wing: 0 - 0.3 < 0, one kink.
+  EXPECT_EQ(tally.n_wing_kinks, 1u);
+  EXPECT_EQ(tally.n_interior_kinks, 0u); // slopes ascend: no concave interior node
 }
 
 // Task I5.4: with `spline_candidate` unset anywhere (the default -- every

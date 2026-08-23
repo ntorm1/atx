@@ -287,10 +287,24 @@ struct PricerConfig {
   // reproduces every one of those.
   //
   // `SurfaceHealth::validation` on the published mark now ALWAYS carries that
-  // measurement (counts, worst slack, first offending k and its two segment
-  // slopes) and its `failures` bit, so `validation.admitted()` is FALSE and no
-  // caller can read the mark as oracle-certified. What this flag governs is only
-  // whether the measurement also demotes `SurfaceHealth::state` to `Degraded`.
+  // measurement -- `n_slices` (measured, not total), `n_butterfly_violations`,
+  // worst slack, and the first offending k with its two segment slopes.
+  //
+  // READ THE COUNTS, NOT `admitted()`. At this flag's default the published
+  // digest carries `failures == None`, so `validation.admitted()` is TRUE beside
+  // a non-zero `n_butterfly_violations` -- on the synthetic SPY panel above,
+  // true beside 11. That is not an oversight and it cannot be fixed here: the
+  // archive enforces the pairing (`provenance_record_valid`,
+  // src/storage/surface_archive.cpp:93 -- `state != Healthy ||
+  // validation_failures == 0`), so a Healthy mark carrying a Butterfly bit is
+  // not a representable persisted state, and making `admitted()` false would
+  // make the mark unpersistable rather than honest. `admitted()` is the
+  // ADMISSION VERDICT and moves only with the state; the geometry is the COUNTS.
+  // A caller that needs butterfly-clean geometry must test
+  // `n_butterfly_violations == 0 && n_slices > 0`.
+  //
+  // What this flag governs is only whether the measurement also demotes
+  // `SurfaceHealth::state` to `Degraded` and carries the bit with it.
   //
   // It defaults to FALSE deliberately, and the reason is a live coupling rather
   // than timidity: `src/marketdata/corpus_board_fit.cpp` substitutes a mark for

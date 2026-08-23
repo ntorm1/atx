@@ -889,12 +889,22 @@ TEST(SurfaceV2Provenance, UnservableCalendarArbBoardFailsLoudWithFullAttemptTrai
 // The mark arm pins LinearVariance -- raw quote interpolation in total variance
 // -- and published `Healthy` with a DEFAULT-CONSTRUCTED ValidationDigest: every
 // count zero and `admitted()` true, for a surface no oracle had ever looked at.
-// The digest is now the mark's own butterfly tally. `n_slices > 0` is what
-// proves the audit RAN rather than defaulting, and `admitted() == false` is the
-// claim that changed.
+// The digest is now the mark's own butterfly tally, and the COUNTS are what
+// changed. `n_slices` counts the slices the audit MEASURED, so `n_slices > 0`
+// proves it ran rather than defaulting.
+//
+// `admitted()` is still TRUE, and this test pins that deliberately. The archive
+// refuses a Healthy record carrying any failure bit (`provenance_record_valid`,
+// src/storage/surface_archive.cpp:93), so a Healthy mark with a Butterfly bit is
+// not a representable persisted state -- making `admitted()` false here would
+// make the mark unpersistable, not honest. The geometry lives in the counts.
 //
 // Measured at this SHA on the repo's known-truth synthetic SPY panel: 6 served
-// slices, 11 butterfly violations, worst kink slope drop 0.20.
+// slices, 11 butterfly violations. The worst kink slope drop (0.20) is pinned in
+// curve_selector_test.cpp against the tally directly, where its units -- a
+// total-variance slope in log-moneyness -- are unambiguous; it is deliberately
+// NOT published into `max_butterfly_slack`, which means a price slope in strike
+// space (see MarkButterflyAudit in src/fitting/pricer_fitter.cpp).
 TEST(MarkButterflyHonesty, MarkDigestCarriesItsOwnButterflyTally) {
   auto chain = make_known_truth_chain();
   ASSERT_TRUE(chain.has_value());
@@ -910,13 +920,24 @@ TEST(MarkButterflyHonesty, MarkDigestCarriesItsOwnButterflyTally) {
   ASSERT_NE(bundle.market_mark, nullptr);
   const auto &digest = bundle.market_mark_health.validation;
   // The audit ran over the served slices -- an assertion a defaulted,
-  // never-populated digest cannot satisfy.
-  EXPECT_GT(digest.n_slices, 0u);
+  // never-populated digest cannot satisfy. Pinned to the measured value, not
+  // `> 0`: every slice of this mark IS LinearVariance, so measured == served,
+  // and a regression that started skipping slices would still pass `> 0`.
+  EXPECT_EQ(digest.n_slices, 6u);
   // Every LinearVariance slice splices a flat wing onto a sloped segment, so the
   // family is structurally never butterfly-arb-free and the tally says so.
-  EXPECT_GT(digest.n_butterfly_violations, 0u);
-  EXPECT_GT(digest.max_butterfly_slack, 0.0);
-  EXPECT_GT(digest.first_butterfly_k, -1.0e9); // populated, not left at the default
+  EXPECT_EQ(digest.n_butterfly_violations, 11u);
+  // Zero BY DESIGN, not unpopulated: these three fields mean a price slope in
+  // strike space, and this audit measures a total-variance slope in
+  // log-moneyness. Publishing the latter under the former's name would put two
+  // incommensurable quantities in one field -- `format_digest` prints the mark's
+  // and the risk arm's side by side.
+  EXPECT_EQ(digest.max_butterfly_slack, 0.0);
+  EXPECT_EQ(digest.first_butterfly_slope_left, 0.0);
+  EXPECT_EQ(digest.first_butterfly_slope_right, 0.0);
+  // `first_butterfly_k` IS shared honestly -- log-moneyness in both writers.
+  EXPECT_TRUE(std::isfinite(digest.first_butterfly_k));
+  EXPECT_LT(digest.first_butterfly_slice, digest.n_slices);
   // `failures` is the admission VERDICT, not the measurement, and stays None
   // while the state is Healthy -- the archive record refuses any other pairing
   // (`provenance_record_valid`, src/storage/surface_archive.cpp). The honest
