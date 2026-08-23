@@ -160,11 +160,55 @@ struct FitAdmissionPolicy {
   bool require_front_expiry{false};
   std::size_t max_consecutive_expiry_gaps{std::numeric_limits<std::size_t>::max()};
   bool require_calendar_arb_free{false};
+  // Worst per-expiry fraction of scored quotes repriced inside bid/ask that a
+  // surface must clear. T6: 0.0 leaves this gate DISARMED, and disarmed is not a
+  // low bar -- it is NO bar. The predicate `evaluate_surface_admission` runs is
+  // `worst_frac_within_bidask < min_worst_frac_within_bidask`, and
+  // `worst_frac_within_bidask` is a FRACTION in [0, 1], so at 0.0 the comparison
+  // is `worst < 0.0`: unsatisfiable. `QualityBelowFloor` cannot fire, and no
+  // other admission path compares an RMSE to a tolerance either (grep confirms:
+  // `rmse` appears nowhere in fit_policy.cpp or this header), while the
+  // independent geometry oracle never reads a bid or an ask at all. An arb-free
+  // surface that reprices NOTHING inside the spread therefore publishes clean.
+  //
+  // `fit_quality_floor_armed` below is the predicate a caller reads to find out
+  // whether the gate can fire at all, and two static_asserts pin the shipped
+  // defaults as disarmed so arming one becomes a deliberate, reviewed edit
+  // rather than a silent number change.
+  //
+  // WHAT A REAL FLOOR WOULD BE (not armed here; arming it changes which
+  // production surfaces publish and needs its own measured rollout):
+  //   * the only non-zero value anywhere in the repo is populate's 0.35
+  //     (`kPopulateMinWorstFracInBand`, src/storage/surface_db_populate.cpp) --
+  //     a WORST-EXPIRY floor, so it is already the conservative statistic;
+  //   * the floor must key on the consumer. A Mark surface exists to interpolate
+  //     quotes and should clear a high fraction; a Risk surface trades in-band
+  //     fit for arb-freeness by construction and would be refused by the same
+  //     number, so one constant cannot serve both;
+  //   * it needs the diagnostic to exist: `fit_admission_consumes_parity`
+  //     already makes an armed floor fail closed on missing parity evidence,
+  //     which means arming it ALSO turns on the second de-Am scoring pass and
+  //     its latency cost on every route that had opted out;
+  //   * and it needs a measured distribution of `worst_frac_within_bidask` over
+  //     a real board population before a number is chosen -- picking one without
+  //     that is how a gate starts refusing surfaces that were always fine.
   double min_worst_frac_within_bidask{0.0};
   bool require_short_tenor{false};
   bool require_medium_tenor{false};
   bool require_long_tenor{false};
 };
+
+// T6: whether the bid/ask quality floor can fire AT ALL. A floor of 0.0 makes
+// the admission predicate `worst < 0.0`, which no fraction in [0, 1] satisfies,
+// so the gate is not "lenient" -- it is absent. Out-of-range floors (negative,
+// > 1, non-finite) are rejected by `evaluate_surface_admission` on their own and
+// are not "armed" either. Named so a caller can ask the question instead of
+// inferring it from a number, and so the two shipped defaults can be pinned.
+[[nodiscard]] constexpr bool
+fit_quality_floor_armed(const FitAdmissionPolicy &policy) noexcept {
+  return policy.enabled && policy.min_worst_frac_within_bidask > 0.0 &&
+         policy.min_worst_frac_within_bidask <= 1.0;
+}
 
 // Whether admission requires the re-Americanized fit diagnostic pass. Quote
 // and Risk fail closed without diagnostics. Mark can omit them only when its
@@ -178,7 +222,7 @@ fit_admission_consumes_parity(const FitAdmissionPolicy &policy) noexcept {
   if (policy.consumer != SurfaceConsumer::Mark) {
     return true;
   }
-  return policy.min_worst_frac_within_bidask > 0.0 && policy.min_worst_frac_within_bidask <= 1.0;
+  return fit_quality_floor_armed(policy);
 }
 
 // The strict risk-serving contract: every attempted expiry fitted, the front
@@ -196,6 +240,19 @@ fit_admission_consumes_parity(const FitAdmissionPolicy &policy) noexcept {
   policy.require_calendar_arb_free = true;
   return policy;
 }
+
+// T6: the shipped defaults do NOT arm the bid/ask quality floor. That is a
+// recorded fact, not an aspiration -- both surfaces below publish on geometry
+// and coverage alone, and neither compares a reprice quality to a tolerance. If
+// you are here because one of these fired, you are arming a gate that will start
+// REFUSING production surfaces: read `min_worst_frac_within_bidask`'s contract
+// above, measure the distribution first, and change the assert deliberately.
+static_assert(!fit_quality_floor_armed(FitAdmissionPolicy{}),
+              "the default Mark admission policy publishes with NO bid/ask quality floor; "
+              "arming it changes which production surfaces publish (see T6)");
+static_assert(!fit_quality_floor_armed(risk_admission_policy()),
+              "risk_admission_policy() publishes with NO bid/ask quality floor; "
+              "arming it changes which production surfaces publish (see T6)");
 
 struct SurfaceAdmissionEvidence {
   std::size_t attempted_expiries{0u};

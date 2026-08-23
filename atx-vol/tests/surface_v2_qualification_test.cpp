@@ -924,6 +924,13 @@ TEST(MarkButterflyHonesty, MarkDigestCarriesItsOwnButterflyTally) {
   // `state == Healthy` mark-substitution gate in corpus_board_fit.cpp).
   EXPECT_EQ(bundle.market_mark_health.state, SurfaceState::Healthy);
   EXPECT_EQ(bundle.market_mark_health.reasons, ValidationFailure::None);
+
+  // T6, pinned here because this is the one place a freshly published health is
+  // in hand: `SurfaceHealth::surface_age_ns` is DECLARED AND NEVER ASSIGNED by
+  // any first-party code, so it reads 0 -- "built just now" -- whatever the
+  // surface's actual age. A caller must not mistake that silence for a
+  // measurement; freshness lives in the generation counters and SurfaceState.
+  EXPECT_EQ(bundle.market_mark_health.surface_age_ns, 0);
 }
 
 // The honest state a caller can ASK for: with `demote_mark_on_butterfly` the
