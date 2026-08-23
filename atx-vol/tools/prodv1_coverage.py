@@ -23,12 +23,14 @@ only when a board census is supplied via --census-dir; without one, a symbol is
 scored over the days it was served or not and the churn figure is an upper bound
 on real instability. Say which you ran.
 
---from/--to BOUND THE SESSIONS SCORED, because the corpus now straddles a
-roughly three-week hole between a July block and an August block, and pooling
-straight across that hole makes a name that was listed in July, delisted, and
-never re-listed in August indistinguishable from a name that genuinely churns
-day to day; with both unset every session the DB holds is used, exactly as
-before.
+--from/--to BOUND THE SESSIONS SCORED, because "served on EVERY session" is a bar
+whose harshness SCALES WITH THE SESSION COUNT: a figure pooled over the whole
+corpus is not comparable to the ten-session numbers recorded in docs/LEDGER.md,
+and two calendar months are two listing and volatility regimes, so a name listed
+in one and delisted in the next is scored unstable when nothing about the fit
+failed. Score each month alone and then pooled; that is what separates a fit
+problem from a calendar one. With both unset every session the DB holds is used,
+exactly as before.
 
 Usage:
   python atx-vol/tools/prodv1_coverage.py --db C:/atx-data/surface-db/prodv1 \
