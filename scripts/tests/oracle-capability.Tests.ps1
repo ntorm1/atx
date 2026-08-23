@@ -99,10 +99,22 @@ Describe 'oracle capability candidate grid rungs' {
     # The pre-axis rung the committed bootstrap receipts still carry: retiring it
     # means regenerating those receipts in the same commit, so it must stay green.
     (Test-CandidatePrices (ConvertTo-Receipt (New-TestCandidatePrices))) | Should Be $true
-    # ...and so must the middle rung, the two-axis grid between them.
-    $twoAxisIds = @(foreach ($model in $script:OracleInputModels) { foreach ($style in $script:OracleExerciseStyles) { $model + '|' + $style } })
+    # ...and so must the two legacy rungs between them, both stated against the
+    # PRE-TREE input-model count: the models the committed receipts were swept
+    # over are the leading entries of the now-wider list (see
+    # $script:OraclePreTreeInputModelCount in scripts/oracle-capability.ps1 —
+    # deriving these rungs from the 9-wide list would silently turn them into
+    # grids no committed receipt ever carried).
+    $preTreeModels = @($script:OracleInputModels | Select-Object -First $script:OraclePreTreeInputModelCount)
+    $preTreeThreeAxisIds = @(foreach ($model in $preTreeModels) {
+      foreach ($style in $script:OracleExerciseStyles) {
+        foreach ($method in $script:OracleTimeDecayMethods) { $model + '|' + $style + '|' + $method }
+      }
+    })
+    (Test-CandidatePrices (ConvertTo-Receipt (New-TestCandidateGrid $preTreeThreeAxisIds $script:OracleFinalistCount))) | Should Be $true
+    $twoAxisIds = @(foreach ($model in $preTreeModels) { foreach ($style in $script:OracleExerciseStyles) { $model + '|' + $style } })
     (Test-CandidatePrices (ConvertTo-Receipt (New-TestCandidateGrid $twoAxisIds (2 * $script:OracleExerciseStyleCount)))) | Should Be $true
-    # A full 48-candidate receipt carrying the PRE-AXIS finalist count is a tied
+    # A full current-grid receipt carrying the PRE-AXIS finalist count is a tied
     # block sliced in half, not a rung: the rung is matched on candidate count,
     # so its finalist count is the only one that may appear beside it.
     (Test-CandidatePrices (ConvertTo-Receipt (New-TestCandidateGrid $currentIds 2))) | Should Be $false
@@ -131,10 +143,21 @@ Describe 'oracle capability candidate grid rungs' {
     $script:OracleCandidateCount | Should Be ($inputModels * $exerciseStyles * $timeDecayMethods)
     $script:OracleFinalistCount | Should Be (2 * $exerciseStyles * $timeDecayMethods)
     # The CURRENT grid must be the newest accepted rung, and the older rungs must
-    # still be there: dropping one silently invalidates committed receipts.
-    $script:OracleAcceptedCandidateGrids.Count | Should Be 3
-    [int]$script:OracleAcceptedCandidateGrids[0].Candidates | Should Be $script:OracleCandidateCount
-    [int]$script:OracleAcceptedCandidateGrids[0].Finalists | Should Be $script:OracleFinalistCount
+    # still be there: dropping one silently invalidates committed receipts. The
+    # current rung is derived from the C++ axis sizes read above; the legacy
+    # rungs from the script's own pre-tree count, never from the now-wider model
+    # list (see $script:OraclePreTreeInputModelCount).
+    $expectedGrids = @(
+      @{ Candidates = ($inputModels * $exerciseStyles * $timeDecayMethods); Finalists = (2 * $exerciseStyles * $timeDecayMethods) },
+      @{ Candidates = ($script:OraclePreTreeInputModelCount * $exerciseStyles * $timeDecayMethods); Finalists = (2 * $exerciseStyles * $timeDecayMethods) },
+      @{ Candidates = ($script:OraclePreTreeInputModelCount * $exerciseStyles); Finalists = (2 * $exerciseStyles) },
+      @{ Candidates = $script:OraclePreTreeInputModelCount; Finalists = 2 }
+    )
+    $script:OracleAcceptedCandidateGrids.Count | Should Be $expectedGrids.Count
+    for ($rung = 0; $rung -lt $expectedGrids.Count; $rung++) {
+      [int]$script:OracleAcceptedCandidateGrids[$rung].Candidates | Should Be ([int]$expectedGrids[$rung].Candidates)
+      [int]$script:OracleAcceptedCandidateGrids[$rung].Finalists | Should Be ([int]$expectedGrids[$rung].Finalists)
+    }
   }
 }
 

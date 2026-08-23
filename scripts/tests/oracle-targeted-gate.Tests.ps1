@@ -147,7 +147,16 @@ function New-ConventionSweepJson([string]$Sha, [string]$ProductionDayCount = '',
   if ($ProductionDayCount) { $production.day_count = $ProductionDayCount }
   return ([ordered]@{
     schema_version = 2; kind = 'convention_sweep'; git_sha = $Sha; cohorts = @('smoke', 'tune'); selection_strategy = 'all_smoke_then_top2_deterministic_tune_sample_then_full_attribution'
-    smoke_rows = 40; tune_rows = 60; rows_priced = 100; engine_errors = 0; baseline_conventions = $map; conventions = $map; production_conventions = $production
+    smoke_rows = 40; tune_rows = 60; rows_priced = 100; engine_errors = 0
+    # The dividend-schedule pre-pass ledger the sweep schema requires (see the
+    # `$divRec` block in ConvertFrom-OracleConventionSweep): run-level aggregate
+    # counts only, with a non-zero tally so the per-reason sum == groups_refused
+    # closure check is exercised rather than trivially satisfied by zeros.
+    dividend_reconstruction = [ordered]@{
+      rows_seen = 100; groups_seen = 10; groups_refused = 1; rows_in_refused_groups = 5
+      refusals = [ordered]@{ non_finite_input = 0; ambiguous_ddiv_at_expiry = 0; non_monotone_ddiv = 1; non_positive_jump = 0 }
+    }
+    baseline_conventions = $map; conventions = $map; production_conventions = $production
     metrics = $metrics; baseline_metrics = $baseline; metric_deltas = $deltas
     symmetric_metrics = $symmetric; baseline_symmetric_metrics = $baselineSymmetric; symmetric_metric_deltas = $symmetricDeltas
     accepted_regressions = @($accepted)
