@@ -1,0 +1,7 @@
+{
+  "name": "breadth",
+  "dates": ["2026-08-14"],
+  "underliers": ["AMD", "DIA", "EOSE", "MSFT", "MXEF", "NDX", "RUT", "SNDK", "SPY"],
+  "buckets_et": ["0940", "1000", "1300", "1530", "1600"],
+  "notes": "Additive coverage-expansion cohort for srPrc/srVol convergence breadth (construction only; smoke/tune/holdout untouched). Targets the audited 2026-08-23 gaps: zero-coverage index families NDX (305,923 valid rows incl NDXP roll-up, 55.3% wide-spread) and RUT (226,946 incl RUTW); the open/last-print/post-close bucket regimes (0940/1555/1600 candidates, SPY and NDX anchors -- the buckets_et array above is what survived holdout subtraction); monthly-payer DIA (ddiv-frac 96.8%, 90,131 rows) and quarterly mega-cap MSFT (59,047); high-vol semis SNDK (mean srVol 1.03, 183,702) and AMD (0.83, 101,044); sub-$5 EOSE (10,808; tune price floor is $22.19); negative-carry index MXEF (52,816, most extreme non-tune borrow). Reader semantics make membership the full dates x underliers x buckets_et cross product, so off-seed pairs (e.g. DIA x 0940) are members too -- deliberate extra breadth. Built by scripts/oracle-breadth-cohort.py, which seeds these axes from a documented candidate list, silently subtracts holdout collisions (weekly roots normalized), and emits only aggregate counts; the written rectangle is verified disjoint from holdout membership. Weekly roots roll up (SPXW->SPX, RUTW->RUT, NDXP->NDX), so only canonical roots are listed. This is a generalization baseline: no tuning against it until it is blessed as a tune-class cohort."
+}
