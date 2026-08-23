@@ -53,6 +53,11 @@ set(ATX_VOL_PRICING_SOURCES
     src/pricing/cboe_strip.cpp
     src/pricing/al_probe.cpp
     src/pricing/american.cpp
+    # Vellekoop-Nieuwenhuis spliced CRR lattice for DISCRETE CASH dividends. Its
+    # own TU rather than a section of american.cpp: it shares no state with the
+    # Andersen-Lake machinery, while its public entries sit beside them in
+    # api/pricing/american.hpp.
+    src/pricing/american_discrete_div.cpp
     src/pricing/american_batch.cpp
     src/pricing/adjoint_greeks.cpp
     src/pricing/boundary_interp.cpp
@@ -599,6 +604,19 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(spy_carry_diag examples/spy_carry_diag.cpp)
     target_link_libraries(spy_carry_diag PRIVATE atx::vol atx::core atx_warnings)
 
+    # DIAGNOSTIC (lane/oracle-exercise-style-20260819): per-underlier evidence
+    # for the exercise-style convention axis — does srPrc reproduce the American
+    # premium or the European one on our exact convention inputs? Compiles the
+    # oracle cohort reader and convention layer directly (the same TUs
+    # atx-vol-oracle-bench links) so it measures what production prices with.
+    add_executable(oracle_exercise_style_diag
+        examples/oracle_exercise_style_diag.cpp
+        tools/oracle_conventions.cpp
+        tools/oracle_cohort_reader.cpp)
+    target_link_libraries(oracle_exercise_style_diag PRIVATE atx::vol atx::core atx_warnings)
+    target_include_directories(oracle_exercise_style_diag
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tools")
+
     # Out-of-sample honesty check: leave-every-other-strike-out generalization of
     # the convex-QP dense fit. See examples/spy_oos_check.cpp.
     add_executable(spy_oos_check examples/spy_oos_check.cpp)
@@ -989,6 +1007,7 @@ if(ATX_BUILD_TOOLS)
         tools/oracle_bench_main.cpp
         tools/oracle_convention_sweep.cpp
         tools/oracle_conventions.cpp
+        tools/oracle_dividends.cpp
         tools/oracle_host_probe.cpp
         tools/oracle_scorecard.cpp
         tools/oracle_cohort_reader.cpp)

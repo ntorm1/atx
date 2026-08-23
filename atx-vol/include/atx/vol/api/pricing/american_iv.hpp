@@ -63,6 +63,19 @@ namespace atx::vol {
 //                 nudges converges in ~1 step from the previous iterate. 0 (the
 //                 default) means "no warm start; use the European seed". The
 //                 result is unchanged — only the iteration count differs.
+// @param price_tol  optional PRICE-unit convergence demand on the cold
+//                 Andersen-Lake reference map (the map `american_greeks_al`
+//                 re-prices with). 0 (the default) reproduces the sigma-unit
+//                 polish behaviour bit-for-bit. When > 0 the cold-AL polish
+//                 additionally verifies |cold(sigma) - price| <= price_tol and,
+//                 where the warm search map's seed-dependent boundary left the
+//                 root a multiple of `tol` away from the cold root (measured
+//                 1e-5..6.2e-5 sigma at long-dated deep-ITM high-vega corners,
+//                 2026-08-23), continues the cold-map Newton past the sigma
+//                 drift cap — keeping that cap's collapsed-vega protection by
+//                 accepting only iterates that REDUCE the cold-map residual.
+//                 Bounded: at most 4 cold solves total. Only the cold
+//                 AndersenLake route reads it; cached/BAW routes ignore it.
 // @return         the implied volatility, or an Error:
 //                   InvalidArgument — S/K/T <= 0
 //                   OutOfRange      — non-finite input, or price outside the
@@ -81,7 +94,8 @@ namespace atx::vol {
 american_implied_vol(double price, double S, double K, double T, double r, double q, Side side,
                      AmericanMethod method = AmericanMethod::AndersenLake, double tol = 1.0e-7,
                      std::uint16_t max_iter = 64, const std::optional<AlOpts> &opts = std::nullopt,
-                     const CorrectionCache *correction = nullptr, double warm_start = 0.0) noexcept;
+                     const CorrectionCache *correction = nullptr, double warm_start = 0.0,
+                     double price_tol = 0.0) noexcept;
 
 // Fixed-weight two-cache forward map. The blend is placed before the optional
 // solver controls so callers cannot accidentally bind it to the legacy cache
@@ -91,7 +105,7 @@ american_implied_vol(double price, double S, double K, double T, double r, doubl
                      const CorrectionBlend &correction,
                      AmericanMethod method = AmericanMethod::AndersenLake, double tol = 1.0e-7,
                      std::uint16_t max_iter = 64, const std::optional<AlOpts> &opts = std::nullopt,
-                     double warm_start = 0.0) noexcept;
+                     double warm_start = 0.0, double price_tol = 0.0) noexcept;
 
 // Batch inversion over a strike axis (scalar-backed; mirrors the library's
 // *_batch shape and the parallel-status failure convention of

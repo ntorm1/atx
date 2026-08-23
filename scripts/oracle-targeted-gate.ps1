@@ -68,32 +68,80 @@ $script:OracleBenchTestIds = @(
   'OracleBenchAggregate.PublishesTheElevenTargetsAndNoMembership',
   'OracleBenchAggregate.WritesToStdoutWhenOutIsAbsent',
   'OracleBenchAggregate.BenchmarkSpeedPublishesRowsPerSecondOnly',
-  # Stage 4, Mode B: volatility MEASURED from raw NBBO. These five REPLACE
+  # Stage 4, Mode B: volatility MEASURED from raw NBBO. The first five REPLACED
   # OracleBenchModeB.FailsAtRunTimeWithADistinctActionableError, which asserted
   # the run-time refusal a real Mode B runner has now retired. That test's load-
   # bearing property -- no Mode B invocation may hand the ratchet a number it did
   # not measure -- survives in WithoutRealDataItFailsInsteadOfPublishingNumbers,
   # and the confidentiality boundary above is RE-ASSERTED for Mode B rather than
   # assumed inherited (Mode B added both a stderr line and a receipt block).
-  # These are also exactly the five the mode_b_targeted_tests ctest case runs,
+  # These are also exactly the cases the mode_b_targeted_tests ctest case runs,
   # whose PASS_REGULAR_EXPRESSION pins that count (atx-vol/tests/CMakeLists.txt).
-  # A sixth Mode B case therefore moves THREE definition sites: this set, that
+  # Another Mode B case therefore moves THREE definition sites: this set, that
   # regex, and ORACLE_BENCH_TEST_COUNT in .claude/workflows/vol-oracle-iter.js.
   'OracleBenchModeB.RecoversTheVolThatGeneratedTheQuote',
   'OracleBenchModeB.GroupsByUnderlierExpiryAndBucket',
   'OracleBenchModeB.RefusesUnidentifiedRowsInsteadOfClampingToTheVolFloor',
   'OracleBenchModeB.AggregatePublishesTheElevenTargetsAndNoMembership',
-  'OracleBenchModeB.WithoutRealDataItFailsInsteadOfPublishingNumbers'
+  'OracleBenchModeB.WithoutRealDataItFailsInsteadOfPublishingNumbers',
+  # Mode B, the EUROPEAN leg (iter-002): the exercise-style axis honoured inside
+  # the inversion. European rows invert against the European pricing leg with
+  # the European admission band (discounted forward intrinsic, no early-exercise
+  # floor); American rows keep the American inverter and bounds byte-for-byte.
+  'OracleBenchModeB.EuropeanRowsInvertAgainstTheEuropeanLeg',
+  'OracleBenchModeB.RefusesAEuropeanMidAtTheDiscountedForwardIntrinsic',
+  'OracleBenchModeB.DeepItmEuropeanPutBelowIntrinsicStillInverts',
+  'OracleBenchModeB.AmericanRowsKeepTheAmericanBoundsAndInverter',
+  # Mode B, the TREE leg: the lattice inversion rung that lifted the 55a908aa
+  # stopgap. Tree-routed dividend rows invert against the V&N spliced lattice
+  # on their reconstructed schedule (round-trip anchor plus an asserted
+  # wrong-functional counterfactual), a mid at the dividend-adjusted zero-vol
+  # floor is refused into the existing taxonomy, and a ddiv == 0 row keeps the
+  # continuous American inverter bit-for-bit.
+  'OracleBenchModeB.TreeRoutedDividendRowsInvertOnTheLattice',
+  'OracleBenchModeB.RefusesATreeMidAtTheDividendAdjustedZeroVolFloor',
+  'OracleBenchModeB.DividendFreeRowsKeepTheContinuousInverterBitForBit'
 )
 # Pinned exactly like the OracleBench registry above: the Stage 3 suite is
 # discovered per gtest case, so a vanished or renamed case fails the gate
 # instead of passing a filter that matched nothing.
 $script:OracleConventionTestIds = @(
   'OracleConvention.DiscreteDividendForwardIsAppliedExactly',
+  # The DiscreteDividendTree input-model arm: three cases pin the three
+  # load-bearing facts — the convention layer prices EXACTLY the engine's
+  # nine-greek lattice bundle on the supplied schedule (both exercise legs,
+  # dp_dq = the bundle's phi), a ddiv == 0 row is bit-identical to the
+  # continuous-carry engine (the invariance control that licenses the arm), and
+  # a refused or missing schedule is an Err, never a silent fallback.
+  'OracleConvention.DiscreteDividendTreePricesTheLatticeBundleOnTheSchedule',
+  'OracleConvention.DiscreteDividendTreeWithoutDividendsIsTheContinuousEngine',
+  'OracleConvention.DiscreteDividendTreeFailsClosedOnRefusedOrMissingSchedules',
+  # The exercise-style convention axis: which PRICER a row is entitled to.
+  # Three cases pin the three load-bearing facts — the European leg is the
+  # independent European rung (no American intrinsic floor), each rule routes
+  # exactly its named roots and nothing else, and an ingested per-row style
+  # outranks the root-list rule.
+  'OracleConvention.EuropeanLegMatchesTheIndependentRungWithNoIntrinsicFloor',
+  'OracleConvention.ExerciseStyleRulesRouteOnlyTheirNamedRoots',
+  'OracleConvention.IngestedExerciseStyleOutranksTheRootListRule',
+  # The time-decay convention axis: HOW theta and delta decay are formed. Three
+  # cases pin the three load-bearing facts — the secant is the one-business-day
+  # difference of price and delta (and the axis never moves a price), the two
+  # per-day scales are INERT under it because the secant is already a one-day
+  # quantity, and the expiration-day boundary resolves to the intrinsic payoff
+  # rather than to an invented epsilon.
+  'OracleConvention.SecantDecayIsTheOneDayDifferenceOfPriceAndDelta',
+  'OracleConvention.SecantDecayIgnoresTheThetaAndDecayScales',
+  'OracleConvention.ExpirationDayDecayLegIsTheIntrinsicPayoff',
   'OracleConvention.ProductionMapIsTheResolvedHardCut',
   'OracleConvention.BestScaleRanksOnTheSelectionObjective',
   'OracleConvention.SymmetricObjectiveHasNoSmallestScaleGradient',
   'OracleConvention.FinalistRankPrefersNoGreekRegressionOverLowerPriceMae',
+  # A candidate id is ordered FIELD BY FIELD on '|', never as one flat string:
+  # '|' sorts above '_' and one exercise-style id is a strict prefix of another,
+  # so a flat comparison reversed that pair the moment the time-decay field was
+  # appended after it.
+  'OracleConvention.CandidateIdentityOrdersFieldByFieldNotAsAFlatString',
   'OracleConvention.BestScaleTieBreaksOnSourceThenNumericScale',
   'OracleConvention.BestScaleWithoutSelectionEvidenceUsesCandidateIdentity',
   'OracleConvention.CompleteMapNamesEveryGreekSignAndScale',
@@ -183,12 +231,24 @@ function Get-OracleTargetedGateSpec([string]$GateId, $Identity) {
       }
     }
     'mode_a_smoke_tune' {
+      # rel-avx2, NOT dev. The convention sweep is the single most expensive
+      # thing this gate set runs, and the Debug build made it unrunnable rather
+      # than merely slow: a full sweep took 74,711 s (20.7 h) from the dev
+      # binary against 193 s from rel-avx2 -- a 387x difference that turns a gate
+      # into an overnight job nobody waits for. The two runs are the SAME
+      # answer, not a speed/accuracy trade: identical winning convention map,
+      # metrics agreeing to <= 1.7e-9 relative, and price MAE identical to
+      # 6.7e-15. The optimization level cannot change the selection here, so the
+      # only thing Debug bought was the wall clock.
+      #
+      # Only the two sweep gates move. Every other gate below stays on dev,
+      # where the debug build is the point of the test.
       $out = Join-Path $outputRoot ('mode-a-smoke-tune-' + $Identity.Sha + '.json')
       return [pscustomobject]@{
-        Kind = 'oracle_convention'; Program = $benchExe; OutputPath = $out
-        RequiredExecutables = @($benchExe)
+        Kind = 'oracle_convention'; Program = $relBenchExe; OutputPath = $out
+        RequiredExecutables = @($relBenchExe)
         PrepareProgram = 'powershell'
-        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', 'build', 'atx-vol-oracle-bench', '--parallel', '2')
+        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'rel-avx2', 'build', 'atx-vol-oracle-bench', '--parallel', '2')
         Arguments = @('--convention-sweep', '--smoke', $smokeCohort, '--tune', $tuneCohort, '--store', $script:OracleStoreRoot, '--out', $out, '--git-sha', $Identity.Sha)
       }
     }
@@ -261,11 +321,20 @@ function Get-OracleTargetedGateSpec([string]$GateId, $Identity) {
       # Program is the WORKTREE-LOCAL binary. It was a bare 'atx-vol-oracle-bench'
       # PATH lookup, which this script's own banner forbids -- a gate that
       # resolves its binary off PATH can validate a build from another tree.
+      #
+      # That binary is now the rel-avx2 one, for the reason spelled out on
+      # mode_a_smoke_tune above: a full sweep costs 74,711 s (20.7 h) from the
+      # dev build and 193 s from rel-avx2, for the same winning convention map
+      # and metrics within 1.7e-9 relative (price MAE identical to 6.7e-15).
+      # Note that the PRESET moved and the ARGUMENTS did not, and must not: the
+      # freeze described above is on the command line, not on the build it runs
+      # from, so swapping the binary keeps the stdout/--aggregate-only shape
+      # byte-identical to the two verbatim-frozen Mode B command lines.
       return [pscustomobject]@{
-        Kind = 'oracle_aggregate'; Program = $benchExe; OutputPath = ''
-        RequiredExecutables = @($benchExe)
+        Kind = 'oracle_aggregate'; Program = $relBenchExe; OutputPath = ''
+        RequiredExecutables = @($relBenchExe)
         PrepareProgram = 'powershell'
-        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', 'build', 'atx-vol-oracle-bench', '--parallel', '2')
+        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'rel-avx2', 'build', 'atx-vol-oracle-bench', '--parallel', '2')
         Arguments = @('--cohort', 'smoke,tune', '--mode', 'B', '--aggregate-only')
       }
     }
@@ -501,15 +570,35 @@ function Test-OracleMetricPopulationParity($Metrics, $BaselineMetrics) {
 # i.e. AFTER the commit, which is the one place the failure cannot be undone.
 function Test-OracleConventionMap($Map) {
   $keys = @('input_model', 'forward_formula', 'rate_model', 'carry_model', 'dividend_model', 'day_count', 'dte_banding_day_count', 'price_scale', 'price_sign', 'vol_scale', 'delta_scale', 'delta_sign', 'gamma_scale', 'gamma_sign', 'theta_basis', 'theta_sign', 'vega_scale', 'vega_sign', 'rho_scale', 'rho_sign', 'phi_scale', 'phi_sign', 'volga_source', 'volga_scale', 'volga_sign', 'vanna_source', 'vanna_scale', 'vanna_sign', 'delta_decay_basis', 'delta_decay_day_count', 'delta_decay_sign')
+  # `exercise_style` is OPTIONAL: maps committed before the axis existed omit it,
+  # and absence means `american_all` (the historical behaviour — every root gets
+  # the American pricer). The value domain is closed like every other key. It is
+  # never required here, because this validator also runs against committed
+  # receipts that predate the axis and MUST keep validating them.
+  if ($Map -and @($Map.PSObject.Properties.Name) -contains 'exercise_style') {
+    if (@('american_all', 'european_cash_settled_index', 'european_cash_settled_index_plus_empirical') -notcontains $Map.exercise_style) { return $false }
+    $keys = @($keys) + 'exercise_style'
+  }
+  # `time_decay_method` is OPTIONAL for exactly the same reason, one axis later:
+  # maps committed before the axis existed omit it, and absence means
+  # `analytic_derivative` (the historical behaviour — theta and delta decay are
+  # the analytic dP/dt and charm jets times their per-day scales). Under
+  # `secant_252` those two scales are inert, which is why this key must be read
+  # before `theta_basis` / `delta_decay_basis` are believed to describe a
+  # multiplier that was actually applied.
+  if ($Map -and @($Map.PSObject.Properties.Name) -contains 'time_decay_method') {
+    if (@('analytic_derivative', 'secant_252') -notcontains $Map.time_decay_method) { return $false }
+    $keys = @($keys) + 'time_decay_method'
+  }
   if (-not (Test-OracleExactKeys $Map $keys)) { return $false }
   foreach ($key in $keys) { if (-not ($Map.$key -is [string]) -or -not $Map.$key) { return $false } }
-  $inputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
+  $inputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry', 'discrete_dividend_tree__rate__sdiv_yield')
   $dayCounts = @('ACT_365F', 'ACT_365_25', 'ACT_360', 'BUS_252')
   if ($inputModels -notcontains $Map.input_model -or
       @('none', 'uprc_exp_rate_t_minus_ddiv') -notcontains $Map.forward_formula -or
       @('continuous_row_rate', 'continuous_rate_minus_sdiv', 'continuous_rate_plus_sdiv', 'zero') -notcontains $Map.rate_model -or
       @('sdiv_as_yield', 'zero') -notcontains $Map.carry_model -or
-      @('continuous_yield_only', 'discrete_cash_forward') -notcontains $Map.dividend_model -or
+      @('continuous_yield_only', 'discrete_cash_forward', 'discrete_cash_schedule') -notcontains $Map.dividend_model -or
       $dayCounts -notcontains $Map.day_count -or $dayCounts -notcontains $Map.dte_banding_day_count -or
       $dayCounts -notcontains $Map.delta_decay_day_count -or
       @('per_share', 'per_contract_100', 'per_share_from_contract') -notcontains $Map.price_scale -or
@@ -555,9 +644,47 @@ function Test-OracleJsonValueEqual($Left, $Right) {
   return (Test-OracleFiniteNumber $Left) -and (Test-OracleFiniteNumber $Right) -and ([double]$Left -eq [double]$Right)
 }
 
+# NAMED normalization for the exercise-style axis, not generic key-dropping: a
+# convention map that OMITS `exercise_style` and one that says `american_all`
+# mean the same pricing — absence predates the axis, whose default is the
+# historical American-everywhere behaviour. Comparisons of a freshly-computed
+# sweep map (new format, key always present) against a committed floor map (old
+# format, key absent) must go through this so the two forms compare EQUAL when
+# they mean the same thing, and still compare UNEQUAL when the sweep resolved a
+# non-default style the committed floor never priced with.
+function ConvertTo-OracleConventionMapWithExplicitExerciseStyle($Map) {
+  if ($null -eq $Map -or -not ($Map -is [System.Management.Automation.PSCustomObject])) { return $Map }
+  if (@($Map.PSObject.Properties.Name) -contains 'exercise_style') { return $Map }
+  $explicit = [pscustomobject]@{}
+  foreach ($property in $Map.PSObject.Properties) {
+    Add-Member -InputObject $explicit -MemberType NoteProperty -Name $property.Name -Value $property.Value
+  }
+  Add-Member -InputObject $explicit -MemberType NoteProperty -Name 'exercise_style' -Value 'american_all'
+  return $explicit
+}
+
+# The same NAMED normalization, one axis later: a convention map that OMITS
+# `time_decay_method` and one that says `analytic_derivative` describe the same
+# reported Greeks — absence predates the axis, whose default is the historical
+# analytic dP/dt and charm jets. Kept as a second named function rather than
+# folded into a generic "fill in missing keys" helper, because the DEFAULT is the
+# whole content of each: a generic helper would silently invent a default for
+# whatever key is added next, which is exactly the way a real difference gets
+# normalized away.
+function ConvertTo-OracleConventionMapWithExplicitTimeDecayMethod($Map) {
+  if ($null -eq $Map -or -not ($Map -is [System.Management.Automation.PSCustomObject])) { return $Map }
+  if (@($Map.PSObject.Properties.Name) -contains 'time_decay_method') { return $Map }
+  $explicit = [pscustomobject]@{}
+  foreach ($property in $Map.PSObject.Properties) {
+    Add-Member -InputObject $explicit -MemberType NoteProperty -Name $property.Name -Value $property.Value
+  }
+  Add-Member -InputObject $explicit -MemberType NoteProperty -Name 'time_decay_method' -Value 'analytic_derivative'
+  return $explicit
+}
+
 function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$GateId, $Identity, [string]$ExpectedFloorPath) {
   try { $sweep = $ScorecardText | ConvertFrom-Json } catch { throw "oracle targeted gate $GateId sweep is not JSON" }
-  $keys = @('schema_version', 'kind', 'git_sha', 'cohorts', 'selection_strategy', 'smoke_rows', 'tune_rows', 'rows_priced', 'engine_errors', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'accepted_regressions', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed')
+  $keys = @('schema_version', 'kind', 'git_sha', 'cohorts', 'selection_strategy', 'smoke_rows', 'tune_rows', 'rows_priced', 'engine_errors', 'dividend_reconstruction', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'accepted_regressions', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed')
   if (-not (Test-OracleExactKeys $sweep $keys) -or $sweep.schema_version -ne 2 -or $sweep.kind -ne 'convention_sweep' -or
       $sweep.git_sha -ne $Identity.Sha -or -not (Test-OracleExactStringSet @($sweep.cohorts) @('smoke', 'tune')) -or
       -not (Test-OracleNonnegativeInteger $sweep.smoke_rows) -or [long]$sweep.smoke_rows -le 0 -or
@@ -577,6 +704,27 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
   # 1% it priced.
   if (([long]$sweep.smoke_rows + [long]$sweep.tune_rows) -ne ([long]$sweep.rows_priced + [long]$sweep.engine_errors)) {
     throw "oracle targeted gate $GateId sweep row accounting does not close: smoke_rows+tune_rows != rows_priced+engine_errors"
+  }
+  # The dividend-schedule pre-pass ledger: RUN-LEVEL AGGREGATE COUNTS ONLY (the
+  # reconstruction groups are per-snapshot partitions — membership — so any key
+  # beyond these counts is a leak, which the exact-keys checks refuse). The four
+  # per-reason counts must sum to groups_refused: a reason cannot be dropped
+  # from the tally without the sum breaking.
+  $divRec = $sweep.dividend_reconstruction
+  if (-not (Test-OracleExactKeys $divRec @('rows_seen', 'groups_seen', 'groups_refused', 'rows_in_refused_groups', 'refusals'))) { throw "oracle targeted gate $GateId dividend_reconstruction schema mismatch" }
+  foreach ($name in @('rows_seen', 'groups_seen', 'groups_refused', 'rows_in_refused_groups')) {
+    if (-not (Test-OracleNonnegativeInteger $divRec.$name)) { throw "oracle targeted gate $GateId dividend_reconstruction has invalid $name" }
+  }
+  $divReasons = $divRec.refusals
+  if (-not (Test-OracleExactKeys $divReasons @('non_finite_input', 'ambiguous_ddiv_at_expiry', 'non_monotone_ddiv', 'non_positive_jump'))) { throw "oracle targeted gate $GateId dividend_reconstruction refusal schema mismatch" }
+  $divReasonSum = 0L
+  foreach ($name in @('non_finite_input', 'ambiguous_ddiv_at_expiry', 'non_monotone_ddiv', 'non_positive_jump')) {
+    if (-not (Test-OracleNonnegativeInteger $divReasons.$name)) { throw "oracle targeted gate $GateId dividend_reconstruction has invalid refusal $name" }
+    $divReasonSum += [long]$divReasons.$name
+  }
+  if ($divReasonSum -ne [long]$divRec.groups_refused -or [long]$divRec.groups_refused -gt [long]$divRec.groups_seen -or
+      [long]$divRec.rows_in_refused_groups -gt [long]$divRec.rows_seen) {
+    throw "oracle targeted gate $GateId dividend_reconstruction accounting does not close"
   }
   # Fail closed while the pinned production map differs from what the sweep
   # resolved: otherwise a committed floor can describe a map production never
@@ -612,7 +760,23 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
     throw "oracle targeted gate $GateId input_model_regressed_greeks is not a unique subset of the nine Greek metric ids"
   }
   $candidatePrices = @($sweep.candidate_prices)
-  if ($candidatePrices.Count -ne 8 -or @($candidatePrices.candidate_id | Select-Object -Unique).Count -ne 8) { throw "oracle targeted gate $GateId candidate registry mismatch" }
+  # The candidate registry is the CLOSED three-axis grid the sweep searches:
+  # every input model crossed with every exercise-style rule crossed with every
+  # time-decay method, with candidate_id rendered as
+  # '<input_model_id>|<exercise_style_id>|<time_decay_method_id>' (candidate_id_of
+  # in atx-vol/tools/oracle_convention_sweep.cpp; the C++ side pins the same 54
+  # in OracleConvention.SweepIsClosedDeterministicAndCoversElevenMetrics). THAT
+  # PAIRING IS A RECORDED TRAP: this set and that C++ pin must move in the SAME
+  # commit, or a gate run spends the whole sweep before failing on a registry
+  # mismatch. Pinned as the exact id SET, not a count: a dropped, duplicated, or
+  # renamed grid point fails here instead of passing as a silently narrower
+  # search. The id domains are the same closed enums Test-OracleConventionMap
+  # enforces.
+  $candidateInputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry', 'discrete_dividend_tree__rate__sdiv_yield')
+  $candidateExerciseStyles = @('american_all', 'european_cash_settled_index', 'european_cash_settled_index_plus_empirical')
+  $candidateTimeDecayMethods = @('analytic_derivative', 'secant_252')
+  $expectedCandidateIds = @(foreach ($model in $candidateInputModels) { foreach ($style in $candidateExerciseStyles) { foreach ($method in $candidateTimeDecayMethods) { $model + '|' + $style + '|' + $method } } })
+  if (-not (Test-OracleExactStringSet @($candidatePrices.candidate_id) $expectedCandidateIds)) { throw "oracle targeted gate $GateId candidate registry mismatch" }
   foreach ($candidate in $candidatePrices) {
     if (-not (Test-OracleExactKeys $candidate @('candidate_id', 'smoke_price_mae_ticks', 'smoke_count', 'tune_sample_price_mae_ticks', 'tune_sample_count')) -or
         -not ($candidate.candidate_id -is [string]) -or -not (Test-OracleFiniteNumber $candidate.smoke_price_mae_ticks) -or
@@ -656,8 +820,21 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
         [long]$floor.rows_processed -ne [long]$sweep.rows_priced -or -not (Test-OracleExactStringSet @($floor.cohorts) @('smoke', 'tune')) -or
         -not (Test-OracleConventionMap $floor.production_conventions) -or
         -not (Test-OracleExactStringSet @($floor.target_metric_ids) @($script:ModeAMetricMap.Values))) { throw 'residual floor receipt schema mismatch' }
+    $conventionMapFields = @('baseline_conventions', 'conventions', 'production_conventions')
     foreach ($name in @('baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'accepted_regressions', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status')) {
-      if (-not (Test-OracleJsonValueEqual $floor.$name $sweep.$name)) {
+      $floorValue = $floor.$name
+      $sweepValue = $sweep.$name
+      if ($conventionMapFields -contains $name) {
+        # Old-format committed floors omit `exercise_style` and/or
+        # `time_decay_method`; the fresh sweep always writes both. Normalize BOTH
+        # sides to the explicit form, one axis at a time, so the comparison is
+        # about pricing meaning and not key-set vintage.
+        $floorValue = ConvertTo-OracleConventionMapWithExplicitExerciseStyle $floorValue
+        $sweepValue = ConvertTo-OracleConventionMapWithExplicitExerciseStyle $sweepValue
+        $floorValue = ConvertTo-OracleConventionMapWithExplicitTimeDecayMethod $floorValue
+        $sweepValue = ConvertTo-OracleConventionMapWithExplicitTimeDecayMethod $sweepValue
+      }
+      if (-not (Test-OracleJsonValueEqual $floorValue $sweepValue)) {
         throw ('residual floor differs from recomputed sweep: ' + $name +
                ' (fields compare by VALUE, numbers as doubles; look for a real value change, a differing key set or array order,' +
                ' or a number written as a string / with digits that do not round-trip)')

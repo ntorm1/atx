@@ -46,11 +46,114 @@ function New-TestMetricDeltas {
   })
 }
 
-function New-TestCandidatePrices {
-  $ids = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
-  return @(for ($index = 0; $index -lt $ids.Count; $index++) {
-    [ordered]@{ candidate_id = $ids[$index]; smoke_price_mae_ticks = 10.0 + $index; smoke_count = 20; tune_sample_price_mae_ticks = if ($index -lt 2) { 11.0 + $index } else { 0.0 }; tune_sample_count = if ($index -lt 2) { 10 } else { 0 } }
+# One candidate-price array of an arbitrary grid rung: $Ids candidates of which
+# the leading $Finalists carry a positive tune_sample_count.
+function New-TestCandidateGrid([string[]]$Ids, [int]$Finalists) {
+  return @(for ($index = 0; $index -lt $Ids.Count; $index++) {
+    [ordered]@{ candidate_id = $Ids[$index]; smoke_price_mae_ticks = 10.0 + $index; smoke_count = 20; tune_sample_price_mae_ticks = if ($index -lt $Finalists) { 11.0 + $index } else { 0.0 }; tune_sample_count = if ($index -lt $Finalists) { 10 } else { 0 } }
   })
+}
+
+# The CURRENT three-axis grid, crossed from the probe's own axis domains — the
+# only registry Test-CandidatePrices accepts since the committed bootstrap
+# receipts were regenerated onto it and the legacy rungs (48/12 pre-tree,
+# 24/6 two-axis, 8/2 pre-axis) were retired in that same commit.
+function New-TestCandidateIds {
+  return @(foreach ($model in $script:OracleInputModels) {
+    foreach ($style in $script:OracleExerciseStyles) {
+      foreach ($method in $script:OracleTimeDecayMethods) { $model + '|' + $style + '|' + $method }
+    }
+  })
+}
+
+function New-TestCandidatePrices {
+  return New-TestCandidateGrid (New-TestCandidateIds) $script:OracleFinalistCount
+}
+
+# Test-CandidatePrices reads receipts, so the fixtures it is handed must be
+# round-tripped through JSON: Test-ExactKeys inspects PSObject properties, which
+# an [ordered] hashtable does not expose the way a parsed receipt does.
+function ConvertTo-Receipt($Value) {
+  return @(ConvertFrom-Json (ConvertTo-Json -InputObject @($Value) -Depth 8))
+}
+
+# The axis-size AUTHORITY: the three static_assert-guarded std::array declarations
+# in atx-vol/tools/oracle_convention_sweep.cpp, read back from source. The C++
+# static_asserts already pin each array to its enum, so the declared size is the
+# enum cardinality.
+function Get-SweepAxisSize([string]$Source, [string]$Type, [string]$Name) {
+  $found = [regex]::Match($Source, 'std::array<\s*' + $Type + '\s*,\s*(\d+)\s*>\s*' + $Name + '\b')
+  if (-not $found.Success) { throw ('atx-vol/tools/oracle_convention_sweep.cpp no longer declares ' + $Name) }
+  return [int]$found.Groups[1].Value
+}
+
+Describe 'oracle capability candidate grid rungs' {
+  It 'accepts only the current three-axis grid and rejects every retired legacy rung' {
+    # The CURRENT grid, crossed from the same three axis domains
+    # scripts/oracle-capability.ps1 derives $script:OracleAcceptedCandidateGrids
+    # from.
+    $currentIds = @(New-TestCandidateIds)
+    $currentIds.Count | Should Be $script:OracleCandidateCount
+    (Test-CandidatePrices (ConvertTo-Receipt (New-TestCandidateGrid $currentIds $script:OracleFinalistCount))) | Should Be $true
+    # The three RETIRED rungs, stated against the pre-tree 8-model prefix of the
+    # input-model list exactly as the probe once accepted them. They were valid
+    # only while the committed bootstrap receipts still carried those grids; the
+    # receipts were regenerated onto the current 54-candidate grid in the same
+    # commit that retired the rungs, so each must now be REJECTED — a probe that
+    # still accepted one would validate a registry no committed receipt carries.
+    $preTreeModels = @($script:OracleInputModels | Select-Object -First 8)
+    $preTreeThreeAxisIds = @(foreach ($model in $preTreeModels) {
+      foreach ($style in $script:OracleExerciseStyles) {
+        foreach ($method in $script:OracleTimeDecayMethods) { $model + '|' + $style + '|' + $method }
+      }
+    })
+    (Test-CandidatePrices (ConvertTo-Receipt (New-TestCandidateGrid $preTreeThreeAxisIds $script:OracleFinalistCount))) | Should Be $false
+    $twoAxisIds = @(foreach ($model in $preTreeModels) { foreach ($style in $script:OracleExerciseStyles) { $model + '|' + $style } })
+    (Test-CandidatePrices (ConvertTo-Receipt (New-TestCandidateGrid $twoAxisIds (2 * $script:OracleExerciseStyleCount)))) | Should Be $false
+    (Test-CandidatePrices (ConvertTo-Receipt (New-TestCandidateGrid $preTreeModels 2))) | Should Be $false
+    # A full current-grid receipt carrying the PRE-AXIS finalist count is a tied
+    # block sliced in half, not a valid registry: the grid is matched on
+    # candidate count, so its finalist count is the only one that may appear
+    # beside it.
+    (Test-CandidatePrices (ConvertTo-Receipt (New-TestCandidateGrid $currentIds 2))) | Should Be $false
+    # An off-grid candidate count matches nothing, which is what stops a
+    # silently narrowed search from being adopted as a valid receipt.
+    (Test-CandidatePrices (ConvertTo-Receipt (New-TestCandidateGrid @($currentIds | Select-Object -First ($currentIds.Count - 1)) $script:OracleFinalistCount))) | Should Be $false
+    # Duplicate ids never pass.
+    $duplicated = @(New-TestCandidateGrid $currentIds $script:OracleFinalistCount)
+    $duplicated[$duplicated.Count - 1].candidate_id = $duplicated[0].candidate_id
+    (Test-CandidatePrices (ConvertTo-Receipt $duplicated)) | Should Be $false
+  }
+
+  It 'pins the accepted grid arithmetic to the C++ sweep grid it must move with' {
+    # scripts/oracle-capability.ps1 says these move in ONE commit with the C++.
+    # Read both sides from source so widening an axis in
+    # atx-vol/tools/oracle_convention_sweep.cpp without widening this probe fails
+    # here rather than by rejecting a perfectly good receipt at a later layer.
+    $sweep = [System.IO.File]::ReadAllText((Join-Path $here '..\..\atx-vol\tools\oracle_convention_sweep.cpp'))
+    $inputModels = Get-SweepAxisSize $sweep 'InputModel' 'kInputModels'
+    $exerciseStyles = Get-SweepAxisSize $sweep 'ExerciseStyleRule' 'kExerciseStyleRules'
+    $timeDecayMethods = Get-SweepAxisSize $sweep 'TimeDecayMethod' 'kTimeDecayMethods'
+    $script:OracleInputModelCount | Should Be $inputModels
+    $script:OracleExerciseStyleCount | Should Be $exerciseStyles
+    $script:OracleTimeDecayMethodCount | Should Be $timeDecayMethods
+    $script:OracleTiedArmsPerInputModel | Should Be ($exerciseStyles * $timeDecayMethods)
+    $script:OracleCandidateCount | Should Be ($inputModels * $exerciseStyles * $timeDecayMethods)
+    $script:OracleFinalistCount | Should Be (2 * $exerciseStyles * $timeDecayMethods)
+    # The accepted list must be EXACTLY the current grid, derived from the C++
+    # axis sizes read above. The legacy rungs are retired: the committed
+    # bootstrap receipts were regenerated onto the current grid in the same
+    # commit, so a lingering rung would be dead permissiveness — it would accept
+    # a registry no committed receipt carries.
+    $expectedGrids = @(
+      @{ Candidates = ($inputModels * $exerciseStyles * $timeDecayMethods); Finalists = (2 * $exerciseStyles * $timeDecayMethods) }
+    )
+    $script:OracleAcceptedCandidateGrids.Count | Should Be $expectedGrids.Count
+    for ($rung = 0; $rung -lt $expectedGrids.Count; $rung++) {
+      [int]$script:OracleAcceptedCandidateGrids[$rung].Candidates | Should Be ([int]$expectedGrids[$rung].Candidates)
+      [int]$script:OracleAcceptedCandidateGrids[$rung].Finalists | Should Be ([int]$expectedGrids[$rung].Finalists)
+    }
+  }
 }
 
 Describe 'oracle capability closed aggregate receipts' {

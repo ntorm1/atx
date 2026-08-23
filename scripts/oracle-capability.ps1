@@ -18,6 +18,62 @@ $targetB = @('mode_b_price_mae', 'mode_b_vol_mae', 'mode_b_delta_rel', 'mode_b_g
 # atx-vol/tools/oracle_convention_sweep.hpp, which carries the full rationale.
 $regressionBoundMultiplier = 1.01
 
+# ── the stage-1 candidate grid, stated ONCE ──────────────────────────────────
+# The sweep searches the CROSS PRODUCT of three convention axes, so the candidate
+# count is a PRODUCT and never a number anyone should be typing by hand. The grid
+# has already moved twice — 8 -> 24 when the exercise-style axis landed (85797d0f
+# pinned the 24-candidate registry) and 24 -> 48 when the time-decay axis landed
+# (635f8bd8) — and this file tracked NEITHER, because Test-CandidatePrices
+# restated the arithmetic as bare literals with nothing linking them to the grid.
+# The three axis DOMAINS below are now the single
+# source for both the enum checks in Test-ConventionMap and these counts.
+#
+# The AUTHORITATIVE values are the static_assert-guarded constants in
+# atx-vol/tools/oracle_convention_sweep.cpp:
+#   kCandidateCount        = kInputModels.size() * kExerciseStyleRules.size() * kTimeDecayMethods.size()
+#   kTiedArmsPerInputModel = kExerciseStyleRules.size() * kTimeDecayMethods.size()
+#   kFinalistCount         = 2 * kTiedArmsPerInputModel
+#
+# THESE MOVE TOGETHER, IN ONE COMMIT: the C++ grid, this block, the matching
+# ORACLE_CANDIDATE_COUNT block in .claude/workflows/vol-oracle-iter.js, and
+# `$expectedCandidateIds` in scripts/oracle-targeted-gate.ps1 (which pins the
+# exact id SET rather than a count). Adding or widening an axis while any one of
+# them lags does not fail loudly at the axis — it rejects a perfectly good
+# receipt later, at whichever layer was missed.
+$script:OracleInputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry', 'discrete_dividend_tree__rate__sdiv_yield')
+$script:OracleExerciseStyles = @('american_all', 'european_cash_settled_index', 'european_cash_settled_index_plus_empirical')
+$script:OracleTimeDecayMethods = @('analytic_derivative', 'secant_252')
+$script:OracleInputModelCount = $script:OracleInputModels.Count
+$script:OracleExerciseStyleCount = $script:OracleExerciseStyles.Count
+$script:OracleTimeDecayMethodCount = $script:OracleTimeDecayMethods.Count
+# kTiedArmsPerInputModel: neither non-input-model axis can move a stage-1 PRICE
+# (the smoke cohort is one unrouted underlier, and the decay method only changes
+# how theta and delta decay are REPORTED), so one input model contributes this
+# many candidates the price cut ranks bit-for-bit identically.
+$script:OracleTiedArmsPerInputModel = $script:OracleExerciseStyleCount * $script:OracleTimeDecayMethodCount
+# kCandidateCount = 8 x 3 x 2 = 48 at 635f8bd8; 9 x 3 x 2 = 54 since the
+# discrete-dividend-tree input model widened $script:OracleInputModels.
+$script:OracleCandidateCount = $script:OracleInputModelCount * $script:OracleTiedArmsPerInputModel
+# kFinalistCount = 2 x 6 = 12 at 635f8bd8 — the FULL tied fan of the top TWO
+# input models, never two candidates overall, and therefore exactly the number of
+# candidates carrying a positive `tune_sample_count` on a sweep receipt.
+$script:OracleFinalistCount = 2 * $script:OracleTiedArmsPerInputModel
+# The grids this probe accepts: exactly the CURRENT one. The three narrower
+# legacy rungs this list once carried (48/12 pre-tree three-axis, 24/6
+# two-axis, 8/2 pre-axis) were RETIRED in the same commit that regenerated the
+# committed bootstrap receipts onto the current 54-candidate grid — the rule
+# this block has always stated. They existed only because the probe validates
+# receipts COMMITTED before an axis (or the ninth input model) existed;
+# with the receipts regenerated, a legacy rung would accept a registry no
+# committed receipt carries. The workflow validator stays pinned to the
+# current grid for its own reason: it only ever sees a receipt freshly
+# produced at the tested SHA. If a future axis widening cannot regenerate the
+# committed receipts in the same commit, the outgoing grid must be
+# re-introduced here as an explicit rung — never widened silently.
+$script:OracleAcceptedCandidateGrids = @(
+  @{ Candidates = $script:OracleCandidateCount; Finalists = $script:OracleFinalistCount }
+)
+
 function Invoke-GitText([string[]]$GitArgs) {
   $savedPreference = $ErrorActionPreference
   try {
@@ -305,11 +361,30 @@ function Test-MetricDeltas($Deltas) {
 
 function Test-ConventionMap($Map) {
   $keys = @('input_model', 'forward_formula', 'rate_model', 'carry_model', 'dividend_model', 'day_count', 'dte_banding_day_count', 'price_scale', 'price_sign', 'vol_scale', 'delta_scale', 'delta_sign', 'gamma_scale', 'gamma_sign', 'theta_basis', 'theta_sign', 'vega_scale', 'vega_sign', 'rho_scale', 'rho_sign', 'phi_scale', 'phi_sign', 'volga_source', 'volga_scale', 'volga_sign', 'vanna_source', 'vanna_scale', 'vanna_sign', 'delta_decay_basis', 'delta_decay_day_count', 'delta_decay_sign')
+  # `exercise_style` is OPTIONAL, mirroring Test-OracleConventionMap in
+  # oracle-targeted-gate.ps1 (the domains are duplicated by design — see the
+  # comment there): maps committed before the axis existed omit the key, and
+  # absence means `american_all`, the historical American-everywhere default.
+  # It must stay optional here because this probe validates committed receipts
+  # that predate the axis and MUST keep reporting them valid.
+  if ($Map -and @($Map.PSObject.Properties.Name) -contains 'exercise_style') {
+    if ($script:OracleExerciseStyles -notcontains $Map.exercise_style) { return $false }
+    $keys = @($keys) + 'exercise_style'
+  }
+  # `time_decay_method` is OPTIONAL for the same reason, one axis later, and
+  # mirrors Test-OracleConventionMap in oracle-targeted-gate.ps1: maps committed
+  # before the axis existed omit the key, and absence means
+  # `analytic_derivative`, the historical analytic-jet default. It must stay
+  # optional here because this probe validates committed receipts that predate
+  # the axis and MUST keep reporting them valid.
+  if ($Map -and @($Map.PSObject.Properties.Name) -contains 'time_decay_method') {
+    if ($script:OracleTimeDecayMethods -notcontains $Map.time_decay_method) { return $false }
+    $keys = @($keys) + 'time_decay_method'
+  }
   if (-not (Test-ExactKeys $Map $keys)) { return $false }
-  $inputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
-  if ($inputModels -notcontains $Map.input_model -or @('none', 'uprc_exp_rate_t_minus_ddiv') -notcontains $Map.forward_formula -or
+  if ($script:OracleInputModels -notcontains $Map.input_model -or @('none', 'uprc_exp_rate_t_minus_ddiv') -notcontains $Map.forward_formula -or
       @('continuous_row_rate', 'continuous_rate_minus_sdiv', 'continuous_rate_plus_sdiv', 'zero') -notcontains $Map.rate_model -or
-      @('sdiv_as_yield', 'zero') -notcontains $Map.carry_model -or @('continuous_yield_only', 'discrete_cash_forward') -notcontains $Map.dividend_model -or
+      @('sdiv_as_yield', 'zero') -notcontains $Map.carry_model -or @('continuous_yield_only', 'discrete_cash_forward', 'discrete_cash_schedule') -notcontains $Map.dividend_model -or
       @('ACT_365F', 'ACT_365_25', 'ACT_360', 'BUS_252') -notcontains $Map.day_count -or
       @('ACT_365F', 'ACT_365_25', 'ACT_360', 'BUS_252') -notcontains $Map.dte_banding_day_count -or
       @('per_share', 'per_contract_100', 'per_share_from_contract') -notcontains $Map.price_scale -or
@@ -325,9 +400,21 @@ function Test-ConventionMap($Map) {
   return $true
 }
 
+# The candidate registry must be a CLOSED cross product of the searched axes:
+# `<input models> x <tied arms>` distinct candidates, of which exactly
+# `2 x <tied arms>` carry a positive tune_sample_count — the full tied fan of the
+# top TWO input models, never two candidates overall. Both numbers come from
+# $script:OracleAcceptedCandidateGrids at the top of this file, which is the ONE
+# place the grid arithmetic is written; see that block before changing anything
+# here, including the note on how the legacy pre-axis rungs were retired when
+# the committed receipts were regenerated onto the current grid.
 function Test-CandidatePrices($Candidates) {
   $items = @($Candidates)
-  if ($items.Count -ne 8 -or @($items.candidate_id | Select-Object -Unique).Count -ne 8) { return $false }
+  $finalists = -1
+  foreach ($grid in $script:OracleAcceptedCandidateGrids) {
+    if ($items.Count -eq [int]$grid.Candidates) { $finalists = [int]$grid.Finalists; break }
+  }
+  if ($finalists -lt 0 -or @($items.candidate_id | Select-Object -Unique).Count -ne $items.Count) { return $false }
   foreach ($candidate in $items) {
     if (-not (Test-ExactKeys $candidate @('candidate_id', 'smoke_price_mae_ticks', 'smoke_count', 'tune_sample_price_mae_ticks', 'tune_sample_count')) -or
         -not (Test-FiniteNumber $candidate.smoke_price_mae_ticks) -or -not (Test-PositiveInteger $candidate.smoke_count) -or
@@ -335,7 +422,7 @@ function Test-CandidatePrices($Candidates) {
     $tuneCount = 0L
     if (-not [long]::TryParse(([string]$candidate.tune_sample_count), [ref]$tuneCount) -or $tuneCount -lt 0) { return $false }
   }
-  return @($items | Where-Object { [long]$_.tune_sample_count -gt 0 }).Count -eq 2
+  return @($items | Where-Object { [long]$_.tune_sample_count -gt 0 }).Count -eq $finalists
 }
 
 # The pin is DERIVED from the convention_speed_measure baseline as

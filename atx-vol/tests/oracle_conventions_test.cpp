@@ -17,11 +17,14 @@ using namespace atx::vol;
 using namespace atx::vol::oracle;
 
 // Synthesizes a row whose oracle columns were produced BY `map`, so a sweep
-// over such rows must resolve back to `map`'s input model.
+// over such rows must resolve back to `map`'s input model AND its exercise
+// style. It authors through `mode_a_price_row` — the same entry point the sweep
+// and production Mode A price with — so the synthetic oracle honours the map's
+// exercise-style rule instead of being unconditionally American.
 OracleRow make_row(double strike, Side side, const ConventionMap &map, double ddiv = 0.0,
-                   double sdiv = 0.0) {
+                   double sdiv = 0.0, std::string_view underlier = "SYNTH") {
   OracleRow row;
-  row.underlier = "SYNTH";
+  row.underlier = std::string(underlier);
   row.side = side;
   row.strike = strike;
   row.uprc = 100.0;
@@ -32,22 +35,28 @@ OracleRow make_row(double strike, Side side, const ConventionMap &map, double dd
   row.sr_vol = 0.25;
   row.bid_prc = 1.0;
   row.ask_prc = 1.1;
-  const EnginePricingInputs inputs = mode_a_inputs(row, map);
-  const auto greeks = american_greeks_al(inputs.spot, inputs.strike, inputs.years, inputs.sigma,
-                                         inputs.rate, inputs.carry, inputs.side, al_fast_opts());
-  EXPECT_TRUE(greeks.has_value());
-  if (!greeks.has_value()) {
+  // The single-expiry schedule the sweep's pre-pass reconstructs for this
+  // row's snapshot: every make_row cohort shares one `years`, so its whole
+  // ddiv is one dividend whose upper bracket is the expiry itself. Authoring
+  // with the same schedule keeps the tree arm a FIXED POINT of the sweep the
+  // way the escrow arms are. Non-tree maps ignore it.
+  std::vector<CashDividend> schedule;
+  if (row.ddiv > 0.0) {
+    schedule.push_back(CashDividend{row.years, row.ddiv});
+  }
+  const Result<ModeAPricing> priced = mode_a_price_row(
+      row, map, al_fast_opts(), RowDividends{.schedule = schedule, .refused = false});
+  EXPECT_TRUE(priced.has_value());
+  if (!priced.has_value()) {
     return row;
   }
-  const auto carry =
-      american_carry_greeks_al(inputs.spot, inputs.strike, inputs.years, inputs.sigma, inputs.rate,
-                               inputs.carry, inputs.side, al_fast_opts());
-  EXPECT_TRUE(carry.has_value());
-  if (!carry.has_value()) {
-    return row;
-  }
-  row.sr_prc = price_to_oracle_units(greeks->price, map);
-  const OracleUnitGreeks units = to_oracle_units(*greeks, carry->dP_dq, map);
+  EXPECT_TRUE(std::isfinite(priced->dp_dq));
+  row.sr_prc = price_to_oracle_units(priced->greeks.price, map);
+  // The AXIS-AWARE conversion, not the jet-only overload: a synthetic oracle
+  // authored under a `Secant252` map must carry that map's SECANTS in `th` and
+  // `de_decay`, or a sweep over these rows could not resolve back to the map
+  // that produced them — the property every fixed-point test here rests on.
+  const OracleUnitGreeks units = to_oracle_units(*priced, map);
   row.de = units.de;
   row.ga = units.ga;
   row.th = units.th;
@@ -78,13 +87,60 @@ std::vector<OracleRow> distinct_arm_rows(double first_strike, double second_stri
           make_row(second_strike, Side::Put, map, 2.5, 0.01)};
 }
 
-// A cohort authored under the PRODUCTION map, so a sweep over it must resolve
-// back to winning_convention(). Non-zero ddiv/sdiv keep the production input
-// model distinguishable from the other seven.
-std::vector<OracleRow> production_rows(double first_strike, double second_strike) {
-  const ConventionMap &map = winning_convention();
+// A cohort spanning routed and unrouted roots, authored under `map`. A sweep
+// over it must resolve back to `map`'s exercise style.
+//
+// THREE roots: an unrouted equity (SYNTH) that keeps the American arm honest,
+// and two contract-fact European roots (SPX, and MGTN since its Cboe spec was
+// located). With the empirical table empty the two European rules route
+// identical sets, so they tie bit-for-bit on every metric and the sweep's
+// deterministic identity tie-break resolves the plain
+// `european_cash_settled_index` id — which is exactly what the production map
+// pins. The deep-in-the-money puts are what make the European and American
+// legs separable at all — that is where the early-exercise premium is worth
+// ~0.9 per share rather than ~0.
+//
+// Non-zero ddiv/sdiv on the SYNTH rows keep the production input model
+// distinguishable from the other eight at the same time. The two EUROPEAN
+// rows carry ddiv == 0, exactly as their real roots do (every European-routed
+// root in the store is dividend-free) — and not only for realism: a cash
+// dividend at expiry makes a deep-ITM put's early exercise worthless (holding
+// captures the dividend-driven forward drop), so under the tree model a
+// ddiv-bearing SPX row prices IDENTICALLY through both exercise legs and the
+// style axis would resolve on the identity tie-break instead of on evidence.
+// Dividend-free, the two legs separate exactly as designed: the American leg
+// floors at intrinsic, the European premium sits below it.
+std::vector<OracleRow> rows_under(const ConventionMap &map, double first_strike,
+                                  double second_strike) {
   return {make_row(first_strike, Side::Call, map, 2.5, 0.01),
-          make_row(second_strike, Side::Put, map, 2.5, 0.01)};
+          make_row(second_strike, Side::Put, map, 2.5, 0.01),
+          make_row(200.0, Side::Put, map, 0.0, 0.01, "SPX"),
+          make_row(200.0, Side::Put, map, 0.0, 0.01, "MGTN")};
+}
+
+// A cohort authored under the PRODUCTION map, so a sweep over it must resolve
+// back to winning_convention().
+std::vector<OracleRow> production_rows(double first_strike, double second_strike) {
+  return rows_under(winning_convention(), first_strike, second_strike);
+}
+
+// erf-based Black-Scholes, deliberately NOT the repo's own Black-76 kernel: it
+// is the independent rung `european_greeks` is checked against, and a check
+// that reused the kernel under test would only prove the kernel equals itself.
+[[nodiscard]] double independent_ncdf(double x) {
+  return 0.5 * std::erfc(-x * 0.70710678118654752440);
+}
+
+[[nodiscard]] double independent_euro(double S, double K, double T, double sigma, double r,
+                                      double q, Side side) {
+  const double v = sigma * std::sqrt(T);
+  const double d1 = (std::log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / v;
+  const double d2 = d1 - v;
+  const double df = std::exp(-r * T);
+  const double dq = std::exp(-q * T);
+  return side == Side::Call
+             ? S * dq * independent_ncdf(d1) - K * df * independent_ncdf(d2)
+             : K * df * independent_ncdf(-d2) - S * dq * independent_ncdf(-d1);
 }
 
 // The exact bytes `convention_sweep_json` publishes as `production_conventions`,
@@ -94,9 +150,11 @@ std::vector<OracleRow> production_rows(double first_strike, double second_strike
 // struct literal that could drift the same way the first one did) is what makes
 // the production map checkable against the sweep.
 constexpr std::string_view kResolvedWinnerJson =
-    R"({"input_model":"discrete_forward_pv__rate__sdiv_yield",)"
-    R"("forward_formula":"uprc_exp_rate_t_minus_ddiv","rate_model":"continuous_row_rate",)"
-    R"("carry_model":"sdiv_as_yield","dividend_model":"discrete_cash_forward",)"
+    R"({"input_model":"discrete_dividend_tree__rate__sdiv_yield",)"
+    R"("forward_formula":"none","rate_model":"continuous_row_rate",)"
+    R"("carry_model":"sdiv_as_yield","dividend_model":"discrete_cash_schedule",)"
+    R"("exercise_style":"european_cash_settled_index",)"
+    R"("time_decay_method":"analytic_derivative",)"
     R"("day_count":"BUS_252","dte_banding_day_count":"ACT_365F",)"
     R"("price_scale":"per_share","price_sign":"positive",)"
     R"("vol_scale":"decimal_identity","delta_scale":"per_unit","delta_sign":"positive",)"
@@ -124,9 +182,364 @@ TEST(OracleConvention, DiscreteDividendForwardIsAppliedExactly) {
   EXPECT_DOUBLE_EQ(inputs.carry, row.sdiv);
 }
 
+// The tree arm prices EXACTLY the engine bundle it claims to — same schedule,
+// same exercise routing, dp_dq is the bundle's own phi — pinned bit-for-bit so
+// the convention layer can never wrap the lattice in a second model choice.
+TEST(OracleConvention, DiscreteDividendTreePricesTheLatticeBundleOnTheSchedule) {
+  ConventionMap map = baseline_convention();
+  map.input_model = InputModel::DiscreteDividendTree;
+  OracleRow row;
+  row.underlier = "SYNTH";
+  row.side = Side::Put;
+  row.strike = 97.5;
+  row.uprc = 100.0;
+  row.rate = 0.04;
+  row.sdiv = 0.003;
+  row.ddiv = 1.25;
+  row.years = 0.35;
+  row.sr_vol = 0.27;
+  const std::vector<CashDividend> schedule = {CashDividend{0.10, 0.65}, CashDividend{0.35, 0.60}};
+  const RowDividends divs{.schedule = schedule, .refused = false};
+  const Result<ModeAPricing> priced = mode_a_price_row(row, map, al_fast_opts(), divs);
+  ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
+  EXPECT_EQ(priced->style, atx::vol::oracle::ExerciseStyle::American);
+  const auto bundle = american_discrete_div_greek_bundle(
+      row.uprc, row.strike, row.years, row.sr_vol, row.rate, row.sdiv, row.side, schedule);
+  ASSERT_TRUE(bundle.has_value()) << bundle.error().to_string();
+  EXPECT_EQ(priced->greeks.price, bundle->price);
+  EXPECT_EQ(priced->greeks.delta, bundle->delta);
+  EXPECT_EQ(priced->greeks.gamma, bundle->gamma);
+  EXPECT_EQ(priced->greeks.vega, bundle->vega);
+  EXPECT_EQ(priced->greeks.theta, bundle->theta);
+  EXPECT_EQ(priced->greeks.rho, bundle->rho);
+  EXPECT_EQ(priced->greeks.vanna, bundle->vanna);
+  EXPECT_EQ(priced->greeks.volga, bundle->volga);
+  EXPECT_EQ(priced->greeks.charm, bundle->charm);
+  EXPECT_EQ(priced->dp_dq, bundle->phi);
+  // The stage-1 price tier is the same kernel at one rollback.
+  const Result<double> price_only = mode_a_price(row, map, al_fast_opts(), divs);
+  ASSERT_TRUE(price_only.has_value());
+  EXPECT_EQ(*price_only, bundle->price);
+  // A European-routed row with a live schedule takes the lattice's OWN
+  // European rollback — the closed form has no schedule slot, and silently
+  // dropping the cash would be a different model, not a different leg.
+  row.underlier = "SPX";
+  ConventionMap routed = map;
+  routed.exercise_style = ExerciseStyleRule::EuropeanCashSettledIndex;
+  const Result<ModeAPricing> euro = mode_a_price_row(row, routed, al_fast_opts(), divs);
+  ASSERT_TRUE(euro.has_value()) << euro.error().to_string();
+  EXPECT_EQ(euro->style, atx::vol::oracle::ExerciseStyle::European);
+  const auto euro_bundle = american_discrete_div_greek_bundle(
+      row.uprc, row.strike, row.years, row.sr_vol, row.rate, row.sdiv, row.side, schedule,
+      kDiscreteDivDefaultSteps, atx::vol::ExerciseStyle::European);
+  ASSERT_TRUE(euro_bundle.has_value()) << euro_bundle.error().to_string();
+  EXPECT_EQ(euro->greeks.price, euro_bundle->price);
+  EXPECT_EQ(euro->dp_dq, euro_bundle->phi);
+}
+
+// THE ddiv == 0 CONTROL, pinned bit-for-bit: with no cash in (0, T] the tree
+// and the continuous-carry model are the SAME model, so a dividend-free row
+// must not move at all under the tree arm — movement there is a defect, not a
+// result, and it is what licenses reading the dividend rows' price deltas as
+// the dividend treatment's effect.
+TEST(OracleConvention, DiscreteDividendTreeWithoutDividendsIsTheContinuousEngine) {
+  ConventionMap tree = baseline_convention();
+  tree.input_model = InputModel::DiscreteDividendTree;
+  const ConventionMap &spot = baseline_convention(); // CurrentSpotSdivYield
+  OracleRow row;
+  row.underlier = "SYNTH";
+  row.side = Side::Call;
+  row.strike = 102.0;
+  row.uprc = 100.0;
+  row.rate = 0.04;
+  row.sdiv = 0.011;
+  row.ddiv = 0.0;
+  row.years = 0.35;
+  row.sr_vol = 0.27;
+  const Result<ModeAPricing> tree_priced = mode_a_price_row(row, tree, al_fast_opts());
+  const Result<ModeAPricing> spot_priced = mode_a_price_row(row, spot, al_fast_opts());
+  ASSERT_TRUE(tree_priced.has_value()) << tree_priced.error().to_string();
+  ASSERT_TRUE(spot_priced.has_value());
+  EXPECT_EQ(tree_priced->greeks, spot_priced->greeks);
+  EXPECT_EQ(tree_priced->dp_dq, spot_priced->dp_dq);
+  const Result<double> tree_price = mode_a_price(row, tree, al_fast_opts());
+  const Result<double> spot_price = mode_a_price(row, spot, al_fast_opts());
+  ASSERT_TRUE(tree_price.has_value());
+  ASSERT_TRUE(spot_price.has_value());
+  EXPECT_EQ(*tree_price, *spot_price);
+}
+
+// FAIL CLOSED: a row the reconstruction refused, or a ddiv-bearing row with no
+// covering schedule (including every call through the no-pre-pass overload),
+// is an Err — never a silent fallback onto a model the receipt did not name.
+TEST(OracleConvention, DiscreteDividendTreeFailsClosedOnRefusedOrMissingSchedules) {
+  ConventionMap map = baseline_convention();
+  map.input_model = InputModel::DiscreteDividendTree;
+  OracleRow row;
+  row.underlier = "SYNTH";
+  row.side = Side::Call;
+  row.strike = 100.0;
+  row.uprc = 100.0;
+  row.rate = 0.04;
+  row.sdiv = 0.002;
+  row.ddiv = 1.0;
+  row.years = 0.35;
+  row.sr_vol = 0.27;
+  // A refused snapshot refuses the row outright — even one whose ddiv is 0.
+  const RowDividends refused{.schedule = {}, .refused = true};
+  EXPECT_FALSE(mode_a_price_row(row, map, al_fast_opts(), refused).has_value());
+  EXPECT_FALSE(mode_a_price(row, map, al_fast_opts(), refused).has_value());
+  // ddiv > 0 with no covering schedule: the no-pre-pass overload cannot invent
+  // a chain schedule from one row, so it must refuse rather than guess.
+  EXPECT_FALSE(mode_a_price_row(row, map, al_fast_opts()).has_value());
+  EXPECT_FALSE(mode_a_price(row, map, al_fast_opts()).has_value());
+  // A schedule whose only events sit past this row's expiry covers nothing the
+  // row's own ddiv claims, and is refused for the same reason.
+  const std::vector<CashDividend> beyond = {CashDividend{0.60, 1.0}};
+  EXPECT_FALSE(
+      mode_a_price_row(row, map, al_fast_opts(), RowDividends{.schedule = beyond, .refused = false})
+          .has_value());
+  // ddiv == 0 needs no schedule at all: the continuous legs are the tree's own
+  // no-dividend limit and the row prices.
+  row.ddiv = 0.0;
+  EXPECT_TRUE(mode_a_price_row(row, map, al_fast_opts()).has_value());
+  EXPECT_TRUE(mode_a_price(row, map, al_fast_opts()).has_value());
+}
+
+TEST(OracleConvention, EuropeanLegMatchesTheIndependentRungWithNoIntrinsicFloor) {
+  constexpr double S = 100.0;
+  constexpr double T = 0.75;
+  constexpr double sigma = 0.24;
+  constexpr double r = 0.043;
+  constexpr double q = 0.012;
+  for (const Side side : {Side::Call, Side::Put}) {
+    for (const double strike : {60.0, 100.0, 140.0}) {
+      double dp_dq = std::numeric_limits<double>::quiet_NaN();
+      const Result<AmericanGreeks> leg = european_greeks(S, strike, T, sigma, r, q, side, &dp_dq);
+      ASSERT_TRUE(leg.has_value());
+      EXPECT_NEAR(leg->price, independent_euro(S, strike, T, sigma, r, q, side), 1e-9);
+      EXPECT_TRUE(std::isfinite(dp_dq));
+    }
+  }
+  // The case the axis exists for: a deep-ITM European put is entitled to sit
+  // BELOW intrinsic — exactly what the intrinsic-flooring null-cache path would
+  // have destroyed — and the leg must reproduce it, not floor it.
+  const Result<AmericanGreeks> deep = european_greeks(S, 200.0, T, sigma, r, q, Side::Put);
+  ASSERT_TRUE(deep.has_value());
+  EXPECT_LT(deep->price, 200.0 - S);
+  EXPECT_NEAR(deep->price, independent_euro(S, 200.0, T, sigma, r, q, Side::Put), 1e-9);
+  // american_greeks_al's admission contract, verbatim: which leg a row takes
+  // must not change whether the row is admitted.
+  EXPECT_FALSE(european_greeks(S, 200.0, 0.0, sigma, r, q, Side::Put).has_value());
+}
+
+TEST(OracleConvention, ExerciseStyleRulesRouteOnlyTheirNamedRoots) {
+  constexpr auto kAmerican = ExerciseStyleRule::AmericanAll;
+  constexpr auto kIndex = ExerciseStyleRule::EuropeanCashSettledIndex;
+  constexpr auto kPlus = ExerciseStyleRule::EuropeanCashSettledIndexPlusEmpirical;
+  // OEX is the standing counterexample to "index => European" — cash-settled
+  // but AMERICAN by contract; SPY and SYNTH are the unrouted equity controls.
+  // DJIA and BRR are the store's two index-LOOKING traps: DJIA is the Global X
+  // Dow 30 Covered Call ETF (the Dow index option is DJX) and BRR is ProCap
+  // Financial common stock — both American, neither an index option
+  // (kEuropeanIndexRoots' DELIBERATELY ABSENT block carries the citations).
+  for (const std::string_view root : {"SPY", "OEX", "SYNTH", "DJIA", "BRR"}) {
+    EXPECT_FALSE(routes_european(root, kAmerican)) << root;
+    EXPECT_FALSE(routes_european(root, kIndex)) << root;
+    EXPECT_FALSE(routes_european(root, kPlus)) << root;
+  }
+  // The contract-fact roots: routed by both European rules, never the baseline.
+  // Each is European-exercise cash-settled by its published listing
+  // specification (kEuropeanIndexRoots carries the per-root citations; the
+  // 2026-08-23 additions NDX/XND/RUT/MRUT/XEO/DJX/MXEA/MXEF/VIX are the
+  // documented-fact repair whose consistency evidence is the sanctioned
+  // breadth baseline at 6b245621). The empirical table is empty, so
+  // `_plus_empirical` routes exactly the contract-fact set today.
+  for (const std::string_view root : {"SPX", "XSP", "MGTN", "NDX", "XND", "RUT", "MRUT", "XEO",
+                                      "DJX", "MXEA", "MXEF", "VIX"}) {
+    EXPECT_FALSE(routes_european(root, kAmerican)) << root;
+    EXPECT_TRUE(routes_european(root, kIndex)) << root;
+    EXPECT_TRUE(routes_european(root, kPlus)) << root;
+  }
+}
+
+TEST(OracleConvention, IngestedExerciseStyleOutranksTheRootListRule) {
+  ConventionMap map = baseline_convention();
+  map.exercise_style = ExerciseStyleRule::EuropeanCashSettledIndexPlusEmpirical;
+  OracleRow row;
+  row.underlier = "SPX";
+  // `oracle::` throughout: atx::vol already carries an unrelated ExerciseStyle
+  // and this file imports both namespaces.
+  // Unknown (today, every row): the map's rule answers.
+  EXPECT_EQ(exercise_style_for(row, map), oracle::ExerciseStyle::European);
+  // An ingested style is fact and outranks the rule — in both directions.
+  row.ingested_exercise_style = oracle::ExerciseStyle::American;
+  EXPECT_EQ(exercise_style_for(row, map), oracle::ExerciseStyle::American);
+  row.underlier = "SPY";
+  row.ingested_exercise_style = oracle::ExerciseStyle::European;
+  EXPECT_EQ(exercise_style_for(row, map), oracle::ExerciseStyle::European);
+}
+
+// The time-decay axis, fact 1: what the secant IS. SpiderRock measures theta
+// "by calculating the difference between the current option price and the option
+// price calculated with volatility time decreased by 1/252 years", and deDecay
+// is the same finite difference taken on delta. The independent rung here is a
+// second full `mode_a_price_row` on a row whose `years` has been moved by hand,
+// which reproduces the bumped leg without borrowing `bumped_leg`'s arithmetic.
+// The baseline input model derives no engine input from `years`, so moving the
+// row's maturity and moving the derived `EnginePricingInputs::years` are the
+// same bump — which is exactly what makes this rung independent AND exact.
+TEST(OracleConvention, SecantDecayIsTheOneDayDifferenceOfPriceAndDelta) {
+  EXPECT_DOUBLE_EQ(kTimeDecayStepYears, 1.0 / 252.0);
+  const ConventionMap analytic = baseline_convention();
+  ConventionMap secant = analytic;
+  secant.time_decay_method = TimeDecayMethod::Secant252;
+
+  const OracleRow row = make_row(100.0, Side::Call, secant);
+  const Result<ModeAPricing> priced = mode_a_price_row(row, secant, al_fast_opts());
+  ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
+
+  OracleRow bumped_row = row;
+  bumped_row.years -= kTimeDecayStepYears;
+  ASSERT_GT(bumped_row.years, 0.0);
+  const Result<ModeAPricing> bumped = mode_a_price_row(bumped_row, analytic, al_fast_opts());
+  ASSERT_TRUE(bumped.has_value()) << bumped.error().to_string();
+
+  EXPECT_DOUBLE_EQ(priced->theta_secant, priced->greeks.price - bumped->greeks.price);
+  EXPECT_DOUBLE_EQ(priced->delta_decay_secant, priced->greeks.delta - bumped->greeks.delta);
+  // POSITIVE = decay, SpiderRock's own sign: what a long at-the-money call loses
+  // when one business day passes.
+  EXPECT_GT(priced->theta_secant, 0.0);
+
+  // The analytic arm asks for no bumped valuation, so it publishes no secant —
+  // non-finite rather than a 0.0 that would read as a measured "no decay".
+  const Result<ModeAPricing> unbumped = mode_a_price_row(row, analytic, al_fast_opts());
+  ASSERT_TRUE(unbumped.has_value()) << unbumped.error().to_string();
+  EXPECT_FALSE(std::isfinite(unbumped->theta_secant));
+  EXPECT_FALSE(std::isfinite(unbumped->delta_decay_secant));
+  // THE INVARIANT THE AXIS RESTS ON: the decay method changes how two Greeks are
+  // reported and never how a price is formed. If this ever fails, a price move
+  // attributed to the sweep is a defect, not an improvement.
+  EXPECT_DOUBLE_EQ(priced->greeks.price, unbumped->greeks.price);
+  EXPECT_DOUBLE_EQ(priced->greeks.delta, unbumped->greeks.delta);
+}
+
+// The time-decay axis, fact 2, and the pin `to_oracle_units` names by test id:
+// `theta_scale` and `delta_decay_scale` are INERT under `Secant252`. The secant
+// is already SpiderRock's one-day quantity, so applying a per-day scale on top
+// of it divides by a day count a SECOND time — a silent order-of-magnitude bug
+// that no metric would identify as a unit error. Reintroducing either
+// multiplier fails here.
+TEST(OracleConvention, SecantDecayIgnoresTheThetaAndDecayScales) {
+  ConventionMap secant = baseline_convention();
+  secant.time_decay_method = TimeDecayMethod::Secant252;
+  const OracleRow row = make_row(100.0, Side::Call, secant);
+  const Result<ModeAPricing> priced = mode_a_price_row(row, secant, al_fast_opts());
+  ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
+  ASSERT_TRUE(std::isfinite(priced->theta_secant));
+  ASSERT_TRUE(std::isfinite(priced->delta_decay_secant));
+
+  // RAW: exactly the secant, with no multiplier of any kind applied.
+  const OracleUnitGreeks units = to_oracle_units(*priced, secant);
+  EXPECT_DOUBLE_EQ(units.th, priced->theta_secant);
+  EXPECT_DOUBLE_EQ(units.de_decay, priced->delta_decay_secant);
+
+  // Move BOTH per-day scales far off identity — including a sign flip — and the
+  // two published decay Greeks must not budge by a single ulp.
+  ConventionMap scaled = secant;
+  scaled.theta_scale = 1.0 / 252.0;
+  scaled.theta_days_per_year = 252.0;
+  scaled.delta_decay_scale = -100.0;
+  const OracleUnitGreeks scaled_units = to_oracle_units(*priced, scaled);
+  EXPECT_DOUBLE_EQ(scaled_units.th, units.th);
+  EXPECT_DOUBLE_EQ(scaled_units.de_decay, units.de_decay);
+
+  // The seven axes the decay method does not touch DO still scale, so this
+  // cannot pass by the conversion having gone inert altogether.
+  ConventionMap other = secant;
+  other.delta_scale = 100.0;
+  EXPECT_DOUBLE_EQ(to_oracle_units(*priced, other).de, 100.0 * units.de);
+
+  // And the analytic arm still scales its own theta and charm, so inertness is a
+  // property of THIS method rather than of the two fields.
+  ConventionMap analytic = baseline_convention();
+  analytic.theta_scale = 1.0 / 252.0;
+  analytic.theta_days_per_year = 252.0;
+  analytic.delta_decay_scale = 1.0 / 252.0;
+  const OracleUnitGreeks analytic_units = to_oracle_units(*priced, analytic);
+  EXPECT_DOUBLE_EQ(analytic_units.th, priced->greeks.theta * (1.0 / 252.0));
+  EXPECT_DOUBLE_EQ(analytic_units.de_decay, priced->greeks.charm * (1.0 / 252.0));
+  // A tangent and a secant are different QUANTITIES, which is the whole reason
+  // this is a convention axis and not another entry in the scale grid.
+  EXPECT_NE(analytic_units.th, units.th);
+  EXPECT_NE(analytic_units.de_decay, units.de_decay);
+}
+
+// The time-decay axis, fact 3: the EXPIRATION-DAY boundary, where the bumped
+// maturity lands at or below zero and both pricing legs refuse. SpiderRock's own
+// expiration-day convention (American -> European AND rate = sdiv = carry = 0)
+// collapses at zero remaining time to the payoff itself, so the bumped leg is
+// the intrinsic payoff and its slope — no epsilon knob, and the row keeps every
+// other Greek instead of being dropped.
+TEST(OracleConvention, ExpirationDayDecayLegIsTheIntrinsicPayoff) {
+  ConventionMap secant = baseline_convention();
+  secant.time_decay_method = TimeDecayMethod::Secant252;
+  OracleRow row;
+  row.underlier = "SYNTH";
+  row.side = Side::Call;
+  row.uprc = 100.0;
+  row.rate = 0.04;
+  row.sr_vol = 0.25;
+  row.years = 1.0 / 365.0;
+  ASSERT_LE(row.years, kTimeDecayStepYears);
+
+  // In the money: the payoff is 5 and its slope is 1, so the secant is the whole
+  // remaining premium over intrinsic.
+  row.strike = 95.0;
+  const Result<ModeAPricing> itm_call = mode_a_price_row(row, secant, al_fast_opts());
+  ASSERT_TRUE(itm_call.has_value()) << itm_call.error().to_string();
+  EXPECT_DOUBLE_EQ(itm_call->theta_secant, itm_call->greeks.price - 5.0);
+  EXPECT_DOUBLE_EQ(itm_call->delta_decay_secant, itm_call->greeks.delta - 1.0);
+  EXPECT_GT(itm_call->theta_secant, 0.0);
+  // The row is kept whole: the expiration-day rule costs it nothing else.
+  EXPECT_TRUE(std::isfinite(itm_call->greeks.vega));
+  EXPECT_TRUE(std::isfinite(itm_call->dp_dq));
+
+  // Out of the money: payoff and slope are both zero, so the secant is the whole
+  // price and the delta decay is the whole delta.
+  row.strike = 105.0;
+  const Result<ModeAPricing> otm_call = mode_a_price_row(row, secant, al_fast_opts());
+  ASSERT_TRUE(otm_call.has_value()) << otm_call.error().to_string();
+  EXPECT_DOUBLE_EQ(otm_call->theta_secant, otm_call->greeks.price);
+  EXPECT_DOUBLE_EQ(otm_call->delta_decay_secant, otm_call->greeks.delta);
+
+  // Exactly at the money: the payoff's kink resolves to the OUT-of-the-money
+  // side, so the bumped leg claims delta 0 and price 0 rather than a one-sided
+  // derivative the payoff does not have.
+  row.strike = 100.0;
+  const Result<ModeAPricing> atm_call = mode_a_price_row(row, secant, al_fast_opts());
+  ASSERT_TRUE(atm_call.has_value()) << atm_call.error().to_string();
+  EXPECT_DOUBLE_EQ(atm_call->theta_secant, atm_call->greeks.price);
+  EXPECT_DOUBLE_EQ(atm_call->delta_decay_secant, atm_call->greeks.delta);
+
+  // The put side, where the payoff slope is -1 rather than +1.
+  row.side = Side::Put;
+  row.strike = 105.0;
+  const Result<ModeAPricing> itm_put = mode_a_price_row(row, secant, al_fast_opts());
+  ASSERT_TRUE(itm_put.has_value()) << itm_put.error().to_string();
+  EXPECT_DOUBLE_EQ(itm_put->theta_secant, itm_put->greeks.price - 5.0);
+  EXPECT_DOUBLE_EQ(itm_put->delta_decay_secant, itm_put->greeks.delta + 1.0);
+  row.strike = 100.0;
+  const Result<ModeAPricing> atm_put = mode_a_price_row(row, secant, al_fast_opts());
+  ASSERT_TRUE(atm_put.has_value()) << atm_put.error().to_string();
+  EXPECT_DOUBLE_EQ(atm_put->theta_secant, atm_put->greeks.price);
+  EXPECT_DOUBLE_EQ(atm_put->delta_decay_secant, atm_put->greeks.delta);
+}
+
 TEST(OracleConvention, ProductionMapIsTheResolvedHardCut) {
   const ConventionMap &map = winning_convention();
-  EXPECT_EQ(map.input_model, InputModel::DiscreteDividendPvSdivYield);
+  EXPECT_EQ(map.input_model, InputModel::DiscreteDividendTree);
+  EXPECT_EQ(map.exercise_style, ExerciseStyleRule::EuropeanCashSettledIndex);
   EXPECT_DOUBLE_EQ(map.price_scale, 1.0);
   // Never searched: the DTE-banding day count, not a unit the sweep may pick.
   EXPECT_DOUBLE_EQ(map.days_per_year, 365.0);
@@ -225,6 +638,34 @@ TEST(OracleConvention, FinalistRankPrefersNoGreekRegressionOverLowerPriceMae) {
       FinalistRank{.regresses_any_greek = false, .tune_price_mae = 1.0, .candidate_id = "a"}));
 }
 
+// The trap the third axis sprang, pinned so it cannot spring again on a fourth.
+// '|' is 0x7C and '_' is 0x5F, so the separator sorts ABOVE an id character, and
+// one exercise-style id is a strict prefix of another. A FLAT string comparison
+// therefore reverses that pair the moment a field is appended after the style —
+// changing which arm the sweep resolves on a tie the evidence never decided.
+TEST(OracleConvention, CandidateIdentityOrdersFieldByFieldNotAsAFlatString) {
+  const std::string index = "m|european_cash_settled_index|analytic_derivative";
+  const std::string plus = "m|european_cash_settled_index_plus_empirical|analytic_derivative";
+  // The flat order, asserted so this test names the thing it forbids rather than
+  // merely asserting the thing it wants.
+  EXPECT_LT(plus, index);
+
+  const auto rank = [](std::string_view id) {
+    return FinalistRank{.regresses_any_greek = false, .tune_price_mae = 1.0, .candidate_id = id};
+  };
+  // Field order: the style field alone decides, and the prefix sorts first.
+  EXPECT_TRUE(less_finalist(rank(index), rank(plus)));
+  EXPECT_FALSE(less_finalist(rank(plus), rank(index)));
+  // The FIRST differing field decides, never a later one.
+  EXPECT_TRUE(less_finalist(rank("a|z|z"), rank("b|a|a")));
+  EXPECT_FALSE(less_finalist(rank("b|a|a"), rank("a|z|z")));
+  // Fewer fields sorts first, and equal ids are not less than one another — the
+  // sort would not be a strict weak ordering otherwise.
+  EXPECT_TRUE(less_finalist(rank("a|b"), rank("a|b|c")));
+  EXPECT_FALSE(less_finalist(rank("a|b|c"), rank("a|b")));
+  EXPECT_FALSE(less_finalist(rank(index), rank(index)));
+}
+
 TEST(OracleConvention, BestScaleTieBreaksOnSourceThenNumericScale) {
   std::vector<ScaleCandidate> candidates = {
       ScaleCandidate{GreekSource::Gamma, -1.0, {}},
@@ -256,6 +697,8 @@ TEST(OracleConvention, CompleteMapNamesEveryGreekSignAndScale) {
                                 "rate_model",
                                 "carry_model",
                                 "dividend_model",
+                                "exercise_style",
+                                "time_decay_method",
                                 "day_count",
                                 "dte_banding_day_count",
                                 "price_scale",
@@ -291,7 +734,7 @@ TEST(OracleConvention, CompleteMapNamesEveryGreekSignAndScale) {
   // ':' in it, so counting colons counts keys.
   EXPECT_EQ(static_cast<std::size_t>(std::count(json.begin(), json.end(), ':')),
             std::size(tokens));
-  EXPECT_EQ(std::size(tokens), 31u);
+  EXPECT_EQ(std::size(tokens), 33u);
 }
 
 TEST(OracleConvention, ThetaDayCountNeverRebucketsDteBands) {
@@ -326,12 +769,44 @@ TEST(OracleConvention, SweepIsClosedDeterministicAndCoversElevenMetrics) {
     EXPECT_EQ(first->baseline_symmetric_metrics[index].metric_id,
               first->baseline_metrics[index].metric_id);
   }
-  ASSERT_EQ(first->candidate_prices.size(), 8u);
+  // The CROSS PRODUCT of the three searched axes: nine input models x three
+  // exercise-style rules x two time-decay methods. The tune sample is paid for
+  // by the survivors of the smoke cut alone — two input models times the FULL
+  // tied fan (3 x 2), because the stage-1 price ranking can separate neither the
+  // exercise axis (single unrouted smoke underlier) nor the decay axis (it never
+  // touches a price at all). This exact number is mirrored by the candidate-id
+  // set $expectedCandidateIds pins in scripts/oracle-targeted-gate.ps1; the two
+  // pins MUST move together or the smoke_tune gate fails on a registry mismatch
+  // after the full sweep has already run.
+  ASSERT_EQ(first->candidate_prices.size(), 54u);
   EXPECT_EQ(std::count_if(first->candidate_prices.begin(), first->candidate_prices.end(),
                           [](const CandidatePriceMetric &candidate) {
                             return candidate.tune_sample_count > 0;
                           }),
-            2);
+            12);
+  // Every published id names all three axes, in the order the gate reproduces
+  // them. A two-part id would still be unique and would still pass the count
+  // above, and the gate's exact-set pin is what would then fail.
+  for (const CandidatePriceMetric &candidate : first->candidate_prices) {
+    EXPECT_EQ(std::count(candidate.candidate_id.begin(), candidate.candidate_id.end(), '|'), 2)
+        << candidate.candidate_id;
+  }
+  EXPECT_NE(std::find_if(first->candidate_prices.begin(), first->candidate_prices.end(),
+                         [](const CandidatePriceMetric &candidate) {
+                           return candidate.candidate_id ==
+                                  "uprc_spot__rate__sdiv_yield|american_all|secant_252";
+                         }),
+            first->candidate_prices.end());
+  // The discrete-dividend ENGINE arm is on the grid: the 8 -> 9 input-model
+  // widening this pin exists to catch would otherwise only fail at the gate's
+  // id-set check, a full sweep later.
+  EXPECT_NE(std::find_if(first->candidate_prices.begin(), first->candidate_prices.end(),
+                         [](const CandidatePriceMetric &candidate) {
+                           return candidate.candidate_id ==
+                                  "discrete_dividend_tree__rate__sdiv_yield|american_all|"
+                                  "analytic_derivative";
+                         }),
+            first->candidate_prices.end());
   EXPECT_EQ(convention_map_json(first->winner), convention_map_json(second->winner));
   const std::string json = convention_sweep_json(*first, "0123456789abcdef");
   EXPECT_NE(json.find("\"cohorts\":[\"smoke\",\"tune\"]"), std::string::npos);
@@ -347,6 +822,11 @@ TEST(OracleConvention, SweepIsClosedDeterministicAndCoversElevenMetrics) {
   // Always present, empty when nothing regressed: five validator layers require
   // the key, and an absent one fails them closed after a 12-minute sweep.
   EXPECT_NE(json.find("\"accepted_regressions\":"), std::string::npos);
+  // The schedule pre-pass publishes its refusal ledger as RUN-LEVEL AGGREGATES
+  // — counts only, never a group key: the reconstruction groups are
+  // (date, bucket_et, underlier) snapshots, which are cohort membership.
+  EXPECT_NE(json.find("\"dividend_reconstruction\":{\"rows_seen\":"), std::string::npos);
+  EXPECT_NE(json.find("\"groups_refused\":"), std::string::npos);
   EXPECT_NE(json.find("not_evaluated_no_nbbo_gate"), std::string::npos);
   EXPECT_EQ(json.find("holdout"), std::string::npos);
 }

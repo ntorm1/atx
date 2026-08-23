@@ -51,10 +51,13 @@
 
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/pricing/american.hpp"
-#include "atx/vol/api/pricing/american_iv.hpp" // Mode B: AMERICAN vol inversion
+#include "atx/vol/api/pricing/american_iv.hpp" // Mode B: the AMERICAN-leg inversion
+// (the European-leg inversion, european_implied_vol, comes with the convention
+// layer via oracle_conventions.hpp — declared beside its forward map there)
 #include "oracle_cohort_reader.hpp"
 #include "oracle_convention_sweep.hpp"
 #include "oracle_conventions.hpp"
+#include "oracle_dividends.hpp" // Mode A: the DividendScheduleIndex pre-pass
 #include "oracle_host_probe.hpp"
 #include "oracle_scorecard.hpp"
 
@@ -488,16 +491,30 @@ public:
 
   [[nodiscard]] Status run(std::span<const OracleRow> rows, Scorecard &card, ModeStats &stats,
                            AggregateMetrics &agg) override {
+    // THE PRE-PASS: the DiscreteDividendTree input model prices each ddiv > 0
+    // row on its whole-chain snapshot schedule, reconstructed ONCE per run
+    // (the schedules are map-independent). A row whose snapshot reconstruction
+    // refused is REFUSED by the pricer below and counted in rows_engine_error
+    // — never silently priced on a different model.
+    const DividendScheduleIndex dividends = DividendScheduleIndex::build(rows);
     for (const OracleRow &row : rows) {
-      const EnginePricingInputs in = mode_a_inputs(row);
-      const Result<AmericanGreeks> greeks = american_greeks_al(
-          in.spot, in.strike, in.years, in.sigma, in.rate, in.carry, in.side, mode_a_al_opts());
-      if (!greeks.has_value()) {
+      // ONE entry point for inputs, exercise-style routing, Greeks and the
+      // carry leg — the same `mode_a_price_row` the Stage 3 sweep resolves the
+      // map with, so production cannot price with a different pricer than the
+      // one the published floor was measured on.
+      const DividendScheduleIndex::RowSchedule entitled = dividends.for_row(row);
+      const Result<ModeAPricing> priced = mode_a_price_row(
+          row, winning_convention(), mode_a_al_opts(),
+          RowDividends{.schedule = entitled.schedule, .refused = entitled.refused});
+      if (!priced.has_value()) {
         // Expected on corner regimes (double-continuation, degenerate T/sigma
-        // the reader could not know about): counted, not fatal.
+        // the reader could not know about), and on rows the dividend
+        // reconstruction refused: counted, not fatal.
         ++stats.rows_engine_error;
         continue;
       }
+      const EnginePricingInputs &in = priced->inputs;
+      const AmericanGreeks &greeks = priced->greeks;
       ++stats.rows_priced;
 
       const MoneynessBand mband = moneyness_band(row.strike / row.uprc, in.side);
@@ -510,7 +527,7 @@ public:
         card.observe(name(), metric, mband, dband, in.side, err, std::abs(err) <= tol);
       };
 
-      const double model_price = price_to_oracle_units(greeks->price);
+      const double model_price = price_to_oracle_units(greeks.price);
       observe("price", model_price, row.sr_prc, price_tolerance(row.bid_prc, row.ask_prc));
       agg.price.absolute(model_price, row.sr_prc);
       // Mode A deliberately prices at SpiderRock's own vol. Record that
@@ -519,15 +536,10 @@ public:
       observe("vol", in.sigma, row.sr_vol, vol_tolerance());
       agg.vol.absolute(in.sigma, row.sr_vol);
 
-      // ph rides the carry-greeks route; its corner-regime failures skip ONLY
-      // the ph observation (cell n per metric reflects it), never the row.
-      double dp_dq = std::numeric_limits<double>::quiet_NaN();
-      const Result<CarryGreeks> carry = american_carry_greeks_al(
-          in.spot, in.strike, in.years, in.sigma, in.rate, in.carry, in.side, mode_a_al_opts());
-      if (carry.has_value()) {
-        dp_dq = carry->dP_dq;
-      }
-      const OracleUnitGreeks g = to_oracle_units(*greeks, dp_dq);
+      // ph rides the carry-greeks route; on the American leg its corner-regime
+      // failures leave dp_dq non-finite and skip ONLY the ph observation (cell
+      // n per metric reflects it), never the row.
+      const OracleUnitGreeks g = to_oracle_units(greeks, priced->dp_dq);
       // Slot order is kGreekMetricSuffix's / kGreekCellMetric's.
       const std::array<std::pair<double, double>, 9> greek_pairs{
           std::pair{g.de, row.de}, std::pair{g.ga, row.ga}, std::pair{g.th, row.th},
@@ -553,18 +565,48 @@ public:
 // nine Greeks FROM that fitted vol through the same pinned convention map Mode
 // A uses. The only difference between the two modes is where sigma comes from.
 //
-// WHAT IS INVERTED, AND WHY IT IS NOT "LET'S BE RATIONAL". These are AMERICAN
-// equity options. Jäckel's four-branch/Householder(3) inversion is exact and
-// fast for the BLACK forward map and is the right tool there, but running it
-// against an American premium inverts the wrong function: the early-exercise
-// premium is charged to volatility, so it returns a plausible, biased-low
-// sigma that re-prices to the wrong number. Every layer downstream would then
-// inherit a fiction that looks like a measurement. This uses the library's
-// `american_implied_vol` (american_iv.hpp) instead — a safeguarded Newton
-// (rtsafe) whose forward map is the SAME Andersen-Lake pricer, at the SAME
-// `al_fast_opts` rung, that this file prices with. Because forward and inverse
-// share one map, the round trip is self-consistent by construction rather than
-// by assumption, and it is asserted per row below.
+// WHAT IS INVERTED — THE LEG THE ROW IS ENTITLED TO. The map's exercise-style
+// key routes each inversion exactly as it routes Mode A's pricing, through the
+// same `exercise_style_for` decision:
+//
+//   AMERICAN rows (every root the map does not route): a closed-form Black
+//   inversion is exact and fast for the BLACK forward map, but running it
+//   against an American premium inverts the wrong function — the
+//   early-exercise premium is charged to volatility, returning a plausible,
+//   biased-low sigma that re-prices to the wrong number. These rows use the
+//   library's `american_implied_vol` (american_iv.hpp) — a safeguarded Newton
+//   (rtsafe) whose forward map is the SAME Andersen-Lake pricer, at the SAME
+//   `al_fast_opts` rung, this file re-prices with.
+//
+//   EUROPEAN rows (SPX/XSP/MGTN, by contract fact): the same argument,
+//   mirrored. An option that cannot be exercised early has no early-exercise
+//   premium, and inverting its premium through the American rung charges the
+//   ABSENCE of that premium to volatility — tail-dominant on this population's
+//   deep-ITM index puts, whose European premium legitimately sits below
+//   immediate intrinsic where an American inversion has no root at all. These
+//   rows use `european_implied_vol` (oracle_conventions.hpp): the library's
+//   closed-form Black-76 inverse on exactly the forward/discount pair
+//   `european_greeks` re-prices with.
+//
+//   TREE-ROUTED DIVIDEND rows (the pinned map's DiscreteDividendTree model,
+//   ddiv > 0): the same argument a third time. Their premium carries discrete
+//   cash-dividend events, and inverting it through a continuous-carry inverter
+//   charges the cash to volatility — the exact silent wrongness the 55a908aa
+//   stopgap refused wholesale. These rows use `discrete_tree_implied_vol`
+//   (oracle_conventions.hpp): a bracketed root-find whose forward map IS
+//   `mode_a_price`'s tree leg (american_discrete_div_price at
+//   kDiscreteDivDefaultSteps on the row's reconstructed snapshot schedule,
+//   the map's exercise rollback), so the inversion and the re-pricing share
+//   one lattice. Admission mirrors Mode A leg-for-leg: `tree_admits_lattice`
+//   is the SAME rule Mode A prices with, and a row whose snapshot
+//   reconstruction refused — or whose claimed ddiv no supplied schedule
+//   covers — stays an engine error, never a continuous-carry fallback. A
+//   ddiv == 0 row under the tree map is the tree's own no-dividend limit and
+//   keeps its continuous inverter BIT-FOR-BIT.
+//
+// Each leg's forward and inverse share one map, so both round trips are
+// self-consistent by construction rather than by assumption — and the round
+// trip is asserted per row below regardless of leg.
 //
 // WHY THE SEAM IS BATCH-LEVEL. The group is the unit of work, not the row: it
 // pins one snapshot's pricing context, it orders the chain by strike so each
@@ -596,8 +638,11 @@ struct ModeBStats {
   // fabricated vol is strictly worse than a missing one, because the oracle
   // loop ratchets on whatever it is given.
   std::int64_t rows_no_quote = 0;          // NBBO absent, crossed, or non-finite
-  std::int64_t rows_below_lo_bound = 0;    // mid at/under the zero-vol American floor
-  std::int64_t rows_above_up_bound = 0;    // mid at/over the no-arbitrage ceiling
+  std::int64_t rows_below_lo_bound = 0;    // mid at/under the LEG's zero-vol floor
+                                           // (American: max of immediate and
+                                           // discounted-forward intrinsic;
+                                           // European: discounted-forward alone)
+  std::int64_t rows_above_up_bound = 0;    // mid at/over the LEG's no-arb ceiling
   std::int64_t rows_iv_no_solution = 0;    // inverter returned Err (incl. T <= 0)
   std::int64_t rows_iv_at_floor = 0;       // inverter reported kIvMin: the clamp, not a root
   std::int64_t rows_vega_below_floor = 0;  // quote cannot resolve a vol at all
@@ -618,10 +663,11 @@ constexpr double kModeBIvTol = 1.0e-6;
 constexpr std::uint16_t kModeBIvMaxIter = 64;
 
 // A fitted vol this close to the inverter's reported floor IS the floor clamp.
-// american_implied_vol returns Ok(kIvMin) — a SUCCESS — both for a price at or
-// below intrinsic and for a quote whose root sits under the floor. Taking that
-// at face value would publish 0.005 as a measured volatility for every dead
-// deep-wing quote in the cohort. It is refused and counted instead.
+// BOTH inverters return Ok(kIvMin) — a SUCCESS — for a price at or below their
+// leg's intrinsic floor and for a quote whose root sits under kIvMin (the
+// documented unified floor, types.hpp). Taking that at face value would
+// publish 0.005 as a measured volatility for every dead deep-wing quote in the
+// cohort. It is refused and counted instead, on either leg.
 constexpr double kModeBVolFloorSlack = 1.0e-9;
 
 // IV IDENTIFIABILITY. A quote pins vol only as tightly as vega converts price
@@ -633,14 +679,16 @@ constexpr double kModeBVolFloorSlack = 1.0e-9;
 // here to refuse the hopeless, not to grade accuracy.
 constexpr double kModeBMaxVolResolution = 0.05;
 
-// Self-consistency of the round trip. The inverse and forward maps are the same
-// Andersen-Lake rung, so re-pricing at the fitted vol must land back on the mid
-// to within the solver's own tolerance; half a tick is slack of two orders. A
-// row that misses it did not actually invert — commonly a collapsed-vega corner
-// the screens above did not catch — and is refused rather than published.
+// Self-consistency of the round trip, asserted on BOTH legs. Each leg's inverse
+// and forward share one map (American: the same Andersen-Lake rung; European:
+// the same Black-76 kernel), so re-pricing at the fitted vol must land back on
+// the mid to within the solver's own tolerance; half a tick is slack of two
+// orders. A row that misses it did not actually invert — commonly a
+// collapsed-vega corner the screens above did not catch — and is refused
+// rather than published.
 constexpr double kModeBRoundTripTicks = 0.5;
 
-// The ZERO-VOL American price: the correct lower bracket for an American
+// The ZERO-VOL AMERICAN price: the correct lower bracket for an AMERICAN
 // inversion, and NOT the same thing as immediate intrinsic. At sigma = 0 the
 // spot follows the deterministic path S_t = S e^{(r-q)t} and the holder may
 // exercise at any t in [0, T], so the value is max over t of the discounted
@@ -659,8 +707,8 @@ constexpr double kModeBRoundTripTicks = 0.5;
 // combinations; ignoring it leaves this a slightly LOOSE lower bound, which is
 // the safe direction — a row it wrongly admits is caught by the floor-clamp and
 // round-trip screens rather than published.
-[[nodiscard]] double mode_b_lo_bound(double spot, double strike, double years, double rate,
-                                     double q, Side side) noexcept {
+[[nodiscard]] double mode_b_american_lo_bound(double spot, double strike, double years,
+                                              double rate, double q, Side side) noexcept {
   const double spot_leg = spot * std::exp(-q * years);
   const double strike_leg = strike * std::exp(-rate * years);
   const double now = side == Side::Call ? spot - strike : strike - spot;
@@ -670,8 +718,104 @@ constexpr double kModeBRoundTripTicks = 0.5;
 
 // The no-arbitrage ceiling the American price cannot reach: the underlying for
 // a call, the strike for a put. Mirrors american_iv.cpp's own upper band.
-[[nodiscard]] double mode_b_up_bound(double spot, double strike, Side side) noexcept {
+[[nodiscard]] double mode_b_american_up_bound(double spot, double strike, Side side) noexcept {
   return side == Side::Call ? spot : strike;
+}
+
+// The EUROPEAN admission band: the same no-arbitrage band the closed-form
+// inverse enforces internally (implied_vol.cpp no_arb_band), restated in the
+// spot terms this file screens in. The lower bound is the DISCOUNTED FORWARD
+// intrinsic ALONE — a European holder cannot exercise early, so there is no
+// t = 0 leg and no max over exercise times, and a deep-ITM premium BELOW
+// immediate intrinsic is a legitimate quote that admits a volatility (the
+// American screen above would wrongly refuse it; on this population it did,
+// wholesale, on the deep-ITM index puts). Applying the American zero-vol floor
+// to a European row is exactly the silent misclassification this pair of
+// functions exists to prevent.
+[[nodiscard]] double mode_b_european_lo_bound(double spot, double strike, double years,
+                                              double rate, double q, Side side) noexcept {
+  const double spot_leg = spot * std::exp(-q * years);
+  const double strike_leg = strike * std::exp(-rate * years);
+  const double fwd = side == Side::Call ? spot_leg - strike_leg : strike_leg - spot_leg;
+  return std::max(0.0, fwd);
+}
+
+// The European ceiling is the DISCOUNTED FORWARD itself: df*F = S*e^{-qT} for a
+// call, K*e^{-rT} for a put — NOT spot/strike. Under negative carry (q < 0, the
+// everyday case on hard-to-borrow names) S*e^{-qT} exceeds S, and a European
+// call is entitled to trade above spot; the American ceiling would refuse the
+// row a volatility it genuinely admits.
+[[nodiscard]] double mode_b_european_up_bound(double spot, double strike, double years,
+                                              double rate, double q, Side side) noexcept {
+  return side == Side::Call ? spot * std::exp(-q * years) : strike * std::exp(-rate * years);
+}
+
+// The model-consistent present value of the cash landing in (0, years] under
+// the tree leg's own escrow identity (american.hpp: the removed cash accrues
+// the continuous yield too): sum_i D_i e^{-r tau_i} e^{-q (years - tau_i)}.
+// The event window mirrors `tree_admits_lattice`'s, one-ulp tolerance and all,
+// so the bound describes exactly the events the lattice will price.
+[[nodiscard]] double mode_b_tree_pv_dividends(std::span<const CashDividend> schedule,
+                                              double years, double rate, double q) noexcept {
+  double pv = 0.0;
+  for (const CashDividend &dividend : schedule) {
+    if (dividend.amount > 0.0 && dividend.tau > 0.0 &&
+        dividend.tau <= years * (1.0 + 1.0e-12)) {
+      pv += dividend.amount * std::exp(-rate * dividend.tau) *
+            std::exp(-q * (years - dividend.tau));
+    }
+  }
+  return pv;
+}
+
+// The TREE leg's admission band — the two continuous bounds above translated
+// onto the discrete-dividend model, leg-for-leg. At sigma = 0 the spot follows
+// its deterministic path and DROPS by each cash dividend at its ex-date, so
+// the discounted terminal (t = T) leg of the zero-vol price is
+//   call: S e^{-qT} - PV(divs) - K e^{-rT}     (mirrored for puts)
+// — the continuous bound's spot leg minus the dividends' PV. The t = 0 leg is
+// immediate intrinsic, present only under an American rollback; a European
+// rollback keeps the discounted-forward leg alone (no early exercise, and a
+// deep-ITM premium below immediate intrinsic still admits a volatility).
+// Interior exercise times are ignored exactly as the continuous American
+// bound ignores them — with cash dividends the pre-ex-date interior CAN hold
+// the maximum for a call, so the bound stays slightly LOOSE, which is the safe
+// direction: a row it wrongly admits is caught by the floor-clamp and
+// round-trip screens rather than published. Without this translation the
+// dividend-blind American bound would sit PV(divs) too HIGH on calls and
+// wrongly refuse quotes that genuinely admit a volatility.
+[[nodiscard]] double mode_b_tree_lo_bound(double spot, double strike, double years, double rate,
+                                          double q, Side side,
+                                          std::span<const CashDividend> schedule,
+                                          bool european) noexcept {
+  const double spot_leg =
+      spot * std::exp(-q * years) - mode_b_tree_pv_dividends(schedule, years, rate, q);
+  const double strike_leg = strike * std::exp(-rate * years);
+  const double fwd = side == Side::Call ? spot_leg - strike_leg : strike_leg - spot_leg;
+  if (european) {
+    return std::max(0.0, fwd);
+  }
+  const double now = side == Side::Call ? spot - strike : strike - spot;
+  return std::max(0.0, std::max(now, fwd));
+}
+
+// The ceilings: an American rollback keeps the American ceiling unchanged —
+// cash coming OUT of the spot only lowers a call, so S (call) / K (put) still
+// bound it. A European rollback's call ceiling is the dividend-adjusted
+// discounted forward itself (df*E[S_T] = S e^{-qT} - PV(divs)), mirroring the
+// continuous European pair; the put keeps its discounted strike.
+[[nodiscard]] double mode_b_tree_up_bound(double spot, double strike, double years, double rate,
+                                          double q, Side side,
+                                          std::span<const CashDividend> schedule,
+                                          bool european) noexcept {
+  if (!european) {
+    return side == Side::Call ? spot : strike;
+  }
+  if (side == Side::Put) {
+    return strike * std::exp(-rate * years);
+  }
+  return std::max(0.0, spot * std::exp(-q * years) -
+                           mode_b_tree_pv_dividends(schedule, years, rate, q));
 }
 
 // Stable ordering key for one fit group. The three string members are VIEWS
@@ -706,6 +850,13 @@ public:
     }
     fit_->groups_fitted = static_cast<std::int64_t>(groups.size());
 
+    // THE PRE-PASS, Mode A's arrangement verbatim (ModeARunner::run): the
+    // tree-routed dividend rows invert on their whole-chain snapshot schedule,
+    // reconstructed ONCE per run — the schedules are mode-independent, and a
+    // row whose snapshot reconstruction refused is REFUSED below through the
+    // same `tree_admits_lattice` rule Mode A prices with.
+    const DividendScheduleIndex dividends = DividendScheduleIndex::build(rows);
+
     const double tick_engine = price_from_oracle_units(kPriceTick);
     const double half_tick = 0.5 * tick_engine;
     const double min_vega = half_tick / kModeBMaxVolResolution;
@@ -727,12 +878,50 @@ public:
                   return static_cast<int>(a.side) < static_cast<int>(b.side);
                 });
 
-      double warm_start = 0.0; // 0 == "no warm start; use the European seed"
+      // Feeds the two SOLVING inverters — American and tree (the closed-form
+      // European inverse needs no seed); 0 == "no warm start". Routing is per
+      // root and per the row's ddiv, and a group is one underlier at one
+      // expiry (whose rows share one ddiv), so a chain never crosses legs.
+      double warm_start = 0.0;
       for (const std::uint32_t index : members) {
         const OracleRow &row = rows[index];
+        // The tree-arm inversion rung (lifts the 55a908aa stopgap): a
+        // tree-routed dividend row inverts against the SAME spliced lattice
+        // Mode A prices it with, on the row's reconstructed snapshot schedule.
+        // FAIL CLOSED exactly as Mode A does, through the same admission rule:
+        // a row whose snapshot reconstruction refused — or whose claimed ddiv
+        // no supplied schedule covers — is an engine error, never a
+        // continuous-carry fallback. ddiv == 0 rows are the tree's own
+        // no-dividend limit and keep the continuous inverters BIT-FOR-BIT.
+        const bool is_tree =
+            winning_convention().input_model == InputModel::DiscreteDividendTree &&
+            row.ddiv != 0.0;
+        DividendScheduleIndex::RowSchedule entitled{};
+        if (is_tree) {
+          entitled = dividends.for_row(row);
+          const Result<bool> lattice = tree_admits_lattice(
+              row, RowDividends{.schedule = entitled.schedule, .refused = entitled.refused});
+          if (!lattice.has_value() || !*lattice) {
+            // `!*lattice` is unreachable while is_tree requires ddiv != 0; the
+            // guard is belt-and-suspenders so a future admission change cannot
+            // silently invert a row on the wrong leg.
+            ++stats.rows_engine_error;
+            continue;
+          }
+        }
         EnginePricingInputs in = mode_a_inputs(row); // same pinned map as Mode A
         // ...everything except sigma, which Mode B MEASURES rather than reads.
         in.sigma = 0.0;
+        // The map's `exercise_style` key IS honoured here, through the same
+        // `exercise_style_for` decision Mode A prices with: a European-routed
+        // row is admitted, inverted, and re-priced through the European leg;
+        // an American row keeps the American rung exactly as before. One
+        // decision site for both modes, so Mode B can never measure a row's
+        // volatility against a different functional than the one Mode A
+        // prices it with. On the tree leg the same style selects the LATTICE's
+        // own rollback, exactly as `mode_a_price` does.
+        const ExerciseStyle style = exercise_style_for(row, winning_convention());
+        const bool is_european = style == ExerciseStyle::European;
 
         // ── Quote admission. A mid needs two live, uncrossed sides.
         if (!(row.bid_prc > 0.0) || !(row.ask_prc > 0.0) || !(row.ask_prc >= row.bid_prc)) {
@@ -745,23 +934,67 @@ public:
           continue;
         }
 
-        // ── Identifiability brackets (see mode_b_lo_bound's banner).
-        const double lo = mode_b_lo_bound(in.spot, in.strike, in.years, in.rate, in.carry, in.side);
+        // ── Identifiability brackets, PER LEG (see the three banners above):
+        // a European row is screened against the European band, never against
+        // the American zero-vol floor, and a tree row against the
+        // dividend-adjusted band its own model implies.
+        const double lo =
+            is_tree ? mode_b_tree_lo_bound(in.spot, in.strike, in.years, in.rate, in.carry,
+                                           in.side, entitled.schedule, is_european)
+            : is_european
+                ? mode_b_european_lo_bound(in.spot, in.strike, in.years, in.rate, in.carry,
+                                           in.side)
+                : mode_b_american_lo_bound(in.spot, in.strike, in.years, in.rate, in.carry,
+                                           in.side);
         if (mid <= lo + half_tick) {
           ++fit_->rows_below_lo_bound;
           continue;
         }
-        if (mid >= mode_b_up_bound(in.spot, in.strike, in.side) - half_tick) {
+        const double up =
+            is_tree ? mode_b_tree_up_bound(in.spot, in.strike, in.years, in.rate, in.carry,
+                                           in.side, entitled.schedule, is_european)
+            : is_european
+                ? mode_b_european_up_bound(in.spot, in.strike, in.years, in.rate, in.carry,
+                                           in.side)
+                : mode_b_american_up_bound(in.spot, in.strike, in.side);
+        if (mid >= up - half_tick) {
           ++fit_->rows_above_up_bound;
           continue;
         }
 
-        // ── The inversion. AMERICAN, through the same Andersen-Lake rung this
-        // file prices with; `in.carry` is the engine's q slot.
-        const Result<double> fitted = american_implied_vol(
-            mid, in.spot, in.strike, in.years, in.rate, in.carry, in.side,
-            AmericanMethod::AndersenLake, kModeBIvTol, kModeBIvMaxIter, mode_a_al_opts(),
-            /*correction=*/nullptr, warm_start);
+        // ── The inversion, through the LEG the row is entitled to. Tree: the
+        // bracketed lattice root-find on the row's reconstructed schedule,
+        // sharing the strike-chain warm start (a group is one underlier and one
+        // expiry, so a chain never crosses legs — every row of a group carries
+        // the same ddiv). American: the safeguarded Newton on the same
+        // Andersen-Lake rung this file re-prices with, warm-started along the
+        // same chain. European: the closed-form Black-76 inverse of the exact
+        // kernel european_greeks re-prices with, which needs no seed.
+        // `in.carry` is the engine's q slot on all three. Tolerance and
+        // iteration cap are ONE pair across the solving legs — kModeBIvTol /
+        // kModeBIvMaxIter — so no leg reports at a different resolution.
+        const Result<double> fitted =
+            is_tree ? discrete_tree_implied_vol(mid, in.spot, in.strike, in.years, in.rate,
+                                                in.carry, in.side, entitled.schedule, style,
+                                                kModeBIvTol, kModeBIvMaxIter, warm_start)
+            : is_european
+                ? european_implied_vol(mid, in.spot, in.strike, in.years, in.rate, in.carry,
+                                       in.side)
+                : american_implied_vol(mid, in.spot, in.strike, in.years, in.rate, in.carry,
+                                       in.side, AmericanMethod::AndersenLake, kModeBIvTol,
+                                       kModeBIvMaxIter, mode_a_al_opts(),
+                                       /*correction=*/nullptr, warm_start,
+                                       // PRICE-unit polish demand at HALF the
+                                       // round-trip screen below: the inverter's
+                                       // warm search map is seed-dependent at the
+                                       // long-dated deep-ITM corners (warm->cold
+                                       // root gap 10-62x kModeBIvTol, 2026-08-23
+                                       // diagnosis), so on high-dollar-vega names
+                                       // the cold re-price otherwise misses the
+                                       // screen by vega x gap. Half the screen
+                                       // leaves the same slack the screen itself
+                                       // grants the solver.
+                                       /*price_tol=*/0.5 * round_trip_tol);
         if (!fitted.has_value() || !std::isfinite(*fitted)) {
           ++fit_->rows_iv_no_solution;
           continue;
@@ -772,8 +1005,44 @@ public:
         }
         in.sigma = *fitted;
 
-        const Result<AmericanGreeks> greeks = american_greeks_al(
-            in.spot, in.strike, in.years, in.sigma, in.rate, in.carry, in.side, mode_a_al_opts());
+        // Re-price through the SAME leg that was inverted. The tree leg's nine
+        // Greeks are the eight-rollback lattice bundle Mode A scores tree rows
+        // with (its price is bit-identical to the inverter's forward map, so
+        // the round-trip screen below tests the SOLVE, not a model mismatch),
+        // and dp_dq is the bundle's phi — the lattice solves it directly. The
+        // European leg's carry sensitivity comes with the same call (shared
+        // d1/d2); the American leg's needs its own solve, made only after the
+        // screens.
+        double dp_dq = std::numeric_limits<double>::quiet_NaN();
+        const auto reprice = [&]() -> Result<AmericanGreeks> {
+          if (is_tree) {
+            ATX_TRY(const DiscreteDivGreekBundle bundle,
+                    american_discrete_div_greek_bundle(
+                        in.spot, in.strike, in.years, in.sigma, in.rate, in.carry, in.side,
+                        entitled.schedule, kDiscreteDivDefaultSteps,
+                        is_european ? atx::vol::ExerciseStyle::European
+                                    : atx::vol::ExerciseStyle::American));
+            AmericanGreeks g{};
+            g.price = bundle.price;
+            g.delta = bundle.delta;
+            g.gamma = bundle.gamma;
+            g.vega = bundle.vega;
+            g.theta = bundle.theta;
+            g.rho = bundle.rho;
+            g.vanna = bundle.vanna;
+            g.volga = bundle.volga;
+            g.charm = bundle.charm;
+            dp_dq = bundle.phi;
+            return Ok(g);
+          }
+          if (is_european) {
+            return european_greeks(in.spot, in.strike, in.years, in.sigma, in.rate, in.carry,
+                                   in.side, &dp_dq);
+          }
+          return american_greeks_al(in.spot, in.strike, in.years, in.sigma, in.rate, in.carry,
+                                    in.side, mode_a_al_opts());
+        };
+        const Result<AmericanGreeks> greeks = reprice();
         if (!greeks.has_value()) {
           ++stats.rows_engine_error; // same meaning as Mode A's: the pricer refused
           continue;
@@ -809,11 +1078,18 @@ public:
         observe("vol", in.sigma, row.sr_vol, vol_tolerance());
         agg.vol.absolute(in.sigma, row.sr_vol);
 
-        double dp_dq = std::numeric_limits<double>::quiet_NaN();
-        const Result<CarryGreeks> carry = american_carry_greeks_al(
-            in.spot, in.strike, in.years, in.sigma, in.rate, in.carry, in.side, mode_a_al_opts());
-        if (carry.has_value()) {
-          dp_dq = carry->dP_dq;
+        // The tree leg's dp_dq is the bundle's phi and the European leg's was
+        // filled by the pricing call above; only the American leg pays for its
+        // own carry solve, and only for a row that survived every screen. A
+        // failed solve leaves dp_dq non-finite and skips ONLY the ph
+        // observation, never the row — Mode A's convention.
+        if (!is_european && !is_tree) {
+          const Result<CarryGreeks> carry = american_carry_greeks_al(
+              in.spot, in.strike, in.years, in.sigma, in.rate, in.carry, in.side,
+              mode_a_al_opts());
+          if (carry.has_value()) {
+            dp_dq = carry->dP_dq;
+          }
         }
         const OracleUnitGreeks g = to_oracle_units(*greeks, dp_dq);
         const std::array<std::pair<double, double>, 9> greek_pairs{

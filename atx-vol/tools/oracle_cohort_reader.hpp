@@ -63,6 +63,25 @@ struct Cohort {
 //
 // These fields are MEMBERSHIP. They may key a grouping and they may be counted,
 // but they must never reach an --aggregate-only receipt or its stderr.
+
+// Exercise style AS INGESTED — the SEAM for a column we do not have.
+//
+// SpiderRock's own record carries the contract's exercise style (and, upstream
+// of it, the calcEngine that produced srPrc/srDe/...), but the stage-1 ingest
+// selects no such column, so the store has none and `read_cohort_rows` always
+// leaves this `Unknown`. The convention layer therefore DECIDES exercise style
+// from a stated rule over the underlier root (`ExerciseStyleRule` in
+// oracle_conventions.hpp). That rule is a STAND-IN FOR DATA and is documented
+// as one everywhere it appears.
+//
+// This field is what makes the stand-in replaceable without touching the
+// convention map: `exercise_style_for()` reads the ROW first and applies the
+// rule only while the row says Unknown. The day an exercise-style / calcEngine
+// column lands in the store, the reader populates this and routing becomes
+// per-row ingested fact — no map change, no root list, and no re-sweep of the
+// other ten axes to get there.
+enum class ExerciseStyle : std::uint8_t { Unknown = 0, American = 1, European = 2 };
+
 struct OracleRow {
   std::string underlier;
   // The partition this row was read from, verbatim: `date=<d>` -> "YYYY-MM-DD",
@@ -91,6 +110,10 @@ struct OracleRow {
   double de_decay = 0.0; // deDecay
   double bid_prc = 0.0;
   double ask_prc = 0.0;
+  // Always Unknown today — see the ExerciseStyle banner above. Kept on the row
+  // and read first by `exercise_style_for()` so the root-list rule is a
+  // fallback that an ingested column supersedes, rather than the only answer.
+  ExerciseStyle ingested_exercise_style = ExerciseStyle::Unknown;
 };
 
 struct CohortScan {

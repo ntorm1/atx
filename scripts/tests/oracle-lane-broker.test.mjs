@@ -122,6 +122,7 @@ test('production broker surface has fixed IDs, no raw command tool, and exact re
     'vol-verifier': 'tools: mcp__oracle_lane_broker__lane_integrate, mcp__oracle_lane_broker__gate_run',
     'vol-reviewer': 'tools: mcp__oracle_lane_broker__repo_search, mcp__oracle_lane_broker__repo_read, mcp__oracle_lane_broker__commit_inspect, mcp__oracle_lane_broker__gate_run',
     'vol-ref-finalizer': 'tools: mcp__oracle_lane_broker__canonical_finalize',
+    'vol-ref-discarder': 'tools: mcp__oracle_lane_broker__canonical_discard',
     'vol-ref-auditor': 'tools: mcp__oracle_lane_broker__ref_resolve, mcp__oracle_lane_broker__canonical_audit',
     'vol-capability-inspector': 'tools: mcp__oracle_lane_broker__capability_probe',
     'vol-planner': 'tools: mcp__oracle_lane_broker__repo_search, mcp__oracle_lane_broker__repo_read',
@@ -134,14 +135,33 @@ test('production broker surface has fixed IDs, no raw command tool, and exact re
   }
 
   const oracleWorkflow = readFileSync(join(projectRoot, '.claude', 'workflows', 'vol-oracle-iter.js'), 'utf8')
-  assert.ok(oracleWorkflow.indexOf("failure: 'READY_BROKER_MIGRATION_REQUIRED'") < oracleWorkflow.indexOf("phase('Measure')"))
-  for (const agentName of ['vol-lane-opener', 'vol-lane-releaser', 'vol-stage1-quarantiner', 'vol-stage1-result-reader', 'vol-reviewer', 'vol-verifier', 'vol-ref-finalizer', 'vol-ref-auditor']) {
+  // The ready-state migration retired the refusal; both transactions are now
+  // broker-only, so no stage may name a lease script or a raw git mutation.
+  assert.doesNotMatch(oracleWorkflow, /READY_BROKER_MIGRATION_REQUIRED/)
+  assert.doesNotMatch(oracleWorkflow, /RETIRED_READY_PATH/)
+  assert.doesNotMatch(oracleWorkflow, /lease-worktree\.ps1|Lease keeper-backed|Run exactly git update-ref/)
+  assert.ok(oracleWorkflow.indexOf("phase('Measure Acquire')") < oracleWorkflow.indexOf("phase('Measure')"))
+  for (const agentName of ['vol-lane-opener', 'vol-lane-releaser', 'vol-stage1-quarantiner', 'vol-stage1-result-reader', 'vol-reviewer', 'vol-verifier', 'vol-ref-finalizer', 'vol-ref-auditor', 'vol-analyst', 'vol-builder']) {
     assert.match(oracleWorkflow, new RegExp(`agentType: '${agentName}'`))
   }
   assert.match(oracleWorkflow, /buildAgentType = capability\.state === 'missing_data' \? 'vol-stage1-recovery' : 'vol-builder'/)
   const sprintWorkflow = readFileSync(join(projectRoot, '.claude', 'workflows', 'vol-sprint.js'), 'utf8')
-  assert.match(sprintWorkflow, /failure: 'ORACLE_BROKER_MIGRATION_REQUIRED'/)
-  assert.doesNotMatch(sprintWorkflow, /\bagent\s*\(/)
+  assert.doesNotMatch(sprintWorkflow, /ORACLE_BROKER_MIGRATION_REQUIRED/)
+  assert.doesNotMatch(sprintWorkflow, /lease-worktree\.ps1|git update-ref|powershell scripts\\\\lease/)
+  // Every agent either workflow dispatches must be one of the fixed
+  // broker-restricted agent definitions asserted above.
+  const dispatched = new Set([...oracleWorkflow.matchAll(/agentType: '([a-z0-9-]+)'/g), ...sprintWorkflow.matchAll(/agentType: '([a-z0-9-]+)'/g)].map(match => match[1]))
+  const known = new Set([...Object.keys(exactAgentTools), 'vol-analyst', 'vol-stage1-recovery'])
+  for (const agentName of dispatched) assert.ok(known.has(agentName), `undeclared agent dispatched: ${agentName}`)
+  // and no `agent(` call may omit an explicit agentType. The Stage 1/2 build
+  // dispatch pins it through `buildAgentType`, so this looks for the option
+  // rather than a literal name.
+  for (const source of [oracleWorkflow, sprintWorkflow]) {
+    for (const call of source.split(/await agent\(/).slice(1)) {
+      const label = call.indexOf('label:')
+      assert.match(call.slice(0, label < 0 ? 240 : label), /agentType:\s*\S/, 'an agent dispatch does not pin an agentType')
+    }
+  }
 })
 
 test('Stage 2 clean release reopens with fresh capability and immutable history while drift rejects', { timeout: 120_000 }, async () => {

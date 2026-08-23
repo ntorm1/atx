@@ -268,6 +268,7 @@ add_executable(atx-vol-tests
 target_sources(atx-vol-tests PRIVATE
     ../tools/oracle_convention_sweep.cpp
     ../tools/oracle_conventions.cpp
+    ../tools/oracle_dividends.cpp
     ../tools/oracle_host_probe.cpp
     ../tools/oracle_scorecard.cpp
     ../tools/oracle_cohort_reader.cpp)
@@ -410,7 +411,8 @@ include(GoogleTest)
 add_executable(atx-vol-oracle-convention-tests
     oracle_conventions_test.cpp
     ../tools/oracle_convention_sweep.cpp
-    ../tools/oracle_conventions.cpp)
+    ../tools/oracle_conventions.cpp
+    ../tools/oracle_dividends.cpp)
 target_link_libraries(atx-vol-oracle-convention-tests
     PRIVATE atx::vol atx::core GTest::gtest_main atx_warnings)
 target_include_directories(atx-vol-oracle-convention-tests
@@ -421,6 +423,29 @@ target_include_directories(atx-vol-oracle-convention-tests
 # turns a vanished suite into "No tests were found", and the gate pins the exact
 # fully-qualified ID set the way it pins the OracleBench registry.
 gtest_discover_tests(atx-vol-oracle-convention-tests
+    DISCOVERY_MODE PRE_TEST)
+
+# Discrete-cash-dividend lane: the Vellekoop-Nieuwenhuis spliced CRR lattice
+# (atx::vol, src/pricing/american_discrete_div.cpp) plus the `ddiv` schedule
+# reconstructor (../tools/oracle_dividends.cpp, compiled straight in the way the
+# convention target above compiles its own tools TUs).
+#
+# A NEW target rather than two more sources on atx-vol-tests, deliberately: that
+# executable carries a PASS_REGULAR_EXPRESSION case-count pin (mode_b_targeted_tests,
+# below) and a README-checked public-header registry, and neither should move for
+# work that owns its own small target perfectly well. Nothing here is labelled, so
+# `-L atx_vol_fast` / `-L atx_vol_slow` select exactly what they selected before.
+add_executable(atx-vol-discrete-div-tests
+    discrete_div_american_test.cpp
+    oracle_dividends_test.cpp
+    ../tools/oracle_dividends.cpp)
+target_link_libraries(atx-vol-discrete-div-tests
+    PRIVATE atx::vol atx::core GTest::gtest_main atx_warnings)
+target_include_directories(atx-vol-discrete-div-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tools ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+# Same reason as the convention target: one ctest case per gtest case, so a
+# vanished suite reports "No tests were found" instead of a vacuous 1/1 pass.
+gtest_discover_tests(atx-vol-discrete-div-tests
     DISCOVERY_MODE PRE_TEST)
 
 # Suites measured >10s (serial debug, 2026-07-11). Everything here still runs
@@ -475,13 +500,15 @@ gtest_discover_tests(atx-vol-tests
 # Mode B case fails this gate instead of passing it vacuously.
 # FAIL_REGULAR_EXPRESSION is required beside it because setting a pass pattern
 # makes ctest IGNORE the process exit code — without it a genuine assertion
-# failure would still match "[  PASSED  ] 5 tests." never being printed... and
+# failure would still match "[  PASSED  ] 12 tests." never being printed... and
 # in the partial-failure case gtest prints a LOWER passed count, so the pair
-# closes both doors. Adding a Mode B case means bumping the 5 here.
+# closes both doors. Adding a Mode B case means bumping the 12 here (moved
+# 5 -> 9 when the European-leg inversion landed its four cases, 9 -> 12 when
+# the tree-leg lattice inversion landed its three).
 add_test(NAME mode_b_targeted_tests
          COMMAND atx-vol-tests --gtest_filter=OracleBenchModeB.*)
 set_tests_properties(mode_b_targeted_tests PROPERTIES
-    PASS_REGULAR_EXPRESSION "\\[  PASSED  \\] 5 tests\\."
+    PASS_REGULAR_EXPRESSION "\\[  PASSED  \\] 12 tests\\."
     FAIL_REGULAR_EXPRESSION "\\[  FAILED  \\]"
     LABELS atx_vol_fast)
 
