@@ -884,4 +884,71 @@ TEST(SurfaceV2Provenance, UnservableCalendarArbBoardFailsLoudWithFullAttemptTrai
   EXPECT_EQ(fitter.bundle().risk, nullptr);
 }
 
+// ── T1: the market mark is measured, and says what it measured ───────────────
+//
+// The mark arm pins LinearVariance -- raw quote interpolation in total variance
+// -- and published `Healthy` with a DEFAULT-CONSTRUCTED ValidationDigest: every
+// count zero and `admitted()` true, for a surface no oracle had ever looked at.
+// The digest is now the mark's own butterfly tally. `n_slices > 0` is what
+// proves the audit RAN rather than defaulting, and `admitted() == false` is the
+// claim that changed.
+//
+// Measured at this SHA on the repo's known-truth synthetic SPY panel: 6 served
+// slices, 11 butterfly violations, worst kink slope drop 0.20.
+TEST(MarkButterflyHonesty, MarkDigestCarriesItsOwnButterflyTally) {
+  auto chain = make_known_truth_chain();
+  ASSERT_TRUE(chain.has_value());
+
+  PricerConfig config;
+  config.quality_mode = FitQualityMode::Latency;
+  config.outputs = SurfaceOutputs::MarketMark;
+  config.risk_admission = RiskAdmission::NotApplicable;
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*chain).has_value());
+
+  const auto bundle = fitter.bundle();
+  ASSERT_NE(bundle.market_mark, nullptr);
+  const auto &digest = bundle.market_mark_health.validation;
+  // The audit ran over the served slices -- an assertion a defaulted,
+  // never-populated digest cannot satisfy.
+  EXPECT_GT(digest.n_slices, 0u);
+  // Every LinearVariance slice splices a flat wing onto a sloped segment, so the
+  // family is structurally never butterfly-arb-free and the tally says so.
+  EXPECT_GT(digest.n_butterfly_violations, 0u);
+  EXPECT_GT(digest.max_butterfly_slack, 0.0);
+  EXPECT_TRUE(has_validation_failure(digest.failures, ValidationFailure::Butterfly));
+  // THE claim that moved: the mark no longer publishes an oracle-certified digest.
+  EXPECT_FALSE(digest.admitted());
+  // The mark is still SERVED, and by default its state is unchanged -- gating or
+  // demoting it by default would stop serving SPY/QQQ/IWM (and would arm the
+  // `state == Healthy` mark-substitution gate in corpus_board_fit.cpp).
+  EXPECT_EQ(bundle.market_mark_health.state, SurfaceState::Healthy);
+  EXPECT_EQ(bundle.market_mark_health.reasons, ValidationFailure::None);
+}
+
+// The honest state a caller can ASK for: with `demote_mark_on_butterfly` the
+// same board publishes Degraded + Butterfly. Still served -- refusing the mark
+// would publish nothing for the most liquid names -- but no longer claiming to
+// be verified clean at the top level either.
+TEST(MarkButterflyHonesty, PolicyCanDemoteAButterflyCarryingMarkToDegraded) {
+  auto chain = make_known_truth_chain();
+  ASSERT_TRUE(chain.has_value());
+
+  PricerConfig config;
+  config.quality_mode = FitQualityMode::Latency;
+  config.outputs = SurfaceOutputs::MarketMark;
+  config.risk_admission = RiskAdmission::NotApplicable;
+  config.demote_mark_on_butterfly = true;
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*chain).has_value()) << "the mark must still SERVE, only not claim clean";
+
+  const auto bundle = fitter.bundle();
+  ASSERT_NE(bundle.market_mark, nullptr);
+  EXPECT_EQ(bundle.market_mark_health.state, SurfaceState::Degraded);
+  EXPECT_TRUE(
+      has_validation_failure(bundle.market_mark_health.reasons, ValidationFailure::Butterfly));
+  EXPECT_TRUE(bundle.market_mark_health.serving_candidate());
+  EXPECT_GT(bundle.market_mark_health.validation.n_butterfly_violations, 0u);
+}
+
 } // namespace

@@ -276,6 +276,29 @@ struct PricerConfig {
   // to admit or fall back from.
   RiskAdmission risk_admission{RiskAdmission::Required};
   SurfaceFallback fallback{SurfaceFallback::LastKnownGood};
+  // T1. The market-MARK arm pins `VolCurveKind::LinearVariance` -- linear
+  // interpolation of the quoted total variances -- so the served curve is only
+  // C0 and its butterfly density carries a Dirac at every node (arb.hpp states
+  // the geometry in full). That surface is NOT butterfly-arb-free, on any board:
+  // measured on this repo's own known-truth synthetic SPY panel, a 6-slice mark
+  // carries 11 violations, and the codebase's own real-board number is that
+  // ~1/4 of a raw penny-quote SPY board is locally butterfly-violating
+  // (src/fitting/essvi_calib.cpp) -- a mark that interpolates the quotes
+  // reproduces every one of those.
+  //
+  // `SurfaceHealth::validation` on the published mark now ALWAYS carries that
+  // measurement (counts, worst slack, first offending k and its two segment
+  // slopes) and its `failures` bit, so `validation.admitted()` is FALSE and no
+  // caller can read the mark as oracle-certified. What this flag governs is only
+  // whether the measurement also demotes `SurfaceHealth::state` to `Degraded`.
+  //
+  // It defaults to FALSE deliberately, and the reason is a live coupling rather
+  // than timidity: `src/marketdata/corpus_board_fit.cpp` substitutes a mark for
+  // a risk-refused board only while `market_mark_health.state == Healthy`.
+  // Defaulting this true would silently stop serving those boards on every
+  // snapshot -- arming a refusal, not reporting a fact. Flip it (or move the
+  // default) once that gate accepts a Degraded+Butterfly mark.
+  bool demote_mark_on_butterfly{false};
 };
 
 enum class ExpiryBuildOutcome : std::uint8_t {

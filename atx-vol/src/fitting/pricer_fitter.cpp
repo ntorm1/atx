@@ -724,6 +724,92 @@ admission_reason_name(SurfaceAdmissionReason reason) noexcept {
   return e.fitted_expiries < e.attempted_expiries;
 }
 
+// T1. The market-MARK arm pins `VolCurveKind::LinearVariance` (the raw-quote
+// total-variance interpolation), and published `Healthy` with an all-zero,
+// `admitted()`-true `ValidationDigest` that NOTHING had produced -- no butterfly
+// gate runs on that route, and the selector's own per-kind gate used to return a
+// hard-coded 0 for the kind under the label "by-construction arb-free". It is
+// not: piecewise-linear w is only C0, so w'' carries a Dirac at every node and a
+// concave kink is a negative density (arb.hpp states this in full).
+//
+// The mark is NOT gated and NOT repaired, and that is the decision, not an
+// omission:
+//
+//   * GATING it would refuse a mark for exactly the boards it exists to serve.
+//     The codebase's own measurement is that ~1/4 of a raw penny-quote SPY board
+//     is locally butterfly-violating (essvi_calib.cpp), and a mark that
+//     interpolates the quotes reproduces every one of those. A gate here would
+//     publish nothing for SPY/QQQ/IWM on most snapshots, which is strictly worse
+//     than an honest mark.
+//   * REPAIRING it would move the mark off the quotes it is DEFINED to
+//     interpolate, and the repair already exists on the arm that needs it: a
+//     LinearVariance *risk* config is refused outright and the risk ladder fits
+//     ConvexDense instead.
+//
+// What changes is the CLAIM. The published digest used to be default-constructed
+// -- every count zero and `admitted()` TRUE -- for a surface no oracle had ever
+// looked at. It now carries the measured tally and its `Butterfly` failure bit,
+// so `validation.admitted()` is false and the numbers are reachable from the
+// public bundle. Whether that measurement additionally demotes
+// `SurfaceHealth::state` is `PricerConfig::demote_mark_on_butterfly`, default
+// false: `src/marketdata/corpus_board_fit.cpp` substitutes a mark for a
+// risk-refused board only while the mark's state is `Healthy`, and flipping the
+// state by default would arm that refusal rather than report a fact.
+//
+// `quote_implied` separates the board's OWN quotes implying a negative density
+// (`n_quote_implied()` -- interior concave kinks and negative smooth-part
+// density) from the two structural flat-wing splices every LinearVariance slice
+// carries whatever the quotes say. Both are counted in the digest; only the
+// former is board-dependent, so it is what a demotion keys on.
+struct MarkButterflyAudit {
+  ValidationDigest digest{};
+  bool quote_implied{false}; // the BOARD implies negative density, not just the splice
+};
+
+[[nodiscard]] MarkButterflyAudit audit_linear_variance_mark(const VolaSession &session) noexcept {
+  MarkButterflyAudit out;
+  const CurveSurface *curves = session.curve_override();
+  if (curves == nullptr) {
+    return out; // not a curve-family session; nothing this audit can measure
+  }
+  const std::span<const std::unique_ptr<IVolCurve>> slices = curves->slices();
+  out.digest.n_slices = static_cast<std::uint32_t>(slices.size());
+  std::uint32_t quote_implied = 0u;
+  bool first_recorded = false;
+  for (std::size_t i = 0; i < slices.size(); ++i) {
+    const IVolCurve *curve = slices[i].get();
+    if (curve == nullptr || curve->kind() != VolCurveKind::LinearVariance) {
+      continue;
+    }
+    const LinearVarianceButterflyTally tally = arb_check_butterfly_linear_variance(
+        static_cast<const LinearVarianceCurve &>(*curve));
+    if (!tally.decided) {
+      // A slice whose geometry could not be read is NOT clean. Surface it the
+      // same way a violation is, rather than letting it count as zero.
+      out.digest.failures |= ValidationFailure::NonFinite;
+      ++out.digest.n_non_finite;
+      out.quote_implied = true;
+      continue;
+    }
+    out.digest.n_butterfly_violations += tally.n_violations();
+    quote_implied += tally.n_quote_implied();
+    out.digest.max_butterfly_slack =
+        std::max(out.digest.max_butterfly_slack, tally.max_kink_slope_drop);
+    if (!first_recorded && tally.n_violations() > 0u) {
+      first_recorded = true;
+      out.digest.first_butterfly_k = tally.first_violation_k;
+      out.digest.first_butterfly_slice = static_cast<std::uint32_t>(i);
+      out.digest.first_butterfly_slope_left = tally.first_kink_slope_left;
+      out.digest.first_butterfly_slope_right = tally.first_kink_slope_right;
+    }
+  }
+  if (quote_implied > 0u) {
+    out.digest.failures |= ValidationFailure::Butterfly;
+    out.quote_implied = true;
+  }
+  return out;
+}
+
 [[nodiscard]] SurfaceParityInputs refit_preparation_inputs(const VolaSession &session) {
   const SessionInputs &stored = session.inputs();
   SurfaceParityInputs inputs;
@@ -859,6 +945,7 @@ fallback_comparison_on_primary_support(const Underlying &under, const VolaSessio
 } // namespace detail
 
 using detail::admission_detail;
+using detail::audit_linear_variance_mark;
 using detail::completed_attempt_report;
 using detail::duplicate_maturity_report;
 using detail::failed_attempt_report;
@@ -1401,16 +1488,22 @@ Status PricerFitter::fit(const OptionChain &chain,
     report.published = true;
     report.published_curve = mark_in.curve;
     report.attempts.back().stage = SurfaceBuildStage::Publication;
+    // T1: measure the served piecewise-linear mark BEFORE the session moves into
+    // the FittedSurface. See audit_linear_variance_mark for why this reports
+    // rather than gates.
+    const detail::MarkButterflyAudit mark_audit = audit_linear_variance_mark(*built);
+    const bool demote_mark = cfg_.demote_mark_on_butterfly && mark_audit.quote_implied;
     std::shared_ptr<const FittedSurface> next_surface(new FittedSurface(
         std::move(*built), SurfacePurpose::MarketMark, quality_mode, candidate_generation_));
     std::optional<FitSnapshotProvenance> next_provenance{snapshot_provenance()};
     const SurfaceHealth next_health{
         .purpose = SurfacePurpose::MarketMark,
         .quality_mode = quality_mode,
-        .state = SurfaceState::Healthy,
-        .reasons = ValidationFailure::None,
+        .state = demote_mark ? SurfaceState::Degraded : SurfaceState::Healthy,
+        .reasons = demote_mark ? mark_audit.digest.failures : ValidationFailure::None,
         .candidate_generation = candidate_generation_,
         .served_generation = candidate_generation_,
+        .validation = mark_audit.digest,
     };
     std::optional<SurfaceBuildReport> next_published{report};
     std::optional<SurfaceBuildReport> next_attempt{std::move(report)};
@@ -1455,16 +1548,20 @@ Status PricerFitter::fit(const OptionChain &chain,
     timings_.market_mark_build_ms = result.elapsed_ms;
     if (result.built.has_value()) {
       std::optional<FitSnapshotProvenance> next_provenance{snapshot_provenance()};
+      // T1: same audit as the mark-only arm, before the session is moved away.
+      const detail::MarkButterflyAudit mark_audit = audit_linear_variance_mark(*result.built);
+      const bool demote_mark = cfg_.demote_mark_on_butterfly && mark_audit.quote_implied;
       std::shared_ptr<const FittedSurface> next_surface(
           new FittedSurface(std::move(*result.built), SurfacePurpose::MarketMark, quality_mode,
                             candidate_generation_));
       const SurfaceHealth next_health{
           .purpose = SurfacePurpose::MarketMark,
           .quality_mode = quality_mode,
-          .state = SurfaceState::Healthy,
-          .reasons = ValidationFailure::None,
+          .state = demote_mark ? SurfaceState::Degraded : SurfaceState::Healthy,
+          .reasons = demote_mark ? mark_audit.digest.failures : ValidationFailure::None,
           .candidate_generation = candidate_generation_,
           .served_generation = candidate_generation_,
+          .validation = mark_audit.digest,
       };
       // Mark publication is independent of risk admission. Publish its surface,
       // health, and chain identity as one no-fail state transition after every
