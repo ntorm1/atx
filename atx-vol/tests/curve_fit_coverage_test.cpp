@@ -158,23 +158,13 @@ void fill_steep_leg(Chain &c, double F, double q_eff, double T, std::size_t i, S
 // solve has co-terminal pairs); the prefer-OTM heuristic (calib.cpp:119-124)
 // admits only the PUT legs to the fit strip, so every admitted row sits left
 // of ATM.
-//
-// The borrow is ZERO here, unlike the two-sided sibling. This slice is 15 days
-// out and every one of its strikes is a DEEP-ITM call, whose time value at
-// sigma ~ 0.20 is ~0.03 price points — smaller than the S*borrow*T ~ 0.09 by
-// which the borrow moves the forward. With a non-zero borrow those call quotes
-// sit BELOW the zero-vol American bound at the carry solve's zero-borrow first
-// probe, and `american_implied_vol` now (correctly) refuses that probe instead
-// of returning a fabricated 0.5%-vol success — so the expiry died as
-// CarryFailed before the k-coverage predicate this file exists to test ever
-// ran. Zero borrow makes the quotes carry-consistent so the subject of the test
-// is reachable; the one-sidedness, which IS the subject, is untouched.
 [[nodiscard]] Chain make_one_sided_put_chain(double T) {
   Chain c;
   c.T = T;
   c.expiry_ns = static_cast<std::int64_t>(T * kYearNs);
   const std::vector<DividendEvent> no_divs;
-  const double F = hybrid_forward(kSpot, kRate, /*borrow=*/0.0, T, no_divs, c.expiry_ns,
+  const double borrow = borrow_of_T(T);
+  const double F = hybrid_forward(kSpot, kRate, borrow, T, no_divs, c.expiry_ns,
                                   /*now_ts_ns=*/0, HybridDivParams{});
   const double q_eff = kRate - std::log(F / kSpot) / T;
   for (int i = 0; i < 11; ++i) {

@@ -701,6 +701,100 @@ TEST(AmericanIv, ZeroVolBoundHonoursInteriorExerciseOptimum_Call) {
   EXPECT_NE(iv.error().message().find("zero-vol"), std::string::npos) << iv.error().to_string();
 }
 
+// ── F2: the ceiling is a sup too, and under negative carry it is NOT S or K ──
+//
+// An American call under q < 0 is worth MORE than spot and a put under r < 0 is
+// worth more than its strike. The old "S for a call, K for a put" ceiling then
+// sits BELOW the zero-vol lower bound, and the two screens cross into an EMPTY
+// admissible interval that rejects every price. Reachable in-house: q_eff is the
+// borrow and `imply_borrow_european_pcp_from_base` brackets it from -0.5.
+
+TEST(AmericanIv, NegativeCarryCall_InvertsInsteadOfCrossingTheScreens) {
+  const double S = 100.0, K = 50.0, T = 1.0, r = 0.05, q = -0.5, sigma = 0.30;
+  // The zero-vol bound is S*e^{-qT} - K*e^{-rT} = 117.31, ABOVE the old S=100
+  // ceiling; the true price is above that again.
+  const double zero_vol = S * std::exp(-q * T) - K * std::exp(-r * T);
+  ASSERT_GT(zero_vol, S) << "fixture broken: this must exceed the naive ceiling";
+  const double p = value_or_fail(
+      american_price(S, K, T, sigma, r, q, Side::Call, AmericanMethod::AndersenLake));
+  ASSERT_GT(p, zero_vol);
+  const auto iv = american_implied_vol(p, S, K, T, r, q, Side::Call);
+  ASSERT_TRUE(iv.has_value()) << (iv ? std::string{} : iv.error().to_string());
+  EXPECT_NEAR(*iv, sigma, 1.0e-5);
+}
+
+TEST(AmericanIv, NegativeRatePut_InvertsInsteadOfCrossingTheScreens) {
+  const double S = 100.0, K = 100.0, T = 20.0, r = -0.05, q = 0.0, sigma = 0.30;
+  const double zero_vol = K * std::exp(-r * T) - S * std::exp(-q * T);
+  ASSERT_GT(zero_vol, K) << "fixture broken: this must exceed the naive ceiling";
+  const double p = value_or_fail(
+      american_price(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake));
+  ASSERT_GT(p, zero_vol);
+  const auto iv = american_implied_vol(p, S, K, T, r, q, Side::Put);
+  ASSERT_TRUE(iv.has_value()) << (iv ? std::string{} : iv.error().to_string());
+  EXPECT_NEAR(*iv, sigma, 1.0e-4);
+}
+
+// The other half of the same guard: a carry x maturity that OVERFLOWS the
+// deterministic payoff must be refused by name, not silently turn every
+// comparison against an infinity into a rejection.
+TEST(AmericanIv, OverflowingCarryMaturity_RefusedByName) {
+  const auto iv = american_implied_vol(50.0, 100.0, 100.0, 20000.0, 0.0, -0.05, Side::Call);
+  ASSERT_FALSE(iv.has_value());
+  EXPECT_EQ(iv.error().code(), atx::vol::ErrorCode::OutOfRange);
+  EXPECT_NE(iv.error().message().find("overflows"), std::string::npos) << iv.error().to_string();
+}
+
+// ── F4: the SELECTED MAP adjudicates the zero-vol screen ────────────────────
+//
+// The analytic sup is the sigma -> 0 limit of the EXACT American value (measured
+// to 1.3e-13 against Andersen-Lake). BAW and the Chebyshev-corrected cached map
+// are approximations, so the screen must never refuse a price the caller's own
+// pricer produced. These pin the round trip on both routes at the very corner
+// where the analytic bound is most aggressive — the interior-exercise optimum,
+// where it exceeds both endpoints by 1.76 points. The only pre-existing
+// BAW/cached inverter test is counters-gated and SKIPPED in this build, so
+// without these that route has no coverage at all.
+
+TEST(AmericanIv, ZeroVolScreenAdjudicatedByMap_BawRoundTripAtInteriorOptimum) {
+  const double S = 409.4, K = 100.0, T = 5.0, r = 0.10, q = 0.02, sigma = 0.30;
+  const double p = value_or_fail(american_price(S, K, T, sigma, r, q, Side::Call,
+                                                AmericanMethod::Baw));
+  const auto iv = american_implied_vol(p, S, K, T, r, q, Side::Call, AmericanMethod::Baw);
+  ASSERT_TRUE(iv.has_value()) << "a pricer must never be refused a price it produced: "
+                              << (iv ? std::string{} : iv.error().to_string());
+  EXPECT_NEAR(*iv, sigma, 1.0e-5);
+}
+
+// The cached route's assertion is ADMISSION, not recovery. Measured at
+// 654a9206 and byte-identical here: this grid's sigma = 0.12 rows recover
+// 0.005 / 0.005 / 0.230 against a true 0.12, because the inversion searches
+// down to kIvMin = 0.005 while the correction tensor is only FITTED over
+// [0.10, 0.80] and extrapolates badly below it. That is a pre-existing cache
+// defect of the same fabrication class as T1 and is recorded in the ledger; it
+// is not what this test guards, and pinning a recovery bound here would pin the
+// defect. What must hold is that the screen never REFUSES the cached map a
+// price the cached map itself produced.
+TEST(AmericanIv, ZeroVolScreenAdjudicatedByMap_CachedMapNeverRefusedItsOwnPrice) {
+  const double r = 0.05, q = 0.0, S = 100.0, T = 1.0;
+  const CorrectionCache cache = make_iv_correction(r, q); // Put cache
+  int checked = 0;
+  for (double K : {104.0, 112.0, 120.0, 128.0, 136.0}) {
+    for (double sigma : {0.12, 0.25, 0.45}) {
+      const double p = american_price_cached(S, K, T, sigma, r, q, Side::Put, &cache);
+      ASSERT_TRUE(std::isfinite(p)) << "K=" << K;
+      const auto iv = american_implied_vol(p, S, K, T, r, q, Side::Put,
+                                           AmericanMethod::AndersenLake, 1.0e-7, 64, std::nullopt,
+                                           &cache);
+      EXPECT_TRUE(iv.has_value())
+          << "K=" << K << " sig=" << sigma << ": the cached map was refused its own price: "
+          << (iv ? std::string{} : iv.error().to_string());
+      ++checked;
+    }
+  }
+  EXPECT_EQ(checked, 15);
+}
+
 // A6 (core-review finding 6): the IV bracket floor and the reported floor are the
 // SAME constant (kIvMin). Pre-fix the search bracket floored at kSigmaLo=1e-4
 // while the reported floor was kIvMin=0.005, so a quote decaying toward intrinsic
