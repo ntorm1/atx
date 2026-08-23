@@ -13,7 +13,8 @@
 // Usage:
 //   atx-vol-surface-db-build --db <root> --hive <root>
 //       --from YYYY-MM-DD --to YYYY-MM-DD
-//       [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045]
+//       [--symbols A,B,C | --symbols-file <path>] [--index SPY]
+//       [--preset populate] [--r 0.045]
 //       [--snapshot-suffix T19:55:00Z]
 //       [--deep-selection] [--retry-disabled] [--pin-curve-family true|false]
 //       [--fit-workers N] [--report out.csv] [--max-failures N]
@@ -24,6 +25,28 @@
 //   --from / --to   inclusive date window.
 //   --symbols       CSV universe; OMIT (or empty) to discover every underlying
 //                   in the window (rectangular date x union grid, visible holes).
+//                   Mutually exclusive with --symbols-file.
+//   --symbols-file  the same universe read from a FILE, one symbol per line —
+//                   blank lines and `#`-comment lines skipped, surrounding
+//                   whitespace trimmed, FILE ORDER PRESERVED (the loader lays
+//                   the entry grid out date-major x this order). Exists because
+//                   --symbols is one argv token and the full OPRA census (6,189
+//                   underliers) joins to 28,777 chars, which with the exe path
+//                   and the other flags a backfill invocation carries measures
+//                   29,068 of the Windows CreateProcess 32,767-char
+//                   command-line ceiling — 3,699 left, less than one universe
+//                   revision of margin, and at the ceiling the failure is an
+//                   opaque spawn error in the caller, not a diagnostic here.
+//                   The same invocation with --symbols-file measures 409.
+//                   Mutually exclusive with --symbols; supplying both is
+//                   a usage error (exit 2), because taking both would make the
+//                   universe depend on argv order. An unreadable path, a file
+//                   with NO symbols, and a symbol over the 32-char storage cap
+//                   are each a usage error (exit 2) too. The empty case is a
+//                   hard error on purpose: an empty symbol list IS discovery
+//                   mode, so silently accepting one would swap the whole hive in
+//                   for the universe the operator asked for. See
+//                   apply_symbols_file_flag (surface_db_build_cli.hpp).
 //   --index         designated index leg, pinned to the dense index recipe.
 //   --preset        fast | accurate | robust | hft | populate | bulk (default
 //                   populate). `bulk` is the Perf-2b opt-in throughput tier: the
@@ -154,7 +177,8 @@
 #include "atx/vol/tools/surface_db_populate.hpp" // PopulateSymbolStats
 #include "atx/vol/api/core/types.hpp"               // Result, Status
 
-#include "surface_db_build_cli.hpp" // is_valid_snapshot_suffix (Task 4 addendum §B)
+#include "surface_db_build_cli.hpp" // is_valid_snapshot_suffix (Task 4 addendum §B),
+                                    // apply_symbols_file_flag (--symbols-file seam)
 
 using namespace atx::vol;
 
@@ -184,7 +208,8 @@ void print_usage(std::FILE *out) {
   std::fprintf(out,
                "usage: atx-vol-surface-db-build --db <root> --hive <root> "
                "--from YYYY-MM-DD --to YYYY-MM-DD\n"
-               "         [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045] "
+               "         [--symbols A,B,C | --symbols-file <path>] [--index SPY] "
+               "[--preset populate] [--r 0.045] "
                "[--snapshot-suffix T19:55:00Z] "
                "[--deep-selection] [--retry-disabled] [--pin-curve-family true|false] "
                "[--fit-workers N] [--report out.csv] "
@@ -341,6 +366,24 @@ void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
   std::printf("coverage.cells_carried_disabled %u\n", r.coverage.cells_carried_disabled);
   std::printf("coverage.cells_already_present %u\n", r.coverage.cells_already_present);
   std::printf("coverage.cells_ok %u\n", r.coverage.cells_ok);
+  // R1 (2026-08-23 top-of-book fit-refusal diagnosis, §4). The three SERVED
+  // dispositions, all on screen so a cell that used to be `failed` and now
+  // serves a market mark cannot be mistaken for a risk-served one:
+  //   cells_ok_risk  -- risk surface, admitted by the independent oracle
+  //   cells_mark     -- MARKET MARK, served because the oracle refused the risk
+  //                     candidate. Fair value / fair vol / greeks; market-
+  //                     following and NOT arbitrage-certified. The stored
+  //                     surface carries `SurfaceProvenance::purpose ==
+  //                     MarketMark`, so the label reaches every reader of the
+  //                     database, not just this log.
+  //   cells_failed   -- nothing was written.
+  // `cells_mark` is a subset of `cells_ok` (both were fitted and written), which
+  // is why the risk-served count is printed rather than left to be subtracted.
+  std::printf("coverage.cells_ok_risk %u\n",
+              r.coverage.cells_ok >= r.coverage.cells_mark
+                  ? r.coverage.cells_ok - r.coverage.cells_mark
+                  : 0u);
+  std::printf("coverage.cells_mark %u\n", r.coverage.cells_mark);
   std::printf("coverage.cells_failed %u\n", r.coverage.cells_failed);
   std::printf("coverage.dates_total %u\n", r.coverage.dates_total);
   std::printf("coverage.dates_written %u\n", r.coverage.dates_written);
@@ -447,6 +490,12 @@ int run_build_cli(int argc, char **argv) {
   // build must be byte-identical with and without it.
   bool strict = false;
 
+  // --symbols / --symbols-file are two sources for ONE field. Recorded here
+  // and resolved after the loop so neither order wins silently.
+  bool symbols_flag_seen = false;
+  bool symbols_file_flag_seen = false;
+  std::string symbols_file_path;
+
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
     // Value for a flag that takes one. A flag that ENDED the argv used to yield ""
@@ -477,6 +526,13 @@ int run_build_cli(int argc, char **argv) {
       spec.hive.date_hi = nv();
     } else if (a == "--symbols") {
       spec.hive.symbols = split_csv(nv());
+      symbols_flag_seen = true;
+    } else if (a == "--symbols-file") {
+      // Recorded, not applied: the mutual-exclusion verdict needs BOTH flags'
+      // presence, and `--symbols` may still arrive later in the argv. Resolved
+      // once, after the loop, so the outcome cannot depend on flag order.
+      symbols_file_path = nv();
+      symbols_file_flag_seen = true;
     } else if (a == "--index") {
       spec.auto_config.index_symbol = nv();
     } else if (a == "--preset") {
@@ -547,6 +603,22 @@ int run_build_cli(int argc, char **argv) {
     if (missing_value) {
       std::fprintf(stderr, "atx-vol-surface-db-build: %.*s requires a value\n",
                    static_cast<int>(a.size()), a.data());
+      print_usage(stderr);
+      return 2;
+    }
+  }
+
+  // The universe, resolved AFTER the whole argv is seen so `--symbols
+  // --symbols-file` and `--symbols-file --symbols` are the same usage error
+  // rather than two different silent winners. Validate-and-apply lives in the
+  // seam (surface_db_build_cli.hpp) so both halves are unit-testable; this file
+  // keeps only the diagnostic, like it does for --snapshot-suffix.
+  if (symbols_file_flag_seen) {
+    const SymbolsFileOutcome sf =
+        apply_symbols_file_flag(symbols_file_path, symbols_flag_seen, spec.hive);
+    if (!sf) {
+      std::fprintf(stderr, "atx-vol-surface-db-build: %s\n",
+                   symbols_file_diagnostic(symbols_file_path, sf).c_str());
       print_usage(stderr);
       return 2;
     }

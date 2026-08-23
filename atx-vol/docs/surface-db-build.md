@@ -76,35 +76,43 @@ per `(symbol, date)`). To convert an existing per-symbol tree, see
 
 ## Build
 
-The tool target is **gated behind the cmake cache flag `ATX_BUILD_EXAMPLES`,
-which is OFF by default** — the plain `configure` verb
-(`powershell scripts/atx-build.ps1 configure`, i.e. `cmake --preset dev`) builds the
-library and tests but **omits** this CLI. Enable the flag explicitly at configure
-time, then build the target:
+The tool is part of the **shipped tools tier** and is **ON by default**: it is
+gated behind the cmake cache flag `ATX_BUILD_TOOLS` (declared in the root
+`CMakeLists.txt`, default ON; the `if(ATX_BUILD_TOOLS)` block that adds this
+target is at `atx-vol/CMakeLists.txt:883`). The plain `configure` verb therefore
+builds it — no extra `-D` is needed:
 
 ```bash
-# Configure with the tool enabled. The `configure` verb does not forward extra
-# -D flags, so pass the flag through the wrapper's raw cmake path:
-powershell scripts/atx-build.ps1 --preset dev -DATX_BUILD_EXAMPLES=ON
-# (equivalently, straight cmake in the MSVC dev env: cmake --preset dev -DATX_BUILD_EXAMPLES=ON)
+# Configure once (ATX_BUILD_TOOLS defaults to ON):
+powershell scripts/atx-build.ps1 configure
 
 # Build just the CLI:
 powershell scripts/atx-build.ps1 build atx-vol-surface-db-build
 # -> build/bin/atx-vol-surface-db-build(.exe)
 ```
 
-The exact cache flag is **`-DATX_BUILD_EXAMPLES=ON`**. It only ADDS the
-example/tool targets (it does not change the library or tests). If you forget it,
-the build fails with `ninja: error: unknown target 'atx-vol-surface-db-build'` —
-that means the current build dir was configured without the flag; re-run the
-configure line above.
+> **Corrected 2026-08-23.** This section previously said the target was gated
+> behind **`ATX_BUILD_EXAMPLES`, which is OFF by default**, and told the reader
+> to configure with `-DATX_BUILD_EXAMPLES=ON`. That was true until the three
+> shipped operator CLIs were promoted out of the examples gate (see the comment
+> above `if(ATX_BUILD_TOOLS)` at `atx-vol/CMakeLists.txt:861-882`, which records
+> the promotion and why: an examples flag "describes demonstrations", so the
+> shipped tooling was built by nothing except an explicitly opted-in developer
+> build). Following the old instruction now sets a flag that does not gate this
+> target at all. `ATX_BUILD_EXAMPLES` still exists and still gates the
+> examples/bench targets — it is simply not what builds this CLI.
+
+If `ninja: error: unknown target 'atx-vol-surface-db-build'` appears, the build
+dir was configured with `-DATX_BUILD_TOOLS=OFF`; re-run the configure line above
+without it.
 
 ## Usage
 
 ```
 atx-vol-surface-db-build --db <root> --hive <root>
     --from YYYY-MM-DD --to YYYY-MM-DD
-    [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045]
+    [--symbols A,B,C | --symbols-file <path>] [--index SPY]
+    [--preset populate] [--r 0.045] [--snapshot-suffix T19:55:00Z]
     [--deep-selection] [--retry-disabled] [--pin-curve-family true|false]
     [--fit-workers N] [--report out.csv] [--max-failures N]
     [--allow-coverage-regression] [--strict]
@@ -115,7 +123,8 @@ atx-vol-surface-db-build --db <root> --hive <root>
 | `--db <root>` | yes | `SurfaceDb` root. Created if absent, else **opened/resumed**. |
 | `--hive <root>` | yes | OPRA hive-v2 root holding `date=<YYYY-MM-DD>/data.parquet`. |
 | `--from` / `--to` | yes | Inclusive date window (every calendar date in range is enumerated). |
-| `--symbols A,B,C` | no | CSV universe. **Omit (or empty) to discover** every underlying present in the window. Surrounding whitespace per field is trimmed. |
+| `--symbols A,B,C` | no | CSV universe, loaded **in the given order**. **Omit (or empty) to discover** every underlying present in the window. Surrounding whitespace per field is trimmed. Mutually exclusive with `--symbols-file`. A symbol longer than the 32-char storage key is **silently truncated** on this path (`canonicalize_symbol`) — `--symbols-file` rejects one instead. |
+| `--symbols-file <path>` | no | The same universe read from a **file**, one symbol per line — **use this for any universe wider than a few hundred names.** Blank lines and lines whose first non-whitespace character is `#` are skipped; leading/trailing whitespace (including a CRLF `\r`) is trimmed; **file order is preserved**, and it is the order the entry grid is laid out in. Mutually exclusive with `--symbols`: supplying both is **exit 2**, because taking both would make the universe depend on argv order. An **unreadable path**, a file that yields **no symbols** (empty or all-comment), and a symbol **over 32 chars** are each **exit 2** as well. The empty case is a hard error on purpose — an empty symbol list *is* discovery mode, so accepting one would silently swap the whole hive in for the universe you asked for. See [Why `--symbols-file` exists](#why---symbols-file-exists). |
 | `--index SPY` | no | Designated index leg — its config records the dense index recipe (bypassing per-board selection) instead of a classified family, for both config generation and the populate. **Under the default `--pin-curve-family false` that recipe never reaches the fit**: the stored `curve` is only consumed when `pin_curve` is set (`pricer_config_for_symbol`, and `apply_symbol_config`'s curve/calib assignment), so by default `--index` is a config-time annotation and the index leg auto-routes like every other symbol. It becomes load-bearing again with `--pin-curve-family true`. |
 | `--preset NAME` | no | `fast` \| `accurate` \| `robust` \| `hft` \| `populate`. Default `populate`. Drives both the manifest seeding and the populate fit tier. |
 | `--r RATE` | no | Flat continuously-compounded carry rate (`OpraHiveSpec.r`). Default **`0.0`**. **Must match the rate the hive's quotes were priced under** — read [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing) before every run. Must be a finite number consuming the whole token; `abc`, `0.03x`, `nan`, `inf` and a missing value are all **exit 2**, never a silent `0.0`. Negative rates **parse**, but a negative rate is not unconditionally *priceable*: a strictly negative rate sitting above the board's implied yield (`yield < r < 0`) is the double-continuation corner the Andersen-Lake scheme refuses, so every American price on that cell returns `NotImplemented` and the cell fits nothing. See *Stated limitations* in [`atx-vol/README.md`](../README.md). |
@@ -144,6 +153,57 @@ grid, not a data defect. `n_load_errors` is the counter that means something is
 wrong. The two are classified structurally by the loader (a hole is a present,
 readable date file that does not carry that symbol), never guessed from an error
 code, so real corruption can never hide in hole noise.
+
+### Why `--symbols-file` exists
+
+`--symbols` is **one comma-joined argv token**, and Windows caps a whole
+`CreateProcess` command line at **32,767 characters**. Measured:
+
+| Universe | Joined `--symbols` token |
+| --- | --- |
+| 616-name cross-section (`data/universe/xsec_2026-08.csv`, symbol column) | 2,656 chars |
+| full OPRA census (`data/universe/census_2026-08-21.csv`, 6,189 underliers, mean symbol length 3.65) | **28,777 chars** |
+
+Add the exe path and the other flags
+[`run_surface_db_backfill.py`](../tools/run_surface_db_backfill.py)'s
+`build_build_command` already emits, and a representative full-universe
+invocation measures **29,068 chars of the 32,767 ceiling — 3,699 left**. The
+same invocation with `--symbols-file` measures **409**. So the joined form
+*fits*, by less than one universe revision, and that margin — not an overflow —
+is the problem: at the ceiling the spawn fails **inside the orchestrator** with
+an opaque OS error, not with a diagnostic from this tool. The file form's argv
+cost does not scale with the universe at all.
+
+**Discovery mode is not the workaround.** Omitting `--symbols` looks like the
+cheap way out, but discovery reads each date's Parquet table in a serial pre-pass
+and **retains** it for the panel pass (`src/marketdata/opra_hive.cpp:132-134`
+moves every table into the per-date record), so the whole window stays resident.
+That is also why an **empty symbols file is a hard error**: an empty symbol list
+*is* the discovery switch (`opra_hive.cpp:129`), so silently accepting one would
+swap the entire hive in for the universe you asked for, on the widest possible
+window.
+
+Generating the file is one line — the census's first column is `underlying`:
+
+```powershell
+# every name in the census, header row dropped
+Import-Csv atx-vol\data\universe\census_2026-08-21.csv |
+    ForEach-Object { $_.underlying } |
+    Set-Content -Encoding ascii C:\tmp\opra_universe.txt
+
+build\bin\atx-vol-surface-db-build.exe --db C:\atx-data\surfdb --hive C:\atx-data\opra-hive `
+    --from 2026-01-02 --to 2026-01-31 --symbols-file C:\tmp\opra_universe.txt
+```
+
+There are **no inline comments** and **no column parsing**: a `#` only starts a
+comment when it is the first non-whitespace character on the line, and otherwise
+the whole trimmed line *is* the symbol. So a delimited universe file fed straight
+in — `data/universe/xsec_2026-08.csv` is `SYMBOL<TAB>weight`, and the census is a
+12-column CSV — yields symbols like `SPY\t4.1404`, not `SPY`. Extract the symbol
+column first, as the snippet above does. Such a name is not silently dropped: it
+becomes a visible coverage hole on every date and is named on that symbol's
+`symbol.<name> attempted=… ok=0` report line, like any other symbol the hive does
+not carry.
 
 ### The curve family is a route, not a pin
 
@@ -933,6 +993,7 @@ disposition counters partition the distinct symbols seen:
 | `coverage.cells_carried_disabled` | Already-present cells whose config is **disabled** and whose stored surface was re-emitted verbatim so the rewrite would not **delete** it. `enabled = false` means *stop fitting this symbol*, never *delete what is already stored*. Deliberately **separate** from `cells_carried`, which both exit-code predicates read as evidence the run produced a serviceable database — a switched-off name's leftover bytes are not that evidence. Counted in neither `cells_refit` (never offered to the fitter) nor `cells_ok`. Unlike `cells_carried` this does **not** depend on the config fingerprint: the alternative to preserving is deletion, not a re-fit, so the fingerprint has no say. |
 | `coverage.cells_already_present` | Skipped: symbol already in its date partition. |
 | `coverage.cells_ok` / `cells_failed` | Fit outcomes over the dates this run put through the **fitter** — outcomes, **not** commits, and **not** "written dates". A cell that fitted on a date the write path then **refused** is still `cells_ok`: it really did fit, it just did not land. `coverage.dates_written` is the authority on what reached disk, which is why the verdict reads it separately. |
+| `coverage.cells_mark` / `cells_ok_risk` | **R1.** `cells_mark` is a NAMED SUBSET of `cells_ok`: cells whose stored surface is a **market mark**, served because the independent risk-geometry oracle (or the publish floor) refused the risk candidate. Mark-grade — fair value, fair vol, greeks; market-following and **not** arbitrage-certified. `cells_ok_risk` (= `cells_ok - cells_mark`, printed to stdout) is the risk-served count, so the three served dispositions read straight off the run: risk / mark / failed. The surface carries the same verdict on disk as `SurfaceProvenance::purpose` (`atx-vol-surface-db config --symbol S` prints `provenance.purpose market_mark`), so **no consumer has to infer the grade from a counter**. A cell only lands here when the risk pipeline returned `ErrorCode::Unavailable` — a BUILT candidate that was refused. A malformed request (`InvalidArgument`, "invalid correctness policy for requested risk surface") and a risk build that produced no slice at all (`NotFound`) both still fail. |
 | `coverage.dates_total` | Distinct dates among the loaded boards. |
 | `coverage.dates_written` | Dates this run really **committed** — taken from the write site itself, so it counts commits and never intentions. A date the write path refused is not here, and neither is one whose candidate ended up empty (no partition is written for an empty candidate). It is therefore **not** the count of dates chosen for rewrite; nothing promises `dates_written + dates_refused_coverage_regression` equals that. |
 | `coverage.dates_skipped_complete` | Dates with **nothing left to add**: every loaded cell is either already present or config-disabled. |
@@ -1121,7 +1182,7 @@ this text.
 
 ### Build
 
-Same `ATX_BUILD_EXAMPLES` gate as `atx-vol-surface-db-build` (see
+Same `ATX_BUILD_TOOLS` gate as `atx-vol-surface-db-build` — ON by default (see
 [Build](#build) above — if that CLI is in your build dir, this one is too):
 
 ```bash

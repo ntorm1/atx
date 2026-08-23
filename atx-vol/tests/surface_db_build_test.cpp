@@ -45,7 +45,8 @@
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/fitting/vol_curve.hpp" // VolCurveKind
 
-#include "surface_db_build_cli.hpp" // is_valid_snapshot_suffix (Task 4 addendum §B seam)
+#include "surface_db_build_cli.hpp" // is_valid_snapshot_suffix (Task 4 addendum §B seam),
+                                    // apply_symbols_file_flag (--symbols-file seam)
 
 namespace atx::vol {
 namespace {
@@ -56,6 +57,22 @@ namespace tsupport = atx::vol::testsupport;
 [[nodiscard]] fs::path fresh_dir(std::string_view name) {
   fs::path p = fs::temp_directory_path() / ("atx_surface_db_build_" + std::string(name));
   fs::remove_all(p);
+  return p;
+}
+
+// Write `content` verbatim into a fresh directory as `symbols.txt` and return
+// the path — the fixture for the `--symbols-file` seam below. Binary mode so the
+// test's own "\r\n" and missing-trailing-newline cases reach the parser exactly
+// as written, instead of being normalised by the CRT's text-mode translation.
+[[nodiscard]] fs::path write_symbols_file(std::string_view name, std::string_view content) {
+  const fs::path dir = fresh_dir(name);
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  EXPECT_FALSE(ec) << "could not create " << dir.string() << ": " << ec.message();
+  const fs::path p = dir / "symbols.txt";
+  std::ofstream os(p.string(), std::ios::binary | std::ios::trunc);
+  EXPECT_TRUE(os.good()) << "could not write " << p.string();
+  os.write(content.data(), static_cast<std::streamsize>(content.size()));
   return p;
 }
 
@@ -1926,6 +1943,241 @@ TEST(SurfaceDbBuildCli, SnapshotSuffixRejectsMalformedValue) {
   EXPECT_FALSE(is_valid_snapshot_suffix("T19:55:00Z ")) << "trailing junk must not be truncated away";
   EXPECT_FALSE(is_valid_snapshot_suffix("Tab:cd:efZ")) << "non-digit fields";
   EXPECT_FALSE(is_valid_snapshot_suffix("t19:55:00z")) << "case-sensitive: only upper-case T/Z";
+}
+
+// ── SurfaceDbBuildCli: the --symbols-file seam (argv-limit sprint) ────────────
+//
+// WHY THE FLAG EXISTS. `--symbols` is ONE comma-joined argv token. At the
+// 616-name cross-section that token is 2,656 chars; the full OPRA universe
+// (`atx-vol/data/universe/census_2026-08-21.csv`, 6,189 underliers, mean symbol
+// length 3.65) joins to 28,777 chars, and with the exe path plus the other
+// flags `run_surface_db_backfill.py`'s `build_build_command` already emits, a
+// full-universe invocation MEASURES 29,068 of the Windows `CreateProcess`
+// 32,767-char command-line ceiling -- 3,699 left; the same invocation with
+// `--symbols-file` measures 409. So the joined form FITS, by less than one
+// universe revision, and at the ceiling the failure is an opaque spawn error
+// from the ORCHESTRATOR, not a diagnostic from this tool. That margin, not an
+// overflow, is what makes the joined form unusable for the full census.
+//
+// The only pre-existing alternative was to omit `--symbols` and let the loader
+// DISCOVER the universe -- which is not a workaround: discovery reads and
+// RETAINS every date's Parquet table for the panel pass
+// (`src/marketdata/opra_hive.cpp:132-134` moves each `tbl` into `di.table`), so
+// the whole window sits resident. A file-fed universe is therefore the only way
+// to run the full census, and requirement 3's "an empty file must NOT become
+// discovery mode" is load-bearing rather than tidy: `spec.symbols.empty()` IS
+// the discovery switch (`opra_hive.cpp:129`), so a file that parsed to nothing
+// would silently alias the one mode the flag exists to avoid.
+//
+// Same seam discipline as --snapshot-suffix above (FIX-I-1): the header owns
+// BOTH halves of the decision -- validate AND apply -- so a deleted assignment
+// cannot pass the suite.
+TEST(SurfaceDbBuildCli, SymbolsFileReadsOneSymbolPerLinePreservingFileOrder) {
+  // Deliberately NOT sorted: `load_opra_hive` documents an explicit list as
+  // loaded "in the given order" (opra_hive.hpp:18-19) and builds the entry grid
+  // date-major x that order (`effective = spec.symbols`, opra_hive.cpp:185), so
+  // the file's order is the grid's order and this seam must not sort it.
+  const fs::path p = write_symbols_file("symfile_order", "SPY\nAAPL\nBRK.B\nA\n");
+
+  OpraHiveSpec hive;
+  const SymbolsFileOutcome out = apply_symbols_file_flag(p.string(), false, hive);
+  ASSERT_TRUE(static_cast<bool>(out)) << symbols_file_diagnostic(p.string(), out);
+  EXPECT_EQ(hive.symbols, (std::vector<std::string>{"SPY", "AAPL", "BRK.B", "A"}))
+      << "file order is the entry-grid order; sorting here would silently reorder every build";
+}
+
+TEST(SurfaceDbBuildCli, SymbolsFileSkipsBlankAndCommentLinesAndTrimsWhitespace) {
+  const fs::path p = write_symbols_file("symfile_comments",
+                                        "# generated from census_2026-08-21.csv\n"
+                                        "\n"
+                                        "  SPY  \n"
+                                        "\t\n"
+                                        "   # an indented comment is still a comment\n"
+                                        "\tAAPL\r\n" // CRLF: the \r is trimmed, not kept
+                                        "   \n"
+                                        "MSFT"); // no trailing newline
+  OpraHiveSpec hive;
+  const SymbolsFileOutcome out = apply_symbols_file_flag(p.string(), false, hive);
+  ASSERT_TRUE(static_cast<bool>(out)) << symbols_file_diagnostic(p.string(), out);
+  EXPECT_EQ(hive.symbols, (std::vector<std::string>{"SPY", "AAPL", "MSFT"}));
+}
+
+// `--symbols` and `--symbols-file` name the same field from two sources. Taking
+// both would make the universe depend on argv ORDER (last flag wins) -- the same
+// silent-universe-change class the arg loop's missing-value check exists to
+// close. Refused, and the spec is left UNTOUCHED so a conflicting run cannot
+// half-apply the file on its way to the exit.
+TEST(SurfaceDbBuildCli, SymbolsFileConflictsWithSymbolsAndLeavesTheSpecUntouched) {
+  const fs::path p = write_symbols_file("symfile_conflict", "SPY\nAAPL\n");
+
+  OpraHiveSpec hive;
+  hive.symbols = {"QQQ"}; // what an earlier --symbols put there
+  const SymbolsFileOutcome out = apply_symbols_file_flag(p.string(), true, hive);
+  EXPECT_FALSE(static_cast<bool>(out));
+  EXPECT_EQ(out.error, SymbolsFlagError::BothFlags);
+  EXPECT_EQ(hive.symbols, (std::vector<std::string>{"QQQ"}))
+      << "a refused run must not have applied the file";
+}
+
+// A path typo must be a loud usage error. The dangerous alternative is the one
+// `read_universe_file` takes (examples/universe_surfdb_populate.cpp:64-68):
+// return an empty list on a failed open -- which here would mean discovery mode
+// over the entire hive.
+TEST(SurfaceDbBuildCli, SymbolsFileMissingPathIsAnErrorNotAnEmptyUniverse) {
+  const fs::path missing = fresh_dir("symfile_missing") / "no_such_universe.txt";
+
+  OpraHiveSpec hive;
+  const SymbolsFileOutcome out = apply_symbols_file_flag(missing.string(), false, hive);
+  EXPECT_FALSE(static_cast<bool>(out));
+  EXPECT_EQ(out.error, SymbolsFlagError::Unreadable);
+  EXPECT_TRUE(hive.symbols.empty());
+  const std::string msg = symbols_file_diagnostic(missing.string(), out);
+  EXPECT_NE(msg.find(missing.string()), std::string::npos)
+      << "the diagnostic must name the path that failed: " << msg;
+}
+
+// The aliasing bug requirement 3 exists to prevent: `spec.symbols.empty()` is
+// the DISCOVERY switch (opra_hive.cpp:129), so a file that yields no symbols
+// must be an error, never "load the whole hive".
+TEST(SurfaceDbBuildCli, SymbolsFileWithNoSymbolsIsAnErrorNotDiscoveryMode) {
+  const fs::path empty_file = write_symbols_file("symfile_empty", "");
+  OpraHiveSpec hive;
+  const SymbolsFileOutcome out = apply_symbols_file_flag(empty_file.string(), false, hive);
+  EXPECT_FALSE(static_cast<bool>(out));
+  EXPECT_EQ(out.error, SymbolsFlagError::Empty);
+  EXPECT_TRUE(hive.symbols.empty());
+
+  const fs::path all_comments =
+      write_symbols_file("symfile_all_comments", "# nothing but comments\n\n   \n#\n");
+  OpraHiveSpec hive2;
+  const SymbolsFileOutcome out2 = apply_symbols_file_flag(all_comments.string(), false, hive2);
+  EXPECT_FALSE(static_cast<bool>(out2));
+  EXPECT_EQ(out2.error, SymbolsFlagError::Empty)
+      << "an all-comment file is as empty as a zero-byte one, and just as dangerous";
+  EXPECT_TRUE(hive2.symbols.empty());
+}
+
+// The storage layer caps a symbol at `kSurfaceDbKeyMax` and TRUNCATES silently
+// (`canonicalize_symbol`, archive_util.cpp:199-210 -- ASCII upper-case +
+// truncate, so raw and canonical byte lengths are equal and this check is
+// exact). A truncated symbol is a DIFFERENT symbol that matches nothing in the
+// hive, so the file path rejects it rather than reproducing the trap.
+// `--symbols` is deliberately left alone: changing it is a behaviour break this
+// task does not take.
+TEST(SurfaceDbBuildCli, SymbolsFileRejectsAnOverLengthSymbolInsteadOfTruncating) {
+  const std::string at_cap(kSurfaceDbKeyMax, 'A');
+  const std::string over_cap(kSurfaceDbKeyMax + 1, 'B');
+
+  const fs::path ok = write_symbols_file("symfile_at_cap", "SPY\n" + at_cap + "\n");
+  OpraHiveSpec hive;
+  const SymbolsFileOutcome out = apply_symbols_file_flag(ok.string(), false, hive);
+  ASSERT_TRUE(static_cast<bool>(out)) << symbols_file_diagnostic(ok.string(), out);
+  EXPECT_EQ(hive.symbols, (std::vector<std::string>{"SPY", at_cap}))
+      << "exactly kSurfaceDbKeyMax chars still FITS; only longer is a defect";
+
+  const fs::path bad =
+      write_symbols_file("symfile_over_cap", "# header\nSPY\n" + over_cap + "\nAAPL\n");
+  OpraHiveSpec hive2;
+  const SymbolsFileOutcome out2 = apply_symbols_file_flag(bad.string(), false, hive2);
+  EXPECT_FALSE(static_cast<bool>(out2));
+  EXPECT_EQ(out2.error, SymbolsFlagError::SymbolTooLong);
+  EXPECT_EQ(out2.offender, over_cap);
+  EXPECT_EQ(out2.line, std::size_t{3}) << "1-based PHYSICAL line; comments and blanks counted";
+  EXPECT_TRUE(hive2.symbols.empty()) << "a rejected file must not half-apply";
+
+  const std::string msg = symbols_file_diagnostic(bad.string(), out2);
+  EXPECT_NE(msg.find("line 3"), std::string::npos) << msg;
+  EXPECT_NE(msg.find(over_cap), std::string::npos) << msg;
+}
+
+// The realistic operator error, and the reason taking the whole trimmed line is
+// safe: every universe fixture this tool is aimed at is COLUMNAR
+// (`atx-vol/data/universe/xsec_2026-08.csv` is `SYM<TAB>weight`), so
+// `--symbols-file xsec_2026-08.csv` is the obvious thing to type. Without this
+// check it parses "successfully" into symbols like "SPY\t4.1404" -- short enough
+// to clear the length cap, matching nothing in the hive, turning every cell into
+// a coverage hole under a name nobody typed. Same silent-mismatch failure as
+// SymbolTooLong, reached by a different road.
+TEST(SurfaceDbBuildCli, SymbolsFileRejectsAColumnarRowInsteadOfMakingItASymbol) {
+  const fs::path tabbed =
+      write_symbols_file("symfile_tabbed", "SPY\t4.1404\nQQQ\t4.0893\n");
+  OpraHiveSpec hive;
+  const SymbolsFileOutcome out = apply_symbols_file_flag(tabbed.string(), false, hive);
+  EXPECT_FALSE(static_cast<bool>(out));
+  EXPECT_EQ(out.error, SymbolsFlagError::InteriorWhitespace);
+  EXPECT_EQ(out.offender, "SPY\t4.1404");
+  EXPECT_EQ(out.line, std::size_t{1});
+  EXPECT_TRUE(hive.symbols.empty()) << "a rejected file must not half-apply";
+
+  const std::string msg = symbols_file_diagnostic(tabbed.string(), out);
+  EXPECT_NE(msg.find("line 1"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("interior whitespace"), std::string::npos) << msg;
+
+  // A space-separated row is the same defect, and the diagnostic must name the
+  // right physical line when earlier lines are legitimate.
+  const fs::path spaced =
+      write_symbols_file("symfile_spaced", "# roster\nSPY\nBRK B 12\nAAPL\n");
+  OpraHiveSpec hive2;
+  const SymbolsFileOutcome out2 = apply_symbols_file_flag(spaced.string(), false, hive2);
+  EXPECT_EQ(out2.error, SymbolsFlagError::InteriorWhitespace);
+  EXPECT_EQ(out2.line, std::size_t{3});
+  EXPECT_TRUE(hive2.symbols.empty());
+
+  // Trimming still wins over the new check: outer padding is not interior.
+  const fs::path padded = write_symbols_file("symfile_padded", "  SPY  \n\t QQQ\t\n");
+  OpraHiveSpec hive3;
+  const SymbolsFileOutcome out3 = apply_symbols_file_flag(padded.string(), false, hive3);
+  ASSERT_TRUE(static_cast<bool>(out3)) << symbols_file_diagnostic(padded.string(), out3);
+  EXPECT_EQ(hive3.symbols, (std::vector<std::string>{"SPY", "QQQ"}));
+}
+
+// The motivating regression, in-process: a full-census-sized universe fed as a
+// FILE parses, while the same universe joined into one `--symbols` token claims
+// almost the whole Windows command line. No subprocess -- this pins the
+// arithmetic that made the flag necessary, so a later "just widen --symbols"
+// cannot look safe.
+//
+// The number is a MEASUREMENT, and it is deliberately not rounded up into
+// "overflows": the real census joins to 28,777 chars, and a representative
+// backfill invocation carrying it measures 29,068 of the 32,767-char ceiling
+// with 3,699 left -- while the same invocation with `--symbols-file` measures
+// 409. It FITS, by less than one more year of listings. That margin, not an
+// overflow, is what makes the joined form unusable: it fails silently and
+// opaquely at the boundary rather than diagnosably before it.
+TEST(SurfaceDbBuildCli, SymbolsFileCarriesAUniverseThatFillsAWindowsCommandLine) {
+  constexpr std::size_t kOpraUniverse = 6189;       // census_2026-08-21.csv data rows
+  constexpr std::size_t kWindowsCmdLineMax = 32767; // CreateProcess lpCommandLine ceiling
+
+  std::string text = "# full OPRA census\n";
+  std::vector<std::string> expect;
+  expect.reserve(kOpraUniverse);
+  std::size_t csv_chars = 0;
+  for (std::size_t i = 0; i < kOpraUniverse; ++i) {
+    // 4-char synthetic names: 6189 * 4 + 6188 separators = 30,944 joined chars,
+    // the same order of magnitude as the real census's 28,777.
+    std::string sym = "S";
+    sym += static_cast<char>('A' + static_cast<int>((i / 676U) % 26U));
+    sym += static_cast<char>('A' + static_cast<int>((i / 26U) % 26U));
+    sym += static_cast<char>('A' + static_cast<int>(i % 26U));
+    csv_chars += sym.size() + (i == 0U ? 0U : 1U);
+    text += sym;
+    text += '\n';
+    expect.push_back(std::move(sym));
+  }
+  EXPECT_GT(csv_chars * 100U / kWindowsCmdLineMax, 90U)
+      << "the joined --symbols token is " << csv_chars << " of " << kWindowsCmdLineMax
+      << " chars -- if this ever drops to a comfortable fraction the flag's premise "
+         "changed; re-derive it, do not delete the flag";
+
+  const fs::path p = write_symbols_file("symfile_universe", text);
+  OpraHiveSpec hive;
+  const SymbolsFileOutcome out = apply_symbols_file_flag(p.string(), false, hive);
+  ASSERT_TRUE(static_cast<bool>(out)) << symbols_file_diagnostic(p.string(), out);
+  ASSERT_EQ(hive.symbols.size(), kOpraUniverse);
+  EXPECT_EQ(hive.symbols, expect);
+  // The whole point: the argv cost of the file-fed form is one path, whatever
+  // the universe holds.
+  EXPECT_LT(p.string().size() + std::string("--symbols-file ").size(), csv_chars / 10U);
 }
 
 // ── FIX-C-1 / FIX-I-1: the suffix reaches the PANEL, and a wrong one is loud ──
