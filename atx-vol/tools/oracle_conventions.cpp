@@ -4,7 +4,9 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <limits>
+#include <new> // std::bad_alloc — the discrete_tree_implied_vol noexcept boundary
 #include <span>
 #include <utility>
 
@@ -264,39 +266,6 @@ void fill_time_decay_secants(ModeAPricing &out, const ConventionMap &map,
 [[nodiscard]] atx::vol::ExerciseStyle engine_exercise(ExerciseStyle style) noexcept {
   return style == ExerciseStyle::European ? atx::vol::ExerciseStyle::European
                                           : atx::vol::ExerciseStyle::American;
-}
-
-// The tree model's admission rule for one row, decided on the row's OWN
-// evidence (`ddiv` is the vendor's statement that cash lands at or before this
-// expiry — the accrual identity against the reconstructed schedule was
-// measured to 1.8e-15):
-//   Err        — reconstruction refused the snapshot, or the row claims cash
-//                (ddiv != 0) the supplied schedule cannot account for. FAIL
-//                CLOSED: never a silent fallback to a different model.
-//   Ok(true)   — cash lands in (0, years]: price on the lattice.
-//   Ok(false)  — ddiv == 0: no cash in the option's life, the tree IS the
-//                continuous-carry engine, and the analytic legs are exact.
-[[nodiscard]] Result<bool> tree_admits_lattice(const OracleRow &row,
-                                               const RowDividends &dividends) {
-  if (dividends.refused) {
-    return Err(ErrorCode::Unavailable,
-               "discrete dividend tree: dividend reconstruction refused this row's snapshot");
-  }
-  if (row.ddiv == 0.0) {
-    return Ok(false);
-  }
-  // Bounded by the schedule length. The relative expiry tolerance mirrors the
-  // lattice's own (0, T] admission window, so a schedule the engine would use
-  // is never refused here on a one-ulp tau.
-  for (const CashDividend &dividend : dividends.schedule) {
-    if (dividend.amount > 0.0 && dividend.tau > 0.0 &&
-        dividend.tau <= row.years * (1.0 + 1.0e-12)) {
-      return Ok(true);
-    }
-  }
-  return Err(ErrorCode::InvalidArgument,
-             "discrete dividend tree: row carries ddiv but the supplied schedule has no ex-date "
-             "in (0, years] — supply the reconstructed chain snapshot schedule");
 }
 
 // One tree-arm row: the nine-greek lattice bundle mapped onto the ModeAPricing
@@ -573,6 +542,202 @@ Result<double> european_implied_vol(double price, double S, double K, double T, 
   const double F = S * std::exp((r - q) * T);
   const double df = std::exp(-r * T);
   return implied_vol(price, F, K, T, df, side);
+}
+
+// Contract in the header; behaviour unchanged from its former file-private
+// self — only the linkage moved, so Mode B's routing can consult the same rule.
+Result<bool> tree_admits_lattice(const OracleRow &row, const RowDividends &dividends) {
+  if (dividends.refused) {
+    return Err(ErrorCode::Unavailable,
+               "discrete dividend tree: dividend reconstruction refused this row's snapshot");
+  }
+  if (row.ddiv == 0.0) {
+    return Ok(false);
+  }
+  // Bounded by the schedule length. The relative expiry tolerance mirrors the
+  // lattice's own (0, T] admission window, so a schedule the engine would use
+  // is never refused here on a one-ulp tau.
+  for (const CashDividend &dividend : dividends.schedule) {
+    if (dividend.amount > 0.0 && dividend.tau > 0.0 &&
+        dividend.tau <= row.years * (1.0 + 1.0e-12)) {
+      return Ok(true);
+    }
+  }
+  return Err(ErrorCode::InvalidArgument,
+             "discrete dividend tree: row carries ddiv but the supplied schedule has no ex-date "
+             "in (0, years] — supply the reconstructed chain snapshot schedule");
+}
+
+namespace {
+
+// NOT noexcept, deliberately (the american_iv.cpp arrangement): every lattice
+// solve allocates its rollback buffers and every Err message allocates a
+// string. The public entry point below contains the resulting bad_alloc so its
+// declared noexcept holds by construction rather than by claim.
+Result<double> discrete_tree_implied_vol_impl(double price, double S, double K, double T,
+                                              double r, double q, Side side,
+                                              std::span<const CashDividend> schedule,
+                                              ExerciseStyle style, double tol,
+                                              std::uint16_t max_iter, double warm_start) {
+  // american_iv.cpp's own search-bracket constants, restated verbatim: the
+  // bracket floor IS the reported floor kIvMin (its A6 unification), hi starts
+  // at 5.0 and doubles toward a hard 40.0 cap on a bounded budget.
+  constexpr double kSigmaLo = kIvMin;
+  constexpr double kSigmaHi = 5.0;
+  constexpr double kSigmaHiCap = 40.0;
+  constexpr unsigned kMaxExpand = 8;
+
+  if (!std::isfinite(price) || !std::isfinite(S) || !std::isfinite(K) || !std::isfinite(T) ||
+      !std::isfinite(r) || !std::isfinite(q)) {
+    return Err(ErrorCode::OutOfRange, "discrete_tree_implied_vol: non-finite input");
+  }
+  if (S <= 0.0 || K <= 0.0 || T <= 0.0) {
+    return Err(ErrorCode::InvalidArgument, "discrete_tree_implied_vol: S/K/T must be > 0");
+  }
+  const atx::vol::ExerciseStyle rollback = engine_exercise(style);
+  if (rollback == atx::vol::ExerciseStyle::American) {
+    // american_implied_vol's boundary validation, verbatim: the American
+    // no-arbitrage band [immediate intrinsic, S-or-K], the same band_tol, and
+    // the same Ok(kIvMin) clamp for a price at intrinsic. A European rollback
+    // deliberately has no intrinsic floor — a deep-ITM premium below immediate
+    // intrinsic is a legitimate quote there and inverts.
+    const double intrinsic = side == Side::Call ? std::max(S - K, 0.0) : std::max(K - S, 0.0);
+    const double upper = side == Side::Call ? S : K;
+    const double band_tol = 1.0e-9 * upper + 1.0e-12;
+    if (price < intrinsic - band_tol) {
+      return Err(ErrorCode::OutOfRange, "discrete_tree_implied_vol: price below intrinsic");
+    }
+    if (price > upper + band_tol) {
+      return Err(ErrorCode::OutOfRange, "discrete_tree_implied_vol: price above upper bound");
+    }
+    if (price <= intrinsic + band_tol) {
+      return Ok(kIvMin); // sigma is not identifiable at the floor: the documented clamp
+    }
+  }
+
+  // f(sigma) = lattice_price(sigma) - price, monotone increasing in sigma. The
+  // forward map is EXACTLY mode_a_price's tree leg — one rollback of the same
+  // spliced lattice at the same step count and the same exercise rollback — so
+  // the round trip closes by construction. A pricer refusal (e.g. the CRR
+  // probability leaving (0, 1) at an extreme sigma probe) propagates as the
+  // row's Err, counted where every inverter refusal is counted.
+  const auto residual = [&](double sigma) -> Result<double> {
+    ATX_TRY(const double p, american_discrete_div_price(S, K, T, sigma, r, q, side, schedule,
+                                                        kDiscreteDivDefaultSteps, rollback));
+    if (!std::isfinite(p)) {
+      return Err(ErrorCode::Internal, "discrete_tree_implied_vol: non-finite lattice price");
+    }
+    return Ok(p - price);
+  };
+
+  // ── Bracket so f(xl) < 0 <= f(xh) ────────────────────────────────────────
+  // The warm seed (a neighbour's converged root) is probed FIRST when present,
+  // so a chained inversion pays one probe near the root instead of two at the
+  // bracket extremes; the floor is probed only when a lower end is needed.
+  double xl = kSigmaLo;
+  double fl = 0.0;
+  double xh = 0.0;
+  double fh = 0.0;
+  bool have_lo = false;
+  bool have_hi = false;
+  if (warm_start > kSigmaLo && warm_start < kSigmaHi) {
+    ATX_TRY(const double fs, residual(warm_start));
+    if (fs == 0.0) {
+      return Ok(warm_start);
+    }
+    if (fs > 0.0) {
+      xh = warm_start;
+      fh = fs;
+      have_hi = true;
+    } else {
+      xl = warm_start;
+      fl = fs;
+      have_lo = true;
+    }
+  }
+  if (!have_lo) {
+    ATX_TRY(const double f_floor, residual(kSigmaLo));
+    if (f_floor >= 0.0) {
+      return Ok(kIvMin); // even the vol floor over-prices the quote: the documented clamp
+    }
+    xl = kSigmaLo;
+    fl = f_floor;
+  }
+  if (!have_hi) {
+    xh = kSigmaHi;
+    ATX_TRY(const double f_hi, residual(xh));
+    fh = f_hi;
+    for (unsigned e = 0; fh < 0.0 && xh < kSigmaHiCap && e < kMaxExpand; ++e) {
+      xl = xh; // the old hi was still on the negative side: the bracket narrows from below
+      fl = fh;
+      xh = std::fmin(xh * 2.0, kSigmaHiCap);
+      ATX_TRY(const double f_next, residual(xh));
+      fh = f_next;
+    }
+    if (fh < 0.0) {
+      return Err(ErrorCode::OutOfRange, "discrete_tree_implied_vol: price above max-vol price");
+    }
+  }
+
+  // ── Safeguarded secant (Illinois regula falsi) ───────────────────────────
+  // The iterate never leaves [xl, xh]; a proposal outside it (or a degenerate
+  // secant) forces bisection, and the Illinois down-weighting stops the classic
+  // one-sided stagnation, so the bracket width shrinks superlinearly on this
+  // monotone map without needing a lattice vega for a Newton step.
+  int last_kept = 0; // -1: xl moved last, +1: xh moved last
+  for (std::uint16_t iter = 0; iter < max_iter; ++iter) {
+    const double denom = fh - fl;
+    double x = std::isfinite(denom) && denom != 0.0 ? xl - fl * (xh - xl) / denom
+                                                    : 0.5 * (xl + xh);
+    if (!(x > xl) || !(x < xh)) {
+      x = 0.5 * (xl + xh);
+    }
+    if (x <= xl || x >= xh) {
+      return Ok(0.5 * (xl + xh)); // interval collapsed to representable points
+    }
+    ATX_TRY(const double fx, residual(x));
+    if (fx == 0.0) {
+      return Ok(x);
+    }
+    if (fx < 0.0) {
+      xl = x;
+      fl = fx;
+      if (last_kept == -1) {
+        fh *= 0.5; // Illinois: the stagnant end is down-weighted
+      }
+      last_kept = -1;
+    } else {
+      xh = x;
+      fh = fx;
+      if (last_kept == 1) {
+        fl *= 0.5;
+      }
+      last_kept = 1;
+    }
+    if (xh - xl < tol) {
+      return Ok(0.5 * (xl + xh));
+    }
+  }
+  return Err(ErrorCode::Unavailable, "discrete_tree_implied_vol: no convergence");
+}
+
+} // namespace
+
+// SAFETY: noexcept is pinned by the header, but the inversion allocates (each
+// lattice solve's buffers, every Err message). Contain bad_alloc here so the
+// promise holds and memory pressure degrades to the declared Result error model
+// — american_iv.cpp's own arrangement, message-free for the same reason.
+Result<double> discrete_tree_implied_vol(double price, double S, double K, double T, double r,
+                                         double q, Side side,
+                                         std::span<const CashDividend> schedule,
+                                         ExerciseStyle style, double tol, std::uint16_t max_iter,
+                                         double warm_start) noexcept {
+  try {
+    return discrete_tree_implied_vol_impl(price, S, K, T, r, q, side, schedule, style, tol,
+                                          max_iter, warm_start);
+  } catch (const std::bad_alloc &) {
+    return Err(ErrorCode::Internal);
+  }
 }
 
 Result<ModeAPricing> mode_a_price_row(const OracleRow &row, const ConventionMap &map,

@@ -85,8 +85,11 @@ const TARGETED_BOOTSTRAP_GATE_IDS = Object.freeze(['mode_a_targeted_tests', 'mod
 // confidentiality boundary, and the surviving "no data, no number" property).
 // Mirror of $script:OracleBenchTestIds in scripts/oracle-targeted-gate.ps1 —
 // the gate matches the ID SET, this matches the count, and both must move
-// together.
-const ORACLE_BENCH_TEST_COUNT = 57
+// together. Moved 57 -> 60 by the Mode B tree-leg lattice-inversion lane
+// (lattice round-trip with an asserted wrong-functional counterfactual, the
+// dividend-adjusted zero-vol-floor refusal, and the ddiv == 0 bit-for-bit
+// continuous-inverter invariance control).
+const ORACLE_BENCH_TEST_COUNT = 60
 // Same contract for the Stage 3 suite: mirror of $script:OracleConventionTestIds
 // in scripts/oracle-targeted-gate.ps1, which pins the ID SET while this pins the
 // count, so the two must move together. Moved 18 -> 21 by the exercise-style

@@ -4,8 +4,10 @@
 // single ConventionMap on aggregate smoke+tune data; production Mode A uses
 // winning_convention() and never exposes a runtime convention flag.
 
+#include <cstdint>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string_view>
 
 #include "atx/vol/api/core/types.hpp"
@@ -248,6 +250,47 @@ struct EnginePricingInputs {
 [[nodiscard]] Result<double> european_implied_vol(double price, double S, double K, double T,
                                                   double r, double q, Side side) noexcept;
 
+// The INVERSE of the `DiscreteDividendTree` price: implied volatility measured
+// from a premium under the V&N spliced-CRR lattice on the row's reconstructed
+// cash-dividend schedule. Declared beside the convention layer's other inverse
+// (`european_implied_vol`) for the same reason that one sits beside its forward
+// map: the forward map here IS `mode_a_price`'s tree leg —
+// `american_discrete_div_price` at `kDiscreteDivDefaultSteps` with the map's
+// exercise rollback — so a Mode B that root-found a locally built lattice could
+// drift from the leg it re-prices with.
+//
+// CONTRACT — `american_implied_vol`'s, leg for leg, with the same constants
+// (american_iv.cpp): the search bracket floors at kIvMin and expands
+// geometrically from 5.0 to a hard 40.0 ceiling; `tol` is the convergence
+// tolerance in volatility units and `max_iter` the bounded-loop cap. The solver
+// is a safeguarded secant (Illinois regula falsi) inside a maintained sign
+// bracket — the lattice offers no cheap vega for a Newton step, and the price
+// is monotone in sigma, so bracketed superlinear convergence is the right tool.
+// `warm_start` (> 0, in-bracket) seeds the bracket from a prior nearby sigma;
+// like the American inverter's, it moves the search path, never the root.
+//
+// `style` is the ORACLE routing vocabulary (`exercise_style_for`'s result);
+// Unknown rolls back American, exactly as the forward map's `engine_exercise`
+// maps it. Under an American rollback the admission band is verbatim
+// `american_implied_vol`'s: price below immediate intrinsic / above the S-or-K
+// ceiling is OutOfRange, price AT intrinsic reports Ok(kIvMin) — the
+// documented clamp, not a root, which Mode B's floor screen refuses. A
+// European rollback carries no intrinsic floor (a deep-ITM premium below
+// immediate intrinsic legitimately inverts) and relies on the bracket itself:
+//   InvalidArgument — S/K/T <= 0, or a schedule the pricer rejects
+//   OutOfRange      — non-finite input, price outside the band, or a price
+//                     above the max-vol lattice price
+//   Unavailable     — no convergence in max_iter
+//   Internal        — allocation failure (contained; the entry is noexcept)
+// A price at/below the lattice's own kIvMin value reports Ok(kIvMin) — the
+// same floor clamp both continuous inverters document. Mode B never publishes
+// it: the floor-clamp screen refuses any kIvMin-adjacent result.
+[[nodiscard]] Result<double>
+discrete_tree_implied_vol(double price, double S, double K, double T, double r, double q,
+                          Side side, std::span<const CashDividend> schedule, ExerciseStyle style,
+                          double tol = 1.0e-7, std::uint16_t max_iter = 64,
+                          double warm_start = 0.0) noexcept;
+
 // One priced row: the inputs used, the nine raw engine Greeks, the carry
 // sensitivity, and WHICH leg produced them. `dp_dq` is non-finite when the
 // carry solve refused — only the phi metric reads it, so the row keeps its
@@ -288,6 +331,22 @@ struct RowDividends {
   std::span<const CashDividend> schedule{};
   bool refused = false;
 };
+
+// The tree model's admission rule for one row, decided on the row's OWN
+// evidence (`ddiv` is the vendor's statement that cash lands at or before this
+// expiry — the accrual identity against the reconstructed schedule was
+// measured to 1.8e-15):
+//   Err        — reconstruction refused the snapshot, or the row claims cash
+//                (ddiv != 0) the supplied schedule cannot account for. FAIL
+//                CLOSED: never a silent fallback to a different model.
+//   Ok(true)   — cash lands in (0, years]: price (or invert) on the lattice.
+//   Ok(false)  — ddiv == 0: no cash in the option's life, the tree IS the
+//                continuous-carry engine, and the analytic legs are exact.
+// Exposed (it was file-private inside mode_a_price_row) so Mode B's inversion
+// routing makes exactly the same admission decision as Mode A's pricing — one
+// rule, two consumers, no way to drift.
+[[nodiscard]] Result<bool> tree_admits_lattice(const OracleRow &row,
+                                               const RowDividends &dividends);
 
 // Prices one row end to end under `map`: `mode_a_inputs` for the inputs,
 // `exercise_style_for` for the leg. Err exactly where the chosen leg errs, so

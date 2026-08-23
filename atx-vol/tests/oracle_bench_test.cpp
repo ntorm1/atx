@@ -1645,4 +1645,211 @@ TEST(OracleBenchModeB, AmericanRowsKeepTheAmericanBoundsAndInverter) {
   EXPECT_LT(run->aggregate.vol.mean(), 1.0e-5) << "American inversion did not recover srVol";
 }
 
+// ── Mode B, the TREE leg ─────────────────────────────────────────────────
+//
+// The three cases below pin the lattice inversion rung that lifted the
+// 55a908aa stopgap: a tree-routed dividend row inverts against the V&N spliced
+// lattice on its reconstructed schedule and recovers the generating vol, a mid
+// at the dividend-adjusted zero-vol floor is refused and COUNTED (never a
+// fabricated kIvMin), and a ddiv == 0 row keeps the continuous inverter
+// BIT-FOR-BIT.
+
+// Authors one dividend row's oracle outputs through the same `mode_a_price_row`
+// tree leg production prices ddiv > 0 rows with, on the supplied whole-chain
+// schedule. Returns false when the row does not price on the lattice (a fixture
+// whose ddiv stopped routing to the tree is a defect the caller must FAIL on).
+[[nodiscard]] bool fill_tree_outputs(FixtureRow &r,
+                                     std::span<const atx::vol::CashDividend> schedule) {
+  const auto priced = mode_a_price_row(to_oracle_row(r), winning_convention(), mode_a_al_opts(),
+                                       RowDividends{.schedule = schedule, .refused = false});
+  if (!priced.has_value()) {
+    return false;
+  }
+  r.srPrc = price_to_oracle_units(priced->greeks.price);
+  const OracleUnitGreeks g = to_oracle_units(priced->greeks, priced->dp_dq);
+  r.de = g.de;
+  r.ga = g.ga;
+  r.th = g.th;
+  r.ve = g.ve;
+  r.rh = g.rh;
+  r.ph = g.ph;
+  r.vo = g.vo;
+  r.va = g.va;
+  r.deDecay = g.de_decay;
+  return true;
+}
+
+// A TREE-routed store (American root, ddiv > 0): the quote IS the lattice
+// price at a KNOWN per-strike vol, so the true implied vol of every row is
+// srVol by construction. Two expiries whose cumulative ddiv column (1.2, then
+// 2.4) reconstructs to two cash events, so the far expiry inverts across an
+// INTERIOR ex-date, not merely an at-expiry one. The anchor bites: these
+// premia carry discrete dividend events, so a continuous-carry inversion of
+// them charges the cash to volatility and misses srVol by vol POINTS (asserted
+// below as the counterfactual) — recovery proves the ROUTING and the lattice,
+// not merely that something inverted.
+TEST(OracleBenchModeB, TreeRoutedDividendRowsInvertOnTheLattice) {
+  using atx::vol::CashDividend;
+  const fs::path root = fresh_dir("mode-b-tree-roundtrip");
+  const double near_years = 60.0 / 365.0;
+  const double far_years = 180.0 / 365.0;
+  const std::vector<CashDividend> chain{{near_years, 1.2}, {far_years, 1.2}};
+  std::vector<FixtureRow> rows;
+  for (const double years : {near_years, far_years}) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      for (const double strike : {95.0, 100.0, 105.0}) {
+        FixtureRow r;
+        r.cp = (side == Side::Call) ? "Call" : "Put";
+        r.strike = strike;
+        r.years = years;
+        r.ddiv = years < 0.5 * (near_years + far_years) ? 1.2 : 2.4;
+        r.srVol = strike < 97.5 ? 0.30 : (strike > 102.5 ? 0.22 : 0.25);
+        ASSERT_TRUE(fill_tree_outputs(r, chain)) << "fixture lattice pricing failed";
+        r.bidPrc = r.srPrc;
+        r.askPrc = r.srPrc;
+        rows.push_back(r);
+      }
+    }
+  }
+  // The counterfactual, asserted rather than narrated: a continuous-carry
+  // inversion of the near-ATM PUT's lattice premium misses the generating vol
+  // by more than 100 bp — the wrong-functional error the 55a908aa stopgap
+  // existed to keep out of the vol MAE, and the error this rung removes. The
+  // PUT, deliberately: an American CALL exercises just before the ex-date and
+  // recaptures most of the cash (measured here: its continuous inversion
+  // misses by only ~7 bp), while the put keeps the full dividend effect — the
+  // same asymmetry the escrow-model measurement recorded (calls -78 / puts
+  // +199 ticks).
+  {
+    const FixtureRow &r = rows[4]; // near expiry, put, strike 100
+    ASSERT_EQ(r.cp, "Put");
+    const EnginePricingInputs in = mode_a_inputs(to_oracle_row(r));
+    const auto continuous = atx::vol::american_implied_vol(
+        price_from_oracle_units(r.srPrc), in.spot, in.strike, in.years, in.rate, in.carry,
+        in.side, atx::vol::AmericanMethod::AndersenLake, kModeBIvTol, kModeBIvMaxIter,
+        mode_a_al_opts());
+    ASSERT_TRUE(continuous.has_value());
+    EXPECT_GT(std::abs(*continuous - r.srVol), 0.01)
+        << "premise broken: the continuous inversion no longer mis-measures this premium";
+  }
+  write_mode_b_cohort(root, rows, "AAA");
+  ASSERT_FALSE(::testing::Test::HasFatalFailure());
+
+  const auto run = run_oracle_bench(mode_b_args_at(root));
+  ASSERT_TRUE(run.has_value()) << run.error().to_string();
+  // Every row fits — under the stopgap every one of these was an engine error.
+  EXPECT_EQ(run->stats.rows_priced, 12);
+  EXPECT_EQ(run->stats.rows_engine_error, 0);
+  EXPECT_EQ(run->mode_b.rows_unfitted(), 0);
+  // Same bound as the American and European anchors: the inverter's own vol
+  // tolerance with an order of slack.
+  ASSERT_EQ(run->aggregate.vol.count, 12);
+  EXPECT_LT(run->aggregate.vol.mean(), 1.0e-5) << "lattice inversion did not recover srVol";
+  ASSERT_EQ(run->aggregate.price.count, 12);
+  EXPECT_LT(run->aggregate.price.mean(), 1.0e-4);
+  for (std::size_t i = 0; i < kGreekMetricSuffix.size(); ++i) {
+    EXPECT_EQ(run->aggregate.greeks[i].count, 12) << kGreekMetricSuffix[i];
+    EXPECT_LT(run->aggregate.greeks[i].mean(), 1.0e-3) << kGreekMetricSuffix[i];
+  }
+}
+
+// A tree mid AT the dividend-adjusted zero-vol floor admits no volatility, and
+// the refusal lands in the existing taxonomy (rows_below_lo_bound) exactly as
+// on the continuous legs — counted, never inverted, never a fabricated kIvMin
+// success. The floor here is the DISCRETE-dividend one: the deterministic
+// terminal leg subtracts the schedule's PV, so the dividend-blind continuous
+// bound would sit in the wrong place on this quote.
+TEST(OracleBenchModeB, RefusesATreeMidAtTheDividendAdjustedZeroVolFloor) {
+  using atx::vol::CashDividend;
+  const fs::path root = fresh_dir("mode-b-tree-refusal");
+  const double years = 120.0 / 365.0;
+  const std::vector<CashDividend> chain{{years, 2.0}};
+  std::vector<FixtureRow> rows;
+  // A healthy tree control row, so the refusal below is visibly selective.
+  {
+    FixtureRow r;
+    r.years = years;
+    r.ddiv = 2.0;
+    ASSERT_TRUE(fill_tree_outputs(r, chain)) << "fixture lattice pricing failed";
+    r.bidPrc = r.srPrc;
+    r.askPrc = r.srPrc;
+    rows.push_back(r);
+  }
+  // A deep-ITM call quoted AT the tree zero-vol floor: the larger of immediate
+  // intrinsic and the dividend-adjusted discounted forward leg.
+  {
+    FixtureRow r;
+    r.strike = 40.0;
+    r.years = years;
+    r.ddiv = 2.0;
+    ASSERT_TRUE(fill_tree_outputs(r, chain)) << "fixture lattice pricing failed";
+    const EnginePricingInputs in = mode_a_inputs(to_oracle_row(r));
+    const double pv = 2.0 * std::exp(-in.rate * years); // the at-expiry event's PV
+    const double floor_price =
+        std::max(in.spot - in.strike,
+                 in.spot * std::exp(-in.carry * years) - pv -
+                     in.strike * std::exp(-in.rate * years));
+    r.bidPrc = price_to_oracle_units(floor_price);
+    r.askPrc = r.bidPrc;
+    rows.push_back(r);
+  }
+  write_mode_b_cohort(root, rows, "AAA");
+  ASSERT_FALSE(::testing::Test::HasFatalFailure());
+
+  const auto run = run_oracle_bench(mode_b_args_at(root));
+  ASSERT_TRUE(run.has_value()) << run.error().to_string();
+  EXPECT_EQ(run->stats.rows_priced, 1);
+  EXPECT_EQ(run->stats.rows_engine_error, 0);
+  EXPECT_EQ(run->mode_b.rows_below_lo_bound, 1);
+  // NEVER a fabricated kIvMin success.
+  EXPECT_EQ(run->mode_b.rows_iv_at_floor, 0);
+  EXPECT_EQ(run->mode_b.rows_unfitted(), 1);
+  EXPECT_EQ(run->stats.rows_total, run->stats.rows_priced + run->stats.rows_null_sentinel +
+                                       run->stats.rows_bad_input + run->stats.rows_engine_error +
+                                       run->mode_b.rows_unfitted());
+}
+
+// The invariance control that licenses the rung: a ddiv == 0 row under the
+// pinned tree map is the tree's own no-dividend limit and keeps the CONTINUOUS
+// American inverter BIT-FOR-BIT — asserted by reproducing the run's fitted vol
+// with a direct `american_implied_vol` call at Mode B's own tolerance pair and
+// requiring exact (not approximate) agreement through the published aggregate.
+TEST(OracleBenchModeB, DividendFreeRowsKeepTheContinuousInverterBitForBit) {
+  const fs::path root = fresh_dir("mode-b-tree-ddiv0-invariance");
+  std::vector<FixtureRow> rows;
+  FixtureRow r;
+  r.years = 60.0 / 365.0;
+  ASSERT_TRUE(fill_oracle_outputs(r)) << "fixture pricing failed";
+  // A genuinely two-sided market whose mid sits OFF the model price, so the
+  // fitted vol is a real measurement (not srVol echoed back) and the equality
+  // below cannot pass by accident of a zero-width quote.
+  r.bidPrc = r.srPrc - 0.03;
+  r.askPrc = r.srPrc + 0.13;
+  rows.push_back(r);
+  write_mode_b_cohort(root, rows, "AAA");
+  ASSERT_FALSE(::testing::Test::HasFatalFailure());
+
+  // The pinned map routes this store's rows through the tree model; ddiv == 0
+  // is the premise that keeps them on the continuous inverter.
+  ASSERT_EQ(winning_convention().input_model, InputModel::DiscreteDividendTree);
+  const EnginePricingInputs in = mode_a_inputs(to_oracle_row(r));
+  const double mid = price_from_oracle_units(0.5 * (r.bidPrc + r.askPrc));
+  const auto direct = atx::vol::american_implied_vol(
+      mid, in.spot, in.strike, in.years, in.rate, in.carry, in.side,
+      atx::vol::AmericanMethod::AndersenLake, kModeBIvTol, kModeBIvMaxIter, mode_a_al_opts());
+  ASSERT_TRUE(direct.has_value());
+
+  const auto run = run_oracle_bench(mode_b_args_at(root));
+  ASSERT_TRUE(run.has_value()) << run.error().to_string();
+  EXPECT_EQ(run->stats.rows_priced, 1);
+  EXPECT_EQ(run->stats.rows_engine_error, 0);
+  ASSERT_EQ(run->aggregate.vol.count, 1);
+  // EXACT equality, deliberately: the aggregate's single observation is
+  // |fitted - srVol|, so bit-identical routing reproduces the direct
+  // inversion's error to the last bit. Any tolerance here would hide a leg
+  // swap behind "close enough".
+  EXPECT_EQ(run->aggregate.vol.mean(), std::abs(*direct - r.srVol))
+      << "ddiv == 0 row did not take the continuous American inverter bit-for-bit";
+}
+
 } // namespace

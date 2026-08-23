@@ -91,7 +91,16 @@ $script:OracleBenchTestIds = @(
   'OracleBenchModeB.EuropeanRowsInvertAgainstTheEuropeanLeg',
   'OracleBenchModeB.RefusesAEuropeanMidAtTheDiscountedForwardIntrinsic',
   'OracleBenchModeB.DeepItmEuropeanPutBelowIntrinsicStillInverts',
-  'OracleBenchModeB.AmericanRowsKeepTheAmericanBoundsAndInverter'
+  'OracleBenchModeB.AmericanRowsKeepTheAmericanBoundsAndInverter',
+  # Mode B, the TREE leg: the lattice inversion rung that lifted the 55a908aa
+  # stopgap. Tree-routed dividend rows invert against the V&N spliced lattice
+  # on their reconstructed schedule (round-trip anchor plus an asserted
+  # wrong-functional counterfactual), a mid at the dividend-adjusted zero-vol
+  # floor is refused into the existing taxonomy, and a ddiv == 0 row keeps the
+  # continuous American inverter bit-for-bit.
+  'OracleBenchModeB.TreeRoutedDividendRowsInvertOnTheLattice',
+  'OracleBenchModeB.RefusesATreeMidAtTheDividendAdjustedZeroVolFloor',
+  'OracleBenchModeB.DividendFreeRowsKeepTheContinuousInverterBitForBit'
 )
 # Pinned exactly like the OracleBench registry above: the Stage 3 suite is
 # discovered per gtest case, so a vanished or renamed case fails the gate
