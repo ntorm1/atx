@@ -157,6 +157,40 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   return std::exp(-r * t1) * sum * h / 3.0;
 }
 
+// The EUROPEAN sibling of the same decomposition, and the reason it has to
+// exist: put-call parity is STRUCTURALLY BLIND to the grid-bottom extrapolation.
+// The splice applies one linear operator to the value vector, `cont_C - cont_P`
+// is affine in the stock level, and a linear operator reproduces an affine
+// function exactly — so BOTH legs receive the identical extrapolation error and
+// `C - P` stays exact however wrong each leg is. Measured on one 6.00 dividend
+// at step 1 of 300: call error -2.518e-01, put error -2.518e-01, parity residual
+// 0. Only an ABSOLUTE reference sees that, so here is one.
+//
+//   V(0) = exp(-r*t1) * E[ V_BS(S_t1 - D, K, T - t1) ]
+//
+// exact for one dividend under the engine's spot-shift model, with no exercise
+// kink anywhere in the integrand (the `max(S_t1 - D, 0)` clamp sits ~42 sigma
+// into the tail for the parameters used here), so Simpson converges cleanly.
+[[nodiscard]] double vn_european_one_dividend(double S, double K, double T, double sigma, double r,
+                                              double D, double t1, Side side) {
+  constexpr int kNodes = 40000; // even: composite Simpson
+  constexpr double kZ = 10.0;
+  const double h = 2.0 * kZ / static_cast<double>(kNodes);
+  const double drift = (r - 0.5 * sigma * sigma) * t1;
+  const double diffusion = sigma * std::sqrt(t1);
+  const double inv_sqrt_2pi = 1.0 / std::sqrt(2.0 * std::acos(-1.0));
+  const auto integrand = [&](double z) {
+    const double s_cum = S * std::exp(drift + diffusion * z);
+    return inv_sqrt_2pi * std::exp(-0.5 * z * z) *
+           bs_price(std::max(s_cum - D, 0.0), K, T - t1, sigma, r, 0.0, side);
+  };
+  double sum = integrand(-kZ) + integrand(kZ);
+  for (int i = 1; i < kNodes; ++i) {
+    sum += ((i % 2) != 0 ? 4.0 : 2.0) * integrand(-kZ + h * static_cast<double>(i));
+  }
+  return std::exp(-r * t1) * sum * h / 3.0;
+}
+
 // ── Roll-Geske-Whaley, the classical closed form ─────────────────────────────
 //
 // RGW is exact for ONE cash dividend on an American call under the ESCROWED
@@ -384,7 +418,7 @@ TEST(DiscreteDivAmerican, EuropeanPutCallParity_HoldsWithSixDiscreteDividends) {
   // 5.222871e-05 before the grid-bottom extrapolation (see `splice_dividend`);
   // the earliest ex-date of this schedule lands on step 22, where the corner
   // node still carries ~(1-p)^22 of weight and the flat clamp was visible.
-  EXPECT_NEAR(worst, 5.1822980566385013e-05, 1.0e-9);
+  EXPECT_NEAR(worst, 5.1822980566385013e-05, 1.0e-9); // parity is blind, so this did NOT move
   EXPECT_LT(worst * 100.0, 0.0053) << "parity residual in ticks";
 }
 
@@ -394,21 +428,22 @@ TEST(DiscreteDivAmerican, EuropeanWithDividends_ReproducesReferencePriceAndGreek
                                                  kParityQ, Side::Call, schedule, 301,
                                                  ExerciseStyle::European);
   ASSERT_TRUE(call.has_value()) << call.error().to_string();
-  // All five anchors moved with the grid-bottom extrapolation, in the directions
-  // the geometry requires: the CALL value curve is increasing, so extrapolating
-  // below level[0] LOWERS the continuation the flat clamp held up
-  // (75.222227622486884 -> 75.222227558392603); the PUT curve is decreasing, so
-  // the same edit RAISES it (51.21952913918814 -> 51.219529480822089). The pair
-  // moves toward each other, which is the parity improvement above.
-  EXPECT_NEAR(call->price, 75.222227558392603, 1.0e-9);
+  // These anchors moved with the grid-bottom extrapolation, and BOTH LEGS MOVED
+  // BY THE SAME AMOUNT, which is the signature of the branch rather than a
+  // coincidence: the splice is a linear operator, so an extrapolation error is
+  // common to the call and the put and put-call parity above sees none of it.
+  // Call 75.222227622486884 (flat clamp) -> 75.222227558392603 (linear) ->
+  // 75.222227565387954 (quadratic); put 51.21952913918814 -> 51.219529480822089
+  // -> 51.219529487817411, the second step being +6.995e-09 on each.
+  EXPECT_NEAR(call->price, 75.222227565387954, 1.0e-9);
   EXPECT_NEAR(call->delta, 0.59491124565685172, 1.0e-9);
-  EXPECT_NEAR(call->gamma, 0.0023741849955113002, 1.0e-11);
+  EXPECT_NEAR(call->gamma, 0.0023741850780676448, 1.0e-11);
 
   const auto put = american_discrete_div_greeks(kParityS, 775.0, kParityT, kParitySigma, kParityR,
                                                 kParityQ, Side::Put, schedule, 301,
                                                 ExerciseStyle::European);
   ASSERT_TRUE(put.has_value()) << put.error().to_string();
-  EXPECT_NEAR(put->price, 51.219529480822089, 1.0e-9);
+  EXPECT_NEAR(put->price, 51.219529487817411, 1.0e-9);
   EXPECT_NEAR(put->delta, -0.39445572220346636, 1.0e-9);
 }
 
@@ -652,24 +687,31 @@ TEST(DiscreteDivAmerican, EuropeanPutOnACertainlyWorthlessStock_IsTheDiscountedS
                                         ExerciseStyle::European);
   // The flat clamp lost exactly level[0]*exp(-r*tau_grid) of this — 0.897723 —
   // and the loss is a lattice artefact, not a model statement, so the bar is
-  // machine precision and not a tolerance for it.
+  // machine precision and not a tolerance for it. This case is exact under any
+  // extrapolation rule, linear or quadratic: `post` is floored at 0 at every
+  // node, the put is affine in the level there, and both the first and second
+  // divided differences of an affine curve are what they are.
   EXPECT_NEAR(euro_put, exact, 1.0e-9);
 }
 
-// The same defect with the zero floor NEVER binding, so the two clamps cannot be
-// confused. European put-call parity is exactly the identity that sees it: C - P
-// is AFFINE in the stock level, so interpolation reproduces it exactly and
-// EXTRAPOLATION does too, while a flat clamp does not.
-//
-// WHERE it bites is the part worth stating, because a mid-tree ex-date hides it
-// completely. The bottom-edge branch fires on every splice, but the nodes it
-// fires on carry binomial weight ~(1-p)^k at step k, so a late ex-date multiplies
-// the error by ~1e-30 and a parity check there reads clean at machine precision
-// both before and after. An EARLY ex-date is where the corner has weight: the
-// same identity at tau = 0.05, worst over K in {60 .. 140}, measured
-//   D = 6  : 3.2922e-03 -> 1.9966e-12
-//   D = 12 : 9.9558e-02 -> 4.9613e-05   (residual: the ZERO floor now binds)
-// Both ex-dates are on-grid at 300 steps, so no part of this is ex-date rounding.
+// Parity here is a NECESSARY condition and not a sufficient one, and the test
+// below `EuropeanEarlyDividend_ParityIsBlindToTheGridBottom` is why: the splice
+// is one LINEAR operator on the value vector and C - P is affine in the stock
+// level, so any linear extrapolation reproduces the difference exactly while
+// leaving both legs equally wrong. What parity DOES catch is anything non-linear
+// bolted onto that branch, and a per-node `max(extrapolated, 0)` is exactly
+// that. Measured at tau = 0.05, worst over K in {60 .. 140}, at 300 steps:
+//   flat clamp                     D = 6 : 3.2922e-03    D = 12 : 9.9558e-02
+//   linear extrapolation + max(,0) D = 6 : 1.9966e-12    D = 12 : 4.9613e-05
+//   quadratic extrapolation, none  D = 6 : 1.9966e-12    D = 12 : 1.6804e-12
+// The D = 12 residual was recorded in an earlier revision as the post-dividend
+// ZERO floor binding, "a model statement, not an error". It was neither: at this
+// ex-step the lowest grid level is 77.119993, so `level[i] - 12.0 >= 65.12` and
+// the zero floor never fires at all. The clamp that fired was the
+// non-negativity one on the extrapolated CONTINUATION value, which linear
+// extrapolation of a convex call curve needs and quadratic extrapolation
+// mostly does not. Both ex-dates are on-grid at 300 steps, so no part of this is
+// ex-date rounding.
 TEST(DiscreteDivAmerican, EuropeanParityWithAnEarlyDividend_HoldsAtTheGridBottom) {
   constexpr double kS = 100.0, kT = 1.0, kSigma = 0.30, kR = 0.03;
   constexpr double kTau = 0.05; // == 15 * dt at 300 steps: on-grid, no rounding
@@ -686,8 +728,118 @@ TEST(DiscreteDivAmerican, EuropeanParityWithAnEarlyDividend_HoldsAtTheGridBottom
     }
     return worst;
   };
-  EXPECT_LT(worst_residual(6.0), 1.0e-11) << "parity must hold exactly when only the edge binds";
-  EXPECT_LT(worst_residual(12.0), 1.0e-4) << "the zero floor is a model statement, not an artefact";
+  EXPECT_LT(worst_residual(6.0), 1.0e-11);
+  EXPECT_LT(worst_residual(12.0), 1.0e-11)
+      << "nothing non-linear may sit on the grid-bottom branch";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  The grid bottom, measured ABSOLUTELY — the only way it can be measured
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The trap this scheme sets for its own tests, pinned so nobody falls into it
+// twice: put-call parity is STRUCTURALLY BLIND to the grid-bottom branch. Both
+// legs receive the identical extrapolation, `C - P` stays affine and exact, and
+// the residual sits at machine precision while both prices are 25 ticks wrong.
+TEST(DiscreteDivAmerican, EuropeanEarlyDividend_ParityIsBlindToTheGridBottom) {
+  constexpr double kS = 100.0, kK = 100.0, kT = 1.0, kSigma = 0.30, kR = 0.03;
+  constexpr double kTau = 1.0 / 300.0; // step 1 of 300: only two nodes to lean on
+  const std::vector<CashDividend> one{{kTau, 6.0}};
+  const double call =
+      price_or_fail(kS, kK, kT, kSigma, kR, 0.0, Side::Call, one, 300, ExerciseStyle::European);
+  const double put =
+      price_or_fail(kS, kK, kT, kSigma, kR, 0.0, Side::Put, one, 300, ExerciseStyle::European);
+  const double call_err =
+      call - vn_european_one_dividend(kS, kK, kT, kSigma, kR, 6.0, kTau, Side::Call);
+  const double put_err =
+      put - vn_european_one_dividend(kS, kK, kT, kSigma, kR, 6.0, kTau, Side::Put);
+  // 25 ticks of error on each leg...
+  EXPECT_NEAR(call_err, -0.2517970814, 1.0e-7);
+  EXPECT_NEAR(put_err, -0.2517970814, 1.0e-7);
+  // ...and the two are the SAME error to the summation noise of a 0.25 quantity,
+  // so parity sees exactly none of it.
+  EXPECT_NEAR(call_err, put_err, 1.0e-11);
+  const double parity =
+      (call - put) - (kS - 6.0 * std::exp(-kR * kTau) - kK * std::exp(-kR * kT));
+  EXPECT_LT(std::abs(parity), 1.0e-11) << "parity is clean while both legs are 25 ticks out";
+}
+
+// The absolute anchor the suite was missing. An ex-date three steps into a
+// 300-step year puts real binomial weight on the corner nodes, which is where
+// the grid-bottom branch decides the price. Measured against the exact European
+// decomposition of this same model:
+//
+//   K    flat clamp (call / put)   linear+max(,0)   quadratic
+//   60   +1.6784 / -0.0756         -0.0182 (both)   -0.0036 (both)
+//   100  +0.8753 / -0.8787         -0.0944 (both)   -0.0073 (both)
+//   140  +0.2336 / -1.5204         -0.0478 (both)   +0.0095 (both)
+//
+// The flat clamp is the only row where the two legs disagree, and its parity
+// residual was 1.7540 — which no test in this file was placed to see.
+TEST(DiscreteDivAmerican, EuropeanWithAnEarlyDividend_MatchesTheExactDecomposition) {
+  constexpr double kS = 100.0, kT = 1.0, kSigma = 0.30, kR = 0.03;
+  constexpr double kTau = 3.0 / 300.0; // on-grid at 300 steps
+  constexpr double kD = 6.0;
+  const std::vector<CashDividend> one{{kTau, kD}};
+  double worst = 0.0;
+  for (const double K : {60.0, 100.0, 140.0}) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const double got =
+          price_or_fail(kS, K, kT, kSigma, kR, 0.0, side, one, 300, ExerciseStyle::European);
+      const double exact = vn_european_one_dividend(kS, K, kT, kSigma, kR, kD, kTau, side);
+      worst = std::max(worst, std::abs(got - exact));
+    }
+  }
+  EXPECT_LT(worst, 1.0e-2) << "worst absolute error over six legs: " << worst;
+  EXPECT_NEAR(worst, 0.009539345169, 1.0e-8);
+}
+
+// The same statement at the scale the engine actually serves: SPY-sized spot, a
+// real quarterly amount, one step in. The flat clamp cost +63.18 ticks on the
+// call and -43.45 on the put; the extrapolation costs -3.64 ticks on each, and
+// that residual is the two-node grid at step 1, not the extrapolation rule.
+TEST(DiscreteDivAmerican, EuropeanAtSpyScale_TheGridBottomCostsUnderFourTicks) {
+  constexpr double kS = 775.8, kK = 775.0, kT = 1.0, kSigma = 0.18, kR = 0.041;
+  constexpr double kTau = 1.0 / 300.0;
+  constexpr double kD = 2.15;
+  const std::vector<CashDividend> one{{kTau, kD}};
+  for (const Side side : {Side::Call, Side::Put}) {
+    const double got =
+        price_or_fail(kS, kK, kT, kSigma, kR, 0.0, side, one, 300, ExerciseStyle::European);
+    const double exact = vn_european_one_dividend(kS, kK, kT, kSigma, kR, kD, kTau, side);
+    EXPECT_NEAR((got - exact) * 100.0, -3.644710, 1.0e-4)
+        << "ticks, side=" << (side == Side::Call ? "C" : "P");
+  }
+}
+
+// The American put anchor the suite did not have, and the claim it kills: "the
+// put anchors can only move if the grid-bottom edit touched something it should
+// not have" was FALSE. Every American-put anchor in this file sits at tau = 0.5,
+// tau = 0.9, or step 22 of the 775-scale schedule — exactly where the corner
+// weight (1-p)^k is negligible — so their invariance was a property of the anchor
+// set, not a discriminating check. Move the ex-date to step 3 and the same edit
+// moves an American put by 91 ticks.
+//
+// The bound is what gives this teeth rather than the pin: an American put can
+// never be worth less than its European sibling, and under the flat clamp it
+// WAS, by 52 ticks against the exact reference. That is a rigorous violation, not
+// a tolerance.
+TEST(DiscreteDivAmerican, AmericanPutWithAnEarlyDividend_ClearsItsEuropeanSibling) {
+  constexpr double kS = 100.0, kK = 100.0, kT = 1.0, kSigma = 0.30, kR = 0.03;
+  constexpr double kTau = 3.0 / 300.0;
+  constexpr double kD = 6.0;
+  const std::vector<CashDividend> one{{kTau, kD}};
+  const double european_exact =
+      vn_european_one_dividend(kS, kK, kT, kSigma, kR, kD, kTau, Side::Put);
+  EXPECT_NEAR(european_exact, 12.9821859272407, 1.0e-9);
+
+  const double american =
+      price_or_fail(kS, kK, kT, kSigma, kR, 0.0, Side::Put, one, 300, ExerciseStyle::American);
+  EXPECT_GT(american, european_exact)
+      << "an American put cannot be worth less than the European one; the flat clamp priced "
+         "12.4610785657936 against a 12.9821859272407 European";
+  // 12.4610785657936 flat clamp -> 13.2785762658791 linear -> this.
+  EXPECT_NEAR(american, 13.3718937351702, 1.0e-9);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1451,12 +1603,14 @@ TEST(DiscreteDivAmerican, GreekBundle_Price_IsPinnedAgainstAnyGreekSchemeChange)
   const DiscreteDivGreekBundle put = bundle_or_fail(kParityS, 775.0, kParityT, kParitySigma,
                                                     kParityR, kParityQ, Side::Put, schedule, 301,
                                                     ExerciseStyle::American);
-  // 75.222227622486997 before the grid-bottom extrapolation in `splice_dividend`;
-  // the earliest of these six ex-dates lands on step 22, where the corner node
-  // the flat clamp mishandled still carries ~(1-p)^22 of probability. The PUT is
-  // untouched to the last bit, which is what says the move is the edge and not
-  // the exercise rule.
-  EXPECT_DOUBLE_EQ(call.price, 75.22222755839276);
+  // 75.222227622486997 with the flat clamp, 75.22222755839276 with a linear
+  // extrapolation, this with the quadratic; the earliest of these six ex-dates
+  // lands on step 22, where the corner node still carries ~(1-p)^22 of
+  // probability. The PUT is untouched to the last bit here, which says the move
+  // is the edge and not the exercise rule — but see
+  // AmericanPutWithAnEarlyDividend_ClearsItsEuropeanSibling: put invariance is a
+  // property of WHERE this schedule's ex-dates sit, not of the edit.
+  EXPECT_DOUBLE_EQ(call.price, 75.222227565388096);
   EXPECT_DOUBLE_EQ(put.price, 54.128579425756222);
 
   const DiscreteDivGreekBundle euro_call = bundle_or_fail(100.0, 97.0, 1.0, 0.25, 0.04, 0.01,
@@ -1999,6 +2153,52 @@ TEST(DiscreteDivRoute, ZeroAmountsAreDroppedAndNegativeOnesFailClosedDownstream)
   EXPECT_EQ(priced.error().code(), ErrorCode::InvalidArgument);
 }
 
+// The two boundary instants, both reachable and both previously untested.
+//
+// AT THE VALUATION INSTANT the two routes genuinely disagree, and this is the
+// case the header used to claim could not happen under Calendar365.
+// `forward_div_corrected` admits `ex_date_ns == now_ts_ns` and subtracts the
+// full UNDISCOUNTED amount; the lattice's window is open at 0 and there is no
+// step-0 splice, so it cannot price that cash at all. It is reached whenever
+// both timestamps are date-snapped to the same midnight — valuing on the morning
+// of an ex-date — so the route counts it instead of pretending it is zero.
+TEST(DiscreteDivRoute, AnExDateOnTheValuationInstant_IsCountedNotSpliced) {
+  const std::vector<atx::vol::DividendEvent> evs{{kNow, 2.00}, {at_years(0.40), 2.00}};
+  const std::int64_t expiry = at_years(0.75);
+  const double T = static_cast<double>(expiry - kNow) / atx::vol::kCalendarYearNs;
+  const auto route = atx::vol::discrete_div_route(evs, expiry, kNow, T, 0.041,
+                                                  atx::vol::DiscreteDivPolicy::Lattice);
+  ASSERT_TRUE(route.applies());
+  EXPECT_EQ(route.schedule.size(), 1U);
+  EXPECT_EQ(route.n_outside_tau_window, 1U);
+  // And the disagreement is real, not bookkeeping: the escrowed forward removes
+  // BOTH amounts, this route's pv only the second, so the count is the caller's
+  // warning that an escrow-versus-lattice comparison is not like-for-like here.
+  const double escrowed_pv =
+      775.8 - atx::vol::forward_div_corrected(775.8, 0.041, T, evs, expiry, kNow) *
+                  std::exp(-0.041 * T);
+  EXPECT_NEAR(escrowed_pv - route.pv, 2.00, 1.0e-9)
+      << "the undiscounted same-instant amount the lattice cannot see";
+}
+
+// AT EXPIRY the two agree: tau == T exactly under Calendar365, the tau window is
+// closed at T, and the lattice applies the amount to its terminal payoff.
+TEST(DiscreteDivRoute, AnExDateOnExpiry_IsAdmittedByBothWindows) {
+  const std::int64_t expiry = at_years(0.75);
+  const double T = static_cast<double>(expiry - kNow) / atx::vol::kCalendarYearNs;
+  const std::vector<atx::vol::DividendEvent> evs{{at_years(0.40), 2.00}, {expiry, 2.35}};
+  const auto route = atx::vol::discrete_div_route(evs, expiry, kNow, T, 0.041,
+                                                  atx::vol::DiscreteDivPolicy::Lattice);
+  ASSERT_TRUE(route.applies());
+  EXPECT_EQ(route.schedule.size(), 2U);
+  EXPECT_EQ(route.n_outside_tau_window, 0U);
+  EXPECT_DOUBLE_EQ(route.schedule[1].tau, T);
+  const double escrowed_pv =
+      775.8 - atx::vol::forward_div_corrected(775.8, 0.041, T, evs, expiry, kNow) *
+                  std::exp(-0.041 * T);
+  EXPECT_NEAR(escrowed_pv, route.pv, 1.0e-9) << "same cash, both routes";
+}
+
 // The route decision is worth making, stated as a price rather than as an
 // argument: the same chain, the same cash, the two routes, one number apart.
 TEST(DiscreteDivRoute, TheTwoRoutesDisagreeByFarMoreThanEitherOnesNoise) {
@@ -2032,5 +2232,6 @@ TEST(DiscreteDivRoute, TheTwoRoutesDisagreeByFarMoreThanEitherOnesNoise) {
         << (lattice - escrowed) * 100.0;
   }
 }
+
 
 } // namespace

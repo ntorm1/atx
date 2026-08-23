@@ -29,11 +29,6 @@ using atx::core::Ok;
 
 namespace {
 
-// A `tau` this far past `T` (relatively) is still treated as landing AT expiry.
-// A dividend ex-date reconstructed from the same year-fraction column as `T`
-// must not be dropped by one ulp of that column.
-inline constexpr double kTauAtExpiryRelTol = 1.0e-12;
-
 // Turns "stock level minus strike" into the exercise payoff for either side.
 [[nodiscard]] constexpr double payoff_sign(Side side) noexcept {
   return (side == Side::Call) ? 1.0 : -1.0;
@@ -94,15 +89,29 @@ struct LatticeOutcome {
 
 // Detail 1 of 3 (header): at an ex-step BELOW expiry the continuation value is
 // re-read on the shifted grid by LINEAR interpolation. Above the top node it is
-// clamped; BELOW the bottom node it is EXTRAPOLATED along the grid's own lowest
-// segment, because `post = level[i] - amount` sits under `level[0]` for the low
-// nodes at EVERY splice with a positive amount — the bottom edge is the common
-// case here, not a corner. A flat clamp there says the option stops responding
-// to spot below the grid; an American put's exercise floor hides that, a
-// EUROPEAN put — the side every validating parity identity is written on — does
-// not. Measured: the ruinous-dividend European put moved 96.146830 -> 97.044553,
-// the latter being K*exp(-r*T) exactly, and the flat clamp's deficit was
-// level[0]*exp(-r*tau_grid) to the last digit.
+// clamped; BELOW the bottom node it is EXTRAPOLATED — quadratically through the
+// three lowest nodes, linearly when only two survive — because
+// `post = level[i] - amount` sits under `level[0]` for the low nodes at EVERY
+// splice with a positive amount, so the bottom edge is the common case here and
+// not a corner. A flat clamp there says the option stops responding to spot
+// below the grid; an American put's exercise floor hides that, a EUROPEAN put
+// does not. Measured: the ruinous-dividend European put moved 96.146830 ->
+// 97.044553, the latter being K*exp(-r*T) exactly, and the flat clamp's deficit
+// was level[0]*exp(-r*tau_grid) to the last digit.
+//
+// THREE properties of this branch are load-bearing and each is measured at the
+// header's declaration:
+//   * NOTHING is clamped in it. The splice is one LINEAR operator on the value
+//     vector and cont_call - cont_put is affine in the stock level, so a linear
+//     extrapolation reproduces put-call parity exactly and hands both legs the
+//     same absolute error. A per-node max(., 0) is not linear; it desynchronises
+//     the legs and is the ONLY thing that can break parity here.
+//   * Consequently PUT-CALL PARITY CANNOT TEST THIS BRANCH. An absolute
+//     reference must (tests/discrete_div_american_test.cpp).
+//   * Quadratic, because option value is convex in spot: a linear extension from
+//     the lowest segment is a rigorous lower bound and undershoots one-sidedly.
+//     The divided-difference term is >= 0 on convex data, so it only adds to
+//     that bound.
 //
 // Post-dividend levels are the same monotone sequence shifted down, so one
 // forward sweep of the bracket index `j` serves every node: a two-pointer merge,
@@ -130,15 +139,28 @@ void splice_dividend(std::span<double> level, std::span<double> value, std::span
   // single surviving node there is no segment and the flat clamp is all that
   // exists; that step is the root, where `post <= lo` cannot bind on a node the
   // caller reads (`value[0]` is the answer either way).
+  // Newton divided differences over the three lowest surviving nodes. At two
+  // nodes the second difference does not exist and `lo_curv` stays 0, which
+  // degrades the expression below to the linear extension; at one node there is
+  // no segment either and it degrades to the flat value, which is the whole
+  // answer at that step anyway (`value[0]` is what the caller reads).
   const double lo_slope = (last >= 1U) ? ((value[1] - value[0]) / (level[1] - level[0])) : 0.0;
+  double lo_curv = 0.0;
+  double lo_next = lo;
+  if (last >= 2U) {
+    const double d12 = (value[2] - value[1]) / (level[2] - level[1]);
+    lo_curv = (d12 - lo_slope) / (level[2] - level[0]);
+    lo_next = level[1];
+  }
   std::size_t j = 0;
   for (std::size_t i = 0; i <= last; ++i) {
     const double post = std::max(level[i] - amount, 0.0);
     double cont = 0.0;
     if (post <= lo) {
-      // Floored at zero: no option is worth less than nothing, and a call's
-      // near-flat lowest segment can extrapolate marginally negative.
-      cont = std::max(value[0] + lo_slope * (post - lo), 0.0);
+      // No max(., 0) here, deliberately: see the note above. Both factors of the
+      // quadratic term are negative below `lo`, so on convex data the term is
+      // >= 0 and the result never falls below the linear lower bound.
+      cont = value[0] + lo_slope * (post - lo) + lo_curv * (post - lo) * (post - lo_next);
     } else if (post >= hi) {
       cont = value[last];
     } else {

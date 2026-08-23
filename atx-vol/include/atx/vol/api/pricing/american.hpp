@@ -758,14 +758,42 @@ assignment_risk(double S, double K, double T, double sigma, double r, double q, 
 //      escrowed cash too. That is a caller's parity identity, not this
 //      function's output, but getting it wrong reads as a constant offset.)
 //      Distinct from that floor, and equally load-bearing: below the LOWEST grid
-//      node the continuation value is linearly EXTRAPOLATED, not held flat.
-//      `post = level[i] - amount` sits under `level[0]` for the low nodes at
-//      EVERY splice, so this is the common case and not a corner; a flat clamp
-//      says the option stops responding to spot there, which an American put's
-//      exercise floor hides and a European put does not. It cost European
-//      put-call parity 3.2922e-3 at a tau=0.05 ex-date of 6.00 on a 100 stock
-//      (1.9966e-12 after), and it was pinning the ruinous-dividend European put
+//      node the continuation value is EXTRAPOLATED — quadratically through the
+//      three lowest nodes, or linearly when only two survive — and never held
+//      flat, and never clamped. `post = level[i] - amount` sits under `level[0]`
+//      for the low nodes at EVERY splice, so this is the common case and not a
+//      corner; a flat clamp says the option stops responding to spot there,
+//      which an American put's exercise floor hides and a European put does not.
+//      Measured against the exact European decomposition of this same model, one
+//      6.00 dividend three steps into a 300-step year on a 100 stock: the flat
+//      clamp cost +0.8753 on the call and -0.8787 on the put at the money, a
+//      linear extrapolation -0.0944 on both, the quadratic -0.0073 on both. At
+//      SPY scale (775.8 spot, 2.15 of cash on step 1 of 300) the flat clamp cost
+//      +63.18 ticks on the call and -43.45 on the put where the extrapolation
+//      costs -3.64 on each. It was also pinning the ruinous-dividend European put
 //      at 96.146830 where the only defensible value is K*exp(-r*T) = 97.044553.
+//
+//      NOTHING is clamped in that branch, and the reason is a property of the
+//      splice rather than a preference: it applies ONE LINEAR OPERATOR to the
+//      value vector, and `cont_call - cont_put` is affine in the stock level, so
+//      any linear extrapolation reproduces the parity difference EXACTLY while
+//      giving both legs the identical absolute error. A per-node
+//      `max(extrapolated, 0)` is not linear, desynchronises the two legs, and is
+//      the only thing that can make European put-call parity fail here — it
+//      measured a 4.96e-05 residual that vanishes to 1.68e-12 without it. The
+//      corollary is the trap this scheme sets for its own tests: PUT-CALL PARITY
+//      CANNOT SEE THIS BRANCH AT ALL. Both legs are wrong by the same amount and
+//      the residual stays at machine precision, so only an ABSOLUTE reference
+//      measures it (`vn_european_one_dividend` in the tests).
+//
+//      Quadratic rather than linear because option value is CONVEX in spot, so a
+//      linear extension from the lowest segment is a rigorous lower bound and
+//      undershoots — one-sidedly, by 12x more than the quadratic at an early
+//      ex-date. The quadratic's divided-difference term is >= 0 on convex data,
+//      so it only ever adds to the linear bound; where the true curvature decays
+//      faster than quadratic it can overshoot slightly (measured +0.043 against
+//      the linear -0.302 at K=140), which is a 7x improvement in magnitude and
+//      the reason it is not guarded.
 //
 // THREE entry points, in increasing cost. `american_discrete_div_price` is one
 // rollback. `american_discrete_div_greeks` is the SAME rollback, additionally
@@ -786,8 +814,8 @@ assignment_risk(double S, double K, double T, double sigma, double r, double q, 
 // expressible here, and it is sound ONLY while `tau` is on the option's own
 // clock as the paragraph above requires. `forward_div_corrected` compares
 // INSTANTS, which is clock-independent, and no longer screens on `T` at all. A
-// `tau` marginally past `T` (within a relative 1e-12) still counts as landing
-// AT expiry, so a schedule whose ex-date was reconstructed from the same
+// `tau` marginally past `T` (within `kTauAtExpiryRelTol`) still counts as
+// landing AT expiry, so a schedule whose ex-date was reconstructed from the same
 // year-fraction column as `T` is not silently dropped by one ulp.
 struct CashDividend {
   double tau = 0.0;    // ex-date, year-fraction from valuation; admitted on (0, T]
@@ -799,6 +827,12 @@ struct CashDividend {
 // ticks, ~58x smaller than the residual the dividend treatment itself carries,
 // so the step count is not the binding constraint on agreement.
 inline constexpr int kDiscreteDivDefaultSteps = 301;
+
+// A `tau` this far past `T` (relatively) is still treated as landing AT expiry.
+// PUBLIC because `discrete_div_route` (dividend.hpp) has to apply the SAME
+// window this engine applies — its whole contract is that the two routes see the
+// same cash — and a duplicated literal is how that quietly stops being true.
+inline constexpr double kTauAtExpiryRelTol = 1.0e-12;
 
 // Bounded-loop / allocation guard (JPL rule 2). The rollback is O(steps^2) and
 // each lattice buffer is `steps + 1` doubles; a caller asking for more than this

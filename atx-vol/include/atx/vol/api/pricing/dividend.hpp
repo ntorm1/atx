@@ -249,8 +249,13 @@ struct CoTermQuote {
 //   Andersen-Lake implied vol (1e-4, 48 iters)         934 us      2.44x
 //   V&N lattice price, 301 steps                     1,276 us      3.33x
 //   V&N lattice price, 101 steps                       172 us      0.45x
-//   V&N lattice implied vol, 301 steps (15 solves)  15,771 us     41.2x
-//   V&N lattice implied vol, 101 steps (15 solves)   1,892 us      4.94x
+//   V&N lattice implied vol, 301 steps              15,771 us     41.2x
+//   V&N lattice implied vol, 101 steps               1,892 us      4.94x
+//
+// (the inversion is a 1e-4 bisection; its cost is NOT the solve count times the
+// price above, because the bracket walks sigma across the whole [0.005, 3.0]
+// range and the per-solve cost varies with it — 15,771/1,276 = 12.4 and
+// 1,892/172 = 11.0 against a bisection that ran 15 iterations)
 //
 // So the route is affordable ONE PRICE AT A TIME and not inside a root find:
 // against the Andersen-Lake inversion the lattice inversion is 16.9x at the step
@@ -285,11 +290,20 @@ struct DiscreteDivRoute {
   double pv = 0.0;
   // Events the INSTANT window admitted (ex-date in [now, expiry], the window
   // `forward_div_corrected` sums) that the lattice's TAU window (0, T] then
-  // rejected. Under the Calendar365 clock this is 0 by construction; under a
-  // vol-time `T` it is not, because a calendar tau and a weekend-compressed T
-  // are not comparable — see the note in `forward_div_corrected`. Counted
-  // instead of silently dropped: a non-zero value means the two routes are
-  // pricing different cash and the escrow comparison is not like-for-like.
+  // rejected. Counted instead of silently dropped: a non-zero value means the
+  // two routes are pricing different cash and the escrow comparison is not
+  // like-for-like. TWO ways it becomes non-zero, and neither is exotic:
+  //   * an ex-date ON the valuation instant (`ex_date_ns == now_ts_ns`). The
+  //     escrowed forward admits it and subtracts the full UNDISCOUNTED amount;
+  //     the lattice's window is open at 0 and there is no step-0 splice, so the
+  //     lattice cannot price it at all. Reachable whenever both timestamps are
+  //     date-snapped to the same midnight — i.e. valuing on the morning of an
+  //     ex-date, which is exactly when the cash matters most.
+  //   * a vol-time `T`, where a calendar tau and a weekend-compressed `T` are
+  //     not comparable — see the note in `forward_div_corrected`.
+  // The CLOSING end is not a source: `ex_date_ns == expiry_ns` gives tau == T
+  // under Calendar365 and is admitted by both routes (the lattice applies it to
+  // the terminal payoff).
   std::size_t n_outside_tau_window = 0;
   [[nodiscard]] bool applies() const noexcept { return !schedule.empty(); }
 };
@@ -306,6 +320,10 @@ struct DiscreteDivRoute {
 // A zero amount is dropped (it is a no-op for both routes). A NEGATIVE amount is
 // kept, so it reaches `american_discrete_div_price`'s validation and fails
 // closed there rather than being silently discarded here.
+//
+// The tau window is `american.hpp`'s own `kTauAtExpiryRelTol`, shared rather
+// than restated, because the header's promise that the two routes see the same
+// cash is only as good as the two windows staying identical.
 //
 // @param policy  Escrow returns an empty route unconditionally; that is the
 //                switch a bisection flips, and it is why this function is the

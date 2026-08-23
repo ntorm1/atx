@@ -207,14 +207,25 @@ DiscreteDivRoute discrete_div_route(std::span<const DividendEvent> cash_divs,
                                     std::int64_t expiry_ns, std::int64_t now_ts_ns, double T,
                                     double r, DiscreteDivPolicy policy) {
   DiscreteDivRoute out;
-  if (policy != DiscreteDivPolicy::Lattice || !(T > 0.0) || !std::isfinite(T) ||
-      !std::isfinite(r)) {
+  // Exhaustive on the enum with no `default`, so adding a third policy fails to
+  // COMPILE here rather than silently falling into escrow (agent profile §3).
+  bool routed = false;
+  switch (policy) {
+  case DiscreteDivPolicy::Escrow:
+    routed = false;
+    break;
+  case DiscreteDivPolicy::Lattice:
+    routed = true;
+    break;
+  }
+  if (!routed || !(T > 0.0) || !std::isfinite(T) || !std::isfinite(r)) {
     return out;
   }
-  // The lattice admits a tau marginally past T as landing AT expiry, for the
-  // same reason it does internally: an ex-date reconstructed from the same
-  // year-fraction column as T must not be lost to one ulp of that column.
-  const double tau_at_expiry = T * (1.0 + 1.0e-12);
+  // The engine's OWN tolerance, not a copy of its literal: it admits a tau
+  // marginally past T as landing at expiry so an ex-date reconstructed from the
+  // same year-fraction column as T is not lost to one ulp, and the two windows
+  // have to agree for the route's same-cash contract to mean anything.
+  const double tau_at_expiry = T * (1.0 + kTauAtExpiryRelTol);
   out.schedule.reserve(cash_divs.size());
   for (const DividendEvent &ev : cash_divs) {
     // Instant window, byte-for-byte the one `forward_div_corrected` sums.
