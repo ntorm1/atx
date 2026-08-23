@@ -288,10 +288,20 @@ double ndx_true_sigma(double K) {
 } // namespace
 
 // CONTROL: the default (price_tol = 0) inversion is the pre-change binary,
-// BIT FOR BIT. Golden bit patterns captured from the 469d313c build with this
-// exact call shape (Mode B's leg: AndersenLake, tol 1e-6, max_iter 64,
-// al_fast_opts). A change here means the control property broke — the default
-// path must never move as a side effect of the price-unit extension.
+// BIT FOR BIT, with this exact call shape (Mode B's leg: AndersenLake, tol 1e-6,
+// max_iter 64, al_fast_opts). A change here means the control property broke —
+// the default path must never move as a side effect of the price-unit extension.
+//
+// RE-PINNED at the T3 Newton-slope change (secant over the two most recent
+// residual evaluations instead of the Black-76 proxy vega). That change moves the
+// cold-route search PATH by construction, so the converged root moves inside the
+// requested tol — 6.0e-8 and 4.0e-7 in sigma at tol = 1e-6. Re-pinning is only
+// legitimate because the new roots are strictly MORE accurate on the cold
+// reference map, measured at capture:
+//   OTM put   |resid| 1.000e-5 -> 8.003e-6, |sigma - 0.22| 2.983e-7 -> 2.387e-7
+//   NDX corner|resid| 1.815e-2 -> 1.502e-2
+// The control property itself is unchanged: price_tol = 0 must still reproduce
+// these bits exactly.
 TEST(AmericanIv, PricePolishDefaultOffIsBitForBitControl) {
   const std::optional<AlOpts> opts = atx::vol::al_fast_opts();
   {
@@ -303,7 +313,7 @@ TEST(AmericanIv, PricePolishDefaultOffIsBitForBitControl) {
                                          AmericanMethod::AndersenLake, 1.0e-6, 64, opts,
                                          /*correction=*/nullptr, /*warm_start=*/0.0);
     ASSERT_TRUE(iv.has_value());
-    EXPECT_EQ(std::bit_cast<std::uint64_t>(*iv), 0x3fcc28f341ddfb00ULL)
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(*iv), 0x3fcc28f3c1e76011ULL)
         << "default-path IV moved: " << std::setprecision(17) << *iv;
   }
   {
@@ -318,7 +328,7 @@ TEST(AmericanIv, PricePolishDefaultOffIsBitForBitControl) {
                                          AmericanMethod::AndersenLake, 1.0e-6, 64, opts,
                                          /*correction=*/nullptr, c.warm);
     ASSERT_TRUE(iv.has_value());
-    EXPECT_EQ(std::bit_cast<std::uint64_t>(*iv), 0x3fcc8a65a9ba178cULL)
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(*iv), 0x3fcc8a690ad53f53ULL)
         << "default-path IV moved at the hard corner: " << std::setprecision(17) << *iv;
   }
 }
@@ -401,48 +411,62 @@ TEST(AmericanIv, PricePolishClosesWarmColdGapOnHighVegaPuts) {
 TEST(AmericanIv, PricePolishKeepsCollapsedVegaProtection) {
   const double S = 100.0;
   int checked = 0;
+  int bolted_n = 0;
   int reverted = 0;
-  for (double K : {110.0, 115.0, 120.0}) {
-    for (double sig : {0.08, 0.10}) {
-      const double T = 2.0, r = 0.05, q = 0.0;
-      const double p = value_or_fail(
-          atx::vol::american_price(S, K, T, sig, r, q, Side::Put, AmericanMethod::AndersenLake));
-      if (!std::isfinite(p)) {
-        continue;
-      }
-      double xl = 0.0, xh = 0.0;
-      bool ran = false, clamped = false;
-      const auto base = atx::vol::american_implied_vol_polish_traced(
-          p, S, K, T, r, q, Side::Put, 1.0e-7, 64, std::nullopt, /*warm_start=*/0.0, xl, xh, ran,
-          clamped);
-      bool bolted = false, bolt_reverted = false;
-      const auto tight = atx::vol::american_implied_vol_polish_traced(
-          p, S, K, T, r, q, Side::Put, 1.0e-7, 64, std::nullopt, /*warm_start=*/0.0, xl, xh, ran,
-          clamped, /*price_tol=*/1.0e-12, &bolted, &bolt_reverted);
-      if (!base.has_value() || !tight.has_value() || !ran) {
-        continue;
-      }
-      ++checked;
-      const double resid_base = std::fabs(
-          value_or_fail(atx::vol::american_price(S, K, T, *base, r, q, Side::Put,
-                                                 AmericanMethod::AndersenLake)) -
-          p);
-      const double resid_tight = std::fabs(
-          value_or_fail(atx::vol::american_price(S, K, T, *tight, r, q, Side::Put,
-                                                 AmericanMethod::AndersenLake)) -
-          p);
-      // Never worse on the cold map than the sigma-polish result, and never
-      // outside the inverter's own domain — the observable halves of the
-      // preserved protection (see the banner: reducing bolts are accepted).
-      EXPECT_LE(resid_tight, resid_base + 1.0e-12) << "K=" << K << " sig=" << sig;
-      EXPECT_GE(*tight, atx::vol::kIvMin) << "K=" << K << " sig=" << sig;
-      EXPECT_LE(*tight, 40.0) << "K=" << K << " sig=" << sig; // kSigmaHiCap
-      if (bolt_reverted) {
-        ++reverted;
+  // Widened at the T3 Newton-slope change. The secant slope lands the rtsafe root
+  // closer to the cold root, so on the ORIGINAL 3x2 grid every bolt now REDUCES
+  // the cold residual and the revert half of the protection went unexercised —
+  // a coverage loss, not a behaviour change. Reaching further onto the flat
+  // plateau (longer T, nearer intrinsic, lower vol) engages it again.
+  for (double K : {110.0, 115.0, 120.0, 125.0, 130.0, 135.0, 140.0}) {
+    for (double sig : {0.04, 0.06, 0.08, 0.10, 0.14}) {
+      for (double T : {1.0, 2.0, 3.0, 5.0}) {
+        const double r = 0.05, q = 0.0;
+        const double p = value_or_fail(atx::vol::american_price(S, K, T, sig, r, q, Side::Put,
+                                                                AmericanMethod::AndersenLake));
+        if (!std::isfinite(p)) {
+          continue;
+        }
+        double xl = 0.0, xh = 0.0;
+        bool ran = false, clamped = false;
+        const auto base = atx::vol::american_implied_vol_polish_traced(
+            p, S, K, T, r, q, Side::Put, 1.0e-7, 64, std::nullopt, /*warm_start=*/0.0, xl, xh, ran,
+            clamped);
+        bool bolted = false, bolt_reverted = false;
+        const auto tight = atx::vol::american_implied_vol_polish_traced(
+            p, S, K, T, r, q, Side::Put, 1.0e-7, 64, std::nullopt, /*warm_start=*/0.0, xl, xh, ran,
+            clamped, /*price_tol=*/1.0e-12, &bolted, &bolt_reverted);
+        if (!base.has_value() || !tight.has_value() || !ran) {
+          continue;
+        }
+        ++checked;
+        const double resid_base =
+            std::fabs(value_or_fail(atx::vol::american_price(S, K, T, *base, r, q, Side::Put,
+                                                             AmericanMethod::AndersenLake)) -
+                      p);
+        const double resid_tight =
+            std::fabs(value_or_fail(atx::vol::american_price(S, K, T, *tight, r, q, Side::Put,
+                                                             AmericanMethod::AndersenLake)) -
+                      p);
+        // Never worse on the cold map than the sigma-polish result, and never
+        // outside the inverter's own domain — the observable halves of the
+        // preserved protection (see the banner: reducing bolts are accepted).
+        EXPECT_LE(resid_tight, resid_base + 1.0e-12) << "K=" << K << " sig=" << sig << " T=" << T;
+        EXPECT_GE(*tight, atx::vol::kIvMin) << "K=" << K << " sig=" << sig << " T=" << T;
+        EXPECT_LE(*tight, 40.0) << "K=" << K << " sig=" << sig << " T=" << T; // kSigmaHiCap
+        if (bolted) {
+          ++bolted_n;
+        }
+        if (bolt_reverted) {
+          ++reverted;
+        }
       }
     }
   }
+  std::cout << "[A3 protection] corners=" << checked << " bolted=" << bolted_n
+            << " reverted=" << reverted << "\n";
   EXPECT_GT(checked, 0);
+  EXPECT_GT(bolted_n, 0) << "sweep never attempted a beyond-drift-cap bolt";
   EXPECT_GT(reverted, 0) << "sweep never exercised the residual-increasing-bolt revert path";
 }
 
@@ -588,6 +612,93 @@ TEST(AmericanIv, PriceAtIntrinsic_ClampsToFloor) {
   const auto iv = american_implied_vol(40.0, S, K, T, r, q, Side::Put);
   ASSERT_TRUE(iv.has_value()) << (iv ? std::string{} : iv.error().to_string());
   EXPECT_DOUBLE_EQ(*iv, atx::vol::kIvMin);
+}
+
+// ── T1: the zero-vol American bound, not the immediate intrinsic ─────────
+//
+// The screen above the search used to compare the quote against the IMMEDIATE
+// intrinsic max(0, S-K) only. That is just the t = 0 corner of the sigma -> 0
+// American value; the t = T corner is the discounted forward intrinsic
+// df*(F-K)^+, and for a call with r > q it is the LARGER of the two. A quote
+// between the two carries no volatility at all — no sigma > 0 reproduces it —
+// yet it passed the screen, tripped residual(kSigmaLo) >= 0 inside the bracket
+// and came back as Ok(kIvMin): a SUCCESS publishing 0.005 as a MEASURED vol
+// (docs/LEDGER.md). The inverter must now refuse it and say why.
+
+TEST(AmericanIv, PriceBelowZeroVolForwardBound_Call_ReturnsOutOfRange) {
+  const double S = 100.0, K = 90.0, T = 1.0, r = 0.05, q = 0.0;
+  // Immediate intrinsic = 10.0, so 10.05 clears the OLD screen. The zero-vol
+  // value is S - K*e^{-rT} = 100 - 90*e^{-0.05} = 14.389..., so the quote is
+  // unidentifiable. Proven with the library's OWN forward map rather than a
+  // restated constant: the American price is increasing in sigma, so a price at
+  // a sigma far BELOW the reported floor already exceeding the quote means no
+  // positive sigma reproduces it.
+  const double p_sub_floor = value_or_fail(american_price(S, K, T, 1.0e-6, r, q, Side::Call,
+                                                          AmericanMethod::AndersenLake));
+  ASSERT_GT(p_sub_floor, 10.05) << "fixture broken: the quote is identifiable after all";
+
+  const auto iv = american_implied_vol(10.05, S, K, T, r, q, Side::Call);
+  ASSERT_FALSE(iv.has_value()) << "returned " << (iv ? *iv : 0.0) << " as a MEASURED vol";
+  EXPECT_EQ(iv.error().code(), atx::vol::ErrorCode::OutOfRange);
+  EXPECT_NE(iv.error().message().find("zero-vol"), std::string::npos) << iv.error().to_string();
+}
+
+// The clamp side of the same boundary: a quote AT the zero-vol value is the
+// documented sigma -> 0 case and still reports the floor, so the fix moves the
+// boundary, it does not delete the clamp.
+TEST(AmericanIv, PriceAtZeroVolForwardBound_Call_ClampsToFloor) {
+  const double S = 100.0, K = 90.0, T = 1.0, r = 0.05, q = 0.0;
+  const double zero_vol = S - K * std::exp(-r * T); // = df*(F-K), the t = T corner
+  const auto iv = american_implied_vol(zero_vol, S, K, T, r, q, Side::Call);
+  ASSERT_TRUE(iv.has_value()) << (iv ? std::string{} : iv.error().to_string());
+  EXPECT_DOUBLE_EQ(*iv, atx::vol::kIvMin);
+}
+
+// ... and a quote just above it still inverts to its true vol, so the widened
+// screen costs no identifiable quote.
+TEST(AmericanIv, PriceAboveZeroVolForwardBound_Call_StillInverts) {
+  const double S = 100.0, K = 90.0, T = 1.0, r = 0.05, q = 0.0, sigma = 0.08;
+  const double p = value_or_fail(
+      american_price(S, K, T, sigma, r, q, Side::Call, AmericanMethod::AndersenLake));
+  const auto iv = american_implied_vol(p, S, K, T, r, q, Side::Call);
+  ASSERT_TRUE(iv.has_value()) << (iv ? std::string{} : iv.error().to_string());
+  EXPECT_NEAR(*iv, sigma, 1.0e-5);
+}
+
+// Puts with r > q keep the immediate intrinsic as the binding corner (K*e^{-rT}
+// - S*e^{-qT} < K - S there), so the put front door is untouched by the fix.
+TEST(AmericanIv, PutZeroVolBoundIsImmediateIntrinsic_Unchanged) {
+  const double S = 100.0, K = 140.0, T = 1.0, r = 0.05, q = 0.0; // intrinsic = 40
+  const auto at = american_implied_vol(40.0, S, K, T, r, q, Side::Put);
+  ASSERT_TRUE(at.has_value()) << (at ? std::string{} : at.error().to_string());
+  EXPECT_DOUBLE_EQ(*at, atx::vol::kIvMin);
+  const auto below = american_implied_vol(39.5, S, K, T, r, q, Side::Put);
+  ASSERT_FALSE(below.has_value());
+  EXPECT_EQ(below.error().code(), atx::vol::ErrorCode::OutOfRange);
+}
+
+// The zero-vol value is a sup over exercise times, not a max over the two ends:
+// for q > 0 and r > q the deterministic payoff S*e^{-qt} - K*e^{-rt} has an
+// interior stationary MAXIMUM at t* = ln(qS/rK)/(q-r). Deep ITM and long dated
+// that bump clears both endpoints by ~1.8 price points, so screening on the two
+// corners alone still admits an unidentifiable quote.
+TEST(AmericanIv, ZeroVolBoundHonoursInteriorExerciseOptimum_Call) {
+  const double S = 409.4, K = 100.0, T = 5.0, r = 0.10, q = 0.02;
+  const double end0 = S - K;                                    // 309.4
+  const double endT = S * std::exp(-q * T) - K * std::exp(-r * T); // 309.79
+  const double t_star = std::log((q * S) / (r * K)) / (q - r);
+  ASSERT_GT(t_star, 0.0);
+  ASSERT_LT(t_star, T);
+  const double interior = S * std::exp(-q * t_star) - K * std::exp(-r * t_star);
+  ASSERT_GT(interior, std::fmax(end0, endT) + 1.0) << "fixture broken: no interior bump";
+
+  // Strictly between the best ENDPOINT and the interior optimum: no sigma > 0
+  // reproduces it, but a two-corner screen admits it.
+  const double quote = 0.5 * (std::fmax(end0, endT) + interior);
+  const auto iv = american_implied_vol(quote, S, K, T, r, q, Side::Call);
+  ASSERT_FALSE(iv.has_value()) << "returned " << (iv ? *iv : 0.0) << " as a MEASURED vol";
+  EXPECT_EQ(iv.error().code(), atx::vol::ErrorCode::OutOfRange);
+  EXPECT_NE(iv.error().message().find("zero-vol"), std::string::npos) << iv.error().to_string();
 }
 
 // A6 (core-review finding 6): the IV bracket floor and the reported floor are the
@@ -950,6 +1061,62 @@ TEST(AmericanIv, Batch_WarmChain_CutsResidualEvals) {
               << " warm=" << warm_sweeps << " (gated cnt_)\n";
     EXPECT_LT(warm_sweeps, cold_sweeps);
   }
+}
+
+// ── T3: the Newton slope must differentiate the map being SOLVED ──────────
+//
+// The rtsafe refinement solves the AMERICAN residual but took its derivative
+// from `american_vega`, which with a null correction is the pure Black-76
+// EUROPEAN vega (american.cpp). docs/LEDGER.md measured the consequence: the
+// proxy overstates the true Andersen-Lake slope 2-3x deep ITM, so every Newton
+// step understeps, the rtsafe range test demotes it to bisection, and the
+// inversion pays LINEAR convergence exactly where the proxy is worst. A secant
+// slope over the two most recent residual evaluations differentiates the actual
+// forward map, costs no extra pricer call, and stays inside the same sign
+// bracket. `IvNewtonIters` is the always-on solve-ledger plane, so this counts
+// residual evaluations on the shipping (counters-OFF) binary.
+TEST(AmericanIv, DeepItmColdInversion_SecantSlopeCutsResidualEvals) {
+  namespace led = atx::vol::counters::ledger;
+  const double S = 100.0, r = 0.05, q = 0.0;
+  const std::array<double, 4> K{104.0, 110.0, 116.0, 122.0};
+  const std::array<double, 3> T{0.5, 1.0, 2.0};
+  const std::array<double, 2> sig{0.25, 0.40};
+
+  // Price the grid first so the ledger only sees the inversions.
+  struct Quote { double K, T, sigma, price; };
+  std::vector<Quote> quotes;
+  for (double k : K) {
+    for (double t : T) {
+      for (double s : sig) {
+        const auto p = american_price(S, k, t, s, r, q, Side::Put, AmericanMethod::AndersenLake);
+        if (p.has_value() && std::isfinite(*p)) {
+          quotes.push_back(Quote{k, t, s, *p});
+        }
+      }
+    }
+  }
+  ASSERT_GE(quotes.size(), 24u);
+
+  led::reset();
+  const led::Counts before = led::snapshot();
+  int recovered = 0;
+  for (const Quote &qt : quotes) {
+    const auto iv = american_implied_vol(qt.price, S, qt.K, qt.T, r, q, Side::Put,
+                                         AmericanMethod::AndersenLake, 1.0e-7, 64, std::nullopt,
+                                         /*correction=*/nullptr, /*warm_start=*/0.0);
+    ASSERT_TRUE(iv.has_value()) << "K=" << qt.K << " T=" << qt.T << " sig=" << qt.sigma << ": "
+                                << (iv ? std::string{} : iv.error().to_string());
+    // The slope change may not move a converged root beyond the cold-AL noise.
+    EXPECT_NEAR(*iv, qt.sigma, 1.0e-5) << "K=" << qt.K << " T=" << qt.T;
+    ++recovered;
+  }
+  const std::uint64_t iters = (led::snapshot() - before).get(led::Solve::IvNewtonIters);
+  const double per_quote = static_cast<double>(iters) / static_cast<double>(recovered);
+  std::cout << "[T3 slope] cold deep-ITM inversions=" << recovered
+            << " IvNewtonIters=" << iters << " (" << per_quote << " residual evals/quote)\n";
+  // MEASURED baseline with the Black-76-proxy vega: 222 residual evaluations over
+  // 24 quotes = 9.25 per quote. The secant slope must beat it by a clear margin.
+  EXPECT_LT(per_quote, 7.5) << "iters=" << iters << " over " << recovered << " quotes";
 }
 
 TEST(AmericanIv, LightweightTelemetryMeasuresCompleteInversionKernel) {

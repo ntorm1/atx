@@ -1,9 +1,14 @@
 // K1 — scalar Cody rational-erfc Φ / φ accuracy gate (WS-2 North-Star sprint).
 //
-// The scalar IV inverter (src/implied_vol.cpp) and Black-76 (src/black76.cpp)
-// swapped their Φ / φ off libm std::erfc / std::exp onto the scalar Cody
-// rational-erfc kernel in detail/scalar_erfc.hpp. That is a perf change on the
-// hot path; this file is the accuracy backstop that keeps it honest.
+// The swap this file was written to backstop NEVER LANDED. K1 proposed moving
+// the scalar IV inverter (src/pricing/implied_vol.cpp) and Black-76
+// (src/pricing/black76.cpp) off libm std::erfc / std::exp onto the Cody
+// rational-erfc kernel in src/pricing/scalar_erfc.hpp; it was shelved as
+// perf-neutral and NEITHER TU includes that header today (the header's own
+// STATUS banner records the same). This file is therefore the revival-ready
+// accuracy gate on a validated but unwired leaf, not the backstop of a live hot
+// path — it is the reason the kernel may be dropped in later without re-deriving
+// its error bounds.
 //
 // Gates (all versus the std::erfc / std::exp source of truth atx::core::norm_cdf
 // / norm_pdf, which the sprint treats as the reference the swap must not regress

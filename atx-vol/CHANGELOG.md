@@ -5,6 +5,92 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### FIXED — `american_implied_vol` no longer returns `Ok(0.005)` as a MEASURED vol for a quote with no volatility behind it
+
+**The error class that moves.** A quote below the true zero-vol American value
+now returns `Err(OutOfRange, "american_implied_vol: price below the zero-vol
+American bound")` where it previously returned `Ok(kIvMin)` — a SUCCESS carrying
+0.005 as a measurement. Nothing else moves: a quote AT the bound still clamps to
+`kIvMin`, and a quote between the bound and `price(kIvMin)` is still the
+documented sub-floor clamp reported through the bracket.
+
+**Why the old screen was wrong.** `american_iv.cpp` screened on the IMMEDIATE
+intrinsic `max(0, S-K)` only. That is the `t = 0` corner of the sigma -> 0
+American value, which is a sup over every exercise date:
+`max(0, max_{t in [0,T]} [S*e^{-qt} - K*e^{-rt}])` for a call. The `t = T` corner
+is the discounted forward intrinsic `df*(F-K)^+`, and for a call with `r > q` it
+is the LARGER one — the everyday short-dated ITM case. `zero_vol_american_value`
+now takes the max over `{0, T, t*}`, `t* = ln(aA/bB)/(a-b)` being the single
+stationary point, which for `0 < q < r` deep ITM and long dated clears BOTH
+endpoints by whole price points.
+
+**What breaks.** Every caller that reads `has_value()` alone. The fit path
+already filtered the fabricated floor out downstream (`kObsIvMin`/`kFitIvMin`,
+both 0.005, both strict `>`), so `calib.cpp` and `prepared_fitting.cpp` reach the
+same admission decision by a different route. The one that genuinely changes is
+`deamer.cpp deam_pcp_step`, which `ATX_TRY`s the inverter inside the borrow fixed
+point: a probe carry far from the truth now HARD-FAILS the pair instead of
+silently feeding it a 0.5%-vol leg, so a term whose every pair is short-dated and
+deep-ITM reports `CarryFailed` rather than converging on a fabricated borrow.
+That is the honest outcome, but the fixed point should be taught to read this
+error as "inadmissible iterate", not as fatal — see `docs/LEDGER.md`.
+`tools/oracle_conventions.cpp:640-658` restates the OLD screen verbatim for the
+discrete-dividend lattice inverter and now carries the same defect.
+
+### FIXED — European `implied_vol` reports the ceiling instead of burning 16 Halley steps and mislabelling the failure
+
+**The error class that moves.** A quote whose true IV exceeds `kIvMax = 10.0`
+returned `Err(Unavailable, "implied_vol: exhausted iterations")` after all 16
+Halley evaluations; it now returns
+`Err(OutOfRange, "implied_vol: implied vol above the vol ceiling kIvMax")` in
+fewer than 3 steps. `sigma` is clamped into `[kIvMin, kIvMax]` after every step
+while the termination test reads the PRE-clamp `step`, so sigma sat motionless at
+the ceiling with `|step|` large — the exact mirror of the floor defect fixed
+earlier, left behind then. Unlike the floor, `kIvMax` is not a documented
+REPORTED value, so there is nothing honest to return above it. Measured on
+`F = K = 100, T = 0.01, df = 1`, true sigma 12: 16 iterations and the wrong error
+class before, terminating with the right one after.
+
+### CHANGED — the American Newton step now differentiates the map it is solving; cold deep-ITM inversions cost 28% fewer residual evaluations
+
+**The number that moves.** `IvNewtonIters` over a 24-quote cold Andersen-Lake
+deep-ITM put grid (S=100, K in {104,110,116,122}, T in {0.5,1,2}, sigma in
+{0.25,0.40}) drops **222 -> 160**, i.e. 9.25 -> 6.67 residual evaluations per
+quote.
+
+**What changed.** The rtsafe refinement solves the AMERICAN residual but took its
+derivative from `american_vega`, which with a null correction is the pure
+Black-76 EUROPEAN vega — a proxy measured 2-3x the true Andersen-Lake slope deep
+ITM, so every Newton step understepped, the range test demoted it to bisection,
+and convergence collapsed to linear exactly where the proxy is worst. On the
+cold/BAW route the slope is now a secant over the two most recent residual
+evaluations, which differentiates the actual forward map and costs no extra
+pricer call; the analytic vega remains the fallback wherever the chord carries no
+usable slope. The CACHED route is untouched — `american_price_and_vega_cached`
+already returns the true sigma partial of the map being solved and shares one
+correction traversal with the residual (perf F1).
+
+**Bits that move.** The cold-route search path changes by construction, so the
+converged root moves inside the requested `tol` (6.0e-8 and 4.0e-7 in sigma at
+`tol = 1e-6`). The two golden bit patterns in
+`AmericanIv.PricePolishDefaultOffIsBitForBitControl` are re-pinned; the new roots
+are strictly MORE accurate on the cold reference map (|resid| 1.000e-5 -> 8.003e-6
+and 1.815e-2 -> 1.502e-2, |sigma - 0.22| 2.983e-7 -> 2.387e-7).
+
+### FIXED — three documentation claims the code refutes
+
+`include/atx/vol/api/pricing/implied_vol.hpp` advertised a Stefanica-Radoicic
+seed "uniformly within ~2% of the true sigma"; the seed is Choi-Kim-Kwak (2023)
+L3 (SR-2017 survives only as the degenerate-corner fallback) and is a BOUND,
+measured 18-32% low at `|ln F/K| ~ 0.10-0.14`. What is gated is the step count:
+mean 2.94 / max 4 over the 904-point corpus. `include/atx/vol/api/core/types.hpp`
+claimed "one Householder step reaches machine precision"; the gate is
+`mean_steps < 3.0` and `max_steps <= 8` (`tests/iv_seed_test.cpp`).
+`tests/scalar_erfc_test.cpp` described a swap of `implied_vol.cpp` / `black76.cpp`
+onto the Cody kernel that never landed — neither TU includes
+`src/pricing/scalar_erfc.hpp`, whose own STATUS banner already said so. No
+behaviour change.
+
 ### CHANGED — a Risk-purpose preset now requests the MARK too, and `fit_board` serves it when the risk oracle refuses
 
 **The number that moves.** A populate run over the full 2026-08-21 OPRA universe

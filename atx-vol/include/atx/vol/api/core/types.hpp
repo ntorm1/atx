@@ -183,10 +183,14 @@ inline constexpr double kTMinEval = 1.0 / 525600.0;
 inline constexpr double kIvMin = 0.005;
 inline constexpr double kIvMax = 10.0;
 
-// IV solver tolerance in VOL units and iteration cap. A rational initial guess
-// plus one Householder step reaches machine precision for almost all inputs; the
-// cap is a bounded-loop guard (JPL Rule 2). `kIvTol` governs the vol-step
-// termination test `|Δσ| < kIvTol` directly (Δσ is already in vol units).
+// IV solver tolerance in VOL units and iteration cap. The Choi-2023 L₃ seed plus
+// the Halley (order-3) loop reaches machine precision in a mean of 2.94 and a
+// worst case of 4 steps over the 904-point iv_seed_test corpus — the gate there
+// is `mean_steps < 3.0` and `max_steps <= 8` (tests/iv_seed_test.cpp), NOT the
+// "one Householder step" this comment used to claim. `kIvMaxIter` is a
+// bounded-loop guard (JPL Rule 2), not the expected cost. `kIvTol` governs the
+// vol-step termination test `|Δσ| < kIvTol` directly (Δσ is already in vol
+// units).
 inline constexpr double kIvTol = 1.0e-12;
 inline constexpr int kIvMaxIter = 16;
 
