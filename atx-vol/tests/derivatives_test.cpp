@@ -832,72 +832,158 @@ TEST(StripResolution, DkFloorNodesCapsPastKMaxStripNodes) {
   EXPECT_LT(small_raise, kMaxStripNodes);
 }
 
-// ── L5 T1: the SPAN rescale never carried the cap dk_floor_nodes has ──────
+// -- L5 T1: the SPAN rescale had no pre-cast bound at all -----------------
 //
-// `dk_floor_nodes` above was capped because an out-of-range double->size_t
-// cast is undefined behaviour. The FIX-E M-7 SPAN rescale is the same shape
-// -- `intervals = (n-1) * kh/floor_half`, then `ceil()` into a `size_t` --
-// and the guard was never mirrored onto it, so it ran uncapped and unbounded
-// from the day it was written until this test. Nothing about the input is
-// malformed: `kh` is `width_sigmas * sigma_atm * sqrt(T)` and the ratio is
-// simply unbounded above.
+// `intervals = (n-1) * kh/floor_half` then `ceil()` into a `size_t`, with `kh`
+// carrying `width_sigmas * sigma_atm * sqrt(T)` and nothing upstream bounding
+// sigma_atm -- so the cast left size_t's range on an ordinary finite input,
+// which is UB rather than a saturating truncation.
 //
-// Pure-function pin, because the UB end of the range cannot be reached
+// The bound is `kMaxRescaleNodes`, NOT `kMaxStripNodes`. Review fix: the first
+// version of this fix bounded at `kMaxStripNodes` (the batched gather's stack
+// buffer length) and thereby made the rescale INCAPABLE of raising at the
+// Audit tier -- 2048 intervals over +-3.0 need `intervals < 2049` to escape
+// the bound while any widening at all forces `intervals > 2048`. The tests
+// below pin both halves: the bound is unreachable in practice, and it still
+// kills the UB.
+//
+// Pure-function pins, because the UB end of the range cannot be reached
 // through a quadrature -- a strip that large never returns.
-TEST(StripResolution, SpanRescaleCapsPastKMaxStripNodes) {
-  using atx::vol::strip::kMaxStripNodes;
+TEST(StripResolution, SpanRescaleBoundsTheCastWithoutDisablingTheRaise) {
+  using atx::vol::strip::kMaxRescaleNodes;
   using atx::vol::strip::span_rescaled_nodes;
 
   // Standard tier (257 nodes over +-1.5) at sigma*sqrt(T) ~ 2.5e17: kh is an
   // ordinary finite double, but `intervals` = 256 * kh/1.5 ~ 2.6e20 is past
   // size_t's 1.8e19 range, so the pre-fix cast was UB.
-  const std::size_t huge = span_rescaled_nodes(/*current_n=*/257u, /*kh=*/1.5e18,
-                                               /*floor_half=*/1.5);
-  EXPECT_EQ(huge, kMaxStripNodes);
-  EXPECT_EQ(huge % 4u, 1u) << "cap must stay on the 4m+1 Richardson lattice";
+  const auto huge = span_rescaled_nodes(/*current_n=*/257u, /*kh=*/1.5e18, /*floor_half=*/1.5);
+  EXPECT_EQ(huge.n_nodes, kMaxRescaleNodes);
+  EXPECT_TRUE(huge.capped);
+  EXPECT_EQ(huge.n_nodes % 4u, 1u) << "the bound must stay on the 4m+1 Richardson lattice";
 
-  // +inf takes the same `!(intervals < cap)` branch, so no out-of-range value
-  // can reach the cast on any input the adaptive half-width can produce.
-  EXPECT_EQ(span_rescaled_nodes(257u, std::numeric_limits<double>::infinity(), 1.5),
-            kMaxStripNodes);
+  // +inf takes the same `!(intervals < ceiling)` branch, so no out-of-range
+  // value can reach the cast on any input at all.
+  EXPECT_EQ(span_rescaled_nodes(257u, std::numeric_limits<double>::infinity(), 1.5).n_nodes,
+            kMaxRescaleNodes);
+  // A NaN half-width fails `kh > floor_half` and never reaches the ratio.
+  EXPECT_EQ(span_rescaled_nodes(257u, std::numeric_limits<double>::quiet_NaN(), 1.5).n_nodes,
+            257u);
 
-  // The merely-expensive end the brief measured: sigma*sqrt(T) ~ 100 asked a
-  // Standard-tier quote for 102 401 nodes (256 * 600/1.5 + 1), which also
-  // disables the batched gather (its buffers are exactly kMaxStripNodes long).
-  EXPECT_EQ(span_rescaled_nodes(257u, /*kh=*/600.0, /*floor_half=*/1.5), kMaxStripNodes);
+  // The merely-expensive end: sigma*sqrt(T) ~ 100 asked a Standard-tier quote
+  // for 102 401 nodes. Bounded, and reported bounded.
+  const auto wide = span_rescaled_nodes(257u, /*kh=*/600.0, /*floor_half=*/1.5);
+  EXPECT_EQ(wide.n_nodes, kMaxRescaleNodes);
+  EXPECT_TRUE(wide.capped);
 
-  // An everyday widening is untouched: sigma*sqrt(T) = 0.5 doubles the span,
-  // so the interval count doubles too and lands on 513 -- well under the cap.
-  EXPECT_EQ(span_rescaled_nodes(257u, /*kh=*/3.0, /*floor_half=*/1.5), 513u);
-
-  // No widening, or an unusable floor, leaves the tier's own count alone.
-  EXPECT_EQ(span_rescaled_nodes(257u, /*kh=*/1.5, /*floor_half=*/1.5), 257u);
-  EXPECT_EQ(span_rescaled_nodes(257u, /*kh=*/24.0, /*floor_half=*/0.0), 257u);
+  // No widening, or an unusable floor, leaves the tier's own count alone and
+  // reports nothing capped.
+  EXPECT_EQ(span_rescaled_nodes(257u, /*kh=*/1.5, /*floor_half=*/1.5).n_nodes, 257u);
+  EXPECT_FALSE(span_rescaled_nodes(257u, 1.5, 1.5).capped);
+  EXPECT_EQ(span_rescaled_nodes(257u, /*kh=*/24.0, /*floor_half=*/0.0).n_nodes, 257u);
 }
 
-// End-to-end companion to the pin above: a 400-vol 1Y quote is extreme but
-// perfectly finite, and the span rescale it triggers used to resolve 4097
-// nodes -- past `kMaxStripNodes`, so the batched gather fell back to the
-// scalar loop for a ~40x cost with no flag and no ceiling. The moderate case
-// beside it proves the cap bites only the pathological end.
-TEST(StripResolution, AdaptiveSpanRescaleIsCappedEndToEnd) {
+// The regression the first fix introduced, pinned so it cannot come back: at
+// EVERY tier, and at every sigma*sqrt(T) a real quote can carry, the rescale
+// must actually raise. Bounding at `kMaxStripNodes` made the Audit column read
+// 2049 all the way down -- FIX-E M-7 dead in the exact regime it was written
+// for, integrating a 2x (sigma*sqrt(T)=1) or 4x (=2) coarser dk than the tier
+// promises.
+TEST(StripResolution, SpanRescaleStillRaisesAtEveryTier) {
+  using atx::vol::strip::kMaxRescaleNodes;
+  using atx::vol::strip::span_rescaled_nodes;
+
+  struct Tier {
+    const char* name;
+    std::size_t n;
+    double floor_half;
+  };
+  // strip_quality_defaults (derivatives.cpp): Fast/Standard/High/Audit.
+  const Tier tiers[] = {
+      {"Fast", 97u, 1.0}, {"Standard", 257u, 1.5}, {"High", 769u, 2.0}, {"Audit", 2049u, 3.0}};
+
+  for (const Tier& t : tiers) {
+    for (const double sig_sqrt_t : {0.5, 1.0, 2.0}) {
+      const double kh = std::fmax(t.floor_half, 6.0 * sig_sqrt_t);  // adaptive_half_width
+      const auto r = span_rescaled_nodes(t.n, kh, t.floor_half);
+      const std::string at = std::string(t.name) + " s=" + std::to_string(sig_sqrt_t);
+      EXPECT_FALSE(r.capped) << at << ": a realistic vol scale must not hit the cost bound";
+      EXPECT_LT(r.n_nodes, kMaxRescaleNodes) << at;
+      // dk is held: the interval count grew by at least the factor the span did.
+      const double grew = static_cast<double>(r.n_nodes - 1u) / static_cast<double>(t.n - 1u);
+      EXPECT_GE(grew, kh / t.floor_half - 1.0e-9) << at << ": dk was allowed to coarsen";
+    }
+  }
+
+  // The Audit tier specifically, spelled out, because it is the one the first
+  // fix silently disabled. 2048 intervals over +-3.0, widened to +-6 / +-12.
+  EXPECT_EQ(span_rescaled_nodes(2049u, /*kh=*/6.0, /*floor_half=*/3.0).n_nodes, 4097u);
+  EXPECT_EQ(span_rescaled_nodes(2049u, /*kh=*/12.0, /*floor_half=*/3.0).n_nodes, 8193u);
+}
+
+// End-to-end companion: a widened span really does resolve more nodes through
+// `var_swap_fair_strike`, at the tier the first fix disabled.
+TEST(StripResolution, AdaptiveSpanRescaleRaisesEndToEnd) {
+  const double T = 1.0;
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  // Audit tier, sigma*sqrt(T) = 1 => kh = 6 = 2x the +-3.0 floor, so the
+  // interval count must double: 2048 -> 4096, i.e. 4097 nodes. The first
+  // version of this fix served 2049 here.
+  DerivConfig audit = deriv_default_config();
+  audit.quality = DerivQuality::Audit;
+  const EssviSurface s1 = make_flat_surface(1.0, 0.01, 1.00);
+  ASSERT_NEAR(s1.iv(0.0, T), 1.0, 1.0e-9);
+  const auto q_audit = var_swap_fair_strike(s1, cs, T, audit);
+  ASSERT_TRUE(q_audit.has_value()) << q_audit.error().to_string();
+  EXPECT_EQ(q_audit->strip_nodes_used, 4097u);
+
+  // Standard tier, sigma*sqrt(T) = 4: 256 -> 4096 intervals, 4097 nodes. This
+  // is the pre-L5 number -- killing the UB was never supposed to move it.
+  DerivConfig std_cfg = deriv_default_config();
+  std_cfg.quality = DerivQuality::Standard;
+  const EssviSurface s4 = make_flat_surface(4.0, 0.01, 1.00);
+  const auto q_wild = var_swap_fair_strike(s4, cs, T, std_cfg);
+  ASSERT_TRUE(q_wild.has_value()) << q_wild.error().to_string();
+  EXPECT_EQ(q_wild->strip_nodes_used, 4097u);
+
+  // sigma*sqrt(T) = 0.5 => kh = 3, ratio 2, 513 nodes.
+  const EssviSurface tame = make_flat_surface(0.5, 0.01, 1.00);
+  const auto q_tame = var_swap_fair_strike(tame, cs, T, std_cfg);
+  ASSERT_TRUE(q_tame.has_value()) << q_tame.error().to_string();
+  EXPECT_EQ(q_tame->strip_nodes_used, 513u);
+}
+
+// -- L5 F2: a CAPPED rescale must be flagged, and only the flag can say so --
+//
+// `span_rescaled_nodes`' own doc used to claim the call site's
+// `max_panel_spacing(split) > dk_max` check would report a capped rescale as
+// LowT. It provably cannot: after the bound the spacing is
+// `2*kh/(kMaxRescaleNodes-1)` and `dk_ceiling` is `sigma*sqrt(T)/4`, both
+// linear in sigma*sqrt(T), so the ratio is a CONSTANT ~1.5e-3 -- under the
+// ceiling for every input that exists. `dk_floor_nodes` cannot raise either,
+// for the same reason. The flag is now set explicitly from the rescale.
+TEST(StripResolution, CappedSpanRescaleRaisesLowT) {
   const double T = 1.0;
   const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
   DerivConfig cfg = deriv_default_config();
   cfg.quality = DerivQuality::Standard;
 
-  // sigma*sqrt(T) = 4 => kh = 24, ratio 16, raw demand 4097 nodes.
-  const EssviSurface wild = make_flat_surface(4.0, 0.01, 1.00);
-  ASSERT_NEAR(wild.iv(0.0, T), 4.0, 1.0e-9);
-  const auto q_wild = var_swap_fair_strike(wild, cs, T, cfg);
-  ASSERT_TRUE(q_wild.has_value()) << q_wild.error().to_string();
-  EXPECT_EQ(q_wild->strip_nodes_used, atx::vol::strip::kMaxStripNodes);
+  // sigma*sqrt(T) = 200 => kh = 1200, ratio 800, raw demand 204 800 intervals
+  // against a 32 768 ceiling: capped, so dk really is coarser than the tier's.
+  const EssviSurface absurd = make_flat_surface(200.0, 0.01, 1.00);
+  const auto q = var_swap_fair_strike(absurd, cs, T, cfg);
+  ASSERT_TRUE(q.has_value()) << q.error().to_string();
+  EXPECT_EQ(q->strip_nodes_used, atx::vol::strip::kMaxRescaleNodes);
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::LowT))
+      << "a capped rescale is under-resolved for its own vol scale and must say so";
 
-  // sigma*sqrt(T) = 0.5 => kh = 3, ratio 2, 513 nodes: unchanged by the cap.
-  const EssviSurface tame = make_flat_surface(0.5, 0.01, 1.00);
-  const auto q_tame = var_swap_fair_strike(tame, cs, T, cfg);
-  ASSERT_TRUE(q_tame.has_value()) << q_tame.error().to_string();
-  EXPECT_EQ(q_tame->strip_nodes_used, 513u);
+  // The control: the same tier at an ordinary vol scale is NOT capped and NOT
+  // LowT, so the flag carries information rather than being permanently on.
+  const EssviSurface ordinary = make_flat_surface(0.5, 0.01, 1.00);
+  const auto q_ok = var_swap_fair_strike(ordinary, cs, T, cfg);
+  ASSERT_TRUE(q_ok.has_value()) << q_ok.error().to_string();
+  EXPECT_LT(q_ok->strip_nodes_used, atx::vol::strip::kMaxRescaleNodes);
+  EXPECT_FALSE(has_flag(q_ok->flags, DerivFlags::LowT));
 }
 
 // ── C-3 / LIT-10: kink-aligned composite Simpson panels ──────────────────

@@ -28,6 +28,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 
 #include "atx/core/math.hpp"
@@ -382,16 +383,27 @@ american_put_adjoint(double S, double K, double T, double sigma, double r, doubl
   // derivative; move the boundary along ẏ_σ (the Christianson tangent) and take a
   // spot-difference of delta on the σ± moved boundaries.
   //
-  // L5 T5: this σ step used to be 1.0e-3·max(σ,1e-3), TEN TIMES `hsig` above,
-  // with nothing recording why -- so the returned vanna was not the
-  // σ-derivative of the returned vega at any consistent order. Sharing `hsig`
-  // differences the whole σ direction of the bundle at one scale, and it is
-  // not merely tidier: against a nested-Richardson reference over
-  // `DiagnosticGaps`' 189-point grid the max |vanna| gap FELL from 1.85464e-3
-  // to 1.78845e-3 (-3.6%), with vega, volga and adjoint coverage (179/189)
-  // unmoved. Kept as a named local because the σ± boundary-motion scale below
-  // reads it.
-  const double hsv = hsig;
+  // L5 T5, and then the review that overturned it: this σ step is TEN TIMES
+  // `hsig` above, and that is CORRECT, not an inconsistency to be flattened.
+  //
+  // The tempting argument is that vanna should be "the σ-derivative of the
+  // returned vega", so both should difference σ at one scale. But vega is a
+  // FIRST-order central difference of the price (truncation O(h²), roundoff
+  // O(ε/h), optimum h ~ ε^(1/3)) while vanna is a MIXED second difference
+  // (`(dvp - dvm)/(2*hsv)` over spot differences), whose roundoff floor scales
+  // as ε/(hSv·hsv) -- an order of h worse. Their optimal steps genuinely
+  // differ, and 10x is the right direction.
+  //
+  // MEASURED, because the first attempt at this got it wrong on a max-only
+  // statistic: setting hsv = hsig and comparing PER POINT against a
+  // nested-Richardson reference over `DiagnosticGaps`' 179 adjoint-served
+  // points, the smaller step was better on 98 and WORSE ON 81 -- a coin flip,
+  // not an improvement -- with the median gap slightly worse (1.27383e-5 vs
+  // 1.25916e-5), a median paired change of -0.3% (noise), and one point
+  // regressing by 3927% (K=112 T=0.4 sig=0.25 r=0.06). The max fell 3.6%,
+  // which is what a max over 189 points does when you jiggle a step size; it
+  // cannot separate a real gain from grid noise, and here there was none.
+  const double hsv = 1.0e-3 * std::fmax(sigma, 1.0e-3);
   const double hSv = 1.0e-3 * S;
   const double dvp =
       (price_moved(bnd, ws, S + hSv, K, T, sigma + hsv, r, q, ydot_s.data() + 1, hsv) -
@@ -424,17 +436,33 @@ american_put_adjoint(double S, double K, double T, double sigma, double r, doubl
   // admits σ > 1e-6 — so for every σ <= 5e-3 the DOWN-bump `sigma - hvol` was
   // non-positive. The cold re-solve then failed (or was meaningless) and the
   // whole bundle bailed to `std::nullopt`, i.e. the adjoint silently ceded the
-  // entire low-σ band it claims. `american_greeks_fd` (american.cpp:3101-3102)
-  // and `american_greeks_al` (:3508-3509) both already handle exactly this the
-  // same way; copied verbatim rather than invented, so the three σ-bump
-  // policies agree at the degenerate end. The residual 50%-relative-bump band
-  // just above the switch (σ in (5e-3, 1e-2]) is american.cpp's own established
-  // convention at its own step size, deliberately not diverged from here.
+  // entire low-σ band it claims. The SHAPE of the fix is
+  // `american_greeks_fd`'s (american.cpp:3101-3102) and `american_greeks_al`'s
+  // (:3508-3509); the SWITCH POINT is not, because their step is 1e-3 and this
+  // one is 5e-3, so their relative branch engages at σ <= 1e-3 and this one at
+  // σ <= 5e-3. The three policies therefore agree in form, not numerically —
+  // and note the band just ABOVE the switch is where the absolute step is
+  // proportionally largest, not smallest: at σ = 6e-3, `sigma - hvol` is still
+  // positive so `hvol` stays 5e-3, i.e. 83% of σ.
+  //
+  // AND THE BOTTOM OF THE BAND IS DELIBERATELY STILL CEDED (review fix). A
+  // relative step alone would let this claim σ down to the regime guard's
+  // 1e-6, where `hvol = 5e-7` puts 1/hvol² at 4e12 and amplifies the cold
+  // boundary's ~1e-10 residual into ~4e2 of volga error — and the
+  // self-consistency guard below cannot catch it, because both vega estimates
+  // are ~0 there and its 1e-3 floor is absolute. `kMinVolgaBump` is set so that
+  // residual/hvol² stays at ~1e-2: claiming a band whose volga cannot be
+  // computed is strictly worse than the gap it would close, so points below it
+  // go to the FD bundle exactly as they did before.
   double volga = 0.0;
   {
+    constexpr double kMinVolgaBump = 1.0e-4;  // 1e-10 residual / (1e-4)^2 = 1e-2 volga
     double hvol = 5.0e-3;
     if (sigma - hvol <= 0.0) {
       hvol = 0.5 * sigma;
+    }
+    if (hvol < kMinVolgaBump) {
+      return std::nullopt;  // σ < 2e-4: the 2nd difference cannot resolve volga
     }
     AlBoundary bsp{}, bsm{};
     AlWorkspace wsp{}, wsm{};
@@ -536,6 +564,29 @@ AmericanGreeks european_greeks_adjoint(double S, double K, double T, double sigm
   // strike and carries no σ dependence at all, so gamma/vega/vanna/volga are
   // exactly zero rather than merely unpopulated.
   if (sigma <= 1.0e-8) {
+    // A non-finite r/q/T must not be answered with a confident zero row. The
+    // closed form below folds them into `fwd_intr`, whose NaN then fails
+    // `> 0.0` and falls to the out-of-the-money arm — so the caller would get
+    // price 0.0 and eight zero greeks from an input that returns all-NaN at
+    // σ one ulp higher (`euro_reverse` propagates it). Match that instead;
+    // `classify_regime(0.0, NaN)` reads European, so this arm really is
+    // reachable with a NaN carry.
+    if (!std::isfinite(r) || !std::isfinite(q) || !std::isfinite(T)) {
+      const double nan = std::numeric_limits<double>::quiet_NaN();
+      g.price = nan;
+      g.delta = nan;
+      g.gamma = nan;
+      g.vega = nan;
+      g.theta = nan;
+      g.rho = nan;
+      g.vanna = nan;
+      g.volga = nan;
+      g.charm = nan;
+      if (dP_dq != nullptr) {
+        *dP_dq = nan;
+      }
+      return g;
+    }
     const double df = std::exp(-r * T);
     const double carry = std::exp((r - q) * T); // spot -> forward
     const double F = S * carry;

@@ -563,6 +563,7 @@ TEST(AdjointGreeksAmerican, DiagnosticGaps) {
     }
   };
   int n_adjoint = 0, n_total = 0, n_material = 0;
+  std::vector<double> vanna_gaps;
   double vega_gap_R = 0.0, volga_gap_R = 0.0;
   std::string vega_at_R, volga_at_R, material_at;
   for (double K : {80.0, 88.0, 96.0, 100.0, 104.0, 108.0, 112.0}) {
@@ -600,6 +601,13 @@ TEST(AdjointGreeksAmerican, DiagnosticGaps) {
               sigma, 1.0e-3);
           upd(dvanna, g->vanna - vanna_ref, at);
           upd(dvolga, g->volga - volga_ref, at);
+          // Per-point vanna gaps, so a step-size change is adjudicated on the
+          // DISTRIBUTION rather than on a max over 189 points -- a max cannot
+          // separate an improvement from grid noise, and once did not: see the
+          // `hsv` comment in adjoint_greeks.cpp. To re-adjudicate a step, add
+          // a `std::cout` of `at` and the gap here and diff two builds; the
+          // summary below is what a reader needs the rest of the time.
+          vanna_gaps.push_back(std::fabs(g->vanna - vanna_ref));
           const double vega_euro = european_greeks_adjoint(S, K, T, sigma, r, q, Side::Put).vega;
           if (std::fabs(g->vega - vega_ref) > vega_gap_R) {
             vega_gap_R = std::fabs(g->vega - vega_ref);
@@ -627,6 +635,12 @@ TEST(AdjointGreeksAmerican, DiagnosticGaps) {
   std::cout << "[gaps vs fd, full grid] delta=" << ddelta.v << " gamma=" << dgamma.v << "\n";
   std::cout << "[2nd-order gaps vs Richardson] vanna=" << dvanna.v << " (" << dvanna.at << ")"
             << " volga=" << dvolga.v << " (" << dvolga.at << ")\n";
+  if (!vanna_gaps.empty()) {
+    std::sort(vanna_gaps.begin(), vanna_gaps.end());
+    const std::size_t n = vanna_gaps.size();
+    std::cout << "[vanna dist] n=" << n << " median=" << vanna_gaps[n / 2]
+              << " p90=" << vanna_gaps[(n * 9) / 10] << " max=" << vanna_gaps[n - 1] << "\n";
+  }
   SUCCEED();
 }
 
@@ -698,6 +712,27 @@ TEST(AdjointGreeksAmerican, LowVolBandNoLongerCededByTheVolgaBump) {
     }
   }
   EXPECT_GT(claimed, 0) << "the adjoint still cedes every sigma <= 5e-3";
+}
+
+// The other half of the same policy (review fix): the band is widened only as
+// far as volga can actually be computed. A relative step alone would let the
+// adjoint claim sigma down to the regime guard's 1e-6, where hvol = 5e-7 puts
+// 1/hvol^2 at 4e12 and turns the cold boundary's ~1e-10 residual into ~4e2 of
+// volga error -- and the self-consistency guard cannot catch it, because both
+// vega estimates are ~0 there and its 1e-3 floor is absolute. Points below
+// `kMinVolgaBump` are therefore still handed to the FD bundle, deliberately.
+TEST(AdjointGreeksAmerican, VolgaAmplifiedBandIsStillCeded) {
+  const double S = 100.0, K = 100.0, T = 0.5, r = 0.05, q = 0.0;
+  for (const double sigma : {1.0e-6, 1.0e-5, 5.0e-5, 1.0e-4}) {
+    bool took = false;
+    const auto g = american_greeks_adjoint(S, K, T, sigma, r, q, Side::Put, std::nullopt, &took);
+    ASSERT_TRUE(g.has_value()) << "sigma=" << sigma;
+    EXPECT_FALSE(took) << "sigma=" << sigma
+                       << ": 1/hvol^2 amplification here exceeds what a cold solve's "
+                          "residual survives, so this point belongs to fd";
+    // Ceded is not broken: the FD bundle still serves a finite bundle.
+    EXPECT_TRUE(std::isfinite(g->price)) << "sigma=" << sigma;
+  }
 }
 
 // Informal perf sanity (DISABLED — run with --gtest_also_run_disabled_tests on a

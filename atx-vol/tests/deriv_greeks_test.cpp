@@ -1532,9 +1532,11 @@ TEST(AnalyticGreeks, NonFiniteCenterReadNeverPoisonsGamma) {
   const auto clean = atx::vol::detail::analytic_strip_greeks(holes::CleanSurface{}, F, S, T, df,
                                                              k_lo, k_hi, n_nodes, wing_band);
   ASSERT_NE(clean.gamma, 0.0);
-  EXPECT_LT(std::fabs(center.gamma - clean.gamma), 0.05 * std::fabs(clean.gamma))
+  // Measured 0.26% (3.88794e-4 vs 3.89802e-4); 1% leaves ~4x headroom without
+  // being the kind of slack that would wave a real error through.
+  EXPECT_LT(std::fabs(center.gamma - clean.gamma), 0.01 * std::fabs(clean.gamma))
       << "one dropped node out of 257 (Simpson weight 1 at a panel boundary) "
-         "should move gamma by well under 5%";
+         "moves gamma by 0.26%";
 }
 
 // ── Task F-7: smile greeks ─────────────────────────────────────────────────
