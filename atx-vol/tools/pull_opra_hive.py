@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
 """Cost-gated OPRA cbbo-1m pull into the v2 date-partitioned hive.
 
+DO NOT USE THIS FOR A LARGE UNIVERSE -- see ``pull_opra_allsym.py``.
+The ``stype_in="parent"`` resolution this module relies on does not scale:
+measured 2026-08-23 on OPRA.PILLAR at 19:55Z, 25 parents took 57.7 s, 50 took
+78.5 s, and 100+ returns a 504 gateway timeout, so the single whole-universe
+``get_range`` below can never complete for the 616-name xsec universe (six
+retries with backoff, ~10 min, then failure). The same wall hits the FREE
+``metadata.get_cost`` preflight, which uses the same resolver.
+``pull_opra_allsym.py`` requests ``ALL_SYMBOLS`` instead (no server-side
+resolution) and filters locally, producing a byte-identical date file in ~46 s
+(verified row-for-row on 2026-08-11). This module remains correct and useful
+for small universes (<= ~25 names) and is the source of the shared
+plan/merge/calendar helpers that tool imports.
+
 Port of ``tools/pull_opra_universe_batch.py`` targeting the redesigned layout
 (design §3): each session is ONE parquet file holding every symbol,
 
