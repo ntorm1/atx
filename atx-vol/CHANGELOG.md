@@ -5,6 +5,106 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### CHANGED — a Risk-purpose preset now requests the MARK too, and `fit_board` serves it when the risk oracle refuses
+
+**The number that moves.** A populate run over the full 2026-08-21 OPRA universe
+went from `cells_ok 2815 / cells_failed 2431` to
+`cells_ok 3117 (2815 risk + 302 mark) / cells_failed 2129`. The risk-served set
+is UNCHANGED — set-equal to the old `cells_ok`, symbol for symbol — so nothing
+was downgraded; the 302 are cells that previously produced nothing at all.
+Contract-weighted (census `n_two_sided` over all 6,189 census underliers) that
+is 80.5% → 89.3%.
+
+**What changed.** `symbol_config_from_preset` maps a Risk-purpose preset to
+`SurfaceOutputs::MarketMarkAndRisk` instead of `SurfaceOutputs::Risk`
+(`src/storage/surface_db.cpp`). `SurfaceOutputs` is a bitmask and
+`PricerFitter::fit` engages its mark arm only when the MarketMark bit is set, so
+under the old value no mark was ever BUILT on the populate path — a board whose
+risk candidate the independent geometry oracle refused produced nothing, even
+though the same board fits as a market mark. `risk_admission` stays `Required`.
+
+`fit_board` (`src/marketdata/corpus_board_fit.cpp`) then serves that mark when
+`PricerFitter::fit` returns `ErrorCode::Unavailable` — a BUILT candidate the
+oracle or the publish floor refused — and the fitter published a Healthy mark for
+that same candidate generation. `FitSlot::mark_after_risk_refusal` records it,
+`provenance.purpose` is `market_mark` (verified on disk: MSFT stores
+`provenance.purpose market_mark`, SPY `risk`), and the risk refusal text is
+retained on the slot verbatim.
+
+**What did NOT change.** A caller that asks for `SurfaceOutputs::Risk` alone
+still gets the refusal — no mark is built, so there is nothing to substitute.
+`PricerFitter::surface()` and the default-purpose `value_chain` overloads are
+untouched and still fail closed on a Risk request. And a malformed REQUEST
+(`ErrorCode::InvalidArgument`, "invalid correctness policy for requested risk
+surface" — e.g. a config pinning LinearVariance under mandatory risk admission)
+still fails: the rescue answers a refused board, not a bad config.
+
+**New counters, because a mark must never read as a risk surface.**
+`PopulateSymbolStats::n_mark`, `SurfaceDbPopulateStats::n_mark` and
+`UniversePopulateCoverage::cells_mark` are a NAMED SUBSET of their `n_ok` /
+`cells_ok` parent (the cell really was fitted and written, which is what every
+`cells_ok` reader asks); `n_ok - n_mark` is the risk-served count. The build CLI
+prints `coverage.cells_ok_risk` / `coverage.cells_mark` / `coverage.cells_failed`
+so all three dispositions are on screen. Both per-symbol stats CSVs gained an
+APPENDED `n_mark` column (`symbol,...,n_carried,n_mark`), so positional readers
+of the older columns are unaffected. The python bindings gained `n_mark` /
+`cells_mark`; `run_surface_db_backfill.py` picks `coverage.cells_mark` up with
+no change (its `coverage.*` prefix is already in `ADDITIVE_SUMMARY_PREFIXES`).
+
+**No on-disk format change.** `SurfacePolicy::outputs` is already persisted, in
+the `DbSurfacePolicyRecord` embedded in `DbSymbolRecord::reserved`, and
+`surface_policy_record_valid` already admits `outputs` in 1..3.
+`sizeof(DbSymbolRecord)` is unchanged, so the schema fingerprint and
+`kSurfaceDbCarryOverFitSalt` both stand. The record BYTES do change, so
+`fold_symbol_configs` yields a different carry-over fingerprint and a partition
+fitted under the old contract re-fits rather than being carried — the intended
+behaviour for a changed fit config. **Migration:** an existing manifest keeps its
+stored `outputs = Risk` (the populate seeder never overwrites an existing symbol
+config), so an existing database adopts the wider request only when its symbols
+are re-configured.
+
+**Scope.** This recovers the risk-geometry/publish-floor refusals (the 302
+cells). It deliberately does NOT touch the 2,129 carry-gate failures, whose risk
+BUILD produced no slice at all: `finalize_mark()` does run on that path, so a
+mark may exist for many of them, but serving it means serving a forward the
+carry-confidence gate declined to vouch for. That is a separate decision and is
+not measured here.
+
+### NEW — `atx-vol-chain-export`: per-contract fair value / fair vol / greeks to Parquet
+
+**The gap it closes.** Nothing in atx-vol emitted a per-CONTRACT valuation: the
+oracle bench publishes JSON aggregates, `atx-vol-surface-db-build` publishes
+fitted SURFACES. This tool exports one session's board as a
+`tblOptionIntradayHist`-shaped Parquet slice — market slice, `srPrc`, `srVol`
+and the nine SpiderRock greeks — under the VENDOR's column names and physical
+types, so the output unions with the SpiderRock store.
+
+**Schema is read, not invented.** Names/types come from the enforced schema in
+`scripts/oracle_store_metadata.py` and were re-confirmed against the live drop.
+Two facts a reader would guess wrong are pinned by `ChainExport*`: `okey_cp` is
+spelled `"Call"`/`"Put"` (not `"C"`/`"P"`), and `date`/`timestamp` are STRING
+stamps `"YYYY-MM-DD HH:MM:SS.ffffff"` in UTC.
+
+**Greek units are the pinned map, not a re-derivation.** The nine scales are the
+greek half of `kWinner` (`oracle/canonical:tools/oracle_conventions.cpp`);
+`deDecay` is `charm`, and `ph` is a separate `american_carry_greeks_al` solve on
+the SAME `(S, K, T, model_iv, rate_at(T), q_eff_at(T))` the fitter's other eight
+were produced at.
+
+**Refusals are counted, never silent.** Every field defaults to the vendor's -99
+sentinel and is overwritten only by a computed value; the stderr census reports
+sentinels per column, drops per reason, and the symbols that failed to fit. Two
+divergences are stated rather than hidden: `undSecKey_tk` repeats `okey_tk` (our
+OPRA hive's root and underlying namespaces coincide — SPXW is its own underlier
+there), and `error` is a whole-column refusal.
+
+**Cash-settled index complex handled explicitly.** SPX/SPXW/XSP/NDX/NDXP/RUT/
+RUTW/XEO/VIX/DJX/MRUT/XND/MXEA/MXEF have no row in any equity NBBO feed, so
+`uPrc` comes from the board's own put-call-parity forward and `uBid`/`uAsk` are
+legitimately sentinel — a feed row offered under such a ticker is ignored rather
+than published as an index level.
+
+
 ### Stage 3 conventions RESOLVED — committed floor, speed pin, and an honest residual
 
 **What landed.** `atx-vol/bench/oracle/CONVENTIONS.md`,
