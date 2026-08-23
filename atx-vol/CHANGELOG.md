@@ -359,6 +359,228 @@ distribution over a real board population before any number is chosen; populate'
 documented as **declared and never assigned** — it always reads 0, i.e. "built
 just now", the most dangerous default a staleness field can carry.
 
+### FIXED — the strip's span rescale fed an unbounded double into a `size_t` cast (undefined behaviour)
+
+**The number that moves — only in the regime that was undefined.** Past
+sigma_atm*sqrt(T) ~ 1.8e16 the value handed to
+`static_cast<std::size_t>(std::ceil(...))` left `size_t`'s range entirely, which
+is UB rather than a saturating truncation. That is now bounded at
+`strip::kMaxRescaleNodes` (32769). **Every input that was previously
+well-defined resolves the same node count it always did**: Standard tier at
+sigma_atm*sqrt(T) = 4 still resolves 4097, at 0.5 still 513, Audit at 1.0 still
+4097. What used to demand ~102 401 nodes (sigma_atm*sqrt(T) ~ 100) is now capped
+at 32769 and flagged `LowT`.
+
+**What changed.** The FIX-E M-7 body moved out of `strip_fair_value_core`
+(`src/pricing/derivatives.cpp`) into `strip::span_rescaled_nodes`
+(`src/pricing/strip_grid.hpp`), which bounds `intervals` BEFORE the cast — the
+rule `strip::dk_floor_nodes`' own comment already stated (*"Capped here, before
+the ceil()->size_t cast below … casting an out-of-range double to `size_t` is
+undefined behaviour, not a saturating truncation"*) and which had never been
+mirrored onto this second copy of the shape. `!(intervals < ceiling)` catches
+`+inf` and NaN on the same test.
+
+**The bound is `kMaxRescaleNodes`, NOT `kMaxStripNodes` — review fix.** The
+first version of this change bounded at `kMaxStripNodes` (2049), which is the
+batched gather's fixed STACK BUFFER length, not a cost ceiling. That made the
+rescale **incapable of raising at the Audit tier at all** (2048 intervals over
++-3.0 need `intervals < 2049` to escape the bound, while any widening forces
+`intervals > 2048`), clipped High from sigma_atm*sqrt(T) >= 1 and Standard from
+> 2, and so re-introduced the widened-span/coarsened-dk trade FIX-E M-7 exists
+to prevent — up to 2x the promised dk at sigma_atm*sqrt(T) = 1 and 4x at 2.
+`kMaxRescaleNodes` is a cost bound set where no real quote reaches it: the
+richest tier only hits it at sigma_atm*sqrt(T) = 8, an 800-vol year.
+
+**What did NOT change.** A caller-PINNED `cfg.strip_nodes` is still never
+clamped (`Strip.BatchedPathFallsBackAboveMaxStripNodes` resolves 5001 and falls
+back to the scalar loop), and a rescale past `kMaxStripNodes` still falls back
+to that same scalar loop through the gather's own structural guard.
+
+Pinned by `StripResolution.SpanRescaleBoundsTheCastWithoutDisablingTheRaise`
+(pure function, incl. the out-of-range and `+inf` inputs a quadrature can never
+reach), `StripResolution.SpanRescaleStillRaisesAtEveryTier` (all four tiers x
+sigma_atm*sqrt(T) in {0.5, 1, 2}, asserting dk is actually held) and
+`StripResolution.AdaptiveSpanRescaleRaisesEndToEnd`.
+
+### FIXED — a capped span rescale is now actually flagged LowT
+
+**What changed.** `strip::span_rescaled_nodes` returns `{n_nodes, capped}` and
+`strip_fair_value_core` seeds `low_t` from `capped`.
+
+The previous entry claimed the call site's existing
+`max_panel_spacing(split) > dk_max` check would report a capped rescale. It
+provably cannot: after the bound the spacing is `2*kh/(kMaxRescaleNodes-1)`,
+linear in sigma_atm*sqrt(T), and `dk_ceiling` is `sigma_atm*sqrt(T)/4` — the vol
+scale CANCELS and the ratio is a constant ~1.5e-3, under the ceiling for every
+input that exists. `dk_floor_nodes` cannot raise on that path either, for the
+same reason. So the claim was false and a capped rescale was silent. Pinned by
+`StripResolution.CappedSpanRescaleRaisesLowT`, which also pins the control case
+(an ordinary vol scale is neither capped nor LowT).
+
+### FIXED — `deriv_analytic_greeks` let a non-finite CENTRE surface read poison gamma
+
+**The number that moves.** For a strip node whose centre surface read is
+non-finite, `AnalyticStripGreeks::gamma` was NaN; it is now that node's zero
+contribution, leaving gamma finite (measured on a 257-node ±1.5 grid: NaN →
+3.88794e-4, against 3.89802e-4 for the same smile with no hole — one dropped
+node in 257 moves it by 0.26%). delta, vega, vanna and volga are byte-unchanged
+— they were already correct.
+
+**What changed.** `slope_usable` (`src/pricing/deriv_analytic_greeks.hpp`)
+screened the four SHIFTED reads for finiteness but not the centre, while
+`sig_curv`'s 5-point stencil carries a `-30.0 * sigma` term. `black76_vega_volga`
+answers `{0, 0}` for a bad centre, so the node's other four products were already
+zero — but `bv.vega * sig_curv` was `0 * NaN`. The centre now enters the
+predicate on the same bad-node test `black76_vega_volga` uses
+(`sigma > 0 && isfinite`), which is behaviour-identical wherever it newly fires,
+since `bv` is `{0, 0}` there anyway. This restores the promise the file's own
+header makes at its "bad node" convention.
+
+Pinned by `AnalyticGreeks.NonFiniteCenterReadNeverPoisonsGamma`, which asserts
+EXACT equality between a surface missing only the centre read and one missing
+that node's whole read window — a bad centre makes the shifted reads irrelevant,
+so the two are the same computation.
+
+### FIXED — `european_greeks_adjoint`'s sigma-to-zero arm returned the bare SPOT intrinsic
+
+**The number that moves.** S = K = 100, T = 1, r = 0, q = 5%, sigma <= 1e-8, put:
+price **0.0 → 4.87706**, delta **0.0 → -0.951229**, `dP/dq` **0.0 → 95.1229**.
+The old arm dropped both the forward and the discount factor, so it understated a
+carry-dominant contract by the entire discounted-forward intrinsic and
+OVERSTATED a spot-ITM one by the discount it ignored.
+
+**What changed.** `src/pricing/adjoint_greeks.cpp` splits the degenerate guard
+into `andersen_lake_core`'s own two arms. T ~ 0 keeps the spot intrinsic (which
+IS that limit — df and the carry are both 1 there). sigma ~ 0 with time left now
+returns `df*max(sgn*(F-K), 0)` with `F = S*e^{(r-q)T}` and no spot-intrinsic
+floor (that floor is an AMERICAN early-exercise term; this entry prices the
+European contract). rho, theta, charm and `dP/dq` are filled from the same closed
+form rather than left at zeros that would contradict the price beside them;
+gamma/vega/vanna/volga stay exactly 0 because no optionality remains. This is
+verbatim the defect already fixed on the American FD path (`american.cpp`, the
+`Pput` lambda's sigma arm and `sigma_zero_american_limit`) and reconciles with
+`black76_greeks`, whose sigma ~ 0 delta is +/-df in forward space.
+
+Pinned by `AdjointGreeksEuropean.ZeroVolLimitMatchesTheContinuousLimit` — which
+compares the degenerate branch at sigma = 1e-8 against the function's OWN full
+reverse sweep at sigma = 1e-7, an independent route — and
+`AdjointGreeksEuropean.ZeroVolCarryDominantPutIsNotTheSpotIntrinsic`.
+
+### CHANGED — adjoint bump sizes: the volga tail no longer cedes the low-sigma band, and vanna shares vega's sigma step
+
+**The numbers that move.** Over `AdjointGreeksAmerican.DiagnosticGaps`' 189-point
+grid, max gap vs a Richardson reference: **vega 9.58826e-3 → 9.53708e-3**
+(-0.53%); vanna (1.85464e-3), volga (2.38591) and adjoint coverage (179/189)
+unmoved. Separately, the adjoint now CLAIMS points with
+sigma in [2e-4, 5e-3] that it previously handed to the FD bundle without saying
+so, and still cedes sigma below that (see the third bullet).
+
+**What changed** (`src/pricing/adjoint_greeks.cpp`):
+
+- the volga tail's cold sigma-plus/minus re-solve used an ABSOLUTE `hvol = 5e-3`
+  against a regime guard admitting sigma > 1e-6, so every sigma <= 5e-3 produced
+  a NON-POSITIVE down-bump, the re-solve failed, and the whole bundle returned
+  `nullopt`. It now takes the SHAPE of `american_greeks_fd`'s relative floor
+  (`if (sigma - hvol <= 0) hvol = 0.5*sigma`, american.cpp:3101-3102) — though
+  not its switch point, since that function's step is 1e-3 and this one's is
+  5e-3, so their relative branches engage at sigma <= 1e-3 and <= 5e-3
+  respectively. Note the absolute step is proportionally LARGEST just above the
+  switch, not smallest: at sigma = 6e-3, `hvol` stays 5e-3, i.e. 83% of sigma.
+- **and the bottom of that band is deliberately still ceded.** A relative step
+  alone would let the adjoint claim sigma down to 1e-6, where `hvol = 5e-7` puts
+  `1/hvol^2` at 4e12 and turns the cold boundary's ~1e-10 residual into ~4e2 of
+  volga error — which the self-consistency guard cannot catch, since both vega
+  estimates are ~0 there and its 1e-3 floor is absolute. `kMinVolgaBump = 1e-4`
+  (i.e. sigma >= 2e-4) keeps the amplified end with the FD bundle. Claiming a
+  band whose volga cannot be computed is worse than the gap it would close.
+- the JVP probe step was `1e-7 / fmax(ymax, 1.0)`, which CAPPED but never
+  FLOORED, so the stated "probe is ~1e-7 regardless of the tangent norm" held
+  only for norms >= 1; below that the real probe was `1e-7*ymax`. It is now
+  `1e-7/ymax` (the surviving `fmax` is an overflow guard on `hy` alone —
+  `|hy*ydot[i]|` is <= 1e-7 by construction).
+- vanna's sigma step **was left at** `1e-3*max(sigma,1e-3)`, TEN TIMES vega's
+  `1e-4*max(sigma,1e-3)`. An earlier revision of this entry set the two equal
+  and claimed a 3.6% max-gap improvement; **that claim is retracted.** A max
+  over 189 points cannot separate a step-size gain from grid noise. Compared PER
+  POINT against a nested-Richardson reference over the 179 adjoint-served
+  points, the smaller step was better on 98 and **worse on 81** — a coin flip
+  — with the median gap slightly worse (1.27383e-5 vs 1.25916e-5), a median
+  paired change of -0.3%, and one point regressing 3927%. The 10x difference is
+  correct: vega is a first-order central difference (roundoff O(eps/h)) while
+  vanna is a mixed second difference (roundoff O(eps/(hS*hsv))), so their
+  optimal steps genuinely differ. The code now records that reasoning instead
+  of the false equality.
+
+`AdjointGreeksAmerican.DiagnosticGaps` gained a nested-Richardson vanna
+reference and a per-point distribution print — it had neither, which is how a
+step-size question came to be adjudicated on a max. New pins:
+`AdjointGreeksAmerican.LowVolBandNoLongerCededByTheVolgaBump` and
+`AdjointGreeksAmerican.VolgaAmplifiedBandIsStillCeded`.
+
+Also: the sigma ~ 0 arm of `european_greeks_adjoint` now screens
+`isfinite(r) && isfinite(q) && isfinite(T)` and returns an all-NaN row rather
+than a confident all-zero one — a NaN carry made `fwd_intr` NaN, which failed
+`> 0.0` and fell to the out-of-the-money branch, while the same inputs one ulp
+higher in sigma return NaN through `euro_reverse`.
+
+### FIXED — `adjusted_greeks` computed `sqrt(w/T)` above the guard protecting it
+
+**No number moves.** Both `curve_skew_slope` and `surface_skew_slope`
+(`src/pricing/adjusted_greeks.cpp`) already returned NaN for every rejected
+input, because `!(sigma > 0.0)` caught the NaN the bad arithmetic produced. What
+changes is that T == 0 no longer DIVIDES by zero and w < 0 no longer takes the
+root of a negative: both raised an FP exception (FE_DIVBYZERO / FE_INVALID) on a
+path documented as a clean early return. The reordered screen is exactly
+equivalent — sigma is positive and finite iff T > 0 and w > 0 and w/T neither
+underflows nor overflows, and the two checks after the sqrt still cover the
+latter pair.
+
+Pinned by `AdjustedGreeks.RejectedCurveInputsRaiseNoFpException`, which reads
+`std::fetestexcept` rather than the return value — the return value cannot
+distinguish the two orderings.
+
+`skew_adjusted`'s NaN propagation was reviewed and DELIBERATELY LEFT ALONE, but
+an earlier revision of this entry justified that with a claim that is false and
+is retracted: `skew_adjusted` has **no production caller at all**. Its only
+in-tree call sites are four in `tests/adjusted_greeks_test.cpp`. The backtest
+does not route through it — `portfolio_pricer.cpp` DUPLICATES `delta +
+vega_slope*vega` inline at `:1060` and `:1107`, and `finite_vega_slope` guards
+the input to *that* duplicated expression, not to this function. Declining the
+screen is still right (a silent fallback to the unadjusted delta would publish a
+different economic quantity under an indistinguishable column), but the reason
+is that this is a leaf whose only consumers are tests. The public header now
+says exactly that, so a future caller does not assume a screen it does not
+inherit. The duplicated arithmetic is the latent hazard, not the NaN.
+
+### DOCS — the "adjoint" greeks kernel is documented as something it is not
+
+`src/pricing/adjoint_greeks.hpp`, the `.cpp` file header, the
+`boundary_tangent_through_iters` doc, and `docs/adjoint_greeks_design.md` sections
+4-5 described "hand-coded adjoint algorithmic differentiation … a reverse
+tangent", "reverse-accumulation-through-iterations", Christianson's
+`vega = dP/dsigma|_y - lambda^T R_sigma` with `J^T lambda = (dP/dy)^T`, and
+"constant cost in the number of upstream inputs". None of that is what ships on
+the American path: the code is FORWARD-MODE tangent propagation
+(`ydot^0 = 0`, `ydot^k = dG_k/dy . ydot^(k-1) + dG_k/dtheta`) with BOTH
+Jacobian-vector products obtained by finite-differencing
+`al_apply_boundary_sweep`, called once per parameter — so cost scales with the
+parameter count, which is what an adjoint exists to eliminate. There is no
+lambda and no transposed solve anywhere in the file. The European path IS a
+genuine reverse sweep, but only to first order.
+
+The header's "machine-precise vs a central-difference reference" is likewise
+false for the American bundle: its own acceptance guard is 3% of the sum of two
+vega estimates plus 1e-3 absolute, and the measured max gaps vs Richardson over
+the `DiagnosticGaps` grid are vega 9.5e-3, vanna 1.8e-3, volga 2.4.
+
+Behaviour is UNCHANGED by this entry — only the prose. Shipped cost, counted from
+the code: 3 boundary solves (one taped + two cold sigma-plus/minus re-solves),
+2 tangent passes (each applying the boundary sweep twice per taped iteration),
+15 price evaluations off a boundary. A genuine Christianson adjoint would return
+the whole greek row for ~3-4x ONE price regardless of parameter count
+(Giles-Glasserman NA-05-15); closing that gap is a Phase-2 item, and the design
+doc's sections 4/5 now carry a **[TARGET — NOT SHIPPED]** marker so they stop
+reading as a description of the code.
 
 ### CHANGED — a Risk-purpose preset now requests the MARK too, and `fit_board` serves it when the risk oracle refuses
 

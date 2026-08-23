@@ -1,17 +1,49 @@
 #pragma once
 
-// ── Adjoint (AAD) American / European greeks — WS-P P2 + P3-pre ───────────
+// ── American / European greeks via a taped boundary tangent — WS-P P2 + P3-pre ──
 //
-// Hand-coded adjoint algorithmic differentiation of the Andersen-Lake American
-// pricer. All 8 greeks (delta, gamma, vega, theta, rho, vanna, volga, charm) from
-// ONE taped forward solve plus a reverse tangent through the early-exercise
-// boundary. P2 differentiated the exact fixed point via the implicit-function
-// theorem (mark-consistent only on the ~1/12 well-converged subset); P3-pre
-// switches the boundary sensitivities to Christianson (1994) reverse-accumulation
-// through the ACTUAL budget-limited iteration, so the greek matches the served mark
-// derivative on the wide domain (~83% of a realistic grid). Machine-precise vs a
-// central-difference reference. Design + primary-source citations:
-// docs/adjoint_greeks_design.md.
+// NAME WARNING (L5 T6, 2026-08-23). "Adjoint" in this file's name and in
+// `american_greeks_adjoint` is HISTORICAL. This header used to describe a
+// kernel that was never built; what ships is:
+//
+//   * European (`european_greeks_adjoint`): a genuine hand-coded REVERSE sweep
+//     of the BSM price graph, FIRST ORDER ONLY (`euro_reverse`,
+//     adjoint_greeks.cpp). Second order comes from the closed BSM forms.
+//   * American (`american_greeks_adjoint`): FORWARD-MODE tangent propagation
+//     through the taped boundary iteration —
+//     ẏ⁰ = 0, ẏᵏ = ∂G_k/∂y·ẏᵏ⁻¹ + ∂G_k/∂θ — with BOTH Jacobian-vector products
+//     obtained by FINITE-DIFFERENCING `al_apply_boundary_sweep`. No adjoint
+//     variable λ, no transposed solve Jᵀλ = (∂P/∂y)ᵀ, no reverse sweep anywhere
+//     on the American path. The tangent runs ONCE PER PARAMETER (σ, then r), so
+//     its cost scales with the parameter count — precisely what an adjoint
+//     exists to eliminate.
+//
+// Cost of one American bundle, counted from the code: 3 boundary solves (one
+// taped, plus two cold σ± re-solves for volga), 2 tangent passes (each applying
+// the boundary sweep twice per taped iteration), and 15 price evaluations off a
+// boundary. A genuine Christianson/Giles-Glasserman adjoint would return the
+// whole greek row for ~3-4x ONE price REGARDLESS of how many upstream
+// parameters feed it (Giles-Glasserman, "Smoking Adjoints", RISK 2006;
+// NA-05-15). That gap is real and unrealised — a Phase-2 item, not something
+// this file does. `docs/adjoint_greeks_design.md` §4-§5 specify the adjoint
+// that was DESIGNED; read them as the target, not as a description of the code.
+//
+// What the kernel does deliver: all 8 greeks (delta, gamma, vega, theta, rho,
+// vanna, volga, charm) from ONE taped forward solve instead of the FD bundle's
+// seven cold ones, with the boundary sensitivities differentiated through the
+// ACTUAL budget-limited iteration (Christianson 1994's attractive-fixed-point
+// result is what licenses dropping the seed tangent ẏ⁰), so the greek matches
+// the SERVED mark derivative on the wide domain (~83% of a realistic grid)
+// rather than the ~1/12 well-converged subset the earlier exact-fixed-point IFT
+// claimed.
+//
+// Accuracy is NOT "machine-precise vs a central-difference reference", as this
+// header used to claim. The European closed forms are exact; the American
+// bundle is finite-difference throughout, and its own acceptance guard is 3% of
+// the sum of two independent vega estimates plus 1e-3 absolute (the
+// self-consistency check in adjoint_greeks.cpp). Measured max gaps vs a
+// Richardson reference over the 189-point `DiagnosticGaps` grid: vega 9.5e-3,
+// vanna 1.8e-3, volga 2.4.
 //
 // This is the pricing lever that replaces american_greeks/fd_warm (the ~1.5 ms,
 // ~7-boundary-solve finite-difference bundle). The existing FD path is UNTOUCHED
@@ -31,15 +63,24 @@ namespace atx::vol::detail {
 // graph — the adjoint architecture, exposing the full direct-input gradient
 // [∂P/∂S, ∂P/∂K, ∂P/∂T, ∂P/∂σ, ∂P/∂r, ∂P/∂q]; second order (gamma, vanna, volga,
 // charm) via the exact BSM closed forms. theta is calendar-time (-∂P/∂T). This
-// is the TDD rung 1 for the adjoint machinery AND the exact American price in the
-// no-early-exercise regime (American == European). Always succeeds for positive
-// inputs; degenerate T~0 / σ~0 collapses to intrinsic greeks.
+// is the one genuinely reverse-mode piece of the kernel AND the exact American
+// price in the no-early-exercise regime (American == European). Always succeeds
+// for positive inputs.
 //
-// @param dP_dq optional out: the reverse sweep's ∂P/∂q carry sensitivity — the
-//        6th gradient component the returned AmericanGreeks has no field for (G2).
-//        Written iff non-null; the machine-exact BSM ∂P/∂q (= -T·S·e^{-qT}·Φ(±d1))
-//        on the non-degenerate branch, 0 in the intrinsic limit. Pure (writes only
-//        through the caller's pointer).
+// Degenerate limits, in `andersen_lake_core`'s own order:
+//   T ~ 0    -> the SPOT intrinsic, delta ±1 (no time left).
+//   σ ~ 0    -> the EUROPEAN σ->0 limit df·max(sgn·(F-K), 0), F = S·e^{(r-q)T} —
+//               the discounted FORWARD intrinsic, with delta = sgn·e^{-qT}, and
+//               rho/theta/charm/∂P∂q filled from the same closed form (L5 T3;
+//               this arm used to return the bare spot intrinsic with delta ±1,
+//               dropping the forward AND the discount factor). Second-order
+//               greeks are exactly 0: no optionality is left.
+//
+// @param dP_dq optional out: ∂P/∂q, the carry sensitivity `AmericanGreeks` has
+//        no field for (G2). Written iff non-null; the reverse sweep's exact BSM
+//        ∂P/∂q (= -T·S·e^{-qT}·Φ(±d1)) on the non-degenerate branch,
+//        -sgn·T·S·e^{-qT} on the ITM σ~0 arm, 0 at T~0 and out of the money.
+//        Pure (writes only through the caller's pointer).
 [[nodiscard]] AmericanGreeks european_greeks_adjoint(double S, double K, double T, double sigma,
                                                      double r, double q, Side side,
                                                      double *dP_dq = nullptr) noexcept;

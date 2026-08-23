@@ -221,6 +221,77 @@ inline constexpr std::size_t kMaxStripNodes = 2049;
   return n > kMaxStripNodes ? kMaxStripNodes : n;
 }
 
+// ── FIX-E M-7: the SPAN-driven node rescale (the mirror of dk_floor_nodes) ──
+//
+// Widening the span at a fixed node count coarsens Δk, which is the resolution
+// a tier actually promises. Holding it means scaling the INTERVAL count by the
+// same factor the half-width grew by, `kh / floor_half`.
+//
+// This body used to live inline in `strip_fair_value_core` (derivatives.cpp),
+// and it was the one copy of this shape that never got a pre-cast bound. `kh`
+// carries `width_sigmas * sigma_atm * sqrt(T)` and nothing upstream bounds
+// `sigma_atm`, so the ratio is unbounded above and `intervals` runs away
+// exactly as `dk_floor_nodes`'s own demand does: at σ√T ≈ 100 a Standard-tier
+// quote asked for ~102 401 nodes, and past `size_t`'s range the
+// `ceil()`→`size_t` cast is UNDEFINED BEHAVIOUR, not a saturating truncation.
+// Extracted here so the bound is written once and so the out-of-range end is
+// testable without paying for a quadrature.
+//
+// THE BOUND IS `kMaxRescaleNodes`, NOT `kMaxStripNodes` — review fix, and the
+// distinction is load-bearing. `kMaxStripNodes` is the batched gather's fixed
+// STACK BUFFER length, and the only correct consequence of exceeding it is the
+// fallback to the scalar loop that gather already performs structurally
+// (derivatives.cpp, "Review fix round 1, CRITICAL-1"). Bounding the RESCALE
+// there instead made this function INCAPABLE of raising at the Audit tier at
+// all — 2048 intervals over ±3.0 need `intervals < 2049` to escape the cap
+// while any widening at all forces `intervals > 2048` — and clipped High from
+// σ√T ≥ 1 and Standard from σ√T > 2, i.e. it re-introduced the widened-span/
+// coarsened-Δk trade M-7 exists to prevent, in the regime M-7 was written for.
+// `kMaxRescaleNodes` is a COST bound instead, set where no real quote reaches
+// it: the richest tier only hits it at σ√T = 8, an 800-vol year.
+//
+// A capped rescale is NOT self-reporting. The call site's
+// `max_panel_spacing(split) > dk_max` check cannot detect it — after the bound
+// the spacing is `2*kh/(kMaxRescaleNodes-1)` ∝ σ√T and `dk_ceiling` is
+// `σ√T/4`, so σ√T cancels and the ratio is a constant ~1.5e-3, under the
+// ceiling for EVERY input. `capped` is therefore returned explicitly and the
+// caller raises LowT from it; do not delete that plumbing on the assumption
+// the spacing check covers it.
+//
+// Returns `current_n` unchanged when the span did not widen, or when either
+// half-width is unusable.
+inline constexpr std::size_t kMaxRescaleNodes = 32769;  // 4*8192+1, on the 4m+1 lattice
+
+struct SpanRescale {
+  std::size_t n_nodes;  // resolved node count; never below `current_n`
+  bool capped;          // the cost bound engaged: Δk is coarser than the tier promises
+};
+
+[[nodiscard]] inline SpanRescale span_rescaled_nodes(std::size_t current_n, double kh,
+                                                     double floor_half) noexcept {
+  if (current_n < 2u || !(floor_half > 0.0) || !(kh > floor_half)) {
+    return SpanRescale{current_n, false};
+  }
+  const double intervals = static_cast<double>(current_n - 1u) * (kh / floor_half);
+  // Bounded HERE, before the ceil()->size_t cast below, for the same reason
+  // `dk_floor_nodes` bounds its own: an out-of-range double->size_t cast is UB.
+  // `!(intervals < ceiling)` catches +inf and NaN on the same test, so no
+  // out-of-range value can reach the cast on any input.
+  const auto ceiling = static_cast<double>(kMaxRescaleNodes - 1u);
+  const bool capped = !(intervals < ceiling);
+  std::size_t n =
+      odd_nodes(static_cast<std::size_t>(std::ceil(capped ? ceiling : intervals)) + 1u, current_n);
+  // Round up to 4m+1: the Richardson half-grid error estimate at the call site
+  // needs the half grid ((n+1)/2 nodes) to be odd again, which plain
+  // odd-forcing does not guarantee (e.g. n=99 halves to 50, even). The tier
+  // defaults are already 4m+1 (97/257/769/2049); only this adaptive rescale
+  // can land off that lattice, so only it needs the correction.
+  if ((n % 4u) != 1u) {
+    n += 2u;
+  }
+  return SpanRescale{n > kMaxRescaleNodes ? kMaxRescaleNodes : n, capped};
+}
+
 // Composite-Simpson weight for node i of n (n odd): end nodes 1, interior
 // alternating 4 / 2. The caller supplies the trailing Δk/3.
 [[nodiscard]] inline double simpson_weight(std::size_t i, std::size_t n) noexcept {

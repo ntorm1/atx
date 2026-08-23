@@ -1,15 +1,25 @@
-// ── Adjoint (AAD) American / European greeks — WS-P P2 + P3-pre ───────────
+// ── American / European greeks via a taped boundary tangent — WS-P P2 + P3-pre ──
 //
-// Hand-coded adjoint algorithmic differentiation of the Andersen-Lake American
-// pricer. The boundary sensitivities (vega/rho/vanna) are differentiated THROUGH
-// the actual budget-limited exercise-boundary iteration via Christianson (1994)
-// reverse-accumulation of iterated maps (P3-pre domain widening), superseding the
-// P2 exact-fixed-point IFT which was mark-consistent only on the narrow
-// well-converged subset. See docs/adjoint_greeks_design.md for the full design and
-// the primary-source citations (Giles-Glasserman 2006; Savine ch.9; Henrard/
-// OpenGamma AAD+IFT 2011; Christianson 1994 reverse accumulation of attractive
-// fixed points; Griewank-Walther cheap-gradient bound; Deussen/Naumann EuroAD-2015
-// American AAD envelope + Γ=0 trap). Class: accuracy-improving.
+// READ THE NAME WARNING IN adjoint_greeks.hpp FIRST (L5 T6). "Adjoint" here is
+// historical. The EUROPEAN path below (`euro_reverse`) is a real hand-coded
+// reverse sweep, first order only. The AMERICAN path is FORWARD-MODE tangent
+// propagation (`boundary_tangent_through_iters`), both of its Jacobian-vector
+// products taken by finite-differencing `al_apply_boundary_sweep`, run once per
+// parameter — no λ, no Jᵀ solve, no reverse accumulation. What Christianson
+// (1994) supplies is the attractive-fixed-point argument that licenses dropping
+// the seed tangent ẏ⁰, and the licence to differentiate THROUGH the actual
+// budget-limited iteration rather than the exact fixed point — which is what
+// superseded the P2 IFT (mark-consistent only on the narrow well-converged
+// subset) and widened the domain. It is not evidence that this file accumulates
+// in reverse.
+//
+// docs/adjoint_greeks_design.md holds the full DESIGN and the primary-source
+// citations (Giles-Glasserman 2006; Savine ch.9; Henrard/OpenGamma AAD+IFT 2011;
+// Christianson 1994 reverse accumulation of attractive fixed points;
+// Griewank-Walther cheap-gradient bound; Deussen/Naumann EuroAD-2015 American
+// AAD envelope + Γ=0 trap). §4-§5 there describe the adjoint that was specified,
+// NOT the kernel that shipped; both carry a marker saying so.
+// Class: accuracy-improving.
 //
 // Pure functions (no globals/statics mutation) — live == backtest bit-for-bit.
 
@@ -18,6 +28,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 
 #include "atx/core/math.hpp"
@@ -178,8 +189,14 @@ using amer::kAlMaxNodes;
 
 using amer::AlSolveTape;
 
-// dy*/dθ via reverse-accumulation-through-iterations (Christianson 1994, "Reverse
-// accumulation and attractive fixed points", Optim. Methods & Software 3:311-326).
+// dy*/dθ by FORWARD-MODE TANGENT PROPAGATION through the taped iterations. (The
+// name in the surrounding file says "adjoint"; this function is where that name
+// stops being true — see the file header. The relevant Christianson result is
+// the attractive-fixed-point one that licenses ẏ⁰ = 0 below: Christianson 1994,
+// "Reverse accumulation and attractive fixed points", Optim. Methods & Software
+// 3:311-326. Reverse accumulation itself is NOT what runs here — cost scales
+// with the parameter count, once per `param_sel`.)
+//
 // The budget-limited solve is y* = seed(θ) then y^k = G_k(y^{k-1}; θ) for the taped
 // sweeps. Its EXACT tangent (the derivative the mark actually has, matching fd/al) is
 //   ẏ^0 = ∂seed/∂θ ,   ẏ^k = ∂G_k/∂y · ẏ^{k-1} + ∂G_k/∂θ ,   dy*/dθ = ẏ^N.
@@ -230,7 +247,18 @@ void boundary_tangent_through_iters(const AlBoundary &bnd, const AlWorkspace &ws
       ymax = std::fmax(ymax, std::fabs(ydot[i]));
     }
     if (ymax > 0.0) {
-      const double hy = 1.0e-7 / std::fmax(ymax, 1.0);
+      // L5 T5: `1e-7 / fmax(ymax, 1.0)` CAPPED the step but never FLOORED it,
+      // so the stated "probe is ~1e-7 regardless of ‖ẏ‖" only held for
+      // ‖ẏ‖ >= 1. Below that the fmax pinned hy at 1e-7 and the actual
+      // perturbation was 1e-7·ymax — at ymax ~ 1e-6 that is a 1e-13 probe
+      // against boundary nodes of order K, i.e. ~6 decimal digits of
+      // cancellation in `(jvp - ynext)/hy`. Scaling by ymax itself makes the
+      // largest perturbed component exactly 1e-7 on BOTH sides of 1, which is
+      // what the comment above always claimed. The fmax that remains is an
+      // overflow guard on `hy` alone, not a step policy: |hy·ydot[i]| <= 1e-7
+      // by construction for every i (ymax is the max |ydot|), so no perturbed
+      // node can blow up however small ymax gets.
+      const double hy = 1.0e-7 / std::fmax(ymax, 1.0e-280);
       for (std::uint16_t i = 0; i < n; ++i) {
         yp[i] = yb[i] + hy * ydot[i];
       }
@@ -354,6 +382,27 @@ american_put_adjoint(double S, double K, double T, double sigma, double r, doubl
   // ── vanna = ∂delta/∂σ. Only the FIRST-ORDER boundary motion ẏ_σ enters a mixed 2nd
   // derivative; move the boundary along ẏ_σ (the Christianson tangent) and take a
   // spot-difference of delta on the σ± moved boundaries.
+  //
+  // L5 T5, and then the review that overturned it: this σ step is TEN TIMES
+  // `hsig` above, and that is CORRECT, not an inconsistency to be flattened.
+  //
+  // The tempting argument is that vanna should be "the σ-derivative of the
+  // returned vega", so both should difference σ at one scale. But vega is a
+  // FIRST-order central difference of the price (truncation O(h²), roundoff
+  // O(ε/h), optimum h ~ ε^(1/3)) while vanna is a MIXED second difference
+  // (`(dvp - dvm)/(2*hsv)` over spot differences), whose roundoff floor scales
+  // as ε/(hSv·hsv) -- an order of h worse. Their optimal steps genuinely
+  // differ, and 10x is the right direction.
+  //
+  // MEASURED, because the first attempt at this got it wrong on a max-only
+  // statistic: setting hsv = hsig and comparing PER POINT against a
+  // nested-Richardson reference over `DiagnosticGaps`' 179 adjoint-served
+  // points, the smaller step was better on 98 and WORSE ON 81 -- a coin flip,
+  // not an improvement -- with the median gap slightly worse (1.27383e-5 vs
+  // 1.25916e-5), a median paired change of -0.3% (noise), and one point
+  // regressing by 3927% (K=112 T=0.4 sig=0.25 r=0.06). The max fell 3.6%,
+  // which is what a max over 189 points does when you jiggle a step size; it
+  // cannot separate a real gain from grid noise, and here there was none.
   const double hsv = 1.0e-3 * std::fmax(sigma, 1.0e-3);
   const double hSv = 1.0e-3 * S;
   const double dvp =
@@ -382,9 +431,39 @@ american_put_adjoint(double S, double K, double T, double sigma, double r, doubl
   // difference), then 2nd price difference — the proven american_greeks_al route.
   // hvol = 5e-3: large enough that the cold boundary's ~1e-10 residual is not
   // amplified into volga, small enough to keep truncation modest.
+  //
+  // L5 T5: 5e-3 is ABSOLUTE, and the regime guard at the top of this function
+  // admits σ > 1e-6 — so for every σ <= 5e-3 the DOWN-bump `sigma - hvol` was
+  // non-positive. The cold re-solve then failed (or was meaningless) and the
+  // whole bundle bailed to `std::nullopt`, i.e. the adjoint silently ceded the
+  // entire low-σ band it claims. The SHAPE of the fix is
+  // `american_greeks_fd`'s (american.cpp:3101-3102) and `american_greeks_al`'s
+  // (:3508-3509); the SWITCH POINT is not, because their step is 1e-3 and this
+  // one is 5e-3, so their relative branch engages at σ <= 1e-3 and this one at
+  // σ <= 5e-3. The three policies therefore agree in form, not numerically —
+  // and note the band just ABOVE the switch is where the absolute step is
+  // proportionally largest, not smallest: at σ = 6e-3, `sigma - hvol` is still
+  // positive so `hvol` stays 5e-3, i.e. 83% of σ.
+  //
+  // AND THE BOTTOM OF THE BAND IS DELIBERATELY STILL CEDED (review fix). A
+  // relative step alone would let this claim σ down to the regime guard's
+  // 1e-6, where `hvol = 5e-7` puts 1/hvol² at 4e12 and amplifies the cold
+  // boundary's ~1e-10 residual into ~4e2 of volga error — and the
+  // self-consistency guard below cannot catch it, because both vega estimates
+  // are ~0 there and its 1e-3 floor is absolute. `kMinVolgaBump` is set so that
+  // residual/hvol² stays at ~1e-2: claiming a band whose volga cannot be
+  // computed is strictly worse than the gap it would close, so points below it
+  // go to the FD bundle exactly as they did before.
   double volga = 0.0;
   {
-    const double hvol = 5.0e-3;
+    constexpr double kMinVolgaBump = 1.0e-4;  // 1e-10 residual / (1e-4)^2 = 1e-2 volga
+    double hvol = 5.0e-3;
+    if (sigma - hvol <= 0.0) {
+      hvol = 0.5 * sigma;
+    }
+    if (hvol < kMinVolgaBump) {
+      return std::nullopt;  // σ < 2e-4: the 2nd difference cannot resolve volga
+    }
     AlBoundary bsp{}, bsm{};
     AlWorkspace wsp{}, wsm{};
     const bool okp =
@@ -431,16 +510,100 @@ american_put_adjoint(double S, double K, double T, double sigma, double r, doubl
 AmericanGreeks european_greeks_adjoint(double S, double K, double T, double sigma, double r,
                                        double q, Side side, double *dP_dq) noexcept {
   AmericanGreeks g{};
-  // Degenerate: collapse to intrinsic to avoid a v=0 division. Matches the
-  // pricer's T~0/σ~0 intrinsic policy.
-  if (T <= 1.0e-12 || sigma <= 1.0e-8 || S <= 0.0 || K <= 0.0) {
+  // Degenerate, in andersen_lake_core's OWN two-arm order (T first, then σ) so
+  // this entry and the pricer collapse the same way on the same inputs.
+  //
+  // Arm 1 — T ~ 0 (or a nonsense spot/strike): no time left, so the value is
+  // the SPOT intrinsic. That is not an approximation of arm 2, it is its
+  // limit: at T <= 1e-12 both e^{-rT} and e^{(r-q)T} are 1 to well inside
+  // double precision, so the discounted-forward form below degenerates to
+  // exactly this. Matches `andersen_lake_core`'s T ~ 0 arm and
+  // `american_greeks_fd`'s `Pput`/`Pcall` lambdas.
+  if (T <= 1.0e-12 || S <= 0.0 || K <= 0.0) {
     const double intr = (side == Side::Put) ? (K - S) : (S - K);
     g.price = intr > 0.0 ? intr : 0.0;
     if (intr > 0.0) {
       g.delta = (side == Side::Put) ? -1.0 : 1.0;
     }
     if (dP_dq != nullptr) {
-      *dP_dq = 0.0; // intrinsic has no carry sensitivity
+      *dP_dq = 0.0; // no time left: no carry sensitivity
+    }
+    return g;
+  }
+  // Arm 2 (L5 T3) — σ ~ 0 WITH time left. This used to return the bare spot
+  // intrinsic with delta = ±1, which is verbatim the defect already found and
+  // fixed on the American FD path: see `american_greeks_fd`'s `Pput` comment
+  // ("The sigma arm used to return the bare spot intrinsic, which disagrees
+  // with the pricer by the whole discounted-forward intrinsic on a
+  // carry-dominant contract") and `sigma_zero_american_limit`. It also
+  // disagreed with `black76_greeks`, whose own σ ~ 0 delta is ±df, not ±1.
+  //
+  // The EUROPEAN σ -> 0 limit is the discounted FORWARD intrinsic
+  //
+  //     P = df · max(sgn·(F - K), 0),   F = S·e^{(r-q)T},  df = e^{-rT},
+  //     sgn = +1 (call) / -1 (put)
+  //
+  // with NO spot-intrinsic floor: `sigma_zero_american_limit`'s
+  // max(·, immediate exercise) term is an AMERICAN early-exercise right, and
+  // this entry prices the European contract (it is reached from
+  // `american_greeks_adjoint` only in the regime where American == European
+  // exactly). Both directions of the old error are real: the spot intrinsic
+  // UNDERSTATES a carry-dominant put (r = 0, q > 0: df·(K-F) > 0 at spot
+  // intrinsic 0) and OVERSTATES a spot-ITM put under positive rates (it drops
+  // the discount factor entirely).
+  //
+  // Rewriting the ITM branch as P = sgn·(S·e^{-qT} - K·e^{-rT}) makes the
+  // whole first-order row exact and elementary, so it is filled in rather than
+  // left at the zeros that would now contradict the price beside them:
+  //     delta  = ∂P/∂S  = sgn·e^{-qT}            (= sgn·df·e^{(r-q)T})
+  //     rho    = ∂P/∂r  = sgn·K·T·e^{-rT}
+  //     ∂P/∂q           = -sgn·T·S·e^{-qT}
+  //     theta  = -∂P/∂T = sgn·(q·S·e^{-qT} - r·K·e^{-rT})   (calendar-time)
+  //     charm  = ∂theta/∂S = sgn·q·e^{-qT} = q·delta
+  // Every second-order greek stays 0: P is affine in S on each side of the
+  // strike and carries no σ dependence at all, so gamma/vega/vanna/volga are
+  // exactly zero rather than merely unpopulated.
+  if (sigma <= 1.0e-8) {
+    // A non-finite r/q/T must not be answered with a confident zero row. The
+    // closed form below folds them into `fwd_intr`, whose NaN then fails
+    // `> 0.0` and falls to the out-of-the-money arm — so the caller would get
+    // price 0.0 and eight zero greeks from an input that returns all-NaN at
+    // σ one ulp higher (`euro_reverse` propagates it). Match that instead;
+    // `classify_regime(0.0, NaN)` reads European, so this arm really is
+    // reachable with a NaN carry.
+    if (!std::isfinite(r) || !std::isfinite(q) || !std::isfinite(T)) {
+      const double nan = std::numeric_limits<double>::quiet_NaN();
+      g.price = nan;
+      g.delta = nan;
+      g.gamma = nan;
+      g.vega = nan;
+      g.theta = nan;
+      g.rho = nan;
+      g.vanna = nan;
+      g.volga = nan;
+      g.charm = nan;
+      if (dP_dq != nullptr) {
+        *dP_dq = nan;
+      }
+      return g;
+    }
+    const double df = std::exp(-r * T);
+    const double carry = std::exp((r - q) * T); // spot -> forward
+    const double F = S * carry;
+    const double sgn = (side == Side::Put) ? -1.0 : 1.0;
+    const double fwd_intr = sgn * (F - K);
+    if (fwd_intr > 0.0) {
+      const double disc_spot = S * std::exp(-q * T); // = df * F
+      g.price = df * fwd_intr;
+      g.delta = sgn * df * carry;
+      g.rho = sgn * K * T * df;
+      g.theta = sgn * (q * disc_spot - r * K * df);
+      g.charm = q * g.delta;
+      if (dP_dq != nullptr) {
+        *dP_dq = -sgn * T * disc_spot;
+      }
+    } else if (dP_dq != nullptr) {
+      *dP_dq = 0.0; // out of the money at σ = 0: identically zero, all derivatives too
     }
     return g;
   }

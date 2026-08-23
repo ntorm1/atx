@@ -1658,6 +1658,10 @@ template <class SurfaceT>
       cfg.width_sigmas == 0.0 ? strip::kDefaultWidthSigmas : cfg.width_sigmas;
   const double sigma_atm = surface.iv(0.0, T);
   const double required = strip::required_half_width(sigma_atm, T, width_sigmas);
+  // Set when the adaptive rescale below hit `strip::kMaxRescaleNodes`, i.e. the
+  // grid resolves COARSER in dk than this tier promises for its own vol scale.
+  // That is exactly what LowT reports, and nothing downstream can re-derive it.
+  bool span_rescale_capped = false;
   if (!span_pinned) {
     const double floor_half = std::fmax(-grid.k_min_log, grid.k_max_log);
     const double kh = strip::adaptive_half_width(floor_half, sigma_atm, T, width_sigmas);
@@ -1672,18 +1676,21 @@ template <class SurfaceT>
     // truncation bias for a quadrature one. Hold Δk at the tier's own value
     // instead. Only when the caller has not pinned `strip_nodes`: an explicit
     // node count is a request, same as an explicit span.
-    if (cfg.strip_nodes == 0u && kh > floor_half && floor_half > 0.0) {
-      const double intervals = static_cast<double>(grid.n_nodes - 1) * (kh / floor_half);
-      grid.n_nodes = strip::odd_nodes(
-          static_cast<std::size_t>(std::ceil(intervals)) + 1u, grid.n_nodes);
-      // Round up to 4m+1: the Richardson half-grid error estimate below needs
-      // the half grid ((n+1)/2 nodes) to be odd again, which plain odd-forcing
-      // does not guarantee (e.g. n=99 halves to 50, even). The tier defaults
-      // are already 4m+1 (97/257/769/2049); only this adaptive rescale can
-      // land off that lattice, so only it needs the correction.
-      if ((grid.n_nodes % 4u) != 1u) {
-        grid.n_nodes += 2u;
-      }
+    //
+    // The rescale itself (the 4m+1 Richardson rounding, and the
+    // `kMaxRescaleNodes` bound that keeps the unbounded `kh / floor_half` ratio
+    // away from a `ceil()`->`size_t` cast that would be UB) lives in
+    // `strip::span_rescaled_nodes`.
+    //
+    // `capped` is carried out to LowT below rather than left to the spacing
+    // check: that check CANNOT see a capped rescale, because both sides of it
+    // scale linearly in sigma_atm*sqrt(T) and the ratio is a constant well
+    // under the ceiling for every input (see span_rescaled_nodes' own note).
+    if (cfg.strip_nodes == 0u) {
+      const strip::SpanRescale rescaled =
+          strip::span_rescaled_nodes(grid.n_nodes, kh, floor_half);
+      grid.n_nodes = rescaled.n_nodes;
+      span_rescale_capped = rescaled.capped;
     }
   }
 
@@ -1881,7 +1888,10 @@ template <class SurfaceT>
   const double resolved_span = integ_k_hi - integ_k_lo;
   const std::size_t n_panels =
       strip::strip_panel_count(integ_k_lo, integ_k_hi, split_wing_band);
-  bool low_t = false;
+  // Seeded from the span rescale: a capped rescale is under-resolved for its own
+  // vol scale by construction, and the `max_panel_spacing > dk_max` check below
+  // provably cannot detect it (sigma_atm*sqrt(T) cancels out of that ratio).
+  bool low_t = span_rescale_capped;
   if (cfg.strip_nodes == 0u) {
     const std::size_t raised =
         strip::dk_floor_nodes(resolved_span, grid.n_nodes, dk_max, n_panels);
@@ -2101,12 +2111,15 @@ template <class SurfaceT>
   // test can prove the two are bit-identical on the exact same surface/grid.
   //
   // Review fix round 1, CRITICAL-1: `n` is NOT bounded by `kMaxStripNodes` on
-  // every path that can reach here. The adaptive span rescale above (unlike
-  // `strip::dk_floor_nodes`) never caps its own raise, and a caller-pinned
-  // `cfg.strip_nodes` is deliberately never clamped either (see that block's
-  // own comment) -- so an Audit-tier quote with sigma_atm*sqrt(T) high enough
-  // (e.g. ~0.55 at 1Y), or a directly pinned strip_nodes past the cap, can
-  // resolve a node count larger than the fixed-size gather buffers below.
+  // every path that can reach here, and that is deliberate on BOTH of them. A
+  // caller-pinned `cfg.strip_nodes` is never clamped (see that block's own
+  // comment), and the adaptive span rescale above is bounded by
+  // `strip::kMaxRescaleNodes` (32769), not by this buffer length -- bounding it
+  // here instead would trade a widened span's truncation error back for
+  // quadrature error, which is the exact swap FIX-E M-7 exists to prevent, and
+  // at the Audit tier it disabled M-7 outright. So an Audit quote with
+  // sigma_atm*sqrt(T) >= ~0.5, or a pinned strip_nodes past the cap, still
+  // resolves a node count larger than the fixed-size gather buffers below.
   // The guard is structural, not an assert-only check: `x_read_buf`/
   // `sigma_buf` are never touched at all unless `n <= kMaxStripNodes`
   // (equivalently `gather_n <= kMaxStripNodes`, since `plan_strip_split`

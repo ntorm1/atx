@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "atx/vol/api/pricing/rates_curve.hpp"
+#include "pricing/deriv_analytic_greeks.hpp"  // L5 T2: analytic_strip_greeks (bad-node contract)
 #include "atx/vol/api/backtest/deriv_book.hpp"  // DerivPriceFrame::vega_by_tenor (Task F-7)
 #include "atx/vol/api/pricing/derivatives.hpp"
 #include "fitting/counters.hpp"        // ledger::Solve::VarSwapStripEvals (F-7 r1, I-1)
@@ -1436,6 +1439,104 @@ TEST(AnalyticGreeks, DoesNotSwallowDispatchMatrixErrors) {
   ASSERT_FALSE(g_an.has_value());
   EXPECT_EQ(g_fd.error().code(), g_an.error().code());
   EXPECT_EQ(g_fd.error().code(), ErrorCode::InvalidArgument);
+}
+
+// ── L5 T2: the "bad node" convention has to cover the CENTER read too ─────
+//
+// deriv_analytic_greeks.hpp promises that "a node whose surface read is
+// non-finite ... never propagates a NaN into the total". `black76_vega_volga`
+// honours it for four of the five greeks by answering {0, 0} on a bad center,
+// which zeroes that node's vega/delta/vanna/volga products. gamma escaped:
+// `sig_curv`'s 5-point stencil carries `-30.0 * sigma`, so a NaN center made
+// `sig_curv` NaN and `bv.vega * sig_curv` the 0*NaN that poisons `sum_gamma`.
+//
+// Two surfaces differing ONLY in how much of one node's read window is
+// unusable make that exact. `CenterHole` loses just the center read;
+// `WholeNodeHole` loses the center AND all four +/-delta probes of the same
+// node. By the documented convention a bad center makes the node contribute
+// zero to every sum, so the shifted reads cannot matter and the two must
+// agree BIT-FOR-BIT. Before the fix they did not: CenterHole's gamma was NaN
+// and WholeNodeHole's was finite. No tolerance is involved in that assertion
+// -- exact equality is what makes it a contract test, not an accuracy one.
+namespace holes {
+
+// Skewed + curved so every greek is genuinely non-zero; `iv` is the only
+// member either surface needs (`analytic_strip_greeks` is a template whose
+// whole requirement is that query, and neither type exposes `iv_batch`, so
+// both take the scalar read loop).
+constexpr double kSigma0 = 0.22;
+constexpr double kSlope = -0.35;
+constexpr double kCurv = 0.40;
+
+[[nodiscard]] inline double smile(double x) noexcept {
+  return kSigma0 + kSlope * x + kCurv * x * x;
+}
+
+struct CenterHoleSurface {
+  // The k = 0 node lands on exactly 0.0 (it is a panel BOUNDARY of the
+  // kink-aligned split, carried through verbatim by `analytic_node_x`), and
+  // its four probes sit at +/-1e-3 and +/-2e-3, so this holes the center read
+  // of one node and nothing else.
+  [[nodiscard]] double iv(double x, double /*T*/) const noexcept {
+    return x == 0.0 ? std::numeric_limits<double>::quiet_NaN() : smile(x);
+  }
+};
+
+struct WholeNodeHoleSurface {
+  // Same node, whole read window. The nearest OTHER node sits at
+  // 3.0/256 ~ 1.17e-2, five times outside this band, so no second node is
+  // touched.
+  [[nodiscard]] double iv(double x, double /*T*/) const noexcept {
+    return std::fabs(x) <= 2.1e-3 ? std::numeric_limits<double>::quiet_NaN() : smile(x);
+  }
+};
+
+struct CleanSurface {
+  [[nodiscard]] double iv(double x, double /*T*/) const noexcept { return smile(x); }
+};
+
+}  // namespace holes
+
+TEST(AnalyticGreeks, NonFiniteCenterReadNeverPoisonsGamma) {
+  const double F = 100.0, S = 100.0, T = 0.5, df = 0.99;
+  const double k_lo = -1.5, k_hi = 1.5;
+  const std::size_t n_nodes = 257u;
+  const double wing_band = 0.0;  // identity clamp: node x == read x
+
+  const auto center = atx::vol::detail::analytic_strip_greeks(
+      holes::CenterHoleSurface{}, F, S, T, df, k_lo, k_hi, n_nodes, wing_band);
+  const auto whole = atx::vol::detail::analytic_strip_greeks(
+      holes::WholeNodeHoleSurface{}, F, S, T, df, k_lo, k_hi, n_nodes, wing_band);
+
+  // The four greeks that were already correct, pinned so a future change
+  // cannot "fix" gamma by breaking them.
+  EXPECT_TRUE(std::isfinite(center.delta));
+  EXPECT_TRUE(std::isfinite(center.vega));
+  EXPECT_TRUE(std::isfinite(center.vanna));
+  EXPECT_TRUE(std::isfinite(center.volga));
+
+  // The regression itself.
+  EXPECT_TRUE(std::isfinite(center.gamma))
+      << "a non-finite center read must contribute 0, not NaN, to sum_gamma";
+
+  // And the contract, exactly: a bad center makes the shifted reads
+  // irrelevant, so the two surfaces are the same computation.
+  EXPECT_EQ(center.delta, whole.delta);
+  EXPECT_EQ(center.gamma, whole.gamma);
+  EXPECT_EQ(center.vega, whole.vega);
+  EXPECT_EQ(center.vanna, whole.vanna);
+  EXPECT_EQ(center.volga, whole.volga);
+
+  // A hole of one node in 257 must not swallow the signal: gamma stays a real
+  // number of the same order as the un-holed surface's, not a collapse to 0.
+  const auto clean = atx::vol::detail::analytic_strip_greeks(holes::CleanSurface{}, F, S, T, df,
+                                                             k_lo, k_hi, n_nodes, wing_band);
+  ASSERT_NE(clean.gamma, 0.0);
+  // Measured 0.26% (3.88794e-4 vs 3.89802e-4); 1% leaves ~4x headroom without
+  // being the kind of slack that would wave a real error through.
+  EXPECT_LT(std::fabs(center.gamma - clean.gamma), 0.01 * std::fabs(clean.gamma))
+      << "one dropped node out of 257 (Simpson weight 1 at a panel boundary) "
+         "moves gamma by 0.26%";
 }
 
 // ── Task F-7: smile greeks ─────────────────────────────────────────────────

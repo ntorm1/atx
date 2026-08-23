@@ -12,6 +12,7 @@
 
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/greeks.hpp"  // L5 T3: black76_greeks' own sigma ~ 0 delta
 #include "pricing/adjoint_greeks.hpp"
 
 using atx::vol::american_greeks_fd;
@@ -145,6 +146,93 @@ TEST(AdjointGreeksEuropean, SecondOrderMatchesCentralFd) {
       EXPECT_NEAR(g.charm, charm_fd, 1.0e-5 + 1.0e-5 * std::fabs(charm_fd)) << "charm " << at;
     }
   }
+}
+
+// ── L5 T3: the σ -> 0 arm returned the bare SPOT intrinsic ───────────────
+//
+// `european_greeks_adjoint`'s degenerate branch answered max(K-S,0) with
+// delta = ±1 — the forward AND the discount factor both missing. That is
+// verbatim the defect already found and fixed on the American FD path (see
+// `american_greeks_fd`'s `Pput` comment at its own sigma arm, and
+// `sigma_zero_american_limit`), and it disagreed with `black76_greeks`, whose
+// σ ~ 0 delta is ±df in forward space.
+//
+// The oracle here is the function's OWN full reverse sweep one decade above
+// the branch cut. At σ = 1e-7 every Φ has saturated to 0/1 and every φ has
+// underflowed to exactly 0, so the sweep computes the σ -> 0 limit by a
+// completely different route (the BSM price graph, not a closed form) — an
+// oracle the degenerate branch cannot be circular with, and one that covers
+// all eight greeks plus ∂P/∂q rather than just the two the fix names.
+TEST(AdjointGreeksEuropean, ZeroVolLimitMatchesTheContinuousLimit) {
+  struct ZCase {
+    double S, K, T, r, q;
+    const char* what;
+  };
+  const ZCase cases[] = {
+      // Carry-dominant put — the exact shape american.cpp's comment names:
+      // spot intrinsic 0, df*(K-F) = 4.877.
+      {100.0, 100.0, 1.0, 0.0, 0.05, "r=0 q>0 (spot intrinsic understates)"},
+      // Spot-ITM put under positive rates: the spot intrinsic keeps the whole
+      // 10.0 and drops the discount factor, so it OVERSTATES.
+      {90.0, 100.0, 1.0, 0.05, 0.0, "spot-ITM (spot intrinsic overstates)"},
+      {100.0, 100.0, 0.5, 0.05, 0.15, "carry and discount both bite"},
+      {120.0, 100.0, 1.0, 0.01, 0.0, "forward-OTM put"},
+      {100.0, 100.0, 2.0, -0.02, 0.03, "negative rate, positive borrow"},
+  };
+  for (const ZCase& c : cases) {
+    for (const Side side : {Side::Put, Side::Call}) {
+      double dq_deg = 0.0, dq_lim = 0.0;
+      // 1e-8 is the largest σ still taking the degenerate branch (`<= 1e-8`).
+      const AmericanGreeks deg =
+          european_greeks_adjoint(c.S, c.K, c.T, 1.0e-8, c.r, c.q, side, &dq_deg);
+      const AmericanGreeks lim =
+          european_greeks_adjoint(c.S, c.K, c.T, 1.0e-7, c.r, c.q, side, &dq_lim);
+      const std::string at = std::string(c.what) + (side == Side::Put ? " put" : " call");
+
+      auto rel = [](double x) { return 1.0e-12 * (1.0 + std::fabs(x)); };
+      EXPECT_NEAR(deg.price, lim.price, rel(lim.price)) << "price " << at;
+      EXPECT_NEAR(deg.delta, lim.delta, rel(lim.delta)) << "delta " << at;
+      EXPECT_NEAR(deg.rho, lim.rho, rel(lim.rho)) << "rho " << at;
+      EXPECT_NEAR(deg.theta, lim.theta, rel(lim.theta)) << "theta " << at;
+      EXPECT_NEAR(deg.charm, lim.charm, rel(lim.charm)) << "charm " << at;
+      EXPECT_NEAR(dq_deg, dq_lim, rel(dq_lim)) << "dP/dq " << at;
+      // No optionality left: the payoff is affine in S on each side of the
+      // strike and carries no σ dependence, so these are exactly zero, not
+      // merely small — and the reverse sweep agrees.
+      EXPECT_EQ(deg.gamma, 0.0) << at;
+      EXPECT_EQ(deg.vega, 0.0) << at;
+      EXPECT_EQ(deg.vanna, 0.0) << at;
+      EXPECT_EQ(deg.volga, 0.0) << at;
+      EXPECT_EQ(lim.gamma, 0.0) << at;
+      EXPECT_EQ(lim.vega, 0.0) << at;
+    }
+  }
+}
+
+// The regression in closed form, so the numbers a reader can check by hand are
+// on the record: r = 0, q = 5%, S = K = 100, T = 1 gives F = 95.1229 and
+// df = 1, so the European σ -> 0 put is worth 4.8771 with delta -0.95123. The
+// old branch returned 0.0 and delta 0.0 (its `intr > 0.0` test failed on the
+// SPOT intrinsic) — the entire discounted-forward intrinsic, missing.
+TEST(AdjointGreeksEuropean, ZeroVolCarryDominantPutIsNotTheSpotIntrinsic) {
+  const double S = 100.0, K = 100.0, T = 1.0, r = 0.0, q = 0.05;
+  const double df = std::exp(-r * T);
+  const double carry = std::exp((r - q) * T);
+  const double F = S * carry;
+
+  double dq = 0.0;
+  const AmericanGreeks g = european_greeks_adjoint(S, K, T, 1.0e-9, r, q, Side::Put, &dq);
+
+  EXPECT_NEAR(g.price, df * (K - F), 1.0e-12);
+  EXPECT_GT(g.price, 4.87);  // the old answer was exactly 0.0
+  EXPECT_NEAR(g.delta, -df * carry, 1.0e-12);
+  EXPECT_NEAR(g.delta, -0.951229424500714, 1.0e-12);
+  // Reconciles with `black76_greeks` (greeks.cpp), whose σ ~ 0 delta is -df in
+  // FORWARD space: the spot delta is that times dF/dS = e^{(r-q)T}.
+  const double fwd_delta = atx::vol::black76_greeks(F, K, T, 0.0, r, df, Side::Put).greeks.delta;
+  EXPECT_NEAR(g.delta, fwd_delta * carry, 1.0e-12);
+  // dP/dq = -sgn·T·S·e^{-qT}; sgn = -1 for a put, so it is +T·S·e^{-qT}.
+  EXPECT_NEAR(dq, T * S * std::exp(-q * T), 1.0e-10);
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -475,6 +563,7 @@ TEST(AdjointGreeksAmerican, DiagnosticGaps) {
     }
   };
   int n_adjoint = 0, n_total = 0, n_material = 0;
+  std::vector<double> vanna_gaps;
   double vega_gap_R = 0.0, volga_gap_R = 0.0;
   std::string vega_at_R, volga_at_R, material_at;
   for (double K : {80.0, 88.0, 96.0, 100.0, 104.0, 108.0, 112.0}) {
@@ -502,6 +591,23 @@ TEST(AdjointGreeksAmerican, DiagnosticGaps) {
                                           1.0e-3);
           const double volga_ref = rich_d2([&](double v) { return alput(S, K, T, v, r, q); }, sigma,
                                            3.0e-3);
+          // L5 T5: vanna carried no reference at all here, which is why its
+          // σ step could sit 10x off `hsig`'s for as long as it did. Nested
+          // Richardson: an S-derivative of the mark, differenced again in σ.
+          const double vanna_ref = rich_d1(
+              [&](double v) {
+                return rich_d1([&](double s) { return alput(s, K, T, v, r, q); }, S, 1.0e-3 * S);
+              },
+              sigma, 1.0e-3);
+          upd(dvanna, g->vanna - vanna_ref, at);
+          upd(dvolga, g->volga - volga_ref, at);
+          // Per-point vanna gaps, so a step-size change is adjudicated on the
+          // DISTRIBUTION rather than on a max over 189 points -- a max cannot
+          // separate an improvement from grid noise, and once did not: see the
+          // `hsv` comment in adjoint_greeks.cpp. To re-adjudicate a step, add
+          // a `std::cout` of `at` and the gap here and diff two builds; the
+          // summary below is what a reader needs the rest of the time.
+          vanna_gaps.push_back(std::fabs(g->vanna - vanna_ref));
           const double vega_euro = european_greeks_adjoint(S, K, T, sigma, r, q, Side::Put).vega;
           if (std::fabs(g->vega - vega_ref) > vega_gap_R) {
             vega_gap_R = std::fabs(g->vega - vega_ref);
@@ -527,6 +633,14 @@ TEST(AdjointGreeksAmerican, DiagnosticGaps) {
             << "  volga_gap_vsR=" << volga_gap_R << " (" << volga_at_R << ")"
             << "  n_material_corr=" << n_material << " (" << material_at << ")\n";
   std::cout << "[gaps vs fd, full grid] delta=" << ddelta.v << " gamma=" << dgamma.v << "\n";
+  std::cout << "[2nd-order gaps vs Richardson] vanna=" << dvanna.v << " (" << dvanna.at << ")"
+            << " volga=" << dvolga.v << " (" << dvolga.at << ")\n";
+  if (!vanna_gaps.empty()) {
+    std::sort(vanna_gaps.begin(), vanna_gaps.end());
+    const std::size_t n = vanna_gaps.size();
+    std::cout << "[vanna dist] n=" << n << " median=" << vanna_gaps[n / 2]
+              << " p90=" << vanna_gaps[(n * 9) / 10] << " max=" << vanna_gaps[n - 1] << "\n";
+  }
   SUCCEED();
 }
 
@@ -558,6 +672,66 @@ TEST(AdjointGreeksAmerican, FallbackMatchesFd) {
     EXPECT_NEAR(g->price, fd->price, 1.0e-6) << "K=" << c.K;
     EXPECT_NEAR(g->delta, fd->delta, 1.0e-4);
     EXPECT_NEAR(g->vega, fd->vega, 1.0e-3);
+  }
+}
+
+// ── L5 T5: the volga tail's ABSOLUTE bump ceded the whole low-σ band ─────
+//
+// The regime guard admits σ > 1e-6, but the volga tail's cold σ± re-solve used
+// a hard-coded ABSOLUTE hvol = 5e-3 — so for EVERY σ <= 5e-3 the down-bump
+// `sigma - hvol` was non-positive, the re-solve could not succeed, and the
+// bundle returned nullopt. The adjoint therefore never claimed a band it
+// advertises, silently, on every input in it. `american_greeks_fd`
+// (american.cpp:3101-3102) and `american_greeks_al` (:3508-3509) have carried
+// the relative floor for this exact reason all along; it is copied, not
+// invented.
+//
+// The assertion is deliberately "at least one point in the band is claimed",
+// not "all of them": the self-consistency and straddle guards legitimately
+// reject individual corners, and pinning a specific count would make this
+// test a tripwire for their tuning rather than for the bump policy. Before the
+// fix the count was necessarily ZERO — no σ in the band could get past a
+// non-positive down-bump — so any nonzero count is the fix working.
+TEST(AdjointGreeksAmerican, LowVolBandNoLongerCededByTheVolgaBump) {
+  const double S = 100.0, K = 100.0, T = 0.5, r = 0.05, q = 0.0;
+  int claimed = 0;
+  for (const double sigma : {1.0e-3, 2.0e-3, 3.0e-3, 4.0e-3, 5.0e-3}) {
+    bool took = false;
+    const auto g =
+        american_greeks_adjoint(S, K, T, sigma, r, q, Side::Put, std::nullopt, &took);
+    ASSERT_TRUE(g.has_value()) << "sigma=" << sigma;
+    EXPECT_TRUE(std::isfinite(g->volga)) << "sigma=" << sigma;
+    EXPECT_TRUE(std::isfinite(g->vega)) << "sigma=" << sigma;
+    if (took) {
+      ++claimed;
+      // A claimed point must still agree with the FD reference it replaces.
+      const auto fd = american_greeks_fd(S, K, T, sigma, r, q, Side::Put);
+      ASSERT_TRUE(fd.has_value()) << "sigma=" << sigma;
+      EXPECT_NEAR(g->price, fd->price, 1.0e-6 + 1.0e-6 * std::fabs(fd->price))
+          << "sigma=" << sigma;
+    }
+  }
+  EXPECT_GT(claimed, 0) << "the adjoint still cedes every sigma <= 5e-3";
+}
+
+// The other half of the same policy (review fix): the band is widened only as
+// far as volga can actually be computed. A relative step alone would let the
+// adjoint claim sigma down to the regime guard's 1e-6, where hvol = 5e-7 puts
+// 1/hvol^2 at 4e12 and turns the cold boundary's ~1e-10 residual into ~4e2 of
+// volga error -- and the self-consistency guard cannot catch it, because both
+// vega estimates are ~0 there and its 1e-3 floor is absolute. Points below
+// `kMinVolgaBump` are therefore still handed to the FD bundle, deliberately.
+TEST(AdjointGreeksAmerican, VolgaAmplifiedBandIsStillCeded) {
+  const double S = 100.0, K = 100.0, T = 0.5, r = 0.05, q = 0.0;
+  for (const double sigma : {1.0e-6, 1.0e-5, 5.0e-5, 1.0e-4}) {
+    bool took = false;
+    const auto g = american_greeks_adjoint(S, K, T, sigma, r, q, Side::Put, std::nullopt, &took);
+    ASSERT_TRUE(g.has_value()) << "sigma=" << sigma;
+    EXPECT_FALSE(took) << "sigma=" << sigma
+                       << ": 1/hvol^2 amplification here exceeds what a cold solve's "
+                          "residual survives, so this point belongs to fd";
+    // Ceded is not broken: the FD bundle still serves a finite bundle.
+    EXPECT_TRUE(std::isfinite(g->price)) << "sigma=" << sigma;
   }
 }
 
