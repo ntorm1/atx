@@ -1520,14 +1520,23 @@ TEST_F(PricerFitterTest, ValueChainSeparatesUnsetSidesFromAttemptedInversionFail
   const auto baseline = fitter.value_chain(*chain_, OutputField::Bands, 1);
   ASSERT_TRUE(baseline.has_value()) << baseline.error().to_string();
 
+  // The legs must be ones whose bid IV currently SUCCEEDS: the assertions below
+  // read n_bid_iv_fail as unchanged by unsetting them, which only holds if they
+  // were not already failures. Selecting ITM legs by moneyness alone is not
+  // enough — a short-dated deep-ITM leg quoted between its immediate and its
+  // discounted-forward intrinsic is unidentifiable and `american_implied_vol`
+  // refuses it, so `baseline->bid_iv` is the predicate, not the strike.
+  const std::vector<OptionId> chain_ids = chain_->ids();
+  ASSERT_EQ(baseline->bid_iv.size(), chain_ids.size());
   std::vector<OptionId> ids;
   std::vector<double> bids;
   std::vector<double> asks;
-  for (const OptionId id : chain_->ids()) {
+  for (std::size_t i = 0; i < chain_ids.size(); ++i) {
+    const OptionId id = chain_ids[i];
     const auto option = chain_->at(id);
     ASSERT_TRUE(option.has_value());
     const bool itm = option->side == Side::Call ? option->strike < spot_ : option->strike > spot_;
-    if (itm && ids.size() < 4u) {
+    if (itm && std::isfinite(baseline->bid_iv[i]) && ids.size() < 4u) {
       ids.push_back(id);
       bids.push_back(0.0);
       asks.push_back(option->ask);

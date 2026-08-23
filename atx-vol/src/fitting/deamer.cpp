@@ -1,6 +1,7 @@
 #include "atx/vol/api/fitting/deamer.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -67,6 +68,15 @@ constexpr int kBorrowMaxIter = 64;      // bounded-loop guard (JPL Rule 2)
 // realistic hard-to-borrow name; a root outside it surfaces as OutOfRange.
 constexpr double kBorrowLo = -0.5;
 constexpr double kBorrowHi = 0.5;
+
+// Outward ladder of borrow offsets tried, in order, when the SEED borrow is
+// itself an inadmissible probe (see the fixed point below). Offsets only —
+// offset 0 is the seed, which has already been tried by the time this is
+// consulted, so it does not appear. Bounded and small: the true borrow of a
+// pair that quotes at all is near zero, and the loop's own kBorrowMaxIter caps
+// the total probe count regardless.
+constexpr std::array<double, 10> kBorrowProbeLadder{0.01, -0.01, 0.02, -0.02, 0.04,
+                                                    -0.04, 0.08, -0.08, 0.20, -0.20};
 // kPcpTol — the innermost European-PCP borrow root tolerance. Tighter than
 // kBorrowFpTol so the PCP root's own residual never dominates the |Δborrow|
 // fixed-point test that consumes it.
@@ -270,12 +280,19 @@ struct DeAmStep {
   double sigma_p = 0.0; // recovered put vol at this iterate (cross-pair warm seed)
 };
 
+// `leg_unidentifiable` reports the ONE failure the caller must not treat as
+// fatal: a leg whose quote carries no implied volatility AT THIS TRIAL q_eff.
+// It is an out-parameter rather than an error-code sniff because the PCP solve
+// below also returns OutOfRange (dividend.cpp), and conflating a genuinely
+// unsolvable parity residual with an inadmissible carry probe would resurrect
+// the defect this signal exists to fix in the opposite direction.
 [[nodiscard]] Result<DeAmStep> deam_pcp_step(double borrow, double call_mid, double put_mid,
                                              double S, double K, double T, double r,
                                              double forward_base, AmericanMethod method,
                                              const std::optional<AlOpts> &opts,
                                              const AmericanCorrectionCaches &caches, double &warm_c,
-                                             double &warm_p) noexcept {
+                                             double &warm_p, bool &leg_unidentifiable) noexcept {
+  leg_unidentifiable = false;
   const double F = hybrid_forward_from_base(forward_base, borrow, T);
   if (!(F > 0.0) || !std::isfinite(F)) {
     return Err(ErrorCode::Internal, "imply_term_borrow: non-positive or non-finite forward");
@@ -288,12 +305,22 @@ struct DeAmStep {
   // borrow (hence q_eff) converges the recovered vols barely move, so Newton
   // lands in ~1 step. The result is identical to a cold seed — only iterations,
   // each a full American solve, are saved.
-  ATX_TRY(const double sigma_c,
-          american_implied_vol(call_mid, S, K, T, r, q_eff, Side::Call, method, kInnerIvTol,
-                               kInnerIvMaxIter, opts, caches.for_side(Side::Call), warm_c));
-  ATX_TRY(const double sigma_p,
-          american_implied_vol(put_mid, S, K, T, r, q_eff, Side::Put, method, kInnerIvTol,
-                               kInnerIvMaxIter, opts, caches.for_side(Side::Put), warm_p));
+  const Result<double> iv_c =
+      american_implied_vol(call_mid, S, K, T, r, q_eff, Side::Call, method, kInnerIvTol,
+                           kInnerIvMaxIter, opts, caches.for_side(Side::Call), warm_c);
+  if (!iv_c.has_value()) {
+    leg_unidentifiable = iv_c.error().code() == ErrorCode::OutOfRange;
+    return Err(iv_c.error());
+  }
+  const Result<double> iv_p =
+      american_implied_vol(put_mid, S, K, T, r, q_eff, Side::Put, method, kInnerIvTol,
+                           kInnerIvMaxIter, opts, caches.for_side(Side::Put), warm_p);
+  if (!iv_p.has_value()) {
+    leg_unidentifiable = iv_p.error().code() == ErrorCode::OutOfRange;
+    return Err(iv_p.error());
+  }
+  const double sigma_c = *iv_c;
+  const double sigma_p = *iv_p;
   warm_c = sigma_c;
   warm_p = sigma_p;
 
@@ -352,13 +379,59 @@ void note_carry_fp_iterations(int iterations) noexcept {
   bool converged = false;
   int iterations = 0;
   DeAmStep last_step{}; // loop's final evaluation, reused by the fast path
+  // [2026-08-23] The map is only DEFINED on the admissible set, so the iterates
+  // stay inside it. `american_implied_vol` refuses a quote below the zero-vol
+  // American bound, and that bound MOVES WITH THE CARRY — for a call it is
+  // S*e^{-q_eff T} - K*e^{-rT} — so a TRIAL borrow far from the truth can be
+  // refused for a pair whose converged carry is perfectly identifiable.
+  // Measured: a 15-day deep-ITM call whose time value (~0.03 pts at sigma 0.20)
+  // is smaller than S*borrow*T (~0.09) is refused at the ZERO-BORROW first probe
+  // and admitted at its true borrow of 0.0216. `ATX_TRY`ing that refusal aborted
+  // the whole fixed point and turned an identifiable pair into CarryFailed.
+  //
+  // Recovery: ladder outward for a first foothold when the SEED is refused, then
+  // damp any later iterate back toward the last borrow that worked (the
+  // admissible set is an interval around the true carry, because the zero-vol
+  // bound is monotone in q_eff, so halving always reaches it). The pair fails
+  // only when the CONVERGED carry refuses, or when no borrow in the bracket
+  // makes both legs identifiable. Retries share the loop's own bounded budget.
+  double admissible = borrow; // last borrow at which BOTH legs inverted
+  bool have_admissible = false;
+  std::size_t rung = 0; // next untried ladder offset (only while have_admissible is false)
   for (int it = 0; it < kBorrowMaxIter; ++it) {
-    ATX_TRY(const DeAmStep step, deam_pcp_step(borrow, call_mid, put_mid, S, K, T, r, forward_base,
-                                               method, opts, caches, warm_c, warm_p));
-    last_step = step;
-    iterations = it + 1;
-    const double delta = step.borrow_next - borrow;
-    borrow = step.borrow_next;
+    bool leg_unidentifiable = false;
+    const Result<DeAmStep> probe =
+        deam_pcp_step(borrow, call_mid, put_mid, S, K, T, r, forward_base, method, opts, caches,
+                      warm_c, warm_p, leg_unidentifiable);
+    if (!probe.has_value()) {
+      if (!leg_unidentifiable) {
+        return Err(probe.error()); // a real failure, not an inadmissible probe
+      }
+      alprobe::bump(alprobe::Event::CarryFpNoConverge);
+      if (have_admissible) {
+        const double damped = 0.5 * (borrow + admissible);
+        if (std::fabs(damped - admissible) < kBorrowFpTol) {
+          return Err(ErrorCode::OutOfRange,
+                     "imply_term_borrow: the admissible carry interval collapsed around the "
+                     "fixed-point iterate");
+        }
+        borrow = damped;
+      } else {
+        if (rung >= kBorrowProbeLadder.size()) {
+          return Err(ErrorCode::OutOfRange,
+                     "imply_term_borrow: no borrow in the bracket makes both legs identifiable");
+        }
+        borrow = std::fmin(std::fmax(borrow_seed + kBorrowProbeLadder[rung], kBorrowLo), kBorrowHi);
+        ++rung;
+      }
+      continue;
+    }
+    admissible = borrow;
+    have_admissible = true;
+    last_step = *probe;
+    ++iterations;
+    const double delta = probe->borrow_next - borrow;
+    borrow = probe->borrow_next;
     if (std::fabs(delta) < kBorrowFpTol) {
       converged = true;
       break;
@@ -391,9 +464,10 @@ void note_carry_fp_iterations(int iterations) noexcept {
 
   // One final self-consistent evaluation at the converged borrow, so `forward`
   // and the PCP residual are reported on a single coherent state.
+  bool final_leg_unidentifiable = false;
   ATX_TRY(const DeAmStep final_step,
           deam_pcp_step(borrow, call_mid, put_mid, S, K, T, r, forward_base, method, opts, caches,
-                        warm_c, warm_p));
+                        warm_c, warm_p, final_leg_unidentifiable));
   const double residual = (final_step.call_eu - final_step.put_eu) - df * (final_step.forward - K);
   TermBorrow result{borrow, final_step.forward, std::fabs(residual)};
   result.sigma_call = final_step.sigma_c;

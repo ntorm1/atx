@@ -352,6 +352,22 @@ template <bool Trace>
       return Ok(kIvMin);
     }
 
+    // ... and the CEILING, the exact mirror, left behind when the floor branch
+    // above was added. kIvMax is not a reported value the way kIvMin is —
+    // types.hpp documents a reported FLOOR only — so above it there is nothing
+    // honest to return. The Black price is strictly increasing in sigma, so a
+    // residual still NEGATIVE (beyond the noise floor tested above) with sigma
+    // pinned at kIvMax proves the root lies above the ceiling. Without this the
+    // post-step clamp held sigma motionless at kIvMax while the termination test
+    // read the PRE-clamp `step` (still large), so the loop burned every one of
+    // kIvMaxIter Halley evaluations and then reported Unavailable("exhausted
+    // iterations") — the wrong error CLASS (the solver did not fail; the answer
+    // is out of range) and indistinguishable from a genuine convergence failure.
+    if (sigma >= kIvMax && fval < 0.0) {
+      return Err(ErrorCode::OutOfRange,
+                 "implied_vol: implied vol above the vol ceiling kIvMax");
+    }
+
     const double vega = df * F * phi_d1 * sqrt_t;
     if (vega < 1e-20) {
       // Vega collapse — typical at deep wings near expiry.

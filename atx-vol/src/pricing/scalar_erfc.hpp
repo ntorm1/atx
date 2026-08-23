@@ -4,8 +4,9 @@
 // path today.
 //
 // STATUS (kept, not deleted; corrected drift, PR-C2): K1 was SHELVED as
-// perf-neutral — no production TU includes this header (src/implied_vol.cpp and
-// src/black76.cpp do NOT), and it is exercised only by scalar_erfc_test.cpp. It is
+// perf-neutral — no production TU includes this header (src/pricing/implied_vol.cpp
+// and src/pricing/black76.cpp do NOT; the only `#include "pricing/scalar_erfc.hpp"`
+// in the tree is tests/scalar_erfc_test.cpp). It is
 // retained (with its ≈1.1e-16-vs-std::erfc test) as a revival-ready drop-in should
 // a future scalar hot path want to avoid libm's std::erfc / std::exp.
 //
