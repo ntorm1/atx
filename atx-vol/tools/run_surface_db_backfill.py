@@ -65,9 +65,11 @@ import datetime as dt
 import importlib.util
 import json
 import math
+import os
 import pathlib
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -90,6 +92,45 @@ read_universe = _pull_mod.read_universe
 ET = _pull_mod.ET
 
 DEFAULT_RATES_PATH = "atx-vol/data/rates/us_3m_monthly.csv"
+
+# ── Wall-clock guard ────────────────────────────────────────────────────────
+#
+# WHY. `run_subprocess` shipped with no `timeout=` at all and
+# `execute_build_chunk_with_retry` branched only on the exit code, so nothing
+# in this orchestrator capped a build invocation. From the live log
+# (C:/atx-data/logs/xsec-fit/orchestrator.log):
+#
+#   2026-08-18T21:56:17.286253+00:00 tag=build_2026_2026-06-29_2026-06-29
+#   exit=1073807364 duration_s=74573.328 cmd='build-rel\bin\atx-vol-surface-db-build.exe' ...
+#
+# ONE single-session invocation over 616 names ran 74573 s (20.7 hours) and
+# then died with 0x40000364. It was never halved and never killed, and it held
+# the 2026 walk for the whole time. At the full OPRA universe (6189 underliers,
+# ~2.95x the contracts of the 616-name board) an uncapped pathological board is
+# an unbounded outage, not a slow night.
+#
+# THE NUMBER IS THE OPERATOR'S, NOT A DERIVED ONE. The budget is set per
+# TRADING DAY at 10 minutes: above that "something is wrong and should be
+# killed and investigated". It is deliberately NOT derived from the measured
+# ~185 s/session populate throughput with headroom -- a headroom-derived
+# default answers "how long could a healthy run legitimately take", and the
+# operator is asking the different question "past what point do I want to be
+# told". Keeping the flag PER SESSION (rather than an opaque per-chunk number)
+# is what preserves that semantic: `chunk_timeout_s` scales it by the number of
+# sessions in the chunk, so the meaning stays "a day fit must not exceed 10
+# minutes" however the date axis happens to be chunked.
+DEFAULT_SESSION_TIMEOUT_S = 600.0
+
+# The exit code `run_subprocess` synthesises for a killed-on-timeout child.
+#
+# It MUST NOT be 0, 3 or 5: 3 is `total_fit_failure` and 5 is
+# `coverage_regression`, and both ABORT the year in
+# `execute_build_chunk_with_retry`. A timeout has to land in that function's
+# crash-shaped branch instead, so the bisect ladder HALVES the slow chunk and
+# isolates the offending session rather than abandoning the year. 124 is the
+# GNU `timeout(1)` convention for exactly this, and no build-CLI exit code
+# collides with it (`kSurfaceDbBuildExit*`, surface_db_build.hpp).
+BUILD_TIMEOUT_EXIT = 124
 
 
 # ── Rates table ──────────────────────────────────────────────────────────────
@@ -263,6 +304,86 @@ def bisect_chunk(chunk: list[str]) -> tuple[list[str], list[str]]:
 DEFAULT_MIN_CELL_FRACTION = 0.95
 DEFAULT_MAX_ABSENT_FRACTION = 0.04
 DEFAULT_ABSENT_SIGMA_Z = 3.0
+
+
+def chunk_timeout_s(n_sessions: int, session_timeout_s: Optional[float]) -> Optional[float]:
+    """The wall-clock budget for ONE build invocation covering ``n_sessions``.
+
+    The operator sets a PER-SESSION (per trading day) budget; a chunk covering
+    N sessions therefore gets ``N * session_timeout_s``. Returning the product
+    here -- rather than letting the caller pass a per-chunk number -- is what
+    keeps the flag's meaning stable when ``--chunk-sessions`` changes.
+
+    A non-positive (or absent) budget means NO CAP -- ``None``, never a
+    zero-second cap, which would kill every invocation the instant it started.
+    That is the explicit opt-out for an operator who wants the old unbounded
+    behaviour back."""
+    if session_timeout_s is None or session_timeout_s <= 0:
+        return None
+    return float(session_timeout_s) * max(1, int(n_sessions))
+
+
+def split_symbol_shards(symbols: list[str], n_shards: int) -> list[list[str]]:
+    """Split ``symbols`` into at most ``n_shards`` CONTIGUOUS, balanced shards.
+
+    Contiguous and order-preserving, so ``[s for shard in out for s in shard]``
+    reproduces ``symbols`` exactly: no name may be lost (it would silently never
+    be built) and none may be duplicated (it would be fitted twice and cost
+    twice). Sizes differ by at most one.
+
+    Shards are the SYMBOL axis only. The date axis is already chunked by
+    ``chunk_sessions``, and a SurfaceDb partition is keyed per DATE -- see the
+    note on ``phase_build`` for why splitting symbols is safe against that and
+    splitting dates further would not be.
+
+    Empty shards are never emitted: ``n_shards`` larger than the universe just
+    yields one shard per symbol. An empty ``--symbols-file`` would build nothing
+    and still pay for a process."""
+    if n_shards < 1:
+        raise ValueError(f"--symbol-shards must be >= 1, got {n_shards}")
+    if not symbols:
+        raise ValueError("split_symbol_shards: refusing to shard an EMPTY universe")
+    n = min(int(n_shards), len(symbols))
+    q, r = divmod(len(symbols), n)
+    out: list[list[str]] = []
+    start = 0
+    for i in range(n):
+        size = q + (1 if i < r else 0)   # the first `r` shards absorb the remainder
+        out.append(list(symbols[start:start + size]))
+        start += size
+    return out
+
+
+def write_shard_symbols_file(symbols: list[str], path) -> None:
+    """Write one symbol per line -- the shape the shipped universe chunk files
+    already use (``C:/atx-data/universe/xsec_prod_chunks/chunk_00.txt``), and
+    what the build CLI's ``--symbols-file`` consumes."""
+    path = pathlib.Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(symbols) + "\n", encoding="utf-8")
+
+
+@dataclass(frozen=True)
+class TimeoutRecord:
+    """One session whose build breached the wall-clock budget and was KILLED.
+
+    Carries everything an operator needs to go and look at it without first
+    re-deriving the run's parameters: which db root, which year, which trading
+    session, and which snapshot minute that session was stamped with (an
+    EDT/EST mix-up is one of the plausible causes of a pathological board, so
+    the minute is part of the evidence, not decoration)."""
+    db: str
+    year: int
+    session: str
+    minute: str
+    timeout_s: float
+
+    def summary_value(self) -> str:
+        """The single-cell form written into the year-summary CSV, which is a
+        pinned two-column ``key,value`` file (Task 8 reads it) -- so the detail
+        has to fit in ONE value rather than widen the schema."""
+        return (f"db={self.db} year={self.year} session={self.session} "
+                f"minute={self.minute} timeout_s={self.timeout_s:.3f}")
 
 
 def latched_absent_cells(hive_root, sessions: list[str], symbols: list[str],
@@ -722,12 +843,18 @@ def year_summary_name(year: int, date_lo: str, date_hi: str) -> str:
     return f"year_summary_{year}_{date_lo}_{date_hi}.csv"
 
 
-def write_year_summary_csv(summary: dict[str, float], path) -> None:
+def write_year_summary_csv(summary: dict[str, float], path, timeouts=()) -> None:
     """Write ``summary`` (``aggregate_build_summary``'s output) as a sorted
     ``key,value`` CSV -- the run's only structured, file-based record of a
     year's chunk outcomes (Task 8 reads this). ``path`` should come from
     ``year_summary_name``, so a sub-range resume cannot truncate an earlier
-    invocation's aggregate."""
+    invocation's aggregate.
+
+    ``timeouts`` (``TimeoutRecord``s) are appended as extra ROWS rather than
+    extra COLUMNS, because the two-column shape is what Task 8's reader is
+    pinned to. A timed-out session is the one outcome the operator has asked to
+    be sent to explicitly, so it must survive in the file an operator actually
+    opens -- stderr scrolls away, this does not."""
     path = pathlib.Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -735,6 +862,11 @@ def write_year_summary_csv(summary: dict[str, float], path) -> None:
         w.writerow(["key", "value"])
         for key in sorted(summary):
             w.writerow([key, summary[key]])
+        records = list(timeouts)
+        if records:
+            w.writerow(["n_timeout_sessions", len(records)])
+            for i, rec in enumerate(records):
+                w.writerow([f"timeout_session_{i:02d}", rec.summary_value()])
 
 
 # ── hive_sessions_present (glob date=* dirs) ────────────────────────────────
@@ -812,23 +944,39 @@ def assert_snapshot_minute_uniform(chunk: list[str], snap_et: str) -> str:
 
 def build_build_command(*, build_exe, hive, db_prefix: str, year: int, chunk: list[str],
                         symbols: list[str], index_symbol: str, rates: dict[str, float],
-                        fit_workers: int, report_path, snap_et: str = "15:55") -> list[str]:
+                        fit_workers: int, report_path, snap_et: str = "15:55",
+                        symbols_file=None) -> list[str]:
     """One build-CLI invocation over ``chunk`` (a uniform-(month, minute)
     session group per ``chunk_sessions``). ``--r`` resolves off the chunk's
     FIRST session's calendar month; ``--snapshot-suffix`` off the one snapshot
     minute ``assert_snapshot_minute_uniform`` proves is correct for the whole
     ``--from``/``--to`` RANGE (FIX-I-7 -- previously taken from ``chunk[0]``
-    alone and merely asserted in prose)."""
+    alone and merely asserted in prose).
+
+    ``symbols_file`` selects the SHARDED form: the board set is named by a
+    one-symbol-per-line file (``--symbols-file``) instead of an inline
+    comma-joined ``--symbols``. The two are mutually exclusive here on purpose
+    -- emitting both would leave "which one wins" to the CLI, and that is not a
+    question this orchestrator should leave open. At 6189 underliers the inline
+    form is also a ~46 KB argv, which is uncomfortably close to the Windows
+    32 KiB command-line ceiling; the file form removes that failure mode
+    entirely.
+
+    DEPENDENCY: ``--symbols-file`` is being added to the build CLI by a sibling
+    change and is NOT landed yet. Until it is, only the default (unsharded,
+    inline ``--symbols``) path is executable."""
     c0, c1 = chunk[0], chunk[-1]
     r = rate_for_date(rates, c0)
     minute = assert_snapshot_minute_uniform(chunk, snap_et)
     suffix = f"T{minute}:00Z"
+    board_args = (["--symbols-file", str(symbols_file)] if symbols_file is not None
+                  else ["--symbols", ",".join(symbols)])
     return [
         str(build_exe),
         "--db", f"{db_prefix}-{year}",
         "--hive", str(hive),
         "--from", c0, "--to", c1,
-        "--symbols", ",".join(symbols),
+        *board_args,
         "--index", index_symbol,
         "--preset", "populate",
         "--r", f"{r:.6f}",
@@ -888,7 +1036,8 @@ def build_query_command(*, admin_exe, db_prefix: str, year: int, key: str, symbo
 # ── bisect-and-retry build policy ───────────────────────────────────────────
 
 def execute_build_chunk_with_retry(executor: Callable[[list[str]], int], chunk: list[str], *,
-                                   max_failed_sessions: int, failed_sessions: list[str]) -> str:
+                                   max_failed_sessions: int, failed_sessions: list[str],
+                                   timed_out_sessions: Optional[list[str]] = None) -> str:
     """Run ``executor(chunk) -> exit_code`` (one build-CLI invocation) and
     apply the brief's policy:
       * 0 -> "ok".
@@ -896,15 +1045,28 @@ def execute_build_chunk_with_retry(executor: Callable[[list[str]], int], chunk: 
         window is exit 0, so 3 here is genuine) -- ABORTS the year.
       * 5 -> "coverage_regression" (a refused rewrite; needs human eyes) --
         ABORTS the year.
-      * any other nonzero (a crash) -> ``bisect_chunk`` and retry each half
-        recursively. A single-session chunk that STILL crashes this way is
+      * ``BUILD_TIMEOUT_EXIT`` (the wall-clock guard killed the child) or any
+        other nonzero (a crash) -> ``bisect_chunk`` and retry each half
+        recursively. A single-session chunk that STILL fails this way is
         appended to ``failed_sessions`` (mutated in place) and treated as
         "ok" for the purpose of continuing the walk -- its failure is
         recorded, not fatal -- unless that pushes ``failed_sessions`` past
         ``max_failed_sessions``, which raises ``RuntimeError`` to abort the
         whole run.
     Returns the first ABORTING status seen while walking the (possibly
-    bisected) chunk, or "ok" if none did."""
+    bisected) chunk, or "ok" if none did.
+
+    A TIMEOUT deliberately takes the SAME ladder as a crash. A chunk that is
+    merely slow is usually slow because of one pathological board inside it, so
+    halving isolates that session in log2(N) invocations instead of abandoning
+    the year -- which is what an abort-on-timeout would do, and which is the
+    behaviour the 20.7-hour incident already effectively had.
+
+    ``timed_out_sessions`` (when supplied) additionally collects the sessions
+    that died on the CLOCK, kept apart from ``failed_sessions`` because the two
+    want different operator responses: a crash is a bug report, a timeout is
+    "something is wrong here, go and look". The caller surfaces this list on
+    stderr and in the year-summary CSV."""
     code = executor(chunk)
     if code == 0:
         return "ok"
@@ -912,9 +1074,11 @@ def execute_build_chunk_with_retry(executor: Callable[[list[str]], int], chunk: 
         return "total_fit_failure"
     if code == 5:
         return "coverage_regression"
-    # Crash-shaped nonzero: bisect and retry.
+    # Crash-shaped OR timeout-shaped nonzero: bisect and retry.
     if len(chunk) < 2:
         failed_sessions.append(chunk[0])
+        if code == BUILD_TIMEOUT_EXIT and timed_out_sessions is not None:
+            timed_out_sessions.append(chunk[0])
         if len(failed_sessions) > max_failed_sessions:
             raise RuntimeError(
                 f"build phase: {len(failed_sessions)} permanently-failed session(s) "
@@ -923,11 +1087,13 @@ def execute_build_chunk_with_retry(executor: Callable[[list[str]], int], chunk: 
         return "ok"
     left, right = bisect_chunk(chunk)
     status = execute_build_chunk_with_retry(executor, left, max_failed_sessions=max_failed_sessions,
-                                            failed_sessions=failed_sessions)
+                                            failed_sessions=failed_sessions,
+                                            timed_out_sessions=timed_out_sessions)
     if status != "ok":
         return status
     return execute_build_chunk_with_retry(executor, right, max_failed_sessions=max_failed_sessions,
-                                          failed_sessions=failed_sessions)
+                                          failed_sessions=failed_sessions,
+                                          timed_out_sessions=timed_out_sessions)
 
 
 # ── subprocess execution + logging seam ─────────────────────────────────────
@@ -940,40 +1106,126 @@ class SubprocessOutcome:
     stderr: str
     duration_s: float
     dry_run: bool = False
+    # True only when the wall-clock guard killed the child. `exit_code` is then
+    # `BUILD_TIMEOUT_EXIT`, which is indistinguishable from a child that really
+    # exited 124 -- this flag is the unambiguous signal, and it is what the
+    # phase driver keys the operator-facing reporting on.
+    timed_out: bool = False
 
 
 def _log_line(log_dir: pathlib.Path, tag: str, argv: list[str], exit_code: int, duration_s: float,
-             dry_run: bool) -> None:
+             dry_run: bool, timeout_s: Optional[float] = None) -> None:
     log_dir = pathlib.Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     prefix = "[DRY-RUN] " if dry_run else ""
+    # A timeout is logged DISTINCTLY from a crash. The 20.7-hour incident is
+    # indistinguishable in this log from any other nonzero exit, and that is
+    # part of why it went unnoticed: `TIMEOUT` plus the budget that was
+    # breached makes the line greppable as an investigation signal.
+    timeout_note = f"TIMEOUT timeout_s={timeout_s:.3f} " if timeout_s is not None else ""
     line = (f"{dt.datetime.now(dt.timezone.utc).isoformat()} {prefix}tag={tag} exit={exit_code} "
-            f"duration_s={duration_s:.3f} cmd={shlex.join(str(a) for a in argv)}\n")
+            f"{timeout_note}duration_s={duration_s:.3f} cmd={shlex.join(str(a) for a in argv)}\n")
     with open(log_dir / "orchestrator.log", "a", encoding="utf-8") as f:
         f.write(line)
 
 
-def run_subprocess(argv: list[str], *, log_dir, tag: str, dry_run: bool = False) -> SubprocessOutcome:
+def _kill_process_tree(proc) -> None:
+    """Kill ``proc`` AND every descendant it spawned.
+
+    WHY NOT ``subprocess.run(timeout=)``. That helper kills only the DIRECT
+    child and then reaps it. The build CLI fans work out across fit workers, so
+    the grandchildren survive their parent's death, keep their handles on the
+    db and the hive, and keep burning the cores the next chunk needs -- the
+    orchestrator would believe it had recovered while the machine had not.
+    Worse, by the time ``TimeoutExpired`` surfaces the direct child is already
+    dead, so its pid can no longer be used to enumerate the tree.
+
+    So the wait is done on a ``Popen`` we still own, and the kill goes through
+    the OS's own tree walker:
+      * Windows: ``taskkill /T`` walks the parent-pid chain from a pid that is
+        still alive, and ``/F`` makes it unconditional.
+      * POSIX: the child is spawned with ``start_new_session=True``, so one
+        ``killpg`` on its process-group id reaches the whole group.
+    The direct ``proc.kill()`` afterwards is the belt-and-braces case where the
+    tree walker itself failed (a denied ACL, a pid that raced away)."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, check=False)
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:  # noqa: BLE001 - a failed kill must not mask the timeout
+        pass
+    try:
+        proc.kill()
+    except Exception:  # noqa: BLE001 - already dead is the expected case
+        pass
+
+
+def run_subprocess(argv: list[str], *, log_dir, tag: str, dry_run: bool = False,
+                   timeout_s: Optional[float] = None) -> SubprocessOutcome:
     """Run ``argv`` (or, under ``dry_run``, print+log the plan and execute
     NOTHING) -- every invocation logs its full command line, exit code, and
     duration to ``<log_dir>/orchestrator.log``; a real (non-dry-run)
     invocation additionally tees stdout/stderr to ``<log_dir>/<tag>.std{out,
-    err}.txt``."""
+    err}.txt``.
+
+    ``timeout_s`` caps the invocation's WALL CLOCK. On breach the whole process
+    TREE is killed (``_kill_process_tree``) and the outcome comes back with
+    ``timed_out=True`` and ``exit_code == BUILD_TIMEOUT_EXIT``, which routes it
+    into the bisect ladder like any other crash-shaped exit.
+
+    ``timeout_s=None`` keeps the original ``subprocess.run`` path byte for
+    byte. That is deliberate rather than incidental: the un-capped path is
+    still used by the pull and verify phases, whose invocations are bounded by
+    the remote API and by a partition walk rather than by a fit, and every
+    existing test of those phases drives them by patching ``subprocess.run``."""
     log_dir = pathlib.Path(log_dir)
     if dry_run:
         print(f"DRY-RUN would run: {shlex.join(str(a) for a in argv)}")
         _log_line(log_dir, tag, argv, 0, 0.0, dry_run=True)
         return SubprocessOutcome(argv=list(argv), exit_code=0, stdout="", stderr="",
                                  duration_s=0.0, dry_run=True)
+
     start = time.monotonic()
-    proc = subprocess.run([str(a) for a in argv], capture_output=True, text=True)
-    duration = time.monotonic() - start
-    _log_line(log_dir, tag, argv, proc.returncode, duration, dry_run=False)
+    if timeout_s is None:
+        proc = subprocess.run([str(a) for a in argv], capture_output=True, text=True)
+        duration = time.monotonic() - start
+        code, out, err, timed_out = proc.returncode, proc.stdout, proc.stderr, False
+        _log_line(log_dir, tag, argv, code, duration, dry_run=False)
+    else:
+        popen_kwargs = {}
+        if os.name != "nt":
+            # One process GROUP per invocation, so `killpg` below reaches every
+            # fit worker the build CLI forked.
+            popen_kwargs["start_new_session"] = True
+        proc = subprocess.Popen([str(a) for a in argv], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, **popen_kwargs)
+        timed_out = False
+        try:
+            out, err = proc.communicate(timeout=timeout_s)
+            code = proc.returncode
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _kill_process_tree(proc)
+            # REAP after the kill. Without this second communicate the child
+            # stays a zombie holding both pipes, and a long enough run leaks a
+            # handle per timed-out chunk.
+            try:
+                out, err = proc.communicate(timeout=30)
+            except Exception:  # noqa: BLE001 - the kill is what matters, not the drain
+                out, err = "", ""
+            code = BUILD_TIMEOUT_EXIT
+        duration = time.monotonic() - start
+        _log_line(log_dir, tag, argv, code, duration, dry_run=False,
+                  timeout_s=timeout_s if timed_out else None)
+
     log_dir.mkdir(parents=True, exist_ok=True)
-    (log_dir / f"{tag}.stdout.txt").write_text(proc.stdout, encoding="utf-8")
-    (log_dir / f"{tag}.stderr.txt").write_text(proc.stderr, encoding="utf-8")
-    return SubprocessOutcome(argv=list(argv), exit_code=proc.returncode, stdout=proc.stdout,
-                             stderr=proc.stderr, duration_s=duration, dry_run=False)
+    (log_dir / f"{tag}.stdout.txt").write_text(out or "", encoding="utf-8")
+    (log_dir / f"{tag}.stderr.txt").write_text(err or "", encoding="utf-8")
+    return SubprocessOutcome(argv=list(argv), exit_code=code, stdout=out or "",
+                             stderr=err or "", duration_s=duration, dry_run=False,
+                             timed_out=timed_out)
 
 
 # ── phase pull ───────────────────────────────────────────────────────────────
@@ -1044,6 +1296,63 @@ def phase_build(args, symbols: list[str], rates: dict[str, float], log_dir: path
     requested = trading_sessions_excluding_early_close(args.from_date, args.to_date, args.snap_et)
     roots = year_roots_partition(requested)
     overall = 0
+
+    # ── the wall-clock budget ────────────────────────────────────────────────
+    # `getattr` rather than `args.session_timeout` because `args` is a plain
+    # namespace that callers (and the test suite) build by hand; a caller that
+    # predates this flag keeps the old uncapped behaviour instead of dying on
+    # an AttributeError. Every REAL run comes through `build_parser`, whose
+    # default is DEFAULT_SESSION_TIMEOUT_S.
+    session_timeout = getattr(args, "session_timeout", None)
+
+    # ── symbol shards ────────────────────────────────────────────────────────
+    # SYMBOL axis only. The date axis is already chunked, and a SurfaceDb
+    # partition is keyed per DATE -- so two shards covering the same date write
+    # the SAME partition key. That is safe here, but only because of a merge
+    # that lives one layer below `SurfaceDb::write_partition`:
+    #
+    #   * `SurfaceDb::write_partition` itself REPLACES. It writes the archive
+    #     from `items` alone (surface_db.cpp:1358) via an atomic tmp+rename,
+    #     and assigns the manifest record rather than accumulating it
+    #     (surface_db.cpp:~1412, "rewrite: overwriting an existing key is
+    #     allowed"). Nothing in it reads the partition that is already there.
+    #
+    #   * The C-10 "safe merge" in the populate layer -- the layer the build
+    #     CLI actually goes through -- makes the WRITE a union first
+    #     (surface_db_populate.cpp:1019-1036). Before calling write_partition
+    #     it opens the existing partition FILE and re-emits every stored record
+    #     that this run produced no replacement for, which its own comment
+    #     spells out as covering "symbols absent from the incoming board set".
+    #     So shard 1's write carries shard 0's symbols through untouched.
+    #
+    #   * That merge is gated on `!cfg.destructive_rewrite`, and the build CLI
+    #     cannot turn it off: `SurfaceDbBuildSpec` has no such field at all, and
+    #     both `SurfaceDbPopulateConfig::destructive_rewrite` and
+    #     `UniversePopulateSpec::destructive_rewrite` default to false
+    #     (surface_db_populate.hpp:169, :585). There is no flag on this path
+    #     that makes a second shard clobber the first.
+    #
+    #   * And if the merge ever DID miss something, the coverage-regression
+    #     guard (surface_db_populate.cpp:1211-1244) refuses the write rather
+    #     than committing a partition that drops a stored surface. The failure
+    #     mode is a refusal, never a silent deletion.
+    #
+    # KNOWN COST, not a correctness problem: a shard that retains another
+    # shard's records sets `retained_unreplaced`, which forces the partition's
+    # config attestation to `None` (surface_db_populate.cpp:1276-1278). A zero
+    # fingerprint means "unknown" and never carries, so the NEXT resume of a
+    # sharded date re-fits it instead of reusing stored surfaces. Sharding
+    # therefore trades resume-carry efficiency for bounded per-process memory
+    # and a bounded blast radius.
+    n_shards = int(getattr(args, "symbol_shards", 1) or 1)
+    shard_files: list[pathlib.Path] = []
+    if n_shards > 1:
+        shard_dir = pathlib.Path(log_dir) / "_shards"
+        for i, shard in enumerate(split_symbol_shards(symbols, n_shards)):
+            p = shard_dir / f"shard_{i:02d}_of_{len(symbols)}sym.txt"
+            write_shard_symbols_file(shard, p)
+            shard_files.append(p)
+
     for year in sorted(roots):
         year_sessions = roots[year]
         if args.dry_run:
@@ -1067,6 +1376,13 @@ def phase_build(args, symbols: list[str], rates: dict[str, float], log_dir: path
         # partial report in favour of its children's, and a re-run of the same
         # sub-chunk replaces its own entry instead of being counted twice.
         chunk_reports: dict[tuple[str, ...], dict[str, str]] = {}
+        # Per-date-tuple shard reports, folded into `chunk_reports` only when
+        # sharding is ON. Shards are DISJOINT symbol sets over the same dates,
+        # so summing their additive counters is the right fold; keeping the
+        # unsharded path on the raw single report keeps its values byte-for-byte
+        # what they were before this flag existed.
+        shard_reports: dict[tuple[str, ...], list[dict[str, str]]] = {}
+        timed_out_sessions: list[str] = []
         year_status = "ok"
         for chunk in chunks:
             c0, c1 = chunk[0], chunk[-1]
@@ -1076,6 +1392,7 @@ def phase_build(args, symbols: list[str], rates: dict[str, float], log_dir: path
                 build_exe=args.build_exe, hive=args.hive, db_prefix=args.db_prefix, year=year,
                 chunk=chunk, symbols=symbols, index_symbol=args.index, rates=rates,
                 fit_workers=args.fit_workers, report_path=report_path, snap_et=args.snap_et,
+                symbols_file=shard_files[0] if shard_files else None,
             )
             if args.dry_run:
                 run_subprocess(argv, log_dir=log_dir, tag=tag, dry_run=True)
@@ -1083,30 +1400,60 @@ def phase_build(args, symbols: list[str], rates: dict[str, float], log_dir: path
 
             def executor(sub_chunk, _year=year, _log_dir=log_dir) -> int:
                 sc0, sc1 = sub_chunk[0], sub_chunk[-1]
-                sub_report = pathlib.Path(_log_dir) / f"build_{_year}_{sc0}_{sc1}.csv"
-                sub_argv = build_build_command(
-                    build_exe=args.build_exe, hive=args.hive, db_prefix=args.db_prefix, year=_year,
-                    chunk=sub_chunk, symbols=symbols, index_symbol=args.index, rates=rates,
-                    fit_workers=args.fit_workers, report_path=sub_report, snap_et=args.snap_et,
-                )
-                sub_res = run_subprocess(sub_argv, log_dir=_log_dir, tag=f"build_{_year}_{sc0}_{sc1}",
-                                         dry_run=False)
-                # Read back whatever this invocation reported (even a failed
-                # one may have written partial coverage) -- a build that
-                # crashed before writing the CSV at all is skipped (RSS-safe:
-                # never treated as fatal here, the exit code already carries
-                # that verdict).
-                if sub_report.exists():
-                    try:
-                        chunk_reports[tuple(sub_chunk)] = parse_build_report_csv(sub_report)
-                    except (OSError, csv.Error):
-                        pass
-                return sub_res.exit_code
+                key = tuple(sub_chunk)
+                # One build invocation per SHARD, run SEQUENTIALLY, so no single
+                # process ever holds the whole universe. `shard_files` empty =>
+                # one unsharded invocation with inline --symbols (unchanged).
+                plan = list(enumerate(shard_files)) if shard_files else [(None, None)]
+                # The budget is per SESSION, so every shard invocation covering
+                # these sessions carries the same cap. It is NOT divided among
+                # shards: the cap exists to catch a board that has stopped making
+                # progress, and a shard doing legitimate work over these sessions
+                # needs the whole per-session budget to do it in.
+                timeout_s = chunk_timeout_s(len(sub_chunk), session_timeout)
+                shard_reports.setdefault(key, [])
+                for idx, shard_file in plan:
+                    suffix = "" if idx is None else f"_s{idx:02d}"
+                    sub_report = (pathlib.Path(_log_dir)
+                                  / f"build_{_year}_{sc0}_{sc1}{suffix}.csv")
+                    sub_argv = build_build_command(
+                        build_exe=args.build_exe, hive=args.hive, db_prefix=args.db_prefix,
+                        year=_year, chunk=sub_chunk, symbols=symbols, index_symbol=args.index,
+                        rates=rates, fit_workers=args.fit_workers, report_path=sub_report,
+                        snap_et=args.snap_et, symbols_file=shard_file,
+                    )
+                    sub_res = run_subprocess(
+                        sub_argv, log_dir=_log_dir,
+                        tag=f"build_{_year}_{sc0}_{sc1}{suffix}", dry_run=False,
+                        timeout_s=timeout_s)
+                    # Read back whatever this invocation reported (even a failed
+                    # one may have written partial coverage) -- a build that
+                    # crashed before writing the CSV at all is skipped (RSS-safe:
+                    # never treated as fatal here, the exit code already carries
+                    # that verdict).
+                    if sub_report.exists():
+                        try:
+                            parsed = parse_build_report_csv(sub_report)
+                            if shard_files:
+                                shard_reports[key].append(parsed)
+                                chunk_reports[key] = {
+                                    k: str(v) for k, v in
+                                    aggregate_build_summary(shard_reports[key]).items()}
+                            else:
+                                chunk_reports[key] = parsed
+                        except (OSError, csv.Error):
+                            pass
+                    # Stop this chunk at the FIRST failing shard: the remaining
+                    # shards would re-pay the same cost to hit the same board,
+                    # and the bisect ladder wants the verdict now so it can halve.
+                    if sub_res.exit_code != 0:
+                        return sub_res.exit_code
+                return 0
 
             try:
                 status = execute_build_chunk_with_retry(
                     executor, chunk, max_failed_sessions=args.max_failed_sessions,
-                    failed_sessions=failed_sessions,
+                    failed_sessions=failed_sessions, timed_out_sessions=timed_out_sessions,
                 )
             except RuntimeError as exc:
                 print(str(exc), file=sys.stderr)
@@ -1116,16 +1463,36 @@ def phase_build(args, symbols: list[str], rates: dict[str, float], log_dir: path
                 print(f"BUILD year {year} ABORTED ({status}) on chunk {c0}..{c1}", file=sys.stderr)
                 break
 
-        if not args.dry_run and chunk_reports:
+        # A session that breached the budget even as a chunk of ONE is the
+        # signal the operator explicitly asked to be sent to. Name the db, the
+        # year, the session and the snapshot minute it was stamped with, so the
+        # investigation can start without re-deriving the run's parameters.
+        year_timeouts = [
+            TimeoutRecord(db=f"{args.db_prefix}-{year}", year=year, session=s,
+                          minute=assert_snapshot_minute_uniform([s], args.snap_et),
+                          timeout_s=chunk_timeout_s(1, session_timeout) or 0.0)
+            for s in timed_out_sessions
+        ]
+        for rec in year_timeouts:
+            print(f"BUILD TIMEOUT: session exceeded the wall-clock budget and was KILLED "
+                  f"(process tree): {rec.summary_value()} -- INVESTIGATE, this is not a "
+                  f"flaky exit", file=sys.stderr)
+
+        # `year_timeouts` alone is enough to justify a summary: a run in which
+        # every chunk timed out writes no report CSV at all, and that is exactly
+        # the run whose evidence must not vanish.
+        if not args.dry_run and (chunk_reports or year_timeouts):
             # FIX-I-3: dedupe bisected parents, then name the file after the
             # range this invocation actually reported on, so a sub-range resume
             # writes a NEW file instead of truncating the whole-year aggregate.
-            reported_dates = sorted({d for key in chunk_reports for d in key})
+            reported_dates = sorted({d for key in chunk_reports for d in key}
+                                    or set(timed_out_sessions))
             summary = aggregate_build_summary(dedupe_chunk_reports(chunk_reports))
             write_year_summary_csv(
                 summary,
                 pathlib.Path(log_dir) / year_summary_name(
                     year, reported_dates[0], reported_dates[-1]),
+                timeouts=year_timeouts,
             )
 
         if failed_sessions:
@@ -1267,6 +1634,23 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--cap", type=float, default=90.0)
     ap.add_argument("--spend-abort", type=float, default=95.0)
     ap.add_argument("--max-failed-sessions", type=int, default=10)
+    ap.add_argument("--session-timeout", type=float, default=DEFAULT_SESSION_TIMEOUT_S,
+                    help=f"wall-clock budget in seconds for ONE TRADING DAY's fit "
+                         f"(default {DEFAULT_SESSION_TIMEOUT_S:g} = 10 min). A chunk covering "
+                         f"N sessions gets N x this. On breach the child's whole process TREE "
+                         f"is killed, the kill is logged as TIMEOUT (distinct from a crash), "
+                         f"and the chunk goes through the same bisect ladder as any other "
+                         f"nonzero exit so the offending session is isolated instead of the "
+                         f"year being abandoned. A single session that still breaches is "
+                         f"recorded in failed_sessions AND reported on stderr and in the year "
+                         f"summary CSV for investigation. Pass 0 to disable the cap entirely")
+    ap.add_argument("--symbol-shards", type=int, default=1,
+                    help="split the universe into N symbol shards and run each as a SEPARATE "
+                         "sequential build invocation per date chunk, so no single process "
+                         "holds the whole universe (default 1 = off). Shards the SYMBOL axis "
+                         "only; same-date shards union into one partition via the populate "
+                         "layer's safe merge (see phase_build). REQUIRES the build CLI's "
+                         "--symbols-file flag")
     # FIX-I-2: verify's two thresholds are operator-overridable. Before this an
     # operator could not TIGHTEN them without editing this source, which is why
     # the only automated destroyed-surface detector shipped inert.

@@ -1540,3 +1540,420 @@ def test_phase_verify_non_finite_spot_check_iv_fails(tmp_path, monkeypatch):
     args = _verify_args(tmp_path, from_date="2022-07-05", to_date="2022-07-05", hive=hive)
     code = orch.phase_verify(args, [("SPY", 100.0)], tmp_path)
     assert code == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Wall-clock guard (--session-timeout) and symbol sharding (--symbol-shards)
+#
+# WHY THESE EXIST. `run_subprocess` shipped with NO `timeout=`, and
+# `execute_build_chunk_with_retry` branched only on the exit code, so a
+# pathological board had nothing capping it. Measured, from the live
+# orchestrator log (C:/atx-data/logs/xsec-fit/orchestrator.log):
+#
+#   2026-08-18T21:56:17.286253+00:00 tag=build_2026_2026-06-29_2026-06-29
+#   exit=1073807364 duration_s=74573.328 cmd='build-rel\bin\atx-vol-surface-db-build.exe' ...
+#
+# ONE single-session invocation at 616 names ran 74573 s (20.7 h) and then
+# crashed with 0x40000364. Nothing halved it, nothing killed it, and the year
+# it belonged to was blocked for the whole time.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class _FakePopen:
+    """Stands in for ``subprocess.Popen`` on the TIMEOUT path.
+
+    ``run_subprocess`` only ever touches ``.pid``, ``.communicate(timeout=)``,
+    ``.kill()`` and ``.returncode``, so those are all this models. Raising
+    ``TimeoutExpired`` from the FIRST ``communicate`` and returning on the
+    second is exactly the real object's contract: after a timeout the caller
+    must kill and then reap, or the child becomes a zombie holding the pipes."""
+
+    def __init__(self, *, timeout_first_call=True, returncode=0, stdout="", stderr=""):
+        self.pid = 4242
+        self._timeout_first_call = timeout_first_call
+        self._calls = 0
+        self.returncode = returncode
+        self._stdout = stdout
+        self._stderr = stderr
+        self.kill_calls = 0
+
+    def communicate(self, timeout=None):
+        self._calls += 1
+        if self._timeout_first_call and self._calls == 1:
+            raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
+        return (self._stdout, self._stderr)
+
+    def kill(self):
+        self.kill_calls += 1
+
+
+def _build_args(tmp_path, *, session_timeout=None, symbol_shards=1, chunk_sessions=4,
+                dry_run=False, max_failed_sessions=10):
+    return types.SimpleNamespace(
+        from_date="2026-06-01", to_date="2026-06-30", snap_et="15:55", dry_run=dry_run,
+        hive=tmp_path / "hive", db_prefix=str(tmp_path / "db" / "xsec"),
+        build_exe="BUILD.exe", index="SPY", fit_workers=0,
+        chunk_sessions=chunk_sessions, max_failed_sessions=max_failed_sessions,
+        log_dir=tmp_path / "logs", session_timeout=session_timeout,
+        symbol_shards=symbol_shards,
+    )
+
+
+# ── chunk_timeout_s: the per-SESSION budget, scaled by chunk size ───────────
+
+def test_chunk_timeout_scales_by_session_count():
+    # The operator-set budget is PER TRADING DAY (10 min). A chunk covering N
+    # sessions therefore gets N x that, so the flag's semantic stays "a day fit
+    # must not exceed 10 minutes" no matter how the date axis is chunked.
+    assert orch.chunk_timeout_s(1, 600.0) == pytest.approx(600.0)
+    assert orch.chunk_timeout_s(4, 600.0) == pytest.approx(2400.0)
+    assert orch.chunk_timeout_s(8, 600.0) == pytest.approx(4800.0)
+
+
+def test_chunk_timeout_disabled_by_non_positive_budget():
+    # An explicit opt-out must be expressible -- and must mean "no cap at all"
+    # (None), never "cap of zero seconds", which would kill every invocation.
+    assert orch.chunk_timeout_s(4, 0.0) is None
+    assert orch.chunk_timeout_s(4, -1.0) is None
+    assert orch.chunk_timeout_s(4, None) is None
+
+
+def test_default_session_timeout_is_ten_minutes():
+    assert orch.DEFAULT_SESSION_TIMEOUT_S == pytest.approx(600.0)
+
+
+def test_timeout_exit_code_is_not_an_aborting_status():
+    # 3 (total_fit_failure) and 5 (coverage_regression) ABORT the year. A
+    # timeout must NOT be either: it has to fall into the crash-shaped branch
+    # so the bisect ladder halves it.
+    assert orch.BUILD_TIMEOUT_EXIT not in (0, 3, 5)
+
+
+# ── timeout routing into the bisect ladder ─────────────────────────────────
+
+def test_timeout_routes_into_the_bisect_ladder_not_an_abort():
+    """A slow 4-session chunk gets HALVED, exactly like a crash-shaped exit."""
+    chunk = ["2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04"]
+    seen: list[tuple[str, ...]] = []
+
+    def executor(sub_chunk):
+        seen.append(tuple(sub_chunk))
+        # The whole chunk times out; each half is fine.
+        return orch.BUILD_TIMEOUT_EXIT if len(sub_chunk) == 4 else 0
+
+    failed: list[str] = []
+    timed_out: list[str] = []
+    status = orch.execute_build_chunk_with_retry(
+        executor, chunk, max_failed_sessions=10, failed_sessions=failed,
+        timed_out_sessions=timed_out)
+
+    assert status == "ok"                      # NOT an abort
+    assert seen[0] == tuple(chunk)             # tried whole first
+    assert tuple(chunk[:2]) in seen            # then both halves
+    assert tuple(chunk[2:]) in seen
+    assert failed == []                        # halves succeeded: nothing failed
+    assert timed_out == []
+
+
+def test_single_session_timeout_lands_in_failed_and_timed_out_sessions():
+    """A chunk that is ALREADY one session and still breaches the budget cannot
+    be halved further -- it is recorded, not fatal, and it is recorded in the
+    dedicated timeout list too so an operator can be sent to investigate it."""
+    failed: list[str] = []
+    timed_out: list[str] = []
+    status = orch.execute_build_chunk_with_retry(
+        lambda _c: orch.BUILD_TIMEOUT_EXIT, ["2026-06-29"],
+        max_failed_sessions=10, failed_sessions=failed, timed_out_sessions=timed_out)
+
+    assert status == "ok"
+    assert failed == ["2026-06-29"]      # same treatment as a single-session crash
+    assert timed_out == ["2026-06-29"]   # AND separately flagged for investigation
+
+
+def test_single_session_crash_does_not_populate_the_timeout_list():
+    """A crash is not a timeout. The two must stay distinguishable."""
+    failed: list[str] = []
+    timed_out: list[str] = []
+    orch.execute_build_chunk_with_retry(
+        lambda _c: 1073807364, ["2026-06-29"],
+        max_failed_sessions=10, failed_sessions=failed, timed_out_sessions=timed_out)
+    assert failed == ["2026-06-29"]
+    assert timed_out == []
+
+
+def test_timeout_still_respects_max_failed_sessions():
+    """The spend/abort guard is not weakened by the new routing."""
+    failed: list[str] = []
+    timed_out: list[str] = []
+    with pytest.raises(RuntimeError, match="max-failed-sessions"):
+        orch.execute_build_chunk_with_retry(
+            lambda _c: orch.BUILD_TIMEOUT_EXIT,
+            ["2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04"],
+            max_failed_sessions=2, failed_sessions=failed, timed_out_sessions=timed_out)
+
+
+def test_bisect_ladder_still_works_without_a_timeout_list():
+    """``timed_out_sessions`` is optional: the pre-guard call shape still works."""
+    failed: list[str] = []
+    status = orch.execute_build_chunk_with_retry(
+        lambda _c: 1073807364, ["2026-06-29"], max_failed_sessions=10,
+        failed_sessions=failed)
+    assert status == "ok"
+    assert failed == ["2026-06-29"]
+
+
+# ── run_subprocess: kill the TREE, log it distinctly ───────────────────────
+
+def test_run_subprocess_timeout_kills_the_whole_process_tree(tmp_path, monkeypatch):
+    fake = _FakePopen()
+    killed: list[int] = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
+    monkeypatch.setattr(orch, "_kill_process_tree", lambda p: killed.append(p.pid))
+
+    out = orch.run_subprocess(["slow.exe"], log_dir=tmp_path, tag="t", timeout_s=600.0)
+
+    # The GRANDCHILDREN matter: subprocess.run(timeout=) kills only the direct
+    # child, so the tree killer is the whole point of this path.
+    assert killed == [fake.pid], "the process TREE must be killed, not just proc.kill()"
+    assert out.timed_out is True
+    assert out.exit_code == orch.BUILD_TIMEOUT_EXIT
+    # ...and the child must be REAPED after the kill, or it zombies on the pipes.
+    assert fake._calls == 2
+
+
+def test_run_subprocess_timeout_logs_distinctly_from_a_crash(tmp_path, monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _FakePopen())
+    monkeypatch.setattr(orch, "_kill_process_tree", lambda p: None)
+    orch.run_subprocess(["slow.exe"], log_dir=tmp_path, tag="slow", timeout_s=600.0)
+
+    line = (tmp_path / "orchestrator.log").read_text(encoding="utf-8")
+    # An investigation signal, not a flaky exit -- it must be greppable as such.
+    assert "TIMEOUT" in line
+    assert "timeout_s=600.000" in line
+    assert f"exit={orch.BUILD_TIMEOUT_EXIT}" in line
+
+
+def test_run_subprocess_without_timeout_keeps_the_old_subprocess_run_path(tmp_path, monkeypatch):
+    """Back-compat: ``timeout_s=None`` must not change how anything spawns."""
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *a, **k: _FakeCompleted(0, stdout="hi", stderr=""))
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda *a, **k: pytest.fail("must not Popen without a timeout"))
+    out = orch.run_subprocess(["x.exe"], log_dir=tmp_path, tag="t")
+    assert out.exit_code == 0
+    assert out.timed_out is False
+    assert "TIMEOUT" not in (tmp_path / "orchestrator.log").read_text(encoding="utf-8")
+
+
+def test_run_subprocess_completing_under_the_budget_is_not_a_timeout(tmp_path, monkeypatch):
+    fake = _FakePopen(timeout_first_call=False, returncode=0, stdout="ok", stderr="")
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
+    out = orch.run_subprocess(["fast.exe"], log_dir=tmp_path, tag="t", timeout_s=600.0)
+    assert out.timed_out is False
+    assert out.exit_code == 0
+    assert fake.kill_calls == 0
+
+
+# ── symbol sharding: exact membership ──────────────────────────────────────
+
+def test_split_symbol_shards_loses_and_duplicates_nothing():
+    symbols = [f"SYM{i:04d}" for i in range(6189)]   # the OPRA universe size
+    shards = orch.split_symbol_shards(symbols, 7)
+    flat = [s for shard in shards for s in shard]
+    assert flat == symbols, "concatenation must reproduce the input EXACTLY, in order"
+    assert len(flat) == len(set(flat)) == 6189
+    # Balanced to within one name, so no shard is a hidden whole-universe run.
+    assert max(len(s) for s in shards) - min(len(s) for s in shards) <= 1
+
+
+def test_split_symbol_shards_balances_an_uneven_split():
+    shards = orch.split_symbol_shards(list("ABCDEFGHIJ"), 3)   # 10 into 3
+    assert [len(s) for s in shards] == [4, 3, 3]
+    assert [x for s in shards for x in s] == list("ABCDEFGHIJ")
+
+
+def test_split_symbol_shards_single_shard_is_the_identity():
+    symbols = ["SPY", "QQQ", "AAPL"]
+    assert orch.split_symbol_shards(symbols, 1) == [symbols]
+
+
+def test_split_symbol_shards_never_emits_an_empty_shard():
+    # More shards than symbols must not produce empty invocations: an empty
+    # --symbols-file would build NOTHING and still cost a process.
+    shards = orch.split_symbol_shards(["SPY", "QQQ"], 5)
+    assert shards == [["SPY"], ["QQQ"]]
+    assert all(shards)
+
+
+def test_split_symbol_shards_rejects_a_non_positive_count():
+    for bad in (0, -1):
+        with pytest.raises(ValueError):
+            orch.split_symbol_shards(["SPY"], bad)
+
+
+def test_split_symbol_shards_rejects_an_empty_universe():
+    with pytest.raises(ValueError):
+        orch.split_symbol_shards([], 2)
+
+
+def test_write_shard_symbols_file_is_one_symbol_per_line(tmp_path):
+    p = tmp_path / "shard_00.txt"
+    orch.write_shard_symbols_file(["SPY", "QQQ", "BRK.B"], p)
+    assert p.read_text(encoding="utf-8").splitlines() == ["SPY", "QQQ", "BRK.B"]
+
+
+# ── build command: --symbols-file vs inline --symbols ──────────────────────
+
+def test_build_command_uses_symbols_file_when_sharded(tmp_path):
+    argv = orch.build_build_command(
+        build_exe="B.exe", hive="H", db_prefix="P", year=2026,
+        chunk=["2026-06-29"], symbols=["SPY", "QQQ"], index_symbol="SPY",
+        rates={"2026-06": 0.043}, fit_workers=0, report_path=tmp_path / "r.csv",
+        snap_et="15:55", symbols_file=tmp_path / "shard_00.txt")
+    assert "--symbols-file" in argv
+    assert argv[argv.index("--symbols-file") + 1] == str(tmp_path / "shard_00.txt")
+    # The two are mutually exclusive: passing both would let the CLI pick, and
+    # which one wins is not this orchestrator's decision to leave open.
+    assert "--symbols" not in argv
+
+
+def test_build_command_without_a_shard_file_keeps_inline_symbols(tmp_path):
+    argv = orch.build_build_command(
+        build_exe="B.exe", hive="H", db_prefix="P", year=2026,
+        chunk=["2026-06-29"], symbols=["SPY", "QQQ"], index_symbol="SPY",
+        rates={"2026-06": 0.043}, fit_workers=0, report_path=tmp_path / "r.csv",
+        snap_et="15:55")
+    assert "--symbols" in argv
+    assert argv[argv.index("--symbols") + 1] == "SPY,QQQ"
+    assert "--symbols-file" not in argv
+
+
+# ── timeout records reach an operator: stderr + the summary CSV ────────────
+
+def test_timeout_records_land_in_the_year_summary_csv(tmp_path):
+    rec = orch.TimeoutRecord(db="C:/atx-data/surface-db/xsec-2026", year=2026,
+                             session="2026-06-29", minute="19:55", timeout_s=600.0)
+    p = tmp_path / "year_summary_2026_2026-06-29_2026-06-29.csv"
+    orch.write_year_summary_csv({"cells_ok": 12.0}, p, timeouts=[rec])
+
+    rows = dict(csv.reader(p.read_text(encoding="utf-8").splitlines()[1:]))
+    assert rows["cells_ok"] == "12.0"
+    assert rows["n_timeout_sessions"] == "1"
+    # The operator must be able to read (db, year, session, minute) straight off
+    # the row -- that is the whole point of recording it here.
+    detail = rows["timeout_session_00"]
+    for field in ("C:/atx-data/surface-db/xsec-2026", "2026", "2026-06-29", "19:55"):
+        assert field in detail
+
+
+def test_year_summary_csv_without_timeouts_is_unchanged(tmp_path):
+    p = tmp_path / "s.csv"
+    orch.write_year_summary_csv({"cells_ok": 1.0}, p)
+    rows = dict(csv.reader(p.read_text(encoding="utf-8").splitlines()[1:]))
+    assert rows == {"cells_ok": "1.0"}
+    assert "n_timeout_sessions" not in rows
+
+
+# ── both flags together, end to end through phase_build ────────────────────
+
+def test_phase_build_runs_one_invocation_per_shard_and_passes_the_timeout(tmp_path, monkeypatch):
+    """`--symbol-shards N` must produce N SEPARATE sequential build invocations
+    per chunk (so no single process holds the whole universe), each carrying the
+    scaled wall-clock budget."""
+    hive = _make_hive_with_sessions(tmp_path, ["2026-06-29", "2026-06-30"])
+    args = _build_args(tmp_path, session_timeout=600.0, symbol_shards=3, chunk_sessions=2)
+    args.hive = hive
+
+    calls = []
+
+    def fake_run_subprocess(argv, *, log_dir, tag, dry_run=False, timeout_s=None):
+        calls.append((list(argv), timeout_s))
+        return orch.SubprocessOutcome(argv=list(argv), exit_code=0, stdout="", stderr="",
+                                      duration_s=0.1)
+
+    monkeypatch.setattr(orch, "run_subprocess", fake_run_subprocess)
+    rc = orch.phase_build(args, ["A", "B", "C", "D", "E", "F"], {"2026-06": 0.043},
+                          tmp_path / "logs")
+    assert rc == 0
+
+    # One chunk of 2 sessions x 3 shards = 3 sequential invocations.
+    assert len(calls) == 3
+    # 2 sessions x 600 s/session, applied to EACH shard invocation.
+    assert all(t == pytest.approx(1200.0) for _argv, t in calls)
+
+    # Every invocation is symbols-FILE driven, and the files partition the
+    # universe exactly -- nothing lost, nothing built twice.
+    seen = []
+    for argv, _t in calls:
+        assert "--symbols-file" in argv, "a sharded run must not inline --symbols"
+        f = pathlib.Path(argv[argv.index("--symbols-file") + 1])
+        seen.extend(f.read_text(encoding="utf-8").split())
+    assert sorted(seen) == ["A", "B", "C", "D", "E", "F"]
+    assert len(seen) == len(set(seen))
+
+
+def test_phase_build_unsharded_is_a_single_inline_symbols_invocation(tmp_path, monkeypatch):
+    """Back-compat: the default (1 shard) keeps the pre-shard call shape."""
+    hive = _make_hive_with_sessions(tmp_path, ["2026-06-29"])
+    args = _build_args(tmp_path, session_timeout=600.0, symbol_shards=1, chunk_sessions=4)
+    args.hive = hive
+    calls = []
+
+    def fake_run_subprocess(argv, *, log_dir, tag, dry_run=False, timeout_s=None):
+        calls.append((list(argv), timeout_s))
+        return orch.SubprocessOutcome(argv=list(argv), exit_code=0, stdout="", stderr="",
+                                      duration_s=0.1)
+
+    monkeypatch.setattr(orch, "run_subprocess", fake_run_subprocess)
+    assert orch.phase_build(args, ["A", "B"], {"2026-06": 0.043}, tmp_path / "logs") == 0
+    assert len(calls) == 1
+    argv, timeout_s = calls[0]
+    assert "--symbols" in argv and "--symbols-file" not in argv
+    assert timeout_s == pytest.approx(600.0)   # 1 session in the chunk
+
+
+def test_phase_build_timeout_reaches_stderr_and_the_summary(tmp_path, monkeypatch, capsys):
+    """A single-session chunk that STILL breaches the budget must be shouted
+    about: the user wants these investigated, not silently absorbed."""
+    hive = _make_hive_with_sessions(tmp_path, ["2026-06-29"])
+    log_dir = tmp_path / "logs"
+    args = _build_args(tmp_path, session_timeout=600.0, symbol_shards=1, chunk_sessions=1)
+    args.hive = hive
+
+    def fake_run_subprocess(argv, *, log_dir, tag, dry_run=False, timeout_s=None):
+        return orch.SubprocessOutcome(argv=list(argv), exit_code=orch.BUILD_TIMEOUT_EXIT,
+                                      stdout="", stderr="", duration_s=601.0, timed_out=True)
+
+    monkeypatch.setattr(orch, "run_subprocess", fake_run_subprocess)
+    assert orch.phase_build(args, ["A"], {"2026-06": 0.043}, log_dir) == 0
+
+    err = capsys.readouterr().err
+    assert "TIMEOUT" in err
+    assert "2026-06-29" in err
+    assert "2026" in err
+
+    summaries = list(log_dir.glob("year_summary_2026_*.csv"))
+    assert summaries, "a timed-out session must still produce a summary to read"
+    rows = dict(csv.reader(summaries[0].read_text(encoding="utf-8").splitlines()[1:]))
+    assert rows["n_timeout_sessions"] == "1"
+    assert "2026-06-29" in rows["timeout_session_00"]
+
+
+def test_symbol_shards_flag_and_session_timeout_flag_parse(tmp_path):
+    ap = orch.build_parser()
+    args = ap.parse_args([
+        "--universe", "u.csv", "--hive", "h", "--db-prefix", "p",
+        "--from", "2026-01-01", "--to", "2026-01-31",
+        "--build-exe", "b.exe", "--admin-exe", "a.exe", "--log-dir", str(tmp_path),
+    ])
+    assert args.session_timeout == pytest.approx(600.0)   # 10 min/day, operator-set
+    assert args.symbol_shards == 1                        # off by default
+
+    args2 = ap.parse_args([
+        "--universe", "u.csv", "--hive", "h", "--db-prefix", "p",
+        "--from", "2026-01-01", "--to", "2026-01-31",
+        "--build-exe", "b.exe", "--admin-exe", "a.exe", "--log-dir", str(tmp_path),
+        "--session-timeout", "900", "--symbol-shards", "7",
+    ])
+    assert args2.session_timeout == pytest.approx(900.0)
+    assert args2.symbol_shards == 7
