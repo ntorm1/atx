@@ -391,7 +391,11 @@ void nm_search(const NmCtx &c, double &m, double &sigma, QeBasisScratch &sc,
       for (int j = i + 1; j < 3; ++j) {
         const auto ui = static_cast<std::size_t>(i);
         const auto uj = static_cast<std::size_t>(j);
-        if (f[uj] < f[ui]) {
+        // Same NaN rule as the winner pick (svi_calib.hpp): an unusable vertex
+        // must sink to v[2], the slot Nelder-Mead replaces first. Under the raw
+        // `<` a NaN never moved, so it could sit at v[0] driving the whole
+        // search while the simplex contracted toward it.
+        if (detail::nm_vertex_less(f[uj], f[ui])) {
           std::swap(f[ui], f[uj]);
           std::swap(v[ui], v[uj]);
           std::swap(lin[ui], lin[uj]);
@@ -455,14 +459,12 @@ void nm_search(const NmCtx &c, double &m, double &sigma, QeBasisScratch &sc,
     }
   }
 
-  int best = 0;
-  if (f[1] < f[static_cast<std::size_t>(best)]) {
-    best = 1;
-  }
-  if (f[2] < f[static_cast<std::size_t>(best)]) {
-    best = 2;
-  }
-  const auto ub = static_cast<std::size_t>(best);
+  // FT-T3: `f[1] < f[best]` is FALSE when f[best] is NaN, so one NaN vertex used
+  // to win over two finite ones and `out_best_sse` returned non-finite even
+  // though the simplex HAD usable candidates -- breaking this function's own
+  // contract above, on which the caller's discard decision rests. The rule lives
+  // in svi_calib.hpp so the in-loop simplex ordering cannot drift from it.
+  const std::size_t ub = detail::nm_best_vertex(f);
   // FT-C1: clamp the winning vertex into the (m, sigma) box before writing it
   // back. `nm_eval` clamps (m, sigma) BY VALUE before the inner BLLS solve, so
   // `lin[ub]` (the linear optimum) belongs to the CLAMPED point. Writing the raw,

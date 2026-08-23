@@ -429,8 +429,16 @@ double ConvexSliceFit::call_price(double K) const noexcept {
     if (!(P0 > 0.0)) {
       return std::max(df * (F - K), 0.0);
     }
-    const double slope = (C[1] - C[0]) / (u[1] - u[0]);
-    const double put_slope = std::clamp(slope + df, 0.0, df);
+    // T5: `u` is a PUBLIC member and the no-duplicates invariant is established
+    // by the fitter's 1e-9 merge, NOT by this accessor -- a hand-built or
+    // deserialized fit divides by a zero edge gap here. With no usable gap there
+    // is no edge derivative to match, so fall back to the BOUNDARY of the a >= 1
+    // no-arb family (a == 1, the straight put through the origin): determinate,
+    // still positive/increasing/convex, and C0 at the splice. Same span-guard
+    // shape `ConvexDenseCurve::w` already uses.
+    const double edge_span = u[1] - u[0];
+    const double put_slope =
+        (edge_span > 0.0) ? std::clamp((C[1] - C[0]) / edge_span + df, 0.0, df) : 0.0;
     const double exponent = std::max(1.0, put_slope * K0 / P0);
     const double put = P0 * std::pow(K / K0, exponent);
     return df * (F - K) + put;
@@ -449,7 +457,15 @@ double ConvexSliceFit::call_price(double K) const noexcept {
     // still decays (if slowly) instead of never decaying at all.
     const std::size_t n = u.size();
     const double Kn = u.back();
-    const double slope = (C[n - 1] - C[n - 2]) / (u[n - 1] - u[n - 2]);
+    // T5: same unestablished precondition as the left tail. A zero edge gap made
+    // the slope infinite and the exponent +inf, and `pow(K/Kn, -inf)` is exactly
+    // 0 for every K past the splice -- the price fell off a cliff from C.back()
+    // to zero one ULP past the last node, which is precisely the flat-clamp
+    // failure FIT-C11 below exists to prevent, in a louder form. An unusable gap
+    // means no edge derivative, so the slope is 0 and the exponent lands on the
+    // FIT-C11 epsilon floor: a slow but continuous decay.
+    const double edge_span = u[n - 1] - u[n - 2];
+    const double slope = (edge_span > 0.0) ? (C[n - 1] - C[n - 2]) / edge_span : 0.0;
     const double exponent = std::max(1.0e-6, -slope * Kn / C.back());
     return C.back() * std::pow(K / Kn, -exponent);
   }
@@ -458,7 +474,20 @@ double ConvexSliceFit::call_price(double K) const noexcept {
   const auto it = std::upper_bound(u.begin(), u.end(), K);
   const std::size_t hi = static_cast<std::size_t>(it - u.begin());
   const std::size_t lo = hi - 1;
-  const double t = (K - u[lo]) / (u[hi] - u[lo]);
+  // T5: the bracket cannot straddle an exact duplicate (both guards above have
+  // already returned by then), but a non-finite `u` -- reachable through the
+  // public member -- can still hand this a non-positive span. Hold the lower
+  // node rather than emit a non-finite price from a noexcept pricer.
+  //
+  // An UNORDERED `u` is deliberately NOT in that list: it violates
+  // `std::upper_bound`'s partitioning precondition at the call above, so such a
+  // curve is already undefined behaviour before reaching here. This guard cannot
+  // recover it and must not be read as claiming it does.
+  const double span = u[hi] - u[lo];
+  if (!(span > 0.0)) {
+    return C[lo];
+  }
+  const double t = (K - u[lo]) / span;
   return C[lo] + t * (C[hi] - C[lo]);
 }
 

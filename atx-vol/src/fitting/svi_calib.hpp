@@ -41,6 +41,9 @@
 // inputs (`Underlying`, `CurveSet`) follow the "many readers OR one writer"
 // contract.
 
+#include <array>
+#include <cmath>
+#include <cstddef>
 #include <span>
 
 #include "atx/vol/api/fitting/calib.hpp"        // CalibOpts, FitObs, FitDiag
@@ -172,5 +175,50 @@ struct SviJwParams {
 //         v_min > v, |rho| >= 1, |beta| > 1, or a negative recovered sigma);
 //         otherwise Ok with the recovered raw slice.
 [[nodiscard]] Result<SviParams> svi_jw_to_raw(const SviJwParams &jw);
+
+namespace detail {
+
+// ── Nelder-Mead vertex ordering (the NaN rule, stated once) ─────────────────
+//
+// FT-T3. `nm_search` picked its winner with `if (f[1] < f[best]) best = 1;`,
+// which is FALSE when `f[best]` is NaN — IEEE-754 makes every ordered
+// comparison against NaN false. So a NaN vertex 0 beat two perfectly good
+// finite vertices, `out_best_sse` came back non-finite, and the function broke
+// its OWN documented contract ("non-finite iff EVERY vertex the simplex visited
+// was unusable"). The caller reads that contract literally and discards the
+// slice, so one NaN threw away a fit that had usable candidates.
+//
+// `svi_blls_inner`'s documented unusable sentinel is +inf, which the naive
+// comparison already handled; NaN reaches the objective by other routes (a
+// non-finite observation surviving into `svi_qe_sse`, a normal-equation solve
+// returning NaN rather than the +inf fallback). Both are "unusable", so the
+// rule below ranks EVERY non-finite value behind every finite one. -inf is
+// impossible for a sum of squares and is deliberately swept into the same
+// bucket rather than given a special case that could never fire.
+[[nodiscard]] inline bool nm_vertex_less(double lhs, double rhs) noexcept {
+  if (!std::isfinite(lhs)) {
+    return false; // an unusable vertex never beats anything, itself included
+  }
+  if (!std::isfinite(rhs)) {
+    return true; // any usable vertex beats an unusable one
+  }
+  return lhs < rhs;
+}
+
+// Index of the winning simplex vertex under `nm_vertex_less`. Ties keep the
+// EARLIEST vertex (the pre-existing tie-break). Returns 0 when every vertex is
+// unusable — the one case in which a non-finite `out_best_sse` is correct.
+[[nodiscard]] inline std::size_t nm_best_vertex(const std::array<double, 3> &f) noexcept {
+  std::size_t best = 0u;
+  if (nm_vertex_less(f[1], f[best])) {
+    best = 1u;
+  }
+  if (nm_vertex_less(f[2], f[best])) {
+    best = 2u;
+  }
+  return best;
+}
+
+}  // namespace detail
 
 }  // namespace atx::vol

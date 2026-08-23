@@ -325,6 +325,59 @@ TEST(FitAdmission, ValidDiagnosticsStillGateNonFiniteQualityOnAFloorFreeMark) {
   EXPECT_TRUE(has_admission_failure(decision, SurfaceAdmissionReason::NonFiniteDiagnostics));
 }
 
+// ── T6: the bid/ask quality floor is not lenient, it is ABSENT ──────────────
+//
+// `min_worst_frac_within_bidask` defaults to 0.0, and the gate's predicate is
+// `worst_frac_within_bidask < min_worst_frac_within_bidask` over a FRACTION in
+// [0, 1] -- so at the default the comparison is `worst < 0.0` and
+// `QualityBelowFloor` can never fire. No admission path compares an RMSE to a
+// tolerance either, and the independent geometry oracle never reads a bid or an
+// ask, so a surface that reprices NOTHING inside the spread publishes clean.
+// This test pins that as a known state rather than a discovery, and proves the
+// mechanism is live (it fires the moment a floor is armed) rather than dead.
+TEST(FitAdmission, QualityFloorIsDisarmedOnEveryShippedDefault) {
+  EXPECT_FALSE(fit_quality_floor_armed(FitAdmissionPolicy{}));
+  EXPECT_FALSE(fit_quality_floor_armed(risk_admission_policy()));
+
+  SurfaceAdmissionEvidence evidence;
+  evidence.attempted_expiries = 1u;
+  evidence.fitted_expiries = 1u;
+  evidence.attempted_quotes = 10u;
+  evidence.fitted_quotes = 10u;
+  evidence.front_expiry_fitted = true;
+  evidence.parity_state = ParityDiagnosticState::Valid;
+  evidence.finite_diagnostics = true;
+  evidence.calendar_arb_free = true;
+  evidence.finite_iv_domain = true;
+  evidence.european_price_bounds = true;
+  evidence.strike_monotone = true;
+  evidence.strike_convex = true;
+  evidence.calendar_total_variance = true;
+  evidence.forward_variance_nonnegative = true;
+  // The worst expiry reprices NOTHING inside bid/ask.
+  evidence.worst_frac_within_bidask = 0.0;
+
+  // Default Mark: publishes clean anyway. This is the finding, stated as a test.
+  const SurfaceAdmissionDecision mark = evaluate_surface_admission(evidence, FitAdmissionPolicy{});
+  EXPECT_TRUE(mark.admitted);
+  EXPECT_FALSE(has_admission_failure(mark, SurfaceAdmissionReason::QualityBelowFloor));
+
+  // Strict risk admission: also publishes clean. Geometry and coverage only.
+  const SurfaceAdmissionDecision risk =
+      evaluate_surface_admission(evidence, risk_admission_policy());
+  EXPECT_TRUE(risk.admitted);
+  EXPECT_FALSE(has_admission_failure(risk, SurfaceAdmissionReason::QualityBelowFloor));
+
+  // Armed (populate's 0.35 is the only non-zero value in the repo): the gate is
+  // present and fires, so what is missing is a chosen number, not a mechanism.
+  FitAdmissionPolicy armed;
+  armed.min_worst_frac_within_bidask = 0.35;
+  EXPECT_TRUE(fit_quality_floor_armed(armed));
+  const SurfaceAdmissionDecision floored = evaluate_surface_admission(evidence, armed);
+  EXPECT_FALSE(floored.admitted);
+  EXPECT_TRUE(has_admission_failure(floored, SurfaceAdmissionReason::QualityBelowFloor));
+}
+
 TEST(FitPolicy, ForcedCrossValidationOverridesDirectTickerPrior) {
   const Underlying u = make_underlier("SPY", 2500, 0.01);
   FitPolicyConfig config;
