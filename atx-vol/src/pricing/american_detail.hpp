@@ -128,6 +128,10 @@ struct BawCriticalSolve {
   double Sx = 0.0;
   double residual = 0.0;
   std::uint16_t iters = 0;
+  // Bracket attempts run (REVL1-F1/T3). 1 == the historical bracket sufficed and
+  // no widening happened, which is the only way a test can assert that an ordinary
+  // cell did NOT silently take the recovery path.
+  std::uint16_t attempts = 0;
   bool converged = false;
   bool ok = false;
 };

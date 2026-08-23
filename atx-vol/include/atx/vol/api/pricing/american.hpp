@@ -154,6 +154,55 @@ static_assert(detail::aggregate_arity_is_v<AlOpts, 5>,
                                            double q, Side side,
                                            const std::optional<AlOpts> &opts = std::nullopt);
 
+// ── Boundary-convergence evidence (what `andersen_lake` does NOT tell you) ──
+//
+// The Andersen-Lake exercise boundary is solved by a FIXED sweep budget with an
+// early exit once the boundary residual max |Δy| falls to `AlOpts::tol`. Reaching
+// tol is NOT a precondition of pricing: the solve stops when the budget is spent
+// and returns the boundary it has, so `andersen_lake` succeeds either way. That is
+// deliberate — a truncated budget is the fast tiers' normal operating point, and
+// hard-failing it would turn every fast-tier mark into an error — but it does mean
+// a successful price carries NO convergence claim of its own, and `tol` alone tells
+// you what was ASKED for, never what was achieved.
+//
+// Measured 2026-08-23 on a 64-cell production-shaped grid (S=K=100, T in
+// {0.5,1,2,5}, sigma in {0.2,0.4,0.6,0.9}, r in {0.03,0.08}, q in {0,0.02}, put):
+// `al_fast_opts()` (tol 1e-8, 2 JN + 2 FP sweeps) converged on ZERO of them — pure
+// Jacobi-Newton needs 17-24 sweeps to reach that tol there — while `andersen_lake`
+// returned a price on all 64.
+//
+// This entry point reports the residual the solve ACTUALLY achieved for one cell,
+// so a caller whose accuracy budget depends on it can gate instead of assume. It
+// runs the identical validation / degenerate / regime path as `andersen_lake` and
+// then the identical boundary solve, so its verdict describes the very solve that
+// price would have used (Side::Call reports the McDonald-Schroder internal put's
+// solve — strike S, rate q, yield r — which is the boundary a call actually rides).
+struct AlBoundaryConvergence {
+  double resid = 0.0;              // achieved max |Δy| of the last sweep run
+  double tol = 0.0;                // the scheme tolerance the budget was asked to reach
+  bool converged = false;          // resid <= tol, and a sweep actually measured it
+  // Sweeps that actually ran and produced a residual. 0 means NOTHING was measured
+  // and `resid` is not a measurement — which is the case for every regime that
+  // prices without solving a boundary (below). Read it before trusting `resid`.
+  std::uint16_t sweeps_run = 0;
+  std::uint16_t sweep_budget = 0;  // sweeps the scheme affords (n_iter_jn + n_iter_fp)
+};
+
+// Convergence evidence for the boundary solve behind
+// `andersen_lake(S, K, T, sigma, r, q, side, opts)`.
+//
+// @return the report, or the SAME Error `andersen_lake` would return for these
+//         arguments (InvalidArgument / NotImplemented / Internal) — so a caller
+//         needs no second regime classification of its own.
+//
+// Regimes that price without solving a boundary at all (degenerate T ~ 0 or
+// sigma ~ 0, and the European no-early-exercise corner) report
+// {resid = 0, converged = true, sweeps_run = 0, sweep_budget = 0}: nothing was
+// left unconverged because nothing was solved.
+[[nodiscard]] Result<AlBoundaryConvergence>
+andersen_lake_convergence(double S, double K, double T, double sigma, double r, double q,
+                          Side side, const std::optional<AlOpts> &opts = std::nullopt);
+
 // ── Cross-strike call-slice pricer (one boundary, many strikes) ──────────
 //
 // Price MANY American CALL strikes at a fixed (S, T, r, q, sigma) reusing a

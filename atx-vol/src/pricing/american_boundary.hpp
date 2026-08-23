@@ -199,6 +199,34 @@ struct AlWorkspace {
 // change how an existing failure is handled — it adds a case that used to be Ok.
 enum class AlSolveStatus { Ok, Collapsed, TableMissing, NotConverged };
 
+// Convergence EVIDENCE for one boundary solve, reported alongside the status.
+//
+// The solve runs a FIXED budget of sch.n_iter_jn Jacobi-Newton sweeps followed by
+// up to sch.n_iter_fp fixed-point sweeps, breaking early once a sweep's residual
+// (max |Δy| over the movable collocation nodes) falls to <= sch.tol. Exhausting the
+// budget without ever reaching sch.tol is NOT an error — it is the normal operating
+// point of every fast tier (measured 2026-08-23: al_fast_opts's 2 JN + 2 FP budget
+// reaches tol=1e-8 on NONE of a 64-cell production-shaped grid; pure Jacobi-Newton
+// needs 17-24 sweeps there). So sch.tol is an early-exit threshold, and this struct
+// is how far the solve actually got. Ok therefore still means "bnd/ws are safe to
+// price from"; `converged()` — never the status — is the accuracy claim.
+//
+// resid is the residual of the LAST sweep that produced one, and `sweeps` counts
+// those sweeps. REVL1: `sweeps` is what makes the report unambiguous — a
+// pre-sweep failure (Collapsed / TableMissing, both reported before the loop) and
+// the all-frozen corner leave sweeps == 0, and the pessimistic resid = 1.0 they
+// carry is a SENTINEL, not a measurement. Without the count a caller-supplied
+// tol >= 1.0 would make such a report read as converged.
+struct AlSolveResid {
+  double resid = 1.0;        // achieved max |Δy| when sweeps > 0; else a sentinel
+  double tol = 0.0;          // the sch.tol the budget was asked to reach
+  std::uint16_t sweeps = 0;  // sweeps that produced a residual; 0 == nothing measured
+
+  [[nodiscard]] constexpr bool converged() const noexcept {
+    return sweeps > 0 && resid <= tol;
+  }
+};
+
 // ── Declarations (definitions live in american.cpp, namespace amer) ──────
 
 // Homogeneity scale K·min(1, r/q) (with the negative-carry corners). > 0 iff the
@@ -209,12 +237,16 @@ enum class AlSolveStatus { Ok, Collapsed, TableMissing, NotConverged };
 [[nodiscard]] AlScheme scheme_from_opts(const std::optional<AlOpts>& opts) noexcept;
 
 // S-independent: init nodes, bind quadrature, seed + iterate the boundary. On Ok,
-// bnd/ws hold a converged boundary ready for al_put_price_from_boundary.
+// bnd/ws hold a boundary ready for al_put_price_from_boundary — NOT necessarily a
+// CONVERGED one: the sweep budget is fixed and Ok is returned however far it got.
+// `resid_out` (optional) receives that evidence; a caller that cares about accuracy
+// must pass it and gate on AlSolveResid::converged(). See AlSolveResid.
 [[nodiscard]] AlSolveStatus al_solve_put_boundary(double K, double T, double sigma,
                                                   double r, double q,
                                                   const AlScheme& sch,
                                                   AlBoundary& bnd, AlWorkspace& ws,
-                                                  bool specialize = true) noexcept;
+                                                  bool specialize = true,
+                                                  AlSolveResid* resid_out = nullptr) noexcept;
 
 // Init-ONLY variant for the AVX2 boundary batch (Task A5; supersedes A1's
 // al_seed_put_boundary). Runs al_solve_put_boundary's pre-sweep prefix — init the
@@ -228,13 +260,15 @@ enum class AlSolveStatus { Ok, Collapsed, TableMissing, NotConverged };
                                                  AlWorkspace& ws) noexcept;
 
 // Warm variant: seed from an already-converged boundary a small (sigma,r,T) bump
-// away instead of a cold Barone-Adesi-Whaley re-seed.
+// away instead of a cold Barone-Adesi-Whaley re-seed. Same fixed-budget/Ok contract
+// and same optional `resid_out` evidence as al_solve_put_boundary.
 [[nodiscard]] AlSolveStatus al_solve_put_boundary_warm(double K, double T, double sigma,
                                                        double r, double q,
                                                        const AlScheme& sch,
                                                        const AlBoundary& seed,
                                                        AlBoundary& bnd,
-                                                       AlWorkspace& ws) noexcept;
+                                                       AlWorkspace& ws,
+                                                       AlSolveResid* resid_out = nullptr) noexcept;
 
 // Put price at spot S from a solved (or interpolated) boundary. Runs the SAME
 // euro + premium + clamp path as a full cold solve, so a freshly-solved bnd is
@@ -304,7 +338,8 @@ struct AlSolveTape {
 [[nodiscard]] AlSolveStatus al_solve_put_boundary_tape(double K, double T, double sigma, double r,
                                                        double q, const AlScheme& sch,
                                                        AlBoundary& bnd, AlWorkspace& ws,
-                                                       AlSolveTape& tape) noexcept;
+                                                       AlSolveTape& tape,
+                                                       AlSolveResid* resid_out = nullptr) noexcept;
 
 // Apply ONE boundary sweep (Jacobi-Newton if is_jn, else fixed-point) of the GENERIC
 // inline-geometry kernel to y_in at (sigma,r,q), writing the swept boundary to y_out.

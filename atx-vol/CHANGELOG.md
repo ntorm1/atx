@@ -814,6 +814,155 @@ the de-Americanization inversion on Andersen-Lake, and do not trade step count
 for throughput.** The route decision itself is worth 10.61 ticks on an
 at-the-money call and 54.59 on the put, measured on the SAME lattice at the SAME
 step count so the gap is the dividend treatment and nothing else.
+### FIXED — the yield curve extrapolates flat in the RATE now, not in the discount factor
+
+**The numbers that move.** `YieldCurve::zero(T)` outside the pillar range. On the
+suite's own 11-pillar OIS fixture (`tests/rates_curve_test.cpp`, t0 = 1/365.25,
+r0 = 4.05%; last pillar 2y at 4.65%):
+
+| T | old `zero(T)` | new |
+|---|---|---|
+| 5 min | 1108.8% | 4.05% |
+| 1 h | 97.2% | 4.05% |
+| 12 h | 8.10% | 4.05% |
+| 1 day (= t0) | 4.05% | 4.05% |
+| 5 y | 1.86% | 4.65% |
+| 30 y | 0.31% | 4.65% |
+
+`disc(T <= 0)` also moves, from `exp(log_df.front())` to exactly 1.0. Everything
+inside the pillar range is bit-unchanged, and `disc()` at every pillar is
+bit-unchanged (the extrapolation is written as `exp(log_df * (T / t_pillar))`, so
+the ratio is exactly 1.0 at the pillar). `zero()` at the FIRST and LAST pillar
+moves by <1e-14 — about 600 ulp on the fixture, `0.04049999999999577` to
+`0.0405` — because it now reads the pillar rate directly instead of through
+`-log(disc(T))/T`; it is exactly the pillar rate afterwards.
+
+**The defect.** `disc()` clamped the DISCOUNT FACTOR flat outside the pillars, so
+`zero(T) = -log_df.front()/T = r0*t0/T` diverged like 1/T at the short end — every
+0DTE/intraday path through `MarketEnv::rate_at` (`api/core/market_env.hpp`) reads
+`zero()`, and no test called it below the first pillar. Past the last pillar the
+same clamp is the symmetric error: a flat discount factor is a ZERO instantaneous
+forward rate, so the zero rate decayed as `rN*tN/T`. Both ends now hold the ZERO
+RATE flat (`src/pricing/rates_curve.cpp`), which is what the class contract already
+read as. `zero()` reads the flat rate straight off the pillar rather than through
+`-log(disc(T))/T`, whose exp/log round trip drifts 1.5e-12 at five minutes.
+
+**Migration.** Anything that deliberately relied on a decaying long-end rate must
+add pillars instead. A curve whose FIRST pillar sits at t = 0 has no short end at
+all — every T > 0 is already inside the pillar range — so the interior
+interpolant handles it and no extrapolation runs; a curve whose LAST pillar is
+non-positive keeps the flat-DF clamp, since there is no positive maturity to read
+a rate off.
+
+### FIXED — the Andersen-Lake boundary solve stops discarding the residual it achieved
+
+**No number moves; a missing one appears.** `al_solve_put_boundary` ran its fixed
+`n_iter_jn + n_iter_fp` budget, assigned the last sweep's max |Δy| to a local
+`resid`, and returned `AlSolveStatus::Ok` unconditionally — the local was never
+read. `AlOpts::tol` was therefore an early-exit shortcut and never a convergence
+criterion, and `boundary_interp.cpp`'s node-build note already said what that
+means ("returns `AlSolveStatus::Ok` carrying an under-converged boundary,
+silently"). Every price, greek, IV and correction-cache sample in the library
+rides that boundary.
+
+**How under-converged, measured.** On a 64-cell production-shaped grid
+(S = K = 100, T in {0.5, 1, 2, 5}, sigma in {0.2, 0.4, 0.6, 0.9}, r in
+{0.03, 0.08}, q in {0, 0.02}, put), `al_fast_opts()` (tol 1e-8, 2 JN + 2 FP)
+reached tol on **zero** of them — pure Jacobi-Newton needs 17-24 sweeps there —
+while `andersen_lake` returned a price on all 64. Achieved residuals at
+sigma = 0.6, r = 0.08, q = 0: 1.0e-4 (T = 0.5), 4.1e-4 (T = 1), 1.4e-3 (T = 5).
+The ACCURATE (nullopt) preset at T = 1 achieves 5.4e-5 against tol 1e-10.
+
+**The contract that landed.** `Ok` still means "priceable", because a truncated
+budget is the fast tiers' normal operating point and hard-failing it would turn
+every fast-tier mark into an error. What changes is that the evidence now leaves
+with the status: `amer::AlSolveResid {resid, tol, converged()}`
+(`src/pricing/american_boundary.hpp`) is an optional out-parameter on
+`al_solve_put_boundary`, `..._warm` and `..._tape`, and the public
+`andersen_lake_convergence(S, K, T, sigma, r, q, side, opts)` →
+`AlBoundaryConvergence {resid, tol, converged, sweep_budget}`
+(`api/pricing/american.hpp`) reports it for one cell through the identical
+validation / degenerate / regime / solve path a price would take. Regimes that
+price without solving a boundary report `sweep_budget = 0, converged = true`.
+**`converged()` — never the status — is the accuracy claim.**
+
+**One counter moves.** `Counter::EarlyResidualExits` was bumped only by the cold
+solve and the adjoint tape; the warm solve, `AloPricer`'s sigma-sweep loop and
+`andersen_lake_call_slice`'s inline loop run the same residual short-circuit and
+did not count it. All five sites now bump, so the counter is no longer an
+undercount of the thing it is named for. Gated exact counters are opt-in, so no
+default build observes this.
+
+### FIXED — the BAW critical-price bracket is a recovery domain, not a hard-coded constant
+
+**The numbers that move: two cells that used to fail closed now price.**
+`newton_critical_put/call` (`src/pricing/american.cpp`) ran a safeguarded Newton
+inside fixed brackets — `[1e-3*K, K)` and `(K, 50*K]` — and both ends have
+ordinary contracts whose root lies outside, where the safeguard pins the iterate
+at the bracket edge and the `kBawCriticalResidualGate` check rejects it:
+
+| cell | old | new |
+|---|---|---|
+| put K=100, T=1, sigma=0.2, r=1e-4, q=0.10 | Sx pinned at 0.100009 (floor `1e-3*K`), residual -1.5e-3, `Unavailable` | converges strictly inside the admissible range (xmax = K*r/q = 0.1) |
+| call K=100, T=1, sigma=0.2, r=0.05, q=0.001 | Sx pinned at 4999.72 (ceiling `50*K`), residual -0.65, `Unavailable` | converges above 50*K |
+
+For the put the entire admissible range `(0, K*min(1, r/q)]` collapsed **to** the
+old floor — `1e-3*K` and `K*r/q` are both 0.1 — so the bracket excluded every
+admissible root. For the call, early exercise recedes as q → 0 and the critical
+price runs away, so no fixed multiple of K is a domain.
+
+**What changed.** The historical bracket is tried first and kept byte-identical,
+so every cell it already served is untouched and pays nothing; only if that
+attempt is not ACCEPTABLE is the bracket widened geometrically
+(`kBawBracketRetries = 6`, floor ×1/16 / ceiling ×8) and retried. Exhausting the
+retries still fails closed through the existing residual gate.
+
+**Acceptable means the residual, never the step test.** `baw_critical_accepted`
+is `baw_american`'s own gate term, defined once and applied at both places. The
+step test `|dS| < tol*K` fires precisely when the safeguarded bisection collapses
+onto an EXCLUDED bracket edge — the step goes to zero because the iterate is
+pinned — so gating the widening on it disabled the widening exactly where it is
+needed and made a larger `max_iter` (public on `baw_american`, and a Python
+keyword argument) strictly worse: the put pinned at `Sx = 0.10000055`
+(resid -1.549e-3) for `max_iter` 32/40/64 while 16 recovered, and the call pinned
+at `Sx = 5000.0` (resid -0.652) at 64 while 16/32 recovered. The gate now holds
+at every `max_iter` in {16, 32, 64} on both cells.
+
+**Confined to `AmericanMethod::Baw`.** `al_seed_boundary` runs the same
+critical-price solve per collocation node of EVERY cold Andersen-Lake solve, with
+no residual gate, feeding a served price. It keeps the historical single bracket
+(`BracketRecovery::Off`) and is byte-identical to before. For the record, the
+exposure had it not been confined, measured over 576 cells of the affected regime
+(K=100, T in {0.05,0.25,1,2}, sigma in {0.15,0.2,0.4,0.8}, r in {1e-4,1e-3,5e-3},
+q in {0.02,0.05,0.1,0.3}, S in {80,100,120}, put): **33 of 192 nodes widen and the
+widened seed moves up to 53% relative after the `xmax` clamp, but only 3 of 576
+prices move at all and every one by ~1e-14 relative** — the sweeps absorb the seed
+difference. So the seed exposure is real in the seed and immaterial in the mark;
+it is fenced off anyway rather than shipped unmeasured.
+
+### FIXED — a sub-minimum `n_collocation` request no longer resolves to the most expensive boundary
+
+**The number that moves** — for out-of-range requests only. Every value in
+[6, 32] is unchanged, and a sweep of every `n_collocation` literal in the
+repository found none outside it. That sweep sees SOURCE LITERALS only, so the
+one value that also arrives by decode is handled separately below.
+`scheme_from_opts` (`src/pricing/american.cpp`) guarded
+`n_collocation` with `>= 6 && <= kAlMaxNodes` and simply skipped the assignment
+otherwise, so `AlOpts{.n_collocation = 3}` silently kept the ACCURATE default of
+12 — the most expensive boundary in the ladder — for a caller who asked for the
+cheapest. That is the same silent-ignore the `n_quadrature < 8` floor beside it
+was added to remove under the rule "a caller asking for cheaper must not get more
+expensive" (A9, core-review finding 9). It now CLAMPS in both directions:
+`< 6` → 6, `> kAlMaxNodes` → `kAlMaxNodes`.
+
+**Zero is the exception, and it does NOT move.** `n_collocation` also arrives
+straight off a stored record in three decoders (`src/storage/surface_db.cpp`,
+`src/storage/surface_archive.cpp`, `src/backtest/priced_surface_view.cpp`) and
+from the Python `AlOpts` constructor. A manifest written before the column
+existed decodes as 0 — exactly the case the `n_quad_price` line beside each of
+those three already documents — and such a surface has always priced off the
+12-node default. So 0 keeps meaning ABSENT, not "cheapest", matching
+`n_quad_price`'s own convention in the same struct. Only 1..5 floor to 6.
 
 ### CHANGED — a Risk-purpose preset now requests the MARK too, and `fit_board` serves it when the risk oracle refuses
 
