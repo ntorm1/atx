@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <limits>
 #include <span>
@@ -10,7 +11,9 @@
 
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/core/vol_time.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/dividend.hpp"
 
 // Coverage for the Vellekoop-Nieuwenhuis spliced CRR lattice
 // (api/pricing/american.hpp, src/pricing/american_discrete_div.cpp).
@@ -110,6 +113,114 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   const auto out = american_discrete_div_price(S, K, T, sigma, r, q, side, divs, steps, exercise);
   EXPECT_TRUE(out.has_value());
   return out.has_value() ? *out : kNaN;
+}
+
+// ── An EXACT reference for one dividend, by a method that is not a lattice ────
+//
+// With a SINGLE cash dividend at t1 and no continuous yield, the American call
+// under this engine's own (spot-shift) dividend model has a closed-form
+// decomposition, because early exercise is optimal at exactly one instant:
+//
+//   * before t1  — never. Committing to exercise at t1^- is already worth
+//                  S_t - K*exp(-r*(t1 - t)) > S_t - K, so exercising earlier
+//                  strictly gives up interest on the strike.
+//   * after t1   — never. Nothing is paid after t1, so the residual claim is a
+//                  call on a non-dividend-paying stock with r > 0.
+//   * AT t1^-    — the only place it can bind, and where the exercise boundary
+//                  is effectively vertical (Roll 1977 / Geske 1979 / Whaley
+//                  1981; re-confirmed numerically by Itkin, arXiv:2510.18159
+//                  section 6.4).
+//
+// So  V(0) = exp(-r*t1) * E[ max( S_t1 - K, C_BS(S_t1 - D, K, T - t1) ) ],
+// one normal expectation over a closed form. That is an INDEPENDENT reference
+// in the sense that matters — a different numerical method (quadrature plus
+// Black-Scholes) for the SAME model the lattice implements — and it is exact up
+// to the quadrature, so it pins the lattice's value rather than its structure.
+[[nodiscard]] double vn_american_call_one_dividend(double S, double K, double T, double sigma,
+                                                   double r, double D, double t1) {
+  constexpr int kNodes = 40000; // even: composite Simpson
+  constexpr double kZ = 10.0;   // +/-10 sigma; the tail beyond is < 1e-23
+  const double h = 2.0 * kZ / static_cast<double>(kNodes);
+  const double drift = (r - 0.5 * sigma * sigma) * t1;
+  const double diffusion = sigma * std::sqrt(t1);
+  const double inv_sqrt_2pi = 1.0 / std::sqrt(2.0 * std::acos(-1.0));
+  const auto integrand = [&](double z) {
+    const double s_cum = S * std::exp(drift + diffusion * z);
+    const double hold = bs_price(std::max(s_cum - D, 0.0), K, T - t1, sigma, r, 0.0, Side::Call);
+    const double exercise_now = std::max(s_cum - K, 0.0);
+    return inv_sqrt_2pi * std::exp(-0.5 * z * z) * std::max(exercise_now, hold);
+  };
+  double sum = integrand(-kZ) + integrand(kZ);
+  for (int i = 1; i < kNodes; ++i) {
+    sum += ((i % 2) != 0 ? 4.0 : 2.0) * integrand(-kZ + h * static_cast<double>(i));
+  }
+  return std::exp(-r * t1) * sum * h / 3.0;
+}
+
+// ── Roll-Geske-Whaley, the classical closed form ─────────────────────────────
+//
+// RGW is exact for ONE cash dividend on an American call under the ESCROWED
+// model (the stochastic part is S - PV(D) and stays lognormal throughout). This
+// engine is spot-shift, not escrowed, so RGW is a CROSS-MODEL check: it must
+// agree in shape and to within the two models' own difference, and the test
+// that uses it pins that difference rather than pretending it is zero.
+[[nodiscard]] double norm_cdf(double x) { return 0.5 * std::erfc(-x / std::sqrt(2.0)); }
+
+// M(a, b; rho) = P(X <= a, Y <= b) for standard bivariates with correlation rho,
+// by composite Simpson on the conditional decomposition
+//   M = int_{-inf}^{a} phi(x) * N((b - rho*x)/sqrt(1 - rho^2)) dx.
+[[nodiscard]] double bivariate_norm_cdf(double a, double b, double rho) {
+  constexpr double kLo = -10.0;
+  if (a <= kLo) {
+    return 0.0;
+  }
+  constexpr int kNodes = 20000;
+  const double s = std::sqrt(1.0 - rho * rho);
+  const double h = (a - kLo) / static_cast<double>(kNodes);
+  const double inv_sqrt_2pi = 1.0 / std::sqrt(2.0 * std::acos(-1.0));
+  const auto integrand = [&](double x) {
+    return inv_sqrt_2pi * std::exp(-0.5 * x * x) * norm_cdf((b - rho * x) / s);
+  };
+  double sum = integrand(kLo) + integrand(a);
+  for (int i = 1; i < kNodes; ++i) {
+    sum += ((i % 2) != 0 ? 4.0 : 2.0) * integrand(kLo + h * static_cast<double>(i));
+  }
+  return sum * h / 3.0;
+}
+
+[[nodiscard]] double rgw_american_call(double S, double K, double T, double sigma, double r,
+                                       double D, double t1) {
+  const double s_adj = S - D * std::exp(-r * t1);
+  // Merton's no-early-exercise condition: the cash cannot beat the interest
+  // saved by deferring the strike payment over the stub (t1, T].
+  if (D <= K * (1.0 - std::exp(-r * (T - t1)))) {
+    return bs_price(s_adj, K, T, sigma, r, 0.0, Side::Call);
+  }
+  // S*: the CUM-dividend spot at which exercising at t1^- exactly ties with
+  // holding. g(x) = C_BS(x, K, T - t1) - (x + D - K) is positive at x -> 0 and
+  // negative at x -> inf precisely when the condition above fails, so bisection
+  // is well posed.
+  double lo = 1.0e-8;
+  double hi = 100.0 * (S + K);
+  for (int i = 0; i < 200; ++i) {
+    const double mid = 0.5 * (lo + hi);
+    if (bs_price(mid, K, T - t1, sigma, r, 0.0, Side::Call) - (mid + D - K) > 0.0) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  const double s_star = 0.5 * (lo + hi);
+  const double sq_t = sigma * std::sqrt(T);
+  const double sq_t1 = sigma * std::sqrt(t1);
+  const double a1 = (std::log(s_adj / K) + (r + 0.5 * sigma * sigma) * T) / sq_t;
+  const double a2 = a1 - sq_t;
+  const double b1 = (std::log(s_adj / s_star) + (r + 0.5 * sigma * sigma) * t1) / sq_t1;
+  const double b2 = b1 - sq_t1;
+  const double rho = -std::sqrt(t1 / T);
+  return s_adj * (norm_cdf(b1) + bivariate_norm_cdf(a1, -b1, rho)) -
+         K * std::exp(-r * T) * bivariate_norm_cdf(a2, -b2, rho) -
+         (K - D) * std::exp(-r * t1) * norm_cdf(b2);
 }
 
 // ── The four reference V0/V1 scenarios, verbatim ─────────────────────────────
@@ -270,7 +381,10 @@ TEST(DiscreteDivAmerican, EuropeanPutCallParity_HoldsWithSixDiscreteDividends) {
   // with the step count. Both are pinned: the bar, and the exact value, so a
   // regression that stays under the bar still fails here.
   EXPECT_LT(worst, 1.0e-3);
-  EXPECT_NEAR(worst, 5.222871e-05, 1.0e-9);
+  // 5.222871e-05 before the grid-bottom extrapolation (see `splice_dividend`);
+  // the earliest ex-date of this schedule lands on step 22, where the corner
+  // node still carries ~(1-p)^22 of weight and the flat clamp was visible.
+  EXPECT_NEAR(worst, 5.1822980566385013e-05, 1.0e-9);
   EXPECT_LT(worst * 100.0, 0.0053) << "parity residual in ticks";
 }
 
@@ -280,16 +394,22 @@ TEST(DiscreteDivAmerican, EuropeanWithDividends_ReproducesReferencePriceAndGreek
                                                  kParityQ, Side::Call, schedule, 301,
                                                  ExerciseStyle::European);
   ASSERT_TRUE(call.has_value()) << call.error().to_string();
-  EXPECT_NEAR(call->price, 75.222227622486884, 1.0e-9);
-  EXPECT_NEAR(call->delta, 0.59491123873539919, 1.0e-9);
-  EXPECT_NEAR(call->gamma, 0.002374185751928035, 1.0e-11);
+  // All five anchors moved with the grid-bottom extrapolation, in the directions
+  // the geometry requires: the CALL value curve is increasing, so extrapolating
+  // below level[0] LOWERS the continuation the flat clamp held up
+  // (75.222227622486884 -> 75.222227558392603); the PUT curve is decreasing, so
+  // the same edit RAISES it (51.21952913918814 -> 51.219529480822089). The pair
+  // moves toward each other, which is the parity improvement above.
+  EXPECT_NEAR(call->price, 75.222227558392603, 1.0e-9);
+  EXPECT_NEAR(call->delta, 0.59491124565685172, 1.0e-9);
+  EXPECT_NEAR(call->gamma, 0.0023741849955113002, 1.0e-11);
 
   const auto put = american_discrete_div_greeks(kParityS, 775.0, kParityT, kParitySigma, kParityR,
                                                 kParityQ, Side::Put, schedule, 301,
                                                 ExerciseStyle::European);
   ASSERT_TRUE(put.has_value()) << put.error().to_string();
-  EXPECT_NEAR(put->price, 51.21952913918814, 1.0e-9);
-  EXPECT_NEAR(put->delta, -0.39445568531088704, 1.0e-9);
+  EXPECT_NEAR(put->price, 51.219529480822089, 1.0e-9);
+  EXPECT_NEAR(put->delta, -0.39445572220346636, 1.0e-9);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -392,6 +512,314 @@ TEST(DiscreteDivAmerican, DeepOtmShortDatedAmerican_MatchesBlackScholes) {
   EXPECT_NEAR(worst, 1.428e-05, 1.0e-7);
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Cum-dividend exercise — the ONLY place an American call exercises early
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The classical result (Roll 1977 / Geske 1979 / Whaley 1981, re-confirmed
+// numerically by Itkin, arXiv:2510.18159 section 6.4) is that an American call
+// on a stock paying discrete cash exercises early ONLY at the instant before an
+// ex-date, where the exercise boundary is effectively vertical. A lattice that
+// tests exercise against the POST-dividend level only therefore excludes the
+// one place American call exercise happens, and understates the exercise value
+// by exactly the dividend at every node where exercise binds.
+//
+// The put is the mirror image and does NOT change: exercising at t^- pays
+// K - S, exercising at t^+ pays K - (S - D), and the second is larger, so a put
+// holder never exercises cum-dividend. The engine takes the better of the two
+// levels, which is why the same edit is a no-op on every put anchor above.
+
+// The hard floor. Exercising UNCONDITIONALLY at the instant before the ex-date
+// is a feasible strategy, and under the engine's own measure its time-0 value is
+// exp(-r*t1)*E[S_t1 - K] = S - K*exp(-r*t1) EXACTLY (the dividend-free process
+// is a martingale up to the jump). An American call cannot be worth less than a
+// strategy its holder may follow, so this bound is model-free within the engine
+// and needs no reference implementation at all.
+TEST(DiscreteDivAmerican, AmericanCallBeforeAnExDate_ClearsTheUnconditionalExerciseFloor) {
+  constexpr double kS = 100.0, kK = 90.0, kT = 0.5, kSigma = 0.20, kR = 0.04;
+  constexpr double kTau = 0.25, kD = 5.00;
+  const std::vector<CashDividend> one{{kTau, kD}};
+  const double floor_value = kS - kK * std::exp(-kR * kTau);
+  EXPECT_NEAR(floor_value, 10.895514962574865, 1.0e-12);
+
+  const double amer =
+      price_or_fail(kS, kK, kT, kSigma, kR, 0.0, Side::Call, one, 301, ExerciseStyle::American);
+  EXPECT_GT(amer, floor_value)
+      << "an American call must beat committing to exercise at the ex-date";
+
+  // ... and it must still beat its own European sibling, which cannot exercise
+  // at all. The two together bracket where the early-exercise premium lives.
+  const double euro =
+      price_or_fail(kS, kK, kT, kSigma, kR, 0.0, Side::Call, one, 301, ExerciseStyle::European);
+  EXPECT_GT(amer, euro);
+  EXPECT_LT(euro, floor_value) << "the European sibling is BELOW the floor — which is exactly "
+                                  "why excluding cum-dividend exercise is visible";
+}
+
+// The value, against the exact quadrature-plus-Black-Scholes decomposition of
+// the SAME model (see `vn_american_call_one_dividend`). This is what turns the
+// bound above into a number: the lattice must land on the reference to its own
+// O(1/steps) truncation, and that error must fall as the step count rises.
+TEST(DiscreteDivAmerican, AmericanCallWithOneDividend_MatchesTheExactDecomposition) {
+  constexpr double kS = 100.0, kK = 90.0, kT = 0.5, kSigma = 0.20, kR = 0.04;
+  constexpr double kTau = 0.25, kD = 5.00;
+  const std::vector<CashDividend> one{{kTau, kD}};
+  const double exact = vn_american_call_one_dividend(kS, kK, kT, kSigma, kR, kD, kTau);
+  EXPECT_NEAR(exact, 11.66391384621064, 1.0e-6);
+
+  const double at301 =
+      price_or_fail(kS, kK, kT, kSigma, kR, 0.0, Side::Call, one, 301, ExerciseStyle::American);
+  const double at1201 =
+      price_or_fail(kS, kK, kT, kSigma, kR, 0.0, Side::Call, one, 1201, ExerciseStyle::American);
+  // Measured, and one-SIDED in both regimes: the lattice can only ever miss
+  // exercise, never invent it, so the error is negative at every step count.
+  // Admitting cum-dividend exercise took it from -1.4539e-2 / -6.0211e-3 /
+  // -2.7829e-3 at 301 / 601 / 1201 steps to -2.1011e-3 / -1.3008e-3 /
+  // -9.4645e-4 -- 6.9x at the shipped step count.
+  EXPECT_LT(at301, exact);
+  EXPECT_NEAR(at301, exact, 3.0e-3);
+  EXPECT_NEAR(at1201, exact, 1.2e-3);
+  EXPECT_LT(std::abs(at1201 - exact), std::abs(at301 - exact))
+      << "301: " << (at301 - exact) << "  1201: " << (at1201 - exact);
+}
+
+// The cross-MODEL check. Roll-Geske-Whaley is exact for one cash dividend on an
+// American call under the ESCROWED model; this engine is spot-shift. The two
+// are different models and their gap is NOT zero, so the number that matters is
+// the gap itself — pinned here so a future edit that silently switches dividend
+// models is caught by its size.
+TEST(DiscreteDivAmerican, AmericanCallWithOneDividend_SitsBesideRollGeskeWhaley) {
+  constexpr double kS = 100.0, kK = 90.0, kT = 0.5, kSigma = 0.20, kR = 0.04;
+  constexpr double kTau = 0.25, kD = 5.00;
+  const std::vector<CashDividend> one{{kTau, kD}};
+  const double rgw = rgw_american_call(kS, kK, kT, kSigma, kR, kD, kTau);
+  const double lattice =
+      price_or_fail(kS, kK, kT, kSigma, kR, 0.0, Side::Call, one, 1201, ExerciseStyle::American);
+  EXPECT_NEAR(rgw, 11.559265746648435, 1.0e-6);
+  EXPECT_NEAR(lattice - rgw, 0.10370165364757611, 5.0e-4)
+      << "escrowed vs spot-shift model gap, not a lattice error";
+}
+
+// The boundary of the same rule, and the guard that the fix does not fire where
+// it must not. Under Merton's condition D <= K*(1 - exp(-r*(T - t1))) early
+// exercise is never optimal, so admitting the cum-dividend test must leave the
+// American price BIT-IDENTICAL to the European one.
+TEST(DiscreteDivAmerican, SmallDividendUnderMertonsBound_LeavesTheAmericanCallEuropean) {
+  constexpr double kS = 100.0, kK = 90.0, kT = 0.5, kSigma = 0.20, kR = 0.04;
+  constexpr double kTau = 0.25;
+  const double merton_bound = kK * (1.0 - std::exp(-kR * (kT - kTau)));
+  EXPECT_NEAR(merton_bound, 0.8955149625748704, 1.0e-12);
+  const std::vector<CashDividend> small{{kTau, 0.5 * merton_bound}};
+  const double amer =
+      price_or_fail(kS, kK, kT, kSigma, kR, 0.0, Side::Call, small, 301, ExerciseStyle::American);
+  const double euro =
+      price_or_fail(kS, kK, kT, kSigma, kR, 0.0, Side::Call, small, 301, ExerciseStyle::European);
+  EXPECT_EQ(amer, euro);
+}
+
+// The put side of the same edit: cum-dividend exercise is DOMINATED for a put,
+// so every American put anchor in this file must be untouched by it. Pinned as
+// an equality against the reference lattice value that predates the change.
+TEST(DiscreteDivAmerican, AmericanPutWithOneDividend_IsUnchangedByCumDividendExercise) {
+  const std::vector<CashDividend> one{{0.20, 2.15}};
+  const double put = price_or_fail(775.8, 780.0, 0.35, 0.18, 0.041, 0.0, Side::Put, one, 301,
+                                   ExerciseStyle::American);
+  EXPECT_EQ(put, 31.469268684567247);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  The splice below the grid bottom — extrapolate, do not flat-clamp
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `post = level[i] - amount` is BELOW level[0] for every low node at every
+// splice with amount > 0, so the bottom-edge branch is not a corner case: it
+// fires on every dividend. Holding the continuation value FLAT there says the
+// option stops responding to spot below the grid, which for an American put is
+// hidden by its own exercise floor and for a EUROPEAN put — the side every
+// validating parity identity is written on — is not hidden at all.
+//
+// The exact statement below is the cleanest possible witness: with a dividend
+// that certainly exceeds the stock, the stock is worth 0 from the ex-date on,
+// so a European put IS a zero-coupon claim on the strike, worth K*exp(-r*T) and
+// nothing else. The lattice reproduces that only if the continuation value is
+// extrapolated to post = 0 rather than clamped at value[0].
+TEST(DiscreteDivAmerican, EuropeanPutOnACertainlyWorthlessStock_IsTheDiscountedStrike) {
+  const std::vector<CashDividend> ruinous{{0.9, 1.0e6}};
+  const double exact = 100.0 * std::exp(-0.03 * 1.0);
+  EXPECT_NEAR(exact, 97.044553354850808, 1.0e-12);
+  const double euro_put = price_or_fail(100.0, 100.0, 1.0, 0.30, 0.03, 0.0, Side::Put, ruinous, 301,
+                                        ExerciseStyle::European);
+  // The flat clamp lost exactly level[0]*exp(-r*tau_grid) of this — 0.897723 —
+  // and the loss is a lattice artefact, not a model statement, so the bar is
+  // machine precision and not a tolerance for it.
+  EXPECT_NEAR(euro_put, exact, 1.0e-9);
+}
+
+// The same defect with the zero floor NEVER binding, so the two clamps cannot be
+// confused. European put-call parity is exactly the identity that sees it: C - P
+// is AFFINE in the stock level, so interpolation reproduces it exactly and
+// EXTRAPOLATION does too, while a flat clamp does not.
+//
+// WHERE it bites is the part worth stating, because a mid-tree ex-date hides it
+// completely. The bottom-edge branch fires on every splice, but the nodes it
+// fires on carry binomial weight ~(1-p)^k at step k, so a late ex-date multiplies
+// the error by ~1e-30 and a parity check there reads clean at machine precision
+// both before and after. An EARLY ex-date is where the corner has weight: the
+// same identity at tau = 0.05, worst over K in {60 .. 140}, measured
+//   D = 6  : 3.2922e-03 -> 1.9966e-12
+//   D = 12 : 9.9558e-02 -> 4.9613e-05   (residual: the ZERO floor now binds)
+// Both ex-dates are on-grid at 300 steps, so no part of this is ex-date rounding.
+TEST(DiscreteDivAmerican, EuropeanParityWithAnEarlyDividend_HoldsAtTheGridBottom) {
+  constexpr double kS = 100.0, kT = 1.0, kSigma = 0.30, kR = 0.03;
+  constexpr double kTau = 0.05; // == 15 * dt at 300 steps: on-grid, no rounding
+  const auto worst_residual = [&](double D) {
+    const std::vector<CashDividend> one{{kTau, D}};
+    const double pv = D * std::exp(-kR * kTau);
+    double worst = 0.0;
+    for (const double K : {60.0, 80.0, 100.0, 120.0, 140.0}) {
+      const double call =
+          price_or_fail(kS, K, kT, kSigma, kR, 0.0, Side::Call, one, 300, ExerciseStyle::European);
+      const double put =
+          price_or_fail(kS, K, kT, kSigma, kR, 0.0, Side::Put, one, 300, ExerciseStyle::European);
+      worst = std::max(worst, std::abs((call - put) - (kS - pv - K * std::exp(-kR * kT))));
+    }
+    return worst;
+  };
+  EXPECT_LT(worst_residual(6.0), 1.0e-11) << "parity must hold exactly when only the edge binds";
+  EXPECT_LT(worst_residual(12.0), 1.0e-4) << "the zero floor is a model statement, not an artefact";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Per-event dP/dD_i — a real derivative, not the European forward chain
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The escrowed route folds the whole cash schedule into ONE scalar carry
+// (q_eff = r - ln(F/S)/T) before any early-exercise boundary is touched, so the
+// only thing an individual event can do is move F. `american_dividend_
+// sensitivities` (american.cpp) therefore computes
+//     dP/dD_i = (-dP/dq / (F*T)) * dF/dD_i
+// which is a FIXED scalar times dF/dD_i = -(1 - blend)*exp(r*(T - t_i)). Every
+// event's answer is then the same number scaled by exp(-r*t_i): the ratio
+// between two events depends on NOTHING but the gap between their ex-dates and
+// the rate. Two schedules with the same present value and different timing get
+// identical dividend sensitivities, and a call that would be exercised ahead of
+// a late ex-date is indistinguishable from one that would not.
+//
+// The lattice knows the difference because it prices each event where it lands.
+
+// First: the shipped chain-rule entry really does collapse to that ratio, for
+// ANY dP/dq. Asserted rather than asserted-about, so the demonstration below is
+// a comparison against measured behaviour and not against a paraphrase.
+TEST(DiscreteDivAmerican, DividendSensitivities_TheForwardChainRuleRatioIsTimingOnly) {
+  constexpr double kT = 1.0, kR = 0.05, kF = 100.0;
+  constexpr double kT1 = 0.10, kT2 = 0.90;
+  const double dF_dDiv[2] = {-std::exp(kR * (kT - kT1)), -std::exp(kR * (kT - kT2))};
+  const double timing_ratio = std::exp(kR * (kT2 - kT1));
+  for (const double dP_dq : {-40.0, -12.5, 3.75}) {
+    double out[2] = {0.0, 0.0};
+    atx::vol::american_dividend_sensitivities(dP_dq, kF, kT, dF_dDiv, out);
+    EXPECT_NEAR(out[0] / out[1], timing_ratio, 1.0e-12) << "dP_dq=" << dP_dq;
+  }
+  EXPECT_NEAR(timing_ratio, 1.0408107741923882, 1.0e-12);
+}
+
+// The lattice's own per-event sensitivities, validated against a naive two-sided
+// bump of the shipped PRICE entry — a different caller, the same model.
+TEST(DiscreteDivAmerican, DividendSensitivities_MatchADirectBumpOfThePriceEntry) {
+  constexpr double kS = 100.0, kK = 100.0, kT = 1.0, kSigma = 0.25, kR = 0.05;
+  const std::vector<CashDividend> two{{0.10, 1.50}, {0.90, 1.50}};
+  double got[2] = {kNaN, kNaN};
+  const auto status = atx::vol::american_discrete_div_dividend_sensitivities(
+      kS, kK, kT, kSigma, kR, 0.0, Side::Call, two, got, 301, ExerciseStyle::American);
+  ASSERT_TRUE(status.has_value()) << status.error().to_string();
+
+  for (std::size_t i = 0; i < 2U; ++i) {
+    const double h = atx::vol::discrete_div_amount_bump(two[i].amount);
+    std::vector<CashDividend> up = two;
+    std::vector<CashDividend> dn = two;
+    up[i].amount += h;
+    dn[i].amount -= h;
+    const double p_up =
+        price_or_fail(kS, kK, kT, kSigma, kR, 0.0, Side::Call, up, 301, ExerciseStyle::American);
+    const double p_dn =
+        price_or_fail(kS, kK, kT, kSigma, kR, 0.0, Side::Call, dn, 301, ExerciseStyle::American);
+    EXPECT_NEAR(got[i], (p_up - p_dn) / (2.0 * h), 1.0e-12) << "event " << i;
+  }
+}
+
+// The demonstration. Same schedule, same present value question, and the two
+// routes disagree by far more than either one's own numerical noise.
+TEST(DiscreteDivAmerican, DividendSensitivities_DoNotCollapseToTheForwardChainRule) {
+  constexpr double kS = 100.0, kK = 100.0, kT = 1.0, kSigma = 0.25, kR = 0.05;
+  constexpr double kT1 = 0.10, kT2 = 0.90;
+  // A CALL, and a schedule big enough that the late ex-date is an exercise
+  // event while the early one is only a spot reduction. That asymmetry is
+  // exactly what a single scalar carry cannot represent.
+  const std::vector<CashDividend> two{{kT1, 6.0}, {kT2, 6.0}};
+  double lattice[2] = {kNaN, kNaN};
+  const auto status = atx::vol::american_discrete_div_dividend_sensitivities(
+      kS, kK, kT, kSigma, kR, 0.0, Side::Call, two, lattice, 301, ExerciseStyle::American);
+  ASSERT_TRUE(status.has_value()) << status.error().to_string();
+
+  // Both must be negative: more cash off the stock is worth less to a call.
+  EXPECT_LT(lattice[0], 0.0);
+  EXPECT_LT(lattice[1], 0.0);
+
+  const double lattice_ratio = lattice[0] / lattice[1];
+  const double chain_rule_ratio = std::exp(kR * (kT2 - kT1));
+  EXPECT_NEAR(chain_rule_ratio, 1.0408107741923882, 1.0e-12);
+  // Measured 18.4581 against the chain rule's 1.0408. The late ex-date is very
+  // nearly free to a call because the holder exercises the instant before it;
+  // the early one is a straight spot reduction with most of the life still to
+  // run. An escrowed carry can only ever put those 4% apart.
+  EXPECT_GT(lattice_ratio, 10.0) << "measured 18.4581, chain rule says 1.0408";
+  EXPECT_NEAR(lattice_ratio, 18.458057364197490, 1.0e-3);
+
+  // And the structural point, stated as its own measurement: the PUT on the
+  // same schedule ranks the two events the OTHER way round (0.9298 < 1), which
+  // no scalar multiple of dF/dD_i can do — the chain rule hands every side, and
+  // every strike, the identical 1.0408.
+  double put[2] = {kNaN, kNaN};
+  const auto put_status = atx::vol::american_discrete_div_dividend_sensitivities(
+      kS, kK, kT, kSigma, kR, 0.0, Side::Put, two, put, 301, ExerciseStyle::American);
+  ASSERT_TRUE(put_status.has_value()) << put_status.error().to_string();
+  EXPECT_GT(put[0], 0.0) << "more cash off the stock is worth MORE to a put";
+  EXPECT_GT(put[1], 0.0);
+  EXPECT_LT(put[0] / put[1], chain_rule_ratio);
+  EXPECT_NEAR(put[0] / put[1], 0.92979744455616498, 1.0e-6) << "measured 0.9298";
+}
+
+// Out-of-window events contribute nothing and must report exactly 0, the same
+// convention `hybrid_forward_div_jacobian` uses for its own window.
+TEST(DiscreteDivAmerican, DividendSensitivities_OutOfWindowEventsAreExactlyZero) {
+  const std::vector<CashDividend> mixed{{-0.10, 2.0}, {0.50, 2.0}, {1.90, 2.0}};
+  double got[3] = {kNaN, kNaN, kNaN};
+  const auto status = atx::vol::american_discrete_div_dividend_sensitivities(
+      100.0, 100.0, 1.0, 0.25, 0.05, 0.0, Side::Put, mixed, got, 301, ExerciseStyle::American);
+  ASSERT_TRUE(status.has_value()) << status.error().to_string();
+  EXPECT_EQ(got[0], 0.0);
+  EXPECT_GT(got[1], 0.0);
+  EXPECT_EQ(got[2], 0.0);
+}
+
+TEST(DiscreteDivAmerican, DividendSensitivities_RejectAMismatchedOutputSpan) {
+  const std::vector<CashDividend> two{{0.10, 1.0}, {0.90, 1.0}};
+  double one_slot[1] = {kNaN};
+  const auto status = atx::vol::american_discrete_div_dividend_sensitivities(
+      100.0, 100.0, 1.0, 0.25, 0.05, 0.0, Side::Put, two, one_slot, 301,
+      ExerciseStyle::American);
+  ASSERT_FALSE(status.has_value());
+  EXPECT_EQ(status.error().code(), ErrorCode::InvalidArgument);
+
+  // And the scalar contract is the price entry's, unchanged.
+  double slot[2] = {kNaN, kNaN};
+  const auto bad_sigma = atx::vol::american_discrete_div_dividend_sensitivities(
+      100.0, 100.0, 1.0, 0.0, 0.05, 0.0, Side::Put, two, slot, 301, ExerciseStyle::American);
+  ASSERT_FALSE(bad_sigma.has_value());
+  EXPECT_EQ(bad_sigma.error().code(), ErrorCode::InvalidArgument);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  Degenerate inputs — every one handled explicitly, none silently
 // ═══════════════════════════════════════════════════════════════════════════
@@ -411,10 +839,13 @@ TEST(DiscreteDivAmerican, DividendLargerThanTheLowestNode_ClampsInsteadOfGoingNe
   EXPECT_LE(put->price, 100.0) << "a put can never be worth more than its strike";
   EXPECT_NEAR(put->price, 22.743716471511213, 1.0e-9);
 
+  // 9.3443758393719278 before cum-dividend exercise was admitted at the ex-step:
+  // a 20.00 dividend on a 100 stock is exactly the regime where an American call
+  // exercises the instant BEFORE the ex-date rather than after it.
   const double call = price_or_fail(100.0, 100.0, 1.0, 0.30, 0.03, 0.0, Side::Call, big, 301,
                                     ExerciseStyle::American);
   EXPECT_GE(call, 0.0);
-  EXPECT_NEAR(call, 9.3443758393719278, 1.0e-9);
+  EXPECT_NEAR(call, 9.3833648543233199, 1.0e-9);
 }
 
 // The floor binds at EVERY node here: 1e6 of cash on a 100 stock, so the stock
@@ -432,7 +863,13 @@ TEST(DiscreteDivAmerican, DividendLargerThanEveryNode_StaysFiniteAndNonNegative)
   EXPECT_TRUE(std::isfinite(euro_put));
   EXPECT_GT(euro_put, 0.0);
   EXPECT_LE(euro_put, 100.0) << "a put can never be worth more than its strike";
-  EXPECT_NEAR(euro_put, 96.146830494183135, 1.0e-9);
+  // Once the stock is certainly worth 0 this put IS a zero-coupon claim on the
+  // strike, so the only defensible value is K*exp(-r*T). The flat continuation
+  // clamp at the grid bottom pinned 96.146830494183135 here instead, short by
+  // exactly level[0]*exp(-r*tau_grid) -- the PINNED VALUE was the artefact.
+  // EuropeanPutOnACertainlyWorthlessStock_IsTheDiscountedStrike states it as the
+  // identity rather than as a number.
+  EXPECT_NEAR(euro_put, 100.0 * std::exp(-0.03), 1.0e-9);
 
   for (const Side side : {Side::Call, Side::Put}) {
     const double amer = price_or_fail(100.0, 100.0, 1.0, 0.30, 0.03, 0.0, side, ruinous, 301,
@@ -448,8 +885,10 @@ TEST(DiscreteDivAmerican, DividendLargerThanEveryNode_StaysFiniteAndNonNegative)
   EXPECT_NEAR(amer_put, 97.335154029783297, 1.0e-9);
   const double amer_call = price_or_fail(100.0, 100.0, 1.0, 0.30, 0.03, 0.0, Side::Call, ruinous,
                                          301, ExerciseStyle::American);
+  // 12.514058272121554 before cum-dividend exercise: the holder used to have to
+  // exercise a whole lattice step ahead of the ex-date to capture anything.
   EXPECT_GT(amer_call, euro_call);
-  EXPECT_NEAR(amer_call, 12.514058272121554, 1.0e-9);
+  EXPECT_NEAR(amer_call, 12.55950705605116, 1.0e-9);
 }
 
 TEST(DiscreteDivAmerican, NonPositiveScalarInputs_AreInvalidArgument) {
@@ -1012,7 +1451,12 @@ TEST(DiscreteDivAmerican, GreekBundle_Price_IsPinnedAgainstAnyGreekSchemeChange)
   const DiscreteDivGreekBundle put = bundle_or_fail(kParityS, 775.0, kParityT, kParitySigma,
                                                     kParityR, kParityQ, Side::Put, schedule, 301,
                                                     ExerciseStyle::American);
-  EXPECT_DOUBLE_EQ(call.price, 75.222227622486997);
+  // 75.222227622486997 before the grid-bottom extrapolation in `splice_dividend`;
+  // the earliest of these six ex-dates lands on step 22, where the corner node
+  // the flat clamp mishandled still carries ~(1-p)^22 of probability. The PUT is
+  // untouched to the last bit, which is what says the move is the edge and not
+  // the exercise rule.
+  EXPECT_DOUBLE_EQ(call.price, 75.22222755839276);
   EXPECT_DOUBLE_EQ(put.price, 54.128579425756222);
 
   const DiscreteDivGreekBundle euro_call = bundle_or_fail(100.0, 97.0, 1.0, 0.25, 0.04, 0.01,
@@ -1245,20 +1689,31 @@ TEST(DiscreteDivAmerican, GreekBundle_MaturityBump_DropsDividendsOutsideTheBumpe
       EXPECT_EQ(g.theta_secant, g.price - dropped) << "the ex-date past T-h must be DROPPED";
 
       // Clipping it onto the bumped terminal step instead prices a cash flow the
-      // option no longer lives to receive.
+      // option no longer lives to receive -- with ONE exception, and it is an
+      // economic fact rather than a numerical accident: an AMERICAN CALL facing
+      // an ex-date ON its own expiry exercises the instant before it and takes
+      // max(S - K, 0) either way, so a terminal dividend is invisible to it and
+      // the two prices agree to the LAST BIT. Before cum-dividend exercise was
+      // admitted this leg read a gap of 0.0241, an artefact of the holder having
+      // to exercise a whole lattice step early to escape the drop.
       const double clamped =
           price_or_fail(100.0, 100.0, kBumped, 0.25, 0.04, 0.01, side, clipped, 301, style);
-      EXPECT_NE(dropped, clamped);
+      if (side == Side::Call && style == ExerciseStyle::American) {
+        EXPECT_EQ(dropped, clamped) << "a terminal ex-date cannot move an American call";
+      } else {
+        EXPECT_NE(dropped, clamped);
+      }
     }
   }
 
   // How big the mistake is, side by side. The EUROPEAN legs show it at full
   // size (1.03 for the call, 1.27 for the put on a ~7 premium) because a
-  // European holder simply eats the terminal drop. The AMERICAN CALL is the one
-  // place it compresses -- to 0.024 -- and for a real reason rather than a
-  // cancellation: facing a 2.35 ex-dividend at expiry the holder exercises
-  // just before it, so most of the clipped cash never touches the value. That
-  // is exactly why this test does not assert one magnitude for all four legs.
+  // European holder simply eats the terminal drop. The AMERICAN PUT keeps
+  // 1.13 of it, because cum-dividend exercise is dominated for a put. The
+  // AMERICAN CALL is the one place it vanishes ENTIRELY -- measured 0.024
+  // while the exercise test ran one lattice step early, exactly 0 once it runs
+  // at the ex-step itself. That is why this test does not assert one magnitude
+  // for all four legs.
   const double euro_call_dropped =
       price_or_fail(100.0, 100.0, kBumped, 0.25, 0.04, 0.01, Side::Call, survivors, 301,
                     ExerciseStyle::European);
@@ -1432,5 +1887,150 @@ TEST(DiscreteDivAmerican, GreekBundle_SignsAreSaneOnTheDividendPath) {
 // scenario, relative: price 2.8e-3, delta 3.4e-4, gamma 1.2e-3, vega 7.2e-4,
 // theta 3.5e-3, rho 2.1e-3, phi 1.6e-3, charm 7.5e-3, vanna 1.9e-2,
 // theta_secant 4.6e-2, volga 1.9e-1. Same ordering, same reason.
+
+
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  The route decision — one place, explicit, switchable, and reported
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `discrete_div_route` (api/pricing/dividend.hpp) is the seam between the
+// escrowed forward and this lattice. Everything below is about the seam holding:
+// the two routes must start from the SAME set of cash events, or a comparison
+// between them is measuring the window and not the model.
+
+namespace {
+
+constexpr std::int64_t kNow = 1'700'000'000'000'000'000;
+
+[[nodiscard]] std::int64_t at_years(double years) {
+  return kNow + static_cast<std::int64_t>(years * atx::vol::kCalendarYearNs);
+}
+
+} // namespace
+
+// The switch. Escrow is not "the lattice with an empty schedule" — it is no
+// route at all, so a bisection flipping this enum flips exactly one decision.
+TEST(DiscreteDivRoute, EscrowPolicy_NeverProducesASchedule) {
+  const std::vector<atx::vol::DividendEvent> evs{{at_years(0.10), 1.5}, {at_years(0.40), 1.5}};
+  const std::int64_t expiry = at_years(0.75);
+  const double T = static_cast<double>(expiry - kNow) / atx::vol::kCalendarYearNs;
+  const auto escrow = atx::vol::discrete_div_route(evs, expiry, kNow, T, 0.045,
+                                                   atx::vol::DiscreteDivPolicy::Escrow);
+  EXPECT_FALSE(escrow.applies());
+  EXPECT_TRUE(escrow.schedule.empty());
+  EXPECT_EQ(escrow.pv, 0.0);
+
+  const auto lattice = atx::vol::discrete_div_route(evs, expiry, kNow, T, 0.045,
+                                                    atx::vol::DiscreteDivPolicy::Lattice);
+  EXPECT_TRUE(lattice.applies());
+  EXPECT_EQ(lattice.schedule.size(), 2U);
+}
+
+// The identity that makes the two routes comparable at all: the cash the lattice
+// splices and the cash the escrowed forward removes are THE SAME CASH, to the
+// last bit of the discounting. If this ever fails, an escrow-versus-lattice
+// price difference is partly a window difference and the measurement is void.
+TEST(DiscreteDivRoute, ThePvItReportsIsExactlyWhatTheEscrowedForwardRemoves) {
+  const std::vector<atx::vol::DividendEvent> evs{
+      {at_years(-0.05), 1.90}, // already paid: outside the instant window
+      {at_years(0.10), 1.98},  {at_years(0.40), 2.05}, {at_years(0.70), 2.15},
+      {at_years(0.90), 2.35}}; // after expiry: outside the instant window
+  const std::int64_t expiry = at_years(0.75);
+  const double T = static_cast<double>(expiry - kNow) / atx::vol::kCalendarYearNs;
+  constexpr double kS = 775.8, kR = 0.041;
+  const auto route = atx::vol::discrete_div_route(evs, expiry, kNow, T, kR,
+                                                  atx::vol::DiscreteDivPolicy::Lattice);
+  ASSERT_TRUE(route.applies());
+  EXPECT_EQ(route.schedule.size(), 3U);
+  EXPECT_EQ(route.n_outside_tau_window, 0U) << "a Calendar365 T loses nothing to the tau screen";
+
+  const double escrowed =
+      atx::vol::forward_div_corrected(kS, kR, T, evs, expiry, kNow);
+  EXPECT_NEAR(escrowed, (kS - route.pv) * std::exp(kR * T), 1.0e-9);
+
+  // And each tau is on the option's own clock, the conversion that discounts
+  // CASH — the same one hybrid_forward_div_jacobian uses.
+  for (std::size_t i = 0; i < 3U; ++i) {
+    const double want =
+        static_cast<double>(evs[i + 1U].ex_date_ns - kNow) / atx::vol::kCalendarYearNs;
+    EXPECT_DOUBLE_EQ(route.schedule[i].tau, want);
+    EXPECT_EQ(route.schedule[i].amount, evs[i + 1U].amount);
+  }
+}
+
+// The one place the two windows can disagree, counted instead of hidden. Under a
+// VOL-TIME clock `T` is weekend-compressed and a calendar tau is not, so an
+// event the instant window admits can fall outside (0, T]. The escrowed forward
+// still prices that cash and the lattice cannot, so the count is the caller's
+// signal that the comparison is no longer like-for-like.
+TEST(DiscreteDivRoute, AVolTimeYearFractionShorterThanCalendar_CountsWhatTheLatticeCannotSee) {
+  const std::vector<atx::vol::DividendEvent> evs{{at_years(0.10), 2.0}, {at_years(0.70), 2.0}};
+  const std::int64_t expiry = at_years(0.75);
+  // A vol-time T that compresses 0.75 calendar years to 0.60: the second ex-date
+  // is inside the instant window and outside (0, T].
+  const auto route = atx::vol::discrete_div_route(evs, expiry, kNow, 0.60, 0.041,
+                                                  atx::vol::DiscreteDivPolicy::Lattice);
+  ASSERT_TRUE(route.applies());
+  EXPECT_EQ(route.schedule.size(), 1U);
+  EXPECT_EQ(route.n_outside_tau_window, 1U);
+  EXPECT_NEAR(route.pv, 2.0 * std::exp(-0.041 * route.schedule[0].tau), 1.0e-12);
+}
+
+// A malformed amount is NOT swallowed here: it reaches the lattice's own
+// validation and fails closed there. A zero is, because it is a no-op for both
+// routes and a schedule full of zeros should not force a route.
+TEST(DiscreteDivRoute, ZeroAmountsAreDroppedAndNegativeOnesFailClosedDownstream) {
+  const std::int64_t expiry = at_years(0.75);
+  const double T = static_cast<double>(expiry - kNow) / atx::vol::kCalendarYearNs;
+  const std::vector<atx::vol::DividendEvent> zeros{{at_years(0.10), 0.0}, {at_years(0.40), 0.0}};
+  EXPECT_FALSE(atx::vol::discrete_div_route(zeros, expiry, kNow, T, 0.041,
+                                            atx::vol::DiscreteDivPolicy::Lattice)
+                   .applies());
+
+  const std::vector<atx::vol::DividendEvent> negative{{at_years(0.10), -1.0}};
+  const auto route = atx::vol::discrete_div_route(negative, expiry, kNow, T, 0.041,
+                                                  atx::vol::DiscreteDivPolicy::Lattice);
+  ASSERT_TRUE(route.applies());
+  const auto priced = american_discrete_div_price(100.0, 100.0, T, 0.25, 0.041, 0.0, Side::Put,
+                                                  route.schedule, 301, ExerciseStyle::American);
+  ASSERT_FALSE(priced.has_value());
+  EXPECT_EQ(priced.error().code(), ErrorCode::InvalidArgument);
+}
+
+// The route decision is worth making, stated as a price rather than as an
+// argument: the same chain, the same cash, the two routes, one number apart.
+TEST(DiscreteDivRoute, TheTwoRoutesDisagreeByFarMoreThanEitherOnesNoise) {
+  const std::vector<atx::vol::DividendEvent> evs{
+      {at_years(0.05), 1.98}, {at_years(0.30), 2.05}, {at_years(0.55), 2.15}};
+  const std::int64_t expiry = at_years(0.75);
+  const double T = static_cast<double>(expiry - kNow) / atx::vol::kCalendarYearNs;
+  constexpr double kS = 100.0, kK = 100.0, kSigma = 0.25, kR = 0.045;
+  const auto route =
+      atx::vol::discrete_div_route(evs, expiry, kNow, T, kR, atx::vol::DiscreteDivPolicy::Lattice);
+  ASSERT_TRUE(route.applies());
+
+  // The escrowed route as the library builds it today: one scalar carry that
+  // reproduces the dividend-corrected forward exactly (deamer.cpp, curve_fit.cpp).
+  const double F = atx::vol::forward_div_corrected(kS, kR, T, evs, expiry, kNow);
+  const double q_eff = kR - std::log(F / kS) / T;
+  for (const Side side : {Side::Call, Side::Put}) {
+    const double escrowed = price_or_fail(kS, kK, T, kSigma, kR, q_eff, side, {}, 301,
+                                          ExerciseStyle::American);
+    const double lattice = price_or_fail(kS, kK, T, kSigma, kR, 0.0, side, route.schedule, 301,
+                                         ExerciseStyle::American);
+    // Both routes are the SAME lattice at the SAME step count here, so the gap
+    // is the dividend treatment and nothing else -- no pricer difference, no
+    // step-count difference, no convention difference. Measured 10.61 ticks on
+    // the call and 54.59 on the put, at the money, on three ~2.00 dividends
+    // inside 0.75 years of a 100 stock. The put carries the larger half because
+    // escrowing removes the cash from spot on day one and hands its early-
+    // exercise value back too early.
+    EXPECT_GT(std::abs(lattice - escrowed) * 100.0, 10.0)
+        << "route gap in ticks, side=" << (side == Side::Call ? "C" : "P") << ": "
+        << (lattice - escrowed) * 100.0;
+  }
+}
 
 } // namespace
