@@ -350,9 +350,16 @@ void implied_vol_batch_avx2(const double *price, const double *F, const double *
                                        _mm256_or_pd(_mm256_cmp_pd(Kv, zero, _CMP_LE_OQ),
                                                     _mm256_cmp_pd(dfv, zero, _CMP_LE_OQ)))));
     const __m256d safeT = _mm256_blendv_pd(Tv, one, bad);
+    // ONE convention for the log argument across the three batch kernels: the PATCHED
+    // copies, as black76_batch_avx2 already does. safeF/safeK equal Fv/Kv on every lane
+    // that is not already in `bad`, so every SERVED lane is bit-identical; the change is
+    // that a degenerate lane can no longer feed log_pd a 0 or a negative and have the
+    // decode hand back finite garbage that the later masks reason about.
+    const __m256d safeF = _mm256_blendv_pd(Fv, one, bad);
+    const __m256d safeK = _mm256_blendv_pd(Kv, one, bad);
 
     const __m256d sqrtT = _mm256_sqrt_pd(safeT);
-    const __m256d lnFK = log_pd(_mm256_div_pd(Fv, Kv));
+    const __m256d lnFK = log_pd(_mm256_div_pd(safeF, safeK));
 
     // K3: the cheap Choi-2023 L₃ seed (same as the scalar K2 seed) starts inside
     // the Halley cubic basin, so THREE Halley steps drive the lanes to machine
@@ -377,13 +384,32 @@ void implied_vol_batch_avx2(const double *price, const double *F, const double *
     const __m256d abs_resid = _mm256_andnot_pd(abs_mask, resid);
     const __m256d not_conv = _mm256_cmp_pd(abs_resid, resid_tol, _CMP_GE_OQ);
     const __m256d vfloor = _mm256_mul_pd(_mm256_mul_pd(vfloor_coef, _mm256_add_pd(Fv, Kv)), dfv);
-    const __m256d ill_cond = _mm256_cmp_pd(vega, vfloor, _CMP_LT_OQ);
+    // UNORDERED-true compare: an ORDERED `vega < vfloor` reads a NaN vega as
+    // well-conditioned and declines to patch the lane. _CMP_NGE_UQ is identical to
+    // _CMP_LT_OQ for every ordered pair and true when either side is NaN.
+    const __m256d ill_cond = _mm256_cmp_pd(vega, vfloor, _CMP_NGE_UQ);
+    // The |ln(F/K)| >= 708 escape both sibling kernels carry and both document as
+    // required (black76_batch_avx2.cpp:104, greeks_batch_avx2.cpp:110). log_pd assumes a
+    // positive NORMAL argument, so an F/K ratio that underflows to a denormal/zero or
+    // overflows to +inf decodes to FINITE garbage near ±709 — which nonfinite_mask
+    // cannot see — and that garbage lnFK feeds d1 in all four Halley steps.
+    //
+    // MEASURED, so the guard is not mistaken for the thing that catches it today: the
+    // ill-conditioning floor already patches every lane in this band, and NOT by
+    // coincidence. |lnFK| ≈ 709 forces |d1| = |lnFK/v + v/2| >= sqrt(2·709) ≈ 37.7 for
+    // ANY v, so φ(d1) <= 1e-308 and vega <= F·df·√T·1e-308, while the floor is
+    // 0.005·(F+K)·df >= 0.005·F·df. The escape is therefore a REDUNDANT guard here, kept
+    // because it makes the three kernels state the same precondition in the same place
+    // rather than leaving one of them relying on a downstream accident.
+    const __m256d abs_lnfk = _mm256_andnot_pd(abs_mask, lnFK);
+    const __m256d lnfk_escape = _mm256_cmp_pd(abs_lnfk, _mm256_set1_pd(708.0), _CMP_GE_OQ);
     const __m256d not_valid = _mm256_andnot_pd(seed_valid, all_ones);
     const __m256d nan_out = _mm256_or_pd(_mm256_cmp_pd(sigma, sigma, _CMP_UNORD_Q),
                                          _mm256_cmp_pd(resid, resid, _CMP_UNORD_Q));
 
     __m256d patch = _mm256_or_pd(bad, not_valid);
     patch = _mm256_or_pd(patch, ill_cond);
+    patch = _mm256_or_pd(patch, lnfk_escape);
     patch = _mm256_or_pd(patch, not_conv);
     patch = _mm256_or_pd(patch, nan_out);
     const int pbits = _mm256_movemask_pd(patch);

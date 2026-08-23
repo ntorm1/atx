@@ -137,10 +137,16 @@ ATX_FORCE_INLINE int greeks_block(const double *F, const double *K, const double
   const __m256d input_patch = input_patch_mask(Fv, Kv, Tv, sv, rv, dfv, zero);
   const __m256d safeT = _mm256_blendv_pd(Tv, one, input_patch);
   const __m256d safeS = _mm256_blendv_pd(sv, one, input_patch);
+  // Same patched-operand convention for the log argument as black76_batch_avx2 (which
+  // divides safe_f by safe_k). safeF/safeK equal Fv/Kv on every lane not already in
+  // input_patch, so every SERVED lane and the final patch mask are bit-identical; what
+  // changes is that a degenerate lane no longer hands log_pd a 0 or a negative.
+  const __m256d safeF = _mm256_blendv_pd(Fv, one, input_patch);
+  const __m256d safeK = _mm256_blendv_pd(Kv, one, input_patch);
 
   const __m256d sqrtT = _mm256_sqrt_pd(safeT);
   const __m256d v = _mm256_mul_pd(safeS, sqrtT);
-  const __m256d lnFK = log_pd(_mm256_div_pd(Fv, Kv));
+  const __m256d lnFK = log_pd(_mm256_div_pd(safeF, safeK));
   const __m256d d1 =
       _mm256_div_pd(_mm256_add_pd(lnFK, _mm256_mul_pd(half, _mm256_mul_pd(v, v))), v);
   const __m256d d2 = _mm256_sub_pd(d1, v);
@@ -196,8 +202,10 @@ ATX_FORCE_INLINE int greeks_block(const double *F, const double *K, const double
   const __m256d charm =
       _mm256_add_pd(_mm256_mul_pd(rv, delta),
                     _mm256_div_pd(_mm256_mul_pd(df_phi, d2), _mm256_mul_pd(two, safeT)));
-  // rho = -T·price (same form for call and put).
-  const __m256d rho = _mm256_mul_pd(_mm256_sub_pd(zero, Tv), price);
+  // rho = -T·price (same form for call and put). safeT, not Tv: every other term in
+  // this block already uses the patched expiry, and rho was the one that did not.
+  // safeT == Tv on every served lane, so this is bit-identical there.
+  const __m256d rho = _mm256_mul_pd(_mm256_sub_pd(zero, safeT), price);
 
   _mm256_store_pd(b.dl, delta);
   _mm256_store_pd(b.gm, gamma);

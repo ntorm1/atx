@@ -23,4 +23,16 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
                                       double* price_out, std::size_t n,
                                       const std::optional<AlOpts>& opts) noexcept;
 
+// TEST PROBE for the shared 4-lane barycentric interpolant cheb_eval_pd
+// (american_boundary_avx2_kernel.hpp). The interpolant is an inline detail of two
+// hot kernels, and its exact-node (dz == 0) behaviour — the one case where the AVX2
+// copy used to diverge from the scalar al_cheb_eval_t / bary_eval — is not otherwise
+// reachable from any public entry point in a way that survives the downstream masks.
+// This thin wrapper evaluates it directly so that contract can be gated.
+//
+// `znodes`/`wbary`/`y` are nb-long and shared by all four lanes; `zq` and `out` are
+// exactly 4 long. AVX2-ONLY: call behind atx::vol::simd::have_avx2().
+void bary_eval_pack_avx2(const double* znodes, const double* wbary, const double* y,
+                         unsigned nb, const double* zq, double* out) noexcept;
+
 } // namespace atx::vol::simd::detail

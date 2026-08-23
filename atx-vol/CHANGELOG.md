@@ -5,6 +5,84 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### FIXED — the AVX2 kernels no longer answer an unanswerable input with a finite number
+
+**The numbers that move.** Four, all of them cases where a kernel previously emitted a
+finite value it had no basis for:
+
+1. `detail::exp_pd(NaN)` returned **-7.98e292** (measured, this host) instead of NaN, and
+   `norm_pdf_pd(NaN)` therefore returned **-3.19e292** — a finite NEGATIVE probability
+   density. Both now return NaN. `_mm256_max_pd(x, kExpLo)` returns its SECOND operand
+   when either is NaN, so a NaN argument was silently replaced by the clamp bound:
+   N = -1075, biased = -52, and `_mm256_slli_epi64(-52, 52)` rebuilt -2^973. The
+   `underflow` compare could not see it — `_CMP_LT_OQ` is false for NaN. Fixed by putting
+   the constant first in both clamps (`src/simd/vector_math.hpp`), which propagates the
+   NaN at zero instruction cost. Reachable from `norm_pdf_pd` / `erfc_nonneg_pd` and from
+   `american_boundary_avx2_kernel.hpp`'s `res_deriv` / `eqn_b_ND`, which pass unmasked
+   tau- and b-derived arguments. **The finite domain is bit-identical**: Φ, φ and exp
+   digests over 1,417,219 sample points (incl. every Cody region boundary at 1/65536
+   spacing) are byte-equal before and after.
+
+2. The AVX2 barycentric interpolant at an EXACT collocation node returned the wrong
+   boundary. Both copies (`american_boundary_avx2_kernel.hpp:293` and `:518`) divided by
+   `dz = zc - znodes[j]` with no `dz == 0` guard, unlike every scalar counterpart
+   (`american.cpp` `al_cheb_eval_t`, `boundary_interp.cpp` `bary_eval`). On a hit
+   `qq = ±inf` and `num/den = NaN`, and the caller's `b_from_y_pd(NaN)` then degraded to
+   `XMAX` rather than to NaN — because `_mm256_max_pd(NaN, 0)` returns its second operand
+   — so a finite WRONG boundary went downstream invisible to every non-finite guard. It
+   is reachable: `clamp01` saturates to exactly ±1.0 and the Lobatto grid's endpoints ARE
+   exactly ∓1.0. The two copies are now ONE function, `cheb_eval_pd`, with a branchless
+   per-lane hit blend; non-hit lanes divide by an unchanged `dz` and stay bit-identical.
+
+3. `essvi_backbone_sigma_batch` served a volatility for a slice with an invalid time
+   axis. `slice_vector_admissible` validated theta, phi and rho but never `T`, while both
+   routes divide by it: `T == 0` served `sqrt(w/0) = +inf`, `T < 0` served NaN, and
+   `T == -inf` served `-0.0` — all unflagged. Both routes now REFUSE with NaN
+   (`essvi_slice_time_valid`, `src/simd/essvi_batch_avx2.hpp`), because a fallback would
+   only divide by the same T. Valid slices are untouched.
+
+4. `detail::exp_cody` (`src/pricing/scalar_erfc.hpp`) overflowed early. `kExpHi` is
+   `ln(DBL_MAX)`, whose `Nf` rounds to 1024, and `pow2i`'s documented precondition is
+   n ≤ 1023 — so `exp_cody(709.78)` returned `+inf` where `std::exp` returns
+   ≈1.7976931348622732e308. The 2^N scale is now split as 2^(n-1)·2, and arguments past
+   `ln(DBL_MAX)` overflow explicitly instead of saturating to a finite `DBL_MAX`.
+
+**Undefined behaviour removed.** `exp_cody` computed `Nf = nearbyint(x * kInvLn2)` and
+then `static_cast<int>(Nf)`. Every guard ahead of it was an ORDERED comparison, so a NaN
+argument fell through all three and converted a NaN to `int` — UB per [conv.fpint]/1,
+reachable as `norm_cdf_erfc(NaN)` → `erfc_nonneg(NaN)` → `exp_cody(-NaN)`. The early-out
+is now a negated compare that separates NaN (propagated) from genuine underflow (0.0).
+This did NOT reproduce as a wrong answer under clang-cl 18 — `cvttsd2si` yields INT_MIN
+and the polynomial was already NaN — which is the point: it is fixed on the no-UB rule,
+not on an observed failure. This tree builds no sanitizer, so nothing else would report
+it.
+
+**Hardening with no number attached** (recorded so a later reader does not mistake these
+for the fixes above): every bump-state boundary solve in `american_greeks_avx2.cpp` now
+re-checks `ref < 0` like the base solve does, so the σ± / r± stencils can no longer be
+priced against a stale BASE boundary — today those lanes are dropped by an incidental
+`lane_ok &&` chain rather than by the guard. `iv_batch_avx2.cpp` gains the
+`|ln(F/K)| ≥ 708` escape both sibling kernels carry and document as required, and its
+`ill_cond` compare becomes unordered-true so a NaN vega patches. **Measured, so the
+escape is not credited with catching something it does not:** the ill-conditioning floor
+already patches every lane in that band, and not by coincidence — |lnFK| ≈ 709 forces
+|d1| ≥ √(2·709) ≈ 37.7 for any v, hence φ(d1) ≤ 1e-308 and vega ≪ 0.005·(F+K)·df. Lastly
+`greeks_batch_avx2.cpp` and `iv_batch_avx2.cpp` adopt `black76_batch_avx2`'s patched
+`safe_f`/`safe_k` for the log argument, and `rho` uses `safeT` like every other term —
+all identical on served lanes.
+
+**Performance, no number.** `erfc_nonneg_pd` dropped one of its five divisions per call
+by blending regions 1 and 2 as an `(N, D)` PAIR before the divide; a division is a pure
+per-lane function of its two operands, so each selected lane's quotient is bit-for-bit
+what it was (verified by the digest above). Region 3 is deliberately left alone — folding
+it needs an algebraic rearrangement that is NOT bit-identical, and the American-boundary
+route's reproducible-per-host status rests on an explicit user ruling
+(`american_boundary_batch.cpp:73-83`). The five file-local scalar batch fallbacks
+(`pnl_batch`, `black76_batch`, `greeks_batch`, `iv_batch`, `american_boundary_batch`)
+gained `__restrict`, which is the first `restrict` anywhere under `src/simd` or
+`src/pricing`; non-aliasing was already each API's documented precondition. Only the
+scalar route is touched, so no intrinsic kernel and no number changes.
+
 ### CHANGED — a Risk-purpose preset now requests the MARK too, and `fit_board` serves it when the risk oracle refuses
 
 **The number that moves.** A populate run over the full 2026-08-21 OPRA universe

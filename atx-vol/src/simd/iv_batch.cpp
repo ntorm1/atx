@@ -32,9 +32,15 @@ namespace {
 // with ok = 1 on success, NaN with ok = 0 on any failure (non-finite input,
 // out-of-band price, non-convergence, or allocation failure). This is the
 // numerical source of truth the AVX2 kernel patches through.
-void iv_batch_scalar(const double* price, const double* F, const double* K,
-                     const double* T, const double* df, const Side* side,
-                     double* iv_out, std::uint8_t* ok_out,
+// SAFETY (__restrict, T9): non-aliasing is already this API's documented precondition
+// ("the outputs must not alias the inputs"), but nothing in the code said so — there was
+// no `restrict` anywhere under src/simd or src/pricing. Only the file-local SCALAR
+// fallback is annotated; the AVX2 kernels use explicit loads/stores and are untouched,
+// so no number moves on either route. See pnl_batch.cpp for the full rationale.
+void iv_batch_scalar(const double* __restrict price, const double* __restrict F,
+                     const double* __restrict K, const double* __restrict T,
+                     const double* __restrict df, const Side* __restrict side,
+                     double* __restrict iv_out, std::uint8_t* __restrict ok_out,
                      std::size_t n) noexcept {
     for (std::size_t i = 0; i < n; ++i) {
         const Result<double> r =

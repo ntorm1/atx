@@ -17,9 +17,15 @@ namespace {
 // truth the AVX2 route is validated against. On an error result (e.g. the
 // double-continuation corner) the price is NaN — the caller feeds only valid
 // American puts through the batch.
-void put_batch_scalar(const double* S, const double* K, const double* T,
-                      const double* sigma, const double* r, const double* q,
-                      double* price_out, std::size_t n,
+// SAFETY (__restrict, T9): non-aliasing is already this API's documented precondition
+// ("the outputs must not alias the inputs"), but nothing in the code said so — there was
+// no `restrict` anywhere under src/simd or src/pricing. Only the file-local SCALAR
+// fallback is annotated; the AVX2 kernels use explicit loads/stores and are untouched,
+// so no number moves on either route. See pnl_batch.cpp for the full rationale.
+void put_batch_scalar(const double* __restrict S, const double* __restrict K,
+                      const double* __restrict T, const double* __restrict sigma,
+                      const double* __restrict r, const double* __restrict q,
+                      double* __restrict price_out, std::size_t n,
                       const std::optional<AlOpts>& opts) noexcept {
     for (std::size_t i = 0; i < n; ++i) {
         const Result<double> res =

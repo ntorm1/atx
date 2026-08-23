@@ -45,6 +45,46 @@ ATX_FORCE_INLINE __m256d k_sel(__m256d mask, __m256d t, __m256d f) noexcept {
     return _mm256_blendv_pd(f, t, mask);
 }
 
+// Second-kind barycentric Lagrange interpolation of the per-lane boundary Y[] on the
+// scheme-fixed Lobatto grid, 4 lanes at a time. ONE definition shared by the solve
+// sweep (eqn_b_ND) and the premium quadrature (price_put_pack_at_avx2), which used to
+// carry byte-identical copies — so the exact-node guard below had to be added twice.
+//
+// EXACT-NODE GUARD (parity with the scalar al_cheb_eval_t in american.cpp and
+// bary_eval in boundary_interp.cpp, both of which early-return y[i] when dz == 0):
+// `zc` reaches a node EXACTLY here — clamp01() saturates to exactly -1.0/+1.0 and the
+// Lobatto grid's endpoints ARE exactly -1.0/+1.0 — so an unguarded wbary[j] / dz gives
+// +/-inf, num/den = NaN, and the caller's b_from_y_pd(NaN) then silently degrades to
+// XMAX (because _mm256_max_pd(NaN, 0) returns its SECOND operand). A finite wrong
+// boundary, invisible to every non-finite guard downstream.
+//
+// The guard is branchless and per-lane: a hit lane divides by 1.0 instead (keeping
+// num/den finite) and takes Y[j] from the final blend. Non-hit lanes see `dz`
+// unchanged and are therefore BIT-IDENTICAL to the pre-guard kernel. The Lobatto nodes
+// are strictly increasing, so at most one j can hit per lane and the blend order is
+// immaterial.
+ATX_FORCE_INLINE __m256d cheb_eval_pd(const double* znodes, const double* wbary,
+                                      const __m256d* Y, unsigned nb,
+                                      __m256d zc) noexcept {
+    const __m256d zero = _mm256_setzero_pd();
+    const __m256d one = _mm256_set1_pd(1.0);
+    __m256d num = zero;
+    __m256d den = zero;
+    __m256d hit_any = zero;
+    __m256d hit_val = zero;
+    for (unsigned j = 0; j < nb; ++j) {
+        const __m256d dz = _mm256_sub_pd(zc, _mm256_set1_pd(znodes[j]));
+        const __m256d hit = _mm256_cmp_pd(dz, zero, _CMP_EQ_OQ);
+        const __m256d safe_dz = _mm256_blendv_pd(dz, one, hit);
+        const __m256d qq = _mm256_div_pd(_mm256_set1_pd(wbary[j]), safe_dz);
+        num = _mm256_add_pd(num, _mm256_mul_pd(qq, Y[j]));
+        den = _mm256_add_pd(den, qq);
+        hit_val = _mm256_blendv_pd(hit_val, Y[j], hit);
+        hit_any = _mm256_or_pd(hit_any, hit);
+    }
+    return _mm256_blendv_pd(_mm256_div_pd(num, den), hit_val, hit_any);
+}
+
 // The K2 BAW critical-price Newton cap (see american_boundary_avx2.cpp lever-1 audit:
 // a static sub-16 cap breaks the economic parity gate — the movemask early-exit is the
 // adaptive trim). Shared so both kernels seed identically.
@@ -291,15 +331,7 @@ inline void solve_put_boundary_pack_avx2(
     }
 
     auto cheb_eval = [&](__m256d zc) {
-        __m256d num = zero;
-        __m256d den = zero;
-        for (unsigned j = 0; j < nb; ++j) {
-            const __m256d dz = _mm256_sub_pd(zc, _mm256_set1_pd(out.znodes[j]));
-            const __m256d qq = _mm256_div_pd(_mm256_set1_pd(out.wbary[j]), dz);
-            num = _mm256_add_pd(num, _mm256_mul_pd(qq, Y[j]));
-            den = _mm256_add_pd(den, qq);
-        }
-        return _mm256_div_pd(num, den);
+        return cheb_eval_pd(out.znodes, out.wbary, Y, nb, zc);
     };
     auto eqn_b_ND = [&](__m256d tau, __m256d b_val, __m256d& N, __m256d& D) {
         const __m256d v_tip = _mm256_mul_pd(SIG, _mm256_sqrt_pd(tau));
@@ -516,15 +548,7 @@ inline __m256d price_put_pack_at_avx2(const PutPackBoundary& b, __m256d spot,
         return _mm256_mul_pd(xmax, exp_pd(_mm256_sub_pd(zero, _mm256_sqrt_pd(yv2))));
     };
     auto cheb_eval = [&](__m256d zc) {
-        __m256d num = zero;
-        __m256d den = zero;
-        for (unsigned j = 0; j < nb; ++j) {
-            const __m256d dz = _mm256_sub_pd(zc, _mm256_set1_pd(b.znodes[j]));
-            const __m256d qq = _mm256_div_pd(_mm256_set1_pd(b.wbary[j]), dz);
-            num = _mm256_add_pd(num, _mm256_mul_pd(qq, Y[j]));
-            den = _mm256_add_pd(den, qq);
-        }
-        return _mm256_div_pd(num, den);
+        return cheb_eval_pd(b.znodes, b.wbary, Y, nb, zc);
     };
 
     const __m256d Sv = spot;

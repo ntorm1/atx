@@ -106,4 +106,14 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
     }
 }
 
+void bary_eval_pack_avx2(const double* znodes, const double* wbary, const double* y,
+                         unsigned nb, const double* zq, double* out) noexcept {
+    __m256d Y[amer::kAlMaxNodes];
+    const unsigned n_use = (nb < amer::kAlMaxNodes) ? nb : amer::kAlMaxNodes;
+    for (unsigned j = 0; j < n_use; ++j) {
+        Y[j] = _mm256_set1_pd(y[j]);
+    }
+    _mm256_storeu_pd(out, cheb_eval_pd(znodes, wbary, Y, n_use, _mm256_loadu_pd(zq)));
+}
+
 } // namespace atx::vol::simd::detail

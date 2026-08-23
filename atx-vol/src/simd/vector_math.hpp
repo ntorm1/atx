@@ -110,8 +110,22 @@ ATX_FORCE_INLINE __m256d log_pd(__m256d x) noexcept {
 // K2 wing-patch removal retired the scalar detour that used to hide this.
 ATX_FORCE_INLINE __m256d exp_pd(__m256d x) noexcept {
     const __m256d underflow = _mm256_cmp_pd(x, _mm256_set1_pd(kExpMinNormal), _CMP_LT_OQ);
-    __m256d xc = _mm256_min_pd(_mm256_max_pd(x, _mm256_set1_pd(kExpLo)),
-                               _mm256_set1_pd(kExpHi));
+    // SAFETY (NaN domain): the CONSTANT is the first operand of both clamps on purpose.
+    // x86 MAXPD/MINPD return their SECOND operand whenever EITHER operand is NaN, so
+    // with `x` first a NaN lane was silently replaced by the clamp bound: xc = kExpLo
+    // gave N = -1075, biased = -52, and _mm256_slli_epi64(-52, 52) rebuilt the double
+    // -2^973 = -7.98e292. `underflow` could not see it either (_CMP_LT_OQ is false for
+    // NaN), so a NaN argument left this function as a FINITE NEGATIVE number — invisible
+    // to every nonfinite_mask / std::isfinite guard downstream, and via norm_pdf_pd a
+    // negative probability density. With the constant first, MAXPD/MINPD return `x`
+    // itself and the NaN propagates through the polynomial to a NaN result.
+    //
+    // Every FINITE lane is bit-identical under the swap: when the operands compare
+    // equal both orders return the same bits, and otherwise the ordering rule picks the
+    // same operand. +/-inf also keep IEEE exp semantics (+inf -> +inf, -inf -> 0).
+    // Gated by SimdNanSafety.ExpPd_* in tests/simd_nan_safety_test.cpp.
+    __m256d xc = _mm256_min_pd(_mm256_set1_pd(kExpHi),
+                               _mm256_max_pd(_mm256_set1_pd(kExpLo), x));
 
     const __m256d Nf = _mm256_round_pd(
         _mm256_mul_pd(xc, _mm256_set1_pd(kInvLn2)),
@@ -202,6 +216,9 @@ ATX_FORCE_INLINE __m256d erfc_nonneg_pd(__m256d y) noexcept {
     // e = exp(−y²), shared by regions 2 and 3.
     const __m256d e = exp_pd(_mm256_sub_pd(_mm256_setzero_pd(), ysq));
 
+    // Region selector, hoisted: regions 1 and 2 share ONE division (see below).
+    const __m256d in_lo = _mm256_cmp_pd(y, _mm256_set1_pd(kCodyThresh), _CMP_LE_OQ);
+
     // Region 1 (y ≤ 0.46875): erf via degree-4/4 rational in ysq; erfc = 1 − erf.
     __m256d num1 = _mm256_set1_pd(kCodyA[4]);
     num1 = _mm256_fmadd_pd(num1, ysq, _mm256_set1_pd(kCodyA[0]));
@@ -213,8 +230,6 @@ ATX_FORCE_INLINE __m256d erfc_nonneg_pd(__m256d y) noexcept {
     den1 = _mm256_fmadd_pd(den1, ysq, _mm256_set1_pd(kCodyB[1]));
     den1 = _mm256_fmadd_pd(den1, ysq, _mm256_set1_pd(kCodyB[2]));
     den1 = _mm256_fmadd_pd(den1, ysq, _mm256_set1_pd(kCodyB[3]));
-    const __m256d erf = _mm256_div_pd(_mm256_mul_pd(y, num1), den1);
-    const __m256d r_lo = _mm256_sub_pd(_mm256_set1_pd(1.0), erf);
 
     // Region 2 (0.46875 < y ≤ 4): erfc = e·N(y)/D(y), degree-8/8.
     __m256d num2 = _mm256_set1_pd(kCodyC[8]);
@@ -235,7 +250,25 @@ ATX_FORCE_INLINE __m256d erfc_nonneg_pd(__m256d y) noexcept {
     den2 = _mm256_fmadd_pd(den2, y, _mm256_set1_pd(kCodyD[5]));
     den2 = _mm256_fmadd_pd(den2, y, _mm256_set1_pd(kCodyD[6]));
     den2 = _mm256_fmadd_pd(den2, y, _mm256_set1_pd(kCodyD[7]));
-    const __m256d r_mid = _mm256_mul_pd(e, _mm256_div_pd(num2, den2));
+
+    // ONE division for regions 1 and 2 (perf, bit-identical). Both regions divide a
+    // numerator by a denominator with the SAME operator on the SAME lane, so blending
+    // the (N, D) PAIR before the divide and blending the two post-processings after it
+    // reproduces each selected lane's quotient bit-for-bit — a division is a pure
+    // per-lane function of its two operands, and blendv is a pure bitwise select. Only
+    // the UNSELECTED region's discarded value changes. That trades one _mm256_div_pd
+    // (13-14 cycle latency, ~4-8 cycle reciprocal throughput) for two blends (1 cycle
+    // each) in a kernel evaluated per quadrature node per sweep, twice per Φ pair.
+    //
+    // Region 3 is deliberately NOT folded in: it needs an algebraic rearrangement that
+    // is not bit-identical, and this tree's American-boundary route is
+    // reproducible-per-host by an explicit user ruling — see
+    // american_boundary_batch.cpp:73-83. Not this lane's call to make.
+    const __m256d num12 = _mm256_blendv_pd(num2, _mm256_mul_pd(y, num1), in_lo);
+    const __m256d den12 = _mm256_blendv_pd(den2, den1, in_lo);
+    const __m256d q12 = _mm256_div_pd(num12, den12);
+    const __m256d r_lo = _mm256_sub_pd(_mm256_set1_pd(1.0), q12); // 1 − erf(y)
+    const __m256d r_mid = _mm256_mul_pd(e, q12);                  // e·N(y)/D(y)
 
     // Region 3 (y > 4): asymptotic erfc = e·(1/√π − w·N(w)/D(w))/y, w = 1/y².
     // For small-y lanes w is huge and these results are non-finite, but they are
@@ -257,8 +290,7 @@ ATX_FORCE_INLINE __m256d erfc_nonneg_pd(__m256d y) noexcept {
     r_hi = _mm256_div_pd(_mm256_sub_pd(_mm256_set1_pd(kCodySqrtPiInv), r_hi), y);
     r_hi = _mm256_mul_pd(e, r_hi);
 
-    // Select region by y.
-    const __m256d in_lo = _mm256_cmp_pd(y, _mm256_set1_pd(kCodyThresh), _CMP_LE_OQ);
+    // Select region by y (in_lo hoisted above the shared division).
     const __m256d in_hi = _mm256_cmp_pd(y, _mm256_set1_pd(4.0), _CMP_GT_OQ);
     __m256d erfc = _mm256_blendv_pd(r_mid, r_hi, in_hi); // mid vs asymptotic
     erfc = _mm256_blendv_pd(erfc, r_lo, in_lo);          // then the erf region

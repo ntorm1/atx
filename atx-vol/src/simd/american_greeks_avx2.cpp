@@ -162,10 +162,24 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
         }
 
         if (need_vega) {
+            // EVERY bump-state solve re-checks `ref`, exactly as the base solve above
+            // does. solve_put_boundary_pack_avx2 returns EARLY, WITHOUT writing `out`,
+            // when no lane of the pack is eligible — so without this the following
+            // price_put_pack_avx2 prices the sigma± / r± stencils against the stale
+            // BASE boundary and stores base-sigma prices into vvp/vvm/vrp/vrm. Those
+            // lanes happen to be dropped today (the refusal also clears `elig`, hence
+            // `lane_ok`), which means a Greek's correctness rested on an incidental
+            // `lane_ok &&` chain rather than on the guard that exists to enforce it.
+            // Reachable: sigma just above the kernel's 1e-8 floor makes hv = 0.5·sigma,
+            // so sigma − hv lands AT 0.5·sigma and every lane of the sigma− solve
+            // refuses. Gated by SimdNanSafety.AmericanPutGreeksBatch_RefusedBumpSolve.
             // sigma+ boundary: price at S, S+hS, S-hS (vega, vanna+ leg).
             solve_put_boundary_pack_avx2(Sl, Kl, Tl, sig_p, rl, ql, m, sch, sc.bnd, sc.ws, pk, elig, ref);
             for (std::size_t l = 0; l < m; ++l) {
                 lane_ok[l] = lane_ok[l] && elig[l];
+            }
+            if (ref < 0) {
+                continue; // refused bump solve: `pk` still holds the BASE boundary
             }
             _mm256_store_pd(vvp, price_put_pack_avx2(pk, spot_vec(0.0)));
             _mm256_store_pd(vSpVp, price_put_pack_avx2(pk, spot_vec(+1.0)));
@@ -175,6 +189,9 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
             solve_put_boundary_pack_avx2(Sl, Kl, Tl, sig_m, rl, ql, m, sch, sc.bnd, sc.ws, pk, elig, ref);
             for (std::size_t l = 0; l < m; ++l) {
                 lane_ok[l] = lane_ok[l] && elig[l];
+            }
+            if (ref < 0) {
+                continue; // refused bump solve: `pk` still holds the BASE boundary
             }
             _mm256_store_pd(vvm, price_put_pack_avx2(pk, spot_vec(0.0)));
             _mm256_store_pd(vSpVm, price_put_pack_avx2(pk, spot_vec(+1.0)));
@@ -187,12 +204,18 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
             for (std::size_t l = 0; l < m; ++l) {
                 lane_ok[l] = lane_ok[l] && elig[l];
             }
+            if (ref < 0) {
+                continue; // refused bump solve: `pk` still holds the BASE boundary
+            }
             _mm256_store_pd(vrp, price_put_pack_avx2(pk, spot_vec(0.0)));
 
             // r- boundary: price at S.
             solve_put_boundary_pack_avx2(Sl, Kl, Tl, sigl, r_m, ql, m, sch, sc.bnd, sc.ws, pk, elig, ref);
             for (std::size_t l = 0; l < m; ++l) {
                 lane_ok[l] = lane_ok[l] && elig[l];
+            }
+            if (ref < 0) {
+                continue; // refused bump solve: `pk` still holds the BASE boundary
             }
             _mm256_store_pd(vrm, price_put_pack_avx2(pk, spot_vec(0.0)));
         }
@@ -372,10 +395,15 @@ void american_call_greeks_batch_avx2(const double* S, const double* K, const dou
         }
 
         if (need_vega) {
+            // Same `ref` re-check on every bump-state solve as the put kernel above —
+            // see the comment there for what the stale-boundary path would price.
             // sigma+ boundary (rate = q, yield = r, sigma+).
             solve_put_boundary_pack_avx2(Sl, Sl, Tl, sig_p, ql, rl, m, sch, sc.bnd, sc.ws, pk, elig, ref);
             for (std::size_t l = 0; l < m; ++l) {
                 lane_ok[l] = lane_ok[l] && elig[l];
+            }
+            if (ref < 0) {
+                continue; // refused bump solve: `pk` still holds the BASE boundary
             }
             _mm256_store_pd(vvp, price_call_stencil(pk, 0.0));
             _mm256_store_pd(vSpVp, price_call_stencil(pk, +1.0));
@@ -385,6 +413,9 @@ void american_call_greeks_batch_avx2(const double* S, const double* K, const dou
             solve_put_boundary_pack_avx2(Sl, Sl, Tl, sig_m, ql, rl, m, sch, sc.bnd, sc.ws, pk, elig, ref);
             for (std::size_t l = 0; l < m; ++l) {
                 lane_ok[l] = lane_ok[l] && elig[l];
+            }
+            if (ref < 0) {
+                continue; // refused bump solve: `pk` still holds the BASE boundary
             }
             _mm256_store_pd(vvm, price_call_stencil(pk, 0.0));
             _mm256_store_pd(vSpVm, price_call_stencil(pk, +1.0));
@@ -397,12 +428,18 @@ void american_call_greeks_batch_avx2(const double* S, const double* K, const dou
             for (std::size_t l = 0; l < m; ++l) {
                 lane_ok[l] = lane_ok[l] && elig[l];
             }
+            if (ref < 0) {
+                continue; // refused bump solve: `pk` still holds the BASE boundary
+            }
             _mm256_store_pd(vrp, price_call_stencil(pk, 0.0));
 
             // r- boundary: internal yield = r - hr.
             solve_put_boundary_pack_avx2(Sl, Sl, Tl, sigl, ql, yld_m, m, sch, sc.bnd, sc.ws, pk, elig, ref);
             for (std::size_t l = 0; l < m; ++l) {
                 lane_ok[l] = lane_ok[l] && elig[l];
+            }
+            if (ref < 0) {
+                continue; // refused bump solve: `pk` still holds the BASE boundary
             }
             _mm256_store_pd(vrm, price_call_stencil(pk, 0.0));
         }
