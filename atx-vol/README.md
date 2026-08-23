@@ -956,6 +956,7 @@ current tree.
 |---|---|---|---|
 | **Tier-A** | exactly the headers `atx/vol/api/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
 | **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 20 | Public and supported to include; **not** frozen |
+| `alpha/` | `include/atx/vol/alpha/` — a SECOND public include root, header-only | 7 | Public, installed, outside the freeze and outside the umbrella. L7-T1 (2026-08-23) added the install rule and this row; until then the root sat on the target's public `BUILD_INTERFACE` and was shipped by nothing, so it compiled in-tree and was a hard `#include` failure downstream |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 12 | Run orchestration. Not part of the shipped library surface |
 

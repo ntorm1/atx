@@ -5,6 +5,84 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### FIXED — `include/atx/vol/alpha/` is a public include root that nothing installed
+
+Seven headers — `spec.hpp`, `registry.hpp`, `schema.hpp`, `frame.hpp`,
+`compute.hpp`, `strategy.hpp`, `audit.hpp` — sat on the atx-vol target's public
+`BUILD_INTERFACE` (`atx-vol/CMakeLists.txt` puts the whole `include/` root there
+and `include` on the `INSTALL_INTERFACE`) while `cmake/atx-vol-install.cmake`
+shipped only the `api/` subtree. In tree they resolved; from an install prefix
+`#include "atx/vol/alpha/registry.hpp"` was a hard `file not found`. No in-tree
+test could see it, because in-tree is the configuration where it works.
+
+**Chosen: ship it, as its own tier.** The layer is header-only, its whole
+non-STL closure is `atx/core/error.hpp` plus its own siblings (all already
+installed), and two SHIPPED executables — `atx-vol-alpha-audit` and
+`atx-vol-longvega` — are built on it. A layer whose CLIs ship is a product
+surface; demoting it to `src/alpha/` would have meant rewriting four first-party
+consumers to hide a directory the build already published. It is Tier-B: public,
+installed, outside the v1 freeze, and deliberately still outside the umbrella.
+
+**Migration:** none for existing code. Downstream consumers that previously
+could not include the layer now can.
+
+The manifest in `include/atx/vol/api/vol.hpp` and the tier table in
+`atx-vol/README.md` both gained the root — they had never mentioned it. Both are
+now derived rather than asserted: `VolUmbrella.EveryPublicIncludeRootShipsAndIsDeclared`
+walks the immediate subdirectories of `include/atx/vol/` and requires each to
+appear in an `install(DIRECTORY ...)` call (comments stripped — the prose above
+each rule otherwise satisfies a raw substring search) and in the umbrella's tier
+manifest. The out-of-tree consumer `atx-vol/test-package/smoke.cpp` now includes
+`alpha/registry.hpp` and names `builtin_features()`, so the packaging gate fails
+to COMPILE if the install rule is dropped again.
+
+### NEW — risk buckets across the smile: `ByLogMoneyness` and `ByDelta`
+
+`RiskBucketKey` had exactly two enumerators, `ByUnderlier` and `ByExpiry`, so
+the library could not answer the single most-used cut on an equity vol book:
+where the vega sits across the strike axis. `DerivPriceFrame::vega_by_tenor` on
+the swap book was the only strike-free ladder anywhere. Two enumerators join it,
+plus `RiskBucketLadder` (edges, and per-underlier reference forwards for the
+moneyness axis), `RiskBucketForward`, `kRiskBucketUnkeyed`, the two shipped
+defaults `default_log_moneyness_ladder()` / `default_delta_ladder()`, and a
+five-argument `reduce_risk_buckets` overload taking the ladder.
+
+`ByLogMoneyness` bands `k = ln(K / F(uid))`; `ByDelta` bands the PER-SHARE delta,
+recovered as `frame.delta[i] / (qty * multiplier)` because the frame's Greek
+columns are position-scaled. The forwards live in the ladder because `Portfolio`
+carries `(K, T)` and no forward, and this reduction deliberately holds no
+surface. A lane the ladder cannot place — no forward for its uid, zero-weight
+lot, non-finite delta — is BUCKETED under `kRiskBucketUnkeyed` (sorts last),
+never dropped, so `sum_k bucket[k].totals.n_ok` still equals the frame's Ok-lane
+count. `ByDelta` over a marks-only frame is `InvalidArgument`, not a book-wide
+unkeyed bucket: "no delta was computed" and "this position has no delta" are
+different facts.
+
+**No existing number moves.** The four-argument overload forwards to the new one
+with an empty ladder, so `ByUnderlier` / `ByExpiry` are bit-identical; a laddered
+key through it is `InvalidArgument` rather than an invented single-band ladder.
+Keying stays a pure function of `(contract, ladder)` with accumulation in fixed
+input order, so the laddered buckets are thread-count invariant for exactly the
+reason the original two were. `reduce_pnl_risk_buckets` refuses the new keys —
+`PnlFrame` carries neither a forward nor a base-frame delta.
+
+### FIXED — `PriceTotals::abs_vega` was declared per bucket and never assigned
+
+`reduce_risk_buckets` returned NaN for `abs_vega` in every bucket and in `grand`,
+for a field the header documents as the gross companion to the signed `vega`.
+It now sums `|vega|` over the same lanes in the same input order, opening its
+accumulator exactly where `reduce_price_totals` opens its own — so it stays NaN
+(never a false 0.0) under a marks-only frame, and `grand.abs_vega` is the
+bit-exact ordered sum of the bucket subtotals like every other column.
+
+This matters most on the books the reduction exists for: a vega-neutral
+dispersion book drives the SIGNED sum to a cancellation residual by
+construction, so any per-bucket statistic normalised by "the book's vega
+exposure" must divide by the gross number. Every caller found was already
+consuming the whole-book `abs_vega` that `reduce_price_totals` populates
+(`src/backtest/tearsheet.cpp` gross-vega return, `src/backtest/backtest.cpp`'s
+`gross_vega_abs` series); none had a bucket-level source until now.
+
 ### CHANGED — a Risk-purpose preset now requests the MARK too, and `fit_board` serves it when the risk oracle refuses
 
 **The number that moves.** A populate run over the full 2026-08-21 OPRA universe

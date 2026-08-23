@@ -97,6 +97,16 @@
 //           (batch.hpp, american_batch.hpp, api/simd/), the listed-dispersion
 //           domain vocabulary, OPRA hive/batch loaders, harness panels and
 //           fixtures, and the earnings-reproduction harness.
+//   alpha   include/atx/vol/alpha/*.hpp — a SECOND public include root, also
+//           Tier-B and also outside the freeze: the header-only alpha layer
+//           (spec / registry / schema / frame / compute / strategy / audit)
+//           behind the atx-vol-alpha-audit and atx-vol-longvega CLIs. It is
+//           NOT under api/ and is deliberately NOT in the umbrella, but it IS
+//           installed (cmake/atx-vol-install.cmake) and therefore reachable
+//           out of tree. L7-T1, 2026-08-23: this entry exists because the
+//           layer had been on the public BUILD_INTERFACE include path with no
+//           install rule at all, so it compiled in-tree and was a hard
+//           `file not found` downstream while this manifest said nothing.
 //   private src/<module>/ — internal machinery: no include/ path, no
 //           stability promise, not installed. This is where the per-family
 //           calibrators live now (svi_calib.hpp, essvi_calib.hpp, cstar.hpp,
@@ -111,8 +121,9 @@
 //           opra_fixture, spy_fit_fixture and breadth_fit_fixture.
 //
 // Consumers should only ever include from api/ — the module headers above and
-// this umbrella. Nothing under src/, tools/, research/ or tests/support/ is a
-// stable, or even reachable, public entry point.
+// this umbrella — or, for the alpha layer, from alpha/. Nothing under src/,
+// tools/, research/ or tests/support/ is a stable, or even reachable, public
+// entry point.
 //
 // ── Coordinate + pricing conventions (used everywhere in the library) ──────────
 //

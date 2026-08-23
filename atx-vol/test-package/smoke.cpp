@@ -22,6 +22,17 @@
 //      module's static-library slice fails at link time, not just parse time;
 //   4. the library is deterministic: the driver script runs this binary twice
 //      and byte-compares stdout.
+//   5. L7-T1: the alpha layer is REACHABLE out of tree. include/atx/vol/alpha/
+//      is a second public include root -- it sits on the target's public
+//      BUILD_INTERFACE and two shipped CLIs are built on it -- but nothing
+//      installed it, so `#include "atx/vol/alpha/registry.hpp"` compiled for
+//      every in-tree consumer and was a hard `file not found` for every
+//      downstream one. The include below is the only place that distinction is
+//      observable, because in-tree is exactly the configuration where the bug
+//      does not reproduce. It is header-only, so a NAMED SYMBOL is what proves
+//      it (there is no object to link): the registry's built-in catalogue is
+//      constructed and its size printed, which also makes the header's
+//      constant-initialisation part of the determinism byte-compare.
 //
 // Output is fixed-precision on purpose (%.12f): a run-to-run diff has to be a
 // real numeric change, not a formatting artefact.
@@ -29,6 +40,7 @@
 #include <cstdio>
 #include <string>
 
+#include "atx/vol/alpha/registry.hpp"
 #include "atx/vol/api/core/version.hpp"
 #include "atx/vol/api/fitting/session.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
@@ -88,6 +100,15 @@ int main() {
   check(version == atx::vol::kVersionString,
         "version() disagrees with the header-declared kVersionString");
   std::printf("atx_vol_version %s\n", version.c_str());
+
+  // -- alpha/registry.hpp (L7-T1): the second public include root, header-only.
+  //    Building the built-in catalogue names a symbol from it, so a prefix that
+  //    ships api/ but not alpha/ fails to COMPILE here rather than passing on a
+  //    surface no consumer can reach. The count is printed so the determinism
+  //    byte-compare covers the catalogue too.
+  const atx::vol::alpha::FeatureRegistry features = atx::vol::alpha::builtin_features();
+  check(features.size() > 0, "the alpha built-in feature catalogue is empty");
+  std::printf("alpha_features  %zu\n", features.size());
 
   if (failures != 0) {
     std::printf("SMOKE FAILED (%d)\n", failures);

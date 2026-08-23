@@ -634,6 +634,89 @@ TEST(VolUmbrella, DemotedSurfaceContainersAreNotNamedInPublicHeaders) {
       << std::size(kTierA) << " Tier-A + " << tier_b_row.value << " Tier-B + vol.hpp";
 }
 
+// ── L7-T1: every public include root must SHIP, and must be DECLARED ─────────
+//
+// The tests above all read the source tree. None of them read the packaging, and
+// that is precisely where the surface had come apart: atx-vol/CMakeLists.txt puts
+// the WHOLE `include/` directory on the target's `BUILD_INTERFACE` and `include`
+// on its `INSTALL_INTERFACE`, while cmake/atx-vol-install.cmake shipped only the
+// `api/` subtree. So `include/atx/vol/alpha/` -- seven headers, two shipped CLIs
+// built on them, its own ctest lane -- compiled for every in-tree consumer and
+// was a hard `#include` failure for every downstream one. No in-tree test could
+// see it, because in-tree is the configuration where it works.
+//
+// Two properties, one walk, and both derived from the directory listing rather
+// than from a list a human keeps: each immediate subdirectory of
+// include/atx/vol/ must (1) appear as an install(DIRECTORY ...) source in
+// cmake/atx-vol-install.cmake, so the package ships it, and (2) be named in
+// vol.hpp's tier manifest, so the one document a consumer actually reads admits
+// it exists. Adding an eighth module under api/ does not trip this (api/ itself
+// is the installed root); adding a NEW root beside api/ and alpha/ does, which
+// is the mistake this catches.
+
+// Drop every whole-line `#` comment from a CMake source. Line-granular on
+// purpose: CMake has no block comment worth handling here, and a trailing `#`
+// inside a quoted argument (a path fragment, say) must NOT be treated as one.
+[[nodiscard]] std::string strip_cmake_comments(const std::string& text) {
+  std::string out;
+  out.reserve(text.size());
+  std::istringstream in{text};
+  std::string line;
+  while (std::getline(in, line)) {
+    const std::size_t first = line.find_first_not_of(" \t");
+    if (first != std::string::npos && line[first] == '#') continue;
+    out += line;
+    out += '\n';
+  }
+  return out;
+}
+
+TEST(VolUmbrella, EveryPublicIncludeRootShipsAndIsDeclared) {
+  const fs::path vol_root = include_root() / "atx" / "vol";
+  ASSERT_TRUE(fs::is_directory(vol_root)) << vol_root.string();
+
+  // COMMENTS STRIPPED, and that is load-bearing rather than tidiness: the
+  // install file documents each rule in prose directly above it, so a raw
+  // substring search is satisfied by the comment that EXPLAINS the install call
+  // even after the call itself is deleted. (Verified: removing the alpha/
+  // install(DIRECTORY) line left this test green until this strip was added.)
+  // vol.hpp gets no such treatment — its tier manifest IS a comment block.
+  const std::string install_text = strip_cmake_comments(read_file(fs::path{ATX_VOL_INSTALL_CMAKE}));
+  ASSERT_FALSE(install_text.empty()) << ATX_VOL_INSTALL_CMAKE;
+  ASSERT_NE(install_text.find("install(DIRECTORY"), std::string::npos)
+      << "stripping comments left no install(DIRECTORY ...) call at all, so this "
+         "test would pass vacuously";
+  const std::string manifest_text = read_file(umbrella_path());
+  ASSERT_FALSE(manifest_text.empty()) << umbrella_path().string();
+
+  std::size_t roots_seen = 0;
+  for (const fs::directory_entry& entry : fs::directory_iterator(vol_root)) {
+    if (!entry.is_directory()) continue;
+    ++roots_seen;
+    const std::string name = entry.path().filename().string();
+    // The exact spelling both files use for a public include root. Matching the
+    // full path rather than the bare directory name keeps an unrelated mention
+    // of the word (a comment about `alpha` the concept, say) from passing.
+    const std::string needle = "include/atx/vol/" + name + "/";
+    EXPECT_NE(install_text.find(needle), std::string::npos)
+        << "include/atx/vol/" << name << "/ is on the public BUILD_INTERFACE but "
+        << "cmake/atx-vol-install.cmake never installs it, so it is unreachable "
+        << "for every consumer of the installed package. Either add an "
+        << "install(DIRECTORY \"" << needle << "\" ...) call or move the "
+        << "directory under src/ where it carries no public-path promise.";
+    EXPECT_NE(manifest_text.find(needle), std::string::npos)
+        << "include/atx/vol/" << name << "/ ships but the tier manifest in "
+        << "api/vol.hpp does not mention it. The manifest is the one document a "
+        << "consumer reads to learn what is public; a shipped root missing from "
+        << "it is a surface nobody can find.";
+  }
+  // A directory_iterator over a path that exists but is empty yields nothing and
+  // would pass vacuously, which is the same class of defect this whole test is
+  // about. api/ and alpha/ are both present at the time of writing.
+  EXPECT_GE(roots_seen, 2u) << "found only " << roots_seen
+                            << " include roots under " << vol_root.string();
+}
+
 // ── No second way to resolve a fixture path ─────────────────────────────────
 //
 // FRI-072 retired six hand-pasted relative "ladders" onto testkit::test_paths.
