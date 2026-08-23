@@ -115,7 +115,25 @@ test('the two workflows carry byte-identical copies of iterationCommandError', (
 
 test('frozen numeric contracts have not drifted', () => {
   assert.equal(O.REGRESSION_BOUND_MULTIPLIER, 1.01)
-  assert.equal(O.ORACLE_BENCH_TEST_COUNT, 53)
+  // Deliberately a BARE LITERAL, not derived: this test's whole job is to make
+  // ORACLE_BENCH_TEST_COUNT unmovable without a human editing this line, so
+  // recomputing it from the workflow (or from the gate registry the next
+  // assertion already cross-checks) would delete the review step. The message
+  // names WHAT last moved it so the reviewer can tell an intended widening from
+  // a case someone deleted to make a red suite go green.
+  //   49 -> 53  ca493cfe  Mode B, five raw-NBBO cases
+  //   53 -> 57  6950132f  Mode B European leg (iter-002), four cases:
+  //                       EuropeanRowsInvertAgainstTheEuropeanLeg,
+  //                       RefusesAEuropeanMidAtTheDiscountedForwardIntrinsic,
+  //                       DeepItmEuropeanPutBelowIntrinsicStillInverts,
+  //                       AmericanRowsKeepTheAmericanBoundsAndInverter
+  assert.equal(O.ORACLE_BENCH_TEST_COUNT, 57,
+    'ORACLE_BENCH_TEST_COUNT drifted. It is 57 because 6950132f pinned the four OracleBenchModeB European-leg ' +
+    'cases (iter-002) on top of the 53 that ca493cfe left. Adding or removing an OracleBench gtest case moves ' +
+    'FOUR definition sites in one commit: the TEST() macros in atx-vol/tests/oracle_bench_test.cpp, ' +
+    '$script:OracleBenchTestIds in scripts/oracle-targeted-gate.ps1, the mode_b_targeted_tests ' +
+    'PASS_REGULAR_EXPRESSION in atx-vol/tests/CMakeLists.txt, and ORACLE_BENCH_TEST_COUNT in ' +
+    '.claude/workflows/vol-oracle-iter.js. Update this literal only after confirming the case list moved on purpose.')
   const gate = read('scripts/oracle-targeted-gate.ps1')
   const open = gate.indexOf('@(', gate.indexOf('$script:OracleBenchTestIds'))
   assert.ok(open > 0, '$script:OracleBenchTestIds is missing')

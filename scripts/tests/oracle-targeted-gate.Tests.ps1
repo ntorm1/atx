@@ -2,6 +2,64 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $scriptPath = Join-Path (Split-Path -Parent $here) 'oracle-targeted-gate.ps1'
 . $scriptPath
 
+# ── fixtures READ BACK from the definitions they mirror ──────────────────────
+#
+# Every expectation below used to be a bare literal restated here, and all three
+# of them went stale at once (31 vs 57 bench cases, 18 vs 25 convention cases, 8
+# vs 48 candidates) because nothing linked a number to the thing it described.
+# These read the definition instead, and the cross-checks are deliberately
+# ACROSS languages: the gtest ids come from the C++ that ctest actually runs and
+# are compared to the PowerShell registry, and the candidate axes come from the
+# PowerShell gate and are compared to the C++ grid. Neither side can be widened
+# alone without failing here.
+
+# The gtest ids a source file declares, as 'Suite.Case'.
+function Get-GtestIdsFromSource([string]$RelativePath) {
+  $source = [System.IO.File]::ReadAllText((Join-Path $script:OracleRepoRoot $RelativePath))
+  $found = [regex]::Matches($source, '(?m)^TEST(?:_F)?\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)')
+  if ($found.Count -eq 0) { throw ('no TEST() macros found in ' + $RelativePath) }
+  return @($found | ForEach-Object { $_.Groups[1].Value + '.' + $_.Groups[2].Value })
+}
+$script:OracleBenchGtestIds = Get-GtestIdsFromSource 'atx-vol\tests\oracle_bench_test.cpp'
+$script:OracleConventionGtestIds = Get-GtestIdsFromSource 'atx-vol\tests\oracle_conventions_test.cpp'
+
+# One axis-domain array out of the gate's own `$expectedCandidateIds` block.
+# Parsed rather than restated because the gate keeps these three arrays as
+# function-local literals, so there is nothing to dot-source.
+function Get-OracleGateAxisDomain([string]$Variable) {
+  $source = [System.IO.File]::ReadAllText($scriptPath)
+  $match = [regex]::Match($source, '(?m)^\s*\$' + $Variable + '\s*=\s*@\(([^)]*)\)')
+  if (-not $match.Success) { throw ('scripts/oracle-targeted-gate.ps1 no longer defines $' + $Variable) }
+  return @([regex]::Matches($match.Groups[1].Value, "'([a-z0-9_]+)'") | ForEach-Object { $_.Groups[1].Value })
+}
+$script:GateInputModels = Get-OracleGateAxisDomain 'candidateInputModels'
+$script:GateExerciseStyles = Get-OracleGateAxisDomain 'candidateExerciseStyles'
+$script:GateTimeDecayMethods = Get-OracleGateAxisDomain 'candidateTimeDecayMethods'
+# Crossed in the gate's OWN nesting order (model -> style -> method), so the
+# fixture is model-major exactly like a real receipt and the first
+# $script:GateFinalistCount entries really are the tied fans of the top two
+# input models rather than an arbitrary prefix.
+$script:GateCandidateIds = @(foreach ($model in $script:GateInputModels) {
+  foreach ($style in $script:GateExerciseStyles) {
+    foreach ($method in $script:GateTimeDecayMethods) { $model + '|' + $style + '|' + $method }
+  }
+})
+$script:GateFinalistCount = 2 * $script:GateExerciseStyles.Count * $script:GateTimeDecayMethods.Count
+
+# The AUTHORITY for the grid: the three static_assert-guarded std::array sizes in
+# atx-vol/tools/oracle_convention_sweep.cpp (kInputModels / kExerciseStyleRules /
+# kTimeDecayMethods). The C++ static_asserts already pin each array to its enum,
+# so the declared size is the enum cardinality.
+function Get-SweepAxisSize([string]$Source, [string]$Type, [string]$Name) {
+  $match = [regex]::Match($Source, 'std::array<\s*' + $Type + '\s*,\s*(\d+)\s*>\s*' + $Name + '\b')
+  if (-not $match.Success) { throw ('atx-vol/tools/oracle_convention_sweep.cpp no longer declares ' + $Name) }
+  return [int]$match.Groups[1].Value
+}
+$script:SweepSource = [System.IO.File]::ReadAllText((Join-Path $script:OracleRepoRoot 'atx-vol\tools\oracle_convention_sweep.cpp'))
+$script:SweepInputModelCount = Get-SweepAxisSize $script:SweepSource 'InputModel' 'kInputModels'
+$script:SweepExerciseStyleCount = Get-SweepAxisSize $script:SweepSource 'ExerciseStyleRule' 'kExerciseStyleRules'
+$script:SweepTimeDecayMethodCount = Get-SweepAxisSize $script:SweepSource 'TimeDecayMethod' 'kTimeDecayMethods'
+
 function New-ModeAScorecardJson([string]$Sha, [string]$OmitMetric = '') {
   $cells = [ordered]@{}
   foreach ($metric in @($script:ModeAMetricMap.Keys)) {
@@ -30,7 +88,7 @@ function New-OracleBenchCtestLines([string[]]$TestIds) {
   return $lines
 }
 
-function New-ConventionSweepJson([string]$Sha, [string]$ProductionDayCount = '', [long]$BaselineCountOverride = 0, [string]$RegressMetric = '', [string[]]$RegressedGreeks = @(), [string]$RegressSymmetricMetric = '', [double]$SymmetricRegressionFraction = 0.0, [switch]$OmitAcceptedRegression) {
+function New-ConventionSweepJson([string]$Sha, [string]$ProductionDayCount = '', [long]$BaselineCountOverride = 0, [string]$RegressMetric = '', [string[]]$RegressedGreeks = @(), [string]$RegressSymmetricMetric = '', [double]$SymmetricRegressionFraction = 0.0, [switch]$OmitAcceptedRegression, [switch]$DropOneCandidate, [string]$SubstituteCandidateId = '') {
   $map = [ordered]@{
     input_model = 'discrete_forward_pv__rate__sdiv_yield'; forward_formula = 'uprc_exp_rate_t_minus_ddiv'; rate_model = 'continuous_row_rate'; carry_model = 'sdiv_as_yield'; dividend_model = 'discrete_cash_forward'; day_count = 'ACT_365_25'; dte_banding_day_count = 'ACT_365F'
     price_scale = 'per_share'; price_sign = 'positive'; vol_scale = 'decimal_identity'; delta_scale = 'per_unit'; delta_sign = 'positive'; gamma_scale = 'per_unit'; gamma_sign = 'positive'
@@ -46,8 +104,15 @@ function New-ConventionSweepJson([string]$Sha, [string]$ProductionDayCount = '',
   $symmetric = @($metrics | ForEach-Object { [ordered]@{ metric_id = $_.metric_id; value = 1.0; count = 100; selection_count = 90; unit = $_.unit } })
   $baselineSymmetric = @($metrics | ForEach-Object { [ordered]@{ metric_id = $_.metric_id; value = 2.0; count = 100; selection_count = 90; unit = $_.unit } })
   $symmetricDeltas = @($metrics | ForEach-Object { [ordered]@{ metric_id = $_.metric_id; candidate = 1.0; baseline = 2.0; delta = -1.0; count = 100; unit = $_.unit } })
-  $ids = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
-  $candidates = @(for ($i = 0; $i -lt $ids.Count; $i++) { [ordered]@{ candidate_id = $ids[$i]; smoke_price_mae_ticks = 1.0 + $i; smoke_count = 50; tune_sample_price_mae_ticks = if ($i -lt 2) { 2.0 + $i } else { 0.0 }; tune_sample_count = if ($i -lt 2) { 20 } else { 0 } } })
+  # The CLOSED three-axis registry the gate pins, read back out of the gate's own
+  # axis literals (see the header block) instead of restated here as an id list
+  # that silently narrowed the search the day an axis was added. The finalists
+  # are the leading $script:GateFinalistCount entries, which in model-major order
+  # are exactly the full tied fans of the top two input models.
+  $ids = @($script:GateCandidateIds)
+  if ($DropOneCandidate) { $ids = @($ids | Select-Object -First ($ids.Count - 1)) }
+  $candidates = @(for ($i = 0; $i -lt $ids.Count; $i++) { [ordered]@{ candidate_id = $ids[$i]; smoke_price_mae_ticks = 1.0 + $i; smoke_count = 50; tune_sample_price_mae_ticks = if ($i -lt $script:GateFinalistCount) { 2.0 + $i } else { 0.0 }; tune_sample_count = if ($i -lt $script:GateFinalistCount) { 20 } else { 0 } } })
+  if ($SubstituteCandidateId) { $candidates[0].candidate_id = $SubstituteCandidateId }
   if ($BaselineCountOverride -gt 0) { foreach ($metric in $baseline) { $metric.count = $BaselineCountOverride } }
   # A STANDARD-relative floor worse than its baseline. This is no longer a gate
   # failure: the reported array stays comparable to the charter target but is not
@@ -108,9 +173,15 @@ Describe 'oracle targeted gate production adapter' {
     $result.status | Should Be 'PASS'
     $result.command_id | Should Be 'mode_a_targeted_tests'
     $result.gate_kind | Should Be 'ctest'
-    $script:captured.ExpectedTestIds.Count | Should Be 31
-    $result.tests_executed | Should Be 31
-    $result.tests_passed | Should Be 31
+    # The registry is pinned against the gtest SOURCE, not against itself: a
+    # TEST(OracleBench*, ...) added, renamed, or deleted in
+    # atx-vol/tests/oracle_bench_test.cpp without the same commit touching
+    # $script:OracleBenchTestIds fails here, which is exactly the drift that left
+    # this fixture asserting 31 against a 57-case suite.
+    (Test-OracleExactStringSet @($script:captured.ExpectedTestIds) $script:OracleBenchGtestIds) | Should Be $true
+    $script:captured.ExpectedTestIds.Count | Should Be $script:OracleBenchGtestIds.Count
+    $result.tests_executed | Should Be $script:OracleBenchGtestIds.Count
+    $result.tests_passed | Should Be $script:OracleBenchGtestIds.Count
     $result.tested_sha | Should Match '^[0-9a-f]{40}$'
     $result.tested_tree | Should Match '^[0-9a-f]{40}$'
     $result.raw_output_sha256 | Should Match '^[0-9a-f]{64}$'
@@ -131,7 +202,11 @@ Describe 'oracle targeted gate production adapter' {
   }
 
   It 'rejects both count drift and same-count test-name substitution' {
-    $tooFew = @($script:OracleBenchTestIds | Select-Object -First 30)
+    # Exactly one short, derived rather than a literal 30 that only happens to
+    # be under the real count: an off-by-one is the count drift most likely to
+    # slip through, and it is the one a fixed prefix stops testing as the suite
+    # grows.
+    $tooFew = @($script:OracleBenchTestIds | Select-Object -First ($script:OracleBenchTestIds.Count - 1))
     { Invoke-OracleTargetedGate 'mode_a_targeted_tests' {
         [pscustomobject]@{ ExitCode = 0; Lines = @(New-OracleBenchCtestLines $tooFew) }
       } } | Should Throw
@@ -192,7 +267,9 @@ Describe 'oracle targeted gate production adapter' {
     $tests = Get-OracleTargetedGateSpec 'convention_tests' $identity
     ($tests.PrepareArguments -join ' ') | Should Match 'build atx-vol-oracle-convention-tests --parallel 2$'
     ($tests.Arguments -join ' ') | Should Match '-Ctest -R \^OracleConvention\\\. --no-tests=error'
-    $tests.ExpectedTestIds.Count | Should Be 18
+    # Same source-of-truth pin as the OracleBench registry above.
+    (Test-OracleExactStringSet @($tests.ExpectedTestIds) $script:OracleConventionGtestIds) | Should Be $true
+    $tests.ExpectedTestIds.Count | Should Be $script:OracleConventionGtestIds.Count
     @($tests.ExpectedTestIds | Where-Object { $_ -notmatch '^OracleConvention\.[A-Za-z0-9_]+$' }).Count | Should Be 0
     $sweep = Get-OracleTargetedGateSpec 'mode_a_smoke_tune' $identity
     ($sweep.PrepareArguments -join ' ') | Should Match 'build atx-vol-oracle-bench --parallel 2$'
@@ -205,7 +282,7 @@ Describe 'oracle targeted gate production adapter' {
     $floor.OutputPath | Should Be $sweep.OutputPath
   }
 
-  It 'emits all eleven convention floors, deltas, the complete map, and eight bounded candidates' {
+  It 'emits all eleven convention floors, deltas, the complete map, and the whole bounded candidate grid' {
     $identity = Get-OracleGitIdentity
     $result = Invoke-OracleTargetedGate 'mode_a_smoke_tune' {
       [pscustomobject]@{ ExitCode = 0; Lines = @('closed convention sweep completed'); ScorecardJson = (New-ConventionSweepJson $identity.Sha) }
@@ -214,11 +291,50 @@ Describe 'oracle targeted gate production adapter' {
     $result.rows_processed | Should Be 100
     $result.metrics.Count | Should Be 11
     $result.metric_deltas.Count | Should Be 11
-    $result.candidate_prices.Count | Should Be 8
+    # The whole grid reaches the receipt: the gate must publish every candidate
+    # it validated, not a truncated or de-duplicated prefix of them.
+    $result.candidate_prices.Count | Should Be $script:GateCandidateIds.Count
+    (Test-OracleExactStringSet @($result.candidate_prices.candidate_id) $script:GateCandidateIds) | Should Be $true
+    @($result.candidate_prices | Where-Object { [long]$_.tune_sample_count -gt 0 }).Count | Should Be $script:GateFinalistCount
     (Test-OracleConventionMap $result.conventions) | Should Be $true
     (Test-OracleConventionMap $result.production_conventions) | Should Be $true
     $result.metrics[0].selection_count | Should Be 90
     @($result.input_model_regressed_greeks).Count | Should Be 0
+  }
+
+  It 'pins the gate candidate registry to the C++ sweep grid it must move with' {
+    # The RECORDED TRAP the gate names at $expectedCandidateIds: that id set and
+    # the kInputModels / kExerciseStyleRules / kTimeDecayMethods arrays in
+    # atx-vol/tools/oracle_convention_sweep.cpp must move in ONE commit, or a
+    # gate run spends a whole 12-minute sweep before failing on a registry
+    # mismatch. Both sides are read from source, so widening either alone fails
+    # here in milliseconds instead.
+    $script:GateInputModels.Count | Should Be $script:SweepInputModelCount
+    $script:GateExerciseStyles.Count | Should Be $script:SweepExerciseStyleCount
+    $script:GateTimeDecayMethods.Count | Should Be $script:SweepTimeDecayMethodCount
+    $script:GateCandidateIds.Count | Should Be ($script:SweepInputModelCount * $script:SweepExerciseStyleCount * $script:SweepTimeDecayMethodCount)
+    # kFinalistCount = 2 * kTiedArmsPerInputModel: a whole multiple of one tied
+    # block, never two candidates overall.
+    $script:GateFinalistCount | Should Be (2 * $script:SweepExerciseStyleCount * $script:SweepTimeDecayMethodCount)
+    ($script:GateFinalistCount % ($script:SweepExerciseStyleCount * $script:SweepTimeDecayMethodCount)) | Should Be 0
+    # candidate_id is '<input_model>|<exercise_style>|<time_decay_method>' —
+    # three fields, two separators — and every point of the grid is distinct.
+    @($script:GateCandidateIds | Where-Object { @($_.Split('|')).Count -ne 3 }).Count | Should Be 0
+    @($script:GateCandidateIds | Select-Object -Unique).Count | Should Be $script:GateCandidateIds.Count
+  }
+
+  It 'rejects candidate registry count drift and same-count id substitution' {
+    # The happy-path fixture now DERIVES its id list from the gate, so the
+    # gate's own registry check would go unexercised without these two. Same
+    # pair the OracleBench registry gets: one short, and one the right length
+    # with a member the grid does not contain.
+    $identity = Get-OracleGitIdentity
+    { Invoke-OracleTargetedGate 'mode_a_smoke_tune' {
+        [pscustomobject]@{ ExitCode = 0; Lines = @('closed convention sweep completed'); ScorecardJson = (New-ConventionSweepJson $identity.Sha -DropOneCandidate) }
+      } } | Should Throw
+    { Invoke-OracleTargetedGate 'mode_a_smoke_tune' {
+        [pscustomobject]@{ ExitCode = 0; Lines = @('closed convention sweep completed'); ScorecardJson = (New-ConventionSweepJson $identity.Sha -SubstituteCandidateId 'uprc_spot__rate__sdiv_yield|american_all|secant_504') }
+      } } | Should Throw
   }
 
   It 'carries the selected input model greek regressions into the typed receipt' {
