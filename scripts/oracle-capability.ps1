@@ -40,7 +40,13 @@ $regressionBoundMultiplier = 1.01
 # exact id SET rather than a count). Adding or widening an axis while any one of
 # them lags does not fail loudly at the axis — it rejects a perfectly good
 # receipt later, at whichever layer was missed.
-$script:OracleInputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
+$script:OracleInputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry', 'discrete_dividend_tree__rate__sdiv_yield')
+# The input-model count BEFORE the discrete-dividend-tree arm widened the enum
+# (8 -> 9). The legacy grid rungs below are stated against THIS count, never
+# against $script:OracleInputModelCount: a committed pre-tree receipt carries a
+# 48/24/8-candidate registry, and deriving those rungs from the now-9-wide list
+# would silently turn them into 54/27/9 and reject every one of them.
+$script:OraclePreTreeInputModelCount = 8
 $script:OracleExerciseStyles = @('american_all', 'european_cash_settled_index', 'european_cash_settled_index_plus_empirical')
 $script:OracleTimeDecayMethods = @('analytic_derivative', 'secant_252')
 $script:OracleInputModelCount = $script:OracleInputModels.Count
@@ -51,25 +57,28 @@ $script:OracleTimeDecayMethodCount = $script:OracleTimeDecayMethods.Count
 # how theta and delta decay are REPORTED), so one input model contributes this
 # many candidates the price cut ranks bit-for-bit identically.
 $script:OracleTiedArmsPerInputModel = $script:OracleExerciseStyleCount * $script:OracleTimeDecayMethodCount
-# kCandidateCount = 8 x 3 x 2 = 48 at 635f8bd8.
+# kCandidateCount = 8 x 3 x 2 = 48 at 635f8bd8; 9 x 3 x 2 = 54 since the
+# discrete-dividend-tree input model widened $script:OracleInputModels.
 $script:OracleCandidateCount = $script:OracleInputModelCount * $script:OracleTiedArmsPerInputModel
 # kFinalistCount = 2 x 6 = 12 at 635f8bd8 — the FULL tied fan of the top TWO
 # input models, never two candidates overall, and therefore exactly the number of
 # candidates carrying a positive `tune_sample_count` on a sweep receipt.
 $script:OracleFinalistCount = 2 * $script:OracleTiedArmsPerInputModel
-# The grids this probe accepts, newest first: the CURRENT one, then the two
-# narrower ones it grew from, each written as the same
-# `<input models> x <tied arms>` / `2 x <tied arms>` arithmetic. Unlike the
-# workflow validator — which only ever sees a gate receipt freshly produced at
-# the tested SHA and is therefore pinned to the current grid alone — this probe
-# validates receipts COMMITTED before an axis existed and MUST keep reporting
+# The grids this probe accepts, newest first: the CURRENT one, then the three
+# narrower ones it grew from. Unlike the workflow validator — which only ever
+# sees a gate receipt freshly produced at the tested SHA and is therefore
+# pinned to the current grid alone — this probe validates receipts COMMITTED
+# before an axis (or the ninth input model) existed and MUST keep reporting
 # them valid, for exactly the reason Test-ConventionMap keeps `exercise_style`
-# and `time_decay_method` optional. Retiring a rung here means regenerating the
-# committed bootstrap receipts in the same commit.
+# and `time_decay_method` optional. The legacy rungs are stated against the
+# PRE-TREE input-model count on purpose — see $script:OraclePreTreeInputModelCount.
+# Retiring a rung here means regenerating the committed bootstrap receipts in
+# the same commit.
 $script:OracleAcceptedCandidateGrids = @(
   @{ Candidates = $script:OracleCandidateCount; Finalists = $script:OracleFinalistCount },
-  @{ Candidates = $script:OracleInputModelCount * $script:OracleExerciseStyleCount; Finalists = 2 * $script:OracleExerciseStyleCount },
-  @{ Candidates = $script:OracleInputModelCount; Finalists = 2 }
+  @{ Candidates = $script:OraclePreTreeInputModelCount * $script:OracleTiedArmsPerInputModel; Finalists = $script:OracleFinalistCount },
+  @{ Candidates = $script:OraclePreTreeInputModelCount * $script:OracleExerciseStyleCount; Finalists = 2 * $script:OracleExerciseStyleCount },
+  @{ Candidates = $script:OraclePreTreeInputModelCount; Finalists = 2 }
 )
 
 function Invoke-GitText([string[]]$GitArgs) {
@@ -382,7 +391,7 @@ function Test-ConventionMap($Map) {
   if (-not (Test-ExactKeys $Map $keys)) { return $false }
   if ($script:OracleInputModels -notcontains $Map.input_model -or @('none', 'uprc_exp_rate_t_minus_ddiv') -notcontains $Map.forward_formula -or
       @('continuous_row_rate', 'continuous_rate_minus_sdiv', 'continuous_rate_plus_sdiv', 'zero') -notcontains $Map.rate_model -or
-      @('sdiv_as_yield', 'zero') -notcontains $Map.carry_model -or @('continuous_yield_only', 'discrete_cash_forward') -notcontains $Map.dividend_model -or
+      @('sdiv_as_yield', 'zero') -notcontains $Map.carry_model -or @('continuous_yield_only', 'discrete_cash_forward', 'discrete_cash_schedule') -notcontains $Map.dividend_model -or
       @('ACT_365F', 'ACT_365_25', 'ACT_360', 'BUS_252') -notcontains $Map.day_count -or
       @('ACT_365F', 'ACT_365_25', 'ACT_360', 'BUS_252') -notcontains $Map.dte_banding_day_count -or
       @('per_share', 'per_contract_100', 'per_share_from_contract') -notcontains $Map.price_scale -or

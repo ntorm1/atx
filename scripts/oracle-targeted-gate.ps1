@@ -98,6 +98,15 @@ $script:OracleBenchTestIds = @(
 # instead of passing a filter that matched nothing.
 $script:OracleConventionTestIds = @(
   'OracleConvention.DiscreteDividendForwardIsAppliedExactly',
+  # The DiscreteDividendTree input-model arm: three cases pin the three
+  # load-bearing facts — the convention layer prices EXACTLY the engine's
+  # nine-greek lattice bundle on the supplied schedule (both exercise legs,
+  # dp_dq = the bundle's phi), a ddiv == 0 row is bit-identical to the
+  # continuous-carry engine (the invariance control that licenses the arm), and
+  # a refused or missing schedule is an Err, never a silent fallback.
+  'OracleConvention.DiscreteDividendTreePricesTheLatticeBundleOnTheSchedule',
+  'OracleConvention.DiscreteDividendTreeWithoutDividendsIsTheContinuousEngine',
+  'OracleConvention.DiscreteDividendTreeFailsClosedOnRefusedOrMissingSchedules',
   # The exercise-style convention axis: which PRICER a row is entitled to.
   # Three cases pin the three load-bearing facts — the European leg is the
   # independent European rung (no American intrinsic floor), each rule routes
@@ -574,13 +583,13 @@ function Test-OracleConventionMap($Map) {
   }
   if (-not (Test-OracleExactKeys $Map $keys)) { return $false }
   foreach ($key in $keys) { if (-not ($Map.$key -is [string]) -or -not $Map.$key) { return $false } }
-  $inputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
+  $inputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry', 'discrete_dividend_tree__rate__sdiv_yield')
   $dayCounts = @('ACT_365F', 'ACT_365_25', 'ACT_360', 'BUS_252')
   if ($inputModels -notcontains $Map.input_model -or
       @('none', 'uprc_exp_rate_t_minus_ddiv') -notcontains $Map.forward_formula -or
       @('continuous_row_rate', 'continuous_rate_minus_sdiv', 'continuous_rate_plus_sdiv', 'zero') -notcontains $Map.rate_model -or
       @('sdiv_as_yield', 'zero') -notcontains $Map.carry_model -or
-      @('continuous_yield_only', 'discrete_cash_forward') -notcontains $Map.dividend_model -or
+      @('continuous_yield_only', 'discrete_cash_forward', 'discrete_cash_schedule') -notcontains $Map.dividend_model -or
       $dayCounts -notcontains $Map.day_count -or $dayCounts -notcontains $Map.dte_banding_day_count -or
       $dayCounts -notcontains $Map.delta_decay_day_count -or
       @('per_share', 'per_contract_100', 'per_share_from_contract') -notcontains $Map.price_scale -or
@@ -666,7 +675,7 @@ function ConvertTo-OracleConventionMapWithExplicitTimeDecayMethod($Map) {
 
 function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$GateId, $Identity, [string]$ExpectedFloorPath) {
   try { $sweep = $ScorecardText | ConvertFrom-Json } catch { throw "oracle targeted gate $GateId sweep is not JSON" }
-  $keys = @('schema_version', 'kind', 'git_sha', 'cohorts', 'selection_strategy', 'smoke_rows', 'tune_rows', 'rows_priced', 'engine_errors', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'accepted_regressions', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed')
+  $keys = @('schema_version', 'kind', 'git_sha', 'cohorts', 'selection_strategy', 'smoke_rows', 'tune_rows', 'rows_priced', 'engine_errors', 'dividend_reconstruction', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'accepted_regressions', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed')
   if (-not (Test-OracleExactKeys $sweep $keys) -or $sweep.schema_version -ne 2 -or $sweep.kind -ne 'convention_sweep' -or
       $sweep.git_sha -ne $Identity.Sha -or -not (Test-OracleExactStringSet @($sweep.cohorts) @('smoke', 'tune')) -or
       -not (Test-OracleNonnegativeInteger $sweep.smoke_rows) -or [long]$sweep.smoke_rows -le 0 -or
@@ -686,6 +695,27 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
   # 1% it priced.
   if (([long]$sweep.smoke_rows + [long]$sweep.tune_rows) -ne ([long]$sweep.rows_priced + [long]$sweep.engine_errors)) {
     throw "oracle targeted gate $GateId sweep row accounting does not close: smoke_rows+tune_rows != rows_priced+engine_errors"
+  }
+  # The dividend-schedule pre-pass ledger: RUN-LEVEL AGGREGATE COUNTS ONLY (the
+  # reconstruction groups are per-snapshot partitions — membership — so any key
+  # beyond these counts is a leak, which the exact-keys checks refuse). The four
+  # per-reason counts must sum to groups_refused: a reason cannot be dropped
+  # from the tally without the sum breaking.
+  $divRec = $sweep.dividend_reconstruction
+  if (-not (Test-OracleExactKeys $divRec @('rows_seen', 'groups_seen', 'groups_refused', 'rows_in_refused_groups', 'refusals'))) { throw "oracle targeted gate $GateId dividend_reconstruction schema mismatch" }
+  foreach ($name in @('rows_seen', 'groups_seen', 'groups_refused', 'rows_in_refused_groups')) {
+    if (-not (Test-OracleNonnegativeInteger $divRec.$name)) { throw "oracle targeted gate $GateId dividend_reconstruction has invalid $name" }
+  }
+  $divReasons = $divRec.refusals
+  if (-not (Test-OracleExactKeys $divReasons @('non_finite_input', 'ambiguous_ddiv_at_expiry', 'non_monotone_ddiv', 'non_positive_jump'))) { throw "oracle targeted gate $GateId dividend_reconstruction refusal schema mismatch" }
+  $divReasonSum = 0L
+  foreach ($name in @('non_finite_input', 'ambiguous_ddiv_at_expiry', 'non_monotone_ddiv', 'non_positive_jump')) {
+    if (-not (Test-OracleNonnegativeInteger $divReasons.$name)) { throw "oracle targeted gate $GateId dividend_reconstruction has invalid refusal $name" }
+    $divReasonSum += [long]$divReasons.$name
+  }
+  if ($divReasonSum -ne [long]$divRec.groups_refused -or [long]$divRec.groups_refused -gt [long]$divRec.groups_seen -or
+      [long]$divRec.rows_in_refused_groups -gt [long]$divRec.rows_seen) {
+    throw "oracle targeted gate $GateId dividend_reconstruction accounting does not close"
   }
   # Fail closed while the pinned production map differs from what the sweep
   # resolved: otherwise a committed floor can describe a map production never
@@ -725,7 +755,7 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
   # every input model crossed with every exercise-style rule crossed with every
   # time-decay method, with candidate_id rendered as
   # '<input_model_id>|<exercise_style_id>|<time_decay_method_id>' (candidate_id_of
-  # in atx-vol/tools/oracle_convention_sweep.cpp; the C++ side pins the same 48
+  # in atx-vol/tools/oracle_convention_sweep.cpp; the C++ side pins the same 54
   # in OracleConvention.SweepIsClosedDeterministicAndCoversElevenMetrics). THAT
   # PAIRING IS A RECORDED TRAP: this set and that C++ pin must move in the SAME
   # commit, or a gate run spends the whole sweep before failing on a registry
@@ -733,7 +763,7 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
   # renamed grid point fails here instead of passing as a silently narrower
   # search. The id domains are the same closed enums Test-OracleConventionMap
   # enforces.
-  $candidateInputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
+  $candidateInputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry', 'discrete_dividend_tree__rate__sdiv_yield')
   $candidateExerciseStyles = @('american_all', 'european_cash_settled_index', 'european_cash_settled_index_plus_empirical')
   $candidateTimeDecayMethods = @('analytic_derivative', 'secant_252')
   $expectedCandidateIds = @(foreach ($model in $candidateInputModels) { foreach ($style in $candidateExerciseStyles) { foreach ($method in $candidateTimeDecayMethods) { $model + '|' + $style + '|' + $method } } })

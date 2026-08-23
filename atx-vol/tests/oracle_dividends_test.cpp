@@ -492,4 +492,50 @@ TEST(OracleDividends, ReconstructedScheduleFeedsTheLatticeAndTheSplitMovesThePri
   EXPECT_NE(*with_merged, *with_split);
 }
 
+// The sweep/bench pre-pass index: one reconstruction per (date, bucket_et,
+// underlier) SNAPSHOT — two buckets of one day are two clocks and must not
+// pool — a refused snapshot marks every one of its rows refused, and a row
+// from a snapshot the build never saw fails CLOSED rather than reading as
+// "pays no dividends".
+TEST(DividendScheduleIndex, KeysPerSnapshotAndFailsClosedOnRefusedOrUnknownRows) {
+  using atx::vol::oracle::DividendScheduleIndex;
+
+  std::vector<OracleRow> rows = spy_rows(); // bucket 1600, the clean ladder
+  // The SAME date and underlier at another bucket. Pooled by (date, underlier)
+  // its lone expiry would interleave into the 1600 ladder on a different
+  // clock; keyed per snapshot the two reconstruct independently.
+  OracleRow other = make_row("2026-08-14", "SPY", 0.0967677, 1.98);
+  other.bucket_et = "1000";
+  rows.push_back(other);
+  // A refused snapshot beside them: two ddiv answers at one expiry.
+  rows.push_back(make_row("2026-08-14", "XXX", 0.5, 1.0));
+  rows.push_back(make_row("2026-08-14", "XXX", 0.5, 2.0));
+
+  const DividendScheduleIndex index = DividendScheduleIndex::build(rows);
+  EXPECT_EQ(index.aggregates().rows_seen, static_cast<std::int64_t>(rows.size()));
+  EXPECT_EQ(index.aggregates().groups_seen, 3);
+  EXPECT_EQ(index.aggregates().groups_refused, 1);
+  EXPECT_EQ(index.aggregates().rows_in_refused_groups, 2);
+  EXPECT_EQ(index.aggregates().refusals.ambiguous_ddiv_at_expiry, 1u);
+
+  // The clean snapshot serves the full eight-dividend SPY schedule.
+  const DividendScheduleIndex::RowSchedule spy = index.for_row(rows.front());
+  EXPECT_FALSE(spy.refused);
+  ASSERT_EQ(spy.schedule.size(), std::size(kSpySchedule));
+  EXPECT_NEAR(accrued_dividend(spy.schedule, 2.3349), 21.13, 1.0e-9);
+  // The lone other-bucket snapshot reconstructs on its own: one expiry, one
+  // dividend at its upper bracket.
+  const DividendScheduleIndex::RowSchedule bucket = index.for_row(other);
+  EXPECT_FALSE(bucket.refused);
+  ASSERT_EQ(bucket.schedule.size(), 1u);
+  EXPECT_DOUBLE_EQ(bucket.schedule.front().amount, 1.98);
+  // Refused snapshot: every row of it is refused, and none served a schedule.
+  const DividendScheduleIndex::RowSchedule refused = index.for_row(rows.back());
+  EXPECT_TRUE(refused.refused);
+  EXPECT_TRUE(refused.schedule.empty());
+  // A snapshot the build never saw: refused, never "pays no dividends".
+  const OracleRow unseen = make_row("2026-08-15", "SPY", 0.5, 0.0);
+  EXPECT_TRUE(index.for_row(unseen).refused);
+}
+
 } // namespace

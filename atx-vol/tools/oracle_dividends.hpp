@@ -182,6 +182,76 @@ struct DividendCadence {
   int max_parts = 4;
 };
 
+// ── The snapshot-keyed schedule index (the sweep / bench pre-pass) ──────────
+//
+// The convention layer prices one row at a time, but a schedule is a property
+// of a whole CHAIN. This index is the pre-pass that closes the gap: built ONCE
+// per cohort scan, before any candidate is evaluated, because the schedules are
+// candidate-independent and rebuilding them per grid point is pure waste.
+//
+// KEYED BY (date, bucket_et, underlier), not by (date, underlier): a
+// `CashDividend::tau` is "a year-fraction measured from the SAME valuation
+// instant as the option's `T`" (american.hpp), and the valuation instant of a
+// stored row is its BUCKET. Two buckets of one date are two clocks hours
+// apart, so pooling them would (a) smear every recovered tau by the
+// inter-bucket year-fraction and (b) let an intraday `ddiv` update refuse the
+// whole day as AmbiguousDdivAtExpiry when each snapshot alone is clean. Each
+// bucket sees the full chain, so nothing is lost by the finer key.
+//
+// FAIL CLOSED, per row: `for_row` reports `refused = true` both for a group
+// reconstruction actually refused AND for a row whose snapshot the build never
+// saw — a caller holding a row this index cannot vouch for must not price it as
+// if it could. Refusals are surfaced as RUN-LEVEL AGGREGATE COUNTS ONLY: the
+// group keys are cohort membership, and membership must never reach an
+// aggregate receipt.
+class DividendScheduleIndex {
+public:
+  // What one row is entitled to. `schedule` is the row's whole-chain snapshot
+  // schedule (possibly empty: "pays no dividends" — distinguishable from
+  // `refused`, which is "reconstruction cannot vouch for this snapshot").
+  struct RowSchedule {
+    std::span<const CashDividend> schedule{};
+    bool refused = false;
+  };
+
+  // Run-level aggregates, the ONLY reconstruction facts a receipt may carry.
+  struct Aggregates {
+    std::int64_t rows_seen = 0;
+    std::int64_t groups_seen = 0;
+    std::int64_t groups_refused = 0;
+    std::int64_t rows_in_refused_groups = 0;
+    DividendRefusalCounts refusals;
+  };
+
+  DividendScheduleIndex() = default;
+
+  // One reconstruction per (date, bucket_et, underlier) snapshot over the
+  // concatenation of the two spans (two, because the sweep holds smoke and tune
+  // as separate scans; a snapshot present in both reconstructs once from the
+  // union, and duplicated rows collapse in the reconstructor). Row order is
+  // irrelevant.
+  [[nodiscard]] static DividendScheduleIndex build(std::span<const OracleRow> first,
+                                                   std::span<const OracleRow> second = {});
+
+  // The returned span stays valid for the life of this index.
+  [[nodiscard]] RowSchedule for_row(const OracleRow &row) const noexcept;
+
+  [[nodiscard]] const Aggregates &aggregates() const noexcept { return aggregates_; }
+
+private:
+  struct Entry {
+    std::string date;
+    std::string bucket_et;
+    std::string underlier;
+    std::vector<CashDividend> schedule;
+    bool refused = false;
+  };
+
+  // Sorted by (date, bucket_et, underlier); for_row binary-searches it.
+  std::vector<Entry> entries_;
+  Aggregates aggregates_;
+};
+
 // Split every merged jump into `round(gap / period)` equal instalments placed
 // backwards from the recovered tau on `cadence.period_years`.
 //

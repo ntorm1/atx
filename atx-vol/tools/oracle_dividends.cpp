@@ -137,6 +137,22 @@ void refuse(DividendReconstruction &out, const DividendGroupKey &key, DividendRe
   return true;
 }
 
+// Fold one SINGLE-GROUP reconstruction into the index aggregates. `rows` is
+// the group's row count, which RefusedDividendGroup deliberately does not
+// carry — the index knows it from its own grouping.
+void aggregate_reconstruction(DividendScheduleIndex::Aggregates &agg,
+                              const DividendReconstruction &rec, std::int64_t rows) noexcept {
+  agg.groups_seen += static_cast<std::int64_t>(rec.groups_seen);
+  agg.refusals.non_finite_input += rec.refusals.non_finite_input;
+  agg.refusals.ambiguous_ddiv_at_expiry += rec.refusals.ambiguous_ddiv_at_expiry;
+  agg.refusals.non_monotone_ddiv += rec.refusals.non_monotone_ddiv;
+  agg.refusals.non_positive_jump += rec.refusals.non_positive_jump;
+  if (!(rec.schedules.size() == 1U && rec.refused.empty())) {
+    ++agg.groups_refused;
+    agg.rows_in_refused_groups += rows;
+  }
+}
+
 } // namespace
 
 std::string_view to_string(DividendRefusal reason) noexcept {
@@ -204,6 +220,95 @@ DividendReconstruction reconstruct_dividends(std::span<const OracleRow> rows) {
     begin = end;
   }
   return out;
+}
+
+DividendScheduleIndex DividendScheduleIndex::build(std::span<const OracleRow> first,
+                                                   std::span<const OracleRow> second) {
+  DividendScheduleIndex out;
+  out.aggregates_.rows_seen = static_cast<std::int64_t>(first.size() + second.size());
+
+  // One flat pointer index over both spans, sorted by the SNAPSHOT key. String
+  // comparison is total, so the sort is well defined regardless of any
+  // non-finite numeric column (finiteness is the reconstructor's own screen).
+  std::vector<const OracleRow *> order;
+  order.reserve(first.size() + second.size());
+  for (const OracleRow &row : first) {
+    order.push_back(&row);
+  }
+  for (const OracleRow &row : second) {
+    order.push_back(&row);
+  }
+  const auto key_less = [](const OracleRow *a, const OracleRow *b) {
+    if (a->date != b->date) {
+      return a->date < b->date;
+    }
+    if (a->bucket_et != b->bucket_et) {
+      return a->bucket_et < b->bucket_et;
+    }
+    return a->underlier < b->underlier;
+  };
+  const auto key_equal = [](const OracleRow *a, const OracleRow *b) {
+    return a->date == b->date && a->bucket_et == b->bucket_et && a->underlier == b->underlier;
+  };
+  std::sort(order.begin(), order.end(), key_less);
+
+  // One reconstruction per snapshot run. The scratch copy is one group at a
+  // time (never the whole cohort), and each row is copied exactly once.
+  std::vector<OracleRow> scratch;
+  std::size_t begin = 0;
+  while (begin < order.size()) {
+    std::size_t end = begin + 1U;
+    while (end < order.size() && key_equal(order[begin], order[end])) {
+      ++end;
+    }
+    scratch.clear();
+    scratch.reserve(end - begin);
+    for (std::size_t i = begin; i < end; ++i) {
+      scratch.push_back(*order[i]);
+    }
+    DividendReconstruction rec = reconstruct_dividends(scratch);
+    // The scratch group shares one (date, underlier), so the reconstructor sees
+    // exactly one group: it either accepted it or refused it, never both.
+    aggregate_reconstruction(out.aggregates_, rec, static_cast<std::int64_t>(end - begin));
+
+    Entry entry;
+    entry.date = order[begin]->date;
+    entry.bucket_et = order[begin]->bucket_et;
+    entry.underlier = order[begin]->underlier;
+    if (rec.schedules.size() == 1U && rec.refused.empty()) {
+      entry.schedule = std::move(rec.schedules.front().dividends);
+      entry.refused = false;
+    } else {
+      // Refused — or a shape reconstruct_dividends documents as impossible for
+      // a one-group input, which must also fail closed rather than be guessed
+      // about.
+      entry.refused = true;
+    }
+    out.entries_.push_back(std::move(entry));
+    begin = end;
+  }
+  return out;
+}
+
+DividendScheduleIndex::RowSchedule
+DividendScheduleIndex::for_row(const OracleRow &row) const noexcept {
+  const auto entry_less = [](const Entry &entry, const OracleRow &wanted) {
+    if (entry.date != wanted.date) {
+      return entry.date < wanted.date;
+    }
+    if (entry.bucket_et != wanted.bucket_et) {
+      return entry.bucket_et < wanted.bucket_et;
+    }
+    return entry.underlier < wanted.underlier;
+  };
+  const auto it = std::lower_bound(entries_.begin(), entries_.end(), row, entry_less);
+  if (it == entries_.end() || it->date != row.date || it->bucket_et != row.bucket_et ||
+      it->underlier != row.underlier) {
+    // A snapshot the build never saw: this index cannot vouch for the row, and
+    // "no schedule known" must not be presented as "pays no dividends".
+    return RowSchedule{.schedule = {}, .refused = true};
+  }
+  return RowSchedule{.schedule = it->schedule, .refused = it->refused};
 }
 
 double accrued_dividend(std::span<const CashDividend> dividends, double years) noexcept {

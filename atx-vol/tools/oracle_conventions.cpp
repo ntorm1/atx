@@ -34,7 +34,14 @@ constexpr ConventionMap kBaseline{};
 // Designated initializers: twelve consecutive doubles by position is a
 // parameter-swap waiting to happen.
 constexpr ConventionMap kWinner{
-    .input_model = InputModel::DiscreteDividendPvSdivYield,
+    // The discrete-dividend ENGINE arm (lane/oracle-div-schedule-20260822):
+    // dividend-bearing rows are 34.63% of the aggregate smoke+tune population,
+    // and on the six dividend-bearing tune underliers the escrowed-spot
+    // convention scored 104.91 ticks of price MAE against srPrc where the
+    // spliced lattice scored 15.12. Like every field here, this literal is
+    // re-derived by the sweep on every gate run and the gate fails closed
+    // while the two differ.
+    .input_model = InputModel::DiscreteDividendTree,
     // Resolved by the sweep's identity tie-break since MGTN's reclassification:
     // with the empirical table empty the two European rules route identical
     // root sets, every metric ties bit-for-bit, and the deterministic
@@ -250,6 +257,102 @@ void fill_time_decay_secants(ModeAPricing &out, const ConventionMap &map,
   out.delta_decay_secant = out.greeks.delta - bumped->delta;
 }
 
+// ── The DiscreteDividendTree leg ────────────────────────────────────────────
+
+// The oracle routing vocabulary carries Unknown; the engine's does not. Stated
+// once so the two enums cannot be conflated at a call site.
+[[nodiscard]] atx::vol::ExerciseStyle engine_exercise(ExerciseStyle style) noexcept {
+  return style == ExerciseStyle::European ? atx::vol::ExerciseStyle::European
+                                          : atx::vol::ExerciseStyle::American;
+}
+
+// The tree model's admission rule for one row, decided on the row's OWN
+// evidence (`ddiv` is the vendor's statement that cash lands at or before this
+// expiry — the accrual identity against the reconstructed schedule was
+// measured to 1.8e-15):
+//   Err        — reconstruction refused the snapshot, or the row claims cash
+//                (ddiv != 0) the supplied schedule cannot account for. FAIL
+//                CLOSED: never a silent fallback to a different model.
+//   Ok(true)   — cash lands in (0, years]: price on the lattice.
+//   Ok(false)  — ddiv == 0: no cash in the option's life, the tree IS the
+//                continuous-carry engine, and the analytic legs are exact.
+[[nodiscard]] Result<bool> tree_admits_lattice(const OracleRow &row,
+                                               const RowDividends &dividends) {
+  if (dividends.refused) {
+    return Err(ErrorCode::Unavailable,
+               "discrete dividend tree: dividend reconstruction refused this row's snapshot");
+  }
+  if (row.ddiv == 0.0) {
+    return Ok(false);
+  }
+  // Bounded by the schedule length. The relative expiry tolerance mirrors the
+  // lattice's own (0, T] admission window, so a schedule the engine would use
+  // is never refused here on a one-ulp tau.
+  for (const CashDividend &dividend : dividends.schedule) {
+    if (dividend.amount > 0.0 && dividend.tau > 0.0 &&
+        dividend.tau <= row.years * (1.0 + 1.0e-12)) {
+      return Ok(true);
+    }
+  }
+  return Err(ErrorCode::InvalidArgument,
+             "discrete dividend tree: row carries ddiv but the supplied schedule has no ex-date "
+             "in (0, years] — supply the reconstructed chain snapshot schedule");
+}
+
+// One tree-arm row: the nine-greek lattice bundle mapped onto the ModeAPricing
+// shape every consumer already reads (dp_dq is the bundle's phi — the lattice
+// solves it directly, so no separate carry solve exists on this leg). Under
+// Secant252 the two decay secants come from ONE extra bumped rollback that
+// yields price AND delta together, so the pair cannot mix two bump styles; a
+// refused bumped leg costs the two secants, never the row — the same policy
+// the continuous legs hold.
+[[nodiscard]] Result<ModeAPricing> discrete_tree_price_row(const OracleRow &row,
+                                                           const ConventionMap &map,
+                                                           const RowDividends &dividends) {
+  ModeAPricing out;
+  out.inputs = mode_a_inputs(row, map);
+  out.style = exercise_style_for(row, map);
+  const EnginePricingInputs &in = out.inputs;
+  const Result<DiscreteDivGreekBundle> bundle = american_discrete_div_greek_bundle(
+      in.spot, in.strike, in.years, in.sigma, in.rate, in.carry, in.side, dividends.schedule,
+      kDiscreteDivDefaultSteps, engine_exercise(out.style));
+  if (!bundle.has_value()) {
+    return Err(bundle.error());
+  }
+  out.greeks.price = bundle->price;
+  out.greeks.delta = bundle->delta;
+  out.greeks.gamma = bundle->gamma;
+  out.greeks.vega = bundle->vega;
+  out.greeks.theta = bundle->theta;
+  out.greeks.rho = bundle->rho;
+  out.greeks.vanna = bundle->vanna;
+  out.greeks.volga = bundle->volga;
+  out.greeks.charm = bundle->charm;
+  out.dp_dq = bundle->phi;
+  if (map.time_decay_method == TimeDecayMethod::Secant252) {
+    const double bumped_years = in.years - kTimeDecayStepYears;
+    if (!(bumped_years > 0.0)) {
+      // The same expiration-day rule the continuous legs use: SpiderRock's own
+      // companion convention taken to its zero-time limit IS the intrinsic.
+      const DecayLeg leg = expiration_day_leg(in.spot, in.strike, in.side);
+      out.theta_secant = out.greeks.price - leg.price;
+      out.delta_decay_secant = out.greeks.delta - leg.delta;
+    } else {
+      // Same schedule, bumped expiry: events past T - 1/252 drop under the
+      // engine's own (0, T] window — dropped, never clipped onto the new
+      // terminal step (american.hpp documents why).
+      const Result<DiscreteDivGreeks> bumped = american_discrete_div_greeks(
+          in.spot, in.strike, bumped_years, in.sigma, in.rate, in.carry, in.side,
+          dividends.schedule, kDiscreteDivDefaultSteps, engine_exercise(out.style));
+      if (bumped.has_value()) {
+        out.theta_secant = out.greeks.price - bumped->price;
+        out.delta_decay_secant = out.greeks.delta - bumped->delta;
+      }
+    }
+  }
+  return Ok(std::move(out));
+}
+
 } // namespace
 
 const ConventionMap &baseline_convention() noexcept { return kBaseline; }
@@ -274,6 +377,8 @@ std::string_view input_model_id(InputModel model) noexcept {
     return "discrete_forward_pv__rate_minus_sdiv__zero_carry";
   case InputModel::DiscreteDividendPvRatePlusSdiv:
     return "discrete_forward_pv__rate_plus_sdiv__zero_carry";
+  case InputModel::DiscreteDividendTree:
+    return "discrete_dividend_tree__rate__sdiv_yield";
   }
   assert(false);
   return "invalid";
@@ -401,6 +506,14 @@ EnginePricingInputs mode_a_inputs(const OracleRow &row, const ConventionMap &map
     in.rate = row.rate + row.sdiv;
     in.carry = 0.0;
     break;
+  case InputModel::DiscreteDividendTree:
+    // The whole point of this arm: NOTHING is escrowed out of spot. The cash
+    // dividends enter the lattice as discrete events (mode_a_price_row's
+    // RowDividends), and sdiv stays as the residual continuous yield.
+    in.spot = row.uprc;
+    in.rate = row.rate;
+    in.carry = row.sdiv;
+    break;
   }
   return in;
 }
@@ -463,7 +576,19 @@ Result<double> european_implied_vol(double price, double S, double K, double T, 
 }
 
 Result<ModeAPricing> mode_a_price_row(const OracleRow &row, const ConventionMap &map,
-                                      const std::optional<AlOpts> &opts) {
+                                      const std::optional<AlOpts> &opts,
+                                      const RowDividends &dividends) {
+  if (map.input_model == InputModel::DiscreteDividendTree) {
+    const Result<bool> lattice = tree_admits_lattice(row, dividends);
+    if (!lattice.has_value()) {
+      return Err(lattice.error());
+    }
+    if (*lattice) {
+      return discrete_tree_price_row(row, map, dividends);
+    }
+    // ddiv == 0: fall through — the continuous legs below ARE the tree's own
+    // no-dividend limit, evaluated exactly instead of on a 301-step grid.
+  }
   ModeAPricing out;
   out.inputs = mode_a_inputs(row, map);
   out.style = exercise_style_for(row, map);
@@ -498,9 +623,34 @@ Result<ModeAPricing> mode_a_price_row(const OracleRow &row, const ConventionMap 
   return Ok(std::move(out));
 }
 
+// The no-pre-pass convenience overload: admits every model, and the tree's
+// ddiv == 0 rows (whose schedule is provably empty on the row's own evidence);
+// a tree-arm ddiv != 0 row fails tree_admits_lattice's coverage check against
+// the empty schedule — deriving a chain schedule from one row is exactly the
+// silent wrongness the explicit overload exists to prevent.
+Result<ModeAPricing> mode_a_price_row(const OracleRow &row, const ConventionMap &map,
+                                      const std::optional<AlOpts> &opts) {
+  return mode_a_price_row(row, map, opts, RowDividends{});
+}
+
 Result<double> mode_a_price(const OracleRow &row, const ConventionMap &map,
-                            const std::optional<AlOpts> &opts) {
+                            const std::optional<AlOpts> &opts, const RowDividends &dividends) {
   const EnginePricingInputs in = mode_a_inputs(row, map);
+  if (map.input_model == InputModel::DiscreteDividendTree) {
+    const Result<bool> lattice = tree_admits_lattice(row, dividends);
+    if (!lattice.has_value()) {
+      return Err(lattice.error());
+    }
+    if (*lattice) {
+      // ONE rollback: the stage-1 price cut has no Greek to attribute, so the
+      // bundle's other seven solves would be pure waste here.
+      return american_discrete_div_price(in.spot, in.strike, in.years, in.sigma, in.rate,
+                                         in.carry, in.side, dividends.schedule,
+                                         kDiscreteDivDefaultSteps,
+                                         engine_exercise(exercise_style_for(row, map)));
+    }
+    // ddiv == 0: the continuous legs below are the tree's own no-dividend limit.
+  }
   if (exercise_style_for(row, map) == ExerciseStyle::European) {
     const Result<AmericanGreeks> greeks =
         european_greeks(in.spot, in.strike, in.years, in.sigma, in.rate, in.carry, in.side);
@@ -510,6 +660,12 @@ Result<double> mode_a_price(const OracleRow &row, const ConventionMap &map,
     return Ok(greeks->price);
   }
   return andersen_lake(in.spot, in.strike, in.years, in.sigma, in.rate, in.carry, in.side, opts);
+}
+
+// Same convenience contract as the mode_a_price_row wrapper above.
+Result<double> mode_a_price(const OracleRow &row, const ConventionMap &map,
+                            const std::optional<AlOpts> &opts) {
+  return mode_a_price(row, map, opts, RowDividends{});
 }
 
 double dte_days(double years, const ConventionMap &map) noexcept {

@@ -57,6 +57,7 @@
 #include "oracle_cohort_reader.hpp"
 #include "oracle_convention_sweep.hpp"
 #include "oracle_conventions.hpp"
+#include "oracle_dividends.hpp" // Mode A: the DividendScheduleIndex pre-pass
 #include "oracle_host_probe.hpp"
 #include "oracle_scorecard.hpp"
 
@@ -490,16 +491,25 @@ public:
 
   [[nodiscard]] Status run(std::span<const OracleRow> rows, Scorecard &card, ModeStats &stats,
                            AggregateMetrics &agg) override {
+    // THE PRE-PASS: the DiscreteDividendTree input model prices each ddiv > 0
+    // row on its whole-chain snapshot schedule, reconstructed ONCE per run
+    // (the schedules are map-independent). A row whose snapshot reconstruction
+    // refused is REFUSED by the pricer below and counted in rows_engine_error
+    // — never silently priced on a different model.
+    const DividendScheduleIndex dividends = DividendScheduleIndex::build(rows);
     for (const OracleRow &row : rows) {
       // ONE entry point for inputs, exercise-style routing, Greeks and the
       // carry leg — the same `mode_a_price_row` the Stage 3 sweep resolves the
       // map with, so production cannot price with a different pricer than the
       // one the published floor was measured on.
-      const Result<ModeAPricing> priced =
-          mode_a_price_row(row, winning_convention(), mode_a_al_opts());
+      const DividendScheduleIndex::RowSchedule entitled = dividends.for_row(row);
+      const Result<ModeAPricing> priced = mode_a_price_row(
+          row, winning_convention(), mode_a_al_opts(),
+          RowDividends{.schedule = entitled.schedule, .refused = entitled.refused});
       if (!priced.has_value()) {
         // Expected on corner regimes (double-continuation, degenerate T/sigma
-        // the reader could not know about): counted, not fatal.
+        // the reader could not know about), and on rows the dividend
+        // reconstruction refused: counted, not fatal.
         ++stats.rows_engine_error;
         continue;
       }
@@ -784,6 +794,20 @@ public:
       double warm_start = 0.0;
       for (const std::uint32_t index : members) {
         const OracleRow &row = rows[index];
+        // FAIL CLOSED, stopgap: the pinned map's DiscreteDividendTree model
+        // has no inversion rung yet — the continuous-carry inverters below
+        // would ignore the row's cash dividends outright (worse than the
+        // escrowed convention they replaced), so a tree-routed dividend row is
+        // REFUSED here rather than silently measured against the wrong
+        // functional. ddiv == 0 rows are the tree's own no-dividend limit and
+        // invert exactly as before. Lifting this needs a lattice (or
+        // de-Americanized) inversion lane; until then the refusal is counted
+        // where every pricer refusal is counted.
+        if (winning_convention().input_model == InputModel::DiscreteDividendTree &&
+            row.ddiv != 0.0) {
+          ++stats.rows_engine_error;
+          continue;
+        }
         EnginePricingInputs in = mode_a_inputs(row); // same pinned map as Mode A
         // ...everything except sigma, which Mode B MEASURES rather than reads.
         in.sigma = 0.0;

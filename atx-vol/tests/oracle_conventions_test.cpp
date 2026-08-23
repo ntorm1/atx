@@ -35,7 +35,17 @@ OracleRow make_row(double strike, Side side, const ConventionMap &map, double dd
   row.sr_vol = 0.25;
   row.bid_prc = 1.0;
   row.ask_prc = 1.1;
-  const Result<ModeAPricing> priced = mode_a_price_row(row, map, al_fast_opts());
+  // The single-expiry schedule the sweep's pre-pass reconstructs for this
+  // row's snapshot: every make_row cohort shares one `years`, so its whole
+  // ddiv is one dividend whose upper bracket is the expiry itself. Authoring
+  // with the same schedule keeps the tree arm a FIXED POINT of the sweep the
+  // way the escrow arms are. Non-tree maps ignore it.
+  std::vector<CashDividend> schedule;
+  if (row.ddiv > 0.0) {
+    schedule.push_back(CashDividend{row.years, row.ddiv});
+  }
+  const Result<ModeAPricing> priced = mode_a_price_row(
+      row, map, al_fast_opts(), RowDividends{.schedule = schedule, .refused = false});
   EXPECT_TRUE(priced.has_value());
   if (!priced.has_value()) {
     return row;
@@ -90,14 +100,22 @@ std::vector<OracleRow> distinct_arm_rows(double first_strike, double second_stri
 // legs separable at all — that is where the early-exercise premium is worth
 // ~0.9 per share rather than ~0.
 //
-// Non-zero ddiv/sdiv keep the production input model distinguishable from the
-// other seven at the same time.
+// Non-zero ddiv/sdiv on the SYNTH rows keep the production input model
+// distinguishable from the other eight at the same time. The two EUROPEAN
+// rows carry ddiv == 0, exactly as their real roots do (every European-routed
+// root in the store is dividend-free) — and not only for realism: a cash
+// dividend at expiry makes a deep-ITM put's early exercise worthless (holding
+// captures the dividend-driven forward drop), so under the tree model a
+// ddiv-bearing SPX row prices IDENTICALLY through both exercise legs and the
+// style axis would resolve on the identity tie-break instead of on evidence.
+// Dividend-free, the two legs separate exactly as designed: the American leg
+// floors at intrinsic, the European premium sits below it.
 std::vector<OracleRow> rows_under(const ConventionMap &map, double first_strike,
                                   double second_strike) {
   return {make_row(first_strike, Side::Call, map, 2.5, 0.01),
           make_row(second_strike, Side::Put, map, 2.5, 0.01),
-          make_row(200.0, Side::Put, map, 2.5, 0.01, "SPX"),
-          make_row(200.0, Side::Put, map, 2.5, 0.01, "MGTN")};
+          make_row(200.0, Side::Put, map, 0.0, 0.01, "SPX"),
+          make_row(200.0, Side::Put, map, 0.0, 0.01, "MGTN")};
 }
 
 // A cohort authored under the PRODUCTION map, so a sweep over it must resolve
@@ -132,9 +150,9 @@ std::vector<OracleRow> production_rows(double first_strike, double second_strike
 // struct literal that could drift the same way the first one did) is what makes
 // the production map checkable against the sweep.
 constexpr std::string_view kResolvedWinnerJson =
-    R"({"input_model":"discrete_forward_pv__rate__sdiv_yield",)"
-    R"("forward_formula":"uprc_exp_rate_t_minus_ddiv","rate_model":"continuous_row_rate",)"
-    R"("carry_model":"sdiv_as_yield","dividend_model":"discrete_cash_forward",)"
+    R"({"input_model":"discrete_dividend_tree__rate__sdiv_yield",)"
+    R"("forward_formula":"none","rate_model":"continuous_row_rate",)"
+    R"("carry_model":"sdiv_as_yield","dividend_model":"discrete_cash_schedule",)"
     R"("exercise_style":"european_cash_settled_index",)"
     R"("time_decay_method":"analytic_derivative",)"
     R"("day_count":"BUS_252","dte_banding_day_count":"ACT_365F",)"
@@ -162,6 +180,130 @@ TEST(OracleConvention, DiscreteDividendForwardIsAppliedExactly) {
   EXPECT_DOUBLE_EQ(inputs.spot, documented_forward * std::exp(-row.rate * row.years));
   EXPECT_DOUBLE_EQ(inputs.rate, row.rate);
   EXPECT_DOUBLE_EQ(inputs.carry, row.sdiv);
+}
+
+// The tree arm prices EXACTLY the engine bundle it claims to — same schedule,
+// same exercise routing, dp_dq is the bundle's own phi — pinned bit-for-bit so
+// the convention layer can never wrap the lattice in a second model choice.
+TEST(OracleConvention, DiscreteDividendTreePricesTheLatticeBundleOnTheSchedule) {
+  ConventionMap map = baseline_convention();
+  map.input_model = InputModel::DiscreteDividendTree;
+  OracleRow row;
+  row.underlier = "SYNTH";
+  row.side = Side::Put;
+  row.strike = 97.5;
+  row.uprc = 100.0;
+  row.rate = 0.04;
+  row.sdiv = 0.003;
+  row.ddiv = 1.25;
+  row.years = 0.35;
+  row.sr_vol = 0.27;
+  const std::vector<CashDividend> schedule = {CashDividend{0.10, 0.65}, CashDividend{0.35, 0.60}};
+  const RowDividends divs{.schedule = schedule, .refused = false};
+  const Result<ModeAPricing> priced = mode_a_price_row(row, map, al_fast_opts(), divs);
+  ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
+  EXPECT_EQ(priced->style, atx::vol::oracle::ExerciseStyle::American);
+  const auto bundle = american_discrete_div_greek_bundle(
+      row.uprc, row.strike, row.years, row.sr_vol, row.rate, row.sdiv, row.side, schedule);
+  ASSERT_TRUE(bundle.has_value()) << bundle.error().to_string();
+  EXPECT_EQ(priced->greeks.price, bundle->price);
+  EXPECT_EQ(priced->greeks.delta, bundle->delta);
+  EXPECT_EQ(priced->greeks.gamma, bundle->gamma);
+  EXPECT_EQ(priced->greeks.vega, bundle->vega);
+  EXPECT_EQ(priced->greeks.theta, bundle->theta);
+  EXPECT_EQ(priced->greeks.rho, bundle->rho);
+  EXPECT_EQ(priced->greeks.vanna, bundle->vanna);
+  EXPECT_EQ(priced->greeks.volga, bundle->volga);
+  EXPECT_EQ(priced->greeks.charm, bundle->charm);
+  EXPECT_EQ(priced->dp_dq, bundle->phi);
+  // The stage-1 price tier is the same kernel at one rollback.
+  const Result<double> price_only = mode_a_price(row, map, al_fast_opts(), divs);
+  ASSERT_TRUE(price_only.has_value());
+  EXPECT_EQ(*price_only, bundle->price);
+  // A European-routed row with a live schedule takes the lattice's OWN
+  // European rollback — the closed form has no schedule slot, and silently
+  // dropping the cash would be a different model, not a different leg.
+  row.underlier = "SPX";
+  ConventionMap routed = map;
+  routed.exercise_style = ExerciseStyleRule::EuropeanCashSettledIndex;
+  const Result<ModeAPricing> euro = mode_a_price_row(row, routed, al_fast_opts(), divs);
+  ASSERT_TRUE(euro.has_value()) << euro.error().to_string();
+  EXPECT_EQ(euro->style, atx::vol::oracle::ExerciseStyle::European);
+  const auto euro_bundle = american_discrete_div_greek_bundle(
+      row.uprc, row.strike, row.years, row.sr_vol, row.rate, row.sdiv, row.side, schedule,
+      kDiscreteDivDefaultSteps, atx::vol::ExerciseStyle::European);
+  ASSERT_TRUE(euro_bundle.has_value()) << euro_bundle.error().to_string();
+  EXPECT_EQ(euro->greeks.price, euro_bundle->price);
+  EXPECT_EQ(euro->dp_dq, euro_bundle->phi);
+}
+
+// THE ddiv == 0 CONTROL, pinned bit-for-bit: with no cash in (0, T] the tree
+// and the continuous-carry model are the SAME model, so a dividend-free row
+// must not move at all under the tree arm — movement there is a defect, not a
+// result, and it is what licenses reading the dividend rows' price deltas as
+// the dividend treatment's effect.
+TEST(OracleConvention, DiscreteDividendTreeWithoutDividendsIsTheContinuousEngine) {
+  ConventionMap tree = baseline_convention();
+  tree.input_model = InputModel::DiscreteDividendTree;
+  const ConventionMap &spot = baseline_convention(); // CurrentSpotSdivYield
+  OracleRow row;
+  row.underlier = "SYNTH";
+  row.side = Side::Call;
+  row.strike = 102.0;
+  row.uprc = 100.0;
+  row.rate = 0.04;
+  row.sdiv = 0.011;
+  row.ddiv = 0.0;
+  row.years = 0.35;
+  row.sr_vol = 0.27;
+  const Result<ModeAPricing> tree_priced = mode_a_price_row(row, tree, al_fast_opts());
+  const Result<ModeAPricing> spot_priced = mode_a_price_row(row, spot, al_fast_opts());
+  ASSERT_TRUE(tree_priced.has_value()) << tree_priced.error().to_string();
+  ASSERT_TRUE(spot_priced.has_value());
+  EXPECT_EQ(tree_priced->greeks, spot_priced->greeks);
+  EXPECT_EQ(tree_priced->dp_dq, spot_priced->dp_dq);
+  const Result<double> tree_price = mode_a_price(row, tree, al_fast_opts());
+  const Result<double> spot_price = mode_a_price(row, spot, al_fast_opts());
+  ASSERT_TRUE(tree_price.has_value());
+  ASSERT_TRUE(spot_price.has_value());
+  EXPECT_EQ(*tree_price, *spot_price);
+}
+
+// FAIL CLOSED: a row the reconstruction refused, or a ddiv-bearing row with no
+// covering schedule (including every call through the no-pre-pass overload),
+// is an Err — never a silent fallback onto a model the receipt did not name.
+TEST(OracleConvention, DiscreteDividendTreeFailsClosedOnRefusedOrMissingSchedules) {
+  ConventionMap map = baseline_convention();
+  map.input_model = InputModel::DiscreteDividendTree;
+  OracleRow row;
+  row.underlier = "SYNTH";
+  row.side = Side::Call;
+  row.strike = 100.0;
+  row.uprc = 100.0;
+  row.rate = 0.04;
+  row.sdiv = 0.002;
+  row.ddiv = 1.0;
+  row.years = 0.35;
+  row.sr_vol = 0.27;
+  // A refused snapshot refuses the row outright — even one whose ddiv is 0.
+  const RowDividends refused{.schedule = {}, .refused = true};
+  EXPECT_FALSE(mode_a_price_row(row, map, al_fast_opts(), refused).has_value());
+  EXPECT_FALSE(mode_a_price(row, map, al_fast_opts(), refused).has_value());
+  // ddiv > 0 with no covering schedule: the no-pre-pass overload cannot invent
+  // a chain schedule from one row, so it must refuse rather than guess.
+  EXPECT_FALSE(mode_a_price_row(row, map, al_fast_opts()).has_value());
+  EXPECT_FALSE(mode_a_price(row, map, al_fast_opts()).has_value());
+  // A schedule whose only events sit past this row's expiry covers nothing the
+  // row's own ddiv claims, and is refused for the same reason.
+  const std::vector<CashDividend> beyond = {CashDividend{0.60, 1.0}};
+  EXPECT_FALSE(
+      mode_a_price_row(row, map, al_fast_opts(), RowDividends{.schedule = beyond, .refused = false})
+          .has_value());
+  // ddiv == 0 needs no schedule at all: the continuous legs are the tree's own
+  // no-dividend limit and the row prices.
+  row.ddiv = 0.0;
+  EXPECT_TRUE(mode_a_price_row(row, map, al_fast_opts()).has_value());
+  EXPECT_TRUE(mode_a_price(row, map, al_fast_opts()).has_value());
 }
 
 TEST(OracleConvention, EuropeanLegMatchesTheIndependentRungWithNoIntrinsicFloor) {
@@ -388,7 +530,7 @@ TEST(OracleConvention, ExpirationDayDecayLegIsTheIntrinsicPayoff) {
 
 TEST(OracleConvention, ProductionMapIsTheResolvedHardCut) {
   const ConventionMap &map = winning_convention();
-  EXPECT_EQ(map.input_model, InputModel::DiscreteDividendPvSdivYield);
+  EXPECT_EQ(map.input_model, InputModel::DiscreteDividendTree);
   EXPECT_EQ(map.exercise_style, ExerciseStyleRule::EuropeanCashSettledIndex);
   EXPECT_DOUBLE_EQ(map.price_scale, 1.0);
   // Never searched: the DTE-banding day count, not a unit the sweep may pick.
@@ -619,7 +761,7 @@ TEST(OracleConvention, SweepIsClosedDeterministicAndCoversElevenMetrics) {
     EXPECT_EQ(first->baseline_symmetric_metrics[index].metric_id,
               first->baseline_metrics[index].metric_id);
   }
-  // The CROSS PRODUCT of the three searched axes: eight input models x three
+  // The CROSS PRODUCT of the three searched axes: nine input models x three
   // exercise-style rules x two time-decay methods. The tune sample is paid for
   // by the survivors of the smoke cut alone — two input models times the FULL
   // tied fan (3 x 2), because the stage-1 price ranking can separate neither the
@@ -628,7 +770,7 @@ TEST(OracleConvention, SweepIsClosedDeterministicAndCoversElevenMetrics) {
   // set $expectedCandidateIds pins in scripts/oracle-targeted-gate.ps1; the two
   // pins MUST move together or the smoke_tune gate fails on a registry mismatch
   // after the full sweep has already run.
-  ASSERT_EQ(first->candidate_prices.size(), 48u);
+  ASSERT_EQ(first->candidate_prices.size(), 54u);
   EXPECT_EQ(std::count_if(first->candidate_prices.begin(), first->candidate_prices.end(),
                           [](const CandidatePriceMetric &candidate) {
                             return candidate.tune_sample_count > 0;
@@ -647,6 +789,16 @@ TEST(OracleConvention, SweepIsClosedDeterministicAndCoversElevenMetrics) {
                                   "uprc_spot__rate__sdiv_yield|american_all|secant_252";
                          }),
             first->candidate_prices.end());
+  // The discrete-dividend ENGINE arm is on the grid: the 8 -> 9 input-model
+  // widening this pin exists to catch would otherwise only fail at the gate's
+  // id-set check, a full sweep later.
+  EXPECT_NE(std::find_if(first->candidate_prices.begin(), first->candidate_prices.end(),
+                         [](const CandidatePriceMetric &candidate) {
+                           return candidate.candidate_id ==
+                                  "discrete_dividend_tree__rate__sdiv_yield|american_all|"
+                                  "analytic_derivative";
+                         }),
+            first->candidate_prices.end());
   EXPECT_EQ(convention_map_json(first->winner), convention_map_json(second->winner));
   const std::string json = convention_sweep_json(*first, "0123456789abcdef");
   EXPECT_NE(json.find("\"cohorts\":[\"smoke\",\"tune\"]"), std::string::npos);
@@ -662,6 +814,11 @@ TEST(OracleConvention, SweepIsClosedDeterministicAndCoversElevenMetrics) {
   // Always present, empty when nothing regressed: five validator layers require
   // the key, and an absent one fails them closed after a 12-minute sweep.
   EXPECT_NE(json.find("\"accepted_regressions\":"), std::string::npos);
+  // The schedule pre-pass publishes its refusal ledger as RUN-LEVEL AGGREGATES
+  // — counts only, never a group key: the reconstruction groups are
+  // (date, bucket_et, underlier) snapshots, which are cohort membership.
+  EXPECT_NE(json.find("\"dividend_reconstruction\":{\"rows_seen\":"), std::string::npos);
+  EXPECT_NE(json.find("\"groups_refused\":"), std::string::npos);
   EXPECT_NE(json.find("not_evaluated_no_nbbo_gate"), std::string::npos);
   EXPECT_EQ(json.find("holdout"), std::string::npos);
 }

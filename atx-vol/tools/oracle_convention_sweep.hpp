@@ -88,6 +88,24 @@ struct CandidatePriceMetric {
   std::int64_t tune_sample_count = 0;
 };
 
+// RUN-LEVEL AGGREGATES of the dividend-schedule pre-pass, and nothing finer:
+// the reconstruction groups are (date, bucket_et, underlier) snapshots —
+// cohort MEMBERSHIP — and membership must never reach an aggregate receipt or
+// its stderr, so no per-group breakdown exists here by design. Rows in refused
+// groups are REFUSED by the DiscreteDividendTree arm (they surface as engine
+// errors), never silently priced on a different model; these counts are what
+// makes that refusal auditable from the receipt alone.
+struct DividendReconstructionAggregate {
+  std::int64_t rows_seen = 0;
+  std::int64_t groups_seen = 0;
+  std::int64_t groups_refused = 0;
+  std::int64_t rows_in_refused_groups = 0;
+  std::int64_t refusals_non_finite_input = 0;
+  std::int64_t refusals_ambiguous_ddiv_at_expiry = 0;
+  std::int64_t refusals_non_monotone_ddiv = 0;
+  std::int64_t refusals_non_positive_jump = 0;
+};
+
 struct ConventionSweepResult {
   ConventionMap winner;
   // DEFINITION SITE 1 of the two published floor arrays.
@@ -125,6 +143,8 @@ struct ConventionSweepResult {
   // lexicographic rank degenerates to price MAE, and this names what that cost,
   // so the trade-off is published rather than silently absorbed.
   std::vector<std::string> input_model_regressed_greeks;
+  // The schedule pre-pass, in run-level aggregate. See the struct's banner.
+  DividendReconstructionAggregate dividend_reconstruction;
   std::int64_t smoke_rows = 0;
   std::int64_t tune_rows = 0;
   std::int64_t rows_priced = 0;

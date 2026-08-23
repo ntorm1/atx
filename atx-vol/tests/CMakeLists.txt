@@ -255,6 +255,7 @@ add_executable(atx-vol-tests
 target_sources(atx-vol-tests PRIVATE
     ../tools/oracle_convention_sweep.cpp
     ../tools/oracle_conventions.cpp
+    ../tools/oracle_dividends.cpp
     ../tools/oracle_host_probe.cpp
     ../tools/oracle_scorecard.cpp
     ../tools/oracle_cohort_reader.cpp)
@@ -397,7 +398,8 @@ include(GoogleTest)
 add_executable(atx-vol-oracle-convention-tests
     oracle_conventions_test.cpp
     ../tools/oracle_convention_sweep.cpp
-    ../tools/oracle_conventions.cpp)
+    ../tools/oracle_conventions.cpp
+    ../tools/oracle_dividends.cpp)
 target_link_libraries(atx-vol-oracle-convention-tests
     PRIVATE atx::vol atx::core GTest::gtest_main atx_warnings)
 target_include_directories(atx-vol-oracle-convention-tests

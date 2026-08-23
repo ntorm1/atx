@@ -23,6 +23,17 @@ enum class InputModel {
   DiscreteForwardZeroRates,
   DiscreteDividendPvNetRate,
   DiscreteDividendPvRatePlusSdiv,
+  // The discrete-dividend ENGINE arm: spot stays uPrc (nothing is escrowed out
+  // of it), rate = row.rate, carry = row.sdiv as the RESIDUAL continuous yield
+  // (near-zero once ddiv carries the cash, but NOT negligible — zeroing it was
+  // measured to cost calls 2.95 -> 72.55 ticks of price MAE), and the cash
+  // dividends enter as a reconstructed per-snapshot schedule priced on the
+  // Vellekoop-Nieuwenhuis spliced CRR lattice
+  // (american_discrete_div_greek_bundle). A row with ddiv == 0 prices on the
+  // continuous-carry engine instead: with no cash in (0, T] the two ARE the
+  // same model, and the analytic pricer is both exact and cheaper there.
+  // Appended LAST so no existing enumerator's value moves.
+  DiscreteDividendTree,
 };
 
 enum class GreekSource { Delta, Gamma, Theta, Vega, Rho, CarryRho, Volga, Vanna, Charm };
@@ -262,6 +273,22 @@ struct ModeAPricing {
   double delta_decay_secant = std::numeric_limits<double>::quiet_NaN();
 };
 
+// The per-row DIVIDEND CONTEXT the `DiscreteDividendTree` input model prices
+// on. The pricer sees one row at a time while a schedule is a property of a
+// whole chain, so the caller resolves the row's snapshot schedule in a
+// pre-pass (DividendScheduleIndex, oracle_dividends.hpp) and hands it in here.
+// Deliberately just a span + flag — this layer never depends on the
+// reconstructor, so targets that compile only the convention TUs still link.
+//
+// `refused = true` means reconstruction could not vouch for the row's
+// snapshot: the tree model then REFUSES the row (Err) rather than silently
+// pricing it on a different model and scoring it as if it were tree-priced.
+// Every other input model ignores this struct entirely.
+struct RowDividends {
+  std::span<const CashDividend> schedule{};
+  bool refused = false;
+};
+
 // Prices one row end to end under `map`: `mode_a_inputs` for the inputs,
 // `exercise_style_for` for the leg. Err exactly where the chosen leg errs, so
 // `rows_engine_error` keeps counting the same thing.
@@ -272,12 +299,38 @@ struct ModeAPricing {
 // (`american_greeks_al`'s reduced first-order tier), so it costs one boundary
 // solve rather than five. A refusal there leaves the two secants non-finite and
 // does NOT fail the row.
+//
+// Under `InputModel::DiscreteDividendTree` a row with ddiv > 0 prices on the
+// V&N spliced lattice (american_discrete_div_greek_bundle, 8 rollbacks; the
+// map's exercise style selects the lattice's own American/European rollback),
+// `dividends.schedule` supplies the cash events, and dp_dq is the bundle's phi.
+// FAIL CLOSED: `dividends.refused`, or a ddiv > 0 row whose schedule carries no
+// ex-date in (0, years], is an Err — never a silent fallback to another model.
+// A ddiv == 0 row takes the continuous-carry legs below unchanged (same model
+// when no cash lands in the option's life, and exact rather than discretized).
+// Its Secant252 bump re-solves the LATTICE at T - 1/252 with the same schedule
+// (events past the bumped expiry drop, per the engine's own (0, T] window).
+[[nodiscard]] Result<ModeAPricing> mode_a_price_row(const OracleRow &row, const ConventionMap &map,
+                                                    const std::optional<AlOpts> &opts,
+                                                    const RowDividends &dividends);
+
+// Convenience overload for callers with no schedule pre-pass. Identical for
+// every model except `DiscreteDividendTree`, where it admits only ddiv == 0
+// rows (their schedule is provably empty on the row's own evidence) and
+// refuses ddiv != 0 rows — deriving a chain schedule from one row is exactly
+// the silent wrongness the explicit overload exists to prevent.
 [[nodiscard]] Result<ModeAPricing> mode_a_price_row(const OracleRow &row, const ConventionMap &map,
                                                     const std::optional<AlOpts> &opts);
 
 // Price only, for the sweep's stage-1 input/exercise cut, which has no Greek to
 // attribute. Same routing, same inputs, ~5x cheaper on the American leg because
-// no boundary re-solves are requested.
+// no boundary re-solves are requested; the tree arm's ddiv > 0 rows cost ONE
+// lattice rollback (american_discrete_div_price) instead of the bundle's eight.
+[[nodiscard]] Result<double> mode_a_price(const OracleRow &row, const ConventionMap &map,
+                                          const std::optional<AlOpts> &opts,
+                                          const RowDividends &dividends);
+
+// Same convenience contract as the mode_a_price_row overload above.
 [[nodiscard]] Result<double> mode_a_price(const OracleRow &row, const ConventionMap &map,
                                           const std::optional<AlOpts> &opts);
 [[nodiscard]] double dte_days(double years, const ConventionMap &map) noexcept;

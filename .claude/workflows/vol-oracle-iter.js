@@ -90,9 +90,11 @@ const ORACLE_BENCH_TEST_COUNT = 57
 // Same contract for the Stage 3 suite: mirror of $script:OracleConventionTestIds
 // in scripts/oracle-targeted-gate.ps1, which pins the ID SET while this pins the
 // count, so the two must move together. Moved 18 -> 21 by the exercise-style
-// axis lane (be290aed) and 21 -> 25 by the time-decay axis lane (635f8bd8); this
-// constant tracked neither, so it is now stated beside the commits that moved it.
-const ORACLE_CONVENTION_TEST_COUNT = 25
+// axis lane (be290aed), 21 -> 25 by the time-decay axis lane (635f8bd8), and
+// 25 -> 28 by the discrete-dividend-tree input-model lane (three cases pin the
+// lattice-bundle identity, the ddiv == 0 invariance control, and the
+// fail-closed schedule rule).
+const ORACLE_CONVENTION_TEST_COUNT = 28
 // The BOUNDED no-regression rule, as a multiplier on the baseline value. Stated
 // as the multiplier and not as `1 + fraction` because five layers in three
 // languages re-evaluate this same comparison and `1.0 + 0.01` is not required to
@@ -243,11 +245,11 @@ const CONVENTION_MAP = {
   // is counted from — see ORACLE_CANDIDATE_COUNT under this object.
   required: ['input_model', 'forward_formula', 'rate_model', 'carry_model', 'dividend_model', 'exercise_style', 'time_decay_method', 'day_count', 'dte_banding_day_count', 'price_scale', 'price_sign', 'vol_scale', 'delta_scale', 'delta_sign', 'gamma_scale', 'gamma_sign', 'theta_basis', 'theta_sign', 'vega_scale', 'vega_sign', 'rho_scale', 'rho_sign', 'phi_scale', 'phi_sign', 'volga_source', 'volga_scale', 'volga_sign', 'vanna_source', 'vanna_scale', 'vanna_sign', 'delta_decay_basis', 'delta_decay_day_count', 'delta_decay_sign'],
   properties: {
-    input_model: { type: 'string', enum: ['uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry'] },
+    input_model: { type: 'string', enum: ['uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry', 'discrete_dividend_tree__rate__sdiv_yield'] },
     forward_formula: { type: 'string', enum: ['none', 'uprc_exp_rate_t_minus_ddiv'] },
     rate_model: { type: 'string', enum: ['continuous_row_rate', 'continuous_rate_minus_sdiv', 'continuous_rate_plus_sdiv', 'zero'] },
     carry_model: { type: 'string', enum: ['sdiv_as_yield', 'zero'] },
-    dividend_model: { type: 'string', enum: ['continuous_yield_only', 'discrete_cash_forward'] },
+    dividend_model: { type: 'string', enum: ['continuous_yield_only', 'discrete_cash_forward', 'discrete_cash_schedule'] },
     // The two axes the sweep searches alongside `input_model`. Their enums are
     // the same closed domains as kExerciseStyleRules and kTimeDecayMethods in
     // atx-vol/tools/oracle_convention_sweep.cpp, and the candidate-grid
@@ -303,7 +305,8 @@ const ORACLE_TIME_DECAY_METHOD_COUNT = CONVENTION_MAP.properties.time_decay_meth
 // how theta and delta decay are REPORTED), so one input model contributes this
 // many candidates the price cut ranks bit-for-bit identically.
 const ORACLE_TIED_ARMS_PER_INPUT_MODEL = ORACLE_EXERCISE_STYLE_COUNT * ORACLE_TIME_DECAY_METHOD_COUNT
-// kCandidateCount = 8 x 3 x 2 = 48 at 635f8bd8.
+// kCandidateCount = 8 x 3 x 2 = 48 at 635f8bd8; 9 x 3 x 2 = 54 since the
+// discrete-dividend-tree input model widened the enum above.
 const ORACLE_CANDIDATE_COUNT = ORACLE_INPUT_MODEL_COUNT * ORACLE_TIED_ARMS_PER_INPUT_MODEL
 // kFinalistCount = 2 x 6 = 12 at 635f8bd8 — the FULL tied fan of the top TWO
 // input models, never two candidates overall, and therefore exactly the number

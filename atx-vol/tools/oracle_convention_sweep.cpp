@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "oracle_dividends.hpp"
 
 namespace atx::vol::oracle {
 
@@ -20,17 +21,18 @@ using atx::core::Ok;
 
 namespace {
 
-constexpr std::array<InputModel, 8> kInputModels = {
+constexpr std::array<InputModel, 9> kInputModels = {
     InputModel::CurrentSpotSdivYield,      InputModel::DiscreteDividendPvSdivYield,
     InputModel::DiscreteForwardNetCarry,   InputModel::DiscreteForwardRateSdivYield,
     InputModel::DiscreteForwardNetRate,    InputModel::DiscreteForwardZeroRates,
     InputModel::DiscreteDividendPvNetRate, InputModel::DiscreteDividendPvRatePlusSdiv,
+    InputModel::DiscreteDividendTree,
 };
 
 // The staged search evaluates the CLOSED candidate set, so the array and the
 // enum must not drift apart. InputModel is default-numbered from 0, so the last
 // enumerator's value pins the enum's cardinality.
-static_assert(static_cast<std::size_t>(InputModel::DiscreteDividendPvRatePlusSdiv) + 1 ==
+static_assert(static_cast<std::size_t>(InputModel::DiscreteDividendTree) + 1 ==
                   kInputModels.size(),
               "kInputModels must enumerate every InputModel");
 
@@ -333,14 +335,20 @@ enum class PriceStage { Smoke, TuneSample };
 }
 
 void evaluate_price_rows(std::span<const OracleRow> rows, std::size_t stride,
-                         PriceCandidate &candidate, PriceStage stage) {
+                         const DividendScheduleIndex &dividends, PriceCandidate &candidate,
+                         PriceStage stage) {
   const ConventionMap map = candidate_map(candidate);
   Accumulator &acc = stage == PriceStage::Smoke ? candidate.smoke : candidate.tune;
   for (std::size_t index = 0; index < rows.size(); index += stride) {
     // Routed through the convention layer, not through a bare andersen_lake:
     // this stage ranks the exercise-style axis, so it has to price each row
-    // with the leg the candidate's rule actually entitles it to.
-    const auto price = mode_a_price(rows[index], map, al_fast_opts());
+    // with the leg the candidate's rule actually entitles it to. The schedule
+    // index is the candidate-independent pre-pass; only the tree arm reads it,
+    // and a refused snapshot refuses the row there rather than falling back.
+    const DividendScheduleIndex::RowSchedule entitled = dividends.for_row(rows[index]);
+    const auto price =
+        mode_a_price(rows[index], map, al_fast_opts(),
+                     RowDividends{.schedule = entitled.schedule, .refused = entitled.refused});
     if (price.has_value()) {
       acc.absolute(*price, rows[index].sr_prc);
     }
@@ -430,8 +438,12 @@ void evaluate_price_rows(std::span<const OracleRow> rows, std::size_t stride,
 // with another.
 using PricedRow = ModeAPricing;
 
-[[nodiscard]] std::optional<PricedRow> price_row(const OracleRow &row, const ConventionMap &map) {
-  Result<ModeAPricing> priced = mode_a_price_row(row, map, al_fast_opts());
+[[nodiscard]] std::optional<PricedRow> price_row(const OracleRow &row, const ConventionMap &map,
+                                                 const DividendScheduleIndex &dividends) {
+  const DividendScheduleIndex::RowSchedule entitled = dividends.for_row(row);
+  Result<ModeAPricing> priced =
+      mode_a_price_row(row, map, al_fast_opts(),
+                       RowDividends{.schedule = entitled.schedule, .refused = entitled.refused});
   if (!priced.has_value()) {
     return std::nullopt;
   }
@@ -460,11 +472,12 @@ using PricedRow = ModeAPricing;
 // side is equally unobserved, which is the intended fail-closed direction for a
 // finalist nothing can be said about.
 [[nodiscard]] std::array<double, kGreekCount>
-attribute_greeks(std::span<const OracleRow> rows, std::size_t stride, const ConventionMap &map) {
+attribute_greeks(std::span<const OracleRow> rows, std::size_t stride, const ConventionMap &map,
+                 const DividendScheduleIndex &dividends) {
   GreekSearches searches = make_greek_searches();
   for (std::size_t index = 0; index < rows.size(); index += stride) {
     const OracleRow &row = rows[index];
-    const std::optional<PricedRow> priced = price_row(row, map);
+    const std::optional<PricedRow> priced = price_row(row, map, dividends);
     if (!priced.has_value()) {
       continue;
     }
@@ -712,7 +725,12 @@ void append_delta_array(std::string &out, std::span<const FloorMetric> metrics,
 }
 
 [[nodiscard]] std::string_view forward_formula(InputModel model) noexcept {
-  return model == InputModel::CurrentSpotSdivYield ? "none" : "uprc_exp_rate_t_minus_ddiv";
+  // "none" for the two models that feed uPrc straight through: the yield-only
+  // baseline and the discrete tree, which by design escrows NOTHING out of
+  // spot — its dividends enter the lattice as events, not the forward.
+  return model == InputModel::CurrentSpotSdivYield || model == InputModel::DiscreteDividendTree
+             ? "none"
+             : "uprc_exp_rate_t_minus_ddiv";
 }
 
 // These labels are written verbatim into bootstrap/conventions.json, so a
@@ -723,6 +741,7 @@ void append_delta_array(std::string &out, std::span<const FloorMetric> metrics,
   case InputModel::DiscreteDividendPvSdivYield:
   case InputModel::DiscreteForwardNetCarry:
   case InputModel::DiscreteForwardRateSdivYield:
+  case InputModel::DiscreteDividendTree:
     return "continuous_row_rate";
   case InputModel::DiscreteForwardNetRate:
   case InputModel::DiscreteDividendPvNetRate:
@@ -742,6 +761,7 @@ void append_delta_array(std::string &out, std::span<const FloorMetric> metrics,
   case InputModel::DiscreteDividendPvSdivYield:
   case InputModel::DiscreteForwardNetCarry:
   case InputModel::DiscreteForwardRateSdivYield:
+  case InputModel::DiscreteDividendTree:
     return "sdiv_as_yield";
   case InputModel::DiscreteForwardNetRate:
   case InputModel::DiscreteForwardZeroRates:
@@ -817,6 +837,12 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
   if (smoke.empty() || tune.empty()) {
     return Err(ErrorCode::InvalidArgument, "convention sweep requires non-empty smoke+tune");
   }
+  // THE PRE-PASS: one snapshot-keyed schedule reconstruction over the whole
+  // cohort, before any candidate is evaluated. The schedules are
+  // candidate-independent — rebuilding them per grid point would be pure
+  // waste — and every stage below reads this one index, so no stage can price
+  // the tree arm against a different reconstruction than another.
+  const DividendScheduleIndex dividend_index = DividendScheduleIndex::build(smoke, tune);
   const ConventionMap &baseline = baseline_convention();
   std::vector<PriceCandidate> prices;
   prices.reserve(kCandidateCount);
@@ -825,7 +851,7 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
       for (const TimeDecayMethod method : kTimeDecayMethods) {
         prices.push_back(
             PriceCandidate{model, rule, method, candidate_id_of(model, rule, method), {}, {}});
-        evaluate_price_rows(smoke, 1, prices.back(), PriceStage::Smoke);
+        evaluate_price_rows(smoke, 1, dividend_index, prices.back(), PriceStage::Smoke);
       }
     }
   }
@@ -841,16 +867,33 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
   finalists.resize(kFinalistCount);
   const std::size_t tune_stride = std::max<std::size_t>(1, tune.size() / 32768);
   for (const std::size_t index : finalists) {
-    evaluate_price_rows(tune, tune_stride, prices[index], PriceStage::TuneSample);
+    evaluate_price_rows(tune, tune_stride, dividend_index, prices[index], PriceStage::TuneSample);
   }
   ConventionSweepResult out;
+  {
+    // Published as RUN-LEVEL AGGREGATES ONLY (see the struct's banner): counts,
+    // never group keys — partition names ARE cohort membership.
+    const DividendScheduleIndex::Aggregates &agg = dividend_index.aggregates();
+    out.dividend_reconstruction.rows_seen = agg.rows_seen;
+    out.dividend_reconstruction.groups_seen = agg.groups_seen;
+    out.dividend_reconstruction.groups_refused = agg.groups_refused;
+    out.dividend_reconstruction.rows_in_refused_groups = agg.rows_in_refused_groups;
+    out.dividend_reconstruction.refusals_non_finite_input =
+        static_cast<std::int64_t>(agg.refusals.non_finite_input);
+    out.dividend_reconstruction.refusals_ambiguous_ddiv_at_expiry =
+        static_cast<std::int64_t>(agg.refusals.ambiguous_ddiv_at_expiry);
+    out.dividend_reconstruction.refusals_non_monotone_ddiv =
+        static_cast<std::int64_t>(agg.refusals.non_monotone_ddiv);
+    out.dividend_reconstruction.refusals_non_positive_jump =
+        static_cast<std::int64_t>(agg.refusals.non_positive_jump);
+  }
   // Stage 2 is the ONLY place Greeks enter the input-model / exercise-style /
-  // time-decay choice. Nine-Greek attribution for all forty-eight grid points is
+  // time-decay choice. Nine-Greek attribution for all fifty-four grid points is
   // prohibitively expensive, so only the finalists — and the baseline they are
   // measured against — pay for it. Ranking the whole grid on price alone is how
   // a Greek regression used to reach the winner unnoticed.
   const std::array<double, kGreekCount> baseline_greeks =
-      attribute_greeks(tune, tune_stride, baseline);
+      attribute_greeks(tune, tune_stride, baseline, dividend_index);
   std::array<std::vector<std::string>, kFinalistCount> finalist_regressions;
   std::array<FinalistRank, kFinalistCount> ranks;
   for (std::size_t slot = 0; slot < kFinalistCount; ++slot) {
@@ -860,8 +903,9 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
     // matching on the input model alone would attribute the baseline's Greeks
     // to a candidate that routes a different exercise leg.
     const std::array<double, kGreekCount> arm_greeks =
-        same_searched_axes(arm, baseline) ? baseline_greeks
-                                          : attribute_greeks(tune, tune_stride, arm);
+        same_searched_axes(arm, baseline)
+            ? baseline_greeks
+            : attribute_greeks(tune, tune_stride, arm, dividend_index);
     for (std::size_t greek = 0; greek < kGreekCount; ++greek) {
       if (arm_greeks[greek] > baseline_greeks[greek]) {
         finalist_regressions[slot].emplace_back(kGreekSpecs[greek].metric_id);
@@ -897,13 +941,13 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
       // Both arms are priced BEFORE anything is committed. A row either feeds
       // the candidate and the baseline floors or feeds neither, so
       // metric_deltas can never compare two different populations.
-      const std::optional<PricedRow> win = price_row(row, winner);
+      const std::optional<PricedRow> win = price_row(row, winner, dividend_index);
       if (!win.has_value()) {
         ++out.engine_errors;
         continue;
       }
       const std::optional<PricedRow> base =
-          same_searched_axes(winner, baseline) ? win : price_row(row, baseline);
+          same_searched_axes(winner, baseline) ? win : price_row(row, baseline, dividend_index);
       if (!base.has_value()) {
         ++out.engine_errors;
         continue;
@@ -1105,8 +1149,14 @@ std::string convention_map_json(const ConventionMap &map) {
   field("forward_formula", forward_formula(map.input_model));
   field("rate_model", rate_model(map.input_model));
   field("carry_model", carry_model(map.input_model));
+  // Three dividend treatments, three names: the yield-only baseline, the
+  // escrowed PV(ddiv)/forward family, and the tree's discrete cash SCHEDULE on
+  // the lattice — a different functional, not a different forward, so it must
+  // not masquerade as "discrete_cash_forward" in a receipt.
   field("dividend_model", map.input_model == InputModel::CurrentSpotSdivYield
                               ? "continuous_yield_only"
+                          : map.input_model == InputModel::DiscreteDividendTree
+                              ? "discrete_cash_schedule"
                               : "discrete_cash_forward");
   // WHICH PRICER each row is entitled to. It sits next to the other structural
   // keys and not among the unit scales on purpose: it selects a different
@@ -1175,6 +1225,26 @@ std::string convention_sweep_json(const ConventionSweepResult &result, std::stri
   append_int(out, result.rows_priced);
   out.append(",\"engine_errors\":");
   append_int(out, result.engine_errors);
+  // The schedule pre-pass, as RUN-LEVEL AGGREGATE COUNTS ONLY. No group keys:
+  // the reconstruction groups are (date, bucket_et, underlier) snapshots, and
+  // partition names ARE cohort membership, which never reaches a receipt.
+  out.append(",\"dividend_reconstruction\":{\"rows_seen\":");
+  append_int(out, result.dividend_reconstruction.rows_seen);
+  out.append(",\"groups_seen\":");
+  append_int(out, result.dividend_reconstruction.groups_seen);
+  out.append(",\"groups_refused\":");
+  append_int(out, result.dividend_reconstruction.groups_refused);
+  out.append(",\"rows_in_refused_groups\":");
+  append_int(out, result.dividend_reconstruction.rows_in_refused_groups);
+  out.append(",\"refusals\":{\"non_finite_input\":");
+  append_int(out, result.dividend_reconstruction.refusals_non_finite_input);
+  out.append(",\"ambiguous_ddiv_at_expiry\":");
+  append_int(out, result.dividend_reconstruction.refusals_ambiguous_ddiv_at_expiry);
+  out.append(",\"non_monotone_ddiv\":");
+  append_int(out, result.dividend_reconstruction.refusals_non_monotone_ddiv);
+  out.append(",\"non_positive_jump\":");
+  append_int(out, result.dividend_reconstruction.refusals_non_positive_jump);
+  out.append("}}");
   out.append(",\"baseline_conventions\":");
   out.append(convention_map_json(baseline_convention()));
   out.append(",\"conventions\":");

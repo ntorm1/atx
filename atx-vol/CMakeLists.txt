@@ -976,6 +976,7 @@ if(ATX_BUILD_TOOLS)
         tools/oracle_bench_main.cpp
         tools/oracle_convention_sweep.cpp
         tools/oracle_conventions.cpp
+        tools/oracle_dividends.cpp
         tools/oracle_host_probe.cpp
         tools/oracle_scorecard.cpp
         tools/oracle_cohort_reader.cpp)
