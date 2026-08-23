@@ -42,8 +42,8 @@ flight. `CONVENTIONS.md` at `54024add` supersedes it at 8.66. L7 fixes it.
 | | number | source |
 |---|---|---|
 | atx band audit, per contract | **32.6 us** | `docs/LEDGER.md`, 1,382,283 contracts / 45.1 s serial |
-| atx `fast` preset (7,16,16,4sw) — **shipped default** | **46.5 us/op**, 9.7e-4 max abs err | `docs/al-preset-ladder.md` §4 |
-| atx `ql_fast` preset (7,8,32,2sw) — in-tree, unused | **26.1 us/op**, 1.0e-3 max abs err | same |
+| atx `fast` preset (7,16,16,4sw) — **shipped default** | 46.7 us/op *(provisional)*, 9.7e-4 max abs err | `docs/al-preset-ladder.md` §4 |
+| atx `ql_fast` preset (7,8,32,2sw) | 25.8 us/op *(provisional)* = **1.81x fast**, 1.0e-3 max abs err | same |
 | atx AVX2 boundary batch vs scalar | **1.48x** / 1.76x on the gate | `bench/baselines/...-avx2-american-shootout.json` |
 | atx full 8 greeks | **750 us/option** (1,334/s) | `bench/baselines/...-sse2-portfolio.json` |
 | atx European B76 IV | 1,082,851/s | `...-avx2-iv-shootout.json` |
@@ -54,11 +54,14 @@ flight. `CONVENTIONS.md` at `54024add` supersedes it at 8.66. L7 fixes it.
 
 Three readings follow, and they are not the same story:
 
-1. **Per-option American pricing is near the frontier already — the gap is
-   configuration, not algorithm.** `ql_fast` is **1.81x cheaper than the shipped
-   `fast` at statistically equal accuracy** and is already admitted to
-   `al_fp_specialized` (`american.cpp:606-614`) and already exposed as
-   `al_bulk_opts()`. It is simply not the default.
+1. **Per-option American pricing is near the frontier already.** `ql_fast` is
+   **1.81x cheaper than the shipped `fast` at statistically equal accuracy**
+   (9.7e-4 vs 1.0e-3) and is already exposed as `al_bulk_opts()`.
+   **Cite the ratio, not the microseconds**: `al-preset-ladder.md:159` marks the
+   absolute us/op **PROVISIONAL** — the capture shared a host and 5 of 7 rows
+   breach the 5% CV gate — while stating "the relative A/B is citable (ql_fast is
+   fastest in every one of 5 reps)". The same doc at `:229` says **"No default
+   changes here"**, and L1 established the reason (below): this is not free.
 2. **American greeks are 3x to 9.6x off the AAD-implied cost model — the single
    largest performance gap in the library.** It still pays 5 boundary solves +
    13 price evaluations per bundle by finite difference
@@ -94,6 +97,16 @@ Owns `src/pricing/american.cpp`, `american_boundary*.hpp`, `boundary_interp.cpp`
    `AlSolveStatus::Ok` carrying an under-converged boundary, silently". Same
    structure at `:1746`, `:1821`, `:1971`, `:2591-2602`. Every accuracy claim in
    the library — price, greeks, IV, correction-cache samples — rides on this.
+
+   **L1 measured it, and it is worse than this section assumed.** On a 64-cell
+   production-shaped grid (S=K=100, T in {0.5,1,2,5}, sigma in {0.2,0.4,0.6,0.9},
+   r in {0.03,0.08}, q in {0,0.02}, put), the shipped `al_fast_opts()`
+   (tol 1e-8, 2 JN + 2 FP sweeps) reached tol on **zero of 64 cells** — pure
+   Jacobi-Newton needs 17-24 sweeps there — while `andersen_lake` returned `Ok`
+   and priced all 64. Achieved residuals at sigma=0.6, r=0.08, q=0: **1.0e-4**
+   (T=0.5), **4.1e-4** (T=1), **1.4e-3** (T=5), against a tol of 1e-8. The
+   `accurate` rung reaches 5.4e-5 at T=1. **This is not a long-dated corner; it
+   is the fast tier's normal operating point.**
 2. **`YieldCurve::zero(T)` diverges below the first pillar.**
    `rates_curve.cpp:119-124` clamps the *discount factor* flat, so
    `zero(T) = r0*t0/T`. With the suite's own pillars (t0 = 1/365.25, r0 = 4.05%):
@@ -109,11 +122,23 @@ Owns `src/pricing/american.cpp`, `american_boundary*.hpp`, `boundary_interp.cpp`
    `n_collocation < 6` keeps the *more expensive* default while `n_quadrature < 8`
    floors to the cheapest. The stated rule — a caller asking for cheaper must not
    get more expensive — was applied to one axis only.
-5. **Promote `ql_fast` to the marks / de-Am / cache-sampling default.**
-   MEASURED 1.81x (46.5 -> 26.1 us/op) at statistically equal accuracy
-   (9.7e-4 vs 1.0e-3). `al-preset-ladder.md:206-212` already names it for exactly
-   these tiers. It explicitly does **not** clear the greeks tier — FD greeks
-   divide price error by the bump, so greeks stay on `fast_p32` (1.3e-4).
+5. ~~Promote `ql_fast` to the marks / de-Am / cache-sampling default.~~
+   **REFUSED ON EVIDENCE, and the refusal is the finding.** L1 established two
+   independent blockers:
+   (a) It is **already done wherever it is safe** — `FitPreset::Bulk`
+   (`session.cpp:1093-1116`) already ships `al_bulk_opts()` for `deam.al_opts`
+   and `carry_al_opts`.
+   (b) Promoting the **marks/serve** tier would make marks *worse*, not better.
+   `n_quad_price` survives **no** `AlOpts` record format, so baking
+   `al_bulk_opts()` into a stored pricing config round-trips as
+   `n_quad_price = 0`, tying the premium quadrature to `n_quadrature = 8` —
+   i.e. **(7,8,8)**, materially worse than `ql_fast` (7,8,32) *and* than `fast`.
+   `session.cpp:1114` pins `serve_al_opts = al_fast_opts()` for exactly this
+   reason, and `american_bulk_rung_test.cpp:270-292` already pins the behaviour.
+   **Unblocking the marks tier requires the archive to persist
+   `al_n_quad_price`** — a storage change, not a preset edit. Recorded as a
+   `decision` line in the ledger so nobody "finishes" it later by flipping a
+   default.
 
 ### L2 — Discrete dividends into production (`pool-18`)
 Owns `src/pricing/american_discrete_div.cpp`, `dividend.cpp`, and the pricing
