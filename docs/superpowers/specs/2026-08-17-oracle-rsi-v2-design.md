@@ -86,9 +86,19 @@ Source: `docs.spiderrockconnect.com/.../Analytics/OptionPricing/`, quoted direct
   **But alpha is directly solvable from data we already hold**: our cohort carries
   both `years` (volatility time) and `yearsC` (calendar time). That pair
   over-determines alpha. Solve it, do not reverse-engineer it from theta.
-  Errata to ignore: the VolTimeCalc page prints 1638 (= 6.5 x 252) once; the
+  ~~Errata to ignore: the VolTimeCalc page prints 1638 (= 6.5 x 252) once; the
   formula, the Option Pricing page, and the page's own sanity check (7.5/1890 =
-  1/252) all use 1890. Use 1890.
+  1/252) all use 1890. Use 1890.~~ **SUPERSEDED 2026-08-23 — DO NOT "use 1890".**
+  The docs really do say 1890/6870 near-unanimously (that part stands), but the
+  vendor's own `years` DATA for 2026-08-14 measures **1638/7122 with a 6.5 h
+  session**, and it is the data we must reproduce. The intraday slope, the
+  annual normalisation and the weekend increment each exclude the documented
+  7.5 h shape independently; `1638 = 252 x 6.5` is exactly the legacy V7/`SRV6`
+  constant their `MsgVolTimeCalculator` still exposes, so `tblOptionIntradayHist`
+  is plausibly still on the V7-flavoured clock while the docs describe V8. Full
+  derivation and the exact scope of the claim:
+  `atx-vol/include/atx/vol/api/core/vol_time.hpp`; see also the correction in
+  `docs/plans/2026-08-17-oracle-v2-goal-prompt.md`.
 - **Rates are quoted Act/365 but INTERPRETED in vol time**: "All rates are stored
   using an Act/365-day count convention but are interpreted in the platform using
   SpiderRock Vol Time." So discounting is exp(-rate * volTimeYears) with an

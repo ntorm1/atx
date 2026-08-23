@@ -34,13 +34,73 @@ The residual structure is DIAGNOSED, not mysterious:
 
 ### The cheapest win available, do it first
 
-The hybrid clock is NOT a black box. The formula is published:
-`Time = TradingHoursRemaining * alpha/1890 + NonTradingHoursRemaining *
-(1-alpha)/6870`, where 1890 = 252 x 7.5h and 6870 = 8760 - 1890. Only `alpha` is
-unpublished (~0.7 in every worked example). **Our cohort already carries both
-`years` (volatility time) and `yearsC` (calendar time) — that pair over-determines
-alpha.** Solve it directly from the data before touching theta. Note the vendor's
-own typo: one page prints 1638; the correct constant is 1890.
+The hybrid clock is NOT a black box. Its SHAPE is published:
+`Time = TradingHoursRemaining * alpha/TH + NonTradingHoursRemaining *
+(1-alpha)/NTH`, with `TH + NTH = 8760`. The vendor's docs print
+`TH/NTH = 1890/6870` (a 7.5h session); the vendor's own `years` DATA measures
+`1638/7122` (a 6.5h session), and **we match the data** — see the correction
+below for the evidence and for how far that claim actually reaches.
+`alpha` is not stated as a production constant anywhere (~0.7 in every worked
+example). **Our cohort already carries both `years` (volatility time) and
+`yearsC` (calendar time) — that pair over-determines alpha.** Solve it directly
+from the data before touching theta.
+
+> **CORRECTION (2026-08-23) — this paragraph originally ruled on the wrong
+> question, and the first attempt at correcting it also overshot.** It read:
+> *"Note the vendor's own typo: one page prints 1638; the correct constant is
+> 1890"*, with `1890 = 252 x 7.5h` and `6870 = 8760 - 1890`. The right framing
+> is not "which doc page is correct" but **the vendor's published PROSE and the
+> vendor's published DATA disagree, and we reproduce the DATA.**
+>
+> **The docs say 1890/6870, near-unanimously.** A full crawl of
+> docs.spiderrockconnect.com (1,439 pages, all three published versions) finds
+> `1,890` and `6,870` on BOTH the VolTimeCalc and OptionPricing pages in every
+> published version (~13 and ~10 occurrences). `1,638` and `7122`/`7,122`
+> appear ZERO times. The lone `1638` is one prose sentence on VolTimeCalc that
+> contradicts the LaTeX equation printed directly beneath it
+> (`1,890 x 1/8,760 + 6,870 x 1/8,760 = 1`); note too that 1638 + 6870 = 8508,
+> not 8760. Their V7->V8 migration page separately documents the trading window
+> being EXTENDED from 6.5h (08:30-15:00 CT) to 7.5h (08:30-16:00 CT =
+> 09:30-17:00 ET). So: no typo claim, in either direction.
+>
+> **The data says 1638/7122 with a 6.5h session.** Measured from the vendor's
+> own `years` column (`C:\atx-cache\oracle\spiderrock\date=2026-08-14`, 74
+> expiries x 19 intraday buckets): differencing `years` across adjacent
+> expiries gives 0.003514930 yr/trading-day and 0.001010952 yr/non-trading-day
+> (`252a + 113b = 1.00002`), solving to `0.7/1638` and `0.3/7122` per hour.
+> Three independent checks rule out the documented 7.5h shape:
+>
+> 1. **Intraday slope** (no expiry arithmetic, no holiday calendar): regressing
+>    `years` for a FIXED expiry across the 19 in-session buckets gives
+>    d(T)/d(trading hour) = 4.27088e-04, against `0.7/1638` = 4.27350e-04
+>    (ratio 0.9994) and `0.7/1890` = 3.70370e-04 (ratio 1.1531). Two separate
+>    expiries (2027-03-19, 2026-09-18) agree to 5 digits.
+> 2. **Annual normalisation**: with the measured hourly rates a = 4.27088e-4
+>    and b = 4.21230e-5, `252*(6.5a + 17.5b) + 113*24b` = 0.99957 — a year. The
+>    same sum on a 7.5/16.5 split is 1.09658. Only 6.5h normalises.
+> 3. **Weekend increment**: fixing a = 4.27088e-4 and solving the trading-day
+>    increment 0.003514930 for b forces b = 1.8895e-5 under a 7.5h day, hence a
+>    non-trading day of 4.535e-4 against 0.001010952 measured — off by >2x. A
+>    6.5h day gives 0.00101331 (0.23% high).
+>
+> The two day increments alone are DEGENERATE in (alpha, session width) — a
+> 7.5h day at alpha = 0.710606 fits both — which is how the original ruling
+> survived. Checks 1-3 each break that degeneracy separately.
+>
+> **Likely explanation** (a reading, not a fact): `MsgVolTimeCalculator` still
+> exposes a `timeMetric` enum including `SRV6`, the legacy alpha/6.5-hour
+> convention, and 1638 = 252 x 6.5 is exactly that V7 constant. The `years`
+> column in `tblOptionIntradayHist` is plausibly still produced on the
+> V7-flavoured clock while the docs describe V8.
+>
+> **Scope of the claim:** not that SpiderRock "uses" 1638/7122 in production —
+> their docs present alpha = 0.7 as an illustration and never state a
+> production constant. Only that these constants reproduce their published
+> `years` column **for trade date 2026-08-14** to 0.06% on the intraday slope
+> and 0.1% pooled. Re-measure before trusting it against a materially later
+> store. `atx-vol/include/atx/vol/api/core/vol_time.hpp` carries the full
+> derivation and ships 1638/7122 + 6.5h, pinned by
+> `VolTime.VendorMeasuredDayIncrementsArePinned`.
 
 ### Know the floor before you set a target
 
