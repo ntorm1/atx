@@ -764,12 +764,18 @@ append-only documents conflicted, and only ever as racing appends. Each lane's
 signature symbols were then confirmed present in the merged tree rather than
 assumed to have survived.
 
-**Two timing prints in that run are NOT usable and must not be cited:**
-`[AvxBoundary] speedup=0.246x` and `[B76GreeksSoA] speedup=0.099x` — i.e. the
-vectorised paths timing 4x and 10x *slower* than scalar. Both are diagnostic
-prints, not gated assertions, and both were measured while two test binaries
-from other runs (`pool-25`, `pool-27`) were saturating all 16 logical cores.
-`bench/oracle/CONVENTIONS.md` requires a quiet host for any speed number, and
-this was the opposite. **Re-measure on a quiet host before treating either as a
-regression or as evidence of anything.** Flagged because if they survive a clean
-measurement they are a Phase 2 headline, not a footnote.
+**Two timing prints in that run must not be cited, and the reason is the build,
+not the host.** `[AvxBoundary] speedup=0.246x` and `[B76GreeksSoA] speedup=0.099x`
+show the vectorised paths timing 4x and 10x *slower* than scalar. The first
+reading was that two test binaries from other runs were saturating all 16 cores.
+They were, but that is not the explanation, and offering it would send the next
+reader to re-measure on a quiet host, reproduce `0.246x` exactly, and conclude a
+regression.
+
+The integration tree is the `dev` preset: `CMAKE_BUILD_TYPE=Debug`,
+`/Ob0 /Od /RTC1`. With inlining off, every AVX2 intrinsic wrapper is a real
+function call, so the vector path is *expected* to lose badly. The test says so
+itself (`simd_american_test.cpp:433`): the ratio is informational at Debug and
+the >=2.0x gate is evaluated from the **Release (`build-rel`)** run of that same
+test. Both numbers are documented Debug behaviour, not findings. The Phase 2
+perf question is still open, but these two prints say nothing about it.
