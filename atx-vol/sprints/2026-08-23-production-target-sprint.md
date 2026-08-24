@@ -662,3 +662,114 @@ and deliberately unscheduled; they belong to the next sprint.
   indistinguishable from `open_reconstruct_all`.
 - **`port/price/greeks/u64` regresses from t4 to t8** (25,384 -> 63,211 us) — a
   scheduling cliff. Its `u2688` sibling was quarantined for 40% CV.
+
+## Outcome — 2026-08-23
+
+### What changed about how this sprint ran
+
+The sub-agent fan-out was **stopped mid-flight by the user**, with four lanes
+(L1, L2, L3, L5) in fix rounds, L4 and L6 in review, and the L6 fix round
+drafted but never dispatched. Nothing was respawned. The remaining work — L6's
+seven findings, the merge, and qualification — was completed inline.
+
+Three lanes had been killed with **uncommitted work still only on disk**: L1
+(10 files, +399/-106), L3 (4 files, +290/-48) and L5 (9 files, +441/-156). That
+work was snapshotted, compile-verified, anchored-tested and committed before
+anything else was touched. A worktree release or branch flip would have
+destroyed it.
+
+### Lanes as merged
+
+| lane | final SHA | disposition |
+|---|---|---|
+| L1 American solver core | `fae4a8bd` | rescued from disk, REVL1-F1..F5 |
+| L2 discrete dividends | `c2c6dbce` | fix round had committed before the stop |
+| L3 implied-vol inversion | `b5d3b6b2` | rescued from disk, borrow-probe admissibility |
+| L4 SIMD / NaN safety | `3ae42211` | committed; **re-review never completed** |
+| L5 greeks and vol derivatives | `140e07b7` | rescued from disk, REVL5-F1..F4 |
+| L6 fitting and calibration | `36e21014` | fixed inline, RV-L6 F1..F7 |
+| L7 breadth and packaging | `98e59de5` | approved and merged first |
+
+Integration: **`6412278a`** on `integrate/vol-sprint-20260823` (pool-24), 88
+files, +8,376/-498 against the sprint base `654a9206`.
+
+Every merge conflict was in `CHANGELOG.md` and `LEDGER.md` only — two append-only
+files whose conflicts are always racing appends, resolved by keeping both sides
+in order. **No source file conflicted textually.** The four collisions this plan
+predicted did not materialise as conflicts because the lanes touched disjoint
+regions; each lane's signature symbols were verified present in the merged tree
+rather than assumed.
+
+### The L6 finding worth remembering
+
+The lane written to delete `return 0u; // by-construction arb-free` — a hard-coded
+"clean" for geometry nothing had measured — **reintroduced the same defect one
+level up**. `audit_linear_variance_mark` set `n_slices` from `slices.size()` but
+skipped every non-LinearVariance slice without recording the skip, so
+`n_slices > 0 && n_butterfly_violations == 0` meant both "measured and clean" and
+"never looked". Reachable from the public API through `session_overlay`, which is
+applied *after* the family pin.
+
+The general form is worth carrying forward: **a coverage counter must count what
+was covered, never what was offered.** The same shape appeared a third time in
+the same lane, in the segment sampler (F4), which skipped unevaluatable points
+while leaving `decided == true`.
+
+### Outstanding — this sprint did not close these
+
+1. **L4 was never re-reviewed.** `3ae42211` answered RV-L4's first pass but its
+   verification was killed before returning a verdict. It is merged on the
+   strength of its own tests and the targeted regression below, not on review.
+2. **L1, L2, L3, L5 fix rounds were never re-reviewed either** — same reason.
+   L6's fixes were written against RV-L6's findings but nothing reviewed them.
+3. **Phase 2 performance is untouched**, as planned: AVX2 geometry hoist, greeks
+   stencil reuse, `<NB,NQ,NP>` templating, packed scalar boundary solves, and the
+   fitter thread pool all remain open.
+4. **`n_wing_kinks` still classifies by position, not cause** (RV-L6 F6). A board
+   whose only butterfly arbitrage is one stale *outer* quote scores
+   `n_quote_implied() == 0` and never arms `demote_mark_on_butterfly`. Keying the
+   count on kink magnitude relative to the interior population is the fix; it is a
+   measured change and was recorded rather than made.
+5. **A non-finite `mult` still serves NaN on the segments touching the bad knot**
+   (RV-L6 F7). The spline solve no longer poisons the *whole* curve, which is what
+   the finding asked for, but repairing the rest means sanitising `mult` at
+   construction — a change to what `params()` reports.
+6. **Nothing is merged to `main`.** The integration branch is unpushed.
+
+### Accuracy note
+
+This sprint moved correctness, not the parity numbers. The `CONVENTIONS.md`
+residual floor is unchanged: price MAE **8.6633 ticks** against a 1-tick target,
+and **delta is still the only greek meeting the charter**. Nothing here should be
+read as closing that gap.
+
+### Verification actually performed
+
+Integration `6412278a` builds and links clean, then:
+
+**1,339 passed, 25 skipped, 0 failures** — 1,365 tests across 288 suites, run
+against the merged tree with a filter spanning all seven lanes' suites and
+excluding the data-gated dispersion / backtest / surface-DB / track / archive
+families (those skip without their fixtures and say nothing about this diff).
+
+A full-binary run was started first and **killed before it produced a verdict**;
+it is the thing this sprint's brief asked to avoid, and it was contending with
+two unrelated test binaries. Its "exit 0" is an artifact of the kill, not a pass,
+and no claim here rests on it.
+
+Merge integrity was checked structurally as well as by test: the combined diff
+(`git show --cc`) at every one of the six merge commits is **empty for every
+source file**, so git required no hand resolution in code — only the two
+append-only documents conflicted, and only ever as racing appends. Each lane's
+signature symbols were then confirmed present in the merged tree rather than
+assumed to have survived.
+
+**Two timing prints in that run are NOT usable and must not be cited:**
+`[AvxBoundary] speedup=0.246x` and `[B76GreeksSoA] speedup=0.099x` — i.e. the
+vectorised paths timing 4x and 10x *slower* than scalar. Both are diagnostic
+prints, not gated assertions, and both were measured while two test binaries
+from other runs (`pool-25`, `pool-27`) were saturating all 16 logical cores.
+`bench/oracle/CONVENTIONS.md` requires a quiet host for any speed number, and
+this was the opposite. **Re-measure on a quiet host before treating either as a
+regression or as evidence of anything.** Flagged because if they survive a clean
+measurement they are a Phase 2 headline, not a footnote.
