@@ -91,10 +91,19 @@ def main(argv=None) -> int:
     # join then drops every symbol the first run did not transcode -- without a
     # word, so the receipt carries a real number for the wrong population. This
     # cost one 140-name breadth run that came back scoring 22.
+    # ...AND ON THE TRANSCODER ITSELF. The hive is a function of (date, bucket,
+    # symbols, TRANSCODE LOGIC), and the fourth term is not optional: when the
+    # transcode changed to emit one board per OSI root, a rerun over the same
+    # symbol list hit the pre-split hive and would have reported the OLD coverage
+    # as the new result -- the same silent-narrowing failure the symbol term was
+    # added to stop, one level up. Hashing the script's own bytes means any change
+    # to what a hive CONTAINS retires the caches built by the previous version.
     sym_key = hashlib.sha1(
         ",".join(sorted(s.strip().upper()
                         for s in a.symbols.split(",") if s.strip())).encode()
     ).hexdigest()[:8]
+    tx = TOOLS / "spiderrock_to_opra_hive.py"
+    sym_key += "-" + hashlib.sha1(tx.read_bytes()).hexdigest()[:6]
 
     receipts = []
     for bucket in [b.strip() for b in a.buckets.split(",") if b.strip()]:
