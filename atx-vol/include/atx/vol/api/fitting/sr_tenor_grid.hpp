@@ -98,7 +98,7 @@ struct SrTenorGrid {
 //
 // Returns `Result<double>` to PROPAGATE both fail-closed coverage errors: the
 // long end of the grid is 504 trading days (~2 years), so a snapshot anchored
-// late in the default calendar's 2024-2028 window resolves an expiry beyond it.
+// late in the default calendar's 2024-2032 window resolves an expiry beyond it.
 // Swallowing that into a NaN would poison the censored-term fit downstream with
 // no signal. Note this bites on EVERY convention, `Calendar365` included: the
 // year-fraction convention reads no calendar, but the expiry INSTANT it is

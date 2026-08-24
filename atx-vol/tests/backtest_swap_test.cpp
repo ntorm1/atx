@@ -93,7 +93,7 @@ constexpr std::uint32_t kMissingUid = 4242; // never written into any archive
 // in `(prev_ns, ts_ns]`. Mirrors what the engine's OWN `weekday_sessions_
 // between` (backtest.cpp, file-local) computes -- including its HYBRID rule
 // (real NYSE sessions, via `VolTimeCalendar::us_default()`'s listed closures,
-// whenever BOTH endpoints fall inside its 2024-2028 covered window; plain
+// whenever BOTH endpoints fall inside its 2024-2032 covered window; plain
 // Mon-Fri weekdays otherwise) -- but is written FRESH here rather than
 // calling into engine internals, the same independent-oracle discipline
 // `reference_swap_mark` below documents (built from the documented
@@ -253,7 +253,7 @@ struct Corpus {
 // day-counting arithmetic (`weekday_sessions_between`, backtest.cpp).
 //
 // Deliberately dated in 2023, OUTSIDE `VolTimeCalendar::us_default()`'s
-// 2024-2028 covered window (see the "HYBRID RULE" comment on
+// 2024-2032 covered window (see the "HYBRID RULE" comment on
 // `weekday_sessions_between`, backtest.cpp, added in the post-review
 // fixup): this fixture exercises the CADENCE GUARD mechanism generically,
 // via plain Mon-Fri weekday counting, independent of the holiday-aware path
@@ -1081,7 +1081,7 @@ TEST(BacktestSwap, GapAcceptedUnderAcceptClockAsSchedule_ScalesAccrual) {
 // `RequireEverySession`, even though the contract's daily fixing schedule
 // was honored exactly -- a false positive on the most common in-window
 // production case. Fixed: within `VolTimeCalendar::us_default()`'s covered
-// window (2024-2028), `weekday_sessions_between` now subtracts the table's
+// window (2024-2032), `weekday_sessions_between` now subtracts the table's
 // listed full closures before counting.
 //
 // 2024-11-27 (Wed) -> 2024-11-29 (Fri) spans Thanksgiving (2024-11-28, a
@@ -1129,7 +1129,7 @@ TEST(BacktestSwap, HolidayAwareCoarseClockAcceptedUnderRequireEverySession) {
 //
 // `CoarseClockRefusedUnderRequireEverySession` above already exercises the
 // out-of-window (2023) fallback for the GAPPED step (30 plain weekdays, no
-// holiday table consulted, since 2023 predates the 2024-2028 covered
+// holiday table consulted, since 2023 predates the 2024-2032 covered
 // window). This test pins the same fallback for the ORDINARY one-session
 // case, using the same 2023-dated `kGapD0`/`kGapD1`/`kGapD2` points (one
 // genuine weekday apart each) but stopping short of the gap, so the run

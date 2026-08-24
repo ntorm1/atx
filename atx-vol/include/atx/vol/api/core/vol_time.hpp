@@ -143,11 +143,31 @@
 // `VolTimeCalendar` is an immutable, sorted set of NYSE full-closure dates
 // (days-since-epoch, plain proleptic-Gregorian civil-date numbering — the
 // same numbering `days_from_civil`/`civil_from_days` produce, independent of
-// any timezone). `us_default()` carries the exact NYSE full-closure table for
-// 2024-2028 inclusive (weekend-observance shifts already applied, e.g. the
-// 2026 Independence Day closure lands on Friday 07-03, the 2027 one on Monday
-// 07-05). It does NOT model early closes (half-days) or ad-hoc emergency
-// closures — those would need a data-override extension.
+// any timezone). `us_default()` covers 2024-01-01 .. 2032-12-31, in two halves
+// that are two DIFFERENT KINDS OF FACT and are deliberately not conflated:
+//
+//   2024-2028 — OBSERVED. Transcribed from the calendars NYSE has actually
+//     published (the exchange's own site listed 2026/2027/2028 and nothing
+//     further when this was written). Weekend-observance shifts are already
+//     applied, e.g. the 2026 Independence Day closure lands on Friday 07-03 and
+//     the 2027 one on Monday 07-05. This half also carries the AD-HOC closures
+//     of those years — 2025-01-09, the National Day of Mourning for Jimmy
+//     Carter — which is precisely why it stays a literal table.
+//
+//   2029-2032 — RULE-PROJECTED. Computed by `nyse_rule_based_closures` (see its
+//     contract) from the ten computable holidays plus the exchange's weekend
+//     shifts. NOTHING here is transcribed, because there is nothing to
+//     transcribe: NYSE has not published these years. So any AD-HOC closure
+//     that lands in them is ABSENT, and this calendar will credit such a day a
+//     full trading session until someone adds it. That is the projection's
+//     stated cost, and it is the reason the horizon stops at 2032 rather than
+//     running on: the no-ad-hoc-closure assumption decays with distance.
+//
+// The same generator reproduces all five OBSERVED years exactly (modulo the
+// un-guessable 2025-01-09), which is what makes the projection a checked rule
+// rather than an assertion — see `VolTime.RuleProjectionReproducesTheObserved
+// Table`. Neither half models early closes (half-days); those would need a
+// data-override extension.
 //
 // ## Coverage window (fail-closed, plan item 1.10)
 //
@@ -171,20 +191,32 @@
 // a padding day genuinely accrue. A window-vs-interval precheck would wave
 // those two days through.
 //
-// `us_default()`'s window is exactly 2024-01-01 .. 2028-12-31, the span its
-// table enumerates. It is deliberately not wider: the pre-2007 US DST rule
-// differs from the modern one this module implements, so even a hypothetical
-// "no closures" answer would be wrong for early dates. Widening the window is
-// a change to the table, not to a caller.
+// `us_default()`'s window is exactly 2024-01-01 .. 2032-12-31, the span its
+// closure set is populated over (2024-2028 observed, 2029-2032 projected —
+// see the Calendar section above). It is deliberately not wider at EITHER end.
+// Backwards: the pre-2007 US DST rule differs from the modern one this module
+// implements, so even a hypothetical "no closures" answer would be wrong for
+// early dates. Forwards: the projection assumes no ad-hoc closure occurs, and
+// that assumption is worth four years, not forty. Moving either bound is a
+// change to `us_default()`'s construction, not to a caller.
 //
-// KNOWN DATED CLIFF from that upper bound. A long tenor measured off a recent
-// snapshot resolves past 2028-12-31 well before 2028 arrives, and the caller
-// then gets `OutOfRange` for the whole request rather than a partial answer.
-// The concrete one in-tree: the earnings-repro pipeline's 504-trading-day SR
-// tenor (~2 years), which under the default VolTime convention starts failing
-// for snapshots dated after roughly 2027-01 — see the DATED CLIFF note on
-// `EarningsReproConfig::time` (earnings_repro_config.hpp) for the two ways
-// past it. Extending the table before 2027 is the durable fix.
+// PAST 2032-12-31 THE FAIL-CLOSED BEHAVIOUR IS UNCHANGED, and that is load-
+// bearing rather than incidental. In particular a far-dated non-contract — the
+// 2099-01-01 sentinel expiry the production option store carries — still
+// returns `OutOfRange` (indeed it is refused twice over: past the window AND
+// past `kMaxLoopDays`). Extending the projection to swallow it would mean
+// guessing seventy years of closures to make a row that is not an option parse,
+// which is the exact silent guess this module exists to refuse. What changed
+//
+// The DATED CLIFF this note used to describe is pushed out, not removed. A long
+// tenor measured off a recent snapshot still resolves past the window's end
+// eventually. The concrete one in-tree: the earnings-repro pipeline's
+// 504-trading-day SR tenor (~2 years), which under the default VolTime
+// convention now starts failing for snapshots dated after roughly 2031-01
+// rather than 2027-01 — see the DATED CLIFF note on `EarningsReproConfig::time`
+// (earnings_repro_config.hpp) for the two ways past it. Raising
+// `kUsDefaultProjectedThroughYear` (vol_time.cpp) before 2031 is the durable
+// fix, and it is now a one-line change with no new data.
 //
 // ## Session window / DST
 //
@@ -232,8 +264,9 @@ struct VolTimeParams {
 // each expressed as days-since-epoch (1970-01-01 = 0) under plain
 // proleptic-Gregorian civil-date numbering (no timezone attached to the day
 // number itself), PLUS the inclusive day window that set is complete over.
-// `us_default()` carries the NYSE full-closure table for 2024-2028 inclusive
-// and declares exactly that window.
+// `us_default()` carries the NYSE full-closure set for 2024-2032 inclusive
+// (2024-2028 observed, 2029-2032 rule-projected) and declares exactly that
+// window.
 class VolTimeCalendar {
  public:
   // Sorts and de-duplicates `holiday_days` (order/duplicates in the input are
@@ -277,8 +310,11 @@ class VolTimeCalendar {
   // one. A `false` here is what makes the vol-time entry points fail closed.
   [[nodiscard]] bool covers(std::int32_t day_since_epoch) const noexcept;
 
-  // NYSE full-closure calendar, 2024-2028 inclusive (that is also its covered
-  // window). Built once (function-local static) on first call.
+  // NYSE full-closure calendar, 2024-2032 inclusive (that is also its covered
+  // window): 2024-2028 OBSERVED from published NYSE calendars, 2029-2032
+  // RULE-PROJECTED — see the Calendar section at the top of this header for
+  // what the projection can and cannot know. Built once (function-local static)
+  // on first call.
   [[nodiscard]] static const VolTimeCalendar& us_default();
 
  private:
@@ -302,6 +338,52 @@ class VolTimeCalendar {
 // True if `day_since_epoch` falls on a Saturday or Sunday (see
 // `weekday_from_days` for the day-index convention).
 [[nodiscard]] bool is_weekend_day(std::int32_t day_since_epoch) noexcept;
+
+// The RULE-BASED half of the NYSE closure calendar for one calendar year: the
+// ten computable full closures, with the exchange's weekend-observance shifts
+// applied, as days-since-epoch (ascending, unique).
+//
+// WHAT THIS CAN AND CANNOT KNOW — the distinction the whole design turns on.
+// NYSE full closures are two different kinds of fact:
+//
+//   * RULE-BASED, and therefore computable to any horizon: New Year's Day,
+//     Martin Luther King Jr. Day (3rd Mon Jan), Washington's Birthday (3rd Mon
+//     Feb), Good Friday (Gregorian Easter minus two days), Memorial Day (last
+//     Mon May), Juneteenth (Jun 19), Independence Day (Jul 4), Labor Day (1st
+//     Mon Sep), Thanksgiving (4th Thu Nov), Christmas (Dec 25).
+//   * AD-HOC, and therefore not computable by anything: national days of
+//     mourning (2025-01-09, Jimmy Carter), weather closures (Hurricane Sandy,
+//     2012), 9/11. These can only ever be a table.
+//
+// This function returns ONLY the first kind. It never guesses the second, so a
+// calendar built from it alone is complete only up to an ad-hoc closure nobody
+// can foresee. `VolTimeCalendar::us_default()` therefore uses the OBSERVED
+// table for the years NYSE has actually published and this projection only
+// past them — see its doc comment for which years are which.
+//
+// Weekend observance, exactly as the exchange applies it: a fixed-date closure
+// falling on a Saturday moves to the preceding Friday, one falling on a Sunday
+// moves to the following Monday. The ONE exception is New Year's Day, which
+// when it falls on a Saturday is not observed at all — NYSE's own calendar
+// footnote, "Because the holiday falls on Saturday, January 1, 2028, no New
+// Year's Day holiday is observed." Such a year yields NINE closures, not ten.
+// The floating Monday/Thursday holidays and Good Friday can never land on a
+// weekend and are never shifted.
+//
+// Juneteenth became an NYSE closure in 2022, so this projection is only valid
+// from 2022 onward; `is_dst` (vol_time.cpp) implementing the modern (2007+) US
+// DST rule is a second, independent reason not to run it backwards.
+//
+// This models FULL closures only. NYSE half-days (the 13:00 ET early closes
+// around Independence Day, Thanksgiving and Christmas) are not modelled here,
+// consistent with the rest of this module. Note in passing that the shift rule
+// removes one: when Christmas moves to Friday 12-24 that day is a full closure,
+// so such a year has no Christmas Eve early close at all.
+//
+// @param year  calendar year (proleptic Gregorian)
+// @return      ascending, unique days-since-epoch of that year's rule-based
+//              NYSE full closures (9 or 10 entries)
+[[nodiscard]] std::vector<std::int32_t> nyse_rule_based_closures(std::int32_t year);
 
 // ── Option settlement instants ──────────────────────────────────────────────
 //
@@ -443,7 +525,7 @@ struct TimeSpec {
 // every default-`TimeSpec` caller is unconditionally in the success arm.
 // `spec.convention == VolTime`: returns `vol_time_years(from_ns, to_ns,
 // spec.vol_time, VolTimeCalendar::us_default())`, INCLUDING its
-// `ErrorCode::OutOfRange` failure outside the 2024-2028 covered window.
+// `ErrorCode::OutOfRange` failure outside the 2024-2032 covered window.
 //
 // @param from_ns  evaluation instant, epoch nanoseconds (UTC)
 // @param to_ns    maturity instant, epoch nanoseconds (UTC)

@@ -1242,7 +1242,7 @@ struct SwapStepResult {
 // trading session -- Mon-Fri, minus `VolTimeCalendar::us_default()`'s listed
 // full closures (Thanksgiving, July 4th, Christmas, etc.) -- whenever BOTH
 // endpoints of the step fall inside that calendar's covered window
-// (2024-2028, vol_time.hpp). Outside the window (either endpoint), it falls
+// (2024-2032, vol_time.hpp). Outside the window (either endpoint), it falls
 // back to plain Mon-Fri weekday counting, exactly as a corpus with no
 // calendar coverage always has: `is_holiday` cannot distinguish "not a
 // listed closure" from "outside the populated range" (both read `false`), so
@@ -1259,7 +1259,7 @@ struct SwapStepResult {
 // Monday close over a Friday holiday), and `RequireEverySession` refused a
 // backtest that had honored its fixing schedule exactly -- a false positive
 // on the most common in-window production case. Within the covered window
-// this is now a non-issue; outside it (a pre-2024 or post-2028 corpus, like
+// this is now a non-issue; outside it (a pre-2024 or post-2032 corpus, like
 // this file's own 2023-dated test fixture), the same false-positive risk
 // still exists and the remedy is still `SwapFixingCadence::
 // AcceptClockAsSchedule`, named in the error text below.
@@ -1343,9 +1343,9 @@ struct SwapStepResult {
                    std::to_string(acc.prev_ts_ns) + ") spans " + std::to_string(elapsed) +
                    " session(s); SwapFixingCadence::RequireEverySession expected 1 "
                    "session per step. This guard counts real NYSE trading sessions when both "
-                   "step endpoints fall inside the built-in 2024-2028 closure table, and falls "
+                   "step endpoints fall inside the built-in 2024-2032 closure table, and falls "
                    "back to plain Mon-Fri weekdays outside that window (so a step spanning an "
-                   "exchange closure before 2024 or after 2028 can still trigger this) -- opt "
+                   "exchange closure before 2024 or after 2032 can still trigger this) -- opt "
                    "into SwapFixingCadence::AcceptClockAsSchedule to accept the clock's own "
                    "cadence and scale the accrual instead of refusing it.");
   }

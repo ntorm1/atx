@@ -2,11 +2,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <random>
 #include <string>
+#include <vector>
 
 #include "atx/core/datetime.hpp"
 #include "atx/vol/api/marketdata/data.hpp"
@@ -299,9 +301,9 @@ TEST(VolTime, CalendarConstructorSortsAndDedupes) {
 
 // ── Coverage window: fail closed outside the table (plan item 1.10) ────────
 //
-// The defect: `us_default()` enumerates NYSE full closures for 2024-2028 ONLY,
-// yet was wired unconditionally into `time_to_expiry_years(VolTime)`. Outside
-// that span every real closure reads as "not in the table" -> a full 6.5h
+// The defect: `us_default()` enumerated NYSE full closures for a bounded span
+// ONLY, yet was wired unconditionally into `time_to_expiry_years(VolTime)`.
+// Outside that span every real closure reads as "not in the table" -> a full 6.5h
 // trading session, silently, with no diagnostic — corrupting every vol-time
 // number derived from it. Memorial Day 2020 (Mon 2020-05-25, NYSE fully
 // closed) accrued a full session's trading hours before this guard existed.
@@ -309,17 +311,153 @@ TEST(VolTime, CalendarConstructorSortsAndDedupes) {
 TEST(VolTime, CalendarDeclaresItsUsDefaultCoverageWindow) {
   const auto& cal = VolTimeCalendar::us_default();
   EXPECT_EQ(cal.first_covered_day(), day_utc(2024, 1, 1));
-  EXPECT_EQ(cal.last_covered_day(), day_utc(2028, 12, 31));
+  EXPECT_EQ(cal.last_covered_day(), day_utc(2032, 12, 31));
   EXPECT_TRUE(cal.covers(day_utc(2024, 1, 1)));
-  EXPECT_TRUE(cal.covers(day_utc(2028, 12, 31)));
+  EXPECT_TRUE(cal.covers(day_utc(2028, 12, 31)));  // last OBSERVED year's end
+  EXPECT_TRUE(cal.covers(day_utc(2029, 1, 1)));    // first RULE-PROJECTED day
+  EXPECT_TRUE(cal.covers(day_utc(2032, 12, 31)));
   EXPECT_FALSE(cal.covers(day_utc(2023, 12, 31)));
-  EXPECT_FALSE(cal.covers(day_utc(2029, 1, 1)));
+  EXPECT_FALSE(cal.covers(day_utc(2033, 1, 1)));
+}
+
+// ── Rule projection (2029-2032) ────────────────────────────────────────────
+//
+// The defect this closes: the production option store holds 2029/2030/2031
+// LEAPS, and a 2024-2028 window made EVERY one of them `OutOfRange` under
+// `--time-convention voltime` — i.e. vol-time was unusable on any real board.
+//
+// The extension is honest about its two kinds of fact. 2024-2028 stays the
+// OBSERVED table (it carries 2025-01-09, the Carter national day of mourning,
+// which no rule can produce). 2029-2032 is RULE-PROJECTED from the ten
+// computable NYSE closures plus the weekend-observance shifts. Ad-hoc closures
+// in those years are unknowable and are therefore absent by construction.
+
+// The projection engine is validated against five years of PUBLISHED fact: on
+// 2024-2028 it must reproduce `us_default()`'s observed table EXACTLY, save for
+// the one entry no rule could ever generate (the 2025-01-09 mourning closure).
+// A rule that cannot re-derive the years we can check is not one to trust on
+// the years we cannot.
+TEST(VolTime, RuleProjectionReproducesTheObservedTable) {
+  const auto& cal = VolTimeCalendar::us_default();
+  const std::int32_t carter_mourning = day_utc(2025, 1, 9);
+  for (std::int32_t y = 2024; y <= 2028; ++y) {
+    const std::vector<std::int32_t> projected = atx::vol::nyse_rule_based_closures(y);
+    // 2028's New Year's Day falls on a Saturday and is unobserved, so that year
+    // carries nine rule closures rather than ten.
+    EXPECT_EQ(projected.size(), y == 2028 ? std::size_t{9} : std::size_t{10}) << "year " << y;
+    for (const std::int32_t d : projected) {
+      EXPECT_TRUE(cal.is_holiday(d))
+          << "year " << y << ": rule projected day " << d << ", observed table does not list it";
+    }
+    // And nothing observed in that year is missing from the projection, except
+    // the ad-hoc closure.
+    for (std::int32_t d = day_utc(y, 1, 1); d <= day_utc(y, 12, 31); ++d) {
+      if (!cal.is_holiday(d) || d == carter_mourning) {
+        continue;
+      }
+      EXPECT_NE(std::find(projected.begin(), projected.end(), d), projected.end())
+          << "year " << y << ": observed closure day " << d << " is not rule-projected";
+    }
+  }
+  // The one entry the rule must NOT be able to produce.
+  const std::vector<std::int32_t> p2025 = atx::vol::nyse_rule_based_closures(2025);
+  EXPECT_EQ(std::find(p2025.begin(), p2025.end(), carter_mourning), p2025.end())
+      << "an ad-hoc closure must never be guessed by a rule";
+  EXPECT_TRUE(cal.is_holiday(carter_mourning)) << "the observed table must still carry it";
+}
+
+TEST(VolTime, ProjectedGoodFridaysAreListedAndAccrueNothing) {
+  VolTimeParams p;
+  p.alpha = 1.0;
+  const auto& cal = VolTimeCalendar::us_default();
+  // Gregorian Easter Sundays 2029-04-01 / 2030-04-21 / 2031-04-13 /
+  // 2032-03-28; Good Friday is Easter minus two days.
+  const int years[] = {2029, 2030, 2031, 2032};
+  const unsigned months[] = {3, 4, 4, 3};
+  const unsigned dom[] = {30, 19, 11, 26};
+  for (std::size_t i = 0; i < 4; ++i) {
+    EXPECT_TRUE(cal.is_holiday(day_utc(years[i], months[i], dom[i])))
+        << "Good Friday " << years[i];
+    const auto t0 = ns_utc(years[i], months[i], dom[i], 4, 0);  // 00:00 EDT
+    EXPECT_NEAR(ok(trading_hours_between(t0, t0 + kDayNs, p, cal)), 0.0, 1e-9)
+        << "Good Friday " << years[i] << " accrued a session";
+  }
+}
+
+TEST(VolTime, ProjectedWeekendObservanceShiftsFollowTheNyseRule) {
+  const auto& cal = VolTimeCalendar::us_default();
+  // 2029-2031: New Year / Juneteenth / Independence Day / Christmas all fall on
+  // weekdays, so they are observed on their own dates.
+  for (const int y : {2029, 2030, 2031}) {
+    EXPECT_TRUE(cal.is_holiday(day_utc(y, 1, 1))) << y << " New Year";
+    EXPECT_TRUE(cal.is_holiday(day_utc(y, 6, 19))) << y << " Juneteenth";
+    EXPECT_TRUE(cal.is_holiday(day_utc(y, 7, 4))) << y << " Independence Day";
+    EXPECT_TRUE(cal.is_holiday(day_utc(y, 12, 25))) << y << " Christmas";
+  }
+  // 2032 is the only projected year with shifts: Juneteenth 06-19 is a
+  // Saturday (-> Fri 06-18), Independence Day 07-04 a Sunday (-> Mon 07-05),
+  // Christmas 12-25 a Saturday (-> Fri 12-24).
+  EXPECT_TRUE(cal.is_holiday(day_utc(2032, 6, 18)));
+  EXPECT_FALSE(cal.is_holiday(day_utc(2032, 6, 19)));
+  EXPECT_TRUE(cal.is_holiday(day_utc(2032, 7, 5)));
+  EXPECT_FALSE(cal.is_holiday(day_utc(2032, 7, 4)));
+  EXPECT_TRUE(cal.is_holiday(day_utc(2032, 12, 24)));
+  EXPECT_FALSE(cal.is_holiday(day_utc(2032, 12, 25)));
+  // Floating holidays, projected, in the last projected year.
+  EXPECT_TRUE(cal.is_holiday(day_utc(2032, 1, 19)));   // 3rd Mon Jan
+  EXPECT_TRUE(cal.is_holiday(day_utc(2032, 2, 16)));   // 3rd Mon Feb
+  EXPECT_TRUE(cal.is_holiday(day_utc(2032, 5, 31)));   // last Mon May
+  EXPECT_TRUE(cal.is_holiday(day_utc(2032, 9, 6)));    // 1st Mon Sep
+  EXPECT_TRUE(cal.is_holiday(day_utc(2032, 11, 25)));  // 4th Thu Nov
+}
+
+TEST(VolTime, SaturdayNewYearIsNeverObserved) {
+  // NYSE's own exception to the Saturday->preceding-Friday rule: a Saturday
+  // New Year's Day is not observed at all (the exchange does not close the
+  // preceding 12-31). 2028-01-01 is the observed-table case; 2033-01-01 is the
+  // projected one, and it is what makes Fri 2032-12-31 the last covered SESSION
+  // rather than a closure.
+  const std::vector<std::int32_t> p2033 = atx::vol::nyse_rule_based_closures(2033);
+  EXPECT_EQ(std::find(p2033.begin(), p2033.end(), day_utc(2033, 1, 1)), p2033.end());
+  EXPECT_EQ(std::find(p2033.begin(), p2033.end(), day_utc(2032, 12, 31)), p2033.end());
+  EXPECT_EQ(p2033.size(), std::size_t{9}) << "nine closures in a Saturday-New-Year year";
+  EXPECT_FALSE(VolTimeCalendar::us_default().is_holiday(day_utc(2032, 12, 31)));
+}
+
+TEST(VolTime, LeapsExpiriesPastTwentyTwentyEightNowResolve) {
+  // The concrete production defect (D1): under `--time-convention voltime`
+  // every 2029/2030/2031 LEAPS in the option store returned `OutOfRange`, which
+  // failed the whole symbol. Third-Friday January LEAPS expiries, 16:00 ET.
+  TimeSpec spec;
+  spec.convention = TimeConvention::VolTime;
+  const auto now = ns_utc(2026, 8, 14, 19, 0);  // 15:00 EDT
+  const std::int64_t leaps[] = {
+      ns_utc(2029, 1, 19, 21, 0),  // Fri 2029-01-19 16:00 EST
+      ns_utc(2030, 1, 18, 21, 0),  // Fri 2030-01-18 16:00 EST
+      ns_utc(2031, 1, 17, 21, 0),  // Fri 2031-01-17 16:00 EST
+  };
+  double prev = 0.0;
+  for (const std::int64_t expiry : leaps) {
+    const auto res = time_to_expiry_years(now, expiry, spec);
+    ASSERT_TRUE(res.has_value()) << res.error().to_string();
+    EXPECT_GT(*res, prev);
+    prev = *res;
+  }
+  // A 2029 LEAPS is a bit over two years of vol-time from 2026-08: sane, and
+  // strictly below the calendar year-fraction (non-trading hours are
+  // discounted).
+  const auto vt = time_to_expiry_years(now, leaps[0], spec);
+  const auto cal365 = time_to_expiry_years(now, leaps[0], TimeSpec{});
+  ASSERT_TRUE(vt.has_value());
+  ASSERT_TRUE(cal365.has_value());
+  EXPECT_GT(*vt, 2.0);
+  EXPECT_LT(*vt, *cal365);
 }
 
 TEST(VolTime, TradingHoursBetweenBeforeWindowFailsClosed) {
   VolTimeParams p;
   p.alpha = 1.0;
-  // Mon 2020-05-25 = Memorial Day, a full NYSE closure the 2024-2028 table
+  // Mon 2020-05-25 = Memorial Day, a full NYSE closure the 2024-2032 calendar
   // cannot see. Pre-fix this returned a full session's trading hours.
   const auto t0 = ns_utc(2020, 5, 25, 4, 0);  // 00:00 EDT
   const auto res = trading_hours_between(t0, t0 + kDayNs, p, VolTimeCalendar::us_default());
@@ -328,8 +466,11 @@ TEST(VolTime, TradingHoursBetweenBeforeWindowFailsClosed) {
 }
 
 TEST(VolTime, TradingHoursBetweenAfterWindowFailsClosed) {
+  // Mon 2033-01-03: one trading day past the (extended) projected window. The
+  // projection deliberately STOPS rather than running forever — past its end
+  // the answer is unknown and must stay fail-closed.
   VolTimeParams p;
-  const auto t0 = ns_utc(2029, 1, 2, 4, 0);
+  const auto t0 = ns_utc(2033, 1, 3, 5, 0);
   const auto res = trading_hours_between(t0, t0 + kDayNs, p, VolTimeCalendar::us_default());
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), ErrorCode::OutOfRange);
@@ -339,8 +480,8 @@ TEST(VolTime, VolTimeYearsStraddlingWindowEndFailsClosed) {
   // Starts inside the window, ends past it: the uncovered tail is exactly the
   // part that would be silently credited, so the whole query must fail.
   VolTimeParams p;
-  const auto now = ns_utc(2028, 12, 20, 15, 0);
-  const auto expiry = ns_utc(2029, 1, 19, 21, 0);
+  const auto now = ns_utc(2032, 12, 20, 15, 0);
+  const auto expiry = ns_utc(2033, 1, 21, 21, 0);
   const auto res = vol_time_years(now, expiry, p, VolTimeCalendar::us_default());
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), ErrorCode::OutOfRange);
@@ -366,13 +507,14 @@ TEST(VolTime, VolTimeYearsAtWindowBoundaryDaysSucceeds) {
   const auto first_session = ns_utc(2024, 1, 2, 5, 0);  // 00:00 EST
   EXPECT_NEAR(ok(trading_hours_between(first_session, first_session + kDayNs, p, cal)), 6.5,
               1e-9);
-  // Last covered session: Fri 2028-12-29 (2028-12-30/31 are the weekend).
-  const auto last_session = ns_utc(2028, 12, 29, 5, 0);
+  // Last covered session: Fri 2032-12-31 — a real session, because 2033-01-01
+  // is a Saturday and a Saturday New Year is unobserved (see
+  // SaturdayNewYearIsNeverObserved).
+  const auto last_session = ns_utc(2032, 12, 31, 5, 0);
   EXPECT_NEAR(ok(trading_hours_between(last_session, last_session + kDayNs, p, cal)), 6.5, 1e-9);
-  // The very next weekday, Mon 2029-01-01, is one day past the window. Its
-  // status is unknown to the table (it IS a real NYSE closure), so it fails
-  // closed rather than accruing a full session.
-  const auto past_end = ns_utc(2029, 1, 1, 5, 0);
+  // The next weekday, Mon 2033-01-03, is past the window. Its status is
+  // unknown to the table, so it fails closed rather than accruing a session.
+  const auto past_end = ns_utc(2033, 1, 3, 5, 0);
   const auto res = trading_hours_between(past_end, past_end + kDayNs, p, cal);
   ASSERT_FALSE(res.has_value()) << "silently accrued " << *res << " trading hours";
   EXPECT_EQ(res.error().code(), ErrorCode::OutOfRange);
@@ -460,7 +602,7 @@ TEST(VolTime, TimeToExpiryVolTimeOutsideWindowFailsClosed) {
   ASSERT_FALSE(before.has_value());
   EXPECT_EQ(before.error().code(), ErrorCode::OutOfRange);
 
-  const auto after = time_to_expiry_years(ns_utc(2030, 3, 1, 15, 0), ns_utc(2030, 4, 1, 20, 0),
+  const auto after = time_to_expiry_years(ns_utc(2033, 3, 1, 15, 0), ns_utc(2033, 4, 1, 20, 0),
                                           spec);
   ASSERT_FALSE(after.has_value());
   EXPECT_EQ(after.error().code(), ErrorCode::OutOfRange);
@@ -469,7 +611,7 @@ TEST(VolTime, TimeToExpiryVolTimeOutsideWindowFailsClosed) {
 TEST(VolTime, TimeToExpiryCalendar365OutsideWindowIsUnaffected) {
   // Calendar365 reads no calendar, so the coverage guard must not touch it:
   // the whole historical fit/serve/backtest corpus rides this branch and every
-  // pre-2024 / post-2028 fixture in it must keep working, bit-for-bit.
+  // pre-2024 / post-2032 fixture in it must keep working, bit-for-bit.
   const auto from = ns_utc(1998, 7, 2, 13, 30);
   const auto to = ns_utc(2031, 9, 19, 20, 0);
   const auto res = time_to_expiry_years(from, to, TimeSpec{});
