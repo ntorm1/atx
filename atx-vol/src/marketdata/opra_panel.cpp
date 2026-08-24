@@ -156,10 +156,15 @@ void append_source_text(std::string &out, std::string_view value) {
 // Content hash over the frame's SOURCE rows/identities only (schema version,
 // snapshot stamp, uid, every row's quote fields, and the instrument-identity
 // map) -- it intentionally does NOT fold in `frame.time`/`spec.time`
-// (TimeSpec), so two panels loaded from byte-identical source rows under
-// DIFFERENT T conventions (e.g. Calendar365 vs VolTime) share the same
-// fingerprint; it identifies the market-data rows, not the fitting
-// convention applied to them.
+// (TimeSpec), so two panels holding the same KEPT rows under DIFFERENT T
+// conventions (e.g. Calendar365 vs VolTime) share the same fingerprint; it
+// identifies the market-data rows, not the fitting convention applied to them.
+//
+// The convention can still change WHICH rows are kept, and then the fingerprints
+// differ -- correctly, because the row sets differ. `VolTime` drops rows whose
+// expiry it cannot resolve at all (`n_dropped_uncovered_expiry`), and
+// `Calendar365`, which reads no calendar, keeps them. The invariant is "same
+// kept rows => same fingerprint", not "same file => same fingerprint".
 [[nodiscard]] std::uint64_t
 source_fingerprint(const QuoteFrame &frame, std::span<const std::uint32_t> instrument_ids,
                    const std::map<std::uint32_t, std::string> &identities,
@@ -826,6 +831,9 @@ Result<OpraPanel> panel_from_scan(const OpraTableScan &scan, const OpraLoadSpec 
   std::map<std::uint32_t, std::string> kept_mappings;
   std::size_t n_dropped = 0;
   std::size_t n_one_sided = 0;
+  std::size_t n_dropped_uncovered_expiry = 0;
+  std::vector<std::string> uncovered_expiries;  // distinct, kept ascending
+  std::string uncovered_expiry_reason;
   std::string first_underlying;
   std::string first_root;
 
@@ -890,11 +898,37 @@ Result<OpraPanel> panel_from_scan(const OpraTableScan &scan, const OpraLoadSpec 
     // which is a tradeable forward node; only after the 16:00 ET settle does T go
     // non-positive and the contract drop. (Previously the midnight-UTC parse made
     // every same-day expiry T <= 0 and hard-dropped the highest-volume segment.)
-    // A VolTime coverage failure (vol_time.hpp) is NOT a row-level drop: it
-    // means the loader cannot decide whether this contract is live, so the load
-    // fails rather than silently shrinking the board.
-    ATX_TRY(const double t_row,
-            time_to_expiry_years(snapshot_iso_ns, expiry_instant, spec.time));
+    //
+    // A VolTime coverage failure (vol_time.hpp) drops THIS EXPIRY and nothing
+    // else, counted and named (`n_dropped_uncovered_expiry` /
+    // `uncovered_expiries` / `uncovered_expiry_reason` — see the OpraPanel field
+    // docs for why both halves are needed). It used to abort the whole load, on
+    // the reasoning that the loader "cannot decide whether this contract is
+    // live". That reasoning was right about the ROW and wrong about the BLAST
+    // RADIUS: an unresolvable T is a property of one expiry, and real boards
+    // carry such expiries routinely — anything past the closure calendar's end,
+    // plus the 2099-01-01 sentinel that is not a contract at all — so one junk
+    // row cost the operator every quote on the name. It is NOT a silent drop
+    // either: the counters below are what make a shrunk board say so.
+    const Result<double> t_res =
+        time_to_expiry_years(snapshot_iso_ns, expiry_instant, spec.time);
+    if (!t_res.has_value()) {
+      ++n_dropped;
+      ++n_dropped_uncovered_expiry;
+      if (uncovered_expiry_reason.empty()) {
+        uncovered_expiry_reason = std::string(t_res.error().message());
+      }
+      // Distinct expiries only, and kept sorted by insertion: the count is
+      // per-row but the operator reads per-expiry. Linear over a set whose size
+      // is the board's uncoverable-expiry count (a handful at most).
+      const auto at = std::lower_bound(uncovered_expiries.begin(), uncovered_expiries.end(),
+                                       osi->expiry_iso);
+      if (at == uncovered_expiries.end() || *at != osi->expiry_iso) {
+        uncovered_expiries.insert(at, osi->expiry_iso);
+      }
+      continue;
+    }
+    const double t_row = *t_res;
     if (!(t_row > 0.0)) {
       ++n_dropped;
       continue;
@@ -1003,6 +1037,24 @@ Result<OpraPanel> panel_from_scan(const OpraTableScan &scan, const OpraLoadSpec 
     } else {
       kept_instrument_ids.push_back(0u);
     }
+  }
+
+  // Per-expiry drop, NOT a licence to return an empty board. When EVERY row was
+  // refused for coverage the defect is not one bad expiry — it is the SNAPSHOT
+  // (or the calendar) itself, and that has to reach the operator as an error
+  // rather than as a symbol whose quotes mysteriously vanished. Reported with
+  // the clock's own message and the expiry list, so the cause is named.
+  if (rows.empty() && n_dropped_uncovered_expiry > 0) {
+    std::string list;
+    for (std::size_t j = 0; j < uncovered_expiries.size(); ++j) {
+      if (j != 0) {
+        list.push_back(',');
+      }
+      list.append(uncovered_expiries[j]);
+    }
+    return Err(ErrorCode::OutOfRange,
+               "every quote row's expiry is unresolvable under the selected time convention {" +
+                   list + "}: " + uncovered_expiry_reason);
   }
 
   // The frame's default uid, in the SAME namespace every row above was keyed in
@@ -1131,6 +1183,9 @@ Result<OpraPanel> panel_from_scan(const OpraTableScan &scan, const OpraLoadSpec 
   panel.n_expiries = n_expiries;
   panel.n_dropped = n_dropped;
   panel.n_one_sided = n_one_sided;
+  panel.n_dropped_uncovered_expiry = n_dropped_uncovered_expiry;
+  panel.uncovered_expiries = std::move(uncovered_expiries);
+  panel.uncovered_expiry_reason = std::move(uncovered_expiry_reason);
   panel.source_schema_version = has_instrument_id ? 2u : 1u;
   panel.source_fingerprint = source_fingerprint(panel.frame, kept_instrument_ids, kept_mappings,
                                                 panel.source_schema_version);

@@ -300,15 +300,44 @@ struct OpraPanel {
   std::string snapshot_iso;               // the stamp applied to the frame
   std::size_t n_contracts = 0;            // rows kept
   std::size_t n_expiries = 0;             // distinct expiries kept
-  std::size_t n_dropped = 0;              // rows skipped (bad symbol / unset px / crossed)
+  std::size_t n_dropped = 0;              // rows skipped (bad symbol / unset px / crossed /
+                                          // uncoverable expiry)
   // T6: rows kept with an offer but no bid (`admit_one_sided_quotes`). Counted
   // separately from `n_contracts` so a board's one-sided share stays visible
   // rather than dissolving into the two-sided total.
   std::size_t n_one_sided = 0;
+  // ── Uncoverable-expiry drops ────────────────────────────────────────────
+  //
+  // Rows dropped because `time` could not resolve a year-fraction for their
+  // expiry AT ALL — under `TimeConvention::VolTime`, an expiry outside the
+  // holiday calendar's covered window or past the clock's ~20-year day-loop
+  // bound (vol_time.hpp). A SUB-COUNT of `n_dropped`, never a parallel bucket.
+  //
+  // This exists because both alternatives are wrong. Failing the LOAD makes one
+  // uncoverable expiry cost the WHOLE symbol — and a real board carries such
+  // rows, including the 2099-01-01 sentinel "expiry" that is not a contract at
+  // all, so vol-time was unusable on any production name. Dropping SILENTLY
+  // hands back a board short its long end that says so nowhere, which is the
+  // worse of the two: a chain carrying two clocks' worth of coverage with no
+  // diagnostic. Hence per-expiry AND reported.
+  //
+  // On `TimeConvention::Calendar365` these are always 0 / empty: that branch
+  // reads no calendar and is infallible, so no row can land here.
+  std::size_t n_dropped_uncovered_expiry = 0;
+  // The DISTINCT expiries those rows belonged to ("YYYY-MM-DD", ascending,
+  // unique) — the operator-facing half. A count alone cannot distinguish "one
+  // junk sentinel" from "the entire long end went missing".
+  std::vector<std::string> uncovered_expiries;
+  // The clock's own message for the FIRST such drop, verbatim, so the reason is
+  // named rather than re-derived (it distinguishes an out-of-window expiry from
+  // one past the day-loop bound). Empty iff `n_dropped_uncovered_expiry == 0`.
+  std::string uncovered_expiry_reason;
   std::uint32_t source_schema_version{1}; // 1=legacy, 2=instrument_id
-  // Content hash of the source rows/identities only; intentionally
+  // Content hash of the KEPT source rows/identities only; intentionally
   // TimeSpec-independent (see opra_panel.cpp's `source_fingerprint`) -- two
-  // panels loaded from the same rows under different T conventions share it.
+  // panels holding the same rows under different T conventions share it. A
+  // convention that DROPS rows the other keeps (VolTime's uncoverable expiries,
+  // above) yields a different fingerprint, because the row sets differ.
   std::uint64_t source_fingerprint{0};
   bool provenance_complete{false};
   // Column-presence metadata. A numeric zero is a valid observed count and
@@ -336,8 +365,13 @@ struct OpraPanel {
 //      failure.
 //   2. Per row: skip when the `underlying` filter is set and mismatched; drop
 //      (counted) when bid_px/ask_px is the INT64_MIN sentinel or null, when the
-//      OSI symbol fails to parse, or when the quote is crossed (bid > ask). A
-//      zero bid or ask is kept (unquotable legs are dropped downstream).
+//      OSI symbol fails to parse, when the quote is crossed (bid > ask), or when
+//      `spec.time` cannot resolve the row's expiry at all (additionally counted
+//      in `n_dropped_uncovered_expiry` and named in `uncovered_expiries` — one
+//      such expiry costs that expiry, not the symbol). A zero bid or ask is kept
+//      (unquotable legs are dropped downstream). If EVERY row is refused for
+//      coverage the load fails `OutOfRange` rather than returning an empty
+//      board: that is a snapshot/calendar defect, not one bad expiry.
 //   3. Multi-symbol guard (P2-2): reject ambiguous input up front — an empty
 //      `underlying` over a parquet carrying more than one distinct `underlying`,
 //      an `underlying` filter over a parquet with no `underlying` column, or a
@@ -372,7 +406,8 @@ struct OpraPanel {
 //
 // @return InvalidArgument on a read failure, an ambiguous multi-symbol input, a
 //         term-pillar length mismatch, or a frame-assembly (install
-//         precondition) failure; Unavailable when no co-terminal pair exists to
+//         precondition) failure; OutOfRange when `spec.time` can resolve NO
+//         row's expiry (step 2); Unavailable when no co-terminal pair exists to
 //         imply the spot and no override was supplied.
 [[nodiscard]] Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec &spec);
 

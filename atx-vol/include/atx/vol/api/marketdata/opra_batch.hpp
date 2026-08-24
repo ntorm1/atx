@@ -216,6 +216,19 @@ struct OpraBatchResult {
   // failed for a real defect (unreadable/unparseable file, wrong schema,
   // quarantined market inputs). Only `load_opra_hive` ever raises it.
   std::size_t n_coverage_holes = 0;
+  // Rows the LOADED cells dropped because the governing time convention could
+  // not resolve their expiry (`OpraPanel::n_dropped_uncovered_expiry`, summed),
+  // and how many cells contributed at least one such row.
+  //
+  // These describe cells inside `n_loaded`, NOT a failure bucket — which is the
+  // whole point of the per-expiry drop: a board past the closure calendar's end,
+  // or carrying the 2099-01-01 sentinel, still loads and still fits, minus that
+  // expiry. They are what keeps it from being a SILENT shrink: a run whose long
+  // end quietly evaporated and one that dropped a single junk row are otherwise
+  // indistinguishable. Read the per-cell `OpraPanel::uncovered_expiries` for
+  // WHICH expiries went.
+  std::size_t n_uncovered_expiry_rows = 0;
+  std::size_t n_cells_with_uncovered_expiries = 0;
 };
 
 // Diagnostics for the bounded production-ingest driver below. `peak_entries`

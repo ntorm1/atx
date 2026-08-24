@@ -1006,6 +1006,96 @@ TEST(OpraPanel, VolTimeConvention_ChangesPcpSpotAndTermRateStamping) {
   EXPECT_NE(vol->implied_spot, cal->implied_spot);
 }
 
+// ── D2: an uncoverable expiry costs ONE EXPIRY, not the whole symbol ───────
+//
+// The defect: the 0DTE/expired drop filter `ATX_TRY`d its year-fraction, so a
+// SINGLE expiry the vol-time calendar cannot resolve aborted the entire load.
+// A real board carries such rows — anything past the calendar's projected end,
+// and the 2099-01-01 sentinel "expiry" that is not a contract at all — so under
+// `--time-convention voltime` one junk row cost the operator the whole name.
+//
+// Dropping the row silently would be no better (a board short its long end,
+// saying so nowhere). So the drop is COUNTED and the expiries are NAMED:
+// `n_dropped_uncovered_expiry` / `uncovered_expiries` / `uncovered_expiry_reason`
+// are what turn a silent shrink into a reported one.
+TEST(OpraPanel, VolTimeDropsOnlyTheUncoverableExpiryAndCountsIt) {
+  const std::vector<RawRow> rows{
+      {"XOM", osi_sym("XOM", "260801", 'C', 110.0), 3.00, 3.10}, // covered
+      {"XOM", osi_sym("XOM", "260801", 'P', 110.0), 2.00, 2.10},
+      {"XOM", osi_sym("XOM", "271101", 'C', 110.0), 8.00, 8.10}, // covered
+      {"XOM", osi_sym("XOM", "271101", 'P', 110.0), 7.00, 7.10},
+      {"XOM", osi_sym("XOM", "330617", 'C', 110.0), 14.0, 14.2}, // past window end
+      {"XOM", osi_sym("XOM", "330617", 'P', 110.0), 13.0, 13.2},
+      {"XOM", osi_sym("XOM", "990101", 'C', 110.0), 20.0, 20.2}, // 2099 sentinel
+      {"XOM", osi_sym("XOM", "990101", 'P', 110.0), 19.0, 19.2},
+  };
+  const std::string path = write_slice("voltime_uncovered_expiry.parquet", rows);
+
+  OpraLoadSpec cal_spec;
+  cal_spec.path = path;
+  cal_spec.underlying = "XOM";
+  cal_spec.snapshot_iso = "2026-05-01";
+  cal_spec.r = 0.04;
+  OpraLoadSpec vol_spec = cal_spec;
+  vol_spec.time.convention = TimeConvention::VolTime;
+
+  // Calendar365 reads no calendar, so it keeps every row — which is what makes
+  // the VolTime result below a statement about the CLOCK, not the fixture.
+  const auto cal = load_opra_cbbo_parquet(cal_spec);
+  ASSERT_TRUE(cal.has_value()) << cal.error().to_string();
+  EXPECT_EQ(cal->n_contracts, std::size_t{8});
+  EXPECT_EQ(cal->n_expiries, std::size_t{4});
+  EXPECT_EQ(cal->n_dropped_uncovered_expiry, std::size_t{0});
+  EXPECT_TRUE(cal->uncovered_expiries.empty());
+
+  const auto vol = load_opra_cbbo_parquet(vol_spec);
+  ASSERT_TRUE(vol.has_value()) << "one uncoverable expiry must not fail the symbol: "
+                               << vol.error().to_string();
+  // The two covered expiries survive intact; only the four uncoverable rows go.
+  EXPECT_EQ(vol->n_contracts, std::size_t{4});
+  EXPECT_EQ(vol->n_expiries, std::size_t{2});
+  EXPECT_NE(atx::vol::find_expiry_inputs(vol->frame, "XOM", "2026-08-01"), nullptr);
+  EXPECT_NE(atx::vol::find_expiry_inputs(vol->frame, "XOM", "2027-11-01"), nullptr);
+  EXPECT_EQ(atx::vol::find_expiry_inputs(vol->frame, "XOM", "2033-06-17"), nullptr);
+  EXPECT_EQ(atx::vol::find_expiry_inputs(vol->frame, "XOM", "2099-01-01"), nullptr);
+  // Counted, named, and with the clock's own reason retained.
+  EXPECT_EQ(vol->n_dropped_uncovered_expiry, std::size_t{4});
+  ASSERT_EQ(vol->uncovered_expiries.size(), std::size_t{2});
+  EXPECT_EQ(vol->uncovered_expiries[0], "2033-06-17");
+  EXPECT_EQ(vol->uncovered_expiries[1], "2099-01-01");
+  EXPECT_FALSE(vol->uncovered_expiry_reason.empty());
+  // A coverage drop is a dropped ROW like any other, so it is inside n_dropped
+  // (a sub-count, never a parallel bucket).
+  EXPECT_GE(vol->n_dropped, vol->n_dropped_uncovered_expiry);
+  // The board is still usable: the surviving front expiry implies a spot.
+  EXPECT_GT(vol->implied_spot, 0.0);
+}
+
+TEST(OpraPanel, VolTimeStillFailsWhenEVERYExpiryIsUncoverable) {
+  // The drop is per-expiry, NOT a licence to hand back an empty board. A
+  // snapshot outside the calendar makes every row uncoverable, and that is a
+  // whole-cell defect the operator has to see — reported as OutOfRange with the
+  // clock's own message, not as a mysteriously quote-less symbol.
+  const std::vector<RawRow> rows{
+      {"XOM", osi_sym("XOM", "990101", 'C', 110.0), 20.0, 20.2},
+      {"XOM", osi_sym("XOM", "990101", 'P', 110.0), 19.0, 19.2},
+  };
+  const std::string path = write_slice("voltime_all_uncovered.parquet", rows);
+
+  OpraLoadSpec spec;
+  spec.path = path;
+  spec.underlying = "XOM";
+  spec.snapshot_iso = "2026-05-01";
+  spec.r = 0.04;
+  spec.time.convention = TimeConvention::VolTime;
+
+  const auto loaded = load_opra_cbbo_parquet(spec);
+  ASSERT_FALSE(loaded.has_value()) << "an empty board must not be reported as a load";
+  EXPECT_EQ(loaded.error().code(), atx::core::ErrorCode::OutOfRange);
+  EXPECT_NE(loaded.error().message().find("2099-01-01"), std::string::npos)
+      << loaded.error().message();
+}
+
 // The misuse the frame-carried TimeSpec makes impossible: a VolTime panel
 // handed to the PLAIN `data_install(u, panel.frame)` call every production
 // consumer already makes (no extra threading) must install Chain::T under

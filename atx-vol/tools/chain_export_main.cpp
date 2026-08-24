@@ -234,8 +234,9 @@ void usage() {
       "                     voltime     = SpiderRock's hybrid trading/non-trading\n"
       "                     clock. voltime is only defined over the 2024-2032\n"
       "                     holiday-calendar window (2024-2028 observed, 2029-2032\n"
-      "                     rule-projected); a session or expiry outside it\n"
-      "                     fails that cell rather than guessing. voltime also\n"
+      "                     rule-projected); a SESSION outside it fails that cell,\n"
+      "                     an EXPIRY outside it drops that expiry alone. Both are\n"
+      "                     counted in the census, never guessed. voltime also\n"
       "                     moves the DISCOUNTING clock, which the vendor keeps\n"
       "                     separate (years vs yearsC) — see the header note.\n"
       "  --pin-curve        force ONE curve family for EVERY symbol, overriding both the\n"
@@ -586,6 +587,12 @@ struct SymbolResult {
   bool risk_fit_rejected{false};      // fit() erred but a market mark was served
   bool index_namespace{false};        // okey_tk is a cash-settled index root
   std::size_t n_carry_solve_failed{0};
+  // Expiries the time convention could not resolve, so their rows were dropped
+  // and the REST of this symbol's board kept (opra_panel.hpp). Copied off the
+  // panel before the board consumes it, for the same reason `n_rows_emitted` is:
+  // the census runs long after that storage is gone.
+  std::vector<std::string> uncovered_expiries;
+  std::size_t n_uncovered_expiry_rows{0};
   // The family every SERVED slice actually used, and which surface served it.
   // Recorded separately from the pinned family because they can differ: a
   // pinned risk candidate that admission refuses is not substituted, it is
@@ -760,6 +767,9 @@ void export_symbol(atx::vol::OpraBatchEntry &entry, const SurfaceDb *db,
 
   const double parity_spot = entry.panel->implied_spot;
   const bool sizes_available = entry.panel->bid_size_available && entry.panel->ask_size_available;
+  // Read BEFORE the board consumes the panel: the census outlives this storage.
+  out.uncovered_expiries = entry.panel->uncovered_expiries;
+  out.n_uncovered_expiry_rows = entry.panel->n_dropped_uncovered_expiry;
   CorpusBoard board =
       atx::vol::corpus_board_from_opra(entry.date, entry.symbol, std::move(entry.panel.value()));
 
@@ -1081,6 +1091,40 @@ void print_census(const std::vector<SymbolResult> &results, const ce::ExportCens
   }
   std::fprintf(stderr, "hive cells              loaded=%zu missing=%zu error=%zu holes=%zu\n",
                batch.n_loaded, batch.n_missing, batch.n_error, batch.n_coverage_holes);
+  // Expiries the clock could not resolve, dropped with the rest of the board
+  // kept. Printed unconditionally under voltime, INCLUDING the zero, because "no
+  // expiry was dropped" and "this line was never reached" are two readings an
+  // operator has to tell apart — and a silently-shrunk long end is precisely
+  // what the drop would otherwise become. The batch counters cover every LOADED
+  // cell; the per-symbol names come from `results`, which outlives the panels.
+  if (time_convention == TimeConvention::VolTime) {
+    std::fprintf(stderr,
+                 "expiries out of clock   %zu rows over %zu of %zu loaded cells (that expiry "
+                 "dropped, rest of the board kept)\n",
+                 batch.n_uncovered_expiry_rows, batch.n_cells_with_uncovered_expiries,
+                 batch.n_loaded);
+    constexpr std::size_t kMaxNamedSymbols = 10;
+    std::size_t named = 0;
+    for (const SymbolResult &r : results) {
+      if (r.uncovered_expiries.empty()) {
+        continue;
+      }
+      if (named == kMaxNamedSymbols) {
+        std::fputs("    ... (more symbols not listed)\n", stderr);
+        break;
+      }
+      std::string list;
+      for (const std::string &iso : r.uncovered_expiries) {
+        if (!list.empty()) {
+          list.push_back(' ');
+        }
+        list.append(iso);
+      }
+      std::fprintf(stderr, "    %-10s %zu rows  %s\n", r.symbol.c_str(),
+                   r.n_uncovered_expiry_rows, list.c_str());
+      ++named;
+    }
+  }
   // SR-DIVS. Two lines, because "no schedule was supplied" and "a schedule was
   // supplied and matched none of these symbols" produce IDENTICAL rows and mean
   // opposite things — the first is the old continuous-borrow behaviour on

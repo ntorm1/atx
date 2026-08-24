@@ -141,22 +141,28 @@ struct EarningsReproConfig {
   // `sess.inputs().time`, so the historical calendar smoke path is bit-preserved;
   // only the config-driven (4-arg) default picks VolTime up.
   //
-  // DATED CLIFF — ~2027-01, and it is fail-closed, not silent. The SR tenor
+  // DATED CLIFF — ~2031-01, and it is fail-closed, not silent. The SR tenor
   // grid's longest horizon is 504 trading days (~2 years), and under
   // `VolTime` + `clock_days_per_year == 0` that horizon resolves through
   // `VolTimeCalendar::us_default()`, whose coverage window is exactly
-  // 2024-01-01 .. 2028-12-31 (vol_time.hpp explains why it is not wider). A
-  // snapshot dated after roughly 2027-01 therefore pushes its 504-day tenor
-  // past 2028-12-31 and `run_earnings_repro` returns `OutOfRange` for the whole
-  // call. That is CORRECT behaviour — the alternative is crediting full
-  // sessions for days no table covers — but it is a hard date, and every
+  // 2024-01-01 .. 2032-12-31 (vol_time.hpp explains why it is not wider at
+  // either end). A snapshot dated after roughly 2031-01 therefore pushes its
+  // 504-day tenor past 2032-12-31 and `run_earnings_repro` returns `OutOfRange`
+  // for the whole call. That is CORRECT behaviour — the alternative is crediting
+  // full sessions for days no calendar covers — but it is a hard date, and every
   // shipped fixture (NVDA 2026-02-10) sits comfortably inside it, so nothing in
   // the suite will start failing before the pipeline does.
   //
-  // Two ways past it, in preference order: extend `VolTimeCalendar`'s closure
-  // table and its window beyond 2028 (a change to the table, not to any
-  // caller); or set `clock_days_per_year > 0`, which bypasses the
-  // calendar-aware path entirely at the cost of the convention Task 10 locked.
+  // The cliff was ~2027-01 while the window ended at 2028-12-31; the 2029-2032
+  // rule projection moved it out by four years, it did not remove it.
+  //
+  // Two ways past it, in preference order: raise
+  // `kUsDefaultProjectedThroughYear` (vol_time.cpp) — now a one-line change
+  // needing no new data, though every added year is projection rather than
+  // published fact, so read that file's note on what the projection cannot know
+  // before leaning on a distant one; or set `clock_days_per_year > 0`, which
+  // bypasses the calendar-aware path entirely at the cost of the convention
+  // Task 10 locked.
   TimeSpec time{TimeConvention::VolTime};     // -> tenor_years convention (Task 10 sweep: VolTime)
   double clock_days_per_year{0.0};            // >0: T = N_td / this; 0: calendar-aware
   bool censor_space{true};                    // censor-then-interp (true) vs interp-then-censor
