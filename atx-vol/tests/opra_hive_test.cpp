@@ -167,6 +167,8 @@ TEST(OpraHive, IndexedScanPanelIsIdenticalToTheFullScanPanel) {
     EXPECT_EQ(fast->n_contracts, reference->n_contracts) << sym;
     EXPECT_EQ(fast->n_expiries, reference->n_expiries) << sym;
     EXPECT_EQ(fast->n_dropped, reference->n_dropped) << sym;
+    EXPECT_EQ(fast->n_dropped_uncovered_expiry, reference->n_dropped_uncovered_expiry) << sym;
+    EXPECT_EQ(fast->uncovered_expiries, reference->uncovered_expiries) << sym;
     EXPECT_EQ(fast->implied_spot, reference->implied_spot) << sym; // bitwise, not NEAR
     EXPECT_EQ(fast->snapshot_iso, reference->snapshot_iso) << sym;
     EXPECT_EQ(fast->source_schema_version, reference->source_schema_version) << sym;
@@ -989,25 +991,27 @@ TEST(OpraHive, VolTimeChainTIsExactlyVolTimeYearsForTheSameSpan) {
   fs::remove_all(root);
 }
 
-// An expiry PAST the vol-time calendar's covered window must FAIL the cell, not
-// quietly shrink the board.
+// An expiry PAST the vol-time calendar's covered window must cost THAT EXPIRY,
+// not the whole symbol -- and must not vanish quietly either.
 //
-// This is the operationally dangerous case, and it is not hypothetical: the
-// store carries a 2099-01-01 sentinel expiry, and a board can list an expiry past
-// whatever horizon `VolTimeCalendar::us_default()` can honestly claim. Three
-// outcomes were possible and only one is safe:
-//   * silently treat the uncovered days as OPEN — a wrong T with no symptom;
-//   * silently DROP the uncovered rows — a board that is short its long end and
-//     says so nowhere, i.e. a chain carrying two clocks' worth of coverage;
-//   * fail the cell.
-// The loader takes the third: the year-fraction the 0DTE/expired filter computes
-// per row is `ATX_TRY`d (opra_panel.cpp), so an uncovered expiry aborts the load
-// instead of being classified as expired. The whole symbol is then a visible
-// `n_error` entry the census names, never a partial board.
+// This is the operationally dangerous case, and it is not hypothetical: a real
+// board carries expiries beyond any horizon a closure table can honestly claim,
+// including the production store's 2099-01-01 sentinel, which is not a contract
+// at all. Four outcomes were possible and only one is right:
+//   * silently treat the uncovered days as OPEN -- a wrong T with no symptom;
+//   * silently DROP the uncovered rows -- a board short its long end that says
+//     so nowhere, i.e. a chain carrying two clocks' worth of coverage;
+//   * fail the CELL -- which is what this used to do, and it made one junk row
+//     cost every quote on the name, so vol-time was unusable on a real board;
+//   * drop that expiry, count it, and name it.
+// The loader takes the fourth. `n_uncovered_expiry_rows` /
+// `n_cells_with_uncovered_expiries` (batch) and `OpraPanel::uncovered_expiries`
+// (cell) are what separate it from the silent-drop option above; the chain-export
+// census prints both.
 //
-// The same fixture under Calendar365 loads fine, which is what makes this a
+// The same fixture under Calendar365 keeps every row, which is what makes this a
 // statement about the CLOCK rather than about the fixture.
-TEST(OpraHive, VolTimeFailsTheCellForAnExpiryPastTheCalendarWindow) {
+TEST(OpraHive, VolTimeDropsTheUncoverableExpiryAndKeepsTheRestOfTheCell) {
   const fs::path root = fs::temp_directory_path() / "atx_opra_hive_time_window";
   fs::remove_all(root);
   tsupport::SyntheticHiveSpec fx;
@@ -1030,29 +1034,40 @@ TEST(OpraHive, VolTimeFailsTheCellForAnExpiryPastTheCalendarWindow) {
     return ahv::load_opra_hive(spec);
   };
 
-  // Calendar365 reads the straddling board without complaint.
+  // Calendar365 reads the straddling board without complaint: both expiries,
+  // 36 rows (9 strikes x 2 expiries x {C,P}), nothing dropped for coverage.
   const auto cal = load(ahv::TimeConvention::Calendar365);
   ASSERT_TRUE(cal.has_value()) << cal.error().to_string();
   ASSERT_EQ(cal->entries.size(), std::size_t{1});
-  EXPECT_TRUE(cal->entries.front().panel.has_value())
+  ASSERT_TRUE(cal->entries.front().panel.has_value())
       << cal->entries.front().panel.error().to_string();
   EXPECT_EQ(cal->n_loaded, std::size_t{1});
   EXPECT_EQ(cal->n_error, std::size_t{0});
+  EXPECT_EQ(cal->entries.front().panel->n_expiries, std::size_t{2});
+  EXPECT_EQ(cal->entries.front().panel->n_contracts, std::size_t{36});
+  EXPECT_EQ(cal->n_uncovered_expiry_rows, std::size_t{0});
+  EXPECT_EQ(cal->n_cells_with_uncovered_expiries, std::size_t{0});
 
-  // VolTime refuses it. The batch itself is still Ok (an uncovered expiry is a
-  // CELL defect, not a malformed spec), so the failure is reported per symbol.
+  // VolTime keeps the cell and drops the one expiry it cannot resolve.
   const auto vt = load(ahv::TimeConvention::VolTime);
   ASSERT_TRUE(vt.has_value()) << vt.error().to_string();
   ASSERT_EQ(vt->entries.size(), std::size_t{1});
   const ahv::OpraBatchEntry &cell = vt->entries.front();
-  ASSERT_FALSE(cell.panel.has_value()) << "an uncovered expiry must not load";
-  EXPECT_EQ(cell.panel.error().code(), ahv::ErrorCode::OutOfRange);
-  // Not a coverage hole: the symbol IS in the file. It is a real defect, and the
-  // counters must say so or an operator reads it as a sparse universe.
+  ASSERT_TRUE(cell.panel.has_value())
+      << "one uncoverable expiry must not cost the symbol: " << cell.panel.error().to_string();
+  EXPECT_EQ(vt->n_loaded, std::size_t{1});
+  EXPECT_EQ(vt->n_error, std::size_t{0});
   EXPECT_FALSE(cell.coverage_hole);
-  EXPECT_EQ(vt->n_error, std::size_t{1});
-  EXPECT_EQ(vt->n_coverage_holes, std::size_t{0});
-  EXPECT_EQ(vt->n_loaded, std::size_t{0});
+  // Half the board survives: the covered near expiry, all 18 of its rows.
+  EXPECT_EQ(cell.panel->n_expiries, std::size_t{1});
+  EXPECT_EQ(cell.panel->n_contracts, std::size_t{18});
+  // ...and the loss is COUNTED and NAMED rather than inferred from the gap.
+  EXPECT_EQ(cell.panel->n_dropped_uncovered_expiry, std::size_t{18});
+  ASSERT_EQ(cell.panel->uncovered_expiries.size(), std::size_t{1});
+  EXPECT_EQ(cell.panel->uncovered_expiries.front(), "2033-01-26");
+  EXPECT_FALSE(cell.panel->uncovered_expiry_reason.empty());
+  EXPECT_EQ(vt->n_uncovered_expiry_rows, std::size_t{18});
+  EXPECT_EQ(vt->n_cells_with_uncovered_expiries, std::size_t{1});
 }
 
 // ── SR-DIVS: the discrete cash-dividend schedule reaches the frame ───────────

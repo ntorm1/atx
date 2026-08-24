@@ -161,9 +161,16 @@ struct OpraHiveSpec {
   // defaulted the same way, and this loader simply left it at its default).
   //
   // `TimeConvention::VolTime` inherits the vol-time calendar's fail-closed
-  // coverage window (2024-2032, vol_time.hpp): a date/expiry pair outside it
-  // makes the CELL fail with `ErrorCode::OutOfRange` (an entry-level `Err`
-  // bumping `n_error`), never a silently-wrong T.
+  // coverage window (2024-2032, vol_time.hpp). The blast radius depends on WHAT
+  // is uncoverable — but a silently-wrong T is never one of the outcomes:
+  //   * one EXPIRY the clock cannot resolve (a tenor past the calendar's end, or
+  //     the 2099-01-01 sentinel that is not a contract at all) drops that
+  //     expiry's rows and nothing else. The cell still loads and still fits;
+  //     the rows are counted in `n_uncovered_expiry_rows` and the expiries named
+  //     in `OpraPanel::uncovered_expiries`.
+  //   * a SNAPSHOT outside the window makes EVERY row uncoverable, and the cell
+  //     then fails `ErrorCode::OutOfRange` (an entry-level `Err` bumping
+  //     `n_error`) rather than reporting an empty board as a successful load.
   TimeSpec time{};
 
   // Per-date load fan-out (W4.3). 0 = auto (hardware concurrency), 1 = serial.

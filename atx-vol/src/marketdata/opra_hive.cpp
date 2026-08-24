@@ -393,6 +393,13 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec& spec, const OpraBatch
   for (const OpraBatchEntry& entry : result.entries) {
     if (entry.panel.has_value()) {
       ++result.n_loaded;
+      // Sub-counts of a LOADED cell, not a fourth bucket: an uncoverable expiry
+      // costs that expiry, never the symbol (opra_panel.hpp). Counted here so a
+      // silently-shortened long end is visible in the batch summary.
+      if (entry.panel->n_dropped_uncovered_expiry > 0) {
+        result.n_uncovered_expiry_rows += entry.panel->n_dropped_uncovered_expiry;
+        ++result.n_cells_with_uncovered_expiries;
+      }
     } else if (entry.panel.error().code() == ErrorCode::NotFound) {
       ++result.n_missing;
     } else {

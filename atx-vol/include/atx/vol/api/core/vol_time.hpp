@@ -207,6 +207,9 @@
 // past `kMaxLoopDays`). Extending the projection to swallow it would mean
 // guessing seventy years of closures to make a row that is not an option parse,
 // which is the exact silent guess this module exists to refuse. What changed
+// for that sentinel is the BLAST RADIUS, not the verdict: the OPRA loader now
+// drops the uncoverable expiry and counts it (`OpraPanel::n_dropped_uncovered_
+// expiry`) instead of failing the whole symbol.
 //
 // The DATED CLIFF this note used to describe is pushed out, not removed. A long
 // tenor measured off a recent snapshot still resolves past the window's end
