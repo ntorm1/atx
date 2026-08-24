@@ -32,6 +32,8 @@ import subprocess
 import sys
 from zoneinfo import ZoneInfo
 
+import polars as pl
+
 TOOLS = pathlib.Path(__file__).resolve().parent
 ET = ZoneInfo("America/New_York")
 
@@ -119,9 +121,23 @@ def main(argv=None) -> int:
         else:
             print(f"  (hive cached: {hive})")
 
+        # ASK chain-export FOR THE BOARDS THE HIVE ACTUALLY HOLDS. --symbols here
+        # names vendor underliers (undSecKey_tk), but a hive board is one OSI
+        # ROOT, and the two differ wherever SpiderRock files several roots under
+        # one key -- SPX carries SPXW, NDX carries NDXP, BRK.B is filed as BRKB.
+        # Passing the vendor list exports only the roots that happen to spell the
+        # same, and the scorecard's inner join then drops the vendor rows for the
+        # rest without a word: a 140-name run silently lost SPXW, NDXP, RUTW,
+        # DJXW, BABA2 and BRKB while reporting 139 names and a plausible number.
+        boards = sorted(
+            pl.scan_parquet(str(hive / "**" / "*.parquet"))
+            .select("underlying").unique().collect()["underlying"].to_list())
+        print(f"  hive holds {len(boards)} boards for {len(a.symbols.split(','))} "
+              f"requested underliers", flush=True)
+
         chain = a.work / f"chain-{a.tag}-{a.date}-{bucket}.parquet"
         cmd = [str(a.binary), "--hive", str(hive), "--underlier", str(und),
-               "--db", a.db, "--date", a.date, "--symbols", a.symbols,
+               "--db", a.db, "--date", a.date, "--symbols", ",".join(boards),
                "--snapshot-suffix", snapshot_suffix(a.date, bucket),
                "--r", a.rate, "--out", str(chain)]
         if a.extra:
@@ -131,7 +147,7 @@ def main(argv=None) -> int:
         receipt = a.work / f"score-{a.tag}-{a.date}-{bucket}.json"
         run([sys.executable, str(TOOLS / "sr_fit_scorecard.py"),
              "--chain", str(chain), "--store", str(a.store),
-             "--date", a.date, "--bucket", bucket,
+             "--date", a.date, "--bucket", bucket, "--symbols", a.symbols,
              "--label", f"{a.label} [{bucket}]", "--out", str(receipt)],
             f"score {bucket}")
         receipts.append(receipt)
