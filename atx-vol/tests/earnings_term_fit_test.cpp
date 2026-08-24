@@ -86,7 +86,7 @@ TEST(SrTenorGrid, TradingDays_MatchTickerHistoryColumns) {
 TEST(SrTenorGrid, PresidentsDay2026_IsNyseHoliday) {
   // Precondition for AdvanceTradingDays_SkipsWeekendAndHoliday below: confirms
   // VolTimeCalendar::us_default() actually carries 2026-02-16 (Presidents
-  // Day) as a full NYSE closure, per the header's claimed 2024-2028 coverage.
+  // Day) as a full NYSE closure, per the header's claimed 2024-2032 coverage.
   constexpr std::int64_t kDayNs = 24LL * 3600LL * 1'000'000'000LL;
   const auto day = static_cast<std::int32_t>(ns_utc(2026, 2, 16, 0, 0) / kDayNs);
   EXPECT_TRUE(VolTimeCalendar::us_default().is_holiday(day));
@@ -209,10 +209,11 @@ TEST(SrTenorGrid, TenorYears_ComposesAdvanceAndTimeToExpiry) {
 // `tenor_years` propagates the stepper's coverage error rather than folding it
 // into a plausible-looking year-fraction -- including on the DEFAULT Calendar365
 // convention, whose year-fraction reads no calendar but whose EXPIRY INSTANT is
-// still produced by the trading-day walk. 21 trading days from 2028-12-24 leaves
-// us_default()'s 2024-2028 table.
+// still produced by the trading-day walk. Mon 2032-12-20 leaves only eight
+// covered sessions in the year (12-24 is the observed Christmas closure), so a
+// 21 trading-day walk from it leaves us_default()'s 2024-2032 window.
 TEST(SrTenorGrid, TenorYears_StepOutsideTheCalendarWindowFailsClosed) {
-  const std::int64_t now = ns_utc(2028, 12, 24, 16, 0);
+  const std::int64_t now = ns_utc(2032, 12, 20, 16, 0);
   const auto y = tenor_years(now, 21, TimeSpec{}); // Calendar365 default
   ASSERT_FALSE(y.has_value());
   EXPECT_EQ(y.error().code(), atx::vol::ErrorCode::OutOfRange);

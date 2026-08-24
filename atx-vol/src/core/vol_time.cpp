@@ -77,6 +77,52 @@ struct CivilDate {
   return first + offset + static_cast<std::int64_t>(n - 1) * 7;
 }
 
+// Gregorian Easter Sunday for `y`, as days-since-epoch (Meeus/Jones/Butcher
+// "anonymous" algorithm). Good Friday — the one movable NYSE full closure — is
+// this minus two days.
+//
+// The Gregorian date is what NYSE observes; the Julian/Orthodox computus can
+// differ by up to five weeks (2032 is such a year: Gregorian 03-28 against
+// Orthodox 05-02), so a source quoting the Julian date will silently move a
+// closure a month. Cross-checked against published Good Fridays: 2024-03-29,
+// 2025-04-18, 2026-04-03, 2027-03-26, 2028-04-14 all fall out of this, which is
+// what `VolTime.RuleProjectionReproducesTheObservedTable` pins.
+//
+// Every intermediate is bounded well inside int (the largest is 19*a + b, under
+// 600 for any four-digit year), so the integer arithmetic cannot overflow.
+[[nodiscard]] constexpr std::int64_t easter_sunday_days(std::int32_t y) noexcept {
+  const int a = y % 19;
+  const int b = y / 100;
+  const int c = y % 100;
+  const int d = b / 4;
+  const int e = b % 4;
+  const int f = (b + 8) / 25;
+  const int g = (b - f + 1) / 3;
+  const int h = (19 * a + b - d - g + 15) % 30;
+  const int i = c / 4;
+  const int k = c % 4;
+  const int l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const int m = (a + 11 * h + 22 * l) / 451;
+  const int month = (h + l - 7 * m + 114) / 31;                 // 3 (March) or 4 (April)
+  const int day = ((h + l - 7 * m + 114) % 31) + 1;             // [1, 31]
+  return days_from_civil(y, static_cast<std::uint32_t>(month), static_cast<std::uint32_t>(day));
+}
+
+// NYSE weekend-observance shift for a FIXED-DATE closure: Saturday -> the
+// preceding Friday, Sunday -> the following Monday, weekday -> itself. The
+// Saturday-New-Year exception is NOT applied here (it is a non-observance, not
+// a shift); its caller handles it.
+[[nodiscard]] std::int64_t nyse_observed_day(std::int64_t z) noexcept {
+  const int wd = weekday_from_days(static_cast<std::int32_t>(z));
+  if (wd == 6) {
+    return z - 1;  // Saturday -> preceding Friday
+  }
+  if (wd == 0) {
+    return z + 1;  // Sunday -> following Monday
+  }
+  return z;
+}
+
 // US/Eastern modern (2007+) DST rule, resolved at calendar-day granularity:
 // both transition instants (02:00 local on the 2nd Sunday of March / 1st
 // Sunday of November) fall on Sundays, a non-trading day, so this is exact for
@@ -139,6 +185,41 @@ bool is_weekend_day(std::int32_t day_since_epoch) noexcept {
   return wd == 0 || wd == 6;
 }
 
+// See vol_time.hpp for the contract, and above all for what this deliberately
+// does NOT produce: ad-hoc closures. Every closure below is derivable from a
+// published NYSE rule; nothing here is a guess about a year's actual events.
+std::vector<std::int32_t> nyse_rule_based_closures(std::int32_t year) {
+  std::vector<std::int32_t> out;
+  out.reserve(10);
+  const auto push = [&out](std::int64_t z) {
+    out.push_back(static_cast<std::int32_t>(z));
+  };
+
+  // New Year's Day. A Sunday New Year moves to Monday 01-02; a SATURDAY one is
+  // not observed at all (NYSE does not close the preceding 12-31), which is why
+  // this is the only holiday here that can be absent.
+  const std::int64_t new_year = days_from_civil(year, 1, 1);
+  if (weekday_from_days(static_cast<std::int32_t>(new_year)) != 6) {
+    push(nyse_observed_day(new_year));
+  }
+  push(nth_weekday_of_month(year, 1, /*Monday=*/1, 3));   // MLK Jr. Day
+  push(nth_weekday_of_month(year, 2, /*Monday=*/1, 3));   // Washington's Birthday
+  push(easter_sunday_days(year) - 2);                     // Good Friday
+  // Memorial Day = LAST Monday of May, i.e. one week before June's first
+  // Monday. Computing it as "the 5th Monday of May" would silently fall into
+  // June in the years May has only four.
+  push(nth_weekday_of_month(year, 6, /*Monday=*/1, 1) - 7);
+  push(nyse_observed_day(days_from_civil(year, 6, 19)));  // Juneteenth
+  push(nyse_observed_day(days_from_civil(year, 7, 4)));   // Independence Day
+  push(nth_weekday_of_month(year, 9, /*Monday=*/1, 1));   // Labor Day
+  push(nth_weekday_of_month(year, 11, /*Thursday=*/4, 4));// Thanksgiving
+  push(nyse_observed_day(days_from_civil(year, 12, 25))); // Christmas
+
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+  return out;
+}
+
 std::int64_t settlement_instant_ns(std::int32_t et_day_since_epoch,
                                    SettlementSession settle) noexcept {
   // 16:00 ET (Pm, the regular-session close) or 09:30 ET (Am, the opening
@@ -169,31 +250,61 @@ bool VolTimeCalendar::covers(std::int32_t day_since_epoch) const noexcept {
   return day_since_epoch >= first_covered_day_ && day_since_epoch <= last_covered_day_;
 }
 
-// Coverage window of the NYSE closure table in `us_default()` below:
-// 2024-01-01 through 2028-12-31, inclusive. These live HERE, adjacent to the
-// table, because they are one fact with it: extending the table without
-// extending the window silently keeps the new years fail-closed, and extending
-// the window without the table reinstates exactly the silent-full-session bug
-// the window exists to prevent. Change both in the same edit.
+// Coverage window of the NYSE closure calendar in `us_default()` below:
+// 2024-01-01 through 2032-12-31, inclusive, in two halves that are two
+// different kinds of fact — 2024-2028 OBSERVED, 2029-2032 RULE-PROJECTED.
+//
+// These constants live HERE, adjacent to the table, because window and closures
+// are one fact together: extending the table without extending the window
+// silently keeps the new years fail-closed, and extending the window without
+// the closures reinstates exactly the silent-full-session bug the window exists
+// to prevent. Change both in the same edit.
 //
 // The window is not widened backwards past 2024 "because closures are rare":
 // `is_dst` implements the MODERN (2007+) US DST rule only, so pre-2007
 // session boundaries would be off by an hour on top of the missing closures.
+//
+// Nor is it projected indefinitely forwards. The projection is only as good as
+// the assumption that no ad-hoc closure happens, and that assumption decays: it
+// is a reasonable four-year bridge to cover the LEAPS the option store actually
+// lists, not a claim about the 2040s. Past the end the clock still fails closed
+// — that is what makes the horizon a stated limit rather than a silent one.
 constexpr std::int32_t kUsDefaultFirstCoveredDay =
     static_cast<std::int32_t>(days_from_civil(2024, 1, 1));
+
+// Last year NYSE has actually PUBLISHED a holiday calendar for (verified
+// 2026-08-23 at nyse.com/markets/hours-calendars, which lists 2026/2027/2028
+// and nothing further). Everything through this year is transcribed observed
+// fact below, ad-hoc closures included. Bump it — and move those years into the
+// literal table — when the exchange publishes further out.
+constexpr std::int32_t kUsDefaultObservedThroughYear = 2028;
+
+// Last year the rule projection is carried out to. Raising this is a one-line
+// change and needs no new data; lowering it re-narrows the window. It is NOT
+// raised to cover a far-dated sentinel expiry: a 2099 "expiry" is not a
+// contract, and projecting 70 years of closures to make one parse would be
+// exactly the silent guess this module refuses.
+constexpr std::int32_t kUsDefaultProjectedThroughYear = 2032;
+
 constexpr std::int32_t kUsDefaultLastCoveredDay =
-    static_cast<std::int32_t>(days_from_civil(2028, 12, 31));
+    static_cast<std::int32_t>(days_from_civil(kUsDefaultProjectedThroughYear, 12, 31));
 
 const VolTimeCalendar& VolTimeCalendar::us_default() {
   static const VolTimeCalendar cal = [] {
     std::vector<std::int32_t> days;
-    days.reserve(50);
+    days.reserve(90);
     auto add = [&days](std::int32_t y, std::uint32_t m, std::uint32_t d) {
       days.push_back(static_cast<std::int32_t>(days_from_civil(y, m, d)));
     };
-    // NYSE full-closure table, 2024-2028 inclusive (weekend-observance shifts
-    // already applied). 2025-01-09 = National Day of Mourning (Jimmy Carter).
-    // 2027 Independence Day observed Monday 07-05 (07-04 is a Sunday); 2027
+    // ── 2024-2028: OBSERVED ────────────────────────────────────────────────
+    // Transcribed from NYSE's own published holiday calendars (weekend-
+    // observance shifts already applied), which is why this half is a literal
+    // table and not a call to `nyse_rule_based_closures`: only a transcription
+    // can carry an AD-HOC closure, and this half has one — 2025-01-09, the
+    // National Day of Mourning for Jimmy Carter. No rule produces that day, and
+    // dropping to a rule here would silently delete it.
+    // 2026 Independence Day observed Friday 07-03 (07-04 is a Saturday); 2027
+    // Independence Day observed Monday 07-05 (07-04 is a Sunday); 2027
     // Christmas observed Friday 12-24. 2028 New Year's Day is unobserved
     // (falls on a Saturday) and is intentionally absent from this table.
     add(2024, 1, 1);  add(2024, 1, 15); add(2024, 2, 19); add(2024, 3, 29);
@@ -215,6 +326,29 @@ const VolTimeCalendar& VolTimeCalendar::us_default() {
     add(2028, 1, 17); add(2028, 2, 21); add(2028, 4, 14); add(2028, 5, 29);
     add(2028, 6, 19); add(2028, 7, 4);  add(2028, 9, 4);  add(2028, 11, 23);
     add(2028, 12, 25);
+
+    // ── 2029-2032: RULE-PROJECTED ──────────────────────────────────────────
+    // NYSE has published nothing past 2028, so these years are COMPUTED from
+    // the ten rule-based closures (`nyse_rule_based_closures`, whose contract
+    // states exactly what it can and cannot know). They are a projection, not a
+    // transcription: any AD-HOC closure that lands in 2029-2032 — a national
+    // day of mourning, a hurricane, a market-wide emergency — will be MISSING
+    // here until someone adds it, and this calendar will credit that day a full
+    // trading session. That is the standing, stated cost of the projection.
+    //
+    // It is a far smaller error than the alternative it replaces. Before this
+    // extension the window simply ENDED at 2028-12-31, and every 2029/2030/2031
+    // LEAPS in the option store returned `OutOfRange`, which failed the whole
+    // symbol — vol-time was unusable on any real board. One possible unlisted
+    // closure buys back four years of usable long end, and the same generator
+    // reproduces NYSE's five published years EXACTLY (see
+    // `VolTime.RuleProjectionReproducesTheObservedTable`), so the rule itself is
+    // checked against fact rather than asserted.
+    for (std::int32_t y = kUsDefaultObservedThroughYear + 1;
+         y <= kUsDefaultProjectedThroughYear; ++y) {
+      const std::vector<std::int32_t> projected = nyse_rule_based_closures(y);
+      days.insert(days.end(), projected.begin(), projected.end());
+    }
 
     return VolTimeCalendar(std::move(days), kUsDefaultFirstCoveredDay, kUsDefaultLastCoveredDay);
   }();

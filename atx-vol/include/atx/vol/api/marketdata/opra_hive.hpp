@@ -161,7 +161,7 @@ struct OpraHiveSpec {
   // defaulted the same way, and this loader simply left it at its default).
   //
   // `TimeConvention::VolTime` inherits the vol-time calendar's fail-closed
-  // coverage window (2024-2028, vol_time.hpp): a date/expiry pair outside it
+  // coverage window (2024-2032, vol_time.hpp): a date/expiry pair outside it
   // makes the CELL fail with `ErrorCode::OutOfRange` (an entry-level `Err`
   // bumping `n_error`), never a silently-wrong T.
   TimeSpec time{};

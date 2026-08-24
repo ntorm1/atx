@@ -993,8 +993,8 @@ TEST(OpraHive, VolTimeChainTIsExactlyVolTimeYearsForTheSameSpan) {
 // quietly shrink the board.
 //
 // This is the operationally dangerous case, and it is not hypothetical: the
-// store carries real 2029-2031 LEAPS and a 2099-01-01 sentinel expiry, all of
-// which sit outside `VolTimeCalendar::us_default()`'s 2024-2028 window. Three
+// store carries a 2099-01-01 sentinel expiry, and a board can list an expiry past
+// whatever horizon `VolTimeCalendar::us_default()` can honestly claim. Three
 // outcomes were possible and only one is safe:
 //   * silently treat the uncovered days as OPEN — a wrong T with no symptom;
 //   * silently DROP the uncovered rows — a board that is short its long end and
@@ -1012,16 +1012,17 @@ TEST(OpraHive, VolTimeFailsTheCellForAnExpiryPastTheCalendarWindow) {
   fs::remove_all(root);
   tsupport::SyntheticHiveSpec fx;
   fx.symbols = {"AAA"};
-  // Trade date inside the window; the +56d expiry (2029-01-26) lands outside it,
-  // so this board straddles the boundary exactly like a real LEAPS-carrying name.
-  fx.dates = {"2028-12-01"};
+  // Trade date inside the window; the +28d expiry (2032-12-29) is covered and the
+  // +56d one (2033-01-26) is not, so this board straddles the boundary exactly
+  // like a real name carrying an expiry past the calendar's end.
+  fx.dates = {"2032-12-01"};
   tsupport::write_synthetic_hive_v2(root, fx);
 
   const auto load = [&root](ahv::TimeConvention convention) {
     ahv::OpraHiveSpec spec;
     spec.root_dir = root.string();
-    spec.date_lo = "2028-12-01";
-    spec.date_hi = "2028-12-01";
+    spec.date_lo = "2032-12-01";
+    spec.date_hi = "2032-12-01";
     spec.symbols = {"AAA"};
     spec.r = 0.03;
     spec.n_threads = 1;
