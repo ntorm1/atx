@@ -1,3 +1,30 @@
+# ── L7-T4 (2026-08-23): the SKIPPED-is-not-PASSED contract ───────────────────
+#
+# A `GTEST_SKIP()`ping case leaves the process exit code at 0, so a naive ctest
+# registration reports PASS for a test that never ran. With 168 GTEST_SKIP sites
+# across 50 files in this tree — most of them fixture gates over data/ that a
+# clean checkout does not have (root .gitignore excludes /data/) — that would
+# make every end-to-end fit-quality and no-arb gate green-by-vacuity.
+#
+# MEASURED, NOT ASSUMED (2026-08-23, CMake 3.29.0): the per-case lanes are
+# already honest. `GoogleTestAddTests.cmake` (CMake's own module, shipped at
+# share/cmake-3.29/Modules/) writes `SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\]"`
+# onto every discovered test unconditionally, and `ctest -R ^AmznEarnings`
+# reports all seven fixture-gated cases as `***Skipped` and lists them under
+# "The following tests did not run". So the sprint's per-case gate output can be
+# trusted. It is restated HERE, explicitly, because that default is a property
+# of the toolchain rather than of this project: a CMake that predates it (the
+# property itself is 3.16; the GoogleTest module's default is newer) would
+# silently take the contract away, and a gate contract that depends on which
+# cmake.exe is first on PATH is not a contract.
+#
+# NOT applied to the aggregate `--gtest_filter` lanes further down. Per CMake's
+# own documentation this property marks a test skipped "regardless of the
+# process exit code", so on a lane that runs hundreds of cases in ONE ctest
+# entry a single skipped case would mask a genuine FAILURE in the same run.
+# Those lanes get a `FAIL_REGULAR_EXPRESSION` instead — see each one.
+set(ATX_VOL_GTEST_SKIP_REGEX "\\[  SKIPPED \\]")
+
 add_executable(atx-vol-tests
     convex_recovery_test.cpp
     quote_feasibility_test.cpp
@@ -370,6 +397,15 @@ target_compile_definitions(atx-vol-tests PRIVATE
 target_compile_definitions(atx-vol-tests PRIVATE
     "ATX_VOL_INCLUDE_ROOT=\"${CMAKE_CURRENT_SOURCE_DIR}/../include\""
     "ATX_VOL_UMBRELLA_HPP=\"${CMAKE_CURRENT_SOURCE_DIR}/../include/atx/vol/api/vol.hpp\"")
+# L7-T1: the third anchor of the same contract. The two above pin what the public
+# include tree CONTAINS; this one pins what the package SHIPS, which is a separate
+# file and was the half that had rotted — include/atx/vol/alpha/ sat on the
+# target's public BUILD_INTERFACE with no install() rule at all, so seven headers
+# compiled in-tree and were a hard `file not found` for every downstream consumer.
+# Baked in the same way and for the same reason: the contract must hold under any
+# ctest working directory.
+target_compile_definitions(atx-vol-tests PRIVATE
+    "ATX_VOL_INSTALL_CMAKE=\"${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/atx-vol-install.cmake\"")
 
 # FRI-072: the single anchor every fixture/resource path in this test tree is
 # resolved from (tests/support/test_paths.hpp). Same intent as the three baked
@@ -423,6 +459,7 @@ target_include_directories(atx-vol-oracle-convention-tests
 # turns a vanished suite into "No tests were found", and the gate pins the exact
 # fully-qualified ID set the way it pins the OracleBench registry.
 gtest_discover_tests(atx-vol-oracle-convention-tests
+    PROPERTIES SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
     DISCOVERY_MODE PRE_TEST)
 
 # Discrete-cash-dividend lane: the Vellekoop-Nieuwenhuis spliced CRR lattice
@@ -446,6 +483,7 @@ target_include_directories(atx-vol-discrete-div-tests
 # Same reason as the convention target: one ctest case per gtest case, so a
 # vanished suite reports "No tests were found" instead of a vacuous 1/1 pass.
 gtest_discover_tests(atx-vol-discrete-div-tests
+    PROPERTIES SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
     DISCOVERY_MODE PRE_TEST)
 
 # Suites measured >10s (serial debug, 2026-07-11). Everything here still runs
@@ -475,11 +513,11 @@ set(ATX_VOL_SLOW_FILTER
 # non-launchable exe no longer fails the *build*.
 gtest_discover_tests(atx-vol-tests
     TEST_FILTER "-${ATX_VOL_SLOW_FILTER}"
-    PROPERTIES LABELS atx_vol_fast
+    PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
     DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(atx-vol-tests
     TEST_FILTER "${ATX_VOL_SLOW_FILTER}"
-    PROPERTIES LABELS atx_vol_slow
+    PROPERTIES LABELS atx_vol_slow SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
     DISCOVERY_MODE PRE_TEST)
 
 # Oracle RSI charter stage 4 (Mode B). scripts/oracle-targeted-gate.ps1
@@ -595,8 +633,19 @@ add_test(
     COMMAND atx-vol-tests
         --gtest_filter=ScalarLegEnv.*:American*:AmericanIv*:CorrectionCache*:Bulk*:VolaSession*:*Deam*:*Parity*:-*Batch*:AvxBoundary*:VectorMath*:Simd*
 )
+# L7-T4: this lane is ONE ctest entry over hundreds of gtest cases, so a blanket
+# SKIP_REGULAR_EXPRESSION would mark it skipped "regardless of the process exit
+# code" (CMake's words) and hide a real failure that happened to share the run
+# with a legitimately fixture-gated skip. The vacuity that actually matters here
+# is narrower and has a name: `ScalarLegEnv.ForceScalarEnvSeedsScalarOverride`
+# GTEST_SKIPs exactly when ATX_SIMD_ISA did NOT reach the process, i.e. exactly
+# when every other case in this lane re-ran under the ordinary Auto ISA and the
+# whole scalar leg proved nothing. Failing on THAT one skip line is loud where it
+# should be and silent about the American*/CorrectionCache* fixture gates, which
+# the per-case discovered lane already reports as Skipped in their own right.
 set_tests_properties(atx-vol-pricing-forcescalar PROPERTIES
     ENVIRONMENT "ATX_SIMD_ISA=ForceScalar"
+    FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\] ScalarLegEnv\\."
     LABELS atx_vol)
 
 # Task F-8 fix round 8 (I-A): the P&L-explain column gate, moved off source-text
@@ -626,7 +675,15 @@ target_compile_definitions(varswap-compare-columns-tests PRIVATE
 target_link_libraries(varswap-compare-columns-tests PRIVATE
     atx::vol atx::core GTest::gtest_main atx_warnings)
 add_test(NAME VarswapCompareColumns COMMAND varswap-compare-columns-tests)
-set_tests_properties(VarswapCompareColumns PROPERTIES LABELS "atx_vol;atx_vol_fast")
+# L7-T4: a whole-binary lane, so the same reasoning as atx-vol-pricing-forcescalar
+# applies — FAIL, not SKIP, because SKIP_REGULAR_EXPRESSION overrides the exit
+# code and would swallow a co-occurring failure. This gate has NO fixture
+# dependency (it compiles the example TU, writes a TSV to a temp dir and diffs
+# the header), so any GTEST_SKIP here means the column contract stopped being
+# checked, which must be loud rather than green.
+set_tests_properties(VarswapCompareColumns PROPERTIES
+    FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\]"
+    LABELS "atx_vol;atx_vol_fast")
 
 # THE F-8 VERIFICATION FILTER, written down because a count without its filter is
 # one string short of checkable. A reviewer could not re-derive a reported
@@ -638,8 +695,10 @@ set_tests_properties(VarswapCompareColumns PROPERTIES LABELS "atx_vol;atx_vol_fa
 #   ctest -R "ScenarioGrid|BacktestSwap|DerivPnl|DerivGreeks|DerivBook|SmileGreeks|SurfaceOverlay|StickyStrike|VolUmbrella|RunArchive|RunReport|Tearsheet|Backtest|SurfaceDb|VarswapCompareColumns|SpxWilmottRepro"
 #
 # The gap between "enumerated" and "executed" is gtest-`DISABLED_` entries, which
-# `ctest -N` lists but no run counts; runtime SKIPs (absent real-data fixtures)
-# execute and count as passed.
+# `ctest -N` lists but no run counts. Runtime SKIPs (absent real-data fixtures)
+# used to close that gap silently by counting as passed; since L7-T4 they report
+# `***Skipped` per case and are listed under ctest's "The following tests did not
+# run", so an enumerated-vs-passed gap now has exactly two named causes.
 
 # ── alpha layer (include/atx/vol/alpha/**) ──────────────────────────────────
 # Its own binary rather than another source in `atx-vol-tests`: the layer is
@@ -652,4 +711,9 @@ add_executable(atx-vol-alpha-tests
 target_link_libraries(atx-vol-alpha-tests PRIVATE
     atx::vol atx::core GTest::gtest_main atx_warnings)
 add_test(NAME AlphaRegistry COMMAND atx-vol-alpha-tests)
-set_tests_properties(AlphaRegistry PROPERTIES LABELS "atx_vol;atx_vol_fast")
+# L7-T4: same shape and same reason as VarswapCompareColumns — one ctest entry
+# per BINARY, and the alpha layer is header-only with no fixture or environment
+# gate anywhere in it, so a skip is vacuity, not an absent optional input.
+set_tests_properties(AlphaRegistry PROPERTIES
+    FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\]"
+    LABELS "atx_vol;atx_vol_fast")

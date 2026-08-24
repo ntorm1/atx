@@ -197,4 +197,53 @@ Result<double> imply_forward_atm_pcp(std::span<const CoTermQuote> quotes, double
   return Ok(sum / static_cast<double>(k));
 }
 
+// ── The discrete-dividend pricing route ──────────────────────────────────
+//
+// The declaration carries the cost table and the rule it implies (marks through
+// the lattice, inversions on Andersen-Lake). This is the window arithmetic, and
+// the only thing it is careful about is agreeing with `forward_div_corrected` on
+// WHICH events exist before disagreeing with it about how to price them.
+DiscreteDivRoute discrete_div_route(std::span<const DividendEvent> cash_divs,
+                                    std::int64_t expiry_ns, std::int64_t now_ts_ns, double T,
+                                    double r, DiscreteDivPolicy policy) {
+  DiscreteDivRoute out;
+  // Exhaustive on the enum with no `default`, so adding a third policy fails to
+  // COMPILE here rather than silently falling into escrow (agent profile §3).
+  bool routed = false;
+  switch (policy) {
+  case DiscreteDivPolicy::Escrow:
+    routed = false;
+    break;
+  case DiscreteDivPolicy::Lattice:
+    routed = true;
+    break;
+  }
+  if (!routed || !(T > 0.0) || !std::isfinite(T) || !std::isfinite(r)) {
+    return out;
+  }
+  // The engine's OWN tolerance, not a copy of its literal: it admits a tau
+  // marginally past T as landing at expiry so an ex-date reconstructed from the
+  // same year-fraction column as T is not lost to one ulp, and the two windows
+  // have to agree for the route's same-cash contract to mean anything.
+  const double tau_at_expiry = T * (1.0 + kTauAtExpiryRelTol);
+  out.schedule.reserve(cash_divs.size());
+  for (const DividendEvent &ev : cash_divs) {
+    // Instant window, byte-for-byte the one `forward_div_corrected` sums.
+    if (ev.ex_date_ns < now_ts_ns || ev.ex_date_ns > expiry_ns) {
+      continue;
+    }
+    if (ev.amount == 0.0) {
+      continue; // a no-op for both routes
+    }
+    const double tau = static_cast<double>(ev.ex_date_ns - now_ts_ns) / kCalendarYearNs;
+    if (!(tau > 0.0) || tau > tau_at_expiry) {
+      ++out.n_outside_tau_window;
+      continue;
+    }
+    out.schedule.push_back(CashDividend{tau, ev.amount});
+    out.pv += ev.amount * std::exp(-r * tau);
+  }
+  return out;
+}
+
 } // namespace atx::vol

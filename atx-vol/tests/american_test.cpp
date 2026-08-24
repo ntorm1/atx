@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "pricing/american_boundary.hpp" // amer:: boundary seam (REVL1-F2 seed check)
 #include "pricing/american_detail.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
 #include "atx/vol/api/fitting/correction.hpp"
@@ -3969,6 +3970,342 @@ TEST(AmericanSigmaZeroLimit, CarryDominantPut_TendsToDiscountedForwardIntrinsic)
                                    atx::vol::AmericanMethod::Baw);
   ASSERT_TRUE(pbaw.has_value()) << pbaw.error().to_string();
   EXPECT_NEAR(*pbaw, euro_limit, 1.0e-6) << "BAW sigma->0 must match the AL limit";
+}
+
+// ── T1: the boundary solve's achieved residual is no longer discarded ─────
+//
+// al_solve_put_boundary used to run its fixed (n_iter_jn + n_iter_fp) budget,
+// assign the last sweep's max|Δy| to a local `resid`, and then return
+// AlSolveStatus::Ok unconditionally — so `sch.tol` was only an early-exit
+// shortcut and never a convergence criterion. boundary_interp.cpp's node-build
+// note already recorded the consequence ("returns AlSolveStatus::Ok carrying an
+// under-converged boundary, silently"). andersen_lake_convergence is the seam
+// that makes the achieved residual observable to a caller.
+
+TEST(AlBoundaryConvergenceReport, FastPreset_ReportsUnderConvergedResidual) {
+  using atx::vol::andersen_lake_convergence;
+  using atx::vol::detail::al_boundary_jn_sweeps_to_converge;
+  using atx::vol::detail::AlSeedMode;
+
+  const double S = 100.0, K = 100.0, T = 5.0, sigma = 0.6, r = 0.08, q = 0.0;
+  const AlOpts fo = al_fast_opts(); // {7, 16, 4, 1e-8} -> 2 JN + 2 FP sweeps
+
+  // Independent evidence that the budget cannot reach tol on this cell: pure
+  // Jacobi-Newton (which converges FASTER than the JN+FP mix the preset runs)
+  // still needs far more than the 4 sweeps the preset affords.
+  const int sweeps =
+      al_boundary_jn_sweeps_to_converge(K, T, sigma, r, q, fo, AlSeedMode::Baw, fo.tol, 60);
+  ASSERT_GT(sweeps, 4) << "cell converges inside the fast budget; pick a harder one";
+
+  // The price route nonetheless SUCCEEDS — that is the contract being pinned:
+  // a budget-limited solve is a served price, not an error.
+  const auto px = andersen_lake(S, K, T, sigma, r, q, Side::Put, fo);
+  ASSERT_TRUE(px.has_value()) << px.error().to_string();
+
+  // ...and the residual it achieved is now visible instead of discarded.
+  const auto rep = andersen_lake_convergence(S, K, T, sigma, r, q, Side::Put, fo);
+  ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+  EXPECT_EQ(rep->sweep_budget, 4) << "fast preset budget is 2 JN + 2 FP";
+  EXPECT_EQ(rep->sweeps_run, 4) << "no early exit: the whole budget was spent";
+  EXPECT_DOUBLE_EQ(rep->tol, fo.tol);
+  EXPECT_GT(rep->resid, rep->tol) << "solve reported Ok on a boundary it never converged";
+  EXPECT_FALSE(rep->converged);
+  EXPECT_TRUE(std::isfinite(rep->resid));
+}
+
+TEST(AlBoundaryConvergenceReport, GenerousBudget_ConvergesAndSaysSo) {
+  const double S = 100.0, K = 100.0, T = 5.0, sigma = 0.6, r = 0.08, q = 0.0;
+  const AlOpts deep{.n_collocation = 7,
+                    .n_quadrature = 16,
+                    .n_quad_price = 32,
+                    .max_newton_iter = 60,
+                    .tol = 1.0e-8};
+  const auto rep = atx::vol::andersen_lake_convergence(S, K, T, sigma, r, q, Side::Put, deep);
+  ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+  EXPECT_TRUE(rep->converged) << "resid " << rep->resid << " > tol " << rep->tol;
+  EXPECT_LE(rep->resid, rep->tol);
+  EXPECT_GT(rep->sweeps_run, 0) << "a converged verdict must rest on a measured sweep";
+  EXPECT_LT(rep->sweeps_run, rep->sweep_budget) << "convergence should have exited early";
+}
+
+// A call routes through McDonald-Schroder, so its boundary is the INTERNAL put's
+// (strike S, rate q, yield r). The report must describe the solve that actually ran.
+TEST(AlBoundaryConvergenceReport, CallSideDescribesTheInternalPutSolve) {
+  const double S = 100.0, K = 90.0, T = 2.0, sigma = 0.4, r = 0.01, q = 0.06;
+  const AlOpts fo = al_fast_opts();
+  const auto call_rep = atx::vol::andersen_lake_convergence(S, K, T, sigma, r, q, Side::Call, fo);
+  ASSERT_TRUE(call_rep.has_value()) << call_rep.error().to_string();
+  // The equivalent put solve: strike S, spot K, rate q, yield r.
+  const auto put_rep = atx::vol::andersen_lake_convergence(K, S, T, sigma, q, r, Side::Put, fo);
+  ASSERT_TRUE(put_rep.has_value()) << put_rep.error().to_string();
+  EXPECT_DOUBLE_EQ(call_rep->resid, put_rep->resid);
+  EXPECT_EQ(call_rep->converged, put_rep->converged);
+}
+
+// Regimes where andersen_lake never solves a boundary report n_sweeps == 0 and
+// converged == true — there is nothing left under-converged.
+TEST(AlBoundaryConvergenceReport, NoBoundarySolveRegimes_ReportZeroSweeps) {
+  const AlOpts fo = al_fast_opts();
+  // European put corner (r <= 0 && r <= q): no early exercise, no boundary.
+  const auto eu = atx::vol::andersen_lake_convergence(100.0, 100.0, 1.0, 0.3, -0.01, 0.02,
+                                                      Side::Put, fo);
+  ASSERT_TRUE(eu.has_value()) << eu.error().to_string();
+  EXPECT_EQ(eu->sweep_budget, 0);
+  EXPECT_EQ(eu->sweeps_run, 0) << "sweeps_run == 0 is what says resid is not a measurement";
+  EXPECT_TRUE(eu->converged);
+  EXPECT_DOUBLE_EQ(eu->resid, 0.0);
+
+  // Degenerate T ~ 0 collapses to intrinsic before any solve.
+  const auto t0 =
+      atx::vol::andersen_lake_convergence(100.0, 100.0, 0.0, 0.3, 0.05, 0.0, Side::Put, fo);
+  ASSERT_TRUE(t0.has_value()) << t0.error().to_string();
+  EXPECT_EQ(t0->sweep_budget, 0);
+  EXPECT_EQ(t0->sweeps_run, 0);
+  EXPECT_TRUE(t0->converged);
+}
+
+// The report shares andersen_lake's error channel exactly, so a caller can gate on
+// it without a second regime classification of its own.
+TEST(AlBoundaryConvergenceReport, MirrorsAndersenLakeErrorChannel) {
+  const AlOpts fo = al_fast_opts();
+  // Double-continuation corner: put with q < r <= 0.
+  const auto bad =
+      atx::vol::andersen_lake_convergence(100.0, 100.0, 1.0, 0.3, -0.01, -0.05, Side::Put, fo);
+  ASSERT_FALSE(bad.has_value());
+  EXPECT_EQ(bad.error().code(), atx::core::ErrorCode::NotImplemented);
+  const auto px = andersen_lake(100.0, 100.0, 1.0, 0.3, -0.01, -0.05, Side::Put, fo);
+  ASSERT_FALSE(px.has_value());
+  EXPECT_EQ(bad.error().code(), px.error().code());
+
+  // Invalid argument: S <= 0.
+  const auto neg =
+      atx::vol::andersen_lake_convergence(-1.0, 100.0, 1.0, 0.3, 0.05, 0.0, Side::Put, fo);
+  ASSERT_FALSE(neg.has_value());
+  EXPECT_EQ(neg.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+// ── T3: the BAW critical-price brackets are derived, not hard-coded ───────
+//
+// newton_critical_put/call ran a safeguarded Newton inside a FIXED bracket —
+// [1e-3*K, K) and (K, 50*K] — which is not a domain, and both ends had cells
+// whose true critical price fell outside it. The safeguard then pinned the
+// iterate at the bracket edge and the residual gate rejected the result, so BAW
+// failed closed on a perfectly ordinary contract. The bracket now expands
+// geometrically (bounded) whenever the first attempt fails its own residual test.
+
+TEST(BawCriticalBracket, HeavyCarryPut_RootBelowHistoricalFloor_IsFound) {
+  using atx::vol::detail::baw_critical_solve;
+  const double K = 100.0, T = 1.0, sigma = 0.2, r = 0.0001, q = 0.10;
+  // xmax = K*min(1, r/q) = 0.1 — the WHOLE admissible boundary range sits at or
+  // below the old bracket floor lo = 1e-3*K = 0.1.
+  const double xmax = K * std::min(1.0, r / q);
+  ASSERT_DOUBLE_EQ(xmax, 1.0e-3 * K);
+
+  const auto b = baw_critical_solve(K, T, sigma, r, q, Side::Put, 0, 0.0);
+  ASSERT_TRUE(b.ok);
+  EXPECT_TRUE(b.converged) << "Sx=" << b.Sx << " resid=" << b.residual;
+  EXPECT_GT(b.attempts, 1) << "the historical bracket cannot hold this root";
+  EXPECT_GT(b.Sx, 0.0);
+  EXPECT_LT(b.Sx, xmax) << "critical price must lie strictly inside the admissible range";
+  EXPECT_LT(std::fabs(b.residual), 1.0e-8);
+
+  const auto px = american_price(100.0, K, T, sigma, r, q, Side::Put,
+                                 atx::vol::AmericanMethod::Baw);
+  ASSERT_TRUE(px.has_value()) << px.error().to_string();
+  EXPECT_GE(*px, 0.0);
+}
+
+TEST(BawCriticalBracket, LowYieldCall_RootAboveHistoricalCeiling_IsFound) {
+  using atx::vol::detail::baw_critical_solve;
+  const double K = 100.0, T = 1.0, sigma = 0.2, r = 0.05, q = 0.001;
+  const auto b = baw_critical_solve(K, T, sigma, r, q, Side::Call, 0, 0.0);
+  ASSERT_TRUE(b.ok);
+  EXPECT_TRUE(b.converged) << "Sx=" << b.Sx << " resid=" << b.residual;
+  EXPECT_GT(b.attempts, 1) << "the historical bracket cannot hold this root";
+  EXPECT_GT(b.Sx, 50.0 * K) << "this cell's root is past the old hard-coded 50x ceiling";
+  EXPECT_LT(std::fabs(b.residual), 1.0e-8);
+
+  const auto px = american_price(100.0, K, T, sigma, r, q, Side::Call,
+                                 atx::vol::AmericanMethod::Baw);
+  ASSERT_TRUE(px.has_value()) << px.error().to_string();
+  // A low-yield American call is worth essentially its European twin, and never less.
+  const auto eu = atx::vol::black76_price(100.0 * std::exp((r - q) * T), K, T, sigma,
+                                          std::exp(-r * T), Side::Call);
+  EXPECT_GE(*px, eu - 1.0e-9);
+  EXPECT_LT(*px, eu + 0.05);
+}
+
+// The expansion is a RECOVERY path: an ordinary cell must still solve inside the
+// historical bracket, so nothing that already converged changes.
+TEST(BawCriticalBracket, OrdinaryCells_SolveInsideTheFirstBracket) {
+  using atx::vol::detail::baw_critical_solve;
+  const double K = 100.0;
+  for (const double T : {0.25, 1.0, 2.0}) {
+    for (const double sigma : {0.15, 0.35}) {
+      const auto p = baw_critical_solve(K, T, sigma, 0.05, 0.03, Side::Put, 0, 0.0);
+      ASSERT_TRUE(p.ok);
+      EXPECT_TRUE(p.converged);
+      EXPECT_EQ(p.attempts, 1) << "widened a bracket that already held the root";
+      EXPECT_GT(p.Sx, 1.0e-3 * K);
+      EXPECT_LT(p.Sx, K);
+      const auto c = baw_critical_solve(K, T, sigma, 0.03, 0.06, Side::Call, 0, 0.0);
+      ASSERT_TRUE(c.ok);
+      EXPECT_TRUE(c.converged);
+      EXPECT_EQ(c.attempts, 1) << "widened a bracket that already held the root";
+      EXPECT_GT(c.Sx, K);
+      EXPECT_LT(c.Sx, 50.0 * K);
+    }
+  }
+}
+
+
+// ── T4: a sub-minimum knob request must FLOOR, never fall through ─────────
+//
+// scheme_from_opts floors n_quadrature < 8 to the cheapest supported order under
+// the stated rule "a caller asking for cheaper must not get more expensive".
+// n_collocation < 6 did not follow it: the guard `>= 6 && <= kAlMaxNodes` simply
+// skipped the assignment, so a request for 3 nodes silently kept the ACCURATE
+// default of 12 — the single most expensive boundary in the ladder. Both knobs now
+// clamp, so a request is always honoured in the direction it was made.
+
+TEST(AlSchemeFromOpts, SubMinimumCollocation_FloorsToCheapestNotDefault) {
+  const double S = 100.0, K = 105.0, T = 0.75, sigma = 0.28, r = 0.05, q = 0.02;
+  auto price_with = [&](std::uint16_t nc) {
+    return andersen_lake(S, K, T, sigma, r, q, Side::Put,
+                         AlOpts{.n_collocation = nc,
+                                .n_quadrature = 16,
+                                .n_quad_price = 32,
+                                .max_newton_iter = 4,
+                                .tol = 1.0e-8});
+  };
+  const auto p_min = price_with(6);
+  const auto p_sub = price_with(3);
+  const auto p_zero = price_with(0);
+  const auto p_default = price_with(12);
+  ASSERT_TRUE(p_min.has_value() && p_sub.has_value() && p_zero.has_value() &&
+              p_default.has_value());
+
+  EXPECT_DOUBLE_EQ(*p_sub, *p_min) << "a sub-minimum request must floor to 6 nodes";
+  EXPECT_NE(*p_sub, *p_default) << "flooring must not resolve to the 12-node default";
+
+  // REVL1-F3: ZERO is the one value that must NOT floor. Three record decoders
+  // (storage/surface_db.cpp, storage/surface_archive.cpp,
+  // backtest/priced_surface_view.cpp) assign this field straight off a stored
+  // record, and a manifest written before the column existed reads back as 0 —
+  // exactly as the n_quad_price line beside each of them already documents. Such a
+  // surface has always priced off the default boundary and must keep doing so.
+  EXPECT_DOUBLE_EQ(*p_zero, *p_default)
+      << "a stored record decoding to n_collocation = 0 must keep its historical boundary";
+  EXPECT_NE(*p_zero, *p_min);
+}
+
+TEST(AlSchemeFromOpts, OverMaximumCollocation_ClampsToTheCeiling) {
+  const double S = 100.0, K = 95.0, T = 1.5, sigma = 0.33, r = 0.04, q = 0.01;
+  auto price_with = [&](std::uint16_t nc) {
+    return andersen_lake(S, K, T, sigma, r, q, Side::Put,
+                         AlOpts{.n_collocation = nc,
+                                .n_quadrature = 24,
+                                .n_quad_price = 32,
+                                .max_newton_iter = 6,
+                                .tol = 1.0e-10});
+  };
+  const auto p_max = price_with(32); // kAlMaxNodes
+  const auto p_over = price_with(64);
+  const auto p_default = price_with(12);
+  ASSERT_TRUE(p_max.has_value() && p_over.has_value() && p_default.has_value());
+  EXPECT_DOUBLE_EQ(*p_over, *p_max) << "an over-maximum request must clamp to the ceiling";
+  EXPECT_NE(*p_over, *p_default) << "clamping must not resolve to the 12-node default";
+}
+
+
+// REVL1-F1: the widening must be gated on the ACCEPTANCE predicate, never on the
+// step test. |dS| < tol*K fires exactly when the safeguarded bisection collapses
+// onto an excluded bracket edge, so gating on it made a LARGER max_iter strictly
+// worse: at 32/64 the put pinned at 0.10000055 (resid -1.549e-3) and the call at
+// 5000.0 (resid -0.652), both rejected by the same gate the recovery exists to
+// satisfy. max_iter is public on baw_american and a Python keyword argument.
+TEST(BawCriticalBracket, GateHoldsAcrossTheWholeMaxIterRange) {
+  using atx::vol::baw_american;
+  using atx::vol::detail::baw_critical_solve;
+  struct Cell {
+    const char *name;
+    double K, T, sigma, r, q;
+    Side side;
+  };
+  const Cell cells[] = {
+      {"heavy-carry put", 100.0, 1.0, 0.2, 1.0e-4, 0.10, Side::Put},
+      {"low-yield call", 100.0, 1.0, 0.2, 0.05, 0.001, Side::Call},
+  };
+  for (const Cell &c : cells) {
+    for (const std::uint16_t mi : {std::uint16_t{16}, std::uint16_t{32}, std::uint16_t{64}}) {
+      const auto b = baw_critical_solve(c.K, c.T, c.sigma, c.r, c.q, c.side, mi, 1.0e-8);
+      ASSERT_TRUE(b.ok) << c.name << " max_iter=" << mi;
+      EXPECT_GT(b.attempts, 1) << c.name << " max_iter=" << mi
+                               << ": the historical bracket cannot hold this root";
+      // The gate's own residual term: |f| <= 1e2 * tol * K.
+      EXPECT_LE(std::fabs(b.residual), 1.0e2 * 1.0e-8 * c.K)
+          << c.name << " max_iter=" << mi << " Sx=" << b.Sx;
+      const auto px = baw_american(100.0, c.K, c.T, c.sigma, c.r, c.q, c.side, mi, 1.0e-8);
+      ASSERT_TRUE(px.has_value())
+          << c.name << " max_iter=" << mi << ": " << px.error().to_string();
+    }
+  }
+}
+
+// REVL1-F2: the Andersen-Lake cold seed runs baw_critical_put per collocation node
+// with NO residual gate of its own and its result feeds a SERVED price, so it keeps
+// the historical single bracket (BracketRecovery::Off) and stays byte-identical to
+// the pre-recovery solve. Widening it is a separate, measured change.
+//
+// This is a STRUCTURAL assertion, deliberately not a price golden. Measured over a
+// 576-cell sweep of the affected regime (K=100, T in {0.05,0.25,1,2}, sigma in
+// {0.15,0.2,0.4,0.8}, r in {1e-4,1e-3,5e-3}, q in {0.02,0.05,0.1,0.3}, S in
+// {80,100,120}, put): 33 of 192 nodes widen and the widened seed moves up to 53%
+// relative after the xmax clamp, yet only 3 of 576 PRICES move at all and every one
+// by ~1e-14 relative. A price golden therefore cannot detect the seed flipping onto
+// the recovery path; the seed itself can.
+TEST(BawBracketRecovery, AlColdSeedTakesTheClampedHistoricalCriticalPrice) {
+  using atx::vol::detail::baw_critical_solve;
+  // The widest seed gap found by that sweep.
+  const double K = 100.0, T = 2.0, sigma = 0.8, r = 1.0e-4, q = 0.05;
+  const double xmax = K * std::min(1.0, r / q);
+
+  // The historical bracket's FLOOR is the invariant: with recovery off the solve
+  // returns a value in (1e-3*K, K), so no seed node can land below 1e-3*K. The
+  // recovered root at this contract does — that is what makes the check sharp.
+  const double floor_hist = 1.0e-3 * K;
+  const auto rec = baw_critical_solve(K, T, sigma, r, q, Side::Put, 16, 1.0e-10);
+  ASSERT_TRUE(rec.ok);
+  ASSERT_GT(rec.attempts, 1) << "this contract must be one the widening changes";
+  ASSERT_LT(rec.Sx, floor_hist)
+      << "recovered root must be below the historical floor or this test is blind";
+  ASSERT_LT(floor_hist, xmax) << "the xmax clamp must not mask the floor";
+
+  // Re-seed a solved boundary's node grid and read the seed back as b = B(tau).
+  atx::vol::amer::AlBoundary bnd{};
+  atx::vol::amer::AlWorkspace ws{};
+  const atx::vol::amer::AlScheme sch = atx::vol::amer::scheme_from_opts(al_fast_opts());
+  ASSERT_EQ(atx::vol::amer::al_solve_put_boundary(K, T, sigma, r, q, sch, bnd, ws),
+            atx::vol::amer::AlSolveStatus::Ok);
+  ASSERT_DOUBLE_EQ(bnd.xmax, xmax);
+  std::array<double, atx::vol::amer::kAlMaxNodes> yseed{};
+  atx::vol::amer::al_seed_boundary_into(bnd, sigma, r, q, yseed.data());
+
+  // b = xmax * exp(-sqrt(y)) (american.cpp b_from_y). Node 0 is pinned at tau = 0.
+  bool pinned_at_floor = false;
+  for (std::uint16_t i = 1; i < bnd.n; ++i) {
+    const double b_seed = xmax * std::exp(-std::sqrt(yseed[i] > 0.0 ? yseed[i] : 0.0));
+    EXPECT_GE(b_seed, floor_hist)
+        << "node " << i << ": seed fell below the historical bracket floor, so it took a"
+        << " widened critical price (recovered " << rec.Sx << ")";
+    if (b_seed < 1.001 * floor_hist) {
+      pinned_at_floor = true;
+    }
+  }
+  // At least one node must actually sit ON the floor, or the floor invariant above
+  // is satisfied vacuously by roots the widening never touches.
+  EXPECT_TRUE(pinned_at_floor)
+      << "no node pinned at the historical floor; pick a contract where one does";
 }
 
 } // namespace

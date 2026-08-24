@@ -10,6 +10,7 @@
 
 #include "atx/vol/api/pricing/american.hpp" // american_price, AmericanMethod
 #include "atx/vol/api/core/chain.hpp"
+#include "atx/vol/api/fitting/arb.hpp" // arb_check_butterfly, LinearVarianceButterflyTally
 #include "atx/vol/api/fitting/curve_selector.hpp" // CandidateScore, select_candidate_index, select_curve
 #include "atx/vol/api/pricing/dividend.hpp"       // hybrid_forward, HybridDivParams, DividendEvent
 #include "atx/vol/api/fitting/fit_policy.hpp"
@@ -535,7 +536,110 @@ TEST(CurveSelector, ButterflyGateReadsSplineViolations) {
   p.n_butterfly_viol = 3;
   const SplineVolCurve curve(p, /*T=*/0.25, /*F=*/100.0, /*df=*/0.98);
 
-  EXPECT_EQ(slice_butterfly_violations(curve, 0.25, -0.5, 0.5), 3u);
+  EXPECT_EQ(slice_butterfly_violations(curve, 0.25, -0.5, 0.5).n_violations, 3u);
+}
+
+// ── T1: the selection-time butterfly gate must CHECK LinearVariance ─────────
+//
+// `LinearVarianceCurve` interpolates the quoted total variances linearly in k
+// and extends FLAT past the outer nodes, so w is only C0 and w'' is a MEASURE:
+// zero on every open segment plus a Dirac at each node carrying the slope jump.
+// A concave kink is a NEGATIVE Dirac, i.e. negative Lee/Roper density, i.e.
+// butterfly arbitrage in the served curve. The selector used to return a
+// hard-coded 0 for this kind under the label "by-construction arb-free", which
+// is false for every board -- so a butterfly-violating raw-quote mark scored as
+// clean and was never disqualified.
+//
+// The board below is strictly concave in total variance (each kink drops the
+// slope), so the INDEPENDENT grid gate finds violations; the selection-time
+// mapping must find them too.
+TEST(CurveSelector, ButterflyGateChecksLinearVarianceRatherThanAssumingItClean) {
+  const std::vector<double> knots{-0.20, -0.10, 0.0, 0.10, 0.20};
+  const std::vector<double> total_variance{0.010, 0.030, 0.040, 0.030, 0.010};
+  const atx::vol::LinearVarianceCurve curve(/*T=*/0.25, /*F=*/100.0, /*df=*/0.98, knots,
+                                            total_variance);
+
+  // Independent evidence: the shared FD density scan over the served range.
+  const auto grid = atx::vol::arb_check_butterfly(curve, -0.70, 0.70, 256u);
+  ASSERT_TRUE(grid.has_value()) << grid.error().to_string();
+  EXPECT_GT(grid->size(), 0u) << "fixture is not butterfly-violating; the test proves nothing";
+
+  const auto verdict = slice_butterfly_violations(curve, 0.25, -0.70, 0.70);
+  EXPECT_TRUE(verdict.decided);
+  EXPECT_GT(verdict.n_violations, 0u);
+  EXPECT_FALSE(verdict.clean());
+}
+
+// The exact tally separates the two populations a piecewise-linear mark carries:
+// the STRUCTURAL flat-wing splice at the two outer nodes (present on every
+// board) and the board's own INTERIOR concave kinks (the reproduced market
+// butterfly). A convex node set has interior 0 and wings 2.
+TEST(LinearVarianceButterfly, ConvexNodesCarryOnlyTheStructuralWingSplice) {
+  // w convex in k (slopes -0.20, -0.10, +0.10, +0.20, strictly increasing).
+  const std::vector<double> knots{-0.20, -0.10, 0.0, 0.10, 0.20};
+  const std::vector<double> total_variance{0.050, 0.030, 0.020, 0.030, 0.050};
+  const atx::vol::LinearVarianceCurve curve(/*T=*/0.25, /*F=*/100.0, /*df=*/0.98, knots,
+                                            total_variance);
+
+  const auto tally = atx::vol::arb_check_butterfly_linear_variance(curve);
+  EXPECT_TRUE(tally.decided);
+  EXPECT_EQ(tally.n_interior_kinks, 0u);
+  EXPECT_EQ(tally.n_wing_kinks, 2u); // left slope < 0 and right slope > 0
+  EXPECT_EQ(tally.n_quote_implied(), 0u);
+  EXPECT_GT(tally.n_violations(), 0u);
+}
+
+// A degenerate node vector cannot be decided, and "undecided" must never read
+// as clean -- the defect the hard-coded 0 encoded.
+TEST(LinearVarianceButterfly, DegenerateNodesAreUndecidedNotClean) {
+  const std::vector<double> knots{0.0, 0.0, 0.10};
+  const std::vector<double> total_variance{0.02, 0.02, 0.03};
+  const atx::vol::LinearVarianceCurve curve(/*T=*/0.25, /*F=*/100.0, /*df=*/0.98, knots,
+                                            total_variance);
+
+  const auto tally = atx::vol::arb_check_butterfly_linear_variance(curve);
+  EXPECT_FALSE(tally.decided);
+  EXPECT_FALSE(tally.clean());
+  EXPECT_FALSE(slice_butterfly_violations(curve, 0.25, -0.70, 0.70).clean());
+}
+
+// A slice whose total variance is positive but below the stencil floor cannot be
+// EVALUATED: the density's 1/w terms carry no information there. It used to
+// `continue` past those samples with `decided` still true, so the curve reported
+// `n_segment_points == 0` and `clean() == true` for points nothing had read --
+// the same "zero means clean" conflation the exact tally exists to remove, and
+// reached through a GATE (`slice_butterfly_violations`, a Roper IV4 gate role).
+TEST(LinearVarianceButterfly, SubFloorVarianceIsUndecidedNotClean) {
+  const std::vector<double> knots{-0.20, -0.10, 0.0, 0.10, 0.20};
+  const std::vector<double> total_variance(5, 1.0e-14); // positive, but unreadable
+  const atx::vol::LinearVarianceCurve curve(/*T=*/0.25, /*F=*/100.0, /*df=*/0.98, knots,
+                                            total_variance);
+
+  const auto tally = atx::vol::arb_check_butterfly_linear_variance(curve);
+  // Flat w means no slope jump anywhere, so the SINGULAR part is genuinely
+  // empty -- which is exactly why the old code reported a clean curve.
+  EXPECT_EQ(tally.n_violations(), 0u);
+  EXPECT_FALSE(tally.decided);
+  EXPECT_FALSE(tally.clean());
+  EXPECT_FALSE(slice_butterfly_violations(curve, 0.25, -0.70, 0.70).clean());
+}
+
+// `n_wing_kinks` is classified by POSITION (outer node), not by cause, and it is
+// NOT the invariant 2 the header used to claim. At j == 0 the left slope is 0 by
+// construction, so a first segment with a POSITIVE slope gives jump = +s >= 0 and
+// no left wing kink at all. Pinned so no caller re-derives "always 2".
+TEST(LinearVarianceButterfly, PositiveFirstSlopeHasNoLeftWingKink) {
+  // w strictly increasing across the whole grid, slopes +0.1, +0.1, +0.2, +0.3.
+  const std::vector<double> knots{-0.20, -0.10, 0.0, 0.10, 0.20};
+  const std::vector<double> total_variance{0.02, 0.03, 0.04, 0.06, 0.09};
+  const atx::vol::LinearVarianceCurve curve(/*T=*/0.25, /*F=*/100.0, /*df=*/0.98, knots,
+                                            total_variance);
+
+  const auto tally = atx::vol::arb_check_butterfly_linear_variance(curve);
+  ASSERT_TRUE(tally.decided);
+  // Left wing: jump = +0.1 - 0 > 0, no kink. Right wing: 0 - 0.3 < 0, one kink.
+  EXPECT_EQ(tally.n_wing_kinks, 1u);
+  EXPECT_EQ(tally.n_interior_kinks, 0u); // slopes ascend: no concave interior node
 }
 
 // Task I5.4: with `spline_candidate` unset anywhere (the default -- every

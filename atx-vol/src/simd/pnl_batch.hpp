@@ -59,7 +59,11 @@ struct PnlExplainInputs {
   const double* dr;     // absolute rate move
 };
 
-// Non-owning SoA output columns, each length n and distinct from the inputs.
+// Non-owning SoA output columns, each length n and distinct from the inputs — AND
+// distinct from EACH OTHER. The scalar fallback binds these to __restrict pointers, so
+// two output columns pointing at the same array is undefined, not merely nonsensical.
+// (The input columns carry no such requirement: restrict constrains only objects that
+// are modified in the scope, and the inputs are read-only there.)
 // The eight component columns sum (per position) to `total`; `total` is the
 // Taylor-explained P&L (position-weighted). `total` is formed as the left-to-right
 // sum of the SAME eight per-share products the columns carry, so with qty ==

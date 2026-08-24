@@ -1,9 +1,14 @@
 // K1 — scalar Cody rational-erfc Φ / φ accuracy gate (WS-2 North-Star sprint).
 //
-// The scalar IV inverter (src/implied_vol.cpp) and Black-76 (src/black76.cpp)
-// swapped their Φ / φ off libm std::erfc / std::exp onto the scalar Cody
-// rational-erfc kernel in detail/scalar_erfc.hpp. That is a perf change on the
-// hot path; this file is the accuracy backstop that keeps it honest.
+// The swap this file was written to backstop NEVER LANDED. K1 proposed moving
+// the scalar IV inverter (src/pricing/implied_vol.cpp) and Black-76
+// (src/pricing/black76.cpp) off libm std::erfc / std::exp onto the Cody
+// rational-erfc kernel in src/pricing/scalar_erfc.hpp; it was shelved as
+// perf-neutral and NEITHER TU includes that header today (the header's own
+// STATUS banner records the same). This file is therefore the revival-ready
+// accuracy gate on a validated but unwired leaf, not the backstop of a live hot
+// path — it is the reason the kernel may be dropped in later without re-deriving
+// its error bounds.
 //
 // Gates (all versus the std::erfc / std::exp source of truth atx::core::norm_cdf
 // / norm_pdf, which the sprint treats as the reference the swap must not regress
@@ -20,6 +25,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <cstdio>
 #include <vector>
 
@@ -241,6 +247,65 @@ TEST(ScalarErfc, HardCornersWithinEconomicBound) {
     ++tested;
   }
   EXPECT_GT(tested, 0);
+}
+
+// ── Domain safety: a non-finite argument must not reach the int conversion ──────
+//
+// exp_cody ends in `pow2i(static_cast<int>(Nf))`. Every guard ahead of it — the
+// underflow early-out and both clamps — was an ORDERED comparison, so a NaN argument
+// fell through all three, Nf = nearbyint(NaN·kInvLn2) stayed NaN, and the conversion
+// of a NaN to int is UNDEFINED BEHAVIOUR ([conv.fpint]/1): not an unspecified value,
+// undefined. The reachable path is norm_cdf_erfc(NaN) -> erfc_nonneg (y = NaN, so
+// `y <= 0.46875` is false) -> exp_cody(-NaN).
+//
+// This tree builds NO sanitizer (.agents/cpp/agent.md §8), so nothing else would ever
+// have reported it. HONEST NOTE: this test does NOT go red on the pre-fix header under
+// clang-cl 18 — cvttsd2si yields INT_MIN for a NaN source, pow2i(INT_MIN) happens to
+// rebuild 1.0, and the polynomial `p` is already NaN, so the product came out NaN
+// anyway. That is the signature of UB, not an argument that it was fine: the compiler
+// is entitled to assume the conversion never happens. It is fixed on §0's authority
+// (no UB, ever) and this test is the regression pin on the OBSERVABLE contract std::exp
+// keeps — NaN in, NaN out, never a plausible-looking number.
+TEST(ScalarErfc, NonFiniteArgumentsPropagateInsteadOfConvertingNaNToInt) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+
+  EXPECT_TRUE(std::isnan(detail::exp_cody(nan)));
+  EXPECT_TRUE(std::isnan(detail::exp_cody(-nan)));
+  EXPECT_TRUE(std::isnan(detail::erfc_nonneg(nan)));
+  EXPECT_TRUE(std::isnan(detail::norm_cdf_erfc(nan)));
+  EXPECT_TRUE(std::isnan(detail::norm_pdf_cody(nan)));
+
+  // The infinities keep IEEE semantics, exactly as std::exp / std::erfc do.
+  EXPECT_EQ(detail::exp_cody(-inf), 0.0);
+  EXPECT_EQ(detail::exp_cody(inf), inf);
+  EXPECT_EQ(detail::erfc_nonneg(inf), 0.0);
+  EXPECT_EQ(detail::norm_cdf_erfc(inf), 1.0);
+  EXPECT_EQ(detail::norm_cdf_erfc(-inf), 0.0);
+  EXPECT_EQ(detail::norm_pdf_cody(inf), 0.0);
+  EXPECT_EQ(detail::norm_pdf_cody(-inf), 0.0);
+}
+
+// ── The top of the clamped range must not overflow early ────────────────────────
+//
+// kExpHi = 709.782712893384 is exactly 1024·ln2 to rounding, so Nf rounds to 1024 and
+// pow2i(1024) — whose documented precondition is n <= 1023 — laid down the inf/NaN
+// exponent pattern. exp_cody(kExpHi) therefore returned +inf where std::exp returns
+// ≈1.7976931348622732e308, just under DBL_MAX.
+TEST(ScalarErfc, TopOfRangeStaysFiniteLikeStdExp) {
+  const double hi = 709.782712893384; // serfc::kExpHi
+  for (const double x : {709.0, 709.4, 709.7, 709.78, hi}) {
+    const double got = detail::exp_cody(x);
+    const double want = std::exp(x);
+    ASSERT_TRUE(std::isfinite(want)) << "x=" << x << " (test premise)";
+    EXPECT_TRUE(std::isfinite(got)) << "x=" << x << " exp_cody overflowed early";
+    EXPECT_LE(std::fabs(got - want) / want, 1e-13) << "x=" << x;
+  }
+  // Past ln(DBL_MAX) it still OVERFLOWS, as std::exp does — it must not saturate to
+  // a finite DBL_MAX, which is the other half of the same "no finite wrong answer"
+  // contract this lane exists to enforce.
+  EXPECT_EQ(detail::exp_cody(710.0), std::numeric_limits<double>::infinity());
+  EXPECT_EQ(detail::exp_cody(1.0e300), std::numeric_limits<double>::infinity());
 }
 
 } // namespace

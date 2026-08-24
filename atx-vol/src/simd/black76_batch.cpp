@@ -9,18 +9,25 @@ namespace atx::vol::simd {
 
 namespace {
 
-void price_batch_scalar(const double* F, const double* K, const double* T,
-                        const double* sigma, const double* df, const Side* side,
-                        double* price_out, std::size_t n) noexcept {
+// SAFETY (__restrict, T9): non-aliasing is already this API's documented precondition
+// ("the outputs must not alias the inputs"), but nothing in the code said so — there was
+// no `restrict` anywhere under src/simd or src/pricing. Only the file-local SCALAR
+// fallback is annotated; the AVX2 kernels use explicit loads/stores and are untouched,
+// so no number moves on either route. See pnl_batch.cpp for the full rationale.
+void price_batch_scalar(const double* __restrict F, const double* __restrict K,
+                        const double* __restrict T, const double* __restrict sigma,
+                        const double* __restrict df, const Side* __restrict side,
+                        double* __restrict price_out, std::size_t n) noexcept {
     for (std::size_t i = 0; i < n; ++i) {
         price_out[i] = black76_price(F[i], K[i], T[i], sigma[i], df[i], side[i]);
     }
 }
 
-void value_vega_batch_scalar(const double* F, const double* K, const double* T,
-                             const double* sigma, const double* df,
-                             const Side* side, double* price_out,
-                             double* vega_out, std::size_t n) noexcept {
+void value_vega_batch_scalar(const double* __restrict F, const double* __restrict K,
+                             const double* __restrict T, const double* __restrict sigma,
+                             const double* __restrict df, const Side* __restrict side,
+                             double* __restrict price_out,
+                             double* __restrict vega_out, std::size_t n) noexcept {
     for (std::size_t i = 0; i < n; ++i) {
         const Black76ValueVega r =
             black76_value_and_vega(F[i], K[i], T[i], sigma[i], df[i], side[i]);

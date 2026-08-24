@@ -154,16 +154,36 @@ endif()
 # `install(DIRECTORY .../atx-vol/include/ DESTINATION ...)` (which copied
 # whatever sat under atx-vol/include/atx/vol/, api/ or not) to exactly the
 # include/atx/vol/api/ subtree Tasks 1-2 made the module-split public surface.
-# The one non-api/ header that still ships is the generated version header
-# immediately below (its own atx/vol/detail/ install, untouched by this
-# narrowing); nothing under src/ or an old-layout atx/vol/detail/*.hpp is
-# reachable from this DIRECTORY root at all, so there is nothing to
-# accidentally leak. atx-vol/tools/include/ and atx-vol/research/include/
+# The non-api/ headers that still ship are the generated version header (its own
+# atx/vol/detail/ install, untouched by this narrowing) and, since L7-T1, the
+# alpha/ tier immediately below; nothing under src/ or an old-layout
+# atx/vol/detail/*.hpp is reachable from this DIRECTORY root at all, so there is
+# nothing to accidentally leak. atx-vol/tools/include/ and atx-vol/research/include/
 # (further below) are a SEPARATE, pre-existing Tier-B tiering (S4-T18 / plan
 # 4.1, see atx-vol/CMakeLists.txt) outside the 8-module api/ split this task
 # restructures, and are deliberately left as their own install() calls.
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/atx-vol/include/atx/vol/api/"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/atx/vol/api")
+# L7-T1 (2026-08-23): include/atx/vol/alpha/ ships as its OWN tier, the same way
+# tools/include/ and research/include/ do. The narrowing above shipped exactly
+# api/, but atx-vol/CMakeLists.txt puts the WHOLE include/ root on the target's
+# BUILD_INTERFACE and `include` on its INSTALL_INTERFACE, so the seven alpha
+# headers compiled in-tree and were a hard `file not found` for every downstream
+# consumer of the installed prefix -- a defect no in-tree test could see, which
+# is why tests/vol_umbrella_test.cpp now derives the install list from the
+# directory listing (VolUmbrella.EveryPublicIncludeRootShipsAndIsDeclared).
+#
+# SHIPPED rather than demoted to src/alpha/, on the evidence: the layer is
+# header-only, its non-STL closure is `atx/core/error.hpp` plus its own six
+# siblings (every one of which this prefix already installs), and two SHIPPED
+# CLIs -- atx-vol-alpha-audit and atx-vol-longvega, both installed by the
+# install(TARGETS) block above when ATX_BUILD_TOOLS is on -- are built on it. A
+# layer whose executables ship is a product surface; making it private would
+# have meant rewriting four first-party consumers to hide a directory the build
+# was already publishing. It is TIER-B, not Tier-A: outside the v1 freeze,
+# public and includable, and deliberately absent from the umbrella.
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/atx-vol/include/atx/vol/alpha/"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/atx/vol/alpha")
 # The one atx-vol header that is generated rather than checked in: plan 5.3's
 # version_generated.hpp, configure_file'd from project(VERSION) into atx-vol's
 # binary dir (atx-vol/CMakeLists.txt). It lands in the same atx/vol/detail/

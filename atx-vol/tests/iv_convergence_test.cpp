@@ -23,6 +23,7 @@
 
 #include <cmath>
 #include <limits>
+#include <string>
 
 #include "atx/vol/api/pricing/black76.hpp"
 #include "atx/vol/api/pricing/implied_vol.hpp"
@@ -130,6 +131,47 @@ TEST(IvConvergence, BelowFloorTerminatesOnFloorClamp) {
   EXPECT_EQ(exit_reason, 2) << "expected floor-clamp termination, got reason=" << exit_reason
                             << " after " << iters << " Halley steps";
   EXPECT_LE(iters, 2) << "iters=" << iters;
+}
+
+// Item T2 — termination, not exhaustion, ABOVE the vol ceiling.
+//
+// The exact mirror of the floor branch above, and it was left behind when the
+// floor was fixed. `sigma` is clamped into [kIvMin, kIvMax] after every step
+// while the termination test reads the PRE-clamp `step`, so a quote whose true
+// IV exceeds kIvMax pinned σ at the ceiling with |step| still large: the loop
+// burned all kIvMaxIter Halley evaluations and returned
+// Unavailable("exhausted iterations") — the wrong error CLASS (the solver did
+// not fail; the answer is out of range) and indistinguishable from a genuine
+// convergence failure. Unlike the floor, kIvMax is not a documented REPORTED
+// value, so there is nothing honest to return: this is an OutOfRange that names
+// the cause.
+TEST(IvConvergence, AboveCeilingReportsOutOfRangeNotExhaustion) {
+  const double F = 100.0, K = 100.0, T = 0.01, df = 1.0;
+  const double sigma = 12.0; // > kIvMax = 10
+  const double price = black76_price(F, K, T, sigma, df, Side::Call);
+  ASSERT_LT(price, df * F) << "fixture broken: the quote must sit inside the no-arb band";
+
+  int iters = -1, exit_reason = -99;
+  const Result<double> iv = implied_vol_traced(price, F, K, T, df, Side::Call, iters, exit_reason);
+  ASSERT_FALSE(iv.has_value()) << "a 1200% quote has no IV inside [kIvMin, kIvMax]";
+  EXPECT_EQ(iv.error().code(), ErrorCode::OutOfRange);
+  EXPECT_NE(iv.error().message().find("above the vol ceiling"), std::string::npos)
+      << iv.error().to_string();
+  EXPECT_LT(iters, kIvMaxIter) << "the ceiling must terminate, not exhaust: iters=" << iters;
+}
+
+// The ceiling branch must not fire one step early: a quote just INSIDE kIvMax
+// still inverts to its true σ.
+TEST(IvConvergence, JustBelowCeilingStillInverts) {
+  const double F = 100.0, K = 100.0, T = 0.01, df = 1.0;
+  const double sigma = 9.5;
+  const double price = black76_price(F, K, T, sigma, df, Side::Call);
+
+  int iters = -1, exit_reason = -99;
+  const Result<double> iv = implied_vol_traced(price, F, K, T, df, Side::Call, iters, exit_reason);
+  ASSERT_TRUE(iv.has_value()) << iv.error().to_string();
+  EXPECT_NEAR(*iv, sigma, 1.0e-9);
+  EXPECT_LT(iters, kIvMaxIter);
 }
 
 // Low-notional / small-vega quotes keep the historical absolute-1e-12 behaviour

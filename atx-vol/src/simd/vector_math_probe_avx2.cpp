@@ -26,6 +26,7 @@ namespace {
 using atx::vol::detail::exp_pd;
 using atx::vol::detail::log_pd;
 using atx::vol::detail::norm_cdf_erfc_pd;
+using atx::vol::detail::norm_pdf_pd;
 
 // Apply a 1-arg __m256d kernel over x[0..n) into out, padding a short tail.
 template <class Fn>
@@ -61,6 +62,10 @@ void fd_exp_batch(const double* x, double* out, std::size_t n) noexcept {
 
 void fd_norm_cdf_batch(const double* x, double* out, std::size_t n) noexcept {
     map4(x, out, n, [](__m256d v) { return norm_cdf_erfc_pd(v); });
+}
+
+void fd_norm_pdf_batch(const double* x, double* out, std::size_t n) noexcept {
+    map4(x, out, n, [](__m256d v) { return norm_pdf_pd(v); });
 }
 
 } // namespace atx::vol::simd

@@ -1144,6 +1144,97 @@ arb_check_butterfly_slice(const std::function<double(double)> &w_of_k, double T,
   return Ok(std::move(out));
 }
 
+LinearVarianceButterflyTally
+arb_check_butterfly_linear_variance(const LinearVarianceCurve &curve,
+                                    std::uint32_t n_per_segment) noexcept {
+  LinearVarianceButterflyTally out;
+  const std::span<const double> k = curve.k_nodes();
+  const std::span<const double> w = curve.w_nodes();
+  const std::size_t n = k.size();
+  if (n < 2u || w.size() != n) {
+    return out; // decided == false: NOT a zero-violation verdict
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    const bool ascending = (i == 0u) || (k[i] > k[i - 1u]);
+    if (!std::isfinite(k[i]) || !std::isfinite(w[i]) || !(w[i] > 0.0) || !ascending) {
+      return out;
+    }
+  }
+  out.decided = true;
+
+  // Slope on the open segment (k[i], k[i+1]). The two wings are FLAT, so the
+  // slope left of k.front() and right of k.back() is exactly 0.
+  const auto segment_slope = [&](std::size_t i) noexcept {
+    return (w[i + 1u] - w[i]) / (k[i + 1u] - k[i]);
+  };
+  // JPL: the per-segment sample count is caller-supplied, so bound it here
+  // rather than trust it. 64 already over-resolves a straight line.
+  const std::uint32_t samples = (n_per_segment < 64u) ? n_per_segment : 64u;
+  bool have_first = false;
+  const auto record_first = [&](double k_at, double s_left, double s_right) noexcept {
+    if (have_first) {
+      return;
+    }
+    have_first = true;
+    out.first_violation_k = k_at;
+    out.first_kink_slope_left = s_left;
+    out.first_kink_slope_right = s_right;
+  };
+
+  // Walk ascending in k so `first_violation_k` is the leftmost violation:
+  // node j, then the segment to its right.
+  for (std::size_t j = 0; j < n; ++j) {
+    const double s_left = (j == 0u) ? 0.0 : segment_slope(j - 1u);
+    const double s_right = (j + 1u == n) ? 0.0 : segment_slope(j);
+    // w'' carries (s_right - s_left) * delta(k - k[j]). A NEGATIVE jump is a
+    // negative point mass in the density. Scale the round-off guard to the
+    // slopes themselves so a tiny curve and a steep one are judged alike.
+    const double tol = 1.0e-12 * std::max(1.0, std::fabs(s_left) + std::fabs(s_right));
+    const double jump = s_right - s_left;
+    if (jump < -tol) {
+      if (j == 0u || j + 1u == n) {
+        ++out.n_wing_kinks;
+      } else {
+        ++out.n_interior_kinks;
+      }
+      out.max_kink_slope_drop = std::max(out.max_kink_slope_drop, -jump);
+      record_first(k[j], s_left, s_right);
+    }
+    if (j + 1u == n || samples == 0u) {
+      continue;
+    }
+    // Smooth part: w'' == 0 strictly inside the segment, so the Lee/Roper
+    // density collapses to the two algebraic terms and needs no stencil.
+    const double slope = segment_slope(j);
+    const double span = k[j + 1u] - k[j];
+    for (std::uint32_t m = 1u; m <= samples; ++m) {
+      const double frac = static_cast<double>(m) / static_cast<double>(samples + 1u);
+      const double k_at = k[j] + span * frac;
+      const double w_at = w[j] + slope * (k_at - k[j]);
+      if (!(w_at > detail::kButterflyStencilWFloor)) {
+        // The 1/w terms carry no density information here, so this point was
+        // NOT evaluated -- and an unevaluatable point is not a clean one. The
+        // caller (`slice_butterfly_violations`, src/fitting/curve_selector.cpp)
+        // is a GATE, and letting this fall through with `decided` still true
+        // would report `clean()` for geometry nothing ever read. This is the
+        // same rule `ButterflyStencilPolicy::MarkUnusable` applies in
+        // butterfly_density.hpp. Repro: every `w_nodes` entry at 1e-14.
+        out.decided = false;
+        return out;
+      }
+      const double inner = 1.0 - 0.5 * k_at * slope / w_at;
+      const double density =
+          inner * inner - 0.25 * slope * slope * (0.25 + 1.0 / w_at);
+      out.min_segment_density = std::min(out.min_segment_density, density);
+      if (density < detail::kButterflyDensityFloor) {
+        ++out.n_segment_points;
+        record_first(k_at, slope, slope);
+      }
+    }
+  }
+  return out;
+}
+
 Result<std::vector<ArbViolation>> arb_check_all(const VolSurface &s,
                                                 double k_min, double k_max,
                                                 std::uint32_t n_grid) {

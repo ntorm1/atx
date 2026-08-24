@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <utility>
 #include <vector>
@@ -239,6 +240,42 @@ TEST(SviCalib, NonPositiveT_ReturnsInvalidArgument) {
                    rnorm.begin() + static_cast<std::ptrdiff_t>(q_idx),
                    rnorm.end());
   return rnorm[q_idx];
+}
+
+// ── T3: the Nelder-Mead winner pick and the NaN vertex ──────────────────────
+//
+// `nm_search` picked its winner with `if (f[1] < f[best]) best = 1;`. That is
+// FALSE when `f[best]` is NaN, so a single NaN vertex 0 beat two perfectly good
+// finite vertices and `out_best_sse` came back non-finite -- breaking the
+// function's stated contract ("non-finite iff EVERY vertex the simplex visited
+// was unusable"), on which the caller's decision to DISCARD the slice rests.
+TEST(SviCalib, NmBestVertexRanksAnUnusableVertexLastNotFirst) {
+  using atx::vol::detail::nm_best_vertex;
+  using atx::vol::detail::nm_vertex_less;
+  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+  constexpr double kInf = std::numeric_limits<double>::infinity();
+
+  // The defect: a NaN vertex 0 with two usable vertices behind it.
+  EXPECT_EQ(nm_best_vertex({kNaN, 4.0, 2.0}), 2u);
+  EXPECT_EQ(nm_best_vertex({kNaN, 2.0, 4.0}), 1u);
+  EXPECT_EQ(nm_best_vertex({kNaN, kNaN, 7.0}), 2u);
+  // +inf is svi_blls_inner's documented unusable sentinel and already worked;
+  // it must keep working.
+  EXPECT_EQ(nm_best_vertex({kInf, 4.0, 2.0}), 2u);
+  // Ordinary finite ordering and the earliest-wins tie-break are unchanged.
+  EXPECT_EQ(nm_best_vertex({1.0, 2.0, 3.0}), 0u);
+  EXPECT_EQ(nm_best_vertex({3.0, 1.0, 2.0}), 1u);
+  EXPECT_EQ(nm_best_vertex({3.0, 2.0, 1.0}), 2u);
+  EXPECT_EQ(nm_best_vertex({1.0, 1.0, 1.0}), 0u);
+  // The ONE case in which a non-finite best is correct: nothing was usable.
+  EXPECT_EQ(nm_best_vertex({kNaN, kInf, kNaN}), 0u);
+
+  // The ordering itself: unusable never beats anything, including itself, so the
+  // in-loop bubble sort sinks it to the vertex Nelder-Mead replaces first.
+  EXPECT_TRUE(nm_vertex_less(1.0, kNaN));
+  EXPECT_FALSE(nm_vertex_less(kNaN, 1.0));
+  EXPECT_FALSE(nm_vertex_less(kNaN, kNaN));
+  EXPECT_FALSE(nm_vertex_less(kInf, kNaN));
 }
 
 TEST(SviCalib, NthElementQ90MatchesSelectionSort) {

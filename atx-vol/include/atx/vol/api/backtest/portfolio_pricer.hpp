@@ -110,6 +110,7 @@ struct PriceFrame;
 struct PriceTotals;
 enum class RiskBucketKey : std::uint8_t;
 struct RiskBucket;
+struct RiskBucketLadder;
 struct PnlFrame;
 struct PnlTotals;
 struct PnlRiskBucket;
@@ -117,6 +118,9 @@ struct PnlRiskBucket;
 [[nodiscard]] Result<std::vector<RiskBucket>>
 reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf, RiskBucketKey by,
                     PriceTotals *grand);
+[[nodiscard]] Result<std::vector<RiskBucket>>
+reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf, RiskBucketKey by,
+                    const RiskBucketLadder &ladder, PriceTotals *grand);
 [[nodiscard]] Result<std::vector<PnlRiskBucket>>
 reduce_pnl_risk_buckets(const PnlFrame &frame, const Portfolio &pf, RiskBucketKey by,
                         PnlTotals *grand);
@@ -235,8 +239,11 @@ public:
 
 private:
   friend class PortfolioPricer;
+  // The laddered overload is the one that reads the provenance fields; the
+  // 4-argument overload forwards to it, so it needs no access of its own.
   friend Result<std::vector<RiskBucket>>
-  reduce_risk_buckets(const PriceFrame &, const Portfolio &, RiskBucketKey, PriceTotals *);
+  reduce_risk_buckets(const PriceFrame &, const Portfolio &, RiskBucketKey,
+                      const RiskBucketLadder &, PriceTotals *);
   friend Result<std::vector<PnlRiskBucket>>
   reduce_pnl_risk_buckets(const PnlFrame &, const Portfolio &, RiskBucketKey, PnlTotals *);
 
@@ -529,10 +536,14 @@ struct PriceTotals {
   // recovered downstream because the totals-only reduction (`price_totals`, the
   // route `book_greeks` takes) never materializes a per-lane frame to sum.
   //
-  // NaN unless a Greek-bearing `reduce_price_totals` computed it — never 0.0,
-  // which would read as a genuinely gross-vega-flat book (the same convention
-  // `dP_dq` uses below). In particular `reduce_risk_buckets`' per-bucket totals
-  // do NOT populate it yet and therefore report NaN, not a false zero.
+  // NaN unless a Greek-bearing reduction computed it — never 0.0, which would
+  // read as a genuinely gross-vega-flat book (the same convention `dP_dq` uses
+  // below). Both reductions that see the vega column populate it: the whole-book
+  // `reduce_price_totals`, and — since L7-T3 — every per-bucket subtotal AND the
+  // `grand` of `reduce_risk_buckets`, which used to declare the field and never
+  // assign it, so a caller asking a bucket for its gross vega got NaN from an
+  // API that advertised the number. Under a marks-only frame it stays NaN in
+  // both, because the vega column it sums does not exist there.
   double abs_vega{kPriceColumnNaN};
   double theta{0.0};
   double rho{0.0};
@@ -585,7 +596,8 @@ struct PriceFrame {
 private:
   friend class PortfolioPricer;
   friend Result<std::vector<RiskBucket>>
-  reduce_risk_buckets(const PriceFrame &, const Portfolio &, RiskBucketKey, PriceTotals *);
+  reduce_risk_buckets(const PriceFrame &, const Portfolio &, RiskBucketKey,
+                      const RiskBucketLadder &, PriceTotals *);
 
   // Opaque provenance for the logical Portfolio generation that produced this
   // frame. Copies/moves of the frame preserve it; only PortfolioPricer stamps it.
@@ -595,40 +607,138 @@ private:
   std::uint64_t book_revision_{0};
 };
 
-// ── Bucketed risk (GR-F1) — per-underlier / per-expiry aggregation ─────────
+// ── Bucketed risk (GR-F1) — per-underlier / per-expiry / smile aggregation ──
 //
 // The canonical PriceTotals is a single whole-book bucket. Desks need risk sliced
-// per underlier and per expiry. `reduce_risk_buckets` is a deterministic, serial
-// post-process over an Ok-lane price frame: no hot-path cost for callers that do
-// not ask, and — because the source frame is bit-identical across thread counts —
-// the buckets are thread-count invariant too.
+// per underlier, per expiry, and — L7-T2 — ACROSS THE SMILE, which is the cut an
+// equity vol book is actually run on ("where is my vega between the 25-delta put
+// wing and the 25-delta call wing, tenor by tenor"). `reduce_risk_buckets` is a
+// deterministic, serial post-process over an Ok-lane price frame: no hot-path cost
+// for callers that do not ask, and — because the source frame is bit-identical
+// across thread counts — the buckets are thread-count invariant too.
 enum class RiskBucketKey : std::uint8_t {
-  ByUnderlier, // key = contract uid
-  ByExpiry,    // key = the contract T (year-fraction), see RiskBucket::T
+  ByUnderlier,    // key = contract uid
+  ByExpiry,       // key = the contract T (year-fraction), see RiskBucket::T
+  ByLogMoneyness, // key = ladder band of k = ln(K / F), F from RiskBucketLadder
+  ByDelta,        // key = ladder band of the PER-SHARE delta
 };
+
+// The key a laddered reduction assigns to a lane it could not place: no forward
+// for the contract's uid (ByLogMoneyness), or no recoverable per-share delta
+// (ByDelta — see RiskBucketLadder). Such a lane is BUCKETED, never dropped, so
+// `sum_k bucket[k].totals.n_ok` still equals the frame's Ok-lane count and a
+// caller reading a vega ladder can see how much risk the ladder failed to place.
+// The value is UINT64_MAX so the sort puts it last; it cannot collide with a uid
+// (32-bit), with the bits of a finite T > 0, or with a band index.
+inline constexpr std::uint64_t kRiskBucketUnkeyed = (std::numeric_limits<std::uint64_t>::max)();
+
+// One underlier's reference forward, for ByLogMoneyness.
+struct RiskBucketForward {
+  std::uint32_t uid{0};
+  double F{0.0}; // must be finite and > 0
+};
+
+// Bucket-edge configuration for the two LADDERED keys. Ignored for ByUnderlier
+// and ByExpiry, which key off the contract itself and need no configuration.
+//
+// WHY THE FORWARDS LIVE HERE. `Portfolio` carries (K, T) per position but no
+// spot and no forward — those belong to the surface, which this reduction
+// deliberately does not hold (it is a pure post-process over a frame the pricer
+// already produced). Log-moneyness needs a reference F per underlier, so the
+// caller supplies it, exactly once per uid, alongside the edges. A ByDelta
+// reduction needs no forwards and ignores the field.
+struct RiskBucketLadder {
+  // Strictly increasing, all finite. `n` edges make `n + 1` bands, keyed 0..n:
+  // band i is the half-open [edges[i-1], edges[i]) with edges[-1] = -inf and
+  // edges[n] = +inf. An EMPTY edge list is legal and means one whole-book band.
+  //
+  // LOWER-CLOSED, upper-open: a value that lands exactly ON an edge belongs to
+  // the band that edge OPENS. This is the case to get right rather than the
+  // pedantic corner it looks like — an at-the-money strike gives
+  // `k = ln(K / F) == 0.0` exactly, so under the mirror convention every ATM
+  // lane on a ladder with a 0.0 edge would report as a put wing, and a lot at
+  // exactly 0.50 delta would sit one band low on `default_delta_ladder()`.
+  std::vector<double> edges;
+  // ByLogMoneyness only: ascending by `uid`, no duplicates, every F finite and
+  // positive. Must be non-empty for ByLogMoneyness — an empty table would place
+  // the entire book in kRiskBucketUnkeyed, which is a caller mistake, not a
+  // ladder.
+  std::vector<RiskBucketForward> forwards;
+};
+
+// The two shipped default ladders. Neither is privileged — they exist so a
+// caller who just wants "the usual ladder" does not invent a different one per
+// call site, and both are ordinary values a caller may edit or replace.
+//
+// Log-moneyness bands at +/- 5% / 15% / 30% in k = ln(K/F): ATM, near wing, far
+// wing, tail, on each side. Carries NO forwards; the caller must fill them.
+[[nodiscard]] RiskBucketLadder default_log_moneyness_ladder();
+// Signed per-share delta bands at the desk-standard 10 / 25 / 50 / 75 / 90,
+// mirrored across zero so a put (delta in [-1, 0]) and a call (delta in [0, 1])
+// of the same moneyness land in mirrored bands rather than being folded onto one
+// another. Bucket by |delta| instead by passing your own edges.
+[[nodiscard]] RiskBucketLadder default_delta_ladder();
 
 // One aggregation bucket: the per-key PriceTotals column sums over that bucket's
 // Ok lanes, accumulated in input order.
 struct RiskBucket {
-  std::uint64_t key{0}; // ByUnderlier: uid; ByExpiry: raw bits of T (monotone for T>0)
-  double T{0.0};        // ByExpiry: the expiry year-fraction (0 for ByUnderlier)
+  // ByUnderlier: uid. ByExpiry: raw bits of T (monotone for T > 0).
+  // ByLogMoneyness / ByDelta: the ladder band index, or kRiskBucketUnkeyed.
+  std::uint64_t key{0};
+  double T{0.0}; // ByExpiry: the expiry year-fraction (0 for every other key)
   PriceTotals totals{};
 };
 
 // Reduce `frame`'s Ok lanes into per-key buckets, returned sorted ascending by
 // `key`; within each bucket, lanes accumulate in input order. `pf` supplies the
-// per-position contract (uid / T) and must be the SAME logical book generation
+// per-position contract (uid / K / T) and must be the SAME logical book generation
 // `frame` was priced from. A size, provenance, or frame-shape mismatch returns
 // InvalidArgument without modifying `grand`. `grand` (if non-null) receives the
 // sum of the bucket subtotals in that
 // sorted order, so `sum_k bucket[k] == *grand` holds BIT-EXACTLY by construction
 // (it is the bucket-consistent whole-book total; it agrees with PriceFrame::total
 // to floating-point rounding — the two use different summation associations).
-// pv and n_ok are always summed; the eight Greek columns only when the frame
-// materialized them; dP_dq only when the carry column is present.
+// pv, abs_vega and n_ok are always summed; the eight Greek columns only when the
+// frame materialized them; dP_dq only when the carry column is present.
+//
+// This overload keys off the contract alone. A LADDERED key has no meaning
+// without edges, so passing one here is InvalidArgument rather than a silently
+// invented ladder — use the overload below.
 [[nodiscard]] Result<std::vector<RiskBucket>>
 reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf, RiskBucketKey by,
                     PriceTotals *grand = nullptr);
+
+// The laddered form. Identical contract to the overload above, plus:
+//
+//   * ByLogMoneyness bands `k = ln(K / F(uid))`, with F looked up in
+//     `ladder.forwards`. A lane keys to kRiskBucketUnkeyed when its uid is
+//     absent from that table, or when its strike is non-finite or not positive
+//     (the pricing path stamps such a contract InvalidContract rather than Ok,
+//     but this reduction accepts any Ok-stamped frame a caller hands it, so the
+//     log is guarded rather than assumed). `forwards` must be ascending-unique
+//     with every F finite and positive, and non-empty, or the call is
+//     InvalidArgument.
+//   * ByDelta bands the PER-SHARE delta, recovered as
+//     `frame.delta[i] / (qty * multiplier)` — the frame's Greek columns are
+//     position-scaled, and a delta ladder is a per-contract statement. It
+//     therefore requires `frame.greeks_materialized()`; a marks-only frame is
+//     InvalidArgument rather than a book-wide unkeyed bucket, because "no delta
+//     was computed" and "this position has no delta" are different facts. A lane
+//     whose position weight is zero or non-finite, or whose delta column value
+//     is non-finite, keys to kRiskBucketUnkeyed.
+//   * `ladder` is IGNORED for ByUnderlier and ByExpiry — not merely unread, but
+//     UNVALIDATED too, so a caller that loops over every key with one ladder in
+//     hand gets the same numbers the overload above returns, bit for bit, even
+//     if that ladder would be rejected for a laddered key. Validating a ladder
+//     nothing reads would make this sentence false rather than strict.
+//
+// Keying is a pure function of (contract, ladder) and, for ByDelta, of one frame
+// element — no accumulation and no dependence on visit order — so the ladder adds
+// nothing to the thread-count-invariance argument the two original keys already
+// satisfy.
+[[nodiscard]] Result<std::vector<RiskBucket>>
+reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf, RiskBucketKey by,
+                    const RiskBucketLadder &ladder, PriceTotals *grand = nullptr);
 
 // ── In-place price API: caller-owned output view + reusable workspace ──────
 

@@ -276,6 +276,43 @@ struct PricerConfig {
   // to admit or fall back from.
   RiskAdmission risk_admission{RiskAdmission::Required};
   SurfaceFallback fallback{SurfaceFallback::LastKnownGood};
+  // T1. The market-MARK arm pins `VolCurveKind::LinearVariance` -- linear
+  // interpolation of the quoted total variances -- so the served curve is only
+  // C0 and its butterfly density carries a Dirac at every node (arb.hpp states
+  // the geometry in full). That surface is NOT butterfly-arb-free, on any board:
+  // measured on this repo's own known-truth synthetic SPY panel, a 6-slice mark
+  // carries 11 violations, and the codebase's own real-board number is that
+  // ~1/4 of a raw penny-quote SPY board is locally butterfly-violating
+  // (src/fitting/essvi_calib.cpp) -- a mark that interpolates the quotes
+  // reproduces every one of those.
+  //
+  // `SurfaceHealth::validation` on the published mark now ALWAYS carries that
+  // measurement -- `n_slices` (measured, not total), `n_butterfly_violations`,
+  // worst slack, and the first offending k with its two segment slopes.
+  //
+  // READ THE COUNTS, NOT `admitted()`. At this flag's default the published
+  // digest carries `failures == None`, so `validation.admitted()` is TRUE beside
+  // a non-zero `n_butterfly_violations` -- on the synthetic SPY panel above,
+  // true beside 11. That is not an oversight and it cannot be fixed here: the
+  // archive enforces the pairing (`provenance_record_valid`,
+  // src/storage/surface_archive.cpp:93 -- `state != Healthy ||
+  // validation_failures == 0`), so a Healthy mark carrying a Butterfly bit is
+  // not a representable persisted state, and making `admitted()` false would
+  // make the mark unpersistable rather than honest. `admitted()` is the
+  // ADMISSION VERDICT and moves only with the state; the geometry is the COUNTS.
+  // A caller that needs butterfly-clean geometry must test
+  // `n_butterfly_violations == 0 && n_slices > 0`.
+  //
+  // What this flag governs is only whether the measurement also demotes
+  // `SurfaceHealth::state` to `Degraded` and carries the bit with it.
+  //
+  // It defaults to FALSE deliberately, and the reason is a live coupling rather
+  // than timidity: `src/marketdata/corpus_board_fit.cpp` substitutes a mark for
+  // a risk-refused board only while `market_mark_health.state == Healthy`.
+  // Defaulting this true would silently stop serving those boards on every
+  // snapshot -- arming a refusal, not reporting a fact. Flip it (or move the
+  // default) once that gate accepts a Degraded+Butterfly mark.
+  bool demote_mark_on_butterfly{false};
 };
 
 enum class ExpiryBuildOutcome : std::uint8_t {

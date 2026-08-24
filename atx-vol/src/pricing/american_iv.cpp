@@ -1,5 +1,6 @@
 #include "atx/vol/api/pricing/american_iv.hpp"
 
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -47,17 +48,96 @@ constexpr unsigned kMaxExpand = 8;   // bounded hi-doubling budget
 // the converged rtsafe iterate.
 constexpr double kPolishMaxDriftTols = 4.0;
 
-// American immediate-exercise value (undiscounted) and the price ceiling.
-struct NoArbBand {
-  double intrinsic; // max(0, S-K) call / max(0, K-S) put
-  double upper;     // S call / K put
-};
+// The American price ceiling: the sup over exercise dates of the DISCOUNTED
+// payoff ceiling. A call's payoff never exceeds S_t, worth e^{-rt}*S_t =
+// S*e^{-qt} if exercised at t; a put's never exceeds K, worth K*e^{-rt}. Both
+// are monotone in t, so the sup over [0, T] sits at an endpoint.
+//
+// [2026-08-23] The naive "S for a call, K for a put" holds only under
+// NON-NEGATIVE carry. With q < 0 an American call is worth MORE than spot
+// (measured: S=100, K=50, T=1, r=0.05, q=-0.5 prices at 117.31 against a spot of
+// 100) and with r < 0 a put is worth more than its strike (S=K=100, T=20,
+// r=-0.05 prices at 197.56 against a strike of 100). This is reachable in-house,
+// not hypothetical: american_iv.hpp advertises "any sign" for r and q, and
+// `imply_borrow_european_pcp_from_base` brackets borrow from -0.5
+// (dividend.hpp), and q_eff IS the borrow. Under the naive ceiling the upper
+// screen and the zero-vol lower screen CROSS, and an empty admissible interval
+// rejects every price — a silent total refusal, which is why the caller asserts
+// the two cannot cross.
+[[nodiscard]] double american_price_ceiling(double S, double K, double T, double r, double q,
+                                            Side side) noexcept {
+  return (side == Side::Call) ? S * std::fmax(1.0, std::exp(-q * T))
+                              : K * std::fmax(1.0, std::exp(-r * T));
+}
 
-[[nodiscard]] NoArbBand american_band(double S, double K, Side side) noexcept {
-  if (side == Side::Call) {
-    return NoArbBand{(S > K) ? (S - K) : 0.0, S};
+// The ZERO-VOLATILITY American value: the sigma -> 0 limit of the premium, and
+// therefore the true lower end of the identifiable price range.
+//
+// [2026-08-23, LEDGER.md:98] This screen used to compare the quote against
+// the IMMEDIATE intrinsic max(0, S-K) alone. That is only the t = 0 corner of
+// the limit. As sigma -> 0 the underlying follows the deterministic path
+// S*e^{(r-q)t}, so the option is worth the sup of the discounted payoff over
+// every exercise date:
+//
+//   sup_{t in [0,T]} e^{-rt}*(S*e^{(r-q)t} - K)^+  =  max(0, max_t f(t)),
+//   f(t) = S*e^{-qt} - K*e^{-rt}                                    (call)
+//   f(t) = K*e^{-rt} - S*e^{-qt}                                    (put)
+//
+// The t = T corner is the discounted forward intrinsic df*(F-K)^+, and for a
+// CALL with r > q it is the LARGER of the two — the everyday case. A quote
+// between the two carries no volatility at all (no sigma > 0 reproduces it), yet
+// it cleared the immediate-intrinsic screen, tripped residual(kSigmaLo) >= 0
+// inside the bracket, and came back as Ok(kIvMin): a SUCCESS publishing 0.005 as
+// a MEASURED volatility.
+//
+// f(t) = A*e^{-a t} - B*e^{-b t} has AT MOST ONE stationary point, so the sup
+// over the closed interval is the max over {0, T, t*}: f'(t) = 0 gives
+// e^{(a-b)t} = aA / bB, i.e. t* = ln(aA / bB) / (a - b). Deep ITM and long dated
+// with 0 < q < r that interior optimum clears both endpoints by whole price
+// points, so the endpoints alone are not enough.
+//
+// The maximum-vs-minimum condition (f''(t*) = (a-b)*aA*e^{-a t*}, so a maximum
+// iff a < b) is deliberately NOT tested, and the code must not be "improved" to
+// test it: `fmax` over the three candidates is correct whether t* is a maximum
+// or a minimum, because a minimum only contributes a value the max discards.
+// That is exactly what makes the negative-rate sign flip harmless. Note t* is
+// NOT always non-finite in the degenerate corners — with BOTH rates negative
+// aA/bB > 0 and a != b, so t* is finite and may be a minimum; the invariant
+// above, not a finiteness accident, is what keeps that correct.
+[[nodiscard]] double zero_vol_american_value(double S, double K, double T, double r, double q,
+                                             Side side) noexcept {
+  const double A = (side == Side::Call) ? S : K;
+  const double a = (side == Side::Call) ? q : r;
+  const double B = (side == Side::Call) ? K : S;
+  const double b = (side == Side::Call) ? r : q;
+  const auto payoff = [A, a, B, b](double t) noexcept {
+    return A * std::exp(-a * t) - B * std::exp(-b * t);
+  };
+  const double at_0 = payoff(0.0);
+  const double at_T = payoff(T);
+  if (!std::isfinite(at_0) || !std::isfinite(at_T)) {
+    // A carry x maturity that overflows the deterministic payoff (q = -0.05 with
+    // T = 1000 already reaches S*e^50). Surface it as NaN so the caller refuses
+    // the quote instead of comparing against an infinity that rejects every
+    // price — and so `inf - inf = NaN` cannot be silently swallowed by fmax,
+    // which returns the non-NaN operand.
+    return std::numeric_limits<double>::quiet_NaN();
   }
-  return NoArbBand{(K > S) ? (K - S) : 0.0, K};
+  double best = std::fmax(at_0, at_T);
+  // SAFETY: t_star is formed from IEEE division and std::log, both DEFINED (not
+  // UB) on every degenerate input reachable here — a == b divides by zero
+  // (+/-inf), b*B == 0 divides by zero inside the log argument (log of +/-inf),
+  // and a ratio of opposite-signed rates makes log return NaN. Each of those
+  // fails the isfinite guard below and the sup falls back to the endpoints,
+  // which is correct: a stationary point outside (0, T) cannot be the maximum.
+  const double t_star = std::log((a * A) / (b * B)) / (a - b);
+  if (std::isfinite(t_star) && t_star > 0.0 && t_star < T) {
+    const double at_star = payoff(t_star);
+    if (std::isfinite(at_star)) {
+      best = std::fmax(best, at_star);
+    }
+  }
+  return std::fmax(best, 0.0);
 }
 
 // European implied vol of `price` read as a Black-76 premium. The American
@@ -100,6 +180,33 @@ template <typename Correction>
                                  Side side, const Correction *correction) noexcept {
   const double v = correction_vega(S, K, T, sigma, r, q, side, correction);
   return (std::isfinite(v) && v > 0.0) ? v : 0.0;
+}
+
+// [2026-08-23, LEDGER.md:273] Secant slope of the residual over two evaluated
+// points, i.e. the derivative of the map ACTUALLY being solved.
+//
+// The Newton step above differentiates the wrong function on the cold/BAW route:
+// the residual there is the American map (Andersen-Lake or BAW), but
+// `american_vega` with a null correction is the pure Black-76 EUROPEAN vega
+// (american.cpp). The sign and scale agree, so the maintained sign bracket keeps
+// the search correct, but docs/LEDGER.md measured the cost: the proxy overstates
+// the true AL slope 2-3x deep ITM, every Newton step understeps, the rtsafe range
+// test demotes it to bisection, and convergence collapses to linear exactly where
+// the proxy is worst. Two consecutive residual evaluations already bracket a
+// chord of the true map, so the slope is free — no extra pricer call — and it
+// tightens onto the true derivative as the iterates close in.
+//
+// Returns 0 (the documented "force bisection" value) whenever the chord is not a
+// usable increasing slope: coincident abscissae, or a non-positive/non-finite
+// difference, which at the cold pricer's own noise floor means the two residuals
+// carry no resolvable slope information.
+[[nodiscard]] double secant_slope(double x0, double f0, double x1, double f1) noexcept {
+  const double dxs = x1 - x0;
+  if (dxs == 0.0) {
+    return 0.0;
+  }
+  const double slope = (f1 - f0) / dxs;
+  return (std::isfinite(slope) && slope > 0.0) ? slope : 0.0;
 }
 
 // True iff `correction` is usable as the forward map for `side`: non-null,
@@ -229,19 +336,43 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
     return Err(ErrorCode::InvalidArgument, "american_implied_vol: S/K/T must be > 0");
   }
 
-  const NoArbBand band = american_band(S, K, side);
-  const double band_tol = 1.0e-9 * band.upper + 1.0e-12;
-  if (price < band.intrinsic - band_tol) {
-    return Err(ErrorCode::OutOfRange, "american_implied_vol: price below intrinsic");
+  // The identifiable range is [zero-vol value, ceiling]. The zero-vol value is a
+  // sup over exercise dates, NOT the immediate intrinsic — see
+  // zero_vol_american_value.
+  const double ceiling = american_price_ceiling(S, K, T, r, q, side);
+  const double zero_vol = zero_vol_american_value(S, K, T, r, q, side);
+  if (!std::isfinite(ceiling) || !std::isfinite(zero_vol)) {
+    return Err(ErrorCode::OutOfRange,
+               "american_implied_vol: carry x maturity overflows the zero-vol bound");
   }
-  if (price > band.upper + band_tol) {
+  // Both ends are sups of the same integrand over the same interval — the
+  // ceiling drops the subtracted (non-negative) leg — so ceiling >= zero_vol
+  // holds by construction, not by luck. An empty interval would reject EVERY
+  // price silently, so make it unrepresentable rather than merely unlikely.
+  assert(ceiling >= zero_vol && "american_implied_vol: empty admissible price interval");
+  const double band_tol = 1.0e-9 * ceiling + 1.0e-12;
+  if (price > ceiling + band_tol) {
     return Err(ErrorCode::OutOfRange, "american_implied_vol: price above upper bound");
   }
-  // A price at intrinsic implies sigma -> 0 (no finite IV above the floor);
-  // mirror the European inverter and clamp to the vol floor.
-  if (price <= band.intrinsic + band_tol) {
+  // Immediate intrinsic is the one lower bound EVERY American map respects
+  // (early exercise is always available), so an arbitrage-violating quote is
+  // refused here for free — no pricer call. The zero-vol screen proper needs the
+  // forward map and therefore runs below, after it exists.
+  const double immediate =
+      (side == Side::Call) ? std::fmax(S - K, 0.0) : std::fmax(K - S, 0.0);
+  if (price < immediate - band_tol) {
+    return Err(ErrorCode::OutOfRange, "american_implied_vol: price below intrinsic");
+  }
+  // A price AT the zero-vol value implies sigma -> 0 (no finite IV above the
+  // floor); mirror the European inverter and clamp to the vol floor. A price
+  // between it and the price at kIvMin is a genuine sub-floor root and still
+  // reports kIvMin through the bracket, per the unified-floor contract. Kept
+  // here, ahead of the map, because a deep-ITM quote sitting at intrinsic is the
+  // COMMON case and must not pay a cold solve to be recognised.
+  if (price >= zero_vol - band_tol && price <= zero_vol + band_tol) {
     return Ok(kIvMin);
   }
+  const bool below_zero_vol = price < zero_vol - band_tol;
 
   // The retained TLS state is reset once per cold Andersen-Lake inversion and
   // holds the early-exercise boundary across its residual evaluations. Cached
@@ -282,6 +413,33 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
     }
     return Ok(*p - price);
   };
+
+  // ── Zero-vol admissibility, adjudicated by the MAP that will be inverted ──
+  //
+  // The analytic sup above is the sigma -> 0 limit of the EXACT American value,
+  // and Andersen-Lake reproduces it to 1.3e-13 across a 2,688-point carry x
+  // moneyness x maturity scan. But this entry point also serves BAW and the
+  // Chebyshev-corrected cached map, which are APPROXIMATIONS: nothing guarantees
+  // their own sigma -> 0 limit sits at the exact one, and refusing a price the
+  // caller's own selected pricer produced would break the round trip.
+  //
+  // So the analytic bound PROPOSES the refusal and the map DISPOSES: one
+  // evaluation of the actual residual at the vol floor, paid only on this path.
+  // If the map prices at or below the quote there, a root exists at/above kIvMin
+  // under this map and the search runs normally; only when the map's own floor
+  // price also exceeds the quote is the quote genuinely unidentifiable. The same
+  // scan finds ZERO BAW cases that this rescues today (every one the analytic
+  // bound would newly refuse was already below immediate intrinsic, hence
+  // refused before this change too), so the probe buys no coverage now — it buys
+  // the INVARIANT that no approximate forward map can ever be refused a price it
+  // itself produced, which a finite scan cannot promise on its own.
+  if (below_zero_vol) {
+    ATX_TRY(const double f_floor, residual(kSigmaLo));
+    if (f_floor > band_tol) {
+      return Err(ErrorCode::OutOfRange,
+                 "american_implied_vol: price below the zero-vol American bound");
+    }
+  }
 
   // Fused residual + vega for the safeguarded-Newton refinement (perf F1). On the
   // CACHED path a single american_price_and_vega_cached call shares ONE correction
@@ -324,6 +482,14 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
   double rts = 0.0;
   double f = 0.0;
   bool bracketed = false;
+  // The OTHER evaluated point of the completed bracket — the second half of
+  // the initial secant chord, so the first Newton step already differentiates the
+  // forward map instead of the Black-76 proxy. Every branch below closes the
+  // bracket having priced exactly two points; this records the one that is not
+  // `rts`.
+  double x_sec = 0.0;
+  double f_sec = 0.0;
+  bool have_sec = false;
 
   double seed = 0.0;
   if (warm_start > kSigmaLo && warm_start < kSigmaHi) {
@@ -357,6 +523,9 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
         f_lo = f_step;
         if (f_lo < 0.0) {
           xl = s_lo;
+          x_sec = s_lo;
+          f_sec = f_lo;
+          have_sec = true;
           bracketed = true;
           break;
         }
@@ -385,6 +554,9 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
         xh = s_lo; // residual(s_lo) = f_lo >= 0 (loop ended without a sign change)
         rts = s_lo;
         f = f_lo;
+        x_sec = kSigmaLo;
+        f_sec = f_floor;
+        have_sec = true;
         bracketed = true;
       }
     } else {
@@ -399,6 +571,9 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
         f_hi = f_step;
         if (f_hi >= 0.0) {
           xh = s_hi;
+          x_sec = s_hi;
+          f_sec = f_hi;
+          have_sec = true;
           bracketed = true;
           break;
         }
@@ -424,6 +599,9 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
         xh = kSigmaHiCap;
         rts = s_hi;
         f = f_hi;
+        x_sec = kSigmaHiCap;
+        f_sec = f_ceil;
+        have_sec = true;
         bracketed = true;
       }
     }
@@ -454,13 +632,25 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
     rts = 0.5 * (xl + xh);
     ATX_TRY(double f_mid, residual(rts));
     f = f_mid;
+    x_sec = b;
+    f_sec = fb;
+    have_sec = true;
   }
 
   // ── Safeguarded Newton (rtsafe): oriented so f(xl) < 0 < f(xh) ─────────
   bool converged = (f == 0.0); // seed landed exactly on the root
   double dx = xh - xl;
   double dx_old = dx;
-  double df = converged ? 0.0 : newton_vega(S, K, T, rts, r, q, side, active_correction);
+  // Prefer the bracket's own chord on the cold/BAW route, where the analytic
+  // vega differentiates a DIFFERENT function than the residual (see
+  // secant_slope). On the cached route `american_price_and_vega_cached` returns
+  // the true sigma partial of the very map being solved AND shares one correction
+  // traversal with the residual (perf F1), so that path keeps its analytic vega.
+  double df = 0.0;
+  if (!converged) {
+    const double slope0 = (use_cache || !have_sec) ? 0.0 : secant_slope(x_sec, f_sec, rts, f);
+    df = (slope0 > 0.0) ? slope0 : newton_vega(S, K, T, rts, r, q, side, active_correction);
+  }
 
   for (std::uint16_t iter = 0; !converged && iter < max_iter; ++iter) {
     // Bisect when the Newton iterate would leave [xl, xh] or is not shrinking
@@ -468,6 +658,10 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
     const bool newton_out = (((rts - xh) * df - f) * ((rts - xl) * df - f)) > 0.0;
     const bool newton_slow = std::fabs(2.0 * f) > std::fabs(dx_old * df);
     dx_old = dx;
+    // The point whose residual `f` currently is — the near half of the next
+    // secant chord. Captured before the step moves `rts`.
+    const double x_prev = rts;
+    const double f_prev = f;
     if (newton_out || newton_slow) {
       dx = 0.5 * (xh - xl);
       rts = xl + dx;
@@ -492,8 +686,12 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
     // Fused residual + vega: one shared correction traversal per Newton step on
     // the cached path (perf F1). The residual is bit-identical to residual(rts).
     ATX_TRY(auto fv, residual_and_vega(rts));
+    // The two most recent evaluations are a chord of the map being solved;
+    // the analytic vega on the cold/BAW route is a chord of a different one. Fall
+    // back to the vega only where the chord carries no usable slope.
+    const double slope = use_cache ? 0.0 : secant_slope(x_prev, f_prev, rts, fv.first);
     f = fv.first;
-    df = fv.second;
+    df = (slope > 0.0) ? slope : fv.second;
     if (f < 0.0) {
       xl = rts;
     } else if (f > 0.0) {

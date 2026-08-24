@@ -71,8 +71,8 @@ inline constexpr double kQuietNaN = std::numeric_limits<double>::quiet_NaN();
 // ── Yield curve ───────────────────────────────────────────────────────────
 
 // Fritsch-Carlson monotone cubic-Hermite yield curve over (T, zero-rate)
-// pillars, evaluated as log-discount-factor. Flat extrapolation outside the
-// pillar range.
+// pillars, evaluated as log-discount-factor. Outside the pillar range the ZERO
+// RATE is held flat (NOT the discount factor — see `disc`).
 //
 // Thread-safety: many-readers-or-one-writer. `disc`/`zero` are const and
 // safe to call concurrently from any number of threads once construction
@@ -94,13 +94,27 @@ public:
                                                   std::span<const double> zero_rates);
 
   // Discount factor exp(-r(T)*T) at year-fraction T. A default-constructed
-  // (empty) curve always returns 1.0, matching the C no-curve contract.
-  // Flat extrapolation beyond the pillar range.
+  // (empty) curve always returns 1.0, matching the C no-curve contract, as does
+  // any curve at T <= 0 (the value date discounts to itself).
+  //
+  // Outside the pillar range the extrapolation holds the ZERO RATE flat:
+  // disc(T) = exp(-r0*T) below the first pillar and exp(-rN*T) above the last, so
+  // `zero` stays bounded at r0 / rN respectively. Clamping the DISCOUNT FACTOR
+  // flat instead — as this did before 2026-08-23 — makes zero(T) = -log_df/T,
+  // which diverges like 1/T at the short end (measured on the test suite's own
+  // pillars: 1 h -> 97.2%, 5 min -> 1108.8% off a 4.05% overnight rate) and
+  // decays toward 0 at the long end, because a flat discount factor is a ZERO
+  // instantaneous forward rate. `disc` at every pillar is bit-unchanged. A curve
+  // whose first pillar sits at t = 0 has no short end to extrapolate at all —
+  // every T > 0 is inside the pillar range — so the interior interpolant handles
+  // it; a curve whose LAST pillar is non-positive keeps the flat-DF clamp, since
+  // there is no positive maturity to read a rate off.
   [[nodiscard]] double disc(double T) const noexcept;
 
   // Continuously-compounded zero rate at year-fraction T. Returns 0.0 for
   // T <= 0 (matches the C contract — there is no rate "at" the value
-  // date).
+  // date). Bounded by the first / last pillar rate outside the pillar range —
+  // see `disc` for the extrapolation contract that rests on.
   [[nodiscard]] double zero(double T) const noexcept;
 
   [[nodiscard]] std::size_t size() const noexcept { return t_years_.size(); }

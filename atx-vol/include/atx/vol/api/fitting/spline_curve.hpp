@@ -94,6 +94,11 @@ inline constexpr std::array<double, 29> kSrMoneynessGrid = {
 // served curve is flat beyond `[z.front(), z.back()]` regardless.
 struct SplineVolParams {
   double atm_vol{0.0};           // sigma_ATM > 0
+  // INVARIANT (required, not enforced by this struct): strictly increasing and
+  // finite. The spline core divides by the gaps z[i+1]-z[i]; a duplicated or
+  // unsorted knot from a hand-built or deserialized params degrades the curve to
+  // the piecewise-linear interpolant (all-zero second derivatives) rather than
+  // serving NaN, but it is still not the curve the caller asked for.
   std::vector<double> z;         // active knot grid, strictly increasing
   std::vector<double> mult;      // per-knot vol multiples, > 0 (>= mult_floor)
   double z_lo_valid{0.0};        // observed standardized-moneyness range;
@@ -119,6 +124,24 @@ struct SplineVolParams {
 
 // ── Fit options ──────────────────────────────────────────────────────────
 struct SplineFitOpts {
+  // BORROWED, not owned — `std::span` as a MEMBER, so this options object does
+  // not extend the lifetime of whatever backs it. The default names a
+  // `constexpr` static (`kSrMoneynessGrid`) whose storage outlives every caller,
+  // but `SplineFitOpts{.grid = make_grid()}` with a temporary vector stores a
+  // DANGLING span and the fitter reads freed memory. House style §1 forbids a
+  // non-owning view as a member without a lifetime guarantee; the guarantee here
+  // is the caller's, and it is stated rather than enforced because changing the
+  // member to an owning container would allocate on a per-slice fit path.
+  //
+  // CONTRACT: the storage `grid` names must outlive every `fit_spline_vol_slice`
+  // call that receives this object. Bind the grid to a NAMED object that
+  // outlives the options:
+  //     const std::vector<double> knots = make_grid();
+  //     SplineFitOpts opts; opts.grid = knots;   // OK
+  //     SplineFitOpts bad{.grid = make_grid()};  // DANGLING
+  //
+  // Must be strictly increasing and finite (validated at the fitter's entry, and
+  // the spline core divides by the knot gaps — see fit_spline_vol_slice).
   std::span<const double> grid{kSrMoneynessGrid};  // candidate knot z-grid
   // 2nd-difference (P-spline) roughness penalty on the fitted multiples. Raised
   // 20x from the historical 1e-3 after a full-OPRA-universe sweep: the light

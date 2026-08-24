@@ -1520,14 +1520,23 @@ TEST_F(PricerFitterTest, ValueChainSeparatesUnsetSidesFromAttemptedInversionFail
   const auto baseline = fitter.value_chain(*chain_, OutputField::Bands, 1);
   ASSERT_TRUE(baseline.has_value()) << baseline.error().to_string();
 
+  // The legs must be ones whose bid IV currently SUCCEEDS: the assertions below
+  // read n_bid_iv_fail as unchanged by unsetting them, which only holds if they
+  // were not already failures. Selecting ITM legs by moneyness alone is not
+  // enough — a short-dated deep-ITM leg quoted between its immediate and its
+  // discounted-forward intrinsic is unidentifiable and `american_implied_vol`
+  // refuses it, so `baseline->bid_iv` is the predicate, not the strike.
+  const std::vector<OptionId> chain_ids = chain_->ids();
+  ASSERT_EQ(baseline->bid_iv.size(), chain_ids.size());
   std::vector<OptionId> ids;
   std::vector<double> bids;
   std::vector<double> asks;
-  for (const OptionId id : chain_->ids()) {
+  for (std::size_t i = 0; i < chain_ids.size(); ++i) {
+    const OptionId id = chain_ids[i];
     const auto option = chain_->at(id);
     ASSERT_TRUE(option.has_value());
     const bool itm = option->side == Side::Call ? option->strike < spot_ : option->strike > spot_;
-    if (itm && ids.size() < 4u) {
+    if (itm && std::isfinite(baseline->bid_iv[i]) && ids.size() < 4u) {
       ids.push_back(id);
       bids.push_back(0.0);
       asks.push_back(option->ask);
@@ -1924,14 +1933,37 @@ TEST(PricerFitterPolicy, ThinBoardSelectorRefusalPublishesTheProfileCurve) {
 
   PricerConfig config;
   config.policy.mode = atx::vol::FitSelectionMode::CrossValidated;
-  atx::vol::CurveConfig linear;
-  linear.kind = atx::vol::VolCurveKind::LinearVariance;
-  config.selector.candidates = {linear};
+  // T1: the sole candidate used to be LinearVariance. The selector's butterfly
+  // gate now MEASURES that family instead of assuming it clean, and a
+  // piecewise-linear total variance is never butterfly-arb-free (arb.hpp), so a
+  // LinearVariance-only ladder is disqualified by construction and this arm
+  // would exercise the refusal path rather than the cross-validated one it is
+  // here to test. eSSVI is a family that can actually clear the gate; the
+  // property under test -- a healthy board cross-validates, a thin board's
+  // refusal still publishes through the profile's family -- is unchanged.
+  atx::vol::CurveConfig essvi;
+  essvi.kind = atx::vol::VolCurveKind::Essvi;
+  config.selector.candidates = {essvi};
   config.admission.require_calendar_arb_free = false;
   PricerFitter fitter{config};
   ASSERT_TRUE(fitter.fit(*good_chain).has_value());
   ASSERT_TRUE(fitter.decision().has_value());
   EXPECT_FALSE(fitter.decision()->selector_fallback) << "the healthy board cross-validated";
+
+  // The companion fact, pinned here because this is where it bites: the same
+  // healthy board with a LinearVariance-only ladder now falls back to the
+  // profile's family instead of selecting a butterfly-violating one -- and it
+  // still PUBLISHES, so the gate costs a family choice, not a surface.
+  PricerConfig linear_only = config;
+  atx::vol::CurveConfig linear;
+  linear.kind = atx::vol::VolCurveKind::LinearVariance;
+  linear_only.selector.candidates = {linear};
+  PricerFitter linear_fitter{linear_only};
+  ASSERT_TRUE(linear_fitter.fit(*good_chain).has_value());
+  ASSERT_TRUE(linear_fitter.decision().has_value());
+  EXPECT_TRUE(linear_fitter.decision()->selector_fallback)
+      << "a LinearVariance-only ladder is butterfly-disqualified and must fall back";
+  EXPECT_NE(linear_fitter.surface(), nullptr);
   const auto *const published = fitter.surface();
   ASSERT_NE(published, nullptr);
 

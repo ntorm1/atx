@@ -734,6 +734,70 @@ TEST(DenseSlice, HostileSlopeBoundStartIsRepairedBeforeCertifiedFit) {
   }
 }
 
+// ── T5: the ladder gap is an ACCESSOR precondition nothing established ──────
+//
+// `ConvexSliceFit::call_price` divides by `u[1]-u[0]` (left put tail), by
+// `u[n-1]-u[n-2]` (right call tail) and by `u[hi]-u[lo]` (interior bracket) with
+// no strict-increase check. `u` is a PUBLIC member, so the no-duplicates
+// invariant is established only by the 1e-9 merge inside `fit_convex_slice`,
+// never by the accessor: a hand-built or DESERIALIZED fit reaches these
+// divisions with a zero gap. `ConvexDenseCurve::w` already carries the
+// span-guard fallback pattern; the noexcept pricer must too.
+//
+// The divisions do not (quite) produce a non-finite price -- `std::clamp` and
+// `std::max` return their NaN argument's counterpart, laundering 0/0 into the
+// nearest bound -- so the observable defect is a SILENTLY WRONG tail: an
+// infinite edge slope drives the right-tail exponent to +inf, and
+// pow(K/Kn, -inf) is exactly 0 for every K past the splice. The price falls off
+// a cliff from C.back() to zero one ULP past the last node, out of a tail whose
+// entire purpose (FIT-C11, same function) is to decay smoothly instead of
+// clamping.
+TEST(ConvexSliceFit, DuplicatedTrailingStrikeKeepsTheCallTailContinuous) {
+  using namespace atx::vol;
+  ConvexSliceFit fit;
+  fit.T = 0.25;
+  fit.F = 100.0;
+  fit.df = 0.98;
+  fit.u = {90.0, 100.0, 110.0, 110.0};
+  fit.C = {12.0, 5.0, 2.0, 1.5};
+
+  const double at_node = fit.call_price(110.0);
+  const double just_past = fit.call_price(110.0 * (1.0 + 1.0e-9));
+  ASSERT_TRUE(std::isfinite(at_node));
+  ASSERT_TRUE(std::isfinite(just_past));
+  EXPECT_GT(just_past, 0.0) << "the call tail collapsed to zero at the splice";
+  EXPECT_NEAR(just_past, at_node, 1.0e-6);
+  // It still DECAYS -- the guard must not turn the tail into a flat clamp.
+  EXPECT_LT(fit.call_price(400.0), at_node);
+  EXPECT_TRUE(std::isfinite(fit.iv(std::log(200.0 / 100.0))));
+}
+
+// Left tail, same defect class: with no usable edge gap there is no edge
+// derivative to match, and the exponent used to be whatever the infinite slope
+// happened to clamp to. Fall back to the documented boundary of the a >= 1
+// no-arb family -- the straight put through the origin, a == 1 -- which is
+// determinate, still positive/increasing/convex, and C0 at the splice.
+TEST(ConvexSliceFit, DuplicatedLeadingStrikeFallsBackToTheLinearPutTail) {
+  using namespace atx::vol;
+  ConvexSliceFit fit;
+  fit.T = 0.25;
+  fit.F = 100.0;
+  fit.df = 0.98;
+  fit.u = {90.0, 90.0, 100.0, 110.0};
+  fit.C = {11.0, 12.0, 5.0, 1.5};
+
+  const double K0 = 90.0;
+  const double P0 = 11.0 - 0.98 * (100.0 - K0); // 1.2
+  ASSERT_GT(P0, 0.0);
+  // a == 1: P(K) = P0 * K / K0, so C(K) = df*(F-K) + P0*K/K0.
+  EXPECT_NEAR(fit.call_price(45.0), 0.98 * (100.0 - 45.0) + P0 * 0.5, 1.0e-12);
+  // C0 at the splice, and finite everywhere below it.
+  EXPECT_NEAR(fit.call_price(K0), 11.0, 1.0e-12);
+  for (const double K : {1.0, 20.0, 60.0, 89.999}) {
+    EXPECT_TRUE(std::isfinite(fit.call_price(K))) << "K=" << K;
+  }
+}
+
 TEST(ConvexSliceFit, SlopeBelowBoundHonored) {
   using namespace atx::vol;
   // Build a simple in-the-money-heavy obs set where the unconstrained slope could

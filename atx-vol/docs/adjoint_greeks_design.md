@@ -1,5 +1,36 @@
 # Adjoint (AAD) American Greeks — design note (WS-P, P1)
 
+> **⚠ THIS IS A DESIGN NOTE, NOT A DESCRIPTION OF THE SHIPPED KERNEL** (L5 T6,
+> 2026-08-23). §4 and §5 below specify a Christianson / Giles-Glasserman
+> **adjoint**: `vega = ∂P/∂σ|_y − λᵀR_σ` with one transposed solve
+> `Jᵀλ = (∂P/∂y)ᵀ`, at **constant cost in the number of upstream inputs**. That is
+> the target. It was **never implemented**: `src/pricing/adjoint_greeks.cpp`
+> contains no `λ`, no transposed solve, and no reverse accumulation on the
+> American path. What ships is **forward-mode tangent propagation** through the
+> taped boundary iteration — `ẏ⁰ = 0`, `ẏᵏ = ∂G_k/∂y·ẏᵏ⁻¹ + ∂G_k/∂θ` — with BOTH
+> Jacobian-vector products taken by **finite-differencing**
+> `al_apply_boundary_sweep`, and **run once per parameter** (σ, then r). Its cost
+> therefore scales with the parameter count, which is exactly what the adjoint in
+> §5 exists to remove. The European path (`euro_reverse`) *is* a genuine
+> hand-coded reverse sweep, first order only.
+>
+> Shipped cost, counted from the code: **3 boundary solves** (one taped, plus two
+> cold σ± re-solves for volga), **2 tangent passes** (each applying the boundary
+> sweep twice per taped iteration), and **15 price evaluations** off a boundary.
+> A real adjoint would give the whole greek row for ~3-4× **one** price regardless
+> of parameter count (Giles-Glasserman NA-05-15, §1 below). Closing that gap is a
+> Phase-2 item and is not scheduled here.
+>
+> Accuracy: the "machine-precise" goal stated below is likewise a target, not an
+> outcome. The European closed forms are exact; the American bundle is
+> finite-difference throughout, its own acceptance guard is 3% of the sum of two
+> independent vega estimates plus 1e-3 absolute, and the measured max gaps vs a
+> Richardson reference over the 189-point `AdjointGreeksAmerican.DiagnosticGaps`
+> grid are vega 9.5e-3, vanna 1.8e-3, volga 2.4.
+>
+> Headings marked **[TARGET — NOT SHIPPED]** describe unbuilt design. Everything
+> else in this note still holds.
+
 Sprint: `2026-07-18-atx-vol-backtest-hotpath-throughput-sprint.md` §4 WS-P (P1/P2).
 Status: design + first-order/second-order kernel (P2). Wave-2 wires it into
 `PortfolioPricer` (P3) and the batched strike resolve (P4).
@@ -119,7 +150,7 @@ that is the right architecture even though for two parameters the flop counts ar
 
 ---
 
-## 4. Boundary IFT treatment (Trap 2 — the highest-severity correctness risk)
+## 4. Boundary IFT treatment (Trap 2 — the highest-severity correctness risk) — **[TARGET — NOT SHIPPED for the first-order boundary sensitivities; see the banner]**
 
 Two facts must both be respected:
 
@@ -215,7 +246,7 @@ McDonald-Schroder dual-greek map is a wave-2 extension.)
 
 ---
 
-## 5. Why adjoint (reverse) rather than the existing forward IFT spike
+## 5. Why adjoint (reverse) rather than the existing forward IFT spike — **[TARGET — NOT SHIPPED]**
 
 For the *direct* American inputs alone, forward IFT (P2.4 spike: solve `J y_σ`, `J y_r`)
 and reverse IFT (this kernel: solve `J^T λ` once) have comparable flop counts — two

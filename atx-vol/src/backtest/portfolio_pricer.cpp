@@ -2559,9 +2559,132 @@ void PortfolioPricer::retained_marks(const PortfolioWorkspace &ws,
   }
 }
 
-// ── GR-F1: bucketed risk reduction ─────────────────────────────────────────
+// ── GR-F1 / L7-T2: bucketed risk reduction ─────────────────────────────────
+
+namespace {
+
+// True for the two keys that need RiskBucketLadder edges to mean anything.
+//
+// An exhaustive switch with no `default` rather than the obvious two-term
+// disjunction (house style S3): a sixth enumerator must not be able to acquire
+// an answer here by falling off the end of a hand-written condition. The
+// compiler names every site that has to be revisited instead.
+[[nodiscard]] constexpr bool is_laddered_key(RiskBucketKey by) noexcept {
+  switch (by) {
+  case RiskBucketKey::ByLogMoneyness:
+  case RiskBucketKey::ByDelta:
+    return true;
+  case RiskBucketKey::ByUnderlier:
+  case RiskBucketKey::ByExpiry:
+    return false;
+  }
+  return false; // a value outside the enumeration, e.g. from a bad cast
+}
+
+[[nodiscard]] constexpr bool is_known_key(RiskBucketKey by) noexcept {
+  switch (by) {
+  case RiskBucketKey::ByUnderlier:
+  case RiskBucketKey::ByExpiry:
+  case RiskBucketKey::ByLogMoneyness:
+  case RiskBucketKey::ByDelta:
+    return true;
+  }
+  return false; // a value outside the enumeration, e.g. from a bad cast
+}
+
+// The keys `reduce_pnl_risk_buckets` can serve. Exhaustive for the same reason
+// as the two above: PnlFrame carries neither a reference forward nor a
+// base-frame delta, so the laddered keys are refused rather than approximated,
+// and a future enumerator must be classified here deliberately.
+[[nodiscard]] constexpr bool pnl_key_supported(RiskBucketKey by) noexcept {
+  switch (by) {
+  case RiskBucketKey::ByUnderlier:
+  case RiskBucketKey::ByExpiry:
+    return true;
+  case RiskBucketKey::ByLogMoneyness:
+  case RiskBucketKey::ByDelta:
+    return false;
+  }
+  return false; // a value outside the enumeration, e.g. from a bad cast
+}
+
+// Band index of `x` on `edges`: the count of edges `<= x`, so band i is the
+// half-open [edges[i-1], edges[i]) the header promises and an exact hit on an
+// edge belongs to the band that edge OPENS. Pure, total over finite x, and
+// independent of visit order — which is the whole determinism argument for the
+// laddered keys.
+//
+// upper_bound, NOT lower_bound, and the difference is not cosmetic. lower_bound
+// counts edges strictly below x, which is the MIRROR convention (edges[i-1],
+// edges[i]] — upper-CLOSED — and it silently misplaces exactly the lane that
+// matters most: an at-the-money strike gives k = ln(K/F) == 0.0 exactly, so with
+// a 0.0 edge every ATM lane would land in the put wing instead of the ATM band,
+// and a lot at exactly 0.50 delta would sit one band low on the shipped ladder.
+// Reachable, silent, and on the commonest input there is.
+[[nodiscard]] std::uint64_t ladder_band(std::span<const double> edges, double x) noexcept {
+  const auto it = std::upper_bound(edges.begin(), edges.end(), x);
+  return static_cast<std::uint64_t>(it - edges.begin());
+}
+
+// `forwards` is required ascending-unique, so this is a binary search, not a
+// scan. Returns nullptr when the uid is absent (the caller keys kRiskBucketUnkeyed).
+[[nodiscard]] const RiskBucketForward *
+find_forward(std::span<const RiskBucketForward> forwards, std::uint32_t uid) noexcept {
+  const auto it = std::lower_bound(
+      forwards.begin(), forwards.end(), uid,
+      [](const RiskBucketForward &f, std::uint32_t u) noexcept { return f.uid < u; });
+  if (it == forwards.end() || it->uid != uid) {
+    return nullptr;
+  }
+  return &*it;
+}
+
+// Validate exactly what the requested key will read, and nothing else: a ByDelta
+// caller must not have to supply forwards, and a ByUnderlier caller must not have
+// to supply a ladder at all. Returns the failure message, or nullptr when valid —
+// every failure here is InvalidArgument, so the code is not worth carrying.
+[[nodiscard]] const char *validate_ladder(const RiskBucketLadder &ladder,
+                                          RiskBucketKey by) noexcept {
+  // A contract-only key reads NOTHING out of the ladder, and the header promises
+  // it is ignored for exactly that reason. Validating it anyway made the promise
+  // false: `ladder.edges = {0.10, -0.10}` turned a ByUnderlier reduction into
+  // InvalidArgument where the four-argument overload returns buckets, so the two
+  // spellings of the same reduction disagreed on a ladder neither of them reads.
+  if (!is_laddered_key(by)) {
+    return nullptr;
+  }
+  for (std::size_t i = 0; i < ladder.edges.size(); ++i) {
+    if (!std::isfinite(ladder.edges[i])) {
+      return "reduce_risk_buckets: ladder edge is not finite";
+    }
+    if (i > 0 && !(ladder.edges[i - 1] < ladder.edges[i])) {
+      return "reduce_risk_buckets: ladder edges are not strictly increasing";
+    }
+  }
+  if (by != RiskBucketKey::ByLogMoneyness) {
+    return nullptr;
+  }
+  if (ladder.forwards.empty()) {
+    return "reduce_risk_buckets: ByLogMoneyness needs a non-empty forward table";
+  }
+  for (std::size_t i = 0; i < ladder.forwards.size(); ++i) {
+    const RiskBucketForward &f = ladder.forwards[i];
+    if (!std::isfinite(f.F) || f.F <= 0.0) {
+      return "reduce_risk_buckets: ladder forward is not finite and positive";
+    }
+    if (i > 0 && !(ladder.forwards[i - 1].uid < f.uid)) {
+      return "reduce_risk_buckets: ladder forwards are not ascending-unique by uid";
+    }
+  }
+  return nullptr;
+}
+
+} // namespace
+
 Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf,
-                                                    RiskBucketKey by, PriceTotals *grand) {
+                                                    RiskBucketKey by,
+                                                    const RiskBucketLadder &ladder,
+                                                    PriceTotals *grand) {
   const std::size_t n = frame.size();
   const std::span<const Position> positions = pf.positions();
   if (positions.size() != n || frame.book_logical_id_ != pf.logical_id_ ||
@@ -2569,8 +2692,11 @@ Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, con
     return Err(ErrorCode::InvalidArgument,
                "reduce_risk_buckets: frame and portfolio provenance mismatch");
   }
-  if (by != RiskBucketKey::ByUnderlier && by != RiskBucketKey::ByExpiry) {
+  if (!is_known_key(by)) {
     return Err(ErrorCode::InvalidArgument, "reduce_risk_buckets: invalid bucket key");
+  }
+  if (const char *bad_ladder = validate_ladder(ladder, by); bad_ladder != nullptr) {
+    return Err(ErrorCode::InvalidArgument, bad_ladder);
   }
 
   const bool greeks = frame.greeks_materialized();
@@ -2588,6 +2714,13 @@ Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, con
   if (!marks_shape_ok || !greek_shape_ok || (!carry && !frame.dP_dq.empty())) {
     return Err(ErrorCode::InvalidArgument, "reduce_risk_buckets: malformed price frame");
   }
+  // A delta ladder over a marks-only frame would put the WHOLE book in the
+  // unkeyed bucket and read as "no position has a delta", which is a different
+  // fact from "no delta was computed". Fail closed instead.
+  if (by == RiskBucketKey::ByDelta && !greeks) {
+    return Err(ErrorCode::InvalidArgument,
+               "reduce_risk_buckets: ByDelta needs a Greek-bearing price frame");
+  }
   for (std::size_t i = 0; i < n; ++i) {
     if (frame.id[i] != positions[i].id || frame.uid[i] != positions[i].contract.uid) {
       return Err(ErrorCode::InvalidArgument,
@@ -2599,8 +2732,13 @@ Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, con
   // from 0; unmaterialized Greek columns stay NaN (never a false 0); dP_dq starts
   // at 0 when the carry column is present, else stays NaN.
   const auto fresh = [&]() noexcept {
-    PriceTotals t{}; // pv/greeks 0, dP_dq NaN, n_ok 0
-    if (!greeks) {
+    PriceTotals t{}; // pv/greeks 0, abs_vega NaN, dP_dq NaN, n_ok 0
+    if (greeks) {
+      // L7-T3: `abs_vega` follows the vega column it sums, so it opens its
+      // accumulator exactly where `reduce_price_totals` opens its own — a 0.0
+      // here under a marks-only frame would report a gross-vega-flat bucket.
+      t.abs_vega = 0.0;
+    } else {
       t.delta = t.gamma = t.vega = t.theta = t.rho = kNaN;
       t.vanna = t.volga = t.charm = kNaN;
     }
@@ -2615,6 +2753,10 @@ Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, con
       t.delta += frame.delta[i];
       t.gamma += frame.gamma[i];
       t.vega += frame.vega[i];
+      // Accumulated over the same lanes in the same input order as the signed
+      // sum immediately above, so the gross companion is thread-count invariant
+      // for exactly the reason the signed one is. `t.vega` is untouched.
+      t.abs_vega += std::fabs(frame.vega[i]);
       t.theta += frame.theta[i];
       t.rho += frame.rho[i];
       t.vanna += frame.vanna[i];
@@ -2639,11 +2781,36 @@ Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, con
     }
     std::uint64_t key = 0;
     double T = 0.0;
-    if (by == RiskBucketKey::ByUnderlier) {
-      key = positions[i].contract.uid;
-    } else {
-      T = positions[i].contract.T;
+    const OptionContract &c = positions[i].contract;
+    switch (by) {
+    case RiskBucketKey::ByUnderlier:
+      key = c.uid;
+      break;
+    case RiskBucketKey::ByExpiry:
+      T = c.T;
       key = std::bit_cast<std::uint64_t>(T); // T > 0 => bit order == value order
+      break;
+    case RiskBucketKey::ByLogMoneyness: {
+      const RiskBucketForward *fwd = find_forward(ladder.forwards, c.uid);
+      // K is validated as finite and positive on the pricing path (a bad strike
+      // is InvalidContract, not Ok), but this reduction accepts any Ok-stamped
+      // frame the caller hands it, so the log is guarded rather than assumed.
+      const bool keyable = fwd != nullptr && std::isfinite(c.K) && c.K > 0.0;
+      key = keyable ? ladder_band(ladder.edges, std::log(c.K / fwd->F)) : kRiskBucketUnkeyed;
+      break;
+    }
+    case RiskBucketKey::ByDelta: {
+      // The frame's Greek columns are position-scaled; a delta ladder is a
+      // per-CONTRACT statement, so divide the weight back out. A zero-qty lot
+      // (a legal, if unusual, book entry) has no recoverable per-share delta.
+      const double w = positions[i].qty * eff_multiplier(positions[i].multiplier);
+      // Guarded rather than divided-then-checked: a 0 divisor is left unevaluated
+      // instead of relying on the IEEE result of x/0.
+      const bool w_ok = std::isfinite(w) && w != 0.0;
+      const double per_share = w_ok ? frame.delta[i] / w : kNaN;
+      key = std::isfinite(per_share) ? ladder_band(ladder.edges, per_share) : kRiskBucketUnkeyed;
+      break;
+    }
     }
     const auto [slot, inserted] = bucket_slots.try_emplace(key, buckets.size());
     if (inserted) {
@@ -2663,6 +2830,7 @@ Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, con
         g.delta += b.totals.delta;
         g.gamma += b.totals.gamma;
         g.vega += b.totals.vega;
+        g.abs_vega += b.totals.abs_vega; // L7-T3: same bucket order as every other column
         g.theta += b.totals.theta;
         g.rho += b.totals.rho;
         g.vanna += b.totals.vanna;
@@ -2679,6 +2847,37 @@ Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, con
   return buckets;
 }
 
+// The contract-only form. Forwards to the laddered reducer with an empty ladder,
+// so there is exactly ONE reduction body and the two overloads cannot drift; a
+// laddered key is refused here because an empty ladder is a single whole-book
+// band, which would answer the caller's question with a number that looks like a
+// ladder and is not one.
+Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf,
+                                                    RiskBucketKey by, PriceTotals *grand) {
+  if (is_laddered_key(by)) {
+    return Err(ErrorCode::InvalidArgument,
+               "reduce_risk_buckets: a laddered key needs the RiskBucketLadder overload");
+  }
+  // Not `static`: construction allocates nothing (two empty vectors), so a
+  // function-local static would buy a thread-safe-init guard and an exit-time
+  // destructor for a value cheaper than the guard that protects it.
+  const RiskBucketLadder no_ladder{};
+  return reduce_risk_buckets(frame, pf, by, no_ladder, grand);
+}
+
+RiskBucketLadder default_log_moneyness_ladder() {
+  // ATM +/- 5%, then 15%, then 30% in k = ln(K/F). Seven bands: two tails, two
+  // far wings, two near wings, one ATM. No forwards — only the caller knows them.
+  return RiskBucketLadder{{-0.30, -0.15, -0.05, 0.05, 0.15, 0.30}, {}};
+}
+
+RiskBucketLadder default_delta_ladder() {
+  // The desk-standard 10 / 25 / 50 / 75 / 90 delta marks, mirrored across zero
+  // because a put's delta is negative: eleven bands, symmetric, with the band
+  // spanning (-0.10, 0.10) holding both sides' dead wings.
+  return RiskBucketLadder{{-0.90, -0.75, -0.50, -0.25, -0.10, 0.10, 0.25, 0.50, 0.75, 0.90}, {}};
+}
+
 Result<std::vector<PnlRiskBucket>>
 reduce_pnl_risk_buckets(const PnlFrame &frame, const Portfolio &pf, RiskBucketKey by,
                         PnlTotals *grand) {
@@ -2689,8 +2888,14 @@ reduce_pnl_risk_buckets(const PnlFrame &frame, const Portfolio &pf, RiskBucketKe
     return Err(ErrorCode::InvalidArgument,
                "reduce_pnl_risk_buckets: frame and portfolio provenance mismatch");
   }
-  if (by != RiskBucketKey::ByUnderlier && by != RiskBucketKey::ByExpiry) {
-    return Err(ErrorCode::InvalidArgument, "reduce_pnl_risk_buckets: invalid bucket key");
+  // L7-T2 added ByLogMoneyness / ByDelta to the shared key enum. They are NOT
+  // wired here: a P&L attribution ladder needs the base-frame delta and forward,
+  // which PnlFrame does not carry, and inventing one from the shifted frame would
+  // be a different (and wrong) statistic. Refused explicitly rather than silently
+  // collapsing onto a whole-book bucket.
+  if (!pnl_key_supported(by)) {
+    return Err(ErrorCode::InvalidArgument,
+               "reduce_pnl_risk_buckets: only ByUnderlier and ByExpiry are supported");
   }
   const bool shape_ok =
       frame.uid.size() == n && frame.pv_base.size() == n && frame.pv_target.size() == n &&
@@ -2746,10 +2951,24 @@ reduce_pnl_risk_buckets(const PnlFrame &frame, const Portfolio &pf, RiskBucketKe
     if (frame.status[i] != PriceStatus::Ok) {
       continue;
     }
-    const double T = by == RiskBucketKey::ByExpiry ? positions[i].contract.T : 0.0;
-    const std::uint64_t key = by == RiskBucketKey::ByUnderlier
-                                  ? positions[i].contract.uid
-                                  : std::bit_cast<std::uint64_t>(T);
+    // Switched, not ternaried, for the same reason the price-side keying is:
+    // under an if-chain a new enumerator that slipped past the gate above would
+    // silently key as ByExpiry. `pnl_key_supported` has already refused every
+    // key this switch does not handle, so the unreachable arms assert that.
+    double T = 0.0;
+    std::uint64_t key = 0;
+    switch (by) {
+    case RiskBucketKey::ByUnderlier:
+      key = positions[i].contract.uid;
+      break;
+    case RiskBucketKey::ByExpiry:
+      T = positions[i].contract.T;
+      key = std::bit_cast<std::uint64_t>(T);
+      break;
+    case RiskBucketKey::ByLogMoneyness:
+    case RiskBucketKey::ByDelta:
+      return Err(ErrorCode::Internal, "reduce_pnl_risk_buckets: unsupported key reached keying");
+    }
     const auto [slot, inserted] = bucket_slots.try_emplace(key, buckets.size());
     if (inserted) {
       buckets.push_back(PnlRiskBucket{key, T, PnlTotals{}});

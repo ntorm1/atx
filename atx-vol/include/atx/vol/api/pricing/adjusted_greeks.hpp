@@ -97,6 +97,23 @@ struct StickyParams {
 // delta); every other field of `g` passes through unchanged. A non-finite
 // `vega_slope` propagates to a non-finite adjusted delta (no clamp — the
 // caller decides how to handle a degenerate input).
+//
+// That propagation is deliberate, not a missing check: a silent fallback to the
+// unadjusted `g.delta` would publish a different economic quantity than the
+// caller asked for, under a column the caller cannot distinguish. Screening
+// belongs to whoever owns the error channel, and this function does not.
+//
+// KNOW WHAT YOU ARE INHERITING (review fix): as of 2026-08-23 this function has
+// NO production caller. Its only in-tree call sites are in
+// `tests/adjusted_greeks_test.cpp`. The backtest does NOT route through it —
+// `portfolio_pricer.cpp` DUPLICATES the arithmetic inline (`g.delta +
+// c.vega_slope * g.vega`, twice) and screens its OWN input beforehand
+// (`finite_vega_slope` demotes a non-finite slope to
+// `PriceStatus::NumericError` before the Ok-stamp, so the lane is excluded from
+// every book total). A future caller of THIS function inherits none of that
+// screening and must supply its own. The duplicated expression is the latent
+// hazard here, not the NaN. Pinned by
+// `AdjustedGreeks.NaNVegaSlopePropagatesToAdjustedDeltaOnly`.
 [[nodiscard]] Greeks skew_adjusted(const Greeks& g, double vega_slope) noexcept;
 
 }  // namespace atx::vol

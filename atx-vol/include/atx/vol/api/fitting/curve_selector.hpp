@@ -75,9 +75,23 @@ struct CandidateScore {
   std::size_t n_within_band{0}; // held-out obs inside their 1σ error bar
   bool metrics_valid{false};    // slice_fit_metrics succeeded
   // Butterfly no-arb disqualification: a family whose fitted slice fails its
-  // butterfly check (closed-form MM for raw-SVI, grid g-check for C8;
-  // by-construction kinds are skipped) is DISQUALIFIED and scores as a
-  // fit-failure — excluded from the winner search.
+  // butterfly check (closed-form MM plus a served-range grid scan for raw-SVI,
+  // grid g-check for C8, the exact kink tally for LinearVariance; the two
+  // by-construction kinds ConvexDense/eSSVI are skipped) is DISQUALIFIED and
+  // scores as a fit-failure — excluded from the winner search. A slice whose
+  // shape could NOT be decided disqualifies exactly like a violating one: the
+  // gate may not pass what it could not read.
+  //
+  // T1: `LinearVariance` used to report a hard-coded 0 here under the label
+  // "by-construction arb-free", which is false for every board — piecewise-linear
+  // total variance is only C0, so w'' carries a Dirac at each node and the flat
+  // wings splice a concave kink onto the two outer ones. It is now measured
+  // exactly (arb.hpp), which means the family is ~always disqualified in this
+  // ranking. That is the intended reading and it agrees with the rest of the
+  // stack: a LinearVariance RISK config is refused outright and rewritten to
+  // ConvexDense (pricer_fitter.cpp). The family stays a scored rung of
+  // `bounded_selector_candidates()` so its fit metrics remain comparable, but a
+  // caller should not expect it to WIN a no-arb-gated selection.
   std::uint32_t n_butterfly_viol{0};
   bool disqualified{false};
 

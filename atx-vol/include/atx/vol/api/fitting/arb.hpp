@@ -405,6 +405,92 @@ arb_check_butterfly(const VolSurface &s, double k_min, double k_max,
 arb_check_butterfly_slice(const std::function<double(double)> &w_of_k, double T,
                           double k_min, double k_max, std::uint32_t n_grid);
 
+// ── Piecewise-linear total variance: exact singular part, sampled smooth part ─
+//
+// `LinearVarianceCurve` interpolates the quoted total variances linearly in k
+// and extends FLAT beyond the outer nodes, so w is only C0 and w'' is a MEASURE:
+// identically zero on every open segment, plus a Dirac at each node carrying
+// that node's slope JUMP. A negative jump (a concave kink) is a negative Dirac
+// in `+ w''/2`, i.e. the Lee/Roper density is negative there — genuine butterfly
+// arbitrage in the SERVED curve, not a sampling artifact.
+//
+// A finite-difference grid scan cannot state that cleanly: it smears each Dirac
+// over one stencil, so what it reports depends on whether a stencil happened to
+// straddle a node and on `dk`. This entry decides the singular part EXACTLY from
+// the node geometry instead, and samples only the SMOOTH part (where w'' == 0
+// and g is an ordinary function of w and w').
+//
+// The tally deliberately separates two populations, because they answer
+// different questions and only one of them is board-dependent:
+//
+//   * `n_wing_kinks` — the flat-wing splice at the two OUTER nodes. It is REAL
+//     arbitrage, which is why the family can never be called butterfly-arb-free.
+//
+//     READ THIS AS A POSITION, NOT A CAUSE. The split is made on WHERE the node
+//     sits, not on what put the kink there, and the two do not coincide: the
+//     splice magnitude IS the first/last segment slope, which is set entirely by
+//     the two outermost quotes. So a board whose only butterfly arbitrage is one
+//     stale OUTER quote scores `n_quote_implied() == 0` and does not arm
+//     `demote_mark_on_butterfly`, while the `max_butterfly_slack` the mark
+//     publishes may be drawn from exactly that excluded population. Keying the
+//     quote-implied count on kink MAGNITUDE relative to the interior population
+//     would classify by cause; that is a measured change, not made here.
+//
+//     Nor is it "always 2": a curve whose first segment slope is >= 0 has jump
+//     `s_right - 0 >= 0` at `j == 0` and therefore NO left wing kink. Two is the
+//     normal count for a smile with a negative first slope and positive last
+//     one, not an invariant, and no caller may assume it.
+//   * `n_interior_kinks` + `n_segment_points` — the board's OWN quotes implying
+//     a negative density (`n_quote_implied()`). This is the informative number:
+//     it is zero for a convex quoted smile and non-zero exactly when the raw
+//     quotes are locally butterfly-violating.
+//
+// `decided == false` means the node vectors could not be read as a curve at all
+// (fewer than two nodes, mismatched sizes, non-finite or non-ascending knots,
+// non-positive total variance). It must NEVER be read as "clean" — that
+// conflation is what the hard-coded zero this entry replaces encoded.
+struct LinearVarianceButterflyTally {
+  std::uint32_t n_wing_kinks{};      // concave splice at k.front() / k.back()
+  std::uint32_t n_interior_kinks{};  // concave slope jump at an interior node
+  std::uint32_t n_segment_points{};  // sampled g < 0 strictly inside a segment
+  double max_kink_slope_drop{};      // worst -(s_right - s_left) over all nodes
+  double min_segment_density{};      // worst sampled g inside a segment (0 if none dipped)
+  double first_violation_k{};        // k of the first violation found, 0 if none
+  double first_kink_slope_left{};    // segment slopes at `first_violation_k`
+  double first_kink_slope_right{};
+  bool decided{false};
+
+  [[nodiscard]] constexpr std::uint32_t n_violations() const noexcept {
+    return n_wing_kinks + n_interior_kinks + n_segment_points;
+  }
+  // Violations the QUOTES imply, excluding the structural flat-wing splice.
+  [[nodiscard]] constexpr std::uint32_t n_quote_implied() const noexcept {
+    return n_interior_kinks + n_segment_points;
+  }
+  // NOT a proof of butterfly-arb-freedom. The singular part is exact, but the
+  // smooth part is 8 interior samples per segment -- never at a node limit and
+  // never within the first or last ninth of a segment -- so a `g` dip confined
+  // to that region returns `decided == true` with `clean() == true`. Eight
+  // points on a rational function bound nothing. Read it as "nothing found by
+  // an exact node scan plus a coarse interior sweep".
+  [[nodiscard]] constexpr bool clean() const noexcept {
+    return decided && n_violations() == 0u;
+  }
+};
+
+// Samples per open segment for the smooth part of the density. Eight interior
+// points per segment costs O(8n) evaluations of a closed form and is far cheaper
+// than the 64-256 point grid scan the parametric families pay.
+inline constexpr std::uint32_t kLinearVarianceSegmentSamples = 8u;
+
+// Exact-singular / sampled-smooth butterfly tally for a piecewise-linear
+// total-variance curve. Total and noexcept: every undecidable input maps to
+// `decided == false` rather than to a zero count.
+[[nodiscard]] LinearVarianceButterflyTally
+arb_check_butterfly_linear_variance(
+    const LinearVarianceCurve &curve,
+    std::uint32_t n_per_segment = kLinearVarianceSegmentSamples) noexcept;
+
 // Convenience: run the calendar check then the butterfly check and
 // concatenate their violations (calendar entries first). Propagates a
 // butterfly InvalidArgument (k_max <= k_min) as the overall error, matching

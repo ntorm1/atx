@@ -179,6 +179,15 @@ struct SurfaceHealth {
   std::uint64_t candidate_generation{};
   std::uint64_t served_generation{};
   std::uint64_t fallback_generation{};
+  // T6: DECLARED AND NEVER ASSIGNED. No first-party code writes this field and
+  // none reads it, so a caller inspecting it always sees 0 -- which reads as
+  // "this surface was built just now", the most dangerous possible default for
+  // a staleness field. It is left in place because the type is persisted in
+  // archives and telemetry (removing it moves the layout), but it carries NO
+  // information: use `candidate_generation` / `served_generation` and
+  // `SurfaceState::Stale` to reason about freshness instead. Populating it needs
+  // a defined reference clock (build wall-clock vs. board timestamp), which the
+  // struct does not state, so it is documented rather than filled with a guess.
   std::int64_t surface_age_ns{};
   ValidationDigest validation{};
 

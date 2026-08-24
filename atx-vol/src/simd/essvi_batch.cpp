@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 
 #include "atx/vol/api/simd/cpu.hpp"
 #include "atx/vol/api/fitting/vol_surface.hpp"
@@ -45,6 +46,15 @@ void svi_qe_basis_batch_scalar(double m, double sigma, const double* k,
 void essvi_backbone_sigma_batch_scalar(const EssviParams& slice,
                                        const double* k_log, double* sigma_out,
                                        std::size_t n) noexcept {
+    // Same refusal as the AVX2 kernel — see detail::essvi_slice_time_valid. slice.T is
+    // the divisor below; an unusable one must produce NaN on BOTH routes, or the two
+    // lanes disagree about what a served volatility means.
+    if (!detail::essvi_slice_time_valid(slice)) {
+        for (std::size_t i = 0; i < n; ++i) {
+            sigma_out[i] = std::numeric_limits<double>::quiet_NaN();
+        }
+        return;
+    }
     for (std::size_t i = 0; i < n; ++i) {
         const double w = essvi_backbone_w(slice, k_log[i]);
         sigma_out[i] = std::sqrt(std::max(w, 0.0) / slice.T);

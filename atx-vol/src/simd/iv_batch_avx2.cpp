@@ -350,9 +350,16 @@ void implied_vol_batch_avx2(const double *price, const double *F, const double *
                                        _mm256_or_pd(_mm256_cmp_pd(Kv, zero, _CMP_LE_OQ),
                                                     _mm256_cmp_pd(dfv, zero, _CMP_LE_OQ)))));
     const __m256d safeT = _mm256_blendv_pd(Tv, one, bad);
+    // ONE convention for the log argument across the three batch kernels: the PATCHED
+    // copies, as black76_batch_avx2 already does. safeF/safeK equal Fv/Kv on every lane
+    // that is not already in `bad`, so every SERVED lane is bit-identical; the change is
+    // that a degenerate lane can no longer feed log_pd a 0 or a negative and have the
+    // decode hand back finite garbage that the later masks reason about.
+    const __m256d safeF = _mm256_blendv_pd(Fv, one, bad);
+    const __m256d safeK = _mm256_blendv_pd(Kv, one, bad);
 
     const __m256d sqrtT = _mm256_sqrt_pd(safeT);
-    const __m256d lnFK = log_pd(_mm256_div_pd(Fv, Kv));
+    const __m256d lnFK = log_pd(_mm256_div_pd(safeF, safeK));
 
     // K3: the cheap Choi-2023 L₃ seed (same as the scalar K2 seed) starts inside
     // the Halley cubic basin, so THREE Halley steps drive the lanes to machine
@@ -377,13 +384,43 @@ void implied_vol_batch_avx2(const double *price, const double *F, const double *
     const __m256d abs_resid = _mm256_andnot_pd(abs_mask, resid);
     const __m256d not_conv = _mm256_cmp_pd(abs_resid, resid_tol, _CMP_GE_OQ);
     const __m256d vfloor = _mm256_mul_pd(_mm256_mul_pd(vfloor_coef, _mm256_add_pd(Fv, Kv)), dfv);
-    const __m256d ill_cond = _mm256_cmp_pd(vega, vfloor, _CMP_LT_OQ);
+    // UNORDERED-true compare: an ORDERED `vega < vfloor` reads a NaN vega as
+    // well-conditioned and declines to patch the lane. _CMP_NGE_UQ is identical to
+    // _CMP_LT_OQ for every ordered pair and true when either side is NaN.
+    const __m256d ill_cond = _mm256_cmp_pd(vega, vfloor, _CMP_NGE_UQ);
+    // The |ln(F/K)| >= 708 escape both sibling kernels carry and both document as
+    // required (black76_batch_avx2.cpp:104, greeks_batch_avx2.cpp:110). log_pd assumes a
+    // positive NORMAL argument, so an F/K ratio that underflows to a denormal/zero or
+    // overflows to +inf decodes to FINITE garbage near ±709 — which nonfinite_mask
+    // cannot see — and that garbage lnFK feeds d1 in all four Halley steps.
+    //
+    // The escape is REDUNDANT here — the ill-conditioning floor already patches every
+    // lane in this band — but not by accident, and the proof needs BOTH signs of lnFK,
+    // by two DIFFERENT arguments. (An earlier version of this comment used the AM-GM
+    // argument for both signs. It is false for lnFK < 0: at v = sqrt(2·708) ≈ 37.63,
+    // d1 = lnFK/v + v/2 = 0 EXACTLY and φ(d1) = 0.3989, not ≤ 1e-308.)
+    //
+    //   lnFK >= +708 (F/K overflowed): AM-GM is valid because both terms are positive,
+    //     so d1 = lnFK/v + v/2 >= sqrt(2·708) = 37.63 for ANY v > 0, giving
+    //     φ(d1) <= 1.32e-308 and vega/vfloor <= φ(d1)·√T/0.005 <= 2.64e-306·√T.
+    //   lnFK <= -708 (F/K underflowed to a denormal/zero — the reachable sign): AM-GM
+    //     gives nothing, but the NOTIONAL scaling does. vfloor is 0.005·(F+K)·df, which
+    //     grows with max(F, K), while vega grows with F alone; and lnFK <= -708 means
+    //     F/K <= e^-708 = 3.31e-308. So
+    //     vega/vfloor <= (0.3989/0.005)·√T·F/(F+K) <= 79.79·√T·3.31e-308.
+    //
+    // Both bounds are under 1 for any T this library will ever see, so the lane is
+    // already ill-conditioned. The escape is kept so the three kernels state the same
+    // precondition in the same place, not because a served number moves.
+    const __m256d abs_lnfk = _mm256_andnot_pd(abs_mask, lnFK);
+    const __m256d lnfk_escape = _mm256_cmp_pd(abs_lnfk, _mm256_set1_pd(708.0), _CMP_GE_OQ);
     const __m256d not_valid = _mm256_andnot_pd(seed_valid, all_ones);
     const __m256d nan_out = _mm256_or_pd(_mm256_cmp_pd(sigma, sigma, _CMP_UNORD_Q),
                                          _mm256_cmp_pd(resid, resid, _CMP_UNORD_Q));
 
     __m256d patch = _mm256_or_pd(bad, not_valid);
     patch = _mm256_or_pd(patch, ill_cond);
+    patch = _mm256_or_pd(patch, lnfk_escape);
     patch = _mm256_or_pd(patch, not_conv);
     patch = _mm256_or_pd(patch, nan_out);
     const int pbits = _mm256_movemask_pd(patch);

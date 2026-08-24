@@ -28,6 +28,7 @@ using atx::vol::essvi_reparam_to_natural;
 using atx::vol::essvi_residual_w;
 using atx::vol::essvi_rho_blend_armed;
 using atx::vol::essvi_rho_from_lambda;
+using atx::vol::essvi_slice_dof;
 using atx::vol::essvi_total_w;
 using atx::vol::essvi_w_grad3;
 using atx::vol::essvi_w_grad4;
@@ -183,6 +184,55 @@ TEST(EssviResidual, InsideInnerBand_ReturnsZero) {
   s.resid_coef[3] = 2.0;
   s.resid_coef[4] = 3.0;
   EXPECT_NEAR(essvi_residual_w(s, 0.1), 0.0, 1.0e-15);
+}
+
+// ── T4: the duplicated-and-diverged residual-basis clamp ────────────────────
+//
+// `essvi_residual_w` clamped its summation count to [1, 16] while the C2-Bspline
+// basis it calls re-clamps to [4, 16] (`resid_bump_count`, resid_basis.hpp). For
+// `resid_n_basis` in {1, 2, 3} the basis was built on FOUR bumps and the dot
+// product summed only the first 1-3, so the SURFACE SERVED a different total
+// variance than was calibrated. `fit_dense_residual` always writes >= 4, so this
+// is reachable only by deserialization or hand construction -- which is exactly
+// what a persisted archive and a research caller do.
+TEST(EssviResidual, C2BsplineSumsEveryBumpItsOwnBasisBuilt) {
+  const auto make = [](std::uint8_t n) {
+    EssviParams s{};
+    s.T = 0.25;
+    s.theta = 0.04;
+    s.phi = 1.0;
+    s.rho = -0.30;
+    s.resid_scale = 0.5;
+    s.resid_basis_kind = ResidualBasisKind::C2Bspline;
+    s.resid_coef[0] = 1.0e-3;
+    s.resid_coef[1] = 2.0e-3;
+    s.resid_coef[2] = 3.0e-3;
+    s.resid_coef[3] = 4.0e-3;
+    s.resid_n_basis = n;
+    return s;
+  };
+
+  // The basis is built on `resid_bump_count(n) == 4` bumps for every n <= 4, so
+  // the served residual must be IDENTICAL for n in {1, 2, 3, 4}: the extra
+  // coefficients belong to bumps the basis actually evaluated.
+  const EssviParams four = make(4u);
+  for (const std::uint8_t n : {std::uint8_t{1}, std::uint8_t{2}, std::uint8_t{3}}) {
+    const EssviParams s = make(n);
+    for (const double k : {-0.40, -0.20, 0.0, 0.20, 0.40}) {
+      EXPECT_DOUBLE_EQ(essvi_residual_w(s, k), essvi_residual_w(four, k))
+          << "resid_n_basis=" << static_cast<int>(n) << " k=" << k;
+      EXPECT_DOUBLE_EQ(essvi_total_w(s, k), essvi_total_w(four, k))
+          << "resid_n_basis=" << static_cast<int>(n) << " k=" << k;
+    }
+    // The dof the served surface reports must count the same bumps.
+    EXPECT_EQ(essvi_slice_dof(s), essvi_slice_dof(four))
+        << "resid_n_basis=" << static_cast<int>(n);
+  }
+
+  // Guard against the fix collapsing every count: five bumps is a DIFFERENT
+  // basis and must not evaluate identically to four.
+  const EssviParams five = make(5u);
+  EXPECT_NE(essvi_residual_w(five, -0.20), essvi_residual_w(four, -0.20));
 }
 
 TEST(EssviResidual, ScaleNotPositive_ReturnsZero) {

@@ -291,6 +291,15 @@ void svi_qe_basis_batch_avx2(double m, double sigma, const double *k, double *u_
 
 void essvi_backbone_sigma_batch_avx2(const EssviParams &slice, const double *k_log,
                                      double *sigma_out, std::size_t n) noexcept {
+  // The time axis is the DIVISOR here, and an unusable one is a refusal, not a
+  // fallback: routing to the scalar loop would divide by the same T. See
+  // essvi_slice_time_valid (essvi_batch_avx2.hpp) for what went out un-flagged before.
+  if (!essvi_slice_time_valid(slice)) {
+    for (std::size_t i = 0; i < n; ++i) {
+      sigma_out[i] = std::numeric_limits<double>::quiet_NaN();
+    }
+    return;
+  }
   // A9 (simd-review finding 6): mirror the w-batch's admissibility refusal (see
   // essvi_backbone_w_grad_batch_avx2) so a |rho| >= 1 / non-positive-theta/phi
   // slice routes to the exact scalar kernel instead of leaking a NaN by accident.

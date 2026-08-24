@@ -5,6 +5,965 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### FIXED — `include/atx/vol/alpha/` is a public include root that nothing installed
+
+Seven headers — `spec.hpp`, `registry.hpp`, `schema.hpp`, `frame.hpp`,
+`compute.hpp`, `strategy.hpp`, `audit.hpp` — sat on the atx-vol target's public
+`BUILD_INTERFACE` (`atx-vol/CMakeLists.txt` puts the whole `include/` root there
+and `include` on the `INSTALL_INTERFACE`) while `cmake/atx-vol-install.cmake`
+shipped only the `api/` subtree. In tree they resolved; from an install prefix
+`#include "atx/vol/alpha/registry.hpp"` was a hard `file not found`. No in-tree
+test could see it, because in-tree is the configuration where it works.
+
+**Chosen: ship it, as its own tier.** The layer is header-only, its whole
+non-STL closure is `atx/core/error.hpp` plus its own siblings (all already
+installed), and two SHIPPED executables — `atx-vol-alpha-audit` and
+`atx-vol-longvega` — are built on it. A layer whose CLIs ship is a product
+surface; demoting it to `src/alpha/` would have meant rewriting four first-party
+consumers to hide a directory the build already published. It is Tier-B: public,
+installed, outside the v1 freeze, and deliberately still outside the umbrella.
+
+**Migration:** none for existing code. Downstream consumers that previously
+could not include the layer now can.
+
+The manifest in `include/atx/vol/api/vol.hpp` and the tier table in
+`atx-vol/README.md` both gained the root — they had never mentioned it. Both are
+now derived rather than asserted: `VolUmbrella.EveryPublicIncludeRootShipsAndIsDeclared`
+walks the immediate subdirectories of `include/atx/vol/` and requires each to
+appear in an `install(DIRECTORY ...)` call (comments stripped — the prose above
+each rule otherwise satisfies a raw substring search) and in the umbrella's tier
+manifest. The out-of-tree consumer `atx-vol/test-package/smoke.cpp` now includes
+`alpha/registry.hpp` and names `builtin_features()`, so the packaging gate fails
+to COMPILE if the install rule is dropped again.
+
+### NEW — risk buckets across the smile: `ByLogMoneyness` and `ByDelta`
+
+`RiskBucketKey` had exactly two enumerators, `ByUnderlier` and `ByExpiry`, so
+the library could not answer the single most-used cut on an equity vol book:
+where the vega sits across the strike axis. `DerivPriceFrame::vega_by_tenor` on
+the swap book was the only strike-free ladder anywhere. Two enumerators join it,
+plus `RiskBucketLadder` (edges, and per-underlier reference forwards for the
+moneyness axis), `RiskBucketForward`, `kRiskBucketUnkeyed`, the two shipped
+defaults `default_log_moneyness_ladder()` / `default_delta_ladder()`, and a
+five-argument `reduce_risk_buckets` overload taking the ladder.
+
+`ByLogMoneyness` bands `k = ln(K / F(uid))`; `ByDelta` bands the PER-SHARE delta,
+recovered as `frame.delta[i] / (qty * multiplier)` because the frame's Greek
+columns are position-scaled. The forwards live in the ladder because `Portfolio`
+carries `(K, T)` and no forward, and this reduction deliberately holds no
+surface. A lane the ladder cannot place — no forward for its uid, zero-weight
+lot, non-finite delta — is BUCKETED under `kRiskBucketUnkeyed` (sorts last),
+never dropped, so `sum_k bucket[k].totals.n_ok` still equals the frame's Ok-lane
+count. `ByDelta` over a marks-only frame is `InvalidArgument`, not a book-wide
+unkeyed bucket: "no delta was computed" and "this position has no delta" are
+different facts.
+
+**Bands are LOWER-CLOSED, `[edges[i-1], edges[i])`**, so a value landing exactly
+on an edge joins the band that edge OPENS. Worth stating in a changelog because
+it is not a corner case: an at-the-money strike makes `k = ln(K / F)` exactly
+`0.0`, so under the mirror convention every ATM lane on a ladder with a `0.0`
+edge reports as a put wing, and a lot at exactly 0.50 delta sits one band low on
+`default_delta_ladder()`.
+
+**No existing number moves *for this entry*** — and read the `abs_vega` entry
+below before quoting that, because it moves one in these same buckets. What holds
+here is bit-identity between the two OVERLOADS, not against the previous release:
+the four-argument form forwards to the new one with an empty ladder, so
+`ByUnderlier` / `ByExpiry` return column-for-column what they returned, with
+`abs_vega` the single exception the next entry describes. A laddered key through
+the four-argument form is `InvalidArgument` rather than an invented single-band
+ladder. The ladder is left UNVALIDATED as well as unread for the two
+contract-only keys: it is documented as ignored there, and validating something
+neither overload reads would make a malformed ladder reject a `ByUnderlier`
+reduction that the four-argument form accepts.
+Keying stays a pure function of `(contract, ladder)` with accumulation in fixed
+input order, so the laddered buckets are thread-count invariant for exactly the
+reason the original two were. `reduce_pnl_risk_buckets` refuses the new keys —
+`PnlFrame` carries neither a forward nor a base-frame delta.
+
+### FIXED — `PriceTotals::abs_vega` was declared per bucket and never assigned
+
+`reduce_risk_buckets` returned NaN for `abs_vega` in every bucket and in `grand`,
+for a field the header documents as the gross companion to the signed `vega`.
+It now sums `|vega|` over the same lanes in the same input order, opening its
+accumulator exactly where `reduce_price_totals` opens its own — so it stays NaN
+(never a false 0.0) under a marks-only frame, and `grand.abs_vega` is the
+bit-exact ordered sum of the bucket subtotals like every other column.
+
+This matters most on the books the reduction exists for: a vega-neutral
+dispersion book drives the SIGNED sum to a cancellation residual by
+construction, so any per-bucket statistic normalised by "the book's vega
+exposure" must divide by the gross number. Every caller found was already
+consuming the whole-book `abs_vega` that `reduce_price_totals` populates
+(`src/backtest/tearsheet.cpp` gross-vega return, `src/backtest/backtest.cpp`'s
+`gross_vega_abs` series); none had a bucket-level source until now.
+### FIXED — the American boundary batch served +0.0 for a non-finite input (review follow-up)
+
+**The number that moves.** `american_put_boundary_batch(S=100, K=100, T=NaN, σ=0.2,
+r=0.05, q=0)` returned **0** on the AVX2 route where the scalar route returns NaN; the
+same for `σ = +inf`. That directly contradicted
+`api/simd/american_boundary_batch.hpp:22-24`, which promises that "any non-finite lane
+PATCH[es] through the exact scalar andersen_lake, so parity holds everywhere". Three
+things had to line up, and all three are the same failure mode this branch is named
+after:
+
+* eligibility (`american_boundary_avx2_kernel.hpp:135`) tested `T <= 1e-12` and
+  `sigma <= 1e-8` — ORDERED compares, false for NaN — and checked `isfinite` on r and q
+  but never on T or sigma, so the lane was eligible and took the vector path;
+* the three terminal clamps `_mm256_max_pd(price, zero)` return their SECOND operand for
+  a NaN price, normalising it to a finite `+0.0`;
+* the driver's patch guard is `!std::isfinite(pr[l])`, which `+0.0` passes.
+
+Fixed at both layers: `isfinite(T)`/`isfinite(sigma)` join the eligibility test, and the
+price kernel re-injects a NaN after the clamps. The NaN is re-ORed rather than fixed by
+swapping the clamp operands (the technique used in `exp_pd`), because MAXPD also returns
+SRC2 when the operands compare EQUAL — so `max(zero, price)` would let a `-0.0` through
+the final clamp where `+0.0` is emitted today, a served-bits change the fingerprint
+contracts would notice.
+
+### FIXED — `exp_pd` overflowed early, and had diverged from its own scalar sibling
+
+`exp_pd(709.44)` returned `+inf` where `std::exp` returns `1.2760780590224528e308`, and
+`exp_pd(kExpHi)` returned `+inf` for `1.7976931348622732e308`. Cause is the same `N`
+rounding to 1024 that was fixed in `exp_cody` — fixing only the scalar one had *created*
+a scalar-vs-vector divergence across the last binade where none existed. The upper clamp
+now applies to N rather than to x (so an overflowing argument keeps growing `r` and
+drives the polynomial to `+inf` on its own, instead of collapsing onto `kExpHi`'s value),
+and the one exponent the biased field cannot hold is carried as a masked self-add on the
+polynomial. A CONSTANT split cannot work: N spans `[-1022, 1024]`, 2047 values, against
+2046 encodable — any fixed offset that saves the top flushes the bottom binade and would
+have silently truncated the deep Φ wings.
+
+**Exactly 177 of 750,081 values change**, all inside `[709.4375, 709.78125]` — measured
+by a bitwise sweep of `[-750, 715]` at 1/512 spacing. **Cost, measured** (standalone
+clang-cl 18 `/O2 /arch:AVX2` A/B, 1Mi values, best-of-240, 11 paired samples — a
+microbenchmark, NOT a repo `rel-avx2` number): `exp_pd` in isolation ~**+13% median**
+(range +2% to +35%); inside `norm_cdf_erfc_pd`, which is how it is actually consumed,
+~**+4.7% median** (range −6% to +18%, i.e. at this rig's noise floor — two identical code
+paths differed by up to 6pp run to run). The masked self-add was chosen over a blendv'd
+carry multiply on that measurement: the blendv shape cost +14–25% / +6–10.5% for the same
+fix.
+
+### FIXED — three docs corrections
+
+The `|ln(F/K)| ≥ 708` redundancy argument (source comment, this file, and the ledger) was
+justified by an AM-GM step that only holds for `lnFK > 0`; see the corrected paragraph
+below and the new ledger line. `tests/simd_nan_safety_test.cpp` quoted the pre-fix
+`exp_pd(NaN)` as `-2.0` and `φ(NaN)` as `-0.7979`; the measured values are
+`-7.9833612381487477e292` and `-3.1849003376154668e292`. `src/simd/essvi_batch.hpp`
+documented "Assumes slice.T > 0" where the code now REFUSES with NaN.
+
+### FIXED — the AVX2 kernels no longer answer an unanswerable input with a finite number
+
+**The numbers that move.** Four, all of them cases where a kernel previously emitted a
+finite value it had no basis for:
+
+1. `detail::exp_pd(NaN)` returned **-7.98e292** (measured, this host) instead of NaN, and
+   `norm_pdf_pd(NaN)` therefore returned **-3.19e292** — a finite NEGATIVE probability
+   density. Both now return NaN. `_mm256_max_pd(x, kExpLo)` returns its SECOND operand
+   when either is NaN, so a NaN argument was silently replaced by the clamp bound:
+   N = -1075, biased = -52, and `_mm256_slli_epi64(-52, 52)` rebuilt -2^973. The
+   `underflow` compare could not see it — `_CMP_LT_OQ` is false for NaN. Fixed by putting
+   the constant first in both clamps (`src/simd/vector_math.hpp`), which propagates the
+   NaN at zero instruction cost. Reachable from `norm_pdf_pd` / `erfc_nonneg_pd` and from
+   `american_boundary_avx2_kernel.hpp`'s `res_deriv` / `eqn_b_ND`, which pass unmasked
+   tau- and b-derived arguments. **The finite domain is bit-identical**: Φ, φ and exp
+   digests over 1,417,219 sample points (incl. every Cody region boundary at 1/65536
+   spacing) are byte-equal before and after.
+
+2. The AVX2 barycentric interpolant at an EXACT collocation node returned the wrong
+   boundary. Both copies (`american_boundary_avx2_kernel.hpp:293` and `:518`) divided by
+   `dz = zc - znodes[j]` with no `dz == 0` guard, unlike every scalar counterpart
+   (`american.cpp` `al_cheb_eval_t`, `boundary_interp.cpp` `bary_eval`). On a hit
+   `qq = ±inf` and `num/den = NaN`, and the caller's `b_from_y_pd(NaN)` then degraded to
+   `XMAX` rather than to NaN — because `_mm256_max_pd(NaN, 0)` returns its second operand
+   — so a finite WRONG boundary went downstream invisible to every non-finite guard. It
+   is reachable: `clamp01` saturates to exactly ±1.0 and the Lobatto grid's endpoints ARE
+   exactly ∓1.0. The two copies are now ONE function, `cheb_eval_pd`, with a branchless
+   per-lane hit blend; non-hit lanes divide by an unchanged `dz` and stay bit-identical.
+
+3. `essvi_backbone_sigma_batch` served a volatility for a slice with an invalid time
+   axis. `slice_vector_admissible` validated theta, phi and rho but never `T`, while both
+   routes divide by it: `T == 0` served `sqrt(w/0) = +inf`, `T < 0` served NaN, and
+   `T == -inf` served `-0.0` — all unflagged. Both routes now REFUSE with NaN
+   (`essvi_slice_time_valid`, `src/simd/essvi_batch_avx2.hpp`), because a fallback would
+   only divide by the same T. Valid slices are untouched.
+
+4. `detail::exp_cody` (`src/pricing/scalar_erfc.hpp`) overflowed early. `kExpHi` is
+   `ln(DBL_MAX)`, whose `Nf` rounds to 1024, and `pow2i`'s documented precondition is
+   n ≤ 1023 — so `exp_cody(709.78)` returned `+inf` where `std::exp` returns
+   ≈1.7976931348622732e308. The 2^N scale is now split as 2^(n-1)·2, and arguments past
+   `ln(DBL_MAX)` overflow explicitly instead of saturating to a finite `DBL_MAX`.
+
+**Undefined behaviour removed.** `exp_cody` computed `Nf = nearbyint(x * kInvLn2)` and
+then `static_cast<int>(Nf)`. Every guard ahead of it was an ORDERED comparison, so a NaN
+argument fell through all three and converted a NaN to `int` — UB per [conv.fpint]/1,
+reachable as `norm_cdf_erfc(NaN)` → `erfc_nonneg(NaN)` → `exp_cody(-NaN)`. The early-out
+is now a negated compare that separates NaN (propagated) from genuine underflow (0.0).
+This did NOT reproduce as a wrong answer under clang-cl 18 — `cvttsd2si` yields INT_MIN
+and the polynomial was already NaN — which is the point: it is fixed on the no-UB rule,
+not on an observed failure. This tree builds no sanitizer, so nothing else would report
+it.
+
+**Hardening with no number attached** (recorded so a later reader does not mistake these
+for the fixes above): every bump-state boundary solve in `american_greeks_avx2.cpp` now
+re-checks `ref < 0` like the base solve does, so the σ± / r± stencils can no longer be
+priced against a stale BASE boundary — today those lanes are dropped by an incidental
+`lane_ok &&` chain rather than by the guard. `iv_batch_avx2.cpp` gains the
+`|ln(F/K)| ≥ 708` escape both sibling kernels carry and document as required, and its
+`ill_cond` compare becomes unordered-true so a NaN vega patches. **The escape is not
+credited with catching something it does not:** the ill-conditioning floor already
+patches every lane in that band, and not by coincidence — but the proof needs BOTH signs
+of `lnFK`, by two different arguments. For `lnFK ≥ +708`, AM-GM applies (both terms
+positive) and `|d1| ≥ √(2·708) = 37.63` for any v, so `φ(d1) ≤ 1.32e-308`. For
+`lnFK ≤ −708` — the reachable sign, since `log_pd` of an underflowed ratio decodes to
+≈ −708.4 — AM-GM gives NOTHING (at `v = 37.63`, `d1 = 0` exactly and `φ = 0.3989`);
+what bounds it there is the notional scaling, since `vfloor = 0.005·(F+K)·df` grows with
+`max(F,K)` while vega grows with F alone and `F/K ≤ e^-708 = 3.31e-308`. Lastly
+`greeks_batch_avx2.cpp` and `iv_batch_avx2.cpp` adopt `black76_batch_avx2`'s patched
+`safe_f`/`safe_k` for the log argument, and `rho` uses `safeT` like every other term —
+all identical on served lanes.
+
+**Performance, no number.** `erfc_nonneg_pd` dropped one of its five divisions per call
+by blending regions 1 and 2 as an `(N, D)` PAIR before the divide; a division is a pure
+per-lane function of its two operands, so each selected lane's quotient is bit-for-bit
+what it was (verified by the digest above). Region 3 is deliberately left alone — folding
+it needs an algebraic rearrangement that is NOT bit-identical, and the American-boundary
+route's reproducible-per-host status rests on an explicit user ruling
+(`american_boundary_batch.cpp:73-83`). The five file-local scalar batch fallbacks
+(`pnl_batch`, `black76_batch`, `greeks_batch`, `iv_batch`, `american_boundary_batch`)
+gained `__restrict`, which is the first `restrict` anywhere under `src/simd` or
+`src/pricing`; non-aliasing was already each API's documented precondition. Only the
+scalar route is touched, so no intrinsic kernel and no number changes.
+### FIXED — the LinearVariance market mark is MEASURED now, not asserted arb-free
+
+**The claim that moves.** `detail::slice_butterfly_violations`
+(`src/fitting/curve_selector.cpp`) returned a hard-coded `0` for
+`VolCurveKind::LinearVariance` under the label *by-construction arb-free*, with a
+parenthetical conceding the check was out of scope. Piecewise-linear total
+variance is only C0: `w''` is a measure carrying a Dirac at every node, and the
+flat wings splice a concave kink onto both outer nodes, so the family is never
+butterfly-arb-free on any board. The market-mark arm pins that family
+(`FitPreset::Hft`, `src/fitting/session.cpp`) for SPY/QQQ/IWM and dense mega-cap
+event boards, and published `Healthy` with a DEFAULT-CONSTRUCTED
+`ValidationDigest` — every count zero, `admitted()` true — that no oracle had
+produced.
+
+**The numbers.** On the repo's own known-truth synthetic SPY panel a 6-slice mark
+carries **11 butterfly violations**, worst kink slope drop **0.20**. The
+codebase's own real-board number is that ~1/4 of a raw penny-quote SPY board is
+locally butterfly-violating (`src/fitting/essvi_calib.cpp`); a mark that
+interpolates the quotes reproduces every one of those.
+
+**What changed.** `arb_check_butterfly_linear_variance` (`arb.hpp`) decides the
+singular part EXACTLY from the node geometry — a finite-difference stencil only
+smears each Dirac over one grid cell, so what it reports depends on `dk` — and
+samples the smooth part where `w'' == 0`. It separates the two structural
+flat-wing splices from the violations the board's own quotes imply
+(`n_quote_implied()`). The selector seam now returns
+`SliceButterflyVerdict{n_violations, decided}` and an UNDECIDED slice
+disqualifies exactly like a violating one. **Selection behaviour moves:
+LinearVariance is now ~always disqualified as a selector candidate**, which
+agrees with the rest of the stack — a LinearVariance *risk* config is already
+refused outright and rewritten to ConvexDense (`src/fitting/pricer_fitter.cpp`).
+It stays a scored rung of `bounded_selector_candidates()` so its fit metrics
+remain comparable.
+
+**The mark is NOT gated and NOT repaired, and that is the decision.** Gating it
+would publish nothing for the most liquid names on most snapshots; repairing it
+would move the mark off the quotes it is defined to interpolate, and the repair
+already exists on the risk ladder. What changed is the claim: the published
+digest carries the measurement and its `Butterfly` bit, so
+`market_mark_health.validation.admitted()` is now **false** and the counts are
+reachable from the public bundle. Demoting `SurfaceHealth::state` to `Degraded`
+is opt-in via `PricerConfig::demote_mark_on_butterfly`, **default false** —
+`src/marketdata/corpus_board_fit.cpp` substitutes a mark for a risk-refused board
+only while `market_mark_health.state == Healthy`, so defaulting the demotion true
+would arm that refusal rather than report a fact.
+
+### FIXED — the spline knot grid is validated instead of divided by
+
+`natural_spline_m` (`src/fitting/spline_curve.cpp`) divides by the knot gaps
+`h[t]`/`h[t+1]`, by `b[0]` and by the Thomas pivot with no zero check, and
+`fit_spline_vol_slice` validated only `grid.size() >= 4` — never that the grid
+ASCENDS, which `SplineVolParams::z` is documented to do and nothing enforced. One
+duplicated or unsorted knot made the whole second-derivative vector NaN and every
+served IV NaN, **out of a fit that reported success**. The entry point now
+returns `InvalidArgument` for a non-ascending or non-finite grid (a caller that
+was silently serving NaN now gets an error), and the core returns all-zero second
+derivatives for an undecidable gap — the natural-spline answer for data it cannot
+difference — so a hand-built or deserialized params degrades to the
+piecewise-linear interpolant instead of poisoning the surface.
+`SplineFitOpts::grid` is a `std::span` MEMBER; its borrow contract is now stated
+on the field, with the dangling-temporary form spelled out.
+
+### FIXED — a single NaN vertex no longer wins the SVI Nelder-Mead search
+
+`nm_search` (`src/fitting/svi_calib.cpp`) picked its winner with
+`if (f[1] < f[best]) best = 1;`, which is false when `f[best]` is NaN. One NaN
+vertex therefore beat two finite vertices and `out_best_sse` returned non-finite,
+breaking the function's own stated contract (*non-finite iff EVERY vertex the
+simplex visited was unusable*) — on which the caller's decision to DISCARD the
+slice rests. Slices that were thrown away for one bad vertex now fit.
+`detail::nm_vertex_less` / `nm_best_vertex` state the rule once; the in-loop
+simplex sort uses the same predicate, so an unusable vertex sinks to `v[2]` — the
+slot Nelder-Mead replaces first — instead of sitting at `v[0]` driving the
+search.
+
+### FIXED — the eSSVI dense-residual clamp is single-sourced (the served w moves)
+
+`essvi_residual_w` (`src/fitting/vol_surface.cpp`) clamped its summation count to
+`[1, 16]` while the C2-Bspline basis it calls re-clamps to `[4, 16]`
+(`resid_bump_count`, `src/fitting/resid_basis.hpp`). For `resid_n_basis` in
+{1, 2, 3} the basis was built on FOUR bumps and the dot product summed only the
+first 1-3, so **the surface served a different total variance than was
+calibrated**. `essvi_slice_dof` carried a third, private copy of the clamp and
+reported 1-3 for a slice the evaluator serves on four bumps. Measured on a
+hand-built slice: `essvi_total_w` at k=0.40 moves `0.038219` → `0.041758` at
+`resid_n_basis == 3`, and the reported dof 6 → 7. `fit_dense_residual` always
+writes ≥ 4, so the drift is reachable only by deserialization or hand
+construction — which is what a persisted archive and a research caller do.
+
+### FIXED — `ConvexSliceFit::call_price` no longer falls off a cliff on a duplicated ladder strike
+
+`call_price` (`src/fitting/dense_slice.cpp`) divides by `u[1]-u[0]`, by
+`u[n-1]-u[n-2]` and by `u[hi]-u[lo]` with no strict-increase check. `u` is a
+PUBLIC member, so the no-duplicates invariant is established only by the 1e-9
+merge inside `fit_convex_slice`, never by the accessor. The observable defect is
+not a NaN price — `std::clamp`/`std::max` return their NaN argument's counterpart
+— but a silently wrong tail: an infinite right-edge slope drives the exponent to
+`+inf`, and `pow(K/Kn, -inf)` is exactly 0, so on a four-node ladder the price
+fell from **1.5 to 0.0** one ULP past the last node. That is the flat-clamp
+failure FIT-C11 exists to prevent, in a louder form. An unusable gap now means
+"no edge derivative": the right tail takes slope 0 and lands on the FIT-C11
+epsilon floor, the left tail falls back to `a == 1` (the straight put through the
+origin, C0 at the splice), and the interior bracket holds the lower node.
+
+### CHANGED — the disarmed bid/ask quality floor is now VISIBLE (no number armed)
+
+`FitAdmissionPolicy::min_worst_frac_within_bidask` defaults to `0.0`, and the
+admission predicate is `worst_frac_within_bidask < min` over a FRACTION in
+`[0, 1]` — so the default makes it `worst < 0.0`, which nothing satisfies.
+`QualityBelowFloor` cannot fire on either shipped policy, no admission path
+compares an RMSE to a tolerance (`rmse` appears nowhere in `fit_policy`), and the
+independent geometry oracle never reads a bid or an ask. An arb-free surface that
+reprices NOTHING inside the spread publishes as `Healthy`. **Nothing is armed**:
+arming it would start refusing production surfaces and would also switch on the
+second de-Am scoring pass on every route that had opted out. What lands is
+`fit_quality_floor_armed(policy)`, two `static_assert`s pinning BOTH shipped
+defaults as disarmed so arming one is a deliberate reviewed edit, and a field
+contract stating what a real floor needs (a per-consumer number — Mark and Risk
+cannot share one; the parity-evidence and latency cost; and a measured
+distribution over a real board population before any number is chosen; populate's
+0.35 is the only non-zero value in the repo). `SurfaceHealth::surface_age_ns` is
+documented as **declared and never assigned** — it always reads 0, i.e. "built
+just now", the most dangerous default a staleness field can carry.
+
+### FIXED — the strip's span rescale fed an unbounded double into a `size_t` cast (undefined behaviour)
+
+**The number that moves — only in the regime that was undefined.** Past
+sigma_atm*sqrt(T) ~ 1.8e16 the value handed to
+`static_cast<std::size_t>(std::ceil(...))` left `size_t`'s range entirely, which
+is UB rather than a saturating truncation. That is now bounded at
+`strip::kMaxRescaleNodes` (32769). **Every input that was previously
+well-defined resolves the same node count it always did**: Standard tier at
+sigma_atm*sqrt(T) = 4 still resolves 4097, at 0.5 still 513, Audit at 1.0 still
+4097. What used to demand ~102 401 nodes (sigma_atm*sqrt(T) ~ 100) is now capped
+at 32769 and flagged `LowT`.
+
+**What changed.** The FIX-E M-7 body moved out of `strip_fair_value_core`
+(`src/pricing/derivatives.cpp`) into `strip::span_rescaled_nodes`
+(`src/pricing/strip_grid.hpp`), which bounds `intervals` BEFORE the cast — the
+rule `strip::dk_floor_nodes`' own comment already stated (*"Capped here, before
+the ceil()->size_t cast below … casting an out-of-range double to `size_t` is
+undefined behaviour, not a saturating truncation"*) and which had never been
+mirrored onto this second copy of the shape. `!(intervals < ceiling)` catches
+`+inf` and NaN on the same test.
+
+**The bound is `kMaxRescaleNodes`, NOT `kMaxStripNodes` — review fix.** The
+first version of this change bounded at `kMaxStripNodes` (2049), which is the
+batched gather's fixed STACK BUFFER length, not a cost ceiling. That made the
+rescale **incapable of raising at the Audit tier at all** (2048 intervals over
++-3.0 need `intervals < 2049` to escape the bound, while any widening forces
+`intervals > 2048`), clipped High from sigma_atm*sqrt(T) >= 1 and Standard from
+> 2, and so re-introduced the widened-span/coarsened-dk trade FIX-E M-7 exists
+to prevent — up to 2x the promised dk at sigma_atm*sqrt(T) = 1 and 4x at 2.
+`kMaxRescaleNodes` is a cost bound set where no real quote reaches it: the
+richest tier only hits it at sigma_atm*sqrt(T) = 8, an 800-vol year.
+
+**What did NOT change.** A caller-PINNED `cfg.strip_nodes` is still never
+clamped (`Strip.BatchedPathFallsBackAboveMaxStripNodes` resolves 5001 and falls
+back to the scalar loop), and a rescale past `kMaxStripNodes` still falls back
+to that same scalar loop through the gather's own structural guard.
+
+Pinned by `StripResolution.SpanRescaleBoundsTheCastWithoutDisablingTheRaise`
+(pure function, incl. the out-of-range and `+inf` inputs a quadrature can never
+reach), `StripResolution.SpanRescaleStillRaisesAtEveryTier` (all four tiers x
+sigma_atm*sqrt(T) in {0.5, 1, 2}, asserting dk is actually held) and
+`StripResolution.AdaptiveSpanRescaleRaisesEndToEnd`.
+
+### FIXED — a capped span rescale is now actually flagged LowT
+
+**What changed.** `strip::span_rescaled_nodes` returns `{n_nodes, capped}` and
+`strip_fair_value_core` seeds `low_t` from `capped`.
+
+The previous entry claimed the call site's existing
+`max_panel_spacing(split) > dk_max` check would report a capped rescale. It
+provably cannot: after the bound the spacing is `2*kh/(kMaxRescaleNodes-1)`,
+linear in sigma_atm*sqrt(T), and `dk_ceiling` is `sigma_atm*sqrt(T)/4` — the vol
+scale CANCELS and the ratio is a constant ~1.5e-3, under the ceiling for every
+input that exists. `dk_floor_nodes` cannot raise on that path either, for the
+same reason. So the claim was false and a capped rescale was silent. Pinned by
+`StripResolution.CappedSpanRescaleRaisesLowT`, which also pins the control case
+(an ordinary vol scale is neither capped nor LowT).
+
+### FIXED — `deriv_analytic_greeks` let a non-finite CENTRE surface read poison gamma
+
+**The number that moves.** For a strip node whose centre surface read is
+non-finite, `AnalyticStripGreeks::gamma` was NaN; it is now that node's zero
+contribution, leaving gamma finite (measured on a 257-node ±1.5 grid: NaN →
+3.88794e-4, against 3.89802e-4 for the same smile with no hole — one dropped
+node in 257 moves it by 0.26%). delta, vega, vanna and volga are byte-unchanged
+— they were already correct.
+
+**What changed.** `slope_usable` (`src/pricing/deriv_analytic_greeks.hpp`)
+screened the four SHIFTED reads for finiteness but not the centre, while
+`sig_curv`'s 5-point stencil carries a `-30.0 * sigma` term. `black76_vega_volga`
+answers `{0, 0}` for a bad centre, so the node's other four products were already
+zero — but `bv.vega * sig_curv` was `0 * NaN`. The centre now enters the
+predicate on the same bad-node test `black76_vega_volga` uses
+(`sigma > 0 && isfinite`), which is behaviour-identical wherever it newly fires,
+since `bv` is `{0, 0}` there anyway. This restores the promise the file's own
+header makes at its "bad node" convention.
+
+Pinned by `AnalyticGreeks.NonFiniteCenterReadNeverPoisonsGamma`, which asserts
+EXACT equality between a surface missing only the centre read and one missing
+that node's whole read window — a bad centre makes the shifted reads irrelevant,
+so the two are the same computation.
+
+### FIXED — `european_greeks_adjoint`'s sigma-to-zero arm returned the bare SPOT intrinsic
+
+**The number that moves.** S = K = 100, T = 1, r = 0, q = 5%, sigma <= 1e-8, put:
+price **0.0 → 4.87706**, delta **0.0 → -0.951229**, `dP/dq` **0.0 → 95.1229**.
+The old arm dropped both the forward and the discount factor, so it understated a
+carry-dominant contract by the entire discounted-forward intrinsic and
+OVERSTATED a spot-ITM one by the discount it ignored.
+
+**What changed.** `src/pricing/adjoint_greeks.cpp` splits the degenerate guard
+into `andersen_lake_core`'s own two arms. T ~ 0 keeps the spot intrinsic (which
+IS that limit — df and the carry are both 1 there). sigma ~ 0 with time left now
+returns `df*max(sgn*(F-K), 0)` with `F = S*e^{(r-q)T}` and no spot-intrinsic
+floor (that floor is an AMERICAN early-exercise term; this entry prices the
+European contract). rho, theta, charm and `dP/dq` are filled from the same closed
+form rather than left at zeros that would contradict the price beside them;
+gamma/vega/vanna/volga stay exactly 0 because no optionality remains. This is
+verbatim the defect already fixed on the American FD path (`american.cpp`, the
+`Pput` lambda's sigma arm and `sigma_zero_american_limit`) and reconciles with
+`black76_greeks`, whose sigma ~ 0 delta is +/-df in forward space.
+
+Pinned by `AdjointGreeksEuropean.ZeroVolLimitMatchesTheContinuousLimit` — which
+compares the degenerate branch at sigma = 1e-8 against the function's OWN full
+reverse sweep at sigma = 1e-7, an independent route — and
+`AdjointGreeksEuropean.ZeroVolCarryDominantPutIsNotTheSpotIntrinsic`.
+
+### CHANGED — adjoint bump sizes: the volga tail no longer cedes the low-sigma band, and vanna shares vega's sigma step
+
+**The numbers that move.** Over `AdjointGreeksAmerican.DiagnosticGaps`' 189-point
+grid, max gap vs a Richardson reference: **vega 9.58826e-3 → 9.53708e-3**
+(-0.53%); vanna (1.85464e-3), volga (2.38591) and adjoint coverage (179/189)
+unmoved. Separately, the adjoint now CLAIMS points with
+sigma in [2e-4, 5e-3] that it previously handed to the FD bundle without saying
+so, and still cedes sigma below that (see the third bullet).
+
+**What changed** (`src/pricing/adjoint_greeks.cpp`):
+
+- the volga tail's cold sigma-plus/minus re-solve used an ABSOLUTE `hvol = 5e-3`
+  against a regime guard admitting sigma > 1e-6, so every sigma <= 5e-3 produced
+  a NON-POSITIVE down-bump, the re-solve failed, and the whole bundle returned
+  `nullopt`. It now takes the SHAPE of `american_greeks_fd`'s relative floor
+  (`if (sigma - hvol <= 0) hvol = 0.5*sigma`, american.cpp:3101-3102) — though
+  not its switch point, since that function's step is 1e-3 and this one's is
+  5e-3, so their relative branches engage at sigma <= 1e-3 and <= 5e-3
+  respectively. Note the absolute step is proportionally LARGEST just above the
+  switch, not smallest: at sigma = 6e-3, `hvol` stays 5e-3, i.e. 83% of sigma.
+- **and the bottom of that band is deliberately still ceded.** A relative step
+  alone would let the adjoint claim sigma down to 1e-6, where `hvol = 5e-7` puts
+  `1/hvol^2` at 4e12 and turns the cold boundary's ~1e-10 residual into ~4e2 of
+  volga error — which the self-consistency guard cannot catch, since both vega
+  estimates are ~0 there and its 1e-3 floor is absolute. `kMinVolgaBump = 1e-4`
+  (i.e. sigma >= 2e-4) keeps the amplified end with the FD bundle. Claiming a
+  band whose volga cannot be computed is worse than the gap it would close.
+- the JVP probe step was `1e-7 / fmax(ymax, 1.0)`, which CAPPED but never
+  FLOORED, so the stated "probe is ~1e-7 regardless of the tangent norm" held
+  only for norms >= 1; below that the real probe was `1e-7*ymax`. It is now
+  `1e-7/ymax` (the surviving `fmax` is an overflow guard on `hy` alone —
+  `|hy*ydot[i]|` is <= 1e-7 by construction).
+- vanna's sigma step **was left at** `1e-3*max(sigma,1e-3)`, TEN TIMES vega's
+  `1e-4*max(sigma,1e-3)`. An earlier revision of this entry set the two equal
+  and claimed a 3.6% max-gap improvement; **that claim is retracted.** A max
+  over 189 points cannot separate a step-size gain from grid noise. Compared PER
+  POINT against a nested-Richardson reference over the 179 adjoint-served
+  points, the smaller step was better on 98 and **worse on 81** — a coin flip
+  — with the median gap slightly worse (1.27383e-5 vs 1.25916e-5), a median
+  paired change of -0.3%, and one point regressing 3927%. The 10x difference is
+  correct: vega is a first-order central difference (roundoff O(eps/h)) while
+  vanna is a mixed second difference (roundoff O(eps/(hS*hsv))), so their
+  optimal steps genuinely differ. The code now records that reasoning instead
+  of the false equality.
+
+`AdjointGreeksAmerican.DiagnosticGaps` gained a nested-Richardson vanna
+reference and a per-point distribution print — it had neither, which is how a
+step-size question came to be adjudicated on a max. New pins:
+`AdjointGreeksAmerican.LowVolBandNoLongerCededByTheVolgaBump` and
+`AdjointGreeksAmerican.VolgaAmplifiedBandIsStillCeded`.
+
+Also: the sigma ~ 0 arm of `european_greeks_adjoint` now screens
+`isfinite(r) && isfinite(q) && isfinite(T)` and returns an all-NaN row rather
+than a confident all-zero one — a NaN carry made `fwd_intr` NaN, which failed
+`> 0.0` and fell to the out-of-the-money branch, while the same inputs one ulp
+higher in sigma return NaN through `euro_reverse`.
+
+### FIXED — `adjusted_greeks` computed `sqrt(w/T)` above the guard protecting it
+
+**No number moves.** Both `curve_skew_slope` and `surface_skew_slope`
+(`src/pricing/adjusted_greeks.cpp`) already returned NaN for every rejected
+input, because `!(sigma > 0.0)` caught the NaN the bad arithmetic produced. What
+changes is that T == 0 no longer DIVIDES by zero and w < 0 no longer takes the
+root of a negative: both raised an FP exception (FE_DIVBYZERO / FE_INVALID) on a
+path documented as a clean early return. The reordered screen is exactly
+equivalent — sigma is positive and finite iff T > 0 and w > 0 and w/T neither
+underflows nor overflows, and the two checks after the sqrt still cover the
+latter pair.
+
+Pinned by `AdjustedGreeks.RejectedCurveInputsRaiseNoFpException`, which reads
+`std::fetestexcept` rather than the return value — the return value cannot
+distinguish the two orderings.
+
+`skew_adjusted`'s NaN propagation was reviewed and DELIBERATELY LEFT ALONE, but
+an earlier revision of this entry justified that with a claim that is false and
+is retracted: `skew_adjusted` has **no production caller at all**. Its only
+in-tree call sites are four in `tests/adjusted_greeks_test.cpp`. The backtest
+does not route through it — `portfolio_pricer.cpp` DUPLICATES `delta +
+vega_slope*vega` inline at `:1060` and `:1107`, and `finite_vega_slope` guards
+the input to *that* duplicated expression, not to this function. Declining the
+screen is still right (a silent fallback to the unadjusted delta would publish a
+different economic quantity under an indistinguishable column), but the reason
+is that this is a leaf whose only consumers are tests. The public header now
+says exactly that, so a future caller does not assume a screen it does not
+inherit. The duplicated arithmetic is the latent hazard, not the NaN.
+
+### DOCS — the "adjoint" greeks kernel is documented as something it is not
+
+`src/pricing/adjoint_greeks.hpp`, the `.cpp` file header, the
+`boundary_tangent_through_iters` doc, and `docs/adjoint_greeks_design.md` sections
+4-5 described "hand-coded adjoint algorithmic differentiation … a reverse
+tangent", "reverse-accumulation-through-iterations", Christianson's
+`vega = dP/dsigma|_y - lambda^T R_sigma` with `J^T lambda = (dP/dy)^T`, and
+"constant cost in the number of upstream inputs". None of that is what ships on
+the American path: the code is FORWARD-MODE tangent propagation
+(`ydot^0 = 0`, `ydot^k = dG_k/dy . ydot^(k-1) + dG_k/dtheta`) with BOTH
+Jacobian-vector products obtained by finite-differencing
+`al_apply_boundary_sweep`, called once per parameter — so cost scales with the
+parameter count, which is what an adjoint exists to eliminate. There is no
+lambda and no transposed solve anywhere in the file. The European path IS a
+genuine reverse sweep, but only to first order.
+
+The header's "machine-precise vs a central-difference reference" is likewise
+false for the American bundle: its own acceptance guard is 3% of the sum of two
+vega estimates plus 1e-3 absolute, and the measured max gaps vs Richardson over
+the `DiagnosticGaps` grid are vega 9.5e-3, vanna 1.8e-3, volga 2.4.
+
+Behaviour is UNCHANGED by this entry — only the prose. Shipped cost, counted from
+the code: 3 boundary solves (one taped + two cold sigma-plus/minus re-solves),
+2 tangent passes (each applying the boundary sweep twice per taped iteration),
+15 price evaluations off a boundary. A genuine Christianson adjoint would return
+the whole greek row for ~3-4x ONE price regardless of parameter count
+(Giles-Glasserman NA-05-15); closing that gap is a Phase-2 item, and the design
+doc's sections 4/5 now carry a **[TARGET — NOT SHIPPED]** marker so they stop
+reading as a description of the code.
+### FIXED — `american_implied_vol` no longer returns `Ok(0.005)` as a MEASURED vol for a quote with no volatility behind it
+
+**The error class that moves.** A quote below the true zero-vol American value
+now returns `Err(OutOfRange, "american_implied_vol: price below the zero-vol
+American bound")` where it previously returned `Ok(kIvMin)` — a SUCCESS carrying
+0.005 as a measurement. Nothing else moves: a quote AT the bound still clamps to
+`kIvMin`, and a quote between the bound and `price(kIvMin)` is still the
+documented sub-floor clamp reported through the bracket.
+
+**Why the old screen was wrong.** `american_iv.cpp` screened on the IMMEDIATE
+intrinsic `max(0, S-K)` only. That is the `t = 0` corner of the sigma -> 0
+American value, which is a sup over every exercise date:
+`max(0, max_{t in [0,T]} [S*e^{-qt} - K*e^{-rt}])` for a call. The `t = T` corner
+is the discounted forward intrinsic `df*(F-K)^+`, and for a call with `r > q` it
+is the LARGER one — the everyday short-dated ITM case. `zero_vol_american_value`
+now takes the max over `{0, T, t*}`, `t* = ln(aA/bB)/(a-b)` being the single
+stationary point, which for `0 < q < r` deep ITM and long dated clears BOTH
+endpoints by whole price points.
+
+**What breaks.** Every caller that reads `has_value()` alone. The fit path
+already filtered the fabricated floor out downstream (`kObsIvMin`/`kFitIvMin`,
+both 0.005, both strict `>`), so `calib.cpp` and `prepared_fitting.cpp` reach the
+same admission decision by a different route. The one that genuinely changes is
+`deamer.cpp deam_pcp_step`, which `ATX_TRY`s the inverter inside the borrow fixed
+point: a probe carry far from the truth now HARD-FAILS the pair instead of
+silently feeding it a 0.5%-vol leg, so a term whose every pair is short-dated and
+deep-ITM reports `CarryFailed` rather than converging on a fabricated borrow.
+That is the honest outcome, but the fixed point should be taught to read this
+error as "inadmissible iterate", not as fatal — see `docs/LEDGER.md`.
+`tools/oracle_conventions.cpp:640-658` restates the OLD screen verbatim for the
+discrete-dividend lattice inverter and now carries the same defect.
+
+### FIXED — European `implied_vol` reports the ceiling instead of burning 16 Halley steps and mislabelling the failure
+
+**The error class that moves.** A quote whose true IV exceeds `kIvMax = 10.0`
+returned `Err(Unavailable, "implied_vol: exhausted iterations")` after all 16
+Halley evaluations; it now returns
+`Err(OutOfRange, "implied_vol: implied vol above the vol ceiling kIvMax")` in
+fewer than 3 steps. `sigma` is clamped into `[kIvMin, kIvMax]` after every step
+while the termination test reads the PRE-clamp `step`, so sigma sat motionless at
+the ceiling with `|step|` large — the exact mirror of the floor defect fixed
+earlier, left behind then. Unlike the floor, `kIvMax` is not a documented
+REPORTED value, so there is nothing honest to return above it. Measured on
+`F = K = 100, T = 0.01, df = 1`, true sigma 12: 16 iterations and the wrong error
+class before, terminating with the right one after.
+
+### CHANGED — the American Newton step now differentiates the map it is solving; cold deep-ITM inversions cost 28% fewer residual evaluations
+
+**The number that moves.** `IvNewtonIters` over a 24-quote cold Andersen-Lake
+deep-ITM put grid (S=100, K in {104,110,116,122}, T in {0.5,1,2}, sigma in
+{0.25,0.40}) drops **222 -> 160**, i.e. 9.25 -> 6.67 residual evaluations per
+quote.
+
+**What changed.** The rtsafe refinement solves the AMERICAN residual but took its
+derivative from `american_vega`, which with a null correction is the pure
+Black-76 EUROPEAN vega — a proxy measured 2-3x the true Andersen-Lake slope deep
+ITM, so every Newton step understepped, the range test demoted it to bisection,
+and convergence collapsed to linear exactly where the proxy is worst. On the
+cold/BAW route the slope is now a secant over the two most recent residual
+evaluations, which differentiates the actual forward map and costs no extra
+pricer call; the analytic vega remains the fallback wherever the chord carries no
+usable slope. The CACHED route is untouched — `american_price_and_vega_cached`
+already returns the true sigma partial of the map being solved and shares one
+correction traversal with the residual (perf F1).
+
+**Bits that move.** The cold-route search path changes by construction, so the
+converged root moves inside the requested `tol` (6.0e-8 and 4.0e-7 in sigma at
+`tol = 1e-6`). The two golden bit patterns in
+`AmericanIv.PricePolishDefaultOffIsBitForBitControl` are re-pinned; the new roots
+are strictly MORE accurate on the cold reference map (|resid| 1.000e-5 -> 8.003e-6
+and 1.815e-2 -> 1.502e-2, |sigma - 0.22| 2.983e-7 -> 2.387e-7).
+
+### FIXED — three documentation claims the code refutes
+
+`include/atx/vol/api/pricing/implied_vol.hpp` advertised a Stefanica-Radoicic
+seed "uniformly within ~2% of the true sigma"; the seed is Choi-Kim-Kwak (2023)
+L3 (SR-2017 survives only as the degenerate-corner fallback) and is a BOUND,
+measured 18-32% low at `|ln F/K| ~ 0.10-0.14`. What is gated is the step count:
+mean 2.94 / max 4 over the 904-point corpus. `include/atx/vol/api/core/types.hpp`
+claimed "one Householder step reaches machine precision"; the gate is
+`mean_steps < 3.0` and `max_steps <= 8` (`tests/iv_seed_test.cpp`).
+`tests/scalar_erfc_test.cpp` described a swap of `implied_vol.cpp` / `black76.cpp`
+onto the Cody kernel that never landed — neither TU includes
+`src/pricing/scalar_erfc.hpp`, whose own STATUS banner already said so. No
+behaviour change.
+### FIXED — the discrete-dividend lattice now admits cum-dividend exercise, and extrapolates below the grid instead of clamping
+
+**The numbers that move.** Every one of these is a price the library already
+serves through `american_discrete_div_price` / `_greeks` / `_greek_bundle`
+(`src/pricing/american_discrete_div.cpp`); the pinned test values that changed
+are listed with their old value beside them in
+`tests/discrete_div_american_test.cpp`.
+
+| anchor | before | after |
+|---|---|---|
+| American call, one 5.00 dividend at tau=0.25 (S=100, K=90, T=0.5, sigma=0.20, r=0.04), error vs the exact decomposition at 301 / 601 / 1201 steps | -1.4539e-2 / -6.0211e-3 / -2.7829e-3 | -2.1011e-3 / -1.3008e-3 / -9.4645e-4 |
+| European put on a certainly-worthless stock (1e6 of cash at tau=0.9) | 96.146830494183135 | 97.04455335484883, against the exact `K*exp(-r*T)` = 97.044553354850808 |
+| European CALL, one 6.00 dividend three steps into a 300-step year, absolute error vs the exact European decomposition, K = 60 / 100 / 140 | +1.6784 / +0.8753 / +0.2336 | -0.0036 / -0.0073 / +0.0095 |
+| the PUT legs of the same | -0.0756 / -0.8787 / -1.5204 | -0.0036 / -0.0073 / +0.0095 |
+| the same at SPY scale (775.8 spot, 2.15 on step 1 of 300), call / put, ticks | +63.18 / -43.45 | -3.64 / -3.64 |
+| AMERICAN put, one 6.00 dividend three steps in (S=K=100, T=1, sigma=0.30, r=0.03) | 12.4610785657936, **below** its 12.9821859272407 European sibling | 13.3718937351702 |
+| European put-call parity, one 6.00 dividend at tau=0.05, worst over five strikes | 3.2922e-03 | 1.9966e-12 |
+| the same at 12.00 | 9.9558e-02 | 1.6804e-12 |
+| European parity, the six-dividend SPY-shaped schedule | 5.222871e-05 | 5.1822980566385013e-05 |
+| six-dividend European call price / delta / gamma | 75.222227622486884 / 0.59491123873539919 / 0.002374185751928035 | 75.222227565387954 / 0.59491124565685172 / 0.0023741850780676448 |
+| six-dividend European put price / delta | 51.21952913918814 / -0.39445568531088704 | 51.219529487817411 / -0.39445572220346636 |
+| six-dividend AMERICAN call bundle price | 75.222227622486997 | 75.222227565388096 |
+| American call, 20.00 of cash at tau=0.5 on a 100 stock | 9.3443758393719278 | 9.3833648543233199 |
+| American call, 1e6 of cash at tau=0.9 | 12.514058272121554 | 12.55950705605116 |
+| a dividend clipped onto an American call's own bumped expiry, price gap | 0.024071862276378 | exactly 0 |
+
+Every American PUT anchor that predates this entry is unchanged to the last bit,
+which separates the cum-dividend fix from the grid-bottom one — cum-dividend
+exercise is dominated for a put. It does NOT say the grid-bottom edit leaves puts
+alone, and an earlier revision of this entry claimed it did. That was false: every
+American-put anchor in the suite sat at tau=0.5, tau=0.9, or step 22 of the
+775-scale schedule, exactly where the corner weight `(1-p)^k` is negligible, so
+their invariance was a property of the anchor set rather than a discriminating
+check. Move the ex-date to step 3 and the same edit moves an American put by 91
+ticks — the row above, now anchored by
+`AmericanPutWithAnEarlyDividend_ClearsItsEuropeanSibling`.
+
+**Cum-dividend exercise.** `splice_dividend` tested exercise against the
+POST-dividend level only, and the terminal payoff was built on the post-dividend
+level for both styles. A holder standing at an ex-step may exercise before the
+cash comes off or an instant after it, so the value is
+`max(sgn*(S - K), sgn*(S - D - K), cont(S - D))`; the classical result (Roll
+1977 / Geske 1979 / Whaley 1981, re-confirmed numerically by Itkin
+arXiv:2510.18159 §6.4) is that the instant BEFORE an ex-date is the only place an
+American call exercises early at all. The header documented the omission as
+deliberate because admitting it "made agreement with the vendor mark strictly
+worse" — evidence about a vendor, not about the option. It was also never free:
+the plain American test at the step BELOW the ex-step recovered the exercise one
+`dt` late, so the price converged from below with an O(dt) bias, which is the
+6.9x error reduction at 301 steps in the table. On the TERMINAL step nothing
+below can recover it, and the consequence there is exact rather than O(dt): a
+dividend landing on an American call's own expiry cannot move its price, which is
+why the maturity-bump test's American-call leg is now an equality.
+
+**The grid bottom.** `post = level[i] - amount` is below `level[0]` for the low
+nodes at every splice with a positive amount, so the bottom-edge branch is the
+common case, not a corner. It held the continuation value FLAT there; it now
+extrapolates quadratically through the three lowest nodes (linearly when only two
+survive), and clamps nothing. The pinned `96.146830494183135` was the artefact:
+its deficit against `K*exp(-r*T)` was `level[0]*exp(-r*tau_grid)` to the last
+digit. Where it bites is a LATE-versus-EARLY question rather than a size
+question: the corner nodes carry binomial weight `~(1-p)^k` at step k, so a
+mid-tree ex-date hides the defect at machine precision and an early one does not.
+
+Two things about that branch are worth stating because both were got wrong once.
+
+**Put-call parity cannot test it.** The splice applies ONE LINEAR OPERATOR to the
+value vector and `cont_call - cont_put` is affine in the stock level, so any
+linear extrapolation reproduces the parity difference exactly while handing both
+legs the identical absolute error. Measured at step 1 of 300 with one 6.00
+dividend: call error -2.518e-01, put error -2.518e-01, parity residual 1.3e-12.
+Only an absolute reference sees it, so the suite now carries one
+(`vn_european_one_dividend`, the European sibling of the exact decomposition
+already used for the American call) and three tests built on it, including one
+whose entire job is to pin the blindness so nobody re-derives accuracy from
+parity here.
+
+**Nothing is clamped in it.** An earlier revision floored the extrapolated
+continuation at 0 and attributed the resulting 4.9613e-05 parity residual to the
+post-dividend ZERO floor, calling it "a model statement, not an error". It was
+neither. At that ex-step the lowest grid level is 77.119993, so
+`level[i] - 12.0 >= 65.12` and the zero floor never fires; the clamp that fired
+was the non-negativity one on the extrapolated continuation, which a LINEAR
+extension of a convex call curve needs and which is not a linear operation — so
+it desynchronised the two legs and was the only thing capable of breaking parity
+here. Quadratic extrapolation removes both the need and the residual: the
+divided-difference term is `>= 0` on convex data so it only ever adds to the
+linear lower bound, and the residual goes to 1.6804e-12.
+
+### NEW — `dP/dD_i` off the lattice, per event, priced where the event lands
+
+`american_discrete_div_dividend_sensitivities` (api/pricing/american.hpp)
+reports the derivative of the lattice price with respect to each cash amount, by
+a central difference in the amount (`discrete_div_amount_bump`, two rollbacks per
+in-window event; the ex-date's lattice step does not move with the bump so the
+step-rounding error cancels). Out-of-window events report exactly 0, matching
+`hybrid_forward_div_jacobian`.
+
+This exists because the escrowed composition cannot answer the question.
+`american_dividend_sensitivities` (`src/pricing/american.cpp:3788`) is
+`(-dP/dq / (F*T)) * dF/dD_i` — a fixed scalar times a pure discount factor — so
+the ratio between any two events is `exp(r*(t_j - t_i))` and nothing else: not
+the side, not the strike, not whether one of them triggers early exercise. On
+S=K=100, T=1, sigma=0.25, r=0.05 with 6.00 at tau=0.10 and 6.00 at tau=0.90, the
+lattice ranks the early event **18.4581x** the late one for a CALL and
+**0.9298x** for a PUT — opposite orderings on one schedule — where the chain rule
+hands both sides **1.0408**. The call's late ex-date is nearly free precisely
+because the holder exercises the instant before it.
+
+### NEW — the discrete-dividend route is a decision with a name, a switch, and a cost
+
+`discrete_div_route` / `DiscreteDivPolicy` / `DiscreteDivRoute`
+(api/pricing/dividend.hpp) resolve, in one place, whether a chain is priced
+through the escrowed forward or through the V&N spliced lattice. It builds the
+lattice's tau-space schedule from a `MarketEnv::cash_divs` span using the SAME
+instant window `forward_div_corrected` sums, reports the present value of the
+cash the decision is about, and COUNTS the events an instant window admits but
+the lattice's `(0, T]` tau window rejects — which is 0 under Calendar365 and is
+not under a vol-time `T`, and which is exactly when an escrow-versus-lattice
+comparison stops being like-for-like. The escrow policy returns no route at all,
+so a regression bisects on one enum.
+
+**The cost, which decides where the route may go.** Per contract on the `dev`
+preset (`/Od`, so the ratios are the number, not the absolutes; the release
+Andersen-Lake band is 32.6 us/contract, docs/LEDGER.md 2026-08-23):
+
+| route | us/call | x AL price |
+|---|---|---|
+| Andersen-Lake price, cold | 383 | 1.00 |
+| Andersen-Lake implied vol (1e-4, 48 iters) | 934 | 2.44 |
+| V&N lattice price, 301 steps | 1,276 | 3.33 |
+| V&N lattice price, 101 steps | 172 | 0.45 |
+| V&N lattice implied vol, 301 steps | 15,771 | 41.2 |
+| V&N lattice implied vol, 101 steps | 1,892 | 4.94 |
+
+(The inversion is a 1e-4 bisection over sigma in [0.005, 3.0]; its cost is not the iteration count times the price above, because the per-solve cost varies with the sigma the bracket is walking -- 15,771/1,276 = 12.4 and 1,892/172 = 11.0 against 15 iterations.)
+
+The lattice is affordable one price at a time and not inside a root find: against
+the Andersen-Lake inversion the lattice inversion is **16.9x** at the step count
+that reproduces the vendor, and a whole-board fit already spends 133 s on ~1.5M
+de-Americanization inversions. Dropping to 101 steps buys the cost back and hands
+it straight to the error — against a 1201-step reference the truncation is
+6.79 / 4.89 / 2.55 ticks at 101 / 151 / 301 steps, and 6.79 ticks is the size of
+the entire accuracy claim. **So: route marks and greeks through the lattice, keep
+the de-Americanization inversion on Andersen-Lake, and do not trade step count
+for throughput.** The route decision itself is worth 10.61 ticks on an
+at-the-money call and 54.59 on the put, measured on the SAME lattice at the SAME
+step count so the gap is the dividend treatment and nothing else.
+### FIXED — the yield curve extrapolates flat in the RATE now, not in the discount factor
+
+**The numbers that move.** `YieldCurve::zero(T)` outside the pillar range. On the
+suite's own 11-pillar OIS fixture (`tests/rates_curve_test.cpp`, t0 = 1/365.25,
+r0 = 4.05%; last pillar 2y at 4.65%):
+
+| T | old `zero(T)` | new |
+|---|---|---|
+| 5 min | 1108.8% | 4.05% |
+| 1 h | 97.2% | 4.05% |
+| 12 h | 8.10% | 4.05% |
+| 1 day (= t0) | 4.05% | 4.05% |
+| 5 y | 1.86% | 4.65% |
+| 30 y | 0.31% | 4.65% |
+
+`disc(T <= 0)` also moves, from `exp(log_df.front())` to exactly 1.0. Everything
+inside the pillar range is bit-unchanged, and `disc()` at every pillar is
+bit-unchanged (the extrapolation is written as `exp(log_df * (T / t_pillar))`, so
+the ratio is exactly 1.0 at the pillar). `zero()` at the FIRST and LAST pillar
+moves by <1e-14 — about 600 ulp on the fixture, `0.04049999999999577` to
+`0.0405` — because it now reads the pillar rate directly instead of through
+`-log(disc(T))/T`; it is exactly the pillar rate afterwards.
+
+**The defect.** `disc()` clamped the DISCOUNT FACTOR flat outside the pillars, so
+`zero(T) = -log_df.front()/T = r0*t0/T` diverged like 1/T at the short end — every
+0DTE/intraday path through `MarketEnv::rate_at` (`api/core/market_env.hpp`) reads
+`zero()`, and no test called it below the first pillar. Past the last pillar the
+same clamp is the symmetric error: a flat discount factor is a ZERO instantaneous
+forward rate, so the zero rate decayed as `rN*tN/T`. Both ends now hold the ZERO
+RATE flat (`src/pricing/rates_curve.cpp`), which is what the class contract already
+read as. `zero()` reads the flat rate straight off the pillar rather than through
+`-log(disc(T))/T`, whose exp/log round trip drifts 1.5e-12 at five minutes.
+
+**Migration.** Anything that deliberately relied on a decaying long-end rate must
+add pillars instead. A curve whose FIRST pillar sits at t = 0 has no short end at
+all — every T > 0 is already inside the pillar range — so the interior
+interpolant handles it and no extrapolation runs; a curve whose LAST pillar is
+non-positive keeps the flat-DF clamp, since there is no positive maturity to read
+a rate off.
+
+### FIXED — the Andersen-Lake boundary solve stops discarding the residual it achieved
+
+**No number moves; a missing one appears.** `al_solve_put_boundary` ran its fixed
+`n_iter_jn + n_iter_fp` budget, assigned the last sweep's max |Δy| to a local
+`resid`, and returned `AlSolveStatus::Ok` unconditionally — the local was never
+read. `AlOpts::tol` was therefore an early-exit shortcut and never a convergence
+criterion, and `boundary_interp.cpp`'s node-build note already said what that
+means ("returns `AlSolveStatus::Ok` carrying an under-converged boundary,
+silently"). Every price, greek, IV and correction-cache sample in the library
+rides that boundary.
+
+**How under-converged, measured.** On a 64-cell production-shaped grid
+(S = K = 100, T in {0.5, 1, 2, 5}, sigma in {0.2, 0.4, 0.6, 0.9}, r in
+{0.03, 0.08}, q in {0, 0.02}, put), `al_fast_opts()` (tol 1e-8, 2 JN + 2 FP)
+reached tol on **zero** of them — pure Jacobi-Newton needs 17-24 sweeps there —
+while `andersen_lake` returned a price on all 64. Achieved residuals at
+sigma = 0.6, r = 0.08, q = 0: 1.0e-4 (T = 0.5), 4.1e-4 (T = 1), 1.4e-3 (T = 5).
+The ACCURATE (nullopt) preset at T = 1 achieves 5.4e-5 against tol 1e-10.
+
+**The contract that landed.** `Ok` still means "priceable", because a truncated
+budget is the fast tiers' normal operating point and hard-failing it would turn
+every fast-tier mark into an error. What changes is that the evidence now leaves
+with the status: `amer::AlSolveResid {resid, tol, converged()}`
+(`src/pricing/american_boundary.hpp`) is an optional out-parameter on
+`al_solve_put_boundary`, `..._warm` and `..._tape`, and the public
+`andersen_lake_convergence(S, K, T, sigma, r, q, side, opts)` →
+`AlBoundaryConvergence {resid, tol, converged, sweep_budget}`
+(`api/pricing/american.hpp`) reports it for one cell through the identical
+validation / degenerate / regime / solve path a price would take. Regimes that
+price without solving a boundary report `sweep_budget = 0, converged = true`.
+**`converged()` — never the status — is the accuracy claim.**
+
+**One counter moves.** `Counter::EarlyResidualExits` was bumped only by the cold
+solve and the adjoint tape; the warm solve, `AloPricer`'s sigma-sweep loop and
+`andersen_lake_call_slice`'s inline loop run the same residual short-circuit and
+did not count it. All five sites now bump, so the counter is no longer an
+undercount of the thing it is named for. Gated exact counters are opt-in, so no
+default build observes this.
+
+### FIXED — the BAW critical-price bracket is a recovery domain, not a hard-coded constant
+
+**The numbers that move: two cells that used to fail closed now price.**
+`newton_critical_put/call` (`src/pricing/american.cpp`) ran a safeguarded Newton
+inside fixed brackets — `[1e-3*K, K)` and `(K, 50*K]` — and both ends have
+ordinary contracts whose root lies outside, where the safeguard pins the iterate
+at the bracket edge and the `kBawCriticalResidualGate` check rejects it:
+
+| cell | old | new |
+|---|---|---|
+| put K=100, T=1, sigma=0.2, r=1e-4, q=0.10 | Sx pinned at 0.100009 (floor `1e-3*K`), residual -1.5e-3, `Unavailable` | converges strictly inside the admissible range (xmax = K*r/q = 0.1) |
+| call K=100, T=1, sigma=0.2, r=0.05, q=0.001 | Sx pinned at 4999.72 (ceiling `50*K`), residual -0.65, `Unavailable` | converges above 50*K |
+
+For the put the entire admissible range `(0, K*min(1, r/q)]` collapsed **to** the
+old floor — `1e-3*K` and `K*r/q` are both 0.1 — so the bracket excluded every
+admissible root. For the call, early exercise recedes as q → 0 and the critical
+price runs away, so no fixed multiple of K is a domain.
+
+**What changed.** The historical bracket is tried first and kept byte-identical,
+so every cell it already served is untouched and pays nothing; only if that
+attempt is not ACCEPTABLE is the bracket widened geometrically
+(`kBawBracketRetries = 6`, floor ×1/16 / ceiling ×8) and retried. Exhausting the
+retries still fails closed through the existing residual gate.
+
+**Acceptable means the residual, never the step test.** `baw_critical_accepted`
+is `baw_american`'s own gate term, defined once and applied at both places. The
+step test `|dS| < tol*K` fires precisely when the safeguarded bisection collapses
+onto an EXCLUDED bracket edge — the step goes to zero because the iterate is
+pinned — so gating the widening on it disabled the widening exactly where it is
+needed and made a larger `max_iter` (public on `baw_american`, and a Python
+keyword argument) strictly worse: the put pinned at `Sx = 0.10000055`
+(resid -1.549e-3) for `max_iter` 32/40/64 while 16 recovered, and the call pinned
+at `Sx = 5000.0` (resid -0.652) at 64 while 16/32 recovered. The gate now holds
+at every `max_iter` in {16, 32, 64} on both cells.
+
+**Confined to `AmericanMethod::Baw`.** `al_seed_boundary` runs the same
+critical-price solve per collocation node of EVERY cold Andersen-Lake solve, with
+no residual gate, feeding a served price. It keeps the historical single bracket
+(`BracketRecovery::Off`) and is byte-identical to before. For the record, the
+exposure had it not been confined, measured over 576 cells of the affected regime
+(K=100, T in {0.05,0.25,1,2}, sigma in {0.15,0.2,0.4,0.8}, r in {1e-4,1e-3,5e-3},
+q in {0.02,0.05,0.1,0.3}, S in {80,100,120}, put): **33 of 192 nodes widen and the
+widened seed moves up to 53% relative after the `xmax` clamp, but only 3 of 576
+prices move at all and every one by ~1e-14 relative** — the sweeps absorb the seed
+difference. So the seed exposure is real in the seed and immaterial in the mark;
+it is fenced off anyway rather than shipped unmeasured.
+
+### FIXED — a sub-minimum `n_collocation` request no longer resolves to the most expensive boundary
+
+**The number that moves** — for out-of-range requests only. Every value in
+[6, 32] is unchanged, and a sweep of every `n_collocation` literal in the
+repository found none outside it. That sweep sees SOURCE LITERALS only, so the
+one value that also arrives by decode is handled separately below.
+`scheme_from_opts` (`src/pricing/american.cpp`) guarded
+`n_collocation` with `>= 6 && <= kAlMaxNodes` and simply skipped the assignment
+otherwise, so `AlOpts{.n_collocation = 3}` silently kept the ACCURATE default of
+12 — the most expensive boundary in the ladder — for a caller who asked for the
+cheapest. That is the same silent-ignore the `n_quadrature < 8` floor beside it
+was added to remove under the rule "a caller asking for cheaper must not get more
+expensive" (A9, core-review finding 9). It now CLAMPS in both directions:
+`< 6` → 6, `> kAlMaxNodes` → `kAlMaxNodes`.
+
+**Zero is the exception, and it does NOT move.** `n_collocation` also arrives
+straight off a stored record in three decoders (`src/storage/surface_db.cpp`,
+`src/storage/surface_archive.cpp`, `src/backtest/priced_surface_view.cpp`) and
+from the Python `AlOpts` constructor. A manifest written before the column
+existed decodes as 0 — exactly the case the `n_quad_price` line beside each of
+those three already documents — and such a surface has always priced off the
+12-node default. So 0 keeps meaning ABSENT, not "cheapest", matching
+`n_quad_price`'s own convention in the same struct. Only 1..5 floor to 6.
+
 ### CHANGED — a Risk-purpose preset now requests the MARK too, and `fit_board` serves it when the risk oracle refuses
 
 **The number that moves.** A populate run over the full 2026-08-21 OPRA universe

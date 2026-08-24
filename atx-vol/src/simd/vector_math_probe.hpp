@@ -27,4 +27,12 @@ void fd_exp_batch(const double* x, double* out, std::size_t n) noexcept;
 //                                   no wing patch)
 void fd_norm_cdf_batch(const double* x, double* out, std::size_t n) noexcept;
 
+// out[i] = norm_pdf_pd(x[i])   (φ = (1/√2π)·exp(−½x²))
+//
+// Exposed alongside the three above so the exp_pd DOMAIN contract is gateable at the
+// surface that actually consumes it: φ is the shortest path from a caller-supplied x
+// to exp_pd's clamp, and a non-finite x there must not come back as a finite (worse:
+// negative) "density". See simd_nan_safety_test.cpp.
+void fd_norm_pdf_batch(const double* x, double* out, std::size_t n) noexcept;
+
 } // namespace atx::vol::simd

@@ -542,8 +542,22 @@ template <class SurfaceT>
       // curvature to 0 ("no usable smile-derivative info here" -> "locally
       // flat") rather than poisoning an otherwise-good center node with a
       // NaN -- see the file header's "bad node" convention.
-      const bool slope_usable = std::isfinite(sigma_dn) && std::isfinite(sigma_up) &&
-                                std::isfinite(sigma_dn2) && std::isfinite(sigma_up2);
+      //
+      // L5 T2: the CENTER read belongs in this predicate too, and used to be
+      // missing from it. `black76_vega_volga` already answers {0, 0} for a bad
+      // center, which zeroes this node's vega/delta/vanna/volga contributions
+      // -- but `sig_curv`'s 5-point stencil carries a `-30.0 * sigma` term, so
+      // a non-finite center made `sig_curv` NaN and `bv.vega * sig_curv` the
+      // 0*NaN = NaN that poisoned `sum_gamma` alone. That contradicted the file
+      // header's own promise that such a node "never propagates a NaN into the
+      // total". Screening the center on the SAME bad-node predicate
+      // (`black76_vega_volga`'s `sigma > 0 && isfinite`) is behaviour-identical
+      // everywhere else: wherever it newly forces the stencils to 0, `bv` is
+      // already {0, 0}, so every product this node contributes was 0 anyway.
+      const bool center_usable = sigma > 0.0 && std::isfinite(sigma);
+      const bool slope_usable = center_usable && std::isfinite(sigma_dn) &&
+                                std::isfinite(sigma_up) && std::isfinite(sigma_dn2) &&
+                                std::isfinite(sigma_up2);
       // 5-point central-difference stencils, O(delta^4) truncation -- see
       // the gather pass's own comment for why the plain 2-point/O(delta^2)
       // stencil could not reach this file's precision target.

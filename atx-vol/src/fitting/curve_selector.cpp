@@ -85,15 +85,16 @@ SelectorConfig production_selector_config() {
 
 namespace detail {
 
-// Per-kind butterfly violation count for a fitted slice (the selection-time
-// mapping): closed-form Martini-Mingone for raw-SVI, grid Durrleman g-check for
-// C8, the fitted post-fit Lee/Roper diagnostic count carried on the params for
-// SplineVol (see spline_curve.hpp's file-top comment, step 6 -- NOT projected,
-// just reported), and 0 for the by-construction / out-of-scope kinds
-// (ConvexDense, eSSVI, LinearVariance). `k_lo`/`k_hi` bound the C8 grid (padded
-// by the caller).
-[[nodiscard]] std::uint32_t slice_butterfly_violations(const IVolCurve &cv, double T, double k_lo,
-                                                       double k_hi) noexcept {
+// Per-kind butterfly verdict for a fitted slice (the selection-time mapping):
+// closed-form Martini-Mingone plus a served-range grid scan for raw-SVI, grid
+// Durrleman g-check for C8, the EXACT kink tally for LinearVariance, the fitted
+// post-fit Lee/Roper diagnostic count carried on the params for SplineVol (see
+// spline_curve.hpp's file-top comment, step 6 -- NOT projected, just reported),
+// and 0 for the two by-construction kinds (ConvexDense's price-space convex QP,
+// eSSVI's Mingone parametrization). `k_lo`/`k_hi` bound the C8 grid (padded by
+// the caller).
+[[nodiscard]] SliceButterflyVerdict slice_butterfly_violations(const IVolCurve &cv, double T,
+                                                               double k_lo, double k_hi) noexcept {
   switch (cv.kind()) {
   case VolCurveKind::Svi: {
     const auto &sp = static_cast<const SviCurve &>(cv).slice();
@@ -107,26 +108,45 @@ namespace detail {
     if (bf.has_value()) {
       nv += static_cast<std::uint32_t>(bf->size());
     }
-    return nv;
+    return SliceButterflyVerdict{nv, /*decided=*/true};
   }
   case VolCurveKind::C8: {
     const auto bf =
         arb_check_butterfly_slice([&cv](double kk) { return cv.w(kk); }, T, k_lo, k_hi, 64u);
-    return bf.has_value() ? static_cast<std::uint32_t>(bf->size()) : 0u;
+    if (!bf.has_value()) {
+      return SliceButterflyVerdict{0u, /*decided=*/false};
+    }
+    return SliceButterflyVerdict{static_cast<std::uint32_t>(bf->size()), /*decided=*/true};
+  }
+  case VolCurveKind::LinearVariance: {
+    // T1: piecewise-linear total variance is only C0, so w'' is a MEASURE and no
+    // finite-difference stencil states its singular part cleanly. The exact kink
+    // tally does (arb.hpp). Every violation it finds counts here -- the two
+    // structural flat-wing splices included -- because THIS gate ranks FAMILIES
+    // against each other, and "this family's served slice is never
+    // butterfly-arb-free" is precisely the fact the ranking must see. It agrees
+    // with the risk ladder, which already refuses a LinearVariance risk config
+    // outright (pricer_fitter.cpp). The market-MARK arm makes the other,
+    // narrower judgement (`n_quote_implied()`); see pricer_fitter.cpp.
+    const auto &lv = static_cast<const LinearVarianceCurve &>(cv);
+    const LinearVarianceButterflyTally tally = arb_check_butterfly_linear_variance(lv);
+    return SliceButterflyVerdict{tally.n_violations(), tally.decided};
   }
   case VolCurveKind::ConvexDense:
   case VolCurveKind::Essvi:
-  case VolCurveKind::LinearVariance:
-    return 0u; // by-construction arb-free (LinearVariance g-check out of scope)
+    return SliceButterflyVerdict{0u, /*decided=*/true}; // arb-free by construction
   case VolCurveKind::SplineVol: {
     const auto &sv = static_cast<const SplineVolCurve &>(cv);
     const std::size_t n = sv.params().n_butterfly_viol;
-    return n > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())
-               ? std::numeric_limits<std::uint32_t>::max()
-               : static_cast<std::uint32_t>(n);
+    const auto capped = n > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())
+                            ? std::numeric_limits<std::uint32_t>::max()
+                            : static_cast<std::uint32_t>(n);
+    return SliceButterflyVerdict{capped, /*decided=*/true};
   }
   }
-  return 0u;
+  // Unreachable for a well-formed kind; an UNKNOWN kind was never checked, so
+  // it must not read as clean.
+  return SliceButterflyVerdict{0u, /*decided=*/false};
 }
 
 } // namespace detail
@@ -644,10 +664,12 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
       // family with any butterfly-violating fitted slice scores as a
       // fit-failure. Grid bounds for the C8 check are the fitted strikes padded
       // by 0.5 in log-moneyness (matches the fit_slice_curve gate).
-      const std::uint32_t nv = detail::slice_butterfly_violations(
+      const detail::SliceButterflyVerdict verdict = detail::slice_butterfly_violations(
           curve, expiry.slice.maturity(), expiry.fit_k_lo - 0.5, expiry.fit_k_hi + 0.5);
-      accum.n_butterfly_viol += nv;
-      if (nv > 0u) {
+      accum.n_butterfly_viol += verdict.n_violations;
+      if (!verdict.clean()) {
+        // An UNDECIDED slice disqualifies exactly like a violating one: the
+        // gate may not pass a shape it could not read.
         accum.disqualified = true;
       }
 
