@@ -88,6 +88,7 @@ SCALAR_FUNCTIONS = frozenset(
 )
 QUARTER_FUNCTIONS = frozenset({"ttm", "avg2", "lag", "yoy", "qoq", "cagr", "stdev_q"})
 DAILY_FUNCTIONS = frozenset({"lag_d", "avg_d", "tret", "rvol"})
+_WINDOW_FUNCTIONS = QUARTER_FUNCTIONS | DAILY_FUNCTIONS
 
 FUNCTION_ARITY: dict[str, tuple[int, int]] = {
     "safe_div": (2, 2),
@@ -320,6 +321,31 @@ def _greatest(parts: list[str]) -> str:
     return f"nullif(greatest({wrapped}), {_NEG_INFINITY})"
 
 
+def _find_nested_window_call(node: Node) -> Call | None:
+    """Return the first ``Call`` to a window function reachable from ``node``.
+
+    DuckDB rejects a window function used as the argument of another window
+    function within one SQL expression (no implicit subquery). The search
+    descends through scalar ``Call`` wrappers, ``Neg`` and ``BinOp`` so that a
+    window function buried under scalar functions or arithmetic is still
+    found, while independent window calls combined at the top level (e.g. two
+    ``ttm`` calls passed to ``safe_div``) are left alone.
+    """
+    if isinstance(node, Call):
+        if node.name in _WINDOW_FUNCTIONS:
+            return node
+        for argument in node.args:
+            found = _find_nested_window_call(argument)
+            if found is not None:
+                return found
+        return None
+    if isinstance(node, Neg):
+        return _find_nested_window_call(node.operand)
+    if isinstance(node, BinOp):
+        return _find_nested_window_call(node.left) or _find_nested_window_call(node.right)
+    return None
+
+
 def _integer_literal(node: Node, *, function: str, expression_hint: str) -> int:
     if not isinstance(node, Number) or node.value != int(node.value) or node.value < 0:
         raise DslError(
@@ -367,6 +393,18 @@ def _lower_call(node: Call, context: LowerContext) -> Lowered:
     if name in DAILY_FUNCTIONS and context.grid != "day":
         raise DslError(f"{name!r} is only valid on the day grid, not {context.grid!r}")
 
+    if name in _WINDOW_FUNCTIONS:
+        for argument in node.args:
+            nested = _find_nested_window_call(argument)
+            if nested is not None:
+                raise DslError(
+                    f"{name!r} cannot be composed with {nested.name!r}: DuckDB does not support "
+                    f"nesting one window function inside another within a single SQL expression. "
+                    f"Define {nested.name!r}(...) as its own derived metric and reference it by "
+                    f"name inside {name!r} instead; the registry supports metric-to-metric "
+                    f"dependencies with topological ordering."
+                )
+
     inner = lower(node.args[0], context)
 
     if name in ("tret", "rvol"):
@@ -377,8 +415,12 @@ def _lower_call(node: Call, context: LowerContext) -> Lowered:
                 f"(CASE WHEN {previous} IS NULL OR {previous} = 0 THEN NULL "
                 f"ELSE ({inner.value_sql}) / {previous} - 1.0 END)"
             )
-            frame = _frame(context, periods)
-            availability = f"max({inner.availability_sql}) OVER ({frame})"
+            availability = _greatest(
+                [
+                    inner.availability_sql,
+                    f"lag({inner.availability_sql}, {periods}) OVER ({_unbounded(context)})",
+                ]
+            )
             return Lowered(value, availability, inner.max_lag + periods)
         if periods < 2:
             raise DslError("'rvol' requires a non-negative integer literal window of at least 2")
@@ -449,10 +491,11 @@ def _lower_call(node: Call, context: LowerContext) -> Lowered:
         availability = f"max({inner.availability_sql}) OVER ({frame})"
         return Lowered(value, availability, inner.max_lag + 3)
     if name == "avg2":
-        frame = _frame(context, 4)
         previous = f"lag({inner.value_sql}, 4) OVER ({_unbounded(context)})"
         value = f"(CASE WHEN {previous} IS NULL THEN NULL ELSE (({inner.value_sql}) + {previous}) / 2.0 END)"
-        availability = f"max({inner.availability_sql}) OVER ({frame})"
+        availability = _greatest(
+            [inner.availability_sql, f"lag({inner.availability_sql}, 4) OVER ({_unbounded(context)})"]
+        )
         return Lowered(value, availability, inner.max_lag + 4)
     if name in ("lag", "lag_d"):
         periods = _integer_literal(node.args[1], function=name, expression_hint="a period count")
@@ -461,26 +504,34 @@ def _lower_call(node: Call, context: LowerContext) -> Lowered:
         return Lowered(value, availability, inner.max_lag + periods)
     if name in ("yoy", "qoq"):
         periods = 4 if name == "yoy" else 1
-        frame = _frame(context, periods)
         previous = f"lag({inner.value_sql}, {periods}) OVER ({_unbounded(context)})"
         value = (
             f"(CASE WHEN {previous} IS NULL OR {previous} = 0 THEN NULL "
             f"ELSE (({inner.value_sql}) - {previous}) / abs({previous}) END)"
         )
-        availability = f"max({inner.availability_sql}) OVER ({frame})"
+        availability = _greatest(
+            [
+                inner.availability_sql,
+                f"lag({inner.availability_sql}, {periods}) OVER ({_unbounded(context)})",
+            ]
+        )
         return Lowered(value, availability, inner.max_lag + periods)
     if name == "cagr":
         years = _integer_literal(node.args[1], function="cagr", expression_hint="a year count")
         if years < 1:
             raise DslError("'cagr' requires a non-negative integer literal year count of at least 1")
         periods = 4 * years
-        frame = _frame(context, periods)
         previous = f"lag({inner.value_sql}, {periods}) OVER ({_unbounded(context)})"
         value = (
             f"(CASE WHEN ({inner.value_sql}) > 0 AND {previous} > 0 "
             f"THEN power(({inner.value_sql}) / {previous}, 1.0 / {years}.0) - 1.0 END)"
         )
-        availability = f"max({inner.availability_sql}) OVER ({frame})"
+        availability = _greatest(
+            [
+                inner.availability_sql,
+                f"lag({inner.availability_sql}, {periods}) OVER ({_unbounded(context)})",
+            ]
+        )
         return Lowered(value, availability, inner.max_lag + periods)
     if name in ("stdev_q", "avg_d"):
         count = _integer_literal(node.args[1], function=name, expression_hint="a window length")
