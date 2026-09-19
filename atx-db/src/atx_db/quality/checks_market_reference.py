@@ -387,6 +387,23 @@ def market_reference_check_specs(
         SqlQualityCheck(
             dataset_id="tbltickerhistory_daily",
             table_name="equity_daily_bars",
+            check_name="duplicate_equity_daily_bar_keys",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT source, security_id, trade_date, count(*) AS row_count
+                    FROM equity_daily_bars
+                    GROUP BY 1, 2, 3
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("equity_daily_bars",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="tbltickerhistory_daily",
+            table_name="equity_daily_bars",
             check_name="bad_ohlcv_values",
             sql="""
                 SELECT count(*)::DOUBLE
