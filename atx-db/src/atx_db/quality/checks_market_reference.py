@@ -3,6 +3,20 @@ from __future__ import annotations
 from ._check_common import DEFAULT_EXPORT_OBJECTS, _export_scan_internal_cusip_sql
 from ._types import SqlQualityCheck
 
+# Shared by duplicate_equity_daily_bars (error-severity, ungated) and
+# duplicate_equity_daily_bar_keys (critical-severity, registered in
+# quality_check_registry by migration 0300) so the (source, security_id,
+# trade_date) uniqueness invariant cannot drift between the two checks.
+_DUPLICATE_EQUITY_DAILY_BAR_KEYS_SQL = """
+    SELECT count(*)::DOUBLE
+    FROM (
+        SELECT source, security_id, trade_date, count(*) AS row_count
+        FROM equity_daily_bars
+        GROUP BY 1, 2, 3
+        HAVING count(*) > 1
+    )
+"""
+
 
 def market_reference_check_specs(
     *,
@@ -372,15 +386,7 @@ def market_reference_check_specs(
             dataset_id="tbltickerhistory_daily",
             table_name="equity_daily_bars",
             check_name="duplicate_equity_daily_bars",
-            sql="""
-                SELECT count(*)::DOUBLE
-                FROM (
-                    SELECT source, security_id, trade_date, count(*) AS row_count
-                    FROM equity_daily_bars
-                    GROUP BY 1, 2, 3
-                    HAVING count(*) > 1
-                )
-            """,
+            sql=_DUPLICATE_EQUITY_DAILY_BAR_KEYS_SQL,
             threshold=0.0,
             required_tables=("equity_daily_bars",),
         ),
@@ -388,15 +394,7 @@ def market_reference_check_specs(
             dataset_id="tbltickerhistory_daily",
             table_name="equity_daily_bars",
             check_name="duplicate_equity_daily_bar_keys",
-            sql="""
-                SELECT count(*)::DOUBLE
-                FROM (
-                    SELECT source, security_id, trade_date, count(*) AS row_count
-                    FROM equity_daily_bars
-                    GROUP BY 1, 2, 3
-                    HAVING count(*) > 1
-                )
-            """,
+            sql=_DUPLICATE_EQUITY_DAILY_BAR_KEYS_SQL,
             threshold=0.0,
             required_tables=("equity_daily_bars",),
             severity="critical",

@@ -69,3 +69,34 @@ def test_duplicate_equity_daily_bar_keys_fails_on_a_duplicate_key_pair(tmp_store
     result = results["duplicate_equity_daily_bar_keys"]
     assert result.status == "failed"
     assert result.observed_value is not None and result.observed_value > 0.0
+
+
+def test_duplicate_equity_daily_bar_keys_and_the_legacy_check_share_the_invariant(tmp_store):
+    """Both checks run the same (source, security_id, trade_date) SQL (a shared
+    module-level constant in checks_market_reference.py), so they must always agree
+    on whether equity_daily_bars has duplicate keys -- one cannot drift out of sync
+    with the other."""
+    con = tmp_store.con
+    con.execute(
+        "INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, close, available_at) "
+        "VALUES ('test', 'SEC-1', 'ABC', DATE '2024-01-02', 10.0, ?), "
+        "       ('test', 'SEC-1', 'ABC', DATE '2024-01-02', 10.5, ?)",
+        [
+            dt.datetime(2024, 1, 2, 22, 0),
+            dt.datetime(2024, 1, 2, 22, 5),
+        ],
+    )
+
+    results = {
+        r.check_name: r
+        for r in run_warehouse_quality_checks(
+            tmp_store,
+            record=False,
+            check_names=("duplicate_equity_daily_bar_keys", "duplicate_equity_daily_bars"),
+        )
+    }
+    new_check = results["duplicate_equity_daily_bar_keys"]
+    legacy_check = results["duplicate_equity_daily_bars"]
+    assert new_check.status == "failed"
+    assert legacy_check.status == "failed"
+    assert new_check.observed_value == legacy_check.observed_value == 1.0
