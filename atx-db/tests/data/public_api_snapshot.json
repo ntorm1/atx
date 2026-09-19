@@ -277,6 +277,7 @@
     "delisting_events_asof",
     "delisting_return_observations_asof",
     "delta_roe",
+    "derived_dsl",
     "detect_rowcount_anomalies",
     "earnings_acceleration",
     "earnings_confirmation",
