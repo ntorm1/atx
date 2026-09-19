@@ -13,6 +13,7 @@ from typing import Any, Callable
 from .adjustment_factors import AdjustmentFactorHistoryDataset, AdjustmentFactorHistoryOptions
 from .alpha_research import AlphaResearchDataset, AlphaResearchOptions
 from .calendar import TradingCalendarDataset, TradingCalendarOptions
+from .clock import utc_today
 from .connection import DuckDBStore
 from .corporate_actions import CorporateActionsDataset, CorporateActionsOptions
 from .daily_adjustments import DailyAdjustmentFactorDataset, DailyAdjustmentFactorOptions
@@ -505,6 +506,15 @@ def _thirteenf_options(params: dict[str, Any]) -> ThirteenFOptions:
 
 
 def _identifier_resolution_options(params: dict[str, Any]) -> IdentifierResolutionOptions:
+    """Build options for the identifier-resolution-candidates job.
+
+    ``as_of_date`` defaults to ``atx_db.clock.utc_today()`` when the job params
+    don't supply one. This job-entry function is the one sanctioned wall-clock
+    edge for this dataset (see ``atx_db.clock``): identifier_resolution.py's
+    row builder never reads the clock itself, and now fails shut (raises)
+    rather than silently reading it if neither a source-derived date nor an
+    explicit ``as_of_date`` is available.
+    """
     default = IdentifierResolutionOptions()
     return IdentifierResolutionOptions(
         source_dataset_id=params.get("source_dataset_id") or default.source_dataset_id,
@@ -515,10 +525,17 @@ def _identifier_resolution_options(params: dict[str, Any]) -> IdentifierResoluti
             default.include_already_mapped,
         ),
         source=params.get("source", default.source),
+        as_of_date=_date_or_none(params.get("as_of_date")) or utc_today(),
     )
 
 
 def _identifier_decision_options(params: dict[str, Any]) -> IdentifierResolutionDecisionOptions:
+    """Build options for the identifier-resolution-decisions job.
+
+    ``as_of_date`` defaults to ``atx_db.clock.utc_today()`` when the job params
+    don't supply one -- see ``_identifier_resolution_options`` above; this is
+    the one sanctioned wall-clock edge for this dataset.
+    """
     default = IdentifierResolutionDecisionOptions()
     return IdentifierResolutionDecisionOptions(
         source_dataset_id=params.get("source_dataset_id") or default.source_dataset_id,
@@ -535,6 +552,7 @@ def _identifier_decision_options(params: dict[str, Any]) -> IdentifierResolution
         decision_method=params.get("decision_method") or default.decision_method,
         decided_by=params.get("decided_by") or default.decided_by,
         source=params.get("source") or default.source,
+        as_of_date=_date_or_none(params.get("as_of_date")) or utc_today(),
     )
 
 

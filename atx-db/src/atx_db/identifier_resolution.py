@@ -135,8 +135,8 @@ class IdentifierResolutionCandidateDataset(Dataset):
                     h.name_of_issuer,
                     any_value(h.security_id) AS source_security_id,
                     max(h.source_period) AS source_period,
-                    max(coalesce(s.period_of_report, s.filing_date, current_date)) AS max_report_date,
-                    max(coalesce(s.filing_date, s.period_of_report, current_date)) AS max_filing_date,
+                    max(coalesce(s.period_of_report, s.filing_date)) AS max_report_date,
+                    max(coalesce(s.filing_date, s.period_of_report)) AS max_filing_date,
                     count(*) AS holding_rows,
                     row_number() OVER (
                         PARTITION BY h.cusip
@@ -215,8 +215,10 @@ class IdentifierResolutionCandidateDataset(Dataset):
                 status = "proposed"
             if status == "already_mapped" and not options.include_already_mapped:
                 continue
+            source_filing_date = None if pd.isna(row.max_filing_date) else row.max_filing_date
+            source_report_date = None if pd.isna(row.max_report_date) else row.max_report_date
             as_of_date = resolve_as_of_date(
-                row.max_filing_date or row.max_report_date or None,
+                source_filing_date or source_report_date,
                 source_max_date=options.as_of_date,
             )
             available_at = pd.Timestamp(as_of_date) + pd.Timedelta(hours=22)

@@ -12,6 +12,7 @@ from typing import Any
 
 import pandas as pd
 
+from .clock import resolve_as_of_date
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .fundamental_statements import (
@@ -26,7 +27,6 @@ from .security_master import (
     sec_session,
     security_ids_for_symbols,
 )
-from .clock import resolve_as_of_date
 from .warehouse import insert_frame, json_dumps, now_utc_naive, quality_check, record_source_file, symbol_key
 
 SEC_COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"

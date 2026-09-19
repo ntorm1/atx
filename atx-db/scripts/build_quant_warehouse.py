@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from atx_db import DEFAULT_DB_PATH, DuckDBStore
 from atx_db.adjustment_factors import AdjustmentFactorHistoryDataset, AdjustmentFactorHistoryOptions
 from atx_db.calendar import TradingCalendarDataset, TradingCalendarOptions
+from atx_db.clock import utc_today
 from atx_db.corporate_actions import CorporateActionsDataset, CorporateActionsOptions
 from atx_db.daily_adjustments import DailyAdjustmentFactorDataset, DailyAdjustmentFactorOptions
 from atx_db.delisting import (
@@ -258,6 +259,8 @@ def main() -> int:
                     store,
                     IdentifierResolutionOptions(
                         min_confidence=args.identifier_resolution_min_confidence,
+                        # Script edge: the one sanctioned wall-clock date read (atx_db.clock).
+                        as_of_date=utc_today(),
                     ),
                 )
             )
@@ -268,6 +271,8 @@ def main() -> int:
                     store,
                     IdentifierResolutionDecisionOptions(
                         accept_candidate_statuses=accept_statuses,
+                        # Script edge: the one sanctioned wall-clock date read (atx_db.clock).
+                        as_of_date=utc_today(),
                     ),
                 )
             )
