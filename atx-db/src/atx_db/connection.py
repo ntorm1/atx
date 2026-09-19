@@ -95,6 +95,19 @@ class DuckDBStore:
             self.connection.close()
             self.connection = None
 
+    def close(self) -> None:
+        """Release the connection without discarding the store's configuration."""
+        if self.connection is not None:
+            self.connection.execute("CHECKPOINT")
+            self.connection.close()
+            self.connection = None
+
+    def reopen(self) -> None:
+        """Reacquire a configured connection after ``close()``."""
+        if self.connection is None:
+            self.connection = open_duckdb_connection(self.path, read_only=self.read_only)
+            self._configure_session(self.connection)
+
     @property
     def con(self) -> duckdb.DuckDBPyConnection:
         if self.connection is None:

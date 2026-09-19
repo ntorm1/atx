@@ -13,6 +13,9 @@ import datetime as dt
 import json
 import logging
 import os
+import subprocess
+import sys
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -554,3 +557,243 @@ STAGES.update(
         "companyfacts_load": stage_companyfacts_load,
     }
 )
+
+
+def stage_statement_points(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Rebuild the concept catalog, fact revisions, and normalized statement points."""
+    from .fundamental_statements import refresh_fundamental_statement_points
+    from .fundamentals import refresh_fundamental_fact_revisions, refresh_xbrl_concept_catalog
+
+    _ = options
+    catalog_rows = refresh_xbrl_concept_catalog(store)
+    revision_rows = refresh_fundamental_fact_revisions(store)
+    point_rows = refresh_fundamental_statement_points(store)
+    return StageResult(
+        rows=int(point_rows),
+        detail={
+            "catalog_rows": int(catalog_rows),
+            "revision_rows": int(revision_rows),
+            "statement_point_rows": int(point_rows),
+        },
+    )
+
+
+def stage_periods(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    from .fundamental_statements import refresh_fundamental_periods
+
+    _ = options
+    rows = refresh_fundamental_periods(store)
+    return StageResult(rows=int(rows), detail={"period_rows": int(rows)})
+
+
+def stage_ttm(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    from .fundamental_statements import refresh_fundamental_ttm_points
+
+    _ = options
+    rows = refresh_fundamental_ttm_points(store)
+    return StageResult(rows=int(rows), detail={"ttm_rows": int(rows)})
+
+
+def stage_calendarization(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    from .calendarization import CalendarizationOptions, run_calendarization_refresh
+
+    summary = run_calendarization_refresh(
+        store, CalendarizationOptions(run_id=f"{options.run_id}-calendarization")
+    )
+    rows = int(summary.get("calendar_ttm_rows", summary.get("map_rows", 0)) or 0)
+    return StageResult(rows=rows, detail=dict(summary))
+
+
+def stage_standardized(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    from .standardization import FundamentalStandardizationOptions, refresh_fundamental_standardized
+
+    _configure_analytical_session(store, options)
+    result = refresh_fundamental_standardized(
+        store,
+        FundamentalStandardizationOptions(
+            materialize_result_limit=0,
+            run_id=f"{options.run_id}-standardized",
+        ),
+    )
+    return StageResult(
+        rows=int(result.standardized_row_count),
+        detail={
+            "build_id": result.build_id,
+            "rule_set_sha256": result.rule_set_sha256,
+            "input_rows": int(result.input_row_count),
+            "exception_rows": int(result.exception_row_count),
+            "basis_counts": dict(result.basis_counts or {}),
+        },
+    )
+
+
+def stage_industry_templates(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    from .industry_templates import IndustryTemplateOptions, run_industry_template_refresh
+
+    summary = run_industry_template_refresh(
+        store, IndustryTemplateOptions(run_id=f"{options.run_id}-industry")
+    )
+    return StageResult(rows=int(summary.get("coverage_rows", 0) or 0), detail=dict(summary))
+
+
+def stage_reconciliation(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Publish the reconciliation serving table in bounded symbol shards.
+
+    Side effect: this stage CLOSES the ladder's connection and shells out to
+    ``scripts/refresh_reconciliation_sharded.py``, which runs each shard in a fresh
+    interpreter. A long-lived process was measured to degrade a shard from ~110s to
+    ~840s at identical warehouse size, and DuckDB allows exactly one writer, so the
+    ladder must yield the file for the duration. The connection is reopened before
+    returning, so the stage's contract to its caller is unchanged.
+    """
+    script = Path(__file__).resolve().parents[2] / "scripts" / "refresh_reconciliation_sharded.py"
+    db_path = str(options.db_path)
+    store.close()
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--db-path",
+                db_path,
+                "--shards",
+                str(options.reconciliation_shards),
+                "--memory-limit",
+                options.memory_limit,
+                "--threads",
+                str(options.threads),
+                "--run-id-prefix",
+                f"{options.run_id}-recon",
+            ],
+            check=False,
+        )
+    finally:
+        store.reopen()
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"sharded reconciliation publish failed with exit code {completed.returncode}"
+        )
+    row = store.con.execute("SELECT count(*) FROM fundamental_reconciliation_serving").fetchone()
+    rows = 0 if row is None else int(row[0])
+    return StageResult(rows=rows, detail={"shards": options.reconciliation_shards, "serving_rows": rows})
+
+
+def stage_provider_coverage(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    from .provider_coverage import ProviderCoverageOptions, refresh_provider_coverage
+
+    rows = refresh_provider_coverage(
+        store,
+        ProviderCoverageOptions(run_id=f"{options.run_id}-coverage"),
+    )
+    conditions = {
+        condition: sum(row.condition == condition for row in rows)
+        for condition in ("available", "degraded", "pending", "missing")
+    }
+    return StageResult(rows=len(rows), detail={"schema_count": len(rows), "conditions": conditions})
+
+
+def _configure_analytical_session(store: DuckDBStore, options: ActivationOptions) -> None:
+    store.con.execute("PRAGMA disable_progress_bar")
+    store.con.execute("SET memory_limit = ?", [options.memory_limit])
+    store.con.execute("SET threads = ?", [options.threads])
+    store.con.execute("SET preserve_insertion_order = false")
+
+
+STAGES.update(
+    {
+        "statement_points": stage_statement_points,
+        "periods": stage_periods,
+        "ttm": stage_ttm,
+        "calendarization": stage_calendarization,
+        "standardized": stage_standardized,
+        "industry_templates": stage_industry_templates,
+        "reconciliation": stage_reconciliation,
+        "provider_coverage": stage_provider_coverage,
+    }
+)
+
+
+def print_json(payload: dict[str, object]) -> None:
+    """Emit one JSON line to stdout, flushed, so an operator can tail the ladder."""
+    print(json.dumps(payload, default=str, sort_keys=True), flush=True)
+
+
+def run_activation(
+    options: ActivationOptions,
+    *,
+    stages: tuple[str, ...] = STAGE_ORDER,
+    emit: Callable[[dict[str, object]], None] = print_json,
+) -> list[dict[str, object]]:
+    """Run the activation ladder, ledgering every stage and stopping on the first failure."""
+    for stage in stages:
+        if stage not in STAGES:
+            raise ValueError(f"unknown activation stage {stage!r}; expected one of {STAGE_ORDER}")
+    emitted: list[dict[str, object]] = []
+    params = options.ledger_params()
+    with DuckDBStore(options.db_path) as store:
+        done = set() if options.force else completed_stages(store)
+        for stage in stages:
+            if options.dry_run:
+                payload = {
+                    "stage": stage,
+                    "status": "dry_run",
+                    "rows": 0,
+                    "seconds": 0.0,
+                    "detail": {"already_completed": stage in done},
+                }
+                emit(payload)
+                emitted.append(payload)
+                continue
+            if stage in done:
+                payload = {
+                    "stage": stage,
+                    "status": "skipped",
+                    "rows": 0,
+                    "seconds": 0.0,
+                    "detail": {"reason": "already completed; pass --force to rerun"},
+                }
+                emit(payload)
+                emitted.append(payload)
+                continue
+            begun = time.monotonic()
+            started_at = begin_stage(store, stage=stage, run_id=options.run_id, params=params)
+            try:
+                result = STAGES[stage](store, options)
+            except Exception as exc:  # recorded then re-raised
+                finish_stage(
+                    store,
+                    stage=stage,
+                    run_id=options.run_id,
+                    started_at=started_at,
+                    status="failed",
+                    rows=0,
+                    error=str(exc),
+                )
+                payload = {
+                    "stage": stage,
+                    "status": "failed",
+                    "rows": 0,
+                    "seconds": round(time.monotonic() - begun, 3),
+                    "detail": {"error": str(exc)},
+                }
+                emit(payload)
+                emitted.append(payload)
+                raise
+            finish_stage(
+                store,
+                stage=stage,
+                run_id=options.run_id,
+                started_at=started_at,
+                status="completed",
+                rows=result.rows,
+            )
+            payload = {
+                "stage": stage,
+                "status": "completed",
+                "rows": result.rows,
+                "seconds": round(time.monotonic() - begun, 3),
+                "detail": result.detail,
+            }
+            emit(payload)
+            emitted.append(payload)
+    return emitted
