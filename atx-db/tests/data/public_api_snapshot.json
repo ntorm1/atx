@@ -538,6 +538,7 @@
     "signal_eval",
     "source_cache",
     "standardization",
+    "statement_map_seed",
     "storage_admin",
     "symbol_directory",
     "tax_expense_momentum",
