@@ -29,7 +29,7 @@ from .ticker_history_extract import (
     TICKER_HISTORY_UNCOMPRESSED_BYTES,
     extract_ticker_history_tsv,
 )
-from .warehouse import now_utc_naive, record_source_file
+from .warehouse import file_sha256, now_utc_naive, record_source_file
 
 LOGGER = logging.getLogger(__name__)
 
@@ -375,6 +375,150 @@ def _require_downloader(options: ActivationOptions) -> Downloader:
     return options.downloader
 
 
+def sha256_file(path: Path, *, chunk_bytes: int = 1 << 22) -> str:
+    """Stream a file through sha256 without loading it into memory."""
+    return file_sha256(path, chunk_size=chunk_bytes)
+
+
+def requests_downloader(url: str, dest: Path, *, user_agent: str) -> int:
+    """Resumable streaming HTTP download. Network — never called from tests."""
+    import requests
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    partial = dest.with_suffix(dest.suffix + ".part")
+    existing = partial.stat().st_size if partial.is_file() else 0
+    headers = {"User-Agent": user_agent, "Accept-Encoding": "identity"}
+    if existing:
+        headers["Range"] = f"bytes={existing}-"
+    with requests.get(url, headers=headers, stream=True, timeout=600) as response:
+        if existing and response.status_code == 200:
+            existing = 0  # server ignored the range request; restart
+        response.raise_for_status()
+        mode = "ab" if existing else "wb"
+        with open(partial, mode) as handle:
+            for chunk in response.iter_content(chunk_size=1 << 20):
+                if chunk:
+                    handle.write(chunk)
+    partial.replace(dest)
+    return dest.stat().st_size
+
+
+def _download_archive(
+    store: DuckDBStore,
+    options: ActivationOptions,
+    *,
+    url: str,
+    dest: Path,
+    dataset_id: str,
+    user_agent: str,
+) -> tuple[str, int, bool]:
+    """Fetch ``url`` to ``dest`` unless it is already present; return (sha256, bytes, skipped)."""
+    skipped = dest.is_file() and dest.stat().st_size > 0
+    if not skipped:
+        _require_downloader(options)(url, dest, user_agent=user_agent)
+    checksum = sha256_file(dest)
+    record_source_file(
+        store,
+        dataset_id=dataset_id,
+        source_url=url,
+        cache_path=dest,
+        status="available",
+        metadata={"sha256": checksum, "bytes": dest.stat().st_size, "resumed": skipped},
+        compute_hash=False,
+    )
+    return checksum, int(dest.stat().st_size), skipped
+
+
+def stage_sec_bulk_download(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Fetch companyfacts.zip and submissions.zip with resume + recorded sha256 (network)."""
+    user_agent = require_sec_user_agent(options)
+    facts_sha, facts_bytes, facts_skipped = _download_archive(
+        store,
+        options,
+        url=COMPANYFACTS_ZIP_URL,
+        dest=options.companyfacts_zip,
+        dataset_id="sec_company_facts",
+        user_agent=user_agent,
+    )
+    subs_sha, subs_bytes, subs_skipped = _download_archive(
+        store,
+        options,
+        url=SUBMISSIONS_ZIP_URL,
+        dest=options.submissions_zip,
+        dataset_id="sec_submissions",
+        user_agent=user_agent,
+    )
+    return StageResult(
+        rows=2,
+        detail={
+            "companyfacts_path": str(options.companyfacts_zip),
+            "companyfacts_sha256": facts_sha,
+            "companyfacts_bytes": facts_bytes,
+            "companyfacts_skipped": facts_skipped,
+            "submissions_path": str(options.submissions_zip),
+            "submissions_sha256": subs_sha,
+            "submissions_bytes": subs_bytes,
+            "submissions_skipped": subs_skipped,
+        },
+    )
+
+
+def stage_submissions_load(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Load SEC filing histories from the bulk submissions archive (offline)."""
+    from .sec_submissions import SecSubmissionsBulkDataset, SecSubmissionsBulkOptions
+
+    if not options.submissions_zip.is_file():
+        raise FileNotFoundError(options.submissions_zip)
+    result = SecSubmissionsBulkDataset().run(
+        store,
+        SecSubmissionsBulkOptions(
+            zip_path=options.submissions_zip,
+            run_id=f"{options.run_id}-submissions",
+        ),
+    )
+    return StageResult(rows=int(result.rows_loaded), detail=dict(result.details))
+
+
+def stage_companyfacts_load(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Load XBRL company facts for every CIK in sec_company_tickers (offline)."""
+    from .fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions, resolve_companyfacts_targets
+
+    if not options.companyfacts_zip.is_file():
+        raise FileNotFoundError(options.companyfacts_zip)
+    fact_options = SecCompanyFactsOptions(
+        symbols=(),
+        symbol_source="sec_company_tickers",
+        symbol_limit=options.companyfacts_limit,
+        skip_loaded_targets=options.skip_loaded_companyfacts,
+        skip_failed_targets=True,
+        companyfacts_zip=options.companyfacts_zip,
+        as_of_date=options.as_of_date,
+        refresh_derived_surfaces=False,
+        progress_every_targets=options.companyfacts_progress_every,
+        run_id=f"{options.run_id}-companyfacts",
+    )
+    # SecCompanyFactsDataset.load() raises when its target set resolves to empty,
+    # treating "nothing to fetch" as an operator error (e.g. an unmapped symbol
+    # list). With skip_loaded_targets on, a fully-loaded universe legitimately
+    # resolves to zero targets on a repeat run -- that is success, not failure,
+    # so the stage short-circuits to a no-op before it can raise.
+    if not resolve_companyfacts_targets(store, fact_options):
+        return StageResult(
+            rows=0,
+            detail={
+                "symbol_source": "sec_company_tickers",
+                "skip_loaded": options.skip_loaded_companyfacts,
+                "target_count": 0,
+                "loaded_targets": 0,
+            },
+        )
+    result = SecCompanyFactsDataset().run(store, fact_options)
+    detail = {key: value for key, value in result.details.items() if key != "failed_targets"}
+    detail["symbol_source"] = "sec_company_tickers"
+    detail["skip_loaded"] = options.skip_loaded_companyfacts
+    return StageResult(rows=int(result.rows_loaded), detail=detail)
+
+
 STAGES: dict[str, Callable[[DuckDBStore, ActivationOptions], StageResult]] = {
     "migrate": stage_migrate,
     "security_master": stage_security_master,
@@ -382,3 +526,11 @@ STAGES: dict[str, Callable[[DuckDBStore, ActivationOptions], StageResult]] = {
     "ticker_history_extract": stage_ticker_history_extract,
     "ticker_history_publish": stage_ticker_history_publish,
 }
+
+STAGES.update(
+    {
+        "sec_bulk_download": stage_sec_bulk_download,
+        "submissions_load": stage_submissions_load,
+        "companyfacts_load": stage_companyfacts_load,
+    }
+)
