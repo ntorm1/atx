@@ -40,7 +40,7 @@ from .filing_context_backfill_executor import (
     FilingContextBackfillExecutorDataset,
 )
 from .filer_alias import FilerAliasDataset, FilerAliasOptions
-from .finra import FinraShortInterestDataset, FinraShortInterestOptions, parse_date
+from .finra import FinraShortInterestDataset, FinraShortInterestOptions, parse_date, subtract_years
 from .fundamental_ratios import FundamentalRatiosDataset, FundamentalRatiosOptions
 from .fundamental_reconciliation import (
     FundamentalReconciliationDataset,
@@ -257,10 +257,20 @@ def _nonnegative_float(value: Any, name: str) -> float:
 
 
 def _security_master_options(params: dict[str, Any]) -> SecurityMasterOptions:
+    """Build options for the SEC security-master job.
+
+    ``as_of_date`` defaults to ``atx_db.clock.utc_today()`` when the job params
+    don't supply one -- the SEC company_tickers feed carries no date of its own,
+    so this job-entry function is the one sanctioned wall-clock edge for this
+    dataset (see ``atx_db.clock``); ``upsert_security_master_from_frame`` now
+    fails shut (raises) rather than silently reading the clock if neither a
+    source-derived date nor an explicit ``as_of_date`` is available.
+    """
     return SecurityMasterOptions(
         source_url=params.get("source_url", SecurityMasterOptions.source_url),
         request_timeout=int(params.get("request_timeout", 60)),
         user_agent=params.get("user_agent", SecurityMasterOptions.user_agent),
+        as_of_date=_date_or_none(params.get("as_of_date")) or utc_today(),
     )
 
 
@@ -466,12 +476,31 @@ def _estimate_security_link_options(params: dict[str, Any]) -> EstimateSecurityL
 
 
 def _finra_options(params: dict[str, Any]) -> FinraShortInterestOptions:
+    """Build options for the FINRA short-interest job.
+
+    ``FinraShortInterestDataset.load`` now fails shut (raises) when a
+    date-range load (no ``--symbol``) has neither ``start_date`` nor
+    ``end_date`` -- see ``atx_db.finra``. This job-entry function is the one
+    sanctioned wall-clock edge for that window: when the job params supply
+    neither and no symbol is given, it defaults to a
+    ``atx_db.clock.utc_today()``-derived 5-year window (mirroring
+    ``scripts/download_finra_short_interest.py``'s CLI default). Symbol-mode
+    loads never require a date window, so no default is applied when a symbol
+    is supplied.
+    """
     default = FinraShortInterestOptions()
+    symbol = params.get("symbol")
+    start_date = _date_or_none(params.get("start_date"))
+    end_date = _date_or_none(params.get("end_date"))
+    if not symbol and (start_date is None or end_date is None):
+        today = utc_today()
+        start_date = start_date or subtract_years(today, 5)
+        end_date = end_date or today
     return FinraShortInterestOptions(
         api_url=params.get("api_url", default.api_url),
-        symbol=params.get("symbol"),
-        start_date=_date_or_none(params.get("start_date")),
-        end_date=_date_or_none(params.get("end_date")),
+        symbol=symbol,
+        start_date=start_date,
+        end_date=end_date,
         limit=int(params.get("limit", default.limit)),
         request_timeout=int(params.get("request_timeout", default.request_timeout)),
         max_retries=int(params.get("max_retries", default.max_retries)),

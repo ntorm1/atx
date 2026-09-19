@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .clock import resolve_as_of_date
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .identifier_decisions import decision_id_for, now_utc_naive
@@ -419,7 +420,7 @@ class LeiAliasDataset(Dataset):
     def load(self, store: DuckDBStore, options: LeiLoadOptions) -> DatasetLoadResult:
         gleif = parse_gleif_file(options.lei_file)
         crosswalk = gleif[gleif["cik"].notna()].reset_index(drop=True)
-        as_of_date = options.as_of_date or dt.date.today()
+        as_of_date = resolve_as_of_date(options.as_of_date, source_max_date=None)
         available_at = pd.Timestamp(as_of_date) + pd.Timedelta(hours=22)
 
         # A GLEIF Golden Copy is NOT a safe 1:1 cik<->lei key -- split off any

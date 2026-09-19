@@ -9,6 +9,7 @@ from typing import Any
 import pandas as pd
 import requests
 
+from .clock import resolve_as_of_date
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .warehouse import insert_frame, quality_check, record_source_file, symbol_key
@@ -66,6 +67,19 @@ def _file_creation_time(text: str) -> dt.datetime | None:
             except ValueError:
                 pass
     return None
+
+
+def resolve_directory_as_of_date(
+    options: NasdaqSymbolDirectoryOptions | NasdaqListingEventsOptions,
+    text: str,
+) -> dt.date:
+    """Resolve the snapshot date without reading the wall clock.
+
+    The Nasdaq Trader files carry their own ``File Creation Time:`` trailer, so a
+    reload of the same file always stamps the same ``as_of_date``.
+    """
+    created = _file_creation_time(text)
+    return resolve_as_of_date(options.as_of_date, source_max_date=created)
 
 
 def _parse_event_date(value: Any) -> dt.date | None:
@@ -238,16 +252,19 @@ class NasdaqSymbolDirectoryDataset(Dataset):
         store.initialize()
 
     def load(self, store: DuckDBStore, options: NasdaqSymbolDirectoryOptions) -> DatasetLoadResult:
-        as_of_date = options.as_of_date or dt.date.today()
         session = requests.Session()
         session.headers.update({"User-Agent": options.user_agent, "Accept": "text/plain,*/*"})
-        frames: list[pd.DataFrame] = []
+        payloads: list[tuple[str, str, Any]] = []
         for url, normalizer in (
             (options.nasdaq_url, normalize_nasdaq_listed),
             (options.other_url, normalize_other_listed),
         ):
             response = session.get(url, timeout=options.request_timeout)
             response.raise_for_status()
+            payloads.append((url, response.text, normalizer))
+        as_of_date = resolve_directory_as_of_date(options, payloads[0][1])
+        frames: list[pd.DataFrame] = []
+        for url, text, normalizer in payloads:
             record_source_file(
                 store,
                 dataset_id=self.dataset_id,
@@ -255,7 +272,14 @@ class NasdaqSymbolDirectoryDataset(Dataset):
                 status="fetched",
                 metadata={"as_of_date": as_of_date.isoformat()},
             )
-            frames.append(normalizer(_read_directory_text(response.text), as_of_date=as_of_date, source_url=url, run_id=options.run_id))
+            frames.append(
+                normalizer(
+                    _read_directory_text(text),
+                    as_of_date=as_of_date,
+                    source_url=url,
+                    run_id=options.run_id,
+                )
+            )
         frame = pd.concat([frame for frame in frames if not frame.empty], ignore_index=True)
         rows = self._replace_snapshot(store, frame, as_of_date)
         quality_check(
@@ -297,7 +321,7 @@ class NasdaqListingEventsDataset(Dataset):
         response = session.get(options.source_url, timeout=options.request_timeout)
         response.raise_for_status()
         source_file_created_at = _file_creation_time(response.text)
-        as_of_date = options.as_of_date or (source_file_created_at.date() if source_file_created_at else dt.date.today())
+        as_of_date = resolve_directory_as_of_date(options, response.text)
         record_source_file(
             store,
             dataset_id=self.dataset_id,

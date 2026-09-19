@@ -184,7 +184,13 @@ def main() -> int:
 
     with DuckDBStore(args.db_path) as store:
         results = []
-        results.append(SecurityMasterDataset().run(store, SecurityMasterOptions()))
+        results.append(
+            SecurityMasterDataset().run(
+                store,
+                # Script edge: the one sanctioned wall-clock date read (atx_db.clock).
+                SecurityMasterOptions(as_of_date=utc_today()),
+            )
+        )
         if not args.skip_symbol_directory:
             results.append(NasdaqSymbolDirectoryDataset().run(store, NasdaqSymbolDirectoryOptions()))
         if not args.skip_listing_events:

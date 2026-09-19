@@ -13,9 +13,17 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from .clock import resolve_as_of_date
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
-from .warehouse import cik_security_id, insert_frame, quality_check, record_source_file, symbol_key
+from .warehouse import (
+    cik_security_id,
+    insert_frame,
+    now_utc_naive,
+    quality_check,
+    record_source_file,
+    symbol_key,
+)
 
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_USER_AGENT = "atx-db security master nathan.tormaschy@gmail.com"
@@ -32,6 +40,7 @@ class SecurityMasterOptions:
     source_url: str = SEC_COMPANY_TICKERS_URL
     request_timeout: int = 60
     user_agent: str = SEC_USER_AGENT
+    as_of_date: dt.date | None = None
     run_id: str | None = None
 
 
@@ -440,13 +449,14 @@ def upsert_security_master_from_frame(
     frame: pd.DataFrame,
     *,
     source: str,
+    as_of_date: dt.date,
     run_id: str | None = None,
 ) -> None:
     if frame.empty:
         return
     frame = ensure_security_frame_entity_ids(frame)
-    today = dt.date.today()
-    available_at = pd.Timestamp.now(tz="UTC").tz_localize(None)
+    today = as_of_date
+    available_at = now_utc_naive()
     securities = pd.DataFrame(
         {
             "security_id": frame["security_id"],
@@ -557,7 +567,7 @@ def upsert_security_master_from_frame(
             "valid_from": today,
             "valid_to": pd.NaT,
             "as_of_date": today,
-            "available_at": pd.Timestamp.now(tz="UTC").tz_localize(None),
+            "available_at": available_at,
             "source": source,
             "run_id": run_id,
         }
@@ -696,7 +706,13 @@ class SecurityMasterDataset(Dataset):
             status="fetched",
             metadata={"rows": len(frame)},
         )
-        upsert_security_master_from_frame(store, frame, source=self.source_name, run_id=options.run_id)
+        upsert_security_master_from_frame(
+            store,
+            frame,
+            source=self.source_name,
+            as_of_date=resolve_as_of_date(options.as_of_date, source_max_date=None),
+            run_id=options.run_id,
+        )
         quality_check(
             store,
             dataset_id=self.dataset_id,

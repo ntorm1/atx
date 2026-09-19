@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import datetime as dt
 import json
 import logging
 import sys
@@ -11,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from atx_db import DEFAULT_DB_PATH, DuckDBStore, FinraShortInterestDataset, FinraShortInterestOptions
+from atx_db.clock import utc_today
 from atx_db.finra import parse_date, subtract_years
 
 
@@ -41,11 +41,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(asctime)s %(levelname)s %(message)s")
+    today = utc_today()
     options = FinraShortInterestOptions(
         api_url=args.api_url,
         symbol=args.symbol,
-        start_date=args.start_date if args.start_date else (None if args.symbol else subtract_years(dt.date.today(), 5)),
-        end_date=args.end_date if args.end_date else (None if args.symbol else dt.date.today()),
+        start_date=args.start_date if args.start_date else (None if args.symbol else subtract_years(today, 5)),
+        end_date=args.end_date if args.end_date else (None if args.symbol else today),
         limit=args.limit,
         request_timeout=args.request_timeout,
         max_retries=args.max_retries,

@@ -457,7 +457,7 @@ def test_lei_alias_dataset_load_attaches_lei_to_entity_securities(tmp_store):
     )
 
     dataset = LeiAliasDataset()
-    result = dataset.run(tmp_store, LeiLoadOptions(lei_file=lei_file))
+    result = dataset.run(tmp_store, LeiLoadOptions(lei_file=lei_file, as_of_date=dt.date(2024, 1, 1)))
 
     assert result.rows_loaded > 0
 
@@ -492,7 +492,7 @@ def test_lei_alias_dataset_unmatched_entity_does_not_crash(tmp_store):
     )
 
     dataset = LeiAliasDataset()
-    result = dataset.run(tmp_store, LeiLoadOptions(lei_file=lei_file))
+    result = dataset.run(tmp_store, LeiLoadOptions(lei_file=lei_file, as_of_date=dt.date(2024, 1, 1)))
     assert result.rows_loaded == 0
 
     lei_count = tmp_store.con.execute(
@@ -518,8 +518,8 @@ def test_lei_alias_dataset_load_is_idempotent(tmp_store):
     )
 
     dataset = LeiAliasDataset()
-    dataset.run(tmp_store, LeiLoadOptions(lei_file=lei_file))
-    dataset.run(tmp_store, LeiLoadOptions(lei_file=lei_file))
+    dataset.run(tmp_store, LeiLoadOptions(lei_file=lei_file, as_of_date=dt.date(2024, 1, 1)))
+    dataset.run(tmp_store, LeiLoadOptions(lei_file=lei_file, as_of_date=dt.date(2024, 1, 1)))
 
     lei_count = tmp_store.con.execute(
         "SELECT count(*) FROM security_identifier_history WHERE id_type = 'LEI'"
@@ -581,7 +581,7 @@ def test_lei_alias_dataset_optionally_loads_level2_parent_edges(tmp_store):
     )
 
     dataset = LeiAliasDataset()
-    result = dataset.run(tmp_store, LeiLoadOptions(lei_file=lei_file, lei_level2_file=level2_file))
+    result = dataset.run(tmp_store, LeiLoadOptions(lei_file=lei_file, lei_level2_file=level2_file, as_of_date=dt.date(2024, 1, 1)))
 
     assert result.details["parent_edge_rows"] == 1
     edges = tmp_store.con.execute(
@@ -617,7 +617,7 @@ def test_lei_alias_dataset_no_network_call_offline_only(tmp_store, monkeypatch):
     from atx_db.identifiers_lei import LeiAliasDataset, LeiLoadOptions
 
     dataset = LeiAliasDataset()
-    result = dataset.run(tmp_store, LeiLoadOptions(lei_file=lei_file))
+    result = dataset.run(tmp_store, LeiLoadOptions(lei_file=lei_file, as_of_date=dt.date(2024, 1, 1)))
     assert result.rows_loaded > 0
 
 
@@ -658,7 +658,7 @@ def test_lei_alias_dataset_duplicate_cik_routes_to_resolution_ledger_not_merge(t
     )
 
     dataset = LeiAliasDataset()
-    dataset.run(tmp_store, LeiLoadOptions(lei_file=lei_file))
+    dataset.run(tmp_store, LeiLoadOptions(lei_file=lei_file, as_of_date=dt.date(2024, 1, 1)))
 
     # No duplicate/ambiguous current LEI alias written for the Apple security.
     lei_rows = tmp_store.con.execute(

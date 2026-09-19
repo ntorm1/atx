@@ -258,7 +258,7 @@ def test_figi_alias_dataset_load_attaches_figi_and_keeps_cusip_internal_only(tmp
     )
 
     dataset = FigiAliasDataset()
-    result = dataset.run(tmp_store, FigiLoadOptions(figi_file=figi_file))
+    result = dataset.run(tmp_store, FigiLoadOptions(figi_file=figi_file, as_of_date=dt.date(2024, 1, 1)))
 
     assert result.rows_loaded > 0
 
@@ -296,7 +296,7 @@ def test_figi_alias_dataset_conflict_writes_candidate_and_decision_not_merge(tmp
     )
 
     dataset = FigiAliasDataset()
-    dataset.run(tmp_store, FigiLoadOptions(figi_file=figi_file))
+    dataset.run(tmp_store, FigiLoadOptions(figi_file=figi_file, as_of_date=dt.date(2024, 1, 1)))
 
     figi_rows = tmp_store.con.execute(
         "SELECT count(*) FROM security_identifier_history WHERE id_type = 'FIGI' AND id_value = 'BBG000CONFLICT'"
@@ -346,7 +346,7 @@ def test_figi_alias_dataset_unmatched_cusip_writes_candidate_not_error(tmp_store
     )
 
     dataset = FigiAliasDataset()
-    result = dataset.run(tmp_store, FigiLoadOptions(figi_file=figi_file))
+    result = dataset.run(tmp_store, FigiLoadOptions(figi_file=figi_file, as_of_date=dt.date(2024, 1, 1)))
 
     assert result.rows_loaded == 0
     candidate = tmp_store.con.execute(
@@ -389,5 +389,5 @@ def test_figi_alias_dataset_no_network_call_offline_only(tmp_store, monkeypatch)
     from atx_db.identifiers_figi import FigiAliasDataset, FigiLoadOptions
 
     dataset = FigiAliasDataset()
-    result = dataset.run(tmp_store, FigiLoadOptions(figi_file=figi_file))
+    result = dataset.run(tmp_store, FigiLoadOptions(figi_file=figi_file, as_of_date=dt.date(2024, 1, 1)))
     assert result.rows_loaded > 0

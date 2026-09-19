@@ -12,6 +12,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from atx_db import DEFAULT_DB_PATH, DuckDBStore, FinraShortInterestDataset, FinraShortInterestOptions
+from atx_db.clock import utc_today
 from atx_db.finra import discover_settlement_dates, parse_date, request_session, subtract_years
 from atx_db.short_interest_features import ShortInterestFeatureDataset, ShortInterestFeatureOptions
 from atx_db.watermarks import refresh_warehouse_watermarks
@@ -268,8 +269,9 @@ def parse_args() -> argparse.Namespace:
         description="Compact all-symbol FINRA short-interest settlement-date backfill with feature rebuild."
     )
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
-    parser.add_argument("--start-date", type=parse_date, default=subtract_years(dt.date.today(), 1))
-    parser.add_argument("--end-date", type=parse_date, default=dt.date.today())
+    today = utc_today()
+    parser.add_argument("--start-date", type=parse_date, default=subtract_years(today, 1))
+    parser.add_argument("--end-date", type=parse_date, default=today)
     parser.add_argument("--api-url", default=FinraShortInterestOptions.api_url)
     parser.add_argument("--limit", type=int, default=5000)
     parser.add_argument("--limit-dates", type=int, default=1)

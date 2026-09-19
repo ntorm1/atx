@@ -429,8 +429,13 @@ class FinraShortInterestDataset(Dataset):
             ]
             mode = f"symbol={options.symbol.upper()}"
         else:
-            start_date = options.start_date or subtract_years(dt.date.today(), 5)
-            end_date = options.end_date or dt.date.today()
+            if options.start_date is None or options.end_date is None:
+                raise ValueError(
+                    "start_date and end_date are required for a date-range FINRA load; "
+                    "the CLI passes atx_db.clock.utc_today()-derived defaults explicitly"
+                )
+            start_date = options.start_date
+            end_date = options.end_date
             frames = self._download_dates(session, options, start_date, end_date)
             mode = f"dates={start_date}:{end_date}"
 

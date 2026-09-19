@@ -367,7 +367,9 @@ def test_security_master_upsert_backfills_current_cik_entity(tmp_store):
     assert frame.iloc[0]["security_id"] == "SEC-CIK-0000320193"
     assert frame.iloc[0]["entity_id"] == "CIK-0000320193"
 
-    upsert_security_master_from_frame(tmp_store, frame, source="fixture-security-master", run_id="run-1")
+    upsert_security_master_from_frame(
+        tmp_store, frame, source="fixture-security-master", as_of_date=dt.date(2024, 1, 1), run_id="run-1"
+    )
 
     security = tmp_store.con.execute(
         """
@@ -405,12 +407,16 @@ def test_security_master_refresh_replaces_stale_current_ticker(tmp_store):
     current = normalize_company_tickers(
         {"0": {"cik_str": 19617, "ticker": "JPM", "title": "JPMorgan Chase & Co."}}
     )
-    upsert_security_master_from_frame(tmp_store, old, source="fixture-security-master")
+    upsert_security_master_from_frame(
+        tmp_store, old, source="fixture-security-master", as_of_date=dt.date(2024, 1, 1)
+    )
     first_seen = tmp_store.con.execute(
         "SELECT first_seen_date FROM securities WHERE security_id='SEC-CIK-0000019617'"
     ).fetchone()[0]
 
-    upsert_security_master_from_frame(tmp_store, current, source="fixture-security-master")
+    upsert_security_master_from_frame(
+        tmp_store, current, source="fixture-security-master", as_of_date=dt.date(2024, 2, 1)
+    )
 
     assert tmp_store.con.execute(
         "SELECT ticker FROM sec_company_tickers WHERE cik='0000019617'"
@@ -432,7 +438,7 @@ def test_security_master_refresh_replaces_stale_current_ticker(tmp_store):
         ORDER BY id_value
         """
     ).fetchall() == [
-        ("AMJB", dt.date.today(), False),
+        ("AMJB", dt.date(2024, 2, 1), False),
         ("JPM", None, True),
     ]
 

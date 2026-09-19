@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .clock import resolve_as_of_date
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .identifier_decisions import UNRESOLVED_CUSIP_PREFIX, decision_id_for, now_utc_naive
@@ -255,7 +256,7 @@ class FigiAliasDataset(Dataset):
 
     def load(self, store: DuckDBStore, options: FigiLoadOptions) -> DatasetLoadResult:
         mapping = parse_openfigi_file(options.figi_file)
-        as_of_date = options.as_of_date or dt.date.today()
+        as_of_date = resolve_as_of_date(options.as_of_date, source_max_date=None)
         available_at = pd.Timestamp(as_of_date) + pd.Timedelta(hours=22)
 
         matches = _cusip_security_matches(store, list(mapping["cusip"]))
