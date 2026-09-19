@@ -20,7 +20,7 @@ import pandas as pd
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .valuation_set_based import valuation_formula_stage_sql, valuation_input_stage_sql
-from .warehouse import insert_frame, json_dumps, quality_check
+from .warehouse import insert_frame, json_dumps, now_utc_naive, quality_check
 
 SOURCE_NAME = "Derived market capitalization"
 VALUATION_SOURCE_NAME = "Derived point-in-time valuation multiples"
@@ -1643,7 +1643,7 @@ def _overlap_slice_row(options: ValuationMultiplesOptions, details: dict[str, ob
     available_at = (
         _timestamp_from_iso(details.get("as_of_ts"))
         or _timestamp_from_iso(details.get("max_visible_available_at"))
-        or dt.datetime.utcnow()
+        or now_utc_naive()
     )
     as_of_date = (
         _date_from_iso(details.get("max_valuation_trade_date"))

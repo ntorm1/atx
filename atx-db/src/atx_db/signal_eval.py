@@ -866,12 +866,12 @@ def compute_breadth(panel: pd.DataFrame, universe_counts: pd.DataFrame | None = 
     ``available_at`` is the PIT availability of the breadth fact: ``max(panel.available_at)``
     over that ``(factor_id, as_of_date)`` group -- the breadth could not be *known* before all
     of its input factor rows were themselves available. When the panel carries no
-    ``available_at`` column (pure-transform fixtures that omit it), it falls back to a single
-    compute-time ``now()`` for every row, which is conservative/PIT-safe (never earlier than any
-    input). Any group whose input ``available_at`` values are all NULL likewise falls back to
-    that ``now()``. Stable-sorted by ["factor_id", "as_of_date"] with a reset index so identical
-    inputs (any row order) reproduce byte-identical rows (the ``available_at`` ``max`` aggregate
-    is itself order-independent).
+    ``available_at`` column (pure-transform fixtures that omit it), or when a group's input
+    ``available_at`` values are all NULL, it falls back to that group's ``as_of_date + 22h`` --
+    the warehouse end-of-day availability convention. The fallback is derived from the data,
+    never from the clock, so identical inputs reproduce byte-identical rows. Stable-sorted by
+    ["factor_id", "as_of_date"] with a reset index so identical inputs (any row order) reproduce
+    byte-identical rows (the ``available_at`` ``max`` aggregate is itself order-independent).
     """
 
     if panel is None or panel.empty:
@@ -896,13 +896,17 @@ def compute_breadth(panel: pd.DataFrame, universe_counts: pd.DataFrame | None = 
     breadth["n_names"] = breadth["n_names"].astype(int)
     breadth["n_non_null"] = breadth["n_non_null"].astype(int)
 
-    # Conservative PIT-safe availability fallback: a single compute-time now() where the panel
-    # supplied no available_at at all, or where a group's inputs were all NULL.
-    fallback_available_at = pd.Timestamp.now()
+    # Deterministic, source-derived availability. The previous fallback read the
+    # wall clock via pandas' current-timestamp helper, which is also tz-naive LOCAL
+    # time while every warehouse available_at is tz-naive UTC, so in US timezones it
+    # landed 4-8 hours EARLIER than the true UTC now and could precede its own inputs.
+    # The warehouse end-of-day convention (as_of_date + 22h, as in ticker_history and
+    # features.py) is reproducible and never clock-dependent.
+    as_of_fallback = pd.to_datetime(breadth["as_of_date"]) + pd.Timedelta(hours=22)
     if has_available:
-        breadth["available_at"] = breadth["available_at"].fillna(fallback_available_at)
+        breadth["available_at"] = breadth["available_at"].fillna(as_of_fallback)
     else:
-        breadth["available_at"] = fallback_available_at
+        breadth["available_at"] = as_of_fallback
 
     if universe_counts is not None and not universe_counts.empty:
         uni = universe_counts.loc[:, ["as_of_date", "universe_size"]].copy()

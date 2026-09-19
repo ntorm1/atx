@@ -26,6 +26,7 @@ from .security_master import (
     sec_session,
     security_ids_for_symbols,
 )
+from .clock import resolve_as_of_date
 from .warehouse import insert_frame, json_dumps, now_utc_naive, quality_check, record_source_file, symbol_key
 
 SEC_COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
@@ -505,7 +506,12 @@ def resolve_company_facts_identifiers(
     return out, unresolved
 
 
-def _unresolved_cik_candidates(unresolved: pd.DataFrame, *, run_id: str | None) -> pd.DataFrame:
+def _unresolved_cik_candidates(
+    unresolved: pd.DataFrame,
+    *,
+    run_id: str | None,
+    as_of_date: dt.date,
+) -> pd.DataFrame:
     """Build identifier_resolution_candidates rows for unresolved companyfacts CIKs.
 
     Mirrors identifiers_figi.py's unmatched-cusip routing: status ``proposed``
@@ -516,7 +522,6 @@ def _unresolved_cik_candidates(unresolved: pd.DataFrame, *, run_id: str | None) 
     """
     if unresolved is None or unresolved.empty:
         return pd.DataFrame()
-    as_of_date = dt.date.today()
     available_at = now_utc_naive()
     rows: list[dict[str, Any]] = []
     for row in unresolved.itertuples(index=False):
@@ -1144,7 +1149,18 @@ class SecCompanyFactsDataset(Dataset):
         unresolved_candidate_rows = 0
         if unresolved_ciks:
             unresolved_frame = pd.concat(unresolved_ciks, ignore_index=True).drop_duplicates(subset=["cik"])
-            candidates = _unresolved_cik_candidates(unresolved_frame, run_id=options.run_id)
+            candidates = _unresolved_cik_candidates(
+                unresolved_frame,
+                run_id=options.run_id,
+                as_of_date=resolve_as_of_date(
+                    options.as_of_date,
+                    source_max_date=(
+                        None
+                        if unresolved_frame.empty
+                        else pd.to_datetime(unresolved_frame["available_at"]).max().date()
+                    ),
+                ),
+            )
             if not candidates.empty:
                 store.con.register("sec_company_facts_unresolved_candidates", candidates)
                 try:

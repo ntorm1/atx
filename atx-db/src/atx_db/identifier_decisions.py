@@ -7,6 +7,7 @@ from typing import Iterable
 
 import pandas as pd
 
+from .clock import resolve_as_of_date
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .warehouse import insert_frame, json_dumps, now_utc_naive, quality_check
@@ -39,6 +40,7 @@ class IdentifierResolutionDecisionOptions:
     decision_method: str = DEFAULT_DECISION_METHOD
     decided_by: str = "system:auto_identifier_resolution_v1"
     source: str = SOURCE_NAME
+    as_of_date: dt.date | None = None
     run_id: str | None = None
 
 
@@ -162,7 +164,10 @@ class IdentifierResolutionDecisionDataset(Dataset):
                 decision_status = "needs_review"
             if decision_status is None:
                 continue
-            as_of_date = row.as_of_date or dt.date.today()
+            as_of_date = resolve_as_of_date(
+                row.as_of_date or None,
+                source_max_date=options.as_of_date,
+            )
             available_at = row.available_at
             if pd.isna(available_at):
                 available_at = pd.Timestamp(as_of_date) + pd.Timedelta(hours=22)

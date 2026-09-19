@@ -218,9 +218,15 @@ def assemble_factor_panel_long(
     if panel.empty:
         return _empty_panel()
 
+    # source_loaded_at is a wall-clock stamp (DEFAULT now()), so ordering on it made
+    # two identical reruns pick a different duplicate. Order on the PIT key plus the
+    # revision identity instead; na_position="first" keeps an identified run_id ahead
+    # of a NULL one under keep="last". The column stays in FACTOR_PANEL_COLUMNS and in
+    # the pinned panel contract -- only its use as an ordering key is removed.
     panel = panel.sort_values(
-        ["as_of_date", "security_id", "factor_id", "available_at", "source_loaded_at", "run_id"],
+        ["as_of_date", "security_id", "factor_id", "available_at", "run_id"],
         kind="mergesort",
+        na_position="first",
     )
     panel = panel.drop_duplicates(["security_id", "as_of_date", "factor_id"], keep="last")
     return panel.loc[:, FACTOR_PANEL_COLUMNS].reset_index(drop=True)
@@ -634,7 +640,7 @@ def _read_panel_asof_active(
                         PARTITION BY security_id, factor_id
                         ORDER BY as_of_date DESC,
                                  available_at DESC,
-                                 source_loaded_at DESC
+                                 run_id DESC NULLS LAST
                     ) AS rn
                 FROM eligible
             )

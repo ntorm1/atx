@@ -228,6 +228,7 @@
     "checkpoint",
     "checkpoint_and_compact",
     "cli",
+    "clock",
     "complete_backup_record",
     "compute_calendar_map_rows",
     "compute_concentration_metrics",

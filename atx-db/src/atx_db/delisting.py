@@ -12,7 +12,16 @@ import pandas as pd
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .signal_eval import IC_HORIZONS, compute_forward_returns  # read-only reuse (PF4-S4 S4-2)
-from .warehouse import file_sha256, insert_frame, json_dumps, quality_check, record_source_file, snake_case, symbol_key
+from .warehouse import (
+    file_sha256,
+    insert_frame,
+    json_dumps,
+    now_utc_naive,
+    quality_check,
+    record_source_file,
+    snake_case,
+    symbol_key,
+)
 
 
 SOURCE_NAME = "ATX public delisting proxy builder"
@@ -245,7 +254,7 @@ def normalize_delisting_return_observations(
     if "delisting_return" not in raw.columns:
         raise ValueError("Delisting return observations require delisting_return/DLRET")
 
-    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    now = now_utc_naive()
     delist_date = _date_series(raw, "delist_date")
     as_of_date = _date_series(raw, "as_of_date")
     as_of_date = as_of_date.where(pd.notna(as_of_date), delist_date)

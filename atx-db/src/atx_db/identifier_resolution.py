@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from .clock import resolve_as_of_date
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .warehouse import insert_frame, json_dumps, quality_check
@@ -48,6 +49,7 @@ class IdentifierResolutionOptions:
     min_confidence: float = 0.8
     include_already_mapped: bool = True
     source: str = SOURCE_NAME
+    as_of_date: dt.date | None = None
     run_id: str | None = None
 
 
@@ -213,7 +215,10 @@ class IdentifierResolutionCandidateDataset(Dataset):
                 status = "proposed"
             if status == "already_mapped" and not options.include_already_mapped:
                 continue
-            as_of_date = row.max_filing_date or row.max_report_date or dt.date.today()
+            as_of_date = resolve_as_of_date(
+                row.max_filing_date or row.max_report_date or None,
+                source_max_date=options.as_of_date,
+            )
             available_at = pd.Timestamp(as_of_date) + pd.Timedelta(hours=22)
             match_method = "issuer_name_exact_normalized"
             rows.append(
