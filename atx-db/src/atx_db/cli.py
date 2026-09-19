@@ -73,11 +73,21 @@ def _table_exists(store: DuckDBStore, table_name: str) -> bool:
 
 
 def _configure_analytical_session(store: DuckDBStore, *, memory_limit: str, threads: int) -> None:
+    """Tune a DuckDB session for large aggregate refreshes.
+
+    Also records the settings on ``store`` (``analytical_memory_limit`` /
+    ``analytical_threads``) so ``DuckDBStore.reopen()`` can replay them after a
+    ``close()``/``reopen()`` cycle -- shared with ``atx_db.activation``, whose
+    ladder calls this once per store open/reopen instead of per stage.
+    """
     if threads < 1:
         raise ValueError("threads must be positive")
+    store.con.execute("PRAGMA disable_progress_bar")
     store.con.execute("SET memory_limit = ?", [memory_limit])
     store.con.execute("SET threads = ?", [threads])
     store.con.execute("SET preserve_insertion_order = false")
+    store.analytical_memory_limit = memory_limit
+    store.analytical_threads = threads
 
 
 def warehouse_status(db_path: Path) -> dict[str, Any]:

@@ -165,6 +165,17 @@ class Downloader(Protocol):
     def __call__(self, url: str, dest: Path, *, user_agent: str) -> int: ...
 
 
+class ShardRunner(Protocol):
+    """Run the sharded reconciliation publish and return its captured result.
+
+    The only subprocess seam in the activation ladder. Real runs pass
+    ``run_reconciliation_shards_subprocess``; tests pass a fake that returns a
+    canned ``CompletedProcess`` without spawning anything.
+    """
+
+    def __call__(self, argv: list[str]) -> subprocess.CompletedProcess[str]: ...
+
+
 @dataclass(frozen=True)
 class ActivationOptions:
     db_path: Path = DEFAULT_DB_PATH
@@ -178,6 +189,7 @@ class ActivationOptions:
     memory_limit: str = "8GB"
     threads: int = 4
     reconciliation_shards: int = 16
+    shard_runner: ShardRunner | None = None
     minimum_rows: int = 30_000_000
     minimum_securities: int = 10_000
     minimum_latest_date_securities: int = 5_000
@@ -190,11 +202,13 @@ class ActivationOptions:
 
     def as_dict(self) -> dict[str, object]:
         """Shallow field mapping for ``ActivationOptions(**{**opts.as_dict(), ...})``."""
-        return dict(asdict(self)) | {"downloader": self.downloader}
+        return dict(asdict(self)) | {"downloader": self.downloader, "shard_runner": self.shard_runner}
 
     def ledger_params(self) -> dict[str, object]:
         """JSON-safe option snapshot for ``activation_stage_runs.params_json``."""
-        payload = {key: value for key, value in self.as_dict().items() if key != "downloader"}
+        payload = {
+            key: value for key, value in self.as_dict().items() if key not in ("downloader", "shard_runner")
+        }
         return {key: (str(value) if isinstance(value, Path) else value) for key, value in payload.items()}
 
     @property
@@ -607,7 +621,10 @@ def stage_calendarization(store: DuckDBStore, options: ActivationOptions) -> Sta
 def stage_standardized(store: DuckDBStore, options: ActivationOptions) -> StageResult:
     from .standardization import FundamentalStandardizationOptions, refresh_fundamental_standardized
 
-    _configure_analytical_session(store, options)
+    # memory_limit/threads/preserve_insertion_order are configured once by
+    # run_activation right after it opens the store (and replayed by
+    # DuckDBStore.reopen() after the reconciliation stage's close/reopen), not
+    # per stage -- this used to call _configure_analytical_session itself.
     result = refresh_fundamental_standardized(
         store,
         FundamentalStandardizationOptions(
@@ -636,67 +653,117 @@ def stage_industry_templates(store: DuckDBStore, options: ActivationOptions) -> 
     return StageResult(rows=int(summary.get("coverage_rows", 0) or 0), detail=dict(summary))
 
 
+def run_reconciliation_shards_subprocess(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    """Default ``ShardRunner``: spawn the sharded script and capture its output.
+
+    Never called from tests -- tests inject a fake ``ShardRunner`` that returns a
+    canned ``CompletedProcess`` without spawning anything.
+    """
+    return subprocess.run(argv, check=False, capture_output=True, text=True)
+
+
+def _parse_shard_json_lines(stdout: str) -> list[dict[str, object]]:
+    """Best-effort parse of the shard child's one-JSON-object-per-line stdout.
+
+    A line that isn't a JSON object is skipped rather than raising: the child is
+    a separate process, and nothing it prints may break the ladder's own
+    one-JSON-line-per-stage contract on our own stdout.
+    """
+    events: list[dict[str, object]] = []
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            events.append(payload)
+    return events
+
+
 def stage_reconciliation(store: DuckDBStore, options: ActivationOptions) -> StageResult:
     """Publish the reconciliation serving table in bounded symbol shards.
 
     Side effect: this stage CLOSES the ladder's connection and shells out to
-    ``scripts/refresh_reconciliation_sharded.py``, which runs each shard in a fresh
-    interpreter. A long-lived process was measured to degrade a shard from ~110s to
-    ~840s at identical warehouse size, and DuckDB allows exactly one writer, so the
-    ladder must yield the file for the duration. The connection is reopened before
-    returning, so the stage's contract to its caller is unchanged.
+    ``scripts/refresh_reconciliation_sharded.py`` (by default; ``options.shard_runner``
+    overrides this, and tests always inject a fake), which runs each shard in a
+    fresh interpreter. A long-lived process was measured to degrade a shard from
+    ~110s to ~840s at identical warehouse size, and DuckDB allows exactly one
+    writer, so the ladder must yield the file for the duration. The connection is
+    reopened -- via ``finally``, even if the runner raises -- before returning, so
+    the stage's contract to its caller is unchanged.
+
+    The child's stdout is captured, not forwarded: it prints its own
+    ``{"step": ...}`` JSON lines, which would otherwise interleave with the
+    ladder's one-line-per-stage contract on our stdout. Those lines are parsed
+    into this stage's detail instead. The child's stderr IS forwarded, so a
+    genuine shard failure's traceback is still visible to the operator.
     """
     script = Path(__file__).resolve().parents[2] / "scripts" / "refresh_reconciliation_sharded.py"
-    db_path = str(options.db_path)
+    argv = [
+        sys.executable,
+        str(script),
+        "--db-path",
+        str(options.db_path),
+        "--shards",
+        str(options.reconciliation_shards),
+        "--memory-limit",
+        options.memory_limit,
+        "--threads",
+        str(options.threads),
+        "--run-id-prefix",
+        f"{options.run_id}-recon",
+    ]
+    runner = options.shard_runner or run_reconciliation_shards_subprocess
     store.close()
     try:
-        completed = subprocess.run(
-            [
-                sys.executable,
-                str(script),
-                "--db-path",
-                db_path,
-                "--shards",
-                str(options.reconciliation_shards),
-                "--memory-limit",
-                options.memory_limit,
-                "--threads",
-                str(options.threads),
-                "--run-id-prefix",
-                f"{options.run_id}-recon",
-            ],
-            check=False,
-        )
+        completed = runner(argv)
     finally:
         store.reopen()
+    if completed.stderr:
+        sys.stderr.write(completed.stderr)
+    shard_events = _parse_shard_json_lines(completed.stdout)
     if completed.returncode != 0:
         raise RuntimeError(
             f"sharded reconciliation publish failed with exit code {completed.returncode}"
         )
     row = store.con.execute("SELECT count(*) FROM fundamental_reconciliation_serving").fetchone()
     rows = 0 if row is None else int(row[0])
-    return StageResult(rows=rows, detail={"shards": options.reconciliation_shards, "serving_rows": rows})
+    return StageResult(
+        rows=rows,
+        detail={
+            "shards": options.reconciliation_shards,
+            "serving_rows": rows,
+            "shard_event_count": len(shard_events),
+            "last_shard_event": shard_events[-1] if shard_events else None,
+        },
+    )
 
 
 def stage_provider_coverage(store: DuckDBStore, options: ActivationOptions) -> StageResult:
     from .provider_coverage import ProviderCoverageOptions, refresh_provider_coverage
 
-    rows = refresh_provider_coverage(
+    # Library never reads the clock: derive a deterministic observed_at from the
+    # ladder's own as_of_date (the script edge's only clock read) instead of
+    # letting refresh_provider_coverage fall back to dt.datetime.now(). 22:00 is
+    # an arbitrary but fixed end-of-day stamp so reruns for the same as_of_date
+    # are reproducible.
+    observed_at = (
+        dt.datetime.combine(options.as_of_date, dt.time(22, 0)) if options.as_of_date is not None else None
+    )
+    snapshots = refresh_provider_coverage(
         store,
-        ProviderCoverageOptions(run_id=f"{options.run_id}-coverage"),
+        ProviderCoverageOptions(run_id=f"{options.run_id}-coverage", observed_at=observed_at),
     )
     conditions = {
-        condition: sum(row.condition == condition for row in rows)
+        condition: sum(row.condition == condition for row in snapshots)
         for condition in ("available", "degraded", "pending", "missing")
     }
-    return StageResult(rows=len(rows), detail={"schema_count": len(rows), "conditions": conditions})
-
-
-def _configure_analytical_session(store: DuckDBStore, options: ActivationOptions) -> None:
-    store.con.execute("PRAGMA disable_progress_bar")
-    store.con.execute("SET memory_limit = ?", [options.memory_limit])
-    store.con.execute("SET threads = ?", [options.threads])
-    store.con.execute("SET preserve_insertion_order = false")
+    return StageResult(
+        rows=len(snapshots), detail={"schema_count": len(snapshots), "conditions": conditions}
+    )
 
 
 STAGES.update(
@@ -718,6 +785,25 @@ def print_json(payload: dict[str, object]) -> None:
     print(json.dumps(payload, default=str, sort_keys=True), flush=True)
 
 
+def _dry_run_done(options: ActivationOptions) -> set[str]:
+    """Best-effort 'already completed' set for the dry-run plan.
+
+    ``run_activation`` must never create or migrate the warehouse file under
+    ``--dry-run`` (a write-mode ``DuckDBStore.__enter__`` bootstraps/migrates the
+    schema as a side effect of ``initialize()``), so this opens read-only and
+    only if the file already exists. A file that exists but predates the ledger
+    table (or isn't a warehouse at all yet) reports nothing completed rather than
+    raising -- dry-run's job is to report a plan, not to validate the file.
+    """
+    if options.force or not Path(options.db_path).is_file():
+        return set()
+    with DuckDBStore(options.db_path, read_only=True) as store:
+        try:
+            return completed_stages(store)
+        except Exception:
+            return set()
+
+
 def run_activation(
     options: ActivationOptions,
     *,
@@ -729,21 +815,30 @@ def run_activation(
         if stage not in STAGES:
             raise ValueError(f"unknown activation stage {stage!r}; expected one of {STAGE_ORDER}")
     emitted: list[dict[str, object]] = []
+    if options.dry_run:
+        # Never opens a write-mode store: see _dry_run_done. Nothing is created,
+        # migrated, or ledgered.
+        done = _dry_run_done(options)
+        for stage in stages:
+            payload = {
+                "stage": stage,
+                "status": "dry_run",
+                "rows": 0,
+                "seconds": 0.0,
+                "detail": {"already_completed": stage in done},
+            }
+            emit(payload)
+            emitted.append(payload)
+        return emitted
     params = options.ledger_params()
     with DuckDBStore(options.db_path) as store:
+        from .cli import _configure_analytical_session
+
+        # Configured once here (and replayed by DuckDBStore.reopen() after the
+        # reconciliation stage's close/reopen), not per stage.
+        _configure_analytical_session(store, memory_limit=options.memory_limit, threads=options.threads)
         done = set() if options.force else completed_stages(store)
         for stage in stages:
-            if options.dry_run:
-                payload = {
-                    "stage": stage,
-                    "status": "dry_run",
-                    "rows": 0,
-                    "seconds": 0.0,
-                    "detail": {"already_completed": stage in done},
-                }
-                emit(payload)
-                emitted.append(payload)
-                continue
             if stage in done:
                 payload = {
                     "stage": stage,

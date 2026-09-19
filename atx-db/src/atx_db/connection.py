@@ -64,6 +64,13 @@ class DuckDBStore:
         self.read_only = read_only
         self.connection: duckdb.DuckDBPyConnection | None = None
         self._initialized = False
+        # Recorded by cli._configure_analytical_session() (or any caller) so a
+        # close()/reopen() cycle -- e.g. around the activation ladder's
+        # reconciliation stage, which yields the file to a sharded subprocess --
+        # can restore the same memory_limit/threads tuning instead of silently
+        # reverting to DuckDB defaults on the new connection.
+        self.analytical_memory_limit: str | None = None
+        self.analytical_threads: int | None = None
 
     def __enter__(self) -> DuckDBStore:
         if not self.read_only:
@@ -96,17 +103,35 @@ class DuckDBStore:
             self.connection = None
 
     def close(self) -> None:
-        """Release the connection without discarding the store's configuration."""
+        """Release the connection without discarding the store's configuration.
+
+        ``self.path``/``self.read_only`` and any recorded analytical session
+        settings (``analytical_memory_limit``/``analytical_threads``) survive
+        this call, so ``reopen()`` can bring a replacement connection back to
+        the same tuning.
+        """
         if self.connection is not None:
             self.connection.execute("CHECKPOINT")
             self.connection.close()
             self.connection = None
 
     def reopen(self) -> None:
-        """Reacquire a configured connection after ``close()``."""
+        """Reacquire a configured connection after ``close()``.
+
+        Replays the base session setup (UTC timezone, temp directory) and, if
+        ``configure_analytical_session()`` (or ``cli._configure_analytical_session``)
+        was applied before the close, the same ``memory_limit``/``threads``/
+        ``preserve_insertion_order`` tuning -- a fresh DuckDB connection does not
+        inherit session-level ``SET`` state from the one it replaces.
+        """
         if self.connection is None:
             self.connection = open_duckdb_connection(self.path, read_only=self.read_only)
             self._configure_session(self.connection)
+            if self.analytical_memory_limit is not None and self.analytical_threads is not None:
+                self.connection.execute("PRAGMA disable_progress_bar")
+                self.connection.execute("SET memory_limit = ?", [self.analytical_memory_limit])
+                self.connection.execute("SET threads = ?", [self.analytical_threads])
+                self.connection.execute("SET preserve_insertion_order = false")
 
     @property
     def con(self) -> duckdb.DuckDBPyConnection:
