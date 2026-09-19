@@ -145,6 +145,12 @@ def test_download_stage_fetches_both_archives_and_records_hashes(
     assert result.detail["companyfacts_sha256"] == sha256_file(companyfacts_zip)
     assert result.detail["submissions_sha256"] == sha256_file(submissions_zip)
     assert result.rows == 2
+    rows = tmp_store.con.execute(
+        "SELECT dataset_id, sha256 FROM raw_source_files WHERE dataset_id IN ('sec_company_facts', 'sec_submissions')"
+    ).fetchall()
+    recorded = dict(rows)
+    assert recorded["sec_company_facts"] == sha256_file(companyfacts_zip)
+    assert recorded["sec_submissions"] == sha256_file(submissions_zip)
 
 
 def test_download_stage_resumes_by_skipping_present_archives(
@@ -227,3 +233,15 @@ def test_companyfacts_stage_is_idempotent_with_skip_loaded(tmp_store, tmp_path, 
 def test_companyfacts_stage_fails_without_the_archive(tmp_store, tmp_path):
     with pytest.raises(FileNotFoundError):
         stage_companyfacts_load(tmp_store, _options(tmp_path))
+
+
+def test_companyfacts_stage_detail_keys_match_across_load_and_noop_runs(tmp_store, tmp_path, companyfacts_zip):
+    _seed_company_ticker(tmp_store)
+    options = _options(tmp_path)
+    options.companyfacts_zip.parent.mkdir(parents=True, exist_ok=True)
+    options.companyfacts_zip.write_bytes(companyfacts_zip.read_bytes())
+    first_run = stage_companyfacts_load(tmp_store, options)
+    second_run = stage_companyfacts_load(tmp_store, options)
+    assert first_run.rows >= 1
+    assert second_run.rows == 0
+    assert set(first_run.detail) == set(second_run.detail)

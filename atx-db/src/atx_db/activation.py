@@ -423,6 +423,7 @@ def _download_archive(
         source_url=url,
         cache_path=dest,
         status="available",
+        sha256=checksum,
         metadata={"sha256": checksum, "bytes": dest.stat().st_size, "resumed": skipped},
         compute_hash=False,
     )
@@ -501,17 +502,36 @@ def stage_companyfacts_load(store: DuckDBStore, options: ActivationOptions) -> S
     # treating "nothing to fetch" as an operator error (e.g. an unmapped symbol
     # list). With skip_loaded_targets on, a fully-loaded universe legitimately
     # resolves to zero targets on a repeat run -- that is success, not failure,
-    # so the stage short-circuits to a no-op before it can raise.
+    # so the stage short-circuits to a no-op before it can raise. The no-op
+    # detail carries the SAME key set as the normal-load branch below (zeros in
+    # place of the row/target counts) so callers never have to branch on which
+    # path ran.
     if not resolve_companyfacts_targets(store, fact_options):
-        return StageResult(
-            rows=0,
-            detail={
-                "symbol_source": "sec_company_tickers",
-                "skip_loaded": options.skip_loaded_companyfacts,
-                "target_count": 0,
-                "loaded_targets": 0,
-            },
-        )
+        detail: dict[str, object] = {
+            "symbols": fact_options.symbols,
+            "symbol_source": "sec_company_tickers",
+            "symbol_limit": fact_options.symbol_limit,
+            "symbol_offset": fact_options.symbol_offset,
+            "skip_loaded_targets": fact_options.skip_loaded_targets,
+            "refresh_derived_surfaces": fact_options.refresh_derived_surfaces,
+            "universe_id": fact_options.universe_id,
+            "as_of_date": fact_options.as_of_date.isoformat() if fact_options.as_of_date else None,
+            "target_count": 0,
+            "loaded_targets": 0,
+            "failed_target_count": 0,
+            "source_mode": "bulk_zip",
+            "companyfacts_zip": str(fact_options.companyfacts_zip) if fact_options.companyfacts_zip else None,
+            "facts": 0,
+            "fundamental_points": 0,
+            "xbrl_concept_catalog": 0,
+            "fundamental_fact_revisions": 0,
+            "fundamental_statement_points": 0,
+            "fundamental_periods": 0,
+            "fundamental_ttm_points": 0,
+            "unresolved_cik_candidate_rows": 0,
+            "skip_loaded": options.skip_loaded_companyfacts,
+        }
+        return StageResult(rows=0, detail=detail)
     result = SecCompanyFactsDataset().run(store, fact_options)
     detail = {key: value for key, value in result.details.items() if key != "failed_targets"}
     detail["symbol_source"] = "sec_company_tickers"
