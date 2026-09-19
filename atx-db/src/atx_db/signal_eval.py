@@ -15,17 +15,18 @@ gated leakage/coverage DQC checks) extend ``evaluate_panel`` without reworking t
 from __future__ import annotations
 
 import hashlib
+import itertools
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from .connection import DEFAULT_DB_PATH, connect  # noqa: F401  (re-exported per interfaces contract)
-from .quality import QualityResult, _registry_allows_check  # noqa: F401  (gated factor DQC, PF4-S1-3)
+from .quality import QualityResult, _registry_allows_check
 from .warehouse import insert_frame, json_dumps, quality_check  # noqa: F401  (quality_check reused by later tasks)
-
 
 IC_HORIZONS: tuple[int, ...] = (1, 5, 10, 21, 63)
 DEFAULT_N_QUANTILES: int = 10
@@ -365,7 +366,7 @@ def _aggregate_ic(per_date: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for (factor_id, horizon), group in per_date.groupby(["factor_id", "horizon"], sort=True):
         valid = group.dropna(subset=["rank_ic"])
-        n_dates = int(len(valid))
+        n_dates = len(valid)
         if n_dates == 0:
             rows.append(
                 {
@@ -386,10 +387,9 @@ def _aggregate_ic(per_date: pd.DataFrame) -> pd.DataFrame:
             continue
         mean_rank_ic = float(valid["rank_ic"].mean())
         ic_std = float(valid["rank_ic"].std(ddof=1)) if n_dates > 1 else float("nan")
-        if math.isnan(ic_std) or ic_std == 0.0:
-            ic_information_ratio = float("nan")
-        else:
-            ic_information_ratio = mean_rank_ic / ic_std
+        ic_information_ratio = (
+            float("nan") if math.isnan(ic_std) or ic_std == 0.0 else mean_rank_ic / ic_std
+        )
         ic_tstat = (
             ic_information_ratio * math.sqrt(n_dates)
             if not math.isnan(ic_information_ratio)
@@ -433,7 +433,7 @@ def _compute_ic_decay(ic: pd.DataFrame, horizons: tuple[int, ...]) -> pd.DataFra
 
     rows: list[dict[str, Any]] = []
     for factor_id, group in ic.groupby("factor_id", sort=True):
-        by_horizon = dict(zip(group["horizon"], group["mean_rank_ic"]))
+        by_horizon = dict(zip(group["horizon"], group["mean_rank_ic"], strict=True))
         base = by_horizon.get(shortest, float("nan"))
         for horizon in ordered:
             if horizon not in by_horizon:
@@ -571,7 +571,7 @@ def compute_quantile_spread(
     for (factor_id, as_of_date, horizon), group in merged.groupby(
         ["factor_id", "as_of_date", "horizon"], sort=True
     ):
-        n_names = int(len(group))
+        n_names = len(group)
         if n_names < n_quantiles:
             continue
         ranks = group["value"].rank(method="first")
@@ -585,7 +585,7 @@ def compute_quantile_spread(
                     "quantile": int(quantile_value),
                     "forward_return_sum": float(bucket["forward_return"].sum()),
                     "factor_value_sum": float(bucket["value"].sum()),
-                    "n_obs": int(len(bucket)),
+                    "n_obs": len(bucket),
                 }
             )
         top_mean = bucketed.loc[bucketed["quantile"] == n_quantiles, "forward_return"].mean()
@@ -674,7 +674,7 @@ def compute_turnover(panel: pd.DataFrame, *, n_quantiles: int = DEFAULT_N_QUANTI
     ``panel``: security_id, as_of_date, factor_id, value. For each factor, distinct
     ``as_of_date`` values are ordered ascending and every consecutive pair forms one
     "rebalance": top/bottom-decile membership churn is a Jaccard-complement
-    (``1 - |A∩B| / |A∪B|``) over the quantile-``n_quantiles``/quantile-1 membership sets on
+    (``1 - |A∩B| / |AUB|``) over the quantile-``n_quantiles``/quantile-1 membership sets on
     each date, and the rank autocorrelation is the Spearman correlation (via ``_rank_corr``)
     of the two dates' factor values restricted to names present on both dates. A rebalance
     is only formed between two dates that each have at least ``n_quantiles`` names (mirroring
@@ -705,7 +705,7 @@ def compute_turnover(panel: pd.DataFrame, *, n_quantiles: int = DEFAULT_N_QUANTI
         top_churns: list[float] = []
         bottom_churns: list[float] = []
         autocorrs: list[float] = []
-        for prev_date, next_date in zip(dates, dates[1:]):
+        for prev_date, next_date in itertools.pairwise(dates):
             prev_values = by_date[prev_date]
             next_values = by_date[next_date]
             prev_quantile = _quantile_membership(prev_values, n_quantiles)
@@ -800,7 +800,7 @@ def compute_factor_correlation(panel: pd.DataFrame) -> pd.DataFrame:
                     "factor_id_b": b,
                     "mean_correlation": float(arr.mean()),
                     "mean_abs_correlation": float(np.abs(arr).mean()),
-                    "n_dates": int(len(arr)),
+                    "n_dates": len(arr),
                 }
             )
 
@@ -838,7 +838,7 @@ def compute_crowding(correlation: pd.DataFrame) -> pd.DataFrame:
                 "max_abs_correlation": float(group["mean_abs_correlation"].max()),
                 "avg_abs_correlation": float(group["mean_abs_correlation"].mean()),
                 "most_correlated_factor_id": group.loc[top_index, "factor_id_b"],
-                "n_peers": int(len(group)),
+                "n_peers": len(group),
             }
         )
 
@@ -880,7 +880,7 @@ def compute_breadth(panel: pd.DataFrame, universe_counts: pd.DataFrame | None = 
     has_available = "available_at" in panel.columns
     input_columns = ["security_id", "as_of_date", "factor_id", "value"]
     if has_available:
-        input_columns = input_columns + ["available_at"]
+        input_columns = [*input_columns, "available_at"]
     frame = panel.loc[:, input_columns].copy()
     frame = _normalize_asof(frame)
     if has_available:
@@ -1396,7 +1396,7 @@ def _hash_eval_id(prefix: str, *parts: object) -> str:
     """Deterministic id hash, mirroring ``db.alpha_research._hash_id``."""
 
     payload = "|".join("" if part is None else str(part) for part in parts)
-    return hashlib.sha256(f"{prefix}|{payload}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"{prefix}|{payload}".encode()).hexdigest()
 
 
 def _build_ic_manifest(
@@ -2452,7 +2452,7 @@ def _dqc_check_requested(
     )
 
 
-def _skipped_dqc_result(check_name: str, *, checked_at: Any, reason: str) -> "QualityResult":
+def _skipped_dqc_result(check_name: str, *, checked_at: Any, reason: str) -> QualityResult:
     return QualityResult(
         dataset_id="factor_panel",
         table_name="v_factor_panel",
@@ -2472,7 +2472,7 @@ def signal_eval_dqc_results(
     requested_checks,
     requested_datasets,
     checked_at,
-) -> list["QualityResult"]:
+) -> list[QualityResult]:
     """The two clause-G gated factor DQC checks (leakage, coverage), gate-ready.
 
     Mirrors the ``PANEL_EXPORT_GATE_CHECK_NAME`` block in ``db.quality._runner``: each check

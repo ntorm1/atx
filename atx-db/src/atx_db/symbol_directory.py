@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import io
 import uuid
@@ -13,7 +14,6 @@ from .clock import resolve_as_of_date
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .warehouse import insert_frame, quality_check, record_source_file, symbol_key
-
 
 NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
 OTHER_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
@@ -305,7 +305,7 @@ class NasdaqSymbolDirectoryDataset(Dataset):
         with store.transaction():
             store.con.execute("DELETE FROM nasdaq_symbol_directory WHERE as_of_date = ?", [as_of_date])
             insert_frame(store, frame, "nasdaq_symbol_directory", "nasdaq_symbol_directory_insert")
-        return int(len(frame))
+        return len(frame)
 
 
 class NasdaqListingEventsDataset(Dataset):
@@ -399,8 +399,6 @@ class NasdaqListingEventsDataset(Dataset):
                 )
                 insert_frame(store, frame, "nasdaq_listing_events", "nasdaq_listing_events_insert")
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 store.con.unregister("nasdaq_listing_events_load")
-            except Exception:
-                pass
-        return int(len(frame))
+        return len(frame)

@@ -33,6 +33,100 @@ threads, disk spilling beside the warehouse, and unordered inserts. Override
 `--memory-limit` or `--threads` when a deployment has a different resource
 envelope.
 
+## Activation from scratch
+
+`atx-db activate` builds a complete warehouse from an empty directory. It is
+idempotent, resumable, and deterministic: every stage is recorded in
+`activation_stage_runs`, and a rerun skips stages whose newest attempt completed
+unless `--force` is given. Each stage prints exactly one JSON line to stdout.
+
+### Prerequisites
+
+- The SpiderRock archive `tbltickerhistory3_10y.zip` on disk (3.30 GiB
+  compressed; one DEFLATE member, 11,084,562,320 uncompressed bytes).
+- `ATX_SEC_USER_AGENT` set to a product name and a monitored contact address.
+  The ladder fails fast on any SEC stage without it.
+- One durable volume with room for the disk budget below.
+
+### Disk usage
+
+| Artifact | Size |
+| --- | --- |
+| `tbltickerhistory3_10y.zip` (input, not written by the ladder) | 3.3 GB |
+| `data/staging/broad-bars/tbltickerhistory3_10y.txt` (extracted TSV) | **11 GB** |
+| `data/cache/companyfacts.zip` | **~1.3 GB** |
+| `data/cache/submissions.zip` | **~1.5 GB** |
+| `data/warehouse.duckdb` (built) | **30-40 GB** |
+| DuckDB spill (`data/staging/broad-bars/duckdb-tmp/`, transient) | up to 8 GB |
+| **Peak total** | **~65 GB** |
+
+The staging TSV may be deleted after `ticker_history_publish` completes; keep the
+`.sha256` sidecar so a later rerun can prove which extraction produced the bars.
+
+### Commands
+
+```powershell
+$env:ATX_SEC_USER_AGENT = "atx-db/0.2 ops@example.com"
+$env:ATX_DB_PATH = "D:\atx\data\warehouse.duckdb"
+
+# 1. See the plan without touching anything.
+atx-db activate --db-path $env:ATX_DB_PATH --dry-run
+
+# 2. Run the whole ladder (multi-hour; safe to interrupt).
+atx-db activate --db-path $env:ATX_DB_PATH `
+  --ticker-history-zip $env:USERPROFILE\Downloads\tbltickerhistory3_10y.zip `
+  --staging-dir D:\atx\data\staging\broad-bars `
+  --cache-dir D:\atx\data\cache `
+  --memory-limit 8GB --threads 4 --shards 16
+
+# 3. Resume after an interruption (completed stages are skipped automatically).
+atx-db activate --db-path $env:ATX_DB_PATH
+
+# 4. Resume from an explicit point, or rerun one stage.
+atx-db activate --db-path $env:ATX_DB_PATH --start-stage companyfacts_load
+atx-db activate --db-path $env:ATX_DB_PATH --only standardized --force
+
+# 5. Confirm the result.
+atx-db status --db-path $env:ATX_DB_PATH --strict
+```
+
+On an existing warehouse file, `atx-db activate` runs the same governed-migration
+guard as `scripts/warehouse_activate.py`: checkpoint + backup + locked apply +
+verify, with automatic restore-on-failure, before the ladder ever opens its own
+connection, so a bad migration can never leave a live warehouse half-upgraded. A
+brand-new (non-existent) database file skips this -- `stage_migrate` bootstraps
+it directly -- and so does `--dry-run`, whose contract is to touch nothing.
+
+### Stage order
+
+`migrate` -> `security_master` -> `symbol_directory` -> `ticker_history_extract`
+-> `ticker_history_publish` -> `sec_bulk_download` -> `submissions_load` ->
+`companyfacts_load` -> `statement_points` -> `periods` -> `ttm` ->
+`calendarization` -> `standardized` -> `industry_templates` -> `reconciliation`
+-> `provider_coverage`.
+
+Network is limited to `security_master`, `symbol_directory`, and
+`sec_bulk_download`; every other stage is offline. `sec_bulk_download` resumes a
+partial transfer and records each archive's sha256 in `raw_source_files`.
+`reconciliation` shells out to `scripts/refresh_reconciliation_sharded.py`, which
+runs each shard in a fresh interpreter (a long-lived process was measured to
+degrade a shard from ~110s to ~840s).
+
+### Determinism
+
+No derived or ingest path reads the wall clock. `atx_db.warehouse.now_utc_naive()`
+is the only sanctioned timestamp read and is used solely for `source_loaded_at`
+lineage. `atx_db.clock.utc_today()` is the only sanctioned wall-clock date read
+and is called only at CLI/script edges, which pass the value down explicitly.
+Library code resolves its stamp through
+`atx_db.clock.resolve_as_of_date(explicit, source_max_date=...)`, which raises
+rather than silently producing a non-reproducible run.
+
+`source_loaded_at` is lineage only and is never an ordering or dedupe key: the
+factor panel selects duplicates by `(available_at, run_id)` in both its pandas
+and SQL read paths, and `factor_breadth.available_at` is the max of its input
+availabilities, falling back to `as_of_date + 22h` rather than to the clock.
+
 ## 13F recovery
 
 Each SEC archive is an idempotent partition keyed by `source_period`. Re-running

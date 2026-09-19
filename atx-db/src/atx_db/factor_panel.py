@@ -7,12 +7,13 @@ the panel's ``as_of_date`` is the first date the row is safe to consume.
 
 from __future__ import annotations
 
-import datetime as dt
 import argparse
+import datetime as dt
 import json
-from pathlib import Path
 import sys
-from typing import Any, Iterable
+from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -84,7 +85,10 @@ def _normalize_factor_surface(frame: pd.DataFrame | Iterable[dict[str, object]] 
     source_as_of = pd.to_datetime(values["as_of_date"]).dt.normalize()
     available_at = pd.to_datetime(values["available_at"])
     decision_as_of = pd.Series(
-        [max(source_date, available.normalize()) for source_date, available in zip(source_as_of, available_at)],
+        [
+            max(source_date, available.normalize())
+            for source_date, available in zip(source_as_of, available_at, strict=True)
+        ],
         index=values.index,
     )
 

@@ -11,8 +11,11 @@ on:
       - ".github/workflows/atx-db.yml"
 
 jobs:
-  focused-quality:
+  quality:
     runs-on: ubuntu-latest
+    # The full non-slow suite is ~2m47s locally at -n 4 plus a ~180s cold schema
+    # template build; budget ~3 min of test time and cap the job well above it.
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: atx-db
@@ -25,12 +28,29 @@ jobs:
           cache-dependency-path: atx-db/pyproject.toml
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]"
+      - name: Cache the warehouse schema template
+        uses: actions/cache@v4
+        with:
+          path: atx-db/.pytest_cache/db_schema_templates
+          key: >-
+            atx-db-schema-${{ hashFiles('atx-db/src/atx_db/migrations/*.py',
+            'atx-db/src/atx_db/seeds/*.csv', 'atx-db/src/atx_db/schema.py',
+            'atx-db/src/atx_db/schema_contract.py', 'atx-db/src/atx_db/api/catalog.py',
+            'atx-db/src/atx_db/connection.py', 'atx-db/src/atx_db/fundamental_statements.py',
+            'atx-db/src/atx_db/parity.py') }}
       - name: Compile package
         run: python -m compileall -q src tests scripts
       - name: Lint productionized surfaces
         run: >-
           python -m ruff check
+          src/atx_db/activation.py
+          src/atx_db/clock.py
+          src/atx_db/ticker_history_extract.py
+          src/atx_db/migrations/bodies_0300.py
           src/atx_db/cli.py
+          src/atx_db/connection.py
+          src/atx_db/security_master.py
+          src/atx_db/symbol_directory.py
           src/atx_db/thirteenf.py
           src/atx_db/thirteenf_archive.py
           src/atx_db/thirteenf_amendments.py
@@ -38,13 +58,26 @@ jobs:
           src/atx_db/openfigi_signals.py
           src/atx_db/thirteenf_backtest.py
           src/atx_db/thirteenf_analysis.py
-          tests/test_thirteenf_archive.py
-          tests/test_thirteenf_signals.py
-          tests/test_openfigi_signals.py
-          tests/test_thirteenf_backtest.py
+          src/atx_db/factor_panel.py
+          src/atx_db/signal_eval.py
+          scripts/warehouse_activate.py
+          tests/test_activation_ledger.py
+          tests/test_activation_stages_a.py
+          tests/test_activation_stages_b.py
+          tests/test_activation_ladder.py
+          tests/test_ticker_history_extract.py
+          tests/test_clock.py
+          tests/test_determinism_as_of.py
+          tests/test_determinism_ingest_edges.py
+          tests/test_determinism_panel_dedupe.py
+          tests/test_cli_activate.py
       - name: Typecheck productionized surfaces
         run: >-
           python -m mypy --strict
+          src/atx_db/activation.py
+          src/atx_db/clock.py
+          src/atx_db/ticker_history_extract.py
+          src/atx_db/connection.py
           src/atx_db/cli.py
           src/atx_db/thirteenf_archive.py
           src/atx_db/thirteenf_amendments.py
@@ -52,12 +85,5 @@ jobs:
           src/atx_db/openfigi_signals.py
           src/atx_db/thirteenf_backtest.py
           src/atx_db/thirteenf_analysis.py
-      - name: Focused tests
-        run: >-
-          python -m pytest -q -n0 --tb=short
-          tests/test_import.py
-          tests/test_module_boundaries.py
-          tests/test_thirteenf_archive.py
-          tests/test_thirteenf_signals.py
-          tests/test_openfigi_signals.py
-          tests/test_thirteenf_backtest.py
+      - name: Full non-slow test suite
+        run: python -m pytest -q -n 4 -m "not slow" --tb=short tests

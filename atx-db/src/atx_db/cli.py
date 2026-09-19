@@ -12,6 +12,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from .activation import add_activation_arguments, run_activation_from_args
 from .connection import DEFAULT_DB_PATH, DuckDBStore
 from .filing_context_backfill import (
     FilingContextBackfillQueueOptions,
@@ -25,10 +26,11 @@ from .fundamental_reconciliation import (
     FundamentalReconciliationRefreshOptions,
     refresh_fundamental_reconciliation_serving,
 )
+from .migration_admin import run_governed_migrations
 from .migrations import MIGRATIONS
 from .openfigi_signals import OpenFigiSignalMapOptions, map_signal_cusips
-from .sec_submissions import SecSubmissionsBulkDataset, SecSubmissionsBulkOptions
 from .provider_coverage import ProviderCoverageOptions, refresh_provider_coverage
+from .sec_submissions import SecSubmissionsBulkDataset, SecSubmissionsBulkOptions
 from .standardization import (
     FundamentalStandardizationOptions,
     refresh_fundamental_standardized,
@@ -389,6 +391,12 @@ def _build_parser() -> argparse.ArgumentParser:
     broad_bars.add_argument("--memory-limit", default="4GB")
     broad_bars.add_argument("--threads", type=int, default=4)
     broad_bars.add_argument("--run-id")
+
+    activate = commands.add_parser(
+        "activate",
+        help="Build a complete warehouse from zero, resumably, one JSON line per stage",
+    )
+    add_activation_arguments(activate)
     return parser
 
 
@@ -726,6 +734,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         _json(asdict(result))
         return 0
+
+    if args.command == "activate":
+        return run_activation_from_args(args, governed_migrations=run_governed_migrations)
 
     raise AssertionError(f"Unhandled command: {args.command}")
 

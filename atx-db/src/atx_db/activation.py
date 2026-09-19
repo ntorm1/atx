@@ -9,6 +9,7 @@ testable on its own.
 
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import json
 import logging
@@ -23,7 +24,7 @@ from typing import Protocol
 
 import pandas as pd
 
-from .clock import resolve_as_of_date
+from .clock import resolve_as_of_date, utc_today
 from .connection import DEFAULT_DB_PATH, DuckDBStore
 from .security_master import SEC_COMPANY_TICKERS_URL, normalize_company_tickers, upsert_security_master_from_frame
 from .ticker_history_bulk import BulkTickerHistoryOptions, publish_bulk_ticker_history
@@ -892,3 +893,88 @@ def run_activation(
             emit(payload)
             emitted.append(payload)
     return emitted
+
+
+GovernedMigrationsCallable = Callable[[Path], object]
+
+
+def add_activation_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add every ``activate`` flag to ``parser``.
+
+    Shared by ``scripts/warehouse_activate.py`` and the ``atx-db activate``
+    subcommand so the two entry points can never drift apart on flags or
+    defaults.
+    """
+    parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    parser.add_argument("--as-of-date", type=dt.date.fromisoformat, default=None)
+    parser.add_argument("--ticker-history-zip", type=Path, default=DEFAULT_TICKER_HISTORY_ZIP)
+    parser.add_argument("--staging-dir", type=Path, default=Path("data/staging/broad-bars"))
+    parser.add_argument("--cache-dir", type=Path, default=Path("data/cache"))
+    parser.add_argument("--sec-user-agent", default=None)
+    parser.add_argument("--memory-limit", default="8GB")
+    parser.add_argument("--threads", type=int, default=4)
+    parser.add_argument("--shards", type=int, default=16)
+    parser.add_argument("--companyfacts-limit", type=int, default=None)
+    parser.add_argument("--start-stage", choices=STAGE_ORDER, default=None)
+    parser.add_argument("--stop-stage", choices=STAGE_ORDER, default=None)
+    parser.add_argument("--only", action="append", choices=STAGE_ORDER, default=None)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--run-id", default=None)
+
+
+def activation_options_from_args(args: argparse.Namespace) -> ActivationOptions:
+    """Resolve parsed ``add_activation_arguments`` flags into ``ActivationOptions``.
+
+    ``as_of_date`` resolves the wall clock here, at the CLI edge, exactly once per
+    invocation -- never inside library code (see ``atx_db.clock``). Shared by
+    ``scripts/warehouse_activate.py`` and the ``atx-db activate`` subcommand.
+    """
+    as_of_date = args.as_of_date or utc_today()
+    sec_user_agent = args.sec_user_agent or os.environ.get("ATX_SEC_USER_AGENT")
+    run_id = args.run_id or f"warehouse-activate-{as_of_date.isoformat()}"
+    return ActivationOptions(
+        db_path=args.db_path,
+        as_of_date=as_of_date,
+        ticker_history_zip=args.ticker_history_zip,
+        staging_dir=args.staging_dir,
+        cache_dir=args.cache_dir,
+        sec_user_agent=sec_user_agent,
+        downloader=requests_downloader,
+        memory_limit=args.memory_limit,
+        threads=args.threads,
+        reconciliation_shards=args.shards,
+        companyfacts_limit=args.companyfacts_limit,
+        dry_run=args.dry_run,
+        force=args.force,
+        run_id=run_id,
+    )
+
+
+def run_activation_from_args(
+    args: argparse.Namespace,
+    *,
+    governed_migrations: GovernedMigrationsCallable,
+) -> int:
+    """Build options/stages from parsed ``activate`` args and run the ladder.
+
+    On an existing warehouse file, this runs ``governed_migrations`` --
+    checkpoint + backup + locked apply + verify with restore-on-failure -- BEFORE
+    the ladder opens its own connection, so a bad migration on a live warehouse
+    can never leave it half-upgraded. A brand-new file has nothing to protect
+    yet, so ``stage_migrate`` bootstraps it directly. ``--dry-run`` never
+    mutates anything, governed path included, so it is skipped there too. Used
+    by the ``atx-db activate`` subcommand; ``scripts/warehouse_activate.py``
+    keeps its own inline call to ``run_activation`` so its tests can monkeypatch
+    that name directly on the loaded script module.
+    """
+    options = activation_options_from_args(args)
+    stages = select_stages(
+        start=args.start_stage,
+        stop=args.stop_stage,
+        only=tuple(args.only or ()),
+    )
+    if not options.dry_run and options.db_path.exists():
+        governed_migrations(options.db_path)
+    run_activation(options, stages=stages)
+    return 0
