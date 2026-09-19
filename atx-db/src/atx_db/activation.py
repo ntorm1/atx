@@ -11,10 +11,33 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-from dataclasses import dataclass
+import logging
+import os
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Protocol
 
-from .connection import DuckDBStore
-from .warehouse import now_utc_naive
+import pandas as pd
+
+from .clock import resolve_as_of_date
+from .connection import DEFAULT_DB_PATH, DuckDBStore
+from .security_master import SEC_COMPANY_TICKERS_URL, normalize_company_tickers, upsert_security_master_from_frame
+from .ticker_history_bulk import BulkTickerHistoryOptions, publish_bulk_ticker_history
+from .ticker_history_extract import (
+    TICKER_HISTORY_MEMBER,
+    TICKER_HISTORY_UNCOMPRESSED_BYTES,
+    extract_ticker_history_tsv,
+)
+from .warehouse import now_utc_naive, record_source_file
+
+LOGGER = logging.getLogger(__name__)
+
+COMPANYFACTS_ZIP_URL = "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip"
+SUBMISSIONS_ZIP_URL = "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip"
+NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+OTHER_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+DEFAULT_TICKER_HISTORY_ZIP = Path.home() / "Downloads" / "tbltickerhistory3_10y.zip"
 
 STAGE_ORDER: tuple[str, ...] = (
     "migrate",
@@ -127,3 +150,235 @@ def completed_stages(store: DuckDBStore) -> set[str]:
         """
     ).fetchall()
     return {stage for (stage,) in rows}
+
+
+class Downloader(Protocol):
+    """Fetch ``url`` to ``dest`` and return the number of bytes on disk.
+
+    The only network seam in the activation ladder. Real runs pass
+    ``requests_downloader``; tests pass a fake that writes a fixture payload.
+    """
+
+    def __call__(self, url: str, dest: Path, *, user_agent: str) -> int: ...
+
+
+@dataclass(frozen=True)
+class ActivationOptions:
+    db_path: Path = DEFAULT_DB_PATH
+    as_of_date: dt.date | None = None
+    ticker_history_zip: Path = DEFAULT_TICKER_HISTORY_ZIP
+    ticker_history_expected_bytes: int | None = TICKER_HISTORY_UNCOMPRESSED_BYTES
+    staging_dir: Path = Path("data/staging/broad-bars")
+    cache_dir: Path = Path("data/cache")
+    sec_user_agent: str | None = None
+    downloader: Downloader | None = None
+    memory_limit: str = "8GB"
+    threads: int = 4
+    reconciliation_shards: int = 16
+    minimum_rows: int = 30_000_000
+    minimum_securities: int = 10_000
+    minimum_latest_date_securities: int = 5_000
+    companyfacts_limit: int | None = None
+    companyfacts_progress_every: int = 25
+    skip_loaded_companyfacts: bool = True
+    dry_run: bool = False
+    force: bool = False
+    run_id: str = "warehouse-activate"
+
+    def as_dict(self) -> dict[str, object]:
+        """Shallow field mapping for ``ActivationOptions(**{**opts.as_dict(), ...})``."""
+        return dict(asdict(self)) | {"downloader": self.downloader}
+
+    def ledger_params(self) -> dict[str, object]:
+        """JSON-safe option snapshot for ``activation_stage_runs.params_json``."""
+        payload = {key: value for key, value in self.as_dict().items() if key != "downloader"}
+        return {key: (str(value) if isinstance(value, Path) else value) for key, value in payload.items()}
+
+    @property
+    def tsv_path(self) -> Path:
+        return Path(self.staging_dir) / TICKER_HISTORY_MEMBER
+
+    @property
+    def companyfacts_zip(self) -> Path:
+        return Path(self.cache_dir) / "companyfacts.zip"
+
+    @property
+    def submissions_zip(self) -> Path:
+        return Path(self.cache_dir) / "submissions.zip"
+
+
+def require_sec_user_agent(options: ActivationOptions) -> str:
+    """Return the SEC user agent or fail fast with an operator-actionable message."""
+    agent = options.sec_user_agent or os.environ.get("ATX_SEC_USER_AGENT")
+    if not agent or not agent.strip():
+        raise ValueError(
+            "ATX_SEC_USER_AGENT is required before any SEC request. Set it to a product "
+            'name and a monitored contact address, e.g. ATX_SEC_USER_AGENT="atx-db/0.2 '
+            'ops@example.com", or pass --sec-user-agent.'
+        )
+    return agent.strip()
+
+
+def stage_migrate(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Bring the warehouse to head schema and assert it got there."""
+    from .migrations import MIGRATIONS, apply_pending_migrations
+
+    applied = apply_pending_migrations(store.con)
+    row = store.con.execute(
+        "SELECT max(try_cast(version AS INTEGER)) FROM schema_migrations"
+    ).fetchone()
+    if row is None or row[0] is None:
+        raise RuntimeError("warehouse has no schema_migrations rows after migrate")
+    version = int(row[0])
+    target = max(migration.version for migration in MIGRATIONS)
+    if version != target:
+        raise RuntimeError(f"warehouse is at schema {version}, expected head {target}")
+    _ = options
+    return StageResult(
+        rows=len(applied),
+        detail={"schema_version": version, "applied_versions": list(applied)},
+    )
+
+
+def stage_security_master(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Load SEC ``company_tickers.json`` into ``sec_company_tickers`` (network)."""
+    user_agent = require_sec_user_agent(options)
+    download = _require_downloader(options)
+    cache_path = Path(options.cache_dir) / "company_tickers.json"
+    byte_count = download(SEC_COMPANY_TICKERS_URL, cache_path, user_agent=user_agent)
+    frame = normalize_company_tickers(json.loads(cache_path.read_text(encoding="utf-8")))
+    as_of_date = resolve_as_of_date(options.as_of_date, source_max_date=None)
+    upsert_security_master_from_frame(
+        store,
+        frame,
+        source="SEC company_tickers",
+        as_of_date=as_of_date,
+        run_id=f"{options.run_id}-security-master",
+    )
+    record_source_file(
+        store,
+        dataset_id="sec_security_master",
+        source_url=SEC_COMPANY_TICKERS_URL,
+        cache_path=cache_path,
+        status="available",
+        metadata={"as_of_date": as_of_date.isoformat(), "bytes": byte_count},
+    )
+    count = store.con.execute("SELECT count(*) FROM sec_company_tickers").fetchone()
+    return StageResult(
+        rows=0 if count is None else int(count[0]),
+        detail={"as_of_date": as_of_date.isoformat(), "bytes": byte_count},
+    )
+
+
+def stage_symbol_directory(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Load the Nasdaq Trader symbol directory snapshot (network)."""
+    from .symbol_directory import (
+        NasdaqSymbolDirectoryOptions,
+        _read_directory_text,
+        normalize_nasdaq_listed,
+        normalize_other_listed,
+        resolve_directory_as_of_date,
+    )
+    from .warehouse import insert_frame
+
+    download = _require_downloader(options)
+    user_agent = require_sec_user_agent(options)
+    directory_options = NasdaqSymbolDirectoryOptions(as_of_date=options.as_of_date)
+    texts: list[tuple[str, str, Callable[..., pd.DataFrame]]] = []
+    for url, normalizer, name in (
+        (NASDAQ_LISTED_URL, normalize_nasdaq_listed, "nasdaqlisted.txt"),
+        (OTHER_LISTED_URL, normalize_other_listed, "otherlisted.txt"),
+    ):
+        dest = Path(options.cache_dir) / name
+        download(url, dest, user_agent=user_agent)
+        texts.append((url, dest.read_text(encoding="utf-8"), normalizer))
+    as_of_date = resolve_directory_as_of_date(directory_options, texts[0][1])
+    frames = [
+        normalizer(
+            _read_directory_text(text),
+            as_of_date=as_of_date,
+            source_url=url,
+            run_id=f"{options.run_id}-symbol-directory",
+        )
+        for url, text, normalizer in texts
+    ]
+    frame = pd.concat([f for f in frames if not f.empty], ignore_index=True)
+    with store.transaction():
+        store.con.execute("DELETE FROM nasdaq_symbol_directory WHERE as_of_date = ?", [as_of_date])
+        insert_frame(store, frame, "nasdaq_symbol_directory", "activation_symbol_directory_insert")
+    return StageResult(
+        rows=len(frame),
+        detail={"as_of_date": as_of_date.isoformat(), "symbols": int(frame["symbol"].nunique())},
+    )
+
+
+def stage_ticker_history_extract(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Stream the ticker-history ZIP member into the staging TSV (offline)."""
+    _ = store
+    result = extract_ticker_history_tsv(
+        Path(options.ticker_history_zip),
+        options.tsv_path,
+        expected_bytes=options.ticker_history_expected_bytes,
+        progress=lambda written, total: LOGGER.info(
+            "ticker-history extract %.1f%% (%s / %s bytes)",
+            100.0 * written / total,
+            f"{written:,}",
+            f"{total:,}",
+        ),
+    )
+    return StageResult(
+        rows=result.written_bytes,
+        detail={
+            "tsv_path": str(result.tsv_path),
+            "member_name": result.member_name,
+            "expected_bytes": result.expected_bytes,
+            "written_bytes": result.written_bytes,
+            "sha256": result.sha256,
+            "skipped": result.skipped,
+        },
+    )
+
+
+def stage_ticker_history_publish(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Atomically publish the staging TSV into ``equity_daily_bars`` (offline)."""
+    result = publish_bulk_ticker_history(
+        store,
+        BulkTickerHistoryOptions(
+            tsv_path=options.tsv_path.resolve(),
+            memory_limit=options.memory_limit,
+            threads=options.threads,
+            minimum_rows=options.minimum_rows,
+            minimum_securities=options.minimum_securities,
+            minimum_latest_date_securities=options.minimum_latest_date_securities,
+            run_id=f"{options.run_id}-broad-bars",
+        ),
+    )
+    return StageResult(
+        rows=result.rows,
+        detail={
+            "securities": result.securities,
+            "latest_date": result.latest_date.isoformat(),
+            "latest_date_securities": result.latest_date_securities,
+            "invalid_rows": result.invalid_rows,
+            "duplicate_keys": result.duplicate_keys,
+            "elapsed_seconds": round(result.elapsed_seconds, 3),
+        },
+    )
+
+
+def _require_downloader(options: ActivationOptions) -> Downloader:
+    if options.downloader is None:
+        raise ValueError(
+            "a Downloader is required for network stages; the CLI injects "
+            "requests_downloader and tests inject a fake"
+        )
+    return options.downloader
+
+
+STAGES: dict[str, Callable[[DuckDBStore, ActivationOptions], StageResult]] = {
+    "migrate": stage_migrate,
+    "security_master": stage_security_master,
+    "symbol_directory": stage_symbol_directory,
+    "ticker_history_extract": stage_ticker_history_extract,
+    "ticker_history_publish": stage_ticker_history_publish,
+}
