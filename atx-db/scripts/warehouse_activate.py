@@ -19,16 +19,21 @@ request; the ladder fails fast without it.
 
 Migration governance
 ---------------------
-``stage_migrate`` applies pending migrations directly against the ladder's own
-connection, which is the right thing to do the FIRST time a warehouse is built
-(there is nothing yet to back up). Once a warehouse file already exists, this
-script runs the governed path instead -- checkpoint + backup + locked apply +
-verify, with automatic restore-on-failure (``run_governed_migrations`` in
-``atx_db.migration_admin``) -- BEFORE opening the ladder's own store, so a bad
-migration on a live warehouse can never leave it half-upgraded. A fresh
-(non-existent) database file skips this and lets ``stage_migrate`` bootstrap it
-from scratch. ``--dry-run`` skips it too: dry-run's contract is that it touches
-nothing, and the governed path always writes a checkpoint/backup.
+This script is a thin CLI wrapper: all governance logic lives in
+``run_activation_from_args`` (``atx_db.activation``), shared with the
+``atx-db activate`` subcommand. ``stage_migrate`` applies pending migrations
+directly against the ladder's own connection, which is the right thing to do
+the FIRST time a warehouse is built (there is nothing yet to back up). Once a
+warehouse file already exists AND has at least one pending migration, the
+governed path runs instead -- checkpoint + backup + locked apply + verify,
+with automatic restore-on-failure (``run_governed_migrations`` in
+``atx_db.migration_admin``), followed by ``--backup-keep``-bounded backup
+pruning -- BEFORE opening the ladder's own store, so a bad migration on a live
+warehouse can never leave it half-upgraded. A warehouse already at head skips
+the governed path entirely (it is a full-file copy + re-hash, too expensive to
+pay on every resume/``--only`` call). A fresh (non-existent) database file
+also skips it and lets ``stage_migrate`` bootstrap it from scratch.
+``--dry-run`` skips it too: dry-run's contract is that it touches nothing.
 
 Usage
 -----
@@ -41,20 +46,19 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from atx_db.activation import (
-    activation_options_from_args,
+    GovernedMigrationsCallable,
+    RunActivationCallable,
     add_activation_arguments,
     run_activation,
-    select_stages,
+    run_activation_from_args,
 )
 from atx_db.migration_admin import run_governed_migrations as _run_governed_migrations
-
-GovernedMigrationsCallable = Callable[[Path], object]
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -67,23 +71,20 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     governed_migrations: GovernedMigrationsCallable = _run_governed_migrations,
+    run_activation: RunActivationCallable = run_activation,
 ) -> int:
+    """Parse ``activate`` args and delegate to ``run_activation_from_args``.
+
+    ``governed_migrations``/``run_activation`` are kept as explicit injection
+    seams (not module-attribute monkeypatch targets) so this script and the
+    ``atx-db activate`` subcommand share exactly one governed-migration-then-
+    ladder implementation -- see ``run_activation_from_args`` in
+    ``atx_db.activation`` for the pending-migration guard and backup retention.
+    """
     args = parse_args(argv)
-    options = activation_options_from_args(args)  # the only clock read in the ladder's path
-    stages = select_stages(
-        start=args.start_stage,
-        stop=args.stop_stage,
-        only=tuple(args.only or ()),
+    return run_activation_from_args(
+        args, governed_migrations=governed_migrations, run_activation=run_activation
     )
-    # A pre-existing warehouse goes through checkpoint + backup + locked apply +
-    # verify (with restore-on-failure) before the ladder ever opens its own
-    # connection; a brand-new file has nothing to protect yet, so stage_migrate
-    # bootstraps it directly. --dry-run never mutates anything, governed path
-    # included.
-    if not options.dry_run and options.db_path.exists():
-        governed_migrations(options.db_path)
-    run_activation(options, stages=stages)
-    return 0
 
 
 if __name__ == "__main__":

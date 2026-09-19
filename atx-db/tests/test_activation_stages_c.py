@@ -31,6 +31,21 @@ def _completed(*, returncode: int = 0, stdout: str = "", stderr: str = "") -> su
 # --- stage_reconciliation: injectable shard runner -------------------------------
 
 
+def test_stage_reconciliation_raises_actionably_when_the_shard_script_is_missing(tmp_store, tmp_path, monkeypatch):
+    import atx_db.activation as activation
+
+    missing_script = tmp_path / "does-not-exist" / "refresh_reconciliation_sharded.py"
+    monkeypatch.setattr(activation, "_reconciliation_script_path", lambda: missing_script)
+
+    def fake_runner(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("the shard runner must not be invoked when the script is missing")
+
+    options = _options(db_path=tmp_store.path, shard_runner=fake_runner)
+    with pytest.raises(FileNotFoundError, match=r"refresh_reconciliation_sharded\.py"):
+        stage_reconciliation(tmp_store, options)
+    assert tmp_store.connection is not None, "the store must never be closed if the pre-flight check fails"
+
+
 def test_shard_runner_receives_the_expected_argv(tmp_store):
     captured: list[list[str]] = []
 

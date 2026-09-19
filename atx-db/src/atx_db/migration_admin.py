@@ -120,6 +120,31 @@ def _numeric_versions(conn: duckdb.DuckDBPyConnection) -> tuple[int, ...]:
     return tuple(row[0] for row in rows)
 
 
+def pending_migrations(db_path: Path | str) -> list[int]:
+    """Return registered migration versions not yet applied to ``db_path``.
+
+    Opens the database READ-ONLY and never mutates it. Used to decide whether
+    the (expensive: full-file copy + re-hash) governed migration path is needed
+    at all -- an ``activate`` resume or ``--only`` invocation against a warehouse
+    already at head should skip it entirely rather than pay for a checkpoint,
+    backup, and verify on every call. A database file that doesn't exist yet, or
+    predates ``schema_migrations``, reports every registered version as pending
+    (``_numeric_versions`` returns ``()`` for either case) so the governed path
+    still runs and puts the warehouse on a normal footing.
+    """
+    from .migrations import MIGRATIONS
+
+    target = Path(db_path)
+    if not target.exists():
+        return sorted(migration.version for migration in MIGRATIONS)
+    con = duckdb.connect(str(target), read_only=True)
+    try:
+        applied = set(_numeric_versions(con))
+    finally:
+        con.close()
+    return sorted(migration.version for migration in MIGRATIONS if migration.version not in applied)
+
+
 def _table_exists(conn: duckdb.DuckDBPyConnection, table_name: str) -> bool:
     row = conn.execute(
         """

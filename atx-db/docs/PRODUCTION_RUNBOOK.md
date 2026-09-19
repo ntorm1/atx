@@ -57,8 +57,10 @@ unless `--force` is given. Each stage prints exactly one JSON line to stdout.
 | `data/cache/companyfacts.zip` | **~1.3 GB** |
 | `data/cache/submissions.zip` | **~1.5 GB** |
 | `data/warehouse.duckdb` (built) | **30-40 GB** |
-| DuckDB spill (`data/staging/broad-bars/duckdb-tmp/`, transient) | up to 8 GB |
-| **Peak total** | **~65 GB** |
+| Pre-migrate backup (`data/warehouse.duckdb.<label>.<timestamp>.bak`, one per governed migration run against an existing warehouse; skipped when the warehouse is already at head) | full copy of the warehouse (30-40 GB) each, `--backup-keep` most recent kept (default 3) |
+| DuckDB spill, `ticker_history_publish` (`data/staging/broad-bars/duckdb-tmp/`, transient) | up to 8 GB |
+| DuckDB spill, every other connection (`<db parent>/.<db name>.duckdb_tmp/`, e.g. `data/.warehouse.duckdb.duckdb_tmp/`, transient) | best-effort, sized by the query |
+| **Peak total** | **~65 GB**, plus up to `--backup-keep` x 30-40 GB while pre-migrate backups accumulate on a resumed/`--only` run against a pre-head warehouse |
 
 The staging TSV may be deleted after `ticker_history_publish` completes; keep the
 `.sha256` sidecar so a later rerun can prove which extraction produced the bars.
@@ -90,12 +92,17 @@ atx-db activate --db-path $env:ATX_DB_PATH --only standardized --force
 atx-db status --db-path $env:ATX_DB_PATH --strict
 ```
 
-On an existing warehouse file, `atx-db activate` runs the same governed-migration
-guard as `scripts/warehouse_activate.py`: checkpoint + backup + locked apply +
-verify, with automatic restore-on-failure, before the ladder ever opens its own
-connection, so a bad migration can never leave a live warehouse half-upgraded. A
-brand-new (non-existent) database file skips this -- `stage_migrate` bootstraps
-it directly -- and so does `--dry-run`, whose contract is to touch nothing.
+On an existing warehouse file that has at least one migration PENDING,
+`atx-db activate` runs the same governed-migration guard as
+`scripts/warehouse_activate.py`: checkpoint + backup + locked apply + verify,
+with automatic restore-on-failure, before the ladder ever opens its own
+connection, so a bad migration can never leave a live warehouse half-upgraded,
+followed by `--backup-keep`-bounded pruning of older backups. A warehouse
+already at schema head skips the governed path entirely -- it is a full-file
+copy plus a re-hash, so paying that cost on every resume or `--only` call
+would be wasteful once a build is mostly done. A brand-new (non-existent)
+database file also skips this -- `stage_migrate` bootstraps it directly -- and
+so does `--dry-run`, whose contract is to touch nothing.
 
 ### Stage order
 
@@ -126,6 +133,12 @@ rather than silently producing a non-reproducible run.
 factor panel selects duplicates by `(available_at, run_id)` in both its pandas
 and SQL read paths, and `factor_breadth.available_at` is the max of its input
 availabilities, falling back to `as_of_date + 22h` rather than to the clock.
+
+`--as-of-date` must be pinned to the same explicit value across reruns of the
+network stages (`security_master`, `symbol_directory`, `sec_bulk_download`) for
+those reruns to be byte-identical; left unset, each invocation resolves it from
+`atx_db.clock.utc_today()` at the CLI edge, which necessarily differs run to
+run.
 
 ## 13F recovery
 

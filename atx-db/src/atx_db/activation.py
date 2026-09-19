@@ -273,13 +273,15 @@ def stage_security_master(store: DuckDBStore, options: ActivationOptions) -> Sta
         as_of_date=as_of_date,
         run_id=f"{options.run_id}-security-master",
     )
+    checksum = sha256_file(cache_path)
     record_source_file(
         store,
         dataset_id="sec_security_master",
         source_url=SEC_COMPANY_TICKERS_URL,
         cache_path=cache_path,
         status="available",
-        metadata={"as_of_date": as_of_date.isoformat(), "bytes": byte_count},
+        sha256=checksum,
+        metadata={"as_of_date": as_of_date.isoformat(), "bytes": byte_count, "sha256": checksum},
     )
     count = store.con.execute("SELECT count(*) FROM sec_company_tickers").fetchone()
     return StageResult(
@@ -303,6 +305,7 @@ def stage_symbol_directory(store: DuckDBStore, options: ActivationOptions) -> St
     user_agent = require_sec_user_agent(options)
     directory_options = NasdaqSymbolDirectoryOptions(as_of_date=options.as_of_date)
     texts: list[tuple[str, str, Callable[..., pd.DataFrame]]] = []
+    fetched: list[tuple[str, Path]] = []
     for url, normalizer, name in (
         (NASDAQ_LISTED_URL, normalize_nasdaq_listed, "nasdaqlisted.txt"),
         (OTHER_LISTED_URL, normalize_other_listed, "otherlisted.txt"),
@@ -310,7 +313,19 @@ def stage_symbol_directory(store: DuckDBStore, options: ActivationOptions) -> St
         dest = Path(options.cache_dir) / name
         download(url, dest, user_agent=user_agent)
         texts.append((url, dest.read_text(encoding="utf-8"), normalizer))
+        fetched.append((url, dest))
     as_of_date = resolve_directory_as_of_date(directory_options, texts[0][1])
+    for url, dest in fetched:
+        checksum = sha256_file(dest)
+        record_source_file(
+            store,
+            dataset_id="nasdaq_symbol_directory",
+            source_url=url,
+            cache_path=dest,
+            status="available",
+            sha256=checksum,
+            metadata={"as_of_date": as_of_date.isoformat(), "bytes": dest.stat().st_size, "sha256": checksum},
+        )
     frames = [
         normalizer(
             _read_directory_text(text),
@@ -613,7 +628,10 @@ def stage_calendarization(store: DuckDBStore, options: ActivationOptions) -> Sta
     from .calendarization import CalendarizationOptions, run_calendarization_refresh
 
     summary = run_calendarization_refresh(
-        store, CalendarizationOptions(run_id=f"{options.run_id}-calendarization")
+        store,
+        CalendarizationOptions(
+            run_id=f"{options.run_id}-calendarization", as_of_date=options.as_of_date
+        ),
     )
     rows = int(summary.get("calendar_ttm_rows", summary.get("map_rows", 0)) or 0)
     return StageResult(rows=rows, detail=dict(summary))
@@ -684,6 +702,10 @@ def _parse_shard_json_lines(stdout: str) -> list[dict[str, object]]:
     return events
 
 
+def _reconciliation_script_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "scripts" / "refresh_reconciliation_sharded.py"
+
+
 def stage_reconciliation(store: DuckDBStore, options: ActivationOptions) -> StageResult:
     """Publish the reconciliation serving table in bounded symbol shards.
 
@@ -702,7 +724,14 @@ def stage_reconciliation(store: DuckDBStore, options: ActivationOptions) -> Stag
     into this stage's detail instead. The child's stderr IS forwarded, so a
     genuine shard failure's traceback is still visible to the operator.
     """
-    script = Path(__file__).resolve().parents[2] / "scripts" / "refresh_reconciliation_sharded.py"
+    script = _reconciliation_script_path()
+    if not script.is_file():
+        raise FileNotFoundError(
+            f"reconciliation shard script not found at {script}. stage_reconciliation shells out to "
+            "scripts/refresh_reconciliation_sharded.py, which a wheel/sdist install of atx-db does not "
+            "ship -- run from a source checkout, or install atx-db editable (pip install -e .) so "
+            "scripts/ is present two directories above atx_db/activation.py."
+        )
     argv = [
         sys.executable,
         str(script),
@@ -896,6 +925,7 @@ def run_activation(
 
 
 GovernedMigrationsCallable = Callable[[Path], object]
+RunActivationCallable = Callable[..., list[dict[str, object]]]
 
 
 def add_activation_arguments(parser: argparse.ArgumentParser) -> None:
@@ -921,6 +951,12 @@ def add_activation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--run-id", default=None)
+    parser.add_argument(
+        "--backup-keep",
+        type=int,
+        default=3,
+        help="Most recent pre-migrate backups to retain after a governed migration run (default: 3).",
+    )
 
 
 def activation_options_from_args(args: argparse.Namespace) -> ActivationOptions:
@@ -951,30 +987,65 @@ def activation_options_from_args(args: argparse.Namespace) -> ActivationOptions:
     )
 
 
+def _prune_activation_backups(db_path: Path, *, keep_latest: int) -> None:
+    """Prune old pre-migrate backups after a successful governed migration run.
+
+    Opens a READ-ONLY connection: pruning only deletes registered ``.bak`` files
+    on disk and reads ``migration_backup_registry`` to know which are safe to
+    remove (``enforce_backup_retention`` never writes to the database itself).
+    Best-effort in the sense that a database file gone by the time this runs (or
+    one that predates the backup registry table) simply prunes nothing.
+    """
+    import duckdb
+
+    from .migration_admin import enforce_backup_retention
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        enforce_backup_retention(
+            db_path.parent,
+            conn=con,
+            keep_latest=keep_latest,
+            min_age=dt.timedelta(0),
+        )
+    finally:
+        con.close()
+
+
 def run_activation_from_args(
     args: argparse.Namespace,
     *,
     governed_migrations: GovernedMigrationsCallable,
+    run_activation: RunActivationCallable = run_activation,
 ) -> int:
     """Build options/stages from parsed ``activate`` args and run the ladder.
 
-    On an existing warehouse file, this runs ``governed_migrations`` --
-    checkpoint + backup + locked apply + verify with restore-on-failure -- BEFORE
-    the ladder opens its own connection, so a bad migration on a live warehouse
-    can never leave it half-upgraded. A brand-new file has nothing to protect
-    yet, so ``stage_migrate`` bootstraps it directly. ``--dry-run`` never
-    mutates anything, governed path included, so it is skipped there too. Used
-    by the ``atx-db activate`` subcommand; ``scripts/warehouse_activate.py``
-    keeps its own inline call to ``run_activation`` so its tests can monkeypatch
-    that name directly on the loaded script module.
+    On an existing warehouse file that has at least one PENDING migration, this
+    runs ``governed_migrations`` -- checkpoint + backup + locked apply + verify
+    with restore-on-failure -- BEFORE the ladder opens its own connection, so a
+    bad migration on a live warehouse can never leave it half-upgraded. A
+    warehouse already at head skips the governed path entirely: it copies the
+    whole file (30-40 GB at target size) and re-hashes it, so paying that cost on
+    every resume/``--only`` invocation -- the common case once a build is mostly
+    done -- was the bug this guards against. A brand-new file has nothing to
+    protect yet, so ``stage_migrate`` bootstraps it directly. ``--dry-run``
+    never mutates anything, governed path included, so it is skipped there too.
+    After a governed run actually executes, old backups beyond ``--backup-keep``
+    are pruned. Used by the ``atx-db activate`` subcommand and by
+    ``scripts/warehouse_activate.py``, which threads its own
+    ``governed_migrations``/``run_activation`` injection seams through to this
+    single implementation.
     """
+    from .migration_admin import pending_migrations
+
     options = activation_options_from_args(args)
     stages = select_stages(
         start=args.start_stage,
         stop=args.stop_stage,
         only=tuple(args.only or ()),
     )
-    if not options.dry_run and options.db_path.exists():
+    if not options.dry_run and options.db_path.exists() and pending_migrations(options.db_path):
         governed_migrations(options.db_path)
+        _prune_activation_backups(options.db_path, keep_latest=getattr(args, "backup_keep", 3))
     run_activation(options, stages=stages)
     return 0

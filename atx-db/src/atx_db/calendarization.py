@@ -9,10 +9,10 @@ from typing import Any
 
 import pandas as pd
 
+from .clock import resolve_as_of_date
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .warehouse import insert_frame, quality_check
-
 
 SOURCE_NAME = "derived_calendarization_v1"
 FISCAL_TTM_METHOD = "sum_four_visible_quarter_like_statement_points_with_ytd_quarter_derivations"
@@ -59,6 +59,7 @@ CALENDAR_MAP_COLUMNS = [
 class CalendarizationOptions:
     source: str = SOURCE_NAME
     run_id: str | None = None
+    as_of_date: dt.date | None = None
 
 
 def _stable_id(*parts: object) -> str:
@@ -734,6 +735,34 @@ def refresh_fundamental_calendar_ttm(
     )
 
 
+def _resolve_coverage_as_of_date(store: DuckDBStore, options: CalendarizationOptions) -> dt.date:
+    """Resolve ``as_of_date`` without reading the clock.
+
+    An explicit ``options.as_of_date`` wins. Otherwise this derives a
+    deterministic source-derived date from the maximum ``available_at`` already
+    recorded for ``options.source`` across the two inputs this report scans
+    (``fundamental_calendar_map`` and ``fundamental_calendar_ttm``), so rerunning
+    the same inputs with the same explicit date -- or none at all, once the
+    upstream data stops changing -- reproduces the same value. Raises via
+    ``resolve_as_of_date`` when neither is available.
+    """
+    if options.as_of_date is not None:
+        return options.as_of_date
+    row = store.con.execute(
+        """
+        SELECT greatest(
+            coalesce((SELECT max(available_at) FROM fundamental_calendar_map WHERE source = ?), TIMESTAMP '1970-01-01'),
+            coalesce((SELECT max(available_at) FROM fundamental_calendar_ttm WHERE source = ?), TIMESTAMP '1970-01-01')
+        )
+        """,
+        [options.source, options.source],
+    ).fetchone()
+    source_max_available_at = row[0] if row is not None else None
+    if source_max_available_at == dt.datetime(1970, 1, 1):
+        source_max_available_at = None
+    return resolve_as_of_date(None, source_max_date=source_max_available_at)
+
+
 def refresh_calendarization_coverage(
     store: DuckDBStore,
     options: CalendarizationOptions | None = None,
@@ -741,6 +770,8 @@ def refresh_calendarization_coverage(
     """Refresh the calendarization coverage/gating report."""
 
     options = options or CalendarizationOptions()
+    as_of_date = _resolve_coverage_as_of_date(store, options)
+    available_at = dt.datetime.combine(as_of_date, dt.time(22, 0))
     with store.transaction():
         store.con.execute("DELETE FROM calendarization_coverage WHERE source = ?", [options.source])
         store.con.execute(
@@ -814,7 +845,7 @@ def refresh_calendarization_coverage(
                 )
             )
             SELECT
-                sha256(concat_ws('|', ?, CAST(current_date AS VARCHAR))) AS coverage_id,
+                sha256(concat_ws('|', ?, CAST(? AS VARCHAR))) AS coverage_id,
                 ? AS source,
                 (SELECT count(*) FROM fundamental_periods) AS period_count,
                 (SELECT count(*) FROM mapped) AS map_row_count,
@@ -829,8 +860,8 @@ def refresh_calendarization_coverage(
                 (SELECT duplicate_count FROM duplicate_calendar_ttm) AS duplicate_calendar_ttm_window_count,
                 (SELECT count(*) FROM fundamental_ttm_points WHERE calculation_method = ?) AS stitched_ttm_row_count,
                 (SELECT duplicate_count FROM duplicate_stitched) AS duplicate_stitched_ttm_window_count,
-                current_date AS as_of_date,
-                now() AS available_at,
+                CAST(? AS DATE) AS as_of_date,
+                CAST(? AS TIMESTAMP) AS available_at,
                 true AS is_latest_revision,
                 ? AS run_id,
                 now() AS source_loaded_at
@@ -840,8 +871,11 @@ def refresh_calendarization_coverage(
                 options.source,
                 STITCHED_TTM_METHOD,
                 options.source,
+                as_of_date,
                 options.source,
                 STITCHED_TTM_METHOD,
+                as_of_date,
+                available_at,
                 options.run_id,
             ],
         )

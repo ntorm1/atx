@@ -413,6 +413,80 @@ def test_refresh_calendar_map_and_quality_checks(tmp_store) -> None:
     assert result.status == "failed"
 
 
+def test_calendarization_coverage_is_byte_identical_across_reruns_with_a_pinned_as_of_date(
+    tmp_store,
+) -> None:
+    """The clock must never leak into ``coverage_id``/``as_of_date``/``available_at``.
+
+    Two reruns over the same inputs with the same explicit ``as_of_date`` must
+    reproduce the exact same coverage row -- the regression this guards against
+    is ``run_calendarization_refresh`` reading ``current_date``/``now()`` in SQL,
+    which would make every run non-reproducible.
+    """
+    from atx_db.calendarization import CalendarizationOptions, run_calendarization_refresh
+
+    _insert_period(
+        tmp_store,
+        period_id="pinned-q1",
+        security_id="SEC-CIK-0000000201",
+        symbol="PIN",
+        start=dt.date(2024, 1, 1),
+        end=dt.date(2024, 3, 31),
+        normalized_period_type="quarter",
+        fiscal_year=2024,
+        fiscal_period="Q1",
+        accession="pinned-q1",
+    )
+
+    pinned_as_of_date = dt.date(2025, 6, 1)
+    options = CalendarizationOptions(run_id="pinned-run", as_of_date=pinned_as_of_date)
+
+    first = run_calendarization_refresh(tmp_store, options)
+    first_row = tmp_store.con.execute(
+        "SELECT coverage_id, as_of_date, available_at FROM calendarization_coverage WHERE source = ?",
+        [options.source],
+    ).fetchone()
+
+    second = run_calendarization_refresh(tmp_store, options)
+    second_row = tmp_store.con.execute(
+        "SELECT coverage_id, as_of_date, available_at FROM calendarization_coverage WHERE source = ?",
+        [options.source],
+    ).fetchone()
+
+    assert first == second
+    assert first_row == second_row
+    assert first_row is not None
+    assert first_row[1] == pinned_as_of_date
+    assert first_row[2] == dt.datetime(2025, 6, 1, 22, 0)
+
+
+def test_calendarization_coverage_derives_as_of_date_from_source_data_when_unset(tmp_store) -> None:
+    """No explicit ``as_of_date`` -> derive from the max input ``available_at``, not the clock."""
+    from atx_db.calendarization import CalendarizationOptions, run_calendarization_refresh
+
+    _insert_period(
+        tmp_store,
+        period_id="derived-q1",
+        security_id="SEC-CIK-0000000202",
+        symbol="DER",
+        start=dt.date(2024, 1, 1),
+        end=dt.date(2024, 3, 31),
+        normalized_period_type="quarter",
+        fiscal_year=2024,
+        fiscal_period="Q1",
+        accession="derived-q1",
+        available_at=dt.datetime(2025, 4, 17, 22, 0),
+    )
+
+    options = CalendarizationOptions(run_id="derived-run")
+    run_calendarization_refresh(tmp_store, options)
+    row = tmp_store.con.execute(
+        "SELECT as_of_date, available_at FROM calendarization_coverage WHERE source = ?",
+        [options.source],
+    ).fetchone()
+    assert row == (dt.date(2025, 4, 17), dt.datetime(2025, 4, 17, 22, 0))
+
+
 def _seed_calendar_ttm_issuer(
     store,
     *,

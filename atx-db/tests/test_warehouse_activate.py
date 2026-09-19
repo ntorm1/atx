@@ -1,14 +1,18 @@
 """``scripts/warehouse_activate.py``: the governed-migrations seam and dry-run plan.
 
-The script must run the governed migration path (checkpoint + backup + locked
-apply + verify, restore-on-failure) BEFORE opening the ladder's own store when
-the warehouse file already exists, but must never touch a fresh (non-existent)
-file that way -- ``stage_migrate`` bootstraps that one directly -- and must
-never touch anything at all under ``--dry-run``. These tests inject a fake
-governed-migrations callable at the ``main(argv, *, governed_migrations=...)``
-seam and stub out ``run_activation`` so no real ladder work (schema-from-
-scratch, network, subprocess shard-outs) runs; that behaviour is already
-covered by ``tests/test_activation_ladder.py``.
+The script delegates to ``atx_db.activation.run_activation_from_args`` (the single
+governed-then-ladder implementation, shared with the ``atx-db activate``
+subcommand): it must run the governed migration path (checkpoint + backup +
+locked apply + verify, restore-on-failure) BEFORE opening the ladder's own store
+when the warehouse file already exists AND has at least one pending migration,
+must skip it entirely when the warehouse is already at head (the governed path
+copies and re-hashes the whole file -- expensive to pay on every resume/``--only``
+call), must never touch a fresh (non-existent) file that way -- ``stage_migrate``
+bootstraps that one directly -- and must never touch anything at all under
+``--dry-run``. These tests inject fake ``governed_migrations``/``run_activation``
+callables at the ``main(argv, *, governed_migrations=..., run_activation=...)``
+seam so no real ladder work (schema-from-scratch, network, subprocess shard-outs)
+runs; that behaviour is already covered by ``tests/test_activation_ladder.py``.
 """
 
 from __future__ import annotations
@@ -32,44 +36,27 @@ def _load_warehouse_activate_module() -> ModuleType:
     return module
 
 
-def _stub_run_activation(monkeypatch, module: ModuleType) -> list[object]:
-    """Replace run_activation with a no-op recorder so no real ladder work runs."""
-    calls: list[object] = []
+def _fake_run_activation(calls: list[object]):
+    """A no-op ladder recorder so no real ladder work runs."""
 
     def fake_run_activation(options, *, stages=None, **kwargs):
         calls.append(options)
         return []
 
-    monkeypatch.setattr(module, "run_activation", fake_run_activation)
-    return calls
+    return fake_run_activation
 
 
-def test_main_runs_governed_migrations_before_the_ladder_when_the_db_exists(monkeypatch, built_warehouse):
+def test_main_skips_governed_migrations_when_the_warehouse_is_already_at_head(monkeypatch, built_warehouse):
+    """``built_warehouse`` copies the fully-migrated schema template: nothing pending."""
     module = _load_warehouse_activate_module()
     db_path = built_warehouse("existing.duckdb")
     migration_calls: list[Path] = []
-    ladder_calls = _stub_run_activation(monkeypatch, module)
+    ladder_calls: list[object] = []
 
     exit_code = module.main(
         ["--db-path", str(db_path), "--only", "migrate"],
         governed_migrations=migration_calls.append,
-    )
-
-    assert exit_code == 0
-    assert migration_calls == [db_path]
-    assert len(ladder_calls) == 1
-
-
-def test_main_skips_governed_migrations_for_a_fresh_database(monkeypatch, tmp_path):
-    module = _load_warehouse_activate_module()
-    db_path = tmp_path / "brand-new.duckdb"
-    assert not db_path.exists()
-    migration_calls: list[Path] = []
-    ladder_calls = _stub_run_activation(monkeypatch, module)
-
-    exit_code = module.main(
-        ["--db-path", str(db_path), "--only", "migrate"],
-        governed_migrations=migration_calls.append,
+        run_activation=_fake_run_activation(ladder_calls),
     )
 
     assert exit_code == 0
@@ -77,15 +64,63 @@ def test_main_skips_governed_migrations_for_a_fresh_database(monkeypatch, tmp_pa
     assert len(ladder_calls) == 1
 
 
-def test_main_skips_governed_migrations_under_dry_run_even_if_the_db_exists(monkeypatch, built_warehouse):
+def test_main_runs_governed_migrations_once_before_the_ladder_when_a_migration_is_pending(
+    monkeypatch, built_warehouse
+):
+    module = _load_warehouse_activate_module()
+    db_path = built_warehouse("pending.duckdb")
+    monkeypatch.setattr("atx_db.migration_admin.pending_migrations", lambda path: [999999])
+    call_log: list[str] = []
+
+    def fake_governed(path: Path) -> None:
+        assert path == db_path
+        call_log.append("governed")
+
+    def fake_run_activation(options, *, stages=None, **kwargs):
+        call_log.append("ladder")
+        return []
+
+    exit_code = module.main(
+        ["--db-path", str(db_path), "--only", "migrate"],
+        governed_migrations=fake_governed,
+        run_activation=fake_run_activation,
+    )
+
+    assert exit_code == 0
+    assert call_log == ["governed", "ladder"]
+
+
+def test_main_skips_governed_migrations_for_a_fresh_database(monkeypatch, tmp_path):
+    module = _load_warehouse_activate_module()
+    db_path = tmp_path / "brand-new.duckdb"
+    assert not db_path.exists()
+    migration_calls: list[Path] = []
+    ladder_calls: list[object] = []
+
+    exit_code = module.main(
+        ["--db-path", str(db_path), "--only", "migrate"],
+        governed_migrations=migration_calls.append,
+        run_activation=_fake_run_activation(ladder_calls),
+    )
+
+    assert exit_code == 0
+    assert migration_calls == []
+    assert len(ladder_calls) == 1
+
+
+def test_main_skips_governed_migrations_under_dry_run_even_if_a_migration_is_pending(
+    monkeypatch, built_warehouse
+):
     module = _load_warehouse_activate_module()
     db_path = built_warehouse("existing-dry-run.duckdb")
+    monkeypatch.setattr("atx_db.migration_admin.pending_migrations", lambda path: [999999])
     migration_calls: list[Path] = []
-    ladder_calls = _stub_run_activation(monkeypatch, module)
+    ladder_calls: list[object] = []
 
     exit_code = module.main(
         ["--db-path", str(db_path), "--only", "migrate", "--dry-run"],
         governed_migrations=migration_calls.append,
+        run_activation=_fake_run_activation(ladder_calls),
     )
 
     assert exit_code == 0
@@ -97,18 +132,16 @@ def test_main_skips_governed_migrations_under_dry_run_even_if_the_db_exists(monk
 def test_select_stages_slice_is_forwarded_to_the_ladder(monkeypatch, built_warehouse):
     module = _load_warehouse_activate_module()
     db_path = built_warehouse("slice.duckdb")
-    _stub_run_activation(monkeypatch, module)
     captured: dict[str, object] = {}
 
     def fake_run_activation(options, *, stages=None, **kwargs):
         captured["stages"] = stages
         return []
 
-    monkeypatch.setattr(module, "run_activation", fake_run_activation)
-
     module.main(
         ["--db-path", str(db_path), "--only", "provider_coverage", "--only", "migrate", "--dry-run"],
         governed_migrations=lambda path: None,
+        run_activation=fake_run_activation,
     )
 
     # select_stages always returns STAGE_ORDER order regardless of --only order.
@@ -136,3 +169,50 @@ def test_script_dry_run_emits_exactly_the_requested_stage_lines(built_warehouse)
     lines = [json.loads(line) for line in completed.stdout.strip().splitlines()]
     assert [line["stage"] for line in lines] == ["migrate", "provider_coverage"]
     assert [line["status"] for line in lines] == ["dry_run", "dry_run"]
+
+
+# --- atx_db.activation.run_activation_from_args: the single shared implementation ---
+
+
+def test_run_activation_from_args_skips_governed_migrations_when_at_head(built_warehouse):
+    from atx_db.activation import run_activation_from_args
+
+    module = _load_warehouse_activate_module()
+    db_path = built_warehouse("direct-at-head.duckdb")
+    args = module.parse_args(["--db-path", str(db_path), "--only", "migrate"])
+    migration_calls: list[Path] = []
+    ladder_calls: list[object] = []
+
+    exit_code = run_activation_from_args(
+        args,
+        governed_migrations=migration_calls.append,
+        run_activation=_fake_run_activation(ladder_calls),
+    )
+
+    assert exit_code == 0
+    assert migration_calls == []
+    assert len(ladder_calls) == 1
+
+
+def test_run_activation_from_args_runs_governed_migrations_once_when_pending(monkeypatch, built_warehouse):
+    from atx_db.activation import run_activation_from_args
+
+    module = _load_warehouse_activate_module()
+    db_path = built_warehouse("direct-pending.duckdb")
+    monkeypatch.setattr("atx_db.migration_admin.pending_migrations", lambda path: [999999])
+    args = module.parse_args(["--db-path", str(db_path), "--only", "migrate"])
+    call_log: list[str] = []
+
+    def fake_governed(path: Path) -> None:
+        call_log.append("governed")
+
+    def fake_run_activation(options, *, stages=None, **kwargs):
+        call_log.append("ladder")
+        return []
+
+    exit_code = run_activation_from_args(
+        args, governed_migrations=fake_governed, run_activation=fake_run_activation
+    )
+
+    assert exit_code == 0
+    assert call_log == ["governed", "ladder"]

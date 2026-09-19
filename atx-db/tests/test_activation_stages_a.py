@@ -158,6 +158,49 @@ def test_security_master_stage_uses_the_injected_downloader(tmp_store, tmp_path,
     assert result.rows == 1
     row = tmp_store.con.execute("SELECT count(*) FROM sec_company_tickers").fetchone()
     assert row is not None and row[0] == 1
+    sha_row = tmp_store.con.execute(
+        "SELECT sha256 FROM raw_source_files WHERE dataset_id = 'sec_security_master'"
+    ).fetchone()
+    assert sha_row is not None and sha_row[0] and len(sha_row[0]) == 64
+
+
+_NASDAQ_LISTED_TXT = (
+    "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares\n"
+    "AAA|AAA Corp|Q|N|N|100|N|N\n"
+)
+_OTHER_LISTED_TXT = (
+    "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol\n"
+    "BBB|BBB Corp|N|BBB|N|100|N|BBB\n"
+)
+
+
+def test_symbol_directory_stage_records_source_files_with_sha256(tmp_store, tmp_path, three_symbol_zip):
+    from atx_db.activation import stage_symbol_directory
+
+    payloads = {
+        "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt": _NASDAQ_LISTED_TXT,
+        "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt": _OTHER_LISTED_TXT,
+    }
+
+    def fake_downloader(url: str, dest: Path, *, user_agent: str) -> int:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(payloads[url], encoding="utf-8")
+        return dest.stat().st_size
+
+    options = ActivationOptions(
+        **{**_options(tmp_path, three_symbol_zip).as_dict(), "downloader": fake_downloader}
+    )
+    result = stage_symbol_directory(tmp_store, options)
+    assert result.rows == 2
+    rows = tmp_store.con.execute(
+        "SELECT source_url, sha256, byte_count FROM raw_source_files "
+        "WHERE dataset_id = 'nasdaq_symbol_directory' ORDER BY source_url"
+    ).fetchall()
+    assert len(rows) == 2
+    for source_url, sha256, byte_count in rows:
+        assert sha256 is not None and len(sha256) == 64
+        assert byte_count is not None and byte_count > 0
+        assert source_url in payloads
 
 
 def test_stages_fail_fast_without_a_sec_user_agent(tmp_store, tmp_path, three_symbol_zip):
