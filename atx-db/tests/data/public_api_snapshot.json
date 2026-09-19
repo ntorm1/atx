@@ -558,6 +558,7 @@
     "thirteenf_signals",
     "ticker_history",
     "ticker_history_bulk",
+    "ticker_history_extract",
     "twin_momentum",
     "universe",
     "universe_asof",
