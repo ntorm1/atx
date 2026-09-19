@@ -502,7 +502,10 @@ def _create_discrete_quarters(store: DuckDBStore, *, symbols: tuple[str, ...]) -
              AND rule.basis = 'quarterly'
              AND coalesce(rule.valid_from, DATE '0001-01-01') <= derived.period_end
              AND coalesce(rule.valid_to, DATE '9999-12-31') > derived.period_end
-            WHERE rule.combination_rule IN ('identity', 'coalesce_priority', 'first_non_null')
+            WHERE rule.combination_rule IN (
+                'identity', 'coalesce_priority', 'first_non_null',
+                'coalesce_or_sum', 'coalesce_or_difference'
+            )
         )
         SELECT
             upstream_source,
@@ -573,7 +576,10 @@ def _create_output(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
              AND r.basis = c.basis
              AND coalesce(r.valid_from, DATE '0001-01-01') <= c.period_end
              AND coalesce(r.valid_to, DATE '9999-12-31') > c.period_end
-            WHERE r.combination_rule IN ('identity', 'coalesce_priority', 'first_non_null')
+            WHERE r.combination_rule IN (
+                'identity', 'coalesce_priority', 'first_non_null',
+                'coalesce_or_sum', 'coalesce_or_difference'
+            )
         )
         SELECT
             upstream_source,
@@ -669,7 +675,9 @@ def _create_output(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
              AND c.basis = r.basis
              AND coalesce(r.valid_from, DATE '0001-01-01') <= c.period_end
              AND coalesce(r.valid_to, DATE '9999-12-31') > c.period_end
-            WHERE r.combination_rule IN ('sum', 'difference')
+            WHERE r.combination_rule IN (
+                'sum', 'difference', 'coalesce_or_sum', 'coalesce_or_difference'
+            )
         ),
         visible_inputs AS (
             SELECT
@@ -707,7 +715,8 @@ def _create_output(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
         ),
         picked AS (
             SELECT * FROM visible_inputs WHERE input_rank_at_event = 1
-        )
+        ),
+        aggregated AS (
         SELECT
             string_agg(DISTINCT upstream_source, '+' ORDER BY upstream_source) AS upstream_source,
             security_id,
@@ -722,10 +731,10 @@ def _create_output(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
             any_value(fiscal_period) AS fiscal_period,
             CASE
                 WHEN absolute_value THEN abs(sum(
-                    CASE WHEN combination_rule = 'difference' AND input_position = 2 THEN -input_value ELSE input_value END
+                    CASE WHEN combination_rule IN ('difference', 'coalesce_or_difference') AND input_position = 2 THEN -input_value ELSE input_value END
                 ))
                 ELSE sum(
-                    CASE WHEN combination_rule = 'difference' AND input_position = 2 THEN -input_value ELSE input_value END
+                    CASE WHEN combination_rule IN ('difference', 'coalesce_or_difference') AND input_position = 2 THEN -input_value ELSE input_value END
                 ) * sign_multiplier
             END * scale_multiplier AS value,
             any_value(unit) AS unit,
@@ -748,6 +757,18 @@ def _create_output(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
             period_start, period_end, event_at
         HAVING count(DISTINCT input_position) = input_count
             OR missing_policy = 'zero_fill'
+        )
+        SELECT *
+        FROM aggregated agg
+        WHERE agg.combination_rule IN ('sum', 'difference')
+           OR NOT EXISTS (
+                SELECT 1
+                FROM _std_direct direct
+                WHERE direct.rule_id = agg.rule_id
+                  AND direct.security_id = agg.security_id
+                  AND direct.period_end = agg.period_end
+                  AND direct.available_at <= agg.available_at
+           )
         """
     )
     store.con.execute(

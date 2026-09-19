@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import csv
 import datetime as dt
 import json
 
 import pandas as pd
+import pytest
 
 from atx_db.fundamental_ratios import FundamentalRatiosOptions, refresh_fundamental_ratios
 from atx_db.quality import run_warehouse_quality_checks
 from atx_db.standardization import (
+    RULE_COLUMNS,
     SourceAlias,
     StandardizationRule,
     compute_standardization_exceptions,
@@ -77,6 +80,11 @@ def _candidate(
         "available_at": available_at,
         "input_rank": rank,
     }
+
+
+def _input_row(item_id: int, concept: str, value, **kwargs) -> dict:
+    """Alias for _candidate with a readable (item_id, concept, value) call shape."""
+    return _candidate(item_id, value, concept=concept, **kwargs)
 
 
 def test_standardization_rule_seed_covers_template_items():
@@ -783,3 +791,247 @@ def test_standardization_quality_gates_fire_and_pass(tmp_store):
         record=False,
     )[0]
     assert coverage_result.status == "passed"
+
+
+# --- Tier1-S2 T5: coalesce_or_sum / coalesce_or_difference -----------------
+
+
+def test_coalesce_or_difference_prefers_the_direct_tag():
+    """Tier1-S2 T5: with GrossProfit reported, the composition is not used."""
+    rules = (
+        _rule(
+            9101,
+            combination_rule="coalesce_or_difference",
+            source_item_ids=(9102, 9103),
+        ),
+    )
+    inputs = pd.DataFrame(
+        [
+            _input_row(9101, "GrossProfit", 400.0),
+            _input_row(9102, "Revenues", 1000.0),
+            _input_row(9103, "CostOfRevenue", 700.0),
+        ]
+    )
+    rows = compute_standardized_rows(inputs, rules=rules)
+
+    assert list(rows["value"]) == [400.0]
+    assert json.loads(rows["input_item_ids_json"].iloc[0]) == [9101]
+    assert rows["combination_rule"].iloc[0] == "coalesce_or_difference"
+
+
+def test_coalesce_or_difference_falls_back_to_the_composition():
+    """Tier1-S2 T5: with no GrossProfit tag, revenue - cost_of_revenue is emitted."""
+    rules = (
+        _rule(
+            9101,
+            combination_rule="coalesce_or_difference",
+            source_item_ids=(9102, 9103),
+        ),
+    )
+    inputs = pd.DataFrame(
+        [
+            _input_row(9102, "Revenues", 1000.0),
+            _input_row(9103, "CostOfRevenue", 700.0),
+        ]
+    )
+    rows = compute_standardized_rows(inputs, rules=rules)
+
+    assert list(rows["value"]) == [300.0]
+    assert json.loads(rows["input_item_ids_json"].iloc[0]) == [9102, 9103]
+
+
+def test_coalesce_or_sum_prefers_the_direct_tag_then_sums():
+    rules = (_rule(9201, combination_rule="coalesce_or_sum", source_item_ids=(9202, 9203)),)
+
+    direct = compute_standardized_rows(
+        pd.DataFrame(
+            [
+                _input_row(9201, "PaymentsOfDividends", 90.0),
+                _input_row(9202, "PaymentsOfDividendsCommonStock", 70.0),
+                _input_row(9203, "PaymentsOfDividendsPreferredStock", 25.0),
+            ]
+        ),
+        rules=rules,
+    )
+    assert list(direct["value"]) == [90.0]
+
+    fallback = compute_standardized_rows(
+        pd.DataFrame(
+            [
+                _input_row(9202, "PaymentsOfDividendsCommonStock", 70.0),
+                _input_row(9203, "PaymentsOfDividendsPreferredStock", 25.0),
+            ]
+        ),
+        rules=rules,
+    )
+    assert list(fallback["value"]) == [95.0]
+
+
+def test_coalesce_or_difference_rejects_wrong_input_arity(tmp_path):
+    seed = tmp_path / "standardization_rules.csv"
+    with seed.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(RULE_COLUMNS)
+        writer.writerow(
+            [
+                "std_annual_9999", "9999", "bad", "annual", "[]", "[1001]",
+                "coalesce_or_difference", "statement_normalized", "identity",
+                "skip", "true", "1900-01-01", "",
+            ]
+        )
+    with pytest.raises(ValueError, match="requires exactly two source item ids"):
+        read_standardization_rules(seed)
+
+
+def _seed_statement_points(store, rows, *, id_prefix: str = "sp", available_at: dt.datetime = dt.datetime(2026, 2, 1)):
+    """Insert minimal annual statement points for security TST, FY2025.
+
+    NOTE: the task-5 brief's original version of this helper predates the
+    ``fact_revision_id`` NOT NULL column (and several other now-required
+    columns) on ``fundamental_statement_points``; the column list below
+    matches the live schema (see ``schema.py`` + migrations), following the
+    pattern used by ``tests/test_pit_snapshot.py::_insert_statement``.
+    """
+    from atx_db.fundamental_statements import seed_fundamental_statement_map
+    from atx_db.item_registry import seed_fundamental_item_registry
+
+    seed_fundamental_item_registry(store)
+    seed_fundamental_statement_map(store)
+    for index, (taxonomy, concept, canonical_metric, item_id, value) in enumerate(rows):
+        accession = f"{id_prefix}-acc-{index}"
+        cols = {
+            "statement_point_id": f"{id_prefix}-{index}",
+            "fact_revision_id": f"{id_prefix}-fr-{index}",
+            "revision_group_id": f"rg-{id_prefix}-{index}",
+            "source": "SEC companyfacts",
+            "security_id": "SEC-TST",
+            "symbol": "TST",
+            "cik": "1",
+            "statement_type": "income_statement",
+            "statement_section": "profitability",
+            "canonical_metric": canonical_metric,
+            "canonical_label": canonical_metric,
+            "taxonomy": taxonomy,
+            "concept": concept,
+            "unit": "USD",
+            "unit_type": "monetary",
+            "period_type": "duration",
+            "normal_balance": "credit",
+            "period_start": dt.date(2025, 1, 1),
+            "period_end": dt.date(2025, 12, 31),
+            "as_of_date": dt.date(2025, 12, 31),
+            "available_at": available_at,
+            "fiscal_year": 2025,
+            "fiscal_period": "FY",
+            "accession_number": accession,
+            "source_accession": accession,
+            "filed_date": available_at.date(),
+            "revision_sequence": 1,
+            "revision_count": 1,
+            "is_latest_revision": True,
+            "is_value_changed": True,
+            "value": value,
+            "item_id": item_id,
+            "source_url": f"https://example.invalid/{accession}",
+            "source_loaded_at": available_at,
+            "updated_at": available_at,
+        }
+        keys = ", ".join(cols)
+        store.con.execute(
+            f"INSERT INTO fundamental_statement_points ({keys}) VALUES ({', '.join(['?'] * len(cols))})",
+            list(cols.values()),
+        )
+
+
+def test_set_based_fallback_composition_emits_gross_profit(tmp_store):
+    """Tier1-S2 T5: the set-based engine honours the fallback too.
+
+    Uses a local rule (not default_standardization_rules()) because no committed
+    seed row uses coalesce_or_difference yet -- the rule-set digest stays fixed.
+    """
+    from atx_db._standardization_set_based import refresh_standardized_set_based
+    from atx_db.standardization import FundamentalStandardizationOptions
+
+    _seed_statement_points(
+        tmp_store,
+        [
+            ("us-gaap", "Revenues", "revenue", 1001, 1000.0),
+            ("us-gaap", "CostOfRevenue", "cost_of_revenue", 1003, 700.0),
+        ],
+    )
+    gross_profit_rule = _rule(
+        1004,
+        combination_rule="coalesce_or_difference",
+        source_item_ids=(1001, 1003),
+        canonical_code="gross_profit__1004",
+    )
+    outcome = refresh_standardized_set_based(
+        tmp_store,
+        FundamentalStandardizationOptions(symbols=("TST",)),
+        (gross_profit_rule,),
+    )
+    gross = tmp_store.con.execute(
+        "SELECT value, combination_rule FROM fundamental_standardized WHERE item_id = 1004"
+    ).fetchall()
+
+    assert outcome.exception_row_count >= 0
+    assert gross and gross[0][0] == pytest.approx(300.0)
+    assert gross[0][1] == "coalesce_or_difference"
+
+
+def test_set_based_fallback_composition_is_pit_explicit_on_restatement(tmp_store):
+    """Tier1-S2 T5: a restated input moves the composed value's available_at.
+
+    CostOfRevenue is filed once, then restated with a new value at a later
+    available_at. The composed gross_profit must appear as two PIT revisions,
+    the second carrying the restated input's available_at as its own.
+    """
+    from atx_db._standardization_set_based import refresh_standardized_set_based
+    from atx_db.standardization import FundamentalStandardizationOptions
+
+    t1 = dt.datetime(2026, 2, 1)
+    t2 = dt.datetime(2026, 5, 1)
+    _seed_statement_points(
+        tmp_store,
+        [
+            ("us-gaap", "Revenues", "revenue", 1001, 1000.0),
+            ("us-gaap", "CostOfRevenue", "cost_of_revenue", 1003, 700.0),
+        ],
+        id_prefix="orig",
+        available_at=t1,
+    )
+    _seed_statement_points(
+        tmp_store,
+        [
+            ("us-gaap", "CostOfRevenue", "cost_of_revenue", 1003, 750.0),
+        ],
+        id_prefix="restated",
+        available_at=t2,
+    )
+    gross_profit_rule = _rule(
+        1004,
+        combination_rule="coalesce_or_difference",
+        source_item_ids=(1001, 1003),
+        canonical_code="gross_profit__1004",
+    )
+    refresh_standardized_set_based(
+        tmp_store,
+        FundamentalStandardizationOptions(symbols=("TST",)),
+        (gross_profit_rule,),
+    )
+    revisions = tmp_store.con.execute(
+        """
+        SELECT value, available_at, is_latest_revision
+        FROM fundamental_standardized
+        WHERE item_id = 1004
+        ORDER BY available_at
+        """
+    ).fetchall()
+
+    assert len(revisions) == 2
+    assert revisions[0][0] == pytest.approx(300.0)
+    assert revisions[0][1] == t1
+    assert revisions[0][2] is False
+    assert revisions[1][0] == pytest.approx(250.0)
+    assert revisions[1][1] == t2
+    assert revisions[1][2] is True

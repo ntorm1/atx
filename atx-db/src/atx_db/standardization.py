@@ -28,8 +28,22 @@ DEFAULT_SOURCE = "fundamental_standardization_v1"
 SOURCE_NAME = "Standardized fundamental statement items"
 
 COMBINATION_RULES = frozenset(
-    {"coalesce_priority", "first_non_null", "identity", "sum", "difference"}
+    {
+        "coalesce_priority",
+        "first_non_null",
+        "identity",
+        "sum",
+        "difference",
+        # Tier1-S2 T5: prefer the item's own alias, else compose from
+        # source_item_ids. The engine allows one active rule per
+        # (item_id, basis), so derived-if-missing needs its own rule kind.
+        "coalesce_or_sum",
+        "coalesce_or_difference",
+    }
 )
+_COMPOSITION_RULES = frozenset({"sum", "difference", "coalesce_or_sum", "coalesce_or_difference"})
+_DIFFERENCE_RULES = frozenset({"difference", "coalesce_or_difference"})
+_DIRECT_FIRST_RULES = frozenset({"identity", "coalesce_priority", "first_non_null", "coalesce_or_sum", "coalesce_or_difference"})
 SIGN_RULES = frozenset({"statement_normalized", "as_reported", "absolute", "invert"})
 SCALE_RULES = frozenset({"identity", "thousands", "millions"})
 MISSING_POLICIES = frozenset({"skip", "zero_fill"})
@@ -222,10 +236,10 @@ def _read_rule(row: Mapping[str, str], *, row_number: int, seed_path: Path) -> S
         raise ValueError(f"{seed_path} row {row_number}: unknown scale_rule {rule.scale_rule!r}")
     if rule.missing_policy not in MISSING_POLICIES:
         raise ValueError(f"{seed_path} row {row_number}: unknown missing_policy {rule.missing_policy!r}")
-    if rule.combination_rule in {"sum", "difference"} and not rule.source_item_ids:
+    if rule.combination_rule in _COMPOSITION_RULES and not rule.source_item_ids:
         raise ValueError(f"{seed_path} row {row_number}: {rule.combination_rule} requires source_item_ids_json")
-    if rule.combination_rule == "difference" and len(rule.source_item_ids) != 2:
-        raise ValueError(f"{seed_path} row {row_number}: difference requires exactly two source item ids")
+    if rule.combination_rule in _DIFFERENCE_RULES and len(rule.source_item_ids) != 2:
+        raise ValueError(f"{seed_path} row {row_number}: {rule.combination_rule} requires exactly two source item ids")
     return rule
 
 
@@ -358,14 +372,14 @@ def _select_inputs(
     candidates: Sequence[Mapping[str, Any]],
     rule: StandardizationRule,
 ) -> tuple[float, list[Mapping[str, Any]]] | None:
-    if rule.combination_rule in {"identity", "coalesce_priority", "first_non_null"}:
+    if rule.combination_rule in _DIRECT_FIRST_RULES:
         direct = _best_direct_rows(candidates, rule)
-        if not direct:
+        if direct:
+            value = _normalize_value(direct[0].get("value"), rule)
+            if value is not None:
+                return value, [direct[0]]
+        if rule.combination_rule not in _COMPOSITION_RULES:
             return None
-        value = _normalize_value(direct[0].get("value"), rule)
-        if value is None:
-            return None
-        return value, [direct[0]]
 
     selected: list[Mapping[str, Any]] = []
     values: list[float] = []
@@ -385,11 +399,11 @@ def _select_inputs(
         selected.append(row)
         values.append(value)
 
-    if rule.combination_rule == "sum":
-        return sum(values), selected
-    if rule.combination_rule == "difference":
+    if not selected:
+        return None
+    if rule.combination_rule in _DIFFERENCE_RULES:
         return values[0] - values[1], selected
-    raise ValueError(f"unknown combination_rule {rule.combination_rule!r}")
+    return sum(values), selected
 
 
 def _max_present(values: Iterable[Any]) -> Any | None:
