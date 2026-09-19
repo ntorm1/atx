@@ -3460,3 +3460,37 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 **Type consistency.** `StageResult(rows: int, detail: dict[str, object])` is used identically in Tasks 3, 5, 6, 7. `ActivationOptions.as_dict()` is the only mutation idiom used in tests. `Downloader.__call__(url, dest, *, user_agent) -> int` is identical in Tasks 5 and 6. `resolve_as_of_date(explicit, *, source_max_date)` keeps the same keyword in Tasks 1 and 2. `STAGE_ORDER` is defined once in Task 3 and asserted against `STAGES` in Task 7.
 
 **Known cross-task ordering.** Task 3 changes `migrations/*.py`, which invalidates the conftest schema-template fingerprint; the first test run after Task 3 pays ~180 s. Tasks 4-8 reuse the rebuilt template.
+
+---
+
+## Addendum A (controller-ruled, binding for Tasks 3 and 8)
+
+### Task 3 addendum — equity_daily_bars uniqueness is a quality check, not a constraint
+
+Inside `bodies_0300.py`'s quality-check `conn.executemany(...)` block, add a second tuple after `activation_stage_runs_stuck_running`:
+
+```python
+            (
+                "duplicate_equity_daily_bar_keys",
+                "tbltickerhistory_daily",
+                "equity_daily_bars",
+                "critical",
+                0.0,
+                "eq",
+                True,
+                "failed",
+                "atx_tier1_parity",
+            ),
+```
+
+The check counts rows where `(source, security_id, trade_date)` occurs more than once in `equity_daily_bars` (expected 0).
+
+**Why a check and not a unique index.** `(source, symbol, trade_date)` is not unique by design: `ticker_history_bulk._create_line_map` splits a recycled ticker into two `security_id`s that both keep the same `symbol`, so a unique index would break `INSERT INTO equity_daily_bars SELECT * FROM equity_daily_bars_bulk_next`. `(source, security_id, trade_date)` *is* guaranteed by the bulk publisher but not by the pandas chunk path, which inserts before `disambiguate_vendor_collisions` repairs, and not by an existing live warehouse. A constraint added here would fail the migration and trigger a backup restore. The check makes the invariant visible without risking the activation.
+
+### Task 8 addendum
+
+- CI ruff list also includes `src/atx_db/factor_panel.py`, `src/atx_db/signal_eval.py`, `tests/test_determinism_panel_dedupe.py`, `src/atx_db/clock.py`.
+- Append to the runbook `### Determinism` subsection: "`source_loaded_at` is lineage only and is never an ordering or dedupe key: the factor panel selects duplicates by `(available_at, run_id)` in both its pandas and SQL read paths, and `factor_breadth.available_at` is the max of its input availabilities, falling back to `as_of_date + 22h` rather than to the clock."
+
+### Task 1 addendum
+See `.superpowers/sdd/2026-09-19-tier1-s1-foundation/task-1-addendum.md` (factor_panel dedupe ordering + signal_eval.compute_breadth fallback; new test file `tests/test_determinism_panel_dedupe.py`).
