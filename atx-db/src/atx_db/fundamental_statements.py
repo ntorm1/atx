@@ -43,6 +43,14 @@ CONCEPT_MAP_SEED_COLUMNS = (
 )
 CONCEPT_MAP_SUPPORTED_TAXONOMIES = ("us-gaap", "dei")
 
+# dei cover-page concepts the shares/float pipeline needs. They are not statement
+# lines, so they are not in the statement-map projection, but shares_outstanding.py
+# and the market-cap chain cannot run without them.
+DEI_COVER_PAGE_CONCEPTS: tuple[str, ...] = (
+    "EntityCommonStockSharesOutstanding",
+    "EntityPublicFloat",
+)
+
 
 def _fundamental_statement_map_pk_columns(store: DuckDBStore) -> tuple[str, ...]:
     try:
@@ -428,10 +436,47 @@ def concept_map_projection_rows(
     )
 
 
-def default_companyfacts_concepts() -> tuple[str, ...]:
-    """Concept names admitted by the companyfacts loader by default."""
+def rule_alias_concepts() -> tuple[tuple[str, str], ...]:
+    """Return sorted distinct (alias_scheme, alias_code) over active rules.
 
-    return tuple(sorted({row[1] for row in concept_map_projection_rows()}))
+    Imported lazily: standardization imports connection/dataset/warehouse and we
+    do not want fundamental_statements to pull that chain in at module import.
+    """
+
+    from .standardization import default_standardization_rules
+
+    return tuple(
+        sorted(
+            {
+                (alias.alias_scheme, alias.alias_code)
+                for rule in default_standardization_rules()
+                if rule.is_active
+                for alias in rule.source_aliases
+            }
+        )
+    )
+
+
+def default_companyfacts_concepts() -> tuple[str, ...]:
+    """Concept names admitted by the companyfacts loader by default.
+
+    Tier1-S2 T2: this used to be only the statement-map projection (137
+    concepts), which throttled the publication funnel - a curated alias could
+    never emit because its concept was never ingested. It is now the union of
+
+      1. the active, loadable statement-map projection,
+      2. every alias referenced by an active standardization rule whose scheme
+         is a supported taxonomy, and
+      3. the dei cover-page concepts.
+
+    All three inputs are committed seeds, so the result is deterministic.
+    """
+
+    concepts = {row[1] for row in concept_map_projection_rows()}
+    supported = set(CONCEPT_MAP_SUPPORTED_TAXONOMIES)
+    concepts.update(code for scheme, code in rule_alias_concepts() if scheme in supported)
+    concepts.update(DEI_COVER_PAGE_CONCEPTS)
+    return tuple(sorted(concepts))
 
 
 def seed_fundamental_statement_map(store: DuckDBStore) -> int:

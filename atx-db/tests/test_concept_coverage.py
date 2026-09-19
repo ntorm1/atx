@@ -16,14 +16,14 @@ from atx_db.fundamental_statements import (
     FUNDAMENTAL_STATEMENT_MAP_ROWS,
     SOURCE_NAME,
     concept_map_projection_rows,
+    default_companyfacts_concepts,
     seed_fundamental_statement_map,
     statement_map_overlay_exception_rows,
     statement_map_unloadable_overlay_rows,
     unexplained_statement_map_overlay_rows,
 )
-from atx_db.fundamentals import CANONICAL_CONCEPTS, DEFAULT_CONCEPTS, SUPPORTED_FACT_TAXONOMIES
+from atx_db.fundamentals import SUPPORTED_FACT_TAXONOMIES
 from atx_db.item_registry import read_fundamental_item_seed
-
 
 CONCEPT_MAP_PATH = Path(__file__).resolve().parents[1] / "src" / "atx_db" / "seeds" / "concept_map.csv"
 
@@ -151,20 +151,23 @@ def _insert_ratio(store, security_id: str) -> None:
 
 
 def test_default_concepts_cover_active_all_statement_map_concepts():
-    default_concepts = set(DEFAULT_CONCEPTS)
-    missing = {
-        f"{taxonomy}:{concept}"
-        for taxonomy, concept in _active_all_statement_map_concepts()
-        if concept not in default_concepts
-    }
-    assert not missing, f"active ALL-template concepts missing from DEFAULT_CONCEPTS: {sorted(missing)}"
+    # Tier1-S2 T2: the allowlist is now the union of the statement-map
+    # projection, active-rule aliases, and dei cover-page concepts. It must
+    # still COVER every active ALL-template statement-map concept; it is no
+    # longer restricted to them.
+    concepts = set(default_companyfacts_concepts())
+    missing = sorted(
+        concept for taxonomy, concept in _active_all_statement_map_concepts()
+        if concept not in concepts
+    )
+    assert missing == []
 
 
 def test_default_concepts_match_reviewable_concept_map_projection():
+    # Tier1-S2 T2: superset, not equality - see rule_alias_concepts().
     rows = _read_concept_map_seed()
-    seed_concepts = tuple(sorted({row[1] for row in rows}))
-    assert DEFAULT_CONCEPTS == CANONICAL_CONCEPTS
-    assert DEFAULT_CONCEPTS == seed_concepts
+    concepts = set(default_companyfacts_concepts())
+    assert {row[1] for row in rows} <= concepts
 
 
 def test_concept_map_csv_round_trips_generated_projection():
