@@ -59,6 +59,7 @@ STAGE_ORDER: tuple[str, ...] = (
     "standardized",
     "industry_templates",
     "reconciliation",
+    "universe_us_listed",
     "provider_coverage",
 )
 
@@ -772,6 +773,18 @@ def stage_reconciliation(store: DuckDBStore, options: ActivationOptions) -> Stag
     )
 
 
+def stage_universe_us_listed(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Rebuild the point-in-time US-listed universe from bars + directory + deciles."""
+
+    from .universe_us_listed import UniverseUsListedOptions, refresh_universe_us_listed
+
+    rows = refresh_universe_us_listed(
+        store,
+        UniverseUsListedOptions(as_of_date=options.as_of_date, run_id=options.run_id),
+    )
+    return StageResult(rows=rows, detail={"table": "universe_us_listed_membership"})
+
+
 def stage_provider_coverage(store: DuckDBStore, options: ActivationOptions) -> StageResult:
     from .provider_coverage import ProviderCoverageOptions, refresh_provider_coverage
 
@@ -805,6 +818,7 @@ STAGES.update(
         "standardized": stage_standardized,
         "industry_templates": stage_industry_templates,
         "reconciliation": stage_reconciliation,
+        "universe_us_listed": stage_universe_us_listed,
         "provider_coverage": stage_provider_coverage,
     }
 )

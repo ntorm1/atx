@@ -129,6 +129,7 @@ from .symbol_directory import (
 from .thirteenf import ThirteenFDataSet, ThirteenFOptions
 from .ticker_history import TickerHistoryDataset, TickerHistoryOptions
 from .universes import UniverseBuildOptions, UniverseMembershipDataset
+from .universe_us_listed import UniverseUsListedDataset, UniverseUsListedOptions
 from .watermarks import refresh_warehouse_watermarks
 from .warehouse import json_dumps, now_utc_naive
 from .xbrl_filing_contexts import XbrlFilingContextDataset, XbrlFilingContextOptions
@@ -1227,6 +1228,18 @@ def _fred_macro_options(params: dict[str, Any]) -> FredMacroOptions:
     )
 
 
+def _universe_us_listed_options(params: dict[str, Any]) -> UniverseUsListedOptions:
+    default = UniverseUsListedOptions()
+    return UniverseUsListedOptions(
+        universe_id=params.get("universe_id", default.universe_id),
+        lookback_days=int(params.get("lookback_days", default.lookback_days)),
+        market_source=params.get("market_source", default.market_source),
+        start_date=_date_or_none(params.get("start_date")),
+        end_date=_date_or_none(params.get("end_date")),
+        run_id=params.get("run_id"),
+    )
+
+
 DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     SecurityMasterDataset.dataset_id: (SecurityMasterDataset, _security_master_options),
     TickerHistoryDataset.dataset_id: (TickerHistoryDataset, _ticker_history_options),
@@ -1358,6 +1371,7 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     AlphaResearchDataset.dataset_id: (AlphaResearchDataset, _alpha_research_options),
     TradingCalendarDataset.dataset_id: (TradingCalendarDataset, _calendar_options),
     UniverseMembershipDataset.dataset_id: (UniverseMembershipDataset, _universe_options),
+    UniverseUsListedDataset.dataset_id: (UniverseUsListedDataset, _universe_us_listed_options),
     SicTaxonomyDataset.dataset_id: (SicTaxonomyDataset, lambda p: SicTaxonomyOptions()),
     FamaFrenchTaxonomyDataset.dataset_id: (FamaFrenchTaxonomyDataset, lambda p: FamaFrenchTaxonomyOptions()),
     NaicsTaxonomyDataset.dataset_id: (NaicsTaxonomyDataset, lambda p: NaicsTaxonomyOptions()),
@@ -1520,6 +1534,7 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "bulk_daily_bars_backfill": ("sec_security_master",),
     "trading_calendar": ("tbltickerhistory_daily",),
     "universe_memberships": ("tbltickerhistory_daily",),
+    "universe_us_listed": ("market_daily", "tbltickerhistory_daily"),
     "xbrl_filing_contexts": ("sec_submissions",),
     "xbrl_validation": ("xbrl_filing_contexts", "xbrl_taxonomy"),
     "xbrl_processor_runs": ("xbrl_filing_contexts",),
