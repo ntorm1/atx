@@ -1,0 +1,110 @@
+{
+  "observed_at_utc": "2026-09-20T19:36:03.159587+00:00",
+  "read_only": true,
+  "statistical_significance": "not_evaluated",
+  "production_eligibility": "not_certified",
+  "run": {
+    "columns": [
+      "run_id",
+      "run_kind",
+      "feature_source",
+      "feature_version",
+      "price_source",
+      "source_sha256",
+      "as_of_date",
+      "run_at",
+      "configuration_json",
+      "diagnostics_json"
+    ],
+    "rows": [
+      [
+        "custom-features-build1",
+        "build",
+        "atx_custom_price_liquidity_v1",
+        "cf1_v1",
+        "tbltickerhistory3_10y",
+        "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+        "2026-09-20",
+        "2026-09-20 22:00:00",
+        "{\"calendar_sha256\":\"19471066a6b59d57a44f99bb8b1edd7b89e5242bcdcb12cde28e7bdb0b8ff058\",\"cohort\":\"bar_observed_price5_adv63_1m_v1_not_certified_us_common\",\"definition_count\":8,\"partitions_sequential\":16,\"price_basis\":\"adjusted_close\",\"source_sha256_evidence\":\"operator-supplied published bulk artifact digest\",\"stored_source_loaded_at\":\"operational load clock, not historical availability proof\"}",
+        "{\"cohort_rows\":16338033,\"first_decision\":\"2012-03-27\",\"known_by_decision_rows\":31934514,\"last_decision\":\"2026-09-17\",\"production_blockers\":[\"historical US-common listing membership is not certified\",\"source economic adjustments and identity history are not certified\",\"modeled availability is not a verified historical delivery vintage\",\"complete delisting event and terminal-label coverage is not certified\",\"cost scenarios do not verify execution, borrow, capacity or realized turnover\"],\"rows\":31934514}"
+      ]
+    ]
+  },
+  "inventory": {
+    "columns": [
+      "rows",
+      "security_ids",
+      "first_decision",
+      "last_decision",
+      "known_by_decision",
+      "cohort_eligible",
+      "invalid_session_order",
+      "invalid_known_clock"
+    ],
+    "rows": [
+      [
+        31934514,
+        34224,
+        "2012-03-27",
+        "2026-09-17",
+        31934514,
+        16338033,
+        0,
+        0
+      ]
+    ]
+  },
+  "coverage": {
+    "columns": [
+      "reversal_5_finite",
+      "reversal_5_nonfinite",
+      "momentum_126_skip_21_finite",
+      "momentum_126_skip_21_nonfinite",
+      "volatility_scaled_momentum_63_finite",
+      "volatility_scaled_momentum_63_nonfinite",
+      "dollar_volume_shock_finite",
+      "dollar_volume_shock_nonfinite",
+      "close_location_pressure_21_finite",
+      "close_location_pressure_21_nonfinite",
+      "range_compression_finite",
+      "range_compression_nonfinite",
+      "liquidity_conditioned_reversal_finite",
+      "liquidity_conditioned_reversal_nonfinite",
+      "compression_accumulation_finite",
+      "compression_accumulation_nonfinite"
+    ],
+    "rows": [
+      [
+        29593359,
+        0,
+        26521953,
+        0,
+        28472775,
+        0,
+        28569192,
+        0,
+        30101514,
+        0,
+        28583137,
+        0,
+        28392687,
+        0,
+        28432813,
+        0
+      ]
+    ]
+  },
+  "labels_and_evaluations": {
+    "columns": [
+      "forward_labels",
+      "evaluations"
+    ],
+    "rows": [
+      [
+        0,
+        0
+      ]
+    ]
+  }
+}

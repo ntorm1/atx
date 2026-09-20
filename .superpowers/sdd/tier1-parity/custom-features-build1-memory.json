@@ -1,0 +1,30 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "scripts/build_custom_features.py",
+    "build",
+    "--db-path",
+    "data/warehouse.duckdb",
+    "--as-of-date",
+    "2026-09-20",
+    "--run-at",
+    "2026-09-20T22:00:00+00:00",
+    "--run-id",
+    "custom-features-build1",
+    "--source-sha256",
+    "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+    "--memory-limit",
+    "1GB",
+    "--partitions",
+    "16"
+  ],
+  "job_limit_gb": 3.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 7.920673370361328,
+    "commit_free_gb": 10.520931243896484
+  },
+  "child_pid": 19648,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 1.7670364379882812
+}

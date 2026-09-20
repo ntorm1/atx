@@ -42,6 +42,15 @@ All live work and tests run sequentially with the locked project Python runtime.
 
 ## Activation result
 
+The first custom-feature build subsequently completed over the corrected prices:
+31,934,514 daily rows /34,224 warehouse security IDs; 16,338,033 research-cohort
+rows. Eight feature columns have finite observations, with zero nonnull
+nonfinite values and zero measured date-order or modeled decision-clock errors.
+Peak process-tree memory was 1.767 GiB under the 3 GiB guard. Forward labels and
+decile evaluations remain pending. See [custom-feature measurements](CUSTOM_FEATURE_RESEARCH.md).
+This supersedes the earlier empty CF1 inventory below, not the still-empty
+fundamentals and market-metric surfaces.
+
 The next full-archive companyfacts attempt, `activation-companyfacts-archive1`,
 failed after 68.375 seconds on its first issuer. The correlated cleanup DELETE
 in `_replace_facts` exhausted the 1 GB DuckDB budget; native process-tree peak

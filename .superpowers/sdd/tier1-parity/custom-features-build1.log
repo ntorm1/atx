@@ -1,0 +1,14 @@
+{
+  "cohort_rows": 16338033,
+  "first_decision": "2012-03-27",
+  "known_by_decision_rows": 31934514,
+  "last_decision": "2026-09-17",
+  "production_blockers": [
+    "historical US-common listing membership is not certified",
+    "source economic adjustments and identity history are not certified",
+    "modeled availability is not a verified historical delivery vintage",
+    "complete delisting event and terminal-label coverage is not certified",
+    "cost scenarios do not verify execution, borrow, capacity or realized turnover"
+  ],
+  "rows": 31934514
+}

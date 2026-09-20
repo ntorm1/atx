@@ -3,7 +3,39 @@
 CF1 creates production warehouse research surfaces over the corrected daily price
 warehouse. These eight prespecified candidates complement the fundamentals,
 ratios, growth and per-share pipeline. They are not claimed novel, significant or
-profitable. The first live run has not yet been measured.
+profitable. The first full-price-universe build, `custom-features-build1`,
+completed on 2026-09-20; forward-return evaluation is still pending.
+
+The read-only post-build measurement found **31,934,514 daily rows across 34,224
+warehouse security IDs**, covering decision dates 2012-03-27 through 2026-09-17.
+Of these, 16,338,033 rows meet the prespecified price/liquidity research cohort.
+All rows pass the modeled decision-clock check, with zero invalid input/decision/
+entry date ordering. These are warehouse IDs and research eligibility counts,
+not certified issuer counts or historical US-common coverage.
+
+| Feature | Finite observations |
+| --- | ---: |
+| Five-session reversal | 29,593,359 |
+| Momentum with recent month skipped | 26,521,953 |
+| Volatility-scaled momentum | 28,472,775 |
+| Dollar-volume shock | 28,569,192 |
+| Close-location pressure | 30,101,514 |
+| Range compression | 28,583,137 |
+| Liquidity-conditioned reversal | 28,392,687 |
+| Compression accumulation | 28,432,813 |
+
+No feature has a nonnull nonfinite value. Missing values remain missing when
+their input-history requirements are unmet. The build used 1 GB DuckDB memory,
+one thread and 16 sequential partitions; measured process-tree peak was
+1.767 GiB under a 3 GiB guard. It retains the corrected source SHA-256
+`0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae`.
+The explicit run timestamp is the modeled observation cutoff, 2026-09-20
+22:00 UTC; the inspection's actual UTC timestamp is recorded separately.
+Evidence: `.superpowers/sdd/tier1-parity/custom-features-build1-memory.json`,
+`custom-features-build1.log` and `custom-features-build1-inspection.json` with its
+separate memory receipt. At inspection there were zero forward labels and zero
+evaluation records, so statistical significance and production eligibility
+remain unmeasured/uncertified.
 
 `custom_features_daily` is wide: one row per observed security/input session,
 carrying eight feature columns, coverage counts, a build reference and explicit
