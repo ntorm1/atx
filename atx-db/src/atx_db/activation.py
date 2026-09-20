@@ -70,6 +70,7 @@ STAGE_ORDER: tuple[str, ...] = (
     "survivorship_forward_returns",
     "item_coverage",
     "provider_coverage",
+    "equity_price_metrics",
     "quality",
 )
 
@@ -910,6 +911,29 @@ def stage_item_coverage(store: DuckDBStore, options: ActivationOptions) -> Stage
     return _production_panel(store, options, ItemCoverageDataset())
 
 
+def stage_equity_price_metrics(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Publish bounded daily risk metrics before the final warehouse checks."""
+    from .equity_price_metrics import EquityPriceMetricsOptions, refresh_equity_price_metrics
+
+    rows = refresh_equity_price_metrics(store, EquityPriceMetricsOptions(
+        as_of_date=resolve_as_of_date(options.as_of_date), run_id=options.run_id,
+    ))
+    diagnostic = store.con.execute("""
+        SELECT count(DISTINCT security_id), min(trade_date), max(trade_date), max(available_at)
+        FROM equity_price_metrics WHERE source = ?
+    """, ["derived_equity_price_metrics_v1"]).fetchone()
+    assert diagnostic is not None
+    return StageResult(rows, {
+        "source": "derived_equity_price_metrics_v1",
+        "as_of_date": resolve_as_of_date(options.as_of_date),
+        "run_id": options.run_id,
+        "security_count": int(diagnostic[0]),
+        "trade_date_start": diagnostic[1],
+        "trade_date_end": diagnostic[2],
+        "max_available_at": diagnostic[3],
+    })
+
+
 def stage_quality(store: DuckDBStore, options: ActivationOptions) -> StageResult:
     from .quality import run_warehouse_quality_checks  # type: ignore[attr-defined]
     results = run_warehouse_quality_checks(
@@ -967,6 +991,7 @@ STAGES.update(
         "survivorship_forward_returns": stage_survivorship_forward_returns,
         "item_coverage": stage_item_coverage,
         "provider_coverage": stage_provider_coverage,
+        "equity_price_metrics": stage_equity_price_metrics,
         "quality": stage_quality,
     }
 )
