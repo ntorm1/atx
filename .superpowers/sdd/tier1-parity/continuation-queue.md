@@ -2,6 +2,38 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override — 2026-09-20 20:54 UTC
+
+- Companyfacts archive3 STILL ACTIVE under the same session6840/worker9412,
+  launcher2332, guard3GiB/DB1GB/1thread. At20:53:19UTC:1675 processed,
+  1432loaded,229empty,13unavailable,ONEFAILED,8875863 written attempt rows.
+  First failure arose between progress1650 and1675. Loader records source/
+  normalization errors in DB/source receipts and final result, not per-member
+  stderr, so exact target/error cannot yet be inspected without the writer's
+  connection. Do not interrupt the healthy full run or open competing DB/probes.
+  After completion, inspect ALL source failures (final summary truncates50),
+  repair actual failures as tasks and reconcile successful coverage; do not
+  rerun the entire healthy archive solely to obtain this one error sooner.
+- Core breadth implementation READY and independent static review CLEAN,
+  core-metric-breadth-report.md / -review.md. Adds28 CSV rows plus4dead-code
+  reclamation entries in derived_registry.py; source total201, original173
+  preserved. New test_core_metric_breadth.py is queued after source writer
+  and stable0315. Implementer then aligned assertions to explicit NULL PIT
+  states on report; no extra review requested for that seam. NO TESTS run,
+  NO SOURCE COMMIT yet. Root uses locked .venv Python both guard and child,
+ 2.5GiB/-n0; no bare systemPython. Registry set entries owned by core only.
+- P1 /root/derived_pit_revision_repair is implementing critical historical
+  revision preservation under brief/audit. Owns0315 registry/migration and
+  derived/market/PIT consumer sources. Root additionally authorized exact
+  derived-coverage count predicate in activation.py and provider_coverage:
+  explicit invalid states must not fabricate finite valid metric coverage.
+  No concurrent registry/jobs/activation editor. No P1 runtime/review yet.
+- Root docs checkpointdfa7fbc9 records Critical evidence/brief; subsequent
+  program ruling is edited but not committed. Goal ACTIVE. Keep source running;
+  finish verified submissions resume, guarded focused/PIT verification and
+  commits, then run5 fromstatement_points --force, CF1labels/eval, measurements,
+  release and gate/merge approval. Stash@{0} still must be mentioned to user.
+
 ## Current controller override — 2026-09-20 20:42 UTC
 
 - Sole active DB writer remains activation-companyfacts-archive3, session6840,
