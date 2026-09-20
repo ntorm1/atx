@@ -56,7 +56,7 @@ def _columns(store, table: str) -> list[str]:
 def test_migration_302_is_registered_exactly_once():
     versions = [migration.version for migration in MIGRATIONS]
     assert versions.count(302) == 1
-    assert max(versions) == 302
+    assert max(versions) >= 302  # later sprints append 0303+
 
 
 def test_derived_metric_definitions_shape(tmp_store):
