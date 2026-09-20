@@ -1,0 +1,19 @@
+{
+  "command": [
+    "python",
+    "-m",
+    "pytest",
+    "-n0",
+    "tests/test_equity_price_metrics.py::TestRefreshIntegration",
+    "-q"
+  ],
+  "job_limit_gb": 3.0,
+  "status": "failed",
+  "headroom": {
+    "physical_free_gb": 6.047920227050781,
+    "commit_free_gb": 10.096794128417969
+  },
+  "child_pid": 10136,
+  "returncode": 1,
+  "native_peak_job_memory_gb": 0.9194374084472656
+}
