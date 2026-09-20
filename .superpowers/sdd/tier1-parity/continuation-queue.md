@@ -2,6 +2,63 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override - 2026-09-20 22:59 UTC
+
+- No production writer or runtime check currently active. CF5 COMMITTED
+  b9572b27; AF1/0316 COMMITTED 244af575 in separate pathspec-only task commits.
+  Both independent reviews had 0 Critical / 2 Important, all four findings
+  fixed and accepted on implementer reports plus root focused execution.
+- AF1 initial 79 cases covered after three fixture/seam fixes; fix3 six targeted
+  cases passed, peak 0.789284 GiB. Final strict mypy passed four AF1 files after
+  mechanical COUNT-result narrowing; touched Ruff passed. CF5 53 post-review
+  cases passed, peak 0.703762 GiB. No second independent reviews performed.
+- Root added exact _companyfacts_resume / _derived_annual snapshot names and
+  relocated existing _derived_pit next to them. Regenerated DATA_DICTIONARY.md
+  from current 201 definitions/API 2.1; pure generation passed under 1.5 GiB
+  guard, peak 0.570744 GiB. Root docs truth updates pending their own commit.
+- Next: commit root snapshot/dictionary/docs, then isolated committed-HEAD
+  import + module boundaries + schema contract via verify_committed_head.py
+  under 2.5 GiB guard. Check actual completion before starting another workload.
+  Then launch exact companyfacts archive4 verified resume prepared in
+  production-resume-after-cf5.md (UUID758f7d5c-73ae-4b66-a8c9-f1996afa163a).
+- Live still schema0314 and archive3 retained 38,500,008 facts=points. The CLI
+  will govern0315/0316 with a backup and 1 GB/one-thread migration settings.
+  Keep production3 GiB guard, one writer/workload, all sources/backups, no RAM
+  escalation. Then submissions resume, full run5, CF1 evaluation, measured
+  coverage/quality/release, full non-slow once, Codex whole-branch review, ask
+  before main. Preserve stash@{0} and unrelated/phantom-EOL work. Goal ACTIVE.
+
+## Current controller override - 2026-09-20 22:51 UTC
+
+- No production writer or runtime check currently active. Archive3's terminal
+  failure and 38,500,008 retained facts/points remain the latest live evidence.
+- CF5 COMMITTED b9572b27 in its own 13-path task commit. One independent review
+  found 0 Critical / 2 Important; both fixed and accepted on the implementer's
+  fix1 report and root execution. All 53 post-review focused cases passed,
+  peak job memory 0.703762 GiB; touched Ruff and new-module strict mypy passed.
+  Reports: companyfacts-archive3-repair-review.md, -fix1-report.md,
+  companyfacts-archive3-root-verification.md. No further review required.
+- AF1 remains applied/uncommitted in its 11 paths. Strict mypy passed after
+  fix1. Initial six-file run 76/79 passed; fix2 corrected forbidden NULL source
+  fixtures and the four-argument frame instrumentation wrapper. All three
+  affected selectors now passed, peak 0.790688 GiB. Production schema unchanged.
+- Fresh AF1 review /root/review_annual_fallback is finishing its single report:
+  two concrete Important issues found (unrelated annual span vetoes valid
+  quarterly metric; annual weighted-share branch retains quarterly coherence),
+  no Critical so far. Await final report, dispatch original AF1 implementer,
+  focused root execution, accept fixed Important issues on report. No speculative
+  rereview or full suite before the actual gate.
+- Root-only runtime rule continues. Production-resume-after-cf5.md prepares the
+  exact source UUIDs and order; those commands have NOT run. Finish AF1, commit
+  its migration with its source, pin exact new helper snapshot names, regenerate
+  dictionary, check committed HEAD, then companyfacts archive4 verified resume,
+  submissions verified resume, full activation-run5, CF1 evaluation, measured
+  live coverage/quality and first eligible release. Keep 1 GB/one thread within
+  the 3 GiB production guard; no global memory changes or other-app termination.
+- Goal ACTIVE; user scope includes a production fundamentals warehouse and
+  statistically tested custom signals, not just source ingestion. Preserve
+  stash@{0}, unrelated files and four content-empty EOL changes. Ask before main.
+
 ## Current controller override - 2026-09-20 22:29 UTC
 
 - No production writer. Archive3 terminal failure/recovery in22:07 override below

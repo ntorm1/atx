@@ -264,7 +264,7 @@ for the current rebuild's evidence and limitations.
 
 ## Derived metrics
 
-173 metrics, from `src/atx_db/seeds/derived_metric_definitions.csv`. Every value carries `available_at = max(input available_at)` and an `inputs_hash`.
+201 metrics, from `src/atx_db/seeds/derived_metric_definitions.csv`. Canonical filing-event states retain `available_at`, the selected arithmetic input clock in `arithmetic_available_at`, and an `inputs_hash`; an invalidation or selection event can occur after the arithmetic input clock.
 
 | family | metric | window | expression | description |
 | --- | --- | --- | --- | --- |
@@ -272,24 +272,47 @@ for the current rebuild's evidence and limitations.
 | growth | asset_turnover_change_yoy | ttm | asset_turnover - lag(asset_turnover, 4) | Year-over-year change in asset turnover. |
 | growth | book_value_growth_yoy | q | yoy(common_equity_q) | Year-over-year common book-value growth. |
 | growth | capex_growth_yoy | ttm | yoy(capex_ttm) | Year-over-year trailing capital-expenditure growth. |
+| growth | capex_q_growth_qoq | q | qoq(capex_q) | Quarter-over-quarter growth in unadjusted reported quarterly capital expenditure; fiscal-quarter comparisons may be seasonal. |
+| growth | capex_q_growth_yoy | q | yoy(capex_q) | Year-over-year growth in unadjusted reported quarterly capital expenditure; fiscal-quarter comparisons may be seasonal. |
 | growth | cfo_cagr_3y | ttm | cagr(cfo_ttm, 3) | Three-year compound annual trailing operating-cash-flow growth. |
 | growth | cfo_growth_yoy | ttm | yoy(cfo_ttm) | Year-over-year trailing operating-cash-flow growth. |
+| growth | cfo_q_growth_qoq | q | qoq(cash_flow_from_operations) | Quarter-over-quarter growth in unadjusted reported quarterly operating cash flow; fiscal-quarter comparisons may be seasonal. |
+| growth | cfo_q_growth_yoy | q | yoy(cash_flow_from_operations) | Year-over-year growth in unadjusted reported quarterly operating cash flow; fiscal-quarter comparisons may be seasonal. |
+| growth | common_equity_cagr_3y | q | cagr(common_equity_q, 3) | Three-year compound annual common-equity growth with positive endpoints required. |
+| growth | ebitda_cagr_3y | ttm | cagr(ebitda_ttm, 3) | Three-year compound annual trailing EBITDA growth with positive endpoints required. |
 | growth | eps_cagr_3y | ttm | cagr(eps_diluted_ttm, 3) | Three-year compound annual trailing diluted-EPS growth. |
 | growth | eps_diluted_growth_qoq | ttm | qoq(eps_diluted_ttm) | Quarter-over-quarter trailing diluted-EPS growth. |
 | growth | eps_diluted_growth_yoy | ttm | yoy(eps_diluted_ttm) | Year-over-year trailing diluted-EPS growth. |
+| growth | eps_diluted_q_growth_qoq | q | qoq(eps_diluted) | Quarter-over-quarter growth in unadjusted reported quarterly diluted EPS; fiscal-quarter comparisons may be seasonal. |
+| growth | eps_diluted_q_growth_yoy | q | yoy(eps_diluted) | Year-over-year growth in unadjusted reported quarterly diluted EPS; fiscal-quarter comparisons may be seasonal. |
+| growth | fcf_cagr_3y | ttm | cagr(fcf_ttm, 3) | Three-year compound annual trailing free-cash-flow growth with positive endpoints required. |
 | growth | fcf_growth_yoy | ttm | yoy(fcf_ttm) | Year-over-year trailing free-cash-flow growth. |
+| growth | fcf_q_growth_qoq | q | qoq(fcf_q) | Quarter-over-quarter growth in unadjusted reported quarterly free cash flow; fiscal-quarter comparisons may be seasonal. |
+| growth | fcf_q_growth_yoy | q | yoy(fcf_q) | Year-over-year growth in unadjusted reported quarterly free cash flow; fiscal-quarter comparisons may be seasonal. |
 | growth | gross_margin_change_yoy | ttm | gross_margin - lag(gross_margin, 4) | Year-over-year change in trailing gross margin. |
+| growth | gross_profit_cagr_3y | ttm | cagr(gross_profit_ttm, 3) | Three-year compound annual trailing gross-profit growth with positive endpoints required. |
 | growth | gross_profit_growth_yoy | ttm | yoy(gross_profit_ttm) | Year-over-year trailing gross-profit growth. |
+| growth | gross_profit_q_growth_qoq | q | qoq(gross_profit_q) | Quarter-over-quarter growth in unadjusted reported quarterly gross profit; fiscal-quarter comparisons may be seasonal. |
+| growth | gross_profit_q_growth_yoy | q | yoy(gross_profit_q) | Year-over-year growth in unadjusted reported quarterly gross profit; fiscal-quarter comparisons may be seasonal. |
 | growth | net_income_growth_yoy | ttm | yoy(net_income_ttm) | Year-over-year trailing net-income growth. |
+| growth | net_income_q_growth_qoq | q | qoq(net_income_total) | Quarter-over-quarter growth in unadjusted reported quarterly net income; fiscal-quarter comparisons may be seasonal. |
+| growth | net_income_q_growth_yoy | q | yoy(net_income_total) | Year-over-year growth in unadjusted reported quarterly net income; fiscal-quarter comparisons may be seasonal. |
 | growth | net_margin_change_yoy | ttm | net_margin - lag(net_margin, 4) | Year-over-year change in trailing net margin. |
+| growth | operating_income_cagr_3y | ttm | cagr(operating_income_ttm, 3) | Three-year compound annual trailing operating-income growth with positive endpoints required. |
 | growth | operating_income_growth_yoy | ttm | yoy(operating_income_ttm) | Year-over-year trailing operating-income growth. |
+| growth | operating_income_q_growth_qoq | q | qoq(operating_income) | Quarter-over-quarter growth in unadjusted reported quarterly operating income; fiscal-quarter comparisons may be seasonal. |
+| growth | operating_income_q_growth_yoy | q | yoy(operating_income) | Year-over-year growth in unadjusted reported quarterly operating income; fiscal-quarter comparisons may be seasonal. |
 | growth | operating_margin_change_yoy | ttm | operating_margin - lag(operating_margin, 4) | Year-over-year change in trailing operating margin. |
 | growth | operating_profitability_change_yoy | ttm | operating_profitability - lag(operating_profitability, 4) | Year-over-year change in operating profitability. |
 | growth | rd_expense_growth_yoy | ttm | yoy(rd_expense_ttm) | Year-over-year trailing research-and-development growth. |
+| growth | rd_expense_q_growth_qoq | q | qoq(r_and_d_expense) | Quarter-over-quarter growth in unadjusted reported quarterly research and development expense; fiscal-quarter comparisons may be seasonal. |
+| growth | rd_expense_q_growth_yoy | q | yoy(r_and_d_expense) | Year-over-year growth in unadjusted reported quarterly research and development expense; fiscal-quarter comparisons may be seasonal. |
 | growth | revenue_cagr_1y | ttm | cagr(revenue_ttm, 1) | One-year compound annual trailing revenue growth. |
 | growth | revenue_cagr_3y | ttm | cagr(revenue_ttm, 3) | Three-year compound annual trailing revenue growth. |
 | growth | revenue_growth_qoq | ttm | qoq(revenue_ttm) | Quarter-over-quarter trailing revenue growth. |
 | growth | revenue_growth_yoy | ttm | yoy(revenue_ttm) | Year-over-year trailing revenue growth. |
+| growth | revenue_q_growth_qoq | q | qoq(revenue) | Quarter-over-quarter growth in unadjusted reported quarterly revenue; fiscal-quarter comparisons may be seasonal. |
+| growth | revenue_q_growth_yoy | q | yoy(revenue) | Year-over-year growth in unadjusted reported quarterly revenue; fiscal-quarter comparisons may be seasonal. |
 | growth | roe_change_yoy | ttm | roe - lag(roe, 4) | Year-over-year change in return on equity. |
 | growth | shares_growth_yoy | q | yoy(shares_outstanding_period_end) | Year-over-year period-end share-count growth. |
 | growth | tax_expense_change_yoy | ttm | yoy(income_tax_ttm) | Year-over-year trailing tax-expense growth. |
@@ -350,11 +373,15 @@ for the current rebuild's evidence and limitations.
 | per_share | sales_per_share | ttm | safe_div(revenue_ttm, shares_outstanding_period_end) | Trailing-twelve-month revenue per period-end share. |
 | per_share | tangible_book_value_per_share | q | safe_div(common_equity_q - coalesce(goodwill, 0) - coalesce(other_intangibles, 0), shares_outstanding_period_end) | Tangible common book value per period-end share. |
 | profitability | asset_turnover | ttm | safe_div(revenue_ttm, total_assets_avg2) | Revenue over average total assets. |
+| profitability | cash_conversion_cycle | ttm | dso_days + dio_days - dpo_days | Cash conversion cycle in days: DSO plus DIO less DPO. |
 | profitability | cash_profitability | ttm | safe_div(operating_income_ttm + depreciation_ttm - change_in_receivables_yoy - change_in_inventory_yoy + change_in_payables_yoy, total_assets_avg2) | Ball-Gerakos-Linnainmaa-Nikolaev cash-based operating profitability. |
 | profitability | cfo_to_assets | ttm | safe_div(cfo_ttm, total_assets_avg2) | Operating cash flow over average total assets. |
 | profitability | change_in_inventory_yoy | ttm | inventory - lag(inventory, 4) | Year-over-year change in inventory. |
 | profitability | change_in_payables_yoy | ttm | accounts_payable - lag(accounts_payable, 4) | Year-over-year change in payables. |
 | profitability | change_in_receivables_yoy | ttm | accounts_receivable - lag(accounts_receivable, 4) | Year-over-year change in receivables. |
+| profitability | dio_days | ttm | safe_div(inventory_avg2 * 365, max(cost_of_revenue_ttm, 0)) | Days inventory outstanding using 365 days and average opening and closing inventory over positive trailing cost of revenue. |
+| profitability | dpo_days | ttm | safe_div(payables_avg2 * 365, max(cost_of_revenue_ttm, 0)) | Days payables outstanding using 365 days and average opening and closing payables over positive trailing cost of revenue. |
+| profitability | dso_days | ttm | safe_div(receivables_avg2 * 365, max(revenue_ttm, 0)) | Days sales outstanding using 365 days and average opening and closing receivables over positive trailing revenue. |
 | profitability | ebitda_margin | ttm | safe_div(ebitda_ttm, revenue_ttm) | Trailing-twelve-month EBITDA margin. |
 | profitability | effective_tax_rate_ttm | ttm | safe_div(income_tax_ttm, pretax_income_ttm) | Trailing-twelve-month effective tax rate. |
 | profitability | gross_margin | ttm | safe_div(gross_profit_ttm, revenue_ttm) | Trailing-twelve-month gross margin. |
@@ -411,6 +438,7 @@ for the current rebuild's evidence and limitations.
 | rollup | dividends_paid_ttm | ttm | ttm(total_dividends_paid) | Trailing-twelve-month total dividends paid. |
 | rollup | ebitda_q | q | coalesce(ebitda_standardised, operating_income + d_and_a_income_statement, operating_income + d_and_a_cash_flow) | Quarterly EBITDA with two composition fallbacks. |
 | rollup | ebitda_ttm | ttm | ttm(ebitda_q) | Trailing-twelve-month EBITDA. |
+| rollup | eps_basic_ttm | ttm | ttm(eps_basic__1034) | Trailing-twelve-month basic earnings per share. |
 | rollup | eps_diluted_ttm | ttm | ttm(eps_diluted) | Trailing-twelve-month diluted earnings per share. |
 | rollup | fcf_q | q | cash_flow_from_operations - capex_q | Quarterly free cash flow. |
 | rollup | fcf_ttm | ttm | ttm(fcf_q) | Trailing-twelve-month free cash flow. |
@@ -837,7 +865,7 @@ US equity fundamental restatement events (v1.0.0) over `v_fundamental_restatemen
 
 ### ATX.US.FUNDAMENTALS/derived-metrics
 
-Point-in-time derived metrics (v1.0.0) over `derived_metric_values`; time column `period_end`; natural key `security_id, metric_code, metric_window, period_end`.
+Point-in-time derived metrics (v2.1.0) over `derived_metric_values`; time column `period_end`; natural key `revision_group_id`.
 
 | field | type | unit | nullable | filterable | description |
 | --- | --- | --- | --- | --- | --- |
@@ -845,12 +873,25 @@ Point-in-time derived metrics (v1.0.0) over `derived_metric_values`; time column
 | metric | string |  | no | yes | Derived metric code. |
 | window | string |  | no | yes | Metric window: q, ttm, annual, instant, avg2 or daily. |
 | period_end | date |  | no | no | Fiscal period end. |
-| value | float64 |  | no | no | Derived metric value. |
-| inputs_hash | string |  | no | no | SHA-256 over the sorted (code, period_end, revision_sequence, value) inputs consumed. |
+| value | float64 |  | yes | no | Derived value; NULL for an invalid event state. |
+| derived_value_id | string |  | no | no | Stable typed event-state identity. |
+| value_status | string |  | yes | no | valid, zero_denominator, missing_input_or_domain, or nonfinite. |
+| history_status | string |  | yes | no | event_reconstructed or incomplete legacy_latest_only. |
+| value_origin | string |  | yes | no | annual_fallback, annual_dependency, quarterly, instant, scalar, incomparable, unavailable, or legacy_unspecified. |
+| fiscal_period_start | date |  | yes | no | Selected current duration start; NULL for balance/scalar inputs or missing span evidence. |
+| fiscal_period_end | date |  | yes | no | Selected current operand endpoint, including an exact annual fallback endpoint. |
+| revision_group_id | string |  | yes | no | Source/security/metric/window/bucket/definition identity. |
+| revision_sequence | int64 |  | yes | no | Event order within the revision group. |
+| revision_count | int64 |  | yes | no | Number of retained group states. |
+| valid_to | timestamp |  | yes | no | Exclusive next state event; NULL for the last state. |
+| target_bucket | int64 |  | yes | no | Stable calendar quarter bucket identity. |
+| definition_hash | string |  | yes | no | Fingerprint of formula and input contract. |
+| arithmetic_available_at | timestamp |  | yes | no | Arithmetic input clock; transition available_at may be later. |
+| inputs_hash | string |  | no | no | SHA-256 over ordered typed frame lineage with actual selected input states, values and clocks. |
 | source | string |  | no | no | ATX engine identifier. |
-| as_of_date | date |  | yes | no | Economic observation date. |
-| available_at | timestamp |  | yes | no | Earliest timestamp at which ATX could have delivered this revision. |
-| source_loaded_at | timestamp |  | yes | no | Timestamp at which the source observation entered the warehouse. |
+| as_of_date | date |  | yes | no | Date of the modeled state transition. |
+| available_at | timestamp |  | yes | no | Modeled filing-event transition time, including invalidation and control flow. |
+| source_loaded_at | timestamp |  | yes | no | Warehouse reconstruction time; not historical delivery evidence. |
 | run_id | string |  | yes | no | Lineage identifier for the producing run. |
 
 ### ATX.US.FUNDAMENTALS/security-master
@@ -906,7 +947,7 @@ US equity daily bars (v1.0.0) over `equity_daily_bars`; time column `trade_date`
 
 ### ATX.US.EQUITIES/market-daily-1d
 
-Daily market and valuation panel (v1.0.0) over `market_daily_metrics`; time column `trade_date`; natural key `security_id, trade_date`.
+Daily market and valuation panel (v1.1.0) over `market_daily_metrics`; time column `trade_date`; natural key `security_id, trade_date`.
 
 | field | type | unit | nullable | filterable | description |
 | --- | --- | --- | --- | --- | --- |

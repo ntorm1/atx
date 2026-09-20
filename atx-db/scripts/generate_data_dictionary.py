@@ -107,7 +107,9 @@ def _derived_section() -> list[str]:
         "## Derived metrics",
         "",
         f"{len(definitions)} metrics, from `src/atx_db/seeds/derived_metric_definitions.csv`. "
-        "Every value carries `available_at = max(input available_at)` and an `inputs_hash`.",
+        "Canonical filing-event states retain `available_at`, the selected arithmetic input clock in "
+        "`arithmetic_available_at`, and an `inputs_hash`; an invalidation or selection event can occur "
+        "after the arithmetic input clock.",
         "",
     ]
     lines.extend(

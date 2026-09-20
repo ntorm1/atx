@@ -5,7 +5,7 @@ after activation-run4 stopped. It is not a completed parity gate or a release.
 Completed counts below came from read-only SQL or the exact staged source file.
 In-flight progress is explicitly identified as loader-log evidence.
 
-Latest production update: **corrected prices were published successfully** by
+Latest successful price publication: **corrected prices were published** by
 `activation-prices-updated-bounded` at 18:00:09 UTC. A separate read-only check at
 18:02:30 UTC measured the following live state:
 
@@ -71,10 +71,15 @@ passed alone. This is fixture validation, not measured live metric coverage.
 A further source-path check found that annual statements are standardized but
 cannot feed TTM flow metrics unless a complete quarterly history is available.
 This prevents annual-only filers from supplying core margins, flow per-share
-metrics and daily valuation denominators. An isolated implementation draft is
-addressing direct fiscal-year fallback with historical source precedence. It
-must preserve actual quarterly gaps and filing-event revisions. This is a
-confirmed code-path gap, not a measured count of affected issuers; see
+metrics and daily valuation denominators. The AF1 implementation adds direct
+fiscal-year fallback with historical source precedence, actual fiscal spans,
+canonical origin metadata and preserved quarterly gaps. Its first 79 focused
+cases passed after three fixture/seam corrections. One independent review found
+two Important selection issues; both are fixed, and six targeted preservation
+and counterexample checks passed with peak process-tree memory 0.789 GiB.
+AF1 is committed as `244af575`; touched Ruff and strict type checks pass.
+Committed-HEAD checks and the production rebuild remain pending. This is
+source/fixture evidence, not a measured count of covered issuers; see
 `annual-filer-metric-path-report.md` and `annual-fallback-implementation-brief.md`.
 
 ## Activation result
@@ -113,12 +118,15 @@ the same number of fundamental points. Price and custom-feature row counts were
 unchanged. The attempt retained 20,205,629 fact rows across 3,750 loaded CIKs;
 member receipts also record 708 empty, 26 unavailable and five errors. The last
 loaded CIK was 0001033905. This is partial source ingestion, not full-universe
-coverage. The pending repair bounds connection lifetime and verifies retained
-source evidence before resuming, including unfinished identity-candidate output.
+coverage. CF5 is committed as `b9572b27`: it bounds connection lifetime and
+verifies retained source evidence before resuming, including unfinished
+identity-candidate output. Its independent review found two Important issues;
+both were fixed and all 53 post-review focused checks passed. Peak process-tree
+memory was 0.704 GiB. Full-archive proof and ingestion at 1 GB remain unmeasured.
 
 All five member errors were missing top-level payload CIK fields in otherwise
 valid archive records. Exact archive filenames still identify those members.
-The repair will distinguish absent identity fields from conflicting fields
+The repair distinguishes absent identity fields from conflicting fields
 and retain explicit source provenance. It also forwards the operator's dummy
 SEC contact into loader options; the completed attempt used local archive
 members without HTTP requests.

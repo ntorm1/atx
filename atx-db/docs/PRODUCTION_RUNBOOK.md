@@ -49,8 +49,10 @@ readiness must be measured separately.
 ### Current rebuild evidence (2026-09-20)
 
 The current [activation measurements](TIER1_ACTIVATION_STATUS.md) record run4's
-completed ingestion and its subsequent `statement_points` memory failure at
-15:00:49 UTC. No later run4 stage completed. That record supersedes the older
+`statement_points` failure, the successful corrected-price publication, and
+the subsequent partial companyfacts archive3 load. Archive3 failed at COMMIT
+at 22:02:44 UTC; 38,500,008 raw facts and the same number of fundamental points
+were retained. No full downstream fundamentals build has completed. That record supersedes the older
 [activation handoff](../../docs/superpowers/handoffs/2026-09-20-tier1-parity-handoff.md)
 status; source-ingestion counts are not full-universe coverage or quality gates.
 Run4 has stopped. Before any new warehouse operation, verify that no replacement
@@ -66,10 +68,11 @@ positive vendor-ID/date keys are quarantined together, never resolved by volume.
 The raw TSV/archive is preserved; preprojection counts and original-`dn` adjacency
 diagnostics are recorded separately from postpublication uniqueness checks.
 `returnFactor` is distribution-inclusive; canonical `split_factor` is NULL.
-Legacy consumers that reconstruct returns from split factors or infer split-adjusted
-shares still require separate correction/evidence. Republish prices in the assigned
-writer slot, then rebuild return-dependent surfaces; existing measurements predate
-this correction. Internal agreement does not verify every economic adjustment.
+Adjusted-return consumer repairs are committed. Corrected prices were published
+at 18:00:09 UTC: 31,959,271 rows across 34,251 warehouse security IDs, through
+2026-09-18. Return-dependent production surfaces still require rebuilding;
+31,934,514 custom-feature rows are built, but forward-label evaluation is pending.
+Internal agreement does not verify every economic adjustment.
 The vendor lists 05:00 CT T+1
 delivery; the backfill's session-date + 22-hour availability is a modeling
 assumption, not verified historical publication or revision timing.
@@ -92,8 +95,11 @@ successful execution alone does not certify the data.
 
 ### Prerequisites
 
-- The SpiderRock archive `tbltickerhistory3_10y.zip` on disk (3.30 GiB
-  compressed; one DEFLATE member, 11,084,562,320 uncompressed bytes).
+- The retained price source. This rebuild uses the updated native
+  `TickerHistory3.parquet`, staged under `data/staging/broad-bars/2026-09-20-updated/`
+  (3,617,973,507 bytes). The older `tbltickerhistory3_10y.zip` and extracted TSV
+  remain preserved source evidence. Use `--ticker-history-source-path` for the
+  native file; it does not require ZIP extraction.
 - `ATX_SEC_USER_AGENT` set to a product name and a monitored contact address.
   The ladder fails fast on any SEC stage without it.
 - One durable volume with room for the disk budget below.
@@ -103,6 +109,7 @@ successful execution alone does not certify the data.
 | Artifact | Size |
 | --- | --- |
 | `tbltickerhistory3_10y.zip` (input, not written by the ladder) | 3.3 GB |
+| Updated `TickerHistory3.parquet` (current published price source) | 3.62 GB |
 | `data/staging/broad-bars/tbltickerhistory3_10y.txt` (extracted TSV) | **11 GB** |
 | `data/cache/companyfacts.zip` | **~1.3 GB** |
 | `data/cache/submissions.zip` | **~1.5 GB** |
