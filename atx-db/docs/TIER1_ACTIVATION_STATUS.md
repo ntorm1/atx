@@ -4,6 +4,26 @@ This is an interim measurement of the local production warehouse on 2026-09-20,
 after activation-run4 stopped. It is not a completed parity gate or a release.
 All counts below came from read-only SQL or the exact staged source file.
 
+Latest production update: the guarded price prepass applied migrations0303-0312
+and created a6,303,264,768-byte backup, retaining three older backups. Its
+replacement table validated31,959,271 rows across34,251 IDs, including12,386 on
+2026-09-18. Publication COMMIT then exhausted DuckDB's1GB limit and invalidated
+the connection during rollback. The process exited1 with native job peak1.773GiB
+under a3GiB cap; it did not exhaust host memory.
+
+A fresh read-only recovery check confirmed all ten migrations and the original
+31,178,192 price rows/34,803 IDs through2026-06-15. The validated replacement
+remains staged. Publication has not completed; the stale running attempt requires
+operator failure recording because its invalidated connection could not update
+the ledger. A2GB query-budget retry within the same3GiB process cap is planned,
+subject to the unchanged headroom guard. No source/coverage threshold is relaxed.
+
+Operator receipts: `activation-prices-updated-memory.json`,
+`activation-prices-updated.err` and `price-recovery-readonly.json` under
+`.superpowers/sdd/tier1-parity/`. The recovery receipt's backup lookup alone used
+an obsolete table name; migration and price recovery queries succeeded. The
+backup registry is `migration_backup_registry`.
+
 ## Activation result
 
 Run4 loaded 3,045,440 submissions and 31,590,760 raw companyfacts rows.
@@ -13,8 +33,8 @@ Loaded-target outcomes are not unique issuer counts. The next statement_points
 stage failed at 15:00:49 UTC because its concept catalog materialized all facts
 in pandas and exhausted memory. No later run4 stage completed.
 
-The warehouse had migrations through 0302 at measurement time. Subsequent code
-and migrations have not yet been applied to this warehouse. A stale running
+The warehouse had migrations through0302 at the run4 measurement below; the
+later guarded prepass above applied through0312. A stale running
 entry from run3 is historical bookkeeping, not an active writer.
 
 ## Source and identity coverage
@@ -79,7 +99,9 @@ The replacement concept-catalog query aggregated all 31,590,760 live facts into
 thread. Peak process working set was 1,119,350,784 bytes; peak process commit was
 1,128,935,424 bytes. This validates that query only. Facade integration and its
 review are now complete; bounded calendar mapping is also independently reviewed.
-Final production-stage integration remains underway before restarting the ladder.
+Production-stage integration is committed and independently reviewed, with125
+focused checks passing and one default slow skip. Full-scale activation remains
+pending the successful source prepasses.
 
 Future production work is serialized, uses bounded DuckDB queries, and runs
 under a separate process-tree memory guard with physical and commit headroom

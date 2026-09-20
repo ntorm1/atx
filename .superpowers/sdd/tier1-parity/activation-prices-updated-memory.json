@@ -1,0 +1,32 @@
+{
+  "command": [
+    ".venv/Scripts/python.exe",
+    "scripts/warehouse_activate.py",
+    "--db-path",
+    "data/warehouse.duckdb",
+    "--as-of-date",
+    "2026-09-20",
+    "--only",
+    "ticker_history_publish",
+    "--ticker-history-source-path",
+    "data/staging/broad-bars/2026-09-20-updated/TickerHistory3.parquet",
+    "--memory-limit",
+    "1GB",
+    "--threads",
+    "1",
+    "--backup-keep",
+    "100",
+    "--force",
+    "--run-id",
+    "activation-prices-updated"
+  ],
+  "job_limit_gb": 3.0,
+  "status": "failed",
+  "headroom": {
+    "physical_free_gb": 5.834568023681641,
+    "commit_free_gb": 10.62554931640625
+  },
+  "child_pid": 11460,
+  "returncode": 1,
+  "native_peak_job_memory_gb": 1.7727279663085938
+}
