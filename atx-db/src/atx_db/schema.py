@@ -1880,8 +1880,6 @@ def _ensure_indexes_and_views(store: DuckDBStore) -> None:
         "CREATE INDEX IF NOT EXISTS idx_identifier_resolution_decisions_candidate ON identifier_resolution_decisions(candidate_id, decision_method)",
         "CREATE INDEX IF NOT EXISTS idx_identifier_resolution_decisions_key ON identifier_resolution_decisions(source_dataset_id, source_key_type, source_key_value)",
         "CREATE INDEX IF NOT EXISTS idx_identifier_resolution_decisions_target ON identifier_resolution_decisions(target_security_id)",
-        "CREATE INDEX IF NOT EXISTS idx_equity_daily_bars_security_date ON equity_daily_bars(security_id, trade_date)",
-        "CREATE INDEX IF NOT EXISTS idx_equity_daily_bars_symbol_date ON equity_daily_bars(symbol, trade_date)",
         "CREATE INDEX IF NOT EXISTS idx_corp_action_type_dim_event ON corp_action_type_dim(event_type, type_code)",
         "CREATE INDEX IF NOT EXISTS idx_adjustment_factor_history_security ON adjustment_factor_history(security_id, ex_date, available_at)",
         "CREATE INDEX IF NOT EXISTS idx_adjustment_factor_history_event ON adjustment_factor_history(event_type, type_code, ex_date)",

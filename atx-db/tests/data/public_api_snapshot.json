@@ -196,6 +196,7 @@
     "XbrlTaxonomyPackageResult",
     "XbrlValidationDataset",
     "XbrlValidationOptions",
+    "_bulk_publication",
     "abnormal_inventory_growth",
     "abnormal_receivables_growth",
     "acquire_apply_lock",

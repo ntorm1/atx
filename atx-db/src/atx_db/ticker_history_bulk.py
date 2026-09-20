@@ -18,6 +18,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from ._bulk_publication import publish_validated_shadow
 from .connection import DuckDBStore
 from .ticker_history import SOURCE_NAME, TBLTICKERHISTORY_ID_TYPE
 from .ticker_history_quality import (
@@ -236,6 +237,16 @@ def _create_next_table(store: DuckDBStore, options: BulkTickerHistoryOptions) ->
         )
         """
     )
+    # Preserve every non-replaced source in the complete physical shadow.  The
+    # later rename then replaces the public table as one catalog transaction,
+    # rather than deleting 32M indexed live rows before an insert can commit.
+    con.execute(
+        """
+        INSERT INTO equity_daily_bars_bulk_next
+        SELECT * FROM equity_daily_bars WHERE source <> ?
+        """,
+        [options.source],
+    )
     con.execute(
         f"""
         INSERT INTO equity_daily_bars_bulk_next
@@ -358,7 +369,7 @@ def _validate_next(
 
 def _publish(store: DuckDBStore, options: BulkTickerHistoryOptions) -> None:
     con = store.con
-    with store.transaction():
+    def publish_links() -> None:
         con.execute(
             """
             UPDATE securities AS s SET
@@ -418,24 +429,11 @@ def _publish(store: DuckDBStore, options: BulkTickerHistoryOptions) -> None:
             """,
             [options.source, options.run_id],
         )
-        con.execute("DELETE FROM equity_daily_bars WHERE source = ?", [options.source])
-        con.execute("INSERT INTO equity_daily_bars SELECT * FROM equity_daily_bars_bulk_next")
-        _ensure_indexes(store)
-    con.execute("DROP TABLE equity_daily_bars_bulk_next")
-
-
-def _ensure_indexes(store: DuckDBStore) -> None:
-    store.con.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_equity_daily_bars_security_date
-        ON equity_daily_bars(security_id, trade_date)
-        """
-    )
-    store.con.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_equity_daily_bars_symbol_date
-        ON equity_daily_bars(symbol, trade_date)
-        """
+    publish_validated_shadow(
+        store,
+        live_table="equity_daily_bars",
+        shadow_table="equity_daily_bars_bulk_next",
+        before_swap=publish_links,
     )
 
 
