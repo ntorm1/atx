@@ -218,6 +218,7 @@ class ActivationOptions:
     companyfacts_limit: int | None = None
     companyfacts_progress_every: int = 25
     submissions_batch_size: int = 50
+    submissions_resume_from_run_id: str | None = None
     companyfacts_symbol_source: str = "sec_company_tickers"
     skip_loaded_companyfacts: bool | None = None
     dry_run: bool = False
@@ -546,9 +547,12 @@ def stage_submissions_load(store: DuckDBStore, options: ActivationOptions) -> St
             zip_path=options.submissions_zip,
             forms=None,
             batch_ciks=options.submissions_batch_size,
+            resume_from_run_id=options.submissions_resume_from_run_id,
             run_id=f"{options.run_id}-submissions",
         ),
     )
+    if result.details.get("missing_history_members", 0):
+        raise ValueError("SEC submissions archive is missing referenced history; full stage is incomplete")
     return StageResult(rows=int(result.rows_loaded), detail={**result.details, "forms": "all",
                                                            "batch_size": options.submissions_batch_size})
 
@@ -1021,6 +1025,16 @@ def _dry_run_done(options: ActivationOptions) -> set[str]:
             return set()
 
 
+def _validate_submissions_resume_plan(options: ActivationOptions, stages: tuple[str, ...]) -> None:
+    # Download cache hits rewrite the source receipt timestamp too. Refuse the
+    # combination before opening/migrating the warehouse or refreshing sources.
+    if options.submissions_resume_from_run_id is not None and "sec_bulk_download" in stages:
+        raise ValueError(
+            "SEC submissions resume cannot include sec_bulk_download; use --only submissions_load "
+            "or --start-stage submissions_load to preserve the prior archive receipt"
+        )
+
+
 def run_activation(
     options: ActivationOptions,
     *,
@@ -1031,6 +1045,7 @@ def run_activation(
     for stage in stages:
         if stage not in STAGES:
             raise ValueError(f"unknown activation stage {stage!r}; expected one of {STAGE_ORDER}")
+    _validate_submissions_resume_plan(options, stages)
     emitted: list[dict[str, object]] = []
     if options.dry_run:
         # Never opens a write-mode store: see _dry_run_done. Nothing is created,
@@ -1152,6 +1167,8 @@ def add_activation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--shards", type=int, default=16)
     parser.add_argument("--companyfacts-limit", type=int, default=None)
     parser.add_argument("--submissions-batch-size", type=int, default=50)
+    parser.add_argument("--submissions-resume-from-run-id", default=None,
+                        help="Verify and resume the full archive prefix of a failed submissions dataset UUID.")
     parser.add_argument("--companyfacts-symbol-source", choices=("sec_company_tickers", "archive_members"),
                         default="sec_company_tickers", help="archive_members discovers all exact local CIK members offline.")
     companyfacts_policy = parser.add_mutually_exclusive_group()
@@ -1198,6 +1215,7 @@ def activation_options_from_args(args: argparse.Namespace) -> ActivationOptions:
         reconciliation_shards=args.shards,
         companyfacts_limit=args.companyfacts_limit,
         submissions_batch_size=args.submissions_batch_size,
+        submissions_resume_from_run_id=args.submissions_resume_from_run_id,
         companyfacts_symbol_source=args.companyfacts_symbol_source,
         skip_loaded_companyfacts=args.skip_loaded_companyfacts,
         dry_run=args.dry_run,
@@ -1263,6 +1281,7 @@ def run_activation_from_args(
         stop=args.stop_stage,
         only=tuple(args.only or ()),
     )
+    _validate_submissions_resume_plan(options, stages)
     if not options.dry_run and options.db_path.exists() and pending_migrations(options.db_path):
         governed_migrations(options.db_path)
         _prune_activation_backups(options.db_path, keep_latest=getattr(args, "backup_keep", 3))

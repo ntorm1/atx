@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import zipfile
+from collections.abc import Generator, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -14,7 +15,7 @@ import pandas as pd
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .security_master import SEC_USER_AGENT, sec_session
-from .warehouse import cik_security_id, insert_frame, quality_check, record_source_file, symbol_key
+from .warehouse import cik_security_id, file_sha256, insert_frame, quality_check, record_source_file, symbol_key
 
 SOURCE_NAME = "SEC submissions API"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
@@ -270,6 +271,186 @@ class SecSubmissionsBulkOptions:
     include_history_files: bool = True
     run_id: str | None = None
     batch_ciks: int = 2000
+    resume_from_run_id: str | None = None
+
+
+@dataclass(frozen=True)
+class _VerifiedBulkPrefix:
+    last_cik: str
+    rows: int
+    ciks: int
+    main_members: int
+    history_members: int
+    lineage: tuple[str, ...]
+    archive_sha256: str
+
+
+def _bulk_resume_lineage(
+    store: DuckDBStore, options: SecSubmissionsBulkOptions,
+) -> tuple[tuple[str, ...], dt.datetime]:
+    """Only explicitly linked, compatible failed attempts may supply a prefix."""
+    if options.forms is not None or options.ciks is not None or not options.include_history_files:
+        raise ValueError("SEC submissions resume requires all forms, all CIKs and history")
+    expected = {
+        "zip_path": str(options.zip_path), "forms": None, "ciks": None,
+        "include_history_files": True, "batch_ciks": options.batch_ciks,
+    }
+    lineage: list[str] = []
+    prior_id = options.resume_from_run_id
+    earliest = None
+    while prior_id is not None:
+        if not isinstance(prior_id, str) or prior_id in lineage or prior_id == options.run_id:
+            raise ValueError("SEC submissions resume has invalid or cyclic lineage")
+        row = store.con.execute(
+            """SELECT source, status, started_at, finished_at, params_json
+               FROM dataset_runs WHERE run_id = ? AND dataset_id = 'sec_submissions'""",
+            [prior_id],
+        ).fetchone()
+        if row is None or row[0] != BULK_SOURCE_NAME or row[1] != "failed" or row[3] is None:
+            raise ValueError("SEC submissions resume requires a terminal failed bulk dataset run")
+        params = json.loads(row[4])
+        if not isinstance(params, dict) or any(key not in params or params[key] != value
+                                               for key, value in expected.items()):
+            raise ValueError("SEC submissions resume prior archive path or scope does not match")
+        if earliest is not None and row[3] > earliest:
+            raise ValueError("SEC submissions resume ancestor was not terminal before its successor")
+        earliest = row[2]
+        lineage.append(prior_id)
+        prior_id = params.get("resume_from_run_id")
+    if earliest is None:
+        raise ValueError("SEC submissions resume requires a prior dataset run")
+    return tuple(reversed(lineage)), earliest
+
+
+def _bulk_retained_rows(store: DuckDBStore) -> Generator[tuple[Any, ...], None, None]:
+    """Consume the active ordered query without materializing the filing corpus."""
+    while rows := store.con.fetchmany(4096):
+        yield from rows
+
+
+def _bulk_source_keys(columnar: dict[str, Any]) -> Iterator[tuple[str, str | None]]:
+    """Match _normalize's strip semantics without parsing every date again.
+
+    Non-string accession/form values are deliberately unsupported for resume;
+    a fresh load remains available instead of guessing pandas coercion behavior.
+    """
+    if not columnar:
+        return
+    if any(not isinstance(values, list) for values in columnar.values()):
+        raise ValueError("SEC submissions resume found malformed columnar filings")
+    length = len(next(iter(columnar.values())))
+    if any(len(values) != length for values in columnar.values()):
+        raise ValueError("SEC submissions resume found malformed columnar filings")
+    accessions = columnar.get("accessionNumber", [None] * length)
+    forms = columnar.get("form", [None] * length)
+    for accession, form in zip(accessions, forms, strict=True):
+        if not isinstance(accession, str) or (form is not None and not isinstance(form, str)):
+            raise ValueError("SEC submissions resume requires string accession and form keys")
+        yield accession.strip(), None if form is None else form.strip()
+
+
+def _verify_bulk_prefix(
+    store: DuckDBStore,
+    options: SecSubmissionsBulkOptions,
+    archive: zipfile.ZipFile,
+    main_members: list[str],
+    member_names: set[str],
+    security_map: dict[str, str],
+) -> _VerifiedBulkPrefix:
+    """Prove a contiguous committed prefix; a maximum CIK alone proves nothing.
+
+    DuckDB sorts under the caller's existing budget/spill configuration. Python
+    holds one CIK's deduplicated keys and at most 4096 retained filing rows.
+    No writes occur until the complete candidate prefix has been verified.
+    """
+    lineage, started_at = _bulk_resume_lineage(store, options)
+    source_stat = options.zip_path.stat()
+    archive_sha = file_sha256(options.zip_path)
+    receipt = store.con.execute(
+        """SELECT 1 FROM raw_source_files
+           WHERE dataset_id = 'sec_submissions' AND cache_path = ?
+             AND sha256 = ? AND byte_count = ? AND fetched_at <= ?
+             AND status = 'available' LIMIT 1""",
+        [str(options.zip_path), archive_sha, source_stat.st_size, started_at],
+    ).fetchone()
+    if receipt is None:
+        raise ValueError("SEC submissions resume archive hash lacks a matching pre-attempt receipt")
+    placeholders = ",".join("?" for _ in lineage)
+    groups = store.con.execute(
+        f"""SELECT run_id, count(*), count(DISTINCT cik), min(cik), max(cik)
+            FROM sec_submissions WHERE run_id IN ({placeholders}) GROUP BY run_id""",
+        list(lineage),
+    ).fetchall()
+    by_run = {row[0]: row[1:] for row in groups}
+    row_count = cik_count = 0
+    last_cik = ""
+    for prior_id in lineage:
+        if prior_id not in by_run:
+            continue  # An interrupted successor may not yet have committed a batch.
+        rows, ciks, first, last = by_run[prior_id]
+        if ciks % options.batch_ciks or first <= last_cik:
+            raise ValueError("SEC submissions resume lineage does not end in ordered complete batches")
+        row_count += rows
+        cik_count += ciks
+        last_cik = last
+    if not row_count or f"CIK{last_cik}.json" not in member_names:
+        raise ValueError("SEC submissions resume has no committed archive boundary")
+    LOGGER.info("SEC submissions resume verifying prefix: runs=%s rows=%d boundary=%s",
+                lineage, row_count, last_cik)
+    store.con.execute(
+        f"""SELECT cik, security_id, accession_number, form, source_url
+            FROM sec_submissions WHERE run_id IN ({placeholders})
+            ORDER BY cik, accession_number""",
+        list(lineage),
+    )
+    retained = _bulk_retained_rows(store)
+    verified_rows = verified_ciks = processed = history_read = 0
+    try:
+        for member in main_members:
+            cik = member[3:13]
+            if cik > last_cik:
+                break
+            payload = json.loads(archive.read(member))
+            expected: dict[str, tuple[str | None, str]] = {}
+
+            def add_keys(
+                columnar: dict[str, Any], source_member: str, target: dict[str, tuple[str | None, str]],
+            ) -> None:
+                for accession, form in _bulk_source_keys(columnar):
+                    target.setdefault(accession, (form, f"{options.zip_path}!{source_member}"))
+
+            add_keys(payload.get("filings", {}).get("recent", {}), member, expected)
+            for item in payload.get("filings", {}).get("files", []):
+                name = item.get("name")
+                if not name:
+                    continue
+                if name not in member_names:
+                    raise ValueError("SEC submissions resume prefix is missing referenced history")
+                add_keys(json.loads(archive.read(name)), name, expected)
+                history_read += 1
+            security_id = security_map.get(cik) or cik_security_id(cik)
+            for accession in sorted(expected):
+                form, source_url = expected[accession]
+                actual = next(retained, None)
+                if actual != (cik, security_id, accession, form, source_url):
+                    raise ValueError(f"SEC submissions resume prefix rows do not match archive at CIK {cik}")
+                verified_rows += 1
+            verified_ciks += bool(expected)
+            processed += 1
+            if processed % _BULK_PROGRESS_MEMBERS == 0:
+                LOGGER.info("SEC submissions resume verification: main_members=%d/%d verified_rows=%d",
+                            processed, len(main_members), verified_rows)
+        if next(retained, None) is not None or (verified_rows, verified_ciks) != (row_count, cik_count):
+            raise ValueError("SEC submissions resume retained rows exceed the verified prefix")
+    finally:
+        retained.close()
+    final_stat = options.zip_path.stat()
+    if (source_stat.st_size, source_stat.st_mtime_ns) != (final_stat.st_size, final_stat.st_mtime_ns):
+        raise ValueError("SEC submissions resume archive changed during verification")
+    LOGGER.info("SEC submissions resume verified: main_members=%d/%d rows=%d boundary=%s",
+                processed, len(main_members), verified_rows, last_cik)
+    return _VerifiedBulkPrefix(last_cik, verified_rows, verified_ciks, processed,
+                               history_read, lineage, archive_sha)
 
 
 def _pad_normalize_columns(frame: pd.DataFrame) -> pd.DataFrame:
@@ -344,6 +525,8 @@ class SecSubmissionsBulkDataset(Dataset):
         store.initialize()
 
     def load(self, store: DuckDBStore, options: SecSubmissionsBulkOptions) -> DatasetLoadResult:
+        if options.batch_ciks < 1:
+            raise ValueError("SEC submissions batch_ciks must be positive")
         forms = None if options.forms is None else set(options.forms)
         cik_scope = (
             None
@@ -360,6 +543,8 @@ class SecSubmissionsBulkDataset(Dataset):
         missing_history_members = 0
         pending: list[pd.DataFrame] = []
         pending_ciks = 0
+        verified_prefix: _VerifiedBulkPrefix | None = None
+        verified_prior_rows = 0
 
         def log_progress() -> None:
             LOGGER.info(
@@ -368,7 +553,7 @@ class SecSubmissionsBulkDataset(Dataset):
                 main_members_processed,
                 len(main_members),
                 ciks_loaded,
-                loaded,
+                loaded + verified_prior_rows,
                 flush_count,
             )
 
@@ -398,8 +583,18 @@ class SecSubmissionsBulkDataset(Dataset):
             main_members = sorted(
                 name for name in member_names if _BULK_MAIN_MEMBER.match(name)
             )
+            if options.resume_from_run_id is not None:
+                verified_prefix = _verify_bulk_prefix(
+                    store, options, archive, main_members, member_names, security_map,
+                )
+                main_members_processed = verified_prefix.main_members
+                ciks_loaded = verified_prefix.ciks
+                history_members_read = verified_prefix.history_members
+                verified_prior_rows = verified_prefix.rows
             for member in main_members:
                 cik = cast(re.Match[str], _BULK_MAIN_MEMBER.match(member)).group(1)
+                if verified_prefix is not None and cik <= verified_prefix.last_cik:
+                    continue
                 if cik_scope is not None and cik not in cik_scope:
                     continue
                 payload = json.loads(archive.read(member))
@@ -452,6 +647,24 @@ class SecSubmissionsBulkDataset(Dataset):
         flush()
         log_progress()
 
+        resume_details: dict[str, Any] = {}
+        if verified_prefix is not None:
+            resume_details = {
+                "resume_from_run_id": options.resume_from_run_id,
+                "verified_prior_run_ids": verified_prefix.lineage,
+                "verified_prior_rows": verified_prefix.rows,
+                "verified_prior_main_members": verified_prefix.main_members,
+                "resume_after_cik": verified_prefix.last_cik,
+                "archive_sha256": verified_prefix.archive_sha256,
+            }
+        coverage_details = {
+            "main_members_processed": main_members_processed,
+            "covered_rows": loaded + verified_prior_rows,
+            "scope_complete": options.forms is None and cik_scope is None and options.include_history_files
+                              and main_members_processed == len(main_members) and missing_history_members == 0,
+            **resume_details,
+        }
+
         record_source_file(
             store,
             dataset_id=self.dataset_id,
@@ -462,6 +675,7 @@ class SecSubmissionsBulkDataset(Dataset):
                 "ciks_loaded": ciks_loaded,
                 "history_members_read": history_members_read,
                 "missing_history_members": missing_history_members,
+                **coverage_details,
             },
         )
         quality_check(
@@ -469,13 +683,14 @@ class SecSubmissionsBulkDataset(Dataset):
             dataset_id=self.dataset_id,
             table_name="sec_submissions",
             check_name="rows_loaded",
-            status="passed" if loaded > 0 else "warning",
-            observed_value=float(loaded),
+            status="passed" if loaded + verified_prior_rows > 0 else "warning",
+            observed_value=float(loaded + verified_prior_rows),
             threshold_value=1.0,
             details={
                 "zip_path": str(options.zip_path),
                 "forms": options.forms,
                 "ciks": options.ciks,
+                **coverage_details,
             },
         )
         return DatasetLoadResult(
@@ -490,5 +705,6 @@ class SecSubmissionsBulkDataset(Dataset):
                 "history_members_read": history_members_read,
                 "missing_history_members": missing_history_members,
                 "forms": options.forms,
+                **coverage_details,
             },
         )
