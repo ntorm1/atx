@@ -23,6 +23,7 @@ DEFAULT_EXPORT_OBJECTS = (
     "universe_us_listed_membership",
     "delist_code_dim",
     "delisting_events",
+    "delisting_evidence",
     "delisting_return_observations",
     "equity_daily_bars",
     "corporate_actions",

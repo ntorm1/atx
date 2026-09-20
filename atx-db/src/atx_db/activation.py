@@ -61,6 +61,7 @@ STAGE_ORDER: tuple[str, ...] = (
     "reconciliation",
     "derived_metrics",
     "market_daily",
+    "delisting_evidence",
     "universe_us_listed",
     "provider_coverage",
 )
@@ -802,6 +803,23 @@ def stage_market_daily(store: DuckDBStore, options: ActivationOptions) -> StageR
     return StageResult(rows=rows, detail=dict(shares_reconciliation_report(store)))
 
 
+def stage_delisting_evidence(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Build public delisting evidence and fold it into delisting_events."""
+
+    from .delisting_evidence import (
+        DelistingEvidenceOptions,
+        fold_evidence_into_delisting_events,
+        refresh_delisting_evidence,
+    )
+
+    evidence_options = DelistingEvidenceOptions(
+        as_of_date=options.as_of_date, run_id=options.run_id
+    )
+    evidence = refresh_delisting_evidence(store, evidence_options)
+    events = fold_evidence_into_delisting_events(store, evidence_options)
+    return StageResult(rows=evidence, detail={"delisting_events": events})
+
+
 def stage_universe_us_listed(store: DuckDBStore, options: ActivationOptions) -> StageResult:
     """Rebuild the point-in-time US-listed universe from bars + directory + deciles."""
 
@@ -849,6 +867,7 @@ STAGES.update(
         "reconciliation": stage_reconciliation,
         "derived_metrics": stage_derived_metrics,
         "market_daily": stage_market_daily,
+        "delisting_evidence": stage_delisting_evidence,
         "universe_us_listed": stage_universe_us_listed,
         "provider_coverage": stage_provider_coverage,
     }

@@ -23,6 +23,7 @@ from .delisting import (
     DelistingReturnObservationDataset,
     DelistingReturnObservationOptions,
 )
+from .delisting_evidence import DelistingEvidenceDataset, DelistingEvidenceOptions
 from .dataset import Dataset, DatasetLoadResult
 from .derived_metrics import DerivedMetricsDataset, DerivedMetricsOptions
 from .market_daily import MarketDailyDataset, MarketDailyOptions
@@ -1230,6 +1231,18 @@ def _fred_macro_options(params: dict[str, Any]) -> FredMacroOptions:
     )
 
 
+def _delisting_evidence_options(params: dict[str, Any]) -> DelistingEvidenceOptions:
+    default = DelistingEvidenceOptions()
+    return DelistingEvidenceOptions(
+        archive_gap_sessions=int(params.get("archive_gap_sessions", default.archive_gap_sessions)),
+        merger_lookback_days=int(params.get("merger_lookback_days", default.merger_lookback_days)),
+        include_archive_inference=bool(
+            params.get("include_archive_inference", default.include_archive_inference)
+        ),
+        run_id=params.get("run_id"),
+    )
+
+
 def _universe_us_listed_options(params: dict[str, Any]) -> UniverseUsListedOptions:
     default = UniverseUsListedOptions()
     return UniverseUsListedOptions(
@@ -1406,6 +1419,7 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     TradingCalendarDataset.dataset_id: (TradingCalendarDataset, _calendar_options),
     UniverseMembershipDataset.dataset_id: (UniverseMembershipDataset, _universe_options),
     UniverseUsListedDataset.dataset_id: (UniverseUsListedDataset, _universe_us_listed_options),
+    DelistingEvidenceDataset.dataset_id: (DelistingEvidenceDataset, _delisting_evidence_options),
     SicTaxonomyDataset.dataset_id: (SicTaxonomyDataset, lambda p: SicTaxonomyOptions()),
     FamaFrenchTaxonomyDataset.dataset_id: (FamaFrenchTaxonomyDataset, lambda p: FamaFrenchTaxonomyOptions()),
     NaicsTaxonomyDataset.dataset_id: (NaicsTaxonomyDataset, lambda p: NaicsTaxonomyOptions()),
@@ -1575,6 +1589,7 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "trading_calendar": ("tbltickerhistory_daily",),
     "universe_memberships": ("tbltickerhistory_daily",),
     "universe_us_listed": ("market_daily", "tbltickerhistory_daily"),
+    "delisting_evidence": ("tbltickerhistory_daily", "nasdaq_listing_events", "sec_submissions"),
     "xbrl_filing_contexts": ("sec_submissions",),
     "xbrl_validation": ("xbrl_filing_contexts", "xbrl_taxonomy"),
     "xbrl_processor_runs": ("xbrl_filing_contexts",),
