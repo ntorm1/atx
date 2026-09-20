@@ -135,6 +135,10 @@ snapshot. The loader is now continuing through all 20,390 archive members;
 full source completion and final memory peak remain pending. The preserved new
 pre-migration backup is 11,529,629,696 bytes. Logs and the live guard receipt use
 the `activation-companyfacts-archive4` prefix.
+At 23:16:41 UTC its log reported 4,500 processed members, 3,758 loaded outcomes
+(including verified reuse), 716 empty, 26 unavailable, zero failures and 34,438
+newly processed fact rows. It has passed archive3's prior COMMIT failure point.
+These attempt-write counters do not establish net warehouse growth or completion.
 
 All five member errors were missing top-level payload CIK fields in otherwise
 valid archive records. Exact archive filenames still identify those members.

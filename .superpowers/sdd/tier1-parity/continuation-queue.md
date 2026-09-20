@@ -2,6 +2,25 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override - 2026-09-20 23:17 UTC
+
+- Archive4 CONFIRMED LIVE this turn via session25640 and CIM worker21904,
+  parent9712, creation1789945403452. Session poll returned the SAME live handle
+  around23:16:44UTC. No restart, failure or headroom stop occurred.
+- At23:16:41UTC the loader passed the old archive3 failure point: processed4500
+  of20390, loaded3758 (includes3750 verified reuse), empty716, unavailable26,
+  failed0, newly processed factrows34438. These are log counters/attempt writes,
+  not net warehouse growth or completed source/quality coverage. The missing
+  payload-CIK errors have not reappeared through the old processed prefix.
+- Latestguard physicalfree~7.33GiB/commit~9.07GiB. Keep1GB/one thread/3GiBcap.
+  Continue this healthy source pass; no competing runtime, database connection,
+  test or probe. Check actualsession/log/process before resuming any future turn.
+- Previous goal turn classified PROGRESS (reviewed code+commits and live proof).
+  This turn also gained production evidence: safe proof/reuse proceeded beyond
+  the old COMMIT failure into new issuer writes. Goal remains ACTIVE. Remaining
+  order and all source UUIDs are in23:11/23:05 overrides and production-resume-
+  after-cf5.md. No full-universe release or significant-signal claim yet.
+
 ## Current controller override - 2026-09-20 23:11 UTC
 
 - Archive4 remains sole ROOT runtime workload, session25640, guard child9712,
