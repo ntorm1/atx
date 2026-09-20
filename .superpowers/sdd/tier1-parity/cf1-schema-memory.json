@@ -1,0 +1,21 @@
+{
+  "command": [
+    ".venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "-n0",
+    "-q",
+    "tests/test_schema_contract_v2.py",
+    "-k",
+    "bootstrapped_warehouse_has_zero_pit_column_presence_after_s2_0 or schema_contract_version_table_pins_v2_manifest_hash_and_is_catalogued"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 5.542057037353516,
+    "commit_free_gb": 10.269775390625
+  },
+  "child_pid": 20808,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.9440193176269531
+}

@@ -1,0 +1,20 @@
+{
+  "command": [
+    ".venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "-n0",
+    "-q",
+    "tests/test_custom_features.py",
+    "tests/test_module_boundaries.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 5.489078521728516,
+    "commit_free_gb": 10.314220428466797
+  },
+  "child_pid": 9468,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.6241035461425781
+}

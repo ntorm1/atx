@@ -264,6 +264,7 @@
     "corporate_action_split_metrics_asof",
     "corporate_actions",
     "corporate_actions_asof",
+    "custom_features",
     "daily_adjustment_factors_asof",
     "daily_adjustments",
     "daily_panel_asof",
