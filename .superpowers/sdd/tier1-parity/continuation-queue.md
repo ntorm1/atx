@@ -2,6 +2,45 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override - 2026-09-20 23:39 UTC
+
+- Archive4 is still the sole live runtime workload. Session25640 returned the
+  same running child9712; CIM confirms worker21904, parent9712, creation
+  1789945403452. Latest log at23:38:45UTC: processed5300/20390, loaded4459,
+  empty813, unavailable28, failed0, attempt fact rows3070959. Loaded includes
+  3750 verified reused issuers; attempt rows include replacements, not net growth.
+  Last guard headroom: physical5.528GiB, commit6.908GiB. Worker at23:39UTC:
+  working1308864512B/private1868636160B. No guard or source failure occurred.
+  Follow-up at23:40:28UTC: processed5375, loaded4526, empty821, unavailable28,
+  failed0, attempt rows3301987. Same live session; guard physical6.217GiB and
+  commit6.861GiB. These newer counters supersede5300 above.
+- PR1 source is stable but UNCOMMITTED and runtime verification is PENDING.
+  Fresh Codex implementer owns cli.py and new test_publication_resources.py;
+  publication-resource-report.md records the implementation. One fresh Codex
+  static review is COMPLETE: publication-resource-review.md, 0 Critical,
+  0 Important, 0 Minor. No further review is required unless Critical fixes arise.
+  --memory-limit defaults1GB and --threads defaults1, applied at publication
+  boundary using the existing helper. The new test checks actual CLI defaults,
+  explicit512MB/two-thread override and configuration replay after reopen.
+- Root owns the UNCOMMITTED PRODUCTION_RUNBOOK.md edits: correct the already
+  implemented terminal/calendar/survivorship ladder description and show explicit
+  publication1GB/one-thread options plus the outer process-guard requirement.
+  Scoped git diff --check passed. This is static validation only, not pytest,
+  Ruff, mypy or any import/DB probe. No runtime work competed with archive4.
+- When archive4 releases the runtime slot, collect its terminal receipt and
+  inspect actual ledgers/outcome. Then run PR1's five focused cases from its
+  report (two resource cases, pending-migration refusal, missing/legacy variants)
+  under the root guard, Ruff the touched Python paths, and commit the task with
+  exact pathspecs including its reports and root runbook. Keep unrelated EOL
+  phantom modifications and user files out. Do not commit PR1 as tested yet.
+- The historical companion-data async question remains pending. No answer or
+  new file is assumed, no question was repeated, and ingestion continues.
+  Remaining production order is submissions verified resume, activation-run5
+  from statement_points with --force and16 sequential shards, CF1 evaluation,
+  live coverage/quality and first release, then full non-slow suite once and
+  fresh Codex whole-branch review. Ask before merging main; preserve stash@{0}.
+  Goal remains ACTIVE, with healthy production progress and no readiness claim.
+
 ## Current controller override - 2026-09-20 23:26 UTC
 
 - Archive4 confirmed LIVE via session25640 around23:24UTC, same worker21904 /
