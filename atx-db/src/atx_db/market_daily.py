@@ -43,17 +43,32 @@ MARKET_DAILY_SOURCE_NAME = "atx-db daily market panel v1"
 #: PIT cutoff in this module derives from a single constant.
 END_OF_DAY_HOURS = 22
 
-#: Calendar-day buffer used to widen the ``bars`` lookback below
+#: Row-count (not calendar-day) lookback used to widen the ``bars`` CTE below
 #: ``MarketDailyOptions.start_date`` so a scoped/incremental refresh's trailing
-#: windows (up to a 252-trading-session realized-vol/total-return frame, plus
-#: the 21-trading-day skip ``total_return_1m`` needs) are never computed over a
-#: truncated bar range. 252 trading sessions is roughly 365 calendar days at
-#: typical ~69% weekday trading-day density; 450 leaves a large margin for
-#: holidays and is simpler to prove correct than counting exact trading-day
-#: row offsets. The ``[start_date, end_date]`` restriction itself is applied
-#: only to the final emitted/inserted rows, never to the ``bars`` CTE that the
-#: window functions consume.
-_LOOKBACK_CALENDAR_DAYS = 450
+#: windows (up to a 252-trading-session realized-vol/total-return frame; the
+#: 21-trading-day skip in ``momentum_12_1`` is a second, independent ``tret``
+#: whose lag is ``max()``'d with the 252-day one, not added to it, so 252 is
+#: the true worst case) are never computed over a truncated bar range. This
+#: MUST be a per-security *row* count -- every trailing window is
+#: ``ROWS BETWEEN N PRECEDING``, i.e. N rows actually present in the
+#: partition, not N calendar days -- so a calendar-day buffer alone silently
+#: under-fills for a security with sparse/halted bar coverage (a long halt can
+#: span far more calendar time than 252 normal trading sessions). 300 leaves
+#: comfortable margin over the 252-session worst case. See
+#: ``build_market_daily_sql``'s ``bars_by_session``/``bars`` CTEs: a bar
+#: strictly before ``start_date`` is kept only if its descending-trade_date
+#: rank *within that security* is <= this limit; a bar on/after ``start_date``
+#: is always kept regardless of rank.
+_LOOKBACK_ROW_LIMIT = 300
+
+#: A date far enough in the past that no real bar predates it, used so the
+#: ``bars_by_session`` CTE's ``is_recent`` computation (and thus the
+#: lookback-rank partitioning) is a single, always-valid SQL expression
+#: whether or not the caller passed a ``start_date`` -- when there is no
+#: ``start_date``, every
+#: bar is "recent" relative to this sentinel, so the row-rank restriction is
+#: a structural no-op and the full history is used, matching an unscoped run.
+_NO_START_DATE_SENTINEL = dt.date(1900, 1, 1)
 
 
 @dataclass(frozen=True)
@@ -125,30 +140,49 @@ def build_market_daily_sql(
     metric_codes: tuple[str, ...],
     daily_definitions: tuple[DerivedMetricDefinition, ...],
     security_count: int,
-    bars_date_predicate: str,
+    bars_extra_predicate: str,
     output_date_predicate: str,
 ) -> str:
     """Return the full ``INSERT`` statement for one batch of securities.
 
-    ``bars_date_predicate`` restricts the ``bars`` CTE that every trailing-window
-    metric (``tret``/``rvol``/``avg_d`` -> total returns, momentum, realized vol,
-    dollar volume) is computed over; it must use the *widened* lookback start
-    (see ``_LOOKBACK_CALENDAR_DAYS``), never the caller's raw ``start_date``, or
-    a scoped/incremental refresh would truncate the window functions' input and
-    null out every multi-day metric for the scoped range (and, since the
-    DELETE+INSERT is scoped identically, destructively overwrite previously
-    -correct values). ``output_date_predicate`` is the caller's actual
-    ``[start_date, end_date]`` restriction, applied only to the final emitted
-    rows (``f.trade_date``) -- it is what actually scopes what gets inserted,
-    matching the DELETE's scope.
+    Trailing-window metrics (``tret``/``rvol``/``avg_d`` -> total returns,
+    momentum, realized vol, dollar volume) are computed over the ``bars`` CTE,
+    which is ranked from ``bars_by_session`` (one row per
+    ``(security_id, trade_date)``, already deduped): every bar on/after the
+    caller's ``start_date`` is kept unconditionally, and every bar strictly
+    before ``start_date`` is kept only if its descending-``trade_date`` rank
+    *within that security* is <= ``_LOOKBACK_ROW_LIMIT``. This is a per
+    -security row count, not a calendar-day window, so a scoped/incremental
+    refresh's trailing windows are never truncated even for a security with
+    sparse/halted bar coverage (unlike a calendar-day buffer, which can
+    under-fill when a gap spans more calendar time than the window's row
+    count would otherwise need) -- matching what an unscoped run would
+    compute. When the caller passed no ``start_date`` at all, the "on/after
+    start_date" branch matches every real bar (see ``_NO_START_DATE_SENTINEL``
+    in ``refresh_market_daily_metrics``), so the rank restriction is a
+    structural no-op and the full history is used, exactly as before this
+    fix. ``bars_extra_predicate`` carries only ``end_date``/``bar_source``
+    (never a lower date bound -- that's the row-rank's job); it applies
+    uniformly to both the "recent" and "lookback" bars, which is safe because
+    every "lookback" bar's ``trade_date`` is already `< start_date <=
+    end_date` by construction. ``output_date_predicate`` is the caller's
+    actual ``[start_date, end_date]`` restriction, applied only to the final
+    emitted rows (``f.trade_date``) -- it is what actually scopes what gets
+    inserted, matching the DELETE's scope.
 
-    Bind order, matching the placeholders in the query text left to right: the
-    batch's security ids (for ``bars``), then the ``bars_date_predicate``
-    params (widened-start/end/bar_source, in that order, however many of the
-    three are present), then ``derived_source`` (the ``fund_long`` union's
-    derived-side filter), then ``source`` twice (the id hash, then the
-    ``source`` column), then ``run_id``, then the ``output_date_predicate``
-    params (start_date/end_date, in that order, however many are present).
+    Bind order, matching the placeholders in the query text left to right:
+    the effective start date first (the ``is_recent`` computation -- it's in
+    the ``SELECT`` list, textually *before* the ``security_id IN (...)``
+    predicate in the ``WHERE`` clause below it, even though ``WHERE`` filters
+    first logically; DuckDB numbers ``?`` placeholders by their left-to-right
+    position in the parsed text, not by execution order -- always bound, see
+    ``_NO_START_DATE_SENTINEL``), then the batch's security ids (for
+    ``bars_by_session``), then the ``bars_extra_predicate`` params
+    (end/bar_source, in that order, however many of the two are present),
+    then ``derived_source`` (the ``fund_long`` union's derived-side filter),
+    then ``source`` twice (the id hash, then the ``source`` column), then
+    ``run_id``, then the ``output_date_predicate`` params (start_date/end_date,
+    in that order, however many are present).
     """
     codes = tuple(item_codes) + tuple(metric_codes)
     joins, projections = _asof_joins(codes)
@@ -203,7 +237,12 @@ INSERT INTO market_daily_metrics (
     {metric_columns},
     fundamental_available_at, available_at, inputs_hash, as_of_date, is_latest_revision, run_id
 )
-WITH bars AS (
+WITH bars_by_session AS (
+    -- One row per (security_id, trade_date) -- the physical-row dedup happens
+    -- here, BEFORE the lookback rank below, so a corrected/duplicate physical
+    -- row for the same session can never split a session's rank from its
+    -- sibling's (row_number() over trade_date DESC would otherwise have to
+    -- break same-trade_date ties on undefined physical/plan order).
     SELECT security_id, trade_date,
            arg_max(symbol, (available_at, source)) AS symbol,
            arg_max(close, (available_at, source)) AS close,
@@ -212,12 +251,23 @@ WITH bars AS (
            arg_max(shares_outstanding, (available_at, source)) AS archive_shares,
            greatest(max(available_at),
                     CAST(trade_date AS TIMESTAMP) + INTERVAL {END_OF_DAY_HOURS} HOUR) AS bar_at,
-           CAST(trade_date AS TIMESTAMP) + INTERVAL {END_OF_DAY_HOURS} HOUR AS cutoff
+           CAST(trade_date AS TIMESTAMP) + INTERVAL {END_OF_DAY_HOURS} HOUR AS cutoff,
+           (trade_date >= ?) AS is_recent
     FROM equity_daily_bars
     WHERE close > 0 AND adjusted_close > 0 AND trade_date IS NOT NULL
       AND security_id IN ({securities})
-      {bars_date_predicate}
+      {bars_extra_predicate}
     GROUP BY security_id, trade_date
+), bars AS (
+    SELECT security_id, trade_date, symbol, close, adj_close, volume, archive_shares, bar_at, cutoff
+    FROM (
+        SELECT *,
+               row_number() OVER (
+                   PARTITION BY security_id, is_recent ORDER BY trade_date DESC
+               ) AS lookback_rank
+        FROM bars_by_session
+    )
+    WHERE is_recent OR lookback_rank <= {_LOOKBACK_ROW_LIMIT}
 ), fund_long AS (
     SELECT security_id, canonical_code AS code, period_end, value, available_at, revision_sequence
     FROM fundamental_standardized
@@ -288,7 +338,16 @@ WITH bars AS (
            CASE WHEN j.dei_shares IS NULL OR j.archive_shares IS NULL OR j.archive_shares = 0
                 THEN NULL ELSE j.dei_shares / j.archive_shares END AS shares_reconciliation_ratio,
            j.bar_at AS "close__at", j.bar_at AS "adj_close__at", j.bar_at AS "volume__at",
-           j.bar_at AS "shares_outstanding__at", j.bar_at AS "log_return__at",
+           j.bar_at AS "shares_outstanding__at",
+           -- log_return(t) = ln(adj_close(t) / adj_close(t-1)) depends on BOTH
+           -- t and t-1's bars, mirroring the same lag(1)-availability
+           -- composition derived_dsl.py's own lowering uses for every other
+           -- lagged quantity (e.g. tret's `_greatest([inner_at, lag(inner_at,
+           -- periods)])`); coalescing the lag to j.bar_at when it's NULL
+           -- (first row of a security) is safe since j.bar_at is never NULL.
+           greatest(j.bar_at,
+                    coalesce(lag(j.bar_at) OVER (PARTITION BY j.security_id ORDER BY j.trade_date), j.bar_at))
+               AS "log_return__at",
            j.bar_at AS "archive_shares__at", j.bar_at AS "dei_shares__at",
            CASE WHEN lag(j.adj_close) OVER (PARTITION BY j.security_id ORDER BY j.trade_date) > 0
                 THEN ln(j.adj_close / lag(j.adj_close) OVER (PARTITION BY j.security_id
@@ -356,27 +415,26 @@ def refresh_market_daily_metrics(
     size = max(1, int(options.batch_size))
     batches = [tuple(identifiers[i : i + size]) for i in range(0, len(identifiers), size)]
 
-    # Critical fix: widen the *bars* lookback so trailing-window metrics never
-    # see a truncated bar range for a scoped/incremental refresh. The caller's
-    # actual start_date/end_date restriction is applied separately, only to
-    # the emitted rows (see output_date_* below) -- never to the bars CTE that
-    # feeds the window functions. See build_market_daily_sql's docstring and
-    # _LOOKBACK_CALENDAR_DAYS.
-    widened_start_date = (
-        options.start_date - dt.timedelta(days=_LOOKBACK_CALENDAR_DAYS) if options.start_date is not None else None
-    )
-    bars_date_fragments: list[str] = []
-    bars_date_params: list[Any] = []
-    if widened_start_date is not None:
-        bars_date_fragments.append("AND trade_date >= ?")
-        bars_date_params.append(widened_start_date)
+    # Critical fix (row-based per fix round 2): the bars CTE never truncates
+    # trailing-window metrics for a scoped/incremental refresh. The row-rank
+    # restriction itself is unconditional SQL (see build_market_daily_sql's
+    # "bars" CTE); what varies here is only the "effective start" bound to
+    # `is_recent`. With no caller start_date, _NO_START_DATE_SENTINEL makes
+    # every real bar "recent" so the rank restriction is a structural no-op
+    # (full history used, exactly like an unscoped run). The caller's actual
+    # start_date/end_date restriction is applied separately, only to the
+    # emitted rows (see output_date_* below) -- never to the bars CTE.
+    effective_start = options.start_date if options.start_date is not None else _NO_START_DATE_SENTINEL
+
+    bars_extra_fragments: list[str] = []
+    bars_extra_params: list[Any] = []
     if options.end_date is not None:
-        bars_date_fragments.append("AND trade_date <= ?")
-        bars_date_params.append(options.end_date)
+        bars_extra_fragments.append("AND trade_date <= ?")
+        bars_extra_params.append(options.end_date)
     if options.bar_source is not None:
-        bars_date_fragments.append("AND source = ?")
-        bars_date_params.append(options.bar_source)
-    bars_date_predicate = "\n      ".join(bars_date_fragments)
+        bars_extra_fragments.append("AND source = ?")
+        bars_extra_params.append(options.bar_source)
+    bars_extra_predicate = "\n      ".join(bars_extra_fragments)
 
     output_date_fragments: list[str] = []
     output_date_params: list[Any] = []
@@ -395,12 +453,13 @@ def refresh_market_daily_metrics(
             metric_codes=metric_codes,
             daily_definitions=daily,
             security_count=len(batch),
-            bars_date_predicate=bars_date_predicate,
+            bars_extra_predicate=bars_extra_predicate,
             output_date_predicate=output_date_predicate,
         )
         bind: list[Any] = [
+            effective_start,
             *batch,
-            *bars_date_params,
+            *bars_extra_params,
             options.derived_source,
             options.source,
             options.source,

@@ -73,6 +73,48 @@ def _bar(store, security_id, trade_date, close, shares=None):
     )
 
 
+def _weekdays(start, count):
+    """``count`` consecutive weekday dates starting at (and possibly including) ``start``."""
+    dates = []
+    current = start
+    while len(dates) < count:
+        if current.weekday() < 5:
+            dates.append(current)
+        current += dt.timedelta(days=1)
+    return dates
+
+
+def _n_weekdays_before(date_, n):
+    """The weekday date exactly ``n`` weekdays strictly before ``date_``."""
+    current = date_
+    counted = 0
+    while counted < n:
+        current -= dt.timedelta(days=1)
+        if current.weekday() < 5:
+            counted += 1
+    return current
+
+
+def _assert_rows_equal(actual, expected, columns, compare_idx):
+    """Compare two market_daily_metrics rows column-by-column.
+
+    Float columns (e.g. realized_vol_*, computed via stddev_samp over a
+    ROWS-frame window) are compared with a tolerance rather than bit-for-bit:
+    two independent query executions over the same *logical* set of input
+    values can accumulate a vectorized-engine sum/variance in a different
+    (non-associative) order and differ in the last one or two bits of a
+    double, even when nothing about the computed value is actually wrong.
+    """
+    for i in compare_idx:
+        a, b = actual[i], expected[i]
+        if a is None or b is None:
+            assert a == b, (columns[i], a, b)
+        elif isinstance(a, float) or isinstance(b, float):
+            assert a == pytest.approx(b, rel=1e-9, abs=1e-12), (columns[i], a, b)
+        else:
+            assert a == b, (columns[i], a, b)
+
+
 @pytest.fixture
 def panel(tmp_store):
     seed_derived_metric_definitions(tmp_store)
@@ -308,9 +350,59 @@ def test_scoped_refresh_matches_unscoped_for_trailing_windows(panel):
     for row in scoped_rows:
         key = (row[columns.index("security_id")], row[columns.index("trade_date")])
         expected = snapshot[key]
-        assert tuple(row[i] for i in compare_idx) == tuple(expected[i] for i in compare_idx)
+        _assert_rows_equal(row, expected, columns, compare_idx)
         for i in windowed_idx:
             assert row[i] is not None
+
+
+def test_a_long_halt_straddling_start_date_still_reproduces_unscoped_values(tmp_store):
+    """(A) fix round 2: the lookback must be ROW-based, not calendar-based.
+
+    A security with a 200-session halt straddling start_date needs its
+    trailing-window lookback to reach back across the halt (spanning far more
+    calendar time than 252 ordinary trading sessions) to find its 252 most
+    recent actual bar rows -- exactly like an unscoped run would. A
+    calendar-day-bounded widen (the fix round 1 approach) would under-fill
+    here and silently null out the scoped rows' windowed metrics.
+    """
+    pre_halt = _weekdays(dt.date(2015, 1, 1), 300)
+    halt = _weekdays(pre_halt[-1] + dt.timedelta(days=1), 200)
+    post_halt = _weekdays(halt[-1] + dt.timedelta(days=1), 40)
+
+    price = 10.0
+    for trade_date in pre_halt + post_halt:  # no bars at all during the halt
+        price += 0.01
+        _bar(tmp_store, "S5", trade_date, price)
+
+    first_total = refresh_market_daily_metrics(tmp_store, MarketDailyOptions(security_ids=("S5",)))
+    assert first_total == len(pre_halt) + len(post_halt)
+
+    cursor = tmp_store.con.execute("SELECT * FROM market_daily_metrics WHERE security_id = 'S5' ORDER BY trade_date")
+    columns = [d[0] for d in cursor.description]
+    compare_idx = [i for i, name in enumerate(columns) if name != "source_loaded_at"]
+    snapshot = {row[columns.index("trade_date")]: row for row in cursor.fetchall()}
+    realized_vol_idx = columns.index("realized_vol_252d")
+    # Sanity: the unscoped run actually filled this window (otherwise the
+    # scoped-vs-unscoped comparison below would trivially "match" on NULLs).
+    assert snapshot[post_halt[10]][realized_vol_idx] is not None
+
+    start = post_halt[10]
+    end = post_halt[-1]
+    scoped_total = refresh_market_daily_metrics(
+        tmp_store, MarketDailyOptions(security_ids=("S5",), start_date=start, end_date=end)
+    )
+    assert scoped_total == len(post_halt) - 10
+
+    scoped_rows = tmp_store.con.execute(
+        "SELECT * FROM market_daily_metrics WHERE security_id = 'S5' AND trade_date BETWEEN ? AND ? "
+        "ORDER BY trade_date",
+        [start, end],
+    ).fetchall()
+    assert len(scoped_rows) == len(post_halt) - 10
+    for row in scoped_rows:
+        assert row[realized_vol_idx] is not None
+        key = row[columns.index("trade_date")]
+        _assert_rows_equal(row, snapshot[key], columns, compare_idx)
 
 
 def test_enterprise_value_and_valuation_multiples_positive_path(tmp_store):
@@ -471,6 +563,41 @@ def test_a_stale_bar_correction_inside_the_window_raises_the_available_at(panel)
         ) VALUES ('test', 'S1', 'AAA', ?, 25.0, 25.0, 25.0, 25.0, 25.0, 1000, 1.0, false, ?, ?, true, 1_000_000.0)
         """,
         [d_old, corrected_at, d_old],
+    )
+    refresh_market_daily_metrics(panel, MarketDailyOptions())
+    row = panel.con.execute(
+        "SELECT available_at, realized_vol_60d FROM market_daily_metrics WHERE security_id = 'S1' AND trade_date = ?",
+        [d_new],
+    ).fetchone()
+    assert row is not None
+    available_at, realized_vol = row
+    assert realized_vol is not None
+    assert available_at >= corrected_at
+
+
+def test_a_correction_one_session_before_the_windows_left_edge_still_raises_availability(panel):
+    """(B) fix round 2: log_return(t) = ln(adj_close(t) / adj_close(t-1))
+    depends on BOTH t and t-1's bars, mirroring the DSL's own lag(1)
+    -composed availability. A correction to the bar exactly one session
+    *before* a window's left edge changes the left-edge row's log_return (and
+    its availability, via that lag(1) composition) even though the corrected
+    bar itself sits one row entirely *outside* the window -- a case the
+    original M1 test (correction placed well inside the window) does not
+    exercise. Before this fix, log_return__at was hardcoded to the row's own
+    bar_at and could not see this.
+    """
+    d_new = dt.date(2020, 6, 1)
+    d_boundary = _n_weekdays_before(d_new, 60)  # one session before realized_vol_60d's left edge
+    corrected_at = dt.datetime(2020, 9, 1, 12, 0)
+    panel.con.execute(
+        """
+        INSERT INTO equity_daily_bars (
+            source, security_id, symbol, trade_date, open, high, low, close,
+            adjusted_close, volume, split_factor, is_adjusted, available_at,
+            as_of_date, is_latest_revision, shares_outstanding
+        ) VALUES ('test', 'S1', 'AAA', ?, 30.0, 30.0, 30.0, 30.0, 30.0, 1000, 1.0, false, ?, ?, true, 1_000_000.0)
+        """,
+        [d_boundary, corrected_at, d_boundary],
     )
     refresh_market_daily_metrics(panel, MarketDailyOptions())
     row = panel.con.execute(
