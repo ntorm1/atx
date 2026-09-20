@@ -2,7 +2,7 @@
 
 Re-seeds ``delist_code_dim`` (four new codes the public evidence streams emit:
 ``SEC_FORM_25``, ``SEC_FORM_15``, ``ARCHIVE_LAST_TRADE``, ``NASDAQ_FINANCIAL_STATUS_BANKRUPT``)
-and ``terminal_return_policy_dim`` (the new ``performance_unknown`` row) from the widened Python
+and ``terminal_return_policy_dim`` (the two ``performance_unknown*`` rows) from the widened Python
 tuples in ``atx_db.delisting``, and registers
 ``delisting_events_without_terminal_return`` in ``quality_check_registry`` --
 ``atx_db.quality.checks_survivorship.SURVIVORSHIP_TERMINAL_RETURN_COVERAGE_CHECK_NAME`` -- the
@@ -27,7 +27,6 @@ from ..delisting import (
     POLICY_DIM_COLUMNS,
     TERMINAL_RETURN_POLICY_ROWS,
 )
-from ..quality.checks_survivorship import SURVIVORSHIP_TERMINAL_RETURN_COVERAGE_CHECK_NAME
 from ._runner import Migration
 from .bodies_0140_0143 import _refresh_schema_contract_v2_pin
 
@@ -60,7 +59,7 @@ def _delisting_terminal_return_policy(conn: duckdb.DuckDBPyConnection) -> None:
         """,
         [
             (
-                SURVIVORSHIP_TERMINAL_RETURN_COVERAGE_CHECK_NAME,
+                "delisting_events_without_terminal_return",
                 "delisting_terminal_returns",
                 "delisting_terminal_returns",
                 "error",

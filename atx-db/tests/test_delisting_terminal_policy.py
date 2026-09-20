@@ -107,12 +107,12 @@ def test_the_option_default_applies_the_shumway_convention(tmp_store):
     # S4 preflight ruling: the convention is ON by default; an operator opts out via
     # performance_delisting_return=None.
     from atx_db.delisting import (
-        SHUMWAY_PERFORMANCE_DELISTING_RETURN,
         DelistingTerminalReturnOptions,
+        ShumwayPerformancePolicy,
     )
 
     options = DelistingTerminalReturnOptions()
-    assert options.performance_delisting_return == SHUMWAY_PERFORMANCE_DELISTING_RETURN
+    assert options.performance_delisting_return == ShumwayPerformancePolicy()
 
     opted_out = DelistingTerminalReturnOptions(performance_delisting_return=None)
     assert opted_out.performance_delisting_return is None
@@ -140,9 +140,14 @@ def test_compute_delisting_terminal_returns_applies_the_policy_independent_of_co
 
 
 def test_compute_delisting_terminal_returns_lets_observed_win_over_performance_policy(tmp_store):
-    from atx_db.delisting import TERMINAL_RETURN_COLUMNS, compute_delisting_terminal_returns
+    from atx_db.delisting import (
+        TERMINAL_RETURN_COLUMNS,
+        ShumwayPerformancePolicy,
+        compute_delisting_terminal_returns,
+    )
 
     events = _events()
+    events["listing_exchange_code"] = "XNAS"
     policy = _policy_dim(tmp_store)
     observations = pd.DataFrame(
         [
@@ -168,12 +173,144 @@ def test_compute_delisting_terminal_returns_lets_observed_win_over_performance_p
         events,
         policy,
         corporate_actions=None,
-        performance_delisting_return=-0.30,
+        performance_delisting_return=ShumwayPerformancePolicy(),
     )
     assert set(out.columns) == set(TERMINAL_RETURN_COLUMNS)
     row = out[out["security_id"] == "SEC-1"].iloc[0]
     assert row["terminal_return_source"] == "observed"
     assert float(row["terminal_return"]) == pytest.approx(-0.05)
+
+
+def test_performance_policy_dispatches_a_mixed_exchange_universe(tmp_store):
+    from atx_db.delisting import ShumwayPerformancePolicy, apply_performance_delisting_policy
+
+    exchanges = ["XNAS", "NASDAQ", " xnas ", "XNYS", "XASE", None]
+    events = pd.concat([_events().iloc[[0]]] * len(exchanges), ignore_index=True)
+    events["security_id"] = [f"SEC-{i}" for i in range(len(exchanges))]
+    events["listing_exchange_code"] = exchanges
+    policy = _policy_dim(tmp_store)
+    out = apply_performance_delisting_policy(events, policy, performance_return=ShumwayPerformancePolicy())
+    assert out["terminal_return"].tolist() == [-0.55] * 3 + [-0.30] * 3
+    assert out["terminal_return_policy"].tolist() == ["performance_unknown_nasdaq"] * 3 + ["performance_unknown"] * 3
+    assert out["return_basis"].tolist() == ["shumway_nasdaq_default"] * 3 + ["shumway_default"] * 3
+    pd.testing.assert_frame_equal(
+        out,
+        apply_performance_delisting_policy(events.iloc[::-1], policy, performance_return=ShumwayPerformancePolicy()),
+    )
+    override = apply_performance_delisting_policy(events, policy, performance_return=-0.42)
+    assert override["terminal_return"].tolist() == [-0.42] * len(exchanges)
+
+
+def _seed_exchange_input(
+    store,
+    source,
+    exchange,
+    *,
+    snapshot="2024-01-10",
+    available="2024-01-10 22:00:00",
+    valid_from="2024-01-10",
+    valid_to=None,
+    latest=True,
+):
+    if source == "membership":
+        store.con.execute(
+            "INSERT INTO universe_us_listed_membership (membership_id, universe_id, security_id, "
+            "symbol, valid_from, valid_to, available_at, security_type, exchange_code, has_cik, "
+            "reason, rules_json, decision_count, as_of_date, source, is_latest_revision) VALUES "
+            "(?, 'us_listed_v1', 'SEC-1', 'GONE', ?, ?, ?, 'common', ?, false, 'member', '{}', 1, ?, 'test', ?)",
+            [source + exchange + snapshot, valid_from, valid_to, available, exchange, snapshot, latest],
+        )
+    elif source == "listing":
+        store.con.execute(
+            "INSERT INTO exchange_listings (security_id, ticker, exchange_code, valid_from, "
+            "valid_to, as_of_date, available_at, source, is_latest_revision) "
+            "VALUES ('SEC-1', 'GONE', ?, ?, ?, ?, ?, 'test', ?)",
+            [exchange, valid_from, valid_to, snapshot, available, latest],
+        )
+    else:
+        store.con.execute(
+            "INSERT INTO nasdaq_symbol_directory (directory, symbol, exchange, as_of_date, "
+            "available_at, source_url, is_latest_revision) VALUES (?, 'GONE', ?, ?, ?, 'test', ?)",
+            ["nasdaqlisted" if exchange == "XNAS" else "otherlisted", exchange, snapshot, available, latest],
+        )
+
+
+@pytest.mark.parametrize(
+    ("inputs", "expected"),
+    [
+        ([("membership", "XNAS", {}), ("listing", "XNYS", {}), ("directory", "XNYS", {})], -0.55),
+        ([("membership", "XNYS", {}), ("listing", "XNAS", {}), ("directory", "XNAS", {})], -0.30),
+        ([("listing", "XNAS", {}), ("directory", "XNYS", {})], -0.55),
+        ([("listing", "XNYS", {}), ("directory", "XNAS", {})], -0.30),
+        ([("directory", "XNAS", {})], -0.55),
+        ([("directory", "XNYS", {}), ("directory", "XNAS", {"snapshot": "2024-01-13"})], -0.30),
+        (
+            [
+                ("directory", "XNYS", {}),
+                ("directory", "XNAS", {"snapshot": "2024-01-11", "available": "2024-01-13 10:00:00"}),
+            ],
+            -0.30,
+        ),
+        ([("membership", "XNAS", {"snapshot": "2024-01-13"}), ("listing", "XNYS", {})], -0.30),
+        ([("membership", "XNAS", {"valid_from": "2024-01-13"}), ("directory", "XNYS", {})], -0.30),
+        ([("membership", "XNAS", {"valid_to": "2024-01-11"}), ("listing", "XNYS", {})], -0.30),
+        ([("listing", "XNAS", {"valid_to": "2024-01-12"}), ("directory", "XNYS", {})], -0.30),
+        ([("listing", "XNAS", {"available": "2024-01-12 23:00:00"})], -0.30),
+        ([("membership", "XNAS", {"latest": False}), ("directory", "XNYS", {})], -0.30),
+        ([], -0.30),
+    ],
+)
+def test_refresh_resolves_exchange_in_pit_priority_order(tmp_store, inputs, expected):
+    from atx_db.delisting import refresh_delisting_terminal_returns
+
+    _seed_one_delisting_event(tmp_store)
+    for source, exchange, overrides in inputs:
+        _seed_exchange_input(tmp_store, source, exchange, **overrides)
+    assert refresh_delisting_terminal_returns(tmp_store) == 1
+    row = tmp_store.con.execute(
+        "SELECT terminal_return, terminal_return_policy FROM delisting_terminal_returns"
+    ).fetchone()
+    assert row[0] == expected
+    assert row[1] == ("performance_unknown_nasdaq" if expected == -0.55 else "performance_unknown")
+
+
+def test_refresh_uses_maximum_event_and_selected_exchange_availability_and_can_opt_out(tmp_store):
+    from atx_db.delisting import DelistingTerminalReturnOptions, refresh_delisting_terminal_returns
+
+    _seed_one_delisting_event(tmp_store)
+    tmp_store.con.execute("UPDATE delisting_events SET available_at = TIMESTAMP '2024-01-12 10:00:00'")
+    _seed_exchange_input(tmp_store, "membership", "XNAS", available="2024-01-12 21:00:00")
+    _seed_exchange_input(tmp_store, "listing", "XNYS", available="2024-01-12 22:00:00")
+    assert refresh_delisting_terminal_returns(tmp_store) == 1
+    assert tmp_store.con.execute("SELECT available_at FROM delisting_terminal_returns").fetchone()[0] == (
+        dt.datetime(2024, 1, 12, 21)
+    )
+    assert (
+        refresh_delisting_terminal_returns(tmp_store, DelistingTerminalReturnOptions(performance_delisting_return=None))
+        == 0
+    )
+
+
+@pytest.mark.parametrize(
+    ("code", "vendor_code", "expected"),
+    [
+        ("SEC_FORM_25", 500, "match"),
+        ("SEC_FORM_25", 300, "match"),
+        ("SEC_FORM_15", 500, "match"),
+        ("ARCHIVE_LAST_TRADE", 500, "match"),
+        ("NASDAQ_FINANCIAL_STATUS_BANKRUPT", 574, "match"),
+        ("NASDAQ_FINANCIAL_STATUS_BANKRUPT", 400, "match"),
+        ("SEC_FORM_15", 200, "mismatch"),
+    ],
+)
+def test_public_evidence_codes_reconcile_with_vendor_families(tmp_store, code, vendor_code, expected):
+    from atx_db.delisting import compute_delisting_code_reconciliation
+
+    events = _events().iloc[[0]].assign(delisting_event_id="event-1", delist_code=code)
+    observations = _events().iloc[[0]].assign(return_observation_id="obs-1", crsp_dlstcd=vendor_code)
+    codes = tmp_store.con.execute("SELECT delist_code, reason_category FROM delist_code_dim").df()
+    result = compute_delisting_code_reconciliation(events, observations, codes)
+    assert result["reconciliation_status"].tolist() == [expected]
 
 
 def _seed_one_delisting_event(store):

@@ -32,16 +32,50 @@ DEFAULT_CODE_SOURCE = "atx_delist_code_dim_v1"
 # delisting return for NYSE/AMEX performance-related delistings is about -30%. Shumway &
 # Warther (1999), JF 54(6), estimate about -55% for Nasdaq. These are named conventions, not
 # observations. S4 preflight ruling (program.md): the convention is ON by default --
-# DelistingTerminalReturnOptions.performance_delisting_return defaults to
-# SHUMWAY_PERFORMANCE_DELISTING_RETURN -- and an operator opts OUT by passing
-# performance_delisting_return=None. Whichever value is used, any row produced this way is
-# stamped terminal_return_policy='performance_unknown' and return_basis='shumway_default'
-# so a consumer can always filter imputed rows back out, and the coverage gate in
-# quality/checks_survivorship.py makes an unset/uncovered gap loud either way.
+# DelistingTerminalReturnOptions.performance_delisting_return defaults to a
+# ShumwayPerformancePolicy() instance -- and an operator opts OUT by passing
+# performance_delisting_return=None. Dispatch between the two magnitudes is per-security,
+# resolved from the event's own PIT listing exchange as of delist_date: a row
+# resolved to Nasdaq is stamped terminal_return_policy='performance_unknown_nasdaq'; anything
+# else (NYSE/AMEX/ARCA/BATS, or an unresolved exchange) is stamped
+# terminal_return_policy='performance_unknown'. Either way a consumer can always filter
+# imputed rows back out (`terminal_return_policy NOT LIKE 'performance_unknown%'`), and the
+# coverage gate in quality/checks_survivorship.py makes an unset/uncovered gap loud either way.
 SHUMWAY_PERFORMANCE_DELISTING_RETURN = -0.30
 SHUMWAY_NASDAQ_PERFORMANCE_DELISTING_RETURN = -0.55
 PERFORMANCE_TERMINAL_RETURN_POLICY_CODE = "performance_unknown"
+PERFORMANCE_TERMINAL_RETURN_POLICY_CODE_NASDAQ = "performance_unknown_nasdaq"
 PERFORMANCE_DELIST_REASONS = frozenset({"bankruptcy", "exchange_delist", "unknown"})
+
+# Exchange tokens that count as "Nasdaq" for Shumway-variant dispatch, spanning both
+# representations this warehouse actually produces: universe_us_listed_membership.exchange_code
+# (MIC-style, from universe_us_listed.EXCHANGE_CODE_BY_DIRECTORY_EXCHANGE) writes "XNAS", while
+# nasdaq_symbol_directory.exchange writes the literal "NASDAQ" for nasdaqlisted.txt rows.
+# Comparison is case-insensitive (see _is_nasdaq_exchange).
+NASDAQ_EXCHANGE_CODES = frozenset({"XNAS", "NASDAQ"})
+
+
+@dataclass(frozen=True)
+class ShumwayPerformancePolicy:
+    """Per-exchange Shumway performance-delisting convention magnitudes.
+
+    ``default_return`` (Shumway 1997) applies to a performance-related delist whose resolved
+    listing exchange is NYSE/AMEX/ARCA/BATS or could not be resolved at all.
+    ``nasdaq_return`` (Shumway & Warther 1999) applies only when the resolved exchange is
+    Nasdaq. See :func:`apply_performance_delisting_policy` for the dispatch and
+    :data:`NASDAQ_EXCHANGE_CODES` for the recognized Nasdaq tokens.
+
+    This object is what :data:`DelistingTerminalReturnOptions.performance_delisting_return`
+    carries when the convention is on; passing ``None`` there still opts out of the whole
+    convention (no exchange resolution, no policy row, ever).
+    """
+
+    default_return: float = SHUMWAY_PERFORMANCE_DELISTING_RETURN
+    nasdaq_return: float = SHUMWAY_NASDAQ_PERFORMANCE_DELISTING_RETURN
+
+
+def _is_nasdaq_exchange(value: object) -> bool:
+    return isinstance(value, str) and value.strip().upper() in NASDAQ_EXCHANGE_CODES
 
 
 @dataclass(frozen=True)
@@ -829,6 +863,15 @@ _DLSTCD_FAMILY_BY_PREFIX = {2: "merger", 3: "exchange", 4: "liquidation", 5: "dr
 RECONCILIATION_COMPATIBLE_FAMILIES = {
     "exchange_delete": frozenset({"exchange", "dropped"}),
     "snapshot_absence": frozenset({"exchange", "dropped"}),
+    # S4 T4 fix round 1: the four reason_category values the public-evidence delist_code_dim
+    # rows carry (delisting.py's DELIST_CODE_ROWS, fed from delisting_evidence.py's precedence
+    # fold). Each is a coarse, best-effort mapping to the CRSP DLSTCD family bucket a genuine
+    # vendor record of the same event would most likely carry -- not a claim that the public
+    # proxy alone can distinguish sub-reasons within a family.
+    "exchange_delist": frozenset({"exchange", "dropped"}),  # SEC Form 25 / 25-NSE
+    "voluntary": frozenset({"dropped"}),  # SEC Form 15 deregistration
+    "dropped": frozenset({"dropped"}),  # archive last-trade inference (lowest confidence)
+    "bankruptcy": frozenset({"dropped", "liquidation"}),  # bankruptcy or liquidation
 }
 
 # ---------------------------------------------------------------------------
@@ -906,9 +949,23 @@ TERMINAL_RETURN_POLICY_ROWS = (
         False,
         SHUMWAY_PERFORMANCE_DELISTING_RETURN,
         False,
-        "Performance-related delisting with no observed DLRET: apply the documented "
-        "Shumway (1997) -30% convention. On by default (S4 preflight ruling); an operator "
-        "opts out by setting DelistingTerminalReturnOptions.performance_delisting_return=None.",
+        "Performance-related delisting with no observed DLRET, resolved (PIT, as of "
+        "delist_date) to a NYSE/AMEX/ARCA/BATS listing or to no resolvable exchange at all: "
+        "apply the documented Shumway (1997) -30% convention. On by default (S4 preflight "
+        "ruling); an operator opts out by setting "
+        "DelistingTerminalReturnOptions.performance_delisting_return=None.",
+    ),
+    (
+        "performance_unknown_nasdaq",
+        "performance_delist",
+        "shumway_nasdaq_default",
+        False,
+        SHUMWAY_NASDAQ_PERFORMANCE_DELISTING_RETURN,
+        False,
+        "Performance-related delisting with no observed DLRET, resolved (PIT, as of "
+        "delist_date) to a Nasdaq listing: apply the documented Shumway & Warther (1999) "
+        "-55% convention. Same on-by-default / opt-out-via-None behavior as "
+        "performance_unknown.",
     ),
 )
 
@@ -1123,20 +1180,24 @@ def apply_performance_delisting_policy(
     events: pd.DataFrame,
     policy_dim: pd.DataFrame,
     *,
-    performance_return: float | None,
+    performance_return: ShumwayPerformancePolicy | float | None,
     reasons: frozenset[str] = PERFORMANCE_DELIST_REASONS,
 ) -> pd.DataFrame:
     """Apply the documented Shumway convention to performance-related delists.
 
     ``events`` carries ``security_id, symbol, delist_date, as_of_date, available_at,
     delist_reason`` (the ``delisting_events`` shape) and optionally
-    ``successor_security_id``. A row qualifies when its ``delist_reason`` is in ``reasons``
+    ``successor_security_id, listing_exchange_code, listing_exchange_available_at``.
+    A row qualifies when its ``delist_reason`` is in ``reasons``
     AND ``performance_return`` is not None AND the event carries a real ``available_at`` --
     this function never invents a timestamp, exactly like :func:`apply_terminal_return_policy`.
 
     Returns a :data:`POLICY_TERMINAL_RETURN_COLUMNS` frame with
-    ``terminal_return_source='policy'``, ``terminal_return_policy='performance_unknown'``
-    and ``return_basis='shumway_default'``. Pure, stable-sorted, and empty whenever
+    ``terminal_return_source='policy'`` and the exchange-specific policy code and basis.
+    The policy object dispatches Nasdaq separately; a float retains the explicit scalar
+    override. Exchange inputs must be PIT-resolved by the caller, as the refresh path does.
+    Availability is the maximum of the event and the selected exchange input.
+    Pure, stable-sorted, and empty whenever
     ``performance_return`` is None -- callers opt out by passing None.
     """
 
@@ -1146,15 +1207,33 @@ def apply_performance_delisting_policy(
         return _empty_policy_terminal_return_frame()
     if "delist_reason" not in events.columns:
         return _empty_policy_terminal_return_frame()
-    policy = policy_dim[policy_dim["policy_code"] == PERFORMANCE_TERMINAL_RETURN_POLICY_CODE]
-    if policy.empty:
-        return _empty_policy_terminal_return_frame()
-    basis = str(policy.iloc[0]["terminal_return_basis"])
-
     frame = events.copy().reset_index(drop=True)
     eligible = frame["delist_reason"].astype("string").isin(sorted(reasons))
     eligible &= pd.to_datetime(frame["available_at"], errors="coerce").notna()
-    frame = frame[eligible]
+    frame = frame[eligible].copy()
+    if frame.empty:
+        return _empty_policy_terminal_return_frame()
+
+    frame["terminal_return_policy"] = PERFORMANCE_TERMINAL_RETURN_POLICY_CODE
+    if isinstance(performance_return, ShumwayPerformancePolicy):
+        frame["terminal_return"] = performance_return.default_return
+        if "listing_exchange_code" in frame.columns:
+            nasdaq = frame["listing_exchange_code"].map(_is_nasdaq_exchange)
+            frame.loc[nasdaq, "terminal_return"] = performance_return.nasdaq_return
+            frame.loc[nasdaq, "terminal_return_policy"] = PERFORMANCE_TERMINAL_RETURN_POLICY_CODE_NASDAQ
+        if "listing_exchange_available_at" in frame.columns:
+            frame["available_at"] = pd.concat(
+                [
+                    pd.to_datetime(frame["available_at"], errors="coerce"),
+                    pd.to_datetime(frame["listing_exchange_available_at"], errors="coerce"),
+                ],
+                axis=1,
+            ).max(axis=1)
+    else:
+        frame["terminal_return"] = float(performance_return)
+    bases = policy_dim.set_index("policy_code")["terminal_return_basis"]
+    frame["return_basis"] = frame["terminal_return_policy"].map(bases)
+    frame = frame[frame["return_basis"].notna()]
     if frame.empty:
         return _empty_policy_terminal_return_frame()
 
@@ -1165,12 +1244,12 @@ def apply_performance_delisting_policy(
             "delist_date": frame["delist_date"],
             "as_of_date": frame.get("as_of_date"),
             "available_at": pd.to_datetime(frame["available_at"]),
-            "terminal_return": float(performance_return),
+            "terminal_return": frame["terminal_return"],
             "terminal_return_ex_div": pd.NA,
             "terminal_return_source": "policy",
-            "terminal_return_policy": PERFORMANCE_TERMINAL_RETURN_POLICY_CODE,
+            "terminal_return_policy": frame["terminal_return_policy"],
             "crsp_dlstcd": pd.NA,
-            "return_basis": basis,
+            "return_basis": frame["return_basis"],
             "successor_security_id": frame.get("successor_security_id"),
             "return_observation_id": pd.NA,
         }
@@ -1185,12 +1264,9 @@ def apply_performance_delisting_policy(
 class DelistingTerminalReturnOptions:
     source: str = DEFAULT_TERMINAL_RETURN_SOURCE
     run_id: str | None = None
-    # S4 preflight ruling: the Shumway convention is ON by default (SHUMWAY_PERFORMANCE_
-    # DELISTING_RETURN, -30%); an operator opts OUT by passing performance_delisting_return=None.
-    # A caller targeting an all-Nasdaq cohort may instead pass
-    # SHUMWAY_NASDAQ_PERFORMANCE_DELISTING_RETURN (-55%). Whichever value is applied is always
-    # recorded as terminal_return_policy='performance_unknown' / return_basis='shumway_default'.
-    performance_delisting_return: float | None = SHUMWAY_PERFORMANCE_DELISTING_RETURN
+    # ON by default, dispatched per historical exchange; None opts out. A scalar remains
+    # an explicit operator override for compatibility with the original policy interface.
+    performance_delisting_return: ShumwayPerformancePolicy | float | None = ShumwayPerformancePolicy()
 
 
 @dataclass(frozen=True)
@@ -1243,7 +1319,7 @@ def compute_delisting_terminal_returns(
     source: str = DEFAULT_TERMINAL_RETURN_SOURCE,
     run_id: str | None = None,
     corporate_actions: pd.DataFrame | None = None,
-    performance_delisting_return: float | None = None,
+    performance_delisting_return: ShumwayPerformancePolicy | float | None = None,
 ) -> pd.DataFrame:
     """Collapse ``delisting_return_observations`` to one terminal return per
     ``(security_id, delist_date)``, then fill remaining coverage gaps from (S4-1) the
@@ -1277,7 +1353,7 @@ def compute_delisting_terminal_returns(
     ``available_at`` is inherited verbatim from the observation's ``available_at`` (the
     delisting-confirmation timestamp) for observed rows, and is ``max(corporate action
     available_at, last pre-delist bar available_at)`` for corporate-action-policy rows, and the
-    event's own ``available_at`` for performance-policy rows -- never the delist event date in
+    maximum event/exchange ``available_at`` for performance-policy rows -- never the delist event date in
     any case: the no-lookahead invariant the survivorship fix depends on.
     """
 
@@ -1710,6 +1786,69 @@ def compute_delisting_code_reconciliation(
     return result[RECONCILIATION_COLUMNS]
 
 
+def _load_terminal_return_events(store: DuckDBStore, *, resolve_exchange: bool) -> pd.DataFrame:
+    """Resolve the listing at delist-date close without borrowing future snapshots.
+
+    Membership intervals precede exchange listings, then directory snapshots. Both economic
+    dates and input availability are bounded by delist_date (22:00 close). Missing exchange
+    metadata stays unresolved and uses the documented non-Nasdaq fallback. A latest-revision
+    flag alone is insufficient: a current snapshot cannot classify a historical delisting.
+    """
+
+    event_sql = """
+        SELECT delisting_event_id, security_id, symbol, delist_date, as_of_date, available_at,
+               delist_code, delist_reason
+        FROM delisting_events
+    """
+    if not resolve_exchange:
+        return store.con.execute(event_sql + " ORDER BY delisting_event_id").df()
+    return store.con.execute(
+        f"""
+        WITH events AS ({event_sql})
+        SELECT e.*, x.exchange_code AS listing_exchange_code,
+               x.available_at AS listing_exchange_available_at
+        FROM events e
+        LEFT JOIN LATERAL (
+            SELECT exchange_code, available_at
+            FROM (
+                SELECT 1 AS priority, u.exchange_code, u.available_at, u.as_of_date,
+                       u.valid_from, u.membership_id AS tie_break
+                FROM universe_us_listed_membership u
+                WHERE u.security_id = e.security_id
+                  AND u.universe_id = 'us_listed_v1'
+                  AND u.is_latest_revision
+                  AND u.valid_from <= e.delist_date
+                  AND (u.valid_to IS NULL OR u.valid_to >= e.delist_date)
+                UNION ALL
+                SELECT 2, coalesce(nullif(trim(l.exchange_code), ''), l.mic),
+                       l.available_at, l.as_of_date, l.valid_from,
+                       concat(l.source, '|', l.ticker, '|', l.mic)
+                FROM exchange_listings l
+                WHERE l.security_id = e.security_id
+                  AND coalesce(l.is_latest_revision, true)
+                  AND l.valid_from <= e.delist_date
+                  AND (l.valid_to IS NULL OR l.valid_to > e.delist_date)
+                UNION ALL
+                SELECT 3,
+                       CASE WHEN d.directory = 'nasdaqlisted' THEN 'XNAS' ELSE d.exchange END,
+                       d.available_at, d.as_of_date, d.as_of_date,
+                       concat(d.directory, '|', d.source_url)
+                FROM nasdaq_symbol_directory d
+                WHERE d.symbol = e.symbol
+                  AND coalesce(d.is_latest_revision, true)
+            ) candidates
+            WHERE nullif(trim(exchange_code), '') IS NOT NULL
+              AND as_of_date <= e.delist_date
+              AND available_at <= e.delist_date + INTERVAL '22 hours'
+            ORDER BY priority, as_of_date DESC, available_at DESC, valid_from DESC,
+                     tie_break, exchange_code
+            LIMIT 1
+        ) x ON true
+        ORDER BY e.delisting_event_id
+        """
+    ).df()
+
+
 def refresh_delisting_terminal_returns(
     store: DuckDBStore,
     options: DelistingTerminalReturnOptions | None = None,
@@ -1750,13 +1889,9 @@ def refresh_delisting_terminal_returns(
         FROM delisting_return_observations
         """
     ).df()
-    events = store.con.execute(
-        """
-        SELECT delisting_event_id, security_id, symbol, delist_date, as_of_date, available_at,
-               delist_code, delist_reason
-        FROM delisting_events
-        """
-    ).df()
+    events = _load_terminal_return_events(
+        store, resolve_exchange=isinstance(options.performance_delisting_return, ShumwayPerformancePolicy)
+    )
     policy_dim = store.con.execute(
         """
         SELECT

@@ -186,21 +186,27 @@ and an event carries a real `available_at` (never invented).
 The convention itself: Shumway (1997), *Journal of Finance* 52(1), estimates a mean delisting
 return of about **-30%** for NYSE/AMEX performance-related delistings
 (`atx_db.delisting.SHUMWAY_PERFORMANCE_DELISTING_RETURN`); Shumway & Warther (1999), *JF* 54(6),
-estimate about **-55%** for Nasdaq (`SHUMWAY_NASDAQ_PERFORMANCE_DELISTING_RETURN`). Both
-constants are named, documented and exported; whichever value is applied is always recorded as
-`terminal_return_policy='performance_unknown'` and `return_basis='shumway_default'`, so a
-consumer of `delisting_terminal_returns` (or `forward_returns_survivorship_safe`) can always
-filter imputed rows back out with `WHERE terminal_return_policy != 'performance_unknown'`.
+estimate about **-55%** for Nasdaq (`SHUMWAY_NASDAQ_PERFORMANCE_DELISTING_RETURN`). The default
+policy selects **-55% for Nasdaq** and **-30% for other or unresolved exchanges**, per event.
+It records Nasdaq rows as `terminal_return_policy='performance_unknown_nasdaq'` and
+`return_basis='shumway_nasdaq_default'`; other rows use `performance_unknown` and
+`shumway_default`. Filter both imputation variants with
+`WHERE terminal_return_policy IS NULL OR terminal_return_policy NOT LIKE 'performance_unknown%'`.
+
+Exchange lookup uses `universe_us_listed_membership` (`us_listed_v1`), then `exchange_listings`,
+then `nasdaq_symbol_directory`. An input must cover the delist date where it has a validity
+interval, have a snapshot dated no later than that date, and be available by that date at
+22:00. Future snapshots and later-known exchange changes cannot classify a historical delist.
+The imputed row's `available_at` is the maximum of event and selected exchange availability.
 
 **Default: ON.** `DelistingTerminalReturnOptions.performance_delisting_return` defaults to
-`SHUMWAY_PERFORMANCE_DELISTING_RETURN` (S4 preflight ruling: a survivorship-adjusted panel with
+`ShumwayPerformancePolicy()` (S4 preflight ruling: a survivorship-adjusted panel with
 no delisting-return convention at all is a worse default than a documented, filterable
 imputation). **Opt out** by constructing
 `DelistingTerminalReturnOptions(performance_delisting_return=None)` before calling
 `refresh_delisting_terminal_returns` — the convention is then never applied, and no row is ever
-invented for a performance-related delist with no observed return. A cohort known to be
-Nasdaq-only may instead pass `performance_delisting_return=SHUMWAY_NASDAQ_PERFORMANCE_
-DELISTING_RETURN`.
+invented for a performance-related delist with no observed return. A policy object can override
+the two magnitudes independently; a float remains an explicit uniform-return override.
 
 **The non-vacuous coverage gate.** The critical
 `survivorship_forward_return_drops_delisted_names` check anti-joins `delisting_terminal_returns`
@@ -212,4 +218,6 @@ empty, so the check is GREEN while proving nothing (audit §4.4). The companion 
 fails (threshold `0.0`, comparator `le`) the moment that count is nonzero — turning "no
 delistings are covered" into a measured, non-zero failure instead of a silent pass. Running with
 the Shumway policy off (`performance_delisting_return=None`) is a valid operator choice, but it
-will trip this gate for every uncovered performance-related delist, by design.
+will trip this gate for every uncovered performance-related delist, by design. This companion
+check has severity `error`, so the orchestrator degrades the run to `partial`; only a
+`critical` failure halts it.
