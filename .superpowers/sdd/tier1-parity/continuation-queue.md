@@ -2,6 +2,34 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override — 2026-09-20 18:23 UTC
+
+- Source prepass2 is still healthy in tool session 44646. Launcher 14440 owns
+  worker 20680. Submissions have not emitted their completed-stage count yet;
+  do not query the live DB or start tests while this writer is active. At 18:22
+  UTC the worker private memory was 2,091,466,752 bytes, physical headroom about
+  4 GiB. Guard remains 3 GiB, DuckDB 1 GB / one thread. Disk about 123 GB free.
+- Daily-risk code is committed in 666d13e3; final report 826670f4. All six focused
+  cases and shared API snapshot passed. Price success evidence/runbook committed
+  in 09d1fe03; static fundamentals audit committed in d3cd9593.
+- The audit found no remaining whole-fact Python materialization in the main
+  fundamentals stages. Revisions and standardization retain large indexed
+  transactions; repair only from actual guarded failure evidence. Derived
+  metrics already use 500-security transactions (older suspicion was incorrect).
+- New scripts/measure_tier1_readiness.py and production-measurement-report.md are
+  UNCOMMITTED pending root live verification. Static independent review found
+  no Critical/Important issues; production-measurement-review.md records it.
+  Nonblocking redaction wording is fixed. No agent has executed DB/tests.
+- After prepass: root can run the new read-only measurement under guard using
+  fresh production-measurement-prepass2 JSON/Markdown/receipt filenames; runtime
+  has not yet been verified. Then commit exact script/report/review paths.
+  Run activation-run5 from statement_points --force after any real source repair.
+- Correct price counts are warehouse security IDs, not certified distinct
+  issuers/common stocks. Current Downloads have no named TickerDefinitionHist,
+  ReturnFactorsHist, OptionCorpActionRecordHist or DividendCalendarHist companion.
+  Fresh Codex researcher is checking one official SEC bulk text-data alternative
+  for historical symbol/exchange evidence; no downloads or DB work authorized.
+
 ## Current live override — 2026-09-20 18:04 UTC
 
 - Price publication SUCCEEDED at 18:00:09 UTC (session 72916 closed, exit 0).

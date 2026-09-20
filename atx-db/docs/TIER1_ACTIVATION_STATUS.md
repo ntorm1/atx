@@ -10,9 +10,9 @@ Latest production update: **corrected prices were published successfully** by
 
 | Measurement | Observed result |
 | --- | ---: |
-| Daily price rows / distinct vendor security IDs | 31,959,271 / 34,251 |
+| Daily price rows / distinct warehouse security IDs | 31,959,271 / 34,251 |
 | Price date range | 2012-03-26 through 2026-09-18 |
-| Latest-date rows / distinct vendor security IDs | 12,386 / 12,386 |
+| Latest-date rows / distinct warehouse security IDs | 12,386 / 12,386 |
 | Invalid or missing adjusted closes | 0 |
 | Nonnull split-only factors | 0 (unknown, intentionally) |
 | Remaining price staging tables | 0 |
