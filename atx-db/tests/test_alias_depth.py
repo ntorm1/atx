@@ -9,14 +9,19 @@ from atx_db.statement_map_seed import read_statement_map_seed
 
 MINIMUM_ALIASES = 3
 
-# Wave A-1: income statement + cash flow. Task 7 adds the balance-sheet ids,
-# Task 8 adds the industry-overlay ids.
+# Wave A-1 income statement + cash flow, Wave A-2 balance sheet. Task 8 adds
+# the industry-overlay ids.
 SPEC_ITEM_IDS = frozenset(
     {
+        # Wave A-1 income statement + cash flow
         1001, 1003, 1004, 1005, 1008, 1011, 1014, 1016, 1018, 1021, 1022, 1023,
         1024, 1027, 1029, 1030, 1031, 1032, 1033, 1034, 1035, 1040, 1041, 1051,
         1301, 1303, 1304, 1305, 1307, 1308, 1309, 1311, 1312, 1313, 1314, 1316,
         1318, 1322, 1324, 1327,
+        # Wave A-2 balance sheet
+        1039, 1101, 1102, 1104, 1105, 1106, 1107, 1109, 1110, 1111, 1112, 1114,
+        1115, 1117, 1119, 1120, 1201, 1202, 1203, 1205, 1207, 1211, 1212, 1213,
+        1214, 1217, 1219, 1220, 1221, 1225, 1226, 1227,
     }
 )
 
@@ -47,6 +52,26 @@ ALIAS_DEPTH_EXCEPTIONS: dict[int, tuple[int, str]] = {
     1318: (1, "PaymentsOfDividends; the rest is composition from 1316-1317."),
     1322: (0, "no us-gaap working-capital-change total; composed from 1319+1320+1321."),
     1327: (1, "DeferredIncomeTaxesAndTaxCredits is the only cash-flow deferred-tax element; the income-statement element belongs to 1026."),
+    1101: (1, "Assets is the only us-gaap total-assets element."),
+    1102: (1, "AssetsCurrent is the only us-gaap current-assets element."),
+    1109: (1, "OtherAssetsCurrent is the only us-gaap other-current-assets element."),
+    1110: (2, "PropertyPlantAndEquipmentNet plus the finance-lease-ROU-inclusive variant."),
+    1111: (1, "PropertyPlantAndEquipmentGross is the only us-gaap gross PP&E element."),
+    1112: (1, "AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment is the only accumulated-depreciation element."),
+    1114: (2, "Goodwill and GoodwillGross; the goodwill-plus-intangibles total belongs to 1113."),
+    1119: (2, "OtherAssetsNoncurrent and OtherAssets."),
+    1120: (2, "CapitalizedComputerSoftwareNet and CapitalizedComputerSoftwareGross; the accumulated-amortization element is a contra account, not the asset."),
+    1201: (1, "Liabilities; the rest is composition from total_liab_equity - equity_incl_NCI."),
+    1202: (1, "LiabilitiesCurrent is the only us-gaap current-liabilities element."),
+    1211: (2, "DeferredIncomeTaxLiabilitiesNet and DeferredTaxLiabilitiesNoncurrent."),
+    1212: (2, "OtherLiabilitiesNoncurrent and OtherLiabilities."),
+    1213: (1, "MinorityInterest is the only balance-sheet noncontrolling-interest element; the including-NCI equity total belongs to 1222."),
+    1214: (2, "PreferredStockValue and PreferredStockLiquidationPreferenceValue."),
+    1217: (1, "RetainedEarningsAccumulatedDeficit is the only retained-earnings element."),
+    1219: (2, "TreasuryStockValue and TreasuryStockCommonValue."),
+    1220: (0, "no us-gaap common-equity element; composed from stockholders_equity - preferred_stock."),
+    1221: (1, "StockholdersEquity; the including-NCI element belongs to 1222 and is reached by the coalesce_or_difference fallback."),
+    1226: (2, "OtherLiabilitiesCurrent and OtherAccruedLiabilitiesCurrent."),
 }
 
 

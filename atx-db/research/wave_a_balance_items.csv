@@ -1,0 +1,5 @@
+item_id,canonical_code,statement,section,data_type,unit_type,sign_convention,is_derived,definition,citation,alias_scheme,alias_code,coalesce_priority,valid_from,valid_to,vendor,vendor_field,sign_note
+1120,capitalized_software,balance,assets,instant,monetary,positive,false,Capitalized internal-use and external-use computer software net of amortization,Tier-1 parity design 2026-09-19 supplemental catalog (capitalized_software),,,,1900-01-01,,compustat,capsft,
+1225,taxes_payable,balance,liabilities,instant,monetary,positive,false,Income and other taxes payable within one year,Tier-1 parity design 2026-09-19 balance sheet catalog (cs txp),,,,1900-01-01,,compustat,txp,
+1226,other_current_liabilities,balance,liabilities,instant,monetary,positive,false,Other current liabilities not separately classified,Tier-1 parity design 2026-09-19 balance sheet catalog (cs lco),,,,1900-01-01,,compustat,lco,
+1227,finance_lease_liabilities,balance,liabilities,instant,monetary,positive,false,Finance lease liabilities current and noncurrent,Tier-1 parity design 2026-09-19 supplemental catalog (finance_lease_liabilities),,,,1900-01-01,,bloomberg,BS_FINANCE_LEASE_LIABILITIES,

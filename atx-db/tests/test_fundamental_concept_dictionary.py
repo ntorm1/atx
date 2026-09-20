@@ -2,7 +2,7 @@
 
 Groups:
 1. migration:     version 5 recorded; 4 new columns exist on fundamental_statement_map.
-2. seed coverage: exactly 144 authorized S4a item_ids after seeding.
+2. seed coverage: exactly 150 authorized S4a item_ids after seeding.
 2b. overlays:    exactly 47 S4b/S5 industry item_ids under the right templates.
 3. original 16:   all original canonical_metrics still present.
 4. item_ids:      all active rows have non-NULL item_id; multi-concept metrics share item_id
@@ -26,10 +26,11 @@ import pytest
 # 1044 remains a reserved gap id and is not authorized.
 AUTHORIZED_S4A_ITEM_IDS = (
     set(range(1001, 1044))
-    | set(range(1045, 1051))
-    | set(range(1101, 1120))
-    | set(range(1201, 1225))
+    | set(range(1045, 1052))          # Tier1-S2 T6: +1051 extraordinary_items
+    | set(range(1101, 1121))          # Tier1-S2 T7: +1120 capitalized_software
+    | set(range(1201, 1228))          # Tier1-S2 T7: +1225 taxes_payable, +1226 other_current_liabilities, +1227 finance_lease_liabilities
     | set(range(1301, 1326))
+    | {1327}                          # Tier1-S2 T6: deferred_tax_cash_flow
     | set(range(1401, 1428))
 )
 
@@ -197,7 +198,7 @@ def test_seed_authorized_s4a_item_id_coverage(tmp_store):
             """
         ).fetchall()
     }
-    assert len(AUTHORIZED_S4A_ITEM_IDS) == 144
+    assert len(AUTHORIZED_S4A_ITEM_IDS) == 150
     assert actual == AUTHORIZED_S4A_ITEM_IDS, (
         "Seeded S4a item_ids differ from authorized cross-industry ranges; "
         f"missing={sorted(AUTHORIZED_S4A_ITEM_IDS - actual)}, "

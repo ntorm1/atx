@@ -20,7 +20,14 @@ from atx_db.statement_map_seed import (
 # extracted (main @ e4bdcf54). Later sprint tasks that add concepts bump this
 # number in the same commit that adds the rows, with the new count justified in
 # the commit body.
-EXPECTED_STATEMENT_MAP_ROWS = 286  # 214 + 72 (Tier1-S2 T6 Wave A-1; the wave CSV enumerates 72 alias rows, not 73)
+EXPECTED_STATEMENT_MAP_ROWS = 331  # 286 + 45 (Tier1-S2 T7 Wave A-2; the wave CSV enumerates 56 alias
+# rows, but 11 (three targeting 1205, two targeting 1209, one targeting 1215, and
+# all five targeting 1224) already had active, non-derived statement-map rows for
+# their item before this wave, so apply_alias_wave.py's dedup-by-(taxonomy,concept,
+# industry_template) key correctly skipped re-inserting them; only 45 are new rows.
+# The brief's stated "343 (287 + 56)" double-counts on both terms: the pre-wave
+# baseline was 286, not 287, and the real increment is 45, not 56 - see
+# task-7-report.md for the row-by-row resolution.
 
 
 def test_seed_columns_match_dataclass_fields():

@@ -1,0 +1,11 @@
+rule_id,item_id,canonical_code,basis,source_aliases_json,source_item_ids_json,combination_rule,sign_rule,scale_rule,missing_policy,is_active,valid_from,valid_to
+std_instant_1120,1120,capitalized_software,instant,[],[],coalesce_priority,statement_normalized,identity,skip,true,1900-01-01,
+std_instant_1225,1225,taxes_payable,instant,[],[],coalesce_priority,statement_normalized,identity,skip,true,1900-01-01,
+std_instant_1226,1226,other_current_liabilities,instant,[],[],coalesce_priority,statement_normalized,identity,skip,true,1900-01-01,
+std_instant_1227,1227,finance_lease_liabilities,instant,[],[],coalesce_priority,statement_normalized,identity,skip,true,1900-01-01,
+std_instant_1103,1103,cash_and_st_investments,instant,[],"[1104,1105]",coalesce_or_sum,statement_normalized,identity,zero_fill,true,1900-01-01,
+std_instant_1113,1113,intangibles_total,instant,[],"[1114,1115]",coalesce_or_sum,statement_normalized,identity,zero_fill,true,1900-01-01,
+std_instant_1201,1201,total_liabilities,instant,"[{""alias_code"":""Liabilities"",""alias_scheme"":""us-gaap"",""priority"":10}]","[1223,1222]",coalesce_or_difference,statement_normalized,identity,skip,true,1900-01-01,
+std_instant_1205,1205,short_term_debt,instant,[],[1206],coalesce_or_sum,statement_normalized,identity,skip,true,1900-01-01,
+std_instant_1220,1220,common_equity,instant,[],"[1221,1214]",coalesce_or_difference,statement_normalized,identity,zero_fill,true,1900-01-01,
+std_instant_1221,1221,stockholders_equity,instant,"[{""alias_code"":""StockholdersEquity"",""alias_scheme"":""us-gaap"",""priority"":10}]","[1222,1213]",coalesce_or_difference,statement_normalized,identity,skip,true,1900-01-01,

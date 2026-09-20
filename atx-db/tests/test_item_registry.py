@@ -84,8 +84,8 @@ SEED_PATH = Path(__file__).resolve().parents[1] / "src" / "atx_db" / "seeds" / "
 AUTHORIZED_ITEM_IDS = (
     set(range(1001, 1044))
     | set(range(1045, 1053))          # Tier1-S2 T6: +1051 extraordinary_items, +1052 employees
-    | set(range(1101, 1120))
-    | set(range(1201, 1225))
+    | set(range(1101, 1121))          # Tier1-S2 T7: +1120 capitalized_software
+    | set(range(1201, 1228))          # Tier1-S2 T7: +1225 taxes_payable, +1226 other_current_liabilities, +1227 finance_lease_liabilities
     | set(range(1301, 1326))
     | {1327}                          # Tier1-S2 T6: deferred_tax_cash_flow (1326 stays unauthorized)
     | set(range(1401, 1428))
@@ -315,7 +315,7 @@ def test_fundamental_item_seed_csv_is_stdlib_parseable():
     assert tuple(rows[0].keys()) == SEED_COLUMNS
     seeded_item_ids = {int(row["item_id"]) for row in rows}
     assert seeded_item_ids == AUTHORIZED_ITEM_IDS
-    assert len(seeded_item_ids) == 238
+    assert len(seeded_item_ids) == 242
     assert seeded_item_ids.isdisjoint(UNAUTHORIZED_GAP_ITEM_IDS)
     assert all("ifrs-full:" not in row["alias_code"] for row in rows)
     assert all("ifrs-full:" not in row["vendor_field"] for row in rows)
@@ -443,7 +443,7 @@ def test_seed_fundamental_item_registry_loads_acceptance_count(tmp_store):
     item_count = tmp_store.con.execute("SELECT count(*) FROM fundamental_item").fetchone()[0]
 
     assert inserted == item_count
-    assert item_count == 238
+    assert item_count == 242
 
 
 def test_seed_fundamental_item_registry_rejects_unauthorized_gap_ids(tmp_store):

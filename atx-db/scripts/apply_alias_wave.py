@@ -117,6 +117,14 @@ def apply_wave(aliases_path: Path, items_path: Path | None, rules_path: Path | N
     rule_rows = _read_csv(RULE_PATH, RULE_COLUMNS)
     map_rows = list(read_statement_map_seed())
 
+    # Snapshot on-disk source_aliases_json before the --rules replace pass touches
+    # anything, so rule_alias_json_updates below reflects a real content change
+    # (this run's net effect) rather than every append attempt. A rule id that
+    # already existed but whose --rules replacement resets source_aliases_json
+    # (e.g. to '[]') only to have the --aliases pass re-append the same entries
+    # nets to unchanged content and must not count as "updated".
+    original_rule_json = {row["rule_id"]: row["source_aliases_json"] for row in rule_rows}
+
     added_items = 0
     if items_path is not None:
         existing = {(r["item_id"], r["alias_scheme"], r["alias_code"], r["vendor"], r["vendor_field"]) for r in item_rows}
@@ -153,7 +161,6 @@ def apply_wave(aliases_path: Path, items_path: Path | None, rules_path: Path | N
 
     added_map = 0
     added_alias = 0
-    touched_rules = 0
     for wave_row in _read_csv(aliases_path, WAVE_COLUMNS):
         item_id = int(wave_row["item_id"])
         resolved = _inherit(wave_row, template_by_item.get(item_id))
@@ -216,7 +223,19 @@ def apply_wave(aliases_path: Path, items_path: Path | None, rules_path: Path | N
                 }
             )
             rule_row["source_aliases_json"] = json.dumps(aliases, separators=(",", ":"), sort_keys=True)
-            touched_rules += 1
+
+    # Count only a real net content change against what was on disk before this
+    # invocation, for rules that already existed. A rule created by this same
+    # invocation is reported via rules_added_or_replaced instead, and a rule
+    # whose --rules replacement reset source_aliases_json only to have the
+    # --aliases pass re-append the identical entries nets to unchanged content
+    # (the idempotent-rerun case) and must not be counted.
+    touched_rules = sum(
+        1
+        for row in rule_rows
+        if row["rule_id"] in original_rule_json
+        and row["source_aliases_json"] != original_rule_json[row["rule_id"]]
+    )
 
     _write_csv(ITEM_SEED_PATH, ITEM_SEED_COLUMNS, item_rows)
     _write_csv(RULE_PATH, RULE_COLUMNS, rule_rows)

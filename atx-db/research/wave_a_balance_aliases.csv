@@ -1,0 +1,57 @@
+item_id,taxonomy,concept,priority,statement_type,statement_section,canonical_metric,canonical_label,period_type,normal_balance,unit_type,industry_template,registry_alias,notes
+1103,us-gaap,CashCashEquivalentsAndShortTermInvestments,10,balance_sheet,assets,cash_and_st_investments,Cash and short-term investments,instant,debit,monetary,ALL,true,Combined cash and short-term investments total
+1103,us-gaap,CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents,20,,,,,,,,,true,Post-ASU-2016-18 cash total including restricted cash
+1104,us-gaap,CashAndDueFromBanks,30,,,,,,,,,true,Bank presentation of cash on hand and due from banks
+1105,us-gaap,AvailableForSaleSecuritiesCurrent,30,,,,,,,,,true,Current available-for-sale securities
+1105,us-gaap,OtherShortTermInvestments,40,,,,,,,,,true,Other short-term investments
+1106,us-gaap,AccountsAndNotesReceivableNet,30,,,,,,,,,true,Combined accounts and notes receivable
+1106,us-gaap,AccountsReceivableGrossCurrent,40,,,,,,,,,true,Gross current receivables fallback
+1107,us-gaap,InventoryGross,20,,,,,,,,,true,Gross inventory before reserves
+1107,us-gaap,InventoryNetOfAllowancesCustomerAdvancesAndProgressBillings,30,,,,,,,,,true,Contract-accounting inventory presentation
+1108,us-gaap,PrepaidExpenseAndOtherAssetsCurrent,20,,,,,,,,,true,Prepaid expenses combined with other current assets
+1110,us-gaap,PropertyPlantAndEquipmentAndFinanceLeaseRightOfUseAssetAfterAccumulatedDepreciationAndAmortization,20,,,,,,,,,true,Net PP and E including finance-lease right-of-use assets
+1113,us-gaap,IntangibleAssetsNetIncludingGoodwill,10,balance_sheet,assets,intangibles_total,Total intangibles including goodwill,instant,debit,monetary,ALL,true,Combined intangibles including goodwill
+1114,us-gaap,GoodwillGross,20,,,,,,,,,true,Goodwill before impairment
+1115,us-gaap,FiniteLivedIntangibleAssetsNet,20,,,,,,,,,true,Finite-lived intangibles net
+1115,us-gaap,IndefiniteLivedIntangibleAssetsExcludingGoodwill,30,,,,,,,,,true,Indefinite-lived intangibles excluding goodwill
+1117,us-gaap,AvailableForSaleSecuritiesNoncurrent,30,,,,,,,,,true,Noncurrent available-for-sale securities
+1117,us-gaap,MarketableSecuritiesNoncurrent,40,,,,,,,,,true,Noncurrent marketable securities
+1118,us-gaap,DeferredTaxAssetsNetNoncurrent,20,,,,,,,,,true,Noncurrent net deferred tax assets
+1119,us-gaap,OtherAssets,20,,,,,,,,,true,Unclassified other assets
+1120,us-gaap,CapitalizedComputerSoftwareNet,10,balance_sheet,assets,capitalized_software,Capitalized software,instant,debit,monetary,ALL,true,Capitalized software net of amortization
+1120,us-gaap,CapitalizedComputerSoftwareGross,20,balance_sheet,assets,capitalized_software,Capitalized software,instant,debit,monetary,ALL,true,Capitalized software before amortization
+1203,us-gaap,AccountsPayableAndAccruedLiabilitiesCurrent,20,,,,,,,,,true,Payables combined with accrued liabilities
+1203,us-gaap,AccountsPayableTradeCurrent,30,,,,,,,,,true,Trade payables only
+1204,us-gaap,EmployeeRelatedLiabilitiesCurrent,20,,,,,,,,,true,Accrued compensation and benefits
+1205,us-gaap,ShortTermBorrowings,10,balance_sheet,liabilities,short_term_debt,Short-term debt,instant,credit,monetary,ALL,true,Short-term borrowings
+1205,us-gaap,OtherShortTermBorrowings,20,,,,,,,,,true,Other short-term borrowings
+1205,us-gaap,CommercialPaper,30,,,,,,,,,true,Commercial paper outstanding
+1205,us-gaap,DebtCurrent,40,,,,,,,,,true,Total current debt
+1206,us-gaap,LongTermDebtAndCapitalLeaseObligationsCurrent,20,,,,,,,,,true,Current maturities including capital leases
+1207,us-gaap,LongTermDebtAndCapitalLeaseObligations,20,,,,,,,,,true,Long-term debt including capital lease obligations
+1207,us-gaap,LongTermNotesPayable,30,,,,,,,,,true,Long-term notes payable
+1207,us-gaap,SeniorNotes,40,,,,,,,,,true,Senior notes outstanding
+1209,us-gaap,OperatingLeaseLiabilityNoncurrent,10,balance_sheet,liabilities,operating_lease_liability,Operating lease liabilities,instant,credit,monetary,ALL,true,Noncurrent operating lease liability
+1209,us-gaap,OperatingLeaseLiability,20,,,,,,,,,true,Total operating lease liability
+1209,us-gaap,OperatingLeaseLiabilityCurrent,30,,,,,,,,,true,Current operating lease liability
+1210,us-gaap,DeferredRevenueCurrent,20,,,,,,,,,true,Current deferred revenue
+1210,us-gaap,ContractWithCustomerLiabilityCurrent,30,,,,,,,,,true,ASC-606 current contract liability
+1210,us-gaap,ContractWithCustomerLiability,40,,,,,,,,,true,ASC-606 total contract liability
+1211,us-gaap,DeferredTaxLiabilitiesNoncurrent,20,,,,,,,,,true,Noncurrent deferred tax liabilities
+1212,us-gaap,OtherLiabilities,20,,,,,,,,,true,Unclassified other liabilities
+1214,us-gaap,PreferredStockLiquidationPreferenceValue,20,,,,,,,,,true,Preferred stock at liquidation preference
+1215,us-gaap,CommonStocksIncludingAdditionalPaidInCapital,20,,,,,,,,,true,Common stock combined with APIC
+1219,us-gaap,TreasuryStockCommonValue,20,,,,,,,,,true,Common treasury stock at cost
+1224,us-gaap,RedeemableNoncontrollingInterestEquityCarryingAmount,20,,,,,,,,,true,Redeemable NCI carrying amount
+1224,us-gaap,TemporaryEquityCarryingAmount,30,,,,,,,,,true,Temporary equity carrying amount
+1224,us-gaap,RedeemablePreferredStockCarryingAmount,40,,,,,,,,,true,Redeemable preferred carrying amount
+1224,us-gaap,TemporaryEquityRedemptionValue,50,,,,,,,,,true,Temporary equity at redemption value
+1224,us-gaap,RedeemableNoncontrollingInterestEquityPreferredCarryingAmount,60,,,,,,,,,true,Redeemable preferred NCI carrying amount
+1225,us-gaap,TaxesPayableCurrent,10,balance_sheet,liabilities,taxes_payable,Taxes payable,instant,credit,monetary,ALL,true,Current taxes payable
+1225,us-gaap,AccruedIncomeTaxesCurrent,20,balance_sheet,liabilities,taxes_payable,Taxes payable,instant,credit,monetary,ALL,true,Accrued current income taxes
+1225,us-gaap,AccruedIncomeTaxes,30,balance_sheet,liabilities,taxes_payable,Taxes payable,instant,credit,monetary,ALL,true,Total accrued income taxes
+1226,us-gaap,OtherLiabilitiesCurrent,10,balance_sheet,liabilities,other_current_liabilities,Other current liabilities,instant,credit,monetary,ALL,true,Other current liabilities
+1226,us-gaap,OtherAccruedLiabilitiesCurrent,20,balance_sheet,liabilities,other_current_liabilities,Other current liabilities,instant,credit,monetary,ALL,true,Other accrued current liabilities
+1227,us-gaap,FinanceLeaseLiabilityNoncurrent,10,balance_sheet,liabilities,finance_lease_liabilities,Finance lease liabilities,instant,credit,monetary,ALL,true,Noncurrent finance lease liability
+1227,us-gaap,FinanceLeaseLiability,20,balance_sheet,liabilities,finance_lease_liabilities,Finance lease liabilities,instant,credit,monetary,ALL,true,Total finance lease liability
+1227,us-gaap,FinanceLeaseLiabilityCurrent,30,balance_sheet,liabilities,finance_lease_liabilities,Finance lease liabilities,instant,credit,monetary,ALL,true,Current finance lease liability
