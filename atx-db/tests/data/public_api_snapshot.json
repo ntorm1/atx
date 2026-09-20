@@ -200,6 +200,7 @@
     "abnormal_inventory_growth",
     "abnormal_receivables_growth",
     "acquire_apply_lock",
+    "_derived_pit",
     "activation",
     "adjustment_factors",
     "adjustment_factors_asof",

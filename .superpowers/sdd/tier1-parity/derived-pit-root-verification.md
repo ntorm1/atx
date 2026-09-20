@@ -34,3 +34,12 @@ for its pathspec commit, then Core separately. A committed-HEAD import/module/
 schema check follows those commits; AF1 and CF5 remain separate tasks. The
 full-universe runtime, measured coverage/quality, release and full sprint gate
 are not proven by these focused fixtures.
+
+Committed-HEAD check at0c52fdbd: isolated import resolved exclusively to the
+git-archive export. All schema-contract cases and remaining module cases passed
+(one preexisting slow skip). The sole failure was the intended new private
+helper `_derived_pit` missing from the literal dir-surface snapshot. Root added
+that exact name, without changing boundary rules or another task's snapshot
+names. Native guard peak0.967030GiB. After the pin commit, rerun the isolated
+module file only; the schema/source bytes are unchanged by this fixture update.
+Evidence: pit-core-head-0c52fdbd.log/err/-memory.json.

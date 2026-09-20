@@ -44,27 +44,29 @@ All live work and tests run sequentially with the locked project Python runtime.
 ## Metrics build prerequisite
 
 A focused static audit found a historical-revision defect before the first full
-derived build. The current engine computes from only the latest standardized
-revisions and replaces earlier derived states. The daily market join also
-filters standardized facts and DEI shares to latest-only revisions. Consequently,
-a later amendment can remove a previously knowable historical value or make a
+derived build. The earlier engine computed from only the latest standardized
+revisions and replaced earlier derived states. The daily market join also
+filtered standardized facts and DEI shares to latest-only revisions. Consequently,
+a later amendment could remove a previously knowable historical value or make a
 daily valuation fall back to an older quarter. Maximum-input availability
-timestamps do not recover discarded states.
+timestamps could not recover discarded states.
 
 The P1 repair now preserves original/amended states and invalidation events in
 bounded event frames, with daily/export/API consumers updated together. One
 independent static review closed the original defect at source level. Focused
-runtime verification, including a populated 0314-to-0315 upgrade, remains queued
-behind the active companyfacts writer; the code is not yet committed or used in
-production. No repaired full-universe result has been measured. Evidence,
+runtime verification ran after the companyfacts writer stopped. All P1 focused
+cases passed, including
+the populated upgrade; the repair is committed as `5519d1ac`, with no repaired
+full-universe result yet measured. Evidence,
 implementation and review reports use the `derived-pit-revision-` prefix under
 `.superpowers/sdd/tier1-parity/`.
 
 The catalog audit counted 173 definitions (143 on the quarterly grid and 30
 daily). A separate implemented, statically reviewed wave adds 28 definitions
 for ordinary quarterly YoY/QoQ growth, three-year CAGR, basic EPS and cash-cycle
-metrics. These 201 definitions await runtime validation and commit; they are
-not a measurement of live metric coverage.
+metrics. These 201 definitions are committed in `0c52fdbd`. The combined focused
+run had 65 passes and one Core test-expectation error; the corrected case then
+passed alone. This is fixture validation, not measured live metric coverage.
 
 A further source-path check found that annual statements are standardized but
 cannot feed TTM flow metrics unless a complete quarterly history is available.
@@ -101,10 +103,28 @@ one already-processed issuer returned the same 11,550 distinct keys/checksum:
 1.084 seconds for the numeric normalization predicate, 0.006 seconds for the
 exact spelling predicate. This sequential, warm-cache comparison is not an
 end-to-end throughput result. The full optimized source retry,
-`activation-companyfacts-archive3`, started at 20:03:30 UTC. At 20:06:05 it had
-processed 75 members: 64 loaded, 10 empty, one unavailable, zero failures and
-429,320 committed attempt rows. This is progress, not completed ingestion or a
-full-universe coverage result.
+`activation-companyfacts-archive3`, failed at 22:02:44 UTC after 7,155.515 seconds.
+A transaction COMMIT exhausted the 1 GB DuckDB allocation; the process-tree
+guard was not triggered and measured a peak of 1.885 GiB. Both run ledgers
+recorded failure without operator correction.
+
+A separate read-only check at 22:04:46 UTC found 38,500,008 retained facts and
+the same number of fundamental points. Price and custom-feature row counts were
+unchanged. The attempt retained 20,205,629 fact rows across 3,750 loaded CIKs;
+member receipts also record 708 empty, 26 unavailable and five errors. The last
+loaded CIK was 0001033905. This is partial source ingestion, not full-universe
+coverage. The pending repair bounds connection lifetime and verifies retained
+source evidence before resuming, including unfinished identity-candidate output.
+
+All five member errors were missing top-level payload CIK fields in otherwise
+valid archive records. Exact archive filenames still identify those members.
+The repair will distinguish absent identity fields from conflicting fields
+and retain explicit source provenance. It also forwards the operator's dummy
+SEC contact into loader options; the completed attempt used local archive
+members without HTTP requests.
+Latest evidence: `companyfacts-archive3-failure-inspection.json`,
+`companyfacts-archive3-failed-members.json`, their guard receipts, and
+`companyfacts-archive3-failure-report.md` under `.superpowers/sdd/tier1-parity/`.
 Evidence: `companyfacts-archive2-stop-inspection.json`,
 `companyfacts-archive2-ledger-recovery.json`, `companyfacts-placeholder-inventory.json`
 and `companyfacts-cik-predicate-measurement.json`, with their guard receipts.
