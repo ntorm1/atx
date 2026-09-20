@@ -12,9 +12,14 @@ This section supersedes every older status below. Updated 2026-09-20.
   after writer release, then repair actual failures. No competing DB/tests.
 - P1 implementation COMPLETE FOR REVIEW, source uncommitted and frozen.
   Exact18-path inventory, work bounds, consumer contracts and root command in
-  derived-pit-revision-report.md. Fresh Codex /root/review_derived_pit_revision
-  is doing its ONE static review; no verdict yet. Output report will be
-  derived-pit-revision-review.md. Original implementer idle/available for fixes.
+  derived-pit-revision-report.md. ONE static review COMPLETE at21:13UTC:
+  derived-pit-revision-review.md closes original Critical at source level only,
+  finds no newCritical,1ImportantI1(populated0314->0315 upgrade case) and
+  MinorM1(invalid daily/factor plus API first_reported/stub-range assertions).
+  /root/derived_pit_revision_repair is now preparing those tests and
+  derived-pit-revision-fix1-report.md. Accept on report/root execution, no
+  additional independent review for these noncritical test-preparation fixes.
+  No runtime verification or production reconstruction has occurred.
   It has no dependency on core201 CSV/test helpers; commit P1/0315 before
   core breadth after root verification so committed HEAD stays coherent.
 - P1 evolves canonical nullable event states under0315, updates daily/raw/DEI,
@@ -29,7 +34,7 @@ This section supersedes every older status below. Updated 2026-09-20.
   this continuation. P1 report now pins .venv Python both guard/child,2.5GiB,
   freshGUIDreceipt/logs,-n0. Root must also run required bootstrap/schema/import
   checks and regenerate dictionary/snapshots when relevant source stabilizes.
-- HEAD84cdd6d1 before this checkpoint. Preserve unrelated four bootstrap EOL
+- HEADa3ac9379 before this checkpoint. Preserve unrelated four bootstrap EOL
   phantomM files and other-session work. No goal completion/release/fullsuite/
   wholebranchreview/mergepermission. Verified submissions resume and run5,
   CF1labels/eval, actualquality/coverage/publication and approval gate remain.
