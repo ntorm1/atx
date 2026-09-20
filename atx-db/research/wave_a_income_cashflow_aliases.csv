@@ -1,0 +1,73 @@
+item_id,taxonomy,concept,priority,statement_type,statement_section,canonical_metric,canonical_label,period_type,normal_balance,unit_type,industry_template,registry_alias,notes
+1001,us-gaap,RevenueFromContractWithCustomerIncludingAssessedTax,15,,,,,,,,,true,ASC-606 revenue including assessed tax
+1001,us-gaap,SalesRevenueGoodsNet,40,,,,,,,,,true,Pre-ASC-606 product revenue
+1001,us-gaap,SalesRevenueServicesNet,50,,,,,,,,,true,Pre-ASC-606 service revenue
+1001,us-gaap,RevenuesNetOfInterestExpense,60,,,,,,,,,true,Broker and bank style total revenue presentation
+1003,us-gaap,CostOfServices,40,,,,,,,,,true,Service-only cost of revenue
+1003,us-gaap,CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization,50,,,,,,,,,true,Cost of revenue excluding D and A
+1003,us-gaap,CostOfGoodsSoldExcludingDepreciationDepletionAndAmortization,60,,,,,,,,,true,Legacy cost of goods sold excluding D and A
+1005,us-gaap,OtherSellingGeneralAndAdministrativeExpense,20,,,,,,,,,true,Residual SG and A line
+1006,us-gaap,SellingExpense,20,,,,,,,,,true,Selling expense only
+1007,us-gaap,OtherGeneralAndAdministrativeExpense,20,,,,,,,,,true,Residual G and A line
+1008,us-gaap,ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost,20,,,,,,,,,true,R and D excluding acquired in-process R and D
+1008,us-gaap,ResearchAndDevelopmentExpenseSoftwareExcludingAcquiredInProcessCost,30,,,,,,,,,true,Software R and D
+1009,us-gaap,MarketingAndAdvertisingExpense,20,,,,,,,,,true,Combined marketing and advertising
+1010,us-gaap,CostsAndExpenses,20,,,,,,,,,true,Total costs and expenses
+1010,us-gaap,OperatingCostsAndExpenses,30,,,,,,,,,true,Total operating costs and expenses
+1011,us-gaap,DepreciationDepletionAndAmortizationNonproduction,20,,,,,,,,,true,Non-production D and A on the income statement
+1011,us-gaap,CostOfGoodsAndServicesSoldDepreciationAndAmortization,30,,,,,,,,,true,D and A embedded in cost of sales
+1012,us-gaap,DepreciationNonproduction,20,,,,,,,,,true,Non-production depreciation only
+1013,us-gaap,FiniteLivedIntangibleAssetsAmortizationExpense,20,,,,,,,,,true,Finite-lived intangible amortization
+1018,us-gaap,InterestExpenseNonoperating,20,,,,,,,,,true,Nonoperating interest expense
+1018,us-gaap,InterestAndDebtExpense,30,,,,,,,,,true,Combined interest and debt expense
+1019,us-gaap,InterestExpenseLongTermDebt,20,,,,,,,,,true,Long-term debt interest only
+1020,us-gaap,InvestmentIncomeInterestAndDividend,30,,,,,,,,,true,Combined interest and dividend investment income
+1022,us-gaap,GoodwillAndIntangibleAssetImpairmentCharge,30,,,,,,,,,true,Goodwill and intangible impairment
+1022,us-gaap,RestructuringSettlementAndImpairmentProvisions,40,,,,,,,,,true,Combined restructuring settlement and impairment
+1022,us-gaap,GainLossOnSaleOfBusiness,50,,,,,,,,,true,Gain or loss on business disposal
+1023,us-gaap,IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments,20,,,,,,,,,true,Pretax income before equity-method results
+1024,us-gaap,IncomeTaxExpenseBenefitContinuingOperations,20,,,,,,,,,true,Tax expense on continuing operations
+1026,us-gaap,DeferredOtherTaxExpenseBenefit,20,,,,,,,,,true,Other deferred tax expense on the income statement
+1027,us-gaap,NetIncomeLossAttributableToRedeemableNoncontrollingInterest,30,,,,,,,,,true,Redeemable NCI share of earnings
+1029,us-gaap,IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest,20,,,,,,,,,true,Continuing operations including NCI
+1030,us-gaap,IncomeLossFromDiscontinuedOperationsNetOfTaxAttributableToReportingEntity,20,,,,,,,,,true,Discontinued operations attributable to the parent
+1030,us-gaap,DiscontinuedOperationIncomeLossFromDiscontinuedOperationNetOfTax,30,,,,,,,,,true,Per-disposal discontinued operations result
+1031,us-gaap,ProfitLoss,20,,,,,,,,,true,Net income including noncontrolling interests
+1032,us-gaap,NetIncomeLossAvailableToCommonStockholdersDiluted,20,,,,,,,,,true,Diluted income available to common
+1033,us-gaap,PreferredStockDividendsAndOtherAdjustments,20,,,,,,,,,true,Preferred dividends plus other adjustments
+1033,us-gaap,PreferredStockDividendsIncomeStatementImpact,30,,,,,,,,,true,Income-statement impact of preferred dividends
+1034,us-gaap,EarningsPerShareBasicAndDiluted,20,,,,,,,,,true,Single combined EPS line
+1039,us-gaap,CommonStockSharesIssued,30,,,,,,,,,true,Shares issued fallback for the period-end share count
+1040,us-gaap,WeightedAverageNumberOfSharesIssuedBasic,20,,,,,,,,,true,Weighted-average shares issued
+1051,us-gaap,ExtraordinaryItemNetOfTax,10,income_statement,income,extraordinary_items,Extraordinary items,duration,credit,monetary,ALL,true,Extraordinary items net of tax
+1051,us-gaap,ExtraordinaryItemGross,20,income_statement,income,extraordinary_items,Extraordinary items,duration,credit,monetary,ALL,true,Extraordinary items before tax
+1303,us-gaap,NetCashProvidedByUsedInInvestingActivitiesContinuingOperations,20,,,,,,,,,true,Investing cash flow from continuing operations
+1304,us-gaap,NetCashProvidedByUsedInFinancingActivitiesContinuingOperations,20,,,,,,,,,true,Financing cash flow from continuing operations
+1305,us-gaap,PaymentsForCapitalImprovements,20,,,,,,,,,true,Capital improvements
+1305,us-gaap,PaymentsToAcquireMachineryAndEquipment,30,,,,,,,,,true,Machinery and equipment purchases
+1305,us-gaap,PaymentsToAcquireOtherPropertyPlantAndEquipment,40,,,,,,,,,true,Other PP and E purchases
+1306,us-gaap,PaymentsToAcquireIntangibleAssets,20,,,,,,,,,true,Intangible asset purchases
+1306,us-gaap,PaymentsToDevelopSoftware,30,,,,,,,,,true,Capitalized software development spend
+1307,us-gaap,DepreciationAmortizationAndAccretionNet,20,,,,,,,,,true,D and A plus accretion
+1308,us-gaap,AllocatedShareBasedCompensationExpense,20,,,,,,,,,true,Allocated share-based compensation expense
+1309,us-gaap,PaymentsToAcquireBusinessesGross,20,,,,,,,,,true,Gross business acquisition payments
+1309,us-gaap,PaymentsToAcquireBusinessesAndInterestInAffiliates,30,,,,,,,,,true,Acquisitions including affiliate interests
+1310,us-gaap,ProceedsFromDivestitureOfBusinessesNetOfCashDivested,20,,,,,,,,,true,Divestiture proceeds net of cash divested
+1310,us-gaap,ProceedsFromSaleOfProductiveAssets,30,,,,,,,,,true,Productive asset sale proceeds
+1311,us-gaap,ProceedsFromIssuanceOrSaleOfEquity,20,,,,,,,,,true,Equity issuance or sale proceeds
+1311,us-gaap,ProceedsFromStockOptionsExercised,30,,,,,,,,,true,Option exercise proceeds
+1312,us-gaap,PaymentsForRepurchaseOfEquity,20,,,,,,,,,true,Equity repurchase payments
+1312,us-gaap,TreasuryStockValueAcquiredCostMethod,30,,,,,,,,,true,Treasury stock acquired at cost
+1313,us-gaap,ProceedsFromNotesPayable,20,,,,,,,,,true,Notes payable proceeds
+1313,us-gaap,ProceedsFromIssuanceOfSeniorLongTermDebt,30,,,,,,,,,true,Senior long-term debt proceeds
+1313,us-gaap,ProceedsFromLinesOfCredit,40,,,,,,,,,true,Line of credit draws
+1314,us-gaap,RepaymentsOfNotesPayable,20,,,,,,,,,true,Notes payable repayments
+1314,us-gaap,RepaymentsOfSeniorDebt,30,,,,,,,,,true,Senior debt repayments
+1314,us-gaap,RepaymentsOfLinesOfCredit,40,,,,,,,,,true,Line of credit repayments
+1319,us-gaap,IncreaseDecreaseInReceivables,20,,,,,,,,,true,Total receivables movement
+1321,us-gaap,IncreaseDecreaseInAccountsPayableTrade,20,,,,,,,,,true,Trade payables movement
+1321,us-gaap,IncreaseDecreaseInAccountsPayableAndAccruedLiabilities,30,,,,,,,,,true,Payables and accrued liabilities movement
+1323,us-gaap,EffectOfExchangeRateOnCashAndCashEquivalents,20,,,,,,,,,true,Pre-ASU-2016-18 FX effect on cash
+1324,us-gaap,CashAndCashEquivalentsPeriodIncreaseDecrease,20,,,,,,,,,true,Pre-ASU-2016-18 change in cash
+1324,us-gaap,CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsPeriodIncreaseDecreaseExcludingExchangeRateEffect,30,,,,,,,,,true,Change in cash excluding the FX effect
+1327,us-gaap,DeferredIncomeTaxesAndTaxCredits,10,cash_flow,operating,deferred_tax_cash_flow,Deferred income taxes (cash flow),duration,debit,monetary,ALL,true,Deferred taxes as a cash-flow reconciling item

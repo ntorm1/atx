@@ -20,7 +20,7 @@ from atx_db.statement_map_seed import (
 # extracted (main @ e4bdcf54). Later sprint tasks that add concepts bump this
 # number in the same commit that adds the rows, with the new count justified in
 # the commit body.
-EXPECTED_STATEMENT_MAP_ROWS = 214
+EXPECTED_STATEMENT_MAP_ROWS = 286  # 214 + 72 (Tier1-S2 T6 Wave A-1; the wave CSV enumerates 72 alias rows, not 73)
 
 
 def test_seed_columns_match_dataclass_fields():

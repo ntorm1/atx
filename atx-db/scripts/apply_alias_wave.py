@@ -35,8 +35,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from atx_db.fundamental_statements import SOURCE_NAME
 from atx_db.item_registry import SEED_COLUMNS as ITEM_SEED_COLUMNS
@@ -48,6 +47,8 @@ from atx_db.statement_map_seed import (
     read_statement_map_seed,
     write_statement_map_seed,
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 WAVE_COLUMNS = (
     "item_id",

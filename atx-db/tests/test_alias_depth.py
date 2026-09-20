@@ -24,6 +24,8 @@ SPEC_ITEM_IDS = frozenset(
 # An exact count, not a floor, so a silent regression fails the test.
 ALIAS_DEPTH_EXCEPTIONS: dict[int, tuple[int, str]] = {
     1004: (1, "GrossProfit is the only us-gaap gross-profit element; the rest is composition from 1001-1003."),
+    1021: (1, "NonoperatingIncomeExpense is the only us-gaap total-nonoperating-income-or-expense element; the components (interest, investment income) belong to items 1017-1020."),
+    1040: (2, "WeightedAverageNumberOfSharesOutstandingBasic and WeightedAverageNumberOfSharesIssuedBasic are the only two us-gaap basic weighted-average-share elements; the rest of the item's rows are vendor field mappings, not us-gaap aliases."),
     1005: (2, "us-gaap splits SG&A into SellingGeneralAndAdministrativeExpense and OtherSellingGeneralAndAdministrativeExpense; GeneralAndAdministrativeExpense belongs to item 1007."),
     1014: (1, "OperatingIncomeLoss is the only us-gaap operating-income element."),
     1016: (0, "EBITDA has no us-gaap element; composed from operating_income + cf_depreciation."),

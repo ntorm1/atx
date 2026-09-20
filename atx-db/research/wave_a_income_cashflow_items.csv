@@ -1,0 +1,4 @@
+item_id,canonical_code,statement,section,data_type,unit_type,sign_convention,is_derived,definition,citation,alias_scheme,alias_code,coalesce_priority,valid_from,valid_to,vendor,vendor_field,sign_note
+1051,extraordinary_items,income,income_statement,duration,monetary,positive,false,Extraordinary items and discontinued operations net of tax,Tier-1 parity design 2026-09-19 income statement catalog (cs xido),,,,1900-01-01,,compustat,xido,
+1052,employees,income,supplemental,instant,count,positive,false,Total employee headcount reported on the annual cover page,Tier-1 parity design 2026-09-19 supplemental catalog,,,,1900-01-01,,compustat,emp,
+1327,deferred_tax_cash_flow,cashflow,cash_flow,duration,monetary,positive,false,Deferred income taxes as a cash-flow reconciling item,Tier-1 parity design 2026-09-19 cash flow catalog (cs txdc),,,,1900-01-01,,compustat,txdc,

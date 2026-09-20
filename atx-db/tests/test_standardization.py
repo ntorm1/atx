@@ -93,17 +93,23 @@ def test_standardization_rule_seed_covers_template_items():
     for rule in rules:
         by_basis.setdefault(rule.basis, set()).add(rule.item_id)
 
-    assert len(rules) == 455
-    assert len(by_basis["annual"]) == 130
-    assert len(by_basis["quarterly"]) == 130
-    assert len(by_basis["ttm"]) == 130
+    # Tier1-S2 T6: +3 annual/quarterly/ttm rules for 1051 extraordinary_items and
+    # +3 for 1327 deferred_tax_cash_flow. instant is untouched by Wave A-1.
+    assert len(rules) == 461
+    assert len(by_basis["annual"]) == 132
+    assert len(by_basis["quarterly"]) == 132
+    assert len(by_basis["ttm"]) == 132
     assert len(by_basis["instant"]) == 65
     revenue = next(rule for rule in rules if rule.rule_id == "std_annual_1001")
     assert revenue.combination_rule == "coalesce_priority"
     assert [alias.alias_code for alias in revenue.source_aliases] == [
         "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "RevenueFromContractWithCustomerIncludingAssessedTax",
         "Revenues",
         "SalesRevenueNet",
+        "SalesRevenueGoodsNet",
+        "SalesRevenueServicesNet",
+        "RevenuesNetOfInterestExpense",
     ]
     total_debt = next(rule for rule in rules if rule.rule_id == "std_instant_1208")
     assert total_debt.combination_rule == "sum"
@@ -404,7 +410,7 @@ def test_set_based_refresh_retains_revisions_classifies_quarters_and_writes_mani
         [sid],
     ).fetchone()
     assert quarterly == (25.0, "std_quarterly_1001", "USD", "monetary")
-    assert tmp_store.con.execute("SELECT count(*) FROM fundamental_item").fetchone()[0] == 235
+    assert tmp_store.con.execute("SELECT count(*) FROM fundamental_item").fetchone()[0] == 238
     assert (
         tmp_store.con.execute(
             """
@@ -424,7 +430,7 @@ def test_set_based_refresh_retains_revisions_classifies_quarters_and_writes_mani
         """,
         [result.build_id],
     ).fetchone()
-    assert manifest[:5] == ("completed", 455, 3, 3, 0)
+    assert manifest[:5] == ("completed", 461, 3, 3, 0)
     assert json.loads(manifest[5]) == {"annual": 2, "quarterly": 1}
     assert result.standardized_row_count == 3
     assert result.rule_set_sha256 is not None
