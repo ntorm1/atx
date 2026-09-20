@@ -2,6 +2,32 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override - 2026-09-20 23:05 UTC
+
+- SOLE live workload: activation-companyfacts-archive4, tool session25640,
+  guard child9712 / actual worker21904, started23:03:23UTC. Project Python,
+  DuckDB1 GB/one thread within3 GiB guard; dummy SEC UA. Do not launch any other
+  tests, typechecks, DB connections, probes or writers while it runs.
+- At23:04:17UTC it reached verified resume after governed startup; 3750 loaded
+  receipts, one failed-run ancestor, count inventory done. At23:04:19UTC it
+  began retained fact SHA256 aggregation. Proof has NOT completed; no skipped
+  issuer or full-source completion claimed. Logs activation-companyfacts-archive4
+  .err/.log/-memory.json. Check actual latest output before deciding next action.
+- Source HEAD c33b5ccd (docs/snapshot), following AF1 244af575 and CF5 b9572b27.
+  Isolated244af import/schema tests passed(one existing slow skip); sole module
+  failure was two names before root snapshot commit. Isolatedc33b import and
+  all7modulechecks passed, peak0.614365GiB. Source/schema test diff between them
+  is empty. Report annual-cf-committed-head-verification.md explains exact order.
+- DATA_DICTIONARY regenerated201definitions/API2.1 and corrected event-vs-
+  arithmetic clock prose; source/test changes are committed. Four unrelated
+  content-empty EOL changes remain, plus user's other-session files/stash@{0}.
+- After archive4 terminal, inspect both ledgers and measured outcomes using
+  the sole guarded slot; handle actual failures as tasks. Then submissions
+  verifiedresume04cf947d-53bb-49b7-a276-b3c74a2a52c8, full activation-run5,
+  CF1labels/evaluation, live coverage/quality, eligible release, full non-slow
+  once, Codex whole-branch review and ask before main. Goal ACTIVE. No claims
+  of live metric coverage or statistically significant signals yet.
+
 ## Current controller override - 2026-09-20 22:59 UTC
 
 - No production writer or runtime check currently active. CF5 COMMITTED
