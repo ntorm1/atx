@@ -78,7 +78,8 @@ cases passed after three fixture/seam corrections. One independent review found
 two Important selection issues; both are fixed, and six targeted preservation
 and counterexample checks passed with peak process-tree memory 0.789 GiB.
 AF1 is committed as `244af575`; touched Ruff and strict type checks pass.
-Committed-HEAD checks and the production rebuild remain pending. This is
+Committed-source import, module-boundary and schema-contract checks passed
+(one existing slow schema case skipped). The production rebuild remains pending. This is
 source/fixture evidence, not a measured count of covered issuers; see
 `annual-filer-metric-path-report.md` and `annual-fallback-implementation-brief.md`.
 
@@ -122,7 +123,18 @@ coverage. CF5 is committed as `b9572b27`: it bounds connection lifetime and
 verifies retained source evidence before resuming, including unfinished
 identity-candidate output. Its independent review found two Important issues;
 both were fixed and all 53 post-review focused checks passed. Peak process-tree
-memory was 0.704 GiB. Full-archive proof and ingestion at 1 GB remain unmeasured.
+memory was 0.704 GiB. Full archive ingestion at 1 GB still requires completion.
+
+The verified resume, `activation-companyfacts-archive4`, started at 23:03:23 UTC
+with DuckDB at 1 GB/one thread inside a 3 GiB process-tree guard. After governed
+startup, its proof passed at 23:09:00 UTC: 3,750 completed issuers and 20,205,629
+retained fact rows were verified against source receipts and matching fact/point
+fingerprints. Both scans grouped 8,759 security identities; the proof took about
+283 seconds. These are loader-log measurements, not a new completed warehouse
+snapshot. The loader is now continuing through all 20,390 archive members;
+full source completion and final memory peak remain pending. The preserved new
+pre-migration backup is 11,529,629,696 bytes. Logs and the live guard receipt use
+the `activation-companyfacts-archive4` prefix.
 
 All five member errors were missing top-level payload CIK fields in otherwise
 valid archive records. Exact archive filenames still identify those members.

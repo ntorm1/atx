@@ -2,6 +2,36 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override - 2026-09-20 23:11 UTC
+
+- Archive4 remains sole ROOT runtime workload, session25640, guard child9712,
+  actual worker21904, creation23:03:23UTC. SAME source/limits/command as23:05
+  override below. No tests/DB/probes/additional runtime while active.
+- PROOF PASSED at23:09:00UTC: targets3750 / retainedrows20205629. Fact and point
+  fingerprint groups both8759. Startedproof23:04:17UTC; factscanended23:06:43,
+  pointscanended23:08:58, candidate recoveryverifiedby23:09:00. About283sec total.
+  Logs activation-companyfacts-archive4.err contain exact times (localEDT,
+  add4hforUTC); stdoutfinalstageJSON not yet present. Archive targets20390.
+- At23:09:52UTC processed550,loaded490,empty57,unavailable3,failed0,newrows0;
+  this is the verified-skip prefix, not a newly loaded20.2M row claim. Continue
+  watching actual laterlog tail. Previousarchive3 failed around4489receipts;
+  archive4 will replayempty/unavailable, retry5missingCIKerrors withnewhandler,
+  and loadremainingtail. Do not stop a healthy pass to run competing probes.
+- Process memory after proof recyle at23:10UTC: working684240896B/private
+  1159008256B; host physicalfree~7.6GiB/commit~9.2GiB. Nativepeakfinalpending.
+  FreeC103347466240B. Preservednewbackup warehouse.duckdb.pre-migrate.20260920-
+  230330.bak is11529629696B; hashfromgovernedregistrytoinspectafterterminal,
+  no costlyredundant hash duringactivewriter. Live schema expected316from
+  governed startup but directpost-runmeasurement remainspending.
+- HEAD a54841bf beforethisdocscheckpoint. Sourceunchangedfromc33b5ccd;
+  annual-cf-committed-head-verification.md recordsimport/module/schemapasses.
+  BothCF5/AF1 reviewed/fixed/focused-tested/committed; dictionary201/API2.1.
+- Next afterterminal: verifyledgers/outcome insoleguard, handleactualfailure,
+  submissionsverifiedresume, fullrun5, CF1eval, livecoverage/quality/release,
+  fullnon-slowsuiteonce, Codexwholebranchreview, askbeforemain. GoalACTIVE,
+  significant-signal/full-universe-readiness claims stillunmade. Preserve
+  stash@{0}, unrelateduserfiles and4content-emptyEOLmodifications.
+
 ## Current controller override - 2026-09-20 23:05 UTC
 
 - SOLE live workload: activation-companyfacts-archive4, tool session25640,
