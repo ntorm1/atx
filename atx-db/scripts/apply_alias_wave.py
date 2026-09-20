@@ -26,6 +26,7 @@ Effects, all additive:
 
 Re-running the same wave is a no-op.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -127,7 +128,9 @@ def apply_wave(aliases_path: Path, items_path: Path | None, rules_path: Path | N
 
     added_items = 0
     if items_path is not None:
-        existing = {(r["item_id"], r["alias_scheme"], r["alias_code"], r["vendor"], r["vendor_field"]) for r in item_rows}
+        existing = {
+            (r["item_id"], r["alias_scheme"], r["alias_code"], r["vendor"], r["vendor_field"]) for r in item_rows
+        }
         for row in _read_csv(items_path, ITEM_SEED_COLUMNS):
             key = (row["item_id"], row["alias_scheme"], row["alias_code"], row["vendor"], row["vendor_field"])
             if key in existing:
@@ -141,7 +144,26 @@ def apply_wave(aliases_path: Path, items_path: Path | None, rules_path: Path | N
         by_id = {row["rule_id"]: index for index, row in enumerate(rule_rows)}
         for row in _read_csv(rules_path, RULE_COLUMNS):
             if row["rule_id"] in by_id:
-                rule_rows[by_id[row["rule_id"]]] = row
+                # A replacement row updates the rule's structure (basis,
+                # combination_rule, source_item_ids_json, etc.) but must not
+                # silently drop whatever source_aliases_json the rule already
+                # holds on disk - that json may carry entries accumulated by
+                # earlier waves that this --rules CSV never restates. Merge:
+                # keep every existing alias, then append any new ones this
+                # row adds that aren't already present. Final ordering is
+                # normalized by normalize_fundamental_seeds.py below.
+                existing_row = rule_rows[by_id[row["rule_id"]]]
+                existing_aliases = json.loads(existing_row["source_aliases_json"] or "[]")
+                existing_pairs = {(a["alias_scheme"], a["alias_code"]) for a in existing_aliases}
+                merged_aliases = list(existing_aliases)
+                for alias in json.loads(row["source_aliases_json"] or "[]"):
+                    pair = (alias["alias_scheme"], alias["alias_code"])
+                    if pair not in existing_pairs:
+                        merged_aliases.append(alias)
+                        existing_pairs.add(pair)
+                merged_row = dict(row)
+                merged_row["source_aliases_json"] = json.dumps(merged_aliases, separators=(",", ":"), sort_keys=True)
+                rule_rows[by_id[row["rule_id"]]] = merged_row
             else:
                 by_id[row["rule_id"]] = len(rule_rows)
                 rule_rows.append(row)
@@ -197,8 +219,18 @@ def apply_wave(aliases_path: Path, items_path: Path | None, rules_path: Path | N
             if alias_key not in alias_keys:
                 base = item_attributes[resolved["item_id"]]
                 alias_row = {column: "" for column in ITEM_SEED_COLUMNS}
-                for column in ("item_id", "canonical_code", "statement", "section", "data_type",
-                               "unit_type", "sign_convention", "is_derived", "definition", "citation"):
+                for column in (
+                    "item_id",
+                    "canonical_code",
+                    "statement",
+                    "section",
+                    "data_type",
+                    "unit_type",
+                    "sign_convention",
+                    "is_derived",
+                    "definition",
+                    "citation",
+                ):
                     alias_row[column] = base[column]
                 alias_row["alias_scheme"] = resolved["taxonomy"]
                 alias_row["alias_code"] = resolved["concept"]
@@ -213,7 +245,9 @@ def apply_wave(aliases_path: Path, items_path: Path | None, rules_path: Path | N
             if int(rule_row["item_id"]) != item_id or rule_row["is_active"].strip().lower() != "true":
                 continue
             aliases = json.loads(rule_row["source_aliases_json"] or "[]")
-            if any(a["alias_scheme"] == resolved["taxonomy"] and a["alias_code"] == resolved["concept"] for a in aliases):
+            if any(
+                a["alias_scheme"] == resolved["taxonomy"] and a["alias_code"] == resolved["concept"] for a in aliases
+            ):
                 continue
             aliases.append(
                 {
@@ -233,8 +267,7 @@ def apply_wave(aliases_path: Path, items_path: Path | None, rules_path: Path | N
     touched_rules = sum(
         1
         for row in rule_rows
-        if row["rule_id"] in original_rule_json
-        and row["source_aliases_json"] != original_rule_json[row["rule_id"]]
+        if row["rule_id"] in original_rule_json and row["source_aliases_json"] != original_rule_json[row["rule_id"]]
     )
 
     _write_csv(ITEM_SEED_PATH, ITEM_SEED_COLUMNS, item_rows)

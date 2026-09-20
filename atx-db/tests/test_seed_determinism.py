@@ -1,4 +1,5 @@
 """Tier1-S2 T3: all four fundamentals seeds are canonically sorted and duplicate-free."""
+
 from __future__ import annotations
 
 import csv
@@ -66,9 +67,7 @@ def test_item_seed_is_grouped_by_item_and_sorted_within_the_group():
 
 def test_no_duplicate_item_alias_pairs_in_the_item_seed():
     counts = Counter(
-        (int(r["item_id"]), r["alias_scheme"], r["alias_code"])
-        for r in _item_rows()
-        if r["alias_scheme"].strip()
+        (int(r["item_id"]), r["alias_scheme"], r["alias_code"]) for r in _item_rows() if r["alias_scheme"].strip()
     )
     assert [k for k, n in counts.items() if n > 1] == []
 
@@ -79,6 +78,43 @@ def test_no_alias_code_maps_to_two_items_in_the_item_seed():
         if row.alias_scheme is None or row.alias_code is None:
             continue
         owners.setdefault((row.alias_scheme, row.alias_code), set()).add(row.item_id)
+    conflicts = {k: sorted(v) for k, v in owners.items() if len(v) > 1}
+    assert conflicts == {}
+
+
+def test_no_alias_code_maps_to_two_items_across_statement_map_and_item_seed():
+    """An alias's item_id must agree between statement_map.csv and fundamental_items.csv.
+
+    Each seed is internally alias-unique on its own (see
+    test_no_duplicate_item_alias_pairs_in_the_item_seed and
+    test_no_alias_code_maps_to_two_items_in_the_item_seed), but nothing
+    previously checked that the two seeds agree with each other. A
+    statement_map row that assigns a concept to one item while
+    fundamental_items.csv (and, transitively, that item's standardization
+    rule) assigns the same concept to a different item makes one of the two
+    assignments dead config: load_standardization_inputs() resolves item_id
+    from the statement map first.
+
+    fundamental_items.csv has no industry_template column - it is the
+    cross-industry (ALL) registry - so it is only compared against ALL-scope
+    statement_map rows. A non-ALL industry-overlay row (e.g. an 'UT'/'BK'/'BD'
+    item reusing a base concept for its own SIC-gated presentation, such as
+    OperatingIncomeLoss on both 1014/ALL and 1804/UT) is a deliberate,
+    independently-scoped reuse, not a conflict - overlay uniqueness is
+    checked within its own scope only.
+    """
+    owners: dict[tuple[str, str, str], set[int]] = {}
+    for row in read_statement_map_seed():
+        if row.item_id is None or not row.is_active or row.is_derived:
+            continue
+        if row.taxonomy not in {"us-gaap", "dei"}:
+            continue
+        scope = "ALL" if row.industry_template == "ALL" else row.industry_template
+        owners.setdefault((row.taxonomy, row.concept, scope), set()).add(int(row.item_id))
+    for row in read_fundamental_item_seed():
+        if row.alias_scheme is None or row.alias_code is None:
+            continue
+        owners.setdefault((row.alias_scheme, row.alias_code, "ALL"), set()).add(row.item_id)
     conflicts = {k: sorted(v) for k, v in owners.items() if len(v) > 1}
     assert conflicts == {}
 
