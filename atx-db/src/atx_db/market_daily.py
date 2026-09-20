@@ -43,6 +43,18 @@ MARKET_DAILY_SOURCE_NAME = "atx-db daily market panel v1"
 #: PIT cutoff in this module derives from a single constant.
 END_OF_DAY_HOURS = 22
 
+#: Calendar-day buffer used to widen the ``bars`` lookback below
+#: ``MarketDailyOptions.start_date`` so a scoped/incremental refresh's trailing
+#: windows (up to a 252-trading-session realized-vol/total-return frame, plus
+#: the 21-trading-day skip ``total_return_1m`` needs) are never computed over a
+#: truncated bar range. 252 trading sessions is roughly 365 calendar days at
+#: typical ~69% weekday trading-day density; 450 leaves a large margin for
+#: holidays and is simpler to prove correct than counting exact trading-day
+#: row offsets. The ``[start_date, end_date]`` restriction itself is applied
+#: only to the final emitted/inserted rows, never to the ``bars`` CTE that the
+#: window functions consume.
+_LOOKBACK_CALENDAR_DAYS = 450
+
 
 @dataclass(frozen=True)
 class MarketDailyOptions:
@@ -113,16 +125,30 @@ def build_market_daily_sql(
     metric_codes: tuple[str, ...],
     daily_definitions: tuple[DerivedMetricDefinition, ...],
     security_count: int,
-    date_predicate: str,
+    bars_date_predicate: str,
+    output_date_predicate: str,
 ) -> str:
     """Return the full ``INSERT`` statement for one batch of securities.
 
-    Bind order, matching the placeholders in the query text left to right:
-    the batch's security ids (for ``bars``), then the date-predicate params
-    (start/end/bar_source, in that order, however many of the three are
-    present), then ``derived_source`` (the ``fund_long`` union's derived-side
-    filter), then ``source`` twice (the id hash, then the ``source`` column),
-    then ``run_id``.
+    ``bars_date_predicate`` restricts the ``bars`` CTE that every trailing-window
+    metric (``tret``/``rvol``/``avg_d`` -> total returns, momentum, realized vol,
+    dollar volume) is computed over; it must use the *widened* lookback start
+    (see ``_LOOKBACK_CALENDAR_DAYS``), never the caller's raw ``start_date``, or
+    a scoped/incremental refresh would truncate the window functions' input and
+    null out every multi-day metric for the scoped range (and, since the
+    DELETE+INSERT is scoped identically, destructively overwrite previously
+    -correct values). ``output_date_predicate`` is the caller's actual
+    ``[start_date, end_date]`` restriction, applied only to the final emitted
+    rows (``f.trade_date``) -- it is what actually scopes what gets inserted,
+    matching the DELETE's scope.
+
+    Bind order, matching the placeholders in the query text left to right: the
+    batch's security ids (for ``bars``), then the ``bars_date_predicate``
+    params (widened-start/end/bar_source, in that order, however many of the
+    three are present), then ``derived_source`` (the ``fund_long`` union's
+    derived-side filter), then ``source`` twice (the id hash, then the
+    ``source`` column), then ``run_id``, then the ``output_date_predicate``
+    params (start_date/end_date, in that order, however many are present).
     """
     codes = tuple(item_codes) + tuple(metric_codes)
     joins, projections = _asof_joins(codes)
@@ -153,6 +179,23 @@ def build_market_daily_sql(
     metric_columns = ", ".join(f'"{definition.metric_code}"' for definition in daily_definitions)
     chain_sql = (",\n".join(chain) + ",\n") if chain else ""
 
+    # M1: fold the availability of every trailing-window daily metric into the
+    # row-level available_at, not just the bar/fundamental availability. A
+    # windowed metric's own "<code>__at" is already max(...) OVER the frame it
+    # reads (computed by derived_dsl's lowering), so if a bar *inside* e.g. a
+    # 252-day realized-vol window was late-arriving/corrected, that lateness is
+    # already captured there; it just needs to reach the row. f.bar_at is
+    # never NULL, so coalescing each "<code>__at" to it is a safe, always-
+    # defined fallback (rather than the NULL-propagating plain SQL greatest()).
+    metric_at_terms = ", ".join(
+        f'coalesce(f."{definition.metric_code}__at", f.bar_at)' for definition in daily_definitions
+    )
+    row_available_at = (
+        f"greatest(f.bar_at, coalesce(f.fundamental_available_at, f.bar_at), {metric_at_terms})"
+        if metric_at_terms
+        else "greatest(f.bar_at, coalesce(f.fundamental_available_at, f.bar_at))"
+    )
+
     return f"""
 INSERT INTO market_daily_metrics (
     market_daily_id, source, security_id, symbol, trade_date, close, adj_close, volume,
@@ -173,7 +216,7 @@ WITH bars AS (
     FROM equity_daily_bars
     WHERE close > 0 AND adjusted_close > 0 AND trade_date IS NOT NULL
       AND security_id IN ({securities})
-      {date_predicate}
+      {bars_date_predicate}
     GROUP BY security_id, trade_date
 ), fund_long AS (
     SELECT security_id, canonical_code AS code, period_end, value, available_at, revision_sequence
@@ -206,6 +249,10 @@ WITH bars AS (
     -- Same running-latest-value discipline for the DEI share count: the
     -- newest effective_date known as of each available_at, never overwritten
     -- by a later-arriving revision of an older effective_date.
+    -- taxonomy = 'dei' restricts this to actual DEI cover-page share counts
+    -- (shares_outstanding_history is otherwise populated generically from any
+    -- XBRL statement point with share_count_type = 'shares_outstanding'); this
+    -- is what makes the dei_shares/shares_source = 'dei' naming accurate.
     SELECT security_id, available_at, share_count
     FROM (
         SELECT security_id, available_at,
@@ -215,6 +262,7 @@ WITH bars AS (
                                   ORDER BY effective_date DESC, revision_sequence DESC) AS rk
         FROM shares_outstanding_history
         WHERE is_latest_revision AND share_count_type = 'shares_outstanding'
+          AND taxonomy = 'dei'
           AND available_at IS NOT NULL AND share_count > 0
         WINDOW w AS (PARTITION BY security_id
                      ORDER BY available_at, effective_date, revision_sequence
@@ -256,7 +304,7 @@ SELECT sha256(? || '|' || f.security_id || '|' || CAST(f.trade_date AS VARCHAR))
        f."shares_outstanding", f.shares_source, f.shares_reconciliation_ratio,
        {metric_columns},
        f.fundamental_available_at,
-       greatest(f.bar_at, coalesce(f.fundamental_available_at, f.bar_at)),
+       {row_available_at},
        sha256(f.security_id || '|' || CAST(f.trade_date AS VARCHAR) || '|' ||
               CAST(f.close AS VARCHAR) || '|' || CAST(f.adj_close AS VARCHAR) || '|' ||
               coalesce(CAST(f."shares_outstanding" AS VARCHAR), '') || '|' ||
@@ -264,7 +312,8 @@ SELECT sha256(? || '|' || f.security_id || '|' || CAST(f.trade_date AS VARCHAR))
               coalesce(CAST(f.fundamental_available_at AS VARCHAR), '')),
        f.trade_date, true, ?
 FROM final f
-WHERE greatest(f.bar_at, coalesce(f.fundamental_available_at, f.bar_at)) IS NOT NULL
+WHERE {row_available_at} IS NOT NULL
+  {output_date_predicate}
 ORDER BY f.security_id, f.trade_date
 """
 
@@ -307,18 +356,37 @@ def refresh_market_daily_metrics(
     size = max(1, int(options.batch_size))
     batches = [tuple(identifiers[i : i + size]) for i in range(0, len(identifiers), size)]
 
-    date_fragments: list[str] = []
-    date_params: list[Any] = []
-    if options.start_date is not None:
-        date_fragments.append("AND trade_date >= ?")
-        date_params.append(options.start_date)
+    # Critical fix: widen the *bars* lookback so trailing-window metrics never
+    # see a truncated bar range for a scoped/incremental refresh. The caller's
+    # actual start_date/end_date restriction is applied separately, only to
+    # the emitted rows (see output_date_* below) -- never to the bars CTE that
+    # feeds the window functions. See build_market_daily_sql's docstring and
+    # _LOOKBACK_CALENDAR_DAYS.
+    widened_start_date = (
+        options.start_date - dt.timedelta(days=_LOOKBACK_CALENDAR_DAYS) if options.start_date is not None else None
+    )
+    bars_date_fragments: list[str] = []
+    bars_date_params: list[Any] = []
+    if widened_start_date is not None:
+        bars_date_fragments.append("AND trade_date >= ?")
+        bars_date_params.append(widened_start_date)
     if options.end_date is not None:
-        date_fragments.append("AND trade_date <= ?")
-        date_params.append(options.end_date)
+        bars_date_fragments.append("AND trade_date <= ?")
+        bars_date_params.append(options.end_date)
     if options.bar_source is not None:
-        date_fragments.append("AND source = ?")
-        date_params.append(options.bar_source)
-    date_predicate = "\n      ".join(date_fragments)
+        bars_date_fragments.append("AND source = ?")
+        bars_date_params.append(options.bar_source)
+    bars_date_predicate = "\n      ".join(bars_date_fragments)
+
+    output_date_fragments: list[str] = []
+    output_date_params: list[Any] = []
+    if options.start_date is not None:
+        output_date_fragments.append("AND f.trade_date >= ?")
+        output_date_params.append(options.start_date)
+    if options.end_date is not None:
+        output_date_fragments.append("AND f.trade_date <= ?")
+        output_date_params.append(options.end_date)
+    output_date_predicate = "\n  ".join(output_date_fragments)
 
     total = 0
     for batch in batches:
@@ -327,15 +395,17 @@ def refresh_market_daily_metrics(
             metric_codes=metric_codes,
             daily_definitions=daily,
             security_count=len(batch),
-            date_predicate=date_predicate,
+            bars_date_predicate=bars_date_predicate,
+            output_date_predicate=output_date_predicate,
         )
         bind: list[Any] = [
             *batch,
-            *date_params,
+            *bars_date_params,
             options.derived_source,
             options.source,
             options.source,
             options.run_id,
+            *output_date_params,
         ]
         with store.transaction():
             predicates = ["source = ?", f"security_id IN ({', '.join(['?'] * len(batch))})"]
@@ -364,25 +434,30 @@ def shares_reconciliation_report(
     ``meets_spec_gate`` is the spec's "at least 95% of securities [with both
     sources] reconcile within tolerance"; it is ``False`` when no security
     has both sources observed, since a gate cannot pass on zero evidence.
+
+    I2: the pass/fail criterion per security is the *latest* (most recent
+    ``trade_date``) observed ``shares_reconciliation_ratio``, not a
+    requirement that every historical day be within tolerance. A single
+    transient day of drift -- e.g. a DEI filing landing a day before an
+    archive-shares correction catches up -- should not permanently fail a
+    security for the life of the panel once the two sources have since
+    reconciled; the gate reflects the panel's current state, not its history.
     """
     row = store.con.execute(
         """
-        WITH per_security AS (
-            SELECT security_id,
-                   count(*) FILTER (WHERE shares_reconciliation_ratio IS NOT NULL) AS observed,
-                   count(*) FILTER (
-                       WHERE shares_reconciliation_ratio IS NOT NULL
-                         AND abs(shares_reconciliation_ratio - 1.0) <= ?
-                   ) AS within
+        WITH latest AS (
+            SELECT security_id, shares_reconciliation_ratio,
+                   row_number() OVER (
+                       PARTITION BY security_id ORDER BY trade_date DESC
+                   ) AS rn
             FROM market_daily_metrics
-            WHERE source = ?
-            GROUP BY security_id
+            WHERE source = ? AND shares_reconciliation_ratio IS NOT NULL
         )
-        SELECT count(*) FILTER (WHERE observed > 0),
-               count(*) FILTER (WHERE observed > 0 AND within = observed)
-        FROM per_security
+        SELECT count(*) FILTER (WHERE rn = 1),
+               count(*) FILTER (WHERE rn = 1 AND abs(shares_reconciliation_ratio - 1.0) <= ?)
+        FROM latest
         """,
-        [tolerance, source],
+        [source, tolerance],
     ).fetchone()
     both = int(row[0]) if row else 0
     within = int(row[1]) if row else 0

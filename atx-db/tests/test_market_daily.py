@@ -273,6 +273,216 @@ def test_inputs_hash_is_populated_and_stable(panel):
     assert all(len(str(row[0])) == 64 for row in before)
 
 
+def test_scoped_refresh_matches_unscoped_for_trailing_windows(panel):
+    """Critical fix: a start_date/end_date-scoped refresh must not truncate the
+    trailing-window lookback (total_return_*, momentum_12_1, realized_vol_*,
+    dollar_volume_20d) a full/unscoped refresh computes -- and must not
+    destructively overwrite previously-correct values with NULLs.
+    """
+    first_total = refresh_market_daily_metrics(panel, MarketDailyOptions())
+    assert first_total > 0
+    cursor = panel.con.execute("SELECT * FROM market_daily_metrics ORDER BY security_id, trade_date")
+    columns = [d[0] for d in cursor.description]
+    compare_idx = [i for i, name in enumerate(columns) if name != "source_loaded_at"]
+    snapshot = {(row[columns.index("security_id")], row[columns.index("trade_date")]): row for row in cursor.fetchall()}
+
+    last_40 = panel.con.execute(
+        "SELECT trade_date FROM market_daily_metrics WHERE security_id = 'S1' ORDER BY trade_date DESC LIMIT 40"
+    ).fetchall()
+    assert len(last_40) == 40
+    start = min(row[0] for row in last_40)
+    end = max(row[0] for row in last_40)
+
+    scoped_total = refresh_market_daily_metrics(panel, MarketDailyOptions(start_date=start, end_date=end))
+    assert scoped_total == 40
+
+    scoped_rows = panel.con.execute(
+        "SELECT * FROM market_daily_metrics WHERE trade_date BETWEEN ? AND ? ORDER BY security_id, trade_date",
+        [start, end],
+    ).fetchall()
+    assert len(scoped_rows) == 40
+    # Every trailing-window metric must be populated (not nulled by truncation)
+    # for these rows, since they're well past every window's lookback depth.
+    windowed = ("total_return_1m", "total_return_3m", "realized_vol_60d", "dollar_volume_20d")
+    windowed_idx = [columns.index(name) for name in windowed]
+    for row in scoped_rows:
+        key = (row[columns.index("security_id")], row[columns.index("trade_date")])
+        expected = snapshot[key]
+        assert tuple(row[i] for i in compare_idx) == tuple(expected[i] for i in compare_idx)
+        for i in windowed_idx:
+            assert row[i] is not None
+
+
+def test_enterprise_value_and_valuation_multiples_positive_path(tmp_store):
+    """I1: enterprise_value and the daily valuation multiples through the real
+    ASOF/chain wiring, not just at the DSL level.
+    """
+    seed_derived_metric_definitions(tmp_store)
+    for period_end in _QUARTERS:
+        available_at = dt.datetime.combine(period_end + dt.timedelta(days=40), dt.time(21, 0))
+        _fact(tmp_store, "S2", "revenue", "quarterly", period_end, 5_000_000.0, available_at)
+        _fact(tmp_store, "S2", "net_income_to_common", "quarterly", period_end, 2_000_000.0, available_at)
+        _fact(tmp_store, "S2", "ebitda_standardised", "quarterly", period_end, 4_000_000.0, available_at)
+        _fact(tmp_store, "S2", "cash_flow_from_operations", "quarterly", period_end, 3_000_000.0, available_at)
+        _fact(tmp_store, "S2", "capex__1305", "quarterly", period_end, 500_000.0, available_at)
+        _fact(tmp_store, "S2", "common_dividends_paid", "quarterly", period_end, 500_000.0, available_at)
+        _fact(tmp_store, "S2", "common_equity", "instant", period_end, 40_000_000.0, available_at)
+        _fact(tmp_store, "S2", "preferred_stock", "instant", period_end, 5_000_000.0, available_at)
+        _fact(tmp_store, "S2", "minority_interest_bs", "instant", period_end, 1_000_000.0, available_at)
+        _fact(tmp_store, "S2", "total_debt", "instant", period_end, 15_000_000.0, available_at)
+        _fact(tmp_store, "S2", "cash_and_st_investments", "instant", period_end, 8_000_000.0, available_at)
+    _bar(tmp_store, "S2", dt.date(2020, 6, 1), 50.0, shares=2_000_000.0)
+    refresh_derived_metrics(tmp_store, DerivedMetricsOptions())
+    refresh_market_daily_metrics(tmp_store, MarketDailyOptions())
+
+    row = tmp_store.con.execute(
+        "SELECT market_cap, enterprise_value, pe_ttm, pb, ps_ttm, ev_ebitda, ev_sales, "
+        "fcf_yield, dividend_yield FROM market_daily_metrics "
+        "WHERE security_id = 'S2' AND trade_date = ?",
+        [dt.date(2020, 6, 1)],
+    ).fetchone()
+    assert row is not None
+    market_cap, enterprise_value, pe_ttm, pb, ps_ttm, ev_ebitda, ev_sales, fcf_yield, dividend_yield = row
+    # market_cap = 50.0 * 2,000,000
+    assert market_cap == pytest.approx(100_000_000.0)
+    # enterprise_value = market_cap + total_debt_q + preferred_stock + minority_interest_bs - cash_st_investments_q
+    #                  = 100,000,000 + 15,000,000 + 5,000,000 + 1,000,000 - 8,000,000
+    assert enterprise_value == pytest.approx(113_000_000.0)
+    # net_income_common_ttm = 4 * 2,000,000 = 8,000,000
+    assert pe_ttm == pytest.approx(100_000_000.0 / 8_000_000.0)
+    # common_equity_q = 40,000,000 (latest quarter, passthrough, not ttm'd)
+    assert pb == pytest.approx(100_000_000.0 / 40_000_000.0)
+    # revenue_ttm = 4 * 5,000,000 = 20,000,000
+    assert ps_ttm == pytest.approx(100_000_000.0 / 20_000_000.0)
+    # ebitda_ttm = 4 * 4,000,000 = 16,000,000
+    assert ev_ebitda == pytest.approx(113_000_000.0 / 16_000_000.0)
+    assert ev_sales == pytest.approx(113_000_000.0 / 20_000_000.0)
+    # fcf_q = cfo - capex = 3,000,000 - 500,000 = 2,500,000/quarter; fcf_ttm = 10,000,000
+    assert fcf_yield == pytest.approx(10_000_000.0 / 100_000_000.0)
+    # common_dividends_ttm = 4 * 500,000 = 2,000,000
+    assert dividend_yield == pytest.approx(2_000_000.0 / 100_000_000.0)
+
+
+def test_pb_is_null_when_common_equity_is_zero(tmp_store):
+    """I1: a zero denominator (common_equity_q) must yield NULL, not a divide error."""
+    seed_derived_metric_definitions(tmp_store)
+    available_at = dt.datetime(2020, 2, 10, 21, 0)
+    _fact(tmp_store, "S3", "common_equity", "instant", dt.date(2019, 12, 31), 0.0, available_at)
+    _bar(tmp_store, "S3", dt.date(2020, 6, 1), 50.0, shares=2_000_000.0)
+    refresh_derived_metrics(tmp_store, DerivedMetricsOptions())
+    refresh_market_daily_metrics(tmp_store, MarketDailyOptions())
+    row = tmp_store.con.execute(
+        "SELECT market_cap, pb FROM market_daily_metrics WHERE security_id = 'S3' AND trade_date = ?",
+        [dt.date(2020, 6, 1)],
+    ).fetchone()
+    assert row is not None
+    market_cap, pb = row
+    assert market_cap == pytest.approx(100_000_000.0)
+    assert pb is None
+
+
+def test_pe_ttm_is_a_negative_ratio_not_null_when_earnings_are_negative(tmp_store):
+    """I1: a negative TTM denominator produces a legitimate negative ratio, not
+    NULL -- safe_div (derived_dsl.py, out of this file's scope) only guards a
+    NULL/zero denominator, never its sign. This documents that actual,
+    current behavior end-to-end through the real market_daily wiring.
+    """
+    seed_derived_metric_definitions(tmp_store)
+    for period_end in _QUARTERS:
+        available_at = dt.datetime.combine(period_end + dt.timedelta(days=40), dt.time(21, 0))
+        _fact(tmp_store, "S4", "net_income_to_common", "quarterly", period_end, -2_000_000.0, available_at)
+    _bar(tmp_store, "S4", dt.date(2020, 6, 1), 50.0, shares=2_000_000.0)
+    refresh_derived_metrics(tmp_store, DerivedMetricsOptions())
+    refresh_market_daily_metrics(tmp_store, MarketDailyOptions())
+    row = tmp_store.con.execute(
+        "SELECT market_cap, pe_ttm FROM market_daily_metrics WHERE security_id = 'S4' AND trade_date = ?",
+        [dt.date(2020, 6, 1)],
+    ).fetchone()
+    assert row is not None
+    market_cap, pe_ttm = row
+    assert market_cap == pytest.approx(100_000_000.0)
+    assert pe_ttm is not None
+    assert pe_ttm == pytest.approx(market_cap / -8_000_000.0)
+    assert pe_ttm < 0
+
+
+def test_shares_reconciliation_uses_the_latest_ratio_not_all_days(panel):
+    """I2: an early out-of-tolerance day must not permanently fail a security
+    once a later DEI revision brings it back within tolerance -- the gate
+    criterion is the latest observed ratio per security, not all days.
+    """
+    panel.con.execute(
+        """
+        INSERT INTO shares_outstanding_history (
+            share_history_id, source, security_id, cik, share_count_type, taxonomy,
+            concept, unit, period_type, period_end, effective_date, as_of_date,
+            available_at, accession_number, revision_sequence, revision_count,
+            is_latest_revision, share_count, source_url
+        ) VALUES ('h3','test','S1','0000000001','shares_outstanding','dei',
+                  'EntityCommonStockSharesOutstanding','shares','instant',
+                  DATE '2019-12-31', DATE '2020-01-15', DATE '2020-01-15',
+                  TIMESTAMP '2020-01-15 21:00:00','acc',1,1,true, 1_100_000.0, 'test')
+        """
+    )
+    panel.con.execute(
+        """
+        INSERT INTO shares_outstanding_history (
+            share_history_id, source, security_id, cik, share_count_type, taxonomy,
+            concept, unit, period_type, period_end, effective_date, as_of_date,
+            available_at, accession_number, revision_sequence, revision_count,
+            is_latest_revision, share_count, source_url
+        ) VALUES ('h4','test','S1','0000000001','shares_outstanding','dei',
+                  'EntityCommonStockSharesOutstanding','shares','instant',
+                  DATE '2020-03-31', DATE '2020-04-01', DATE '2020-04-01',
+                  TIMESTAMP '2020-04-01 21:00:00','acc',2,2,true, 1_020_000.0, 'test')
+        """
+    )
+    refresh_market_daily_metrics(panel, MarketDailyOptions())
+    ratios = panel.con.execute(
+        "SELECT trade_date, shares_reconciliation_ratio FROM market_daily_metrics "
+        "WHERE security_id = 'S1' AND shares_reconciliation_ratio IS NOT NULL ORDER BY trade_date"
+    ).fetchall()
+    assert ratios[0][1] == pytest.approx(1.10)  # early days: out of the 5% tolerance
+    assert ratios[-1][1] == pytest.approx(1.02)  # latest day: within tolerance
+    assert abs(ratios[0][1] - 1.0) > 0.05
+    assert abs(ratios[-1][1] - 1.0) <= 0.05
+
+    report = shares_reconciliation_report(panel)
+    assert report["securities_with_both_sources"] == 1
+    assert report["securities_within_tolerance"] == 1
+    assert report["meets_spec_gate"] is True
+
+
+def test_a_stale_bar_correction_inside_the_window_raises_the_available_at(panel):
+    """M1: a late-arriving correction to a historical bar *inside* a trailing
+    window (realized_vol_60d) must surface in the row-level available_at of
+    every later row whose window includes that bar, not just the day it
+    lands on.
+    """
+    d_old = dt.date(2020, 3, 2)
+    d_new = dt.date(2020, 4, 1)
+    corrected_at = dt.datetime(2020, 8, 1, 12, 0)
+    panel.con.execute(
+        """
+        INSERT INTO equity_daily_bars (
+            source, security_id, symbol, trade_date, open, high, low, close,
+            adjusted_close, volume, split_factor, is_adjusted, available_at,
+            as_of_date, is_latest_revision, shares_outstanding
+        ) VALUES ('test', 'S1', 'AAA', ?, 25.0, 25.0, 25.0, 25.0, 25.0, 1000, 1.0, false, ?, ?, true, 1_000_000.0)
+        """,
+        [d_old, corrected_at, d_old],
+    )
+    refresh_market_daily_metrics(panel, MarketDailyOptions())
+    row = panel.con.execute(
+        "SELECT available_at, realized_vol_60d FROM market_daily_metrics WHERE security_id = 'S1' AND trade_date = ?",
+        [d_new],
+    ).fetchone()
+    assert row is not None
+    available_at, realized_vol = row
+    assert realized_vol is not None
+    assert available_at >= corrected_at
+
+
 def test_no_wall_clock_in_the_module_source():
     import inspect
 
