@@ -52,12 +52,21 @@ no new full-universe item, derived-metric, universe, terminal-return or quality
 measurements have been certified. Wait for that writer to exit before opening
 the live file, including for read-only checks.
 
-**Price-source blocker:** the archive loaders currently map `closePr` to
-`equity_daily_bars.adjusted_close` and prefer `todayTicker`. The vendor defines
-`closePr` as the corporate-action-adjusted **prior** session close, and
-`todayTicker` as the latest symbol, while `ticker_tk` is the underlying ticker.
-Correct those mappings and validate the source adjustment treatment before
-rebuilding or certifying return-dependent panels. The vendor lists 05:00 CT T+1
+**Price-source correction:** both archive loaders now map finite positive
+`close * cumulReturnFactor` to `equity_daily_bars.adjusted_close`; missing,
+nonpositive, nonfinite or overflowing factors/products produce NULL. The vendor's
+`closePr` is the adjusted **prior** session close and remains a raw source field.
+Bars display historical `ticker_tk`; current `todayTicker` remains metadata and
+the legacy current-symbol/CIK association is explicitly unverified. Repeated
+positive vendor-ID/date keys are quarantined together, never resolved by volume.
+The raw TSV/archive is preserved; preprojection counts and original-`dn` adjacency
+diagnostics are recorded separately from postpublication uniqueness checks.
+`returnFactor` is distribution-inclusive; canonical `split_factor` is NULL.
+Legacy consumers that reconstruct returns from split factors or infer split-adjusted
+shares still require separate correction/evidence. Republish prices after the active
+writer exits, then rebuild return-dependent surfaces; existing measurements predate
+this correction. Internal agreement does not verify every economic adjustment.
+The vendor lists 05:00 CT T+1
 delivery; the backfill's session-date + 22-hour availability is a modeling
 assumption, not verified historical publication or revision timing.
 [SpiderRock TickerHistory3 dictionary](https://docs.spiderrockconnect.com/docs/next/HistoricalData/Data%20Dictionaries/TickerHistory3/).

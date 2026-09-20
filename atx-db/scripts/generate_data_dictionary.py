@@ -41,7 +41,7 @@ MARKET_DAILY_SPINE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("symbol", "Ticker on the bar."),
     ("trade_date", "Trading session date."),
     ("close", "Session close price, unadjusted."),
-    ("adj_close", "Warehouse adjusted_close used for returns; the archive closePr mapping is a known prior-day/current-day mismatch pending correction."),
+    ("adj_close", "Current raw close times finite positive cumulReturnFactor; invalid factors/products are NULL. Economic adjustment and historical source vintage remain unverified."),
     ("volume", "Reported share volume."),
     ("shares_outstanding", "Eligible dei shares preferred over archive; historical archive shares vintages are unverified."),
     ("shares_source", "'dei' or 'archive'."),
@@ -130,10 +130,12 @@ def _market_daily_section() -> list[str]:
         "`market_daily_metrics` -- one row per (security_id, trade_date). The spine is fixed; "
         "the metric columns are exactly the `window='daily'` rows of the derived seed.",
         "",
-        "**Current source limitation:** return-dependent metrics are not certified while "
-        "the archive loader maps vendor `closePr` (adjusted prior-session close) to "
-        "`adjusted_close`. Latest-symbol mapping and historical availability also need "
-        "correction or source evidence. See the [production runbook](PRODUCTION_RUNBOOK.md) "
+        "**Current source limitation:** archive `adjusted_close` now uses same-row "
+        "`close * cumulReturnFactor`, with invalid products NULL. `closePr` remains a prior-session "
+        "source field; distribution-inclusive `returnFactor` is not a split-only factor. "
+        "Historical ticker display preserves vendor identity, but current-symbol/CIK links, "
+        "economic adjustments and historical availability remain unverified. Price republication "
+        "and downstream rebuilding are required. See the [production runbook](PRODUCTION_RUNBOOK.md) "
         "and the [vendor dictionary](https://docs.spiderrockconnect.com/docs/next/HistoricalData/Data%20Dictionaries/TickerHistory3/).",
         "",
         "### Spine columns",

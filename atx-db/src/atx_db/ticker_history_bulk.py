@@ -3,9 +3,9 @@
 The pandas chunk loader remains useful for small symbol subsets.  Full-universe
 publication is different: repeatedly probing and deleting from a multi-million
 row indexed table turns linear ingestion into an effectively quadratic job.
-This module scans an extracted TSV twice with DuckDB projection pushdown, builds
-the complete replacement beside the live table, validates it, and swaps it in
-atomically.
+This module stages a projection of the extracted TSV, measures original-row
+quality before exclusions, builds the replacement beside the live table,
+validates it, and swaps it in atomically. Raw source bytes remain the lineage.
 """
 
 from __future__ import annotations
@@ -15,11 +15,12 @@ import json
 import logging
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .connection import DuckDBStore
 from .ticker_history import SOURCE_NAME, TBLTICKERHISTORY_ID_TYPE
+from .ticker_history_quality import SOURCE_PROVENANCE, source_diagnostics, stage_source
 from .warehouse import quality_check, record_source_file
 
 LOGGER = logging.getLogger(__name__)
@@ -57,26 +58,22 @@ class BulkTickerHistoryResult:
     duplicate_keys: int
     elapsed_seconds: float
     run_id: str
+    source_diagnostics: dict[str, object] = field(default_factory=dict)
+    provenance: dict[str, str] = field(default_factory=lambda: dict(SOURCE_PROVENANCE))
 
 
 _RAW_CTE = """
 projected AS (
-    SELECT
-        try_cast(tradingDate AS DATE) AS trade_date,
-        nullif(trim(securityID), '') AS vendor_security_id,
-        upper(trim(coalesce(nullif(todayTicker, ''), nullif(ticker_tk, '')))) AS symbol,
-        try_cast(open AS DOUBLE) AS open,
-        try_cast(high AS DOUBLE) AS high,
-        try_cast(low AS DOUBLE) AS low,
-        try_cast(close AS DOUBLE) AS close,
-        try_cast(closePr AS DOUBLE) AS adjusted_close,
-        try_cast(volume AS BIGINT) AS volume,
-        try_cast(shares AS BIGINT) AS shares_outstanding,
-        try_cast(returnFactor AS DOUBLE) AS split_factor
-    FROM read_csv(
-        ?, delim = '\t', header = true, all_varchar = true,
-        auto_detect = true, sample_size = 20480
-    )
+    SELECT r.*,
+           CASE WHEN isfinite(close) AND close > 0
+                     AND isfinite(cumul_return_factor) AND cumul_return_factor > 0
+                     AND isfinite(close * cumul_return_factor) AND close * cumul_return_factor > 0
+                THEN close * cumul_return_factor END AS adjusted_close,
+           NULL::DOUBLE AS split_factor
+    FROM ticker_history_source_rows r
+    LEFT JOIN ticker_history_source_keys k
+      ON r.vendor_id = k.vendor_id AND r.trade_date IS NOT DISTINCT FROM k.trade_date
+    WHERE coalesce(k.key_rows, 1) = 1
 ),
 raw AS (
     SELECT *
@@ -134,30 +131,31 @@ def _create_line_map(store: DuckDBStore, options: BulkTickerHistoryOptions) -> N
         resolved AS (
             SELECT
                 r.vendor_security_id,
-                r.symbol,
+                r.current_symbol AS symbol,
                 r.trade_date,
                 coalesce(
                     m.security_id,
                     CASE
                         WHEN r.vendor_security_id IS NULL OR r.vendor_security_id = '0'
-                        THEN 'TBLTICKERHISTORY-SYMBOL-' || r.symbol || '-VENDOR-'
+                        THEN 'TBLTICKERHISTORY-SYMBOL-' || r.current_symbol || '-VENDOR-'
                              || coalesce(r.vendor_security_id, 'MISSING')
                         ELSE 'TBLTICKERHISTORY-' || r.vendor_security_id
                     END
                 ) AS base_security_id
             FROM raw r
-            LEFT JOIN broad_symbol_map m USING (symbol)
+            LEFT JOIN broad_symbol_map m ON m.symbol = r.current_symbol
         ),
         line_stats AS (
             SELECT
-                base_security_id,
+                arg_max(base_security_id, (trade_date, symbol)) AS base_security_id,
                 vendor_security_id,
-                symbol,
+                arg_max(symbol, (trade_date, symbol)) AS symbol,
                 count(*) AS observations,
                 min(trade_date) AS first_seen_date,
                 max(trade_date) AS last_seen_date
             FROM resolved
-            GROUP BY base_security_id, vendor_security_id, symbol
+            GROUP BY vendor_security_id,
+                     CASE WHEN try_cast(vendor_security_id AS BIGINT) > 0 THEN '' ELSE symbol END
         ),
         ranked AS (
             SELECT *, row_number() OVER (
@@ -185,7 +183,6 @@ def _create_line_map(store: DuckDBStore, options: BulkTickerHistoryOptions) -> N
             last_seen_date
         FROM ranked
         """,
-        [str(options.tsv_path)],
     )
 
 
@@ -228,14 +225,18 @@ def _create_next_table(store: DuckDBStore, options: BulkTickerHistoryOptions) ->
             SELECT r.*, m.security_id
             FROM raw r
             JOIN broad_line_map m
-              ON m.symbol = r.symbol
-             AND m.vendor_security_id IS NOT DISTINCT FROM r.vendor_security_id
+              ON m.vendor_security_id IS NOT DISTINCT FROM r.vendor_security_id
+             AND (r.vendor_id > 0 OR m.symbol = r.current_symbol)
             WHERE NOT (
                 coalesce(r.volume < 0, false)
                 OR coalesce(r.open <= 0, false)
                 OR coalesce(r.high <= 0, false)
                 OR coalesce(r.low <= 0, false)
                 OR coalesce(r.close <= 0, false)
+                OR coalesce(NOT isfinite(r.open), false)
+                OR coalesce(NOT isfinite(r.high), false)
+                OR coalesce(NOT isfinite(r.low), false)
+                OR coalesce(NOT isfinite(r.close), false)
                 OR coalesce(r.high < greatest(r.open, r.low, r.close), false)
                 OR coalesce(r.low > least(r.open, r.high, r.close), false)
             )
@@ -248,12 +249,9 @@ def _create_next_table(store: DuckDBStore, options: BulkTickerHistoryOptions) ->
             ?, current_timestamp, NULL::DATE, NULL::BOOLEAN,
             shares_outstanding, shares_outstanding * close
         FROM valid
-        QUALIFY row_number() OVER (
-            PARTITION BY security_id, trade_date
-            ORDER BY volume DESC NULLS LAST, vendor_security_id
-        ) = 1
+        QUALIFY count(*) OVER (PARTITION BY security_id, trade_date) = 1
         """,
-        [str(options.tsv_path), options.source, options.run_id],
+        [options.source, options.run_id],
     )
 
 
@@ -381,7 +379,7 @@ def _publish(store: DuckDBStore, options: BulkTickerHistoryOptions) -> None:
                 available_at, source, run_id
             )
             SELECT security_id, ?, identifier_value, first_seen_date, NULL,
-                   first_seen_date, first_seen_date::TIMESTAMP + INTERVAL 22 HOUR,
+                   first_seen_date, current_timestamp,
                    ?, ?
             FROM broad_line_map
             """,
@@ -395,7 +393,7 @@ def _publish(store: DuckDBStore, options: BulkTickerHistoryOptions) -> None:
                 valid_to, as_of_date, available_at, source, run_id
             )
             SELECT security_id, symbol, NULL, NULL, 'USD', first_seen_date, NULL,
-                   first_seen_date, first_seen_date::TIMESTAMP + INTERVAL 22 HOUR,
+                   first_seen_date, current_timestamp,
                    ?, ?
             FROM broad_line_map
             """,
@@ -447,10 +445,27 @@ def publish_bulk_ticker_history(
             source_url=str(options.tsv_path),
             cache_path=options.tsv_path,
             status="available",
-            metadata={"mode": "native_bulk_projection", "run_id": run_id},
-            compute_hash=False,
+            metadata={"mode": "native_bulk_projection", "run_id": run_id, **SOURCE_PROVENANCE},
+            compute_hash=True,
+        )
+        stage_source(store.con, str(options.tsv_path))
+        diagnostics = source_diagnostics(store.con)
+        LOGGER.warning("ticker-history source diagnostics: %s; provenance: %s", diagnostics, SOURCE_PROVENANCE)
+        quality_check(
+            store, dataset_id="tbltickerhistory_daily", table_name="equity_daily_bars",
+            check_name="source_preprojection_diagnostics", status="warning",
+            observed_value=float(diagnostics["quarantined_positive_key_rows"]), threshold_value=0.0,
+            details={"run_id": run_id, "diagnostics": diagnostics, "provenance": SOURCE_PROVENANCE},
         )
         _create_symbol_map(store)
+        identity_counts = store.con.execute(
+            "SELECT count(*) FILTER (WHERE m.security_id IS NOT NULL), "
+            "count(*) FILTER (WHERE m.security_id IS NULL) "
+            "FROM ticker_history_source_rows r LEFT JOIN broad_symbol_map m ON m.symbol = r.current_symbol"
+        ).fetchone()
+        if identity_counts is not None:
+            diagnostics["current_symbol_linked_unverified_rows"] = identity_counts[0]
+            diagnostics["no_current_symbol_identity_match_rows"] = identity_counts[1]
         LOGGER.info("built canonical symbol map")
         _create_line_map(store, options)
         LOGGER.info("built vendor-line collision map")
@@ -501,6 +516,8 @@ def publish_bulk_ticker_history(
             "latest_date": latest_date,
             "duplicate_keys": duplicate_keys,
             "invalid_rows": invalid_rows,
+            "source_diagnostics": diagnostics,
+            "provenance": SOURCE_PROVENANCE,
         },
     )
     store.con.execute("CHECKPOINT")
@@ -513,4 +530,5 @@ def publish_bulk_ticker_history(
         duplicate_keys=duplicate_keys,
         elapsed_seconds=elapsed,
         run_id=run_id,
+        source_diagnostics=diagnostics,
     )

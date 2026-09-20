@@ -6,10 +6,12 @@ when this file is stale.
 
 Sources of truth: `src/atx_db/seeds/fundamental_items.csv`,
 `src/atx_db/seeds/derived_metric_definitions.csv`, `src/atx_db/api/catalog.py`,
-`src/atx_db/universe_us_listed.py`. The Delistings and Release datasets sections each
-prefer their Task 3 / Task 8 module (`atx_db.delisting_evidence`,
-`atx_db.publication`) and fall back to an already-committed equivalent otherwise; see
-each section's "source" line for which one rendered this revision.
+`src/atx_db/universe_us_listed.py`, `src/atx_db/delisting_evidence.py`,
+`src/atx_db/delisting.py` and `src/atx_db/publication.py`.
+
+This is a field and policy contract, not a measurement of loaded rows, historical
+listing coverage, or passing quality gates. See [the production runbook](PRODUCTION_RUNBOOK.md)
+for the current rebuild's evidence and limitations.
 
 ## Canonical statement items
 
@@ -444,6 +446,8 @@ each section's "source" line for which one rendered this revision.
 
 `market_daily_metrics` -- one row per (security_id, trade_date). The spine is fixed; the metric columns are exactly the `window='daily'` rows of the derived seed.
 
+**Current source limitation:** archive `adjusted_close` now uses same-row `close * cumulReturnFactor`, with invalid products NULL. `closePr` remains a prior-session source field; distribution-inclusive `returnFactor` is not a split-only factor. Historical ticker display preserves vendor identity, but current-symbol/CIK links, economic adjustments and historical availability remain unverified. Price republication and downstream rebuilding are required. See the [production runbook](PRODUCTION_RUNBOOK.md) and the [vendor dictionary](https://docs.spiderrockconnect.com/docs/next/HistoricalData/Data%20Dictionaries/TickerHistory3/).
+
 ### Spine columns
 
 | column | meaning |
@@ -454,9 +458,9 @@ each section's "source" line for which one rendered this revision.
 | symbol | Ticker on the bar. |
 | trade_date | Trading session date. |
 | close | Session close price, unadjusted. |
-| adj_close | Split/dividend adjusted close; the only return input. |
+| adj_close | Current raw close times finite positive cumulReturnFactor; invalid factors/products are NULL. Economic adjustment and historical source vintage remain unverified. |
 | volume | Reported share volume. |
-| shares_outstanding | Point-in-time shares, dei preferred over archive. |
+| shares_outstanding | Eligible dei shares preferred over archive; historical archive shares vintages are unverified. |
 | shares_source | 'dei' or 'archive'. |
 | shares_reconciliation_ratio | dei shares / archive shares on the same session. |
 | fundamental_available_at | Availability of the newest fundamental input. |
@@ -561,7 +565,13 @@ Vocabulary source: `atx_db.delisting_evidence.EVIDENCE_PRECEDENCE / REASON_CATEG
 
 `bankruptcy`, `exchange_delist`, `merger_acquisition`, `unknown`, `voluntary`.
 
-A Nasdaq `financial_status` bankruptcy flag (`Q`) on or before the delist date upgrades any row to `bankruptcy` with `high` confidence.
+The newest eligible Nasdaq directory snapshot on or before the delist date supplies `financial_status`; a `Q` flag (including composite codes) upgrades the evidence to `bankruptcy` with `high` confidence. A cleared newer status does not inherit an older bankruptcy flag. The overlay contributes its availability to the evidence timestamp.
+
+### Terminal-return policy
+
+`DelistingTerminalReturnOptions.performance_delisting_return` defaults to `ShumwayPerformancePolicy()`: -0.55 for PIT-resolved Nasdaq events and -0.30 for other or unresolved exchanges. Set the option to `None` to opt out. Observed DLRET outranks corporate-action policy, which outranks this performance convention. The implemented eligible reason labels are `bankruptcy`, `exchange_delist` and `unknown`; identity, event availability and seeded policy requirements still apply. This is not a fill for every unknown or non-performance event.
+
+Exchange evidence is selected from dated universe membership, exchange listings or Nasdaq snapshots known by the delist date at 22:00. Policy availability includes the selected exchange input. Imputations are tagged with `terminal_return_policy` values `performance_unknown` or `performance_unknown_nasdaq`; unresolved terminal gaps remain measurable through `delisting_events_without_terminal_return`. This definition does not assert that terminal returns have been built or their coverage passed.
 
 ## Public API schemas
 
@@ -843,6 +853,29 @@ Point-in-time derived metrics (v1.0.0) over `derived_metric_values`; time column
 | source_loaded_at | timestamp |  | yes | no | Timestamp at which the source observation entered the warehouse. |
 | run_id | string |  | yes | no | Lineage identifier for the producing run. |
 
+### ATX.US.FUNDAMENTALS/security-master
+
+US equity security master (v1.0.0) over `v_security_master_public`; time column `as_of_date`; natural key `security_id`.
+
+| field | type | unit | nullable | filterable | description |
+| --- | --- | --- | --- | --- | --- |
+| security_id | string |  | no | no | Stable ATX security identifier. |
+| entity_id | string |  | yes | no | Issuing entity key; 'CIK-<cik>' for SEC filers. |
+| issuer_id | string |  | yes | no | Issuer grouping key. |
+| primary_symbol | string |  | yes | no | Current primary ticker. |
+| name | string |  | yes | no | Security name. |
+| asset_class | string |  | no | no | ATX asset class. |
+| country | string |  | no | no | Country of listing. |
+| currency | string |  | no | no | Trading currency. |
+| active | boolean |  | no | no | Whether the listing is currently active. |
+| cik | string |  | yes | yes | SEC Central Index Key. |
+| lei | string |  | yes | yes | Legal Entity Identifier (GLEIF). |
+| figi | string |  | yes | yes | Financial Instrument Global Identifier (OpenFIGI). |
+| as_of_date | date |  | yes | no | Economic observation date. |
+| available_at | timestamp |  | yes | no | Earliest timestamp at which ATX could have delivered this revision. |
+| source_loaded_at | timestamp |  | yes | no | Timestamp at which the source observation entered the warehouse. |
+| run_id | string |  | yes | no | Lineage identifier for the producing run. |
+
 ### ATX.US.EQUITIES/ohlcv-1d
 
 US equity daily bars (v1.0.0) over `equity_daily_bars`; time column `trade_date`; natural key `source, security_id, trade_date`.
@@ -924,121 +957,67 @@ Daily market and valuation panel (v1.0.0) over `market_daily_metrics`; time colu
 | source_loaded_at | timestamp |  | yes | no | Timestamp at which the source observation entered the warehouse. |
 | run_id | string |  | yes | no | Lineage identifier for the producing run. |
 
+### ATX.US.EQUITIES/universe
+
+US-listed equity universe membership (v1.0.0) over `universe_us_listed_membership`; time column `valid_from`; natural key `universe_id, security_id, valid_from`.
+
+| field | type | unit | nullable | filterable | description |
+| --- | --- | --- | --- | --- | --- |
+| universe_id | string |  | no | yes | Universe identifier. |
+| security_id | string |  | no | no | Stable ATX security identifier. |
+| symbol | string |  | yes | no | Ticker at the start of the interval. |
+| valid_from | date |  | no | no | First session of the membership interval. |
+| valid_to | date |  | yes | no | Last session of the interval; null while open. |
+| security_type | string |  | no | yes | common, ADR, REIT or LP. |
+| exchange_code | string |  | no | yes | XNYS, XNAS, XASE, ARCX or BATS. |
+| has_cik | boolean |  | no | yes | Whether the security resolves to an SEC filer. |
+| cik | string |  | yes | no | SEC Central Index Key when resolved. |
+| market_cap_decile | int32 |  | yes | no | Market-cap decile AT valid_from only. |
+| reason | string |  | no | no | member or member_no_cik. |
+| decision_count | int32 |  | no | no | Sessions backing the interval. |
+| as_of_date | date |  | yes | no | Economic observation date. |
+| available_at | timestamp |  | yes | no | Earliest timestamp at which ATX could have delivered this revision. |
+| source_loaded_at | timestamp |  | yes | no | Timestamp at which the source observation entered the warehouse. |
+| run_id | string |  | yes | no | Lineage identifier for the producing run. |
+
+### ATX.US.EQUITIES/delistings
+
+US equity delisting events (v1.0.0) over `delisting_events`; time column `delist_date`; natural key `source, security_id, symbol, delist_date`.
+
+| field | type | unit | nullable | filterable | description |
+| --- | --- | --- | --- | --- | --- |
+| security_id | string |  | yes | no | Stable ATX security identifier. |
+| symbol | string |  | no | no | Ticker at delisting. |
+| delist_date | date |  | no | no | Date trading ceased. |
+| delist_code | string |  | no | yes | Warehouse delist code. |
+| delist_reason | string |  | no | yes | Attributed reason category. |
+| delisting_return | float64 | ratio | yes | no | Terminal return when known. |
+| delisting_return_type | string |  | no | no | OBSERVED, POLICY or UNOBSERVED. |
+| is_return_imputed | boolean |  | no | no | Whether the terminal return is a policy convention. |
+| return_policy | string |  | no | no | Policy code that produced the return. |
+| evidence_source | string |  | no | no | Evidence family. |
+| evidence_confidence | string |  | no | no | high, medium or low. |
+| inferred_from_absence | boolean |  | no | no | Whether the event was inferred rather than filed. |
+| source | string |  | no | yes | ATX source adapter. |
+| as_of_date | date |  | yes | no | Economic observation date. |
+| available_at | timestamp |  | yes | no | Earliest timestamp at which ATX could have delivered this revision. |
+| source_loaded_at | timestamp |  | yes | no | Timestamp at which the source observation entered the warehouse. |
+| run_id | string |  | yes | no | Lineage identifier for the producing run. |
+
 
 ## Release datasets
 
 `atx-db publish-release` writes one Parquet file per dataset plus a single `manifest.json` pinning the exported schema hash, the public record-contract hash, the exact query text, the file bytes, and the diff against the previous release.
 
-Dataset source: `atx_db.lake.DEFAULT_EXPORT_OBJECTS (atx_db.publication -- Task 8 -- not yet landed)`.
+The first release has no predecessor and null diff counts. `fundamentals_core` uses the existing `standardized` public schema. Pending migrations must be applied through the governed migration command before publication. Export success does not certify quality or coverage; review the measured quality evidence separately.
 
-| relation |
-| --- |
-| v_security_master_current |
-| nasdaq_symbol_directory |
-| nasdaq_listing_events |
-| listing_status_intervals |
-| universe_us_listed_membership |
-| delist_code_dim |
-| delisting_events |
-| delisting_evidence |
-| delisting_return_observations |
-| equity_daily_bars |
-| corporate_actions |
-| corp_action_type_dim |
-| adjustment_factor_history |
-| daily_adjustment_factors |
-| shares_outstanding_history |
-| v_alpha_daily_panel |
-| fundamental_points |
-| xbrl_concept_catalog |
-| xbrl_taxonomy_packages |
-| xbrl_taxonomy_roles |
-| xbrl_taxonomy_relationships |
-| xbrl_dimension_edges |
-| xbrl_fact_frames |
-| xbrl_filing_contexts |
-| xbrl_filing_dimensions |
-| xbrl_filing_facts |
-| xbrl_validation_results |
-| fundamental_fact_revisions |
-| fundamental_statement_map |
-| fundamental_statement_points |
-| fundamental_ttm_points |
-| fundamental_periods |
-| fundamental_ratios |
-| fundamental_xbrl_metric |
-| short_interest_metrics |
-| macro_metrics |
-| equity_price_metrics |
-| thirteenf_position_metrics |
-| thirteenf_option_metrics |
-| thirteenf_concentration_metrics |
-| corporate_action_dividend_metrics |
-| corporate_action_split_metrics |
-| corporate_action_factor_reconciliation |
-| feature_build_manifests |
-| feature_definitions |
-| feature_set_catalog |
-| feature_dependency_edges |
-| feature_values |
-| alpha_expression_catalog |
-| alpha_signal_values |
-| alpha_backtest_manifests |
-| finra_short_interest |
-| finra_short_interest_backfill_manifests |
-| finra_short_volume |
-| short_volume_metrics |
-| offexchange_venue |
-| offexchange_volume |
-| offexchange_security_period |
-| offexchange_quality_report |
-| thirteenf_managers |
-| thirteenf_manager_reports |
-| thirteenf_security_positions |
-| thirteenf_security_ownership |
-| filer_13f_cik_alias |
-| v_thirteenf_positioning_by_security |
-| insider |
-| filing_form4 |
-| insider_relationship |
-| insider_transaction |
-| insider_transaction_metrics |
-| security_listing_metrics |
-| insider_holding |
-| tradingplan_10b5_1 |
-| blockholder_filing |
-| blockholder_reporting_person |
-| fund |
-| fund_class |
-| filing_nport |
-| fund_holding |
-| form144_intent |
-| form144_to_form4_link |
-| proxy_vote |
-| congressional_disclosure |
-| identifier_resolution_candidates |
-| identifier_resolution_decisions |
-| sec_submissions |
-| macro_series |
-| macro_observations |
-| universe_memberships |
-| provider_parity_matrix |
-| taxonomy |
-| taxonomy_node |
-| entity_classification |
-| taxonomy_mapping |
-| est_measure |
-| est_broker |
-| est_broker_alias |
-| est_analyst |
-| est_analyst_alias |
-| est_period_dim |
-| est_detail |
-| est_consensus |
-| est_actual |
-| est_surprise |
-| est_guidance |
-| est_recommendation |
-| est_recommendation_summary |
-| est_security_link |
-| v_factor_panel |
+Dataset source: `atx_db.publication.RELEASE_DATASETS`.
+
+| dataset | relation | key columns | public schema |
+| --- | --- | --- | --- |
+| security_master | v_security_master_public | security_id | ATX.US.FUNDAMENTALS/security-master |
+| universe | universe_us_listed_membership | universe_id, security_id, valid_from | ATX.US.EQUITIES/universe |
+| delistings | delisting_events | delisting_event_id | ATX.US.EQUITIES/delistings |
+| fundamentals_core | fundamental_standardized | standardized_id | ATX.US.FUNDAMENTALS/standardized |
+| derived_metrics | derived_metric_values | derived_value_id | ATX.US.FUNDAMENTALS/derived-metrics |
+| market_daily | market_daily_metrics | market_daily_id | ATX.US.EQUITIES/market-daily-1d |

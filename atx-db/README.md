@@ -264,13 +264,16 @@ tar -xf $HOME\Downloads\tbltickerhistory3_10y.zip -C data\staging\broad-bars
 atx-db publish-broad-bars --tsv-path data\staging\broad-bars\tbltickerhistory3_10y.txt
 ```
 
-The bulk path reads OHLCV, a source adjustment factor, identifiers, and shares; validates
+The bulk path reads OHLCV, cumulative adjustment factors, identifiers, and shares; validates
 at least 30 million clean rows, 10,000 securities, and 5,000 latest-date names;
-resolves recycled ticker/share-class collisions; and publishes the replacement
-transactionally. Those checks do not certify price adjustment or historical
-publication timing. The current `closePr` mapping, latest-symbol preference and
-archive availability convention require correction or explicit source evidence
-before return-dependent panels can be certified; see the
+quarantines all repeated positive vendor-ID/date keys; and publishes the replacement
+transactionally. Current `adjusted_close` is finite positive `close * cumulReturnFactor`;
+invalid factors yield NULL. Historical `ticker_tk` supplies display symbols without
+splitting stable vendor IDs across renames. Raw OHLC, volume and shares remain unchanged;
+`returnFactor` includes distributions and is not published as a split-only factor.
+Source diagnostics expose internal return disagreements, but do not certify economic
+adjustments, historical identity, or source vintages. Existing current-symbol/CIK links
+remain unverified and session-date + 22-hour availability is a modeled backfill; see the
 [current rebuild limitations](docs/PRODUCTION_RUNBOOK.md#current-rebuild-evidence-2026-09-20).
 Canonical bars expose `shares_outstanding` and `market_cap_usd`, but the archive's
 historical shares vintages remain unverified.
