@@ -1,5 +1,15 @@
 # Core metric breadth report
 
+Root verification update,2026-09-20 22:19UTC: combined P1/Core focused run
+completed65passed/1failed; the sole failure was this task's off-by-one expected
+TTM denominator at quarterindex4. The fixture correction is documented in
+core-metric-breadth-fix1-report.md. Root reran that one affected case and it
+passed under2.5GiBguard, peak0.751171GiB. All other cases passed the initial run
+(peak0.922688GiB). Touched-file Ruff passed after one mechanical import-spacing
+cleanup. Production definitions remained unchanged. Accepted for separate Core
+commit after P1/0315 commit5519d1ac; no extra review required for fixture/spacing
+fixes. This is runtime fixture evidence, not live metric coverage.
+
 ## Delivered catalog wave
 
 `atx-db/src/atx_db/seeds/derived_metric_definitions.csv` adds 28 version-1

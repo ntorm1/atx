@@ -88,6 +88,10 @@ RECLAIMED_ITEM_CODES = frozenset(
         "sales_per_share",
         "cash_per_share",
         "tangible_book_value_per_share",
+        "dso_days",
+        "dio_days",
+        "dpo_days",
+        "cash_conversion_cycle",
     }
 )
 

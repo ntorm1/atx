@@ -1,0 +1,19 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "-n0",
+    "-q",
+    "tests/test_core_metric_breadth.py::test_core_quarterly_growth_cagrs_basic_eps_and_cash_cycle_are_pit_derived"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 7.014034271240234,
+    "commit_free_gb": 9.868576049804688
+  },
+  "child_pid": 6508,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.7511711120605469
+}
