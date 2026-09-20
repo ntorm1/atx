@@ -18,6 +18,7 @@ from typing import Any
 import pandas as pd
 
 from .connection import DuckDBStore
+from .derived_factor_projection import PROJECTION_SOURCE_NAME
 from .factors.cross_section import zscore
 from .warehouse import insert_frame, json_dumps
 
@@ -313,6 +314,7 @@ def load_piotroski_inputs(
               AND is_latest_revision
               AND raw_value IS NOT NULL
               AND isfinite(raw_value)
+              AND available_at <= CAST(as_of_date AS TIMESTAMP) + INTERVAL 22 HOUR
               {date_sql}
         ),
         book_ranked AS (
@@ -333,15 +335,18 @@ def load_piotroski_inputs(
                 available_at AS net_issuance_available_at,
                 row_number() OVER (
                     PARTITION BY security_id, as_of_date
-                    ORDER BY available_at DESC, source_loaded_at DESC,
+                    ORDER BY available_at DESC,
+                             CASE WHEN source = '{PROJECTION_SOURCE_NAME}' THEN 1 ELSE 0 END DESC,
+                             source_loaded_at DESC,
                              factor_value_id DESC
                 ) AS issuance_rank
             FROM fundamental_factor_values
             WHERE factor_id = ?
-              AND source = ?
+              AND source IN (?, ?)
               AND is_latest_revision
               AND raw_value IS NOT NULL
               AND isfinite(raw_value)
+              AND available_at <= CAST(as_of_date AS TIMESTAMP) + INTERVAL 22 HOUR
               {date_sql}
         ),
         decisions AS (
@@ -386,6 +391,7 @@ def load_piotroski_inputs(
         *date_params,
         NET_ISSUANCE_FACTOR_ID,
         NET_ISSUANCE_SOURCE,
+        PROJECTION_SOURCE_NAME,
         *date_params,
         options.maximum_fundamental_age_days,
     ]

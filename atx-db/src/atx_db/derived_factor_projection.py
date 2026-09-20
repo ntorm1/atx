@@ -11,6 +11,9 @@ retired per-metric module: it reads an already-computed engine metric
 grid the pandas modules use, and applies the identical
 :mod:`atx_db.factors.cross_section` winsorize/zscore pair, so a retired
 ``factor_id`` keeps publishing both numbers without the bespoke SQL.
+Distinct ``legacy_*`` definitions use shared filing/lag selectors and the
+restricted arithmetic compiler where a published factor's annual or quarterly
+convention differs from a conventional catalog metric.
 """
 
 from __future__ import annotations
@@ -18,7 +21,8 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import hashlib
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -26,6 +30,8 @@ from typing import Any
 import pandas as pd
 
 from .connection import DuckDBStore
+from .derived_compatibility import load_compatibility_inputs
+from .derived_compatibility_catalog import compatibility_metrics
 from .derived_registry import DERIVED_SOURCE_NAME
 from .factors.cross_section import winsorize, zscore
 from .market_daily import END_OF_DAY_HOURS, MARKET_DAILY_SOURCE_NAME
@@ -59,6 +65,8 @@ PROJECTION_SEED_COLUMNS = (
     "winsor_limit",
     "minimum_names_per_date",
     "retired_module",
+    "value_orientation",
+    "legacy_source",
 )
 #: The identical 15-column shape all 46 pandas per-metric modules write into
 #: ``fundamental_factor_values``.
@@ -92,6 +100,8 @@ class FactorProjection:
     winsor_limit: float
     minimum_names_per_date: int
     retired_module: str
+    value_orientation: int = 1
+    legacy_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -117,7 +127,10 @@ def read_projection_seed(path: Path | str = PROJECTION_SEED_PATH) -> tuple[Facto
             orientation = int(raw["orientation"])
             if orientation not in (1, -1):
                 raise ValueError(f"orientation must be 1 or -1, got {orientation}")
-            if raw["source_window"] not in ("quarter", "daily"):
+            value_orientation = int(raw["value_orientation"])
+            if value_orientation not in (1, -1):
+                raise ValueError(f"value_orientation must be 1 or -1, got {value_orientation}")
+            if raw["source_window"] not in ("quarter", "daily", "legacy"):
                 raise ValueError(f"unknown source_window {raw['source_window']!r}")
             rows.append(
                 FactorProjection(
@@ -130,6 +143,8 @@ def read_projection_seed(path: Path | str = PROJECTION_SEED_PATH) -> tuple[Facto
                     winsor_limit=float(raw["winsor_limit"]),
                     minimum_names_per_date=int(raw["minimum_names_per_date"]),
                     retired_module=raw["retired_module"],
+                    value_orientation=value_orientation,
+                    legacy_source=raw["legacy_source"] or None,
                 )
             )
     return tuple(rows)
@@ -192,6 +207,17 @@ def load_projection_inputs(
     ``market_daily_metrics`` at that ``trade_date``.
     """
 
+    if projection.source_window == "legacy":
+        definition = compatibility_metrics()[projection.metric_code]
+        if definition.parent_source == PROJECTION_SOURCE_NAME:
+            definition = replace(definition, parent_source=options.source)
+        return load_compatibility_inputs(
+            store,
+            definition,
+            universe_id=options.universe_id,
+            start_date=options.start_date,
+            end_date=options.end_date,
+        )
     date_fragments: list[str] = []
     params: list[Any] = []
     if options.start_date is not None:
@@ -294,6 +320,10 @@ def compute_projection_rows(
         # very column the previous line just used.
         return pd.DataFrame(columns=list(PROJECTION_OUTPUT_COLUMNS))
     rows = rows[rows["metric_value"].apply(lambda value: value == value and abs(value) != float("inf"))]
+    if projection.source_window == "legacy":
+        cutoff = pd.to_datetime(rows["as_of_date"]) + pd.Timedelta(hours=END_OF_DAY_HOURS)
+        rows = rows[(rows["available_at"] <= cutoff)
+                    & (pd.to_datetime(rows["metric_available_at"], errors="coerce") <= cutoff)]
     if rows.empty:
         return pd.DataFrame(columns=list(PROJECTION_OUTPUT_COLUMNS))
     counts = rows.groupby("as_of_date")["security_id"].transform("nunique")
@@ -304,13 +334,19 @@ def compute_projection_rows(
     rows["factor_name"] = projection.factor_name
     rows["family"] = projection.family
     rows["raw_value"] = projection.orientation * rows["metric_value"]
+    rows["oriented_value"] = projection.value_orientation * rows["raw_value"]
     # Both cross-sectional operators consume every eligible peer. Preserve
     # each row's own input time, then publish only once the whole cohort exists.
     rows["input_decision_available_at"] = rows["available_at"]
     rows["available_at"] = rows.groupby(["factor_id", "as_of_date"])["available_at"].transform("max")
+    if projection.source_window == "legacy":
+        # Retained parent cohorts can be broader than the eligible child cohort.
+        # Publish at the common decision cutoff so a removed peer cannot make
+        # the child's timestamp precede a prerequisite cohort's availability.
+        rows["available_at"] = pd.to_datetime(rows["as_of_date"]) + pd.Timedelta(hours=END_OF_DAY_HOURS)
     rows = winsorize(
         rows,
-        value_column="raw_value",
+        value_column="oriented_value",
         output_column="winsorized_value",
         partition_columns=("factor_id", "as_of_date"),
         limits=projection.winsor_limit,
@@ -329,6 +365,7 @@ def compute_projection_rows(
                 "metric_code": projection.metric_code,
                 "source_window": projection.source_window,
                 "orientation": projection.orientation,
+                "value_orientation": projection.value_orientation,
                 "winsor_limits": [projection.winsor_limit, projection.winsor_limit],
                 "decision": {
                     "as_of_date": as_of_date,
@@ -341,15 +378,17 @@ def compute_projection_rows(
                     "value": metric_value,
                     "available_at": metric_available_at,
                 },
+                "compatibility_inputs": json.loads(compatibility_inputs) if compatibility_inputs else None,
             }
         )
-        for as_of_date, available_at, input_available_at, period_end, metric_value, metric_available_at in zip(
+        for as_of_date, available_at, input_available_at, period_end, metric_value, metric_available_at, compatibility_inputs in zip(
             rows["as_of_date"],
             rows["available_at"],
             rows["input_decision_available_at"],
             rows["period_end"],
             rows["metric_value"],
             rows["metric_available_at"],
+            rows.get("compatibility_inputs_json", pd.Series("", index=rows.index, dtype=object)),
             strict=True,
         )
     ]
@@ -372,15 +411,25 @@ def refresh_projected_factor_values(
     store: DuckDBStore,
     options: FactorProjectionOptions | None = None,
 ) -> int:
-    """Recompute every seeded projection's rows (or just ``options.factor_ids``)."""
+    """Publish retirement mappings, or an explicit ``factor_ids`` selection.
+
+    ``KEPT`` seed rows document generic opt-in projections. Their original
+    refreshers remain the default publishers because their annual selection
+    semantics are not interchangeable with conventional quarterly metrics.
+    RSST includes its NOA cohort prerequisite in the same requested date scope.
+    """
 
     options = options or FactorProjectionOptions()
     if options.start_date is not None and options.end_date is not None and options.start_date > options.end_date:
         raise ValueError("start_date must not be after end_date")
     store.initialize()
     wanted = set(options.factor_ids) if options.factor_ids is not None else None
+    if wanted is not None and "quality_low_rsst_accruals" in wanted:
+        wanted.add("quality_net_operating_assets")
     total = 0
     for projection in default_projections():
+        if wanted is None and projection.retired_module == "KEPT":
+            continue
         if wanted is not None and projection.factor_id not in wanted:
             continue
         frame = compute_projection_rows(load_projection_inputs(store, projection, options), projection, options)
@@ -393,6 +442,16 @@ def refresh_projected_factor_values(
             delete_sql += " AND as_of_date <= ?"
             delete_params.append(options.end_date)
         with store.transaction():
+            if projection.legacy_source is not None and options.source == PROJECTION_SOURCE_NAME:
+                # Retain exact legacy history, but stop default consumers from
+                # selecting a stale row after this scope has been recomputed.
+                # This also retires rows newly excluded by eligibility filters.
+                legacy_sql = delete_sql.replace(
+                    "DELETE FROM fundamental_factor_values",
+                    "UPDATE fundamental_factor_values SET is_latest_revision=false",
+                    1,
+                )
+                store.con.execute(legacy_sql, [projection.legacy_source, *delete_params[1:]])
             store.con.execute(delete_sql, delete_params)
             if not frame.empty:
                 insert_frame(store, frame, "fundamental_factor_values", f"projection_{projection.factor_id}_insert")
