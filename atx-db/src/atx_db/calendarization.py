@@ -17,6 +17,7 @@ from .warehouse import insert_frame, quality_check
 SOURCE_NAME = "derived_calendarization_v1"
 FISCAL_TTM_METHOD = "sum_four_visible_quarter_like_statement_points_with_ytd_quarter_derivations"
 STITCHED_TTM_METHOD = "stitched_quarterly_ttm"
+_CALENDAR_MAP_BATCH_SIZE = 2048
 
 
 CALENDAR_MAP_COLUMNS = [
@@ -277,11 +278,20 @@ def refresh_fundamental_calendar_map(
     store: DuckDBStore,
     options: CalendarizationOptions | None = None,
 ) -> int:
-    """Materialize fiscal-to-calendar labels for fundamental_periods."""
+    """Materialize labels with SQL issuer inference and bounded Python batches.
+
+    The SQL input snapshot includes every issuer's annual periods before batching,
+    so an issuer crossing a batch boundary keeps the same fiscal-year inference.
+    Both full-sized staging tables remain inside DuckDB's memory/spill budget.
+    """
 
     options = options or CalendarizationOptions()
-    periods = store.con.execute(
-        """
+    columns = ", ".join(CALENDAR_MAP_COLUMNS)
+    row_count = 0
+    with store.transaction():
+        store.con.execute(
+            """
+        CREATE TEMP TABLE _calendar_map_input AS
         WITH issuer_fyr AS (
             SELECT
                 source,
@@ -293,6 +303,7 @@ def refresh_fundamental_calendar_map(
             GROUP BY 1, 2
         )
         SELECT
+            row_number() OVER (ORDER BY fp.fundamental_period_id) AS _batch_row,
             fp.fundamental_period_id,
             fp.period_group_id,
             fp.source,
@@ -315,12 +326,31 @@ def refresh_fundamental_calendar_map(
           ON issuer_fyr.source = fp.source
          AND issuer_fyr.security_id = fp.security_id
         """
-    ).df()
-    rows = compute_calendar_map_rows(periods, source=options.source, run_id=options.run_id)
-    with store.transaction():
+        )
+        store.con.execute(
+            f"CREATE TEMP TABLE _calendar_map_output AS "
+            f"SELECT {columns} FROM fundamental_calendar_map WHERE false"
+        )
+        count_result = store.con.execute("SELECT count(*) FROM _calendar_map_input").fetchone()
+        assert count_result is not None
+        input_count = int(count_result[0])
+        for offset in range(0, input_count, _CALENDAR_MAP_BATCH_SIZE):
+            periods = store.con.execute(
+                "SELECT * EXCLUDE (_batch_row) FROM _calendar_map_input "
+                "WHERE _batch_row > ? AND _batch_row <= ? ORDER BY _batch_row",
+                [offset, offset + _CALENDAR_MAP_BATCH_SIZE],
+            ).df()
+            rows = compute_calendar_map_rows(periods, source=options.source, run_id=options.run_id)
+            row_count += insert_frame(store, rows, "_calendar_map_output", "_calendar_map_rows")
+            del periods, rows
         store.con.execute("DELETE FROM fundamental_calendar_map WHERE source = ?", [options.source])
-        insert_frame(store, rows, "fundamental_calendar_map", "_calendar_map_rows")
-    return int(len(rows))
+        store.con.execute(
+            f"INSERT INTO fundamental_calendar_map ({columns}) "
+            f"SELECT {columns} FROM _calendar_map_output"
+        )
+        store.con.execute("DROP TABLE _calendar_map_output")
+        store.con.execute("DROP TABLE _calendar_map_input")
+    return row_count
 
 
 def refresh_fundamental_calendar_ttm(
