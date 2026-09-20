@@ -175,7 +175,8 @@ def test_download_stage_resumes_by_skipping_present_archives(
     assert result.detail["submissions_skipped"] is True
 
 
-def test_download_stage_requires_a_sec_user_agent(tmp_store, tmp_path):
+def test_download_stage_requires_a_sec_user_agent(tmp_store, tmp_path, monkeypatch):
+    monkeypatch.delenv("ATX_SEC_USER_AGENT", raising=False)
     options = ActivationOptions(**{**_options(tmp_path).as_dict(), "sec_user_agent": None})
     with pytest.raises(ValueError, match="ATX_SEC_USER_AGENT"):
         stage_sec_bulk_download(tmp_store, options)

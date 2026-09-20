@@ -14,6 +14,7 @@ from typing import Any
 
 import pandas as pd
 
+from ._companyfacts_resume import reopen_companyfacts_store, verify_companyfacts_resume
 from .clock import resolve_as_of_date
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
@@ -60,6 +61,9 @@ COMPANYFACTS_MEMBER_PATTERN = re.compile(r"CIK([0-9]{10})\.json")
 # SEC-CIK-* is already used by actual traded securities and cannot be a fallback.
 UNRESOLVED_COMPANYFACTS_CIK_PREFIX = "SEC-COMPANYFACTS-UNRESOLVED-CIK-"
 LOGGER = logging.getLogger(__name__)
+# Ten issuer commits keep retained PK/index state far below the 3,750-issuer
+# COMMIT failure. Recycling happens only after all per-issuer work is committed.
+_COMPANYFACTS_REOPEN_TARGETS = 10
 
 
 @dataclass(frozen=True)
@@ -89,6 +93,8 @@ class SecCompanyFactsOptions:
     # the global catalog/revision/statement/period surfaces once after all batches.
     refresh_derived_surfaces: bool = True
     progress_every_targets: int = 0
+    # Verified full-archive resume from a failed or source-incomplete dataset UUID.
+    resume_from_run_id: str | None = None
     run_id: str | None = None
 
 
@@ -590,11 +596,50 @@ def _unresolved_cik_candidates(
                     "status_reason": "unresolved_cik_or_entity_at_fact_available_at",
                     "unresolved_security_fact_rows": row.security_unresolved_count,
                     "unresolved_entity_fact_rows": row.entity_unresolved_count,
+                    "fact_available_at": str(row.available_at),
                 }),
                 "run_id": run_id,
             }
         )
     return pd.DataFrame(rows)
+
+
+def _companyfacts_candidates(unresolved: pd.DataFrame, options: SecCompanyFactsOptions) -> pd.DataFrame:
+    if unresolved.empty:
+        return pd.DataFrame()
+    return _unresolved_cik_candidates(
+        unresolved, run_id=options.run_id,
+        as_of_date=resolve_as_of_date(
+            options.as_of_date,
+            source_max_date=pd.to_datetime(unresolved["available_at"]).max().date(),
+        ),
+    )
+
+
+def _replace_companyfacts_candidates(store: DuckDBStore, cik: str, candidates: pd.DataFrame) -> int:
+    """Caller owns the issuer transaction; no relation survives this function."""
+    store.con.execute(
+        """DELETE FROM identifier_resolution_candidates
+        WHERE source_dataset_id = 'sec_company_facts' AND match_method = ?
+          AND source_key_type = 'CIK' AND regexp_full_match(trim(source_key_value), '[0-9]+')
+          AND try_cast(source_key_value AS BIGINT) = cast(? AS BIGINT)""",
+        [FACT_IDENTIFIER_MATCH_METHOD, cik],
+    )
+    return insert_frame(store, candidates, "identifier_resolution_candidates",
+                        "sec_company_facts_unresolved_candidates_insert")
+
+
+def _validate_archive_payload_cik(payload: dict[str, Any], cik: str) -> str:
+    """Only an absent field can borrow an exact validated archive member CIK."""
+    if "cik" not in payload:
+        return "validated_archive_member_missing_payload_cik"
+    raw_cik = payload["cik"]
+    if (isinstance(raw_cik, bool) or not isinstance(raw_cik, (str, int))
+            or re.fullmatch(r"[0-9]{1,10}", str(raw_cik)) is None):
+        raise ValueError("companyfacts payload CIK is invalid")
+    if f"{int(raw_cik):010d}" != cik:
+        raise ValueError("payload CIK does not match archive member CIK")
+    return "payload_cik_matches_archive_member"
 
 
 def normalize_companyfacts(
@@ -967,6 +1012,11 @@ def _companyfacts_zip_member_url(cik: str | int) -> str:
     return f"{SEC_COMPANY_FACTS_ZIP_URL}#CIK{int(str(cik).strip()):010d}.json"
 
 
+def _companyfacts_archive_identity(path: Path) -> tuple[int, int, int, int]:
+    stat = path.stat()
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+
 def _companyfacts_cik_spellings(store: DuckDBStore) -> dict[int, tuple[str, ...]]:
     """Inventory exact stored spellings once, using the replacement's SQL rules.
 
@@ -996,6 +1046,11 @@ class SecCompanyFactsDataset(Dataset):
 
     def load(self, store: DuckDBStore, options: SecCompanyFactsOptions) -> DatasetLoadResult:
         archive_mode = options.symbol_source.lower() == "archive_members"
+        if options.resume_from_run_id is not None and (
+            not archive_mode or options.companyfacts_zip is None or options.symbol_limit is not None
+            or options.symbol_offset != 0 or options.skip_loaded_targets
+        ):
+            raise ValueError("companyfacts resume requires the full archive with replacement enabled")
         # Resolve first: an archive selector without a ZIP must fail before a session opens.
         targets = resolve_companyfacts_targets(store, options)
         all_options = replace(options, skip_loaded_targets=False, symbol_offset=0, symbol_limit=None)
@@ -1048,16 +1103,21 @@ class SecCompanyFactsDataset(Dataset):
         empty_reasons: dict[str, int] = {}
         unavailable_targets: list[dict[str, str]] = []
         unavailable_reasons: dict[str, int] = {}
-        unresolved_ciks: list[pd.DataFrame] = []
+        unresolved_candidate_rows = recovered_candidate_rows = 0
+        connection_reopens = committed_since_reopen = 0
+        verified_members = {}
         cik_spellings_by_number: dict[int, tuple[str, ...]] | None = None
         with contextlib.ExitStack() as stack:
             zip_fetcher = None
             session = None
             if options.companyfacts_zip is not None:
+                archive_stat = _companyfacts_archive_identity(options.companyfacts_zip)
                 zip_fetcher = _make_companyfacts_zip_fetcher(options.companyfacts_zip)
                 stack.callback(zip_fetcher.close)
                 with options.companyfacts_zip.open("rb") as handle:
                     details["archive_sha256"] = hashlib.file_digest(handle, "sha256").hexdigest()
+                if _companyfacts_archive_identity(options.companyfacts_zip) != archive_stat:
+                    raise ValueError("companyfacts archive changed while computing its digest")
                 names = zip_fetcher._archive.namelist()
                 exact_names = [name for name in names if COMPANYFACTS_MEMBER_PATTERN.fullmatch(name)]
                 details.update({
@@ -1066,14 +1126,58 @@ class SecCompanyFactsDataset(Dataset):
                     "archive_duplicate_cik_members": len(exact_names) - len(set(exact_names)),
                     "archive_ignored_member_count": len(names) - len(exact_names),
                 })
+                if options.resume_from_run_id is not None:
+                    LOGGER.info("companyfacts resume verifying receipts and retained fact/point rows")
+                    verified_members, resume_details = verify_companyfacts_resume(
+                        store, options, archive_sha256=details["archive_sha256"],
+                        allowlist_sha256=fingerprint, target_ciks=set(target_ciks),
+                        source_url_prefix=SEC_COMPANY_FACTS_ZIP_URL,
+                        unresolved_prefix=UNRESOLVED_COMPANYFACTS_CIK_PREFIX,
+                        duplicate_members=details["archive_duplicate_cik_members"],
+                    )
+                    details.update(resume_details)
+                    if _companyfacts_archive_identity(options.companyfacts_zip) != archive_stat:
+                        raise ValueError("companyfacts archive changed during resume verification")
+                    # The proof queries have been fully consumed. Begin mutations
+                    # with fresh index state under the same analytical caps.
+                    connection_reopens += int(reopen_companyfacts_store(store))
+                    LOGGER.info("companyfacts resume verified targets=%d rows=%d",
+                                len(verified_members), details["resume_verified_rows"])
             elif targets:
+                if options.resume_from_run_id is not None:
+                    raise ValueError("companyfacts resume requires a local full archive")
                 session = sec_session(options.user_agent)
             effective_skip_failed = options.skip_failed_targets or zip_fetcher is not None
             for index, (symbol, cik, security_id) in enumerate(targets):
+                if committed_since_reopen >= _COMPANYFACTS_REOPEN_TARGETS:
+                    connection_reopens += int(reopen_companyfacts_store(store))
+                    committed_since_reopen = 0
                 if options.progress_every_targets > 0 and index % options.progress_every_targets == 0:
                     LOGGER.info("companyfacts processed=%d total=%d loaded=%d empty=%d unavailable=%d failed=%d rows=%d",
                                 index, len(targets), loaded_targets, len(empty_targets),
                                 len(unavailable_targets), len(failed_targets), rows_loaded)
+                if cik in verified_members:
+                    member = verified_members[cik]
+                    if member.unresolved is not None:
+                        recovered = pd.DataFrame([member.unresolved])
+                        candidates = _companyfacts_candidates(recovered, options)
+                        with store.transaction():
+                            recovered_candidate_rows += _replace_companyfacts_candidates(store, cik, candidates)
+                        unresolved_candidate_rows += len(candidates)
+                        unresolved_fact_rows += member.unresolved["security_unresolved_count"]
+                        unresolved_targets += int(member.unresolved["security_unresolved_count"] > 0)
+                        unresolved_entity_rows += member.unresolved["entity_unresolved_count"]
+                        unresolved_entity_targets += int(member.unresolved["entity_unresolved_count"] > 0)
+                        del recovered, candidates
+                    else:
+                        with store.transaction():
+                            _replace_companyfacts_candidates(store, cik, pd.DataFrame())
+                    committed_since_reopen += 1
+                    loaded_targets += 1
+                    completed_targets += 1
+                    # Keep the original fact/point owner and source receipt. A
+                    # future failed resume can verify the explicitly linked ancestor.
+                    continue
                 if zip_fetcher is None and options.request_delay_seconds > 0 and index > 0:
                     time.sleep(options.request_delay_seconds)
                 source_url = (
@@ -1082,6 +1186,7 @@ class SecCompanyFactsDataset(Dataset):
                 )
                 # Only source/member/normalization errors are skippable. Database errors remain fatal.
                 archive_placeholder = None
+                payload_identity = None
                 try:
                     if zip_fetcher is not None:
                         payload = zip_fetcher(cik)
@@ -1104,8 +1209,8 @@ class SecCompanyFactsDataset(Dataset):
                     if archive_placeholder is None:
                         if not isinstance(payload, dict) or not isinstance(payload.get("facts"), dict):
                             raise ValueError("companyfacts payload requires a facts object")
-                        if archive_mode and f"{int(str(payload.get('cik'))):010d}" != cik:
-                            raise ValueError("payload CIK does not match archive member CIK")
+                        if archive_mode:
+                            payload_identity = _validate_archive_payload_cik(payload, cik)
                         facts, points = normalize_companyfacts(
                             payload, symbol=symbol, security_id=security_id, cik=cik,
                             source_url=source_url, concepts=set(options.concepts), run_id=options.run_id,
@@ -1145,7 +1250,6 @@ class SecCompanyFactsDataset(Dataset):
                     store, facts, allow_current_fallback=not archive_mode,
                 )
                 if not unresolved.empty:
-                    unresolved_ciks.append(unresolved)
                     security_unresolved = int(unresolved["security_unresolved_count"].sum())
                     unresolved_fact_rows += security_unresolved
                     unresolved_targets += int(security_unresolved > 0)
@@ -1167,16 +1271,6 @@ class SecCompanyFactsDataset(Dataset):
                                     time.perf_counter() - inventory_started)
                 cik_number = int(cik)
                 stored_cik_spellings = cik_spellings_by_number.get(cik_number, ())
-                rows_loaded += self._replace_facts(
-                    store, facts, points, security_id, cik=cik,
-                    stored_cik_spellings=stored_cik_spellings,
-                )
-                # The loader inserts canonical CIKs. Advance only after commit;
-                # retaining deleted spellings as harmless supersets is safe.
-                if not facts.empty and cik not in stored_cik_spellings:
-                    cik_spellings_by_number[cik_number] = (*stored_cik_spellings, cik)
-                point_rows += len(points)
-                completed_targets += 1
                 reason = None
                 if facts.empty:
                     supported = {key: value for key, value in payload["facts"].items()
@@ -1191,42 +1285,37 @@ class SecCompanyFactsDataset(Dataset):
                     empty_targets.append({"cik": cik, "reason": reason})
                 else:
                     loaded_targets += 1
-                record_source_file(
-                    store, dataset_id=self.dataset_id, source_url=source_url,
+                candidates = _companyfacts_candidates(unresolved, options)
+                receipt = dict(
+                    dataset_id=self.dataset_id, source_url=source_url,
                     cache_path=options.companyfacts_zip, status="empty" if facts.empty else "loaded",
                     sha256=details["archive_sha256"],
                     metadata={"symbol": symbol, "cik": cik, "source_mode": source_mode,
                               "run_id": options.run_id,
                               "rows": len(facts), "empty_reason": reason,
+                              "payload_cik_identity": payload_identity,
+                              "archive_member": f"CIK{cik}.json" if zip_fetcher is not None else None,
                               "unresolved_security": bool(
                                   not unresolved.empty and unresolved["security_unresolved_count"].sum() > 0),
                               "unresolved_entity": bool(not facts.empty and facts["entity_id"].isna().any()),
                               "archive_sha256": details["archive_sha256"], "allowlist_sha256": fingerprint},
                 )
-        unresolved_candidate_rows = 0
-        if unresolved_ciks:
-            unresolved_frame = pd.concat(unresolved_ciks, ignore_index=True).drop_duplicates(subset=["cik"])
-            candidates = _unresolved_cik_candidates(
-                unresolved_frame, run_id=options.run_id,
-                as_of_date=resolve_as_of_date(options.as_of_date, source_max_date=(
-                    pd.to_datetime(unresolved_frame["available_at"]).max().date()
-                )),
-            )
-            if not candidates.empty:
-                store.con.register("sec_company_facts_unresolved_candidates", candidates)
-                try:
-                    with store.transaction():
-                        store.con.execute(
-                            """DELETE FROM identifier_resolution_candidates
-                            WHERE source_dataset_id = 'sec_company_facts' AND match_method = ?
-                              AND source_key_value IN (SELECT source_key_value FROM sec_company_facts_unresolved_candidates)""",
-                            [FACT_IDENTIFIER_MATCH_METHOD],
-                        )
-                        insert_frame(store, candidates, "identifier_resolution_candidates",
-                                     "sec_company_facts_unresolved_candidates_insert")
-                finally:
-                    store.con.unregister("sec_company_facts_unresolved_candidates")
-                unresolved_candidate_rows = len(candidates)
+                rows_loaded += self._replace_facts(
+                    store, facts, points, security_id, cik=cik,
+                    stored_cik_spellings=stored_cik_spellings, candidates=candidates, receipt=receipt,
+                )
+                committed_since_reopen += 1
+                # Advance only after facts, points, candidates and receipt commit.
+                if not facts.empty and cik not in stored_cik_spellings:
+                    cik_spellings_by_number[cik_number] = (*stored_cik_spellings, cik)
+                point_rows += len(points)
+                completed_targets += 1
+                unresolved_candidate_rows += len(candidates)
+                del facts, points, payload, unresolved, candidates, receipt
+            if zip_fetcher is not None and _companyfacts_archive_identity(options.companyfacts_zip) != archive_stat:
+                raise ValueError("companyfacts archive changed during ingestion")
+        if committed_since_reopen:
+            connection_reopens += int(reopen_companyfacts_store(store))
         if options.refresh_derived_surfaces:
             concept_rows = refresh_xbrl_concept_catalog(store)
             revision_rows = refresh_fundamental_fact_revisions(store)
@@ -1237,6 +1326,11 @@ class SecCompanyFactsDataset(Dataset):
             concept_rows = revision_rows = statement_rows = period_rows = ttm_rows = 0
         details.update({
             "completed_targets": completed_targets,
+            "replayed_targets": completed_targets - len(verified_members),
+            "resumed_loaded_targets": len(verified_members),
+            "recovered_unresolved_candidate_rows": recovered_candidate_rows,
+            "connection_reopens": connection_reopens,
+            "connection_reopen_interval": _COMPANYFACTS_REOPEN_TARGETS,
             "loaded_targets": loaded_targets,
             "empty_target_count": len(empty_targets), "empty_target_reasons": empty_reasons,
             "empty_targets": empty_targets[:50],
@@ -1273,6 +1367,19 @@ class SecCompanyFactsDataset(Dataset):
                           check_name="source_availability", status="warning",
                           observed_value=float(len(unavailable_targets)), threshold_value=0.0,
                           details=details)
+        if failed_targets:
+            # Dataset.run records a normal return as succeeded even when the
+            # activation stage reports source incompleteness. Persist this
+            # run-bound reason before returning so its completed tail can be
+            # verified on the next resume, even after error receipts are retried.
+            quality_check(
+                store, dataset_id=self.dataset_id, table_name="sec_company_facts",
+                check_name="source_completeness", status="failed",
+                observed_value=float(len(failed_targets)), threshold_value=0.0,
+                details={"run_id": options.run_id, "failed_target_count": len(failed_targets),
+                         "source_mode": source_mode, "archive_sha256": details["archive_sha256"],
+                         "allowlist_sha256": fingerprint},
+            )
         quality_check(store, dataset_id=self.dataset_id, table_name="sec_company_facts", check_name="rows_loaded",
                       status="failed" if failed_targets else "passed" if rows_loaded > 0 else "warning",
                       observed_value=float(rows_loaded), threshold_value=1.0, details=details)
@@ -1287,6 +1394,8 @@ class SecCompanyFactsDataset(Dataset):
         *,
         cik: str,
         stored_cik_spellings: tuple[str, ...] | None = None,
+        candidates: pd.DataFrame | None = None,
+        receipt: dict[str, Any] | None = None,
     ) -> int:
         # Independent callers retain fresh numeric matching. The serial load
         # supplies a complete spelling inventory and maintains its own inserts.
@@ -1358,17 +1467,13 @@ class SecCompanyFactsDataset(Dataset):
             store.con.execute(
                 f"DELETE FROM sec_company_facts WHERE {cik_predicate}", cik_params,
             )
-            store.con.execute(
-                """DELETE FROM identifier_resolution_candidates
-                WHERE source_dataset_id = 'sec_company_facts' AND match_method = ?
-                  AND source_key_type = 'CIK' AND regexp_full_match(trim(source_key_value), '[0-9]+')
-                  AND try_cast(source_key_value AS BIGINT) = cast(? AS BIGINT)""",
-                [FACT_IDENTIFIER_MATCH_METHOD, cik],
-            )
+            _replace_companyfacts_candidates(store, cik, candidates if candidates is not None else pd.DataFrame())
             if not facts.empty:
                 insert_frame(store, facts, "sec_company_facts", "sec_company_facts_insert")
                 insert_frame(store, points, "fundamental_points", "fundamental_points_insert")
             store.con.execute("DROP TABLE companyfacts_point_delete_keys")
             store.con.execute("DROP TABLE companyfacts_legacy_ids")
             store.con.execute("DROP TABLE companyfacts_old_fact_keys")
+            if receipt is not None:
+                record_source_file(store, **receipt)
         return len(facts)
