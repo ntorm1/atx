@@ -75,6 +75,14 @@ class StageResult:
     detail: dict[str, object]
 
 
+class ActivationStageError(RuntimeError):
+    """A failed stage with committed partial work and inspectable outcome counts."""
+
+    def __init__(self, message: str, result: StageResult) -> None:
+        self.result = result
+        super().__init__(f"{message}: {json.dumps(result.detail, default=str, sort_keys=True)}")
+
+
 def select_stages(
     *,
     start: str | None = None,
@@ -200,7 +208,8 @@ class ActivationOptions:
     minimum_latest_date_securities: int = 5_000
     companyfacts_limit: int | None = None
     companyfacts_progress_every: int = 25
-    skip_loaded_companyfacts: bool = True
+    companyfacts_symbol_source: str = "sec_company_tickers"
+    skip_loaded_companyfacts: bool | None = None
     dry_run: bool = False
     force: bool = False
     run_id: str = "warehouse-activate"
@@ -518,16 +527,19 @@ def stage_submissions_load(store: DuckDBStore, options: ActivationOptions) -> St
 
 
 def stage_companyfacts_load(store: DuckDBStore, options: ActivationOptions) -> StageResult:
-    """Load XBRL company facts for every CIK in sec_company_tickers (offline)."""
-    from .fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions, resolve_companyfacts_targets
+    """Load the selected local CIK corpus; archive mode replaces every selected CIK."""
+    from .fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions
 
     if not options.companyfacts_zip.is_file():
         raise FileNotFoundError(options.companyfacts_zip)
+    skip_loaded = options.skip_loaded_companyfacts
+    if skip_loaded is None:
+        skip_loaded = options.companyfacts_symbol_source != "archive_members"
     fact_options = SecCompanyFactsOptions(
         symbols=(),
-        symbol_source="sec_company_tickers",
+        symbol_source=options.companyfacts_symbol_source,
         symbol_limit=options.companyfacts_limit,
-        skip_loaded_targets=options.skip_loaded_companyfacts,
+        skip_loaded_targets=skip_loaded,
         skip_failed_targets=True,
         companyfacts_zip=options.companyfacts_zip,
         as_of_date=options.as_of_date,
@@ -535,45 +547,13 @@ def stage_companyfacts_load(store: DuckDBStore, options: ActivationOptions) -> S
         progress_every_targets=options.companyfacts_progress_every,
         run_id=f"{options.run_id}-companyfacts",
     )
-    # SecCompanyFactsDataset.load() raises when its target set resolves to empty,
-    # treating "nothing to fetch" as an operator error (e.g. an unmapped symbol
-    # list). With skip_loaded_targets on, a fully-loaded universe legitimately
-    # resolves to zero targets on a repeat run -- that is success, not failure,
-    # so the stage short-circuits to a no-op before it can raise. The no-op
-    # detail carries the SAME key set as the normal-load branch below (zeros in
-    # place of the row/target counts) so callers never have to branch on which
-    # path ran.
-    if not resolve_companyfacts_targets(store, fact_options):
-        detail: dict[str, object] = {
-            "symbols": fact_options.symbols,
-            "symbol_source": "sec_company_tickers",
-            "symbol_limit": fact_options.symbol_limit,
-            "symbol_offset": fact_options.symbol_offset,
-            "skip_loaded_targets": fact_options.skip_loaded_targets,
-            "refresh_derived_surfaces": fact_options.refresh_derived_surfaces,
-            "universe_id": fact_options.universe_id,
-            "as_of_date": fact_options.as_of_date.isoformat() if fact_options.as_of_date else None,
-            "target_count": 0,
-            "loaded_targets": 0,
-            "failed_target_count": 0,
-            "source_mode": "bulk_zip",
-            "companyfacts_zip": str(fact_options.companyfacts_zip) if fact_options.companyfacts_zip else None,
-            "facts": 0,
-            "fundamental_points": 0,
-            "xbrl_concept_catalog": 0,
-            "fundamental_fact_revisions": 0,
-            "fundamental_statement_points": 0,
-            "fundamental_periods": 0,
-            "fundamental_ttm_points": 0,
-            "unresolved_cik_candidate_rows": 0,
-            "skip_loaded": options.skip_loaded_companyfacts,
-        }
-        return StageResult(rows=0, detail=detail)
     result = SecCompanyFactsDataset().run(store, fact_options)
-    detail = {key: value for key, value in result.details.items() if key != "failed_targets"}
-    detail["symbol_source"] = "sec_company_tickers"
-    detail["skip_loaded"] = options.skip_loaded_companyfacts
-    return StageResult(rows=int(result.rows_loaded), detail=detail)
+    detail = dict(result.details)
+    detail["skip_loaded"] = skip_loaded
+    stage_result = StageResult(rows=int(result.rows_loaded), detail=detail)
+    if detail["failed_target_count"] or detail["outcome"] == "no_valid_targets":
+        raise ActivationStageError("companyfacts ingestion incomplete", stage_result)
+    return stage_result
 
 
 STAGES: dict[str, Callable[[DuckDBStore, ActivationOptions], StageResult]] = {
@@ -949,21 +929,22 @@ def run_activation(
             try:
                 result = STAGES[stage](store, options)
             except Exception as exc:  # recorded then re-raised
+                partial = exc.result if isinstance(exc, ActivationStageError) else StageResult(0, {})
                 finish_stage(
                     store,
                     stage=stage,
                     run_id=options.run_id,
                     started_at=started_at,
                     status="failed",
-                    rows=0,
+                    rows=partial.rows,
                     error=str(exc),
                 )
                 payload = {
                     "stage": stage,
                     "status": "failed",
-                    "rows": 0,
+                    "rows": partial.rows,
                     "seconds": round(time.monotonic() - begun, 3),
-                    "detail": {"error": str(exc)},
+                    "detail": {**partial.detail, "error": str(exc)},
                 }
                 emit(payload)
                 emitted.append(payload)
@@ -1009,6 +990,14 @@ def add_activation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--shards", type=int, default=16)
     parser.add_argument("--companyfacts-limit", type=int, default=None)
+    parser.add_argument("--companyfacts-symbol-source", choices=("sec_company_tickers", "archive_members"),
+                        default="sec_company_tickers", help="archive_members discovers all exact local CIK members offline.")
+    companyfacts_policy = parser.add_mutually_exclusive_group()
+    companyfacts_policy.add_argument("--companyfacts-append-missing", dest="skip_loaded_companyfacts",
+                                    action="store_true", default=None,
+                                    help="Skip CIKs with any facts; NOT archive/allowlist completion evidence.")
+    companyfacts_policy.add_argument("--companyfacts-replace-existing", dest="skip_loaded_companyfacts",
+                                    action="store_false", help="Replace selected CIKs (default for archive_members).")
     parser.add_argument("--start-stage", choices=STAGE_ORDER, default=None)
     parser.add_argument("--stop-stage", choices=STAGE_ORDER, default=None)
     parser.add_argument("--only", action="append", choices=STAGE_ORDER, default=None)
@@ -1045,6 +1034,8 @@ def activation_options_from_args(args: argparse.Namespace) -> ActivationOptions:
         threads=args.threads,
         reconciliation_shards=args.shards,
         companyfacts_limit=args.companyfacts_limit,
+        companyfacts_symbol_source=args.companyfacts_symbol_source,
+        skip_loaded_companyfacts=args.skip_loaded_companyfacts,
         dry_run=args.dry_run,
         force=args.force,
         run_id=run_id,

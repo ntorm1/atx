@@ -14,6 +14,8 @@ from atx_db.activation import (
     COMPANYFACTS_ZIP_URL,
     SUBMISSIONS_ZIP_URL,
     ActivationOptions,
+    ActivationStageError,
+    run_activation,
     sha256_file,
     stage_companyfacts_load,
     stage_sec_bulk_download,
@@ -245,3 +247,30 @@ def test_companyfacts_stage_detail_keys_match_across_load_and_noop_runs(tmp_stor
     assert first_run.rows >= 1
     assert second_run.rows == 0
     assert set(first_run.detail) == set(second_run.detail)
+
+
+def test_archive_stage_failure_keeps_partial_rows_and_durable_details(tmp_store, tmp_path, companyfacts_zip):
+    options = ActivationOptions(**{**_options(tmp_path).as_dict(), "companyfacts_symbol_source": "archive_members",
+                                   "db_path": tmp_store.path})
+    options.companyfacts_zip.parent.mkdir(parents=True, exist_ok=True)
+    options.companyfacts_zip.write_bytes(companyfacts_zip.read_bytes())
+    with zipfile.ZipFile(options.companyfacts_zip, "a") as archive:
+        archive.writestr("CIK0000000001.json", "broken JSON")
+    emitted = []
+    with pytest.raises(ActivationStageError) as caught:
+        run_activation(options, stages=("companyfacts_load",), emit=emitted.append)
+    result = caught.value.result
+    assert result.rows == 1
+    assert result.detail["skip_loaded"] is False
+    assert result.detail["failed_target_count"] == 1
+    assert result.detail["completed_targets"] == 1
+    assert result.detail["unresolved_security_targets"] == 1
+    assert emitted[-1]["status"] == "failed"
+    assert emitted[-1]["rows"] == 1
+    assert emitted[-1]["detail"]["failed_target_count"] == 1
+    row = tmp_store.con.execute(
+        "SELECT status,\"rows\",error FROM activation_stage_runs WHERE stage='companyfacts_load' AND run_id='test-run'"
+    ).fetchone()
+    assert row[0:2] == ("failed", 1)
+    assert '"failed_target_count": 1' in row[2]
+    assert tmp_store.con.execute("SELECT count(*) FROM sec_company_facts").fetchone()[0] == 1

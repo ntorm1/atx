@@ -12,9 +12,44 @@ Covers the brief's three accept criteria:
 from __future__ import annotations
 
 import datetime as dt
+import json
+import zipfile
 
 import pandas as pd
-import pytest
+
+
+def test_archive_pit_security_transition_preserves_cik_fallback_and_point_ids(tmp_store, tmp_path):
+    from atx_db.fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions
+
+    cik = "0000000007"
+    tmp_store.con.execute(
+        """INSERT INTO security_identifier_history
+        (security_id,id_type,id_value,valid_from,valid_to,as_of_date,available_at,source) VALUES
+        ('HIST-OLD','CIK',?,'2019-01-01','2023-01-01','2021-01-01','2021-01-01','fixture'),
+        ('HIST-NEW','CIK',?,'2023-01-01',NULL,'2023-01-01','2023-01-01','fixture'),
+        ('HIST-OLD','ENTITY_ID','ENTITY-OLD','2019-01-01','2023-01-01','2021-01-01','2021-01-01','fixture'),
+        ('HIST-NEW','ENTITY_ID','ENTITY-NEW','2023-01-01',NULL,'2023-01-01','2023-01-01','fixture')""",
+        [cik, cik],
+    )
+    tmp_store.con.execute("INSERT INTO sec_company_tickers (cik,ticker,title,security_id) VALUES (?, 'NOW', 'Now', 'WRONG')", [cik])
+    payload = {"cik": 7, "facts": {"us-gaap": {"Assets": {"units": {"USD": [
+        {"filed": f"{year}-02-15", "end": f"{year - 1}-12-31", "val": year,
+         "accn": f"{cik}-{year}-000001", "form": "10-K", "fy": year - 1, "fp": "FY"}
+        for year in (2020, 2022, 2024)
+    ]}}}}}
+    path = tmp_path / "companyfacts.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(f"CIK{cik}.json", json.dumps(payload))
+    options = SecCompanyFactsOptions(symbol_source="archive_members", companyfacts_zip=path,
+                                    concepts=("Assets",), refresh_derived_surfaces=False)
+    dataset = SecCompanyFactsDataset()
+    for _ in range(2):
+        result = dataset.load(tmp_store, options)
+        assert result.details["unresolved_security_fact_rows"] == 1
+        assert tmp_store.con.execute("SELECT security_id,entity_id FROM sec_company_facts ORDER BY filed_date").fetchall() == [
+            ("SEC-CIK-0000000007", None), ("HIST-OLD", "ENTITY-OLD"), ("HIST-NEW", "ENTITY-NEW")]
+        assert tmp_store.con.execute("SELECT security_id FROM fundamental_points ORDER BY as_of_date").fetchall() == [
+            ("SEC-CIK-0000000007",), ("HIST-OLD",), ("HIST-NEW",)]
 
 
 def _seed_spine(store, *, cik="0000320193", security_id="SEC-CIK-0000320193"):
@@ -402,8 +437,8 @@ class TestStatementPointsCarrySecurityId:
         monkeypatch.setattr("atx_db.fundamentals.sec_session", _boom)
 
         import json
-        import zipfile
         import tempfile
+        import zipfile
         from pathlib import Path
 
         payload = {

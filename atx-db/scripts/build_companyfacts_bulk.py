@@ -12,7 +12,15 @@ reads and drops the per-CIK 404/throttle/retry burden.
 The archive is a one-time operator download — supply it with ``--companyfacts-zip``,
 or pass ``--download`` to stream it to that path first. Reading the zip is offline;
 ``SecCompanyFactsDataset.load`` then rebuilds the chained surfaces (concept catalog,
-fact revisions, statement points, periods, TTM) exactly as the network path does.
+fact revisions, statement points, periods, TTM), unless ``--defer-derived-surfaces``
+leaves those for the subsequent activation run.
+
+``--symbol-source archive_members`` discovers every exact local CIK JSON member,
+independently of current tickers. It cannot download or use HTTP. Replacement is
+the default; ``--append-missing`` skips CIKs with any facts and is not completion
+evidence for a new archive or concept allowlist. There are no persisted completion
+receipts: a full replacement rerun rereads all selected members. CIK-only identities
+do not establish historical traded-US-equity membership.
 
 Usage
 -----
@@ -28,9 +36,11 @@ Usage
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import logging
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -38,7 +48,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from atx_db import DEFAULT_DB_PATH, DuckDBStore
-from atx_db.fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions
+from atx_db.clock import utc_today
+from atx_db.fundamentals import COMPANY_FACT_SYMBOL_SOURCES, SecCompanyFactsDataset, SecCompanyFactsOptions
 from atx_db.security_master import SEC_USER_AGENT, sec_session
 
 COMPANYFACTS_ZIP_URL = "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip"
@@ -59,7 +70,7 @@ def _download(dest: Path, *, user_agent: str) -> None:
         print(f"downloaded {written / 1e9:.2f} GB -> {dest}", file=sys.stderr)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Backfill companyfacts from the SEC bulk zip (S45).")
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument("--companyfacts-zip", type=Path, required=True, help="Path to companyfacts.zip.")
@@ -67,7 +78,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--symbol-source",
         default="loaded_facts",
-        help="Target resolver: loaded_facts (default) | universe | sec_company_tickers | symbols.",
+        choices=COMPANY_FACT_SYMBOL_SOURCES,
+        help="archive_members: every exact local CIK member, offline; loaded_facts (default): existing issuers only.",
     )
     parser.add_argument("--universe-id", default=None)
     parser.add_argument(
@@ -79,9 +91,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=None, help="Cap targets (debug/smoke).")
     parser.add_argument("--offset", type=int, default=0, help="Skip this many deterministically ordered targets.")
     parser.add_argument(
-        "--skip-loaded",
+        "--append-missing", "--skip-loaded",
+        dest="skip_loaded",
         action="store_true",
-        help="Exclude CIKs already present in sec_company_facts before applying offset/limit.",
+        help="Append-missing only: exclude CIKs with any facts. NOT completion proof for this archive/allowlist.",
     )
     parser.add_argument(
         "--defer-derived-surfaces",
@@ -90,7 +103,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--user-agent", default=SEC_USER_AGENT)
     parser.add_argument("--progress-every", type=int, default=25)
-    return parser.parse_args()
+    parser.add_argument("--as-of-date", type=dt.date.fromisoformat, default=None)
+    args = parser.parse_args(argv)
+    if args.symbol_source == "archive_members" and (args.download or args.factor_ids):
+        parser.error("archive_members is fully offline and cannot combine with --download or --factor-ids")
+    return args
 
 
 def main() -> int:
@@ -138,10 +155,10 @@ def main() -> int:
             skip_failed_targets=True,  # CIKs absent from the archive are recorded + skipped
             refresh_derived_surfaces=not args.defer_derived_surfaces,
             progress_every_targets=args.progress_every,
+            as_of_date=args.as_of_date or utc_today(),
         )
         result = SecCompanyFactsDataset().run(store, options)
     details = dict(result.details)
-    details.pop("failed_targets", None)
     print(
         json.dumps(
             {"step": "build_companyfacts_bulk", "rows_loaded": result.rows_loaded,
@@ -149,7 +166,7 @@ def main() -> int:
             indent=2, default=str,
         )
     )
-    return 0
+    return 1 if details["failed_target_count"] or details["outcome"] == "no_valid_targets" else 0
 
 
 if __name__ == "__main__":

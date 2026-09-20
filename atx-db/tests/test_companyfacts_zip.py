@@ -13,11 +13,15 @@ from __future__ import annotations
 
 import json
 import zipfile
+from dataclasses import replace
+
+import pytest
 
 from atx_db.fundamentals import (
     SecCompanyFactsDataset,
     SecCompanyFactsOptions,
     _make_companyfacts_zip_fetcher,
+    resolve_companyfacts_targets,
 )
 
 
@@ -123,3 +127,111 @@ class TestCompanyFactsZipLoad:
         )
         assert res.details["loaded_targets"] == 1
         assert res.details["failed_target_count"] == 1
+
+
+def test_archive_targets_are_exact_sorted_deduplicated_and_paged(tmp_path):
+    path = tmp_path / "members.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        for name in ("CIK0000000009.json", "CIK0000000001.json", "nested/CIK0000000002.json",
+                     "CIK2.json", "cik0000000003.json", "CIK0000000004.json.bak"):
+            archive.writestr(name, "{}")
+        with pytest.warns(UserWarning, match="Duplicate name"):
+            archive.writestr("CIK0000000001.json", "{}")
+    options = SecCompanyFactsOptions(symbol_source="archive_members", companyfacts_zip=path)
+    # No store access is permitted for archive discovery.
+    assert resolve_companyfacts_targets(None, options) == [
+        ("CIK0000000001", "0000000001", "SEC-CIK-0000000001"),
+        ("CIK0000000009", "0000000009", "SEC-CIK-0000000009"),
+    ]
+    assert resolve_companyfacts_targets(None, replace(options, symbol_offset=1, symbol_limit=1))[0][1] == "0000000009"
+    with pytest.raises(ValueError, match="positive"):
+        resolve_companyfacts_targets(None, replace(options, symbol_limit=0))
+
+
+def test_archive_requires_local_zip_before_network(monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("archive mode opened a network session")
+
+    monkeypatch.setattr("atx_db.fundamentals.sec_session", forbidden)
+    with pytest.raises(ValueError, match="local companyfacts_zip"):
+        SecCompanyFactsDataset().load(None, SecCompanyFactsOptions(symbol_source="archive_members"))
+
+
+def test_archive_load_accounts_failures_empty_unresolved_and_replacement(tmp_store, tmp_path, monkeypatch):
+    path = tmp_path / "companyfacts.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("CIK0000000001.json", json.dumps(_companyfacts_payload("1")))
+        archive.writestr("CIK0000000002.json", "{invalid json")
+        unsupported = _companyfacts_payload("3")
+        unsupported["facts"]["ifrs-full"] = unsupported["facts"].pop("us-gaap")
+        archive.writestr("CIK0000000003.json", json.dumps(unsupported))
+        filtered = _companyfacts_payload("4")
+        filtered["facts"]["us-gaap"]["Other"] = filtered["facts"]["us-gaap"].pop("Assets")
+        archive.writestr("CIK0000000004.json", json.dumps(filtered))
+        archive.writestr("CIK0000000005.json", json.dumps({"cik": 5, "facts": []}))
+        archive.writestr("CIK0000000006.json", json.dumps(_companyfacts_payload("99")))
+        archive.writestr("readme.txt", "ignored")
+    # Alias/current source metadata must neither duplicate targets nor resolve old facts.
+    tmp_store.con.execute("INSERT INTO sec_company_tickers (cik,ticker,title,security_id) VALUES "
+                          "('0000000001','AAA','Alpha','CURRENT'), ('0000000001','AAA.A','Alpha','CURRENT')")
+    monkeypatch.setattr("atx_db.fundamentals.sec_session", lambda *_: pytest.fail("HTTP fallback"))
+    options = SecCompanyFactsOptions(symbol_source="archive_members", companyfacts_zip=path,
+                                    concepts=("Assets",), refresh_derived_surfaces=False)
+    result = SecCompanyFactsDataset().load(tmp_store, options)
+    detail = result.details
+    assert result.rows_loaded == 1
+    assert detail["archive_member_count"] == 7
+    assert detail["archive_cik_member_count"] == detail["valid_target_count"] == detail["target_count"] == 6
+    assert detail["completed_targets"] == 3
+    assert detail["loaded_targets"] == 1
+    assert detail["empty_target_count"] == 2
+    assert detail["empty_target_reasons"] == {"unsupported_or_empty_taxonomy": 1, "allowlist_empty": 1}
+    assert detail["failed_target_count"] == 3
+    assert detail["failure_types"] == {"JSONDecodeError": 1, "ValueError": 2}
+    assert detail["unresolved_security_targets"] == detail["unresolved_security_fact_rows"] == 1
+    assert detail["unresolved_entity_fact_rows"] == detail["unresolved_cik_candidate_rows"] == 1
+    assert detail["previously_completed_targets"] is None
+    assert len(detail["archive_sha256"]) == len(detail["allowlist_sha256"]) == 64
+    assert tmp_store.con.execute("SELECT security_id,entity_id FROM sec_company_facts").fetchall() == [
+        ("SEC-CIK-0000000001", None)]
+    assert tmp_store.con.execute("SELECT security_id,symbol FROM fundamental_points").fetchall() == [
+        ("SEC-CIK-0000000001", None)]
+    assert tmp_store.con.execute("SELECT count(*) FROM securities WHERE security_id='SEC-CIK-0000000001'").fetchone()[0] == 0
+    assert tmp_store.con.execute("SELECT candidate_status FROM identifier_resolution_candidates "
+                                 "WHERE source_dataset_id='sec_company_facts'").fetchall() == [("proposed",)]
+    assert tmp_store.con.execute("SELECT count(*) FROM raw_source_files WHERE status='error'").fetchone()[0] == 3
+
+    # Append-missing skips any existing facts, without asserting fingerprint completion.
+    skipped = SecCompanyFactsDataset().load(tmp_store, replace(options, skip_loaded_targets=True))
+    assert skipped.details["skipped_existing_targets"] == 1
+    assert skipped.details["target_count"] == 5
+    assert skipped.details["previously_completed_targets"] is None
+    assert skipped.details["load_policy"] == "append_missing"
+
+    # New allowlist: replacement clears the old CIK facts/points on a successful empty parse.
+    empty = SecCompanyFactsDataset().load(tmp_store, replace(options, concepts=("NeverReported",), symbol_limit=1))
+    assert empty.details["empty_target_count"] == 1
+    assert empty.details["allowlist_sha256"] != detail["allowlist_sha256"]
+    assert tmp_store.con.execute("SELECT count(*) FROM sec_company_facts").fetchone()[0] == 0
+    assert tmp_store.con.execute("SELECT count(*) FROM fundamental_points").fetchone()[0] == 0
+    assert tmp_store.con.execute("SELECT count(*) FROM identifier_resolution_candidates "
+                                 "WHERE source_dataset_id='sec_company_facts'").fetchone()[0] == 0
+
+
+def test_empty_archive_and_all_existing_have_different_outcomes(tmp_store, tmp_path):
+    path = _write_companyfacts_zip(tmp_path / "companyfacts.zip")
+    options = SecCompanyFactsOptions(symbol_source="archive_members", companyfacts_zip=path,
+                                    concepts=("Assets",), refresh_derived_surfaces=False)
+    dataset = SecCompanyFactsDataset()
+    first = dataset.load(tmp_store, options)
+    second = dataset.load(tmp_store, options)
+    assert first.rows_loaded == second.rows_loaded == 1
+    assert tmp_store.con.execute("SELECT count(*) FROM sec_company_facts").fetchone()[0] == 1
+    skipped = dataset.load(tmp_store, replace(options, skip_loaded_targets=True))
+    assert skipped.details["outcome"] == "all_existing_skipped"
+    assert skipped.details["skipped_existing_targets"] == 1
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("not-a-cik.json", "{}")
+    empty = dataset.load(tmp_store, options)
+    assert empty.details["outcome"] == "no_valid_targets"
+    assert empty.details["valid_target_count"] == 0
