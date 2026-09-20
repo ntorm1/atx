@@ -5,13 +5,16 @@ from __future__ import annotations
 import datetime as dt
 import importlib
 import json
+from collections import Counter
 from dataclasses import replace
 
 import pandas as pd
 import pytest
 
 from atx_db.derived_factor_projection import (
+    FactorProjection,
     FactorProjectionOptions,
+    compute_projection_rows,
     default_projections,
     load_projection_inputs,
     refresh_projected_factor_values,
@@ -325,8 +328,12 @@ def test_every_projection_orientation_is_plus_or_minus_one():
 
 
 def test_projection_covers_every_retired_module(retired_modules):
-    covered = {projection.retired_module for projection in default_projections()}
-    assert set(retired_modules) <= covered
+    projections = default_projections()
+    counts = Counter(projection.retired_module for projection in projections)
+    expected = dict.fromkeys(retired_modules, 1)
+    expected.update(annual_margin_change=3, enterprise_yield=4, KEPT=1)
+    assert counts == expected
+    assert len(projections) == len({projection.factor_id for projection in projections}) == 24
 
 
 def test_every_skipped_module_has_a_documented_reason(retired_modules):
@@ -360,7 +367,26 @@ PARITY_CASES = [
 
 @pytest.fixture
 def retired_modules():
-    return {projection.retired_module for projection in default_projections()} - {"KEPT"}
+    return {
+        "altman_distress",
+        "annual_margin_change",
+        "asset_turnover_change",
+        "beneish_m_score",
+        "enterprise_yield",
+        "external_financing",
+        "net_debt_financing",
+        "net_issuance",
+        "net_operating_assets",
+        "net_payout",
+        "quarterly_gross_margin_change",
+        "quarterly_profitability_change",
+        "quarterly_working_capital_accruals",
+        "rd_increase",
+        "rd_intensity",
+        "rsst_accruals",
+        "tax_expense_momentum",
+        "tax_to_book_income",
+    }
 
 
 # --- Synthetic fixture construction -----------------------------------------
@@ -1203,6 +1229,66 @@ def projection_store(tmp_store):
                 ],
             )
     return tmp_store
+
+
+def test_projection_standardized_values_wait_for_eligible_cohort():
+    projection = FactorProjection(
+        factor_id="test_factor",
+        metric_code="test_metric",
+        source_window="quarter",
+        orientation=1,
+        factor_name="Test factor",
+        family="test",
+        winsor_limit=0.0,
+        minimum_names_per_date=3,
+        retired_module="KEPT",
+    )
+    inputs = []
+    for day, hour, minutes in ((31, 21, (0, 30, 15)), (30, 20, (0, 10, 5))):
+        date = dt.date(2022, 1, day)
+        for security_id, value, minute in zip(("A", "B", "C"), (1.0, 2.0, 9.0), minutes, strict=True):
+            available_at = dt.datetime.combine(date, dt.time(hour, minute))
+            inputs.append(
+                {
+                    "security_id": security_id,
+                    "symbol": security_id,
+                    "as_of_date": date,
+                    "metric_value": value,
+                    "metric_available_at": available_at - dt.timedelta(minutes=5),
+                    "decision_available_at": available_at,
+                    "period_end": dt.date(2021, 12, 31),
+                }
+            )
+    # An ineligible peer must not postpone publication of the actual cohort.
+    inputs.append(
+        {
+            **inputs[0],
+            "security_id": "INELIGIBLE",
+            "metric_value": float("inf"),
+            "decision_available_at": dt.datetime(2022, 1, 31, 22),
+        }
+    )
+    frame = pd.DataFrame(inputs)
+    rows = compute_projection_rows(frame, projection, FactorProjectionOptions())
+    assert len(rows) == 6
+    for date, expected in (
+        (dt.date(2022, 1, 31), pd.Timestamp("2022-01-31 21:30")),
+        (dt.date(2022, 1, 30), pd.Timestamp("2022-01-30 20:10")),
+    ):
+        cohort = rows[rows["as_of_date"] == date]
+        assert set(cohort["security_id"]) == {"A", "B", "C"}
+        assert set(cohort["available_at"]) == {expected}
+        first = cohort[cohort["security_id"] == "A"].iloc[0]
+        assert first["raw_value"] == 1.0
+        # Sample standard deviation of (1, 2, 9) is sqrt(19): the later peer
+        # contributes to the earlier security's actual published score.
+        assert first["value"] == pytest.approx(-3.0 / 19.0**0.5)
+        for row in cohort.itertuples():
+            lineage = json.loads(row.input_lineage_json)
+            own_input = frame[(frame["as_of_date"] == date) & (frame["security_id"] == row.security_id)].iloc[0]
+            assert pd.Timestamp(lineage["decision"]["available_at"]) == expected
+            assert pd.Timestamp(lineage["decision"]["input_available_at"]) == own_input["decision_available_at"]
+            assert pd.Timestamp(lineage["metric"]["available_at"]) == own_input["metric_available_at"]
 
 
 def test_projection_selects_latest_known_period_and_preserves_historical_revisions(projection_store):

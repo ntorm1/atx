@@ -304,6 +304,10 @@ def compute_projection_rows(
     rows["factor_name"] = projection.factor_name
     rows["family"] = projection.family
     rows["raw_value"] = projection.orientation * rows["metric_value"]
+    # Both cross-sectional operators consume every eligible peer. Preserve
+    # each row's own input time, then publish only once the whole cohort exists.
+    rows["input_decision_available_at"] = rows["available_at"]
+    rows["available_at"] = rows.groupby(["factor_id", "as_of_date"])["available_at"].transform("max")
     rows = winsorize(
         rows,
         value_column="raw_value",
@@ -329,6 +333,7 @@ def compute_projection_rows(
                 "decision": {
                     "as_of_date": as_of_date,
                     "available_at": available_at,
+                    "input_available_at": input_available_at,
                     "universe_id": options.universe_id,
                 },
                 "metric": {
@@ -338,9 +343,10 @@ def compute_projection_rows(
                 },
             }
         )
-        for as_of_date, available_at, period_end, metric_value, metric_available_at in zip(
+        for as_of_date, available_at, input_available_at, period_end, metric_value, metric_available_at in zip(
             rows["as_of_date"],
             rows["available_at"],
+            rows["input_decision_available_at"],
             rows["period_end"],
             rows["metric_value"],
             rows["metric_available_at"],
