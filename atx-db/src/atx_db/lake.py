@@ -20,6 +20,7 @@ DEFAULT_EXPORT_OBJECTS = (
     "nasdaq_symbol_directory",
     "nasdaq_listing_events",
     "listing_status_intervals",
+    "universe_us_listed_membership",
     "delist_code_dim",
     "delisting_events",
     "delisting_return_observations",
