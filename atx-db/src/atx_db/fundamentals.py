@@ -1201,33 +1201,58 @@ class SecCompanyFactsDataset(Dataset):
             # Points have no CIK. Match both an old issuer identity and its fact
             # keys; filing keys alone may be shared by different issuers. Include
             # legacy loader fallback IDs as well as per-fact PIT-resolved IDs.
-            # Numeric comparison is guarded by digit-only input, so padded and
-            # unpadded legacy CIKs identify one issuer without matching junk keys.
+            # Materialize issuer-sized relations before joining the full points
+            # history: the correlated EXISTS/identity OR exhausts query memory
+            # on production history. These temp tables are created and dropped
+            # in this transaction, so a failed replacement rolls them back too.
             store.con.execute(
                 """
-                DELETE FROM fundamental_points p
-                WHERE p.source = ? AND EXISTS (
-                        SELECT 1 FROM sec_company_facts f
-                        WHERE regexp_full_match(trim(f.cik), '[0-9]+')
-                          AND try_cast(f.cik AS BIGINT) = cast(? AS BIGINT)
-                          AND (
-                              p.security_id = f.security_id
-                              OR p.security_id IN (?, ?)
-                              OR p.security_id IN (
-                                  SELECT t.security_id FROM sec_company_tickers t
-                                  WHERE regexp_full_match(trim(t.cik), '[0-9]+')
-                                    AND try_cast(t.cik AS BIGINT) = cast(? AS BIGINT)
-                              )
-                          )
-                          AND p.accession_number IS NOT DISTINCT FROM f.accession_number
-                          AND p.taxonomy IS NOT DISTINCT FROM f.taxonomy
-                          AND p.metric IS NOT DISTINCT FROM f.concept
-                          AND p.unit IS NOT DISTINCT FROM f.unit
-                          AND p.period_end IS NOT DISTINCT FROM f.period_end
-                          AND p.period_start IS NOT DISTINCT FROM f.period_start
-                )
+                CREATE TEMP TABLE companyfacts_old_fact_keys AS
+                SELECT DISTINCT security_id, accession_number, taxonomy, concept, unit, period_end, period_start
+                FROM sec_company_facts
+                WHERE regexp_full_match(trim(cik), '[0-9]+')
+                  AND try_cast(cik AS BIGINT) = cast(? AS BIGINT)
                 """,
-                [SOURCE_NAME, cik, security_id, cik_security_id(cik), cik],
+                [cik],
+            )
+            store.con.execute(
+                """
+                CREATE TEMP TABLE companyfacts_legacy_ids AS
+                SELECT security_id FROM (VALUES (cast(? AS VARCHAR)), (cast(? AS VARCHAR))) AS ids(security_id)
+                WHERE security_id IS NOT NULL
+                UNION
+                SELECT security_id FROM sec_company_tickers
+                WHERE regexp_full_match(trim(cik), '[0-9]+')
+                  AND try_cast(cik AS BIGINT) = cast(? AS BIGINT)
+                  AND security_id IS NOT NULL
+                """,
+                [security_id, cik_security_id(cik), cik],
+            )
+            store.con.execute(
+                """
+                CREATE TEMP TABLE companyfacts_point_delete_keys AS
+                SELECT * FROM companyfacts_old_fact_keys WHERE security_id IS NOT NULL
+                UNION
+                SELECT ids.security_id, f.accession_number, f.taxonomy, f.concept, f.unit, f.period_end, f.period_start
+                FROM companyfacts_legacy_ids ids
+                CROSS JOIN (
+                    SELECT DISTINCT accession_number, taxonomy, concept, unit, period_end, period_start
+                    FROM companyfacts_old_fact_keys
+                ) f
+                """
+            )
+            store.con.execute(
+                """
+                DELETE FROM fundamental_points p USING companyfacts_point_delete_keys k
+                WHERE p.source = ? AND p.security_id = k.security_id
+                  AND p.accession_number IS NOT DISTINCT FROM k.accession_number
+                  AND p.taxonomy IS NOT DISTINCT FROM k.taxonomy
+                  AND p.metric IS NOT DISTINCT FROM k.concept
+                  AND p.unit IS NOT DISTINCT FROM k.unit
+                  AND p.period_end IS NOT DISTINCT FROM k.period_end
+                  AND p.period_start IS NOT DISTINCT FROM k.period_start
+                """,
+                [SOURCE_NAME],
             )
             store.con.execute(
                 """DELETE FROM sec_company_facts WHERE regexp_full_match(trim(cik), '[0-9]+')
@@ -1243,4 +1268,7 @@ class SecCompanyFactsDataset(Dataset):
             if not facts.empty:
                 insert_frame(store, facts, "sec_company_facts", "sec_company_facts_insert")
                 insert_frame(store, points, "fundamental_points", "fundamental_points_insert")
+            store.con.execute("DROP TABLE companyfacts_point_delete_keys")
+            store.con.execute("DROP TABLE companyfacts_legacy_ids")
+            store.con.execute("DROP TABLE companyfacts_old_fact_keys")
         return len(facts)
