@@ -1048,21 +1048,37 @@ def run_activation(
                 result = STAGES[stage](store, options)
             except Exception as exc:  # recorded then re-raised
                 partial = exc.result if isinstance(exc, ActivationStageError) else StageResult(0, {})
-                finish_stage(
-                    store,
-                    stage=stage,
-                    run_id=options.run_id,
-                    started_at=started_at,
-                    status="failed",
-                    rows=partial.rows,
-                    error=str(exc),
-                )
+                ledger_detail: dict[str, object] = {}
+                for recover in (False, True):
+                    try:
+                        if recover:
+                            store.recover_failed_connection()
+                        finish_stage(
+                            store,
+                            stage=stage,
+                            run_id=options.run_id,
+                            started_at=started_at,
+                            status="failed",
+                            rows=partial.rows,
+                            error=str(exc),
+                        )
+                        break
+                    except Exception as ledger_error:
+                        if recover:
+                            note = (
+                                "Operator recovery required for activation_stage_runs "
+                                f"stage={stage!r}, run_id={options.run_id!r}: "
+                                f"could not record the original stage failure: {ledger_error}"
+                            )
+                            exc.add_note(note)
+                            LOGGER.error("%s", note)
+                            ledger_detail = {"failure_ledger": "operator_recovery_required"}
                 payload = {
                     "stage": stage,
                     "status": "failed",
                     "rows": partial.rows,
                     "seconds": round(time.monotonic() - begun, 3),
-                    "detail": {**partial.detail, "error": str(exc)},
+                    "detail": {**partial.detail, **ledger_detail, "error": str(exc)},
                 }
                 emit(payload)
                 emitted.append(payload)

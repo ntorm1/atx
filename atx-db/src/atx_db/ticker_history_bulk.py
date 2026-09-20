@@ -104,6 +104,8 @@ def _configure(store: DuckDBStore, options: BulkTickerHistoryOptions) -> None:
     store.con.execute("PRAGMA disable_progress_bar")
     store.con.execute("SET memory_limit = ?", [options.memory_limit])
     store.con.execute("SET threads = ?", [options.threads])
+    store.analytical_memory_limit = options.memory_limit
+    store.analytical_threads = options.threads
     store.con.execute("SET preserve_insertion_order = false")
     store.con.execute("SET temp_directory = ?", [str(temp_dir)])
 
@@ -437,6 +439,31 @@ def _ensure_indexes(store: DuckDBStore) -> None:
     )
 
 
+def _record_failed_publication(store: DuckDBStore, run_id: str, error: Exception) -> None:
+    """Best-effort failure ledgering without masking the publication error."""
+    for recover in (False, True):
+        try:
+            if recover:
+                store.recover_failed_connection()
+            store.con.execute(
+                """
+                UPDATE dataset_runs SET status = 'failed', finished_at = current_timestamp,
+                                        error_message = ?
+                WHERE run_id = ?
+                """,
+                [str(error), run_id],
+            )
+            return
+        except Exception as ledger_error:
+            if recover:
+                note = (
+                    f"Operator recovery required for dataset_runs run_id={run_id!r}: "
+                    f"could not record the original publication failure: {ledger_error}"
+                )
+                error.add_note(note)
+                LOGGER.error("%s", note)
+
+
 def publish_bulk_ticker_history(
     store: DuckDBStore, options: BulkTickerHistoryOptions
 ) -> BulkTickerHistoryResult:
@@ -491,7 +518,7 @@ def publish_bulk_ticker_history(
         LOGGER.info("built canonical daily-bar staging table")
         metrics = _validate_next(store, options)
         LOGGER.info(
-            "validated %,d rows across %,d securities; latest breadth %,d",
+            "validated %d rows across %d securities; latest breadth %d",
             metrics[0],
             metrics[1],
             metrics[3],
@@ -499,15 +526,9 @@ def publish_bulk_ticker_history(
         _publish(store, options)
         LOGGER.info("atomically published bars and canonical indexes")
     except Exception as exc:
-        store.con.execute("DROP TABLE IF EXISTS equity_daily_bars_bulk_next")
-        store.con.execute(
-            """
-            UPDATE dataset_runs SET status = 'failed', finished_at = current_timestamp,
-                                    error_message = ?
-            WHERE run_id = ?
-            """,
-            [str(exc), run_id],
-        )
+        # Keep staging for inspection. Cleanup must not invalidate a recovered
+        # connection or hide the original failure; the next explicit run replaces it.
+        _record_failed_publication(store, run_id, exc)
         raise
     rows, securities, latest_date, latest_securities, invalid_rows, duplicate_keys = metrics
     elapsed = time.perf_counter() - started
