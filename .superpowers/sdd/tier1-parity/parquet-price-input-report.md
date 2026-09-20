@@ -84,3 +84,9 @@ using this same path, explicit warehouse/run ID, 1 GB and one thread. Existing
 return-dependent outputs still require their separately assigned repairs and
 rebuilds. This input addition makes no historical identity, availability-vintage,
 economic-adjustment or full Tier-1 parity certification.
+
+Independent review found one Important identifier-type contract issue and no
+Critical findings. `parquet-price-input-fix-report.md` records the bounded repair:
+securityID/dn require native integer or strict integer text columns; floating and
+decimal identifier columns are rejected before staging. Numeric price and return
+columns retain their original acceptance.

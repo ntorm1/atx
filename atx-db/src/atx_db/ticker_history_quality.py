@@ -49,10 +49,11 @@ _NUMERIC_COLUMNS = {
     "securityid", "dn", "open", "high", "low", "close", "closepr",
     "closeunadjpr", "volume", "shares", "returnfactor", "totalreturn", "cumulreturnfactor",
 }
-_NUMERIC_TYPES = {
+_IDENTIFIER_TYPES = {
     "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
-    "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT", "FLOAT", "DOUBLE",
+    "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT",
 }
+_NUMERIC_TYPES = _IDENTIFIER_TYPES | {"FLOAT", "DOUBLE"}
 
 
 def source_format(path: str | Path) -> str:
@@ -72,7 +73,9 @@ def source_provenance(path: str | Path) -> dict[str, str]:
         if format_name == "parquet" else "TSV text parsed with DuckDB try_cast"
     )
     return {**SOURCE_PROVENANCE, "source_format": format_name,
-            "source_numeric_representation": representation}
+            "source_numeric_representation": representation,
+            "identifier_type_policy": "securityID/dn require native integer or strict integer text; "
+                                      "native float/decimal columns rejected"}
 
 
 def _validate_source_columns(con: duckdb.DuckDBPyConnection, reader: str, path: str) -> None:
@@ -88,7 +91,11 @@ def _validate_source_columns(con: duckdb.DuckDBPyConnection, reader: str, path: 
     for name in sorted(required):
         dtype = columns[name]
         valid = dtype == "VARCHAR"
-        if name in _NUMERIC_COLUMNS:
+        if name in {"securityid", "dn"}:
+            # Reject unsupported schemas rather than silently invalidating even
+            # integral floating/decimal values via their fractional text suffix.
+            valid |= dtype in _IDENTIFIER_TYPES
+        elif name in _NUMERIC_COLUMNS:
             valid |= dtype in _NUMERIC_TYPES or dtype.startswith("DECIMAL(")
         elif name == "tradingdate":
             valid |= dtype == "DATE" or dtype.startswith("TIMESTAMP")

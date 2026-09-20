@@ -111,13 +111,47 @@ def test_parquet_rejects_missing_or_incompatible_required_columns(tmp_path, sele
         assert con.execute("SELECT count(*) FROM duckdb_tables() WHERE table_name = 'ticker_history_source_rows'").fetchone() == (0,)
 
 
-def test_parquet_fractional_ids_are_not_rounded_into_positive_keys(tmp_path):
-    parquet, _ = _write_sources(tmp_path, select="SELECT * REPLACE (101.5 AS securityID) FROM source")
+@pytest.mark.parametrize("field", ["securityID", "dn"])
+@pytest.mark.parametrize("dtype", ["FLOAT", "DOUBLE", "DECIMAL(18,1)"])
+@pytest.mark.parametrize("value", ["101.0", "101.5"])
+def test_parquet_rejects_floating_and_decimal_identifier_columns(tmp_path, field, dtype, value):
+    parquet, _ = _write_sources(
+        tmp_path, select=f"SELECT * REPLACE ({value}::{dtype} AS {field}) FROM source",
+    )
+    with duckdb.connect(config={"memory_limit": "128MB", "threads": 1}) as con:
+        with pytest.raises(ValueError, match=f"incompatible column types: {field.lower()}="):
+            stage_source(con, str(parquet))
+        assert con.execute(
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'ticker_history_source_rows'"
+        ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize("value", ["101.0", "101.5", "9223372036854775808"])
+def test_parquet_text_identifiers_keep_strict_token_and_bigint_range_policy(tmp_path, value):
+    parquet, _ = _write_sources(tmp_path, select=(
+        f"SELECT * REPLACE ('{value}' AS securityID, '{value}' AS dn) FROM source"
+    ))
     with duckdb.connect(config={"memory_limit": "128MB", "threads": 1}) as con:
         stage_source(con, str(parquet))
         diagnostics = source_diagnostics(con)
         assert diagnostics["missing_or_invalid_id_rows"] == 5
         assert diagnostics["repeated_positive_keys"] == 0
+        assert con.execute("SELECT count(dn) FROM ticker_history_source_rows").fetchone() == (0,)
+
+
+def test_parquet_int64_identifiers_preserve_keys_and_duplicate_diagnostics(tmp_path):
+    parquet, _ = _write_sources(tmp_path)
+    with duckdb.connect(config={"memory_limit": "128MB", "threads": 1}) as con:
+        stage_source(con, str(parquet))
+        diagnostics = source_diagnostics(con)
+        assert diagnostics["missing_or_invalid_id_rows"] == 0
+        assert diagnostics["repeated_positive_keys"] == 1
+        assert diagnostics["quarantined_positive_key_rows"] == 2
+        assert diagnostics["adjacent_unique_pairs"] == 1
+        assert diagnostics["latest_date_distinct_positive_vendor_ids"] == 2
+        assert con.execute(
+            "SELECT DISTINCT vendor_id, vendor_security_id, dn FROM ticker_history_source_rows ORDER BY 1, 3"
+        ).fetchall() == [(101, "101", 1), (101, "101", 2), (202, "202", 1), (202, "202", 2)]
 
 
 @pytest.mark.parametrize("flag", ["--source-path", "--tsv-path"])
