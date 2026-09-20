@@ -12,11 +12,25 @@ the connection during rollback. The process exited1 with native job peak1.773GiB
 under a3GiB cap; it did not exhaust host memory.
 
 A fresh read-only recovery check confirmed all ten migrations and the original
-31,178,192 price rows/34,803 IDs through2026-06-15. The validated replacement
-remains staged. Publication has not completed; the stale running attempt requires
-operator failure recording because its invalidated connection could not update
-the ledger. A2GB query-budget retry within the same3GiB process cap is planned,
-subject to the unchanged headroom guard. No source/coverage threshold is relaxed.
+31,178,192 price rows/34,803 IDs through2026-06-15. The operator closed the failed
+dataset and activation ledgers at16:59:42UTC; that is the recovery time, not the
+original failure time. Code now preserves the original exception and can reopen
+an invalidated connection under its recorded budget to write failure ledgers.
+
+Two attempts to start a2GB query-budget retry were refused before launch because
+physical headroom was below the unchanged5GiB requirement. A separate SEC source
+prepass then stopped before ingestion: migration0313 rejected the uncatalogued
+table left by the failed price staging, and governed migration restored its
+backup. The additional10,229,919,744-byte backup is preserved. After inspecting
+the exact staging state and preserving its backup and audited raw source, the
+operator removed only that regenerable staging table at17:05:55UTC. Original
+live prices remain unchanged.
+
+The next price retry is running with2GB DuckDB/one thread inside the same3GiB
+process cap; preflight measured7.353GiB physical and11.256GiB commit headroom.
+Its receipt is `activation-prices-updated-2g-attempt3-memory.json`. Completion
+and the resulting live counts remain pending. No source/coverage threshold is
+relaxed, and no heavy tests or scans run alongside production.
 
 Operator receipts: `activation-prices-updated-memory.json`,
 `activation-prices-updated.err` and `price-recovery-readonly.json` under
