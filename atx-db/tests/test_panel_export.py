@@ -40,7 +40,7 @@ _QUARTERS = (
 _FIRST_TRADE = dt.date(2020, 1, 2)
 
 
-def _fact(store, security_id, code, basis, period_end, value, available_at, revision=1):
+def _fact(store, security_id, code, basis, period_end, value, available_at, revision=1, is_latest=True):
     store.con.execute(
         """
         INSERT INTO fundamental_standardized (
@@ -48,7 +48,7 @@ def _fact(store, security_id, code, basis, period_end, value, available_at, revi
             period_end, value, as_of_date, available_at, input_codes_json,
             input_item_ids_json, rule_id, combination_rule, revision_sequence,
             is_latest_revision
-        ) VALUES (?, 'test', ?, 1, ?, ?, ?, ?, ?, ?, '[]', '[]', 'r', 'direct', ?, true)
+        ) VALUES (?, 'test', ?, 1, ?, ?, ?, ?, ?, ?, '[]', '[]', 'r', 'direct', ?, ?)
         """,
         [
             f"{security_id}|{code}|{basis}|{period_end}|{revision}",
@@ -60,6 +60,7 @@ def _fact(store, security_id, code, basis, period_end, value, available_at, revi
             available_at.date(),
             available_at,
             revision,
+            is_latest,
         ],
     )
 
@@ -169,6 +170,43 @@ def test_query_hash_changes_with_the_requested_columns(exported):
     one = export_panel_quarterly(store, AS_OF, items=("revenue",), metrics=(), out_dir=out_dir)
     two = export_panel_quarterly(store, AS_OF, items=("revenue", "total_assets"), metrics=(), out_dir=out_dir)
     assert one.query_sha256 != two.query_sha256
+    # Different selections at the same as_of must not clobber each other's files
+    # on disk (Minor #3, task-9-review.md): each filename carries a short hash
+    # of the query text, so both exports' Parquet/manifest files coexist.
+    assert one.parquet_path != two.parquet_path
+    assert one.manifest_path != two.manifest_path
+    assert one.parquet_path.exists()
+    assert two.parquet_path.exists()
+    assert one.manifest_path.exists()
+    assert two.manifest_path.exists()
+
+
+def test_quarterly_panel_uses_the_latest_revision_visible_at_as_of(exported):
+    # Important #2 (task-9-review.md): fundamental_standardized keeps
+    # superseded revisions as separate rows, and is_latest_revision is a
+    # today-relative flag (revision_sequence == revision_count), not an
+    # as_of-relative one. A restatement filed after the requested as_of must
+    # not blank out the value that was actually visible on that date -- the
+    # export has to select by available_at <= as_of and take the latest
+    # revision among those, not filter on is_latest_revision at all.
+    store, out_dir = exported
+    period_end = _QUARTERS[0]
+    revision_1_available = dt.datetime.combine(period_end + dt.timedelta(days=10), dt.time(21, 0))
+    revision_2_available = dt.datetime.combine(period_end + dt.timedelta(days=60), dt.time(21, 0))
+    _fact(store, "S2", "revenue", "quarterly", period_end, 111.0, revision_1_available, revision=1, is_latest=False)
+    _fact(store, "S2", "revenue", "quarterly", period_end, 222.0, revision_2_available, revision=2, is_latest=True)
+
+    between = export_panel_quarterly(
+        store, period_end + dt.timedelta(days=30), items=("revenue",), metrics=(), out_dir=out_dir
+    )
+    row_between = pq.read_table(between.parquet_path).to_pandas().set_index("security_id").loc["S2"]
+    assert row_between["revenue"] == pytest.approx(111.0)
+
+    after = export_panel_quarterly(
+        store, period_end + dt.timedelta(days=90), items=("revenue",), metrics=(), out_dir=out_dir
+    )
+    row_after = pq.read_table(after.parquet_path).to_pandas().set_index("security_id").loc["S2"]
+    assert row_after["revenue"] == pytest.approx(222.0)
 
 
 def test_quarterly_panel_never_exposes_a_row_available_after_the_as_of(exported):

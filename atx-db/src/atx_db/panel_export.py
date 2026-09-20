@@ -99,8 +99,17 @@ def _write(
     out_dir: Path,
 ) -> PanelExportResult:
     out_dir.mkdir(parents=True, exist_ok=True)
-    parquet_path = out_dir / f"{panel}_{as_of.isoformat()}.parquet"
-    manifest_path = out_dir / f"{panel}_{as_of.isoformat()}.manifest.json"
+    query_sha256 = _sha256_text(sql)
+    # Fold a short selection hash into the filename: two exports with the same
+    # as_of but different requested items/metrics have different sql text (see
+    # export_panel_quarterly/export_panel_daily_market building item_columns /
+    # projection into the query), so this keeps them from clobbering each
+    # other's Parquet/manifest at the same out_dir. A repeat of the *same*
+    # selection still lands on the same path, which is the desired idempotent
+    # overwrite behavior exercised by test_repeated_export_is_byte_identical.
+    selection_hash = query_sha256[:8]
+    parquet_path = out_dir / f"{panel}_{as_of.isoformat()}_{selection_hash}.parquet"
+    manifest_path = out_dir / f"{panel}_{as_of.isoformat()}_{selection_hash}.manifest.json"
     relation = f"_panel_{panel}"
     # A parameterized CREATE VIEW is rejected by DuckDB ("Unexpected prepared
     # parameter"); materialize into a TEMP TABLE instead, which both accepts
@@ -128,7 +137,7 @@ def _write(
         "contract_version": PANEL_EXPORT_CONTRACT_VERSION,
         "as_of": as_of.isoformat(),
         "inputs": inputs,
-        "query_sha256": _sha256_text(sql),
+        "query_sha256": query_sha256,
         "schema_sha256": _schema_sha256(schema),
         "row_count": row_count,
         "column_count": len(schema),
@@ -160,10 +169,16 @@ def export_panel_quarterly(
 
     One column per requested ``item:`` code (pivoted from
     ``fundamental_standardized``) and per ``metric_code`` (pivoted from
-    ``derived_metric_values``), each selected with ``available_at <= as_of``
-    and the greatest ``available_at`` per ``(security_id, code, period_end)``.
-    ``panel_available_at`` carries the row-level max across every selected
-    column.
+    ``derived_metric_values``), each selected with ``available_at <= as_of``.
+    The ``fundamental_standardized`` branch takes the latest revision that was
+    actually *visible* as of that cutoff -- ranked by ``available_at`` then
+    ``revision_sequence`` per ``(security_id, canonical_code, period_end,
+    basis)`` -- not the row currently flagged ``is_latest_revision``, which is
+    a today-relative flag that a later restatement can flip false on the very
+    revision that was still the answer as of an earlier ``as_of``. Both
+    branches then take the greatest ``available_at`` per
+    ``(security_id, code, period_end)``; ``panel_available_at`` carries the
+    row-level max across every selected column.
     """
     item_codes = tuple(dict.fromkeys(items))
     metric_codes = tuple(dict.fromkeys(metrics))
@@ -184,11 +199,20 @@ def export_panel_quarterly(
         for code in metric_codes
     )
     sql = f"""
-    WITH unioned AS (
-        SELECT security_id, canonical_code AS code, period_end, value, available_at
+    WITH visible_standardized AS (
+        SELECT
+            security_id, canonical_code, period_end, value, available_at,
+            row_number() OVER (
+                PARTITION BY security_id, canonical_code, period_end, basis
+                ORDER BY available_at DESC, revision_sequence DESC
+            ) AS rn
         FROM fundamental_standardized
-        WHERE is_latest_revision AND available_at <= ?
+        WHERE available_at <= ?
           AND canonical_code IN ({", ".join(_quote(code) for code in item_codes) or "''"})
+    ), unioned AS (
+        SELECT security_id, canonical_code AS code, period_end, value, available_at
+        FROM visible_standardized
+        WHERE rn = 1
         UNION ALL
         SELECT security_id, metric_code AS code, period_end, value, available_at
         FROM derived_metric_values
