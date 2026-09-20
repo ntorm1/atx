@@ -269,7 +269,16 @@ def validate_definitions(
                         f"{where}: quarter function {call.name!r} requires a quarter-grid window "
                         f"({sorted(QUARTER_GRID_WINDOWS)}), got {definition.window!r}"
                     )
+                declared_metric_inputs = set(definition.metric_inputs)
                 for name in _direct_refs(call.args[0]):
+                    if name not in declared_metric_inputs:
+                        # Only a name declared via a ``metric:`` input is a dependency on
+                        # another derived metric's window. A bare name that happens to
+                        # collide with some other row's metric_code -- e.g. an
+                        # ``item:`` input whose code equals a reclaimed-statement
+                        # metric_code (see RECLAIMED_ITEM_CODES) -- is not that metric
+                        # reference and must not be checked against its window.
+                        continue
                     referenced = by_code.get(name)
                     if referenced is not None and referenced.window not in QUARTER_GRID_WINDOWS:
                         _fail(

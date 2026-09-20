@@ -105,6 +105,86 @@ def test_unknown_item_code_is_rejected():
     assert "nonsense" in str(excinfo.value)
 
 
+def test_undefined_metric_reference_is_rejected():
+    with pytest.raises(DerivedRegistryError) as excinfo:
+        validate_definitions(
+            (_definition(expression="nonexistent_metric", inputs=("metric:nonexistent_metric",)),),
+            item_codes=_ITEMS,
+        )
+    assert "nonexistent_metric" in str(excinfo.value)
+
+
+def test_input_without_a_namespace_prefix_is_rejected():
+    with pytest.raises(DerivedRegistryError) as excinfo:
+        validate_definitions(
+            (_definition(inputs=("revenue", "item:total_assets")),),
+            item_codes=_ITEMS,
+        )
+    assert "revenue" in str(excinfo.value)
+
+
+def test_unknown_market_column_is_rejected():
+    with pytest.raises(DerivedRegistryError) as excinfo:
+        validate_definitions(
+            (
+                _definition(
+                    metric_code="bad_col",
+                    expression="safe_div(revenue, foobar)",
+                    inputs=("item:revenue", "market:foobar"),
+                    window="daily",
+                    requires_market=True,
+                ),
+            ),
+            item_codes=_ITEMS,
+        )
+    assert "foobar" in str(excinfo.value)
+
+
+def test_invalid_metric_code_format_is_rejected():
+    with pytest.raises(DerivedRegistryError) as excinfo:
+        validate_definitions((_definition(metric_code="BadCode"),), item_codes=_ITEMS)
+    assert "BadCode" in str(excinfo.value)
+
+
+def test_duplicate_metric_code_is_rejected():
+    with pytest.raises(DerivedRegistryError) as excinfo:
+        validate_definitions((_definition(), _definition()), item_codes=_ITEMS)
+    assert "gross_margin" in str(excinfo.value)
+
+
+def test_invalid_window_is_rejected():
+    with pytest.raises(DerivedRegistryError) as excinfo:
+        validate_definitions((_definition(window="weekly"),), item_codes=_ITEMS)
+    assert "weekly" in str(excinfo.value)
+
+
+def test_malformed_requires_market_flag_is_rejected(tmp_path):
+    bad_csv = tmp_path / "bad_seed.csv"
+    bad_csv.write_text(
+        "metric_code,family,expression,window,inputs,requires_market,description,version\n"
+        "bad_flag,rollup,revenue,ttm,item:revenue,yes,Bad flag.,1\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DerivedRegistryError) as excinfo:
+        read_derived_seed(bad_csv)
+    assert "requires_market" in str(excinfo.value)
+    assert "yes" in str(excinfo.value)
+
+
+def test_bare_name_declared_in_two_namespaces_is_rejected():
+    definitions = (
+        _definition(metric_code="revenue", expression="1", inputs=()),
+        _definition(
+            metric_code="dup_ns",
+            expression="revenue",
+            inputs=("item:revenue", "metric:revenue"),
+        ),
+    )
+    with pytest.raises(DerivedRegistryError) as excinfo:
+        validate_definitions(definitions, item_codes=_ITEMS, reclaimable_codes=frozenset({"revenue"}))
+    assert "dup_ns" in str(excinfo.value)
+
+
 def test_metric_code_colliding_with_an_item_code_is_rejected():
     with pytest.raises(DerivedRegistryError) as excinfo:
         validate_definitions((_definition(metric_code="revenue"),), item_codes=_ITEMS)
@@ -167,6 +247,23 @@ def test_daily_function_in_a_quarterly_metric_is_rejected():
     assert "tret" in str(excinfo.value)
 
 
+def test_quarter_function_outside_a_quarter_grid_window_is_rejected():
+    with pytest.raises(DerivedRegistryError) as excinfo:
+        validate_definitions(
+            (
+                _definition(
+                    metric_code="annual_ttm_bad",
+                    expression="ttm(revenue)",
+                    inputs=("item:revenue",),
+                    window="annual",
+                ),
+            ),
+            item_codes=_ITEMS,
+        )
+    assert "ttm" in str(excinfo.value)
+    assert "annual" in str(excinfo.value)
+
+
 def test_quarter_window_function_on_a_non_grid_metric_reference_is_rejected():
     definitions = (
         _definition(
@@ -185,6 +282,28 @@ def test_quarter_window_function_on_a_non_grid_metric_reference_is_rejected():
     with pytest.raises(DerivedRegistryError) as excinfo:
         validate_definitions(definitions, item_codes=_ITEMS)
     assert "annual_thing" in str(excinfo.value)
+
+
+def test_item_reference_matching_a_reclaimed_metric_code_is_not_a_metric_dependency():
+    """An ``item:`` input whose bare name equals another row's metric_code (e.g. a
+    RECLAIMED_ITEM_CODES collision) is a plain item reference, not a dependency on
+    that metric -- it must not be checked against that metric's window."""
+    item_codes = _ITEMS | {"roa"}
+    definitions = (
+        _definition(
+            metric_code="roa",
+            expression="revenue",
+            inputs=("item:revenue",),
+            window="annual",
+        ),
+        _definition(
+            metric_code="bad_ref",
+            expression="ttm(roa)",
+            inputs=("item:roa",),
+            window="ttm",
+        ),
+    )
+    validate_definitions(definitions, item_codes=item_codes)
 
 
 def test_topological_order_places_dependencies_first():
