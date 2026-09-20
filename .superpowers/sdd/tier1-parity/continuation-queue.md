@@ -19,11 +19,15 @@ This section supersedes every older status below. Updated 2026-09-20.
 - Concrete PIT bug found statically: derived_metrics selects latest-only
   standardized revisions and replaces historical metric rows; market_daily
   independently selects latest-only standardized/DEI revisions. Max-input
-  clocks cannot restore lost earlier states. /root/derived_pit_revision_audit
-  is tracing the exact amendment/older-period/NULL counterexamples and bounded
-  repair design in derived-pit-revision-audit.md; no source edits yet. This is
-  REQUIRED before full derived/market activation. 0315 reserved for that repair
-  if a new state schema is needed (core breadth released reservation).
+  clocks cannot restore lost earlier states. Audit COMPLETE with a Critical
+  numeric amendment counterexample and bounded event/state design in
+  derived-pit-revision-audit.md. Fresh Codex /root/derived_pit_revision_repair
+  implements derived-pit-revision-brief.md: required writer/daily/export/PIT
+  consumer closure, nullable invalidation states, stable IDs, event-local frames.
+  Owns derived/market/consumer source and migration0315/registry lock; source
+  loaders and concurrent breadth CSV off limits. No runtime checks yet. Fresh
+  review must assess original Critical closure; rereview only new Critical fixes.
+  This repair is REQUIRED before full derived/market activation.
 - Completed prior work unchanged: corrected price publication and CF1 build.
   No labels/significance yet. After companyfacts, verified submissions resume
   uses priorUUID04cf947d-53bb-49b7-a276-b3c74a2a52c8, --only submissions_load,

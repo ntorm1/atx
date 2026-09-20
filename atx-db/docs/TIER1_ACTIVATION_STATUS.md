@@ -2,7 +2,8 @@
 
 This is an interim measurement of the local production warehouse on 2026-09-20,
 after activation-run4 stopped. It is not a completed parity gate or a release.
-All counts below came from read-only SQL or the exact staged source file.
+Completed counts below came from read-only SQL or the exact staged source file.
+In-flight progress is explicitly identified as loader-log evidence.
 
 Latest production update: **corrected prices were published successfully** by
 `activation-prices-updated-bounded` at 18:00:09 UTC. A separate read-only check at
@@ -39,6 +40,27 @@ Current receipts under `.superpowers/sdd/tier1-parity/` are
 Earlier failure receipts keep their original names, including
 `updated-price-live-measurement.json`; they describe the superseded snapshot.
 All live work and tests run sequentially with the locked project Python runtime.
+
+## Metrics build prerequisite
+
+A focused static audit found a historical-revision defect before the first full
+derived build. The current engine computes from only the latest standardized
+revisions and replaces earlier derived states. The daily market join also
+filters standardized facts and DEI shares to latest-only revisions. Consequently,
+a later amendment can remove a previously knowable historical value or make a
+daily valuation fall back to an older quarter. Maximum-input availability
+timestamps do not recover discarded states.
+
+The repair must preserve original/amended states and invalidation events, use
+bounded event frames, and update daily/export consumers together. It is underway;
+no repaired full-universe result has been measured. Static evidence and the
+implementation brief are retained as `derived-pit-revision-audit.md` and
+`derived-pit-revision-brief.md` under `.superpowers/sdd/tier1-parity/`.
+
+The catalog audit counted 173 definitions (143 on the quarterly grid and 30
+daily). A separate additive wave is filling ordinary quarterly YoY/QoQ growth,
+three-year CAGR, basic-EPS and cash-cycle gaps from existing inputs. This is
+pending implementation/validation, not additional live metric coverage.
 
 ## Activation result
 
