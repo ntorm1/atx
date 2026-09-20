@@ -8,10 +8,21 @@ archive and the Downloads original remain intact. Footer inspection reports
 
 The staged file is 3,617,973,507 bytes with SHA-256
 `0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae`.
-The copy observed an unchanged source size and modification time. Full source
-quality auditing and warehouse publication are still pending. Footer dates do
-not prove valid rows, historical listing classification, adjustment accuracy or
-historical delivery vintages.
+The copy observed an unchanged source size and modification time. The subsequent
+full-file audit matched the SHA-256 sidecar and confirmed unchanged size and
+modification time. Warehouse publication is still pending.
+
+The audit measured 32,323,644 rows, with 12,489 rows and 12,462 distinct positive
+vendor IDs on September18. It found 1,345 repeated positive ID/date keys involving
+2,690 quarantined rows, 332,607 invalid OHLCV rows, 272,181 zero-ID rows and892
+invalid display keys. These categories overlap. No adjusted-price product was
+invalid. Among31,461,105 comparable pairs,43,082 adjusted-return residuals
+exceeded0.001. Internal consistency does not establish economic adjustment
+accuracy, historical listing classification or historical delivery vintages.
+
+This audit took174.889 seconds at1GB/one DuckDB thread; measured native job peak
+was1.627GiB under a2GiB process-tree cap. An initial3GiB launch was refused before
+starting for insufficient free-memory reserve. No live warehouse write occurred.
 
 ## Verified source options
 
@@ -49,12 +60,13 @@ No secret values were printed, credentials sent, accounts created, or contact
 messages sent. This is a check of these configured locations, not a claim about
 every application or account on the machine.
 
-Use the newly supplied Parquet through the bounded native source reader,
-re-audit its full contents, and publish its actual counts. Keep the existing
+Publish the audited Parquet through the bounded native source reader and measure
+the resulting warehouse counts. Keep the existing
 raw/adjusted/split-only distinctions and unknown historical listing status.
 Do not splice differently normalized vendors' adjusted prices by ticker.
 The new file addresses the observed price-date gap; it does not independently
 close the historical identity and common-equity membership gates.
 
 Local operator receipts: `.superpowers/sdd/tier1-parity/updated-price-footer.json`,
-`updated-price-staging.json` and `updated-price-staging-memory.json`.
+`updated-price-staging.json`, `updated-price-staging-memory.json`,
+`updated-price-source-audit.json` and `updated-price-audit-memory-2g.json`.

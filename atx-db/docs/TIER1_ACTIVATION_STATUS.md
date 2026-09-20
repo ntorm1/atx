@@ -44,6 +44,14 @@ listing evidence and identity resolution remain prerequisites for that claim.
 
 ## Price source audit
 
+An updated user-supplied Parquet file has now been staged and fully audited,
+but has not yet replaced the live prices listed above. Its32,323,644 rows span
+2012-03-26 through2026-09-18; the latest source date has12,462 positive vendor IDs.
+The native bounded loader and duplicate quarantine are implemented. See the
+[updated source receipt](BULK_PRICE_SOURCE_OPTIONS.md) for the exact hash,
+quality counts and measured memory. The following TSV audit remains historical
+evidence for the old input, not the new file's measurements.
+
 The original staged `tbltickerhistory3_10y.txt` is 11,084,562,320 bytes with SHA-256
 `96cb7fbde52e03c7f6559bc1ccdf2dd97e8cec225d93128200afeb8d60ab0629`.
 The complete audit counted **31,598,499 source rows**. The earlier operator
@@ -69,8 +77,9 @@ rule is a modeled backfill convention, not historical delivery evidence.
 The replacement concept-catalog query aggregated all 31,590,760 live facts into
 242 concepts in 26.031 seconds, read-only, with DuckDB limited to 1 GB and one
 thread. Peak process working set was 1,119,350,784 bytes; peak process commit was
-1,128,935,424 bytes. This validates that query only. Facade integration, review,
-and later-stage memory work remain necessary before restarting the ladder.
+1,128,935,424 bytes. This validates that query only. Facade integration and its
+review are now complete; bounded calendar mapping is also independently reviewed.
+Final production-stage integration remains underway before restarting the ladder.
 
 Future production work is serialized, uses bounded DuckDB queries, and runs
 under a separate process-tree memory guard with physical and commit headroom

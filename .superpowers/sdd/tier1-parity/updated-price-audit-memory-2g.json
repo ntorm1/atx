@@ -1,0 +1,21 @@
+{
+  "command": [
+    ".venv/Scripts/python.exe",
+    "scripts/audit_ticker_history_source.py",
+    "--source-path",
+    "data/staging/broad-bars/2026-09-20-updated/TickerHistory3.parquet",
+    "--output",
+    "../.superpowers/sdd/tier1-parity/updated-price-source-audit.json",
+    "--memory-limit",
+    "1GB"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.663055419921875,
+    "commit_free_gb": 10.865596771240234
+  },
+  "child_pid": 12860,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 1.6270523071289062
+}

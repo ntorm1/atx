@@ -1,0 +1,18 @@
+{
+  "command": [
+    ".venv/Scripts/python.exe",
+    "scripts/audit_ticker_history_source.py",
+    "--source-path",
+    "data/staging/broad-bars/2026-09-20-updated/TickerHistory3.parquet",
+    "--output",
+    "../.superpowers/sdd/tier1-parity/updated-price-source-audit.json",
+    "--memory-limit",
+    "1GB"
+  ],
+  "job_limit_gb": 3.0,
+  "status": "refused_low_headroom",
+  "headroom": {
+    "physical_free_gb": 4.680599212646484,
+    "commit_free_gb": 9.488075256347656
+  }
+}
