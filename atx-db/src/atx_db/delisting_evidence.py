@@ -6,9 +6,10 @@
 25 / 25-NSE, SEC Form 15, and a last-trade gap in the ticker-history archive -- attributes
 a reason to each, and folds them into ``delisting_events`` under a fixed precedence.
 
-Every timestamp is sourced: SEC acceptance datetimes, the Nasdaq file creation time, or
-last ``trade_date`` + 22 hours (the archive's own end-of-day convention). Nothing here
-reads a clock.
+Every timestamp is sourced: SEC acceptance datetimes, Nasdaq publication times, or
+``trade_date`` + 22 hours (the archive's own end-of-day convention). Derived evidence
+carries the latest availability of its inputs, including the sessions establishing an
+archive gap. Nothing here reads a clock.
 """
 
 from __future__ import annotations
@@ -68,6 +69,8 @@ EVIDENCE_COLUMNS: tuple[str, ...] = (
 
 @dataclass(frozen=True)
 class DelistingEvidenceOptions:
+    """Rebuild a source using inputs known by ``as_of_date`` at 22:00, if supplied."""
+
     source: str = DELISTING_EVIDENCE_SOURCE
     event_source: str = DELISTING_EVENT_SOURCE
     archive_gap_sessions: int = ARCHIVE_GAP_SESSIONS
@@ -78,38 +81,66 @@ class DelistingEvidenceOptions:
 
 
 def _evidence_id_expression(kind_literal: str) -> str:
-    """Deterministic content hash for one evidence row."""
+    """Deterministic content hash scoped by the bound source parameter."""
 
-    return f"sha256(concat_ws('|', '{kind_literal}', coalesce(security_id, ''), symbol, CAST(delist_date AS VARCHAR)))"
+    return (
+        f"sha256(concat_ws('|', ?, '{kind_literal}', coalesce(security_id, ''), symbol, CAST(delist_date AS VARCHAR)))"
+    )
 
 
-def build_archive_last_trade_sql() -> str:
+def _as_of_filter(date_sql: str, available_sql: str, as_of_date: dt.date | None) -> str:
+    """Render a typed date cutoff without changing the builders' bound parameters."""
+
+    if as_of_date is None:
+        return "true"
+    cutoff = dt.datetime.combine(as_of_date, dt.time(END_OF_DAY_HOURS))
+    return (
+        f"({date_sql}) <= DATE '{as_of_date.isoformat()}' "
+        f"AND ({available_sql}) <= TIMESTAMP '{cutoff.isoformat(sep=' ')}'"
+    )
+
+
+def build_archive_last_trade_sql(*, as_of_date: dt.date | None = None) -> str:
     """Last bar per security, more than ``?`` sessions before the archive's last session.
 
     Placeholder order: ``[archive_gap_sessions]``.
     """
 
+    available = f"coalesce(b.available_at, CAST(b.trade_date AS TIMESTAMP) + INTERVAL {END_OF_DAY_HOURS} HOUR)"
     return f"""
-        WITH sessions AS (
-            SELECT trade_date,
-                   row_number() OVER (ORDER BY trade_date) AS session_rank
-            FROM (SELECT DISTINCT trade_date FROM equity_daily_bars WHERE trade_date IS NOT NULL)
+        WITH eligible_bars AS (
+            SELECT b.*, {available} AS input_available_at
+            FROM equity_daily_bars b
+            WHERE b.is_latest_revision = true
+              AND b.trade_date IS NOT NULL
+              AND {_as_of_filter("b.trade_date", available, as_of_date)}
         ),
-        archive_end AS (SELECT max(session_rank) AS last_rank FROM sessions),
+        sessions AS (
+            SELECT trade_date,
+                   row_number() OVER (ORDER BY trade_date) AS session_rank,
+                   min(input_available_at) AS available_at
+            FROM eligible_bars
+            GROUP BY trade_date
+        ),
+        archive_end AS (
+            SELECT max(session_rank) AS last_rank, max(available_at) AS available_at
+            FROM sessions
+        ),
         last_bar AS (
             SELECT
                 b.security_id,
                 max(b.trade_date) AS delist_date,
-                any_value(b.symbol ORDER BY b.trade_date DESC) AS symbol
-            FROM equity_daily_bars b
-            WHERE b.security_id IS NOT NULL AND b.trade_date IS NOT NULL AND b.close IS NOT NULL
+                any_value(b.symbol ORDER BY b.trade_date DESC, b.input_available_at DESC, b.symbol) AS symbol,
+                max(b.input_available_at) AS available_at
+            FROM eligible_bars b
+            WHERE b.security_id IS NOT NULL AND b.close IS NOT NULL
             GROUP BY b.security_id
         )
         SELECT
             last_bar.security_id,
             last_bar.symbol,
             last_bar.delist_date,
-            CAST(last_bar.delist_date AS TIMESTAMP) + INTERVAL {END_OF_DAY_HOURS} HOUR AS available_at,
+            greatest(last_bar.available_at, archive_end.available_at) AS available_at,
             'equity_daily_bars' AS evidence_source_table,
             CAST(NULL AS VARCHAR) AS source_event_id,
             archive_end.last_rank - s.session_rank AS gap_sessions
@@ -121,22 +152,22 @@ def build_archive_last_trade_sql() -> str:
     """
 
 
-def build_nasdaq_delete_sql() -> str:
+def build_nasdaq_delete_sql(*, as_of_date: dt.date | None = None) -> str:
     """Nasdaq Trader delete actions on any of the three venue columns."""
 
-    return """
+    available = "coalesce(e.source_file_created_at, e.available_at, CAST(e.as_of_date AS TIMESTAMP) + INTERVAL 22 HOUR)"
+    return f"""
         SELECT
             e.security_id,
             e.symbol,
             coalesce(e.effective_date, e.as_of_date) AS delist_date,
-            coalesce(
-                e.source_file_created_at,
-                CAST(coalesce(e.effective_date, e.as_of_date) AS TIMESTAMP) + INTERVAL 22 HOUR
-            ) AS available_at,
+            {available} AS available_at,
             'nasdaq_listing_events' AS evidence_source_table,
             e.event_id AS source_event_id
         FROM nasdaq_listing_events e
         WHERE coalesce(e.effective_date, e.as_of_date) IS NOT NULL
+          AND e.is_latest_revision = true
+          AND {_as_of_filter("coalesce(e.effective_date, e.as_of_date)", available, as_of_date)}
           AND (
             upper(coalesce(e.nasdaq_action, '')) = 'D'
             OR upper(coalesce(e.bx_action, '')) = 'D'
@@ -146,7 +177,7 @@ def build_nasdaq_delete_sql() -> str:
     """
 
 
-def build_sec_form_sql(*, form_kind: str) -> str:
+def build_sec_form_sql(*, form_kind: str, as_of_date: dt.date | None = None) -> str:
     """SEC Form 25/25-NSE or Form 15 evidence.
 
     ``form_kind`` is ``"form_25"`` or ``"form_15"``. For ``form_25`` the placeholder
@@ -155,8 +186,10 @@ def build_sec_form_sql(*, form_kind: str) -> str:
 
     if form_kind not in {"form_25", "form_15"}:
         raise ValueError(f"unknown form_kind: {form_kind!r}")
+    available = "coalesce(s.acceptance_datetime, CAST(s.filing_date AS TIMESTAMP) + INTERVAL 22 HOUR)"
+    date_sql = "coalesce(s.filing_date, CAST(s.acceptance_datetime AS DATE))"
     if form_kind == "form_15":
-        return """
+        return f"""
             SELECT
                 s.security_id,
                 coalesce(sec.primary_symbol, s.security_id) AS symbol,
@@ -172,9 +205,11 @@ def build_sec_form_sql(*, form_kind: str) -> str:
             LEFT JOIN securities sec ON sec.security_id = s.security_id
             WHERE s.form LIKE '15-%'
               AND coalesce(s.filing_date, CAST(s.acceptance_datetime AS DATE)) IS NOT NULL
+              AND {_as_of_filter(date_sql, available, as_of_date)}
             ORDER BY s.security_id, delist_date, s.accession_number
         """
     placeholders = ", ".join("?" for _ in MERGER_FORMS)
+    merger_available = "coalesce(m.acceptance_datetime, CAST(m.filing_date AS TIMESTAMP) + INTERVAL 22 HOUR)"
     return f"""
         WITH form25 AS (
             SELECT
@@ -190,9 +225,10 @@ def build_sec_form_sql(*, form_kind: str) -> str:
             FROM sec_submissions s
             WHERE s.form IN ('25', '25-NSE')
               AND coalesce(s.filing_date, CAST(s.acceptance_datetime AS DATE)) IS NOT NULL
+              AND {_as_of_filter(date_sql, available, as_of_date)}
         ),
         merger_evidence AS (
-            SELECT DISTINCT f.accession_number
+            SELECT f.accession_number, max({merger_available}) AS available_at
             FROM form25 f
             JOIN sec_submissions m
               ON m.cik = f.cik
@@ -200,12 +236,14 @@ def build_sec_form_sql(*, form_kind: str) -> str:
              AND coalesce(m.filing_date, CAST(m.acceptance_datetime AS DATE)) <= f.delist_date
              AND coalesce(m.filing_date, CAST(m.acceptance_datetime AS DATE))
                  >= f.delist_date - CAST(? AS INTEGER)
+             AND {_as_of_filter("coalesce(m.filing_date, CAST(m.acceptance_datetime AS DATE))", merger_available, as_of_date)}
+            GROUP BY f.accession_number
         )
         SELECT
             form25.security_id,
             coalesce(sec.primary_symbol, form25.security_id) AS symbol,
             form25.delist_date,
-            form25.available_at,
+            greatest(form25.available_at, me.available_at) AS available_at,
             'sec_submissions' AS evidence_source_table,
             form25.accession_number AS source_event_id,
             CASE
@@ -220,31 +258,38 @@ def build_sec_form_sql(*, form_kind: str) -> str:
     """
 
 
-def build_bankruptcy_overlay_sql() -> str:
-    """Securities whose newest directory snapshot at or before the delist date is bankrupt.
+def build_bankruptcy_overlay_sql(*, as_of_date: dt.date | None = None) -> str:
+    """Newest eligible snapshot per evidence row, used to assess bankruptcy.
 
     Nasdaq's ``financial_status`` flag ``Q`` means "bankrupt"; the composite codes (``EQ``,
-    ``HQ``, ...) contain it, so a substring test is the right predicate.
+    ``HQ``, ...) contain it, so a substring test is the right predicate. Cleared/null
+    statuses remain in the result so their availability also constrains the reason.
     """
 
-    return """
-        SELECT DISTINCT e.evidence_id
-        FROM delisting_evidence e
-        JOIN (
+    available = "coalesce(d.available_at, CAST(d.as_of_date AS TIMESTAMP) + INTERVAL 22 HOUR)"
+    return f"""
+        WITH ranked AS (
             SELECT
-                d.symbol,
-                d.as_of_date,
+                e.evidence_id,
                 d.financial_status,
-                row_number() OVER (PARTITION BY d.symbol, d.as_of_date ORDER BY d.directory) AS rn
-            FROM nasdaq_symbol_directory d
-            WHERE d.financial_status IS NOT NULL
-        ) dir
-          ON dir.rn = 1
-         AND dir.symbol = e.symbol
-         AND dir.as_of_date <= e.delist_date
-        WHERE e.source = ?
-          AND contains(upper(dir.financial_status), 'Q')
-        ORDER BY e.evidence_id
+                greatest(e.available_at, {available}) AS available_at,
+                row_number() OVER (
+                    PARTITION BY e.evidence_id
+                    ORDER BY d.as_of_date DESC, d.directory, {available} DESC,
+                             d.financial_status NULLS LAST
+                ) AS rn
+            FROM delisting_evidence e
+            JOIN nasdaq_symbol_directory d
+              ON d.symbol = e.symbol
+             AND d.as_of_date <= e.delist_date
+             AND d.is_latest_revision = true
+             AND {_as_of_filter("d.as_of_date", available, as_of_date)}
+            WHERE e.source = ? AND e.is_latest_revision = true
+        )
+        SELECT evidence_id, available_at, contains(upper(financial_status), 'Q') AS is_bankrupt
+        FROM ranked
+        WHERE rn = 1
+        ORDER BY evidence_id
     """
 
 
@@ -293,7 +338,7 @@ def refresh_delisting_evidence(
     store: DuckDBStore,
     options: DelistingEvidenceOptions | None = None,
 ) -> int:
-    """Rebuild every public delisting evidence stream for this source."""
+    """Rebuild this source from latest revisions visible at the optional cutoff."""
 
     options = options or DelistingEvidenceOptions()
     store.initialize()
@@ -303,6 +348,7 @@ def refresh_delisting_evidence(
             "archive_gap_sessions": options.archive_gap_sessions,
             "merger_lookback_days": options.merger_lookback_days,
             "merger_forms": list(MERGER_FORMS),
+            "as_of_date": options.as_of_date.isoformat() if options.as_of_date is not None else None,
         }
     )
     by_kind = {row[0]: row for row in EVIDENCE_PRECEDENCE}
@@ -318,10 +364,10 @@ def refresh_delisting_evidence(
                 code,
                 reason,
                 confidence,
-                body=build_sec_form_sql(form_kind="form_25"),
+                body=build_sec_form_sql(form_kind="form_25", as_of_date=options.as_of_date),
                 reason_from_body=True,
             ),
-            [options.source, details, options.run_id, *MERGER_FORMS, options.merger_lookback_days],
+            [options.source, options.source, details, options.run_id, *MERGER_FORMS, options.merger_lookback_days],
         )
 
         kind, rank, code, reason, confidence = by_kind["nasdaq_delete"]
@@ -332,10 +378,10 @@ def refresh_delisting_evidence(
                 code,
                 reason,
                 confidence,
-                body=build_nasdaq_delete_sql(),
+                body=build_nasdaq_delete_sql(as_of_date=options.as_of_date),
                 reason_from_body=False,
             ),
-            [options.source, details, options.run_id],
+            [options.source, options.source, details, options.run_id],
         )
 
         kind, rank, code, reason, confidence = by_kind["sec_form_15"]
@@ -346,10 +392,10 @@ def refresh_delisting_evidence(
                 code,
                 reason,
                 confidence,
-                body=build_sec_form_sql(form_kind="form_15"),
+                body=build_sec_form_sql(form_kind="form_15", as_of_date=options.as_of_date),
                 reason_from_body=True,
             ),
-            [options.source, details, options.run_id],
+            [options.source, options.source, details, options.run_id],
         )
 
         if options.include_archive_inference:
@@ -361,17 +407,20 @@ def refresh_delisting_evidence(
                     code,
                     reason,
                     confidence,
-                    body=build_archive_last_trade_sql(),
+                    body=build_archive_last_trade_sql(as_of_date=options.as_of_date),
                     reason_from_body=False,
                 ),
-                [options.source, details, options.run_id, options.archive_gap_sessions],
+                [options.source, options.source, details, options.run_id, options.archive_gap_sessions],
             )
 
         store.con.execute(
             f"""
-            UPDATE delisting_evidence
-            SET reason_category = 'bankruptcy', reason_confidence = 'high'
-            WHERE evidence_id IN ({build_bankruptcy_overlay_sql()})
+            UPDATE delisting_evidence AS e
+            SET reason_category = CASE WHEN overlay.is_bankrupt THEN 'bankruptcy' ELSE e.reason_category END,
+                reason_confidence = CASE WHEN overlay.is_bankrupt THEN 'high' ELSE e.reason_confidence END,
+                available_at = overlay.available_at
+            FROM ({build_bankruptcy_overlay_sql(as_of_date=options.as_of_date)}) overlay
+            WHERE e.evidence_id = overlay.evidence_id
             """,
             [options.source],
         )
@@ -411,7 +460,8 @@ def fold_evidence_into_delisting_events(
 
     The winner is the minimum ``evidence_rank``, ties broken by ``evidence_id`` so the
     result is stable. Rows written by ``delisting.refresh_delisting_events`` are never
-    touched: the DELETE is scoped to ``options.event_source``.
+    touched: the DELETE is scoped to ``options.event_source``. The optional as-of bound
+    also applies when folding already-materialized evidence without refreshing it.
     """
 
     options = options or DelistingEvidenceOptions()
@@ -419,7 +469,7 @@ def fold_evidence_into_delisting_events(
     with store.transaction():
         store.con.execute("DELETE FROM delisting_events WHERE source = ?", [options.event_source])
         store.con.execute(
-            """
+            f"""
             INSERT OR REPLACE INTO delisting_events (
                 delisting_event_id, source, listing_status_source, source_listing_status_id,
                 security_id, symbol, delist_date, as_of_date, available_at, delist_code,
@@ -436,7 +486,8 @@ def fold_evidence_into_delisting_events(
                         ORDER BY e.evidence_rank, e.evidence_id
                     ) AS rn
                 FROM delisting_evidence e
-                WHERE e.source = ?
+                WHERE e.source = ? AND e.is_latest_revision = true
+                  AND {_as_of_filter("e.delist_date", "e.available_at", options.as_of_date)}
             )
             SELECT
                 sha256(concat_ws('|', ?, coalesce(security_id, symbol), CAST(delist_date AS VARCHAR))),

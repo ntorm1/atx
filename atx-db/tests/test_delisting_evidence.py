@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
+
 
 def _seed_bars(store, security_id, symbol, days):
     values = ",".join(
@@ -137,8 +139,8 @@ def test_nasdaq_delete_and_form_15_are_captured(tmp_store):
     _seed_two_securities(tmp_store)
     tmp_store.con.execute(
         "INSERT INTO nasdaq_listing_events (event_id, symbol, security_id, nasdaq_action, "
-        "effective_date, as_of_date, source_url) VALUES "
-        "('EV-1','GONE','SEC-GONE','D',DATE '2024-01-17',DATE '2024-01-17','file://t')"
+        "effective_date, as_of_date, source_url, is_latest_revision) VALUES "
+        "('EV-1','GONE','SEC-GONE','D',DATE '2024-01-17',DATE '2024-01-17','file://t',true)"
     )
     tmp_store.con.execute(
         "INSERT INTO sec_submissions (security_id, cik, accession_number, filing_date, form, "
@@ -164,9 +166,9 @@ def test_bankruptcy_overlay_upgrades_the_reason(tmp_store):
     _seed_two_securities(tmp_store)
     tmp_store.con.execute(
         "INSERT INTO nasdaq_symbol_directory (directory, symbol, security_name, exchange, etf, "
-        "test_issue, financial_status, as_of_date, source_url) VALUES "
+        "test_issue, financial_status, as_of_date, source_url, is_latest_revision) VALUES "
         "('nasdaqlisted','GONE','Gone Corp - Common Stock','NASDAQ',false,false,'Q',"
-        "DATE '2024-01-10','file://t')"
+        "DATE '2024-01-10','file://t',true)"
     )
     refresh_delisting_evidence(tmp_store, DelistingEvidenceOptions(run_id="t"))
     row = tmp_store.con.execute("SELECT reason_category, reason_confidence FROM delisting_evidence").fetchone()
@@ -184,8 +186,8 @@ def test_the_fold_keeps_the_highest_precedence_evidence(tmp_store):
     _seed_two_securities(tmp_store)
     tmp_store.con.execute(
         "INSERT INTO nasdaq_listing_events (event_id, symbol, security_id, nasdaq_action, "
-        "effective_date, as_of_date, source_url) VALUES "
-        "('EV-1','GONE','SEC-GONE','D',DATE '2024-01-12',DATE '2024-01-12','file://t')"
+        "effective_date, as_of_date, source_url, is_latest_revision) VALUES "
+        "('EV-1','GONE','SEC-GONE','D',DATE '2024-01-12',DATE '2024-01-12','file://t',true)"
     )
     options = DelistingEvidenceOptions(run_id="t")
     refresh_delisting_evidence(tmp_store, options)
@@ -242,3 +244,242 @@ def test_refresh_is_idempotent(tmp_store):
     assert first == second
     total = tmp_store.con.execute("SELECT count(*) FROM delisting_evidence").fetchone()[0]
     assert int(total) == second
+
+
+@pytest.mark.parametrize("latest_status", ["N", None])
+def test_bankruptcy_overlay_uses_the_newest_snapshot_per_event(tmp_store, latest_status):
+    from atx_db.delisting_evidence import DelistingEvidenceOptions, refresh_delisting_evidence
+
+    _seed_two_securities(tmp_store)
+    tmp_store.con.execute(
+        "INSERT INTO nasdaq_symbol_directory "
+        "(directory, symbol, financial_status, as_of_date, source_url, is_latest_revision) VALUES "
+        "('nasdaqlisted','GONE','EQ',DATE '2024-01-01','file://t',true),"
+        "('nasdaqlisted','GONE',?,DATE '2024-01-10','file://t',true),"
+        "('nasdaqlisted','GONE','Q',DATE '2024-01-13','file://t',true)",
+        [latest_status],
+    )
+    tmp_store.con.execute(
+        "INSERT INTO nasdaq_listing_events "
+        "(event_id, symbol, security_id, nasdaq_action, effective_date, as_of_date, source_url, is_latest_revision) VALUES "
+        "('EV-OLD','GONE','SEC-GONE','D',DATE '2024-01-09',DATE '2024-01-09','file://t',true),"
+        "('EV-NEW','GONE','SEC-GONE','D',DATE '2024-01-12',DATE '2024-01-12','file://t',true)"
+    )
+    refresh_delisting_evidence(tmp_store, DelistingEvidenceOptions(include_archive_inference=False))
+    assert tmp_store.con.execute(
+        "SELECT source_event_id, reason_category FROM delisting_evidence ORDER BY delist_date"
+    ).fetchall() == [("EV-OLD", "bankruptcy"), ("EV-NEW", "exchange_delist")]
+
+
+def test_evidence_sources_coexist_and_refresh_independently(tmp_store):
+    from atx_db.delisting_evidence import DelistingEvidenceOptions, refresh_delisting_evidence
+
+    _seed_two_securities(tmp_store)
+    first_options = DelistingEvidenceOptions(run_id="original")
+    other_options = DelistingEvidenceOptions(source="other_evidence", run_id="other")
+    refresh_delisting_evidence(tmp_store, first_options)
+    original = tmp_store.con.execute(
+        "SELECT * FROM delisting_evidence WHERE source = ?", [first_options.source]
+    ).fetchall()
+    refresh_delisting_evidence(tmp_store, other_options)
+    assert (
+        tmp_store.con.execute("SELECT * FROM delisting_evidence WHERE source = ?", [first_options.source]).fetchall()
+        == original
+    )
+    other = tmp_store.con.execute(
+        "SELECT * FROM delisting_evidence WHERE source = ?", [other_options.source]
+    ).fetchall()
+    refresh_delisting_evidence(tmp_store, first_options)
+    assert (
+        tmp_store.con.execute("SELECT * FROM delisting_evidence WHERE source = ?", [other_options.source]).fetchall()
+        == other
+    )
+    assert tmp_store.con.execute("SELECT count(DISTINCT evidence_id) FROM delisting_evidence").fetchone()[0] == 2
+    assert original[0][0] != other[0][0]
+
+
+@pytest.mark.parametrize("kind", ["sec_form_25", "sec_form_15", "nasdaq_delete"])
+@pytest.mark.parametrize(
+    ("event_date", "available_at", "expected"),
+    [
+        ("2024-01-12", "2024-01-12 22:00:00", 1),
+        ("2024-01-12", "2024-01-12 22:00:01", 0),
+        ("2024-01-13", "2024-01-12 17:00:00", 0),
+    ],
+)
+def test_as_of_bounds_explicit_evidence_by_date_and_availability(tmp_store, kind, event_date, available_at, expected):
+    from atx_db.delisting_evidence import DelistingEvidenceOptions, refresh_delisting_evidence
+
+    _seed_two_securities(tmp_store)
+    if kind == "nasdaq_delete":
+        tmp_store.con.execute(
+            "INSERT INTO nasdaq_listing_events (event_id, symbol, security_id, nasdaq_action, "
+            "effective_date, as_of_date, source_file_created_at, source_url, is_latest_revision) "
+            "VALUES ('EV','GONE','SEC-GONE','D',?,DATE '2024-01-12',?,'file://t',true)",
+            [event_date, available_at],
+        )
+    else:
+        tmp_store.con.execute(
+            "INSERT INTO sec_submissions (security_id, cik, accession_number, filing_date, "
+            "form, acceptance_datetime, source_url) "
+            "VALUES ('SEC-GONE','0000000002','ACC',?,?,?,'file://t')",
+            [event_date, "25" if kind == "sec_form_25" else "15-12B", available_at],
+        )
+    options = DelistingEvidenceOptions(as_of_date=dt.date(2024, 1, 12), include_archive_inference=False)
+    assert refresh_delisting_evidence(tmp_store, options) == expected
+
+
+def test_as_of_bounds_the_archive_sessions_and_last_bar(tmp_store):
+    from atx_db.delisting_evidence import DelistingEvidenceOptions, refresh_delisting_evidence
+
+    _seed_two_securities(tmp_store)
+    early = DelistingEvidenceOptions(as_of_date=dt.date.fromisoformat(SESSIONS[20]))
+    assert refresh_delisting_evidence(tmp_store, early) == 0
+    # The future resumed trade must not hide the gap visible at the historical cutoff.
+    _seed_bars(tmp_store, "SEC-GONE", "GONE", [SESSIONS[50]])
+    cutoff = dt.date.fromisoformat(SESSIONS[40])
+    assert refresh_delisting_evidence(tmp_store, DelistingEvidenceOptions(as_of_date=cutoff)) == 1
+    assert tmp_store.con.execute("SELECT available_at FROM delisting_evidence").fetchone()[0] == dt.datetime.combine(
+        cutoff, dt.time(22)
+    )
+    assert refresh_delisting_evidence(tmp_store) == 0
+
+
+def test_archive_ignores_superseded_sessions(tmp_store):
+    from atx_db.delisting_evidence import refresh_delisting_evidence
+
+    _seed_two_securities(tmp_store)
+    tmp_store.con.execute(
+        "UPDATE equity_daily_bars SET is_latest_revision = false WHERE trade_date > ?", [SESSIONS[20]]
+    )
+    assert refresh_delisting_evidence(tmp_store) == 0
+
+
+def test_archive_ignores_superseded_last_bar(tmp_store):
+    from atx_db.delisting_evidence import refresh_delisting_evidence
+
+    _seed_two_securities(tmp_store)
+    _seed_bars(tmp_store, "SEC-GONE", "GONE", [SESSIONS[-1]])
+    tmp_store.con.execute(
+        "UPDATE equity_daily_bars SET is_latest_revision = false WHERE security_id = 'SEC-GONE' AND trade_date = ?",
+        [SESSIONS[-1]],
+    )
+    assert refresh_delisting_evidence(tmp_store) == 1
+    assert tmp_store.con.execute("SELECT delist_date FROM delisting_evidence").fetchone()[0] == dt.date.fromisoformat(
+        SESSIONS[9]
+    )
+
+
+def test_delete_and_directory_ignore_superseded_revisions(tmp_store):
+    from atx_db.delisting_evidence import refresh_delisting_evidence
+
+    _seed_two_securities(tmp_store)
+    tmp_store.con.execute(
+        "INSERT INTO nasdaq_listing_events (event_id, symbol, security_id, nasdaq_action, "
+        "effective_date, as_of_date, source_url, is_latest_revision) VALUES "
+        "('EV','GONE','SEC-GONE','D',DATE '2024-01-12',DATE '2024-01-12','file://t',false)"
+    )
+    tmp_store.con.execute(
+        "INSERT INTO nasdaq_symbol_directory "
+        "(directory, symbol, financial_status, as_of_date, source_url, is_latest_revision) VALUES "
+        "('nasdaqlisted','GONE','Q',DATE '2024-01-10','file://t',false)"
+    )
+    assert refresh_delisting_evidence(tmp_store) == 1
+    assert tmp_store.con.execute("SELECT evidence_kind, reason_category FROM delisting_evidence").fetchall() == [
+        ("archive_last_trade", "unknown")
+    ]
+
+
+def test_as_of_bounds_merger_reason_and_carries_its_availability(tmp_store):
+    from atx_db.delisting_evidence import DelistingEvidenceOptions, refresh_delisting_evidence
+
+    _seed_two_securities(tmp_store)
+    tmp_store.con.execute(
+        "INSERT INTO sec_submissions (security_id, cik, accession_number, filing_date, "
+        "form, acceptance_datetime, source_url) VALUES "
+        "('SEC-GONE','0000000002','FORM25',DATE '2024-01-12','25',TIMESTAMP '2024-01-12 17:00:00','file://t'),"
+        "('SEC-GONE','0000000002','MERGER',DATE '2024-01-10','DEFM14A',TIMESTAMP '2024-01-13 17:00:00','file://t')"
+    )
+    for day, expected in [(12, "voluntary"), (13, "merger_acquisition")]:
+        refresh_delisting_evidence(
+            tmp_store, DelistingEvidenceOptions(as_of_date=dt.date(2024, 1, day), include_archive_inference=False)
+        )
+        assert tmp_store.con.execute("SELECT reason_category, available_at FROM delisting_evidence").fetchone() == (
+            expected,
+            dt.datetime(2024, 1, day, 17),
+        )
+
+
+def test_as_of_bounds_bankruptcy_reason_and_carries_its_availability(tmp_store):
+    from atx_db.delisting_evidence import DelistingEvidenceOptions, refresh_delisting_evidence
+
+    _seed_two_securities(tmp_store)
+    tmp_store.con.execute(
+        "INSERT INTO sec_submissions (security_id, cik, accession_number, filing_date, "
+        "form, acceptance_datetime, source_url) VALUES "
+        "('SEC-GONE','0000000002','FORM15',DATE '2024-01-12','15-12B',TIMESTAMP '2024-01-12 17:00:00','file://t')"
+    )
+    tmp_store.con.execute(
+        "INSERT INTO nasdaq_symbol_directory "
+        "(directory, symbol, financial_status, as_of_date, available_at, source_url, is_latest_revision) VALUES "
+        "('nasdaqlisted','GONE','Q',DATE '2024-01-10',TIMESTAMP '2024-01-13 17:00:00','file://t',true)"
+    )
+    for day, expected in [(12, "voluntary"), (13, "bankruptcy")]:
+        refresh_delisting_evidence(
+            tmp_store, DelistingEvidenceOptions(as_of_date=dt.date(2024, 1, day), include_archive_inference=False)
+        )
+        assert tmp_store.con.execute("SELECT reason_category, available_at FROM delisting_evidence").fetchone() == (
+            expected,
+            dt.datetime(2024, 1, day, 17),
+        )
+
+
+@pytest.mark.parametrize("cleared_status", ["N", None])
+def test_cleared_bankruptcy_carries_the_new_snapshot_availability(tmp_store, cleared_status):
+    from atx_db.delisting_evidence import DelistingEvidenceOptions, refresh_delisting_evidence
+
+    _seed_two_securities(tmp_store)
+    tmp_store.con.execute(
+        "INSERT INTO sec_submissions (security_id, cik, accession_number, filing_date, "
+        "form, acceptance_datetime, source_url) VALUES "
+        "('SEC-GONE','0000000002','FORM15',DATE '2024-01-12','15-12B',TIMESTAMP '2024-01-12 17:00:00','file://t')"
+    )
+    tmp_store.con.execute(
+        "INSERT INTO nasdaq_symbol_directory "
+        "(directory, symbol, financial_status, as_of_date, available_at, source_url, is_latest_revision) VALUES "
+        "('nasdaqlisted','GONE','Q',DATE '2024-01-01',TIMESTAMP '2024-01-01 17:00:00','file://t',true),"
+        "('nasdaqlisted','GONE',?,DATE '2024-01-10',TIMESTAMP '2024-01-13 17:00:00','file://t',true)",
+        [cleared_status],
+    )
+    for day, expected in [(12, "bankruptcy"), (13, "voluntary")]:
+        refresh_delisting_evidence(
+            tmp_store, DelistingEvidenceOptions(as_of_date=dt.date(2024, 1, day), include_archive_inference=False)
+        )
+        assert tmp_store.con.execute("SELECT reason_category, available_at FROM delisting_evidence").fetchone() == (
+            expected,
+            dt.datetime(2024, 1, day, 17),
+        )
+
+
+def test_fold_independently_bounds_dates_availability_and_revisions(tmp_store):
+    from atx_db.delisting_evidence import (
+        DelistingEvidenceOptions,
+        fold_evidence_into_delisting_events,
+        refresh_delisting_evidence,
+    )
+
+    _seed_two_securities(tmp_store)
+    tmp_store.con.execute(
+        "INSERT INTO sec_submissions (security_id, cik, accession_number, filing_date, "
+        "form, acceptance_datetime, source_url) VALUES "
+        "('SEC-GONE','0000000002','KNOWN',DATE '2024-01-10','15-12B',TIMESTAMP '2024-01-10 17:00:00','file://t'),"
+        "('SEC-GONE','0000000002','LATE',DATE '2024-01-11','15-12B',TIMESTAMP '2024-01-13 17:00:00','file://t'),"
+        "('SEC-GONE','0000000002','FUTURE',DATE '2024-01-13','15-12B',TIMESTAMP '2024-01-12 17:00:00','file://t'),"
+        "('SEC-GONE','0000000002','STALE',DATE '2024-01-09','15-12B',TIMESTAMP '2024-01-09 17:00:00','file://t')"
+    )
+    refresh_delisting_evidence(tmp_store, DelistingEvidenceOptions(include_archive_inference=False))
+    tmp_store.con.execute("UPDATE delisting_evidence SET is_latest_revision = false WHERE source_event_id = 'STALE'")
+    assert (
+        fold_evidence_into_delisting_events(tmp_store, DelistingEvidenceOptions(as_of_date=dt.date(2024, 1, 12))) == 1
+    )
+    assert tmp_store.con.execute("SELECT source_event_id FROM delisting_events").fetchall() == [("KNOWN",)]
