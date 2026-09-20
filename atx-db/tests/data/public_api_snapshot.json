@@ -570,6 +570,7 @@
     "warehouse",
     "warehouse_catalog_asof",
     "watermarks",
+    "xbrl_catalog",
     "xbrl_filing_contexts",
     "xbrl_processor",
     "xbrl_taxonomy",
