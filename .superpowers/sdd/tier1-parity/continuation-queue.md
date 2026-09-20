@@ -2,6 +2,35 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override — 2026-09-20 20:42 UTC
+
+- Sole active DB writer remains activation-companyfacts-archive3, session6840,
+  launcher2332/worker9412, same guard3GiB/DuckDB1GB/1thread. At20:41:19UTC:
+  1250/20390 members processed,1082 loaded,158 empty,10 source unavailable,
+  zero failed,7045704 attempt rows. CPU/logs advance, physical free ~6.4GiB;
+  disk111.28GiB free at20:38. LET THIS HEALTHY FULL ARCHIVE RUN FINISH.
+  Root alone runs DB/tests/probes, none concurrently. No RAM escalation.
+- Static production-metric-surface-report.md confirms173 catalog definitions
+  (143quarterly-grid/30daily) and material ordinary quarterly growth/efficiency
+  gaps. Fresh Codex /root/core_metric_breadth owns CSV/newtest/report under
+  core-metric-breadth-brief.md:18quarterly YoY/QoQ outputs,5CAGRs,basicEPS,
+  DSO/DIO/DPO/CCC. No migration needed: activation reseeds catalog. No runtime
+  validation yet; root tests after active writer, one independent review.
+- Concrete PIT bug found statically: derived_metrics selects latest-only
+  standardized revisions and replaces historical metric rows; market_daily
+  independently selects latest-only standardized/DEI revisions. Max-input
+  clocks cannot restore lost earlier states. /root/derived_pit_revision_audit
+  is tracing the exact amendment/older-period/NULL counterexamples and bounded
+  repair design in derived-pit-revision-audit.md; no source edits yet. This is
+  REQUIRED before full derived/market activation. 0315 reserved for that repair
+  if a new state schema is needed (core breadth released reservation).
+- Completed prior work unchanged: corrected price publication and CF1 build.
+  No labels/significance yet. After companyfacts, verified submissions resume
+  uses priorUUID04cf947d-53bb-49b7-a276-b3c74a2a52c8, --only submissions_load,
+  no archive download; then tested/reviewed PIT+core changes and run5 from
+  statement_points --force. Measurements, release, gate suite, whole-branch
+  review and USER APPROVAL before merge still required; stash@{0} reminder.
+
 ## Current controller override — 2026-09-20 20:06 UTC
 
 - ACTIVE soleDBwriter activation-companyfacts-archive3, tool session6840,
