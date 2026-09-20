@@ -2,6 +2,40 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override - 2026-09-20 22:07 UTC
+
+- Archive3 is TERMINAL FAILED at22:02:44UTC; worker9412 gone and session6840
+  completedexit1. Fatal COMMIT hit953.6MiB/953.6MiB DuckDB budget, guardpeak
+  1.884941GiB, no host-memory guard stop. Do not continue old wait/poll/restart.
+  Both DB ledgers already failed with proper clocks; no manual ledger repair.
+- Root guarded read-only inspection22:04:46UTC found38500008facts=points,
+  31959271prices,31934514CF1rows retained. Attempt20205629facts/3750loadedCIKs;
+  receipts3750loaded+708empty+26unavailable+5errors=4489, lastloaded0001033905.
+  DatasetUUID758f7d5c-73ae-4b66-a8c9-f1996afa163a, schema0314.
+  companyfacts-archive3-failure-report.md/inspection.json and failed-members.json
+  are authoritative evidence. Personal configured contact in params was redacted
+  from generated evidence; no archive member HTTP occurred.
+- Five errors are missing payloadCIK despite valid exact archive names/facts
+  objects. CF5 /root/companyfacts_archive3_repair owns fundamentals.py+private
+  helper/focusedCFtests per companyfacts-archive3-repair-brief.md. It will repair
+  bounded connection lifetime, verified resume including unfinished candidates,
+  missingCIK source handling and explicit dummyUA forwarding. Activation changes
+  must be a separate patch until P1commit; no actual activation edits by CF5 yet.
+- Sole ROOT runtime workload now: focused P1+Core five-file pytest -n0 under
+  project .venv guard2.5GiB, toolsession27496, guardchild11480. Exact logfile
+  prefix is in derived-pit-active-check.txt. No competing probes/tests/writers.
+  Review fixes I1/M1 included. Inspect actual result; do not claim passed yet.
+- AF1 /root/annual_fallback_implementation continues isolated draft source/tests
+  and0316/API2.1 proposal. No actualP1/Core edits. Root validates/commits P1/0315
+  FIRST, Core second, then reconciles draft baseline/patch and CF5activationpatch.
+  One independent review per newtask; Criticalfixes only rereview.
+- HEAD1fba7641 before this checkpoint. Goal ACTIVE with production repair in
+  progress. ResumeCF5 only after tests/review, submissions verifiedresume still
+  queued, fullrun5/CF1eval/livequalitycoverage/release/gates/mergeapproval remain.
+  Preserve other-session work and stash@{0}. Turn classification PROGRESS:
+  authoritative terminal diagnosis, retained-data measurement, CF5implementation
+  dispatched and queued P1/Core tests running.
+
 ## Current controller override - 2026-09-20 21:53 UTC
 
 - Actual archive3 worker9412 remains LIVE with the same creation time and advancing

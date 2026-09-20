@@ -1,0 +1,60 @@
+[
+  {
+    "cik": "0000741313",
+    "bytes": 4945,
+    "keys": [
+      "entityName",
+      "facts"
+    ],
+    "payload_cik": null,
+    "facts_type": "dict",
+    "taxonomy_count": 1
+  },
+  {
+    "cik": "0000759828",
+    "bytes": 289,
+    "keys": [
+      "entityName",
+      "facts"
+    ],
+    "payload_cik": null,
+    "facts_type": "dict",
+    "taxonomy_count": 1,
+    "raw": "{\"entityName\":\"JOHN HANCOCK INVESTORS TRUST\",\"facts\":{\"cef\":{\"OutstandingSecurityHeldShares\":{\"label\":\"\",\"description\":\"\",\"units\":{\"shares\":[{\"start\":\"2025-11-01\",\"end\":\"2026-04-30\",\"val\":8744547,\"accn\":\"0000759828-26-000014\",\"fy\":null,\"fp\":null,\"form\":\"N-CSRS\",\"filed\":\"2026-07-01\"}]}}}}}"
+  },
+  {
+    "cik": "0000851693",
+    "bytes": 6561,
+    "keys": [
+      "entityName",
+      "facts"
+    ],
+    "payload_cik": null,
+    "facts_type": "dict",
+    "taxonomy_count": 1
+  },
+  {
+    "cik": "0000855886",
+    "bytes": 296,
+    "keys": [
+      "entityName",
+      "facts"
+    ],
+    "payload_cik": null,
+    "facts_type": "dict",
+    "taxonomy_count": 1,
+    "raw": "{\"entityName\":\"JOHN HANCOCK PREMIUM DIVIDEND FUND\",\"facts\":{\"cef\":{\"OutstandingSecurityHeldShares\":{\"label\":\"\",\"description\":\"\",\"units\":{\"shares\":[{\"start\":\"2025-11-01\",\"end\":\"2026-04-30\",\"val\":49185225,\"accn\":\"0000855886-26-000014\",\"fy\":null,\"fp\":null,\"form\":\"N-CSRS\",\"filed\":\"2026-07-01\"}]}}}}}"
+  },
+  {
+    "cik": "0000925683",
+    "bytes": 303,
+    "keys": [
+      "entityName",
+      "facts"
+    ],
+    "payload_cik": null,
+    "facts_type": "dict",
+    "taxonomy_count": 1,
+    "raw": "{\"entityName\":\"JOHN HANCOCK FINANCIAL OPPORTUNITIES FUND\",\"facts\":{\"cef\":{\"OutstandingSecurityHeldShares\":{\"label\":\"\",\"description\":\"\",\"units\":{\"shares\":[{\"start\":\"2026-01-01\",\"end\":\"2026-06-30\",\"val\":19833060,\"accn\":\"0000925683-26-000008\",\"fy\":null,\"fp\":null,\"form\":\"N-CSRS\",\"filed\":\"2026-08-24\"}]}}}}}"
+  }
+]

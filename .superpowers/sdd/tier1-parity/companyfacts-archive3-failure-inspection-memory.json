@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "C:/atx/.superpowers/sdd/tier1-parity/inspect_companyfacts_archive3_failure.py"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 7.608207702636719,
+    "commit_free_gb": 10.425361633300781
+  },
+  "child_pid": 6120,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.4414863586425781
+}

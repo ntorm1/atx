@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "C:/atx/.superpowers/sdd/tier1-parity/inspect_archive3_failed_members.py"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 8.057037353515625,
+    "commit_free_gb": 10.859321594238281
+  },
+  "child_pid": 11280,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.034442901611328125
+}
