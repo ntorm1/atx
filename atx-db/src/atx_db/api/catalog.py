@@ -39,6 +39,7 @@ class RecordSchema:
     basis_column: str | None = None
     supports_vintages: bool = True
     max_sync_rows: int = 50_000
+    coverage_item_columns: tuple[str, ...] = ()
 
     @property
     def field_names(self) -> tuple[str, ...]:
@@ -648,6 +649,40 @@ DERIVED_METRICS_SCHEMA = RecordSchema(
 )
 
 
+_MARKET_DAILY_METRICS: Final[tuple[tuple[str, str, str | None], ...]] = (
+    ("market_cap", "Price times point-in-time shares outstanding.", "USD"),
+    ("enterprise_value", "Market cap plus debt, preferred and minority less cash.", "USD"),
+    ("pe_ttm", "Price to trailing earnings available to common.", None),
+    ("pb", "Price to common book value.", None),
+    ("ps_ttm", "Price to trailing revenue.", None),
+    ("pcf_ttm", "Price to trailing operating cash flow.", None),
+    ("ev_ebitda", "Enterprise value to trailing EBITDA.", None),
+    ("ev_sales", "Enterprise value to trailing revenue.", None),
+    ("fcf_yield", "Trailing free cash flow over market cap.", None),
+    ("dividend_yield", "Trailing common dividends over market cap.", None),
+    ("earnings_yield", "Trailing earnings available to common over market cap.", None),
+    ("shareholder_yield", "Net payout plus net debt paydown over market cap.", None),
+    ("net_payout_yield", "Dividends plus net buybacks over market cap.", None),
+    ("total_payout_yield", "Gross dividends plus gross buybacks over market cap.", None),
+    ("buyback_yield", "Net buybacks over market cap.", None),
+    ("book_to_market", "Common book value over market cap.", None),
+    ("rd_to_market_equity", "Trailing R&D expense over market cap.", None),
+    ("gross_profit_to_ev", "Trailing gross profit over enterprise value.", None),
+    ("cfo_to_ev", "Trailing operating cash flow over enterprise value.", None),
+    ("ebit_to_ev", "Trailing operating income over enterprise value.", None),
+    ("sales_to_ev", "Trailing revenue over enterprise value.", None),
+    ("altman_z", "Altman Z-score with market equity.", None),
+    ("total_return_1m", "Twenty-one-trading-day total return.", None),
+    ("total_return_3m", "Sixty-three-trading-day total return.", None),
+    ("total_return_6m", "One-hundred-twenty-six-trading-day total return.", None),
+    ("total_return_12m", "Two-hundred-fifty-two-trading-day total return.", None),
+    ("momentum_12_1", "Twelve-month total return skipping the last month.", None),
+    ("realized_vol_60d", "Annualized sixty-day realized volatility.", None),
+    ("realized_vol_252d", "Annualized two-hundred-fifty-two-day realized volatility.", None),
+    ("dollar_volume_20d", "Twenty-day average daily dollar volume.", "USD"),
+)
+
+
 MARKET_DAILY_SCHEMA = RecordSchema(
     dataset="ATX.US.EQUITIES",
     code="market-daily-1d",
@@ -657,6 +692,7 @@ MARKET_DAILY_SCHEMA = RecordSchema(
         "Daily prices, point-in-time shares, market cap, enterprise value, valuation multiples, "
         "total returns, momentum and realized volatility."
     ),
+    coverage_item_columns=tuple(name for name, _, _ in _MARKET_DAILY_METRICS),
     source_table="market_daily_metrics",
     time_column="trade_date",
     natural_key=("security_id", "trade_date"),
@@ -678,38 +714,7 @@ MARKET_DAILY_SCHEMA = RecordSchema(
         ),
         *(
             FieldSpec(name, name, "float64", description, unit)
-            for name, description, unit in (
-                ("market_cap", "Price times point-in-time shares outstanding.", "USD"),
-                ("enterprise_value", "Market cap plus debt, preferred and minority less cash.", "USD"),
-                ("pe_ttm", "Price to trailing earnings available to common.", None),
-                ("pb", "Price to common book value.", None),
-                ("ps_ttm", "Price to trailing revenue.", None),
-                ("pcf_ttm", "Price to trailing operating cash flow.", None),
-                ("ev_ebitda", "Enterprise value to trailing EBITDA.", None),
-                ("ev_sales", "Enterprise value to trailing revenue.", None),
-                ("fcf_yield", "Trailing free cash flow over market cap.", None),
-                ("dividend_yield", "Trailing common dividends over market cap.", None),
-                ("earnings_yield", "Trailing earnings available to common over market cap.", None),
-                ("shareholder_yield", "Net payout plus net debt paydown over market cap.", None),
-                ("net_payout_yield", "Dividends plus net buybacks over market cap.", None),
-                ("total_payout_yield", "Gross dividends plus gross buybacks over market cap.", None),
-                ("buyback_yield", "Net buybacks over market cap.", None),
-                ("book_to_market", "Common book value over market cap.", None),
-                ("rd_to_market_equity", "Trailing R&D expense over market cap.", None),
-                ("gross_profit_to_ev", "Trailing gross profit over enterprise value.", None),
-                ("cfo_to_ev", "Trailing operating cash flow over enterprise value.", None),
-                ("ebit_to_ev", "Trailing operating income over enterprise value.", None),
-                ("sales_to_ev", "Trailing revenue over enterprise value.", None),
-                ("altman_z", "Altman Z-score with market equity.", None),
-                ("total_return_1m", "Twenty-one-trading-day total return.", None),
-                ("total_return_3m", "Sixty-three-trading-day total return.", None),
-                ("total_return_6m", "One-hundred-twenty-six-trading-day total return.", None),
-                ("total_return_12m", "Two-hundred-fifty-two-trading-day total return.", None),
-                ("momentum_12_1", "Twelve-month total return skipping the last month.", None),
-                ("realized_vol_60d", "Annualized sixty-day realized volatility.", None),
-                ("realized_vol_252d", "Annualized two-hundred-fifty-two-day realized volatility.", None),
-                ("dollar_volume_20d", "Twenty-day average daily dollar volume.", "USD"),
-            )
+            for name, description, unit in _MARKET_DAILY_METRICS
         ),
         FieldSpec(
             "fundamental_available_at",
@@ -725,6 +730,98 @@ MARKET_DAILY_SCHEMA = RecordSchema(
             nullable=False,
         ),
         FieldSpec("source", "source", "string", "ATX engine identifier.", nullable=False),
+        *_PIT_FIELDS,
+    ),
+)
+
+
+SECURITY_MASTER_SCHEMA = RecordSchema(
+    dataset="ATX.US.FUNDAMENTALS",
+    code="security-master",
+    version="1.0.0",
+    title="US equity security master",
+    description=(
+        "Current-state security spine with its open CIK, LEI and FIGI identifiers. "
+        "CUSIP is internal-only by policy and is never part of this contract."
+    ),
+    source_table="v_security_master_public",
+    time_column="as_of_date",
+    natural_key=("security_id",),
+    supports_vintages=False,
+    fields=(
+        FieldSpec("security_id", "security_id", "string", "Stable ATX security identifier.", nullable=False),
+        FieldSpec("entity_id", "entity_id", "string", "Issuing entity key; 'CIK-<cik>' for SEC filers."),
+        FieldSpec("issuer_id", "issuer_id", "string", "Issuer grouping key."),
+        FieldSpec("primary_symbol", "primary_symbol", "string", "Current primary ticker."),
+        FieldSpec("name", "name", "string", "Security name."),
+        FieldSpec("asset_class", "asset_class", "string", "ATX asset class.", nullable=False),
+        FieldSpec("country", "country", "string", "Country of listing.", nullable=False),
+        FieldSpec("currency", "currency", "string", "Trading currency.", nullable=False),
+        FieldSpec("active", "active", "boolean", "Whether the listing is currently active.", nullable=False),
+        FieldSpec("cik", "cik", "string", "SEC Central Index Key.", filterable=True),
+        FieldSpec("lei", "lei", "string", "Legal Entity Identifier (GLEIF).", filterable=True),
+        FieldSpec("figi", "figi", "string", "Financial Instrument Global Identifier (OpenFIGI).", filterable=True),
+        *_PIT_FIELDS,
+    ),
+)
+
+
+UNIVERSE_SCHEMA = RecordSchema(
+    dataset="ATX.US.EQUITIES",
+    code="universe",
+    version="1.0.0",
+    title="US-listed equity universe membership",
+    description=(
+        "Interval-keyed point-in-time universe of US-listed common stock, ADRs, REITs and "
+        "LPs. Members with no resolved CIK are present with has_cik=false."
+    ),
+    source_table="universe_us_listed_membership",
+    time_column="valid_from",
+    natural_key=("universe_id", "security_id", "valid_from"),
+    fields=(
+        FieldSpec("universe_id", "universe_id", "string", "Universe identifier.", nullable=False, filterable=True),
+        FieldSpec("security_id", "security_id", "string", "Stable ATX security identifier.", nullable=False),
+        FieldSpec("symbol", "symbol", "string", "Ticker at the start of the interval."),
+        FieldSpec("valid_from", "valid_from", "date", "First session of the membership interval.", nullable=False),
+        FieldSpec("valid_to", "valid_to", "date", "Last session of the interval; null while open."),
+        FieldSpec("security_type", "security_type", "string", "common, ADR, REIT or LP.", nullable=False, filterable=True),
+        FieldSpec("exchange_code", "exchange_code", "string", "XNYS, XNAS, XASE, ARCX or BATS.", nullable=False, filterable=True),
+        FieldSpec("has_cik", "has_cik", "boolean", "Whether the security resolves to an SEC filer.", nullable=False, filterable=True),
+        FieldSpec("cik", "cik", "string", "SEC Central Index Key when resolved."),
+        FieldSpec("market_cap_decile", "market_cap_decile", "int32", "Market-cap decile AT valid_from only."),
+        FieldSpec("reason", "reason", "string", "member or member_no_cik.", nullable=False),
+        FieldSpec("decision_count", "decision_count", "int32", "Sessions backing the interval.", nullable=False),
+        *_PIT_FIELDS,
+    ),
+)
+
+
+DELISTINGS_SCHEMA = RecordSchema(
+    dataset="ATX.US.EQUITIES",
+    code="delistings",
+    version="1.0.0",
+    title="US equity delisting events",
+    description=(
+        "One delisting event per security and delist date, attributed to the "
+        "highest-precedence public evidence and carrying its terminal-return state."
+    ),
+    source_table="delisting_events",
+    time_column="delist_date",
+    natural_key=("source", "security_id", "delist_date"),
+    fields=(
+        FieldSpec("security_id", "security_id", "string", "Stable ATX security identifier."),
+        FieldSpec("symbol", "symbol", "string", "Ticker at delisting.", nullable=False),
+        FieldSpec("delist_date", "delist_date", "date", "Date trading ceased.", nullable=False),
+        FieldSpec("delist_code", "delist_code", "string", "Warehouse delist code.", nullable=False, filterable=True),
+        FieldSpec("delist_reason", "delist_reason", "string", "Attributed reason category.", nullable=False, filterable=True),
+        FieldSpec("delisting_return", "delisting_return", "float64", "Terminal return when known.", "ratio"),
+        FieldSpec("delisting_return_type", "delisting_return_type", "string", "OBSERVED, POLICY or UNOBSERVED.", nullable=False),
+        FieldSpec("is_return_imputed", "is_return_imputed", "boolean", "Whether the terminal return is a policy convention.", nullable=False),
+        FieldSpec("return_policy", "return_policy", "string", "Policy code that produced the return.", nullable=False),
+        FieldSpec("evidence_source", "evidence_source", "string", "Evidence family.", nullable=False),
+        FieldSpec("evidence_confidence", "evidence_confidence", "string", "high, medium or low.", nullable=False),
+        FieldSpec("inferred_from_absence", "inferred_from_absence", "boolean", "Whether the event was inferred rather than filed.", nullable=False),
+        FieldSpec("source", "source", "string", "ATX source adapter.", nullable=False, filterable=True),
         *_PIT_FIELDS,
     ),
 )
@@ -748,6 +845,7 @@ DATASETS: Final[tuple[DatasetSpec, ...]] = (
             RATIOS_SCHEMA,
             RESTATEMENTS_SCHEMA,
             DERIVED_METRICS_SCHEMA,
+            SECURITY_MASTER_SCHEMA,
         ),
     ),
     DatasetSpec(
@@ -759,7 +857,7 @@ DATASETS: Final[tuple[DatasetSpec, ...]] = (
         region="US",
         entitlement="us_equities_eod",
         default_schema="ohlcv-1d",
-        schemas=(DAILY_BARS_SCHEMA, MARKET_DAILY_SCHEMA),
+        schemas=(DAILY_BARS_SCHEMA, MARKET_DAILY_SCHEMA, UNIVERSE_SCHEMA, DELISTINGS_SCHEMA),
     ),
 )
 
