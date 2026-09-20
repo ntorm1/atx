@@ -56,9 +56,7 @@ SECURITY_TYPE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("ETN", re.compile(r"\bETNS?\b|EXCHANGE[- ]TRADED NOTE")),
     (
         "preferred",
-        re.compile(
-            r"\bPREFERRED\b|\bPREFERENCE\b|\bPFD\b|(?<!AMERICAN )DEPOSITARY (?:SHARE|SHS|SHARES)"
-        ),
+        re.compile(r"\bPREFERRED\b|\bPREFERENCE\b|\bPFD\b|(?<!AMERICAN )DEPOSITARY (?:SHARE|SHS|SHARES)"),
     ),
     ("warrant", re.compile(r"\bWARRANTS?\b|\bWTS?\b")),
     ("right", re.compile(r"\bRIGHTS?\b")),
@@ -179,7 +177,10 @@ def _rules(options: UniverseUsListedOptions) -> dict[str, object]:
         "eligible_exchange_codes": list(ELIGIBLE_EXCHANGE_CODES),
         "eligible_security_types": list(ELIGIBLE_SECURITY_TYPES),
         "market_source": options.market_source,
-        "decile_basis": "market_daily_metrics.market_cap at valid_from",
+        "decile_basis": (
+            "market_daily_metrics.market_cap at valid_from, ranked among eligible "
+            "common-equity members only, tie-broken by security_id"
+        ),
     }
 
 
@@ -209,9 +210,18 @@ def compute_universe_us_listed_intervals(
     A new interval opens when any of ``_INTERVAL_STATE_COLUMNS`` changes or when the
     session-rank gap to the previous decision exceeds ``lookback_days`` -- the latter is
     the spec's "at least one trade in the prior N trading days" rule expressed on the
-    grid. An interval closes at ``min(last decision rank + lookback_days - 1, archive
-    end)``; an interval whose extension reaches the last known session stays OPEN
-    (``valid_to`` NULL) because the archive cannot prove the name stopped trading.
+    grid. A closing interval is always extended forward through
+    ``final_rank + lookback_days - 1`` (rule 1 of the membership contract: the security
+    never actually lost membership while within the lookback window of its last known
+    bar), capped at whichever bound is known: the day *before* the next decision, when
+    there is one (a state change or a real gap, both bounded by known evidence), or the
+    archive end when there is none (the security's final decision -- ``valid_to`` NULL,
+    OPEN, if the extension reaches the last known session, since the archive cannot prove
+    the name stopped trading). This means a same-session-grid state change never drops
+    real membership days: the closing interval is extended right up to (but not past) the
+    successor interval's ``valid_from``, so the two intervals abut with no gap whenever
+    the state change itself happened within the lookback window, and a genuine hole only
+    appears when the gap to the next decision exceeds ``lookback_days``.
     ``market_cap_decile`` is the decile observed at ``valid_from`` only (deviation 3).
 
     Pure and stable-sorted: the same decisions in any row order yield a byte-identical
@@ -237,20 +247,25 @@ def compute_universe_us_listed_intervals(
     rules_json = json_dumps(_rules(options))
     rows: list[dict[str, object]] = []
 
-    def close(current: dict[str, object], final_rank: int, *, extend: bool) -> None:
-        # An interval closed by a real gap (a rank jump beyond lookback_days) or by
-        # running off the end of the security's decisions is extended forward --
-        # the archive cannot prove membership lapsed the instant the last known bar
-        # printed, so it is held open through the lookback window (closed=None if
-        # that reaches the archive end). An interval closed by an immediate state
-        # change (the very next session, just under different attributes) is NOT
-        # extended: the successor interval's valid_from already covers the next
-        # session, so extending here would overlap it.
-        if extend:
-            extended = final_rank + options.lookback_days - 1
-            current["valid_to"] = None if extended >= last_rank else rank_to_date[extended]
+    def close(current: dict[str, object], final_rank: int, *, next_rank: int | None) -> None:
+        # Every closing interval is extended forward through the lookback window (rule 1:
+        # the security never actually lost membership while within lookback_days of its
+        # last known bar) -- the only question is what bounds that extension.
+        #   - next_rank is not None (a successor decision exists -- a state change or a
+        #     real gap): bound at min(extended, next_rank - 1) so this interval never
+        #     reaches into the session the successor interval's own valid_from already
+        #     covers. For a real gap (next_rank - previous_rank > lookback_days) this bound
+        #     is always the extension itself (next_rank - 1 is necessarily beyond it), so a
+        #     genuine hole still appears; for a same-grid state change within the lookback
+        #     window the two intervals abut with zero dropped days.
+        #   - next_rank is None (the security's final decision, no successor at all): the
+        #     old open-ended behavior -- capped at the archive end, OPEN (valid_to=NULL) if
+        #     the extension reaches it, since the archive cannot prove trading stopped.
+        extended = final_rank + options.lookback_days - 1
+        if next_rank is not None:
+            current["valid_to"] = rank_to_date[min(extended, next_rank - 1)]
         else:
-            current["valid_to"] = rank_to_date[final_rank]
+            current["valid_to"] = None if extended >= last_rank else rank_to_date[extended]
         rows.append({key: value for key, value in current.items() if not key.startswith("_")})
 
     for security_id, group in frame.groupby("security_id", sort=True, dropna=False):
@@ -262,7 +277,7 @@ def compute_universe_us_listed_intervals(
             gapped = previous_rank is not None and (rank - previous_rank) > options.lookback_days
             if current is None or current["_state"] != state or gapped:
                 if current is not None:
-                    close(current, int(previous_rank), extend=gapped)
+                    close(current, int(previous_rank), next_rank=rank)
                 current = {
                     "_state": state,
                     "membership_id": _membership_id(options.universe_id, security_id, row.as_of_date, *state),
@@ -289,7 +304,7 @@ def compute_universe_us_listed_intervals(
             current["decision_count"] = int(current["decision_count"]) + 1
             previous_rank = rank
         if current is not None:
-            close(current, int(previous_rank), extend=True)
+            close(current, int(previous_rank), next_rank=None)
 
     if not rows:
         return _empty_output()
@@ -310,7 +325,9 @@ def build_universe_decision_sql(
 
     One row per (security_id, session the security traded on) with the newest listing
     snapshot visible on that session, the CIK resolution from ``securities.entity_id``
-    and the market-cap decile from ``market_daily_metrics``. Placeholder order:
+    and the raw ``market_cap`` from ``market_daily_metrics`` (the decile itself is
+    computed downstream in Python, over the eligible-common-equity population only --
+    see :func:`_eligible_common_market_cap_deciles`). Placeholder order:
     ``[market_source]`` then, when present, ``[start_date]``, ``[end_date]``.
     """
 
@@ -354,15 +371,26 @@ def build_universe_decision_sql(
                 d.test_issue,
                 row_number() OVER (
                     PARTITION BY d.symbol, d.as_of_date
-                    ORDER BY d.directory, d.source_loaded_at DESC
+                    -- 'nasdaqlisted' is explicitly preferred over 'otherlisted' (and any
+                    -- future directory value) when both cover the same (symbol, as_of_date)
+                    -- -- not an accident of 'nasdaqlisted' < 'otherlisted' alphabetically.
+                    ORDER BY CASE d.directory WHEN 'nasdaqlisted' THEN 0 ELSE 1 END,
+                             d.source_loaded_at DESC
                 ) AS rn
             FROM nasdaq_symbol_directory d
         ),
         deciles AS (
+            -- Raw market_cap only, NOT ntile() here: the decile ranking population must be
+            -- restricted to eligible common-equity rows (security_type == "common" among
+            -- this session's eligible members), which requires the Python classification
+            -- table this module already owns as the single source of truth -- duplicating
+            -- SECURITY_TYPE_PATTERNS in SQL would let the two drift apart. The decile
+            -- itself is computed in Python (see _eligible_common_market_cap_deciles) with a
+            -- deterministic (market_cap, security_id) tie-break.
             SELECT
                 m.security_id,
                 m.trade_date,
-                ntile(10) OVER (PARTITION BY m.trade_date ORDER BY m.market_cap) AS market_cap_decile
+                m.market_cap
             FROM market_daily_metrics m
             WHERE m.source = ? AND m.market_cap IS NOT NULL AND m.is_latest_revision
         ),
@@ -396,7 +424,7 @@ def build_universe_decision_sql(
             listing.test_issue,
             coalesce(sec.entity_id LIKE 'CIK-%', false) AS has_cik,
             CASE WHEN sec.entity_id LIKE 'CIK-%' THEN substr(sec.entity_id, 5) END AS cik,
-            deciles.market_cap_decile
+            deciles.market_cap
         FROM bars
         JOIN sessions s ON s.trade_date = bars.trade_date
         LEFT JOIN listing
@@ -471,7 +499,50 @@ def load_universe_decisions(
         "not_eligible_security_type": int(bad_type.sum()),
     }
     eligible = frame[~(no_listing | bad_exchange | bad_type)].reset_index(drop=True)
+    eligible["market_cap_decile"] = _eligible_common_market_cap_deciles(eligible)
     return eligible, sessions, exclusions
+
+
+def _ntile_buckets(n: int, buckets: int = 10) -> list[int]:
+    """Bucket assignment for ``n`` rows in ascending-sort order, matching SQL ``ntile``.
+
+    The first ``n % buckets`` buckets get ``n // buckets + 1`` rows, the rest get
+    ``n // buckets`` (identical distribution rule to DuckDB/PostgreSQL ``ntile``).
+    """
+
+    base, remainder = divmod(n, buckets)
+    sizes = [base + 1] * remainder + [base] * (buckets - remainder)
+    out: list[int] = []
+    for bucket_number, size in enumerate(sizes, start=1):
+        out.extend([bucket_number] * size)
+    return out
+
+
+def _eligible_common_market_cap_deciles(eligible: pd.DataFrame) -> pd.Series:
+    """Market-cap decile, ranked only among eligible common-equity members.
+
+    The spec's decile is a rank within the US-listed universe's common stocks, not the
+    whole ``market_daily_metrics`` population for the source -- an ADR/REIT/LP still
+    becomes a universe member (``eligible`` already reflects that: this runs after the
+    exchange/security-type eligibility filter) but is excluded from the ranking
+    population and gets no decile (``pd.NA``). Ties on ``market_cap`` are broken by
+    ``security_id`` so the assignment is deterministic and order-independent, unlike a
+    bare ``ntile(10) OVER (ORDER BY market_cap)`` with no secondary key.
+    """
+
+    decile = pd.Series(pd.NA, index=eligible.index, dtype="Int64")
+    if eligible.empty or "market_cap" not in eligible.columns:
+        return decile
+    market_cap = pd.to_numeric(eligible["market_cap"], errors="coerce")
+    population_mask = (eligible["security_type"] == "common") & market_cap.notna()
+    if not population_mask.any():
+        return decile
+    working = eligible.loc[population_mask, ["as_of_date", "security_id"]].copy()
+    working["market_cap"] = market_cap.loc[population_mask]
+    for _as_of_date, group in working.groupby("as_of_date", sort=True):
+        ordered = group.sort_values(["market_cap", "security_id"], kind="mergesort")
+        decile.loc[ordered.index] = _ntile_buckets(len(ordered))
+    return decile
 
 
 def refresh_universe_us_listed(
