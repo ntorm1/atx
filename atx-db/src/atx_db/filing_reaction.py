@@ -65,17 +65,23 @@ def load_filing_reaction_inputs(
         params.append(options.end_date)
     return store.con.execute(
         f"""
-        WITH price_dedup AS (
+        WITH price_revisions AS (
             SELECT
                 security_id,
-                any_value(symbol) AS symbol,
+                symbol,
                 trade_date,
-                arg_max("close", available_at) AS close_value,
-                arg_max(split_factor, available_at) AS split_value,
-                max(available_at) AS price_available_at
+                CASE WHEN isfinite(adjusted_close) AND adjusted_close > 0
+                     THEN adjusted_close END AS close_value,
+                available_at AS price_available_at,
+                row_number() OVER (
+                    PARTITION BY security_id, trade_date
+                    ORDER BY available_at DESC, source_loaded_at DESC, source DESC
+                ) AS revision_rank
             FROM equity_daily_bars
-            WHERE "close" > 0 AND trade_date IS NOT NULL AND available_at IS NOT NULL
-            GROUP BY security_id, trade_date
+            WHERE trade_date IS NOT NULL AND available_at IS NOT NULL
+        ),
+        price_dedup AS (
+            SELECT * EXCLUDE (revision_rank) FROM price_revisions WHERE revision_rank = 1
         ),
         daily AS (
             SELECT
@@ -86,12 +92,16 @@ def load_filing_reaction_inputs(
                 close_value / (
                     lag(close_value) OVER (
                         PARTITION BY security_id ORDER BY trade_date
-                    ) * coalesce(nullif(split_value, 0), 1)
-                ) - 1 AS daily_return
+                    )
+                ) - 1 AS daily_return,
+                greatest(price_available_at, lag(price_available_at) OVER (
+                    PARTITION BY security_id ORDER BY trade_date
+                )) AS return_available_at
             FROM price_dedup
         ),
         market_return_by_date AS (
-            SELECT trade_date, median(daily_return) AS market_return
+            SELECT trade_date, median(daily_return) AS market_return,
+                   max(return_available_at) AS market_available_at
             FROM daily
             WHERE isfinite(daily_return)
             GROUP BY trade_date
@@ -123,10 +133,10 @@ def load_filing_reaction_inputs(
             SELECT
                 e.*,
                 d.trade_date AS reaction_date,
-                d.price_available_at AS reaction_available_at,
+                greatest(e.filing_available_at, d.return_available_at,
+                         m.market_available_at) AS reaction_available_at,
                 d.prior_close,
                 d.close_value AS reaction_close,
-                d.split_value AS reaction_adjustment_factor,
                 d.daily_return,
                 m.market_return,
                 d.daily_return - m.market_return AS abnormal_return,
@@ -138,13 +148,12 @@ def load_filing_reaction_inputs(
               ON d.security_id = e.security_id
              AND d.trade_date > e.filed_date
              AND d.trade_date <= e.filed_date + 7
-            JOIN market_return_by_date m USING (trade_date)
-            WHERE isfinite(d.daily_return)
+            LEFT JOIN market_return_by_date m USING (trade_date)
         ),
         reactions AS (
             SELECT * EXCLUDE (reaction_rank)
             FROM reaction_candidates
-            WHERE reaction_rank = 1
+            WHERE reaction_rank = 1 AND isfinite(daily_return)
         )
         SELECT
             f.factor_value_id AS sue_factor_value_id,
@@ -182,7 +191,7 @@ def _lineage(row: pd.Series) -> str:
                 "available_at": row["reaction_available_at"],
                 "prior_close": row["prior_close"],
                 "close": row["reaction_close"],
-                "adjustment_factor": row["reaction_adjustment_factor"],
+                "price_basis": "canonical_adjusted_close",
                 "security_return": row["daily_return"],
                 "cross_sectional_median_return": row["market_return"],
                 "abnormal_return": row["abnormal_return"],
@@ -216,6 +225,8 @@ def compute_filing_reaction_rows(
     rows = rows[counts >= options.minimum_names_per_date].copy()
     if rows.empty:
         return pd.DataFrame(columns=_OUTPUT_COLUMNS)
+    # The standardized score consumes the entire admitted date cohort.
+    rows["available_at"] = rows.groupby("as_of_date")["available_at"].transform("max")
     rows["factor_id"] = FACTOR_ID
     rows["factor_name"] = FACTOR_NAME
     rows["family"] = FACTOR_FAMILY

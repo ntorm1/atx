@@ -67,6 +67,20 @@ def test_fundamental_momentum_residual_is_orthogonal_to_price_rank() -> None:
     assert lineage[0]["price_momentum"]["start_available_at"] == "2024-01-31 22:00:00"
 
 
+def test_fundamental_momentum_clock_includes_all_rank_and_regression_inputs() -> None:
+    inputs = pd.DataFrame([
+        _input("A", -2, -.2), _input("B", 2, 0), _input("C", 1, .2),
+    ])
+    late = dt.datetime(2025, 2, 3, 22)
+    inputs.loc[0, "decision_available_at"] = late
+    inputs.loc[0, "momentum_end_available_at"] = late
+    rows = compute_fundamental_momentum_rows(
+        inputs, FundamentalMomentumOptions(minimum_names_per_date=3),
+    )
+    assert len(rows) == 3
+    assert (rows["available_at"] == late).all()
+
+
 def test_price_momentum_loader_adjusts_splits_and_skips_recent_session(tmp_store) -> None:
     as_of_date = dt.date(2025, 1, 6)
     available_at = dt.datetime(2025, 1, 6, 22)
@@ -110,11 +124,11 @@ def test_price_momentum_loader_adjusts_splits_and_skips_recent_session(tmp_store
             tmp_store.con.execute(
                 """
                 INSERT INTO equity_daily_bars (
-                    source,security_id,symbol,trade_date,close,split_factor,
+                    source,security_id,symbol,trade_date,close,split_factor,adjusted_close,
                     is_adjusted,available_at,run_id
-                ) VALUES ('test',?,?,?,?,?,false,?,'test')
+                ) VALUES ('test',?,?,?,?,?,?,false,?,'test')
                 """,
-                [security_id, security_id, trade_date, close, split_factor, bar_available_at],
+                [security_id, security_id, trade_date, close, split_factor, 50.0 if close == 100.0 else close, bar_available_at],
             )
 
     inputs = load_fundamental_momentum_inputs(

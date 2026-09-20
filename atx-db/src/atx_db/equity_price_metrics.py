@@ -1,6 +1,6 @@
 """S14: derived daily price analytics (`equity_price_metrics`).
 
-The cached ``equity_daily_bars`` feed holds split/dividend-adjusted daily OHLCV. This
+The cached ``equity_daily_bars`` feed holds raw OHLCV and adjusted close. This
 module turns it into a typed, point-in-time analytics surface — one row per
 ``(security_id, trade_date)`` — with the canonical price features quant strategies
 condition on: adjusted daily and log returns, the overnight gap, trailing realized
@@ -89,33 +89,23 @@ def _metric_id(source: str, security_id: str, trade_date) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _back_adjusted_close(close: pd.Series, split_factor: pd.Series) -> pd.Series:
-    """Split/dividend back-adjusted close: each day scaled by the product of all
-    *future* adjustment factors. This is computed from the bar's own ``split_factor``
-    (0.5 on a 2:1 split, ~0.997 on a dividend), NOT the feed's ``adjusted_close``
-    column — in the cached 2012-13 sample that column is an unadjusted lagged close and
-    leaves split jumps in, which would inflate returns/volatility. The cumulative-future
-    product makes the series continuous across splits so returns reflect real moves.
-    """
-    factor = pd.to_numeric(split_factor, errors="coerce").fillna(1.0)
-    rev_cumfac = factor[::-1].cumprod().shift(1).fillna(1.0)[::-1]
-    return close * rev_cumfac.to_numpy()
-
-
 def _derive_one_security(g: pd.DataFrame) -> pd.DataFrame:
     """Per-security price transforms over one symbol's bars (sorted by trade_date)."""
     g = g.sort_values("trade_date").reset_index(drop=True)
     close = pd.to_numeric(g["close"], errors="coerce")
     open_ = pd.to_numeric(g.get("open"), errors="coerce")
     volume = pd.to_numeric(g["volume"], errors="coerce")
-    adj = _back_adjusted_close(close, g.get("split_factor", pd.Series(1.0, index=g.index)))
-    adj_open = _back_adjusted_close(open_, g.get("split_factor", pd.Series(1.0, index=g.index)))
+    adj = pd.to_numeric(g["adjusted_close"], errors="coerce")
+    adj = adj.where(np.isfinite(adj) & (adj > 0))
+    scale = adj / close.where(np.isfinite(close) & (close > 0))
+    adj_open = open_.where(np.isfinite(open_) & (open_ > 0)) * scale
+    adj_open = adj_open.where(np.isfinite(adj_open) & (adj_open > 0))
 
     g["close"] = close
     g["adjusted_close"] = adj
     g["volume"] = volume
     g["dollar_volume"] = close * volume
-    g["daily_return"] = adj.pct_change()
+    g["daily_return"] = adj.pct_change(fill_method=None)
     with np.errstate(divide="ignore", invalid="ignore"):
         g["log_return"] = np.log(adj / adj.shift(1))
     prev_adj = adj.shift(1)
@@ -149,6 +139,8 @@ def _derive_one_security(g: pd.DataFrame) -> pd.DataFrame:
     g["downside_deviation_60d"] = (
         np.sqrt((downside ** 2).rolling(DOWNSIDE_WINDOW, min_periods=DOWNSIDE_WINDOW).mean()) * np.sqrt(TRADING_DAYS)
     )
+    # The running peak consumes all preceding bars, including late revisions.
+    g["available_at"] = g["available_at"].cummax()
     return g
 
 
@@ -174,6 +166,7 @@ def _derive_market_relative_one_security(g: pd.DataFrame) -> pd.DataFrame:
     g["idiosyncratic_vol_60d"] = (
         np.sqrt(residual_var.clip(lower=0.0)) * np.sqrt(TRADING_DAYS)
     ).replace([np.inf, -np.inf], np.nan)
+    g["available_at"] = g["available_at"].cummax()
     return g
 
 
@@ -237,8 +230,8 @@ def compute_equity_price_metrics(
     out["available_at"] = pd.to_datetime(out["available_at"], errors="coerce")
     if "open" not in out.columns:
         out["open"] = np.nan
-    if "split_factor" not in out.columns:
-        out["split_factor"] = 1.0
+    if "adjusted_close" not in out.columns:
+        out["adjusted_close"] = np.nan
 
     derived = (
         out.groupby("security_id", group_keys=False)[out.columns.tolist()]
@@ -270,7 +263,7 @@ _LOAD_SQL = """
         b.trade_date,
         b.open,
         b.close,
-        b.split_factor,
+        b.adjusted_close,
         b.volume,
         b.available_at
     FROM equity_daily_bars b
@@ -279,9 +272,12 @@ _LOAD_SQL = """
 
 
 def load_price_inputs(store: DuckDBStore, options: EquityPriceMetricsOptions) -> pd.DataFrame:
+    """Load all symbols only for None; an explicit empty scope loads no rows."""
     symbols = tuple(s for s in (options.symbols or ()) if str(s).strip())
     registered = False
     symbol_pred = ""
+    if options.symbols is not None and not symbols:
+        symbol_pred = "WHERE FALSE"
     if symbols:
         store.con.register(
             "eqpm_symbol_filter",

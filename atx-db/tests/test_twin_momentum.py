@@ -59,6 +59,18 @@ def test_twin_momentum_rewards_only_same_direction_confirmation() -> None:
     assert lineage["price_momentum"]["start_available_at"] == "2024-01-31 22:00:00"
 
 
+def test_twin_momentum_clock_includes_all_rank_inputs() -> None:
+    inputs = pd.DataFrame([
+        _input("A", -2, -.2), _input("B", 0, 0), _input("C", 2, .2),
+    ])
+    late = dt.datetime(2025, 2, 3, 22)
+    inputs.loc[0, "decision_available_at"] = late
+    inputs.loc[0, "momentum_end_available_at"] = late
+    rows = compute_twin_momentum_rows(inputs, TwinMomentumOptions(minimum_names_per_date=3))
+    assert len(rows) == 3
+    assert (rows["available_at"] == late).all()
+
+
 def test_twin_momentum_loader_is_split_adjusted_and_skips_recent_session(tmp_store) -> None:
     as_of_date = dt.date(2025, 1, 6)
     available_at = dt.datetime(2025, 1, 6, 22)
@@ -85,11 +97,11 @@ def test_twin_momentum_loader_is_split_adjusted_and_skips_recent_session(tmp_sto
             tmp_store.con.execute(
                 """
                 INSERT INTO equity_daily_bars (
-                    source,security_id,symbol,trade_date,close,split_factor,
+                    source,security_id,symbol,trade_date,close,split_factor,adjusted_close,
                     is_adjusted,available_at,run_id
-                ) VALUES ('test',?,?,?,?,?,false,?,'test')
+                ) VALUES ('test',?,?,?,?,?,?,false,?,'test')
                 """,
-                [security_id, security_id, trade_date, close, split_factor,
+                [security_id, security_id, trade_date, close, split_factor, 50.0 if close == 100.0 else close,
                  dt.datetime.combine(trade_date, dt.time(22))],
             )
     inputs = load_twin_momentum_inputs(

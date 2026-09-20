@@ -1,0 +1,29 @@
+{
+  "command": [
+    ".venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "tests/test_adjusted_return_consumers.py",
+    "tests/test_equity_price_metrics.py",
+    "tests/test_signal_eval.py::test_compute_forward_returns_from_prices",
+    "tests/test_signal_eval.py::test_warehouse_forward_returns_are_split_adjusted_and_panel_scoped",
+    "tests/test_fundamental_momentum.py::test_price_momentum_loader_adjusts_splits_and_skips_recent_session",
+    "tests/test_fundamental_momentum.py::test_fundamental_momentum_clock_includes_all_rank_and_regression_inputs",
+    "tests/test_twin_momentum.py::test_twin_momentum_loader_is_split_adjusted_and_skips_recent_session",
+    "tests/test_twin_momentum.py::test_twin_momentum_clock_includes_all_rank_inputs",
+    "tests/test_filing_reaction.py::test_filing_reaction_orientation_and_event_semantics",
+    "tests/test_filing_reaction.py::test_filing_reaction_clock_includes_cohort_standardization_inputs",
+    "-n",
+    "0",
+    "-q"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 5.540779113769531,
+    "commit_free_gb": 10.343734741210938
+  },
+  "child_pid": 9132,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.9327659606933594
+}

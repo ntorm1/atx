@@ -29,7 +29,7 @@ def _ts(s: str) -> pd.Timestamp:
     return pd.Timestamp(s)
 
 
-def _bar(security_id, symbol, date, close, *, split_factor=1.0, open_=None, volume=1000, av="2013-01-02"):
+def _bar(security_id, symbol, date, close, *, split_factor=1.0, adjusted_close=None, open_=None, volume=1000, av="2013-01-02"):
     return {
         "security_id": security_id,
         "symbol": symbol,
@@ -37,6 +37,7 @@ def _bar(security_id, symbol, date, close, *, split_factor=1.0, open_=None, volu
         "open": open_ if open_ is not None else close,
         "close": close,
         "split_factor": split_factor,
+        "adjusted_close": close if adjusted_close is None else adjusted_close,
         "volume": volume,
         "available_at": _ts(av),
     }
@@ -103,10 +104,10 @@ class TestComputeEquityPriceMetrics:
 
     def test_returns_are_split_adjusted(self):
         # 2:1 split between day 2 and day 3: raw close halves (100 -> 51) but the real
-        # move is small. split_factor=0.5 on the split day back-adjusts the pre-split
-        # price so the return reflects the true move, not the split.
+        # move is small. Canonical adjusted close carries the correction; the
+        # split_factor must not be applied again.
         rows = [
-            _bar("S1", "AAA", dt.date(2013, 1, 2), 100.0),
+            _bar("S1", "AAA", dt.date(2013, 1, 2), 100.0, adjusted_close=50.0),
             _bar("S1", "AAA", dt.date(2013, 1, 3), 51.0, split_factor=0.5),
         ]
         out = compute_equity_price_metrics(pd.DataFrame(rows))
