@@ -2152,6 +2152,8 @@ def refresh_survivorship_safe_forward_returns(
     positive price STRICTLY BEFORE delisting, compounded with the terminal return.
     Event-day and later bars never enter that leg; formations on/after a known
     terminal are excluded. A formation-only price produces a zero partial return.
+    Invalid selected terminal values retain that event boundary but suppress labels
+    spanning it; the input-derived quality gate fails instead of reviving old data.
 
     ``adjusted_close`` is the production basis; ``close`` explicitly opts into raw
     price compatibility. Missing adjusted prices are never inferred from raw close
@@ -2224,10 +2226,10 @@ def refresh_survivorship_safe_forward_returns(
                     ) AS revision
                     FROM delisting_terminal_returns
                     WHERE (?::TIMESTAMP IS NULL OR available_at <= ?)
-                      AND isfinite(terminal_return) AND terminal_return >= -1
                 )
                 SELECT security_id, delist_date, terminal_return, terminal_return_source,
-                       return_observation_id, available_at AS terminal_available_at
+                       return_observation_id, available_at AS terminal_available_at,
+                       isfinite(terminal_return) AND terminal_return >= -1 AS terminal_valid
                 FROM revisions WHERE revision = 1
                 QUALIFY row_number() OVER (
                     PARTITION BY security_id ORDER BY delist_date, terminal_return_id
@@ -2280,6 +2282,10 @@ def refresh_survivorship_safe_forward_returns(
                           ON e.security_id = f.security_id AND e.trade_date = ending.trade_date
                         LEFT JOIN _ss_terminal_prices t ON t.security_id = f.security_id
                         WHERE (t.delist_date IS NULL OR f.trade_date < t.delist_date)
+                          -- Retain invalid selected evidence as an event boundary: never
+                          -- resurrect an older return or use a post-terminal survivor leg.
+                          AND (t.delist_date IS NULL OR t.delist_date > ending.trade_date
+                               OR coalesce(t.terminal_valid, false))
                           AND ((t.delist_date <= ending.trade_date
                                 AND t.last_price_date >= f.trade_date) OR e.price IS NOT NULL)
                     ), returns AS (

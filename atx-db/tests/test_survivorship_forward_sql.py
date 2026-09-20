@@ -293,3 +293,62 @@ def test_missing_bar_clock_uses_modeled_22h_and_late_preterminal_clock_is_preser
     _bar(panel_store, "D", 2, 110)
     refresh_survivorship_safe_forward_returns(panel_store)
     assert _row(panel_store, horizon=1)["available_at"] == dt.datetime(2024, 1, 2, 22)
+
+
+@pytest.mark.parametrize("invalid", [-1.01, float("inf"), float("nan")])
+def test_invalid_terminal_correction_never_resurrects_older_revision(panel_store, invalid):
+    for day, price in [(1, 100), (2, 110), (3, 120), (5, 90), (6, 80), (7, 70)]:
+        _bar(panel_store, "D", day, price)
+    _terminal(panel_store, latest=False, available=dt.datetime(2024, 1, 7))
+    _terminal(panel_store, identifier="invalid-correction", value=invalid,
+              available=dt.datetime(2024, 1, 12))
+    cutoff = dt.datetime(2024, 1, 10, 22)
+    refresh_survivorship_safe_forward_returns(
+        panel_store, SurvivorshipSafeForwardReturnOptions(observation_cutoff=cutoff),
+    )
+    assert _row(panel_store)["forward_return"] == pytest.approx(-0.4)
+    assert _row(panel_store)["return_observation_id"] == "obs-terminal"
+    assert survivorship_forward_return_check(
+        panel_store, observation_cutoff=cutoff,
+    ).status == "passed"
+    # Even an existing valid-looking output cannot mask an invalid selected input.
+    before_refresh = survivorship_forward_return_check(panel_store)
+    assert before_refresh.status == "failed" and before_refresh.observed_value == 1
+
+    refresh_survivorship_safe_forward_returns(panel_store)
+    assert _row(panel_store) is None
+    assert _row(panel_store, day=6, horizon=1) is None
+    assert _row(panel_store, horizon=1)["forward_return"] == pytest.approx(0.1)
+    result = survivorship_forward_return_check(panel_store)
+    assert result.status == "failed" and result.observed_value == 1
+
+
+@pytest.mark.parametrize("invalid", [-1.01, float("inf"), float("nan")])
+def test_invalid_only_terminal_blocks_survivor_and_later_event_fallback(panel_store, invalid):
+    for day, price in [(1, 100), (3, 120), (6, 80), (7, 70), (10, 60)]:
+        _bar(panel_store, "D", day, price)
+    _terminal(panel_store, identifier="invalid-only", value=invalid,
+              available=dt.datetime(2024, 1, 12))
+    cutoff = dt.datetime(2024, 1, 10, 22)
+    refresh_survivorship_safe_forward_returns(
+        panel_store, SurvivorshipSafeForwardReturnOptions(observation_cutoff=cutoff),
+    )
+    assert _row(panel_store)["forward_return"] == pytest.approx(-0.2)
+    assert survivorship_forward_return_check(
+        panel_store, observation_cutoff=cutoff,
+    ).status == "passed"
+    # A valid later event does not replace the first known, invalid event boundary.
+    _terminal(panel_store, identifier="later-event", day=8, value=-0.6,
+              available=dt.datetime(2024, 1, 13))
+    refresh_survivorship_safe_forward_returns(panel_store)
+    assert _row(panel_store) is None
+    assert _row(panel_store, day=6, horizon=1) is None
+    result = survivorship_forward_return_check(panel_store)
+    assert result.status == "failed" and result.observed_value == 1
+
+
+def test_invalid_selected_terminal_fails_quality_without_any_formation_input(panel_store):
+    _terminal(panel_store, value=float("nan"))
+    assert refresh_survivorship_safe_forward_returns(panel_store) == 0
+    result = survivorship_forward_return_check(panel_store)
+    assert result.status == "failed" and result.observed_value == 1

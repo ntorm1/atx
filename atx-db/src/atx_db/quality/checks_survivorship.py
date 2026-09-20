@@ -52,6 +52,8 @@ def _survivorship_sql(
     A positive raw formation bar with a missing/invalid adjusted price still demands
     a stitch in production mode. The writer cannot compute it, so the gate reports
     the missing adjusted input rather than passing over an empty eligible set.
+    Selected invalid terminal inputs fail once per event, even without a formation
+    window. Their revisions/events are selected before numeric validity is tested.
     """
     if price_basis not in {"adjusted_close", "close"}:
         raise ValueError("price_basis must be adjusted_close or close")
@@ -69,9 +71,10 @@ def _survivorship_sql(
         ) AS revision
         FROM delisting_terminal_returns
         WHERE ({cutoff_sql} IS NULL OR available_at <= {cutoff_sql})
-          AND isfinite(terminal_return) AND terminal_return >= -1
     ), terminals AS (
-        SELECT * FROM revisions WHERE revision = 1
+        SELECT *, coalesce(isfinite(terminal_return) AND terminal_return >= -1, false)
+            AS terminal_valid
+        FROM revisions WHERE revision = 1
         QUALIFY row_number() OVER (
             PARTITION BY security_id ORDER BY delist_date, terminal_return_id
         ) = 1
@@ -102,6 +105,7 @@ def _survivorship_sql(
         SELECT b.security_id, b.trade_date AS as_of_date, h.horizon_days,
                ending.trade_date AS forward_end_date, t.delist_date,
                t.return_observation_id, t.terminal_return_source,
+               t.terminal_valid,
                greatest(b.price_available_at, t.available_at) AS minimum_available_at
         FROM bars b
         JOIN terminals t ON t.security_id = b.security_id AND b.trade_date < t.delist_date
@@ -112,19 +116,21 @@ def _survivorship_sql(
           AND ((b.{price_basis} > 0 AND isfinite(b.{price_basis}))
                OR (b.close > 0 AND isfinite(b.close)))
     )
-    SELECT count(*)::DOUBLE FROM expected e
-    WHERE NOT EXISTS (
-        SELECT 1 FROM forward_returns_survivorship_safe f
-        WHERE f.source = {source_sql} AND f.security_id = e.security_id
-          AND f.as_of_date = e.as_of_date AND f.horizon_days = e.horizon_days
-          AND f.forward_end_date = e.forward_end_date AND f.delist_date = e.delist_date
-          AND f.return_observation_id IS NOT DISTINCT FROM e.return_observation_id
-          AND f.terminal_return_source = e.terminal_return_source
-          AND f.is_stitched AND f.is_latest_revision
-          AND f.symbol IS NOT NULL AND isfinite(f.forward_return)
-          AND f.available_at >= e.minimum_available_at
-          AND ({cutoff_sql} IS NULL OR f.available_at <= {cutoff_sql})
-    )
+    SELECT (
+        (SELECT count(*) FROM terminals WHERE NOT terminal_valid)
+        + (SELECT count(*) FROM expected e WHERE e.terminal_valid AND NOT EXISTS (
+            SELECT 1 FROM forward_returns_survivorship_safe f
+            WHERE f.source = {source_sql} AND f.security_id = e.security_id
+              AND f.as_of_date = e.as_of_date AND f.horizon_days = e.horizon_days
+              AND f.forward_end_date = e.forward_end_date AND f.delist_date = e.delist_date
+              AND f.return_observation_id IS NOT DISTINCT FROM e.return_observation_id
+              AND f.terminal_return_source = e.terminal_return_source
+              AND f.is_stitched AND f.is_latest_revision
+              AND f.symbol IS NOT NULL AND isfinite(f.forward_return)
+              AND f.available_at >= e.minimum_available_at
+              AND ({cutoff_sql} IS NULL OR f.available_at <= {cutoff_sql})
+        ))
+    )::DOUBLE
     """
 
 
