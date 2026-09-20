@@ -63,7 +63,11 @@ def _universe_us_listed_membership(conn: duckdb.DuckDBPyConnection) -> None:
                 "available_at is the earliest timestamp a consumer could have known the "
                 "interval opened. market_cap_decile is the decile AT valid_from only and must "
                 "never be read as a per-date attribute; use market_daily_metrics.market_cap "
-                "for a dated decile.",
+                "for a dated decile. is_latest_revision is expected to always be true: "
+                "refresh_universe_us_listed fully replaces a universe_id's interval set on "
+                "every run rather than maintaining a revision chain, so this column carries "
+                "no information today but keeps the table's shape consistent with every "
+                "other fact table under the current PIT regime.",
             )
         ],
     )

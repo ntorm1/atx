@@ -417,3 +417,153 @@ def test_membership_intervals_never_overlap(tmp_store):
         """
     ).fetchone()[0]
     assert int(overlaps) == 0
+
+
+# --- Fix round 1: the migration-0304 quality_check_registry rows are backed by real
+# SqlQualityChecks (atx_db.quality.checks_universe) and actually run through the shared
+# runner, not just registered as inert metadata. ---
+
+_OVERLAP_CHECK_NAME = "universe_us_listed_overlapping_intervals"
+_MISSING_DECILE_CHECK_NAME = "universe_us_listed_missing_decile"
+
+
+def _insert_membership_rows(store, rows):
+    store.con.executemany(
+        """
+        INSERT INTO universe_us_listed_membership (
+            membership_id, universe_id, security_id, symbol, valid_from, valid_to,
+            available_at, security_type, exchange_code, has_cik, cik, market_cap_decile,
+            reason, rules_json, decision_count, as_of_date, is_latest_revision, source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+
+
+def _membership_row(
+    membership_id,
+    security_id,
+    valid_from,
+    valid_to,
+    *,
+    universe_id="universe_us_listed",
+    market_cap_decile=5,
+):
+    return (
+        membership_id,
+        universe_id,
+        security_id,
+        security_id,
+        dt.date.fromisoformat(valid_from),
+        None if valid_to is None else dt.date.fromisoformat(valid_to),
+        pd.Timestamp(f"{valid_from} 22:00:00"),
+        "common",
+        "XNAS",
+        True,
+        "0000320193",
+        market_cap_decile,
+        "member",
+        "{}",
+        1,
+        dt.date.fromisoformat(valid_from),
+        True,
+        "test",
+    )
+
+
+def _insert_market_daily_rows(store, rows):
+    store.con.executemany(
+        """
+        INSERT INTO market_daily_metrics (
+            market_daily_id, source, security_id, trade_date, market_cap,
+            available_at, inputs_hash, as_of_date, is_latest_revision
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+
+
+def _market_daily_row(security_id, trade_date, market_cap):
+    return (
+        f"{security_id}-{trade_date}",
+        "test",
+        security_id,
+        dt.date.fromisoformat(trade_date),
+        market_cap,
+        pd.Timestamp(f"{trade_date} 22:00:00"),
+        f"hash-{security_id}-{trade_date}",
+        dt.date.fromisoformat(trade_date),
+        True,
+    )
+
+
+def _run_universe_checks(store, check_name):
+    from atx_db.quality import run_warehouse_quality_checks
+
+    results = run_warehouse_quality_checks(store, record=False, check_names={check_name})
+    assert len(results) == 1
+    return results[0]
+
+
+def test_universe_quality_checks_pass_on_clean_disjoint_intervals(tmp_store):
+    _insert_membership_rows(
+        tmp_store,
+        [
+            _membership_row("m-1", "SEC-1", "2024-01-02", "2024-01-04"),
+            _membership_row("m-2", "SEC-1", "2024-01-10", None),
+            _membership_row("m-3", "SEC-2", "2024-01-02", None),
+        ],
+    )
+    _insert_market_daily_rows(
+        tmp_store,
+        [
+            _market_daily_row("SEC-1", "2024-01-02", 1_000_000.0),
+            _market_daily_row("SEC-2", "2024-01-02", 2_000_000.0),
+        ],
+    )
+
+    overlap_result = _run_universe_checks(tmp_store, _OVERLAP_CHECK_NAME)
+    assert overlap_result.status == "passed"
+    assert overlap_result.observed_value == 0.0
+    assert overlap_result.severity == "critical"
+
+    decile_result = _run_universe_checks(tmp_store, _MISSING_DECILE_CHECK_NAME)
+    assert decile_result.status == "passed"
+    assert decile_result.observed_value == 0.0
+    assert decile_result.severity == "warning"
+
+
+def test_overlapping_intervals_check_fails_on_an_engineered_overlap(tmp_store):
+    _insert_membership_rows(
+        tmp_store,
+        [
+            # SEC-1 has two intervals that overlap Jan5-Jan10: a critical, gate-blocking bug.
+            _membership_row("m-1", "SEC-1", "2024-01-02", "2024-01-10"),
+            _membership_row("m-2", "SEC-1", "2024-01-05", None),
+        ],
+    )
+
+    result = _run_universe_checks(tmp_store, _OVERLAP_CHECK_NAME)
+    assert result.status == "failed"
+    assert result.observed_value == 1.0
+    assert result.severity == "critical"
+
+
+def test_missing_decile_check_fails_when_a_priced_row_has_no_decile(tmp_store):
+    _insert_membership_rows(
+        tmp_store,
+        [
+            _membership_row("m-1", "SEC-1", "2024-01-02", None, market_cap_decile=None),
+        ],
+    )
+    _insert_market_daily_rows(
+        tmp_store,
+        [
+            _market_daily_row("SEC-1", "2024-01-02", 1_000_000.0),
+        ],
+    )
+
+    result = _run_universe_checks(tmp_store, _MISSING_DECILE_CHECK_NAME)
+    assert result.status == "warning"
+    assert result.observed_value == 1.0
+    assert result.severity == "warning"

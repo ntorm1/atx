@@ -35,6 +35,7 @@ for _name in (
     "_identity_check_specs",
     "_market_reference_check_specs",
     "_ownership_check_specs",
+    "_universe_check_specs",
     "checks_analytics",
     "checks_estimates",
     "checks_features_catalog",
@@ -43,6 +44,7 @@ for _name in (
     "checks_market_reference",
     "checks_ownership",
     "checks_survivorship",
+    "checks_universe",
     "survivorship_dqc_results",
 ):
     globals().pop(_name, None)
