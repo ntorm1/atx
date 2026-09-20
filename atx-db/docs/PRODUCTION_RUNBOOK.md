@@ -78,16 +78,17 @@ assumption, not verified historical publication or revision timing.
 The directory snapshot is dated 2026-09-20, after the latest loaded bar. It
 cannot certify historical common-equity membership by being backdated. The
 historical top-3000 common-equity cohort remains unestablished; the existing
-liquidity cohort is a different population, and the current item-coverage
-implementation also needs cohort/year corrections before an authoritative
-110-item / 90% / FY2015+ annual gate. Registry item counts are static contract
+liquidity cohort is a different population. Item coverage now measures the
+separate annual PIT top-3000 population, all completed FY2015+ years and explicit
+missing/undersized cohorts against the unchanged 110-item / 90% gate. Registry item counts are static contract
 breadth. Neither those counts nor dated proof slices in the
 [provider design](FUNDAMENTALS_PROVIDER_DESIGN.md) certify the rebuilt warehouse.
 
-Pending input supplementation and activation integration include historical
-listing evidence, archive-wide companyfacts targets, delisting submission forms,
-terminal returns, legacy-cohort factor projection and annual item coverage.
-These are follow-on requirements, not stages already proven on production data.
+The ladder includes archive-wide companyfacts selection, all-form submissions,
+terminal returns, legacy-cohort factor projection, adjusted-price forward returns,
+annual item coverage and final quality measurement. Historical listing evidence
+remains an input prerequisite. These stages require measured production outcomes;
+successful execution alone does not certify the data.
 
 ### Prerequisites
 
@@ -188,8 +189,53 @@ migrates without the activation retention option.
 -> `ticker_history_publish` -> `sec_bulk_download` -> `submissions_load` ->
 `companyfacts_load` -> `statement_points` -> `periods` -> `ttm` ->
 `calendarization` -> `standardized` -> `industry_templates` -> `reconciliation`
--> `derived_metrics` -> `market_daily` -> `delisting_evidence`
--> `universe_us_listed` -> `provider_coverage`.
+-> `derived_metrics` -> `market_daily` -> `legacy_liquid_universe`
+-> `factor_projections` -> `delisting_evidence`
+-> `universe_us_listed` -> `delisting_terminal_returns` -> `trading_calendar`
+-> `survivorship_forward_returns` -> `item_coverage` -> `provider_coverage` -> `quality`.
+
+The cohort uses the original price/liquidity rules, with dated inputs only;
+unclassified bar candidates are not proof of historical US common-equity listing.
+Its full daily decisions and interval compression stay in DuckDB. The 23 retired
+factor mappings and retained parents run in sequential calendar-year partitions
+with complete monthly peers. Empty cohorts skip parents and preserve prior
+projection output with an explicit degraded diagnostic; empty output and
+insufficient peers are recorded, never treated as continuity evidence.
+
+`delisting_terminal_returns` also reconciles codes and reports uncovered reasons.
+The observed calendar precedes the adjusted-price forward panel. `item_coverage`
+builds the separate annual cohort before measuring items; `quality` runs all
+checks using the explicit as-of date at 22:00. Failures remain visible in the
+stage detail and quality tables; no stage completion flips a schema condition.
+
+An operator-supplied `--ticker-history-source-path` accepts the native staged
+Parquet or TSV and makes extraction a recorded no-op. The updated user source is
+`data/staging/broad-bars/2026-09-20-updated/TickerHistory3.parquet`; preserve the
+Downloads original and old source. After governed migration and source review,
+run offline source prepasses separately from the downstream rebuild:
+
+```powershell
+python scripts/warehouse_activate.py --db-path data/warehouse.duckdb `
+  --as-of-date 2026-09-20 --only ticker_history_publish `
+  --ticker-history-source-path data/staging/broad-bars/2026-09-20-updated/TickerHistory3.parquet `
+  --memory-limit 1GB --threads 1 --backup-keep 100 --force --run-id activation-prices-updated
+python scripts/warehouse_activate.py --db-path data/warehouse.duckdb `
+  --as-of-date 2026-09-20 --only submissions_load --only companyfacts_load `
+  --submissions-batch-size 50 --companyfacts-symbol-source archive_members `
+  --companyfacts-replace-existing --memory-limit 1GB --threads 1 `
+  --backup-keep 100 --force --run-id activation-source-prepass
+python scripts/warehouse_activate.py --db-path data/warehouse.duckdb `
+  --as-of-date 2026-09-20 --start-stage statement_points --force `
+  --memory-limit 1GB --threads 1 --shards 16 --backup-keep 100 --run-id activation-run5
+```
+
+Wrap each command in the reviewed controller process-tree memory guard, with a
+fresh receipt and a cap supported by current physical/commit headroom. Run one
+heavy command at a time. Submissions use all forms and 50-CIK flush batches;
+reconciliation's separate symbol-planning connection gets the same session cap.
+Scheduler dataset IDs use the same panel adapters. Supply explicit `as_of_date`
+in scheduled terminal/forward/coverage job parameters; projection and cohort
+jobs also accept date scopes. Keep the legacy and annual cohort IDs distinct.
 
 Repeat `--only` for multiple stages; selections run in ladder order. A slice
 does not build omitted prerequisites. LEI/FIGI activation is deferred and has

@@ -35,9 +35,16 @@ def test_stage_order_is_the_documented_dependency_order():
         "reconciliation",
         "derived_metrics",
         "market_daily",
+        "legacy_liquid_universe",
+        "factor_projections",
         "delisting_evidence",
         "universe_us_listed",
+        "delisting_terminal_returns",
+        "trading_calendar",
+        "survivorship_forward_returns",
+        "item_coverage",
         "provider_coverage",
+        "quality",
     )
 
 

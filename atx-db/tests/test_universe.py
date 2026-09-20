@@ -136,9 +136,9 @@ def _insert_security(store, security_id: str, symbol: str, asset_class: str = "E
         """
         INSERT INTO securities (
             security_id, primary_symbol, name, asset_class, country,
-            currency, active, first_seen_date, source
+            currency, active, first_seen_date, source, source_loaded_at
         )
-        VALUES (?, ?, ?, ?, 'US', 'USD', true, DATE '2020-01-02', 'fixture')
+        VALUES (?, ?, ?, ?, 'US', 'USD', true, DATE '2020-01-02', 'fixture', TIMESTAMP '2020-01-02 00:00:00')
         """,
         [security_id, symbol, f"{symbol} Common Stock", asset_class],
     )
@@ -532,6 +532,18 @@ def test_universe_membership_migration_catalogs_contract_surface(tmp_store):
     assert tmp_store.con.execute(
         "SELECT count(*) FROM schema_contract WHERE table_name = 'universe_membership'"
     ).fetchone()[0] >= 10
+
+
+def test_bounded_writer_does_not_backdate_current_classification_or_late_bars(tmp_store):
+    _load_governed_universe_slice(tmp_store)
+    tmp_store.con.execute("UPDATE securities SET source_loaded_at=TIMESTAMP '2026-09-20' WHERE security_id='PREF'")
+    tmp_store.con.execute("UPDATE equity_daily_bars SET available_at=TIMESTAMP '2020-01-06' "
+                          "WHERE security_id='COMMON' AND trade_date=DATE '2020-01-05'")
+    result = GovernedUniverseMembershipDataset().load(tmp_store, _governed_universe_options())
+    assert result.rows_loaded == 4
+    assert tmp_store.con.execute("SELECT is_member FROM universe_membership WHERE security_id='PREF'").fetchone() == (True,)
+    assert tmp_store.con.execute("SELECT max(valid_to) FROM universe_membership WHERE security_id='COMMON'").fetchone() == (dt.date(2020, 1, 4),)
+    assert not tmp_store.con.execute("SELECT table_name FROM duckdb_tables() WHERE table_name IN ('_governed_daily','_governed_intervals')").fetchall()
 
 
 def test_pf3_s4_quality_indexes_and_registry_are_seeded(tmp_store):

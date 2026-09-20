@@ -61,9 +61,16 @@ STAGE_ORDER: tuple[str, ...] = (
     "reconciliation",
     "derived_metrics",
     "market_daily",
+    "legacy_liquid_universe",
+    "factor_projections",
     "delisting_evidence",
     "universe_us_listed",
+    "delisting_terminal_returns",
+    "trading_calendar",
+    "survivorship_forward_returns",
+    "item_coverage",
     "provider_coverage",
+    "quality",
 )
 
 
@@ -194,13 +201,14 @@ class ActivationOptions:
     db_path: Path = DEFAULT_DB_PATH
     as_of_date: dt.date | None = None
     ticker_history_zip: Path = DEFAULT_TICKER_HISTORY_ZIP
+    ticker_history_source_path: Path | None = None
     ticker_history_expected_bytes: int | None = TICKER_HISTORY_UNCOMPRESSED_BYTES
     staging_dir: Path = Path("data/staging/broad-bars")
     cache_dir: Path = Path("data/cache")
     sec_user_agent: str | None = None
     downloader: Downloader | None = None
-    memory_limit: str = "8GB"
-    threads: int = 4
+    memory_limit: str = "1GB"
+    threads: int = 1
     reconciliation_shards: int = 16
     shard_runner: ShardRunner | None = None
     minimum_rows: int = 30_000_000
@@ -208,11 +216,18 @@ class ActivationOptions:
     minimum_latest_date_securities: int = 5_000
     companyfacts_limit: int | None = None
     companyfacts_progress_every: int = 25
+    submissions_batch_size: int = 50
     companyfacts_symbol_source: str = "sec_company_tickers"
     skip_loaded_companyfacts: bool | None = None
     dry_run: bool = False
     force: bool = False
     run_id: str = "warehouse-activate"
+
+    def __post_init__(self) -> None:
+        if min(self.threads, self.reconciliation_shards, self.submissions_batch_size) < 1:
+            raise ValueError("threads, reconciliation_shards and submissions_batch_size must be positive")
+        if not self.memory_limit.strip():
+            raise ValueError("memory_limit must not be empty")
 
     def as_dict(self) -> dict[str, object]:
         """Shallow field mapping for ``ActivationOptions(**{**opts.as_dict(), ...})``."""
@@ -361,6 +376,12 @@ def stage_symbol_directory(store: DuckDBStore, options: ActivationOptions) -> St
 def stage_ticker_history_extract(store: DuckDBStore, options: ActivationOptions) -> StageResult:
     """Stream the ticker-history ZIP member into the staging TSV (offline)."""
     _ = store
+    if options.ticker_history_source_path is not None:
+        path = options.ticker_history_source_path.resolve()
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        return StageResult(rows=0, detail={"source_path": str(path), "skipped": True,
+                                         "reason": "native source supplied; no extraction required"})
     result = extract_ticker_history_tsv(
         Path(options.ticker_history_zip),
         options.tsv_path,
@@ -390,7 +411,7 @@ def stage_ticker_history_publish(store: DuckDBStore, options: ActivationOptions)
     result = publish_bulk_ticker_history(
         store,
         BulkTickerHistoryOptions(
-            tsv_path=options.tsv_path.resolve(),
+            source_path=(options.ticker_history_source_path or options.tsv_path).resolve(),
             memory_limit=options.memory_limit,
             threads=options.threads,
             minimum_rows=options.minimum_rows,
@@ -408,6 +429,8 @@ def stage_ticker_history_publish(store: DuckDBStore, options: ActivationOptions)
             "invalid_rows": result.invalid_rows,
             "duplicate_keys": result.duplicate_keys,
             "elapsed_seconds": round(result.elapsed_seconds, 3),
+            "source_diagnostics": result.source_diagnostics,
+            "provenance": result.provenance,
         },
     )
 
@@ -520,10 +543,13 @@ def stage_submissions_load(store: DuckDBStore, options: ActivationOptions) -> St
         store,
         SecSubmissionsBulkOptions(
             zip_path=options.submissions_zip,
+            forms=None,
+            batch_ciks=options.submissions_batch_size,
             run_id=f"{options.run_id}-submissions",
         ),
     )
-    return StageResult(rows=int(result.rows_loaded), detail=dict(result.details))
+    return StageResult(rows=int(result.rows_loaded), detail={**result.details, "forms": "all",
+                                                           "batch_size": options.submissions_batch_size})
 
 
 def stage_companyfacts_load(store: DuckDBStore, options: ActivationOptions) -> StageResult:
@@ -809,7 +835,92 @@ def stage_universe_us_listed(store: DuckDBStore, options: ActivationOptions) -> 
         store,
         UniverseUsListedOptions(as_of_date=options.as_of_date, run_id=options.run_id),
     )
-    return StageResult(rows=rows, detail={"table": "universe_us_listed_membership"})
+    return StageResult(rows=rows, detail={"table": "universe_us_listed_membership",
+                                         **listing_input_diagnostics(store, options)})
+
+
+def listing_input_diagnostics(store: DuckDBStore, options: ActivationOptions) -> dict[str, object]:
+    """Measure source prerequisites without treating current snapshots as history."""
+    row = store.con.execute("""
+        SELECT (SELECT min(trade_date) FROM equity_daily_bars),
+               (SELECT max(trade_date) FROM equity_daily_bars),
+               (SELECT min(as_of_date) FROM nasdaq_symbol_directory),
+               (SELECT max(as_of_date) FROM nasdaq_symbol_directory),
+               (SELECT count(*) FROM exchange_listings
+                 WHERE (nullif(trim(exchange_code),'') IS NOT NULL OR nullif(trim(mic),'') IS NOT NULL)
+                   AND available_at<=?),
+               (SELECT count(DISTINCT security_id) FROM equity_daily_bars)
+    """, [dt.datetime.combine(resolve_as_of_date(options.as_of_date), dt.time(22))]).fetchone()
+    assert row is not None
+    return {"price_start": row[0], "price_end": row[1], "directory_first_snapshot": row[2],
+            "directory_latest_snapshot": row[3], "dated_exchange_evidence_rows": row[4],
+            "bar_observed_security_count": row[5],
+            "historical_listing_prerequisite": "missing_or_partial" if not row[4] or row[2] is None
+                or (row[0] is not None and row[2] > row[0]) else "requires_coverage_measurement",
+            "bar_observed_names_are_verified_us_common_equity": False}
+
+
+def stage_legacy_liquid_universe(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    from .universe import GovernedUniverseMembershipDataset, UniverseMembershipOptions
+
+    result = GovernedUniverseMembershipDataset().load(store, UniverseMembershipOptions(
+        end_date=resolve_as_of_date(options.as_of_date), run_id=options.run_id,
+    ))
+    return StageResult(result.rows_loaded, {**result.details,
+        "classification_note": "legacy liquidity rules; unknown classification is not historical US-listing proof"})
+
+
+def stage_factor_projections(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    from .derived_factor_projection import FactorProjectionOptions
+    from .production_panels import DerivedFactorProjectionDataset
+
+    result = DerivedFactorProjectionDataset().load(store, FactorProjectionOptions(
+        end_date=resolve_as_of_date(options.as_of_date), run_id=options.run_id,
+    ))
+    return StageResult(result.rows_loaded, result.details)
+
+
+def _production_panel(store: DuckDBStore, options: ActivationOptions, dataset: object) -> StageResult:
+    from .dataset import Dataset
+    from .production_panels import ProductionPanelOptions
+
+    assert isinstance(dataset, Dataset)
+    result = dataset.load(store, ProductionPanelOptions(resolve_as_of_date(options.as_of_date), options.run_id))
+    return StageResult(result.rows_loaded, result.details)
+
+
+def stage_delisting_terminal_returns(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    from .production_panels import DelistingTerminalDataset
+    return _production_panel(store, options, DelistingTerminalDataset())
+
+
+def stage_trading_calendar(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    from .calendar import TradingCalendarDataset, TradingCalendarOptions
+    result = TradingCalendarDataset().load(store, TradingCalendarOptions(run_id=options.run_id))
+    return StageResult(result.rows_loaded, {**result.details, "calendar_basis": "observed price dates; not certified exchange calendar"})
+
+
+def stage_survivorship_forward_returns(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    from .production_panels import SurvivorshipForwardDataset
+    return _production_panel(store, options, SurvivorshipForwardDataset())
+
+
+def stage_item_coverage(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    from .production_panels import ItemCoverageDataset
+    return _production_panel(store, options, ItemCoverageDataset())
+
+
+def stage_quality(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    from .quality import run_warehouse_quality_checks  # type: ignore[attr-defined]
+    results = run_warehouse_quality_checks(
+        store, checked_at=dt.datetime.combine(resolve_as_of_date(options.as_of_date), dt.time(22)),
+    )
+    return StageResult(len(results), {
+        "counts": {status: sum(r.status == status for r in results) for status in ("passed", "failed", "warning", "skipped")},
+        "failures": [{"check": r.check_name, "severity": r.severity, "observed": r.observed_value,
+                      "threshold": r.threshold_value} for r in results if r.status == "failed"],
+        "outcome": "degraded" if any(r.status in ("failed", "warning") for r in results) else "passed",
+    })
 
 
 def stage_provider_coverage(store: DuckDBStore, options: ActivationOptions) -> StageResult:
@@ -847,9 +958,16 @@ STAGES.update(
         "reconciliation": stage_reconciliation,
         "derived_metrics": stage_derived_metrics,
         "market_daily": stage_market_daily,
+        "legacy_liquid_universe": stage_legacy_liquid_universe,
+        "factor_projections": stage_factor_projections,
         "delisting_evidence": stage_delisting_evidence,
         "universe_us_listed": stage_universe_us_listed,
+        "delisting_terminal_returns": stage_delisting_terminal_returns,
+        "trading_calendar": stage_trading_calendar,
+        "survivorship_forward_returns": stage_survivorship_forward_returns,
+        "item_coverage": stage_item_coverage,
         "provider_coverage": stage_provider_coverage,
+        "quality": stage_quality,
     }
 )
 
@@ -983,13 +1101,16 @@ def add_activation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument("--as-of-date", type=dt.date.fromisoformat, default=None)
     parser.add_argument("--ticker-history-zip", type=Path, default=DEFAULT_TICKER_HISTORY_ZIP)
+    parser.add_argument("--ticker-history-source-path", type=Path, default=None,
+                        help="Native local TSV or Parquet; bypasses ZIP extraction.")
     parser.add_argument("--staging-dir", type=Path, default=Path("data/staging/broad-bars"))
     parser.add_argument("--cache-dir", type=Path, default=Path("data/cache"))
     parser.add_argument("--sec-user-agent", default=None)
-    parser.add_argument("--memory-limit", default="8GB")
-    parser.add_argument("--threads", type=int, default=4)
+    parser.add_argument("--memory-limit", default="1GB")
+    parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--shards", type=int, default=16)
     parser.add_argument("--companyfacts-limit", type=int, default=None)
+    parser.add_argument("--submissions-batch-size", type=int, default=50)
     parser.add_argument("--companyfacts-symbol-source", choices=("sec_company_tickers", "archive_members"),
                         default="sec_company_tickers", help="archive_members discovers all exact local CIK members offline.")
     companyfacts_policy = parser.add_mutually_exclusive_group()
@@ -1026,6 +1147,7 @@ def activation_options_from_args(args: argparse.Namespace) -> ActivationOptions:
         db_path=args.db_path,
         as_of_date=as_of_date,
         ticker_history_zip=args.ticker_history_zip,
+        ticker_history_source_path=args.ticker_history_source_path,
         staging_dir=args.staging_dir,
         cache_dir=args.cache_dir,
         sec_user_agent=sec_user_agent,
@@ -1034,6 +1156,7 @@ def activation_options_from_args(args: argparse.Namespace) -> ActivationOptions:
         threads=args.threads,
         reconciliation_shards=args.shards,
         companyfacts_limit=args.companyfacts_limit,
+        submissions_batch_size=args.submissions_batch_size,
         companyfacts_symbol_source=args.companyfacts_symbol_source,
         skip_loaded_companyfacts=args.skip_loaded_companyfacts,
         dry_run=args.dry_run,

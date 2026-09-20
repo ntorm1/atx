@@ -126,6 +126,16 @@ from .thirteenf import ThirteenFDataSet, ThirteenFOptions
 from .ticker_history import TickerHistoryDataset, TickerHistoryOptions
 from .universes import UniverseBuildOptions, UniverseMembershipDataset
 from .universe_us_listed import UniverseUsListedDataset, UniverseUsListedOptions
+from .universe import GovernedUniverseMembershipDataset, UniverseMembershipOptions
+from .derived_factor_projection import FactorProjectionOptions
+from .production_panels import (
+    DelistingTerminalDataset,
+    DerivedFactorProjectionDataset,
+    ItemCoverageDataset,
+    PRODUCTION_JOB_SEEDS,
+    ProductionPanelOptions,
+    SurvivorshipForwardDataset,
+)
 from .watermarks import refresh_warehouse_watermarks
 from .warehouse import json_dumps, now_utc_naive
 from .xbrl_filing_contexts import XbrlFilingContextDataset, XbrlFilingContextOptions
@@ -1200,6 +1210,7 @@ def _fred_macro_options(params: dict[str, Any]) -> FredMacroOptions:
 def _delisting_evidence_options(params: dict[str, Any]) -> DelistingEvidenceOptions:
     default = DelistingEvidenceOptions()
     return DelistingEvidenceOptions(
+        as_of_date=_date_or_none(params.get("as_of_date")),
         archive_gap_sessions=int(params.get("archive_gap_sessions", default.archive_gap_sessions)),
         merger_lookback_days=int(params.get("merger_lookback_days", default.merger_lookback_days)),
         include_archive_inference=bool(
@@ -1212,11 +1223,45 @@ def _delisting_evidence_options(params: dict[str, Any]) -> DelistingEvidenceOpti
 def _universe_us_listed_options(params: dict[str, Any]) -> UniverseUsListedOptions:
     default = UniverseUsListedOptions()
     return UniverseUsListedOptions(
+        as_of_date=_date_or_none(params.get("as_of_date")),
         universe_id=params.get("universe_id", default.universe_id),
         lookback_days=int(params.get("lookback_days", default.lookback_days)),
         market_source=params.get("market_source", default.market_source),
         start_date=_date_or_none(params.get("start_date")),
         end_date=_date_or_none(params.get("end_date")),
+        run_id=params.get("run_id"),
+    )
+
+
+def _production_panel_options(params: dict[str, Any]) -> ProductionPanelOptions:
+    as_of_date = _date_or_none(params.get("as_of_date"))
+    if as_of_date is None:
+        raise ValueError("production panel jobs require explicit as_of_date")
+    return ProductionPanelOptions(as_of_date=as_of_date, run_id=params.get("run_id"))
+
+
+def _projection_options(params: dict[str, Any]) -> FactorProjectionOptions:
+    default = FactorProjectionOptions()
+    return FactorProjectionOptions(
+        universe_id=params.get("universe_id", default.universe_id),
+        factor_ids=_string_tuple_or_none(params.get("factor_ids")),
+        start_date=_date_or_none(params.get("start_date")),
+        end_date=_date_or_none(params.get("end_date") or params.get("as_of_date")),
+        run_id=params.get("run_id"),
+    )
+
+
+def _governed_universe_options(params: dict[str, Any]) -> UniverseMembershipOptions:
+    default = UniverseMembershipOptions()
+    return UniverseMembershipOptions(
+        universe_id=params.get("universe_id", default.universe_id),
+        symbols=_tuple_or_none(params.get("symbols")),
+        start_date=_date_or_none(params.get("start_date")),
+        end_date=_date_or_none(params.get("end_date") or params.get("as_of_date")),
+        lookback_days=int(params.get("lookback_days", default.lookback_days)),
+        min_history_days=int(params.get("min_history_days", default.min_history_days)),
+        min_price=float(params.get("min_price", default.min_price)),
+        min_dollar_volume=float(params.get("min_dollar_volume", default.min_dollar_volume)),
         run_id=params.get("run_id"),
     )
 
@@ -1382,6 +1427,11 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     TradingCalendarDataset.dataset_id: (TradingCalendarDataset, _calendar_options),
     UniverseMembershipDataset.dataset_id: (UniverseMembershipDataset, _universe_options),
     UniverseUsListedDataset.dataset_id: (UniverseUsListedDataset, _universe_us_listed_options),
+    GovernedUniverseMembershipDataset.dataset_id: (GovernedUniverseMembershipDataset, _governed_universe_options),
+    DerivedFactorProjectionDataset.dataset_id: (DerivedFactorProjectionDataset, _projection_options),
+    DelistingTerminalDataset.dataset_id: (DelistingTerminalDataset, _production_panel_options),
+    SurvivorshipForwardDataset.dataset_id: (SurvivorshipForwardDataset, _production_panel_options),
+    ItemCoverageDataset.dataset_id: (ItemCoverageDataset, _production_panel_options),
     DelistingEvidenceDataset.dataset_id: (DelistingEvidenceDataset, _delisting_evidence_options),
     SicTaxonomyDataset.dataset_id: (SicTaxonomyDataset, lambda p: SicTaxonomyOptions()),
     FamaFrenchTaxonomyDataset.dataset_id: (FamaFrenchTaxonomyDataset, lambda p: FamaFrenchTaxonomyOptions()),
@@ -1541,6 +1591,11 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "bulk_daily_bars_backfill": ("sec_security_master",),
     "trading_calendar": ("tbltickerhistory_daily",),
     "universe_memberships": ("tbltickerhistory_daily",),
+    "universe_membership": ("tbltickerhistory_daily", "listing_status_intervals"),
+    "derived_factor_projection": ("universe_membership", "derived_metrics", "market_daily"),
+    "delisting_terminal_returns": ("delisting_evidence", "universe_us_listed"),
+    "forward_returns_survivorship_safe": ("trading_calendar", "delisting_terminal_returns"),
+    "fundamental_item_coverage": ("universe_us_listed", "market_daily", "fundamental_standardized"),
     "universe_us_listed": ("market_daily", "tbltickerhistory_daily"),
     "delisting_evidence": ("tbltickerhistory_daily", "nasdaq_listing_events", "sec_submissions"),
     "xbrl_filing_contexts": ("sec_submissions",),
@@ -2270,6 +2325,10 @@ class JobManager:
             ],
             **retry_policy,
         )
+
+        for job_name, dataset_id, dependencies in PRODUCTION_JOB_SEEDS:
+            self.register_job(job_name=job_name, dataset_id=dataset_id,
+                              dependencies=list(dependencies), **retry_policy)
 
     def run_job(
         self,

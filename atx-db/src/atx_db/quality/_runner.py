@@ -65,6 +65,7 @@ def run_warehouse_quality_checks(
     record: bool = True,
     check_names: Iterable[str] | None = None,
     dataset_ids: Iterable[str] | None = None,
+    checked_at: dt.datetime | None = None,
 ) -> list[QualityResult]:
     """Run production-oriented SQL checks and optionally append check outcomes.
 
@@ -73,7 +74,7 @@ def run_warehouse_quality_checks(
     """
 
     results: list[QualityResult] = []
-    checked_at = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    checked_at = checked_at or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     requested_checks = set(check_names) if check_names is not None else None
     requested_datasets = set(dataset_ids) if dataset_ids is not None else None
     objects = _main_objects(store)

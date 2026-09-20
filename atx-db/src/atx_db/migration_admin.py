@@ -403,7 +403,10 @@ def run_governed_migrations(
     target.parent.mkdir(parents=True, exist_ok=True)
     run_id = f"warehouse-migrate-{uuid.uuid4()}"
     backup: BackupArtifact | None = None
-    con: duckdb.DuckDBPyConnection | None = duckdb.connect(str(target))
+    # Migration work starts before activation configures its analytical session.
+    # Apply the conservative budget at connection creation, including reopen.
+    config = {"memory_limit": "1GB", "threads": "1", "preserve_insertion_order": "false"}
+    con: duckdb.DuckDBPyConnection | None = duckdb.connect(str(target), config=config)
     lock_claimed = False
     try:
         DuckDBStore(target)._configure_session(con)
@@ -424,7 +427,7 @@ def run_governed_migrations(
             backup_dir=backup_dir,
         )
 
-        con = duckdb.connect(str(target))
+        con = duckdb.connect(str(target), config=config)
         DuckDBStore(target)._configure_session(con)
         holder = con.execute(
             """
