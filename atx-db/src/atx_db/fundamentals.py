@@ -953,6 +953,26 @@ def _companyfacts_zip_member_url(cik: str | int) -> str:
     return f"{SEC_COMPANY_FACTS_ZIP_URL}#CIK{int(str(cik).strip()):010d}.json"
 
 
+def _companyfacts_cik_spellings(store: DuckDBStore) -> dict[int, tuple[str, ...]]:
+    """Inventory exact stored spellings once, using the replacement's SQL rules.
+
+    Only distinct CIK strings enter Python, never the warehouse's fact history.
+    Memory scales with spelling cardinality; keep this cache local to one load.
+    """
+    rows = store.con.execute(
+        """
+        SELECT cik, try_cast(cik AS BIGINT) AS cik_number
+        FROM (SELECT DISTINCT cik FROM sec_company_facts) stored
+        WHERE regexp_full_match(trim(cik), '[0-9]+')
+          AND try_cast(cik AS BIGINT) IS NOT NULL
+        """
+    ).fetchall()
+    spellings: dict[int, list[str]] = {}
+    for raw_cik, cik_number in rows:
+        spellings.setdefault(cik_number, []).append(raw_cik)
+    return {cik_number: tuple(sorted(values)) for cik_number, values in spellings.items()}
+
+
 class SecCompanyFactsDataset(Dataset):
     dataset_id = "sec_company_facts"
     source_name = SOURCE_NAME
@@ -1013,6 +1033,7 @@ class SecCompanyFactsDataset(Dataset):
         empty_targets: list[dict[str, str]] = []
         empty_reasons: dict[str, int] = {}
         unresolved_ciks: list[pd.DataFrame] = []
+        cik_spellings_by_number: dict[int, tuple[str, ...]] | None = None
         with contextlib.ExitStack() as stack:
             zip_fetcher = None
             session = None
@@ -1097,7 +1118,24 @@ class SecCompanyFactsDataset(Dataset):
                     if archive_mode:
                         points["security_id"] = facts["security_id"]
                         points["symbol"] = None  # CIK source labels are not trading symbols.
-                rows_loaded += self._replace_facts(store, facts, points, security_id, cik=cik)
+                if cik_spellings_by_number is None:
+                    inventory_started = time.perf_counter()
+                    cik_spellings_by_number = _companyfacts_cik_spellings(store)
+                    if options.progress_every_targets > 0:
+                        LOGGER.info("companyfacts CIK inventory issuers=%d spellings=%d elapsed_seconds=%.3f",
+                                    len(cik_spellings_by_number),
+                                    sum(len(values) for values in cik_spellings_by_number.values()),
+                                    time.perf_counter() - inventory_started)
+                cik_number = int(cik)
+                stored_cik_spellings = cik_spellings_by_number.get(cik_number, ())
+                rows_loaded += self._replace_facts(
+                    store, facts, points, security_id, cik=cik,
+                    stored_cik_spellings=stored_cik_spellings,
+                )
+                # The loader inserts canonical CIKs. Advance only after commit;
+                # retaining deleted spellings as harmless supersets is safe.
+                if not facts.empty and cik not in stored_cik_spellings:
+                    cik_spellings_by_number[cik_number] = (*stored_cik_spellings, cik)
                 point_rows += len(points)
                 completed_targets += 1
                 reason = None
@@ -1196,7 +1234,19 @@ class SecCompanyFactsDataset(Dataset):
         security_id: str,
         *,
         cik: str,
+        stored_cik_spellings: tuple[str, ...] | None = None,
     ) -> int:
+        # Independent callers retain fresh numeric matching. The serial load
+        # supplies a complete spelling inventory and maintains its own inserts.
+        if stored_cik_spellings is None:
+            cik_predicate = "regexp_full_match(trim(cik), '[0-9]+') AND try_cast(cik AS BIGINT) = cast(? AS BIGINT)"
+            cik_params = [cik]
+        elif stored_cik_spellings:
+            cik_predicate = f"cik IN ({', '.join('?' for _ in stored_cik_spellings)})"
+            cik_params = list(stored_cik_spellings)
+        else:
+            cik_predicate = "FALSE"
+            cik_params = []
         with store.transaction():
             # Points have no CIK. Match both an old issuer identity and its fact
             # keys; filing keys alone may be shared by different issuers. Include
@@ -1206,14 +1256,13 @@ class SecCompanyFactsDataset(Dataset):
             # on production history. These temp tables are created and dropped
             # in this transaction, so a failed replacement rolls them back too.
             store.con.execute(
-                """
+                f"""
                 CREATE TEMP TABLE companyfacts_old_fact_keys AS
                 SELECT DISTINCT security_id, accession_number, taxonomy, concept, unit, period_end, period_start
                 FROM sec_company_facts
-                WHERE regexp_full_match(trim(cik), '[0-9]+')
-                  AND try_cast(cik AS BIGINT) = cast(? AS BIGINT)
+                WHERE {cik_predicate}
                 """,
-                [cik],
+                cik_params,
             )
             store.con.execute(
                 """
@@ -1255,8 +1304,7 @@ class SecCompanyFactsDataset(Dataset):
                 [SOURCE_NAME],
             )
             store.con.execute(
-                """DELETE FROM sec_company_facts WHERE regexp_full_match(trim(cik), '[0-9]+')
-                AND try_cast(cik AS BIGINT) = cast(? AS BIGINT)""", [cik],
+                f"DELETE FROM sec_company_facts WHERE {cik_predicate}", cik_params,
             )
             store.con.execute(
                 """DELETE FROM identifier_resolution_candidates
