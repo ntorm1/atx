@@ -48,6 +48,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from atx_db import DEFAULT_DB_PATH, DuckDBStore
+from atx_db.cli import _configure_analytical_session
 from atx_db.clock import utc_today
 from atx_db.fundamentals import COMPANY_FACT_SYMBOL_SOURCES, SecCompanyFactsDataset, SecCompanyFactsOptions
 from atx_db.security_master import SEC_USER_AGENT, sec_session
@@ -73,6 +74,8 @@ def _download(dest: Path, *, user_agent: str) -> None:
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Backfill companyfacts from the SEC bulk zip (S45).")
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    parser.add_argument("--memory-limit", default="1GB", help="DuckDB query memory bound (default: 1GB).")
+    parser.add_argument("--threads", type=int, default=1, help="DuckDB query threads (default: 1).")
     parser.add_argument("--companyfacts-zip", type=Path, required=True, help="Path to companyfacts.zip.")
     parser.add_argument("--download", action="store_true", help="Stream the archive to --companyfacts-zip first.")
     parser.add_argument(
@@ -119,6 +122,7 @@ def main() -> int:
         raise SystemExit(f"companyfacts.zip not found at {args.companyfacts_zip}; pass --download to fetch it.")
 
     with DuckDBStore(args.db_path) as store:
+        _configure_analytical_session(store, memory_limit=args.memory_limit, threads=args.threads)
         symbols: tuple[str, ...] = ("AAPL",)
         symbol_source = args.symbol_source
         if args.factor_ids:

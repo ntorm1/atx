@@ -140,8 +140,8 @@ def test_archive_targets_are_exact_sorted_deduplicated_and_paged(tmp_path):
     options = SecCompanyFactsOptions(symbol_source="archive_members", companyfacts_zip=path)
     # No store access is permitted for archive discovery.
     assert resolve_companyfacts_targets(None, options) == [
-        ("CIK0000000001", "0000000001", "SEC-CIK-0000000001"),
-        ("CIK0000000009", "0000000009", "SEC-CIK-0000000009"),
+        ("CIK0000000001", "0000000001", "SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000001"),
+        ("CIK0000000009", "0000000009", "SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000009"),
     ]
     assert resolve_companyfacts_targets(None, replace(options, symbol_offset=1, symbol_limit=1))[0][1] == "0000000009"
     with pytest.raises(ValueError, match="positive"):
@@ -193,10 +193,10 @@ def test_archive_load_accounts_failures_empty_unresolved_and_replacement(tmp_sto
     assert detail["previously_completed_targets"] is None
     assert len(detail["archive_sha256"]) == len(detail["allowlist_sha256"]) == 64
     assert tmp_store.con.execute("SELECT security_id,entity_id FROM sec_company_facts").fetchall() == [
-        ("SEC-CIK-0000000001", None)]
+        ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000001", None)]
     assert tmp_store.con.execute("SELECT security_id,symbol FROM fundamental_points").fetchall() == [
-        ("SEC-CIK-0000000001", None)]
-    assert tmp_store.con.execute("SELECT count(*) FROM securities WHERE security_id='SEC-CIK-0000000001'").fetchone()[0] == 0
+        ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000001", None)]
+    assert tmp_store.con.execute("SELECT count(*) FROM securities WHERE security_id='SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000001'").fetchone()[0] == 0
     assert tmp_store.con.execute("SELECT candidate_status FROM identifier_resolution_candidates "
                                  "WHERE source_dataset_id='sec_company_facts'").fetchall() == [("proposed",)]
     assert tmp_store.con.execute("SELECT count(*) FROM raw_source_files WHERE status='error'").fetchone()[0] == 3
@@ -235,3 +235,87 @@ def test_empty_archive_and_all_existing_have_different_outcomes(tmp_store, tmp_p
     empty = dataset.load(tmp_store, options)
     assert empty.details["outcome"] == "no_valid_targets"
     assert empty.details["valid_target_count"] == 0
+
+
+def test_replacement_does_not_delete_another_cik_with_shared_filing_keys(tmp_store, tmp_path):
+    path = _write_companyfacts_zip(tmp_path / "companyfacts.zip", ciks=("0000000001", "0000000002"))
+    options = SecCompanyFactsOptions(symbol_source="archive_members", companyfacts_zip=path,
+                                    concepts=("Assets",), refresh_derived_surfaces=False)
+    dataset = SecCompanyFactsDataset()
+    # The helper deliberately gives both CIKs the same accession/concept/unit/period.
+    dataset.load(tmp_store, options)
+    for _ in range(2):
+        dataset.load(tmp_store, replace(options, symbol_limit=1))
+        assert tmp_store.con.execute("SELECT cik FROM sec_company_facts ORDER BY cik").fetchall() == [
+            ("0000000001",), ("0000000002",)]
+        assert tmp_store.con.execute("SELECT security_id FROM fundamental_points ORDER BY security_id").fetchall() == [
+            ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000001",),
+            ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000002",)]
+
+
+def test_replacement_clears_old_resolved_points_with_null_accession(tmp_store, tmp_path):
+    path = tmp_path / "companyfacts.zip"
+    payload = _companyfacts_payload("1")
+    payload["facts"]["us-gaap"]["Assets"]["units"]["USD"][0]["accn"] = None
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("CIK0000000001.json", json.dumps(payload))
+    tmp_store.con.execute("""INSERT INTO security_identifier_history
+        (security_id,id_type,id_value,valid_from,as_of_date,available_at,source) VALUES
+        ('RESOLVED','CIK','0000000001','2020-01-01','2020-01-01','2020-01-01','fixture')""")
+    options = SecCompanyFactsOptions(symbol_source="archive_members", companyfacts_zip=path,
+                                    concepts=("Assets",), refresh_derived_surfaces=False)
+    dataset = SecCompanyFactsDataset()
+    dataset.load(tmp_store, options)
+    assert tmp_store.con.execute("SELECT security_id FROM fundamental_points").fetchall() == [("RESOLVED",)]
+    tmp_store.con.execute("UPDATE security_identifier_history SET available_at=TIMESTAMP '2026-01-01'")
+    for _ in range(2):
+        dataset.load(tmp_store, options)
+        assert tmp_store.con.execute("SELECT security_id,accession_number FROM fundamental_points").fetchall() == [
+            ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000001", None)]
+
+
+def test_replacement_normalizes_old_raw_points_and_candidate_scope(tmp_store, tmp_path):
+    path = _write_companyfacts_zip(tmp_path / "companyfacts.zip", ciks=("0000000001", "0000000002"))
+    options = SecCompanyFactsOptions(symbol_source="archive_members", companyfacts_zip=path,
+                                    concepts=("Assets",), refresh_derived_surfaces=False)
+    dataset = SecCompanyFactsDataset()
+    dataset.load(tmp_store, options)
+    # Reproduce a prior loader: unpadded raw CIK, PIT raw ID, legacy passthrough point ID.
+    tmp_store.con.execute("UPDATE sec_company_facts SET cik='1',security_id='HISTORICAL' WHERE cik='0000000001'")
+    tmp_store.con.execute("UPDATE fundamental_points SET security_id='SEC-CIK-0000000001' "
+                          "WHERE security_id='SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000001'")
+    tmp_store.con.execute("UPDATE identifier_resolution_candidates SET source_key_value='1' "
+                          "WHERE source_dataset_id='sec_company_facts' AND source_key_value='0000000001'")
+    assert resolve_companyfacts_targets(tmp_store, replace(options, skip_loaded_targets=True)) == []
+    for _ in range(2):
+        dataset.load(tmp_store, replace(options, symbol_limit=1))
+        assert tmp_store.con.execute("SELECT cik FROM sec_company_facts ORDER BY cik").fetchall() == [
+            ("0000000001",), ("0000000002",)]
+        assert tmp_store.con.execute("SELECT security_id FROM fundamental_points ORDER BY security_id").fetchall() == [
+            ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000001",),
+            ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000002",)]
+        assert tmp_store.con.execute("SELECT source_key_value FROM identifier_resolution_candidates "
+                                     "WHERE source_dataset_id='sec_company_facts' ORDER BY source_key_value").fetchall() == [
+            ("0000000001",), ("0000000002",)]
+
+
+@pytest.mark.parametrize("broken", [{}, {"units": {"USD": {}}}, {"units": []}, {"units": {"USD": [None]}}])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_malformed_selected_structure_preserves_prior_issuer(tmp_store, tmp_path, broken, mixed):
+    path = _write_companyfacts_zip(tmp_path / "companyfacts.zip", ciks=("0000000001",))
+    options = SecCompanyFactsOptions(symbol_source="archive_members", companyfacts_zip=path,
+                                    concepts=("Assets", "NetIncomeLoss"), refresh_derived_surfaces=False)
+    dataset = SecCompanyFactsDataset()
+    dataset.load(tmp_store, options)
+    tables = ("sec_company_facts", "fundamental_points", "identifier_resolution_candidates")
+    before = {table: tmp_store.con.execute(f"SELECT * FROM {table}").fetchall() for table in tables}
+    payload = _companyfacts_payload("1")
+    payload["facts"]["us-gaap"]["NetIncomeLoss" if mixed else "Assets"] = broken
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("CIK0000000001.json", json.dumps(payload))
+    result = dataset.load(tmp_store, options)
+    assert result.details["failed_target_count"] == 1
+    assert result.details["completed_targets"] == result.details["empty_target_count"] == 0
+    assert result.rows_loaded == 0
+    for table in tables:
+        assert tmp_store.con.execute(f"SELECT * FROM {table}").fetchall() == before[table]

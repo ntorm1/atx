@@ -56,6 +56,9 @@ DEFAULT_CONCEPTS = CANONICAL_CONCEPTS
 SUPPORTED_FACT_TAXONOMIES = ("us-gaap", "dei")
 COMPANY_FACT_SYMBOL_SOURCES = ("symbols", "universe", "sec_company_tickers", "loaded_facts", "archive_members")
 COMPANYFACTS_MEMBER_PATTERN = re.compile(r"CIK([0-9]{10})\.json")
+# This is a source issuer identity, never a security-master/bar identifier.
+# SEC-CIK-* is already used by actual traded securities and cannot be a fallback.
+UNRESOLVED_COMPANYFACTS_CIK_PREFIX = "SEC-COMPANYFACTS-UNRESOLVED-CIK-"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -341,7 +344,7 @@ def resolve_companyfacts_targets(
                 match.group(1) for name in archive.namelist()
                 if (match := COMPANYFACTS_MEMBER_PATTERN.fullmatch(name)) is not None
             })
-        rows = [(f"CIK{cik}", cik, cik_security_id(cik)) for cik in ciks]
+        rows = [(f"CIK{cik}", cik, f"{UNRESOLVED_COMPANYFACTS_CIK_PREFIX}{cik}") for cik in ciks]
     else:
         raise ValueError(
             f"Unsupported SEC companyfacts symbol_source {options.symbol_source!r}; "
@@ -610,14 +613,22 @@ def normalize_companyfacts(
     for taxonomy, taxonomy_facts in facts.items():
         if taxonomy not in SUPPORTED_FACT_TAXONOMIES:
             continue
+        if not isinstance(taxonomy_facts, dict):
+            raise ValueError(f"{taxonomy} facts must be an object")
         for concept, concept_payload in taxonomy_facts.items():
             if concepts and concept not in concepts:
                 continue
+            if not isinstance(concept_payload, dict) or not isinstance(concept_payload.get("units"), dict):
+                raise ValueError(f"{taxonomy}:{concept} requires a units object")
             label = concept_payload.get("label")
             description = concept_payload.get("description")
-            units = concept_payload.get("units", {})
+            units = concept_payload["units"]
             for unit, unit_rows in units.items():
+                if not isinstance(unit_rows, list):
+                    raise ValueError(f"{taxonomy}:{concept} unit {unit!r} requires a fact list")
                 for item in unit_rows:
+                    if not isinstance(item, dict):
+                        raise ValueError(f"{taxonomy}:{concept} unit {unit!r} contains a non-object fact")
                     end_date = _date(item.get("end"))
                     filed_date = _date(item.get("filed"))
                     if end_date is None or filed_date is None:
@@ -1272,7 +1283,7 @@ class SecCompanyFactsDataset(Dataset):
                         else "all_existing_skipped" if not eligible_targets else "empty_window" if not targets
                         else "supported_facts_empty" if not loaded_targets else "loaded"),
             "listed_security_coverage_verified": False,
-            "identity_policy": "dated_history_or_cik_only" if archive_mode else "legacy_current_fallback",
+            "identity_policy": "dated_history_or_isolated_cik_source" if archive_mode else "legacy_current_fallback",
         })
         if options.progress_every_targets > 0:
             LOGGER.info("companyfacts processed=%d total=%d loaded=%d empty=%d failed=%d unresolved=%d rows=%d finished=true",
@@ -1293,27 +1304,46 @@ class SecCompanyFactsDataset(Dataset):
         cik: str,
     ) -> int:
         with store.transaction():
-            # Points lack a CIK column. The old raw accession/concept keys also
-            # find points whose security ID changed under PIT identity resolution.
+            # Points have no CIK. Match both an old issuer identity and its fact
+            # keys; filing keys alone may be shared by different issuers. Include
+            # legacy loader fallback IDs as well as per-fact PIT-resolved IDs.
+            # Numeric comparison is guarded by digit-only input, so padded and
+            # unpadded legacy CIKs identify one issuer without matching junk keys.
             store.con.execute(
                 """
                 DELETE FROM fundamental_points p
-                WHERE p.source = ? AND (
-                    p.security_id = ? OR EXISTS (
+                WHERE p.source = ? AND EXISTS (
                         SELECT 1 FROM sec_company_facts f
-                        WHERE f.cik = ? AND p.accession_number = f.accession_number
-                          AND p.taxonomy = f.taxonomy AND p.metric = f.concept
-                          AND p.unit = f.unit AND p.period_end = f.period_end
+                        WHERE regexp_full_match(trim(f.cik), '[0-9]+')
+                          AND try_cast(f.cik AS BIGINT) = cast(? AS BIGINT)
+                          AND (
+                              p.security_id = f.security_id
+                              OR p.security_id IN (?, ?)
+                              OR p.security_id IN (
+                                  SELECT t.security_id FROM sec_company_tickers t
+                                  WHERE regexp_full_match(trim(t.cik), '[0-9]+')
+                                    AND try_cast(t.cik AS BIGINT) = cast(? AS BIGINT)
+                              )
+                          )
+                          AND p.accession_number IS NOT DISTINCT FROM f.accession_number
+                          AND p.taxonomy IS NOT DISTINCT FROM f.taxonomy
+                          AND p.metric IS NOT DISTINCT FROM f.concept
+                          AND p.unit IS NOT DISTINCT FROM f.unit
+                          AND p.period_end IS NOT DISTINCT FROM f.period_end
                           AND p.period_start IS NOT DISTINCT FROM f.period_start
-                    )
                 )
                 """,
-                [SOURCE_NAME, security_id, cik],
+                [SOURCE_NAME, cik, security_id, cik_security_id(cik), cik],
             )
-            store.con.execute("DELETE FROM sec_company_facts WHERE cik = ?", [cik])
+            store.con.execute(
+                """DELETE FROM sec_company_facts WHERE regexp_full_match(trim(cik), '[0-9]+')
+                AND try_cast(cik AS BIGINT) = cast(? AS BIGINT)""", [cik],
+            )
             store.con.execute(
                 """DELETE FROM identifier_resolution_candidates
-                WHERE source_dataset_id = 'sec_company_facts' AND match_method = ? AND source_key_value = ?""",
+                WHERE source_dataset_id = 'sec_company_facts' AND match_method = ?
+                  AND source_key_type = 'CIK' AND regexp_full_match(trim(source_key_value), '[0-9]+')
+                  AND try_cast(source_key_value AS BIGINT) = cast(? AS BIGINT)""",
                 [FACT_IDENTIFIER_MATCH_METHOD, cik],
             )
             if not facts.empty:

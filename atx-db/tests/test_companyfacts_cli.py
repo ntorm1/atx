@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -25,9 +27,32 @@ def test_bulk_archive_cli_is_explicitly_offline_and_deferred():
     assert args.symbol_source == "archive_members"
     assert args.defer_derived_surfaces is True
     assert args.skip_loaded is False
+    assert (args.memory_limit, args.threads) == ("1GB", 1)
     for incompatible in (["--download"], ["--factor-ids", "anything"]):
         with pytest.raises(SystemExit):
             module.parse_args(["--companyfacts-zip", "local.zip", "--symbol-source", "archive_members", *incompatible])
+
+
+def test_bulk_cli_applies_query_limits_before_loading(tmp_path, monkeypatch):
+    module = _script("build_companyfacts_bulk")
+    path = tmp_path / "local.zip"
+    path.touch()
+    args = module.parse_args(["--companyfacts-zip", str(path), "--symbol-source", "archive_members",
+                              "--memory-limit", "768MB", "--threads", "2", "--defer-derived-surfaces"])
+    store = object()
+    calls = []
+    monkeypatch.setattr(module, "parse_args", lambda: args)
+    monkeypatch.setattr(module, "DuckDBStore", lambda _: nullcontext(store))
+    monkeypatch.setattr(module, "_configure_analytical_session",
+                        lambda actual, **kwargs: calls.append((actual, kwargs)))
+
+    def load(actual, options):
+        assert calls == [(store, {"memory_limit": "768MB", "threads": 2})]
+        assert actual is store and options.refresh_derived_surfaces is False
+        return SimpleNamespace(rows_loaded=0, run_id="fixture", details={"failed_target_count": 0, "outcome": "loaded"})
+
+    monkeypatch.setattr(module, "SecCompanyFactsDataset", lambda: SimpleNamespace(run=load))
+    assert module.main() == 0
 
 
 def test_activation_and_job_options_preserve_archive_and_append_policy():
