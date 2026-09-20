@@ -2,6 +2,36 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override — 2026-09-20 20:58 UTC
+
+- Sole live writer archive3/session6840/launcher2332/worker9412 continues.
+  At20:57:21UTC:1825/20390 processed,1552loaded,254empty,17unavailable,
+  TWOFAILED,9444918 written attempt rows. Failure1 appeared in1650..1674,
+  failure2 in1775..1799. Exact errors await final result/source receipts after
+  writer release; per-target errors are not emitted to stderr. No fatal DB
+  failure/guard stop, CPUadvancing, workerprivate~1.93GB, physicalfree~6.35GiB.
+  Guard3GiB/DB1GB/1thread unchanged. Do not interrupt full source pass for
+  diagnostics, run competing tests/probes, or increase RAM. Inspect/fix actual
+  failures after it finishes; completion cannot be claimed with failed targets.
+- HEADfe0c61c5 committed program ruling, core report/review and prior queue.
+  Core breadth SOURCE STILL UNCOMMITTED awaiting root focused runtime checks.
+  One static reviewCLEAN. Implementer subsequently aligned focused assertions
+  with0315: latest state ORDER BY available_at,derived_value_id; explicit NULL
+  missing_input_or_domain/events, no invalid numeric result. Accept those seam
+  assertions on implementer report; no new Critical/review loop. Own paths:
+  CSVderived_metric_definitions,4entriesderived_registry,test_core_metric_breadth.
+- P1 implementer /root/derived_pit_revision_repair remains ACTIVE, source edits
+  under exclusive scope in brief; includes0315/registry and minimal activation
+  derived-coverage count/provider_coverage closures. No P1 runtime/review yet.
+  It must finish the bounded event-state/consumer implementation, then one
+  fresh independent review assessing Critical audit closure. Tests remain root
+  exclusive after writer and stable source. Source loader untouched by P1.
+- No goal completion, release, fullsuite, wholebranchreview or mergerpermission.
+  Keep current jobs working; finish source failure repair, verified submissions
+  resume UUID04cf947d-53bb-49b7-a276-b3c74a2a52c8 (onlysubmissions/no download),
+  testedreviewedcodecommits, run5fromstatement_points --force, CF1labels/eval,
+  actual coverage/quality/publication and gates. Remind stash@{0} before merge.
+
 ## Current controller override — 2026-09-20 20:54 UTC
 
 - Companyfacts archive3 STILL ACTIVE under the same session6840/worker9412,
