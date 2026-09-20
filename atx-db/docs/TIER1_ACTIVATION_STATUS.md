@@ -55,7 +55,8 @@ failed with the separately recorded operator recovery timestamp.
 The source error is an exact two-byte `{}` archive member. A subsequent bounded
 inventory found 62 such members among 20,390 CIK members, with no stored fact
 rows currently belonging to those 62. Explicit unavailable-source handling is
-being added; missing source data is not financial coverage. Prior issuer data
+implemented in `1ce0a850` (56 focused checks and clean independent review);
+missing source data is not financial coverage. Prior issuer data
 must be preserved when a placeholder is encountered.
 
 The next committed throughput repair inventories distinct stored CIK spellings
@@ -64,7 +65,11 @@ It passed 54 focused checks and independent review. A read-only comparison for
 one already-processed issuer returned the same 11,550 distinct keys/checksum:
 1.084 seconds for the numeric normalization predicate, 0.006 seconds for the
 exact spelling predicate. This sequential, warm-cache comparison is not an
-end-to-end throughput result. The full optimized source retry remains pending.
+end-to-end throughput result. The full optimized source retry,
+`activation-companyfacts-archive3`, started at 20:03:30 UTC. At 20:06:05 it had
+processed 75 members: 64 loaded, 10 empty, one unavailable, zero failures and
+429,320 committed attempt rows. This is progress, not completed ingestion or a
+full-universe coverage result.
 Evidence: `companyfacts-archive2-stop-inspection.json`,
 `companyfacts-archive2-ledger-recovery.json`, `companyfacts-placeholder-inventory.json`
 and `companyfacts-cik-predicate-measurement.json`, with their guard receipts.

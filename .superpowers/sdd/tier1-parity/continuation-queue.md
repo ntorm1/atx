@@ -2,6 +2,33 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override — 2026-09-20 20:06 UTC
+
+- ACTIVE soleDBwriter activation-companyfacts-archive3, tool session6840,
+  launcher2332/worker9412. Started20:03:30UTC, exactsamefull20390archive scope,
+  --only companyfacts_load --companyfacts-symbol-source archive_members
+  --companyfacts-replace-existing --memory-limit1GB --threads1 --backup-keep100
+  --force --run-id activation-companyfacts-archive3, dummyUA, guard3GiB.
+  Logs/err/memory named activation-companyfacts-archive3*. At20:06:05 had75
+  processed/64loaded/10empty/1unavailable/0failed,429320committedattemptrows.
+  Workerprivate1.35GB at20:06:22, CPUadvancing, disk119.75GBfree. Inventory6601
+  issuers/spellings built0.771sec. No error. LETHEALTHYRUNFINISH; noDB/tests/probes
+  concurrently, no further RAM increase or speculative source redesign.
+- Exactarchiveplaceholder task COMMITTED1ce0a850,56rootfocusedcasespassed
+  (newempty_members,zip,resilience,cik_spellings) guardpeak0.687GiB, independent
+  reviewCLEAN, Ruffpass. Sourceunavailable is separatefromloaded/completed/failed,
+  preservesoldfinancialdata/candidates, exactarchiveb'{}'only; malformedandHTTP
+  emptyobject stillfail. Warning/outcomes explicit, no coveragegate change.
+- Priorrootrecovery/placeholder/predicate evidence +docs committedabd3efc3.
+  No activeagentimplementation. Allnewsourcechangescommitted; onlyknownunrelated
+  migrationEOLphantomMfiles andother-sessionuntrackedworkremainuntouched.
+- Aftercompanyfacts finishes: inspectstage/dataset/sourcecounts underguard;
+  performverifiedsubmissions resume b14f4c1e withpriorUUID04cf947d-53bb-49b7-a276-b3c74a2a52c8
+  (--onlysubmissions_load, no archive download stage), thenactivation-run5
+  fromstatement_points --force overfullsources. CF1buildalreadycomplete,
+  forwardlabels/eval stillpending; fullmeasurements/release/gates/mergeapproval
+  andstash@{0}reminder remain. GoalACTIVE, notcomplete.
+
 ## Current controller override — 2026-09-20 19:57 UTC
 
 - NO active DB writer. Root stopped owned archive2 at19:47:59 (checkedPID7628
