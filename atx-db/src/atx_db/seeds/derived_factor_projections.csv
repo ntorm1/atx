@@ -1,0 +1,25 @@
+factor_id,metric_code,source_window,orientation,factor_name,family,winsor_limit,minimum_names_per_date,retired_module
+distress_altman_z_score,altman_z,daily,1,PIT corrected Altman Z-score,fundamental_distress,0.01,20,altman_distress
+quality_low_beneish_m_score,beneish_m,quarter,-1,PIT low Beneish M-score,fundamental_quality,0.01,20,beneish_m_score
+quality_net_operating_assets,noa_to_assets,quarter,-1,PIT low net operating assets,fundamental_quality,0.01,20,net_operating_assets
+quality_low_rsst_accruals,rsst_accruals,quarter,-1,PIT low RSST accruals,fundamental_quality,0.01,20,rsst_accruals
+quality_low_quarterly_operating_working_capital_accruals,working_capital_accruals,quarter,-1,PIT low quarterly operating-working-capital accruals,fundamental_quality,0.01,20,quarterly_working_capital_accruals
+efficiency_annual_asset_turnover_change,asset_turnover_change_yoy,quarter,1,PIT annual asset-turnover change,fundamental_efficiency,0.01,20,asset_turnover_change
+profitability_annual_net_margin_change,net_margin_change_yoy,quarter,1,PIT annual change in net profit margin,fundamental_profitability,0.01,20,annual_margin_change
+profitability_annual_operating_margin_change,operating_margin_change_yoy,quarter,1,PIT annual change in operating margin,fundamental_profitability,0.01,20,annual_margin_change
+profitability_annual_gross_margin_change,gross_margin_change_yoy,quarter,1,PIT annual change in gross margin,fundamental_profitability,0.01,20,annual_margin_change
+profitability_quarterly_gross_margin_change_yoy,gross_margin_change_yoy,quarter,1,PIT quarterly gross-margin change year over year,fundamental_profitability,0.01,20,quarterly_gross_margin_change
+profitability_quarterly_operating_profitability_change_yoy,operating_profitability_change_yoy,quarter,1,PIT quarterly operating-profitability change year over year,fundamental_profitability,0.01,20,quarterly_profitability_change
+financing_low_external_financing,external_financing,quarter,-1,PIT low external financing,fundamental_financing,0.01,20,external_financing
+financing_low_net_debt_financing,net_debt_issuance,quarter,-1,PIT low net debt financing,fundamental_financing,0.01,20,net_debt_financing
+financing_low_net_share_issuance,shares_growth_yoy,quarter,-1,PIT low net share issuance,fundamental_financing,0.01,20,net_issuance
+financing_net_payout_yield,net_payout_yield,daily,1,PIT cash-flow net payout yield,fundamental_financing,0.01,20,net_payout
+valuation_enterprise_yield_ebit,ebit_to_ev,daily,1,PIT operating-income enterprise yield,fundamental_valuation,0.01,20,enterprise_yield
+valuation_gross_profit_enterprise_yield,gross_profit_to_ev,daily,1,PIT gross-profit enterprise yield,fundamental_valuation,0.01,20,enterprise_yield
+valuation_operating_cash_flow_enterprise_yield,cfo_to_ev,daily,1,PIT operating-cash-flow enterprise yield,fundamental_valuation,0.01,20,enterprise_yield
+valuation_enterprise_yield_sales,sales_to_ev,daily,1,PIT revenue enterprise yield,fundamental_valuation,0.01,20,enterprise_yield
+valuation_rd_to_market_equity,rd_to_market_equity,daily,1,PIT research and development to market equity,fundamental_valuation,0.01,20,rd_intensity
+intangibles_large_rd_increase,rd_expense_growth_yoy,quarter,1,PIT large research and development increase,fundamental_intangibles,0.01,20,rd_increase
+earnings_tax_expense_momentum,tax_expense_change_yoy,quarter,1,PIT tax-expense momentum,fundamental_earnings,0.01,20,tax_expense_momentum
+earnings_tax_to_book_income,tax_to_book_income,quarter,1,PIT tax to book income,fundamental_earnings,0.01,20,tax_to_book_income
+investment_conservative_asset_growth,asset_growth,quarter,-1,PIT conservative annual asset growth,fundamental_investment,0.01,20,KEPT
