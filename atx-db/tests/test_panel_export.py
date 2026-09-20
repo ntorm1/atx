@@ -254,7 +254,9 @@ def test_derived_metrics_schema_is_registered():
     assert schema.source_table == "derived_metric_values"
     assert schema.time_column == "period_end"
     assert schema.item_column == "metric_code"
-    assert schema.natural_key == ("security_id", "metric_code", "metric_window", "period_end")
+    assert schema.natural_key == ("revision_group_id",)
+    assert schema.version == "2.0.0"
+    assert schema.field("value").nullable
     assert "inputs_hash" in schema.field_names
     payload = public_schema(schema)
     assert len(payload["schema_sha256"]) == 64

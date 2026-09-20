@@ -226,7 +226,9 @@ FROM (
     LEFT JOIN (
         SELECT DISTINCT metric_code
         FROM derived_metric_values
-        WHERE is_latest_revision
+        WHERE is_latest_revision AND value_status = 'valid'
+          AND value IS NOT NULL AND isfinite(value)
+          AND history_status = 'event_reconstructed'
     ) v ON v.metric_code = d.metric_code
     GROUP BY d.family
     HAVING count(v.metric_code) = 0

@@ -1,12 +1,13 @@
-"""The quarterly derived-metric engine: one generated statement per metric."""
+"""Quarterly filing-event states evaluated in bounded local SQL frames."""
 
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
+from . import _derived_pit as pit
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .derived_dsl import LowerContext, Lowered, compile_expression
@@ -42,28 +43,17 @@ def _validate_identifier_code(code: str) -> None:
         )
 
 
-_VALUE_COLUMNS = (
-    "derived_value_id",
-    "source",
-    "security_id",
-    "metric_code",
-    "metric_window",
-    "period_end",
-    "value",
-    "available_at",
-    "inputs_hash",
-    "as_of_date",
-    "is_latest_revision",
-    "run_id",
-)
-
-
 @dataclass(frozen=True)
 class DerivedMetricsOptions:
     source: str = DERIVED_SOURCE_NAME
     security_ids: tuple[str, ...] | None = None
     metric_codes: tuple[str, ...] | None = None
-    batch_size: int = 500
+    batch_size: int = 1
+    event_chunk_size: int = 1024
+    max_frame_rows: int = 8192
+    max_input_rows: int = 250000
+    max_candidate_rows: int = 250000
+    max_scope_rows: int = 100000
     run_id: str | None = None
 
 
@@ -81,37 +71,17 @@ def quarterly_context(
         availability[code] = f'b."{code}__at"'
     for code in metric_codes:
         _validate_identifier_code(code)
-        columns[code] = f'd."{code}"'
-        availability[code] = f'd."{code}__at"'
+        columns[code] = f'b."{code}"'
+        availability[code] = f'b."{code}__at"'
     _ = definition
     return LowerContext(
         grid="quarter",
         columns=columns,
         availability=availability,
-        partition_sql="b.security_id",
-        # Order by the dense, gap-free grid row number, not period_end: a
-        # synthesized missing-quarter row carries a NULL period_end (see
-        # build_metric_sql's grid CTE), and NULL doesn't sort into its correct
-        # chronological position, which would corrupt every ROWS-based window.
+        partition_sql="b.security_id, b.key_number",
+        # Calendar-dense local frame position; gaps occupy real window rows.
         order_sql="b.rn",
     )
-
-
-def _pivot_pairs(alias: str, codes: Iterable[str], key_column: str) -> str:
-    fragments: list[str] = []
-    for code in codes:
-        _validate_identifier_code(code)
-        literal = code.replace("'", "''")
-        fragments.append(f"max(CASE WHEN {alias}.{key_column} = '{literal}' THEN {alias}.value END) AS \"{code}\"")
-        fragments.append(
-            f"max(CASE WHEN {alias}.{key_column} = '{literal}' THEN {alias}.available_at END) AS \"{code}__at\""
-        )
-    return ",\n           ".join(fragments) if fragments else "NULL AS __unused"
-
-
-def _in_list(codes: Iterable[str]) -> str:
-    quoted = ", ".join("'" + code.replace("'", "''") + "'" for code in codes)
-    return quoted or "''"
 
 
 def build_metric_sql(
@@ -122,182 +92,62 @@ def build_metric_sql(
     metric_codes: tuple[str, ...],
     security_count: int,
 ) -> str:
-    """Return the full INSERT statement for one metric and one security batch.
+    """Build a bounded event-frame INSERT into private staging.
 
-    Placeholders, in order: the security ids for ``facts``, the source and
-    security ids for ``deps`` (only when this metric has metric-code
-    dependencies), the source for the metric half of ``hash_parts`` (same
-    condition), then source, metric_code (id hash), source, metric_code,
-    metric_window, run_id.
+    The caller prepares _pit_inputs/_pit_keys. Bind key start/end, source, run_id.
+    ``security_count`` remains in the public builder signature for compatibility;
+    publication deliberately handles one complete security scope at a time.
     """
-    securities = ", ".join(["?"] * security_count)
-    deps_cte = (
-        f"""deps AS (
-    SELECT security_id, period_end,
-           {_pivot_pairs("m", metric_codes, "metric_code")}
-    FROM derived_metric_values m
-    WHERE m.source = ? AND m.metric_code IN ({_in_list(metric_codes)})
-      AND m.security_id IN ({securities})
-    GROUP BY 1, 2
-)"""
-        if metric_codes
-        else """deps AS (
-    SELECT CAST(NULL AS VARCHAR) AS security_id, CAST(NULL AS DATE) AS period_end
-    WHERE false
-)"""
-    )
-    metric_hash_branch = (
-        f"""
-    UNION ALL
-    SELECT t.security_id, t.period_end,
-           'metric:' || m.metric_code || '|' || CAST(m.period_end AS VARCHAR) || '|' || m.inputs_hash AS payload
-    FROM grid t
-    JOIN grid lg ON lg.security_id = t.security_id AND lg.rn BETWEEN t.rn - {lowered.max_lag} AND t.rn
-    JOIN derived_metric_values m
-      ON m.security_id = lg.security_id AND m.period_end = lg.period_end
-     AND m.source = ? AND m.metric_code IN ({_in_list(metric_codes)})"""
-        if metric_codes
-        else ""
-    )
-    return f"""
-INSERT INTO derived_metric_values ({", ".join(_VALUE_COLUMNS)})
-WITH facts AS (
-    SELECT security_id, canonical_code, period_end, value, available_at, revision_sequence
-    FROM fundamental_standardized
-    WHERE is_latest_revision
-      AND basis IN ('quarterly', 'instant')
-      AND value IS NOT NULL
-      AND available_at IS NOT NULL
-      AND security_id IN ({securities})
-), picked AS (
-    SELECT security_id, canonical_code, period_end,
-           arg_max(value, (available_at, revision_sequence)) AS value,
-           arg_max(revision_sequence, (available_at, revision_sequence)) AS revision_sequence,
-           max(available_at) AS available_at,
-           -- Quarter-bucket a period_end onto a security-agnostic calendar axis so
-           -- 52/53-week fiscal quarter ends (e.g. Dec 30 vs Jan 2, Jan 28 vs Feb 1)
-           -- that straddle a month boundary land in the same bucket as a
-           -- month-end reporter's quarter. Buckets are pure calendar math, not an
-           -- observed-date union, so a security missing a whole quarter gets a
-           -- synthesized empty bucket instead of silently shrinking every window.
-           CAST(floor((year(period_end) * 12 + month(period_end) - 1 +
-                CASE WHEN day(period_end) >= 15 THEN 1 ELSE 0 END) / 3.0) AS BIGINT) AS bucket
-    FROM facts
-    GROUP BY 1, 2, 3
-), picked_bucketed AS (
-    -- Two distinct period_ends for the same security+item can collide into one
-    -- bucket (chiefly a fiscal-year-end change producing a stub period). Resolve
-    -- deterministically by keeping the fact with the latest period_end; the
-    -- collision is also counted separately for the refresh result detail.
-    SELECT security_id, canonical_code, bucket,
-           arg_max(value, period_end) AS value,
-           arg_max(revision_sequence, period_end) AS revision_sequence,
-           arg_max(available_at, period_end) AS available_at,
-           arg_max(period_end, period_end) AS period_end
-    FROM picked
-    GROUP BY 1, 2, 3
-), bucket_period_end AS (
-    SELECT security_id, bucket, max(period_end) AS period_end
-    FROM picked_bucketed
-    GROUP BY 1, 2
-), bucket_extent AS (
-    SELECT security_id, min(bucket) AS min_bucket, max(bucket) AS max_bucket
-    FROM picked_bucketed
-    GROUP BY 1
-), grid_buckets AS (
-    -- Dense per-security bucket sequence: every calendar quarter between the
-    -- security's first and last observed bucket gets a row, real or not.
-    SELECT be.security_id, gs.bucket AS bucket, gs.bucket - be.min_bucket + 1 AS rn
-    FROM bucket_extent be, LATERAL generate_series(be.min_bucket, be.max_bucket) AS gs(bucket)
-), grid AS (
-    -- A bucket with no observed fact for any item keeps a NULL period_end: it
-    -- exists only so ROWS frames count a real calendar quarter, never so a
-    -- synthesized date can be emitted as a derived_metric_values row.
-    SELECT gb.security_id, gb.bucket, gb.rn, bpe.period_end AS period_end
-    FROM grid_buckets gb
-    LEFT JOIN bucket_period_end bpe ON bpe.security_id = gb.security_id AND bpe.bucket = gb.bucket
-), base AS (
-    SELECT g.security_id, g.period_end, g.rn,
-           {_pivot_pairs("p", item_codes, "canonical_code")}
-    FROM grid g
-    LEFT JOIN picked_bucketed p ON p.security_id = g.security_id AND p.bucket = g.bucket
-    GROUP BY 1, 2, 3
-), {deps_cte}, hash_parts AS (
-    SELECT t.security_id, t.period_end,
-           l.canonical_code || '|' || CAST(l.period_end AS VARCHAR) || '|' ||
-           CAST(l.revision_sequence AS VARCHAR) || '|' || CAST(l.value AS VARCHAR) AS payload
-    FROM grid t
-    JOIN grid lg ON lg.security_id = t.security_id AND lg.rn BETWEEN t.rn - {lowered.max_lag} AND t.rn
-    JOIN picked_bucketed l ON l.security_id = lg.security_id AND l.bucket = lg.bucket
-     AND l.canonical_code IN ({_in_list(item_codes)}){metric_hash_branch}
-), hashed AS (
-    SELECT security_id, period_end,
-           sha256(string_agg(payload, ';' ORDER BY payload)) AS inputs_hash
-    FROM hash_parts
-    GROUP BY 1, 2
-), computed AS (
-    SELECT b.security_id, b.period_end,
-           {lowered.value_sql} AS value,
-           {lowered.availability_sql} AS available_at
-    FROM base b
-    LEFT JOIN deps d ON d.security_id = b.security_id AND d.period_end = b.period_end
-)
-SELECT sha256(? || '|' || c.security_id || '|' || ? || '|' || CAST(c.period_end AS VARCHAR)),
-       ?, c.security_id, ?, ?, c.period_end, c.value, c.available_at, h.inputs_hash,
-       CAST(c.available_at AS DATE), true, ?
-FROM computed c
-JOIN hashed h ON h.security_id = c.security_id AND h.period_end = c.period_end
-WHERE c.value IS NOT NULL AND isfinite(c.value) AND c.available_at IS NOT NULL
-  AND c.period_end IS NOT NULL
-ORDER BY c.security_id, c.period_end
-"""
-
+    _ = security_count
+    context = quarterly_context(definition, item_codes=item_codes, metric_codes=metric_codes)
+    return pit.frame_sql(definition, lowered, context)
 
 def select_security_batches(
     store: DuckDBStore,
     options: DerivedMetricsOptions | None = None,
-) -> list[tuple[str, ...]]:
+) -> Iterator[tuple[str, ...]]:
     options = options or DerivedMetricsOptions()
+    size = max(1, min(500, int(options.batch_size)))
     if options.security_ids is not None:
-        identifiers = sorted(options.security_ids)
+        identifiers = sorted(set(options.security_ids))
+        for start in range(0, len(identifiers), size):
+            yield tuple(identifiers[start:start + size])
     else:
-        rows = store.con.execute(
-            """
-            SELECT DISTINCT security_id
-            FROM fundamental_standardized
-            WHERE is_latest_revision AND basis IN ('quarterly', 'instant')
-            ORDER BY security_id
-            """
-        ).fetchall()
-        identifiers = [str(row[0]) for row in rows]
-    size = max(1, int(options.batch_size))
-    return [tuple(identifiers[start : start + size]) for start in range(0, len(identifiers), size)]
+        # A separate result cursor lets SQL retain/spill the identifier stream
+        # while the writer reuses its connection; Python receives <=500 IDs.
+        with store.con.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT security_id
+                FROM fundamental_standardized
+                WHERE basis IN ('quarterly', 'instant')
+                UNION
+                SELECT DISTINCT security_id FROM derived_metric_values WHERE source = ?
+                ORDER BY security_id
+                """, [options.source]
+            )
+            while rows := cursor.fetchmany(size):
+                yield tuple(str(row[0]) for row in rows)
 
 
 def _expand_metric_codes(requested: tuple[str, ...], by_code: dict[str, DerivedMetricDefinition]) -> frozenset[str]:
-    """Expand ``requested`` metric codes to their transitive ``metric:`` dependency closure.
+    """Close prerequisites and descendants until no rebuilt dependency is stale.
 
-    A caller asking for e.g. ``gross_margin`` without separately listing the
-    metrics it is built from (``gross_profit_ttm``, ``revenue_ttm``, and
-    transitively ``gross_profit_q``) would otherwise see those dependencies
-    left un-refreshed for this run: the ``deps`` join in ``build_metric_sql``
-    would find no matching rows and every ``gross_margin`` value would come
-    out ``NULL`` and be silently dropped by the ``value IS NOT NULL`` filter,
-    with no diagnostic. Rather than requiring the caller to pre-compute the
-    closure or erroring out, the requested set is always auto-expanded here so
-    every transitive dependency is computed in the same run, in topological
-    order, ahead of the metrics that need it.
+    Rebuilding a prerequisite can change its history, so its other consumers
+    must also be rebuilt. A connected metric family may consequently be larger
+    than the requested set. Values still execute in bounded per-metric frames.
     """
-    expanded: set[str] = set()
-    stack = list(requested)
-    while stack:
-        code = stack.pop()
-        if code in expanded:
-            continue
-        expanded.add(code)
-        definition = by_code.get(code)
-        if definition is not None:
-            stack.extend(definition.metric_inputs)
+    unknown = set(requested) - by_code.keys()
+    if unknown:
+        raise ValueError(f"unknown quarterly metric codes: {sorted(unknown)}")
+    expanded = set(requested)
+    while True:
+        descendants = {d.metric_code for d in by_code.values() if expanded.intersection(d.metric_inputs)}
+        prerequisites = {code for name in expanded for code in by_code[name].metric_inputs}
+        additions = descendants | prerequisites
+        if additions <= expanded:
+            break
+        expanded.update(additions)
     return frozenset(expanded)
 
 
@@ -305,83 +155,106 @@ def refresh_derived_metrics(
     store: DuckDBStore,
     options: DerivedMetricsOptions | None = None,
 ) -> int:
-    """Recompute quarterly derived metrics for the selected securities and metrics.
+    """Reconstruct modeled filing-event history; atomically replace each security.
 
-    When ``options.metric_codes`` is given, it is auto-expanded to include the
-    transitive ``metric:`` dependency closure of the requested metrics (see
-    :func:`_expand_metric_codes`) before being intersected with the catalog and
-    topologically ordered, so a dependency is never silently left uncomputed.
+    Each security is the publication/rollback scope. On failure earlier complete
+    securities remain committed, the failing security retains its old complete
+    scope, and the call raises (never reports a partial run as success). Staging
+    and candidate limits fail before deleting canonical rows. SQL owns all data;
+    Python holds definitions and bounded counts only.
     """
     options = options or DerivedMetricsOptions()
+    for name in ("event_chunk_size", "max_frame_rows", "max_input_rows", "max_candidate_rows", "max_scope_rows"):
+        if getattr(options, name) < 1:
+            raise ValueError(f"{name} must be positive")
     store.initialize()
     definitions = default_derived_definitions()
     validate_definitions(definitions, item_codes=known_item_codes())
     quarterly = tuple(d for d in definitions if d.window != "daily")
     by_code = {d.metric_code: d for d in quarterly}
-    wanted_codes = None if options.metric_codes is None else _expand_metric_codes(options.metric_codes, by_code)
-    ordered = tuple(d for d in topological_order(quarterly) if wanted_codes is None or d.metric_code in wanted_codes)
-    batches = select_security_batches(store, options)
+    wanted = None if options.metric_codes is None else _expand_metric_codes(options.metric_codes, by_code)
+    ordered = tuple(d for d in topological_order(quarterly) if wanted is None or d.metric_code in wanted)
+    if not ordered:
+        return 0
+    codes = tuple(d.metric_code for d in ordered)
+    predicate = "source = ? AND security_id = ?"
+    if options.metric_codes is not None:
+        predicate += f" AND metric_code IN ({', '.join('?' for _ in codes)})"
     inserted = 0
-    for batch in batches:
-        with store.transaction():
-            predicates = ["source = ?", f"security_id IN ({', '.join(['?'] * len(batch))})"]
-            params: list[Any] = [options.source, *batch]
+    for batch in select_security_batches(store, options):
+        for security_id in batch:
+            params: list[Any] = [options.source, security_id]
             if options.metric_codes is not None:
-                codes = [d.metric_code for d in ordered]
-                predicates.append(f"metric_code IN ({', '.join(['?'] * len(codes))})")
                 params.extend(codes)
-            store.con.execute(f"DELETE FROM derived_metric_values WHERE {' AND '.join(predicates)}", params)
-            for definition in ordered:
-                item_codes = tuple(sorted(definition.item_inputs))
-                metric_codes = tuple(sorted(definition.metric_inputs))
-                lowered = compile_expression(
-                    definition.expression,
-                    quarterly_context(
-                        definition,
-                        item_codes=item_codes,
-                        metric_codes=metric_codes,
-                    ),
-                )
-                sql = build_metric_sql(
-                    definition,
-                    lowered=lowered,
-                    item_codes=item_codes,
-                    metric_codes=metric_codes,
-                    security_count=len(batch),
-                )
-                bind: list[Any] = list(batch)
-                if metric_codes:
-                    bind.extend([options.source, *batch])
-                    bind.append(options.source)
-                bind.extend(
-                    [
-                        options.source,
-                        definition.metric_code,
-                        options.source,
-                        definition.metric_code,
-                        definition.window,
-                        options.run_id,
-                    ]
-                )
-                cursor = store.con.execute(sql, bind)
-                affected = cursor.fetchall()
-                inserted += int(affected[0][0]) if affected else 0
+            try:
+                pit.prepare_security(store.con, security_id, options.max_input_rows)
+                for definition in ordered:
+                    item_codes = tuple(sorted(definition.item_inputs))
+                    metric_codes = tuple(sorted(definition.metric_inputs))
+                    context = quarterly_context(definition, item_codes=item_codes, metric_codes=metric_codes)
+                    lowered = compile_expression(definition.expression, context)
+                    width = lowered.max_lag + 1
+                    if width > options.max_frame_rows:
+                        raise RuntimeError(f"derived PIT frame width {width} exceeds limit {options.max_frame_rows}")
+                    # Bound candidate generation before constructing its offset
+                    # expansion, even for unusually large user-defined windows.
+                    input_events = int(store.con.execute(
+                        "SELECT count(*) FROM _pit_items WHERE code IN (" +
+                        ",".join(pit.quote(c) for c in item_codes or ("",)) + ")"
+                    ).fetchone()[0])
+                    dependency_events = int(store.con.execute(
+                        "SELECT count(*) FROM _pit_stage WHERE metric_code IN (" +
+                        ",".join(pit.quote(c) for c in metric_codes or ("",)) + ")"
+                    ).fetchone()[0])
+                    targets = int(store.con.execute("SELECT count(*) FROM _pit_targets").fetchone()[0])
+                    if (input_events + dependency_events) * width + targets > options.max_candidate_rows:
+                        raise RuntimeError(f"derived PIT candidate upper bound exceeded for {security_id}/{definition.metric_code}")
+                    count = pit.prepare_metric(store.con, definition, lowered.max_lag, options.max_candidate_rows)
+                    chunk_size = min(options.event_chunk_size, options.max_frame_rows // width)
+                    sql = build_metric_sql(definition, lowered=lowered, item_codes=item_codes,
+                                           metric_codes=metric_codes, security_count=1)
+                    for start in range(1, count + 1, chunk_size):
+                        store.con.execute(sql, [start, start + chunk_size - 1, options.source, options.run_id])
+                    pit.finish_metric(store.con)
+                    pit.enforce_count(store.con, "_pit_stage", options.max_scope_rows, "publication scope")
+                staged = pit.enforce_count(store.con, "_pit_stage", options.max_scope_rows, "publication scope")
+                old_count = int(store.con.execute(
+                    f"SELECT count(*) FROM derived_metric_values WHERE {predicate}", params
+                ).fetchone()[0])
+                if old_count > options.max_scope_rows:
+                    raise RuntimeError(f"derived PIT old publication scope exceeds limit: {old_count}")
+                store.con.execute("BEGIN TRANSACTION")
+                try:
+                    store.con.execute(f"DELETE FROM derived_metric_values WHERE {predicate}", params)
+                    columns = ', '.join(pit.STATE_COLUMNS)
+                    store.con.execute(f"INSERT INTO derived_metric_values ({columns}) SELECT {columns} "
+                                      "FROM _pit_stage ORDER BY derived_value_id")
+                    store.con.execute("COMMIT")
+                except Exception:
+                    # Include COMMIT failures: DuckDB can exhaust its bounded
+                    # allocation budget while publishing required PK entries.
+                    store.con.execute("ROLLBACK")
+                    raise
+                inserted += staged
+            finally:
+                pit.cleanup(store.con)
     return inserted
-
 
 def _grid_bucket_collision_count(store: DuckDBStore, security_ids: tuple[str, ...] | None) -> int:
     """Count (security_id, canonical_code, bucket) groups with more than one observed period_end.
 
-    Mirrors the ``picked`` -> ``picked_bucketed`` collapse in ``build_metric_sql``:
+    Mirrors the historical bucket precedence in the event-state writer:
     a count above zero means at least one security had two distinct fiscal
     period-ends (typically a fiscal-year-end change producing a stub period)
-    land in the same calendar quarter bucket, which ``picked_bucketed`` already
-    resolves deterministically by keeping the fact with the later period_end.
+    land in the same calendar quarter bucket. At each event the writer selects
+    the latest period_end visible then, without using future stub dates.
     This is purely observability -- it does not change engine behavior -- and is
     surfaced via :class:`DerivedMetricsDataset`'s ``details``.
     """
     predicate = ""
     params: list[Any] = []
+    if security_ids == ():
+        return 0
     if security_ids is not None:
         predicate = f"AND security_id IN ({', '.join(['?'] * len(security_ids))})"
         params = list(security_ids)
@@ -394,7 +267,7 @@ def _grid_bucket_collision_count(store: DuckDBStore, security_ids: tuple[str, ..
                        CAST(floor((year(period_end) * 12 + month(period_end) - 1 +
                             CASE WHEN day(period_end) >= 15 THEN 1 ELSE 0 END) / 3.0) AS BIGINT) AS bucket
                 FROM fundamental_standardized
-                WHERE is_latest_revision AND basis IN ('quarterly', 'instant')
+                WHERE basis IN ('quarterly', 'instant')
                   AND value IS NOT NULL AND available_at IS NOT NULL {predicate}
             )
             GROUP BY 1, 2, 3

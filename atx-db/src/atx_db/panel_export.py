@@ -35,7 +35,7 @@ __all__ = [
     "export_panel_quarterly",
 ]
 
-PANEL_EXPORT_CONTRACT_VERSION = "1.0.0"
+PANEL_EXPORT_CONTRACT_VERSION = "2.0.0"
 
 #: Columns ``panel_daily_market`` always projects; a requested metric that
 #: collides with one of these would duplicate a column in the result, so they
@@ -171,14 +171,10 @@ def export_panel_quarterly(
     ``fundamental_standardized``) and per ``metric_code`` (pivoted from
     ``derived_metric_values``), each selected with ``available_at <= as_of``.
     The ``fundamental_standardized`` branch takes the latest revision that was
-    actually *visible* as of that cutoff -- ranked by ``available_at`` then
-    ``revision_sequence`` per ``(security_id, canonical_code, period_end,
-    basis)`` -- not the row currently flagged ``is_latest_revision``, which is
-    a today-relative flag that a later restatement can flip false on the very
-    revision that was still the answer as of an earlier ``as_of``. Both
-    branches then take the greatest ``available_at`` per
-    ``(security_id, code, period_end)``; ``panel_available_at`` carries the
-    row-level max across every selected column.
+    actually visible as of that cutoff, with source/rule/basis/stable-ID ties.
+    Derived states are ranked by bucket and event before exposing their nullable
+    value, so an invalidation cannot resurrect a previously valid state.
+    ``panel_available_at`` carries the row-level max across selected columns.
     """
     item_codes = tuple(dict.fromkeys(items))
     metric_codes = tuple(dict.fromkeys(metrics))
@@ -201,26 +197,34 @@ def export_panel_quarterly(
     sql = f"""
     WITH visible_standardized AS (
         SELECT
-            security_id, canonical_code, period_end, value, available_at,
+            security_id, canonical_code, period_end, value, available_at, standardized_id,
             row_number() OVER (
-                PARTITION BY security_id, canonical_code, period_end, basis
-                ORDER BY available_at DESC, revision_sequence DESC
+                PARTITION BY security_id, canonical_code, period_end
+                ORDER BY available_at DESC, source DESC, rule_id DESC, basis DESC, standardized_id DESC
             ) AS rn
         FROM fundamental_standardized
         WHERE available_at <= ?
+          AND basis IN ('quarterly', 'instant')
           AND canonical_code IN ({", ".join(_quote(code) for code in item_codes) or "''"})
+    ), visible_derived AS (
+        SELECT *, row_number() OVER (
+            PARTITION BY security_id, metric_code, metric_window,
+                         coalesce(CAST(target_bucket AS VARCHAR), CAST(period_end AS VARCHAR))
+            ORDER BY available_at DESC, derived_value_id DESC
+        ) AS rn
+        FROM derived_metric_values
+        WHERE source = ? AND available_at <= ?
+          AND metric_code IN ({", ".join(_quote(code) for code in metric_codes) or "''"})
     ), unioned AS (
         SELECT security_id, canonical_code AS code, period_end, value, available_at
         FROM visible_standardized
         WHERE rn = 1
         UNION ALL
         SELECT security_id, metric_code AS code, period_end, value, available_at
-        FROM derived_metric_values
-        WHERE source = ? AND available_at <= ?
-          AND metric_code IN ({", ".join(_quote(code) for code in metric_codes) or "''"})
+        FROM visible_derived WHERE rn = 1
     ), picked AS (
         SELECT security_id, code, period_end,
-               arg_max(value, available_at) AS value,
+               arg_max(struct_pack(value := value), available_at).value AS value,
                max(available_at) AS available_at
         FROM unioned
         GROUP BY 1, 2, 3

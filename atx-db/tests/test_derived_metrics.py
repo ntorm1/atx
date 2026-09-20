@@ -72,14 +72,17 @@ def seeded(tmp_store):
 def _value(store, metric_code, period_end):
     row = store.con.execute(
         "SELECT value, available_at, inputs_hash FROM derived_metric_values "
-        "WHERE metric_code = ? AND period_end = ? AND security_id = 'S1'",
+        "WHERE metric_code = ? AND period_end = ? AND security_id = 'S1' "
+        "ORDER BY available_at DESC, derived_value_id DESC LIMIT 1",
         [metric_code, period_end],
     ).fetchone()
-    return row
+    # These formula tests inspect the current valid value. Dedicated PIT tests
+    # assert the stored invalid states and intermediate event chronology.
+    return row if row is not None and row[0] is not None else None
 
 
 def test_batches_are_deterministic_and_bounded(seeded):
-    batches = select_security_batches(seeded, DerivedMetricsOptions(batch_size=1))
+    batches = list(select_security_batches(seeded, DerivedMetricsOptions(batch_size=1)))
     assert batches == [("S1",)]
 
 
@@ -125,7 +128,7 @@ def test_yoy_uses_the_absolute_base(seeded):
     assert growth == pytest.approx((current - prior) / abs(prior))
 
 
-def test_a_zero_denominator_yields_no_row_rather_than_infinity(tmp_store):
+def test_a_zero_denominator_yields_invalid_states_rather_than_infinity(tmp_store):
     seed_derived_metric_definitions(tmp_store)
     for period_end in _QUARTERS[:4]:
         _insert_fact(tmp_store, "S2", "revenue", "quarterly", period_end, 0.0, _available(period_end))
@@ -135,9 +138,10 @@ def test_a_zero_denominator_yields_no_row_rather_than_infinity(tmp_store):
         DerivedMetricsOptions(metric_codes=("gross_profit_q", "gross_profit_ttm", "revenue_ttm", "gross_margin")),
     )
     rows = tmp_store.con.execute(
-        "SELECT count(*) FROM derived_metric_values WHERE metric_code = 'gross_margin'"
-    ).fetchone()[0]
-    assert rows == 0
+        "SELECT value, value_status FROM derived_metric_values WHERE metric_code = 'gross_margin'"
+    ).fetchall()
+    assert rows and all(value is None and status != 'valid' for value, status in rows)
+    assert any(status == 'zero_denominator' for _, status in rows)
 
 
 def test_inputs_hash_is_stable_across_reruns(seeded):
@@ -189,19 +193,23 @@ def test_batch_size_does_not_change_the_result(tmp_store):
             )
     refresh_derived_metrics(tmp_store, DerivedMetricsOptions(metric_codes=("revenue_ttm",), batch_size=3))
     wide = tmp_store.con.execute(
-        "SELECT security_id, period_end, value, inputs_hash FROM derived_metric_values ORDER BY 1, 2"
+        "SELECT security_id, period_end, value, inputs_hash FROM derived_metric_values "
+        "ORDER BY 1, 2, metric_code, available_at, derived_value_id"
     ).fetchall()
     refresh_derived_metrics(tmp_store, DerivedMetricsOptions(metric_codes=("revenue_ttm",), batch_size=1))
     narrow = tmp_store.con.execute(
-        "SELECT security_id, period_end, value, inputs_hash FROM derived_metric_values ORDER BY 1, 2"
+        "SELECT security_id, period_end, value, inputs_hash FROM derived_metric_values "
+        "ORDER BY 1, 2, metric_code, available_at, derived_value_id"
     ).fetchall()
     assert wide == narrow
 
 
-def test_every_emitted_value_is_finite_and_has_an_availability(seeded):
+def test_every_emitted_state_has_consistent_validity_and_availability(seeded):
     refresh_derived_metrics(seeded)
     bad = seeded.con.execute(
-        "SELECT count(*) FROM derived_metric_values WHERE value IS NULL OR NOT isfinite(value) OR available_at IS NULL"
+        "SELECT count(*) FROM derived_metric_values WHERE available_at IS NULL "
+        "OR (value_status = 'valid' AND (value IS NULL OR NOT isfinite(value))) "
+        "OR (value_status <> 'valid' AND value IS NOT NULL)"
     ).fetchone()[0]
     assert bad == 0
 

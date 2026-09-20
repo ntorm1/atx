@@ -612,15 +612,17 @@ DAILY_BARS_SCHEMA = RecordSchema(
 DERIVED_METRICS_SCHEMA = RecordSchema(
     dataset="ATX.US.FUNDAMENTALS",
     code="derived-metrics",
-    version="1.0.0",
+    version="2.0.0",
     title="Point-in-time derived metrics",
     description=(
         "Ratios, per-share, growth, leverage, quality, investment and payout metrics computed "
-        "by one declarative engine from the standardized fundamentals layer."
+        "by one declarative engine from standardized history. Each row is a filing-event state, "
+        "including NULL invalidations. Rank states before filtering valid values. Legacy scopes "
+        "are marked incomplete; modeled filing availability does not certify observation-time vintages."
     ),
     source_table="derived_metric_values",
     time_column="period_end",
-    natural_key=("security_id", "metric_code", "metric_window", "period_end"),
+    natural_key=("revision_group_id",),
     item_column="metric_code",
     basis_column="metric_window",
     fields=(
@@ -635,16 +637,29 @@ DERIVED_METRICS_SCHEMA = RecordSchema(
             filterable=True,
         ),
         FieldSpec("period_end", "period_end", "date", "Fiscal period end.", nullable=False),
-        FieldSpec("value", "value", "float64", "Derived metric value.", nullable=False),
+        FieldSpec("value", "value", "float64", "Derived value; NULL for an invalid event state."),
+        FieldSpec("derived_value_id", "derived_value_id", "string", "Stable typed event-state identity.", nullable=False),
+        FieldSpec("value_status", "value_status", "string", "valid, zero_denominator, missing_input_or_domain, or nonfinite."),
+        FieldSpec("history_status", "history_status", "string", "event_reconstructed or incomplete legacy_latest_only."),
+        FieldSpec("revision_group_id", "revision_group_id", "string", "Source/security/metric/window/bucket/definition identity."),
+        FieldSpec("revision_sequence", "revision_sequence", "int64", "Event order within the revision group."),
+        FieldSpec("revision_count", "revision_count", "int64", "Number of retained group states."),
+        FieldSpec("valid_to", "valid_to", "timestamp", "Exclusive next state event; NULL for the last state."),
+        FieldSpec("target_bucket", "target_bucket", "int64", "Stable calendar quarter bucket identity."),
+        FieldSpec("definition_hash", "definition_hash", "string", "Fingerprint of formula and input contract."),
+        FieldSpec("arithmetic_available_at", "arithmetic_available_at", "timestamp", "Arithmetic input clock; transition available_at may be later."),
         FieldSpec(
             "inputs_hash",
             "inputs_hash",
             "string",
-            "SHA-256 over the sorted (code, period_end, revision_sequence, value) inputs consumed.",
+            "SHA-256 over ordered typed frame lineage with actual selected input states, values and clocks.",
             nullable=False,
         ),
         FieldSpec("source", "source", "string", "ATX engine identifier.", nullable=False),
-        *_PIT_FIELDS,
+        FieldSpec("as_of_date", "as_of_date", "date", "Date of the modeled state transition."),
+        FieldSpec("available_at", "available_at", "timestamp", "Modeled filing-event transition time, including invalidation and control flow."),
+        FieldSpec("source_loaded_at", "source_loaded_at", "timestamp", "Warehouse reconstruction time; not historical delivery evidence."),
+        FieldSpec("run_id", "run_id", "string", "Lineage identifier for the producing run."),
     ),
 )
 
@@ -686,11 +701,13 @@ _MARKET_DAILY_METRICS: Final[tuple[tuple[str, str, str | None], ...]] = (
 MARKET_DAILY_SCHEMA = RecordSchema(
     dataset="ATX.US.EQUITIES",
     code="market-daily-1d",
-    version="1.0.0",
+    version="1.1.0",
     title="Daily market and valuation panel",
     description=(
         "Daily prices, point-in-time shares, market cap, enterprise value, valuation multiples, "
-        "total returns, momentum and realized volatility."
+        "total returns, momentum and realized volatility. Rebuilds select historical raw, DEI and "
+        "derived states, retaining invalidations and newest-visible-period precedence; the 22:00 "
+        "bar cutoff is modeled availability and does not certify historical vendor vintages."
     ),
     coverage_item_columns=tuple(name for name, _, _ in _MARKET_DAILY_METRICS),
     source_table="market_daily_metrics",

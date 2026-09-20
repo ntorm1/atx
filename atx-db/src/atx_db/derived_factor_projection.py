@@ -235,6 +235,8 @@ def load_projection_inputs(
             SELECT g.security_id, g.symbol, g.trade_date AS as_of_date,
                    d.metric.value AS metric_value,
                    d.metric.available_at AS metric_available_at,
+                   to_json(struct_pack(state_id := d.metric.state_id,
+                       value_status := d.metric.value_status, inputs_hash := d.metric.inputs_hash)) AS metric_state_json,
                    d.metric.period_end AS period_end,
                    greatest(g.price_available_at,
                             coalesce(g.universe_available_at, g.price_available_at),
@@ -246,8 +248,9 @@ def load_projection_inputs(
                 SELECT security_id, available_at,
                        arg_max(
                            struct_pack(value := value, period_end := period_end,
-                                       available_at := available_at),
-                           (period_end, available_at, source_loaded_at, derived_value_id)
+                                       available_at := available_at, state_id := derived_value_id,
+                                       value_status := value_status, inputs_hash := inputs_hash),
+                           (period_end, available_at, derived_value_id)
                        ) OVER (
                            PARTITION BY security_id ORDER BY available_at
                            RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
@@ -256,7 +259,7 @@ def load_projection_inputs(
                 WHERE source = ? AND metric_code = ?
                 QUALIFY row_number() OVER (
                     PARTITION BY security_id, available_at
-                    ORDER BY period_end DESC, source_loaded_at DESC, derived_value_id DESC
+                    ORDER BY period_end DESC, derived_value_id DESC
                 ) = 1
             ) d ON d.security_id = g.security_id AND g.cutoff >= d.available_at
             ORDER BY g.trade_date, g.security_id
@@ -379,9 +382,10 @@ def compute_projection_rows(
                     "available_at": metric_available_at,
                 },
                 "compatibility_inputs": json.loads(compatibility_inputs) if compatibility_inputs else None,
+                "metric_state": json.loads(metric_state_json) if metric_state_json else None,
             }
         )
-        for as_of_date, available_at, input_available_at, period_end, metric_value, metric_available_at, compatibility_inputs in zip(
+        for as_of_date, available_at, input_available_at, period_end, metric_value, metric_available_at, compatibility_inputs, metric_state_json in zip(
             rows["as_of_date"],
             rows["available_at"],
             rows["input_decision_available_at"],
@@ -389,6 +393,7 @@ def compute_projection_rows(
             rows["metric_value"],
             rows["metric_available_at"],
             rows.get("compatibility_inputs_json", pd.Series("", index=rows.index, dtype=object)),
+            rows.get("metric_state_json", pd.Series("", index=rows.index, dtype=object)),
             strict=True,
         )
     ]

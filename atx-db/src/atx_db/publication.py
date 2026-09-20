@@ -100,6 +100,8 @@ RELEASE_DATASETS: tuple[ReleaseDataset, ...] = (
     ReleaseDataset(
         "derived_metrics",
         "derived_metric_values",
+        # Physical event key preserves invalid states and same-value lineage
+        # revisions. Never filter this release to valid/latest-only rows.
         ("derived_value_id",),
         "ATX.US.FUNDAMENTALS",
         "derived-metrics",

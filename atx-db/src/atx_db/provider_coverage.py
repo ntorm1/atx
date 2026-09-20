@@ -247,6 +247,13 @@ def _schema_stats(
         if schema.basis_column is not None
         else "NULL::BIGINT"
     )
+    # Invalid historical states are necessary PIT records, but do not create
+    # valid current metric coverage or prove legacy scopes were reconstructed.
+    coverage_predicate = (
+        "WHERE is_latest_revision AND value_status = 'valid' "
+        "AND value IS NOT NULL AND isfinite(value) AND history_status = 'event_reconstructed'"
+        if schema.source_table == "derived_metric_values" else ""
+    )
     row = store.con.execute(
         f"""
         SELECT
@@ -259,6 +266,7 @@ def _schema_stats(
             min(coalesce(available_at,source_loaded_at)),
             max(coalesce(available_at,source_loaded_at))
         FROM {table}
+        {coverage_predicate}
         """
     ).fetchone()
     if row is None:

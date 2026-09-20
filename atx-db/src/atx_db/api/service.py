@@ -457,6 +457,12 @@ class WarehouseReadService:
         table = _quote_identifier(schema.source_table)
         natural_key = ", ".join(f"b.{_quote_identifier(name)}" for name in schema.natural_key)
         direction = "ASC" if request.vintage == "first_reported" else "DESC"
+        revision_ties = f"b.source_loaded_at {direction}, coalesce(b.run_id, '') {direction}"
+        if schema.source_table == "derived_metric_values":
+            # Legacy rows have no reconstructed revision group; preserve their
+            # separate identities. NULL invalid states participate in ranking.
+            natural_key = "coalesce(b.revision_group_id, b.derived_value_id)"
+            revision_ties = f"b.derived_value_id {direction}"
         conditions = [
             f"b.{time_column} >= ?",
             f"b.{time_column} < ?",
@@ -469,6 +475,14 @@ class WarehouseReadService:
             _naive_utc(as_of),
             _naive_utc(as_of),
         ]
+        output_time_predicate = ""
+        if schema.source_table == "derived_metric_values":
+            # A later observed stub period may rename the same bucket. Rank
+            # its visible group before filtering the requested period range,
+            # otherwise a range containing only the old date resurrects it.
+            conditions = conditions[2:]
+            parameters = parameters[2:]
+            output_time_predicate = f"AND v.{time_column} >= ? AND v.{time_column} < ?"
         if security_ids == []:
             conditions.append("false")
         elif security_ids is not None:
@@ -482,27 +496,31 @@ class WarehouseReadService:
             assert schema.basis_column is not None
             conditions.append(f"b.{_quote_identifier(schema.basis_column)} IN ({_placeholders(request.basis)})")
             parameters.extend(request.basis)
+        if output_time_predicate:
+            parameters.extend([request.start, request.end])
 
         select_fields = []
         for name in fields:
             field = schema.field(name)
             select_fields.append(f"v.{_quote_identifier(field.source_column)} AS {_quote_identifier(field.name)}")
+        output_order = f"v.{time_column}, v.security_id"
+        if schema.source_table == "derived_metric_values":
+            output_order += ", v.metric_code, v.derived_value_id"
         sql = f"""
             WITH visible AS (
                 SELECT b.*,
                        row_number() OVER (
                            PARTITION BY {natural_key}
                            ORDER BY coalesce(b.available_at, b.source_loaded_at) {direction},
-                                    b.source_loaded_at {direction},
-                                    coalesce(b.run_id, '') {direction}
+                                    {revision_ties}
                        ) AS _revision_rank
                 FROM {table} AS b
                 WHERE {" AND ".join(conditions)}
             )
             SELECT {", ".join(select_fields)}
             FROM visible AS v
-            WHERE v._revision_rank = 1
-            ORDER BY v.{time_column}, v.security_id
+            WHERE v._revision_rank = 1 {output_time_predicate}
+            ORDER BY {output_order}
             LIMIT ?
         """
         parameters.append(request.limit + 1)

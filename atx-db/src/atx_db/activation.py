@@ -794,7 +794,11 @@ def stage_derived_metrics(store: DuckDBStore, options: ActivationOptions) -> Sta
 
     seeded = seed_derived_metric_definitions(store)
     rows = refresh_derived_metrics(store, DerivedMetricsOptions(run_id=options.run_id))
-    metric_count_row = store.con.execute("SELECT count(DISTINCT metric_code) FROM derived_metric_values").fetchone()
+    metric_count_row = store.con.execute(
+        "SELECT count(DISTINCT metric_code) FROM derived_metric_values "
+        "WHERE is_latest_revision AND value_status = 'valid' "
+        "AND value IS NOT NULL AND isfinite(value) AND history_status = 'event_reconstructed'"
+    ).fetchone()
     metric_count = 0 if metric_count_row is None else int(metric_count_row[0])
     return StageResult(
         rows=rows,

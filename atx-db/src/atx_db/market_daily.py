@@ -125,12 +125,13 @@ def _asof_joins(codes: tuple[str, ...]) -> tuple[str, str]:
     for index, code in enumerate(codes):
         alias = f"f{index}"
         joins.append(
-            f"ASOF LEFT JOIN (SELECT security_id, available_at, value FROM latest_by_code "
+            f"ASOF LEFT JOIN (SELECT security_id, available_at, value, state_lineage FROM latest_by_code "
             f"WHERE code = {_quote(code)}) {alias} "
             f"ON {alias}.security_id = b.security_id AND b.cutoff >= {alias}.available_at"
         )
         projections.append(f'{alias}.value AS "{code}"')
         projections.append(f'{alias}.available_at AS "{code}__at"')
+        projections.append(f'{alias}.state_lineage AS "{code}__state_lineage"')
     return "\n    ".join(joins), ",\n           ".join(projections)
 
 
@@ -186,6 +187,9 @@ def build_market_daily_sql(
     """
     codes = tuple(item_codes) + tuple(metric_codes)
     joins, projections = _asof_joins(codes)
+    state_lineage = "[" + ", ".join(
+        f'struct_pack(code := {_quote(code)}, state := f."{code}__state_lineage")' for code in codes
+    ) + "]" if codes else "'[]'"
     securities = ", ".join(["?"] * security_count)
     availability_terms = ", ".join(
         f"coalesce(f{index}.available_at, TIMESTAMP '-infinity')" for index in range(len(codes))
@@ -269,60 +273,60 @@ WITH bars_by_session AS (
     )
     WHERE is_recent OR lookback_rank <= {_LOOKBACK_ROW_LIMIT}
 ), fund_long AS (
-    SELECT security_id, canonical_code AS code, period_end, value, available_at, revision_sequence
+    SELECT security_id, canonical_code AS code, period_end, value, available_at,
+           source AS source_rank, rule_id AS rule_rank, basis AS basis_rank, standardized_id AS state_id,
+           to_json(struct_pack(state_id := standardized_id, source := source, rule_id := rule_id,
+                               basis := basis, value := value, available_at := available_at)) AS state_lineage
     FROM fundamental_standardized
-    WHERE is_latest_revision AND basis IN ('quarterly', 'instant')
+    WHERE basis IN ('quarterly', 'instant') AND available_at IS NOT NULL
       AND canonical_code IN ({_in_list(item_codes)})
+      AND security_id IN (SELECT DISTINCT security_id FROM bars)
     UNION ALL
-    SELECT security_id, metric_code AS code, period_end, value, available_at, 0
+    SELECT security_id, metric_code AS code, period_end, value, available_at, '', '', '', derived_value_id,
+           to_json(struct_pack(state_id := derived_value_id, inputs_hash := inputs_hash, value_status := value_status))
     FROM derived_metric_values
     WHERE source = ?
       AND metric_code IN ({_in_list(metric_codes)})
+      AND security_id IN (SELECT DISTINCT security_id FROM bars)
 ), latest_by_code AS (
-    -- The running latest-known value: at each availability event the code
-    -- carries the value of the newest fiscal period a consumer could have
-    -- known, so a later-arriving restatement of an OLDER period never
-    -- overwrites a newer one. A plain ASOF on available_at alone would.
-    SELECT security_id, code, available_at, value
+    -- Rank whole states, including NULL invalidations, before exposing value.
+    -- RANGE sees every equal-time event; stable IDs break ties without load time.
+    -- Newest fiscal period still wins over amendments of an older raw period.
+    SELECT security_id, code, available_at, state.value AS value, state.lineage AS state_lineage
     FROM (
         SELECT security_id, code, available_at,
-               arg_max(value, (period_end, available_at, revision_sequence)) OVER w AS value,
+               arg_max(struct_pack(value := value, state_id := state_id, lineage := state_lineage),
+                       (period_end, available_at, source_rank, rule_rank, basis_rank, state_id)) OVER w AS state,
                row_number() OVER (PARTITION BY security_id, code, available_at
-                                  ORDER BY period_end DESC, revision_sequence DESC) AS rk
+                                  ORDER BY period_end DESC, source_rank DESC, rule_rank DESC,
+                                           basis_rank DESC, state_id DESC) AS rk
         FROM fund_long
-        WINDOW w AS (PARTITION BY security_id, code
-                     ORDER BY available_at, period_end, revision_sequence
-                     ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+        WINDOW w AS (PARTITION BY security_id, code ORDER BY available_at
+                     RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
     )
     WHERE rk = 1
 ), shares_state AS (
-    -- Same running-latest-value discipline for the DEI share count: the
-    -- newest effective_date known as of each available_at, never overwritten
-    -- by a later-arriving revision of an older effective_date.
-    -- taxonomy = 'dei' restricts this to actual DEI cover-page share counts
-    -- (shares_outstanding_history is otherwise populated generically from any
-    -- XBRL statement point with share_count_type = 'shares_outstanding'); this
-    -- is what makes the dei_shares/shares_source = 'dei' naming accurate.
-    SELECT security_id, available_at, share_count
+    SELECT security_id, available_at,
+           state.state_id AS state_id,
+           CASE WHEN state.share_count > 0 THEN state.share_count END AS share_count
     FROM (
         SELECT security_id, available_at,
-               arg_max(share_count, (effective_date, available_at, revision_sequence)) OVER w
-                   AS share_count,
+               arg_max(struct_pack(share_count := share_count, state_id := share_history_id),
+                       (effective_date, available_at, share_history_id)) OVER w AS state,
                row_number() OVER (PARTITION BY security_id, available_at
-                                  ORDER BY effective_date DESC, revision_sequence DESC) AS rk
+                                  ORDER BY effective_date DESC, share_history_id DESC) AS rk
         FROM shares_outstanding_history
-        WHERE is_latest_revision AND share_count_type = 'shares_outstanding'
-          AND taxonomy = 'dei'
-          AND available_at IS NOT NULL AND share_count > 0
-        WINDOW w AS (PARTITION BY security_id
-                     ORDER BY available_at, effective_date, revision_sequence
-                     ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+        WHERE share_count_type = 'shares_outstanding' AND taxonomy = 'dei'
+          AND available_at IS NOT NULL
+          AND security_id IN (SELECT DISTINCT security_id FROM bars)
+        WINDOW w AS (PARTITION BY security_id ORDER BY available_at
+                     RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
     )
-    WHERE rk = 1
-), joined AS (
+    WHERE rk = 1), joined AS (
     SELECT b.security_id, b.trade_date, b.symbol, b.close, b.adj_close, b.volume,
            b.archive_shares, b.bar_at, b.cutoff,
            s.share_count AS dei_shares,
+           s.state_id AS dei_state_id,
            {projections}
            {"," if projections else ""}{fundamental_at} AS fundamental_available_at
     FROM bars b
@@ -364,11 +368,10 @@ SELECT sha256(? || '|' || f.security_id || '|' || CAST(f.trade_date AS VARCHAR))
        {metric_columns},
        f.fundamental_available_at,
        {row_available_at},
-       sha256(f.security_id || '|' || CAST(f.trade_date AS VARCHAR) || '|' ||
-              CAST(f.close AS VARCHAR) || '|' || CAST(f.adj_close AS VARCHAR) || '|' ||
-              coalesce(CAST(f."shares_outstanding" AS VARCHAR), '') || '|' ||
-              coalesce(f.shares_source, '') || '|' ||
-              coalesce(CAST(f.fundamental_available_at AS VARCHAR), '')),
+       sha256(to_json(struct_pack(security_id := f.security_id, trade_date := f.trade_date,
+              close := f.close, adj_close := f.adj_close, shares := f."shares_outstanding",
+              shares_source := f.shares_source, dei_state_id := f.dei_state_id,
+              fundamental_available_at := f.fundamental_available_at, states := {state_lineage}))),
        f.trade_date, true, ?
 FROM final f
 WHERE {row_available_at} IS NOT NULL
