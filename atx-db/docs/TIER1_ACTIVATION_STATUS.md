@@ -26,11 +26,20 @@ the exact staging state and preserving its backup and audited raw source, the
 operator removed only that regenerable staging table at17:05:55UTC. Original
 live prices remain unchanged.
 
-The next price retry is running with2GB DuckDB/one thread inside the same3GiB
-process cap; preflight measured7.353GiB physical and11.256GiB commit headroom.
-Its receipt is `activation-prices-updated-2g-attempt3-memory.json`. Completion
-and the resulting live counts remain pending. No source/coverage threshold is
-relaxed, and no heavy tests or scans run alongside production.
+The2GB DuckDB/one-thread retry also failed at COMMIT at17:16:23UTC after389.734s.
+Native job peak was2.708GiB under the same3GiB cap; the host retained headroom.
+The repaired failure handler automatically recorded the failed stage. A fresh
+read-only measurement at17:16:50UTC confirmed the original31,178,192 rows remain
+intact and the replacement staging retains31,959,271 rows. Migration0313 did
+complete, with a further preserved8,054,386,688-byte backup.
+
+The original prices still contain1,133 invalid adjusted closes and31,178,192
+nonnull split-factor values from the old mapping. They are not the corrected
+source. The next repair changes the publication method to fit bounded memory;
+no further budget increase is planned. Receipts are
+`activation-prices-updated-2g-attempt3-memory.json` and
+`updated-price-live-measurement.json`. No source/coverage threshold is relaxed,
+and heavy tests or scans run sequentially with production.
 
 Operator receipts: `activation-prices-updated-memory.json`,
 `activation-prices-updated.err` and `price-recovery-readonly.json` under

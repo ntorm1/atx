@@ -1,0 +1,15 @@
+{
+  "command": [
+    ".venv/Scripts/python.exe",
+    "../.superpowers/sdd/tier1-parity/measure_price_publication.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 7.578052520751953,
+    "commit_free_gb": 11.25506591796875
+  },
+  "child_pid": 21616,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.40474700927734375
+}
