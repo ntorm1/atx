@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import re
 import zipfile
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from .warehouse import cik_security_id, insert_frame, quality_check, record_sour
 
 SOURCE_NAME = "SEC submissions API"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -244,6 +246,8 @@ def _replace_submission_rows(store: DuckDBStore, frame: pd.DataFrame) -> int:
 
 BULK_SOURCE_NAME = "SEC submissions bulk archive"
 _BULK_MAIN_MEMBER = re.compile(r"^CIK(\d{10})\.json$")
+_BULK_REOPEN_FLUSHES = 8
+_BULK_PROGRESS_MEMBERS = 2000
 
 # Every column _normalize reads positionally; history members omit some of them
 # (notably primaryDocDescription), so bulk frames are padded before normalizing.
@@ -291,6 +295,39 @@ def _cik_security_map(store: DuckDBStore) -> dict[str, str]:
     return {cik: security_id for cik, security_id in rows if security_id}
 
 
+def _reopen_bulk_store(store: DuckDBStore) -> bool:
+    """Release retained state only in a configured, persistent, idle session.
+
+    Call only after a batch has committed and all loader relations/cursors have
+    been released. The load owns the session while running; caller-owned
+    temporary tables or registered views prevent recycling that session.
+    """
+    if (
+        str(store.path).startswith(":memory:")
+        or not store.path.is_file()
+        or store.analytical_memory_limit is None
+        or store.analytical_threads is None
+    ):
+        # In particular, never destroy an anonymous or named in-memory database.
+        return False
+    temporary_objects = store.con.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM duckdb_tables() WHERE temporary AND NOT internal
+        ) OR EXISTS (
+            SELECT 1 FROM duckdb_views() WHERE temporary AND NOT internal
+        )
+        """
+    ).fetchone()
+    if temporary_objects is None or temporary_objects[0]:
+        return False
+    # close() checkpoints first; reopen() restores the recorded analytical caps
+    # and base session settings without initializing or migrating the warehouse.
+    store.close()
+    store.reopen()
+    return True
+
+
 class SecSubmissionsBulkDataset(Dataset):
     """Load the complete SEC bulk ``submissions.zip`` corpus without API traffic.
 
@@ -317,22 +354,44 @@ class SecSubmissionsBulkDataset(Dataset):
 
         loaded = 0
         ciks_loaded = 0
+        main_members_processed = 0
+        flush_count = 0
         history_members_read = 0
         missing_history_members = 0
         pending: list[pd.DataFrame] = []
         pending_ciks = 0
 
-        def flush() -> int:
-            nonlocal pending, pending_ciks
+        def log_progress() -> None:
+            LOGGER.info(
+                "SEC submissions bulk progress: main_members_processed=%d/%d "
+                "ciks_loaded=%d committed_rows=%d flushes=%d",
+                main_members_processed,
+                len(main_members),
+                ciks_loaded,
+                loaded,
+                flush_count,
+            )
+
+        def flush() -> None:
+            nonlocal pending, pending_ciks, loaded, flush_count
             if not pending:
-                return 0
+                return
             frame = pd.concat(pending, ignore_index=True)
             frame = frame.drop_duplicates(
                 subset=["security_id", "accession_number"], keep="first"
             ).reset_index(drop=True)
             pending = []
             pending_ciks = 0
-            return _replace_submission_rows(store, frame)
+            loaded += _replace_submission_rows(store, frame)
+            flush_count += 1
+            del frame
+            log_progress()
+            if flush_count % _BULK_REOPEN_FLUSHES == 0 and _reopen_bulk_store(store):
+                LOGGER.info(
+                    "SEC submissions bulk connection reopened: committed_rows=%d flushes=%d",
+                    loaded,
+                    flush_count,
+                )
 
         with zipfile.ZipFile(options.zip_path) as archive:
             member_names = set(archive.namelist())
@@ -381,13 +440,17 @@ class SecSubmissionsBulkDataset(Dataset):
                             )
                         )
                 frames = [frame for frame in frames if not frame.empty]
+                main_members_processed += 1
                 if frames:
                     pending.extend(frames)
                     pending_ciks += 1
                     ciks_loaded += 1
                 if pending_ciks >= options.batch_ciks:
-                    loaded += flush()
-        loaded += flush()
+                    flush()
+                elif main_members_processed % _BULK_PROGRESS_MEMBERS == 0:
+                    log_progress()
+        flush()
+        log_progress()
 
         record_source_file(
             store,
