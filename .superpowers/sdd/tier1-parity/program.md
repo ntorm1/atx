@@ -3,6 +3,20 @@ Spec: docs/superpowers/specs/2026-09-19-tier1-parity-design.md
 Audits: .superpowers/sdd/tier1-parity/audit-atx-db.md, audit-ticker-zip.md
 Baseline: main a79f8371, smoke 6 passed.
 
+## Annual fallback continuation ruling - 2026-09-20 21:53 UTC
+
+AF1 addresses the design's fiscal-year fallback promise and the confirmed
+annual-only filer gap in `annual-filer-metric-path-report.md`. Prepare a bounded
+implementation under `annual-fallback-draft/` while archive3 owns the warehouse.
+The fresh Codex implementer follows `annual-fallback-implementation-brief.md`:
+no live source changes, tests, DB access, or commits. P1/0315 and Core remain
+frozen until root runtime verification and separate commits, P1 first. Apply
+AF1 only afterward, verify focused cases, then one independent review. Migration
+0316 is reserved in the draft only if needed for inspectable source precedence.
+No fabricated quarterly flows, no stale FY total at a later fiscal endpoint,
+and no coverage threshold changes. This is core production work, not a reason
+to interrupt or compete with healthy archive ingestion.
+
 ## Production continuation ruling — 2026-09-20 20:52 UTC
 
 The latest `continuation-queue.md` override is authoritative for live process

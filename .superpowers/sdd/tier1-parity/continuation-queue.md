@@ -2,6 +2,37 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override - 2026-09-20 21:53 UTC
+
+- Actual archive3 worker9412 remains LIVE with the same creation time and advancing
+  CPU. At21:52:37UTC:4100/20390 processed,3401loaded,668empty,26unavailable,
+  5failed,18624608 written attempt rows (not net additions or coverage). Fifth
+  failure arose3700..3724. Inspect ALL source error receipts after writer release;
+  individual errors are not emitted to stderr. No competing DB/tests/probes.
+  Same guard3GiB, DuckDB1GB/1thread; host physicalfree6.44GiB/commitfree8.61GiB;
+  private bytes1.965GB, diskfree107.89GiB. Do not restart healthy ingestion.
+- Fresh static path audit COMPLETE: annual-filer-metric-path-report.md confirms
+  standardized annual flows cannot reach core TTM metrics without complete
+  quarterly evidence. Annual-only instants can work, but margins/flow per-share/
+  market denominators cannot. This violates the design's fiscal-year fallback;
+  no live affected-issuer count measured. Root read and accepted the path finding.
+- AF1 fresh Codex implementer /root/annual_fallback_implementation is preparing
+  a concrete ISOLATED draft per annual-fallback-implementation-brief.md, including
+  baseline copies/hashes, exact integration.patch and focused fixtures. All draft
+  files stay under annual-fallback-draft/; no actual atx-db/ edits or tests/DB.
+  Reserve0316 in draft only if needed. This keeps P1/Core frozen until validated.
+- P1 and Core201 remain uncommitted, with one static review each. I1/M1 tests are
+  prepared, not run. Once source releases: inspect/fix real source errors, root
+  guarded focused P1/Core/schema/boundary/import/bootstrap checks; P1/0315 commit
+  FIRST, Core second. Then apply/rebase AF1, root focused checks, one fresh review,
+  commit. Do not silently mix AF1 into previously reviewed P1 source. Regenerate
+  dictionary/snapshots for final stable schema before production activation.
+- Verified submissions resume, full run5, CF1 labels/evaluation, actual quality/
+  coverage, first release and sprint gates remain. Goal ACTIVE, no merge approval;
+  preserve stash@{0} and all unrelated files. Current HEADd25a9c7c before checkpoint.
+- Turn classification: PROGRESS (confirmed core gap and isolated implementation
+  dispatched) plus verified wait on active source. Slow ingestion is not blocked.
+
 ## Current controller override — 2026-09-20 21:20 UTC
 
 - Verified LIVE worker9412 by CIM command/runID/creation time and advancing CPU,

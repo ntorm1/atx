@@ -51,16 +51,29 @@ a later amendment can remove a previously knowable historical value or make a
 daily valuation fall back to an older quarter. Maximum-input availability
 timestamps do not recover discarded states.
 
-The repair must preserve original/amended states and invalidation events, use
-bounded event frames, and update daily/export consumers together. It is underway;
-no repaired full-universe result has been measured. Static evidence and the
-implementation brief are retained as `derived-pit-revision-audit.md` and
-`derived-pit-revision-brief.md` under `.superpowers/sdd/tier1-parity/`.
+The P1 repair now preserves original/amended states and invalidation events in
+bounded event frames, with daily/export/API consumers updated together. One
+independent static review closed the original defect at source level. Focused
+runtime verification, including a populated 0314-to-0315 upgrade, remains queued
+behind the active companyfacts writer; the code is not yet committed or used in
+production. No repaired full-universe result has been measured. Evidence,
+implementation and review reports use the `derived-pit-revision-` prefix under
+`.superpowers/sdd/tier1-parity/`.
 
 The catalog audit counted 173 definitions (143 on the quarterly grid and 30
-daily). A separate additive wave is filling ordinary quarterly YoY/QoQ growth,
-three-year CAGR, basic-EPS and cash-cycle gaps from existing inputs. This is
-pending implementation/validation, not additional live metric coverage.
+daily). A separate implemented, statically reviewed wave adds 28 definitions
+for ordinary quarterly YoY/QoQ growth, three-year CAGR, basic EPS and cash-cycle
+metrics. These 201 definitions await runtime validation and commit; they are
+not a measurement of live metric coverage.
+
+A further source-path check found that annual statements are standardized but
+cannot feed TTM flow metrics unless a complete quarterly history is available.
+This prevents annual-only filers from supplying core margins, flow per-share
+metrics and daily valuation denominators. An isolated implementation draft is
+addressing direct fiscal-year fallback with historical source precedence. It
+must preserve actual quarterly gaps and filing-event revisions. This is a
+confirmed code-path gap, not a measured count of affected issuers; see
+`annual-filer-metric-path-report.md` and `annual-fallback-implementation-brief.md`.
 
 ## Activation result
 
