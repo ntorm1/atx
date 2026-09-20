@@ -907,13 +907,21 @@ def refresh_fundamental_fact_revisions(
     return int(count_row[0])
 
 
+@dataclass(frozen=True)
+class _CompanyFactsArchivePlaceholder:
+    """Observed source absence; never authority to replace retained issuer facts."""
+
+    member: str
+    byte_count: int
+
+
 class _CompanyFactsZipFetcher:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self._archive = zipfile.ZipFile(self.path)
         self._names = set(self._archive.namelist())
 
-    def __call__(self, cik: str | int) -> dict[str, Any] | None:
+    def __call__(self, cik: str | int) -> dict[str, Any] | _CompanyFactsArchivePlaceholder | None:
         try:
             member = f"CIK{int(str(cik).strip()):010d}.json"
         except (TypeError, ValueError):
@@ -921,7 +929,12 @@ class _CompanyFactsZipFetcher:
         if member not in self._names:
             return None
         with self._archive.open(member) as handle:
-            payload: object = json.load(handle)
+            raw_payload = handle.read()
+        # The inspected SEC bulk archive contains exact two-byte placeholders.
+        # Do not generalize this to missing facts, whitespace variants, or HTTP.
+        if raw_payload == b"{}" and COMPANYFACTS_MEMBER_PATTERN.fullmatch(member):
+            return _CompanyFactsArchivePlaceholder(member=member, byte_count=len(raw_payload))
+        payload: object = json.loads(raw_payload)
         if not isinstance(payload, dict):
             raise ValueError("companyfacts payload requires an object")
         return payload
@@ -944,7 +957,8 @@ def _make_companyfacts_zip_fetcher(path: str | Path) -> _CompanyFactsZipFetcher:
     per CIK) so the ~1.4 GB archive never loads fully into memory. Download is a one-time
     operator step; this fetcher and all tests run purely against a local file. Returns the
     parsed companyfacts payload (``{"cik", "entityName", "facts": {...}}``) for
-    ``normalize_companyfacts`` to consume, or ``None`` if the CIK is absent / non-numeric.
+    ``normalize_companyfacts`` to consume, an explicit marker for an exact two-byte
+    ``{}`` archive placeholder, or ``None`` if the CIK is absent / non-numeric.
     """
     return _CompanyFactsZipFetcher(path)
 
@@ -1032,6 +1046,8 @@ class SecCompanyFactsDataset(Dataset):
         failure_types: dict[str, int] = {}
         empty_targets: list[dict[str, str]] = []
         empty_reasons: dict[str, int] = {}
+        unavailable_targets: list[dict[str, str]] = []
+        unavailable_reasons: dict[str, int] = {}
         unresolved_ciks: list[pd.DataFrame] = []
         cik_spellings_by_number: dict[int, tuple[str, ...]] | None = None
         with contextlib.ExitStack() as stack:
@@ -1055,8 +1071,9 @@ class SecCompanyFactsDataset(Dataset):
             effective_skip_failed = options.skip_failed_targets or zip_fetcher is not None
             for index, (symbol, cik, security_id) in enumerate(targets):
                 if options.progress_every_targets > 0 and index % options.progress_every_targets == 0:
-                    LOGGER.info("companyfacts processed=%d total=%d loaded=%d empty=%d failed=%d rows=%d",
-                                index, len(targets), loaded_targets, len(empty_targets), len(failed_targets), rows_loaded)
+                    LOGGER.info("companyfacts processed=%d total=%d loaded=%d empty=%d unavailable=%d failed=%d rows=%d",
+                                index, len(targets), loaded_targets, len(empty_targets),
+                                len(unavailable_targets), len(failed_targets), rows_loaded)
                 if zip_fetcher is None and options.request_delay_seconds > 0 and index > 0:
                     time.sleep(options.request_delay_seconds)
                 source_url = (
@@ -1064,11 +1081,14 @@ class SecCompanyFactsDataset(Dataset):
                     else SEC_COMPANY_FACTS_URL.format(cik=cik)
                 )
                 # Only source/member/normalization errors are skippable. Database errors remain fatal.
+                archive_placeholder = None
                 try:
                     if zip_fetcher is not None:
                         payload = zip_fetcher(cik)
                         if payload is None:
                             raise FileNotFoundError(f"CIK {cik} absent from companyfacts.zip")
+                        if isinstance(payload, _CompanyFactsArchivePlaceholder):
+                            archive_placeholder = payload
                     else:
                         assert session is not None
                         for attempt in range(max(1, options.max_attempts)):
@@ -1081,14 +1101,15 @@ class SecCompanyFactsDataset(Dataset):
                                 if attempt + 1 == max(1, options.max_attempts):
                                     raise
                                 time.sleep(min(2.0 * (attempt + 1), 10.0))
-                    if not isinstance(payload, dict) or not isinstance(payload.get("facts"), dict):
-                        raise ValueError("companyfacts payload requires a facts object")
-                    if archive_mode and f"{int(str(payload.get('cik'))):010d}" != cik:
-                        raise ValueError("payload CIK does not match archive member CIK")
-                    facts, points = normalize_companyfacts(
-                        payload, symbol=symbol, security_id=security_id, cik=cik,
-                        source_url=source_url, concepts=set(options.concepts), run_id=options.run_id,
-                    )
+                    if archive_placeholder is None:
+                        if not isinstance(payload, dict) or not isinstance(payload.get("facts"), dict):
+                            raise ValueError("companyfacts payload requires a facts object")
+                        if archive_mode and f"{int(str(payload.get('cik'))):010d}" != cik:
+                            raise ValueError("payload CIK does not match archive member CIK")
+                        facts, points = normalize_companyfacts(
+                            payload, symbol=symbol, security_id=security_id, cik=cik,
+                            source_url=source_url, concepts=set(options.concepts), run_id=options.run_id,
+                        )
                 except Exception as exc:
                     error_type = type(exc).__name__
                     failure_types[error_type] = failure_types.get(error_type, 0) + 1
@@ -1101,6 +1122,24 @@ class SecCompanyFactsDataset(Dataset):
                     if not effective_skip_failed:
                         raise RuntimeError(f"SEC companyfacts fetch failed for {symbol} (CIK {cik}): {exc}") from exc
                     failed_targets.append(failure)
+                    continue
+                if archive_placeholder is not None:
+                    reason = "empty_archive_placeholder"
+                    unavailable_reasons[reason] = unavailable_reasons.get(reason, 0) + 1
+                    unavailable_targets.append({"cik": cik, "reason": reason})
+                    record_source_file(
+                        store, dataset_id=self.dataset_id, source_url=source_url,
+                        cache_path=options.companyfacts_zip, status="unavailable",
+                        sha256=details["archive_sha256"],
+                        metadata={"symbol": symbol, "cik": cik, "source_mode": source_mode,
+                                  "run_id": options.run_id, "rows": 0,
+                                  "unavailable_reason": reason,
+                                  "archive_member": archive_placeholder.member,
+                                  "archive_member_bytes": archive_placeholder.byte_count,
+                                  "archive_sha256": details["archive_sha256"],
+                                  "allowlist_sha256": fingerprint},
+                    )
+                    # No facts, points, candidate mutations, or completion/loaded counts.
                     continue
                 facts, unresolved = resolve_company_facts_identifiers(
                     store, facts, allow_current_fallback=not archive_mode,
@@ -1201,6 +1240,11 @@ class SecCompanyFactsDataset(Dataset):
             "loaded_targets": loaded_targets,
             "empty_target_count": len(empty_targets), "empty_target_reasons": empty_reasons,
             "empty_targets": empty_targets[:50],
+            "unavailable_target_count": len(unavailable_targets),
+            "unavailable_target_reasons": unavailable_reasons,
+            "unavailable_targets": unavailable_targets[:50],
+            "coverage_warnings": (["archive_empty_placeholders_preserved_prior_data"]
+                                  if unavailable_targets else []),
             "failed_target_count": len(failed_targets), "failed_targets": failed_targets[:50],
             "failure_types": failure_types,
             "unresolved_security_targets": unresolved_targets,
@@ -1213,14 +1257,22 @@ class SecCompanyFactsDataset(Dataset):
             "fundamental_ttm_points": ttm_rows, "unresolved_cik_candidate_rows": unresolved_candidate_rows,
             "outcome": ("failed_targets" if failed_targets else "no_valid_targets" if not all_targets
                         else "all_existing_skipped" if not eligible_targets else "empty_window" if not targets
+                        else "loaded_with_unavailable" if unavailable_targets and loaded_targets
+                        else "source_unavailable" if unavailable_targets
                         else "supported_facts_empty" if not loaded_targets else "loaded"),
             "listed_security_coverage_verified": False,
             "identity_policy": "dated_history_or_isolated_cik_source" if archive_mode else "legacy_current_fallback",
         })
         if options.progress_every_targets > 0:
-            LOGGER.info("companyfacts processed=%d total=%d loaded=%d empty=%d failed=%d unresolved=%d rows=%d finished=true",
-                        len(targets), len(targets), loaded_targets, len(empty_targets), len(failed_targets),
+            LOGGER.info("companyfacts processed=%d total=%d loaded=%d empty=%d unavailable=%d failed=%d unresolved=%d rows=%d finished=true",
+                        len(targets), len(targets), loaded_targets, len(empty_targets),
+                        len(unavailable_targets), len(failed_targets),
                         unresolved_targets, rows_loaded)
+        if unavailable_targets:
+            quality_check(store, dataset_id=self.dataset_id, table_name="sec_company_facts",
+                          check_name="source_availability", status="warning",
+                          observed_value=float(len(unavailable_targets)), threshold_value=0.0,
+                          details=details)
         quality_check(store, dataset_id=self.dataset_id, table_name="sec_company_facts", check_name="rows_loaded",
                       status="failed" if failed_targets else "passed" if rows_loaded > 0 else "warning",
                       observed_value=float(rows_loaded), threshold_value=1.0, details=details)
