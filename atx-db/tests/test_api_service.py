@@ -4,12 +4,14 @@ import datetime as dt
 import hashlib
 import json
 from decimal import Decimal
+from pathlib import Path
 
 import duckdb
 import pyarrow as pa
 import pyarrow.csv as pa_csv
 import pyarrow.ipc as pa_ipc
 import pyarrow.parquet as pq
+import pytest
 from fastapi.testclient import TestClient
 
 from atx_db.api.admin import (
@@ -252,6 +254,71 @@ def test_range_query_is_point_in_time_revision_correct_and_end_exclusive(tmp_sto
     assert [row["value"] for row in after_restatement.data] == [110.0]
     assert [row["value"] for row in first_reported.data] == [100.0]
     assert all(row["period_end"] < dt.date(2024, 1, 1) for row in after_restatement.data)
+
+
+@pytest.mark.parametrize(
+    ("as_of", "vintage", "expected_reason"),
+    [
+        ("2024-02-15T00:00:00Z", "latest", "unknown"),
+        ("2024-04-15T00:00:00Z", "latest", "bankruptcy"),
+        ("2024-04-15T00:00:00Z", "first_reported", "unknown"),
+    ],
+)
+def test_delisting_range_preserves_unresolved_symbols_sources_and_revisions(
+    tmp_path: Path, as_of: str, vintage: str, expected_reason: str,
+) -> None:
+    path = tmp_path / "delisting-range.duckdb"
+    # Exercise the real public query against its source relation without unrelated
+    # warehouse migrations: all projected/key/PIT columns match delisting_events.
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            "CREATE TABLE delisting_events (delisting_event_id VARCHAR PRIMARY KEY, "
+            "source VARCHAR NOT NULL, security_id VARCHAR, symbol VARCHAR NOT NULL, "
+            "delist_date DATE NOT NULL, delist_reason VARCHAR NOT NULL, "
+            "as_of_date DATE NOT NULL, available_at TIMESTAMP NOT NULL, "
+            "source_loaded_at TIMESTAMP NOT NULL, run_id VARCHAR)"
+        )
+        conn.executemany(
+            "INSERT INTO delisting_events VALUES (?,?,?,?,DATE '2024-01-31',?,"
+            "DATE '2024-01-31',?,?,?)",
+            [
+                (event_id, source, security_id, symbol, reason, available, available, event_id)
+                for event_id, source, security_id, symbol, reason, available in (
+                    ("a-old", "source-a", None, "AAA", "unknown", dt.datetime(2024, 2, 1)),
+                    ("a-new", "source-a", None, "AAA", "bankruptcy", dt.datetime(2024, 3, 1)),
+                    ("b", "source-a", None, "BBB", "merger", dt.datetime(2024, 2, 1)),
+                    ("other-source", "source-b", None, "AAA", "liquidation", dt.datetime(2024, 2, 1)),
+                    ("resolved-old", "source-a", "SEC-1", "SAME", "unknown", dt.datetime(2024, 2, 1)),
+                    ("resolved-new", "source-a", "SEC-1", "SAME", "bankruptcy", dt.datetime(2024, 3, 1)),
+                    ("other-security", "source-a", "SEC-2", "SAME", "merger", dt.datetime(2024, 2, 1)),
+                )
+            ],
+        )
+    result = WarehouseReadService(path).get_range(
+        RangeRequest.model_validate(
+            {
+                "dataset": "ATX.US.EQUITIES",
+                "schema": "delistings",
+                "symbols": ["ALL_SYMBOLS"],
+                "start": "2024-01-01",
+                "end": "2024-02-01",
+                "as_of": as_of,
+                "vintage": vintage,
+                "fields": ["source", "security_id", "symbol", "delist_reason"],
+            }
+        )
+    )
+    assert len(result.data) == 5
+    assert {
+        (row["source"], row["security_id"], row["symbol"]): row["delist_reason"]
+        for row in result.data
+    } == {
+        ("source-a", None, "AAA"): expected_reason,
+        ("source-a", None, "BBB"): "merger",
+        ("source-b", None, "AAA"): "liquidation",
+        ("source-a", "SEC-1", "SAME"): expected_reason,
+        ("source-a", "SEC-2", "SAME"): "merger",
+    }
 
 
 def test_industry_standardized_schema_emits_pit_classification_updates(tmp_store):

@@ -807,7 +807,8 @@ DELISTINGS_SCHEMA = RecordSchema(
     ),
     source_table="delisting_events",
     time_column="delist_date",
-    natural_key=("source", "security_id", "delist_date"),
+    # Unresolved securities retain their symbol as event identity.
+    natural_key=("source", "security_id", "symbol", "delist_date"),
     fields=(
         FieldSpec("security_id", "security_id", "string", "Stable ATX security identifier."),
         FieldSpec("symbol", "symbol", "string", "Ticker at delisting.", nullable=False),
