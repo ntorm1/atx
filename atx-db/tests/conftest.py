@@ -247,3 +247,105 @@ def built_warehouse(_schema_template, tmp_path):
         return db_path
 
     return _make
+
+
+@pytest.fixture
+def derived_fixture():
+    """Factory that seeds one security's quarterly fundamentals plus daily bars.
+
+    Tier1-S3 T10 note: the brief for this task assumed a ``derived_fixture``
+    builder already existed in ``tests/test_derived_metrics.py`` (ready to be
+    "moved" here) and that three other test modules had local duplicates to
+    delete. Neither is true -- ``test_derived_metrics.py`` only has a
+    module-private ``seeded`` fixture and ``_insert_fact`` helper, and T9's own
+    ``test_panel_export.py`` already hit this gap and built its own
+    self-contained fixture instead (see the NOTE at the top of that file). This
+    fixture is therefore a fresh addition, modeled on
+    ``tests/test_market_daily.py``'s ``panel`` fixture, for
+    ``tests/test_derived_wiring.py`` alone; the pre-existing local builders in
+    test_derived_metrics.py / test_market_daily.py / test_panel_export.py are
+    left untouched (those files are owned by concurrently active agents on this
+    branch) rather than risk colliding edits in a shared working tree.
+
+    Returns a callable ``build(store) -> store`` that mutates the given store in
+    place and returns it: four quarters of the core metric-family inputs
+    (revenue, cogs, net income, total assets, stockholders' equity) for
+    security "S1", plus ~300 daily bars from 2020-01-02 so a market-daily
+    refresh has bars to ASOF-join against. It does not itself call
+    ``seed_derived_metric_definitions`` or any refresh function -- callers (the
+    activation stages under test) do that.
+    """
+    import datetime as dt
+
+    from atx_db.market_daily import END_OF_DAY_HOURS
+
+    def _fact(store, security_id, code, basis, period_end, value, available_at, revision=1):
+        store.con.execute(
+            """
+            INSERT INTO fundamental_standardized (
+                standardized_id, source, security_id, item_id, canonical_code, basis,
+                period_end, value, as_of_date, available_at, input_codes_json,
+                input_item_ids_json, rule_id, combination_rule, revision_sequence,
+                is_latest_revision
+            ) VALUES (?, 'test', ?, 1, ?, ?, ?, ?, ?, ?, '[]', '[]', 'r', 'direct', ?, true)
+            """,
+            [
+                f"{security_id}|{code}|{basis}|{period_end}|{revision}",
+                security_id,
+                code,
+                basis,
+                period_end,
+                value,
+                available_at.date(),
+                available_at,
+                revision,
+            ],
+        )
+
+    def _bar(store, security_id, trade_date, close, shares=None):
+        store.con.execute(
+            """
+            INSERT INTO equity_daily_bars (
+                source, security_id, symbol, trade_date, open, high, low, close,
+                adjusted_close, volume, split_factor, is_adjusted, available_at,
+                as_of_date, is_latest_revision, shares_outstanding
+            ) VALUES ('test', ?, 'AAA', ?, ?, ?, ?, ?, ?, 1000, 1.0, false, ?, ?, true, ?)
+            """,
+            [
+                security_id,
+                trade_date,
+                close,
+                close,
+                close,
+                close,
+                close,
+                dt.datetime.combine(trade_date, dt.time(END_OF_DAY_HOURS, 0)),
+                trade_date,
+                shares,
+            ],
+        )
+
+    quarters = (
+        dt.date(2019, 3, 31),
+        dt.date(2019, 6, 30),
+        dt.date(2019, 9, 30),
+        dt.date(2019, 12, 31),
+    )
+    first_trade = dt.date(2020, 1, 2)
+
+    def build(store, *, security_id: str = "S1"):
+        for index, period_end in enumerate(quarters):
+            available_at = dt.datetime.combine(period_end + dt.timedelta(days=40), dt.time(21, 0))
+            _fact(store, security_id, "revenue", "quarterly", period_end, 100.0 + index, available_at)
+            _fact(store, security_id, "cost_of_revenue_cogs", "quarterly", period_end, 60.0, available_at)
+            _fact(store, security_id, "net_income_to_common", "quarterly", period_end, 10.0, available_at)
+            _fact(store, security_id, "total_assets", "instant", period_end, 1000.0, available_at)
+            _fact(store, security_id, "stockholders_equity", "instant", period_end, 500.0, available_at)
+        for offset in range(300):
+            trade_date = first_trade + dt.timedelta(days=offset)
+            if trade_date.weekday() >= 5:
+                continue
+            _bar(store, security_id, trade_date, 20.0 + 0.01 * offset, shares=1_000_000.0)
+        return store
+
+    return build

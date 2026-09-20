@@ -33,6 +33,8 @@ def test_stage_order_is_the_documented_dependency_order():
         "standardized",
         "industry_templates",
         "reconciliation",
+        "derived_metrics",
+        "market_daily",
         "universe_us_listed",
         "provider_coverage",
     )

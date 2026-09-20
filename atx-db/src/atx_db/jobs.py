@@ -24,6 +24,8 @@ from .delisting import (
     DelistingReturnObservationOptions,
 )
 from .dataset import Dataset, DatasetLoadResult
+from .derived_metrics import DerivedMetricsDataset, DerivedMetricsOptions
+from .market_daily import MarketDailyDataset, MarketDailyOptions
 from .features import (
     EquityDailyFeatureDataset,
     FeatureBuildOptions,
@@ -1240,6 +1242,36 @@ def _universe_us_listed_options(params: dict[str, Any]) -> UniverseUsListedOptio
     )
 
 
+def _derived_metrics_options(params: dict[str, Any]) -> DerivedMetricsOptions:
+    default = DerivedMetricsOptions()
+    return DerivedMetricsOptions(
+        source=params.get("source") or default.source,
+        security_ids=_tuple_or_none(params.get("security_ids")),
+        # metric_codes are lowercase snake_case (see derived_registry._METRIC_CODE_RE),
+        # unlike security_ids/symbols; _tuple_or_none upper-cases, which would send
+        # every requested code to a name the catalog never defines. _string_tuple_or_none
+        # preserves case.
+        metric_codes=_string_tuple_or_none(params.get("metric_codes")),
+        batch_size=int(params.get("batch_size", default.batch_size)),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _market_daily_options(params: dict[str, Any]) -> MarketDailyOptions:
+    default = MarketDailyOptions()
+    return MarketDailyOptions(
+        source=params.get("source") or default.source,
+        derived_source=params.get("derived_source") or default.derived_source,
+        bar_source=params.get("bar_source") or default.bar_source,
+        start_date=_date_or_none(params.get("start_date")),
+        end_date=_date_or_none(params.get("end_date")),
+        security_ids=_tuple_or_none(params.get("security_ids")),
+        batch_size=int(params.get("batch_size", default.batch_size)),
+        shares_tolerance=float(params.get("shares_tolerance", default.shares_tolerance)),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     SecurityMasterDataset.dataset_id: (SecurityMasterDataset, _security_master_options),
     TickerHistoryDataset.dataset_id: (TickerHistoryDataset, _ticker_history_options),
@@ -1332,6 +1364,8 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
         FundamentalReconciliationDataset,
         _fundamental_reconciliation_options,
     ),
+    DerivedMetricsDataset.dataset_id: (DerivedMetricsDataset, _derived_metrics_options),
+    MarketDailyDataset.dataset_id: (MarketDailyDataset, _market_daily_options),
     FilingContextBackfillQueueDataset.dataset_id: (
         FilingContextBackfillQueueDataset,
         _filing_context_backfill_queue_options,
@@ -1444,6 +1478,7 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "corporate_actions": ("tbltickerhistory_daily",),
     "daily_adjustment_factors": ("adjustment_factor_history",),
     "delisting_events": ("listing_status_intervals",),
+    "derived_metrics": ("fundamental_standardized",),
     "entity_classification": (
         "fama_french_taxonomy",
         "naics_taxonomy",
@@ -1496,6 +1531,11 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     ),
     "macro_metrics": ("fred_macro",),
     "market_cap": ("tbltickerhistory_daily", "shares_outstanding_history"),
+    "market_daily": (
+        "derived_metrics",
+        "tbltickerhistory_daily",
+        "shares_outstanding_history",
+    ),
     "enterprise_value": (
         "market_cap",
         "sec_company_facts",

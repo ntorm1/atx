@@ -59,6 +59,8 @@ STAGE_ORDER: tuple[str, ...] = (
     "standardized",
     "industry_templates",
     "reconciliation",
+    "derived_metrics",
+    "market_daily",
     "universe_us_listed",
     "provider_coverage",
 )
@@ -773,6 +775,33 @@ def stage_reconciliation(store: DuckDBStore, options: ActivationOptions) -> Stag
     )
 
 
+def stage_derived_metrics(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Seed the declarative catalog and materialise every quarterly derived metric."""
+    from .derived_metrics import DerivedMetricsOptions, refresh_derived_metrics
+    from .derived_registry import seed_derived_metric_definitions
+
+    seeded = seed_derived_metric_definitions(store)
+    rows = refresh_derived_metrics(store, DerivedMetricsOptions(run_id=options.run_id))
+    metric_count_row = store.con.execute("SELECT count(DISTINCT metric_code) FROM derived_metric_values").fetchone()
+    metric_count = 0 if metric_count_row is None else int(metric_count_row[0])
+    return StageResult(
+        rows=rows,
+        detail={"definitions_seeded": seeded, "metric_count": metric_count},
+    )
+
+
+def stage_market_daily(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Build the daily market panel from bars plus the point-in-time fundamental state."""
+    from .market_daily import (
+        MarketDailyOptions,
+        refresh_market_daily_metrics,
+        shares_reconciliation_report,
+    )
+
+    rows = refresh_market_daily_metrics(store, MarketDailyOptions(run_id=options.run_id))
+    return StageResult(rows=rows, detail=dict(shares_reconciliation_report(store)))
+
+
 def stage_universe_us_listed(store: DuckDBStore, options: ActivationOptions) -> StageResult:
     """Rebuild the point-in-time US-listed universe from bars + directory + deciles."""
 
@@ -818,6 +847,8 @@ STAGES.update(
         "standardized": stage_standardized,
         "industry_templates": stage_industry_templates,
         "reconciliation": stage_reconciliation,
+        "derived_metrics": stage_derived_metrics,
+        "market_daily": stage_market_daily,
         "universe_us_listed": stage_universe_us_listed,
         "provider_coverage": stage_provider_coverage,
     }
