@@ -145,7 +145,7 @@ buyback_ratio,payout,"safe_div(share_repurchase_ttm - share_issuance_ttm, total_
 market_cap,market,close * shares_outstanding,daily,market:close|market:shares_outstanding,true,Price times point-in-time shares outstanding.,1
 enterprise_value,market,"market_cap + total_debt_q + coalesce(preferred_stock, 0) + coalesce(minority_interest_bs, 0) - cash_st_investments_q",daily,metric:market_cap|metric:total_debt_q|item:preferred_stock|item:minority_interest_bs|metric:cash_st_investments_q,true,Market cap plus debt preferred and minority interest less cash.,1
 pe_ttm,market,"safe_div(market_cap, net_income_common_ttm)",daily,metric:market_cap|metric:net_income_common_ttm,true,Price to trailing earnings available to common.,1
-pb_ratio,market,"safe_div(market_cap, common_equity_q)",daily,metric:market_cap|metric:common_equity_q,true,Price to common book value.,1
+pb,market,"safe_div(market_cap, common_equity_q)",daily,metric:market_cap|metric:common_equity_q,true,Price to common book value.,1
 ps_ttm,market,"safe_div(market_cap, revenue_ttm)",daily,metric:market_cap|metric:revenue_ttm,true,Price to trailing revenue.,1
 pcf_ttm,market,"safe_div(market_cap, cfo_ttm)",daily,metric:market_cap|metric:cfo_ttm,true,Price to trailing operating cash flow.,1
 ev_ebitda,market,"safe_div(enterprise_value, ebitda_ttm)",daily,metric:enterprise_value|metric:ebitda_ttm,true,Enterprise value to trailing EBITDA.,1

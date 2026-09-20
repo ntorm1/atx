@@ -46,6 +46,7 @@ SPEC_REQUIRED_METRICS = {
     "ev_ebitda",
     "ev_sales",
     "pe_ttm",
+    "pb",
     "ps_ttm",
     "pcf_ttm",
     "fcf_yield",
@@ -60,7 +61,6 @@ SPEC_REQUIRED_METRICS = {
     "roe",
     "roic",
     "roic_ex_goodwill",
-    "pb_ratio",
     "gross_profitability",
     "cash_profitability",
     "asset_turnover",
@@ -109,7 +109,7 @@ MARKET_DAILY_COLUMNS = {
     "market_cap",
     "enterprise_value",
     "pe_ttm",
-    "pb_ratio",
+    "pb",
     "ps_ttm",
     "pcf_ttm",
     "ev_ebitda",
@@ -137,6 +137,45 @@ MARKET_DAILY_COLUMNS = {
     "realized_vol_252d",
     "dollar_volume_20d",
 }
+
+
+# Mirrors atx_db.migrations.bodies_0302._DAILY_METRIC_COLUMNS verbatim (the
+# wide-column list `market_daily_metrics` is built from). That name is
+# module-private -- not part of any migrations `__all__` -- so it is not
+# imported directly here; this copy is the drift guard and must be kept in
+# sync by hand whenever either side changes.
+PINNED_MARKET_DAILY_COLUMNS_0302 = (
+    "market_cap",
+    "enterprise_value",
+    "pe_ttm",
+    "pb",
+    "ps_ttm",
+    "pcf_ttm",
+    "ev_ebitda",
+    "ev_sales",
+    "fcf_yield",
+    "dividend_yield",
+    "earnings_yield",
+    "shareholder_yield",
+    "net_payout_yield",
+    "total_payout_yield",
+    "buyback_yield",
+    "book_to_market",
+    "rd_to_market_equity",
+    "gross_profit_to_ev",
+    "cfo_to_ev",
+    "ebit_to_ev",
+    "sales_to_ev",
+    "altman_z",
+    "total_return_1m",
+    "total_return_3m",
+    "total_return_6m",
+    "total_return_12m",
+    "momentum_12_1",
+    "realized_vol_60d",
+    "realized_vol_252d",
+    "dollar_volume_20d",
+)
 
 
 @pytest.fixture(scope="module")
@@ -171,6 +210,12 @@ def test_every_spec_named_metric_is_present(definitions):
 def test_daily_metric_codes_match_the_published_columns(definitions):
     daily = {d.metric_code for d in definitions if d.window == "daily"}
     assert daily == MARKET_DAILY_COLUMNS
+
+
+def test_daily_metric_codes_match_the_pinned_migration_columns(definitions):
+    daily = {d.metric_code for d in definitions if d.window == "daily"}
+    assert daily == set(PINNED_MARKET_DAILY_COLUMNS_0302)
+    assert len(PINNED_MARKET_DAILY_COLUMNS_0302) == len(set(PINNED_MARKET_DAILY_COLUMNS_0302))
 
 
 def test_every_window_is_known(definitions):

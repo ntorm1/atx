@@ -146,6 +146,17 @@ def test_invalid_metric_code_format_is_rejected():
     assert "BadCode" in str(excinfo.value)
 
 
+def test_single_character_metric_code_is_rejected():
+    # _METRIC_CODE_RE requires a minimum total length of 2 (one leading letter
+    # plus at least one more `[a-z0-9_]` character); a bare single-letter code
+    # is still rejected even though the two-character floor (e.g. "pb") is
+    # valid -- market_daily_metrics pins "pb" as a wide column (bodies_0302.py),
+    # so the minimum could not be raised to three without breaking that join.
+    with pytest.raises(DerivedRegistryError) as excinfo:
+        validate_definitions((_definition(metric_code="a"),), item_codes=_ITEMS)
+    assert "'a'" in str(excinfo.value)
+
+
 def test_duplicate_metric_code_is_rejected():
     with pytest.raises(DerivedRegistryError) as excinfo:
         validate_definitions((_definition(), _definition()), item_codes=_ITEMS)

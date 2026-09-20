@@ -61,7 +61,7 @@ QUARTER_GRID_WINDOWS = frozenset({"q", "ttm", "avg2", "instant"})
 MARKET_COLUMNS = frozenset(
     {"close", "adj_close", "log_return", "volume", "archive_shares", "dei_shares", "shares_outstanding"}
 )
-_METRIC_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
+_METRIC_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _NAMESPACES = ("item:", "metric:", "market:")
 
 #: Stable provenance tag for rows this engine writes, consumed by downstream
