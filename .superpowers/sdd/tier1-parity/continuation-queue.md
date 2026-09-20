@@ -2,6 +2,29 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override — 2026-09-20 19:19 UTC
+
+- Source-prepass2 STOPPED by low-host-headroom guard: physical1.096GiB,
+  commit2.921GiB. No live writer remains. Completed read-only recovery found
+  8,504,213 committed attempt rows /37,700CIKs, maxCIK0000933249;
+  total10,297,910rows /72,810CIKs /668forms. Not net additions or completeness.
+  Exact archive SHA still matches receipt. Companyfacts never started.
+- Exactly stage and dataset UUID04cf947d-53bb-49b7-a276-b3c74a2a52c8 stale
+  ledgers closed failed at operator recovery19:16:54UTC. Initial host-timezone
+  cast was corrected explicitly with its own preserved receipt; timestamps
+  now naiveUTC. No source data removed. All guard/inspection/recovery receipts
+  named source-prepass2-*; scripts preserve predicates and assertions.
+- Root lifecycle tests completed11passed, peak0.670GiB; implementer now finalizes
+  report/commit. Fresh submissions_verified_resume agent DESIGNING proof-bound
+  resume: maxCIK alone is insufficient. Wait for previous owner's edit lock.
+- Root read-only measurement FAILED before query execution: DuckDB1.5.5 refuses
+  temp_directory assignment together with enable_external_access=false in
+  connection config. Fix setting order (temp config first, disable access before
+  queries) and explicitUTC; rerun fresh receipt before commit. No measurement
+  outputs/certification were produced. Production-measurement-prepass2.err.
+- Core source companyfacts remains pending; prioritize that full archive build
+  independently while submissions resume is made reviewable. One heavy job only.
+
 ## Current controller override — 2026-09-20 19:06 UTC
 
 - Source-prepass2 remains active in submissions; no completed-stage count or

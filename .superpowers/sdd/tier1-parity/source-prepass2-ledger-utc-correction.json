@@ -1,0 +1,21 @@
+{
+  "reason": "Original controller recovery cast aware UTC timestamp in host timezone; corrected exactly two rows to naive UTC, preserving original recovery instant.",
+  "recovery_at_utc": "2026-09-20T19:16:54.421413+00:00",
+  "previous_timestamp": "2026-09-20 15:16:54.421413",
+  "activation": [
+    [
+      "submissions_load",
+      "activation-source-prepass2",
+      "failed",
+      "2026-09-20 19:16:54.421413"
+    ]
+  ],
+  "dataset": [
+    [
+      "04cf947d-53bb-49b7-a276-b3c74a2a52c8",
+      "sec_submissions",
+      "failed",
+      "2026-09-20 19:16:54.421413"
+    ]
+  ]
+}

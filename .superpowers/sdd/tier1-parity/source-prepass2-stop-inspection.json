@@ -1,0 +1,302 @@
+{
+  "observed_at_utc": "2026-09-20T19:10:48.253234+00:00",
+  "read_only": true,
+  "submissions_archive_sha256": "702fbcd8b4335bc649e9e4eab3a202f3effc314b43421664bfecb59365767165",
+  "archive_bytes": 1564656199,
+  "stages": {
+    "columns": [
+      "stage",
+      "run_id",
+      "status",
+      "started_at",
+      "finished_at",
+      "rows",
+      "error"
+    ],
+    "rows": [
+      [
+        "submissions_load",
+        "activation-source-prepass2",
+        "running",
+        "2026-09-20 18:03:27.338560",
+        null,
+        null,
+        null
+      ]
+    ]
+  },
+  "dataset_attempts": {
+    "columns": [
+      "run_id",
+      "dataset_id",
+      "status",
+      "started_at",
+      "finished_at",
+      "rows_loaded",
+      "error_message",
+      "requested_run_id"
+    ],
+    "rows": [
+      [
+        "04cf947d-53bb-49b7-a276-b3c74a2a52c8",
+        "sec_submissions",
+        "running",
+        "2026-09-20 18:03:27.345693",
+        null,
+        null,
+        null,
+        "activation-source-prepass2-submissions"
+      ]
+    ]
+  },
+  "submissions_total": {
+    "columns": [
+      "rows",
+      "ciks",
+      "forms",
+      "first_date",
+      "last_date"
+    ],
+    "rows": [
+      [
+        10297910,
+        72810,
+        668,
+        "1980-01-02",
+        "2026-09-18"
+      ]
+    ]
+  },
+  "submissions_this_attempt": {
+    "columns": [
+      "run_id",
+      "rows",
+      "ciks",
+      "first_cik",
+      "last_cik"
+    ],
+    "rows": [
+      [
+        "04cf947d-53bb-49b7-a276-b3c74a2a52c8",
+        8504213,
+        37700,
+        "0000000003",
+        "0000933249"
+      ]
+    ]
+  },
+  "submissions_forms": {
+    "columns": [
+      "form",
+      "rows"
+    ],
+    "rows": [
+      [
+        "4",
+        2275383
+      ],
+      [
+        "8-K",
+        2088420
+      ],
+      [
+        "10-Q",
+        718086
+      ],
+      [
+        "424B2",
+        593976
+      ],
+      [
+        "SC 13G/A",
+        413762
+      ],
+      [
+        "497",
+        342405
+      ],
+      [
+        "10-K",
+        238934
+      ],
+      [
+        "SC 13G",
+        193891
+      ],
+      [
+        "497K",
+        174943
+      ],
+      [
+        "FWP",
+        166541
+      ],
+      [
+        "NPORT-P",
+        150454
+      ],
+      [
+        "6-K",
+        131813
+      ],
+      [
+        "3",
+        124882
+      ],
+      [
+        "485BPOS",
+        122960
+      ],
+      [
+        "DEF 14A",
+        110833
+      ],
+      [
+        "24F-2NT",
+        102048
+      ],
+      [
+        "424B3",
+        100145
+      ],
+      [
+        "SC 13D/A",
+        99759
+      ],
+      [
+        "497J",
+        72283
+      ],
+      [
+        "5",
+        70356
+      ],
+      [
+        "4/A",
+        65283
+      ],
+      [
+        "DEFA14A",
+        64297
+      ],
+      [
+        "CORRESP",
+        63362
+      ],
+      [
+        "N-30D",
+        62710
+      ],
+      [
+        "13F-HR",
+        61815
+      ],
+      [
+        "UPLOAD",
+        54823
+      ],
+      [
+        "10QSB",
+        53523
+      ],
+      [
+        "425",
+        50506
+      ],
+      [
+        "N-Q",
+        50483
+      ],
+      [
+        "NSAR-B",
+        48761
+      ],
+      [
+        "NSAR-A",
+        48537
+      ],
+      [
+        "S-8",
+        45555
+      ],
+      [
+        "X-17A-5",
+        43630
+      ],
+      [
+        "N-CSR",
+        42112
+      ],
+      [
+        "424B5",
+        38524
+      ],
+      [
+        "N-CSRS",
+        36860
+      ],
+      [
+        "N-PX",
+        36128
+      ],
+      [
+        "SC 13D",
+        35107
+      ],
+      [
+        "40-17G",
+        34569
+      ],
+      [
+        "8-K/A",
+        33469
+      ]
+    ]
+  },
+  "archive_receipts": {
+    "columns": [
+      "source_id",
+      "dataset_id",
+      "cache_path",
+      "sha256",
+      "byte_count",
+      "fetched_at",
+      "status"
+    ],
+    "rows": [
+      [
+        "84dc3d19-81f3-53b3-95cc-67fcb65f45a5",
+        "sec_submissions",
+        "data\\cache\\submissions.zip",
+        "702fbcd8b4335bc649e9e4eab3a202f3effc314b43421664bfecb59365767165",
+        1564656199,
+        "2026-09-20 00:07:37.159644",
+        "available"
+      ]
+    ]
+  },
+  "retained_prices": {
+    "columns": [
+      "rows",
+      "latest"
+    ],
+    "rows": [
+      [
+        31959271,
+        "2026-09-18"
+      ]
+    ]
+  },
+  "retained_raw_facts": {
+    "columns": [
+      "rows",
+      "ciks"
+    ],
+    "rows": [
+      [
+        31590760,
+        6533
+      ]
+    ]
+  }
+}

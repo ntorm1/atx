@@ -1,0 +1,24 @@
+{
+  "recovered_at_utc": "2026-09-20T19:16:54.421413+00:00",
+  "reason": "Operator recovery: memory guard stopped the source process for low host headroom (physical 1.096244812 GiB, commit 2.921028137 GiB). finished_at is ledger-recovery time, not the unrecorded stop time. 8,504,213 committed attempt rows across 37,700 CIKs preserved; this is partial work, not net additions or full archive completion. companyfacts_load did not start. Evidence: source-prepass2-stop-inspection.json and activation-source-prepass2-memory.json.",
+  "activation_stage_rows": [
+    [
+      "submissions_load",
+      "activation-source-prepass2",
+      "failed",
+      "2026-09-20 15:16:54.421413",
+      8504213,
+      "Operator recovery: memory guard stopped the source process for low host headroom (physical 1.096244812 GiB, commit 2.921028137 GiB). finished_at is ledger-recovery time, not the unrecorded stop time. 8,504,213 committed attempt rows across 37,700 CIKs preserved; this is partial work, not net additions or full archive completion. companyfacts_load did not start. Evidence: source-prepass2-stop-inspection.json and activation-source-prepass2-memory.json."
+    ]
+  ],
+  "dataset_run_rows": [
+    [
+      "04cf947d-53bb-49b7-a276-b3c74a2a52c8",
+      "sec_submissions",
+      "failed",
+      "2026-09-20 15:16:54.421413",
+      8504213,
+      "Operator recovery: memory guard stopped the source process for low host headroom (physical 1.096244812 GiB, commit 2.921028137 GiB). finished_at is ledger-recovery time, not the unrecorded stop time. 8,504,213 committed attempt rows across 37,700 CIKs preserved; this is partial work, not net additions or full archive completion. companyfacts_load did not start. Evidence: source-prepass2-stop-inspection.json and activation-source-prepass2-memory.json."
+    ]
+  ]
+}

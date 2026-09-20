@@ -42,7 +42,26 @@ All live work and tests run sequentially with the locked project Python runtime.
 
 ## Activation result
 
-The all-form source prepass is still running. A directory-only inspection at
+The all-form source prepass was interrupted by its memory guard when host
+headroom fell to 1.096 GiB physical and 2.921 GiB commit space. A bounded
+read-only recovery check at 19:10:48 UTC found 8,504,213 committed rows from that
+attempt across 37,700 CIKs. Total submissions were 10,297,910 rows across 72,810
+CIKs and 668 forms. Attempt rows include replacements, not only net additions.
+The archive SHA-256 still matches its download receipt. These partial results
+do not establish full archive or US-equity coverage; companyfacts did not start.
+Exactly the two interrupted stage/dataset ledgers were closed as failed, with
+`finished_at` recording the operator recovery time, 19:16:54 UTC. The separate
+UTC correction receipt preserves an initial controller timestamp-cast error.
+Source files, committed rows and backups were preserved.
+
+Recovery evidence: `source-prepass2-stop-inspection.json`,
+`source-prepass2-ledger-recovery.json`, `source-prepass2-ledger-utc-correction.json`
+and their memory receipts. A loader lifecycle/progress change passed all eleven
+focused submissions tests under a 2.5 GiB guard (0.670 GiB measured peak); it
+was not present in the interrupted process. It does not guarantee protection
+from changes in other applications' memory consumption.
+
+A directory-only inspection at
 19:04:53 UTC found 991,042 members in the local 1,564,656,199-byte submissions
 archive: 985,667 main CIK members, 5,374 history members and one other member.
 Declared expanded size is 5,741,005,528 bytes. These are archive member counts,

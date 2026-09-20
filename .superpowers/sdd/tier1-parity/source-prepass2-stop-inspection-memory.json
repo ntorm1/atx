@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "C:/atx/.superpowers/sdd/tier1-parity/inspect_source_prepass2_stop.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.744365692138672,
+    "commit_free_gb": 8.052593231201172
+  },
+  "child_pid": 9604,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.24816131591796875
+}
