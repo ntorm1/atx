@@ -380,6 +380,7 @@
     "macro_metrics",
     "macro_metrics_asof",
     "market_cap_asof",
+    "market_daily",
     "metric_engine",
     "migration_admin",
     "migrations",
