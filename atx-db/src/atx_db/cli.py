@@ -26,7 +26,7 @@ from .fundamental_reconciliation import (
     FundamentalReconciliationRefreshOptions,
     refresh_fundamental_reconciliation_serving,
 )
-from .migration_admin import run_governed_migrations
+from .migration_admin import pending_migrations, run_governed_migrations
 from .migrations import MIGRATIONS
 from .openfigi_signals import OpenFigiSignalMapOptions, map_signal_cusips
 from .provider_coverage import ProviderCoverageOptions, refresh_provider_coverage
@@ -751,6 +751,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "publish-release":
         from .publication import publish_release
 
+        pending = pending_migrations(args.db_path)
+        if pending:
+            raise RuntimeError(
+                f"Cannot publish: pending schema migrations {pending}. Run the governed migration first: "
+                f'python scripts/warehouse_migrate.py --db-path "{args.db_path}"'
+            )
         with DuckDBStore(args.db_path) as store:
             release_result = publish_release(
                 store,

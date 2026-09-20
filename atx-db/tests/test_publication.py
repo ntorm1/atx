@@ -365,6 +365,7 @@ def test_parquet_bytes_stable_across_thread_settings_and_row_groups(tmp_store, t
     tmp_store.con.execute(
         "CREATE TABLE publication_large AS SELECT i AS id, 'v' || i AS value FROM range(260000) t(i) ORDER BY i DESC"
     )
+    tmp_store.con.execute("INSERT INTO publication_large VALUES (NULL, 'null-key')")
     monkeypatch.setattr(
         publication,
         "RELEASE_DATASETS",
@@ -373,9 +374,73 @@ def test_parquet_bytes_stable_across_thread_settings_and_row_groups(tmp_store, t
     first = publication.publish_release(tmp_store, "r1", tmp_path, created_at=CREATED_AT)
     tmp_store.con.execute("SET threads = 4")
     tmp_store.con.execute("SET preserve_insertion_order = false")
+    tmp_store.con.execute("SET default_order = 'DESC'")
+    tmp_store.con.execute("SET default_null_order = 'NULLS_FIRST'")
     second = publication.publish_release(tmp_store, "r2", tmp_path, created_at=CREATED_AT)
     assert first.datasets[0].parquet_sha256 == second.datasets[0].parquet_sha256
-    assert second.total_rows == 260000
+    assert first.datasets[0].query_sha256 == second.datasets[0].query_sha256
+    assert first.datasets[0].schema_sha256 == second.datasets[0].schema_sha256
+    assert second.total_rows == 260001
+    ids = pq.read_table(second.datasets[0].parquet_path)["id"].to_pylist()
+    assert ids == [*range(260000), None]
     assert tmp_store.con.execute(
-        "SELECT current_setting('threads'), current_setting('preserve_insertion_order')"
-    ).fetchone() == (4, False)
+        "SELECT current_setting('threads'), current_setting('preserve_insertion_order'), "
+        "current_setting('default_order'), current_setting('default_null_order')"
+    ).fetchone() == (4, False, "DESC", "NULLS_FIRST")
+
+
+def test_cli_refuses_pending_migrations_before_opening_writable_store(tmp_path, monkeypatch):
+    from atx_db import cli
+
+    db_path = tmp_path / "warehouse.duckdb"
+    events = []
+
+    def pending(path):
+        assert path == db_path
+        events.append("read-only preflight")
+        return [308]
+
+    def forbidden_store(*args, **kwargs):
+        pytest.fail("Publication must not open a writable store while migrations are pending")
+
+    monkeypatch.setattr(cli, "pending_migrations", pending)
+    monkeypatch.setattr(cli, "DuckDBStore", forbidden_store)
+    with pytest.raises(RuntimeError, match="warehouse_migrate") as error:
+        cli.main(
+            ["publish-release", "--db-path", str(db_path), "--release-id", "r1", "--out-dir", str(tmp_path / "out")]
+        )
+    assert "308" in str(error.value)
+    assert events == ["read-only preflight"]
+    assert not db_path.exists()
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_cli_read_only_preflight_preserves_missing_or_legacy_database(tmp_path, monkeypatch, existing):
+    from atx_db import cli
+
+    db_path = tmp_path / "warehouse.duckdb"
+    if existing:
+        with duckdb.connect(str(db_path)) as con:
+            con.execute("CREATE TABLE sentinel AS SELECT 1 AS value")
+    original = db_path.read_bytes() if existing else None
+
+    def forbidden_store(*args, **kwargs):
+        pytest.fail("Preflight must not bootstrap the warehouse")
+
+    monkeypatch.setattr(cli, "DuckDBStore", forbidden_store)
+    with pytest.raises(RuntimeError, match="pending schema migrations"):
+        cli.main(
+            ["publish-release", "--db-path", str(db_path), "--release-id", "r1", "--out-dir", str(tmp_path / "out")]
+        )
+    assert (db_path.read_bytes() if db_path.exists() else None) == original
+    assert not (tmp_path / "out").exists()
+
+
+def test_release_query_pins_sort_direction_and_null_order():
+    from atx_db.publication import ReleaseDataset, release_query
+
+    dataset = ReleaseDataset("sample", "sample", ("id", "date"), None, None)
+    assert release_query(dataset, ["id", "date", "value"]) == (
+        'SELECT "id", "date", "value" FROM "sample" ORDER BY "id" ASC NULLS LAST, "date" ASC NULLS LAST'
+    )

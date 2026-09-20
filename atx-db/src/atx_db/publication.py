@@ -162,7 +162,7 @@ def release_query(dataset: ReleaseDataset, columns: list[str]) -> str:
     """
 
     projection = ", ".join(_quote(column) for column in columns)
-    order = ", ".join(_quote(column) for column in dataset.key_columns)
+    order = ", ".join(f"{_quote(column)} ASC NULLS LAST" for column in dataset.key_columns)
     return f"SELECT {projection} FROM {_quote(dataset.object_name)} ORDER BY {order}"
 
 
@@ -330,6 +330,10 @@ def publish_release(
     writes share one database snapshot. A staging directory is renamed only after all
     files are complete. Existing release IDs/directories cannot be overwritten.
 
+    ``store`` must already be open, writable and migrated through the current schema.
+    This library function never initializes or migrates it. The CLI checks for pending
+    migrations read-only before opening a writable store.
+
     Previous files are verified against their manifest before diffing. A dataset absent
     from the previous manifest reports ``None`` for its diff counts. Column/type changes
     require a new baseline (omit ``previous_dir``); they cannot silently produce a diff.
@@ -339,7 +343,6 @@ def publish_release(
         raise ValueError("release_id must be a simple directory name")
     if created_at.tzinfo is not None:
         created_at = created_at.astimezone(dt.UTC).replace(tzinfo=None)
-    store.initialize()
     release_dir = Path(out_dir).resolve() / release_id
     if release_dir.exists():
         raise FileExistsError(f"Release directory already exists: {release_dir}")
@@ -387,6 +390,8 @@ def _publish_snapshot(
     manifest_datasets: list[dict[str, object]] = []
     for dataset in RELEASE_DATASETS:
         schema = _object_schema(store, dataset.object_name)
+        # The shared catalog helper's ORDER BY inherits DuckDB's default direction.
+        schema.sort(key=lambda column: int(str(column["ordinal"])))
         columns = [str(column["name"]) for column in schema]
         query = release_query(dataset, columns)
         parquet_path = staging / f"{dataset.name}.parquet"
