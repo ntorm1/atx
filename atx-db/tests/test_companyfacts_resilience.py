@@ -198,3 +198,18 @@ def test_normalize_drops_non_us_gaap_taxonomies():
     )
     assert set(facts["taxonomy"]) == {"us-gaap"}
     assert (facts["unit"] == "CLP").sum() == 0
+
+
+def test_catalog_facade_delegates_without_reading_all_facts(monkeypatch):
+    from atx_db.fundamentals import refresh_xbrl_concept_catalog
+
+    sentinel_store = object()  # Any direct SQL/DataFrame access in the facade fails.
+    calls = []
+
+    def bounded_refresh(store):
+        calls.append(store)
+        return 242
+
+    monkeypatch.setattr("atx_db.xbrl_catalog.refresh_concept_catalog", bounded_refresh)
+    assert refresh_xbrl_concept_catalog(sentinel_store) == 242
+    assert calls == [sentinel_store]

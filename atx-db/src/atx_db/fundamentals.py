@@ -686,117 +686,11 @@ def normalize_companyfacts(
     return facts_frame, points_frame
 
 
-def _statement_category(taxonomy: str, concept: str) -> str:
-    name = concept.lower()
-    if taxonomy.lower() == "dei" or "sharesoutstanding" in name:
-        return "share_count"
-    if "earningspershare" in name:
-        return "per_share"
-    if any(
-        token in name
-        for token in (
-            "netcashprovidedbyusedin",
-            "paymentstoacquirepropertyplantandequipment",
-            "paymentsforrepurchase",
-            "paymentsofdividends",
-        )
-    ):
-        return "cash_flow"
-    if any(token in name for token in ("assets", "liabilities", "equity", "stocksincludingadditionalpaidincapital")):
-        return "balance_sheet"
-    if any(token in name for token in ("revenue", "income", "loss")):
-        return "income_statement"
-    return "other"
-
-
-def _json_values(values: pd.Series) -> str:
-    cleaned = sorted({str(value) for value in values.dropna() if str(value) != ""})
-    return json_dumps(cleaned)
-
-
 def refresh_xbrl_concept_catalog(store: DuckDBStore) -> int:
     """Refresh concept-level metadata from loaded SEC companyfacts."""
+    from .xbrl_catalog import refresh_concept_catalog
 
-    facts = store.con.execute(
-        """
-        SELECT
-            source,
-            taxonomy,
-            concept,
-            label,
-            description,
-            unit,
-            form,
-            fiscal_period,
-            period_end,
-            filed_date,
-            available_at,
-            security_id,
-            accession_number,
-            source_loaded_at
-        FROM sec_company_facts
-        WHERE taxonomy IS NOT NULL
-          AND taxonomy <> ''
-          AND concept IS NOT NULL
-          AND concept <> ''
-        """
-    ).df()
-    if facts.empty:
-        return 0
-
-    rows: list[dict[str, Any]] = []
-    grouped = facts.groupby(["source", "taxonomy", "concept"], dropna=False, sort=True)
-    for (source, taxonomy, concept), group in grouped:
-        labels = group["label"].dropna()
-        descriptions = group["description"].dropna()
-        rows.append(
-            {
-                "source": str(source),
-                "taxonomy": str(taxonomy),
-                "concept": str(concept),
-                "label": str(labels.iloc[0]) if not labels.empty else None,
-                "description": str(descriptions.iloc[0]) if not descriptions.empty else None,
-                "statement_category": _statement_category(str(taxonomy), str(concept)),
-                "units_json": _json_values(group["unit"]),
-                "forms_json": _json_values(group["form"]),
-                "fiscal_periods_json": _json_values(group["fiscal_period"]),
-                "first_period_end": group["period_end"].min(),
-                "last_period_end": group["period_end"].max(),
-                "first_filed_date": group["filed_date"].min(),
-                "last_filed_date": group["filed_date"].max(),
-                "first_available_at": group["available_at"].min(),
-                "last_available_at": group["available_at"].max(),
-                "fact_count": len(group),
-                "security_count": int(group["security_id"].nunique()),
-                "accession_count": int(group["accession_number"].nunique()),
-                "latest_source_loaded_at": group["source_loaded_at"].max(),
-            }
-        )
-
-    frame = pd.DataFrame(rows)
-    store.con.register("xbrl_concept_catalog_load", frame)
-    try:
-        with store.transaction():
-            store.con.execute(
-                """
-                DELETE FROM xbrl_concept_catalog AS dst
-                USING xbrl_concept_catalog_load AS src
-                WHERE dst.source = src.source
-                  AND dst.taxonomy = src.taxonomy
-                  AND dst.concept = src.concept
-                """
-            )
-            columns = ", ".join(frame.columns)
-            store.con.execute(
-                f"""
-                INSERT INTO xbrl_concept_catalog ({columns})
-                SELECT {columns}
-                FROM xbrl_concept_catalog_load
-                """
-            )
-    finally:
-        store.con.unregister("xbrl_concept_catalog_load")
-    return len(frame)
+    return refresh_concept_catalog(store)
 
 
 def refresh_fundamental_fact_revisions(
