@@ -361,6 +361,7 @@
     "inventory_volatility",
     "is_53_week_period",
     "item_coverage",
+    "item_coverage_cohort",
     "item_registry",
     "jobs",
     "lake",

@@ -8,7 +8,6 @@ import pytest
 
 from atx_db.api.catalog import get_schema
 from atx_db.connection import DuckDBStore
-from atx_db.item_coverage import DEFAULT_SOURCE, DEFAULT_UNIVERSE_ID
 from atx_db.provider_coverage import (
     ProviderCoverageOptions,
     coverage_gate_item_count,
@@ -104,13 +103,9 @@ def test_the_coverage_gate_drives_the_standardized_item_count(tmp_store):
     from atx_db.provider_coverage import coverage_gate_item_count
 
     assert coverage_gate_item_count(tmp_store) == 0
-    tmp_store.con.execute(
-        "INSERT INTO fundamental_item_coverage (coverage_id, source, universe_id, item_id, "
-        "canonical_code, basis, fiscal_year, n_securities, n_with_value, coverage_pct) VALUES "
-        "('c1',?,?,1101,'total_assets','annual',2020,100,99,99.0),"
-        "('c2',?,?,1201,'total_liabilities','annual',2020,100,50,50.0)",
-        [DEFAULT_SOURCE, DEFAULT_UNIVERSE_ID, DEFAULT_SOURCE, DEFAULT_UNIVERSE_ID],
-    )
+    from tests.item_coverage_fixtures import seed_gate_evidence
+    seed_gate_evidence(tmp_store, items=(1101,1201))
+    tmp_store.con.execute("UPDATE fundamental_item_coverage SET n_with_value=1500,coverage_pct=50 WHERE item_id=1201")
     assert coverage_gate_item_count(tmp_store) == 1
 
 
@@ -143,28 +138,13 @@ def test_standardized_condition_flips_only_at_measured_target(tmp_store: DuckDBS
     # Relax only unrelated SLOs: the production 110-item target remains intact.
     tmp_store.con.execute(
         "UPDATE api_schema_coverage_slo SET expected_history_start=DATE '2024-03-31', "
-        "minimum_history_years=0, minimum_security_count=1 "
-        "WHERE schema_code='standardized'"
+        "minimum_history_years=0, minimum_security_count=1 WHERE schema_code='standardized'"
     )
+    from tests.item_coverage_fixtures import seed_gate_evidence
+    seed_gate_evidence(tmp_store, items=tuple(range(1,111)))
     tmp_store.con.execute(
-        "INSERT INTO fundamental_item_coverage (coverage_id, source, universe_id, item_id, "
-        "canonical_code, basis, fiscal_year, n_securities, n_with_value, coverage_pct) "
-        "SELECT 'coverage-' || i || '-' || y, ?, ?, i, 'item-' || i, 'annual', y, 100, "
-        "CASE WHEN i=110 AND y=2021 THEN 89 ELSE 90 END, "
-        "CASE WHEN i=110 AND y=2021 THEN 89.0 ELSE 90.0 END "
-        "FROM range(1,111) items(i) CROSS JOIN range(2020,2022) years(y) ORDER BY i,y",
-        [DEFAULT_SOURCE, DEFAULT_UNIVERSE_ID],
-    )
-    # Foreign sources/universes and other bases/years cannot add or disqualify items.
-    tmp_store.con.execute(
-        "INSERT INTO fundamental_item_coverage (coverage_id, source, universe_id, item_id, "
-        "canonical_code, basis, fiscal_year, n_securities, n_with_value, coverage_pct) VALUES "
-        "('foreign-source','other',?,111,'item-111','annual',2020,100,100,100),"
-        "('foreign-universe',?,'other',112,'item-112','annual',2020,100,100,100),"
-        "('quarterly',?,?,1,'item-1','quarterly',2020,100,0,0),"
-        "('old',?,?,1,'item-1','annual',2014,100,0,0)",
-        [DEFAULT_UNIVERSE_ID, DEFAULT_SOURCE, DEFAULT_SOURCE, DEFAULT_UNIVERSE_ID,
-         DEFAULT_SOURCE, DEFAULT_UNIVERSE_ID],
+        "UPDATE fundamental_item_coverage SET n_with_value=2670,coverage_pct=89 "
+        "WHERE item_id=110 AND fiscal_year=2021"
     )
     for expected_count, condition in ((109, 'degraded'), (110, 'available')):
         snapshots = refresh_provider_coverage(
@@ -177,8 +157,8 @@ def test_standardized_condition_flips_only_at_measured_target(tmp_store: DuckDBS
             {'item_count'} if expected_count == 109 else set()
         )
         tmp_store.con.execute(
-            "UPDATE fundamental_item_coverage SET n_with_value=90,coverage_pct=90 "
-            "WHERE coverage_id='coverage-110-2021'"
+            "UPDATE fundamental_item_coverage SET n_with_value=2700,coverage_pct=90 "
+            "WHERE item_id=110 AND fiscal_year=2021"
         )
     # Missing measurements must never revert to the raw distinct-code count (one).
     tmp_store.con.execute("DROP TABLE fundamental_item_coverage")

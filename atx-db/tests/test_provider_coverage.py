@@ -145,16 +145,8 @@ def test_provider_coverage_measures_range_breadth_and_slo_failure(tmp_store: Duc
 
 def test_provider_coverage_can_reach_available_under_versioned_target(tmp_store: DuckDBStore) -> None:
     _insert_standardized(tmp_store)
-    # Tier1-S4 T7: standardized.item_count is now the coverage_gate measure, so
-    # reaching "available" requires a fundamental_item_coverage row that actually
-    # clears evaluate_item_coverage_gate's default basis ('annual') and minimum
-    # fiscal year (2015), not just a distinct standardized code.
-    tmp_store.con.execute(
-        "INSERT INTO fundamental_item_coverage (coverage_id, source, universe_id, item_id, "
-        "canonical_code, basis, fiscal_year, n_securities, n_with_value, coverage_pct) VALUES "
-        "('coverage-available-1','fundamental_standardization_v1','us_common_equity_liquid_v1',1001,'revenue',"
-        "'annual',2020,1,1,100.0)"
-    )
+    from tests.item_coverage_fixtures import seed_gate_evidence
+    seed_gate_evidence(tmp_store, as_of=OBSERVED_AT.date(), items=(1001,))
     tmp_store.con.execute(
         """
         UPDATE api_schema_coverage_slo

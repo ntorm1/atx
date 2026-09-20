@@ -243,36 +243,14 @@ def _item_coverage_sql(
     minimum_fiscal_year: int,
     basis: str,
 ) -> str:
-    """How many items short of the published target the warehouse is.
+    """Use the exact provider gate, including required years and cohort evidence."""
+    from ..item_coverage import coverage_gate_count_sql
 
-    An item counts only when its coverage clears ``target_pct`` in EVERY in-scope fiscal
-    year, on a single ``basis``, for a single ``(source, universe_id)`` -- the same
-    scoping ``item_coverage.load_item_coverage_inputs``/``refresh_item_coverage`` apply
-    before a frame ever reaches ``evaluate_item_coverage_gate`` (fix-round-1 finding 1
-    closed the ``basis`` gap; fix-round-2 finding 1 closes ``source``/``universe_id``: both
-    are ``NOT NULL`` columns on ``fundamental_item_coverage`` and
-    ``refresh_item_coverage``'s DELETE never purges rows for a second source/universe, so a
-    coverage refresh for a different universe -- ``universe_id`` is a live CLI flag on
-    ``scripts/measure_item_coverage.py`` -- could otherwise blend into this check's
-    ``GROUP BY item_id`` and disagree with a gate evaluated against a single-universe
-    frame). ``basis`` defaults to ``item_coverage.ITEM_COVERAGE_GATE_BASIS``, the same named
-    constant ``evaluate_item_coverage_gate`` defaults to, so the check and the published
-    ``ITEM_COVERAGE.md`` can never disagree about which basis is authoritative.
-    """
-
-    return f"""
-        SELECT greatest(0, {target_items} - count(*))::DOUBLE
-        FROM (
-            SELECT item_id
-            FROM fundamental_item_coverage
-            WHERE source = '{source}'
-              AND universe_id = '{universe_id}'
-              AND fiscal_year >= {minimum_fiscal_year}
-              AND basis = '{basis}'
-            GROUP BY item_id
-            HAVING min(coverage_pct) >= {target_pct}
-        )
-    """
+    count_sql = coverage_gate_count_sql(
+        source=source, universe_id=universe_id, minimum_fiscal_year=minimum_fiscal_year,
+        target_pct=target_pct, basis=basis,
+    )
+    return f"SELECT greatest(0, {target_items} - ( {count_sql} ))::DOUBLE"
 
 
 def identity_check_specs(**_ignored: object) -> tuple[SqlQualityCheck, ...]:
@@ -350,7 +328,7 @@ def identity_check_specs(**_ignored: object) -> tuple[SqlQualityCheck, ...]:
             ),
             threshold=0.0,
             comparator="le",
-            required_tables=("fundamental_item_coverage",),
+            required_tables=("fundamental_item_coverage", "item_coverage_cohort_years"),
             warn_if_missing=True,
             failure_status="warning",
             severity="warning",

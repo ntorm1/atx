@@ -275,24 +275,16 @@ def _schema_stats(
     )
 
 
-def coverage_gate_item_count(store: DuckDBStore) -> int | None:
-    """Items clearing Sprint 2's published coverage target in every in-scope fiscal year.
+def coverage_gate_item_count(store: DuckDBStore, *, as_of_date: dt.date | None = None) -> int | None:
+    """Measured annual top-3000 item count; missing evidence never becomes breadth."""
+    from .item_coverage import coverage_gate_count_sql
 
-    Uses the same source and universe as the published item-coverage quality gate.
-    Returns None when its measurement table is absent; callers must not substitute
-    a distinct-code count for missing measurement evidence.
-    """
-
-    from .item_coverage import DEFAULT_SOURCE, DEFAULT_UNIVERSE_ID, evaluate_item_coverage_gate
-
-    if not _relation_exists(store, "fundamental_item_coverage"):
+    if not all(_relation_exists(store, table) for table in (
+        "fundamental_item_coverage", "item_coverage_cohort_years"
+    )):
         return None
-    frame = store.con.execute(
-        "SELECT item_id, fiscal_year, basis, coverage_pct FROM fundamental_item_coverage "
-        "WHERE source = ? AND universe_id = ? ORDER BY item_id, fiscal_year, basis",
-        [DEFAULT_SOURCE, DEFAULT_UNIVERSE_ID],
-    ).df()
-    return int(evaluate_item_coverage_gate(frame)["items_meeting_threshold"])
+    row = store.con.execute(coverage_gate_count_sql(as_of_date=as_of_date)).fetchone()
+    return int(row[0]) if row else 0
 
 
 def _active_slo(store: DuckDBStore, dataset_id: str, schema_code: str) -> ProviderCoverageSlo:
@@ -408,7 +400,7 @@ def refresh_provider_coverage(
                 item_count = basis_count = None
                 start = end = first_available_at = last_available_at = None
             if slo.item_count_basis == "coverage_gate":
-                item_count = coverage_gate_item_count(store)
+                item_count = coverage_gate_item_count(store, as_of_date=observed_at.date())
             history_years = None if start is None or end is None else (end - start).days / 365.25
             freshness_lag_days = (
                 None
