@@ -292,7 +292,7 @@ def compatibility_metrics() -> dict[str, CompatibilityMetric]:
         definitions.append(
             CompatibilityMetric(
                 f"legacy_{code}_to_ev", "numerator/ev", {"numerator": numerator, "ev": "b.ev.enterprise_value"},
-                parent=parent,
+                parent=parent, parent_rank_after_selections=True,
                 selections=(Selection("ev", ev, "s.trade_date=b.as_of_date AND b.decision_available_at<=s.market_cap_available_at",
                                       "s.available_at DESC,s.enterprise_value_id DESC"),),
                 period=period,

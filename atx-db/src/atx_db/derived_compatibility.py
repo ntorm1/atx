@@ -50,6 +50,7 @@ class CompatibilityMetric:
     parent_source: str | None = None
     parent_clock_path: str | None = None
     maximum_absolute_value: float | None = None
+    parent_rank_after_selections: bool = False
 
 
 def json_field(alias: str, path: str, kind: str = "DOUBLE") -> str:
@@ -274,13 +275,17 @@ def market_inputs(*, enterprise: bool = False) -> Relation:
         WHERE PreferredStockValue IS NOT NULL AND MinorityInterest IS NOT NULL
           AND CashAndCashEquivalentsAtCarryingValue IS NOT NULL
           AND coalesce(TotalDebt,DebtCurrent,LongTermDebtCurrent,ShortTermBorrowings,CommercialPaper,LongTermDebtNoncurrent) IS NOT NULL"""
+    # The original denominator prefers any filing known at trade-date midnight.
+    # Only after choosing that filing do yield selectors enforce the market-cap
+    # clock; prefiltering here could incorrectly fall back from a future winner.
     return Relation(f"""SELECT c.* EXCLUDE (available_at),greatest(c.available_at,f.available_at) AS available_at,
         c.market_cap+f.debt+f.PreferredStockValue+f.MinorityInterest-f.CashAndCashEquivalentsAtCarryingValue AS enterprise_value,
         f.enterprise_value_id,f.period_end
         FROM ({cap}) c JOIN LATERAL (
             SELECT * FROM ({events}) f WHERE f.security_id=c.security_id
-              AND f.period_end<=c.trade_date AND f.available_at<=c.market_cap_available_at
-            ORDER BY f.period_end DESC,f.available_at DESC,f.enterprise_value_id DESC LIMIT 1
+              AND f.period_end<=c.trade_date
+            ORDER BY (f.available_at<=CAST(c.trade_date AS TIMESTAMP)) DESC,
+                     f.period_end DESC,f.available_at DESC,f.enterprise_value_id DESC LIMIT 1
         ) f ON true""")
 
 
@@ -288,12 +293,18 @@ def _grid(metric: CompatibilityMetric, universe_id: str) -> str:
     if metric.parent:
         source = factor_relation(metric.parent, source=metric.parent_source).sql
         clock = json_field("p", metric.parent_clock_path, "TIMESTAMP") if metric.parent_clock_path else "p.available_at"
-        return (
+        parent_grid = (
             f"SELECT p.security_id,p.symbol,p.as_of_date,{clock} AS decision_available_at,"
             "p.available_at AS dependency_available_at,p AS parent "
-            f"FROM ({source}) p QUALIFY row_number() OVER (PARTITION BY security_id,as_of_date "
-            "ORDER BY available_at DESC,factor_value_id DESC)=1"
+            f"FROM ({source}) p WHERE p.available_at<=CAST(p.as_of_date AS TIMESTAMP)+INTERVAL 22 HOUR "
+            f"AND {clock}<=CAST(p.as_of_date AS TIMESTAMP)+INTERVAL 22 HOUR"
         )
+        if not metric.parent_rank_after_selections:
+            parent_grid += (
+                " QUALIFY row_number() OVER (PARTITION BY p.security_id,p.as_of_date "
+                "ORDER BY p.available_at DESC,p.source_loaded_at DESC,p.factor_value_id DESC)=1"
+            )
+        return parent_grid
     if metric.grid == "prices":
         source = _PRICE_RELATION
         clock = "m.available_at"
@@ -301,7 +312,8 @@ def _grid(metric: CompatibilityMetric, universe_id: str) -> str:
         source = f"SELECT * FROM ({market_inputs().sql}) WHERE market_cap>0 AND isfinite(market_cap)"
         clock = "m.available_at"
     elif metric.grid == "enterprise_value":
-        source = f"SELECT * FROM ({market_inputs(enterprise=True).sql}) WHERE enterprise_value>0 AND isfinite(enterprise_value)"
+        source = (f"SELECT * FROM ({market_inputs(enterprise=True).sql}) "
+                  "WHERE enterprise_value>0 AND isfinite(enterprise_value) AND available_at<=market_cap_available_at")
         clock = "m.market_cap_available_at"
     else:
         raise ValueError(f"Unknown compatibility grid: {metric.grid}")
@@ -338,6 +350,17 @@ def build_compatibility_sql(metric: CompatibilityMetric, universe_id: str) -> st
         )
         clocks.append(f"b.{selection.name}.available_at")
         previous = name
+    if metric.parent_rank_after_selections:
+        # Some parent variants have a stricter clock supplied by a selected
+        # market observation. Rank only the parent/input combinations that
+        # survived that selection, so a later invisible row cannot hide one.
+        ctes.append(
+            f"eligible_parents AS (SELECT b.* FROM {previous} b "
+            "QUALIFY row_number() OVER (PARTITION BY b.security_id,b.as_of_date "
+            "ORDER BY b.parent.available_at DESC,b.parent.source_loaded_at DESC,"
+            "b.parent.factor_value_id DESC)=1)"
+        )
+        previous = "eligible_parents"
     context = LowerContext(
         grid="quarter",
         columns=metric.columns,
