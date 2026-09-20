@@ -1,0 +1,28 @@
+{
+  "observed_at": "2026-09-20 16:59:42.733559",
+  "before": [
+    [
+      "ticker_history_publish",
+      "activation-prices-updated",
+      "running"
+    ]
+  ],
+  "after": [
+    [
+      "ticker_history_publish",
+      "activation-prices-updated",
+      "failed",
+      "2026-09-20 16:59:42.733559",
+      0,
+      "Operator recovered failed attempt: DuckDB 1GB query limit exhausted at publication COMMIT; rollback invalidated the old connection and prevented failure ledger writes. Process exited1, native job peak1.772728GiB under3GiB cap. Fresh read-only inspection verified original31178192 price rows through2026-06-15 retained, staging31959271 rows, and migrations0303..0312 applied. See activation-prices-updated.err and price-recovery-readonly.json. finished_at is the operator recovery observation, not an inferred original completion time."
+    ]
+  ],
+  "dataset_runs": [
+    [
+      "activation-prices-updated-broad-bars",
+      "failed",
+      "2026-09-20 16:59:42.733559",
+      0
+    ]
+  ]
+}
