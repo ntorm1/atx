@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "C:/atx/.superpowers/sdd/tier1-parity/clear_failed_price_staging_after2g.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 5.411308288574219,
+    "commit_free_gb": 8.976116180419922
+  },
+  "child_pid": 5420,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.11596298217773438
+}

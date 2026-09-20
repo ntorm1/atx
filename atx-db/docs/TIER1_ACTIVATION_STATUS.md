@@ -4,48 +4,41 @@ This is an interim measurement of the local production warehouse on 2026-09-20,
 after activation-run4 stopped. It is not a completed parity gate or a release.
 All counts below came from read-only SQL or the exact staged source file.
 
-Latest production update: the guarded price prepass applied migrations0303-0312
-and created a6,303,264,768-byte backup, retaining three older backups. Its
-replacement table validated31,959,271 rows across34,251 IDs, including12,386 on
-2026-09-18. Publication COMMIT then exhausted DuckDB's1GB limit and invalidated
-the connection during rollback. The process exited1 with native job peak1.773GiB
-under a3GiB cap; it did not exhaust host memory.
+Latest production update: **corrected prices were published successfully** by
+`activation-prices-updated-bounded` at 18:00:09 UTC. A separate read-only check at
+18:02:30 UTC measured the following live state:
 
-A fresh read-only recovery check confirmed all ten migrations and the original
-31,178,192 price rows/34,803 IDs through2026-06-15. The operator closed the failed
-dataset and activation ledgers at16:59:42UTC; that is the recovery time, not the
-original failure time. Code now preserves the original exception and can reopen
-an invalidated connection under its recorded budget to write failure ledgers.
+| Measurement | Observed result |
+| --- | ---: |
+| Daily price rows / distinct vendor security IDs | 31,959,271 / 34,251 |
+| Price date range | 2012-03-26 through 2026-09-18 |
+| Latest-date rows / distinct vendor security IDs | 12,386 / 12,386 |
+| Invalid or missing adjusted closes | 0 |
+| Nonnull split-only factors | 0 (unknown, intentionally) |
+| Remaining price staging tables | 0 |
+| Applied migration version | 0314 |
 
-Two attempts to start a2GB query-budget retry were refused before launch because
-physical headroom was below the unchanged5GiB requirement. A separate SEC source
-prepass then stopped before ingestion: migration0313 rejected the uncatalogued
-table left by the failed price staging, and governed migration restored its
-backup. The additional10,229,919,744-byte backup is preserved. After inspecting
-the exact staging state and preserving its backup and audited raw source, the
-operator removed only that regenerable staging table at17:05:55UTC. Original
-live prices remain unchanged.
+The stage took 325.562 seconds with DuckDB limited to 1 GB and one thread.
+Native process-tree memory peaked at 1.779 GiB under a 3 GiB guard. The new
+publication method validates a complete shadow table and swaps it atomically;
+migration 0314 removes five nonunique secondary indexes that prevented bounded
+publication. Public tables and their primary-key contracts remain in place.
+The latest preserved pre-migration backup is 10,461,917,184 bytes, SHA-256
+`2cb19981ad360add3f95f7da13a53bdeebd9521745c5de991cf34ba9de0d6c20`.
 
-The2GB DuckDB/one-thread retry also failed at COMMIT at17:16:23UTC after389.734s.
-Native job peak was2.708GiB under the same3GiB cap; the host retained headroom.
-The repaired failure handler automatically recorded the failed stage. A fresh
-read-only measurement at17:16:50UTC confirmed the original31,178,192 rows remain
-intact and the replacement staging retains31,959,271 rows. Migration0313 did
-complete, with a further preserved8,054,386,688-byte backup.
+Earlier indexed publication attempts failed at COMMIT under both 1 GB and 2 GB
+query limits. Their recovery checks confirmed the original live prices survived;
+the replacement now supersedes that original snapshot. Only inspected,
+regenerable failed staging was removed. All source files and backups remain.
+Those failures and memory-preflight refusals are retained as operator evidence;
+no source or coverage threshold was relaxed to obtain this successful result.
 
-The original prices still contain1,133 invalid adjusted closes and31,178,192
-nonnull split-factor values from the old mapping. They are not the corrected
-source. The next repair changes the publication method to fit bounded memory;
-no further budget increase is planned. Receipts are
-`activation-prices-updated-2g-attempt3-memory.json` and
-`updated-price-live-measurement.json`. No source/coverage threshold is relaxed,
-and heavy tests or scans run sequentially with production.
-
-Operator receipts: `activation-prices-updated-memory.json`,
-`activation-prices-updated.err` and `price-recovery-readonly.json` under
-`.superpowers/sdd/tier1-parity/`. The recovery receipt's backup lookup alone used
-an obsolete table name; migration and price recovery queries succeeded. The
-backup registry is `migration_backup_registry`.
+Current receipts under `.superpowers/sdd/tier1-parity/` are
+`activation-prices-updated-bounded-memory.json`, its `.log` and `.err`, and
+`updated-price-live-success.json` / `updated-price-live-success-memory.json`.
+Earlier failure receipts keep their original names, including
+`updated-price-live-measurement.json`; they describe the superseded snapshot.
+All live work and tests run sequentially with the locked project Python runtime.
 
 ## Activation result
 
@@ -56,11 +49,15 @@ Loaded-target outcomes are not unique issuer counts. The next statement_points
 stage failed at 15:00:49 UTC because its concept catalog materialized all facts
 in pandas and exhausted memory. No later run4 stage completed.
 
-The warehouse had migrations through0302 at the run4 measurement below; the
-later guarded prepass above applied through0312. A stale running
+The warehouse had migrations through 0302 at the run4 measurement below; the
+successful price publication above applied through 0314. A stale running
 entry from run3 is historical bookkeeping, not an active writer.
 
-## Source and identity coverage
+## Source and identity coverage measured after run4
+
+This historical table predates the successful price replacement above and the
+all-form submissions / archive-wide companyfacts prepass. It is retained for
+comparison; it is not a measurement of the rebuilt fundamentals warehouse.
 
 | Measurement | Observed result |
 | --- | ---: |
@@ -87,8 +84,8 @@ listing evidence and identity resolution remain prerequisites for that claim.
 
 ## Price source audit
 
-An updated user-supplied Parquet file has now been staged and fully audited,
-but has not yet replaced the live prices listed above. Its32,323,644 rows span
+The updated user-supplied Parquet file has been audited and published as described
+above. Its 32,323,644 source rows span
 2012-03-26 through2026-09-18; the latest source date has12,462 positive vendor IDs.
 The native bounded loader and duplicate quarantine are implemented. See the
 [updated source receipt](BULK_PRICE_SOURCE_OPTIONS.md) for the exact hash,
@@ -109,8 +106,8 @@ factor consistency does not establish economically correct total returns.
 
 The source dictionary defines `closePr` as prior adjusted close. Corrected code
 uses same-row raw close multiplied by the cumulative return factor for current
-adjusted close and leaves split-only factors unknown. The live prices above
-still use the old mapping and require republication. See the
+adjusted close and leaves split-only factors unknown. The successful live
+publication now uses this corrected mapping. See the
 [vendor dictionary](https://docs.spiderrockconnect.com/docs/next/HistoricalData/Data%20Dictionaries/TickerHistory3/).
 Historical delivery vintages remain unverified; the date-at-22:00 availability
 rule is a modeled backfill convention, not historical delivery evidence.

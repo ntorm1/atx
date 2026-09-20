@@ -192,7 +192,8 @@ migrates without the activation retention option.
 -> `derived_metrics` -> `market_daily` -> `legacy_liquid_universe`
 -> `factor_projections` -> `delisting_evidence`
 -> `universe_us_listed` -> `delisting_terminal_returns` -> `trading_calendar`
--> `survivorship_forward_returns` -> `item_coverage` -> `provider_coverage` -> `quality`.
+-> `survivorship_forward_returns` -> `item_coverage` -> `provider_coverage`
+-> `equity_price_metrics` -> `quality`.
 
 The cohort uses the original price/liquidity rules, with dated inputs only;
 unclassified bar candidates are not proof of historical US common-equity listing.
@@ -208,6 +209,12 @@ builds the separate annual cohort before measuring items; `quality` runs all
 checks using the explicit as-of date at 22:00. Failures remain visible in the
 stage detail and quality tables; no stage completion flips a schema condition.
 
+`equity_price_metrics` builds adjusted returns, momentum, volatility, liquidity,
+drawdown, beta, correlation and cross-sectional ranks in DuckDB. It stages the
+complete result, builds the primary-key table in sequential prefix batches, and
+publishes with an atomic table swap. Its full-scale memory and coverage must be
+measured separately from the successful daily-bar publication.
+
 An operator-supplied `--ticker-history-source-path` accepts the native staged
 Parquet or TSV and makes extraction a recorded no-op. The updated user source is
 `data/staging/broad-bars/2026-09-20-updated/TickerHistory3.parquet`; preserve the
@@ -215,23 +222,26 @@ Downloads original and old source. After governed migration and source review,
 run offline source prepasses separately from the downstream rebuild:
 
 ```powershell
-python scripts/warehouse_activate.py --db-path data/warehouse.duckdb `
+.venv/Scripts/python.exe scripts/warehouse_activate.py --db-path data/warehouse.duckdb `
   --as-of-date 2026-09-20 --only ticker_history_publish `
   --ticker-history-source-path data/staging/broad-bars/2026-09-20-updated/TickerHistory3.parquet `
   --memory-limit 1GB --threads 1 --backup-keep 100 --force --run-id activation-prices-updated
-python scripts/warehouse_activate.py --db-path data/warehouse.duckdb `
+.venv/Scripts/python.exe scripts/warehouse_activate.py --db-path data/warehouse.duckdb `
   --as-of-date 2026-09-20 --only submissions_load --only companyfacts_load `
   --submissions-batch-size 50 --companyfacts-symbol-source archive_members `
   --companyfacts-replace-existing --memory-limit 1GB --threads 1 `
   --backup-keep 100 --force --run-id activation-source-prepass
-python scripts/warehouse_activate.py --db-path data/warehouse.duckdb `
+.venv/Scripts/python.exe scripts/warehouse_activate.py --db-path data/warehouse.duckdb `
   --as-of-date 2026-09-20 --start-stage statement_points --force `
   --memory-limit 1GB --threads 1 --shards 16 --backup-keep 100 --run-id activation-run5
 ```
 
 Wrap each command in the reviewed controller process-tree memory guard, with a
 fresh receipt and a cap supported by current physical/commit headroom. Run one
-heavy command at a time. Submissions use all forms and 50-CIK flush batches;
+heavy command at a time. Use the project `.venv/Scripts/python.exe` for both the
+guard and its child; the locked DuckDB runtime is 1.5.5. Bare system Python may
+load another version and is not a valid production or test runtime here.
+Submissions use all forms and 50-CIK flush batches;
 reconciliation's separate symbol-planning connection gets the same session cap.
 Scheduler dataset IDs use the same panel adapters. Supply explicit `as_of_date`
 in scheduled terminal/forward/coverage job parameters; projection and cohort

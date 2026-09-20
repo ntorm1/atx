@@ -1,0 +1,24 @@
+{
+  "observed_at": "2026-09-20 17:52:44.827014+00:00",
+  "failed_run_id": "activation-prices-updated-2g",
+  "removed_table": "equity_daily_bars_bulk_next",
+  "staged_rows": 31959271,
+  "preserved_live_rows_and_latest": [
+    31178192,
+    "2026-06-15"
+  ],
+  "reason": "Inspected regenerable failed staging blocks governed schema verification",
+  "registered_backups": [
+    [
+      "data\\warehouse.duckdb.pre-migrate.20260920-170932.bak",
+      8054386688,
+      "846b4d7e6b5969d7cf0a4ca0610cb86e572392e3a5d926ba04bcc39d83c05679"
+    ],
+    [
+      "data\\warehouse.duckdb.pre-migrate.20260920-164311.bak",
+      6303264768,
+      "aa4427ded8f2f9b7582711ae3e014be71a28369c1e212b82c1ae8063c498e098"
+    ]
+  ],
+  "source_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae"
+}

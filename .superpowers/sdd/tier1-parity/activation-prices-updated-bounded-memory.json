@@ -1,0 +1,32 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "scripts/warehouse_activate.py",
+    "--db-path",
+    "data/warehouse.duckdb",
+    "--as-of-date",
+    "2026-09-20",
+    "--only",
+    "ticker_history_publish",
+    "--ticker-history-source-path",
+    "data/staging/broad-bars/2026-09-20-updated/TickerHistory3.parquet",
+    "--memory-limit",
+    "1GB",
+    "--threads",
+    "1",
+    "--backup-keep",
+    "100",
+    "--force",
+    "--run-id",
+    "activation-prices-updated-bounded"
+  ],
+  "job_limit_gb": 3.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.814517974853516,
+    "commit_free_gb": 9.894542694091797
+  },
+  "child_pid": 15488,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 1.7791519165039062
+}
