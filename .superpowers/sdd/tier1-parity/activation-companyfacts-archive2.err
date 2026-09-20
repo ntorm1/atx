@@ -1,0 +1,7 @@
+2026-09-20 15:39:07,679 INFO atx_db.fundamentals: companyfacts processed=0 total=20390 loaded=0 empty=0 failed=0 rows=0
+2026-09-20 15:40:29,428 INFO atx_db.fundamentals: companyfacts processed=25 total=20390 loaded=19 empty=5 failed=1 rows=147049
+2026-09-20 15:41:34,813 INFO atx_db.fundamentals: companyfacts processed=50 total=20390 loaded=40 empty=9 failed=1 rows=259949
+2026-09-20 15:42:53,419 INFO atx_db.fundamentals: companyfacts processed=75 total=20390 loaded=64 empty=10 failed=1 rows=429320
+2026-09-20 15:44:24,733 INFO atx_db.fundamentals: companyfacts processed=100 total=20390 loaded=87 empty=12 failed=1 rows=589133
+2026-09-20 15:45:45,306 INFO atx_db.fundamentals: companyfacts processed=125 total=20390 loaded=107 empty=17 failed=1 rows=731416
+2026-09-20 15:47:07,944 INFO atx_db.fundamentals: companyfacts processed=150 total=20390 loaded=130 empty=19 failed=1 rows=894051

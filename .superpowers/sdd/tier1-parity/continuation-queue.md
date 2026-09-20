@@ -2,6 +2,36 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override — 2026-09-20 19:57 UTC
+
+- NO active DB writer. Root stopped owned archive2 at19:47:59 (checkedPID7628
+  command/runID beforeStop-Process); supervisor closed session37220/wholejob.
+  Not memoryfailure: nativepeak1.737GiB. Read-onlyrecovery19:48:43 found987977
+  committedattemptrows/146CIKs,19empty,1error. Totalfacts=points31837696;
+  prices31959271/customfeatures31934514 unchanged. Bothstaleledgersclosedfailed
+  at19:53:40UTC, explicitrecoverytime. DatasetUUIDc22823af-2c18-48c9-9fc3-3bba1ae58d8f.
+- FailedmemberCIK0000003521.json is exact2-byteb'{}'. Rootdirectory/payload
+  inventory19:53:46 found62exactemptyobjects of20390,zeroother<=2byte members,
+  zero retainedfacts for all62CIKs. Sourceabsencehandling is independenttask,
+  notfinancialcoverage or thresholdrelaxation.
+- Raw CIK throughput optimization COMMITTED4ff0e9c2,54focusedcasespassed,
+  guardpeak0.697GiB, independentreviewCLEAN. Keepsone distinctrawspellinginventory
+  perload, exactboundIN twice, Nonefallback androllback/cachefreshness. No point
+  filterchange. Rootoneissuerread-onlypredicateprobe matched11550keys/checksum:
+  numeric1.084sec/exact0.006sec, sequentialwarmcacheonly, nofullspeedupclaim.
+- /root/companyfacts_empty_archive_members ownsfundamentals.py,new
+  tests/test_companyfacts_empty_members.py pluspreciseexistingziptest updates.
+  Acceptedbrief: archive-onlyexactrawb'{}' unavailable outcome/counter/source
+  metadata+coveragewarning, preservepriorfacts/points/candidates, doNOTcountloaded
+  orclearolddata, network/nonemptyinvalidpayloadsremainfailed. Noactivationchange
+  needed. Implementation/testprep underway, no runtimeyet. Freshreviewthenroot
+  focusedtests thenexactpathcommit andactivation-companyfacts-archive3retry at
+  same1GB1thread/3GiBguard. Don'trerun expensiveearliertestswithoutchangedconcern.
+- CF1build alreadycomplete; labels/evaluationstillpending. Verifiedsubmissions
+  resume b14f4c1e notrun yet; aftercompanyfacts useonlysubmissions_load withprior
+  UUID04cf947d-53bb-49b7-a276-b3c74a2a52c8, nocachedownloadstage. Thenrun5from
+  statement_points --force. Fullmeasurements/release/gates/mergeapproval remain.
+
 ## Current controller override — 2026-09-20 19:40 UTC
 
 - ACTIVE sole writer activation-companyfacts-archive2, tool session37220,

@@ -1,0 +1,9 @@
+{
+  "observed_at_utc": "2026-09-20T19:53:46.430183+00:00",
+  "main_members": 20390,
+  "exact_empty_object_members": 62,
+  "other_members_size_le2": 0,
+  "retained_fact_rows_for_empty_members": 0,
+  "retained_fact_ciks_for_empty_members": 0,
+  "note": "Exact byte-level source absence inventory, not issuer eligibility or financial coverage."
+}

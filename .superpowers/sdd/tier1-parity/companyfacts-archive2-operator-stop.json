@@ -1,0 +1,6 @@
+﻿{
+    "stopped_at_utc":  "2026-09-20T19:47:59.9452529Z",
+    "process_id":  7628,
+    "process_command_verified":  true,
+    "reason":  "Operator stops known-incomplete archive2 (one recorded source failure) to inspect preserved state and deploy reviewed exact-CIK scan optimization; no memory escalation."
+}

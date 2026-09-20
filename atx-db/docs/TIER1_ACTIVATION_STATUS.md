@@ -42,6 +42,33 @@ All live work and tests run sequentially with the locked project Python runtime.
 
 ## Activation result
 
+The issuer cleanup repair passed 38 focused checks and independent review, then
+`activation-companyfacts-archive2` progressed beyond the earlier memory failure.
+The operator stopped it at 19:47:59 UTC after observing one source-handling
+failure and sustained repeated raw-fact scans. Peak process-tree memory was
+1.737 GiB; this was an operator stop, not a memory-guard stop. Recovery measured
+987,977 committed attempt rows across 146 CIKs, 19 empty outcomes and one source
+error. Total raw facts and fundamental points were each 31,837,696; prices and
+custom features were unchanged. The two interrupted ledgers were closed as
+failed with the separately recorded operator recovery timestamp.
+
+The source error is an exact two-byte `{}` archive member. A subsequent bounded
+inventory found 62 such members among 20,390 CIK members, with no stored fact
+rows currently belonging to those 62. Explicit unavailable-source handling is
+being added; missing source data is not financial coverage. Prior issuer data
+must be preserved when a placeholder is encountered.
+
+The next committed throughput repair inventories distinct stored CIK spellings
+once per load and uses exact bound predicates for issuer selection/deletion.
+It passed 54 focused checks and independent review. A read-only comparison for
+one already-processed issuer returned the same 11,550 distinct keys/checksum:
+1.084 seconds for the numeric normalization predicate, 0.006 seconds for the
+exact spelling predicate. This sequential, warm-cache comparison is not an
+end-to-end throughput result. The full optimized source retry remains pending.
+Evidence: `companyfacts-archive2-stop-inspection.json`,
+`companyfacts-archive2-ledger-recovery.json`, `companyfacts-placeholder-inventory.json`
+and `companyfacts-cik-predicate-measurement.json`, with their guard receipts.
+
 The first custom-feature build subsequently completed over the corrected prices:
 31,934,514 daily rows /34,224 warehouse security IDs; 16,338,033 research-cohort
 rows. Eight feature columns have finite observations, with zero nonnull
