@@ -28,15 +28,19 @@ atx-db status --db-path $env:ATX_DB_PATH --strict
 python scripts/db_dev_tests.py --smoke --workers 0
 ```
 
-Large analytical refreshes default to a 4 GB DuckDB memory cap, four worker
-threads, disk spilling beside the warehouse, and unordered inserts. Override
-`--memory-limit` or `--threads` when a deployment has a different resource
-envelope.
+Some analytical commands default to a 4 GB DuckDB cap and four threads. For the
+current roughly 16 GiB host, explicitly start with **1 GB and one DuckDB thread**,
+one heavy process tree at a time, under the controller's aggregate memory guard
+with a cap of at most 4 GiB and physical/commit headroom checks. A DuckDB setting
+does not cap pandas or other Python allocations. The guard limits the process
+tree; it does not prove that an unbounded operation can finish within that cap.
+Use bounded local test concurrency (`-n 0`); CI's four-worker lane runs on a
+separate machine and is not the local resource policy.
 
 ## Activation from scratch
 
 `atx-db activate` runs the warehouse build ladder from an empty directory. It is
-idempotent, resumable, and deterministic: every stage is recorded in
+resumable: every stage is recorded in
 `activation_stage_runs`, and a rerun skips stages whose newest attempt completed
 unless `--force` is given. Each stage prints exactly one JSON line to stdout.
 Stage completion records execution; coverage, historical population and release
@@ -44,13 +48,13 @@ readiness must be measured separately.
 
 ### Current rebuild evidence (2026-09-20)
 
-The [activation handoff](../../docs/superpowers/handoffs/2026-09-20-tier1-parity-handoff.md)
-records 31,178,192 published price bars for 34,803 securities, ending 2026-06-15,
-and 3,045,440 submissions rows for 47,869 CIKs. Those are source-ingestion counts.
-At this documentation checkpoint, activation-run4 is still loading companyfacts;
-no new full-universe item, derived-metric, universe, terminal-return or quality
-measurements have been certified. Wait for that writer to exit before opening
-the live file, including for read-only checks.
+The current [activation measurements](TIER1_ACTIVATION_STATUS.md) record run4's
+completed ingestion and its subsequent `statement_points` memory failure at
+15:00:49 UTC. No later run4 stage completed. That record supersedes the older
+[activation handoff](../../docs/superpowers/handoffs/2026-09-20-tier1-parity-handoff.md)
+status; source-ingestion counts are not full-universe coverage or quality gates.
+Run4 has stopped. Before any new warehouse operation, verify that no replacement
+writer is active and follow the controller's serialized, guarded launch policy.
 
 **Price-source correction:** both archive loaders now map finite positive
 `close * cumulReturnFactor` to `equity_daily_bars.adjusted_close`; missing,
@@ -63,8 +67,8 @@ The raw TSV/archive is preserved; preprojection counts and original-`dn` adjacen
 diagnostics are recorded separately from postpublication uniqueness checks.
 `returnFactor` is distribution-inclusive; canonical `split_factor` is NULL.
 Legacy consumers that reconstruct returns from split factors or infer split-adjusted
-shares still require separate correction/evidence. Republish prices after the active
-writer exits, then rebuild return-dependent surfaces; existing measurements predate
+shares still require separate correction/evidence. Republish prices in the assigned
+writer slot, then rebuild return-dependent surfaces; existing measurements predate
 this correction. Internal agreement does not verify every economic adjustment.
 The vendor lists 05:00 CT T+1
 delivery; the backfill's session-date + 22-hour availability is a modeling
@@ -107,8 +111,10 @@ These are follow-on requirements, not stages already proven on production data.
 | DuckDB spill, every other connection (`<db parent>/.<db name>.duckdb_tmp/`, e.g. `data/.warehouse.duckdb.duckdb_tmp/`, transient) | best-effort, sized by the query |
 | **Peak total (planning estimate)** | **~65 GB**, plus up to `--backup-keep` x 30-40 GB while pre-migrate backups accumulate on a resumed/`--only` run against a pre-head warehouse |
 
-The staging TSV may be deleted after `ticker_history_publish` completes; keep the
-`.sha256` sidecar so a later rerun can prove which extraction produced the bars.
+Preserve the actual staging TSV, original archive and `.sha256` sidecar for this
+rebuild. The sidecar alone is not retained source evidence. Cleanup requires a
+separate explicit controller retention decision; publication does not authorize
+deleting any source or backup.
 
 ### Commands
 
@@ -116,25 +122,41 @@ The staging TSV may be deleted after `ticker_history_publish` completes; keep th
 $env:ATX_SEC_USER_AGENT = "atx-db/0.1 atx-research@example.com"
 $env:ATX_DB_PATH = "D:\atx\data\warehouse.duckdb"
 $activationDate = "2026-09-20" # Pin the actual observation date consistently.
+$activationPython = ".\.venv\Scripts\python.exe"
+$memoryGuard = "..\.superpowers\sdd\tier1-parity\run_memory_guarded.py"
+$guardReceipts = "..\.superpowers\sdd\tier1-parity"
 
 # 1. See the plan without touching anything.
 atx-db activate --db-path $env:ATX_DB_PATH --dry-run --as-of-date $activationDate
 
-# 2. Run the whole ladder (multi-hour; safe to interrupt).
-atx-db activate --db-path $env:ATX_DB_PATH `
+# 2. Run only after the controller clears the pending input/memory prerequisites.
+# Each guard receipt must have a new name; existing receipts cannot be overwritten.
+& $activationPython $memoryGuard --job-gb 4 `
+  --receipt "$guardReceipts\activation-from-scratch-memory.json" -- `
+  $activationPython scripts/warehouse_activate.py --db-path $env:ATX_DB_PATH `
   --ticker-history-zip $env:USERPROFILE\Downloads\tbltickerhistory3_10y.zip `
   --staging-dir D:\atx\data\staging\broad-bars `
   --cache-dir D:\atx\data\cache `
-  --memory-limit 8GB --threads 4 --shards 16 `
+  --memory-limit 1GB --threads 1 --shards 16 `
   --as-of-date $activationDate --backup-keep 100
 
 # 3. Resume after an interruption (completed stages are skipped automatically).
-atx-db activate --db-path $env:ATX_DB_PATH --as-of-date $activationDate --backup-keep 100
+& $activationPython $memoryGuard --job-gb 4 `
+  --receipt "$guardReceipts\activation-resume-memory.json" -- `
+  $activationPython scripts/warehouse_activate.py --db-path $env:ATX_DB_PATH `
+  --memory-limit 1GB --threads 1 --shards 16 `
+  --as-of-date $activationDate --backup-keep 100
 
 # 4. Resume from an explicit point, or rerun one stage.
-atx-db activate --db-path $env:ATX_DB_PATH --start-stage companyfacts_load `
+& $activationPython $memoryGuard --job-gb 4 `
+  --receipt "$guardReceipts\activation-companyfacts-memory.json" -- `
+  $activationPython scripts/warehouse_activate.py --db-path $env:ATX_DB_PATH `
+  --start-stage companyfacts_load --memory-limit 1GB --threads 1 --shards 16 `
   --as-of-date $activationDate --backup-keep 100
-atx-db activate --db-path $env:ATX_DB_PATH --only standardized --force `
+& $activationPython $memoryGuard --job-gb 4 `
+  --receipt "$guardReceipts\activation-standardized-memory.json" -- `
+  $activationPython scripts/warehouse_activate.py --db-path $env:ATX_DB_PATH `
+  --only standardized --force --memory-limit 1GB --threads 1 --shards 16 `
   --as-of-date $activationDate --backup-keep 100
 
 # 5. Confirm the result.
@@ -178,31 +200,33 @@ Network is limited to `security_master`, `symbol_directory`, and
 `sec_bulk_download`; every other stage is offline. `sec_bulk_download` resumes a
 partial transfer and records each archive's sha256 in `raw_source_files`.
 `reconciliation` shells out to `scripts/refresh_reconciliation_sharded.py`, which
-runs each shard in a fresh interpreter (a long-lived process was measured to
-degrade a shard from ~110s to ~840s).
+runs the sixteen shards **sequentially, with one shard child active at a time**.
+Each shard gets a fresh interpreter; sixteen partitions are not sixteen workers.
+The controller guard covers the supervisor and its descendants and refuses a
+launch with insufficient headroom. Its reviewed code is versioned at `0e6737fa`;
+see [current memory evidence](TIER1_ACTIVATION_STATUS.md#memory-and-pending-gates).
 
 ### Determinism
 
-No derived or ingest path reads the wall clock. `atx_db.warehouse.now_utc_naive()`
-is the only sanctioned timestamp read and is used solely for `source_loaded_at`
-lineage. `atx_db.clock.utc_today()` is the only sanctioned wall-clock date read
-and is called only at CLI/script edges, which pass the value down explicitly.
-Library code resolves its stamp through
-`atx_db.clock.resolve_as_of_date(explicit, source_max_date=...)`, which raises
-rather than silently producing a non-reproducible run. Deterministic timestamps
-alone do not establish that archive data was historically available at that time;
-the price-source limitation above still applies.
+The inspected factor-panel pandas and SQL paths select duplicates by
+`(available_at, run_id)`. `factor_breadth.available_at` is the maximum input
+availability, with an `as_of_date + 22h` fallback. Those are scoped contracts;
+they do not establish determinism for every ingestion and identity path.
 
-`source_loaded_at` is lineage only and is never an ordering or dedupe key: the
-factor panel selects duplicates by `(available_at, run_id)` in both its pandas
-and SQL read paths, and `factor_breadth.available_at` is the max of its input
-availabilities, falling back to `as_of_date + 22h` rather than to the clock.
+The plain ticker-history adapter now reuses only unambiguous existing vendor
+links; competing links fall back to a stable vendor key without ordering by
+warehouse load timestamps. Positive collision keys no longer depend on ticker
+display. The bulk `_create_symbol_map` still uses `current_date` and
+`source_loaded_at` to select current-symbol identity candidates, so changes in
+the current metadata or load history can alter its mapping. Correcting that
+remaining behavior belongs to the historical identity follow-on; labeling a
+source vintage unknown does not make its identity selection deterministic.
 
-`--as-of-date` must be pinned to the same explicit value across reruns of the
-network stages (`security_master`, `symbol_directory`, `sec_bulk_download`) for
-those reruns to be byte-identical; left unset, each invocation resolves it from
-`atx_db.clock.utc_today()` at the CLI edge, which necessarily differs run to
-run.
+Pin `--as-of-date` consistently across network-stage reruns. Commands that omit
+it resolve a current date at the CLI edge. A pinned date does not freeze remote
+source revisions or imply byte-identical downloads. Modeled timestamps likewise
+do not establish historical archive availability; the price-source limitation
+above still applies.
 
 ## Universe and delisting evidence
 
@@ -210,8 +234,11 @@ After prerequisites have completed and the warehouse writer has exited, a
 targeted rebuild uses the current CLI syntax:
 
 ```powershell
-atx-db activate --db-path $env:ATX_DB_PATH `
+& $activationPython $memoryGuard --job-gb 4 `
+  --receipt "$guardReceipts\activation-universe-memory.json" -- `
+  $activationPython scripts/warehouse_activate.py --db-path $env:ATX_DB_PATH `
   --only delisting_evidence --only universe_us_listed --force `
+  --memory-limit 1GB --threads 1 --shards 16 `
   --as-of-date $activationDate --backup-keep 100
 ```
 
@@ -293,8 +320,8 @@ years and known measurement limitations.
 Retirement wave 2 (`dae4220e`) removed `abnormal_capex` and `operating_leverage`
 and disabled the `market_cap`, `enterprise_value` and `valuation_multiples`
 schedules. Historical valuation tables and their rows remain. The separate
-18-module S3 retirement and compatibility work is still in progress at this
-checkpoint and is not evidence of an activated factor panel.
+18-module S3 retirement and compatibility work landed in `72d38a93`. Its code
+and fixture evidence is not evidence of an activated production factor panel.
 
 The optional checkout-root `warehouse_template.duckdb` is distinct from the
 active test templates under `.pytest_cache/db_schema_templates/<fingerprint>/`.

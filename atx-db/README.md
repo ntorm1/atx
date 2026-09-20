@@ -120,7 +120,7 @@ refreshes. Omit `--symbol` for the full warehouse; repeated filters are useful f
 slices and incremental recovery:
 
 ```powershell
-atx-db refresh-standardized-fundamentals --memory-limit 8GB --threads 4
+atx-db refresh-standardized-fundamentals --memory-limit 1GB --threads 1
 atx-db refresh-standardized-fundamentals --symbol AAPL --symbol MSFT
 atx-db refresh-fundamental-reconciliation
 atx-db refresh-filing-context-backfill-queue
@@ -261,8 +261,13 @@ and publish its complete canonical projection in one governed bulk operation:
 
 ```powershell
 tar -xf $HOME\Downloads\tbltickerhistory3_10y.zip -C data\staging\broad-bars
-atx-db publish-broad-bars --tsv-path data\staging\broad-bars\tbltickerhistory3_10y.txt
+atx-db publish-broad-bars --tsv-path data\staging\broad-bars\tbltickerhistory3_10y.txt --memory-limit 1GB --threads 1
 ```
+
+For this local rebuild, run heavy refresh/publication commands through the
+[guarded launch procedure](docs/PRODUCTION_RUNBOOK.md#commands), with one heavy
+process tree at a time and at most 4 GiB aggregate commit. The 1 GB DuckDB setting
+does not limit pandas allocations. Preserve the archive, extracted TSV and sidecar.
 
 The bulk path reads OHLCV, cumulative adjustment factors, identifiers, and shares; validates
 at least 30 million clean rows, 10,000 securities, and 5,000 latest-date names;

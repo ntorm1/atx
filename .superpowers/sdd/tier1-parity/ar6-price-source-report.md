@@ -108,12 +108,21 @@ this offline source audit did not open the live database to manufacture them.
 
 ## Exact offline operator handoff
 
-After run4 releases the writer, controller-governed migration/checkpoint work
-must precede publication. From `C:/atx/atx-db`, use the same extracted file:
+Run4 has stopped after its statement-stage memory failure; see
+`atx-db/docs/TIER1_ACTIVATION_STATUS.md`. Controller-governed migration/checkpoint
+work and a clear single-writer slot must precede publication. From
+`C:/atx/atx-db`, use the same extracted file under the reviewed controller guard:
 
 ```powershell
-.venv/Scripts/python.exe scripts/publish_broad_daily_bars.py --db-path C:/atx/atx-db/data/warehouse.duckdb --tsv-path C:/atx/atx-db/data/staging/broad-bars/tbltickerhistory3_10y.txt --memory-limit 6GB --threads 8 --run-id activation-ar6-price-republish-v2
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 4 --receipt C:/atx/.superpowers/sdd/tier1-parity/ar6-price-republish-memory.json -- .venv/Scripts/python.exe scripts/publish_broad_daily_bars.py --db-path C:/atx/atx-db/data/warehouse.duckdb --tsv-path C:/atx/atx-db/data/staging/broad-bars/tbltickerhistory3_10y.txt --memory-limit 1GB --threads 1 --run-id activation-ar6-price-republish-v2
 ```
+
+Only one heavy process tree may run at a time. The guard caps aggregate process
+commit at 4 GiB and checks physical/commit headroom; the 1 GB DuckDB limit does
+not cap pandas. Use a new receipt filename for another attempt. Later activation
+commands start at 1 GB/one thread with sixteen sequential reconciliation shards,
+one shard child at a time. None of these settings proves every pending stage can
+complete within the envelope.
 
 Source remains `tbltickerhistory3_10y`; publication now records the source file
 hash, preprojection diagnostics, separate canonical gate results and provenance.
@@ -128,7 +137,7 @@ For a fresh read-only audit, choose a new report filename (the tool refuses to
 overwrite reports):
 
 ```powershell
-.venv/Scripts/python.exe scripts/audit_ticker_history_source.py --tsv-path C:/atx/atx-db/data/staging/broad-bars/tbltickerhistory3_10y.txt --output C:/atx/.superpowers/sdd/tier1-parity/ar6-source-audit-recheck.json --memory-limit 1GB
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 4 --receipt C:/atx/.superpowers/sdd/tier1-parity/ar6-source-recheck-memory.json -- .venv/Scripts/python.exe scripts/audit_ticker_history_source.py --tsv-path C:/atx/atx-db/data/staging/broad-bars/tbltickerhistory3_10y.txt --output C:/atx/.superpowers/sdd/tier1-parity/ar6-source-audit-recheck.json --memory-limit 1GB
 ```
 
 ## Concrete downstream dependency handoff (not edited)
@@ -154,5 +163,7 @@ rebuild, not a formula edit. These dependencies, historical identity, source
 availability/vintage, historical shares revisions, and economic source
 exceptions remain distinct unresolved prerequisites.
 
-Independent review: requested from controller after the implementation commit;
-not yet completed at report creation.
+Independent review: `ar6-price-source-review.md` found two Important issues and
+no Critical issues. The bounded corrective implementation and focused evidence
+are recorded separately in `ar6-price-source-fix-report.md`; no re-review is
+required by the program ruling.
