@@ -1,0 +1,7 @@
+metric_code,family,expression,window,inputs,requires_market,description,version
+gross_profit_q,rollup,"coalesce(gross_profit__1004, revenue - cost_of_revenue_cogs)",q,item:gross_profit__1004|item:revenue|item:cost_of_revenue_cogs,false,Quarterly gross profit with a revenue-less-COGS fallback.,1
+gross_profit_ttm,rollup,ttm(gross_profit_q),ttm,metric:gross_profit_q,false,Trailing-twelve-month gross profit.,1
+revenue_ttm,rollup,ttm(revenue),ttm,item:revenue,false,Trailing-twelve-month total revenue.,1
+total_assets_avg2,rollup,avg2(total_assets),avg2,item:total_assets,false,Average of current and four-quarters-prior total assets.,1
+gross_margin,profitability,"safe_div(gross_profit_ttm, revenue_ttm)",ttm,metric:gross_profit_ttm|metric:revenue_ttm,false,Trailing-twelve-month gross margin.,1
+gross_profitability,profitability,"safe_div(gross_profit_ttm, total_assets_avg2)",ttm,metric:gross_profit_ttm|metric:total_assets_avg2,false,Novy-Marx gross profitability on average assets.,1
