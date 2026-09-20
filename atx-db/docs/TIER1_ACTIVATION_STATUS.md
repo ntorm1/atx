@@ -42,6 +42,25 @@ All live work and tests run sequentially with the locked project Python runtime.
 
 ## Activation result
 
+The next full-archive companyfacts attempt, `activation-companyfacts-archive1`,
+failed after 68.375 seconds on its first issuer. The correlated cleanup DELETE
+in `_replace_facts` exhausted the 1 GB DuckDB budget; native process-tree peak
+was 1.838 GiB under the 3 GiB guard. This was a query failure, not a host crash.
+The stage and dataset both recorded failure. A separate read-only check at
+19:24:24 UTC confirmed the existing 31,590,760 raw fact rows and the same number
+of fundamental point rows remained; corrected prices also remained intact.
+The repair must narrow the cleanup to the issuer's old keys before retrying at
+the existing memory limit. Evidence: `activation-companyfacts-archive1-launch2.*`,
+its memory receipt and `companyfacts-archive1-failure-inspection.json`.
+
+A read-only report at 19:20:47 UTC found zero rows in standardized statements,
+derived metrics, daily market/risk metrics, survivorship forward returns and CF1
+outputs. Provider SLOs were not run, and the annual coverage gate had no eligible
+measured item. These empty surfaces are outstanding production work, not passes.
+The report took 18.94 seconds and peaked at 1.530 GiB under a 3 GiB guard;
+warehouse file metadata was unchanged. Full results are retained in
+`production-measurement-prepass2-fix1.json` and its Markdown companion.
+
 The all-form source prepass was interrupted by its memory guard when host
 headroom fell to 1.096 GiB physical and 2.921 GiB commit space. A bounded
 read-only recovery check at 19:10:48 UTC found 8,504,213 committed rows from that

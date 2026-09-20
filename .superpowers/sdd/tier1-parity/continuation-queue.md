@@ -2,6 +2,27 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override — 2026-09-20 19:26 UTC
+
+- No active writer. Full companyfacts archive attempt activation-companyfacts-archive1
+  FAILED at first issuer `_replace_facts` correlated DELETE, 68.375sec, DuckDB
+  953.5/953.6MiB OOM; guard peak1.838GiB, no host exhaustion. Both ledgers correctly
+  failed. Root recovery19:24:24 confirms facts and points31,590,760 unchanged,
+  prices31,959,271 intact. Fresh query repair needed, no RAM escalation.
+  Auditor fundamentals_runtime_audit is writing source-path brief; earlier
+  downstream audit did not cover this. Launch2 receipts are actual stage;
+  first launch was an argument quoting error before DB access.
+- Measurement fix succeeded18.94sec/peak1.530GiB; warehouse metadata unchanged.
+  All downstream standardized/derived/market/risk/forward/CF1 surfaces empty.
+  Current script + full report receipts owned by measurement_runtime_fix,
+  commit pending. Fixed temp_directory/externalaccess order and explicitUTC.
+- Submissions resume implemented, uncommitted: sec_submissions.py, activation.py,
+  new tests/test_sec_submissions_resume.py. Root passed35resume+bulk cases and
+  11activation cases, guarded peaks0.675/0.678GiB. Fresh independent static
+  review pending before exactpathcommit/live use. Explicit datasetUUIDresume,
+  archivehash/scope/lineage plus source-to-stored prefix keys proof; maxCIK alone
+  is not trusted. Resumeowner stable source while review pending.
+
 ## Current controller override — 2026-09-20 19:19 UTC
 
 - Source-prepass2 STOPPED by low-host-headroom guard: physical1.096GiB,
