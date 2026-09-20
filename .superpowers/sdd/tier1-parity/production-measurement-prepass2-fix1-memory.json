@@ -1,0 +1,26 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "scripts/measure_tier1_readiness.py",
+    "--db-path",
+    "data/warehouse.duckdb",
+    "--as-of-date",
+    "2026-09-20",
+    "--output-json",
+    "C:/atx/.superpowers/sdd/tier1-parity/production-measurement-prepass2-fix1.json",
+    "--output-markdown",
+    "C:/atx/.superpowers/sdd/tier1-parity/production-measurement-prepass2-fix1.md",
+    "--memory-limit",
+    "1GB",
+    "--include-cf1"
+  ],
+  "job_limit_gb": 3.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 7.914745330810547,
+    "commit_free_gb": 10.445796966552734
+  },
+  "child_pid": 5836,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 1.5300712585449219
+}

@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "C:\atx\atx-db\scripts\measure_tier1_readiness.py", line 589, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "C:\atx\atx-db\scripts\measure_tier1_readiness.py", line 541, in main
+    with duckdb.connect(str(args.db_path), read_only=True, config={
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_duckdb.PermissionException: Permission Error: Modifying the temp_directory has been disabled by configuration
