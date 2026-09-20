@@ -2,6 +2,38 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override — 2026-09-20 21:11 UTC
+
+- Source archive3 still active: session6840,launcher2332,worker9412; same
+  guard3GiB/DB1GB/1thread. At21:09:59UTC:2325/20390 processed,1947loaded,
+  353empty,23unavailable,2failed,11462790 written attempt rows. Host physical
+  free6.47GiB/commitfree8.58GiB at21:10. Keep full pass running. The two
+  member failures are not logged individually; inspect all error receipts
+  after writer release, then repair actual failures. No competing DB/tests.
+- P1 implementation COMPLETE FOR REVIEW, source uncommitted and frozen.
+  Exact18-path inventory, work bounds, consumer contracts and root command in
+  derived-pit-revision-report.md. Fresh Codex /root/review_derived_pit_revision
+  is doing its ONE static review; no verdict yet. Output report will be
+  derived-pit-revision-review.md. Original implementer idle/available for fixes.
+  It has no dependency on core201 CSV/test helpers; commit P1/0315 before
+  core breadth after root verification so committed HEAD stays coherent.
+- P1 evolves canonical nullable event states under0315, updates daily/raw/DEI,
+  API/export/factor/publication/coverage semantics. Atomic scope is one source/
+  security plus resolved prerequisite/descendant closure. Defaults:250k input
+  rows/security,250k metric candidate bound,1024keys/chunk,8192frame rows,
+ 100knew/old publication rows,<=500identifier metadata block. These are row
+  bounds, not measured capacity. Large issuers must fail honestly, not skip.
+  Review must check original Critical closure and this bounded design.
+- Core breadth28additions+4reclaimedcodes+newtest remains UNCOMMITTED, clean
+  static review; tests queued behind source AND stableP1. No runtime checks
+  this continuation. P1 report now pins .venv Python both guard/child,2.5GiB,
+  freshGUIDreceipt/logs,-n0. Root must also run required bootstrap/schema/import
+  checks and regenerate dictionary/snapshots when relevant source stabilizes.
+- HEAD84cdd6d1 before this checkpoint. Preserve unrelated four bootstrap EOL
+  phantomM files and other-session work. No goal completion/release/fullsuite/
+  wholebranchreview/mergepermission. Verified submissions resume and run5,
+  CF1labels/eval, actualquality/coverage/publication and approval gate remain.
+
 ## Current controller override — 2026-09-20 20:58 UTC
 
 - Sole live writer archive3/session6840/launcher2332/worker9412 continues.
