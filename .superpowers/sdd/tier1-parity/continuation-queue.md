@@ -2,6 +2,61 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override - 2026-09-20 22:29 UTC
+
+- No production writer. Archive3 terminal failure/recovery in22:07 override below
+  remains authoritative: live38500008facts=points,prices/CF1retained,schema0314;
+  failedUUID758f7d5c-73ae-4b66-a8c9-f1996afa163a. Do not restart untilCF5 and
+  all pending applied production code are tested/reviewed/committed.
+- P1/0315 COMMITTED5519d1ac; Core201 COMMITTED0c52fdbd. Root five-file focused
+  run65pass/1Corefixturefailure, guardpeak0.922688GiB. Core corrected wrong
+  expected TTMwindow0..3 at targetindex4 to1..4; singleaffectedcasePASSED,
+  peak0.751171GiB. P1 allcases passed incl realpopulated314->315/invalidations.
+  P1 Ruff+newmodule strictmypyclean; rootverificationreportrecordsacceptance.
+- IsolatedHEAD0c52 import and schema tests passed(oneoldslowskip); solemodule
+  failure was exactmissing `_derived_pit` snapshotname. Rootpinnedonlythatname
+  in3ce0db14, then isolatedHEADmodulefile7casesPASSED/importresolvedexport,
+  peak0.614235GiB. No schema/sourcecode changedbetweenchecks. CurrentHEAD3ce0db14
+  before thischeckpoint. Reports/logs pit-core-head-0c52fdbd and
+  pit-module-head-fix1; defaultfull headhelper now accepts --module-only.
+- AF1 draftrefreshedagainst0c52,12baseline/evidencehashes+patchSHAverified byroot;
+  APPLIED toactualtree. PatchSHAf3711931e29b5d95c50c8cc85d24f8ab34a803b77c0c826d32d8418dde97319d.
+  Own11paths in annual-fallback-implementation-report.md, including0316registry,
+  new _derived_annual, annualtest and P1/paneltestexpectations. NoCFoverlap.
+  Rootfixed3mechanicallintissues; allAF/CFtouchedRuffotherwiseclean.
+  Combinedstrictmypyfailed12errorsONLYannualhelper; AFimplementerfixedactual
+  Spanarguments/narrowedNumber AST, reports no valid-formula behaviorchange.
+  annual-fallback-fix1-report.md; actualhelperSHA4c81e0c469442716d0b7cc70bad51a3f511750d58475c3346198ca48dfb27dae.
+  Rootmypyretry+AFfocusedtests remainQUEUED. NoAFindependentreviewyet.
+  Draftpatch is historicalinitialdelivery; actualtree nowauthoritative withfixes.
+- CF5 implementationCOMPLETEactualtree: fundamentals.py,_companyfacts_resume.py,
+  activation.py,newtest_companyfacts_archive_repair.py/newtest_companyfacts_activation_resume.py.
+  Agent applied itsactivationpatch afterP1release; DO NOT REAPPLYpatchartifact.
+  Tencommittedissueroperations/reopen,proof-phasereopen,atomicfacts/points/
+  candidate/receipt,verifiedfailed-run ancestryresumewithSHA256multisets,
+  candidate recovery,missingpayloadCIK anddummyUAplumbing. Report
+  companyfacts-archive3-repair-report.md. CF5Ruff/strictmypyclean.
+- SOLE ROOT workload is CF5nine-file focusedpytest -n0/guard2.5GiB withdummyUA,
+  toolsession48505,guardchild11292,actualworker18920(creation1789943239473).
+  At22:29:33UTC actualCIMcommandmatched and19caseshadpassed.
+  Logs companyfacts-archive3-repair-focused1.*.
+  Check actual result; not yet passed. No concurrentmypy/AFtests/DB/probes.
+  Fresh staticCF5 review /root/review_companyfacts_archive3_repair underway in
+  parallel; CF5source frozen. Runtime/reviewfixes follow reported evidence.
+- AfterCFtestfinish: rootmypyAFretry, AFfocusedfivefiles; meaningfulactualfixes
+  only, thenonefreshAFreview. CFreviewImportantfixesacceptedonreport;Critical
+  fixesrereviewonly. CommitCF5pathsseparately, AF1paths+0316 together; neverbleed
+  other'sregistry/source. Rootmustaddexactnewprivatehelper snapshotnames after
+  respectivecodecommits, regenerateDATA_DICTIONARY/publicschemaartifacts for316,
+  andperformrelevantfinalHEADchecks beforeproductionresume.
+- ThenCF5verifiedresume from758f7d5c-73ae-4b66-a8c9-f1996afa163a at1GB/1thread/
+  guard3GiB (measureproof/load and fixrealcapacityissues, noRAMescalation),
+  submissionsverifiedresume04cf947d-53bb-49b7-a276-b3c74a2a52c8,fullrun5,
+  CF1labels/eval/livequalitycoverage/release/fullnon-slowsuiteonce/Codexwholebranch
+  review/askbeforemainmerge. Preserve stash@{0}, unrelatedphantomEOLM andotherwork.
+- Turnclassification PROGRESS: sourcefailuremeasured, P1/Corevalidatedandcommitted,
+  committedHEADchecked, AF1appliedandCF5runtime/reviewbegun. GoalremainsACTIVE.
+
 ## Current controller override - 2026-09-20 22:07 UTC
 
 - Archive3 is TERMINAL FAILED at22:02:44UTC; worker9412 gone and session6840
