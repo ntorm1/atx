@@ -2,6 +2,67 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override - 2026-09-20 23:56 UTC
+
+- Prior goal turn was PROGRESS plus VERIFIED WAIT: PR1 implementation/review
+  artifacts committed2bacc787 and session25640 confirmed live. This turn also
+  verified the SAME session, child9712, worker21904/creation1789945403452.
+  Latest23:55:12UTC log: processed5925/20390, loaded5033 (includes3750 reuse),
+  empty864, unavailable28, failed0, attempt fact rows5200080. These are attempt
+  writes including replacements, not net warehouse growth. Latest guard physical
+  free5.703GiB/commit7.024GiB. Disk free at23:53UTC102973145088B. No failure.
+- Healthy archive4 remains the SOLE runtime workload at1GB/one thread/3GiB job
+  cap. Do not run tests, imports, probes, type/lint checks or any DB connection
+  until it ends. Poll the actual existing handle/process; silence is not failure.
+- A fresh Codex STATIC audit of the imminent fundamentals stages completed:
+  fundamentals-activation-memory-audit.md,0Critical/2Important capacity findings.
+  Early full-universe indexed transactions and derived connection lifetime remain
+  unbounded even though calculations use SQL/per-security bounds. This is source
+  evidence plus prior actual price/CF5 COMMIT failures, NOT a claimed run5 failure.
+  The16 reconciliation partitions do not bound earlier publication transactions.
+- Root also confirmed forward labels use one transaction for five full-universe
+  horizon inserts into a PK plus2secondary-index table. With31.96M price rows,
+  output may approach160M labels. No forward-stage scale failure has occurred.
+  Prepare bounded physical publication while the source pass runs; preserve all
+  outputs, scopes, required keys and atomicity, without increasing memory.
+- THREE FRESH CODEX IMPLEMENTERS are active, all DRAFT-ONLY/static:
+  1. forward_publication_capacity_implementation: FP1 brief/report prefix
+     forward-publication-capacity; draft forward-publication-draft/. Owns forward
+     label publication and reserved0317 removal of ONLY its2optional indexes.
+     Must preserve _bulk_publication's existing single-table API.
+  2. derived_connection_capacity_implementation: DP1 brief/report prefix
+     derived-connection-capacity; draft derived-connection-draft/. Owns only
+     derived_metrics.py plus focused tests; no migration. Keyset traversal and
+    10-committed-security recycle cadence, after owned PIT cleanup. Root agreed
+     with CF5 eligibility: persistent stores with recorded analytical settings
+     recycle; unconfigured callers retain their existing settings/behavior.
+  3. fundamentals_publication_capacity_implementation: AP1 brief/report prefix
+     fundamentals-publication-capacity; draft fundamentals-publication-draft/.
+     Owns8early fundamental output publications and reserved0318 optional-index
+     policy/bootstrap changes. May add narrow coupled-swap helper while keeping
+     existing single-table API unchanged. Preserve standardized+exceptions+
+     completed-build-ledger atomicity. Existing routing/seeding-before and
+     calendar-coverage-after boundaries remain unchanged.
+- Agents may NOT edit live source, run any runtime, commit, or spawn subagents.
+  Drafts are not applied or reviewed/tested yet. Root must serialize0317 then
+ 0318 registry integration with their own bodies/facade lines, inspect actual
+  patches and update exact module pins. One fresh independent review per task;
+  Important fixes on implementer report, re-review only Critical. All root runtime
+  verification waits for writer terminal. No arithmetic/PIT redesign or global
+  atomicity weakening is authorized by these physical capacity tasks.
+- PR1 remains stable/reviewed but UNCOMMITTED and runtime checks pending in
+  actual cli.py, tests/test_publication_resources.py and root runbook edits.
+  Its brief/report/review are committed2bacc787. Preserve unrelated user files,
+ 4EOL-only phantom modifications and stash@{0}. Historical companion-data
+  async question still has no answer; do not repeat it or infer a source.
+- Remaining production order: handle archive4 terminal/actual ledgers, complete
+  reviewed capacity fixes and focused checks as needed before downstream build,
+  submissions verified resume, full activation-run5 from statement_points with
+  --force/16sequential reconciliation shards, CF1 evaluation, actual quality/
+  coverage/release, full non-slow once, fresh whole-branch review and ask before
+  main. Submissions can proceed before draft integration if that keeps ingestion
+  moving; do not overlap it with tests. Goal ACTIVE. No production parity claim.
+
 ## Current controller override - 2026-09-20 23:39 UTC
 
 - Archive4 is still the sole live runtime workload. Session25640 returned the

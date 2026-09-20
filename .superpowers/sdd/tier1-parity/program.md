@@ -3,6 +3,28 @@ Spec: docs/superpowers/specs/2026-09-19-tier1-parity-design.md
 Audits: .superpowers/sdd/tier1-parity/audit-atx-db.md, audit-ticker-zip.md
 Baseline: main a79f8371, smoke 6 passed.
 
+## Production capacity continuation ruling - 2026-09-20 23:56 UTC
+
+Archive4 remains healthy and owns the only runtime slot. A focused static audit
+found full-universe indexed publication transactions in the early fundamentals
+stages and a whole-run derived identifier cursor/connection. Root also found the
+five-horizon forward panel published in one indexed transaction. These are
+source-level capacity findings supported by prior measured price/CF5 failures,
+not newly measured run5 failures. Preparing bounded publication now advances the
+full production objective without interrupting ingestion or raising memory.
+
+Fresh Codex draft-only tasks: AP1 fundamentals-publication-capacity-brief.md,
+DP1 derived-connection-capacity-brief.md, FP1 forward-publication-capacity-brief.md.
+FP1 reserves0317; AP1 reserves0318. Only optional secondary-index policy may
+change under those governed migrations; preserve all required keys, physical
+columns, defaults, nullability, views, atomicity, full scope and calculations.
+No historical migration/checksum edits. Root serializes integration with owned
+bodies/registry lines after the writer finishes. DP1 requires no migration.
+All agents remain static-only; root alone executes guarded focused checks.
+One fresh review per task; Important fixes accepted on report, re-review Critical
+only. Actual post-integration/production evidence remains mandatory. Latest
+continuation-queue.md records exact task ownership and live process state.
+
 ## Annual fallback continuation ruling - 2026-09-20 21:53 UTC
 
 AF1 addresses the design's fiscal-year fallback promise and the confirmed
