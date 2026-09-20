@@ -24,6 +24,11 @@ ITEM_COVERAGE_TARGET_ITEMS = 110
 ITEM_COVERAGE_TARGET_PCT = 90.0
 ITEM_COVERAGE_TARGET_TOP_N = 3000
 ITEM_COVERAGE_TARGET_MINIMUM_FISCAL_YEAR = 2015
+# The spec gate ("at least N items ... for FY2015+") is stated over annual filings; this is
+# the single source of truth for evaluate_item_coverage_gate's basis default so callers outside
+# this module (e.g. atx_db.quality.checks_identities) can import the same value instead of
+# retyping the literal or reflecting on the function signature.
+ITEM_COVERAGE_GATE_BASIS = "annual"
 
 ITEM_COVERAGE_COLUMNS = (
     "source",
@@ -248,7 +253,7 @@ def evaluate_item_coverage_gate(
     minimum_items: int = ITEM_COVERAGE_TARGET_ITEMS,
     minimum_coverage_pct: float = ITEM_COVERAGE_TARGET_PCT,
     minimum_fiscal_year: int = ITEM_COVERAGE_TARGET_MINIMUM_FISCAL_YEAR,
-    basis: str = "annual",
+    basis: str = ITEM_COVERAGE_GATE_BASIS,
 ) -> dict[str, Any]:
     """Count items clearing the spec threshold in every in-scope fiscal year.
 

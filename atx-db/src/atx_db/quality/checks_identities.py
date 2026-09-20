@@ -11,9 +11,9 @@ Six specs:
 
 This module is a LEAF of ``atx_db.quality``: it imports only ``._types`` at module level, so
 it cannot introduce an import cycle inside the package (enforced by
-``test_decomposed_package_import_graphs_are_acyclic``). ``inspect`` is stdlib and does not
-count. The Sprint 2 coverage constants/helpers are imported lazily inside the factory,
-mirroring ``_runner``'s ``signal_eval`` precedent.
+``test_decomposed_package_import_graphs_are_acyclic``). The Sprint 2 coverage
+constants/helpers are imported lazily inside the factory, mirroring ``_runner``'s
+``signal_eval`` precedent.
 
 Schema note, corrected after fix-round 1 review: ``fundamental_standardized`` DOES carry a
 ``revision_sequence`` column -- migration 0271 (``bodies_0271.py::_standardized_fundamentals_release``)
@@ -35,7 +35,6 @@ a given row.
 
 from __future__ import annotations
 
-import inspect
 from dataclasses import dataclass
 
 from ._types import Severity, SqlQualityCheck
@@ -235,17 +234,30 @@ FROM (
 """
 
 
-def _item_coverage_sql(*, target_items: int, target_pct: float, minimum_fiscal_year: int, basis: str) -> str:
+def _item_coverage_sql(
+    *,
+    source: str,
+    universe_id: str,
+    target_items: int,
+    target_pct: float,
+    minimum_fiscal_year: int,
+    basis: str,
+) -> str:
     """How many items short of the published target the warehouse is.
 
     An item counts only when its coverage clears ``target_pct`` in EVERY in-scope fiscal
-    year on a single ``basis`` -- the same rule ``item_coverage.evaluate_item_coverage_gate``
-    applies (fix-round-1 finding 1: the previous version grouped by ``item_id`` alone across
-    every basis, so a thin quarterly/instant/ttm row for an item that fully clears target on
-    ``annual`` could wrongly count it as short). ``basis`` is passed in by the caller, which
-    derives it from ``evaluate_item_coverage_gate``'s own default parameter via
-    ``inspect.signature`` rather than retyping the literal ``"annual"`` here, so the check and
-    the published ``ITEM_COVERAGE.md`` can never disagree about which basis is authoritative.
+    year, on a single ``basis``, for a single ``(source, universe_id)`` -- the same
+    scoping ``item_coverage.load_item_coverage_inputs``/``refresh_item_coverage`` apply
+    before a frame ever reaches ``evaluate_item_coverage_gate`` (fix-round-1 finding 1
+    closed the ``basis`` gap; fix-round-2 finding 1 closes ``source``/``universe_id``: both
+    are ``NOT NULL`` columns on ``fundamental_item_coverage`` and
+    ``refresh_item_coverage``'s DELETE never purges rows for a second source/universe, so a
+    coverage refresh for a different universe -- ``universe_id`` is a live CLI flag on
+    ``scripts/measure_item_coverage.py`` -- could otherwise blend into this check's
+    ``GROUP BY item_id`` and disagree with a gate evaluated against a single-universe
+    frame). ``basis`` defaults to ``item_coverage.ITEM_COVERAGE_GATE_BASIS``, the same named
+    constant ``evaluate_item_coverage_gate`` defaults to, so the check and the published
+    ``ITEM_COVERAGE.md`` can never disagree about which basis is authoritative.
     """
 
     return f"""
@@ -253,7 +265,9 @@ def _item_coverage_sql(*, target_items: int, target_pct: float, minimum_fiscal_y
         FROM (
             SELECT item_id
             FROM fundamental_item_coverage
-            WHERE fiscal_year >= {minimum_fiscal_year}
+            WHERE source = '{source}'
+              AND universe_id = '{universe_id}'
+              AND fiscal_year >= {minimum_fiscal_year}
               AND basis = '{basis}'
             GROUP BY item_id
             HAVING min(coverage_pct) >= {target_pct}
@@ -271,15 +285,12 @@ def identity_check_specs(**_ignored: object) -> tuple[SqlQualityCheck, ...]:
 
     from ..item_coverage import (
         DEFAULT_SOURCE,
+        DEFAULT_UNIVERSE_ID,
+        ITEM_COVERAGE_GATE_BASIS,
         ITEM_COVERAGE_TARGET_ITEMS,
         ITEM_COVERAGE_TARGET_MINIMUM_FISCAL_YEAR,
         ITEM_COVERAGE_TARGET_PCT,
-        evaluate_item_coverage_gate,
     )
-
-    # Derived from evaluate_item_coverage_gate's own default parameter (not retyped) so the
-    # two can never silently drift apart (fix-round-1 finding 1).
-    coverage_basis: str = inspect.signature(evaluate_item_coverage_gate).parameters["basis"].default
 
     specs: list[SqlQualityCheck] = [
         SqlQualityCheck(
@@ -330,10 +341,12 @@ def identity_check_specs(**_ignored: object) -> tuple[SqlQualityCheck, ...]:
             table_name="fundamental_item_coverage",
             check_name=ITEM_COVERAGE_CHECK_NAME,
             sql=_item_coverage_sql(
+                source=DEFAULT_SOURCE,
+                universe_id=DEFAULT_UNIVERSE_ID,
                 target_items=ITEM_COVERAGE_TARGET_ITEMS,
                 target_pct=ITEM_COVERAGE_TARGET_PCT,
                 minimum_fiscal_year=ITEM_COVERAGE_TARGET_MINIMUM_FISCAL_YEAR,
-                basis=coverage_basis,
+                basis=ITEM_COVERAGE_GATE_BASIS,
             ),
             threshold=0.0,
             comparator="le",

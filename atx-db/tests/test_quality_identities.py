@@ -15,6 +15,7 @@ from __future__ import annotations
 import pytest
 
 from atx_db.item_coverage import DEFAULT_SOURCE as _STANDARDIZED_SOURCE
+from atx_db.item_coverage import DEFAULT_UNIVERSE_ID as _STANDARDIZED_UNIVERSE_ID
 
 
 def _spec(name):
@@ -350,7 +351,8 @@ def test_item_coverage_shortfall_is_measured(tmp_store):
     tmp_store.con.execute(
         "INSERT INTO fundamental_item_coverage (coverage_id, source, universe_id, item_id, "
         "canonical_code, basis, fiscal_year, n_securities, n_with_value, coverage_pct) VALUES "
-        "('c1','t','us_listed_v1',1101,'total_assets','annual',2020,100,99,99.0)"
+        f"('c1','{_STANDARDIZED_SOURCE}','{_STANDARDIZED_UNIVERSE_ID}',1101,'total_assets',"
+        "'annual',2020,100,99,99.0)"
     )
     assert _observed(tmp_store, "fundamental_item_coverage_below_target") == float(ITEM_COVERAGE_TARGET_ITEMS - 1)
 
@@ -366,8 +368,30 @@ def test_item_coverage_only_counts_the_evaluate_gate_basis(tmp_store):
     tmp_store.con.execute(
         "INSERT INTO fundamental_item_coverage (coverage_id, source, universe_id, item_id, "
         "canonical_code, basis, fiscal_year, n_securities, n_with_value, coverage_pct) VALUES "
-        "('c1','t','us_listed_v1',1101,'total_assets','annual',2020,100,99,99.0),"
-        "('c2','t','us_listed_v1',1101,'total_assets','instant',2020,100,10,10.0)"
+        f"('c1','{_STANDARDIZED_SOURCE}','{_STANDARDIZED_UNIVERSE_ID}',1101,'total_assets',"
+        "'annual',2020,100,99,99.0),"
+        f"('c2','{_STANDARDIZED_SOURCE}','{_STANDARDIZED_UNIVERSE_ID}',1101,'total_assets',"
+        "'instant',2020,100,10,10.0)"
+    )
+    assert _observed(tmp_store, "fundamental_item_coverage_below_target") == float(ITEM_COVERAGE_TARGET_ITEMS - 1)
+
+
+def test_item_coverage_only_counts_the_default_source_and_universe(tmp_store):
+    # Fix-round-2 finding 1: refresh_item_coverage's DELETE is scoped to exactly
+    # (source, universe_id, basis[, item_ids]) and never purges rows for a second source or
+    # universe, so those rows coexist indefinitely once written. A passing item under a
+    # DIFFERENT (source, universe_id) must not be counted toward the default scope's shortfall,
+    # and must not rescue -- or, symmetrically, drag down -- an item measured under the
+    # default scope.
+    from atx_db.item_coverage import ITEM_COVERAGE_TARGET_ITEMS
+
+    tmp_store.con.execute(
+        "INSERT INTO fundamental_item_coverage (coverage_id, source, universe_id, item_id, "
+        "canonical_code, basis, fiscal_year, n_securities, n_with_value, coverage_pct) VALUES "
+        f"('c1','{_STANDARDIZED_SOURCE}','{_STANDARDIZED_UNIVERSE_ID}',1101,'total_assets',"
+        "'annual',2020,100,99,99.0),"
+        "('c2','other-source','other-universe-v1',1201,'total_liabilities',"
+        "'annual',2020,100,99,99.0)"
     )
     assert _observed(tmp_store, "fundamental_item_coverage_below_target") == float(ITEM_COVERAGE_TARGET_ITEMS - 1)
 
