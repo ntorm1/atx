@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import duckdb
@@ -17,14 +18,14 @@ SOURCE_PROVENANCE = {
     "economic_adjustment_status": "unverified; diagnostics are internal consistency only",
 }
 
-SOURCE_SQL = """
+_SOURCE_PROJECTION = """
 SELECT try_cast(tradingDate AS DATE) AS trade_date,
-       CASE WHEN regexp_full_match(trim(securityID), '[+-]?[0-9]+')
+       CASE WHEN regexp_full_match(trim(securityID::VARCHAR), '[+-]?[0-9]+')
             THEN try_cast(securityID AS BIGINT) END AS vendor_id,
-       nullif(trim(securityID), '') AS vendor_security_id,
+       nullif(trim(securityID::VARCHAR), '') AS vendor_security_id,
        upper(trim(coalesce(nullif(ticker_tk, ''), nullif(todayTicker, '')))) AS symbol,
        upper(trim(coalesce(nullif(todayTicker, ''), nullif(ticker_tk, '')))) AS current_symbol,
-       CASE WHEN regexp_full_match(trim(dn), '[+-]?[0-9]+')
+       CASE WHEN regexp_full_match(trim(dn::VARCHAR), '[+-]?[0-9]+')
             THEN try_cast(dn AS BIGINT) END AS dn,
        try_cast(open AS DOUBLE) AS open,
        try_cast(high AS DOUBLE) AS high,
@@ -37,14 +38,72 @@ SELECT try_cast(tradingDate AS DATE) AS trade_date,
        try_cast(returnFactor AS DOUBLE) AS return_factor,
        try_cast(totalReturn AS DOUBLE) AS total_return,
        try_cast(cumulReturnFactor AS DOUBLE) AS cumul_return_factor
-FROM read_csv(?, delim = '\t', header = true, all_varchar = true,
-              auto_detect = true, sample_size = 20480)
 """
+
+_READERS = {
+    "tsv": "read_csv(?, delim = '\t', header = true, all_varchar = true, "
+           "auto_detect = true, sample_size = 20480)",
+    "parquet": "read_parquet(?)",
+}
+_NUMERIC_COLUMNS = {
+    "securityid", "dn", "open", "high", "low", "close", "closepr",
+    "closeunadjpr", "volume", "shares", "returnfactor", "totalreturn", "cumulreturnfactor",
+}
+_NUMERIC_TYPES = {
+    "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
+    "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT", "FLOAT", "DOUBLE",
+}
+
+
+def source_format(path: str | Path) -> str:
+    """Identify an explicit local input format; ZIP extraction is separate."""
+    suffix = Path(path).suffix.lower()
+    if suffix in {".parquet", ".pq"}:
+        return "parquet"
+    if suffix in {".tsv", ".txt", ".tab"}:
+        return "tsv"
+    raise ValueError(f"unsupported ticker-history source suffix: {suffix!r}")
+
+
+def source_provenance(path: str | Path) -> dict[str, str]:
+    format_name = source_format(path)
+    representation = (
+        "native typed Parquet values; original text precision and source vintage unknown"
+        if format_name == "parquet" else "TSV text parsed with DuckDB try_cast"
+    )
+    return {**SOURCE_PROVENANCE, "source_format": format_name,
+            "source_numeric_representation": representation}
+
+
+def _validate_source_columns(con: duckdb.DuckDBPyConnection, reader: str, path: str) -> None:
+    # DESCRIBE binds Parquet footer metadata, not its full row set. TSV is sampled.
+    columns = {row[0].lower(): row[1] for row in con.execute(
+        "DESCRIBE SELECT * FROM " + reader, [path]
+    ).fetchall()}
+    required = _NUMERIC_COLUMNS | {"tradingdate", "ticker_tk", "todayticker"}
+    missing = sorted(required - columns.keys())
+    if missing:
+        raise ValueError("ticker-history source is missing required columns: " + ", ".join(missing))
+    invalid = []
+    for name in sorted(required):
+        dtype = columns[name]
+        valid = dtype == "VARCHAR"
+        if name in _NUMERIC_COLUMNS:
+            valid |= dtype in _NUMERIC_TYPES or dtype.startswith("DECIMAL(")
+        elif name == "tradingdate":
+            valid |= dtype == "DATE" or dtype.startswith("TIMESTAMP")
+        if not valid:
+            invalid.append(f"{name}={dtype}")
+    if invalid:
+        raise ValueError("ticker-history source has incompatible column types: " + ", ".join(invalid))
 
 
 def stage_source(con: duckdb.DuckDBPyConnection, path: str) -> None:
     """Retain all projected original rows, including rejected/duplicate neighbors."""
-    con.execute("CREATE OR REPLACE TEMP TABLE ticker_history_source_rows AS " + SOURCE_SQL, [path])
+    reader = _READERS[source_format(path)]
+    _validate_source_columns(con, reader, path)
+    con.execute("CREATE OR REPLACE TEMP TABLE ticker_history_source_rows AS "
+                + _SOURCE_PROJECTION + " FROM " + reader, [path])
 
 
 def source_diagnostics(con: duckdb.DuckDBPyConnection) -> dict[str, Any]:
@@ -78,6 +137,13 @@ def source_diagnostics(con: duckdb.DuckDBPyConnection) -> dict[str, Any]:
                coalesce(sum(key_rows) FILTER (WHERE key_rows > 1), 0) AS quarantined_positive_key_rows
         FROM ticker_history_source_keys
     """).fetchdf().iloc[0].to_dict()
+    latest = con.execute("""
+        SELECT count(*) AS latest_date_source_rows,
+               count(DISTINCT vendor_id) FILTER (WHERE vendor_id > 0)
+                   AS latest_date_distinct_positive_vendor_ids
+        FROM ticker_history_source_rows
+        WHERE trade_date = (SELECT max(trade_date) FROM ticker_history_source_rows)
+    """).fetchdf().iloc[0].to_dict()
     # Duplicate predecessors remain in the sequence, blocking comparisons across them.
     con.execute("""
         CREATE OR REPLACE TEMP TABLE ticker_history_pairs AS
@@ -96,7 +162,7 @@ def source_diagnostics(con: duckdb.DuckDBPyConnection) -> dict[str, Any]:
                lag(cumul_return_factor) OVER w AS prior_factor
         FROM grouped WINDOW w AS (PARTITION BY vendor_id ORDER BY trade_date)
     """)
-    metrics: dict[str, Any] = {str(key): value for key, value in {**counts, **duplicates}.items()}
+    metrics: dict[str, Any] = {str(key): value for key, value in {**counts, **duplicates, **latest}.items()}
     adjacency = "key_rows = 1 AND prior_key_rows = 1 AND dn = prior_dn + 1 AND trade_date > prior_date"
     comparable = {
         "prior_close": ("close_unadj_pr / prior_close - 1", ["close_unadj_pr", "prior_close"]),

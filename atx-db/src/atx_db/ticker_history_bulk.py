@@ -3,7 +3,7 @@
 The pandas chunk loader remains useful for small symbol subsets.  Full-universe
 publication is different: repeatedly probing and deleting from a multi-million
 row indexed table turns linear ingestion into an effectively quadratic job.
-This module stages a projection of the extracted TSV, measures original-row
+This module stages a projection of a local TSV or Parquet file, measures original-row
 quality before exclusions, builds the replacement beside the live table,
 validates it, and swaps it in atomically. Raw source bytes remain the lineage.
 """
@@ -20,7 +20,12 @@ from pathlib import Path
 
 from .connection import DuckDBStore
 from .ticker_history import SOURCE_NAME, TBLTICKERHISTORY_ID_TYPE
-from .ticker_history_quality import SOURCE_PROVENANCE, source_diagnostics, stage_source
+from .ticker_history_quality import (
+    SOURCE_PROVENANCE,
+    source_diagnostics,
+    source_provenance,
+    stage_source,
+)
 from .warehouse import quality_check, record_source_file
 
 LOGGER = logging.getLogger(__name__)
@@ -28,16 +33,20 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class BulkTickerHistoryOptions:
-    tsv_path: Path
+    # Retained as an input alias for existing callers and positional construction.
+    tsv_path: Path | None = None
     source: str = SOURCE_NAME
-    memory_limit: str = "4GB"
-    threads: int = 4
+    memory_limit: str = "1GB"
+    threads: int = 1
     minimum_rows: int = 30_000_000
     minimum_securities: int = 10_000
     minimum_latest_date_securities: int = 5_000
     run_id: str | None = None
+    source_path: Path | None = None
 
     def __post_init__(self) -> None:
+        if (self.source_path is None) == (self.tsv_path is None):
+            raise ValueError("supply exactly one source_path or legacy tsv_path")
         if self.threads < 1:
             raise ValueError("threads must be positive")
         if min(
@@ -46,6 +55,12 @@ class BulkTickerHistoryOptions:
             self.minimum_latest_date_securities,
         ) < 1:
             raise ValueError("publication breadth floors must be positive")
+
+    @property
+    def input_path(self) -> Path:
+        path = self.source_path if self.source_path is not None else self.tsv_path
+        assert path is not None  # Validated in __post_init__.
+        return path
 
 
 @dataclass(frozen=True)
@@ -84,7 +99,7 @@ raw AS (
 
 
 def _configure(store: DuckDBStore, options: BulkTickerHistoryOptions) -> None:
-    temp_dir = options.tsv_path.parent / "duckdb-tmp"
+    temp_dir = options.input_path.parent / "duckdb-tmp"
     temp_dir.mkdir(parents=True, exist_ok=True)
     store.con.execute("PRAGMA disable_progress_bar")
     store.con.execute("SET memory_limit = ?", [options.memory_limit])
@@ -425,8 +440,9 @@ def _ensure_indexes(store: DuckDBStore) -> None:
 def publish_bulk_ticker_history(
     store: DuckDBStore, options: BulkTickerHistoryOptions
 ) -> BulkTickerHistoryResult:
-    if not options.tsv_path.is_file():
-        raise FileNotFoundError(options.tsv_path)
+    if not options.input_path.is_file():
+        raise FileNotFoundError(options.input_path)
+    provenance = source_provenance(options.input_path)
     started = time.perf_counter()
     run_id = options.run_id or f"broad-bars-bulk-{uuid.uuid4()}"
     options = BulkTickerHistoryOptions(**{**asdict(options), "run_id": run_id})
@@ -444,20 +460,20 @@ def publish_bulk_ticker_history(
         record_source_file(
             store,
             dataset_id="tbltickerhistory_daily",
-            source_url=str(options.tsv_path),
-            cache_path=options.tsv_path,
+            source_url=str(options.input_path),
+            cache_path=options.input_path,
             status="available",
-            metadata={"mode": "native_bulk_projection", "run_id": run_id, **SOURCE_PROVENANCE},
+            metadata={"mode": "native_bulk_projection", "run_id": run_id, **provenance},
             compute_hash=True,
         )
-        stage_source(store.con, str(options.tsv_path))
+        stage_source(store.con, str(options.input_path))
         diagnostics = source_diagnostics(store.con)
-        LOGGER.warning("ticker-history source diagnostics: %s; provenance: %s", diagnostics, SOURCE_PROVENANCE)
+        LOGGER.warning("ticker-history source diagnostics: %s; provenance: %s", diagnostics, provenance)
         quality_check(
             store, dataset_id="tbltickerhistory_daily", table_name="equity_daily_bars",
             check_name="source_preprojection_diagnostics", status="warning",
             observed_value=float(diagnostics["quarantined_positive_key_rows"]), threshold_value=0.0,
-            details={"run_id": run_id, "diagnostics": diagnostics, "provenance": SOURCE_PROVENANCE},
+            details={"run_id": run_id, "diagnostics": diagnostics, "provenance": provenance},
         )
         _create_symbol_map(store)
         identity_counts = store.con.execute(
@@ -519,7 +535,7 @@ def publish_bulk_ticker_history(
             "duplicate_keys": duplicate_keys,
             "invalid_rows": invalid_rows,
             "source_diagnostics": diagnostics,
-            "provenance": SOURCE_PROVENANCE,
+            "provenance": provenance,
         },
     )
     store.con.execute("CHECKPOINT")
@@ -533,4 +549,5 @@ def publish_bulk_ticker_history(
         elapsed_seconds=elapsed,
         run_id=run_id,
         source_diagnostics=diagnostics,
+        provenance=provenance,
     )
