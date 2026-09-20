@@ -40,9 +40,9 @@ def main(argv: list[str] | None = None) -> int:
         run_id=args.run_id,
     )
     with DuckDBStore(args.db_path) as store:
-        written = refresh_item_coverage(store, options)
         standardized, universe = load_item_coverage_inputs(store, options)
         frame = compute_item_coverage_rows(standardized, universe, options)
+        written = refresh_item_coverage(store, options, frame=frame)
     gate = evaluate_item_coverage_gate(frame)
     if args.write_docs:
         DOCS_PATH.parent.mkdir(parents=True, exist_ok=True)

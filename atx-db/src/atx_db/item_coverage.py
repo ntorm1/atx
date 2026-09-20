@@ -145,17 +145,29 @@ def load_item_coverage_inputs(
         """,
         [options.source],
     ).df()
+    # The per-year cohort is every universe_membership row whose own
+    # [valid_from, valid_to) validity window overlaps the fiscal year -- NOT
+    # "securities that happened to report a fact that year". A true top-3000
+    # constituent that filed nothing this year must still land in the
+    # denominator (as 0% for every item); joining through
+    # fundamental_standardized instead would silently drop it and inflate
+    # coverage_pct. fiscal_year is approximated as the calendar year
+    # [Y-01-01, Y-12-31]; the candidate year list itself still comes from the
+    # standardized facts because that is the only source of "years we have
+    # data to measure".
     universe = store.con.execute(
         """
-        SELECT DISTINCT u.security_id, f.fiscal_year
+        SELECT DISTINCT u.security_id, fy.fiscal_year
         FROM universe_membership u
-        JOIN (
-            SELECT DISTINCT security_id, fiscal_year
+        CROSS JOIN (
+            SELECT DISTINCT fiscal_year
             FROM fundamental_standardized
             WHERE source = ? AND fiscal_year IS NOT NULL
-        ) f ON f.security_id = u.security_id
+        ) fy
         WHERE u.universe_id = ?
           AND u.is_latest_revision
+          AND u.valid_from <= make_date(fy.fiscal_year, 12, 31)
+          AND (u.valid_to IS NULL OR u.valid_to >= make_date(fy.fiscal_year, 1, 1))
         """,
         [options.source, options.universe_id],
     ).df()
@@ -165,13 +177,27 @@ def load_item_coverage_inputs(
 def refresh_item_coverage(
     store: DuckDBStore,
     options: ItemCoverageOptions | None = None,
+    *,
+    frame: pd.DataFrame | None = None,
 ) -> int:
-    """Recompute and replace the coverage rows for this source and universe."""
+    """Recompute and replace the coverage rows for this source and universe.
+
+    The DELETE is scoped to exactly the (basis[, item_id]) slice this call
+    recomputes -- ``options.bases`` always, and ``options.item_ids`` too when
+    the caller narrowed it -- not to the whole (source, universe_id) pair. A
+    narrower refresh (e.g. ``--basis annual``) must never drop previously
+    published rows for bases/items it was not asked to recompute.
+
+    ``frame`` lets a caller that already computed the coverage frame (e.g. to
+    also render it) pass it straight through instead of paying for
+    ``load_item_coverage_inputs`` + ``compute_item_coverage_rows`` twice.
+    """
 
     options = options or ItemCoverageOptions()
     store.initialize()
-    standardized, universe = load_item_coverage_inputs(store, options)
-    frame = compute_item_coverage_rows(standardized, universe, options)
+    if frame is None:
+        standardized, universe = load_item_coverage_inputs(store, options)
+        frame = compute_item_coverage_rows(standardized, universe, options)
     if frame.empty:
         return 0
     frame = frame.copy()
@@ -183,10 +209,18 @@ def refresh_item_coverage(
     frame["available_at"] = None
     frame["run_id"] = options.run_id
     with store.transaction():
-        store.con.execute(
-            "DELETE FROM fundamental_item_coverage WHERE source = ? AND universe_id = ?",
-            [options.source, options.universe_id],
+        basis_placeholders = ", ".join("?" for _ in options.bases)
+        delete_sql = (
+            "DELETE FROM fundamental_item_coverage "
+            "WHERE source = ? AND universe_id = ? "
+            f"AND basis IN ({basis_placeholders})"
         )
+        delete_params: list[Any] = [options.source, options.universe_id, *options.bases]
+        if options.item_ids:
+            item_placeholders = ", ".join("?" for _ in options.item_ids)
+            delete_sql += f" AND item_id IN ({item_placeholders})"
+            delete_params.extend(options.item_ids)
+        store.con.execute(delete_sql, delete_params)
         store.con.register("_item_coverage_frame", frame)
         try:
             store.con.execute(
@@ -214,8 +248,19 @@ def evaluate_item_coverage_gate(
     minimum_items: int = ITEM_COVERAGE_TARGET_ITEMS,
     minimum_coverage_pct: float = ITEM_COVERAGE_TARGET_PCT,
     minimum_fiscal_year: int = ITEM_COVERAGE_TARGET_MINIMUM_FISCAL_YEAR,
+    basis: str = "annual",
 ) -> dict[str, Any]:
-    """Count items clearing the spec threshold in every in-scope fiscal year."""
+    """Count items clearing the spec threshold in every in-scope fiscal year.
+
+    The spec gate ("at least 110 items with at least 90% coverage ... for
+    FY2015+") is stated per fiscal year, i.e. over annual filings; it is
+    evaluated on the ``basis`` slice alone (default ``"annual"``) so a thin
+    quarterly/instant/ttm basis for the same item can never drag an
+    otherwise-passing annual item below threshold, or vice versa. This must
+    stay the same basis ``render_item_coverage_markdown`` renders by default,
+    or the published "Observed: N items" summary will disagree with the
+    visible table.
+    """
 
     if frame.empty:
         return {
@@ -223,10 +268,11 @@ def evaluate_item_coverage_gate(
             "target_items": minimum_items,
             "target_coverage_pct": minimum_coverage_pct,
             "minimum_fiscal_year": minimum_fiscal_year,
+            "basis": basis,
             "shortfall_items": minimum_items,
             "status": "degraded",
         }
-    scoped = frame[frame["fiscal_year"] >= minimum_fiscal_year]
+    scoped = frame[(frame["fiscal_year"] >= minimum_fiscal_year) & (frame["basis"] == basis)]
     per_item = scoped.groupby("item_id")["coverage_pct"].min()
     meeting = int((per_item >= minimum_coverage_pct).sum())
     return {
@@ -234,6 +280,7 @@ def evaluate_item_coverage_gate(
         "target_items": minimum_items,
         "target_coverage_pct": minimum_coverage_pct,
         "minimum_fiscal_year": minimum_fiscal_year,
+        "basis": basis,
         "shortfall_items": max(0, minimum_items - meeting),
         "status": "passed" if meeting >= minimum_items else "degraded",
     }
