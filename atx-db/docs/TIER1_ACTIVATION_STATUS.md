@@ -42,6 +42,16 @@ All live work and tests run sequentially with the locked project Python runtime.
 
 ## Activation result
 
+The all-form source prepass is still running. A directory-only inspection at
+19:04:53 UTC found 991,042 members in the local 1,564,656,199-byte submissions
+archive: 985,667 main CIK members, 5,374 history members and one other member.
+Declared expanded size is 5,741,005,528 bytes. These are archive member counts,
+not filing rows, completed ingestion counts, unique issuers or US-equity coverage.
+No payload or warehouse data was read by this inspection. Its separate 1 GiB
+guard recorded a 0.770 GiB peak and successful exit; the production writer kept
+its existing 3 GiB cap. Receipts: `submissions-archive-inventory.json` and
+`submissions-archive-inventory-memory.json`.
+
 Run4 loaded 3,045,440 submissions and 31,590,760 raw companyfacts rows.
 The companyfacts stage reported 8,031 targets, 7,035 loaded-target outcomes and
 996 failed targets; its old completion status did not enforce target success.

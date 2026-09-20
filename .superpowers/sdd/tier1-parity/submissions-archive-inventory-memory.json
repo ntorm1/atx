@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "C:/atx/.superpowers/sdd/tier1-parity/inventory_submissions_archive.py"
+  ],
+  "job_limit_gb": 1.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 4.422035217285156,
+    "commit_free_gb": 6.454311370849609
+  },
+  "child_pid": 17748,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.7695121765136719
+}

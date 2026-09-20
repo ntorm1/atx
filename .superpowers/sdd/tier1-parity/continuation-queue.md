@@ -2,6 +2,60 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override — 2026-09-20 19:06 UTC
+
+- Source-prepass2 remains active in submissions; no completed-stage count or
+  error. Session 44646, launcher 14440, worker 20680. At 19:05:48 UTC worker
+  private bytes were 2,583,109,632, physical headroom about 4.77 GiB. Memory has
+  fluctuated down and up; no leak or inevitable OOM was established. It retains
+  the original 1 GB / one-thread configuration and 3 GiB process guard.
+- Root performed ONE additional lightweight NON-DB inspection at 19:04:53 UTC:
+  ZIP directory only, no payloads or source transformations. Separate 1 GiB
+  guard succeeded in ~7 seconds, native peak 0.770 GiB, initial physical 4.89 GiB.
+  submissions.zip has 985,667 main CIK members, 5,374 history members, one other;
+  compressed 1,564,656,199 bytes, declared expansion 5,741,005,528 bytes. This is
+  archive scope, not progress, unique issuers, or US-equity coverage. Receipts
+  submissions-archive-inventory.json/-memory.json; helper inventory_submissions_archive.py.
+- The submissions lifecycle/progress change is READY and statically reviewed:
+  submissions-bounded-connection-review.md has no Critical/Important findings.
+  UNCOMMITTED source/tests/report await root's guarded test file run AFTER the
+  active writer exits; then followup_task its implementer to commit exact paths.
+  Active process cannot pick up the edited module. No imports/tests/DB activity
+  were performed by implementer/reviewer.
+- The measurement script/report/review also remain uncommitted, statically clean,
+  awaiting root live verification. After source completion/failure inspection:
+  run guarded production-measurement-prepass2 outputs with the new script, and
+  the focused submissions tests serially; commit those tasks, then run5 or fix
+  an actual source failure. Keep all other standing resource/merge/stash rules.
+
+## Current controller override — 2026-09-20 18:50 UTC
+
+- ACTIVE source-prepass2 remains in submissions, with no completed stage or
+  reported error yet. Session 44646; guard launcher 14440, worker 20680. At
+  18:49 UTC worker private memory was 2,442,285,056 bytes; physical headroom
+  about 5 GiB. CPU and committed WAL activity advance. Do not interrupt healthy
+  work or open the live DB/tests concurrently. Same 1 GB / one thread, guard 3 GiB.
+- A fresh Codex implementer /root/submissions_bounded_connection is preparing
+  a small PREVENTIVE connection-lifecycle/progress change in sec_submissions.py
+  and its narrow bulk tests. It is not a measured stage-failure fix and cannot
+  affect the already-imported active process. Recycle after committed batches
+  only for real file-backed stores with recorded memory/thread caps and no
+  noninternal temporary/registered relations; use existing reopen behavior.
+  It needs one static review and root tests after the writer exits, then an
+  exact-path commit. No registry/jobs/activation or schema edits are authorized.
+- Measurement script and report remain uncommitted pending root live validation.
+  Static review is clean; its one redaction wording caveat was fixed. Root should
+  use fresh production-measurement-prepass2 outputs after the live source pass.
+- SEC historical listing research is COMPLETE and committed with precise ID
+  wording in d61bd7d9. Actual FSN TXT example includes TradingSymbol/exchange/class
+  title. Official 2012-onward archives total 24,698.78 MB compressed, but pre-2019
+  tuple coverage, continuous listings and vendor instrument matching remain
+  unproved. No archive downloaded. Preserve the bounded future-ingestion brief;
+  prioritize core warehouse measurements before dispatching an adapter.
+- Root checked for an already-installed py-spy executable; none was found and
+  nothing was installed or profiled. No new tests, DB probes or source downloads
+  have run concurrently with the production writer.
+
 ## Current controller override — 2026-09-20 18:23 UTC
 
 - Source prepass2 is still healthy in tool session 44646. Launcher 14440 owns
