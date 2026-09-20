@@ -1,7 +1,174 @@
 metric_code,family,expression,window,inputs,requires_market,description,version
-gross_profit_q,rollup,"coalesce(gross_profit__1004, revenue - cost_of_revenue_cogs)",q,item:gross_profit__1004|item:revenue|item:cost_of_revenue_cogs,false,Quarterly gross profit with a revenue-less-COGS fallback.,1
-gross_profit_ttm,rollup,ttm(gross_profit_q),ttm,metric:gross_profit_q,false,Trailing-twelve-month gross profit.,1
+gross_profit_q,rollup,"coalesce(gross_profit__1004, revenue - cost_of_revenue_cogs)",q,item:gross_profit__1004|item:revenue|item:cost_of_revenue_cogs,false,Quarterly gross profit with a revenue-less-cost-of-revenue fallback.,1
+ebitda_q,rollup,"coalesce(ebitda_standardised, operating_income + d_and_a_income_statement, operating_income + d_and_a_cash_flow)",q,item:ebitda_standardised|item:operating_income|item:d_and_a_income_statement|item:d_and_a_cash_flow,false,Quarterly EBITDA with two composition fallbacks.,1
+cash_st_investments_q,rollup,"coalesce(cash_and_st_investments, cash_only + short_term_investments, cash_only)",q,item:cash_and_st_investments|item:cash_only|item:short_term_investments,false,Cash and short-term investments with composition fallbacks.,1
+common_equity_q,rollup,"coalesce(common_equity, stockholders_equity - preferred_stock, stockholders_equity)",q,item:common_equity|item:stockholders_equity|item:preferred_stock,false,Common equity with a preferred-stock deduction fallback.,1
+total_debt_q,rollup,"coalesce(total_debt, coalesce(short_term_debt, 0) + coalesce(long_term_debt, 0))",q,item:total_debt|item:short_term_debt|item:long_term_debt,false,Interest-bearing debt with a short-plus-long composition fallback.,1
+net_debt,rollup,total_debt_q - cash_st_investments_q,q,metric:total_debt_q|metric:cash_st_investments_q,false,Total debt less cash and short-term investments.,1
+capex_q,rollup,abs(capex__1305),q,item:capex__1305,false,Quarterly capital expenditure as a positive magnitude.,1
+fcf_q,rollup,cash_flow_from_operations - capex_q,q,item:cash_flow_from_operations|metric:capex_q,false,Quarterly free cash flow.,1
+invested_capital_q,rollup,"total_debt_q + common_equity_q + coalesce(minority_interest_bs, 0) - cash_st_investments_q",q,metric:total_debt_q|metric:common_equity_q|item:minority_interest_bs|metric:cash_st_investments_q,false,Invested capital net of excess cash.,1
+invested_capital_ex_goodwill_q,rollup,"invested_capital_q - coalesce(goodwill, 0)",q,metric:invested_capital_q|item:goodwill,false,Invested capital excluding goodwill.,1
 revenue_ttm,rollup,ttm(revenue),ttm,item:revenue,false,Trailing-twelve-month total revenue.,1
+cost_of_revenue_ttm,rollup,ttm(cost_of_revenue_cogs),ttm,item:cost_of_revenue_cogs,false,Trailing-twelve-month cost of revenue.,1
+gross_profit_ttm,rollup,ttm(gross_profit_q),ttm,metric:gross_profit_q,false,Trailing-twelve-month gross profit.,1
+sga_expense_ttm,rollup,ttm(sg_and_a),ttm,item:sg_and_a,false,Trailing-twelve-month selling general and administrative expense.,1
+rd_expense_ttm,rollup,ttm(r_and_d_expense),ttm,item:r_and_d_expense,false,Trailing-twelve-month research and development expense.,1
+depreciation_ttm,rollup,ttm(d_and_a_cash_flow),ttm,item:d_and_a_cash_flow,false,Trailing-twelve-month depreciation and amortization from the cash-flow statement.,1
+operating_income_ttm,rollup,ttm(operating_income),ttm,item:operating_income,false,Trailing-twelve-month operating income.,1
+ebitda_ttm,rollup,ttm(ebitda_q),ttm,metric:ebitda_q,false,Trailing-twelve-month EBITDA.,1
+interest_expense_ttm,rollup,ttm(interest_expense_total),ttm,item:interest_expense_total,false,Trailing-twelve-month total interest expense.,1
+pretax_income_ttm,rollup,ttm(pretax_income),ttm,item:pretax_income,false,Trailing-twelve-month pretax income.,1
+income_tax_ttm,rollup,ttm(income_tax_total),ttm,item:income_tax_total,false,Trailing-twelve-month total income tax expense.,1
+net_income_ttm,rollup,ttm(net_income_total),ttm,item:net_income_total,false,Trailing-twelve-month net income.,1
+net_income_common_ttm,rollup,ttm(net_income_to_common),ttm,item:net_income_to_common,false,Trailing-twelve-month net income available to common.,1
+eps_diluted_ttm,rollup,ttm(eps_diluted),ttm,item:eps_diluted,false,Trailing-twelve-month diluted earnings per share.,1
+cfo_ttm,rollup,ttm(cash_flow_from_operations),ttm,item:cash_flow_from_operations,false,Trailing-twelve-month cash flow from operations.,1
+capex_ttm,rollup,ttm(capex_q),ttm,metric:capex_q,false,Trailing-twelve-month capital expenditure.,1
+fcf_ttm,rollup,ttm(fcf_q),ttm,metric:fcf_q,false,Trailing-twelve-month free cash flow.,1
+dividends_paid_ttm,rollup,ttm(total_dividends_paid),ttm,item:total_dividends_paid,false,Trailing-twelve-month total dividends paid.,1
+common_dividends_ttm,rollup,ttm(common_dividends_paid),ttm,item:common_dividends_paid,false,Trailing-twelve-month common dividends paid.,1
+share_repurchase_ttm,rollup,ttm(stock_repurchases_buybacks),ttm,item:stock_repurchases_buybacks,false,Trailing-twelve-month share repurchases.,1
+share_issuance_ttm,rollup,ttm(stock_issuance),ttm,item:stock_issuance,false,Trailing-twelve-month share issuance.,1
+debt_issuance_ttm,rollup,ttm(lt_debt_issued),ttm,item:lt_debt_issued,false,Trailing-twelve-month long-term debt issued.,1
+debt_reduction_ttm,rollup,ttm(lt_debt_repaid),ttm,item:lt_debt_repaid,false,Trailing-twelve-month long-term debt repaid.,1
+stock_compensation_ttm,rollup,ttm(stock_based_compensation),ttm,item:stock_based_compensation,false,Trailing-twelve-month stock-based compensation.,1
+acquisitions_ttm,rollup,ttm(acquisitions),ttm,item:acquisitions,false,Trailing-twelve-month cash paid for acquisitions.,1
+total_payout_ttm,rollup,common_dividends_ttm + share_repurchase_ttm - share_issuance_ttm,ttm,metric:common_dividends_ttm|metric:share_repurchase_ttm|metric:share_issuance_ttm,false,Trailing-twelve-month net payout to common shareholders.,1
 total_assets_avg2,rollup,avg2(total_assets),avg2,item:total_assets,false,Average of current and four-quarters-prior total assets.,1
+stockholders_equity_avg2,rollup,avg2(stockholders_equity),avg2,item:stockholders_equity,false,Average of current and four-quarters-prior stockholders equity.,1
+common_equity_avg2,rollup,avg2(common_equity_q),avg2,metric:common_equity_q,false,Average of current and four-quarters-prior common equity.,1
+inventory_avg2,rollup,avg2(inventory),avg2,item:inventory,false,Average of current and four-quarters-prior inventory.,1
+receivables_avg2,rollup,avg2(accounts_receivable),avg2,item:accounts_receivable,false,Average of current and four-quarters-prior receivables.,1
+payables_avg2,rollup,avg2(accounts_payable),avg2,item:accounts_payable,false,Average of current and four-quarters-prior payables.,1
+total_debt_avg2,rollup,avg2(total_debt_q),avg2,metric:total_debt_q,false,Average of current and four-quarters-prior total debt.,1
+invested_capital_avg2,rollup,avg2(invested_capital_q),avg2,metric:invested_capital_q,false,Average of current and four-quarters-prior invested capital.,1
+invested_capital_ex_goodwill_avg2,rollup,avg2(invested_capital_ex_goodwill_q),avg2,metric:invested_capital_ex_goodwill_q,false,Average invested capital excluding goodwill.,1
+eps_ttm,per_share,"safe_div(net_income_common_ttm, weighted_avg_shares_diluted)",ttm,metric:net_income_common_ttm|item:weighted_avg_shares_diluted,false,Trailing-twelve-month earnings per diluted share.,1
+sales_per_share,per_share,"safe_div(revenue_ttm, shares_outstanding_period_end)",ttm,metric:revenue_ttm|item:shares_outstanding_period_end,false,Trailing-twelve-month revenue per period-end share.,1
+book_per_share,per_share,"safe_div(common_equity_q, shares_outstanding_period_end)",q,metric:common_equity_q|item:shares_outstanding_period_end,false,Common book value per period-end share.,1
+tangible_book_value_per_share,per_share,"safe_div(common_equity_q - coalesce(goodwill, 0) - coalesce(other_intangibles, 0), shares_outstanding_period_end)",q,metric:common_equity_q|item:goodwill|item:other_intangibles|item:shares_outstanding_period_end,false,Tangible common book value per period-end share.,1
+cfo_per_share,per_share,"safe_div(cfo_ttm, shares_outstanding_period_end)",ttm,metric:cfo_ttm|item:shares_outstanding_period_end,false,Trailing-twelve-month operating cash flow per share.,1
+fcf_per_share,per_share,"safe_div(fcf_ttm, shares_outstanding_period_end)",ttm,metric:fcf_ttm|item:shares_outstanding_period_end,false,Trailing-twelve-month free cash flow per share.,1
+dividends_per_share_ttm,per_share,"safe_div(common_dividends_ttm, shares_outstanding_period_end)",ttm,metric:common_dividends_ttm|item:shares_outstanding_period_end,false,Trailing-twelve-month common dividends per share.,1
+cash_per_share,per_share,"safe_div(cash_st_investments_q, shares_outstanding_period_end)",q,metric:cash_st_investments_q|item:shares_outstanding_period_end,false,Cash and short-term investments per period-end share.,1
 gross_margin,profitability,"safe_div(gross_profit_ttm, revenue_ttm)",ttm,metric:gross_profit_ttm|metric:revenue_ttm,false,Trailing-twelve-month gross margin.,1
+operating_margin,profitability,"safe_div(operating_income_ttm, revenue_ttm)",ttm,metric:operating_income_ttm|metric:revenue_ttm,false,Trailing-twelve-month operating margin.,1
+net_margin,profitability,"safe_div(net_income_ttm, revenue_ttm)",ttm,metric:net_income_ttm|metric:revenue_ttm,false,Trailing-twelve-month net margin.,1
+ebitda_margin,profitability,"safe_div(ebitda_ttm, revenue_ttm)",ttm,metric:ebitda_ttm|metric:revenue_ttm,false,Trailing-twelve-month EBITDA margin.,1
+effective_tax_rate_ttm,profitability,"safe_div(income_tax_ttm, pretax_income_ttm)",ttm,metric:income_tax_ttm|metric:pretax_income_ttm,false,Trailing-twelve-month effective tax rate.,1
+nopat_ttm,profitability,operating_income_ttm * (1 - effective_tax_rate_ttm),ttm,metric:operating_income_ttm|metric:effective_tax_rate_ttm,false,Trailing-twelve-month net operating profit after tax.,1
+roa,profitability,"safe_div(net_income_ttm, total_assets_avg2)",ttm,metric:net_income_ttm|metric:total_assets_avg2,false,Return on average total assets.,1
+roe,profitability,"safe_div(net_income_common_ttm, common_equity_avg2)",ttm,metric:net_income_common_ttm|metric:common_equity_avg2,false,Return on average common equity.,1
+roic,profitability,"safe_div(nopat_ttm, invested_capital_avg2)",ttm,metric:nopat_ttm|metric:invested_capital_avg2,false,Return on average invested capital.,1
+roic_ex_goodwill,profitability,"safe_div(nopat_ttm, invested_capital_ex_goodwill_avg2)",ttm,metric:nopat_ttm|metric:invested_capital_ex_goodwill_avg2,false,Return on average invested capital excluding goodwill.,1
 gross_profitability,profitability,"safe_div(gross_profit_ttm, total_assets_avg2)",ttm,metric:gross_profit_ttm|metric:total_assets_avg2,false,Novy-Marx gross profitability on average assets.,1
+operating_profitability,profitability,"safe_div(operating_income_ttm, total_assets_avg2)",ttm,metric:operating_income_ttm|metric:total_assets_avg2,false,Operating profitability on average assets.,1
+change_in_receivables_ttm,profitability,"accounts_receivable - lag(accounts_receivable, 4)",ttm,item:accounts_receivable,false,Year-over-year change in receivables.,1
+change_in_inventory_ttm,profitability,"inventory - lag(inventory, 4)",ttm,item:inventory,false,Year-over-year change in inventory.,1
+change_in_payables_ttm,profitability,"accounts_payable - lag(accounts_payable, 4)",ttm,item:accounts_payable,false,Year-over-year change in payables.,1
+cash_profitability,profitability,"safe_div(operating_income_ttm + depreciation_ttm - change_in_receivables_ttm - change_in_inventory_ttm + change_in_payables_ttm, total_assets_avg2)",ttm,metric:operating_income_ttm|metric:depreciation_ttm|metric:change_in_receivables_ttm|metric:change_in_inventory_ttm|metric:change_in_payables_ttm|metric:total_assets_avg2,false,Ball-Gerakos-Linnainmaa-Nikolaev cash-based operating profitability.,1
+asset_turnover,profitability,"safe_div(revenue_ttm, total_assets_avg2)",ttm,metric:revenue_ttm|metric:total_assets_avg2,false,Revenue over average total assets.,1
+cfo_to_assets,profitability,"safe_div(cfo_ttm, total_assets_avg2)",ttm,metric:cfo_ttm|metric:total_assets_avg2,false,Operating cash flow over average total assets.,1
+revenue_growth_yoy,growth,yoy(revenue_ttm),ttm,metric:revenue_ttm,false,Year-over-year trailing revenue growth.,1
+gross_profit_growth_yoy,growth,yoy(gross_profit_ttm),ttm,metric:gross_profit_ttm,false,Year-over-year trailing gross-profit growth.,1
+operating_income_growth_yoy,growth,yoy(operating_income_ttm),ttm,metric:operating_income_ttm,false,Year-over-year trailing operating-income growth.,1
+net_income_growth_yoy,growth,yoy(net_income_ttm),ttm,metric:net_income_ttm,false,Year-over-year trailing net-income growth.,1
+eps_diluted_growth_yoy,growth,yoy(eps_diluted_ttm),ttm,metric:eps_diluted_ttm,false,Year-over-year trailing diluted-EPS growth.,1
+cfo_growth_yoy,growth,yoy(cfo_ttm),ttm,metric:cfo_ttm,false,Year-over-year trailing operating-cash-flow growth.,1
+fcf_growth_yoy,growth,yoy(fcf_ttm),ttm,metric:fcf_ttm,false,Year-over-year trailing free-cash-flow growth.,1
+capex_growth_yoy,growth,yoy(capex_ttm),ttm,metric:capex_ttm,false,Year-over-year trailing capital-expenditure growth.,1
+rd_expense_growth_yoy,growth,yoy(rd_expense_ttm),ttm,metric:rd_expense_ttm,false,Year-over-year trailing research-and-development growth.,1
+tax_expense_change_yoy,growth,yoy(income_tax_ttm),ttm,metric:income_tax_ttm,false,Year-over-year trailing tax-expense growth.,1
+asset_growth,growth,yoy(total_assets),q,item:total_assets,false,Year-over-year total-asset growth.,1
+shares_growth_yoy,growth,yoy(shares_outstanding_period_end),q,item:shares_outstanding_period_end,false,Year-over-year period-end share-count growth.,1
+book_value_growth_yoy,growth,yoy(common_equity_q),q,metric:common_equity_q,false,Year-over-year common book-value growth.,1
+revenue_growth_qoq,growth,qoq(revenue_ttm),ttm,metric:revenue_ttm,false,Quarter-over-quarter trailing revenue growth.,1
+eps_diluted_growth_qoq,growth,qoq(eps_diluted_ttm),ttm,metric:eps_diluted_ttm,false,Quarter-over-quarter trailing diluted-EPS growth.,1
+revenue_cagr_1y,growth,"cagr(revenue_ttm, 1)",ttm,metric:revenue_ttm,false,One-year compound annual trailing revenue growth.,1
+revenue_cagr_3y,growth,"cagr(revenue_ttm, 3)",ttm,metric:revenue_ttm,false,Three-year compound annual trailing revenue growth.,1
+eps_cagr_3y,growth,"cagr(eps_diluted_ttm, 3)",ttm,metric:eps_diluted_ttm,false,Three-year compound annual trailing diluted-EPS growth.,1
+cfo_cagr_3y,growth,"cagr(cfo_ttm, 3)",ttm,metric:cfo_ttm,false,Three-year compound annual trailing operating-cash-flow growth.,1
+total_assets_cagr_3y,growth,"cagr(total_assets, 3)",q,item:total_assets,false,Three-year compound annual total-asset growth.,1
+gross_margin_change_yoy,growth,"gross_margin - lag(gross_margin, 4)",ttm,metric:gross_margin,false,Year-over-year change in trailing gross margin.,1
+operating_margin_change_yoy,growth,"operating_margin - lag(operating_margin, 4)",ttm,metric:operating_margin,false,Year-over-year change in trailing operating margin.,1
+net_margin_change_yoy,growth,"net_margin - lag(net_margin, 4)",ttm,metric:net_margin,false,Year-over-year change in trailing net margin.,1
+asset_turnover_change_yoy,growth,"asset_turnover - lag(asset_turnover, 4)",ttm,metric:asset_turnover,false,Year-over-year change in asset turnover.,1
+operating_profitability_change_yoy,growth,"operating_profitability - lag(operating_profitability, 4)",ttm,metric:operating_profitability,false,Year-over-year change in operating profitability.,1
+roe_change_yoy,growth,"roe - lag(roe, 4)",ttm,metric:roe,false,Year-over-year change in return on equity.,1
+debt_to_equity,leverage,"safe_div(total_debt_q, stockholders_equity)",q,metric:total_debt_q|item:stockholders_equity,false,Total debt over stockholders equity.,1
+debt_to_assets,leverage,"safe_div(total_debt_q, total_assets)",q,metric:total_debt_q|item:total_assets,false,Total debt over total assets.,1
+long_term_debt_to_assets,leverage,"safe_div(long_term_debt, total_assets)",q,item:long_term_debt|item:total_assets,false,Long-term debt over total assets.,1
+net_debt_ebitda,leverage,"safe_div(net_debt, ebitda_ttm)",ttm,metric:net_debt|metric:ebitda_ttm,false,Net debt over trailing EBITDA.,1
+interest_coverage,leverage,"safe_div(operating_income_ttm, abs(interest_expense_ttm))",ttm,metric:operating_income_ttm|metric:interest_expense_ttm,false,Trailing operating income over absolute interest expense.,1
+current_ratio,leverage,"safe_div(current_assets, current_liabilities)",q,item:current_assets|item:current_liabilities,false,Current assets over current liabilities.,1
+quick_ratio,leverage,"safe_div(current_assets - coalesce(inventory, 0), current_liabilities)",q,item:current_assets|item:inventory|item:current_liabilities,false,Current assets less inventory over current liabilities.,1
+cash_ratio,leverage,"safe_div(cash_st_investments_q, current_liabilities)",q,metric:cash_st_investments_q|item:current_liabilities,false,Cash and short-term investments over current liabilities.,1
+total_accruals,quality,"safe_div(net_income_ttm - cfo_ttm, total_assets_avg2)",ttm,metric:net_income_ttm|metric:cfo_ttm|metric:total_assets_avg2,false,Sloan cash-flow-statement total accruals scaled by average assets.,1
+percent_accruals,quality,"safe_div(net_income_ttm - cfo_ttm, abs(net_income_ttm))",ttm,metric:net_income_ttm|metric:cfo_ttm,false,Total accruals scaled by absolute trailing earnings.,1
+noa,quality,(total_assets - cash_st_investments_q) - (total_liabilities - total_debt_q),q,item:total_assets|metric:cash_st_investments_q|item:total_liabilities|metric:total_debt_q,false,Net operating assets: operating assets less operating liabilities.,1
+noa_to_assets,quality,"safe_div(noa, lag(total_assets, 4))",q,metric:noa|item:total_assets,false,Net operating assets scaled by lagged total assets.,1
+delta_noa,quality,"safe_div(noa - lag(noa, 4), lag(total_assets, 4))",q,metric:noa|item:total_assets,false,Year-over-year change in net operating assets scaled by lagged assets.,1
+operating_working_capital_q,quality,"(current_assets - cash_st_investments_q) - (current_liabilities - coalesce(short_term_debt, 0))",q,item:current_assets|metric:cash_st_investments_q|item:current_liabilities|item:short_term_debt,false,Operating working capital excluding cash and short-term debt.,1
+working_capital_accruals,quality,"safe_div(operating_working_capital_q - lag(operating_working_capital_q, 4), total_assets_avg2)",ttm,metric:operating_working_capital_q|metric:total_assets_avg2,false,Year-over-year change in operating working capital scaled by average assets.,1
+rsst_accruals,quality,"safe_div((noa - lag(noa, 4)) + (coalesce(long_term_investments, 0) - lag(coalesce(long_term_investments, 0), 4)) + (total_debt_q - lag(total_debt_q, 4)), total_assets_avg2)",ttm,metric:noa|item:long_term_investments|metric:total_debt_q|metric:total_assets_avg2,false,Richardson-Sloan-Soliman-Tuna broad accruals scaled by average assets.,1
+earnings_variability,quality,"stdev_q(eps_diluted_growth_yoy, 12)",ttm,metric:eps_diluted_growth_yoy,false,Twelve-quarter sample standard deviation of year-over-year diluted-EPS growth.,1
+piotroski_f,quality,"indicator_gt(roa, 0) + indicator_gt(cfo_to_assets, 0) + indicator_gt(roa - lag(roa, 4), 0) + indicator_gt(cfo_to_assets, roa) + indicator_lt(long_term_debt_to_assets - lag(long_term_debt_to_assets, 4), 0) + indicator_gt(current_ratio - lag(current_ratio, 4), 0) + indicator_lt(shares_growth_yoy, 0.00001) + indicator_gt(gross_margin - lag(gross_margin, 4), 0) + indicator_gt(asset_turnover - lag(asset_turnover, 4), 0)",ttm,metric:roa|metric:cfo_to_assets|metric:long_term_debt_to_assets|metric:current_ratio|metric:shares_growth_yoy|metric:gross_margin|metric:asset_turnover,false,Piotroski nine-signal fundamental strength score.,1
+altman_z_book,quality,"1.2 * safe_div(current_assets - current_liabilities, total_assets) + 1.4 * safe_div(retained_earnings, total_assets) + 3.3 * safe_div(operating_income_ttm, total_assets) + 0.6 * safe_div(common_equity_q, total_liabilities) + safe_div(revenue_ttm, total_assets)",ttm,item:current_assets|item:current_liabilities|item:total_assets|item:retained_earnings|metric:operating_income_ttm|metric:common_equity_q|item:total_liabilities|metric:revenue_ttm,false,Altman Z-score with book equity in the fourth term.,1
+beneish_dsri,quality,"safe_div(safe_div(accounts_receivable, revenue_ttm), lag(safe_div(accounts_receivable, revenue_ttm), 4))",ttm,item:accounts_receivable|metric:revenue_ttm,false,Beneish days-sales-in-receivables index.,1
+beneish_gmi,quality,"safe_div(lag(gross_margin, 4), gross_margin)",ttm,metric:gross_margin,false,Beneish gross-margin index.,1
+beneish_aqi,quality,"safe_div(safe_div(total_assets - current_assets - pp_and_e_net, total_assets), lag(safe_div(total_assets - current_assets - pp_and_e_net, total_assets), 4))",ttm,item:total_assets|item:current_assets|item:pp_and_e_net,false,Beneish asset-quality index.,1
+beneish_sgi,quality,"safe_div(revenue_ttm, lag(revenue_ttm, 4))",ttm,metric:revenue_ttm,false,Beneish sales-growth index.,1
+beneish_depi,quality,"safe_div(lag(safe_div(depreciation_ttm, depreciation_ttm + pp_and_e_net), 4), safe_div(depreciation_ttm, depreciation_ttm + pp_and_e_net))",ttm,metric:depreciation_ttm|item:pp_and_e_net,false,Beneish depreciation index.,1
+beneish_sgai,quality,"safe_div(safe_div(sga_expense_ttm, revenue_ttm), lag(safe_div(sga_expense_ttm, revenue_ttm), 4))",ttm,metric:sga_expense_ttm|metric:revenue_ttm,false,Beneish selling-general-and-administrative index.,1
+beneish_tata,quality,"safe_div(net_income_ttm - cfo_ttm, total_assets)",ttm,metric:net_income_ttm|metric:cfo_ttm|item:total_assets,false,Beneish total-accruals-to-total-assets term.,1
+beneish_lvgi,quality,"safe_div(safe_div(total_liabilities, total_assets), lag(safe_div(total_liabilities, total_assets), 4))",ttm,item:total_liabilities|item:total_assets,false,Beneish leverage index.,1
+beneish_m,quality,-4.84 + 0.92 * beneish_dsri + 0.528 * beneish_gmi + 0.404 * beneish_aqi + 0.892 * beneish_sgi + 0.115 * beneish_depi - 0.172 * beneish_sgai + 4.679 * beneish_tata - 0.327 * beneish_lvgi,ttm,metric:beneish_dsri|metric:beneish_gmi|metric:beneish_aqi|metric:beneish_sgi|metric:beneish_depi|metric:beneish_sgai|metric:beneish_tata|metric:beneish_lvgi,false,Beneish eight-variable earnings-manipulation M-score.,1
+ohlson_tlta,quality,"safe_div(total_liabilities, total_assets)",q,item:total_liabilities|item:total_assets,false,Ohlson total-liabilities-to-total-assets term.,1
+ohlson_wcta,quality,"safe_div(current_assets - current_liabilities, total_assets)",q,item:current_assets|item:current_liabilities|item:total_assets,false,Ohlson working-capital-to-total-assets term.,1
+ohlson_clca,quality,"safe_div(current_liabilities, current_assets)",q,item:current_liabilities|item:current_assets,false,Ohlson current-liabilities-to-current-assets term.,1
+ohlson_oeneg,quality,"indicator_gt(total_liabilities, total_assets)",q,item:total_liabilities|item:total_assets,false,Ohlson negative-book-equity indicator.,1
+ohlson_nita,quality,"safe_div(net_income_ttm, total_assets)",ttm,metric:net_income_ttm|item:total_assets,false,Ohlson net-income-to-total-assets term.,1
+ohlson_futl,quality,"safe_div(cfo_ttm, total_liabilities)",ttm,metric:cfo_ttm|item:total_liabilities,false,Ohlson funds-from-operations-to-total-liabilities term.,1
+ohlson_intwo,quality,"indicator_lt(net_income_ttm, 0) * indicator_lt(lag(net_income_ttm, 4), 0)",ttm,metric:net_income_ttm,false,Ohlson two-consecutive-loss-years indicator.,1
+ohlson_chin,quality,"safe_div(net_income_ttm - lag(net_income_ttm, 4), abs(net_income_ttm) + abs(lag(net_income_ttm, 4)))",ttm,metric:net_income_ttm,false,Ohlson scaled change-in-net-income term.,1
+ohlson_o,quality,-1.32 - 0.407 * ln(total_assets) + 6.03 * ohlson_tlta - 1.43 * ohlson_wcta + 0.0757 * ohlson_clca - 1.72 * ohlson_oeneg - 2.37 * ohlson_nita - 1.83 * ohlson_futl + 0.285 * ohlson_intwo - 0.521 * ohlson_chin,ttm,item:total_assets|metric:ohlson_tlta|metric:ohlson_wcta|metric:ohlson_clca|metric:ohlson_oeneg|metric:ohlson_nita|metric:ohlson_futl|metric:ohlson_intwo|metric:ohlson_chin,false,Ohlson O-score bankruptcy probability index without the GNP price-level deflator.,1
+capex_to_depreciation,investment,"safe_div(capex_ttm, depreciation_ttm)",ttm,metric:capex_ttm|metric:depreciation_ttm,false,Trailing capital expenditure over trailing depreciation.,1
+capex_to_sales,investment,"safe_div(capex_ttm, revenue_ttm)",ttm,metric:capex_ttm|metric:revenue_ttm,false,Trailing capital expenditure over trailing revenue.,1
+rd_intensity_sales,investment,"safe_div(rd_expense_ttm, revenue_ttm)",ttm,metric:rd_expense_ttm|metric:revenue_ttm,false,Trailing research-and-development expense over trailing revenue.,1
+net_equity_issuance,investment,"safe_div(share_issuance_ttm - share_repurchase_ttm, total_assets_avg2)",ttm,metric:share_issuance_ttm|metric:share_repurchase_ttm|metric:total_assets_avg2,false,Net equity issued scaled by average total assets.,1
+net_debt_issuance,investment,"safe_div(debt_issuance_ttm - debt_reduction_ttm, total_assets_avg2)",ttm,metric:debt_issuance_ttm|metric:debt_reduction_ttm|metric:total_assets_avg2,false,Net long-term debt issued scaled by average total assets.,1
+external_financing,investment,net_equity_issuance + net_debt_issuance,ttm,metric:net_equity_issuance|metric:net_debt_issuance,false,Total net external financing scaled by average total assets.,1
+tax_to_book_income,investment,"safe_div(income_tax_ttm, net_income_ttm)",ttm,metric:income_tax_ttm|metric:net_income_ttm,false,Trailing tax expense over trailing net income.,1
+payout_ratio,payout,"safe_div(common_dividends_ttm, net_income_common_ttm)",ttm,metric:common_dividends_ttm|metric:net_income_common_ttm,false,Trailing common dividends over trailing earnings available to common.,1
+buyback_ratio,payout,"safe_div(share_repurchase_ttm - share_issuance_ttm, total_assets_avg2)",ttm,metric:share_repurchase_ttm|metric:share_issuance_ttm|metric:total_assets_avg2,false,Net buybacks scaled by average total assets.,1
+market_cap,market,close * shares_outstanding,daily,market:close|market:shares_outstanding,true,Price times point-in-time shares outstanding.,1
+enterprise_value,market,"market_cap + total_debt_q + coalesce(preferred_stock, 0) + coalesce(minority_interest_bs, 0) - cash_st_investments_q",daily,metric:market_cap|metric:total_debt_q|item:preferred_stock|item:minority_interest_bs|metric:cash_st_investments_q,true,Market cap plus debt preferred and minority interest less cash.,1
+pe_ttm,market,"safe_div(market_cap, net_income_common_ttm)",daily,metric:market_cap|metric:net_income_common_ttm,true,Price to trailing earnings available to common.,1
+pb_ratio,market,"safe_div(market_cap, common_equity_q)",daily,metric:market_cap|metric:common_equity_q,true,Price to common book value.,1
+ps_ttm,market,"safe_div(market_cap, revenue_ttm)",daily,metric:market_cap|metric:revenue_ttm,true,Price to trailing revenue.,1
+pcf_ttm,market,"safe_div(market_cap, cfo_ttm)",daily,metric:market_cap|metric:cfo_ttm,true,Price to trailing operating cash flow.,1
+ev_ebitda,market,"safe_div(enterprise_value, ebitda_ttm)",daily,metric:enterprise_value|metric:ebitda_ttm,true,Enterprise value to trailing EBITDA.,1
+ev_sales,market,"safe_div(enterprise_value, revenue_ttm)",daily,metric:enterprise_value|metric:revenue_ttm,true,Enterprise value to trailing revenue.,1
+fcf_yield,market,"safe_div(fcf_ttm, market_cap)",daily,metric:fcf_ttm|metric:market_cap,true,Trailing free cash flow over market cap.,1
+dividend_yield,market,"safe_div(common_dividends_ttm, market_cap)",daily,metric:common_dividends_ttm|metric:market_cap,true,Trailing common dividends over market cap.,1
+earnings_yield,market,"safe_div(net_income_common_ttm, market_cap)",daily,metric:net_income_common_ttm|metric:market_cap,true,Trailing earnings available to common over market cap.,1
+shareholder_yield,market,"safe_div(total_payout_ttm + debt_reduction_ttm - debt_issuance_ttm, market_cap)",daily,metric:total_payout_ttm|metric:debt_reduction_ttm|metric:debt_issuance_ttm|metric:market_cap,true,Net payout plus net debt paydown over market cap.,1
+net_payout_yield,market,"safe_div(total_payout_ttm, market_cap)",daily,metric:total_payout_ttm|metric:market_cap,true,Dividends plus net buybacks over market cap.,1
+total_payout_yield,market,"safe_div(common_dividends_ttm + share_repurchase_ttm, market_cap)",daily,metric:common_dividends_ttm|metric:share_repurchase_ttm|metric:market_cap,true,Gross dividends plus gross buybacks over market cap.,1
+buyback_yield,market,"safe_div(share_repurchase_ttm - share_issuance_ttm, market_cap)",daily,metric:share_repurchase_ttm|metric:share_issuance_ttm|metric:market_cap,true,Net buybacks over market cap.,1
+book_to_market,market,"safe_div(common_equity_q, market_cap)",daily,metric:common_equity_q|metric:market_cap,true,Common book value over market cap.,1
+rd_to_market_equity,market,"safe_div(rd_expense_ttm, market_cap)",daily,metric:rd_expense_ttm|metric:market_cap,true,Trailing research-and-development expense over market cap.,1
+gross_profit_to_ev,market,"safe_div(gross_profit_ttm, enterprise_value)",daily,metric:gross_profit_ttm|metric:enterprise_value,true,Trailing gross profit over enterprise value.,1
+cfo_to_ev,market,"safe_div(cfo_ttm, enterprise_value)",daily,metric:cfo_ttm|metric:enterprise_value,true,Trailing operating cash flow over enterprise value.,1
+ebit_to_ev,market,"safe_div(operating_income_ttm, enterprise_value)",daily,metric:operating_income_ttm|metric:enterprise_value,true,Trailing operating income over enterprise value.,1
+sales_to_ev,market,"safe_div(revenue_ttm, enterprise_value)",daily,metric:revenue_ttm|metric:enterprise_value,true,Trailing revenue over enterprise value.,1
+altman_z,market,"1.2 * safe_div(current_assets - current_liabilities, total_assets) + 1.4 * safe_div(retained_earnings, total_assets) + 3.3 * safe_div(operating_income_ttm, total_assets) + 0.6 * safe_div(market_cap, total_liabilities) + safe_div(revenue_ttm, total_assets)",daily,item:current_assets|item:current_liabilities|item:total_assets|item:retained_earnings|metric:operating_income_ttm|metric:market_cap|item:total_liabilities|metric:revenue_ttm,true,Altman Z-score with market equity in the fourth term.,1
+total_return_1m,market,"tret(adj_close, 21)",daily,market:adj_close,true,Twenty-one-trading-day total return.,1
+total_return_3m,market,"tret(adj_close, 63)",daily,market:adj_close,true,Sixty-three-trading-day total return.,1
+total_return_6m,market,"tret(adj_close, 126)",daily,market:adj_close,true,One-hundred-twenty-six-trading-day total return.,1
+total_return_12m,market,"tret(adj_close, 252)",daily,market:adj_close,true,Two-hundred-fifty-two-trading-day total return.,1
+momentum_12_1,market,"safe_div(1 + tret(adj_close, 252), 1 + tret(adj_close, 21)) - 1",daily,market:adj_close,true,Twelve-month total return skipping the most recent month.,1
+realized_vol_60d,market,"rvol(log_return, 60)",daily,market:log_return,true,Annualized sixty-day realized volatility of daily log returns.,1
+realized_vol_252d,market,"rvol(log_return, 252)",daily,market:log_return,true,Annualized two-hundred-fifty-two-day realized volatility of daily log returns.,1
+dollar_volume_20d,market,"avg_d(close * volume, 20)",daily,market:close|market:volume,true,Twenty-day average daily dollar volume.,1

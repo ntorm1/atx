@@ -29,6 +29,7 @@ from .warehouse import now_utc_naive
 __all__ = [
     "DERIVED_SEED_COLUMNS",
     "DERIVED_SEED_PATH",
+    "DERIVED_SOURCE_NAME",
     "MARKET_COLUMNS",
     "METRIC_WINDOWS",
     "QUARTER_GRID_WINDOWS",
@@ -62,6 +63,10 @@ MARKET_COLUMNS = frozenset(
 )
 _METRIC_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
 _NAMESPACES = ("item:", "metric:", "market:")
+
+#: Stable provenance tag for rows this engine writes, consumed by downstream
+#: readers (Tasks 5/6/7) that need to attribute a value to this seed generation.
+DERIVED_SOURCE_NAME = "atx-db declarative derived metrics v1"
 
 #: Registry codes on the ``derived`` statement that the engine deliberately owns.
 #: Every member must be in :func:`derived_statement_item_codes`; those rows have
