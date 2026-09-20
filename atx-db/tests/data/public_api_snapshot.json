@@ -278,6 +278,7 @@
     "delisting_return_observations_asof",
     "delta_roe",
     "derived_dsl",
+    "derived_metrics",
     "derived_registry",
     "detect_rowcount_anomalies",
     "earnings_acceleration",
