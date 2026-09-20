@@ -666,14 +666,15 @@ def test_terminal_return_policy_dim_is_seeded_and_catalogued_idempotently(tmp_st
     from atx_db.delisting import TERMINAL_RETURN_POLICY_ROWS
     from atx_db.migrations.registry import MIGRATIONS
 
+    # S4 T4: a 7th row (performance_unknown, the Shumway convention) is seeded by migration 0306.
     expected_codes = {row[0] for row in TERMINAL_RETURN_POLICY_ROWS}
-    assert len(expected_codes) == 6
+    assert len(expected_codes) == 7
 
     rows = tmp_store.con.execute(
         "SELECT policy_code FROM terminal_return_policy_dim ORDER BY policy_code"
     ).fetchall()
     assert {row[0] for row in rows} == expected_codes
-    assert len(rows) == 6
+    assert len(rows) == 7
 
     migration_0185 = next(m for m in MIGRATIONS if m.version == 185)
     migration_0185.up(tmp_store.con)
@@ -681,7 +682,7 @@ def test_terminal_return_policy_dim_is_seeded_and_catalogued_idempotently(tmp_st
     rows_after = tmp_store.con.execute(
         "SELECT policy_code FROM terminal_return_policy_dim ORDER BY policy_code"
     ).fetchall()
-    assert len(rows_after) == 6
+    assert len(rows_after) == 7
     assert {row[0] for row in rows_after} == expected_codes
 
 

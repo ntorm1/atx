@@ -28,6 +28,21 @@ SOURCE_NAME = "ATX public delisting proxy builder"
 DEFAULT_SOURCE = "atx_delisting_proxy_v1"
 DEFAULT_CODE_SOURCE = "atx_delist_code_dim_v1"
 
+# Shumway (1997), "The Delisting Bias in CRSP Data", Journal of Finance 52(1): the mean
+# delisting return for NYSE/AMEX performance-related delistings is about -30%. Shumway &
+# Warther (1999), JF 54(6), estimate about -55% for Nasdaq. These are named conventions, not
+# observations. S4 preflight ruling (program.md): the convention is ON by default --
+# DelistingTerminalReturnOptions.performance_delisting_return defaults to
+# SHUMWAY_PERFORMANCE_DELISTING_RETURN -- and an operator opts OUT by passing
+# performance_delisting_return=None. Whichever value is used, any row produced this way is
+# stamped terminal_return_policy='performance_unknown' and return_basis='shumway_default'
+# so a consumer can always filter imputed rows back out, and the coverage gate in
+# quality/checks_survivorship.py makes an unset/uncovered gap loud either way.
+SHUMWAY_PERFORMANCE_DELISTING_RETURN = -0.30
+SHUMWAY_NASDAQ_PERFORMANCE_DELISTING_RETURN = -0.55
+PERFORMANCE_TERMINAL_RETURN_POLICY_CODE = "performance_unknown"
+PERFORMANCE_DELIST_REASONS = frozenset({"bankruptcy", "exchange_delist", "unknown"})
+
 
 @dataclass(frozen=True)
 class DelistingEventOptions:
@@ -81,6 +96,71 @@ DELIST_CODE_ROWS = (
         False,
         None,
         "none",
+        DEFAULT_CODE_SOURCE,
+    ),
+    (
+        "SEC_FORM_25",
+        "ATX_PUBLIC_EVIDENCE",
+        None,
+        None,
+        "SEC_FORM_25_NOTIFICATION",
+        "exchange_delist",
+        (
+            "SEC Form 25 / 25-NSE notification of removal from listing and registration. "
+            "25-NSE is exchange-initiated; a bare 25 is issuer-initiated."
+        ),
+        "DELISTED_FORM_25",
+        True,
+        SHUMWAY_PERFORMANCE_DELISTING_RETURN,
+        "performance_related_when_no_merger_evidence",
+        DEFAULT_CODE_SOURCE,
+    ),
+    (
+        "SEC_FORM_15",
+        "ATX_PUBLIC_EVIDENCE",
+        None,
+        None,
+        "SEC_FORM_15_DEREGISTRATION",
+        "voluntary",
+        (
+            "SEC Form 15 deregistration / suspension of the duty to file. A voluntary exit "
+            "from reporting, not a performance delisting."
+        ),
+        "DEREGISTERED_FORM_15",
+        False,
+        None,
+        "not_allowed_voluntary_deregistration",
+        DEFAULT_CODE_SOURCE,
+    ),
+    (
+        "ARCHIVE_LAST_TRADE",
+        "ATX_PUBLIC_EVIDENCE",
+        None,
+        None,
+        "ARCHIVE_TRADING_CEASED",
+        "dropped",
+        (
+            "Trading ceased in the ticker-history archive more than the configured session gap "
+            "before the archive end, with no later bar. Lowest-confidence evidence."
+        ),
+        "NO_LONGER_TRADING_IN_ARCHIVE",
+        True,
+        SHUMWAY_PERFORMANCE_DELISTING_RETURN,
+        "performance_related_unknown_reason",
+        DEFAULT_CODE_SOURCE,
+    ),
+    (
+        "NASDAQ_FINANCIAL_STATUS_BANKRUPT",
+        "ATX_PUBLIC_EVIDENCE",
+        None,
+        None,
+        "NASDAQ_FINANCIAL_STATUS_Q",
+        "bankruptcy",
+        ("The Nasdaq symbol-directory financial_status carried the bankruptcy flag (Q) on or before the delist date."),
+        "BANKRUPT",
+        True,
+        SHUMWAY_PERFORMANCE_DELISTING_RETURN,
+        "performance_related_bankruptcy",
         DEFAULT_CODE_SOURCE,
     ),
 )
@@ -819,6 +899,17 @@ TERMINAL_RETURN_POLICY_ROWS = (
         "Unresolved drop: no policy terminal return; handled only if an observed/imputed value "
         "is supplied elsewhere.",
     ),
+    (
+        "performance_unknown",
+        "performance_delist",
+        "shumway_default",
+        False,
+        SHUMWAY_PERFORMANCE_DELISTING_RETURN,
+        False,
+        "Performance-related delisting with no observed DLRET: apply the documented "
+        "Shumway (1997) -30% convention. On by default (S4 preflight ruling); an operator "
+        "opts out by setting DelistingTerminalReturnOptions.performance_delisting_return=None.",
+    ),
 )
 
 POLICY_DIM_COLUMNS = [
@@ -1028,10 +1119,78 @@ def apply_terminal_return_policy(
     return result[POLICY_TERMINAL_RETURN_COLUMNS]
 
 
+def apply_performance_delisting_policy(
+    events: pd.DataFrame,
+    policy_dim: pd.DataFrame,
+    *,
+    performance_return: float | None,
+    reasons: frozenset[str] = PERFORMANCE_DELIST_REASONS,
+) -> pd.DataFrame:
+    """Apply the documented Shumway convention to performance-related delists.
+
+    ``events`` carries ``security_id, symbol, delist_date, as_of_date, available_at,
+    delist_reason`` (the ``delisting_events`` shape) and optionally
+    ``successor_security_id``. A row qualifies when its ``delist_reason`` is in ``reasons``
+    AND ``performance_return`` is not None AND the event carries a real ``available_at`` --
+    this function never invents a timestamp, exactly like :func:`apply_terminal_return_policy`.
+
+    Returns a :data:`POLICY_TERMINAL_RETURN_COLUMNS` frame with
+    ``terminal_return_source='policy'``, ``terminal_return_policy='performance_unknown'``
+    and ``return_basis='shumway_default'``. Pure, stable-sorted, and empty whenever
+    ``performance_return`` is None -- callers opt out by passing None.
+    """
+
+    if performance_return is None:
+        return _empty_policy_terminal_return_frame()
+    if events is None or events.empty or policy_dim is None or policy_dim.empty:
+        return _empty_policy_terminal_return_frame()
+    if "delist_reason" not in events.columns:
+        return _empty_policy_terminal_return_frame()
+    policy = policy_dim[policy_dim["policy_code"] == PERFORMANCE_TERMINAL_RETURN_POLICY_CODE]
+    if policy.empty:
+        return _empty_policy_terminal_return_frame()
+    basis = str(policy.iloc[0]["terminal_return_basis"])
+
+    frame = events.copy().reset_index(drop=True)
+    eligible = frame["delist_reason"].astype("string").isin(sorted(reasons))
+    eligible &= pd.to_datetime(frame["available_at"], errors="coerce").notna()
+    frame = frame[eligible]
+    if frame.empty:
+        return _empty_policy_terminal_return_frame()
+
+    out = pd.DataFrame(
+        {
+            "security_id": frame["security_id"],
+            "symbol": frame.get("symbol"),
+            "delist_date": frame["delist_date"],
+            "as_of_date": frame.get("as_of_date"),
+            "available_at": pd.to_datetime(frame["available_at"]),
+            "terminal_return": float(performance_return),
+            "terminal_return_ex_div": pd.NA,
+            "terminal_return_source": "policy",
+            "terminal_return_policy": PERFORMANCE_TERMINAL_RETURN_POLICY_CODE,
+            "crsp_dlstcd": pd.NA,
+            "return_basis": basis,
+            "successor_security_id": frame.get("successor_security_id"),
+            "return_observation_id": pd.NA,
+        }
+    )
+    out = out.drop_duplicates(subset=["security_id", "delist_date"], keep="first")
+    return out.sort_values(["security_id", "delist_date"], kind="mergesort", na_position="last").reset_index(
+        drop=True
+    )[POLICY_TERMINAL_RETURN_COLUMNS]
+
+
 @dataclass(frozen=True)
 class DelistingTerminalReturnOptions:
     source: str = DEFAULT_TERMINAL_RETURN_SOURCE
     run_id: str | None = None
+    # S4 preflight ruling: the Shumway convention is ON by default (SHUMWAY_PERFORMANCE_
+    # DELISTING_RETURN, -30%); an operator opts OUT by passing performance_delisting_return=None.
+    # A caller targeting an all-Nasdaq cohort may instead pass
+    # SHUMWAY_NASDAQ_PERFORMANCE_DELISTING_RETURN (-55%). Whichever value is applied is always
+    # recorded as terminal_return_policy='performance_unknown' / return_basis='shumway_default'.
+    performance_delisting_return: float | None = SHUMWAY_PERFORMANCE_DELISTING_RETURN
 
 
 @dataclass(frozen=True)
@@ -1084,10 +1243,14 @@ def compute_delisting_terminal_returns(
     source: str = DEFAULT_TERMINAL_RETURN_SOURCE,
     run_id: str | None = None,
     corporate_actions: pd.DataFrame | None = None,
+    performance_delisting_return: float | None = None,
 ) -> pd.DataFrame:
     """Collapse ``delisting_return_observations`` to one terminal return per
-    ``(security_id, delist_date)``, then (S4-1) fill remaining coverage gaps from the
-    deterministic corporate-action policy.
+    ``(security_id, delist_date)``, then fill remaining coverage gaps from (S4-1) the
+    deterministic corporate-action policy and (S4-4) the opt-in Shumway performance-delisting
+    policy -- in that priority order, so observed always wins over corporate-action policy,
+    which always wins over the performance convention, for the same ``(security_id,
+    delist_date)``.
 
     The latest-visible observation wins: ``ORDER BY available_at DESC, source_loaded_at
     DESC, delisting_return_observation_id DESC`` -- the same tie-break
@@ -1095,20 +1258,27 @@ def compute_delisting_terminal_returns(
     ``db/asof/security.py``). Every observed row is tagged ``terminal_return_source='observed'``.
     ``imputed`` is never written here.
 
-    ``corporate_actions`` is keyword-only and defaults to ``None``: with it omitted, behaviour is
-    byte-identical to S4-0 (observed rows only). When supplied (and non-empty), :func:`
+    ``corporate_actions`` is keyword-only and defaults to ``None``: with it omitted, the
+    corporate-action policy path is skipped. When supplied (and non-empty), :func:`
     apply_terminal_return_policy` is called against exactly the events that have **no** observed
-    terminal return for their ``(security_id, delist_date)`` -- observed always wins, and at most
-    one terminal row is ever emitted per ``(security_id, delist_date)``. ``events`` rows carry no
+    terminal return for their ``(security_id, delist_date)``. ``events`` rows carry no
     ``corporate_action_type`` of their own (that column does not exist on ``delisting_events``);
     it is attached here from ``corporate_actions.action_type``, joined on ``(security_id,
     delist_date == ex_date)`` -- an event with no matching corporate action simply gets no policy
     row, it is never invented.
 
+    ``performance_delisting_return`` (S4-4) is independent of ``corporate_actions`` -- a
+    public-evidence-only warehouse has no licensed corporate-action feed at all, which is
+    exactly the profile the Shumway convention exists for. When not None, :func:`
+    apply_performance_delisting_policy` is called against the events still uncovered after the
+    observed and corporate-action-policy passes, using ``events.delist_reason``. Passing None
+    opts out entirely (no row is ever invented).
+
     ``available_at`` is inherited verbatim from the observation's ``available_at`` (the
     delisting-confirmation timestamp) for observed rows, and is ``max(corporate action
-    available_at, last pre-delist bar available_at)`` for policy rows -- never the delist event
-    date, in either case: the no-lookahead invariant the survivorship fix depends on.
+    available_at, last pre-delist bar available_at)`` for corporate-action-policy rows, and the
+    event's own ``available_at`` for performance-policy rows -- never the delist event date in
+    any case: the no-lookahead invariant the survivorship fix depends on.
     """
 
     if observations.empty:
@@ -1190,90 +1360,142 @@ def compute_delisting_terminal_returns(
             result["terminal_return_id"] = result.apply(_stable_terminal_return_id, axis=1)
             result = result[TERMINAL_RETURN_COLUMNS]
 
-    if (
-        corporate_actions is None
-        or corporate_actions.empty
-        or policy_dim.empty
-        or events.empty
-        or "security_id" not in events.columns
-        or "delist_date" not in events.columns
-    ):
+    events_ok = not events.empty and "security_id" in events.columns and "delist_date" in events.columns
+    can_apply_corporate_action_policy = (
+        events_ok and corporate_actions is not None and not corporate_actions.empty and not policy_dim.empty
+    )
+    can_apply_performance_policy = (
+        events_ok
+        and performance_delisting_return is not None
+        and not policy_dim.empty
+        and "delist_reason" in events.columns
+    )
+    if not can_apply_corporate_action_policy and not can_apply_performance_policy:
         return result
 
-    # A DuckDB-sourced frame's delist_date is datetime64; a hand-built (e.g. test) frame's is
-    # often plain datetime.date -- pandas.merge raises on that dtype mismatch rather than
-    # coercing it, and events/result/corporate_actions may come from either source depending on
-    # the caller. Every merge below joins on a normalized _delist_date_key copy and always drops
-    # it afterward; the delist_date each frame retains in its own columns is untouched.
-    ev = events.copy().reset_index(drop=True)
-    ev = ev.assign(_delist_date_key=pd.to_datetime(ev["delist_date"], errors="coerce"))
-    if not result.empty:
-        observed_pairs = (
-            result[["security_id", "delist_date"]]
-            .assign(_delist_date_key=pd.to_datetime(result["delist_date"], errors="coerce"))
+    def _covered_pairs(frame: pd.DataFrame) -> pd.DataFrame:
+        # A DuckDB-sourced frame's delist_date is datetime64; a hand-built (e.g. test) frame's is
+        # often plain datetime.date -- normalize both sides to the same _delist_date_key so the
+        # merge below never raises on a dtype mismatch.
+        if frame.empty:
+            return pd.DataFrame(columns=["security_id", "_delist_date_key", "_covered"])
+        return (
+            frame[["security_id", "delist_date"]]
+            .assign(_delist_date_key=pd.to_datetime(frame["delist_date"], errors="coerce"))
             .drop(columns=["delist_date"])
             .drop_duplicates()
-            .assign(_observed=True)
+            .assign(_covered=True)
         )
-        ev = ev.merge(observed_pairs, on=["security_id", "_delist_date_key"], how="left")
-        uncovered = ev[ev["_observed"].isna()].drop(columns=["_observed"]).reset_index(drop=True)
-    else:
-        uncovered = ev
 
-    if uncovered.empty:
-        return result
-
-    ca = corporate_actions.copy().reset_index(drop=True)
-    if "ex_date" in ca.columns and "delist_date" not in ca.columns:
-        ca = ca.rename(columns={"ex_date": "delist_date"})
-
-    if "corporate_action_type" not in uncovered.columns:
-        if "action_type" in ca.columns and {"security_id", "delist_date"}.issubset(ca.columns):
-            type_lookup = (
-                ca[["security_id", "delist_date", "action_type"]]
-                .dropna(subset=["security_id", "delist_date"])
-                .assign(_delist_date_key=lambda frame: pd.to_datetime(frame["delist_date"], errors="coerce"))
-                .drop(columns=["delist_date"])
-                .drop_duplicates(subset=["security_id", "_delist_date_key"])
-                .rename(columns={"action_type": "corporate_action_type"})
-            )
-            uncovered = uncovered.merge(type_lookup, on=["security_id", "_delist_date_key"], how="left")
+    policy_result = _empty_terminal_return_frame()
+    if can_apply_corporate_action_policy:
+        ev = events.copy().reset_index(drop=True)
+        ev = ev.assign(_delist_date_key=pd.to_datetime(ev["delist_date"], errors="coerce"))
+        observed_pairs = _covered_pairs(result)
+        if not observed_pairs.empty:
+            ev = ev.merge(observed_pairs, on=["security_id", "_delist_date_key"], how="left")
+            uncovered = ev[ev["_covered"].isna()].drop(columns=["_covered"]).reset_index(drop=True)
         else:
-            uncovered = uncovered.assign(corporate_action_type=pd.NA)
+            uncovered = ev
 
-    uncovered = uncovered.drop(columns=["_delist_date_key"])
+        if not uncovered.empty:
+            ca = corporate_actions.copy().reset_index(drop=True)
+            if "ex_date" in ca.columns and "delist_date" not in ca.columns:
+                ca = ca.rename(columns={"ex_date": "delist_date"})
 
-    policy_rows = apply_terminal_return_policy(uncovered, corporate_actions, policy_dim)
-    if policy_rows.empty:
+            if "corporate_action_type" not in uncovered.columns:
+                if "action_type" in ca.columns and {"security_id", "delist_date"}.issubset(ca.columns):
+                    type_lookup = (
+                        ca[["security_id", "delist_date", "action_type"]]
+                        .dropna(subset=["security_id", "delist_date"])
+                        .assign(_delist_date_key=lambda frame: pd.to_datetime(frame["delist_date"], errors="coerce"))
+                        .drop(columns=["delist_date"])
+                        .drop_duplicates(subset=["security_id", "_delist_date_key"])
+                        .rename(columns={"action_type": "corporate_action_type"})
+                    )
+                    uncovered = uncovered.merge(type_lookup, on=["security_id", "_delist_date_key"], how="left")
+                else:
+                    uncovered = uncovered.assign(corporate_action_type=pd.NA)
+
+            uncovered = uncovered.drop(columns=["_delist_date_key"])
+
+            policy_rows = apply_terminal_return_policy(uncovered, corporate_actions, policy_dim)
+            if not policy_rows.empty:
+                policy_result = pd.DataFrame(
+                    {
+                        "source": source,
+                        "security_id": policy_rows["security_id"],
+                        "symbol": policy_rows["symbol"],
+                        "delist_date": policy_rows["delist_date"],
+                        "as_of_date": policy_rows["as_of_date"],
+                        "available_at": policy_rows["available_at"],
+                        "terminal_return": policy_rows["terminal_return"],
+                        "terminal_return_ex_div": policy_rows["terminal_return_ex_div"],
+                        "terminal_return_source": policy_rows["terminal_return_source"],
+                        "terminal_return_policy": policy_rows["terminal_return_policy"],
+                        "crsp_dlstcd": policy_rows["crsp_dlstcd"],
+                        "return_basis": policy_rows["return_basis"],
+                        "successor_security_id": policy_rows["successor_security_id"],
+                        "return_observation_id": policy_rows["return_observation_id"],
+                        "run_id": run_id,
+                    }
+                )
+                policy_result["terminal_return_id"] = policy_result.apply(_stable_terminal_return_id, axis=1)
+                policy_result = policy_result[TERMINAL_RETURN_COLUMNS]
+
+    performance_result = _empty_terminal_return_frame()
+    if can_apply_performance_policy:
+        ev2 = events.copy().reset_index(drop=True)
+        ev2 = ev2.assign(_delist_date_key=pd.to_datetime(ev2["delist_date"], errors="coerce"))
+        # Filter out empty pieces before concatenating (mirrors _concat_terminal_return_frames):
+        # an empty _covered_pairs frame has no real dtype for _delist_date_key, and concatenating
+        # it with a non-empty datetime64 piece can silently upcast the result to object, which
+        # then raises a merge dtype error against ev2's datetime64 _delist_date_key below.
+        covered_parts = [p for p in (_covered_pairs(result), _covered_pairs(policy_result)) if not p.empty]
+        already_covered = pd.concat(covered_parts, ignore_index=True) if covered_parts else pd.DataFrame()
+        if not already_covered.empty:
+            already_covered = already_covered.drop_duplicates(subset=["security_id", "_delist_date_key"])
+            ev2 = ev2.merge(already_covered, on=["security_id", "_delist_date_key"], how="left")
+            still_uncovered = (
+                ev2[ev2["_covered"].isna()].drop(columns=["_covered", "_delist_date_key"]).reset_index(drop=True)
+            )
+        else:
+            still_uncovered = ev2.drop(columns=["_delist_date_key"])
+
+        performance_rows = apply_performance_delisting_policy(
+            still_uncovered, policy_dim, performance_return=performance_delisting_return
+        )
+        if not performance_rows.empty:
+            performance_result = pd.DataFrame(
+                {
+                    "source": source,
+                    "security_id": performance_rows["security_id"],
+                    "symbol": performance_rows["symbol"],
+                    "delist_date": performance_rows["delist_date"],
+                    "as_of_date": performance_rows["as_of_date"],
+                    "available_at": performance_rows["available_at"],
+                    "terminal_return": performance_rows["terminal_return"],
+                    "terminal_return_ex_div": performance_rows["terminal_return_ex_div"],
+                    "terminal_return_source": performance_rows["terminal_return_source"],
+                    "terminal_return_policy": performance_rows["terminal_return_policy"],
+                    "crsp_dlstcd": performance_rows["crsp_dlstcd"],
+                    "return_basis": performance_rows["return_basis"],
+                    "successor_security_id": performance_rows["successor_security_id"],
+                    "return_observation_id": performance_rows["return_observation_id"],
+                    "run_id": run_id,
+                }
+            )
+            performance_result["terminal_return_id"] = performance_result.apply(_stable_terminal_return_id, axis=1)
+            performance_result = performance_result[TERMINAL_RETURN_COLUMNS]
+
+    combined = _concat_terminal_return_frames([result, policy_result, performance_result])
+    if combined.empty:
         return result
-
-    policy_result = pd.DataFrame(
-        {
-            "source": source,
-            "security_id": policy_rows["security_id"],
-            "symbol": policy_rows["symbol"],
-            "delist_date": policy_rows["delist_date"],
-            "as_of_date": policy_rows["as_of_date"],
-            "available_at": policy_rows["available_at"],
-            "terminal_return": policy_rows["terminal_return"],
-            "terminal_return_ex_div": policy_rows["terminal_return_ex_div"],
-            "terminal_return_source": policy_rows["terminal_return_source"],
-            "terminal_return_policy": policy_rows["terminal_return_policy"],
-            "crsp_dlstcd": policy_rows["crsp_dlstcd"],
-            "return_basis": policy_rows["return_basis"],
-            "successor_security_id": policy_rows["successor_security_id"],
-            "return_observation_id": policy_rows["return_observation_id"],
-            "run_id": run_id,
-        }
-    )
-    policy_result["terminal_return_id"] = policy_result.apply(_stable_terminal_return_id, axis=1)
-    policy_result = policy_result[TERMINAL_RETURN_COLUMNS]
-
-    combined = _concat_terminal_return_frames([result, policy_result])
     # Sort on a normalized copy of delist_date, not the column itself: result's delist_date
-    # (observations-sourced) and policy_result's (events-sourced) can carry different concrete
-    # date representations (e.g. one DuckDB-native, one a hand-built datetime.date in a test),
-    # and pandas raises rather than coerces when comparing a Timestamp to a plain date directly.
+    # (observations-sourced) and policy_result's/performance_result's (events-sourced) can carry
+    # different concrete date representations (e.g. one DuckDB-native, one a hand-built
+    # datetime.date in a test), and pandas raises rather than coerces when comparing a Timestamp
+    # to a plain date directly.
     sort_key = pd.to_datetime(combined["delist_date"], errors="coerce")
     combined = (
         combined.assign(_delist_date_sort_key=sort_key)
@@ -1530,7 +1752,8 @@ def refresh_delisting_terminal_returns(
     ).df()
     events = store.con.execute(
         """
-        SELECT delisting_event_id, security_id, symbol, delist_date, as_of_date, available_at, delist_code
+        SELECT delisting_event_id, security_id, symbol, delist_date, as_of_date, available_at,
+               delist_code, delist_reason
         FROM delisting_events
         """
     ).df()
@@ -1570,6 +1793,7 @@ def refresh_delisting_terminal_returns(
         source=options.source,
         run_id=options.run_id,
         corporate_actions=corporate_actions,
+        performance_delisting_return=options.performance_delisting_return,
     )
 
     with store.transaction():

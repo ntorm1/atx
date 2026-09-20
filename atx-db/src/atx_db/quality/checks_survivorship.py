@@ -32,6 +32,7 @@ from ._types import Comparator, QualityRegistryEntry, QualityResult, Severity, S
 
 SURVIVORSHIP_FORWARD_RETURN_CHECK_NAME = "survivorship_forward_return_drops_delisted_names"
 DELISTING_CODE_RECONCILIATION_CHECK_NAME = "delisting_code_reconciliation_unresolved"
+SURVIVORSHIP_TERMINAL_RETURN_COVERAGE_CHECK_NAME = "delisting_events_without_terminal_return"
 
 SURVIVORSHIP_DATASET_ID = "forward_returns_survivorship_safe"
 RECONCILIATION_DATASET_ID = "delisting_code_reconciliation"
@@ -76,6 +77,22 @@ FROM delisting_code_reconciliation
 WHERE reconciliation_status = 'unmapped'
 """
 
+# The critical drop check above anti-joins delisting_terminal_returns against the panel, so an
+# EMPTY delisting_terminal_returns makes it pass on an empty set -- "no delisted name with a
+# known terminal return was dropped" is not "the universe is complete" (audit 4.4 / 8 #7). This
+# companion check measures the other side: every delisting_events row must have a terminal
+# return. Zero delistings is still zero here, but the moment any delisting evidence exists with
+# no terminal return the gate goes RED instead of silently green.
+_TERMINAL_RETURN_COVERAGE_SQL = """
+SELECT count(*)::DOUBLE
+FROM delisting_events e
+LEFT JOIN delisting_terminal_returns t
+  ON t.security_id = e.security_id
+ AND t.delist_date = e.delist_date
+WHERE e.security_id IS NOT NULL
+  AND t.terminal_return_id IS NULL
+"""
+
 _SEVERITIES = frozenset({"warning", "error", "critical"})
 _COMPARATORS = frozenset({"eq", "le", "ge"})
 
@@ -114,15 +131,30 @@ def _reconciliation_spec() -> SqlQualityCheck:
     )
 
 
+def _terminal_return_coverage_spec() -> SqlQualityCheck:
+    return SqlQualityCheck(
+        dataset_id="delisting_terminal_returns",
+        table_name="delisting_terminal_returns",
+        check_name=SURVIVORSHIP_TERMINAL_RETURN_COVERAGE_CHECK_NAME,
+        sql=_TERMINAL_RETURN_COVERAGE_SQL,
+        threshold=0.0,
+        comparator="le",
+        required_tables=("delisting_events", "delisting_terminal_returns"),
+        warn_if_missing=True,
+        failure_status="failed",
+        severity="error",
+    )
+
+
 def survivorship_check_specs(**_ignored: object) -> tuple[SqlQualityCheck, ...]:
-    """The two S4-3 survivorship-safety check specs.
+    """The three S4-3/S4-4 survivorship-safety check specs.
 
     Accepts and ignores the ``daily_macro_stale_days``/``monthly_macro_stale_days``/
     ``valuation_stale_gap_days`` common kwargs so it is interchangeable with the other
-    ``*_check_specs`` factories, even though neither check needs them.
+    ``*_check_specs`` factories, even though none of these checks need them.
     """
 
-    return (_survivorship_spec(), _reconciliation_spec())
+    return (_survivorship_spec(), _reconciliation_spec(), _terminal_return_coverage_spec())
 
 
 def _coerce_severity(value: object, fallback: Severity = "error") -> Severity:
@@ -285,6 +317,19 @@ def delisting_code_reconciliation_check(
     """
 
     return _run_single_check(store, _reconciliation_spec(), checked_at=checked_at)
+
+
+def delisting_terminal_return_coverage_check(
+    store: DuckDBStore, *, checked_at: dt.datetime | None = None
+) -> QualityResult:
+    """Count delisting events carrying no terminal return (the anti-vacuity gate).
+
+    Companion to :func:`survivorship_forward_return_check`: that critical check can pass on an
+    empty anti-join when ``delisting_terminal_returns`` is empty; this ``error``-severity check
+    makes that specific gap loud instead of silently green.
+    """
+
+    return _run_single_check(store, _terminal_return_coverage_spec(), checked_at=checked_at)
 
 
 def _check_requested(
