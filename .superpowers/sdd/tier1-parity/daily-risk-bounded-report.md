@@ -48,4 +48,4 @@ valid retained foreign row.
 
 ## Ownership release
 
-Owned files are `atx-db/src/atx_db/equity_price_metrics.py`, `atx-db/src/atx_db/activation.py`, `atx-db/tests/test_equity_price_metrics.py`, and the narrow ordering assertion in `atx-db/tests/test_activation_ladder.py`. The shared publisher and migration 0314 are owned by the price-publication task. No jobs or registry edits were made. Commit: pending below.
+Owned files are `atx-db/src/atx_db/equity_price_metrics.py`, `atx-db/src/atx_db/activation.py`, `atx-db/tests/test_equity_price_metrics.py`, and the narrow ordering assertion in `atx-db/tests/test_activation_ladder.py`. The shared publisher and migration 0314 are owned by the price-publication task. No jobs or registry edits were made. Implementation commit: `666d13e3`; this evidence update follows in a separate path-limited commit.
