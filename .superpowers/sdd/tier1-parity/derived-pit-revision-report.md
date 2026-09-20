@@ -74,6 +74,8 @@ Existing formula tests now explicitly choose their latest state before presentin
 
 Root should run touched-file Ruff and schema bootstrap/pin checks with the same slot. Fresh migration315 bootstrap and an upgrade containing legacy rows remain essential runtime concerns. Public schema snapshot/data-dictionary regeneration belongs to the existing root integration gate once source ownership is stable. No generated documentation or frozen parity artifact was modified here. Core breadth's separate test can be added to root's joint working-tree verification but is not required to import or commit P1 against the original173 catalog.
 
+Post-review test preparation: `derived-pit-revision-fix1-report.md` records Important I1 and Minor M1. The focused file now includes a real populated0314-to0315 upgrade with legacy/API/coverage/PK/catalog-pin/re-entry assertions, plus direct invalid daily/factor and API first-reported/stub-range assertions. These cases are included in the same root command above; none has been executed by the implementer. The independent review closed the original Critical at source level and found no new Critical; no additional review pass is required for these prepared noncritical verification fixes.
+
 One independent Codex static implementation review should explicitly close the original Critical audit finding. A scoped rereview is needed only for a new Critical finding requiring fixes. Runtime evidence remains root-owned. No commit until root explicitly dispatches it after verification.
 
 ## Exact owned file inventory
@@ -96,3 +98,4 @@ One independent Codex static implementation review should explicitly close the o
 - `atx-db/tests/test_derived_metrics.py` — historical state-aware existing assertions.
 - `atx-db/tests/test_panel_export.py` — changed public schema contract assertion.
 - `.superpowers/sdd/tier1-parity/derived-pit-revision-report.md` — this report.
+- `.superpowers/sdd/tier1-parity/derived-pit-revision-fix1-report.md` — issue-by-issue post-review test preparation.

@@ -2,6 +2,34 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override — 2026-09-20 21:20 UTC
+
+- Verified LIVE worker9412 by CIM command/runID/creation time and advancing CPU,
+  not just a status file. Parent2332/session6840 still archive3. Base interpreter
+  process path is the Windows venv redirector's Python312 child; the guard
+  receipt/parent command remains the locked project .venv Python. At21:19:08UTC:
+  2750/20390 processed,2285loaded,436empty,25unavailable,FOURFAILED,
+ 13046177 written attempt rows. Third failure arose2625..2649, fourth2675..2699;
+  exact details await source receipts after writer release. Memory safe (~1.94GB
+  private,7.16GiB physicalfree,9.16GiBcommitfree). Same3GiBguard/DB1GB/1thread.
+  Let full source finish; no concurrent DB/tests/probes or speculative restart.
+- P1 noncritical review fix preparation COMPLETE: derived-pit-revision-fix1-report.md
+  records real populated0314->0315 two-row upgrade/PK/nullability/legacy/API/
+  reconstructed-coverage/pin/re-entry assertions and direct invalid daily/factor,
+  API first_reported/stub-date cases. Only focusedtest/mainreport/fixreport changed;
+  no implementation defect, no runtime checks, no new review needed. Prepared
+  coverage gaps addressed on implementer report; final acceptance still requires
+  ROOT'S EXECUTION. All implementation/review agents now idle/completed.
+- Core201/P1 source remains uncommitted. Root queued focused guard2.5GiB test
+  command is in P1 report and includes all added I1/M1 cases; add core breadth
+  focused file once source stable. Required schema/bootstrap/module/import and
+  relevant dictionary/snapshot integration checks remain. Then pathspec P1/0315
+  commit FIRST, core second; preserve clean HEAD against original173 at P1commit.
+- Last turn classification: PROGRESS (PITreview gaps now prepared) plus verified
+  wait on the actual live source process. Active source is slow, not blocked.
+  Current HEADc8211964 before this checkpoint; goal remains ACTIVE. Preserve
+  unrelated four EOLphantomM files and stash@{0}; no mergerpermission.
+
 ## Current controller override — 2026-09-20 21:11 UTC
 
 - Source archive3 still active: session6840,launcher2332,worker9412; same
