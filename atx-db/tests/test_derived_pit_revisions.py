@@ -275,10 +275,10 @@ def test_bounded_frames_scope_preservation_and_prepublication_failure(store, mon
     frames = []
     original = pit.frame_sql
 
-    def counted_frame(definition, lowered, context):
+    def counted_frame(definition, lowered, context, annual_plan):
         assert lowered.max_lag + 1 <= 8
         frames.append(lowered.max_lag + 1)
-        return original(definition, lowered, context)
+        return original(definition, lowered, context, annual_plan)
 
     monkeypatch.setattr(pit, "frame_sql", counted_frame)
     engine.refresh_derived_metrics(store, engine.DerivedMetricsOptions(security_ids=("S2",), max_frame_rows=8, event_chunk_size=100))
@@ -370,7 +370,7 @@ def test_candidate_and_local_frame_growth_is_linear_in_input_events(store):
 
 
 def test_populated_0314_upgrade_preserves_legacy_contract_and_reentry(tmp_path, monkeypatch):
-    """Exercise the real 0314 bootstrap and pending-0315 runner with two rows."""
+    """Exercise the real 0314 bootstrap and pending 0315/0316 with two rows."""
     import duckdb
 
     import atx_db.migrations as migrations
@@ -412,8 +412,12 @@ def test_populated_0314_upgrade_preserves_legacy_contract_and_reentry(tmp_path, 
         original_sql = f"SELECT {original_columns} FROM derived_metric_values ORDER BY derived_value_id"
         before = con.execute(original_sql).fetchall()
 
-        assert migrations.apply_pending_migrations(con) == [315]
+        assert migrations.apply_pending_migrations(con) == [315, 316]
         assert con.execute(original_sql).fetchall() == before
+        assert con.execute("""
+            SELECT value_origin, fiscal_period_start, fiscal_period_end
+            FROM derived_metric_values ORDER BY derived_value_id
+        """).fetchall() == [("legacy_unspecified", None, None), ("legacy_unspecified", None, None)]
         assert con.execute("""
             SELECT count(*) FROM duckdb_tables()
             WHERE table_name='derived_metric_values' AND NOT temporary

@@ -612,7 +612,7 @@ DAILY_BARS_SCHEMA = RecordSchema(
 DERIVED_METRICS_SCHEMA = RecordSchema(
     dataset="ATX.US.FUNDAMENTALS",
     code="derived-metrics",
-    version="2.0.0",
+    version="2.1.0",
     title="Point-in-time derived metrics",
     description=(
         "Ratios, per-share, growth, leverage, quality, investment and payout metrics computed "
@@ -641,6 +641,9 @@ DERIVED_METRICS_SCHEMA = RecordSchema(
         FieldSpec("derived_value_id", "derived_value_id", "string", "Stable typed event-state identity.", nullable=False),
         FieldSpec("value_status", "value_status", "string", "valid, zero_denominator, missing_input_or_domain, or nonfinite."),
         FieldSpec("history_status", "history_status", "string", "event_reconstructed or incomplete legacy_latest_only."),
+        FieldSpec("value_origin", "value_origin", "string", "annual_fallback, annual_dependency, quarterly, instant, scalar, incomparable, unavailable, or legacy_unspecified."),
+        FieldSpec("fiscal_period_start", "fiscal_period_start", "date", "Selected current duration start; NULL for balance/scalar inputs or missing span evidence."),
+        FieldSpec("fiscal_period_end", "fiscal_period_end", "date", "Selected current operand endpoint, including an exact annual fallback endpoint."),
         FieldSpec("revision_group_id", "revision_group_id", "string", "Source/security/metric/window/bucket/definition identity."),
         FieldSpec("revision_sequence", "revision_sequence", "int64", "Event order within the revision group."),
         FieldSpec("revision_count", "revision_count", "int64", "Number of retained group states."),

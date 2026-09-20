@@ -1,0 +1,21 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "mypy",
+    "--strict",
+    "src/atx_db/_derived_annual.py",
+    "src/atx_db/_derived_pit.py",
+    "src/atx_db/migrations/bodies_0316.py",
+    "src/atx_db/derived_metrics.py"
+  ],
+  "job_limit_gb": 1.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 8.11971664428711,
+    "commit_free_gb": 10.054553985595703
+  },
+  "child_pid": 17984,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.32929229736328125
+}

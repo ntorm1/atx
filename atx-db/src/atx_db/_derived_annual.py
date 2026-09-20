@@ -1,0 +1,275 @@
+"""Private fiscal-year evidence and metadata for the canonical PIT evaluator.
+
+Only a top-level ttm(scalar) receives a direct FY alternative. Scalar metric
+references are expanded from the existing registry, never published as annual
+values under their quarterly codes. The arithmetic DSL remains unchanged.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from .derived_dsl import (
+    SCALAR_FUNCTIONS,
+    BinOp,
+    Call,
+    LowerContext,
+    Neg,
+    Node,
+    Number,
+    Ref,
+    expression_names,
+    lower,
+    parse_expression,
+)
+from .derived_registry import DerivedMetricDefinition
+
+WEIGHTED_SHARES = frozenset({"weighted_avg_shares_basic", "weighted_avg_shares_diluted"})
+
+
+@dataclass(frozen=True)
+class AnnualPlan:
+    alternative: Node | None = None
+    item_codes: tuple[str, ...] = ()
+    weighted_codes: tuple[str, ...] = ()
+
+    @property
+    def codes(self) -> tuple[str, ...]:
+        return tuple(sorted(set(self.item_codes) | set(self.weighted_codes)))
+
+
+EMPTY_PLAN = AnnualPlan()
+
+
+def plan_for(definition: DerivedMetricDefinition,
+             definitions: dict[str, DerivedMetricDefinition]) -> AnnualPlan:
+    """Discover eligible formulas, without a second public metric catalog."""
+    def expand(node: Node, owner: DerivedMetricDefinition, seen: frozenset[str]) -> Node | None:
+        if isinstance(node, Ref) and node.name in owner.metric_inputs:
+            if node.name in seen:
+                return None
+            dependency = definitions[node.name]
+            return expand(parse_expression(dependency.expression), dependency, seen | {node.name})
+        if isinstance(node, (Number, Ref)):
+            return node
+        if isinstance(node, Neg):
+            child = expand(node.operand, owner, seen)
+            return Neg(child) if child is not None else None
+        if isinstance(node, BinOp):
+            left, right = expand(node.left, owner, seen), expand(node.right, owner, seen)
+            return BinOp(node.op, left, right) if left is not None and right is not None else None
+        if isinstance(node, Call) and node.name in SCALAR_FUNCTIONS:
+            args = tuple(expand(arg, owner, seen) for arg in node.args)
+            return Call(node.name, tuple(arg for arg in args if arg is not None)) \
+                if all(arg is not None for arg in args) else None
+        return None
+
+    node = parse_expression(definition.expression)
+    alternative = None
+    if definition.window == "ttm" and isinstance(node, Call) and node.name == "ttm":
+        alternative = expand(node.args[0], definition, frozenset({definition.metric_code}))
+        # Constant-only formulas have no actual annual source evidence.
+        if alternative is not None and not expression_names(alternative):
+            alternative = None
+    weighted = tuple(sorted(WEIGHTED_SHARES.intersection(definition.item_inputs))) \
+        if definition.window == "ttm" else ()
+    return AnnualPlan(alternative, expression_names(alternative) if alternative is not None else (), weighted)
+
+
+def prepare_security(con: Any) -> None:
+    """All revisions, exact spans, deterministic whole-state selection."""
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE _pit_annual_items AS
+        WITH events AS (
+            SELECT security_id, canonical_code AS code, bucket, period_start, period_end,
+                   available_at AS event_at,
+                   arg_max(struct_pack(value := value, available_at := available_at,
+                       period_start := period_start, period_end := period_end,
+                       state_id := standardized_id, source := source, rule_id := rule_id,
+                       basis := basis), (available_at, source, rule_id, standardized_id))
+                   OVER (PARTITION BY security_id, canonical_code, period_start, period_end
+                         ORDER BY available_at RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS state
+            FROM _pit_raw WHERE basis = 'annual'
+            QUALIFY row_number() OVER (
+                PARTITION BY security_id, canonical_code, period_start, period_end, available_at
+                ORDER BY source DESC, rule_id DESC, standardized_id DESC) = 1
+        )
+        SELECT * FROM events
+        QUALIFY lag(state) OVER (
+            PARTITION BY security_id, code, period_start, period_end ORDER BY event_at)
+            IS DISTINCT FROM state
+    """)
+    # The same visible fiscal span governs every annual input at an endpoint.
+    # A later alternative span is a selection event, not a license to mix spans.
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE _pit_annual_targets AS
+        WITH events AS (
+            SELECT security_id, bucket, available_at AS event_at,
+                   arg_max(struct_pack(period_start := period_start, period_end := period_end),
+                       (period_end, available_at, source, rule_id, standardized_id))
+                   OVER (PARTITION BY security_id, bucket ORDER BY available_at
+                         RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS span
+            FROM _pit_raw WHERE basis = 'annual'
+            QUALIFY row_number() OVER (PARTITION BY security_id, bucket, available_at
+                ORDER BY period_end DESC, source DESC, rule_id DESC, standardized_id DESC) = 1
+        )
+        SELECT * FROM events
+        QUALIFY lag(span) OVER (PARTITION BY security_id, bucket ORDER BY event_at) IS DISTINCT FROM span
+    """)
+
+
+@dataclass(frozen=True)
+class Span:
+    """SQL provenance of the selected scalar operands, independent of arithmetic."""
+
+    start: str = "NULL::DATE"
+    end: str = "NULL::DATE"
+    annual: str = "false"
+    coherent: str = "true"
+    offset: int | None = None
+
+
+def _case(condition: str, yes: str, no: str) -> str:
+    return f"(CASE WHEN {condition} THEN {yes} ELSE {no} END)"
+
+
+def _years_apart(current: str, prior: str, years: int) -> str:
+    return f"(date_diff('day', {prior}, {current}) BETWEEN {330 * years} AND {380 * years})"
+
+
+def _combine(left: Span, right: Span) -> Span:
+    if left.offset is None:
+        return right
+    if right.offset is None:
+        return left
+    newer, older = (left, right) if left.offset <= right.offset else (right, left)
+    distance = abs(left.offset - right.offset)
+    if distance == 0:
+        comparable = (
+            f"(({left.end}) IS NULL OR ({right.end}) IS NULL OR ({left.end}) = ({right.end})) AND "
+            f"(({left.start}) IS NULL OR ({right.start}) IS NULL OR ({left.start}) = ({right.start}))"
+        )
+    elif distance % 4:
+        comparable = "false"
+    else:
+        comparable = (
+            f"{_years_apart(newer.end, older.end, distance // 4)} AND "
+            f"(({newer.start}) IS NULL OR ({older.start}) IS NULL OR "
+            f"{_years_apart(newer.start, older.start, distance // 4)})"
+        )
+    return Span(
+        f"coalesce({newer.start}, {older.start})" if distance == 0 else newer.start,
+        f"coalesce({newer.end}, {older.end})" if distance == 0 else newer.end,
+        f"(({left.annual}) OR ({right.annual}))",
+        f"(({left.coherent}) AND ({right.coherent}) AND ({comparable}))",
+        newer.offset,
+    )
+
+
+def lower_span(node: Node, context: LowerContext, refs: dict[str, Span]) -> Span:
+    """Follow DSL-selected branches and window offsets without changing formulas.
+
+    Coherence is recorded for all states but only gates arithmetic when annual
+    evidence participates. This leaves historical quarterly-only rules intact.
+    """
+    if isinstance(node, Number):
+        return Span()
+    if isinstance(node, Ref):
+        return refs[node.name]
+    if isinstance(node, Neg):
+        return lower_span(node.operand, context, refs)
+    if isinstance(node, BinOp):
+        return _combine(lower_span(node.left, context, refs), lower_span(node.right, context, refs))
+    if not isinstance(node, Call):
+        raise TypeError(node)
+    children = [lower_span(arg, context, refs) for arg in node.args]
+    inner = children[0]
+    if node.name == "coalesce":
+        result = Span()
+        for arg, child in reversed(list(zip(node.args, children, strict=True))):
+            condition = f"({lower(arg, context).value_sql}) IS NOT NULL"
+            result = Span(
+                start=_case(condition, child.start, result.start),
+                end=_case(condition, child.end, result.end),
+                annual=_case(condition, child.annual, result.annual),
+                coherent=_case(condition, child.coherent, result.coherent),
+                offset=child.offset if child.offset is not None else result.offset,
+            )
+        return result
+    if node.name in SCALAR_FUNCTIONS:
+        result = inner
+        for child in children[1:]:
+            result = _combine(result, child)
+        return result
+    window = f"PARTITION BY {context.partition_sql} ORDER BY {context.order_sql}"
+    if node.name == "ttm":
+        frame = window + " ROWS BETWEEN 3 PRECEDING AND CURRENT ROW"
+        starts = f"list({inner.start}) OVER ({frame})"
+        ends = f"list({inner.end}) OVER ({frame})"
+        coherent = [f"count({inner.start}) OVER ({frame}) = 4",
+                    f"bool_and({inner.coherent}) OVER ({frame})",
+                    f"date_diff('day', ({starts})[1], ({ends})[4]) + 1 BETWEEN 330 AND 380"]
+        for index in range(1, 5):
+            coherent.append(f"date_diff('day', ({starts})[{index}], ({ends})[{index}]) + 1 BETWEEN 70 AND 120")
+            if index < 4:
+                coherent.append(f"({ends})[{index}] + INTERVAL 1 DAY = ({starts})[{index + 1}]")
+        return Span(f"({starts})[1]", f"({ends})[4]",
+                    f"bool_or({inner.annual}) OVER ({frame})", " AND ".join(coherent), 0)
+    if node.name == "stdev_q":
+        period_argument = node.args[1]
+        if not isinstance(period_argument, Number):
+            raise TypeError(f"{node.name} metadata requires a numeric literal period")
+        size = int(period_argument.value)
+        frame = window + f" ROWS BETWEEN {size - 1} PRECEDING AND CURRENT ROW"
+        return Span(inner.start, inner.end, f"bool_or({inner.annual}) OVER ({frame})", "false", 0)
+    periods = {"avg2": 4, "yoy": 4, "qoq": 1}.get(node.name)
+    if node.name in ("lag", "cagr"):
+        period_argument = node.args[1]
+        if not isinstance(period_argument, Number):
+            raise TypeError(f"{node.name} metadata requires a numeric literal period")
+        periods = int(period_argument.value) * (4 if node.name == "cagr" else 1)
+    if periods is None:
+        raise ValueError(f"unsupported filing-grid metadata function {node.name}")
+    previous = Span(
+        start=f"lag({inner.start}, {periods}) OVER ({window})",
+        end=f"lag({inner.end}, {periods}) OVER ({window})",
+        annual=f"lag({inner.annual}, {periods}) OVER ({window})",
+        coherent=f"lag({inner.coherent}, {periods}) OVER ({window})",
+        offset=periods,
+    )
+    if node.name == "lag":
+        return previous
+    paired = _combine(inner, previous)
+    if node.name == "avg2":
+        return Span("NULL::DATE", inner.end, paired.annual, paired.coherent, 0)
+    return Span(inner.start, inner.end, paired.annual, paired.coherent, 0)
+
+
+def frame_annual_columns(plan: AnnualPlan, quote: Any) -> tuple[list[str], list[str], list[str]]:
+    """One ASOF state per exact span/code; no annual x historical-frame panel."""
+    if not plan.codes:
+        return [], [], []
+    joins = [
+        "ASOF LEFT JOIN _pit_annual_targets ay ON f.security_id=ay.security_id "
+        "AND f.bucket=ay.bucket AND f.event_at >= ay.event_at"
+    ]
+    projections = [
+        "CASE WHEN ay.span.period_end=f.period_end THEN ay.span.period_start END AS annual_start",
+        "CASE WHEN ay.span.period_end=f.period_end THEN ay.span.period_end END AS annual_end",
+    ]
+    lineage = ["struct_pack(kind := 'annual_span', code := '', state := to_json(ay.span))"]
+    for index, code in enumerate(plan.codes):
+        alias = f"a{index}"
+        joins.append(
+            f"ASOF LEFT JOIN (SELECT * FROM _pit_annual_items WHERE code={quote(code)}) {alias} "
+            f"ON f.security_id={alias}.security_id AND ay.span.period_start={alias}.period_start "
+            f"AND ay.span.period_end={alias}.period_end AND f.period_end={alias}.period_end "
+            f"AND f.event_at >= {alias}.event_at"
+        )
+        projections.extend([
+            f'{alias}.state.value AS "annual_{code}"',
+            f'{alias}.state.available_at AS "annual_{code}__at"',
+        ])
+        lineage.append(f"struct_pack(kind := 'annual', code := {quote(code)}, state := to_json({alias}.state))")
+    return joins, projections, lineage

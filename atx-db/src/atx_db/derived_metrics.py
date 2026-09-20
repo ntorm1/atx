@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
+from . import _derived_annual as annual
 from . import _derived_pit as pit
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
@@ -91,6 +92,7 @@ def build_metric_sql(
     item_codes: tuple[str, ...],
     metric_codes: tuple[str, ...],
     security_count: int,
+    annual_plan: annual.AnnualPlan = annual.EMPTY_PLAN,
 ) -> str:
     """Build a bounded event-frame INSERT into private staging.
 
@@ -100,7 +102,7 @@ def build_metric_sql(
     """
     _ = security_count
     context = quarterly_context(definition, item_codes=item_codes, metric_codes=metric_codes)
-    return pit.frame_sql(definition, lowered, context)
+    return pit.frame_sql(definition, lowered, context, annual_plan)
 
 def select_security_batches(
     store: DuckDBStore,
@@ -120,7 +122,7 @@ def select_security_batches(
                 """
                 SELECT DISTINCT security_id
                 FROM fundamental_standardized
-                WHERE basis IN ('quarterly', 'instant')
+                WHERE basis IN ('quarterly', 'instant', 'annual')
                 UNION
                 SELECT DISTINCT security_id FROM derived_metric_values WHERE source = ?
                 ORDER BY security_id
@@ -189,6 +191,7 @@ def refresh_derived_metrics(
             try:
                 pit.prepare_security(store.con, security_id, options.max_input_rows)
                 for definition in ordered:
+                    annual_plan = annual.plan_for(definition, by_code)
                     item_codes = tuple(sorted(definition.item_inputs))
                     metric_codes = tuple(sorted(definition.metric_inputs))
                     context = quarterly_context(definition, item_codes=item_codes, metric_codes=metric_codes)
@@ -198,29 +201,49 @@ def refresh_derived_metrics(
                         raise RuntimeError(f"derived PIT frame width {width} exceeds limit {options.max_frame_rows}")
                     # Bound candidate generation before constructing its offset
                     # expansion, even for unusually large user-defined windows.
-                    input_events = int(store.con.execute(
+                    input_count_row = store.con.execute(
                         "SELECT count(*) FROM _pit_items WHERE code IN (" +
                         ",".join(pit.quote(c) for c in item_codes or ("",)) + ")"
-                    ).fetchone()[0])
-                    dependency_events = int(store.con.execute(
+                    ).fetchone()
+                    assert input_count_row is not None
+                    input_events = int(input_count_row[0])
+                    dependency_count_row = store.con.execute(
                         "SELECT count(*) FROM _pit_stage WHERE metric_code IN (" +
                         ",".join(pit.quote(c) for c in metric_codes or ("",)) + ")"
-                    ).fetchone()[0])
-                    targets = int(store.con.execute("SELECT count(*) FROM _pit_targets").fetchone()[0])
-                    if (input_events + dependency_events) * width + targets > options.max_candidate_rows:
+                    ).fetchone()
+                    assert dependency_count_row is not None
+                    dependency_events = int(dependency_count_row[0])
+                    target_count_row = store.con.execute("SELECT count(*) FROM _pit_targets").fetchone()
+                    assert target_count_row is not None
+                    targets = int(target_count_row[0])
+                    annual_events = 0
+                    if annual_plan.codes:
+                        annual_count_row = store.con.execute(
+                            "SELECT count(*) FROM _pit_annual_items WHERE code IN (" +
+                            ",".join(pit.quote(c) for c in annual_plan.codes) + ")"
+                        ).fetchone()
+                        assert annual_count_row is not None
+                        annual_events = int(annual_count_row[0])
+                        annual_target_count_row = store.con.execute("SELECT count(*) FROM _pit_annual_targets").fetchone()
+                        assert annual_target_count_row is not None
+                        annual_events += int(annual_target_count_row[0])
+                    if (input_events + dependency_events) * width + targets + annual_events > options.max_candidate_rows:
                         raise RuntimeError(f"derived PIT candidate upper bound exceeded for {security_id}/{definition.metric_code}")
-                    count = pit.prepare_metric(store.con, definition, lowered.max_lag, options.max_candidate_rows)
+                    count = pit.prepare_metric(store.con, definition, lowered.max_lag,
+                                               options.max_candidate_rows, annual_plan)
                     chunk_size = min(options.event_chunk_size, options.max_frame_rows // width)
                     sql = build_metric_sql(definition, lowered=lowered, item_codes=item_codes,
-                                           metric_codes=metric_codes, security_count=1)
+                                           metric_codes=metric_codes, security_count=1, annual_plan=annual_plan)
                     for start in range(1, count + 1, chunk_size):
                         store.con.execute(sql, [start, start + chunk_size - 1, options.source, options.run_id])
                     pit.finish_metric(store.con)
                     pit.enforce_count(store.con, "_pit_stage", options.max_scope_rows, "publication scope")
                 staged = pit.enforce_count(store.con, "_pit_stage", options.max_scope_rows, "publication scope")
-                old_count = int(store.con.execute(
+                old_count_row = store.con.execute(
                     f"SELECT count(*) FROM derived_metric_values WHERE {predicate}", params
-                ).fetchone()[0])
+                ).fetchone()
+                assert old_count_row is not None
+                old_count = int(old_count_row[0])
                 if old_count > options.max_scope_rows:
                     raise RuntimeError(f"derived PIT old publication scope exceeds limit: {old_count}")
                 store.con.execute("BEGIN TRANSACTION")

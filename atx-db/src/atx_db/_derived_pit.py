@@ -10,6 +10,7 @@ import hashlib
 import json
 from typing import Any
 
+from . import _derived_annual as annual
 from .derived_dsl import BinOp, Call, LowerContext, Lowered, lower, parse_expression
 from .derived_registry import DerivedMetricDefinition
 
@@ -19,6 +20,7 @@ STATE_COLUMNS = (
     "is_latest_revision", "run_id", "value_status", "revision_group_id",
     "revision_sequence", "revision_count", "valid_to", "target_bucket",
     "definition_hash", "arithmetic_available_at", "history_status",
+    "value_origin", "fiscal_period_start", "fiscal_period_end",
 )
 
 
@@ -33,9 +35,11 @@ def bucket_sql(column: str) -> str:
     )
 
 
-def definition_hash(definition: DerivedMetricDefinition) -> str:
-    payload = ["quarter-pit-v2", definition.metric_code, definition.window,
-               definition.expression, sorted(definition.inputs), definition.version]
+def definition_hash(definition: DerivedMetricDefinition,
+                    annual_plan: annual.AnnualPlan = annual.EMPTY_PLAN) -> str:
+    payload = ["quarter-pit-v3-annual", definition.metric_code, definition.window,
+               definition.expression, sorted(definition.inputs), definition.version,
+               repr(annual_plan.alternative), annual_plan.weighted_codes]
     return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -50,7 +54,7 @@ def prepare_security(con: Any, security_id: str, input_limit: int) -> None:
     # Check before materialization; no assumption that one issuer is small.
     count = int(con.execute("""
         SELECT count(*) FROM fundamental_standardized
-        WHERE security_id = ? AND basis IN ('quarterly', 'instant')
+        WHERE security_id = ? AND basis IN ('quarterly', 'instant', 'annual')
           AND available_at IS NOT NULL
     """, [security_id]).fetchone()[0])
     if count > input_limit:
@@ -58,10 +62,11 @@ def prepare_security(con: Any, security_id: str, input_limit: int) -> None:
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _pit_raw AS
         SELECT standardized_id, source, security_id, canonical_code, basis,
-               period_end, value, available_at, rule_id, {bucket_sql('period_end')} AS bucket
+               period_start, period_end, value, available_at, rule_id, {bucket_sql('period_end')} AS bucket
         FROM fundamental_standardized
-        WHERE security_id = ? AND basis IN ('quarterly', 'instant')
+        WHERE security_id = ? AND basis IN ('quarterly', 'instant', 'annual')
           AND available_at IS NOT NULL
+          AND (basis <> 'annual' OR date_diff('day', period_start, period_end) + 1 BETWEEN 330 AND 380)
     """, [security_id])
     # Latest visible period wins within a bucket; availability wins within a
     # period. Source/rule/basis/stable ID break equal-event ties, never load time
@@ -71,12 +76,12 @@ def prepare_security(con: Any, security_id: str, input_limit: int) -> None:
         WITH events AS (
             SELECT security_id, canonical_code AS code, bucket, available_at AS event_at,
                    arg_max(struct_pack(value := value, available_at := available_at,
-                       period_end := period_end, state_id := standardized_id,
+                       period_start := period_start, period_end := period_end, state_id := standardized_id,
                        source := source, rule_id := rule_id, basis := basis),
                        (period_end, available_at, source, rule_id, basis, standardized_id))
                    OVER (PARTITION BY security_id, canonical_code, bucket
                          ORDER BY available_at RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS state
-            FROM _pit_raw
+            FROM _pit_raw WHERE basis <> 'annual'
             QUALIFY row_number() OVER (
                 PARTITION BY security_id, canonical_code, bucket, available_at
                 ORDER BY period_end DESC, source DESC, rule_id DESC, basis DESC, standardized_id DESC
@@ -110,10 +115,12 @@ def prepare_security(con: Any, security_id: str, input_limit: int) -> None:
             PARTITION BY security_id, bucket ORDER BY event_at) AS valid_to
         FROM changed
     """)
+    annual.prepare_security(con)
     con.execute("CREATE OR REPLACE TEMP TABLE _pit_stage AS SELECT * FROM derived_metric_values WHERE false")
 
 
-def prepare_metric(con: Any, definition: DerivedMetricDefinition, lag: int, candidate_limit: int) -> int:
+def prepare_metric(con: Any, definition: DerivedMetricDefinition, lag: int, candidate_limit: int,
+                   annual_plan: annual.AnnualPlan = annual.EMPTY_PLAN) -> int:
     items = ",".join(quote(c) for c in definition.item_inputs) or "''"
     metrics = ",".join(quote(c) for c in definition.metric_inputs) or "''"
     # State relations stay complete across event chunks, including predecessor
@@ -122,16 +129,28 @@ def prepare_metric(con: Any, definition: DerivedMetricDefinition, lag: int, cand
         CREATE OR REPLACE TEMP TABLE _pit_inputs AS
         SELECT security_id, 'item' AS kind, code, bucket, event_at, valid_to,
                state.value AS value, state.available_at AS input_at,
-               to_json(state) AS lineage
+               to_json(state) AS lineage,
+               CASE WHEN state.basis = 'instant' THEN NULL ELSE state.period_start END AS fiscal_period_start,
+               state.period_end AS fiscal_period_end, state.basis AS value_origin
         FROM _pit_items WHERE code IN ({items})
         UNION ALL
         SELECT security_id, 'metric', metric_code, target_bucket, available_at, valid_to,
                value, available_at,
                to_json(struct_pack(state_id := derived_value_id, inputs_hash := inputs_hash,
                    value := value, value_status := value_status, available_at := available_at,
-                   period_end := period_end, source := source, definition_hash := definition_hash))
+                   period_end := period_end, source := source, definition_hash := definition_hash,
+                   value_origin := value_origin, fiscal_period_start := fiscal_period_start,
+                   fiscal_period_end := fiscal_period_end)),
+               fiscal_period_start, fiscal_period_end, value_origin
         FROM _pit_stage WHERE metric_code IN ({metrics})
     """)
+    annual_events = ""
+    if annual_plan.codes:
+        annual_codes = ",".join(quote(code) for code in annual_plan.codes)
+        annual_events = f"""
+            UNION SELECT security_id, bucket, event_at FROM _pit_annual_items WHERE code IN ({annual_codes})
+            UNION SELECT security_id, bucket, event_at FROM _pit_annual_targets
+        """
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _pit_keys AS
         WITH affected AS (
@@ -139,6 +158,7 @@ def prepare_metric(con: Any, definition: DerivedMetricDefinition, lag: int, cand
             FROM _pit_inputs i, range(0, {lag + 1}) o(offset_value)
             UNION
             SELECT security_id, bucket, event_at FROM _pit_targets
+            {annual_events}
         ), visible AS (
             SELECT a.*, t.period_end FROM affected a
             ASOF JOIN _pit_targets t
@@ -152,7 +172,8 @@ def prepare_metric(con: Any, definition: DerivedMetricDefinition, lag: int, cand
     return count
 
 
-def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: LowerContext) -> str:
+def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: LowerContext,
+              annual_plan: annual.AnnualPlan = annual.EMPTY_PLAN) -> str:
     """Insert one bounded key chunk; bind start, end, source, run_id.
 
     Every window partition includes the target/event key. ASOF joins produce
@@ -161,6 +182,7 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
     joins: list[str] = []
     projections: list[str] = []
     lineage: list[str] = []
+    span_refs: dict[str, annual.Span] = {}
     for index, (kind, code) in enumerate(
         [("item", c) for c in sorted(definition.item_inputs)]
         + [("metric", c) for c in sorted(definition.metric_inputs)]
@@ -172,11 +194,86 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
         )
         projections.extend([
             f'{alias}.value AS "{code}"', f'{alias}.input_at AS "{code}__at"',
+            f'{alias}.fiscal_period_start AS "{code}__start"',
+            f'{alias}.fiscal_period_end AS "{code}__end"',
+            f'{alias}.value_origin AS "{code}__origin"',
         ])
+        span_refs[code] = annual.Span(
+            f'b."{code}__start"', f'b."{code}__end"',
+            f'coalesce(b."{code}__origin" IN (\'annual_fallback\', \'annual_dependency\', \'annual\'), false)',
+            f'coalesce(b."{code}__origin" <> \'incomparable\' AND '
+            f'(b."{code}__origin" <> \'quarterly\' OR b."{code}__start" IS NOT NULL), true)', 0,
+        )
         lineage.append(f"struct_pack(kind := {quote(kind)}, code := {quote(code)}, state := {alias}.lineage)")
+    extra_joins, extra_columns, extra_lineage = annual.frame_annual_columns(annual_plan, quote)
+    joins.extend(extra_joins)
+    projections.extend(extra_columns)
+    lineage.extend(extra_lineage)
+    # Weighted annual averages are an endpoint denominator only. No quarterly
+    # item or _q metric receives an annual numeric value.
+    columns, availability = dict(context.columns), dict(context.availability)
+    dependency_annual = " OR ".join(span_refs[code].annual for code in definition.metric_inputs) or "false"
+    for code in annual_plan.weighted_codes:
+        choose_annual = f"(({dependency_annual}) OR b.\"{code}\" IS NULL) AND b.annual_end IS NOT NULL"
+        columns[code] = annual._case(choose_annual, f'b."annual_{code}"', columns[code])
+        availability[code] = annual._case(choose_annual, f'b."annual_{code}__at"', availability[code])
+        old = span_refs[code]
+        span_refs[code] = annual.Span(
+            annual._case(choose_annual, "b.annual_start", old.start),
+            annual._case(choose_annual, "b.annual_end", old.end),
+            annual._case(choose_annual, "true", old.annual),
+            annual._case(choose_annual, "true", old.coherent), 0,
+        )
+    context = LowerContext(context.grid, columns, availability, context.partition_sql, context.order_sql)
+    node = parse_expression(definition.expression)
+    lowered = lower(node, context)
+    span = annual.lower_span(node, context, span_refs)
+    coherent = f"coalesce(({span.coherent}), false)"
+    # Only annual-backed arithmetic gets the new comparability gate. The
+    # existing quarter-only arithmetic and its missing-start legacy inputs stay.
+    annual_guard = f"NOT coalesce(({span.annual}), false) OR ({coherent} AND ({span.end}) = b.period_end)"
+    quarter_result = f"CASE WHEN {annual_guard} THEN ({lowered.value_sql}) END"
+    choose_annual = "false"
+    result_sql, arithmetic_sql = quarter_result, lowered.availability_sql
+    start_sql, end_sql = span.start, span.end
+    if annual_plan.alternative is not None:
+        annual_context = LowerContext(
+            context.grid,
+            {code: f'b."annual_{code}"' for code in annual_plan.item_codes},
+            {code: f'b."annual_{code}__at"' for code in annual_plan.item_codes},
+            context.partition_sql, context.order_sql,
+        )
+        alternative = lower(annual_plan.alternative, annual_context)
+        comparable_quarters = (
+            f"b.annual_start IS NULL OR ({coherent} AND ({span.start}) = b.annual_start "
+            f"AND ({span.end}) = b.annual_end)"
+        )
+        valid_annual = (f"b.annual_start IS NOT NULL AND ({alternative.availability_sql}) IS NOT NULL "
+                        f"AND isfinite(({alternative.value_sql}))")
+        # An unrelated global annual span cannot veto this metric's complete
+        # quarters when its own annual alternative is unusable. Keep the
+        # exact endpoint and full-quarter coherence requirements on this path.
+        independent_quarters = (
+            f"NOT coalesce(({valid_annual}), false) AND ({coherent}) "
+            f"AND ({span.end}) = b.period_end"
+        )
+        prefer_quarters = (
+            f"isfinite(({quarter_result})) AND (({comparable_quarters}) OR ({independent_quarters}))"
+        )
+        choose_annual = f"NOT coalesce(({prefer_quarters}), false) AND ({valid_annual})"
+        result_sql = (f"CASE WHEN {prefer_quarters} THEN ({quarter_result}) "
+                      f"WHEN {valid_annual} THEN ({alternative.value_sql}) "
+                      f"WHEN {comparable_quarters} THEN ({quarter_result}) END")
+        arithmetic_sql = annual._case(choose_annual, alternative.availability_sql, lowered.availability_sql)
+        start_sql = annual._case(choose_annual, "b.annual_start", start_sql)
+        end_sql = annual._case(choose_annual, "b.annual_end", end_sql)
+    origin_sql = (
+        f"CASE WHEN {choose_annual} THEN 'annual_fallback' WHEN {span.annual} THEN 'annual_dependency' "
+        f"WHEN NOT ({coherent}) THEN 'incomparable' WHEN ({span.start}) IS NOT NULL THEN 'quarterly' "
+        f"WHEN ({span.end}) IS NOT NULL THEN 'instant' ELSE 'scalar' END"
+    )
     projection = ", " + ", ".join(projections) if projections else ""
     line = "to_json([" + ",".join(lineage) + "])" if lineage else "'[]'"
-    node = parse_expression(definition.expression)
     denominator = None
     if isinstance(node, BinOp) and node.op == "/":
         denominator = node.right
@@ -187,7 +284,7 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
         "ELSE 'missing_input_or_domain' END"
         if denominator is not None else "'missing_input_or_domain'"
     )
-    fingerprint = quote(definition_hash(definition))
+    fingerprint = quote(definition_hash(definition, annual_plan))
     return f"""
         INSERT INTO _pit_metric ({', '.join(STATE_COLUMNS)})
         WITH frame AS (
@@ -202,15 +299,16 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
                 struct_pack(bucket := bucket, inputs := lineage) ORDER BY bucket)))) AS inputs_hash
             FROM base GROUP BY key_number
         ), computed AS (
-            SELECT b.*, {lowered.value_sql} AS result,
-                   {lowered.availability_sql} AS arithmetic_at, {reason} AS invalid_reason
+            SELECT b.*, {result_sql} AS result,
+                   {arithmetic_sql} AS arithmetic_at, {reason} AS invalid_reason,
+                   {origin_sql} AS selected_origin, {start_sql} AS selected_start, {end_sql} AS selected_end
             FROM base b
         ), target AS (
             SELECT c.*, h.inputs_hash, ? AS output_source, ? AS output_run
             FROM computed c JOIN hashed h USING (key_number)
             WHERE c.bucket = c.target_bucket
         ), identified AS (
-            SELECT *, sha256(to_json(struct_pack(contract := 'quarter-pit-v2', source := output_source,
+            SELECT *, sha256(to_json(struct_pack(contract := 'quarter-pit-v3-annual', source := output_source,
                 security := security_id, metric := {quote(definition.metric_code)},
                 metric_window := {quote(definition.window)}, bucket := target_bucket,
                 definition := {fingerprint}))) AS group_id
@@ -223,7 +321,9 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
                inputs_hash, CAST(event_at AS DATE), true, output_run,
                CASE WHEN result IS NULL THEN invalid_reason WHEN NOT isfinite(result) THEN 'nonfinite'
                     ELSE 'valid' END,
-               group_id, 1, 1, NULL, target_bucket, {fingerprint}, arithmetic_at, 'event_reconstructed'
+               group_id, 1, 1, NULL, target_bucket, {fingerprint}, arithmetic_at, 'event_reconstructed',
+               CASE WHEN result IS NULL OR NOT isfinite(result) THEN 'unavailable' ELSE selected_origin END,
+               selected_start, selected_end
         FROM identified
     """
 
@@ -236,20 +336,24 @@ def finish_metric(con: Any) -> None:
         WITH changed AS (
             SELECT * FROM _pit_metric
             QUALIFY lag(struct_pack(inputs := inputs_hash, value := value,
-                                    status := value_status, period := period_end))
+                                    status := value_status, period := period_end, origin := value_origin,
+                                    fiscal_start := fiscal_period_start, fiscal_end := fiscal_period_end))
                     OVER (PARTITION BY revision_group_id ORDER BY available_at)
                 IS DISTINCT FROM struct_pack(inputs := inputs_hash, value := value,
-                                             status := value_status, period := period_end)
+                                             status := value_status, period := period_end, origin := value_origin,
+                                             fiscal_start := fiscal_period_start, fiscal_end := fiscal_period_end)
         )
         SELECT derived_value_id, source, security_id, metric_code, metric_window,
                period_end, value, available_at, inputs_hash, as_of_date,
                lead(available_at) OVER w IS NULL, run_id, value_status, revision_group_id,
                row_number() OVER w, count(*) OVER (PARTITION BY revision_group_id),
-               lead(available_at) OVER w, target_bucket, definition_hash, arithmetic_available_at, history_status
+               lead(available_at) OVER w, target_bucket, definition_hash, arithmetic_available_at, history_status,
+               value_origin, fiscal_period_start, fiscal_period_end
         FROM changed WINDOW w AS (PARTITION BY revision_group_id ORDER BY available_at)
     """)
 
 
 def cleanup(con: Any) -> None:
-    for table in ("_pit_metric", "_pit_keys", "_pit_inputs", "_pit_stage", "_pit_targets", "_pit_items", "_pit_raw"):
+    for table in ("_pit_metric", "_pit_keys", "_pit_inputs", "_pit_stage", "_pit_targets", "_pit_items",
+                  "_pit_annual_targets", "_pit_annual_items", "_pit_raw"):
         con.execute(f"DROP TABLE IF EXISTS {table}")

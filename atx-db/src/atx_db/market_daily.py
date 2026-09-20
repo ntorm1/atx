@@ -283,7 +283,8 @@ WITH bars_by_session AS (
       AND security_id IN (SELECT DISTINCT security_id FROM bars)
     UNION ALL
     SELECT security_id, metric_code AS code, period_end, value, available_at, '', '', '', derived_value_id,
-           to_json(struct_pack(state_id := derived_value_id, inputs_hash := inputs_hash, value_status := value_status))
+           to_json(struct_pack(state_id := derived_value_id, inputs_hash := inputs_hash, value_status := value_status,
+               value_origin := value_origin, fiscal_period_start := fiscal_period_start, fiscal_period_end := fiscal_period_end))
     FROM derived_metric_values
     WHERE source = ?
       AND metric_code IN ({_in_list(metric_codes)})
