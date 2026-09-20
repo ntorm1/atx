@@ -11,7 +11,7 @@ import pandas as pd
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
-from .signal_eval import IC_HORIZONS, compute_forward_returns  # read-only reuse (PF4-S4 S4-2)
+from .signal_eval import IC_HORIZONS
 from .warehouse import (
     file_sha256,
     insert_frame,
@@ -2023,32 +2023,17 @@ class DelistingReturnObservationDataset(Dataset):
 # ===========================================================================
 # PF4-S4 S4-2: survivorship-safe forward-return stitching.
 #
-# RAW_FORWARD_RETURN_SOURCE reconciliation (the crux). The task brief names a
-# "signal_forward_returns" table as the raw source. That table does NOT exist: PF4-S1 never
-# persisted raw forward returns -- db.signal_eval.compute_forward_returns is a pure in-memory
-# function that DROPS rows whose t+h bar is missing (that drop IS the survivorship bug), and only
-# the *aggregated* factor_ic/factor_quantile_spread/... tables were landed. So the raw source is
-# reconciled here, once, to the table that actually resolves: equity_daily_bars.close -- the exact
-# surface db/signal_eval.py:_derive_forward_returns_from_prices already reads. We REUSE
-# compute_forward_returns read-only for the surviving return math (so "surviving names pass through
-# unchanged" holds by construction) and join symbol / forward_end_date / available_at on afterward.
-# We deliberately do NOT use equity_price_metrics.adjusted_close: it is independently back-adjusted
-# from split_factor and would diverge from compute_forward_returns on any split/dividend.
-#
-# Structural risk (pre-existing, not introduced here): equity_daily_bars has no unique constraint
-# on (security_id, trade_date) and no is_latest_revision, so a duplicate bar would mis-shift
-# compute_forward_returns' row-position horizon shift. The symbol/available_at joins below defend
-# against fan-out via GROUP BY, but the horizon shift itself inherits this latent property.
+# Production reads corrected same-row equity_daily_bars.adjusted_close. Raw close
+# remains an explicit compatibility option. Neither the modeled bar availability
+# nor the vendor cumulative adjustment factor proves historical economic/PIT quality.
+# The calendar is the observed union of bar dates, not an official exchange calendar.
+# All horizons count this SAME calendar for price endpoints, dates and DQC windows.
 # ===========================================================================
 
 RAW_FORWARD_RETURN_SOURCE = "equity_daily_bars"
 DEFAULT_FORWARD_RETURN_SS_SOURCE = "atx_forward_returns_survivorship_safe_v1"
 
-# The global trading calendar (db/calendar.py): calendar_id 'XNYS', source 'equity_daily_bars
-# calendar'. It is the union of every trade_date in equity_daily_bars, so it is a superset of any
-# single security's bar dates -- which is what guarantees the h-th trading day resolves for any
-# surviving forward-return row (the security must have >= h subsequent bars, all within the
-# calendar, so its h-th calendar day exists and forward_end_date/available_at are never NULL).
+# Existing observed-session calendar, populated by TradingCalendarDataset.
 _TRADING_CALENDAR_ID = "XNYS"
 _TRADING_CALENDAR_SOURCE = "equity_daily_bars calendar"
 
@@ -2076,6 +2061,11 @@ _DELISTING_COHORT_COLUMNS = [
 class SurvivorshipSafeForwardReturnOptions:
     source: str = DEFAULT_FORWARD_RETURN_SS_SOURCE
     run_id: str | None = None
+    # Production uses the source's corrected same-row adjusted price. This is not
+    # certification of economic adjustment quality or historical source vintages.
+    # Raw close is an explicit compatibility mode; NULL adjustments never fall back.
+    price_basis: str = "adjusted_close"
+    observation_cutoff: dt.datetime | None = None
 
 
 def _stitch(raw, terminal):
@@ -2155,163 +2145,221 @@ def refresh_survivorship_safe_forward_returns(
     store: DuckDBStore,
     options: SurvivorshipSafeForwardReturnOptions | None = None,
 ) -> int:
-    """Materialize ``forward_returns_survivorship_safe`` from the landed price/calendar/terminal-
-    return tables via :func:`compute_survivorship_safe_forward_returns`, replacing prior rows by
-    source.
+    """Replace one source atomically using spillable SQL and one horizon at a time.
 
-    The surviving panel is built exactly as PF4-S1 builds it -- ``compute_forward_returns`` over
-    ``equity_daily_bars.close`` (:data:`RAW_FORWARD_RETURN_SOURCE`) -- so surviving names pass
-    through unchanged. ``forward_end_date`` is the h-th trading day after ``as_of_date`` from the
-    global ``trading_calendar``; the forward ``available_at`` is the t+h bar's ``available_at`` with
-    a ``forward_end_date + 22h`` fallback.
+    A survivor requires a positive finite price on the exact h-th observed calendar
+    session. A known terminal in (formation, endpoint] instead uses the latest
+    positive price STRICTLY BEFORE delisting, compounded with the terminal return.
+    Event-day and later bars never enter that leg; formations on/after a known
+    terminal are excluded. A formation-only price produces a zero partial return.
 
-    The ``delisting_cohort`` is built from the FORMATION GRID -- every bar date of a delisting
-    security crossed with :data:`IC_HORIZONS` -- NOT from the surviving panel, so a name that
-    delists with no surviving t+h bar (the pure NaN-drop case) is still enumerated. A cohort row is
-    admitted when ``delist_date`` falls in ``(as_of_date, forward_end_date]``.
+    ``adjusted_close`` is the production basis; ``close`` explicitly opts into raw
+    price compatibility. Missing adjusted prices are never inferred from raw close
+    or a NULL split factor. Source adjustment quality remains a measured limitation.
+    All input availability clocks are maximized. An optional observation cutoff is
+    applied BEFORE revision selection, including terminal rows no longer marked
+    latest. Calendar dates beyond that cutoff are excluded too. The cutoff is an
+    observation vintage, not the formation date: these are realized outcome labels.
 
-    Deviation (documented in the report): the brief's cohort WHERE clause also lists
-    ``terminal.available_at <= <panel-decision ts for as_of_date>`` glossed as
-    ``end_of_day(as_of_date)``. Applied literally that predicate is self-defeating -- a terminal is
-    confirmed no earlier than its ``delist_date`` and the cohort requires ``delist_date >
-    as_of_date``, so ``terminal.available_at`` is always ``> as_of_date`` and ``<= as_of_date + 22h``
-    can never hold for a real stitch; it would drop EVERY stitch and re-introduce the exact
-    survivorship bias this table fixes (contradicting the Accept criteria). Per invariant (A)+(I),
-    no-lookahead is enforced authoritatively by the OUTPUT row's ``available_at = max(raw,
-    terminal)`` (a PIT reader gating on ``available_at <= as_of_ts`` cannot see the stitch before
-    the terminal resolves), so the self-defeating input gate is omitted rather than applied.
+    Only scalar counts cross into Python. Temporary tables and the output inserts
+    remain inside DuckDB's memory/spill controls; no all-bar/expanded pandas frames.
     """
-
     options = options or SurvivorshipSafeForwardReturnOptions()
+    if options.price_basis not in {"adjusted_close", "close"}:
+        raise ValueError("price_basis must be adjusted_close or close")
+    cutoff = options.observation_cutoff
+    if cutoff is not None and cutoff.tzinfo is not None:
+        cutoff = cutoff.astimezone(dt.UTC).replace(tzinfo=None)
     store.initialize()
     con = store.con
-
-    prices = con.execute(
-        f"""
-        SELECT security_id, trade_date AS as_of_date, close
-        FROM {RAW_FORWARD_RETURN_SOURCE}
-        WHERE close IS NOT NULL
-        ORDER BY security_id, trade_date
-        """
-    ).df()
-    raw = compute_forward_returns(prices, horizons=IC_HORIZONS).rename(
-        columns={"horizon": "horizon_days", "forward_return": "raw_forward_return"}
-    )
-
-    if raw.empty:
-        forward_returns = pd.DataFrame(columns=_FORWARD_RETURN_BASE_COLUMNS)
-    else:
-        con.register("_ss_raw_forward_returns", raw)
-        try:
-            forward_returns = con.execute(
-                """
-                WITH cal AS (
-                    SELECT trade_date, ROW_NUMBER() OVER (ORDER BY trade_date) AS rn
-                    FROM (
-                        SELECT DISTINCT trade_date
-                        FROM trading_calendar
-                        WHERE calendar_id = ? AND source = ?
-                    )
-                ),
-                bar AS (
-                    SELECT security_id, trade_date,
-                           max(symbol) AS symbol,
-                           max(available_at) AS available_at
+    temporary_tables = ("_ss_bars", "_ss_calendar", "_ss_terminals", "_ss_terminal_prices")
+    try:
+        with store.transaction():
+            con.execute(
+                f"""
+                CREATE TEMP TABLE _ss_bars AS
+                WITH eligible AS (
+                    SELECT *, coalesce(available_at,
+                        CAST(trade_date AS TIMESTAMP) + INTERVAL '22 hours') AS price_available_at
                     FROM equity_daily_bars
-                    GROUP BY security_id, trade_date
+                    WHERE (?::TIMESTAMP IS NULL OR coalesce(available_at,
+                        CAST(trade_date AS TIMESTAMP) + INTERVAL '22 hours') <= ?)
+                ), chosen AS (
+                    SELECT security_id, symbol, trade_date,
+                           {options.price_basis} AS price, price_available_at,
+                           row_number() OVER (
+                               PARTITION BY security_id, trade_date
+                               ORDER BY price_available_at DESC, source ASC,
+                                        vendor_security_id ASC NULLS LAST, symbol ASC,
+                                        adjusted_close DESC NULLS LAST, close DESC NULLS LAST,
+                                        source_loaded_at DESC
+                           ) AS pick
+                    FROM eligible
                 )
-                SELECT
-                    fr.security_id,
-                    anchor.symbol AS symbol,
-                    fr.as_of_date,
-                    fr.horizon_days,
-                    cal_fwd.trade_date AS forward_end_date,
-                    fr.raw_forward_return,
-                    coalesce(
-                        fwd_bar.available_at,
-                        CAST(cal_fwd.trade_date AS TIMESTAMP) + INTERVAL '22 hours'
-                    ) AS available_at
-                FROM _ss_raw_forward_returns fr
-                LEFT JOIN cal cal_anchor ON cal_anchor.trade_date = fr.as_of_date
-                LEFT JOIN cal cal_fwd ON cal_fwd.rn = cal_anchor.rn + fr.horizon_days
-                LEFT JOIN bar anchor ON anchor.security_id = fr.security_id
-                                    AND anchor.trade_date = fr.as_of_date
-                LEFT JOIN bar fwd_bar ON fwd_bar.security_id = fr.security_id
-                                     AND fwd_bar.trade_date = cal_fwd.trade_date
+                SELECT security_id, symbol, trade_date, price, price_available_at
+                FROM chosen WHERE pick = 1 AND price > 0 AND isfinite(price)
                 """,
-                [_TRADING_CALENDAR_ID, _TRADING_CALENDAR_SOURCE],
-            ).df()
-        finally:
-            con.unregister("_ss_raw_forward_returns")
-
-    horizons_sql = ", ".join(str(int(h)) for h in IC_HORIZONS)
-    cohort = con.execute(
-        f"""
-        WITH horizons AS (SELECT unnest([{horizons_sql}]) AS horizon_days),
-        cal AS (
-            SELECT trade_date, ROW_NUMBER() OVER (ORDER BY trade_date) AS rn
-            FROM (
-                SELECT DISTINCT trade_date
-                FROM trading_calendar
-                WHERE calendar_id = ? AND source = ?
+                [cutoff, cutoff],
             )
-        ),
-        tr AS (
-            SELECT
-                security_id, delist_date, terminal_return, terminal_return_source,
-                return_observation_id, available_at,
-                ROW_NUMBER() OVER (
-                    PARTITION BY security_id, delist_date
-                    ORDER BY available_at DESC, source_loaded_at DESC, terminal_return_id DESC
-                ) AS rn
-            FROM delisting_terminal_returns
-            WHERE is_latest_revision = true
-        ),
-        formation AS (
-            SELECT DISTINCT b.security_id, b.trade_date AS as_of_date
-            FROM equity_daily_bars b
-            WHERE b.close IS NOT NULL
-              AND b.security_id IN (SELECT DISTINCT security_id FROM tr WHERE rn = 1)
-        ),
-        qualified AS (
-            SELECT
-                f.security_id, f.as_of_date, h.horizon_days,
-                t.delist_date, t.terminal_return, t.terminal_return_source,
-                t.return_observation_id, t.available_at AS terminal_available_at,
-                ROW_NUMBER() OVER (
-                    PARTITION BY f.security_id, f.as_of_date, h.horizon_days
-                    ORDER BY t.delist_date ASC, t.available_at ASC
-                ) AS pick
-            FROM formation f
-            CROSS JOIN horizons h
-            JOIN cal cal_anchor ON cal_anchor.trade_date = f.as_of_date
-            JOIN cal cal_fwd ON cal_fwd.rn = cal_anchor.rn + h.horizon_days
-            JOIN tr t ON t.security_id = f.security_id AND t.rn = 1
-            WHERE t.delist_date > f.as_of_date
-              AND t.delist_date <= cal_fwd.trade_date
-              -- No cohort-level terminal.available_at gate: it is self-defeating (see docstring).
-              -- No-lookahead is enforced by the row-level available_at = max(raw, terminal).
-        )
-        SELECT
-            security_id, as_of_date, horizon_days, delist_date, terminal_return,
-            terminal_return_source, return_observation_id, terminal_available_at
-        FROM qualified
-        WHERE pick = 1
-        """,
-        [_TRADING_CALENDAR_ID, _TRADING_CALENDAR_SOURCE],
-    ).df()
-
-    out = compute_survivorship_safe_forward_returns(
-        forward_returns, cohort, source=options.source, run_id=options.run_id
-    )
-
-    with store.transaction():
-        con.execute(
-            "DELETE FROM forward_returns_survivorship_safe WHERE source = ?", [options.source]
-        )
-        if not out.empty:
-            insert_frame(
-                store, out, "forward_returns_survivorship_safe", "forward_returns_survivorship_safe_insert"
+            con.execute(
+                """
+                CREATE TEMP TABLE _ss_calendar AS
+                SELECT trade_date, row_number() OVER (ORDER BY trade_date) AS session_number
+                FROM (
+                    SELECT DISTINCT trade_date FROM trading_calendar
+                    WHERE calendar_id = ? AND source = ? AND is_open
+                      AND (?::TIMESTAMP IS NULL OR trade_date <= CAST(? AS DATE))
+                )
+                """,
+                [_TRADING_CALENDAR_ID, _TRADING_CALENDAR_SOURCE, cutoff, cutoff],
             )
+            con.execute(
+                """
+                CREATE TEMP TABLE _ss_terminals AS
+                WITH revisions AS (
+                    SELECT *, row_number() OVER (
+                        PARTITION BY security_id, delist_date
+                        ORDER BY available_at DESC, source_loaded_at DESC,
+                                 terminal_return_id DESC
+                    ) AS revision
+                    FROM delisting_terminal_returns
+                    WHERE (?::TIMESTAMP IS NULL OR available_at <= ?)
+                      AND isfinite(terminal_return) AND terminal_return >= -1
+                )
+                SELECT security_id, delist_date, terminal_return, terminal_return_source,
+                       return_observation_id, available_at AS terminal_available_at
+                FROM revisions WHERE revision = 1
+                QUALIFY row_number() OVER (
+                    PARTITION BY security_id ORDER BY delist_date, terminal_return_id
+                ) = 1
+                """,
+                [cutoff, cutoff],
+            )
+            con.execute(
+                """
+                CREATE TEMP TABLE _ss_terminal_prices AS
+                SELECT t.*, b.trade_date AS last_price_date, b.price AS last_price,
+                       b.price_available_at AS last_price_available_at
+                FROM _ss_terminals t
+                ASOF LEFT JOIN _ss_bars b
+                  ON t.security_id = b.security_id AND t.delist_date > b.trade_date
+                """
+            )
+            con.execute(
+                "DELETE FROM forward_returns_survivorship_safe WHERE source = ?", [options.source]
+            )
+            for horizon in IC_HORIZONS:
+                con.execute(
+                    f"""
+                    INSERT INTO forward_returns_survivorship_safe
+                        ({', '.join(FORWARD_RETURN_SS_COLUMNS)})
+                    WITH legs AS (
+                        SELECT f.security_id, f.symbol, f.trade_date AS as_of_date,
+                               ending.trade_date AS forward_end_date,
+                               CASE WHEN t.delist_date <= ending.trade_date
+                                    THEN t.last_price / f.price - 1
+                                    ELSE e.price / f.price - 1 END AS raw_forward_return,
+                               CASE WHEN t.delist_date <= ending.trade_date
+                                    THEN t.terminal_return END AS terminal_return,
+                               CASE WHEN t.delist_date <= ending.trade_date
+                                    THEN t.delist_date END AS delist_date,
+                               CASE WHEN t.delist_date <= ending.trade_date
+                                    THEN t.terminal_return_source END AS terminal_return_source,
+                               CASE WHEN t.delist_date <= ending.trade_date
+                                    THEN t.return_observation_id END AS return_observation_id,
+                               greatest(f.price_available_at,
+                                   CASE WHEN t.delist_date <= ending.trade_date
+                                        THEN greatest(t.last_price_available_at,
+                                                      t.terminal_available_at)
+                                        ELSE e.price_available_at END) AS available_at
+                        FROM _ss_bars f
+                        JOIN _ss_calendar anchor ON anchor.trade_date = f.trade_date
+                        JOIN _ss_calendar ending
+                          ON ending.session_number = anchor.session_number + ?
+                        LEFT JOIN _ss_bars e
+                          ON e.security_id = f.security_id AND e.trade_date = ending.trade_date
+                        LEFT JOIN _ss_terminal_prices t ON t.security_id = f.security_id
+                        WHERE (t.delist_date IS NULL OR f.trade_date < t.delist_date)
+                          AND ((t.delist_date <= ending.trade_date
+                                AND t.last_price_date >= f.trade_date) OR e.price IS NOT NULL)
+                    ), returns AS (
+                        SELECT *, CASE WHEN terminal_return IS NOT NULL
+                            THEN (1 + raw_forward_return) * (1 + terminal_return) - 1
+                            ELSE raw_forward_return END AS forward_return
+                        FROM legs
+                    )
+                    SELECT sha256(concat_ws('|', ?, security_id,
+                                           CAST(as_of_date AS VARCHAR), CAST(? AS VARCHAR))),
+                           ?, security_id, symbol, as_of_date, ?, forward_end_date,
+                           raw_forward_return, terminal_return, forward_return,
+                           terminal_return IS NOT NULL, terminal_return IS NOT NULL,
+                           delist_date, terminal_return_source, return_observation_id,
+                           true, available_at, ?
+                    FROM returns WHERE isfinite(forward_return)
+                    """,
+                    [horizon, options.source, horizon, options.source, horizon, options.run_id],
+                )
+            count = con.execute(
+                "SELECT count(*) FROM forward_returns_survivorship_safe WHERE source = ?",
+                [options.source],
+            ).fetchone()[0]
+    finally:
+        for table in reversed(temporary_tables):
+            con.execute(f"DROP TABLE IF EXISTS {table}")
+    return int(count)
 
-    return int(len(out))
+
+def survivorship_forward_return_diagnostics(
+    store: DuckDBStore,
+    options: SurvivorshipSafeForwardReturnOptions | None = None,
+) -> dict[str, Any]:
+    """Scalar operational counts; missing adjustment/terminal inputs remain explicit.
+
+    Source-row counts are not distinct security/date coverage or economic quality
+    certification. The input-derived DQC separately identifies missing stitches.
+    """
+    options = options or SurvivorshipSafeForwardReturnOptions()
+    cutoff = options.observation_cutoff
+    if cutoff is not None and cutoff.tzinfo is not None:
+        cutoff = cutoff.astimezone(dt.UTC).replace(tzinfo=None)
+    prices = store.con.execute(
+        """
+        SELECT count(*) FILTER (WHERE close > 0 AND isfinite(close)),
+               count(*) FILTER (WHERE close > 0 AND isfinite(close)
+                   AND (adjusted_close IS NULL OR adjusted_close <= 0
+                        OR NOT isfinite(adjusted_close)))
+        FROM equity_daily_bars
+        WHERE (?::TIMESTAMP IS NULL OR coalesce(available_at,
+            CAST(trade_date AS TIMESTAMP) + INTERVAL '22 hours') <= ?)
+        """, [cutoff, cutoff],
+    ).fetchone()
+    output = store.con.execute(
+        """
+        SELECT count(*), count(*) FILTER (WHERE is_stitched)
+        FROM forward_returns_survivorship_safe WHERE source = ?
+        """, [options.source],
+    ).fetchone()
+    uncovered = store.con.execute(
+        """
+        SELECT count(*) FROM delisting_events e
+        WHERE e.security_id IS NOT NULL
+          AND (?::TIMESTAMP IS NULL OR e.available_at <= ?)
+          AND NOT EXISTS (
+              SELECT 1 FROM delisting_terminal_returns t
+              WHERE t.security_id = e.security_id AND t.delist_date = e.delist_date
+                AND (?::TIMESTAMP IS NULL OR t.available_at <= ?)
+          )
+        """, [cutoff, cutoff, cutoff, cutoff],
+    ).fetchone()[0]
+    return {
+        "source": options.source,
+        "price_basis": options.price_basis,
+        "calendar_basis": "bar-observed sessions; not an official exchange calendar",
+        "adjustment_quality": "source supplied; economic and historical vintage quality unverified",
+        "observation_cutoff": None if cutoff is None else cutoff.isoformat(),
+        "positive_raw_price_source_rows": int(prices[0]),
+        "missing_adjusted_price_source_rows": int(prices[1]),
+        "rows": int(output[0]),
+        "stitched_rows": int(output[1]),
+        "uncovered_event_rows": int(uncovered),
+    }

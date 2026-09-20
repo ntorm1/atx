@@ -1241,7 +1241,7 @@ def test_refresh_survivorship_safe_forward_returns_stitches_and_is_idempotent(tm
         [dt.date(2024, 1, 5), dt.date(2024, 1, 5), dt.datetime(2024, 1, 6, 12, 0)],
     )
 
-    options = SurvivorshipSafeForwardReturnOptions(source="ss_itest")
+    options = SurvivorshipSafeForwardReturnOptions(source="ss_itest", price_basis="close")
     n1 = refresh_survivorship_safe_forward_returns(tmp_store, options)
     assert n1 > 0
 
@@ -1263,12 +1263,15 @@ def test_refresh_survivorship_safe_forward_returns_stitches_and_is_idempotent(tm
     assert surv_h1_d1["raw_forward_return"] == pytest.approx(0.01)   # 101/100 - 1
     assert surv_h1_d1["forward_return"] == pytest.approx(0.01)       # unchanged pass-through
 
-    # Delisting name: a mid-horizon delist is stitched to the terminal DLRET (pure NaN-drop case),
-    # never dropped. All stitched rows equal the terminal return and inherit its availability.
+    # Delisting name retains its nonzero partial price leg before the terminal return.
+    # The final strictly preterminal close is 40; formation prices are 50, 45 and 40.
     del_rows = rows[rows["security_id"] == "DEL"]
     stitched = del_rows[del_rows["is_stitched"].astype(bool)]
     assert len(stitched) >= 1
-    assert all(v == pytest.approx(-0.5) for v in stitched["forward_return"].astype(float))
+    formation_prices = dict(del_bars)
+    for row in stitched.itertuples():
+        expected = (40.0 / formation_prices[_date_value(row.as_of_date)]) * 0.5 - 1
+        assert row.forward_return == pytest.approx(expected)
     assert stitched["is_delisted_in_horizon"].astype(bool).all()
     assert (pd.to_datetime(stitched["delist_date"]) == pd.Timestamp("2024-01-05")).all()
     # no-lookahead: the stitched row inherits the terminal confirmation timestamp (raw was absent)
@@ -1300,8 +1303,17 @@ def test_refresh_survivorship_safe_forward_returns_stitches_and_is_idempotent(tm
 # ---------------------------------------------------------------------------
 
 
+def _seed_forward_observed_calendar(store, days):
+    store.con.executemany(
+        "INSERT INTO trading_calendar (calendar_id, trade_date, is_open, source) "
+        "VALUES ('XNYS', ?, true, 'equity_daily_bars calendar')",
+        [(dt.date(2024, 1, day),) for day in days],
+    )
+
+
 def test_survivorship_dqc_red_on_dropped_delisted_names_green_when_stitched(tmp_store):
     from atx_db.quality.checks_survivorship import survivorship_forward_return_check
+    _seed_forward_observed_calendar(tmp_store, (2, 31))
     # seed one terminal return whose delist falls in a formation window ...
     tmp_store.con.execute(
         "INSERT INTO delisting_terminal_returns (terminal_return_id, source, security_id, delist_date, "
@@ -1317,15 +1329,16 @@ def test_survivorship_dqc_red_on_dropped_delisted_names_green_when_stitched(tmp_
         "INSERT INTO forward_returns_survivorship_safe (forward_return_id, source, security_id, as_of_date, "
         "horizon_days, forward_end_date, forward_return, is_delisted_in_horizon, is_stitched, available_at) "
         "VALUES ('f1','ss','Z', DATE '2024-01-02', 21, DATE '2024-01-31', 0.03, false, false, TIMESTAMP '2024-02-01 22:00')")
-    red = survivorship_forward_return_check(tmp_store)      # runs the registered critical check
+    red = survivorship_forward_return_check(tmp_store, source="ss", price_basis="close")      # runs the registered critical check
     assert red.status == "failed" and red.severity == "critical"
     # now stitch A in -> GREEN
     tmp_store.con.execute(
         "INSERT INTO forward_returns_survivorship_safe (forward_return_id, source, security_id, as_of_date, "
         "horizon_days, forward_end_date, terminal_return, forward_return, is_delisted_in_horizon, is_stitched, "
-        "delist_date, available_at) VALUES ('f2','ss','A', DATE '2024-01-02', 21, DATE '2024-01-31', -0.5, -0.5, "
-        "true, true, DATE '2024-01-10', TIMESTAMP '2024-01-12 12:00')")
-    green = survivorship_forward_return_check(tmp_store)
+        "delist_date, available_at, symbol, terminal_return_source) VALUES "
+        "('f2','ss','A', DATE '2024-01-02', 1, DATE '2024-01-31', -0.5, -0.5, "
+        "true, true, DATE '2024-01-10', TIMESTAMP '2024-01-12 12:00', 'A', 'observed')")
+    green = survivorship_forward_return_check(tmp_store, source="ss", price_basis="close")
     assert green.status in ("passed", "skipped")
 
 
@@ -1335,6 +1348,7 @@ def test_survivorship_dqc_green_on_pre_delist_halt_not_in_own_formation(tmp_stor
     # horizons. A name halted before delisting has no formation bar on a SURVIVING name's later
     # formation as_of, so the build correctly stitches nothing there -- the check must not demand it.
     from atx_db.quality.checks_survivorship import survivorship_forward_return_check
+    _seed_forward_observed_calendar(tmp_store, (2, 3, 5, 31))
     con = tmp_store.con
     # Delisting name D: last traded 2024-01-03 (then halted); delists 2024-01-10.
     con.executemany(
@@ -1353,7 +1367,7 @@ def test_survivorship_dqc_green_on_pre_delist_halt_not_in_own_formation(tmp_stor
         "INSERT INTO forward_returns_survivorship_safe (forward_return_id, source, security_id, as_of_date, "
         "horizon_days, forward_end_date, forward_return, is_delisted_in_horizon, is_stitched, available_at) "
         "VALUES ('f1','ss','Z', DATE '2024-01-05', 21, DATE '2024-01-31', 0.03, false, false, TIMESTAMP '2024-02-01 22:00')")
-    result = survivorship_forward_return_check(tmp_store)
+    result = survivorship_forward_return_check(tmp_store, source="ss", price_basis="close")
     # GREEN: no stitched row is demanded at a formation date the delisting name never traded on.
     # (Under the pre-fix security-independent grid this false-positives to failed/critical.)
     assert result.status == "passed" and result.severity == "critical"
@@ -1402,6 +1416,7 @@ def test_delisting_code_reconciliation_unresolved_fires_on_unmapped_not_mismatch
 
 def test_survivorship_checks_wired_into_warehouse_quality_sweep(tmp_store):
     # The critical + error checks must actually run inside the production sweep so the gate can halt.
+    _seed_forward_observed_calendar(tmp_store, (2, 31))
     from atx_db.quality import run_warehouse_quality_checks
     from atx_db.quality.checks_survivorship import (
         DELISTING_CODE_RECONCILIATION_CHECK_NAME,
