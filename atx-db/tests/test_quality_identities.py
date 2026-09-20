@@ -1,15 +1,20 @@
 """Tier1-S4 T6: accounting identities, cross-source shares, and coverage gates.
 
-``fundamental_standardized`` has no ``revision_sequence`` column (verified against
-``migrations/bodies_0001_0137.py::_fundamental_standardized_schema_catalog`` -- that column
-lives on ``fundamental_points``/TTM tables, not here), so ``_insert_standardized`` below omits
-it; ``checks_identities.identity_violation_sql`` resolves "the current fact" via a plain
-``is_latest_revision`` filter, mirroring ``item_coverage.load_item_coverage_inputs``.
+Fix round 1: ``identity_violation_sql`` now filters ``fundamental_standardized`` by a pinned
+``source`` (default ``item_coverage.DEFAULT_SOURCE``, the same constant
+``item_coverage.load_item_coverage_inputs`` pins), so ``_insert_standardized`` below writes rows
+under that same source value rather than an arbitrary ``'test'`` literal. Correction: an earlier
+version of this comment claimed ``fundamental_standardized`` has no ``revision_sequence`` column;
+migration 0271 does add one (nullable, populated only by the set-based production writer), but
+the identity pivot still resolves ties via ``available_at`` (``NOT NULL`` on every row) rather
+than that column -- see ``checks_identities.py``'s module docstring for the full reasoning.
 """
 
 from __future__ import annotations
 
 import pytest
+
+from atx_db.item_coverage import DEFAULT_SOURCE as _STANDARDIZED_SOURCE
 
 
 def _spec(name):
@@ -26,11 +31,14 @@ def _insert_standardized(store, rows):
     # input_codes_json/input_item_ids_json/rule_id/combination_rule are NOT NULL on
     # fundamental_standardized (verified against
     # migrations/bodies_0001_0137.py::_fundamental_standardized_schema_catalog) but are not
-    # exercised by the identity checks, so fixed placeholder values are used.
+    # exercised by the identity checks, so fixed placeholder values are used. ``source`` is
+    # the same pinned value identity_violation_sql filters on by default.
     values = ",".join(
-        "('{sid}-{code}-{pe}','test','sec','{sid}','{cik}',{item},'{code}','{basis}',"
-        "DATE '{pe}',{value},TIMESTAMP '{pe} 22:00:00',DATE '{pe}',true,"
-        "'acc-{sid}-{pe}','[]','[]','test-rule','direct')".format(**row)
+        (
+            "('{sid}-{code}-{pe}','{source}','sec','{sid}','{cik}',{item},'{code}','{basis}',"
+            "DATE '{pe}',{value},TIMESTAMP '{pe} 22:00:00',DATE '{pe}',true,"
+            "'acc-{sid}-{pe}','[]','[]','test-rule','direct')"
+        ).format(source=_STANDARDIZED_SOURCE, **row)
         for row in rows
     )
     store.con.execute(
@@ -200,6 +208,60 @@ def test_the_cash_flow_identity_ties_out(tmp_store):
     assert _observed(tmp_store, "cash_flow_identity_violations") == 0.0
 
 
+def test_a_cash_flow_break_beyond_tolerance_is_a_violation(tmp_store):
+    # cfo + cfi + cff + fx = 100e6 - 40e6 - 20e6 + 1e6 = 41e6, vs net_change_in_cash = 20e6:
+    # a 21e6 break, far past greatest(0.5% * 20e6, 1e6) = 1e6.
+    rows = [
+        dict(
+            sid="SEC-4",
+            cik="0000000004",
+            item=1301,
+            code="cash_flow_from_operations",
+            basis="quarterly",
+            pe="2024-03-31",
+            value=100_000_000,
+        ),
+        dict(
+            sid="SEC-4",
+            cik="0000000004",
+            item=1303,
+            code="cash_flow_from_investing",
+            basis="quarterly",
+            pe="2024-03-31",
+            value=-40_000_000,
+        ),
+        dict(
+            sid="SEC-4",
+            cik="0000000004",
+            item=1304,
+            code="cash_flow_from_financing",
+            basis="quarterly",
+            pe="2024-03-31",
+            value=-20_000_000,
+        ),
+        dict(
+            sid="SEC-4",
+            cik="0000000004",
+            item=1323,
+            code="fx_effect_on_cash",
+            basis="quarterly",
+            pe="2024-03-31",
+            value=1_000_000,
+        ),
+        dict(
+            sid="SEC-4",
+            cik="0000000004",
+            item=1324,
+            code="net_change_in_cash",
+            basis="quarterly",
+            pe="2024-03-31",
+            value=20_000_000,
+        ),
+    ]
+    _insert_standardized(tmp_store, rows)
+    assert _observed(tmp_store, "cash_flow_identity_violations") == 1.0
+
+
 def _insert_market_daily(store, rows):
     values = ",".join(
         "('{sid}-{td}','atx-db daily market panel v1','{sid}','{sym}',DATE '{td}',{ratio},"
@@ -236,9 +298,32 @@ def test_a_security_outside_five_percent_fails_the_share_check(tmp_store):
     assert _observed(tmp_store, "shares_cross_source_disagreement") == pytest.approx(0.5)
 
 
-def test_securities_with_only_one_share_source_are_out_of_scope(tmp_store):
-    _insert_market_daily(tmp_store, [dict(sid="SEC-1", sym="A", td="2024-01-02", ratio="NULL")])
+def test_a_security_with_only_one_share_source_is_out_of_scope(tmp_store):
+    # SEC-2 has both sources (agreement); SEC-1's single-source (NULL ratio) row must be
+    # excluded from the denominator without affecting the observed value -- distinct from the
+    # "zero eligible securities at all" pipeline-outage case covered below.
+    _insert_market_daily(
+        tmp_store,
+        [
+            dict(sid="SEC-1", sym="A", td="2024-01-02", ratio="NULL"),
+            dict(sid="SEC-2", sym="B", td="2024-01-02", ratio=1.0),
+        ],
+    )
     assert _observed(tmp_store, "shares_cross_source_disagreement") == 0.0
+
+
+def test_zero_eligible_share_pairs_fails_loudly_instead_of_passing_vacuously(tmp_store):
+    # Fix-round-1 finding 2: a non-empty market_daily_metrics table where NO security has both
+    # a dei and an archive share count (e.g. the reconciliation pipeline broke upstream) must
+    # not read as a clean pass on zero measured rows.
+    _insert_market_daily(
+        tmp_store,
+        [
+            dict(sid="SEC-1", sym="A", td="2024-01-02", ratio="NULL"),
+            dict(sid="SEC-2", sym="B", td="2024-01-02", ratio="NULL"),
+        ],
+    )
+    assert _observed(tmp_store, "shares_cross_source_disagreement") == 1.0
 
 
 def test_a_derived_family_with_no_values_is_reported(tmp_store):
@@ -265,7 +350,24 @@ def test_item_coverage_shortfall_is_measured(tmp_store):
     tmp_store.con.execute(
         "INSERT INTO fundamental_item_coverage (coverage_id, source, universe_id, item_id, "
         "canonical_code, basis, fiscal_year, n_securities, n_with_value, coverage_pct) VALUES "
-        "('c1','t','us_listed_v1',1101,'total_assets','instant',2020,100,99,99.0)"
+        "('c1','t','us_listed_v1',1101,'total_assets','annual',2020,100,99,99.0)"
+    )
+    assert _observed(tmp_store, "fundamental_item_coverage_below_target") == float(ITEM_COVERAGE_TARGET_ITEMS - 1)
+
+
+def test_item_coverage_only_counts_the_evaluate_gate_basis(tmp_store):
+    # Fix-round-1 finding 1: item_coverage.evaluate_item_coverage_gate scores an item on its
+    # `annual` row alone. A thin `instant` row for the SAME item/year must not drag an
+    # otherwise-passing annual item below threshold (nor may a healthy instant row rescue a
+    # thin annual one) -- the previous version of this check grouped across every basis, which
+    # disagreed with evaluate_item_coverage_gate and the published ITEM_COVERAGE.md.
+    from atx_db.item_coverage import ITEM_COVERAGE_TARGET_ITEMS
+
+    tmp_store.con.execute(
+        "INSERT INTO fundamental_item_coverage (coverage_id, source, universe_id, item_id, "
+        "canonical_code, basis, fiscal_year, n_securities, n_with_value, coverage_pct) VALUES "
+        "('c1','t','us_listed_v1',1101,'total_assets','annual',2020,100,99,99.0),"
+        "('c2','t','us_listed_v1',1101,'total_assets','instant',2020,100,10,10.0)"
     )
     assert _observed(tmp_store, "fundamental_item_coverage_below_target") == float(ITEM_COVERAGE_TARGET_ITEMS - 1)
 

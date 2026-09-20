@@ -11,24 +11,34 @@ Six specs:
 
 This module is a LEAF of ``atx_db.quality``: it imports only ``._types`` at module level, so
 it cannot introduce an import cycle inside the package (enforced by
-``test_decomposed_package_import_graphs_are_acyclic``). The Sprint 2 coverage constants are
-imported lazily inside the factory, mirroring ``_runner``'s ``signal_eval`` precedent.
+``test_decomposed_package_import_graphs_are_acyclic``). ``inspect`` is stdlib and does not
+count. The Sprint 2 coverage constants/helpers are imported lazily inside the factory,
+mirroring ``_runner``'s ``signal_eval`` precedent.
 
-Substitution note (verified against ``fundamental_standardized``'s actual schema in
-``migrations/bodies_0001_0137.py::_fundamental_standardized_schema_catalog``): the table has
-no ``revision_sequence`` column (that column exists on ``fundamental_points`` /
-``fundamental_statement_points`` / TTM tables, not here). The plan's identity SQL sketch
-assumed one. Sprint 2's own reader, ``item_coverage.load_item_coverage_inputs``, resolves
-"the current fact" for this table with a plain ``WHERE is_latest_revision`` filter and no
-further tie-break; the identity pivot below follows that precedent instead of an
-``arg_max(..., revision_sequence)`` that would not compile.
+Schema note, corrected after fix-round 1 review: ``fundamental_standardized`` DOES carry a
+``revision_sequence`` column -- migration 0271 (``bodies_0271.py::_standardized_fundamentals_release``)
+adds it via ``ALTER TABLE ... ADD COLUMN``, and the production batch writer
+(``_standardization_set_based.py``) populates it going forward. An earlier version of this module
+claimed the column did not exist (true only of the original ``CREATE TABLE`` in
+``bodies_0001_0137.py``, before migration 0271 landed) and used a plain ``is_latest_revision``
+filter with no further tie-break, mirroring ``item_coverage.load_item_coverage_inputs``. That
+filter is still correct as a *scope* (it is what identifies "the currently valid fact"), but
+the per-code pivot below also needs an explicit, deterministic tie-break for the rare case where
+more than one ``is_latest_revision`` row can exist for the same
+``(source, security_id, period_end, basis, source_accession, canonical_code)`` key (e.g. two
+different ``rule_id``s mapping to the same canonical code). ``revision_sequence`` is nullable --
+only the set-based writer populates it, the row-at-a-time ``standardization.py`` writer does not --
+so ``available_at`` (``NOT NULL`` on every row since the original ``CREATE TABLE``) is used as the
+tie-break instead of ``revision_sequence``, so the dedup works regardless of which writer produced
+a given row.
 """
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 
-from ._types import SqlQualityCheck
+from ._types import Severity, SqlQualityCheck
 
 IDENTITY_TOLERANCE_PCT = 0.005
 IDENTITY_TOLERANCE_ABS = 1_000_000.0
@@ -56,7 +66,7 @@ class AccountingIdentity:
     lhs: str
     rhs: str
     scale: str
-    severity: str
+    severity: Severity
     description: str
 
 
@@ -115,19 +125,32 @@ _PIVOT_CODES: tuple[str, ...] = (
 )
 
 
-def identity_violation_sql(identity: AccountingIdentity) -> str:
+def identity_violation_sql(identity: AccountingIdentity, *, source: str) -> str:
     """Count filings whose ``identity`` breaks by more than 0.5% of scale or $1M.
 
     The pivot keys on ``(security_id, period_end, basis, source_accession)`` -- one filing's
-    view of one period. ``fundamental_standardized`` carries no ``revision_sequence`` column
-    (unlike ``fundamental_points``/TTM tables), so "the current fact" is resolved the same
-    way Sprint 2's ``item_coverage.load_item_coverage_inputs`` resolves it: a plain
-    ``WHERE is_latest_revision`` filter, with no further tie-break.
+    view of one period, scoped to a single pinned ``source`` the same way
+    ``item_coverage.load_item_coverage_inputs`` pins its own ``source`` filter (fix-round-1
+    finding 3: without this, two rows from different ``source`` values loaded into
+    ``fundamental_standardized`` could both carry ``is_latest_revision=true`` for the same
+    filing and silently blend across sources in the pivot). Within that single source, a
+    per-code ``arg_max(value, available_at)`` -- rather than a plain ``max(value)``, which
+    would pick whichever row's VALUE happens to be numerically larger, not the more recent
+    one -- makes the "which duplicate wins" tie-break explicit and deterministic if more than
+    one ``is_latest_revision`` row is ever found for the same
+    ``(source, security_id, period_end, basis, source_accession, canonical_code)`` key (e.g.
+    two ``rule_id``s producing the same canonical code). ``available_at`` is used as the
+    tie-break rather than the table's own ``revision_sequence`` column because
+    ``revision_sequence`` is only populated by the set-based production writer
+    (``_standardization_set_based.py``) and is NULL for rows written through the per-row
+    ``standardization.py`` path, whereas ``available_at`` is ``NOT NULL`` on every row.
     """
 
     code_list = ", ".join(f"'{code}'" for code in _PIVOT_CODES)
     pivot = ",\n            ".join(
-        f"max(CASE WHEN canonical_code = '{code}' THEN value END) AS {code}" for code in _PIVOT_CODES
+        f"arg_max(CASE WHEN canonical_code = '{code}' THEN value END, "
+        f"CASE WHEN canonical_code = '{code}' THEN available_at END) AS {code}"
+        for code in _PIVOT_CODES
     )
     present = " AND ".join(f"{code} IS NOT NULL" for code in identity.codes)
     return f"""
@@ -138,9 +161,11 @@ def identity_violation_sql(identity: AccountingIdentity) -> str:
                 basis,
                 source_accession,
                 canonical_code,
-                value
+                value,
+                available_at
             FROM fundamental_standardized
-            WHERE is_latest_revision
+            WHERE source = '{source}'
+              AND is_latest_revision
               AND value IS NOT NULL
               AND canonical_code IN ({code_list})
         ),
@@ -166,6 +191,15 @@ def identity_violation_sql(identity: AccountingIdentity) -> str:
 # Fraction of two-source securities whose median |dei/archive - 1| exceeds the tolerance.
 # The spec asks for "within 5% for at least 95% of securities", so the observed value is
 # the FAILING fraction and the threshold is 1 - 0.95 = 0.05.
+#
+# Fix-round-1 finding 2: when NO security has both a dei and an archive share count (an
+# empty ``per_security``), the observed value is 1.0 -- a value that always violates the
+# ``le`` threshold below 1.0 -- rather than 0.0. An empty ``per_security`` means either the
+# table is empty or the reconciliation pipeline that populates
+# ``shares_reconciliation_ratio`` broke upstream; either way that is "no evidence this check
+# passed," which must fail loudly rather than read as a clean pass on zero measured rows
+# (the same "empty anti-join counts as success" failure mode the survivorship gate was
+# built to rule out).
 _SHARES_SQL = f"""
 WITH per_security AS (
     SELECT
@@ -179,7 +213,7 @@ WITH per_security AS (
 )
 SELECT
     CASE
-        WHEN count(*) = 0 THEN 0.0
+        WHEN count(*) = 0 THEN 1.0
         ELSE (count(*) FILTER (WHERE median_abs_gap > {SHARES_TOLERANCE}))::DOUBLE / count(*)
     END
 FROM per_security
@@ -201,12 +235,17 @@ FROM (
 """
 
 
-def _item_coverage_sql(*, target_items: int, target_pct: float, minimum_fiscal_year: int) -> str:
+def _item_coverage_sql(*, target_items: int, target_pct: float, minimum_fiscal_year: int, basis: str) -> str:
     """How many items short of the published target the warehouse is.
 
     An item counts only when its coverage clears ``target_pct`` in EVERY in-scope fiscal
-    year -- the same all-years rule ``item_coverage.evaluate_item_coverage_gate`` applies,
-    so the gate and the published ITEM_COVERAGE.md can never disagree.
+    year on a single ``basis`` -- the same rule ``item_coverage.evaluate_item_coverage_gate``
+    applies (fix-round-1 finding 1: the previous version grouped by ``item_id`` alone across
+    every basis, so a thin quarterly/instant/ttm row for an item that fully clears target on
+    ``annual`` could wrongly count it as short). ``basis`` is passed in by the caller, which
+    derives it from ``evaluate_item_coverage_gate``'s own default parameter via
+    ``inspect.signature`` rather than retyping the literal ``"annual"`` here, so the check and
+    the published ``ITEM_COVERAGE.md`` can never disagree about which basis is authoritative.
     """
 
     return f"""
@@ -215,6 +254,7 @@ def _item_coverage_sql(*, target_items: int, target_pct: float, minimum_fiscal_y
             SELECT item_id
             FROM fundamental_item_coverage
             WHERE fiscal_year >= {minimum_fiscal_year}
+              AND basis = '{basis}'
             GROUP BY item_id
             HAVING min(coverage_pct) >= {target_pct}
         )
@@ -230,23 +270,29 @@ def identity_check_specs(**_ignored: object) -> tuple[SqlQualityCheck, ...]:
     """
 
     from ..item_coverage import (
+        DEFAULT_SOURCE,
         ITEM_COVERAGE_TARGET_ITEMS,
         ITEM_COVERAGE_TARGET_MINIMUM_FISCAL_YEAR,
         ITEM_COVERAGE_TARGET_PCT,
+        evaluate_item_coverage_gate,
     )
+
+    # Derived from evaluate_item_coverage_gate's own default parameter (not retyped) so the
+    # two can never silently drift apart (fix-round-1 finding 1).
+    coverage_basis: str = inspect.signature(evaluate_item_coverage_gate).parameters["basis"].default
 
     specs: list[SqlQualityCheck] = [
         SqlQualityCheck(
             dataset_id="fundamental_standardized",
             table_name="fundamental_standardized",
             check_name=identity.check_name,
-            sql=identity_violation_sql(identity),
+            sql=identity_violation_sql(identity, source=DEFAULT_SOURCE),
             threshold=0.0,
             comparator="le",
             required_tables=("fundamental_standardized",),
             warn_if_missing=True,
             failure_status="failed",
-            severity=identity.severity,  # type: ignore[arg-type]
+            severity=identity.severity,
         )
         for identity in ACCOUNTING_IDENTITIES
     ]
@@ -287,6 +333,7 @@ def identity_check_specs(**_ignored: object) -> tuple[SqlQualityCheck, ...]:
                 target_items=ITEM_COVERAGE_TARGET_ITEMS,
                 target_pct=ITEM_COVERAGE_TARGET_PCT,
                 minimum_fiscal_year=ITEM_COVERAGE_TARGET_MINIMUM_FISCAL_YEAR,
+                basis=coverage_basis,
             ),
             threshold=0.0,
             comparator="le",
