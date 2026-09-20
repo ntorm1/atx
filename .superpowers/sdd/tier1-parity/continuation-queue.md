@@ -2,6 +2,55 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override — 2026-09-20 19:40 UTC
+
+- ACTIVE sole writer activation-companyfacts-archive2, tool session37220,
+  launcher7628/worker11236, started19:39:07UTC with20390archive targets,
+  --only companyfacts_load --companyfacts-symbol-source archive_members
+  --companyfacts-replace-existing --memory-limit1GB --threads1 --backup-keep100
+  --force --run-id activation-companyfacts-archive2, guard3GiB. Samecorrectvenv
+  and dummyUA. Log/err/memory filenames activation-companyfacts-archive2*.
+  No completed25-target progress yet at19:39:51, noerror,CPU/WAL advancing.
+  Do not openDB/run tests whilethiswriter active; don'tinterrupthealthywork.
+- Source query repair COMMITTEDa5004bf5 withreviewCLEAN,38focusedtests passed,
+  guard2.5GiBpeak0.689GiB. Preciseissuer tempkeys/directDELETE,transactional.
+- Verified submissions resume COMMITTEDb14f4c1e,54focusedcasespassedincluding
+  eightImportantfixcases. BothImportantaccepted, noCritical. Productionresume
+  not yetrun. Aftercompanyfactsfinished use freshguard/runid --onlysubmissions_load
+  --submissions-resume-from-run-id04cf947d-53bb-49b7-a276-b3c74a2a52c8 --force,
+  fullforms/history/defaultbatch50, samearchive; do NOTrerundownloadstage.
+- CF1 build SUCCESS (31,934,514rows/34,224warehouseIDs,16,338,033cohortrows),
+  all8features measuredfinite/no nonnullnonfinite,zero measuredtimeorder/clockerrors.
+  Fullguardpeak1.767GiB. Read-onlyinspectionpeak0.552GiB. Labels/evaluationsstill0.
+  Evidence/docs committedff46cff7. No need rebuildfeatures absentnewsource/code.
+- No activeagent codework. Bothimplementers/reviewercompleted. No new migration.
+  After sourcesfinish activation-run5 fromstatement_points --force stillrequired;
+  CF1 evaluation afterforwardlabels, livecoverage/provider/quality,release,gates,
+  mergerpermission andstashreminder remain. FullsuiteNOTyetexecuted.
+
+## Current controller override — 2026-09-20 19:32 UTC
+
+- Sole active DB writer is custom-features-build1, tool session17955, guard
+  launcher19648 /worker2448, 1GB1thread16sequentialpartitions/3GiBguard. Uses
+  corrected full price source SHA0ed96b...; no forward labels/evaluation yet.
+  Started19:27; no error, CPU advancing, ~1.87GB worker private at19:32,
+  spill~1.65GB, host physical~5.37GiB. No other DB/tests/probes during it.
+  Guard/log/err names custom-features-build1*. Do not interrupt healthy work.
+- After it exits: inspect success/failure, then root run exactly8 new Important
+  resume fix cases `test_sec_submissions_resume.py -k 'scope_complete or resume_plan'`.
+  Earlier35resume+bulk +11activationpassed. Resume independent review had2Important
+  noCritical: forms/history completeness and forceddownload destroyingreceipt.
+  Both fixed (preflight rejects resume plan with sec_bulk_download before sideeffects),
+  Ruff passed, accept on implementer report after8cases, exactpathcommit.
+- Companyfacts query repair source/newtests ready; fresh independent reviewer
+  review_companyfacts_issuer_cleanup active. Root focused command AFTERfeature:
+  test_companyfacts_issuer_cleanup.py test_companyfacts_zip.py test_fundamentals_spine_link.py,
+  -n0 guarded2.5GiB. Reduced-schema250k unrelatedkeys under64MB meaningful bounded
+  cleanup case, plus real-schema existingtests. No tests run yet. FixImportant
+  acceptedreport; Criticalrereview. Then exactpathcommit +productionretry1GB1thread.
+- Measurement task COMMITTEDb420f174, docs/failureauditCOMMITTEDbfff3325.
+  Source resumer/cleanup still uncommitted. No schema/registry changes for either.
+
 ## Current controller override — 2026-09-20 19:26 UTC
 
 - No active writer. Full companyfacts archive attempt activation-companyfacts-archive1
