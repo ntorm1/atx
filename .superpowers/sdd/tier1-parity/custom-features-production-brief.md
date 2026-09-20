@@ -57,7 +57,7 @@ commands so root can wire them after the existing activation ladder.
 
 ### Evaluation and promotion evidence
 
-- Primary horizon20 market sessions; secondary5 and60 are sensitivity checks,
+- Primary horizon21 market sessions; secondary5 and63 are sensitivity checks,
   not alternative horizons for choosing significance. Reuse the production
   survivorship forward panel, with adjusted basis and terminal provenance.
   Do not use the legacy raw-price/per-security-shift label helper.
@@ -75,7 +75,7 @@ commands so root can wire them after the existing activation ladder.
   common stocks. No synthetic backdating of current directory membership.
 - Chronological fixed partitions: train through2020, validation2021-2023,
   holdout2024 onward through explicit as-of. Purge labels crossing a split
-  boundary; keep a60-session embargo after each new split begins. No holdout
+  boundary; keep a63-session embargo after each new split begins. No holdout
   tuning, future ranks, direction selection on holdout or retrospective winners.
 - Aggregate to date/feature/horizon/decile in SQL before Python statistics.
   Persist Q10-Q1 horizon spreads, means, robust uncertainty, counts, time
@@ -120,3 +120,9 @@ actual validation. Live statistics are a later root-operated measured run.
 These justify the source interpretation and inference safeguards. The eight
 feature formulas, splits and promotion thresholds are our predeclared research
 design, not claims that the papers endorse or validate these signals.
+
+Controller correction before any live outcome evaluation: the production label
+writer already publishes horizons(1,5,10,21,63). Use21 as primary and5/63 as
+sensitivity, with63-session embargo. This supersedes the initial20/5/60 draft;
+it aligns to existing calendar labels and avoids another large label panel.
+Required horizons absent from the label input must be reported explicitly.
