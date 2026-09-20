@@ -67,6 +67,15 @@ Do not splice differently normalized vendors' adjusted prices by ticker.
 The new file addresses the observed price-date gap; it does not independently
 close the historical identity and common-equity membership gates.
 
+SpiderRock's `TickerDefinitionHist` is a concrete companion reference dataset:
+its documented US history starts2010-01-04, with dated vendor IDs, security type,
+MIC and identifiers. However, its v7-backfill notes say `primaryExch` and newly
+added `cik`/issue-class fields are null in backfilled history. Historical MIC and
+classification could therefore help the listing gate, while CIK linkage would
+still need measured evidence. Its shares field is in thousands, unlike the raw
+price file's share count. No companion archive has been downloaded or assumed
+available. [Reference dictionary](https://docs.spiderrockconnect.com/docs/next/HistoricalData/Data%20Dictionaries/TickerDefinitionHist/).
+
 Local operator receipts: `.superpowers/sdd/tier1-parity/updated-price-footer.json`,
 `updated-price-staging.json`, `updated-price-staging-memory.json`,
 `updated-price-source-audit.json` and `updated-price-audit-memory-2g.json`.
