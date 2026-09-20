@@ -9,14 +9,17 @@ import pytest
 
 from atx_db.ticker_history import (
     SOURCE_COLUMNS,
+    TBLTICKERHISTORY_ID_TYPE,
     TickerHistoryDataset,
     TickerHistoryOptions,
     _apply_security_ids,
     _canonical_bars,
     _normalize_chunk,
+    disambiguate_vendor_collisions,
 )
 from atx_db.ticker_history_bulk import BulkTickerHistoryOptions, publish_bulk_ticker_history
 from atx_db.ticker_history_quality import source_diagnostics, stage_source
+from atx_db.warehouse import insert_frame
 
 
 def _row(date, close, factor, *, prior, daily=1, total=0, dn=1, vendor=101, ticker="OLD"):
@@ -131,3 +134,74 @@ def test_plain_quarantine_covers_chunk_boundary_and_retains_raw(tmp_store, tmp_p
     assert result.details["source_diagnostics"]["quarantined_positive_key_rows"] == 2
     assert tmp_store.con.execute("SELECT count(*) FROM tbltickerhistory_daily").fetchone() == (3,)
     assert tmp_store.con.execute("SELECT close FROM equity_daily_bars").fetchall() == [(110,)]
+
+
+@pytest.mark.parametrize("projection_only", [False, True])
+def test_plain_quarantine_replaces_prior_bar_despite_identity_change(tmp_store, projection_only):
+    options = TickerHistoryOptions(symbols=None, price_projection_only=projection_only)
+    dataset = TickerHistoryDataset()
+    dataset.ensure_schema(tmp_store)
+    original = [_row("2025-01-02", 100, 1, prior=90),
+                _row("2025-01-03", 110, 1, prior=100, dn=2),
+                _row("2025-01-02", 200, 1, prior=190, vendor=202)]
+    frame = _normalize_chunk(pd.DataFrame(original), options)
+    frame["security_id"] = ["OLD-101", "OLD-101", "KEEP-202"]
+    dataset._load_chunk(tmp_store, frame, options)
+    other = TickerHistoryOptions(symbols=None, source="other", price_projection_only=projection_only)
+    other_frame = frame.iloc[[0]].copy()
+    other_frame["source"] = other.source
+    dataset._load_chunk(tmp_store, other_frame, other)
+
+    conflicts = [_row("2025-01-02", 100, 1, prior=90),
+                 _row("2025-01-02", 101, 1, prior=90)]
+    changed = _normalize_chunk(pd.DataFrame(conflicts), options)
+    changed["security_id"] = "NEW-101"
+    assert dataset._load_chunk(tmp_store, changed, options) == 0
+    assert tmp_store.con.execute(
+        "SELECT source, security_id, close FROM equity_daily_bars ORDER BY source, security_id"
+    ).fetchall() == [("other", "OLD-101", 100), (options.source, "KEEP-202", 200),
+                    (options.source, "OLD-101", 110)]
+    if not projection_only:
+        assert tmp_store.con.execute(
+            "SELECT close FROM tbltickerhistory_daily WHERE source = ? "
+            "AND vendor_security_id = 101 AND trading_date = DATE '2025-01-02' ORDER BY close",
+            [options.source],
+        ).fetchall() == [(100,), (101,)]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_conflicting_vendor_links_ignore_load_order_and_timestamps(tmp_store, monkeypatch, reverse):
+    options = TickerHistoryOptions(symbols=None)
+    candidates = ["SEC-A", "SEC-B"]
+    if reverse:
+        candidates.reverse()
+    for index, security in enumerate(candidates):
+        tmp_store.con.execute(
+            "INSERT INTO security_identifier_history "
+            "(security_id,id_type,id_value,valid_from,as_of_date,source,source_loaded_at) "
+            "VALUES (?,?,'101',DATE '2025-01-02',DATE '2025-01-02',?,?::TIMESTAMP)",
+            [security, TBLTICKERHISTORY_ID_TYPE, options.source, f"2026-09-20 12:00:0{index}"],
+        )
+    monkeypatch.setattr("atx_db.ticker_history.security_ids_for_symbols", lambda *_: {"NEW": "SEC-A"})
+    frame = _normalize_chunk(pd.DataFrame([_row("2025-01-02", 100, 1, prior=90)]), options)
+    assert _apply_security_ids(tmp_store, frame, options)["security_id"].tolist() == ["TBLTICKERHISTORY-101"]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_renamed_collision_key_uses_vendor_id_not_display_order(tmp_store, reverse):
+    options = TickerHistoryOptions(symbols=None)
+    rows = [_row("2025-01-02", 100, 1, prior=90, vendor=101),
+            _row("2025-01-03", 100, 1, prior=90, vendor=101),
+            _row("2025-01-06", 100, 1, prior=90, vendor=101),
+            _row("2025-01-02", 200, 1, prior=190, vendor=202, ticker="OLD"),
+            _row("2025-01-03", 210, 1, prior=200, vendor=202, ticker="NEW")]
+    if reverse:
+        rows.reverse()
+    frame = _normalize_chunk(pd.DataFrame(rows), options)
+    frame["security_id"] = "SHARED-UNVERIFIED-CIK"
+    insert_frame(tmp_store, _canonical_bars(frame, options), "equity_daily_bars", "rename_collision_fixture")
+    assert disambiguate_vendor_collisions(tmp_store) == 1
+    assert tmp_store.con.execute(
+        "SELECT security_id,symbol FROM equity_daily_bars WHERE vendor_security_id = '202' ORDER BY trade_date"
+    ).fetchall() == [("TBLTICKERHISTORY-202", "OLD"), ("TBLTICKERHISTORY-202", "NEW")]
+    assert disambiguate_vendor_collisions(tmp_store) == 0

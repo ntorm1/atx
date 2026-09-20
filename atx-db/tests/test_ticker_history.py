@@ -240,17 +240,17 @@ def test_disambiguate_vendor_collisions_splits_recycled_tickers(tmp_store) -> No
     assert con.execute(
         "SELECT security_id FROM equity_daily_bars WHERE vendor_security_id = 111 LIMIT 1"
     ).fetchone()[0] == "SEC-CIK-X"
-    # Ghost (vendor 222) re-keyed to its per-line synthetic id (vendor + symbol).
+    # Ghost (vendor 222) re-keyed to its stable synthetic vendor id.
     assert con.execute(
         "SELECT security_id FROM equity_daily_bars WHERE vendor_security_id = 222 LIMIT 1"
-    ).fetchone()[0] == "TBLTICKERHISTORY-222-ET"
+    ).fetchone()[0] == "TBLTICKERHISTORY-222"
     # Clean security untouched.
     assert con.execute(
         "SELECT security_id FROM equity_daily_bars WHERE vendor_security_id = 999 LIMIT 1"
     ).fetchone()[0] == "SEC-CIK-Y"
     # First-class security row materialized for the new id.
     assert con.execute(
-        "SELECT COUNT(*) FROM securities WHERE security_id = 'TBLTICKERHISTORY-222-ET'"
+        "SELECT COUNT(*) FROM securities WHERE security_id = 'TBLTICKERHISTORY-222'"
     ).fetchone()[0] == 1
     # Idempotent: a second pass is a no-op.
     assert disambiguate_vendor_collisions(tmp_store) == 0

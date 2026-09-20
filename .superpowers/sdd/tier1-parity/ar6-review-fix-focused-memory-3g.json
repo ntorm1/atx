@@ -1,0 +1,22 @@
+{
+  "command": [
+    ".venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "tests/test_ticker_history.py",
+    "tests/test_ticker_history_bulk.py",
+    "tests/test_ticker_history_price_source.py",
+    "-n",
+    "0",
+    "-q"
+  ],
+  "job_limit_gb": 3.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 5.940067291259766,
+    "commit_free_gb": 9.768505096435547
+  },
+  "child_pid": 2996,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.706451416015625
+}

@@ -382,13 +382,22 @@ def _apply_security_ids(store: DuckDBStore, frame: pd.DataFrame, options: Ticker
     # Reuse earlier chunks' identity; this does not authenticate the original
     # current-symbol/CIK shortcut or turn it into historical identity evidence.
     existing_rows = store.con.execute(
-        "SELECT id_value, arg_max(security_id, source_loaded_at) "
+        "SELECT id_value, min(security_id), count(DISTINCT security_id) "
         "FROM security_identifier_history WHERE source = ? AND id_type = ? GROUP BY id_value",
         [options.source, TBLTICKERHISTORY_ID_TYPE],
     ).fetchall()
-    existing = {str(key): str(value) for key, value in existing_rows}
+    # Competing links are unresolved, not ordered by their warehouse load time.
+    existing = {
+        str(key): (str(value) if count == 1 else vendor_security_id("tbltickerhistory", str(key)))
+        for key, value, count in existing_rows
+    }
     positive = frame["vendor_security_id"].gt(0).fillna(False)
-    stable = frame.loc[positive].groupby("vendor_security_id")["security_id"].transform("last")
+    candidates = frame.loc[positive].groupby("vendor_security_id")["security_id"]
+    stable = candidates.transform("min")
+    ambiguous = candidates.transform("nunique").gt(1)
+    stable.loc[ambiguous] = frame.loc[stable.index[ambiguous], "vendor_security_id"].map(
+        lambda value: vendor_security_id("tbltickerhistory", value)
+    )
     prior = frame.loc[positive, "vendor_security_id"].astype("string").map(existing)
     frame.loc[positive, "security_id"] = prior.fillna(stable)
     return frame.drop(columns=["_symbol_for_mapping"])
@@ -542,7 +551,8 @@ def disambiguate_vendor_collisions(store: DuckDBStore, source: str = SOURCE_NAME
         """
         SELECT security_id,
                vendor_security_id,
-               any_value(symbol) AS symbol,
+               coalesce(try_cast(vendor_security_id AS BIGINT) > 0, false) AS positive_vendor_id,
+               arg_max(symbol, (trade_date, symbol)) AS symbol,
                COUNT(*) AS n,
                MIN(trade_date) AS first_seen,
                MAX(trade_date) AS last_seen
@@ -577,9 +587,13 @@ def disambiguate_vendor_collisions(store: DuckDBStore, source: str = SOURCE_NAME
             )
         ]
         nonprimary["new_security_id"] = [
-            vendor_security_id(_collision_security_id_namespace(source), f"{vid}-{sk}")
-            for vid, sk in zip(
-                nonprimary["vendor_security_id"], nonprimary["symbol_key"], strict=True
+            vendor_security_id(
+                _collision_security_id_namespace(source),
+                str(vid) if positive_id else f"{vid}-{sk}",
+            )
+            for vid, sk, positive_id in zip(
+                nonprimary["vendor_security_id"], nonprimary["symbol_key"],
+                nonprimary["positive_vendor_id"], strict=True
             )
         ]
         mapping = nonprimary[
@@ -853,6 +867,10 @@ class TickerHistoryDataset(Dataset):
 
         store.con.register("equity_daily_bars_load", bars)
         registered = ["equity_daily_bars_load"]
+        selected_keys = frame[["vendor_security_id", "trading_date"]].copy()
+        selected_keys["symbol"] = frame["ticker_tk"].fillna(frame["today_ticker"]).map(symbol_key)
+        store.con.register("ticker_history_selected_keys", selected_keys.drop_duplicates())
+        registered.append("ticker_history_selected_keys")
         raw: pd.DataFrame | None = None
         if not options.price_projection_only:
             raw_columns = (
@@ -888,11 +906,14 @@ class TickerHistoryDataset(Dataset):
                 store.con.execute(
                     """
                     DELETE FROM equity_daily_bars AS dst
-                    USING equity_daily_bars_load AS src
-                    WHERE dst.source = src.source
-                      AND dst.security_id = src.security_id
-                      AND dst.trade_date = src.trade_date
-                    """
+                    USING ticker_history_selected_keys AS src
+                    WHERE dst.source = ?
+                      AND dst.trade_date = src.trading_date
+                      AND try_cast(dst.vendor_security_id AS BIGINT)
+                          IS NOT DISTINCT FROM src.vendor_security_id
+                      AND (src.vendor_security_id > 0 OR dst.symbol = src.symbol)
+                    """,
+                    [options.source],
                 )
                 insert_frame(store, bars, "equity_daily_bars", "equity_daily_bars_insert")
                 self._upsert_links(store, securities, identifiers, listings)

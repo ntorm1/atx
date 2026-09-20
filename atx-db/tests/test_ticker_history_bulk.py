@@ -59,7 +59,7 @@ def test_bulk_publication_is_atomic_deduplicated_and_collision_safe(tmp_store, t
     security_ids = tmp_store.con.execute(
         "SELECT DISTINCT security_id FROM equity_daily_bars WHERE source = 'tbltickerhistory3_10y' ORDER BY 1"
     ).fetchall()
-    assert security_ids == [("SEC-CIK-0000000001",), ("TBLTICKERHISTORY-20-AAA",)]
+    assert security_ids == [("SEC-CIK-0000000001",), ("TBLTICKERHISTORY-20",)]
     assert tmp_store.con.execute(
         "SELECT count(*) FROM equity_daily_bars WHERE source = 'other'"
     ).fetchone() == (1,)

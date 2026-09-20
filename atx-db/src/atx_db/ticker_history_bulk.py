@@ -167,6 +167,8 @@ def _create_line_map(store: DuckDBStore, options: BulkTickerHistoryOptions) -> N
         SELECT
             CASE
                 WHEN line_rank = 1 THEN base_security_id
+                WHEN try_cast(vendor_security_id AS BIGINT) > 0
+                THEN 'TBLTICKERHISTORY-' || vendor_security_id
                 ELSE 'TBLTICKERHISTORY-' || coalesce(vendor_security_id, '<NA>')
                      || '-' || symbol
             END AS security_id,
