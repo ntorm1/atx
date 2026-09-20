@@ -60,7 +60,15 @@ jobs:
           src/atx_db/thirteenf_analysis.py
           src/atx_db/factor_panel.py
           src/atx_db/signal_eval.py
+          src/atx_db/universe_us_listed.py
+          src/atx_db/delisting_evidence.py
+          src/atx_db/publication.py
+          src/atx_db/quality/checks_identities.py
           scripts/warehouse_activate.py
+          scripts/generate_data_dictionary.py
+          scripts/build_universe_us_listed.py
+          scripts/build_delisting_evidence.py
+          scripts/publish_release.py
           tests/test_activation_ledger.py
           tests/test_activation_stages_a.py
           tests/test_activation_stages_b.py
@@ -71,6 +79,15 @@ jobs:
           tests/test_determinism_ingest_edges.py
           tests/test_determinism_panel_dedupe.py
           tests/test_cli_activate.py
+          tests/test_universe_us_listed.py
+          tests/test_delisting_evidence.py
+          tests/test_delisting_terminal_policy.py
+          tests/test_quality_identities.py
+          tests/test_provider_coverage_slos.py
+          tests/test_publication.py
+          tests/test_data_dictionary.py
+          tests/test_retirement_wave2.py
+          tests/test_docs_banners.py
       - name: Typecheck productionized surfaces
         run: >-
           python -m mypy --strict
@@ -85,5 +102,12 @@ jobs:
           src/atx_db/openfigi_signals.py
           src/atx_db/thirteenf_backtest.py
           src/atx_db/thirteenf_analysis.py
+          src/atx_db/universe_us_listed.py
+          src/atx_db/delisting_evidence.py
+          src/atx_db/publication.py
+          src/atx_db/quality/checks_identities.py
+          scripts/generate_data_dictionary.py
+      - name: Data dictionary is current
+        run: python scripts/generate_data_dictionary.py --check
       - name: Full non-slow test suite
         run: python -m pytest -q -n 4 -m "not slow" --tb=short tests

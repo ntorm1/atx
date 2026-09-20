@@ -1,3 +1,8 @@
+> **HISTORICAL — superseded.** This document is retained as a build record; its layout and counts do not describe the current warehouse.
+> Architecture and dated evidence: [docs/FUNDAMENTALS_PROVIDER_DESIGN.md](FUNDAMENTALS_PROVIDER_DESIGN.md).
+> Current design contract: [docs/superpowers/specs/2026-09-19-tier1-parity-design.md](../../docs/superpowers/specs/2026-09-19-tier1-parity-design.md).
+> Field reference: [docs/DATA_DICTIONARY.md](DATA_DICTIONARY.md). Activation and measurement status: [docs/PRODUCTION_RUNBOOK.md](PRODUCTION_RUNBOOK.md).
+
 # ats-eqt Parity Gap Matrix
 
 **Purpose:** Table-by-table, domain-by-domain gap analysis driving the multi-sprint build toward FactSet / S&P-Compustat / Refinitiv parity on equity fundamentals + ownership + supply-chain.

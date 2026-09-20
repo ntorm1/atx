@@ -97,25 +97,10 @@ def test_the_universe_vocabulary_is_documented():
 
 
 def test_the_delisting_vocabulary_is_documented():
-    """Checks whichever vocabulary the generator actually rendered.
+    from atx_db.delisting_evidence import EVIDENCE_PRECEDENCE, REASON_CATEGORIES
 
-    ``atx_db.delisting_evidence`` (Task 3) is the preferred source; this mirrors the
-    generator's own ``_delisting_vocabulary`` fallback to ``atx_db.delisting`` so the
-    test stays meaningful (and automatically switches branches) regardless of Task 3/8
-    landing order.
-    """
     module = _load_generator()
     text = module.render_data_dictionary()
-    try:
-        from atx_db.delisting_evidence import EVIDENCE_PRECEDENCE, REASON_CATEGORIES
-    except ImportError:
-        from atx_db.delisting import DELIST_CODE_ROWS, TERMINAL_RETURN_POLICY_ROWS
-
-        for row in DELIST_CODE_ROWS:
-            assert row[0] in text
-        for row in TERMINAL_RETURN_POLICY_ROWS:
-            assert row[1] in text
-        return
     for reason in REASON_CATEGORIES:
         assert reason in text
     for kind, _rank, _code, _reason, _confidence in EVIDENCE_PRECEDENCE:
@@ -123,18 +108,10 @@ def test_the_delisting_vocabulary_is_documented():
 
 
 def test_the_release_dataset_source_is_documented():
-    """Mirrors the generator's own ``_release_datasets`` fallback to ``atx_db.lake``."""
+    from atx_db.publication import RELEASE_DATASETS
+
     module = _load_generator()
     text = module.render_data_dictionary()
-    try:
-        from atx_db.publication import RELEASE_DATASETS
-    except ImportError:
-        from atx_db.lake import DEFAULT_EXPORT_OBJECTS
-
-        assert "atx_db.lake.DEFAULT_EXPORT_OBJECTS" in text
-        for name in DEFAULT_EXPORT_OBJECTS:
-            assert name in text
-        return
     for dataset in RELEASE_DATASETS:
         assert dataset.name in text
 

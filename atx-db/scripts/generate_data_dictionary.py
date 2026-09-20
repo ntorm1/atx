@@ -5,12 +5,8 @@ record schemas, and the universe/delisting/release vocabularies. It never opens 
 warehouse, so CI can run it in --check mode and fail the build when the committed file
 is stale.
 
-Two sections (*Delistings*, *Release datasets*) read their vocabulary through a small
-source function -- ``_delisting_vocabulary`` / ``_release_datasets`` -- that prefers the
-real Task 3 / Task 8 module (``atx_db.delisting_evidence`` / ``atx_db.publication``) and
-falls back to the nearest already-committed equivalent when that module has not landed
-yet. Once it lands, the next regeneration picks it up automatically with no code change;
-the doc's own "Vocabulary source" / "Dataset source" line always says which one rendered.
+Delisting and release vocabularies come from their implemented source modules.
+An import failure is a real error, never a reason to publish a fallback contract.
 """
 
 from __future__ import annotations
@@ -45,9 +41,9 @@ MARKET_DAILY_SPINE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("symbol", "Ticker on the bar."),
     ("trade_date", "Trading session date."),
     ("close", "Session close price, unadjusted."),
-    ("adj_close", "Split/dividend adjusted close; the only return input."),
+    ("adj_close", "Warehouse adjusted_close used for returns; the archive closePr mapping is a known prior-day/current-day mismatch pending correction."),
     ("volume", "Reported share volume."),
-    ("shares_outstanding", "Point-in-time shares, dei preferred over archive."),
+    ("shares_outstanding", "Eligible dei shares preferred over archive; historical archive shares vintages are unverified."),
     ("shares_source", "'dei' or 'archive'."),
     ("shares_reconciliation_ratio", "dei shares / archive shares on the same session."),
     ("fundamental_available_at", "Availability of the newest fundamental input."),
@@ -134,6 +130,12 @@ def _market_daily_section() -> list[str]:
         "`market_daily_metrics` -- one row per (security_id, trade_date). The spine is fixed; "
         "the metric columns are exactly the `window='daily'` rows of the derived seed.",
         "",
+        "**Current source limitation:** return-dependent metrics are not certified while "
+        "the archive loader maps vendor `closePr` (adjusted prior-session close) to "
+        "`adjusted_close`. Latest-symbol mapping and historical availability also need "
+        "correction or source evidence. See the [production runbook](PRODUCTION_RUNBOOK.md) "
+        "and the [vendor dictionary](https://docs.spiderrockconnect.com/docs/next/HistoricalData/Data%20Dictionaries/TickerHistory3/).",
+        "",
         "### Spine columns",
         "",
     ]
@@ -203,42 +205,18 @@ def _universe_section() -> list[str]:
 
 
 def _delisting_vocabulary() -> tuple[str, tuple[str, ...], list[tuple[object, ...]], list[str]]:
-    """Return ``(source_label, table_headers, table_rows, reason_categories)``.
+    """Return ``(source_label, table_headers, table_rows, reason_categories)``."""
+    from atx_db.delisting_evidence import EVIDENCE_PRECEDENCE, REASON_CATEGORIES
 
-    Prefers Task 3's ``atx_db.delisting_evidence`` (``EVIDENCE_PRECEDENCE``,
-    ``REASON_CATEGORIES``). Falls back to the real, already-committed
-    ``atx_db.delisting`` vocabulary (``DELIST_CODE_ROWS``, ``TERMINAL_RETURN_POLICY_ROWS``)
-    when ``delisting_evidence.py`` has not landed yet, so this section self-upgrades on
-    the next regeneration with no code change.
-    """
-    try:
-        from atx_db.delisting_evidence import EVIDENCE_PRECEDENCE, REASON_CATEGORIES
-    except ImportError:
-        pass
-    else:
-        precedence_rows: list[tuple[object, ...]] = [
-            (rank, kind, code, reason, confidence)
-            for kind, rank, code, reason, confidence in sorted(EVIDENCE_PRECEDENCE, key=lambda row: row[1])
-        ]
-        return (
-            "atx_db.delisting_evidence.EVIDENCE_PRECEDENCE / REASON_CATEGORIES",
-            ("rank", "evidence_kind", "delist_code", "default reason", "confidence"),
-            precedence_rows,
-            list(REASON_CATEGORIES),
-        )
-
-    from atx_db.delisting import DELIST_CODE_ROWS, TERMINAL_RETURN_POLICY_ROWS
-
-    fallback_rows: list[tuple[object, ...]] = [
-        (index + 1, row[0], row[5], row[6], row[11]) for index, row in enumerate(DELIST_CODE_ROWS)
+    precedence_rows: list[tuple[object, ...]] = [
+        (rank, kind, code, reason, confidence)
+        for kind, rank, code, reason, confidence in sorted(EVIDENCE_PRECEDENCE, key=lambda row: row[1])
     ]
-    fallback_reasons = sorted({str(row[1]) for row in TERMINAL_RETURN_POLICY_ROWS})
     return (
-        "atx_db.delisting.DELIST_CODE_ROWS / TERMINAL_RETURN_POLICY_ROWS "
-        "(atx_db.delisting_evidence -- Task 3 -- not yet landed)",
-        ("rank", "delist_code", "reason_category", "description", "source"),
-        fallback_rows,
-        fallback_reasons,
+        "atx_db.delisting_evidence.EVIDENCE_PRECEDENCE / REASON_CATEGORIES",
+        ("rank", "evidence_kind", "delist_code", "default reason", "confidence"),
+        precedence_rows,
+        list(REASON_CATEGORIES),
     )
 
 
@@ -264,8 +242,30 @@ def _delisting_section() -> list[str]:
             "",
             ", ".join(f"`{value}`" for value in reasons) + ".",
             "",
-            "A Nasdaq `financial_status` bankruptcy flag (`Q`) on or before the delist date "
-            "upgrades any row to `bankruptcy` with `high` confidence.",
+            "The newest eligible Nasdaq directory snapshot on or before the delist date "
+            "supplies `financial_status`; a `Q` flag (including composite codes) upgrades "
+            "the evidence to `bankruptcy` with `high` confidence. A cleared newer status "
+            "does not inherit an older bankruptcy flag. The overlay contributes its "
+            "availability to the evidence timestamp.",
+            "",
+            "### Terminal-return policy",
+            "",
+            "`DelistingTerminalReturnOptions.performance_delisting_return` defaults to "
+            "`ShumwayPerformancePolicy()`: -0.55 for PIT-resolved Nasdaq events and -0.30 "
+            "for other or unresolved exchanges. Set the option to `None` to opt out. "
+            "Observed DLRET outranks corporate-action policy, which outranks this "
+            "performance convention. The implemented eligible reason labels are "
+            "`bankruptcy`, `exchange_delist` and `unknown`; identity, event availability "
+            "and seeded policy requirements still apply. This is not a fill for every "
+            "unknown or non-performance event.",
+            "",
+            "Exchange evidence is selected from dated universe membership, exchange "
+            "listings or Nasdaq snapshots known by the delist date at 22:00. Policy "
+            "availability includes the selected exchange input. Imputations are tagged "
+            "with `terminal_return_policy` values `performance_unknown` or "
+            "`performance_unknown_nasdaq`; unresolved terminal gaps remain measurable "
+            "through `delisting_events_without_terminal_return`. This definition does "
+            "not assert that terminal returns have been built or their coverage passed.",
         ]
     )
     return lines
@@ -306,32 +306,13 @@ def _api_section() -> list[str]:
 
 
 def _release_datasets() -> tuple[str, tuple[str, ...], list[tuple[object, ...]]]:
-    """Return ``(source_label, table_headers, table_rows)``.
-
-    Prefers Task 8's ``atx_db.publication.RELEASE_DATASETS``. Falls back to the real,
-    already-committed lakehouse export registry ``atx_db.lake.DEFAULT_EXPORT_OBJECTS``
-    when ``publication.py`` has not landed yet -- it carries no key-column or
-    public-schema shape, so the fallback table lists only the relation name.
-    """
-    try:
-        # atx_db.publication (Task 8) does not exist on disk yet, so mypy cannot resolve
-        # it statically; the runtime ImportError fallback below is what actually matters.
-        from atx_db.publication import RELEASE_DATASETS  # type: ignore[import-not-found]
-    except ImportError:
-        pass
-    else:
-        return (
-            "atx_db.publication.RELEASE_DATASETS",
-            ("dataset", "relation", "key columns", "public schema"),
-            [(d.name, d.object_name, ", ".join(d.key_columns), d.schema_ref or "") for d in RELEASE_DATASETS],
-        )
-
-    from atx_db.lake import DEFAULT_EXPORT_OBJECTS
+    """Return ``(source_label, table_headers, table_rows)``."""
+    from atx_db.publication import RELEASE_DATASETS
 
     return (
-        "atx_db.lake.DEFAULT_EXPORT_OBJECTS (atx_db.publication -- Task 8 -- not yet landed)",
-        ("relation",),
-        [(name,) for name in DEFAULT_EXPORT_OBJECTS],
+        "atx_db.publication.RELEASE_DATASETS",
+        ("dataset", "relation", "key columns", "public schema"),
+        [(d.name, d.object_name, ", ".join(d.key_columns), d.schema_ref or "") for d in RELEASE_DATASETS],
     )
 
 
@@ -343,6 +324,12 @@ def _release_section() -> list[str]:
         "`atx-db publish-release` writes one Parquet file per dataset plus a single "
         "`manifest.json` pinning the exported schema hash, the public record-contract hash, "
         "the exact query text, the file bytes, and the diff against the previous release.",
+        "",
+        "The first release has no predecessor and null diff counts. "
+        "`fundamentals_core` uses the existing `standardized` public schema. "
+        "Pending migrations must be applied through the governed migration command "
+        "before publication. Export success does not certify quality or coverage; "
+        "review the measured quality evidence separately.",
         "",
         f"Dataset source: `{source_label}`.",
         "",
@@ -363,10 +350,12 @@ def render_data_dictionary() -> str:
         "",
         "Sources of truth: `src/atx_db/seeds/fundamental_items.csv`,",
         "`src/atx_db/seeds/derived_metric_definitions.csv`, `src/atx_db/api/catalog.py`,",
-        "`src/atx_db/universe_us_listed.py`. The Delistings and Release datasets sections each",
-        "prefer their Task 3 / Task 8 module (`atx_db.delisting_evidence`,",
-        "`atx_db.publication`) and fall back to an already-committed equivalent otherwise; see",
-        'each section\'s "source" line for which one rendered this revision.',
+        "`src/atx_db/universe_us_listed.py`, `src/atx_db/delisting_evidence.py`,",
+        "`src/atx_db/delisting.py` and `src/atx_db/publication.py`.",
+        "",
+        "This is a field and policy contract, not a measurement of loaded rows, historical",
+        "listing coverage, or passing quality gates. See [the production runbook](PRODUCTION_RUNBOOK.md)",
+        "for the current rebuild's evidence and limitations.",
         "",
     ]
     for section in (

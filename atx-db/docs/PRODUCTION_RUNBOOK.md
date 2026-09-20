@@ -35,10 +35,46 @@ envelope.
 
 ## Activation from scratch
 
-`atx-db activate` builds a complete warehouse from an empty directory. It is
+`atx-db activate` runs the warehouse build ladder from an empty directory. It is
 idempotent, resumable, and deterministic: every stage is recorded in
 `activation_stage_runs`, and a rerun skips stages whose newest attempt completed
 unless `--force` is given. Each stage prints exactly one JSON line to stdout.
+Stage completion records execution; coverage, historical population and release
+readiness must be measured separately.
+
+### Current rebuild evidence (2026-09-20)
+
+The [activation handoff](../../docs/superpowers/handoffs/2026-09-20-tier1-parity-handoff.md)
+records 31,178,192 published price bars for 34,803 securities, ending 2026-06-15,
+and 3,045,440 submissions rows for 47,869 CIKs. Those are source-ingestion counts.
+At this documentation checkpoint, activation-run4 is still loading companyfacts;
+no new full-universe item, derived-metric, universe, terminal-return or quality
+measurements have been certified. Wait for that writer to exit before opening
+the live file, including for read-only checks.
+
+**Price-source blocker:** the archive loaders currently map `closePr` to
+`equity_daily_bars.adjusted_close` and prefer `todayTicker`. The vendor defines
+`closePr` as the corporate-action-adjusted **prior** session close, and
+`todayTicker` as the latest symbol, while `ticker_tk` is the underlying ticker.
+Correct those mappings and validate the source adjustment treatment before
+rebuilding or certifying return-dependent panels. The vendor lists 05:00 CT T+1
+delivery; the backfill's session-date + 22-hour availability is a modeling
+assumption, not verified historical publication or revision timing.
+[SpiderRock TickerHistory3 dictionary](https://docs.spiderrockconnect.com/docs/next/HistoricalData/Data%20Dictionaries/TickerHistory3/).
+
+The directory snapshot is dated 2026-09-20, after the latest loaded bar. It
+cannot certify historical common-equity membership by being backdated. The
+historical top-3000 common-equity cohort remains unestablished; the existing
+liquidity cohort is a different population, and the current item-coverage
+implementation also needs cohort/year corrections before an authoritative
+110-item / 90% / FY2015+ annual gate. Registry item counts are static contract
+breadth. Neither those counts nor dated proof slices in the
+[provider design](FUNDAMENTALS_PROVIDER_DESIGN.md) certify the rebuilt warehouse.
+
+Pending input supplementation and activation integration include historical
+listing evidence, archive-wide companyfacts targets, delisting submission forms,
+terminal returns, legacy-cohort factor projection and annual item coverage.
+These are follow-on requirements, not stages already proven on production data.
 
 ### Prerequisites
 
@@ -56,11 +92,11 @@ unless `--force` is given. Each stage prints exactly one JSON line to stdout.
 | `data/staging/broad-bars/tbltickerhistory3_10y.txt` (extracted TSV) | **11 GB** |
 | `data/cache/companyfacts.zip` | **~1.3 GB** |
 | `data/cache/submissions.zip` | **~1.5 GB** |
-| `data/warehouse.duckdb` (built) | **30-40 GB** |
+| `data/warehouse.duckdb` (planning estimate, not a measured final size) | **30-40 GB** |
 | Pre-migrate backup (`data/warehouse.duckdb.<label>.<timestamp>.bak`, one per governed migration run against an existing warehouse; skipped when the warehouse is already at head) | full copy of the warehouse (30-40 GB) each, `--backup-keep` most recent kept (default 3) |
 | DuckDB spill, `ticker_history_publish` (`data/staging/broad-bars/duckdb-tmp/`, transient) | up to 8 GB |
 | DuckDB spill, every other connection (`<db parent>/.<db name>.duckdb_tmp/`, e.g. `data/.warehouse.duckdb.duckdb_tmp/`, transient) | best-effort, sized by the query |
-| **Peak total** | **~65 GB**, plus up to `--backup-keep` x 30-40 GB while pre-migrate backups accumulate on a resumed/`--only` run against a pre-head warehouse |
+| **Peak total (planning estimate)** | **~65 GB**, plus up to `--backup-keep` x 30-40 GB while pre-migrate backups accumulate on a resumed/`--only` run against a pre-head warehouse |
 
 The staging TSV may be deleted after `ticker_history_publish` completes; keep the
 `.sha256` sidecar so a later rerun can prove which extraction produced the bars.
@@ -68,25 +104,29 @@ The staging TSV may be deleted after `ticker_history_publish` completes; keep th
 ### Commands
 
 ```powershell
-$env:ATX_SEC_USER_AGENT = "atx-db/0.2 ops@example.com"
+$env:ATX_SEC_USER_AGENT = "atx-db/0.1 atx-research@example.com"
 $env:ATX_DB_PATH = "D:\atx\data\warehouse.duckdb"
+$activationDate = "2026-09-20" # Pin the actual observation date consistently.
 
 # 1. See the plan without touching anything.
-atx-db activate --db-path $env:ATX_DB_PATH --dry-run
+atx-db activate --db-path $env:ATX_DB_PATH --dry-run --as-of-date $activationDate
 
 # 2. Run the whole ladder (multi-hour; safe to interrupt).
 atx-db activate --db-path $env:ATX_DB_PATH `
   --ticker-history-zip $env:USERPROFILE\Downloads\tbltickerhistory3_10y.zip `
   --staging-dir D:\atx\data\staging\broad-bars `
   --cache-dir D:\atx\data\cache `
-  --memory-limit 8GB --threads 4 --shards 16
+  --memory-limit 8GB --threads 4 --shards 16 `
+  --as-of-date $activationDate --backup-keep 100
 
 # 3. Resume after an interruption (completed stages are skipped automatically).
-atx-db activate --db-path $env:ATX_DB_PATH
+atx-db activate --db-path $env:ATX_DB_PATH --as-of-date $activationDate --backup-keep 100
 
 # 4. Resume from an explicit point, or rerun one stage.
-atx-db activate --db-path $env:ATX_DB_PATH --start-stage companyfacts_load
-atx-db activate --db-path $env:ATX_DB_PATH --only standardized --force
+atx-db activate --db-path $env:ATX_DB_PATH --start-stage companyfacts_load `
+  --as-of-date $activationDate --backup-keep 100
+atx-db activate --db-path $env:ATX_DB_PATH --only standardized --force `
+  --as-of-date $activationDate --backup-keep 100
 
 # 5. Confirm the result.
 atx-db status --db-path $env:ATX_DB_PATH --strict
@@ -104,13 +144,26 @@ would be wasteful once a build is mostly done. A brand-new (non-existent)
 database file also skips this -- `stage_migrate` bootstraps it directly -- and
 so does `--dry-run`, whose contract is to touch nothing.
 
+For this rebuild, use the authorized dummy SEC contact shown above; never send
+the user's email. Activation examples retain up to 100 backups to preserve the
+existing files; confirm that retention exceeds existing backups plus new ones
+before proceeding. Do not use the default retention of three to prune the
+user's backups. The standalone `warehouse_migrate.py` command backs up and
+migrates without the activation retention option.
+
 ### Stage order
 
 `migrate` -> `security_master` -> `symbol_directory` -> `ticker_history_extract`
 -> `ticker_history_publish` -> `sec_bulk_download` -> `submissions_load` ->
 `companyfacts_load` -> `statement_points` -> `periods` -> `ttm` ->
 `calendarization` -> `standardized` -> `industry_templates` -> `reconciliation`
--> `provider_coverage`.
+-> `derived_metrics` -> `market_daily` -> `delisting_evidence`
+-> `universe_us_listed` -> `provider_coverage`.
+
+Repeat `--only` for multiple stages; selections run in ladder order. A slice
+does not build omitted prerequisites. LEI/FIGI activation is deferred and has
+no active stage or vendor-file flags. The existing `industry_templates` stage
+remains; expanded industry templates and their fixture corpus are deferred.
 
 Network is limited to `security_master`, `symbol_directory`, and
 `sec_bulk_download`; every other stage is offline. `sec_bulk_download` resumes a
@@ -127,7 +180,9 @@ lineage. `atx_db.clock.utc_today()` is the only sanctioned wall-clock date read
 and is called only at CLI/script edges, which pass the value down explicitly.
 Library code resolves its stamp through
 `atx_db.clock.resolve_as_of_date(explicit, source_max_date=...)`, which raises
-rather than silently producing a non-reproducible run.
+rather than silently producing a non-reproducible run. Deterministic timestamps
+alone do not establish that archive data was historically available at that time;
+the price-source limitation above still applies.
 
 `source_loaded_at` is lineage only and is never an ordering or dedupe key: the
 factor panel selects duplicates by `(available_at, run_id)` in both its pandas
@@ -139,6 +194,104 @@ network stages (`security_master`, `symbol_directory`, `sec_bulk_download`) for
 those reruns to be byte-identical; left unset, each invocation resolves it from
 `atx_db.clock.utc_today()` at the CLI edge, which necessarily differs run to
 run.
+
+## Universe and delisting evidence
+
+After prerequisites have completed and the warehouse writer has exited, a
+targeted rebuild uses the current CLI syntax:
+
+```powershell
+atx-db activate --db-path $env:ATX_DB_PATH `
+  --only delisting_evidence --only universe_us_listed --force `
+  --as-of-date $activationDate --backup-keep 100
+```
+
+`delisting_evidence` reads landed SEC Form 25/25-NSE, Nasdaq deletes, SEC Form 15
+and archive last-trade evidence, then folds the sources into `delisting_events`
+by precedence. Default submissions ingestion does not establish that every
+required delisting form is present; inventory and supplement those inputs
+before measuring evidence coverage. Archive inference requires more than 30
+later observed trading sessions and carries the availability of that evidence.
+An archive-end observation alone does not establish a delisting.
+
+`universe_us_listed` builds `universe_us_listed_membership`. Qualifying securities
+with no resolved CIK remain as `has_cik = false`; the
+`universe_us_listed(store, as_of_date, require_cik=True)` accessor selects the
+fundamentals subset. `market_cap_decile` is an interval-start attribute. The
+builder requires dated listing/type evidence: a bar-observed candidate or a
+current listing snapshot is not proof of historical US common-equity membership.
+
+The current ladder's evidence stage does not refresh terminal returns. The
+Shumway policy below applies when `refresh_delisting_terminal_returns` is run;
+its implementation and successful evidence generation do not certify terminal
+coverage or survivorship-adjusted forward returns.
+
+## Publishing a release
+
+Wait for ingestion to release the single-writer warehouse. Apply all pending
+migrations with the governed command before publishing; publication checks for
+pending migrations read-only and refuses to open a writable store if any remain.
+Check the full pending set, not only the highest migration number. Preserve
+existing backups.
+
+```powershell
+python scripts/warehouse_migrate.py --db-path $env:ATX_DB_PATH
+atx-db status --db-path $env:ATX_DB_PATH --strict
+
+# After measuring and reviewing release quality, create the first baseline.
+atx-db publish-release --db-path $env:ATX_DB_PATH --release-id 2026-09-20 `
+  --out-dir data/releases
+
+# A later release may compare against a verified, existing predecessor.
+atx-db publish-release --db-path $env:ATX_DB_PATH --release-id 2026-09-27 `
+  --out-dir data/releases --previous-dir data/releases/2026-09-20
+```
+
+Publication writes six Parquet datasets: `security_master`, `universe`,
+`delistings`, `fundamentals_core`, `derived_metrics` and `market_daily`, plus
+`manifest.json`, and records them in `publication_releases` and
+`publication_release_datasets`. `fundamentals_core` references the existing
+`ATX.US.FUNDAMENTALS/standardized` public schema; there is no separate
+`fundamentals-core` schema code. Existing release directories cannot be
+overwritten.
+
+The first release has no predecessor and null added/removed/changed counts.
+Later releases verify predecessor files and compute exact key-level diffs when
+their schemas are compatible. The manifest records schema, query and Parquet
+hashes, row counts and activation run IDs. Verify those artifacts against the
+recorded hashes; a successful export is not a quality pass. The CLI supplies
+the creation timestamp, so separate CLI invocations do not promise identical
+manifest hashes even when dataset contents are unchanged.
+
+Run `run_warehouse_quality_checks` and review its actual results before release.
+No critical failures is necessary but does not establish the entire Tier-1 gate:
+inspect error-severity terminal gaps, annual cohort/item coverage, identities,
+shares, universe exclusions, projected factor breadth and provider SLO conditions.
+Publication does not enforce those checks itself. Keep unresolved inputs and
+`pending`/`degraded` surfaces visible in the release evidence; never change
+observation dates to hide the age of the last loaded prices.
+
+## Documentation and retained artifacts
+
+Run `python scripts/generate_data_dictionary.py` after registry, public-schema,
+universe or delisting vocabulary changes. It reads repository definitions only;
+`python scripts/generate_data_dictionary.py --check` fails CI when
+[DATA_DICTIONARY.md](DATA_DICTIONARY.md) differs. It never measures a warehouse.
+`scripts/measure_item_coverage.py --write-docs` is the separate producer of
+`docs/ITEM_COVERAGE.md`; publish that report only with its actual cohort, fiscal
+years and known measurement limitations.
+
+Retirement wave 2 (`dae4220e`) removed `abnormal_capex` and `operating_leverage`
+and disabled the `market_cap`, `enterprise_value` and `valuation_multiples`
+schedules. Historical valuation tables and their rows remain. The separate
+18-module S3 retirement and compatibility work is still in progress at this
+checkpoint and is not evidence of an activated factor panel.
+
+The optional checkout-root `warehouse_template.duckdb` is distinct from the
+active test templates under `.pytest_cache/db_schema_templates/<fingerprint>/`.
+The current test harness references the latter. This documentation pass leaves
+both alone; verify local process use and file ownership before any later cleanup.
+Existing migration backups and stashes are also preserved.
 
 ## 13F recovery
 

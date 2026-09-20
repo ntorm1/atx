@@ -22,6 +22,17 @@ python -m pytest tests/test_import.py tests/test_module_boundaries.py -q -n0
 Use focused test modules during development. Slow integration tests remain
 opt-in with `--run-slow`.
 
+### Reference documentation
+
+| Document | What it records |
+| --- | --- |
+| [Data dictionary](docs/DATA_DICTIONARY.md) | Generated item, derived-metric, market-panel, universe, delisting, API and release contracts. Regenerate with `python scripts/generate_data_dictionary.py`; CI checks for staleness. Registry breadth is not measured warehouse coverage. |
+| [Item coverage measurement](scripts/measure_item_coverage.py) | Produces `docs/ITEM_COVERAGE.md` with `--write-docs`. That report has not yet been published for the current rebuild; the historical top-3000 common-equity cohort and annual gate still require validation. |
+| [Fundamentals provider design](docs/FUNDAMENTALS_PROVIDER_DESIGN.md) | Architecture and dated measurements from earlier warehouse builds; use each measurement's stated date and scope. |
+| [Tier-1 parity design](../docs/superpowers/specs/2026-09-19-tier1-parity-design.md) | Target design contract. Implementation does not by itself establish measured coverage. |
+| [Production runbook](docs/PRODUCTION_RUNBOOK.md) | Current activation commands, evidence limitations, terminal-return policy and release procedure. |
+| [Parity gap](docs/PARITY_GAP.md), [roadmap](docs/ROADMAP_PARITY.md), [handoff](docs/WAREHOUSE_PARITY_NEXT_AGENT_README.md), [tranche ledger](docs/WAREHOUSE_PARITY_TRANCHES.md) | Historical build records, with supersession banners. |
+
 ## Data safety
 
 All facts intended for research carry point-in-time availability and source
@@ -253,12 +264,16 @@ tar -xf $HOME\Downloads\tbltickerhistory3_10y.zip -C data\staging\broad-bars
 atx-db publish-broad-bars --tsv-path data\staging\broad-bars\tbltickerhistory3_10y.txt
 ```
 
-The bulk path reads only OHLCV, split factor, identifiers, and shares; validates
+The bulk path reads OHLCV, a source adjustment factor, identifiers, and shares; validates
 at least 30 million clean rows, 10,000 securities, and 5,000 latest-date names;
 resolves recycled ticker/share-class collisions; and publishes the replacement
-transactionally. Canonical bars carry point-in-time `shares_outstanding` and
-`market_cap_usd`, so downstream capacity and 13F screens do not depend on the
-wide raw vendor table.
+transactionally. Those checks do not certify price adjustment or historical
+publication timing. The current `closePr` mapping, latest-symbol preference and
+archive availability convention require correction or explicit source evidence
+before return-dependent panels can be certified; see the
+[current rebuild limitations](docs/PRODUCTION_RUNBOOK.md#current-rebuild-evidence-2026-09-20).
+Canonical bars expose `shares_outstanding` and `market_cap_usd`, but the archive's
+historical shares vintages remain unverified.
 
 `RESTATEMENT` amendments replace the prior information table. `ADD NEW
 HOLDINGS` amendments supplement it. The materialized amendment-rate z-score is
