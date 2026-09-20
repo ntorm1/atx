@@ -41,7 +41,9 @@ def refresh_item_coverage_cohort(store: DuckDBStore, options: AnnualCoverageCoho
 
     Only aggregate year summaries cross into Python. The warehouse must already have
     migration 0311. No initialization, migration, or clock read is performed here.
-    US-listed intervals use half-open endpoints; no directory data is backdated.
+    US-listed valid_to is the last included session, matching its writer/readers.
+    source_loaded_at is the explicit as_of_date at 22h on every identical rerun;
+    available_at remains the input-derived clock. No directory data is backdated.
     """
     lower, upper = coverage_year_bounds(options.as_of_date, options.minimum_fiscal_year, options.maximum_fiscal_year)
     cutoff = dt.datetime.combine(options.as_of_date, dt.time(22))
@@ -86,7 +88,7 @@ def refresh_item_coverage_cohort(store: DuckDBStore, options: AnnualCoverageCoho
                 FROM universe_us_listed_membership u
                 WHERE u.universe_id=? AND u.source=? AND u.security_id=m.security_id
                   AND u.valid_from<=m.ranking_date
-                  AND (u.valid_to IS NULL OR m.ranking_date<u.valid_to)
+                  AND (u.valid_to IS NULL OR m.ranking_date<=u.valid_to)
                   AND u.available_at<=m.ranking_date+INTERVAL 22 HOUR
                   AND u.security_type='common'
                   AND u.exchange_code IN ('XNAS','XNYS','XASE','ARCX','BATS')
@@ -146,7 +148,7 @@ def refresh_item_coverage_cohort(store: DuckDBStore, options: AnnualCoverageCoho
                         WHEN s.ranking_date IS NULL THEN 'missing_session'
                         WHEN coalesce(eligible_count,0)<3000 THEN 'undersized'
                         ELSE 'complete' END,
-                   greatest(s.ranking_date+INTERVAL 22 HOUR,input_available_at),?,now()
+                   greatest(s.ranking_date+INTERVAL 22 HOUR,input_available_at),?,?
             FROM range(?,?) years(y) LEFT JOIN sessions s ON s.fiscal_year=y
             LEFT JOIN stats c ON c.fiscal_year=y
             """,
@@ -164,6 +166,7 @@ def refresh_item_coverage_cohort(store: DuckDBStore, options: AnnualCoverageCoho
                 options.as_of_date,
                 options.as_of_date,
                 options.run_id,
+                cutoff,
                 lower,
                 upper + 1,
             ],
@@ -173,7 +176,7 @@ def refresh_item_coverage_cohort(store: DuckDBStore, options: AnnualCoverageCoho
             INSERT INTO item_coverage_annual_cohort
             SELECT ?,r.fiscal_year,r.security_id,r.ranking_date,r.market_cap_rank,r.market_cap,
                    r.market_daily_id,r.membership_id,r.market_available_at,r.listing_available_at,
-                   y.available_at,?, ?,?,now()
+                   y.available_at,?, ?,?,?
             FROM _coverage_ranked r JOIN item_coverage_cohort_years y
               ON y.universe_id=? AND y.fiscal_year=r.fiscal_year
             WHERE r.market_cap_rank<=3000
@@ -183,6 +186,7 @@ def refresh_item_coverage_cohort(store: DuckDBStore, options: AnnualCoverageCoho
                 options.as_of_date,
                 COHORT_SOURCE,
                 options.run_id,
+                cutoff,
                 ANNUAL_COVERAGE_UNIVERSE_ID,
             ],
         )

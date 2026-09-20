@@ -114,7 +114,7 @@ def test_pure_same_year_membership_rejected_member_and_zero_not_null():
     assert tuple(rows.columns) == ITEM_COVERAGE_COLUMNS
 
 
-def test_exact_top_3000_tie_pit_and_half_open_boundary(coverage_store):
+def test_exact_top_3000_tie_pit_and_inclusive_boundary(coverage_store):
     _market_and_listing(coverage_store, n=3005)
     # Large caps with unusable metadata cannot displace a known eligible security.
     coverage_store.con.execute("UPDATE market_daily_metrics SET market_cap=99999 WHERE security_id>='S03001'")
@@ -131,11 +131,11 @@ def test_exact_top_3000_tie_pit_and_half_open_boundary(coverage_store):
         "SELECT security_id,market_cap_rank FROM item_coverage_annual_cohort ORDER BY market_cap_rank"
     ).fetchall()
     assert len(members) == 3000
-    assert members[0] == ("S00000", 1) and members[-1] == ("S02999", 3000)
+    assert members[0] == ("S03002", 1) and members[-1] == ("S02998", 3000)
     year = coverage_store.con.execute(
         "SELECT candidate_count,eligible_count,selected_count,excluded_listing,excluded_market_cap,excluded_rank,status,available_at FROM item_coverage_cohort_years WHERE fiscal_year=2020"
     ).fetchone()
-    assert year[:7] == (3005, 3001, 3000, 3, 1, 1, "complete")
+    assert year[:7] == (3005, 3002, 3000, 2, 1, 2, "complete")
     assert year[7] == dt.datetime(2020, 12, 31, 22)
     # Rebuild is deterministic and the incomplete current year stays explicit.
     _cohort(coverage_store)
@@ -328,3 +328,24 @@ def test_future_market_revision_does_not_replace_known_ranking_input(coverage_st
         "SELECT security_id,market_cap,market_daily_id FROM item_coverage_annual_cohort ORDER BY market_cap_rank"
     ).fetchall()
     assert rows == [('S00000', 1000.0, 'm-2020-0'), ('S00001', 1000.0, 'm-2020-1')]
+
+
+def test_inclusive_listing_end_and_deterministic_cohort_load_timestamps(coverage_store):
+    _market_and_listing(coverage_store, n=2)
+    coverage_store.con.execute(
+        "UPDATE universe_us_listed_membership SET valid_to = "
+        "CASE security_id WHEN 'S00000' THEN DATE '2020-12-31' ELSE DATE '2020-12-30' END"
+    )
+    _cohort(coverage_store)
+    assert coverage_store.con.execute(
+        "SELECT security_id FROM item_coverage_annual_cohort"
+    ).fetchall() == [('S00000',)]
+    before = {}
+    for table in ('item_coverage_annual_cohort', 'item_coverage_cohort_years'):
+        assert coverage_store.con.execute(
+            f"SELECT DISTINCT source_loaded_at FROM {table}"
+        ).fetchall() == [(dt.datetime.combine(AS_OF, dt.time(22)),)]
+        before[table] = coverage_store.con.execute(f"SELECT * FROM {table} ORDER BY fiscal_year").fetchall()
+    _cohort(coverage_store)
+    for table, rows in before.items():
+        assert coverage_store.con.execute(f"SELECT * FROM {table} ORDER BY fiscal_year").fetchall() == rows

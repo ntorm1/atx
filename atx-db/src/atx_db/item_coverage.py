@@ -154,7 +154,7 @@ def measure_item_coverage(store: DuckDBStore, options: ItemCoverageOptions) -> p
             FROM item_coverage_cohort_years WHERE universe_id=? AND as_of_date=?"""
         params.extend([options.universe_id, options.as_of_date])
     else:
-        # Legacy universe_membership endpoints are inclusive, unlike US-listed intervals.
+        # Both legacy and US-listed membership valid_to dates are inclusive.
         membership = """
             SELECT DISTINCT u.security_id,y.fiscal_year,u.available_at
             FROM universe_membership u CROSS JOIN years y
