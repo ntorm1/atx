@@ -2,6 +2,32 @@
 
 This section supersedes every older status below. Updated 2026-09-20.
 
+## Current controller override - 2026-09-20 23:26 UTC
+
+- Archive4 confirmed LIVE via session25640 around23:24UTC, same worker21904 /
+  parent9712 / creation1789945403452. At23:24:19UTC processed4750,loaded3984,
+  empty739,unavailable27,failed0,newattemptfactrows1131235. These include issuer
+  replacements and are not net warehousegrowth. Headroom physical~6.22GiB,
+  commit~8.00GiB. No source/guardfailure. SAME one-runtime policy/limits apply.
+- Fresh Codex static research COMPLETE: historical-vendor-source-check.md.
+  Official TickerDefinitionHist has datedID/MIC/symbolType; v7backfill lacksCIK,
+  primaryExch,issueClass; Equity is distinctfrompreferred/ADR/ETF but not
+  expresslydefined common-only. Root independentlyopenedprimarydictionary/enum.
+  Historicalidentity/PITcoverage stillrequiresrealdata; noadapter/sourcechange,
+  download, account, contact, purchase orDBwork was done. This is distinctfrom
+  earlierSEC FSNresearch; it identifiesamoredirectvendorcompanion, not AR5closure.
+- Root refreshed filteredDownloads metadata: stillonlyoldtickerZIPandupdated
+  TickerHistory3.parquet; norelevantcompanionfilename. Asyncuserquestion SENT
+  asking whetheranexistingUS TickerDefinitionHist historicalexportisavailable
+  anditslocalpath/sample. Noanswerreceivedyet; donotassumepermission/presence,
+  askagain, orpauseindependentsource/metricsworkwhilewaiting. No credentials
+  requested. Do not manufactureanallhistoryfilename/S3keyorbackdate22CTdelivery.
+- Remainingpipelineunchanged: lethealthyarchive4finish, verifyledgers/outcome
+  insoleguard, submissionsverifiedresume, fullrun5, CF1eval, measuredcoverage/
+  quality/release, fullnon-slowonce, Codexwholebranchreview, askbeforemain.
+  Ifcompanionarrives, inspectactualformat/size/columns/coverageinassignedroot
+  runtimeslotaftercurrentwriter;onlythen sizeadapter/identitytasks. GoalACTIVE.
+
 ## Current controller override - 2026-09-20 23:17 UTC
 
 - Archive4 CONFIRMED LIVE this turn via session25640 and CIM worker21904,
