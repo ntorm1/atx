@@ -608,6 +608,128 @@ DAILY_BARS_SCHEMA = RecordSchema(
 )
 
 
+DERIVED_METRICS_SCHEMA = RecordSchema(
+    dataset="ATX.US.FUNDAMENTALS",
+    code="derived-metrics",
+    version="1.0.0",
+    title="Point-in-time derived metrics",
+    description=(
+        "Ratios, per-share, growth, leverage, quality, investment and payout metrics computed "
+        "by one declarative engine from the standardized fundamentals layer."
+    ),
+    source_table="derived_metric_values",
+    time_column="period_end",
+    natural_key=("security_id", "metric_code", "metric_window", "period_end"),
+    item_column="metric_code",
+    basis_column="metric_window",
+    fields=(
+        FieldSpec("security_id", "security_id", "string", "Stable ATX security identifier.", nullable=False),
+        FieldSpec("metric", "metric_code", "string", "Derived metric code.", nullable=False, filterable=True),
+        FieldSpec(
+            "window",
+            "metric_window",
+            "string",
+            "Metric window: q, ttm, annual, instant, avg2 or daily.",
+            nullable=False,
+            filterable=True,
+        ),
+        FieldSpec("period_end", "period_end", "date", "Fiscal period end.", nullable=False),
+        FieldSpec("value", "value", "float64", "Derived metric value.", nullable=False),
+        FieldSpec(
+            "inputs_hash",
+            "inputs_hash",
+            "string",
+            "SHA-256 over the sorted (code, period_end, revision_sequence, value) inputs consumed.",
+            nullable=False,
+        ),
+        FieldSpec("source", "source", "string", "ATX engine identifier.", nullable=False),
+        *_PIT_FIELDS,
+    ),
+)
+
+
+MARKET_DAILY_SCHEMA = RecordSchema(
+    dataset="ATX.US.EQUITIES",
+    code="market-daily-1d",
+    version="1.0.0",
+    title="Daily market and valuation panel",
+    description=(
+        "Daily prices, point-in-time shares, market cap, enterprise value, valuation multiples, "
+        "total returns, momentum and realized volatility."
+    ),
+    source_table="market_daily_metrics",
+    time_column="trade_date",
+    natural_key=("security_id", "trade_date"),
+    supports_vintages=False,
+    fields=(
+        FieldSpec("security_id", "security_id", "string", "Stable ATX security identifier.", nullable=False),
+        FieldSpec("symbol", "symbol", "string", "Ticker for the observation."),
+        FieldSpec("trade_date", "trade_date", "date", "Exchange trading date.", nullable=False),
+        FieldSpec("close", "close", "float64", "Unadjusted closing price.", "USD"),
+        FieldSpec("adj_close", "adj_close", "float64", "Corporate-action adjusted close.", "USD"),
+        FieldSpec("volume", "volume", "int64", "Share volume.", "shares"),
+        FieldSpec("shares_outstanding", "shares_outstanding", "float64", "Point-in-time shares.", "shares"),
+        FieldSpec("shares_source", "shares_source", "string", "dei or archive.", filterable=True),
+        FieldSpec(
+            "shares_reconciliation_ratio",
+            "shares_reconciliation_ratio",
+            "float64",
+            "dei shares divided by archive shares on the same date.",
+        ),
+        *(
+            FieldSpec(name, name, "float64", description, unit)
+            for name, description, unit in (
+                ("market_cap", "Price times point-in-time shares outstanding.", "USD"),
+                ("enterprise_value", "Market cap plus debt, preferred and minority less cash.", "USD"),
+                ("pe_ttm", "Price to trailing earnings available to common.", None),
+                ("pb", "Price to common book value.", None),
+                ("ps_ttm", "Price to trailing revenue.", None),
+                ("pcf_ttm", "Price to trailing operating cash flow.", None),
+                ("ev_ebitda", "Enterprise value to trailing EBITDA.", None),
+                ("ev_sales", "Enterprise value to trailing revenue.", None),
+                ("fcf_yield", "Trailing free cash flow over market cap.", None),
+                ("dividend_yield", "Trailing common dividends over market cap.", None),
+                ("earnings_yield", "Trailing earnings available to common over market cap.", None),
+                ("shareholder_yield", "Net payout plus net debt paydown over market cap.", None),
+                ("net_payout_yield", "Dividends plus net buybacks over market cap.", None),
+                ("total_payout_yield", "Gross dividends plus gross buybacks over market cap.", None),
+                ("buyback_yield", "Net buybacks over market cap.", None),
+                ("book_to_market", "Common book value over market cap.", None),
+                ("rd_to_market_equity", "Trailing R&D expense over market cap.", None),
+                ("gross_profit_to_ev", "Trailing gross profit over enterprise value.", None),
+                ("cfo_to_ev", "Trailing operating cash flow over enterprise value.", None),
+                ("ebit_to_ev", "Trailing operating income over enterprise value.", None),
+                ("sales_to_ev", "Trailing revenue over enterprise value.", None),
+                ("altman_z", "Altman Z-score with market equity.", None),
+                ("total_return_1m", "Twenty-one-trading-day total return.", None),
+                ("total_return_3m", "Sixty-three-trading-day total return.", None),
+                ("total_return_6m", "One-hundred-twenty-six-trading-day total return.", None),
+                ("total_return_12m", "Two-hundred-fifty-two-trading-day total return.", None),
+                ("momentum_12_1", "Twelve-month total return skipping the last month.", None),
+                ("realized_vol_60d", "Annualized sixty-day realized volatility.", None),
+                ("realized_vol_252d", "Annualized two-hundred-fifty-two-day realized volatility.", None),
+                ("dollar_volume_20d", "Twenty-day average daily dollar volume.", "USD"),
+            )
+        ),
+        FieldSpec(
+            "fundamental_available_at",
+            "fundamental_available_at",
+            "timestamp",
+            "Max availability of the fundamentals joined into this row.",
+        ),
+        FieldSpec(
+            "inputs_hash",
+            "inputs_hash",
+            "string",
+            "SHA-256 over the price, share and fundamental-availability inputs.",
+            nullable=False,
+        ),
+        FieldSpec("source", "source", "string", "ATX engine identifier.", nullable=False),
+        *_PIT_FIELDS,
+    ),
+)
+
+
 DATASETS: Final[tuple[DatasetSpec, ...]] = (
     DatasetSpec(
         code="ATX.US.FUNDAMENTALS",
@@ -625,6 +747,7 @@ DATASETS: Final[tuple[DatasetSpec, ...]] = (
             FUNDAMENTAL_RECONCILIATION_SCHEMA,
             RATIOS_SCHEMA,
             RESTATEMENTS_SCHEMA,
+            DERIVED_METRICS_SCHEMA,
         ),
     ),
     DatasetSpec(
@@ -636,7 +759,7 @@ DATASETS: Final[tuple[DatasetSpec, ...]] = (
         region="US",
         entitlement="us_equities_eod",
         default_schema="ohlcv-1d",
-        schemas=(DAILY_BARS_SCHEMA,),
+        schemas=(DAILY_BARS_SCHEMA, MARKET_DAILY_SCHEMA),
     ),
 )
 

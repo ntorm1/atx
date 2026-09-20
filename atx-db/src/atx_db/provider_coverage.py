@@ -137,6 +137,28 @@ DEFAULT_PROVIDER_COVERAGE_SLOS: tuple[ProviderCoverageSlo, ...] = (
         DATABENTO_METADATA_URL,
         "Institutional target for survivorship-aware daily US equity observations.",
     ),
+    ProviderCoverageSlo(
+        "ATX.US.FUNDAMENTALS",
+        "derived-metrics",
+        dt.date(2009, 1, 1),
+        15.0,
+        2_500,
+        100,
+        120.0,
+        _FUNDAMENTAL_CITATION,
+        "Institutional target for declaratively computed point-in-time derived metrics.",
+    ),
+    ProviderCoverageSlo(
+        "ATX.US.EQUITIES",
+        "market-daily-1d",
+        dt.date(2010, 1, 1),
+        10.0,
+        5_000,
+        None,
+        7.0,
+        DATABENTO_METADATA_URL,
+        "Institutional target for the daily market cap, valuation and total-return panel.",
+    ),
 )
 
 
@@ -161,8 +183,9 @@ def _relation_exists(store: DuckDBStore, relation: str) -> bool:
 def _schema_stats(
     store: DuckDBStore,
     schema: RecordSchema,
-) -> tuple[int, int, int | None, int | None, dt.datetime | None, dt.datetime | None,
-           dt.datetime | None, dt.datetime | None]:
+) -> tuple[
+    int, int, int | None, int | None, dt.datetime | None, dt.datetime | None, dt.datetime | None, dt.datetime | None
+]:
     table = _quote_identifier(schema.source_table)
     time_column = _quote_identifier(schema.time_column)
     item_expression = (
@@ -264,9 +287,7 @@ def _evaluate_slos(
         fail("history_years", history_years, slo.minimum_history_years, "ge")
     if security_count < slo.minimum_security_count:
         fail("security_count", security_count, slo.minimum_security_count, "ge")
-    if slo.minimum_item_count is not None and (
-        item_count is None or item_count < slo.minimum_item_count
-    ):
+    if slo.minimum_item_count is not None and (item_count is None or item_count < slo.minimum_item_count):
         fail("item_count", item_count, slo.minimum_item_count, "ge")
     if freshness_lag_days is None or freshness_lag_days > slo.maximum_freshness_lag_days:
         fail("freshness_lag_days", freshness_lag_days, slo.maximum_freshness_lag_days, "le")

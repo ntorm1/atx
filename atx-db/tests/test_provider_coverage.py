@@ -83,17 +83,18 @@ def test_provider_coverage_migration_seeds_every_public_schema(tmp_store: DuckDB
         ).fetchall()
     )
     assert actual == expected
-    assert len(actual) == 7
+    # Tier1-S3 T9: derived-metrics (ATX.US.FUNDAMENTALS) and market-daily-1d
+    # (ATX.US.EQUITIES) added two schema codes and their SLO rows (addendum in
+    # .superpowers/sdd/tier1-parity/program.md), so the pinned count moves 7 -> 9.
+    assert len(actual) == 9
 
     snapshots = refresh_provider_coverage(
         tmp_store,
         ProviderCoverageOptions(observed_at=OBSERVED_AT, run_id="empty-coverage"),
     )
-    assert len(snapshots) == 7
+    assert len(snapshots) == 9
     assert {snapshot.condition for snapshot in snapshots} == {"pending"}
-    assert tmp_store.con.execute(
-        "SELECT count(*) FROM v_api_schema_coverage_current"
-    ).fetchone() == (7,)
+    assert tmp_store.con.execute("SELECT count(*) FROM v_api_schema_coverage_current").fetchone() == (9,)
 
 
 def test_provider_coverage_measures_range_breadth_and_slo_failure(tmp_store: DuckDBStore) -> None:
@@ -278,10 +279,10 @@ def test_provider_coverage_cli_emits_condition_summary(
     ) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["run_id"] == "cli-coverage"
-    assert payload["schema_count"] == 7
+    assert payload["schema_count"] == 9
     assert payload["conditions"] == {
         "available": 0,
         "degraded": 0,
         "missing": 0,
-        "pending": 7,
+        "pending": 9,
     }
