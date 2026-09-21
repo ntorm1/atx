@@ -5,6 +5,30 @@ This section supersedes every older status below. Updated 2026-09-21 UTC
 
 ## Current controller override - 2026-09-21 22:28 UTC
 
+Update23:04UTC: SAME archive7/session28324/nativeworker14556 remains live.
+At23:03:25.694UTC it reached8300/20390, loaded7109 (includes6805verified
+reuse), empty1152/unavailable39/failed0, attempt1,043,493rows (replacement
+rows included; not net warehouse growth). At23:02 guard headroom was
+physical6.475GiB/commit8.427GiB, with the unchanged2GiB process-tree cap.
+
+VR1 repaired draft is READY FOR INTEGRATION AFTER THE WRITER IS TERMINAL.
+The scoped Critical re-review closes C1 with no Critical regression; see
+verified-resume-recycling-critical-rereview.md. I1 was fixed and accepted on
+verified-resume-recycling-draft/verified-resume-recycling-fix-report.md,
+pending root focused runtime checks. Use ONLY integration-final.patch in
+that draft directory, SHA256
+0D268C57499B9738DA4FD85AC4B0ABD2DB011479C2BF3185065CE7E872FB4E34.
+Root verified this hash, unchanged live source/test hashes, and a successful
+git apply --check. Original integration.patch is frozen non-applicable
+evidence; integration-v2.patch is an intermediate packaging artifact.
+No patch has been applied, no runtime tests have run, and no production
+performance improvement is claimed. Frozen implementation source remains
+cd841f26. Once archive7 terminates, inspect its actual ledgers, then apply
+the final patch and execute the six focused selectors in the fix report
+under the existing memory guard, -n0, before a pathspec-only source commit.
+Continue submissions resume and run5 afterward. All previous full-universe
+measurement, publication, sprint-gate and main-merge requirements remain.
+
 Update22:53:46UTC: SAME archive7/session28324/nativeworker14556 is live and
 BEYOND archive6's interrupted prefix. At22:53:29 it reached7975/20390,
 loaded6807 (includes6805verified reuse), empty1129/unavailable39/failed0,
