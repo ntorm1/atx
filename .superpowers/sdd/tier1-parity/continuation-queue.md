@@ -5,6 +5,13 @@ This section supersedes every older status below. Updated 2026-09-21 UTC
 
 ## Current controller override - 2026-09-21 01:09 UTC
 
+Update01:15:50UTC: archive5 VERIFIED5792targets /28,205,479retainedrows at
+01:14:35; both fingerprint scans10,174groups. Actual INFO output lives in
+activation-companyfacts-archive5.err (EDT timestamps), stdout.log is currently
+empty. Traversal725/20390, loaded638reused, empty83/unavailable4/failed0,
+newattemptrows0. No error/stop. Backup20260921-010817.bak12,125,220,864B;
+disk free84,994,764,800B. See companyfacts-archive5-resume-evidence.md.
+
 - Archive5 is LIVE, started01:08:14UTC from sourcecd841f26, sole runtime.
   SAME exec session35531; guard child/venv redirector13004, worker16900,
   conhost10572. Both Python creation01:08:14UTC. Guard3GiB, DuckDB1GB/1thread,
