@@ -3,7 +3,46 @@
 This section supersedes every older status below. Updated 2026-09-21 UTC
 (2026-09-20 local). The production snapshot remains explicitly as-of Sep20.
 
-## Current controller override - 2026-09-21 00:41 UTC
+## Current controller override - 2026-09-21 00:57 UTC
+
+- All four capacity tasks integrated, focused checks accepted and pathspec
+  committed: FP1/0317 cc6da619 (36passes); AP1/0318 fca77aef (47passes then
+  one corrected calendar-oracle case passed); DP1 197195a3 (20passes then
+  two corrected NOTNULL/fiscal-span fixtures passed); MP1 1a3cb68b (37passes).
+  PR1 remains5dc0aec7 (5passes). All one-review policies satisfied; no
+  production arithmetic changed by fixture corrections. Reports+receipts in
+  corresponding *-root-verification.md. Final touched Ruff/type passed;
+  known baseline-only Ruff findings documented, not claimed clean globally.
+- Current HEAD1a3cb68b. Root isolated git-archive import+module/schema check
+  COMPLETED session58500, capacity-committed-head-{memory.json,log,err}; import
+  from export and all module/schema cases passed (one existing slow skip),
+  exit0/peak0.9511GiB. No full-suite gate yet; no production writer.
+- FC1 draft COMPLETE, one fresh review active /root/review_fundamental_clock_policy.
+  Read fundamental-clock-policy-report.md and fundamental-clock-draft/
+  root-integration.md. Root APPLIED patch after capacity HEAD check, while the
+  reviewer reads frozen draft;9existing/4new paths plus three root-owned0319
+  registry/facade lines and exact private module pin. Focused tests running
+  session8107, fundamental-clock-tests.{log,err}/-memory.json. Review pending.
+  0319 is existing overlap view/catalog only. Future raw
+  SEC readers use shared max(stored,filed+46h); raw tables remain unchanged.
+  Corrected shares refresh added inside existing statement_points stage.
+- Root read-only inventory00:50:22UTC proved fundamental_xbrl_metric0,
+  shares_outstanding_history0, est_actual0, revisions0, statement_points0,
+  standardized0, market_daily_metrics0. Thus legacy-XBRL empty prerequisite
+  satisfied before run5. Evidence fundamental-clock-legacy-input-inventory.json.
+  Do not confuse accidental nonexistent derived_metrics name with count of
+  derived_metric_values. No new legacy policy column/gate needed. Shares
+  SQL-wide indexed transaction peak remains unmeasured; fix only actual failure.
+- Archive4 terminal/recovery details below remain authoritative. Actual resume
+  UUID c7c21cd1-c7c4-4de8-af64-4f2877ef6f59. Finish FC1 review/integration/
+  focused checks/commit, then archive5 SAME3GiB/1GB/1thread limits and fresh
+  receipt. Submissions verified resume follows, then run5 --start-stage
+  statement_points --force --shards16; no bulk redownload. Source rows intact.
+- Main/release/fullgate still pending. No conditions flipped. Companion input
+  question pending; stash@{0} untouched. GoalACTIVE. Actual source/test tree
+  only has four preexisting content-empty EOL phantom modifications.
+
+## Historical controller override - 2026-09-21 00:41 UTC
 
 - Archive4 TERMINAL: stopped_low_headroom (commit2.983GiB; physical2.474GiB).
   Receipt mtime00:25:33UTC, terminal collected00:29:18. Session25640 completed;
