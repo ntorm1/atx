@@ -1,0 +1,29 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "-n",
+    "0",
+    "-q",
+    "tests/test_derived_connection_capacity.py",
+    "tests/test_derived_metrics.py::test_batches_are_deterministic_and_bounded",
+    "tests/test_derived_metrics.py::test_batch_size_does_not_change_the_result",
+    "tests/test_derived_metrics.py::test_full_catalog_runs_without_error",
+    "tests/test_derived_metrics.py::test_requesting_a_metric_auto_expands_its_transitive_dependencies",
+    "tests/test_derived_pit_revisions.py::test_exact_amendment_dependency_export_daily_and_projection",
+    "tests/test_derived_pit_revisions.py::test_bounded_frames_scope_preservation_and_prepublication_failure",
+    "tests/test_derived_pit_revisions.py::test_scoped_atomic_rollback_on_publish_error",
+    "tests/test_derived_annual.py::test_precedence_switches_and_null_never_resurrects",
+    "tests/test_derived_annual.py::test_annual_limits_and_atomic_failure_preserve_previous_scope"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "failed",
+  "headroom": {
+    "physical_free_gb": 5.859058380126953,
+    "commit_free_gb": 5.710670471191406
+  },
+  "child_pid": 21420,
+  "returncode": 1,
+  "native_peak_job_memory_gb": 0.7956314086914062
+}
