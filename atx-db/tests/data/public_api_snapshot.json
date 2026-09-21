@@ -200,6 +200,7 @@
     "_companyfacts_resume",
     "_derived_annual",
     "_derived_pit",
+    "_forward_return_publication",
     "abnormal_inventory_growth",
     "abnormal_receivables_growth",
     "acquire_apply_lock",

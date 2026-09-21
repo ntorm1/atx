@@ -1,0 +1,24 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "-n",
+    "0",
+    "-q",
+    "tests/test_forward_return_publication.py",
+    "tests/test_survivorship_forward_sql.py",
+    "tests/test_bulk_publication.py",
+    "tests/test_delisting_returns.py::test_refresh_survivorship_safe_forward_returns_stitches_and_is_idempotent",
+    "--run-slow"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 5.918712615966797,
+    "commit_free_gb": 5.9500274658203125
+  },
+  "child_pid": 20640,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.9224090576171875
+}

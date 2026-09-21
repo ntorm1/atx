@@ -1,0 +1,23 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "ruff",
+    "check",
+    "src/atx_db/delisting.py",
+    "src/atx_db/_forward_return_publication.py",
+    "src/atx_db/migrations/bodies_0317.py",
+    "src/atx_db/migrations/registry.py",
+    "src/atx_db/migrations/__init__.py",
+    "tests/test_forward_return_publication.py"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "failed",
+  "headroom": {
+    "physical_free_gb": 5.960113525390625,
+    "commit_free_gb": 5.949787139892578
+  },
+  "child_pid": 11464,
+  "returncode": 1,
+  "native_peak_job_memory_gb": 0.08200454711914062
+}
