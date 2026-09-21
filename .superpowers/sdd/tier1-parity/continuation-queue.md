@@ -5,6 +5,26 @@ This section supersedes every older status below. Updated 2026-09-21 UTC
 
 ## Current controller override - 2026-09-21 22:28 UTC
 
+Update22:53:46UTC: SAME archive7/session28324/nativeworker14556 is live and
+BEYOND archive6's interrupted prefix. At22:53:29 it reached7975/20390,
+loaded6807 (includes6805verified reuse), empty1129/unavailable39/failed0,
+new attempt1270rows (includes replacements, not net growth). Latest guard
+physical7.104GiB/commit9.227GiB; no stop or restart. Disk free84,075,134,976B.
+
+VR1 draft is COMPLETE and its ONE fresh review found C1(test lacks configured
+analytical settings, so intended reopens cannot occur) and I1(empty replacement
+cadence evidence is not independent). Production source logic has no reported
+semantic finding. Read verified-resume-recycling-review.md and the original
+report INSIDE verified-resume-recycling-draft/verified-resume-recycling-report.md.
+Original implementer verified_resume_recycling_implementation is fixing C1/I1
+in draft tests and packaging a standard-context patch. Root's original patch
+check FAILED at fundamentals.py:66 with both default and core.autocrlf=false;
+do not apply original integration.patch. All live source/test hashes remained
+unchanged. Keep original frozen patch/report for evidence; final fixed patch
+and fix report are pending. C1 needs scoped Critical re-review; I1 accepted on
+implementer's report and root focused checks. No integration/tests while the
+writer lives. Current source stillcd841f26; no new runtime claim.
+
 Update22:38UTC: SAME archive7/session28324/worker14556 is live. Proof PASSED
 22:36:37.119UTC:6805targets/31,707,754retainedrows; fact/point scans each
 10,914identity groups. Traversal750/20390 at22:38:25, loaded662verified reuse,

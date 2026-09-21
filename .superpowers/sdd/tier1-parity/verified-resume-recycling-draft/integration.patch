@@ -1,0 +1,156 @@
+diff --git a/atx-db/src/atx_db/fundamentals.py b/atx-db/src/atx_db/fundamentals.py
+--- a/atx-db/src/atx_db/fundamentals.py
++++ b/atx-db/src/atx_db/fundamentals.py
+@@ -66,3 +66,7 @@
+-# Ten issuer commits keep retained PK/index state far below the 3,750-issuer
+-# COMMIT failure. Recycling happens only after all per-issuer work is committed.
++# Ten raw fact/point replacement commits keep retained PK/index state far below
++# the 3,750-issuer COMMIT failure. Recycling happens only after all per-issuer
++# work is committed.
+ _COMPANYFACTS_REOPEN_TARGETS = 10
++# Verified members only reconcile one issuer's candidates. Keep that work
++# bounded independently without making it consume the raw replacement cadence.
++_COMPANYFACTS_VERIFIED_REOPEN_TARGETS = 100
+@@ -1108,2 +1112,2 @@
+-        connection_reopens = committed_since_reopen = 0
++        connection_reopens = raw_replacements_since_reopen = verified_members_since_reopen = 0
+         verified_members = {}
+@@ -1153,3 +1157,6 @@
+-                if committed_since_reopen >= _COMPANYFACTS_REOPEN_TARGETS:
++                if (raw_replacements_since_reopen >= _COMPANYFACTS_REOPEN_TARGETS
++                        or verified_members_since_reopen >= _COMPANYFACTS_VERIFIED_REOPEN_TARGETS):
+                     connection_reopens += int(reopen_companyfacts_store(store))
+-                    committed_since_reopen = 0
++                    # Both kinds of work share one connection. A recycle caused
++                    # by either counter releases the state retained by both.
++                    raw_replacements_since_reopen = verified_members_since_reopen = 0
+@@ -1176,2 +1183,4 @@
+-                    committed_since_reopen += 1
++                    # Advance only after this issuer's candidate transaction
++                    # commits. Verified members do not replace facts or points.
++                    verified_members_since_reopen += 1
+                     loaded_targets += 1
+@@ -1308,2 +1317,2 @@
+-                committed_since_reopen += 1
++                raw_replacements_since_reopen += 1
+                 # Advance only after facts, points, candidates and receipt commit.
+@@ -1318,2 +1327,2 @@
+-        if committed_since_reopen:
++        if raw_replacements_since_reopen or verified_members_since_reopen:
+             connection_reopens += int(reopen_companyfacts_store(store))
+diff --git a/atx-db/tests/test_companyfacts_archive_repair.py b/atx-db/tests/test_companyfacts_archive_repair.py
+--- a/atx-db/tests/test_companyfacts_archive_repair.py
++++ b/atx-db/tests/test_companyfacts_archive_repair.py
+@@ -47,8 +47,18 @@
+ class _FailBeforeSix(SecCompanyFactsDataset):
+     def _replace_facts(self, store, facts, points, security_id, *, cik, **kwargs):
+         if cik == "0000000006":
+             raise RuntimeError("injected issuer failure")
+         return super()._replace_facts(store, facts, points, security_id, cik=cik, **kwargs)
+ 
+ 
++class _FailOnCik(SecCompanyFactsDataset):
++    def __init__(self, failed_cik):
++        self.failed_cik = f"{failed_cik:010d}"
++
++    def _replace_facts(self, store, facts, points, security_id, *, cik, **kwargs):
++        if cik == self.failed_cik:
++            raise RuntimeError("injected issuer failure")
++        return super()._replace_facts(store, facts, points, security_id, cik=cik, **kwargs)
++
++
+ def _failed_prefix(store, tmp_path, *, mixed=False):
+@@ -423,3 +433,93 @@
+     result = SecCompanyFactsDataset().run(tmp_store, replace(options, resume_from_run_id=prior_id))
+     assert observations == [(2, 0), (3, 3)]
+     assert result.details["connection_reopens"] == 2
++
++
++def test_verified_resume_uses_independent_bounded_recycling_and_preserves_owned_rows(
++        tmp_store, tmp_path, monkeypatch):
++    """Exercise verified, raw, and empty paths through the real resume proof."""
++    raw_replays = tuple(range(10, 101, 10))
++    members = {cik: _payload(cik) for cik in range(1, 202)}
++    members[202] = {"cik": 202, "facts": {"cef": {}}}
++    options = _options(_archive(tmp_path / "companyfacts.zip", members))
++    with pytest.raises(RuntimeError, match="injected issuer failure"):
++        _FailOnCik(201).run(tmp_store, options)
++    prior_id = tmp_store.con.execute(
++        "SELECT run_id FROM dataset_runs WHERE dataset_id='sec_company_facts' ORDER BY started_at DESC LIMIT 1"
++    ).fetchone()[0]
++    replay_urls = [fundamentals._companyfacts_zip_member_url(str(cik)) for cik in raw_replays]
++    placeholders = ", ".join("?" for _ in replay_urls)
++    tmp_store.con.execute(f"DELETE FROM raw_source_files WHERE source_url IN ({placeholders})", replay_urls)
++    tmp_store.con.execute("DELETE FROM identifier_resolution_candidates")
++    owned_before = {
++        "facts": tmp_store.con.execute(
++            "SELECT * FROM sec_company_facts WHERE cik IN ('0000000001', '0000000101') ORDER BY cik"
++        ).fetchall(),
++        "points": tmp_store.con.execute(
++            "SELECT * FROM fundamental_points WHERE accession_number IN "
++            "('0000000001-24-000001', '0000000101-24-000001') ORDER BY accession_number"
++        ).fetchall(),
++        "receipts": tmp_store.con.execute(
++            "SELECT * FROM raw_source_files WHERE source_url IN (?, ?) ORDER BY source_url",
++            [fundamentals._companyfacts_zip_member_url("1"), fundamentals._companyfacts_zip_member_url("101")],
++        ).fetchall(),
++    }
++    observations = []
++    original = tmp_store.close
++
++    def observe_before_close():
++        observations.append(tmp_store.con.execute(
++            "SELECT (SELECT count(*) FROM sec_company_facts),"
++            "(SELECT count(*) FROM identifier_resolution_candidates)"
++        ).fetchone())
++        original()
++
++    monkeypatch.setattr(tmp_store, "close", observe_before_close)
++    result = SecCompanyFactsDataset().run(tmp_store, replace(options, resume_from_run_id=prior_id))
++    assert observations == [(200, 0), (200, 100), (200, 200), (201, 201)]
++    assert result.details["connection_reopens"] == 4
++    assert result.details["connection_reopen_interval"] == 10
++    assert result.rows_loaded == 1
++    assert result.details["empty_target_count"] == 1
++    assert tmp_store.con.execute("SELECT count(*) FROM identifier_resolution_candidates").fetchone() == (201,)
++    assert {
++        "facts": tmp_store.con.execute(
++            "SELECT * FROM sec_company_facts WHERE cik IN ('0000000001', '0000000101') ORDER BY cik"
++        ).fetchall(),
++        "points": tmp_store.con.execute(
++            "SELECT * FROM fundamental_points WHERE accession_number IN "
++            "('0000000001-24-000001', '0000000101-24-000001') ORDER BY accession_number"
++        ).fetchall(),
++        "receipts": tmp_store.con.execute(
++            "SELECT * FROM raw_source_files WHERE source_url IN (?, ?) ORDER BY source_url",
++            [fundamentals._companyfacts_zip_member_url("1"), fundamentals._companyfacts_zip_member_url("101")],
++        ).fetchall(),
++    } == owned_before
++
++
++def test_verified_candidate_reconciliation_failure_rolls_back_without_counting_work(
++        tmp_store, tmp_path, monkeypatch):
++    options, prior_id = _failed_prefix(tmp_store, tmp_path)
++    tmp_store.con.execute("DELETE FROM identifier_resolution_candidates")
++    before = _snapshot(tmp_store)
++    original = fundamentals.insert_frame
++
++    def insert_then_fail(store, frame, table, relation_name):
++        result = original(store, frame, table, relation_name)
++        if table == "identifier_resolution_candidates":
++            raise RuntimeError("injected verified candidate failure")
++        return result
++
++    monkeypatch.setattr(fundamentals, "insert_frame", insert_then_fail)
++    with pytest.raises(RuntimeError, match="injected verified candidate failure"):
++        SecCompanyFactsDataset().run(tmp_store, replace(options, resume_from_run_id=prior_id))
++    assert _snapshot(tmp_store) == before
++    assert tmp_store.con.execute(
++        "SELECT table_name FROM duckdb_tables() WHERE temporary AND NOT internal"
++    ).fetchall() == []
++    assert tmp_store.con.execute(
++        "SELECT view_name FROM duckdb_views() WHERE temporary AND NOT internal"
++    ).fetchall() == []
++    assert tmp_store.con.execute(
++        "SELECT status FROM dataset_runs ORDER BY started_at DESC LIMIT 1"
++    ).fetchone() == ("failed",)
