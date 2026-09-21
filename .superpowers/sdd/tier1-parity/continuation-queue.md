@@ -5,6 +5,12 @@ This section supersedes every older status below. Updated 2026-09-21 UTC
 
 ## Current controller override - 2026-09-21 01:09 UTC
 
+Update01:34:53UTC: SAME session35531/worker16900 remains healthy; processed
+7200/20390, loaded6100 (includes5792reuse), empty1065/unavailable35/failed0,
+attemptfactrows1,131,808 (includes replacements). Guard physical4.518GiB/
+commit4.563GiB; no stop. No further code/review work pending; continue source
+job and full production sequence below. Current source stillcd841f26.
+
 Update01:26:57UTC: SAME archive5/session35531 is healthy and now BEYOND the
 archive4 interruption. processed6875/20390, loaded5821 (includes5792verified
 reuse), empty1019/unavailable35/failed0, newattemptfactrows90,957. Counts include
