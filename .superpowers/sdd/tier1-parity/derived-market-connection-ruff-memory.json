@@ -1,0 +1,21 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "ruff",
+    "check",
+    "src/atx_db/derived_metrics.py",
+    "src/atx_db/market_daily.py",
+    "tests/test_derived_connection_capacity.py",
+    "tests/test_market_connection_capacity.py"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "failed",
+  "headroom": {
+    "physical_free_gb": 6.401786804199219,
+    "commit_free_gb": 6.5004425048828125
+  },
+  "child_pid": 5864,
+  "returncode": 1,
+  "native_peak_job_memory_gb": 0.07209396362304688
+}

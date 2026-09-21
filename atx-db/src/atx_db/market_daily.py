@@ -398,11 +398,33 @@ def _referenced_codes() -> tuple[tuple[str, ...], tuple[str, ...]]:
     return tuple(sorted(items)), tuple(sorted(metrics))
 
 
+def _market_connection_recycling(store: DuckDBStore) -> bool:
+    """Check replay eligibility and refuse caller temp state before mutation."""
+    # Only configured persistent callers can replay their analytical budget.
+    # Other callers retain their connection and all existing session state.
+    recycle_connection = (
+        not str(store.path).startswith(":memory:")
+        and store.path.is_file()
+        and store.analytical_memory_limit is not None
+        and store.analytical_threads is not None
+    )
+    if recycle_connection:
+        temporary = store.con.execute("""SELECT EXISTS (
+            SELECT 1 FROM duckdb_tables() WHERE temporary AND NOT internal
+        ) OR EXISTS (
+            SELECT 1 FROM duckdb_views() WHERE temporary AND NOT internal
+        )""").fetchone()
+        if temporary is None or temporary[0]:
+            raise RuntimeError("market daily cannot bound connection lifetime with caller-owned temporary objects")
+    return recycle_connection
+
+
 def refresh_market_daily_metrics(
     store: DuckDBStore,
     options: MarketDailyOptions | None = None,
 ) -> int:
     options = options or MarketDailyOptions()
+    recycle_connection = _market_connection_recycling(store)
     store.initialize()
     item_codes, metric_codes = _referenced_codes()
     daily = _daily_definitions()
@@ -480,9 +502,15 @@ def refresh_market_daily_metrics(
                 predicates.append("trade_date <= ?")
                 params.append(options.end_date)
             store.con.execute(f"DELETE FROM market_daily_metrics WHERE {' AND '.join(predicates)}", params)
-            cursor = store.con.execute(sql, bind)
-            affected = cursor.fetchall()
-            total += int(affected[0][0]) if affected else 0
+            # Detach the INSERT count before the transaction commits or the
+            # connection closes; neither a cursor nor temp state crosses it.
+            affected = store.con.execute(sql, bind).fetchall()
+        total += int(affected[0][0]) if affected else 0
+        if recycle_connection:
+            # close() checkpoints after this batch's successful COMMIT;
+            # reopen() replays the existing recorded resource settings.
+            store.close()
+            store.reopen()
     return total
 
 
@@ -539,6 +567,8 @@ class MarketDailyDataset(Dataset):
     source_name = MARKET_DAILY_SOURCE_NAME
 
     def ensure_schema(self, store: DuckDBStore) -> None:
+        # Dataset.run initializes and writes its ledger before calling load().
+        _market_connection_recycling(store)
         store.initialize()
 
     def load(self, store: DuckDBStore, options: Any) -> DatasetLoadResult:
