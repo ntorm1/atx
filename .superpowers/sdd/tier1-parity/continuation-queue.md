@@ -5,6 +5,23 @@ This section supersedes every older status below. Updated 2026-09-21 UTC
 
 ## Current controller override - 2026-09-21 22:28 UTC
 
+Update22:38UTC: SAME archive7/session28324/worker14556 is live. Proof PASSED
+22:36:37.119UTC:6805targets/31,707,754retainedrows; fact/point scans each
+10,914identity groups. Traversal750/20390 at22:38:25, loaded662verified reuse,
+empty84/unavailable4/failed0/newattemptrows0. Last guard physical5.813GiB/
+commit7.827GiB; unchanged2GiB cap. Continue the current job, no restart.
+
+VR1 newly dispatched STATIC DRAFT ONLY to Codex agent
+verified_resume_recycling_implementation. Audit verified-resume-prefix-audit.md
+proves verified candidate-only cleanup consumes the raw ten-target reopen
+counter; its elapsed-time contribution is unmeasured. Brief
+verified-resume-recycling-brief.md keeps raw/empty replacements at10, gives
+verified cleanup a separate bounded100 counter, resets both on either reopen,
+and preserves all candidate transactions, postproof/finalpartial handling and
+verification/identity/empty-cleanup invariants. Root will not integrate or run
+focused checks until the current writer is terminal. One fresh review follows
+the draft; no production performance claim. No other new implementation task.
+
 - Archive6 is TERMINAL, guard stopped_low_headroom at receipt timestamp
   22:23:30UTC: physical1.4619865GiB fell below1.5GiB; commit5.913353GiB.
   Session10431 returned terminal; worker11024, redirector11544 and guard2944
@@ -36,7 +53,8 @@ This section supersedes every older status below. Updated 2026-09-21 UTC
   source-verified submissions resume and full run5 sequence in committed
   production-resume-sequence-2026-09-21.md. Its Archive6-live paragraph is now
   historical; future command templates remain valid with fresh receipts.
-- All implementation/review work complete at this source checkpoint. Full
+- All prior implementation/review work complete at this source checkpoint;
+  VR1 above is a new isolated draft. Full
   activation, custom forward-return evaluation, measured quality/coverage,
   publication and sprint gates remain pending. No threshold flips, release,
   alpha claim or main merge. Preserve stash@{0}; ask before main.

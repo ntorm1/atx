@@ -3,6 +3,21 @@ Spec: docs/superpowers/specs/2026-09-19-tier1-parity-design.md
 Audits: .superpowers/sdd/tier1-parity/audit-atx-db.md, audit-ticker-zip.md
 Baseline: main a79f8371, smoke 6 passed.
 
+## Verified resume recycling ruling - 2026-09-21 22:38 UTC
+
+Archive7 remains the sole guarded writer; its6805receipt proof passed. The
+static verified-resume-prefix-audit.md explains source-level lifecycle work
+after proof: candidate-only verified members share the raw replacement
+ten-member recycle counter. The measured archive6 prefix took15minutes but
+the contribution of each operation is not measured. Prepare VR1 under
+verified-resume-recycling-brief.md as an isolated draft, preserving raw/empty
+replacement cadence10 and adding a separate bounded100 verified-candidate
+cadence. Either reopen resets both. Preserve all proofs, source scope, row
+ownership, candidate transactions, empty cleanup, clocks and final/postproof
+reopen. Do not remove candidate recycling entirely. Codex implementer then one
+fresh review; root integration/focused checks only after the writer is terminal.
+No extra full-universe rewrite solely to benchmark; no performance claim yet.
+
 ## Explicit user resume - 2026-09-21 21:55 UTC
 
 The user stopped archive5 and has now explicitly requested continuation. Recover
