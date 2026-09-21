@@ -5,6 +5,18 @@ This section supersedes every older status below. Updated 2026-09-21 UTC
 
 ## Current controller override - 2026-09-21 22:28 UTC
 
+Update23:10UTC: goal metadata now reports ACTIVE (the earlier blocked-state
+observation is historical). Archive7/session28324 remains live; latest
+progress23:09:31.804UTC is8475/20390, loaded7280 including6805verified reuse,
+empty1156/unavailable39/failed0; attempt1,544,102rows includes replacements.
+Latest guard physical5.329GiB/commit8.176GiB. No restart or competing runtime.
+The final VR1 patch, fixes and scoped Critical re-review are committed in
+2a856a1c; integration and the six focused runtime checks remain pending the
+writer's actual terminal state. The mixed-EOL patch bytes are preserved in
+that commit using command-local core.autocrlf=false; no global Git setting
+was changed. Live implementation stillcd841f26. Continue the production
+sequence without waiting for another user instruction.
+
 Update23:04UTC: SAME archive7/session28324/nativeworker14556 remains live.
 At23:03:25.694UTC it reached8300/20390, loaded7109 (includes6805verified
 reuse), empty1152/unavailable39/failed0, attempt1,043,493rows (replacement
