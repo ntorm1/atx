@@ -1,6 +1,100 @@
 # Latest controller state: full source audit complete, production and CF1
 
-This section supersedes every older status below. Updated 2026-09-20.
+This section supersedes every older status below. Updated 2026-09-21 UTC
+(2026-09-20 local). The production snapshot remains explicitly as-of Sep20.
+
+## Current controller override - 2026-09-21 00:41 UTC
+
+- Archive4 TERMINAL: stopped_low_headroom (commit2.983GiB; physical2.474GiB).
+  Receipt mtime00:25:33UTC, terminal collected00:29:18. Session25640 completed;
+  worker21904/parent9712 confirmed absent. Do not wait/restart that old session.
+- Read-only inspection00:35:56: facts=points42,052,707; prices31,959,271;
+  custom31,934,514; schema0316. Actual dataset UUID
+  c7c21cd1-c7c4-4de8-af64-4f2877ef6f59. Newly processed2042loaded issuers,
+  7,999,850 attemptrows;1010empty/34unavailable/0error. Prior3750loaded
+  receipts reused separately; replacement writes are not net growth.
+- Both archive4 ledgers now failed at operator recovery00:36:56UTC. Initial
+  recovery COMMIT succeeded but CHECKPOINT failed at512MB; root reopened at
+  normal production1GB/1thread, verified both ledgers without secondUPDATE,
+  checkpoint PASSED00:37:38, peak0.856GiB. Evidence in archive4 inspection,
+  recovery scripts/receipts and ledger-recovery-verified.json. Source untouched.
+- Host recovered above6GiB physical/commit. PR1 five focused tests+Ruff passed,
+  committed5dc0aec7. FP1 patch0317 applied with exact module pin; focused tests
+  running session37273 at00:41UTC. Other capacity drafts not yet applied.
+- AP1/MP1 one fresh review each CLEAN0/0/0; DP1 Important+Minor fixed/report
+  accepted; all pending root runtime. MP1 patch check passed. Integrate0317
+  then0318, using owned registry/facade hunks only. DP1 raw patch requires
+  core.autocrlf=false; MP1 default true. Never overwrite full shared copies.
+- FC1 effective-clock implementation dispatched STATIC DRAFT ONLY, brief
+  fundamental-clock-policy-brief.md. Source-proven winter same-day early-use
+  counterexample, live prevalence unmeasured. Next-calendar-day22UTC default,
+  stored timestamp floor, before revision ordering; close raw PIT bypasses,
+  preserve raw tables/CF5 receipts. Reserve0319 if needed. Not exact acceptance
+  or historical arrival certification. Fresh review then root tests/integration.
+- Finish focused component validation/commits serially; then archive5 resumes
+  verified actual archive4 UUID above under same3GiB/1GB/1thread budgets.
+  Submissions resume04cf947d-53bb-49b7-a276-b3c74a2a52c8; then full run5 from
+  statement_points --force --shards16. No bulk redownload. CF1 evaluation,
+  measured coverage/quality, publication, full suite and branch review remain.
+  GoalACTIVE; no main merge; stash@{0} untouched; companion question pending.
+
+## Historical controller override - 2026-09-21 00:14 UTC
+
+- Archive4 remains LIVE, confirmed through SAME session25640 and CIM worker21904,
+  parent9712, creation1789945403452. Latest log00:13:55UTC: processed6500/20390,
+  loaded5528 (includes3750 verified reuse), empty943, unavailable29, failed0,
+  attempt fact rows7061230. Attempt writes include replacements, not net growth.
+  Latest guard free physical5.085GiB/commit6.071GiB. Headroom briefly fell to
+  physical3.643/commit5.016 around23:59UTC but no guard stop occurred. Disk free
+  around00:07UTC102866690048B. No source failure, restart, or competing runtime.
+- Root committed the audit/three original capacity briefs/ruling as1c6535e8.
+  SOURCE IS STILL UNCHANGED by capacity tasks; all are isolated drafts. PR1
+  actual CLI/test/runbook edits remain uncommitted and runtime-unverified.
+- FP1 DRAFT COMPLETE and ONE FRESH STATIC REVIEW CLEAN (0/0/0):
+  forward-publication-capacity-report.md and -review.md. Six-path patch at
+  forward-publication-draft/forward-publication.patch. Root git apply --check
+  PASSED against current worktree, without applying it. No runtime validation.
+  Helper _forward_return_publication plus0317 belongs to this task. Use patch
+  hunks for registry/facade; never overwrite them with full review copies.
+  Root module pin and focused tests still pending after writer terminal.
+- DP1 ONE REVIEW COMPLETE:0Critical/1Important/1Minor. Important repeated
+  fact-level ID UNION per default one-ID page; Minor settings expectation
+  captured only after baseline reopen. Both FIXED in draft. Root read fix1
+  report and verified source/test hashes, accepting fixes for integration on
+  implementer's report; NO extra review needed. Runtime acceptance pending.
+  Files: derived-connection-capacity-{report,review,fix1-report}.md.
+  Fixed source hash EDCF0286D42F8A09DBAD999F02517E14E99D21EE860532124D02029D34560B10;
+  test hash C13E81E1C5176E2ADE0DC576CBDF3C01D8EDD49CB90BF3592DBDE1D479270CC3.
+  Live basis remains F953220EA651DD4F60BB1E205046CEE2966F89F1AAD9582412BD805E20978729.
+  One UUID-owned ID-only snapshot now feeds bounded keyset pages; explicit
+  contextlib.closing ensures cleanup on refresh failure. New tests13cases.
+  Agent is packaging a two-path patch only; accepted Python artifacts must stay
+  unchanged. Check the fix1 report for final patch path before integration.
+- AP1 agent fundamentals_publication_capacity_implementation still assembling
+  draft/report/tests for8early output tables. Uses one sorted unindexed output
+  stage, then bounded ordered prefix/keyset shadow batches; removes only27
+  optional secondary indexes in reserved0318. Coupled standardized/exception/
+  completed-build-ledger swap stays atomic. Existing single-table helper body
+  remains text-identical; no FP1/DP1 files changed. Review not started yet.
+- MP1 is a FOURTH, disjoint capacity task, fresh agent
+  market_connection_capacity_implementation. Read market-connection-capacity-
+  brief.md. Draft market-connection-draft/; report same prefix. Owns ONLY
+  market_daily.py and one focused test file, no migration. Root found existing
+  SQL/security batches but no recycle across the whole daily table publication.
+  Preserve every calculation/date/source/atomic batch contract; consume scalar
+  count then checkpoint/reopen after each successful batch. No runtime or
+  production failure is claimed. Draft and its one review still pending.
+- ALL capacity tasks now share CF5 eligibility: recycle only persistent files
+  with recorded analytical memory/thread settings. Unconfigured/in-memory
+  callers keep their session; no implicit adoption/snapshot of a few settings.
+  Refuse incompatible caller temp state before mutation where recycling applies.
+  All agents static-only; root alone runs imports/tests/type/lint/DB/probes.
+- Continue healthy source pass, then handle actual ledgers, submissions resume,
+  reviewed capacity integration/focused checks before run5, full downstream
+  ladder, CF1 evaluation, measured coverage/quality/release and sprint gates.
+  Order0317 before0318; root owns exact module pins. No re-review for accepted
+  Important fixes. No memory increases or output reductions. Goal ACTIVE.
+  Historical companion question remains pending; stash@{0} remains untouched.
 
 ## Current controller override - 2026-09-20 23:56 UTC
 

@@ -3,6 +3,24 @@ Spec: docs/superpowers/specs/2026-09-19-tier1-parity-design.md
 Audits: .superpowers/sdd/tier1-parity/audit-atx-db.md, audit-ticker-zip.md
 Baseline: main a79f8371, smoke 6 passed.
 
+## Production continuation ruling - 2026-09-21 00:43 UTC
+
+Archive4 stopped on low host commit headroom; guard protection is retained.
+42,052,707 fact and point rows survived. Actual interrupted dataset UUID
+c7c21cd1-c7c4-4de8-af64-4f2877ef6f59 is terminal failed after explicit ledger
+recovery00:36:56UTC, verified00:37:38. Resume from this UUID, preserving source
+receipts and normal3GiB process/1GB DuckDB/1thread budgets. All runtime serial.
+
+FC1 effective clock correction is authorized before run5, from the source-level
+audit fundamental-availability-clock-audit.md: date-only same-day22UTC can be
+earlier than a winter filing acceptance. Project SEC eligibility no earlier than
+stored time and filed date +46h, before revision ordering, and close raw-point
+PIT reader bypasses. Preserve raw tables/CF5 evidence; disclose that this is a
+conservative date policy, not exact acceptance or delivery proof. Reserve0319
+only for its governed view/catalog metadata. Scope in fundamental-clock-policy-
+brief.md; one fresh Codex implementer/review, root focused checks. AP1/MP1 static
+reviews clean; DP1 review fixes accepted pending runtime. No new quality claims.
+
 ## Production capacity continuation ruling - 2026-09-20 23:56 UTC
 
 Archive4 remains healthy and owns the only runtime slot. A focused static audit
@@ -24,6 +42,16 @@ All agents remain static-only; root alone executes guarded focused checks.
 One fresh review per task; Important fixes accepted on report, re-review Critical
 only. Actual post-integration/production evidence remains mandatory. Latest
 continuation-queue.md records exact task ownership and live process state.
+
+MP1 addendum, 2026-09-21 00:14 UTC: the existing daily-market SQL batches also
+retain one connection across the complete price universe. Prepare the disjoint
+market-connection-capacity-brief.md draft, preserving batch atomicity and all
+calculations while recycling after committed batches. No migration is needed.
+All four capacity tasks use CF5's configured-persistent eligibility rule;
+unconfigured and in-memory callers retain their session. DP1's one review found
+repeated full-fact ID enumeration and a test-baseline weakness; both are fixed
+and accepted on the implementer report pending root execution. FP1's one static
+review is clean and its patch applies in check-only mode. Neither is live yet.
 
 ## Annual fallback continuation ruling - 2026-09-20 21:53 UTC
 

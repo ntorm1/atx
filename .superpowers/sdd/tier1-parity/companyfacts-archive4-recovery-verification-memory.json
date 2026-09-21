@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "C:/atx/.superpowers/sdd/tier1-parity/verify_companyfacts_archive4_recovery.py"
+  ],
+  "job_limit_gb": 3.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.356712341308594,
+    "commit_free_gb": 6.169349670410156
+  },
+  "child_pid": 14408,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.856353759765625
+}
