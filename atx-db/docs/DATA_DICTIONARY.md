@@ -266,6 +266,8 @@ for the current rebuild's evidence and limitations.
 
 201 metrics, from `src/atx_db/seeds/derived_metric_definitions.csv`. Canonical filing-event states retain `available_at`, the selected arithmetic input clock in `arithmetic_available_at`, and an `inputs_hash`; an invalidation or selection event can occur after the arithmetic input clock.
 
+SEC date-only facts use `sec_filed_date_plus_46h_v1`: effective eligibility is no earlier than stored availability and the filing date plus 46 hours. This is a conservative date policy, not measured acceptance or delivery. Raw provenance remains unchanged; existing materializations require rebuilding. See [fundamental clock policy](FUNDAMENTAL_CLOCK_POLICY.md).
+
 | family | metric | window | expression | description |
 | --- | --- | --- | --- | --- |
 | growth | asset_growth | q | yoy(total_assets) | Year-over-year total-asset growth. |
@@ -474,7 +476,7 @@ for the current rebuild's evidence and limitations.
 
 `market_daily_metrics` -- one row per (security_id, trade_date). The spine is fixed; the metric columns are exactly the `window='daily'` rows of the derived seed.
 
-**Current source limitation:** archive `adjusted_close` now uses same-row `close * cumulReturnFactor`, with invalid products NULL. `closePr` remains a prior-session source field; distribution-inclusive `returnFactor` is not a split-only factor. Historical ticker display preserves vendor identity, but current-symbol/CIK links, economic adjustments and historical availability remain unverified. Price republication and downstream rebuilding are required. See the [production runbook](PRODUCTION_RUNBOOK.md) and the [vendor dictionary](https://docs.spiderrockconnect.com/docs/next/HistoricalData/Data%20Dictionaries/TickerHistory3/).
+**Current source limitation:** archive `adjusted_close` now uses same-row `close * cumulReturnFactor`, with invalid products NULL. `closePr` remains a prior-session source field; distribution-inclusive `returnFactor` is not a split-only factor. Historical ticker display preserves vendor identity, but current-symbol/CIK links, economic adjustments and historical availability remain unverified. Changes to this mapping require price republication and downstream rebuilding; dated run receipts record activation status. See the [production runbook](PRODUCTION_RUNBOOK.md) and the [vendor dictionary](https://docs.spiderrockconnect.com/docs/next/HistoricalData/Data%20Dictionaries/TickerHistory3/).
 
 ### Spine columns
 

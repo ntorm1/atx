@@ -11,8 +11,9 @@ Provides:
 
 PIT contract
 ------------
-est_actual   : available_at CARRIED from sec_company_facts (filing availability, UTC-naive).
-               Do NOT restamp to now().
+est_actual   : available_at uses FC1 effective sec_company_facts eligibility (UTC-naive):
+               SEC date-only max(stored clock, filed date + 46 hours), not exact delivery.
+               Non-SEC clocks are carried unchanged; do NOT restamp to now().
 est_surprise : available_at CARRIED from the originally-reported actual_t (SUE is knowable
                when period t is filed).  Prior-period restated values do NOT alter earlier SUE rows.
 est_consensus: available_at carried from provider/source row if supplied; injectable

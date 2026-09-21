@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from ._fundamental_clock import EFFECTIVE_FUNDAMENTAL_POINTS_SQL, FUNDAMENTAL_CLOCK_POLICY
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .warehouse import insert_frame, json_dumps, quality_check, symbol_key
@@ -792,7 +793,7 @@ class FundamentalFeatureDataset(Dataset):
                     SELECT sum(row_count)
                     FROM (
                         SELECT count(*) AS row_count
-                        FROM fundamental_points f
+                        FROM {EFFECTIVE_FUNDAMENTAL_POINTS_SQL} f
                         JOIN fund_feature_symbol_filter sf ON sf.symbol = f.symbol
                         WHERE f.available_at IS NOT NULL
                           AND f.value IS NOT NULL
@@ -809,7 +810,7 @@ class FundamentalFeatureDataset(Dataset):
                         FROM fundamental_fact_revisions r
                         JOIN (
                             SELECT DISTINCT fp.security_id
-                            FROM fundamental_points fp
+                            FROM {EFFECTIVE_FUNDAMENTAL_POINTS_SQL} fp
                             JOIN fund_feature_symbol_filter sf ON sf.symbol = fp.symbol
                         ) rs
                           ON rs.security_id = r.security_id
@@ -829,7 +830,7 @@ class FundamentalFeatureDataset(Dataset):
                         f.as_of_date,
                         max(f.available_at) AS available_at,
                         count(*) AS input_fact_count
-                    FROM fundamental_points f
+                    FROM {EFFECTIVE_FUNDAMENTAL_POINTS_SQL} f
                     JOIN fund_feature_symbol_filter sf ON sf.symbol = f.symbol
                     WHERE f.available_at IS NOT NULL
                       AND f.value IS NOT NULL
@@ -869,7 +870,7 @@ class FundamentalFeatureDataset(Dataset):
                         f.form,
                         f.accession_number
                     FROM snapshots s
-                    JOIN fundamental_points f
+                    JOIN {EFFECTIVE_FUNDAMENTAL_POINTS_SQL} f
                       ON f.security_id = s.security_id
                      AND f.as_of_date <= s.as_of_date
                      AND (f.available_at IS NULL OR f.available_at <= s.available_at)
@@ -1281,6 +1282,7 @@ class FundamentalFeatureDataset(Dataset):
                             "feature_set": options.feature_set,
                             "start_date": options.start_date,
                             "end_date": options.end_date,
+                            "fundamental_clock_policy": FUNDAMENTAL_CLOCK_POLICY,
                         }
                     ),
                     "source": FUNDAMENTAL_FEATURE_SOURCE_NAME,
@@ -1334,7 +1336,12 @@ class FundamentalFeatureDataset(Dataset):
                     ),
                     "lookback_days": definition["lookback_days"],
                     "is_point_in_time_safe": True,
-                    "available_at_policy": "Feature available only after the SEC filing-date fact, TTM, or revision availability timestamp; same-date market cap uses bars with available_at no later than the feature timestamp.",
+                    "available_at_policy": (
+                        f"{FUNDAMENTAL_CLOCK_POLICY}: SEC date-only inputs use max(stored clock, "
+                        "filed date + 46 hours); unresolved dates are excluded. TTM/revision "
+                        "clocks propagate from rebuilt inputs. Market bars must be visible "
+                        "by the feature timestamp. This is not measured delivery availability."
+                    ),
                     "owner": "atx-db",
                     "source": FUNDAMENTAL_FEATURE_SOURCE_NAME,
                 }

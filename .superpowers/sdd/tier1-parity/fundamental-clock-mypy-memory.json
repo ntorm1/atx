@@ -1,0 +1,26 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "mypy",
+    "src/atx_db/_fundamental_clock.py",
+    "src/atx_db/migrations/bodies_0319.py",
+    "src/atx_db/fundamentals.py",
+    "src/atx_db/asof/fundamentals.py",
+    "src/atx_db/features.py",
+    "src/atx_db/quality/checks_market_reference.py",
+    "src/atx_db/activation.py",
+    "src/atx_db/fundamental_xbrl_metrics.py",
+    "src/atx_db/expected_growth.py",
+    "src/atx_db/estimates/measure_actuals.py"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "failed",
+  "headroom": {
+    "physical_free_gb": 6.425289154052734,
+    "commit_free_gb": 6.703361511230469
+  },
+  "child_pid": 19352,
+  "returncode": 1,
+  "native_peak_job_memory_gb": 0.2643585205078125
+}

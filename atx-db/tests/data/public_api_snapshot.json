@@ -201,6 +201,7 @@
     "_derived_annual",
     "_derived_pit",
     "_forward_return_publication",
+    "_fundamental_clock",
     "_fundamental_publication",
     "abnormal_inventory_growth",
     "abnormal_receivables_growth",

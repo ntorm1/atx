@@ -608,20 +608,26 @@ STAGES.update(
 
 
 def stage_statement_points(store: DuckDBStore, options: ActivationOptions) -> StageResult:
-    """Rebuild the concept catalog, fact revisions, and normalized statement points."""
+    """Rebuild effective revisions, statement points, and dependent SEC shares."""
+    from ._fundamental_clock import FUNDAMENTAL_CLOCK_POLICY
     from .fundamental_statements import refresh_fundamental_statement_points
     from .fundamentals import refresh_fundamental_fact_revisions, refresh_xbrl_concept_catalog
+    from .shares_outstanding import SharesOutstandingHistoryOptions, refresh_shares_outstanding_history
 
-    _ = options
     catalog_rows = refresh_xbrl_concept_catalog(store)
     revision_rows = refresh_fundamental_fact_revisions(store)
     point_rows = refresh_fundamental_statement_points(store)
+    share_rows = refresh_shares_outstanding_history(
+        store, SharesOutstandingHistoryOptions(run_id=f"{options.run_id}-shares")
+    )
     return StageResult(
         rows=int(point_rows),
         detail={
             "catalog_rows": int(catalog_rows),
             "revision_rows": int(revision_rows),
             "statement_point_rows": int(point_rows),
+            "shares_history_rows": int(share_rows),
+            "fundamental_clock_policy": FUNDAMENTAL_CLOCK_POLICY,
         },
     )
 

@@ -1,0 +1,19 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "ruff",
+    "check",
+    "src/atx_db/_fundamental_clock.py",
+    "scripts/generate_data_dictionary.py"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.501396179199219,
+    "commit_free_gb": 6.818424224853516
+  },
+  "child_pid": 11300,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.060123443603515625
+}

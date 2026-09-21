@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .._fundamental_clock import EFFECTIVE_FUNDAMENTAL_POINTS_SQL
 from ._common import (
     DEFAULT_DB_PATH,
     Path,
@@ -16,7 +17,7 @@ from ._common import (
 )
 
 
-FUNDAMENTALS_ASOF_SQL = """
+FUNDAMENTALS_ASOF_SQL = f"""
 WITH params AS (
     SELECT
         CAST(? AS DATE) AS as_of_date,
@@ -29,9 +30,9 @@ ranked AS (
             PARTITION BY f.security_id, f.metric, f.period_start, f.period_end, f.unit
             ORDER BY f.as_of_date DESC, f.source_loaded_at DESC
         ) AS rn
-    FROM fundamental_points f
-    {symbol_join}
-    {metric_join}
+    FROM {EFFECTIVE_FUNDAMENTAL_POINTS_SQL} f
+    {{symbol_join}}
+    {{metric_join}}
     CROSS JOIN params p
     WHERE f.period_end <= p.as_of_date
       AND f.as_of_date <= p.as_of_date

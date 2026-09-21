@@ -26,6 +26,7 @@ from typing import Any
 
 import pandas as pd
 
+from ._fundamental_clock import EFFECTIVE_COMPANY_FACTS_SQL
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .fundamental_statements import (
@@ -311,7 +312,7 @@ _DURATION_SQL = """
 # PF-S3 S3-2 widens only this companyfacts-derived candidate set. The inline
 # xbrl_filing_facts substrate stays as wide as the operator's cached primary-document
 # downloads; growing that cache remains network-gated and out of scope for pytest.
-_COMPANYFACTS_INSTANT_SQL = """
+_COMPANYFACTS_INSTANT_SQL = f"""
     SELECT
         f.security_id,
         s.primary_symbol AS symbol,
@@ -327,17 +328,17 @@ _COMPANYFACTS_INSTANT_SQL = """
         coalesce(f.available_at, f.filed_date::TIMESTAMP) AS available_at,
         f.fiscal_year,
         f.fiscal_period
-    FROM sec_company_facts f
+    FROM {EFFECTIVE_COMPANY_FACTS_SQL} f
     LEFT JOIN securities s ON s.security_id = f.security_id
-    WHERE f.taxonomy IN ({taxonomy_placeholders})
+    WHERE f.taxonomy IN ({{taxonomy_placeholders}})
       AND f.value IS NOT NULL
       AND f.period_start IS NULL
       AND f.period_end IS NOT NULL
-      AND f.concept IN ({placeholders})
-      {symbol_pred}
+      AND f.concept IN ({{placeholders}})
+      {{symbol_pred}}
 """
 
-_COMPANYFACTS_DURATION_SQL = """
+_COMPANYFACTS_DURATION_SQL = f"""
     SELECT
         f.security_id,
         s.primary_symbol AS symbol,
@@ -353,14 +354,14 @@ _COMPANYFACTS_DURATION_SQL = """
         coalesce(f.available_at, f.filed_date::TIMESTAMP) AS available_at,
         f.fiscal_year,
         f.fiscal_period
-    FROM sec_company_facts f
+    FROM {EFFECTIVE_COMPANY_FACTS_SQL} f
     LEFT JOIN securities s ON s.security_id = f.security_id
-    WHERE f.taxonomy IN ({taxonomy_placeholders})
+    WHERE f.taxonomy IN ({{taxonomy_placeholders}})
       AND f.value IS NOT NULL
       AND f.period_start IS NOT NULL AND f.period_end IS NOT NULL
-      AND date_diff('day', f.period_start, f.period_end) BETWEEN {amin} AND {amax}
-      AND f.concept IN ({placeholders})
-      {symbol_pred}
+      AND date_diff('day', f.period_start, f.period_end) BETWEEN {{amin}} AND {{amax}}
+      AND f.concept IN ({{placeholders}})
+      {{symbol_pred}}
 """
 
 

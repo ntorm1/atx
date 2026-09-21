@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 
 from ._companyfacts_resume import reopen_companyfacts_store, verify_companyfacts_resume
+from ._fundamental_clock import EFFECTIVE_COMPANY_FACTS_SQL
 from ._fundamental_publication import check_publication_session, fundamental_publication
 from .clock import resolve_as_of_date
 from .connection import DuckDBStore
@@ -743,7 +744,7 @@ def refresh_fundamental_fact_revisions(
     store: DuckDBStore,
     concepts: tuple[str, ...] | None = None,
 ) -> int:
-    """Refresh accession-level revision chains, optionally for selected concepts."""
+    """Refresh revision chains using FC1 eligibility before sequencing or IDs."""
 
     check_publication_session(store)
     selected = tuple(sorted({str(concept) for concept in concepts or () if concept}))
@@ -854,7 +855,7 @@ def refresh_fundamental_fact_revisions(
                     run_id,
                     source_url,
                     source_loaded_at
-                FROM sec_company_facts f
+                FROM {EFFECTIVE_COMPANY_FACTS_SQL} f
                 WHERE source IS NOT NULL
                   AND source <> ''
                   AND security_id IS NOT NULL

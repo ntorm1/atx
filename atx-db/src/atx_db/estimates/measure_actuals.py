@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .._fundamental_clock import EFFECTIVE_COMPANY_FACTS_SQL
 from ._columns import *
 from ._common import *
 
@@ -212,7 +213,7 @@ class EstimateActualsDataset(Dataset):
                 f.filed_date        AS announce_date,
                 f.period_end        AS as_of_date,
                 f.available_at
-            FROM sec_company_facts f
+            FROM {EFFECTIVE_COMPANY_FACTS_SQL} f
             JOIN _tmp_est_concept_map m ON m.concept = f.concept
             {security_filter_join}
             WHERE f.fiscal_period IN ('Q1','Q2','Q3','Q4','FY')
@@ -227,7 +228,7 @@ class EstimateActualsDataset(Dataset):
                   AND f.concept != 'Revenues'
                   AND EXISTS (
                       SELECT 1
-                      FROM sec_company_facts f2
+                      FROM {EFFECTIVE_COMPANY_FACTS_SQL} f2
                       WHERE f2.security_id      = f.security_id
                         AND f2.concept          = 'Revenues'
                         AND f2.fiscal_year      = f.fiscal_year

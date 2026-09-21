@@ -31,6 +31,7 @@ opt-in with `--run-slow`.
 | [Fundamentals provider design](docs/FUNDAMENTALS_PROVIDER_DESIGN.md) | Architecture and dated measurements from earlier warehouse builds; use each measurement's stated date and scope. |
 | [Tier-1 parity design](../docs/superpowers/specs/2026-09-19-tier1-parity-design.md) | Target design contract. Implementation does not by itself establish measured coverage. |
 | [Production runbook](docs/PRODUCTION_RUNBOOK.md) | Current activation commands, evidence limitations, terminal-return policy and release procedure. |
+| [Fundamental clock policy](docs/FUNDAMENTAL_CLOCK_POLICY.md) | Conservative eligibility for date-only SEC facts, raw provenance boundaries and required downstream rebuilds. |
 | [Parity gap](docs/PARITY_GAP.md), [roadmap](docs/ROADMAP_PARITY.md), [handoff](docs/WAREHOUSE_PARITY_NEXT_AGENT_README.md), [tranche ledger](docs/WAREHOUSE_PARITY_TRANCHES.md) | Historical build records, with supersession banners. |
 
 ## Data safety

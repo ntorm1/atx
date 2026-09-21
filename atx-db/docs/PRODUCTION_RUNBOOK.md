@@ -216,6 +216,14 @@ builds the separate annual cohort before measuring items; `quality` runs all
 checks using the explicit as-of date at 22:00. Failures remain visible in the
 stage detail and quality tables; no stage completion flips a schema condition.
 
+`statement_points` rebuilds SEC facts using the conservative effective clock
+`max(stored available_at, filed_date + 46 hours)` and then refreshes shares
+history. This is a date policy, not measured SEC acceptance or delivery. Raw
+source records remain unchanged. Force the downstream ladder after adopting it;
+any preexisting XBRL metric inputs must first be inventoried and refreshed under
+the same policy. See [fundamental clock policy](FUNDAMENTAL_CLOCK_POLICY.md) for
+the exact consumer scope and rebuild prerequisites.
+
 `equity_price_metrics` builds adjusted returns, momentum, volatility, liquidity,
 drawdown, beta, correlation and cross-sectional ranks in DuckDB. It stages the
 complete result, builds the primary-key table in sequential prefix batches, and

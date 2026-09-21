@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from ._fundamental_clock import EFFECTIVE_COMPANY_FACTS_SQL
 from .asset_growth import FACTOR_ID as ASSET_GROWTH_FACTOR_ID
 from .asset_growth import SOURCE_NAME as ASSET_GROWTH_SOURCE_NAME
 from .cash_profitability import SOURCE_NAME as CASH_PROFITABILITY_SOURCE_NAME
@@ -156,7 +157,7 @@ def load_expected_growth_inputs(
                     WHERE concept = 'DebtCurrent'
                 ) AS current_debt_fallback,
                 max(available_at) AS debt_available_at
-            FROM sec_company_facts
+            FROM {EFFECTIVE_COMPANY_FACTS_SQL}
             WHERE taxonomy = 'us-gaap'
               AND unit = 'USD'
               AND concept IN (
