@@ -5,6 +5,17 @@ This section supersedes every older status below. Updated 2026-09-21 UTC
 
 ## Current controller override - 2026-09-21 21:55 UTC
 
+Update22:03:47UTC: SAME archive6/session10431/nativeworker11024 is live.
+Resume validation PASSED22:00:42.881UTC:6570targets/31,008,510retainedrows;
+fact and point scans each10,743identity groups. Traversal1775/20390,
+loaded1514 (verified reuse), empty246/unavailable15/failed0/newattemptrows0.
+Latest guard physical4.866GiB/commit10.275GiB; cap2GiB remains unchanged.
+Do not restart or open a concurrent DB connection. Recovery committed172cba97;
+static command handoff227187a0. Evidence companyfacts-archive6-resume-evidence.md.
+The goal controller still reported blocked22:01:26 despite the user's explicit
+continue; work itself is authorized and running. Tools cannot set active/resume.
+Do not mark complete or create a replacement goal to work around that metadata.
+
 The user explicitly resumed after the prior stop. Source HEAD remains cd841f26
 (latest docs HEAD1db69117 before this update). No implementation or review fixes
 are pending. The four pre-existing content-empty migration/test modifications
