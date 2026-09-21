@@ -3,7 +3,43 @@
 This section supersedes every older status below. Updated 2026-09-21 UTC
 (2026-09-20 local). The production snapshot remains explicitly as-of Sep20.
 
-## Current controller override - 2026-09-21 00:57 UTC
+## Current controller override - 2026-09-21 01:09 UTC
+
+- Archive5 is LIVE, started01:08:14UTC from sourcecd841f26, sole runtime.
+  SAME exec session35531; guard child/venv redirector13004, worker16900,
+  conhost10572. Both Python creation01:08:14UTC. Guard3GiB, DuckDB1GB/1thread,
+  backup-keep100, asof2026-09-20, dummy SEC UA only. Resume source is terminal
+  archive4datasetUUID c7c21cd1-c7c4-4de8-af64-4f2877ef6f59. Actual NEW dataset
+  UUID not yet observed; do not assume the prior UUID belongs to this attempt.
+  Receipts/logs activation-companyfacts-archive5-memory.json/.log/.err.
+  Latest01:08:49 guard physical5.668GiB/commit6.058GiB; no stop/error. No
+  concurrent tests/imports/lint/type/DB/probes. Await actual terminal receipt.
+- FC1 COMMITTED cd841f26:37focused passes first run; one fresh review0/0/0;
+  module/schema contracts passed (one existing slow skip). Isolated committed
+  HEAD import+all7module tests passed, peak0.6149GiB. Helper+0319strictmypy
+  clean;16legacy errors in5wider modules exactly match isolated318baseline.
+  One whitespace Ruff issue fixed; zero new scoped lint. Dictionary regenerated
+  and --checkpassed, policy linked README/runbook. Full receipts in
+  fundamental-clock-root-verification.md. No full-suite gate yet.
+- Source0317/318/319 is complete with owned bodies+registry/facade lines and
+  exact module pins. Archive5 governed startup applies pending migrations with
+  backup; confirm startup/actual applied versions later, never infer success.
+  Raw facts/points/receipts unchanged by FC1. LegacyXBRL empty prerequisite
+  measured00:50:22 remains valid; no intervening data writes before archive5.
+- All implementation/review agents idle, no pending task except production.
+  Once archive5 finishes, inspect ACTUALledgers/receipts and any source gaps;
+  resume submissionsUUID04cf947d-53bb-49b7-a276-b3c74a2a52c8, then full
+  activation-run5 --start-stage statement_points --force --shards16. Full core
+  rebuild includes corrected shares. Fix actual stage capacity failures as
+  tasks, no speculative scope growth or budget increases. Then CF1evaluate,
+  live coverage/quality docs/thresholds/release, full non-slow gate once and
+  Codex whole-branch review. Ask before main; stash@{0} untouched.
+- Prelaunch disk free97,515,393,024B; warehouse12,125,220,864B. Existing8
+  pre-migrate backups preserved (~55GB); no deletion authorized/performed.
+  Monitor remaining disk as stages grow. Companion historical listing source
+  question still pending. GoalACTIVE; no parity/significant-alpha claim.
+
+## Historical controller override - 2026-09-21 00:57 UTC
 
 - All four capacity tasks integrated, focused checks accepted and pathspec
   committed: FP1/0317 cc6da619 (36passes); AP1/0318 fca77aef (47passes then
