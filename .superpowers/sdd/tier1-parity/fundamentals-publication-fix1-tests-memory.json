@@ -1,0 +1,20 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "-n",
+    "0",
+    "-q",
+    "tests/test_fundamental_publication.py::test_all_eight_sql_writers_cross_file_reopens_with_unchanged_payload"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 5.832794189453125,
+    "commit_free_gb": 5.741081237792969
+  },
+  "child_pid": 432,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.71929931640625
+}

@@ -1,0 +1,26 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "C:/atx/.superpowers/sdd/tier1-parity/verify_scoped_lint.py",
+    "src/atx_db/_fundamental_publication.py",
+    "src/atx_db/_bulk_publication.py",
+    "src/atx_db/_standardization_set_based.py",
+    "src/atx_db/calendarization.py",
+    "src/atx_db/fundamental_statements.py",
+    "src/atx_db/fundamentals.py",
+    "src/atx_db/migrations/bodies_0318.py",
+    "src/atx_db/migrations/registry.py",
+    "src/atx_db/migrations/__init__.py",
+    "src/atx_db/schema.py",
+    "tests/test_fundamental_publication.py"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.287990570068359,
+    "commit_free_gb": 6.034572601318359
+  },
+  "child_pid": 18896,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.06543731689453125
+}

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import astuple, dataclass
 
 import pandas as pd
 
+from ._bulk_publication import _identifier
+from ._fundamental_publication import check_publication_session, fundamental_publication
 from .connection import DuckDBStore
 from .industry_templates import refresh_entity_industry_templates
 from .statement_map_seed import (
@@ -577,13 +580,16 @@ def seed_fundamental_statement_map(store: DuckDBStore) -> int:
     return len(default_statement_map_rows())
 
 
-def _insert_derived_reit_statement_points(store: DuckDBStore) -> int:
+def _insert_derived_reit_statement_points(
+    store: DuckDBStore, *, table: str = "fundamental_statement_points"
+) -> int:
     """Derive REIT FFO/AFFO rows from raw statement points when reported rows are absent."""
 
-    before = int(store.con.execute("SELECT count(*) FROM fundamental_statement_points").fetchone()[0])
+    table = _identifier(table)
+    before = int(store.con.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
     store.con.execute(
-        """
-        INSERT INTO fundamental_statement_points (
+        f"""
+        INSERT INTO {table} (
             statement_point_id,
             fact_revision_id,
             revision_group_id,
@@ -671,7 +677,7 @@ def _insert_derived_reit_statement_points(store: DuckDBStore) -> int:
                 max(p.value) FILTER (WHERE p.canonical_metric = 'ffo') AS reported_ffo,
                 max(p.value) FILTER (WHERE p.canonical_metric = 'affo') AS reported_affo,
                 max(p.value) FILTER (WHERE p.canonical_metric = 'shares_diluted_avg') AS shares_diluted_avg
-            FROM fundamental_statement_points p
+            FROM {table} p
             JOIN latest_routes r
               ON r.security_id = p.security_id
              AND r.industry_template = 'RT'
@@ -734,7 +740,7 @@ def _insert_derived_reit_statement_points(store: DuckDBStore) -> int:
               AND fallback_ffo IS NOT NULL
               AND NOT EXISTS (
                   SELECT 1
-                  FROM fundamental_statement_points existing
+                  FROM {table} existing
                   WHERE existing.source = b.source
                     AND existing.security_id = b.security_id
                     AND existing.canonical_metric = 'ffo'
@@ -772,7 +778,7 @@ def _insert_derived_reit_statement_points(store: DuckDBStore) -> int:
             WHERE affo_basis IS NOT NULL
               AND NOT EXISTS (
                   SELECT 1
-                  FROM fundamental_statement_points existing
+                  FROM {table} existing
                   WHERE existing.source = b.source
                     AND existing.security_id = b.security_id
                     AND existing.canonical_metric = 'affo'
@@ -812,7 +818,7 @@ def _insert_derived_reit_statement_points(store: DuckDBStore) -> int:
               AND shares_diluted_avg <> 0
               AND NOT EXISTS (
                   SELECT 1
-                  FROM fundamental_statement_points existing
+                  FROM {table} existing
                   WHERE existing.source = b.source
                     AND existing.security_id = b.security_id
                     AND existing.canonical_metric = 'ffo_per_share'
@@ -852,7 +858,7 @@ def _insert_derived_reit_statement_points(store: DuckDBStore) -> int:
               AND shares_diluted_avg <> 0
               AND NOT EXISTS (
                   SELECT 1
-                  FROM fundamental_statement_points existing
+                  FROM {table} existing
                   WHERE existing.source = b.source
                     AND existing.security_id = b.security_id
                     AND existing.canonical_metric = 'affo_per_share'
@@ -975,7 +981,7 @@ def _insert_derived_reit_statement_points(store: DuckDBStore) -> int:
         FROM keyed
         """
     )
-    after = int(store.con.execute("SELECT count(*) FROM fundamental_statement_points").fetchone()[0])
+    after = int(store.con.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
     return after - before
 
 
@@ -985,6 +991,7 @@ def refresh_fundamental_statement_points(
 ) -> int:
     """Refresh mapped statement facts, optionally for selected raw concepts."""
 
+    check_publication_session(store)
     seed_fundamental_statement_map(store)
     selected = tuple(sorted({str(concept) for concept in concepts or () if concept}))
     registered = False
@@ -999,21 +1006,18 @@ def refresh_fundamental_statement_points(
     else:
         refresh_entity_industry_templates(store)
     try:
-        with store.transaction():
-            if selected:
-                store.con.execute(
-                    """
-                    DELETE FROM fundamental_statement_points
-                    WHERE concept IN (
-                        SELECT concept FROM fundamental_statement_concept_filter
-                    )
-                    """
-                )
-            else:
-                store.con.execute("DELETE FROM fundamental_statement_points")
+        with fundamental_publication(
+            store,
+            ("fundamental_statement_points",),
+            replace_where=(
+                "concept IN (SELECT concept FROM fundamental_statement_concept_filter)"
+                if selected else "TRUE"
+            ),
+            owned_registrations=("fundamental_statement_concept_filter",) if registered else (),
+        ):
             store.con.execute(
                 f"""
-            INSERT INTO fundamental_statement_points (
+            INSERT INTO fundamental_statement_points_bulk_stage (
                 statement_point_id,
                 fact_revision_id,
                 revision_group_id,
@@ -1246,21 +1250,21 @@ def refresh_fundamental_statement_points(
             """
             )
             if not selected:
-                _insert_derived_reit_statement_points(store)
+                _insert_derived_reit_statement_points(store, table="fundamental_statement_points_bulk_stage")
     finally:
         if registered:
-            store.con.unregister("fundamental_statement_concept_filter")
+            with suppress(Exception):
+                store.con.unregister("fundamental_statement_concept_filter")
     return int(store.con.execute("SELECT count(*) FROM fundamental_statement_points").fetchone()[0])
 
 
 def refresh_fundamental_periods(store: DuckDBStore) -> int:
     """Refresh normalized reporting-period windows from SEC statement points."""
 
-    with store.transaction():
-        store.con.execute("DELETE FROM fundamental_periods")
+    with fundamental_publication(store, ("fundamental_periods",)):
         store.con.execute(
             """
-            INSERT INTO fundamental_periods (
+            INSERT INTO fundamental_periods_bulk_stage (
                 fundamental_period_id,
                 period_group_id,
                 source,
@@ -1497,17 +1501,15 @@ def refresh_fundamental_ttm_points(
     placeholders = ", ".join("?" for _ in selected)
     metric_filter_sql = f"AND canonical_metric IN ({placeholders})" if selected else ""
 
-    with store.transaction():
-        if selected:
-            store.con.execute(
-                f"DELETE FROM fundamental_ttm_points WHERE canonical_metric IN ({placeholders})",
-                list(selected),
-            )
-        else:
-            store.con.execute("DELETE FROM fundamental_ttm_points")
+    with fundamental_publication(
+        store,
+        ("fundamental_ttm_points",),
+        replace_where=f"canonical_metric IN ({placeholders})" if selected else "TRUE",
+        replace_params=selected,
+    ):
         store.con.execute(
             f"""
-            INSERT INTO fundamental_ttm_points (
+            INSERT INTO fundamental_ttm_points_bulk_stage (
                 ttm_point_id,
                 ttm_revision_group_id,
                 anchor_statement_point_id,

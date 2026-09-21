@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 
 from ._companyfacts_resume import reopen_companyfacts_store, verify_companyfacts_resume
+from ._fundamental_publication import check_publication_session, fundamental_publication
 from .clock import resolve_as_of_date
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
@@ -744,6 +745,7 @@ def refresh_fundamental_fact_revisions(
 ) -> int:
     """Refresh accession-level revision chains, optionally for selected concepts."""
 
+    check_publication_session(store)
     selected = tuple(sorted({str(concept) for concept in concepts or () if concept}))
     registered = False
     concept_predicate = ""
@@ -758,21 +760,18 @@ def refresh_fundamental_fact_revisions(
             "SELECT concept FROM fundamental_revision_concept_filter)"
         )
     try:
-        with store.transaction():
-            if selected:
-                store.con.execute(
-                    """
-                    DELETE FROM fundamental_fact_revisions
-                    WHERE concept IN (
-                        SELECT concept FROM fundamental_revision_concept_filter
-                    )
-                    """
-                )
-            else:
-                store.con.execute("DELETE FROM fundamental_fact_revisions")
+        with fundamental_publication(
+            store,
+            ("fundamental_fact_revisions",),
+            replace_where=(
+                "concept IN (SELECT concept FROM fundamental_revision_concept_filter)"
+                if selected else "TRUE"
+            ),
+            owned_registrations=("fundamental_revision_concept_filter",) if registered else (),
+        ):
             store.con.execute(
                 f"""
-            INSERT INTO fundamental_fact_revisions (
+            INSERT INTO fundamental_fact_revisions_bulk_stage (
                 fact_revision_id,
                 revision_group_id,
                 source,
@@ -946,7 +945,8 @@ def refresh_fundamental_fact_revisions(
             )
     finally:
         if registered:
-            store.con.unregister("fundamental_revision_concept_filter")
+            with contextlib.suppress(Exception):
+                store.con.unregister("fundamental_revision_concept_filter")
     count_row = store.con.execute("SELECT count(*) FROM fundamental_fact_revisions").fetchone()
     assert count_row is not None
     return int(count_row[0])

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from ._fundamental_publication import check_publication_session, fundamental_publication
 from .connection import DuckDBStore
 from .item_registry import seed_fundamental_item_registry
 
@@ -921,7 +922,9 @@ def _drop_temporary_relations(store: DuckDBStore) -> None:
         "_std_candidates",
         "_std_candidates_all",
     ):
-        store.con.execute(f"DROP TABLE IF EXISTS {table_name}")
+        # Cleanup runs before shadow recycling and again on exit. Qualify temp
+        # so a persistent caller table hidden by our temp name is never dropped.
+        store.con.execute(f"DROP TABLE IF EXISTS temp.main.{table_name}")
     for relation_name in ("_std_context", "_std_rule_inputs", "_std_rules", "_std_symbol_filter"):
         with suppress(Exception):
             store.con.unregister(relation_name)
@@ -941,6 +944,7 @@ def refresh_standardized_set_based(
 ) -> SetBasedStandardizationOutcome:
     """Materialize all standardized revisions without moving the fact set into Python."""
 
+    check_publication_session(store)
     # The committed registry is authoritative even for an already-populated warehouse.
     # Reseeding is idempotent and prevents additive canonical items/aliases from remaining
     # absent until an operator manually empties the table.
@@ -995,50 +999,8 @@ def refresh_standardized_set_based(
                 "SELECT reason,count(*) FROM _std_exceptions GROUP BY reason ORDER BY reason"
             ).fetchall()
         }
-        with store.transaction():
-            if symbols:
-                for table_name in ("fundamental_standardized", "fundamental_standardization_exception"):
-                    store.con.execute(
-                        f"""
-                        DELETE FROM {table_name}
-                        WHERE source = ?
-                          AND symbol IN (SELECT symbol FROM _std_symbol_filter)
-                        """,
-                        [options.source],
-                    )
-            else:
-                store.con.execute(
-                    "DELETE FROM fundamental_standardized WHERE source = ?",
-                    [options.source],
-                )
-                store.con.execute(
-                    "DELETE FROM fundamental_standardization_exception WHERE source = ?",
-                    [options.source],
-                )
-            store.con.execute(
-                """
-                INSERT INTO fundamental_standardized (
-                    standardized_id,source,upstream_source,security_id,symbol,cik,item_id,
-                    canonical_code,basis,period_start,period_end,fiscal_year,fiscal_period,
-                    value,unit,unit_type,source_accession,filed_date,as_of_date,available_at,
-                    input_codes_json,input_item_ids_json,rule_id,combination_rule,
-                    revision_group_id,revision_sequence,revision_count,is_value_changed,
-                    previous_value,value_delta,value_delta_percent,update_type,valid_to,
-                    is_latest_revision,run_id
-                )
-                SELECT * FROM _std_output
-                """
-            )
-            store.con.execute(
-                """
-                INSERT INTO fundamental_standardization_exception (
-                    exception_id,source,upstream_source,security_id,symbol,cik,basis,
-                    period_start,period_end,accession_number,concept,taxonomy,unit,value,
-                    reason,as_of_date,available_at,is_latest_revision,run_id
-                )
-                SELECT * FROM _std_exceptions
-                """
-            )
+
+        def complete_build() -> None:
             store.con.execute(
                 """
                 UPDATE fundamental_standardization_builds
@@ -1055,6 +1017,48 @@ def refresh_standardized_set_based(
                     json.dumps(exception_reason_counts, sort_keys=True, separators=(",", ":")),
                     build_id,
                 ],
+            )
+
+        with fundamental_publication(
+            store,
+            ("fundamental_standardized", "fundamental_standardization_exception"),
+            replace_where=(
+                "source = ? AND symbol IN (SELECT symbol FROM _std_symbol_filter)"
+                if symbols else "source = ?"
+            ),
+            replace_params=(options.source,),
+            owned_registrations=(
+                "_std_exceptions", "_std_output", "_std_output_raw", "_std_combinations",
+                "_std_combination_candidates", "_std_derived_quarters", "_std_direct",
+                "_std_quarter_inputs", "_std_candidates", "_std_candidates_all",
+                "_std_context", "_std_rule_inputs", "_std_rules", "_std_symbol_filter",
+            ),
+            before_build=lambda: _drop_temporary_relations(store),
+            before_swap=complete_build,
+        ):
+            store.con.execute(
+                """
+                INSERT INTO fundamental_standardized_bulk_stage (
+                    standardized_id,source,upstream_source,security_id,symbol,cik,item_id,
+                    canonical_code,basis,period_start,period_end,fiscal_year,fiscal_period,
+                    value,unit,unit_type,source_accession,filed_date,as_of_date,available_at,
+                    input_codes_json,input_item_ids_json,rule_id,combination_rule,
+                    revision_group_id,revision_sequence,revision_count,is_value_changed,
+                    previous_value,value_delta,value_delta_percent,update_type,valid_to,
+                    is_latest_revision,run_id
+                )
+                SELECT * FROM _std_output
+                """
+            )
+            store.con.execute(
+                """
+                INSERT INTO fundamental_standardization_exception_bulk_stage (
+                    exception_id,source,upstream_source,security_id,symbol,cik,basis,
+                    period_start,period_end,accession_number,concept,taxonomy,unit,value,
+                    reason,as_of_date,available_at,is_latest_revision,run_id
+                )
+                SELECT * FROM _std_exceptions
+                """
             )
 
         if output_count <= options.materialize_result_limit:

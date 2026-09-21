@@ -8,6 +8,7 @@ constraint), after validating a complete shadow table outside the transaction.
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import suppress
 
 from .connection import DuckDBStore
 
@@ -78,3 +79,42 @@ def publish_validated_shadow(
         store.con.execute(f"ALTER TABLE {live} RENAME TO {previous}")
         store.con.execute(f"ALTER TABLE {shadow} RENAME TO {live}")
         store.con.execute(f"DROP TABLE {previous}")
+
+
+def publish_validated_shadows(
+    store: DuckDBStore,
+    *,
+    tables: tuple[tuple[str, str], ...],
+    before_swap: Callable[[], None] | None = None,
+) -> None:
+    """Atomically swap coupled outputs and their completion-ledger update."""
+    names: set[str] = set()
+    swaps = []
+    for live_table, shadow_table in tables:
+        live, shadow = _identifier(live_table), _identifier(shadow_table)
+        previous = _identifier(f"{live}_bulk_previous")
+        if len({live, shadow, previous}) != 3 or names.intersection((live, shadow, previous)):
+            raise ValueError("coupled publication relation names must be distinct")
+        names.update((live, shadow, previous))
+        swaps.append((live, shadow, previous))
+    if not swaps:
+        raise ValueError("coupled publication requires at least one table")
+    transaction_started = False
+    try:
+        with store.transaction():
+            transaction_started = True
+            for live, shadow, _ in swaps:
+                _validate_shadow_contract(store, live_table=live, shadow_table=shadow)
+            if before_swap is not None:
+                before_swap()
+            for live, shadow, previous in swaps:
+                store.con.execute(f"ALTER TABLE {live} RENAME TO {previous}")
+                store.con.execute(f"ALTER TABLE {shadow} RENAME TO {live}")
+            for _, _, previous in swaps:
+                store.con.execute(f"DROP TABLE {previous}")
+    except BaseException:
+        # transaction() does not roll back a failure raised by COMMIT itself.
+        if transaction_started:
+            with suppress(Exception):
+                store.con.execute("ROLLBACK")
+        raise

@@ -1,0 +1,35 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "-n",
+    "0",
+    "-q",
+    "tests/test_fundamental_publication.py",
+    "tests/test_bulk_publication.py",
+    "tests/test_fundamental_concept_dictionary.py::test_scoped_revision_and_statement_refresh_preserves_other_concepts",
+    "tests/test_fundamental_concept_dictionary.py::test_duration_fact_without_period_start_is_excluded",
+    "tests/test_industry_templates.py::test_reit_ffo_affo_derives_from_us_gaap_inputs",
+    "tests/test_industry_templates.py::test_reported_reit_ffo_wins_over_derivation",
+    "tests/test_fundamental_period_dates.py::test_refresh_fundamental_periods_infers_four_date_model",
+    "tests/test_calendarization_bounded.py",
+    "tests/test_calendarization.py::test_calendar_aligned_ttm_emits_shared_calendar_quarter_for_offset_fye",
+    "tests/test_calendarization.py::test_quarterly_ttm_stitch_tags_annual_minus_9mo_path",
+    "tests/test_calendarization.py::test_ttm_restatement_uses_latest_visible_derived_quarter_and_anchor_time",
+    "tests/test_calendarization.py::test_ttm_refresh_can_scope_delete_and_scan_to_one_metric",
+    "tests/test_standardization.py::test_refresh_routes_custom_extension_and_records_unmapped_exception",
+    "tests/test_standardization.py::test_set_based_refresh_retains_revisions_classifies_quarters_and_writes_manifest",
+    "tests/test_standardization.py::test_refresh_derives_pit_discrete_q4_and_defers_to_reported_quarter",
+    "tests/test_standardization_composition_pit.py"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "failed",
+  "headroom": {
+    "physical_free_gb": 6.271411895751953,
+    "commit_free_gb": 6.03863525390625
+  },
+  "child_pid": 23164,
+  "returncode": 1,
+  "native_peak_job_memory_gb": 0.9532318115234375
+}

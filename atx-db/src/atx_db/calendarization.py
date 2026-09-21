@@ -9,6 +9,7 @@ from typing import Any
 
 import pandas as pd
 
+from ._fundamental_publication import fundamental_publication
 from .clock import resolve_as_of_date
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
@@ -288,7 +289,10 @@ def refresh_fundamental_calendar_map(
     options = options or CalendarizationOptions()
     columns = ", ".join(CALENDAR_MAP_COLUMNS)
     row_count = 0
-    with store.transaction():
+    with fundamental_publication(
+        store, ("fundamental_calendar_map",),
+        replace_where="source = ?", replace_params=(options.source,),
+    ):
         store.con.execute(
             """
         CREATE TEMP TABLE _calendar_map_input AS
@@ -343,9 +347,8 @@ def refresh_fundamental_calendar_map(
             rows = compute_calendar_map_rows(periods, source=options.source, run_id=options.run_id)
             row_count += insert_frame(store, rows, "_calendar_map_output", "_calendar_map_rows")
             del periods, rows
-        store.con.execute("DELETE FROM fundamental_calendar_map WHERE source = ?", [options.source])
         store.con.execute(
-            f"INSERT INTO fundamental_calendar_map ({columns}) "
+            f"INSERT INTO fundamental_calendar_map_bulk_stage ({columns}) "
             f"SELECT {columns} FROM _calendar_map_output"
         )
         store.con.execute("DROP TABLE _calendar_map_output")
@@ -360,11 +363,13 @@ def refresh_fundamental_calendar_ttm(
     """Refresh calendar-aligned trailing-twelve-month statement values."""
 
     options = options or CalendarizationOptions()
-    with store.transaction():
-        store.con.execute("DELETE FROM fundamental_calendar_ttm WHERE source = ?", [options.source])
+    with fundamental_publication(
+        store, ("fundamental_calendar_ttm",),
+        replace_where="source = ?", replace_params=(options.source,),
+    ):
         store.con.execute(
             """
-            INSERT INTO fundamental_calendar_ttm (
+            INSERT INTO fundamental_calendar_ttm_bulk_stage (
                 calendar_ttm_id,
                 calendar_ttm_revision_group_id,
                 source,
