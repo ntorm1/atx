@@ -3,7 +3,45 @@
 This section supersedes every older status below. Updated 2026-09-21 UTC
 (2026-09-20 local). The production snapshot remains explicitly as-of Sep20.
 
-## Current controller override - 2026-09-21 21:55 UTC
+## Current controller override - 2026-09-21 22:28 UTC
+
+- Archive6 is TERMINAL, guard stopped_low_headroom at receipt timestamp
+  22:23:30UTC: physical1.4619865GiB fell below1.5GiB; commit5.913353GiB.
+  Session10431 returned terminal; worker11024, redirector11544 and guard2944
+  were independently absent. This was host headroom protection, not a measured
+  source failure or job-cap failure. Do not wait on or restart that old handle.
+- Read-only inspection22:25:59UTC proved facts=points43,781,769; prices31,959,271;
+  custom31,934,514; schema0319. Actual archive6 dataset UUID is
+  7da8bd67-de3a-4fe6-a9bc-08a7a7d4cce7. Retained new attempt699,244rows/235CIKs,
+  empty1128/unavailable39/no source errors. Rows include replacements.
+- Both archive6 ledgers recovered failed22:27:11.401503UTC, COMMIT/CHECKPOINT
+  passed at1GB/1thread under2GiB guard. Probe peak0.425GiB, recovery peak1.391GiB.
+  Source data untouched. Scripts/evidence: companyfacts-archive6-stop-inspection
+  and companyfacts-archive6-ledger-recovery JSON/logs/receipts.
+- Host free RAM initially stayed near1.6GiB after the stop. Root asked the user
+  to free memory, but headroom recovered to6.6GiB at probe preflight and8.1GiB
+  for recovery; the resource request is now resolved without needing a reply.
+  No other applications were terminated, no settings or thresholds changed.
+- Archive7 is LIVE, started22:27:51UTC; exec session28324, native guard10280,
+  child redirector5200, native worker14556 (creation22:27:51UTC). Same2GiB
+  ceiling, DuckDB1GB/1thread, full archive_members replacement, force, no bulk
+  redownload, backup-keep100, dummy SEC UA. Resume predecessor is actual archive6
+  UUID above. At22:27:55, verifier enumerated6805receipts across4lineage runs
+  and began retained row fingerprints. Verification is not yet complete.
+  Actual NEW dataset UUID remains unobserved; do not use predecessor UUID as it.
+  Logs/receipt activation-companyfacts-archive7.{err,log}/-memory.json.
+- Disk free84,514,316,288B at22:28:23UTC. All backups retained. Sole runtime is
+  archive7; no concurrent tests, DB probes, imports or code changes. Core source
+  stillcd841f26. Continue to actual terminal, then inspect ledgers before the
+  source-verified submissions resume and full run5 sequence in committed
+  production-resume-sequence-2026-09-21.md. Its Archive6-live paragraph is now
+  historical; future command templates remain valid with fresh receipts.
+- All implementation/review work complete at this source checkpoint. Full
+  activation, custom forward-return evaluation, measured quality/coverage,
+  publication and sprint gates remain pending. No threshold flips, release,
+  alpha claim or main merge. Preserve stash@{0}; ask before main.
+
+## Historical controller override - 2026-09-21 21:55 UTC
 
 Update22:16:46UTC: SAME archive6/session10431/nativeworker11024 is live and
 BEYOND the user-stopped archive5 prefix. Traversal7750/20390, loaded6596

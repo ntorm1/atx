@@ -1,5 +1,32 @@
 # Archive6 verified resume observation
 
+## Terminal update and recovery — 2026-09-21 22:28 UTC
+
+Archive6 is now terminal. Its memory guard stopped the owned job at22:23:30UTC
+when free physical memory reached1.4619865GiB; free commit was5.913353GiB.
+The same exec session returned terminal and the original guard/worker/redirector
+were confirmed absent. This is not evidence of an application memory-cap or
+source failure. The prior live observations below remain historical only.
+
+Read-only inspection22:25:59UTC proved43,781,769facts and matching points,
+31,959,271prices and31,934,514custom rows. Actual archive6 dataset UUID:
+`7da8bd67-de3a-4fe6-a9bc-08a7a7d4cce7`. Its235newly processed issuers retained
+699,244attempt rows;1128empty/39unavailable/no source-error receipts. See
+companyfacts-archive6-stop-inspection.json, whose fields omit raw params and
+private contact information. Counts include replacements, not net additions.
+
+After host headroom recovered, root closed only the two interrupted ledger
+rows at22:27:11.401503UTC and checkpointed successfully. Recovery used the
+unchanged1GB/one-thread connection under2GiB guard, peak1.391GiB. The raw
+source tables were not changed by that operation. See the ledger-recovery JSON.
+
+Archive7 subsequently began from that actual terminal predecessor under the
+same guard settings; its6805receipt/four-run proof is in progress. The latest
+continuation-queue.md owns its process and session identity. Do not reuse the
+old archive6 handle or mistake its predecessor UUID for archive7's new UUID.
+
+## Historical live observation
+
 Observed 2026-09-21 UTC; source snapshot remains 2026-09-20. This is an
 in-progress observation, not a completion or coverage claim.
 
