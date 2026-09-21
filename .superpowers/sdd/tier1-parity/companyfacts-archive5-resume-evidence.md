@@ -27,3 +27,9 @@ dataset UUID has not been queried while the writer is active.
 Disk free84,994,764,800bytes at01:15:21UTC. Continue watching the same job/logs
 and guard. No competing DB/tests/probes, restart, memory escalation, backup
 deletion, quality-condition flip, source completeness or parity claim.
+
+At01:26:57.586UTC archive5 had passed the archive4 stopping position:
+processed6,875/20,390, loaded5,821 (including5,792verified reuse), empty1,019,
+unavailable35, failed0, newattemptfactrows90,957. Those writes include source
+replacements and are not net warehouse growth. Same session35531 remained live;
+guard headroom physical5.537GiB/commit5.703GiB. No runtime competed with it.

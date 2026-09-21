@@ -5,6 +5,14 @@ This section supersedes every older status below. Updated 2026-09-21 UTC
 
 ## Current controller override - 2026-09-21 01:09 UTC
 
+Update01:26:57UTC: SAME archive5/session35531 is healthy and now BEYOND the
+archive4 interruption. processed6875/20390, loaded5821 (includes5792verified
+reuse), empty1019/unavailable35/failed0, newattemptfactrows90,957. Counts include
+replacements, not net growth. Latest guard physical5.537GiB/commit5.703GiB.
+No active test/agent work, no extra DB access. Continue this exact run; do not
+restart it or run another workload. Root's Downloads filename check around
+01:19UTC still found only old priceZIP+updatedParquet, no TickerDefinitionHist.
+
 Update01:15:50UTC: archive5 VERIFIED5792targets /28,205,479retainedrows at
 01:14:35; both fingerprint scans10,174groups. Actual INFO output lives in
 activation-companyfacts-archive5.err (EDT timestamps), stdout.log is currently
