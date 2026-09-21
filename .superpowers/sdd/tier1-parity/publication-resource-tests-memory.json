@@ -1,0 +1,22 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "-n",
+    "0",
+    "-q",
+    "tests/test_publication_resources.py",
+    "tests/test_publication.py::test_cli_refuses_pending_migrations_before_opening_writable_store",
+    "tests/test_publication.py::test_cli_read_only_preflight_preserves_missing_or_legacy_database"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.324134826660156,
+    "commit_free_gb": 6.029094696044922
+  },
+  "child_pid": 1324,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.6334953308105469
+}

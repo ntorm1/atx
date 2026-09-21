@@ -320,10 +320,10 @@ fundamentals subset. `market_cap_decile` is an interval-start attribute. The
 builder requires dated listing/type evidence: a bar-observed candidate or a
 current listing snapshot is not proof of historical US common-equity membership.
 
-The current ladder's evidence stage does not refresh terminal returns. The
-Shumway policy below applies when `refresh_delisting_terminal_returns` is run;
-its implementation and successful evidence generation do not certify terminal
-coverage or survivorship-adjusted forward returns.
+The ladder runs separate `delisting_evidence`, `delisting_terminal_returns`,
+`trading_calendar` and `survivorship_forward_returns` stages. The terminal stage
+applies the configured Shumway policy; successful evidence generation alone
+does not certify terminal coverage or survivorship-adjusted forward returns.
 
 ## Publishing a release
 
@@ -339,12 +339,18 @@ atx-db status --db-path $env:ATX_DB_PATH --strict
 
 # After measuring and reviewing release quality, create the first baseline.
 atx-db publish-release --db-path $env:ATX_DB_PATH --release-id 2026-09-20 `
-  --out-dir data/releases
+  --out-dir data/releases --memory-limit 1GB --threads 1
 
 # A later release may compare against a verified, existing predecessor.
 atx-db publish-release --db-path $env:ATX_DB_PATH --release-id 2026-09-27 `
-  --out-dir data/releases --previous-dir data/releases/2026-09-20
+  --out-dir data/releases --previous-dir data/releases/2026-09-20 `
+  --memory-limit 1GB --threads 1
 ```
+
+The publication command defaults to a 1 GB DuckDB budget and one thread. Run it
+through the process memory guard, using the project virtual environment, after
+the previous warehouse workload finishes. The DuckDB budget applies before
+export and survives connection replacement; it does not cap the entire process.
 
 Publication writes six Parquet datasets: `security_master`, `universe`,
 `delistings`, `fundamentals_core`, `derived_metrics` and `market_daily`, plus

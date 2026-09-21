@@ -1,0 +1,19 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "ruff",
+    "check",
+    "src/atx_db/cli.py",
+    "tests/test_publication_resources.py"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.860984802246094,
+    "commit_free_gb": 6.086872100830078
+  },
+  "child_pid": 3320,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.06475830078125
+}

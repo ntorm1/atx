@@ -406,6 +406,8 @@ def _build_parser() -> argparse.ArgumentParser:
     release.add_argument("--release-id", required=True)
     release.add_argument("--out-dir", type=Path, required=True)
     release.add_argument("--previous-dir", type=Path)
+    release.add_argument("--memory-limit", default="1GB")
+    release.add_argument("--threads", type=int, default=1)
     release.add_argument("--run-id")
     return parser
 
@@ -758,6 +760,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f'python scripts/warehouse_migrate.py --db-path "{args.db_path}"'
             )
         with DuckDBStore(args.db_path) as store:
+            _configure_analytical_session(store, memory_limit=args.memory_limit, threads=args.threads)
             release_result = publish_release(
                 store,
                 args.release_id,
