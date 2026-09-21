@@ -5,6 +5,15 @@ This section supersedes every older status below. Updated 2026-09-21 UTC
 
 ## Current controller override - 2026-09-21 21:55 UTC
 
+Update22:16:46UTC: SAME archive6/session10431/nativeworker11024 is live and
+BEYOND the user-stopped archive5 prefix. Traversal7750/20390, loaded6596
+(includes6570verified reuse), empty1115/unavailable39/failed0; this attempt
+has committed65,068fact rows, including replacements (not net growth).
+Latest guard physical3.112GiB/commit8.206GiB, unchanged2GiB process ceiling,
+DuckDB1GB/1thread. Native worker creation still21:54:46UTC; no restart or
+competing runtime. Continue this exact process to actual terminal status,
+then inspect real ledgers and follow the committed production sequence.
+
 Update22:03:47UTC: SAME archive6/session10431/nativeworker11024 is live.
 Resume validation PASSED22:00:42.881UTC:6570targets/31,008,510retainedrows;
 fact and point scans each10,743identity groups. Traversal1775/20390,

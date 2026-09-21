@@ -3,6 +3,22 @@
 Observed 2026-09-21 UTC; source snapshot remains 2026-09-20. This is an
 in-progress observation, not a completion or coverage claim.
 
+## Progress beyond the interrupted predecessor
+
+At22:16:01.496UTC the same archive6 process passed the previous stop:
+7725/20390entries,6576loaded outcomes including6570verified reuse,1110empty,
+39unavailable,0failed,11,062new attempt rows. At22:16:46.801UTC it reached
+7750entries,6596loaded,1115empty,39unavailable,0failed and65,068attempt rows.
+These rows include replacements and do not imply net warehouse growth.
+
+Exec session10431 was confirmed live, and CIM independently confirmed worker
+11024 with parent11544 and original21:54:46UTC creation time. Latest collected
+guard headroom was3.112GiB physical and8.206GiB commit; limits unchanged.
+This observation advances the production load but does not establish terminal
+success, full-universe coverage or readiness for downstream publication.
+
+## Recovery and resume verification
+
 The user explicitly requested continuation after stopping archive5. Root
 confirmed no surviving owned load, inspected the warehouse read-only, and
 recovered only the two interrupted archive5 ledger rows with a successful
