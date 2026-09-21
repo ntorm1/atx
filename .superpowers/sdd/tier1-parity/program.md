@@ -3,6 +3,21 @@ Spec: docs/superpowers/specs/2026-09-19-tier1-parity-design.md
 Audits: .superpowers/sdd/tier1-parity/audit-atx-db.md, audit-ticker-zip.md
 Baseline: main a79f8371, smoke 6 passed.
 
+## Explicit user resume - 2026-09-21 21:55 UTC
+
+The user stopped archive5 and has now explicitly requested continuation. Recover
+only its verified interrupted ledgers, preserve all committed data, and resume
+from actual datasetUUID6400b3c2-f0d1-4f47-bcf0-95aadd9241de. Snapshot remains
+2026-09-20. The latest continuation-queue.md overrides old LIVE statements.
+Host free physical4.2-4.7GiB is below the3GiBjob preflight requirement5GiB.
+For archive6, reduce the process-tree ceiling to2GiB while retaining DuckDB1GB,
+one thread, cap+2GiB preflight and runtime physical1.5GiB/commit3GiB guards.
+This lowers maximum memory exposure; it does not establish capacity success.
+No escalation, other-app termination or global settings change. Root alone
+owns runtime; Codex agents remain static-only during production. An actual
+capacity failure is a bounded task. All full production outputs, measurements,
+publication and sprint gates remain required; no main merge without user OK.
+
 ## Production continuation ruling - 2026-09-21 00:43 UTC
 
 Archive4 stopped on low host commit headroom; guard protection is retained.

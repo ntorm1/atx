@@ -3,7 +3,50 @@
 This section supersedes every older status below. Updated 2026-09-21 UTC
 (2026-09-20 local). The production snapshot remains explicitly as-of Sep20.
 
-## Current controller override - 2026-09-21 01:09 UTC
+## Current controller override - 2026-09-21 21:55 UTC
+
+The user explicitly resumed after the prior stop. Source HEAD remains cd841f26
+(latest docs HEAD1db69117 before this update). No implementation or review fixes
+are pending. The four pre-existing content-empty migration/test modifications
+and unrelated atx-engine/atx-impl files remain untouched.
+
+- Archive5 is TERMINAL by verified owned-process termination at the user's stop;
+  its old guard receipt is stale and still says running. Read-only warehouse
+  inspection21:52:54UTC found facts=points43,417,902; prices31,959,271;
+  custom_features31,934,514; schema0319. Actual archive5 dataset UUID is
+  6400b3c2-f0d1-4f47-bcf0-95aadd9241de. New attempt2,803,031rows/778CIKs,
+  empty1110/unavailable39/no source errors; replacement rows are not net growth.
+- Both archive5 ledgers were recovered failed at21:53:52UTC after explicit
+  user continuation; COMMIT and CHECKPOINT passed. Only those two running rows
+  were changed. Evidence: companyfacts-archive5-stop-inspection.json and
+  companyfacts-archive5-ledger-recovery.json, scripts/logs/guard receipts.
+  Read-only probe peak0.390GiB; ledger recovery peak0.929GiB, both guard2GiB.
+- Archive6 is LIVE, started21:54:46UTC; exec session10431, native guard2944,
+  child redirector11544, native worker11024 (all created21:54:46UTC).
+  run-id activation-companyfacts-archive6; resume predecessor is the actual
+  archive5 UUID above. At21:54:50, verifier enumerated6570 loaded receipts
+  across3lineage runs and began retained fact/point fingerprint scans.
+  Verification is not yet complete. Do not restart this confirmed live job.
+- Memory: host physical free4.2-4.7GiB does not meet the former3GiB job's5GiB
+  startup requirement. Root conservatively REDUCED this attempt's job ceiling
+  to2GiB; DuckDB remains1GB/1thread. Existing cap+2GiB preflight and runtime
+  physical1.5GiB/commit3GiB thresholds remain unchanged. No budget escalation,
+  no other-app termination, no pagefile changes, one runtime only. Production
+  peak under this tighter cap is unmeasured; an actual cap failure becomes a
+  bounded task, not a repeated budget increase.
+- Snapshot remains explicitly2026-09-20. Dummy SEC UA only. No bulk redownload.
+  Once archive6 is terminal, inspect actual ledgers/receipts; then source-verified
+  submissions resume04cf947d-53bb-49b7-a276-b3c74a2a52c8 with batch50, full forms
+  and history; then activation-run5 from statement_points --force --shards16.
+  Follow existing core/market/forward/custom-evaluation/measurements/publication
+  sequence. Static Codex agent resume_production_sequence is verifying exact
+  commands; report production-resume-sequence-2026-09-21.md. Root owns runtime.
+- At21:55:09 disk free85,138,173,952B. All backups retained. Full quality/gates,
+  full non-slow suite and whole-branch review remain pending. No coverage
+  conditions flipped, release, or alpha claim. Ask before main; stash@{0}
+  remains the user's other session's work and has not been applied or dropped.
+
+## Historical controller override - 2026-09-21 01:09 UTC
 
 Update01:34:53UTC: SAME session35531/worker16900 remains healthy; processed
 7200/20390, loaded6100 (includes5792reuse), empty1065/unavailable35/failed0,
