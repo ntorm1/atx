@@ -5,6 +5,18 @@ This section supersedes every older status below. Updated 2026-09-21 UTC
 
 ## Current controller override - 2026-09-21 22:28 UTC
 
+Update23:26UTC: Archive7/session28324 remains the sole live writer. Its
+23:25:47.474UTC log checkpoint is9000/20390 members, loaded7757 (includes
+6805verified reuse), empty1203/unavailable40/failed0. This attempt has written
+2,954,116fact rows, including replacements; this is not net warehouse growth.
+Latest guard physical4.236GiB/commit6.844GiB, unchanged2GiB tree cap and
+1GB/1thread DuckDB. The observation-only functions cell88 was terminated
+after this checkpoint; the actual ingestion session and processes were NOT
+terminated. Resume observation with session28324, not cell88. No source,
+test, warehouse, backup or scope changes. This interval was a VERIFIED WAIT,
+with repeated fresh polls of the same running session and advancing logs.
+VR1 integration/tests and the full production sequence below remain pending.
+
 Update23:10UTC: goal metadata now reports ACTIVE (the earlier blocked-state
 observation is historical). Archive7/session28324 remains live; latest
 progress23:09:31.804UTC is8475/20390, loaded7280 including6805verified reuse,
