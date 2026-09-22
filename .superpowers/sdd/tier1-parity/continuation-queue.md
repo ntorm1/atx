@@ -2,6 +2,18 @@
 
 ## Controller recovery and resume - 2026-09-22 22:14 UTC
 
+Update22:23UTC: archive10 proof passed22:21:53.060UTC for8819retained
+targets/37,648,977rows. It is replaying the verified prefix; no new raw facts
+yet at the last22:22log. Nativeworker16672, guard9060, redirectors10164/7408.
+Issuer finaldraft checkpoint7d9cee54 received scoped rereview: production
+collision closure is present, but restored fixture needs as_of_date; same
+implementer fixes that plus SQL DISTINCT beforefetchall. Source0320 repair
+was returned to its implementer because finalpatch was prose/non-applicable
+and governedhooks were guidance, not completedcode. Root also caught receipt
+CHECK wrongly excludingfetch_failed. No such source draft is approved or
+integrated. Core0321 implementer remains active. The next desk-screen brief
+is fundamental-desk-screen-brief.md; defer execution until materialization.
+
 Archive9 is TERMINAL. Session43107 was unknown and independent CIM checks
 found no original9208/13708/9256/16436 or other warehouse/guard worker. Its
 running guard receipt is stale and preserved; termination cause is unknown
