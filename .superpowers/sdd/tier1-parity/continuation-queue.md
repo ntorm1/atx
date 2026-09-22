@@ -1,5 +1,31 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Integration window - 2026-09-22 23:12 UTC
+
+Issuer query is committed92cf42c4:5focused+14existing API tests passed;
+guard peaks0.602/0.952GiB. Core0321 still ready/unapplied. Source0320 final
+BAC6C8DE... had final Critical closure and is applied live but UNCOMMITTED.
+Its initial guarded tests:28passed/3fixtureerrors (incorrect +46h expected
+timestamp twice, missing comparative header-span once), peak0.938GiB.
+Do not commit until follow-up and focused repair pass.
+
+Actual official CVX exhibit parser verification PASSED at23:10UTC:
+Q42025 reported1.39/prior1.84/Dec31 period, peak0.571GiB. Evidence
+cvx-q4-2025-official-extraction-result.json and verification script. This is
+decoded-UTF8 reference input, no production receipt or warehouse writes.
+Root then proved real discovery defect: SEC directory JSON type=text.gif,
+actual filename a12312025ex9918-k.htm. eps_source_finish_concrete prepares
+a SMALL follow-up against appliedBAC6... for authoritative filing-index
+Type-column EX99 selection plus3fixtures/newlint. No filename guessing.
+Frozen official filing index and directory JSON are local reference artifacts.
+
+New isolated issuer_catalog_upgrade task owns0322 body/test only to publish
+issuer schemas into the existing DB's persisted API catalog. One review done,
+noCritical; Important scoped catalog preservation and runner upgrade fixture
+being repaired. Root registration after320/321, no concurrent registrywriter.
+No productionwarehouse worker; one guarded runtime at a time. Archive11
+predecessor and recovered47,906,807rows remain as below.
+
 ## Current controller state - 2026-09-22 23:03 UTC
 
 Archive10 is terminal: the unchanged guard stopped it at22:48:44UTC on

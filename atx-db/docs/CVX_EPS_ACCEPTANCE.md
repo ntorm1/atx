@@ -29,6 +29,19 @@ the growth benchmark is calculated from those reported values.
 
 ## A real quarter-construction trap
 
+On 2026-09-22, the repaired source parser was executed against the locally
+frozen official Q4 2025 SEC exhibit. It selected reported diluted EPS1.39,
+prior-year-quarter EPS1.84 and period end2025-12-31 from the statement table;
+it separately identified fiscal2025Q4. The filing's event date is2026-01-30.
+This is a source-extraction check, not a populated production growth result.
+The run used no warehouse writes and peaked at0.571GiB under the2GiB guard.
+
+The [actual filing index](https://www.sec.gov/Archives/edgar/data/93410/000009341026000019/0000093410-26-000019-index.html)
+labels `a12312025ex9918-k.htm` as EX-99.1. The directory JSON instead labels
+files with values such as `text.gif`; it does not supply SEC exhibit types.
+Generic source discovery must use the filing's typed document table rather
+than infer an exhibit type from that directory field or a filename prefix.
+
 Chevron's FY2025 diluted EPS is 6.63 and its nine-month 2025 diluted EPS is
 5.27. Their difference is 1.36, while reported Q4 EPS is 1.39. The nine-month
 figure is in the [Q3 2025 release](https://chevroncorp.gcs-web.com/node/37451).
