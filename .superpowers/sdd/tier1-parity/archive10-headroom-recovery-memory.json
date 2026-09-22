@@ -1,0 +1,13 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "C:/atx/.superpowers/sdd/tier1-parity/close_companyfacts_archive10_headroom_stop.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "stopped_low_headroom",
+  "headroom": {
+    "physical_free_gb": 1.4922828674316406,
+    "commit_free_gb": 3.2008628845214844
+  },
+  "child_pid": 8988
+}

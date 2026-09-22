@@ -1,5 +1,34 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Current controller state - 2026-09-22 23:03 UTC
+
+Archive10 is terminal: the unchanged guard stopped it at22:48:44UTC on
+physical headroom1.366GiB, not a reported source failure. Its actual dataset
+UUID is `ade90629-8e06-4186-9ea7-565cbd05e285`. Recovery COMMITted both
+ledgers failed at22:52:07UTC with1,753,504attempt rows/621loadedCIKs, but
+the recovery guard stopped before checkpoint completion. DO NOT repeat those
+ledger updates. Independent verification subsequently proved both durable
+ledgers and CHECKPOINT passed at23:00:57UTC, peak1.539GiB, guard exit0.
+Retained rawfacts=points **47,906,807**, net+900,566. Evidence:
+companyfacts-archive10-headroom-recovery.json and
+companyfacts-archive10-recovery-checkpoint-verification.json.
+
+The first checkpoint verifier was refused preflight before child start;
+verification2 completed. Host samples show clang-cl compiler processes during
+low headroom and recovery to8+GiB as those disappear. No other workload was
+stopped or altered. Keep2GiB job/1GB DuckDB/1thread, one runtime at a time.
+Next companyfacts resume is archive11 from the actual archive10 UUID above,
+fresh receipt/logs, full archive scope, backup-keep100, dummy SEC contact.
+
+Use this writer-free window for serial focused integration/tests. Issuer
+finalpatch ca74a08c... has Critical closure and is first. Source0320's
+49AE4E22... patch still has one Critical: comparative prose masquerades as a
+current results title; implementer is repairing structural title binding.
+Do not apply that SHA. Core0321 F6E6712C... is ready with Critical closure;
+register it only after source0320 body+registration land together. Runtime
+tests, downstream activation, coverage gates, release and alpha remain pending.
+The dated paragraphs below are historical snapshots, not active processes.
+
 ## Controller recovery and resume - 2026-09-22 22:14 UTC
 
 Update22:47UTC: prepared desk SQL/docs are integrated in71d98735. This is a

@@ -3,6 +3,17 @@ Spec: docs/superpowers/specs/2026-09-19-tier1-parity-design.md
 Audits: .superpowers/sdd/tier1-parity/audit-atx-db.md, audit-ticker-zip.md
 Baseline: main a79f8371, smoke 6 passed.
 
+## Current production position - 2026-09-22 23:03 UTC
+
+Archive10 stopped on host headroom under the unchanged guard; actual dataset
+UUID ade90629-8e06-4186-9ea7-565cbd05e285 is the next resume predecessor.
+Both failed ledgers are durably recovered; independent CHECKPOINT verification
+passed23:00:57UTC. Retained facts=points47,906,807. No warehouse worker remains.
+Root uses this writer-free window to integrate/test reviewed issuer/source/core
+tasks serially. Source0320 retains the registry lock before root0321; its last
+Critical structural fiscal-title binding repair is pending. Follow newest
+continuation-queue.md entry; older live-run paragraphs below are historical.
+
 ## Process interruption recovery - 2026-09-22 22:14 UTC
 
 Archive9 processes/session were independently confirmed absent after a tool

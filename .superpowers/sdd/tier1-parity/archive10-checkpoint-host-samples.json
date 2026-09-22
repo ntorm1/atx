@@ -1,0 +1,734 @@
+﻿[
+    {
+        "time_utc":  "2026-09-22T22:55:31.3949179Z",
+        "counters":  [
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\available mbytes",
+                             "CookedValue":  3475
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\committed bytes",
+                             "CookedValue":  20094156800
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\commit limit",
+                             "CookedValue":  25439227904
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool paged bytes",
+                             "CookedValue":  525053952
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool nonpaged bytes",
+                             "CookedValue":  922759168
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\system cache resident bytes",
+                             "CookedValue":  153382912
+                         }
+                     ],
+        "top_processes":  [
+                              {
+                                  "Id":  14032,
+                                  "ProcessName":  "chrome",
+                                  "PrivateMemorySize64":  647716864,
+                                  "WorkingSet64":  281468928
+                              },
+                              {
+                                  "Id":  3552,
+                                  "ProcessName":  "claude",
+                                  "PrivateMemorySize64":  622010368,
+                                  "WorkingSet64":  264556544
+                              },
+                              {
+                                  "Id":  13660,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  610926592,
+                                  "WorkingSet64":  633704448
+                              },
+                              {
+                                  "Id":  7696,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  599314432,
+                                  "WorkingSet64":  622878720
+                              },
+                              {
+                                  "Id":  8008,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  586649600,
+                                  "WorkingSet64":  609435648
+                              }
+                          ]
+    },
+    {
+        "time_utc":  "2026-09-22T22:55:33.8915639Z",
+        "counters":  [
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\available mbytes",
+                             "CookedValue":  3653
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\committed bytes",
+                             "CookedValue":  19870101504
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\commit limit",
+                             "CookedValue":  25439227904
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool paged bytes",
+                             "CookedValue":  526651392
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool nonpaged bytes",
+                             "CookedValue":  924868608
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\system cache resident bytes",
+                             "CookedValue":  153829376
+                         }
+                     ],
+        "top_processes":  [
+                              {
+                                  "Id":  13660,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  719171584,
+                                  "WorkingSet64":  743116800
+                              },
+                              {
+                                  "Id":  7696,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  711389184,
+                                  "WorkingSet64":  737013760
+                              },
+                              {
+                                  "Id":  8008,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  696143872,
+                                  "WorkingSet64":  721301504
+                              },
+                              {
+                                  "Id":  5896,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  686579712,
+                                  "WorkingSet64":  710594560
+                              },
+                              {
+                                  "Id":  11892,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  684351488,
+                                  "WorkingSet64":  709115904
+                              }
+                          ]
+    },
+    {
+        "time_utc":  "2026-09-22T22:55:35.9045333Z",
+        "counters":  [
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\available mbytes",
+                             "CookedValue":  4111
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\committed bytes",
+                             "CookedValue":  19457953792
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\commit limit",
+                             "CookedValue":  25439227904
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool paged bytes",
+                             "CookedValue":  526409728
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool nonpaged bytes",
+                             "CookedValue":  923611136
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\system cache resident bytes",
+                             "CookedValue":  151834624
+                         }
+                     ],
+        "top_processes":  [
+                              {
+                                  "Id":  13660,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  847802368,
+                                  "WorkingSet64":  856739840
+                              },
+                              {
+                                  "Id":  7696,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  842129408,
+                                  "WorkingSet64":  850616320
+                              },
+                              {
+                                  "Id":  8008,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  826986496,
+                                  "WorkingSet64":  835215360
+                              },
+                              {
+                                  "Id":  4588,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  804585472,
+                                  "WorkingSet64":  816840704
+                              },
+                              {
+                                  "Id":  6148,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  797974528,
+                                  "WorkingSet64":  808767488
+                              }
+                          ]
+    },
+    {
+        "time_utc":  "2026-09-22T22:55:37.9339655Z",
+        "counters":  [
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\available mbytes",
+                             "CookedValue":  3486
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\committed bytes",
+                             "CookedValue":  20095553536
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\commit limit",
+                             "CookedValue":  25439227904
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool paged bytes",
+                             "CookedValue":  523792384
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool nonpaged bytes",
+                             "CookedValue":  922984448
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\system cache resident bytes",
+                             "CookedValue":  153661440
+                         }
+                     ],
+        "top_processes":  [
+                              {
+                                  "Id":  13660,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  1045037056,
+                                  "WorkingSet64":  1053667328
+                              },
+                              {
+                                  "Id":  7696,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  971972608,
+                                  "WorkingSet64":  984346624
+                              },
+                              {
+                                  "Id":  8008,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  957038592,
+                                  "WorkingSet64":  968613888
+                              },
+                              {
+                                  "Id":  6148,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  935972864,
+                                  "WorkingSet64":  949661696
+                              },
+                              {
+                                  "Id":  4588,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  934715392,
+                                  "WorkingSet64":  948330496
+                              }
+                          ]
+    },
+    {
+        "time_utc":  "2026-09-22T22:55:39.9491245Z",
+        "counters":  [
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\available mbytes",
+                             "CookedValue":  3806
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\committed bytes",
+                             "CookedValue":  19770011648
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\commit limit",
+                             "CookedValue":  25439227904
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool paged bytes",
+                             "CookedValue":  523751424
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool nonpaged bytes",
+                             "CookedValue":  921473024
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\system cache resident bytes",
+                             "CookedValue":  153358336
+                         }
+                     ],
+        "top_processes":  [
+                              {
+                                  "Id":  7696,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  1143455744,
+                                  "WorkingSet64":  1151672320
+                              },
+                              {
+                                  "Id":  4588,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  1055047680,
+                                  "WorkingSet64":  1067315200
+                              },
+                              {
+                                  "Id":  8008,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  872894464,
+                                  "WorkingSet64":  885424128
+                              },
+                              {
+                                  "Id":  6148,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  870105088,
+                                  "WorkingSet64":  884105216
+                              },
+                              {
+                                  "Id":  14132,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  806580224,
+                                  "WorkingSet64":  834973696
+                              }
+                          ]
+    },
+    {
+        "time_utc":  "2026-09-22T22:55:41.9855008Z",
+        "counters":  [
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\available mbytes",
+                             "CookedValue":  6627
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\committed bytes",
+                             "CookedValue":  16767123456
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\commit limit",
+                             "CookedValue":  25439227904
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool paged bytes",
+                             "CookedValue":  526090240
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool nonpaged bytes",
+                             "CookedValue":  923373568
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\system cache resident bytes",
+                             "CookedValue":  154071040
+                         }
+                     ],
+        "top_processes":  [
+                              {
+                                  "Id":  7696,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  1352048640,
+                                  "WorkingSet64":  1357307904
+                              },
+                              {
+                                  "Id":  14032,
+                                  "ProcessName":  "chrome",
+                                  "PrivateMemorySize64":  641921024,
+                                  "WorkingSet64":  275435520
+                              },
+                              {
+                                  "Id":  3552,
+                                  "ProcessName":  "claude",
+                                  "PrivateMemorySize64":  626216960,
+                                  "WorkingSet64":  264757248
+                              },
+                              {
+                                  "Id":  10716,
+                                  "ProcessName":  "Code",
+                                  "PrivateMemorySize64":  587534336,
+                                  "WorkingSet64":  116125696
+                              },
+                              {
+                                  "Id":  5500,
+                                  "ProcessName":  "MsMpEng",
+                                  "PrivateMemorySize64":  548933632,
+                                  "WorkingSet64":  211070976
+                              }
+                          ]
+    },
+    {
+        "time_utc":  "2026-09-22T22:55:44.0149517Z",
+        "counters":  [
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\available mbytes",
+                             "CookedValue":  8085
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\committed bytes",
+                             "CookedValue":  15147638784
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\commit limit",
+                             "CookedValue":  25439227904
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool paged bytes",
+                             "CookedValue":  525668352
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool nonpaged bytes",
+                             "CookedValue":  922517504
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\system cache resident bytes",
+                             "CookedValue":  155914240
+                         }
+                     ],
+        "top_processes":  [
+                              {
+                                  "Id":  14032,
+                                  "ProcessName":  "chrome",
+                                  "PrivateMemorySize64":  644599808,
+                                  "WorkingSet64":  277639168
+                              },
+                              {
+                                  "Id":  3552,
+                                  "ProcessName":  "claude",
+                                  "PrivateMemorySize64":  626216960,
+                                  "WorkingSet64":  264753152
+                              },
+                              {
+                                  "Id":  10716,
+                                  "ProcessName":  "Code",
+                                  "PrivateMemorySize64":  587735040,
+                                  "WorkingSet64":  115687424
+                              },
+                              {
+                                  "Id":  7696,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  581599232,
+                                  "WorkingSet64":  593117184
+                              },
+                              {
+                                  "Id":  5500,
+                                  "ProcessName":  "MsMpEng",
+                                  "PrivateMemorySize64":  544317440,
+                                  "WorkingSet64":  206561280
+                              }
+                          ]
+    },
+    {
+        "time_utc":  "2026-09-22T22:55:46.0342871Z",
+        "counters":  [
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\available mbytes",
+                             "CookedValue":  7919
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\committed bytes",
+                             "CookedValue":  15337029632
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\commit limit",
+                             "CookedValue":  25439227904
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool paged bytes",
+                             "CookedValue":  523485184
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool nonpaged bytes",
+                             "CookedValue":  921219072
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\system cache resident bytes",
+                             "CookedValue":  155979776
+                         }
+                     ],
+        "top_processes":  [
+                              {
+                                  "Id":  7696,
+                                  "ProcessName":  "clang-cl",
+                                  "PrivateMemorySize64":  772227072,
+                                  "WorkingSet64":  778690560
+                              },
+                              {
+                                  "Id":  14032,
+                                  "ProcessName":  "chrome",
+                                  "PrivateMemorySize64":  644456448,
+                                  "WorkingSet64":  278392832
+                              },
+                              {
+                                  "Id":  3552,
+                                  "ProcessName":  "claude",
+                                  "PrivateMemorySize64":  626216960,
+                                  "WorkingSet64":  264753152
+                              },
+                              {
+                                  "Id":  10716,
+                                  "ProcessName":  "Code",
+                                  "PrivateMemorySize64":  587739136,
+                                  "WorkingSet64":  115691520
+                              },
+                              {
+                                  "Id":  5500,
+                                  "ProcessName":  "MsMpEng",
+                                  "PrivateMemorySize64":  544260096,
+                                  "WorkingSet64":  206512128
+                              }
+                          ]
+    },
+    {
+        "time_utc":  "2026-09-22T22:55:48.0417113Z",
+        "counters":  [
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\available mbytes",
+                             "CookedValue":  8696
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\committed bytes",
+                             "CookedValue":  14461427712
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\commit limit",
+                             "CookedValue":  25439227904
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool paged bytes",
+                             "CookedValue":  523866112
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool nonpaged bytes",
+                             "CookedValue":  921583616
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\system cache resident bytes",
+                             "CookedValue":  156192768
+                         }
+                     ],
+        "top_processes":  [
+                              {
+                                  "Id":  14032,
+                                  "ProcessName":  "chrome",
+                                  "PrivateMemorySize64":  635027456,
+                                  "WorkingSet64":  270262272
+                              },
+                              {
+                                  "Id":  3552,
+                                  "ProcessName":  "claude",
+                                  "PrivateMemorySize64":  628531200,
+                                  "WorkingSet64":  268189696
+                              },
+                              {
+                                  "Id":  10716,
+                                  "ProcessName":  "Code",
+                                  "PrivateMemorySize64":  587911168,
+                                  "WorkingSet64":  115638272
+                              },
+                              {
+                                  "Id":  5500,
+                                  "ProcessName":  "MsMpEng",
+                                  "PrivateMemorySize64":  553119744,
+                                  "WorkingSet64":  215855104
+                              },
+                              {
+                                  "Id":  3152,
+                                  "ProcessName":  "claude",
+                                  "PrivateMemorySize64":  536281088,
+                                  "WorkingSet64":  202551296
+                              }
+                          ]
+    },
+    {
+        "time_utc":  "2026-09-22T22:55:50.0561182Z",
+        "counters":  [
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\available mbytes",
+                             "CookedValue":  8729
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\committed bytes",
+                             "CookedValue":  14454079488
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\commit limit",
+                             "CookedValue":  25439227904
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool paged bytes",
+                             "CookedValue":  523456512
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool nonpaged bytes",
+                             "CookedValue":  919928832
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\system cache resident bytes",
+                             "CookedValue":  155332608
+                         }
+                     ],
+        "top_processes":  [
+                              {
+                                  "Id":  3552,
+                                  "ProcessName":  "claude",
+                                  "PrivateMemorySize64":  649166848,
+                                  "WorkingSet64":  275222528
+                              },
+                              {
+                                  "Id":  14032,
+                                  "ProcessName":  "chrome",
+                                  "PrivateMemorySize64":  607293440,
+                                  "WorkingSet64":  242872320
+                              },
+                              {
+                                  "Id":  10716,
+                                  "ProcessName":  "Code",
+                                  "PrivateMemorySize64":  587911168,
+                                  "WorkingSet64":  115666944
+                              },
+                              {
+                                  "Id":  5500,
+                                  "ProcessName":  "MsMpEng",
+                                  "PrivateMemorySize64":  548773888,
+                                  "WorkingSet64":  211591168
+                              },
+                              {
+                                  "Id":  3152,
+                                  "ProcessName":  "claude",
+                                  "PrivateMemorySize64":  536285184,
+                                  "WorkingSet64":  202563584
+                              }
+                          ]
+    },
+    {
+        "time_utc":  "2026-09-22T22:55:52.0759016Z",
+        "counters":  [
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\available mbytes",
+                             "CookedValue":  8753
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\committed bytes",
+                             "CookedValue":  14428774400
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\commit limit",
+                             "CookedValue":  25439227904
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool paged bytes",
+                             "CookedValue":  523546624
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool nonpaged bytes",
+                             "CookedValue":  920997888
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\system cache resident bytes",
+                             "CookedValue":  154308608
+                         }
+                     ],
+        "top_processes":  [
+                              {
+                                  "Id":  3552,
+                                  "ProcessName":  "claude",
+                                  "PrivateMemorySize64":  642015232,
+                                  "WorkingSet64":  269733888
+                              },
+                              {
+                                  "Id":  14032,
+                                  "ProcessName":  "chrome",
+                                  "PrivateMemorySize64":  599191552,
+                                  "WorkingSet64":  233750528
+                              },
+                              {
+                                  "Id":  10716,
+                                  "ProcessName":  "Code",
+                                  "PrivateMemorySize64":  587927552,
+                                  "WorkingSet64":  115924992
+                              },
+                              {
+                                  "Id":  5500,
+                                  "ProcessName":  "MsMpEng",
+                                  "PrivateMemorySize64":  548769792,
+                                  "WorkingSet64":  211587072
+                              },
+                              {
+                                  "Id":  3152,
+                                  "ProcessName":  "claude",
+                                  "PrivateMemorySize64":  536285184,
+                                  "WorkingSet64":  202592256
+                              }
+                          ]
+    },
+    {
+        "time_utc":  "2026-09-22T22:55:54.0862742Z",
+        "counters":  [
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\available mbytes",
+                             "CookedValue":  8742
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\committed bytes",
+                             "CookedValue":  14459088896
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\commit limit",
+                             "CookedValue":  25439227904
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool paged bytes",
+                             "CookedValue":  523673600
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\pool nonpaged bytes",
+                             "CookedValue":  921702400
+                         },
+                         {
+                             "Path":  "\\\\nathans_pc\\memory\\system cache resident bytes",
+                             "CookedValue":  152862720
+                         }
+                     ],
+        "top_processes":  [
+                              {
+                                  "Id":  3552,
+                                  "ProcessName":  "claude",
+                                  "PrivateMemorySize64":  642080768,
+                                  "WorkingSet64":  269746176
+                              },
+                              {
+                                  "Id":  14032,
+                                  "ProcessName":  "chrome",
+                                  "PrivateMemorySize64":  590299136,
+                                  "WorkingSet64":  224944128
+                              },
+                              {
+                                  "Id":  10716,
+                                  "ProcessName":  "Code",
+                                  "PrivateMemorySize64":  588210176,
+                                  "WorkingSet64":  116281344
+                              },
+                              {
+                                  "Id":  5500,
+                                  "ProcessName":  "MsMpEng",
+                                  "PrivateMemorySize64":  548888576,
+                                  "WorkingSet64":  211705856
+                              },
+                              {
+                                  "Id":  3152,
+                                  "ProcessName":  "claude",
+                                  "PrivateMemorySize64":  545284096,
+                                  "WorkingSet64":  204005376
+                              }
+                          ]
+    }
+]

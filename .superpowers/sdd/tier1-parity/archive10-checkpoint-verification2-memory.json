@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\verify_archive10_recovery_checkpoint.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 7.955589294433594,
+    "commit_free_gb": 9.758556365966797
+  },
+  "child_pid": 2084,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 1.5388374328613281
+}

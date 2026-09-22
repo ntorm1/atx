@@ -1,0 +1,106 @@
+{
+  "observed_at_utc": "2026-09-22T22:52:07.512781+00:00",
+  "process_check": {
+    "observed_at_utc": "2026-09-22T22:52:05.2167497Z",
+    "run_id": "activation-companyfacts-archive10",
+    "matching_process_count": 0,
+    "original_pid_count": 0,
+    "session_exit_code": 1,
+    "guard_receipt_last_write_utc": "2026-09-22T22:48:44.1986585Z"
+  },
+  "guard_status": "stopped_low_headroom",
+  "guard_stop_headroom": {
+    "physical_free_gb": 1.3661842346191406,
+    "commit_free_gb": 5.402515411376953
+  },
+  "termination_cause": "host headroom guard; not a recorded source failure",
+  "actual_dataset_run_id": "ade90629-8e06-4186-9ea7-565cbd05e285",
+  "activation_before": [
+    [
+      "companyfacts_load",
+      "activation-companyfacts-archive10",
+      "running",
+      "2026-09-22 22:13:14.407468",
+      null,
+      null
+    ]
+  ],
+  "dataset_before": [
+    [
+      "ade90629-8e06-4186-9ea7-565cbd05e285",
+      "sec_company_facts",
+      "running",
+      "2026-09-22 22:13:14.418372",
+      null,
+      null
+    ]
+  ],
+  "retained_totals_columns": [
+    "facts",
+    "points",
+    "prices",
+    "custom_features",
+    "schema_version"
+  ],
+  "retained_totals": [
+    47906807,
+    47906807,
+    31959271,
+    31934514,
+    "0319"
+  ],
+  "attempt_columns": [
+    "rows",
+    "ciks",
+    "first_cik",
+    "last_cik"
+  ],
+  "attempt": [
+    1753504,
+    621,
+    "0001458868",
+    "0001495240"
+  ],
+  "source_outcomes_columns": [
+    "status",
+    "members",
+    "reported_rows"
+  ],
+  "source_outcomes": [
+    [
+      "empty",
+      1323,
+      0
+    ],
+    [
+      "loaded",
+      621,
+      1753504
+    ],
+    [
+      "unavailable",
+      43,
+      0
+    ]
+  ],
+  "activation_after": [
+    [
+      "companyfacts_load",
+      "activation-companyfacts-archive10",
+      "failed",
+      "2026-09-22 22:52:07.512781",
+      1753504
+    ]
+  ],
+  "dataset_after": [
+    [
+      "ade90629-8e06-4186-9ea7-565cbd05e285",
+      "sec_company_facts",
+      "failed",
+      "2026-09-22 22:52:07.512781",
+      1753504
+    ]
+  ],
+  "committed": true,
+  "checkpoint": "pending"
+}
