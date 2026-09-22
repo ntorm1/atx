@@ -106,6 +106,27 @@ evidence is in `companyfacts-archive7-stop-inspection.json`,
 `cvx-identity-live-evidence.json`, and `cvx-eps-production-query-audit.md`
 under `.superpowers/sdd/tier1-parity/` at the repository root.
 
+## Filing event date is not the earnings period
+
+Source verification on 2026-09-22 found another generic ingestion requirement.
+The [SEC filing index](https://www.sec.gov/Archives/edgar/data/93410/000009341026000019/0000093410-26-000019-index.htm)
+records the 8-K's filing date and period of report as **2026-01-30**. Its
+[earnings exhibit](https://www.sec.gov/Archives/edgar/data/93410/000009341026000019/a12312025ex9918-k.htm)
+reports **fourth-quarter 2025**, with the statement quarter ending
+**2025-12-31** and reported diluted EPS1.39 (prior-year quarter1.84).
+
+The source draft incorrectly used the submission's `report_date` as the
+accounting `period_end`. That would reject the real exhibit even if a synthetic
+fixture supplied December31 as its 8-K report date. The repair must identify
+the accounting period from the exhibit's labeled fiscal quarter and explicit
+statement header, retaining the filing/event date separately for provenance
+and availability. Exact 13/14-week boundaries likewise need document evidence;
+a filing event date or calendar-quarter guess is not a substitute.
+
+This is a verified source-semantic defect in an isolated draft, not a live
+warehouse repair or a newly measured EPS result. The focused integration
+fixture must use the actual event/quarter-date distinction before activation.
+
 After the writer finishes and the relevant stages are activated, run this
 query through the warehouse's production path. Confirm the CVX security/CIK
 mapping, exact quarter boundaries, reported diluted EPS item, same-quarter

@@ -2,6 +2,26 @@
 
 ## Controller recovery and resume - 2026-09-22 22:14 UTC
 
+Update22:35UTC: archive10 reached NEW work at22:29:18UTC (10125members,
+12176newattemptrows). Latest22:34:17log10250/20390, loaded8938,empty1269,
+unavailable43,failed0,attemptrows436253. Counts include replacements. It is
+still the sole live writer; do not restart or run concurrent runtime tests.
+
+Issuer repair finalpatch SHAca74a08c3e917363e1c083c0e433edc0cd017f883c55c2af1a57ce260947ca74
+has Critical closure, fixtureas_of_date and SQLDISTINCT fixed; focusedruntime
+still pending. Source0320 and core0321 remain REJECTED drafts, not integrated.
+Fresh Codex agents eps_source_finish_concrete / eps_bridge_finish_concrete
+repair the reports reported-eps-source-critical-rereview.md and
+reported-eps-core-bridge-review.md. Source actualCVX acceptance additionally
+needs documentquarterend distinctfrom8Keventreportdate (Jan30 vsDec31), and
+must not reject currentfiscalquarterbecausecomparativeprior-yearlabelsalso
+appear. Root verified officialSECindex/exhibit and recorded in public
+CVX_EPS_ACCEPTANCE.md; this is a generic production defect, not a nichecase.
+Core repair owns actualmigratedschemabinding, equalclockNULLconflict and true
+end-to-endfocusedfixture. Registry stayssource0320ownerfirst, root0321second.
+Fundamental desk readout draft is complete/preparednotexecuted; onefresh
+review by fundamental_desk_readout_review is underway. No alpha claim.
+
 Update22:23UTC: archive10 proof passed22:21:53.060UTC for8819retained
 targets/37,648,977rows. It is replaying the verified prefix; no new raw facts
 yet at the last22:22log. Nativeworker16672, guard9060, redirectors10164/7408.

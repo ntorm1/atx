@@ -91,3 +91,30 @@ Python before the final `set`. This does not change the exclusivity result,
 but `SELECT DISTINCT visible.security_id, visible.normalized_cik` would bound
 the transferred result to owner/normalized-CIK pairs. This is a performance
 follow-up only and does not alter C1 or the original Critical disposition.
+
+## C1 closure disposition (updated final patch)
+
+Static re-review of the replacement `integration-final.patch` verifies SHA-256
+`ca74a08c3e917363e1c083c0e433edc0cd017f883c55c2af1a57ce260947ca74`.
+C1 is closed statically.
+
+The fixture now defines `fundamental_fact_revisions.as_of_date DATE`
+(`atx-db/tests/test_issuer_content_query.py:32-38`; final patch lines
+720-725) and its insert changes to five values, including explicit dates for
+the safe owner, CIK-A collision mapping, and CIK-B collision mapping (`:78-85`;
+final patch lines 765-771).  This supplies the column required by the unchanged
+strict owner-clock predicate in `_issuer_owner_ids`
+(`atx-db/src/atx_db/api/service.py:479-494`).  The collision test can therefore
+reach its existing assertions that CIK-B is excluded and the later NULL state
+is retained (`tests/test_issuer_content_query.py:123-142`).  No runtime test
+was run in this review.
+
+The narrow memory repair is semantics-preserving: both owner-discovery queries
+now select `DISTINCT visible.security_id, visible.normalized_cik` before
+`fetchall()` (`atx-db/src/atx_db/api/service.py:485-498` and
+`atx-db/src/atx_db/asof/fundamentals.py:379-398`).  The prior Python result was
+already reduced to `tuple(sorted(set(...)))`; removing duplicate raw
+owner/normalized-CIK pairs before that identical reduction cannot add or remove
+an owner or normalized CIK.  The selected-owner predicate and the content-clock
+filters are unchanged.  No new Critical issue was found within this limited
+closure review.
