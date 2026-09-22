@@ -47,4 +47,18 @@ while the loader was active.  The integration owner should apply the final
 draft patch and run only the focused issuer selector after the writer is
 terminal.  `integration-final.patch` applies cleanly in a static
 `git apply --check --whitespace=error` validation.  SHA-256:
-`c2edf0faadde4e990ab3bfb5a01ca83e0d61c3627971fc43cc4b24e54d426829`.
+`ca74a08c3e917363e1c083c0e433edc0cd017f883c55c2af1a57ce260947ca74`.
+
+## Critical rereview fixture and bounded-memory repair
+
+The rereview found that the fixture's `fundamental_fact_revisions` table did
+not include the `as_of_date` now required by the owner-qualification clock.
+The fixture now creates that column and supplies explicit dates for every raw
+owner/CIK row; the production query remains strict.
+
+Both owner-qualification queries now use `SELECT DISTINCT security_id,
+normalized_cik` before `fetchall()`.  This prevents a Python result pair for
+each raw fact while retaining every unique owner-to-CIK proof.  The full patch
+was regenerated and passed `git apply --check --whitespace=error`; its updated
+SHA-256 is
+`ca74a08c3e917363e1c083c0e433edc0cd017f883c55c2af1a57ce260947ca74`.

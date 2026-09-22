@@ -1,5 +1,5 @@
 diff --git a/atx-db/src/atx_db/asof/fundamentals.py b/atx-db/src/atx_db/asof/fundamentals.py
-index 4658f65a..39848945 100644
+index 4658f65a..23375636 100644
 --- a/atx-db/src/atx_db/asof/fundamentals.py
 +++ b/atx-db/src/atx_db/asof/fundamentals.py
 @@ -338,3 +338,183 @@ def shares_outstanding_asof(
@@ -53,7 +53,7 @@ index 4658f65a..39848945 100644
 +            ), selected AS (
 +                SELECT DISTINCT security_id FROM visible WHERE normalized_cik = ?
 +            )
-+            SELECT visible.security_id, visible.normalized_cik
++            SELECT DISTINCT visible.security_id, visible.normalized_cik
 +            FROM visible JOIN selected USING (security_id)
 +            WHERE visible.normalized_cik IS NOT NULL
 +            ORDER BY visible.security_id, visible.normalized_cik
@@ -329,7 +329,7 @@ index b5b30dc8..bcd76583 100644
          code="ATX.US.EQUITIES",
          version="1.0.0",
 diff --git a/atx-db/src/atx_db/api/service.py b/atx-db/src/atx_db/api/service.py
-index 1021fe72..1ca98930 100644
+index 1021fe72..b1bbba01 100644
 --- a/atx-db/src/atx_db/api/service.py
 +++ b/atx-db/src/atx_db/api/service.py
 @@ -344,6 +344,346 @@ class WarehouseReadService:
@@ -477,7 +477,7 @@ index 1021fe72..1ca98930 100644
 +            ), selected AS (
 +                SELECT DISTINCT security_id FROM visible WHERE normalized_cik = ?
 +            )
-+            SELECT visible.security_id, visible.normalized_cik
++            SELECT DISTINCT visible.security_id, visible.normalized_cik
 +            FROM visible JOIN selected USING (security_id)
 +            WHERE visible.normalized_cik IS NOT NULL
 +            ORDER BY visible.security_id, visible.normalized_cik
@@ -681,10 +681,10 @@ index 1021fe72..1ca98930 100644
          requested = request.fields or list(schema.field_names)
 diff --git a/atx-db/tests/test_issuer_content_query.py b/atx-db/tests/test_issuer_content_query.py
 new file mode 100644
-index 00000000..38d3b6d6
+index 00000000..5f3059d9
 --- /dev/null
 +++ b/atx-db/tests/test_issuer_content_query.py
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,201 @@
 +from __future__ import annotations
 +
 +import datetime as dt
@@ -719,7 +719,8 @@ index 00000000..38d3b6d6
 +        conn.execute(
 +            """
 +            CREATE TABLE fundamental_fact_revisions (
-+                security_id VARCHAR, cik VARCHAR, available_at TIMESTAMP, source_loaded_at TIMESTAMP
++                security_id VARCHAR, cik VARCHAR, as_of_date DATE, available_at TIMESTAMP,
++                source_loaded_at TIMESTAMP
 +            )
 +            """
 +        )
@@ -762,11 +763,11 @@ index 00000000..38d3b6d6
 +            ],
 +        )
 +        conn.executemany(
-+            "INSERT INTO fundamental_fact_revisions VALUES (?,?,?,?)",
++            "INSERT INTO fundamental_fact_revisions VALUES (?,?,?,?,?)",
 +            [
-+                (OWNER_SAFE, CIK_A, dt.datetime(2026, 1, 1), dt.datetime(2026, 1, 1)),
-+                (OWNER_COLLIDING, CIK_A, dt.datetime(2026, 2, 1), dt.datetime(2026, 2, 1)),
-+                (OWNER_COLLIDING, CIK_B, dt.datetime(2026, 3, 1), dt.datetime(2026, 3, 1)),
++                (OWNER_SAFE, CIK_A, dt.date(2026, 1, 1), dt.datetime(2026, 1, 1), dt.datetime(2026, 1, 1)),
++                (OWNER_COLLIDING, CIK_A, dt.date(2026, 2, 1), dt.datetime(2026, 2, 1), dt.datetime(2026, 2, 1)),
++                (OWNER_COLLIDING, CIK_B, dt.date(2026, 3, 1), dt.datetime(2026, 3, 1), dt.datetime(2026, 3, 1)),
 +            ],
 +        )
 +        conn.executemany(

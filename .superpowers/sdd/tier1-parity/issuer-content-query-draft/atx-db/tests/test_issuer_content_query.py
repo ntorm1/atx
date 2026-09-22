@@ -32,7 +32,8 @@ def _service(tmp_path) -> WarehouseReadService:
         conn.execute(
             """
             CREATE TABLE fundamental_fact_revisions (
-                security_id VARCHAR, cik VARCHAR, available_at TIMESTAMP, source_loaded_at TIMESTAMP
+                security_id VARCHAR, cik VARCHAR, as_of_date DATE, available_at TIMESTAMP,
+                source_loaded_at TIMESTAMP
             )
             """
         )
@@ -75,11 +76,11 @@ def _service(tmp_path) -> WarehouseReadService:
             ],
         )
         conn.executemany(
-            "INSERT INTO fundamental_fact_revisions VALUES (?,?,?,?)",
+            "INSERT INTO fundamental_fact_revisions VALUES (?,?,?,?,?)",
             [
-                (OWNER_SAFE, CIK_A, dt.datetime(2026, 1, 1), dt.datetime(2026, 1, 1)),
-                (OWNER_COLLIDING, CIK_A, dt.datetime(2026, 2, 1), dt.datetime(2026, 2, 1)),
-                (OWNER_COLLIDING, CIK_B, dt.datetime(2026, 3, 1), dt.datetime(2026, 3, 1)),
+                (OWNER_SAFE, CIK_A, dt.date(2026, 1, 1), dt.datetime(2026, 1, 1), dt.datetime(2026, 1, 1)),
+                (OWNER_COLLIDING, CIK_A, dt.date(2026, 2, 1), dt.datetime(2026, 2, 1), dt.datetime(2026, 2, 1)),
+                (OWNER_COLLIDING, CIK_B, dt.date(2026, 3, 1), dt.datetime(2026, 3, 1), dt.datetime(2026, 3, 1)),
             ],
         )
         conn.executemany(

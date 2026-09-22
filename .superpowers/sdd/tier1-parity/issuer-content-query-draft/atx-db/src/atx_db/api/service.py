@@ -485,7 +485,7 @@ class WarehouseReadService:
             ), selected AS (
                 SELECT DISTINCT security_id FROM visible WHERE normalized_cik = ?
             )
-            SELECT visible.security_id, visible.normalized_cik
+            SELECT DISTINCT visible.security_id, visible.normalized_cik
             FROM visible JOIN selected USING (security_id)
             WHERE visible.normalized_cik IS NOT NULL
             ORDER BY visible.security_id, visible.normalized_cik

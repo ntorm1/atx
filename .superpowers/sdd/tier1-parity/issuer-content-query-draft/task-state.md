@@ -1,5 +1,11 @@
 # Issuer-content query draft state
 
+Integration update2026-09-22: root applied final patch after archive10 checkpoint,
+5 focused plus14 existing API tests passed under2GiB guard. Root performed
+scoped import cleanup; issuer-query-integration-result.md records evidence.
+The draft mirror remains the reviewed artifact; live source includes cleanup.
+Critical review is closed. Historical instructions below are superseded.
+
 Status: complete draft repair; not integrated or runtime-tested.
 
 Owned mirrors are limited to `atx-db/src/atx_db/asof/fundamentals.py`,
@@ -21,7 +27,11 @@ migration file was edited here.
 
 Integration remains serialized behind the production loader.  After the
 writer is terminal, apply `integration-final.patch` (SHA-256
-`c2edf0faadde4e990ab3bfb5a01ca83e0d61c3627971fc43cc4b24e54d426829`), run
+`ca74a08c3e917363e1c083c0e433edc0cd017f883c55c2af1a57ce260947ca74`), run
 `tests/test_issuer_content_query.py` once, and conduct the required
 Critical-only review.  The full patch has passed static
 `git apply --check --whitespace=error`; no runtime check was performed.
+
+The final bounded repair adds explicit `as_of_date` fixture values for raw
+owner qualification and deduplicates owner/CIK pairs in SQL before Python
+materialization.  It leaves the content-clock requirement strict.
