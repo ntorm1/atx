@@ -3,6 +3,16 @@ Spec: docs/superpowers/specs/2026-09-19-tier1-parity-design.md
 Audits: .superpowers/sdd/tier1-parity/audit-atx-db.md, audit-ticker-zip.md
 Baseline: main a79f8371, smoke 6 passed.
 
+## Explicit user resume - 2026-09-22 21:53 UTC
+
+User resumed: "continue goal of building Factset/S&P compustat competitor".
+Continue full Tier1production scope and query-driven method; no new approval
+needed except existing ask-first actions/mainmerge. Stop snapshot and drafts
+were preserved in0c1069f9; root verified no writer and launched archive9 from
+actualarchive8UUID17ac14e8-f2f4-4dbf-91c3-fe55be5ab480 under unchanged2GiB/
+1GB/1thread safeguards. Fresh Codex agents resume isolated repairs/review;
+no draft integration duringwriter. The following stopinstruction is historical.
+
 ## User stop and handoff - 2026-09-22 00:44 UTC
 
 User requested stop/status/next-parent goal. Authoritative continuation file:

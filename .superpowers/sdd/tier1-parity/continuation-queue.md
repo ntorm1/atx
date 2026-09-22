@@ -1,5 +1,37 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## USER RESUME - authoritative override 2026-09-22 21:54 UTC
+
+User explicitly resumed goal of building FactSet/S&P Compustat competitor.
+Stop snapshot and draft checkpoint preserved in0c1069f9 and latest public
+handoff2026-09-22-tier1-parity-status-and-next-goal.md. Root independently
+verified no warehouse/guard/recovery process before launch and fresh archive9
+filenames; disk80,629,456,896bytes free. Production code remains VR1fd2738c7,
+live schema0319; isolated drafts are not applied.
+
+Archive9 LIVE, session43107, guard child9256, predecessor actual archive8
+datasetUUID17ac14e8-f2f4-4dbf-91c3-fe55be5ab480. Full archive_members replace,
+force, snapshotSep20, unchanged2GiBprocess/1GBDuckDB/1thread,backupkeep100,
+dummyUA, no redownload. Initial physicalfree7.354GiB/commit13.678GiB. New
+actual datasetUUID not yet inspected. Use archive9 log/err/memory receipt.
+
+Fresh Codex agents only, STATIC DRAFT work while writer lives:
+1. issuer_query_finish_repairs finishes prior Critical+Important repair set
+   in issuer-content-query-draft, must issueintegration-final.patch/fixreport;
+   onlyCritical re-review afterready.
+2. eps_core_bridge_finish continues partial0321 bridge in
+   reported-eps-core-bridge-draft; statement/standardization/derived state
+   propagation, nullablevaluecontract, no rawCompanyFacts edits. Freshreview
+   required whencomplete;0321registrywaits0320.
+3. review_eps_source_resumed performs the unfinished first source0320 review,
+   report reported-eps-source-review.md. Productionhooks/parser/receipts and
+   originalmetadataresumecompatibility requireactualreview, noassumedpass.
+
+No runtime/tests/DBprobes/imports alongsidewriter. Root owns integration and
+guarded tests later. Registry/jobs/activation serialized. Full objective and
+production sequence in publichandoff remain unchanged; old stopparagraphs
+below describe completed history, not a current blocker.
+
 ## USER STOP - authoritative override 2026-09-22 00:44 UTC
 
 Read docs/superpowers/handoffs/2026-09-22-tier1-parity-status-and-next-goal.md.

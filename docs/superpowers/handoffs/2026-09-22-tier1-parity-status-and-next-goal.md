@@ -1,5 +1,11 @@
 # Tier-1 parity: stopped status and next-parent goal
 
+**Resume note:** the user subsequently instructed "continue goal of building
+Factset/S&P compustat competitor". Work resumed2026-09-22 at21:53UTC. This
+file preserves the stop snapshot and prompt; current live state is in
+`.superpowers/sdd/tier1-parity/continuation-queue.md`. The stop directive below
+is satisfied and no longer prevents authorized continuation.
+
 Written after the user's explicit instruction: **"stop here and write a status
 markdown file with goal prompt for next parent agent to pick up"**.
 The stop/recovery observations below are UTC on 2026-09-22. This file supersedes
