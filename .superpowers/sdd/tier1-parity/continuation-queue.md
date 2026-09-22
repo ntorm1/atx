@@ -2,6 +2,21 @@
 
 ## Controller recovery and resume - 2026-09-22 22:14 UTC
 
+Update22:47UTC: prepared desk SQL/docs are integrated in71d98735. This is a
+standalone read-only research artifact, not imported Python or an active-stage
+input; production Python remainsVR1fd2738c7. SQL has one review, allfive
+Important fixes accepted onreport, outputcap999names+1aggregate=1000. Execute
+after materialization with frozenhash and immutableevidence, not duringwriter.
+Core0321 finalSHAF6E6712CB81FC9F25FEFBD80372B3CE9313B8B5D0CD4007254D355671D3D777A
+has allthreeCritical staticallyclosed and is checkpointed911a7053. Runtime
+tests/capacity remainpending. Source0320's2569830B...SHA has one remaining
+Critical (comparative-firstfiscalidentity) and root requested realcurrency/
+spacer-columnfixture from officialHTML. eps_source_finish_concrete fixesit;
+do not integrate that oldSHA. Sourceevidence cvx-source-structure-evidence.md.
+Latestarchive10log22:46:51UTC10750/20390,attemptrows1611727,failed0; stilllive.
+Static submissions_production_scope_audit considers whetherall~1mregistrants
+are necessary; it doesNOTauthorize scopechange or bypassresumeproofs.
+
 Update22:35UTC: archive10 reached NEW work at22:29:18UTC (10125members,
 12176newattemptrows). Latest22:34:17log10250/20390, loaded8938,empty1269,
 unavailable43,failed0,attemptrows436253. Counts include replacements. It is
