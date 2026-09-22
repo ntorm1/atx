@@ -79,6 +79,7 @@ TEST_F(AtxImplOptimizeGpTrading, GpTradingChangesBookWhenSet) {
   ASSERT_TRUE(atx::impl::write_panel(*cp, combo_path).has_value());
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = research_path;
   cfg.combo = combo_path;
   cfg.gross = 1.0;
@@ -128,6 +129,7 @@ TEST_F(AtxImplOptimizeGpTrading, OffPathByteIdentical) {
   ASSERT_TRUE(atx::impl::write_panel(*cp, combo_path).has_value());
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = research_path;
   cfg.combo = combo_path;
   cfg.gross = 1.0;
@@ -221,6 +223,7 @@ TEST_F(AtxImplOptimizeGpTrading, GpLowersTurnoverAtMatchedOrBetterSharpe) {
   };
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = research_path;
   cfg.combo = combo_path;
   cfg.gross = 1.0;
@@ -292,6 +295,7 @@ TEST_F(AtxImplOptimizeGpTrading, TwiceRunByteIdentical) {
   ASSERT_TRUE(atx::impl::write_panel(*cp, combo_path).has_value());
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = research_path;
   cfg.combo = combo_path;
   cfg.gross = 1.0;

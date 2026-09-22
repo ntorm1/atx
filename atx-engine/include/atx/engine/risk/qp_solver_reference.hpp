@@ -118,6 +118,12 @@ private:
   // -------------------------------------------------------------------------
   [[nodiscard]] static atx::core::Status validate(const QpProblem &p, atx::usize m) {
     namespace co = atx::core;
+    // This frozen dense oracle predates objective turnover costs. Refuse them
+    // explicitly rather than returning an optimum for a different objective.
+    if (p.C.turnover_penalty != 0.0) {
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "Reference QP: objective turnover penalties are unsupported");
+    }
     if (p.q.size() != m) {
       return co::Err(co::ErrorCode::InvalidArgument, "QP: q.size() must equal M (n_instruments)");
     }

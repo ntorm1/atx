@@ -118,6 +118,7 @@ TEST(StageCombineRiskModelWire, DefaultRiskModelByteIdenticalToExplicitDiagonal)
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = fx.panel_path;
     cfg.alphas     = fx.alphas_dir;
     cfg.method     = "shrinkage-mv";
@@ -149,6 +150,7 @@ TEST(StageCombineRiskModelWire, RiskModelFactorReachesS3_4CleanedCovPath) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = fx.panel_path;
     cfg.alphas     = fx.alphas_dir;
     cfg.method     = "shrinkage-mv";
@@ -196,6 +198,7 @@ TEST(StageCombineRiskModelWire, TwiceRunByteIdentical) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = fx.panel_path;
     cfg.alphas     = fx.alphas_dir;
     cfg.method     = "shrinkage-mv";

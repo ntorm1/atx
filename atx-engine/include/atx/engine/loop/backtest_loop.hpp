@@ -19,13 +19,12 @@
 //  For each sealed cross-section the feed publishes, on_time_slice runs a FIXED
 //  sequence whose ORDER is the look-ahead firewall:
 //
+//    0. accrue_borrow       finance the previous holdings/marks over elapsed UTC
+//                            time; first observation anchors a zero-length interval
 //    1. update_prices       refresh the Market book from this slice's closes
 //    2. mark_to_market      value the book on the new marks
 //    3. settle PRIOR orders  fill orders queued on an EARLIER slice -> Portfolio
-//    3.5 accrue_borrow (S4-3c) one bar's short-borrow financing on the book
-//                            settle (3) just finalized -- a pure cash debit,
-//                            inert (byte-identical) at the default
-//                            BorrowModel{} (annual_rate=0.0)
+//    3.5 mark_to_market     refresh Portfolio marks after permanent fill impact
 //    4. append_sealed_row   write the completed bar into the PIT RollingPanel
 //    5. if schedule fires:  evaluate the signal over the panel view,
 //    6.                      turn it into target weights, then
@@ -79,7 +78,10 @@
 //  a bounded number of times. WeightPolicy still allocates once per rebalance
 //  (its tracked residual), which is the rebalance cadence, not per bar.
 
+#include <limits>  // std::numeric_limits (checked elapsed nanoseconds)
+#include <optional> // std::optional (first observation has no preceding interval)
 #include <span>    // std::span (drained-slice view, order list)
+#include <stdexcept> // invalid_argument, overflow_error, runtime_error (run boundary)
 #include <utility> // std::move (result hand-off)
 #include <vector>  // std::vector (per-slice scratch + result accumulators)
 
@@ -89,7 +91,7 @@
 
 #include "atx/engine/bus/event_bus.hpp"       // EventBus<> (the spine bus)
 #include "atx/engine/clock/sim_clock.hpp"     // SimClock (the spine clock)
-#include "atx/engine/cost/borrow.hpp"         // cost::BorrowModel, cost::accrue_borrow (S4-3c)
+#include "atx/engine/cost/borrow.hpp"         // BorrowModel, accrue_borrow_for_elapsed
 #include "atx/engine/data/data_handler.hpp"   // data::IDataHandler (the spine feed)
 #include "atx/engine/data/market.hpp"         // data::MarketPayload (slice decode)
 #include "atx/engine/event/event.hpp"         // event::Event, EventType
@@ -177,23 +179,28 @@ public:
   /// Registers consumer 0 on `bus` — the bus must have no prior consumer
   /// registered. `universe` is the fixed instrument set, in the SAME column order
   /// the panel / market / portfolio / signal source were built over.
-  /// S4-3c: `borrow` (trailing, inert-default `cost::BorrowModel{}` ==
-  /// `{annual_rate=0.0, D360}`) accrues short-borrow financing once per bar in
-  /// the settle sequence (see on_time_slice). `annual_rate == 0.0` ⇒
-  /// `daily_borrow` returns an exact Decimal ZERO charge ⇒ `accrue_financing`
-  /// subtracts zero from cash ⇒ byte-identical to every existing caller that
-  /// omits this parameter (the boundary-pin no-op).
+  /// `exec` must be dedicated to this strategy: each successful rebalance replaces
+  /// its complete pending order book with the new target-minus-filled quantities.
+  /// `borrow` accrues on previous holdings and marks over elapsed calendar time.
+  /// ACT/360 and ACT/365 are supported; zero rate is inert. This is a continuous
+  /// trade-date research convention, not broker settlement/collateral accounting.
+  /// @throws std::invalid_argument for an invalid rate or unsupported day count,
+  /// before registering the bus consumer or mutating execution configuration.
   BacktestLoop(data::IDataHandler &feed, SimClock &clock, EventBus<> &bus, RollingPanel<Cap> &panel,
                ISignalSource &signal, const WeightPolicy &policy, exec::ExecutionSimulator &exec,
                Portfolio &portfolio, Market &market, Universe universe, Schedule schedule,
-               Delay delay = Delay::Next, cost::BorrowModel borrow = cost::BorrowModel{}) noexcept
+               Delay delay = Delay::Next, cost::BorrowModel borrow = cost::BorrowModel{})
       : feed_{&feed}, clock_{&clock}, bus_{&bus}, panel_{&panel}, signal_{&signal},
         policy_{&policy}, exec_{&exec}, portfolio_{&portfolio}, market_{&market},
         universe_{universe}, schedule_{schedule}, delay_{delay}, borrow_{borrow} {
+    const auto valid_borrow = cost::validate_elapsed_borrow_model(borrow_);
+    if (!valid_borrow) {
+      throw std::invalid_argument{valid_borrow.error().to_string()};
+    }
     // One consumer drives the single-threaded drain. Reserve the slice scratch to
     // the universe size so steady-state slice assembly never allocates.
-    (void)bus_->add_consumer(0);
     slice_rows_.reserve(universe_.size());
+    (void)bus_->add_consumer(0);
 
     // Fill-timing knob (P3c-3). delay-0 (Same) flips the exec sim's same-bar
     // relaxation ON so the dedicated post-queue same-bar settle below CAN fill;
@@ -224,6 +231,9 @@ public:
 
   /// Run the backtest to EOF and return the result. Drives feed.step() then
   /// drain_in_order() in lockstep; each true step is one sealed cross-section.
+  /// Financing/time errors throw before that slice changes market or positions.
+  /// Basic guarantee: earlier slices and the already-advanced feed remain consumed;
+  /// a failed run must not be resumed. No future financing is added at EOF.
   [[nodiscard]] BacktestResult run() {
     while (feed_->step()) {
       // Drain THIS frontier's Market events into the slice scratch. The feed
@@ -260,6 +270,7 @@ private:
   /// The per-slice crank (plan §2). The fixed step order IS the no-look-ahead
   /// guarantee — see the header. `t` is the sealed slice's timestamp.
   void on_time_slice(atx::core::time::Timestamp t, const MarketSlice &slice) {
+    accrue_elapsed_borrow(t);            // 0. finance the interval actually held
     market_->update_prices(slice);        // 1. refresh marks from this slice's closes
     portfolio_->mark_to_market(*market_); // 2. value the book on the new marks
 
@@ -268,14 +279,6 @@ private:
     //    order decided here can never fill here. (delay-0 adds a second settle
     //    AFTER queue, in rebalance(), gated entirely by Delay::Same.)
     settle_at(t);
-
-    // S4-3c [B5 fix]: accrue one bar's short-borrow financing on the JUST-
-    // SETTLED book (the holdings step 3 finalized for this slice) -- a pure
-    // cash debit via Portfolio::accrue_financing (accrue_borrow), never a
-    // synthetic fill. Placed once per bar, after settle and before the panel
-    // seal, so it reflects the same book turnover() reports for this slice.
-    // Inert (byte-identical) at the default annual_rate=0.0.
-    cost::accrue_borrow(borrow_, *portfolio_, *market_, universe_);
 
     panel_->append_sealed_row(slice); // 4. seal the completed bar into the panel
 
@@ -288,12 +291,40 @@ private:
     ++slice_index_;
   }
 
+  /// Use the preceding slice's book before current prices/fills can change it.
+  /// Timestamp subtraction is checked before converting to the signed duration.
+  void accrue_elapsed_borrow(atx::core::time::Timestamp now) {
+    if (!previous_slice_) {
+      previous_slice_ = now;
+      return;
+    }
+    const atx::i64 current_ns = now.unix_nanos();
+    const atx::i64 previous_ns = previous_slice_->unix_nanos();
+    if (current_ns < previous_ns) {
+      throw std::invalid_argument{"BacktestLoop: slice time moved backwards"};
+    }
+    // Unsigned subtraction is defined even when ordered timestamps straddle zero.
+    const atx::u64 elapsed_ns =
+        static_cast<atx::u64>(current_ns) - static_cast<atx::u64>(previous_ns);
+    if (elapsed_ns > static_cast<atx::u64>(std::numeric_limits<atx::i64>::max())) {
+      throw std::overflow_error{"BacktestLoop: elapsed nanoseconds exceed Duration range"};
+    }
+    const auto elapsed =
+        atx::core::time::Duration::nanoseconds(static_cast<atx::i64>(elapsed_ns));
+    const auto accrued =
+        cost::accrue_borrow_for_elapsed(borrow_, *portfolio_, *market_, universe_, elapsed);
+    if (!accrued) {
+      throw std::runtime_error{accrued.error().to_string()};
+    }
+    previous_slice_ = now;
+  }
+
   /// Evaluate the strategy over the sealed panel and queue the resulting orders.
   /// Under delay-1 (Next, the default) they fill on a strictly-LATER slice — the
   /// firewall. Under delay-0 (Same) a dedicated post-queue settle at THIS `t`
   /// fills them against this bar's close (opt-in). An expected signal failure
-  /// (exhausted scripted schedule) or an all-NaN signal produces no orders — never
-  /// an abort.
+  /// (exhausted scripted schedule) preserves pending intent. An all-NaN signal
+  /// produces zero targets, canceling stale intent and closing filled positions.
   void rebalance(atx::core::time::Timestamp t) {
     auto signal = signal_->evaluate(panel_->view()); // 6. strategy = VM (or scripted)
     if (!signal) {
@@ -302,7 +333,9 @@ private:
     const std::vector<atx::f64> weights = policy_->to_target_weights(*signal, universe_);
     const std::vector<exec::OrderPayload> orders =
         policy_->reconcile(weights, universe_, *portfolio_, *market_, t); // 7. target - current
-    exec_->queue(std::span<const exec::OrderPayload>{orders}, t);
+    // Reconcile uses FILLED holdings; its deltas already include any outstanding
+    // remainder. Appending them would duplicate intent after every partial fill.
+    exec_->replace_pending(std::span<const exec::OrderPayload>{orders}, t);
 
     // delay-0 (Same) ONLY: a second settle at THIS same `t` lets the just-queued
     // orders fill against this bar's close. It is gated entirely by `delay_`, so
@@ -321,9 +354,15 @@ private:
   /// span borrows sim-owned scratch valid only until the next sim call, so it is
   /// fully consumed here.
   void settle_at(atx::core::time::Timestamp now) {
-    for (const exec::FillPayload &f : exec_->settle_pending(now, *market_)) {
+    const auto fills = exec_->settle_pending(now, *market_);
+    for (const exec::FillPayload &f : fills) {
       portfolio_->apply_fill(f);
       record_fill(f);
+    }
+    if (!fills.empty()) {
+      // Permanent impact changes Market during settlement; sizing and sampling
+      // must value the resulting holdings against that same post-fill book.
+      portfolio_->mark_to_market(*market_);
     }
   }
 
@@ -354,12 +393,13 @@ private:
   Universe universe_;
   Schedule schedule_;
   Delay delay_;              // fill-timing knob (P3c-3): Same = delay-0, Next = delay-1
-  cost::BorrowModel borrow_; // S4-3c: annual_rate==0.0 (default) => zero charge, inert
+  cost::BorrowModel borrow_; // annual_rate==0.0 (default) => zero charge, inert
 
   // ---- run state ------------------------------------------------------------
   std::vector<SliceRow> slice_rows_; // per-slice scratch (reserved once)
   BacktestResult result_;            // accrues over the run, moved out at EOF
   atx::usize slice_index_ = 0;       // 0-based slice counter (drives the cadence gate)
+  std::optional<atx::core::time::Timestamp> previous_slice_;
 };
 
 } // namespace atx::engine

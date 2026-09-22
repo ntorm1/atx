@@ -1,0 +1,84 @@
+{
+  "status": "complete",
+  "policy_version": "tickerhistory-qa-v1",
+  "source": {
+    "crc_verified": true,
+    "member": "tbltickerhistory3_10y.txt",
+    "member_crc32": "15b6e051",
+    "member_uncompressed_bytes": 11084562320,
+    "path": "C:\\Users\\natha\\Downloads\\tbltickerhistory3_10y.zip",
+    "sha256": "7d2b7a615a08ef3b8686608eda384c4e30e2ce23bdee294ea141b3c9334acd8f",
+    "size_bytes": 3542506361
+  },
+  "window": {
+    "end_inclusive": "2026-06-15",
+    "start_inclusive": "2026-05-01"
+  },
+  "counts": {
+    "accepted_rows": 372014,
+    "duplicate_positive_keys": 16,
+    "outside_window_rows": 31222753,
+    "rejected_rows": 3732,
+    "selected_rows": 375746,
+    "source_rows": 31598499
+  },
+  "primary_rejection_counts": {
+    "duplicate_positive_date_security_id": 32,
+    "invalid_or_nonpositive_ohlc": 1,
+    "invalid_or_nonpositive_security_id": 1916,
+    "ohlc_order_violation": 1783
+  },
+  "overlapping_reason_counts": {
+    "duplicate_positive_date_security_id": 32,
+    "invalid_or_nonpositive_ohlc": 1,
+    "invalid_or_nonpositive_security_id": 1916,
+    "ohlc_order_violation": 2488
+  },
+  "nonrejecting_flags": {
+    "accepted_zero_shares": 20829,
+    "accepted_zero_volume": 71,
+    "selected_zero_shares": 23296,
+    "selected_zero_volume": 219
+  },
+  "accepted": {
+    "filename": "accepted.zip",
+    "rows_preserved_byte_for_byte": true,
+    "sha256": "907d877b4bbd11db6dc6d86bf5fc6cad92fc891fdadff16adfeb9ba6daa85c07",
+    "size_bytes": 44080207
+  },
+  "conflict_fixture": {
+    "date": "2026-05-04",
+    "filename": "conflict_fixture.zip",
+    "purpose": "Native duplicate-key rejection fixture; NOT accepted data",
+    "rows": 2,
+    "security_id": 6459818,
+    "sha256": "84f836f630f2aedc27e1096db14ed4af356503f24f4065321ae45c9d7d3d7bbb",
+    "size_bytes": 742
+  },
+  "policy": [
+    "All positive duplicate date/ID rows quarantined, including identical duplicates",
+    "No first/last selection, price repair, factor adjustment, or todayTicker selection",
+    "Finite positive OHLC and cumulative factor; valid OHLC ordering and adjusted products",
+    "Finite nonnegative volume; zero volume allowed and counted",
+    "Shares preserved unchanged; zero/invalid shares flagged without inference"
+  ],
+  "limits": [
+    "Does not validate economic daily-return/factor consistency or shares revisions",
+    "Archive snapshot is not original historical publication or bitemporal data",
+    "Vendor currently states 05:00 CT T+1; historical calendar/release timing is unverified",
+    "Input quality checkpoint only; no investment performance or tradability claim"
+  ],
+  "bounds": {
+    "max_line_bytes": 1048576,
+    "max_source_bytes_per_date": 134217728
+  },
+  "manifest_path": "C:\\atx\\data\\tickerhistory_20260501_20260615_20260919\\manifest.json",
+  "manifest_sha256": "82312b38f3197cdbf383261c584b568fb635984af9401f16337d7da1bf8c5422",
+  "tool_path": "atx-engine/tools/prepare_tickerhistory.py",
+  "tool_sha256": "f153c3bf8de1595716c0527c847829a1819b57d79e1bbd95aa5af252d45ecb2f",
+  "fixture_validation": {
+    "command": "python -m unittest discover -s atx-engine/tests/tools -p test_prepare_tickerhistory.py -v",
+    "tests_passed": 3
+  },
+  "output_crc_verified": true
+}

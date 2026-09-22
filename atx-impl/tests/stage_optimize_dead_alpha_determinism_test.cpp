@@ -231,6 +231,7 @@ TEST_F(AtxImplOptimizeDeadAlphaDeterminism, TwiceRunByteIdentical) {
   seed_crowded_library(tmp_dir_ / "lib", /*n_dead=*/3U, M, center);
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = research_path.string();
   cfg.combo = combo_path.string();
   cfg.gross = 1.0;

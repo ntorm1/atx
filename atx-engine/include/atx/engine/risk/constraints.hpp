@@ -191,7 +191,10 @@ struct MaterializedConstraints {
   atx::f64 gross_l1_budget = -1.0;     // Σ|w| <= this; < 0 ⇒ no gross-L1 cap
   bool has_turnover = false;           // a TurnoverBudget was set
   atx::f64 turnover_budget = 0.0;      // Σ|w − w_prev| <= this (valid iff has_turnover)
-  std::vector<atx::f64> turnover_ref;  // w_prev snapshot keying the turnover L1 (valid iff has_turnover)
+  std::vector<atx::f64> turnover_ref;  // w_prev for a hard turnover budget or objective penalty
+  // Exact objective cost kappa*sum(abs(w-w_prev)), independent of a hard budget.
+  // Positive penalty also requires a length-M turnover_ref; zero is inert.
+  atx::f64 turnover_penalty = 0.0;
 
   // CONE metadata (S8.5a — NOT linear in w; the ADMM owns the SOC z-projection). The
   // tracking-error SOC needs L_F = chol(F) and sqrt(D) from the FactorModel to form its

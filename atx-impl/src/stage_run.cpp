@@ -1,5 +1,6 @@
 #include "stages.hpp"
 
+#include <cmath>
 #include <filesystem>
 #include <string>
 
@@ -47,6 +48,20 @@ atx::core::Result<StageResult> run_all(const RunConfig& cfg)
     if (cfg.zip.empty()) {
         return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                               "run: --zip required");
+    }
+
+    // A planning charge must not disappear at report handoff, including meta
+    // books whose old sidecars round or omit that telemetry. Require a deliberate
+    // actual fee choice; zero is valid only when explicitly selected.
+    if (!std::isfinite(cfg.cost_bps) || cfg.cost_bps < 0.0 ||
+        !std::isfinite(cfg.replay_trade_bps) || cfg.replay_trade_bps < 0.0) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "run: planning and replay trade rates must be finite/nonnegative");
+    }
+    if (cfg.cost_bps != 0.0 && cfg.replay_trade_bps == 0.0 &&
+        cfg.set_flags.count("replay-trade-bps") == 0) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "run: --cost-bps requires an explicit --replay-trade-bps choice");
     }
 
     const fs::path work = cfg.out;
@@ -141,6 +156,9 @@ atx::core::Result<StageResult> run_all(const RunConfig& cfg)
 
     // 6. report
     RunConfig c_rep = cfg;
+    // --cost-bps belongs to the optimizer's planning model. The identified
+    // replay uses its own explicit per-traded-dollar fee, never this scalar.
+    c_rep.cost_bps = 0.0;
     c_rep.panel      = (work / "panel.bin").string();
     c_rep.books      = (work / "books.bin").string();
     // A2b — point report at combo.bin so it finds combo.bin.meta and can split

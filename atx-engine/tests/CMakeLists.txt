@@ -52,6 +52,13 @@ foreach(grp IN LISTS _atx_groups)
 
     file(GLOB _grp_sources CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/${grp}/*_test.cpp")
+    # Older cone/QP suites predate subsystem directories. Keep them in the risk
+    # target so they cannot silently disappear from build and test discovery.
+    if(grp STREQUAL "risk")
+        file(GLOB _legacy_risk_sources CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/risk_*_test.cpp")
+        list(APPEND _grp_sources ${_legacy_risk_sources})
+    endif()
     if(NOT _grp_sources)
         message(WARNING "test group '${grp}' has no *_test.cpp sources; skipping")
         continue()

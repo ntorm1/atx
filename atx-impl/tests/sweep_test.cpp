@@ -100,6 +100,7 @@ static atx::impl::RunConfig sweep_cfg(const std::string& panel_path,
                                       long sweep_runs) {
     atx::impl::RunConfig cfg;
     cfg.subcommand   = "sweep";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel        = panel_path;
     cfg.alpha_out    = alpha_out;
     cfg.seed         = seed;
@@ -450,6 +451,7 @@ TEST(AtxImplSweep, MissingLibraryDirFails) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand   = "sweep";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel        = panel_path;
     cfg.alpha_out    = alpha_out;
     cfg.seed         = 1ULL;
@@ -611,6 +613,7 @@ TEST(AtxImplSweep, EndToEndMegaAlphaHasPositiveOosSharpe) {
     {
         atx::impl::RunConfig c;
         c.subcommand           = "combine";
+        c.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         c.panel                = panel_path;
         c.library_dir          = lib_dir;
         c.combo_out            = combo_path;
@@ -627,6 +630,7 @@ TEST(AtxImplSweep, EndToEndMegaAlphaHasPositiveOosSharpe) {
     {
         atx::impl::RunConfig c;
         c.subcommand = "optimize";
+        c.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         c.panel      = panel_path;
         c.combo      = combo_path;
         c.books_out  = books_path;
@@ -639,6 +643,7 @@ TEST(AtxImplSweep, EndToEndMegaAlphaHasPositiveOosSharpe) {
     {
         atx::impl::RunConfig c;
         c.subcommand = "report";
+        c.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         c.panel      = panel_path;
         c.books      = books_path;
         c.combo      = combo_path;

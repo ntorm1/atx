@@ -59,6 +59,7 @@
 
 #include <algorithm> // std::sort (per-column ascending-row ordering)
 #include <cassert>   // assert (solve() span-length precondition)
+#include <limits>    // checked factor payload sizes / default unlimited budget
 #include <numeric>   // std::iota (column-sort index permutation)
 #include <span>      // std::span (solve I/O)
 #include <string>    // std::to_string (zero-pivot diagnostic message)
@@ -89,9 +90,18 @@ public:
   //  Symbolic phase — AMD permutation + elimination tree + L pattern + alloc plan.
   //  Depends ONLY on the sparsity pattern of K. Cacheable across rebalances.
   //  Err(InvalidArgument) if K is not square; the upper triangle is what is read.
+  //  max_factor_bytes caps the requested Lp/Li/Lx/D/Dinv element payload, using
+  //  actual symbolic fill. It excludes symbolic workspaces, retained vector
+  //  capacity, allocator overhead and other solver storage; it is not an RSS cap.
+  //  A rejected attempt invalidates the prior factor. Budget/size failures return
+  //  OutOfRange before assigning any of those five payload vectors.
   // -------------------------------------------------------------------------
-  [[nodiscard]] Status factor_symbolic(const SpMat &K) {
+  [[nodiscard]] Status factor_symbolic(
+      const SpMat &K,
+      atx::u64 max_factor_bytes = std::numeric_limits<atx::u64>::max()) {
     namespace co = atx::core;
+    symbolic_ready_ = false;
+    numeric_ready_ = false;
     if (K.rows() != K.cols()) {
       return co::Err(co::ErrorCode::InvalidArgument, "QuasiDefiniteLdl: K must be square");
     }
@@ -207,13 +217,58 @@ public:
                      "triangular consistent)");
     }
 
-    // (4) Column pointers Lp from the counts; allocate Li/Lx. L is unit lower-
-    //     triangular in the PERMUTED ordering (diagonal implicit).
+    // (4) Check actual symbolic fill and every factor payload byte before any
+    //     Lp/Li/Lx/D/Dinv assignment. The default path uses the identical counts
+    //     and ordering; no clipping or dense worst-case fill estimate is used.
+    constexpr atx::u64 max_u64 = std::numeric_limits<atx::u64>::max();
+    atx::u64 lnnz_u64 = 0;
+    for (const atx::usize count : Lnz_) {
+      if (static_cast<atx::u64>(count) > max_u64 - lnnz_u64) {
+        return co::Err(co::ErrorCode::OutOfRange,
+                       "QuasiDefiniteLdl: symbolic factor nonzero count overflow");
+      }
+      lnnz_u64 += static_cast<atx::u64>(count);
+    }
+    const auto n_u64 = static_cast<atx::u64>(n_);
+    if (n_u64 == max_u64 || n_ == std::numeric_limits<atx::usize>::max() ||
+        n_ + 1 > Lp_.max_size() || n_ > D_.max_size() || n_ > Dinv_.max_size() ||
+        lnnz_u64 > Li_.max_size() || lnnz_u64 > Lx_.max_size()) {
+      return co::Err(co::ErrorCode::OutOfRange,
+                     "QuasiDefiniteLdl: factor element count exceeds storage range");
+    }
+    atx::u64 factor_bytes = 0;
+    const auto add_payload = [&factor_bytes](atx::u64 count, atx::u64 width) {
+      constexpr atx::u64 limit = std::numeric_limits<atx::u64>::max();
+      if (count > limit / width) {
+        return false;
+      }
+      const atx::u64 bytes = count * width;
+      if (bytes > limit - factor_bytes) {
+        return false;
+      }
+      factor_bytes += bytes;
+      return true;
+    };
+    if (!add_payload(n_u64 + 1, sizeof(atx::usize)) ||
+        !add_payload(lnnz_u64, sizeof(atx::usize)) ||
+        !add_payload(lnnz_u64, sizeof(atx::f64)) ||
+        !add_payload(n_u64, sizeof(atx::f64)) ||
+        !add_payload(n_u64, sizeof(atx::f64))) {
+      return co::Err(co::ErrorCode::OutOfRange,
+                     "QuasiDefiniteLdl: factor payload byte count overflow");
+    }
+    if (factor_bytes > max_factor_bytes) {
+      return co::Err(co::ErrorCode::OutOfRange,
+                     "QuasiDefiniteLdl: factor payload requires " + std::to_string(factor_bytes) +
+                         " bytes, exceeds max_factor_bytes=" + std::to_string(max_factor_bytes));
+    }
+
+    // L is unit lower-triangular in the permuted ordering (diagonal implicit).
     Lp_.assign(n_ + 1, 0);
     for (atx::usize c = 0; c < n_; ++c) {
       Lp_[c + 1] = Lp_[c] + Lnz_[c];
     }
-    const atx::usize lnnz = Lp_[n_];
+    const auto lnnz = static_cast<atx::usize>(lnnz_u64);
     Li_.assign(lnnz, 0);
     Lx_.assign(lnnz, 0.0);
     D_.assign(n_, 0.0);
@@ -231,6 +286,7 @@ public:
   // -------------------------------------------------------------------------
   [[nodiscard]] Status factor_numeric(const SpMat &K) {
     namespace co = atx::core;
+    numeric_ready_ = false;
     if (!symbolic_ready_) {
       return co::Err(co::ErrorCode::Internal,
                      "QuasiDefiniteLdl: factor_numeric called before factor_symbolic");
@@ -355,6 +411,7 @@ public:
   //  may alias different buffers; both must have length n.
   // -------------------------------------------------------------------------
   void solve(std::span<const atx::f64> rhs, std::span<atx::f64> x) const {
+    assert(numeric_ready_ && "QuasiDefiniteLdl::solve: factor_numeric must have succeeded");
     assert(rhs.size() == n_ && x.size() == n_ && "QuasiDefiniteLdl::solve: rhs/x must have length n");
     // (1) Permute rhs into the factorization ordering: xp[new] = rhs[old].
     std::vector<atx::f64> xp(n_, 0.0);

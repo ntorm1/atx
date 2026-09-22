@@ -192,6 +192,7 @@ protected:
         fs::create_directories(report_path, ec);
 
         atx::impl::RunConfig opt_cfg;
+        opt_cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         opt_cfg.panel         = research_path_;
         opt_cfg.combo         = combo_path_;
         opt_cfg.books_out     = books_path.string();
@@ -206,6 +207,7 @@ protected:
         ATX_TRY(auto opt_sr, atx::impl::run_optimize(opt_cfg));
 
         atx::impl::RunConfig rep_cfg;
+        rep_cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         rep_cfg.panel      = research_path_;
         rep_cfg.books      = books_path.string();
         rep_cfg.report_out = report_path.string();

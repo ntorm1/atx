@@ -137,6 +137,7 @@ TEST(StageCombineCleanedCov, DiagonalKindByteIdenticalToLegacyPath) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.method     = "shrinkage-mv";

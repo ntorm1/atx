@@ -77,7 +77,8 @@ struct RefSpans {
 // Per-instrument resolution (in price.instruments() order):
 //   1. Find the instrument in reference.instruments() (linear scan; O(M) cold).
 //      If absent: market_cap[i] = NaN, group_id[i] = default_group. Done.
-//   2. Resolve as-of row: as_of_index(reference.dates(), as_of_date).
+//   2. Resolve the latest row whose availability (date + pit_delay calendar days)
+//      is <= as_of_date. Date encodings must match; reference dates must ascend.
 //      If nullopt (as_of_date precedes all reference dates):
 //              market_cap[i] = NaN, group_id[i] = default_group. Done.
 //   3. Read reference.column_by_name("market_cap")[row * ref_ni + ref_inst_idx].

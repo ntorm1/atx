@@ -172,6 +172,7 @@ TEST_F(AtxImplOptimizeDeadAlphaWire, FailOpen_FlagOffByteIdentical) {
   seed_crowded_library(tmp_dir_ / "lib", 2U, M, 3U);
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = research_path.string();
   cfg.combo = combo_path.string();
   cfg.gross = 1.0;
@@ -203,6 +204,7 @@ TEST_F(AtxImplOptimizeDeadAlphaWire, FailOpen_MissingDirByteIdentical) {
   ASSERT_TRUE(make_pair_combo(combo_path, M, D).has_value());
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = research_path.string();
   cfg.combo = combo_path.string();
   cfg.gross = 1.0;
@@ -253,6 +255,7 @@ TEST_F(AtxImplOptimizeDeadAlphaWire, FailOpen_EmptyLibraryByteIdentical) {
   }
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = research_path.string();
   cfg.combo = combo_path.string();
   cfg.gross = 1.0;
@@ -289,6 +292,7 @@ TEST_F(AtxImplOptimizeDeadAlphaWire, CrowdedPoolDelevers) {
   seed_crowded_library(tmp_dir_ / "lib3", /*n_dead=*/3U, M, center);
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = research_path.string();
   cfg.combo = combo_path.string();
   cfg.gross = 1.0;

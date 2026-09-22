@@ -174,9 +174,9 @@ elseif ($verb -eq "check") {
   # Resolves each source to its .obj via ninja's target list, so it works for any
   # first-party TU without knowing the owning CMake target.
   if ($rest.Count -eq 0) { throw "usage: atx-build.ps1 check <source.cpp> [more.cpp ...]" }
-  $buildDir = Join-Path $RepoRoot "build"
+  $buildDir = Join-Path $RepoRoot (Get-PresetBinaryDir $Preset)
   if (-not (Test-Path (Join-Path $buildDir "build.ninja"))) {
-    throw "no build/build.ninja - run: atx-build.ps1 configure"
+    throw "no $buildDir/build.ninja - run: atx-build.ps1 configure -Preset $Preset"
   }
   $ninjaExe = Join-Path $NinjaDir "ninja.exe"
   # `-t targets all` needs no MSVC env; lines look like "path/to/foo.cpp.obj: CXX_COMPILER__..."
@@ -232,8 +232,20 @@ if ($DryRun) {
 
 Write-Host ("[atx-build] " + $innerExe + " " + ($innerArgs -join " ")) -ForegroundColor Cyan
 if (-not $requiresMsvc) {
-  & $innerExe @innerArgs
-  exit $LASTEXITCODE
+  # Windows PowerShell can promote redirected native stderr to a terminating
+  # ErrorRecord under Stop. Native diagnostics are not the success signal;
+  # preserve them and use the executable's exit code (as for the build below).
+  $nativeTool = Get-Command $innerExe -CommandType Application -ErrorAction Stop | Select-Object -First 1
+  $savedErrorAction = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    & $nativeTool.Source @innerArgs
+    $exitCode = $LASTEXITCODE
+  }
+  finally {
+    $ErrorActionPreference = $savedErrorAction
+  }
+  exit $exitCode
 }
 
 # Import vcvars into THIS PowerShell process, then invoke the executable with a
@@ -258,11 +270,17 @@ $env:PATH = "$PathPrefix;$env:PATH"
 # paths in the hash -> cross-worktree cache hits).
 $env:CCACHE_BASEDIR = $RepoRoot
 Push-Location $RepoRoot
+$savedErrorAction = $ErrorActionPreference
 try {
-  & $innerExe @innerArgs
+  $nativeTool = Get-Command $innerExe -CommandType Application -ErrorAction Stop | Select-Object -First 1
+  # CMake emits normal regeneration notices (e.g. GLOB mismatch) on stderr.
+  # Do not abort a successful native command solely because output is captured.
+  $ErrorActionPreference = "Continue"
+  & $nativeTool.Source @innerArgs
   $exitCode = $LASTEXITCODE
 }
 finally {
+  $ErrorActionPreference = $savedErrorAction
   Pop-Location
 }
 exit $exitCode

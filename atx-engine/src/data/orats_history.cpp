@@ -1,6 +1,7 @@
 #include "atx/engine/data/orats_history.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <charconv>
 #include <chrono>
@@ -17,6 +18,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "atx/core/io/parquet_writer.hpp"
@@ -40,6 +42,9 @@ constexpr atx::i64 days_from_civil(int y, unsigned m, unsigned d) noexcept {
 std::optional<atx::i64> date_to_nanos(std::string_view ymd) {
   // strict "YYYY-MM-DD"
   if (ymd.size() != 10 || ymd[4] != '-' || ymd[7] != '-') return std::nullopt;
+  for (atx::usize i = 0; i < ymd.size(); ++i) {
+    if (i != 4 && i != 7 && (ymd[i] < '0' || ymd[i] > '9')) return std::nullopt;
+  }
   int y = 0, mo = 0, d = 0;
   auto num = [](std::string_view s, int &out) {
     const auto r = std::from_chars(s.data(), s.data() + s.size(), out);
@@ -47,9 +52,20 @@ std::optional<atx::i64> date_to_nanos(std::string_view ymd) {
   };
   if (!num(ymd.substr(0, 4), y) || !num(ymd.substr(5, 2), mo) || !num(ymd.substr(8, 2), d))
     return std::nullopt;
-  if (mo < 1 || mo > 12 || d < 1 || d > 31) return std::nullopt;
+  if (mo < 1 || mo > 12 || d < 1) return std::nullopt;
+  constexpr std::array<int, 12> month_days{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  const bool leap_year = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+  const int max_day = month_days[static_cast<atx::usize>(mo - 1)] +
+                      (mo == 2 && leap_year ? 1 : 0);
+  if (d > max_day) return std::nullopt;
   const atx::i64 days = days_from_civil(y, static_cast<unsigned>(mo), static_cast<unsigned>(d));
-  return days * 86400LL * 1000000000LL;
+  constexpr atx::i64 kNanosPerDay = 86400LL * 1000000000LL;
+  // Integer division truncates toward zero: these are the first/last whole
+  // days whose midnight is representable, including dates before the epoch.
+  if (days < std::numeric_limits<atx::i64>::min() / kNanosPerDay ||
+      days > std::numeric_limits<atx::i64>::max() / kNanosPerDay)
+    return std::nullopt;
+  return days * kNanosPerDay;
 }
 
 atx::core::Result<ColumnIndex> resolve_header(std::string_view header_line) {
@@ -230,12 +246,18 @@ struct LoadState {
   // supplies this). Routing the date-boundary flush through a callback keeps
   // process_line oblivious to threading: it just hands off the previous date.
   std::function<atx::core::Status(DateAccumulator &)> flush;
+  // Source ordering is independent of the kept-row accumulator: even a date
+  // filtered by the floor or followed only by malformed IDs advances this guard.
+  std::optional<atx::i64> previous_input_date;
+  // Positive IDs on the current source date, after the floor but BEFORE the
+  // optional sector filter. A filter must not hide a conflicting source key.
+  std::unordered_set<atx::i64> seen_ids;
 };
 
 // Process ONE data line (header already consumed). Increments rows_read, then
 // classifies the row into exactly one of {malformed, filtered, kept} so the
 // invariant rows_read == rows_filtered + rows_malformed + rows_kept holds on
-// every path. A date regression (raw input, BEFORE the floor) fails closed.
+// success. A date regression or duplicate positive key fails closed.
 atx::core::Status process_line(std::string_view line, LoadState &st) {
   ++st.stats.rows_read;
 
@@ -254,9 +276,13 @@ atx::core::Status process_line(std::string_view line, LoadState &st) {
   // 2) Monotonic date-major guard — on ALL rows, BEFORE the floor filter. The
   //    contract is "input MUST be date-major"; a regression among sub-floor rows
   //    is still a malformed input, not a silent drop.
-  if (date_nanos < st.current_date_nanos) {
+  if (st.previous_input_date && date_nanos < *st.previous_input_date) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "orats load: non-monotonic tradingDate");
+  }
+  if (!st.previous_input_date || date_nanos != *st.previous_input_date) {
+    st.seen_ids.clear();
+    st.previous_input_date = date_nanos;
   }
 
   // 3) Date floor filter.
@@ -265,10 +291,24 @@ atx::core::Status process_line(std::string_view line, LoadState &st) {
     return atx::core::Ok();
   }
 
-  // 4) securityID required.
+  // 4) securityID is a positive bigint, parsed once in full. Zero cannot identify
+  // a unique tradable security in this source (unrelated tickers share that ID).
   if (k.secid.empty()) {
     ++st.stats.rows_malformed;
     return atx::core::Ok();
+  }
+  atx::i64 secid_i64 = 0;
+  const auto parsed_id =
+      std::from_chars(k.secid.data(), k.secid.data() + k.secid.size(), secid_i64);
+  if (parsed_id.ec != std::errc{} || parsed_id.ptr != k.secid.data() + k.secid.size() ||
+      secid_i64 <= 0) {
+    ++st.stats.rows_malformed;
+    return atx::core::Ok();
+  }
+  if (!st.seen_ids.insert(secid_i64).second) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "orats load: duplicate securityID " + std::to_string(secid_i64) +
+                              " on tradingDate " + std::string(k.date));
   }
 
   // 4b) Single-stock prune (opt-in): a row with no parseable GICS sector is not a
@@ -298,17 +338,11 @@ atx::core::Status process_line(std::string_view line, LoadState &st) {
   // 6) Keep the row: securityID (already extracted) + the raw line bytes. The 16
   //    value columns are parsed later on a worker thread (run_job), not here.
   //    symbols and raw stay in lockstep (one entry + one line per kept row).
-  st.acc.symbols.emplace_back(k.secid);
+  st.acc.symbols.push_back(std::to_string(secid_i64));
   st.acc.raw.append(line.data(), line.size());
   st.acc.raw.push_back('\n');
 
   // 7) Symbology side-car: first-seen ticker info, keyed by securityID as i64.
-  atx::i64 secid_i64 = 0;
-  {
-    const auto r =
-        std::from_chars(k.secid.data(), k.secid.data() + k.secid.size(), secid_i64);
-    if (r.ec != std::errc{}) secid_i64 = 0;
-  }
   st.symbology.try_emplace(secid_i64, std::string(k.ticker), std::string(k.today));
 
   ++st.stats.rows_kept;
@@ -450,7 +484,7 @@ atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg)
 
   // max_needed_col is set once the header resolves (the producer scans each row
   // only this far); 0 until then — no data row is processed before the header.
-  LoadState st{cfg, idx, stats, acc, current_date_nanos, symbology, 0, {}};
+  LoadState st{cfg, idx, stats, acc, current_date_nanos, symbology, 0, {}, {}, {}};
 
   constexpr atx::usize kChunk = 1u << 22; // 4 MiB inflate reads
   std::vector<char> buf(kChunk);

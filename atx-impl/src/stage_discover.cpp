@@ -43,6 +43,7 @@
 #include "research_sim.hpp"
 #include "serialize_genome.hpp"
 #include "serialize_panel.hpp"
+#include "panel_pipeline.hpp"
 #include "stage_discover_detail.hpp"             // atx::impl::detail::apply_capacity_screen (Fix 1: testable)
 #include "store_progress_sink.hpp"               // StoreProgressSink, compute_discover_fingerprint, fp_hex, now_unix
 
@@ -515,7 +516,8 @@ atx::core::Result<StageResult> run_discover_gated(
     const std::vector<std::string>& fields,
     const atx::engine::alpha::Panel* weak_panel, // W4a: §0.8 weak sub-universe (nullptr = off)
     const std::vector<std::string>& numeric_excluded_fields, // R1: typed-fields exclusion list
-    const std::vector<std::string>& extra_group_fields)      // R1: typed-fields extra group list
+    const std::vector<std::string>& extra_group_fields,
+    const std::string& source_artifact_id)
 {
     namespace fs      = std::filesystem;
     namespace combine = atx::engine::combine;
@@ -800,6 +802,8 @@ atx::core::Result<StageResult> run_discover_gated(
                 "discover (gated): cannot write manifest: " + manifest_path);
         }
         mf << "gated=1\n";
+        mf << "source_artifact_id="
+           << (source_artifact_id.empty() ? "unknown" : source_artifact_id) << '\n';
         mf << "seed="            << cfg.seed             << '\n';
         mf << "count="           << n                    << '\n';
         mf << "evaluated="       << rep.evaluated        << '\n';
@@ -965,7 +969,8 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
     }
 
     // 2. Load the research panel.
-    ATX_TRY(auto panel, read_panel(cfg.panel));
+    ATX_TRY(auto panel_input, read_pipeline_panel(cfg.panel, cfg.allow_unidentified_panels));
+    auto& panel = panel_input.panel;
 
     // 2a. W2 capacity screen (opt-in): build a derived Panel whose universe_ is
     // original_universe ∧ (close>min_price) ∧ (adv{W}>=min_adv). NaN propagation
@@ -1111,8 +1116,11 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
     //     high-fitness. Admitted alphas persist in an on-disk library::Library
     //     (a durable alpha database) and are also written as .dsl for `combine`.
     if (cfg.gated) {
-        return run_discover_gated(cfg, panel, lib, policy, sim, sc, fields, weak_panel,
-                                  numeric_excluded_fields, extra_group_fields); // R1
+        ATX_TRY(auto result, run_discover_gated(cfg, panel, lib, policy, sim, sc, fields, weak_panel,
+            numeric_excluded_fields, extra_group_fields, panel_input.artifact_id));
+        result.kvs.emplace_back("source_artifact_id",
+            panel_input.identity ? panel_input.artifact_id : "unknown");
+        return atx::core::Ok(std::move(result));
     }
 
     // 6. Run the evolutionary search (default ungated path: top-N by raw fitness).
@@ -1171,6 +1179,8 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
         mf << "count="         << n                    << '\n';
         mf << "search_digest=" << to_hex16(res.digest) << '\n';
         mf << "panel="         << cfg.panel            << '\n';
+        mf << "source_artifact_id="
+           << (panel_input.identity ? panel_input.artifact_id : "unknown") << '\n';
     }
 
     // 9. Stage digest = fnv1a64 over ordered concatenation of DSL strings
@@ -1191,6 +1201,7 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
         {"trial_count",   std::to_string(res.trial_count)},
         {"candidates",    std::to_string(res.candidates_generated)},
         {"search_digest", to_hex16(res.digest)},
+        {"source_artifact_id", panel_input.identity ? panel_input.artifact_id : "unknown"},
         {"population",    std::to_string(sc.population)},
         {"generations",   std::to_string(sc.generations)},
     };

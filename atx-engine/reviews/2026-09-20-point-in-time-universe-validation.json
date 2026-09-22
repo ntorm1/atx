@@ -1,0 +1,2782 @@
+{
+  "schema": "atx-point-in-time-universe-validation-v1",
+  "checkpoint": 15,
+  "date": "2026-09-20",
+  "status": "stage1_universe_construction_measured",
+  "accepted": true,
+  "summary_statement": "Point-in-time universe construction over the 2013-2019 archive (seven segment directories, 1,955 sessions, 63-session median dollar-volume rank, 57/63 minimum, raw close > 1.0 on the rank session, monthly cadence ranked at t and effective at t+1 session, six top_n x band cuts {1000,2000,3000} x {0.00,0.10} reported side by side, 84 rebalances 2012-12-31..2019-11-29). Engine unit agrees with an independent exact oracle on 42/42 synthetic cases; the atx-impl equity-universe subcommand ran once on real data under the 2020-01-01 seal, wrote one non-trial ledger line pair (trial_count_declared 0) and completed. Membership lists and counts only; no forecast evidence of any kind.",
+  "immutability": "This receipt is written once and never edited. Corrections go in a separate addendum (schema atx-validation-receipt-addendum-v1) that pins this file by digest. Historical receipt writers are never rerun.",
+  "path_policy": "Every binding below is a sha256 + byte count. Cross-references between documents (comparator -> oracle/logs, measurement -> sources/executable, ledger parents -> ingestion manifests, stage manifest -> outputs and ledger lines) are verified by digest membership, never by path-string equality. Paths are recorded for humans only.",
+  "design_sha256_lineage": {
+    "frozen_receipt_time": "4810fda251c6c285b29413ab6bea05b46db66e9bb0620cf17950b45075267dc8",
+    "section_14_pre_T1_digest_superseded_by_section_15_5": "be4b3b670eaced4f0b6f5cee8a7d5e01dc8b201ae1ecd4ef8b3377bcdb41020f",
+    "stage_embedded": "4810fda251c6c285b29413ab6bea05b46db66e9bb0620cf17950b45075267dc8",
+    "runner_embedded": "4810fda251c6c285b29413ab6bea05b46db66e9bb0620cf17950b45075267dc8",
+    "oracle_v1_document": "be4b3b670eaced4f0b6f5cee8a7d5e01dc8b201ae1ecd4ef8b3377bcdb41020f",
+    "note": "Oracle v1 was cut against the section-14 digest before T1 measurement amended sections 15.4-15.5; the design records the supersession and the oracle expected values were not changed by that amendment (section 15.5). The stage embeds and the runner pins the frozen digest."
+  },
+  "pre_registration": {
+    "frozen_values": {
+      "rank_key": "ADV$ = section 3.5 median of close x volume over the trailing 63 sessions ending at the rank session, inclusive (R15-1)",
+      "window_sessions": 63,
+      "min_valid_observations": 57,
+      "missing_bar": "NaN slot; never filled; section 2.3 validity (R15-1)",
+      "price_floor": "raw close on the rank session > 1.0, strict (R15-5)",
+      "bar_on_rank_session": "required (last_bar == rank ordinal) (R15-5)",
+      "min_adv_usd": 0,
+      "market_cap": "reported only: shares x close, label no-filing-vintage; NaN when shares NaN or <= 0 (R15-2)",
+      "instrument_type": "unknown accepted; gics_missing_members reported (R15-6)",
+      "cadence": "monthly: rank session = attached session whose UTC month differs from the next attached session's month; the last attached session is never one; [start,end] filter after (R15-4, DR15-8)",
+      "effective": "the next observed session after the rank session (R15-4)",
+      "rank_dates": "2012-12-31 .. 2019-11-29, 84 rebalances; membership covers 2013-01-02 .. 2019-12-31 (R15-4)",
+      "real_run_flags": "--rank-start 2012-12-31 --rank-end 2019-11-29, the seven --segments-dirs and --preparation-manifests of section 2.1 in date order; the runner asserts rebalances == 84 from request.json (DR15-3)",
+      "member_order": "set = keep-then-fill; CSV/view order = rank ascending; .bin = id ascending + parallel rank (DR15-2)",
+      "warmup": "63 sessions; 2012 data is warmup only; no 2012 membership emitted (R15-8)",
+      "top_n_set": [
+        1000,
+        2000,
+        3000
+      ],
+      "band_set": {
+        "band": [
+          "0.00",
+          "0.10"
+        ],
+        "band_bp": [
+          0,
+          1000
+        ],
+        "k_band": [
+          1000,
+          1100,
+          2000,
+          2200,
+          3000,
+          3300
+        ]
+      },
+      "band_rule": "incumbent (member of the same cut at r-1) kept iff rank <= K_band; section 3.4 3a-3b ordering; best-ranked top_n when band-kept incumbents exceed top_n (R15-4)",
+      "tie_break": "key descending, then first-seen slot ascending (R15-12)",
+      "median": "section 3.5, (a+b)*0.5 binary64; dv = close*volume one product (R15-1, DR15-5)",
+      "drop_classification": "formula only: LastBar iff last_bar < rank ordinal, else Rank (R15-14, DR15-10)",
+      "maxima": "max_source_ids 32768, max_rebalances 4096, max_sessions 8192, kPitMaxCuts 8, overflow-checked; ID->slot by pre-sized open-addressing hash (capacity next pow2 >= 4*32768), any positive i64 ID accepted (R15-12 as revised by DR15-1)",
+      "seal": "refuse any segment >= 2020-01-01; rank-end <= 2019-12-31 and < last attached session; constants unchanged (R15-13)",
+      "inputs": "seven segment dirs, policy tickerhistory-qa-v1, quarantine-all duplicates (R15-9)",
+      "ledger": "one cp15 line, purpose point-in-time-universe-construction, trial_count_declared 0 (section 5.6) (R15-3)",
+      "design_sha": "embedded after review (section 5.8) (R15-16)",
+      "trial_accounting": "N_15 = 0. Universe cuts are restrictions to be reported side by side (AR-7 semantics); selecting among them later is a new trial. declared_trials_for_checkpoint(14) stays 30; the two existing ledger lines are untouched."
+    },
+    "design_section_6_verbatim": [
+      "## 6. Pre-registration block (FROZEN)",
+      "",
+      "Changing any value below is a new pre-registration (new ledger line, new design SHA).",
+      "",
+      "| Key | Frozen value | Ruling |",
+      "| --- | --- | --- |",
+      "| Rank key | ADV$ = \u00a73.5 median of `close \u00d7 volume` over the trailing 63 sessions ending at the rank session, inclusive | R15-1 |",
+      "| Window `W` | 63 sessions (session ordinals, not calendar days) | R15-1 |",
+      "| Minimum valid observations | 57 of 63 (`min_nonmissing_fraction` 0.9 \u21d2 `ceil(56.7)`) | R15-1 |",
+      "| Missing bar | NaN slot; never filled; \u00a72.3 validity | R15-1 |",
+      "| Price floor | raw `close` on the rank session `> 1.0`, strict | R15-5 |",
+      "| Bar on rank session | required (`last_bar == rank ordinal`) | R15-5 |",
+      "| `min_adv_usd` | 0 | R15-5 |",
+      "| Market cap | reported only: `shares \u00d7 close`, label `no-filing-vintage`; NaN when `shares` NaN or `\u2264 0` | R15-2 |",
+      "| Instrument type | unknown accepted; `gics_missing_members` reported | R15-6 |",
+      "| Cadence | monthly: rank session = attached session whose UTC month differs from the next attached session's month (last of the month BY DATA); the last attached session is never one; `[start,end]` filter after | R15-4, DR15-8 |",
+      "| Effective | the next observed session after the rank session | R15-4 |",
+      "| Rank dates | 2012-12-31 .. 2019-11-29, **84** rebalances (verified against the input profile: first 2012-12-31, 2013-01-31, 2013-02-28 \u2026, last 2019-09-30, 2019-10-31, 2019-11-29); membership covers 2013-01-02 .. 2019-12-31 | R15-4 |",
+      "| Real-run flags | `--rank-start 2012-12-31 --rank-end 2019-11-29`, the seven `--segments-dirs` and `--preparation-manifests` of \u00a72.1 in date order; the runner asserts `rebalances == 84` from `request.json` | DR15-3 |",
+      "| Member order | set = keep-then-fill; CSV/view order = rank ascending; `.bin` = id ascending + parallel rank | DR15-2 |",
+      "| Warmup | 63 sessions; 2012 data is warmup only; no 2012 membership emitted | R15-8 |",
+      "| `top_n` set | {1000, 2000, 3000}, all emitted side by side | R15-3 |",
+      "| `band` set | {0.00, 0.10} as `band_bp` {0, 1000}; `K_band = top_n + top_n*band_bp/10000` = {1000,1100,2000,2200,3000,3300} | R15-4 |",
+      "| Band rule | incumbent (member of the same cut at `r-1`) kept iff `rank \u2264 K_band`; \u00a73.4 3a\u20133b ordering; best-ranked `top_n` when band-kept incumbents exceed `top_n` | R15-4 |",
+      "| Tie-break | key descending, then first-seen slot ascending (`universe.cpp:180-184`) | R15-12 |",
+      "| Median | \u00a73.5, `(a+b)*0.5` binary64; `dv = close*volume` one product | R15-1, DR15-5 |",
+      "| Drop classification | formula only: `LastBar` iff `last_bar < rank ordinal`, else `Rank` | R15-14, DR15-10 |",
+      "| Maxima | `max_source_ids` 32768, `max_rebalances` 4096, `max_sessions` 8192, `kPitMaxCuts` 8, overflow-checked; ID\u2192slot by pre-sized open-addressing hash (capacity next pow2 \u2265 4\u00b732768), any positive i64 ID accepted | R15-12 as revised by DR15-1 |",
+      "| Seal | refuse any segment \u2265 2020-01-01; `rank-end \u2264 2019-12-31` and `<` last attached session; constants unchanged | R15-13 |",
+      "| Inputs | seven segment dirs, policy `tickerhistory-qa-v1`, quarantine-all duplicates | R15-9 |",
+      "| Ledger | one cp15 line, purpose `point-in-time-universe-construction`, `trial_count_declared` 0 (\u00a75.6) | R15-3 |",
+      "| Design SHA | embedded after review (\u00a75.8) | R15-16 |",
+      "",
+      "**Trial accounting.** `N_15 = 0`. \"Universe cuts are restrictions to be reported side by side",
+      "(AR-7 semantics); selecting among them later is a new trial\" (cp14 design \u00a74.4 lines 939-943,",
+      "\u00a711.2 AR-7 lines 2275-2280). `declared_trials_for_checkpoint(14)` stays 30; the two existing",
+      "ledger lines are untouched.",
+      ""
+    ],
+    "trial_id": "iteration15-point-in-time-universe-0001",
+    "trial_count_declared": 0,
+    "declared_trials_checkpoint_14": 30,
+    "declared_trials_checkpoint_15": 0
+  },
+  "summary": {
+    "rebalances": 84,
+    "per_cut": {
+      "t1000_b0": {
+        "top_n": 1000,
+        "band": "0.00",
+        "rebalances": 84,
+        "first_rank_date": "2012-12-31",
+        "last_rank_date": "2019-11-29",
+        "last_effective_date": "2019-12-02",
+        "members_median": 1000.0,
+        "members_min": 1000,
+        "members_max": 1000,
+        "members_final": 1000,
+        "adds_total": 4860,
+        "adds_total_excluding_first_rebalance": 3860,
+        "drops_rank_total": 3014,
+        "drops_last_bar_total": 846,
+        "drops_total": 3860,
+        "kept_total": 79140,
+        "one_way_turnover_mean_all_rebalances": 0.05190476190476191,
+        "one_way_turnover_annualised_x12_all_rebalances": 0.622857142857143,
+        "one_way_turnover_mean_excluding_first_rebalance": 0.046506024096385545,
+        "one_way_turnover_annualised_x12_excluding_first": 0.5580722891566265,
+        "one_way_turnover_max_excluding_first": 0.556,
+        "one_way_turnover_first_rebalance": 0.5
+      },
+      "t1000_b1000": {
+        "top_n": 1000,
+        "band": "0.10",
+        "rebalances": 84,
+        "first_rank_date": "2012-12-31",
+        "last_rank_date": "2019-11-29",
+        "last_effective_date": "2019-12-02",
+        "members_median": 1000.0,
+        "members_min": 1000,
+        "members_max": 1000,
+        "members_final": 1000,
+        "adds_total": 3375,
+        "adds_total_excluding_first_rebalance": 2375,
+        "drops_rank_total": 1533,
+        "drops_last_bar_total": 842,
+        "drops_total": 2375,
+        "kept_total": 80625,
+        "one_way_turnover_mean_all_rebalances": 0.03422619047619048,
+        "one_way_turnover_annualised_x12_all_rebalances": 0.4107142857142857,
+        "one_way_turnover_mean_excluding_first_rebalance": 0.0286144578313253,
+        "one_way_turnover_annualised_x12_excluding_first": 0.3433734939759036,
+        "one_way_turnover_max_excluding_first": 0.558,
+        "one_way_turnover_first_rebalance": 0.5
+      },
+      "t2000_b0": {
+        "top_n": 2000,
+        "band": "0.00",
+        "rebalances": 84,
+        "first_rank_date": "2012-12-31",
+        "last_rank_date": "2019-11-29",
+        "last_effective_date": "2019-12-02",
+        "members_median": 2000.0,
+        "members_min": 2000,
+        "members_max": 2000,
+        "members_final": 2000,
+        "adds_total": 8415,
+        "adds_total_excluding_first_rebalance": 6415,
+        "drops_rank_total": 4692,
+        "drops_last_bar_total": 1723,
+        "drops_total": 6415,
+        "kept_total": 159585,
+        "one_way_turnover_mean_all_rebalances": 0.04413690476190476,
+        "one_way_turnover_annualised_x12_all_rebalances": 0.5296428571428572,
+        "one_way_turnover_mean_excluding_first_rebalance": 0.03864457831325301,
+        "one_way_turnover_annualised_x12_excluding_first": 0.4637349397590362,
+        "one_way_turnover_max_excluding_first": 0.5465,
+        "one_way_turnover_first_rebalance": 0.5
+      },
+      "t2000_b1000": {
+        "top_n": 2000,
+        "band": "0.10",
+        "rebalances": 84,
+        "first_rank_date": "2012-12-31",
+        "last_rank_date": "2019-11-29",
+        "last_effective_date": "2019-12-02",
+        "members_median": 2000.0,
+        "members_min": 2000,
+        "members_max": 2000,
+        "members_final": 2000,
+        "adds_total": 6031,
+        "adds_total_excluding_first_rebalance": 4031,
+        "drops_rank_total": 2312,
+        "drops_last_bar_total": 1719,
+        "drops_total": 4031,
+        "kept_total": 161969,
+        "one_way_turnover_mean_all_rebalances": 0.02994642857142857,
+        "one_way_turnover_annualised_x12_all_rebalances": 0.3593571428571429,
+        "one_way_turnover_mean_excluding_first_rebalance": 0.02428313253012048,
+        "one_way_turnover_annualised_x12_excluding_first": 0.2913975903614458,
+        "one_way_turnover_max_excluding_first": 0.5505,
+        "one_way_turnover_first_rebalance": 0.5
+      },
+      "t3000_b0": {
+        "top_n": 3000,
+        "band": "0.00",
+        "rebalances": 84,
+        "first_rank_date": "2012-12-31",
+        "last_rank_date": "2019-11-29",
+        "last_effective_date": "2019-12-02",
+        "members_median": 3000.0,
+        "members_min": 3000,
+        "members_max": 3000,
+        "members_final": 3000,
+        "adds_total": 12119,
+        "adds_total_excluding_first_rebalance": 9119,
+        "drops_rank_total": 6454,
+        "drops_last_bar_total": 2665,
+        "drops_total": 9119,
+        "kept_total": 239881,
+        "one_way_turnover_mean_all_rebalances": 0.04213888888888889,
+        "one_way_turnover_annualised_x12_all_rebalances": 0.5056666666666667,
+        "one_way_turnover_mean_excluding_first_rebalance": 0.036622489959839355,
+        "one_way_turnover_annualised_x12_excluding_first": 0.43946987951807226,
+        "one_way_turnover_max_excluding_first": 0.558,
+        "one_way_turnover_first_rebalance": 0.5
+      },
+      "t3000_b1000": {
+        "top_n": 3000,
+        "band": "0.10",
+        "rebalances": 84,
+        "first_rank_date": "2012-12-31",
+        "last_rank_date": "2019-11-29",
+        "last_effective_date": "2019-12-02",
+        "members_median": 3000.0,
+        "members_min": 3000,
+        "members_max": 3000,
+        "members_final": 3000,
+        "adds_total": 8787,
+        "adds_total_excluding_first_rebalance": 5787,
+        "drops_rank_total": 3162,
+        "drops_last_bar_total": 2625,
+        "drops_total": 5787,
+        "kept_total": 243213,
+        "one_way_turnover_mean_all_rebalances": 0.028916666666666663,
+        "one_way_turnover_annualised_x12_all_rebalances": 0.347,
+        "one_way_turnover_mean_excluding_first_rebalance": 0.023240963855421688,
+        "one_way_turnover_annualised_x12_excluding_first": 0.27889156626506023,
+        "one_way_turnover_max_excluding_first": 0.5583333333333333,
+        "one_way_turnover_first_rebalance": 0.5
+      }
+    },
+    "coverage_by_year": [
+      {
+        "year": 2012,
+        "sessions": 193,
+        "dates_with_quarantined_duplicates": 2,
+        "duplicate_positive_keys": 2,
+        "rejected_rows": 6362,
+        "ids_seen": 7100,
+        "ids_with_valid_bar_median": 6474.0,
+        "rebalances": 1,
+        "eligible_median": 5805.0,
+        "members_median": {
+          "t1000_b0": 1000.0,
+          "t1000_b1000": 1000.0,
+          "t2000_b0": 2000.0,
+          "t2000_b1000": 2000.0,
+          "t3000_b0": 3000.0,
+          "t3000_b1000": 3000.0
+        },
+        "nonmissing_fraction_median": {
+          "t1000_b0": 0.9996507936507937,
+          "t1000_b1000": 0.9996507936507937,
+          "t2000_b0": 0.9997142857142857,
+          "t2000_b1000": 0.9997142857142857,
+          "t3000_b0": 0.9996402116402117,
+          "t3000_b1000": 0.9996402116402117
+        },
+        "gics_missing_members_median": {
+          "t1000_b0": 0.0,
+          "t1000_b1000": 0.0,
+          "t2000_b0": 0.0,
+          "t2000_b1000": 0.0,
+          "t3000_b0": 0.0,
+          "t3000_b1000": 0.0
+        }
+      },
+      {
+        "year": 2013,
+        "sessions": 252,
+        "dates_with_quarantined_duplicates": 2,
+        "duplicate_positive_keys": 2,
+        "rejected_rows": 21224,
+        "ids_seen": 7238,
+        "ids_with_valid_bar_median": 6471.0,
+        "rebalances": 12,
+        "eligible_median": 5854.0,
+        "members_median": {
+          "t1000_b0": 1000.0,
+          "t1000_b1000": 1000.0,
+          "t2000_b0": 2000.0,
+          "t2000_b1000": 2000.0,
+          "t3000_b0": 3000.0,
+          "t3000_b1000": 3000.0
+        },
+        "nonmissing_fraction_median": {
+          "t1000_b0": 0.9997777777777778,
+          "t1000_b1000": 0.9998174603174603,
+          "t2000_b0": 0.9997301587301587,
+          "t2000_b1000": 0.9997420634920635,
+          "t3000_b0": 0.999537037037037,
+          "t3000_b1000": 0.9996243386243386
+        },
+        "gics_missing_members_median": {
+          "t1000_b0": 0.0,
+          "t1000_b1000": 0.0,
+          "t2000_b0": 0.0,
+          "t2000_b1000": 0.0,
+          "t3000_b0": 0.0,
+          "t3000_b1000": 0.0
+        }
+      },
+      {
+        "year": 2014,
+        "sessions": 252,
+        "dates_with_quarantined_duplicates": 7,
+        "duplicate_positive_keys": 75,
+        "rejected_rows": 17144,
+        "ids_seen": 7546,
+        "ids_with_valid_bar_median": 6755.0,
+        "rebalances": 12,
+        "eligible_median": 6086.5,
+        "members_median": {
+          "t1000_b0": 1000.0,
+          "t1000_b1000": 1000.0,
+          "t2000_b0": 2000.0,
+          "t2000_b1000": 2000.0,
+          "t3000_b0": 3000.0,
+          "t3000_b1000": 3000.0
+        },
+        "nonmissing_fraction_median": {
+          "t1000_b0": 0.9998095238095238,
+          "t1000_b1000": 0.9998650793650794,
+          "t2000_b0": 0.9996904761904762,
+          "t2000_b1000": 0.9997142857142857,
+          "t3000_b0": 0.999558201058201,
+          "t3000_b1000": 0.9996693121693122
+        },
+        "gics_missing_members_median": {
+          "t1000_b0": 0.0,
+          "t1000_b1000": 0.0,
+          "t2000_b0": 0.0,
+          "t2000_b1000": 0.0,
+          "t3000_b0": 0.0,
+          "t3000_b1000": 0.0
+        }
+      },
+      {
+        "year": 2015,
+        "sessions": 252,
+        "dates_with_quarantined_duplicates": 3,
+        "duplicate_positive_keys": 3,
+        "rejected_rows": 6807,
+        "ids_seen": 7754,
+        "ids_with_valid_bar_median": 6946.0,
+        "rebalances": 12,
+        "eligible_median": 6292.5,
+        "members_median": {
+          "t1000_b0": 1000.0,
+          "t1000_b1000": 1000.0,
+          "t2000_b0": 2000.0,
+          "t2000_b1000": 2000.0,
+          "t3000_b0": 3000.0,
+          "t3000_b1000": 3000.0
+        },
+        "nonmissing_fraction_median": {
+          "t1000_b0": 0.9997619047619047,
+          "t1000_b1000": 0.9997777777777778,
+          "t2000_b0": 0.9997857142857143,
+          "t2000_b1000": 0.9997896825396826,
+          "t3000_b0": 0.9997724867724868,
+          "t3000_b1000": 0.9998068783068783
+        },
+        "gics_missing_members_median": {
+          "t1000_b0": 0.0,
+          "t1000_b1000": 0.0,
+          "t2000_b0": 0.0,
+          "t2000_b1000": 0.0,
+          "t3000_b0": 0.0,
+          "t3000_b1000": 0.0
+        }
+      },
+      {
+        "year": 2016,
+        "sessions": 252,
+        "dates_with_quarantined_duplicates": 10,
+        "duplicate_positive_keys": 28,
+        "rejected_rows": 113928,
+        "ids_seen": 9008,
+        "ids_with_valid_bar_median": 7437.0,
+        "rebalances": 12,
+        "eligible_median": 6522.0,
+        "members_median": {
+          "t1000_b0": 1000.0,
+          "t1000_b1000": 1000.0,
+          "t2000_b0": 2000.0,
+          "t2000_b1000": 2000.0,
+          "t3000_b0": 3000.0,
+          "t3000_b1000": 3000.0
+        },
+        "nonmissing_fraction_median": {
+          "t1000_b0": 0.9876031746031746,
+          "t1000_b1000": 0.9876349206349206,
+          "t2000_b0": 0.987638888888889,
+          "t2000_b1000": 0.9876190476190476,
+          "t3000_b0": 0.9864206349206349,
+          "t3000_b1000": 0.9863333333333333
+        },
+        "gics_missing_members_median": {
+          "t1000_b0": 0.0,
+          "t1000_b1000": 0.0,
+          "t2000_b0": 0.0,
+          "t2000_b1000": 0.0,
+          "t3000_b0": 0.0,
+          "t3000_b1000": 0.0
+        }
+      },
+      {
+        "year": 2017,
+        "sessions": 251,
+        "dates_with_quarantined_duplicates": 0,
+        "duplicate_positive_keys": 0,
+        "rejected_rows": 110959,
+        "ids_seen": 9146,
+        "ids_with_valid_bar_median": 7815.0,
+        "rebalances": 12,
+        "eligible_median": 6930.0,
+        "members_median": {
+          "t1000_b0": 1000.0,
+          "t1000_b1000": 1000.0,
+          "t2000_b0": 2000.0,
+          "t2000_b1000": 2000.0,
+          "t3000_b0": 3000.0,
+          "t3000_b1000": 3000.0
+        },
+        "nonmissing_fraction_median": {
+          "t1000_b0": 0.9808492063492064,
+          "t1000_b1000": 0.9810396825396825,
+          "t2000_b0": 0.9811547619047619,
+          "t2000_b1000": 0.9813293650793651,
+          "t3000_b0": 0.9810132275132275,
+          "t3000_b1000": 0.9812222222222222
+        },
+        "gics_missing_members_median": {
+          "t1000_b0": 0.0,
+          "t1000_b1000": 0.0,
+          "t2000_b0": 0.0,
+          "t2000_b1000": 0.0,
+          "t3000_b0": 0.0,
+          "t3000_b1000": 0.0
+        }
+      },
+      {
+        "year": 2018,
+        "sessions": 251,
+        "dates_with_quarantined_duplicates": 83,
+        "duplicate_positive_keys": 86,
+        "rejected_rows": 68873,
+        "ids_seen": 9382,
+        "ids_with_valid_bar_median": 7983.0,
+        "rebalances": 12,
+        "eligible_median": 7062.0,
+        "members_median": {
+          "t1000_b0": 1000.0,
+          "t1000_b1000": 1000.0,
+          "t2000_b0": 2000.0,
+          "t2000_b1000": 2000.0,
+          "t3000_b0": 3000.0,
+          "t3000_b1000": 3000.0
+        },
+        "nonmissing_fraction_median": {
+          "t1000_b0": 0.9998412698412699,
+          "t1000_b1000": 0.9998492063492064,
+          "t2000_b0": 0.9997698412698413,
+          "t2000_b1000": 0.9998253968253968,
+          "t3000_b0": 0.9997619047619047,
+          "t3000_b1000": 0.9997883597883598
+        },
+        "gics_missing_members_median": {
+          "t1000_b0": 0.0,
+          "t1000_b1000": 0.0,
+          "t2000_b0": 0.0,
+          "t2000_b1000": 0.0,
+          "t3000_b0": 0.0,
+          "t3000_b1000": 0.0
+        }
+      },
+      {
+        "year": 2019,
+        "sessions": 252,
+        "dates_with_quarantined_duplicates": 0,
+        "duplicate_positive_keys": 0,
+        "rejected_rows": 51230,
+        "ids_seen": 9512,
+        "ids_with_valid_bar_median": 8258.5,
+        "rebalances": 11,
+        "eligible_median": 7305.0,
+        "members_median": {
+          "t1000_b0": 1000.0,
+          "t1000_b1000": 1000.0,
+          "t2000_b0": 2000.0,
+          "t2000_b1000": 2000.0,
+          "t3000_b0": 3000.0,
+          "t3000_b1000": 3000.0
+        },
+        "nonmissing_fraction_median": {
+          "t1000_b0": 0.9995396825396825,
+          "t1000_b1000": 0.9995714285714286,
+          "t2000_b0": 0.9995238095238095,
+          "t2000_b1000": 0.999547619047619,
+          "t3000_b0": 0.9994708994708995,
+          "t3000_b1000": 0.9994761904761905
+        },
+        "gics_missing_members_median": {
+          "t1000_b0": 0.0,
+          "t1000_b1000": 0.0,
+          "t2000_b0": 0.0,
+          "t2000_b1000": 0.0,
+          "t3000_b0": 0.0,
+          "t3000_b1000": 0.0
+        }
+      }
+    ],
+    "sessions_total": 1955,
+    "union_by_year": [
+      {
+        "year": 2013,
+        "distinct": {
+          "t1000_b0": 1228,
+          "t1000_b1000": 1139,
+          "t2000_b0": 2404,
+          "t2000_b1000": 2231,
+          "t3000_b0": 3574,
+          "t3000_b1000": 3319
+        },
+        "cumulative": {
+          "t1000_b0": 1228,
+          "t1000_b1000": 1139,
+          "t2000_b0": 2404,
+          "t2000_b1000": 2231,
+          "t3000_b0": 3574,
+          "t3000_b1000": 3319
+        }
+      },
+      {
+        "year": 2014,
+        "distinct": {
+          "t1000_b0": 1243,
+          "t1000_b1000": 1157,
+          "t2000_b0": 2369,
+          "t2000_b1000": 2222,
+          "t3000_b0": 3498,
+          "t3000_b1000": 3299
+        },
+        "cumulative": {
+          "t1000_b0": 1390,
+          "t1000_b1000": 1283,
+          "t2000_b0": 2668,
+          "t2000_b1000": 2448,
+          "t3000_b0": 3943,
+          "t3000_b1000": 3617
+        }
+      },
+      {
+        "year": 2015,
+        "distinct": {
+          "t1000_b0": 1246,
+          "t1000_b1000": 1169,
+          "t2000_b0": 2393,
+          "t2000_b1000": 2283,
+          "t3000_b0": 3567,
+          "t3000_b1000": 3369
+        },
+        "cumulative": {
+          "t1000_b0": 1536,
+          "t1000_b1000": 1412,
+          "t2000_b0": 2911,
+          "t2000_b1000": 2696,
+          "t3000_b0": 4336,
+          "t3000_b1000": 3961
+        }
+      },
+      {
+        "year": 2016,
+        "distinct": {
+          "t1000_b0": 1238,
+          "t1000_b1000": 1164,
+          "t2000_b0": 2361,
+          "t2000_b1000": 2245,
+          "t3000_b0": 3547,
+          "t3000_b1000": 3337
+        },
+        "cumulative": {
+          "t1000_b0": 1649,
+          "t1000_b1000": 1520,
+          "t2000_b0": 3103,
+          "t2000_b1000": 2882,
+          "t3000_b0": 4635,
+          "t3000_b1000": 4236
+        }
+      },
+      {
+        "year": 2017,
+        "distinct": {
+          "t1000_b0": 1679,
+          "t1000_b1000": 1611,
+          "t2000_b0": 3327,
+          "t2000_b1000": 3200,
+          "t3000_b0": 5022,
+          "t3000_b1000": 4828
+        },
+        "cumulative": {
+          "t1000_b0": 2099,
+          "t1000_b1000": 2002,
+          "t2000_b0": 4080,
+          "t2000_b1000": 3901,
+          "t3000_b0": 6122,
+          "t3000_b1000": 5832
+        }
+      },
+      {
+        "year": 2018,
+        "distinct": {
+          "t1000_b0": 1251,
+          "t1000_b1000": 1161,
+          "t2000_b0": 2384,
+          "t2000_b1000": 2239,
+          "t3000_b0": 3523,
+          "t3000_b1000": 3328
+        },
+        "cumulative": {
+          "t1000_b0": 2199,
+          "t1000_b1000": 2082,
+          "t2000_b0": 4268,
+          "t2000_b1000": 4056,
+          "t3000_b0": 6390,
+          "t3000_b1000": 6065
+        }
+      },
+      {
+        "year": 2019,
+        "distinct": {
+          "t1000_b0": 1234,
+          "t1000_b1000": 1147,
+          "t2000_b0": 2386,
+          "t2000_b1000": 2246,
+          "t3000_b0": 3512,
+          "t3000_b1000": 3292
+        },
+        "cumulative": {
+          "t1000_b0": 2278,
+          "t1000_b1000": 2159,
+          "t2000_b0": 4447,
+          "t2000_b1000": 4220,
+          "t3000_b0": 6624,
+          "t3000_b1000": 6276
+        }
+      }
+    ],
+    "union_cumulative_at_2019": {
+      "t1000_b0": 2278,
+      "t1000_b1000": 2159,
+      "t2000_b0": 4447,
+      "t2000_b1000": 4220,
+      "t3000_b0": 6624,
+      "t3000_b1000": 6276
+    },
+    "union_max_distinct_any_year": {
+      "t1000_b0": 1679,
+      "t1000_b1000": 1611,
+      "t2000_b0": 3327,
+      "t2000_b1000": 3200,
+      "t3000_b0": 5022,
+      "t3000_b1000": 4828
+    },
+    "union_cumulative_within_kMaxIcInstruments_4096": {
+      "t1000_b0": true,
+      "t1000_b1000": true,
+      "t2000_b0": false,
+      "t2000_b1000": false,
+      "t3000_b0": false,
+      "t3000_b1000": false
+    },
+    "survivorship": {
+      "schema": "atx-equity-universe-survivorship-v1",
+      "window_end": "2019-12-31",
+      "cuts": [
+        {
+          "cut": "t1000_b0",
+          "ever_members": 2278,
+          "ended_before_window_end": 467,
+          "censored": 1811,
+          "fraction_ended": 0.20500438981562774,
+          "per_year": [
+            {
+              "exited_within_year": 26,
+              "fraction": 0.026,
+              "members_at_first_rebalance": 1000,
+              "year": 2013
+            },
+            {
+              "exited_within_year": 23,
+              "fraction": 0.023,
+              "members_at_first_rebalance": 1000,
+              "year": 2014
+            },
+            {
+              "exited_within_year": 41,
+              "fraction": 0.041,
+              "members_at_first_rebalance": 1000,
+              "year": 2015
+            },
+            {
+              "exited_within_year": 45,
+              "fraction": 0.045,
+              "members_at_first_rebalance": 1000,
+              "year": 2016
+            },
+            {
+              "exited_within_year": 45,
+              "fraction": 0.045,
+              "members_at_first_rebalance": 1000,
+              "year": 2017
+            },
+            {
+              "exited_within_year": 32,
+              "fraction": 0.032,
+              "members_at_first_rebalance": 1000,
+              "year": 2018
+            },
+            {
+              "exited_within_year": 31,
+              "fraction": 0.031,
+              "members_at_first_rebalance": 1000,
+              "year": 2019
+            }
+          ]
+        },
+        {
+          "cut": "t1000_b1000",
+          "ever_members": 2159,
+          "ended_before_window_end": 432,
+          "censored": 1727,
+          "fraction_ended": 0.2000926354793886,
+          "per_year": [
+            {
+              "exited_within_year": 26,
+              "fraction": 0.026,
+              "members_at_first_rebalance": 1000,
+              "year": 2013
+            },
+            {
+              "exited_within_year": 22,
+              "fraction": 0.022,
+              "members_at_first_rebalance": 1000,
+              "year": 2014
+            },
+            {
+              "exited_within_year": 44,
+              "fraction": 0.044,
+              "members_at_first_rebalance": 1000,
+              "year": 2015
+            },
+            {
+              "exited_within_year": 43,
+              "fraction": 0.043,
+              "members_at_first_rebalance": 1000,
+              "year": 2016
+            },
+            {
+              "exited_within_year": 45,
+              "fraction": 0.045,
+              "members_at_first_rebalance": 1000,
+              "year": 2017
+            },
+            {
+              "exited_within_year": 37,
+              "fraction": 0.037,
+              "members_at_first_rebalance": 1000,
+              "year": 2018
+            },
+            {
+              "exited_within_year": 30,
+              "fraction": 0.03,
+              "members_at_first_rebalance": 1000,
+              "year": 2019
+            }
+          ]
+        },
+        {
+          "cut": "t2000_b0",
+          "ever_members": 4447,
+          "ended_before_window_end": 1004,
+          "censored": 3443,
+          "fraction_ended": 0.22577018214526648,
+          "per_year": [
+            {
+              "exited_within_year": 60,
+              "fraction": 0.03,
+              "members_at_first_rebalance": 2000,
+              "year": 2013
+            },
+            {
+              "exited_within_year": 57,
+              "fraction": 0.0285,
+              "members_at_first_rebalance": 2000,
+              "year": 2014
+            },
+            {
+              "exited_within_year": 91,
+              "fraction": 0.0455,
+              "members_at_first_rebalance": 2000,
+              "year": 2015
+            },
+            {
+              "exited_within_year": 103,
+              "fraction": 0.0515,
+              "members_at_first_rebalance": 2000,
+              "year": 2016
+            },
+            {
+              "exited_within_year": 88,
+              "fraction": 0.044,
+              "members_at_first_rebalance": 2000,
+              "year": 2017
+            },
+            {
+              "exited_within_year": 91,
+              "fraction": 0.0455,
+              "members_at_first_rebalance": 2000,
+              "year": 2018
+            },
+            {
+              "exited_within_year": 78,
+              "fraction": 0.039,
+              "members_at_first_rebalance": 2000,
+              "year": 2019
+            }
+          ]
+        },
+        {
+          "cut": "t2000_b1000",
+          "ever_members": 4220,
+          "ended_before_window_end": 942,
+          "censored": 3278,
+          "fraction_ended": 0.22322274881516588,
+          "per_year": [
+            {
+              "exited_within_year": 60,
+              "fraction": 0.03,
+              "members_at_first_rebalance": 2000,
+              "year": 2013
+            },
+            {
+              "exited_within_year": 60,
+              "fraction": 0.03,
+              "members_at_first_rebalance": 2000,
+              "year": 2014
+            },
+            {
+              "exited_within_year": 91,
+              "fraction": 0.0455,
+              "members_at_first_rebalance": 2000,
+              "year": 2015
+            },
+            {
+              "exited_within_year": 103,
+              "fraction": 0.0515,
+              "members_at_first_rebalance": 2000,
+              "year": 2016
+            },
+            {
+              "exited_within_year": 88,
+              "fraction": 0.044,
+              "members_at_first_rebalance": 2000,
+              "year": 2017
+            },
+            {
+              "exited_within_year": 94,
+              "fraction": 0.047,
+              "members_at_first_rebalance": 2000,
+              "year": 2018
+            },
+            {
+              "exited_within_year": 77,
+              "fraction": 0.0385,
+              "members_at_first_rebalance": 2000,
+              "year": 2019
+            }
+          ]
+        },
+        {
+          "cut": "t3000_b0",
+          "ever_members": 6624,
+          "ended_before_window_end": 1651,
+          "censored": 4973,
+          "fraction_ended": 0.2492451690821256,
+          "per_year": [
+            {
+              "exited_within_year": 107,
+              "fraction": 0.035666666666666666,
+              "members_at_first_rebalance": 3000,
+              "year": 2013
+            },
+            {
+              "exited_within_year": 94,
+              "fraction": 0.03133333333333333,
+              "members_at_first_rebalance": 3000,
+              "year": 2014
+            },
+            {
+              "exited_within_year": 129,
+              "fraction": 0.043,
+              "members_at_first_rebalance": 3000,
+              "year": 2015
+            },
+            {
+              "exited_within_year": 149,
+              "fraction": 0.049666666666666665,
+              "members_at_first_rebalance": 3000,
+              "year": 2016
+            },
+            {
+              "exited_within_year": 190,
+              "fraction": 0.06333333333333334,
+              "members_at_first_rebalance": 3000,
+              "year": 2017
+            },
+            {
+              "exited_within_year": 145,
+              "fraction": 0.04833333333333333,
+              "members_at_first_rebalance": 3000,
+              "year": 2018
+            },
+            {
+              "exited_within_year": 122,
+              "fraction": 0.04066666666666666,
+              "members_at_first_rebalance": 3000,
+              "year": 2019
+            }
+          ]
+        },
+        {
+          "cut": "t3000_b1000",
+          "ever_members": 6276,
+          "ended_before_window_end": 1547,
+          "censored": 4729,
+          "fraction_ended": 0.24649458253664755,
+          "per_year": [
+            {
+              "exited_within_year": 107,
+              "fraction": 0.035666666666666666,
+              "members_at_first_rebalance": 3000,
+              "year": 2013
+            },
+            {
+              "exited_within_year": 89,
+              "fraction": 0.029666666666666668,
+              "members_at_first_rebalance": 3000,
+              "year": 2014
+            },
+            {
+              "exited_within_year": 127,
+              "fraction": 0.042333333333333334,
+              "members_at_first_rebalance": 3000,
+              "year": 2015
+            },
+            {
+              "exited_within_year": 150,
+              "fraction": 0.05,
+              "members_at_first_rebalance": 3000,
+              "year": 2016
+            },
+            {
+              "exited_within_year": 190,
+              "fraction": 0.06333333333333334,
+              "members_at_first_rebalance": 3000,
+              "year": 2017
+            },
+            {
+              "exited_within_year": 153,
+              "fraction": 0.051,
+              "members_at_first_rebalance": 3000,
+              "year": 2018
+            },
+            {
+              "exited_within_year": 122,
+              "fraction": 0.04066666666666666,
+              "members_at_first_rebalance": 3000,
+              "year": 2019
+            }
+          ]
+        }
+      ],
+      "comparison": {
+        "deletions_per_year_fraction": 0.0523,
+        "positions": 3000,
+        "russell_3000_2019_reconstitution_deletions": 157,
+        "source": "nasdaq.com 2019-06-24 (research \u00a7D.4)"
+      },
+      "caveat": "Both metrics are LOWER BOUNDS on survivorship bias: the archive's backfill policy is unknown (historical_availability: unknown-archive-snapshot), the archive has no delisting date/code/return fields, and a name absent from the archive from its first day is invisible here."
+    },
+    "delisting_exit_kind_counts": {
+      "t1000_b0": {
+        "ever_members": 2278,
+        "rank_drop": 994,
+        "last_bar_within_window": 284,
+        "window_end": 1000,
+        "other": 0
+      },
+      "t1000_b1000": {
+        "ever_members": 2159,
+        "rank_drop": 871,
+        "last_bar_within_window": 288,
+        "window_end": 1000,
+        "other": 0
+      },
+      "t2000_b0": {
+        "ever_members": 4447,
+        "rank_drop": 1820,
+        "last_bar_within_window": 627,
+        "window_end": 2000,
+        "other": 0
+      },
+      "t2000_b1000": {
+        "ever_members": 4220,
+        "rank_drop": 1580,
+        "last_bar_within_window": 640,
+        "window_end": 2000,
+        "other": 0
+      },
+      "t3000_b0": {
+        "ever_members": 6624,
+        "rank_drop": 2655,
+        "last_bar_within_window": 969,
+        "window_end": 3000,
+        "other": 0
+      },
+      "t3000_b1000": {
+        "ever_members": 6276,
+        "rank_drop": 2284,
+        "last_bar_within_window": 992,
+        "window_end": 3000,
+        "other": 0
+      }
+    },
+    "membership_bin": {
+      "version": 1,
+      "adv_window": 63,
+      "min_valid_observations": 57,
+      "min_raw_price_exclusive": 1.0,
+      "top_n": [
+        1000,
+        2000,
+        3000
+      ],
+      "band_bp": [
+        0,
+        1000
+      ],
+      "rebalance_count": 84,
+      "fnv1a64_trailer": "18347024279264672782",
+      "fnv1a64_recomputed": "18347024279264672782",
+      "trailer_matches": true,
+      "first_rank_date": "2012-12-31",
+      "last_rank_date": "2019-11-29",
+      "last_effective_date": "2019-12-02",
+      "all_effective_positive": true,
+      "member_counts_final": [
+        1000,
+        1000,
+        2000,
+        2000,
+        3000,
+        3000
+      ]
+    },
+    "runtime_seconds_from_stage_manifest": 28.8443701,
+    "peak_working_set_bytes_from_stage_manifest": null,
+    "wall_seconds_from_runner": 107.13396730000386,
+    "sampled_os_maxima_bytes_from_runner": {
+      "PagefileUsage": 67432448,
+      "PeakPagefileUsage": 75968512,
+      "PeakWorkingSetSize": 87539712,
+      "PrivateUsage": 67432448,
+      "QuotaNonPagedPoolUsage": 13200,
+      "QuotaPagedPoolUsage": 308248,
+      "QuotaPeakNonPagedPoolUsage": 13512,
+      "QuotaPeakPagedPoolUsage": 308256,
+      "WorkingSetSize": 79147008
+    },
+    "runner_sample_count": 1066,
+    "computation_note": "Every number above is recomputed from churn.csv, coverage_by_year.csv, union_by_year.csv, delisting.csv, survivorship.json, membership.bin, manifest.json and the runner measurement JSON by this script. Medians follow design section 3.5. Turnover means are arithmetic means over rebalances of one_way_turnover as written by the stage; the first rebalance (adds == members by construction) is excluded from the excluding_first figures and the x12 annualisation is a naive multiple."
+  },
+  "native_tests": {
+    "toolchain": "clang-cl 18, preset equity-dev, static Debug, /W4 /permissive- /WX (see the pinned configure log; no hygiene claim)",
+    "engine_final": {
+      "percent": 100,
+      "failed": 0,
+      "total": 37,
+      "passed": 37
+    },
+    "engine_final_log": "build-equity/audits/iteration15-data-t1fix1-tests.log",
+    "engine_group_regression": {
+      "percent": 100,
+      "failed": 0,
+      "total": 94,
+      "passed": 94
+    },
+    "engine_group_regression_log": "build-equity/audits/iteration15-data-group-tests.log",
+    "impl_final": {
+      "percent": 100,
+      "failed": 0,
+      "total": 60,
+      "passed": 60
+    },
+    "impl_final_log": "build-equity/audits/iteration15-impl-t2-tests.log",
+    "logs": [
+      {
+        "path": "build-equity/audits/iteration15-configure-t1.log",
+        "sha256": "e977fcdb8c600e4be9ab78d47711bca9aee8c7af9e0c137e8a12c15592ebec77",
+        "bytes": 2217,
+        "ctest_summary": null,
+        "ninja_failed": false,
+        "marker_lines": 0
+      },
+      {
+        "path": "build-equity/audits/iteration15-check-t1.log",
+        "sha256": "dca445584f2311bd4c218d2b3d806c535dcb48b32d38a07997d51d9a37efd0e9",
+        "bytes": 373,
+        "ctest_summary": null,
+        "ninja_failed": false,
+        "marker_lines": 0
+      },
+      {
+        "path": "build-equity/audits/iteration15-build-t1.log",
+        "sha256": "f6b9e339f187bfc13e9ab3a2a8b55c27dc59c27b0e6c3ca4565fc34092261da4",
+        "bytes": 3626,
+        "ctest_summary": null,
+        "ninja_failed": false,
+        "marker_lines": 0
+      },
+      {
+        "path": "build-equity/audits/iteration15-data-t1-tests.log",
+        "sha256": "2f6674a1074671c5e7c03c6392b8866df369300faec00c47a45a5843b680f7d6",
+        "bytes": 102717,
+        "ctest_summary": {
+          "percent": 97,
+          "failed": 1,
+          "total": 37,
+          "passed": 36
+        },
+        "ninja_failed": true,
+        "marker_lines": 42,
+        "junit_agrees": true
+      },
+      {
+        "path": "build-equity/audits/iteration15-build-t1fix1.log",
+        "sha256": "2f0b1dafbcd87c78e452c6ea7db418203d5f5308fc74a3d411a76a150931f7e7",
+        "bytes": 427,
+        "ctest_summary": null,
+        "ninja_failed": false,
+        "marker_lines": 0
+      },
+      {
+        "path": "build-equity/audits/iteration15-data-t1fix1-tests.log",
+        "sha256": "0cbfc58893d33d7bb074b4473510986549646e533516cb1dda91a86894df2552",
+        "bytes": 101118,
+        "ctest_summary": {
+          "percent": 100,
+          "failed": 0,
+          "total": 37,
+          "passed": 37
+        },
+        "ninja_failed": false,
+        "marker_lines": 42,
+        "junit_agrees": true
+      },
+      {
+        "path": "build-equity/audits/iteration15-data-group-tests.log",
+        "sha256": "b743e4905d484e7ce02c4c4174c89aea65b83e6cb5e021f036e9adb652021456",
+        "bytes": 21036,
+        "ctest_summary": {
+          "percent": 100,
+          "failed": 0,
+          "total": 94,
+          "passed": 94
+        },
+        "ninja_failed": false,
+        "marker_lines": 0,
+        "junit_agrees": true
+      },
+      {
+        "path": "build-equity/audits/iteration15-configure-t2.log",
+        "sha256": "f4cd851adbcc8c5f786d6c8d3a1b714751b0da287c2286f245775b6be867410c",
+        "bytes": 2217,
+        "ctest_summary": null,
+        "ninja_failed": false,
+        "marker_lines": 0
+      },
+      {
+        "path": "build-equity/audits/iteration15-check-t2.log",
+        "sha256": "623dbc9a1fe3d37390e1d07ba782b94239a30ded17408a987e4c52899a50b90f",
+        "bytes": 363,
+        "ctest_summary": null,
+        "ninja_failed": false,
+        "marker_lines": 0
+      },
+      {
+        "path": "build-equity/audits/iteration15-build-t2.log",
+        "sha256": "5a429d18505360b6fe49d00b2b7332994774f57fffe9f2c28a3b822bea0f832e",
+        "bytes": 9006,
+        "ctest_summary": null,
+        "ninja_failed": true,
+        "marker_lines": 0
+      },
+      {
+        "path": "build-equity/audits/iteration15-build-t2fix1.log",
+        "sha256": "d0a1275d4020a101d4eed3c340a0adefbd9ada48b0b7b6a18394d9f8c422ce8b",
+        "bytes": 1470,
+        "ctest_summary": null,
+        "ninja_failed": false,
+        "marker_lines": 0
+      },
+      {
+        "path": "build-equity/audits/iteration15-impl-t2-tests.log",
+        "sha256": "eb71927e7703d244c5c98c8c00cd38d2a8a7d1a2a186343f8bfe93ace4e09e4e",
+        "bytes": 88064,
+        "ctest_summary": {
+          "percent": 100,
+          "failed": 0,
+          "total": 60,
+          "passed": 60
+        },
+        "ninja_failed": false,
+        "marker_lines": 0,
+        "junit_agrees": true
+      },
+      {
+        "path": "build-equity/audits/iteration15-build-atx-impl.log",
+        "sha256": "e0c2954bcf5f8c1cd971060d033235c2c7158d3450159ef03eceed6ed08753a8",
+        "bytes": 184,
+        "ctest_summary": null,
+        "ninja_failed": false,
+        "marker_lines": 0
+      },
+      {
+        "path": "build-equity/audits/iteration15-equity-universe-run.err.log",
+        "sha256": "ffee5f8e38ef6a4b1d93027b54389738e677c988ddcf322d90f4ab75631f036c",
+        "bytes": 599,
+        "ctest_summary": null,
+        "ninja_failed": false,
+        "marker_lines": 0
+      }
+    ],
+    "junits": [
+      {
+        "path": "build-equity/iteration15-data-group-tests.xml",
+        "sha256": "cfb736f06fb4edc4b66dfab209cb58396eb9daf95523f59fec579507217b2680",
+        "bytes": 90064,
+        "tests": 94,
+        "failures": 0,
+        "testcases": 94,
+        "point_in_time_cases": 37
+      },
+      {
+        "path": "build-equity/iteration15-data-t1-tests.xml",
+        "sha256": "db4288e7ef2a869c86c94d056652507b4ed4d59fef44533fedbfd1c7f6cb7efe",
+        "bytes": 38103,
+        "tests": 37,
+        "failures": 1,
+        "testcases": 37,
+        "point_in_time_cases": 37
+      },
+      {
+        "path": "build-equity/iteration15-data-t1fix1-tests.xml",
+        "sha256": "411fe9e32c110cdfbb6dae31fad89005529cba3edc3a3fca413da1fc7217ecba",
+        "bytes": 37697,
+        "tests": 37,
+        "failures": 0,
+        "testcases": 37,
+        "point_in_time_cases": 37
+      },
+      {
+        "path": "build-equity/iteration15-impl-t2-tests.xml",
+        "sha256": "e994aa9a8f18f0ea5172d7e6221f4815cd0afac172ae670122905793f4336281",
+        "bytes": 55258,
+        "tests": 60,
+        "failures": 0,
+        "testcases": 60,
+        "point_in_time_cases": 0
+      }
+    ],
+    "failed_attempts_preserved": [
+      {
+        "path": "build-equity/audits/iteration15-data-t1-tests.log",
+        "ctest_summary": {
+          "percent": 97,
+          "failed": 1,
+          "total": 37,
+          "passed": 36
+        },
+        "ninja_failed": true
+      },
+      {
+        "path": "build-equity/audits/iteration15-build-t2.log",
+        "ctest_summary": null,
+        "ninja_failed": true
+      }
+    ]
+  },
+  "oracle_comparison": {
+    "oracle": {
+      "path": "build-equity/audits/iteration15-universe-oracle-v1.json",
+      "sha256": "8b21cf5785920352b7250d96d92a907f40d882df61ab3ab2bc27c3e933515247",
+      "bytes": 207472
+    },
+    "comparator": {
+      "path": "build-equity/audits/iteration15_native_comparator.py",
+      "sha256": "1859fd95538d0baa100d97b4edf402afd77e787e5561a96c67d3ac00eec3fe51",
+      "bytes": 40636
+    },
+    "comparisons": [
+      {
+        "pin": {
+          "path": "build-equity/audits/iteration15-native-comparison-t1.json",
+          "sha256": "85b27c1c40f061ecd2d174c825880bb3163305c457346bfcc57986da062f9f25",
+          "bytes": 172387
+        },
+        "schema": "atx-iteration15-universe-comparison-v1",
+        "status": "pass",
+        "counts": {
+          "oracle_cases": 42,
+          "required": 42,
+          "compared": 42,
+          "passed": 42,
+          "failed": 0,
+          "not_measured_natively": 0,
+          "global_failures": 0
+        },
+        "oracle_sha256_recorded": "8b21cf5785920352b7250d96d92a907f40d882df61ab3ab2bc27c3e933515247",
+        "comparator_sha256_recorded": "1859fd95538d0baa100d97b4edf402afd77e787e5561a96c67d3ac00eec3fe51",
+        "logs_recorded": [
+          {
+            "sha256": "2f6674a1074671c5e7c03c6392b8866df369300faec00c47a45a5843b680f7d6",
+            "bytes": 102717,
+            "marker_lines": 42
+          }
+        ],
+        "convention_cross_check_all_exact": true,
+        "not_measured_natively": 0
+      },
+      {
+        "pin": {
+          "path": "build-equity/audits/iteration15-native-comparison-t1fix1.json",
+          "sha256": "f5cdb8eccb640b058ac6341f60ec3108f9c12f76409d580d8f5a74502c725526",
+          "bytes": 172559
+        },
+        "schema": "atx-iteration15-universe-comparison-v1",
+        "status": "pass",
+        "counts": {
+          "oracle_cases": 42,
+          "required": 42,
+          "compared": 42,
+          "passed": 42,
+          "failed": 0,
+          "not_measured_natively": 0,
+          "global_failures": 0
+        },
+        "oracle_sha256_recorded": "8b21cf5785920352b7250d96d92a907f40d882df61ab3ab2bc27c3e933515247",
+        "comparator_sha256_recorded": "1859fd95538d0baa100d97b4edf402afd77e787e5561a96c67d3ac00eec3fe51",
+        "logs_recorded": [
+          {
+            "sha256": "0cbfc58893d33d7bb074b4473510986549646e533516cb1dda91a86894df2552",
+            "bytes": 101118,
+            "marker_lines": 42
+          }
+        ],
+        "convention_cross_check_all_exact": true,
+        "not_measured_natively": 0
+      }
+    ],
+    "final_status": "pass",
+    "final_counts": {
+      "oracle_cases": 42,
+      "required": 42,
+      "compared": 42,
+      "passed": 42,
+      "failed": 0,
+      "not_measured_natively": 0,
+      "global_failures": 0
+    },
+    "method": "exact equality per family; reals as Fraction(float) (DR15-5); medians as 2x integers (DR15-15); closed marker key list; every oracle case required natively"
+  },
+  "measurement_kind": "reevaluation_of_attempt1",
+  "runner_defect": {
+    "defect": {
+      "where": "iteration15_run_equity_universe.py:768 (post-run re-pin loop), attempt 1",
+      "error": "TypeError: string indices must be integers, not 'str'",
+      "cause": "the oracle-lineage acceptance note was stored as a string in `checks` (the pin map that becomes source_and_input_pins_before); the re-pin loop indexed it as a pin",
+      "effect": "run_native's in-memory result (exit code, wall seconds, sample count, maxima) was discarded; the measurement JSON was never written; the memory-samples and stdout/stderr logs were written; the stage run itself was unaffected",
+      "fix": "runner: note moved to preflight `facts`/`notes`; `is_pin` guard; `pins_differ` and the re-pin loop ignore non-pin entries (selftest 46 checks)",
+      "crash_log": {
+        "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration15-equity-universe-run.err.log",
+        "sha256": "ffee5f8e38ef6a4b1d93027b54389738e677c988ddcf322d90f4ab75631f036c",
+        "bytes": 599
+      },
+      "crash_log_text": "Traceback (most recent call last):\n  File \"C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration15_run_equity_universe.py\", line 928, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration15_run_equity_universe.py\", line 768, in main\n    after = {key: pin(Path(entry[\"path\"])) for key, entry in before.items() if Path(entry[\"path\"]).exists()}\n                                                                                    ~~~~~^^^^^^^^\nTypeError: string indices must be integers, not 'str'\n",
+      "crash_stdout_log": {
+        "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration15-equity-universe-run.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      }
+    },
+    "measurement_kind_declared_by_file": "POST-HOC RE-EVALUATION of attempt 1 (not written by the runner); see `reevaluation` and `runner_defect`",
+    "exit_code_source": "INFERRED (see reevaluation.exit_code_inference); not recorded by the runner",
+    "wall_seconds_source": "last memory-sample elapsed stamp (lower bound within 0.1 s)",
+    "accepted_source": "accepted_reevaluated (post hoc); identical predicate set to the runner's, with exit_code inferred and pins compared against the stage's own records",
+    "statement": "The original runner crashed AFTER the stage completed (post-run pin step, a runner defect); the stage outputs and the two ledger lines were intact. The stage exit code in this receipt is INFERRED (manifest status complete, terminal ledger line completed, stderr empty), not captured by a parent process. No re-run was made (it would append two more ledger lines).",
+    "launcher_digest": "The launching runner's own digest at attempt 1 is UNRECOVERABLE: the runner was fixed in place after its post-run crash and its pre-crash bytes were not preserved. The pinned runner is the fixed one. The producer binding therefore rests on manifest.json.producer_executable_sha256 == sha256(current build-equity/bin/atx-impl.exe) == 8425fc03c136169a2f7522c0ade37bcf855179de431b302b4f0aae6fe49f950b, verified above."
+  },
+  "data_quality_findings": [
+    {
+      "pin": {
+        "path": ".superpowers/sdd/equity-platform-parent-goal/cp15-idgap-investigation.md",
+        "sha256": "fd4adfbac6c9fd558ac9370dddd8ab625cb130f546cf94fde1debda9960a8c9c",
+        "bytes": 21832
+      },
+      "summary_excerpt_lines": 15,
+      "summary_excerpt": [
+        "# cp15 id-gap investigation: the 2016-12-30 / 2017-01-31 turnover spike",
+        "",
+        "Date: 2026-09-20. Read-only investigation; every number below is from my own reads of the files named in \"Methods\".",
+        "",
+        "## Executive summary",
+        "",
+        "1. The spike is NOT a vendor id remap, NOT archive stitching, NOT a corporate-action wave. It is a **one-session data hole on the rank date 2016-12-30**: 4,034 of the 7,869 positive ids present on 2016-12-29 have no accepted row on 2016-12-30, and 4,001 of them (99.2%) are back under the **same** id within 5 sessions (3,938 on the very next session, 2017-01-03). Only 6 never return by 2017-12-31; 0 re-appear under a different id.",
+        "2. Root cause: the vendor archive carries corrupted OHLC on the **session before every NYSE holiday from 2016-01-15 through 2018-02-16** (19 sessions; 9 in 2016, 8 in 2017, 2 in 2018). On those sessions `open` equals the prior close (98.7% of 2016-12-30 rows have open == closePr vs 12.0% on 2016-12-29) and high/low are truncated, so ~50-80% of rows fail `ohlc_order_violation` (2016-12-30: 3,965 order violations, 41 nonpositive OHLC, 139 id-0 rows; 3,957 accepted of 8,102 raw).",
+        "3. The universe builder requires a bar on the rank session (`bar_on_rank_session_required: true`) and classifies `last_bar < rank ordinal => last_bar`; 2016-12-30 is the only hole session that is also a month-end rank date, so 556 t1000-b0 incumbents (all 556 absent on 2016-12-30; 551 present on both 2016-12-29 and 2017-01-03) were dropped as `drops_last_bar` and replaced by 556 substitutes; at 2017-01-31, 518 of the 555 adds are those incumbents returning and 531 of the 556 substitutes are dropped by rank.",
+        "4. `delisting.csv` shows no delisting wave: t1000-b0 has only 9 ids with last_bar in 2016-12 (1 on 2016-12-30) and 3 with first_bar in 2017-01, because its first/last_bar are true accepted-row extents. Only 5 of the 556 dropped ids truly ended (EVHC, LNKD, UWTI, DWTI, LGF; last bars 2016-12-01..08).",
+        "5. No other year boundary shows it: max disappearance/appearance within +-10 sessions of Jan 1 is 272/254 (2013->14), 215/214 (2014->15), 231/198 (2018->19); 2015->16 (4,180/4,205 at 2016-01-15) and 2017->18 (6,328/6,425 at 2018-01-12) show the same pre-holiday hole, not a boundary effect.",
+        "6. Identity columns in accepted rows are only `securityID`, `ticker_tk`, `todayTicker` (no cusip/figi/symbol). Across the 2016-12-30 hole only 3 of the 4,001 returning ids changed `ticker_tk`; the id is stable, so no bridge is needed for this event. Independent identity caveats exist (56 overlapping same-ticker id segments, 610 tickers used by >1 id, 1,577 ids with >1 ticker_tk).",
+        "7. Contaminated cp15 numbers: churn at rank dates 2016-12-30 and 2017-01-31 for all 6 cuts (one-way 0.498-0.558); 2016 `drops_last_bar` totals (t1000-b0 614 vs 30-55 baseline); `union_by_year` 2017 (t1000-b0 1,679 vs ~1,240; t3000-b0 5,022 vs ~3,500) and every cumulative column from 2017 on; nonmissing-fraction medians 2016 (0.9876) and 2017 (0.9808) = 1-2 hole sessions per 63-session window. Survivorship per-year fractions are not visibly affected (2016 0.045, 2017 0.045 vs 2015 0.041).",
+        "8. Even the ACCEPTED rows on hole sessions are unreliable for open/high/low (open == prior close on 98.7% of 2016-12-30 accepted rows; median (high-low)/close 4.96% vs 1.66% the day before); close and volume spot-check correct (AAPL 2016-12-30 close 115.82, volume 30,586,265).",
+        "9. cp16 must treat the 19 hole sessions as missing-OHL sessions (close/volume usable with a flag), must not require a bar on the rank session when that session is a hole (rank on the previous full session or use a short look-back), and must recompute the 2016-12-30/2017-01-31 churn and 2017 union under that rule; no identity bridge is required for this event."
+      ]
+    }
+  ],
+  "data_hole_2016_12_30": [
+    "Vendor archive carries corrupted OHLC on the session before every NYSE holiday 2016-01-15..2018-02-16 (19 sessions: 9/8/2 in 2016/2017/2018): open == prior close, high/low truncated.",
+    "tickerhistory-qa-v1 rejects those rows as ohlc_order_violation, about half the rows on each such session (2016-12-30: 3,965 violations, 3,957 accepted of 8,102 raw); close/volume spot-check correct.",
+    "2016-12-30 is the only such hole that is also a month-end rank date (bar on rank session required), so 4,034 of 7,869 ids lose eligibility for one rebalance and 99.2 % return under the SAME id within 5 sessions; not an id remap.",
+    "Contaminated outputs: churn.csv at rank 2016-12-30 and 2017-01-31 for all six cuts; 2016 drops_last_bar totals; union_by_year.csv 2017 distinct and every cumulative column from 2017 on; nonmissing_fraction medians 2016 and 2017.",
+    "Unaffected: survivorship.json per-year exits and delisting.csv (no last_bar wave in 2016-12).",
+    "The run STANDS AS MEASURED: pre-registered, no re-tune, no silent correction; the frozen design 4810fda2... is not edited.",
+    "Remediation is a NEW pre-registration (cp16 or cp15b): preparation policy tickerhistory-qa-v2 (accept rows with valid close/volume, flag missing OHL) and/or a hole-aware rank rule (rank on the last full session <= rank date).",
+    "Source: cp15-idgap-investigation.md (pinned under data_quality_findings) and ruling R15-17."
+  ],
+  "coverage_year_attribution": [
+    "coverage_by_year.csv attributes each rebalance (rebalances, eligible_median, members_median, nonmissing_fraction_median, gics_missing_members_median) to the calendar year of its RANK session: the 2012 row carries the 2012-12-31 rebalance and 2019 carries eleven.",
+    "This deviates from the wording of design section 15.2 pins 5/6 (effective-session year); section 4.3 states the rank-session rule.",
+    "Engine, oracle fixtures and tests agree on the measured convention (comparator 42/42, F6), so the number is exact under that convention.",
+    "Recorded as a documented deviation in the cp15 addendum; not corrected in the outputs, the receipt or the frozen design."
+  ],
+  "cp16_capacity_blocker": {
+    "kMaxIcInstruments": 4096,
+    "cumulative_union_at_2019_recomputed": {
+      "t1000_b0": 2278,
+      "t1000_b1000": 2159,
+      "t2000_b0": 4447,
+      "t2000_b1000": 4220,
+      "t3000_b0": 6624,
+      "t3000_b1000": 6276
+    },
+    "cuts_exceeding_cap": [
+      "t2000_b0",
+      "t2000_b1000",
+      "t3000_b0",
+      "t3000_b1000"
+    ],
+    "cuts_within_cap": [
+      "t1000_b0",
+      "t1000_b1000"
+    ],
+    "distinct_2017_recomputed": {
+      "t1000_b0": 1679,
+      "t1000_b1000": 1611,
+      "t2000_b0": 3327,
+      "t2000_b1000": 3200,
+      "t3000_b0": 5022,
+      "t3000_b1000": 4828
+    },
+    "distinct_2017_contaminated_by_data_hole": true,
+    "statement": "kMaxIcInstruments 4096 is below the cumulative 2013-2019 union of the t2000 and t3000 cuts (t1000 fits); the 2017 per-year t3000 union is inflated by the 2016-12-30 data hole (R15-17). cp16 must use per-year contexts, raise the cap by explicit ruling, or re-run after hole remediation under a new pre-registration. This checkpoint only measures the numbers (R15-7, design section 11.8)."
+  },
+  "real_data_run": {
+    "attempt": 1,
+    "measurement_kind": "reevaluation_of_attempt1",
+    "command_line": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\bin\\atx-impl.exe equity-universe --segments-dirs C:/atx/data/tickerhistory_training_native_20260919/segments;C:/atx/data/tickerhistory_training_native_2014_20260920/segments;C:/atx/data/tickerhistory_training_native_2015_20260920/segments;C:/atx/data/tickerhistory_training_native_2016_20260920/segments;C:/atx/data/tickerhistory_training_native_2017_20260920/segments;C:/atx/data/tickerhistory_training_native_2018_20260920/segments;C:/atx/data/tickerhistory_training_native_2019_20260920/segments --preparation-manifests C:/atx/data/tickerhistory_training_20120326_20131231_20260919/manifest.json;C:/atx/data/tickerhistory_training_20140101_20141231_20260920/manifest.json;C:/atx/data/tickerhistory_training_20150101_20151231_20260920/manifest.json;C:/atx/data/tickerhistory_training_20160101_20161231_20260920/manifest.json;C:/atx/data/tickerhistory_training_20170101_20171231_20260920/manifest.json;C:/atx/data/tickerhistory_training_20180101_20181231_20260920/manifest.json;C:/atx/data/tickerhistory_training_20190101_20191231_20260920/manifest.json --out C:/atx/data/equity_universe_pit_2013_2019_20260920 --rank-start 2012-12-31 --rank-end 2019-11-29 --max-working-bytes 3000000000 --trial-ledger C:/atx/.worktrees/equity-platform/atx-engine/reviews/trial-ledger.jsonl",
+    "exit_code": 0,
+    "exit_code_source": "INFERRED (see reevaluation.exit_code_inference); not recorded by the runner",
+    "wall_seconds": 107.13396730000386,
+    "budget_breach": null,
+    "runner_accepted": true,
+    "output_directory": "C:/atx/data/equity_universe_pit_2013_2019_20260920",
+    "output_pins": {
+      "manifest.json": {
+        "path": "C:/atx/data/equity_universe_pit_2013_2019_20260920/manifest.json",
+        "sha256": "26b84defae66192b9a451a9fec3dc5577416b66c6d50c18a769770c5d8ed7c12",
+        "bytes": 374298
+      },
+      "request.json": {
+        "path": "C:/atx/data/equity_universe_pit_2013_2019_20260920/request.json",
+        "sha256": "4111ea4bb2bc58f963fe02fd79a019b6caa61a97e477f404fe3d6e7fbfc60327",
+        "bytes": 322227
+      },
+      "seal.json": {
+        "path": "C:/atx/data/equity_universe_pit_2013_2019_20260920/seal.json",
+        "sha256": "3d9b8cbae54882bf75cee6df08cfbe6501822061d0c5eb543537a22e8cfd7a83",
+        "bytes": 239
+      },
+      "survivorship.json": {
+        "path": "C:/atx/data/equity_universe_pit_2013_2019_20260920/survivorship.json",
+        "sha256": "f6cb9de9203a47d96b4e19db7b99771d224240b4d9e7e750529a9d3592dcee09",
+        "bytes": 8583
+      },
+      "coverage_by_year.csv": {
+        "path": "C:/atx/data/equity_universe_pit_2013_2019_20260920/coverage_by_year.csv",
+        "sha256": "5754336cb4c184f1d73822277257d1a00572573e42ed5121432260badad2ee8e",
+        "bytes": 2307
+      },
+      "churn.csv": {
+        "path": "C:/atx/data/equity_universe_pit_2013_2019_20260920/churn.csv",
+        "sha256": "d98886973af8adb90119922c6b01277221e404c4b7207b913b93aec84cbad5d1",
+        "bytes": 30160
+      },
+      "union_by_year.csv": {
+        "path": "C:/atx/data/equity_universe_pit_2013_2019_20260920/union_by_year.csv",
+        "sha256": "49cb88428aaa6fb453aa6d0e0c57e7430d114d88d82c5e90776cc8cc47dae792",
+        "bytes": 706
+      },
+      "delisting.csv": {
+        "path": "C:/atx/data/equity_universe_pit_2013_2019_20260920/delisting.csv",
+        "sha256": "411b69e57a980dbade639c2a2d917a0937024a10d50c86f609f080a2b20ae248",
+        "bytes": 1908325
+      },
+      "membership.bin": {
+        "path": "C:/atx/data/equity_universe_pit_2013_2019_20260920/membership.bin",
+        "sha256": "776bda8045feed80d1e21fd31a3130539a8d2f334bb8fd9bb372faceb1094ac4",
+        "bytes": 12099428
+      },
+      "membership.csv": {
+        "path": "C:/atx/data/equity_universe_pit_2013_2019_20260920/membership.csv",
+        "sha256": "ef1931be9a94b4ea81aafa6fde1842db591bc3898a3d334fd04d815918076e14",
+        "bytes": 94132189
+      }
+    },
+    "membership_csv_note": "membership.csv is bound by digest only (not parsed by this receipt); its rows are derivable from membership.bin, which is decoded and trailer-verified above.",
+    "seal": {
+      "latest_attached": "2019-12-31",
+      "policy": "RefuseAtOrAfterValidationBeginV1",
+      "sealed_begin": "2023-01-01",
+      "segments_refused": 0,
+      "statement": "no segment at/after 2020-01-01 was mapped",
+      "validation_begin": "2020-01-01"
+    },
+    "loaders": "heterogeneous by construction (M-6): 2012-2013 segments loaded by atx-impl 9415a6ab..., 2014-2019 by ac3ab17f...; the stage manifest and the ingestion manifests both record this",
+    "ingestion_manifests": [
+      {
+        "role": "segments-2012-2013",
+        "pin": {
+          "path": "C:/atx/data/tickerhistory_training_native_20260919/segments/_ingestion.manifest.json",
+          "sha256": "47db6b5d3486322a4f26bd5ba75f3f06b7b22fa6dd50fc54a232fd27d96d6d40",
+          "bytes": 72525
+        },
+        "segments_listed": 445,
+        "status": "complete",
+        "schema": "atx-ingestion-v1",
+        "policy_version": "tickerhistory-qa-v1",
+        "preparation_manifest_sha256": "ee17d68bfe33d58fa7279877c43d370a6b6b6a577bdb11082a70babec6e8c3df",
+        "loader_executable_sha256": "9415a6ab798f0e5fd0eb4fec31a7d2b3d09a47dd7eaf48e668deb844f0fe4daa"
+      },
+      {
+        "role": "segments-2014",
+        "pin": {
+          "path": "C:/atx/data/tickerhistory_training_native_2014_20260920/segments/_ingestion.manifest.json",
+          "sha256": "0f6fd8b291a61806c84163e34e83a5d91323a1b182cec7c5f80c218f989ebb1c",
+          "bytes": 41645
+        },
+        "segments_listed": 252,
+        "status": "complete",
+        "schema": "atx-ingestion-v1",
+        "policy_version": "tickerhistory-qa-v1",
+        "preparation_manifest_sha256": "dc198cf1d355e5d34673a6522da327ef792a553bc8ab02f5af63cc3e0f037b5e",
+        "loader_executable_sha256": "ac3ab17f1202b0802ba7889ad220d065ee18f4fbea9493b6e372120d492b7eff"
+      },
+      {
+        "role": "segments-2015",
+        "pin": {
+          "path": "C:/atx/data/tickerhistory_training_native_2015_20260920/segments/_ingestion.manifest.json",
+          "sha256": "e0e7e5bf89b04ff8b78c1892a4a7646c2f344fb99460dec428d716b65a4d878d",
+          "bytes": 41654
+        },
+        "segments_listed": 252,
+        "status": "complete",
+        "schema": "atx-ingestion-v1",
+        "policy_version": "tickerhistory-qa-v1",
+        "preparation_manifest_sha256": "a22047a5508e7f033efaa7d7a739261cb9edbf7a956a1c76d90e8567753d0ca4",
+        "loader_executable_sha256": "ac3ab17f1202b0802ba7889ad220d065ee18f4fbea9493b6e372120d492b7eff"
+      },
+      {
+        "role": "segments-2016",
+        "pin": {
+          "path": "C:/atx/data/tickerhistory_training_native_2016_20260920/segments/_ingestion.manifest.json",
+          "sha256": "e7cc51130c1dc77796ea7f6238c6b1969fe8d4206f580b9d5b5fa5247d6b3b38",
+          "bytes": 41888
+        },
+        "segments_listed": 252,
+        "status": "complete",
+        "schema": "atx-ingestion-v1",
+        "policy_version": "tickerhistory-qa-v1",
+        "preparation_manifest_sha256": "004ae1f1c615333f6c4fd49fa4896fa072ce7cc49ad78ee3fff35bf7bd52b872",
+        "loader_executable_sha256": "ac3ab17f1202b0802ba7889ad220d065ee18f4fbea9493b6e372120d492b7eff"
+      },
+      {
+        "role": "segments-2017",
+        "pin": {
+          "path": "C:/atx/data/tickerhistory_training_native_2017_20260920/segments/_ingestion.manifest.json",
+          "sha256": "6681f110c841a2d25626599466ba119f244d78bfb0a6fc850faa5c82e244b1e0",
+          "bytes": 41728
+        },
+        "segments_listed": 251,
+        "status": "complete",
+        "schema": "atx-ingestion-v1",
+        "policy_version": "tickerhistory-qa-v1",
+        "preparation_manifest_sha256": "5e9cb5bd5221d67b2831c66b33e9a74b6b67a3aa857b9d816990afca5099bd95",
+        "loader_executable_sha256": "ac3ab17f1202b0802ba7889ad220d065ee18f4fbea9493b6e372120d492b7eff"
+      },
+      {
+        "role": "segments-2018",
+        "pin": {
+          "path": "C:/atx/data/tickerhistory_training_native_2018_20260920/segments/_ingestion.manifest.json",
+          "sha256": "965ad50c634a2396e1de3417dbf1e202e4a45520f7957a8cacb104da82b6a756",
+          "bytes": 41734
+        },
+        "segments_listed": 251,
+        "status": "complete",
+        "schema": "atx-ingestion-v1",
+        "policy_version": "tickerhistory-qa-v1",
+        "preparation_manifest_sha256": "9b3026d569889c416bea4384cc614af87d6fc768fa0f3ec48d484700edc7d10f",
+        "loader_executable_sha256": "ac3ab17f1202b0802ba7889ad220d065ee18f4fbea9493b6e372120d492b7eff"
+      },
+      {
+        "role": "segments-2019",
+        "pin": {
+          "path": "C:/atx/data/tickerhistory_training_native_2019_20260920/segments/_ingestion.manifest.json",
+          "sha256": "a1d540f8f2be1d2cdac59c6a03d2027b542c0964894798a3cdde46288a78d04c",
+          "bytes": 41897
+        },
+        "segments_listed": 252,
+        "status": "complete",
+        "schema": "atx-ingestion-v1",
+        "policy_version": "tickerhistory-qa-v1",
+        "preparation_manifest_sha256": "f2092325ab09b44e749aa17c65b8fedd0f9a21af00763667732f0933f778123e",
+        "loader_executable_sha256": "ac3ab17f1202b0802ba7889ad220d065ee18f4fbea9493b6e372120d492b7eff"
+      }
+    ],
+    "segments_note": "The 1,955 .seg files are pinned by the stage manifest (and were sha256-verified by the stage against each directory's ingestion manifest before the ledger line, design section 5.5 step 2); this receipt binds the ingestion manifests by digest and does not re-hash the segments."
+  },
+  "trial_ledger": {
+    "pin": {
+      "path": "atx-engine/reviews/trial-ledger.jsonl",
+      "sha256": "d4f1262070470ac00ef5f528c2225839d71f5b4628cb856b8a485d47faf4c58c",
+      "bytes": 16870
+    },
+    "sidecar_pin": {
+      "path": "atx-engine/reviews/trial-ledger.manifest.json",
+      "sha256": "c2fa8843e2f28abd005a41f1cbf1b77523bb78c8b32c5fcf9476f4b898ebbfca",
+      "bytes": 130
+    },
+    "chain_valid": true,
+    "chain_error": null,
+    "head_sha256": "72fbb884bed3cf4578fa07c9635547f79d241547edf27215ef55e6a5839e8895",
+    "lines": 4,
+    "line_digests": [
+      {
+        "index": 0,
+        "checkpoint": 14,
+        "trial_id": "iteration14-cross-section-ic-0001",
+        "status": "pre-registered",
+        "purpose": "training-only-forecast-evaluation",
+        "trial_count_declared": 30,
+        "line_sha256": "2508222bb184712311acb61ddc03558cc389a2bea870532afa39bc2a74988880",
+        "bytes": 4077
+      },
+      {
+        "index": 1,
+        "checkpoint": 14,
+        "trial_id": "iteration14-cross-section-ic-0001",
+        "status": "completed",
+        "purpose": "training-only-forecast-evaluation",
+        "trial_count_declared": 30,
+        "line_sha256": "421253a7497522a7017e257963393f0a5d3284201db954b332d5bd3be4b3028d",
+        "bytes": 4142
+      },
+      {
+        "index": 2,
+        "checkpoint": 15,
+        "trial_id": "iteration15-point-in-time-universe-0001",
+        "status": "pre-registered",
+        "purpose": "point-in-time-universe-construction",
+        "trial_count_declared": 0,
+        "line_sha256": "49241ed4a1bf042ac52e0737cc95287d4f80fa8f34dda3a40590eeed37c2643d",
+        "bytes": 4293
+      },
+      {
+        "index": 3,
+        "checkpoint": 15,
+        "trial_id": "iteration15-point-in-time-universe-0001",
+        "status": "completed",
+        "purpose": "point-in-time-universe-construction",
+        "trial_count_declared": 0,
+        "line_sha256": "72fbb884bed3cf4578fa07c9635547f79d241547edf27215ef55e6a5839e8895",
+        "bytes": 4358
+      }
+    ],
+    "cp14_receipt_ledger_pin": {
+      "path": "atx-engine/reviews/trial-ledger.jsonl",
+      "sha256": "cc888bde6b28f84b6e4860a7d2b507b2cb967022eed566fb067790f017809be7",
+      "bytes": 8219
+    },
+    "cp14_lines_unchanged": true,
+    "checkpoint_15_lines": [
+      {
+        "schema": "atx-trial-ledger-v1",
+        "trial_id": "iteration15-point-in-time-universe-0001",
+        "appended_utc": "2026-09-20T22:57:45Z",
+        "prev_sha256": "421253a7497522a7017e257963393f0a5d3284201db954b332d5bd3be4b3028d",
+        "checkpoint": 15,
+        "purpose": "point-in-time-universe-construction",
+        "status": "pre-registered",
+        "trial_count_declared": 0,
+        "parents": [
+          {
+            "role": "segments-2012-2013",
+            "sha256": "47db6b5d3486322a4f26bd5ba75f3f06b7b22fa6dd50fc54a232fd27d96d6d40"
+          },
+          {
+            "role": "segments-2014",
+            "sha256": "0f6fd8b291a61806c84163e34e83a5d91323a1b182cec7c5f80c218f989ebb1c"
+          },
+          {
+            "role": "segments-2015",
+            "sha256": "e0e7e5bf89b04ff8b78c1892a4a7646c2f344fb99460dec428d716b65a4d878d"
+          },
+          {
+            "role": "segments-2016",
+            "sha256": "e7cc51130c1dc77796ea7f6238c6b1969fe8d4206f580b9d5b5fa5247d6b3b38"
+          },
+          {
+            "role": "segments-2017",
+            "sha256": "6681f110c841a2d25626599466ba119f244d78bfb0a6fc850faa5c82e244b1e0"
+          },
+          {
+            "role": "segments-2018",
+            "sha256": "965ad50c634a2396e1de3417dbf1e202e4a45520f7957a8cacb104da82b6a756"
+          },
+          {
+            "role": "segments-2019",
+            "sha256": "a1d540f8f2be1d2cdac59c6a03d2027b542c0964894798a3cdde46288a78d04c"
+          },
+          {
+            "role": "design-note",
+            "sha256": "4810fda251c6c285b29413ab6bea05b46db66e9bb0620cf17950b45075267dc8"
+          }
+        ],
+        "window": {
+          "start": "2013-01-02",
+          "end_exclusive": "2020-01-01",
+          "observations": 84
+        },
+        "fit_boundary": {
+          "fit_kind": "unfit-no-fitting-performed",
+          "fitted_observations": 0
+        },
+        "runtime": {
+          "wall_seconds": null,
+          "peak_working_set_bytes": null
+        },
+        "result": {
+          "outcome": "pending",
+          "manifest_sha256": null,
+          "failure_sha256": null
+        },
+        "producer_executable_sha256": "8425fc03c136169a2f7522c0ade37bcf855179de431b302b4f0aae6fe49f950b",
+        "notes": "Checkpoint 15 universe construction; not a forecast trial (trial_count_declared 0). recipe.horizons/quantiles/bootstrap/autocorr_lags/turnover_source/forward_variants/samples/common_sample_rule/net_spread_rule/cost and source_exclusions carry atx-trial-ledger-v1 defaults and are NOT APPLICABLE to this line. The six top_n x band cuts are reported side by side (AR-7 semantics); selecting among them later is a new trial.",
+        "line_sha256": "49241ed4a1bf042ac52e0737cc95287d4f80fa8f34dda3a40590eeed37c2643d"
+      },
+      {
+        "schema": "atx-trial-ledger-v1",
+        "trial_id": "iteration15-point-in-time-universe-0001",
+        "appended_utc": "2026-09-20T22:58:14Z",
+        "prev_sha256": "49241ed4a1bf042ac52e0737cc95287d4f80fa8f34dda3a40590eeed37c2643d",
+        "checkpoint": 15,
+        "purpose": "point-in-time-universe-construction",
+        "status": "completed",
+        "trial_count_declared": 0,
+        "parents": [
+          {
+            "role": "segments-2012-2013",
+            "sha256": "47db6b5d3486322a4f26bd5ba75f3f06b7b22fa6dd50fc54a232fd27d96d6d40"
+          },
+          {
+            "role": "segments-2014",
+            "sha256": "0f6fd8b291a61806c84163e34e83a5d91323a1b182cec7c5f80c218f989ebb1c"
+          },
+          {
+            "role": "segments-2015",
+            "sha256": "e0e7e5bf89b04ff8b78c1892a4a7646c2f344fb99460dec428d716b65a4d878d"
+          },
+          {
+            "role": "segments-2016",
+            "sha256": "e7cc51130c1dc77796ea7f6238c6b1969fe8d4206f580b9d5b5fa5247d6b3b38"
+          },
+          {
+            "role": "segments-2017",
+            "sha256": "6681f110c841a2d25626599466ba119f244d78bfb0a6fc850faa5c82e244b1e0"
+          },
+          {
+            "role": "segments-2018",
+            "sha256": "965ad50c634a2396e1de3417dbf1e202e4a45520f7957a8cacb104da82b6a756"
+          },
+          {
+            "role": "segments-2019",
+            "sha256": "a1d540f8f2be1d2cdac59c6a03d2027b542c0964894798a3cdde46288a78d04c"
+          },
+          {
+            "role": "design-note",
+            "sha256": "4810fda251c6c285b29413ab6bea05b46db66e9bb0620cf17950b45075267dc8"
+          }
+        ],
+        "window": {
+          "start": "2013-01-02",
+          "end_exclusive": "2020-01-01",
+          "observations": 84
+        },
+        "fit_boundary": {
+          "fit_kind": "unfit-no-fitting-performed",
+          "fitted_observations": 0
+        },
+        "runtime": {
+          "wall_seconds": 28.8443701,
+          "peak_working_set_bytes": null
+        },
+        "result": {
+          "outcome": "completed",
+          "manifest_sha256": "26b84defae66192b9a451a9fec3dc5577416b66c6d50c18a769770c5d8ed7c12",
+          "failure_sha256": null
+        },
+        "producer_executable_sha256": "8425fc03c136169a2f7522c0ade37bcf855179de431b302b4f0aae6fe49f950b",
+        "notes": "Checkpoint 15 universe construction; not a forecast trial (trial_count_declared 0). recipe.horizons/quantiles/bootstrap/autocorr_lags/turnover_source/forward_variants/samples/common_sample_rule/net_spread_rule/cost and source_exclusions carry atx-trial-ledger-v1 defaults and are NOT APPLICABLE to this line. The six top_n x band cuts are reported side by side (AR-7 semantics); selecting among them later is a new trial.",
+        "line_sha256": "72fbb884bed3cf4578fa07c9635547f79d241547edf27215ef55e6a5839e8895"
+      }
+    ],
+    "note": "recipe/source_exclusions of the cp15 lines are the atx-trial-ledger-v1 defaults declared NOT APPLICABLE in the line's notes (design section 5.6, DR15-16); they are bound by the line digest, not restated here."
+  },
+  "review": {
+    "design_review": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp15-design-review.md",
+      "sha256": "e45346e615575379a0d242fbe66888536dad093d10fb43ffe7fa0e5865b2a2f8",
+      "bytes": 46538
+    },
+    "t1_report": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp15-task-T1-report.md",
+      "sha256": "be6a435d5760e06d649ddf11c8d25a0875450325f96c38012a1f18fd76e5861e",
+      "bytes": 15565
+    },
+    "t2_report": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp15-task-T2-report.md",
+      "sha256": "1d5fcec9602c8d5aba8e5d8d72954bd74b466e6d00f6c1de18ba57cc98b089c6",
+      "bytes": 13154
+    },
+    "t3_report": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp15-task-T3-report.md",
+      "sha256": "0643df126490fe9c6f6f1a8cfc7730b0f5face0a5d4c17ca363604ccc017d87b",
+      "bytes": 21596
+    },
+    "end_review": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp15-end-review.md",
+      "sha256": "e9477ca811e4199ca9ef8478a258a3b17f5f9bb8da5f473d17d36ce900c5faa5",
+      "bytes": 21921
+    },
+    "research": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/research-cp15-universe.md",
+      "sha256": "d75ed3bf31212a76f4839986ceaff74858d08c0d7566489b09329173ae414b9a",
+      "bytes": 30188
+    }
+  },
+  "qualifications": [
+    "Stage 1 universe construction only: membership lists, churn, coverage, union and survivorship counts. No alpha, no forecast, no Sharpe, no capacity, no throughput claim.",
+    "No float or common-stock eligibility screen; instrument type unknown is accepted; gics_missing_members is reported, not applied (R15-6).",
+    "Both survivorship metrics are LOWER BOUNDS on bias: the archive backfill policy is unknown (historical_availability: unknown-archive-snapshot), names absent from the archive are invisible, no delisting return is imputed (R15-10).",
+    "Vendor shares lag splits and carry zeros; vendor_market_cap_usd is labelled no-filing-vintage, never a rank key, and must not be used as a size screen downstream.",
+    "2018 thinning: 83 dates with quarantined duplicate keys reduce valid bars; counted in coverage_by_year.csv, not repaired (R15-9 quarantine-all).",
+    "ID reuse (securityID 77622) makes at most a handful of histories composite; reported, not resolved.",
+    "Ingestion caveat: the source ZIP was not read-only during the 2014-2019 loads (mode 0666 as in the 2013 run); integrity was guarded by sha256 before/after each year, recorded in the pinned ingest receipt.",
+    "The seven segment directories were loaded by two different atx-impl builds (9415a6ab... for 2012-2013, ac3ab17f... for 2014-2019); the recipe (policy tickerhistory-qa-v1) is the same by manifest.",
+    "The ledger line uses the cp14-shaped atx-trial-ledger-v1 schema with defaults declared inapplicable in notes (DR15-16).",
+    "The oracle v1 document embeds the pre-T1 section-14 design digest; the design records its supersession (section 15.5) and the stage and runner carry the frozen digest.",
+    "cp13/cp14 receipt CMake pins drift by the one-line cp15 CMake edits; recorded in an addendum, receipts untouched (section 11.9).",
+    "The 2020-01-01 seal is asserted by code (segment filename dates) and is non-vacuous by data only in that no 2020+ directory was listed; it says nothing about leakage inside 2013-2019.",
+    "DATA HOLE 2016-12-30 (R15-17): see data_hole_2016_12_30; churn at 2016-12-30/2017-01-31, 2016 drops_last_bar totals, union_by_year 2017 and every cumulative column from 2017 on, and the 2016/2017 nonmissing medians are contaminated by a vendor OHLC defect and are labelled, not corrected; the run stands as measured.",
+    "The measurement JSON is a post-hoc re-evaluation of attempt 1 (runner crashed after the stage completed); the stage exit code is inferred, see runner_defect.",
+    "COVERAGE YEAR ATTRIBUTION (end review I-1): coverage_by_year rows attribute rebalances to the rank-session year, deviating from design section 15.2 pins 5/6 wording; see coverage_year_attribution.",
+    "CP16 CAPACITY BLOCKER (end review I-3): cumulative union t2000/t3000 exceed kMaxIcInstruments 4096 and the 2017 t3000 union is hole-contaminated; see cp16_capacity_blocker."
+  ],
+  "not_established": [
+    "No alpha, no forecast, no Sharpe, no capacity. Membership lists are inputs to a future measurement; nothing here is evidence that anything predicts anything. (section 11.1)",
+    "No float or common-stock eligibility (R15-6): ETFs, ADRs, preferreds and funds can rank into the top 3000 by dollar volume; gics_missing_members is reported, not applied. (section 11.2)",
+    "Survivorship fractions are lower bounds (R15-10): backfill policy unknown; names never in the archive are invisible; no delisting return is imputed (Shumway -30 % / -55 % cited, not applied). (section 11.3)",
+    "Vendor shares unreliable: lags splits, zeros; vendor_market_cap_usd must not be used as a size screen downstream without a filing-dated source. (section 11.4)",
+    "2018 thinning: 83 dates (86 rows) with quarantined duplicate keys reduce valid bars on those sessions; a name hit on >= 7 of its trailing 63 sessions loses eligibility on that rank date. Counted in coverage_by_year.csv; not repaired. (section 11.5)",
+    "ID reuse (77622) makes at most a handful of histories composite. (section 11.6)",
+    "Ledger schema shape (section 5.6, DR15-16): the v1 line carries cp14 recipe defaults; readers must honour notes. (section 11.7)",
+    "cp16 cap: if cumulative_t3000_b10 at 2019 exceeds 4096, cp16 must go per-year or raise kMaxIcInstruments; this checkpoint only measures the number (R15-7). (section 11.8)",
+    "CMake pin drift: the two one-line CMake edits drift the cp13/cp14 receipt pins as cp14 drifted cp13; recorded in the cp15 addendum, never by editing receipts. (section 11.9)",
+    "No gtest asserts a real-data number; no test claims survivorship completeness, instrument-type correctness, or point-in-time shares. (section 9.4)",
+    "Not throughput, latency, production-readiness or investment-quality evidence. No live trading or broker actions performed or authorized."
+  ],
+  "checks": [
+    {
+      "check": "design_sha256_is_frozen_4810fda2",
+      "ok": true,
+      "detail": {
+        "expected": "4810fda251c6c285b29413ab6bea05b46db66e9bb0620cf17950b45075267dc8",
+        "actual": "4810fda251c6c285b29413ab6bea05b46db66e9bb0620cf17950b45075267dc8"
+      }
+    },
+    {
+      "check": "stage_embeds_frozen_design_sha256",
+      "ok": true,
+      "detail": {
+        "kEquityUniverseDesignNoteSha256": "4810fda251c6c285b29413ab6bea05b46db66e9bb0620cf17950b45075267dc8"
+      }
+    },
+    {
+      "check": "runner_pins_frozen_design_sha256",
+      "ok": true,
+      "detail": {
+        "DESIGN_NOTE_SHA256": "4810fda251c6c285b29413ab6bea05b46db66e9bb0620cf17950b45075267dc8"
+      }
+    },
+    {
+      "check": "oracle_design_sha256_is_frozen_or_documented_predecessor",
+      "ok": true,
+      "detail": {
+        "oracle_design_note_sha256": "be4b3b670eaced4f0b6f5cee8a7d5e01dc8b201ae1ecd4ef8b3377bcdb41020f",
+        "is_superseded_section_14_digest": true
+      }
+    },
+    {
+      "check": "oracle_schema_and_case_count",
+      "ok": true,
+      "detail": {
+        "schema": "atx-iteration15-universe-oracle-v1",
+        "case_count": 42
+      }
+    },
+    {
+      "check": "comparator_final_status_pass",
+      "ok": true,
+      "detail": {
+        "final": "build-equity/audits/iteration15-native-comparison-t1fix1.json",
+        "counts": {
+          "oracle_cases": 42,
+          "required": 42,
+          "compared": 42,
+          "passed": 42,
+          "failed": 0,
+          "not_measured_natively": 0,
+          "global_failures": 0
+        }
+      }
+    },
+    {
+      "check": "comparator_final_binds_pinned_oracle_and_comparator_by_digest",
+      "ok": true,
+      "detail": {
+        "oracle_pinned": "8b21cf5785920352b7250d96d92a907f40d882df61ab3ab2bc27c3e933515247",
+        "comparator_pinned": "1859fd95538d0baa100d97b4edf402afd77e787e5561a96c67d3ac00eec3fe51"
+      }
+    },
+    {
+      "check": "comparator_final_log_is_a_pinned_log_by_digest",
+      "ok": true,
+      "detail": {
+        "comparator_logs": [
+          "0cbfc58893d33d7bb074b4473510986549646e533516cb1dda91a86894df2552"
+        ]
+      }
+    },
+    {
+      "check": "engine_data_suite_final_log_green_37_and_matches_junit",
+      "ok": true,
+      "detail": {
+        "log": "build-equity/audits/iteration15-data-t1fix1-tests.log",
+        "summary": {
+          "percent": 100,
+          "failed": 0,
+          "total": 37,
+          "passed": 37
+        }
+      }
+    },
+    {
+      "check": "engine_data_group_regression_log_green_and_matches_junit",
+      "ok": true,
+      "detail": {
+        "log": "build-equity/audits/iteration15-data-group-tests.log",
+        "summary": {
+          "percent": 100,
+          "failed": 0,
+          "total": 94,
+          "passed": 94
+        }
+      }
+    },
+    {
+      "check": "impl_tests_final_log_green_and_matches_junit",
+      "ok": true,
+      "detail": {
+        "log": "build-equity/audits/iteration15-impl-t2-tests.log",
+        "summary": {
+          "percent": 100,
+          "failed": 0,
+          "total": 60,
+          "passed": 60
+        }
+      }
+    },
+    {
+      "check": "every_log_with_a_ctest_summary_agrees_with_its_junit_when_one_exists",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "check": "measurement_schema_and_accepted",
+      "ok": true,
+      "detail": {
+        "accepted": true,
+        "exit_code": 0,
+        "pins_changed": [],
+        "missing": []
+      }
+    },
+    {
+      "check": "measurement_preflight_saw_frozen_design_in_note_and_stage",
+      "ok": true,
+      "detail": {
+        "preflight_design_note_sha256": "4810fda251c6c285b29413ab6bea05b46db66e9bb0620cf17950b45075267dc8"
+      }
+    },
+    {
+      "check": "sources_byte_identical_to_what_the_run_pinned",
+      "ok": true,
+      "detail": {
+        "drifted_since_run": []
+      }
+    },
+    {
+      "check": "run_pinned_oracle_and_comparator_by_digest",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "check": "stage_exit_code_inferred_0_manifest_complete_stderr_empty_or_captured_0",
+      "ok": true,
+      "detail": {
+        "is_reeval": true,
+        "inference": {
+          "recorded": null,
+          "manifest_status_complete": true,
+          "ledger_terminal_line_completed": true,
+          "stage_summary_on_stdout": true,
+          "stderr_empty": true,
+          "note": "the stage writes manifest.json last and the ledger 'completed' line after it (design section 5.5 step 6); every later exit path is the failure branch, which writes failure.json and a 'failed' line instead. None of those exist.",
+          "inferred_exit_code": 0
+        }
+      }
+    },
+    {
+      "check": "all_ten_output_files_present",
+      "ok": true,
+      "detail": {
+        "missing": [],
+        "output_root": "C:/atx/data/equity_universe_pit_2013_2019_20260920"
+      }
+    },
+    {
+      "check": "no_pending_marker_no_failure_json",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "check": "stage_manifest_digests_match_recomputed_output_digests",
+      "ok": true,
+      "detail": {
+        "mismatched": [],
+        "unrecorded": []
+      }
+    },
+    {
+      "check": "stage_manifest_carries_frozen_design_sha256",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "check": "manifest_producer_executable_sha256_equals_current_atx_impl_exe_and_expected_8425fc03",
+      "ok": true,
+      "detail": {
+        "manifest_producer": "8425fc03c136169a2f7522c0ade37bcf855179de431b302b4f0aae6fe49f950b",
+        "current_exe": "8425fc03c136169a2f7522c0ade37bcf855179de431b302b4f0aae6fe49f950b",
+        "expected": "8425fc03c136169a2f7522c0ade37bcf855179de431b302b4f0aae6fe49f950b",
+        "manifest_status": "complete"
+      }
+    },
+    {
+      "check": "request_json_states_84_rebalances",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "check": "seal_json_refused_nothing_latest_attached_2019_12_31",
+      "ok": true,
+      "detail": {
+        "latest_attached": "2019-12-31",
+        "policy": "RefuseAtOrAfterValidationBeginV1",
+        "sealed_begin": "2023-01-01",
+        "segments_refused": 0,
+        "statement": "no segment at/after 2020-01-01 was mapped",
+        "validation_begin": "2020-01-01"
+      }
+    },
+    {
+      "check": "churn_has_84_rebalances_in_each_of_the_six_cuts",
+      "ok": true,
+      "detail": {
+        "distinct_rank_dates": 84,
+        "cuts": [
+          "t1000_b0",
+          "t1000_b1000",
+          "t2000_b0",
+          "t2000_b1000",
+          "t3000_b0",
+          "t3000_b1000"
+        ]
+      }
+    },
+    {
+      "check": "coverage_sessions_total_1955_and_84_rebalances",
+      "ok": true,
+      "detail": {
+        "sessions_total": 1955,
+        "rebalances_total": 84
+      }
+    },
+    {
+      "check": "coverage_quarantined_duplicate_dates_match_design_2_2_7_3_10_0_83_0",
+      "ok": true,
+      "detail": {
+        "2012": 2,
+        "2013": 2,
+        "2014": 7,
+        "2015": 3,
+        "2016": 10,
+        "2017": 0,
+        "2018": 83,
+        "2019": 0
+      }
+    },
+    {
+      "check": "union_years_2013_to_2019_six_cuts",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "check": "survivorship_schema_six_cuts_window_end_2019_12_31",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "check": "delisting_ever_members_agree_with_survivorship",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "check": "membership_bin_decodes_trailer_verified_header_frozen_84_rebalances",
+      "ok": true,
+      "detail": {
+        "version": 1,
+        "adv_window": 63,
+        "min_valid_observations": 57,
+        "min_raw_price_exclusive": 1.0,
+        "top_n": [
+          1000,
+          2000,
+          3000
+        ],
+        "band_bp": [
+          0,
+          1000
+        ],
+        "rebalance_count": 84,
+        "fnv1a64_trailer": "18347024279264672782",
+        "fnv1a64_recomputed": "18347024279264672782",
+        "trailer_matches": true,
+        "first_rank_date": "2012-12-31",
+        "last_rank_date": "2019-11-29",
+        "last_effective_date": "2019-12-02",
+        "all_effective_positive": true,
+        "member_counts_final": [
+          1000,
+          1000,
+          2000,
+          2000,
+          3000,
+          3000
+        ]
+      }
+    },
+    {
+      "check": "membership_bin_final_member_counts_equal_churn_csv",
+      "ok": true,
+      "detail": {
+        "bin": [
+          1000,
+          1000,
+          2000,
+          2000,
+          3000,
+          3000
+        ],
+        "churn_csv": [
+          1000,
+          1000,
+          2000,
+          2000,
+          3000,
+          3000
+        ]
+      }
+    },
+    {
+      "check": "ingestion_manifests_complete_qa_v1_expected_segment_counts",
+      "ok": true,
+      "detail": {
+        "segments_listed": [
+          445,
+          252,
+          252,
+          252,
+          251,
+          251,
+          252
+        ]
+      }
+    },
+    {
+      "check": "loaders_heterogeneous_as_stated_M6_9415a6ab_then_ac3ab17f_x6",
+      "ok": true,
+      "detail": {
+        "loaders": [
+          "9415a6ab798f0e5fd0eb4fec31a7d2b3d09a47dd7eaf48e668deb844f0fe4daa",
+          "ac3ab17f1202b0802ba7889ad220d065ee18f4fbea9493b6e372120d492b7eff",
+          "ac3ab17f1202b0802ba7889ad220d065ee18f4fbea9493b6e372120d492b7eff",
+          "ac3ab17f1202b0802ba7889ad220d065ee18f4fbea9493b6e372120d492b7eff",
+          "ac3ab17f1202b0802ba7889ad220d065ee18f4fbea9493b6e372120d492b7eff",
+          "ac3ab17f1202b0802ba7889ad220d065ee18f4fbea9493b6e372120d492b7eff",
+          "ac3ab17f1202b0802ba7889ad220d065ee18f4fbea9493b6e372120d492b7eff"
+        ]
+      }
+    },
+    {
+      "check": "ingest_receipt_attempt2_complete_and_binds_the_six_2014_2019_manifests_by_digest",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "check": "stage_manifest_pins_1955_segments",
+      "ok": true,
+      "detail": {
+        "segments_in_manifest": 1955
+      }
+    },
+    {
+      "check": "ledger_chain_valid_and_sidecar_anchored",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "check": "cp14_lines_byte_unchanged_vs_cp14_receipt_pin",
+      "ok": true,
+      "detail": {
+        "cp14_receipt_pin": {
+          "path": "atx-engine/reviews/trial-ledger.jsonl",
+          "sha256": "cc888bde6b28f84b6e4860a7d2b507b2cb967022eed566fb067790f017809be7",
+          "bytes": 8219
+        },
+        "first_two_lines_sha256": "cc888bde6b28f84b6e4860a7d2b507b2cb967022eed566fb067790f017809be7"
+      }
+    },
+    {
+      "check": "declared_trials_checkpoint_14_is_30_unchanged",
+      "ok": true,
+      "detail": {
+        "N14": 30
+      }
+    },
+    {
+      "check": "declared_trials_checkpoint_15_is_0",
+      "ok": true,
+      "detail": {
+        "N15": 0
+      }
+    },
+    {
+      "check": "exactly_two_cp15_lines_pre_registered_then_completed_same_trial_id",
+      "ok": true,
+      "detail": {
+        "lines_total": 4,
+        "cp15_statuses": [
+          "pre-registered",
+          "completed"
+        ]
+      }
+    },
+    {
+      "check": "cp15_trial_id_is_iteration15_point_in_time_universe_0001",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "check": "cp15_line_parents_bind_frozen_design_and_the_seven_ingestion_manifests_by_digest",
+      "ok": true,
+      "detail": {
+        "design_note_parent": [
+          "4810fda251c6c285b29413ab6bea05b46db66e9bb0620cf17950b45075267dc8"
+        ],
+        "segment_parent_count": 7
+      }
+    },
+    {
+      "check": "cp15_completed_line_manifest_sha256_equals_recomputed_manifest_json",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "check": "cp15_line_window_84_observations_2013_01_02_to_2020_01_01",
+      "ok": true,
+      "detail": {
+        "start": "2013-01-02",
+        "end_exclusive": "2020-01-01",
+        "observations": 84
+      }
+    },
+    {
+      "check": "stage_manifest_pre_registration_line_sha256_equals_walked_cp15_line_digest",
+      "ok": true,
+      "detail": {
+        "manifest": "49241ed4a1bf042ac52e0737cc95287d4f80fa8f34dda3a40590eeed37c2643d",
+        "walked": "49241ed4a1bf042ac52e0737cc95287d4f80fa8f34dda3a40590eeed37c2643d"
+      }
+    },
+    {
+      "check": "measurement_ledger_head_equals_current_head",
+      "ok": true,
+      "detail": {
+        "run": "72fbb884bed3cf4578fa07c9635547f79d241547edf27215ef55e6a5839e8895",
+        "now": "72fbb884bed3cf4578fa07c9635547f79d241547edf27215ef55e6a5839e8895"
+      }
+    }
+  ],
+  "sources": {
+    "engine_header": {
+      "path": "atx-engine/include/atx/engine/data/point_in_time_universe.hpp",
+      "sha256": "08fbe91bc3481ee848810acc58ed791b8947e9934acceda54cfed07ceb78957d",
+      "bytes": 16417
+    },
+    "engine_source": {
+      "path": "atx-engine/src/data/point_in_time_universe.cpp",
+      "sha256": "cae32cfa3d4fc48a66312560b4eb55b37548870f50aef9a124e711cf2813ccbf",
+      "bytes": 53023
+    },
+    "engine_test": {
+      "path": "atx-engine/tests/data/data_point_in_time_universe_test.cpp",
+      "sha256": "c43e6b61ea75ec416f6fe4e5aa2cc5b23b84ebf22eeff40b4e7ddfa599380453",
+      "bytes": 102098
+    },
+    "engine_cmake": {
+      "path": "atx-engine/CMakeLists.txt",
+      "sha256": "c0f2a43aa2474faea3feb9fc87f6cf7cccb5ae008c56c66fd9c9100cc803f5e9",
+      "bytes": 6508
+    },
+    "stage_header": {
+      "path": "atx-impl/src/stage_equity_universe.hpp",
+      "sha256": "ff0b67dbeec560f3953452769e57f1d4139566ec5b61b9c2f7f1b0261686a493",
+      "bytes": 2568
+    },
+    "stage_source": {
+      "path": "atx-impl/src/stage_equity_universe.cpp",
+      "sha256": "f4eb7b1796f49c73b6a729543df2d767b54718a5f60c8d90efffb5283d76ec9a",
+      "bytes": 72575
+    },
+    "stage_test": {
+      "path": "atx-impl/tests/stage_equity_universe_test.cpp",
+      "sha256": "9aeb1e7ee1f01f1a414d2012a892a465bd8e75ace217f957b5b9f6cc2dba630f",
+      "bytes": 52392
+    },
+    "ledger_header": {
+      "path": "atx-impl/src/trial_ledger.hpp",
+      "sha256": "63515a3634c6e03bbce80f7b53289997df705ecdccc9793ef78051d4d3321163",
+      "bytes": 15605
+    },
+    "ledger_source": {
+      "path": "atx-impl/src/trial_ledger.cpp",
+      "sha256": "053c14200e82db4109be019881f94c7d272e9fadb29fd09c38e886a0c4ac16dc",
+      "bytes": 38968
+    },
+    "ledger_test": {
+      "path": "atx-impl/tests/trial_ledger_test.cpp",
+      "sha256": "3bf1cc6c5de791f55231d85f81dae3063d224659af87a1fdff286e53a7d1ab69",
+      "bytes": 31877
+    },
+    "impl_config_hpp": {
+      "path": "atx-impl/src/config.hpp",
+      "sha256": "2f8d67717c75f7202135173391c35d81d4af6cf0da54abe8ff86e9c3db113094",
+      "bytes": 36680
+    },
+    "impl_config_cpp": {
+      "path": "atx-impl/src/config.cpp",
+      "sha256": "54e13d1e06a0be14e40c10bf103b410fc169eba187c8083a44a2a27ae5112fdf",
+      "bytes": 36600
+    },
+    "impl_dispatch": {
+      "path": "atx-impl/src/dispatch.cpp",
+      "sha256": "5a9566f22a63a6610a2720761caa5bd689660f1293ebb0476a38af828398163c",
+      "bytes": 8602
+    },
+    "impl_cmake": {
+      "path": "atx-impl/CMakeLists.txt",
+      "sha256": "f70dfd59fb5041aca002f5eb8803a4b336def0b73ff0d879ef726e58773c01d0",
+      "bytes": 3558
+    }
+  },
+  "evidence": {
+    "scripts": {
+      "oracle_script": {
+        "path": "build-equity/audits/iteration15_universe_oracle.py",
+        "sha256": "7fea11ca89dee7e4b5b9bc0ff8b6c98ee51cf752a54f598f1f39fbdb7faaafd8",
+        "bytes": 84472
+      },
+      "comparator": {
+        "path": "build-equity/audits/iteration15_native_comparator.py",
+        "sha256": "1859fd95538d0baa100d97b4edf402afd77e787e5561a96c67d3ac00eec3fe51",
+        "bytes": 40636
+      },
+      "runner": {
+        "path": "build-equity/audits/iteration15_run_equity_universe.py",
+        "sha256": "bf868e678dda6666c8fb0a913c3bc7cd4c264a440d872f73d0968d1423bc0ee9",
+        "bytes": 49777
+      },
+      "ingest_script": {
+        "path": "build-equity/audits/iteration15_ingest_tickerhistory.py",
+        "sha256": "c0608ec7517476c457403dda30fe96f89586cb1f6e56c7ebcdeeed9f278de91d",
+        "bytes": 28896
+      }
+    },
+    "logs": [
+      "build-equity/audits/iteration15-configure-t1.log",
+      "build-equity/audits/iteration15-check-t1.log",
+      "build-equity/audits/iteration15-build-t1.log",
+      "build-equity/audits/iteration15-data-t1-tests.log",
+      "build-equity/audits/iteration15-build-t1fix1.log",
+      "build-equity/audits/iteration15-data-t1fix1-tests.log",
+      "build-equity/audits/iteration15-data-group-tests.log",
+      "build-equity/audits/iteration15-configure-t2.log",
+      "build-equity/audits/iteration15-check-t2.log",
+      "build-equity/audits/iteration15-build-t2.log",
+      "build-equity/audits/iteration15-build-t2fix1.log",
+      "build-equity/audits/iteration15-impl-t2-tests.log",
+      "build-equity/audits/iteration15-build-atx-impl.log",
+      "build-equity/audits/iteration15-equity-universe-run.err.log"
+    ],
+    "junits": [
+      "build-equity/iteration15-data-group-tests.xml",
+      "build-equity/iteration15-data-t1-tests.xml",
+      "build-equity/iteration15-data-t1fix1-tests.xml",
+      "build-equity/iteration15-impl-t2-tests.xml"
+    ],
+    "binaries": {
+      "engine_test_executable": {
+        "path": "build-equity/bin/atx-engine-data-tests.exe",
+        "sha256": "1e17b8283d3593b0985d12da2e8e843b26cc2e6871fdd0022626682896799033",
+        "bytes": 11851776
+      },
+      "impl_test_executable": {
+        "path": "build-equity/bin/atx-impl-tests.exe",
+        "sha256": "ca42f54a1d584ce4bbb83e09f53d0b1eb00d3d2467670c3aaf3b5f7238798968",
+        "bytes": 20069376
+      },
+      "impl_executable": {
+        "path": "build-equity/bin/atx-impl.exe",
+        "sha256": "8425fc03c136169a2f7522c0ade37bcf855179de431b302b4f0aae6fe49f950b",
+        "bytes": 13391360
+      }
+    },
+    "measurement": {
+      "path": "build-equity/audits/iteration15-equity-universe-measurement-attempt1-reeval.json",
+      "sha256": "2345d29d64647b9012dc2e06b757f9027a914a3b9600713f90aea7fbdce66178",
+      "bytes": 37722
+    },
+    "ingest_receipts": {
+      "ingest_receipt_attempt1_killed": {
+        "path": "build-equity/audits/iteration15-ingest-20260920-attempt1.json",
+        "sha256": "0408facc266f5cdccd0bf9cb8f9c1b747c39c34612245de1a7026d955bc99df9",
+        "bytes": 1958
+      },
+      "ingest_receipt_attempt2": {
+        "path": "build-equity/audits/iteration15-ingest-20260920-attempt2.json",
+        "sha256": "7d423b5b6cc7ab89802b2f99dfc87931a664fd469f444384b58210616d587f78",
+        "bytes": 55699
+      },
+      "ingest_run_attempt1_killed_log": {
+        "path": "build-equity/audits/iteration15-ingest-run-attempt1-killed.log",
+        "sha256": "4e02fec327c7e8f97e74812439d9874a97847d090ee72585f93f5d8729194588",
+        "bytes": 1711
+      },
+      "ingest_run_log": {
+        "path": "build-equity/audits/iteration15-ingest-run.log",
+        "sha256": "8015f7b0bf5c3c44a5a34edf99233bd837c31643227c40c2f680642f6a4758b2",
+        "bytes": 6394
+      },
+      "ingest_run_err_log": {
+        "path": "build-equity/audits/iteration15-ingest-run.err.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      }
+    }
+  },
+  "pins": {
+    "design": {
+      "path": "atx-engine/reviews/2026-09-20-iteration15-point-in-time-universe-design.md",
+      "sha256": "4810fda251c6c285b29413ab6bea05b46db66e9bb0620cf17950b45075267dc8",
+      "bytes": 92804
+    },
+    "research": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/research-cp15-universe.md",
+      "sha256": "d75ed3bf31212a76f4839986ceaff74858d08c0d7566489b09329173ae414b9a",
+      "bytes": 30188
+    },
+    "predecessor_receipt_cp14": {
+      "path": "atx-engine/reviews/2026-09-20-cross-section-ic-validation.json",
+      "sha256": "38dd653f7069cb4935b51d003baf9cdf87401434eccc9af5df15e907b319d723",
+      "bytes": 59629
+    },
+    "predecessor_receipt_cp14_addendum": {
+      "path": "atx-engine/reviews/2026-09-20-cross-section-ic-validation-addendum.json",
+      "sha256": "81e6809ceb9446164f06554cd67c71d7d99728ae1d0ba2311daccef062c28c66",
+      "bytes": 4129
+    },
+    "engine_header": {
+      "path": "atx-engine/include/atx/engine/data/point_in_time_universe.hpp",
+      "sha256": "08fbe91bc3481ee848810acc58ed791b8947e9934acceda54cfed07ceb78957d",
+      "bytes": 16417
+    },
+    "engine_source": {
+      "path": "atx-engine/src/data/point_in_time_universe.cpp",
+      "sha256": "cae32cfa3d4fc48a66312560b4eb55b37548870f50aef9a124e711cf2813ccbf",
+      "bytes": 53023
+    },
+    "engine_test": {
+      "path": "atx-engine/tests/data/data_point_in_time_universe_test.cpp",
+      "sha256": "c43e6b61ea75ec416f6fe4e5aa2cc5b23b84ebf22eeff40b4e7ddfa599380453",
+      "bytes": 102098
+    },
+    "engine_cmake": {
+      "path": "atx-engine/CMakeLists.txt",
+      "sha256": "c0f2a43aa2474faea3feb9fc87f6cf7cccb5ae008c56c66fd9c9100cc803f5e9",
+      "bytes": 6508
+    },
+    "stage_header": {
+      "path": "atx-impl/src/stage_equity_universe.hpp",
+      "sha256": "ff0b67dbeec560f3953452769e57f1d4139566ec5b61b9c2f7f1b0261686a493",
+      "bytes": 2568
+    },
+    "stage_source": {
+      "path": "atx-impl/src/stage_equity_universe.cpp",
+      "sha256": "f4eb7b1796f49c73b6a729543df2d767b54718a5f60c8d90efffb5283d76ec9a",
+      "bytes": 72575
+    },
+    "stage_test": {
+      "path": "atx-impl/tests/stage_equity_universe_test.cpp",
+      "sha256": "9aeb1e7ee1f01f1a414d2012a892a465bd8e75ace217f957b5b9f6cc2dba630f",
+      "bytes": 52392
+    },
+    "ledger_header": {
+      "path": "atx-impl/src/trial_ledger.hpp",
+      "sha256": "63515a3634c6e03bbce80f7b53289997df705ecdccc9793ef78051d4d3321163",
+      "bytes": 15605
+    },
+    "ledger_source": {
+      "path": "atx-impl/src/trial_ledger.cpp",
+      "sha256": "053c14200e82db4109be019881f94c7d272e9fadb29fd09c38e886a0c4ac16dc",
+      "bytes": 38968
+    },
+    "ledger_test": {
+      "path": "atx-impl/tests/trial_ledger_test.cpp",
+      "sha256": "3bf1cc6c5de791f55231d85f81dae3063d224659af87a1fdff286e53a7d1ab69",
+      "bytes": 31877
+    },
+    "impl_config_hpp": {
+      "path": "atx-impl/src/config.hpp",
+      "sha256": "2f8d67717c75f7202135173391c35d81d4af6cf0da54abe8ff86e9c3db113094",
+      "bytes": 36680
+    },
+    "impl_config_cpp": {
+      "path": "atx-impl/src/config.cpp",
+      "sha256": "54e13d1e06a0be14e40c10bf103b410fc169eba187c8083a44a2a27ae5112fdf",
+      "bytes": 36600
+    },
+    "impl_dispatch": {
+      "path": "atx-impl/src/dispatch.cpp",
+      "sha256": "5a9566f22a63a6610a2720761caa5bd689660f1293ebb0476a38af828398163c",
+      "bytes": 8602
+    },
+    "impl_cmake": {
+      "path": "atx-impl/CMakeLists.txt",
+      "sha256": "f70dfd59fb5041aca002f5eb8803a4b336def0b73ff0d879ef726e58773c01d0",
+      "bytes": 3558
+    },
+    "oracle_script": {
+      "path": "build-equity/audits/iteration15_universe_oracle.py",
+      "sha256": "7fea11ca89dee7e4b5b9bc0ff8b6c98ee51cf752a54f598f1f39fbdb7faaafd8",
+      "bytes": 84472
+    },
+    "oracle_v1": {
+      "path": "build-equity/audits/iteration15-universe-oracle-v1.json",
+      "sha256": "8b21cf5785920352b7250d96d92a907f40d882df61ab3ab2bc27c3e933515247",
+      "bytes": 207472
+    },
+    "comparator": {
+      "path": "build-equity/audits/iteration15_native_comparator.py",
+      "sha256": "1859fd95538d0baa100d97b4edf402afd77e787e5561a96c67d3ac00eec3fe51",
+      "bytes": 40636
+    },
+    "runner": {
+      "path": "build-equity/audits/iteration15_run_equity_universe.py",
+      "sha256": "bf868e678dda6666c8fb0a913c3bc7cd4c264a440d872f73d0968d1423bc0ee9",
+      "bytes": 49777
+    },
+    "ingest_script": {
+      "path": "build-equity/audits/iteration15_ingest_tickerhistory.py",
+      "sha256": "c0608ec7517476c457403dda30fe96f89586cb1f6e56c7ebcdeeed9f278de91d",
+      "bytes": 28896
+    },
+    "ingest_receipt_attempt1_killed": {
+      "path": "build-equity/audits/iteration15-ingest-20260920-attempt1.json",
+      "sha256": "0408facc266f5cdccd0bf9cb8f9c1b747c39c34612245de1a7026d955bc99df9",
+      "bytes": 1958
+    },
+    "ingest_receipt_attempt2": {
+      "path": "build-equity/audits/iteration15-ingest-20260920-attempt2.json",
+      "sha256": "7d423b5b6cc7ab89802b2f99dfc87931a664fd469f444384b58210616d587f78",
+      "bytes": 55699
+    },
+    "ingest_run_attempt1_killed_log": {
+      "path": "build-equity/audits/iteration15-ingest-run-attempt1-killed.log",
+      "sha256": "4e02fec327c7e8f97e74812439d9874a97847d090ee72585f93f5d8729194588",
+      "bytes": 1711
+    },
+    "ingest_run_log": {
+      "path": "build-equity/audits/iteration15-ingest-run.log",
+      "sha256": "8015f7b0bf5c3c44a5a34edf99233bd837c31643227c40c2f680642f6a4758b2",
+      "bytes": 6394
+    },
+    "ingest_run_err_log": {
+      "path": "build-equity/audits/iteration15-ingest-run.err.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "trial_ledger": {
+      "path": "atx-engine/reviews/trial-ledger.jsonl",
+      "sha256": "d4f1262070470ac00ef5f528c2225839d71f5b4628cb856b8a485d47faf4c58c",
+      "bytes": 16870
+    },
+    "trial_ledger_sidecar": {
+      "path": "atx-engine/reviews/trial-ledger.manifest.json",
+      "sha256": "c2fa8843e2f28abd005a41f1cbf1b77523bb78c8b32c5fcf9476f4b898ebbfca",
+      "bytes": 130
+    },
+    "design_review": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp15-design-review.md",
+      "sha256": "e45346e615575379a0d242fbe66888536dad093d10fb43ffe7fa0e5865b2a2f8",
+      "bytes": 46538
+    },
+    "t1_report": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp15-task-T1-report.md",
+      "sha256": "be6a435d5760e06d649ddf11c8d25a0875450325f96c38012a1f18fd76e5861e",
+      "bytes": 15565
+    },
+    "t2_report": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp15-task-T2-report.md",
+      "sha256": "1d5fcec9602c8d5aba8e5d8d72954bd74b466e6d00f6c1de18ba57cc98b089c6",
+      "bytes": 13154
+    },
+    "t3_report": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp15-task-T3-report.md",
+      "sha256": "0643df126490fe9c6f6f1a8cfc7730b0f5face0a5d4c17ca363604ccc017d87b",
+      "bytes": 21596
+    },
+    "engine_test_executable": {
+      "path": "build-equity/bin/atx-engine-data-tests.exe",
+      "sha256": "1e17b8283d3593b0985d12da2e8e843b26cc2e6871fdd0022626682896799033",
+      "bytes": 11851776
+    },
+    "impl_test_executable": {
+      "path": "build-equity/bin/atx-impl-tests.exe",
+      "sha256": "ca42f54a1d584ce4bbb83e09f53d0b1eb00d3d2467670c3aaf3b5f7238798968",
+      "bytes": 20069376
+    },
+    "impl_executable": {
+      "path": "build-equity/bin/atx-impl.exe",
+      "sha256": "8425fc03c136169a2f7522c0ade37bcf855179de431b302b4f0aae6fe49f950b",
+      "bytes": 13391360
+    },
+    "end_review": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp15-end-review.md",
+      "sha256": "e9477ca811e4199ca9ef8478a258a3b17f5f9bb8da5f473d17d36ce900c5faa5",
+      "bytes": 21921
+    },
+    "measurement": {
+      "path": "build-equity/audits/iteration15-equity-universe-measurement-attempt1-reeval.json",
+      "sha256": "2345d29d64647b9012dc2e06b757f9027a914a3b9600713f90aea7fbdce66178",
+      "bytes": 37722
+    },
+    "measurement_stdout_log": {
+      "path": "build-equity/audits/iteration15-universe-run-attempt1.stdout.log",
+      "sha256": "685d482473633360ff4d7267abf064abd1376c5970ea156059d93881d61c3b27",
+      "bytes": 271
+    },
+    "measurement_stderr_log": {
+      "path": "build-equity/audits/iteration15-universe-run-attempt1.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "measurement_samples_log": {
+      "path": "build-equity/audits/iteration15-universe-memory-samples-attempt1.jsonl",
+      "sha256": "a83cd1c8d49201d072f1d9072299d6b99313e0faf65cc26d72c940f994c4dce1",
+      "bytes": 337940
+    }
+  }
+}

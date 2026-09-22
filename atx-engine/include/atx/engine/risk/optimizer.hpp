@@ -118,7 +118,7 @@ public:
   // An OPTIONAL full constraint set. When ABSENT or MINIMAL (only GrossNet + optional
   // PositionCap — exactly the algebra the projected/proximal fast path expresses), the
   // as-built fast path runs UNCHANGED (the regression pins stay byte-identical). When
-  // it carries ANY extra row (factor/group/beta/turnover/participation/ownership/sector)
+  // it carries any extra row or cone (including tracking error and robust alpha)
   // the solve routes through the ConstrainedQpSolver with q = −alpha. Default empty ⇒
   // the as-built behavior, so every existing caller / pin is untouched.
   std::optional<ConstraintSet> constraints;
@@ -226,10 +226,11 @@ public:
 
   // A ConstraintSet is MINIMAL when it carries ONLY GrossNet (+ optional PositionCap):
   // exactly the algebra the fast path expresses (dollar-neutral + gross + per-name cap).
-  // Any factor/group/beta/turnover/participation/ownership/sector row needs the QP.
-  // (Mirrors MultiHorizonOptimizer::is_minimal_constraint_set, plus the S8.4 caps.)
+  // Every additional descriptor needs the QP, including cones with no linear rows.
+  // MultiHorizonOptimizer uses this same classifier to keep both drivers aligned.
   [[nodiscard]] static bool is_minimal_constraint_set(const ConstraintSet &cs) noexcept {
-    return !cs.fexp && !cs.grp && !cs.beta && !cs.turn && !cs.part && !cs.own && !cs.sector;
+    return !cs.fexp && !cs.grp && !cs.beta && !cs.turn && !cs.part && !cs.own && !cs.sector &&
+           !cs.track && !cs.robust;
   }
 
 private:
@@ -256,6 +257,13 @@ private:
                      "PortfolioOptimizer::solve: w_prev must be empty or length V.n_instruments()");
     }
     ATX_TRY(MaterializedConstraints C, constraints->materialize(V.exposures(), w_prev, m, ref));
+    C.turnover_penalty = cfg.turnover_penalty;
+    if (C.turnover_penalty > 0.0 && !C.has_turnover) {
+      C.turnover_ref.assign(m, 0.0);
+      if (!w_prev.empty()) {
+        std::copy(w_prev.begin(), w_prev.end(), C.turnover_ref.begin());
+      }
+    }
 
     std::vector<atx::f64> q(m, 0.0);
     for (atx::usize i = 0; i < m; ++i) {

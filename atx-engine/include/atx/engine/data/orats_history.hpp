@@ -51,22 +51,29 @@ struct OratsLoadConfig {
 
 struct OratsLoadStats {
   atx::i64 rows_read{};           // data rows seen (excludes header)
-  atx::i64 rows_kept{};           // rows >= min_date with a parseable date+securityID
-  atx::i64 rows_filtered{};       // rows dropped by the date floor
-  atx::i64 rows_malformed{};      // rows dropped for a bad date / missing securityID
+  atx::i64 rows_kept{};           // rows >= min_date with a valid date + positive i64 ID
+  atx::i64 rows_filtered{};       // rows dropped by the date floor or sector filter
+  atx::i64 rows_malformed{};      // bad/unrepresentable date or missing/invalid/nonpositive ID
   atx::i64 dates_written{};       // .seg files written
   atx::i64 distinct_securities{}; // unique securityIDs across kept rows
 };
 
 // Stream the zip, project kOratsFields, filter by date, and write one sealed
-// `<out_dir>/YYYY-MM-DD.seg` per trading date (symbol name = securityID) plus
+// `<out_dir>/YYYY-MM-DD.seg` per trading date (symbol name = canonical decimal
+// positive i64 securityID) plus
 // `<out_dir>/_symbology.parquet` (securityID, ticker_tk, todayTicker) and
 // `<out_dir>/_manifest.json`. The input MUST be date-major (non-decreasing
-// tradingDate); a date regression fails closed with Err(InvalidArgument).
+// tradingDate), including rows below the floor or with invalid IDs. A date
+// regression fails closed with Err(InvalidArgument). At/after the floor, each
+// positive (tradingDate, securityID) must be unique BEFORE the sector filter;
+// duplicates fail closed with Err(InvalidArgument), never overwrite a cell.
+// Use a fresh output directory: failures can leave already completed dates;
+// this streaming loader does not provide transactional rollback.
 [[nodiscard]] atx::core::Result<OratsLoadStats> load_orats_history(const OratsLoadConfig &cfg);
 
 namespace detail {
-// "YYYY-MM-DD" -> midnight-UTC unix nanos; std::nullopt on a malformed date.
+// Strict Gregorian "YYYY-MM-DD" -> midnight-UTC unix nanos; std::nullopt on
+// malformed dates or a midnight outside i64 nanos (1677-09-22..2262-04-11).
 [[nodiscard]] std::optional<atx::i64> date_to_nanos(std::string_view ymd);
 
 // Resolve the projected column indices from the header line (tab-separated names).

@@ -155,11 +155,13 @@ TEST_F(AtxImplOptimizePit, FactorPathIgnoresRowsAfterRebalanceDate) {
   cfg.risk_aversion = 1.0;
   cfg.set_flags.emplace("risk-aversion");
 
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = research_a_path.string();
   cfg.books_out = (tmp_dir_ / "books_a.bin").string();
   auto result_a = atx::impl::run_optimize(cfg, risk_cfg);
   ASSERT_TRUE(result_a.has_value()) << result_a.error().message();
 
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = research_b_path.string();
   cfg.books_out = (tmp_dir_ / "books_b.bin").string();
   auto result_b = atx::impl::run_optimize(cfg, risk_cfg);
@@ -227,6 +229,7 @@ TEST_F(AtxImplOptimizePit, WarmUpFallbackOnShortHistoryPanelProducesValidBooks) 
                              // diagonal fallback.
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = research_path.string();
   cfg.combo = combo_path.string();
   cfg.books_out = (tmp_dir_ / "books_warmup.bin").string();

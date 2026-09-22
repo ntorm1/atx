@@ -81,6 +81,29 @@ inline constexpr atx::f64 kTsNaN = std::numeric_limits<atx::f64>::quiet_NaN();
 
 [[nodiscard]] inline bool ts_is_nan(atx::f64 x) noexcept { return std::isnan(x); }
 
+// R21-1: a cell the RUNNING-SUM kernels (sum/mean + the var/std/zscore/av_diff
+// family) must treat as MISSING — NaN AND +/-inf. An inf folded into a running
+// sum can never be subtracted back out (inf - inf = NaN), which poisoned the
+// online column permanently; excluding every non-finite cell (counted like a NaN
+// in the window's missing-count gate) lets the column recover once it leaves.
+[[nodiscard]] inline bool ts_is_missing(atx::f64 x) noexcept { return !std::isfinite(x); }
+
+// Ops whose batch AND online paths apply the ts_is_missing gate (R21-1). Other
+// ops (min/max/scale/backfill/count_nans/...) keep the plain NaN-only policy.
+[[nodiscard]] inline bool ts_is_running_sum_op(OpCode op) noexcept {
+  switch (op) {
+  case OpCode::TsSum:
+  case OpCode::TsMean:
+  case OpCode::TsVar:
+  case OpCode::TsStd:
+  case OpCode::TsZscore:
+  case OpCode::TsAvDiff:
+    return true;
+  default:
+    return false;
+  }
+}
+
 // Window size from a Ts op's last operand, truncated toward zero. <=0 or NaN
 // yields 0 (the kernels then emit NaN, the documented degenerate case). Mirrors
 // oracle.hpp's `window_of` exactly.
@@ -111,6 +134,19 @@ inline constexpr atx::f64 kTsNaN = std::numeric_limits<atx::f64>::quiet_NaN();
   }
   for (atx::usize s = t + 1 - d; s <= t; ++s) {
     if (ts_is_nan(x[s * instruments + j])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// R21-1: true iff every cell of the (already-valid) trailing window is finite.
+// Only evaluated when tsv_window_valid held (t+1 >= d, d >= 1), so the walk
+// stays in [0, dates*instruments) exactly as tsv_window_valid's.
+[[nodiscard]] inline bool tsv_window_finite(std::span<const atx::f64> x, atx::usize t, atx::usize j,
+                                            atx::usize d, atx::usize instruments) noexcept {
+  for (atx::usize s = t + 1 - d; s <= t; ++s) {
+    if (ts_is_missing(x[s * instruments + j])) {
       return false;
     }
   }
@@ -377,14 +413,14 @@ inline void ts_online_sum_family(OpCode op, std::span<const atx::f64> x, std::sp
   const atx::f64 nf = static_cast<atx::f64>(d);
   for (atx::usize t = 0; t < dates; ++t) {
     const atx::f64 enter = x[t * instruments + j];
-    if (ts_is_nan(enter)) {
+    if (ts_is_missing(enter)) { // R21-1: NaN AND +/-inf are missing
       ++nan_cnt;
     } else {
       sx += enter;
     }
     if (t >= d) {
       const atx::f64 leave = x[(t - d) * instruments + j];
-      if (ts_is_nan(leave)) {
+      if (ts_is_missing(leave)) {
         --nan_cnt;
       } else {
         sx -= leave;
@@ -576,7 +612,7 @@ inline void tsv_welford_var_family(TsvVarOut which, std::span<const atx::f64> x,
   };
   for (atx::usize t = 0; t < dates; ++t) {
     const atx::f64 enter = x[t * instruments + j];
-    if (ts_is_nan(enter)) {
+    if (ts_is_missing(enter)) { // R21-1: NaN AND +/-inf are missing
       ++nan_cnt;
     } else {
       // Welford add keyed on the freshly-recomputed compensated mean: n+1; delta =
@@ -589,7 +625,7 @@ inline void tsv_welford_var_family(TsvVarOut which, std::span<const atx::f64> x,
     }
     if (t >= d) {
       const atx::f64 leave = x[(t - d) * instruments + j];
-      if (ts_is_nan(leave)) {
+      if (ts_is_missing(leave)) {
         --nan_cnt;
       } else if (n <= 1) {
         // The window's last finite cell leaves: reset to an empty, drift-free
@@ -727,6 +763,11 @@ inline void tsv_welford_dispatch(OpCode op, std::span<const atx::f64> x, std::sp
 
   if (!tsv_window_valid(x, t, j, d, instruments)) {
     return kTsNaN; // short window or any-NaN -> NaN (pinned policy)
+  }
+  // R21-1: the running-sum family also treats +/-inf as missing, matching the
+  // online sweeps (ts_online_sum_family / tsv_welford_var_family).
+  if (ts_is_running_sum_op(op) && !tsv_window_finite(x, t, j, d, instruments)) {
+    return kTsNaN;
   }
   const atx::f64 nf = static_cast<atx::f64>(d);
   switch (op) {

@@ -186,6 +186,7 @@ TEST_F(AtxImplOptimize, ProducesValidBooks) {
     const fs::path books_path = tmp_dir_ / "books1.bin";
 
     atx::impl::RunConfig cfg;
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel     = research_path_;
     cfg.combo     = combo_path_;
     cfg.books_out = books_path.string();
@@ -247,6 +248,7 @@ TEST_F(AtxImplOptimize, DeterministicAcrossRuns) {
     const fs::path books_b = tmp_dir_ / "books_det_b.bin";
 
     atx::impl::RunConfig cfg;
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel     = research_path_;
     cfg.combo     = combo_path_;
     cfg.gross     = 1.0;
@@ -286,6 +288,7 @@ TEST_F(AtxImplOptimize, TurnoverPenaltyReducesTurnover) {
     const fs::path books_k5 = tmp_dir_ / "books_k5.bin";
 
     atx::impl::RunConfig base;
+    base.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     base.panel     = research_path_;
     base.combo     = combo_path_;
     base.gross     = 1.0;
@@ -335,6 +338,7 @@ TEST_F(AtxImplOptimize, MissingArgsFails) {
     {
         // Missing combo.
         atx::impl::RunConfig cfg;
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel     = research_path_;
         cfg.books_out = (tmp_dir_ / "x.bin").string();
         auto r = atx::impl::run_optimize(cfg);
@@ -346,6 +350,7 @@ TEST_F(AtxImplOptimize, MissingArgsFails) {
     {
         // Missing books_out.
         atx::impl::RunConfig cfg;
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel = research_path_;
         cfg.combo = combo_path_;
         auto r = atx::impl::run_optimize(cfg);
@@ -363,6 +368,7 @@ TEST_F(AtxImplOptimize, RejectsUnknownRebalance) {
     const fs::path books_path = tmp_dir_ / "books_bad_rebalance.bin";
 
     atx::impl::RunConfig cfg;
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel        = research_path_;
     cfg.combo        = combo_path_;
     cfg.books_out    = books_path.string();
@@ -387,6 +393,7 @@ TEST_F(AtxImplOptimize, PositionModeBookEqualsShapedComboCrossSection) {
     const fs::path books_path = tmp_dir_ / "books_posmode.bin";
 
     atx::impl::RunConfig cfg;
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel         = research_path_;
     cfg.combo         = combo_path_;
     cfg.books_out     = books_path.string();
@@ -485,6 +492,7 @@ TEST_F(AtxImplOptimize, PositionModeBookEqualsShapedComboCrossSection) {
     // fractional weight proportional to demean(alpha)).
     {
         atx::impl::RunConfig pm_cfg;
+        pm_cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         pm_cfg.panel         = hetvar_research.string();
         pm_cfg.combo         = combo_path_;
         pm_cfg.books_out     = pm_disc_path.string();
@@ -498,6 +506,7 @@ TEST_F(AtxImplOptimize, PositionModeBookEqualsShapedComboCrossSection) {
     // MVO run (risk_aversion=1.0; V^{-1} tilts away from high-variance names).
     {
         atx::impl::RunConfig mvo_cfg;
+        mvo_cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         mvo_cfg.panel         = hetvar_research.string();
         mvo_cfg.combo         = combo_path_;
         mvo_cfg.books_out     = mvo_disc_path.string();
@@ -612,6 +621,7 @@ TEST_F(AtxImplOptimize, TradeRateUnsetIsByteIdenticalToFullStep) {
     // Run A: trade-rate unset (legacy off-path).
     atx::core::Result<atx::impl::StageResult> r_unset = [&]() {
         atx::impl::RunConfig cfg;
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel         = research_path_;
         cfg.combo         = combo_path_;
         cfg.books_out     = books_unset.string();
@@ -627,6 +637,7 @@ TEST_F(AtxImplOptimize, TradeRateUnsetIsByteIdenticalToFullStep) {
     // Run B: trade-rate 1.0 explicitly set.
     atx::core::Result<atx::impl::StageResult> r_full = [&]() {
         atx::impl::RunConfig cfg;
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel         = research_path_;
         cfg.combo         = combo_path_;
         cfg.books_out     = books_full.string();
@@ -643,6 +654,7 @@ TEST_F(AtxImplOptimize, TradeRateUnsetIsByteIdenticalToFullStep) {
     // Run C: trade-rate 0.5 explicitly set (partial step).
     atx::core::Result<atx::impl::StageResult> r_half = [&]() {
         atx::impl::RunConfig cfg;
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel         = research_path_;
         cfg.combo         = combo_path_;
         cfg.books_out     = books_partial.string();
@@ -703,6 +715,7 @@ TEST_F(AtxImplOptimize, TradeRatePartialStepReducesTurnover) {
     // Run A: trade-rate 1.0 (full step).
     {
         atx::impl::RunConfig cfg;
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel         = research_path_;
         cfg.combo         = whippy_combo.string();
         cfg.books_out     = books_full.string();
@@ -719,6 +732,7 @@ TEST_F(AtxImplOptimize, TradeRatePartialStepReducesTurnover) {
     // Run B: trade-rate 0.25 (partial step).
     {
         atx::impl::RunConfig cfg;
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel         = research_path_;
         cfg.combo         = whippy_combo.string();
         cfg.books_out     = books_partial.string();

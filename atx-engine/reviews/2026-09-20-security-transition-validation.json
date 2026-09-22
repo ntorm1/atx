@@ -1,0 +1,383 @@
+{
+  "schema": "atx-security-transition-validation-v1",
+  "checkpoint": 12,
+  "date": "2026-09-20",
+  "status": "validated_synthetic_first_slice",
+  "summary": "Pure signed stock-and-cash corporate transition planner and cash-claim payment planner compiled, built and measured natively under clang-cl 18 (equity-dev, static Debug). Native fixture values agree with the independent exact Fraction/Decimal oracle on all five exported cases. An independent implementation review found 0 Critical / 4 Important findings; three numerical fixes (same-product successor valuation, non-tautological leg-scaled bridge reconciliation, symmetric absorbed-addition guard) plus targeted regression tests were applied and re-reviewed clean in two rounds; the fixed source was re-measured (attempt 4).",
+  "native_measurement": {
+    "attempts": {
+      "1": "wrapper rejected ctest -O as an ambiguous PowerShell parameter; CTest never ran",
+      "2": "CTest ran, 3/3 passed, but PowerShell bound --verbose as a common parameter; 0 measurement lines captured",
+      "3": "stop-time source; -VV; 3/3 passed; 5 measurement lines; comparator pass 5/5",
+      "4": "post-review-fix source; -VV; 4/4 passed (new targeted group); 5 measurement lines; comparator pass 5/5"
+    },
+    "final_attempt": 4,
+    "attempt4_exit_code": 0,
+    "attempt4_pins_unchanged": true,
+    "attempt4_marker_lines": {
+      "tests_log": 5,
+      "wrapper_log": 5
+    },
+    "attempt4_tests": [
+      "SecurityTransition.SignedStockCashAndFullPaymentPreserveAttributedExposureAndNav",
+      "SecurityTransition.IndependentTriScalesPreserveEconomicsAndUnprovedBasisRejects",
+      "SecurityTransition.OrderingIdentityAndAdmissionFailuresAreAtomic",
+      "SecurityTransition.AdmittedMarkToleranceAndAbsorbedAdditionsAreEnforced"
+    ],
+    "attempt4_passed": "4/4",
+    "toolchain": "clang-cl 18.1.8, preset equity-dev, static Debug, 4 build jobs, ccache disabled, PCH enabled (no hygiene/include-clean claim)"
+  },
+  "oracle_comparison": {
+    "native_cases_required_and_found": [
+      "long-canonical",
+      "short-canonical",
+      "long-old_scale_8",
+      "long-successor_scale_4",
+      "long-independent_scales_8_4"
+    ],
+    "attempt3_status": "pass",
+    "attempt4_status": "pass",
+    "attempt4_counts": {
+      "required": 5,
+      "passed": 5,
+      "failed": 0,
+      "oracle_only_not_measured_natively": 9
+    },
+    "oracle_only_not_measured_natively": 9,
+    "bound_policy": {
+      "formula": "64 * 2**-52 * max( max(|actual|,|expected|), sum_i |leg_i| )",
+      "ulp_multiplier": 64,
+      "eps": 2.220446049250313e-16,
+      "rationale": "The first term is the plain relative bound with no absolute floor. The second is the cancellation-aware bound: for a single-term product/quotient the leg sum equals the quantity and the bound reduces exactly to the relative bound; for a difference of larger terms (including every exactly-zero quantity and the transition bridge) the leg sum governs. Zero is never tested relatively.",
+      "value_leg_sets": {
+        "old_share_equivalents": [
+          "old_share_equivalents"
+        ],
+        "entitled_share_equivalents": [
+          "entitled_share_equivalents"
+        ],
+        "removed_old_marked_value": [
+          "removed_old_marked_value"
+        ],
+        "successor_share_equivalents_delivered": [
+          "successor_share_equivalents_delivered"
+        ],
+        "successor_units_added": [
+          "successor_units_added"
+        ],
+        "successor_value_before": [
+          "successor_value_before"
+        ],
+        "pending_signed_cash_claim": [
+          "pending_signed_cash_claim"
+        ],
+        "gross_receivable": [
+          "pending_signed_cash_claim"
+        ],
+        "gross_payable": [
+          "pending_signed_cash_claim"
+        ],
+        "payment_cash_delta": [
+          "pending_signed_cash_claim"
+        ],
+        "payment_claim_delta": [
+          "pending_signed_cash_claim"
+        ],
+        "old_units_after": [
+          "in_old_units"
+        ],
+        "old_units_delta": [
+          "in_old_units"
+        ],
+        "settled_cash_after_transition": [
+          "in_settled_cash_before"
+        ],
+        "transition_settled_cash_delta": [
+          "in_settled_cash_before",
+          "settled_cash_after_transition"
+        ],
+        "successor_units_after": [
+          "in_successor_units_before",
+          "successor_units_added"
+        ],
+        "successor_value_after": [
+          "successor_value_before",
+          "incremental_successor_value"
+        ],
+        "incremental_successor_value": [
+          "successor_value_after",
+          "successor_value_before"
+        ],
+        "nav_before": [
+          "in_settled_cash_before",
+          "removed_old_marked_value",
+          "successor_value_before"
+        ],
+        "nav_after_transition": [
+          "in_settled_cash_before",
+          "successor_value_after",
+          "pending_signed_cash_claim"
+        ],
+        "transition_value_bridge": [
+          "incremental_successor_value",
+          "pending_signed_cash_claim",
+          "removed_old_marked_value"
+        ],
+        "settled_cash_after_payment": [
+          "in_settled_cash_before",
+          "pending_signed_cash_claim"
+        ],
+        "claim_after_full_payment": [
+          "pending_signed_cash_claim",
+          "pending_signed_cash_claim"
+        ],
+        "nav_after_payment": [
+          "settled_cash_after_payment",
+          "successor_value_after"
+        ],
+        "payment_nav_change": [
+          "nav_after_payment",
+          "nav_after_transition"
+        ]
+      },
+      "residual_leg_sets": {
+        "representation_residual": [
+          "removed_old_marked_value",
+          "successor_value_before",
+          "successor_value_after",
+          "incremental_successor_value"
+        ],
+        "transition_accounting_residual": [
+          "nav_before",
+          "nav_after_transition",
+          "transition_value_bridge"
+        ],
+        "payment_accounting_residual": [
+          "nav_after_transition",
+          "nav_after_payment",
+          "payment_cash_delta",
+          "payment_claim_delta"
+        ]
+      },
+      "identity_leg_sets": {
+        "nav_bridge_identity": [
+          "nav_after_transition",
+          "nav_before",
+          "transition_value_bridge"
+        ],
+        "payment_nav_invariance": [
+          "nav_after_payment",
+          "nav_after_transition"
+        ]
+      },
+      "residual_leg_set_provenance": "declared from the named accounting identities; the native residual definitions were not read (no C++ source was opened)"
+    },
+    "independence": {
+      "native_cpp_source_read": false,
+      "build_or_test_executed_by_this_script": false,
+      "expected_values_rederived_in_exact_rational_arithmetic": true,
+      "unrelated_signed_claims_assumed_zero": true
+    }
+  },
+  "review": {
+    "independent_implementation_review": "0 Critical, 4 Important, 9 Minor (task-C-review.md)",
+    "fix_round_1": "Important #1-#3 addressed; #4 open (missing #2 regression test)",
+    "fix_round_2": "Important #4 addressed; added() made symmetric; no new breakage",
+    "deferred": "nine original Minors plus five re-review deferrals (task-C-rereview2.md); F1-style CMake blast-radius false positive not applicable here"
+  },
+  "qualifications": [
+    "Synthetic-fixture admission only; no real corporate action (including MetroPCS/T-Mobile 2013-05-01) has been admitted, replayed or backtested.",
+    "Five of fourteen oracle scenarios executed natively; the other nine are recorded as not_measured_natively and are not counted as passed.",
+    "Replay integration is not part of this checkpoint (see checkpoint 13 design).",
+    "Numerical netting does not prove stock-loan discharge; no physical delivery attested.",
+    "Not throughput, capacity, Sharpe or production-readiness evidence. No live trading or broker actions performed or authorized.",
+    "Snapshots are selected-source-plus-producer archives, not portable rebuild bundles."
+  ],
+  "pins": {
+    "design": {
+      "path": "atx-engine/reviews/2026-09-20-iteration12-security-transition-design.md",
+      "sha256": "0a964aebc15f14ea25ddd19fad5be723835b6b7a6e99a6aa308f3b7ecf95caee",
+      "bytes": 16388
+    },
+    "guide": {
+      "path": "atx-engine/docs/SECURITY_TRANSITIONS.md",
+      "sha256": "5b3dcdcec6cc9369543b76b08d5da6353938d16cef5ba608c2b3c34e5ee4e389",
+      "bytes": 3549
+    },
+    "data_header": {
+      "path": "atx-engine/include/atx/engine/data/security_transition.hpp",
+      "sha256": "77e149a8880af18483da5fac8309d1001a55763b8d1be516727a5f7e840523fc",
+      "bytes": 3713
+    },
+    "book_header": {
+      "path": "atx-engine/include/atx/engine/book/security_transition.hpp",
+      "sha256": "3c77b2384dad7b1bbc3f7c20e4530b38b80081ddfc5b868563cee81e2d6a3ca2",
+      "bytes": 6293
+    },
+    "source": {
+      "path": "atx-engine/src/book/security_transition.cpp",
+      "sha256": "acc774f84fa5b7e712de17c425f536a8317b95be81fc81109d082dfd4bf4fddb",
+      "bytes": 21690
+    },
+    "test": {
+      "path": "atx-engine/tests/book/security_transition_test.cpp",
+      "sha256": "6554e71172945e8834271723269e3775ba3c0c7e03c1129d5d38484a3f99f372",
+      "bytes": 29250
+    },
+    "oracle_script": {
+      "path": "build-equity/audits/iteration12_transition_oracle.py",
+      "sha256": "5d9352475863c1c06f00ed6c7eec569c792f79931ef8eb246dafe6a72c99f3d4",
+      "bytes": 13130
+    },
+    "oracle": {
+      "path": "build-equity/audits/iteration12-transition-oracle.json",
+      "sha256": "d0c81c7f4c5e3356816055883a89e811d07206f2804a6761ab1c409a4889df42",
+      "bytes": 55156
+    },
+    "comparator": {
+      "path": "build-equity/audits/iteration12_native_comparator.py",
+      "sha256": "67592f1a5988207a3b3a1d761c7d4e3b250bd660c999168adf10fa42674926fc",
+      "bytes": 39013
+    },
+    "plan": {
+      "path": "build-equity/audits/iteration12-security-transition-plan.json",
+      "sha256": "0275e225ed7cf8f8c67709a1f430c7063a77596610b103b781f4f11934de3721",
+      "bytes": 1873
+    },
+    "configure_log_stop_time": {
+      "path": "build-equity/audits/iteration12-configure.log",
+      "sha256": "0f602781a71a6750ae51cb4f55f28a3f95dcca3b10852d9c37794ce6e793fb38",
+      "bytes": 4420
+    },
+    "check_log_stop_time_source": {
+      "path": "build-equity/audits/iteration12-check.log",
+      "sha256": "ade93b72b73ef1f31bc4f146e1c664bc89d84dfc4605a0987f04e85639bf58a9",
+      "bytes": 693
+    },
+    "build_log_stop_time_source": {
+      "path": "build-equity/audits/iteration12-build.log",
+      "sha256": "57bc3f08de9a7e3e76ce174940f29a9b31aa2a7b110453f05e100496d16132fd",
+      "bytes": 210
+    },
+    "check_log_fix_round1": {
+      "path": "build-equity/audits/iteration12-check-fix1.log",
+      "sha256": "ade93b72b73ef1f31bc4f146e1c664bc89d84dfc4605a0987f04e85639bf58a9",
+      "bytes": 693
+    },
+    "build_log_fix_round2": {
+      "path": "build-equity/audits/iteration12-build-fix2.log",
+      "sha256": "143f729f30a22ace9c79b8abd5844612af15bbde30c045c9e99981a73eb97599",
+      "bytes": 329
+    },
+    "runner_attempt1": {
+      "path": "build-equity/audits/iteration12_run_transition_checks.py",
+      "sha256": "8de2452df271e1f564aaba0a8593320db7e0765f3bec4b6eca35bb853d795862",
+      "bytes": 3646
+    },
+    "runner_attempt2": {
+      "path": "build-equity/audits/iteration12_run_transition_checks_attempt2.py",
+      "sha256": "30664b44bc908dd1c09d786d736247723ad7b27dcc2dc678a54e362af3d6eb5c",
+      "bytes": 4530
+    },
+    "runner_attempt3": {
+      "path": "build-equity/audits/iteration12_run_transition_checks_attempt3.py",
+      "sha256": "9724919f0a931dd4784346b44e0d0c57ad4baae0a4b788ca65b7b6fe47157826",
+      "bytes": 5370
+    },
+    "runner_attempt4": {
+      "path": "build-equity/audits/iteration12_run_transition_checks_attempt4.py",
+      "sha256": "544d94138254af3664ff37b80484f0c50344bf526a70cc66354fe1601784df6b",
+      "bytes": 5908
+    },
+    "measurement_attempt1": {
+      "path": "build-equity/audits/iteration12-native-measurement.json",
+      "sha256": "fd32c53887cc9d30215db93101c59fc6433f6e30d580e3e4fd7cd725abfeb266",
+      "bytes": 8619
+    },
+    "measurement_attempt2": {
+      "path": "build-equity/audits/iteration12-native-measurement-attempt2.json",
+      "sha256": "d934961248aa717aca57cee2af824f537383fc8ffc29343a62b4ef9b205ec61a",
+      "bytes": 9765
+    },
+    "measurement_attempt3": {
+      "path": "build-equity/audits/iteration12-native-measurement-attempt3.json",
+      "sha256": "fca2aa970609c66736f332438b317b74bd2c6c61e5c7e07e7512d5223c27e829",
+      "bytes": 10251
+    },
+    "measurement_attempt4": {
+      "path": "build-equity/audits/iteration12-native-measurement-attempt4.json",
+      "sha256": "5cea0ef3d87d6131b171088c0362a7998754538584a5cd569f6ba1efb30fcfd0",
+      "bytes": 11275
+    },
+    "snapshot_stop_time": {
+      "path": "build-equity/audits/iteration12-native-snapshot.zip",
+      "sha256": "e8ffcd09d5840fffd71cf1f1523d2999c38abd3172fee5a946706baafca3bde4",
+      "bytes": 2819628
+    },
+    "snapshot_v2_post_fix": {
+      "path": "build-equity/audits/iteration12-native-snapshot-v2.zip",
+      "sha256": "d2ae9b76da3ad8e19bea6e97da6b8fd7b976faabf341340131be7624d8116155",
+      "bytes": 2871644
+    },
+    "tests_log_attempt3": {
+      "path": "build-equity/audits/iteration12-tests-attempt3.log",
+      "sha256": "8530d0829e8574b9cdfc8f328456f2baa2baebe32e40a2e35957f6dda9cf87c5",
+      "bytes": 12268
+    },
+    "tests_log_attempt4": {
+      "path": "build-equity/audits/iteration12-tests-attempt4.log",
+      "sha256": "1d4c1d226a755d5ffb0c79ad4072973ef79ae32a6a15fb168b42f6fe6499a1df",
+      "bytes": 13799
+    },
+    "junit_attempt3": {
+      "path": "build-equity/iteration12-tests-attempt3.xml",
+      "sha256": "b8874a5b22d53328f1450ba870e77f6b516838a0ab6f948cd07c654572ce5cd1",
+      "bytes": 3968
+    },
+    "junit_attempt4": {
+      "path": "build-equity/iteration12-tests-attempt4.xml",
+      "sha256": "528d6d5dac67c9965f8192fd4f2258ac4adae175764a001239137400c3d46dd8",
+      "bytes": 4957
+    },
+    "comparison_attempt3": {
+      "path": "build-equity/audits/iteration12-native-comparison.json",
+      "sha256": "4f158c4b0f680213e508235487c8c4a75c3b7331c639c2e1c4ab33d4d653d56a",
+      "bytes": 107401
+    },
+    "comparison_attempt4": {
+      "path": "build-equity/audits/iteration12-native-comparison-attempt4.json",
+      "sha256": "05da1d98ecdb2b82c99ce7f97432986d9fa9a6dffa68548309c82fec29545bae",
+      "bytes": 107401
+    },
+    "review": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/task-C-review.md",
+      "sha256": "a9677d8eedb601c07a5cc3d3058c36a70d73e51e7b424990ddec5a1cf0c99564",
+      "bytes": 24683
+    },
+    "fix_report": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/task-C-fix-report.md",
+      "sha256": "38873b51dc4ba0873ba0a6b1a2f7c60220519d5a1f1d4dc88d8dceebe548d251",
+      "bytes": 18245
+    },
+    "rereview_round1": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/task-C-rereview.md",
+      "sha256": "dcaaa52d7bc2a07b960abd7970758d963e2535b4b87c7e5b208e8fa2d7587a03",
+      "bytes": 18209
+    },
+    "rereview_round2": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/task-C-rereview2.md",
+      "sha256": "bf13e166e5e7b9d3254bb72b4cdfbfcfcde7a7f3ced92288a20c7daece230c83",
+      "bytes": 15544
+    },
+    "comparator_report": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/task-B-report.md",
+      "sha256": "a50f5bfb9eb3c5057a3d676f8f34026b9e70b881374246bbc9ead699e685af13",
+      "bytes": 15061
+    },
+    "producer_executable": {
+      "path": "build-equity/bin/atx-engine-book-tests.exe",
+      "sha256": "fc14a295f639979009707df93212368e7bbde717d0f13390c4be6be7af1672b8",
+      "bytes": 8523776
+    }
+  }
+}

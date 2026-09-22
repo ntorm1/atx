@@ -2,6 +2,8 @@
 
 #include <cstring>
 #include <fstream>
+#include <limits>
+#include <span>
 #include <vector>
 
 #include "artifacts.hpp"          // atx::impl::fnv1a64
@@ -58,8 +60,8 @@ void put_f64(std::vector<unsigned char>& buf, atx::f64 v) {
 using Cursor = atx::usize;
 
 [[nodiscard]] atx::core::Result<atx::u32>
-get_u32(const std::vector<unsigned char>& buf, Cursor& pos) {
-    if (pos + 4 > buf.size()) {
+get_u32(std::span<const atx::u8> buf, Cursor& pos) {
+    if (pos > buf.size() || buf.size() - pos < 4) {
         return atx::core::Err(atx::core::ErrorCode::ParseError,
                               "panel file truncated (u32 read)");
     }
@@ -73,8 +75,8 @@ get_u32(const std::vector<unsigned char>& buf, Cursor& pos) {
 }
 
 [[nodiscard]] atx::core::Result<atx::u64>
-get_u64(const std::vector<unsigned char>& buf, Cursor& pos) {
-    if (pos + 8 > buf.size()) {
+get_u64(std::span<const atx::u8> buf, Cursor& pos) {
+    if (pos > buf.size() || buf.size() - pos < 8) {
         return atx::core::Err(atx::core::ErrorCode::ParseError,
                               "panel file truncated (u64 read)");
     }
@@ -92,7 +94,7 @@ get_u64(const std::vector<unsigned char>& buf, Cursor& pos) {
 }
 
 [[nodiscard]] atx::core::Result<atx::f64>
-get_f64(const std::vector<unsigned char>& buf, Cursor& pos) {
+get_f64(std::span<const atx::u8> buf, Cursor& pos) {
     ATX_TRY(auto bits, get_u64(buf, pos));
     atx::f64 v{};
     std::memcpy(&v, &bits, 8);
@@ -181,36 +183,48 @@ write_panel(const atx::engine::alpha::Panel& panel, const std::string& path) {
 
 atx::core::Result<atx::engine::alpha::Panel>
 read_panel(const std::string& path) {
-    using namespace atx::engine::alpha;
-
     // Read entire file into memory.
     std::ifstream ifs(path, std::ios::binary | std::ios::ate);
     if (!ifs.is_open()) {
         return atx::core::Err(atx::core::ErrorCode::ParseError,
                               "read_panel: cannot open '" + path + "'");
     }
-    const auto file_size = static_cast<atx::usize>(ifs.tellg());
-    if (file_size < 8) {
+    const auto length = ifs.tellg();
+    if (length < 40 || length > std::numeric_limits<std::streamsize>::max() ||
+        static_cast<atx::u64>(length) > std::numeric_limits<atx::usize>::max()) {
         return atx::core::Err(atx::core::ErrorCode::ParseError,
-                              "read_panel: file too small (no trailer)");
+                              "read_panel: invalid file byte size");
     }
+    const auto file_size = static_cast<atx::usize>(length);
     ifs.seekg(0);
-    std::vector<unsigned char> buf(file_size);
+    std::vector<atx::u8> buf(file_size);
+    // SAFETY: char accesses the writable object representation of the byte buffer.
     ifs.read(reinterpret_cast<char*>(buf.data()),
              static_cast<std::streamsize>(file_size));
-    if (!ifs) {
+    if (!ifs || ifs.peek() != std::char_traits<char>::eof()) {
         return atx::core::Err(atx::core::ErrorCode::ParseError,
                               "read_panel: read failed for '" + path + "'");
     }
+    return read_panel_bytes(buf);
+}
+
+atx::core::Result<atx::engine::alpha::Panel>
+read_panel_bytes(std::span<const atx::u8> bytes) {
+    using namespace atx::engine::alpha;
+    if (bytes.size() < 40) {
+        return atx::core::Err(atx::core::ErrorCode::ParseError,
+                              "read_panel: snapshot too small for header and trailer");
+    }
 
     // Payload is everything except the last 8-byte trailer.
-    const atx::usize payload_size = file_size - 8u;
+    const atx::usize payload_size = bytes.size() - 8u;
+    const auto buf = bytes.first(payload_size);
 
     // Read trailer digest (last 8 bytes, LE).
     atx::u64 stored_digest{};
     {
         Cursor tc = payload_size;
-        ATX_TRY(stored_digest, get_u64(buf, tc));
+        ATX_TRY(stored_digest, get_u64(bytes, tc));
     }
 
     // Recompute payload digest.
@@ -238,23 +252,50 @@ read_panel(const std::string& path) {
     ATX_TRY(auto instruments_u64, get_u64(buf, pos));
     ATX_TRY(auto num_fields_u64,  get_u64(buf, pos));
 
+    const auto maximum = std::numeric_limits<atx::usize>::max();
+    if (dates_u64 > maximum || instruments_u64 > maximum || num_fields_u64 > maximum) {
+        return atx::core::Err(atx::core::ErrorCode::ParseError,
+                              "read_panel: dimensions exceed addressable size");
+    }
     const atx::usize D = static_cast<atx::usize>(dates_u64);
     const atx::usize I = static_cast<atx::usize>(instruments_u64);
     const atx::usize F = static_cast<atx::usize>(num_fields_u64);
+    if (I != 0 && D > maximum / I) {
+        return atx::core::Err(atx::core::ErrorCode::ParseError,
+                              "read_panel: cell count overflow");
+    }
     const atx::usize cells = D * I;
+    const auto remaining = payload_size - pos;
+    // Each field needs at least its u32 name length and its full f64 column.
+    // The universe needs one byte per cell. Check before reserve(F/cells), even
+    // for a malformed snapshot whose attacker/caller recomputed a valid FNV.
+    if (cells > (maximum - 4U) / 8U || cells > remaining ||
+        F > (remaining - cells) / (4U + cells * 8U)) {
+        return atx::core::Err(atx::core::ErrorCode::ParseError,
+                              "read_panel: shape cannot fit snapshot payload");
+    }
 
     // 2. Field names.
     std::vector<std::string> names;
     names.reserve(F);
     for (atx::usize f = 0; f < F; ++f) {
         ATX_TRY(auto name_len, get_u32(buf, pos));
-        if (pos + static_cast<atx::usize>(name_len) > payload_size) {
+        if (static_cast<atx::usize>(name_len) > payload_size - pos) {
             return atx::core::Err(atx::core::ErrorCode::ParseError,
                                   "read_panel: field name extends beyond payload");
         }
+        // SAFETY: char reads the already-bounded field name's object representation.
         names.emplace_back(reinterpret_cast<const char*>(buf.data() + pos),
                            static_cast<atx::usize>(name_len));
         pos += static_cast<atx::usize>(name_len);
+    }
+
+    // The first shape check bounds this multiplication. Names have variable
+    // lengths, so verify the exact remaining column/mask extent before allocation.
+    const auto column_bytes = F * (cells * 8U);
+    if (cells > payload_size - pos || column_bytes != payload_size - pos - cells) {
+        return atx::core::Err(atx::core::ErrorCode::ParseError,
+                              "read_panel: columns/mask do not match snapshot shape");
     }
 
     // 3. Field columns (dates*instruments f64 each).
@@ -271,7 +312,7 @@ read_panel(const std::string& path) {
     }
 
     // 4. Universe mask.
-    if (pos + cells > payload_size) {
+    if (cells > payload_size - pos) {
         return atx::core::Err(atx::core::ErrorCode::ParseError,
                               "read_panel: universe mask extends beyond payload");
     }

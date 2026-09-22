@@ -27,6 +27,10 @@ namespace atx::engine::data {
 // reads date_key <= canonical-date.
 using DateKey = atx::i64;
 
+// An explicit unit is required before a calendar-day reporting delay can be
+// applied. Opaque preserves legacy positional/comparable keys at zero delay.
+enum class DateKeyEncoding : atx::u8 { Opaque, EpochDays, YYYYMMDD, UnixNanoseconds };
+
 // Opaque instrument id.
 using InstKey = atx::u32;
 
@@ -47,7 +51,7 @@ enum class ColumnDType : atx::u8 {
   Category,
 };
 
-// Point-in-time versioning flag (minimal; resolution deferred to S6.2 catalog).
+// Descriptive metadata only: this flag does not implement revision history.
 struct AsOfPolicy {
   bool effective_dated = false; // does this dataset carry effective-date / restatement versioning?
 };
@@ -63,10 +67,11 @@ struct DatasetSchema {
   std::vector<std::string> columns; // column names, in storage order
   std::vector<ColumnDType> dtypes;  // one per column; columns.size()==dtypes.size()
   Role role = Role::Reference;
-  atx::u16 pit_delay = 0; // reporting delay in days (stored; enforced by S6.3)
+  atx::u16 pit_delay = 0; // non-negative calendar-day reporting delay
   std::string region;
   std::string universe_tag;
   AsOfPolicy as_of{};
+  DateKeyEncoding date_encoding = DateKeyEncoding::Opaque;
 };
 
 // Returns true iff the schema satisfies the minimal dtype/role coherence rule:

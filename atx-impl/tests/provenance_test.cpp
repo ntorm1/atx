@@ -87,6 +87,7 @@ std::string write_panel_tmp(const Panel& panel, const std::string& stem) {
 atx::impl::RunConfig gated_cfg(const std::string& panel_path, const std::string& alpha_out) {
     atx::impl::RunConfig cfg;
     cfg.subcommand    = "discover";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel         = panel_path;
     cfg.alpha_out     = alpha_out;
     cfg.seed          = 4242ULL;

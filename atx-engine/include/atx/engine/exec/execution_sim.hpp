@@ -189,6 +189,7 @@ public:
       : fill_cfg_{fill}, slip_cfg_{slippage}, impact_cfg_{impact}, comm_cfg_{commission},
         latency_cfg_{latency}, cap_cfg_{volume_cap} {
     open_.reserve(kReserve);
+    replacement_.reserve(kReserve);
     fills_.reserve(kReserve);
     vol_for_bar_.reserve(kReserve);
   }
@@ -234,6 +235,38 @@ public:
       }
       open_.push_back(o);
     }
+  }
+
+  /// Replace the complete pending book with desired REMAINING quantities.
+  /// Intended for a simulator dedicated to one strategy: omitted and zero-qty
+  /// intents are canceled synchronously, including partially filled remainders.
+  /// An identical remaining order retains its original eligibility timestamp;
+  /// changed/new intents start at `now`, ignoring their input queued_at. This
+  /// preserves latency for unchanged targets without backdating new decisions.
+  /// Already emitted fills and this bar's consumed volume are unchanged. No broker
+  /// cancellation acknowledgements are modeled. Single-threaded use only.
+  void replace_pending(std::span<const OrderPayload> orders,
+                       atx::core::time::Timestamp now) noexcept {
+    replacement_.clear();
+    for (const OrderPayload &desired : orders) {
+      if (desired.qty == 0) {
+        continue;
+      }
+      OrderPayload replacement = desired;
+      replacement.queued_at = now;
+      for (OrderPayload &pending : open_) {
+        if (pending.id == desired.id && pending.qty == desired.qty &&
+            pending.type == desired.type &&
+            (desired.type == OrderType::Market || pending.limit == desired.limit)) {
+          replacement.queued_at = pending.queued_at;
+          pending.qty = 0; // consume the match once if the input contains duplicate orders
+          break;
+        }
+      }
+      replacement_.push_back(replacement);
+    }
+    open_.swap(replacement_);
+    replacement_.clear();
   }
 
   /// Settle every eligible open order against the book at `now`, emitting fills.
@@ -545,6 +578,7 @@ private:
 
   // ---- state ----------------------------------------------------------------
   std::vector<OrderPayload> open_{};    // open set, FIFO order (reserved once)
+  std::vector<OrderPayload> replacement_{}; // scratch for complete pending-book replacement
   std::vector<FillPayload> fills_{};    // per-call scratch (cleared, not freed)
   std::vector<VolAccum> vol_for_bar_{}; // per-(instrument, current bar) tally
   atx::i64 current_bar_ns_{0};          // the bar the tally currently covers

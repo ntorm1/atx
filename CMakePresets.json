@@ -45,6 +45,24 @@
       }
     },
     {
+      "name": "equity-rel",
+      "inherits": "equity-dev",
+      "displayName": "equity-rel: optimised equity pipeline binary for measurement sweeps (no AVX2, no IPO)",
+      "binaryDir": "${sourceDir}/build-equity-rel",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "equity-dev",
+      "inherits": "dev",
+      "displayName": "equity-dev: equity engine and pipeline without optional modules",
+      "binaryDir": "${sourceDir}/build-equity",
+      "cacheVariables": {
+        "ATX_EQUITY_ONLY": "ON"
+      }
+    },
+    {
       "name": "dev-counters",
       "inherits": "dev",
       "displayName": "dev-counters: debug gate with atx-vol algorithm counters",
@@ -120,6 +138,8 @@
   "buildPresets": [
     { "name": "ninja", "configurePreset": "ninja" },
     { "name": "dev", "configurePreset": "dev" },
+    { "name": "equity-dev", "configurePreset": "equity-dev" },
+    { "name": "equity-rel", "configurePreset": "equity-rel" },
     { "name": "dev-counters", "configurePreset": "dev-counters" },
     { "name": "dev-shared", "configurePreset": "dev-shared" },
     { "name": "dev-lakehouse-off", "configurePreset": "dev-lakehouse-off" },
@@ -129,6 +149,12 @@
     { "name": "vs", "configurePreset": "vs", "configuration": "Debug" }
   ],
   "testPresets": [
+    {
+      "name": "equity-dev",
+      "configurePreset": "equity-dev",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 1, "scheduleRandom": false }
+    },
     {
       "name": "ninja",
       "configurePreset": "ninja",

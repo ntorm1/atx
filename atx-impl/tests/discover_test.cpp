@@ -208,6 +208,7 @@ TEST(AtxImplDiscover, MissingSeedExprFails) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "discover";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alpha_out  = (std::filesystem::temp_directory_path() /
                       "atx_impl_discover_missing_seed_out").string();
@@ -252,6 +253,7 @@ TEST(AtxImplDiscover, AdmitsAtLeastOneAlpha) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand  = "discover";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel       = panel_path;
     cfg.alpha_out   = alpha_out;
     cfg.seed        = 777ULL;
@@ -304,6 +306,7 @@ TEST(AtxImplDiscover, CapacityObjectiveWithoutTargetAumFailsLoud) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand  = "discover";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel       = panel_path;
     cfg.alpha_out   = (fs::temp_directory_path() / "atx_impl_capacity_no_aum_out").string();
     cfg.seed        = 777ULL;
@@ -338,6 +341,7 @@ TEST(AtxImplDiscover, SameSeedDeterministic) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand  = "discover";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel       = panel_path;
     cfg.seed        = 777ULL;
     cfg.population  = 16;
@@ -385,6 +389,7 @@ TEST(AtxImplDiscover, DiscoverRejectsTooShortOosPanel) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand   = "discover";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel        = panel_path;
     cfg.alpha_out    = alpha_out;
     cfg.seed         = 42ULL;
@@ -436,6 +441,7 @@ TEST(AtxImplDiscover, OosManifestHeaderPresent) {
     {
         atx::impl::RunConfig cfg;
         cfg.subcommand   = "discover";
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel        = panel_path;
         cfg.alpha_out    = alpha_out_oos;
         cfg.seed         = 777ULL;
@@ -470,6 +476,7 @@ TEST(AtxImplDiscover, OosManifestHeaderPresent) {
     {
         atx::impl::RunConfig cfg;
         cfg.subcommand   = "discover";
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel        = panel_path;
         cfg.alpha_out    = alpha_out_leg;
         cfg.seed         = 777ULL;
@@ -536,6 +543,7 @@ static atx::impl::RunConfig gated_cfg(const std::string& panel_path,
                                       unsigned long long seed) {
     atx::impl::RunConfig cfg;
     cfg.subcommand   = "discover";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel        = panel_path;
     cfg.alpha_out    = alpha_out;
     cfg.seed         = seed;
@@ -740,6 +748,7 @@ TEST(AtxImplDiscover, R3a_AccumulationAutoOos) {
     // Build a gated cfg WITH --library-dir but WITHOUT explicit --oos-fraction.
     atx::impl::RunConfig cfg;
     cfg.subcommand   = "discover";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel        = panel_path;
     cfg.alpha_out    = alpha_out;
     cfg.seed         = 7ULL;
@@ -795,6 +804,7 @@ TEST(AtxImplDiscover, R3a_NonAccumulationByteIdentical) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand   = "discover";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel        = panel_path;
     cfg.alpha_out    = alpha_out;
     cfg.seed         = 7ULL;
@@ -1046,6 +1056,7 @@ TEST(AtxImplDiscover, W2_CapacityScreenInactiveIsNoOp) {
     // Baseline: no capacity flags.
     atx::impl::RunConfig cfg_base;
     cfg_base.subcommand  = "discover";
+    cfg_base.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg_base.panel       = panel_path;
     cfg_base.alpha_out   = out_base;
     cfg_base.seed        = 777ULL;
@@ -1118,6 +1129,7 @@ TEST(AtxImplDiscover, W2_CapacityScreenFailClosedMissingClose) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand   = "discover";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel        = panel_path;
     cfg.alpha_out    = alpha_out;
     cfg.seed         = 1ULL;
@@ -1172,6 +1184,7 @@ TEST(AtxImplDiscover, W2_CapacityScreenActiveChangesUniverse) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand   = "discover";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel        = panel_path;
     cfg.alpha_out    = alpha_out;
     cfg.seed         = 777ULL;
@@ -1823,6 +1836,7 @@ TEST(AtxImplDiscover, W6_RediscoverLowVolCapacityAlpha) {
     //    must REACH the low-vol-conditioned family via wrap_in_op + window jitter.
     atx::impl::RunConfig cfg;
     cfg.subcommand        = "discover";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel             = panel_path;
     cfg.alpha_out         = alpha_out;
     cfg.seed              = 20260621ULL;
@@ -1954,6 +1968,7 @@ TEST(AtxImplDiscover, R3a_ExplicitOosFractionOverride) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand   = "discover";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel        = panel_path;
     cfg.alpha_out    = alpha_out;
     cfg.seed         = 7ULL;
@@ -2008,6 +2023,7 @@ TEST(AtxImplDiscover, R3b_AccumulationManifestHasPboLine) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand   = "discover";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel        = panel_path;
     cfg.alpha_out    = alpha_out;
     cfg.seed         = 7ULL;

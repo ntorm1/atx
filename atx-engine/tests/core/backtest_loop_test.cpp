@@ -45,6 +45,7 @@ using atx::core::domain::Quantity;
 using atx::core::domain::Symbol;
 using atx::engine::BacktestLoop;
 using atx::engine::BacktestResult;
+using atx::engine::Delay;
 using atx::engine::EventBus;
 using atx::engine::InstrumentId;
 using atx::engine::InstrumentStats;
@@ -87,7 +88,7 @@ const Symbol kC{3};
 // A frictionless simulator: every cost coefficient zeroed and a 100%-of-volume
 // cap, so a fill lands exactly at the bar close with no fee/slippage/impact —
 // the only way the end-to-end positions/equity are hand-computable.
-[[nodiscard]] ExecutionSimulator make_frictionless_sim() {
+[[nodiscard]] ExecutionSimulator make_frictionless_sim(LatencyCfg latency = {}) {
   return ExecutionSimulator{
       FillCfg{},
       SlippageCfg{SlippageMode::VolumeShare, /*k=*/0.0, /*bps=*/0.0, /*cap_volshare=*/0.0,
@@ -95,19 +96,19 @@ const Symbol kC{3};
       ImpactCfg{/*Y=*/0.0, /*delta=*/0.5, /*gamma=*/0.0},
       CommissionCfg{CommissionMode::PerShare, /*per_share=*/0.0, /*min_fee=*/0.0, /*max_pct=*/1.0,
                     /*per_dollar_bps=*/0.0},
-      LatencyCfg{/*latency_nanos=*/0},
+      latency,
       VolumeCapCfg{/*volume_limit=*/1.0}};
 }
 
 // One constant-OHLCV bar for `symbol` at slice `k` (ts == knowledge_ts == k).
-[[nodiscard]] BarRow bar_row(const Symbol &symbol, i64 k, i64 price) {
+[[nodiscard]] BarRow bar_row(const Symbol &symbol, i64 k, i64 price, i64 volume) {
   Bar bar{};
   bar.ts = ts(k);
   bar.open = Price::from_int(price);
   bar.high = Price::from_int(price);
   bar.low = Price::from_int(price);
   bar.close = Price::from_int(price);
-  bar.volume = Quantity::from_int(1'000'000); // ample vs. the test order sizes
+  bar.volume = Quantity::from_int(volume);
   return BarRow{symbol, bar, ts(k), /*delisted_final=*/false};
 }
 
@@ -125,7 +126,9 @@ struct Outcome {
 // Drive a full backtest over `n_bars` constant-price bars per instrument, a baked
 // `signal_schedule` (one vector per rebalance fire), and a `every`-slice cadence.
 [[nodiscard]] Outcome run_backtest(int n_bars, const std::vector<std::vector<f64>> &signal_schedule,
-                                   usize every, std::array<i64, 3> prices = {100, 50, 200}) {
+                                   usize every, std::array<i64, 3> prices = {100, 50, 200},
+                                   i64 volume = 1'000'000, Delay delay = Delay::Next,
+                                   LatencyCfg latency = {}) {
   std::vector<InstrumentId> universe{kA, kB, kC};
 
   // Three knowledge_ts-sorted sources, one per instrument, constant price.
@@ -133,9 +136,9 @@ struct Outcome {
   std::vector<BarRow> b;
   std::vector<BarRow> c;
   for (int k = 1; k <= n_bars; ++k) {
-    a.push_back(bar_row(kA, k, prices[0]));
-    b.push_back(bar_row(kB, k, prices[1]));
-    c.push_back(bar_row(kC, k, prices[2]));
+    a.push_back(bar_row(kA, k, prices[0], volume));
+    b.push_back(bar_row(kB, k, prices[1], volume));
+    c.push_back(bar_row(kC, k, prices[2], volume));
   }
   std::vector<std::span<const BarRow>> spans{std::span<const BarRow>{a}, std::span<const BarRow>{b},
                                              std::span<const BarRow>{c}};
@@ -148,13 +151,14 @@ struct Outcome {
   RollingPanel<kCap> panel{std::span<const InstrumentId>{universe}, /*max_lookback=*/1};
   ScriptedSignalSource src{signal_schedule, /*universe_size=*/3, /*max_lookback=*/1};
   const WeightPolicy policy{};
-  ExecutionSimulator sim = make_frictionless_sim();
+  ExecutionSimulator sim = make_frictionless_sim(latency);
   Portfolio portfolio{Decimal::from_int(100'000), std::span<const InstrumentId>{universe}};
   Market market{std::span<const InstrumentId>{universe}, std::span<const InstrumentStats>{}};
   const Schedule schedule{every};
 
   BacktestLoop<kCap> loop{
-      feed, clock, *bus, panel, src, policy, sim, portfolio, market, Universe{universe}, schedule};
+      feed, clock, *bus, panel, src, policy, sim, portfolio, market, Universe{universe}, schedule,
+      delay};
 
   Outcome out;
   out.result = loop.run();
@@ -295,6 +299,83 @@ TEST(BacktestLoop, EmptyFeed_NoSlices) {
   EXPECT_TRUE(o.result.fills.empty());
   EXPECT_NEAR(o.result.final_equity, 100'000.0, 1e-6);
   EXPECT_NEAR(o.cash, 100'000.0, 1e-6);
+}
+
+TEST(BacktestLoop, PartialFill_RepeatedTarget_DoesNotDuplicateOutstandingIntent) {
+  const Outcome o = run_backtest(12, ramp_schedule(12), 1, {100, 100, 100}, 100);
+
+  EXPECT_EQ(o.qty[0], 500);
+  EXPECT_EQ(o.qty[1], 0);
+  EXPECT_EQ(o.qty[2], -500);
+  EXPECT_DOUBLE_EQ(o.result.turnover, 100'000.0);
+  ASSERT_EQ(o.result.fills.size(), 10U);
+  for (const auto &fill : o.result.fills) {
+    EXPECT_GT(fill.t.unix_nanos(), 1);
+    EXPECT_LE(fill.t.unix_nanos(), 6);
+  }
+  for (const auto &sample : o.result.equity_curve) {
+    EXPECT_LE(sample.gross, 100'000.0);
+  }
+}
+
+TEST(BacktestLoop, PartialFill_ReversedTarget_CancelsOppositeRemainder) {
+  std::vector<std::vector<f64>> signals(10, std::vector<f64>{1.0, 2.0, 3.0});
+  signals[0] = {3.0, 2.0, 1.0};
+  const Outcome o = run_backtest(10, signals, 1, {100, 100, 100}, 100);
+
+  EXPECT_EQ(o.qty[0], -500);
+  EXPECT_EQ(o.qty[2], 500);
+  EXPECT_DOUBLE_EQ(o.result.turnover, 140'000.0);
+  for (const auto &fill : o.result.fills) {
+    if (fill.t.unix_nanos() > 2) {
+      EXPECT_EQ(fill.qty, fill.id == kA ? -100 : 100);
+    }
+  }
+}
+
+TEST(BacktestLoop, PartialFill_ZeroTarget_ClosesWithoutReopening) {
+  std::vector<std::vector<f64>> signals(8, std::vector<f64>{0.0, 0.0, 0.0});
+  signals[0] = {3.0, 2.0, 1.0};
+  const Outcome o = run_backtest(8, signals, 1, {100, 100, 100}, 100);
+
+  EXPECT_EQ(o.qty[0], 0);
+  EXPECT_EQ(o.qty[2], 0);
+  EXPECT_DOUBLE_EQ(o.result.turnover, 40'000.0);
+  ASSERT_EQ(o.result.fills.size(), 4U);
+  EXPECT_EQ(o.result.fills.back().t.unix_nanos(), 3);
+}
+
+TEST(BacktestLoop, PartialFill_ExhaustedSignal_PreservesOutstandingIntent) {
+  const Outcome o = run_backtest(8, ramp_schedule(1), 1, {100, 100, 100}, 100);
+
+  EXPECT_EQ(o.qty[0], 500);
+  EXPECT_EQ(o.qty[2], -500);
+  EXPECT_DOUBLE_EQ(o.result.turnover, 100'000.0);
+}
+
+TEST(BacktestLoop, RepeatedTarget_PreservesOriginalLatency) {
+  const Outcome o = run_backtest(8, ramp_schedule(8), 1, {100, 100, 100}, 100,
+                                 Delay::Next, LatencyCfg{3});
+
+  ASSERT_EQ(o.result.fills.size(), 10U);
+  EXPECT_EQ(o.result.fills.front().t.unix_nanos(), 4);
+  EXPECT_EQ(o.result.fills.back().t.unix_nanos(), 8);
+  EXPECT_EQ(o.qty[0], 500);
+  EXPECT_EQ(o.qty[2], -500);
+}
+
+TEST(BacktestLoop, PartialFill_SameBarRebalance_PreservesVolumeBudget) {
+  const Outcome o = run_backtest(8, ramp_schedule(8), 1, {100, 100, 100}, 100, Delay::Same);
+
+  EXPECT_EQ(o.qty[0], 500);
+  EXPECT_EQ(o.qty[2], -500);
+  EXPECT_DOUBLE_EQ(o.result.turnover, 100'000.0);
+  ASSERT_EQ(o.result.fills.size(), 10U);
+  EXPECT_EQ(o.result.fills.front().t.unix_nanos(), 1);
+  EXPECT_EQ(o.result.fills.back().t.unix_nanos(), 5);
+  for (const auto &fill : o.result.fills) {
+    EXPECT_EQ(fill.qty, fill.id == kA ? 100 : -100);
+  }
 }
 
 

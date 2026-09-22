@@ -74,6 +74,24 @@ void append_dataset(std::string &out, const std::string &name, const Dataset &ds
   }
   out += "\n  pit_delay: ";
   out += std::to_string(s.pit_delay);
+  // Preserve legacy report bytes for Opaque datasets while recording explicit
+  // units whenever callers opt into availability-aware date arithmetic.
+  if (s.date_encoding != DateKeyEncoding::Opaque) {
+    out += "\n  date_encoding: ";
+    switch (s.date_encoding) {
+    case DateKeyEncoding::Opaque:
+      break;
+    case DateKeyEncoding::EpochDays:
+      out += "EpochDays";
+      break;
+    case DateKeyEncoding::YYYYMMDD:
+      out += "YYYYMMDD";
+      break;
+    case DateKeyEncoding::UnixNanoseconds:
+      out += "UnixNanoseconds";
+      break;
+    }
+  }
   out += "\n  region: ";
   out += s.region;
   out += "\n  universe_tag: ";

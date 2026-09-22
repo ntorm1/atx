@@ -118,6 +118,7 @@ struct SmokeResult {
 run_reachable_graph(const atx::impl::RunConfig &cfg, const std::string &panel_path,
                     const fs::path &work) {
     atx::impl::RunConfig c_disc = cfg;
+    c_disc.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     c_disc.panel = panel_path;
     c_disc.alpha_out = (work / "alphas").string();
     c_disc.gated = true;
@@ -125,6 +126,7 @@ run_reachable_graph(const atx::impl::RunConfig &cfg, const std::string &panel_pa
     ATX_TRY(auto d_disc, atx::impl::run_discover(c_disc));
 
     atx::impl::RunConfig c_comb = cfg;
+    c_comb.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     c_comb.panel = panel_path;
     c_comb.alphas = (work / "alphas").string();
     c_comb.combo_out = (work / "combo.bin").string();
@@ -132,12 +134,14 @@ run_reachable_graph(const atx::impl::RunConfig &cfg, const std::string &panel_pa
     ATX_TRY(auto d_comb, atx::impl::run_combine(c_comb));
 
     atx::impl::RunConfig c_opt = cfg;
+    c_opt.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     c_opt.panel = panel_path;
     c_opt.combo = (work / "combo.bin").string();
     c_opt.books_out = (work / "books.bin").string();
     ATX_TRY(auto d_opt, atx::impl::run_optimize(c_opt));
 
     atx::impl::RunConfig c_rep = cfg;
+    c_rep.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     c_rep.panel = panel_path;
     c_rep.books = (work / "books.bin").string();
     c_rep.combo = (work / "combo.bin").string();

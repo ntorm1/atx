@@ -12,6 +12,7 @@
 //   * Little-endian on-disk (portable across LE platforms; not portable to BE).
 //   * The fnv1a64 trailer allows fast integrity checking without a separate hash file.
 
+#include <span>
 #include <string>
 
 #include "atx/core/error.hpp"
@@ -33,5 +34,12 @@ write_panel(const atx::engine::alpha::Panel& panel, const std::string& path);
 // truncated file). Returns an OWNED Panel (via Panel::create).
 [[nodiscard]] atx::core::Result<atx::engine::alpha::Panel>
 read_panel(const std::string& path);
+
+// Decode one immutable APNL snapshot. Header/layout bounds and the FNV trailer
+// are checked against these exact bytes before data-dependent allocations. Returns
+// an owned Panel; no result borrows the snapshot and no filesystem access occurs.
+// Identified callers must verify their stronger content hash on this same span.
+[[nodiscard]] atx::core::Result<atx::engine::alpha::Panel>
+read_panel_bytes(std::span<const atx::u8> bytes);
 
 } // namespace atx::impl

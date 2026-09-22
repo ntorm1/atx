@@ -1,0 +1,90 @@
+{
+  "schema": "atx-validation-receipt-addendum-v1",
+  "date": "2026-09-20",
+  "applies_to": {
+    "cp14_receipt": {
+      "path": "atx-engine\\reviews\\2026-09-20-cross-section-ic-validation.json",
+      "sha256": "38dd653f7069cb4935b51d003baf9cdf87401434eccc9af5df15e907b319d723"
+    },
+    "cp13_receipt": {
+      "path": "atx-engine\\reviews\\2026-09-20-claims-aware-replay-validation.json",
+      "sha256": "982edfc422961ee3bb4cd9c697712aae905aee81dd0340a66ec50beab7475072"
+    }
+  },
+  "corrections": [
+    {
+      "id": "I-2",
+      "receipt": "cp14",
+      "field": "summary",
+      "wrong_text": "64 native tests incl. 24 state/validation/seal",
+      "correct": "63 native EvalCrossSectionIc tests (24 of them T1 state/validation/seal), as pinned by native_measurement.engine_tests_final and the junit file",
+      "measured_value_in_receipt": "100% tests passed, 0 tests failed out of 63"
+    },
+    {
+      "id": "I-1",
+      "receipt": "cp14",
+      "field": "pins.docs_equity_ic",
+      "note": "pinned before the docs pass added a Validation status section citing the receipt SHA; content accurate; circular by construction",
+      "receipt_time_pin": {
+        "path": "atx-impl/docs/EQUITY_IC.md",
+        "sha256": "8779f8d1522734704a04464cf385a8103b8881fef7681dab927fc447cb17628d",
+        "bytes": 13818
+      },
+      "post_docs_pin": {
+        "path": "atx-impl/docs/EQUITY_IC.md",
+        "sha256": "a8f1e051835afe9ccd65d254823ee7f962ffb983e4fbce4dabb5c391371a8c28",
+        "bytes": 14970
+      }
+    },
+    {
+      "id": "cp13-pin-drift",
+      "receipt": "cp13",
+      "field": "pins.engine_cmake",
+      "note": "checkpoint 14 added one source line (src/eval/cross_section_ic.cpp) after src/eval/cpcv.cpp; the checkpoint-13 line src/book/claims_state.cpp is unchanged",
+      "receipt_time_pin": {
+        "path": "atx-engine/CMakeLists.txt",
+        "sha256": "4d0dbf0daf6afb655e05350086d812996fadbfc062ee4a3715f5fe477d0d725a",
+        "bytes": 6432
+      },
+      "current_pin": {
+        "path": "atx-engine/CMakeLists.txt",
+        "sha256": "abb4e726f83e36a1a180a1c7c486fad1f18e46d3ff54794e8e013f394384bf8d",
+        "bytes": 6467
+      }
+    }
+  ],
+  "post_review_close_out_edits": {
+    "platform_progress": {
+      "path": "atx-engine/docs/PLATFORM_PROGRESS.md",
+      "sha256": "c1f3edee39b7e0b475a62df6c85d0c3a0d258de147dc792207ceb4e0c7f199c0",
+      "bytes": 61864
+    },
+    "platform_progress_note": "replaced the false \"moves every number by less than 0.002\" sentence with the recomputed maxima (IC means 0.0022, spreads 0.0008, ICIR 0.022 at h=21 / 0.080 at h=63) and corrected the h=63 blocks wording",
+    "engine_readme": {
+      "path": "atx-engine/README.md",
+      "sha256": "50389fffe4259d2192217551bf3f5835cd9b04dcf720c5c8f0968673cd273362",
+      "bytes": 11103
+    },
+    "engine_readme_note": "replaced the stale \"pending checkpoint 13 replay integration\" pointer",
+    "stage_source": {
+      "path": "atx-impl/src/stage_equity_ic.cpp",
+      "sha256": "79b7d60e06ede802b13e335a2ef529823f35f87551c865b2e5e179564b8f9945",
+      "bytes": 72646
+    },
+    "stage_source_note": "terminal ledger line construction confined in a try; an exception there is now reported as its own error and named in failure.json instead of unwinding past the append. Not exercised by the real-data run (which used the pinned pre-edit source); re-measured natively after the edit (see stage_tests_after_edit)",
+    "stage_tests_after_edit": {
+      "log": {
+        "path": "build-equity/audits/iteration14-impl-closeout-tests.log",
+        "sha256": "5279f73a3770d5232f39fb027af8149fcc5e4e57aa37e3528a611118efea8e06",
+        "bytes": 6663
+      },
+      "result": "100% tests passed, 0 tests failed out of 32"
+    }
+  },
+  "final_branch_review": {
+    "path": ".superpowers/sdd/equity-platform-parent-goal/final-branch-review.md",
+    "sha256": "daa20598e02f475b0114675746381db1930245fe9115e3ea8d7a47b18c5004b5",
+    "bytes": 28072
+  },
+  "open_items_reference": "final-branch-review.md \"Open items\""
+}

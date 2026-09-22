@@ -5,7 +5,7 @@ add_executable(atx-impl-tests ${ATX_IMPL_TEST_SOURCES})
 # ensure the worker is built into bin/ whenever the test target is built.
 add_dependencies(atx-impl-tests atx-shm-worker)
 target_link_libraries(atx-impl-tests
-    PRIVATE atx-impl-core GTest::gtest_main atx_warnings)
+    PRIVATE atx-impl-core GTest::gtest_main atx_warnings nlohmann_json::nlohmann_json)
 # FIX-3/F3-B: per-process temp root. 42 files in this suite build scratch paths as
 # fixed leaves under the machine-wide temp dir (canonically sweep_test.cpp's
 # atx_sweep_* library/output roots) and remove_all them on entry, so two concurrent

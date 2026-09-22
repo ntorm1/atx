@@ -59,9 +59,10 @@
 //      fixed ADMM, the active set is partitioned by the dual sign, ONE reduced-KKT
 //      system is solved for the high-accuracy book, and a FIXED `polish_refine`
 //      iterative-refinement passes tighten it. The polished book is ACCEPTED only if
-//      it is feasible and lowers the objective (else the ADMM book is kept) — so
-//      polish never DEGRADES the result and the choice is a pure deterministic
-//      function of the iterates (no RNG, no tolerance gate on the loop count).
+//      its primal/dual pair passes feasibility and residual checks. The objective
+//      must not increase when the prior ADMM book is itself feasible; an infeasible
+//      iterate's objective cannot veto a feasible polish. The choice is a pure
+//      deterministic function of the iterates (no tolerance gate on loop counts).
 //
 //  (D) INFEASIBILITY CERTIFICATES (deterministic, from iterate differences). The
 //      primal/dual residuals and the OSQP infeasibility detectors are computed from
@@ -96,6 +97,9 @@
 
 #include <algorithm> // std::max
 #include <cmath>     // std::fabs, std::sqrt, std::isfinite
+#include <iomanip>   // full-precision infeasibility diagnostics
+#include <limits>    // default unlimited factor payload budget
+#include <sstream>   // cold-path diagnostic formatting
 #include <span>      // std::span (q, warm-start)
 #include <string>    // std::string, std::to_string (feasibility-gate Err message)
 #include <utility>   // std::move
@@ -146,6 +150,10 @@ struct QpConfig {
                                // that want the raw un-equilibrated path for comparison.
   bool polish = true;          // run the deterministic active-set polish after the ADMM.
   atx::usize polish_refine = 3; // FIXED iterative-refinement passes inside the polish.
+  // Maximum requested Lp/Li/Lx/D/Dinv payload for EACH direct factorization
+  // (ADMM and optional polish). Symbolic/runtime/other solver storage is excluded.
+  // A budget failure is a solve error even when the factorization is for polish.
+  atx::u64 max_factor_bytes = std::numeric_limits<atx::u64>::max();
 };
 
 // A deterministic infeasibility / convergence certificate, computed from the FINAL
@@ -256,11 +264,11 @@ public:
     cl::VecX x = unscale_primal(x_bar, sc);
     cl::VecX y = unscale_dual(y_bar, sc);
 
-    // (5) Deterministic polish (R1, OSQP §4) — optional; accepted only if it does not
-    //     degrade feasibility/objective. Operates in ORIGINAL units on `aug`.
+    // (5) Deterministic polish (R1, OSQP §4) — optional; guards the coherent
+    //     primal/dual pair and compares objectives only to a feasible ADMM book.
     QpCertificate cert;
     if (cfg.polish) {
-      polish_book(aug, p, x, y, cert);
+      ATX_TRY_VOID(polish_book(aug, p, x, y, cert));
     }
 
     // (6) Certificate from the final original-unit iterates (deterministic).
@@ -312,8 +320,19 @@ private:
       return co::Err(co::ErrorCode::InvalidArgument,
                      "QP: A.rows() must equal l.size() == u.size()");
     }
-    if (p.C.has_turnover && p.C.turnover_ref.size() != m) {
-      return co::Err(co::ErrorCode::InvalidArgument, "QP: turnover_ref length must equal M");
+    if (!std::isfinite(p.C.turnover_penalty) || p.C.turnover_penalty < 0.0) {
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "QP: turnover_penalty must be finite and nonnegative");
+    }
+    if (p.C.has_turnover || p.C.turnover_penalty > 0.0) {
+      if (p.C.turnover_ref.size() != m) {
+        return co::Err(co::ErrorCode::InvalidArgument, "QP: turnover_ref length must equal M");
+      }
+      for (const atx::f64 value : p.C.turnover_ref) {
+        if (!std::isfinite(value)) {
+          return co::Err(co::ErrorCode::InvalidArgument, "QP: turnover_ref must be finite");
+        }
+      }
     }
     if (p.risk_aversion < 0.0) {
       return co::Err(co::ErrorCode::InvalidArgument, "QP: risk_aversion must be >= 0");
@@ -544,7 +563,7 @@ private:
 
     const SpMat kkt = build_kkt(aug);
     QuasiDefiniteLdl ldl;
-    ATX_TRY_VOID(ldl.factor_symbolic(kkt));
+    ATX_TRY_VOID(ldl.factor_symbolic(kkt, cfg.max_factor_bytes));
     ATX_TRY_VOID(ldl.factor_numeric(kkt));
 
     const atx::f64 rho_inv = 1.0 / cfg.rho;
@@ -664,17 +683,20 @@ private:
   //  active set (those clamped at a finite bound, identified by the dual sign) and
   //  the inactive set, solve ONE reduced KKT system that enforces the active rows as
   //  equalities, and run FIXED cfg.polish_refine iterative-refinement passes. The
-  //  result is ACCEPTED only if finite, feasible (within feas_tol), and not worse in
-  //  objective than the ADMM book — so polish NEVER degrades. Operates on `aug`
-  //  (ORIGINAL units). `x`/`y` are in/out in original units.
+  //  result is ACCEPTED only if finite, feasible (including cones), dual-consistent,
+  //  and no worse in residuals above explicit tiny floors. Compare objectives only
+  //  when the previous ADMM book is feasible. Operates on `aug` (ORIGINAL units);
+  //  `x` AND `y` are replaced together, never a polished primal with stale duals.
   // -------------------------------------------------------------------------
-  void polish_book(const AugmentedQp &aug, const QpProblem &p, atx::core::linalg::VecX &x,
-                   const atx::core::linalg::VecX &y, QpCertificate &cert) const {
+  [[nodiscard]] atx::core::Status polish_book(
+      const AugmentedQp &aug, const QpProblem &p, atx::core::linalg::VecX &x,
+      atx::core::linalg::VecX &y, QpCertificate &cert) const {
+    namespace co = atx::core;
     namespace cl = atx::core::linalg;
     const auto n = static_cast<Eigen::Index>(aug.n_w + aug.n_y + aug.n_aux);
     const Eigen::Index r = aug.A_tilde.rows();
     if (r == 0) {
-      return; // no constraints ⇒ nothing to polish
+      return co::Ok(); // no constraints ⇒ nothing to polish
     }
 
     // Cone rows are NEVER linear-active: a SOC row is governed by the ball projection,
@@ -692,7 +714,6 @@ private:
     // (a) Active-set partition by dual sign (OSQP §4.1): a row is active-at-lower if
     //     y_i < −tol, active-at-upper if y_i > tol, else inactive. The active rows are
     //     enforced as equalities A_act x = bnd_act in the reduced KKT.
-    const cl::VecX ax = aug.A_tilde * x;
     const atx::f64 dual_tol = 1e-8;
     std::vector<int> active; // row indices, ascending (fixed order)
     std::vector<atx::f64> bnd;
@@ -720,7 +741,7 @@ private:
     }
     const auto na = static_cast<Eigen::Index>(active.size());
     if (na == 0) {
-      return; // no active rows ⇒ unconstrained interior; the ADMM book stands
+      return co::Ok(); // no active rows ⇒ unconstrained interior; the ADMM book stands
     }
 
     // (b) Build the reduced KKT  [[P+σpI, A_actᵀ],[A_act, 0]]  with a tiny δ on the
@@ -752,58 +773,165 @@ private:
 
     SpMat rkkt = build_reduced_kkt(aug.P, A_act, n, na, sig_p, delta);
     QuasiDefiniteLdl ldl;
-    if (!ldl.factor_symbolic(rkkt) || !ldl.factor_numeric(rkkt)) {
-      return; // degenerate reduced system ⇒ keep the ADMM book
+    const auto symbolic = ldl.factor_symbolic(rkkt, cfg.max_factor_bytes);
+    if (!symbolic) {
+      if (symbolic.error().code() == co::ErrorCode::OutOfRange) {
+        return co::Err(symbolic.error()); // resource bound is mandatory, including polish
+      }
+      return co::Ok(); // ordinary optional polish failure ⇒ keep the ADMM book
+    }
+    if (!ldl.factor_numeric(rkkt)) {
+      return co::Ok(); // degenerate reduced system ⇒ keep the ADMM book
     }
 
-    // (c) Solve  [P+σpI A_actᵀ; A_act -δI] [x; ν] = [σp·x_admm − q̃ ; bnd]  then run
-    //     FIXED cfg.polish_refine iterative-refinement passes against the SAME factor.
+    // (c) The target is the UNREGULARIZED KKT system K0*t = g with g=[-q;b].
+    //     Kreg=[[P+sigma I,A_act^T],[A_act,-delta I]] is only a preconditioner:
+    //     solve Kreg*correction = g-K0*t, then add the correction. Refining the
+    //     residual of Kreg instead would retain its regularization bias.
+    //     See OSQP section 4, eqs (27)-(31): https://arxiv.org/pdf/1711.08013.
+    //
+    //     ATX seeds t from the ADMM primal/selected duals. This differs from OSQP's
+    //     initial solve of Kreg*t=g: inactive zero-cost gross auxiliaries otherwise
+    //     become zero and can violate |w|<=s despite a correct w. The seed preserves
+    //     useful free auxiliary components; ALL candidate guards remain mandatory.
+    //     One initial correction plus cfg.polish_refine corrections retains the
+    //     exact previous solve count and the same single capped factorization.
     const Eigen::Index pdim = n + na;
     std::vector<atx::f64> rhs(static_cast<atx::usize>(pdim), 0.0);
-    std::vector<atx::f64> sol(static_cast<atx::usize>(pdim), 0.0);
+    cl::VecX solv(pdim);
     for (Eigen::Index i = 0; i < n; ++i) {
-      rhs[static_cast<atx::usize>(i)] = sig_p * x[i] - aug.q_aug[i];
+      rhs[static_cast<atx::usize>(i)] = -aug.q_aug[i];
+      solv[i] = x[i];
     }
     for (Eigen::Index k = 0; k < na; ++k) {
       rhs[static_cast<atx::usize>(n + k)] = bnd[static_cast<atx::usize>(k)];
-    }
-    ldl.solve(std::span<const atx::f64>(rhs), std::span<atx::f64>(sol));
-
-    // Iterative refinement (FIXED passes): solve rkkt·Δ = rhs − rkkt·sol; sol += Δ.
-    cl::VecX solv(pdim);
-    for (Eigen::Index i = 0; i < pdim; ++i) {
-      solv[i] = sol[static_cast<atx::usize>(i)];
+      solv[n + k] = y[active[static_cast<atx::usize>(k)]];
     }
     std::vector<atx::f64> res(static_cast<atx::usize>(pdim), 0.0);
     std::vector<atx::f64> corr(static_cast<atx::usize>(pdim), 0.0);
-    for (atx::usize pass = 0; pass < cfg.polish_refine; ++pass) {
-      const cl::VecX kx = rkkt * solv; // rkkt stored FULL symmetric (both triangles)
-      for (Eigen::Index i = 0; i < pdim; ++i) {
-        res[static_cast<atx::usize>(i)] = rhs[static_cast<atx::usize>(i)] - kx[i];
+    const auto correct_original_system = [&]() {
+      const cl::VecX top = aug.P * solv.head(n) + A_act.transpose() * solv.tail(na);
+      const cl::VecX bottom = A_act * solv.head(n);
+      for (Eigen::Index i = 0; i < n; ++i) {
+        res[static_cast<atx::usize>(i)] = rhs[static_cast<atx::usize>(i)] - top[i];
+      }
+      for (Eigen::Index k = 0; k < na; ++k) {
+        res[static_cast<atx::usize>(n + k)] = rhs[static_cast<atx::usize>(n + k)] - bottom[k];
       }
       ldl.solve(std::span<const atx::f64>(res), std::span<atx::f64>(corr));
       for (Eigen::Index i = 0; i < pdim; ++i) {
         solv[i] += corr[static_cast<atx::usize>(i)];
       }
+    };
+    correct_original_system(); // Initial solve, expressed as a correction.
+    for (atx::usize pass = 0; pass < cfg.polish_refine; ++pass) {
+      correct_original_system(); // FIXED passes, no convergence-based early exit.
     }
 
-    // (d) Extract the polished primal (first n entries), accept only if it is finite,
-    //     feasible, and does NOT increase the objective vs the ADMM book.
+    // (d) Reconstruct a complete, coherent primal/dual candidate. Cone rows were
+    //     excluded from the linear relaxation and therefore receive ZERO duals,
+    //     as do inactive linear rows. A linear-relaxation solution is usable only
+    //     if it ALSO satisfies every original cone; stale cone duals are invalid.
     cl::VecX xp(n);
+    cl::VecX yp = cl::VecX::Zero(r);
     for (Eigen::Index i = 0; i < n; ++i) {
       const atx::f64 v = solv[i];
       if (!std::isfinite(v)) {
-        return; // numerical breakdown ⇒ keep the ADMM book
+        return co::Ok(); // numerical breakdown ⇒ keep the ADMM book
       }
       xp[i] = v;
     }
-    if (!feasible_within(aug, xp, p) ) {
-      return;
+    // Explicit tiny residual/sign floor, as in OSQP's polish acceptance. It does
+    // not relax the caller's primal tolerance or the tighter normal-cone check.
+    constexpr atx::f64 tiny_residual = 1e-10;
+    for (Eigen::Index k = 0; k < na; ++k) {
+      const int row = active[static_cast<atx::usize>(k)];
+      const atx::f64 nu = solv[n + k];
+      if (!std::isfinite(nu)) {
+        return co::Ok();
+      }
+      if (aug.l[row] != aug.u[row]) { // Equality multipliers have unrestricted sign.
+        const bool lower = bnd[static_cast<atx::usize>(k)] == aug.l[row];
+        if ((lower && nu > tiny_residual) || (!lower && nu < -tiny_residual)) {
+          return co::Ok(); // The guessed active side has an invalid multiplier.
+        }
+      }
+      yp[row] = nu;
     }
-    if (objective(aug, xp) <= objective(aug, x) + 1e-12) {
-      x = std::move(xp);
-      cert.polished = true;
+    const cl::VecX axp = aug.A_tilde * xp;
+    if (!axp.allFinite() || !feasible_within(aug, xp, p)) {
+      return co::Ok();
     }
+    for (Eigen::Index i = 0; i < r; ++i) {
+      if (is_cone_row[static_cast<atx::usize>(i)]) {
+        continue; // yp=0 is in the normal cone at every feasible cone point.
+      }
+      const atx::f64 shifted = axp[i] + yp[i];
+      if (!std::isfinite(shifted) ||
+          std::fabs(axp[i] - clamp(shifted, aug.l[i], aug.u[i])) > cfg.feas_tol) {
+        return co::Ok(); // Box normal-cone membership / complementarity failed.
+      }
+    }
+
+    // Compare full original-unit primal distance (INCLUDING cones) and stationarity.
+    // Above tiny floors neither may worsen, and at least one must improve unless
+    // both are already tiny. This avoids accepting a worse KKT pair solely because
+    // its objective is smaller. The hard feasibility gate still uses cfg.feas_tol.
+    const auto residuals = [&](const cl::VecX &candidate_x, const cl::VecX &candidate_y) {
+      const atx::f64 invalid = std::numeric_limits<atx::f64>::infinity();
+      const cl::VecX a = aug.A_tilde * candidate_x;
+      const cl::VecX stationarity = aug.P * candidate_x + aug.q_aug +
+                                   aug.A_tilde.transpose() * candidate_y;
+      if (!a.allFinite() || !stationarity.allFinite()) {
+        return std::pair{invalid, invalid};
+      }
+      atx::f64 primal = 0.0;
+      atx::f64 dual = 0.0;
+      for (Eigen::Index i = 0; i < a.size(); ++i) {
+        primal = std::max(primal, std::max(a[i] - aug.u[i], aug.l[i] - a[i]));
+      }
+      for (const SocBlock &blk : aug.cones) {
+        std::vector<atx::f64> arg(blk.dim, 0.0);
+        for (atx::usize j = 0; j < blk.dim; ++j) {
+          arg[j] = a[static_cast<Eigen::Index>(blk.row_start + j)] +
+                   blk.offset[static_cast<Eigen::Index>(j)];
+        }
+        const atx::f64 violation = cone_violation(blk, arg);
+        if (!std::isfinite(violation)) {
+          return std::pair{invalid, invalid};
+        }
+        primal = std::max(primal, violation);
+      }
+      for (Eigen::Index i = 0; i < stationarity.size(); ++i) {
+        dual = std::max(dual, std::fabs(stationarity[i]));
+      }
+      return std::pair{primal, dual};
+    };
+    const auto [old_primal, old_dual] = residuals(x, y);
+    const auto [new_primal, new_dual] = residuals(xp, yp);
+    const atx::f64 primal_floor = std::min(cfg.feas_tol, tiny_residual);
+    if (!std::isfinite(old_primal) || !std::isfinite(old_dual) ||
+        !std::isfinite(new_primal) || !std::isfinite(new_dual) ||
+        new_primal > std::max(old_primal, primal_floor) ||
+        new_dual > std::max(old_dual, tiny_residual) ||
+        (!(new_primal < old_primal || new_dual < old_dual) &&
+         !(new_primal <= primal_floor && new_dual <= tiny_residual))) {
+      return co::Ok();
+    }
+    const atx::f64 new_objective = objective(aug, xp);
+    if (!std::isfinite(new_objective)) {
+      return co::Ok();
+    }
+    if (feasible_within(aug, x, p)) {
+      const atx::f64 old_objective = objective(aug, x);
+      if (!std::isfinite(old_objective) || new_objective > old_objective + 1e-12) {
+        return co::Ok();
+      }
+    }
+    x = std::move(xp);
+    y = std::move(yp);
+    cert.polished = true;
+    return co::Ok();
   }
 
   // Reduced KKT  [[P+σI, A_actᵀ],[A_act, −δI]]  (upper triangle stored is fine for the
@@ -1017,10 +1145,13 @@ private:
   // FEASIBLE set if cfg.iters is too low for the aux-split, so the message names
   // BOTH causes and points at the iteration budget.
   [[nodiscard]] std::string infeasible_msg(Eigen::Index row, atx::f64 violation) const {
-    return "ConstrainedQpSolver::solve: book violates constraint row " + std::to_string(row) +
-           " by " + std::to_string(violation) + " after the fixed iteration budget — the set "
-           "may be infeasible OR the budget (cfg.iters) is too low for the aux-split to "
-           "converge (raise iters)";
+    std::ostringstream message;
+    message << std::setprecision(std::numeric_limits<atx::f64>::max_digits10)
+            << "ConstrainedQpSolver::solve: book violates constraint row " << row
+            << " by " << violation << " tolerance=" << cfg.feas_tol
+            << " after the fixed iteration budget — the set may be infeasible OR the "
+               "budget (cfg.iters) is too low for the aux-split to converge";
+    return message.str();
   }
 
   // -------------------------------------------------------------------------

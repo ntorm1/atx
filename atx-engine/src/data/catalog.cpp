@@ -182,9 +182,9 @@ atx::core::Result<atx::f64> DatasetCatalog::value_at(std::string_view name, std:
                               std::string{name} + "'");
   }
 
-  // 4. PIT as-of: greatest row with DateKey ≤ canonical_date (shared helper;
-  //    dates() is strictly ascending, enforced at registration).
-  const std::optional<atx::usize> row = as_of_index(ds.dates(), canonical_date);
+  // 4. Availability includes the reporting delay. Strict ascent is enforced at
+  //    registration; query validation uses the dataset's explicit encoding.
+  ATX_TRY(const auto row, ds.available_as_of_index(canonical_date));
   if (!row) {
     // No row qualifies — return NaN, not an error.
     return atx::core::Ok(std::numeric_limits<atx::f64>::quiet_NaN());

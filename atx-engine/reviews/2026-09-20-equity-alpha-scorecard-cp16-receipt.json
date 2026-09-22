@@ -1,0 +1,150 @@
+{
+  "script": "C:/atx/.worktrees/equity-platform/build-equity/audits/iteration16_equity_scorecard.py",
+  "script_sha256": "1edb6c0b94aed36a8cb33c4baa5f6d228f2a38829728741a3f99a907b60ae5bd",
+  "generated_utc": "2026-09-21T01:26:46Z",
+  "inputs_sha256": {
+    "C:/atx/data/equity_scorecard16_ic_2013_t1000_20260920/ic.csv": "3f73d8eca711887678b6b7431036e89e654e25d2dfb2f76b8078723a39a27d63",
+    "C:/atx/data/equity_scorecard16_ic_2013_t1000_20260920/signal_autocorr.csv": "d5ee10d21e349f8b709e48c2e9b23e35058b877cbc483b21e831809d41a7db06",
+    "C:/atx/data/equity_scorecard16_ic_2013_t1000_20260920/quantile_spread.csv": "404bb179ee60dd22e960e9add6cb088e3f1b0f3247b29f58ac22acd5264a0c13",
+    "C:/atx/data/equity_scorecard16_ic_2013_t3000_20260920/ic.csv": "34abe061fe73a60b629daad8228175d59dc48767f499ea8a2ce07de82e82b912",
+    "C:/atx/data/equity_scorecard16_ic_2013_t3000_20260920/signal_autocorr.csv": "cd4f75d5de0c124bf0700d8dd5b6812474136c167e53f50ab62a95740953b753",
+    "C:/atx/data/equity_scorecard16_ic_2013_t3000_20260920/quantile_spread.csv": "4859cb94841b23f0ec2e0bbe2a78185967a30296ee83f642c10c47852732f045",
+    "C:/atx/data/equity_scorecard16_ic_2014_t1000_20260920/ic.csv": "6866d14779ebeffb14c1d2686541c02db868dfad22722f09d432c94a259f1c3f",
+    "C:/atx/data/equity_scorecard16_ic_2014_t1000_20260920/signal_autocorr.csv": "82fa5cc85d5261c7cf9428f2b1b76fa2307542256fea1877f70097851185508a",
+    "C:/atx/data/equity_scorecard16_ic_2014_t1000_20260920/quantile_spread.csv": "667702142c8ba20a5ea8c544c97e5a8cde5675539bf518b127981f3a973578bd",
+    "C:/atx/data/equity_scorecard16_ic_2014_t3000_20260920/ic.csv": "1df4d2bde9d74d114946280756fa2862531624d823f2a458c62c159f2d6ab19c",
+    "C:/atx/data/equity_scorecard16_ic_2014_t3000_20260920/signal_autocorr.csv": "90d0bd559c4b680eb1541db64f435c79d6e22b3bfb39e5a2847f060e1ea555f5",
+    "C:/atx/data/equity_scorecard16_ic_2014_t3000_20260920/quantile_spread.csv": "3b08c8accfc090f911b5c23364dfe69de8b7ea3fcb871950c23341e8cf51624d",
+    "C:/atx/data/equity_scorecard16_ic_2015_t1000_20260920/ic.csv": "d237230acd634d466305ba54cb0344d3bb7fb9b80fe18dc086d69563f7911695",
+    "C:/atx/data/equity_scorecard16_ic_2015_t1000_20260920/signal_autocorr.csv": "9f051b1bc718c9161acd5bfd0405c989b9f0e41246e4dd1b7ad6255f9ff98593",
+    "C:/atx/data/equity_scorecard16_ic_2015_t1000_20260920/quantile_spread.csv": "0beef3b6b6cf8fa1357190c3bfd6b9d981c28cc1b3d823c6b5ce3b4cbaba8c36",
+    "C:/atx/data/equity_scorecard16_ic_2015_t3000_20260920/ic.csv": "65a0ba9fd4acf8353b127e7d95c3ca282179731c781df8ebe1653c6530179ff7",
+    "C:/atx/data/equity_scorecard16_ic_2015_t3000_20260920/signal_autocorr.csv": "a648385988857793ab45a833023ff14c18981bc06f34e4f612b9c44f2fe9f141",
+    "C:/atx/data/equity_scorecard16_ic_2015_t3000_20260920/quantile_spread.csv": "25aa434cf078187b8d191b0d8e4c8563828e242caee2eb923f95f99f4e3ee190",
+    "C:/atx/data/equity_scorecard16_ic_2016_t1000_20260920/ic.csv": "58dac03dbe6d6939215e077cd931c74417392ae4db782d58e4bfe6bb6e67282b",
+    "C:/atx/data/equity_scorecard16_ic_2016_t1000_20260920/signal_autocorr.csv": "ef2a6c25b49d6764e69ecc7d6e09469cf0721d2c82402f94af8f67db46731917",
+    "C:/atx/data/equity_scorecard16_ic_2016_t1000_20260920/quantile_spread.csv": "8b616d20770115c513cc79c22a4e47aa58414e45c9ce8124e49f347fa51dbc68",
+    "C:/atx/data/equity_scorecard16_ic_2016_t3000_20260920/ic.csv": "ce1c3b07c944fd3d1198c2c28f0c49344008edad039d4174690787fb8a9c3863",
+    "C:/atx/data/equity_scorecard16_ic_2016_t3000_20260920/signal_autocorr.csv": "e6de21455740c6ce07a6bd3cfe05baf01effcde3ecb1c16024adbbabb19aa458",
+    "C:/atx/data/equity_scorecard16_ic_2016_t3000_20260920/quantile_spread.csv": "d975c3d2b161c420f5be27cce4180d9d0eedbdaace4d886c80535303963a5fa6",
+    "C:/atx/data/equity_scorecard16_ic_2017_t1000_20260920/ic.csv": "d01647a028abbf14d01d4fdf89bfad17686325943a8d5e723a08a78756419810",
+    "C:/atx/data/equity_scorecard16_ic_2017_t1000_20260920/signal_autocorr.csv": "4ba7eec1d00a6c98395776577f99512c23321afc3a07383d8864cb1fcf383709",
+    "C:/atx/data/equity_scorecard16_ic_2017_t1000_20260920/quantile_spread.csv": "35b96af755a21562033c7d27ed0fa36a75b100165cf0847f5875f7bc24012a07",
+    "C:/atx/data/equity_scorecard16_ic_2018_t1000_20260920/ic.csv": "e868141c2d28992719302ba7f7841245983afc5361b34dce83d6de25c60775f9",
+    "C:/atx/data/equity_scorecard16_ic_2018_t1000_20260920/signal_autocorr.csv": "47a51b03b87ebdb688d3a7fbdbbf764f752987602f76e6c9604a9face21bb034",
+    "C:/atx/data/equity_scorecard16_ic_2018_t1000_20260920/quantile_spread.csv": "8cb631da94846ffc8527e19a2d521c8409c7ad05d067fe44cd305a8061d35beb",
+    "C:/atx/data/equity_scorecard16_ic_2018_t3000_20260920/ic.csv": "b9a3647b68ee782a74afaced2ec7743e4a863bdbbab25af5c38a7a05be3066bc",
+    "C:/atx/data/equity_scorecard16_ic_2018_t3000_20260920/signal_autocorr.csv": "0a4496ca9f846d28e32030f23160e33be7b304721046c5efbbe5f677b678bac7",
+    "C:/atx/data/equity_scorecard16_ic_2018_t3000_20260920/quantile_spread.csv": "ec2c87cfb855b250262e52d036d96955ac5937519da8bbcfc35177cefc988456",
+    "C:/atx/data/equity_scorecard16_ic_2019_t1000_20260920/ic.csv": "d151da8ea560ca6408d4b8d9528d1a31222b48dd4bb1e993dc59655bc23f7bb9",
+    "C:/atx/data/equity_scorecard16_ic_2019_t1000_20260920/signal_autocorr.csv": "61764624032c67de8dfb1a95719eb34001dc4d68bf564d879288fbeb6736d42e",
+    "C:/atx/data/equity_scorecard16_ic_2019_t1000_20260920/quantile_spread.csv": "430164ba53d807b228394ab180acd00ab8523288caa364021ba0e53f4382b971",
+    "C:/atx/data/equity_scorecard16_ic_2019_t3000_20260920/ic.csv": "e595a6ca80a147ebcc3db590d42b5ba8eb0c33c4dad70ce9b5ede061787be68a",
+    "C:/atx/data/equity_scorecard16_ic_2019_t3000_20260920/signal_autocorr.csv": "fafb57dfb97c074d2faf90a26e0b5ec8f842e89ab482955b7d38d315a82da452",
+    "C:/atx/data/equity_scorecard16_ic_2019_t3000_20260920/quantile_spread.csv": "b533761b836663e488be3f5afd2108eb010df17bc42d1c9b23f29c2a87945054",
+    "C:/atx/data/equity_ic_training_2013_20260920/ic.csv": "00c98179adb312e4419aab5a4dcd58e0ca6e788cb98cad860ef121258dcfdcd2",
+    "C:/atx/data/equity_ic_training_2013_20260920/signal_autocorr.csv": "f15420bc2d688dc79ce674341185f632f7bffb9f4bec5920405635950c28c7f3",
+    "C:/atx/data/equity_ic_training_2013_20260920/quantile_spread.csv": "2f63a0873fc9dc97436cfa1b32fb88281bc8d79c509b4658d5ec9b2d9611fcba"
+  },
+  "anchor": "C:/atx/data/equity_ic_training_2013_20260920",
+  "anchor_cut_label": "cp14_anchor",
+  "cells": [
+    {
+      "year": 2013,
+      "cut": "1000",
+      "dir": "C:/atx/data/equity_scorecard16_ic_2013_t1000_20260920"
+    },
+    {
+      "year": 2013,
+      "cut": "3000",
+      "dir": "C:/atx/data/equity_scorecard16_ic_2013_t3000_20260920"
+    },
+    {
+      "year": 2014,
+      "cut": "1000",
+      "dir": "C:/atx/data/equity_scorecard16_ic_2014_t1000_20260920"
+    },
+    {
+      "year": 2014,
+      "cut": "3000",
+      "dir": "C:/atx/data/equity_scorecard16_ic_2014_t3000_20260920"
+    },
+    {
+      "year": 2015,
+      "cut": "1000",
+      "dir": "C:/atx/data/equity_scorecard16_ic_2015_t1000_20260920"
+    },
+    {
+      "year": 2015,
+      "cut": "3000",
+      "dir": "C:/atx/data/equity_scorecard16_ic_2015_t3000_20260920"
+    },
+    {
+      "year": 2016,
+      "cut": "1000",
+      "dir": "C:/atx/data/equity_scorecard16_ic_2016_t1000_20260920"
+    },
+    {
+      "year": 2016,
+      "cut": "3000",
+      "dir": "C:/atx/data/equity_scorecard16_ic_2016_t3000_20260920"
+    },
+    {
+      "year": 2017,
+      "cut": "1000",
+      "dir": "C:/atx/data/equity_scorecard16_ic_2017_t1000_20260920"
+    },
+    {
+      "year": 2018,
+      "cut": "1000",
+      "dir": "C:/atx/data/equity_scorecard16_ic_2018_t1000_20260920"
+    },
+    {
+      "year": 2018,
+      "cut": "3000",
+      "dir": "C:/atx/data/equity_scorecard16_ic_2018_t3000_20260920"
+    },
+    {
+      "year": 2019,
+      "cut": "1000",
+      "dir": "C:/atx/data/equity_scorecard16_ic_2019_t1000_20260920"
+    },
+    {
+      "year": 2019,
+      "cut": "3000",
+      "dir": "C:/atx/data/equity_scorecard16_ic_2019_t3000_20260920"
+    }
+  ],
+  "headline": {
+    "variant": "IncludeAuditedTerminalV1",
+    "restriction": "full"
+  },
+  "cells_receipt": "build-equity/audits/iteration16-cells-attempt1-full.json",
+  "cells_receipt_sha256": "2e29d8ee711e7d013826713223ce2e1d1ba7e227122bea0cf75e5f82373a2f8e",
+  "cp16_design": "atx-engine/reviews/2026-09-20-iteration16-alpha-scorecard-design.md",
+  "cp16_design_sha256": "a83484037cae527e2fbfba5dce04289742d1c81666b2c03c132f3da9268c04d1",
+  "recipe": {
+    "ruling": "R16-7",
+    "seed": 20260920,
+    "bootstrap_draws": 2000,
+    "block_length": 5,
+    "sd_ddof": 1,
+    "min_obs_reportable": 8,
+    "wide_interval_obs_floor": 20,
+    "offset": 0,
+    "annualisation_days": 252.0,
+    "percentiles": [
+      2.5,
+      97.5
+    ],
+    "membership_rule": "year-union-not-as-of",
+    "percentile_method": "nearest-rank, round-half-up, on the sorted finite draws (rank = round(p*B), 1-based)",
+    "turnover_source": "1 - rho_rank from signal_autocorr.csv (per signal, lag 1)",
+    "not_fit_cells": {
+      "2017_t3000": "NOT FIT 5,072 > 4,096"
+    },
+    "zero_dispersion": "sd == 0 or n_obs < 2 -> sharpe_net blank, reportable 0, note zero-dispersion",
+    "seed_scope": "one random.Random(20260920) per (signal, horizon, variant, restriction, cut); groups walked signals in cp14 ic.csv token order, horizons ascending, variant then restriction in ic.csv token order, cuts 1000 then 3000; draws consumed by per-year rows in year order then pooled"
+  },
+  "rows_written": 1080
+}

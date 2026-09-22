@@ -6,10 +6,14 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/dispatch.cpp
     src/artifacts.cpp
     src/serialize_panel.cpp
+    src/panel_artifact.cpp
+    src/panel_pipeline.cpp
+    src/stage_data_provenance.cpp
     src/serialize_genome.cpp
     src/stage_load.cpp
     src/stage_regime.cpp
     src/stage_panel.cpp
+    src/asof_field.cpp
     # Incremental panel append: append == full-rebuild byte-identical (p7 S6-1)
     src/append_history_panel.cpp
     # FINRA short-interest augment core (p7 S2-1 / track-b B1; CLI deferred to S7)
@@ -21,6 +25,15 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/stage_riskmodel.cpp
     src/stage_optimize.cpp
     src/stage_report.cpp
+    src/replay_report.cpp
+    src/replay_diagnostics.cpp
+    src/equity_baseline_views.cpp
+    src/stage_equity_baseline.cpp
+    src/equity_allocation.cpp
+    src/stage_equity_book.cpp
+    src/trial_ledger.cpp
+    src/stage_equity_ic.cpp
+    src/stage_equity_universe.cpp
     src/stage_run.cpp
     # p8 S2: the fund:: mega-alpha meta-book seam (opt-in; never called from stage_run.cpp)
     src/stage_metabook.cpp)
@@ -28,7 +41,7 @@ target_include_directories(atx-impl-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(atx-impl-core PUBLIC cxx_std_20)
 target_link_libraries(atx-impl-core
     PUBLIC  atx::core atx::engine atx::tsdb
-    PRIVATE atx_warnings)
+    PRIVATE atx_warnings nlohmann_json::nlohmann_json)
 find_package(Threads REQUIRED)
 target_link_libraries(atx-impl-core PRIVATE Threads::Threads)
 

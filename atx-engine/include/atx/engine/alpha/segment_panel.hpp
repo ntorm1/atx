@@ -95,9 +95,30 @@ universe_from_field(const atx::tsdb::SegmentReader &reader, atx::u32 field, atx:
 attach_segment_panel(const std::string &path, TimeWindow window = {},
                      std::span<const std::string> fields = {}, UniversePolicy universe = {});
 
-/// Span a directory of per-date sealed segments into ONE owned alpha::Panel over
-/// [window). Enumerates `*.seg` in `seg_dir`, sorts lexicographically (ISO
-/// YYYY-MM-DD names sort chronologically), unions the per-segment securityID
+/// Owned numeric panel with the exact axes used during multi-segment assembly.
+/// Generic symbol IDs are opaque strings; source-specific validation belongs to
+/// the data adapter. Session keys are source timestamps, not availability times.
+struct IndexedPanel {
+  Panel panel;
+  std::vector<atx::i64> session_keys;
+  std::vector<std::string> instrument_ids;
+  // Only segments with in-window rows, in deterministic lexical path order.
+  std::vector<std::string> source_segment_paths;
+};
+
+/// Span a directory of sealed segments into an owned panel AND its axes.
+/// Sorts selected rows by actual timestamp, preserving lexical path order for
+/// ties. Each source time axis must be strictly ascending. Duplicate PRESENT
+/// (timestamp, symbol) cells fail with InvalidArgument, even if values match;
+/// absent source padding never overwrites another segment's present cell.
+/// Empty/duplicate source symbol names and reversed windows are rejected.
+[[nodiscard]] atx::core::Result<IndexedPanel>
+attach_indexed_multi_segment_panel(const std::string &seg_dir, TimeWindow window = {},
+                                   std::span<const std::string> fields = {},
+                                   UniversePolicy universe = {});
+
+/// Legacy numeric-only wrapper over attach_indexed_multi_segment_panel.
+/// Spans `*.seg` in `seg_dir`, unions the per-segment
 /// instrument axes (join by symbol NAME, first-seen across dates in ascending date
 /// order), and MATERIALIZES an owned date-major Panel (each per-date segment is a
 /// separate mmap with its own instrument ordering, so a borrowed cross-segment

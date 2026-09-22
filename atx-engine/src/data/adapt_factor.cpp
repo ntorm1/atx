@@ -24,6 +24,11 @@ atx::core::Result<RefSpans> reference_spans(const Dataset &reference, const Data
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "reference_spans: 'reference' dataset must have Role::Reference");
   }
+  if (reference.schema().date_encoding != price.schema().date_encoding ||
+      !is_strictly_ascending(reference.dates())) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "reference_spans: matching date encodings and ascending dates required");
+  }
 
   // Validate that the required columns are present in the reference dataset.
   auto cap_col_r = reference.column_by_name("market_cap");
@@ -44,7 +49,6 @@ atx::core::Result<RefSpans> reference_spans(const Dataset &reference, const Data
   const atx::usize ref_ni = reference.num_instruments();
   const std::span<const InstKey> price_insts = price.instruments();
   const std::span<const InstKey> ref_insts = reference.instruments();
-  const std::span<const DateKey> ref_dates = reference.dates();
 
   RefSpans out;
   out.market_cap.resize(price_ni, std::numeric_limits<atx::f64>::quiet_NaN());
@@ -53,7 +57,7 @@ atx::core::Result<RefSpans> reference_spans(const Dataset &reference, const Data
   // Resolve the as-of row index once (loop-invariant). nullopt => as_of_date
   // precedes all reference dates: the defaults (NaN / default_group) are already
   // set, so we return immediately without scanning instruments.
-  const std::optional<atx::usize> maybe_row = as_of_index(ref_dates, as_of_date);
+  ATX_TRY(const auto maybe_row, reference.available_as_of_index(as_of_date));
   if (!maybe_row.has_value()) {
     return atx::core::Ok(std::move(out));
   }

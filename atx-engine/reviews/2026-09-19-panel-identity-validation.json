@@ -1,0 +1,1195 @@
+{
+  "date": "2026-09-19",
+  "scope": "Equity platform checkpoint 4: exact panel axes, content provenance, and pipeline parent binding",
+  "status": "passed_with_one_documented_skip",
+  "goal_status": "active",
+  "build": {
+    "preset": "equity-dev",
+    "type": "Debug",
+    "compiler": "clang-cl 18.1.8",
+    "targets": [
+      "atx-engine-data-tests",
+      "atx-impl-tests",
+      "atx-impl"
+    ],
+    "translation_unit_checks": [
+      "stage_optimize.cpp",
+      "panel_pipeline.cpp"
+    ],
+    "dependencies": "Existing classic vcpkg Arrow 24.0.0 / GoogleTest 1.17.0 and cached nlohmann_json; pinned manifest not resolved",
+    "configured_source_revision": "0b27287f4a5553b8906b6c4934c03956551440c7-dirty",
+    "revision_is_not_complete_source_identity": true
+  },
+  "ctest": {
+    "selected": 94,
+    "passed": 93,
+    "failed": 0,
+    "skipped": 1,
+    "wall_seconds": 32.48,
+    "new_cases_passed": 35,
+    "new_cases": [
+      "DataHistoryPanel.IdentityAndNonPrefixCompactionPreserveLargeSecurityIds",
+      "DataHistoryPanel.NoncanonicalOrUnrepresentableSecurityIdsFailAtHistoryBoundary",
+      "IndexedHistoryPanel.ActualTimesDetermineAxesAndSelectedSources",
+      "IndexedHistoryPanel.DisjointSameTimeCellsMergeWithoutPaddingOverwrite",
+      "IndexedHistoryPanel.DuplicatePresentCellsRejectEvenWhenValuesMatchAndUniverseIsZero",
+      "IndexedHistoryPanel.InvalidSourceTimeAxesAreRejectedBeforeSorting",
+      "DataUniverse.InvalidGicsUsesValidSicWithoutUnsafeConversion",
+      "DataUniverse.InvalidGicsAndSicRemainUnknownAndFailSectorRequirement",
+      "DataUniverse.IntegralSectorBoundsAndGicsPreferenceArePreserved",
+      "PanelArtifactTest.RoundTripPreservesApnlBytesExactAxesAndDeterministicIdentity",
+      "PanelArtifactTest.EveryIdentityComponentChangesTheArtifactDespiteIdenticalPayload",
+      "PanelArtifactTest.MissingAndTamperedManifestsNeverFallBackToLegacyPayload",
+      "PanelArtifactTest.PayloadTamperingAndOversizedHeaderAreRejectedBeforeNumericRead",
+      "PanelArtifactTest.InvalidAxesSourceIdsAndParentRolesFailBeforePublication",
+      "PanelArtifactTest.ExistingAndInterruptedOutputsCannotBeOverwritten",
+      "PanelArtifactTest.ExactSignedDateBoundariesAndDifferentShapesAreChecked",
+      "PanelArtifactTest.ExcessiveManifestSizeAndDepthAreRejected",
+      "PanelPipeline.MissingManifestRequiresExplicitLegacyDiagnosticMode",
+      "PanelPipeline.OptimizationRejectsEqualShapeWithSwappedSecurityIdentities",
+      "PanelPipeline.OptimizationRejectsSameAxesWithWrongResearchParent",
+      "PanelPipeline.OptimizationRejectsEqualShapeWithShiftedSessionDates",
+      "PanelPipeline.MixedKnownAndUnknownInputsNeverJoin",
+      "PanelPipeline.WeeklyBooksCarryExactDatesAndReportRejectsScheduleMutation",
+      "PanelPipeline.StageReservationPreservesPublishedCompanionBytes",
+      "PanelPipeline.OversizedScheduleIntegerReturnsErrorWithoutThrowing",
+      "AtxImplDataProvenance.BoundLoadAndAugmentedPanelPreserveExactAxes",
+      "AtxImplDataProvenance.RejectsIncompleteWrongInputAndInconsistentPreparation",
+      "AtxImplDataProvenance.ChangedInputLeavesUnpublishedReceiptAndBlocksReuse",
+      "AtxImplDataProvenance.DuplicateKeysAndExcessiveDepthFailClosed",
+      "AtxImplDataProvenance.PreparationAllowsOmittedZeroCounterEntries",
+      "AtxImplDataProvenance.RejectsTamperedSelectedSegmentEvenWithValidReceipt",
+      "AtxImplDataProvenance.MissingReceiptAllowsUnknownSourceButNeverUnlinkedPreparation",
+      "AtxImplDataProvenance.SelectedWindowBindsOnlyParticipatingSegments",
+      "AtxImplDataProvenance.IncompleteIngestionNeverBecomesUnknownSource",
+      "AtxImplDataProvenance.InvalidConfigurationAndIncrementalFailBeforePublication"
+    ],
+    "skipped_cases": [
+      "DataUniverse.SurvivorshipCaveatDocumentedOrDeferred"
+    ],
+    "skip_reason": "Existing deferred survivorship-documentation check; no survivorship validation",
+    "suites": {
+      "AtxImplCombine": {
+        "passed": 3
+      },
+      "AtxImplDataProvenance": {
+        "passed": 10
+      },
+      "AtxImplDiscover": {
+        "passed": 1
+      },
+      "AtxImplE2E": {
+        "passed": 2
+      },
+      "AtxImplLoad": {
+        "passed": 4
+      },
+      "AtxImplOptimize": {
+        "passed": 2
+      },
+      "AtxImplPanel": {
+        "passed": 5
+      },
+      "AtxImplProvenanceDigest": {
+        "passed": 3
+      },
+      "AtxImplSweep": {
+        "passed": 1
+      },
+      "DataE2EByoCapstone": {
+        "passed": 1
+      },
+      "DataHistoryPanel": {
+        "passed": 9
+      },
+      "DataHistoryTri": {
+        "passed": 3
+      },
+      "DataOratsHistory": {
+        "passed": 16
+      },
+      "DataUniverse": {
+        "passed": 9,
+        "skipped": 1
+      },
+      "IndexedHistoryPanel": {
+        "passed": 4
+      },
+      "MetabookStageBoundary": {
+        "passed": 1
+      },
+      "PanelArtifactTest": {
+        "passed": 8
+      },
+      "PanelPipeline": {
+        "passed": 8
+      },
+      "ReportCapacity": {
+        "passed": 1
+      },
+      "StageReportBorrow": {
+        "passed": 2
+      }
+    }
+  },
+  "native_executable": {
+    "path": "build-equity/bin/atx-impl.exe",
+    "sha256": "38dc79352e4a117938d67ae6b36b8846741eb44659c60d9ce3305ef1a3851c55",
+    "bytes": 11347456
+  },
+  "preparation_receipt": {
+    "path": "atx-engine/reviews/2026-09-19-tbltickerhistory-preparation.json",
+    "sha256": "c32f5b23dd23fac1f8292e5c94086838820e72e97c2ba2273209442e94bf77d7",
+    "bytes": 3301
+  },
+  "previous_numeric_validation_receipt": {
+    "path": "atx-engine/reviews/2026-09-19-tbltickerhistory-validation.json",
+    "sha256": "cb232cdb9c67ea8e44bacef5a9e4343c4c99670b7229675f845dd3c2bc1564d7",
+    "bytes": 35573
+  },
+  "ingestion_receipt": {
+    "path": "data/tickerhistory_identified_20260919/segments/_ingestion.manifest.json",
+    "sha256": "70df9e7e26c5dd26cca6882c594f277d7c849053e75e48b34985b66a529a80af",
+    "bytes": 6313
+  },
+  "ingestion_input": {
+    "filename": "accepted.zip",
+    "sha256": "907d877b4bbd11db6dc6d86bf5fc6cad92fc891fdadff16adfeb9ba6daa85c07",
+    "size_bytes": 44080207
+  },
+  "ingestion_preparation_binding": {
+    "accepted_sha256": "907d877b4bbd11db6dc6d86bf5fc6cad92fc891fdadff16adfeb9ba6daa85c07",
+    "manifest_sha256": "82312b38f3197cdbf383261c584b568fb635984af9401f16337d7da1bf8c5422",
+    "original_source_sha256": "7d2b7a615a08ef3b8686608eda384c4e30e2ce23bdee294ea141b3c9334acd8f",
+    "policy_version": "tickerhistory-qa-v1"
+  },
+  "ingestion_recipe": {
+    "created_at_nanos": "0",
+    "date_order": "ascending-date-groups",
+    "dates_written": 31,
+    "distinct_securities": 12737,
+    "duplicate_positive_date_id": "reject-before-sector-filter",
+    "exclude_no_sector": false,
+    "executable_sha256": "38dc79352e4a117938d67ae6b36b8846741eb44659c60d9ce3305ef1a3851c55",
+    "historical_availability": "unknown-archive-snapshot",
+    "instrument_type_eligibility": "unknown",
+    "min_date_nanos": "1777593600000000000",
+    "positive_security_id_required": true,
+    "rows_filtered": 0,
+    "rows_kept": 372014,
+    "rows_malformed": 0,
+    "rows_read": 372014,
+    "version": "tickerhistory-native-load-v1"
+  },
+  "native_stages": {
+    "load": {
+      "exit_code": 0,
+      "observed_wall_seconds": 12.7795041,
+      "terminal_measurement_source": "native process completion tool transcript",
+      "log": {
+        "path": "build-equity/iteration4-native-load.log",
+        "sha256": "73a030c848cd8ec04aa30780c70ef63e8446eb828c4e202703d16c733a6be31f",
+        "bytes": 632
+      }
+    },
+    "panel": {
+      "exit_code": 0,
+      "observed_wall_seconds": 9.5408828,
+      "terminal_measurement_source": "native process completion tool transcript",
+      "log": {
+        "path": "build-equity/iteration4-native-panel.log",
+        "sha256": "cf0766469cb6625da6a576a01588403566e7285bfb4c7a8ec141985122e4b98a",
+        "bytes": 544
+      }
+    },
+    "panel-repeat": {
+      "exit_code": 0,
+      "observed_wall_seconds": 9.5488956,
+      "terminal_measurement_source": "native process completion tool transcript",
+      "log": {
+        "path": "build-equity/iteration4-native-panel-repeat.log",
+        "sha256": "cf0766469cb6625da6a576a01588403566e7285bfb4c7a8ec141985122e4b98a",
+        "bytes": 544
+      }
+    },
+    "combine": {
+      "exit_code": 0,
+      "observed_wall_seconds": 0.332766,
+      "terminal_measurement_source": "log",
+      "log": {
+        "path": "build-equity/iteration4-native-combine.log",
+        "sha256": "db168d64dc5281a289b02791176f7ed86bb8e82a781e7b3da29716d4a1e5d363",
+        "bytes": 538
+      }
+    },
+    "optimize": {
+      "exit_code": 0,
+      "observed_wall_seconds": 0.4334679,
+      "terminal_measurement_source": "log",
+      "log": {
+        "path": "build-equity/iteration4-native-optimize.log",
+        "sha256": "b4341d08fe113d2fc56837520866952573d57a657463c07dadcfe4cf14d9ee70",
+        "bytes": 456
+      }
+    },
+    "report": {
+      "exit_code": 0,
+      "observed_wall_seconds": 0.547779,
+      "terminal_measurement_source": "log",
+      "log": {
+        "path": "build-equity/iteration4-native-report.log",
+        "sha256": "8eaa93229a2710eb7f248a8e118643446820ecaac01321e060685a42982eaadc",
+        "bytes": 1120
+      }
+    }
+  },
+  "native_artifacts": {
+    "panel.bin": {
+      "payload": {
+        "path": "data/tickerhistory_identified_20260919/panel.bin",
+        "sha256": "4cf238d5ea396ead5cda5c5742f55ea93420346f82b56ada5d991c117eaaab6e",
+        "bytes": 640668
+      },
+      "manifest": {
+        "path": "data/tickerhistory_identified_20260919/panel.bin.manifest.json",
+        "sha256": "ddd2bb2d72b15d47c0ceee7eb3e0e8384ac536fd8e2d15a6d7b413b58758574d",
+        "bytes": 15097
+      },
+      "artifact_id": "ecf0c10bbc12463d67befda20eea878021da350ba83aac67d4235cf5b27e214b",
+      "shape": {
+        "dates": "31",
+        "fields": [
+          "close",
+          "raw_close",
+          "volume",
+          "high",
+          "low",
+          "open",
+          "market_cap",
+          "sector",
+          "earnFlag",
+          "atmCenI_21d",
+          "atmCenI_126d",
+          "nEarnCnt_5d"
+        ],
+        "instruments": "213"
+      },
+      "recipe": "{\"augmentation\":{\"adv_windows\":[],\"dollar_volume_basis\":\"adjusted-close*raw-volume-research-proxy\",\"enabled\":false},\"compact_to_universe\":true,\"compaction\":\"keep-original-order-if-ever-in-universe-in-selected-window\",\"end_exclusive_nanos\":\"1781568000000000000\",\"historical_availability\":\"unknown-archive-snapshot\",\"historical_vintages_verified\":false,\"ingestion_content_binding_verified\":true,\"instrument_type_eligibility\":\"unknown-includes-possible-funds-and-other-types\",\"invalid_price_factor_or_product\":\"NaN-gap-next-valid-cell-independent\",\"market_cap\":\"raw-close*reported-shares-no-share-revision-validation\",\"original_source_binding\":\"declared-by-bound-preparation-manifest-not-authenticated\",\"other_fields\":\"sector-and-earnings-options-columns-pass-through\",\"preparation_content_binding_verified\":true,\"producer_executable_sha256\":\"38dc79352e4a117938d67ae6b36b8846741eb44659c60d9ce3305ef1a3851c55\",\"raw_close\":\"unadjusted-as-traded\",\"research_ohlc\":\"raw-OHLC*cumulReturnFactor-pointwise\",\"session_keys\":\"session-label-not-availability-or-execution-time\",\"start_inclusive_nanos\":\"1777593600000000000\",\"todayTicker\":\"not-used-for-identity-or-universe\",\"universe\":{\"adv_basis\":\"raw_close*raw_volume\",\"adv_missing\":\"full-trailing-window-any-NaN-invalid\",\"adv_window_bars\":21,\"current_session_data_included\":true,\"min_adv_usd\":5000000.0,\"min_mktcap_usd\":0.0,\"min_raw_price_exclusive\":1.0,\"require_sector\":false,\"top_n_by_adv\":200,\"top_n_tie_break\":\"original-instrument-index\"},\"version\":\"tickerhistory-panel-v2-identified\",\"volume\":\"raw-reported-volume-no-total-return-factor-rescaling\"}",
+      "parents": [
+        {
+          "role": "ingestion_input_zip",
+          "sha256": "907d877b4bbd11db6dc6d86bf5fc6cad92fc891fdadff16adfeb9ba6daa85c07"
+        },
+        {
+          "role": "ingestion_manifest",
+          "sha256": "70df9e7e26c5dd26cca6882c594f277d7c849053e75e48b34985b66a529a80af"
+        },
+        {
+          "role": "preparation_declared_original_zip",
+          "sha256": "7d2b7a615a08ef3b8686608eda384c4e30e2ce23bdee294ea141b3c9334acd8f"
+        },
+        {
+          "role": "preparation_manifest",
+          "sha256": "82312b38f3197cdbf383261c584b568fb635984af9401f16337d7da1bf8c5422"
+        },
+        {
+          "role": "producer_executable",
+          "sha256": "38dc79352e4a117938d67ae6b36b8846741eb44659c60d9ce3305ef1a3851c55"
+        },
+        {
+          "role": "segment:2026-05-01.seg",
+          "sha256": "60be88c7ba5fdc9d4b2fdbcb3ec94d3c0b6f8cbb22bf897e830da6efcb21e7c5"
+        },
+        {
+          "role": "segment:2026-05-04.seg",
+          "sha256": "62d0e6cf4e92f66da1d75695e566601f743c31f7f158bd3e64a6fe3f84bc451d"
+        },
+        {
+          "role": "segment:2026-05-05.seg",
+          "sha256": "fcdce6afc764e24b1c3f42a419ce6b3b2b8dc4bf790b80f6b86ba809bf13658e"
+        },
+        {
+          "role": "segment:2026-05-06.seg",
+          "sha256": "c5c2b00e5581768bed39b5405c59196be5f1ec4a5849a8ac94535b622b8639db"
+        },
+        {
+          "role": "segment:2026-05-07.seg",
+          "sha256": "9c3e235493249fa4377dbaacc32592a5d5cb24037b4434f528c9401d95d2f7a7"
+        },
+        {
+          "role": "segment:2026-05-08.seg",
+          "sha256": "8d889f247b54a6664f4662fa5847798664064b8f41eec415897c62fc77b0202d"
+        },
+        {
+          "role": "segment:2026-05-11.seg",
+          "sha256": "cb9e5de01ce09ba913a590d41dd23117471e8d6e0eb15d1d626d69ca96e57642"
+        },
+        {
+          "role": "segment:2026-05-12.seg",
+          "sha256": "fe71c453eb2f29a69b3e4fc19ce32b85b2f46facd23e0a6a54622a0ebde2ec7e"
+        },
+        {
+          "role": "segment:2026-05-13.seg",
+          "sha256": "da09cbce5f50730259b7d49d6b681f4e54fdbecc9986f67e9c04d9ab91cc905a"
+        },
+        {
+          "role": "segment:2026-05-14.seg",
+          "sha256": "fbbb8ccebe52470a5b28cf267ded1743a26339c977924aefdf6496bb9d70a1b6"
+        },
+        {
+          "role": "segment:2026-05-15.seg",
+          "sha256": "c4802dcc90b611459f5bc114e8d6c339f298e9c660fd862247a239d1940e46ae"
+        },
+        {
+          "role": "segment:2026-05-18.seg",
+          "sha256": "8d090d48e448c508c41a5e62006ece670e6ce7ada39ff07c01326a6a7c82f5ed"
+        },
+        {
+          "role": "segment:2026-05-19.seg",
+          "sha256": "74a7315697b3db2e1c9a3ecceb9da6ce08b9875bc0acfd2782f5fb21ffbef9c6"
+        },
+        {
+          "role": "segment:2026-05-20.seg",
+          "sha256": "6f67a8275b6ca551790e7f1e3fcd0deb7f426a0c2e1c6f0d46fd47714306ca50"
+        },
+        {
+          "role": "segment:2026-05-21.seg",
+          "sha256": "f4200c88f5c2ad71f03aa6bb72523f0670cc59baa56ccdc9a1767405f352f801"
+        },
+        {
+          "role": "segment:2026-05-22.seg",
+          "sha256": "09faa6840eb6039daedb6065451b5d555d4df06442466195a576130e5888e47e"
+        },
+        {
+          "role": "segment:2026-05-26.seg",
+          "sha256": "e35c6640378bc17011483a94b0556e59f7ff58cfd8bee5fadfefd18edabdd496"
+        },
+        {
+          "role": "segment:2026-05-27.seg",
+          "sha256": "7146592407ba74ea7bb07abffe62bac7047e96cfe5b1cf01b64dc7c51c999259"
+        },
+        {
+          "role": "segment:2026-05-28.seg",
+          "sha256": "8b38cd25587d99f80af62e46272304645c4d4af384db4409211b5aa58c94ab25"
+        },
+        {
+          "role": "segment:2026-05-29.seg",
+          "sha256": "3e6f1300ba1cb3fe183e5800fb35963fd1e027fc5427265fe3d4410496914d08"
+        },
+        {
+          "role": "segment:2026-06-01.seg",
+          "sha256": "2a34adf5b3b9b7cf2dbca7dabced52b17a8c617b7cc3ac4a89571c949398657d"
+        },
+        {
+          "role": "segment:2026-06-02.seg",
+          "sha256": "1fea6d793b672841f6e82244dccddf1626fb0abcfe7baa1d701ba11ada682977"
+        },
+        {
+          "role": "segment:2026-06-03.seg",
+          "sha256": "fd447faf94fc8cae0b3faa07b1ed2163b670ded412c78886955bb42e87595773"
+        },
+        {
+          "role": "segment:2026-06-04.seg",
+          "sha256": "7db17603589a5c0bd7591623befa581ca750ebf2576b3f78357f59bfad395a09"
+        },
+        {
+          "role": "segment:2026-06-05.seg",
+          "sha256": "c60b7be8d1ee1979a1c41776094e71a27275bca532e6ec2b895694a9a0b32e6f"
+        },
+        {
+          "role": "segment:2026-06-08.seg",
+          "sha256": "a73fdbc7544f01bb8270c3cf1ed82bce4dacb30cb403732985b843d1f8986024"
+        },
+        {
+          "role": "segment:2026-06-09.seg",
+          "sha256": "a78954ea5ba637e893288407777174a02ad0c69ba239422c9510443069c21c11"
+        },
+        {
+          "role": "segment:2026-06-10.seg",
+          "sha256": "fb81af5e0711c115fddef1c64f5a0eef436730a7d5eb4848515bbdd992bf60b8"
+        },
+        {
+          "role": "segment:2026-06-11.seg",
+          "sha256": "e1ce2ae4f31cd14543c880b4e7d0b1754b19e39fc19677d03286edd501b05cb6"
+        },
+        {
+          "role": "segment:2026-06-12.seg",
+          "sha256": "dbcdae685632587c2034df5d2f3f5d7322f193d55f00697e708eb1ffc776bed8"
+        },
+        {
+          "role": "segment:2026-06-15.seg",
+          "sha256": "9228290da842ca739547fdf1a692233441a7e86a8b81d6623c6677495800d984"
+        }
+      ]
+    },
+    "panel-repeat.bin": {
+      "payload": {
+        "path": "data/tickerhistory_identified_20260919/panel-repeat.bin",
+        "sha256": "4cf238d5ea396ead5cda5c5742f55ea93420346f82b56ada5d991c117eaaab6e",
+        "bytes": 640668
+      },
+      "manifest": {
+        "path": "data/tickerhistory_identified_20260919/panel-repeat.bin.manifest.json",
+        "sha256": "ddd2bb2d72b15d47c0ceee7eb3e0e8384ac536fd8e2d15a6d7b413b58758574d",
+        "bytes": 15097
+      },
+      "artifact_id": "ecf0c10bbc12463d67befda20eea878021da350ba83aac67d4235cf5b27e214b",
+      "shape": {
+        "dates": "31",
+        "fields": [
+          "close",
+          "raw_close",
+          "volume",
+          "high",
+          "low",
+          "open",
+          "market_cap",
+          "sector",
+          "earnFlag",
+          "atmCenI_21d",
+          "atmCenI_126d",
+          "nEarnCnt_5d"
+        ],
+        "instruments": "213"
+      },
+      "recipe": "{\"augmentation\":{\"adv_windows\":[],\"dollar_volume_basis\":\"adjusted-close*raw-volume-research-proxy\",\"enabled\":false},\"compact_to_universe\":true,\"compaction\":\"keep-original-order-if-ever-in-universe-in-selected-window\",\"end_exclusive_nanos\":\"1781568000000000000\",\"historical_availability\":\"unknown-archive-snapshot\",\"historical_vintages_verified\":false,\"ingestion_content_binding_verified\":true,\"instrument_type_eligibility\":\"unknown-includes-possible-funds-and-other-types\",\"invalid_price_factor_or_product\":\"NaN-gap-next-valid-cell-independent\",\"market_cap\":\"raw-close*reported-shares-no-share-revision-validation\",\"original_source_binding\":\"declared-by-bound-preparation-manifest-not-authenticated\",\"other_fields\":\"sector-and-earnings-options-columns-pass-through\",\"preparation_content_binding_verified\":true,\"producer_executable_sha256\":\"38dc79352e4a117938d67ae6b36b8846741eb44659c60d9ce3305ef1a3851c55\",\"raw_close\":\"unadjusted-as-traded\",\"research_ohlc\":\"raw-OHLC*cumulReturnFactor-pointwise\",\"session_keys\":\"session-label-not-availability-or-execution-time\",\"start_inclusive_nanos\":\"1777593600000000000\",\"todayTicker\":\"not-used-for-identity-or-universe\",\"universe\":{\"adv_basis\":\"raw_close*raw_volume\",\"adv_missing\":\"full-trailing-window-any-NaN-invalid\",\"adv_window_bars\":21,\"current_session_data_included\":true,\"min_adv_usd\":5000000.0,\"min_mktcap_usd\":0.0,\"min_raw_price_exclusive\":1.0,\"require_sector\":false,\"top_n_by_adv\":200,\"top_n_tie_break\":\"original-instrument-index\"},\"version\":\"tickerhistory-panel-v2-identified\",\"volume\":\"raw-reported-volume-no-total-return-factor-rescaling\"}",
+      "parents": [
+        {
+          "role": "ingestion_input_zip",
+          "sha256": "907d877b4bbd11db6dc6d86bf5fc6cad92fc891fdadff16adfeb9ba6daa85c07"
+        },
+        {
+          "role": "ingestion_manifest",
+          "sha256": "70df9e7e26c5dd26cca6882c594f277d7c849053e75e48b34985b66a529a80af"
+        },
+        {
+          "role": "preparation_declared_original_zip",
+          "sha256": "7d2b7a615a08ef3b8686608eda384c4e30e2ce23bdee294ea141b3c9334acd8f"
+        },
+        {
+          "role": "preparation_manifest",
+          "sha256": "82312b38f3197cdbf383261c584b568fb635984af9401f16337d7da1bf8c5422"
+        },
+        {
+          "role": "producer_executable",
+          "sha256": "38dc79352e4a117938d67ae6b36b8846741eb44659c60d9ce3305ef1a3851c55"
+        },
+        {
+          "role": "segment:2026-05-01.seg",
+          "sha256": "60be88c7ba5fdc9d4b2fdbcb3ec94d3c0b6f8cbb22bf897e830da6efcb21e7c5"
+        },
+        {
+          "role": "segment:2026-05-04.seg",
+          "sha256": "62d0e6cf4e92f66da1d75695e566601f743c31f7f158bd3e64a6fe3f84bc451d"
+        },
+        {
+          "role": "segment:2026-05-05.seg",
+          "sha256": "fcdce6afc764e24b1c3f42a419ce6b3b2b8dc4bf790b80f6b86ba809bf13658e"
+        },
+        {
+          "role": "segment:2026-05-06.seg",
+          "sha256": "c5c2b00e5581768bed39b5405c59196be5f1ec4a5849a8ac94535b622b8639db"
+        },
+        {
+          "role": "segment:2026-05-07.seg",
+          "sha256": "9c3e235493249fa4377dbaacc32592a5d5cb24037b4434f528c9401d95d2f7a7"
+        },
+        {
+          "role": "segment:2026-05-08.seg",
+          "sha256": "8d889f247b54a6664f4662fa5847798664064b8f41eec415897c62fc77b0202d"
+        },
+        {
+          "role": "segment:2026-05-11.seg",
+          "sha256": "cb9e5de01ce09ba913a590d41dd23117471e8d6e0eb15d1d626d69ca96e57642"
+        },
+        {
+          "role": "segment:2026-05-12.seg",
+          "sha256": "fe71c453eb2f29a69b3e4fc19ce32b85b2f46facd23e0a6a54622a0ebde2ec7e"
+        },
+        {
+          "role": "segment:2026-05-13.seg",
+          "sha256": "da09cbce5f50730259b7d49d6b681f4e54fdbecc9986f67e9c04d9ab91cc905a"
+        },
+        {
+          "role": "segment:2026-05-14.seg",
+          "sha256": "fbbb8ccebe52470a5b28cf267ded1743a26339c977924aefdf6496bb9d70a1b6"
+        },
+        {
+          "role": "segment:2026-05-15.seg",
+          "sha256": "c4802dcc90b611459f5bc114e8d6c339f298e9c660fd862247a239d1940e46ae"
+        },
+        {
+          "role": "segment:2026-05-18.seg",
+          "sha256": "8d090d48e448c508c41a5e62006ece670e6ce7ada39ff07c01326a6a7c82f5ed"
+        },
+        {
+          "role": "segment:2026-05-19.seg",
+          "sha256": "74a7315697b3db2e1c9a3ecceb9da6ce08b9875bc0acfd2782f5fb21ffbef9c6"
+        },
+        {
+          "role": "segment:2026-05-20.seg",
+          "sha256": "6f67a8275b6ca551790e7f1e3fcd0deb7f426a0c2e1c6f0d46fd47714306ca50"
+        },
+        {
+          "role": "segment:2026-05-21.seg",
+          "sha256": "f4200c88f5c2ad71f03aa6bb72523f0670cc59baa56ccdc9a1767405f352f801"
+        },
+        {
+          "role": "segment:2026-05-22.seg",
+          "sha256": "09faa6840eb6039daedb6065451b5d555d4df06442466195a576130e5888e47e"
+        },
+        {
+          "role": "segment:2026-05-26.seg",
+          "sha256": "e35c6640378bc17011483a94b0556e59f7ff58cfd8bee5fadfefd18edabdd496"
+        },
+        {
+          "role": "segment:2026-05-27.seg",
+          "sha256": "7146592407ba74ea7bb07abffe62bac7047e96cfe5b1cf01b64dc7c51c999259"
+        },
+        {
+          "role": "segment:2026-05-28.seg",
+          "sha256": "8b38cd25587d99f80af62e46272304645c4d4af384db4409211b5aa58c94ab25"
+        },
+        {
+          "role": "segment:2026-05-29.seg",
+          "sha256": "3e6f1300ba1cb3fe183e5800fb35963fd1e027fc5427265fe3d4410496914d08"
+        },
+        {
+          "role": "segment:2026-06-01.seg",
+          "sha256": "2a34adf5b3b9b7cf2dbca7dabced52b17a8c617b7cc3ac4a89571c949398657d"
+        },
+        {
+          "role": "segment:2026-06-02.seg",
+          "sha256": "1fea6d793b672841f6e82244dccddf1626fb0abcfe7baa1d701ba11ada682977"
+        },
+        {
+          "role": "segment:2026-06-03.seg",
+          "sha256": "fd447faf94fc8cae0b3faa07b1ed2163b670ded412c78886955bb42e87595773"
+        },
+        {
+          "role": "segment:2026-06-04.seg",
+          "sha256": "7db17603589a5c0bd7591623befa581ca750ebf2576b3f78357f59bfad395a09"
+        },
+        {
+          "role": "segment:2026-06-05.seg",
+          "sha256": "c60b7be8d1ee1979a1c41776094e71a27275bca532e6ec2b895694a9a0b32e6f"
+        },
+        {
+          "role": "segment:2026-06-08.seg",
+          "sha256": "a73fdbc7544f01bb8270c3cf1ed82bce4dacb30cb403732985b843d1f8986024"
+        },
+        {
+          "role": "segment:2026-06-09.seg",
+          "sha256": "a78954ea5ba637e893288407777174a02ad0c69ba239422c9510443069c21c11"
+        },
+        {
+          "role": "segment:2026-06-10.seg",
+          "sha256": "fb81af5e0711c115fddef1c64f5a0eef436730a7d5eb4848515bbdd992bf60b8"
+        },
+        {
+          "role": "segment:2026-06-11.seg",
+          "sha256": "e1ce2ae4f31cd14543c880b4e7d0b1754b19e39fc19677d03286edd501b05cb6"
+        },
+        {
+          "role": "segment:2026-06-12.seg",
+          "sha256": "dbcdae685632587c2034df5d2f3f5d7322f193d55f00697e708eb1ffc776bed8"
+        },
+        {
+          "role": "segment:2026-06-15.seg",
+          "sha256": "9228290da842ca739547fdf1a692233441a7e86a8b81d6623c6677495800d984"
+        }
+      ]
+    },
+    "combo.bin": {
+      "payload": {
+        "path": "data/tickerhistory_identified_20260919/combo.bin",
+        "sha256": "d6235fe00e6a5fd68fcef3a257e5fba8712120ffa1e58ab64ece9c68faab76f5",
+        "bytes": 59476
+      },
+      "manifest": {
+        "path": "data/tickerhistory_identified_20260919/combo.bin.manifest.json",
+        "sha256": "23e249958fcb219eb5ab2b377953c7aaafac4cc624d1c0b09aba2be8a8caee1d",
+        "bytes": 8731
+      },
+      "artifact_id": "e85f14c9f3598ef54724f9b382b617666162e4e7500c0c1cf81bb21c2adb9bd0",
+      "shape": {
+        "dates": "31",
+        "fields": [
+          "alpha"
+        ],
+        "instruments": "213"
+      },
+      "recipe": "stage=combine-v1\nmethod=equal\nfit_begin=0\nfit_end=24",
+      "parents": [
+        {
+          "role": "fit-boundary",
+          "sha256": "d988ed064767382047c5243d8fef38daacf3c2243ed8f9dc4149b0f15e8d7b70"
+        },
+        {
+          "role": "research",
+          "sha256": "ecf0c10bbc12463d67befda20eea878021da350ba83aac67d4235cf5b27e214b"
+        },
+        {
+          "role": "weights",
+          "sha256": "1576fa60372eca741d966dbaf62af1db61215dd83c6acc60ec05ce45f4e3a233"
+        }
+      ]
+    },
+    "books.bin": {
+      "payload": {
+        "path": "data/tickerhistory_identified_20260919/books.bin",
+        "sha256": "55a9efc011f9d5c54c27a3a7ddac3b3fe8d21077f5337cc24e0aa6c820bfa685",
+        "bytes": 13469
+      },
+      "manifest": {
+        "path": "data/tickerhistory_identified_20260919/books.bin.manifest.json",
+        "sha256": "462b8d4624fbd8f0811a3f4ea6ffcd32d6381b16d27677fdbaea6080905b037d",
+        "bytes": 8004
+      },
+      "artifact_id": "cb3cb7ca5af37f9b3fad1742e3a1df537c91a7473a4a434b292830e2596fc603",
+      "shape": {
+        "dates": "7",
+        "fields": [
+          "weight"
+        ],
+        "instruments": "213"
+      },
+      "recipe": "stage=optimize-v1\nstep=5",
+      "parents": [
+        {
+          "role": "book-schedule",
+          "sha256": "2a98da74664fca6c79c0e8ec5a889b715fec3b08a35a60c8901ee7f0c44e1608"
+        },
+        {
+          "role": "combo",
+          "sha256": "e85f14c9f3598ef54724f9b382b617666162e4e7500c0c1cf81bb21c2adb9bd0"
+        },
+        {
+          "role": "research",
+          "sha256": "ecf0c10bbc12463d67befda20eea878021da350ba83aac67d4235cf5b27e214b"
+        }
+      ]
+    }
+  },
+  "independent_verification": {
+    "status": "passed",
+    "source_instruments": 12737,
+    "research_dates": 31,
+    "research_instruments": 213,
+    "research_artifact_id": "ecf0c10bbc12463d67befda20eea878021da350ba83aac67d4235cf5b27e214b",
+    "panel_sha256": "4cf238d5ea396ead5cda5c5742f55ea93420346f82b56ada5d991c117eaaab6e",
+    "numeric_bytes_equal_checkpoint3": true,
+    "repeat_artifact_id_equal": true,
+    "original_compaction_mapping_verified": true,
+    "ingestion_segments_verified": 31,
+    "historical_vintages_verified": false,
+    "script_sha256": "d8e2bfcb3ec20a3f33558b0c4cfcbe170c2a43f0dc310c3bc9c718a348ea8c88",
+    "scope": "Software artifact identity and content binding; no historical availability or investment-performance certification.",
+    "combo_artifact_id": "e85f14c9f3598ef54724f9b382b617666162e4e7500c0c1cf81bb21c2adb9bd0",
+    "books_artifact_id": "cb3cb7ca5af37f9b3fad1742e3a1df537c91a7473a4a434b292830e2596fc603",
+    "book_periods": [
+      0,
+      5,
+      10,
+      15,
+      20,
+      25,
+      30
+    ]
+  },
+  "peer_review": {
+    "engine_and_legacy_fixtures": "execution_intent",
+    "artifact_io_and_sector_conversion": "risk_execution_audit",
+    "ingestion_and_history_recipe": "research_audit",
+    "independent_native_axes_and_ancestry": "execution_intent",
+    "native_review_result": "17 independent integrity/axis/ancestry checks passed; no material gap found",
+    "integration_owner": "root"
+  },
+  "diagnostic_pipeline": {
+    "purpose": "Software identity and content binding only",
+    "predeclared_expressions": [
+      "rank(delta(close,2))",
+      "rank((close-open)/(high-low))"
+    ],
+    "expressions": [
+      {
+        "path": "data/tickerhistory_identified_20260919/diagnostic-alphas/momentum.dsl",
+        "sha256": "c3a80a1623ff083d3a6815a653cf4638b3015b3f1fe3c89d22451fff239cca5a",
+        "bytes": 22
+      },
+      {
+        "path": "data/tickerhistory_identified_20260919/diagnostic-alphas/range.dsl",
+        "sha256": "feae40fcf28e8d0f163faa5323a7e59202ec0c357582e460e761b70e94b7b23d",
+        "bytes": 31
+      }
+    ],
+    "combine_method": "equal",
+    "holdout_frac": 0.25,
+    "fit_end": 24,
+    "portfolio": {
+      "position_mode": true,
+      "rebalance": "weekly",
+      "gross": 1.0,
+      "name_cap": 0.02
+    },
+    "report": {
+      "aum": 1000000,
+      "borrow_bps": 0,
+      "summary": {
+        "path": "data/tickerhistory_identified_20260919/report/summary.txt",
+        "sha256": "f75090e8b168ecdbbfc34c8eac49dc0447b1bd45b2fd240ca1ca2f37cd1f0541",
+        "bytes": 858
+      },
+      "investment_metrics_accepted": false,
+      "reason": "Single-step report returns do not replay full weekly holding intervals; availability and eligibility also unverified"
+    },
+    "companions": [
+      {
+        "path": "data/tickerhistory_identified_20260919/combo.bin.meta",
+        "sha256": "d988ed064767382047c5243d8fef38daacf3c2243ed8f9dc4149b0f15e8d7b70",
+        "bytes": 76
+      },
+      {
+        "path": "data/tickerhistory_identified_20260919/combo.bin.weights.txt",
+        "sha256": "1576fa60372eca741d966dbaf62af1db61215dd83c6acc60ec05ce45f4e3a233",
+        "bytes": 210
+      },
+      {
+        "path": "data/tickerhistory_identified_20260919/books.bin.meta.txt",
+        "sha256": "2a98da74664fca6c79c0e8ec5a889b715fec3b08a35a60c8901ee7f0c44e1608",
+        "bytes": 338
+      }
+    ]
+  },
+  "evidence": [
+    {
+      "path": "build-equity/iteration4-build.log",
+      "sha256": "455ab15358be30203368d3cc26bac83536b9524f11189c267bf87c9d994ae2cd",
+      "bytes": 22126
+    },
+    {
+      "path": "build-equity/iteration4-check-optimize.log",
+      "sha256": "67ca609a71877d49607da3dcd208fe618e9985c5a9dffb5d709aacc79c87cff3",
+      "bytes": 3634
+    },
+    {
+      "path": "build-equity/iteration4-check-pipeline.log",
+      "sha256": "a28a2320a0e46a5754cc9ae4197025b9db927e54fdb8916297b3986ac77f0b93",
+      "bytes": 582
+    },
+    {
+      "path": "build-equity/iteration4-filter.txt",
+      "sha256": "cb3bd618cc0d7560fc07f5033e94a870619765ff569e9790c6a00a2755a45f94",
+      "bytes": 792
+    },
+    {
+      "path": "build-equity/iteration4-final-build.log",
+      "sha256": "af70835b67fe77826c867da46aa4a2322c63fdea026d907c8ed0a88a6447d5ec",
+      "bytes": 1842
+    },
+    {
+      "path": "build-equity/iteration4-native-combine.log",
+      "sha256": "db168d64dc5281a289b02791176f7ed86bb8e82a781e7b3da29716d4a1e5d363",
+      "bytes": 538
+    },
+    {
+      "path": "build-equity/iteration4-native-load.log",
+      "sha256": "73a030c848cd8ec04aa30780c70ef63e8446eb828c4e202703d16c733a6be31f",
+      "bytes": 632
+    },
+    {
+      "path": "build-equity/iteration4-native-optimize.log",
+      "sha256": "b4341d08fe113d2fc56837520866952573d57a657463c07dadcfe4cf14d9ee70",
+      "bytes": 456
+    },
+    {
+      "path": "build-equity/iteration4-native-panel-repeat.log",
+      "sha256": "cf0766469cb6625da6a576a01588403566e7285bfb4c7a8ec141985122e4b98a",
+      "bytes": 544
+    },
+    {
+      "path": "build-equity/iteration4-native-panel.log",
+      "sha256": "cf0766469cb6625da6a576a01588403566e7285bfb4c7a8ec141985122e4b98a",
+      "bytes": 544
+    },
+    {
+      "path": "build-equity/iteration4-native-report.log",
+      "sha256": "8eaa93229a2710eb7f248a8e118643446820ecaac01321e060685a42982eaadc",
+      "bytes": 1120
+    },
+    {
+      "path": "build-equity/iteration4-tests.log",
+      "sha256": "d57193efd94b4dc837a6cdbe1138d1271b5b6e5a13899931c2ab43e3691cac4d",
+      "bytes": 40958
+    },
+    {
+      "path": "build-equity/iteration4-tests.xml",
+      "sha256": "4c49aa3db808233273e74d13595c7d9c60c08e291be04e579a11ab90cea4c249",
+      "bytes": 86425
+    },
+    {
+      "path": "build-equity/audits/verify_identified_pipeline.py",
+      "sha256": "d8e2bfcb3ec20a3f33558b0c4cfcbe170c2a43f0dc310c3bc9c718a348ea8c88",
+      "bytes": 6214
+    },
+    {
+      "path": "build-equity/audits/iteration4-native-verification.json",
+      "sha256": "700befe18b1c73e8436d0e9a66765ba2430b632a983fd53214c58fde4c373eba",
+      "bytes": 999
+    },
+    {
+      "path": "build-equity/audits/write_iteration4_receipt.py",
+      "sha256": "fcef72c61f424483c2a2ad5a415d137749d4164f04681545d2c3d70191edcec0",
+      "bytes": 10710
+    }
+  ],
+  "measured_sources": [
+    {
+      "path": "atx-engine/include/atx/engine/alpha/segment_panel.hpp",
+      "sha256": "b4a0051e50c3906e767d570c38b19d69b7a08e7071a9fdfc4cbff9d064e94c41",
+      "bytes": 6656
+    },
+    {
+      "path": "atx-engine/include/atx/engine/data/history_panel.hpp",
+      "sha256": "97cccb329ed9651e0974f47d4659393a3727493b7b25f2f51fe2d39a03d3caa2",
+      "bytes": 10962
+    },
+    {
+      "path": "atx-engine/src/alpha/segment_panel.cpp",
+      "sha256": "98ad8ad1a53145bd3f3160d7670394cdc97404dee4a7fb776e903d2e89d9cce1",
+      "bytes": 12137
+    },
+    {
+      "path": "atx-engine/src/data/history_panel.cpp",
+      "sha256": "0318a210157d14ec542d9f2c34c92652534cfe7a6d2e555db43a4090ab5c8177",
+      "bytes": 17438
+    },
+    {
+      "path": "atx-engine/src/data/universe.cpp",
+      "sha256": "05fcc7fb9ae05a286eb67a95af1d00e558e8cf81f384118e50de20f0a04ea92b",
+      "bytes": 12942
+    },
+    {
+      "path": "atx-engine/tests/data/data_history_panel_test.cpp",
+      "sha256": "87f22cad961436b7c8c443f75b957f425b0aa74cc08affe9b551887673c8a3e0",
+      "bytes": 21164
+    },
+    {
+      "path": "atx-engine/tests/data/data_universe_test.cpp",
+      "sha256": "3baaa7ebd0576ccdc882b52260068376343a0a2525f0c79b39a09b1f9105647f",
+      "bytes": 19479
+    },
+    {
+      "path": "atx-impl/CMakeLists.txt",
+      "sha256": "b04c69686e153cb15f2c17560d65b9e928802ba2dd8f3c5fd5021094428fbd94",
+      "bytes": 3272
+    },
+    {
+      "path": "atx-impl/src/append_history_panel.cpp",
+      "sha256": "1fa579e6d5104c3e73ca41db921cd5fdd609507c6f61235ded77c9553ef326d3",
+      "bytes": 8472
+    },
+    {
+      "path": "atx-impl/src/config.cpp",
+      "sha256": "2f168a5400e021bc8bae6eb4af6f51d85c89bc207dcce231f3bdc2c6741d5d70",
+      "bytes": 32554
+    },
+    {
+      "path": "atx-impl/src/config.hpp",
+      "sha256": "be4b9d1e78193de140dac9c87d5d36987e0c0fd706dbbb377fb4d36416c940ee",
+      "bytes": 34675
+    },
+    {
+      "path": "atx-impl/src/dispatch.cpp",
+      "sha256": "36a43c50ea34bf18a95c480a7c14895a0193ad5bc322159ba878e038f6e58514",
+      "bytes": 5246
+    },
+    {
+      "path": "atx-impl/src/panel_artifact.cpp",
+      "sha256": "0a593263853d3dd01b8178b3ff465708502108539b4bf563fc47849a6fb1563b",
+      "bytes": 21662
+    },
+    {
+      "path": "atx-impl/src/panel_artifact.hpp",
+      "sha256": "3e7517bf8cf3de98a463bff32e44ee3dc42b4188312f65203ba6520b79cff695",
+      "bytes": 3435
+    },
+    {
+      "path": "atx-impl/src/panel_pipeline.cpp",
+      "sha256": "70025be6bcbb02a62bf8e61850f93607701eb22bdce969ca58a95a158cfa209a",
+      "bytes": 7089
+    },
+    {
+      "path": "atx-impl/src/panel_pipeline.hpp",
+      "sha256": "c07251a6ef122d00f502de51bc01fedb35094f561482e4d63b1975ce5cbda8db",
+      "bytes": 2284
+    },
+    {
+      "path": "atx-impl/src/stage_combine.cpp",
+      "sha256": "9e050b5b0dfbbbb27d3ca491adfa99da5583d261e65ea84785bd4bd242a5033e",
+      "bytes": 90563
+    },
+    {
+      "path": "atx-impl/src/stage_data_provenance.cpp",
+      "sha256": "7e86772dfd1d93541d64b35e1f0b39ec6434eb5d102780a1f3900705d60c578f",
+      "bytes": 19973
+    },
+    {
+      "path": "atx-impl/src/stage_data_provenance.hpp",
+      "sha256": "2b683c10a8396e4103c7fef254c5a426770c8e57d553f0ee78d8bafdc0f80ec8",
+      "bytes": 2993
+    },
+    {
+      "path": "atx-impl/src/stage_discover.cpp",
+      "sha256": "3f2cb0c46ead98eb2a14715d78af44d91dc182f9f304179070c7031c1c331af1",
+      "bytes": 64564
+    },
+    {
+      "path": "atx-impl/src/stage_load.cpp",
+      "sha256": "34ebdbce04a1e0ef945ccab1c88d9d652d5a74f304e0b0fc0a77680be09bdb66",
+      "bytes": 4016
+    },
+    {
+      "path": "atx-impl/src/stage_metabook.cpp",
+      "sha256": "8b68a68f24bab0a24d01dcd9dbaff06ff038aaadfd38f3cf9dff7ff4fb452b86",
+      "bytes": 40583
+    },
+    {
+      "path": "atx-impl/src/stage_optimize.cpp",
+      "sha256": "30cc15ffdeb7d1fe2258a8dfc1724241b91588ac1768fafad4c36a2771c7f5a7",
+      "bytes": 29411
+    },
+    {
+      "path": "atx-impl/src/stage_panel.cpp",
+      "sha256": "0f3d31d2003e1d7baf56edbb37639501f9b4bf9b6dacbe5e723eaa0492a01806",
+      "bytes": 12041
+    },
+    {
+      "path": "atx-impl/src/stage_report.cpp",
+      "sha256": "f20f6326106e0bbcc4e32aef6d052db7f56db155dc5c9424853d263ef2e02b88",
+      "bytes": 44066
+    },
+    {
+      "path": "atx-impl/src/stage_sweep.cpp",
+      "sha256": "48e1a6f0e3c2a6e063dc87169ce7df4753427837c48b1c6a00f0785b9492e9f8",
+      "bytes": 22803
+    },
+    {
+      "path": "atx-impl/tests/CMakeLists.txt",
+      "sha256": "1e78c634a6e9d4175aff6a44ebc915fb0e5626fbeda04f89f3f1ffa26f67f47d",
+      "bytes": 1571
+    },
+    {
+      "path": "atx-impl/tests/combine_test.cpp",
+      "sha256": "b4cae31090823e294af411d916e96c1e36e553b752557206c538a464375e0621",
+      "bytes": 109509
+    },
+    {
+      "path": "atx-impl/tests/conviction_sizing_test.cpp",
+      "sha256": "e3afc88a2a6f028950c2538c0065040f537577ab098d531a0ae70d9ce744dda0",
+      "bytes": 27433
+    },
+    {
+      "path": "atx-impl/tests/cost_bps_test.cpp",
+      "sha256": "20a71ab36e4c7a3dac1c203a9e6746fff1b9536c85c6d288b800476dc90fbece",
+      "bytes": 20448
+    },
+    {
+      "path": "atx-impl/tests/discover_test.cpp",
+      "sha256": "68d4606bcc3adf12e5affd4fea0e01185d2022da467efc3f559785948529a8db",
+      "bytes": 98627
+    },
+    {
+      "path": "atx-impl/tests/e2e_pipeline_test.cpp",
+      "sha256": "676c19f94b3bff85213d3641101444722e8c160ed9c9dacb86065ed175d37071",
+      "bytes": 45199
+    },
+    {
+      "path": "atx-impl/tests/metabook_netting_test.cpp",
+      "sha256": "6701d19b90fa736020e9a61134f60b8fd7b88ad28a9bcc1ba9e022fb8254806a",
+      "bytes": 15497
+    },
+    {
+      "path": "atx-impl/tests/metabook_test.cpp",
+      "sha256": "16ef35a1c11ecbbe0bae36c3a963e7f2e53093cc89a400c4c4e8bda9adc89e54",
+      "bytes": 37454
+    },
+    {
+      "path": "atx-impl/tests/optimize_test.cpp",
+      "sha256": "562e41016b9874261a297692c187115090fab2f34dc9c69c42bb2d22d3b6d85e",
+      "bytes": 38297
+    },
+    {
+      "path": "atx-impl/tests/panel_artifact_test.cpp",
+      "sha256": "e9198f160bc06562662bd817b67d7d32e0defce4c9e62f180fa402d65f86b99e",
+      "bytes": 11375
+    },
+    {
+      "path": "atx-impl/tests/panel_pipeline_test.cpp",
+      "sha256": "0c64cbaf8039349366a4bd1b2aed28d9f803504bcc8f0ad485819b44768d0521",
+      "bytes": 9863
+    },
+    {
+      "path": "atx-impl/tests/panel_test.cpp",
+      "sha256": "3b4c0b80a672039d8f7ebf5d1fcc02c1ba6552978a0d5e71327e755da2081417",
+      "bytes": 19772
+    },
+    {
+      "path": "atx-impl/tests/provenance_digest_test.cpp",
+      "sha256": "7d4379744764734f28b16f3f4cadd7cb07b83d32a4a3cb22bb212a480722efe1",
+      "bytes": 16198
+    },
+    {
+      "path": "atx-impl/tests/provenance_test.cpp",
+      "sha256": "76f08c548f8d5bf9c77bcb6d769200230d0ac788596eea7b9d46f622b544dc7a",
+      "bytes": 12116
+    },
+    {
+      "path": "atx-impl/tests/report_capacity_test.cpp",
+      "sha256": "35788fe84295f2e12ce9bd180f68975a488a9f4c5bec8e119a44ba46e5f53af5",
+      "bytes": 18167
+    },
+    {
+      "path": "atx-impl/tests/report_participation_test.cpp",
+      "sha256": "787aa930cf140db6fb629ac02193ac00f578f1208414701140c24ff0aabcde5f",
+      "bytes": 13047
+    },
+    {
+      "path": "atx-impl/tests/sign_deploy_test.cpp",
+      "sha256": "db31a93a14090e82ae4e0f986f83dfbb62af7f24e18b27fde1d3e1c0f7bc96b7",
+      "bytes": 15295
+    },
+    {
+      "path": "atx-impl/tests/stage_combine_cleaned_cov_test.cpp",
+      "sha256": "fa0ff1dc7f9b9adeabf2ab099c62a8b12d94948bc06c7633f78956889d10fa78",
+      "bytes": 12881
+    },
+    {
+      "path": "atx-impl/tests/stage_combine_determinism_battery_test.cpp",
+      "sha256": "f08368221978aae24998d019d13c17d59622d99183321897fa15273ff45fc4ee",
+      "bytes": 14172
+    },
+    {
+      "path": "atx-impl/tests/stage_combine_participation_test.cpp",
+      "sha256": "817e4bbc545786076ae820916effb2c095b029d413b8f2120846542dcd601e4e",
+      "bytes": 13802
+    },
+    {
+      "path": "atx-impl/tests/stage_combine_riskmodel_wire_test.cpp",
+      "sha256": "68495fb3e37d85cf3f6aad9ff6416277eb1e0e7b26172f7d924e9333278147e2",
+      "bytes": 9938
+    },
+    {
+      "path": "atx-impl/tests/stage_combine_stack_test.cpp",
+      "sha256": "8a0f52ece0c3ef735f3d454f2ca082f0971189c2ca21082ebccb619322498451",
+      "bytes": 13241
+    },
+    {
+      "path": "atx-impl/tests/stage_data_provenance_test.cpp",
+      "sha256": "8cfcd71433824782aae4c6c27fdf1f24bdff13d196c282830367679ed21edeaa",
+      "bytes": 12647
+    },
+    {
+      "path": "atx-impl/tests/stage_metabook_book_turnover_test.cpp",
+      "sha256": "b32ab64102ee7f53992c6fff31336095e4fea864d05911e4d5ff6d0fc3e96f71",
+      "bytes": 9539
+    },
+    {
+      "path": "atx-impl/tests/stage_metabook_dead_alpha_wire_test.cpp",
+      "sha256": "2bf2ecc98863ed8211045d480d099d43d98e41e7697ce37d60cc54bd6f5baca0",
+      "bytes": 12424
+    },
+    {
+      "path": "atx-impl/tests/stage_metabook_riskmodel_wire_test.cpp",
+      "sha256": "99516c0ddf60e37115470b7bfc46dbf72e837732ac58bf316fe1b216619d6999",
+      "bytes": 13535
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_book_turnover_test.cpp",
+      "sha256": "99a3b6f6fdddd653e6433ba9d5a50adf782954bcd163e3f8fad1b05eaafdebca",
+      "bytes": 10501
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_dead_alpha_determinism_test.cpp",
+      "sha256": "fccd9dc4148e00f30dd9e32e63c5a091edc8ceb1b5be68aeac9f0d38ce06a2e1",
+      "bytes": 13390
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_dead_alpha_wire_test.cpp",
+      "sha256": "546a76181d681be50ec7a7691352106aae7e495df7e58811f9e877603800d2e1",
+      "bytes": 14522
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_gp_trading_test.cpp",
+      "sha256": "4966422014e5ff7fd131958c883f33ba70a1279eb602688609f325e79a41b3bf",
+      "bytes": 14597
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_neutralize_test.cpp",
+      "sha256": "ae0fc36af93a415a563c8b8c0c7fe15ab4050182c133c4533cb86e0fafa033c1",
+      "bytes": 15881
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_participation_cap_test.cpp",
+      "sha256": "c6b202f26d5f1894a91e5b1fd429d8fa4e4bf94c5d16e4ee434ef140edead51c",
+      "bytes": 11187
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_pit_test.cpp",
+      "sha256": "85e73c169897a383283d8ca0114ec70d97c1a5efc80c99e0576179213c64a774",
+      "bytes": 11281
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_riskmodel_test.cpp",
+      "sha256": "dc44ce8597912d434b885b2fae77744401cfb2e03d19f480b6762c13ca3af58e",
+      "bytes": 13592
+    },
+    {
+      "path": "atx-impl/tests/stage_report_borrow_test.cpp",
+      "sha256": "4d0b64e8aac26ae57e564cd77f36e1bcc59ca84cc8379a84262d692a417f1328",
+      "bytes": 9749
+    },
+    {
+      "path": "atx-impl/tests/stage_report_capacity_curve_test.cpp",
+      "sha256": "3365bd05fc9d55936ac77c8b25fc583040a3bc800294406b4484b239f49e7b74",
+      "bytes": 18215
+    },
+    {
+      "path": "atx-impl/tests/stage_run_synthetic_smoke_test.cpp",
+      "sha256": "4357f4f1a6cff96cb319a1dda8b75edb42e57dd16477ae98c385b2abb24105ba",
+      "bytes": 18062
+    },
+    {
+      "path": "atx-impl/tests/store_discover_test.cpp",
+      "sha256": "4768b4fdcb85ac01882e817621376b445f20c886de412eddb7bdba5e9787fdc4",
+      "bytes": 17740
+    },
+    {
+      "path": "atx-impl/tests/sweep_test.cpp",
+      "sha256": "f44d5a0670cec6811fad39f05e0a558c2feefc1284ff832551fdc447db3a3577",
+      "bytes": 47185
+    }
+  ],
+  "primary_references": [
+    "https://www.w3.org/TR/prov-overview/",
+    "https://www.rfc-editor.org/rfc/rfc8785",
+    "https://eel.is/c++draft/conv.fpint",
+    "https://docs.spiderrockconnect.com/docs/next/HistoricalData/Data%20Dictionaries/TickerHistory3/"
+  ],
+  "limitations": [
+    "Session labels are not information availability or execution timestamps",
+    "Archive snapshot does not certify historical publication/revision vintages or historical shares accuracy",
+    "Price/ADV screens do not establish common-stock eligibility or historical listing membership",
+    "Current-session data contributes to the universe; a causal decision/execution contract remains required",
+    "Local content bindings do not authenticate vendor input; original ZIP SHA is bound from preparation and was not rehashed this checkpoint",
+    "Identity serialization is versioned deterministic JSON, not an RFC 8785 compliance claim",
+    "Manifest-last publication detects incomplete output; no fsync or power-loss durability claim",
+    "Full signal-source, library and resolved downstream configuration provenance is not implemented",
+    "Incremental CLI panel construction explicitly fails pending an artifact-aware append contract",
+    "Legacy numeric APIs remain available and explicit diagnostic mode does not recover their identities",
+    "No investment performance, short availability or trading capacity accepted; only 31 sessions selected",
+    "Current multi-day report uses single-step return samples; native diagnostic metrics are not economic evidence",
+    "No full suite, broad search batteries, sanitizer or performance benchmark run",
+    "Observed Debug wall times include concurrent work; source hashes pin measured files amid independent warehouse edits"
+  ]
+}

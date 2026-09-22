@@ -160,6 +160,7 @@ static atx::impl::StageResult run_capacity_probe(f64 price_scale, const std::str
 
     atx::impl::RunConfig cfg;
     cfg.subcommand     = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel          = panel_path;
     cfg.alphas         = alphas_dir;
     cfg.combo_out      = combo_out;
@@ -256,6 +257,7 @@ TEST(StageCombineParticipation, CapacityKvsKeysAreEmittedButNotFoldedIntoDigest)
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.combo_out  = combo_out;

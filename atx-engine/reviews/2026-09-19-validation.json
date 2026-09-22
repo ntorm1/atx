@@ -1,0 +1,162 @@
+{
+    "date":  "2026-09-19",
+    "scope":  "Equity platform development checkpoint 1",
+    "status":  "passed_with_documented_incomplete_checks",
+    "build_preset":  "equity-dev",
+    "build_type":  "Debug",
+    "compiler":  "clang-cl 18.1.8",
+    "dependencies":  "Classic vcpkg installation: Arrow 24.0.0, GoogleTest 1.17.0; pinned manifest was not resolved",
+    "selected":  246,
+    "passed":  241,
+    "failed":  0,
+    "skipped":  5,
+    "wall_seconds":  14.31,
+    "new_regressions_passed":  37,
+    "incomplete":  [
+                       "RiskQpAugment.MatchesDenseOracleAcrossBattery: manually interrupted after over five minutes; excluded from final gate"
+                   ],
+    "skip_reason":  "Five DataRealPanel tests require absent security-master/Databento smoke data (ATX_DATA_DIR)",
+    "xml_path":  "build-equity/iteration1-final.xml",
+    "xml_sha256":  "6d042dba2e07c326e7ba1cfe22637b64426cee4615c38847273b2478efe36b11",
+    "log_path":  "build-equity/iteration1-final.log",
+    "log_sha256":  "d45db7a7c20b796e28ee1a8bb916e0524a227d3a633abe05a6b47b5b0b931dd9",
+    "source_context":  "Working tree; unrelated warehouse commits/edits occurred concurrently. Initial configure revision fa9b92b8481bea68aa117f446586cf496184404f-dirty. Only a QP explanatory comment changed after final executable validation.",
+    "suites":  [
+                   {
+                       "suite":  "RiskConstraintDispatch",
+                       "selected":  15,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "MultiHorizonIntegration",
+                       "selected":  5,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "RiskMultiHorizon",
+                       "selected":  16,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "RiskOptimizer",
+                       "selected":  22,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "RiskQpSolver",
+                       "selected":  19,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "RiskCone",
+                       "selected":  15,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "RiskElasticity",
+                       "selected":  5,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "RiskGarleanuPedersen",
+                       "selected":  6,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "RiskKktLdl",
+                       "selected":  7,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "RiskQpAugment",
+                       "selected":  5,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "DataAdaptFactor",
+                       "selected":  8,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "DataAdaptFeature",
+                       "selected":  6,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "DataAdaptPanel",
+                       "selected":  5,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "DataAdaptSignal",
+                       "selected":  5,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "DataAlign",
+                       "selected":  7,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "DataAvailability",
+                       "selected":  13,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "DataBoundaryPin",
+                       "selected":  1,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "CatalogReport",
+                       "selected":  2,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "DataCatalog",
+                       "selected":  9,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "DataDataset",
+                       "selected":  12,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "DataE2EByoCapstone",
+                       "selected":  1,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "DataRealPanel",
+                       "selected":  5,
+                       "skipped":  5
+                   },
+                   {
+                       "suite":  "RealPanelRegime",
+                       "selected":  3,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "BacktestBorrow",
+                       "selected":  3,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "BacktestIntegration",
+                       "selected":  10,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "BacktestLoop",
+                       "selected":  14,
+                       "skipped":  0
+                   },
+                   {
+                       "suite":  "ExecSim",
+                       "selected":  27,
+                       "skipped":  0
+                   }
+               ],
+    "investment_performance_measured":  false
+}

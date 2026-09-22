@@ -1,16 +1,22 @@
 #include "stages.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cstdint>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/core/sha256.hpp"
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/panel.hpp"
@@ -24,6 +30,8 @@
 #include "config.hpp"
 #include "diag_risk.hpp"
 #include "serialize_panel.hpp"
+#include "panel_pipeline.hpp"
+#include "replay_report.hpp"
 
 namespace atx::impl {
 
@@ -34,6 +42,19 @@ namespace risk  = atx::engine::risk;
 namespace cost  = atx::engine::cost;
 namespace exec  = atx::engine::exec;
 namespace lib_ns = atx::engine::library;
+
+namespace {
+template <typename Number>
+atx::core::Result<Number> schedule_number(std::string_view text) {
+    Number value{};
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) {
+        return atx::core::Err(atx::core::ErrorCode::ParseError,
+                              "report: invalid numeric schedule metadata");
+    }
+    return atx::core::Ok(value);
+}
+} // namespace
 
 // ===========================================================================
 //  book_capacity_curve (S4-5b [B9]) — the book-level (AUM, net-edge) capacity
@@ -197,7 +218,28 @@ book_capacity_curve(std::span<const atx::f64> book, std::span<const atx::f64> ra
 
 } // namespace
 
-atx::core::Result<StageResult> run_report(const RunConfig& cfg)
+namespace {
+
+bool report_hash_valid(std::string_view text) {
+    return text.size() == 64 && std::all_of(text.begin(), text.end(), [](char value) {
+        return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f');
+    });
+}
+
+atx::core::Result<PipelinePanel> read_report_panel(const std::string &path,
+    bool allow_unidentified, const ReplayReportPolicy *policy, std::string_view expected_id) {
+    if (policy == nullptr) return read_pipeline_panel(path, allow_unidentified);
+    ATX_TRY(auto artifact, read_panel_artifact(path, policy->max_input_payload_bytes));
+    if (artifact.artifact_id != expected_id) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+            "policy report: loaded artifact differs from admitted identity: " + path);
+    }
+    return atx::core::Ok(PipelinePanel{std::move(artifact.panel), std::move(artifact.identity),
+                                      std::move(artifact.artifact_id)});
+}
+
+atx::core::Result<StageResult> run_report_impl(const RunConfig& cfg,
+                                             const ReplayReportPolicy *policy)
 {
     // 1. Validate required flags.
     if (cfg.panel.empty() || cfg.books.empty() || cfg.report_out.empty()) {
@@ -206,19 +248,56 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
     }
 
     // 2. Load research and books panels.
-    ATX_TRY(auto research,   read_panel(cfg.panel));
-    ATX_TRY(auto bookspanel, read_panel(cfg.books));
+    ATX_TRY(auto research_input, read_report_panel(cfg.panel, cfg.allow_unidentified_panels,
+        policy, policy ? std::string_view(policy->expected_research_artifact_id)
+                       : std::string_view{}));
+    ATX_TRY(auto books_input, read_report_panel(cfg.books, cfg.allow_unidentified_panels,
+        policy, policy ? std::string_view(policy->expected_books_artifact_id) : std::string_view{}));
+    auto& research = research_input.panel;
+    auto& bookspanel = books_input.panel;
+    ATX_TRY_VOID(require_pipeline_file(books_input, "book-schedule", cfg.books + ".meta.txt"));
+    std::optional<PipelinePanel> validated_combo;
+    if (!cfg.combo.empty()) {
+        ATX_TRY(auto combo_input, read_report_panel(cfg.combo, cfg.allow_unidentified_panels,
+            policy, policy ? std::string_view(policy->expected_combo_artifact_id)
+                           : std::string_view{}));
+        ATX_TRY_VOID(require_pipeline_parent(combo_input, research_input, "research"));
+        if (books_input.identity && combo_input.identity) {
+            ATX_TRY_VOID(require_panel_parent(*books_input.identity, "combo", combo_input.artifact_id));
+        } else if (books_input.identity.has_value() != combo_input.identity.has_value()) {
+            return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                                  "report: identified and unidentified inputs cannot be mixed");
+        }
+        ATX_TRY_VOID(require_pipeline_file(combo_input, "fit-boundary", cfg.combo + ".meta"));
+        validated_combo = std::move(combo_input);
+    }
 
     // 3. Parse the S5 meta sidecar to reconstruct schedule and MultiPeriodResult.
     const std::string sidecar_path = cfg.books + ".meta.txt";
-    std::ifstream sidecar_file{sidecar_path};
-    if (!sidecar_file.is_open()) {
-        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                              "report: cannot open sidecar: " + sidecar_path);
+    std::error_code sidecar_ec;
+    const auto sidecar_size = fs::file_size(sidecar_path, sidecar_ec);
+    if (sidecar_ec || sidecar_size == 0 || sidecar_size > 16U * 1024U * 1024U) {
+        return atx::core::Err(atx::core::ErrorCode::ParseError,
+                              "report: invalid or oversized book schedule");
     }
+    std::ifstream sidecar_file{sidecar_path, std::ios::binary};
+    std::string sidecar_bytes(static_cast<atx::usize>(sidecar_size), '\0');
+    if (!sidecar_file.read(sidecar_bytes.data(),
+                           static_cast<std::streamsize>(sidecar_bytes.size())) ||
+        sidecar_file.peek() != std::char_traits<char>::eof()) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "report: cannot read stable sidecar: " + sidecar_path);
+    }
+    if (books_input.identity) {
+        ATX_TRY(auto consumed_sha, atx::core::sha256_hex(sidecar_bytes));
+        ATX_TRY_VOID(require_panel_parent(*books_input.identity, "book-schedule", consumed_sha));
+    }
+    std::istringstream sidecar_lines(sidecar_bytes);
 
     atx::usize S_meta = 0;
     atx::usize M_meta = 0;
+    bool got_periods = false;
+    bool got_instruments = false;
 
     struct PeriodEntry {
         atx::usize s      = 0;
@@ -230,26 +309,66 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
 
     {
         std::string line;
-        while (std::getline(sidecar_file, line)) {
+        while (std::getline(sidecar_lines, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
             if (line.rfind("periods=", 0) == 0) {
-                S_meta = static_cast<atx::usize>(std::stoull(line.substr(8)));
+                if (got_periods && books_input.identity) {
+                    return atx::core::Err(atx::core::ErrorCode::ParseError,
+                                          "report: duplicate schedule periods");
+                }
+                ATX_TRY(S_meta, schedule_number<atx::usize>(line.substr(8)));
+                got_periods = true;
             } else if (line.rfind("instruments=", 0) == 0) {
-                M_meta = static_cast<atx::usize>(std::stoull(line.substr(12)));
+                if (got_instruments && books_input.identity) {
+                    return atx::core::Err(atx::core::ErrorCode::ParseError,
+                                          "report: duplicate schedule instruments");
+                }
+                ATX_TRY(M_meta, schedule_number<atx::usize>(line.substr(12)));
+                got_instruments = true;
             } else if (line.rfind("s=", 0) == 0) {
                 // Format: s=<s> period=<p> turnover=<t> cost_bps=<c>
                 PeriodEntry e;
+                bool got_index = false;
+                bool got_period = false;
+                bool got_turnover = false;
+                bool got_cost = false;
                 std::istringstream iss(line);
                 std::string tok;
                 while (iss >> tok) {
                     if (tok.rfind("s=", 0) == 0) {
-                        e.s = static_cast<atx::usize>(std::stoull(tok.substr(2)));
+                        if (got_index) {
+                            return atx::core::Err(atx::core::ErrorCode::ParseError,
+                                                  "report: duplicate schedule index");
+                        }
+                        ATX_TRY(e.s, schedule_number<atx::usize>(tok.substr(2)));
+                        got_index = true;
                     } else if (tok.rfind("period=", 0) == 0) {
-                        e.period = static_cast<atx::usize>(std::stoull(tok.substr(7)));
+                        if (got_period) {
+                            return atx::core::Err(atx::core::ErrorCode::ParseError,
+                                                  "report: duplicate schedule period");
+                        }
+                        ATX_TRY(e.period, schedule_number<atx::usize>(tok.substr(7)));
+                        got_period = true;
                     } else if (tok.rfind("turnover=", 0) == 0) {
-                        e.turnover = std::stod(tok.substr(9));
+                        if (got_turnover && books_input.identity) {
+                            return atx::core::Err(atx::core::ErrorCode::ParseError,
+                                                  "report: duplicate schedule turnover");
+                        }
+                        ATX_TRY(e.turnover, schedule_number<atx::f64>(tok.substr(9)));
+                        got_turnover = true;
                     } else if (tok.rfind("cost_bps=", 0) == 0) {
-                        e.cost_bps = std::stod(tok.substr(9));
+                        if (got_cost && books_input.identity) {
+                            return atx::core::Err(atx::core::ErrorCode::ParseError,
+                                                  "report: duplicate schedule cost");
+                        }
+                        ATX_TRY(e.cost_bps, schedule_number<atx::f64>(tok.substr(9)));
+                        got_cost = true;
                     }
+                }
+                if (!got_index || !got_period ||
+                    (books_input.identity && (!got_turnover || !got_cost))) {
+                    return atx::core::Err(atx::core::ErrorCode::ParseError,
+                                          "report: incomplete book schedule entry");
                 }
                 entries.push_back(e);
             }
@@ -263,7 +382,8 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
     const atx::usize S = bookspanel.dates();
     const atx::usize M = bookspanel.instruments();
 
-    if (S_meta != S || M_meta != M) {
+    if (S_meta != S || M_meta != M ||
+        (books_input.identity && (!got_periods || !got_instruments))) {
         return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                               "report: sidecar shape mismatch with books panel");
     }
@@ -283,6 +403,12 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
     ATX_TRY(const auto weight_fid, bookspanel.field_id("weight"));
 
     for (atx::usize s = 0; s < S; ++s) {
+        if (entries[s].s != s || !std::isfinite(entries[s].turnover) ||
+            !std::isfinite(entries[s].cost_bps) || entries[s].turnover < 0.0 ||
+            entries[s].cost_bps < 0.0) {
+            return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                                  "report: invalid book schedule entry");
+        }
         sched.periods.push_back(entries[s].period);
         mpr.turnover.push_back(entries[s].turnover);
         mpr.cost_bps.push_back(entries[s].cost_bps);
@@ -290,6 +416,26 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
         // Copy the weight row for period s into a std::vector<f64>.
         const auto row_span = bookspanel.field_cross_section(weight_fid, s);
         mpr.books.push_back(std::vector<atx::f64>(row_span.begin(), row_span.end()));
+    }
+    ATX_TRY_VOID(require_book_schedule(books_input, research_input, sched.periods));
+    ATX_TRY_VOID(require_pipeline_file(books_input, "book-schedule", cfg.books + ".meta.txt"));
+    if (research_input.identity && books_input.identity) {
+        return run_identified_replay_report(cfg, research_input, books_input, sched.periods,
+                                            mpr.cost_bps,
+                                            validated_combo ? &*validated_combo : nullptr, policy);
+    }
+    if (policy != nullptr) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "policy report: identified research/books/combo are required");
+    }
+    if (cfg.replay_execution_delay != 1 || cfg.replay_trade_bps != 0.0 ||
+        cfg.replay_annual_borrow_bps != 0.0 || cfg.replay_day_basis != 365 ||
+        cfg.set_flags.count("replay-execution-delay") != 0 ||
+        cfg.set_flags.count("replay-trade-bps") != 0 ||
+        cfg.set_flags.count("replay-annual-borrow-bps") != 0 ||
+        cfg.set_flags.count("replay-day-basis") != 0) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "report: replay options require identified date/security axes");
     }
 
     // 4. Build forward-returns panel (1 field "ret") from research TRI close.
@@ -407,12 +553,10 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
                 std::string mline;
                 while (std::getline(meta_file, mline)) {
                     if (mline.rfind("holdout_begin=", 0) == 0) {
-                        meta_holdout =
-                            static_cast<atx::usize>(std::stoull(mline.substr(14)));
+                        ATX_TRY(meta_holdout, schedule_number<atx::usize>(mline.substr(14)));
                         got_holdout = true;
                     } else if (mline.rfind("n_periods=", 0) == 0) {
-                        meta_nperiods =
-                            static_cast<atx::usize>(std::stoull(mline.substr(10)));
+                        ATX_TRY(meta_nperiods, schedule_number<atx::usize>(mline.substr(10)));
                         got_nperiods = true;
                     }
                 }
@@ -748,6 +892,10 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
                 // existing prefix; existing lines stay byte-identical). 0.0 at the
                 // --borrow-bps default.
                 sm_file << "total_pnl_borrow=" << std::to_string(total_pnl_borrow) << "\n";
+                sm_file << "research_artifact_id="
+                        << (research_input.identity ? research_input.artifact_id : "unknown") << '\n';
+                sm_file << "books_artifact_id="
+                        << (books_input.identity ? books_input.artifact_id : "unknown") << '\n';
             }
         }
 
@@ -769,6 +917,8 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
         StageResult sr;
         sr.digest = digest;
         sr.kvs = {
+            {"research_artifact_id", research_input.identity ? research_input.artifact_id : "unknown"},
+            {"books_artifact_id", books_input.identity ? books_input.artifact_id : "unknown"},
             {"periods",               std::to_string(S)},
             {"final_equity",          std::to_string(final_equity)},
             {"pnl_net",               std::to_string(total_pnl_net)},
@@ -791,6 +941,27 @@ atx::core::Result<StageResult> run_report(const RunConfig& cfg)
         };
         return atx::core::Ok(std::move(sr));
     }
+}
+
+} // namespace
+
+atx::core::Result<StageResult> run_report(const RunConfig &cfg) {
+    return run_report_impl(cfg, nullptr);
+}
+
+atx::core::Result<StageResult> run_policy_replay_report(
+    const RunConfig &cfg, const ReplayReportPolicy &policy) {
+    if (cfg.combo.empty() || policy.max_input_payload_bytes == 0 ||
+        !report_hash_valid(policy.expected_research_artifact_id) ||
+        !report_hash_valid(policy.expected_books_artifact_id) ||
+        !report_hash_valid(policy.expected_combo_artifact_id)) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+            "policy report: combo, positive input byte cap and three admitted identities required");
+    }
+    // Capture the admission contract before any path is opened. The lower-level
+    // report separately validates/snapshots the model recipe before publication.
+    const auto frozen_policy = policy;
+    return run_report_impl(cfg, &frozen_policy);
 }
 
 } // namespace atx::impl

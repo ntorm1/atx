@@ -615,6 +615,18 @@ atx::f64 Oracle::ts_unary_at(OpCode op, std::span<const atx::f64> x, atx::usize 
   if (!detail::gather_window(x, t, j, d, instruments_, w)) {
     return detail::kNaN; // short window or any-NaN -> NaN (pinned policy)
   }
+  // R21-1: the running-sum family (sum/mean/var/std/zscore/av_diff) treats
+  // +/-inf exactly like NaN — any non-finite cell in the window -> NaN — so the
+  // oracle matches the VM's online sweeps, which exclude non-finite cells from
+  // their running sums (an inf can never be subtracted back out of one).
+  if (op == OpCode::TsSum || op == OpCode::TsMean || op == OpCode::TsVar ||
+      op == OpCode::TsStd || op == OpCode::TsZscore || op == OpCode::TsAvDiff) {
+    for (const atx::f64 v : w) {
+      if (!std::isfinite(v)) {
+        return detail::kNaN;
+      }
+    }
+  }
   const atx::usize n = w.size();
   // The min_periods policy is the single authority for "enough observations".
   // gather_window already enforces a full, NaN-free window, so for the current

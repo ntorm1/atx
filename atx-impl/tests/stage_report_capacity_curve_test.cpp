@@ -160,6 +160,7 @@ static atx::core::Result<RunResult>
 run_and_parse(const std::string& research_path, const std::string& books_path,
              const fs::path& report_dir, atx::f64 report_aum) {
     atx::impl::RunConfig cfg;
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = research_path;
     cfg.books      = books_path;
     cfg.report_out = report_dir.string();

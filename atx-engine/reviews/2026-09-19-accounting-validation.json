@@ -1,0 +1,133 @@
+﻿{
+    "date":  "2026-09-19",
+    "scope":  "Equity platform development checkpoint 2: elapsed financing and post-fill marks",
+    "status":  "passed",
+    "build_preset":  "equity-dev",
+    "build_type":  "Debug",
+    "compiler":  "clang-cl 18.1.8",
+    "dependencies":  "Classic vcpkg: Arrow24.0.0, GoogleTest1.17.0; pinned manifest not resolved",
+    "selected":  120,
+    "passed":  120,
+    "failed":  0,
+    "skipped":  0,
+    "wall_seconds":  12.82,
+    "focused_financing_accounting_cases":  29,
+    "evidence":  [
+                     {
+                         "path":  "build-equity/iteration2-cli-build.log",
+                         "sha256":  "aca62f9739311aa22c0803c89851cdf9de8b4d113f364fbd9927f569c0129a7c"
+                     },
+                     {
+                         "path":  "build-equity/iteration2-final-build.log",
+                         "sha256":  "05c1704f6982711515c571b94c2ddd4a2b6e12f6f851c3a8a92275e893f6c820"
+                     },
+                     {
+                         "path":  "build-equity/iteration2-final.log",
+                         "sha256":  "86b0b3b11b0b24f13f7882fb13d07a40d939fbca344913dadfc798c314f3fdba"
+                     },
+                     {
+                         "path":  "build-equity/iteration2-final.xml",
+                         "sha256":  "d3dcbdcc4b718a78e8856ed0fc49dd746f9d942cb56c1a67edf2aef4cfc90993"
+                     },
+                     {
+                         "path":  "build-equity/iteration2-native-failure.log",
+                         "sha256":  "4293d010582cc120c2680e4412607f50e5ff0c0ccaf433155829eabf5fb673e4"
+                     }
+                 ],
+    "sources":  [
+                    {
+                        "path":  "atx-engine/include/atx/engine/cost/borrow.hpp",
+                        "sha256":  "27a787af306728b1be04a97786487e7c119de067c045384dd4a6b94c7bb7bad7"
+                    },
+                    {
+                        "path":  "atx-engine/include/atx/engine/loop/backtest_loop.hpp",
+                        "sha256":  "6dd262bf760ddec78225aa127b337e8282c07fee89891253e114ae0bb5be1a72"
+                    },
+                    {
+                        "path":  "atx-engine/tests/core/borrow_test.cpp",
+                        "sha256":  "f23b9115b6b7518f47162ce7f2e76f5691cca81b46d43806033ff50ac2ed57ab"
+                    },
+                    {
+                        "path":  "atx-engine/tests/core/backtest_borrow_test.cpp",
+                        "sha256":  "47d0522dc18ad3b9fa158b636cd1996931c7fde2667154c1562dcc58df440b6b"
+                    },
+                    {
+                        "path":  "atx-engine/tests/core/backtest_accounting_test.cpp",
+                        "sha256":  "0652f774aeffff443e8b8093ac442d43a2b240cbe951eee7d4c154eb8bd24711"
+                    },
+                    {
+                        "path":  "scripts/atx-build.ps1",
+                        "sha256":  "5714b352acf13fbaec677f9a5eee1e6c24704c632f15a8823d51ddfbdb1e9bf9"
+                    }
+                ],
+    "source_context":  "Working tree, configure revision863036edc56fced47dd6ddae602a397e9ba8c594-dirty; independent warehouse work continued concurrently.",
+    "limitations":  [
+                        "Research trade-date continuous financing, not settled broker charges",
+                        "No real-data investment returns or capacity measured",
+                        "Full-width timestamp gap guard source-reviewed; SimClock prevents negative initial times in Debug",
+                        "No sanitizers or full-suite run",
+                        "Prior checkpoint real-panel fixture skips and interrupted dense risk oracle remain open"
+                    ],
+    "suites":  [
+                   {
+                       "suite":  "DataE2EByoCapstone",
+                       "passed":  1
+                   },
+                   {
+                       "suite":  "DatabentoPipelineE2E",
+                       "passed":  1
+                   },
+                   {
+                       "suite":  "PortfolioDeathTest",
+                       "passed":  4
+                   },
+                   {
+                       "suite":  "BacktestAccounting",
+                       "passed":  4
+                   },
+                   {
+                       "suite":  "BacktestBorrow",
+                       "passed":  12
+                   },
+                   {
+                       "suite":  "BacktestIntegration",
+                       "passed":  10
+                   },
+                   {
+                       "suite":  "BacktestLoop",
+                       "passed":  14
+                   },
+                   {
+                       "suite":  "Borrow",
+                       "passed":  3
+                   },
+                   {
+                       "suite":  "BorrowElapsed",
+                       "passed":  13
+                   },
+                   {
+                       "suite":  "CostIntegration",
+                       "passed":  3
+                   },
+                   {
+                       "suite":  "ExecSim",
+                       "passed":  27
+                   },
+                   {
+                       "suite":  "PermanentImpactPersist",
+                       "passed":  5
+                   },
+                   {
+                       "suite":  "Phase3cIntegration_BridgeE2E",
+                       "passed":  2
+                   },
+                   {
+                       "suite":  "Portfolio",
+                       "passed":  17
+                   },
+                   {
+                       "suite":  "TempPerm",
+                       "passed":  4
+                   }
+               ]
+}

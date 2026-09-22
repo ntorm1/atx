@@ -31,6 +31,7 @@
 #include "config.hpp"
 #include "research_sim.hpp"
 #include "serialize_panel.hpp"
+#include "panel_pipeline.hpp"
 #include "stage_discover_detail.hpp"  // T3a: detail::build_robust_holdout_panel
 
 namespace atx::impl {
@@ -75,7 +76,8 @@ atx::core::Result<StageResult> run_sweep(const RunConfig& cfg)
     }
 
     // ---- Panel + run-wide borrows ------------------------------------------
-    ATX_TRY(auto panel, read_panel(cfg.panel));
+    ATX_TRY(auto panel_input, read_pipeline_panel(cfg.panel, cfg.allow_unidentified_panels));
+    auto& panel = panel_input.panel;
 
     alpha::Library dsl{};
     atx::engine::WeightPolicy policy{};
@@ -326,6 +328,8 @@ atx::core::Result<StageResult> run_sweep(const RunConfig& cfg)
                 "sweep: cannot write manifest: " + manifest_path);
         }
         mf << "gated=1\n";
+        mf << "source_artifact_id="
+           << (panel_input.identity ? panel_input.artifact_id : "unknown") << '\n';
         mf << "seed="              << cfg.seed               << '\n';
         mf << "count="             << n                      << '\n';
         mf << "runs="              << rep.runs               << '\n';
@@ -392,6 +396,7 @@ atx::core::Result<StageResult> run_sweep(const RunConfig& cfg)
     sr.digest = stage_digest;
     sr.kvs = {
         {"runs",              std::to_string(rep.runs)},
+        {"source_artifact_id", panel_input.identity ? panel_input.artifact_id : "unknown"},
         {"library_size",      std::to_string(n)},
         {"total_admitted",    std::to_string(rep.total_admitted)},
         {"total_duplicates",  std::to_string(rep.total_duplicates)},

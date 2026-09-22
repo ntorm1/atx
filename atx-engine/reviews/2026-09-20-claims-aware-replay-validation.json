@@ -1,0 +1,208 @@
+{
+  "schema": "atx-claims-aware-replay-validation-v1",
+  "checkpoint": 13,
+  "date": "2026-09-20",
+  "status": "minimal_close_t1_t2_only",
+  "summary": "Bounded claims-book state with two-phase atomic security-transition and cash-claim commits (T1) and a claims-aware replay seam over scheduled intents with an event batch policy (T2) compiled, built and measured natively under clang-cl 18 (equity-dev, static Debug, /W4 /WX). Each task was independently reviewed and fixed in one round and re-reviewed clean. The default (empty event batch) replay path is pinned bit-identical to replay_scheduled_intents at the interval and per-allocation level. Checkpoint was minimal-closed after an alpha-priority re-plan; T3-T5 are deferred.",
+  "native_measurement": {
+    "t1_claims_state": {
+      "initial": "100% tests passed, 0 tests failed out of 3",
+      "post_fix_round_1": "100% tests passed, 0 tests failed out of 3"
+    },
+    "book_group_regex": "^(BookAllocation|BookPipeline|BookReplay|BookReport|ClaimsState|ClaimsReplay|DecayController|DecayMonitor|ReportBorrow|SecurityTransition)\\.",
+    "book_group_pre_t2_baseline": "100% tests passed, 0 tests failed out of 59",
+    "book_group_post_t2": "100% tests passed, 0 tests failed out of 61",
+    "book_group_post_t2_fix1": "100% tests passed, 0 tests failed out of 62",
+    "t2_first_build": "FAILED: replay.cpp(644) -Werror,-Wmissing-field-initializers (pending_claims); fixed by explicit 17-field aggregate init; failed log preserved (build_log_t2_failed)",
+    "toolchain": "clang-cl 18.1.8, preset equity-dev, static Debug, 4 build jobs, ccache disabled, PCH enabled (no hygiene/include-clean claim)"
+  },
+  "review": {
+    "t1": "0 Critical / 3 Important addressed in one fix round; F1 CMake blast-radius false positive (diff verified one line); D1-D5 + Minors F4-F12 deferred",
+    "t2": "SPEC Pass; QUALITY 0 Critical / 4 Important addressed in one fix round (dead period-0/terminal batch branch deleted, structural bound documented; per-allocation bit-identity; row-published settlement identity with moving prices; retired-target rejection coverage); 11 original + 2 new Minors deferred",
+    "t2_deviations": "all 10 accepted, incl. no marked_equities parameter on commit_cash_claim_payment and batch for period p requested at iteration p-1 (first valuation of p is the end mark of (p-1,p])"
+  },
+  "deferred_by_ruling": [
+    "T3 engine fixture scenarios B (short payable with borrow) and C (atomic rejections)",
+    "T4 atx-impl claims-aware allocation certification",
+    "T5 atx-impl equity-book wiring, movements/claims CSV, --transitions flag",
+    "Reason: research-alpha-pipeline.md; design section 8 lists eight unmet preconditions for real PCS admission that T3-T5 supply none of; alpha->tradeable pipeline (checkpoint 14 cross-sectional forecast evaluation) prioritized"
+  ],
+  "qualifications": [
+    "Synthetic-fixture evidence only; no real corporate action (including MetroPCS/T-Mobile 2013-05-01) has been admitted, replayed or backtested; that admission remains rejected.",
+    "The claims-aware seam is not wired into atx-impl; equity-book output is unchanged.",
+    "Numerical netting does not prove stock-loan discharge; no physical delivery attested.",
+    "Not throughput, capacity, alpha, Sharpe or production-readiness evidence. No live trading or broker actions performed or authorized."
+  ],
+  "pins": {
+    "design": {
+      "path": "atx-engine/reviews/2026-09-20-iteration13-claims-aware-replay-design.md",
+      "sha256": "b95d24eee73c09403a45af420d30a62ead01d443704c16d0bc0585ca5045d6b0",
+      "bytes": 38016
+    },
+    "predecessor_receipt": {
+      "path": "atx-engine/reviews/2026-09-20-security-transition-validation.json",
+      "sha256": "09112ffe8e89a09d7bc9d5cc70371fd18d6cc4f7b4b66048f7a0125310f37f2a",
+      "bytes": 16194
+    },
+    "research_reprioritization": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/research-alpha-pipeline.md",
+      "sha256": "6c983746e9594c091c4250b66c88dce94a8b428fc594b43a0713a2aac9775ca8",
+      "bytes": 54330
+    },
+    "claims_state_header": {
+      "path": "atx-engine/include/atx/engine/book/claims_state.hpp",
+      "sha256": "be62f1a925e06626fb7016a96003acef2e4de1c5908ce3b9d8a6d50e92d72008",
+      "bytes": 9149
+    },
+    "claims_state_source": {
+      "path": "atx-engine/src/book/claims_state.cpp",
+      "sha256": "f2820c4d251f08209edb0d9a82fb020db3a7cf690c33e2f4f8b9d0de10a28c3c",
+      "bytes": 25202
+    },
+    "claims_state_test": {
+      "path": "atx-engine/tests/book/book_claims_state_test.cpp",
+      "sha256": "ccf31660cb0358980d07197565a441907454c5a689cc63f70931f6b2ce919014",
+      "bytes": 18412
+    },
+    "replay_header": {
+      "path": "atx-engine/include/atx/engine/book/replay.hpp",
+      "sha256": "d984deff1728ebd4497039e2793d7628fe4a01719345ab138512c86587043007",
+      "bytes": 19257
+    },
+    "replay_source": {
+      "path": "atx-engine/src/book/replay.cpp",
+      "sha256": "ad1a72b4fef57a61beaaaff452206c7d1d5ab418cfe50b7138fc0bc2dd2e1729",
+      "bytes": 43938
+    },
+    "claims_replay_test": {
+      "path": "atx-engine/tests/book/book_claims_replay_test.cpp",
+      "sha256": "537247f29eb59c7072e506a771135dcdc54e25fd4825fcde1710d1393391435c",
+      "bytes": 23013
+    },
+    "engine_cmake": {
+      "path": "atx-engine/CMakeLists.txt",
+      "sha256": "4d0dbf0daf6afb655e05350086d812996fadbfc062ee4a3715f5fe477d0d725a",
+      "bytes": 6432
+    },
+    "configure_log": {
+      "path": "build-equity/audits/iteration13-configure.log",
+      "sha256": "bd7321b17c40bd324531a867ba2151d0dc7c4c5edc63cd98e80504e98be3e62b",
+      "bytes": 2212
+    },
+    "check_log_t1": {
+      "path": "build-equity/audits/iteration13-check-t1.log",
+      "sha256": "a937179a0c4975cef1140db36628f47f0d118ce0776bb797725c109b7bce7076",
+      "bytes": 776
+    },
+    "tests_log_t1": {
+      "path": "build-equity/audits/iteration13-claims-state-tests.log",
+      "sha256": "6ad0f1ab6d58cf36aa55af618a39932a28f129d952354b306347157c4979c179",
+      "bytes": 5025
+    },
+    "build_log_t1_fix1": {
+      "path": "build-equity/audits/iteration13-build-t1fix1.log",
+      "sha256": "d7f412d2fe7c8bb853d1c503d781d045c71368f98b02c6f397606d738d083dcc",
+      "bytes": 534
+    },
+    "tests_log_t1_fix1": {
+      "path": "build-equity/audits/iteration13-claims-state-tests-fix1.log",
+      "sha256": "1a675eba9ff93f5d61cc4f57405990caec8b8e23a12ada8656c597316efb2712",
+      "bytes": 5025
+    },
+    "junit_t1": {
+      "path": "build-equity/iteration13-claims-state-tests.xml",
+      "sha256": "601522bc4d44325930fb57176a12c32dc43b37087cea935fd6e9ecfc6995ba85",
+      "bytes": 2887
+    },
+    "junit_t1_fix1": {
+      "path": "build-equity/iteration13-claims-state-tests-fix1.xml",
+      "sha256": "98929186be917e4414de1b3bd82f60504676c606f2fd9d71c38949ad18bdef08",
+      "bytes": 2886
+    },
+    "tests_log_book_baseline_pre_t2": {
+      "path": "build-equity/audits/iteration13-book-baseline-tests.log",
+      "sha256": "0f9f511b1e9202e6f195bc4afbc7e4ce3c24c2e543dcea6f34f8ee6e55b78171",
+      "bytes": 11999
+    },
+    "junit_book_baseline_pre_t2": {
+      "path": "build-equity/iteration13-book-baseline-tests.xml",
+      "sha256": "e8ea4ab97eb715b671264c333bdae9050564d2c11ccbfd0c32e6f294d3565bd6",
+      "bytes": 52925
+    },
+    "build_log_t2_failed": {
+      "path": "build-equity/audits/iteration13-build-t2.log",
+      "sha256": "903f6b61877060e14d407a71a7809d4f4a70c5f54b20fd595710855cbaf475e0",
+      "bytes": 3512
+    },
+    "build_log_t2_fixed": {
+      "path": "build-equity/audits/iteration13-build-t2b.log",
+      "sha256": "ba5ca5166f55b6269dcc49bb505d8030a6b226e31c88110c813179238e138e9c",
+      "bytes": 640
+    },
+    "tests_log_book_t2": {
+      "path": "build-equity/audits/iteration13-book-t2-tests.log",
+      "sha256": "e5950e70a5af57c9247aade82d26e80f26fe4078aa857383dbdcb660f9d52bab",
+      "bytes": 12421
+    },
+    "junit_book_t2": {
+      "path": "build-equity/iteration13-book-t2-tests.xml",
+      "sha256": "39048453d263eb663594522ff802af0f28d923486aaef9cd308f5122de88f959",
+      "bytes": 54807
+    },
+    "build_log_t2_fix1": {
+      "path": "build-equity/audits/iteration13-build-t2fix1.log",
+      "sha256": "9a7545d40f9b85a14506ecb5a81f82327444dca37e376d2efeed225d6d8e9a80",
+      "bytes": 636
+    },
+    "tests_log_book_t2_fix1": {
+      "path": "build-equity/audits/iteration13-book-t2fix1-tests.log",
+      "sha256": "6fe8591ee3c7ccfc3aab8f86049260c04d4b55acc768bb87e285d455bfec648a",
+      "bytes": 95400
+    },
+    "junit_book_t2_fix1": {
+      "path": "build-equity/build-equity/iteration13-book-t2fix1.xml",
+      "sha256": "22eb09cd1e76331eb16402ea38ed13b662e104faf8de85165b70115de01899ea",
+      "bytes": 55715
+    },
+    "t1_report": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/task-T1-report.md",
+      "sha256": "52745c4ddd987be3fb14221a0dc2e99bb1c5d805c7f99d9e5e9b9b77df32efa5",
+      "bytes": 14926
+    },
+    "t1_review": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/task-T1-review.md",
+      "sha256": "30021bee68ee7839e5b57bc232e851d4ae38074eaca2a88bfb27ad21636bf1db",
+      "bytes": 23752
+    },
+    "t1_rereview": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/task-T1-rereview.md",
+      "sha256": "4bf3953e5f5baecd9a5344212e2d2246b87dc0cc398b88727797d8cf9f9edab1",
+      "bytes": 11120
+    },
+    "t2_report": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/task-T2-report.md",
+      "sha256": "735a1222b39027f6a0c61c199b0ff24fbc16e42132b6532b180fdca0a17fc1e2",
+      "bytes": 16367
+    },
+    "t2_review": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/task-T2-review.md",
+      "sha256": "2a3df248509f3544a2a57e5d06b7573f9ad87cccf9f9b217014e14d998e670ea",
+      "bytes": 18884
+    },
+    "t2_fix_report": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/task-T2-fix-report.md",
+      "sha256": "0ed536768834c21aaa5b5585f7757ac1e9e2298cb9da7e5cee676361213361c5",
+      "bytes": 8924
+    },
+    "t2_rereview": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/task-T2-rereview.md",
+      "sha256": "2c134b3e316374e4c3e60d80b0586c14f79a0835406e80a9ca243b14be03d922",
+      "bytes": 12532
+    },
+    "producer_executable": {
+      "path": "build-equity/bin/atx-engine-book-tests.exe",
+      "sha256": "0012ccb68929847ad5feaffe218461b17b71c15eb5a047d36d38050e8378ac2c",
+      "bytes": 8711168
+    }
+  }
+}

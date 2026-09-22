@@ -5,6 +5,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "atx/core/error.hpp"
@@ -14,9 +15,9 @@ namespace atx::impl {
 
 // The single source of truth for valid subcommand names. parse_args validates
 // against this; dispatch's routing if-chain consumes the same names.
-inline constexpr std::array<std::string_view, 10> kSubcommands = {
+inline constexpr std::array<std::string_view, 14> kSubcommands = {
     "load", "panel", "discover", "combine", "optimize", "report", "run", "regime", "sweep",
-    "metabook"}; // S5-4: standalone meta-book stage (S2's fund::MetaBook, hub-routed)
+    "metabook", "equity-baseline", "equity-book", "equity-ic", "equity-universe"};
 
 // ----------------------------------------------------------------------------
 // RunConfig â€” all CLI flags / config-file keys for every subcommand.
@@ -28,6 +29,9 @@ inline constexpr std::array<std::string_view, 10> kSubcommands = {
 // ----------------------------------------------------------------------------
 struct RunConfig {
     std::string subcommand;            // "load"|"panel"|...|"run"|""
+    // Explicit legacy diagnostics only. Identified/unknown panels cannot be mixed.
+    bool allow_unidentified_panels = false; // --allow-unidentified-panels true|false
+    std::string preparation_manifest;      // --preparation-manifest (load provenance)
 
     // -- load --
     std::string zip;                   // --zip
@@ -441,6 +445,33 @@ struct RunConfig {
     // (mirrors --cost-bps's own bps-per-period convention). 0.0 (default) = pnl_borrow is
     // exactly 0.0 every period -> report digest byte-identical to today.
     double borrow_bps = 0.0;
+    // Identified report replay: hypothetical close execution after this many
+    // stored observations. This delay does not certify historical availability.
+    atx::usize replay_execution_delay = 1; // --replay-execution-delay
+    double replay_trade_bps = 0.0;         // --replay-trade-bps per actual dollar traded
+    double replay_annual_borrow_bps = 0.0; // --replay-annual-borrow-bps annual simple rate
+    int replay_day_basis = 365;            // --replay-day-basis 360|365 calendar days
+    // Fixed equity-baseline recipe: explicit scored window, separate from the
+    // source panel's feature warmup. Dates are validated by the baseline stage.
+    std::string equity_evaluation_start; // --evaluation-start, inclusive
+    std::string equity_evaluation_end;   // --evaluation-end, exclusive
+    atx::u64 equity_max_working_bytes = 3'000'000'000ULL; // --max-working-bytes
+    double equity_min_dollar_adv = 0.0;                  // --min-dollar-adv (0 = no liquidity floor)
+    atx::usize equity_dollar_adv_window = 21;            // --dollar-adv-window (sessions)
+    // Identified fixed baseline artifacts supplying equity-book preferences.
+    // The stage inherits baseline dates/financial assumptions unless overridden;
+    // set_flags distinguishes an explicit zero fee from an omitted override.
+    std::string equity_baseline_dir; // --baseline-dir
+    // Append-only hash-chained pre-registration ledger consumed by equity-ic.
+    // Empty = the stage's own frozen default, atx-engine/reviews/trial-ledger.jsonl.
+    std::string equity_trial_ledger; // --trial-ledger
+    // Checkpoint 15 `equity-universe` (design 2026-09-20-iteration15 §5.1-§5.2): the
+    // `;`-separated segment directories and their positionally paired preparation
+    // manifests, plus the inclusive rank-date window. Parsed and validated by the stage.
+    std::string equity_segments_dirs;         // --segments-dirs a;b;...
+    std::string equity_preparation_manifests; // --preparation-manifests a;b;...
+    std::string equity_rank_start;            // --rank-start, inclusive YYYY-MM-DD
+    std::string equity_rank_end;              // --rank-end, inclusive YYYY-MM-DD
     // --robustness-sub-universe / --robustness-alt-neutralization / --robustness-param-perturb
     // (S5-3): expose the 3 currently-unreachable eval::BatteryConfig checks (noise_control is
     // already wired via --robustness-battery alone, p8 final-wave). Each requires BOTH its own
@@ -449,6 +480,23 @@ struct RunConfig {
     bool robustness_sub_universe = false;
     bool robustness_alt_neutralization = false;
     bool robustness_param_perturb = false;
+
+    // Checkpoint 16 `panel` point-in-time membership restriction. All three are
+    // REQUIRED TOGETHER (parse_args and the stage both reject a partial set): a
+    // membership.bin, the (top_n, band) cut inside it, and the evaluation start that
+    // anchors the union rule. None supplied (the default) leaves every panel code
+    // path — recipe bytes included — byte-identical to today.
+    std::string panel_universe_membership; // --universe-membership <membership.bin>
+    std::string panel_universe_cut;        // --universe-cut <top_n>:<band>, e.g. "3000:0.00"
+    std::string panel_universe_eval_start; // --universe-eval-start YYYY-MM-DD
+    // R21-3 `panel` point-in-time scalar field ingest. Each --asof-field entry is
+    // `<name>=<csv_path>` (repeatable, command-line order preserved); the panel stage
+    // appends one f64 column per entry after build_history_panel (see asof_field.hpp
+    // for the CSV contract and the strict available_at < session-date join rule).
+    // --asof-max-stale-days caps a value's calendar age (0 = no cap). Empty list (the
+    // default) leaves every panel code path and the recipe bytes unchanged.
+    std::vector<std::pair<std::string, std::string>> panel_asof_fields; // --asof-field
+    atx::i64 panel_asof_max_stale_days = 0;                            // --asof-max-stale-days
 
     // Canonical names of flags explicitly supplied by the parsed source (CLI
     // args or config-file keys). Used by the run-mode merge so a CLI-present
@@ -465,6 +513,13 @@ struct RunConfig {
 // cannot be opened, Err(InvalidArgument) if the file yields zero templates.
 [[nodiscard]] atx::core::Result<std::vector<std::string>>
 read_seed_file(const std::string& path);
+
+// Checkpoint 16: the `panel` membership restriction is all-three-or-none.
+// Ok when none of --universe-membership / --universe-cut / --universe-eval-start is
+// set, and when all three are; Err(InvalidArgument) for any partial set. parse_args
+// calls this, and the panel stage calls it again so a config-file-only invocation
+// (which never runs parse_args' cross-flag pass) fails the same way.
+[[nodiscard]] atx::core::Status validate_membership_flags(const RunConfig& cfg);
 
 // Parse CLI arguments.
 // argv[1] is the subcommand (or --help/-h).

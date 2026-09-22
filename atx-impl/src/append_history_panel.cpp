@@ -75,7 +75,8 @@ in_window_dates(const std::string &dir, const alpha::TimeWindow &window) {
 // lineage left empty — the no-op return path carries no new derivation record).
 [[nodiscard]] HistoryPanel as_history_panel(alpha::Panel panel) {
   const atx::u64 digest = digest_panel(panel);
-  return HistoryPanel{std::move(panel), digest, /*lineage=*/{}};
+  // The legacy numeric-only no-op has no recoverable identity axes.
+  return HistoryPanel{std::move(panel), digest, {}, {}, {}, {}, {}};
 }
 
 // Verify the rebuilt combined panel's first `d_old` date rows are byte-identical

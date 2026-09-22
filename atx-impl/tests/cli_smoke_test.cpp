@@ -30,7 +30,7 @@ static int run_dispatch(const std::vector<std::string>& args,
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: --help lists all 8 subcommands
+// Test 1: --help lists the documented subcommands
 // ---------------------------------------------------------------------------
 TEST(AtxImplCli, HelpListsAllSubcommands) {
     std::string out, err;
@@ -38,7 +38,7 @@ TEST(AtxImplCli, HelpListsAllSubcommands) {
 
     EXPECT_EQ(rc, 0);
 
-    // All 8 subcommands must appear in usage output.
+    // Core pipeline and the fixed baseline must appear in usage output.
     EXPECT_NE(out.find("load"),     std::string::npos) << "missing 'load'";
     EXPECT_NE(out.find("panel"),    std::string::npos) << "missing 'panel'";
     EXPECT_NE(out.find("discover"), std::string::npos) << "missing 'discover'";
@@ -47,6 +47,7 @@ TEST(AtxImplCli, HelpListsAllSubcommands) {
     EXPECT_NE(out.find("report"),   std::string::npos) << "missing 'report'";
     EXPECT_NE(out.find("run"),      std::string::npos) << "missing 'run'";
     EXPECT_NE(out.find("regime"),   std::string::npos) << "missing 'regime'";
+    EXPECT_NE(out.find("equity-baseline"), std::string::npos) << "missing 'equity-baseline'";
 }
 
 // ---------------------------------------------------------------------------

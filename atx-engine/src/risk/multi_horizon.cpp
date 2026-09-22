@@ -26,14 +26,34 @@ MultiHorizonOptimizer::run(const RebalanceSchedule &sched,
                            const book::CostInputs &cost) const {
   namespace co = atx::core;
   // --- validate at the boundary -------------------------------------------
-  if (cfg.trade_rate <= 0.0 || cfg.trade_rate > 1.0) {
+  if (!std::isfinite(cfg.trade_rate) || cfg.trade_rate <= 0.0 || cfg.trade_rate > 1.0) {
     return co::Err(co::ErrorCode::InvalidArgument,
                    "MultiHorizonOptimizer::run: trade_rate must be in (0, 1]");
   }
-  // stacked_mpc dispatch (S8.7): true ⇒ the TRUE O(N·H) joint multi-period QP over the
-  // whole trajectory (benched, not the default); false ⇒ the shipped GP aim-collapse +
-  // cost-to-go fold. The schedule walk below is shared; only the per-period inner solve
-  // toward the aim differs (solve_toward_aim vs solve_stacked_mpc), selected per period.
+  // This driver has no per-period CapacityRef source. A configured cap must not
+  // disappear when materialize receives its default, empty reference data.
+  if (cfg.constraints.part || cfg.constraints.own) {
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "MultiHorizonOptimizer::run: participation/ownership caps require "
+                   "reference data; use PortfolioOptimizer with CapacityRef");
+  }
+  if (cfg.trade_rate != 1.0 && !is_minimal_constraint_set()) {
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "MultiHorizonOptimizer::run: augmented constraints require trade_rate=1; "
+                   "partial execution may violate the solved constraints");
+  }
+  if (!std::isfinite(cost.kappa) || cost.kappa < 0.0) {
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "MultiHorizonOptimizer::run: cost.kappa must be finite and nonnegative");
+  }
+  if (cfg.capacity_bound_gross &&
+      (std::isnan(cost.capacity_gross) || cost.capacity_gross < 0.0)) {
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "MultiHorizonOptimizer::run: capacity_gross must be nonnegative, not NaN");
+  }
+  // stacked_mpc selects a geometric blend of the horizon forecasts, followed by
+  // the same single-period constrained solve. It is not a joint multi-period QP.
+  // The default uses the horizon-average GP aim; the schedule walk is shared.
 
   MultiHorizonResult out;
   out.books.reserve(sched.periods.size());
@@ -101,7 +121,7 @@ std::vector<atx::f64> MultiHorizonOptimizer::gp_aim(const HorizonForecast &traj,
   return aim;
 }
 
-// MINIMAL constraints (no fexp/grp/beta/turn) ⇒ reuse PortfolioOptimizer::solve,
+// MINIMAL constraints (only gross/net and position cap) ⇒ PortfolioOptimizer::solve,
 // configured IDENTICALLY to MultiPeriodOptimizer's inner oc (so the boundary pin is
 // byte-identical). AUGMENTED ⇒ materialize the S1-1 ConstraintSet and run the S1-2 QP.
 atx::core::Result<std::vector<atx::f64>>
@@ -111,15 +131,14 @@ MultiHorizonOptimizer::solve_toward_aim(const std::vector<atx::f64> &aim, const 
   if (is_minimal_constraint_set()) {
     return solve_minimal(aim, V, w_prev, cost);
   }
-  return solve_augmented(aim, V, w_prev);
+  return solve_augmented(aim, V, w_prev, cost);
 }
 
 // A constraint set is MINIMAL when it carries ONLY GrossNet (+ optional PositionCap):
 // exactly the algebra PortfolioOptimizer expresses natively (dollar-neutral + gross +
-// per-name cap). Any factor/group/beta/turnover row needs the augmented QP.
+// per-name cap). Share the classifier so new rows/cones cannot bypass this driver.
 bool MultiHorizonOptimizer::is_minimal_constraint_set() const noexcept {
-  return !cfg.constraints.fexp && !cfg.constraints.grp && !cfg.constraints.beta &&
-         !cfg.constraints.turn;
+  return PortfolioOptimizer::is_minimal_constraint_set(cfg.constraints);
 }
 
 // Minimal dispatch: build the SAME OptimizerConfig MultiPeriodOptimizer builds (R7).
@@ -152,9 +171,26 @@ MultiHorizonOptimizer::solve_minimal(const std::vector<atx::f64> &aim, const Fac
 // byte-identical to the pre-S8.7 q = −aim). NaN ᾱ ⇒ 0 coefficient (no-opinion name).
 atx::core::Result<std::vector<atx::f64>>
 MultiHorizonOptimizer::solve_augmented(const std::vector<atx::f64> &aim, const FactorModel &V,
-                                       std::span<const atx::f64> w_prev) const {
+                                       std::span<const atx::f64> w_prev,
+                                       const book::CostInputs &cost) const {
   const atx::usize m = V.n_instruments();
-  ATX_TRY(MaterializedConstraints C, cfg.constraints.materialize(V.exposures(), w_prev, m));
+  if (!w_prev.empty() && w_prev.size() != m) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "MultiHorizonOptimizer: previous book length must match the model");
+  }
+  ConstraintSet effective = cfg.constraints;
+  if (cfg.capacity_bound_gross) {
+    effective.gross.gross_leverage =
+        std::min(effective.gross.gross_leverage, cost.capacity_gross);
+  }
+  ATX_TRY(MaterializedConstraints C, effective.materialize(V.exposures(), w_prev, m));
+  C.turnover_penalty = cost.kappa;
+  if (C.turnover_penalty > 0.0 && !C.has_turnover) {
+    C.turnover_ref.assign(m, 0.0);
+    if (!w_prev.empty()) {
+      std::copy(w_prev.begin(), w_prev.end(), C.turnover_ref.begin());
+    }
+  }
 
   // GP cost-to-go fold: q = −ᾱ (the value-function LINEAR term; A_xx = 2λV stays in P).
   ATX_TRY(GpAimValue gp, gp_aim_and_value(std::span<const atx::f64>(aim), V, cfg.risk_aversion));

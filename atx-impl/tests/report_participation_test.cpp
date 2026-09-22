@@ -218,6 +218,7 @@ protected:
         fs::create_directories(report_dir, ec);
 
         atx::impl::RunConfig cfg;
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel      = research_path_;
         cfg.books      = books_path_;
         cfg.report_out = report_dir.string();

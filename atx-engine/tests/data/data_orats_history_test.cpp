@@ -40,6 +40,26 @@ TEST(DataOratsHistory, DateToNanosMidnightUtc) {
   EXPECT_FALSE(detail::date_to_nanos("not-a-date").has_value());
 }
 
+TEST(DataOratsHistory, DateToNanosValidatesCalendarAndRepresentableMidnight) {
+  // Gregorian leap-year rules and exact digit-only YYYY-MM-DD grammar.
+  EXPECT_TRUE(detail::date_to_nanos("2000-02-29").has_value());
+  EXPECT_TRUE(detail::date_to_nanos("2024-02-29").has_value());
+  for (const char *date : {"1900-02-29", "2100-02-29", "2023-02-29", "2020-04-31",
+                           "2020-02-30", "2020-00-01", "2020-01-00", "2020--1-02",
+                           "2020-1-02", " 020-01-01"}) {
+    EXPECT_FALSE(detail::date_to_nanos(date).has_value()) << date;
+  }
+  // The midnight immediately inside each signed nanosecond boundary is valid;
+  // the adjacent midnight is outside it. No overflowing multiply is attempted.
+  constexpr atx::i64 kDay = 86400LL * 1000000000LL;
+  EXPECT_EQ(detail::date_to_nanos("1677-09-22"), -106751LL * kDay);
+  EXPECT_EQ(detail::date_to_nanos("2262-04-11"), 106751LL * kDay);
+  for (const char *date : {"1677-09-21", "2262-04-12", "0000-01-01", "9999-12-31"}) {
+    EXPECT_FALSE(detail::date_to_nanos(date).has_value()) << date;
+  }
+  EXPECT_EQ(detail::date_to_nanos("1969-12-31"), -kDay);
+}
+
 TEST(DataOratsHistory, ResolveHeaderFindsProjectedColumns) {
   auto idx = detail::resolve_header(kHeader);
   ASSERT_TRUE(idx.has_value()) << idx.error().to_string();
@@ -65,7 +85,7 @@ namespace {
 // One TSV data row: 71 tab-separated fields; fill only the ones the loader
 // projects, zeros elsewhere.
 std::string make_orats_row(const char *date, const char *secid, const char *tk, const char *today,
-                           double close, double cumret, double shares) {
+                           double close, double cumret, double shares, const char *gics = "5") {
   std::array<std::string, 71> f;
   for (auto &x : f) x = "0";
   f[0] = date; f[1] = secid; f[2] = tk; f[3] = today;
@@ -73,7 +93,7 @@ std::string make_orats_row(const char *date, const char *secid, const char *tk, 
   f[8] = std::to_string(close);                    // close (col 9, idx 8)
   f[10] = std::to_string(static_cast<long long>(shares)); // volume placeholder
   f[11] = std::to_string(static_cast<long long>(shares)); // shares (idx 11)
-  f[62] = "5";                                     // GICS (idx 62)
+  f[62] = gics;                                    // GICS (idx 62)
   f[65] = std::to_string(cumret);                  // cumulReturnFactor (idx 65)
   std::string line;
   for (size_t i = 0; i < f.size(); ++i) { line += f[i]; if (i + 1 < f.size()) line += '\t'; }
@@ -102,7 +122,111 @@ std::string make_orats_zip() {
   body += make_orats_row("2020-01-03", "33449", "AAPL", "AAPL", 303.0, 1.0, 4000000000);
   return write_orats_zip(body, "atx_orats_tiny.zip");
 }
+
+fs::path guard_output(const char *tag) {
+  return fs::temp_directory_path() / (std::string("atx_orats_guard_") + tag);
+}
+
+atx::core::Result<OratsLoadStats> load_guard_rows(const std::string &rows, const char *tag,
+                                                bool exclude_no_sector = false) {
+  const std::string filename = std::string("atx_orats_guard_") + tag + ".zip";
+  const std::string zip = write_orats_zip(std::string(kHeader) + "\n" + rows, filename.c_str());
+  const fs::path out = guard_output(tag);
+  fs::remove_all(out);
+  OratsLoadConfig cfg;
+  cfg.zip_path = zip;
+  cfg.out_dir = out.string();
+  cfg.min_date_nanos = *detail::date_to_nanos("2020-01-01");
+  cfg.created_at_nanos = 0;
+  cfg.exclude_no_sector = exclude_no_sector;
+  return load_orats_history(cfg);
+}
 } // namespace
+
+TEST(DataOratsHistory, InvalidKeysAreCountedAndPositiveIdsAreCanonicalized) {
+  std::string rows;
+  for (const char *id : {"", "0", "-1", "12x", "+12", " 12", "9223372036854775808", "abc"}) {
+    rows += make_orats_row("2020-01-02", id, "BAD", "BAD", 100.0, 1.0, 1000);
+  }
+  rows += make_orats_row("2020-01-02", "00012", "A", "A", 101.0, 1.0, 1000);
+  rows += make_orats_row("2020-01-02", "9223372036854775807", "B", "B", 102.0, 1.0, 1000);
+  const auto st = load_guard_rows(rows, "keys");
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  EXPECT_EQ(st->rows_read, 10);
+  EXPECT_EQ(st->rows_malformed, 8);
+  EXPECT_EQ(st->rows_kept, 2);
+  EXPECT_EQ(st->distinct_securities, 2);
+  EXPECT_EQ(st->rows_read, st->rows_filtered + st->rows_malformed + st->rows_kept);
+  auto rdr = atx::tsdb::SegmentReader::attach((guard_output("keys") / "2020-01-02.seg").string());
+  ASSERT_TRUE(rdr.has_value()) << rdr.error().to_string();
+  EXPECT_EQ(rdr->instrument_count(), 2u);
+  EXPECT_EQ(rdr->symbol_name(0), "12");
+  EXPECT_EQ(rdr->symbol_name(1), "9223372036854775807");
+}
+
+TEST(DataOratsHistory, InvalidCalendarRowsAreCountedWithoutAliasingAnotherDate) {
+  std::string rows = make_orats_row("2020-02-30", "12", "A", "A", 900.0, 1.0, 1000);
+  rows += make_orats_row("9999-12-31", "12", "A", "A", 800.0, 1.0, 1000);
+  rows += make_orats_row("2020-03-01", "12", "A", "A", 100.0, 1.0, 1000);
+  const auto st = load_guard_rows(rows, "calendar");
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  EXPECT_EQ(st->rows_malformed, 2);
+  EXPECT_EQ(st->rows_kept, 1);
+  EXPECT_EQ(st->dates_written, 1);
+  EXPECT_FALSE(fs::exists(guard_output("calendar") / "2020-02-30.seg"));
+}
+
+TEST(DataOratsHistory, DuplicatePositiveKeyFailsBeforeWritingConflictingDate) {
+  for (const char *second_id : {"33449", "033449"}) {
+    std::string rows = make_orats_row("2020-01-02", "33449", "AAPL", "AAPL", 300.0, 1.0, 1000);
+    rows += make_orats_row("2020-01-02", second_id, "AAPL", "AAPL", 900.0, 1.0, 1000);
+    const auto st = load_guard_rows(rows, "duplicates");
+    ASSERT_FALSE(st.has_value()) << second_id;
+    EXPECT_EQ(st.error().code(), atx::core::ErrorCode::InvalidArgument);
+    EXPECT_NE(st.error().to_string().find("33449"), std::string::npos);
+    EXPECT_NE(st.error().to_string().find("2020-01-02"), std::string::npos);
+    EXPECT_FALSE(fs::exists(guard_output("duplicates") / "2020-01-02.seg"));
+    EXPECT_FALSE(fs::exists(guard_output("duplicates") / "_manifest.json"));
+  }
+}
+
+TEST(DataOratsHistory, DuplicateKeyGuardPrecedesSectorFilter) {
+  std::string rows = make_orats_row("2020-01-02", "12", "A", "A", 100.0, 1.0, 1000, "");
+  rows += make_orats_row("2020-01-02", "12", "A", "A", 101.0, 1.0, 1000);
+  const auto st = load_guard_rows(rows, "sector_duplicate", true);
+  ASSERT_FALSE(st.has_value());
+  EXPECT_EQ(st.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(DataOratsHistory, DuplicateSubfloorKeysAreFilteredAndIdsCanRepeatOnLaterDates) {
+  std::string rows;
+  rows += make_orats_row("2019-12-31", "12", "A", "A", 98.0, 1.0, 1000);
+  rows += make_orats_row("2019-12-31", "12", "A", "A", 99.0, 1.0, 1000);
+  rows += make_orats_row("2020-01-02", "12", "A", "A", 100.0, 1.0, 1000);
+  rows += make_orats_row("2020-01-03", "00012", "A", "A", 101.0, 1.0, 1000);
+  const auto st = load_guard_rows(rows, "key_scope");
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  EXPECT_EQ(st->rows_filtered, 2);
+  EXPECT_EQ(st->rows_kept, 2);
+  EXPECT_EQ(st->dates_written, 2);
+  EXPECT_EQ(st->distinct_securities, 1);
+}
+
+TEST(DataOratsHistory, DateRegressionIsDetectedAmongSubfloorRows) {
+  std::string rows = make_orats_row("2019-12-31", "12", "A", "A", 100.0, 1.0, 1000);
+  rows += make_orats_row("2019-12-30", "12", "A", "A", 100.0, 1.0, 1000);
+  const auto st = load_guard_rows(rows, "subfloor_order");
+  ASSERT_FALSE(st.has_value());
+  EXPECT_EQ(st.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(DataOratsHistory, DateRegressionIsDetectedAfterMalformedIdentity) {
+  std::string rows = make_orats_row("2020-01-03", "0", "BAD", "BAD", 100.0, 1.0, 1000);
+  rows += make_orats_row("2020-01-02", "12", "A", "A", 100.0, 1.0, 1000);
+  const auto st = load_guard_rows(rows, "invalid_id_order");
+  ASSERT_FALSE(st.has_value());
+  EXPECT_EQ(st.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
 
 TEST(DataOratsHistory, LoadsTinyZipIntoPerDateSegments) {
   const std::string zip = make_orats_zip();

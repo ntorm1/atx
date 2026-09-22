@@ -4,6 +4,7 @@
 #include <limits>
 #include <map>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -13,6 +14,7 @@
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/data/history_panel.hpp"  // kHistField* constants
 #include "atx/engine/data/orats_history.hpp"   // kOratsFields
+#include "atx/engine/data/point_in_time_universe.hpp" // PitMembershipImage (allow-list union)
 #include "atx/tsdb/load_parquet.hpp"           // build_from_long, LongColumns
 
 #include "config.hpp"
@@ -27,6 +29,21 @@ namespace {
 namespace fs = std::filesystem;
 using atx::engine::alpha::FieldId;
 using atx::engine::alpha::Panel;
+
+// Recursive fixture cleanup is confined to resolved, direct children of temp.
+void remove_owned_test_tree(const fs::path& path, std::error_code& ec) {
+    const auto temp_root = fs::weakly_canonical(fs::temp_directory_path(), ec);
+    if (ec) { ADD_FAILURE() << ec.message(); return; }
+    const auto target = fs::weakly_canonical(path, ec);
+    if (ec || target.parent_path() != temp_root ||
+        target.filename().string().rfind("atx_impl_", 0) != 0) {
+        ADD_FAILURE() << "refusing recursive cleanup outside owned temp fixture: " << path;
+        ec = std::make_error_code(std::errc::invalid_argument);
+        return;
+    }
+    fs::remove_all(target, ec);
+    EXPECT_FALSE(ec) << ec.message();
+}
 
 // Build a small owned 2-date × 3-instrument Panel with 2 fields.
 // "close": cells [0,1,NaN, 4,5,6]  (NaN at cell [0,2] — date 0, instr 2)
@@ -215,7 +232,7 @@ TEST(AtxImplPanel, BuildsPanelFromSegments) {
     const fs::path seg_dir = fs::temp_directory_path() / "atx_impl_panel_synth_seg";
     {
         std::error_code ec;
-        fs::remove_all(seg_dir, ec);
+        remove_owned_test_tree(seg_dir, ec);
         fs::create_directories(seg_dir, ec);
     }
 
@@ -235,6 +252,8 @@ TEST(AtxImplPanel, BuildsPanelFromSegments) {
     const std::string panel_out =
         (fs::temp_directory_path() / "atx_impl_panel_synth_out.bin").string();
     fs::remove(fs::path(panel_out));
+    fs::remove(fs::path(panel_out + ".manifest.json"));
+    fs::remove(fs::path(panel_out + ".meta.txt"));
 
     atx::impl::RunConfig cfg;
     cfg.segs       = seg_dir.string();
@@ -277,9 +296,11 @@ TEST(AtxImplPanel, BuildsPanelFromSegments) {
     // ---- clean up ----
     {
         std::error_code ec;
-        fs::remove_all(seg_dir, ec);
+        remove_owned_test_tree(seg_dir, ec);
     }
     fs::remove(fs::path(panel_out));
+    fs::remove(fs::path(panel_out + ".manifest.json"));
+    fs::remove(fs::path(panel_out + ".meta.txt"));
 }
 
 // ---------------------------------------------------------------------------
@@ -294,7 +315,7 @@ TEST(AtxImplPanel, DefaultPathByteIdentical) {
     const fs::path seg_dir = fs::temp_directory_path() / "atx_impl_s62_default_seg";
     {
         std::error_code ec;
-        fs::remove_all(seg_dir, ec);
+        remove_owned_test_tree(seg_dir, ec);
         fs::create_directories(seg_dir, ec);
     }
 
@@ -312,6 +333,7 @@ TEST(AtxImplPanel, DefaultPathByteIdentical) {
         const std::string panel_out =
             (fs::temp_directory_path() / (std::string("atx_impl_s62_") + tag + ".bin")).string();
         fs::remove(fs::path(panel_out));
+        fs::remove(fs::path(panel_out + ".manifest.json"));
         fs::remove(fs::path(panel_out + ".meta.txt"));
         atx::impl::RunConfig cfg;
         cfg.segs         = seg_dir.string();
@@ -332,12 +354,16 @@ TEST(AtxImplPanel, DefaultPathByteIdentical) {
     const std::string bb((std::istreambuf_iterator<char>(fb)), std::istreambuf_iterator<char>());
     EXPECT_FALSE(ba.empty());
     EXPECT_EQ(ba, bb) << "default-path run_panel must be byte-identical across runs";
+    fa.close();
+    fb.close();
 
     {
         std::error_code ec;
-        fs::remove_all(seg_dir, ec);
+        remove_owned_test_tree(seg_dir, ec);
         fs::remove(fs::path(a), ec);
         fs::remove(fs::path(b), ec);
+        fs::remove(fs::path(a + ".manifest.json"), ec);
+        fs::remove(fs::path(b + ".manifest.json"), ec);
         fs::remove(fs::path(a + ".meta.txt"), ec);
         fs::remove(fs::path(b + ".meta.txt"), ec);
     }
@@ -359,7 +385,7 @@ TEST(AtxImplPanel, SidecarMetaWrittenAlongsidePanel) {
         fs::temp_directory_path() / "atx_impl_sidecar_synth_seg";
     {
         std::error_code ec;
-        fs::remove_all(seg_dir, ec);
+        remove_owned_test_tree(seg_dir, ec);
         fs::create_directories(seg_dir, ec);
     }
 
@@ -378,6 +404,7 @@ TEST(AtxImplPanel, SidecarMetaWrittenAlongsidePanel) {
         (fs::temp_directory_path() / "atx_impl_sidecar_out.bin").string();
     const std::string meta_path = panel_out + ".meta.txt";
     fs::remove(fs::path(panel_out));
+    fs::remove(fs::path(panel_out + ".manifest.json"));
     fs::remove(fs::path(meta_path));
 
     atx::impl::RunConfig cfg;
@@ -443,8 +470,118 @@ TEST(AtxImplPanel, SidecarMetaWrittenAlongsidePanel) {
     mf.close(); // close before removal so Windows can unlink the sidecar
     {
         std::error_code ec;
-        fs::remove_all(seg_dir, ec);
+        remove_owned_test_tree(seg_dir, ec);
     }
     fs::remove(fs::path(panel_out));
+    fs::remove(fs::path(panel_out + ".manifest.json"));
     fs::remove(fs::path(meta_path));
+}
+
+// ---------------------------------------------------------------------------
+// (D) Checkpoint 16 — point-in-time membership restriction on the panel stage.
+//
+// Two contracts, both cheap and file-free: the three flags are all-or-none, and
+// the allow-list union rule reaches back to the last rebalance effective BEFORE
+// the evaluation start (the cut a session at eval_start actually trades under).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+atx::core::Result<atx::impl::RunConfig> parse_panel_args(std::vector<std::string> args) {
+    std::vector<char*> argv;
+    argv.reserve(args.size());
+    for (auto& arg : args) argv.push_back(arg.data());
+    return atx::impl::parse_args(static_cast<int>(argv.size()), argv.data());
+}
+
+// One rebalance carrying a single cut (top_n_count == band_count == 1).
+atx::engine::data::PitMembershipRebalance one_cut_rebalance(atx::i64 effective,
+                                                            std::vector<atx::i64> ids) {
+    atx::engine::data::PitMembershipRebalance rebalance{};
+    rebalance.rank_session_key = effective - 86400LL * 1'000'000'000LL;
+    rebalance.effective_session_key = effective;
+    atx::engine::data::PitMembershipCut cut;
+    cut.ranks.assign(ids.size(), 1U);
+    cut.security_ids = std::move(ids);
+    rebalance.cuts.push_back(std::move(cut));
+    return rebalance;
+}
+
+} // namespace
+
+TEST(AtxImplPanelMembership, RestrictionFlagsAreAllThreeOrNone) {
+    const std::vector<std::string> base{"atx-impl", "panel", "--segs", "s", "--panel-out", "p"};
+    const auto none = parse_panel_args(base);
+    ASSERT_TRUE(none.has_value()) << none.error().to_string();
+    EXPECT_TRUE(none->panel_universe_membership.empty());
+    EXPECT_TRUE(none->panel_universe_cut.empty());
+    EXPECT_TRUE(none->panel_universe_eval_start.empty());
+
+    auto all = base;
+    all.insert(all.end(), {"--universe-membership", "membership.bin",
+                           "--universe-cut", "3000:0.00",
+                           "--universe-eval-start", "2013-01-02"});
+    const auto complete = parse_panel_args(all);
+    ASSERT_TRUE(complete.has_value()) << complete.error().to_string();
+    EXPECT_EQ(complete->panel_universe_membership, "membership.bin");
+    EXPECT_EQ(complete->panel_universe_cut, "3000:0.00");
+    EXPECT_EQ(complete->panel_universe_eval_start, "2013-01-02");
+    EXPECT_TRUE(complete->set_flags.contains("universe-membership"));
+    EXPECT_TRUE(complete->set_flags.contains("universe-cut"));
+    EXPECT_TRUE(complete->set_flags.contains("universe-eval-start"));
+
+    // Every strict subset is rejected: a partial set would silently pick a cut or a
+    // window the operator never named.
+    const std::vector<std::vector<std::string>> partials{
+        {"--universe-membership", "membership.bin"},
+        {"--universe-cut", "3000:0.00"},
+        {"--universe-eval-start", "2013-01-02"},
+        {"--universe-membership", "membership.bin", "--universe-cut", "3000:0.00"},
+        {"--universe-membership", "membership.bin", "--universe-eval-start", "2013-01-02"},
+        {"--universe-cut", "3000:0.00", "--universe-eval-start", "2013-01-02"},
+    };
+    for (const auto& partial : partials) {
+        auto args = base;
+        args.insert(args.end(), partial.begin(), partial.end());
+        SCOPED_TRACE(partial.front() + " (" + std::to_string(partial.size() / 2) + " of 3)");
+        const auto parsed = parse_panel_args(args);
+        ASSERT_FALSE(parsed.has_value());
+        EXPECT_EQ(parsed.error().code(), atx::core::ErrorCode::InvalidArgument);
+    }
+}
+
+TEST(AtxImplPanelMembership, AllowListUnionAddsTheLastRebalanceBeforeEvalStart) {
+    const atx::i64 day = 86400LL * 1'000'000'000LL;
+    const atx::i64 eval_start = 18'263LL * day; // 2020-01-02
+    atx::engine::data::PitMembershipImage image{};
+    image.top_n = {3000U};
+    image.band_bp = {0U};
+    // Two rebalances effective before eval_start (only the LAST one counts), one
+    // inside the window, and one at/after the exclusive end (excluded).
+    image.rebalances.push_back(one_cut_rebalance(eval_start - 400 * day, {11, 12}));
+    image.rebalances.push_back(one_cut_rebalance(eval_start - 30 * day, {21, 22}));
+    image.rebalances.push_back(one_cut_rebalance(eval_start + 90 * day, {22, 31}));
+    image.rebalances.push_back(one_cut_rebalance(eval_start + 900 * day, {41}));
+
+    const atx::i64 end_exclusive = eval_start + 365 * day;
+    const auto ids = atx::impl::pit_membership_allow_ids(image, 0, eval_start, end_exclusive);
+    ASSERT_TRUE(ids.has_value()) << ids.error().to_string();
+    // 11/12 are the stale prior-prior cut; 41 is past --end. The union is ascending
+    // and deduplicated (22 appears in two rebalances).
+    EXPECT_EQ(*ids, (std::vector<atx::i64>{21, 22, 31}));
+
+    // A cut index the image does not carry fails closed rather than reading past it.
+    const auto missing = atx::impl::pit_membership_allow_ids(image, 1, eval_start, end_exclusive);
+    ASSERT_FALSE(missing.has_value());
+    EXPECT_EQ(missing.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+    // No rebalance in or before the window at all -> empty union -> Err, never an
+    // allow-list that would silently blank the panel.
+    atx::engine::data::PitMembershipImage later{};
+    later.top_n = image.top_n;
+    later.band_bp = image.band_bp;
+    later.rebalances.push_back(one_cut_rebalance(end_exclusive + day, {51}));
+    const auto empty = atx::impl::pit_membership_allow_ids(later, 0, eval_start, end_exclusive);
+    ASSERT_FALSE(empty.has_value());
+    EXPECT_EQ(empty.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
