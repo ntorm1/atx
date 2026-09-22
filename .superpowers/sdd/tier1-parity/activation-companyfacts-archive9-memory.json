@@ -28,8 +28,8 @@
   "job_limit_gb": 2.0,
   "status": "running",
   "headroom": {
-    "physical_free_gb": 6.456756591796875,
-    "commit_free_gb": 11.959503173828125
+    "physical_free_gb": 6.934253692626953,
+    "commit_free_gb": 12.16811752319336
   },
   "child_pid": 9256
 }

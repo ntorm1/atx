@@ -1,5 +1,31 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Controller recovery and resume - 2026-09-22 22:14 UTC
+
+Archive9 is TERMINAL. Session43107 was unknown and independent CIM checks
+found no original9208/13708/9256/16436 or other warehouse/guard worker. Its
+running guard receipt is stale and preserved; termination cause is unknown
+after tool turn interruption, not inferred as a memory or source failure.
+Root closed exactly its two orphaned ledgers at22:12:44UTC and checkpointed.
+Actual archive9 datasetUUID **b6dd979e-4c97-4cac-a785-c0114887052c**; no new
+attempt fact rows, retained47,006,241facts/points,31,959,271prices,
+31,934,514customfeatures, schema0319. Evidence: archive9-process-check,
+companyfacts-archive9-interruption-recovery and guarded recovery receipts.
+Recovery peak0.923GiB; COMMIT/CHECKPOINT passed.
+
+Archive10 is LIVE, session53839, guard child7408, resuming that actual archive9
+UUID. Unchanged full archive_members replacement, snapshotSep20, force,
+1GBDuckDB/1thread/2GiBprocess guard, backupkeep100, dummyUA. Startup physical
+free5.002GiB/commit11.253GiB. Read archive10 log/err/memory; inspect its actual
+new datasetUUID only after terminal. Never restart because a poll timed out.
+
+Previous agents were lost during interruption. Fresh Codex agents continue
+saved partial drafts: issuer_query_complete_v2 (Critical/Important repairs),
+eps_bridge_complete_v2 (0321 core bridge), eps_source_complete_v2 (0320
+source review repairs and exclusive registry/jobs/activation draft hooks).
+Static work only while writer runs, no source integration/runtime tests.
+Original review findings/ownership and production sequence remain binding.
+
 ## USER RESUME - authoritative override 2026-09-22 21:54 UTC
 
 User explicitly resumed goal of building FactSet/S&P Compustat competitor.
@@ -23,9 +49,20 @@ Fresh Codex agents only, STATIC DRAFT work while writer lives:
    reported-eps-core-bridge-draft; statement/standardization/derived state
    propagation, nullablevaluecontract, no rawCompanyFacts edits. Freshreview
    required whencomplete;0321registrywaits0320.
-3. review_eps_source_resumed performs the unfinished first source0320 review,
-   report reported-eps-source-review.md. Productionhooks/parser/receipts and
-   originalmetadataresumecompatibility requireactualreview, noassumedpass.
+3. review_eps_source_resumed completed first source0320 review, REJECTED with
+   3Critical(actualspan/headerparser,receipt/factatomicity,weekperiodboundaries),
+   3Important(governedintegration,atomicverifiedcache,bulkresumeclocktests) and
+   1Minor(outcomereasons). Fresh eps_source_critical_repairs now owns STATIC
+   source0320 fixes plus exclusiveDRAFTregistry/jobs/activation/CLIhooks.
+   Preserveoriginalpatch; issuefinalpatch/fixreport thenCritical-onlyrereview.
+   Exactdurationsfor13/14weekissuersmustbeimplemented, notblanketdiscarded.
+   Prior-yearquartercomparativesrequired;sourceonlydoesnotpasscoreEPSquery.
+
+Root extended core0321 draftownership narrowly to provider_coverage/item_coverage
+andfocusedtests for nullable-state usablecoverage. Existingitemcoveragegroups
+sourceaccessionsseparately; evaluatecrossaccessionNULLinvalidationbeforeclaiming
+coveragecorrect. APIownerandcoreownercoordinateequal-clockresolverpriority;
+do notinventuniversalNULL-firstselectionoverunrelatedcompetingsources.
 
 No runtime/tests/DBprobes/imports alongsidewriter. Root owns integration and
 guarded tests later. Registry/jobs/activation serialized. Full objective and

@@ -3,6 +3,16 @@ Spec: docs/superpowers/specs/2026-09-19-tier1-parity-design.md
 Audits: .superpowers/sdd/tier1-parity/audit-atx-db.md, audit-ticker-zip.md
 Baseline: main a79f8371, smoke 6 passed.
 
+## Process interruption recovery - 2026-09-22 22:14 UTC
+
+Archive9 processes/session were independently confirmed absent after a tool
+turn interruption; its stale running receipt is preserved. No source/memory
+failure is inferred. Root recovered exactly its two ledgers and checkpointed
+47,006,241facts/points, no new attempt facts. Actual datasetUUID
+b6dd979e-4c97-4cac-a785-c0114887052c is archive10's predecessor. Archive10
+session53839 now runs under unchanged2GiB/1GB/1thread safeguards. Fresh Codex
+agents continue the three saved isolated drafts; see continuation-queue.md.
+
 ## Explicit user resume - 2026-09-22 21:53 UTC
 
 User resumed: "continue goal of building Factset/S&P compustat competitor".
