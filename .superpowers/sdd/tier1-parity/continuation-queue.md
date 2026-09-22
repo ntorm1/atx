@@ -1,5 +1,26 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Source integrated; core tests running - 2026-09-22 23:25 UTC
+
+Source0320 is committed in1a0e4f73 with its body/registry/job/stage/CLI.
+All source Critical findings are closed. Final22focused source tests and
+3activation contracts pass; initial bulk/existingpress tests had no failures.
+Frozen official CVX index AND exhibit extraction pass. Source integration
+report records exact artifacts, tests and inherited lint findings.
+
+Core0321 finalF6E6712C... has now been applied and root registered its body
+after the committed0320. Core is UNCOMMITTED pending guarded focused tests,
+session78824, reported-eps-core-focused1-{memory.json,log,err}. No other
+runtime may start while that session is live. The production warehouse is
+still0319 with47,906,807facts/points; no live DB migration was performed.
+
+Catalog0322 finalCAE91896... draft is checkpointed02a2c976 with one review;
+bothImportant findings fixed and accepted on implementation report. Apply
+and register only after core0321 commit, then focused runner-upgrade check.
+Next final-HEAD checks: import atx_db, module boundaries, schema contract v2.
+Then archive11 from actual10UUIDade90629-8e06-4186-9ea7-565cbd05e285 under
+unchanged2GiB/1GB/1thread guard and backup-keep100. Fullnon-slow once atgate.
+
 ## Integration window - 2026-09-22 23:12 UTC
 
 Issuer query is committed92cf42c4:5focused+14existing API tests passed;

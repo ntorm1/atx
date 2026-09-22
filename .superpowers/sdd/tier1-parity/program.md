@@ -3,6 +3,15 @@ Spec: docs/superpowers/specs/2026-09-19-tier1-parity-design.md
 Audits: .superpowers/sdd/tier1-parity/audit-atx-db.md, audit-ticker-zip.md
 Baseline: main a79f8371, smoke 6 passed.
 
+## Source integration - 2026-09-22 23:25 UTC
+
+Issuer query92cf42c4 and reportedEPS source0320/1a0e4f73 are integrated,
+reviewed and focused-tested. Actual official CVX EX99 discovery/extraction
+pass. Root has applied/registered core0321 after0320 and is testing it in
+session78824; this is the sole runtime, no warehouse writer. Catalog0322 is
+reviewed draft02a2c976, to follow corecommit. Current live DB remains0319.
+Newest continuation-queue.md entry controls over dated paragraphs below.
+
 ## Current production position - 2026-09-22 23:03 UTC
 
 Archive10 stopped on host headroom under the unchanged guard; actual dataset

@@ -1,9 +1,43 @@
 # Tier-1 activation measurements
 
-This is an interim measurement of the local production warehouse on 2026-09-20,
-after activation-run4 stopped. It is not a completed parity gate or a release.
-Completed counts below came from read-only SQL or the exact staged source file.
-In-flight progress is explicitly identified as loader-log evidence.
+The production snapshot remains 2026-09-20. This page records interim
+measurements, most recently observed on 2026-09-22; it is not a completed
+parity gate or a release. Completed counts come from SQL or pinned source
+artifacts. Dated loader progress below is historical evidence.
+
+## Latest durable warehouse measurement: 2026-09-22
+
+Archive10 stopped under the memory guard at22:48:44 UTC. Recovery committed
+its two failed run records at22:52:07 UTC; independent verification completed
+the checkpoint at23:00:57 UTC. The retained raw facts and points increased by
+900,566 compared with the preceding checkpoint.
+
+| Measurement | Observed result |
+| --- | ---: |
+| Retained SEC CompanyFacts rows | 47,906,807 |
+| Retained fundamental points | 47,906,807 |
+| Daily price rows | 31,959,271 |
+| Custom-feature rows | 31,934,514 |
+| Applied production migration | 0319 |
+| Archive10 attempt rows / loaded CIKs | 1,753,504 / 621 |
+
+Attempt rows include replacements and are not the net increase. Archive10's
+actual dataset run is `ade90629-8e06-4186-9ea7-565cbd05e285`; verified resume
+must use that receipt. The checkpoint verification peaked at1.539GiB under
+the current2GiB process guard. Production DuckDB remains limited to1GB and
+one thread, with one heavy runtime at a time. The guard stopped only its own
+work when host headroom fell; other workloads were left untouched.
+
+Code progress exceeds materialization progress. The CIK-owned issuer query
+surface is committed in92cf42c4 with5focused and14existing API checks passed.
+The SEC reported-quarter EPS source is committed in1a0e4f73 with22focused
+source checks passed; actual Chevron filing-index discovery and Q42025
+extraction also pass. The core bridge has10focused passes but is still being
+integrated with its public nullable-value contract. These tests do not establish
+live metric coverage. The full statement/ratio/growth/daily-market rebuild,
+coverage and quality measurements, signal evaluation, and release remain
+pending. Earlier migration versions and guard limits below describe their
+dated runs rather than the current production state.
 
 Latest successful price publication: **corrected prices were published** by
 `activation-prices-updated-bounded` at 18:00:09 UTC. A separate read-only check at
