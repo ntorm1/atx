@@ -1,0 +1,673 @@
+diff --git a/atx-db/src/atx_db/asof/fundamentals.py b/atx-db/src/atx_db/asof/fundamentals.py
+index 4658f65a..be85055a 100644
+--- a/atx-db/src/atx_db/asof/fundamentals.py
++++ b/atx-db/src/atx_db/asof/fundamentals.py
+@@ -338,3 +338,139 @@ def shares_outstanding_asof(
+         finally:
+             for relation in registered:
+                 store.con.unregister(relation)
++
++
++# Issuer-content reads are deliberately separate from symbol/security resolution.
++# A CIK identifies Company Facts content; it does not prove a historical listing or
++# share class.  The owner set is discovered from source rows at the content clock,
++# because a CIK can legitimately have more than one raw owner across vintages.
++def _normalize_cik(cik: str) -> str:
++    value = cik.strip().upper().removeprefix("CIK").strip()
++    if not value.isdigit():
++        raise ValueError("cik must contain only digits")
++    return value.zfill(10)
++
++
++def issuer_owner_ids_asof(
++    cik: str,
++    content_as_of: dt.datetime,
++    db_path: Path | str = DEFAULT_DB_PATH,
++) -> tuple[str, ...]:
++    """Return every visible raw Company Facts owner for one normalized CIK.
++
++    This intentionally does not invent an ``UNRESOLVED`` owner name.  A later
++    identifier resolution may have put the same CIK under a different owner, so
++    callers receive all distinct visible source owners and can surface ambiguity.
++    """
++    normalized = _normalize_cik(cik)
++    with connect(db_path, read_only=True) as store:
++        rows = store.con.execute(
++            """
++            SELECT DISTINCT security_id
++            FROM fundamental_fact_revisions
++            WHERE lpad(trim(cik), 10, '0') = ?
++              AND coalesce(available_at, source_loaded_at) <= ?
++            ORDER BY security_id
++            """,
++            [normalized, content_as_of],
++        ).fetchall()
++    return tuple(str(row[0]) for row in rows)
++
++
++def _issuer_content_asof(
++    *,
++    table: str,
++    cik: str,
++    content_as_of: dt.datetime,
++    time_column: str,
++    partition: str,
++    revision_order: str | None = None,
++    db_path: Path | str,
++    owner_ids: tuple[str, ...] | None = None,
++) -> pd.DataFrame:
++    """Read one CIK-owned relation without consulting the current directory."""
++    normalized = _normalize_cik(cik)
++    owners = owner_ids if owner_ids is not None else issuer_owner_ids_asof(normalized, content_as_of, db_path)
++    if not owners:
++        return pd.DataFrame()
++    placeholders = ",".join("?" for _ in owners)
++    order = revision_order or "coalesce(b.available_at, b.source_loaded_at) DESC, b.source_loaded_at DESC"
++    with connect(db_path, read_only=True) as store:
++        return store.con.execute(
++            f"""
++            WITH visible AS (
++                SELECT b.*,
++                       row_number() OVER (
++                           PARTITION BY {partition}
++                           ORDER BY {order}
++                       ) AS _revision_rank
++                FROM {table} b
++                WHERE lpad(trim(b.cik), 10, '0') = ?
++                  AND b.security_id IN ({placeholders})
++                  AND coalesce(b.available_at, b.source_loaded_at) <= ?
++                  AND coalesce(b.as_of_date, CAST(coalesce(b.available_at, b.source_loaded_at) AS DATE))
++                      <= CAST(? AS DATE)
++            )
++            SELECT * EXCLUDE (_revision_rank)
++            FROM visible
++            WHERE _revision_rank = 1
++            ORDER BY {time_column}, security_id
++            """,
++            [normalized, *owners, content_as_of, content_as_of],
++        ).df()
++
++
++def issuer_statements_asof(cik: str, content_as_of: dt.datetime, db_path: Path | str = DEFAULT_DB_PATH) -> pd.DataFrame:
++    return _issuer_content_asof(table="fundamental_statement_points", cik=cik, content_as_of=content_as_of,
++        time_column="period_end", partition="b.revision_group_id", db_path=db_path)
++
++
++def issuer_ttm_asof(cik: str, content_as_of: dt.datetime, db_path: Path | str = DEFAULT_DB_PATH) -> pd.DataFrame:
++    return _issuer_content_asof(table="fundamental_ttm_points", cik=cik, content_as_of=content_as_of,
++        time_column="ttm_end_date", partition="b.ttm_revision_group_id", db_path=db_path)
++
++
++def issuer_standardized_asof(cik: str, content_as_of: dt.datetime, db_path: Path | str = DEFAULT_DB_PATH) -> pd.DataFrame:
++    return _issuer_content_asof(table="fundamental_standardized", cik=cik, content_as_of=content_as_of,
++        time_column="period_end", partition="b.security_id, b.item_id, b.basis, b.period_end", db_path=db_path)
++
++
++def issuer_ratios_asof(cik: str, content_as_of: dt.datetime, db_path: Path | str = DEFAULT_DB_PATH) -> pd.DataFrame:
++    return _issuer_content_asof(table="fundamental_ratios", cik=cik, content_as_of=content_as_of,
++        time_column="period_end", partition="b.security_id, b.ratio_code, b.basis, b.period_end", db_path=db_path)
++
++
++def issuer_shares_asof(cik: str, content_as_of: dt.datetime, db_path: Path | str = DEFAULT_DB_PATH) -> pd.DataFrame:
++    return _issuer_content_asof(table="shares_outstanding_history", cik=cik, content_as_of=content_as_of,
++        time_column="effective_date", partition="b.security_id, b.share_count_type", db_path=db_path,
++        revision_order=("b.effective_date DESC, b.as_of_date DESC, coalesce(b.available_at, b.source_loaded_at) DESC, "
++                        "b.source_loaded_at DESC, b.share_history_id DESC"))
++
++
++def issuer_derived_asof(cik: str, content_as_of: dt.datetime, db_path: Path | str = DEFAULT_DB_PATH) -> pd.DataFrame:
++    """Read derived states by discovered owner; do not join a current directory."""
++    owners = issuer_owner_ids_asof(cik, content_as_of, db_path)
++    if not owners:
++        return pd.DataFrame()
++    placeholders = ",".join("?" for _ in owners)
++    with connect(db_path, read_only=True) as store:
++        return store.con.execute(
++            f"""
++            WITH visible AS (
++                SELECT d.*,
++                       row_number() OVER (
++                           PARTITION BY coalesce(d.revision_group_id, d.derived_value_id)
++                           ORDER BY coalesce(d.available_at, d.source_loaded_at) DESC,
++                                    d.derived_value_id DESC
++                       ) AS _revision_rank
++                FROM derived_metric_values d
++                WHERE d.security_id IN ({placeholders})
++                  AND coalesce(d.available_at, d.source_loaded_at) <= ?
++                  AND coalesce(d.as_of_date, CAST(coalesce(d.available_at, d.source_loaded_at) AS DATE))
++                      <= CAST(? AS DATE)
++            )
++            SELECT * EXCLUDE (_revision_rank) FROM visible WHERE _revision_rank = 1
++            ORDER BY period_end, security_id, metric_code, derived_value_id
++            """,
++            [*owners, content_as_of, content_as_of],
++        ).df()
+diff --git a/atx-db/src/atx_db/api/catalog.py b/atx-db/src/atx_db/api/catalog.py
+index b5b30dc8..583f30c7 100644
+--- a/atx-db/src/atx_db/api/catalog.py
++++ b/atx-db/src/atx_db/api/catalog.py
+@@ -848,6 +848,112 @@ DELISTINGS_SCHEMA = RecordSchema(
+ )
+ 
+ 
++# These schemas expose source-issuer accounting content.  ``issuer_owner_id``
++# is a Company Facts partition key, never a claim about a tradable security or
++# the historical validity of a current ticker.
++_ISSUER_COMMON_FIELDS: Final[tuple[FieldSpec, ...]] = (
++    FieldSpec("issuer_owner_id", "security_id", "string", "Actual source-owner ID selected from visible rows.", nullable=False),
++    FieldSpec("cik", "cik", "string", "Normalized SEC CIK that selected this issuer content.", nullable=False),
++    FieldSpec("available_at", "available_at", "timestamp", "Selected financial-content availability timestamp."),
++    FieldSpec("as_of_date", "as_of_date", "date", "Source observation date."),
++    FieldSpec("source_loaded_at", "source_loaded_at", "timestamp", "Warehouse load timestamp."),
++)
++
++ISSUER_STATEMENTS_SCHEMA = RecordSchema(
++    dataset="ATX.US.ISSUER_CONTENT", code="statements", version="1.0.0",
++    title="Issuer-owned financial statements",
++    description="CIK-selected statement points. A source owner is not a historical market security.",
++    source_table="fundamental_statement_points", time_column="period_end", natural_key=("revision_group_id",),
++    item_column="canonical_metric", basis_column="fiscal_period",
++    fields=(
++        *_ISSUER_COMMON_FIELDS,
++        FieldSpec("item", "canonical_metric", "string", "Canonical statement item.", nullable=False, filterable=True),
++        FieldSpec("period_start", "period_start", "date", "Fiscal duration start."),
++        FieldSpec("period_end", "period_end", "date", "Fiscal period end.", nullable=False),
++        FieldSpec("value", "value", "float64", "Sign-normalized statement value."),
++        FieldSpec("unit", "unit", "string", "As-filed unit.", nullable=False),
++        FieldSpec("accession_number", "accession_number", "string", "SEC accession lineage."),
++        FieldSpec("source_url", "source_url", "string", "Authoritative filing URL."),
++        FieldSpec("revision_group_id", "revision_group_id", "string", "Statement revision lineage."),
++    ),
++)
++
++ISSUER_STANDARDIZED_SCHEMA = RecordSchema(
++    dataset="ATX.US.ISSUER_CONTENT", code="standardized", version="1.0.0",
++    title="Issuer-owned standardized fundamentals", description="CIK-selected standardized accounting values with filing lineage.",
++    source_table="fundamental_standardized", time_column="period_end", natural_key=("security_id", "item_id", "basis", "period_end"),
++    item_column="canonical_code", basis_column="basis",
++    fields=(
++        *_ISSUER_COMMON_FIELDS,
++        FieldSpec("item", "canonical_code", "string", "Canonical item.", nullable=False, filterable=True),
++        FieldSpec("basis", "basis", "string", "Fiscal basis.", nullable=False, filterable=True),
++        FieldSpec("period_start", "period_start", "date", "Fiscal duration start."),
++        FieldSpec("period_end", "period_end", "date", "Fiscal period end.", nullable=False),
++        FieldSpec("value", "value", "float64", "Standardized value."),
++        FieldSpec("accession_number", "source_accession", "string", "SEC accession lineage."),
++        FieldSpec("rule_id", "rule_id", "string", "Standardization-rule lineage."),
++        FieldSpec("revision_group_id", "revision_group_id", "string", "Standardized revision lineage."),
++    ),
++)
++
++ISSUER_TTM_SCHEMA = RecordSchema(
++    dataset="ATX.US.ISSUER_CONTENT", code="ttm", version="1.0.0",
++    title="Issuer-owned trailing fundamentals", description="CIK-selected trailing values and their statement-point lineage.",
++    source_table="fundamental_ttm_points", time_column="ttm_end_date", natural_key=("ttm_revision_group_id",), item_column="canonical_metric",
++    fields=(
++        *_ISSUER_COMMON_FIELDS,
++        FieldSpec("item", "canonical_metric", "string", "Canonical item.", nullable=False, filterable=True),
++        FieldSpec("period_end", "ttm_end_date", "date", "Trailing-period end.", nullable=False),
++        FieldSpec("value", "ttm_value", "float64", "Trailing value."),
++        FieldSpec("input_statement_point_ids_json", "input_statement_point_ids_json", "json", "Statement-point lineage.", nullable=False),
++        FieldSpec("ttm_revision_group_id", "ttm_revision_group_id", "string", "TTM revision lineage."),
++    ),
++)
++
++ISSUER_RATIOS_SCHEMA = RecordSchema(
++    dataset="ATX.US.ISSUER_CONTENT", code="ratios", version="1.0.0",
++    title="Issuer-owned accounting ratios", description="CIK-selected ratios; market valuation remains outside this issuer surface.",
++    source_table="fundamental_ratios", time_column="period_end", natural_key=("security_id", "ratio_code", "basis", "period_end"), item_column="ratio_code", basis_column="basis",
++    fields=(
++        *_ISSUER_COMMON_FIELDS,
++        FieldSpec("item", "ratio_code", "string", "Ratio code.", nullable=False, filterable=True),
++        FieldSpec("basis", "basis", "string", "Fiscal basis.", nullable=False, filterable=True),
++        FieldSpec("period_end", "period_end", "date", "Fiscal period end.", nullable=False),
++        FieldSpec("value", "value", "float64", "Ratio value."),
++        FieldSpec("input_codes_json", "input_codes_json", "json", "Formula input lineage."),
++    ),
++)
++
++ISSUER_SHARES_SCHEMA = RecordSchema(
++    dataset="ATX.US.ISSUER_CONTENT", code="shares", version="1.0.0",
++    title="Issuer-owned reported shares", description="CIK-selected reported share facts, not a qualified market-share association.",
++    source_table="shares_outstanding_history", time_column="effective_date", natural_key=("share_history_id",), item_column="share_count_type",
++    fields=(
++        *_ISSUER_COMMON_FIELDS,
++        FieldSpec("item", "share_count_type", "string", "Reported share-count type.", nullable=False, filterable=True),
++        FieldSpec("period_end", "effective_date", "date", "Share fact effective date.", nullable=False),
++        FieldSpec("value", "share_count", "float64", "Reported share count.", unit="shares"),
++        FieldSpec("accession_number", "accession_number", "string", "SEC accession lineage."),
++    ),
++)
++
++ISSUER_DERIVED_SCHEMA = RecordSchema(
++    dataset="ATX.US.ISSUER_CONTENT", code="derived-metrics", version="1.0.0",
++    title="Issuer-owned derived metrics", description="Derived accounting states selected by actual source owner; NULL unavailable states are retained.",
++    source_table="derived_metric_values", time_column="period_end", natural_key=("revision_group_id",), item_column="metric_code", basis_column="metric_window",
++    fields=(
++        *_ISSUER_COMMON_FIELDS,
++        FieldSpec("metric", "metric_code", "string", "Derived metric code.", nullable=False, filterable=True),
++        FieldSpec("window", "metric_window", "string", "Metric window.", nullable=False, filterable=True),
++        FieldSpec("period_end", "period_end", "date", "Fiscal period end.", nullable=False),
++        FieldSpec("value", "value", "float64", "Derived value; NULL retains unavailable state."),
++        FieldSpec("value_status", "value_status", "string", "Derived-state status."),
++        FieldSpec("inputs_hash", "inputs_hash", "string", "Selected standardized-input lineage fingerprint."),
++        FieldSpec("revision_group_id", "revision_group_id", "string", "Derived revision lineage."),
++    ),
++)
++
++
+ DATASETS: Final[tuple[DatasetSpec, ...]] = (
+     DatasetSpec(
+         code="ATX.US.FUNDAMENTALS",
+@@ -869,6 +975,13 @@ DATASETS: Final[tuple[DatasetSpec, ...]] = (
+             SECURITY_MASTER_SCHEMA,
+         ),
+     ),
++    DatasetSpec(
++        code="ATX.US.ISSUER_CONTENT", version="1.0.0", title="ATX US Issuer Content",
++        description="CIK-owned accounting content with explicit current lookup and financial-content clocks.",
++        asset_class="issuer_content", region="US", entitlement="us_fundamentals", default_schema="statements",
++        schemas=(ISSUER_STATEMENTS_SCHEMA, ISSUER_STANDARDIZED_SCHEMA, ISSUER_TTM_SCHEMA, ISSUER_RATIOS_SCHEMA,
++                 ISSUER_SHARES_SCHEMA, ISSUER_DERIVED_SCHEMA),
++    ),
+     DatasetSpec(
+         code="ATX.US.EQUITIES",
+         version="1.0.0",
+diff --git a/atx-db/src/atx_db/api/service.py b/atx-db/src/atx_db/api/service.py
+index 1021fe72..18829431 100644
+--- a/atx-db/src/atx_db/api/service.py
++++ b/atx-db/src/atx_db/api/service.py
+@@ -344,6 +344,265 @@ class WarehouseReadService:
+         ).fetchall()
+         return sorted({str(row[0]) for row in rows})
+ 
++    @staticmethod
++    def _normalized_cik(value: str) -> str:
++        candidate = value.strip().upper().removeprefix("CIK").strip()
++        if not candidate.isdigit():
++            raise ApiQueryError("cik must contain only digits")
++        return candidate.zfill(10)
++
++    def resolve_issuer_ticker(
++        self,
++        *,
++        ticker: str,
++        issuer_lookup_as_of: dt.datetime,
++    ) -> dict[str, Any]:
++        """Resolve a current-as-of ticker to a CIK without changing security APIs.
++
++        The historical identifier rows are the authority.  ``sec_company_tickers``
++        is reported only as a current-directory cross-check, so a changed current
++        directory cannot suppress co-visible historical evidence or backdate it.
++        """
++        requested_ticker = ticker.strip().upper()
++        if not requested_ticker:
++            raise ApiQueryError("ticker must not be empty")
++        lookup_at = _naive_utc(issuer_lookup_as_of)
++        with self._connect() as conn:
++            rows = conn.execute(
++                """
++                WITH co_visible AS (
++                    SELECT
++                        ticker.security_id AS directory_security_id,
++                        lpad(trim(cik.id_value), 10, '0') AS lookup_cik,
++                        greatest(ticker.valid_from, cik.valid_from) AS directory_valid_from,
++                        least(coalesce(ticker.valid_to, DATE '9999-12-31'),
++                              coalesce(cik.valid_to, DATE '9999-12-31')) AS directory_valid_to,
++                        greatest(coalesce(ticker.available_at, ticker.source_loaded_at),
++                                 coalesce(cik.available_at, cik.source_loaded_at)) AS directory_available_at,
++                        greatest(ticker.as_of_date, cik.as_of_date) AS directory_as_of_date,
++                        concat(ticker.source, '|', cik.source) AS directory_source,
++                        EXISTS (
++                            SELECT 1 FROM sec_company_tickers current_directory
++                            WHERE current_directory.security_id = ticker.security_id
++                              AND lpad(trim(current_directory.cik), 10, '0') = lpad(trim(cik.id_value), 10, '0')
++                        ) AS current_directory_cross_check
++                    FROM security_identifier_history ticker
++                    JOIN security_identifier_history cik
++                      ON cik.security_id = ticker.security_id AND cik.id_type = 'CIK'
++                    WHERE ticker.id_type = 'TICKER'
++                      AND upper(ticker.id_value) = ?
++                      AND ticker.valid_from <= CAST(? AS DATE)
++                      AND coalesce(ticker.valid_to, DATE '9999-12-31') > CAST(? AS DATE)
++                      AND cik.valid_from <= CAST(? AS DATE)
++                      AND coalesce(cik.valid_to, DATE '9999-12-31') > CAST(? AS DATE)
++                      AND ticker.as_of_date <= CAST(? AS DATE)
++                      AND cik.as_of_date <= CAST(? AS DATE)
++                      AND coalesce(ticker.available_at, ticker.source_loaded_at) <= ?
++                      AND coalesce(cik.available_at, cik.source_loaded_at) <= ?
++                )
++                SELECT * FROM co_visible
++                ORDER BY lookup_cik, directory_security_id, directory_available_at DESC
++                """,
++                [requested_ticker, lookup_at, lookup_at, lookup_at, lookup_at, lookup_at, lookup_at, lookup_at, lookup_at],
++            ).fetchall()
++            columns = [str(column[0]) for column in conn.description]
++        candidates = [dict(zip(columns, row, strict=True)) for row in rows]
++        ciks = sorted({str(row["lookup_cik"]) for row in candidates})
++        if not candidates:
++            return {
++                "requested_ticker": requested_ticker, "issuer_lookup_as_of": issuer_lookup_as_of,
++                "status": "unresolved", "lookup_method": "ticker_cik_history_co_visible",
++                "unavailable_reason": "no_co_visible_ticker_cik_identifier_history",
++            }
++        if len(ciks) != 1:
++            return {
++                "requested_ticker": requested_ticker, "issuer_lookup_as_of": issuer_lookup_as_of,
++                "status": "ambiguous", "lookup_method": "ticker_cik_history_co_visible",
++                "lookup_cik_candidates": ciks, "candidates": candidates,
++                "unavailable_reason": "multiple_co_visible_ciks",
++            }
++        # Multiple rows for the same CIK are retained as evidence but deduplicated
++        # by the stable directory-security/interval tuple for callers.
++        key = lambda row: (row["directory_security_id"], row["directory_valid_from"], row["directory_valid_to"])
++        evidence = list({key(row): row for row in candidates}.values())
++        return {
++            "requested_ticker": requested_ticker, "issuer_lookup_as_of": issuer_lookup_as_of,
++            "status": "resolved", "lookup_cik": ciks[0],
++            "directory_security_id": evidence[0]["directory_security_id"],
++            "directory_valid_from": evidence[0]["directory_valid_from"],
++            "directory_valid_to": evidence[0]["directory_valid_to"],
++            "directory_available_at": evidence[0]["directory_available_at"],
++            "directory_as_of_date": evidence[0]["directory_as_of_date"],
++            "directory_source": evidence[0]["directory_source"],
++            "current_directory_cross_check": evidence[0]["current_directory_cross_check"],
++            "lookup_method": "ticker_cik_history_co_visible", "candidates": evidence,
++        }
++
++    @staticmethod
++    def _issuer_owner_ids(
++        conn: duckdb.DuckDBPyConnection, *, cik: str, content_as_of: dt.datetime
++    ) -> list[str]:
++        rows = conn.execute(
++            """
++            SELECT DISTINCT security_id
++            FROM fundamental_fact_revisions
++            WHERE lpad(trim(cik), 10, '0') = ?
++              AND coalesce(available_at, source_loaded_at) <= ?
++            ORDER BY security_id
++            """,
++            [cik, _naive_utc(content_as_of)],
++        ).fetchall()
++        return [str(row[0]) for row in rows]
++
++    def issuer_content_range(
++        self,
++        *,
++        schema_name: str,
++        start: dt.date,
++        end: dt.date,
++        content_as_of: dt.datetime,
++        cik: str | None = None,
++        ticker: str | None = None,
++        issuer_lookup_as_of: dt.datetime | None = None,
++        items: list[str] | None = None,
++        basis: list[str] | None = None,
++        fields: list[str] | None = None,
++        vintage: str = "latest",
++        limit: int = 10_000,
++    ) -> QueryResult:
++        """Return bounded CIK-owned accounting content and separate lookup provenance."""
++        if end <= start:
++            raise ApiQueryError("end must be later than start; the interval is [start, end)")
++        if bool(cik) == bool(ticker):
++            raise ApiQueryError("supply exactly one of cik or ticker")
++        if limit < 1 or limit > 50_000:
++            raise ApiQueryError("issuer content limit must be between 1 and 50000")
++        if vintage not in {"latest", "first_reported"}:
++            raise ApiQueryError("issuer content vintage must be latest or first_reported")
++        try:
++            schema = get_schema("ATX.US.ISSUER_CONTENT", schema_name)
++        except KeyError as exc:
++            raise SchemaNotFound(f"unknown issuer-content schema {schema_name!r}") from exc
++        lookup: dict[str, Any] | None = None
++        if ticker is not None:
++            if issuer_lookup_as_of is None:
++                raise ApiQueryError("issuer_lookup_as_of is required with ticker")
++            lookup = self.resolve_issuer_ticker(ticker=ticker, issuer_lookup_as_of=issuer_lookup_as_of)
++            if lookup["status"] != "resolved":
++                metadata = {"dataset": schema.dataset, "schema": schema.code, "content_as_of": content_as_of,
++                            "issuer_lookup": lookup, "record_count": 0, "truncated": False}
++                return QueryResult(metadata=metadata, data=[], response_bytes=len(json.dumps(metadata, default=str).encode()), billable_bytes=0)
++            cik = str(lookup["lookup_cik"])
++        assert cik is not None
++        normalized_cik = self._normalized_cik(cik)
++        requested = fields or list(schema.field_names)
++        unknown = sorted(set(requested) - set(schema.field_names))
++        if unknown or len(requested) != len(set(requested)):
++            raise FieldNotFound(f"unknown or duplicate issuer fields: {', '.join(unknown)}")
++        if items and schema.item_column is None:
++            raise ApiQueryError(f"schema {schema.code!r} does not support item filtering")
++        if basis and schema.basis_column is None:
++            raise ApiQueryError(f"schema {schema.code!r} does not support basis filtering")
++
++        with self._connect() as conn:
++            owners = self._issuer_owner_ids(conn, cik=normalized_cik, content_as_of=content_as_of)
++            if owners:
++                rows, columns, truncated = self._issuer_content_rows(
++                    conn, schema=schema, cik=normalized_cik, owners=owners, start=start, end=end,
++                    content_as_of=content_as_of, items=items or [], basis=basis or [], fields=requested,
++                    vintage=vintage, limit=limit,
++                )
++            else:
++                rows, columns, truncated = [], requested, False
++        data = [dict(zip(columns, row, strict=True)) for row in rows]
++        owner_status = "resolved_single_owner" if len(owners) == 1 else ("ambiguous_multiple_visible_owners" if owners else "unresolved_no_visible_source_owner")
++        metadata = {
++            "dataset": schema.dataset, "schema": schema.code, "schema_version": schema.version,
++            "content_as_of": content_as_of, "lookup_cik": normalized_cik, "issuer_owner_ids": owners,
++            "issuer_owner_status": owner_status, "issuer_lookup": lookup,
++            "record_count": len(data), "truncated": truncated, "fields": requested,
++            "owner_semantics": "Company Facts source owner; not a tradable security or historical market association.",
++        }
++        response_bytes = len(json.dumps({"metadata": metadata, "data": data}, default=str, separators=(",", ":")).encode())
++        return QueryResult(metadata=metadata, data=data, response_bytes=response_bytes,
++                           billable_bytes=0 if not data else pa.Table.from_pylist(data).nbytes)
++
++    def _issuer_content_rows(
++        self, conn: duckdb.DuckDBPyConnection, *, schema: RecordSchema, cik: str, owners: list[str],
++        start: dt.date, end: dt.date, content_as_of: dt.datetime, items: list[str], basis: list[str],
++        fields: list[str], vintage: str, limit: int,
++    ) -> tuple[list[tuple[Any, ...]], list[str], bool]:
++        owner_marks = _placeholders(owners)
++        direction = "ASC" if vintage == "first_reported" else "DESC"
++        is_derived = schema.source_table == "derived_metric_values"
++        natural_key = "coalesce(b.revision_group_id, b.derived_value_id)" if is_derived else ", ".join(
++            f"b.{_quote_identifier(name)}" for name in schema.natural_key
++        )
++        revision_order = f"coalesce(b.available_at, b.source_loaded_at) {direction}, b.source_loaded_at {direction}"
++        if schema.source_table == "fundamental_statement_points":
++            revision_order = f"b.as_of_date {direction}, {revision_order}, b.statement_point_id {direction}"
++        elif schema.source_table == "fundamental_ttm_points":
++            revision_order = f"b.as_of_date {direction}, {revision_order}, b.ttm_point_id {direction}"
++        elif schema.source_table == "shares_outstanding_history":
++            revision_order = (
++                "b.effective_date DESC, b.as_of_date DESC, "
++                "coalesce(b.available_at, b.source_loaded_at) DESC, "
++                "b.source_loaded_at DESC, b.share_history_id DESC"
++            )
++        elif is_derived:
++            revision_order = f"coalesce(b.available_at, b.source_loaded_at) {direction}, b.derived_value_id {direction}"
++        cik_condition = "" if is_derived else "AND lpad(trim(b.cik), 10, '0') = ?"
++        params: list[object] = [*owners]
++        if not is_derived:
++            params.append(cik)
++        params.extend([_naive_utc(content_as_of), _naive_utc(content_as_of)])
++        conditions = [f"b.security_id IN ({owner_marks})", cik_condition.removeprefix("AND "),
++                      "coalesce(b.available_at, b.source_loaded_at) <= ?",
++                      "coalesce(b.as_of_date, CAST(coalesce(b.available_at, b.source_loaded_at) AS DATE)) <= CAST(? AS DATE)"]
++        conditions = [condition for condition in conditions if condition]
++        if not is_derived:
++            conditions[:0] = [f"b.{_quote_identifier(schema.time_column)} >= ?", f"b.{_quote_identifier(schema.time_column)} < ?"]
++            params = [start, end, *params]
++        if items:
++            conditions.append(f"b.{_quote_identifier(schema.item_column or '')} IN ({_placeholders(items)})")
++            params.extend(items)
++        if basis:
++            conditions.append(f"b.{_quote_identifier(schema.basis_column or '')} IN ({_placeholders(basis)})")
++            params.extend(basis)
++        selected: list[str] = []
++        for name in fields:
++            if name == "issuer_owner_id":
++                selected.append('v.security_id AS "issuer_owner_id"')
++            elif name == "cik" and is_derived:
++                selected.append('? AS "cik"')
++            else:
++                selected.append(f"v.{_quote_identifier(schema.field(name).source_column)} AS {_quote_identifier(name)}")
++        if is_derived and "cik" in fields:
++            params.append(cik)
++        output_range = ""
++        if is_derived:
++            output_range = f"AND v.{_quote_identifier(schema.time_column)} >= ? AND v.{_quote_identifier(schema.time_column)} < ?"
++            params.extend([start, end])
++        sql = f"""
++            WITH visible AS (
++                SELECT b.*, row_number() OVER (
++                    PARTITION BY {natural_key}
++                    ORDER BY {revision_order}
++                ) AS _revision_rank
++                FROM {_quote_identifier(schema.source_table)} b
++                WHERE {' AND '.join(conditions)}
++            )
++            SELECT {', '.join(selected)} FROM visible v
++            WHERE v._revision_rank = 1 {output_range}
++            ORDER BY v.{_quote_identifier(schema.time_column)}, v.security_id
++            LIMIT ?
++        """
++        params.append(limit + 1)
++        cursor = conn.execute(sql, params)
++        rows = cursor.fetchall()
++        columns = [str(column[0]) for column in cursor.description]
++        return rows[:limit], columns, len(rows) > limit
++
+     @staticmethod
+     def _projected_fields(request: RangeRequest, schema: RecordSchema) -> list[str]:
+         requested = request.fields or list(schema.field_names)
+diff --git a/atx-db/tests/test_issuer_content_query.py b/atx-db/tests/test_issuer_content_query.py
+new file mode 100644
+index 00000000..7f784649
+--- /dev/null
++++ b/atx-db/tests/test_issuer_content_query.py
+@@ -0,0 +1,84 @@
++from __future__ import annotations
++
++import datetime as dt
++
++import duckdb
++
++from atx_db.api.service import WarehouseReadService
++
++
++def _service(tmp_path) -> WarehouseReadService:
++    path = tmp_path / "issuer-content.duckdb"
++    with duckdb.connect(str(path)) as conn:
++        conn.execute("""
++            CREATE TABLE security_identifier_history (
++                security_id VARCHAR, id_type VARCHAR, id_value VARCHAR, valid_from DATE,
++                valid_to DATE, as_of_date DATE, available_at TIMESTAMP, source VARCHAR,
++                source_loaded_at TIMESTAMP
++            )
++        """)
++        conn.execute("CREATE TABLE sec_company_tickers (cik VARCHAR, ticker VARCHAR, title VARCHAR, security_id VARCHAR)")
++        conn.execute("""
++            CREATE TABLE fundamental_fact_revisions (
++                security_id VARCHAR, cik VARCHAR, available_at TIMESTAMP, source_loaded_at TIMESTAMP
++            )
++        """)
++        conn.execute("""
++            CREATE TABLE derived_metric_values (
++                derived_value_id VARCHAR, revision_group_id VARCHAR, security_id VARCHAR,
++                metric_code VARCHAR, metric_window VARCHAR, period_end DATE, value DOUBLE,
++                value_status VARCHAR, inputs_hash VARCHAR, as_of_date DATE,
++                available_at TIMESTAMP, source_loaded_at TIMESTAMP, run_id VARCHAR
++            )
++        """)
++        conn.executemany(
++            "INSERT INTO security_identifier_history VALUES (?,?,?,?,?,?,?,?,?)",
++            [
++                ("SEC-MARKET", "TICKER", "AAA", dt.date(2026, 9, 20), None, dt.date(2026, 9, 20), dt.datetime(2026, 9, 20, 9), "directory", dt.datetime(2026, 9, 20, 9)),
++                ("SEC-MARKET", "CIK", "0000000123", dt.date(2026, 9, 20), None, dt.date(2026, 9, 20), dt.datetime(2026, 9, 20, 9), "directory", dt.datetime(2026, 9, 20, 9)),
++            ],
++        )
++        # The same CIK has two source owners across vintages.  No directory row
++        # is inserted: direct CIK content selection must still be usable.
++        conn.executemany(
++            "INSERT INTO fundamental_fact_revisions VALUES (?,?,?,?)",
++            [
++                ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000123", "0000000123", dt.datetime(2026, 1, 1), dt.datetime(2026, 1, 1)),
++                ("SEC-COMPANYFACTS-RESOLVED-CIK-0000000123", "0000000123", dt.datetime(2026, 7, 1), dt.datetime(2026, 7, 1)),
++            ],
++        )
++        conn.executemany(
++            "INSERT INTO derived_metric_values VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
++            [
++                ("old-valid", "eps-q1", "SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000123", "eps_diluted_q_growth_yoy", "q", dt.date(2026, 3, 31), 1.0, "valid", "old", dt.date(2026, 3, 31), dt.datetime(2026, 5, 1), dt.datetime(2026, 5, 1), "seed"),
++                ("old-unavailable", "eps-q1", "SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000123", "eps_diluted_q_growth_yoy", "q", dt.date(2026, 3, 31), None, "missing_input_or_domain", "new", dt.date(2026, 3, 31), dt.datetime(2026, 6, 1), dt.datetime(2026, 6, 1), "seed"),
++                ("resolved", "eps-q2", "SEC-COMPANYFACTS-RESOLVED-CIK-0000000123", "eps_diluted_q_growth_yoy", "q", dt.date(2026, 6, 30), 2.0, "valid", "resolved", dt.date(2026, 6, 30), dt.datetime(2026, 8, 1), dt.datetime(2026, 8, 1), "seed"),
++            ],
++        )
++    return WarehouseReadService(path)
++
++
++def test_issuer_content_discovers_actual_owners_and_keeps_latest_null_state(tmp_path) -> None:
++    result = _service(tmp_path).issuer_content_range(
++        schema_name="derived-metrics", cik="123", start=dt.date(2026, 1, 1), end=dt.date(2026, 7, 1),
++        content_as_of=dt.datetime(2026, 9, 1, tzinfo=dt.UTC), fields=["issuer_owner_id", "cik", "period_end", "value", "value_status"],
++    )
++    assert result.metadata["issuer_owner_status"] == "ambiguous_multiple_visible_owners"
++    assert result.metadata["issuer_owner_ids"] == [
++        "SEC-COMPANYFACTS-RESOLVED-CIK-0000000123", "SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000123",
++    ]
++    assert {(row["issuer_owner_id"], row["value"], row["value_status"]) for row in result.data} == {
++        ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000123", None, "missing_input_or_domain"),
++        ("SEC-COMPANYFACTS-RESOLVED-CIK-0000000123", 2.0, "valid"),
++    }
++
++
++def test_ticker_lookup_uses_co_visible_history_without_current_directory_gate(tmp_path) -> None:
++    lookup = _service(tmp_path).resolve_issuer_ticker(
++        ticker="aaa", issuer_lookup_as_of=dt.datetime(2026, 9, 20, 12, tzinfo=dt.UTC),
++    )
++    assert lookup["status"] == "resolved"
++    assert lookup["lookup_cik"] == "0000000123"
++    assert lookup["current_directory_cross_check"] is False
++    assert lookup["directory_valid_from"] == dt.date(2026, 9, 20)
++
+diff --git a/atx-db/docs/ISSUER_CONTENT_QUERY.md b/atx-db/docs/ISSUER_CONTENT_QUERY.md
+new file mode 100644
+index 00000000..7c6c201f
+--- /dev/null
++++ b/atx-db/docs/ISSUER_CONTENT_QUERY.md
+@@ -0,0 +1,32 @@
++# Issuer-content query surface
++
++`ATX.US.ISSUER_CONTENT` is a bounded, read-only accounting surface keyed by a
++normalized SEC CIK and the visible Company Facts `issuer_owner_id`.  The owner
++is a source partition, not a tradable security, share class, or proof that a
++ticker was valid at an earlier filing or bar date.
++
++Use `WarehouseReadService.resolve_issuer_ticker(ticker=..., issuer_lookup_as_of=...)`
++to select a CIK from co-visible `TICKER` and `CIK` identifier-history rows.
++The result includes the identifier interval, availability, as-of date, source,
++and an advisory current-directory cross-check.  Current directory contents do
++not authorize or veto the historical lookup.
++
++Use `issuer_content_range(..., content_as_of=...)` to read statements,
++standardized values, TTM, ratios, shares, or derived metrics.  Direct `cik=`
++selection does not require a ticker directory.  With `ticker=`,
++`issuer_lookup_as_of` is required and remains distinct from `content_as_of`.
++
++The content query discovers actual visible owner IDs from
++`fundamental_fact_revisions` for the exact normalized CIK.  It returns every
++visible owner and labels more than one as
++`ambiguous_multiple_visible_owners`; it never fabricates an unresolved-owner
++identifier or combines different CIKs.  Derived values are selected by those
++owners because that table has no CIK.  Its latest state is ranked before the
++requested period range is filtered, so a later NULL/unavailable invalidation
++does not resurrect an older valid value.
++
++No market valuation conclusion follows from this surface.  Current directory
++evidence may identify a present market-security candidate, but remains
++unqualified for historical market cap, valuation multiples, panels, backtests,
++or certified historical output until dated class-specific identifier evidence
++covers the relevant fact or bar time.

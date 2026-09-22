@@ -1,0 +1,304 @@
+"""Ordered migration registry assembly."""
+
+from __future__ import annotations
+
+from .bodies_0001_0137 import MIGRATIONS as _MIGRATIONS_0001_0137
+from .bodies_0140_0143 import MIGRATIONS as _MIGRATIONS_0140_0143
+from .bodies_0144_0147 import MIGRATIONS as _MIGRATIONS_0144_0147
+from .bodies_0148_0151 import MIGRATIONS as _MIGRATIONS_0148_0151
+from .bodies_0152_0155 import MIGRATIONS as _MIGRATIONS_0152_0155
+from .bodies_0156_0159 import MIGRATIONS as _MIGRATIONS_0156_0159
+from .bodies_0160_0163 import MIGRATIONS as _MIGRATIONS_0160_0163
+from .bodies_0164_0167 import MIGRATIONS as _MIGRATIONS_0164_0167
+from .bodies_0176_0179 import MIGRATIONS as _MIGRATIONS_0176_0179
+from .bodies_0180_0183 import MIGRATIONS as _MIGRATIONS_0180_0183
+from .bodies_0185_0188 import MIGRATIONS as _MIGRATIONS_0185_0188
+from .bodies_0189 import MIGRATIONS as _MIGRATIONS_0189
+from .bodies_0190 import MIGRATIONS as _MIGRATIONS_0190
+from .bodies_0191 import MIGRATIONS as _MIGRATIONS_0191
+from .bodies_0192 import MIGRATIONS as _MIGRATIONS_0192
+from .bodies_0193 import MIGRATIONS as _MIGRATIONS_0193
+from .bodies_0194 import MIGRATIONS as _MIGRATIONS_0194
+from .bodies_0195 import MIGRATIONS as _MIGRATIONS_0195
+from .bodies_0196 import MIGRATIONS as _MIGRATIONS_0196
+from .bodies_0197 import MIGRATIONS as _MIGRATIONS_0197
+from .bodies_0198 import MIGRATIONS as _MIGRATIONS_0198
+from .bodies_0199 import MIGRATIONS as _MIGRATIONS_0199
+from .bodies_0200 import MIGRATIONS as _MIGRATIONS_0200
+from .bodies_0201 import MIGRATIONS as _MIGRATIONS_0201
+from .bodies_0202 import MIGRATIONS as _MIGRATIONS_0202
+from .bodies_0203 import MIGRATIONS as _MIGRATIONS_0203
+from .bodies_0204 import MIGRATIONS as _MIGRATIONS_0204
+from .bodies_0205 import MIGRATIONS as _MIGRATIONS_0205
+from .bodies_0206 import MIGRATIONS as _MIGRATIONS_0206
+from .bodies_0207 import MIGRATIONS as _MIGRATIONS_0207
+from .bodies_0208 import MIGRATIONS as _MIGRATIONS_0208
+from .bodies_0209 import MIGRATIONS as _MIGRATIONS_0209
+from .bodies_0210 import MIGRATIONS as _MIGRATIONS_0210
+from .bodies_0211 import MIGRATIONS as _MIGRATIONS_0211
+from .bodies_0212 import MIGRATIONS as _MIGRATIONS_0212
+from .bodies_0213 import MIGRATIONS as _MIGRATIONS_0213
+from .bodies_0214 import MIGRATIONS as _MIGRATIONS_0214
+from .bodies_0215 import MIGRATIONS as _MIGRATIONS_0215
+from .bodies_0216 import MIGRATIONS as _MIGRATIONS_0216
+from .bodies_0217 import MIGRATIONS as _MIGRATIONS_0217
+from .bodies_0218 import MIGRATIONS as _MIGRATIONS_0218
+from .bodies_0219 import MIGRATIONS as _MIGRATIONS_0219
+from .bodies_0220 import MIGRATIONS as _MIGRATIONS_0220
+from .bodies_0221 import MIGRATIONS as _MIGRATIONS_0221
+from .bodies_0222 import MIGRATIONS as _MIGRATIONS_0222
+from .bodies_0223 import MIGRATIONS as _MIGRATIONS_0223
+from .bodies_0224 import MIGRATIONS as _MIGRATIONS_0224
+from .bodies_0225 import MIGRATIONS as _MIGRATIONS_0225
+from .bodies_0226 import MIGRATIONS as _MIGRATIONS_0226
+from .bodies_0227 import MIGRATIONS as _MIGRATIONS_0227
+from .bodies_0228 import MIGRATIONS as _MIGRATIONS_0228
+from .bodies_0229 import MIGRATIONS as _MIGRATIONS_0229
+from .bodies_0230 import MIGRATIONS as _MIGRATIONS_0230
+from .bodies_0231 import MIGRATIONS as _MIGRATIONS_0231
+from .bodies_0232 import MIGRATIONS as _MIGRATIONS_0232
+from .bodies_0233 import MIGRATIONS as _MIGRATIONS_0233
+from .bodies_0234 import MIGRATIONS as _MIGRATIONS_0234
+from .bodies_0235 import MIGRATIONS as _MIGRATIONS_0235
+from .bodies_0236 import MIGRATIONS as _MIGRATIONS_0236
+from .bodies_0237 import MIGRATIONS as _MIGRATIONS_0237
+from .bodies_0238 import MIGRATIONS as _MIGRATIONS_0238
+from .bodies_0239 import MIGRATIONS as _MIGRATIONS_0239
+from .bodies_0240 import MIGRATIONS as _MIGRATIONS_0240
+from .bodies_0241 import MIGRATIONS as _MIGRATIONS_0241
+from .bodies_0242 import MIGRATIONS as _MIGRATIONS_0242
+from .bodies_0243 import MIGRATIONS as _MIGRATIONS_0243
+from .bodies_0244 import MIGRATIONS as _MIGRATIONS_0244
+from .bodies_0245 import MIGRATIONS as _MIGRATIONS_0245
+from .bodies_0246 import MIGRATIONS as _MIGRATIONS_0246
+from .bodies_0247 import MIGRATIONS as _MIGRATIONS_0247
+from .bodies_0248 import MIGRATIONS as _MIGRATIONS_0248
+from .bodies_0249 import MIGRATIONS as _MIGRATIONS_0249
+from .bodies_0250 import MIGRATIONS as _MIGRATIONS_0250
+from .bodies_0251 import MIGRATIONS as _MIGRATIONS_0251
+from .bodies_0252 import MIGRATIONS as _MIGRATIONS_0252
+from .bodies_0253 import MIGRATIONS as _MIGRATIONS_0253
+from .bodies_0254 import MIGRATIONS as _MIGRATIONS_0254
+from .bodies_0255 import MIGRATIONS as _MIGRATIONS_0255
+from .bodies_0256 import MIGRATIONS as _MIGRATIONS_0256
+from .bodies_0257 import MIGRATIONS as _MIGRATIONS_0257
+from .bodies_0258 import MIGRATIONS as _MIGRATIONS_0258
+from .bodies_0259 import MIGRATIONS as _MIGRATIONS_0259
+from .bodies_0260 import MIGRATIONS as _MIGRATIONS_0260
+from .bodies_0261 import MIGRATIONS as _MIGRATIONS_0261
+from .bodies_0262 import MIGRATIONS as _MIGRATIONS_0262
+from .bodies_0263 import MIGRATIONS as _MIGRATIONS_0263
+from .bodies_0264 import MIGRATIONS as _MIGRATIONS_0264
+from .bodies_0265 import MIGRATIONS as _MIGRATIONS_0265
+from .bodies_0266 import MIGRATIONS as _MIGRATIONS_0266
+from .bodies_0267 import MIGRATIONS as _MIGRATIONS_0267
+from .bodies_0268 import MIGRATIONS as _MIGRATIONS_0268
+from .bodies_0269 import MIGRATIONS as _MIGRATIONS_0269
+from .bodies_0270 import MIGRATIONS as _MIGRATIONS_0270
+from .bodies_0271 import MIGRATIONS as _MIGRATIONS_0271
+from .bodies_0272 import MIGRATIONS as _MIGRATIONS_0272
+from .bodies_0273 import MIGRATIONS as _MIGRATIONS_0273
+from .bodies_0274 import MIGRATIONS as _MIGRATIONS_0274
+from .bodies_0275 import MIGRATIONS as _MIGRATIONS_0275
+from .bodies_0276 import MIGRATIONS as _MIGRATIONS_0276
+from .bodies_0277 import MIGRATIONS as _MIGRATIONS_0277
+from .bodies_0278 import MIGRATIONS as _MIGRATIONS_0278
+from .bodies_0279 import MIGRATIONS as _MIGRATIONS_0279
+from .bodies_0280 import MIGRATIONS as _MIGRATIONS_0280
+from .bodies_0281 import MIGRATIONS as _MIGRATIONS_0281
+from .bodies_0282 import MIGRATIONS as _MIGRATIONS_0282
+from .bodies_0283 import MIGRATIONS as _MIGRATIONS_0283
+from .bodies_0284 import MIGRATIONS as _MIGRATIONS_0284
+from .bodies_0285 import MIGRATIONS as _MIGRATIONS_0285
+from .bodies_0286 import MIGRATIONS as _MIGRATIONS_0286
+from .bodies_0287 import MIGRATIONS as _MIGRATIONS_0287
+from .bodies_0288 import MIGRATIONS as _MIGRATIONS_0288
+from .bodies_0289 import MIGRATIONS as _MIGRATIONS_0289
+from .bodies_0290 import MIGRATIONS as _MIGRATIONS_0290
+from .bodies_0291 import MIGRATIONS as _MIGRATIONS_0291
+from .bodies_0292 import MIGRATIONS as _MIGRATIONS_0292
+from .bodies_0293 import MIGRATIONS as _MIGRATIONS_0293
+from .bodies_0294 import MIGRATIONS as _MIGRATIONS_0294
+from .bodies_0295 import MIGRATIONS as _MIGRATIONS_0295
+from .bodies_0296 import MIGRATIONS as _MIGRATIONS_0296
+from .bodies_0298 import MIGRATIONS as _MIGRATIONS_0298
+from .bodies_0299 import MIGRATIONS as _MIGRATIONS_0299
+from .bodies_0300 import MIGRATIONS as _MIGRATIONS_0300
+from .bodies_0301 import MIGRATIONS as _MIGRATIONS_0301
+from .bodies_0302 import MIGRATIONS as _MIGRATIONS_0302
+from .bodies_0303 import MIGRATIONS as _MIGRATIONS_0303
+from .bodies_0304 import MIGRATIONS as _MIGRATIONS_0304
+from .bodies_0305 import MIGRATIONS as _MIGRATIONS_0305
+from .bodies_0306 import MIGRATIONS as _MIGRATIONS_0306
+from .bodies_0307 import MIGRATIONS as _MIGRATIONS_0307
+from .bodies_0308 import MIGRATIONS as _MIGRATIONS_0308
+from .bodies_0309 import MIGRATIONS as _MIGRATIONS_0309
+from .bodies_0310 import MIGRATIONS as _MIGRATIONS_0310
+from .bodies_0311 import MIGRATIONS as _MIGRATIONS_0311
+from .bodies_0312 import MIGRATIONS as _MIGRATIONS_0312
+from .bodies_0313 import MIGRATIONS as _MIGRATIONS_0313
+from .bodies_0314 import MIGRATIONS as _MIGRATIONS_0314
+from .bodies_0315 import MIGRATIONS as _MIGRATIONS_0315
+from .bodies_0316 import MIGRATIONS as _MIGRATIONS_0316
+from .bodies_0317 import MIGRATIONS as _MIGRATIONS_0317
+from .bodies_0318 import MIGRATIONS as _MIGRATIONS_0318
+from .bodies_0319 import MIGRATIONS as _MIGRATIONS_0319
+from .bodies_0320 import MIGRATIONS as _MIGRATIONS_0320
+
+MIGRATIONS = [
+    *_MIGRATIONS_0001_0137,
+    *_MIGRATIONS_0140_0143,
+    *_MIGRATIONS_0144_0147,
+    *_MIGRATIONS_0148_0151,
+    *_MIGRATIONS_0152_0155,
+    *_MIGRATIONS_0156_0159,
+    *_MIGRATIONS_0160_0163,
+    *_MIGRATIONS_0164_0167,
+    *_MIGRATIONS_0176_0179,
+    *_MIGRATIONS_0180_0183,
+    *_MIGRATIONS_0185_0188,
+    *_MIGRATIONS_0189,
+    *_MIGRATIONS_0190,
+    *_MIGRATIONS_0191,
+    *_MIGRATIONS_0192,
+    *_MIGRATIONS_0193,
+    *_MIGRATIONS_0194,
+    *_MIGRATIONS_0195,
+    *_MIGRATIONS_0196,
+    *_MIGRATIONS_0197,
+    *_MIGRATIONS_0198,
+    *_MIGRATIONS_0199,
+    *_MIGRATIONS_0200,
+    *_MIGRATIONS_0201,
+    *_MIGRATIONS_0202,
+    *_MIGRATIONS_0203,
+    *_MIGRATIONS_0204,
+    *_MIGRATIONS_0205,
+    *_MIGRATIONS_0206,
+    *_MIGRATIONS_0207,
+    *_MIGRATIONS_0208,
+    *_MIGRATIONS_0209,
+    *_MIGRATIONS_0210,
+    *_MIGRATIONS_0211,
+    *_MIGRATIONS_0212,
+    *_MIGRATIONS_0213,
+    *_MIGRATIONS_0214,
+    *_MIGRATIONS_0215,
+    *_MIGRATIONS_0216,
+    *_MIGRATIONS_0217,
+    *_MIGRATIONS_0218,
+    *_MIGRATIONS_0219,
+    *_MIGRATIONS_0220,
+    *_MIGRATIONS_0221,
+    *_MIGRATIONS_0222,
+    *_MIGRATIONS_0223,
+    *_MIGRATIONS_0224,
+    *_MIGRATIONS_0225,
+    *_MIGRATIONS_0226,
+    *_MIGRATIONS_0227,
+    *_MIGRATIONS_0228,
+    *_MIGRATIONS_0229,
+    *_MIGRATIONS_0230,
+    *_MIGRATIONS_0231,
+    *_MIGRATIONS_0232,
+    *_MIGRATIONS_0233,
+    *_MIGRATIONS_0234,
+    *_MIGRATIONS_0235,
+    *_MIGRATIONS_0236,
+    *_MIGRATIONS_0237,
+    *_MIGRATIONS_0238,
+    *_MIGRATIONS_0239,
+    *_MIGRATIONS_0240,
+    *_MIGRATIONS_0241,
+    *_MIGRATIONS_0242,
+    *_MIGRATIONS_0243,
+    *_MIGRATIONS_0244,
+    *_MIGRATIONS_0245,
+    *_MIGRATIONS_0246,
+    *_MIGRATIONS_0247,
+    *_MIGRATIONS_0248,
+    *_MIGRATIONS_0249,
+    *_MIGRATIONS_0250,
+    *_MIGRATIONS_0251,
+    *_MIGRATIONS_0252,
+    *_MIGRATIONS_0253,
+    *_MIGRATIONS_0254,
+    *_MIGRATIONS_0255,
+    *_MIGRATIONS_0256,
+    *_MIGRATIONS_0257,
+    *_MIGRATIONS_0258,
+    *_MIGRATIONS_0259,
+    *_MIGRATIONS_0260,
+    *_MIGRATIONS_0261,
+    *_MIGRATIONS_0262,
+    *_MIGRATIONS_0263,
+    *_MIGRATIONS_0264,
+    *_MIGRATIONS_0265,
+    *_MIGRATIONS_0266,
+    *_MIGRATIONS_0267,
+    *_MIGRATIONS_0268,
+    *_MIGRATIONS_0269,
+    *_MIGRATIONS_0270,
+    *_MIGRATIONS_0271,
+    *_MIGRATIONS_0272,
+    *_MIGRATIONS_0273,
+    *_MIGRATIONS_0274,
+    *_MIGRATIONS_0275,
+    *_MIGRATIONS_0276,
+    *_MIGRATIONS_0277,
+    *_MIGRATIONS_0278,
+    *_MIGRATIONS_0279,
+    *_MIGRATIONS_0280,
+    *_MIGRATIONS_0281,
+    *_MIGRATIONS_0282,
+    *_MIGRATIONS_0283,
+    *_MIGRATIONS_0284,
+    *_MIGRATIONS_0285,
+    *_MIGRATIONS_0286,
+    *_MIGRATIONS_0287,
+    *_MIGRATIONS_0288,
+    *_MIGRATIONS_0289,
+    *_MIGRATIONS_0290,
+    *_MIGRATIONS_0291,
+    *_MIGRATIONS_0292,
+    *_MIGRATIONS_0293,
+    *_MIGRATIONS_0294,
+    *_MIGRATIONS_0295,
+    *_MIGRATIONS_0296,
+    *_MIGRATIONS_0298,
+    *_MIGRATIONS_0299,
+    *_MIGRATIONS_0300,
+    *_MIGRATIONS_0301,
+    *_MIGRATIONS_0302,
+    *_MIGRATIONS_0303,
+    *_MIGRATIONS_0304,
+    *_MIGRATIONS_0305,
+    *_MIGRATIONS_0306,
+    *_MIGRATIONS_0307,
+    *_MIGRATIONS_0308,
+    *_MIGRATIONS_0309,
+    *_MIGRATIONS_0310,
+    *_MIGRATIONS_0311,
+    *_MIGRATIONS_0312,
+    *_MIGRATIONS_0313,
+    *_MIGRATIONS_0314,
+    *_MIGRATIONS_0315,
+    *_MIGRATIONS_0316,
+    *_MIGRATIONS_0317,
+    *_MIGRATIONS_0318,
+    *_MIGRATIONS_0319,
+    *_MIGRATIONS_0320,
+]
+
+
+def _validate_registry_versions() -> None:
+    versions = [migration.version for migration in MIGRATIONS]
+    if versions != sorted(versions):
+        raise RuntimeError(f"MIGRATIONS must be sorted ascending: {versions}")
+    duplicates = sorted({version for version in versions if versions.count(version) > 1})
+    if duplicates:
+        formatted = ", ".join(str(version).zfill(4) for version in duplicates)
+        raise RuntimeError(f"MIGRATIONS contains duplicate versions: {formatted}")
+
+
+_validate_registry_versions()

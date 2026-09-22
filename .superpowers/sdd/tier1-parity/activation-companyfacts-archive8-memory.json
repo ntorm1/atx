@@ -26,10 +26,12 @@
     "atx-db/0.1 atx-research@example.com"
   ],
   "job_limit_gb": 2.0,
-  "status": "running",
+  "status": "failed",
   "headroom": {
-    "physical_free_gb": 6.21588134765625,
-    "commit_free_gb": 8.697795867919922
+    "physical_free_gb": 6.1132659912109375,
+    "commit_free_gb": 9.164642333984375
   },
-  "child_pid": 9116
+  "child_pid": 9116,
+  "returncode": 4294967295,
+  "native_peak_job_memory_gb": 1.7335357666015625
 }

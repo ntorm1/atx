@@ -3,6 +3,24 @@ Spec: docs/superpowers/specs/2026-09-19-tier1-parity-design.md
 Audits: .superpowers/sdd/tier1-parity/audit-atx-db.md, audit-ticker-zip.md
 Baseline: main a79f8371, smoke 6 passed.
 
+## User stop and handoff - 2026-09-22 00:44 UTC
+
+User requested stop/status/next-parent goal. Authoritative continuation file:
+docs/superpowers/handoffs/2026-09-22-tier1-parity-status-and-next-goal.md.
+Archive8 is terminal, deliberate user stop, checkpointed47,006,241facts/points;
+next predecessor17ac14e8-f2f4-4dbf-91c3-fe55be5ab480. All agents interrupted.
+No integrated issuer-query/EPS-source/core-bridge code or new migrations yet.
+
+Before stop root reserved0321 to reported_eps_core_bridge for minimally making
+fundamental_standardized.value nullable with matching bootstrap/catalog/pins,
+so source conflicts can invalidate existing EPS through the ordinary derived
+engine. Existing exception rows alone cannot clear stale valid values. Extra
+columns require checked consumer/positional-insert compatibility. Draft owner
+also authorized narrow _derived_pit/derived_metrics consumers; no rawCompanyFacts
+ownership/fingerprint changes.0320 source task retains registry lock first;
+0321 registration must follow it serially. Implementation was interrupted and
+is NOT approved/tested/integrated. Finish with fresh review on explicit resume.
+
 ## Query-driven production ruling - user, 2026-09-21 local
 
 Implementation reservation0320: reported_quarter_eps_implementation exclusively

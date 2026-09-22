@@ -1,5 +1,18 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## USER STOP - authoritative override 2026-09-22 00:44 UTC
+
+Read docs/superpowers/handoffs/2026-09-22-tier1-parity-status-and-next-goal.md.
+User requested stop and a next-parent goal prompt. All active subagents were
+interrupted. Archive8 worker was intentionally stopped00:43:18UTC; session43304
+is terminal and all original processes absent. Both ledgers recovered failed
+with explicit user-stop reason00:44:36UTC; COMMIT/CHECKPOINT passed. Actual
+archive8 datasetUUID17ac14e8-f2f4-4dbf-91c3-fe55be5ab480 is next predecessor.
+Retained47,006,241facts/points; attempt589,436rows/229CIKs; schema0319. No
+writer remains. Preserve interrupted isolated drafts; no draft source applied
+or tests run. Below live-state paragraphs are HISTORICAL. Do not restart work
+until user explicitly resumes via the handoff prompt.
+
 This section supersedes every older status below. Updated 2026-09-21 UTC
 (2026-09-20 local). The production snapshot remains explicitly as-of Sep20.
 

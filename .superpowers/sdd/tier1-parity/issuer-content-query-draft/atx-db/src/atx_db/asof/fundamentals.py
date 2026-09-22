@@ -1,0 +1,486 @@
+from __future__ import annotations
+
+from .._fundamental_clock import EFFECTIVE_FUNDAMENTAL_POINTS_SQL
+from ._common import (
+    DEFAULT_DB_PATH,
+    Path,
+    _month_end,
+    _month_end_asof_ts,
+    _normalize_ids,
+    _normalize_strings,
+    _normalize_symbols,
+    _register_filter,
+    connect,
+    dt,
+    end_of_day_asof_ts,
+    pd,
+)
+
+
+FUNDAMENTALS_ASOF_SQL = f"""
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+),
+ranked AS (
+    SELECT
+        f.*,
+        row_number() OVER (
+            PARTITION BY f.security_id, f.metric, f.period_start, f.period_end, f.unit
+            ORDER BY f.as_of_date DESC, f.source_loaded_at DESC
+        ) AS rn
+    FROM {EFFECTIVE_FUNDAMENTAL_POINTS_SQL} f
+    {{symbol_join}}
+    {{metric_join}}
+    CROSS JOIN params p
+    WHERE f.period_end <= p.as_of_date
+      AND f.as_of_date <= p.as_of_date
+      AND (f.available_at IS NULL OR f.available_at <= p.as_of_ts)
+)
+SELECT *
+FROM ranked
+WHERE rn = 1
+ORDER BY security_id, metric, period_end
+"""
+
+FUNDAMENTAL_STATEMENTS_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+),
+ranked AS (
+    SELECT
+        p.*,
+        row_number() OVER (
+            PARTITION BY p.security_id, p.canonical_metric, p.period_start, p.period_end, p.unit
+            ORDER BY p.as_of_date DESC,
+                     p.available_at DESC NULLS LAST,
+                     p.source_loaded_at DESC NULLS LAST,
+                     p.statement_point_id DESC
+        ) AS rn
+    FROM fundamental_statement_points p
+    {symbol_join}
+    {metric_join}
+    {statement_join}
+    CROSS JOIN params prm
+    WHERE p.period_end <= prm.as_of_date
+      AND p.as_of_date <= prm.as_of_date
+      AND (p.available_at IS NULL OR p.available_at <= prm.as_of_ts)
+)
+SELECT *
+FROM ranked
+WHERE rn = 1
+ORDER BY security_id, statement_type, canonical_metric, period_end
+"""
+
+FUNDAMENTAL_TTM_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+),
+ranked AS (
+    SELECT
+        t.*,
+        row_number() OVER (
+            PARTITION BY t.security_id, t.canonical_metric, t.ttm_end_date, t.unit
+            ORDER BY t.as_of_date DESC,
+                     t.available_at DESC NULLS LAST,
+                     t.source_loaded_at DESC NULLS LAST,
+                     t.ttm_point_id DESC
+        ) AS rn
+    FROM fundamental_ttm_points t
+    {symbol_join}
+    {metric_join}
+    {statement_join}
+    CROSS JOIN params prm
+    WHERE t.ttm_end_date <= prm.as_of_date
+      AND t.as_of_date <= prm.as_of_date
+      AND (t.available_at IS NULL OR t.available_at <= prm.as_of_ts)
+)
+SELECT *
+FROM ranked
+WHERE rn = 1
+ORDER BY security_id, statement_type, canonical_metric, ttm_end_date
+"""
+
+FUNDAMENTAL_PERIODS_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+),
+ranked AS (
+    SELECT
+        fp.*,
+        row_number() OVER (
+            PARTITION BY fp.period_group_id
+            ORDER BY fp.as_of_date DESC,
+                     fp.available_at DESC NULLS LAST,
+                     fp.source_loaded_at DESC NULLS LAST,
+                     fp.fundamental_period_id DESC
+        ) AS rn
+    FROM fundamental_periods fp
+    {symbol_join}
+    {period_type_join}
+    CROSS JOIN params prm
+    WHERE fp.period_end <= prm.as_of_date
+      AND fp.as_of_date <= prm.as_of_date
+      AND (fp.available_at IS NULL OR fp.available_at <= prm.as_of_ts)
+)
+SELECT *
+FROM ranked
+WHERE rn = 1
+ORDER BY security_id, period_end, period_start
+"""
+
+SHARES_OUTSTANDING_ASOF_SQL = """
+WITH params AS (
+    SELECT
+        CAST(? AS DATE) AS as_of_date,
+        CAST(? AS TIMESTAMP) AS as_of_ts
+),
+ranked AS (
+    SELECT
+        s.*,
+        row_number() OVER (
+            PARTITION BY s.security_id, s.share_count_type
+            ORDER BY s.effective_date DESC,
+                     s.as_of_date DESC,
+                     s.available_at DESC NULLS LAST,
+                     s.source_loaded_at DESC NULLS LAST,
+                     s.share_history_id DESC
+        ) AS rn
+    FROM shares_outstanding_history s
+    {symbol_join}
+    {share_type_join}
+    CROSS JOIN params p
+    WHERE s.effective_date <= p.as_of_date
+      AND s.as_of_date <= p.as_of_date
+      AND (s.available_at IS NULL OR s.available_at <= p.as_of_ts)
+)
+SELECT *
+FROM ranked
+WHERE rn = 1
+ORDER BY security_id, share_count_type
+"""
+
+def fundamentals_asof(
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    metrics: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    symbol_values = _normalize_symbols(symbols)
+    metric_values = _normalize_strings(metrics)
+    with connect(db_path, read_only=True) as store:
+        registered = []
+        try:
+            symbol_join = ""
+            metric_join = ""
+            if _register_filter(store, "asof_fundamental_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_fundamental_symbol_filter")
+                symbol_join = "JOIN asof_fundamental_symbol_filter sf ON sf.symbol = f.symbol"
+            if _register_filter(store, "asof_fundamental_metric_filter", "metric", metric_values):
+                registered.append("asof_fundamental_metric_filter")
+                metric_join = "JOIN asof_fundamental_metric_filter mf ON mf.metric = upper(f.metric)"
+            sql = FUNDAMENTALS_ASOF_SQL.format(symbol_join=symbol_join, metric_join=metric_join)
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+def fundamental_statements_asof(
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    metrics: tuple[str, ...] | list[str] | None = None,
+    statement_types: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    symbol_values = _normalize_symbols(symbols)
+    metric_values = _normalize_strings(metrics)
+    statement_values = _normalize_strings(statement_types)
+    with connect(db_path, read_only=True) as store:
+        registered = []
+        try:
+            symbol_join = ""
+            metric_join = ""
+            statement_join = ""
+            if _register_filter(store, "asof_statement_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_statement_symbol_filter")
+                symbol_join = "JOIN asof_statement_symbol_filter sf ON sf.symbol = p.symbol"
+            if _register_filter(store, "asof_statement_metric_filter", "canonical_metric", metric_values):
+                registered.append("asof_statement_metric_filter")
+                metric_join = "JOIN asof_statement_metric_filter mf ON mf.canonical_metric = upper(p.canonical_metric)"
+            if _register_filter(store, "asof_statement_type_filter", "statement_type", statement_values):
+                registered.append("asof_statement_type_filter")
+                statement_join = "JOIN asof_statement_type_filter stf ON stf.statement_type = upper(p.statement_type)"
+            sql = FUNDAMENTAL_STATEMENTS_ASOF_SQL.format(
+                symbol_join=symbol_join,
+                metric_join=metric_join,
+                statement_join=statement_join,
+            )
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+def fundamental_ttm_asof(
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    metrics: tuple[str, ...] | list[str] | None = None,
+    statement_types: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    symbol_values = _normalize_symbols(symbols)
+    metric_values = _normalize_strings(metrics)
+    statement_values = _normalize_strings(statement_types)
+    with connect(db_path, read_only=True) as store:
+        registered = []
+        try:
+            symbol_join = ""
+            metric_join = ""
+            statement_join = ""
+            if _register_filter(store, "asof_ttm_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_ttm_symbol_filter")
+                symbol_join = "JOIN asof_ttm_symbol_filter sf ON sf.symbol = t.symbol"
+            if _register_filter(store, "asof_ttm_metric_filter", "canonical_metric", metric_values):
+                registered.append("asof_ttm_metric_filter")
+                metric_join = "JOIN asof_ttm_metric_filter mf ON mf.canonical_metric = upper(t.canonical_metric)"
+            if _register_filter(store, "asof_ttm_statement_type_filter", "statement_type", statement_values):
+                registered.append("asof_ttm_statement_type_filter")
+                statement_join = "JOIN asof_ttm_statement_type_filter stf ON stf.statement_type = upper(t.statement_type)"
+            sql = FUNDAMENTAL_TTM_ASOF_SQL.format(
+                symbol_join=symbol_join,
+                metric_join=metric_join,
+                statement_join=statement_join,
+            )
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+def fundamental_periods_asof(
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    normalized_period_types: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    symbol_values = _normalize_symbols(symbols)
+    period_type_values = _normalize_strings(normalized_period_types)
+    with connect(db_path, read_only=True) as store:
+        registered = []
+        try:
+            symbol_join = ""
+            period_type_join = ""
+            if _register_filter(store, "asof_period_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_period_symbol_filter")
+                symbol_join = "JOIN asof_period_symbol_filter sf ON sf.symbol = fp.symbol"
+            if _register_filter(store, "asof_period_type_filter", "normalized_period_type", period_type_values):
+                registered.append("asof_period_type_filter")
+                period_type_join = (
+                    "JOIN asof_period_type_filter ptf "
+                    "ON ptf.normalized_period_type = upper(fp.normalized_period_type)"
+                )
+            sql = FUNDAMENTAL_PERIODS_ASOF_SQL.format(
+                symbol_join=symbol_join,
+                period_type_join=period_type_join,
+            )
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+def shares_outstanding_asof(
+    as_of_date: dt.date,
+    as_of_ts: dt.datetime | None = None,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    share_count_types: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    as_of_ts = as_of_ts or end_of_day_asof_ts(as_of_date)
+    symbol_values = _normalize_symbols(symbols)
+    share_type_values = _normalize_strings(share_count_types)
+    with connect(db_path, read_only=True) as store:
+        registered = []
+        try:
+            symbol_join = ""
+            share_type_join = ""
+            if _register_filter(store, "asof_shares_symbol_filter", "symbol", symbol_values):
+                registered.append("asof_shares_symbol_filter")
+                symbol_join = "JOIN asof_shares_symbol_filter sf ON sf.symbol = s.symbol"
+            if _register_filter(store, "asof_shares_type_filter", "share_count_type", share_type_values):
+                registered.append("asof_shares_type_filter")
+                share_type_join = (
+                    "JOIN asof_shares_type_filter stf "
+                    "ON stf.share_count_type = upper(s.share_count_type)"
+                )
+            sql = SHARES_OUTSTANDING_ASOF_SQL.format(
+                symbol_join=symbol_join,
+                share_type_join=share_type_join,
+            )
+            return store.con.execute(sql, [as_of_date, as_of_ts]).df()
+        finally:
+            for relation in registered:
+                store.con.unregister(relation)
+
+
+# Issuer-content reads are deliberately separate from symbol/security resolution.
+# A CIK identifies Company Facts content; it does not prove a historical listing or
+# share class.  The owner set is discovered from source rows at the content clock,
+# because a CIK can legitimately have more than one raw owner across vintages.
+def _normalize_cik(cik: str) -> str:
+    value = cik.strip().upper().removeprefix("CIK").strip()
+    if not value.isdigit():
+        raise ValueError("cik must contain only digits")
+    return value.zfill(10)
+
+
+def _normalized_cik_sql(column: str) -> str:
+    """Normalize one-to-ten digit source CIKs without truncating malformed values."""
+    return (
+        f"CASE WHEN regexp_full_match(trim({column}), '^[0-9]{{1,10}}$') "
+        f"THEN lpad(trim({column}), 10, '0') END"
+    )
+
+
+def issuer_owner_ids_asof(
+    cik: str,
+    content_as_of: dt.datetime,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> tuple[str, ...]:
+    """Return every visible raw Company Facts owner for one normalized CIK.
+
+    This intentionally does not invent an ``UNRESOLVED`` owner name.  A later
+    identifier resolution may have put the same CIK under a different owner, so
+    callers receive all distinct visible source owners and can surface ambiguity.
+    """
+    normalized = _normalize_cik(cik)
+    cik_sql = _normalized_cik_sql("cik")
+    with connect(db_path, read_only=True) as store:
+        rows = store.con.execute(
+            f"""
+            SELECT DISTINCT security_id
+            FROM fundamental_fact_revisions
+            WHERE {cik_sql} = ?
+              AND coalesce(available_at, source_loaded_at) <= ?
+            ORDER BY security_id
+            """,
+            [normalized, content_as_of],
+        ).fetchall()
+    return tuple(str(row[0]) for row in rows)
+
+
+def _issuer_content_asof(
+    *,
+    table: str,
+    cik: str,
+    content_as_of: dt.datetime,
+    time_column: str,
+    partition: str,
+    revision_order: str | None = None,
+    db_path: Path | str,
+    owner_ids: tuple[str, ...] | None = None,
+) -> pd.DataFrame:
+    """Read one CIK-owned relation without consulting the current directory."""
+    normalized = _normalize_cik(cik)
+    owners = owner_ids if owner_ids is not None else issuer_owner_ids_asof(normalized, content_as_of, db_path)
+    if not owners:
+        return pd.DataFrame()
+    placeholders = ",".join("?" for _ in owners)
+    cik_sql = _normalized_cik_sql("b.cik")
+    order = revision_order or "coalesce(b.available_at, b.source_loaded_at) DESC, b.source_loaded_at DESC"
+    with connect(db_path, read_only=True) as store:
+        return store.con.execute(
+            f"""
+            WITH visible AS (
+                SELECT b.*,
+                       row_number() OVER (
+                           PARTITION BY {partition}
+                           ORDER BY {order}
+                       ) AS _revision_rank
+                FROM {table} b
+                WHERE {cik_sql} = ?
+                  AND b.security_id IN ({placeholders})
+                  AND coalesce(b.available_at, b.source_loaded_at) <= ?
+                  AND coalesce(b.as_of_date, CAST(coalesce(b.available_at, b.source_loaded_at) AS DATE))
+                      <= CAST(? AS DATE)
+            )
+            SELECT * EXCLUDE (_revision_rank)
+            FROM visible
+            WHERE _revision_rank = 1
+            ORDER BY {time_column}, security_id
+            """,
+            [normalized, *owners, content_as_of, content_as_of],
+        ).df()
+
+
+def issuer_statements_asof(cik: str, content_as_of: dt.datetime, db_path: Path | str = DEFAULT_DB_PATH) -> pd.DataFrame:
+    return _issuer_content_asof(table="fundamental_statement_points", cik=cik, content_as_of=content_as_of,
+        time_column="period_end", partition="b.revision_group_id", db_path=db_path)
+
+
+def issuer_ttm_asof(cik: str, content_as_of: dt.datetime, db_path: Path | str = DEFAULT_DB_PATH) -> pd.DataFrame:
+    return _issuer_content_asof(table="fundamental_ttm_points", cik=cik, content_as_of=content_as_of,
+        time_column="ttm_end_date", partition="b.ttm_revision_group_id", db_path=db_path)
+
+
+def issuer_standardized_asof(cik: str, content_as_of: dt.datetime, db_path: Path | str = DEFAULT_DB_PATH) -> pd.DataFrame:
+    return _issuer_content_asof(table="fundamental_standardized", cik=cik, content_as_of=content_as_of,
+        time_column="period_end", partition="b.security_id, b.item_id, b.basis, b.period_end", db_path=db_path)
+
+
+def issuer_ratios_asof(cik: str, content_as_of: dt.datetime, db_path: Path | str = DEFAULT_DB_PATH) -> pd.DataFrame:
+    return _issuer_content_asof(table="fundamental_ratios", cik=cik, content_as_of=content_as_of,
+        time_column="period_end", partition="b.security_id, b.ratio_code, b.basis, b.period_end", db_path=db_path)
+
+
+def issuer_shares_asof(cik: str, content_as_of: dt.datetime, db_path: Path | str = DEFAULT_DB_PATH) -> pd.DataFrame:
+    return _issuer_content_asof(table="shares_outstanding_history", cik=cik, content_as_of=content_as_of,
+        time_column="effective_date", partition="b.security_id, b.share_count_type", db_path=db_path,
+        revision_order=("b.effective_date DESC, b.as_of_date DESC, coalesce(b.available_at, b.source_loaded_at) DESC, "
+                        "b.source_loaded_at DESC, b.share_history_id DESC"))
+
+
+def issuer_derived_asof(cik: str, content_as_of: dt.datetime, db_path: Path | str = DEFAULT_DB_PATH) -> pd.DataFrame:
+    """Read derived states by discovered owner; do not join a current directory."""
+    owners = issuer_owner_ids_asof(cik, content_as_of, db_path)
+    if not owners:
+        return pd.DataFrame()
+    placeholders = ",".join("?" for _ in owners)
+    with connect(db_path, read_only=True) as store:
+        return store.con.execute(
+            f"""
+            WITH visible AS (
+                SELECT d.*,
+                       row_number() OVER (
+                           PARTITION BY coalesce(d.revision_group_id, d.derived_value_id)
+                           ORDER BY coalesce(d.available_at, d.source_loaded_at) DESC,
+                                    d.derived_value_id DESC
+                       ) AS _revision_rank
+                FROM derived_metric_values d
+                WHERE d.security_id IN ({placeholders})
+                  AND coalesce(d.available_at, d.source_loaded_at) <= ?
+                  AND coalesce(d.as_of_date, CAST(coalesce(d.available_at, d.source_loaded_at) AS DATE))
+                      <= CAST(? AS DATE)
+            )
+            SELECT * EXCLUDE (_revision_rank) FROM visible WHERE _revision_rank = 1
+            ORDER BY period_end, security_id, metric_code, derived_value_id
+            """,
+            [*owners, content_as_of, content_as_of],
+        ).df()
