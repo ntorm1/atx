@@ -3,7 +3,50 @@
 This section supersedes every older status below. Updated 2026-09-21 UTC
 (2026-09-20 local). The production snapshot remains explicitly as-of Sep20.
 
-## Current controller override - 2026-09-21 22:28 UTC
+## Current controller override - 2026-09-22 00:02 UTC
+
+Archive7 is TERMINAL: session28324 returned1, guard stopped_low_headroom at
+2026-09-21T23:53:00Z (physical1.373397827GiB, commit4.114677429GiB). Original
+worker14556, guard10280, redirectors5200/18700 independently absent. All
+observation cells88/90/92/93 are finished. No production writer currently
+runs. Do not wait on the old session or infer a source error from this host
+headroom event. Host memory recovered without user action or other-app kills.
+
+Read-only inspection23:58:15UTC: facts=points46,639,358; prices31,959,271;
+custom31,934,514; schema0319. Actual archive7 dataset UUID
+404f66a2-655b-4611-a7a0-b71d4dc6d4d3; committed attempt5,351,787rows/1785CIKs
+(0001347242..0001442741), empty1250/unavailable41/no source errors. Rows
+include replacements. Both ledgers recovered failed in the recorded
+companyfacts-archive7-ledger-recovery.json; COMMIT/CHECKPOINT passed under
+the unchanged2GiB guard/1GB/1thread. Probe peak0.455GiB; recovery0.859GiB.
+
+NEXT: integrate the reviewed VR1 integration-final.patch, execute its six
+focused selectors under2.5GiB guard/-n0, scoped lint/type checks and commit
+only fundamentals.py and test_companyfacts_archive_repair.py plus own report.
+No re-review needed beyond already closed C1 unless a new Critical repair is
+introduced. Then resume companyfacts as archive8 from the ACTUAL archive7
+UUID above, using fresh receipts, same2GiB process cap/1GB/1thread/fullscope,
+snapshot2026-09-20, dummy SEC UA and no redownload. Source completeness,
+submissions resume and full run5 remain required.
+
+NEW USER ACCEPTANCE CASE: CVX YoY EPS over the latest three quarters.
+Official GAAP diluted EPS benchmark: Q2 2026 6.11/1.45=>+321.3793103%;
+Q1 2026 1.11/2.00=>-44.5%; Q4 2025 1.39/1.84=>-24.4565217%.
+Root verified actual raw Q1/Q2 inputs but neither Q4 direct EPS input exists.
+ALL statement_points/standardized/derived tables currently have0rows. RawCVX
+owner is unresolved CIK0000093410; prices3621rows use SEC-CIK-0000093410.
+CIK history startsSep20, after filing dates, so conservative archive resolver
+deliberately leaves older facts unresolved. No later relinker handles them.
+Quarter code correctly excludes EPS from FY-minus-nine-month subtraction
+(6.63-5.27=1.36, not reported Q4 1.39); do NOT "fix" by invalid residuals.
+Documented at atx-db/docs/CVX_EPS_ACCEPTANCE.md, with live and static evidence
+in this directory. Prioritize this concrete production query: activate the
+metric path, supply reported Q4 coverage, and make issuer/security linkage
+usable with explicit as-of semantics. Do not backdate current ticker mapping,
+claim the three-row warehouse result already exists, or substitute TTM EPS.
+Fresh Codex audit cvx_eps_production_query_audit is complete, static-only.
+
+## Historical controller override - 2026-09-21 22:28 UTC
 
 Update23:26UTC: Archive7/session28324 remains the sole live writer. Its
 23:25:47.474UTC log checkpoint is9000/20390 members, loaded7757 (includes
