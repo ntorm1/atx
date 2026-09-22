@@ -1,0 +1,251 @@
+diff --git a/atx-db/src/atx_db/press_release.py b/atx-db/src/atx_db/press_release.py
+index f18bf56b..f86c9886 100644
+--- a/atx-db/src/atx_db/press_release.py
++++ b/atx-db/src/atx_db/press_release.py
+@@ -19,6 +19,7 @@ from dataclasses import dataclass
+ from html.parser import HTMLParser
+ from pathlib import Path
+ from typing import Any, Callable, Iterable
++from urllib.parse import urlsplit
+ 
+ import pandas as pd
+ 
+@@ -342,7 +343,7 @@ def _archive_urls(cik: str, accession_number: str) -> tuple[str, str]:
+         raise ValueError(f"invalid SEC accession {accession_number!r}")
+     numeric_cik = str(int(str(cik)))
+     directory = f"https://www.sec.gov/Archives/edgar/data/{numeric_cik}/{digits}"
+-    return f"{directory}/index.json", directory
++    return f"{directory}/{accession_number}-index.html", directory
+ 
+ 
+ def _explicit_sec_clock(raw_timestamp: object) -> SecSourceClock:
+@@ -403,19 +404,71 @@ def _bounded_response_bytes(response: Any, *, maximum: int) -> bytes:
+     return b"".join(chunks)
+ 
+ 
+-def _ex99_documents(index_payload: dict[str, Any]) -> tuple[str, ...]:
+-    items = index_payload.get("directory", {}).get("item", [])
+-    selected = {
+-        str(item.get("name", "")).strip()
+-        for item in items
+-        if isinstance(item, dict)
+-        and (
+-            re.fullmatch(r"ex[-_]?99(?:\.\d+)?", str(item.get("type", "")).strip(), flags=re.IGNORECASE)
+-            or re.match(r"(?:exhibit[-_]?|ex[-_]?)99(?:[._-]|$)", str(item.get("name", "")).strip(), flags=re.IGNORECASE)
+-        )
+-        and re.search(r"\.(?:htm|html|txt)$", str(item.get("name", "")), flags=re.IGNORECASE)
+-    }
+-    return tuple(sorted(name for name in selected if name and "/" not in name and ".." not in name))
++class _SecFilingDocumentTable(HTMLParser):
++    """Read typed rows only from the filing index's document-format table."""
++
++    def __init__(self) -> None:
++        super().__init__(convert_charrefs=True)
++        self.rows: list[list[tuple[str, tuple[str, ...]]]] = []
++        self._table_depth = 0
++        self._row: list[tuple[str, tuple[str, ...]]] | None = None
++        self._cell_text: list[str] | None = None
++        self._cell_hrefs: list[str] = []
++
++    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
++        attributes = dict(attrs)
++        if tag == "table":
++            if self._table_depth:
++                self._table_depth += 1
++            elif _normalized_cell(attributes.get("summary") or "") == "document format files":
++                self._table_depth = 1
++        elif self._table_depth == 1 and tag == "tr":
++            self._row = []
++        elif self._table_depth == 1 and tag == "td" and self._row is not None:
++            self._cell_text = []
++            self._cell_hrefs = []
++        elif self._table_depth == 1 and tag == "a" and self._cell_text is not None:
++            if attributes.get("href") is not None:
++                self._cell_hrefs.append(attributes["href"] or "")
++
++    def handle_data(self, data: str) -> None:
++        if self._cell_text is not None:
++            self._cell_text.append(data)
++
++    def handle_endtag(self, tag: str) -> None:
++        if tag == "td" and self._cell_text is not None and self._row is not None:
++            self._row.append((" ".join("".join(self._cell_text).split()), tuple(self._cell_hrefs)))
++            self._cell_text = None
++            self._cell_hrefs = []
++        elif tag == "tr" and self._table_depth == 1 and self._row is not None:
++            if self._row:
++                self.rows.append(self._row)
++            self._row = None
++        elif tag == "table" and self._table_depth:
++            self._table_depth -= 1
++
++
++def _ex99_documents(index_html: str, directory_url: str) -> tuple[str, ...]:
++    """Trust SEC filing-detail Type cells, never directory MIME or filenames."""
++
++    parser = _SecFilingDocumentTable()
++    parser.feed(index_html)
++    expected_path = urlsplit(directory_url).path.rstrip("/") + "/"
++    selected: set[str] = set()
++    for row in parser.rows:
++        if len(row) < 4 or not re.fullmatch(r"EX[-_]?99(?:\.\d+)?", row[3][0], flags=re.IGNORECASE):
++            continue
++        hrefs = row[2][1]
++        if len(hrefs) != 1:
++            continue
++        link = urlsplit(hrefs[0])
++        if link.scheme or link.netloc or link.query or link.fragment or not link.path.startswith(expected_path):
++            continue
++        name = link.path[len(expected_path):]
++        if ".." in name or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.(?:htm|html|txt)", name, re.IGNORECASE):
++            continue
++        selected.add(name)
++    return tuple(sorted(selected))
+ 
+ 
+ def _normalized_cell(value: str) -> str:
+@@ -717,7 +770,7 @@ def extract_reported_gaap_diluted_eps(
+     rejected_semantics = False
+     duration_rejection: str | None = None
+     for table_number, table in enumerate(tables):
+-        columns, column_reason = _header_columns(table, period_end)
++        columns, _column_reason = _header_columns(table, period_end)
+         if not columns:
+             continue
+         _, evidence = next(iter(columns.items()))
+@@ -841,13 +894,16 @@ def _atomic_cache_file(path: Path, payload: bytes) -> None:
+     """Durably install one cache artifact without exposing a partial file."""
+ 
+     path.parent.mkdir(parents=True, exist_ok=True)
+-    handle = tempfile.NamedTemporaryFile(mode="wb", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False)
+-    temporary = Path(handle.name)
++    temporary: Path | None = None
+     try:
+-        with handle:
++        with tempfile.NamedTemporaryFile(
++            mode="wb", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
++        ) as handle:
++            temporary = Path(handle.name)
+             handle.write(payload)
+             handle.flush()
+             os.fsync(handle.fileno())
++        assert temporary is not None
+         os.replace(temporary, path)
+         # Directory fsync is unsupported on some Windows filesystems; the
+         # document and metadata are still individually flushed and verified.
+@@ -860,7 +916,7 @@ def _atomic_cache_file(path: Path, payload: bytes) -> None:
+         except OSError:
+             pass
+     finally:
+-        if temporary.exists():
++        if temporary is not None and temporary.exists():
+             temporary.unlink()
+ 
+ 
+@@ -1009,7 +1065,7 @@ def refresh_sec_earnings_release_facts(
+             index_bytes = _fetch_sec_bytes(
+                 session, index_url, timeout=options.request_timeout, maximum=options.max_index_bytes
+             )
+-            documents = _ex99_documents(json.loads(index_bytes))
++            documents = _ex99_documents(index_bytes.decode("utf-8", errors="replace"), directory_url)
+         except Exception as exc:
+             outcome = SecEarningsReleaseOutcome(
+                 candidate, "fetch_failed", f"index_fetch_or_parse:{type(exc).__name__}",
+diff --git a/atx-db/tests/test_reported_quarter_eps_source.py b/atx-db/tests/test_reported_quarter_eps_source.py
+index 2d06b815..07c0ce1f 100644
+--- a/atx-db/tests/test_reported_quarter_eps_source.py
++++ b/atx-db/tests/test_reported_quarter_eps_source.py
+@@ -44,6 +44,17 @@ class _Session:
+         return _Response(self.responses.pop(0))
+ 
+ 
++INDEX_DIRECTORY = "https://www.sec.gov/Archives/edgar/data/93410/000009341026000019"
++COMPACT_FILING_INDEX = """
++<table class="tableFile" summary="Document Format Files">
++  <tr><th>Seq</th><th>Description</th><th>Document</th><th>Type</th><th>Size</th></tr>
++  <tr><td>2</td><td>EX-99.1</td>
++      <td><a href="/Archives/edgar/data/93410/000009341026000019/ex99.htm">ex99.htm</a></td>
++      <td>EX-99.1</td><td>100</td></tr>
++</table>
++"""
++
++
+ COMPACT_ATTACHMENT = """
+ <div style="text-align:center"><font style="font-weight:700">Issuer Reports Fourth Quarter 2025 Results</font></div>
+ <p>Compared with fourth quarter 2024, the issuer reports fourth quarter 2025 results.</p>
+@@ -130,7 +141,7 @@ def test_explicit_sec_offset_is_preserved_but_daily_clock_is_conservative() -> N
+ 
+     assert clock.raw_timestamp == "2026-01-30T18:17:00-05:00"
+     assert clock.utc_offset == "-05:00"
+-    assert clock.available_at == dt.datetime(2026, 2, 1, 0, 0)
++    assert clock.available_at == dt.datetime(2026, 1, 31, 22, 0)
+     assert clock.timezone_status == f"timestamp_offset_valid:{SEC_FILING_DATE_CLOCK_POLICY}"
+ 
+ 
+@@ -140,22 +151,40 @@ def test_naive_source_timestamp_cannot_be_promoted_to_exact_utc() -> None:
+ 
+     assert exact.available_at is None
+     assert exact.timezone_status == "timestamp_zone_unknown"
+-    assert daily.available_at == dt.datetime(2026, 2, 1, 0, 0)
++    assert daily.available_at == dt.datetime(2026, 1, 31, 22, 0)
+     assert daily.timezone_status == f"timestamp_zone_unknown:{SEC_FILING_DATE_CLOCK_POLICY}"
+ 
+ 
+ def test_ex99_selection_rejects_multiple_documents_upstream() -> None:
+-    payload = {"directory": {"item": [
+-        {"name": "ex99.htm", "type": "EX-99.1"},
+-        {"name": "exhibit99-2.htm", "type": "EX-99.2"},
+-        {"name": "form8k.htm", "type": "8-K"},
+-    ]}}
+-    assert _ex99_documents(payload) == ("ex99.htm", "exhibit99-2.htm")
++    second = """<tr><td>3</td><td>EX-99.2</td>
++        <td><a href="/Archives/edgar/data/93410/000009341026000019/exhibit99-2.htm">exhibit99-2.htm</a></td>
++        <td>EX-99.2</td><td>101</td></tr>"""
++    assert _ex99_documents(
++        COMPACT_FILING_INDEX.replace("</table>", second + "</table>"), INDEX_DIRECTORY
++    ) == ("ex99.htm", "exhibit99-2.htm")
++
++
++def test_filing_detail_type_is_authoritative_and_href_stays_in_accession() -> None:
++    # SEC directory index.json reports MIME text.gif, not the filing Type.
++    directory_json = json.dumps({"directory": {"item": [
++        {"name": "a12312025ex9918-k.htm", "type": "text.gif"}
++    ]}})
++    assert _ex99_documents(directory_json, INDEX_DIRECTORY) == ()
++
++    typed = COMPACT_FILING_INDEX.replace("ex99.htm", "a12312025ex9918-k.htm")
++    wrong_type = """<tr><td>3</td><td>EX-99.2</td>
++        <td><a href="/Archives/edgar/data/93410/000009341026000019/looks-like-ex99.htm">looks-like-ex99.htm</a></td>
++        <td>text.gif</td><td>20</td></tr>"""
++    wrong_accession = """<tr><td>4</td><td>EX-99.3</td>
++        <td><a href="/Archives/edgar/data/93410/other/accession.htm">accession.htm</a></td>
++        <td>EX-99.3</td><td>20</td></tr>"""
++    typed = typed.replace("</table>", wrong_type + wrong_accession + "</table>")
++    assert _ex99_documents(typed, INDEX_DIRECTORY) == ("a12312025ex9918-k.htm",)
+ 
+ 
+ def test_extracts_one_gaap_diluted_eps_with_aligned_three_month_column() -> None:
+     document = """
+-    <table><tr><th></th><th>Three Months Ended December 31,</th><th></th></tr>
++    <table><tr><th></th><th colspan="2">Three Months Ended December 31,</th></tr>
+     <tr><th></th><th>2025</th><th>2024</th></tr>
+     <tr><td>Earnings per share - diluted</td><td>1.39</td><td>1.84</td></tr></table>
+     """
+@@ -310,7 +339,7 @@ def test_accepted_receipt_rolls_back_with_fact_failure_then_resumes(tmp_store, t
+                      DATE '2026-01-30', DATE '2026-01-30', '2026-01-30T18:17:00-05:00',
+                      '8-K', '2.02', 'bulk-fixture')"""
+     )
+-    index = json.dumps({"directory": {"item": [{"name": "ex99.htm", "type": "EX-99.1"}]}}).encode()
++    index = COMPACT_FILING_INDEX.encode()
+     document = COMPACT_ATTACHMENT.encode()
+     options = SecEarningsReleaseOptions(cache_dir=tmp_path / "cache", run_id="atomic-retry")
+     original = press_release._write_press_release_facts_frame
+@@ -354,7 +383,7 @@ def test_fetch_failed_retries_and_corrupt_cache_is_refetched(tmp_store, tmp_path
+                      DATE '2026-01-30', DATE '2025-12-31', '2026-01-30T18:17:00-05:00',
+                      '8-K', '2.02', 'bulk-fixture')"""
+     )
+-    index = json.dumps({"directory": {"item": [{"name": "ex99.htm", "type": "EX-99.1"}]}}).encode()
++    index = COMPACT_FILING_INDEX.encode()
+     document = b"""
+         <p>Fourth Quarter 2025</p><table>
+         <tr><th></th><th>Three Months Ended December 31,</th></tr><tr><th></th><th>2025</th></tr>

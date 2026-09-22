@@ -1,0 +1,53 @@
+...FF.F........................                                          [100%]
+================================== FAILURES ===================================
+____ test_explicit_sec_offset_is_preserved_but_daily_clock_is_conservative ____
+
+    def test_explicit_sec_offset_is_preserved_but_daily_clock_is_conservative() -> None:
+        clock = _daily_sec_clock("2026-01-30T18:17:00-05:00", dt.date(2026, 1, 30))
+    
+        assert clock.raw_timestamp == "2026-01-30T18:17:00-05:00"
+        assert clock.utc_offset == "-05:00"
+>       assert clock.available_at == dt.datetime(2026, 2, 1, 0, 0)
+E       AssertionError: assert datetime.datetime(2026, 1, 31, 22, 0) == datetime.datetime(2026, 2, 1, 0, 0)
+E        +  where datetime.datetime(2026, 1, 31, 22, 0) = SecSourceClock(raw_timestamp='2026-01-30T18:17:00-05:00', utc_offset='-05:00', available_at=datetime.datetime(2026, 1, 31, 22, 0), timezone_status='timestamp_offset_valid:sec_filed_date_plus_46h_v1').available_at
+E        +  and   datetime.datetime(2026, 2, 1, 0, 0) = <class 'datetime.datetime'>(2026, 2, 1, 0, 0)
+E        +    where <class 'datetime.datetime'> = dt.datetime
+
+tests\test_reported_quarter_eps_source.py:133: AssertionError
+_________ test_naive_source_timestamp_cannot_be_promoted_to_exact_utc _________
+
+    def test_naive_source_timestamp_cannot_be_promoted_to_exact_utc() -> None:
+        exact = _explicit_sec_clock("2026-01-30 18:17:00")
+        daily = _daily_sec_clock("2026-01-30 18:17:00", dt.date(2026, 1, 30))
+    
+        assert exact.available_at is None
+        assert exact.timezone_status == "timestamp_zone_unknown"
+>       assert daily.available_at == dt.datetime(2026, 2, 1, 0, 0)
+E       AssertionError: assert datetime.datetime(2026, 1, 31, 22, 0) == datetime.datetime(2026, 2, 1, 0, 0)
+E        +  where datetime.datetime(2026, 1, 31, 22, 0) = SecSourceClock(raw_timestamp='2026-01-30 18:17:00', utc_offset=None, available_at=datetime.datetime(2026, 1, 31, 22, 0), timezone_status='timestamp_zone_unknown:sec_filed_date_plus_46h_v1').available_at
+E        +  and   datetime.datetime(2026, 2, 1, 0, 0) = <class 'datetime.datetime'>(2026, 2, 1, 0, 0)
+E        +    where <class 'datetime.datetime'> = dt.datetime
+
+tests\test_reported_quarter_eps_source.py:143: AssertionError
+_____ test_extracts_one_gaap_diluted_eps_with_aligned_three_month_column ______
+
+    def test_extracts_one_gaap_diluted_eps_with_aligned_three_month_column() -> None:
+        document = """
+        <table><tr><th></th><th>Three Months Ended December 31,</th><th></th></tr>
+        <tr><th></th><th>2025</th><th>2024</th></tr>
+        <tr><td>Earnings per share - diluted</td><td>1.39</td><td>1.84</td></tr></table>
+        """
+        fact, reason = extract_reported_gaap_diluted_eps(document, period_end=dt.date(2025, 12, 31))
+    
+        assert reason is None
+        assert fact is not None
+        assert fact["value"] == 1.39
+>       assert fact["prior_year_quarter_value"] == 1.84
+E       assert None == 1.84
+
+tests\test_reported_quarter_eps_source.py:167: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_reported_quarter_eps_source.py::test_explicit_sec_offset_is_preserved_but_daily_clock_is_conservative
+FAILED tests/test_reported_quarter_eps_source.py::test_naive_source_timestamp_cannot_be_promoted_to_exact_utc
+FAILED tests/test_reported_quarter_eps_source.py::test_extracts_one_gaap_diluted_eps_with_aligned_three_month_column
+3 failed, 28 passed in 174.40s (0:02:54)

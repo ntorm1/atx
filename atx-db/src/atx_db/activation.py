@@ -51,6 +51,7 @@ STAGE_ORDER: tuple[str, ...] = (
     "ticker_history_publish",
     "sec_bulk_download",
     "submissions_load",
+    "earnings_release_facts",
     "companyfacts_load",
     "statement_points",
     "periods",
@@ -220,6 +221,14 @@ class ActivationOptions:
     companyfacts_resume_from_run_id: str | None = None
     submissions_batch_size: int = 50
     submissions_resume_from_run_id: str | None = None
+    earnings_release_cache_dir: Path | None = None
+    earnings_release_history_start: dt.date | None = None
+    earnings_release_history_end: dt.date | None = None
+    earnings_release_ciks: tuple[str, ...] | None = None
+    earnings_release_request_timeout: float = 30.0
+    earnings_release_max_index_bytes: int = 2_000_000
+    earnings_release_max_document_bytes: int = 8_000_000
+    earnings_release_candidate_batch_size: int = 250
     companyfacts_symbol_source: str = "sec_company_tickers"
     skip_loaded_companyfacts: bool | None = None
     dry_run: bool = False
@@ -227,8 +236,13 @@ class ActivationOptions:
     run_id: str = "warehouse-activate"
 
     def __post_init__(self) -> None:
-        if min(self.threads, self.reconciliation_shards, self.submissions_batch_size) < 1:
+        if min(self.threads, self.reconciliation_shards, self.submissions_batch_size,
+               self.earnings_release_candidate_batch_size, self.earnings_release_max_index_bytes,
+               self.earnings_release_max_document_bytes) < 1 or self.earnings_release_request_timeout <= 0:
             raise ValueError("threads, reconciliation_shards and submissions_batch_size must be positive")
+        if (self.earnings_release_history_start is not None and self.earnings_release_history_end is not None
+                and self.earnings_release_history_end < self.earnings_release_history_start):
+            raise ValueError("earnings-release history end precedes start")
         if not self.memory_limit.strip():
             raise ValueError("memory_limit must not be empty")
 
@@ -558,6 +572,25 @@ def stage_submissions_load(store: DuckDBStore, options: ActivationOptions) -> St
                                                            "batch_size": options.submissions_batch_size})
 
 
+def stage_earnings_release_facts(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Load governed Item 2.02 EX-99 source evidence after submissions."""
+    from .press_release import SecEarningsReleaseDataset, SecEarningsReleaseOptions
+
+    result = SecEarningsReleaseDataset().run(store, SecEarningsReleaseOptions(
+        cache_dir=options.earnings_release_cache_dir or Path(options.cache_dir) / "sec-earnings-release",
+        history_start=options.earnings_release_history_start,
+        history_end=options.earnings_release_history_end,
+        ciks=options.earnings_release_ciks,
+        request_timeout=options.earnings_release_request_timeout,
+        max_index_bytes=options.earnings_release_max_index_bytes,
+        max_document_bytes=options.earnings_release_max_document_bytes,
+        candidate_batch_size=options.earnings_release_candidate_batch_size,
+        user_agent="atx-db/0.1 atx-research@example.com",
+        run_id=f"{options.run_id}-earnings-release",
+    ))
+    return StageResult(rows=int(result.rows_loaded), detail=dict(result.details))
+
+
 def stage_companyfacts_load(store: DuckDBStore, options: ActivationOptions) -> StageResult:
     """Load the selected local CIK corpus; archive mode replaces every selected CIK."""
     from .fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions
@@ -602,6 +635,7 @@ STAGES.update(
     {
         "sec_bulk_download": stage_sec_bulk_download,
         "submissions_load": stage_submissions_load,
+        "earnings_release_facts": stage_earnings_release_facts,
         "companyfacts_load": stage_companyfacts_load,
     }
 )
@@ -1196,6 +1230,14 @@ def add_activation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--companyfacts-resume-from-run-id", default=None,
                         help="Verify and resume completed members of a failed or source-incomplete companyfacts dataset UUID.")
     parser.add_argument("--submissions-batch-size", type=int, default=50)
+    parser.add_argument("--earnings-release-cache-dir", type=Path)
+    parser.add_argument("--earnings-release-history-start", type=dt.date.fromisoformat)
+    parser.add_argument("--earnings-release-history-end", type=dt.date.fromisoformat)
+    parser.add_argument("--earnings-release-cik", action="append", default=[])
+    parser.add_argument("--earnings-release-request-timeout", type=float, default=30.0)
+    parser.add_argument("--earnings-release-max-index-bytes", type=int, default=2_000_000)
+    parser.add_argument("--earnings-release-max-document-bytes", type=int, default=8_000_000)
+    parser.add_argument("--earnings-release-candidate-batch-size", type=int, default=250)
     parser.add_argument("--submissions-resume-from-run-id", default=None,
                         help="Verify and resume the full archive prefix of a failed submissions dataset UUID.")
     parser.add_argument("--companyfacts-symbol-source", choices=("sec_company_tickers", "archive_members"),
@@ -1246,6 +1288,14 @@ def activation_options_from_args(args: argparse.Namespace) -> ActivationOptions:
         companyfacts_resume_from_run_id=args.companyfacts_resume_from_run_id,
         submissions_batch_size=args.submissions_batch_size,
         submissions_resume_from_run_id=args.submissions_resume_from_run_id,
+        earnings_release_cache_dir=args.earnings_release_cache_dir,
+        earnings_release_history_start=args.earnings_release_history_start,
+        earnings_release_history_end=args.earnings_release_history_end,
+        earnings_release_ciks=tuple(args.earnings_release_cik) or None,
+        earnings_release_request_timeout=args.earnings_release_request_timeout,
+        earnings_release_max_index_bytes=args.earnings_release_max_index_bytes,
+        earnings_release_max_document_bytes=args.earnings_release_max_document_bytes,
+        earnings_release_candidate_batch_size=args.earnings_release_candidate_batch_size,
         companyfacts_symbol_source=args.companyfacts_symbol_source,
         skip_loaded_companyfacts=args.skip_loaded_companyfacts,
         dry_run=args.dry_run,

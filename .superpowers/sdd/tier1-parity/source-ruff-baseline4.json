@@ -1,0 +1,70 @@
+{
+  "baseline": "92cf42c4",
+  "files": {
+    "src/atx_db/jobs.py": {
+      "baseline_count": 4,
+      "current_count": 4,
+      "introduced": [],
+      "baseline_diagnostics": [
+        {
+          "code": "I001",
+          "message": "Import block is un-sorted or un-formatted",
+          "count": 1
+        },
+        {
+          "code": "UP035",
+          "message": "Import from `collections.abc` instead: `Callable`",
+          "count": 1
+        },
+        {
+          "code": "B010",
+          "message": "Do not call `setattr` with a constant attribute value. It is not any safer than normal property access.",
+          "count": 1
+        },
+        {
+          "code": "B007",
+          "message": "Loop control variable `job_name` not used within loop body",
+          "count": 1
+        }
+      ]
+    },
+    "src/atx_db/press_release.py": {
+      "baseline_count": 12,
+      "current_count": 11,
+      "introduced": [],
+      "baseline_diagnostics": [
+        {
+          "code": "I001",
+          "message": "Import block is un-sorted or un-formatted",
+          "count": 1
+        },
+        {
+          "code": "F401",
+          "message": "`json` imported but unused",
+          "count": 1
+        },
+        {
+          "code": "UP035",
+          "message": "Import from `collections.abc` instead: `Callable`, `Iterable`",
+          "count": 1
+        },
+        {
+          "code": "B905",
+          "message": "`zip()` without an explicit `strict=` parameter",
+          "count": 4
+        },
+        {
+          "code": "RUF046",
+          "message": "Value being cast to `int` is already an integer",
+          "count": 5
+        }
+      ]
+    },
+    "tests/test_sec_submissions_bulk.py": {
+      "baseline_count": 0,
+      "current_count": 0,
+      "introduced": [],
+      "baseline_diagnostics": []
+    }
+  }
+}

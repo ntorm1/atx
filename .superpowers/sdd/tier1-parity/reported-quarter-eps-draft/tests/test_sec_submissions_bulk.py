@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -11,6 +13,7 @@ import pytest
 from atx_db import sec_submissions
 from atx_db.connection import DuckDBStore
 from atx_db.sec_submissions import SecSubmissionsBulkDataset, SecSubmissionsBulkOptions
+from atx_db.warehouse import record_source_file
 
 
 def _write_bulk_zip(path: Path) -> Path:
@@ -115,7 +118,7 @@ def test_bulk_load_reads_recent_and_history_with_form_filter(tmp_store, tmp_path
     rows = tmp_store.con.execute(
         """
         SELECT cik, accession_number, form, security_id, source_url, run_id,
-               primary_doc_description
+               primary_doc_description, acceptance_datetime_raw
         FROM sec_submissions
         ORDER BY accession_number
         """
@@ -130,12 +133,14 @@ def test_bulk_load_reads_recent_and_history_with_form_filter(tmp_store, tmp_path
     assert "CIK0000000001.json" in recent[4]
     assert recent[5] == "bulk-test-1"
     assert recent[6] == "10-K"
+    assert recent[7] == "2024-02-01T16:30:00.000Z"
 
     history = by_accession["0000000001-14-000001"]
     assert history[2] == "10-Q"
     assert history[3] == "SEC-CIK-0000000001"
     assert "CIK0000000001-submissions-001.json" in history[4]
     assert history[6] is None
+    assert history[7] == "2014-05-01T12:00:00.000Z"
 
 
 def test_bulk_load_is_idempotent_on_replay(tmp_store, tmp_path) -> None:
@@ -326,3 +331,59 @@ def test_bulk_logs_progress_when_form_filter_leaves_no_rows(
     assert result.rows_loaded == 0
     assert "main_members_processed=1/2 ciks_loaded=0 committed_rows=0 flushes=0" in caplog.text
     assert "main_members_processed=2/2 ciks_loaded=0 committed_rows=0 flushes=0" in caplog.text
+
+
+def test_raw_acceptance_and_archive_metadata_survive_failed_prefix_resume(
+    tmp_store, tmp_path, monkeypatch
+) -> None:
+    zip_path = _write_bulk_zip(tmp_path)
+    archive_sha = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    record_source_file(
+        tmp_store, dataset_id="sec_submissions", source_url="https://sec.example/submissions.zip",
+        cache_path=zip_path, compute_hash=True,
+    )
+    options = SecSubmissionsBulkOptions(zip_path=zip_path, forms=None, batch_ciks=1)
+    original = sec_submissions._replace_submission_rows
+    calls = 0
+
+    def interrupt_second_batch(store, frame):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("fixture interruption")
+        return original(store, frame)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(sec_submissions, "_replace_submission_rows", interrupt_second_batch)
+        with pytest.raises(RuntimeError, match="fixture interruption"):
+            SecSubmissionsBulkDataset().run(tmp_store, options)
+
+    prior_id = tmp_store.con.execute(
+        "SELECT run_id FROM dataset_runs WHERE dataset_id = 'sec_submissions' ORDER BY started_at DESC LIMIT 1"
+    ).fetchone()[0]
+    prefix = tmp_store.con.execute(
+        "SELECT cik, accession_number, form, acceptance_datetime_raw FROM sec_submissions ORDER BY accession_number"
+    ).fetchall()
+    assert len(prefix) == 3
+    assert [row[3] for row in prefix] == [
+        "2014-05-01T12:00:00.000Z", "2024-02-01T16:30:00.000Z", "2024-03-01T09:15:00.000Z",
+    ]
+
+    result = SecSubmissionsBulkDataset().run(
+        tmp_store, replace(options, resume_from_run_id=prior_id)
+    )
+    assert result.rows_loaded == 1
+    assert result.details["verified_prior_rows"] == 3
+    assert result.details["resume_after_cik"] == "0000000001"
+    assert result.details["archive_sha256"] == archive_sha
+    assert result.details["scope_complete"] is True
+    after = tmp_store.con.execute(
+        "SELECT cik, accession_number, form, acceptance_datetime_raw FROM sec_submissions ORDER BY accession_number"
+    ).fetchall()
+    assert after[:3] == prefix
+    assert after[3] == ("0000000002", "0000000002-24-000001", "4", "2024-04-01T10:00:00.000Z")
+    receipt = json.loads(tmp_store.con.execute(
+        "SELECT metadata_json FROM raw_source_files WHERE source_url = ?", [str(zip_path)]
+    ).fetchone()[0])
+    assert receipt["archive_sha256"] == archive_sha
+    assert receipt["covered_rows"] == 4

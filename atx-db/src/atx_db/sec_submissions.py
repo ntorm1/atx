@@ -23,6 +23,91 @@ LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class EarningsReleaseCandidate:
+    """An immutable CIK-owned 8-K Item 2.02 metadata candidate.
+
+    ``sec_submissions`` is an index of filing metadata; it deliberately does
+    not claim that an EX-99 document was present in the bulk archive.  The
+    accession is the only input used by the archive-document fetcher.
+    """
+
+    cik: str
+    accession_number: str
+    filing_date: dt.date | None
+    report_date: dt.date | None
+    acceptance_datetime: dt.datetime | None
+    acceptance_datetime_raw: str | None
+    primary_document: str | None
+    source_url: str
+    run_id: str | None
+
+
+def select_earnings_release_candidates(
+    store: DuckDBStore,
+    *,
+    history_start: dt.date | None = None,
+    history_end: dt.date | None = None,
+    ciks: tuple[str, ...] | None = None,
+    after: tuple[str, str] | None = None,
+    limit: int | None = None,
+) -> tuple[EarningsReleaseCandidate, ...]:
+    """Return stable, issuer-generic Item 2.02 candidates from loaded metadata.
+
+    This performs discovery only.  It intentionally retains the source CIK
+    even when ``security_id`` is an unresolved placeholder: identity joins are
+    a later, fact-time concern and may not be repaired with a current ticker.
+    """
+
+    if limit is not None and limit < 1:
+        raise ValueError("earnings-release candidate limit must be positive")
+    normalized_ciks = tuple(sorted({_normalized_cik(cik) for cik in ciks or ()}))
+    if normalized_ciks:
+        scope = pd.DataFrame({"cik": normalized_ciks})
+        store.con.register("earnings_release_candidate_cik_scope", scope)
+        scope_join = "JOIN earnings_release_candidate_cik_scope scope ON scope.cik = s.cik"
+    else:
+        scope_join = ""
+    try:
+        rows = store.con.execute(
+            f"""
+            SELECT
+                s.cik,
+                s.accession_number,
+                s.filing_date,
+                s.report_date,
+                s.acceptance_datetime,
+                s.acceptance_datetime_raw,
+                s.primary_document,
+                s.source_url,
+                s.run_id
+            FROM sec_submissions s
+            {scope_join}
+            WHERE upper(trim(s.form)) = '8-K'
+              AND regexp_matches(coalesce(s.items, ''), '(^|[^0-9])2\\.02([^0-9]|$)')
+              AND (? IS NULL OR s.report_date >= ?)
+              AND (? IS NULL OR s.report_date <= ?)
+              AND (? IS NULL OR s.cik > ? OR (s.cik = ? AND s.accession_number > ?))
+            QUALIFY row_number() OVER (
+                PARTITION BY s.cik, s.accession_number
+                ORDER BY s.acceptance_datetime DESC NULLS LAST,
+                         s.filing_date DESC NULLS LAST,
+                         s.source_loaded_at DESC NULLS LAST,
+                         s.source_url
+            ) = 1
+            ORDER BY s.cik, s.accession_number
+            LIMIT coalesce(?, 9223372036854775807)
+            """,
+            [history_start, history_start, history_end, history_end,
+             after[0] if after else None, after[0] if after else None,
+             after[0] if after else None, after[1] if after else None, limit],
+        ).fetchall()
+    finally:
+        if normalized_ciks:
+            store.con.unregister("earnings_release_candidate_cik_scope")
+    return tuple(EarningsReleaseCandidate(*row) for row in rows)
+
+
+@dataclass(frozen=True)
 class SecSubmissionsOptions:
     symbols: tuple[str, ...] = ("AAPL",)
     ciks: tuple[str, ...] = ()
@@ -86,6 +171,10 @@ def _normalize(
             "filing_date": frame["filingDate"].map(_parse_date),
             "report_date": frame["reportDate"].map(_parse_date),
             "acceptance_datetime": frame["acceptanceDateTime"].map(_parse_acceptance),
+            # Keep SEC's original offset-bearing evidence alongside the legacy
+            # normalized timestamp. A later source must reject old, naive rows
+            # instead of relabeling a warehouse UTC value as an exact clock.
+            "acceptance_datetime_raw": frame["acceptanceDateTime"].astype("string").str.strip(),
             "form": frame["form"].str.strip(),
             "primary_document": frame["primaryDocument"].str.strip(),
             "primary_doc_description": frame["primaryDocDescription"].str.strip(),

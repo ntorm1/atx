@@ -26,7 +26,7 @@ ITEM_SOURCE = "fundamental_standardization_v1"
 # Kept explicit to avoid importing activation and its package dependency tree.
 STAGES = (
     "migrate", "security_master", "symbol_directory", "ticker_history_extract",
-    "ticker_history_publish", "sec_bulk_download", "submissions_load",
+    "ticker_history_publish", "sec_bulk_download", "submissions_load", "earnings_release_facts",
     "companyfacts_load", "statement_points", "periods", "ttm", "calendarization",
     "standardized", "industry_templates", "reconciliation", "derived_metrics",
     "market_daily", "legacy_liquid_universe", "factor_projections",

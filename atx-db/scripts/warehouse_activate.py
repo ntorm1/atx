@@ -10,7 +10,8 @@ Stages are defined by ``atx_db.activation.STAGE_ORDER``. Use ``--dry-run``
 to print the current ladder, including derived metrics, market daily data,
 delisting evidence, the listed universe, and final provider coverage.
 
-Network is limited to security_master, symbol_directory, and sec_bulk_download.
+Network is limited to security_master, symbol_directory, sec_bulk_download, and
+the governed earnings_release_facts stage after submissions_load.
 ``ATX_SEC_USER_AGENT`` (or ``--sec-user-agent``) is required before any SEC
 request; the ladder fails fast without it.
 

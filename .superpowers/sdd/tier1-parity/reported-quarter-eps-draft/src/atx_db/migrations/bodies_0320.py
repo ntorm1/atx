@@ -40,10 +40,11 @@ def _sec_earnings_release_receipts(conn: duckdb.DuckDBPyConnection) -> None:
             run_id VARCHAR,
             source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
             CHECK (outcome IN ('accepted', 'rejected', 'fetch_failed')),
+            CHECK (outcome = 'accepted' OR rejection_reason IS NOT NULL),
             CHECK (
                 (outcome = 'accepted' AND document_name IS NOT NULL AND document_sha256 IS NOT NULL
                  AND available_at IS NOT NULL AND rejection_reason IS NULL)
-                OR outcome = 'rejected'
+                OR (outcome IN ('rejected', 'fetch_failed') AND rejection_reason IS NOT NULL)
             )
         )
         """
@@ -57,7 +58,7 @@ def _sec_earnings_release_receipts(conn: duckdb.DuckDBPyConnection) -> None:
             'cik,accession_number,document_name,document_sha256',
             'Immutable public-SEC archive fetch, rejection, timestamp and SHA receipts for 8-K Item 2.02 earnings-release exhibits.',
             '["receipt_id"]',
-            'Raw acceptance timestamp and explicit offset are retained. A timestamp_zone_unknown receipt is evidence only and cannot establish available_at.', now()
+            'Raw acceptance timestamp and explicit offset are retained. A timestamp_zone_unknown value never establishes exact UTC; with filing_date the conservative filing-date-plus-46-hour daily availability floor remains valid.', now()
         )
         """
     )

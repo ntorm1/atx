@@ -58,7 +58,10 @@ from .standardization import FundamentalStandardizationDataset, FundamentalStand
 from .fundamental_xbrl_metrics import FundamentalXbrlMetricDataset, FundamentalXbrlMetricOptions
 from .segments import SegmentDataset, SegmentOptions
 from .footnotes import FootnoteDataset, FootnoteOptions
-from .press_release import PressReleaseDataset, PressReleaseOptions
+from .press_release import (
+    PressReleaseDataset, PressReleaseOptions, SecEarningsReleaseDataset,
+    SecEarningsReleaseOptions,
+)
 from .short_interest_metrics import ShortInterestMetricsDataset, ShortInterestMetricsOptions
 from .short_volume import FinraShortVolumeDataset, FinraShortVolumeOptions, ShortVolumeMetricsDataset
 from .macro_metrics import MacroMetricsDataset, MacroMetricsOptions
@@ -1251,6 +1254,22 @@ def _projection_options(params: dict[str, Any]) -> FactorProjectionOptions:
     )
 
 
+def _sec_earnings_release_options(params: dict[str, Any]) -> SecEarningsReleaseOptions:
+    default = SecEarningsReleaseOptions(cache_dir=Path("data/cache/sec-earnings-release"))
+    return SecEarningsReleaseOptions(
+        cache_dir=_path(params.get("cache_dir"), default.cache_dir),
+        history_start=_date_or_none(params.get("history_start")),
+        history_end=_date_or_none(params.get("history_end")),
+        ciks=_tuple_or_none(params.get("ciks")),
+        request_timeout=float(params.get("request_timeout", default.request_timeout)),
+        max_index_bytes=int(params.get("max_index_bytes", default.max_index_bytes)),
+        max_document_bytes=int(params.get("max_document_bytes", default.max_document_bytes)),
+        candidate_batch_size=int(params.get("candidate_batch_size", default.candidate_batch_size)),
+        user_agent=default.user_agent,
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _governed_universe_options(params: dict[str, Any]) -> UniverseMembershipOptions:
     default = UniverseMembershipOptions()
     return UniverseMembershipOptions(
@@ -1371,6 +1390,7 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
         _xbrl_taxonomy_package_options,
     ),
     SecSubmissionsDataset.dataset_id: (SecSubmissionsDataset, _submissions_options),
+    SecEarningsReleaseDataset.dataset_id: (SecEarningsReleaseDataset, _sec_earnings_release_options),
     NasdaqSymbolDirectoryDataset.dataset_id: (NasdaqSymbolDirectoryDataset, _symbol_directory_options),
     NasdaqListingEventsDataset.dataset_id: (NasdaqListingEventsDataset, _listing_events_options),
     ListingStatusIntervalDataset.dataset_id: (ListingStatusIntervalDataset, _listing_status_options),
@@ -1515,6 +1535,7 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "equity_daily_features": ("tbltickerhistory_daily",),
     "equity_price_metrics": ("tbltickerhistory_daily",),
     "est_actual": ("est_measure", "sec_company_facts"),
+    "sec_earnings_release_facts": ("sec_submissions",),
     "est_security_link": (
         "est_consensus",
         "est_detail",
@@ -2182,6 +2203,12 @@ class JobManager:
             dataset_id="sec_submissions",
             params={"symbols": symbols},
             dependencies=["security_master"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="sec_earnings_release_facts",
+            dataset_id="sec_earnings_release_facts",
+            dependencies=["sec_submissions"],
             **retry_policy,
         )
         self.register_job(

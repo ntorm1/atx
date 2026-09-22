@@ -1,0 +1,17 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\verify_cvx_filing_index.py",
+    "--output",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\cvx-q4-2025-official-index-discovery-final.json"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 8.117645263671875,
+    "commit_free_gb": 9.85113525390625
+  },
+  "child_pid": 19104,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.569091796875
+}
