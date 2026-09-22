@@ -1,0 +1,137 @@
+{
+  "observed_at_utc": "2026-09-22T00:00:30.603330+00:00",
+  "read_only": true,
+  "snapshot_cutoff": "2026-09-20T22:00:00Z",
+  "queries": {
+    "securities": {
+      "columns": [
+        "security_id",
+        "entity_id",
+        "issuer_id",
+        "primary_symbol",
+        "name",
+        "source",
+        "first_seen_date",
+        "last_seen_date"
+      ],
+      "rows": [
+        [
+          "SEC-CIK-0000093410",
+          "CIK-0000093410",
+          "CIK-0000093410",
+          "CVX",
+          "CHEVRON CORP",
+          "SEC company_tickers",
+          "2026-09-20",
+          null
+        ],
+        [
+          "TBLTICKERHISTORY-34839",
+          null,
+          null,
+          "CVX",
+          "CVX",
+          "tbltickerhistory3_10y",
+          "2012-03-26",
+          "2026-06-15"
+        ]
+      ]
+    },
+    "identifier_history": {
+      "columns": [
+        "security_id",
+        "id_type",
+        "id_value",
+        "valid_from",
+        "valid_to",
+        "as_of_date",
+        "available_at",
+        "source"
+      ],
+      "rows": [
+        [
+          "SEC-CIK-0000093410",
+          "CIK",
+          "0000093410",
+          "2026-09-20",
+          null,
+          "2026-09-20",
+          "2026-09-20 00:06:21.354683",
+          "SEC company_tickers"
+        ],
+        [
+          "SEC-CIK-0000093410",
+          "ENTITY_ID",
+          "CIK-0000093410",
+          "2026-09-20",
+          null,
+          "2026-09-20",
+          "2026-09-20 00:06:21.354683",
+          "SEC company_tickers"
+        ],
+        [
+          "SEC-CIK-0000093410",
+          "TICKER",
+          "CVX",
+          "2026-09-20",
+          null,
+          "2026-09-20",
+          "2026-09-20 00:06:21.354683",
+          "SEC company_tickers"
+        ]
+      ]
+    },
+    "candidates": {
+      "columns": [
+        "source_dataset_id",
+        "source_table",
+        "source_key_type",
+        "source_key_value",
+        "source_security_id",
+        "target_security_id",
+        "target_id_type",
+        "target_id_value",
+        "match_method",
+        "confidence",
+        "candidate_status",
+        "as_of_date",
+        "available_at"
+      ],
+      "rows": [
+        [
+          "sec_company_facts",
+          "sec_company_facts",
+          "CIK",
+          "0000093410",
+          "SEC-COMPANYFACTS-UNRESOLVED-CIK-0000093410",
+          "SEC-COMPANYFACTS-UNRESOLVED-CIK-0000093410",
+          "CIK",
+          "0000093410",
+          "companyfacts_cik_spine_asof",
+          0.0,
+          "proposed",
+          "2026-09-20",
+          "2026-09-20 22:00:00"
+        ]
+      ]
+    },
+    "prices": {
+      "columns": [
+        "security_id",
+        "symbol",
+        "rows",
+        "first_date",
+        "last_date"
+      ],
+      "rows": [
+        [
+          "SEC-CIK-0000093410",
+          "CVX",
+          3621,
+          "2012-03-26",
+          "2026-09-18"
+        ]
+      ]
+    }
+  }
+}
