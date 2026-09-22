@@ -65,6 +65,34 @@ guard, sequentially; measured process-tree peaks were 0.455GiB and 0.283GiB.
   no later activation stage automatically repairs this linkage. Current
   identity evidence must not be backdated to manufacture a historical join.
 
+## Executed SQL acceptance result
+
+At 2026-09-22T00:18:09.931497Z, the read-only
+[acceptance SQL](../../.superpowers/sdd/tier1-parity/quarterly-eps-acceptance.sql)
+returned these three rows at the explicit 2026-09-20 22:00 UTC cutoff:
+
+| Quarter | Raw current EPS | Raw prior EPS | Raw computed YoY | Stored quarterly growth | Diagnosis |
+| --- | ---: | ---: | ---: | --- | --- |
+| Q2 2026 | 6.11 | 1.45 | 321.3793103448% | NULL | Materialization missing |
+| Q1 2026 | 1.11 | 2.00 | -44.5000000000% | NULL | Materialization missing |
+| Q4 2025 | NULL | NULL | NULL | NULL | Both direct quarterly inputs missing |
+
+The [machine-readable result](../../.superpowers/sdd/tier1-parity/quarterly-eps-acceptance-result.json)
+retains accession, owner, period, stored and effective availability, revision,
+and publication diagnostics. SQL SHA-256:
+`fe886f41543f7bf42261dec61096a6935f2c608ee7e447e1ca6379b90c7af262`.
+Execution used DuckDB 1GB/one thread inside the 2GiB process guard, with
+measured native process-tree peak 0.466GiB. This is a diagnostic query over
+current tables, not a replacement publisher or a passed production case.
+
+The general repairs are to activate existing materializers, ingest direct
+reported-quarter EPS through a deterministic earnings-exhibit source, and
+serve issuer accounting content with separate ticker-lookup and content
+availability clocks. A CIK query must discover actual source owners; it must
+not assume every filing uses the unresolved-owner namespace. Current ticker
+lookup can select an issuer's history without certifying historical market
+security association.
+
 These are source and warehouse findings, not a completed production result.
 The independent source benchmark remains the required output. Operator
 evidence is in `companyfacts-archive7-stop-inspection.json`,

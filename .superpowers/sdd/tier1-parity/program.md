@@ -3,6 +3,35 @@ Spec: docs/superpowers/specs/2026-09-19-tier1-parity-design.md
 Audits: .superpowers/sdd/tier1-parity/audit-atx-db.md, audit-ticker-zip.md
 Baseline: main a79f8371, smoke 6 passed.
 
+## Query-driven production ruling - user, 2026-09-21 local
+
+The user directs work through institutional equity long/short desk questions:
+write the SQL expected to answer an alpha-relevant question, execute it on
+the warehouse, inspect missing or incorrect behavior, and implement a general
+fix. Questions, executable SQL, expected results, observed results, provenance
+and availability are the acceptance evidence. Avoid task selection driven
+only by catalog breadth, isolated edge cases, or repeated test loops.
+
+CVX quarterly GAAP diluted-EPS YoY is the first measured case:
+atx-db/docs/CVX_EPS_ACCEPTANCE.md. Root found Q1/Q2 raw inputs present, direct
+Q4 inputs absent, all three core materialized tables empty, and a conservative
+CIK/security identity link missing. Existing EPS subtraction protection is
+correct. Follow this with investable earnings/profitability changes, valuation,
+and forward-return decile spreads after costs, reusing the implemented CF1
+evaluation and full-universe metric machinery rather than creating parallel
+unverified signal paths. No significance or production-readiness claim without
+actual outputs and appropriately scoped evidence.
+
+VR1 is committed fd2738c7 after one reviewed draft, scoped Critical closure,
+five initial focused passes plus the affected pass after a fixture-count
+correction. Ruff passes; four strict-mypy diagnostics match isolated baseline.
+Archive7 stopped on host headroom, retained46,639,358facts/points, and its
+actual UUID404f66a2-655b-4611-a7a0-b71d4dc6d4d3 was recovered failed. The next
+resume preserves its raw schema, fingerprints, ownership and source scope.
+Issuer-query and reported-quarter EPS plans are under source-level review;
+neither is an authorization to backdate current ticker links, rewrite raw
+receipt evidence, silently limit production to two years, or fabricate EPS.
+
 ## Verified resume recycling ruling - 2026-09-21 22:38 UTC
 
 Archive7 remains the sole guarded writer; its6805receipt proof passed. The

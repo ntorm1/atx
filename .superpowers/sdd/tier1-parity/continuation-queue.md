@@ -3,7 +3,48 @@
 This section supersedes every older status below. Updated 2026-09-21 UTC
 (2026-09-20 local). The production snapshot remains explicitly as-of Sep20.
 
-## Current controller override - 2026-09-22 00:02 UTC
+## Current controller override - 2026-09-22 00:26 UTC
+
+Archive8 is LIVE, session43304, launched2026-09-22T00:23:24UTC. Guard8900,
+redirectors15480/9116, native worker2780; guard child_pid is redirector9116.
+Command: full archive_members replacement, predecessor ACTUAL archive7 UUID
+404f66a2-655b-4611-a7a0-b71d4dc6d4d3, snapshot2026-09-20, force, no download,
+DuckDB1GB/one thread, unchanged2GiB process guard, backup-keep100, dummy SEC
+UA. Fresh receipt/log/err names activation-companyfacts-archive8*. Initial
+physical free7.446GiB/commit10.183GiB. Log00:23:29UTC found8590 receipts across
+five lineage runs; retained fingerprints are being verified. Verification is
+NOT yet reported complete. Actual new dataset UUID not yet inspected.
+
+VR1 is complete in fd2738c7. Five initial focused selectors passed; the sixth
+passed after correcting only the fixture's replacement-row expectations.
+Four strict-mypy diagnostics exactly match isolated baseline; scoped Ruff
+passes. This production run is the first measurement of new reuse cadence.
+
+User's query-driven methodology is recorded in program.md. The explicit EPS
+acceptance SQL ran read-only00:18:09.931497UTC and returned Q2+321.3793103%
+and Q1-44.5% from raw inputs, both stored metrics absent; both requested Q4
+direct inputs absent. All three published metrics NULL. See SQL/result and
+atx-db/docs/CVX_EPS_ACCEPTANCE.md; process peak0.466GiB, no full suite.
+
+Fresh Codex implementers are STATIC/DRAFT ONLY while archive8 runs:
+- issuer_content_query_implementation: new issuer/asof/API query surface and
+  tests in issuer-content-query-draft; discover actual CIK owners, separate
+  lookup/content clocks; report any cross-owner derived-growth gap. No raw,
+  statement producer, schema, registry/jobs/activation edits.
+- reported_quarter_eps_implementation: generic public SEC Item2.02/EX99 source,
+  bounded resumable receipt/cache and direct quarter EPS core bridge, with
+  focused tests in reported-quarter-eps-draft. Owns DRAFT activation/jobs hooks
+  exclusively; migration not reserved yet. No API or raw CompanyFacts edits.
+Root owns runtime/integration; no concurrent tests, imports, DB probes or
+audits while writer lives. Both need one fresh static review, focused tests
+after terminal, pathspec commits. No new user approval needed for these tasks.
+
+Next production sequence remains complete sources, submissions resume, full
+run5 from statement_points --force, CF1 evaluation, measured coverage/quality,
+release and sprint gates. Historical association and exact source vintage
+remain qualified explicitly; no threshold flips or alpha claims yet.
+
+## Historical controller override - 2026-09-22 00:02 UTC
 
 Archive7 is TERMINAL: session28324 returned1, guard stopped_low_headroom at
 2026-09-21T23:53:00Z (physical1.373397827GiB, commit4.114677429GiB). Original
