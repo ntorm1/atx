@@ -1,0 +1,19 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "-m",
+    "ruff",
+    "check",
+    "src/atx_db/migrations/__init__.py",
+    "src/atx_db/migrations/bodies_0320.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.854423522949219,
+    "commit_free_gb": 9.718833923339844
+  },
+  "child_pid": 17916,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.061992645263671875
+}

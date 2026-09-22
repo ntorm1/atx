@@ -71,6 +71,20 @@ def _sec_earnings_release_receipts(conn: duckdb.DuckDBPyConnection) -> None:
         WHERE table_name = 'sec_submissions'
         """
     )
+    # Receipt rows are immutable attempts, not period facts or revision chains.
+    # Rejected/fetch-failed attempts may lack a qualified availability clock.
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO pit_exemption (
+            table_name, missing_columns, reason, exempted_by, exempted_at, source_loaded_at
+        ) VALUES (
+            'sec_earnings_release_receipts',
+            '["as_of_date","is_latest_revision"]',
+            'Immutable source-attempt receipts are keyed by receipt_id and have no observation period or revision chain; available_at retains only qualified source availability and may be NULL for rejected or failed attempts.',
+            'tier1-eps0320', now(), now()
+        )
+        """
+    )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_sec_earnings_release_receipts_candidate "
         "ON sec_earnings_release_receipts(cik, accession_number, outcome)"

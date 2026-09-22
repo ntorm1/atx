@@ -1,0 +1,31 @@
+F.......F.s...............................................               [100%]
+================================== FAILURES ===================================
+_______________ test_public_api_snapshot_matches_pinned_fixture _______________
+
+    def test_public_api_snapshot_matches_pinned_fixture():
+        expected = load_public_api_snapshot(SNAPSHOT_PATH)
+    
+>       assert compare_public_api_snapshot(expected) == ()
+E       AssertionError: assert (PublicApiDif...dies_0322')),) == ()
+E         
+E         Left contains one more item: PublicApiDiff(module='atx_db.migrations', missing=(), extra=('bodies_0320', 'bodies_0321', 'bodies_0322'))
+E         Use -v to get more diff
+
+tests\test_module_boundaries.py:43: AssertionError
+_____ test_bootstrapped_warehouse_has_zero_pit_column_presence_after_s2_0 _____
+
+tmp_store = <atx_db.connection.DuckDBStore object at 0x00000195D142B830>
+
+    def test_bootstrapped_warehouse_has_zero_pit_column_presence_after_s2_0(tmp_store):
+        result = pit_column_presence_check(tmp_store)
+    
+>       assert result.status == "passed"
+E       AssertionError: assert 'failed' == 'passed'
+E         
+E         - passed
+E         + failed
+
+tests\test_schema_contract_v2.py:322: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_module_boundaries.py::test_public_api_snapshot_matches_pinned_fixture
+FAILED tests/test_schema_contract_v2.py::test_bootstrapped_warehouse_has_zero_pit_column_presence_after_s2_0

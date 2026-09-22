@@ -1,0 +1,20 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\check_committed_head.py",
+    "tests/test_module_boundaries.py",
+    "tests/test_schema_contract_v2.py",
+    "-n",
+    "0",
+    "-q"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "failed",
+  "headroom": {
+    "physical_free_gb": 6.427753448486328,
+    "commit_free_gb": 9.503746032714844
+  },
+  "child_pid": 19372,
+  "returncode": 1,
+  "native_peak_job_memory_gb": 0.6892967224121094
+}
