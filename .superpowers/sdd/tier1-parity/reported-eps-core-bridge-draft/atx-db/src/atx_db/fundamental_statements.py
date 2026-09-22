@@ -1128,7 +1128,7 @@ def refresh_fundamental_statement_points(
                     m.normal_balance,
                     r.period_start,
                     r.period_end,
-                    r.filed_date AS as_of_date,
+                    coalesce(r.as_of_date, r.filed_date) AS as_of_date,
                     r.available_at,
                     r.fiscal_year,
                     r.fiscal_period,

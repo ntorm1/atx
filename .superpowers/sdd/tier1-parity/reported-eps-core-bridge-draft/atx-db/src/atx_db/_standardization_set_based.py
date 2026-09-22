@@ -15,6 +15,7 @@ import pandas as pd
 from ._fundamental_publication import check_publication_session, fundamental_publication
 from .connection import DuckDBStore
 from .item_registry import seed_fundamental_item_registry
+from .reported_eps_core import reported_eps_conflict_candidates_cte
 
 if TYPE_CHECKING:
     from .standardization import FundamentalStandardizationOptions, StandardizationRule
@@ -103,8 +104,10 @@ def _rule_set_digest(rules: Sequence[StandardizationRule]) -> str:
 
 def _create_candidates(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
     symbol_join = ""
+    conflict_symbol_join = ""
     if symbols:
         symbol_join = "JOIN _std_symbol_filter ssf ON ssf.symbol = src.symbol"
+        conflict_symbol_join = "JOIN _std_symbol_filter ssf ON ssf.symbol = conflict.symbol"
     store.con.execute(
         f"""
         CREATE OR REPLACE TEMP TABLE _std_candidates_all AS
@@ -123,6 +126,7 @@ def _create_candidates(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
             FROM fundamental_item_vendor_map
             GROUP BY lower(vendor), vendor_field
         ),
+        {reported_eps_conflict_candidates_cte()},
         candidate_union AS (
             SELECT
                 'fundamental_ttm_points' AS upstream_source,
@@ -265,6 +269,38 @@ def _create_candidates(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
                  OR date_diff('day', src.period_start, src.period_end) + 1 BETWEEN 70 AND 120
                  OR date_diff('day', src.period_start, src.period_end) + 1 BETWEEN 330 AND 380
               )
+
+            UNION ALL
+
+            SELECT
+                conflict.upstream_source,
+                conflict.upstream_priority,
+                conflict.upstream_row_id,
+                conflict.upstream_adapter,
+                conflict.security_id,
+                conflict.symbol,
+                conflict.cik,
+                conflict.item_id,
+                conflict.canonical_metric,
+                conflict.concept,
+                conflict.taxonomy,
+                conflict.unit,
+                conflict.unit_type,
+                conflict.basis,
+                conflict.period_start,
+                conflict.period_end,
+                conflict.fiscal_year,
+                conflict.fiscal_period,
+                conflict.accession_number,
+                conflict.source_accession,
+                conflict.filed_date,
+                conflict.value,
+                conflict.available_at,
+                conflict.input_rank,
+                conflict.source_is_latest,
+                conflict.source_loaded_at
+            FROM reported_eps_conflict_candidates conflict
+            {conflict_symbol_join}
         )
         SELECT *
         FROM candidate_union
@@ -560,6 +596,16 @@ def _create_output(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
                 row_number() OVER (
                     PARTITION BY r.rule_id, c.security_id, c.period_end, c.available_at
                     ORDER BY
+                        -- The bridge supplies an explicit NULL state first.  At
+                        -- an equal visibility clock a direct Company Facts value
+                        -- then wins a consistent preliminary release; that order
+                        -- is part of the reported-EPS source contract.
+                        CASE
+                            WHEN c.upstream_source = 'reported_eps_conflict' THEN 0
+                            WHEN c.upstream_source = 'fundamental_statement_points'
+                             AND c.upstream_adapter = 'SEC companyfacts' THEN 1
+                            ELSE 2
+                        END,
                         c.input_rank,
                         CASE
                             WHEN c.basis = 'quarterly' THEN abs(date_diff('day', c.period_start, c.period_end) + 1 - 91)
@@ -857,11 +903,13 @@ def _create_exceptions(store: DuckDBStore) -> None:
             SELECT
                 c.*,
                 CASE
+                    WHEN c.upstream_source = 'reported_eps_conflict' THEN 'reported_eps_conflict'
                     WHEN c.item_id IS NULL THEN 'unmapped_concept'
                     ELSE 'no_active_standardization_rule'
                 END AS reason
             FROM _std_candidates c
-            WHERE c.item_id IS NULL
+            WHERE c.upstream_source = 'reported_eps_conflict'
+               OR c.item_id IS NULL
                OR NOT EXISTS (
                     SELECT 1
                     FROM _std_rules r
