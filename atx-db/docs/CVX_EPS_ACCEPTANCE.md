@@ -85,6 +85,13 @@ Execution used DuckDB 1GB/one thread inside the 2GiB process guard, with
 measured native process-tree peak 0.466GiB. This is a diagnostic query over
 current tables, not a replacement publisher or a passed production case.
 
+Review found that the original query's publication-status label depended on
+raw Company Facts inputs. That does not change the measured missing outputs
+above, but would mislabel a future quarter supplied by an earnings exhibit.
+The [versioned successor SQL](../../.superpowers/sdd/tier1-parity/quarterly-eps-acceptance-v2.sql)
+separates publication status from the raw comparison. It is prepared for the
+next run and has not yet executed; the original SQL and result remain frozen.
+
 The general repairs are to activate existing materializers, ingest direct
 reported-quarter EPS through a deterministic earnings-exhibit source, and
 serve issuer accounting content with separate ticker-lookup and content

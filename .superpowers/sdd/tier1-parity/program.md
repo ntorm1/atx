@@ -5,6 +5,24 @@ Baseline: main a79f8371, smoke 6 passed.
 
 ## Query-driven production ruling - user, 2026-09-21 local
 
+Implementation reservation0320: reported_quarter_eps_implementation exclusively
+owns the additive earnings-release receipt/evidence migration in its draft,
+including its own body/import/registration. Activation/jobs draft edits are
+serialized to the same owner; root integrates only after the active writer.
+Issuer query work remains disjoint, with actual CIK owner discovery and no
+raw receipt mutation.
+
+Reported-EPS availability follows the existing daily FC1 policy when exact
+source dissemination cannot be qualified: valid SEC filing date plus46h,
+max with any later qualified availability, explicitly labeled conservative
+date evidence. Unknown naive timestamps are never promoted to exact UTC;
+acceptance is not automatically dissemination. This allows useful dated
+accounting content without a false intraday-vintage claim. SEC source guidance:
+https://www.sec.gov/search-filings/edgar-search-assistance/accessing-edgar-data
+This supersedes the planning brief's overbroad discard interpretation. Local
+bulk filing/cache inputs should be supported; no daily Feed archive download
+has been started or historical-vintage qualification inferred.
+
 The user directs work through institutional equity long/short desk questions:
 write the SQL expected to answer an alpha-relevant question, execute it on
 the warehouse, inspect missing or incorrect behavior, and implement a general

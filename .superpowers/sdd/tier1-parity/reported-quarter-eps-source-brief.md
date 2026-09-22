@@ -1,5 +1,21 @@
 # Reported quarterly EPS source brief
 
+## Root implementation correction - 2026-09-22
+
+The daily source may use the existing FC1 `sec_filed_date_plus_46h_v1` policy
+when a valid SEC filing date is known but precise dissemination is not:
+filing-date midnight plus46h, max with any later qualified source availability.
+Return the conservative policy and source evidence in lineage. Do not claim
+exact intraday publication or historical delivery vintage. Unknown naive
+timestamps remain excluded from exact UTC interpretation, not from every
+daily accounting output. This supersedes any conflicting blanket exclusion
+below. Even exact acceptance need not equal dissemination; see the
+[SEC's data guidance](https://www.sec.gov/search-filings/edgar-search-assistance/accessing-edgar-data).
+Support local bulk SGML/cache inputs; bounded accession/exhibit fetches fill
+document gaps without per-CIK submissions API discovery. No daily archive has
+been downloaded for this task. Migration0320 is reserved to this implementer
+for additive receipt evidence, with its own body and registry lines together.
+
 ## Desk acceptance: the question and executable current-state query
 
 An institutional equity long/short desk needs to answer this at each decision

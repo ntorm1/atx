@@ -11,9 +11,11 @@ Command: full archive_members replacement, predecessor ACTUAL archive7 UUID
 404f66a2-655b-4611-a7a0-b71d4dc6d4d3, snapshot2026-09-20, force, no download,
 DuckDB1GB/one thread, unchanged2GiB process guard, backup-keep100, dummy SEC
 UA. Fresh receipt/log/err names activation-companyfacts-archive8*. Initial
-physical free7.446GiB/commit10.183GiB. Log00:23:29UTC found8590 receipts across
-five lineage runs; retained fingerprints are being verified. Verification is
-NOT yet reported complete. Actual new dataset UUID not yet inspected.
+physical free7.446GiB/commit10.183GiB. Log00:30:44.930UTC verified8590 retained
+targets/37,059,541rows across five lineage runs. At00:32:52.795UTC the replay
+has processed2875/20390, loaded2396 (verified reuse), empty454/unavailable25,
+failed0/new fact rows0. Guard free physical7.530GiB/commit9.620GiB. Session43304
+independently polled still running. Actual new dataset UUID not yet inspected.
 
 VR1 is complete in fd2738c7. Five initial focused selectors passed; the sixth
 passed after correcting only the fixture's replacement-row expectations.
@@ -34,8 +36,14 @@ Fresh Codex implementers are STATIC/DRAFT ONLY while archive8 runs:
 - reported_quarter_eps_implementation: generic public SEC Item2.02/EX99 source,
   bounded resumable receipt/cache and direct quarter EPS core bridge, with
   focused tests in reported-quarter-eps-draft. Owns DRAFT activation/jobs hooks
-  exclusively; migration not reserved yet. No API or raw CompanyFacts edits.
-Root owns runtime/integration; no concurrent tests, imports, DB probes or
+  exclusively; additive receipt migration0320 is reserved to this owner. No
+  API or raw CompanyFacts edits. Daily dated EPS may use existing FC1 +46h
+  conservative availability when exact dissemination is unknown; never promote
+  naive unknown-zone timestamps to exact UTC. Program/brief record this.
+Fresh review_desk_acceptance_queries is static-only, reviewing the executed
+CVX diagnostic and prepared atx-db/sql/research/custom-feature-decile-acceptance.sql.
+The latter pins all eight hypotheses/three splits and first CF1 evaluation;
+it has NOT yet executed. Root owns runtime/integration; no concurrent tests, imports, DB probes or
 audits while writer lives. Both need one fresh static review, focused tests
 after terminal, pathspec commits. No new user approval needed for these tasks.
 
