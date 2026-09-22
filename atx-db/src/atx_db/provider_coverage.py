@@ -252,7 +252,12 @@ def _schema_stats(
     coverage_predicate = (
         "WHERE is_latest_revision AND value_status = 'valid' "
         "AND value IS NOT NULL AND isfinite(value) AND history_status = 'event_reconstructed'"
-        if schema.source_table == "derived_metric_values" else ""
+        if schema.source_table == "derived_metric_values" else
+        # Keep the latest standardized state before testing whether it is
+        # usable.  An explicit reported-EPS conflict is a NULL state, so an
+        # older valid release must not inflate provider coverage.
+        "WHERE is_latest_revision AND value IS NOT NULL AND isfinite(value)"
+        if schema.source_table == "fundamental_standardized" else ""
     )
     row = store.con.execute(
         f"""

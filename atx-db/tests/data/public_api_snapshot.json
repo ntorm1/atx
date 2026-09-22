@@ -505,6 +505,7 @@
     "refresh_xbrl_taxonomy",
     "refresh_xbrl_validation_results",
     "release_apply_lock",
+    "reported_eps_core",
     "resolve_companyfacts_targets",
     "resolve_default_db_path",
     "resolve_primary_cik",

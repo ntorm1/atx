@@ -1,0 +1,1062 @@
+FFFFFFFFFF                                                               [100%]
+================================== FAILURES ===================================
+_______ test_late_direct_conflict_reaches_standardized_and_derived_null _______
+
+tmp_store = <atx_db.connection.DuckDBStore object at 0x000001B34DD74200>
+
+    def test_late_direct_conflict_reaches_standardized_and_derived_null(tmp_store) -> None:
+        store = tmp_store
+        _seed_history(store)
+>       _release(store, "release-target")
+
+tests\test_reported_eps_core.py:197: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+store = <atx_db.connection.DuckDBStore object at 0x000001B34DD74200>
+fact_id = 'release-target', cik = '0000000001', period_start = '2025-01-01'
+period_end = '2025-03-31', duration = 'three_months_explicit', value = 1.5
+at = datetime.datetime(2025, 5, 3, 22, 0), preliminary = True, confidence = 1.0
+receipt_outcome = 'accepted'
+
+    def _release(
+        store,
+        fact_id: str,
+        *,
+        cik: str = "0000000001",
+        period_start: str = "2025-01-01",
+        period_end: str = "2025-03-31",
+        duration: str = "three_months_explicit",
+        value: float = 1.5,
+        at: dt.datetime = RELEASE_AT,
+        preliminary: bool = True,
+        confidence: float = 1.0,
+        receipt_outcome: str = "accepted",
+    ) -> None:
+        receipt_id = f"receipt-{fact_id}"
+        accession = f"accession-{fact_id}"
+        document_sha = "a" * 64
+        source_security = cik_security_id(cik) if cik.isdecimal() else "SEC-CIK-MALFORMED"
+        payload = json.dumps(
+            {
+                "receipt_id": receipt_id,
+                "document_sha256": document_sha,
+                "duration_evidence": duration,
+                "period_start": period_start,
+                "period_start_basis": "explicit_table_header",
+                "fiscal_period_evidence": "Q1 2025 table heading",
+            },
+            sort_keys=True,
+        )
+        store.con.execute(
+            """
+            INSERT INTO sec_earnings_release_receipts (
+                receipt_id, cik, source_security_id, accession_number, document_name,
+                filing_date, report_date, timestamp_zone_status, available_at,
+                document_sha256, outcome, rejection_reason, source_url, retrieval_at
+            ) VALUES (?, ?, ?, ?, 'ex99.htm', DATE '2025-05-01',
+                      DATE '2025-05-01', 'sec_filed_date_plus_46h_v1',
+                      ?, ?, ?, ?, 'https://example.invalid/ex99.htm', ?)
+            """,
+            [
+                receipt_id, cik, source_security, accession, at, document_sha,
+                receipt_outcome, None if receipt_outcome == "accepted" else "fixture rejection", at,
+            ],
+        )
+>       store.con.execute(
+            """
+            INSERT INTO press_release_facts (
+                press_release_fact_id, source, security_id, cik, accession_number, form,
+                source_item, source_url, measure_code, fiscal_year, fiscal_period,
+                period_end, value, unit, basis, is_preliminary, extraction_confidence,
+                filing_date, release_date, as_of_date, available_at, raw_payload_json, run_id
+            ) VALUES (
+                ?, ?, ?, ?, ?, '8-K', '2.02 / EX-99', 'https://example.invalid/ex99.htm',
+                'EPS_DILUTED', 2025, 'Q1', ?, ?, 'USD_PER_SHARE', 'GAAP', ?, ?,
+                DATE '2025-05-01', DATE '2025-05-01', ?, ?, ?, 'fixture'
+            )
+            """,
+            [
+                fact_id, RELEASE_SOURCE, source_security, cik, accession,
+                dt.date.fromisoformat(period_end), value, preliminary, confidence,
+                dt.date.fromisoformat(period_end), at, payload,
+            ],
+        )
+E       _duckdb.ConstraintException: Constraint Error: NOT NULL constraint failed: press_release_facts.input_codes_json
+
+tests\test_reported_eps_core.py:109: ConstraintException
+_____________ test_equal_clock_conflict_and_qualified_source_rows _____________
+
+tmp_store = <atx_db.connection.DuckDBStore object at 0x000001B34DD77DA0>
+
+    def test_equal_clock_conflict_and_qualified_source_rows(tmp_store) -> None:
+        store = tmp_store
+        _seed_history(store)
+>       _release(store, "equal")
+
+tests\test_reported_eps_core.py:255: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+store = <atx_db.connection.DuckDBStore object at 0x000001B34DD77DA0>
+fact_id = 'equal', cik = '0000000001', period_start = '2025-01-01'
+period_end = '2025-03-31', duration = 'three_months_explicit', value = 1.5
+at = datetime.datetime(2025, 5, 3, 22, 0), preliminary = True, confidence = 1.0
+receipt_outcome = 'accepted'
+
+    def _release(
+        store,
+        fact_id: str,
+        *,
+        cik: str = "0000000001",
+        period_start: str = "2025-01-01",
+        period_end: str = "2025-03-31",
+        duration: str = "three_months_explicit",
+        value: float = 1.5,
+        at: dt.datetime = RELEASE_AT,
+        preliminary: bool = True,
+        confidence: float = 1.0,
+        receipt_outcome: str = "accepted",
+    ) -> None:
+        receipt_id = f"receipt-{fact_id}"
+        accession = f"accession-{fact_id}"
+        document_sha = "a" * 64
+        source_security = cik_security_id(cik) if cik.isdecimal() else "SEC-CIK-MALFORMED"
+        payload = json.dumps(
+            {
+                "receipt_id": receipt_id,
+                "document_sha256": document_sha,
+                "duration_evidence": duration,
+                "period_start": period_start,
+                "period_start_basis": "explicit_table_header",
+                "fiscal_period_evidence": "Q1 2025 table heading",
+            },
+            sort_keys=True,
+        )
+        store.con.execute(
+            """
+            INSERT INTO sec_earnings_release_receipts (
+                receipt_id, cik, source_security_id, accession_number, document_name,
+                filing_date, report_date, timestamp_zone_status, available_at,
+                document_sha256, outcome, rejection_reason, source_url, retrieval_at
+            ) VALUES (?, ?, ?, ?, 'ex99.htm', DATE '2025-05-01',
+                      DATE '2025-05-01', 'sec_filed_date_plus_46h_v1',
+                      ?, ?, ?, ?, 'https://example.invalid/ex99.htm', ?)
+            """,
+            [
+                receipt_id, cik, source_security, accession, at, document_sha,
+                receipt_outcome, None if receipt_outcome == "accepted" else "fixture rejection", at,
+            ],
+        )
+>       store.con.execute(
+            """
+            INSERT INTO press_release_facts (
+                press_release_fact_id, source, security_id, cik, accession_number, form,
+                source_item, source_url, measure_code, fiscal_year, fiscal_period,
+                period_end, value, unit, basis, is_preliminary, extraction_confidence,
+                filing_date, release_date, as_of_date, available_at, raw_payload_json, run_id
+            ) VALUES (
+                ?, ?, ?, ?, ?, '8-K', '2.02 / EX-99', 'https://example.invalid/ex99.htm',
+                'EPS_DILUTED', 2025, 'Q1', ?, ?, 'USD_PER_SHARE', 'GAAP', ?, ?,
+                DATE '2025-05-01', DATE '2025-05-01', ?, ?, ?, 'fixture'
+            )
+            """,
+            [
+                fact_id, RELEASE_SOURCE, source_security, cik, accession,
+                dt.date.fromisoformat(period_end), value, preliminary, confidence,
+                dt.date.fromisoformat(period_end), at, payload,
+            ],
+        )
+E       _duckdb.ConstraintException: Constraint Error: NOT NULL constraint failed: press_release_facts.input_codes_json
+
+tests\test_reported_eps_core.py:109: ConstraintException
+_ test_admission_uses_migrated_tables_and_exact_duration[13w-0000000001-2025-01-01-2025-04-01-thirteen_weeks_explicit-True-1.0-accepted-True] _
+
+tmp_store = <atx_db.connection.DuckDBStore object at 0x000001B34DD74080>
+fact_id = '13w', cik = '0000000001', start = '2025-01-01', end = '2025-04-01'
+duration = 'thirteen_weeks_explicit', preliminary = True, confidence = 1.0
+outcome = 'accepted', accepted = True
+
+    @pytest.mark.parametrize(
+        ("fact_id", "cik", "start", "end", "duration", "preliminary", "confidence", "outcome", "accepted"),
+        [
+            ("13w", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", True),
+            ("14w", "0000000001", "2025-01-01", "2025-04-08", "fourteen_weeks_explicit", True, 1.0, "accepted", True),
+            ("wrong-span", "0000000001", "2025-01-02", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("malformed-cik", "00000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("cross-cik", "0000000003", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("nonpreliminary", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", False, 1.0, "accepted", False),
+            ("weak", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 0.9, "accepted", False),
+            ("rejected", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "rejected", False),
+        ],
+    )
+    def test_admission_uses_migrated_tables_and_exact_duration(
+        tmp_store, fact_id, cik, start, end, duration, preliminary, confidence, outcome, accepted
+    ) -> None:
+        store = tmp_store
+        _issuer(store, "owner-eps", "EPS")
+        _companyfact(
+            store, "owner-eps", "0000000001", "2024-01-01", "2024-03-31",
+            1.0, dt.datetime(2024, 5, 3, 22), "owner-fact",
+        )
+>       _release(
+            store, fact_id, cik=cik, period_start=start, period_end=end,
+            duration=duration, preliminary=preliminary, confidence=confidence,
+            receipt_outcome=outcome,
+        )
+
+tests\test_reported_eps_core.py:291: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+store = <atx_db.connection.DuckDBStore object at 0x000001B34DD74080>
+fact_id = '13w', cik = '0000000001', period_start = '2025-01-01'
+period_end = '2025-04-01', duration = 'thirteen_weeks_explicit', value = 1.5
+at = datetime.datetime(2025, 5, 3, 22, 0), preliminary = True, confidence = 1.0
+receipt_outcome = 'accepted'
+
+    def _release(
+        store,
+        fact_id: str,
+        *,
+        cik: str = "0000000001",
+        period_start: str = "2025-01-01",
+        period_end: str = "2025-03-31",
+        duration: str = "three_months_explicit",
+        value: float = 1.5,
+        at: dt.datetime = RELEASE_AT,
+        preliminary: bool = True,
+        confidence: float = 1.0,
+        receipt_outcome: str = "accepted",
+    ) -> None:
+        receipt_id = f"receipt-{fact_id}"
+        accession = f"accession-{fact_id}"
+        document_sha = "a" * 64
+        source_security = cik_security_id(cik) if cik.isdecimal() else "SEC-CIK-MALFORMED"
+        payload = json.dumps(
+            {
+                "receipt_id": receipt_id,
+                "document_sha256": document_sha,
+                "duration_evidence": duration,
+                "period_start": period_start,
+                "period_start_basis": "explicit_table_header",
+                "fiscal_period_evidence": "Q1 2025 table heading",
+            },
+            sort_keys=True,
+        )
+        store.con.execute(
+            """
+            INSERT INTO sec_earnings_release_receipts (
+                receipt_id, cik, source_security_id, accession_number, document_name,
+                filing_date, report_date, timestamp_zone_status, available_at,
+                document_sha256, outcome, rejection_reason, source_url, retrieval_at
+            ) VALUES (?, ?, ?, ?, 'ex99.htm', DATE '2025-05-01',
+                      DATE '2025-05-01', 'sec_filed_date_plus_46h_v1',
+                      ?, ?, ?, ?, 'https://example.invalid/ex99.htm', ?)
+            """,
+            [
+                receipt_id, cik, source_security, accession, at, document_sha,
+                receipt_outcome, None if receipt_outcome == "accepted" else "fixture rejection", at,
+            ],
+        )
+>       store.con.execute(
+            """
+            INSERT INTO press_release_facts (
+                press_release_fact_id, source, security_id, cik, accession_number, form,
+                source_item, source_url, measure_code, fiscal_year, fiscal_period,
+                period_end, value, unit, basis, is_preliminary, extraction_confidence,
+                filing_date, release_date, as_of_date, available_at, raw_payload_json, run_id
+            ) VALUES (
+                ?, ?, ?, ?, ?, '8-K', '2.02 / EX-99', 'https://example.invalid/ex99.htm',
+                'EPS_DILUTED', 2025, 'Q1', ?, ?, 'USD_PER_SHARE', 'GAAP', ?, ?,
+                DATE '2025-05-01', DATE '2025-05-01', ?, ?, ?, 'fixture'
+            )
+            """,
+            [
+                fact_id, RELEASE_SOURCE, source_security, cik, accession,
+                dt.date.fromisoformat(period_end), value, preliminary, confidence,
+                dt.date.fromisoformat(period_end), at, payload,
+            ],
+        )
+E       _duckdb.ConstraintException: Constraint Error: NOT NULL constraint failed: press_release_facts.input_codes_json
+
+tests\test_reported_eps_core.py:109: ConstraintException
+_ test_admission_uses_migrated_tables_and_exact_duration[14w-0000000001-2025-01-01-2025-04-08-fourteen_weeks_explicit-True-1.0-accepted-True] _
+
+tmp_store = <atx_db.connection.DuckDBStore object at 0x000001B34DD758B0>
+fact_id = '14w', cik = '0000000001', start = '2025-01-01', end = '2025-04-08'
+duration = 'fourteen_weeks_explicit', preliminary = True, confidence = 1.0
+outcome = 'accepted', accepted = True
+
+    @pytest.mark.parametrize(
+        ("fact_id", "cik", "start", "end", "duration", "preliminary", "confidence", "outcome", "accepted"),
+        [
+            ("13w", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", True),
+            ("14w", "0000000001", "2025-01-01", "2025-04-08", "fourteen_weeks_explicit", True, 1.0, "accepted", True),
+            ("wrong-span", "0000000001", "2025-01-02", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("malformed-cik", "00000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("cross-cik", "0000000003", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("nonpreliminary", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", False, 1.0, "accepted", False),
+            ("weak", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 0.9, "accepted", False),
+            ("rejected", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "rejected", False),
+        ],
+    )
+    def test_admission_uses_migrated_tables_and_exact_duration(
+        tmp_store, fact_id, cik, start, end, duration, preliminary, confidence, outcome, accepted
+    ) -> None:
+        store = tmp_store
+        _issuer(store, "owner-eps", "EPS")
+        _companyfact(
+            store, "owner-eps", "0000000001", "2024-01-01", "2024-03-31",
+            1.0, dt.datetime(2024, 5, 3, 22), "owner-fact",
+        )
+>       _release(
+            store, fact_id, cik=cik, period_start=start, period_end=end,
+            duration=duration, preliminary=preliminary, confidence=confidence,
+            receipt_outcome=outcome,
+        )
+
+tests\test_reported_eps_core.py:291: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+store = <atx_db.connection.DuckDBStore object at 0x000001B34DD758B0>
+fact_id = '14w', cik = '0000000001', period_start = '2025-01-01'
+period_end = '2025-04-08', duration = 'fourteen_weeks_explicit', value = 1.5
+at = datetime.datetime(2025, 5, 3, 22, 0), preliminary = True, confidence = 1.0
+receipt_outcome = 'accepted'
+
+    def _release(
+        store,
+        fact_id: str,
+        *,
+        cik: str = "0000000001",
+        period_start: str = "2025-01-01",
+        period_end: str = "2025-03-31",
+        duration: str = "three_months_explicit",
+        value: float = 1.5,
+        at: dt.datetime = RELEASE_AT,
+        preliminary: bool = True,
+        confidence: float = 1.0,
+        receipt_outcome: str = "accepted",
+    ) -> None:
+        receipt_id = f"receipt-{fact_id}"
+        accession = f"accession-{fact_id}"
+        document_sha = "a" * 64
+        source_security = cik_security_id(cik) if cik.isdecimal() else "SEC-CIK-MALFORMED"
+        payload = json.dumps(
+            {
+                "receipt_id": receipt_id,
+                "document_sha256": document_sha,
+                "duration_evidence": duration,
+                "period_start": period_start,
+                "period_start_basis": "explicit_table_header",
+                "fiscal_period_evidence": "Q1 2025 table heading",
+            },
+            sort_keys=True,
+        )
+        store.con.execute(
+            """
+            INSERT INTO sec_earnings_release_receipts (
+                receipt_id, cik, source_security_id, accession_number, document_name,
+                filing_date, report_date, timestamp_zone_status, available_at,
+                document_sha256, outcome, rejection_reason, source_url, retrieval_at
+            ) VALUES (?, ?, ?, ?, 'ex99.htm', DATE '2025-05-01',
+                      DATE '2025-05-01', 'sec_filed_date_plus_46h_v1',
+                      ?, ?, ?, ?, 'https://example.invalid/ex99.htm', ?)
+            """,
+            [
+                receipt_id, cik, source_security, accession, at, document_sha,
+                receipt_outcome, None if receipt_outcome == "accepted" else "fixture rejection", at,
+            ],
+        )
+>       store.con.execute(
+            """
+            INSERT INTO press_release_facts (
+                press_release_fact_id, source, security_id, cik, accession_number, form,
+                source_item, source_url, measure_code, fiscal_year, fiscal_period,
+                period_end, value, unit, basis, is_preliminary, extraction_confidence,
+                filing_date, release_date, as_of_date, available_at, raw_payload_json, run_id
+            ) VALUES (
+                ?, ?, ?, ?, ?, '8-K', '2.02 / EX-99', 'https://example.invalid/ex99.htm',
+                'EPS_DILUTED', 2025, 'Q1', ?, ?, 'USD_PER_SHARE', 'GAAP', ?, ?,
+                DATE '2025-05-01', DATE '2025-05-01', ?, ?, ?, 'fixture'
+            )
+            """,
+            [
+                fact_id, RELEASE_SOURCE, source_security, cik, accession,
+                dt.date.fromisoformat(period_end), value, preliminary, confidence,
+                dt.date.fromisoformat(period_end), at, payload,
+            ],
+        )
+E       _duckdb.ConstraintException: Constraint Error: NOT NULL constraint failed: press_release_facts.input_codes_json
+
+tests\test_reported_eps_core.py:109: ConstraintException
+_ test_admission_uses_migrated_tables_and_exact_duration[wrong-span-0000000001-2025-01-02-2025-04-01-thirteen_weeks_explicit-True-1.0-accepted-False] _
+
+tmp_store = <atx_db.connection.DuckDBStore object at 0x000001B34DD77260>
+fact_id = 'wrong-span', cik = '0000000001', start = '2025-01-02'
+end = '2025-04-01', duration = 'thirteen_weeks_explicit', preliminary = True
+confidence = 1.0, outcome = 'accepted', accepted = False
+
+    @pytest.mark.parametrize(
+        ("fact_id", "cik", "start", "end", "duration", "preliminary", "confidence", "outcome", "accepted"),
+        [
+            ("13w", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", True),
+            ("14w", "0000000001", "2025-01-01", "2025-04-08", "fourteen_weeks_explicit", True, 1.0, "accepted", True),
+            ("wrong-span", "0000000001", "2025-01-02", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("malformed-cik", "00000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("cross-cik", "0000000003", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("nonpreliminary", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", False, 1.0, "accepted", False),
+            ("weak", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 0.9, "accepted", False),
+            ("rejected", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "rejected", False),
+        ],
+    )
+    def test_admission_uses_migrated_tables_and_exact_duration(
+        tmp_store, fact_id, cik, start, end, duration, preliminary, confidence, outcome, accepted
+    ) -> None:
+        store = tmp_store
+        _issuer(store, "owner-eps", "EPS")
+        _companyfact(
+            store, "owner-eps", "0000000001", "2024-01-01", "2024-03-31",
+            1.0, dt.datetime(2024, 5, 3, 22), "owner-fact",
+        )
+>       _release(
+            store, fact_id, cik=cik, period_start=start, period_end=end,
+            duration=duration, preliminary=preliminary, confidence=confidence,
+            receipt_outcome=outcome,
+        )
+
+tests\test_reported_eps_core.py:291: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+store = <atx_db.connection.DuckDBStore object at 0x000001B34DD77260>
+fact_id = 'wrong-span', cik = '0000000001', period_start = '2025-01-02'
+period_end = '2025-04-01', duration = 'thirteen_weeks_explicit', value = 1.5
+at = datetime.datetime(2025, 5, 3, 22, 0), preliminary = True, confidence = 1.0
+receipt_outcome = 'accepted'
+
+    def _release(
+        store,
+        fact_id: str,
+        *,
+        cik: str = "0000000001",
+        period_start: str = "2025-01-01",
+        period_end: str = "2025-03-31",
+        duration: str = "three_months_explicit",
+        value: float = 1.5,
+        at: dt.datetime = RELEASE_AT,
+        preliminary: bool = True,
+        confidence: float = 1.0,
+        receipt_outcome: str = "accepted",
+    ) -> None:
+        receipt_id = f"receipt-{fact_id}"
+        accession = f"accession-{fact_id}"
+        document_sha = "a" * 64
+        source_security = cik_security_id(cik) if cik.isdecimal() else "SEC-CIK-MALFORMED"
+        payload = json.dumps(
+            {
+                "receipt_id": receipt_id,
+                "document_sha256": document_sha,
+                "duration_evidence": duration,
+                "period_start": period_start,
+                "period_start_basis": "explicit_table_header",
+                "fiscal_period_evidence": "Q1 2025 table heading",
+            },
+            sort_keys=True,
+        )
+        store.con.execute(
+            """
+            INSERT INTO sec_earnings_release_receipts (
+                receipt_id, cik, source_security_id, accession_number, document_name,
+                filing_date, report_date, timestamp_zone_status, available_at,
+                document_sha256, outcome, rejection_reason, source_url, retrieval_at
+            ) VALUES (?, ?, ?, ?, 'ex99.htm', DATE '2025-05-01',
+                      DATE '2025-05-01', 'sec_filed_date_plus_46h_v1',
+                      ?, ?, ?, ?, 'https://example.invalid/ex99.htm', ?)
+            """,
+            [
+                receipt_id, cik, source_security, accession, at, document_sha,
+                receipt_outcome, None if receipt_outcome == "accepted" else "fixture rejection", at,
+            ],
+        )
+>       store.con.execute(
+            """
+            INSERT INTO press_release_facts (
+                press_release_fact_id, source, security_id, cik, accession_number, form,
+                source_item, source_url, measure_code, fiscal_year, fiscal_period,
+                period_end, value, unit, basis, is_preliminary, extraction_confidence,
+                filing_date, release_date, as_of_date, available_at, raw_payload_json, run_id
+            ) VALUES (
+                ?, ?, ?, ?, ?, '8-K', '2.02 / EX-99', 'https://example.invalid/ex99.htm',
+                'EPS_DILUTED', 2025, 'Q1', ?, ?, 'USD_PER_SHARE', 'GAAP', ?, ?,
+                DATE '2025-05-01', DATE '2025-05-01', ?, ?, ?, 'fixture'
+            )
+            """,
+            [
+                fact_id, RELEASE_SOURCE, source_security, cik, accession,
+                dt.date.fromisoformat(period_end), value, preliminary, confidence,
+                dt.date.fromisoformat(period_end), at, payload,
+            ],
+        )
+E       _duckdb.ConstraintException: Constraint Error: NOT NULL constraint failed: press_release_facts.input_codes_json
+
+tests\test_reported_eps_core.py:109: ConstraintException
+_ test_admission_uses_migrated_tables_and_exact_duration[malformed-cik-00000000001-2025-01-01-2025-04-01-thirteen_weeks_explicit-True-1.0-accepted-False] _
+
+tmp_store = <atx_db.connection.DuckDBStore object at 0x000001B34DD74230>
+fact_id = 'malformed-cik', cik = '00000000001', start = '2025-01-01'
+end = '2025-04-01', duration = 'thirteen_weeks_explicit', preliminary = True
+confidence = 1.0, outcome = 'accepted', accepted = False
+
+    @pytest.mark.parametrize(
+        ("fact_id", "cik", "start", "end", "duration", "preliminary", "confidence", "outcome", "accepted"),
+        [
+            ("13w", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", True),
+            ("14w", "0000000001", "2025-01-01", "2025-04-08", "fourteen_weeks_explicit", True, 1.0, "accepted", True),
+            ("wrong-span", "0000000001", "2025-01-02", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("malformed-cik", "00000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("cross-cik", "0000000003", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("nonpreliminary", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", False, 1.0, "accepted", False),
+            ("weak", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 0.9, "accepted", False),
+            ("rejected", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "rejected", False),
+        ],
+    )
+    def test_admission_uses_migrated_tables_and_exact_duration(
+        tmp_store, fact_id, cik, start, end, duration, preliminary, confidence, outcome, accepted
+    ) -> None:
+        store = tmp_store
+        _issuer(store, "owner-eps", "EPS")
+        _companyfact(
+            store, "owner-eps", "0000000001", "2024-01-01", "2024-03-31",
+            1.0, dt.datetime(2024, 5, 3, 22), "owner-fact",
+        )
+>       _release(
+            store, fact_id, cik=cik, period_start=start, period_end=end,
+            duration=duration, preliminary=preliminary, confidence=confidence,
+            receipt_outcome=outcome,
+        )
+
+tests\test_reported_eps_core.py:291: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+store = <atx_db.connection.DuckDBStore object at 0x000001B34DD74230>
+fact_id = 'malformed-cik', cik = '00000000001', period_start = '2025-01-01'
+period_end = '2025-04-01', duration = 'thirteen_weeks_explicit', value = 1.5
+at = datetime.datetime(2025, 5, 3, 22, 0), preliminary = True, confidence = 1.0
+receipt_outcome = 'accepted'
+
+    def _release(
+        store,
+        fact_id: str,
+        *,
+        cik: str = "0000000001",
+        period_start: str = "2025-01-01",
+        period_end: str = "2025-03-31",
+        duration: str = "three_months_explicit",
+        value: float = 1.5,
+        at: dt.datetime = RELEASE_AT,
+        preliminary: bool = True,
+        confidence: float = 1.0,
+        receipt_outcome: str = "accepted",
+    ) -> None:
+        receipt_id = f"receipt-{fact_id}"
+        accession = f"accession-{fact_id}"
+        document_sha = "a" * 64
+        source_security = cik_security_id(cik) if cik.isdecimal() else "SEC-CIK-MALFORMED"
+        payload = json.dumps(
+            {
+                "receipt_id": receipt_id,
+                "document_sha256": document_sha,
+                "duration_evidence": duration,
+                "period_start": period_start,
+                "period_start_basis": "explicit_table_header",
+                "fiscal_period_evidence": "Q1 2025 table heading",
+            },
+            sort_keys=True,
+        )
+        store.con.execute(
+            """
+            INSERT INTO sec_earnings_release_receipts (
+                receipt_id, cik, source_security_id, accession_number, document_name,
+                filing_date, report_date, timestamp_zone_status, available_at,
+                document_sha256, outcome, rejection_reason, source_url, retrieval_at
+            ) VALUES (?, ?, ?, ?, 'ex99.htm', DATE '2025-05-01',
+                      DATE '2025-05-01', 'sec_filed_date_plus_46h_v1',
+                      ?, ?, ?, ?, 'https://example.invalid/ex99.htm', ?)
+            """,
+            [
+                receipt_id, cik, source_security, accession, at, document_sha,
+                receipt_outcome, None if receipt_outcome == "accepted" else "fixture rejection", at,
+            ],
+        )
+>       store.con.execute(
+            """
+            INSERT INTO press_release_facts (
+                press_release_fact_id, source, security_id, cik, accession_number, form,
+                source_item, source_url, measure_code, fiscal_year, fiscal_period,
+                period_end, value, unit, basis, is_preliminary, extraction_confidence,
+                filing_date, release_date, as_of_date, available_at, raw_payload_json, run_id
+            ) VALUES (
+                ?, ?, ?, ?, ?, '8-K', '2.02 / EX-99', 'https://example.invalid/ex99.htm',
+                'EPS_DILUTED', 2025, 'Q1', ?, ?, 'USD_PER_SHARE', 'GAAP', ?, ?,
+                DATE '2025-05-01', DATE '2025-05-01', ?, ?, ?, 'fixture'
+            )
+            """,
+            [
+                fact_id, RELEASE_SOURCE, source_security, cik, accession,
+                dt.date.fromisoformat(period_end), value, preliminary, confidence,
+                dt.date.fromisoformat(period_end), at, payload,
+            ],
+        )
+E       _duckdb.ConstraintException: Constraint Error: NOT NULL constraint failed: press_release_facts.input_codes_json
+
+tests\test_reported_eps_core.py:109: ConstraintException
+_ test_admission_uses_migrated_tables_and_exact_duration[cross-cik-0000000003-2025-01-01-2025-04-01-thirteen_weeks_explicit-True-1.0-accepted-False] _
+
+tmp_store = <atx_db.connection.DuckDBStore object at 0x000001B34DD755E0>
+fact_id = 'cross-cik', cik = '0000000003', start = '2025-01-01'
+end = '2025-04-01', duration = 'thirteen_weeks_explicit', preliminary = True
+confidence = 1.0, outcome = 'accepted', accepted = False
+
+    @pytest.mark.parametrize(
+        ("fact_id", "cik", "start", "end", "duration", "preliminary", "confidence", "outcome", "accepted"),
+        [
+            ("13w", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", True),
+            ("14w", "0000000001", "2025-01-01", "2025-04-08", "fourteen_weeks_explicit", True, 1.0, "accepted", True),
+            ("wrong-span", "0000000001", "2025-01-02", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("malformed-cik", "00000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("cross-cik", "0000000003", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("nonpreliminary", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", False, 1.0, "accepted", False),
+            ("weak", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 0.9, "accepted", False),
+            ("rejected", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "rejected", False),
+        ],
+    )
+    def test_admission_uses_migrated_tables_and_exact_duration(
+        tmp_store, fact_id, cik, start, end, duration, preliminary, confidence, outcome, accepted
+    ) -> None:
+        store = tmp_store
+        _issuer(store, "owner-eps", "EPS")
+        _companyfact(
+            store, "owner-eps", "0000000001", "2024-01-01", "2024-03-31",
+            1.0, dt.datetime(2024, 5, 3, 22), "owner-fact",
+        )
+>       _release(
+            store, fact_id, cik=cik, period_start=start, period_end=end,
+            duration=duration, preliminary=preliminary, confidence=confidence,
+            receipt_outcome=outcome,
+        )
+
+tests\test_reported_eps_core.py:291: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+store = <atx_db.connection.DuckDBStore object at 0x000001B34DD755E0>
+fact_id = 'cross-cik', cik = '0000000003', period_start = '2025-01-01'
+period_end = '2025-04-01', duration = 'thirteen_weeks_explicit', value = 1.5
+at = datetime.datetime(2025, 5, 3, 22, 0), preliminary = True, confidence = 1.0
+receipt_outcome = 'accepted'
+
+    def _release(
+        store,
+        fact_id: str,
+        *,
+        cik: str = "0000000001",
+        period_start: str = "2025-01-01",
+        period_end: str = "2025-03-31",
+        duration: str = "three_months_explicit",
+        value: float = 1.5,
+        at: dt.datetime = RELEASE_AT,
+        preliminary: bool = True,
+        confidence: float = 1.0,
+        receipt_outcome: str = "accepted",
+    ) -> None:
+        receipt_id = f"receipt-{fact_id}"
+        accession = f"accession-{fact_id}"
+        document_sha = "a" * 64
+        source_security = cik_security_id(cik) if cik.isdecimal() else "SEC-CIK-MALFORMED"
+        payload = json.dumps(
+            {
+                "receipt_id": receipt_id,
+                "document_sha256": document_sha,
+                "duration_evidence": duration,
+                "period_start": period_start,
+                "period_start_basis": "explicit_table_header",
+                "fiscal_period_evidence": "Q1 2025 table heading",
+            },
+            sort_keys=True,
+        )
+        store.con.execute(
+            """
+            INSERT INTO sec_earnings_release_receipts (
+                receipt_id, cik, source_security_id, accession_number, document_name,
+                filing_date, report_date, timestamp_zone_status, available_at,
+                document_sha256, outcome, rejection_reason, source_url, retrieval_at
+            ) VALUES (?, ?, ?, ?, 'ex99.htm', DATE '2025-05-01',
+                      DATE '2025-05-01', 'sec_filed_date_plus_46h_v1',
+                      ?, ?, ?, ?, 'https://example.invalid/ex99.htm', ?)
+            """,
+            [
+                receipt_id, cik, source_security, accession, at, document_sha,
+                receipt_outcome, None if receipt_outcome == "accepted" else "fixture rejection", at,
+            ],
+        )
+>       store.con.execute(
+            """
+            INSERT INTO press_release_facts (
+                press_release_fact_id, source, security_id, cik, accession_number, form,
+                source_item, source_url, measure_code, fiscal_year, fiscal_period,
+                period_end, value, unit, basis, is_preliminary, extraction_confidence,
+                filing_date, release_date, as_of_date, available_at, raw_payload_json, run_id
+            ) VALUES (
+                ?, ?, ?, ?, ?, '8-K', '2.02 / EX-99', 'https://example.invalid/ex99.htm',
+                'EPS_DILUTED', 2025, 'Q1', ?, ?, 'USD_PER_SHARE', 'GAAP', ?, ?,
+                DATE '2025-05-01', DATE '2025-05-01', ?, ?, ?, 'fixture'
+            )
+            """,
+            [
+                fact_id, RELEASE_SOURCE, source_security, cik, accession,
+                dt.date.fromisoformat(period_end), value, preliminary, confidence,
+                dt.date.fromisoformat(period_end), at, payload,
+            ],
+        )
+E       _duckdb.ConstraintException: Constraint Error: NOT NULL constraint failed: press_release_facts.input_codes_json
+
+tests\test_reported_eps_core.py:109: ConstraintException
+_ test_admission_uses_migrated_tables_and_exact_duration[nonpreliminary-0000000001-2025-01-01-2025-04-01-thirteen_weeks_explicit-False-1.0-accepted-False] _
+
+tmp_store = <atx_db.connection.DuckDBStore object at 0x000001B34DD75AF0>
+fact_id = 'nonpreliminary', cik = '0000000001', start = '2025-01-01'
+end = '2025-04-01', duration = 'thirteen_weeks_explicit', preliminary = False
+confidence = 1.0, outcome = 'accepted', accepted = False
+
+    @pytest.mark.parametrize(
+        ("fact_id", "cik", "start", "end", "duration", "preliminary", "confidence", "outcome", "accepted"),
+        [
+            ("13w", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", True),
+            ("14w", "0000000001", "2025-01-01", "2025-04-08", "fourteen_weeks_explicit", True, 1.0, "accepted", True),
+            ("wrong-span", "0000000001", "2025-01-02", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("malformed-cik", "00000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("cross-cik", "0000000003", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("nonpreliminary", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", False, 1.0, "accepted", False),
+            ("weak", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 0.9, "accepted", False),
+            ("rejected", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "rejected", False),
+        ],
+    )
+    def test_admission_uses_migrated_tables_and_exact_duration(
+        tmp_store, fact_id, cik, start, end, duration, preliminary, confidence, outcome, accepted
+    ) -> None:
+        store = tmp_store
+        _issuer(store, "owner-eps", "EPS")
+        _companyfact(
+            store, "owner-eps", "0000000001", "2024-01-01", "2024-03-31",
+            1.0, dt.datetime(2024, 5, 3, 22), "owner-fact",
+        )
+>       _release(
+            store, fact_id, cik=cik, period_start=start, period_end=end,
+            duration=duration, preliminary=preliminary, confidence=confidence,
+            receipt_outcome=outcome,
+        )
+
+tests\test_reported_eps_core.py:291: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+store = <atx_db.connection.DuckDBStore object at 0x000001B34DD75AF0>
+fact_id = 'nonpreliminary', cik = '0000000001', period_start = '2025-01-01'
+period_end = '2025-04-01', duration = 'thirteen_weeks_explicit', value = 1.5
+at = datetime.datetime(2025, 5, 3, 22, 0), preliminary = False, confidence = 1.0
+receipt_outcome = 'accepted'
+
+    def _release(
+        store,
+        fact_id: str,
+        *,
+        cik: str = "0000000001",
+        period_start: str = "2025-01-01",
+        period_end: str = "2025-03-31",
+        duration: str = "three_months_explicit",
+        value: float = 1.5,
+        at: dt.datetime = RELEASE_AT,
+        preliminary: bool = True,
+        confidence: float = 1.0,
+        receipt_outcome: str = "accepted",
+    ) -> None:
+        receipt_id = f"receipt-{fact_id}"
+        accession = f"accession-{fact_id}"
+        document_sha = "a" * 64
+        source_security = cik_security_id(cik) if cik.isdecimal() else "SEC-CIK-MALFORMED"
+        payload = json.dumps(
+            {
+                "receipt_id": receipt_id,
+                "document_sha256": document_sha,
+                "duration_evidence": duration,
+                "period_start": period_start,
+                "period_start_basis": "explicit_table_header",
+                "fiscal_period_evidence": "Q1 2025 table heading",
+            },
+            sort_keys=True,
+        )
+        store.con.execute(
+            """
+            INSERT INTO sec_earnings_release_receipts (
+                receipt_id, cik, source_security_id, accession_number, document_name,
+                filing_date, report_date, timestamp_zone_status, available_at,
+                document_sha256, outcome, rejection_reason, source_url, retrieval_at
+            ) VALUES (?, ?, ?, ?, 'ex99.htm', DATE '2025-05-01',
+                      DATE '2025-05-01', 'sec_filed_date_plus_46h_v1',
+                      ?, ?, ?, ?, 'https://example.invalid/ex99.htm', ?)
+            """,
+            [
+                receipt_id, cik, source_security, accession, at, document_sha,
+                receipt_outcome, None if receipt_outcome == "accepted" else "fixture rejection", at,
+            ],
+        )
+>       store.con.execute(
+            """
+            INSERT INTO press_release_facts (
+                press_release_fact_id, source, security_id, cik, accession_number, form,
+                source_item, source_url, measure_code, fiscal_year, fiscal_period,
+                period_end, value, unit, basis, is_preliminary, extraction_confidence,
+                filing_date, release_date, as_of_date, available_at, raw_payload_json, run_id
+            ) VALUES (
+                ?, ?, ?, ?, ?, '8-K', '2.02 / EX-99', 'https://example.invalid/ex99.htm',
+                'EPS_DILUTED', 2025, 'Q1', ?, ?, 'USD_PER_SHARE', 'GAAP', ?, ?,
+                DATE '2025-05-01', DATE '2025-05-01', ?, ?, ?, 'fixture'
+            )
+            """,
+            [
+                fact_id, RELEASE_SOURCE, source_security, cik, accession,
+                dt.date.fromisoformat(period_end), value, preliminary, confidence,
+                dt.date.fromisoformat(period_end), at, payload,
+            ],
+        )
+E       _duckdb.ConstraintException: Constraint Error: NOT NULL constraint failed: press_release_facts.input_codes_json
+
+tests\test_reported_eps_core.py:109: ConstraintException
+_ test_admission_uses_migrated_tables_and_exact_duration[weak-0000000001-2025-01-01-2025-04-01-thirteen_weeks_explicit-True-0.9-accepted-False] _
+
+tmp_store = <atx_db.connection.DuckDBStore object at 0x000001B34DD77C50>
+fact_id = 'weak', cik = '0000000001', start = '2025-01-01', end = '2025-04-01'
+duration = 'thirteen_weeks_explicit', preliminary = True, confidence = 0.9
+outcome = 'accepted', accepted = False
+
+    @pytest.mark.parametrize(
+        ("fact_id", "cik", "start", "end", "duration", "preliminary", "confidence", "outcome", "accepted"),
+        [
+            ("13w", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", True),
+            ("14w", "0000000001", "2025-01-01", "2025-04-08", "fourteen_weeks_explicit", True, 1.0, "accepted", True),
+            ("wrong-span", "0000000001", "2025-01-02", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("malformed-cik", "00000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("cross-cik", "0000000003", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("nonpreliminary", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", False, 1.0, "accepted", False),
+            ("weak", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 0.9, "accepted", False),
+            ("rejected", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "rejected", False),
+        ],
+    )
+    def test_admission_uses_migrated_tables_and_exact_duration(
+        tmp_store, fact_id, cik, start, end, duration, preliminary, confidence, outcome, accepted
+    ) -> None:
+        store = tmp_store
+        _issuer(store, "owner-eps", "EPS")
+        _companyfact(
+            store, "owner-eps", "0000000001", "2024-01-01", "2024-03-31",
+            1.0, dt.datetime(2024, 5, 3, 22), "owner-fact",
+        )
+>       _release(
+            store, fact_id, cik=cik, period_start=start, period_end=end,
+            duration=duration, preliminary=preliminary, confidence=confidence,
+            receipt_outcome=outcome,
+        )
+
+tests\test_reported_eps_core.py:291: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+store = <atx_db.connection.DuckDBStore object at 0x000001B34DD77C50>
+fact_id = 'weak', cik = '0000000001', period_start = '2025-01-01'
+period_end = '2025-04-01', duration = 'thirteen_weeks_explicit', value = 1.5
+at = datetime.datetime(2025, 5, 3, 22, 0), preliminary = True, confidence = 0.9
+receipt_outcome = 'accepted'
+
+    def _release(
+        store,
+        fact_id: str,
+        *,
+        cik: str = "0000000001",
+        period_start: str = "2025-01-01",
+        period_end: str = "2025-03-31",
+        duration: str = "three_months_explicit",
+        value: float = 1.5,
+        at: dt.datetime = RELEASE_AT,
+        preliminary: bool = True,
+        confidence: float = 1.0,
+        receipt_outcome: str = "accepted",
+    ) -> None:
+        receipt_id = f"receipt-{fact_id}"
+        accession = f"accession-{fact_id}"
+        document_sha = "a" * 64
+        source_security = cik_security_id(cik) if cik.isdecimal() else "SEC-CIK-MALFORMED"
+        payload = json.dumps(
+            {
+                "receipt_id": receipt_id,
+                "document_sha256": document_sha,
+                "duration_evidence": duration,
+                "period_start": period_start,
+                "period_start_basis": "explicit_table_header",
+                "fiscal_period_evidence": "Q1 2025 table heading",
+            },
+            sort_keys=True,
+        )
+        store.con.execute(
+            """
+            INSERT INTO sec_earnings_release_receipts (
+                receipt_id, cik, source_security_id, accession_number, document_name,
+                filing_date, report_date, timestamp_zone_status, available_at,
+                document_sha256, outcome, rejection_reason, source_url, retrieval_at
+            ) VALUES (?, ?, ?, ?, 'ex99.htm', DATE '2025-05-01',
+                      DATE '2025-05-01', 'sec_filed_date_plus_46h_v1',
+                      ?, ?, ?, ?, 'https://example.invalid/ex99.htm', ?)
+            """,
+            [
+                receipt_id, cik, source_security, accession, at, document_sha,
+                receipt_outcome, None if receipt_outcome == "accepted" else "fixture rejection", at,
+            ],
+        )
+>       store.con.execute(
+            """
+            INSERT INTO press_release_facts (
+                press_release_fact_id, source, security_id, cik, accession_number, form,
+                source_item, source_url, measure_code, fiscal_year, fiscal_period,
+                period_end, value, unit, basis, is_preliminary, extraction_confidence,
+                filing_date, release_date, as_of_date, available_at, raw_payload_json, run_id
+            ) VALUES (
+                ?, ?, ?, ?, ?, '8-K', '2.02 / EX-99', 'https://example.invalid/ex99.htm',
+                'EPS_DILUTED', 2025, 'Q1', ?, ?, 'USD_PER_SHARE', 'GAAP', ?, ?,
+                DATE '2025-05-01', DATE '2025-05-01', ?, ?, ?, 'fixture'
+            )
+            """,
+            [
+                fact_id, RELEASE_SOURCE, source_security, cik, accession,
+                dt.date.fromisoformat(period_end), value, preliminary, confidence,
+                dt.date.fromisoformat(period_end), at, payload,
+            ],
+        )
+E       _duckdb.ConstraintException: Constraint Error: NOT NULL constraint failed: press_release_facts.input_codes_json
+
+tests\test_reported_eps_core.py:109: ConstraintException
+_ test_admission_uses_migrated_tables_and_exact_duration[rejected-0000000001-2025-01-01-2025-04-01-thirteen_weeks_explicit-True-1.0-rejected-False] _
+
+tmp_store = <atx_db.connection.DuckDBStore object at 0x000001B350FF3AD0>
+fact_id = 'rejected', cik = '0000000001', start = '2025-01-01'
+end = '2025-04-01', duration = 'thirteen_weeks_explicit', preliminary = True
+confidence = 1.0, outcome = 'rejected', accepted = False
+
+    @pytest.mark.parametrize(
+        ("fact_id", "cik", "start", "end", "duration", "preliminary", "confidence", "outcome", "accepted"),
+        [
+            ("13w", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", True),
+            ("14w", "0000000001", "2025-01-01", "2025-04-08", "fourteen_weeks_explicit", True, 1.0, "accepted", True),
+            ("wrong-span", "0000000001", "2025-01-02", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("malformed-cik", "00000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("cross-cik", "0000000003", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "accepted", False),
+            ("nonpreliminary", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", False, 1.0, "accepted", False),
+            ("weak", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 0.9, "accepted", False),
+            ("rejected", "0000000001", "2025-01-01", "2025-04-01", "thirteen_weeks_explicit", True, 1.0, "rejected", False),
+        ],
+    )
+    def test_admission_uses_migrated_tables_and_exact_duration(
+        tmp_store, fact_id, cik, start, end, duration, preliminary, confidence, outcome, accepted
+    ) -> None:
+        store = tmp_store
+        _issuer(store, "owner-eps", "EPS")
+        _companyfact(
+            store, "owner-eps", "0000000001", "2024-01-01", "2024-03-31",
+            1.0, dt.datetime(2024, 5, 3, 22), "owner-fact",
+        )
+>       _release(
+            store, fact_id, cik=cik, period_start=start, period_end=end,
+            duration=duration, preliminary=preliminary, confidence=confidence,
+            receipt_outcome=outcome,
+        )
+
+tests\test_reported_eps_core.py:291: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+store = <atx_db.connection.DuckDBStore object at 0x000001B350FF3AD0>
+fact_id = 'rejected', cik = '0000000001', period_start = '2025-01-01'
+period_end = '2025-04-01', duration = 'thirteen_weeks_explicit', value = 1.5
+at = datetime.datetime(2025, 5, 3, 22, 0), preliminary = True, confidence = 1.0
+receipt_outcome = 'rejected'
+
+    def _release(
+        store,
+        fact_id: str,
+        *,
+        cik: str = "0000000001",
+        period_start: str = "2025-01-01",
+        period_end: str = "2025-03-31",
+        duration: str = "three_months_explicit",
+        value: float = 1.5,
+        at: dt.datetime = RELEASE_AT,
+        preliminary: bool = True,
+        confidence: float = 1.0,
+        receipt_outcome: str = "accepted",
+    ) -> None:
+        receipt_id = f"receipt-{fact_id}"
+        accession = f"accession-{fact_id}"
+        document_sha = "a" * 64
+        source_security = cik_security_id(cik) if cik.isdecimal() else "SEC-CIK-MALFORMED"
+        payload = json.dumps(
+            {
+                "receipt_id": receipt_id,
+                "document_sha256": document_sha,
+                "duration_evidence": duration,
+                "period_start": period_start,
+                "period_start_basis": "explicit_table_header",
+                "fiscal_period_evidence": "Q1 2025 table heading",
+            },
+            sort_keys=True,
+        )
+        store.con.execute(
+            """
+            INSERT INTO sec_earnings_release_receipts (
+                receipt_id, cik, source_security_id, accession_number, document_name,
+                filing_date, report_date, timestamp_zone_status, available_at,
+                document_sha256, outcome, rejection_reason, source_url, retrieval_at
+            ) VALUES (?, ?, ?, ?, 'ex99.htm', DATE '2025-05-01',
+                      DATE '2025-05-01', 'sec_filed_date_plus_46h_v1',
+                      ?, ?, ?, ?, 'https://example.invalid/ex99.htm', ?)
+            """,
+            [
+                receipt_id, cik, source_security, accession, at, document_sha,
+                receipt_outcome, None if receipt_outcome == "accepted" else "fixture rejection", at,
+            ],
+        )
+>       store.con.execute(
+            """
+            INSERT INTO press_release_facts (
+                press_release_fact_id, source, security_id, cik, accession_number, form,
+                source_item, source_url, measure_code, fiscal_year, fiscal_period,
+                period_end, value, unit, basis, is_preliminary, extraction_confidence,
+                filing_date, release_date, as_of_date, available_at, raw_payload_json, run_id
+            ) VALUES (
+                ?, ?, ?, ?, ?, '8-K', '2.02 / EX-99', 'https://example.invalid/ex99.htm',
+                'EPS_DILUTED', 2025, 'Q1', ?, ?, 'USD_PER_SHARE', 'GAAP', ?, ?,
+                DATE '2025-05-01', DATE '2025-05-01', ?, ?, ?, 'fixture'
+            )
+            """,
+            [
+                fact_id, RELEASE_SOURCE, source_security, cik, accession,
+                dt.date.fromisoformat(period_end), value, preliminary, confidence,
+                dt.date.fromisoformat(period_end), at, payload,
+            ],
+        )
+E       _duckdb.ConstraintException: Constraint Error: NOT NULL constraint failed: press_release_facts.input_codes_json
+
+tests\test_reported_eps_core.py:109: ConstraintException
+=========================== short test summary info ===========================
+FAILED tests/test_reported_eps_core.py::test_late_direct_conflict_reaches_standardized_and_derived_null
+FAILED tests/test_reported_eps_core.py::test_equal_clock_conflict_and_qualified_source_rows
+FAILED tests/test_reported_eps_core.py::test_admission_uses_migrated_tables_and_exact_duration[13w-0000000001-2025-01-01-2025-04-01-thirteen_weeks_explicit-True-1.0-accepted-True]
+FAILED tests/test_reported_eps_core.py::test_admission_uses_migrated_tables_and_exact_duration[14w-0000000001-2025-01-01-2025-04-08-fourteen_weeks_explicit-True-1.0-accepted-True]
+FAILED tests/test_reported_eps_core.py::test_admission_uses_migrated_tables_and_exact_duration[wrong-span-0000000001-2025-01-02-2025-04-01-thirteen_weeks_explicit-True-1.0-accepted-False]
+FAILED tests/test_reported_eps_core.py::test_admission_uses_migrated_tables_and_exact_duration[malformed-cik-00000000001-2025-01-01-2025-04-01-thirteen_weeks_explicit-True-1.0-accepted-False]
+FAILED tests/test_reported_eps_core.py::test_admission_uses_migrated_tables_and_exact_duration[cross-cik-0000000003-2025-01-01-2025-04-01-thirteen_weeks_explicit-True-1.0-accepted-False]
+FAILED tests/test_reported_eps_core.py::test_admission_uses_migrated_tables_and_exact_duration[nonpreliminary-0000000001-2025-01-01-2025-04-01-thirteen_weeks_explicit-False-1.0-accepted-False]
+FAILED tests/test_reported_eps_core.py::test_admission_uses_migrated_tables_and_exact_duration[weak-0000000001-2025-01-01-2025-04-01-thirteen_weeks_explicit-True-0.9-accepted-False]
+FAILED tests/test_reported_eps_core.py::test_admission_uses_migrated_tables_and_exact_duration[rejected-0000000001-2025-01-01-2025-04-01-thirteen_weeks_explicit-True-1.0-rejected-False]
+10 failed in 130.15s (0:02:10)

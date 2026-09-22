@@ -200,7 +200,7 @@ def test_saas_contract_migration_catalogs_public_schemas(tmp_store):
     catalog = tmp_store.con.execute(
         """
         SELECT dataset_id,schema_code,schema_version
-        FROM api_schema_catalog ORDER BY dataset_id,schema_code
+        FROM api_schema_catalog WHERE is_active ORDER BY dataset_id,schema_code
         """
     ).fetchall()
     expected = sorted((dataset.code, schema.code, schema.version) for dataset in DATASETS for schema in dataset.schemas)
@@ -643,7 +643,7 @@ def test_durable_batch_job_is_pit_pinned_checksummed_and_entitled(tmp_store, tmp
     artifact = next((tmp_path / "artifacts").rglob("data.parquet"))
     manifest = json.loads((artifact.parent / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["request"]["as_of"] is not None
-    assert manifest["schema_version"] == "2.0.0"
+    assert manifest["schema_version"] == "3.0.0"
     assert manifest["sha256"] == job["sha256"]
     assert hashlib.sha256((artifact.parent / "manifest.json").read_bytes()).hexdigest() == job[
         "manifest_sha256"

@@ -3,6 +3,22 @@ Spec: docs/superpowers/specs/2026-09-19-tier1-parity-design.md
 Audits: .superpowers/sdd/tier1-parity/audit-atx-db.md, audit-ticker-zip.md
 Baseline: main a79f8371, smoke 6 passed.
 
+## Standardized public NULL contract ruling - 2026-09-22 23:39 UTC
+
+The reported EPS conflict state makes fundamental_standardized.value nullable.
+The ordinary ATX.US.FUNDAMENTALS/standardized record schema must therefore be
+3.0.0: allowing NULL violates the old non-null promise to strict consumers.
+This changes the record contract, not the overall dataset/API product version.
+Extend still-uncommitted migration0321 to publish only this new schema/fields/
+hash, preserve historical2.0.0 metadata/hash inactive, and leave price rows and
+unrelated catalog records intact. Catalog0322 remains issuer-only.
+
+The integrated candidate passed22public/core/API tests under2GiB guard with
+0.936GiB peak; noCritical in one review. Important upgrade/replay fixture fixes
+are being completed against actual live0319 predecessor capture (33fields,
+hash36a994626594e7250cf558c4f2262e8a34ad7906e088e8a71ee3db5af7e0c985).
+No live migration has run. Full-universe materialization remains pending.
+
 ## Source integration - 2026-09-22 23:25 UTC
 
 Issuer query92cf42c4 and reportedEPS source0320/1a0e4f73 are integrated,

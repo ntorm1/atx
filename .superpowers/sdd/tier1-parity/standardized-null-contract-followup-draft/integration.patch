@@ -1,0 +1,802 @@
+diff --git a/atx-db/tests/test_standardized_null_contract.py b/atx-db/tests/test_standardized_null_contract.py
+index 102d9616..43bf1840 100644
+--- a/atx-db/tests/test_standardized_null_contract.py
++++ b/atx-db/tests/test_standardized_null_contract.py
+@@ -2,68 +2,67 @@
+ 
+ from __future__ import annotations
+ 
+-import datetime as dt
+-from dataclasses import replace
+-
+-from atx_db.api.catalog import _record_schema_sha256, get_schema, public_schema
++import datetime as dt
++import json
++from pathlib import Path
++
++from atx_db.api.catalog import _record_schema_sha256, get_schema, public_schema
+ from atx_db.api.models import BatchRangeRequest, RangeRequest
+-from atx_db.api.service import WarehouseReadService
+-from atx_db.migrations.bodies_0321 import _reported_eps_nullable_standardized_value
+-from atx_db.schema_contract import assert_schema_contract_version
+-
+-
+-def test_existing_catalog_upgrade_and_public_standardized_null(tmp_store):
+-    conn = tmp_store.con
+-    schema = get_schema("ATX.US.FUNDAMENTALS", "standardized")
+-    previous = replace(
+-        schema,
+-        version="2.0.0",
+-        fields=tuple(
+-            replace(field, nullable=False, description="Standardized value.")
+-            if field.name == "value" else field
+-            for field in schema.fields
+-        ),
+-    )
+-    assert schema.version == "3.0.0"
+-    assert public_schema(schema)["schema_sha256"] == _record_schema_sha256(schema)
+-    assert next(field for field in public_schema(schema)["fields"] if field["name"] == "value")["nullable"]
+-
+-    # Reproduce only the standardized API metadata and physical nullability of
+-    # a persisted 0319 warehouse. Other catalog rows and prices stay in place.
+-    conn.execute(
+-        """
+-        INSERT INTO api_schema_catalog (
+-            dataset_id,schema_code,schema_version,title,description,source_table,
+-            time_field,natural_key_json,pit_policy,supported_encodings_json,
+-            max_sync_rows,schema_sha256,is_active,source_loaded_at,updated_at
+-        )
+-        SELECT dataset_id,schema_code,'2.0.0',title,description,source_table,
+-               time_field,natural_key_json,pit_policy,supported_encodings_json,
+-               max_sync_rows,?,true,source_loaded_at,updated_at
+-        FROM api_schema_catalog
+-        WHERE dataset_id='ATX.US.FUNDAMENTALS' AND schema_code='standardized'
+-          AND schema_version='3.0.0'
+-        """,
+-        [_record_schema_sha256(previous)],
+-    )
+-    conn.execute(
+-        """
+-        INSERT INTO api_field_catalog (
+-            dataset_id,schema_code,schema_version,ordinal,field_name,source_column,
+-            data_type,semantic_type,unit,nullable,is_filterable,description,
+-            source_loaded_at,updated_at
+-        )
+-        SELECT dataset_id,schema_code,'2.0.0',ordinal,field_name,source_column,
+-               data_type,semantic_type,unit,
+-               CASE WHEN field_name='value' THEN false ELSE nullable END,
+-               is_filterable,
+-               CASE WHEN field_name='value' THEN 'Standardized value.' ELSE description END,
+-               source_loaded_at,updated_at
+-        FROM api_field_catalog
+-        WHERE dataset_id='ATX.US.FUNDAMENTALS' AND schema_code='standardized'
+-          AND schema_version='3.0.0'
+-        """
+-    )
++from atx_db.api.service import WarehouseReadService
++from atx_db.migrations import apply_pending_migrations
++from atx_db.migrations.bodies_0321 import _reported_eps_nullable_standardized_value
++from atx_db.schema_contract import assert_schema_contract_version
++
++
++def _captured_row(row):
++    return {
++        key: dt.datetime.fromisoformat(value)
++        if key in ("source_loaded_at", "updated_at") else value
++        for key, value in row.items()
++    }
++
++
++def _catalog_rows(conn, table, columns, *, order):
++    cursor = conn.execute(
++        f"SELECT {','.join(columns)} FROM {table} "
++        "WHERE dataset_id='ATX.US.FUNDAMENTALS' AND schema_code='standardized' "
++        "AND schema_version='2.0.0' "
++        f"ORDER BY {order}"
++    )
++    return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
++
++
++def test_existing_catalog_upgrade_and_public_standardized_null(tmp_store):
++    conn = tmp_store.con
++    schema = get_schema("ATX.US.FUNDAMENTALS", "standardized")
++    fixture = json.loads((
++        Path(__file__).parent / "data" / "standardized_2_0_0_0319_catalog.json"
++    ).read_text(encoding="utf-8"))
++    assert fixture["production_migration"] == 319
++    assert len(fixture["schemas"]) == 1
++    assert len(fixture["fields"]) == 33
++    captured_schema = _captured_row(fixture["schemas"][0])
++    captured_fields = [_captured_row(row) for row in fixture["fields"]]
++    assert captured_schema["schema_sha256"] == (
++        "36a994626594e7250cf558c4f2262e8a34ad7906e088e8a71ee3db5af7e0c985"
++    )
++    assert next(row for row in captured_fields if row["field_name"] == "value")["nullable"] is False
++    assert schema.version == "3.0.0"
++    assert public_schema(schema)["schema_sha256"] == _record_schema_sha256(schema)
++    assert next(field for field in public_schema(schema)["fields"] if field["name"] == "value")["nullable"]
++
++    # Install the exact source-observed 0319 public metadata, including its
++    # original digest and provenance timestamps, over the current test template.
++    for table, rows in (
++        ("api_schema_catalog", [captured_schema]),
++        ("api_field_catalog", captured_fields),
++    ):
++        columns = tuple(rows[0])
++        placeholders = ",".join("?" for _ in columns)
++        conn.executemany(
++            f"INSERT INTO {table} ({','.join(columns)}) VALUES ({placeholders})",
++            [tuple(row[column] for column in columns) for row in rows],
++        )
+     conn.execute(
+         "DELETE FROM api_field_catalog WHERE dataset_id='ATX.US.FUNDAMENTALS' "
+         "AND schema_code='standardized' AND schema_version='3.0.0'"
+@@ -73,10 +72,14 @@ def test_existing_catalog_upgrade_and_public_standardized_null(tmp_store):
+         "AND schema_code='standardized' AND schema_version='3.0.0'"
+     )
+     conn.execute("ALTER TABLE fundamental_standardized ALTER COLUMN value SET NOT NULL")
+-    conn.execute(
+-        "UPDATE field_catalog SET nullable=false, description='Standardized value.' "
+-        "WHERE table_name='fundamental_standardized' AND field_name='value'"
+-    )
++    conn.execute(
++        "UPDATE field_catalog SET nullable=false, description='Standardized value.' "
++        "WHERE table_name='fundamental_standardized' AND field_name='value'"
++    )
++    assert conn.execute(
++        "SELECT count(*) FROM schema_migrations WHERE version='0321'"
++    ).fetchone() == (1,)
++    conn.execute("DELETE FROM schema_migrations WHERE version='0321'")
+     untouched = {
+         table: conn.execute(
+             f"SELECT * FROM {table} WHERE "
+@@ -86,19 +89,27 @@ def test_existing_catalog_upgrade_and_public_standardized_null(tmp_store):
+         ).fetchall()
+         for table in ("api_schema_catalog", "api_field_catalog", "api_unit_price_catalog")
+     }
+-    old_hash = conn.execute(
+-        "SELECT schema_sha256 FROM api_schema_catalog WHERE dataset_id='ATX.US.FUNDAMENTALS' "
+-        "AND schema_code='standardized' AND schema_version='2.0.0'"
+-    ).fetchone()[0]
++    schema_columns = tuple(captured_schema)
++    field_columns = tuple(captured_fields[0])
++    assert _catalog_rows(
++        conn, "api_schema_catalog", schema_columns, order="schema_version"
++    ) == [captured_schema]
++    assert _catalog_rows(conn, "api_field_catalog", field_columns, order="ordinal") == captured_fields
+ 
+-    _reported_eps_nullable_standardized_value(conn)
+-    assert_schema_contract_version(conn)
+-    assert old_hash == _record_schema_sha256(previous)
+-    assert conn.execute(
+-        "SELECT schema_sha256,is_active FROM api_schema_catalog "
+-        "WHERE dataset_id='ATX.US.FUNDAMENTALS' AND schema_code='standardized' "
+-        "AND schema_version='2.0.0'"
+-    ).fetchone() == (old_hash, False)
++    assert apply_pending_migrations(conn) == [321]
++    assert conn.execute(
++        "SELECT description,length(checksum) FROM schema_migrations WHERE version='0321'"
++    ).fetchone() == ("reported_eps_nullable_standardized_value", 64)
++    assert_schema_contract_version(conn)
++    old_schema_after = _catalog_rows(conn, "api_schema_catalog", schema_columns, order="schema_version")[0]
++    assert old_schema_after["is_active"] is False
++    assert old_schema_after["updated_at"] >= captured_schema["updated_at"]
++    assert {key: value for key, value in old_schema_after.items()
++            if key not in ("is_active", "updated_at")} == {
++        key: value for key, value in captured_schema.items()
++        if key not in ("is_active", "updated_at")
++    }
++    assert _catalog_rows(conn, "api_field_catalog", field_columns, order="ordinal") == captured_fields
+     assert conn.execute(
+         "SELECT schema_sha256,is_active FROM api_schema_catalog "
+         "WHERE dataset_id='ATX.US.FUNDAMENTALS' AND schema_code='standardized' "
+@@ -108,7 +119,7 @@ def test_existing_catalog_upgrade_and_public_standardized_null(tmp_store):
+         "SELECT nullable FROM api_field_catalog WHERE dataset_id='ATX.US.FUNDAMENTALS' "
+         "AND schema_code='standardized' AND schema_version='3.0.0' AND field_name='value'"
+     ).fetchone() == (True,)
+-    assert {
++    assert {
+         table: conn.execute(
+             f"SELECT * FROM {table} WHERE "
+             + ("dataset_id <> 'ATX.US.FUNDAMENTALS'" if table != "api_unit_price_catalog"
+@@ -116,7 +127,29 @@ def test_existing_catalog_upgrade_and_public_standardized_null(tmp_store):
+             + " ORDER BY ALL"
+         ).fetchall()
+         for table in untouched
+-    } == untouched
++    } == untouched
++
++    # A direct replay cannot rewrite current or historical API metadata,
++    # catalog timestamps, or prices. The runner skips the recorded migration.
++    replay_tables = (
++        ("api_dataset_catalog", "dataset_id='ATX.US.FUNDAMENTALS'", "dataset_id"),
++        ("api_schema_catalog", "true", "dataset_id,schema_code,schema_version"),
++        ("api_field_catalog", "true", "dataset_id,schema_code,schema_version,ordinal"),
++        ("api_unit_price_catalog", "true", "price_id"),
++        ("table_catalog", "table_name='fundamental_standardized'", "table_name"),
++        ("field_catalog", "table_name='fundamental_standardized'", "field_name"),
++    )
++    replay_snapshot = {
++        table: conn.execute(f"SELECT * FROM {table} WHERE {predicate} ORDER BY {order}").fetchall()
++        for table, predicate, order in replay_tables
++    }
++    _reported_eps_nullable_standardized_value(conn)
++    assert {
++        table: conn.execute(f"SELECT * FROM {table} WHERE {predicate} ORDER BY {order}").fetchall()
++        for table, predicate, order in replay_tables
++    } == replay_snapshot
++    assert apply_pending_migrations(conn) == []
++    assert_schema_contract_version(conn)
+ 
+     # A later conflict must win the PIT revision ranking even with NULL value.
+     conn.execute(
+@@ -169,5 +202,6 @@ def test_existing_catalog_upgrade_and_public_standardized_null(tmp_store):
+         **request, "as_of": "2025-05-21T00:00:00Z",
+     })) as stream:
+         batches = list(stream.batches())
+-    assert len(batches) == 1
+-    assert batches[0].to_pylist()[0]["value"] is None
++    assert len(batches) == 1
++    assert batches[0].schema.field("value").nullable is True
++    assert batches[0].to_pylist()[0]["value"] is None
+diff --git a/atx-db/tests/data/standardized_2_0_0_0319_catalog.json b/atx-db/tests/data/standardized_2_0_0_0319_catalog.json
+new file mode 100644
+index 00000000..d1e35a94
+--- /dev/null
++++ b/atx-db/tests/data/standardized_2_0_0_0319_catalog.json
+@@ -0,0 +1,554 @@
++{
++  "observed_at_utc": "2026-09-22T23:38:44.405628+00:00",
++  "source": "read-only existing production warehouse before 0320/0321",
++  "production_migration": 319,
++  "schemas": [
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "title": "Standardized US equity fundamentals",
++      "description": "Comparable annual, quarterly, and TTM statement items with filing lineage and bitemporal revision visibility.",
++      "source_table": "fundamental_standardized",
++      "time_field": "period_end",
++      "natural_key_json": "[\"security_id\",\"item_id\",\"basis\",\"period_end\"]",
++      "pit_policy": "available_at_lte_request_as_of_then_select_requested_revision_vintage",
++      "supported_encodings_json": "[\"json\",\"jsonl\",\"csv\",\"parquet\",\"arrow\"]",
++      "max_sync_rows": 50000,
++      "is_active": true,
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669",
++      "schema_sha256": "36a994626594e7250cf558c4f2262e8a34ad7906e088e8a71ee3db5af7e0c985"
++    }
++  ],
++  "fields": [
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 1,
++      "field_name": "security_id",
++      "source_column": "security_id",
++      "data_type": "string",
++      "semantic_type": "identifier",
++      "unit": null,
++      "nullable": false,
++      "is_filterable": false,
++      "description": "Stable ATX security identifier.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 2,
++      "field_name": "symbol",
++      "source_column": "symbol",
++      "data_type": "string",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Ticker reported for the observation.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 3,
++      "field_name": "cik",
++      "source_column": "cik",
++      "data_type": "string",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "SEC Central Index Key.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 4,
++      "field_name": "item",
++      "source_column": "canonical_code",
++      "data_type": "string",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": false,
++      "is_filterable": true,
++      "description": "Canonical ATX fundamental item code.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 5,
++      "field_name": "item_id",
++      "source_column": "item_id",
++      "data_type": "int32",
++      "semantic_type": "identifier",
++      "unit": null,
++      "nullable": false,
++      "is_filterable": false,
++      "description": "Versioned canonical item identifier.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 6,
++      "field_name": "basis",
++      "source_column": "basis",
++      "data_type": "string",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": false,
++      "is_filterable": true,
++      "description": "Fiscal basis such as annual, quarterly, or TTM.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 7,
++      "field_name": "period_start",
++      "source_column": "period_start",
++      "data_type": "date",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Fiscal period start; null for instant items.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 8,
++      "field_name": "period_end",
++      "source_column": "period_end",
++      "data_type": "date",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": false,
++      "is_filterable": false,
++      "description": "Fiscal period end.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 9,
++      "field_name": "fiscal_year",
++      "source_column": "fiscal_year",
++      "data_type": "int32",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Issuer fiscal year.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 10,
++      "field_name": "fiscal_period",
++      "source_column": "fiscal_period",
++      "data_type": "string",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Issuer fiscal-period label.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 11,
++      "field_name": "value",
++      "source_column": "value",
++      "data_type": "float64",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": false,
++      "is_filterable": false,
++      "description": "Standardized value.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 12,
++      "field_name": "unit",
++      "source_column": "unit",
++      "data_type": "string",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "As-reported measurement unit or currency unit.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 13,
++      "field_name": "unit_type",
++      "source_column": "unit_type",
++      "data_type": "string",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Canonical unit family.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 14,
++      "field_name": "accession_number",
++      "source_column": "source_accession",
++      "data_type": "string",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Source SEC accession number.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 15,
++      "field_name": "filed_date",
++      "source_column": "filed_date",
++      "data_type": "date",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "EDGAR filing date.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 16,
++      "field_name": "source",
++      "source_column": "source",
++      "data_type": "string",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "ATX source adapter.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 17,
++      "field_name": "upstream_source",
++      "source_column": "upstream_source",
++      "data_type": "string",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Raw upstream provider or filing source.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 18,
++      "field_name": "standardization_rule",
++      "source_column": "rule_id",
++      "data_type": "string",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Rule that mapped source facts to the canonical item.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 19,
++      "field_name": "revision_group_id",
++      "source_column": "revision_group_id",
++      "data_type": "string",
++      "semantic_type": "identifier",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Stable standardized revision chain identifier.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 20,
++      "field_name": "revision_sequence",
++      "source_column": "revision_sequence",
++      "data_type": "int32",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "One-based revision sequence.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 21,
++      "field_name": "revision_count",
++      "source_column": "revision_count",
++      "data_type": "int32",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Total revisions currently present in the chain.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 22,
++      "field_name": "is_value_changed",
++      "source_column": "is_value_changed",
++      "data_type": "boolean",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Whether this revision changed the preceding value.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 23,
++      "field_name": "previous_value",
++      "source_column": "previous_value",
++      "data_type": "float64",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Value in the preceding standardized revision.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 24,
++      "field_name": "value_delta",
++      "source_column": "value_delta",
++      "data_type": "float64",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Current value less the preceding value.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 25,
++      "field_name": "value_delta_percent",
++      "source_column": "value_delta_percent",
++      "data_type": "float64",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Revision delta divided by the absolute preceding value.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 26,
++      "field_name": "update_type",
++      "source_column": "update_type",
++      "data_type": "string",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Original or restated standardized observation.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 27,
++      "field_name": "valid_to",
++      "source_column": "valid_to",
++      "data_type": "timestamp",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Exclusive timestamp at which a successor revision became available.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 28,
++      "field_name": "input_codes_json",
++      "source_column": "input_codes_json",
++      "data_type": "json",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": false,
++      "is_filterable": false,
++      "description": "Source concept codes used to produce the value.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 29,
++      "field_name": "input_item_ids_json",
++      "source_column": "input_item_ids_json",
++      "data_type": "json",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": false,
++      "is_filterable": false,
++      "description": "Canonical input item identifiers.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 30,
++      "field_name": "as_of_date",
++      "source_column": "as_of_date",
++      "data_type": "date",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Economic observation date.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 31,
++      "field_name": "available_at",
++      "source_column": "available_at",
++      "data_type": "timestamp",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Earliest timestamp at which ATX could have delivered this revision.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 32,
++      "field_name": "source_loaded_at",
++      "source_column": "source_loaded_at",
++      "data_type": "timestamp",
++      "semantic_type": "observation",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Timestamp at which the source observation entered the warehouse.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    },
++    {
++      "dataset_id": "ATX.US.FUNDAMENTALS",
++      "schema_code": "standardized",
++      "schema_version": "2.0.0",
++      "ordinal": 33,
++      "field_name": "run_id",
++      "source_column": "run_id",
++      "data_type": "string",
++      "semantic_type": "identifier",
++      "unit": null,
++      "nullable": true,
++      "is_filterable": false,
++      "description": "Lineage identifier for the producing run.",
++      "source_loaded_at": "2026-09-19 22:36:06.234669",
++      "updated_at": "2026-09-19 22:36:06.234669"
++    }
++  ]
++}
+\ No newline at end of file

@@ -1,0 +1,18 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "-m",
+    "pytest",
+    "-n",
+    "0",
+    "tests/test_standardized_null_contract.py",
+    "tests/test_reported_eps_core.py",
+    "tests/test_api_service.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "refused_low_headroom",
+  "headroom": {
+    "physical_free_gb": 2.9370498657226562,
+    "commit_free_gb": 4.783847808837891
+  }
+}

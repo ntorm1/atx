@@ -1,5 +1,27 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Core and public contract validation - 2026-09-22 23:39 UTC
+
+Session78824 is terminal; initial10core failures were a missing required
+input_codes_json in the new test fixture. Root supplied'[]'; secondrun52993
+passed10in19.35s/0.723GiB. Core code/Ruff thenpassed (rootfixedtestimportspace).
+Core0321 remainsUNCOMMITTED because root found oldordinarypublicschema still
+promisednon-null values. Follow-up standardized-null-contract-draft patch
+1838D53E... is applied: publicrecord3.0.0, targeted0321cataloginsert, preserves
+old2.0.0hash/fields inactive and allprices. One review has noCritical; Important
+fixture upgrades/replay/actualoldhash followup in progress.
+
+First guardlaunch refusedpreflight; second session80643 is COMPLETED:
+22newcontract/core/existingAPI tests passed171.08s, peak0.936GiB. Runtimefree.
+Root read-onlycaptured ACTUALproduction0319 standardized2.0.0catalog in
+standardized-2.0.0-production-predecessor.json:33fields, hash36a994626594e7250cf558c4f2262e8a34ad7906e088e8a71ee3db5af7e0c985,
+peak0.123GiB. Agentstandardized_null_contract adds frozenfixture and realrunner
+upgrade/replay +Arrownullable assertions in isolatedfollowuppatch; accept fixes
+onreport/no rereviewunlessCritical. Thenfocusednewtest, commitcore0321+public
+contract atomically, apply/register322/runfocused/commit, finalHEADchecks.
+Do not repeat the22passing integration checks absentnewimplementation changes.
+No warehouseworker orliveDBmigration; nextarchive11predecessor unchanged.
+
 ## Source integrated; core tests running - 2026-09-22 23:25 UTC
 
 Source0320 is committed in1a0e4f73 with its body/registry/job/stage/CLI.

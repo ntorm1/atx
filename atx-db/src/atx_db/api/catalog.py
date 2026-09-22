@@ -159,7 +159,7 @@ REPORTED_FUNDAMENTALS_SCHEMA = RecordSchema(
 FUNDAMENTALS_SCHEMA = RecordSchema(
     dataset="ATX.US.FUNDAMENTALS",
     code="standardized",
-    version="2.0.0",
+    version="3.0.0",
     title="Standardized US equity fundamentals",
     description=(
         "Comparable annual, quarterly, and TTM statement items with filing lineage and bitemporal revision visibility."
@@ -189,7 +189,7 @@ FUNDAMENTALS_SCHEMA = RecordSchema(
         FieldSpec("period_end", "period_end", "date", "Fiscal period end.", nullable=False),
         FieldSpec("fiscal_year", "fiscal_year", "int32", "Issuer fiscal year."),
         FieldSpec("fiscal_period", "fiscal_period", "string", "Issuer fiscal-period label."),
-        FieldSpec("value", "value", "float64", "Standardized value.", nullable=False),
+        FieldSpec("value", "value", "float64", "Standardized value; NULL is an explicit unavailable state."),
         FieldSpec("unit", "unit", "string", "As-reported measurement unit or currency unit."),
         FieldSpec("unit_type", "unit_type", "string", "Canonical unit family."),
         FieldSpec("accession_number", "source_accession", "string", "Source SEC accession number."),

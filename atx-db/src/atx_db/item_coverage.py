@@ -187,8 +187,12 @@ def measure_item_coverage(store: DuckDBStore, options: ItemCoverageOptions) -> p
         ), eligible_facts AS (
             SELECT f.security_id,f.item_id,f.basis,f.fiscal_year,f.value,f.available_at,
                    row_number() OVER (
-                       PARTITION BY f.security_id,f.item_id,f.basis,f.period_end,f.source_accession
-                       ORDER BY f.available_at DESC,f.standardized_id DESC
+                       -- State selection must precede usability filtering.  A
+                       -- later NULL reported-EPS conflict shares this revision
+                       -- group with the earlier release and must remove that
+                       -- formerly valid value from coverage.
+                       PARTITION BY f.revision_group_id
+                       ORDER BY f.available_at DESC,f.revision_sequence DESC,f.standardized_id DESC
                    ) AS revision_rank
             FROM fundamental_standardized f
             JOIN (SELECT DISTINCT security_id,fiscal_year FROM members) u
@@ -198,7 +202,8 @@ def measure_item_coverage(store: DuckDBStore, options: ItemCoverageOptions) -> p
         ), numerators AS (
             SELECT item_id,basis,fiscal_year,count(DISTINCT security_id) AS k,
                    max(available_at) AS available_at
-            FROM eligible_facts WHERE revision_rank=1 AND value IS NOT NULL
+            FROM eligible_facts
+            WHERE revision_rank=1 AND value IS NOT NULL AND isfinite(value)
             GROUP BY item_id,basis,fiscal_year
         )
         SELECT ? AS source,? AS universe_id,i.item_id,i.canonical_code,b.basis,y.fiscal_year,

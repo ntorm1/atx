@@ -9,6 +9,12 @@ from ._bulk_publication import _identifier
 from ._fundamental_publication import check_publication_session, fundamental_publication
 from .connection import DuckDBStore
 from .industry_templates import refresh_entity_industry_templates
+from .reported_eps_core import (
+    COMPANYFACTS_SOURCE,
+    EPS_CONCEPT,
+    REPORTED_EPS_RELEASE_SOURCE,
+    reported_eps_source_facts_cte,
+)
 from .statement_map_seed import (
     FundamentalStatementMapRow,
     default_statement_map_rows,
@@ -1078,6 +1084,7 @@ def refresh_fundamental_statement_points(
                 )
                 WHERE route_rank = 1
             ),
+            {reported_eps_source_facts_cte()},
             mapped AS (
                 SELECT
                     sha256(
@@ -1121,7 +1128,7 @@ def refresh_fundamental_statement_points(
                     m.normal_balance,
                     r.period_start,
                     r.period_end,
-                    r.filed_date AS as_of_date,
+                    coalesce(r.as_of_date, r.filed_date) AS as_of_date,
                     r.available_at,
                     r.fiscal_year,
                     r.fiscal_period,
@@ -1149,12 +1156,20 @@ def refresh_fundamental_statement_points(
                             r.concept,
                             r.fact_revision_id
                     ) AS canonical_rank
-                FROM fundamental_fact_revisions r
+                FROM source_facts r
                 {concept_join}
                 LEFT JOIN security_industry_templates it
                   ON it.security_id = r.security_id
                 JOIN fundamental_statement_map m
-                  ON m.source = r.source
+                  ON (
+                        m.source = r.source
+                        OR (
+                            r.source = '{REPORTED_EPS_RELEASE_SOURCE}'
+                            AND m.source = '{COMPANYFACTS_SOURCE}'
+                            AND r.taxonomy = 'us-gaap'
+                            AND r.concept = '{EPS_CONCEPT}'
+                        )
+                     )
                  AND m.taxonomy = r.taxonomy
                  AND m.concept = r.concept
                  AND (
