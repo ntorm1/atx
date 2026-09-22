@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\measure_earnings_source_queue.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.485576629638672,
+    "commit_free_gb": 9.55160903930664
+  },
+  "child_pid": 10964,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.9278297424316406
+}

@@ -1,5 +1,73 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Archive11 resumed — 2026-09-23 00:00 UTC
+
+Required import/module/schema checks passed:57 passed,1 expected slow skip in
+130.74s, peak0.954GiB. Scoped Ruff passed. The reviewed integration repair is
+committed938ff7f1. These exact source files are unchanged from the tested tree.
+
+Root launched the sole warehouse writer in session12556, guard child4108,
+activation-companyfacts-archive11. It resumes actual dataset UUID
+ade90629-8e06-4186-9ea7-565cbd05e285 with full archive_members, replacements,
+force, 2GiB guard/1GB DuckDB/1thread and backup-keep100. Fresh evidence uses
+activation-companyfacts-archive11-{memory.json,log,err}. Do not start another
+runtime, edit loaded production modules or restart merely because a tool
+session yields. Governed startup applies0320–0322; inspect actual completion
+before claiming the live schema. Prior durable facts=points47,906,807.
+
+After terminal receipt, inspect actual stage/dataset ledgers and retained
+counts. If failed, resolve the actual latest dataset UUID before verified
+resume; never guess from the activation label. Then full submissions resume
+04cf947d-53bb-49b7-a276-b3c74a2a52c8, scoped CVX earnings-source acceptance,
+full-universe run5, measured desk/quality/CF1 evaluation and release gates.
+See earnings-source-production-sequencing.md for the new production-first
+ordering; exhaustive all-history individual exhibit fetching is not a
+prerequisite to the first full fundamentals build.
+
+## Required HEAD integration checks — 2026-09-22 23:58 UTC
+
+Core/public contract is committed in ddcd49d8 and issuer catalog0322 in
+42883bff. The issuer upgrade test passed (127.76s, peak0.947GiB). No live
+warehouse migration has run; production remains0319 with47,906,807 facts.
+
+Required HEAD checks exposed two integration omissions: visible migration
+body modules and missing PIT exemption for immutable earnings-source attempt
+receipts. Fresh Codex implementation changed only migrations/__init__.py and
+bodies_0320.py; one fresh review is clean. Root guarded session86906 is running
+the import/module-boundary/schema-contract checks. Wait terminal before other
+runtime. Logs/receipt use eps-head-contract-fixed1; prior failure evidence uses
+head-42883bff-checks2. checks1 was a PowerShell argument-quoting failure before
+pytest, corrected with check_committed_head.py.
+
+Read-only source planning measured426,151 earnings-release candidates in the
+incomplete retained submissions, peak0.928GiB, zero network requests. New
+production sequencing ruling is earnings-source-production-sequencing.md:
+finish full CompanyFacts and submissions archives, run an explicitly scoped
+CVX source acceptance wave, then full-universe run5; exhaustive historical
+exhibit backfill remains open and must not block first full fundamentals
+materialization. No provider threshold or output universe is reduced.
+
+After checks pass, commit the two exact source files plus evidence, then
+launch archive11 from actual archive10 UUID
+ade90629-8e06-4186-9ea7-565cbd05e285. Keep2GiB/1GB/1thread, backup-keep100,
+fresh guard/log files and dummy SEC contact. No warehouse writer is active.
+
+## Core committed, issuer catalog testing - 2026-09-22 23:44 UTC
+
+Core0321 plus ordinarypublicnullable3.0.0 contract committedddcd49d8. Its
+real0319metadata upgrade/replay fixture passed1in4.42s/0.715GiB after the
+earlier22integratedpasses; no new implementation changes. Important findings
+accepted onfixreport, noCritical. Full source/corechain details are in
+reported-eps-core-integration-result.md and atx-db/docs/REPORTED_EPS_PIPELINE.md.
+
+Root applied reviewed322CAE91896... and registered it AFTER321commit. It is
+UNCOMMITTED pending sole guarded runtime session81560,
+issuer-catalog-upgrade1-{memory.json,log,err}. Wait terminal before otherruntime
+or live edits. Then minimalRuff/testfixes ifneeded, pathspeccommit3livefiles+
+evidence. Next importatx_db/moduleboundaries/schema_contract_v2 atcommittedHEAD.
+Production DB still0319; no migration/sourceworker. Nextarchive11actual10UUID
+ade90629-8e06-4186-9ea7-565cbd05e285 and fullproductionsequence remain unchanged.
+
 ## Core and public contract validation - 2026-09-22 23:39 UTC
 
 Session78824 is terminal; initial10core failures were a missing required

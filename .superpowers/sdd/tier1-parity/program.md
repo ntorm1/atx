@@ -3,6 +3,21 @@ Spec: docs/superpowers/specs/2026-09-19-tier1-parity-design.md
 Audits: .superpowers/sdd/tier1-parity/audit-atx-db.md, audit-ticker-zip.md
 Baseline: main a79f8371, smoke 6 passed.
 
+## Production-first earnings-source sequencing — 2026-09-22 23:56 UTC
+
+The current, incomplete submissions inventory contains 426,151 distinct
+Item 2.02 candidates. Root measured this read-only with no network requests.
+An exhaustive individual-exhibit backfill must not hold the first full-universe
+fundamentals materialization behind an unmeasured source workload. After the
+full CompanyFacts and submissions archive resumes, run an explicitly scoped
+CVX source acceptance wave, then the full statement_points activation suffix.
+Measure generic item gaps and complete additional source waves afterward.
+Full historical earnings-source coverage remains open and no SLO is waived.
+Bulk Feed/Oldloads options were verified against official SEC documentation;
+volume and adapter compatibility remain unmeasured. Exact scope, evidence and
+sequence: earnings-source-production-sequencing.md. This supersedes only the
+earlier exhaustive earnings-source-before-run5 order.
+
 ## Standardized public NULL contract ruling - 2026-09-22 23:39 UTC
 
 The reported EPS conflict state makes fundamental_standardized.value nullable.

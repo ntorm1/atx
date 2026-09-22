@@ -32,12 +32,27 @@ Code progress exceeds materialization progress. The CIK-owned issuer query
 surface is committed in92cf42c4 with5focused and14existing API checks passed.
 The SEC reported-quarter EPS source is committed in1a0e4f73 with22focused
 source checks passed; actual Chevron filing-index discovery and Q42025
-extraction also pass. The core bridge has10focused passes but is still being
-integrated with its public nullable-value contract. These tests do not establish
-live metric coverage. The full statement/ratio/growth/daily-market rebuild,
+extraction also pass. The core bridge and public standardized record contract
+3.0.0 are committed in ddcd49d8, with 22 integrated checks and a separate
+upgrade/replay check passed. Issuer catalog migration0322 is committed in
+42883bff; its upgrade check passed. The required package import, boundary and
+schema checks now pass (57 passed, one expected slow skip, peak0.954GiB).
+The two integration repairs are committed in938ff7f1. CompanyFacts archive11
+has resumed from the verified archive10 receipt under the unchanged limits.
+Its running progress is not a replacement for the durable counts above.
+These tests do not establish live metric coverage.
+The full statement/ratio/growth/daily-market rebuild,
 coverage and quality measurements, signal evaluation, and release remain
 pending. Earlier migration versions and guard limits below describe their
 dated runs rather than the current production state.
+
+The retained submissions contain **426,151 distinct 8-K Item 2.02 candidates**
+across 2004–2026, measured read-only at23:53:57UTC. This source queue is still
+incomplete; candidates are not extracted EPS facts. The first earnings-source
+wave will explicitly cover CVX for end-to-end acceptance, followed by the
+full-universe fundamentals build and measured item-gap repair. Exhaustive
+historical earnings-release coverage remains open. No provider SLO is waived
+or certified by that scoped acceptance wave.
 
 Latest successful price publication: **corrected prices were published** by
 `activation-prices-updated-bounded` at 18:00:09 UTC. A separate read-only check at
