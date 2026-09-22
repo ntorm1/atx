@@ -51,6 +51,16 @@ class _FailBeforeSix(SecCompanyFactsDataset):
         return super()._replace_facts(store, facts, points, security_id, cik=cik, **kwargs)
 
 
+class _FailOnCik(SecCompanyFactsDataset):
+    def __init__(self, failed_cik):
+        self.failed_cik = f"{failed_cik:010d}"
+
+    def _replace_facts(self, store, facts, points, security_id, *, cik, **kwargs):
+        if cik == self.failed_cik:
+            raise RuntimeError("injected issuer failure")
+        return super()._replace_facts(store, facts, points, security_id, cik=cik, **kwargs)
+
+
 def _failed_prefix(store, tmp_path, *, mixed=False):
     members = {1: _payload(1), 2: _payload(2)}
     if mixed:
@@ -423,3 +433,179 @@ def test_resume_reopens_after_proof_before_candidate_recovery(tmp_store, tmp_pat
     result = SecCompanyFactsDataset().run(tmp_store, replace(options, resume_from_run_id=prior_id))
     assert observations == [(2, 0), (3, 3)]
     assert result.details["connection_reopens"] == 2
+
+
+def test_empty_replacement_is_tenth_raw_commit_before_next_target(tmp_store, tmp_path, monkeypatch):
+    tmp_store.analytical_memory_limit = "256MB"
+    tmp_store.analytical_threads = 1
+    tmp_store.con.execute("SET memory_limit='256MB'")
+    tmp_store.con.execute("SET threads=1")
+    tmp_store.con.execute("SET preserve_insertion_order=false")
+    observations = []
+    original = tmp_store.close
+
+    def observe_before_close():
+        observations.append(tmp_store.con.execute(
+            "SELECT (SELECT count(*) FROM sec_company_facts),"
+            "(SELECT count(*) FROM identifier_resolution_candidates),"
+            "(SELECT count(*) FROM raw_source_files)"
+        ).fetchone())
+        original()
+
+    monkeypatch.setattr(tmp_store, "close", observe_before_close)
+    members = {cik: _payload(cik) for cik in range(1, 10)}
+    members[10] = {"cik": 10, "facts": {"cef": {}}}
+    members[11] = b"{}"
+    result = SecCompanyFactsDataset().run(
+        tmp_store, _options(_archive(tmp_path / "companyfacts.zip", members)),
+    )
+    assert observations == [(9, 9, 10)]
+    assert result.details["connection_reopens"] == 1
+    assert result.details["completed_targets"] == result.details["empty_target_count"] + 9 == 10
+    assert result.details["unavailable_target_count"] == 1
+    assert tmp_store.con.execute(
+        "SELECT status,count(*) FROM raw_source_files GROUP BY status ORDER BY status"
+    ).fetchall() == [("empty", 1), ("loaded", 9), ("unavailable", 1)]
+
+
+def test_empty_replacement_alone_triggers_final_partial_reopen(tmp_store, tmp_path, monkeypatch):
+    tmp_store.analytical_memory_limit = "256MB"
+    tmp_store.analytical_threads = 1
+    tmp_store.con.execute("SET memory_limit='256MB'")
+    tmp_store.con.execute("SET threads=1")
+    tmp_store.con.execute("SET preserve_insertion_order=false")
+    observations = []
+    original = tmp_store.close
+
+    def observe_before_close():
+        observations.append(tmp_store.con.execute(
+            "SELECT (SELECT count(*) FROM sec_company_facts),"
+            "(SELECT count(*) FROM identifier_resolution_candidates),"
+            "(SELECT count(*) FROM raw_source_files)"
+        ).fetchone())
+        original()
+
+    monkeypatch.setattr(tmp_store, "close", observe_before_close)
+    result = SecCompanyFactsDataset().run(
+        tmp_store,
+        _options(_archive(tmp_path / "companyfacts.zip", {1: {"cik": 1, "facts": {"cef": {}}}})),
+    )
+    assert observations == [(0, 0, 1)]
+    assert result.details["connection_reopens"] == 1
+    assert result.details["completed_targets"] == result.details["empty_target_count"] == 1
+    assert result.rows_loaded == result.details["loaded_targets"] == 0
+    assert tmp_store.con.execute("SELECT status FROM raw_source_files").fetchall() == [("empty",)]
+
+
+def test_verified_resume_uses_independent_bounded_recycling_and_preserves_owned_rows(
+        tmp_store, tmp_path, monkeypatch):
+    """Exercise verified, raw, and empty paths through the real resume proof."""
+    raw_replays = tuple(range(10, 101, 10))
+    members = {cik: _payload(cik) for cik in range(1, 202)}
+    members[202] = {"cik": 202, "facts": {"cef": {}}}
+    options = _options(_archive(tmp_path / "companyfacts.zip", members))
+    with pytest.raises(RuntimeError, match="injected issuer failure"):
+        _FailOnCik(201).run(tmp_store, options)
+    prior_id = tmp_store.con.execute(
+        "SELECT run_id FROM dataset_runs WHERE dataset_id='sec_company_facts' ORDER BY started_at DESC LIMIT 1"
+    ).fetchone()[0]
+    replay_urls = [fundamentals._companyfacts_zip_member_url(str(cik)) for cik in raw_replays]
+    placeholders = ", ".join("?" for _ in replay_urls)
+    tmp_store.con.execute(f"DELETE FROM raw_source_files WHERE source_url IN ({placeholders})", replay_urls)
+    tmp_store.con.execute("DELETE FROM identifier_resolution_candidates")
+    tmp_store.analytical_memory_limit = "256MB"
+    tmp_store.analytical_threads = 1
+    tmp_store.con.execute("SET memory_limit='256MB'")
+    tmp_store.con.execute("SET threads=1")
+    tmp_store.con.execute("SET preserve_insertion_order=false")
+    settings_sql = "SELECT current_setting('memory_limit'),current_setting('threads'),current_setting('preserve_insertion_order')"
+    expected_settings = tmp_store.con.execute(settings_sql).fetchone()
+    owned_before = {
+        "facts": tmp_store.con.execute(
+            "SELECT * FROM sec_company_facts WHERE cik IN ('0000000001', '0000000101') ORDER BY cik"
+        ).fetchall(),
+        "points": tmp_store.con.execute(
+            "SELECT * FROM fundamental_points WHERE accession_number IN "
+            "('0000000001-24-000001', '0000000101-24-000001') ORDER BY accession_number"
+        ).fetchall(),
+        "receipts": tmp_store.con.execute(
+            "SELECT * FROM raw_source_files WHERE source_url IN (?, ?) ORDER BY source_url",
+            [fundamentals._companyfacts_zip_member_url("1"), fundamentals._companyfacts_zip_member_url("101")],
+        ).fetchall(),
+    }
+    observations = []
+    original_close = tmp_store.close
+    original_reopen = tmp_store.reopen
+
+    def observe_before_close():
+        observations.append(tmp_store.con.execute(
+            "SELECT (SELECT count(*) FROM sec_company_facts),"
+            "(SELECT count(*) FROM identifier_resolution_candidates)"
+        ).fetchone())
+        original_close()
+
+    def observe_reopen():
+        assert tmp_store.connection is None
+        original_reopen()
+        assert tmp_store.con.execute(settings_sql).fetchone() == expected_settings
+        assert tmp_store.con.execute(
+            "SELECT table_name FROM duckdb_tables() WHERE temporary AND NOT internal"
+        ).fetchall() == []
+        assert tmp_store.con.execute(
+            "SELECT view_name FROM duckdb_views() WHERE temporary AND NOT internal"
+        ).fetchall() == []
+
+    monkeypatch.setattr(tmp_store, "close", observe_before_close)
+    monkeypatch.setattr(tmp_store, "reopen", observe_reopen)
+    result = SecCompanyFactsDataset().run(tmp_store, replace(options, resume_from_run_id=prior_id))
+    assert observations == [(200, 0), (200, 100), (200, 200), (201, 201)]
+    assert result.details["connection_reopens"] == 4
+    assert result.details["connection_reopen_interval"] == 10
+    assert result.rows_loaded == 11
+    assert result.details["previously_completed_targets"] == result.details["resumed_loaded_targets"] == 190
+    assert result.details["replayed_targets"] == 12
+    assert result.details["loaded_targets"] == 201
+    assert result.details["completed_targets"] == 202
+    assert result.details["empty_target_count"] == 1
+    assert tmp_store.con.execute("SELECT count(*) FROM identifier_resolution_candidates").fetchone() == (201,)
+    assert {
+        "facts": tmp_store.con.execute(
+            "SELECT * FROM sec_company_facts WHERE cik IN ('0000000001', '0000000101') ORDER BY cik"
+        ).fetchall(),
+        "points": tmp_store.con.execute(
+            "SELECT * FROM fundamental_points WHERE accession_number IN "
+            "('0000000001-24-000001', '0000000101-24-000001') ORDER BY accession_number"
+        ).fetchall(),
+        "receipts": tmp_store.con.execute(
+            "SELECT * FROM raw_source_files WHERE source_url IN (?, ?) ORDER BY source_url",
+            [fundamentals._companyfacts_zip_member_url("1"), fundamentals._companyfacts_zip_member_url("101")],
+        ).fetchall(),
+    } == owned_before
+
+
+def test_verified_candidate_reconciliation_failure_rolls_back_without_counting_work(
+        tmp_store, tmp_path, monkeypatch):
+    options, prior_id = _failed_prefix(tmp_store, tmp_path)
+    tmp_store.con.execute("DELETE FROM identifier_resolution_candidates")
+    before = _snapshot(tmp_store)
+    original = fundamentals.insert_frame
+
+    def insert_then_fail(store, frame, table, relation_name):
+        result = original(store, frame, table, relation_name)
+        if table == "identifier_resolution_candidates":
+            raise RuntimeError("injected verified candidate failure")
+        return result
+
+    monkeypatch.setattr(fundamentals, "insert_frame", insert_then_fail)
+    with pytest.raises(RuntimeError, match="injected verified candidate failure"):
+        SecCompanyFactsDataset().run(tmp_store, replace(options, resume_from_run_id=prior_id))
+    assert _snapshot(tmp_store) == before
+    assert tmp_store.con.execute(
+        "SELECT table_name FROM duckdb_tables() WHERE temporary AND NOT internal"
+    ).fetchall() == []
+    assert tmp_store.con.execute(
+        "SELECT view_name FROM duckdb_views() WHERE temporary AND NOT internal"
+    ).fetchall() == []
+    assert tmp_store.con.execute(
+        "SELECT status FROM dataset_runs ORDER BY started_at DESC LIMIT 1"
+    ).fetchone() == ("failed",)

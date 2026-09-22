@@ -63,9 +63,13 @@ COMPANYFACTS_MEMBER_PATTERN = re.compile(r"CIK([0-9]{10})\.json")
 # SEC-CIK-* is already used by actual traded securities and cannot be a fallback.
 UNRESOLVED_COMPANYFACTS_CIK_PREFIX = "SEC-COMPANYFACTS-UNRESOLVED-CIK-"
 LOGGER = logging.getLogger(__name__)
-# Ten issuer commits keep retained PK/index state far below the 3,750-issuer
-# COMMIT failure. Recycling happens only after all per-issuer work is committed.
+# Ten raw fact/point replacement commits keep retained PK/index state far below
+# the 3,750-issuer COMMIT failure. Recycling happens only after all per-issuer
+# work is committed.
 _COMPANYFACTS_REOPEN_TARGETS = 10
+# Verified members only reconcile one issuer's candidates. Keep that work
+# bounded independently without making it consume the raw replacement cadence.
+_COMPANYFACTS_VERIFIED_REOPEN_TARGETS = 100
 
 
 @dataclass(frozen=True)
@@ -1105,7 +1109,7 @@ class SecCompanyFactsDataset(Dataset):
         unavailable_targets: list[dict[str, str]] = []
         unavailable_reasons: dict[str, int] = {}
         unresolved_candidate_rows = recovered_candidate_rows = 0
-        connection_reopens = committed_since_reopen = 0
+        connection_reopens = raw_replacements_since_reopen = verified_members_since_reopen = 0
         verified_members = {}
         cik_spellings_by_number: dict[int, tuple[str, ...]] | None = None
         with contextlib.ExitStack() as stack:
@@ -1150,9 +1154,12 @@ class SecCompanyFactsDataset(Dataset):
                 session = sec_session(options.user_agent)
             effective_skip_failed = options.skip_failed_targets or zip_fetcher is not None
             for index, (symbol, cik, security_id) in enumerate(targets):
-                if committed_since_reopen >= _COMPANYFACTS_REOPEN_TARGETS:
+                if (raw_replacements_since_reopen >= _COMPANYFACTS_REOPEN_TARGETS
+                        or verified_members_since_reopen >= _COMPANYFACTS_VERIFIED_REOPEN_TARGETS):
                     connection_reopens += int(reopen_companyfacts_store(store))
-                    committed_since_reopen = 0
+                    # Both kinds of work share one connection. A recycle caused
+                    # by either counter releases the state retained by both.
+                    raw_replacements_since_reopen = verified_members_since_reopen = 0
                 if options.progress_every_targets > 0 and index % options.progress_every_targets == 0:
                     LOGGER.info("companyfacts processed=%d total=%d loaded=%d empty=%d unavailable=%d failed=%d rows=%d",
                                 index, len(targets), loaded_targets, len(empty_targets),
@@ -1173,7 +1180,9 @@ class SecCompanyFactsDataset(Dataset):
                     else:
                         with store.transaction():
                             _replace_companyfacts_candidates(store, cik, pd.DataFrame())
-                    committed_since_reopen += 1
+                    # Advance only after this issuer's candidate transaction
+                    # commits. Verified members do not replace facts or points.
+                    verified_members_since_reopen += 1
                     loaded_targets += 1
                     completed_targets += 1
                     # Keep the original fact/point owner and source receipt. A
@@ -1305,7 +1314,7 @@ class SecCompanyFactsDataset(Dataset):
                     store, facts, points, security_id, cik=cik,
                     stored_cik_spellings=stored_cik_spellings, candidates=candidates, receipt=receipt,
                 )
-                committed_since_reopen += 1
+                raw_replacements_since_reopen += 1
                 # Advance only after facts, points, candidates and receipt commit.
                 if not facts.empty and cik not in stored_cik_spellings:
                     cik_spellings_by_number[cik_number] = (*stored_cik_spellings, cik)
@@ -1315,7 +1324,7 @@ class SecCompanyFactsDataset(Dataset):
                 del facts, points, payload, unresolved, candidates, receipt
             if zip_fetcher is not None and _companyfacts_archive_identity(options.companyfacts_zip) != archive_stat:
                 raise ValueError("companyfacts archive changed during ingestion")
-        if committed_since_reopen:
+        if raw_replacements_since_reopen or verified_members_since_reopen:
             connection_reopens += int(reopen_companyfacts_store(store))
         if options.refresh_derived_surfaces:
             concept_rows = refresh_xbrl_concept_catalog(store)
