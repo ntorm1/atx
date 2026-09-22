@@ -12,9 +12,44 @@ Covers the brief's three accept criteria:
 from __future__ import annotations
 
 import datetime as dt
+import json
+import zipfile
 
 import pandas as pd
-import pytest
+
+
+def test_archive_pit_security_transition_preserves_cik_fallback_and_point_ids(tmp_store, tmp_path):
+    from atx_db.fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions
+
+    cik = "0000000007"
+    tmp_store.con.execute(
+        """INSERT INTO security_identifier_history
+        (security_id,id_type,id_value,valid_from,valid_to,as_of_date,available_at,source) VALUES
+        ('HIST-OLD','CIK',?,'2019-01-01','2023-01-01','2021-01-01','2021-01-01','fixture'),
+        ('HIST-NEW','CIK',?,'2023-01-01',NULL,'2023-01-01','2023-01-01','fixture'),
+        ('HIST-OLD','ENTITY_ID','ENTITY-OLD','2019-01-01','2023-01-01','2021-01-01','2021-01-01','fixture'),
+        ('HIST-NEW','ENTITY_ID','ENTITY-NEW','2023-01-01',NULL,'2023-01-01','2023-01-01','fixture')""",
+        [cik, cik],
+    )
+    tmp_store.con.execute("INSERT INTO sec_company_tickers (cik,ticker,title,security_id) VALUES (?, 'NOW', 'Now', 'WRONG')", [cik])
+    payload = {"cik": 7, "facts": {"us-gaap": {"Assets": {"units": {"USD": [
+        {"filed": f"{year}-02-15", "end": f"{year - 1}-12-31", "val": year,
+         "accn": f"{cik}-{year}-000001", "form": "10-K", "fy": year - 1, "fp": "FY"}
+        for year in (2020, 2022, 2024)
+    ]}}}}}
+    path = tmp_path / "companyfacts.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(f"CIK{cik}.json", json.dumps(payload))
+    options = SecCompanyFactsOptions(symbol_source="archive_members", companyfacts_zip=path,
+                                    concepts=("Assets",), refresh_derived_surfaces=False)
+    dataset = SecCompanyFactsDataset()
+    for _ in range(2):
+        result = dataset.load(tmp_store, options)
+        assert result.details["unresolved_security_fact_rows"] == 1
+        assert tmp_store.con.execute("SELECT security_id,entity_id FROM sec_company_facts ORDER BY filed_date").fetchall() == [
+            ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000007", None), ("HIST-OLD", "ENTITY-OLD"), ("HIST-NEW", "ENTITY-NEW")]
+        assert tmp_store.con.execute("SELECT security_id FROM fundamental_points ORDER BY as_of_date").fetchall() == [
+            ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000007",), ("HIST-OLD",), ("HIST-NEW",)]
 
 
 def _seed_spine(store, *, cik="0000320193", security_id="SEC-CIK-0000320193"):
@@ -40,6 +75,48 @@ def _seed_spine(store, *, cik="0000320193", security_id="SEC-CIK-0000320193"):
         """,
         [security_id, cik, security_id, f"CIK-{cik}"],
     )
+
+
+def test_unresolved_archive_fact_cannot_join_current_sec_identity_or_bars(tmp_store, tmp_path):
+    from atx_db.fundamentals import (
+        SecCompanyFactsDataset,
+        SecCompanyFactsOptions,
+        refresh_fundamental_fact_revisions,
+        refresh_fundamental_statement_points,
+    )
+
+    # Real security-master namespace and a dated mapping starting in 2019.
+    _seed_spine(tmp_store)
+    tmp_store.con.execute("INSERT INTO sec_company_tickers (cik,ticker,title,security_id) VALUES "
+                          "('0000320193','AAPL','Apple Inc.','SEC-CIK-0000320193')")
+    payload = {"cik": 320193, "facts": {"us-gaap": {"Assets": {"units": {"USD": [
+        {"filed": f"{year}-02-15", "end": f"{year - 1}-12-31", "val": year,
+         "accn": f"0000320193-{year}-000001", "form": "10-K", "fy": year - 1, "fp": "FY"}
+        for year in (2018, 2024)
+    ]}}}}}
+    path = tmp_path / "companyfacts.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("CIK0000320193.json", json.dumps(payload))
+    result = SecCompanyFactsDataset().load(tmp_store, SecCompanyFactsOptions(
+        symbol_source="archive_members", companyfacts_zip=path, concepts=("Assets",), refresh_derived_surfaces=False,
+    ))
+    assert result.details["unresolved_security_fact_rows"] == 1
+    assert tmp_store.con.execute("SELECT security_id,entity_id FROM sec_company_facts ORDER BY filed_date").fetchall() == [
+        ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000320193", None), ("SEC-CIK-0000320193", "CIK-0000320193")]
+    refresh_fundamental_fact_revisions(tmp_store)
+    refresh_fundamental_statement_points(tmp_store)
+    assert tmp_store.con.execute("SELECT security_id,symbol FROM fundamental_statement_points ORDER BY as_of_date").fetchall() == [
+        ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000320193", None), ("SEC-CIK-0000320193", "AAPL")]
+    tmp_store.con.execute("""INSERT INTO equity_daily_bars
+        (source,security_id,symbol,trade_date,close,available_at,as_of_date,is_latest_revision) VALUES
+        ('fixture','SEC-CIK-0000320193','AAPL','2018-02-16',100,'2018-02-16 22:00:00','2018-02-16',true),
+        ('fixture','SEC-CIK-0000320193','AAPL','2024-02-16',100,'2024-02-16 22:00:00','2024-02-16',true)""")
+    assert tmp_store.con.execute("""SELECT b.trade_date,s.as_of_date FROM equity_daily_bars b
+        JOIN fundamental_statement_points s ON s.security_id=b.security_id AND s.available_at<=b.available_at
+        ORDER BY b.trade_date""").fetchall() == [(dt.date(2024, 2, 16), dt.date(2024, 2, 15))]
+    assert tmp_store.con.execute("SELECT target_security_id FROM identifier_resolution_candidates "
+                                 "WHERE source_dataset_id='sec_company_facts'").fetchall() == [
+        ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000320193",)]
 
 
 class TestSecCompanyFactsColumn:
@@ -402,8 +479,8 @@ class TestStatementPointsCarrySecurityId:
         monkeypatch.setattr("atx_db.fundamentals.sec_session", _boom)
 
         import json
-        import zipfile
         import tempfile
+        import zipfile
         from pathlib import Path
 
         payload = {

@@ -29,7 +29,7 @@ def _ts(s: str) -> pd.Timestamp:
     return pd.Timestamp(s)
 
 
-def _bar(security_id, symbol, date, close, *, split_factor=1.0, open_=None, volume=1000, av="2013-01-02"):
+def _bar(security_id, symbol, date, close, *, split_factor=1.0, adjusted_close=None, open_=None, volume=1000, av="2013-01-02"):
     return {
         "security_id": security_id,
         "symbol": symbol,
@@ -37,6 +37,7 @@ def _bar(security_id, symbol, date, close, *, split_factor=1.0, open_=None, volu
         "open": open_ if open_ is not None else close,
         "close": close,
         "split_factor": split_factor,
+        "adjusted_close": close if adjusted_close is None else adjusted_close,
         "volume": volume,
         "available_at": _ts(av),
     }
@@ -103,10 +104,10 @@ class TestComputeEquityPriceMetrics:
 
     def test_returns_are_split_adjusted(self):
         # 2:1 split between day 2 and day 3: raw close halves (100 -> 51) but the real
-        # move is small. split_factor=0.5 on the split day back-adjusts the pre-split
-        # price so the return reflects the true move, not the split.
+        # move is small. Canonical adjusted close carries the correction; the
+        # split_factor must not be applied again.
         rows = [
-            _bar("S1", "AAA", dt.date(2013, 1, 2), 100.0),
+            _bar("S1", "AAA", dt.date(2013, 1, 2), 100.0, adjusted_close=50.0),
             _bar("S1", "AAA", dt.date(2013, 1, 3), 51.0, split_factor=0.5),
         ]
         out = compute_equity_price_metrics(pd.DataFrame(rows))
@@ -178,6 +179,105 @@ class TestRefreshIntegration:
         n2 = tmp_store.con.execute("SELECT count(*) FROM equity_price_metrics").fetchone()[0]
         assert r1.rows_loaded == r2.rows_loaded
         assert n1 == n2 == 1
+
+    def test_bounded_writer_matches_pure_transform_and_asof_cutoff(self, tmp_store):
+        """The SQL writer keeps full peers/clocks while avoiding a pandas universe load."""
+        start = dt.date(2020, 1, 2)
+        bars = []
+        for security_id, symbol, step in (("S1", "AAA", 0.004), ("S2", "BBB", 0.004), ("S3", "CCC", -0.002)):
+            prices = _prices_from_returns([step if day % 2 else -step / 2 for day in range(260)])
+            for day, price in enumerate(prices):
+                date = start + dt.timedelta(days=day)
+                # S1's raw split-like price move is corrected only by adjusted_close.
+                close = price / 2 if security_id == "S1" and day >= 70 else price
+                # This early high falls outside the trailing-252 window near cutoff.
+                adjusted = 300.0 if day == 0 else price
+                available = dt.datetime.combine(date, dt.time(22))
+                if security_id == "S3" and day == 80:
+                    available += dt.timedelta(days=3)
+                if security_id == "S3" and day == 100:
+                    available = dt.datetime.combine(start + dt.timedelta(days=256), dt.time(22))
+                bars.append(_bar(security_id, symbol, date, close, adjusted_close=adjusted,
+                                 volume=1_000 + 100 * day, av=available))
+                _insert_bar(tmp_store, security_id=security_id, symbol=symbol, date=date,
+                            close=close, adj=adjusted, volume=1_000 + 100 * day, av=available)
+
+        cutoff = start + dt.timedelta(days=255)
+        eligible = pd.DataFrame(bars)
+        eligible = eligible[(eligible.trade_date.dt.date <= cutoff) & (
+            eligible.available_at <= pd.Timestamp(dt.datetime.combine(cutoff, dt.time.max))
+        )]
+        expected = compute_equity_price_metrics(eligible, run_id="sql-parity")
+        expected = expected.sort_values(["security_id", "trade_date"]).reset_index(drop=True)
+        rows = refresh_equity_price_metrics(tmp_store, EquityPriceMetricsOptions(
+            as_of_date=cutoff, run_id="sql-parity",
+        ))
+        actual = tmp_store.con.execute("""
+            SELECT metric_id, source, security_id, symbol, trade_date, close, adjusted_close,
+                   volume, dollar_volume, daily_return, log_return, gap_return,
+                   realized_vol_20d, realized_vol_60d, momentum_21d, momentum_126d,
+                   pct_from_high_252d, avg_dollar_volume_21d, amihud_illiquidity_21d,
+                   max_drawdown_126d, downside_deviation_60d, market_return_ew, beta_60d,
+                   market_correlation_60d, idiosyncratic_vol_60d,
+                   daily_return_cs_pct_rank, momentum_21d_cs_pct_rank,
+                   realized_vol_20d_cs_pct_rank, dollar_volume_cs_pct_rank,
+                   amihud_illiquidity_21d_cs_pct_rank, is_latest_revision, as_of_date,
+                   available_at, run_id
+            FROM equity_price_metrics ORDER BY security_id, trade_date
+        """).df()
+        assert rows == len(expected)
+        # DuckDB returns DATE as midnight datetime64 while the pure transform
+        # intentionally exposes Python dates. Compare the same date semantics.
+        for frame in (actual, expected):
+            for column in ("trade_date", "as_of_date"):
+                frame[column] = pd.to_datetime(frame[column]).dt.normalize()
+        # Residual variance is a subtraction of nearly equal rolling moments.  Compare
+        # its squared annualized volatility so DuckDB's ~1.5e-9 sqrt-roundoff is held
+        # to a 3e-18 variance tolerance, while non-zero risk remains at 1e-10 relative.
+        actual_idio = actual.pop("idiosyncratic_vol_60d")
+        expected_idio = expected.pop("idiosyncratic_vol_60d")
+        pd.testing.assert_series_equal(
+            actual_idio.pow(2), expected_idio.pow(2), check_dtype=False,
+            rtol=1e-10, atol=3e-18,
+        )
+        pd.testing.assert_frame_equal(actual, expected, check_dtype=False, check_like=False,
+                                      rtol=1e-10, atol=1e-12)
+        # The delayed peer clock remains part of the market proxy's availability.
+        delayed_date = start + dt.timedelta(days=80)
+        for date in (delayed_date, delayed_date + dt.timedelta(days=1)):
+            assert actual[(actual.security_id == "S1") & (actual.trade_date == pd.Timestamp(date))].iloc[0].available_at == pd.Timestamp("2020-03-25 22:00:00")
+
+    def test_empty_scope_replaces_source_and_failed_publish_preserves_previous_rows(self, tmp_store, monkeypatch):
+        av = dt.datetime(2020, 1, 2, 22)
+        _insert_bar(tmp_store, security_id="S1", symbol="AAA", date=dt.date(2020, 1, 2),
+                    close=100, adj=100, volume=1000, av=av)
+        refresh_equity_price_metrics(tmp_store, EquityPriceMetricsOptions())
+        assert refresh_equity_price_metrics(tmp_store, EquityPriceMetricsOptions(symbols=())) == 0
+        assert tmp_store.con.execute("SELECT count(*) FROM equity_price_metrics").fetchone()[0] == 0
+
+        refresh_equity_price_metrics(tmp_store, EquityPriceMetricsOptions())
+        # A retained foreign row is valid before a shadow-build failure.  The live
+        # source and foreign row must both survive because no swap has occurred.
+        tmp_store.con.execute("""
+            INSERT INTO equity_price_metrics (
+                metric_id, source, security_id, trade_date, is_latest_revision,
+                as_of_date, available_at
+            ) VALUES ('foreign-metric-id', 'foreign-source', 'foreign', DATE '2020-01-02', true,
+                      DATE '2020-01-02', TIMESTAMP '2020-01-02 22:00:00')
+        """)
+
+        def fail_shadow(*_args, **_kwargs):
+            raise RuntimeError("injected shadow-build failure")
+
+        monkeypatch.setattr("atx_db.equity_price_metrics._build_publication_shadow", fail_shadow)
+        with pytest.raises(RuntimeError, match="injected shadow-build failure"):
+            refresh_equity_price_metrics(tmp_store, EquityPriceMetricsOptions())
+        assert tmp_store.con.execute(
+            "SELECT count(*) FROM equity_price_metrics WHERE source = ?", ["derived_equity_price_metrics_v1"]
+        ).fetchone()[0] == 1
+        assert tmp_store.con.execute(
+            "SELECT count(*) FROM equity_price_metrics WHERE metric_id = 'foreign-metric-id'"
+        ).fetchone()[0] == 1
 
 
 class TestAsofReader:

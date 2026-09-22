@@ -1,0 +1,10 @@
+{
+  "observed_at_utc": "2026-09-22T23:23:01.986899+00:00",
+  "index_url": "https://www.sec.gov/Archives/edgar/data/93410/000009341026000019/0000093410-26-000019-index.html",
+  "decoded_utf8_sha256": "b38b40dc498c75c28a272a2ff1e714da611e75e8462aa695209f6d63f93897fa",
+  "documents": [
+    "a12312025ex9918-k.htm"
+  ],
+  "production_receipt": false,
+  "warehouse_mutations": false
+}

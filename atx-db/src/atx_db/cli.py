@@ -26,7 +26,7 @@ from .fundamental_reconciliation import (
     FundamentalReconciliationRefreshOptions,
     refresh_fundamental_reconciliation_serving,
 )
-from .migration_admin import run_governed_migrations
+from .migration_admin import pending_migrations, run_governed_migrations
 from .migrations import MIGRATIONS
 from .openfigi_signals import OpenFigiSignalMapOptions, map_signal_cusips
 from .provider_coverage import ProviderCoverageOptions, refresh_provider_coverage
@@ -397,6 +397,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Build a complete warehouse from zero, resumably, one JSON line per stage",
     )
     add_activation_arguments(activate)
+
+    release = commands.add_parser(
+        "publish-release",
+        help="Publish the full-universe Parquet release and its manifest",
+    )
+    release.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    release.add_argument("--release-id", required=True)
+    release.add_argument("--out-dir", type=Path, required=True)
+    release.add_argument("--previous-dir", type=Path)
+    release.add_argument("--memory-limit", default="1GB")
+    release.add_argument("--threads", type=int, default=1)
+    release.add_argument("--run-id")
     return parser
 
 
@@ -737,6 +749,38 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "activate":
         return run_activation_from_args(args, governed_migrations=run_governed_migrations)
+
+    if args.command == "publish-release":
+        from .publication import publish_release
+
+        pending = pending_migrations(args.db_path)
+        if pending:
+            raise RuntimeError(
+                f"Cannot publish: pending schema migrations {pending}. Run the governed migration first: "
+                f'python scripts/warehouse_migrate.py --db-path "{args.db_path}"'
+            )
+        with DuckDBStore(args.db_path) as store:
+            _configure_analytical_session(store, memory_limit=args.memory_limit, threads=args.threads)
+            release_result = publish_release(
+                store,
+                args.release_id,
+                args.out_dir,
+                created_at=dt.datetime.now(dt.UTC),
+                previous_dir=args.previous_dir,
+                run_id=args.run_id,
+            )
+        _json(
+            {
+                "release_id": release_result.release_id,
+                "out_dir": str(release_result.out_dir),
+                "manifest": str(release_result.manifest_path),
+                "manifest_sha256": release_result.manifest_sha256,
+                "previous_release_id": release_result.previous_release_id,
+                "dataset_count": len(release_result.datasets),
+                "total_rows": release_result.total_rows,
+            }
+        )
+        return 0
 
     raise AssertionError(f"Unhandled command: {args.command}")
 

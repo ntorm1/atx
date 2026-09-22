@@ -1,0 +1,28 @@
+diff --git a/atx-db/src/atx_db/press_release.py b/atx-db/src/atx_db/press_release.py
+index 8db306cc..0b74d123 100644
+--- a/atx-db/src/atx_db/press_release.py
++++ b/atx-db/src/atx_db/press_release.py
+@@ -469,8 +469,7 @@ class _SecFilingDocumentTable(HTMLParser):
+                 self._header_seen = True
+             else:
+                 if (len(self._row) != 5 or self._row_tags != ["td"] * 5
+-                        or not self._row[0][0] or len(self._row[2][1]) != 1
+-                        or not self._row[3][0]):
++                        or len(self._row[2][1]) != 1):
+                     raise ValueError("invalid_document_format_row")
+                 self.rows.append(self._row)
+             self._row = None
+diff --git a/atx-db/tests/test_reported_quarter_eps_source.py b/atx-db/tests/test_reported_quarter_eps_source.py
+index 2e1d78f0..d71bc48b 100644
+--- a/atx-db/tests/test_reported_quarter_eps_source.py
++++ b/atx-db/tests/test_reported_quarter_eps_source.py
+@@ -51,6 +51,9 @@ COMPACT_FILING_INDEX = """
+   <tr><td>2</td><td>EX-99.1</td>
+       <td><a href="/Archives/edgar/data/93410/000009341026000019/ex99.htm">ex99.htm</a></td>
+       <td>EX-99.1</td><td>100</td></tr>
++  <tr class="evenRow"><td>&nbsp;</td><td>Complete submission text file</td>
++      <td><a href="/Archives/edgar/data/93410/000009341026000019/0000093410-26-000019.txt">0000093410-26-000019.txt</a></td>
++      <td>&nbsp;</td><td>766161</td></tr>
+ </table>
+ """
+ 

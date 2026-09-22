@@ -1,0 +1,18 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "mypy",
+    "--follow-imports=silent",
+    "src/atx_db/_companyfacts_resume.py"
+  ],
+  "job_limit_gb": 1.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 7.180171966552734,
+    "commit_free_gb": 9.992469787597656
+  },
+  "child_pid": 2264,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.3282356262207031
+}

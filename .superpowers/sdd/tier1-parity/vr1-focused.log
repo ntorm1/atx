@@ -1,0 +1,79 @@
+F.....                                                                   [100%]
+================================== FAILURES ===================================
+_ test_verified_resume_uses_independent_bounded_recycling_and_preserves_owned_rows _
+
+tmp_store = <atx_db.connection.DuckDBStore object at 0x00000199375B4110>
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-68/test_verified_resume_uses_inde0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001993548FF80>
+
+    def test_verified_resume_uses_independent_bounded_recycling_and_preserves_owned_rows(
+            tmp_store, tmp_path, monkeypatch):
+        """Exercise verified, raw, and empty paths through the real resume proof."""
+        raw_replays = tuple(range(10, 101, 10))
+        members = {cik: _payload(cik) for cik in range(1, 202)}
+        members[202] = {"cik": 202, "facts": {"cef": {}}}
+        options = _options(_archive(tmp_path / "companyfacts.zip", members))
+        with pytest.raises(RuntimeError, match="injected issuer failure"):
+            _FailOnCik(201).run(tmp_store, options)
+        prior_id = tmp_store.con.execute(
+            "SELECT run_id FROM dataset_runs WHERE dataset_id='sec_company_facts' ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()[0]
+        replay_urls = [fundamentals._companyfacts_zip_member_url(str(cik)) for cik in raw_replays]
+        placeholders = ", ".join("?" for _ in replay_urls)
+        tmp_store.con.execute(f"DELETE FROM raw_source_files WHERE source_url IN ({placeholders})", replay_urls)
+        tmp_store.con.execute("DELETE FROM identifier_resolution_candidates")
+        tmp_store.analytical_memory_limit = "256MB"
+        tmp_store.analytical_threads = 1
+        tmp_store.con.execute("SET memory_limit='256MB'")
+        tmp_store.con.execute("SET threads=1")
+        tmp_store.con.execute("SET preserve_insertion_order=false")
+        settings_sql = "SELECT current_setting('memory_limit'),current_setting('threads'),current_setting('preserve_insertion_order')"
+        expected_settings = tmp_store.con.execute(settings_sql).fetchone()
+        owned_before = {
+            "facts": tmp_store.con.execute(
+                "SELECT * FROM sec_company_facts WHERE cik IN ('0000000001', '0000000101') ORDER BY cik"
+            ).fetchall(),
+            "points": tmp_store.con.execute(
+                "SELECT * FROM fundamental_points WHERE accession_number IN "
+                "('0000000001-24-000001', '0000000101-24-000001') ORDER BY accession_number"
+            ).fetchall(),
+            "receipts": tmp_store.con.execute(
+                "SELECT * FROM raw_source_files WHERE source_url IN (?, ?) ORDER BY source_url",
+                [fundamentals._companyfacts_zip_member_url("1"), fundamentals._companyfacts_zip_member_url("101")],
+            ).fetchall(),
+        }
+        observations = []
+        original_close = tmp_store.close
+        original_reopen = tmp_store.reopen
+    
+        def observe_before_close():
+            observations.append(tmp_store.con.execute(
+                "SELECT (SELECT count(*) FROM sec_company_facts),"
+                "(SELECT count(*) FROM identifier_resolution_candidates)"
+            ).fetchone())
+            original_close()
+    
+        def observe_reopen():
+            assert tmp_store.connection is None
+            original_reopen()
+            assert tmp_store.con.execute(settings_sql).fetchone() == expected_settings
+            assert tmp_store.con.execute(
+                "SELECT table_name FROM duckdb_tables() WHERE temporary AND NOT internal"
+            ).fetchall() == []
+            assert tmp_store.con.execute(
+                "SELECT view_name FROM duckdb_views() WHERE temporary AND NOT internal"
+            ).fetchall() == []
+    
+        monkeypatch.setattr(tmp_store, "close", observe_before_close)
+        monkeypatch.setattr(tmp_store, "reopen", observe_reopen)
+        result = SecCompanyFactsDataset().run(tmp_store, replace(options, resume_from_run_id=prior_id))
+        assert observations == [(200, 0), (200, 100), (200, 200), (201, 201)]
+        assert result.details["connection_reopens"] == 4
+        assert result.details["connection_reopen_interval"] == 10
+>       assert result.rows_loaded == 1
+E       AssertionError: assert 11 == 1
+E        +  where 11 = DatasetLoadResult(dataset_id='sec_company_facts', rows_loaded=11, source='SEC companyfacts bulk zip', details={'symbol...ied': False, 'identity_policy': 'dated_history_or_isolated_cik_source'}, run_id='8325849d-0311-4b50-99eb-cc21d1db738f').rows_loaded
+
+tests\test_companyfacts_archive_repair.py:564: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_companyfacts_archive_repair.py::test_verified_resume_uses_independent_bounded_recycling_and_preserves_owned_rows

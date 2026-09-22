@@ -1,0 +1,24 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "-n0",
+    "-q",
+    "tests/test_derived_annual.py::test_unrelated_annual_span_keeps_complete_quarterly_revenue",
+    "tests/test_derived_annual.py::test_annual_eps_ignores_unselected_legacy_quarterly_share_span",
+    "tests/test_derived_annual.py::test_precedence_switches_and_null_never_resurrects",
+    "tests/test_derived_annual.py::test_annual_composition_and_weighted_share_invalidations",
+    "tests/test_derived_annual.py::test_mismatched_annual_spans_do_not_compose",
+    "tests/test_derived_annual.py::test_no_stale_fy_at_new_quarter_or_wrong_endpoint"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 8.32144546508789,
+    "commit_free_gb": 10.158203125
+  },
+  "child_pid": 17084,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.7892837524414062
+}

@@ -25,10 +25,12 @@ from .checks_analytics import analytic_check_specs as _analytic_check_specs
 from .checks_estimates import estimate_check_specs as _estimate_check_specs
 from .checks_features_catalog import feature_catalog_check_specs as _feature_catalog_check_specs
 from .checks_fundamentals import fundamental_check_specs as _fundamental_check_specs
+from .checks_identities import identity_check_specs as _identity_check_specs
 from .checks_market_reference import (
     market_reference_check_specs as _market_reference_check_specs,
 )
 from .checks_ownership import ownership_check_specs as _ownership_check_specs
+from .checks_universe import universe_check_specs as _universe_check_specs
 from ._types import (
     Comparator,
     FailureStatus,
@@ -434,10 +436,12 @@ def _check_specs(
     single_table_checks = (
         _market_reference_check_specs(**common_kwargs)
         + _fundamental_check_specs(**common_kwargs)
+        + _identity_check_specs(**common_kwargs)
         + _ownership_check_specs(**common_kwargs)
         + _feature_catalog_check_specs(**common_kwargs)
         + _estimate_check_specs(**common_kwargs)
         + _analytic_check_specs(**common_kwargs)
+        + _universe_check_specs(**common_kwargs)
     )
     referential_checks = tuple(spec.compile() for spec in _referential_check_specs())
     return single_table_checks + referential_checks

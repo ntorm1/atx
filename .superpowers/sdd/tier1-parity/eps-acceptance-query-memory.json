@@ -1,0 +1,21 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "C:/atx/.superpowers/sdd/tier1-parity/run_acceptance_query.py",
+    "--sql",
+    "C:/atx/.superpowers/sdd/tier1-parity/quarterly-eps-acceptance.sql",
+    "--output",
+    "C:/atx/.superpowers/sdd/tier1-parity/quarterly-eps-acceptance-result.json",
+    "--max-rows",
+    "3"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 7.18243408203125,
+    "commit_free_gb": 10.453147888183594
+  },
+  "child_pid": 3924,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.46562957763671875
+}

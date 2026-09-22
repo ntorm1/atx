@@ -1,0 +1,19 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "-m",
+    "pytest",
+    "-n",
+    "0",
+    "tests/test_issuer_catalog_upgrade.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 7.692893981933594,
+    "commit_free_gb": 10.270801544189453
+  },
+  "child_pid": 14648,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.947418212890625
+}

@@ -8,11 +8,13 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .security_master import security_ids_for_symbols
+from .ticker_history_quality import SOURCE_PROVENANCE
 from .warehouse import (
     insert_frame,
     quality_check,
@@ -111,6 +113,7 @@ PRICE_PROJECTION_COLUMNS = (
     "volume",
     "shares",
     "returnFactor",
+    "cumulReturnFactor",
 )
 
 RENAMES = {column: snake_case(column) for column in SOURCE_COLUMNS}
@@ -299,10 +302,22 @@ def _iter_raw_chunks(options: TickerHistoryOptions) -> Iterator[pd.DataFrame]:
                 names=header,
                 usecols=PRICE_PROJECTION_COLUMNS if options.price_projection_only else None,
             )
+            pending = pd.DataFrame()
             for index, chunk in enumerate(reader, start=options.skip_chunks + 1):
                 if options.max_chunks is not None and index > options.max_chunks:
                     break
-                yield chunk
+                # Keep a complete source date together so a chunk boundary cannot
+                # turn conflicting positive-ID rows into successive replacements.
+                chunk = pd.concat([pending, chunk], ignore_index=True)
+                if not chunk["tradingDate"].is_monotonic_increasing:
+                    raise ValueError("ticker-history source must be ordered by tradingDate")
+                last_date = chunk["tradingDate"].iloc[-1]
+                pending = chunk.loc[chunk["tradingDate"] == last_date]
+                complete = chunk.loc[chunk["tradingDate"] != last_date]
+                if not complete.empty:
+                    yield complete
+            if not pending.empty:
+                yield pending
 
 
 def _filter_chunk(chunk: pd.DataFrame, options: TickerHistoryOptions) -> pd.DataFrame:
@@ -363,31 +378,62 @@ def _apply_security_ids(store: DuckDBStore, frame: pd.DataFrame, options: Ticker
             )
         ]
     frame["security_id"] = resolved
+    # A historical display ticker never creates a new line for a positive ID.
+    # Reuse earlier chunks' identity; this does not authenticate the original
+    # current-symbol/CIK shortcut or turn it into historical identity evidence.
+    existing_rows = store.con.execute(
+        "SELECT id_value, min(security_id), count(DISTINCT security_id) "
+        "FROM security_identifier_history WHERE source = ? AND id_type = ? GROUP BY id_value",
+        [options.source, TBLTICKERHISTORY_ID_TYPE],
+    ).fetchall()
+    # Competing links are unresolved, not ordered by their warehouse load time.
+    existing = {
+        str(key): (str(value) if count == 1 else vendor_security_id("tbltickerhistory", str(key)))
+        for key, value, count in existing_rows
+    }
+    positive = frame["vendor_security_id"].gt(0).fillna(False)
+    candidates = frame.loc[positive].groupby("vendor_security_id")["security_id"]
+    stable = candidates.transform("min")
+    ambiguous = candidates.transform("nunique").gt(1)
+    stable.loc[ambiguous] = frame.loc[stable.index[ambiguous], "vendor_security_id"].map(
+        lambda value: vendor_security_id("tbltickerhistory", value)
+    )
+    prior = frame.loc[positive, "vendor_security_id"].astype("string").map(existing)
+    frame.loc[positive, "security_id"] = prior.fillna(stable)
     return frame.drop(columns=["_symbol_for_mapping"])
 
 
 def _canonical_bars(frame: pd.DataFrame, options: TickerHistoryOptions) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame()
+    # Source collisions are ambiguity, not evidence of distinct share classes.
+    duplicate = frame.duplicated(["vendor_security_id", "trading_date"], keep=False)
+    frame = frame.loc[~(duplicate & frame["vendor_security_id"].gt(0).fillna(False))].copy()
     shares = frame.get(
         "shares", pd.Series(pd.NA, index=frame.index, dtype="Int64")
     )
+    factor = pd.to_numeric(frame["cumul_return_factor"], errors="coerce")
+    close = pd.to_numeric(frame["close"], errors="coerce")
+    with np.errstate(over="ignore", invalid="ignore"):
+        adjusted = close * factor
+    valid = (np.isfinite(close) & (close > 0) & np.isfinite(factor) & (factor > 0)
+             & np.isfinite(adjusted) & (adjusted > 0)).fillna(False)
     bars = pd.DataFrame(
         {
             "source": options.source,
             "security_id": frame["security_id"],
             "vendor_security_id": frame["vendor_security_id"].astype("string"),
-            "symbol": frame["today_ticker"].fillna(frame["ticker_tk"]).map(symbol_key),
+            "symbol": frame["ticker_tk"].fillna(frame["today_ticker"]).map(symbol_key),
             "trade_date": frame["trading_date"],
             "open": frame["open"],
             "high": frame["high"],
             "low": frame["low"],
             "close": frame["close"],
-            "adjusted_close": frame["close_pr"],
+            "adjusted_close": adjusted.where(valid),
             "volume": frame["volume"],
             "vwap": pd.NA,
             "dividend_amount": pd.NA,
-            "split_factor": frame["return_factor"],
+            "split_factor": float("nan"),
             "is_adjusted": False,
             "available_at": pd.to_datetime(frame["trading_date"]) + pd.Timedelta(hours=22),
             "run_id": options.run_id,
@@ -422,6 +468,10 @@ def _drop_invalid_ohlcv(bars: pd.DataFrame) -> pd.DataFrame:
         | (h <= 0)
         | (low <= 0)
         | (c <= 0)
+        | (o.notna() & ~np.isfinite(o))
+        | (h.notna() & ~np.isfinite(h))
+        | (low.notna() & ~np.isfinite(low))
+        | (c.notna() & ~np.isfinite(c))
         | (h < pd.concat([o, low, c], axis=1).max(axis=1))
         | (low > pd.concat([o, h, c], axis=1).min(axis=1))
     ).fillna(False)
@@ -465,7 +515,7 @@ def _security_links(frame: pd.DataFrame, options: TickerHistoryOptions) -> tuple
             "valid_from": grouped["first_seen_date"],
             "valid_to": pd.NaT,
             "as_of_date": grouped["first_seen_date"],
-            "available_at": pd.to_datetime(grouped["first_seen_date"]) + pd.Timedelta(hours=22),
+            "available_at": pd.NaT,
             "source": options.source,
             "run_id": options.run_id,
         }
@@ -480,7 +530,7 @@ def _security_links(frame: pd.DataFrame, options: TickerHistoryOptions) -> tuple
             "valid_from": grouped["first_seen_date"],
             "valid_to": pd.NaT,
             "as_of_date": grouped["first_seen_date"],
-            "available_at": pd.to_datetime(grouped["first_seen_date"]) + pd.Timedelta(hours=22),
+            "available_at": pd.NaT,
             "source": options.source,
             "run_id": options.run_id,
         }
@@ -489,41 +539,27 @@ def _security_links(frame: pd.DataFrame, options: TickerHistoryOptions) -> tuple
 
 
 def disambiguate_vendor_collisions(store: DuckDBStore, source: str = SOURCE_NAME) -> int:
-    """Split ``security_id``s that collapse multiple distinct tradeable lines.
+    """Separate distinct vendor IDs collapsed by the legacy current-symbol join.
 
-    The symbol -> canonical-``security_id`` mapping (``security_ids_for_symbols``)
-    is many-to-one across the broad universe: a ticker recycled across issuers
-    (two unrelated companies that both traded as "ET") or split across share
-    classes (LMCA / LMCAV under one vendor) resolves several distinct lines onto
-    one ``security_id``, producing duplicate ``(security_id, trade_date)`` bars
-    that corrupt cross-sectional stats and break the ``equity_price_metrics``
-    primary key.
-
-    The natural permanent line identity in this feed is
-    ``(vendor_security_id, symbol)``. For each ``security_id`` that carries more
-    than one such line, the line with the most bars keeps the canonical id (it is
-    the surviving/primary issuer that carries any cross-surface links); every
-    other line is re-keyed to a deterministic per-line synthetic id, and
-    first-class ``securities`` / ``security_identifier_history`` /
-    ``exchange_listings`` rows are materialized for it. A final safety-net pass
-    collapses any residual exact ``(security_id, trade_date)`` duplicates (e.g.
-    the same line emitted twice in the source), keeping the higher-volume row.
-
-    Global and idempotent: once split, no ``security_id`` carries multiple lines,
-    so a re-run is a no-op. Returns the number of lines re-keyed.
+    A positive vendor ID stays one line across ticker renames. Remaining
+    duplicate canonical keys are quarantined together; volume never selects a
+    winner. This separation does not validate any historical CIK association.
+    Returns the number of vendor lines re-keyed.
     """
     con = store.con
     lines = con.execute(
         """
         SELECT security_id,
                vendor_security_id,
-               symbol,
+               coalesce(try_cast(vendor_security_id AS BIGINT) > 0, false) AS positive_vendor_id,
+               arg_max(symbol, (trade_date, symbol)) AS symbol,
                COUNT(*) AS n,
                MIN(trade_date) AS first_seen,
                MAX(trade_date) AS last_seen
         FROM equity_daily_bars
         WHERE source = ?
-        GROUP BY security_id, vendor_security_id, symbol
+        GROUP BY security_id, vendor_security_id,
+                 CASE WHEN try_cast(vendor_security_id AS BIGINT) > 0 THEN '' ELSE symbol END
         """,
         [source],
     ).df()
@@ -551,9 +587,13 @@ def disambiguate_vendor_collisions(store: DuckDBStore, source: str = SOURCE_NAME
             )
         ]
         nonprimary["new_security_id"] = [
-            vendor_security_id(_collision_security_id_namespace(source), f"{vid}-{sk}")
-            for vid, sk in zip(
-                nonprimary["vendor_security_id"], nonprimary["symbol_key"], strict=True
+            vendor_security_id(
+                _collision_security_id_namespace(source),
+                str(vid) if positive_id else f"{vid}-{sk}",
+            )
+            for vid, sk, positive_id in zip(
+                nonprimary["vendor_security_id"], nonprimary["symbol_key"],
+                nonprimary["positive_vendor_id"], strict=True
             )
         ]
         mapping = nonprimary[
@@ -580,7 +620,6 @@ def disambiguate_vendor_collisions(store: DuckDBStore, source: str = SOURCE_NAME
                     WHERE b.source = ?
                       AND b.security_id = m.security_id
                       AND b.vendor_security_id = m.vendor_security_id
-                      AND b.symbol = m.symbol
                     """,
                     [source],
                 )
@@ -598,7 +637,6 @@ def disambiguate_vendor_collisions(store: DuckDBStore, source: str = SOURCE_NAME
                         WHERE r.source = ?
                           AND r.security_id = m.security_id
                           AND r.vendor_security_id = m.vendor_security_id
-                          AND COALESCE(r.today_ticker, r.ticker_tk) = m.symbol
                         """,
                         [source],
                     )
@@ -625,7 +663,7 @@ def disambiguate_vendor_collisions(store: DuckDBStore, source: str = SOURCE_NAME
                         as_of_date, available_at, source, run_id
                     )
                     SELECT new_security_id, ?, any_value(id_value), min(first_seen), NULL,
-                           min(first_seen), min(first_seen) + INTERVAL 22 HOUR, ?, NULL
+                           min(first_seen), NULL, ?, NULL
                     FROM vendor_collision_map m
                     WHERE NOT EXISTS (
                         SELECT 1 FROM security_identifier_history h
@@ -645,7 +683,7 @@ def disambiguate_vendor_collisions(store: DuckDBStore, source: str = SOURCE_NAME
                     )
                     SELECT new_security_id, any_value(symbol_key), NULL, NULL, 'USD',
                            min(first_seen), NULL, min(first_seen),
-                           min(first_seen) + INTERVAL 22 HOUR, ?, NULL
+                           NULL, ?, NULL
                     FROM vendor_collision_map m
                     WHERE NOT EXISTS (
                         SELECT 1 FROM exchange_listings e
@@ -658,10 +696,7 @@ def disambiguate_vendor_collisions(store: DuckDBStore, source: str = SOURCE_NAME
         finally:
             store.con.unregister("vendor_collision_map")
 
-    # Safety net: drop any residual exact (security_id, trade_date) duplicates
-    # (e.g. an identical line emitted twice in the source), keeping the
-    # higher-volume row. Distinct real lines now carry distinct ids, so this only
-    # removes redundant rows, never a real security.
+    # Preserve the raw source, but publish neither member of an ambiguous key.
     with store.transaction():
         con.execute(
             """
@@ -670,10 +705,7 @@ def disambiguate_vendor_collisions(store: DuckDBStore, source: str = SOURCE_NAME
               AND rowid IN (
                   SELECT rowid FROM (
                       SELECT rowid,
-                             row_number() OVER (
-                                 PARTITION BY security_id, trade_date
-                                 ORDER BY volume DESC NULLS LAST, vendor_security_id
-                             ) AS rn
+                             count(*) OVER (PARTITION BY security_id, trade_date) AS rn
                       FROM equity_daily_bars
                       WHERE source = ?
                   )
@@ -738,6 +770,7 @@ class TickerHistoryDataset(Dataset):
                 "max_chunks": effective_options.max_chunks,
                 "skip_chunks": effective_options.skip_chunks,
                 "price_projection_only": effective_options.price_projection_only,
+                **SOURCE_PROVENANCE,
             },
             compute_hash=effective_options.compute_source_hash,
         )
@@ -748,6 +781,8 @@ class TickerHistoryDataset(Dataset):
         matched_symbols: set[str] = set()
         min_trading_date: dt.date | None = None
         max_trading_date: dt.date | None = None
+        diagnostics = {"source_rows": 0, "quarantined_positive_key_rows": 0,
+                       "zero_or_missing_id_rows": 0, "invalid_adjusted_product_rows": 0}
         for raw_chunk in _iter_raw_chunks(effective_options):
             chunks_seen += 1
             filtered = _filter_chunk(raw_chunk, effective_options)
@@ -756,6 +791,18 @@ class TickerHistoryDataset(Dataset):
             chunks_with_matches += 1
             normalized = _normalize_chunk(filtered, effective_options)
             normalized = _apply_security_ids(store, normalized, effective_options)
+            diagnostics["source_rows"] += len(normalized)
+            duplicate = normalized.duplicated(["vendor_security_id", "trading_date"], keep=False)
+            diagnostics["quarantined_positive_key_rows"] += int(
+                (duplicate & normalized["vendor_security_id"].gt(0).fillna(False)).sum())
+            diagnostics["zero_or_missing_id_rows"] += int(
+                (~normalized["vendor_security_id"].gt(0).fillna(False)).sum())
+            with np.errstate(over="ignore", invalid="ignore"):
+                adjusted = normalized["close"] * normalized["cumul_return_factor"]
+            diagnostics["invalid_adjusted_product_rows"] += int((~(
+                np.isfinite(adjusted) & (adjusted > 0) & (normalized["close"] > 0)
+                & (normalized["cumul_return_factor"] > 0)
+            ).fillna(False)).sum())
             matched_symbols.update(
                 normalized["today_ticker"].fillna(normalized["ticker_tk"]).dropna().map(symbol_key).tolist()
             )
@@ -790,6 +837,8 @@ class TickerHistoryDataset(Dataset):
             "chunk_size": effective_options.chunk_size,
             "canonical_only": effective_options.price_projection_only,
             "vendor_collisions_rekeyed": rekeyed,
+            "source_diagnostics": diagnostics,
+            "provenance": SOURCE_PROVENANCE,
         }
         quality_check(
             store,
@@ -818,6 +867,10 @@ class TickerHistoryDataset(Dataset):
 
         store.con.register("equity_daily_bars_load", bars)
         registered = ["equity_daily_bars_load"]
+        selected_keys = frame[["vendor_security_id", "trading_date"]].copy()
+        selected_keys["symbol"] = frame["ticker_tk"].fillna(frame["today_ticker"]).map(symbol_key)
+        store.con.register("ticker_history_selected_keys", selected_keys.drop_duplicates())
+        registered.append("ticker_history_selected_keys")
         raw: pd.DataFrame | None = None
         if not options.price_projection_only:
             raw_columns = (
@@ -853,11 +906,14 @@ class TickerHistoryDataset(Dataset):
                 store.con.execute(
                     """
                     DELETE FROM equity_daily_bars AS dst
-                    USING equity_daily_bars_load AS src
-                    WHERE dst.source = src.source
-                      AND dst.security_id = src.security_id
-                      AND dst.trade_date = src.trade_date
-                    """
+                    USING ticker_history_selected_keys AS src
+                    WHERE dst.source = ?
+                      AND dst.trade_date = src.trading_date
+                      AND try_cast(dst.vendor_security_id AS BIGINT)
+                          IS NOT DISTINCT FROM src.vendor_security_id
+                      AND (src.vendor_security_id > 0 OR dst.symbol = src.symbol)
+                    """,
+                    [options.source],
                 )
                 insert_frame(store, bars, "equity_daily_bars", "equity_daily_bars_insert")
                 self._upsert_links(store, securities, identifiers, listings)

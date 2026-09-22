@@ -1,0 +1,126 @@
+{
+  "observed_at_utc": "2026-09-21T00:35:56.426524+00:00",
+  "read_only": true,
+  "run": "activation-companyfacts-archive4",
+  "duckdb_version": "1.5.5",
+  "activation": {
+    "columns": [
+      "stage",
+      "run_id",
+      "status",
+      "started_at",
+      "finished_at",
+      "rows",
+      "error"
+    ],
+    "rows": [
+      [
+        "companyfacts_load",
+        "activation-companyfacts-archive4",
+        "running",
+        "2026-09-20 23:04:15.584604",
+        null,
+        null,
+        null
+      ]
+    ]
+  },
+  "dataset": {
+    "columns": [
+      "run_id",
+      "dataset_id",
+      "status",
+      "started_at",
+      "finished_at",
+      "rows_loaded",
+      "error_message"
+    ],
+    "rows": [
+      [
+        "c7c21cd1-c7c4-4de8-af64-4f2877ef6f59",
+        "sec_company_facts",
+        "running",
+        "2026-09-20 23:04:15.595138",
+        null,
+        null,
+        null
+      ]
+    ]
+  },
+  "retained_totals": {
+    "columns": [
+      "facts",
+      "points",
+      "prices",
+      "custom_features"
+    ],
+    "rows": [
+      [
+        42052707,
+        42052707,
+        31959271,
+        31934514
+      ]
+    ]
+  },
+  "attempt_rows": {
+    "columns": [
+      "run_id",
+      "rows",
+      "ciks",
+      "first_cik",
+      "last_cik"
+    ],
+    "rows": [
+      [
+        "c7c21cd1-c7c4-4de8-af64-4f2877ef6f59",
+        7999850,
+        2042,
+        "0001034054",
+        "0001254699"
+      ]
+    ]
+  },
+  "source_outcomes": {
+    "columns": [
+      "status",
+      "members",
+      "reported_rows",
+      "first_cik",
+      "last_cik"
+    ],
+    "rows": [
+      [
+        "empty",
+        1010,
+        0,
+        "0000002110",
+        "0001253327"
+      ],
+      [
+        "loaded",
+        2042,
+        7999850,
+        "0001034054",
+        "0001254699"
+      ],
+      [
+        "unavailable",
+        34,
+        0,
+        "0000003521",
+        "0001221482"
+      ]
+    ]
+  },
+  "migrations": {
+    "columns": [
+      "version"
+    ],
+    "rows": [
+      [
+        "0316"
+      ]
+    ]
+  }
+}

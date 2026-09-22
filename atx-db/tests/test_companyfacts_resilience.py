@@ -163,6 +163,20 @@ def test_companyfacts_target_window_can_skip_already_loaded_ciks(tmp_store):
     assert [row[1] for row in second_unloaded] == ["0000000004"]
 
 
+def test_normalized_cik_aliases_deduplicate_before_limit(tmp_store):
+    from atx_db.fundamentals import resolve_companyfacts_targets
+
+    tmp_store.con.execute(
+        "INSERT INTO sec_company_tickers (cik,ticker,title,security_id) VALUES "
+        "('1','AAA','Alpha','ALPHA'), ('0000000001','AAA.A','Alpha','ALPHA-CLASS-A'), "
+        "('0000000002','BBB','Beta','BETA')"
+    )
+    targets = resolve_companyfacts_targets(
+        tmp_store, SecCompanyFactsOptions(symbol_source="symbols", symbols=("AAA", "AAA.A", "BBB"), symbol_limit=2)
+    )
+    assert [row[1] for row in targets] == ["0000000001", "0000000002"]
+
+
 def test_normalize_drops_non_us_gaap_taxonomies():
     """IFRS (ifrs-full) facts are dropped at load — only us-gaap/dei are kept — so
     they neither leave catalog concepts unmapped nor collide on canonical metric names."""
@@ -184,3 +198,18 @@ def test_normalize_drops_non_us_gaap_taxonomies():
     )
     assert set(facts["taxonomy"]) == {"us-gaap"}
     assert (facts["unit"] == "CLP").sum() == 0
+
+
+def test_catalog_facade_delegates_without_reading_all_facts(monkeypatch):
+    from atx_db.fundamentals import refresh_xbrl_concept_catalog
+
+    sentinel_store = object()  # Any direct SQL/DataFrame access in the facade fails.
+    calls = []
+
+    def bounded_refresh(store):
+        calls.append(store)
+        return 242
+
+    monkeypatch.setattr("atx_db.xbrl_catalog.refresh_concept_catalog", bounded_refresh)
+    assert refresh_xbrl_concept_catalog(sentinel_store) == 242
+    assert calls == [sentinel_store]

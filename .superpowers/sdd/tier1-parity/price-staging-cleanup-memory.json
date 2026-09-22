@@ -1,0 +1,15 @@
+{
+  "command": [
+    ".venv/Scripts/python.exe",
+    "../.superpowers/sdd/tier1-parity/clear_failed_price_staging.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 7.331813812255859,
+    "commit_free_gb": 11.184986114501953
+  },
+  "child_pid": 22584,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.11471939086914062
+}

@@ -168,3 +168,41 @@ def test_piotroski_definitions_and_dependencies_are_production_governed(tmp_stor
         "factor",
         "value_book_to_market",
     ) in edges
+
+
+def test_piotroski_issuance_handoff_chooses_latest_visible_source_before_ranking(tmp_store):
+    from atx_db.derived_factor_projection import PROJECTION_SOURCE_NAME
+    from atx_db.piotroski import (
+        BOOK_TO_MARKET_FACTOR_ID,
+        BOOK_TO_MARKET_SOURCE,
+        NET_ISSUANCE_FACTOR_ID,
+        NET_ISSUANCE_SOURCE,
+        load_piotroski_inputs,
+    )
+    from atx_db.warehouse import insert_frame
+    from tests.derived_retirement_fixtures import build_retirement_fact_tables
+
+    points = [p for p in build_retirement_fact_tables()["fundamental_statement_points"] if p["security_id"] == "RET000"]
+    insert_frame(tmp_store, pd.DataFrame(points), "fundamental_statement_points", "piotroski_handoff_points")
+    for day, projected_hour in ((28, 22), (27, 23)):
+        date = dt.date(2022, 2, day)
+        # At a shared timestamp the canonical projection outranks legacy data;
+        # a newer late revision must be filtered BEFORE row_number selection.
+        records = (
+            ("book", BOOK_TO_MARKET_FACTOR_ID, BOOK_TO_MARKET_SOURCE, 21, 0.5),
+            ("old", NET_ISSUANCE_FACTOR_ID, NET_ISSUANCE_SOURCE, 22, -0.05),
+            ("new", NET_ISSUANCE_FACTOR_ID, PROJECTION_SOURCE_NAME, projected_hour, 0.07),
+            ("late", NET_ISSUANCE_FACTOR_ID, PROJECTION_SOURCE_NAME, 23, 99.),
+        )
+        for suffix, factor, source, hour, raw in records:
+            tmp_store.con.execute(
+                "INSERT INTO fundamental_factor_values "
+                "(factor_value_id,factor_id,factor_name,family,security_id,symbol,as_of_date,raw_value,value,"
+                "available_at,input_ids_json,input_lineage_json,is_latest_revision,source) "
+                "VALUES (?,?,?,'test','RET000','RET000',?,?,0,?,'[]','{}',true,?)",
+                [f"{day}-{suffix}", factor, factor, date, raw, dt.datetime.combine(date, dt.time(hour)), source],
+            )
+    rows = load_piotroski_inputs(tmp_store, PiotroskiOptions(start_date=dt.date(2022, 2, 27), end_date=dt.date(2022, 2, 28)))
+    assert rows.net_issuance_factor_value_id.tolist() == ["27-old", "28-new"]
+    assert rows.low_net_issuance.tolist() == [-0.05, 0.07]
+    assert set(rows.decision_available_at.dt.hour) == {22}

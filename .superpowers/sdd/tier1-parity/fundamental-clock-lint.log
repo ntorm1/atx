@@ -1,0 +1,132 @@
+{
+  "summary": [
+    {
+      "path": "src/atx_db/_fundamental_clock.py",
+      "baseline": 0,
+      "current": 1,
+      "added": 1
+    },
+    {
+      "path": "src/atx_db/fundamentals.py",
+      "baseline": 0,
+      "current": 0,
+      "added": 0
+    },
+    {
+      "path": "src/atx_db/asof/fundamentals.py",
+      "baseline": 4,
+      "current": 4,
+      "added": 0
+    },
+    {
+      "path": "src/atx_db/features.py",
+      "baseline": 10,
+      "current": 10,
+      "added": 0
+    },
+    {
+      "path": "src/atx_db/quality/checks_market_reference.py",
+      "baseline": 0,
+      "current": 0,
+      "added": 0
+    },
+    {
+      "path": "src/atx_db/activation.py",
+      "baseline": 0,
+      "current": 0,
+      "added": 0
+    },
+    {
+      "path": "src/atx_db/fundamental_xbrl_metrics.py",
+      "baseline": 0,
+      "current": 0,
+      "added": 0
+    },
+    {
+      "path": "src/atx_db/expected_growth.py",
+      "baseline": 0,
+      "current": 0,
+      "added": 0
+    },
+    {
+      "path": "src/atx_db/estimates/measure_actuals.py",
+      "baseline": 28,
+      "current": 28,
+      "added": 0
+    },
+    {
+      "path": "src/atx_db/estimates/__init__.py",
+      "baseline": 138,
+      "current": 138,
+      "added": 0
+    },
+    {
+      "path": "src/atx_db/migrations/bodies_0319.py",
+      "baseline": 0,
+      "current": 0,
+      "added": 0
+    },
+    {
+      "path": "src/atx_db/migrations/registry.py",
+      "baseline": 0,
+      "current": 0,
+      "added": 0
+    },
+    {
+      "path": "src/atx_db/migrations/__init__.py",
+      "baseline": 0,
+      "current": 0,
+      "added": 0
+    },
+    {
+      "path": "tests/test_fundamental_clock.py",
+      "baseline": 0,
+      "current": 0,
+      "added": 0
+    },
+    {
+      "path": "scripts/generate_data_dictionary.py",
+      "baseline": 0,
+      "current": 0,
+      "added": 0
+    }
+  ],
+  "new_findings": [
+    {
+      "path": "src/atx_db/_fundamental_clock.py",
+      "cell": null,
+      "code": "I001",
+      "end_location": {
+        "column": 35,
+        "row": 8
+      },
+      "filename": "C:\\atx\\atx-db\\src\\atx_db\\_fundamental_clock.py",
+      "fix": {
+        "applicability": "safe",
+        "edits": [
+          {
+            "content": "from __future__ import annotations\r\n\r\n",
+            "end_location": {
+              "column": 1,
+              "row": 11
+            },
+            "location": {
+              "column": 1,
+              "row": 8
+            }
+          }
+        ],
+        "message": "Organize imports"
+      },
+      "location": {
+        "column": 1,
+        "row": 8
+      },
+      "message": "Import block is un-sorted or un-formatted",
+      "name": "unsorted-imports",
+      "noqa_row": 8,
+      "severity": "error",
+      "url": "https://docs.astral.sh/ruff/rules/unsorted-imports"
+    }
+  ]
+}

@@ -52,6 +52,7 @@ def _normalized_fixture() -> pd.DataFrame:
             "volume": pd.array([1000, 2000], dtype="Int64"),
             "shares": pd.array([1000, 2000], dtype="Int64"),
             "return_factor": [1.0, 1.0],
+            "cumul_return_factor": [1.0, 1.0],
         }
     )
     return frame
@@ -86,6 +87,7 @@ def test_price_projection_normalization_does_not_expand_vendor_width() -> None:
             "volume": ["1000"],
             "shares": ["1000000"],
             "returnFactor": ["1"],
+            "cumulReturnFactor": ["1"],
         }
     )
 
@@ -106,6 +108,7 @@ def test_price_projection_normalization_does_not_expand_vendor_width() -> None:
         "volume",
         "shares",
         "return_factor",
+        "cumul_return_factor",
         "source",
         "run_id",
         "_symbol_for_mapping",
@@ -185,6 +188,7 @@ def test_canonical_bars_drops_invalid_ohlcv() -> None:
             "close_pr": [10.5, 9.5, 5.0, 10.5],
             "volume": pd.array([1000, 1000, 1000, -5], dtype="Int64"),
             "return_factor": [1.0, 1.0, 1.0, 1.0],
+            "cumul_return_factor": [1.0, 1.0, 1.0, 1.0],
         }
     )
     bars = _canonical_bars(frame, options)
@@ -236,17 +240,17 @@ def test_disambiguate_vendor_collisions_splits_recycled_tickers(tmp_store) -> No
     assert con.execute(
         "SELECT security_id FROM equity_daily_bars WHERE vendor_security_id = 111 LIMIT 1"
     ).fetchone()[0] == "SEC-CIK-X"
-    # Ghost (vendor 222) re-keyed to its per-line synthetic id (vendor + symbol).
+    # Ghost (vendor 222) re-keyed to its stable synthetic vendor id.
     assert con.execute(
         "SELECT security_id FROM equity_daily_bars WHERE vendor_security_id = 222 LIMIT 1"
-    ).fetchone()[0] == "TBLTICKERHISTORY-222-ET"
+    ).fetchone()[0] == "TBLTICKERHISTORY-222"
     # Clean security untouched.
     assert con.execute(
         "SELECT security_id FROM equity_daily_bars WHERE vendor_security_id = 999 LIMIT 1"
     ).fetchone()[0] == "SEC-CIK-Y"
     # First-class security row materialized for the new id.
     assert con.execute(
-        "SELECT COUNT(*) FROM securities WHERE security_id = 'TBLTICKERHISTORY-222-ET'"
+        "SELECT COUNT(*) FROM securities WHERE security_id = 'TBLTICKERHISTORY-222'"
     ).fetchone()[0] == 1
     # Idempotent: a second pass is a no-op.
     assert disambiguate_vendor_collisions(tmp_store) == 0
@@ -267,10 +271,10 @@ def _share_class_bars() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def test_disambiguate_splits_share_classes(tmp_store) -> None:
+def test_disambiguate_quarantines_ambiguous_positive_id_date(tmp_store) -> None:
     insert_frame(tmp_store, _share_class_bars(), "equity_daily_bars", "share_class_load")
     rekeyed = disambiguate_vendor_collisions(tmp_store)
-    assert rekeyed == 1  # LMCAV (fewer bars) re-keyed; LMCA keeps the id
+    assert rekeyed == 0  # No invented share-class identity from a conflicting positive ID.
     con = tmp_store.con
     assert con.execute(
         "SELECT COUNT(*) FROM (SELECT security_id, trade_date FROM equity_daily_bars "
@@ -278,7 +282,18 @@ def test_disambiguate_splits_share_classes(tmp_store) -> None:
     ).fetchone()[0] == 0
     assert con.execute(
         "SELECT DISTINCT security_id FROM equity_daily_bars WHERE symbol = 'LMCAV'"
-    ).fetchone()[0] == "TBLTICKERHISTORY-364255-LMCAV"
+    ).fetchall() == []
     assert con.execute(
         "SELECT DISTINCT security_id FROM equity_daily_bars WHERE symbol = 'LMCA'"
     ).fetchone()[0] == "TBLTICKERHISTORY-364255"
+
+
+def test_display_rename_keeps_vendor_identity(tmp_store) -> None:
+    frame = _normalized_fixture().iloc[[0, 0]].reset_index(drop=True)
+    frame["ticker_tk"] = ["OLD", "NEW"]
+    frame["trading_date"] = [dt.date(2025, 1, 2), dt.date(2025, 1, 3)]
+    bars = _canonical_bars(frame, TickerHistoryOptions(symbols=None))
+    insert_frame(tmp_store, bars, "equity_daily_bars", "rename_bars")
+    assert disambiguate_vendor_collisions(tmp_store) == 0
+    assert bars["symbol"].tolist() == ["OLD", "NEW"]
+    assert bars["security_id"].tolist() == ["SEC-A", "SEC-A"]

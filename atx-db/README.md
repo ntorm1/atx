@@ -22,6 +22,18 @@ python -m pytest tests/test_import.py tests/test_module_boundaries.py -q -n0
 Use focused test modules during development. Slow integration tests remain
 opt-in with `--run-slow`.
 
+### Reference documentation
+
+| Document | What it records |
+| --- | --- |
+| [Data dictionary](docs/DATA_DICTIONARY.md) | Generated item, derived-metric, market-panel, universe, delisting, API and release contracts. Regenerate with `python scripts/generate_data_dictionary.py`; CI checks for staleness. Registry breadth is not measured warehouse coverage. |
+| [Item coverage measurement](scripts/measure_item_coverage.py) | Produces `docs/ITEM_COVERAGE.md` with `--write-docs`. That report has not yet been published for the current rebuild; the historical top-3000 common-equity cohort and annual gate still require validation. |
+| [Fundamentals provider design](docs/FUNDAMENTALS_PROVIDER_DESIGN.md) | Architecture and dated measurements from earlier warehouse builds; use each measurement's stated date and scope. |
+| [Tier-1 parity design](../docs/superpowers/specs/2026-09-19-tier1-parity-design.md) | Target design contract. Implementation does not by itself establish measured coverage. |
+| [Production runbook](docs/PRODUCTION_RUNBOOK.md) | Current activation commands, evidence limitations, terminal-return policy and release procedure. |
+| [Fundamental clock policy](docs/FUNDAMENTAL_CLOCK_POLICY.md) | Conservative eligibility for date-only SEC facts, raw provenance boundaries and required downstream rebuilds. |
+| [Parity gap](docs/PARITY_GAP.md), [roadmap](docs/ROADMAP_PARITY.md), [handoff](docs/WAREHOUSE_PARITY_NEXT_AGENT_README.md), [tranche ledger](docs/WAREHOUSE_PARITY_TRANCHES.md) | Historical build records, with supersession banners. |
+
 ## Data safety
 
 All facts intended for research carry point-in-time availability and source
@@ -109,7 +121,7 @@ refreshes. Omit `--symbol` for the full warehouse; repeated filters are useful f
 slices and incremental recovery:
 
 ```powershell
-atx-db refresh-standardized-fundamentals --memory-limit 8GB --threads 4
+atx-db refresh-standardized-fundamentals --memory-limit 1GB --threads 1
 atx-db refresh-standardized-fundamentals --symbol AAPL --symbol MSFT
 atx-db refresh-fundamental-reconciliation
 atx-db refresh-filing-context-backfill-queue
@@ -250,15 +262,27 @@ and publish its complete canonical projection in one governed bulk operation:
 
 ```powershell
 tar -xf $HOME\Downloads\tbltickerhistory3_10y.zip -C data\staging\broad-bars
-atx-db publish-broad-bars --tsv-path data\staging\broad-bars\tbltickerhistory3_10y.txt
+atx-db publish-broad-bars --tsv-path data\staging\broad-bars\tbltickerhistory3_10y.txt --memory-limit 1GB --threads 1
 ```
 
-The bulk path reads only OHLCV, split factor, identifiers, and shares; validates
+For this local rebuild, run heavy refresh/publication commands through the
+[guarded launch procedure](docs/PRODUCTION_RUNBOOK.md#commands), with one heavy
+process tree at a time and at most 4 GiB aggregate commit. The 1 GB DuckDB setting
+does not limit pandas allocations. Preserve the archive, extracted TSV and sidecar.
+
+The bulk path reads OHLCV, cumulative adjustment factors, identifiers, and shares; validates
 at least 30 million clean rows, 10,000 securities, and 5,000 latest-date names;
-resolves recycled ticker/share-class collisions; and publishes the replacement
-transactionally. Canonical bars carry point-in-time `shares_outstanding` and
-`market_cap_usd`, so downstream capacity and 13F screens do not depend on the
-wide raw vendor table.
+quarantines all repeated positive vendor-ID/date keys; and publishes the replacement
+transactionally. Current `adjusted_close` is finite positive `close * cumulReturnFactor`;
+invalid factors yield NULL. Historical `ticker_tk` supplies display symbols without
+splitting stable vendor IDs across renames. Raw OHLC, volume and shares remain unchanged;
+`returnFactor` includes distributions and is not published as a split-only factor.
+Source diagnostics expose internal return disagreements, but do not certify economic
+adjustments, historical identity, or source vintages. Existing current-symbol/CIK links
+remain unverified and session-date + 22-hour availability is a modeled backfill; see the
+[current rebuild limitations](docs/PRODUCTION_RUNBOOK.md#current-rebuild-evidence-2026-09-20).
+Canonical bars expose `shares_outstanding` and `market_cap_usd`, but the archive's
+historical shares vintages remain unverified.
 
 `RESTATEMENT` amendments replace the prior information table. `ADD NEW
 HOLDINGS` amendments supplement it. The materialized amendment-rate z-score is

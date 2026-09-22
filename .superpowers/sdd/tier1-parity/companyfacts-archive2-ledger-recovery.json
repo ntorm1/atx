@@ -1,0 +1,22 @@
+{
+  "recovered_at_utc": "2026-09-20T19:53:40.159294+00:00",
+  "reason": "Operator stopped owned archive2 process at 2026-09-20T19:47:59.9452529Z after one recorded source failure and sustained repeated-scan cost, to prepare a faster retry. Not a memory guard stop. Source failure CIK0000003521.json is an exact two-byte empty JSON object. 987,977 committed attempt rows across 146 CIKs preserved; 19 empty outcomes and one error recorded. Counts are partial accepted rows, not net additions or full source coverage. finished_at is operator ledger recovery time. See companyfacts-archive2-stop-inspection.json.",
+  "activation": [
+    [
+      "companyfacts_load",
+      "activation-companyfacts-archive2",
+      "failed",
+      "2026-09-20 19:53:40.159294",
+      987977
+    ]
+  ],
+  "dataset": [
+    [
+      "c22823af-2c18-48c9-9fc3-3bba1ae58d8f",
+      "sec_company_facts",
+      "failed",
+      "2026-09-20 19:53:40.159294",
+      987977
+    ]
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "recovered_at_utc": "2026-09-21T22:27:11.401503+00:00",
+  "reason": "Memory guard terminated the owned archive6 job when host free physical memory fell to1.4619865GiB, below1.5GiB; free commit remained5.913353GiB. Guard receipt timestamp2026-09-21T22:23:30Z; session terminal and descendants absent. 699,244 committed attempt rows across235 newly processed CIKs retained; 1,128 empty and39 unavailable receipts, no source errors. 6,570 ancestor loaded receipts had been verified and reused. Counts include replacements, not net additions. finished_at records operator ledger recovery time. See companyfacts-archive6-stop-inspection.json.",
+  "activation": [
+    [
+      "companyfacts_load",
+      "activation-companyfacts-archive6",
+      "failed",
+      "2026-09-21 22:27:11.401503",
+      699244
+    ]
+  ],
+  "dataset": [
+    [
+      "7da8bd67-de3a-4fe6-a9bc-08a7a7d4cce7",
+      "sec_company_facts",
+      "failed",
+      "2026-09-21 22:27:11.401503",
+      699244
+    ]
+  ],
+  "committed": true,
+  "checkpoint": "passed"
+}

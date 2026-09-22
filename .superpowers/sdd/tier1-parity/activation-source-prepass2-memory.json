@@ -1,0 +1,37 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "scripts/warehouse_activate.py",
+    "--db-path",
+    "data/warehouse.duckdb",
+    "--as-of-date",
+    "2026-09-20",
+    "--only",
+    "submissions_load",
+    "--only",
+    "companyfacts_load",
+    "--submissions-batch-size",
+    "50",
+    "--companyfacts-symbol-source",
+    "archive_members",
+    "--companyfacts-replace-existing",
+    "--memory-limit",
+    "1GB",
+    "--threads",
+    "1",
+    "--backup-keep",
+    "100",
+    "--force",
+    "--run-id",
+    "activation-source-prepass2",
+    "--sec-user-agent",
+    "atx-db/0.1 atx-research@example.com"
+  ],
+  "job_limit_gb": 3.0,
+  "status": "stopped_low_headroom",
+  "headroom": {
+    "physical_free_gb": 1.0962448120117188,
+    "commit_free_gb": 2.9210281372070312
+  },
+  "child_pid": 14440
+}

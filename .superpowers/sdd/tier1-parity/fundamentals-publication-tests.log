@@ -1,0 +1,36 @@
+....................F...........................                         [100%]
+================================== FAILURES ===================================
+____ test_all_eight_sql_writers_cross_file_reopens_with_unchanged_payload _____
+
+tmp_store = <atx_db.connection.DuckDBStore object at 0x000001CCE0D58230>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001CCE0D5B410>
+
+    def test_all_eight_sql_writers_cross_file_reopens_with_unchanged_payload(tmp_store, monkeypatch):
+        _configure(tmp_store)
+        _seed_pipeline(tmp_store)
+        monkeypatch.setattr(publication, "_BATCH_ROWS", 2)
+        monkeypatch.setattr(publication, "_REOPEN_BATCHES", 1)
+        monkeypatch.setattr(publication, "_PREFIX_BOUNDARIES", ("40", "80"))
+        original_reopen = tmp_store.reopen
+        reopens = []
+    
+        def reopen():
+            original_reopen()
+            reopens.append(1)
+    
+        monkeypatch.setattr(tmp_store, "reopen", reopen)
+        result = _refresh_pipeline(tmp_store)
+        assert result.standardized.empty and result.exceptions.empty
+        assert result.standardized_row_count > 0
+        assert result.exception_row_count == 1
+        assert tmp_store.con.execute("SELECT ttm_value FROM fundamental_ttm_points WHERE is_latest_revision").fetchall() == [(1000.0,)]
+>       assert tmp_store.con.execute("SELECT ttm_value FROM fundamental_calendar_ttm WHERE is_latest_revision").fetchall() == [(1000.0,)]
+E       assert [(600.0,), (1...0,), (100.0,)] == [(1000.0,)]
+E         
+E         At index 0 diff: (600.0,) != (1000.0,)
+E         Left contains 3 more items, first extra item: (1000.0,)
+E         Use -v to get more diff
+
+tests\test_fundamental_publication.py:341: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_fundamental_publication.py::test_all_eight_sql_writers_cross_file_reopens_with_unchanged_payload

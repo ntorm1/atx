@@ -1,0 +1,25 @@
+{
+  "observed_at_utc": "2026-09-22T23:00:49.383488+00:00",
+  "actual_dataset_run_id": "ade90629-8e06-4186-9ea7-565cbd05e285",
+  "ledger_mutations": false,
+  "activation": [
+    [
+      "failed",
+      1753504,
+      "2026-09-22 22:52:07.512781"
+    ]
+  ],
+  "dataset": [
+    [
+      "failed",
+      1753504,
+      "2026-09-22 22:52:07.512781"
+    ]
+  ],
+  "retained_facts_points": [
+    47906807,
+    47906807
+  ],
+  "checkpoint": "passed",
+  "finished_at_utc": "2026-09-22T23:00:57.279024+00:00"
+}

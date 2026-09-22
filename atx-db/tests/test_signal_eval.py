@@ -145,10 +145,10 @@ def test_warehouse_forward_returns_are_split_adjusted_and_panel_scoped(tmp_store
     from atx_db.signal_eval import _derive_forward_returns_from_prices
 
     available_at = dt.datetime(2020, 1, 10, 22, 0)
-    for trade_date, close, split_factor in [
-        (dt.date(2020, 1, 2), 100.0, 1.0),
-        (dt.date(2020, 1, 3), 50.0, 0.5),
-        (dt.date(2020, 1, 6), 55.0, 1.0),
+    for trade_date, close, adjusted_close, split_factor in [
+        (dt.date(2020, 1, 2), 100.0, 50.0, None),
+        (dt.date(2020, 1, 3), 50.0, 50.0, 0.5),
+        (dt.date(2020, 1, 6), 55.0, 55.0, None),
     ]:
         tmp_store.con.execute(
             """
@@ -164,7 +164,7 @@ def test_warehouse_forward_returns_are_split_adjusted_and_panel_scoped(tmp_store
                 close,
                 close,
                 close,
-                close,
+                adjusted_close,
                 split_factor,
                 available_at,
                 available_at,

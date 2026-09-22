@@ -1,0 +1,11 @@
+{
+  "observed_at_utc": "2026-09-20T19:04:53.170947+00:00",
+  "source": "C:\\atx\\atx-db\\data\\cache\\submissions.zip",
+  "archive_bytes": 1564656199,
+  "scope": "ZIP directory only; no payload reads, DB access, row counts, completion or universe claims",
+  "members": 991042,
+  "main_cik_members": 985667,
+  "history_members": 5374,
+  "other_members": 1,
+  "declared_uncompressed_bytes": 5741005528
+}

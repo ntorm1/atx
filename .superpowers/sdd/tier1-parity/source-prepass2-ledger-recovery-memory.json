@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "C:/atx/.superpowers/sdd/tier1-parity/close_source_prepass2_interruption.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.546558380126953,
+    "commit_free_gb": 8.316963195800781
+  },
+  "child_pid": 15964,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.6583213806152344
+}

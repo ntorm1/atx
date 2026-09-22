@@ -1,0 +1,19 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "mypy",
+    "--strict",
+    "--follow-imports=silent",
+    "src/atx_db/fundamentals.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "failed",
+  "headroom": {
+    "physical_free_gb": 6.502693176269531,
+    "commit_free_gb": 9.717124938964844
+  },
+  "child_pid": 5572,
+  "returncode": 1,
+  "native_peak_job_memory_gb": 0.3388824462890625
+}

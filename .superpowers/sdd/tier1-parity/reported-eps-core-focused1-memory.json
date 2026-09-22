@@ -1,0 +1,19 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "-m",
+    "pytest",
+    "-n",
+    "0",
+    "tests/test_reported_eps_core.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "failed",
+  "headroom": {
+    "physical_free_gb": 7.914306640625,
+    "commit_free_gb": 9.844268798828125
+  },
+  "child_pid": 9536,
+  "returncode": 1,
+  "native_peak_job_memory_gb": 0.9288902282714844
+}

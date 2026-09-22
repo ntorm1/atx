@@ -39,6 +39,7 @@ class RecordSchema:
     basis_column: str | None = None
     supports_vintages: bool = True
     max_sync_rows: int = 50_000
+    coverage_item_columns: tuple[str, ...] = ()
 
     @property
     def field_names(self) -> tuple[str, ...]:
@@ -158,7 +159,7 @@ REPORTED_FUNDAMENTALS_SCHEMA = RecordSchema(
 FUNDAMENTALS_SCHEMA = RecordSchema(
     dataset="ATX.US.FUNDAMENTALS",
     code="standardized",
-    version="2.0.0",
+    version="3.0.0",
     title="Standardized US equity fundamentals",
     description=(
         "Comparable annual, quarterly, and TTM statement items with filing lineage and bitemporal revision visibility."
@@ -188,7 +189,7 @@ FUNDAMENTALS_SCHEMA = RecordSchema(
         FieldSpec("period_end", "period_end", "date", "Fiscal period end.", nullable=False),
         FieldSpec("fiscal_year", "fiscal_year", "int32", "Issuer fiscal year."),
         FieldSpec("fiscal_period", "fiscal_period", "string", "Issuer fiscal-period label."),
-        FieldSpec("value", "value", "float64", "Standardized value.", nullable=False),
+        FieldSpec("value", "value", "float64", "Standardized value; NULL is an explicit unavailable state."),
         FieldSpec("unit", "unit", "string", "As-reported measurement unit or currency unit."),
         FieldSpec("unit_type", "unit_type", "string", "Canonical unit family."),
         FieldSpec("accession_number", "source_accession", "string", "Source SEC accession number."),
@@ -608,6 +609,362 @@ DAILY_BARS_SCHEMA = RecordSchema(
 )
 
 
+DERIVED_METRICS_SCHEMA = RecordSchema(
+    dataset="ATX.US.FUNDAMENTALS",
+    code="derived-metrics",
+    version="2.1.0",
+    title="Point-in-time derived metrics",
+    description=(
+        "Ratios, per-share, growth, leverage, quality, investment and payout metrics computed "
+        "by one declarative engine from standardized history. Each row is a filing-event state, "
+        "including NULL invalidations. Rank states before filtering valid values. Legacy scopes "
+        "are marked incomplete; modeled filing availability does not certify observation-time vintages."
+    ),
+    source_table="derived_metric_values",
+    time_column="period_end",
+    natural_key=("revision_group_id",),
+    item_column="metric_code",
+    basis_column="metric_window",
+    fields=(
+        FieldSpec("security_id", "security_id", "string", "Stable ATX security identifier.", nullable=False),
+        FieldSpec("metric", "metric_code", "string", "Derived metric code.", nullable=False, filterable=True),
+        FieldSpec(
+            "window",
+            "metric_window",
+            "string",
+            "Metric window: q, ttm, annual, instant, avg2 or daily.",
+            nullable=False,
+            filterable=True,
+        ),
+        FieldSpec("period_end", "period_end", "date", "Fiscal period end.", nullable=False),
+        FieldSpec("value", "value", "float64", "Derived value; NULL for an invalid event state."),
+        FieldSpec("derived_value_id", "derived_value_id", "string", "Stable typed event-state identity.", nullable=False),
+        FieldSpec("value_status", "value_status", "string", "valid, zero_denominator, missing_input_or_domain, or nonfinite."),
+        FieldSpec("history_status", "history_status", "string", "event_reconstructed or incomplete legacy_latest_only."),
+        FieldSpec("value_origin", "value_origin", "string", "annual_fallback, annual_dependency, quarterly, instant, scalar, incomparable, unavailable, or legacy_unspecified."),
+        FieldSpec("fiscal_period_start", "fiscal_period_start", "date", "Selected current duration start; NULL for balance/scalar inputs or missing span evidence."),
+        FieldSpec("fiscal_period_end", "fiscal_period_end", "date", "Selected current operand endpoint, including an exact annual fallback endpoint."),
+        FieldSpec("revision_group_id", "revision_group_id", "string", "Source/security/metric/window/bucket/definition identity."),
+        FieldSpec("revision_sequence", "revision_sequence", "int64", "Event order within the revision group."),
+        FieldSpec("revision_count", "revision_count", "int64", "Number of retained group states."),
+        FieldSpec("valid_to", "valid_to", "timestamp", "Exclusive next state event; NULL for the last state."),
+        FieldSpec("target_bucket", "target_bucket", "int64", "Stable calendar quarter bucket identity."),
+        FieldSpec("definition_hash", "definition_hash", "string", "Fingerprint of formula and input contract."),
+        FieldSpec("arithmetic_available_at", "arithmetic_available_at", "timestamp", "Arithmetic input clock; transition available_at may be later."),
+        FieldSpec(
+            "inputs_hash",
+            "inputs_hash",
+            "string",
+            "SHA-256 over ordered typed frame lineage with actual selected input states, values and clocks.",
+            nullable=False,
+        ),
+        FieldSpec("source", "source", "string", "ATX engine identifier.", nullable=False),
+        FieldSpec("as_of_date", "as_of_date", "date", "Date of the modeled state transition."),
+        FieldSpec("available_at", "available_at", "timestamp", "Modeled filing-event transition time, including invalidation and control flow."),
+        FieldSpec("source_loaded_at", "source_loaded_at", "timestamp", "Warehouse reconstruction time; not historical delivery evidence."),
+        FieldSpec("run_id", "run_id", "string", "Lineage identifier for the producing run."),
+    ),
+)
+
+
+_MARKET_DAILY_METRICS: Final[tuple[tuple[str, str, str | None], ...]] = (
+    ("market_cap", "Price times point-in-time shares outstanding.", "USD"),
+    ("enterprise_value", "Market cap plus debt, preferred and minority less cash.", "USD"),
+    ("pe_ttm", "Price to trailing earnings available to common.", None),
+    ("pb", "Price to common book value.", None),
+    ("ps_ttm", "Price to trailing revenue.", None),
+    ("pcf_ttm", "Price to trailing operating cash flow.", None),
+    ("ev_ebitda", "Enterprise value to trailing EBITDA.", None),
+    ("ev_sales", "Enterprise value to trailing revenue.", None),
+    ("fcf_yield", "Trailing free cash flow over market cap.", None),
+    ("dividend_yield", "Trailing common dividends over market cap.", None),
+    ("earnings_yield", "Trailing earnings available to common over market cap.", None),
+    ("shareholder_yield", "Net payout plus net debt paydown over market cap.", None),
+    ("net_payout_yield", "Dividends plus net buybacks over market cap.", None),
+    ("total_payout_yield", "Gross dividends plus gross buybacks over market cap.", None),
+    ("buyback_yield", "Net buybacks over market cap.", None),
+    ("book_to_market", "Common book value over market cap.", None),
+    ("rd_to_market_equity", "Trailing R&D expense over market cap.", None),
+    ("gross_profit_to_ev", "Trailing gross profit over enterprise value.", None),
+    ("cfo_to_ev", "Trailing operating cash flow over enterprise value.", None),
+    ("ebit_to_ev", "Trailing operating income over enterprise value.", None),
+    ("sales_to_ev", "Trailing revenue over enterprise value.", None),
+    ("altman_z", "Altman Z-score with market equity.", None),
+    ("total_return_1m", "Twenty-one-trading-day total return.", None),
+    ("total_return_3m", "Sixty-three-trading-day total return.", None),
+    ("total_return_6m", "One-hundred-twenty-six-trading-day total return.", None),
+    ("total_return_12m", "Two-hundred-fifty-two-trading-day total return.", None),
+    ("momentum_12_1", "Twelve-month total return skipping the last month.", None),
+    ("realized_vol_60d", "Annualized sixty-day realized volatility.", None),
+    ("realized_vol_252d", "Annualized two-hundred-fifty-two-day realized volatility.", None),
+    ("dollar_volume_20d", "Twenty-day average daily dollar volume.", "USD"),
+)
+
+
+MARKET_DAILY_SCHEMA = RecordSchema(
+    dataset="ATX.US.EQUITIES",
+    code="market-daily-1d",
+    version="1.1.0",
+    title="Daily market and valuation panel",
+    description=(
+        "Daily prices, point-in-time shares, market cap, enterprise value, valuation multiples, "
+        "total returns, momentum and realized volatility. Rebuilds select historical raw, DEI and "
+        "derived states, retaining invalidations and newest-visible-period precedence; the 22:00 "
+        "bar cutoff is modeled availability and does not certify historical vendor vintages."
+    ),
+    coverage_item_columns=tuple(name for name, _, _ in _MARKET_DAILY_METRICS),
+    source_table="market_daily_metrics",
+    time_column="trade_date",
+    natural_key=("security_id", "trade_date"),
+    supports_vintages=False,
+    fields=(
+        FieldSpec("security_id", "security_id", "string", "Stable ATX security identifier.", nullable=False),
+        FieldSpec("symbol", "symbol", "string", "Ticker for the observation."),
+        FieldSpec("trade_date", "trade_date", "date", "Exchange trading date.", nullable=False),
+        FieldSpec("close", "close", "float64", "Unadjusted closing price.", "USD"),
+        FieldSpec("adj_close", "adj_close", "float64", "Corporate-action adjusted close.", "USD"),
+        FieldSpec("volume", "volume", "int64", "Share volume.", "shares"),
+        FieldSpec("shares_outstanding", "shares_outstanding", "float64", "Point-in-time shares.", "shares"),
+        FieldSpec("shares_source", "shares_source", "string", "dei or archive.", filterable=True),
+        FieldSpec(
+            "shares_reconciliation_ratio",
+            "shares_reconciliation_ratio",
+            "float64",
+            "dei shares divided by archive shares on the same date.",
+        ),
+        *(
+            FieldSpec(name, name, "float64", description, unit)
+            for name, description, unit in _MARKET_DAILY_METRICS
+        ),
+        FieldSpec(
+            "fundamental_available_at",
+            "fundamental_available_at",
+            "timestamp",
+            "Max availability of the fundamentals joined into this row.",
+        ),
+        FieldSpec(
+            "inputs_hash",
+            "inputs_hash",
+            "string",
+            "SHA-256 over the price, share and fundamental-availability inputs.",
+            nullable=False,
+        ),
+        FieldSpec("source", "source", "string", "ATX engine identifier.", nullable=False),
+        *_PIT_FIELDS,
+    ),
+)
+
+
+SECURITY_MASTER_SCHEMA = RecordSchema(
+    dataset="ATX.US.FUNDAMENTALS",
+    code="security-master",
+    version="1.0.0",
+    title="US equity security master",
+    description=(
+        "Current-state security spine with its open CIK, LEI and FIGI identifiers. "
+        "CUSIP is internal-only by policy and is never part of this contract."
+    ),
+    source_table="v_security_master_public",
+    time_column="as_of_date",
+    natural_key=("security_id",),
+    supports_vintages=False,
+    fields=(
+        FieldSpec("security_id", "security_id", "string", "Stable ATX security identifier.", nullable=False),
+        FieldSpec("entity_id", "entity_id", "string", "Issuing entity key; 'CIK-<cik>' for SEC filers."),
+        FieldSpec("issuer_id", "issuer_id", "string", "Issuer grouping key."),
+        FieldSpec("primary_symbol", "primary_symbol", "string", "Current primary ticker."),
+        FieldSpec("name", "name", "string", "Security name."),
+        FieldSpec("asset_class", "asset_class", "string", "ATX asset class.", nullable=False),
+        FieldSpec("country", "country", "string", "Country of listing.", nullable=False),
+        FieldSpec("currency", "currency", "string", "Trading currency.", nullable=False),
+        FieldSpec("active", "active", "boolean", "Whether the listing is currently active.", nullable=False),
+        FieldSpec("cik", "cik", "string", "SEC Central Index Key.", filterable=True),
+        FieldSpec("lei", "lei", "string", "Legal Entity Identifier (GLEIF).", filterable=True),
+        FieldSpec("figi", "figi", "string", "Financial Instrument Global Identifier (OpenFIGI).", filterable=True),
+        *_PIT_FIELDS,
+    ),
+)
+
+
+UNIVERSE_SCHEMA = RecordSchema(
+    dataset="ATX.US.EQUITIES",
+    code="universe",
+    version="1.0.0",
+    title="US-listed equity universe membership",
+    description=(
+        "Interval-keyed point-in-time universe of US-listed common stock, ADRs, REITs and "
+        "LPs. Members with no resolved CIK are present with has_cik=false."
+    ),
+    source_table="universe_us_listed_membership",
+    time_column="valid_from",
+    natural_key=("universe_id", "security_id", "valid_from"),
+    fields=(
+        FieldSpec("universe_id", "universe_id", "string", "Universe identifier.", nullable=False, filterable=True),
+        FieldSpec("security_id", "security_id", "string", "Stable ATX security identifier.", nullable=False),
+        FieldSpec("symbol", "symbol", "string", "Ticker at the start of the interval."),
+        FieldSpec("valid_from", "valid_from", "date", "First session of the membership interval.", nullable=False),
+        FieldSpec("valid_to", "valid_to", "date", "Last session of the interval; null while open."),
+        FieldSpec("security_type", "security_type", "string", "common, ADR, REIT or LP.", nullable=False, filterable=True),
+        FieldSpec("exchange_code", "exchange_code", "string", "XNYS, XNAS, XASE, ARCX or BATS.", nullable=False, filterable=True),
+        FieldSpec("has_cik", "has_cik", "boolean", "Whether the security resolves to an SEC filer.", nullable=False, filterable=True),
+        FieldSpec("cik", "cik", "string", "SEC Central Index Key when resolved."),
+        FieldSpec("market_cap_decile", "market_cap_decile", "int32", "Market-cap decile AT valid_from only."),
+        FieldSpec("reason", "reason", "string", "member or member_no_cik.", nullable=False),
+        FieldSpec("decision_count", "decision_count", "int32", "Sessions backing the interval.", nullable=False),
+        *_PIT_FIELDS,
+    ),
+)
+
+
+DELISTINGS_SCHEMA = RecordSchema(
+    dataset="ATX.US.EQUITIES",
+    code="delistings",
+    version="1.0.0",
+    title="US equity delisting events",
+    description=(
+        "One delisting event per security and delist date, attributed to the "
+        "highest-precedence public evidence and carrying its terminal-return state."
+    ),
+    source_table="delisting_events",
+    time_column="delist_date",
+    # Unresolved securities retain their symbol as event identity.
+    natural_key=("source", "security_id", "symbol", "delist_date"),
+    fields=(
+        FieldSpec("security_id", "security_id", "string", "Stable ATX security identifier."),
+        FieldSpec("symbol", "symbol", "string", "Ticker at delisting.", nullable=False),
+        FieldSpec("delist_date", "delist_date", "date", "Date trading ceased.", nullable=False),
+        FieldSpec("delist_code", "delist_code", "string", "Warehouse delist code.", nullable=False, filterable=True),
+        FieldSpec("delist_reason", "delist_reason", "string", "Attributed reason category.", nullable=False, filterable=True),
+        FieldSpec("delisting_return", "delisting_return", "float64", "Terminal return when known.", "ratio"),
+        FieldSpec("delisting_return_type", "delisting_return_type", "string", "OBSERVED, POLICY or UNOBSERVED.", nullable=False),
+        FieldSpec("is_return_imputed", "is_return_imputed", "boolean", "Whether the terminal return is a policy convention.", nullable=False),
+        FieldSpec("return_policy", "return_policy", "string", "Policy code that produced the return.", nullable=False),
+        FieldSpec("evidence_source", "evidence_source", "string", "Evidence family.", nullable=False),
+        FieldSpec("evidence_confidence", "evidence_confidence", "string", "high, medium or low.", nullable=False),
+        FieldSpec("inferred_from_absence", "inferred_from_absence", "boolean", "Whether the event was inferred rather than filed.", nullable=False),
+        FieldSpec("source", "source", "string", "ATX source adapter.", nullable=False, filterable=True),
+        *_PIT_FIELDS,
+    ),
+)
+
+
+# These schemas expose source-issuer accounting content.  ``issuer_owner_id``
+# is a Company Facts partition key, never a claim about a tradable security or
+# the historical validity of a current ticker.
+_ISSUER_COMMON_FIELDS: Final[tuple[FieldSpec, ...]] = (
+    FieldSpec("issuer_owner_id", "security_id", "string", "Actual source-owner ID selected from visible rows.", nullable=False),
+    FieldSpec("cik", "cik", "string", "Normalized SEC CIK that selected this issuer content.", nullable=False),
+    FieldSpec("available_at", "available_at", "timestamp", "Selected financial-content availability timestamp."),
+    FieldSpec("as_of_date", "as_of_date", "date", "Source observation date."),
+    FieldSpec("source_loaded_at", "source_loaded_at", "timestamp", "Warehouse load timestamp."),
+)
+
+ISSUER_STATEMENTS_SCHEMA = RecordSchema(
+    dataset="ATX.US.ISSUER_CONTENT", code="statements", version="1.0.0",
+    title="Issuer-owned financial statements",
+    description="CIK-selected statement points. A source owner is not a historical market security.",
+    source_table="fundamental_statement_points", time_column="period_end", natural_key=("revision_group_id",),
+    item_column="canonical_metric", basis_column="fiscal_period",
+    fields=(
+        *_ISSUER_COMMON_FIELDS,
+        FieldSpec("item", "canonical_metric", "string", "Canonical statement item.", nullable=False, filterable=True),
+        FieldSpec("period_start", "period_start", "date", "Fiscal duration start."),
+        FieldSpec("period_end", "period_end", "date", "Fiscal period end.", nullable=False),
+        FieldSpec("value", "value", "float64", "Sign-normalized statement value."),
+        FieldSpec("unit", "unit", "string", "As-filed unit.", nullable=False),
+        FieldSpec("fact_revision_id", "fact_revision_id", "string", "Immutable raw fact-revision lineage.", nullable=False),
+        FieldSpec("accession_number", "accession_number", "string", "SEC accession lineage."),
+        FieldSpec("source_url", "source_url", "string", "Authoritative filing URL."),
+        FieldSpec("revision_group_id", "revision_group_id", "string", "Statement revision lineage."),
+    ),
+)
+
+ISSUER_STANDARDIZED_SCHEMA = RecordSchema(
+    dataset="ATX.US.ISSUER_CONTENT", code="standardized", version="1.0.0",
+    title="Issuer-owned standardized fundamentals", description="CIK-selected standardized accounting values with filing lineage.",
+    source_table="fundamental_standardized", time_column="period_end", natural_key=("security_id", "item_id", "basis", "period_end"),
+    item_column="canonical_code", basis_column="basis",
+    fields=(
+        *_ISSUER_COMMON_FIELDS,
+        FieldSpec("item", "canonical_code", "string", "Canonical item.", nullable=False, filterable=True),
+        FieldSpec("basis", "basis", "string", "Fiscal basis.", nullable=False, filterable=True),
+        FieldSpec("period_start", "period_start", "date", "Fiscal duration start."),
+        FieldSpec("period_end", "period_end", "date", "Fiscal period end.", nullable=False),
+        FieldSpec(
+            "value",
+            "value",
+            "float64",
+            "Standardized value; NULL retains a visible reported-EPS conflict state.",
+            nullable=True,
+        ),
+        FieldSpec("accession_number", "source_accession", "string", "SEC accession lineage."),
+        FieldSpec("rule_id", "rule_id", "string", "Standardization-rule lineage."),
+        FieldSpec("input_item_ids_json", "input_item_ids_json", "json", "Immutable standardized-input item lineage."),
+        FieldSpec("revision_group_id", "revision_group_id", "string", "Standardized revision lineage."),
+    ),
+)
+
+ISSUER_TTM_SCHEMA = RecordSchema(
+    dataset="ATX.US.ISSUER_CONTENT", code="ttm", version="1.0.0",
+    title="Issuer-owned trailing fundamentals", description="CIK-selected trailing values and their statement-point lineage.",
+    source_table="fundamental_ttm_points", time_column="ttm_end_date", natural_key=("ttm_revision_group_id",), item_column="canonical_metric",
+    fields=(
+        *_ISSUER_COMMON_FIELDS,
+        FieldSpec("item", "canonical_metric", "string", "Canonical item.", nullable=False, filterable=True),
+        FieldSpec("period_end", "ttm_end_date", "date", "Trailing-period end.", nullable=False),
+        FieldSpec("value", "ttm_value", "float64", "Trailing value."),
+        FieldSpec("input_statement_point_ids_json", "input_statement_point_ids_json", "json", "Statement-point lineage.", nullable=False),
+        FieldSpec("input_accessions_json", "input_accessions_json", "json", "SEC accession lineage.", nullable=False),
+        FieldSpec("input_period_ends_json", "input_period_ends_json", "json", "Input fiscal-period lineage.", nullable=False),
+        FieldSpec("ttm_revision_group_id", "ttm_revision_group_id", "string", "TTM revision lineage."),
+    ),
+)
+
+ISSUER_RATIOS_SCHEMA = RecordSchema(
+    dataset="ATX.US.ISSUER_CONTENT", code="ratios", version="1.0.0",
+    title="Issuer-owned accounting ratios", description="CIK-selected ratios; market valuation remains outside this issuer surface.",
+    source_table="fundamental_ratios", time_column="period_end", natural_key=("security_id", "ratio_code", "basis", "period_end"), item_column="ratio_code", basis_column="basis",
+    fields=(
+        *_ISSUER_COMMON_FIELDS,
+        FieldSpec("item", "ratio_code", "string", "Ratio code.", nullable=False, filterable=True),
+        FieldSpec("basis", "basis", "string", "Fiscal basis.", nullable=False, filterable=True),
+        FieldSpec("period_end", "period_end", "date", "Fiscal period end.", nullable=False),
+        FieldSpec("value", "value", "float64", "Ratio value."),
+        FieldSpec("input_codes_json", "input_codes_json", "json", "Formula input lineage."),
+    ),
+)
+
+ISSUER_SHARES_SCHEMA = RecordSchema(
+    dataset="ATX.US.ISSUER_CONTENT", code="shares", version="1.0.0",
+    title="Issuer-owned reported shares", description="CIK-selected reported share facts, not a qualified market-share association.",
+    source_table="shares_outstanding_history", time_column="effective_date",
+    natural_key=("security_id", "share_count_type", "effective_date", "accession_number"), item_column="share_count_type",
+    fields=(
+        *_ISSUER_COMMON_FIELDS,
+        FieldSpec("item", "share_count_type", "string", "Reported share-count type.", nullable=False, filterable=True),
+        FieldSpec("period_end", "effective_date", "date", "Share fact effective date.", nullable=False),
+        FieldSpec("value", "share_count", "float64", "Reported share count.", unit="shares"),
+        FieldSpec("accession_number", "accession_number", "string", "SEC accession lineage."),
+    ),
+)
+
+ISSUER_DERIVED_SCHEMA = RecordSchema(
+    dataset="ATX.US.ISSUER_CONTENT", code="derived-metrics", version="1.0.0",
+    title="Issuer-owned derived metrics", description="Derived accounting states selected by actual source owner; NULL unavailable states are retained.",
+    source_table="derived_metric_values", time_column="period_end", natural_key=("revision_group_id",), item_column="metric_code", basis_column="metric_window",
+    fields=(
+        *_ISSUER_COMMON_FIELDS,
+        FieldSpec("metric", "metric_code", "string", "Derived metric code.", nullable=False, filterable=True),
+        FieldSpec("window", "metric_window", "string", "Metric window.", nullable=False, filterable=True),
+        FieldSpec("period_end", "period_end", "date", "Fiscal period end.", nullable=False),
+        FieldSpec("value", "value", "float64", "Derived value; NULL retains unavailable state."),
+        FieldSpec("value_status", "value_status", "string", "Derived-state status."),
+        FieldSpec("inputs_hash", "inputs_hash", "string", "Selected standardized-input lineage fingerprint."),
+        FieldSpec("revision_group_id", "revision_group_id", "string", "Derived revision lineage."),
+    ),
+)
+
+
 DATASETS: Final[tuple[DatasetSpec, ...]] = (
     DatasetSpec(
         code="ATX.US.FUNDAMENTALS",
@@ -625,7 +982,16 @@ DATASETS: Final[tuple[DatasetSpec, ...]] = (
             FUNDAMENTAL_RECONCILIATION_SCHEMA,
             RATIOS_SCHEMA,
             RESTATEMENTS_SCHEMA,
+            DERIVED_METRICS_SCHEMA,
+            SECURITY_MASTER_SCHEMA,
         ),
+    ),
+    DatasetSpec(
+        code="ATX.US.ISSUER_CONTENT", version="1.0.0", title="ATX US Issuer Content",
+        description="CIK-owned accounting content with explicit current lookup and financial-content clocks.",
+        asset_class="issuer_content", region="US", entitlement="us_fundamentals", default_schema="statements",
+        schemas=(ISSUER_STATEMENTS_SCHEMA, ISSUER_STANDARDIZED_SCHEMA, ISSUER_TTM_SCHEMA, ISSUER_RATIOS_SCHEMA,
+                 ISSUER_SHARES_SCHEMA, ISSUER_DERIVED_SCHEMA),
     ),
     DatasetSpec(
         code="ATX.US.EQUITIES",
@@ -636,7 +1002,7 @@ DATASETS: Final[tuple[DatasetSpec, ...]] = (
         region="US",
         entitlement="us_equities_eod",
         default_schema="ohlcv-1d",
-        schemas=(DAILY_BARS_SCHEMA,),
+        schemas=(DAILY_BARS_SCHEMA, MARKET_DAILY_SCHEMA, UNIVERSE_SCHEMA, DELISTINGS_SCHEMA),
     ),
 )
 

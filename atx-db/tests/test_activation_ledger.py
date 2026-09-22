@@ -33,7 +33,18 @@ def test_stage_order_is_the_documented_dependency_order():
         "standardized",
         "industry_templates",
         "reconciliation",
+        "derived_metrics",
+        "market_daily",
+        "legacy_liquid_universe",
+        "factor_projections",
+        "delisting_evidence",
+        "universe_us_listed",
+        "delisting_terminal_returns",
+        "trading_calendar",
+        "survivorship_forward_returns",
+        "item_coverage",
         "provider_coverage",
+        "quality",
     )
 
 
@@ -69,9 +80,7 @@ def test_begin_then_finish_records_a_completed_stage(tmp_store):
     started = begin_stage(tmp_store, stage="migrate", run_id="run-1", params={"threads": 4})
     assert isinstance(started, dt.datetime)
     assert completed_stages(tmp_store) == set()
-    finish_stage(
-        tmp_store, stage="migrate", run_id="run-1", started_at=started, status="completed", rows=7
-    )
+    finish_stage(tmp_store, stage="migrate", run_id="run-1", started_at=started, status="completed", rows=7)
     assert completed_stages(tmp_store) == {"migrate"}
     row = tmp_store.con.execute(
         'SELECT status, "rows", params_json, error FROM activation_stage_runs '
@@ -92,9 +101,7 @@ def test_failed_stage_is_not_reported_completed_and_carries_the_error(tmp_store)
         error="boom",
     )
     assert completed_stages(tmp_store) == set()
-    row = tmp_store.con.execute(
-        "SELECT status, error FROM activation_stage_runs WHERE stage='periods'"
-    ).fetchone()
+    row = tmp_store.con.execute("SELECT status, error FROM activation_stage_runs WHERE stage='periods'").fetchone()
     assert row == ("failed", "boom")
 
 

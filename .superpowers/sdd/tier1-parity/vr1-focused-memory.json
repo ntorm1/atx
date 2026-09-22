@@ -1,0 +1,25 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "-n",
+    "0",
+    "-q",
+    "tests/test_companyfacts_archive_repair.py::test_verified_resume_uses_independent_bounded_recycling_and_preserves_owned_rows",
+    "tests/test_companyfacts_archive_repair.py::test_empty_replacement_is_tenth_raw_commit_before_next_target",
+    "tests/test_companyfacts_archive_repair.py::test_empty_replacement_alone_triggers_final_partial_reopen",
+    "tests/test_companyfacts_archive_repair.py::test_verified_candidate_reconciliation_failure_rolls_back_without_counting_work",
+    "tests/test_companyfacts_archive_repair.py::test_reopen_after_ten_commits_preserves_caps_and_leaves_no_relations",
+    "tests/test_companyfacts_archive_repair.py::test_resume_reopens_after_proof_before_candidate_recovery"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "failed",
+  "headroom": {
+    "physical_free_gb": 6.186759948730469,
+    "commit_free_gb": 9.465450286865234
+  },
+  "child_pid": 3436,
+  "returncode": 1,
+  "native_peak_job_memory_gb": 0.6984710693359375
+}

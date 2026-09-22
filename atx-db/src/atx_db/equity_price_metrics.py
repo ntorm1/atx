@@ -1,6 +1,6 @@
 """S14: derived daily price analytics (`equity_price_metrics`).
 
-The cached ``equity_daily_bars`` feed holds split/dividend-adjusted daily OHLCV. This
+The cached ``equity_daily_bars`` feed holds raw OHLCV and adjusted close. This
 module turns it into a typed, point-in-time analytics surface — one row per
 ``(security_id, trade_date)`` — with the canonical price features quant strategies
 condition on: adjusted daily and log returns, the overnight gap, trailing realized
@@ -24,12 +24,14 @@ No network.
 from __future__ import annotations
 
 import hashlib
+import datetime as dt
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
 from .asof import equity_price_metrics_asof  # noqa: F401  (re-exported for callers)
+from ._bulk_publication import publish_validated_shadow
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .warehouse import insert_frame, quality_check
@@ -82,24 +84,15 @@ class EquityPriceMetricsOptions:
     source: str = DEFAULT_SOURCE
     symbols: tuple[str, ...] | None = None
     run_id: str | None = None
+    # This is an operational eligibility cutoff, not a claim that the raw feed
+    # carries certified historical source vintages.  A backfill uses the bars
+    # known by the cutoff timestamp and recomputes their complete prior history.
+    as_of_date: dt.date | None = None
 
 
 def _metric_id(source: str, security_id: str, trade_date) -> str:
     payload = "|".join(str(p) for p in (source, security_id, trade_date))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _back_adjusted_close(close: pd.Series, split_factor: pd.Series) -> pd.Series:
-    """Split/dividend back-adjusted close: each day scaled by the product of all
-    *future* adjustment factors. This is computed from the bar's own ``split_factor``
-    (0.5 on a 2:1 split, ~0.997 on a dividend), NOT the feed's ``adjusted_close``
-    column — in the cached 2012-13 sample that column is an unadjusted lagged close and
-    leaves split jumps in, which would inflate returns/volatility. The cumulative-future
-    product makes the series continuous across splits so returns reflect real moves.
-    """
-    factor = pd.to_numeric(split_factor, errors="coerce").fillna(1.0)
-    rev_cumfac = factor[::-1].cumprod().shift(1).fillna(1.0)[::-1]
-    return close * rev_cumfac.to_numpy()
 
 
 def _derive_one_security(g: pd.DataFrame) -> pd.DataFrame:
@@ -108,14 +101,17 @@ def _derive_one_security(g: pd.DataFrame) -> pd.DataFrame:
     close = pd.to_numeric(g["close"], errors="coerce")
     open_ = pd.to_numeric(g.get("open"), errors="coerce")
     volume = pd.to_numeric(g["volume"], errors="coerce")
-    adj = _back_adjusted_close(close, g.get("split_factor", pd.Series(1.0, index=g.index)))
-    adj_open = _back_adjusted_close(open_, g.get("split_factor", pd.Series(1.0, index=g.index)))
+    adj = pd.to_numeric(g["adjusted_close"], errors="coerce")
+    adj = adj.where(np.isfinite(adj) & (adj > 0))
+    scale = adj / close.where(np.isfinite(close) & (close > 0))
+    adj_open = open_.where(np.isfinite(open_) & (open_ > 0)) * scale
+    adj_open = adj_open.where(np.isfinite(adj_open) & (adj_open > 0))
 
     g["close"] = close
     g["adjusted_close"] = adj
     g["volume"] = volume
     g["dollar_volume"] = close * volume
-    g["daily_return"] = adj.pct_change()
+    g["daily_return"] = adj.pct_change(fill_method=None)
     with np.errstate(divide="ignore", invalid="ignore"):
         g["log_return"] = np.log(adj / adj.shift(1))
     prev_adj = adj.shift(1)
@@ -149,6 +145,8 @@ def _derive_one_security(g: pd.DataFrame) -> pd.DataFrame:
     g["downside_deviation_60d"] = (
         np.sqrt((downside ** 2).rolling(DOWNSIDE_WINDOW, min_periods=DOWNSIDE_WINDOW).mean()) * np.sqrt(TRADING_DAYS)
     )
+    # The running peak consumes all preceding bars, including late revisions.
+    g["available_at"] = g["available_at"].cummax()
     return g
 
 
@@ -174,6 +172,7 @@ def _derive_market_relative_one_security(g: pd.DataFrame) -> pd.DataFrame:
     g["idiosyncratic_vol_60d"] = (
         np.sqrt(residual_var.clip(lower=0.0)) * np.sqrt(TRADING_DAYS)
     ).replace([np.inf, -np.inf], np.nan)
+    g["available_at"] = g["available_at"].cummax()
     return g
 
 
@@ -237,8 +236,8 @@ def compute_equity_price_metrics(
     out["available_at"] = pd.to_datetime(out["available_at"], errors="coerce")
     if "open" not in out.columns:
         out["open"] = np.nan
-    if "split_factor" not in out.columns:
-        out["split_factor"] = 1.0
+    if "adjusted_close" not in out.columns:
+        out["adjusted_close"] = np.nan
 
     derived = (
         out.groupby("security_id", group_keys=False)[out.columns.tolist()]
@@ -270,7 +269,7 @@ _LOAD_SQL = """
         b.trade_date,
         b.open,
         b.close,
-        b.split_factor,
+        b.adjusted_close,
         b.volume,
         b.available_at
     FROM equity_daily_bars b
@@ -279,9 +278,12 @@ _LOAD_SQL = """
 
 
 def load_price_inputs(store: DuckDBStore, options: EquityPriceMetricsOptions) -> pd.DataFrame:
+    """Load all symbols only for None; an explicit empty scope loads no rows."""
     symbols = tuple(s for s in (options.symbols or ()) if str(s).strip())
     registered = False
     symbol_pred = ""
+    if options.symbols is not None and not symbols:
+        symbol_pred = "WHERE FALSE"
     if symbols:
         store.con.register(
             "eqpm_symbol_filter",
@@ -297,16 +299,286 @@ def load_price_inputs(store: DuckDBStore, options: EquityPriceMetricsOptions) ->
             store.con.unregister("eqpm_symbol_filter")
 
 
+_REFRESH_SQL = """
+CREATE OR REPLACE TABLE equity_price_metrics_bulk_stage AS
+WITH inputs AS (
+    SELECT b.security_id, b.symbol, b.trade_date, b.open, b.close,
+           b.adjusted_close, b.volume, b.available_at
+    FROM equity_daily_bars b
+    WHERE (? IS NULL OR b.trade_date <= ?)
+      AND (? IS NULL OR b.available_at <= ?)
+      AND ({symbol_pred})
+), normalized AS (
+    SELECT *,
+        CASE WHEN isfinite(adjusted_close) AND adjusted_close > 0
+             THEN adjusted_close END AS adj,
+        CASE WHEN isfinite(close) THEN close END AS numeric_close,
+        CASE WHEN isfinite(open) THEN open END AS numeric_open,
+        CASE WHEN isfinite(volume) THEN volume END AS numeric_volume
+    FROM inputs
+), lagged AS (
+    SELECT *,
+        lag(adj) OVER security_window AS prior_adj,
+        max(available_at) OVER security_window AS security_available_at,
+        max(adj) OVER security_window AS running_high
+    FROM normalized
+    WINDOW security_window AS (
+        PARTITION BY security_id ORDER BY trade_date
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    )
+), returns AS (
+    SELECT *,
+        numeric_close * numeric_volume AS dollar_volume,
+        CASE WHEN adj IS NOT NULL AND prior_adj IS NOT NULL AND prior_adj > 0
+             THEN adj / prior_adj - 1.0 END AS daily_return,
+        CASE WHEN adj IS NOT NULL AND prior_adj IS NOT NULL AND prior_adj > 0
+             THEN ln(adj / prior_adj) END AS log_return,
+        CASE WHEN numeric_open > 0 AND numeric_close > 0 AND prior_adj > 0
+                  AND adj IS NOT NULL
+             THEN (numeric_open * adj / numeric_close) / prior_adj - 1.0 END AS gap_return,
+        CASE WHEN running_high > 0 THEN adj / running_high - 1.0 END AS drawdown
+    FROM lagged
+), local_metrics AS (
+    SELECT *,
+        CASE WHEN count(daily_return) OVER trailing_20 = 20
+             THEN stddev_samp(daily_return) OVER trailing_20 * sqrt(252.0) END AS realized_vol_20d,
+        CASE WHEN count(daily_return) OVER trailing_60 = 60
+             THEN stddev_samp(daily_return) OVER trailing_60 * sqrt(252.0) END AS realized_vol_60d,
+        CASE WHEN lag(adj, 21) OVER security_order > 0 AND adj IS NOT NULL
+             THEN adj / lag(adj, 21) OVER security_order - 1.0 END AS momentum_21d,
+        CASE WHEN lag(adj, 126) OVER security_order > 0 AND adj IS NOT NULL
+             THEN adj / lag(adj, 126) OVER security_order - 1.0 END AS momentum_126d,
+        max(adj) OVER trailing_252 AS rolling_high_252,
+        CASE WHEN count(dollar_volume) OVER trailing_21 = 21
+             THEN avg(dollar_volume) OVER trailing_21 END AS avg_dollar_volume_21d,
+        CASE WHEN count(CASE WHEN dollar_volume > 0 THEN abs(daily_return) / dollar_volume END) OVER trailing_21 = 21
+             THEN avg(CASE WHEN dollar_volume > 0 THEN abs(daily_return) / dollar_volume END) OVER trailing_21 * 1000000000.0 END AS amihud_illiquidity_21d,
+        CASE WHEN count(drawdown) OVER trailing_126 = 126
+             THEN min(drawdown) OVER trailing_126 END AS max_drawdown_126d,
+        CASE WHEN count(daily_return) OVER trailing_60 = 60
+             THEN sqrt(avg(power(least(daily_return, 0.0), 2)) OVER trailing_60) * sqrt(252.0) END AS downside_deviation_60d
+    FROM returns
+    WINDOW
+        security_order AS (PARTITION BY security_id ORDER BY trade_date),
+        trailing_20 AS (PARTITION BY security_id ORDER BY trade_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW),
+        trailing_21 AS (PARTITION BY security_id ORDER BY trade_date ROWS BETWEEN 20 PRECEDING AND CURRENT ROW),
+        trailing_60 AS (PARTITION BY security_id ORDER BY trade_date ROWS BETWEEN 59 PRECEDING AND CURRENT ROW),
+        trailing_126 AS (PARTITION BY security_id ORDER BY trade_date ROWS BETWEEN 125 PRECEDING AND CURRENT ROW),
+        trailing_252 AS (PARTITION BY security_id ORDER BY trade_date ROWS BETWEEN 251 PRECEDING AND CURRENT ROW)
+), market AS (
+    SELECT trade_date, avg(daily_return) AS market_return_ew,
+           max(security_available_at) AS market_available_at
+    FROM local_metrics GROUP BY trade_date
+), market_joined AS (
+    SELECT l.*, m.market_return_ew,
+           max(greatest(l.security_available_at, m.market_available_at)) OVER (
+               PARTITION BY l.security_id ORDER BY l.trade_date
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+           ) AS metrics_available_at
+    FROM local_metrics l JOIN market m USING (trade_date)
+), risk AS (
+    SELECT *,
+        covar_samp(daily_return, market_return_ew) OVER trailing_60 AS covar,
+        var_samp(market_return_ew) OVER trailing_60 AS market_variance,
+        var_samp(daily_return) OVER trailing_60 AS return_variance,
+        stddev_samp(market_return_ew) OVER trailing_60 AS market_std,
+        stddev_samp(daily_return) OVER trailing_60 AS return_std,
+        count(daily_return) OVER trailing_60 AS risk_observations
+    FROM market_joined
+    WINDOW trailing_60 AS (PARTITION BY security_id ORDER BY trade_date ROWS BETWEEN 59 PRECEDING AND CURRENT ROW)
+), ranked AS (
+    SELECT *,
+        CASE WHEN risk_observations = 60 AND market_variance > 0 THEN covar / market_variance END AS beta_60d,
+        CASE WHEN risk_observations = 60 AND market_std > 0 AND return_std > 0
+             THEN greatest(-1.0, least(1.0, covar / (market_std * return_std))) END AS market_correlation_60d,
+        CASE WHEN risk_observations = 60 AND market_variance > 0
+             THEN sqrt(greatest(0.0, return_variance - covar * covar / market_variance)) * sqrt(252.0) END AS idiosyncratic_vol_60d
+    FROM risk
+), final_values AS (
+    SELECT *,
+        CASE WHEN daily_return IS NOT NULL THEN
+            (rank() OVER (PARTITION BY trade_date ORDER BY daily_return)
+             + (count(*) OVER (PARTITION BY trade_date, daily_return) - 1) / 2.0)
+             / count(daily_return) OVER (PARTITION BY trade_date) END AS daily_return_cs_pct_rank,
+        CASE WHEN momentum_21d IS NOT NULL THEN
+            (rank() OVER (PARTITION BY trade_date ORDER BY momentum_21d)
+             + (count(*) OVER (PARTITION BY trade_date, momentum_21d) - 1) / 2.0)
+             / count(momentum_21d) OVER (PARTITION BY trade_date) END AS momentum_21d_cs_pct_rank,
+        CASE WHEN realized_vol_20d IS NOT NULL THEN
+            (rank() OVER (PARTITION BY trade_date ORDER BY realized_vol_20d)
+             + (count(*) OVER (PARTITION BY trade_date, realized_vol_20d) - 1) / 2.0)
+             / count(realized_vol_20d) OVER (PARTITION BY trade_date) END AS realized_vol_20d_cs_pct_rank,
+        CASE WHEN dollar_volume IS NOT NULL THEN
+            (rank() OVER (PARTITION BY trade_date ORDER BY dollar_volume)
+             + (count(*) OVER (PARTITION BY trade_date, dollar_volume) - 1) / 2.0)
+             / count(dollar_volume) OVER (PARTITION BY trade_date) END AS dollar_volume_cs_pct_rank,
+        CASE WHEN amihud_illiquidity_21d IS NOT NULL THEN
+            (rank() OVER (PARTITION BY trade_date ORDER BY amihud_illiquidity_21d)
+             + (count(*) OVER (PARTITION BY trade_date, amihud_illiquidity_21d) - 1) / 2.0)
+             / count(amihud_illiquidity_21d) OVER (PARTITION BY trade_date) END AS amihud_illiquidity_21d_cs_pct_rank
+    FROM ranked
+)
+SELECT
+    sha256(concat_ws('|', ?, security_id, cast(trade_date AS VARCHAR))) AS metric_id,
+    ? AS source, security_id, symbol, trade_date, numeric_close AS close,
+    adj AS adjusted_close, numeric_volume AS volume, dollar_volume, daily_return,
+    log_return, gap_return, realized_vol_20d, realized_vol_60d, momentum_21d,
+    momentum_126d, CASE WHEN rolling_high_252 > 0 THEN adj / rolling_high_252 - 1.0 END AS pct_from_high_252d,
+    avg_dollar_volume_21d, amihud_illiquidity_21d, max_drawdown_126d,
+    downside_deviation_60d, market_return_ew, beta_60d, market_correlation_60d,
+    idiosyncratic_vol_60d, daily_return_cs_pct_rank, momentum_21d_cs_pct_rank,
+    realized_vol_20d_cs_pct_rank, dollar_volume_cs_pct_rank,
+    amihud_illiquidity_21d_cs_pct_rank, true AS is_latest_revision,
+    trade_date AS as_of_date, metrics_available_at AS available_at, ? AS run_id
+FROM final_values
+"""
+
+_BULK_SHADOW_TABLE = "equity_price_metrics_bulk_next"
+_BULK_STAGE_TABLE = "equity_price_metrics_bulk_stage"
+_PHYSICAL_PUBLICATION_COLUMN_NAMES = (
+    "metric_id", "source", "security_id", "symbol", "trade_date", "close",
+    "adjusted_close", "volume", "dollar_volume", "daily_return", "log_return",
+    "gap_return", "realized_vol_20d", "realized_vol_60d", "momentum_21d",
+    "momentum_126d", "pct_from_high_252d", "is_latest_revision", "as_of_date",
+    "available_at", "run_id", "avg_dollar_volume_21d", "amihud_illiquidity_21d",
+    "max_drawdown_126d", "downside_deviation_60d", "market_return_ew", "beta_60d",
+    "market_correlation_60d", "idiosyncratic_vol_60d", "daily_return_cs_pct_rank",
+    "momentum_21d_cs_pct_rank", "realized_vol_20d_cs_pct_rank",
+    "dollar_volume_cs_pct_rank", "amihud_illiquidity_21d_cs_pct_rank",
+)
+_PUBLICATION_COLUMNS = ", ".join(_PHYSICAL_PUBLICATION_COLUMN_NAMES)
+_PHYSICAL_COLUMN_NAMES = (
+    *_PHYSICAL_PUBLICATION_COLUMN_NAMES[:21],
+    "source_loaded_at", "updated_at",
+    *_PHYSICAL_PUBLICATION_COLUMN_NAMES[21:],
+)
+_PHYSICAL_COLUMNS = ", ".join(_PHYSICAL_COLUMN_NAMES)
+_STAGE_PHYSICAL_SELECT = ", ".join((
+    *_PHYSICAL_PUBLICATION_COLUMN_NAMES[:21],
+    "now() AS source_loaded_at", "now() AS updated_at",
+    *_PHYSICAL_PUBLICATION_COLUMN_NAMES[21:],
+))
+
+_BULK_SHADOW_DDL = f"""
+CREATE TABLE {_BULK_SHADOW_TABLE} (
+    metric_id VARCHAR PRIMARY KEY,
+    source VARCHAR NOT NULL,
+    security_id VARCHAR NOT NULL,
+    symbol VARCHAR,
+    trade_date DATE NOT NULL,
+    close DOUBLE,
+    adjusted_close DOUBLE,
+    volume BIGINT,
+    dollar_volume DOUBLE,
+    daily_return DOUBLE,
+    log_return DOUBLE,
+    gap_return DOUBLE,
+    realized_vol_20d DOUBLE,
+    realized_vol_60d DOUBLE,
+    momentum_21d DOUBLE,
+    momentum_126d DOUBLE,
+    pct_from_high_252d DOUBLE,
+    is_latest_revision BOOLEAN NOT NULL DEFAULT true,
+    as_of_date DATE NOT NULL,
+    available_at TIMESTAMP NOT NULL,
+    run_id VARCHAR,
+    source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP NOT NULL DEFAULT now(),
+    avg_dollar_volume_21d DOUBLE,
+    amihud_illiquidity_21d DOUBLE,
+    max_drawdown_126d DOUBLE,
+    downside_deviation_60d DOUBLE,
+    market_return_ew DOUBLE,
+    beta_60d DOUBLE,
+    market_correlation_60d DOUBLE,
+    idiosyncratic_vol_60d DOUBLE,
+    daily_return_cs_pct_rank DOUBLE,
+    momentum_21d_cs_pct_rank DOUBLE,
+    realized_vol_20d_cs_pct_rank DOUBLE,
+    dollar_volume_cs_pct_rank DOUBLE,
+    amihud_illiquidity_21d_cs_pct_rank DOUBLE
+)
+"""
+
+
+def _metric_id_prefix_bounds(prefix: int) -> tuple[str, str | None]:
+    """Contiguous SHA-256 key intervals; 256 small batches bound PK ART state."""
+    lower = f"{prefix:02x}"
+    return lower, None if prefix == 255 else f"{prefix + 1:02x}"
+
+
+def _build_publication_shadow(store: DuckDBStore, source: str) -> int:
+    """Build the PK-only publication shadow in ordered, independently committed chunks."""
+    store.con.execute(f"DROP TABLE IF EXISTS {_BULK_SHADOW_TABLE}")
+    store.con.execute(_BULK_SHADOW_DDL)
+    for prefix in range(256):
+        lower, upper = _metric_id_prefix_bounds(prefix)
+        upper_clause = "AND metric_id < ?" if upper is not None else ""
+        store.con.execute(f"""
+            INSERT INTO {_BULK_SHADOW_TABLE} ({_PHYSICAL_COLUMNS})
+            SELECT * FROM (
+                SELECT {_PHYSICAL_COLUMNS}
+                FROM equity_price_metrics
+                WHERE source <> ? AND metric_id >= ? {upper_clause}
+                UNION ALL
+                SELECT {_STAGE_PHYSICAL_SELECT}
+                FROM {_BULK_STAGE_TABLE}
+                WHERE metric_id >= ? {upper_clause}
+            ) ordered_rows
+            ORDER BY metric_id
+        """, [source, lower, *(() if upper is None else (upper,)), lower,
+               *(() if upper is None else (upper,))])
+        if prefix % 16 == 15 and prefix != 255:
+            store.close()
+            store.reopen()
+    row = store.con.execute(f"SELECT count(*) FROM {_BULK_SHADOW_TABLE}").fetchone()
+    return 0 if row is None else int(row[0])
+
+
 def refresh_equity_price_metrics(store: DuckDBStore, options: EquityPriceMetricsOptions) -> int:
-    """Recompute and replace the price metric rows for ``options.source``."""
+    """Bounded SQL refresh with disk spill; never loads the bar universe into pandas.
+
+    A persistent stage and a PK-only shadow are built before the short atomic table
+    swap.  Hash-prefix inserts and checkpoint/reopen cycles bound primary-key index
+    work; a failed build leaves the preceding live table untouched.  Production
+    callers must keep DuckDB at one thread and 1GB.
+    """
     store.initialize()
-    inputs = load_price_inputs(store, options)
-    rows = compute_equity_price_metrics(inputs, source=options.source, run_id=options.run_id)
-    with store.transaction():
-        store.con.execute("DELETE FROM equity_price_metrics WHERE source = ?", [options.source])
-        if not rows.empty:
-            insert_frame(store, rows, "equity_price_metrics", "equity_price_metrics_insert")
-    return int(len(rows))
+    symbols = tuple(s for s in (options.symbols or ()) if str(s).strip())
+    registered = False
+    symbol_pred = "TRUE"
+    if options.symbols is not None and not symbols:
+        symbol_pred = "FALSE"
+    elif symbols:
+        store.con.register("eqpm_refresh_symbols", pd.DataFrame({"symbol": sorted({str(s).strip().upper() for s in symbols})}))
+        registered = True
+        symbol_pred = "b.symbol IN (SELECT symbol FROM eqpm_refresh_symbols)"
+    cutoff = options.as_of_date
+    cutoff_at = None if cutoff is None else dt.datetime.combine(cutoff, dt.time.max)
+    try:
+        store.con.execute(
+            _REFRESH_SQL.format(symbol_pred=symbol_pred),
+            [cutoff, cutoff, cutoff_at, cutoff_at, options.source, options.source, options.run_id],
+        )
+        row = store.con.execute(f"SELECT count(*) FROM {_BULK_STAGE_TABLE}").fetchone()
+        rows = 0 if row is None else int(row[0])
+        shadow_rows = _build_publication_shadow(store, options.source)
+        expected = store.con.execute("""
+            SELECT (SELECT count(*) FROM equity_price_metrics WHERE source <> ?)
+                 + (SELECT count(*) FROM equity_price_metrics_bulk_stage)
+        """, [options.source]).fetchone()
+        if expected is None or shadow_rows != int(expected[0]):
+            raise RuntimeError("equity price metrics shadow row count does not match publication inputs")
+        publish_validated_shadow(
+            store,
+            live_table="equity_price_metrics",
+            shadow_table=_BULK_SHADOW_TABLE,
+        )
+        store.con.execute(f"DROP TABLE {_BULK_STAGE_TABLE}")
+        return rows
+    finally:
+        if registered:
+            store.con.unregister("eqpm_refresh_symbols")
 
 
 class EquityPriceMetricsDataset(Dataset):

@@ -1,0 +1,21 @@
+{
+  "observed_at": "2026-09-20 17:05:55.349229+00:00",
+  "removed_table": "equity_daily_bars_bulk_next",
+  "staged_rows": 31959271,
+  "reason": "Inspected failed staging blocks catalog drift verification; rebuild from preserved audited source",
+  "current_schema_version": 312,
+  "registered_backups": [
+    [
+      "data\\warehouse.duckdb.pre-migrate.20260920-164311.bak",
+      6303264768,
+      "aa4427ded8f2f9b7582711ae3e014be71a28369c1e212b82c1ae8063c498e098"
+    ],
+    [
+      "data\\warehouse.duckdb.pre-migrate.20260920-111519.bak",
+      4172820480,
+      "ae0cb42b69bcd299367fd7db77f2007735bdee58d55822f6b71ea4a365db5da4"
+    ]
+  ],
+  "preserved_extra_backup": "warehouse.duckdb.pre-migrate.20260920-170328.bak",
+  "source_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae"
+}

@@ -1,0 +1,14 @@
+{
+  "observed_at_utc": "2026-09-21T00:50:22.238294+00:00",
+  "read_only": true,
+  "tables": {
+    "fundamental_xbrl_metric": 0,
+    "shares_outstanding_history": 0,
+    "est_actual": 0,
+    "fundamental_fact_revisions": 0,
+    "fundamental_statement_points": 0,
+    "fundamental_standardized": 0,
+    "derived_metrics": "not present",
+    "market_daily_metrics": 0
+  }
+}

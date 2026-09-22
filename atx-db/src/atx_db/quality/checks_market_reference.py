@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .._fundamental_clock import EFFECTIVE_FUNDAMENTAL_POINTS_SQL
 from ._check_common import DEFAULT_EXPORT_OBJECTS, _export_scan_internal_cusip_sql
 from ._types import SqlQualityCheck
 
@@ -150,7 +151,7 @@ def market_reference_check_specs(
             dataset_id="universe_membership",
             table_name="universe_membership",
             check_name="priced_fundamental_universe_decision_coverage",
-            sql="""
+            sql=f"""
                 WITH price_days AS (
                     SELECT
                         security_id,
@@ -168,7 +169,7 @@ def market_reference_check_specs(
                     FROM price_days p
                     WHERE EXISTS (
                         SELECT 1
-                        FROM fundamental_points f
+                        FROM {EFFECTIVE_FUNDAMENTAL_POINTS_SQL} f
                         WHERE f.security_id = p.security_id
                           AND f.period_end IS NOT NULL
                           AND f.period_end <= p.trade_date
@@ -199,7 +200,7 @@ def market_reference_check_specs(
             """,
             threshold=0.0,
             required_tables=("equity_daily_bars", "fundamental_points", "universe_membership"),
-            detail_sql="""
+            detail_sql=f"""
                 WITH price_days AS (
                     SELECT
                         security_id,
@@ -218,7 +219,7 @@ def market_reference_check_specs(
                     FROM price_days p
                     WHERE EXISTS (
                         SELECT 1
-                        FROM fundamental_points f
+                        FROM {EFFECTIVE_FUNDAMENTAL_POINTS_SQL} f
                         WHERE f.security_id = p.security_id
                           AND f.period_end IS NOT NULL
                           AND f.period_end <= p.trade_date

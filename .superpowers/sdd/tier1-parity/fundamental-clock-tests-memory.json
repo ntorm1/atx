@@ -1,0 +1,32 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "-n",
+    "0",
+    "-q",
+    "tests/test_fundamental_clock.py",
+    "tests/test_derived_pit_revisions.py::test_exact_amendment_dependency_export_daily_and_projection",
+    "tests/test_derived_pit_revisions.py::test_downstream_growth_rebuild_includes_changed_lagged_ttm",
+    "tests/test_derived_annual.py::test_annual_only_values_growth_api_and_daily",
+    "tests/test_derived_annual.py::test_precedence_switches_and_null_never_resurrects",
+    "tests/test_derived_annual.py::test_actual_standardizer_fy_minus_nine_month_precedence",
+    "tests/test_fundamental_publication.py::test_all_eight_sql_writers_cross_file_reopens_with_unchanged_payload",
+    "tests/test_fundamental_concept_dictionary.py::test_scoped_revision_and_statement_refresh_preserves_other_concepts",
+    "tests/test_fundamentals_spine_link.py::test_unresolved_archive_fact_cannot_join_current_sec_identity_or_bars",
+    "tests/test_fundamental_xbrl_metrics.py::TestCompanyFactsCandidatePath",
+    "tests/test_estimates.py::TestActualsMapping",
+    "tests/test_expected_growth.py",
+    "tests/test_shares_outstanding_history.py::test_shares_outstanding_asof_filters_by_availability_and_type"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.243122100830078,
+    "commit_free_gb": 6.4802703857421875
+  },
+  "child_pid": 7436,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.9267768859863281
+}

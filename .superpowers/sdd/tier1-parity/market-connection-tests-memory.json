@@ -1,0 +1,25 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "-n",
+    "0",
+    "-q",
+    "tests/test_market_connection_capacity.py",
+    "tests/test_market_daily.py",
+    "tests/test_derived_pit_revisions.py::test_exact_amendment_dependency_export_daily_and_projection",
+    "tests/test_derived_pit_revisions.py::test_daily_raw_and_dei_history_preserves_pre_amendment_state",
+    "tests/test_derived_annual.py::test_annual_only_values_growth_api_and_daily",
+    "tests/test_derived_annual.py::test_precedence_switches_and_null_never_resurrects"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.2544708251953125,
+    "commit_free_gb": 6.052482604980469
+  },
+  "child_pid": 19048,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.8347396850585938
+}

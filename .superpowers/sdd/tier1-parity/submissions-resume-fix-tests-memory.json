@@ -1,0 +1,22 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "-n",
+    "0",
+    "-q",
+    "tests/test_sec_submissions_resume.py",
+    "-k",
+    "scope_complete or resume_plan"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 7.895877838134766,
+    "commit_free_gb": 10.458072662353516
+  },
+  "child_pid": 15608,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.6513710021972656
+}

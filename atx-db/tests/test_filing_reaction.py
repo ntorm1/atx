@@ -37,6 +37,15 @@ def test_filing_reaction_orientation_and_event_semantics() -> None:
     assert "synthetic 22:00" in lineage["timestamp_limitation"]
 
 
+def test_filing_reaction_clock_includes_cohort_standardization_inputs() -> None:
+    inputs = pd.DataFrame([_row("A", .015), _row("B", -.01)])
+    late = dt.datetime(2025, 2, 3, 22)
+    inputs.loc[0, "decision_available_at"] = late
+    rows = compute_filing_reaction_rows(inputs, FilingReactionOptions(minimum_names_per_date=2))
+    assert len(rows) == 2
+    assert (rows["available_at"] == late).all()
+
+
 def test_filing_reaction_is_governed_by_migration(tmp_store) -> None:
     assert tmp_store.con.execute(
         "SELECT family,is_point_in_time_safe,source FROM factor_definition WHERE factor_id=?",

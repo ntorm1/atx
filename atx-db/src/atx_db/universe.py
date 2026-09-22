@@ -234,10 +234,53 @@ class GovernedUniverseMembershipDataset(Dataset):
         if options.min_history_days > options.lookback_days:
             raise ValueError("min_history_days cannot exceed lookback_days")
 
-        daily = self._daily_decisions(store, options)
-        intervals = compute_universe_membership_intervals(daily, options)
-        rows = self._replace_intervals(store, intervals, options)
-        members = int(intervals["is_member"].sum()) if not intervals.empty else 0
+        # Keep the full daily panel inside DuckDB. Only scalar diagnostics enter
+        # Python; the public pandas transform remains the small-input oracle.
+        try:
+            self._daily_decisions(store, options, stage=True)
+            store.con.execute(r"""
+                CREATE OR REPLACE TEMP TABLE _governed_intervals AS
+                WITH classified AS (
+                    SELECT *,
+                        upper(trim(coalesce(asset_class,''))) IN
+                            ('','EQUITY','COMMON','COMMON_STOCK','COMMON EQUITY')
+                        AND NOT regexp_matches(upper(coalesce(symbol,'') || ' ' || coalesce(security_name,'')),
+                            '\b(ADR|ADS|PREFERRED|PREFERENCE|PREF|WARRANT|RIGHT|UNIT|ETF|ETN|NOTE|BOND)\b') AS common,
+                        liquidity_snapshot_member OR
+                            (close>=? AND avg_dollar_volume>=? AND history_days>=?) AS liquid
+                    FROM _governed_daily
+                ), decisions AS (
+                    SELECT *, common AND is_active_listing AND liquid AS is_member,
+                        CASE WHEN NOT common THEN 'not_common_equity'
+                             WHEN NOT is_active_listing THEN 'inactive_listing'
+                             WHEN NOT liquid THEN 'liquidity_screen_fail' ELSE 'member' END AS reason
+                    FROM classified
+                ), changes AS (
+                    SELECT *, CASE WHEN row_number() OVER w=1
+                        OR is_member IS DISTINCT FROM lag(is_member) OVER w
+                        OR reason IS DISTINCT FROM lag(reason) OVER w
+                        OR symbol IS DISTINCT FROM lag(symbol) OVER w THEN 1 ELSE 0 END AS changed
+                    FROM decisions WINDOW w AS (PARTITION BY security_id ORDER BY as_of_date)
+                ), groups AS (
+                    SELECT *,sum(changed) OVER (PARTITION BY security_id ORDER BY as_of_date) AS grp FROM changes
+                )
+                SELECT ? AS universe_id,security_id,any_value(symbol) AS symbol,
+                    min(as_of_date) AS valid_from,max(as_of_date) AS valid_to,min(as_of_date) AS as_of_date,
+                    any_value(is_member) AS is_member,any_value(reason) AS reason,? AS rules_json,
+                    count(*) AS decision_count,arg_min(available_at,as_of_date) AS available_at,
+                    ? AS source,? AS run_id
+                FROM groups GROUP BY security_id,grp
+            """, [options.min_price, options.min_dollar_volume, options.min_history_days,
+                  options.universe_id, json_dumps(_rules(options)), options.source, options.run_id])
+            counts = store.con.execute(
+                "SELECT count(*),count(*) FILTER (WHERE is_member) FROM _governed_intervals"
+            ).fetchone()
+            assert counts is not None
+            rows, members = map(int, counts)
+            self._replace_intervals(store, _empty_output(), options, staged=True)
+        finally:
+            store.con.execute("DROP TABLE IF EXISTS _governed_daily")
+            store.con.execute("DROP TABLE IF EXISTS _governed_intervals")
         quality_check(
             store,
             dataset_id=self.dataset_id,
@@ -272,6 +315,8 @@ class GovernedUniverseMembershipDataset(Dataset):
         self,
         store: DuckDBStore,
         options: UniverseMembershipOptions,
+        *,
+        stage: bool = False,
     ) -> pd.DataFrame:
         lookback_preceding = options.lookback_days - 1
         filters = [
@@ -281,13 +326,15 @@ class GovernedUniverseMembershipDataset(Dataset):
             "b.close > 0",
             "b.volume IS NOT NULL",
             "b.volume >= 0",
+            "b.available_at IS NOT NULL",
+            "b.available_at <= b.trade_date + INTERVAL 22 HOUR",
         ]
         params: list[object] = []
         symbol_join = ""
         registered = False
         if options.symbols is not None:
             symbols = sorted({symbol_key(symbol) for symbol in options.symbols if symbol_key(symbol)})
-            store.con.register("governed_universe_symbol_filter", pd.DataFrame({"symbol": symbols}))
+            store.con.register("governed_universe_symbol_filter", pd.DataFrame({"symbol": pd.Series(symbols, dtype="string")}))
             registered = True
             symbol_join = "JOIN governed_universe_symbol_filter sf ON sf.symbol = b.symbol"
         if options.start_date is not None:
@@ -317,7 +364,10 @@ class GovernedUniverseMembershipDataset(Dataset):
                     b.trade_date AS as_of_date,
                     b.close,
                     b.close * b.volume AS dollar_volume,
-                    b.available_at,
+                    max(b.available_at) OVER (
+                        PARTITION BY b.security_id ORDER BY b.trade_date
+                        ROWS BETWEEN {lookback_preceding} PRECEDING AND CURRENT ROW
+                    ) AS available_at,
                     count(*) OVER (
                         PARTITION BY b.security_id
                         ORDER BY b.trade_date
@@ -328,7 +378,10 @@ class GovernedUniverseMembershipDataset(Dataset):
                         ORDER BY b.trade_date
                         ROWS BETWEEN {lookback_preceding} PRECEDING AND CURRENT ROW
                     ) AS avg_dollar_volume
-                FROM equity_daily_bars b
+                FROM (SELECT * FROM equity_daily_bars
+                      WHERE available_at <= trade_date + INTERVAL 22 HOUR
+                      QUALIFY row_number() OVER (PARTITION BY security_id,trade_date
+                          ORDER BY available_at DESC,source DESC,symbol DESC)=1) b
                 {symbol_join}
                 WHERE {" AND ".join(filters)}
             ),
@@ -337,6 +390,7 @@ class GovernedUniverseMembershipDataset(Dataset):
                     base.security_id,
                     base.as_of_date,
                     l.status AS listing_status,
+                    l.available_at AS listing_available_at,
                     row_number() OVER (
                         PARTITION BY base.security_id, base.as_of_date
                         ORDER BY l.available_at DESC NULLS LAST, l.valid_from DESC
@@ -346,7 +400,7 @@ class GovernedUniverseMembershipDataset(Dataset):
                   ON l.security_id = base.security_id
                  AND l.valid_from <= base.as_of_date
                  AND (l.valid_to IS NULL OR l.valid_to >= base.as_of_date)
-                 AND (l.available_at IS NULL OR l.available_at <= base.available_at)
+                 AND l.available_at <= base.as_of_date + INTERVAL 22 HOUR
             )
             SELECT
                 base.security_id,
@@ -355,7 +409,8 @@ class GovernedUniverseMembershipDataset(Dataset):
                 base.close,
                 base.avg_dollar_volume,
                 base.history_days,
-                base.available_at,
+                greatest(base.available_at,listing.listing_available_at,lm.available_at,
+                         s.source_loaded_at) AS available_at,
                 coalesce(s.asset_class, 'EQUITY') AS asset_class,
                 coalesce(s.name, base.symbol) AS security_name,
                 coalesce(s.active, true) AS active,
@@ -366,6 +421,7 @@ class GovernedUniverseMembershipDataset(Dataset):
                 lm.security_id IS NOT NULL AS liquidity_snapshot_member
             FROM base
             LEFT JOIN securities s ON s.security_id = base.security_id
+             AND s.source_loaded_at <= base.as_of_date + INTERVAL 22 HOUR
             LEFT JOIN listing
               ON listing.security_id = base.security_id
              AND listing.as_of_date = base.as_of_date
@@ -374,7 +430,7 @@ class GovernedUniverseMembershipDataset(Dataset):
               ON lm.universe_id = ?
              AND lm.security_id = base.security_id
              AND lm.as_of_date = base.as_of_date
-             AND (lm.available_at IS NULL OR lm.available_at <= base.available_at)
+             AND lm.available_at <= base.as_of_date + INTERVAL 22 HOUR
             {emit_filter}
             ORDER BY base.as_of_date, base.security_id
         """
@@ -382,6 +438,9 @@ class GovernedUniverseMembershipDataset(Dataset):
         if options.start_date is not None:
             exec_params.append(options.start_date)
         try:
+            if stage:
+                store.con.execute("CREATE OR REPLACE TEMP TABLE _governed_daily AS " + sql, exec_params)
+                return pd.DataFrame()
             return store.con.execute(sql, exec_params).df()
         finally:
             if registered:
@@ -392,6 +451,8 @@ class GovernedUniverseMembershipDataset(Dataset):
         store: DuckDBStore,
         frame: pd.DataFrame,
         options: UniverseMembershipOptions,
+        *,
+        staged: bool = False,
     ) -> int:
         with store.transaction():
             store.con.execute("DELETE FROM universes WHERE universe_id = ?", [options.universe_id])
@@ -412,6 +473,9 @@ class GovernedUniverseMembershipDataset(Dataset):
 
             predicates = ["universe_id = ?", "source = ?"]
             params: list[object] = [options.universe_id, options.source]
+            if options.symbols is not None:
+                predicates.append("symbol IN (SELECT unnest(?))")
+                params.append(sorted({symbol_key(symbol) for symbol in options.symbols if symbol_key(symbol)}))
             if options.start_date is not None:
                 predicates.append("coalesce(valid_to, valid_from) >= ?")
                 params.append(options.start_date)
@@ -422,6 +486,12 @@ class GovernedUniverseMembershipDataset(Dataset):
                 f"DELETE FROM universe_membership WHERE {' AND '.join(predicates)}",
                 params,
             )
+            if staged:
+                columns = ",".join(OUTPUT_COLUMNS)
+                store.con.execute(f"INSERT INTO universe_membership ({columns}) SELECT {columns} FROM _governed_intervals")
+                count = store.con.execute("SELECT count(*) FROM _governed_intervals").fetchone()
+                assert count is not None
+                return int(count[0])
             if frame.empty:
                 return 0
             insert_frame(store, frame, "universe_membership", "universe_membership_insert")

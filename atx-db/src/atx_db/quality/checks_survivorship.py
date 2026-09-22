@@ -3,10 +3,9 @@
 Two production checks over the survivorship-safe forward-return surface:
 
 * ``survivorship_forward_return_drops_delisted_names`` -- **critical, gate-ready**. Anti-joins
-  every observed/policy delisting terminal return against the panel's formation-date grid: a
-  delisted name whose ``delist_date`` falls inside a formation window that some surviving name
-  *was* evaluated over, but which carries no stitched ``forward_returns_survivorship_safe`` row,
-  is a survivorship drop. Threshold ``0.0`` / comparator ``le`` -> RED (halt) when > 0, GREEN at 0.
+  known terminal returns against their OWN formation bars and the input calendar/horizons.
+  Missing stitches fail even when the entire output is empty; output rows never define the
+  expected grid. Missing adjusted inputs also remain visible as missing stitches. Threshold ``0.0`` / comparator ``le`` -> RED (halt) when > 0, GREEN at 0.
 * ``delisting_code_reconciliation_unresolved`` -- **error**. Counts
   ``reconciliation_status = 'unmapped'`` rows only. A legitimate vendor/proxy ``'mismatch'`` is
   signal (surfaced in ``v_delisting_return_coverage``), never a failure.
@@ -32,42 +31,110 @@ from ._types import Comparator, QualityRegistryEntry, QualityResult, Severity, S
 
 SURVIVORSHIP_FORWARD_RETURN_CHECK_NAME = "survivorship_forward_return_drops_delisted_names"
 DELISTING_CODE_RECONCILIATION_CHECK_NAME = "delisting_code_reconciliation_unresolved"
+SURVIVORSHIP_TERMINAL_RETURN_COVERAGE_CHECK_NAME = "delisting_events_without_terminal_return"
 
 SURVIVORSHIP_DATASET_ID = "forward_returns_survivorship_safe"
 RECONCILIATION_DATASET_ID = "delisting_code_reconciliation"
 
-# Anti-join (S4-3 brief). CHECK == BUILD. The formation-window grid TUPLES are derived
-# security-INDEPENDENTLY -- a fully dropped name has zero rows of its own in
-# forward_returns_survivorship_safe, so the grid of windows that were actually evaluated (and the
-# build-consistent forward_end_date for each (as_of_date, horizon_days)) must come from the panel's
-# own rows. But the build (refresh_survivorship_safe_forward_returns -> the `formation` CTE) stitches
-# a delisting name ONLY at ITS OWN equity_daily_bars formation dates (close IS NOT NULL) crossed with
-# the horizons -- never at a formation date the name did not trade on. So the check demands a stitched
-# row for a (security, as_of, horizon) triple ONLY when the delisting name itself had a formation bar
-# on that as_of_date. The `JOIN equity_daily_bars b` below enforces exactly that build gate, which
-# eliminates the pre-delist-halt false positive (a name halted before delisting has no bar on a
-# surviving name's later formation as_of) while still catching genuine drops -- including fully-dropped
-# names, which have zero forward_returns_survivorship_safe rows but do have equity_daily_bars rows.
-_SURVIVORSHIP_SQL = """
-SELECT count(*)::DOUBLE
-FROM delisting_terminal_returns t
-JOIN (
-    SELECT DISTINCT as_of_date, horizon_days, forward_end_date
-    FROM forward_returns_survivorship_safe
-) panel
-  ON t.delist_date >  panel.as_of_date
- AND t.delist_date <= panel.forward_end_date
-JOIN equity_daily_bars b        -- gate to the delisting name's OWN formation bars (== the build)
-  ON b.security_id = t.security_id
- AND b.trade_date  = panel.as_of_date
- AND b.close IS NOT NULL
-LEFT JOIN forward_returns_survivorship_safe f
-  ON f.security_id  = t.security_id
- AND f.as_of_date   = panel.as_of_date
- AND f.horizon_days = panel.horizon_days
- AND f.is_stitched
-WHERE f.forward_return_id IS NULL   -- a delisted name in a formation window that was NOT stitched
-"""
+# Keep this leaf independent of signal_eval (which imports quality). The focused
+# contract test pins these horizons to signal_eval.IC_HORIZONS.
+_SURVIVORSHIP_HORIZONS = (1, 5, 10, 21, 63)
+_DEFAULT_FORWARD_SOURCE = "atx_forward_returns_survivorship_safe_v1"
+
+
+def _survivorship_sql(
+    *, source: str = _DEFAULT_FORWARD_SOURCE,
+    price_basis: str = "adjusted_close",
+    observation_cutoff: dt.datetime | None = None,
+) -> str:
+    """Expected stitches come from inputs, even when the output is wholly empty.
+
+    A positive raw formation bar with a missing/invalid adjusted price still demands
+    a stitch in production mode. The writer cannot compute it, so the gate reports
+    the missing adjusted input rather than passing over an empty eligible set.
+    Selected invalid terminal inputs fail once per event, even without a formation
+    window. Their revisions/events are selected before numeric validity is tested.
+    """
+    if price_basis not in {"adjusted_close", "close"}:
+        raise ValueError("price_basis must be adjusted_close or close")
+    cutoff = observation_cutoff
+    if cutoff is not None and cutoff.tzinfo is not None:
+        cutoff = cutoff.astimezone(dt.UTC).replace(tzinfo=None)
+    cutoff_sql = "NULL::TIMESTAMP" if cutoff is None else f"TIMESTAMP '{cutoff.isoformat()}'"
+    source_sql = "'" + source.replace("'", "''") + "'"
+    horizons = ", ".join(str(h) for h in _SURVIVORSHIP_HORIZONS)
+    return f"""
+    WITH revisions AS (
+        SELECT *, row_number() OVER (
+            PARTITION BY security_id, delist_date
+            ORDER BY available_at DESC, source_loaded_at DESC, terminal_return_id DESC
+        ) AS revision
+        FROM delisting_terminal_returns
+        WHERE ({cutoff_sql} IS NULL OR available_at <= {cutoff_sql})
+    ), terminals AS (
+        SELECT *, coalesce(isfinite(terminal_return) AND terminal_return >= -1, false)
+            AS terminal_valid
+        FROM revisions WHERE revision = 1
+        QUALIFY row_number() OVER (
+            PARTITION BY security_id ORDER BY delist_date, terminal_return_id
+        ) = 1
+    ), eligible_bars AS (
+        SELECT *, coalesce(available_at,
+            CAST(trade_date AS TIMESTAMP) + INTERVAL '22 hours') AS price_available_at
+        FROM equity_daily_bars
+        WHERE security_id IN (SELECT security_id FROM terminals)
+          AND ({cutoff_sql} IS NULL OR coalesce(available_at,
+              CAST(trade_date AS TIMESTAMP) + INTERVAL '22 hours') <= {cutoff_sql})
+    ), bars AS (
+        SELECT *, row_number() OVER (
+            PARTITION BY security_id, trade_date
+            ORDER BY price_available_at DESC, source ASC,
+                     vendor_security_id ASC NULLS LAST, symbol ASC,
+                     adjusted_close DESC NULLS LAST, close DESC NULLS LAST,
+                     source_loaded_at DESC
+        ) AS pick
+        FROM eligible_bars
+    ), cal AS (
+        SELECT trade_date, row_number() OVER (ORDER BY trade_date) AS session_number
+        FROM (
+            SELECT DISTINCT trade_date FROM trading_calendar
+            WHERE calendar_id = 'XNYS' AND source = 'equity_daily_bars calendar' AND is_open
+              AND ({cutoff_sql} IS NULL OR trade_date <= CAST({cutoff_sql} AS DATE))
+        )
+    ), horizons AS (SELECT unnest([{horizons}]) AS horizon_days), expected AS (
+        SELECT b.security_id, b.trade_date AS as_of_date, h.horizon_days,
+               ending.trade_date AS forward_end_date, t.delist_date,
+               t.return_observation_id, t.terminal_return_source,
+               t.terminal_valid,
+               greatest(b.price_available_at, t.available_at) AS minimum_available_at
+        FROM bars b
+        JOIN terminals t ON t.security_id = b.security_id AND b.trade_date < t.delist_date
+        JOIN cal anchor ON anchor.trade_date = b.trade_date
+        CROSS JOIN horizons h
+        JOIN cal ending ON ending.session_number = anchor.session_number + h.horizon_days
+        WHERE b.pick = 1 AND t.delist_date <= ending.trade_date
+          AND ((b.{price_basis} > 0 AND isfinite(b.{price_basis}))
+               OR (b.close > 0 AND isfinite(b.close)))
+    )
+    SELECT (
+        (SELECT count(*) FROM terminals WHERE NOT terminal_valid)
+        + (SELECT count(*) FROM expected e WHERE e.terminal_valid AND NOT EXISTS (
+            SELECT 1 FROM forward_returns_survivorship_safe f
+            WHERE f.source = {source_sql} AND f.security_id = e.security_id
+              AND f.as_of_date = e.as_of_date AND f.horizon_days = e.horizon_days
+              AND f.forward_end_date = e.forward_end_date AND f.delist_date = e.delist_date
+              AND f.return_observation_id IS NOT DISTINCT FROM e.return_observation_id
+              AND f.terminal_return_source = e.terminal_return_source
+              AND f.is_stitched AND f.is_latest_revision
+              AND f.symbol IS NOT NULL AND isfinite(f.forward_return)
+              AND f.available_at >= e.minimum_available_at
+              AND ({cutoff_sql} IS NULL OR f.available_at <= {cutoff_sql})
+        ))
+    )::DOUBLE
+    """
+
+
+_SURVIVORSHIP_SQL = _survivorship_sql()
 
 # Only 'unmapped' rows count. 'mismatch' is an expected, non-failing vendor/proxy disagreement.
 _RECONCILIATION_SQL = """
@@ -76,22 +143,45 @@ FROM delisting_code_reconciliation
 WHERE reconciliation_status = 'unmapped'
 """
 
+# The critical drop check above anti-joins delisting_terminal_returns against the panel, so an
+# EMPTY delisting_terminal_returns makes it pass on an empty set -- "no delisted name with a
+# known terminal return was dropped" is not "the universe is complete" (audit 4.4 / 8 #7). This
+# companion check measures the other side: every delisting_events row must have a terminal
+# return. Zero delistings is still zero here, but the moment any delisting evidence exists with
+# no terminal return the gate goes RED instead of silently green.
+_TERMINAL_RETURN_COVERAGE_SQL = """
+SELECT count(*)::DOUBLE
+FROM delisting_events e
+LEFT JOIN delisting_terminal_returns t
+  ON t.security_id = e.security_id
+ AND t.delist_date = e.delist_date
+WHERE e.security_id IS NOT NULL
+  AND t.terminal_return_id IS NULL
+"""
+
 _SEVERITIES = frozenset({"warning", "error", "critical"})
 _COMPARATORS = frozenset({"eq", "le", "ge"})
 
 
-def _survivorship_spec() -> SqlQualityCheck:
+def _survivorship_spec(
+    *, source: str = _DEFAULT_FORWARD_SOURCE,
+    price_basis: str = "adjusted_close",
+    observation_cutoff: dt.datetime | None = None,
+) -> SqlQualityCheck:
     return SqlQualityCheck(
         dataset_id=SURVIVORSHIP_DATASET_ID,
         table_name="forward_returns_survivorship_safe",
         check_name=SURVIVORSHIP_FORWARD_RETURN_CHECK_NAME,
-        sql=_SURVIVORSHIP_SQL,
+        sql=_survivorship_sql(
+            source=source, price_basis=price_basis, observation_cutoff=observation_cutoff,
+        ),
         threshold=0.0,
         comparator="le",
         required_tables=(
             "delisting_terminal_returns",
             "forward_returns_survivorship_safe",
             "equity_daily_bars",
+            "trading_calendar",
         ),
         warn_if_missing=True,
         failure_status="failed",
@@ -114,15 +204,30 @@ def _reconciliation_spec() -> SqlQualityCheck:
     )
 
 
+def _terminal_return_coverage_spec() -> SqlQualityCheck:
+    return SqlQualityCheck(
+        dataset_id="delisting_terminal_returns",
+        table_name="delisting_terminal_returns",
+        check_name=SURVIVORSHIP_TERMINAL_RETURN_COVERAGE_CHECK_NAME,
+        sql=_TERMINAL_RETURN_COVERAGE_SQL,
+        threshold=0.0,
+        comparator="le",
+        required_tables=("delisting_events", "delisting_terminal_returns"),
+        warn_if_missing=True,
+        failure_status="failed",
+        severity="error",
+    )
+
+
 def survivorship_check_specs(**_ignored: object) -> tuple[SqlQualityCheck, ...]:
-    """The two S4-3 survivorship-safety check specs.
+    """The three S4-3/S4-4 survivorship-safety check specs.
 
     Accepts and ignores the ``daily_macro_stale_days``/``monthly_macro_stale_days``/
     ``valuation_stale_gap_days`` common kwargs so it is interchangeable with the other
-    ``*_check_specs`` factories, even though neither check needs them.
+    ``*_check_specs`` factories, even though none of these checks need them.
     """
 
-    return (_survivorship_spec(), _reconciliation_spec())
+    return (_survivorship_spec(), _reconciliation_spec(), _terminal_return_coverage_spec())
 
 
 def _coerce_severity(value: object, fallback: Severity = "error") -> Severity:
@@ -264,7 +369,9 @@ def _run_single_check(
 
 
 def survivorship_forward_return_check(
-    store: DuckDBStore, *, checked_at: dt.datetime | None = None
+    store: DuckDBStore, *, checked_at: dt.datetime | None = None,
+    source: str = _DEFAULT_FORWARD_SOURCE, price_basis: str = "adjusted_close",
+    observation_cutoff: dt.datetime | None = None,
 ) -> QualityResult:
     """Run the registered critical survivorship-drop check and return its ``QualityResult``.
 
@@ -272,7 +379,11 @@ def survivorship_forward_return_check(
     stitched into a formation window is absent/unstitched; GREEN (``'passed'``) at zero drops.
     """
 
-    return _run_single_check(store, _survivorship_spec(), checked_at=checked_at)
+    return _run_single_check(
+        store, _survivorship_spec(
+            source=source, price_basis=price_basis, observation_cutoff=observation_cutoff,
+        ), checked_at=checked_at,
+    )
 
 
 def delisting_code_reconciliation_check(
@@ -285,6 +396,19 @@ def delisting_code_reconciliation_check(
     """
 
     return _run_single_check(store, _reconciliation_spec(), checked_at=checked_at)
+
+
+def delisting_terminal_return_coverage_check(
+    store: DuckDBStore, *, checked_at: dt.datetime | None = None
+) -> QualityResult:
+    """Count delisting events carrying no terminal return (the anti-vacuity gate).
+
+    Companion to :func:`survivorship_forward_return_check`: that critical check can pass on an
+    empty anti-join when ``delisting_terminal_returns`` is empty; this ``error``-severity check
+    makes that specific gap loud instead of silently green.
+    """
+
+    return _run_single_check(store, _terminal_return_coverage_spec(), checked_at=checked_at)
 
 
 def _check_requested(

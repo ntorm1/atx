@@ -9,9 +9,12 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from ._forward_return_publication import (
+    refresh_forward_return_publication as _refresh_forward_return_publication,
+)
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
-from .signal_eval import IC_HORIZONS, compute_forward_returns  # read-only reuse (PF4-S4 S4-2)
+from .signal_eval import IC_HORIZONS
 from .warehouse import (
     file_sha256,
     insert_frame,
@@ -27,6 +30,55 @@ from .warehouse import (
 SOURCE_NAME = "ATX public delisting proxy builder"
 DEFAULT_SOURCE = "atx_delisting_proxy_v1"
 DEFAULT_CODE_SOURCE = "atx_delist_code_dim_v1"
+
+# Shumway (1997), "The Delisting Bias in CRSP Data", Journal of Finance 52(1): the mean
+# delisting return for NYSE/AMEX performance-related delistings is about -30%. Shumway &
+# Warther (1999), JF 54(6), estimate about -55% for Nasdaq. These are named conventions, not
+# observations. S4 preflight ruling (program.md): the convention is ON by default --
+# DelistingTerminalReturnOptions.performance_delisting_return defaults to a
+# ShumwayPerformancePolicy() instance -- and an operator opts OUT by passing
+# performance_delisting_return=None. Dispatch between the two magnitudes is per-security,
+# resolved from the event's own PIT listing exchange as of delist_date: a row
+# resolved to Nasdaq is stamped terminal_return_policy='performance_unknown_nasdaq'; anything
+# else (NYSE/AMEX/ARCA/BATS, or an unresolved exchange) is stamped
+# terminal_return_policy='performance_unknown'. Either way a consumer can always filter
+# imputed rows back out (`terminal_return_policy NOT LIKE 'performance_unknown%'`), and the
+# coverage gate in quality/checks_survivorship.py makes an unset/uncovered gap loud either way.
+SHUMWAY_PERFORMANCE_DELISTING_RETURN = -0.30
+SHUMWAY_NASDAQ_PERFORMANCE_DELISTING_RETURN = -0.55
+PERFORMANCE_TERMINAL_RETURN_POLICY_CODE = "performance_unknown"
+PERFORMANCE_TERMINAL_RETURN_POLICY_CODE_NASDAQ = "performance_unknown_nasdaq"
+PERFORMANCE_DELIST_REASONS = frozenset({"bankruptcy", "exchange_delist", "unknown"})
+
+# Exchange tokens that count as "Nasdaq" for Shumway-variant dispatch, spanning both
+# representations this warehouse actually produces: universe_us_listed_membership.exchange_code
+# (MIC-style, from universe_us_listed.EXCHANGE_CODE_BY_DIRECTORY_EXCHANGE) writes "XNAS", while
+# nasdaq_symbol_directory.exchange writes the literal "NASDAQ" for nasdaqlisted.txt rows.
+# Comparison is case-insensitive (see _is_nasdaq_exchange).
+NASDAQ_EXCHANGE_CODES = frozenset({"XNAS", "NASDAQ"})
+
+
+@dataclass(frozen=True)
+class ShumwayPerformancePolicy:
+    """Per-exchange Shumway performance-delisting convention magnitudes.
+
+    ``default_return`` (Shumway 1997) applies to a performance-related delist whose resolved
+    listing exchange is NYSE/AMEX/ARCA/BATS or could not be resolved at all.
+    ``nasdaq_return`` (Shumway & Warther 1999) applies only when the resolved exchange is
+    Nasdaq. See :func:`apply_performance_delisting_policy` for the dispatch and
+    :data:`NASDAQ_EXCHANGE_CODES` for the recognized Nasdaq tokens.
+
+    This object is what :data:`DelistingTerminalReturnOptions.performance_delisting_return`
+    carries when the convention is on; passing ``None`` there still opts out of the whole
+    convention (no exchange resolution, no policy row, ever).
+    """
+
+    default_return: float = SHUMWAY_PERFORMANCE_DELISTING_RETURN
+    nasdaq_return: float = SHUMWAY_NASDAQ_PERFORMANCE_DELISTING_RETURN
+
+
+def _is_nasdaq_exchange(value: object) -> bool:
+    return isinstance(value, str) and value.strip().upper() in NASDAQ_EXCHANGE_CODES
 
 
 @dataclass(frozen=True)
@@ -81,6 +133,71 @@ DELIST_CODE_ROWS = (
         False,
         None,
         "none",
+        DEFAULT_CODE_SOURCE,
+    ),
+    (
+        "SEC_FORM_25",
+        "ATX_PUBLIC_EVIDENCE",
+        None,
+        None,
+        "SEC_FORM_25_NOTIFICATION",
+        "exchange_delist",
+        (
+            "SEC Form 25 / 25-NSE notification of removal from listing and registration. "
+            "25-NSE is exchange-initiated; a bare 25 is issuer-initiated."
+        ),
+        "DELISTED_FORM_25",
+        True,
+        SHUMWAY_PERFORMANCE_DELISTING_RETURN,
+        "performance_related_when_no_merger_evidence",
+        DEFAULT_CODE_SOURCE,
+    ),
+    (
+        "SEC_FORM_15",
+        "ATX_PUBLIC_EVIDENCE",
+        None,
+        None,
+        "SEC_FORM_15_DEREGISTRATION",
+        "voluntary",
+        (
+            "SEC Form 15 deregistration / suspension of the duty to file. A voluntary exit "
+            "from reporting, not a performance delisting."
+        ),
+        "DEREGISTERED_FORM_15",
+        False,
+        None,
+        "not_allowed_voluntary_deregistration",
+        DEFAULT_CODE_SOURCE,
+    ),
+    (
+        "ARCHIVE_LAST_TRADE",
+        "ATX_PUBLIC_EVIDENCE",
+        None,
+        None,
+        "ARCHIVE_TRADING_CEASED",
+        "dropped",
+        (
+            "Trading ceased in the ticker-history archive more than the configured session gap "
+            "before the archive end, with no later bar. Lowest-confidence evidence."
+        ),
+        "NO_LONGER_TRADING_IN_ARCHIVE",
+        True,
+        SHUMWAY_PERFORMANCE_DELISTING_RETURN,
+        "performance_related_unknown_reason",
+        DEFAULT_CODE_SOURCE,
+    ),
+    (
+        "NASDAQ_FINANCIAL_STATUS_BANKRUPT",
+        "ATX_PUBLIC_EVIDENCE",
+        None,
+        None,
+        "NASDAQ_FINANCIAL_STATUS_Q",
+        "bankruptcy",
+        ("The Nasdaq symbol-directory financial_status carried the bankruptcy flag (Q) on or before the delist date."),
+        "BANKRUPT",
+        True,
+        SHUMWAY_PERFORMANCE_DELISTING_RETURN,
+        "performance_related_bankruptcy",
         DEFAULT_CODE_SOURCE,
     ),
 )
@@ -749,6 +866,15 @@ _DLSTCD_FAMILY_BY_PREFIX = {2: "merger", 3: "exchange", 4: "liquidation", 5: "dr
 RECONCILIATION_COMPATIBLE_FAMILIES = {
     "exchange_delete": frozenset({"exchange", "dropped"}),
     "snapshot_absence": frozenset({"exchange", "dropped"}),
+    # S4 T4 fix round 1: the four reason_category values the public-evidence delist_code_dim
+    # rows carry (delisting.py's DELIST_CODE_ROWS, fed from delisting_evidence.py's precedence
+    # fold). Each is a coarse, best-effort mapping to the CRSP DLSTCD family bucket a genuine
+    # vendor record of the same event would most likely carry -- not a claim that the public
+    # proxy alone can distinguish sub-reasons within a family.
+    "exchange_delist": frozenset({"exchange", "dropped"}),  # SEC Form 25 / 25-NSE
+    "voluntary": frozenset({"dropped"}),  # SEC Form 15 deregistration
+    "dropped": frozenset({"dropped"}),  # archive last-trade inference (lowest confidence)
+    "bankruptcy": frozenset({"dropped", "liquidation"}),  # bankruptcy or liquidation
 }
 
 # ---------------------------------------------------------------------------
@@ -818,6 +944,31 @@ TERMINAL_RETURN_POLICY_ROWS = (
         True,
         "Unresolved drop: no policy terminal return; handled only if an observed/imputed value "
         "is supplied elsewhere.",
+    ),
+    (
+        "performance_unknown",
+        "performance_delist",
+        "shumway_default",
+        False,
+        SHUMWAY_PERFORMANCE_DELISTING_RETURN,
+        False,
+        "Performance-related delisting with no observed DLRET, resolved (PIT, as of "
+        "delist_date) to a NYSE/AMEX/ARCA/BATS listing or to no resolvable exchange at all: "
+        "apply the documented Shumway (1997) -30% convention. On by default (S4 preflight "
+        "ruling); an operator opts out by setting "
+        "DelistingTerminalReturnOptions.performance_delisting_return=None.",
+    ),
+    (
+        "performance_unknown_nasdaq",
+        "performance_delist",
+        "shumway_nasdaq_default",
+        False,
+        SHUMWAY_NASDAQ_PERFORMANCE_DELISTING_RETURN,
+        False,
+        "Performance-related delisting with no observed DLRET, resolved (PIT, as of "
+        "delist_date) to a Nasdaq listing: apply the documented Shumway & Warther (1999) "
+        "-55% convention. Same on-by-default / opt-out-via-None behavior as "
+        "performance_unknown.",
     ),
 )
 
@@ -1028,10 +1179,97 @@ def apply_terminal_return_policy(
     return result[POLICY_TERMINAL_RETURN_COLUMNS]
 
 
+def apply_performance_delisting_policy(
+    events: pd.DataFrame,
+    policy_dim: pd.DataFrame,
+    *,
+    performance_return: ShumwayPerformancePolicy | float | None,
+    reasons: frozenset[str] = PERFORMANCE_DELIST_REASONS,
+) -> pd.DataFrame:
+    """Apply the documented Shumway convention to performance-related delists.
+
+    ``events`` carries ``security_id, symbol, delist_date, as_of_date, available_at,
+    delist_reason`` (the ``delisting_events`` shape) and optionally
+    ``successor_security_id, listing_exchange_code, listing_exchange_available_at``.
+    A row qualifies when its ``delist_reason`` is in ``reasons``
+    AND ``performance_return`` is not None AND the event carries a real ``available_at`` --
+    this function never invents a timestamp, exactly like :func:`apply_terminal_return_policy`.
+
+    Returns a :data:`POLICY_TERMINAL_RETURN_COLUMNS` frame with
+    ``terminal_return_source='policy'`` and the exchange-specific policy code and basis.
+    The policy object dispatches Nasdaq separately; a float retains the explicit scalar
+    override. Exchange inputs must be PIT-resolved by the caller, as the refresh path does.
+    Availability is the maximum of the event and the selected exchange input.
+    Pure, stable-sorted, and empty whenever
+    ``performance_return`` is None -- callers opt out by passing None.
+    """
+
+    if performance_return is None:
+        return _empty_policy_terminal_return_frame()
+    if events is None or events.empty or policy_dim is None or policy_dim.empty:
+        return _empty_policy_terminal_return_frame()
+    if "delist_reason" not in events.columns:
+        return _empty_policy_terminal_return_frame()
+    frame = events.copy().reset_index(drop=True)
+    eligible = frame["delist_reason"].astype("string").isin(sorted(reasons))
+    eligible &= pd.to_datetime(frame["available_at"], errors="coerce").notna()
+    frame = frame[eligible].copy()
+    if frame.empty:
+        return _empty_policy_terminal_return_frame()
+
+    frame["terminal_return_policy"] = PERFORMANCE_TERMINAL_RETURN_POLICY_CODE
+    if isinstance(performance_return, ShumwayPerformancePolicy):
+        frame["terminal_return"] = performance_return.default_return
+        if "listing_exchange_code" in frame.columns:
+            nasdaq = frame["listing_exchange_code"].map(_is_nasdaq_exchange)
+            frame.loc[nasdaq, "terminal_return"] = performance_return.nasdaq_return
+            frame.loc[nasdaq, "terminal_return_policy"] = PERFORMANCE_TERMINAL_RETURN_POLICY_CODE_NASDAQ
+        if "listing_exchange_available_at" in frame.columns:
+            frame["available_at"] = pd.concat(
+                [
+                    pd.to_datetime(frame["available_at"], errors="coerce"),
+                    pd.to_datetime(frame["listing_exchange_available_at"], errors="coerce"),
+                ],
+                axis=1,
+            ).max(axis=1)
+    else:
+        frame["terminal_return"] = float(performance_return)
+    bases = policy_dim.set_index("policy_code")["terminal_return_basis"]
+    frame["return_basis"] = frame["terminal_return_policy"].map(bases)
+    frame = frame[frame["return_basis"].notna()]
+    if frame.empty:
+        return _empty_policy_terminal_return_frame()
+
+    out = pd.DataFrame(
+        {
+            "security_id": frame["security_id"],
+            "symbol": frame.get("symbol"),
+            "delist_date": frame["delist_date"],
+            "as_of_date": frame.get("as_of_date"),
+            "available_at": pd.to_datetime(frame["available_at"]),
+            "terminal_return": frame["terminal_return"],
+            "terminal_return_ex_div": pd.NA,
+            "terminal_return_source": "policy",
+            "terminal_return_policy": frame["terminal_return_policy"],
+            "crsp_dlstcd": pd.NA,
+            "return_basis": frame["return_basis"],
+            "successor_security_id": frame.get("successor_security_id"),
+            "return_observation_id": pd.NA,
+        }
+    )
+    out = out.drop_duplicates(subset=["security_id", "delist_date"], keep="first")
+    return out.sort_values(["security_id", "delist_date"], kind="mergesort", na_position="last").reset_index(
+        drop=True
+    )[POLICY_TERMINAL_RETURN_COLUMNS]
+
+
 @dataclass(frozen=True)
 class DelistingTerminalReturnOptions:
     source: str = DEFAULT_TERMINAL_RETURN_SOURCE
     run_id: str | None = None
+    # ON by default, dispatched per historical exchange; None opts out. A scalar remains
+    # an explicit operator override for compatibility with the original policy interface.
+    performance_delisting_return: ShumwayPerformancePolicy | float | None = ShumwayPerformancePolicy()
 
 
 @dataclass(frozen=True)
@@ -1084,10 +1322,14 @@ def compute_delisting_terminal_returns(
     source: str = DEFAULT_TERMINAL_RETURN_SOURCE,
     run_id: str | None = None,
     corporate_actions: pd.DataFrame | None = None,
+    performance_delisting_return: ShumwayPerformancePolicy | float | None = None,
 ) -> pd.DataFrame:
     """Collapse ``delisting_return_observations`` to one terminal return per
-    ``(security_id, delist_date)``, then (S4-1) fill remaining coverage gaps from the
-    deterministic corporate-action policy.
+    ``(security_id, delist_date)``, then fill remaining coverage gaps from (S4-1) the
+    deterministic corporate-action policy and (S4-4) the opt-in Shumway performance-delisting
+    policy -- in that priority order, so observed always wins over corporate-action policy,
+    which always wins over the performance convention, for the same ``(security_id,
+    delist_date)``.
 
     The latest-visible observation wins: ``ORDER BY available_at DESC, source_loaded_at
     DESC, delisting_return_observation_id DESC`` -- the same tie-break
@@ -1095,20 +1337,27 @@ def compute_delisting_terminal_returns(
     ``db/asof/security.py``). Every observed row is tagged ``terminal_return_source='observed'``.
     ``imputed`` is never written here.
 
-    ``corporate_actions`` is keyword-only and defaults to ``None``: with it omitted, behaviour is
-    byte-identical to S4-0 (observed rows only). When supplied (and non-empty), :func:`
+    ``corporate_actions`` is keyword-only and defaults to ``None``: with it omitted, the
+    corporate-action policy path is skipped. When supplied (and non-empty), :func:`
     apply_terminal_return_policy` is called against exactly the events that have **no** observed
-    terminal return for their ``(security_id, delist_date)`` -- observed always wins, and at most
-    one terminal row is ever emitted per ``(security_id, delist_date)``. ``events`` rows carry no
+    terminal return for their ``(security_id, delist_date)``. ``events`` rows carry no
     ``corporate_action_type`` of their own (that column does not exist on ``delisting_events``);
     it is attached here from ``corporate_actions.action_type``, joined on ``(security_id,
     delist_date == ex_date)`` -- an event with no matching corporate action simply gets no policy
     row, it is never invented.
 
+    ``performance_delisting_return`` (S4-4) is independent of ``corporate_actions`` -- a
+    public-evidence-only warehouse has no licensed corporate-action feed at all, which is
+    exactly the profile the Shumway convention exists for. When not None, :func:`
+    apply_performance_delisting_policy` is called against the events still uncovered after the
+    observed and corporate-action-policy passes, using ``events.delist_reason``. Passing None
+    opts out entirely (no row is ever invented).
+
     ``available_at`` is inherited verbatim from the observation's ``available_at`` (the
     delisting-confirmation timestamp) for observed rows, and is ``max(corporate action
-    available_at, last pre-delist bar available_at)`` for policy rows -- never the delist event
-    date, in either case: the no-lookahead invariant the survivorship fix depends on.
+    available_at, last pre-delist bar available_at)`` for corporate-action-policy rows, and the
+    maximum event/exchange ``available_at`` for performance-policy rows -- never the delist event date in
+    any case: the no-lookahead invariant the survivorship fix depends on.
     """
 
     if observations.empty:
@@ -1190,90 +1439,142 @@ def compute_delisting_terminal_returns(
             result["terminal_return_id"] = result.apply(_stable_terminal_return_id, axis=1)
             result = result[TERMINAL_RETURN_COLUMNS]
 
-    if (
-        corporate_actions is None
-        or corporate_actions.empty
-        or policy_dim.empty
-        or events.empty
-        or "security_id" not in events.columns
-        or "delist_date" not in events.columns
-    ):
+    events_ok = not events.empty and "security_id" in events.columns and "delist_date" in events.columns
+    can_apply_corporate_action_policy = (
+        events_ok and corporate_actions is not None and not corporate_actions.empty and not policy_dim.empty
+    )
+    can_apply_performance_policy = (
+        events_ok
+        and performance_delisting_return is not None
+        and not policy_dim.empty
+        and "delist_reason" in events.columns
+    )
+    if not can_apply_corporate_action_policy and not can_apply_performance_policy:
         return result
 
-    # A DuckDB-sourced frame's delist_date is datetime64; a hand-built (e.g. test) frame's is
-    # often plain datetime.date -- pandas.merge raises on that dtype mismatch rather than
-    # coercing it, and events/result/corporate_actions may come from either source depending on
-    # the caller. Every merge below joins on a normalized _delist_date_key copy and always drops
-    # it afterward; the delist_date each frame retains in its own columns is untouched.
-    ev = events.copy().reset_index(drop=True)
-    ev = ev.assign(_delist_date_key=pd.to_datetime(ev["delist_date"], errors="coerce"))
-    if not result.empty:
-        observed_pairs = (
-            result[["security_id", "delist_date"]]
-            .assign(_delist_date_key=pd.to_datetime(result["delist_date"], errors="coerce"))
+    def _covered_pairs(frame: pd.DataFrame) -> pd.DataFrame:
+        # A DuckDB-sourced frame's delist_date is datetime64; a hand-built (e.g. test) frame's is
+        # often plain datetime.date -- normalize both sides to the same _delist_date_key so the
+        # merge below never raises on a dtype mismatch.
+        if frame.empty:
+            return pd.DataFrame(columns=["security_id", "_delist_date_key", "_covered"])
+        return (
+            frame[["security_id", "delist_date"]]
+            .assign(_delist_date_key=pd.to_datetime(frame["delist_date"], errors="coerce"))
             .drop(columns=["delist_date"])
             .drop_duplicates()
-            .assign(_observed=True)
+            .assign(_covered=True)
         )
-        ev = ev.merge(observed_pairs, on=["security_id", "_delist_date_key"], how="left")
-        uncovered = ev[ev["_observed"].isna()].drop(columns=["_observed"]).reset_index(drop=True)
-    else:
-        uncovered = ev
 
-    if uncovered.empty:
-        return result
-
-    ca = corporate_actions.copy().reset_index(drop=True)
-    if "ex_date" in ca.columns and "delist_date" not in ca.columns:
-        ca = ca.rename(columns={"ex_date": "delist_date"})
-
-    if "corporate_action_type" not in uncovered.columns:
-        if "action_type" in ca.columns and {"security_id", "delist_date"}.issubset(ca.columns):
-            type_lookup = (
-                ca[["security_id", "delist_date", "action_type"]]
-                .dropna(subset=["security_id", "delist_date"])
-                .assign(_delist_date_key=lambda frame: pd.to_datetime(frame["delist_date"], errors="coerce"))
-                .drop(columns=["delist_date"])
-                .drop_duplicates(subset=["security_id", "_delist_date_key"])
-                .rename(columns={"action_type": "corporate_action_type"})
-            )
-            uncovered = uncovered.merge(type_lookup, on=["security_id", "_delist_date_key"], how="left")
+    policy_result = _empty_terminal_return_frame()
+    if can_apply_corporate_action_policy:
+        ev = events.copy().reset_index(drop=True)
+        ev = ev.assign(_delist_date_key=pd.to_datetime(ev["delist_date"], errors="coerce"))
+        observed_pairs = _covered_pairs(result)
+        if not observed_pairs.empty:
+            ev = ev.merge(observed_pairs, on=["security_id", "_delist_date_key"], how="left")
+            uncovered = ev[ev["_covered"].isna()].drop(columns=["_covered"]).reset_index(drop=True)
         else:
-            uncovered = uncovered.assign(corporate_action_type=pd.NA)
+            uncovered = ev
 
-    uncovered = uncovered.drop(columns=["_delist_date_key"])
+        if not uncovered.empty:
+            ca = corporate_actions.copy().reset_index(drop=True)
+            if "ex_date" in ca.columns and "delist_date" not in ca.columns:
+                ca = ca.rename(columns={"ex_date": "delist_date"})
 
-    policy_rows = apply_terminal_return_policy(uncovered, corporate_actions, policy_dim)
-    if policy_rows.empty:
+            if "corporate_action_type" not in uncovered.columns:
+                if "action_type" in ca.columns and {"security_id", "delist_date"}.issubset(ca.columns):
+                    type_lookup = (
+                        ca[["security_id", "delist_date", "action_type"]]
+                        .dropna(subset=["security_id", "delist_date"])
+                        .assign(_delist_date_key=lambda frame: pd.to_datetime(frame["delist_date"], errors="coerce"))
+                        .drop(columns=["delist_date"])
+                        .drop_duplicates(subset=["security_id", "_delist_date_key"])
+                        .rename(columns={"action_type": "corporate_action_type"})
+                    )
+                    uncovered = uncovered.merge(type_lookup, on=["security_id", "_delist_date_key"], how="left")
+                else:
+                    uncovered = uncovered.assign(corporate_action_type=pd.NA)
+
+            uncovered = uncovered.drop(columns=["_delist_date_key"])
+
+            policy_rows = apply_terminal_return_policy(uncovered, corporate_actions, policy_dim)
+            if not policy_rows.empty:
+                policy_result = pd.DataFrame(
+                    {
+                        "source": source,
+                        "security_id": policy_rows["security_id"],
+                        "symbol": policy_rows["symbol"],
+                        "delist_date": policy_rows["delist_date"],
+                        "as_of_date": policy_rows["as_of_date"],
+                        "available_at": policy_rows["available_at"],
+                        "terminal_return": policy_rows["terminal_return"],
+                        "terminal_return_ex_div": policy_rows["terminal_return_ex_div"],
+                        "terminal_return_source": policy_rows["terminal_return_source"],
+                        "terminal_return_policy": policy_rows["terminal_return_policy"],
+                        "crsp_dlstcd": policy_rows["crsp_dlstcd"],
+                        "return_basis": policy_rows["return_basis"],
+                        "successor_security_id": policy_rows["successor_security_id"],
+                        "return_observation_id": policy_rows["return_observation_id"],
+                        "run_id": run_id,
+                    }
+                )
+                policy_result["terminal_return_id"] = policy_result.apply(_stable_terminal_return_id, axis=1)
+                policy_result = policy_result[TERMINAL_RETURN_COLUMNS]
+
+    performance_result = _empty_terminal_return_frame()
+    if can_apply_performance_policy:
+        ev2 = events.copy().reset_index(drop=True)
+        ev2 = ev2.assign(_delist_date_key=pd.to_datetime(ev2["delist_date"], errors="coerce"))
+        # Filter out empty pieces before concatenating (mirrors _concat_terminal_return_frames):
+        # an empty _covered_pairs frame has no real dtype for _delist_date_key, and concatenating
+        # it with a non-empty datetime64 piece can silently upcast the result to object, which
+        # then raises a merge dtype error against ev2's datetime64 _delist_date_key below.
+        covered_parts = [p for p in (_covered_pairs(result), _covered_pairs(policy_result)) if not p.empty]
+        already_covered = pd.concat(covered_parts, ignore_index=True) if covered_parts else pd.DataFrame()
+        if not already_covered.empty:
+            already_covered = already_covered.drop_duplicates(subset=["security_id", "_delist_date_key"])
+            ev2 = ev2.merge(already_covered, on=["security_id", "_delist_date_key"], how="left")
+            still_uncovered = (
+                ev2[ev2["_covered"].isna()].drop(columns=["_covered", "_delist_date_key"]).reset_index(drop=True)
+            )
+        else:
+            still_uncovered = ev2.drop(columns=["_delist_date_key"])
+
+        performance_rows = apply_performance_delisting_policy(
+            still_uncovered, policy_dim, performance_return=performance_delisting_return
+        )
+        if not performance_rows.empty:
+            performance_result = pd.DataFrame(
+                {
+                    "source": source,
+                    "security_id": performance_rows["security_id"],
+                    "symbol": performance_rows["symbol"],
+                    "delist_date": performance_rows["delist_date"],
+                    "as_of_date": performance_rows["as_of_date"],
+                    "available_at": performance_rows["available_at"],
+                    "terminal_return": performance_rows["terminal_return"],
+                    "terminal_return_ex_div": performance_rows["terminal_return_ex_div"],
+                    "terminal_return_source": performance_rows["terminal_return_source"],
+                    "terminal_return_policy": performance_rows["terminal_return_policy"],
+                    "crsp_dlstcd": performance_rows["crsp_dlstcd"],
+                    "return_basis": performance_rows["return_basis"],
+                    "successor_security_id": performance_rows["successor_security_id"],
+                    "return_observation_id": performance_rows["return_observation_id"],
+                    "run_id": run_id,
+                }
+            )
+            performance_result["terminal_return_id"] = performance_result.apply(_stable_terminal_return_id, axis=1)
+            performance_result = performance_result[TERMINAL_RETURN_COLUMNS]
+
+    combined = _concat_terminal_return_frames([result, policy_result, performance_result])
+    if combined.empty:
         return result
-
-    policy_result = pd.DataFrame(
-        {
-            "source": source,
-            "security_id": policy_rows["security_id"],
-            "symbol": policy_rows["symbol"],
-            "delist_date": policy_rows["delist_date"],
-            "as_of_date": policy_rows["as_of_date"],
-            "available_at": policy_rows["available_at"],
-            "terminal_return": policy_rows["terminal_return"],
-            "terminal_return_ex_div": policy_rows["terminal_return_ex_div"],
-            "terminal_return_source": policy_rows["terminal_return_source"],
-            "terminal_return_policy": policy_rows["terminal_return_policy"],
-            "crsp_dlstcd": policy_rows["crsp_dlstcd"],
-            "return_basis": policy_rows["return_basis"],
-            "successor_security_id": policy_rows["successor_security_id"],
-            "return_observation_id": policy_rows["return_observation_id"],
-            "run_id": run_id,
-        }
-    )
-    policy_result["terminal_return_id"] = policy_result.apply(_stable_terminal_return_id, axis=1)
-    policy_result = policy_result[TERMINAL_RETURN_COLUMNS]
-
-    combined = _concat_terminal_return_frames([result, policy_result])
     # Sort on a normalized copy of delist_date, not the column itself: result's delist_date
-    # (observations-sourced) and policy_result's (events-sourced) can carry different concrete
-    # date representations (e.g. one DuckDB-native, one a hand-built datetime.date in a test),
-    # and pandas raises rather than coerces when comparing a Timestamp to a plain date directly.
+    # (observations-sourced) and policy_result's/performance_result's (events-sourced) can carry
+    # different concrete date representations (e.g. one DuckDB-native, one a hand-built
+    # datetime.date in a test), and pandas raises rather than coerces when comparing a Timestamp
+    # to a plain date directly.
     sort_key = pd.to_datetime(combined["delist_date"], errors="coerce")
     combined = (
         combined.assign(_delist_date_sort_key=sort_key)
@@ -1488,6 +1789,69 @@ def compute_delisting_code_reconciliation(
     return result[RECONCILIATION_COLUMNS]
 
 
+def _load_terminal_return_events(store: DuckDBStore, *, resolve_exchange: bool) -> pd.DataFrame:
+    """Resolve the listing at delist-date close without borrowing future snapshots.
+
+    Membership intervals precede exchange listings, then directory snapshots. Both economic
+    dates and input availability are bounded by delist_date (22:00 close). Missing exchange
+    metadata stays unresolved and uses the documented non-Nasdaq fallback. A latest-revision
+    flag alone is insufficient: a current snapshot cannot classify a historical delisting.
+    """
+
+    event_sql = """
+        SELECT delisting_event_id, security_id, symbol, delist_date, as_of_date, available_at,
+               delist_code, delist_reason
+        FROM delisting_events
+    """
+    if not resolve_exchange:
+        return store.con.execute(event_sql + " ORDER BY delisting_event_id").df()
+    return store.con.execute(
+        f"""
+        WITH events AS ({event_sql})
+        SELECT e.*, x.exchange_code AS listing_exchange_code,
+               x.available_at AS listing_exchange_available_at
+        FROM events e
+        LEFT JOIN LATERAL (
+            SELECT exchange_code, available_at
+            FROM (
+                SELECT 1 AS priority, u.exchange_code, u.available_at, u.as_of_date,
+                       u.valid_from, u.membership_id AS tie_break
+                FROM universe_us_listed_membership u
+                WHERE u.security_id = e.security_id
+                  AND u.universe_id = 'us_listed_v1'
+                  AND u.is_latest_revision
+                  AND u.valid_from <= e.delist_date
+                  AND (u.valid_to IS NULL OR u.valid_to >= e.delist_date)
+                UNION ALL
+                SELECT 2, coalesce(nullif(trim(l.exchange_code), ''), l.mic),
+                       l.available_at, l.as_of_date, l.valid_from,
+                       concat(l.source, '|', l.ticker, '|', l.mic)
+                FROM exchange_listings l
+                WHERE l.security_id = e.security_id
+                  AND coalesce(l.is_latest_revision, true)
+                  AND l.valid_from <= e.delist_date
+                  AND (l.valid_to IS NULL OR l.valid_to > e.delist_date)
+                UNION ALL
+                SELECT 3,
+                       CASE WHEN d.directory = 'nasdaqlisted' THEN 'XNAS' ELSE d.exchange END,
+                       d.available_at, d.as_of_date, d.as_of_date,
+                       concat(d.directory, '|', d.source_url)
+                FROM nasdaq_symbol_directory d
+                WHERE d.symbol = e.symbol
+                  AND coalesce(d.is_latest_revision, true)
+            ) candidates
+            WHERE nullif(trim(exchange_code), '') IS NOT NULL
+              AND as_of_date <= e.delist_date
+              AND available_at <= e.delist_date + INTERVAL '22 hours'
+            ORDER BY priority, as_of_date DESC, available_at DESC, valid_from DESC,
+                     tie_break, exchange_code
+            LIMIT 1
+        ) x ON true
+        ORDER BY e.delisting_event_id
+        """
+    ).df()
+
+
 def refresh_delisting_terminal_returns(
     store: DuckDBStore,
     options: DelistingTerminalReturnOptions | None = None,
@@ -1528,12 +1892,9 @@ def refresh_delisting_terminal_returns(
         FROM delisting_return_observations
         """
     ).df()
-    events = store.con.execute(
-        """
-        SELECT delisting_event_id, security_id, symbol, delist_date, as_of_date, available_at, delist_code
-        FROM delisting_events
-        """
-    ).df()
+    events = _load_terminal_return_events(
+        store, resolve_exchange=isinstance(options.performance_delisting_return, ShumwayPerformancePolicy)
+    )
     policy_dim = store.con.execute(
         """
         SELECT
@@ -1570,6 +1931,7 @@ def refresh_delisting_terminal_returns(
         source=options.source,
         run_id=options.run_id,
         corporate_actions=corporate_actions,
+        performance_delisting_return=options.performance_delisting_return,
     )
 
     with store.transaction():
@@ -1664,32 +2026,17 @@ class DelistingReturnObservationDataset(Dataset):
 # ===========================================================================
 # PF4-S4 S4-2: survivorship-safe forward-return stitching.
 #
-# RAW_FORWARD_RETURN_SOURCE reconciliation (the crux). The task brief names a
-# "signal_forward_returns" table as the raw source. That table does NOT exist: PF4-S1 never
-# persisted raw forward returns -- db.signal_eval.compute_forward_returns is a pure in-memory
-# function that DROPS rows whose t+h bar is missing (that drop IS the survivorship bug), and only
-# the *aggregated* factor_ic/factor_quantile_spread/... tables were landed. So the raw source is
-# reconciled here, once, to the table that actually resolves: equity_daily_bars.close -- the exact
-# surface db/signal_eval.py:_derive_forward_returns_from_prices already reads. We REUSE
-# compute_forward_returns read-only for the surviving return math (so "surviving names pass through
-# unchanged" holds by construction) and join symbol / forward_end_date / available_at on afterward.
-# We deliberately do NOT use equity_price_metrics.adjusted_close: it is independently back-adjusted
-# from split_factor and would diverge from compute_forward_returns on any split/dividend.
-#
-# Structural risk (pre-existing, not introduced here): equity_daily_bars has no unique constraint
-# on (security_id, trade_date) and no is_latest_revision, so a duplicate bar would mis-shift
-# compute_forward_returns' row-position horizon shift. The symbol/available_at joins below defend
-# against fan-out via GROUP BY, but the horizon shift itself inherits this latent property.
+# Production reads corrected same-row equity_daily_bars.adjusted_close. Raw close
+# remains an explicit compatibility option. Neither the modeled bar availability
+# nor the vendor cumulative adjustment factor proves historical economic/PIT quality.
+# The calendar is the observed union of bar dates, not an official exchange calendar.
+# All horizons count this SAME calendar for price endpoints, dates and DQC windows.
 # ===========================================================================
 
 RAW_FORWARD_RETURN_SOURCE = "equity_daily_bars"
 DEFAULT_FORWARD_RETURN_SS_SOURCE = "atx_forward_returns_survivorship_safe_v1"
 
-# The global trading calendar (db/calendar.py): calendar_id 'XNYS', source 'equity_daily_bars
-# calendar'. It is the union of every trade_date in equity_daily_bars, so it is a superset of any
-# single security's bar dates -- which is what guarantees the h-th trading day resolves for any
-# surviving forward-return row (the security must have >= h subsequent bars, all within the
-# calendar, so its h-th calendar day exists and forward_end_date/available_at are never NULL).
+# Existing observed-session calendar, populated by TradingCalendarDataset.
 _TRADING_CALENDAR_ID = "XNYS"
 _TRADING_CALENDAR_SOURCE = "equity_daily_bars calendar"
 
@@ -1717,6 +2064,11 @@ _DELISTING_COHORT_COLUMNS = [
 class SurvivorshipSafeForwardReturnOptions:
     source: str = DEFAULT_FORWARD_RETURN_SS_SOURCE
     run_id: str | None = None
+    # Production uses the source's corrected same-row adjusted price. This is not
+    # certification of economic adjustment quality or historical source vintages.
+    # Raw close is an explicit compatibility mode; NULL adjustments never fall back.
+    price_basis: str = "adjusted_close"
+    observation_cutoff: dt.datetime | None = None
 
 
 def _stitch(raw, terminal):
@@ -1796,163 +2148,93 @@ def refresh_survivorship_safe_forward_returns(
     store: DuckDBStore,
     options: SurvivorshipSafeForwardReturnOptions | None = None,
 ) -> int:
-    """Materialize ``forward_returns_survivorship_safe`` from the landed price/calendar/terminal-
-    return tables via :func:`compute_survivorship_safe_forward_returns`, replacing prior rows by
-    source.
+    """Replace one source atomically using bounded persistent publication staging.
 
-    The surviving panel is built exactly as PF4-S1 builds it -- ``compute_forward_returns`` over
-    ``equity_daily_bars.close`` (:data:`RAW_FORWARD_RETURN_SOURCE`) -- so surviving names pass
-    through unchanged. ``forward_end_date`` is the h-th trading day after ``as_of_date`` from the
-    global ``trading_calendar``; the forward ``available_at`` is the t+h bar's ``available_at`` with
-    a ``forward_end_date + 22h`` fallback.
+    A survivor requires a positive finite price on the exact h-th observed calendar
+    session. A known terminal in (formation, endpoint] instead uses the latest
+    positive price STRICTLY BEFORE delisting, compounded with the terminal return.
+    Event-day and later bars never enter that leg; formations on/after a known
+    terminal are excluded. A formation-only price produces a zero partial return.
+    Invalid selected terminal values retain that event boundary but suppress labels
+    spanning it; the input-derived quality gate fails instead of reviving old data.
 
-    The ``delisting_cohort`` is built from the FORMATION GRID -- every bar date of a delisting
-    security crossed with :data:`IC_HORIZONS` -- NOT from the surviving panel, so a name that
-    delists with no surviving t+h bar (the pure NaN-drop case) is still enumerated. A cohort row is
-    admitted when ``delist_date`` falls in ``(as_of_date, forward_end_date]``.
+    ``adjusted_close`` is the production basis; ``close`` explicitly opts into raw
+    price compatibility. Missing adjusted prices are never inferred from raw close
+    or a NULL split factor. Source adjustment quality remains a measured limitation.
+    All input availability clocks are maximized. An optional observation cutoff is
+    applied BEFORE revision selection, including terminal rows no longer marked
+    latest. Calendar dates beyond that cutoff are excluded too. The cutoff is an
+    observation vintage, not the formation date: these are realized outcome labels.
 
-    Deviation (documented in the report): the brief's cohort WHERE clause also lists
-    ``terminal.available_at <= <panel-decision ts for as_of_date>`` glossed as
-    ``end_of_day(as_of_date)``. Applied literally that predicate is self-defeating -- a terminal is
-    confirmed no earlier than its ``delist_date`` and the cohort requires ``delist_date >
-    as_of_date``, so ``terminal.available_at`` is always ``> as_of_date`` and ``<= as_of_date + 22h``
-    can never hold for a real stitch; it would drop EVERY stitch and re-introduce the exact
-    survivorship bias this table fixes (contradicting the Accept criteria). Per invariant (A)+(I),
-    no-lookahead is enforced authoritatively by the OUTPUT row's ``available_at = max(raw,
-    terminal)`` (a PIT reader gating on ``available_at <= as_of_ts`` cannot see the stitch before
-    the terminal resolves), so the self-defeating input gate is omitted rather than applied.
+    Only scalar batch bounds and counts cross into Python. Staging and output inserts
+    remain inside DuckDB's memory/spill controls; no all-bar/expanded pandas frames.
     """
-
     options = options or SurvivorshipSafeForwardReturnOptions()
+    if options.price_basis not in {"adjusted_close", "close"}:
+        raise ValueError("price_basis must be adjusted_close or close")
+    cutoff = options.observation_cutoff
+    if cutoff is not None and cutoff.tzinfo is not None:
+        cutoff = cutoff.astimezone(dt.UTC).replace(tzinfo=None)
     store.initialize()
-    con = store.con
+    return _refresh_forward_return_publication(
+        store, source=options.source, run_id=options.run_id,
+        price_basis=options.price_basis, cutoff=cutoff,
+        columns=FORWARD_RETURN_SS_COLUMNS, horizons=IC_HORIZONS,
+        calendar_id=_TRADING_CALENDAR_ID, calendar_source=_TRADING_CALENDAR_SOURCE,
+    )
 
-    prices = con.execute(
-        f"""
-        SELECT security_id, trade_date AS as_of_date, close
-        FROM {RAW_FORWARD_RETURN_SOURCE}
-        WHERE close IS NOT NULL
-        ORDER BY security_id, trade_date
+
+def survivorship_forward_return_diagnostics(
+    store: DuckDBStore,
+    options: SurvivorshipSafeForwardReturnOptions | None = None,
+) -> dict[str, Any]:
+    """Scalar operational counts; missing adjustment/terminal inputs remain explicit.
+
+    Source-row counts are not distinct security/date coverage or economic quality
+    certification. The input-derived DQC separately identifies missing stitches.
+    """
+    options = options or SurvivorshipSafeForwardReturnOptions()
+    cutoff = options.observation_cutoff
+    if cutoff is not None and cutoff.tzinfo is not None:
+        cutoff = cutoff.astimezone(dt.UTC).replace(tzinfo=None)
+    prices = store.con.execute(
         """
-    ).df()
-    raw = compute_forward_returns(prices, horizons=IC_HORIZONS).rename(
-        columns={"horizon": "horizon_days", "forward_return": "raw_forward_return"}
-    )
-
-    if raw.empty:
-        forward_returns = pd.DataFrame(columns=_FORWARD_RETURN_BASE_COLUMNS)
-    else:
-        con.register("_ss_raw_forward_returns", raw)
-        try:
-            forward_returns = con.execute(
-                """
-                WITH cal AS (
-                    SELECT trade_date, ROW_NUMBER() OVER (ORDER BY trade_date) AS rn
-                    FROM (
-                        SELECT DISTINCT trade_date
-                        FROM trading_calendar
-                        WHERE calendar_id = ? AND source = ?
-                    )
-                ),
-                bar AS (
-                    SELECT security_id, trade_date,
-                           max(symbol) AS symbol,
-                           max(available_at) AS available_at
-                    FROM equity_daily_bars
-                    GROUP BY security_id, trade_date
-                )
-                SELECT
-                    fr.security_id,
-                    anchor.symbol AS symbol,
-                    fr.as_of_date,
-                    fr.horizon_days,
-                    cal_fwd.trade_date AS forward_end_date,
-                    fr.raw_forward_return,
-                    coalesce(
-                        fwd_bar.available_at,
-                        CAST(cal_fwd.trade_date AS TIMESTAMP) + INTERVAL '22 hours'
-                    ) AS available_at
-                FROM _ss_raw_forward_returns fr
-                LEFT JOIN cal cal_anchor ON cal_anchor.trade_date = fr.as_of_date
-                LEFT JOIN cal cal_fwd ON cal_fwd.rn = cal_anchor.rn + fr.horizon_days
-                LEFT JOIN bar anchor ON anchor.security_id = fr.security_id
-                                    AND anchor.trade_date = fr.as_of_date
-                LEFT JOIN bar fwd_bar ON fwd_bar.security_id = fr.security_id
-                                     AND fwd_bar.trade_date = cal_fwd.trade_date
-                """,
-                [_TRADING_CALENDAR_ID, _TRADING_CALENDAR_SOURCE],
-            ).df()
-        finally:
-            con.unregister("_ss_raw_forward_returns")
-
-    horizons_sql = ", ".join(str(int(h)) for h in IC_HORIZONS)
-    cohort = con.execute(
-        f"""
-        WITH horizons AS (SELECT unnest([{horizons_sql}]) AS horizon_days),
-        cal AS (
-            SELECT trade_date, ROW_NUMBER() OVER (ORDER BY trade_date) AS rn
-            FROM (
-                SELECT DISTINCT trade_date
-                FROM trading_calendar
-                WHERE calendar_id = ? AND source = ?
-            )
-        ),
-        tr AS (
-            SELECT
-                security_id, delist_date, terminal_return, terminal_return_source,
-                return_observation_id, available_at,
-                ROW_NUMBER() OVER (
-                    PARTITION BY security_id, delist_date
-                    ORDER BY available_at DESC, source_loaded_at DESC, terminal_return_id DESC
-                ) AS rn
-            FROM delisting_terminal_returns
-            WHERE is_latest_revision = true
-        ),
-        formation AS (
-            SELECT DISTINCT b.security_id, b.trade_date AS as_of_date
-            FROM equity_daily_bars b
-            WHERE b.close IS NOT NULL
-              AND b.security_id IN (SELECT DISTINCT security_id FROM tr WHERE rn = 1)
-        ),
-        qualified AS (
-            SELECT
-                f.security_id, f.as_of_date, h.horizon_days,
-                t.delist_date, t.terminal_return, t.terminal_return_source,
-                t.return_observation_id, t.available_at AS terminal_available_at,
-                ROW_NUMBER() OVER (
-                    PARTITION BY f.security_id, f.as_of_date, h.horizon_days
-                    ORDER BY t.delist_date ASC, t.available_at ASC
-                ) AS pick
-            FROM formation f
-            CROSS JOIN horizons h
-            JOIN cal cal_anchor ON cal_anchor.trade_date = f.as_of_date
-            JOIN cal cal_fwd ON cal_fwd.rn = cal_anchor.rn + h.horizon_days
-            JOIN tr t ON t.security_id = f.security_id AND t.rn = 1
-            WHERE t.delist_date > f.as_of_date
-              AND t.delist_date <= cal_fwd.trade_date
-              -- No cohort-level terminal.available_at gate: it is self-defeating (see docstring).
-              -- No-lookahead is enforced by the row-level available_at = max(raw, terminal).
-        )
-        SELECT
-            security_id, as_of_date, horizon_days, delist_date, terminal_return,
-            terminal_return_source, return_observation_id, terminal_available_at
-        FROM qualified
-        WHERE pick = 1
-        """,
-        [_TRADING_CALENDAR_ID, _TRADING_CALENDAR_SOURCE],
-    ).df()
-
-    out = compute_survivorship_safe_forward_returns(
-        forward_returns, cohort, source=options.source, run_id=options.run_id
-    )
-
-    with store.transaction():
-        con.execute(
-            "DELETE FROM forward_returns_survivorship_safe WHERE source = ?", [options.source]
-        )
-        if not out.empty:
-            insert_frame(
-                store, out, "forward_returns_survivorship_safe", "forward_returns_survivorship_safe_insert"
-            )
-
-    return int(len(out))
+        SELECT count(*) FILTER (WHERE close > 0 AND isfinite(close)),
+               count(*) FILTER (WHERE close > 0 AND isfinite(close)
+                   AND (adjusted_close IS NULL OR adjusted_close <= 0
+                        OR NOT isfinite(adjusted_close)))
+        FROM equity_daily_bars
+        WHERE (?::TIMESTAMP IS NULL OR coalesce(available_at,
+            CAST(trade_date AS TIMESTAMP) + INTERVAL '22 hours') <= ?)
+        """, [cutoff, cutoff],
+    ).fetchone()
+    output = store.con.execute(
+        """
+        SELECT count(*), count(*) FILTER (WHERE is_stitched)
+        FROM forward_returns_survivorship_safe WHERE source = ?
+        """, [options.source],
+    ).fetchone()
+    uncovered = store.con.execute(
+        """
+        SELECT count(*) FROM delisting_events e
+        WHERE e.security_id IS NOT NULL
+          AND (?::TIMESTAMP IS NULL OR e.available_at <= ?)
+          AND NOT EXISTS (
+              SELECT 1 FROM delisting_terminal_returns t
+              WHERE t.security_id = e.security_id AND t.delist_date = e.delist_date
+                AND (?::TIMESTAMP IS NULL OR t.available_at <= ?)
+          )
+        """, [cutoff, cutoff, cutoff, cutoff],
+    ).fetchone()[0]
+    return {
+        "source": options.source,
+        "price_basis": options.price_basis,
+        "calendar_basis": "bar-observed sessions; not an official exchange calendar",
+        "adjustment_quality": "source supplied; economic and historical vintage quality unverified",
+        "observation_cutoff": None if cutoff is None else cutoff.isoformat(),
+        "positive_raw_price_source_rows": int(prices[0]),
+        "missing_adjusted_price_source_rows": int(prices[1]),
+        "rows": int(output[0]),
+        "stitched_rows": int(output[1]),
+        "uncovered_event_rows": int(uncovered),
+    }

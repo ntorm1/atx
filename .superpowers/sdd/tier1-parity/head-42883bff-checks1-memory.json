@@ -1,0 +1,16 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "-c",
+    "import atx_db, pytest; raise SystemExit(pytest.main([tests/test_module_boundaries.py, tests/test_schema_contract_v2.py, -n, 0, -q]))"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "failed",
+  "headroom": {
+    "physical_free_gb": 6.379657745361328,
+    "commit_free_gb": 9.451107025146484
+  },
+  "child_pid": 5756,
+  "returncode": 1,
+  "native_peak_job_memory_gb": 0.5738906860351562
+}

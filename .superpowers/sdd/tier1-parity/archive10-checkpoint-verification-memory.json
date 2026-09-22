@@ -1,0 +1,12 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "C:/atx/.superpowers/sdd/tier1-parity/verify_archive10_recovery_checkpoint.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "refused_low_headroom",
+  "headroom": {
+    "physical_free_gb": 3.7002716064453125,
+    "commit_free_gb": 5.228141784667969
+  }
+}

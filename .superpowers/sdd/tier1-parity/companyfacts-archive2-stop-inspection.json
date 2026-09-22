@@ -1,0 +1,124 @@
+{
+  "observed_at_utc": "2026-09-20T19:48:43.674270+00:00",
+  "read_only": true,
+  "activation": {
+    "columns": [
+      "stage",
+      "run_id",
+      "status",
+      "started_at",
+      "finished_at",
+      "rows",
+      "error"
+    ],
+    "rows": [
+      [
+        "companyfacts_load",
+        "activation-companyfacts-archive2",
+        "running",
+        "2026-09-20 19:39:05.825084",
+        null,
+        null,
+        null
+      ]
+    ]
+  },
+  "dataset": {
+    "columns": [
+      "run_id",
+      "dataset_id",
+      "status",
+      "started_at",
+      "finished_at",
+      "rows_loaded",
+      "error_message"
+    ],
+    "rows": [
+      [
+        "c22823af-2c18-48c9-9fc3-3bba1ae58d8f",
+        "sec_company_facts",
+        "running",
+        "2026-09-20 19:39:05.840775",
+        null,
+        null,
+        null
+      ]
+    ]
+  },
+  "retained_totals": {
+    "columns": [
+      "facts",
+      "points",
+      "prices",
+      "custom_features"
+    ],
+    "rows": [
+      [
+        31837696,
+        31837696,
+        31959271,
+        31934514
+      ]
+    ]
+  },
+  "attempt_rows": {
+    "columns": [
+      "run_id",
+      "rows",
+      "ciks",
+      "first_cik",
+      "last_cik"
+    ],
+    "rows": [
+      [
+        "c22823af-2c18-48c9-9fc3-3bba1ae58d8f",
+        987977,
+        146,
+        "0000001750",
+        "0000018349"
+      ]
+    ]
+  },
+  "source_outcomes": {
+    "columns": [
+      "status",
+      "members",
+      "reported_rows"
+    ],
+    "rows": [
+      [
+        "empty",
+        19,
+        0
+      ],
+      [
+        "error",
+        1,
+        null
+      ],
+      [
+        "loaded",
+        146,
+        987977
+      ]
+    ]
+  },
+  "source_errors": {
+    "columns": [
+      "source_url",
+      "sha256",
+      "cik",
+      "error_type",
+      "error"
+    ],
+    "rows": [
+      [
+        "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip#CIK0000003521.json",
+        "ee099c7394a357f1996c728b7362f25158613b34f2ab1ad270cffc1befb917b6",
+        "0000003521",
+        "ValueError",
+        "companyfacts payload requires a facts object"
+      ]
+    ]
+  }
+}

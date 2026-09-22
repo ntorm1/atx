@@ -1,0 +1,156 @@
+{
+  "observed_at": "2026-09-20 18:02:30.089375+00:00",
+  "db": "C:\\atx\\atx-db\\data\\warehouse.duckdb",
+  "read_only": true,
+  "source_sha256": "0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae",
+  "migrations": {
+    "columns": [
+      "version"
+    ],
+    "rows": [
+      [
+        "0303"
+      ],
+      [
+        "0304"
+      ],
+      [
+        "0305"
+      ],
+      [
+        "0306"
+      ],
+      [
+        "0307"
+      ],
+      [
+        "0308"
+      ],
+      [
+        "0309"
+      ],
+      [
+        "0310"
+      ],
+      [
+        "0311"
+      ],
+      [
+        "0312"
+      ],
+      [
+        "0313"
+      ],
+      [
+        "0314"
+      ]
+    ]
+  },
+  "stages": {
+    "columns": [
+      "stage",
+      "run_id",
+      "status",
+      "started_at",
+      "finished_at",
+      "rows",
+      "error"
+    ],
+    "rows": [
+      [
+        "ticker_history_publish",
+        "activation-prices-updated",
+        "failed",
+        "2026-09-20 16:43:33.486144",
+        "2026-09-20 16:59:42.733559",
+        0,
+        "Operator recovered failed attempt: DuckDB 1GB query limit exhausted at publication COMMIT; rollback invalidated the old connection and prevented failure ledger writes. Process exited1, native job peak1.772728GiB under3GiB cap. Fresh read-only inspection verified original31178192 price rows through2026-06-15 retained, staging31959271 rows, and migrations0303..0312 applied. See activation-prices-updated.err and price-recovery-readonly.json. finished_at is the operator recovery observation, not an inferred original completion time."
+      ],
+      [
+        "ticker_history_publish",
+        "activation-prices-updated-2g",
+        "failed",
+        "2026-09-20 17:09:53.878766",
+        "2026-09-20 17:16:23.602910",
+        0,
+        "FATAL Error: Failed to rollback transaction. Cannot continue operation.\nOriginal Error: Out of Memory Error: failed to allocate data of size 128.0 KiB (1.8 GiB/1.8 GiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads\nRollback Error: Out of Memory Error: failed to pin block of size 256.0 KiB (1.8 GiB/1.8 GiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads"
+      ],
+      [
+        "ticker_history_publish",
+        "activation-prices-updated-bounded",
+        "completed",
+        "2026-09-20 17:54:44.215512",
+        "2026-09-20 18:00:09.786632",
+        31959271,
+        null
+      ]
+    ]
+  },
+  "prices": {
+    "columns": [
+      "source",
+      "rows",
+      "security_count",
+      "first_date",
+      "last_date",
+      "invalid_adjusted_close",
+      "nonnull_split_only_factor"
+    ],
+    "rows": [
+      [
+        "tbltickerhistory3_10y",
+        31959271,
+        34251,
+        "2012-03-26",
+        "2026-09-18",
+        0,
+        0
+      ]
+    ]
+  },
+  "latest_date": {
+    "columns": [
+      "trade_date",
+      "rows",
+      "security_count"
+    ],
+    "rows": [
+      [
+        "2026-09-18",
+        12386,
+        12386
+      ]
+    ]
+  },
+  "retained_staging": {
+    "columns": [
+      "table_name",
+      "estimated_size"
+    ],
+    "rows": []
+  },
+  "latest_backups": {
+    "columns": [
+      "backup_path",
+      "byte_size",
+      "sha256"
+    ],
+    "rows": [
+      [
+        "data\\warehouse.duckdb.pre-migrate.20260920-175417.bak",
+        10461917184,
+        "2cb19981ad360add3f95f7da13a53bdeebd9521745c5de991cf34ba9de0d6c20"
+      ],
+      [
+        "data\\warehouse.duckdb.pre-migrate.20260920-170932.bak",
+        8054386688,
+        "846b4d7e6b5969d7cf0a4ca0610cb86e572392e3a5d926ba04bcc39d83c05679"
+      ],
+      [
+        "data\\warehouse.duckdb.pre-migrate.20260920-164311.bak",
+        6303264768,
+        "aa4427ded8f2f9b7582711ae3e014be71a28369c1e212b82c1ae8063c498e098"
+      ]
+    ]
+  }
+}

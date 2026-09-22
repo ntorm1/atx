@@ -1,0 +1,74 @@
+diff --git a/atx-db/src/atx_db/activation.py b/atx-db/src/atx_db/activation.py
+index c8657027..b84cf901 100644
+--- a/atx-db/src/atx_db/activation.py
++++ b/atx-db/src/atx_db/activation.py
+@@ -217,6 +217,7 @@ class ActivationOptions:
+     minimum_latest_date_securities: int = 5_000
+     companyfacts_limit: int | None = None
+     companyfacts_progress_every: int = 25
++    companyfacts_resume_from_run_id: str | None = None
+     submissions_batch_size: int = 50
+     submissions_resume_from_run_id: str | None = None
+     companyfacts_symbol_source: str = "sec_company_tickers"
+@@ -571,6 +572,8 @@ def stage_companyfacts_load(store: DuckDBStore, options: ActivationOptions) -> S
+         symbol_source=options.companyfacts_symbol_source,
+         symbol_limit=options.companyfacts_limit,
+         skip_loaded_targets=skip_loaded,
++        resume_from_run_id=options.companyfacts_resume_from_run_id,
++        user_agent=options.sec_user_agent or "",
+         skip_failed_targets=True,
+         companyfacts_zip=options.companyfacts_zip,
+         as_of_date=options.as_of_date,
+@@ -1039,6 +1042,19 @@ def _validate_submissions_resume_plan(options: ActivationOptions, stages: tuple[
+         )
+ 
+ 
++def _validate_companyfacts_resume_plan(options: ActivationOptions, stages: tuple[str, ...]) -> None:
++    if options.companyfacts_resume_from_run_id is None:
++        return
++    if (options.companyfacts_symbol_source != "archive_members" or options.companyfacts_limit is not None
++            or options.skip_loaded_companyfacts is True):
++        raise ValueError("companyfacts resume requires the full archive with replacement enabled")
++    if "sec_bulk_download" in stages:
++        raise ValueError(
++            "companyfacts resume cannot include sec_bulk_download; use --only companyfacts_load "
++            "or --start-stage companyfacts_load to preserve the prior archive"
++        )
++
++
+ def run_activation(
+     options: ActivationOptions,
+     *,
+@@ -1050,6 +1066,7 @@ def run_activation(
+         if stage not in STAGES:
+             raise ValueError(f"unknown activation stage {stage!r}; expected one of {STAGE_ORDER}")
+     _validate_submissions_resume_plan(options, stages)
++    _validate_companyfacts_resume_plan(options, stages)
+     emitted: list[dict[str, object]] = []
+     if options.dry_run:
+         # Never opens a write-mode store: see _dry_run_done. Nothing is created,
+@@ -1170,6 +1187,8 @@ def add_activation_arguments(parser: argparse.ArgumentParser) -> None:
+     parser.add_argument("--threads", type=int, default=1)
+     parser.add_argument("--shards", type=int, default=16)
+     parser.add_argument("--companyfacts-limit", type=int, default=None)
++    parser.add_argument("--companyfacts-resume-from-run-id", default=None,
++                        help="Verify and resume completed members of a failed companyfacts dataset UUID.")
+     parser.add_argument("--submissions-batch-size", type=int, default=50)
+     parser.add_argument("--submissions-resume-from-run-id", default=None,
+                         help="Verify and resume the full archive prefix of a failed submissions dataset UUID.")
+@@ -1218,6 +1237,7 @@ def activation_options_from_args(args: argparse.Namespace) -> ActivationOptions:
+         threads=args.threads,
+         reconciliation_shards=args.shards,
+         companyfacts_limit=args.companyfacts_limit,
++        companyfacts_resume_from_run_id=args.companyfacts_resume_from_run_id,
+         submissions_batch_size=args.submissions_batch_size,
+         submissions_resume_from_run_id=args.submissions_resume_from_run_id,
+         companyfacts_symbol_source=args.companyfacts_symbol_source,
+@@ -1286,6 +1306,7 @@ def run_activation_from_args(
+         only=tuple(args.only or ()),
+     )
+     _validate_submissions_resume_plan(options, stages)
++    _validate_companyfacts_resume_plan(options, stages)
+     if not options.dry_run and options.db_path.exists() and pending_migrations(options.db_path):
+         governed_migrations(options.db_path)
+         _prune_activation_backups(options.db_path, keep_latest=getattr(args, "backup_keep", 3))

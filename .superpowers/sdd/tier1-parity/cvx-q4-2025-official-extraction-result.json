@@ -1,0 +1,38 @@
+{
+  "observed_at_utc": "2026-09-22T23:10:19.432799+00:00",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/93410/000009341026000019/a12312025ex9918-k.htm",
+  "local_decoded_utf8_sha256": "4b2ba83859eeb59a5ed94dca29a4a22f7c1d5409166b34c0ae4a2c4690494b00",
+  "original_http_body_hash_measured": false,
+  "production_receipt": false,
+  "warehouse_mutations": false,
+  "filing_event_report_date": "2026-01-30",
+  "fact": {
+    "value": 1.39,
+    "period_end": "2025-12-31",
+    "prior_year_quarter_value": 1.84,
+    "evidence_text": "PER SHARE OF COMMON STOCK | Net Income (Loss) Attributable to Chevron Corporation | - Diluted | 1.39",
+    "table_number": 10,
+    "row_number": 28,
+    "column_number": 4,
+    "column_heading": "CONSOLIDATED STATEMENT OF INCOME | Three Months Ended December 31, | 2025",
+    "header_trace": [
+      "CONSOLIDATED STATEMENT OF INCOME",
+      "Three Months Ended December 31,",
+      "2025"
+    ],
+    "row_lineage": [
+      "PER SHARE OF COMMON STOCK",
+      "Net Income (Loss) Attributable to Chevron Corporation",
+      "- Diluted"
+    ],
+    "duration_evidence": "three_months_explicit",
+    "period_start": null,
+    "period_start_basis": "month_start_deferred_to_bridge",
+    "duration_days": null
+  },
+  "rejection_reason": null,
+  "fiscal": [
+    2025,
+    "Q4"
+  ]
+}

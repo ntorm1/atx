@@ -23,6 +23,7 @@ income_tax_ttm,rollup,ttm(income_tax_total),ttm,item:income_tax_total,false,Trai
 net_income_ttm,rollup,ttm(net_income_total),ttm,item:net_income_total,false,Trailing-twelve-month net income.,1
 net_income_common_ttm,rollup,ttm(net_income_to_common),ttm,item:net_income_to_common,false,Trailing-twelve-month net income available to common.,1
 eps_diluted_ttm,rollup,ttm(eps_diluted),ttm,item:eps_diluted,false,Trailing-twelve-month diluted earnings per share.,1
+eps_basic_ttm,rollup,ttm(eps_basic__1034),ttm,item:eps_basic__1034,false,Trailing-twelve-month basic earnings per share.,1
 cfo_ttm,rollup,ttm(cash_flow_from_operations),ttm,item:cash_flow_from_operations,false,Trailing-twelve-month cash flow from operations.,1
 capex_ttm,rollup,ttm(capex_q),ttm,metric:capex_q,false,Trailing-twelve-month capital expenditure.,1
 fcf_ttm,rollup,ttm(fcf_q),ttm,metric:fcf_q,false,Trailing-twelve-month free cash flow.,1
@@ -96,6 +97,33 @@ net_margin_change_yoy,growth,"net_margin - lag(net_margin, 4)",ttm,metric:net_ma
 asset_turnover_change_yoy,growth,"asset_turnover - lag(asset_turnover, 4)",ttm,metric:asset_turnover,false,Year-over-year change in asset turnover.,1
 operating_profitability_change_yoy,growth,"operating_profitability - lag(operating_profitability, 4)",ttm,metric:operating_profitability,false,Year-over-year change in operating profitability.,1
 roe_change_yoy,growth,"roe - lag(roe, 4)",ttm,metric:roe,false,Year-over-year change in return on equity.,1
+revenue_q_growth_yoy,growth,yoy(revenue),q,item:revenue,false,Year-over-year growth in unadjusted reported quarterly revenue; fiscal-quarter comparisons may be seasonal.,1
+gross_profit_q_growth_yoy,growth,yoy(gross_profit_q),q,metric:gross_profit_q,false,Year-over-year growth in unadjusted reported quarterly gross profit; fiscal-quarter comparisons may be seasonal.,1
+operating_income_q_growth_yoy,growth,yoy(operating_income),q,item:operating_income,false,Year-over-year growth in unadjusted reported quarterly operating income; fiscal-quarter comparisons may be seasonal.,1
+net_income_q_growth_yoy,growth,yoy(net_income_total),q,item:net_income_total,false,Year-over-year growth in unadjusted reported quarterly net income; fiscal-quarter comparisons may be seasonal.,1
+eps_diluted_q_growth_yoy,growth,yoy(eps_diluted),q,item:eps_diluted,false,Year-over-year growth in unadjusted reported quarterly diluted EPS; fiscal-quarter comparisons may be seasonal.,1
+cfo_q_growth_yoy,growth,yoy(cash_flow_from_operations),q,item:cash_flow_from_operations,false,Year-over-year growth in unadjusted reported quarterly operating cash flow; fiscal-quarter comparisons may be seasonal.,1
+fcf_q_growth_yoy,growth,yoy(fcf_q),q,metric:fcf_q,false,Year-over-year growth in unadjusted reported quarterly free cash flow; fiscal-quarter comparisons may be seasonal.,1
+capex_q_growth_yoy,growth,yoy(capex_q),q,metric:capex_q,false,Year-over-year growth in unadjusted reported quarterly capital expenditure; fiscal-quarter comparisons may be seasonal.,1
+rd_expense_q_growth_yoy,growth,yoy(r_and_d_expense),q,item:r_and_d_expense,false,Year-over-year growth in unadjusted reported quarterly research and development expense; fiscal-quarter comparisons may be seasonal.,1
+revenue_q_growth_qoq,growth,qoq(revenue),q,item:revenue,false,Quarter-over-quarter growth in unadjusted reported quarterly revenue; fiscal-quarter comparisons may be seasonal.,1
+gross_profit_q_growth_qoq,growth,qoq(gross_profit_q),q,metric:gross_profit_q,false,Quarter-over-quarter growth in unadjusted reported quarterly gross profit; fiscal-quarter comparisons may be seasonal.,1
+operating_income_q_growth_qoq,growth,qoq(operating_income),q,item:operating_income,false,Quarter-over-quarter growth in unadjusted reported quarterly operating income; fiscal-quarter comparisons may be seasonal.,1
+net_income_q_growth_qoq,growth,qoq(net_income_total),q,item:net_income_total,false,Quarter-over-quarter growth in unadjusted reported quarterly net income; fiscal-quarter comparisons may be seasonal.,1
+eps_diluted_q_growth_qoq,growth,qoq(eps_diluted),q,item:eps_diluted,false,Quarter-over-quarter growth in unadjusted reported quarterly diluted EPS; fiscal-quarter comparisons may be seasonal.,1
+cfo_q_growth_qoq,growth,qoq(cash_flow_from_operations),q,item:cash_flow_from_operations,false,Quarter-over-quarter growth in unadjusted reported quarterly operating cash flow; fiscal-quarter comparisons may be seasonal.,1
+fcf_q_growth_qoq,growth,qoq(fcf_q),q,metric:fcf_q,false,Quarter-over-quarter growth in unadjusted reported quarterly free cash flow; fiscal-quarter comparisons may be seasonal.,1
+capex_q_growth_qoq,growth,qoq(capex_q),q,metric:capex_q,false,Quarter-over-quarter growth in unadjusted reported quarterly capital expenditure; fiscal-quarter comparisons may be seasonal.,1
+rd_expense_q_growth_qoq,growth,qoq(r_and_d_expense),q,item:r_and_d_expense,false,Quarter-over-quarter growth in unadjusted reported quarterly research and development expense; fiscal-quarter comparisons may be seasonal.,1
+gross_profit_cagr_3y,growth,"cagr(gross_profit_ttm, 3)",ttm,metric:gross_profit_ttm,false,Three-year compound annual trailing gross-profit growth with positive endpoints required.,1
+operating_income_cagr_3y,growth,"cagr(operating_income_ttm, 3)",ttm,metric:operating_income_ttm,false,Three-year compound annual trailing operating-income growth with positive endpoints required.,1
+ebitda_cagr_3y,growth,"cagr(ebitda_ttm, 3)",ttm,metric:ebitda_ttm,false,Three-year compound annual trailing EBITDA growth with positive endpoints required.,1
+fcf_cagr_3y,growth,"cagr(fcf_ttm, 3)",ttm,metric:fcf_ttm,false,Three-year compound annual trailing free-cash-flow growth with positive endpoints required.,1
+common_equity_cagr_3y,growth,"cagr(common_equity_q, 3)",q,metric:common_equity_q,false,Three-year compound annual common-equity growth with positive endpoints required.,1
+dso_days,profitability,"safe_div(receivables_avg2 * 365, max(revenue_ttm, 0))",ttm,metric:receivables_avg2|metric:revenue_ttm,false,Days sales outstanding using 365 days and average opening and closing receivables over positive trailing revenue.,1
+dio_days,profitability,"safe_div(inventory_avg2 * 365, max(cost_of_revenue_ttm, 0))",ttm,metric:inventory_avg2|metric:cost_of_revenue_ttm,false,Days inventory outstanding using 365 days and average opening and closing inventory over positive trailing cost of revenue.,1
+dpo_days,profitability,"safe_div(payables_avg2 * 365, max(cost_of_revenue_ttm, 0))",ttm,metric:payables_avg2|metric:cost_of_revenue_ttm,false,Days payables outstanding using 365 days and average opening and closing payables over positive trailing cost of revenue.,1
+cash_conversion_cycle,profitability,dso_days + dio_days - dpo_days,ttm,metric:dso_days|metric:dio_days|metric:dpo_days,false,Cash conversion cycle in days: DSO plus DIO less DPO.,1
 debt_to_equity,leverage,"safe_div(total_debt_q, stockholders_equity)",q,metric:total_debt_q|item:stockholders_equity,false,Total debt over stockholders equity.,1
 debt_to_assets,leverage,"safe_div(total_debt_q, total_assets)",q,metric:total_debt_q|item:total_assets,false,Total debt over total assets.,1
 long_term_debt_to_assets,leverage,"safe_div(long_term_debt, total_assets)",q,item:long_term_debt|item:total_assets,false,Long-term debt over total assets.,1

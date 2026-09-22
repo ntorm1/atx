@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "C:/atx/.superpowers/sdd/tier1-parity/measure_cik_scan_predicates.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.841575622558594,
+    "commit_free_gb": 9.310768127441406
+  },
+  "child_pid": 22736,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.96124267578125
+}

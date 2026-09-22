@@ -76,36 +76,17 @@ def test_default_jobs_include_shares_after_sec_company_facts(tmp_store):
     assert order.index("sec_company_facts") < order.index("shares_outstanding_history")
 
 
-def test_default_jobs_include_valuation_multiples_after_inputs(tmp_store):
-    """Valuation multiples wait for market cap and latest fundamental surfaces."""
+def test_default_jobs_exclude_deprecated_valuation_surfaces(tmp_store):
+    """Legacy valuation tables remain readable but are no longer refreshed."""
     from atx_db.jobs import JobManager
 
     mgr = JobManager(tmp_store)
     mgr.seed_default_jobs()
 
     order = mgr.enabled_job_order()
-    assert "market_cap" in order
     assert "fundamental_xbrl_metric" in order
     assert "sec_company_facts" in order
-    assert "valuation_multiples" in order
-    assert order.index("market_cap") < order.index("valuation_multiples")
-    assert order.index("fundamental_xbrl_metric") < order.index("valuation_multiples")
-    assert order.index("sec_company_facts") < order.index("valuation_multiples")
-
-
-def test_default_jobs_include_enterprise_value_after_inputs(tmp_store):
-    """Enterprise value waits for market cap and statement components."""
-    from atx_db.jobs import JobManager
-
-    mgr = JobManager(tmp_store)
-    mgr.seed_default_jobs()
-
-    order = mgr.enabled_job_order()
-    assert "market_cap" in order
-    assert "sec_company_facts" in order
-    assert "enterprise_value" in order
-    assert order.index("market_cap") < order.index("enterprise_value")
-    assert order.index("sec_company_facts") < order.index("enterprise_value")
+    assert not {"market_cap", "enterprise_value", "valuation_multiples"}.intersection(order)
 
 
 def test_default_jobs_include_adjustment_factors_after_corporate_actions(tmp_store):
@@ -296,18 +277,10 @@ def test_dataset_registry_dag_has_expected_foundation_edges():
     assert dag.dependencies_of("fundamental_ratios") == ("fundamental_standardized",)
     assert dag.dependencies_of("xbrl_filing_contexts") == ("sec_submissions",)
     assert dag.dependencies_of("shares_outstanding_history") == ("sec_company_facts",)
-    assert dag.dependencies_of("market_cap") == (
+    assert dag.dependencies_of("market_daily") == (
+        "derived_metrics",
         "shares_outstanding_history",
         "tbltickerhistory_daily",
-    )
-    assert dag.dependencies_of("enterprise_value") == (
-        "market_cap",
-        "sec_company_facts",
-    )
-    assert dag.dependencies_of("valuation_multiples") == (
-        "fundamental_xbrl_metric",
-        "market_cap",
-        "sec_company_facts",
     )
     assert dag.dependencies_of("fundamental_standardized") == (
         "fundamental_xbrl_metric",

@@ -1952,13 +1952,12 @@ def _derive_forward_returns_from_prices(
 ) -> pd.DataFrame:
     """Build split/dividend-adjusted targets at the panel's formation dates.
 
-    The landed feed's ``adjusted_close`` is not reliable, so the canonical
-    warehouse convention is raw close multiplied by all *future* positive
-    ``split_factor`` values.  Computing both endpoints on that basis makes
-    factors after the return horizon cancel and correctly retains actions
-    inside the horizon.  DuckDB computes the full per-security windows, then
-    emits only keys present in ``panel``; this avoids materializing a
-    ``bars x horizons`` pandas frame for every security in the warehouse.
+    Uses positive finite canonical adjusted-close endpoints directly. Invalid
+    adjusted values remain missing observations in the date sequence; they never
+    become raw-price returns or shift a target to a later valid bar. ``panel=None``
+    explicitly requests every formation key; an empty panel returns no rows.
+    DuckDB computes per-security windows and emits only requested panel keys, but
+    an unscoped call still materializes all resulting targets in pandas.
     """
 
     horizons = tuple(dict.fromkeys(int(horizon) for horizon in horizons))
@@ -1996,33 +1995,30 @@ def _derive_forward_returns_from_prices(
         f"SELECT w.security_id, w.as_of_date, {horizon} AS horizon, "
         f"w.close_fwd_{horizon} / w.adjusted_close - 1.0 AS forward_return "
         f"FROM wide_returns w {key_join} "
-        f"WHERE w.close_fwd_{horizon} IS NOT NULL AND w.adjusted_close > 0"
+        f"WHERE w.close_fwd_{horizon} > 0 AND w.adjusted_close > 0 "
+        f"AND isfinite(w.close_fwd_{horizon} / w.adjusted_close - 1.0)"
         for horizon in horizons
     )
     try:
         return store.con.execute(
             f"""
-            WITH adjusted AS (
+            WITH price_revisions AS (
                 SELECT
                     b.security_id,
                     b.trade_date AS as_of_date,
-                    b.close * coalesce(
-                        product(
-                            CASE
-                                WHEN b.split_factor IS NOT NULL AND b.split_factor > 0
-                                THEN b.split_factor
-                                ELSE 1.0
-                            END
-                        ) OVER (
-                            PARTITION BY b.security_id
-                            ORDER BY b.trade_date
-                            ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING
-                        ),
-                        1.0
-                    ) AS adjusted_close
+                    CASE WHEN isfinite(b.adjusted_close) AND b.adjusted_close > 0
+                         THEN b.adjusted_close END AS adjusted_close,
+                    row_number() OVER (
+                        PARTITION BY b.security_id, b.trade_date
+                        ORDER BY b.available_at DESC, b.source_loaded_at DESC, b.source DESC
+                    ) AS revision_rank
                 FROM equity_daily_bars b
                 {bar_scope_join}
-                WHERE b.close IS NOT NULL AND b.close > 0
+                WHERE b.trade_date IS NOT NULL
+            ),
+            adjusted AS (
+                SELECT * EXCLUDE (revision_rank)
+                FROM price_revisions WHERE revision_rank = 1
             ),
             wide_returns AS (
                 SELECT
@@ -2064,7 +2060,7 @@ def evaluate_panel(
 
     Reads ``v_factor_panel`` read-only via ``load_panel_for_eval`` unless an explicit
     research ``panel`` is supplied. If ``forward_returns`` is not supplied, ``return_target``
-    selects split-adjusted warehouse prices or the governed survivorship-safe target at only the
+    selects adjusted-close warehouse prices or the governed survivorship-safe target at only the
     panel's formation keys. ``neutralize_taxonomy`` optionally replaces raw values with strict,
     point-in-time within-industry ranks; current classifications never leak into past dates.
 
@@ -2309,13 +2305,25 @@ def _derive_same_day_returns_from_prices(store) -> pd.DataFrame:
 
     return store.con.execute(
         """
+        WITH price_revisions AS (
+            SELECT security_id, trade_date,
+                   CASE WHEN isfinite(adjusted_close) AND adjusted_close > 0
+                        THEN adjusted_close END AS adjusted_close,
+                   row_number() OVER (
+                       PARTITION BY security_id, trade_date
+                       ORDER BY available_at DESC, source_loaded_at DESC, source DESC
+                   ) AS revision_rank
+            FROM equity_daily_bars
+            WHERE trade_date IS NOT NULL
+        )
         SELECT
             security_id,
             trade_date AS as_of_date,
-            close / lag(close) OVER (PARTITION BY security_id ORDER BY trade_date) - 1
-                AS same_day_return
-        FROM equity_daily_bars
-        WHERE close IS NOT NULL
+            adjusted_close / lag(adjusted_close) OVER (
+                PARTITION BY security_id ORDER BY trade_date
+            ) - 1 AS same_day_return
+        FROM price_revisions
+        WHERE revision_rank = 1
         ORDER BY security_id, trade_date
         """
     ).df()

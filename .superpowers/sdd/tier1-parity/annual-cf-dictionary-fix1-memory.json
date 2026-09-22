@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "scripts/generate_data_dictionary.py"
+  ],
+  "job_limit_gb": 1.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 8.188159942626953,
+    "commit_free_gb": 10.182292938232422
+  },
+  "child_pid": 4736,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.5702705383300781
+}

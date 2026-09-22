@@ -1,0 +1,5 @@
+src\atx_db\fundamentals.py:1109: error: Need type annotation for "verified_members" (hint: "verified_members: dict[<type>, <type>] = ...")  [var-annotated]
+src\atx_db\fundamentals.py:1275: error: Incompatible types in assignment (expression has type "None", variable has type "str")  [assignment]
+src\atx_db\fundamentals.py:1277: error: Value of type "dict[str, Any] | _CompanyFactsArchivePlaceholder | None" is not indexable  [index]
+src\atx_db\fundamentals.py:1316: error: Argument 1 to "_companyfacts_archive_identity" has incompatible type "Path | None"; expected "Path"  [arg-type]
+Found 4 errors in 1 file (checked 1 source file)

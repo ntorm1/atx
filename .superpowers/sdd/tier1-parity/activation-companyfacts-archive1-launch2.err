@@ -1,0 +1,32 @@
+2026-09-20 15:22:05,902 INFO atx_db.fundamentals: companyfacts processed=0 total=20390 loaded=0 empty=0 failed=0 rows=0
+Traceback (most recent call last):
+  File "C:\atx\atx-db\scripts\warehouse_activate.py", line 90, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "C:\atx\atx-db\scripts\warehouse_activate.py", line 84, in main
+    return run_activation_from_args(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\atx\atx-db\src\atx_db\activation.py", line 1276, in run_activation_from_args
+    run_activation(options, stages=stages)
+  File "C:\atx\atx-db\src\atx_db\activation.py", line 1077, in run_activation
+    result = STAGES[stage](store, options)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\atx\atx-db\src\atx_db\activation.py", line 581, in stage_companyfacts_load
+    result = SecCompanyFactsDataset().run(store, fact_options)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\atx\atx-db\src\atx_db\dataset.py", line 79, in run
+    result = self.load(store, with_run_id(options, run_id))
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\atx\atx-db\src\atx_db\fundamentals.py", line 1100, in load
+    rows_loaded += self._replace_facts(store, facts, points, security_id, cik=cik)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\atx\atx-db\src\atx_db\fundamentals.py", line 1206, in _replace_facts
+    store.con.execute(
+_duckdb.OutOfMemoryException: Out of Memory Error: could not allocate block of size 256.0 KiB (953.5 MiB/953.6 MiB used)
+
+Possible solutions:
+* Reducing the number of threads (SET threads=X)
+* Disabling insertion-order preservation (SET preserve_insertion_order=false)
+* Increasing the memory limit (SET memory_limit='...GB')
+
+See also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads

@@ -3,9 +3,9 @@
 The pandas chunk loader remains useful for small symbol subsets.  Full-universe
 publication is different: repeatedly probing and deleting from a multi-million
 row indexed table turns linear ingestion into an effectively quadratic job.
-This module scans an extracted TSV twice with DuckDB projection pushdown, builds
-the complete replacement beside the live table, validates it, and swaps it in
-atomically.
+This module stages a projection of a local TSV or Parquet file, measures original-row
+quality before exclusions, builds the replacement beside the live table,
+validates it, and swaps it in atomically. Raw source bytes remain the lineage.
 """
 
 from __future__ import annotations
@@ -15,11 +15,18 @@ import json
 import logging
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from ._bulk_publication import publish_validated_shadow
 from .connection import DuckDBStore
 from .ticker_history import SOURCE_NAME, TBLTICKERHISTORY_ID_TYPE
+from .ticker_history_quality import (
+    SOURCE_PROVENANCE,
+    source_diagnostics,
+    source_provenance,
+    stage_source,
+)
 from .warehouse import quality_check, record_source_file
 
 LOGGER = logging.getLogger(__name__)
@@ -27,16 +34,20 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class BulkTickerHistoryOptions:
-    tsv_path: Path
+    # Retained as an input alias for existing callers and positional construction.
+    tsv_path: Path | None = None
     source: str = SOURCE_NAME
-    memory_limit: str = "4GB"
-    threads: int = 4
+    memory_limit: str = "1GB"
+    threads: int = 1
     minimum_rows: int = 30_000_000
     minimum_securities: int = 10_000
     minimum_latest_date_securities: int = 5_000
     run_id: str | None = None
+    source_path: Path | None = None
 
     def __post_init__(self) -> None:
+        if (self.source_path is None) == (self.tsv_path is None):
+            raise ValueError("supply exactly one source_path or legacy tsv_path")
         if self.threads < 1:
             raise ValueError("threads must be positive")
         if min(
@@ -45,6 +56,12 @@ class BulkTickerHistoryOptions:
             self.minimum_latest_date_securities,
         ) < 1:
             raise ValueError("publication breadth floors must be positive")
+
+    @property
+    def input_path(self) -> Path:
+        path = self.source_path if self.source_path is not None else self.tsv_path
+        assert path is not None  # Validated in __post_init__.
+        return path
 
 
 @dataclass(frozen=True)
@@ -57,26 +74,22 @@ class BulkTickerHistoryResult:
     duplicate_keys: int
     elapsed_seconds: float
     run_id: str
+    source_diagnostics: dict[str, object] = field(default_factory=dict)
+    provenance: dict[str, str] = field(default_factory=lambda: dict(SOURCE_PROVENANCE))
 
 
 _RAW_CTE = """
 projected AS (
-    SELECT
-        try_cast(tradingDate AS DATE) AS trade_date,
-        nullif(trim(securityID), '') AS vendor_security_id,
-        upper(trim(coalesce(nullif(todayTicker, ''), nullif(ticker_tk, '')))) AS symbol,
-        try_cast(open AS DOUBLE) AS open,
-        try_cast(high AS DOUBLE) AS high,
-        try_cast(low AS DOUBLE) AS low,
-        try_cast(close AS DOUBLE) AS close,
-        try_cast(closePr AS DOUBLE) AS adjusted_close,
-        try_cast(volume AS BIGINT) AS volume,
-        try_cast(shares AS BIGINT) AS shares_outstanding,
-        try_cast(returnFactor AS DOUBLE) AS split_factor
-    FROM read_csv(
-        ?, delim = '\t', header = true, all_varchar = true,
-        auto_detect = true, sample_size = 20480
-    )
+    SELECT r.*,
+           CASE WHEN isfinite(close) AND close > 0
+                     AND isfinite(cumul_return_factor) AND cumul_return_factor > 0
+                     AND isfinite(close * cumul_return_factor) AND close * cumul_return_factor > 0
+                THEN close * cumul_return_factor END AS adjusted_close,
+           NULL::DOUBLE AS split_factor
+    FROM ticker_history_source_rows r
+    LEFT JOIN ticker_history_source_keys k
+      ON r.vendor_id = k.vendor_id AND r.trade_date IS NOT DISTINCT FROM k.trade_date
+    WHERE coalesce(k.key_rows, 1) = 1
 ),
 raw AS (
     SELECT *
@@ -87,11 +100,13 @@ raw AS (
 
 
 def _configure(store: DuckDBStore, options: BulkTickerHistoryOptions) -> None:
-    temp_dir = options.tsv_path.parent / "duckdb-tmp"
+    temp_dir = options.input_path.parent / "duckdb-tmp"
     temp_dir.mkdir(parents=True, exist_ok=True)
     store.con.execute("PRAGMA disable_progress_bar")
     store.con.execute("SET memory_limit = ?", [options.memory_limit])
     store.con.execute("SET threads = ?", [options.threads])
+    store.analytical_memory_limit = options.memory_limit
+    store.analytical_threads = options.threads
     store.con.execute("SET preserve_insertion_order = false")
     store.con.execute("SET temp_directory = ?", [str(temp_dir)])
 
@@ -134,30 +149,31 @@ def _create_line_map(store: DuckDBStore, options: BulkTickerHistoryOptions) -> N
         resolved AS (
             SELECT
                 r.vendor_security_id,
-                r.symbol,
+                r.current_symbol AS symbol,
                 r.trade_date,
                 coalesce(
                     m.security_id,
                     CASE
                         WHEN r.vendor_security_id IS NULL OR r.vendor_security_id = '0'
-                        THEN 'TBLTICKERHISTORY-SYMBOL-' || r.symbol || '-VENDOR-'
+                        THEN 'TBLTICKERHISTORY-SYMBOL-' || r.current_symbol || '-VENDOR-'
                              || coalesce(r.vendor_security_id, 'MISSING')
                         ELSE 'TBLTICKERHISTORY-' || r.vendor_security_id
                     END
                 ) AS base_security_id
             FROM raw r
-            LEFT JOIN broad_symbol_map m USING (symbol)
+            LEFT JOIN broad_symbol_map m ON m.symbol = r.current_symbol
         ),
         line_stats AS (
             SELECT
-                base_security_id,
+                arg_max(base_security_id, (trade_date, symbol)) AS base_security_id,
                 vendor_security_id,
-                symbol,
+                arg_max(symbol, (trade_date, symbol)) AS symbol,
                 count(*) AS observations,
                 min(trade_date) AS first_seen_date,
                 max(trade_date) AS last_seen_date
             FROM resolved
-            GROUP BY base_security_id, vendor_security_id, symbol
+            GROUP BY vendor_security_id,
+                     CASE WHEN try_cast(vendor_security_id AS BIGINT) > 0 THEN '' ELSE symbol END
         ),
         ranked AS (
             SELECT *, row_number() OVER (
@@ -169,6 +185,8 @@ def _create_line_map(store: DuckDBStore, options: BulkTickerHistoryOptions) -> N
         SELECT
             CASE
                 WHEN line_rank = 1 THEN base_security_id
+                WHEN try_cast(vendor_security_id AS BIGINT) > 0
+                THEN 'TBLTICKERHISTORY-' || vendor_security_id
                 ELSE 'TBLTICKERHISTORY-' || coalesce(vendor_security_id, '<NA>')
                      || '-' || symbol
             END AS security_id,
@@ -185,7 +203,6 @@ def _create_line_map(store: DuckDBStore, options: BulkTickerHistoryOptions) -> N
             last_seen_date
         FROM ranked
         """,
-        [str(options.tsv_path)],
     )
 
 
@@ -220,6 +237,16 @@ def _create_next_table(store: DuckDBStore, options: BulkTickerHistoryOptions) ->
         )
         """
     )
+    # Preserve every non-replaced source in the complete physical shadow.  The
+    # later rename then replaces the public table as one catalog transaction,
+    # rather than deleting 32M indexed live rows before an insert can commit.
+    con.execute(
+        """
+        INSERT INTO equity_daily_bars_bulk_next
+        SELECT * FROM equity_daily_bars WHERE source <> ?
+        """,
+        [options.source],
+    )
     con.execute(
         f"""
         INSERT INTO equity_daily_bars_bulk_next
@@ -228,14 +255,18 @@ def _create_next_table(store: DuckDBStore, options: BulkTickerHistoryOptions) ->
             SELECT r.*, m.security_id
             FROM raw r
             JOIN broad_line_map m
-              ON m.symbol = r.symbol
-             AND m.vendor_security_id IS NOT DISTINCT FROM r.vendor_security_id
+              ON m.vendor_security_id IS NOT DISTINCT FROM r.vendor_security_id
+             AND (r.vendor_id > 0 OR m.symbol = r.current_symbol)
             WHERE NOT (
                 coalesce(r.volume < 0, false)
                 OR coalesce(r.open <= 0, false)
                 OR coalesce(r.high <= 0, false)
                 OR coalesce(r.low <= 0, false)
                 OR coalesce(r.close <= 0, false)
+                OR coalesce(NOT isfinite(r.open), false)
+                OR coalesce(NOT isfinite(r.high), false)
+                OR coalesce(NOT isfinite(r.low), false)
+                OR coalesce(NOT isfinite(r.close), false)
                 OR coalesce(r.high < greatest(r.open, r.low, r.close), false)
                 OR coalesce(r.low > least(r.open, r.high, r.close), false)
             )
@@ -248,12 +279,9 @@ def _create_next_table(store: DuckDBStore, options: BulkTickerHistoryOptions) ->
             ?, current_timestamp, NULL::DATE, NULL::BOOLEAN,
             shares_outstanding, shares_outstanding * close
         FROM valid
-        QUALIFY row_number() OVER (
-            PARTITION BY security_id, trade_date
-            ORDER BY volume DESC NULLS LAST, vendor_security_id
-        ) = 1
+        QUALIFY count(*) OVER (PARTITION BY security_id, trade_date) = 1
         """,
-        [str(options.tsv_path), options.source, options.run_id],
+        [options.source, options.run_id],
     )
 
 
@@ -341,7 +369,7 @@ def _validate_next(
 
 def _publish(store: DuckDBStore, options: BulkTickerHistoryOptions) -> None:
     con = store.con
-    with store.transaction():
+    def publish_links() -> None:
         con.execute(
             """
             UPDATE securities AS s SET
@@ -381,7 +409,7 @@ def _publish(store: DuckDBStore, options: BulkTickerHistoryOptions) -> None:
                 available_at, source, run_id
             )
             SELECT security_id, ?, identifier_value, first_seen_date, NULL,
-                   first_seen_date, first_seen_date::TIMESTAMP + INTERVAL 22 HOUR,
+                   first_seen_date, current_timestamp,
                    ?, ?
             FROM broad_line_map
             """,
@@ -395,38 +423,51 @@ def _publish(store: DuckDBStore, options: BulkTickerHistoryOptions) -> None:
                 valid_to, as_of_date, available_at, source, run_id
             )
             SELECT security_id, symbol, NULL, NULL, 'USD', first_seen_date, NULL,
-                   first_seen_date, first_seen_date::TIMESTAMP + INTERVAL 22 HOUR,
+                   first_seen_date, current_timestamp,
                    ?, ?
             FROM broad_line_map
             """,
             [options.source, options.run_id],
         )
-        con.execute("DELETE FROM equity_daily_bars WHERE source = ?", [options.source])
-        con.execute("INSERT INTO equity_daily_bars SELECT * FROM equity_daily_bars_bulk_next")
-        _ensure_indexes(store)
-    con.execute("DROP TABLE equity_daily_bars_bulk_next")
+    publish_validated_shadow(
+        store,
+        live_table="equity_daily_bars",
+        shadow_table="equity_daily_bars_bulk_next",
+        before_swap=publish_links,
+    )
 
 
-def _ensure_indexes(store: DuckDBStore) -> None:
-    store.con.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_equity_daily_bars_security_date
-        ON equity_daily_bars(security_id, trade_date)
-        """
-    )
-    store.con.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_equity_daily_bars_symbol_date
-        ON equity_daily_bars(symbol, trade_date)
-        """
-    )
+def _record_failed_publication(store: DuckDBStore, run_id: str, error: Exception) -> None:
+    """Best-effort failure ledgering without masking the publication error."""
+    for recover in (False, True):
+        try:
+            if recover:
+                store.recover_failed_connection()
+            store.con.execute(
+                """
+                UPDATE dataset_runs SET status = 'failed', finished_at = current_timestamp,
+                                        error_message = ?
+                WHERE run_id = ?
+                """,
+                [str(error), run_id],
+            )
+            return
+        except Exception as ledger_error:
+            if recover:
+                note = (
+                    f"Operator recovery required for dataset_runs run_id={run_id!r}: "
+                    f"could not record the original publication failure: {ledger_error}"
+                )
+                error.add_note(note)
+                LOGGER.error("%s", note)
 
 
 def publish_bulk_ticker_history(
     store: DuckDBStore, options: BulkTickerHistoryOptions
 ) -> BulkTickerHistoryResult:
-    if not options.tsv_path.is_file():
-        raise FileNotFoundError(options.tsv_path)
+    if not options.input_path.is_file():
+        raise FileNotFoundError(options.input_path)
+    provenance = source_provenance(options.input_path)
     started = time.perf_counter()
     run_id = options.run_id or f"broad-bars-bulk-{uuid.uuid4()}"
     options = BulkTickerHistoryOptions(**{**asdict(options), "run_id": run_id})
@@ -444,13 +485,30 @@ def publish_bulk_ticker_history(
         record_source_file(
             store,
             dataset_id="tbltickerhistory_daily",
-            source_url=str(options.tsv_path),
-            cache_path=options.tsv_path,
+            source_url=str(options.input_path),
+            cache_path=options.input_path,
             status="available",
-            metadata={"mode": "native_bulk_projection", "run_id": run_id},
-            compute_hash=False,
+            metadata={"mode": "native_bulk_projection", "run_id": run_id, **provenance},
+            compute_hash=True,
+        )
+        stage_source(store.con, str(options.input_path))
+        diagnostics = source_diagnostics(store.con)
+        LOGGER.warning("ticker-history source diagnostics: %s; provenance: %s", diagnostics, provenance)
+        quality_check(
+            store, dataset_id="tbltickerhistory_daily", table_name="equity_daily_bars",
+            check_name="source_preprojection_diagnostics", status="warning",
+            observed_value=float(diagnostics["quarantined_positive_key_rows"]), threshold_value=0.0,
+            details={"run_id": run_id, "diagnostics": diagnostics, "provenance": provenance},
         )
         _create_symbol_map(store)
+        identity_counts = store.con.execute(
+            "SELECT count(*) FILTER (WHERE m.security_id IS NOT NULL), "
+            "count(*) FILTER (WHERE m.security_id IS NULL) "
+            "FROM ticker_history_source_rows r LEFT JOIN broad_symbol_map m ON m.symbol = r.current_symbol"
+        ).fetchone()
+        if identity_counts is not None:
+            diagnostics["current_symbol_linked_unverified_rows"] = identity_counts[0]
+            diagnostics["no_current_symbol_identity_match_rows"] = identity_counts[1]
         LOGGER.info("built canonical symbol map")
         _create_line_map(store, options)
         LOGGER.info("built vendor-line collision map")
@@ -458,7 +516,7 @@ def publish_bulk_ticker_history(
         LOGGER.info("built canonical daily-bar staging table")
         metrics = _validate_next(store, options)
         LOGGER.info(
-            "validated %,d rows across %,d securities; latest breadth %,d",
+            "validated %d rows across %d securities; latest breadth %d",
             metrics[0],
             metrics[1],
             metrics[3],
@@ -466,15 +524,9 @@ def publish_bulk_ticker_history(
         _publish(store, options)
         LOGGER.info("atomically published bars and canonical indexes")
     except Exception as exc:
-        store.con.execute("DROP TABLE IF EXISTS equity_daily_bars_bulk_next")
-        store.con.execute(
-            """
-            UPDATE dataset_runs SET status = 'failed', finished_at = current_timestamp,
-                                    error_message = ?
-            WHERE run_id = ?
-            """,
-            [str(exc), run_id],
-        )
+        # Keep staging for inspection. Cleanup must not invalidate a recovered
+        # connection or hide the original failure; the next explicit run replaces it.
+        _record_failed_publication(store, run_id, exc)
         raise
     rows, securities, latest_date, latest_securities, invalid_rows, duplicate_keys = metrics
     elapsed = time.perf_counter() - started
@@ -501,6 +553,8 @@ def publish_bulk_ticker_history(
             "latest_date": latest_date,
             "duplicate_keys": duplicate_keys,
             "invalid_rows": invalid_rows,
+            "source_diagnostics": diagnostics,
+            "provenance": provenance,
         },
     )
     store.con.execute("CHECKPOINT")
@@ -513,4 +567,6 @@ def publish_bulk_ticker_history(
         duplicate_keys=duplicate_keys,
         elapsed_seconds=elapsed,
         run_id=run_id,
+        source_diagnostics=diagnostics,
+        provenance=provenance,
     )

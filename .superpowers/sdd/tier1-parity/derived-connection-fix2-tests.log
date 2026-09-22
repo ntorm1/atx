@@ -1,0 +1,55 @@
+FF                                                                       [100%]
+================================== FAILURES ===================================
+____ test_keyset_reopens_preserve_full_history_stale_cleanup_and_budget[1] ____
+
+configured_store = <atx_db.connection.DuckDBStore object at 0x0000021C00913290>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000021C009133E0>
+batch_size = 1
+
+    @pytest.mark.parametrize("batch_size", [1, 3])
+    def test_keyset_reopens_preserve_full_history_stale_cleanup_and_budget(configured_store, monkeypatch, batch_size):
+        store = configured_store
+        expected_settings = store.con.execute(SETTINGS_SQL).fetchone()
+        _seed_mixed_history(store)
+        options = engine.DerivedMetricsOptions(source=SOURCE, batch_size=batch_size, run_id="same-build")
+        monkeypatch.setattr(engine, "_DERIVED_REOPEN_SECURITIES", 100)
+        expected_count = engine.refresh_derived_metrics(store, options)
+        assert store.con.execute(SETTINGS_SQL).fetchone() == expected_settings
+        assert _id_snapshots(store) == []
+        expected = _snapshot(store)
+        assert expected_count == len(expected) > 0
+>       assert current(store, "revenue_ttm", cutoff="2025-02-21")[:2] == (460, "quarterly")
+E       AssertionError: assert (460.0, 'incomparable') == (460, 'quarterly')
+E         
+E         At index 1 diff: 'incomparable' != 'quarterly'
+E         Use -v to get more diff
+
+tests\test_derived_connection_capacity.py:115: AssertionError
+____ test_keyset_reopens_preserve_full_history_stale_cleanup_and_budget[3] ____
+
+configured_store = <atx_db.connection.DuckDBStore object at 0x0000021C009ED490>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000021C009ED070>
+batch_size = 3
+
+    @pytest.mark.parametrize("batch_size", [1, 3])
+    def test_keyset_reopens_preserve_full_history_stale_cleanup_and_budget(configured_store, monkeypatch, batch_size):
+        store = configured_store
+        expected_settings = store.con.execute(SETTINGS_SQL).fetchone()
+        _seed_mixed_history(store)
+        options = engine.DerivedMetricsOptions(source=SOURCE, batch_size=batch_size, run_id="same-build")
+        monkeypatch.setattr(engine, "_DERIVED_REOPEN_SECURITIES", 100)
+        expected_count = engine.refresh_derived_metrics(store, options)
+        assert store.con.execute(SETTINGS_SQL).fetchone() == expected_settings
+        assert _id_snapshots(store) == []
+        expected = _snapshot(store)
+        assert expected_count == len(expected) > 0
+>       assert current(store, "revenue_ttm", cutoff="2025-02-21")[:2] == (460, "quarterly")
+E       AssertionError: assert (460.0, 'incomparable') == (460, 'quarterly')
+E         
+E         At index 1 diff: 'incomparable' != 'quarterly'
+E         Use -v to get more diff
+
+tests\test_derived_connection_capacity.py:115: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_derived_connection_capacity.py::test_keyset_reopens_preserve_full_history_stale_cleanup_and_budget[1]
+FAILED tests/test_derived_connection_capacity.py::test_keyset_reopens_preserve_full_history_stale_cleanup_and_budget[3]

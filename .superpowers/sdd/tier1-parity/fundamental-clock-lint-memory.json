@@ -1,0 +1,30 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "C:/atx/.superpowers/sdd/tier1-parity/verify_scoped_lint.py",
+    "src/atx_db/_fundamental_clock.py",
+    "src/atx_db/fundamentals.py",
+    "src/atx_db/asof/fundamentals.py",
+    "src/atx_db/features.py",
+    "src/atx_db/quality/checks_market_reference.py",
+    "src/atx_db/activation.py",
+    "src/atx_db/fundamental_xbrl_metrics.py",
+    "src/atx_db/expected_growth.py",
+    "src/atx_db/estimates/measure_actuals.py",
+    "src/atx_db/estimates/__init__.py",
+    "src/atx_db/migrations/bodies_0319.py",
+    "src/atx_db/migrations/registry.py",
+    "src/atx_db/migrations/__init__.py",
+    "tests/test_fundamental_clock.py",
+    "scripts/generate_data_dictionary.py"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "failed",
+  "headroom": {
+    "physical_free_gb": 6.428092956542969,
+    "commit_free_gb": 6.718936920166016
+  },
+  "child_pid": 16072,
+  "returncode": 1,
+  "native_peak_job_memory_gb": 0.0660552978515625
+}

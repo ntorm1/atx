@@ -1,0 +1,19 @@
+{"sha": "244af575b22f3c0a26212c02b4ba92b1e48fd2b0", "export": "C:\\Users\\natha\\AppData\\Local\\Temp\\atx-tier1-head-11zs3yx5\\atx-db"}
+C:\Users\natha\AppData\Local\Temp\atx-tier1-head-11zs3yx5\atx-db\src\atx_db\__init__.py
+F.........s...............................................               [100%]
+================================== FAILURES ===================================
+_______________ test_public_api_snapshot_matches_pinned_fixture _______________
+
+    def test_public_api_snapshot_matches_pinned_fixture():
+        expected = load_public_api_snapshot(SNAPSHOT_PATH)
+    
+>       assert compare_public_api_snapshot(expected) == ()
+E       AssertionError: assert (PublicApiDif...ed_annual')),) == ()
+E         
+E         Left contains one more item: PublicApiDiff(module='atx_db', missing=(), extra=('_companyfacts_resume', '_derived_annual'))
+E         Use -v to get more diff
+
+tests\test_module_boundaries.py:43: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_module_boundaries.py::test_public_api_snapshot_matches_pinned_fixture
+{"sha": "244af575b22f3c0a26212c02b4ba92b1e48fd2b0", "exit_code": 1, "export": "C:\\Users\\natha\\AppData\\Local\\Temp\\atx-tier1-head-11zs3yx5\\atx-db"}

@@ -1,0 +1,127 @@
+{
+  "observed_at_utc": "2026-09-21T21:52:54.987210+00:00",
+  "read_only": true,
+  "run": "activation-companyfacts-archive5",
+  "duckdb_version": "1.5.5",
+  "stop_reason": "User requested stop; controller verified owned job termination. Guard receipt is stale, not live-process evidence.",
+  "activation": {
+    "columns": [
+      "stage",
+      "run_id",
+      "status",
+      "started_at",
+      "finished_at",
+      "rows",
+      "error"
+    ],
+    "rows": [
+      [
+        "companyfacts_load",
+        "activation-companyfacts-archive5",
+        "running",
+        "2026-09-21 01:09:02.985771",
+        null,
+        null,
+        null
+      ]
+    ]
+  },
+  "dataset": {
+    "columns": [
+      "run_id",
+      "dataset_id",
+      "status",
+      "started_at",
+      "finished_at",
+      "rows_loaded",
+      "error_message"
+    ],
+    "rows": [
+      [
+        "6400b3c2-f0d1-4f47-bcf0-95aadd9241de",
+        "sec_company_facts",
+        "running",
+        "2026-09-21 01:09:02.993280",
+        null,
+        null,
+        null
+      ]
+    ]
+  },
+  "retained_totals": {
+    "columns": [
+      "facts",
+      "points",
+      "prices",
+      "custom_features"
+    ],
+    "rows": [
+      [
+        43417902,
+        43417902,
+        31959271,
+        31934514
+      ]
+    ]
+  },
+  "attempt_rows": {
+    "columns": [
+      "run_id",
+      "rows",
+      "ciks",
+      "first_cik",
+      "last_cik"
+    ],
+    "rows": [
+      [
+        "6400b3c2-f0d1-4f47-bcf0-95aadd9241de",
+        2803031,
+        778,
+        "0001255474",
+        "0001329919"
+      ]
+    ]
+  },
+  "source_outcomes": {
+    "columns": [
+      "status",
+      "members",
+      "reported_rows",
+      "first_cik",
+      "last_cik"
+    ],
+    "rows": [
+      [
+        "empty",
+        1110,
+        0,
+        "0000002110",
+        "0001329954"
+      ],
+      [
+        "loaded",
+        778,
+        2803031,
+        "0001255474",
+        "0001329919"
+      ],
+      [
+        "unavailable",
+        39,
+        0,
+        "0000003521",
+        "0001314414"
+      ]
+    ]
+  },
+  "migrations": {
+    "columns": [
+      "version"
+    ],
+    "rows": [
+      [
+        "0319"
+      ]
+    ]
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "ruff",
+    "check",
+    "src/atx_db/_derived_annual.py",
+    "src/atx_db/_derived_pit.py",
+    "src/atx_db/derived_metrics.py",
+    "src/atx_db/migrations/bodies_0316.py",
+    "src/atx_db/migrations/registry.py",
+    "src/atx_db/migrations/__init__.py",
+    "src/atx_db/api/catalog.py",
+    "src/atx_db/market_daily.py",
+    "tests/test_derived_annual.py",
+    "tests/test_derived_pit_revisions.py",
+    "tests/test_panel_export.py"
+  ],
+  "job_limit_gb": 1.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 8.31893539428711,
+    "commit_free_gb": 10.165904998779297
+  },
+  "child_pid": 21980,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.07445526123046875
+}

@@ -1,0 +1,15 @@
+{
+  "observed_at_utc": "2026-09-20T19:55:42.847629+00:00",
+  "read_only": true,
+  "limitation": "One already-processed issuer, sequential warm-cache order; not an end-to-end load benchmark or universal pruning guarantee.",
+  "numeric_guard": {
+    "distinct_key_rows": 11550,
+    "key_checksum": 17179575408950684063,
+    "elapsed_seconds": 1.083721399976639
+  },
+  "exact_spelling": {
+    "distinct_key_rows": 11550,
+    "key_checksum": 17179575408950684063,
+    "elapsed_seconds": 0.006283299997448921
+  }
+}

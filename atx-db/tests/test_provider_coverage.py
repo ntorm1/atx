@@ -83,17 +83,20 @@ def test_provider_coverage_migration_seeds_every_public_schema(tmp_store: DuckDB
         ).fetchall()
     )
     assert actual == expected
-    assert len(actual) == 7
+    # Tier1-S3 T9: derived-metrics (ATX.US.FUNDAMENTALS) and market-daily-1d
+    # (ATX.US.EQUITIES) added two schema codes and their SLO rows (addendum in
+    # .superpowers/sdd/tier1-parity/program.md), so the pinned count moved 7 -> 9.
+    # Tier1-S4 T7 registers three more public schemas -- security-master, universe,
+    # delistings -- with their own SLO rows, moving the pinned count 9 -> 12.
+    assert len(actual) == 12
 
     snapshots = refresh_provider_coverage(
         tmp_store,
         ProviderCoverageOptions(observed_at=OBSERVED_AT, run_id="empty-coverage"),
     )
-    assert len(snapshots) == 7
+    assert len(snapshots) == 12
     assert {snapshot.condition for snapshot in snapshots} == {"pending"}
-    assert tmp_store.con.execute(
-        "SELECT count(*) FROM v_api_schema_coverage_current"
-    ).fetchone() == (7,)
+    assert tmp_store.con.execute("SELECT count(*) FROM v_api_schema_coverage_current").fetchone() == (12,)
 
 
 def test_provider_coverage_measures_range_breadth_and_slo_failure(tmp_store: DuckDBStore) -> None:
@@ -112,7 +115,11 @@ def test_provider_coverage_measures_range_breadth_and_slo_failure(tmp_store: Duc
     assert standardized.condition == "degraded"
     assert standardized.record_count == 1
     assert standardized.security_count == 1
-    assert standardized.item_count == 1
+    # Tier1-S4 T7: standardized.item_count is now measured by the coverage_gate basis
+    # (evaluate_item_coverage_gate's items_meeting_threshold), not a raw distinct-code
+    # count. No fundamental_item_coverage rows are seeded in this fixture, so the gate
+    # reports zero items meeting the published coverage threshold.
+    assert standardized.item_count == 0
     assert standardized.basis_count == 1
     assert standardized.start == dt.datetime(2023, 12, 31)
     assert standardized.end == dt.datetime(2024, 1, 1)
@@ -138,6 +145,8 @@ def test_provider_coverage_measures_range_breadth_and_slo_failure(tmp_store: Duc
 
 def test_provider_coverage_can_reach_available_under_versioned_target(tmp_store: DuckDBStore) -> None:
     _insert_standardized(tmp_store)
+    from tests.item_coverage_fixtures import seed_gate_evidence
+    seed_gate_evidence(tmp_store, as_of=OBSERVED_AT.date(), items=(1001,))
     tmp_store.con.execute(
         """
         UPDATE api_schema_coverage_slo
@@ -278,10 +287,10 @@ def test_provider_coverage_cli_emits_condition_summary(
     ) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["run_id"] == "cli-coverage"
-    assert payload["schema_count"] == 7
+    assert payload["schema_count"] == 12
     assert payload["conditions"] == {
         "available": 0,
         "degraded": 0,
         "missing": 0,
-        "pending": 7,
+        "pending": 12,
     }

@@ -1,0 +1,96 @@
+{
+  "db": "C:\\atx\\atx-db\\data\\warehouse.duckdb",
+  "read_only": true,
+  "migrations": {
+    "columns": [
+      "version"
+    ],
+    "rows": [
+      [
+        "0303"
+      ],
+      [
+        "0304"
+      ],
+      [
+        "0305"
+      ],
+      [
+        "0306"
+      ],
+      [
+        "0307"
+      ],
+      [
+        "0308"
+      ],
+      [
+        "0309"
+      ],
+      [
+        "0310"
+      ],
+      [
+        "0311"
+      ],
+      [
+        "0312"
+      ]
+    ]
+  },
+  "stages": {
+    "columns": [
+      "stage",
+      "run_id",
+      "status",
+      "started_at",
+      "finished_at",
+      "rows",
+      "error"
+    ],
+    "rows": [
+      [
+        "ticker_history_publish",
+        "activation-prices-updated",
+        "running",
+        "2026-09-20 16:43:33.486144",
+        null,
+        null,
+        null
+      ]
+    ]
+  },
+  "prices": {
+    "columns": [
+      "source",
+      "count_star()",
+      "count(DISTINCT security_id)",
+      "min(trade_date)",
+      "max(trade_date)"
+    ],
+    "rows": [
+      [
+        "tbltickerhistory3_10y",
+        31178192,
+        34803,
+        "2012-03-26",
+        "2026-06-15"
+      ]
+    ]
+  },
+  "staging": {
+    "columns": [
+      "table_name",
+      "estimated_size"
+    ],
+    "rows": [
+      [
+        "equity_daily_bars_bulk_next",
+        31959271
+      ]
+    ]
+  },
+  "latest_backup": {
+    "error": "Catalog Error: Table with name warehouse_backups does not exist!\nDid you mean \"warehouse_rebuild_runs\"?\n\nLINE 1: SELECT backup_path,byte_size,sha256 FROM warehouse_backups ORDER BY created_at DESC LIMIT 1\n                                                 ^"
+  }
+}

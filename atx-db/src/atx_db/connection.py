@@ -133,6 +133,42 @@ class DuckDBStore:
                 self.connection.execute("SET threads = ?", [self.analytical_threads])
                 self.connection.execute("SET preserve_insertion_order = false")
 
+    def recover_failed_connection(self) -> None:
+        """Replace an unusable persistent connection for failure ledgering only.
+
+        Do not CHECKPOINT an invalidated connection, initialize the schema, or
+        retry the failed workload. Supply the existing analytical budget before
+        opening the database so WAL recovery also runs within that budget.
+        """
+        if str(self.path) == ":memory:":
+            raise RuntimeError("cannot recover an in-memory warehouse without losing its ledger")
+        if self.analytical_memory_limit is None or self.analytical_threads is None:
+            raise RuntimeError("cannot recover without a recorded analytical memory/thread budget")
+        previous = self.connection
+        self.connection = None
+        if previous is not None:
+            previous.close()  # Raw close: close() above issues SQL that may itself fail.
+        con = duckdb.connect(
+            str(self.path),
+            read_only=self.read_only,
+            config={
+                "memory_limit": self.analytical_memory_limit,
+                "threads": str(self.analytical_threads),
+                "preserve_insertion_order": "false",
+                "temp_directory": (
+                    self.path.resolve().parent / f".{self.path.name}.duckdb_tmp"
+                ).as_posix(),
+            },
+        )
+        try:
+            self._configure_session(con)
+            con.execute("PRAGMA disable_progress_bar")
+        except Exception:
+            with contextlib.suppress(Exception):
+                con.close()
+            raise
+        self.connection = con
+
     @property
     def con(self) -> duckdb.DuckDBPyConnection:
         if self.connection is None:

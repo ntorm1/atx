@@ -1,0 +1,15 @@
+{
+  "command": [
+    ".venv/Scripts/python.exe",
+    "../.superpowers/sdd/tier1-parity/check_price_recovery.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 5.697696685791016,
+    "commit_free_gb": 10.43716049194336
+  },
+  "child_pid": 18808,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.3441162109375
+}

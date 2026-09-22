@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from .api.catalog import DATASETS, RecordSchema
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
+from .warehouse import now_utc_naive
 
 DATABENTO_METADATA_URL = (
     "https://databento.com/docs/api-reference-historical/basics/authentication?historical=http&live=http"
@@ -31,6 +32,10 @@ class ProviderCoverageSlo:
     citation: str
     description: str
     slo_version: str = SLO_VERSION
+    item_count_basis: str = "distinct"
+
+
+ITEM_COUNT_BASES: tuple[str, ...] = ("coverage_gate", "distinct")
 
 
 @dataclass(frozen=True)
@@ -77,10 +82,11 @@ DEFAULT_PROVIDER_COVERAGE_SLOS: tuple[ProviderCoverageSlo, ...] = (
         dt.date(2009, 1, 1),
         15.0,
         2_500,
-        200,
+        110,
         120.0,
         _FUNDAMENTAL_CITATION,
         "Institutional target for comparable standardized fundamentals.",
+        item_count_basis="coverage_gate",
     ),
     ProviderCoverageSlo(
         "ATX.US.FUNDAMENTALS",
@@ -137,6 +143,66 @@ DEFAULT_PROVIDER_COVERAGE_SLOS: tuple[ProviderCoverageSlo, ...] = (
         DATABENTO_METADATA_URL,
         "Institutional target for survivorship-aware daily US equity observations.",
     ),
+    # derived-metrics and market-daily-1d below were first seeded by Sprint 3 Task 9
+    # (S4 preflight ruling: S3 T9 seeds api_schema_coverage_slo rows for these two so
+    # refresh_provider_coverage does not raise as soon as S3 lands). Tier1-S4 T7 widens
+    # their targets in place here -- not as a second duplicate-keyed tuple entry -- and
+    # the migration's INSERT OR REPLACE reseed stays idempotent belt-and-braces either way.
+    ProviderCoverageSlo(
+        "ATX.US.FUNDAMENTALS",
+        "derived-metrics",
+        dt.date(2009, 1, 1),
+        15.0,
+        2_500,
+        120,
+        120.0,
+        _FUNDAMENTAL_CITATION,
+        "Institutional target for declaratively computed PIT derived metrics.",
+    ),
+    ProviderCoverageSlo(
+        "ATX.US.EQUITIES",
+        "market-daily-1d",
+        dt.date(2010, 1, 1),
+        10.0,
+        5_000,
+        30,
+        7.0,
+        DATABENTO_METADATA_URL,
+        "Institutional target for the wide daily market panel.",
+    ),
+    ProviderCoverageSlo(
+        "ATX.US.FUNDAMENTALS",
+        "security-master",
+        dt.date(2009, 1, 1),
+        15.0,
+        5_000,
+        None,
+        120.0,
+        _FUNDAMENTAL_CITATION,
+        "Institutional target for the US equity security master spine.",
+    ),
+    ProviderCoverageSlo(
+        "ATX.US.EQUITIES",
+        "universe",
+        dt.date(2010, 1, 1),
+        10.0,
+        4_000,
+        None,
+        7.0,
+        DATABENTO_METADATA_URL,
+        "Institutional target for survivorship-free US-listed universe membership.",
+    ),
+    ProviderCoverageSlo(
+        "ATX.US.EQUITIES",
+        "delistings",
+        dt.date(2010, 1, 1),
+        10.0,
+        500,
+        None,
+        30.0,
+        DATABENTO_METADATA_URL,
+        "Institutional target for attributed public delisting events.",
+    ),
 )
 
 
@@ -161,8 +227,9 @@ def _relation_exists(store: DuckDBStore, relation: str) -> bool:
 def _schema_stats(
     store: DuckDBStore,
     schema: RecordSchema,
-) -> tuple[int, int, int | None, int | None, dt.datetime | None, dt.datetime | None,
-           dt.datetime | None, dt.datetime | None]:
+) -> tuple[
+    int, int, int | None, int | None, dt.datetime | None, dt.datetime | None, dt.datetime | None, dt.datetime | None
+]:
     table = _quote_identifier(schema.source_table)
     time_column = _quote_identifier(schema.time_column)
     item_expression = (
@@ -170,10 +237,27 @@ def _schema_stats(
         if schema.item_column is not None
         else "NULL::BIGINT"
     )
+    if schema.coverage_item_columns:
+        item_expression = " + ".join(
+            f"(count({_quote_identifier(column)}) > 0)::BIGINT"
+            for column in schema.coverage_item_columns
+        )
     basis_expression = (
         f"count(DISTINCT {_quote_identifier(schema.basis_column)})::BIGINT"
         if schema.basis_column is not None
         else "NULL::BIGINT"
+    )
+    # Invalid historical states are necessary PIT records, but do not create
+    # valid current metric coverage or prove legacy scopes were reconstructed.
+    coverage_predicate = (
+        "WHERE is_latest_revision AND value_status = 'valid' "
+        "AND value IS NOT NULL AND isfinite(value) AND history_status = 'event_reconstructed'"
+        if schema.source_table == "derived_metric_values" else
+        # Keep the latest standardized state before testing whether it is
+        # usable.  An explicit reported-EPS conflict is a NULL state, so an
+        # older valid release must not inflate provider coverage.
+        "WHERE is_latest_revision AND value IS NOT NULL AND isfinite(value)"
+        if schema.source_table == "fundamental_standardized" else ""
     )
     row = store.con.execute(
         f"""
@@ -187,6 +271,7 @@ def _schema_stats(
             min(coalesce(available_at,source_loaded_at)),
             max(coalesce(available_at,source_loaded_at))
         FROM {table}
+        {coverage_predicate}
         """
     ).fetchone()
     if row is None:
@@ -203,13 +288,25 @@ def _schema_stats(
     )
 
 
+def coverage_gate_item_count(store: DuckDBStore, *, as_of_date: dt.date | None = None) -> int | None:
+    """Measured annual top-3000 item count; missing evidence never becomes breadth."""
+    from .item_coverage import coverage_gate_count_sql
+
+    if not all(_relation_exists(store, table) for table in (
+        "fundamental_item_coverage", "item_coverage_cohort_years"
+    )):
+        return None
+    row = store.con.execute(coverage_gate_count_sql(as_of_date=as_of_date)).fetchone()
+    return int(row[0]) if row else 0
+
+
 def _active_slo(store: DuckDBStore, dataset_id: str, schema_code: str) -> ProviderCoverageSlo:
     row = store.con.execute(
         """
         SELECT
             dataset_id,schema_code,expected_history_start,minimum_history_years,
             minimum_security_count,minimum_item_count,maximum_freshness_lag_days,
-            citation,description,slo_version
+            citation,description,slo_version,item_count_basis
         FROM api_schema_coverage_slo
         WHERE dataset_id=? AND schema_code=? AND is_active
         ORDER BY valid_from DESC,slo_version DESC
@@ -219,6 +316,8 @@ def _active_slo(store: DuckDBStore, dataset_id: str, schema_code: str) -> Provid
     ).fetchone()
     if row is None:
         raise RuntimeError(f"no active coverage SLO for {dataset_id}/{schema_code}")
+    if row[10] not in ITEM_COUNT_BASES:
+        raise RuntimeError(f"unsupported item-count basis for {dataset_id}/{schema_code}: {row[10]!r}")
     return ProviderCoverageSlo(
         dataset_id=str(row[0]),
         schema_code=str(row[1]),
@@ -230,6 +329,7 @@ def _active_slo(store: DuckDBStore, dataset_id: str, schema_code: str) -> Provid
         citation=str(row[7]),
         description=str(row[8]),
         slo_version=str(row[9]),
+        item_count_basis=str(row[10]),
     )
 
 
@@ -264,9 +364,7 @@ def _evaluate_slos(
         fail("history_years", history_years, slo.minimum_history_years, "ge")
     if security_count < slo.minimum_security_count:
         fail("security_count", security_count, slo.minimum_security_count, "ge")
-    if slo.minimum_item_count is not None and (
-        item_count is None or item_count < slo.minimum_item_count
-    ):
+    if slo.minimum_item_count is not None and (item_count is None or item_count < slo.minimum_item_count):
         fail("item_count", item_count, slo.minimum_item_count, "ge")
     if freshness_lag_days is None or freshness_lag_days > slo.maximum_freshness_lag_days:
         fail("freshness_lag_days", freshness_lag_days, slo.maximum_freshness_lag_days, "le")
@@ -280,7 +378,7 @@ def refresh_provider_coverage(
     """Append one measured availability/SLO snapshot per selected public schema."""
 
     options = options or ProviderCoverageOptions()
-    observed_at = options.observed_at or dt.datetime.now(dt.UTC).replace(tzinfo=None)
+    observed_at = options.observed_at or now_utc_naive()
     if observed_at.tzinfo is not None:
         observed_at = observed_at.astimezone(dt.UTC).replace(tzinfo=None)
     run_id = options.run_id or f"provider-coverage-{uuid.uuid4()}"
@@ -314,6 +412,8 @@ def refresh_provider_coverage(
                 record_count = security_count = 0
                 item_count = basis_count = None
                 start = end = first_available_at = last_available_at = None
+            if slo.item_count_basis == "coverage_gate":
+                item_count = coverage_gate_item_count(store, as_of_date=observed_at.date())
             history_years = None if start is None or end is None else (end - start).days / 365.25
             freshness_lag_days = (
                 None

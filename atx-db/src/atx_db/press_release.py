@@ -7,18 +7,26 @@ and reconciled to final reported ``est_actual`` rows when those arrive.
 """
 from __future__ import annotations
 
+import calendar
 import datetime as dt
 import hashlib
+import html
 import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable, Iterable
+from urllib.parse import urlsplit
 
 import pandas as pd
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
+from .sec_submissions import EarningsReleaseCandidate, select_earnings_release_candidates
+from .security_master import sec_session
 from .estimates import (
     GUIDANCE_MEASURE_PATTERNS,
     GUIDANCE_TEXT_COLUMNS,
@@ -45,6 +53,7 @@ from .estimates import (
 )
 from .warehouse import (
     file_sha256,
+    cik_security_id,
     insert_frame,
     json_dumps,
     now_utc_naive,
@@ -57,7 +66,11 @@ from .warehouse import (
 
 
 SOURCE_NAME = "press_release_injectable"
+SEC_EARNINGS_RELEASE_SOURCE = "SEC 8-K Item 2.02 reported earnings release"
+SEC_EARNINGS_RELEASE_USER_AGENT = "atx-db/0.1 atx-research@example.com"
 DEFAULT_RECONCILIATION_TOLERANCE = 0.02
+EPS_CONFLICT_TOLERANCE = 0.005
+SEC_FILING_DATE_CLOCK_POLICY = "sec_filed_date_plus_46h_v1"
 
 
 PRESS_RELEASE_FACT_COLUMNS = [
@@ -175,6 +188,1062 @@ class PressReleaseOptions:
     min_confidence: float = 0.70
     reconciliation_tolerance: float = DEFAULT_RECONCILIATION_TOLERANCE
     run_id: str | None = None
+
+
+@dataclass(frozen=True)
+class SecEarningsReleaseOptions:
+    """Bounded public-SEC source controls for reported-quarter EPS evidence."""
+
+    cache_dir: Path
+    history_start: dt.date | None = None
+    history_end: dt.date | None = None
+    ciks: tuple[str, ...] | None = None
+    request_timeout: float = 30.0
+    max_index_bytes: int = 2_000_000
+    max_document_bytes: int = 8_000_000
+    candidate_batch_size: int = 250
+    user_agent: str = SEC_EARNINGS_RELEASE_USER_AGENT
+    run_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.request_timeout <= 0:
+            raise ValueError("SEC earnings-release request_timeout must be positive")
+        if min(self.max_index_bytes, self.max_document_bytes, self.candidate_batch_size) < 1:
+            raise ValueError("SEC earnings-release byte limits must be positive")
+        if self.user_agent != SEC_EARNINGS_RELEASE_USER_AGENT:
+            raise ValueError("SEC earnings-release source requires the project-only SEC user agent")
+
+
+@dataclass(frozen=True)
+class SecSourceClock:
+    raw_timestamp: str | None
+    utc_offset: str | None
+    available_at: dt.datetime | None
+    timezone_status: str
+
+
+@dataclass(frozen=True)
+class SecEarningsReleaseOutcome:
+    candidate: EarningsReleaseCandidate
+    status: str
+    reason: str | None
+    document_name: str | None = None
+    index_url: str | None = None
+    document_url: str | None = None
+    document_sha256: str | None = None
+    source_clock: SecSourceClock | None = None
+    fact: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class _HtmlCell:
+    """One physical HTML cell before its row/column spans are expanded."""
+
+    text: str
+    rowspan: int = 1
+    colspan: int = 1
+
+
+class _HtmlTableCollector(HTMLParser):
+    """Dependency-free table reader retaining span information for a grid."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.tables: list[list[list[_HtmlCell]]] = []
+        self._table: list[list[_HtmlCell]] | None = None
+        self._row: list[_HtmlCell] | None = None
+        self._cell: list[str] | None = None
+        self._cell_rowspan = 1
+        self._cell_colspan = 1
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "table" and self._table is None:
+            self._table = []
+        elif tag == "tr" and self._table is not None:
+            self._row = []
+        elif tag in {"td", "th"} and self._row is not None:
+            self._cell = []
+            attr_map = {name.lower(): value for name, value in attrs}
+            self._cell_rowspan = _positive_span(attr_map.get("rowspan"))
+            self._cell_colspan = _positive_span(attr_map.get("colspan"))
+        elif tag == "br" and self._cell is not None:
+            self._cell.append(" ")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"td", "th"} and self._cell is not None and self._row is not None:
+            self._row.append(_HtmlCell(
+                " ".join("".join(self._cell).split()), self._cell_rowspan, self._cell_colspan
+            ))
+            self._cell = None
+        elif tag == "tr" and self._row is not None and self._table is not None:
+            if self._row:
+                self._table.append(self._row)
+            self._row = None
+        elif tag == "table" and self._table is not None:
+            self.tables.append(self._table)
+            self._table = None
+
+    def handle_data(self, data: str) -> None:
+        if self._cell is not None:
+            self._cell.append(data)
+
+
+def _positive_span(value: str | None) -> int:
+    """HTML spans are untrusted input: invalid/zero spans mean one cell."""
+
+    try:
+        return max(1, int(value or "1"))
+    except ValueError:
+        return 1
+
+
+def _span_expanded_grid(table: list[list[_HtmlCell]]) -> list[list[str]]:
+    """Expand rowspan/colspan into a rectangular logical grid.
+
+    The SEC's tagged exhibits commonly use a duration group above duplicate
+    year leaves.  Physical-cell indexes cannot associate those leaves with the
+    quarterly or annual group, so extraction only works from this grid.
+    """
+
+    active: dict[int, tuple[int, str]] = {}
+    rows: list[list[str]] = []
+    for physical_row in table:
+        expanded: list[str] = []
+        column = 0
+        for cell in physical_row:
+            while column in active:
+                remaining, text = active[column]
+                expanded.append(text)
+                if remaining == 1:
+                    del active[column]
+                else:
+                    active[column] = (remaining - 1, text)
+                column += 1
+            for _ in range(cell.colspan):
+                expanded.append(cell.text)
+                if cell.rowspan > 1:
+                    active[column] = (cell.rowspan - 1, cell.text)
+                column += 1
+        while column in active:
+            remaining, text = active[column]
+            expanded.append(text)
+            if remaining == 1:
+                del active[column]
+            else:
+                active[column] = (remaining - 1, text)
+            column += 1
+        rows.append(expanded)
+    width = max((len(row) for row in rows), default=0)
+    return [row + [""] * (width - len(row)) for row in rows]
+
+
+def _archive_urls(cik: str, accession_number: str) -> tuple[str, str]:
+    digits = str(accession_number).replace("-", "")
+    if not re.fullmatch(r"\d{18}", digits):
+        raise ValueError(f"invalid SEC accession {accession_number!r}")
+    numeric_cik = str(int(str(cik)))
+    directory = f"https://www.sec.gov/Archives/edgar/data/{numeric_cik}/{digits}"
+    return f"{directory}/{accession_number}-index.html", directory
+
+
+def _explicit_sec_clock(raw_timestamp: object) -> SecSourceClock:
+    """Retain the SEC timestamp evidence; a naive value is never PIT-eligible."""
+
+    raw = _clean_string(raw_timestamp)
+    if raw is None:
+        return SecSourceClock(None, None, None, "timestamp_missing")
+    # EDGAR's accepted ISO timestamps normally carry Z. Do not convert naive
+    # legacy payloads with utc=True: that would invent the original zone.
+    has_offset = bool(re.search(r"(?:Z|[+-]\d{2}:?\d{2})$", raw, flags=re.IGNORECASE))
+    if not has_offset:
+        return SecSourceClock(raw, None, None, "timestamp_zone_unknown")
+    parsed = pd.to_datetime(raw, errors="coerce", utc=True)
+    if pd.isna(parsed):
+        return SecSourceClock(raw, None, None, "timestamp_invalid")
+    offset = "Z" if raw.upper().endswith("Z") else raw[-6:]
+    return SecSourceClock(raw, offset, parsed.tz_convert(None).to_pydatetime(), "timestamp_offset_valid")
+
+
+def _daily_sec_clock(raw_timestamp: object, filing_date: dt.date | None) -> SecSourceClock:
+    """Use FC1's conservative daily SEC clock without claiming intraday delivery.
+
+    EDGAR acceptance and dissemination are distinct.  The original acceptance
+    string is still retained for lineage, while the daily pipeline uses the
+    reviewed filed-date-plus-46-hour eligibility floor.  This permits a dated
+    filing with a legacy/naive source timestamp to remain useful daily evidence
+    without relabeling that timestamp as exact UTC publication.
+    """
+
+    exact = _explicit_sec_clock(raw_timestamp)
+    if filing_date is None:
+        return exact
+    conservative = dt.datetime.combine(filing_date, dt.time()) + dt.timedelta(hours=46)
+    return SecSourceClock(
+        exact.raw_timestamp,
+        exact.utc_offset,
+        max(filter(None, (exact.available_at, conservative))),
+        f"{exact.timezone_status}:{SEC_FILING_DATE_CLOCK_POLICY}",
+    )
+
+
+def _bounded_response_bytes(response: Any, *, maximum: int) -> bytes:
+    """Read a response stream without admitting an unbounded SEC document."""
+
+    declared = response.headers.get("Content-Length") if getattr(response, "headers", None) else None
+    if declared and declared.isdigit() and int(declared) > maximum:
+        raise ValueError("response_too_large")
+    chunks: list[bytes] = []
+    observed = 0
+    for chunk in response.iter_content(chunk_size=64 * 1024):
+        if not chunk:
+            continue
+        observed += len(chunk)
+        if observed > maximum:
+            raise ValueError("response_too_large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+class _SecFilingDocumentTable(HTMLParser):
+    """Read typed rows only from the filing index's document-format table."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[tuple[str, tuple[str, ...]]]] = []
+        self.table_found = False
+        self.table_complete = False
+        self._header_seen = False
+        self._table_depth = 0
+        self._row: list[tuple[str, tuple[str, ...]]] | None = None
+        self._row_tags: list[str] = []
+        self._cell_text: list[str] | None = None
+        self._cell_tag: str | None = None
+        self._cell_hrefs: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "table":
+            if self._table_depth:
+                self._table_depth += 1
+            elif _normalized_cell(attributes.get("summary") or "") == "document format files":
+                if self.table_found:
+                    raise ValueError("multiple_document_format_tables")
+                self.table_found = True
+                self._table_depth = 1
+        elif self._table_depth == 1 and tag == "tr":
+            if self._row is not None:
+                raise ValueError("incomplete_document_format_row")
+            self._row = []
+            self._row_tags = []
+        elif self._table_depth == 1 and tag in ("td", "th") and self._row is not None:
+            if self._cell_text is not None:
+                raise ValueError("incomplete_document_format_cell")
+            self._cell_text = []
+            self._cell_tag = tag
+            self._cell_hrefs = []
+        elif (self._table_depth == 1 and tag == "a" and self._cell_text is not None
+              and attributes.get("href") is not None):
+            self._cell_hrefs.append(attributes["href"] or "")
+
+    def handle_data(self, data: str) -> None:
+        if self._cell_text is not None:
+            self._cell_text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("td", "th") and self._cell_text is not None and self._row is not None:
+            if tag != self._cell_tag:
+                raise ValueError("invalid_document_format_cell")
+            self._row.append((" ".join("".join(self._cell_text).split()), tuple(self._cell_hrefs)))
+            self._row_tags.append(tag)
+            self._cell_text = None
+            self._cell_tag = None
+            self._cell_hrefs = []
+        elif tag == "tr" and self._table_depth == 1 and self._row is not None:
+            if self._cell_text is not None:
+                raise ValueError("incomplete_document_format_cell")
+            if not self._header_seen:
+                if (len(self._row) != 5 or self._row_tags != ["th"] * 5
+                        or _normalized_cell(self._row[2][0]) != "document"
+                        or _normalized_cell(self._row[3][0]) != "type"):
+                    raise ValueError("invalid_document_format_header")
+                self._header_seen = True
+            else:
+                if (len(self._row) != 5 or self._row_tags != ["td"] * 5
+                        or len(self._row[2][1]) != 1):
+                    raise ValueError("invalid_document_format_row")
+                self.rows.append(self._row)
+            self._row = None
+        elif tag == "table" and self._table_depth:
+            if self._table_depth == 1:
+                if self._row is not None or not self._header_seen or not self.rows:
+                    raise ValueError("incomplete_document_format_table")
+                self.table_complete = True
+            self._table_depth -= 1
+
+
+def _ex99_documents(index_html: str, directory_url: str) -> tuple[str, ...]:
+    """Trust SEC filing-detail Type cells, never directory MIME or filenames."""
+
+    parser = _SecFilingDocumentTable()
+    parser.feed(index_html)
+    parser.close()
+    if not parser.table_complete:
+        raise ValueError("document_format_table_not_found_or_incomplete")
+    expected_path = urlsplit(directory_url).path.rstrip("/") + "/"
+    selected: set[str] = set()
+    for row in parser.rows:
+        if len(row) < 4 or not re.fullmatch(r"EX[-_]?99(?:\.\d+)?", row[3][0], flags=re.IGNORECASE):
+            continue
+        hrefs = row[2][1]
+        if len(hrefs) != 1:
+            continue
+        link = urlsplit(hrefs[0])
+        if link.scheme or link.netloc or link.query or link.fragment or not link.path.startswith(expected_path):
+            continue
+        name = link.path[len(expected_path):]
+        if ".." in name or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.(?:htm|html|txt)", name, re.IGNORECASE):
+            continue
+        selected.add(name)
+    return tuple(sorted(selected))
+
+
+def _normalized_cell(value: str) -> str:
+    return re.sub(r"\s+", " ", html.unescape(value).replace("\xa0", " ")).strip().lower()
+
+
+def _parse_eps_number(value: str) -> float | None:
+    token = value.replace("$", "").replace(",", "").strip()
+    negative = token.startswith("(") and token.endswith(")")
+    token = token.strip("() ")
+    if not re.fullmatch(r"\d+(?:\.\d+)?", token):
+        return None
+    result = float(token)
+    return -result if negative else result
+
+
+def _duration_evidence(header_text: str) -> str | None:
+    normalized = _normalized_cell(header_text)
+    if "three months" in normalized:
+        return "three_months_explicit"
+    if re.search(r"\b13\s+weeks?\b", normalized):
+        return "thirteen_weeks_explicit"
+    if re.search(r"\b14\s+weeks?\b", normalized):
+        return "fourteen_weeks_explicit"
+    return None
+
+
+def _date_matches_text(value: str, period_end: dt.date) -> bool:
+    """Accept only a document's explicit end-date leaf, never calendar mapping."""
+
+    text = _normalized_cell(value)
+    month = _normalized_cell(calendar.month_name[period_end.month])
+    day = str(period_end.day)
+    year = str(period_end.year)
+    return bool(
+        re.search(rf"\b{re.escape(month)}\s+{day}(?:st|nd|rd|th)?[,]?\s+{year}\b", text)
+        # Multi-level headers commonly put the date group and year leaf in
+        # different cells.  The caller separately requires the exact year.
+        or re.search(rf"\b{re.escape(month)}\s+{day}(?:st|nd|rd|th)?\b", text)
+        or re.search(rf"\b{period_end.month}[/-]{period_end.day}[/-]{year}\b", text)
+    )
+
+
+def _table_header_rows(grid: list[list[str]]) -> list[list[str]]:
+    """Stop all leaf traces together before the first numeric data row."""
+
+    for row_number, row in enumerate(grid[:10]):
+        if any(_parse_eps_number(cell) is not None and not re.fullmatch(r"20\d{2}", cell.strip())
+               for cell in row):
+            return grid[:row_number]
+    return grid[:10]
+
+
+def _document_quarter_end(tables: list[list[list[str]]], filed_on: dt.date) -> dt.date | None:
+    """Find the latest explicitly headed quarterly end visible by filing day.
+
+    An 8-K's ``reportDate`` is the event date, not the earnings period end.
+    Combine each quarterly duration group's month/day with its own year leaf;
+    never infer a quarter end from the event date or a calendar-quarter map.
+    """
+
+    ends: set[dt.date] = set()
+    month_pattern = "|".join(calendar.month_name[1:])
+    for grid in tables:
+        headers = _table_header_rows(grid)
+        for column in range(max((len(row) for row in grid), default=0)):
+            cells: list[str] = []
+            for row in headers:
+                cell = row[column].strip() if column < len(row) else ""
+                if cell:
+                    cells.append(cell)
+            heading = " | ".join(dict.fromkeys(cells))
+            normalized = _normalized_cell(heading)
+            if _duration_evidence(heading) is None or any(
+                term in normalized for term in ("year ended", "years ended", "twelve months")
+            ):
+                continue
+            match = re.search(rf"\b({month_pattern})\s+(\d{{1,2}})(?:st|nd|rd|th)?\b", heading, re.IGNORECASE)
+            years = set(re.findall(r"\b20\d{2}\b", heading))
+            if match is None or len(years) != 1:
+                continue
+            month = next(i for i in range(1, 13) if calendar.month_name[i].lower() == match.group(1).lower())
+            try:
+                end = dt.date(int(next(iter(years))), month, int(match.group(2)))
+            except ValueError:
+                continue
+            if end <= filed_on:
+                ends.add(end)
+    return max(ends) if ends else None
+
+
+def _header_columns(grid: list[list[str]], period_end: dt.date) -> tuple[dict[int, dict[str, Any]], str | None]:
+    """Resolve explicit quarterly leaves in a span-expanded header hierarchy.
+
+    A leaf must contain a duration group and current fiscal-year leaf.  The
+    same year under an annual group is deliberately not an alternative match.
+    """
+
+    candidates: dict[int, dict[str, Any]] = {}
+    headers = _table_header_rows(grid)
+    for column in range(max((len(row) for row in grid), default=0)):
+        trace_cells: list[str] = []
+        for row in headers:
+            cell = row[column].strip() if column < len(row) else ""
+            if cell:
+                trace_cells.append(cell)
+        trace = tuple(trace_cells)
+        heading = " | ".join(dict.fromkeys(trace))
+        duration = _duration_evidence(heading)
+        if duration is None or str(period_end.year) not in heading or not _date_matches_text(heading, period_end):
+            continue
+        # A duration group must be quarterly. "Year Ended" may share the same
+        # period-end date and current-year leaf in the same exhibit.
+        normalized = _normalized_cell(heading)
+        if "year ended" in normalized or "years ended" in normalized or "twelve months" in normalized:
+            continue
+        candidates[column] = {
+            "column_heading": heading,
+            "duration_evidence": duration,
+            "header_trace": trace,
+        }
+    if not candidates:
+        return {}, "qualified_quarter_column_not_found"
+    # A logical year leaf can span currency, value and spacer cells. Those
+    # adjacent physical columns are one quarterly leaf, not three alternatives.
+    ordered = sorted(candidates)
+    if ordered == list(range(ordered[0], ordered[-1] + 1)) and len({
+        evidence["column_heading"] for evidence in candidates.values()
+    }) == 1:
+        return candidates, None
+    return {}, "ambiguous_qualified_quarter_column"
+
+
+def _label_lineage(grid: list[list[str]], row_number: int, column: int) -> tuple[str, ...]:
+    """Recover inherited labels for indented/exhibit rows such as ``- Diluted``.
+
+    An indented numeric Basic row is a sibling of an indented Diluted row, not
+    the end of their shared ``per share`` section.  Walk back through those
+    siblings to the nearest section heading, but stop at a separate numeric
+    row or an older per-share section (for example, adjusted EPS).
+    """
+
+    row = grid[row_number]
+    own = " ".join(dict.fromkeys(
+        cell for cell in row[:column] if cell.strip() and cell.strip() not in {"$", "€", "£"}
+        and _parse_eps_number(cell) is None
+    )).strip()
+    if not own:
+        return ()
+    if not re.match(r"^[-\u2013\u2014\u2022]\s*", own):
+        return (own,)
+
+    parents: list[str] = []
+    found_per_share = False
+    for prior in range(row_number - 1, max(-1, row_number - 9), -1):
+        row = grid[prior]
+        leading = " ".join(dict.fromkeys(
+            cell for cell in row[:column] if cell.strip() and cell.strip() not in {"$", "€", "£"}
+            and _parse_eps_number(cell) is None
+        )).strip()
+        if not leading:
+            continue
+        selected = row[column] if column < len(row) else ""
+        if _parse_eps_number(selected) is not None:
+            if re.match(r"^[-\u2013\u2014\u2022]\s*", leading):
+                continue
+            break
+        is_per_share = "per share" in _normalized_cell(leading)
+        if is_per_share and found_per_share:
+            break
+        parents.append(leading)
+        found_per_share |= is_per_share
+        if len(parents) == 2:
+            break
+    return (*reversed(parents), own)
+
+
+def _qualified_week_period(
+    *, duration: str, heading: str, period_end: dt.date, fiscal_quarter: tuple[int, str] | None
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Create an exact week-period boundary only from explicit evidence."""
+
+    if duration == "three_months_explicit":
+        return {
+            "period_start": None,
+            "period_start_basis": "month_start_deferred_to_bridge",
+            "duration_days": None,
+        }, None
+    week_count = 13 if duration == "thirteen_weeks_explicit" else 14
+    if fiscal_quarter is None:
+        return None, "week_fiscal_quarter_missing_or_ambiguous"
+    if not _date_matches_text(heading, period_end):
+        return None, "week_period_end_missing_or_ambiguous"
+    # Week count plus a document-labelled end is an exact duration boundary,
+    # not a calendar-quarter approximation.  Retain the derivation evidence.
+    return {
+        "period_start": period_end - dt.timedelta(days=week_count * 7 - 1),
+        "period_start_basis": "derived_from_explicit_week_count_and_end",
+        "duration_days": week_count * 7,
+        "week_count": week_count,
+        "fiscal_period_evidence": f"{fiscal_quarter[1]} {fiscal_quarter[0]}",
+    }, None
+
+
+def _fiscal_labels(text: str) -> set[tuple[int, str]]:
+    """Read stated fiscal labels without mapping them to calendar dates."""
+
+    word_map = {"first": "Q1", "1st": "Q1", "q1": "Q1", "second": "Q2", "2nd": "Q2", "q2": "Q2",
+                "third": "Q3", "3rd": "Q3", "q3": "Q3", "fourth": "Q4", "4th": "Q4", "q4": "Q4"}
+    labels: set[tuple[int, str]] = set()
+    for match in re.finditer(
+        r"\b(first|1st|q1|second|2nd|q2|third|3rd|q3|fourth|4th|q4)\s+quarter\s+"
+        r"(?:fiscal\s+|fy\s*)?(20\d{2})\b"
+        r"|\b(?:fiscal\s+|fy\s*)?(20\d{2})\s+"
+        r"(first|1st|q1|second|2nd|q2|third|3rd|q3|fourth|4th|q4)\s+quarter\b"
+        r"|\bq([1-4])\s+(?:fiscal\s+|fy\s*)?(20\d{2})\b"
+        r"|\b(?:fiscal\s+|fy\s*)(20\d{2})\s+q([1-4])\b", text
+    ):
+        if match.group(1) is not None:
+            fiscal = (int(match.group(2)), word_map[match.group(1)])
+        elif match.group(3) is not None:
+            fiscal = (int(match.group(3)), word_map[match.group(4)])
+        elif match.group(5) is not None:
+            fiscal = (int(match.group(6)), f"Q{match.group(5)}")
+        else:
+            fiscal = (int(match.group(7)), f"Q{match.group(8)}")
+        labels.add(fiscal)
+    return labels
+
+
+def _reported_fiscal_quarter(document: str, period_end: dt.date | None) -> tuple[int, str] | None:
+    """Use a unique structural results title, or a sole document label.
+
+    The title structure survives HTML parsing. Prose that happens to say
+    ``quarter ... results`` cannot make a comparative the current quarter.
+    """
+
+    if period_end is None:
+        return None
+    visible = _normalized_cell(re.sub(r"<[^>]*>", " ", document))
+    labels = _fiscal_labels(visible)
+    title_labels: set[tuple[int, str]] = set()
+
+    def consider_title(markup: str, *, centered_bold: bool) -> None:
+        title = _normalized_cell(re.sub(r"<[^>]*>", " ", markup))
+        if len(title) > 180 or re.search(r"\b(?:compared|versus|vs\.?|prior year)\b", title):
+            return
+        if centered_bold and not re.search(r"\b(?:results|earnings)\s*$", title):
+            return
+        found = _fiscal_labels(title)
+        if len(found) == 1:
+            title_labels.update(found)
+
+    for match in re.finditer(
+        r"<(title|h[1-6])\b[^>]*>(.*?)</\1\s*>", document, flags=re.IGNORECASE | re.DOTALL
+    ):
+        consider_title(match.group(2), centered_bold=False)
+    for match in re.finditer(
+        r"<div\b([^>]*)>(.*?)</div\s*>", document, flags=re.IGNORECASE | re.DOTALL
+    ):
+        if not re.search(r"text-align\s*:\s*center\b", match.group(1), flags=re.IGNORECASE):
+            continue
+        if not re.search(
+            r"<(?:b|strong)\b|<(?:font|span)\b[^>]*font-weight\s*:\s*(?:700|bold)\b",
+            match.group(2), flags=re.IGNORECASE,
+        ):
+            continue
+        consider_title(match.group(2), centered_bold=True)
+    if len(title_labels) == 1:
+        return next(iter(title_labels))
+    if not title_labels and len(labels) == 1:
+        return next(iter(labels))
+    return None
+
+
+def extract_reported_gaap_diluted_eps(
+    document: str,
+    *,
+    period_end: dt.date | None,
+    fiscal_quarter: tuple[int, str] | None = None,
+    filed_on: dt.date | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Extract one reported GAAP diluted quarter EPS or reject the document.
+
+    The parser deliberately needs a table row and aligned current-period column;
+    a nearby narrative number, adjusted EPS and continuing-operations EPS never
+    qualify.  A missing/ambiguous period is a rejection rather than a synthetic
+    fiscal boundary.
+    """
+
+    parser = _HtmlTableCollector()
+    parser.feed(document)
+    tables = [_span_expanded_grid(table) for table in parser.tables]
+    if period_end is None and filed_on is not None:
+        period_end = _document_quarter_end(tables, filed_on)
+    if period_end is None:
+        return None, "period_end_missing"
+    candidates: list[dict[str, Any]] = []
+    rejected_semantics = False
+    duration_rejection: str | None = None
+    for table_number, table in enumerate(tables):
+        columns, _column_reason = _header_columns(table, period_end)
+        if not columns:
+            continue
+        _, evidence = next(iter(columns.items()))
+        period_evidence, week_reason = _qualified_week_period(
+            duration=evidence["duration_evidence"], heading=evidence["column_heading"],
+            period_end=period_end, fiscal_quarter=fiscal_quarter,
+        )
+        if week_reason is not None:
+            duration_rejection = week_reason
+            continue
+        try:
+            prior_end = period_end.replace(year=period_end.year - 1)
+        except ValueError:
+            prior_end = None  # A leap-day comparison needs its own explicit end.
+        prior_columns, _ = _header_columns(table, prior_end) if prior_end else ({}, None)
+        for row_number, row in enumerate(table):
+            prior_values = [value for prior_column in prior_columns if prior_column < len(row)
+                            if (value := _parse_eps_number(row[prior_column])) is not None]
+            prior_value = prior_values[0] if len(prior_values) == 1 else None
+            for column in columns:
+                if column >= len(row):
+                    continue
+                lineage = _label_lineage(table, row_number, column)
+                label = _normalized_cell(" | ".join(lineage))
+                if "diluted" not in label or "per share" not in label:
+                    continue
+                if any(term in label for term in ("basic", "continuing", "adjusted", "non-gaap", "non gaap")):
+                    rejected_semantics = True
+                    continue
+                value = _parse_eps_number(row[column])
+                if value is None:
+                    continue
+                candidates.append({
+                    "value": value,
+                    "period_end": period_end,
+                    "prior_year_quarter_value": prior_value,
+                    "evidence_text": " | ".join((*lineage, row[column])),
+                    "table_number": table_number,
+                    "row_number": row_number,
+                    "column_number": column,
+                    "column_heading": evidence["column_heading"],
+                    "header_trace": evidence["header_trace"],
+                    "row_lineage": lineage,
+                    "duration_evidence": evidence["duration_evidence"],
+                    **(period_evidence or {}),
+                })
+    if len(candidates) != 1:
+        return None, "ambiguous_eps_candidates" if candidates else (
+            duration_rejection or (
+                "rejected_non_gaap_or_adjusted" if rejected_semantics else "reported_gaap_diluted_eps_not_found"
+            )
+        )
+    return candidates[0], None
+
+
+def _receipt_id(outcome: SecEarningsReleaseOutcome) -> str:
+    return _stable_id(
+        "sec_earnings_release_receipt", outcome.candidate.cik, outcome.candidate.accession_number,
+        outcome.document_name, outcome.document_sha256, outcome.status, outcome.reason,
+    )
+
+
+def _write_sec_receipt(store: DuckDBStore, outcome: SecEarningsReleaseOutcome) -> None:
+    """Persist an immutable attempt, including rejects and cache outcomes."""
+
+    clock = outcome.source_clock or SecSourceClock(None, None, None, "timestamp_missing")
+    candidate = outcome.candidate
+    store.con.execute(
+        """
+        INSERT OR IGNORE INTO sec_earnings_release_receipts (
+            receipt_id, cik, source_security_id, accession_number, document_name,
+            filing_date, report_date, acceptance_datetime, raw_acceptance_timestamp,
+            acceptance_utc_offset, timestamp_zone_status, available_at, index_url,
+            document_url, document_sha256, outcome, rejection_reason, source_url,
+            retrieval_at, run_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now(), ?)
+        """,
+        [
+            _receipt_id(outcome),
+            candidate.cik,
+            cik_security_id(candidate.cik),
+            candidate.accession_number,
+            outcome.document_name,
+            candidate.filing_date,
+            candidate.report_date,
+            candidate.acceptance_datetime,
+            clock.raw_timestamp,
+            clock.utc_offset,
+            clock.timezone_status,
+            clock.available_at,
+            outcome.index_url,
+            outcome.document_url,
+            outcome.document_sha256,
+            outcome.status,
+            outcome.reason,
+            candidate.source_url,
+            candidate.run_id,
+        ],
+    )
+
+
+def _fetch_sec_bytes(session: Any, url: str, *, timeout: float, maximum: int) -> bytes:
+    response = session.get(url, timeout=timeout, stream=True)
+    try:
+        response.raise_for_status()
+        return _bounded_response_bytes(response, maximum=maximum)
+    finally:
+        response.close()
+
+
+def _cached_document_path(cache_dir: Path, candidate: EarningsReleaseCandidate, document_name: str) -> Path:
+    # _archive_urls validates the accession and this selector admits flat names.
+    return cache_dir / candidate.cik / candidate.accession_number.replace("-", "") / document_name
+
+
+def _cache_metadata_path(cache_path: Path) -> Path:
+    return cache_path.with_name(f"{cache_path.name}.sha256.json")
+
+
+def _atomic_cache_file(path: Path, payload: bytes) -> None:
+    """Durably install one cache artifact without exposing a partial file."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        assert temporary is not None
+        os.replace(temporary, path)
+        # Directory fsync is unsupported on some Windows filesystems; the
+        # document and metadata are still individually flushed and verified.
+        try:
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            pass
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+
+def _discard_invalid_cache(cache_path: Path) -> None:
+    """Remove only the known accession-local cache object and its metadata."""
+
+    for path in (cache_path, _cache_metadata_path(cache_path)):
+        if path.is_file():
+            path.unlink()
+
+
+def _receipt_document_hashes(
+    store: DuckDBStore, candidate: EarningsReleaseCandidate, document_name: str
+) -> set[str]:
+    rows = store.con.execute(
+        """SELECT DISTINCT document_sha256
+           FROM sec_earnings_release_receipts
+           WHERE cik = ? AND accession_number = ? AND document_name = ?
+             AND document_sha256 IS NOT NULL""",
+        [candidate.cik, candidate.accession_number, document_name],
+    ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def _read_verified_cache(
+    store: DuckDBStore,
+    candidate: EarningsReleaseCandidate,
+    document_name: str,
+    cache_path: Path,
+    *,
+    maximum: int,
+) -> bytes | None:
+    """Return a cache hit only when byte count and immutable SHA agree."""
+
+    metadata_path = _cache_metadata_path(cache_path)
+    if not cache_path.is_file() and not metadata_path.is_file():
+        return None
+    try:
+        payload = cache_path.read_bytes()
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        actual_sha = hashlib.sha256(payload).hexdigest()
+        if (len(payload) > maximum or not isinstance(metadata, dict)
+                or metadata.get("sha256") != actual_sha or metadata.get("byte_count") != len(payload)):
+            raise ValueError("cache_sha_or_size_mismatch")
+        known_hashes = _receipt_document_hashes(store, candidate, document_name)
+        if known_hashes and actual_sha not in known_hashes:
+            raise ValueError("cache_receipt_sha_mismatch")
+        return payload
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        _discard_invalid_cache(cache_path)
+        return None
+
+
+def _write_verified_cache(cache_path: Path, payload: bytes) -> str:
+    """Write content and its SHA metadata atomically; next run verifies both."""
+
+    digest = hashlib.sha256(payload).hexdigest()
+    _atomic_cache_file(cache_path, payload)
+    _atomic_cache_file(
+        _cache_metadata_path(cache_path),
+        json.dumps({"sha256": digest, "byte_count": len(payload)}, sort_keys=True).encode("utf-8"),
+    )
+    return digest
+
+
+def _terminal_sec_receipt_exists(store: DuckDBStore, candidate: EarningsReleaseCandidate) -> bool:
+    row = store.con.execute(
+        """SELECT EXISTS (
+            SELECT 1 FROM sec_earnings_release_receipts
+            WHERE cik = ? AND accession_number = ? AND outcome = 'rejected'
+            UNION ALL
+            SELECT 1
+            FROM sec_earnings_release_receipts receipt
+            WHERE receipt.cik = ? AND receipt.accession_number = ?
+              AND receipt.outcome = 'accepted'
+              AND EXISTS (
+                  SELECT 1 FROM press_release_facts fact
+                  WHERE fact.source = ? AND fact.cik = receipt.cik
+                    AND fact.accession_number = receipt.accession_number
+                    AND json_extract_string(fact.raw_payload_json, '$.receipt_id') = receipt.receipt_id
+                    AND json_extract_string(fact.raw_payload_json, '$.document_sha256') = receipt.document_sha256
+              )
+        )""",
+        [candidate.cik, candidate.accession_number, candidate.cik, candidate.accession_number,
+         SEC_EARNINGS_RELEASE_SOURCE],
+    ).fetchone()
+    return bool(row and row[0])
+
+
+def _iter_sec_earnings_release_candidates(
+    store: DuckDBStore, options: SecEarningsReleaseOptions
+) -> Iterable[EarningsReleaseCandidate]:
+    """Keyset-stream metadata batches; no all-universe candidate list is built."""
+
+    after: tuple[str, str] | None = None
+    while True:
+        batch = select_earnings_release_candidates(
+            store,
+            history_start=options.history_start,
+            history_end=options.history_end,
+            ciks=options.ciks,
+            after=after,
+            limit=options.candidate_batch_size,
+        )
+        if not batch:
+            return
+        yield from batch
+        after = (batch[-1].cik, batch[-1].accession_number)
+
+
+def refresh_sec_earnings_release_facts(
+    store: DuckDBStore,
+    options: SecEarningsReleaseOptions,
+    *,
+    session: Any | None = None,
+) -> dict[str, int]:
+    """Discover, fetch, cache and retain qualified reported-quarter EPS evidence.
+
+    Results are resumable through immutable receipts.  A receipt never changes
+    its CIK/accession/document identity; replays only skip terminal document
+    fingerprints and retain each later accession as its own source vintage.
+    This routine requires the additive receipt migration before execution.
+    """
+
+    session = session or sec_session(options.user_agent)
+    counts = {"candidates": 0, "accepted": 0, "rejected": 0, "skipped_terminal": 0, "cache_hits": 0}
+    for candidate in _iter_sec_earnings_release_candidates(store, options):
+        counts["candidates"] += 1
+        if _terminal_sec_receipt_exists(store, candidate):
+            counts["skipped_terminal"] += 1
+            continue
+        # A normalized legacy column cannot prove the original zone. The bulk
+        # loader now persists the exact SEC string. Legacy rows retain that
+        # diagnosis, while a known filing date may supply only FC1's explicitly
+        # conservative daily eligibility floor.
+        clock = _daily_sec_clock(candidate.acceptance_datetime_raw, candidate.filing_date)
+        index_url, directory_url = _archive_urls(candidate.cik, candidate.accession_number)
+        if clock.available_at is None:
+            outcome = SecEarningsReleaseOutcome(
+                candidate, "rejected", clock.timezone_status, index_url=index_url, source_clock=clock
+            )
+            _write_sec_receipt(store, outcome)
+            counts["rejected"] += 1
+            continue
+        try:
+            index_bytes = _fetch_sec_bytes(
+                session, index_url, timeout=options.request_timeout, maximum=options.max_index_bytes
+            )
+            documents = _ex99_documents(index_bytes.decode("utf-8", errors="replace"), directory_url)
+        except Exception as exc:
+            outcome = SecEarningsReleaseOutcome(
+                candidate, "fetch_failed", f"index_fetch_or_parse:{type(exc).__name__}",
+                index_url=index_url, source_clock=clock,
+            )
+            _write_sec_receipt(store, outcome)
+            counts["rejected"] += 1
+            continue
+        if len(documents) != 1:
+            outcome = SecEarningsReleaseOutcome(
+                candidate, "rejected", "ambiguous_ex99_document" if documents else "ex99_document_not_found",
+                index_url=index_url, source_clock=clock,
+            )
+            _write_sec_receipt(store, outcome)
+            counts["rejected"] += 1
+            continue
+        document_name = documents[0]
+        document_url = f"{directory_url}/{document_name}"
+        cache_path = _cached_document_path(options.cache_dir, candidate, document_name)
+        try:
+            document_bytes = _read_verified_cache(
+                store, candidate, document_name, cache_path, maximum=options.max_document_bytes
+            )
+            if document_bytes is not None:
+                counts["cache_hits"] += 1
+            else:
+                document_bytes = _fetch_sec_bytes(
+                    session, document_url, timeout=options.request_timeout, maximum=options.max_document_bytes
+                )
+                _write_verified_cache(cache_path, document_bytes)
+        except Exception as exc:
+            outcome = SecEarningsReleaseOutcome(
+                candidate, "fetch_failed", f"document_fetch:{type(exc).__name__}", document_name,
+                index_url, document_url, source_clock=clock,
+            )
+            _write_sec_receipt(store, outcome)
+            counts["rejected"] += 1
+            continue
+        document_sha = hashlib.sha256(document_bytes).hexdigest()
+        known_hashes = _receipt_document_hashes(store, candidate, document_name)
+        if known_hashes and document_sha not in known_hashes:
+            outcome = SecEarningsReleaseOutcome(
+                candidate, "fetch_failed", "document_sha_mismatches_prior_receipt", document_name,
+                index_url, document_url, document_sha, clock,
+            )
+            _write_sec_receipt(store, outcome)
+            counts["rejected"] += 1
+            continue
+        document_text = document_bytes.decode("utf-8", errors="replace")
+        document_parser = _HtmlTableCollector()
+        document_parser.feed(document_text)
+        headed_end = _document_quarter_end(
+            [_span_expanded_grid(table) for table in document_parser.tables],
+            candidate.filing_date or candidate.report_date,
+        ) if candidate.filing_date or candidate.report_date else None
+        fiscal = _reported_fiscal_quarter(document_text, headed_end)
+        extracted, reason = extract_reported_gaap_diluted_eps(
+            document_text, period_end=headed_end, fiscal_quarter=fiscal,
+        )
+        if fiscal is None and reason is None:
+            reason = "fiscal_period_missing_or_ambiguous"
+            extracted = None
+        if extracted is None:
+            outcome = SecEarningsReleaseOutcome(
+                candidate, "rejected", reason, document_name, index_url, document_url,
+                document_sha, clock,
+            )
+            _write_sec_receipt(store, outcome)
+            counts["rejected"] += 1
+            continue
+        receipt_outcome = SecEarningsReleaseOutcome(
+            candidate, "accepted", None, document_name, index_url, document_url, document_sha, clock
+        )
+        fact = {
+            "source": SEC_EARNINGS_RELEASE_SOURCE,
+            "security_id": cik_security_id(candidate.cik),
+            "cik": candidate.cik,
+            "accession_number": candidate.accession_number,
+            "form": "8-K",
+            "source_item": "2.02 / EX-99",
+            "source_url": document_url,
+            "measure_code": "EPS_DILUTED",
+            "fiscal_year": fiscal[0],
+            "fiscal_period": fiscal[1],
+            "period_end": extracted["period_end"],
+            "value": extracted["value"],
+            "unit": "USD_PER_SHARE",
+            "basis": "GAAP",
+            "is_preliminary": True,
+            "extraction_confidence": 1.0,
+            "evidence_text": extracted["evidence_text"],
+            "filing_date": candidate.filing_date,
+            "release_date": clock.available_at.date(),
+            "as_of_date": extracted["period_end"],
+            "available_at": clock.available_at,
+            "raw_payload_json": json_dumps({
+                "receipt_id": _receipt_id(receipt_outcome),
+                "cik": candidate.cik,
+                "source_security_id": cik_security_id(candidate.cik),
+                "accession_number": candidate.accession_number,
+                "event_report_date": candidate.report_date.isoformat() if candidate.report_date else None,
+                "document_name": document_name,
+                "document_sha256": document_sha,
+                "index_url": index_url,
+                "document_url": document_url,
+                "raw_acceptance_timestamp": clock.raw_timestamp,
+                "acceptance_utc_offset": clock.utc_offset,
+                "timestamp_zone_status": clock.timezone_status,
+                "table_number": extracted["table_number"],
+                "row_number": extracted["row_number"],
+                "column_number": extracted["column_number"],
+                "column_heading": extracted["column_heading"],
+                "header_trace": extracted["header_trace"],
+                "row_lineage": extracted["row_lineage"],
+                "duration_evidence": extracted["duration_evidence"],
+                "period_start": extracted["period_start"].isoformat() if extracted["period_start"] else None,
+                "period_start_basis": extracted["period_start_basis"],
+                "duration_days": extracted["duration_days"],
+                "week_count": extracted.get("week_count"),
+                "fiscal_period_evidence": extracted.get("fiscal_period_evidence"),
+                "prior_year_quarter_value": extracted["prior_year_quarter_value"],
+            }),
+            "run_id": options.run_id,
+        }
+        outcome = SecEarningsReleaseOutcome(
+            candidate, "accepted", None, document_name, index_url, document_url, document_sha, clock, fact
+        )
+        facts = normalize_press_release_rows(pd.DataFrame([fact]), options=PressReleaseOptions(
+            source=SEC_EARNINGS_RELEASE_SOURCE, min_confidence=1.0, run_id=options.run_id
+        ))
+        # Accepted evidence is terminal only when its immutable source fact is
+        # durable.  The same transaction rolls both back on a fact write fault.
+        with store.transaction():
+            _write_sec_receipt(store, outcome)
+            _write_press_release_facts_frame(
+                store, facts, options=PressReleaseOptions(
+                    source=SEC_EARNINGS_RELEASE_SOURCE, replace_source_file=False,
+                    min_confidence=1.0, run_id=options.run_id,
+                ), transaction=False,
+            )
+        counts["accepted"] += 1
+    return counts
 
 
 def _stable_id(*parts: object) -> str:
@@ -645,8 +1714,9 @@ def _write_press_release_facts_frame(
     *,
     options: PressReleaseOptions,
     source_file_sha256: str | None = None,
+    transaction: bool = True,
 ) -> int:
-    with store.transaction():
+    def write() -> None:
         if options.replace_source_file:
             if source_file_sha256:
                 store.con.execute(
@@ -660,8 +1730,13 @@ def _write_press_release_facts_frame(
             else:
                 store.con.execute("DELETE FROM press_release_facts WHERE source = ?", [options.source])
         if frame.empty:
-            return 0
+            return
         insert_frame(store, frame, "press_release_facts", "press_release_fact_insert")
+    if transaction:
+        with store.transaction():
+            write()
+    else:
+        write()
     return int(len(frame))
 
 
@@ -1004,6 +2079,37 @@ class PressReleaseDataset(Dataset):
             dataset_id=self.dataset_id,
             rows_loaded=int(details.get("fact_rows", 0)),
             source=options.source,
+            details=details,
+            run_id=options.run_id,
+        )
+
+
+class SecEarningsReleaseDataset(Dataset):
+    """Governed public-SEC reported-quarter-EPS evidence source."""
+
+    dataset_id = "sec_earnings_release_facts"
+    source_name = SEC_EARNINGS_RELEASE_SOURCE
+    depends_on = ("sec_submissions",)
+
+    def ensure_schema(self, store: DuckDBStore) -> None:
+        store.initialize()
+
+    def load(self, store: DuckDBStore, options: SecEarningsReleaseOptions) -> DatasetLoadResult:
+        details = refresh_sec_earnings_release_facts(store, options)
+        quality_check(
+            store,
+            dataset_id=self.dataset_id,
+            table_name="sec_earnings_release_receipts",
+            check_name="source_outcomes_recorded",
+            status="passed" if details["candidates"] == details["accepted"] + details["rejected"] + details["skipped_terminal"] else "warning",
+            observed_value=float(details["accepted"] + details["rejected"] + details["skipped_terminal"]),
+            threshold_value=float(details["candidates"]),
+            details=details,
+        )
+        return DatasetLoadResult(
+            dataset_id=self.dataset_id,
+            rows_loaded=int(details["accepted"]),
+            source=self.source_name,
             details=details,
             run_id=options.run_id,
         )

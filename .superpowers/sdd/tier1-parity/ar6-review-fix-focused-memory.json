@@ -1,0 +1,19 @@
+{
+  "command": [
+    ".venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "tests/test_ticker_history.py",
+    "tests/test_ticker_history_bulk.py",
+    "tests/test_ticker_history_price_source.py",
+    "-n",
+    "0",
+    "-q"
+  ],
+  "job_limit_gb": 4.0,
+  "status": "refused_low_headroom",
+  "headroom": {
+    "physical_free_gb": 5.664333343505859,
+    "commit_free_gb": 9.741924285888672
+  }
+}

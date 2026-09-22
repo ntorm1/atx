@@ -1,0 +1,230 @@
+﻿{
+    "observed_at_utc":  "2026-09-20T22:04:46.203832+00:00",
+    "read_only":  true,
+    "run":  "activation-companyfacts-archive3",
+    "duckdb_version":  "1.5.5",
+    "activation":  {
+                       "columns":  [
+                                       "stage",
+                                       "run_id",
+                                       "status",
+                                       "started_at",
+                                       "finished_at",
+                                       "rows",
+                                       "error"
+                                   ],
+                       "rows":  [
+                                    [
+                                        "companyfacts_load",
+                                        "activation-companyfacts-archive3",
+                                        "failed",
+                                        "2026-09-20 20:03:29.054152",
+                                        "2026-09-20 22:02:44.570565",
+                                        0,
+                                        "TransactionContext Error: Failed to commit: could not allocate block of size 256.0 KiB (953.6 MiB/953.6 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit=\u0027...GB\u0027)\n\nSee also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads"
+                                    ]
+                                ]
+                   },
+    "dataset":  {
+                    "columns":  [
+                                    "run_id",
+                                    "dataset_id",
+                                    "status",
+                                    "started_at",
+                                    "finished_at",
+                                    "rows_loaded",
+                                    "error_message",
+                                    "params_json"
+                                ],
+                    "rows":  [
+                                 [
+                                     "758f7d5c-73ae-4b66-a8c9-f1996afa163a",
+                                     "sec_company_facts",
+                                     "failed",
+                                     "2026-09-20 20:03:29.064043",
+                                     "2026-09-20 22:02:44.547910",
+                                     null,
+                                     "TransactionContext Error: Failed to commit: could not allocate block of size 256.0 KiB (953.6 MiB/953.6 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit=\u0027...GB\u0027)\n\nSee also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads\nTraceback (most recent call last):\n  File \"C:\\atx\\atx-db\\src\\atx_db\\dataset.py\", line 79, in run\n    result = self.load(store, with_run_id(options, run_id))\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\atx\\atx-db\\src\\atx_db\\fundamentals.py\", line 1170, in load\n    rows_loaded += self._replace_facts(\n                   ^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\atx\\atx-db\\src\\atx_db\\fundamentals.py\", line 1302, in _replace_facts\n    with store.transaction():\n  File \"C:\\Program Files\\Python312\\Lib\\contextlib.py\", line 144, in __exit__\n    next(self.gen)\n  File \"C:\\atx\\atx-db\\src\\atx_db\\connection.py\", line 279, in transaction\n    con.execute(\"COMMIT\")\n_duckdb.TransactionException: TransactionContext Error: Failed to commit: could not allocate block of size 256.0 KiB (953.6 MiB/953.6 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit=\u0027...GB\u0027)\n\nSee also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads\n",
+                                     "{\"as_of_date\":\"2026-09-20\",\"companyfacts_zip\":\"data\\\\cache\\\\companyfacts.zip\",\"concepts\":[\"AccountsAndNotesReceivableNet\",\"AccountsPayableAndAccruedLiabilitiesCurrent\",\"AccountsPayableCurrent\",\"AccountsPayableTradeCurrent\",\"AccountsReceivableGrossCurrent\",\"AccountsReceivableNetCurrent\",\"AccruedIncomeTaxes\",\"AccruedIncomeTaxesCurrent\",\"AccruedLiabilitiesCurrent\",\"AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment\",\"AccumulatedOtherComprehensiveIncomeLossNetOfTax\",\"AdditionalPaidInCapital\",\"AdditionalPaidInCapitalCommonStock\",\"AdvertisingExpense\",\"AllocatedShareBasedCompensationExpense\",\"AmortizationOfIntangibleAssets\",\"AssetImpairmentCharges\",\"Assets\",\"AssetsCurrent\",\"AvailableForSaleSecuritiesCurrent\",\"AvailableForSaleSecuritiesNoncurrent\",\"CapitalizedComputerSoftwareGross\",\"CapitalizedComputerSoftwareNet\",\"Cash\",\"CashAndCashEquivalentsAtCarryingValue\",\"CashAndCashEquivalentsPeriodIncreaseDecrease\",\"CashAndDueFromBanks\",\"CashCashEquivalentsAndShortTermInvestments\",\"CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents\",\"CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsPeriodIncreaseDecreaseExcludingExchangeRateEffect\",\"CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsPeriodIncreaseDecreaseIncludingExchangeRateEffect\",\"ClassACommonStockSharesOutstanding\",\"ClassBCommonStockSharesOutstanding\",\"ClassCCommonStockSharesOutstanding\",\"ClassDCommonStockSharesOutstanding\",\"CommercialPaper\",\"CommonStockSharesIssued\",\"CommonStockSharesOutstanding\",\"CommonStockValue\",\"CommonStocksIncludingAdditionalPaidInCapital\",\"ContractWithCustomerLiability\",\"ContractWithCustomerLiabilityCurrent\",\"CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization\",\"CostOfGoodsAndServicesSold\",\"CostOfGoodsAndServicesSoldDepreciationAndAmortization\",\"CostOfGoodsSold\",\"CostOfGoodsSoldExcludingDepreciationDepletionAndAmortization\",\"CostOfRevenue\",\"CostOfServices\",\"CostsAndExpenses\",\"CurrentIncomeTaxExpenseBenefit\",\"DebtCurrent\",\"DeferredIncomeTaxAssetsNet\",\"DeferredIncomeTaxExpenseBenefit\",\"DeferredIncomeTaxLiabilitiesNet\",\"DeferredIncomeTaxesAndTaxCredits\",\"DeferredOtherTaxExpenseBenefit\",\"DeferredRevenue\",\"DeferredRevenueCurrent\",\"DeferredTaxAssetsNetNoncurrent\",\"DeferredTaxLiabilitiesNoncurrent\",\"Depreciation\",\"DepreciationAmortizationAndAccretionNet\",\"DepreciationAndAmortization\",\"DepreciationDepletionAndAmortization\",\"DepreciationDepletionAndAmortizationNonproduction\",\"DepreciationNonproduction\",\"DiscontinuedOperationIncomeLossFromDiscontinuedOperationNetOfTax\",\"EarningsPerShareBasic\",\"EarningsPerShareBasicAndDiluted\",\"EarningsPerShareDiluted\",\"EffectOfExchangeRateOnCashAndCashEquivalents\",\"EffectOfExchangeRateOnCashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents\",\"EmployeeRelatedLiabilitiesCurrent\",\"EntityCommonStockSharesOutstanding\",\"EntityPublicFloat\",\"EquityMethodInvestments\",\"ExtraordinaryItemGross\",\"ExtraordinaryItemNetOfTax\",\"FinanceLeaseLiability\",\"FinanceLeaseLiabilityCurrent\",\"FinanceLeaseLiabilityNoncurrent\",\"FinancingReceivableAllowanceForCreditLosses\",\"FiniteLivedIntangibleAssetsAmortizationExpense\",\"FiniteLivedIntangibleAssetsNet\",\"GainLossOnSaleOfBusiness\",\"GeneralAndAdministrativeExpense\",\"Goodwill\",\"GoodwillAndIntangibleAssetImpairmentCharge\",\"GoodwillGross\",\"GrossProfit\",\"IncomeLossFromContinuingOperations\",\"IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest\",\"IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments\",\"IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest\",\"IncomeLossFromContinuingOperationsPerBasicShare\",\"IncomeLossFromContinuingOperationsPerDilutedShare\",\"IncomeLossFromDiscontinuedOperationsNetOfTax\",\"IncomeLossFromDiscontinuedOperationsNetOfTaxAttributableToReportingEntity\",\"IncomeLossFromEquityMethodInvestments\",\"IncomeTaxExpenseBenefit\",\"IncomeTaxExpenseBenefitContinuingOperations\",\"IncreaseDecreaseInAccountsPayable\",\"IncreaseDecreaseInAccountsPayableAndAccruedLiabilities\",\"IncreaseDecreaseInAccountsPayableTrade\",\"IncreaseDecreaseInAccountsReceivable\",\"IncreaseDecreaseInInventories\",\"IncreaseDecreaseInReceivables\",\"IndefiniteLivedIntangibleAssetsExcludingGoodwill\",\"IntangibleAssetsNetExcludingGoodwill\",\"IntangibleAssetsNetIncludingGoodwill\",\"InterestAndDebtExpense\",\"InterestAndDividendIncomeOperating\",\"InterestExpense\",\"InterestExpenseDebt\",\"InterestExpenseLongTermDebt\",\"InterestExpenseNonoperating\",\"InterestIncome\",\"InventoryGross\",\"InventoryNet\",\"InventoryNetOfAllowancesCustomerAdvancesAndProgressBillings\",\"InvestmentIncomeInterest\",\"InvestmentIncomeInterestAndDividend\",\"Liabilities\",\"LiabilitiesAndStockholdersEquity\",\"LiabilitiesCurrent\",\"LiabilityForUnpaidClaimsAndClaimsAdjustmentExpenseNet\",\"LoansAndLeasesReceivableNetReportedAmount\",\"LongTermDebtAndCapitalLeaseObligations\",\"LongTermDebtAndCapitalLeaseObligationsCurrent\",\"LongTermDebtCurrent\",\"LongTermDebtNoncurrent\",\"LongTermInvestments\",\"LongTermNotesPayable\",\"MarketableSecuritiesCurrent\",\"MarketableSecuritiesNoncurrent\",\"MarketingAndAdvertisingExpense\",\"MinorityInterest\",\"MinorityInterestInNetIncomeLoss\",\"NetCashProvidedByUsedInFinancingActivities\",\"NetCashProvidedByUsedInFinancingActivitiesContinuingOperations\",\"NetCashProvidedByUsedInInvestingActivities\",\"NetCashProvidedByUsedInInvestingActivitiesContinuingOperations\",\"NetCashProvidedByUsedInOperatingActivities\",\"NetCashProvidedByUsedInOperatingActivitiesContinuingOperations\",\"NetIncomeLoss\",\"NetIncomeLossAttributableToNoncontrollingInterest\",\"NetIncomeLossAttributableToRedeemableNoncontrollingInterest\",\"NetIncomeLossAvailableToCommonStockholdersBasic\",\"NetIncomeLossAvailableToCommonStockholdersDiluted\",\"NonoperatingIncomeExpense\",\"OperatingCostsAndExpenses\",\"OperatingExpenses\",\"OperatingIncomeLoss\",\"OperatingLeaseLiability\",\"OperatingLeaseLiabilityCurrent\",\"OperatingLeaseLiabilityNoncurrent\",\"OperatingLeaseRightOfUseAsset\",\"OtherAccruedLiabilitiesCurrent\",\"OtherAssets\",\"OtherAssetsCurrent\",\"OtherAssetsNoncurrent\",\"OtherGeneralAndAdministrativeExpense\",\"OtherLiabilities\",\"OtherLiabilitiesCurrent\",\"OtherLiabilitiesNoncurrent\",\"OtherSellingGeneralAndAdministrativeExpense\",\"OtherShortTermBorrowings\",\"OtherShortTermInvestments\",\"PayablesToBrokerDealersAndClearingOrganizations\",\"PaymentsForCapitalImprovements\",\"PaymentsForRepurchaseOfCommonStock\",\"PaymentsForRepurchaseOfEquity\",\"PaymentsOfDividends\",\"PaymentsOfDividendsCommonStock\",\"PaymentsOfDividendsPreferredStockAndPreferenceStock\",\"PaymentsToAcquireBusinessesAndInterestInAffiliates\",\"PaymentsToAcquireBusinessesGross\",\"PaymentsToAcquireBusinessesNetOfCashAcquired\",\"PaymentsToAcquireIntangibleAssets\",\"PaymentsToAcquireMachineryAndEquipment\",\"PaymentsToAcquireOtherPropertyPlantAndEquipment\",\"PaymentsToAcquireProductiveAssets\",\"PaymentsToAcquirePropertyPlantAndEquipment\",\"PaymentsToDevelopSoftware\",\"PreferredStockDividends\",\"PreferredStockDividendsAndOtherAdjustments\",\"PreferredStockDividendsIncomeStatementImpact\",\"PreferredStockLiquidationPreferenceValue\",\"PreferredStockValue\",\"PremiumsEarnedNet\",\"PremiumsWrittenNet\",\"PrepaidExpenseAndOtherAssetsCurrent\",\"PrepaidExpenseCurrent\",\"ProceedsFromDivestitureOfBusinesses\",\"ProceedsFromDivestitureOfBusinessesNetOfCashDivested\",\"ProceedsFromIssuanceOfCommonStock\",\"ProceedsFromIssuanceOfLongTermDebt\",\"ProceedsFromIssuanceOfSeniorLongTermDebt\",\"ProceedsFromIssuanceOrSaleOfEquity\",\"ProceedsFromLinesOfCredit\",\"ProceedsFromNotesPayable\",\"ProceedsFromSaleOfProductiveAssets\",\"ProceedsFromStockOptionsExercised\",\"ProfitLoss\",\"PropertyPlantAndEquipmentAndFinanceLeaseRightOfUseAssetAfterAccumulatedDepreciationAndAmortization\",\"PropertyPlantAndEquipmentGross\",\"PropertyPlantAndEquipmentNet\",\"ProvisionForLoanAndLeaseLosses\",\"PublicUtilitiesPropertyPlantAndEquipmentRateBaseAmount\",\"ReceivablesFromBrokerDealersAndClearingOrganizations\",\"ReceivablesNetCurrent\",\"RedeemableNoncontrollingInterestEquityCarryingAmount\",\"RedeemableNoncontrollingInterestEquityPreferredCarryingAmount\",\"RedeemablePreferredStockCarryingAmount\",\"RegulatedAndUnregulatedOperatingRevenue\",\"RepaymentsOfLinesOfCredit\",\"RepaymentsOfLongTermDebt\",\"RepaymentsOfNotesPayable\",\"RepaymentsOfSeniorDebt\",\"ResearchAndDevelopmentExpense\",\"ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost\",\"ResearchAndDevelopmentExpenseSoftwareExcludingAcquiredInProcessCost\",\"RestructuringCharges\",\"RestructuringSettlementAndImpairmentProvisions\",\"RetainedEarningsAccumulatedDeficit\",\"RevenueFromContractWithCustomerExcludingAssessedTax\",\"RevenueFromContractWithCustomerIncludingAssessedTax\",\"Revenues\",\"RevenuesNetOfInterestExpense\",\"SalesRevenueGoodsNet\",\"SalesRevenueNet\",\"SalesRevenueServicesNet\",\"SegregatedCashAndSecurities\",\"SellingAndMarketingExpense\",\"SellingExpense\",\"SellingGeneralAndAdministrativeExpense\",\"SeniorNotes\",\"ShareBasedCompensation\",\"ShortTermBorrowings\",\"ShortTermInvestments\",\"StockholdersEquity\",\"StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest\",\"SupplementalInformationForPropertyCasualtyInsuranceUnderwritersReservesForUnpaidClaimsAndClaimsAdjustmentExpense\",\"TaxesPayableCurrent\",\"TemporaryEquityCarryingAmount\",\"TemporaryEquityCarryingAmountIncludingPortionAttributableToNoncontrollingInterests\",\"TemporaryEquityRedemptionValue\",\"TreasuryStockCommonValue\",\"TreasuryStockShares\",\"TreasuryStockValue\",\"TreasuryStockValueAcquiredCostMethod\",\"WeightedAverageNumberOfDilutedSharesOutstanding\",\"WeightedAverageNumberOfSharesIssuedBasic\",\"WeightedAverageNumberOfSharesOutstandingBasic\"],\"max_attempts\":1,\"progress_every_targets\":25,\"refresh_derived_surfaces\":false,\"request_delay_seconds\":0.0,\"request_timeout\":120,\"run_id\":\"activation-companyfacts-archive3-companyfacts\",\"skip_failed_targets\":true,\"skip_loaded_targets\":false,\"symbol_limit\":null,\"symbol_offset\":0,\"symbol_source\":\"archive_members\",\"symbols\":[],\"universe_id\":null,\"user_agent\":\"[redacted configured contact; archive run was offline]\"}"
+                                 ]
+                             ]
+                },
+    "retained_totals":  {
+                            "columns":  [
+                                            "facts",
+                                            "points",
+                                            "prices",
+                                            "custom_features"
+                                        ],
+                            "rows":  [
+                                         [
+                                             38500008,
+                                             38500008,
+                                             31959271,
+                                             31934514
+                                         ]
+                                     ]
+                        },
+    "attempt_rows":  {
+                         "columns":  [
+                                         "run_id",
+                                         "rows",
+                                         "ciks",
+                                         "first_cik",
+                                         "last_cik"
+                                     ],
+                         "rows":  [
+                                      [
+                                          "758f7d5c-73ae-4b66-a8c9-f1996afa163a",
+                                          20205629,
+                                          3750,
+                                          "0000001750",
+                                          "0001033905"
+                                      ]
+                                  ]
+                     },
+    "source_outcomes":  {
+                            "columns":  [
+                                            "status",
+                                            "members",
+                                            "reported_rows",
+                                            "first_cik",
+                                            "last_cik"
+                                        ],
+                            "rows":  [
+                                         [
+                                             "empty",
+                                             708,
+                                             0,
+                                             "0000002110",
+                                             "0001033669"
+                                         ],
+                                         [
+                                             "error",
+                                             5,
+                                             null,
+                                             "0000741313",
+                                             "0000925683"
+                                         ],
+                                         [
+                                             "loaded",
+                                             3750,
+                                             20205629,
+                                             "0000001750",
+                                             "0001033905"
+                                         ],
+                                         [
+                                             "unavailable",
+                                             26,
+                                             0,
+                                             "0000003521",
+                                             "0000939934"
+                                         ]
+                                     ]
+                        },
+    "source_errors":  {
+                          "columns":  [
+                                          "source_url",
+                                          "sha256",
+                                          "cik",
+                                          "error_type",
+                                          "error"
+                                      ],
+                          "rows":  [
+                                       [
+                                           "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip#CIK0000741313.json",
+                                           "ee099c7394a357f1996c728b7362f25158613b34f2ab1ad270cffc1befb917b6",
+                                           "0000741313",
+                                           "ValueError",
+                                           "invalid literal for int() with base 10: \u0027None\u0027"
+                                       ],
+                                       [
+                                           "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip#CIK0000759828.json",
+                                           "ee099c7394a357f1996c728b7362f25158613b34f2ab1ad270cffc1befb917b6",
+                                           "0000759828",
+                                           "ValueError",
+                                           "invalid literal for int() with base 10: \u0027None\u0027"
+                                       ],
+                                       [
+                                           "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip#CIK0000851693.json",
+                                           "ee099c7394a357f1996c728b7362f25158613b34f2ab1ad270cffc1befb917b6",
+                                           "0000851693",
+                                           "ValueError",
+                                           "invalid literal for int() with base 10: \u0027None\u0027"
+                                       ],
+                                       [
+                                           "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip#CIK0000855886.json",
+                                           "ee099c7394a357f1996c728b7362f25158613b34f2ab1ad270cffc1befb917b6",
+                                           "0000855886",
+                                           "ValueError",
+                                           "invalid literal for int() with base 10: \u0027None\u0027"
+                                       ],
+                                       [
+                                           "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip#CIK0000925683.json",
+                                           "ee099c7394a357f1996c728b7362f25158613b34f2ab1ad270cffc1befb917b6",
+                                           "0000925683",
+                                           "ValueError",
+                                           "invalid literal for int() with base 10: \u0027None\u0027"
+                                       ]
+                                   ]
+                      },
+    "source_tail":  {
+                        "columns":  [
+                                        "status",
+                                        "source_url",
+                                        "metadata_json"
+                                    ],
+                        "rows":  [
+                                     [
+                                         "loaded",
+                                         "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip#CIK0001033905.json",
+                                         "{\"allowlist_sha256\": \"ccfe31cf84b2f8c7eac978cfb19b6fd1e0494410cfcd0f969f98f030a7f6cdaf\", \"archive_sha256\": \"ee099c7394a357f1996c728b7362f25158613b34f2ab1ad270cffc1befb917b6\", \"cik\": \"0001033905\", \"empty_reason\": null, \"rows\": 8394, \"run_id\": \"758f7d5c-73ae-4b66-a8c9-f1996afa163a\", \"source_mode\": \"bulk_zip\", \"symbol\": \"CIK0001033905\", \"unresolved_entity\": true, \"unresolved_security\": true}"
+                                     ],
+                                     [
+                                         "loaded",
+                                         "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip#CIK0001033767.json",
+                                         "{\"allowlist_sha256\": \"ccfe31cf84b2f8c7eac978cfb19b6fd1e0494410cfcd0f969f98f030a7f6cdaf\", \"archive_sha256\": \"ee099c7394a357f1996c728b7362f25158613b34f2ab1ad270cffc1befb917b6\", \"cik\": \"0001033767\", \"empty_reason\": null, \"rows\": 9, \"run_id\": \"758f7d5c-73ae-4b66-a8c9-f1996afa163a\", \"source_mode\": \"bulk_zip\", \"symbol\": \"CIK0001033767\", \"unresolved_entity\": true, \"unresolved_security\": true}"
+                                     ],
+                                     [
+                                         "empty",
+                                         "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip#CIK0001033669.json",
+                                         "{\"allowlist_sha256\": \"ccfe31cf84b2f8c7eac978cfb19b6fd1e0494410cfcd0f969f98f030a7f6cdaf\", \"archive_sha256\": \"ee099c7394a357f1996c728b7362f25158613b34f2ab1ad270cffc1befb917b6\", \"cik\": \"0001033669\", \"empty_reason\": \"unsupported_or_empty_taxonomy\", \"rows\": 0, \"run_id\": \"758f7d5c-73ae-4b66-a8c9-f1996afa163a\", \"source_mode\": \"bulk_zip\", \"symbol\": \"CIK0001033669\", \"unresolved_entity\": false, \"unresolved_security\": false}"
+                                     ],
+                                     [
+                                         "loaded",
+                                         "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip#CIK0001033128.json",
+                                         "{\"allowlist_sha256\": \"ccfe31cf84b2f8c7eac978cfb19b6fd1e0494410cfcd0f969f98f030a7f6cdaf\", \"archive_sha256\": \"ee099c7394a357f1996c728b7362f25158613b34f2ab1ad270cffc1befb917b6\", \"cik\": \"0001033128\", \"empty_reason\": null, \"rows\": 1824, \"run_id\": \"758f7d5c-73ae-4b66-a8c9-f1996afa163a\", \"source_mode\": \"bulk_zip\", \"symbol\": \"CIK0001033128\", \"unresolved_entity\": true, \"unresolved_security\": true}"
+                                     ],
+                                     [
+                                         "loaded",
+                                         "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip#CIK0001033012.json",
+                                         "{\"allowlist_sha256\": \"ccfe31cf84b2f8c7eac978cfb19b6fd1e0494410cfcd0f969f98f030a7f6cdaf\", \"archive_sha256\": \"ee099c7394a357f1996c728b7362f25158613b34f2ab1ad270cffc1befb917b6\", \"cik\": \"0001033012\", \"empty_reason\": null, \"rows\": 5630, \"run_id\": \"758f7d5c-73ae-4b66-a8c9-f1996afa163a\", \"source_mode\": \"bulk_zip\", \"symbol\": \"CIK0001033012\", \"unresolved_entity\": true, \"unresolved_security\": true}"
+                                     ],
+                                     [
+                                         "loaded",
+                                         "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip#CIK0001032975.json",
+                                         "{\"allowlist_sha256\": \"ccfe31cf84b2f8c7eac978cfb19b6fd1e0494410cfcd0f969f98f030a7f6cdaf\", \"archive_sha256\": \"ee099c7394a357f1996c728b7362f25158613b34f2ab1ad270cffc1befb917b6\", \"cik\": \"0001032975\", \"empty_reason\": null, \"rows\": 10887, \"run_id\": \"758f7d5c-73ae-4b66-a8c9-f1996afa163a\", \"source_mode\": \"bulk_zip\", \"symbol\": \"CIK0001032975\", \"unresolved_entity\": true, \"unresolved_security\": true}"
+                                     ],
+                                     [
+                                         "loaded",
+                                         "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip#CIK0001032863.json",
+                                         "{\"allowlist_sha256\": \"ccfe31cf84b2f8c7eac978cfb19b6fd1e0494410cfcd0f969f98f030a7f6cdaf\", \"archive_sha256\": \"ee099c7394a357f1996c728b7362f25158613b34f2ab1ad270cffc1befb917b6\", \"cik\": \"0001032863\", \"empty_reason\": null, \"rows\": 265, \"run_id\": \"758f7d5c-73ae-4b66-a8c9-f1996afa163a\", \"source_mode\": \"bulk_zip\", \"symbol\": \"CIK0001032863\", \"unresolved_entity\": true, \"unresolved_security\": true}"
+                                     ],
+                                     [
+                                         "loaded",
+                                         "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip#CIK0001032761.json",
+                                         "{\"allowlist_sha256\": \"ccfe31cf84b2f8c7eac978cfb19b6fd1e0494410cfcd0f969f98f030a7f6cdaf\", \"archive_sha256\": \"ee099c7394a357f1996c728b7362f25158613b34f2ab1ad270cffc1befb917b6\", \"cik\": \"0001032761\", \"empty_reason\": null, \"rows\": 1422, \"run_id\": \"758f7d5c-73ae-4b66-a8c9-f1996afa163a\", \"source_mode\": \"bulk_zip\", \"symbol\": \"CIK0001032761\", \"unresolved_entity\": true, \"unresolved_security\": true}"
+                                     ]
+                                 ]
+                    },
+    "migrations":  {
+                       "columns":  [
+                                       "version"
+                                   ],
+                       "rows":  [
+                                    [
+                                        "0314"
+                                    ]
+                                ]
+                   }
+}

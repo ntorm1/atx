@@ -1,0 +1,18 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "ruff",
+    "check",
+    "src/atx_db/derived_metrics.py"
+  ],
+  "job_limit_gb": 1.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 8.157527923583984,
+    "commit_free_gb": 10.118324279785156
+  },
+  "child_pid": 2996,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.056774139404296875
+}

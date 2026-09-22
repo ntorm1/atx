@@ -1,0 +1,21 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "-m",
+    "ruff",
+    "check",
+    "--fix",
+    "src/atx_db/migrations/bodies_0322.py",
+    "src/atx_db/migrations/registry.py",
+    "tests/test_issuer_catalog_upgrade.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 7.247364044189453,
+    "commit_free_gb": 10.117748260498047
+  },
+  "child_pid": 15212,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.06803512573242188
+}

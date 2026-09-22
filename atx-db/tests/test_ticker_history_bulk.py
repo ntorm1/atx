@@ -6,7 +6,7 @@ from atx_db.ticker_history_bulk import BulkTickerHistoryOptions, publish_bulk_ti
 
 HEADER = (
     "tradingDate\tsecurityID\tticker_tk\ttodayTicker\topen\thigh\tlow\tclose\t"
-    "closePr\tvolume\tshares\treturnFactor\n"
+    "closePr\tvolume\tshares\treturnFactor\tcumulReturnFactor\tdn\tcloseUnadjPr\ttotalReturn\n"
 )
 
 
@@ -14,11 +14,11 @@ def test_bulk_publication_is_atomic_deduplicated_and_collision_safe(tmp_store, t
     archive = tmp_path / "bars.tsv"
     archive.write_text(
         HEADER
-        + "2025-01-02\t10\tAAA\tAAA\t10\t11\t9\t10\t10\t100\t1000\t1\n"
-        + "2025-01-02\t10\tAAA\tAAA\t10\t11\t9\t10\t10\t200\t1000\t1\n"
-        + "2025-01-03\t10\tAAA\tAAA\t11\t12\t10\t11\t11\t150\t1000\t1\n"
-        + "2025-01-03\t20\tAAA\tAAA\t20\t21\t19\t20\t20\t50\t1000\t1\n"
-        + "2025-01-03\t30\tBAD\tBAD\t20\t19\t18\t20\t20\t50\t1000\t1\n",
+        + "2025-01-02\t10\tAAA\tAAA\t10\t11\t9\t10\t10\t100\t1000\t1\t1\t1\t10\t0\n"
+        + "2025-01-02\t10\tAAA\tAAA\t10\t11\t9\t10\t10\t200\t1000\t1\t1\t1\t10\t0\n"
+        + "2025-01-03\t10\tAAA\tAAA\t11\t12\t10\t11\t11\t150\t1000\t1\t1\t1\t10\t0\n"
+        + "2025-01-03\t20\tAAA\tAAA\t20\t21\t19\t20\t20\t50\t1000\t1\t1\t1\t10\t0\n"
+        + "2025-01-03\t30\tBAD\tBAD\t20\t19\t18\t20\t20\t50\t1000\t1\t1\t1\t10\t0\n",
         encoding="utf-8",
     )
     tmp_store.con.execute(
@@ -40,37 +40,38 @@ def test_bulk_publication_is_atomic_deduplicated_and_collision_safe(tmp_store, t
             tsv_path=archive,
             memory_limit="1GB",
             threads=1,
-            minimum_rows=3,
+            minimum_rows=2,
             minimum_securities=2,
             minimum_latest_date_securities=2,
             run_id="bulk-test",
         ),
     )
 
-    assert result.rows == 3
+    assert result.rows == 2
     assert result.securities == 2
     assert result.latest_date_securities == 2
     assert result.duplicate_keys == 0
     assert result.invalid_rows == 0
+    assert result.source_diagnostics["quarantined_positive_key_rows"] == 2
     assert tmp_store.con.execute(
         "SELECT volume FROM equity_daily_bars WHERE vendor_security_id = '10' AND trade_date = DATE '2025-01-02'"
-    ).fetchone() == (200,)
+    ).fetchone() is None
     security_ids = tmp_store.con.execute(
         "SELECT DISTINCT security_id FROM equity_daily_bars WHERE source = 'tbltickerhistory3_10y' ORDER BY 1"
     ).fetchall()
-    assert security_ids == [("SEC-CIK-0000000001",), ("TBLTICKERHISTORY-20-AAA",)]
+    assert security_ids == [("SEC-CIK-0000000001",), ("TBLTICKERHISTORY-20",)]
     assert tmp_store.con.execute(
         "SELECT count(*) FROM equity_daily_bars WHERE source = 'other'"
     ).fetchone() == (1,)
     assert tmp_store.con.execute(
         "SELECT status, rows_loaded FROM dataset_runs WHERE run_id = 'bulk-test'"
-    ).fetchone() == ("succeeded", 3)
+    ).fetchone() == ("succeeded", 2)
 
 
 def test_bulk_publication_gate_preserves_live_table(tmp_store, tmp_path):
     archive = tmp_path / "too-small.tsv"
     archive.write_text(
-        HEADER + "2025-01-02\t10\tAAA\tAAA\t10\t11\t9\t10\t10\t100\t1000\t1\n",
+        HEADER + "2025-01-02\t10\tAAA\tAAA\t10\t11\t9\t10\t10\t100\t1000\t1\t1\t1\t10\t0\n",
         encoding="utf-8",
     )
     tmp_store.con.execute(

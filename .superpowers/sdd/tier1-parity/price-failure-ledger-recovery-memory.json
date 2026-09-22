@@ -1,0 +1,15 @@
+{
+  "command": [
+    ".venv/Scripts/python.exe",
+    "../.superpowers/sdd/tier1-parity/record_price_failure.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 5.4878082275390625,
+    "commit_free_gb": 10.35103988647461
+  },
+  "child_pid": 17008,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.649871826171875
+}

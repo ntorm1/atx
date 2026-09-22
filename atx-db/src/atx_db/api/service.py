@@ -345,6 +345,346 @@ class WarehouseReadService:
         return sorted({str(row[0]) for row in rows})
 
     @staticmethod
+    def _normalized_cik(value: str) -> str:
+        candidate = value.strip().upper().removeprefix("CIK").strip()
+        if not candidate.isdigit():
+            raise ApiQueryError("cik must contain only digits")
+        if len(candidate) > 10:
+            raise ApiQueryError("cik must contain at most 10 digits")
+        return candidate.zfill(10)
+
+    @staticmethod
+    def _normalized_cik_sql(column: str) -> str:
+        """Normalize only one-to-ten digit source values; never truncate a CIK."""
+        return (
+            f"CASE WHEN regexp_full_match(trim({column}), '^[0-9]{{1,10}}$') "
+            f"THEN lpad(trim({column}), 10, '0') END"
+        )
+
+    def resolve_issuer_ticker(
+        self,
+        *,
+        ticker: str,
+        issuer_lookup_as_of: dt.datetime,
+    ) -> dict[str, Any]:
+        """Resolve a current-as-of ticker to a CIK without changing security APIs.
+
+        The historical identifier rows are the authority.  ``sec_company_tickers``
+        is reported only as a current-directory cross-check, so a changed current
+        directory cannot suppress co-visible historical evidence or backdate it.
+        """
+        requested_ticker = ticker.strip().upper()
+        if not requested_ticker:
+            raise ApiQueryError("ticker must not be empty")
+        lookup_at = _naive_utc(issuer_lookup_as_of)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                WITH co_visible AS (
+                    SELECT
+                        ticker.security_id AS directory_security_id,
+                        CASE WHEN regexp_full_match(trim(cik.id_value), '^[0-9]{1,10}$')
+                             THEN lpad(trim(cik.id_value), 10, '0') END AS lookup_cik,
+                        greatest(ticker.valid_from, cik.valid_from) AS directory_valid_from,
+                        least(coalesce(ticker.valid_to, DATE '9999-12-31'),
+                              coalesce(cik.valid_to, DATE '9999-12-31')) AS directory_valid_to,
+                        greatest(coalesce(ticker.available_at, ticker.source_loaded_at),
+                                 coalesce(cik.available_at, cik.source_loaded_at)) AS directory_available_at,
+                        greatest(ticker.as_of_date, cik.as_of_date) AS directory_as_of_date,
+                        concat(ticker.source, '|', cik.source) AS directory_source,
+                        EXISTS (
+                            SELECT 1 FROM sec_company_tickers current_directory
+                            WHERE current_directory.security_id = ticker.security_id
+                              AND CASE WHEN regexp_full_match(trim(current_directory.cik), '^[0-9]{1,10}$')
+                                       THEN lpad(trim(current_directory.cik), 10, '0') END
+                                  = CASE WHEN regexp_full_match(trim(cik.id_value), '^[0-9]{1,10}$')
+                                       THEN lpad(trim(cik.id_value), 10, '0') END
+                        ) AS current_directory_cross_check
+                    FROM security_identifier_history ticker
+                    JOIN security_identifier_history cik
+                      ON cik.security_id = ticker.security_id AND cik.id_type = 'CIK'
+                    WHERE ticker.id_type = 'TICKER'
+                      AND upper(ticker.id_value) = ?
+                      AND ticker.valid_from <= CAST(? AS DATE)
+                      AND coalesce(ticker.valid_to, DATE '9999-12-31') > CAST(? AS DATE)
+                      AND cik.valid_from <= CAST(? AS DATE)
+                      AND coalesce(cik.valid_to, DATE '9999-12-31') > CAST(? AS DATE)
+                      AND ticker.as_of_date <= CAST(? AS DATE)
+                      AND cik.as_of_date <= CAST(? AS DATE)
+                      AND coalesce(ticker.available_at, ticker.source_loaded_at) <= ?
+                      AND coalesce(cik.available_at, cik.source_loaded_at) <= ?
+                      AND regexp_full_match(trim(cik.id_value), '^[0-9]{1,10}$')
+                )
+                SELECT * FROM co_visible
+                ORDER BY lookup_cik, directory_security_id, directory_available_at DESC
+                """,
+                [requested_ticker, lookup_at, lookup_at, lookup_at, lookup_at, lookup_at, lookup_at, lookup_at, lookup_at],
+            ).fetchall()
+            columns = [str(column[0]) for column in conn.description]
+        candidates = [dict(zip(columns, row, strict=True)) for row in rows]
+        ciks = sorted({str(row["lookup_cik"]) for row in candidates})
+        if not candidates:
+            return {
+                "requested_ticker": requested_ticker, "issuer_lookup_as_of": issuer_lookup_as_of,
+                "status": "unresolved", "lookup_method": "ticker_cik_history_co_visible",
+                "unavailable_reason": "no_co_visible_ticker_cik_identifier_history",
+            }
+        if len(ciks) != 1:
+            return {
+                "requested_ticker": requested_ticker, "issuer_lookup_as_of": issuer_lookup_as_of,
+                "status": "ambiguous", "lookup_method": "ticker_cik_history_co_visible",
+                "lookup_cik_candidates": ciks, "candidates": candidates,
+                "unavailable_reason": "multiple_co_visible_ciks",
+            }
+        # Preserve every co-visible directory row.  A CIK can have more than one
+        # current-as-of directory candidate, and collapsing those rows then
+        # choosing evidence[0] would turn an unresolved market association into
+        # an arbitrary security choice.  These rows establish only a CIK lookup;
+        # no one of them is historical-security-qualified.
+        evidence = candidates
+        association_ambiguous = len(evidence) != 1
+        association = {
+            "market_security_id": None if association_ambiguous else evidence[0]["directory_security_id"],
+            "association_method": "ticker_cik_history_co_visible",
+            "association_scope": "query_asof_current_cik_directory",
+            "historical_security_qualified": False,
+            "unavailable_reason": (
+                "multiple_current_directory_security_candidates"
+                if association_ambiguous else "current_asof_candidate_not_historical_security_qualified"
+            ),
+        }
+        return {
+            "requested_ticker": requested_ticker, "issuer_lookup_as_of": issuer_lookup_as_of,
+            "status": "resolved", "lookup_cik": ciks[0],
+            "directory_candidate_status": "ambiguous_multiple_candidates" if association_ambiguous else "single_candidate",
+            "directory_candidate_count": len(evidence),
+            "directory_security_id": None if association_ambiguous else evidence[0]["directory_security_id"],
+            "directory_valid_from": None if association_ambiguous else evidence[0]["directory_valid_from"],
+            "directory_valid_to": None if association_ambiguous else evidence[0]["directory_valid_to"],
+            "directory_available_at": None if association_ambiguous else evidence[0]["directory_available_at"],
+            "directory_as_of_date": None if association_ambiguous else evidence[0]["directory_as_of_date"],
+            "directory_source": None if association_ambiguous else evidence[0]["directory_source"],
+            "current_directory_cross_check": None if association_ambiguous else evidence[0]["current_directory_cross_check"],
+            "lookup_method": "ticker_cik_history_co_visible", "candidates": evidence,
+            "issuer_market_association": association,
+        }
+
+    @staticmethod
+    def _issuer_owner_ids(
+        conn: duckdb.DuckDBPyConnection, *, cik: str, content_as_of: dt.datetime
+    ) -> dict[str, tuple[str, ...]]:
+        normalized_cik = WarehouseReadService._normalized_cik_sql("cik")
+        rows = conn.execute(
+            f"""
+            WITH visible AS (
+                SELECT security_id, {normalized_cik} AS normalized_cik
+                FROM fundamental_fact_revisions
+                WHERE coalesce(available_at, source_loaded_at) <= ?
+                  AND coalesce(as_of_date, CAST(coalesce(available_at, source_loaded_at) AS DATE))
+                      <= CAST(? AS DATE)
+            ), selected AS (
+                SELECT DISTINCT security_id FROM visible WHERE normalized_cik = ?
+            )
+            SELECT DISTINCT visible.security_id, visible.normalized_cik
+            FROM visible JOIN selected USING (security_id)
+            WHERE visible.normalized_cik IS NOT NULL
+            ORDER BY visible.security_id, visible.normalized_cik
+            """,
+            [_naive_utc(content_as_of), _naive_utc(content_as_of), cik],
+        ).fetchall()
+        by_owner: dict[str, list[str]] = {}
+        for owner, owner_cik in rows:
+            by_owner.setdefault(str(owner), []).append(str(owner_cik))
+        return {owner: tuple(sorted(set(owner_ciks))) for owner, owner_ciks in by_owner.items()}
+
+    def issuer_content_range(
+        self,
+        *,
+        schema_name: str,
+        start: dt.date,
+        end: dt.date,
+        content_as_of: dt.datetime,
+        cik: str | None = None,
+        ticker: str | None = None,
+        issuer_lookup_as_of: dt.datetime | None = None,
+        items: list[str] | None = None,
+        basis: list[str] | None = None,
+        fields: list[str] | None = None,
+        vintage: str = "latest",
+        limit: int = 10_000,
+    ) -> QueryResult:
+        """Return bounded CIK-owned accounting content and separate lookup provenance."""
+        if end <= start:
+            raise ApiQueryError("end must be later than start; the interval is [start, end)")
+        if bool(cik) == bool(ticker):
+            raise ApiQueryError("supply exactly one of cik or ticker")
+        if limit < 1 or limit > 50_000:
+            raise ApiQueryError("issuer content limit must be between 1 and 50000")
+        if vintage not in {"latest", "first_reported"}:
+            raise ApiQueryError("issuer content vintage must be latest or first_reported")
+        try:
+            schema = get_schema("ATX.US.ISSUER_CONTENT", schema_name)
+        except KeyError as exc:
+            raise SchemaNotFound(f"unknown issuer-content schema {schema_name!r}") from exc
+        requested = fields or list(schema.field_names)
+        unknown = sorted(set(requested) - set(schema.field_names))
+        if unknown:
+            raise FieldNotFound(f"unknown issuer fields: {', '.join(unknown)}")
+        if len(requested) != len(set(requested)):
+            raise ApiQueryError("issuer fields must not contain duplicates")
+        if items and schema.item_column is None:
+            raise ApiQueryError(f"schema {schema.code!r} does not support item filtering")
+        if basis and schema.basis_column is None:
+            raise ApiQueryError(f"schema {schema.code!r} does not support basis filtering")
+        lookup: dict[str, Any] | None = None
+        if ticker is not None:
+            if issuer_lookup_as_of is None:
+                raise ApiQueryError("issuer_lookup_as_of is required with ticker")
+            lookup = self.resolve_issuer_ticker(ticker=ticker, issuer_lookup_as_of=issuer_lookup_as_of)
+            if lookup["status"] != "resolved":
+                metadata = self._issuer_metadata(
+                    schema=schema, content_as_of=content_as_of, lookup_cik=None, owner_map={},
+                    derived_owners=[], excluded_derived_owners=[], issuer_lookup=lookup, fields=requested,
+                    record_count=0, truncated=False,
+                )
+                return QueryResult(metadata=metadata, data=[], response_bytes=len(json.dumps(metadata, default=str).encode()), billable_bytes=0)
+            cik = str(lookup["lookup_cik"])
+        assert cik is not None
+        normalized_cik = self._normalized_cik(cik)
+
+        with self._connect() as conn:
+            owner_map = self._issuer_owner_ids(conn, cik=normalized_cik, content_as_of=content_as_of)
+            owners = sorted(owner_map)
+            derived_owners = [owner for owner in owners if owner_map[owner] == (normalized_cik,)]
+            excluded_derived_owners = [owner for owner in owners if owner not in derived_owners]
+            if owners:
+                rows, columns, truncated = self._issuer_content_rows(
+                    conn, schema=schema, cik=normalized_cik, owners=owners, start=start, end=end,
+                    content_as_of=content_as_of, items=items or [], basis=basis or [], fields=requested,
+                    vintage=vintage, limit=limit,
+                    derived_owners=derived_owners,
+                )
+            else:
+                rows, columns, truncated = [], requested, False
+        data = [dict(zip(columns, row, strict=True)) for row in rows]
+        metadata = self._issuer_metadata(
+            schema=schema, content_as_of=content_as_of, lookup_cik=normalized_cik, owner_map=owner_map,
+            derived_owners=derived_owners, excluded_derived_owners=excluded_derived_owners,
+            issuer_lookup=lookup, fields=requested, record_count=len(data), truncated=truncated,
+        )
+        response_bytes = len(json.dumps({"metadata": metadata, "data": data}, default=str, separators=(",", ":")).encode())
+        return QueryResult(metadata=metadata, data=data, response_bytes=response_bytes,
+                           billable_bytes=0 if not data else pa.Table.from_pylist(data).nbytes)
+
+    def _issuer_content_rows(
+        self, conn: duckdb.DuckDBPyConnection, *, schema: RecordSchema, cik: str, owners: list[str],
+        start: dt.date, end: dt.date, content_as_of: dt.datetime, items: list[str], basis: list[str],
+        fields: list[str], vintage: str, limit: int, derived_owners: list[str],
+    ) -> tuple[list[tuple[Any, ...]], list[str], bool]:
+        owner_marks = _placeholders(owners)
+        direction = "ASC" if vintage == "first_reported" else "DESC"
+        is_derived = schema.source_table == "derived_metric_values"
+        if is_derived:
+            owners = derived_owners
+            if not owners:
+                return [], fields, False
+            owner_marks = _placeholders(owners)
+        natural_key = "coalesce(b.revision_group_id, b.derived_value_id)" if is_derived else ", ".join(
+            f"b.{_quote_identifier(name)}" for name in schema.natural_key
+        )
+        revision_order = f"coalesce(b.available_at, b.source_loaded_at) {direction}, b.source_loaded_at {direction}"
+        if schema.source_table == "fundamental_statement_points":
+            revision_order = f"b.as_of_date {direction}, {revision_order}, b.statement_point_id {direction}"
+        elif schema.source_table == "fundamental_ttm_points":
+            revision_order = f"b.as_of_date {direction}, {revision_order}, b.ttm_point_id {direction}"
+        elif schema.source_table == "shares_outstanding_history":
+            share_direction = "ASC" if vintage == "first_reported" else "DESC"
+            revision_order = (
+                f"b.effective_date {share_direction}, b.as_of_date {share_direction}, "
+                f"coalesce(b.available_at, b.source_loaded_at) {share_direction}, "
+                f"b.source_loaded_at {share_direction}, b.share_history_id {share_direction}"
+            )
+        elif is_derived:
+            revision_order = f"coalesce(b.available_at, b.source_loaded_at) {direction}, b.derived_value_id {direction}"
+        cik_condition = "" if is_derived else f"AND {self._normalized_cik_sql('b.cik')} = ?"
+        params: list[object] = [*owners]
+        if not is_derived:
+            params.append(cik)
+        params.extend([_naive_utc(content_as_of), _naive_utc(content_as_of)])
+        conditions = [f"b.security_id IN ({owner_marks})", cik_condition.removeprefix("AND "),
+                      "coalesce(b.available_at, b.source_loaded_at) <= ?",
+                      "coalesce(b.as_of_date, CAST(coalesce(b.available_at, b.source_loaded_at) AS DATE)) <= CAST(? AS DATE)"]
+        conditions = [condition for condition in conditions if condition]
+        if not is_derived:
+            conditions[:0] = [f"b.{_quote_identifier(schema.time_column)} >= ?", f"b.{_quote_identifier(schema.time_column)} < ?"]
+            params = [start, end, *params]
+        if items:
+            conditions.append(f"b.{_quote_identifier(schema.item_column or '')} IN ({_placeholders(items)})")
+            params.extend(items)
+        if basis:
+            conditions.append(f"b.{_quote_identifier(schema.basis_column or '')} IN ({_placeholders(basis)})")
+            params.extend(basis)
+        selected: list[str] = []
+        for name in fields:
+            if name == "issuer_owner_id":
+                selected.append('v.security_id AS "issuer_owner_id"')
+            elif name == "cik" and is_derived:
+                selected.append('? AS "cik"')
+            else:
+                selected.append(f"v.{_quote_identifier(schema.field(name).source_column)} AS {_quote_identifier(name)}")
+        if is_derived and "cik" in fields:
+            params.append(cik)
+        output_range = ""
+        if is_derived:
+            output_range = f"AND v.{_quote_identifier(schema.time_column)} >= ? AND v.{_quote_identifier(schema.time_column)} < ?"
+            params.extend([start, end])
+        sql = f"""
+            WITH visible AS (
+                SELECT b.*, row_number() OVER (
+                    PARTITION BY {natural_key}
+                    ORDER BY {revision_order}
+                ) AS _revision_rank
+                FROM {_quote_identifier(schema.source_table)} b
+                WHERE {' AND '.join(conditions)}
+            )
+            SELECT {', '.join(selected)} FROM visible v
+            WHERE v._revision_rank = 1 {output_range}
+            ORDER BY v.{_quote_identifier(schema.time_column)}, v.security_id
+            LIMIT ?
+        """
+        params.append(limit + 1)
+        cursor = conn.execute(sql, params)
+        rows = cursor.fetchall()
+        columns = [str(column[0]) for column in cursor.description]
+        return rows[:limit], columns, len(rows) > limit
+
+    @staticmethod
+    def _issuer_metadata(
+        *, schema: RecordSchema, content_as_of: dt.datetime, lookup_cik: str | None,
+        owner_map: dict[str, tuple[str, ...]], derived_owners: list[str], excluded_derived_owners: list[str],
+        issuer_lookup: dict[str, Any] | None, fields: list[str], record_count: int, truncated: bool,
+    ) -> dict[str, Any]:
+        owners = sorted(owner_map)
+        owner_status = "resolved_single_owner" if len(owners) == 1 else ("ambiguous_multiple_visible_owners" if owners else "unresolved_no_visible_source_owner")
+        if excluded_derived_owners:
+            owner_status = "ambiguous_owner_cik_collision"
+        association = None if issuer_lookup is None else issuer_lookup.get("issuer_market_association")
+        if association is None:
+            association = {
+                "market_security_id": None, "association_method": None, "association_scope": None,
+                "historical_security_qualified": False, "unavailable_reason": "no_ticker_directory_candidate",
+            }
+        return {
+            "dataset": schema.dataset, "schema": schema.code, "schema_version": schema.version,
+            "content_as_of": content_as_of, "lookup_cik": lookup_cik, "issuer_owner_ids": owners,
+            "issuer_owner_ciks": owner_map, "issuer_owner_status": owner_status,
+            "derived_issuer_owner_ids": derived_owners, "excluded_derived_owner_ids": excluded_derived_owners,
+            "issuer_lookup": issuer_lookup, "issuer_market_association": association,
+            "record_count": record_count, "truncated": truncated, "fields": fields,
+            "owner_semantics": "Company Facts source owner; not a tradable security or historical market association.",
+        }
+
+    @staticmethod
     def _projected_fields(request: RangeRequest, schema: RecordSchema) -> list[str]:
         requested = request.fields or list(schema.field_names)
         unknown = sorted(set(requested) - set(schema.field_names))
@@ -457,6 +797,12 @@ class WarehouseReadService:
         table = _quote_identifier(schema.source_table)
         natural_key = ", ".join(f"b.{_quote_identifier(name)}" for name in schema.natural_key)
         direction = "ASC" if request.vintage == "first_reported" else "DESC"
+        revision_ties = f"b.source_loaded_at {direction}, coalesce(b.run_id, '') {direction}"
+        if schema.source_table == "derived_metric_values":
+            # Legacy rows have no reconstructed revision group; preserve their
+            # separate identities. NULL invalid states participate in ranking.
+            natural_key = "coalesce(b.revision_group_id, b.derived_value_id)"
+            revision_ties = f"b.derived_value_id {direction}"
         conditions = [
             f"b.{time_column} >= ?",
             f"b.{time_column} < ?",
@@ -469,6 +815,14 @@ class WarehouseReadService:
             _naive_utc(as_of),
             _naive_utc(as_of),
         ]
+        output_time_predicate = ""
+        if schema.source_table == "derived_metric_values":
+            # A later observed stub period may rename the same bucket. Rank
+            # its visible group before filtering the requested period range,
+            # otherwise a range containing only the old date resurrects it.
+            conditions = conditions[2:]
+            parameters = parameters[2:]
+            output_time_predicate = f"AND v.{time_column} >= ? AND v.{time_column} < ?"
         if security_ids == []:
             conditions.append("false")
         elif security_ids is not None:
@@ -482,27 +836,31 @@ class WarehouseReadService:
             assert schema.basis_column is not None
             conditions.append(f"b.{_quote_identifier(schema.basis_column)} IN ({_placeholders(request.basis)})")
             parameters.extend(request.basis)
+        if output_time_predicate:
+            parameters.extend([request.start, request.end])
 
         select_fields = []
         for name in fields:
             field = schema.field(name)
             select_fields.append(f"v.{_quote_identifier(field.source_column)} AS {_quote_identifier(field.name)}")
+        output_order = f"v.{time_column}, v.security_id"
+        if schema.source_table == "derived_metric_values":
+            output_order += ", v.metric_code, v.derived_value_id"
         sql = f"""
             WITH visible AS (
                 SELECT b.*,
                        row_number() OVER (
                            PARTITION BY {natural_key}
                            ORDER BY coalesce(b.available_at, b.source_loaded_at) {direction},
-                                    b.source_loaded_at {direction},
-                                    coalesce(b.run_id, '') {direction}
+                                    {revision_ties}
                        ) AS _revision_rank
                 FROM {table} AS b
                 WHERE {" AND ".join(conditions)}
             )
             SELECT {", ".join(select_fields)}
             FROM visible AS v
-            WHERE v._revision_rank = 1
-            ORDER BY v.{time_column}, v.security_id
+            WHERE v._revision_rank = 1 {output_time_predicate}
+            ORDER BY {output_order}
             LIMIT ?
         """
         parameters.append(request.limit + 1)

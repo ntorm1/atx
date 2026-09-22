@@ -1,0 +1,19 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "-n0",
+    "-q",
+    "tests/test_equity_price_metrics.py::TestRefreshIntegration::test_bounded_writer_matches_pure_transform_and_asof_cutoff"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.491870880126953,
+    "commit_free_gb": 9.761669158935547
+  },
+  "child_pid": 2448,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.6930160522460938
+}

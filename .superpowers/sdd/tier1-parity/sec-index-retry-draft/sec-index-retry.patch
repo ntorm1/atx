@@ -1,0 +1,185 @@
+diff --git a/atx-db/src/atx_db/press_release.py b/atx-db/src/atx_db/press_release.py
+index 4031954d..8db306cc 100644
+--- a/atx-db/src/atx_db/press_release.py
++++ b/atx-db/src/atx_db/press_release.py
+@@ -410,9 +410,14 @@ class _SecFilingDocumentTable(HTMLParser):
+     def __init__(self) -> None:
+         super().__init__(convert_charrefs=True)
+         self.rows: list[list[tuple[str, tuple[str, ...]]]] = []
++        self.table_found = False
++        self.table_complete = False
++        self._header_seen = False
+         self._table_depth = 0
+         self._row: list[tuple[str, tuple[str, ...]]] | None = None
++        self._row_tags: list[str] = []
+         self._cell_text: list[str] | None = None
++        self._cell_tag: str | None = None
+         self._cell_hrefs: list[str] = []
+ 
+     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+@@ -421,30 +426,59 @@ class _SecFilingDocumentTable(HTMLParser):
+             if self._table_depth:
+                 self._table_depth += 1
+             elif _normalized_cell(attributes.get("summary") or "") == "document format files":
++                if self.table_found:
++                    raise ValueError("multiple_document_format_tables")
++                self.table_found = True
+                 self._table_depth = 1
+         elif self._table_depth == 1 and tag == "tr":
++            if self._row is not None:
++                raise ValueError("incomplete_document_format_row")
+             self._row = []
+-        elif self._table_depth == 1 and tag == "td" and self._row is not None:
++            self._row_tags = []
++        elif self._table_depth == 1 and tag in ("td", "th") and self._row is not None:
++            if self._cell_text is not None:
++                raise ValueError("incomplete_document_format_cell")
+             self._cell_text = []
++            self._cell_tag = tag
+             self._cell_hrefs = []
+-        elif self._table_depth == 1 and tag == "a" and self._cell_text is not None:
+-            if attributes.get("href") is not None:
+-                self._cell_hrefs.append(attributes["href"] or "")
++        elif (self._table_depth == 1 and tag == "a" and self._cell_text is not None
++              and attributes.get("href") is not None):
++            self._cell_hrefs.append(attributes["href"] or "")
+ 
+     def handle_data(self, data: str) -> None:
+         if self._cell_text is not None:
+             self._cell_text.append(data)
+ 
+     def handle_endtag(self, tag: str) -> None:
+-        if tag == "td" and self._cell_text is not None and self._row is not None:
++        if tag in ("td", "th") and self._cell_text is not None and self._row is not None:
++            if tag != self._cell_tag:
++                raise ValueError("invalid_document_format_cell")
+             self._row.append((" ".join("".join(self._cell_text).split()), tuple(self._cell_hrefs)))
++            self._row_tags.append(tag)
+             self._cell_text = None
++            self._cell_tag = None
+             self._cell_hrefs = []
+         elif tag == "tr" and self._table_depth == 1 and self._row is not None:
+-            if self._row:
++            if self._cell_text is not None:
++                raise ValueError("incomplete_document_format_cell")
++            if not self._header_seen:
++                if (len(self._row) != 5 or self._row_tags != ["th"] * 5
++                        or _normalized_cell(self._row[2][0]) != "document"
++                        or _normalized_cell(self._row[3][0]) != "type"):
++                    raise ValueError("invalid_document_format_header")
++                self._header_seen = True
++            else:
++                if (len(self._row) != 5 or self._row_tags != ["td"] * 5
++                        or not self._row[0][0] or len(self._row[2][1]) != 1
++                        or not self._row[3][0]):
++                    raise ValueError("invalid_document_format_row")
+                 self.rows.append(self._row)
+             self._row = None
+         elif tag == "table" and self._table_depth:
++            if self._table_depth == 1:
++                if self._row is not None or not self._header_seen or not self.rows:
++                    raise ValueError("incomplete_document_format_table")
++                self.table_complete = True
+             self._table_depth -= 1
+ 
+ 
+@@ -453,6 +487,9 @@ def _ex99_documents(index_html: str, directory_url: str) -> tuple[str, ...]:
+ 
+     parser = _SecFilingDocumentTable()
+     parser.feed(index_html)
++    parser.close()
++    if not parser.table_complete:
++        raise ValueError("document_format_table_not_found_or_incomplete")
+     expected_path = urlsplit(directory_url).path.rstrip("/") + "/"
+     selected: set[str] = set()
+     for row in parser.rows:
+diff --git a/atx-db/tests/test_reported_quarter_eps_source.py b/atx-db/tests/test_reported_quarter_eps_source.py
+index 07c0ce1f..2e1d78f0 100644
+--- a/atx-db/tests/test_reported_quarter_eps_source.py
++++ b/atx-db/tests/test_reported_quarter_eps_source.py
+@@ -169,7 +169,8 @@ def test_filing_detail_type_is_authoritative_and_href_stays_in_accession() -> No
+     directory_json = json.dumps({"directory": {"item": [
+         {"name": "a12312025ex9918-k.htm", "type": "text.gif"}
+     ]}})
+-    assert _ex99_documents(directory_json, INDEX_DIRECTORY) == ()
++    with pytest.raises(ValueError, match="document_format_table"):
++        _ex99_documents(directory_json, INDEX_DIRECTORY)
+ 
+     typed = COMPACT_FILING_INDEX.replace("ex99.htm", "a12312025ex9918-k.htm")
+     wrong_type = """<tr><td>3</td><td>EX-99.2</td>
+@@ -182,6 +183,16 @@ def test_filing_detail_type_is_authoritative_and_href_stays_in_accession() -> No
+     assert _ex99_documents(typed, INDEX_DIRECTORY) == ("a12312025ex9918-k.htm",)
+ 
+ 
++@pytest.mark.parametrize("index_html", [
++    COMPACT_FILING_INDEX.replace("<th>Type</th>", "<th>MIME</th>"),
++    COMPACT_FILING_INDEX.replace("</table>", ""),
++    COMPACT_FILING_INDEX.replace("<td>EX-99.1</td><td>100</td>", "<td>EX-99.1</td>"),
++])
++def test_incomplete_or_invalid_document_table_is_retryable(index_html: str) -> None:
++    with pytest.raises(ValueError):
++        _ex99_documents(index_html, INDEX_DIRECTORY)
++
++
+ def test_extracts_one_gaap_diluted_eps_with_aligned_three_month_column() -> None:
+     document = """
+     <table><tr><th></th><th colspan="2">Three Months Ended December 31,</th></tr>
+@@ -410,3 +421,58 @@ def test_fetch_failed_retries_and_corrupt_cache_is_refetched(tmp_store, tmp_path
+     assert tmp_store.con.execute(
+         "SELECT outcome FROM sec_earnings_release_receipts ORDER BY outcome"
+     ).fetchall() == [("accepted",), ("fetch_failed",)]
++
++
++def test_malformed_200_index_is_retryable_then_valid_index_accepts(tmp_store, tmp_path) -> None:
++    _sec_earnings_release_receipts(tmp_store.con)
++    tmp_store.con.execute(
++        """INSERT INTO sec_submissions (
++               security_id, cik, accession_number, filing_date, report_date,
++               acceptance_datetime_raw, form, items, source_url
++           ) VALUES ('SEC-CIK-0000093410', '0000093410', '0000093410-26-000019',
++                     DATE '2026-01-30', DATE '2025-12-31', '2026-01-30T18:17:00-05:00',
++                     '8-K', '2.02', 'bulk-fixture')"""
++    )
++    options = SecEarningsReleaseOptions(cache_dir=tmp_path / "cache", run_id="index-retry")
++    first = refresh_sec_earnings_release_facts(
++        tmp_store, options, session=_Session([b"<html><body>temporary archive error</body></html>"])
++    )
++    assert first["accepted"] == 0
++    assert tmp_store.con.execute(
++        "SELECT outcome, rejection_reason FROM sec_earnings_release_receipts"
++    ).fetchall() == [("fetch_failed", "index_fetch_or_parse:ValueError")]
++
++    second_session = _Session([COMPACT_FILING_INDEX.encode(), COMPACT_ATTACHMENT.encode()])
++    second = refresh_sec_earnings_release_facts(tmp_store, options, session=second_session)
++    assert second["accepted"] == 1
++    assert second_session.responses == []
++    assert tmp_store.con.execute(
++        "SELECT outcome FROM sec_earnings_release_receipts ORDER BY outcome"
++    ).fetchall() == [("accepted",), ("fetch_failed",)]
++    assert tmp_store.con.execute(
++        "SELECT count(*) FROM press_release_facts WHERE accession_number = '0000093410-26-000019'"
++    ).fetchone() == (1,)
++
++
++def test_valid_index_without_ex99_is_terminal(tmp_store, tmp_path) -> None:
++    _sec_earnings_release_receipts(tmp_store.con)
++    tmp_store.con.execute(
++        """INSERT INTO sec_submissions (
++               security_id, cik, accession_number, filing_date, report_date,
++               acceptance_datetime_raw, form, items, source_url
++           ) VALUES ('SEC-CIK-0000093410', '0000093410', '0000093410-26-000019',
++                     DATE '2026-01-30', DATE '2025-12-31', '2026-01-30T18:17:00-05:00',
++                     '8-K', '2.02', 'bulk-fixture')"""
++    )
++    no_ex99 = COMPACT_FILING_INDEX.replace("EX-99.1", "8-K").replace("ex99.htm", "form8k.htm")
++    options = SecEarningsReleaseOptions(cache_dir=tmp_path / "cache", run_id="no-ex99")
++    first = refresh_sec_earnings_release_facts(tmp_store, options, session=_Session([no_ex99.encode()]))
++    assert first["accepted"] == 0
++    assert tmp_store.con.execute(
++        "SELECT outcome, rejection_reason FROM sec_earnings_release_receipts"
++    ).fetchall() == [("rejected", "ex99_document_not_found")]
++
++    unused_session = _Session([COMPACT_FILING_INDEX.encode(), COMPACT_ATTACHMENT.encode()])
++    second = refresh_sec_earnings_release_facts(tmp_store, options, session=unused_session)
++    assert second["skipped_terminal"] == 1
++    assert len(unused_session.responses) == 2

@@ -1,3 +1,8 @@
+> **HISTORICAL — superseded.** This document is retained as a build record; its layout and counts do not describe the current warehouse.
+> Architecture and dated evidence: [docs/FUNDAMENTALS_PROVIDER_DESIGN.md](FUNDAMENTALS_PROVIDER_DESIGN.md).
+> Current design contract: [docs/superpowers/specs/2026-09-19-tier1-parity-design.md](../../docs/superpowers/specs/2026-09-19-tier1-parity-design.md).
+> Field reference: [docs/DATA_DICTIONARY.md](DATA_DICTIONARY.md). Activation and measurement status: [docs/PRODUCTION_RUNBOOK.md](PRODUCTION_RUNBOOK.md).
+
 # Warehouse Parity Handoff
 
 This handoff covers the US-equity fundamentals/public-alt-data warehouse parity goal. The working rule remains: do not touch C++/CMake unless the user explicitly redirects; continue in `atx-impl/db` and `atx-impl/scripts`, using `archive/research` and `.superpowers/sdd/progress.md` as the spec/progress spine.

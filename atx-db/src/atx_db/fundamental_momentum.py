@@ -75,7 +75,7 @@ def load_fundamental_momentum_inputs(
     store: DuckDBStore,
     options: FundamentalMomentumOptions | None = None,
 ) -> pd.DataFrame:
-    """Load governed SUE and split-adjusted 12-1 momentum on the SUE decision grid."""
+    """Load governed SUE and adjusted-close 12-1 momentum on the SUE decision grid."""
 
     options = options or FundamentalMomentumOptions()
     predicates = [
@@ -126,14 +126,8 @@ def load_fundamental_momentum_inputs(
             SELECT
                 b.security_id,
                 b.trade_date,
-                b.close,
-                CASE
-                    WHEN b.split_factor IS NOT NULL
-                     AND isfinite(b.split_factor)
-                     AND b.split_factor > 0
-                    THEN ln(b.split_factor)
-                    ELSE 0.0
-                END AS log_adjustment,
+                CASE WHEN isfinite(b.adjusted_close) AND b.adjusted_close > 0
+                     THEN b.adjusted_close END AS adjusted_close,
                 b.available_at,
                 row_number() OVER (
                     PARTITION BY b.security_id, b.trade_date
@@ -141,19 +135,14 @@ def load_fundamental_momentum_inputs(
                 ) AS bar_revision_rank
             FROM equity_daily_bars b
             JOIN relevant_securities r USING (security_id)
-            WHERE b.close IS NOT NULL AND isfinite(b.close) AND b.close > 0
-              AND b.available_at IS NOT NULL
+            WHERE b.trade_date IS NOT NULL AND b.available_at IS NOT NULL
         ),
         adjusted_bars AS (
             SELECT
                 security_id,
                 trade_date,
-                close,
-                available_at,
-                sum(log_adjustment) OVER (
-                    PARTITION BY security_id ORDER BY trade_date
-                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-                ) AS cumulative_log_adjustment
+                adjusted_close,
+                available_at
             FROM canonical_bars
             WHERE bar_revision_rank = 1
         ),
@@ -164,12 +153,10 @@ def load_fundamental_momentum_inputs(
                 available_at AS reference_available_at,
                 lag(trade_date, {skip}) OVER security_history AS momentum_end_date,
                 lag(available_at, {skip}) OVER security_history AS momentum_end_available_at,
-                lag(close, {skip}) OVER security_history AS momentum_end_close,
-                lag(cumulative_log_adjustment, {skip}) OVER security_history AS momentum_end_adjustment,
+                lag(adjusted_close, {skip}) OVER security_history AS momentum_end_close,
                 lag(trade_date, {lookback}) OVER security_history AS momentum_start_date,
                 lag(available_at, {lookback}) OVER security_history AS momentum_start_available_at,
-                lag(close, {lookback}) OVER security_history AS momentum_start_close,
-                lag(cumulative_log_adjustment, {lookback}) OVER security_history AS momentum_start_adjustment
+                lag(adjusted_close, {lookback}) OVER security_history AS momentum_start_close
             FROM adjusted_bars
             WINDOW security_history AS (PARTITION BY security_id ORDER BY trade_date)
         ),
@@ -178,10 +165,8 @@ def load_fundamental_momentum_inputs(
                 *,
                 momentum_end_close
                     / momentum_start_close
-                    / exp(momentum_end_adjustment - momentum_start_adjustment)
                     - 1.0 AS price_momentum_12_1
             FROM momentum_lags
-            WHERE momentum_start_close > 0 AND momentum_end_close > 0
         ),
         paired AS (
             SELECT
@@ -235,7 +220,7 @@ def _lineage(row: pd.Series, options: FundamentalMomentumOptions) -> str:
         {
             "method": "cross_sectional_rank_ols_residual",
             "response": "standardized_unexpected_eps_rank",
-            "control": "split_adjusted_price_momentum_12_1_rank",
+            "control": "adjusted_close_price_momentum_12_1_rank",
             "missing_control_policy": "drop",
             "skip_sessions": options.skip_sessions,
             "lookback_sessions": options.lookback_sessions,
@@ -247,6 +232,7 @@ def _lineage(row: pd.Series, options: FundamentalMomentumOptions) -> str:
                 "lineage": _decode_json(row.get("sue_lineage_json")),
             },
             "price_momentum": {
+                "price_basis": "canonical_adjusted_close",
                 "value": row["price_momentum_12_1"],
                 "rank": row["momentum_rank"],
                 "reference_trade_date": row["reference_trade_date"],
@@ -318,6 +304,8 @@ def compute_fundamental_momentum_rows(
     if rows.empty:
         return pd.DataFrame(columns=_OUTPUT_COLUMNS)
 
+    # Ranking and standardization consume every admitted cohort member.
+    rows["available_at"] = rows.groupby("as_of_date")["available_at"].transform("max")
     grouped = rows.groupby("as_of_date", sort=False)
     rows["sue_rank"] = grouped["sue_value"].rank(method="average", pct=True)
     rows["momentum_rank"] = grouped["price_momentum_12_1"].rank(

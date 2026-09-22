@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "C:/atx/.superpowers/sdd/tier1-parity/inspect_custom_features_build1.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 7.763065338134766,
+    "commit_free_gb": 10.463676452636719
+  },
+  "child_pid": 22124,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.552490234375
+}

@@ -39,8 +39,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument("--shards", type=int, default=16)
     parser.add_argument("--start-shard", type=int, default=1)
-    parser.add_argument("--memory-limit", default="8GB")
-    parser.add_argument("--threads", type=int, default=4)
+    parser.add_argument("--memory-limit", default="1GB")
+    parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--run-id-prefix", default="recon-sharded")
     parser.add_argument(
         "--only-shard",
@@ -54,8 +54,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _symbol_shards(db_path: Path, shard_count: int) -> list[list[str]]:
+def _symbol_shards(
+    db_path: Path, shard_count: int, *, memory_limit: str = "1GB", threads: int = 1,
+) -> list[list[str]]:
     with DuckDBStore(db_path, read_only=True) as store:
+        _configure_analytical_session(store, memory_limit=memory_limit, threads=threads)
         symbols = [
             row[0]
             for row in store.con.execute(
@@ -77,7 +80,7 @@ def main() -> int:
     args = parse_args()
     if args.shards < 1:
         raise SystemExit("--shards must be positive")
-    shards = _symbol_shards(args.db_path, args.shards)
+    shards = _symbol_shards(args.db_path, args.shards, memory_limit=args.memory_limit, threads=args.threads)
     if args.only_shard is None:
         print(
             json.dumps(

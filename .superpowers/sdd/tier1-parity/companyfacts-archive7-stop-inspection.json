@@ -1,0 +1,283 @@
+{
+  "observed_at_utc": "2026-09-21T23:58:15.773838+00:00",
+  "read_only": true,
+  "run": "activation-companyfacts-archive7",
+  "duckdb_version": "1.5.5",
+  "stop_reason": "Guard terminated owned job after host physical headroom fell below1.5GiB; session terminal and descendants absent.",
+  "stop_headroom": {
+    "physical_free_gb": 1.3733978271484375,
+    "commit_free_gb": 4.114677429199219
+  },
+  "activation": {
+    "columns": [
+      "stage",
+      "run_id",
+      "status",
+      "started_at",
+      "finished_at",
+      "rows",
+      "error"
+    ],
+    "rows": [
+      [
+        "companyfacts_load",
+        "activation-companyfacts-archive7",
+        "running",
+        "2026-09-21 22:27:53.722066",
+        null,
+        null,
+        null
+      ]
+    ]
+  },
+  "dataset": {
+    "columns": [
+      "run_id",
+      "dataset_id",
+      "status",
+      "started_at",
+      "finished_at",
+      "rows_loaded",
+      "error_message"
+    ],
+    "rows": [
+      [
+        "404f66a2-655b-4611-a7a0-b71d4dc6d4d3",
+        "sec_company_facts",
+        "running",
+        "2026-09-21 22:27:53.732580",
+        null,
+        null,
+        null
+      ]
+    ]
+  },
+  "retained_totals": {
+    "columns": [
+      "facts",
+      "points",
+      "prices",
+      "custom_features"
+    ],
+    "rows": [
+      [
+        46639358,
+        46639358,
+        31959271,
+        31934514
+      ]
+    ]
+  },
+  "attempt_rows": {
+    "columns": [
+      "run_id",
+      "rows",
+      "ciks",
+      "first_cik",
+      "last_cik"
+    ],
+    "rows": [
+      [
+        "404f66a2-655b-4611-a7a0-b71d4dc6d4d3",
+        5351787,
+        1785,
+        "0001347242",
+        "0001442741"
+      ]
+    ]
+  },
+  "source_outcomes": {
+    "columns": [
+      "status",
+      "members",
+      "reported_rows",
+      "first_cik",
+      "last_cik"
+    ],
+    "rows": [
+      [
+        "empty",
+        1250,
+        0,
+        "0000002110",
+        "0001439144"
+      ],
+      [
+        "loaded",
+        1785,
+        5351787,
+        "0001347242",
+        "0001442741"
+      ],
+      [
+        "unavailable",
+        41,
+        0,
+        "0000003521",
+        "0001415726"
+      ]
+    ]
+  },
+  "migrations": {
+    "columns": [
+      "version"
+    ],
+    "rows": [
+      [
+        "0319"
+      ]
+    ]
+  },
+  "cvx_raw_reported_quarter_eps": {
+    "columns": [
+      "source",
+      "security_id",
+      "cik",
+      "concept",
+      "unit",
+      "period_start",
+      "period_end",
+      "value",
+      "filed_date",
+      "accession_number",
+      "effective_available_at"
+    ],
+    "rows": [
+      [
+        "SEC companyfacts",
+        "SEC-COMPANYFACTS-UNRESOLVED-CIK-0000093410",
+        "0000093410",
+        "EarningsPerShareDiluted",
+        "USD/shares",
+        "2026-04-01",
+        "2026-06-30",
+        6.11,
+        "2026-08-06",
+        "0000093410-26-000167",
+        "2026-08-07 22:00:00"
+      ],
+      [
+        "SEC companyfacts",
+        "SEC-COMPANYFACTS-UNRESOLVED-CIK-0000093410",
+        "0000093410",
+        "EarningsPerShareDiluted",
+        "USD/shares",
+        "2026-01-01",
+        "2026-03-31",
+        1.11,
+        "2026-05-07",
+        "0000093410-26-000113",
+        "2026-05-08 22:00:00"
+      ],
+      [
+        "SEC companyfacts",
+        "SEC-COMPANYFACTS-UNRESOLVED-CIK-0000093410",
+        "0000093410",
+        "EarningsPerShareDiluted",
+        "USD/shares",
+        "2025-04-01",
+        "2025-06-30",
+        1.45,
+        "2026-08-06",
+        "0000093410-26-000167",
+        "2026-08-07 22:00:00"
+      ],
+      [
+        "SEC companyfacts",
+        "SEC-COMPANYFACTS-UNRESOLVED-CIK-0000093410",
+        "0000093410",
+        "EarningsPerShareDiluted",
+        "USD/shares",
+        "2025-01-01",
+        "2025-03-31",
+        2.0,
+        "2026-05-07",
+        "0000093410-26-000113",
+        "2026-05-08 22:00:00"
+      ]
+    ]
+  },
+  "cvx_raw_2025_annual_and_ytd_eps": {
+    "columns": [
+      "source",
+      "security_id",
+      "cik",
+      "concept",
+      "unit",
+      "period_start",
+      "period_end",
+      "value",
+      "filed_date",
+      "accession_number",
+      "effective_available_at"
+    ],
+    "rows": [
+      [
+        "SEC companyfacts",
+        "SEC-COMPANYFACTS-UNRESOLVED-CIK-0000093410",
+        "0000093410",
+        "EarningsPerShareDiluted",
+        "USD/shares",
+        "2025-01-01",
+        "2025-12-31",
+        6.63,
+        "2026-02-24",
+        "0000093410-26-000078",
+        "2026-02-25 22:00:00"
+      ],
+      [
+        "SEC companyfacts",
+        "SEC-COMPANYFACTS-UNRESOLVED-CIK-0000093410",
+        "0000093410",
+        "EarningsPerShareDiluted",
+        "USD/shares",
+        "2025-01-01",
+        "2025-09-30",
+        5.27,
+        "2025-11-06",
+        "0000093410-25-000108",
+        "2025-11-07 22:00:00"
+      ]
+    ]
+  },
+  "cvx_downstream_row_counts": {
+    "columns": [
+      "relation",
+      "rows"
+    ],
+    "rows": [
+      [
+        "fundamental_statement_points",
+        0
+      ],
+      [
+        "fundamental_standardized",
+        0
+      ],
+      [
+        "derived_metric_values",
+        0
+      ]
+    ]
+  },
+  "production_table_counts": {
+    "columns": [
+      "relation",
+      "rows"
+    ],
+    "rows": [
+      [
+        "fundamental_statement_points",
+        0
+      ],
+      [
+        "fundamental_standardized",
+        0
+      ],
+      [
+        "derived_metric_values",
+        0
+      ]
+    ]
+  }
+}

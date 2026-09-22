@@ -1,0 +1,20 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "-n",
+    "0",
+    "-q",
+    "tests/test_production_activation.py"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 7.7812957763671875,
+    "commit_free_gb": 10.138633728027344
+  },
+  "child_pid": 10700,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.6782150268554688
+}

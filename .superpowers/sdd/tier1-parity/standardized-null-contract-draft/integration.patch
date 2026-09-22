@@ -1,0 +1,365 @@
+diff --git a/atx-db/src/atx_db/api/catalog.py b/atx-db/src/atx_db/api/catalog.py
+index 6579d0e6..2783d998 100644
+--- a/atx-db/src/atx_db/api/catalog.py
++++ b/atx-db/src/atx_db/api/catalog.py
+@@ -156,10 +156,10 @@ REPORTED_FUNDAMENTALS_SCHEMA = RecordSchema(
+ )
+ 
+ 
+-FUNDAMENTALS_SCHEMA = RecordSchema(
+-    dataset="ATX.US.FUNDAMENTALS",
+-    code="standardized",
+-    version="2.0.0",
++FUNDAMENTALS_SCHEMA = RecordSchema(
++    dataset="ATX.US.FUNDAMENTALS",
++    code="standardized",
++    version="3.0.0",
+     title="Standardized US equity fundamentals",
+     description=(
+         "Comparable annual, quarterly, and TTM statement items with filing lineage and bitemporal revision visibility."
+@@ -189,7 +189,7 @@ FUNDAMENTALS_SCHEMA = RecordSchema(
+         FieldSpec("period_end", "period_end", "date", "Fiscal period end.", nullable=False),
+         FieldSpec("fiscal_year", "fiscal_year", "int32", "Issuer fiscal year."),
+         FieldSpec("fiscal_period", "fiscal_period", "string", "Issuer fiscal-period label."),
+-        FieldSpec("value", "value", "float64", "Standardized value.", nullable=False),
++        FieldSpec("value", "value", "float64", "Standardized value; NULL is an explicit unavailable state."),
+         FieldSpec("unit", "unit", "string", "As-reported measurement unit or currency unit."),
+         FieldSpec("unit_type", "unit_type", "string", "Canonical unit family."),
+         FieldSpec("accession_number", "source_accession", "string", "Source SEC accession number."),
+diff --git a/atx-db/src/atx_db/migrations/bodies_0321.py b/atx-db/src/atx_db/migrations/bodies_0321.py
+index 0864ce56..2e6517da 100644
+--- a/atx-db/src/atx_db/migrations/bodies_0321.py
++++ b/atx-db/src/atx_db/migrations/bodies_0321.py
+@@ -1,14 +1,95 @@
+ """Reported-quarter EPS bridge schema support."""
+ 
+-from __future__ import annotations
+-
+-import duckdb
+-
+-from ._runner import Migration
+-from .bodies_0140_0143 import _refresh_schema_contract_v2_pin
+-
+-
+-def _reported_eps_nullable_standardized_value(conn: duckdb.DuckDBPyConnection) -> None:
++from __future__ import annotations
++
++import json
++
++import duckdb
++
++from ..api.catalog import _record_schema_sha256, get_schema
++from ._runner import Migration
++from .bodies_0140_0143 import _refresh_schema_contract_v2_pin
++
++
++def _publish_nullable_standardized_contract(conn: duckdb.DuckDBPyConnection) -> None:
++    """Add only the revised public standardized schema to an existing API catalog."""
++
++    schema = get_schema("ATX.US.FUNDAMENTALS", "standardized")
++    if schema.version != "3.0.0" or schema.field("value").nullable is not True:
++        raise RuntimeError("0321 requires the nullable standardized 3.0.0 API contract")
++    schema_row = (
++        schema.dataset, schema.code, schema.version, schema.title, schema.description,
++        schema.source_table, schema.time_column,
++        json.dumps(schema.natural_key, separators=(",", ":")),
++        "available_at_lte_request_as_of_then_select_requested_revision_vintage",
++        '["json","jsonl","csv","parquet","arrow"]', schema.max_sync_rows,
++        _record_schema_sha256(schema), True,
++    )
++    conn.execute(
++        """
++        INSERT OR IGNORE INTO api_schema_catalog (
++            dataset_id,schema_code,schema_version,title,description,source_table,
++            time_field,natural_key_json,pit_policy,supported_encodings_json,
++            max_sync_rows,schema_sha256,is_active,source_loaded_at,updated_at
++        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,now(),now())
++        """,
++        schema_row,
++    )
++    field_rows = [
++        (
++            schema.dataset, schema.code, schema.version, ordinal, field.name,
++            field.source_column, field.data_type,
++            "identifier" if field.name.endswith("_id") else "observation",
++            field.unit, field.nullable, field.filterable, field.description,
++        )
++        for ordinal, field in enumerate(schema.fields, start=1)
++    ]
++    conn.executemany(
++        """
++        INSERT OR IGNORE INTO api_field_catalog (
++            dataset_id,schema_code,schema_version,ordinal,field_name,source_column,
++            data_type,semantic_type,unit,nullable,is_filterable,description,
++            source_loaded_at,updated_at
++        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,now(),now())
++        """,
++        field_rows,
++    )
++    actual_schema = conn.execute(
++        """
++        SELECT dataset_id,schema_code,schema_version,title,description,source_table,
++               time_field,natural_key_json,pit_policy,supported_encodings_json,
++               max_sync_rows,schema_sha256,is_active
++        FROM api_schema_catalog
++        WHERE dataset_id=? AND schema_code=? AND schema_version=?
++        """,
++        [schema.dataset, schema.code, schema.version],
++    ).fetchone()
++    actual_fields = conn.execute(
++        """
++        SELECT dataset_id,schema_code,schema_version,ordinal,field_name,source_column,
++               data_type,semantic_type,unit,nullable,is_filterable,description
++        FROM api_field_catalog
++        WHERE dataset_id=? AND schema_code=? AND schema_version=?
++        ORDER BY ordinal
++        """,
++        [schema.dataset, schema.code, schema.version],
++    ).fetchall()
++    if actual_schema != schema_row or actual_fields != field_rows:
++        raise RuntimeError("nullable standardized API catalog conflicts with the 0321 contract")
++
++    # Keep the published 2.0.0 row and hash as history. The unversioned API
++    # resolves the current 3.0.0 schema, so its predecessor is no longer active.
++    conn.execute(
++        """
++        UPDATE api_schema_catalog SET is_active=false, updated_at=now()
++        WHERE dataset_id=? AND schema_code=? AND schema_version='2.0.0'
++          AND is_active=true
++        """,
++        [schema.dataset, schema.code],
++    )
++
++
++def _reported_eps_nullable_standardized_value(conn: duckdb.DuckDBPyConnection) -> None:
+     """Represent a later, visible reported-EPS conflict as a PIT NULL state.
+ 
+     No raw Company Facts or release row is changed.  ``value`` is nullable only
+@@ -33,9 +114,9 @@ def _reported_eps_nullable_standardized_value(conn: duckdb.DuckDBPyConnection) -
+             'reported_eps_conflict_v1: rank the complete latest state before filtering usable values; a NULL conflict must not revive an earlier EPS value.',
+         ],
+     )
+-    conn.execute(
+-        """
+-        UPDATE field_catalog
++    conn.execute(
++        """
++        UPDATE field_catalog
+         SET nullable = true,
+             description = concat_ws(' ', nullif(description, ''), ?),
+             updated_at = now()
+@@ -45,9 +126,10 @@ def _reported_eps_nullable_standardized_value(conn: duckdb.DuckDBPyConnection) -
+         """,
+         [
+             'reported_eps_conflict_v1: NULL may be an explicit later unavailable state; inspect input_codes_json and standardization exceptions before treating it as absent source data.',
+-        ],
+-    )
+-    _refresh_schema_contract_v2_pin(conn)
++        ],
++    )
++    _publish_nullable_standardized_contract(conn)
++    _refresh_schema_contract_v2_pin(conn)
+ 
+ 
+ MIGRATIONS = [
+diff --git a/atx-db/tests/test_api_service.py b/atx-db/tests/test_api_service.py
+index e0881c05..019fe01f 100644
+--- a/atx-db/tests/test_api_service.py
++++ b/atx-db/tests/test_api_service.py
+@@ -200,7 +200,7 @@ def test_saas_contract_migration_catalogs_public_schemas(tmp_store):
+     catalog = tmp_store.con.execute(
+         """
+         SELECT dataset_id,schema_code,schema_version
+-        FROM api_schema_catalog ORDER BY dataset_id,schema_code
++        FROM api_schema_catalog WHERE is_active ORDER BY dataset_id,schema_code
+         """
+     ).fetchall()
+     expected = sorted((dataset.code, schema.code, schema.version) for dataset in DATASETS for schema in dataset.schemas)
+@@ -643,7 +643,7 @@ def test_durable_batch_job_is_pit_pinned_checksummed_and_entitled(tmp_store, tmp
+     artifact = next((tmp_path / "artifacts").rglob("data.parquet"))
+     manifest = json.loads((artifact.parent / "manifest.json").read_text(encoding="utf-8"))
+     assert manifest["request"]["as_of"] is not None
+-    assert manifest["schema_version"] == "2.0.0"
++    assert manifest["schema_version"] == "3.0.0"
+     assert manifest["sha256"] == job["sha256"]
+     assert hashlib.sha256((artifact.parent / "manifest.json").read_bytes()).hexdigest() == job[
+         "manifest_sha256"
+diff --git a/atx-db/tests/test_standardized_null_contract.py b/atx-db/tests/test_standardized_null_contract.py
+new file mode 100644
+index 00000000..4d0d46aa
+--- /dev/null
++++ b/atx-db/tests/test_standardized_null_contract.py
+@@ -0,0 +1,173 @@
++"""The ordinary standardized API retains a later visible NULL conflict."""
++
++from __future__ import annotations
++
++import datetime as dt
++from dataclasses import replace
++
++from atx_db.api.catalog import _record_schema_sha256, get_schema, public_schema
++from atx_db.api.models import BatchRangeRequest, RangeRequest
++from atx_db.api.service import WarehouseReadService
++from atx_db.migrations.bodies_0321 import _reported_eps_nullable_standardized_value
++from atx_db.schema_contract import assert_schema_contract_version
++
++
++def test_existing_catalog_upgrade_and_public_standardized_null(tmp_store):
++    conn = tmp_store.con
++    schema = get_schema("ATX.US.FUNDAMENTALS", "standardized")
++    previous = replace(
++        schema,
++        version="2.0.0",
++        fields=tuple(
++            replace(field, nullable=False, description="Standardized value.")
++            if field.name == "value" else field
++            for field in schema.fields
++        ),
++    )
++    assert schema.version == "3.0.0"
++    assert public_schema(schema)["schema_sha256"] == _record_schema_sha256(schema)
++    assert next(field for field in public_schema(schema)["fields"] if field["name"] == "value")["nullable"]
++
++    # Reproduce only the standardized API metadata and physical nullability of
++    # a persisted 0319 warehouse. Other catalog rows and prices stay in place.
++    conn.execute(
++        """
++        INSERT INTO api_schema_catalog (
++            dataset_id,schema_code,schema_version,title,description,source_table,
++            time_field,natural_key_json,pit_policy,supported_encodings_json,
++            max_sync_rows,schema_sha256,is_active,source_loaded_at,updated_at
++        )
++        SELECT dataset_id,schema_code,'2.0.0',title,description,source_table,
++               time_field,natural_key_json,pit_policy,supported_encodings_json,
++               max_sync_rows,?,true,source_loaded_at,updated_at
++        FROM api_schema_catalog
++        WHERE dataset_id='ATX.US.FUNDAMENTALS' AND schema_code='standardized'
++          AND schema_version='3.0.0'
++        """,
++        [_record_schema_sha256(previous)],
++    )
++    conn.execute(
++        """
++        INSERT INTO api_field_catalog (
++            dataset_id,schema_code,schema_version,ordinal,field_name,source_column,
++            data_type,semantic_type,unit,nullable,is_filterable,description,
++            source_loaded_at,updated_at
++        )
++        SELECT dataset_id,schema_code,'2.0.0',ordinal,field_name,source_column,
++               data_type,semantic_type,unit,
++               CASE WHEN field_name='value' THEN false ELSE nullable END,
++               is_filterable,
++               CASE WHEN field_name='value' THEN 'Standardized value.' ELSE description END,
++               source_loaded_at,updated_at
++        FROM api_field_catalog
++        WHERE dataset_id='ATX.US.FUNDAMENTALS' AND schema_code='standardized'
++          AND schema_version='3.0.0'
++        """
++    )
++    conn.execute(
++        "DELETE FROM api_field_catalog WHERE dataset_id='ATX.US.FUNDAMENTALS' "
++        "AND schema_code='standardized' AND schema_version='3.0.0'"
++    )
++    conn.execute(
++        "DELETE FROM api_schema_catalog WHERE dataset_id='ATX.US.FUNDAMENTALS' "
++        "AND schema_code='standardized' AND schema_version='3.0.0'"
++    )
++    conn.execute("ALTER TABLE fundamental_standardized ALTER COLUMN value SET NOT NULL")
++    conn.execute(
++        "UPDATE field_catalog SET nullable=false, description='Standardized value.' "
++        "WHERE table_name='fundamental_standardized' AND field_name='value'"
++    )
++    untouched = {
++        table: conn.execute(
++            f"SELECT * FROM {table} WHERE "
++            + ("dataset_id <> 'ATX.US.FUNDAMENTALS'" if table != "api_unit_price_catalog"
++               else "true")
++            + " ORDER BY ALL"
++        ).fetchall()
++        for table in ("api_schema_catalog", "api_field_catalog", "api_unit_price_catalog")
++    }
++    old_hash = conn.execute(
++        "SELECT schema_sha256 FROM api_schema_catalog WHERE dataset_id='ATX.US.FUNDAMENTALS' "
++        "AND schema_code='standardized' AND schema_version='2.0.0'"
++    ).fetchone()[0]
++
++    _reported_eps_nullable_standardized_value(conn)
++    assert_schema_contract_version(conn)
++    assert old_hash == _record_schema_sha256(previous)
++    assert conn.execute(
++        "SELECT schema_sha256,is_active FROM api_schema_catalog "
++        "WHERE dataset_id='ATX.US.FUNDAMENTALS' AND schema_code='standardized' "
++        "AND schema_version='2.0.0'"
++    ).fetchone() == (old_hash, False)
++    assert conn.execute(
++        "SELECT schema_sha256,is_active FROM api_schema_catalog "
++        "WHERE dataset_id='ATX.US.FUNDAMENTALS' AND schema_code='standardized' "
++        "AND schema_version='3.0.0'"
++    ).fetchone() == (_record_schema_sha256(schema), True)
++    assert conn.execute(
++        "SELECT nullable FROM api_field_catalog WHERE dataset_id='ATX.US.FUNDAMENTALS' "
++        "AND schema_code='standardized' AND schema_version='3.0.0' AND field_name='value'"
++    ).fetchone() == (True,)
++    assert {
++        table: conn.execute(
++            f"SELECT * FROM {table} WHERE "
++            + ("dataset_id <> 'ATX.US.FUNDAMENTALS'" if table != "api_unit_price_catalog"
++               else "true")
++            + " ORDER BY ALL"
++        ).fetchall()
++        for table in untouched
++    } == untouched
++
++    # A later conflict must win the PIT revision ranking even with NULL value.
++    conn.execute(
++        "INSERT INTO securities (security_id,primary_symbol,name,source) "
++        "VALUES ('owner-eps','EPS','EPS','fixture')"
++    )
++    conn.executemany(
++        """
++        INSERT INTO fundamental_standardized (
++            standardized_id,source,security_id,symbol,cik,item_id,canonical_code,
++            basis,period_start,period_end,value,as_of_date,available_at,
++            input_codes_json,input_item_ids_json,rule_id,combination_rule,
++            source_loaded_at
++        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
++        """,
++        [
++            ("eps-release", "fixture", "owner-eps", "EPS", "0000000001", 1,
++             "eps_diluted", "quarterly", dt.date(2025, 1, 1), dt.date(2025, 3, 31),
++             1.5, dt.date(2025, 3, 31), dt.datetime(2025, 5, 3, 22),
++             '["release"]', "[1]", "fixture", "single", dt.datetime(2025, 5, 3, 22)),
++            ("eps-conflict", "fixture", "owner-eps", "EPS", "0000000001", 1,
++             "eps_diluted", "quarterly", dt.date(2025, 1, 1), dt.date(2025, 3, 31),
++             None, dt.date(2025, 3, 31), dt.datetime(2025, 5, 20, 22),
++             '["conflicting_direct_eps"]', "[1]", "fixture", "single",
++             dt.datetime(2025, 5, 20, 22)),
++        ],
++    )
++    conn.execute("CHECKPOINT")
++    tmp_store.connection.close()
++    tmp_store.connection = None
++    service = WarehouseReadService(tmp_store.path)
++    request = {
++        "dataset": "ATX.US.FUNDAMENTALS", "schema": "standardized",
++        "symbols": ["owner-eps"], "stype_in": "security_id",
++        "start": "2025-03-31", "end": "2025-04-01",
++        "items": ["eps_diluted"], "basis": ["quarterly"],
++        "fields": ["security_id", "item", "value", "available_at"],
++    }
++    early = service.get_range(RangeRequest.model_validate({
++        **request, "as_of": "2025-05-10T00:00:00Z",
++    }))
++    late = service.get_range(RangeRequest.model_validate({
++        **request, "as_of": "2025-05-21T00:00:00Z",
++    }))
++    assert [row["value"] for row in early.data] == [1.5]
++    assert [row["value"] for row in late.data] == [None]
++    assert late.metadata["schema_version"] == "3.0.0"
++
++    with service.stream_range(BatchRangeRequest.model_validate({
++        **request, "as_of": "2025-05-21T00:00:00Z",
++    })) as stream:
++        batches = list(stream.batches())
++    assert len(batches) == 1
++    assert batches[0].to_pylist()[0]["value"] is None

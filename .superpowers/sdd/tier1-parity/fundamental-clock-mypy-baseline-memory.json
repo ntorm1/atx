@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "C:/atx/.superpowers/sdd/tier1-parity/verify_clock_mypy_baseline.py"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 5.4338531494140625,
+    "commit_free_gb": 5.762546539306641
+  },
+  "child_pid": 5264,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.355560302734375
+}

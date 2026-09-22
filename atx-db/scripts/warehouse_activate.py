@@ -6,14 +6,12 @@ recording every attempt in ``activation_stage_runs``. A rerun skips stages whose
 newest attempt completed, so an interrupted multi-hour build resumes exactly where
 it stopped.
 
-Stages (in order)
------------------
-  migrate, security_master, symbol_directory, ticker_history_extract,
-  ticker_history_publish, sec_bulk_download, submissions_load,
-  companyfacts_load, statement_points, periods, ttm, calendarization,
-  standardized, industry_templates, reconciliation, provider_coverage
+Stages are defined by ``atx_db.activation.STAGE_ORDER``. Use ``--dry-run``
+to print the current ladder, including derived metrics, market daily data,
+delisting evidence, the listed universe, and final provider coverage.
 
-Network is limited to security_master, symbol_directory, and sec_bulk_download.
+Network is limited to security_master, symbol_directory, sec_bulk_download, and
+the governed earnings_release_facts stage after submissions_load.
 ``ATX_SEC_USER_AGENT`` (or ``--sec-user-agent``) is required before any SEC
 request; the ladder fails fast without it.
 
@@ -45,6 +43,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -82,6 +81,7 @@ def main(
     ``atx_db.activation`` for the pending-migration guard and backup retention.
     """
     args = parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     return run_activation_from_args(
         args, governed_migrations=governed_migrations, run_activation=run_activation
     )

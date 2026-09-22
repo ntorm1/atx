@@ -23,7 +23,10 @@ from .delisting import (
     DelistingReturnObservationDataset,
     DelistingReturnObservationOptions,
 )
+from .delisting_evidence import DelistingEvidenceDataset, DelistingEvidenceOptions
 from .dataset import Dataset, DatasetLoadResult
+from .derived_metrics import DerivedMetricsDataset, DerivedMetricsOptions
+from .market_daily import MarketDailyDataset, MarketDailyOptions
 from .features import (
     EquityDailyFeatureDataset,
     FeatureBuildOptions,
@@ -55,18 +58,14 @@ from .standardization import FundamentalStandardizationDataset, FundamentalStand
 from .fundamental_xbrl_metrics import FundamentalXbrlMetricDataset, FundamentalXbrlMetricOptions
 from .segments import SegmentDataset, SegmentOptions
 from .footnotes import FootnoteDataset, FootnoteOptions
-from .press_release import PressReleaseDataset, PressReleaseOptions
+from .press_release import (
+    PressReleaseDataset, PressReleaseOptions, SecEarningsReleaseDataset,
+    SecEarningsReleaseOptions,
+)
 from .short_interest_metrics import ShortInterestMetricsDataset, ShortInterestMetricsOptions
 from .short_volume import FinraShortVolumeDataset, FinraShortVolumeOptions, ShortVolumeMetricsDataset
 from .macro_metrics import MacroMetricsDataset, MacroMetricsOptions
 from .equity_price_metrics import EquityPriceMetricsDataset, EquityPriceMetricsOptions
-from .enterprise_value import EnterpriseValueDataset, EnterpriseValueOptions
-from .valuation_multiples import (
-    MarketCapDataset,
-    MarketCapOptions,
-    ValuationMultiplesDataset,
-    ValuationMultiplesOptions,
-)
 from .thirteenf_concentration_metrics import (
     ThirteenFConcentrationMetricsDataset,
     ThirteenFConcentrationMetricsOptions,
@@ -129,6 +128,17 @@ from .symbol_directory import (
 from .thirteenf import ThirteenFDataSet, ThirteenFOptions
 from .ticker_history import TickerHistoryDataset, TickerHistoryOptions
 from .universes import UniverseBuildOptions, UniverseMembershipDataset
+from .universe_us_listed import UniverseUsListedDataset, UniverseUsListedOptions
+from .universe import GovernedUniverseMembershipDataset, UniverseMembershipOptions
+from .derived_factor_projection import FactorProjectionOptions
+from .production_panels import (
+    DelistingTerminalDataset,
+    DerivedFactorProjectionDataset,
+    ItemCoverageDataset,
+    PRODUCTION_JOB_SEEDS,
+    ProductionPanelOptions,
+    SurvivorshipForwardDataset,
+)
 from .watermarks import refresh_warehouse_watermarks
 from .warehouse import json_dumps, now_utc_naive
 from .xbrl_filing_contexts import XbrlFilingContextDataset, XbrlFilingContextOptions
@@ -592,6 +602,15 @@ def _company_facts_options(params: dict[str, Any]) -> SecCompanyFactsOptions:
         concepts=_string_tuple_or_none(params.get("concepts", default.concepts)) or default.concepts,
         symbol_source=(params.get("symbol_source") or default.symbol_source),
         symbol_limit=(None if params.get("symbol_limit") in (None, "") else int(params["symbol_limit"])),
+        symbol_offset=int(params.get("symbol_offset", default.symbol_offset)),
+        skip_loaded_targets=_bool_param(params.get("skip_loaded_targets"), default.skip_loaded_targets),
+        companyfacts_zip=Path(params["companyfacts_zip"]) if params.get("companyfacts_zip") else None,
+        skip_failed_targets=_bool_param(params.get("skip_failed_targets"), default.skip_failed_targets),
+        refresh_derived_surfaces=_bool_param(params.get("refresh_derived_surfaces"), default.refresh_derived_surfaces),
+        progress_every_targets=int(params.get("progress_every_targets", default.progress_every_targets)),
+        request_delay_seconds=float(params.get("request_delay_seconds", default.request_delay_seconds)),
+        max_attempts=int(params.get("max_attempts", default.max_attempts)),
+        run_id=params.get("run_id") or default.run_id,
         universe_id=params.get("universe_id") or default.universe_id,
         as_of_date=_date_or_none(params.get("as_of_date")),
         request_timeout=int(params.get("request_timeout", default.request_timeout)),
@@ -980,42 +999,6 @@ def _equity_price_metrics_options(params: dict[str, Any]) -> EquityPriceMetricsO
     )
 
 
-def _market_cap_options(params: dict[str, Any]) -> MarketCapOptions:
-    default = MarketCapOptions()
-    return MarketCapOptions(
-        source=params.get("source") or default.source,
-        price_sources=_string_tuple_or_none(params.get("price_sources")) or default.price_sources,
-        symbols=_tuple_or_none(params.get("symbols")) or default.symbols,
-        start_date=_date_or_none(params.get("start_date")),
-        end_date=_date_or_none(params.get("end_date")),
-        run_id=params.get("run_id") or default.run_id,
-    )
-
-
-def _valuation_multiples_options(params: dict[str, Any]) -> ValuationMultiplesOptions:
-    default = ValuationMultiplesOptions()
-    return ValuationMultiplesOptions(
-        source=params.get("source") or default.source,
-        market_cap_sources=_string_tuple_or_none(params.get("market_cap_sources")) or default.market_cap_sources,
-        symbols=_tuple_or_none(params.get("symbols")) or default.symbols,
-        start_date=_date_or_none(params.get("start_date")),
-        end_date=_date_or_none(params.get("end_date")),
-        run_id=params.get("run_id") or default.run_id,
-    )
-
-
-def _enterprise_value_options(params: dict[str, Any]) -> EnterpriseValueOptions:
-    default = EnterpriseValueOptions()
-    return EnterpriseValueOptions(
-        source=params.get("source") or default.source,
-        market_cap_sources=_string_tuple_or_none(params.get("market_cap_sources")) or default.market_cap_sources,
-        symbols=_tuple_or_none(params.get("symbols")) or default.symbols,
-        start_date=_date_or_none(params.get("start_date")),
-        end_date=_date_or_none(params.get("end_date")),
-        run_id=params.get("run_id") or default.run_id,
-    )
-
-
 def _fundamental_standardization_options(params: dict[str, Any]) -> FundamentalStandardizationOptions:
     default = FundamentalStandardizationOptions()
     return FundamentalStandardizationOptions(
@@ -1227,6 +1210,111 @@ def _fred_macro_options(params: dict[str, Any]) -> FredMacroOptions:
     )
 
 
+def _delisting_evidence_options(params: dict[str, Any]) -> DelistingEvidenceOptions:
+    default = DelistingEvidenceOptions()
+    return DelistingEvidenceOptions(
+        as_of_date=_date_or_none(params.get("as_of_date")),
+        archive_gap_sessions=int(params.get("archive_gap_sessions", default.archive_gap_sessions)),
+        merger_lookback_days=int(params.get("merger_lookback_days", default.merger_lookback_days)),
+        include_archive_inference=bool(
+            params.get("include_archive_inference", default.include_archive_inference)
+        ),
+        run_id=params.get("run_id"),
+    )
+
+
+def _universe_us_listed_options(params: dict[str, Any]) -> UniverseUsListedOptions:
+    default = UniverseUsListedOptions()
+    return UniverseUsListedOptions(
+        as_of_date=_date_or_none(params.get("as_of_date")),
+        universe_id=params.get("universe_id", default.universe_id),
+        lookback_days=int(params.get("lookback_days", default.lookback_days)),
+        market_source=params.get("market_source", default.market_source),
+        start_date=_date_or_none(params.get("start_date")),
+        end_date=_date_or_none(params.get("end_date")),
+        run_id=params.get("run_id"),
+    )
+
+
+def _production_panel_options(params: dict[str, Any]) -> ProductionPanelOptions:
+    as_of_date = _date_or_none(params.get("as_of_date"))
+    if as_of_date is None:
+        raise ValueError("production panel jobs require explicit as_of_date")
+    return ProductionPanelOptions(as_of_date=as_of_date, run_id=params.get("run_id"))
+
+
+def _projection_options(params: dict[str, Any]) -> FactorProjectionOptions:
+    default = FactorProjectionOptions()
+    return FactorProjectionOptions(
+        universe_id=params.get("universe_id", default.universe_id),
+        factor_ids=_string_tuple_or_none(params.get("factor_ids")),
+        start_date=_date_or_none(params.get("start_date")),
+        end_date=_date_or_none(params.get("end_date") or params.get("as_of_date")),
+        run_id=params.get("run_id"),
+    )
+
+
+def _sec_earnings_release_options(params: dict[str, Any]) -> SecEarningsReleaseOptions:
+    default = SecEarningsReleaseOptions(cache_dir=Path("data/cache/sec-earnings-release"))
+    return SecEarningsReleaseOptions(
+        cache_dir=_path(params.get("cache_dir"), default.cache_dir),
+        history_start=_date_or_none(params.get("history_start")),
+        history_end=_date_or_none(params.get("history_end")),
+        ciks=_tuple_or_none(params.get("ciks")),
+        request_timeout=float(params.get("request_timeout", default.request_timeout)),
+        max_index_bytes=int(params.get("max_index_bytes", default.max_index_bytes)),
+        max_document_bytes=int(params.get("max_document_bytes", default.max_document_bytes)),
+        candidate_batch_size=int(params.get("candidate_batch_size", default.candidate_batch_size)),
+        user_agent=default.user_agent,
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _governed_universe_options(params: dict[str, Any]) -> UniverseMembershipOptions:
+    default = UniverseMembershipOptions()
+    return UniverseMembershipOptions(
+        universe_id=params.get("universe_id", default.universe_id),
+        symbols=_tuple_or_none(params.get("symbols")),
+        start_date=_date_or_none(params.get("start_date")),
+        end_date=_date_or_none(params.get("end_date") or params.get("as_of_date")),
+        lookback_days=int(params.get("lookback_days", default.lookback_days)),
+        min_history_days=int(params.get("min_history_days", default.min_history_days)),
+        min_price=float(params.get("min_price", default.min_price)),
+        min_dollar_volume=float(params.get("min_dollar_volume", default.min_dollar_volume)),
+        run_id=params.get("run_id"),
+    )
+
+
+def _derived_metrics_options(params: dict[str, Any]) -> DerivedMetricsOptions:
+    default = DerivedMetricsOptions()
+    return DerivedMetricsOptions(
+        source=params.get("source") or default.source,
+        security_ids=_tuple_or_none(params.get("security_ids")),
+        # metric_codes are lowercase snake_case (see derived_registry._METRIC_CODE_RE),
+        # unlike security_ids/symbols; _tuple_or_none upper-cases, which would send
+        # every requested code to a name the catalog never defines. _string_tuple_or_none
+        # preserves case.
+        metric_codes=_string_tuple_or_none(params.get("metric_codes")),
+        batch_size=int(params.get("batch_size", default.batch_size)),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _market_daily_options(params: dict[str, Any]) -> MarketDailyOptions:
+    default = MarketDailyOptions()
+    return MarketDailyOptions(
+        source=params.get("source") or default.source,
+        derived_source=params.get("derived_source") or default.derived_source,
+        bar_source=params.get("bar_source") or default.bar_source,
+        start_date=_date_or_none(params.get("start_date")),
+        end_date=_date_or_none(params.get("end_date")),
+        security_ids=_tuple_or_none(params.get("security_ids")),
+        batch_size=int(params.get("batch_size", default.batch_size)),
+        shares_tolerance=float(params.get("shares_tolerance", default.shares_tolerance)),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     SecurityMasterDataset.dataset_id: (SecurityMasterDataset, _security_master_options),
     TickerHistoryDataset.dataset_id: (TickerHistoryDataset, _ticker_history_options),
@@ -1302,6 +1390,7 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
         _xbrl_taxonomy_package_options,
     ),
     SecSubmissionsDataset.dataset_id: (SecSubmissionsDataset, _submissions_options),
+    SecEarningsReleaseDataset.dataset_id: (SecEarningsReleaseDataset, _sec_earnings_release_options),
     NasdaqSymbolDirectoryDataset.dataset_id: (NasdaqSymbolDirectoryDataset, _symbol_directory_options),
     NasdaqListingEventsDataset.dataset_id: (NasdaqListingEventsDataset, _listing_events_options),
     ListingStatusIntervalDataset.dataset_id: (ListingStatusIntervalDataset, _listing_status_options),
@@ -1319,6 +1408,8 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
         FundamentalReconciliationDataset,
         _fundamental_reconciliation_options,
     ),
+    DerivedMetricsDataset.dataset_id: (DerivedMetricsDataset, _derived_metrics_options),
+    MarketDailyDataset.dataset_id: (MarketDailyDataset, _market_daily_options),
     FilingContextBackfillQueueDataset.dataset_id: (
         FilingContextBackfillQueueDataset,
         _filing_context_backfill_queue_options,
@@ -1333,9 +1424,6 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     ShortInterestMetricsDataset.dataset_id: (ShortInterestMetricsDataset, _short_interest_metrics_options),
     MacroMetricsDataset.dataset_id: (MacroMetricsDataset, _macro_metrics_options),
     EquityPriceMetricsDataset.dataset_id: (EquityPriceMetricsDataset, _equity_price_metrics_options),
-    MarketCapDataset.dataset_id: (MarketCapDataset, _market_cap_options),
-    EnterpriseValueDataset.dataset_id: (EnterpriseValueDataset, _enterprise_value_options),
-    ValuationMultiplesDataset.dataset_id: (ValuationMultiplesDataset, _valuation_multiples_options),
     FactDisagreementDataset.dataset_id: (FactDisagreementDataset, _fact_disagreement_options),
     ThirteenFPositionMetricsDataset.dataset_id: (ThirteenFPositionMetricsDataset, _thirteenf_position_metrics_options),
     ThirteenFOptionMetricsDataset.dataset_id: (ThirteenFOptionMetricsDataset, _thirteenf_option_metrics_options),
@@ -1358,6 +1446,13 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     AlphaResearchDataset.dataset_id: (AlphaResearchDataset, _alpha_research_options),
     TradingCalendarDataset.dataset_id: (TradingCalendarDataset, _calendar_options),
     UniverseMembershipDataset.dataset_id: (UniverseMembershipDataset, _universe_options),
+    UniverseUsListedDataset.dataset_id: (UniverseUsListedDataset, _universe_us_listed_options),
+    GovernedUniverseMembershipDataset.dataset_id: (GovernedUniverseMembershipDataset, _governed_universe_options),
+    DerivedFactorProjectionDataset.dataset_id: (DerivedFactorProjectionDataset, _projection_options),
+    DelistingTerminalDataset.dataset_id: (DelistingTerminalDataset, _production_panel_options),
+    SurvivorshipForwardDataset.dataset_id: (SurvivorshipForwardDataset, _production_panel_options),
+    ItemCoverageDataset.dataset_id: (ItemCoverageDataset, _production_panel_options),
+    DelistingEvidenceDataset.dataset_id: (DelistingEvidenceDataset, _delisting_evidence_options),
     SicTaxonomyDataset.dataset_id: (SicTaxonomyDataset, lambda p: SicTaxonomyOptions()),
     FamaFrenchTaxonomyDataset.dataset_id: (FamaFrenchTaxonomyDataset, lambda p: FamaFrenchTaxonomyOptions()),
     NaicsTaxonomyDataset.dataset_id: (NaicsTaxonomyDataset, lambda p: NaicsTaxonomyOptions()),
@@ -1430,6 +1525,7 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "corporate_actions": ("tbltickerhistory_daily",),
     "daily_adjustment_factors": ("adjustment_factor_history",),
     "delisting_events": ("listing_status_intervals",),
+    "derived_metrics": ("fundamental_standardized",),
     "entity_classification": (
         "fama_french_taxonomy",
         "naics_taxonomy",
@@ -1439,6 +1535,7 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "equity_daily_features": ("tbltickerhistory_daily",),
     "equity_price_metrics": ("tbltickerhistory_daily",),
     "est_actual": ("est_measure", "sec_company_facts"),
+    "sec_earnings_release_facts": ("sec_submissions",),
     "est_security_link": (
         "est_consensus",
         "est_detail",
@@ -1481,15 +1578,10 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "sec_security_master",
     ),
     "macro_metrics": ("fred_macro",),
-    "market_cap": ("tbltickerhistory_daily", "shares_outstanding_history"),
-    "enterprise_value": (
-        "market_cap",
-        "sec_company_facts",
-    ),
-    "valuation_multiples": (
-        "market_cap",
-        "fundamental_xbrl_metric",
-        "sec_company_facts",
+    "market_daily": (
+        "derived_metrics",
+        "tbltickerhistory_daily",
+        "shares_outstanding_history",
     ),
     "fact_disagreement": ("fundamental_standardized",),
     "nasdaq_listing_events": ("sec_security_master",),
@@ -1520,6 +1612,13 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "bulk_daily_bars_backfill": ("sec_security_master",),
     "trading_calendar": ("tbltickerhistory_daily",),
     "universe_memberships": ("tbltickerhistory_daily",),
+    "universe_membership": ("tbltickerhistory_daily", "listing_status_intervals"),
+    "derived_factor_projection": ("universe_membership", "derived_metrics", "market_daily"),
+    "delisting_terminal_returns": ("delisting_evidence", "universe_us_listed"),
+    "forward_returns_survivorship_safe": ("trading_calendar", "delisting_terminal_returns"),
+    "fundamental_item_coverage": ("universe_us_listed", "market_daily", "fundamental_standardized"),
+    "universe_us_listed": ("market_daily", "tbltickerhistory_daily"),
+    "delisting_evidence": ("tbltickerhistory_daily", "nasdaq_listing_events", "sec_submissions"),
     "xbrl_filing_contexts": ("sec_submissions",),
     "xbrl_validation": ("xbrl_filing_contexts", "xbrl_taxonomy"),
     "xbrl_processor_runs": ("xbrl_filing_contexts",),
@@ -2024,27 +2123,6 @@ class JobManager:
             dependencies=["sec_company_facts"],
             **retry_policy,
         )
-        self.register_job(
-            job_name="market_cap",
-            dataset_id="market_cap",
-            params={"symbols": symbols},
-            dependencies=["daily_bars", "shares_outstanding_history"],
-            **retry_policy,
-        )
-        self.register_job(
-            job_name="enterprise_value",
-            dataset_id="enterprise_value",
-            params={"symbols": symbols},
-            dependencies=["market_cap", "sec_company_facts"],
-            **retry_policy,
-        )
-        self.register_job(
-            job_name="valuation_multiples",
-            dataset_id="valuation_multiples",
-            params={"symbols": symbols},
-            dependencies=["market_cap", "fundamental_xbrl_metric", "sec_company_facts"],
-            **retry_policy,
-        )
         self.register_job(job_name="xbrl_taxonomy", dataset_id="xbrl_taxonomy", **retry_policy)
         self.register_job(
             job_name="sec_fundamental_features",
@@ -2125,6 +2203,12 @@ class JobManager:
             dataset_id="sec_submissions",
             params={"symbols": symbols},
             dependencies=["security_master"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="sec_earnings_release_facts",
+            dataset_id="sec_earnings_release_facts",
+            dependencies=["sec_submissions"],
             **retry_policy,
         )
         self.register_job(
@@ -2268,6 +2352,10 @@ class JobManager:
             ],
             **retry_policy,
         )
+
+        for job_name, dataset_id, dependencies in PRODUCTION_JOB_SEEDS:
+            self.register_job(job_name=job_name, dataset_id=dataset_id,
+                              dependencies=list(dependencies), **retry_policy)
 
     def run_job(
         self,

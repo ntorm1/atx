@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\capture_standardized_predecessor.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.704189300537109,
+    "commit_free_gb": 8.90963363647461
+  },
+  "child_pid": 7296,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.12291336059570312
+}

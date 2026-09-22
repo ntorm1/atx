@@ -1,0 +1,17 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "mypy",
+    "src/atx_db/market_daily.py"
+  ],
+  "job_limit_gb": 2.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.383460998535156,
+    "commit_free_gb": 6.490039825439453
+  },
+  "child_pid": 21532,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.25048828125
+}

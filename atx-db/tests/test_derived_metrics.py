@@ -8,10 +8,11 @@ import pytest
 
 from atx_db.derived_metrics import (
     DerivedMetricsOptions,
+    quarterly_context,
     refresh_derived_metrics,
     select_security_batches,
 )
-from atx_db.derived_registry import seed_derived_metric_definitions
+from atx_db.derived_registry import DerivedMetricDefinition, seed_derived_metric_definitions
 
 _QUARTERS = (
     dt.date(2019, 3, 31),
@@ -71,14 +72,17 @@ def seeded(tmp_store):
 def _value(store, metric_code, period_end):
     row = store.con.execute(
         "SELECT value, available_at, inputs_hash FROM derived_metric_values "
-        "WHERE metric_code = ? AND period_end = ? AND security_id = 'S1'",
+        "WHERE metric_code = ? AND period_end = ? AND security_id = 'S1' "
+        "ORDER BY available_at DESC, derived_value_id DESC LIMIT 1",
         [metric_code, period_end],
     ).fetchone()
-    return row
+    # These formula tests inspect the current valid value. Dedicated PIT tests
+    # assert the stored invalid states and intermediate event chronology.
+    return row if row is not None and row[0] is not None else None
 
 
 def test_batches_are_deterministic_and_bounded(seeded):
-    batches = select_security_batches(seeded, DerivedMetricsOptions(batch_size=1))
+    batches = list(select_security_batches(seeded, DerivedMetricsOptions(batch_size=1)))
     assert batches == [("S1",)]
 
 
@@ -124,7 +128,7 @@ def test_yoy_uses_the_absolute_base(seeded):
     assert growth == pytest.approx((current - prior) / abs(prior))
 
 
-def test_a_zero_denominator_yields_no_row_rather_than_infinity(tmp_store):
+def test_a_zero_denominator_yields_invalid_states_rather_than_infinity(tmp_store):
     seed_derived_metric_definitions(tmp_store)
     for period_end in _QUARTERS[:4]:
         _insert_fact(tmp_store, "S2", "revenue", "quarterly", period_end, 0.0, _available(period_end))
@@ -134,9 +138,10 @@ def test_a_zero_denominator_yields_no_row_rather_than_infinity(tmp_store):
         DerivedMetricsOptions(metric_codes=("gross_profit_q", "gross_profit_ttm", "revenue_ttm", "gross_margin")),
     )
     rows = tmp_store.con.execute(
-        "SELECT count(*) FROM derived_metric_values WHERE metric_code = 'gross_margin'"
-    ).fetchone()[0]
-    assert rows == 0
+        "SELECT value, value_status FROM derived_metric_values WHERE metric_code = 'gross_margin'"
+    ).fetchall()
+    assert rows and all(value is None and status != 'valid' for value, status in rows)
+    assert any(status == 'zero_denominator' for _, status in rows)
 
 
 def test_inputs_hash_is_stable_across_reruns(seeded):
@@ -188,19 +193,23 @@ def test_batch_size_does_not_change_the_result(tmp_store):
             )
     refresh_derived_metrics(tmp_store, DerivedMetricsOptions(metric_codes=("revenue_ttm",), batch_size=3))
     wide = tmp_store.con.execute(
-        "SELECT security_id, period_end, value, inputs_hash FROM derived_metric_values ORDER BY 1, 2"
+        "SELECT security_id, period_end, value, inputs_hash FROM derived_metric_values "
+        "ORDER BY 1, 2, metric_code, available_at, derived_value_id"
     ).fetchall()
     refresh_derived_metrics(tmp_store, DerivedMetricsOptions(metric_codes=("revenue_ttm",), batch_size=1))
     narrow = tmp_store.con.execute(
-        "SELECT security_id, period_end, value, inputs_hash FROM derived_metric_values ORDER BY 1, 2"
+        "SELECT security_id, period_end, value, inputs_hash FROM derived_metric_values "
+        "ORDER BY 1, 2, metric_code, available_at, derived_value_id"
     ).fetchall()
     assert wide == narrow
 
 
-def test_every_emitted_value_is_finite_and_has_an_availability(seeded):
+def test_every_emitted_state_has_consistent_validity_and_availability(seeded):
     refresh_derived_metrics(seeded)
     bad = seeded.con.execute(
-        "SELECT count(*) FROM derived_metric_values WHERE value IS NULL OR NOT isfinite(value) OR available_at IS NULL"
+        "SELECT count(*) FROM derived_metric_values WHERE available_at IS NULL "
+        "OR (value_status = 'valid' AND (value IS NULL OR NOT isfinite(value))) "
+        "OR (value_status <> 'valid' AND value IS NOT NULL)"
     ).fetchone()[0]
     assert bad == 0
 
@@ -218,6 +227,64 @@ def test_full_catalog_runs_without_error(seeded):
     assert rows > 0
     codes = seeded.con.execute("SELECT count(DISTINCT metric_code) FROM derived_metric_values").fetchone()[0]
     assert codes >= 5
+
+
+def test_revenue_ttm_is_null_across_a_missing_quarter_and_resumes_after_it(tmp_store):
+    seed_derived_metric_definitions(tmp_store)
+    for index, period_end in enumerate(_QUARTERS):
+        if index == 2:
+            continue  # a missing quarter in the middle (e.g. a late 10-Q not yet loaded)
+        _insert_fact(tmp_store, "S1", "revenue", "quarterly", period_end, 100.0 + 10.0 * index, _available(period_end))
+    refresh_derived_metrics(tmp_store, DerivedMetricsOptions(metric_codes=("revenue_ttm",)))
+    # Every 4-bucket ROWS frame that spans the synthesized gap bucket sees fewer
+    # than 4 real observations and must be absent, not silently narrowed.
+    assert _value(tmp_store, "revenue_ttm", _QUARTERS[3]) is None
+    assert _value(tmp_store, "revenue_ttm", _QUARTERS[4]) is None
+    assert _value(tmp_store, "revenue_ttm", _QUARTERS[5]) is None
+    # Once 4 consecutive real quarters exist again after the gap (indices 3-6),
+    # revenue_ttm resumes.
+    value, _available_at, _hash = _value(tmp_store, "revenue_ttm", _QUARTERS[6])
+    assert value == pytest.approx(130.0 + 140.0 + 150.0 + 160.0)
+
+
+def test_5253_week_fiscal_quarter_ends_form_a_gap_free_grid(tmp_store):
+    seed_derived_metric_definitions(tmp_store)
+    fiscal_quarters = (
+        dt.date(2023, 12, 30),
+        dt.date(2024, 3, 30),
+        dt.date(2024, 6, 29),
+        dt.date(2024, 9, 28),
+    )
+    for index, period_end in enumerate(fiscal_quarters):
+        _insert_fact(tmp_store, "S1", "revenue", "quarterly", period_end, 100.0 + 10.0 * index, _available(period_end))
+    refresh_derived_metrics(tmp_store, DerivedMetricsOptions(metric_codes=("revenue_ttm",)))
+    value, _available_at, _hash = _value(tmp_store, "revenue_ttm", fiscal_quarters[3])
+    assert value == pytest.approx(100.0 + 110.0 + 120.0 + 130.0)
+
+
+def test_a_double_quote_in_an_item_code_raises_value_error():
+    definition = DerivedMetricDefinition(
+        metric_code="revenue_q",
+        family="rollup",
+        expression="revenue",
+        window="q",
+        inputs=("item:revenue",),
+        requires_market=False,
+        description="d",
+        version="1",
+    )
+    with pytest.raises(ValueError):
+        quarterly_context(definition, item_codes=('rev"enue',), metric_codes=())
+
+
+def test_requesting_a_metric_auto_expands_its_transitive_dependencies(seeded):
+    refresh_derived_metrics(seeded, DerivedMetricsOptions(metric_codes=("gross_margin",)))
+    gross_profit_q, _a, _h = _value(seeded, "gross_profit_q", _QUARTERS[3])
+    gross_profit_ttm, _b, _i = _value(seeded, "gross_profit_ttm", _QUARTERS[3])
+    revenue_ttm, _c, _j = _value(seeded, "revenue_ttm", _QUARTERS[3])
+    margin, _d, _k = _value(seeded, "gross_margin", _QUARTERS[3])
+    assert gross_profit_q is not None
+    assert margin == pytest.approx(gross_profit_ttm / revenue_ttm)
 
 
 def test_no_wall_clock_in_the_module_source():

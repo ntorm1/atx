@@ -1,0 +1,94 @@
+{
+  "observed_at_utc": "2026-09-20T19:24:24.801723+00:00",
+  "read_only": true,
+  "activation": {
+    "columns": [
+      "stage",
+      "run_id",
+      "status",
+      "started_at",
+      "finished_at",
+      "rows",
+      "error"
+    ],
+    "rows": [
+      [
+        "companyfacts_load",
+        "activation-companyfacts-archive1",
+        "failed",
+        "2026-09-20 19:22:04.132594",
+        "2026-09-20 19:23:12.489891",
+        0,
+        "Out of Memory Error: could not allocate block of size 256.0 KiB (953.5 MiB/953.6 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads"
+      ]
+    ]
+  },
+  "dataset": {
+    "columns": [
+      "run_id",
+      "dataset_id",
+      "status",
+      "started_at",
+      "finished_at",
+      "rows_loaded",
+      "error_message"
+    ],
+    "rows": [
+      [
+        "05277e29-578f-4280-86ba-f91e8d026c56",
+        "sec_company_facts",
+        "failed",
+        "2026-09-20 19:22:04.140392",
+        "2026-09-20 19:23:12.472767",
+        null,
+        "Out of Memory Error: could not allocate block of size 256.0 KiB (953.5 MiB/953.6 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads\nTraceback (most recent call last):\n  File \"C:\\atx\\atx-db\\src\\atx_db\\dataset.py\", line 79, in run\n    result = self.load(store, with_run_id(options, run_id))\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\atx\\atx-db\\src\\atx_db\\fundamentals.py\", line 1100, in load\n    rows_loaded += self._replace_facts(store, facts, points, security_id, cik=cik)\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\atx\\atx-db\\src\\atx_db\\fundamentals.py\", line 1206, in _replace_facts\n    store.con.execute(\n_duckdb.OutOfMemoryException: Out of Memory Error: could not allocate block of size 256.0 KiB (953.5 MiB/953.6 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads\n"
+      ]
+    ]
+  },
+  "retained_raw_facts": {
+    "columns": [
+      "rows",
+      "ciks"
+    ],
+    "rows": [
+      [
+        31590760,
+        6533
+      ]
+    ]
+  },
+  "retained_points": {
+    "columns": [
+      "rows"
+    ],
+    "rows": [
+      [
+        31590760
+      ]
+    ]
+  },
+  "retained_prices": {
+    "columns": [
+      "rows",
+      "last_date"
+    ],
+    "rows": [
+      [
+        31959271,
+        "2026-09-18"
+      ]
+    ]
+  },
+  "prior_submissions_params": {
+    "columns": [
+      "run_id",
+      "params_json"
+    ],
+    "rows": [
+      [
+        "04cf947d-53bb-49b7-a276-b3c74a2a52c8",
+        "{\"batch_ciks\": 50, \"ciks\": null, \"forms\": null, \"include_history_files\": true, \"run_id\": \"activation-source-prepass2-submissions\", \"zip_path\": \"data\\\\cache\\\\submissions.zip\"}"
+      ]
+    ]
+  }
+}
