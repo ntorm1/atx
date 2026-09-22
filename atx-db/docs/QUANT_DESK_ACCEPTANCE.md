@@ -8,6 +8,7 @@ source or implementation repair. An empty result is a diagnostic, not success.
 | --- | --- | --- |
 | What was an issuer's reported quarterly EPS growth, using the correct fiscal quarters and information cutoff? | [CVX acceptance case](CVX_EPS_ACCEPTANCE.md), including executed SQL and three measured rows | Activate accounting outputs; supply direct reported Q4 EPS; expose issuer queries with separate lookup and content clocks. |
 | Do the eight predeclared price/liquidity features predict 21-session decile spreads after costs, including holdout performance? | [Custom-feature readout SQL](../sql/research/custom-feature-decile-acceptance.sql), prepared but not yet executed | Finish the survivorship-aware forward-return panel, then run the existing CF1 evaluator and publish all results. |
+| Which qualified US common equities combine improving reported quarterly EPS and operating margins with usable valuation, cash quality and leverage inputs? | [Fundamental desk SQL and contract](FUNDAMENTAL_DESK_SCREEN_ACCEPTANCE.md), prepared but not yet executed | Materialize the accounting and market joins, then measure complete names, missing inputs, stale operands and identity gaps. |
 
 The custom-feature query reads the existing evaluation tables and pins build,
 evaluation, source hash, version, horizon, and snapshot. It returns all eight
@@ -29,9 +30,10 @@ significant alpha has been measured. The readout SQL will run after the active
 bulk writer releases the database and the label/evaluation stages complete.
 The query does not create a second feature or backtest engine.
 
-The next fundamentals question is whether an investable cross-section combines
-improving quarterly earnings and operating margins with attractive valuation.
-It depends on the same accounting outputs, qualified market joins and label
-machinery. Its signal definition and evaluation family must be fixed before
-looking at forward performance; no post-hoc feature selection or threshold
-changes based on holdout results.
+The fundamental desk SQL reports coverage and a bounded name-level preview;
+it is not a return prediction or a tested signal. It retains selected NULL
+states, checks actual fiscal operand age and definition identity, and exposes
+membership and issuer-join ambiguity. It depends on the same accounting
+outputs and qualified market joins. A signal definition and evaluation family
+must be fixed before looking at forward performance; no post-hoc feature
+selection or threshold changes based on holdout results.
