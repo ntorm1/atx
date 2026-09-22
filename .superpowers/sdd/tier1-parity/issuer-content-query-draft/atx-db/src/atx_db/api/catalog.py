@@ -890,7 +890,13 @@ ISSUER_STANDARDIZED_SCHEMA = RecordSchema(
         FieldSpec("basis", "basis", "string", "Fiscal basis.", nullable=False, filterable=True),
         FieldSpec("period_start", "period_start", "date", "Fiscal duration start."),
         FieldSpec("period_end", "period_end", "date", "Fiscal period end.", nullable=False),
-        FieldSpec("value", "value", "float64", "Standardized value."),
+        FieldSpec(
+            "value",
+            "value",
+            "float64",
+            "Standardized value; NULL retains a visible reported-EPS conflict state.",
+            nullable=True,
+        ),
         FieldSpec("accession_number", "source_accession", "string", "SEC accession lineage."),
         FieldSpec("rule_id", "rule_id", "string", "Standardization-rule lineage."),
         FieldSpec("input_item_ids_json", "input_item_ids_json", "json", "Immutable standardized-input item lineage."),
@@ -931,7 +937,8 @@ ISSUER_RATIOS_SCHEMA = RecordSchema(
 ISSUER_SHARES_SCHEMA = RecordSchema(
     dataset="ATX.US.ISSUER_CONTENT", code="shares", version="1.0.0",
     title="Issuer-owned reported shares", description="CIK-selected reported share facts, not a qualified market-share association.",
-    source_table="shares_outstanding_history", time_column="effective_date", natural_key=("share_history_id",), item_column="share_count_type",
+    source_table="shares_outstanding_history", time_column="effective_date",
+    natural_key=("security_id", "share_count_type", "effective_date", "accession_number"), item_column="share_count_type",
     fields=(
         *_ISSUER_COMMON_FIELDS,
         FieldSpec("item", "share_count_type", "string", "Reported share-count type.", nullable=False, filterable=True),

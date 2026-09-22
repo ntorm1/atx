@@ -348,6 +348,8 @@ def _normalize_cik(cik: str) -> str:
     value = cik.strip().upper().removeprefix("CIK").strip()
     if not value.isdigit():
         raise ValueError("cik must contain only digits")
+    if len(value) > 10:
+        raise ValueError("cik must contain at most 10 digits")
     return value.zfill(10)
 
 
@@ -359,31 +361,50 @@ def _normalized_cik_sql(column: str) -> str:
     )
 
 
-def issuer_owner_ids_asof(
+def issuer_owner_ciks_asof(
     cik: str,
     content_as_of: dt.datetime,
     db_path: Path | str = DEFAULT_DB_PATH,
-) -> tuple[str, ...]:
-    """Return every visible raw Company Facts owner for one normalized CIK.
+) -> dict[str, tuple[str, ...]]:
+    """Return visible normalized CIKs for every owner selected by ``cik``.
 
-    This intentionally does not invent an ``UNRESOLVED`` owner name.  A later
-    identifier resolution may have put the same CIK under a different owner, so
-    callers receive all distinct visible source owners and can surface ambiguity.
+    A CIK-less relation such as derived metrics is safe only after this complete
+    content-clock owner set proves that the owner belongs to no other CIK.
     """
     normalized = _normalize_cik(cik)
     cik_sql = _normalized_cik_sql("cik")
     with connect(db_path, read_only=True) as store:
         rows = store.con.execute(
             f"""
-            SELECT DISTINCT security_id
-            FROM fundamental_fact_revisions
-            WHERE {cik_sql} = ?
-              AND coalesce(available_at, source_loaded_at) <= ?
-            ORDER BY security_id
+            WITH visible AS (
+                SELECT security_id, {cik_sql} AS normalized_cik
+                FROM fundamental_fact_revisions
+                WHERE coalesce(available_at, source_loaded_at) <= ?
+                  AND coalesce(as_of_date, CAST(coalesce(available_at, source_loaded_at) AS DATE))
+                      <= CAST(? AS DATE)
+            ), selected AS (
+                SELECT DISTINCT security_id FROM visible WHERE normalized_cik = ?
+            )
+            SELECT visible.security_id, visible.normalized_cik
+            FROM visible JOIN selected USING (security_id)
+            WHERE visible.normalized_cik IS NOT NULL
+            ORDER BY visible.security_id, visible.normalized_cik
             """,
-            [normalized, content_as_of],
+            [content_as_of, content_as_of, normalized],
         ).fetchall()
-    return tuple(str(row[0]) for row in rows)
+    owner_ciks: dict[str, list[str]] = {}
+    for owner, owner_cik in rows:
+        owner_ciks.setdefault(str(owner), []).append(str(owner_cik))
+    return {owner: tuple(sorted(set(ciks))) for owner, ciks in owner_ciks.items()}
+
+
+def issuer_owner_ids_asof(
+    cik: str,
+    content_as_of: dt.datetime,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> tuple[str, ...]:
+    """Return actual visible source owners without inventing an owner namespace."""
+    return tuple(issuer_owner_ciks_asof(cik, content_as_of, db_path))
 
 
 def _issuer_content_asof(
@@ -452,19 +473,27 @@ def issuer_ratios_asof(cik: str, content_as_of: dt.datetime, db_path: Path | str
 
 def issuer_shares_asof(cik: str, content_as_of: dt.datetime, db_path: Path | str = DEFAULT_DB_PATH) -> pd.DataFrame:
     return _issuer_content_asof(table="shares_outstanding_history", cik=cik, content_as_of=content_as_of,
-        time_column="effective_date", partition="b.security_id, b.share_count_type", db_path=db_path,
+        time_column="effective_date", partition="b.security_id, b.share_count_type, b.effective_date, b.accession_number", db_path=db_path,
         revision_order=("b.effective_date DESC, b.as_of_date DESC, coalesce(b.available_at, b.source_loaded_at) DESC, "
                         "b.source_loaded_at DESC, b.share_history_id DESC"))
 
 
 def issuer_derived_asof(cik: str, content_as_of: dt.datetime, db_path: Path | str = DEFAULT_DB_PATH) -> pd.DataFrame:
-    """Read derived states by discovered owner; do not join a current directory."""
-    owners = issuer_owner_ids_asof(cik, content_as_of, db_path)
+    """Read only derived states whose selected owner belongs exclusively to ``cik``."""
+    normalized = _normalize_cik(cik)
+    owner_ciks = issuer_owner_ciks_asof(normalized, content_as_of, db_path)
+    owners = tuple(owner for owner, ciks in owner_ciks.items() if ciks == (normalized,))
+    excluded_owners = tuple(owner for owner, ciks in owner_ciks.items() if ciks != (normalized,))
     if not owners:
-        return pd.DataFrame()
+        result = pd.DataFrame()
+        result.attrs["issuer_owner_status"] = (
+            "ambiguous_owner_cik_collision" if excluded_owners else "unresolved_no_visible_source_owner"
+        )
+        result.attrs["excluded_derived_owner_ids"] = excluded_owners
+        return result
     placeholders = ",".join("?" for _ in owners)
     with connect(db_path, read_only=True) as store:
-        return store.con.execute(
+        result = store.con.execute(
             f"""
             WITH visible AS (
                 SELECT d.*,
@@ -484,3 +513,8 @@ def issuer_derived_asof(cik: str, content_as_of: dt.datetime, db_path: Path | st
             """,
             [*owners, content_as_of, content_as_of],
         ).df()
+    result.attrs["issuer_owner_status"] = (
+        "ambiguous_owner_cik_collision" if excluded_owners else "resolved_single_owner"
+    )
+    result.attrs["excluded_derived_owner_ids"] = excluded_owners
+    return result

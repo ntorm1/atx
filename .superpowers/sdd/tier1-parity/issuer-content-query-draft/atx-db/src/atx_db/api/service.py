@@ -349,6 +349,8 @@ class WarehouseReadService:
         candidate = value.strip().upper().removeprefix("CIK").strip()
         if not candidate.isdigit():
             raise ApiQueryError("cik must contain only digits")
+        if len(candidate) > 10:
+            raise ApiQueryError("cik must contain at most 10 digits")
         return candidate.zfill(10)
 
     @staticmethod
@@ -434,10 +436,12 @@ class WarehouseReadService:
                 "lookup_cik_candidates": ciks, "candidates": candidates,
                 "unavailable_reason": "multiple_co_visible_ciks",
             }
-        # Multiple rows for the same CIK are retained as evidence but deduplicated
-        # by the stable directory-security/interval tuple for callers.
-        key = lambda row: (row["directory_security_id"], row["directory_valid_from"], row["directory_valid_to"])
-        evidence = list({key(row): row for row in candidates}.values())
+        # Preserve every co-visible directory row.  A CIK can have more than one
+        # current-as-of directory candidate, and collapsing those rows then
+        # choosing evidence[0] would turn an unresolved market association into
+        # an arbitrary security choice.  These rows establish only a CIK lookup;
+        # no one of them is historical-security-qualified.
+        evidence = candidates
         association_ambiguous = len(evidence) != 1
         association = {
             "market_security_id": None if association_ambiguous else evidence[0]["directory_security_id"],
@@ -476,6 +480,8 @@ class WarehouseReadService:
                 SELECT security_id, {normalized_cik} AS normalized_cik
                 FROM fundamental_fact_revisions
                 WHERE coalesce(available_at, source_loaded_at) <= ?
+                  AND coalesce(as_of_date, CAST(coalesce(available_at, source_loaded_at) AS DATE))
+                      <= CAST(? AS DATE)
             ), selected AS (
                 SELECT DISTINCT security_id FROM visible WHERE normalized_cik = ?
             )
@@ -484,7 +490,7 @@ class WarehouseReadService:
             WHERE visible.normalized_cik IS NOT NULL
             ORDER BY visible.security_id, visible.normalized_cik
             """,
-            [_naive_utc(content_as_of), cik],
+            [_naive_utc(content_as_of), _naive_utc(content_as_of), cik],
         ).fetchall()
         by_owner: dict[str, list[str]] = {}
         for owner, owner_cik in rows:
@@ -600,7 +606,7 @@ class WarehouseReadService:
             )
         elif is_derived:
             revision_order = f"coalesce(b.available_at, b.source_loaded_at) {direction}, b.derived_value_id {direction}"
-        cik_condition = "" if is_derived else "AND lpad(trim(b.cik), 10, '0') = ?"
+        cik_condition = "" if is_derived else f"AND {self._normalized_cik_sql('b.cik')} = ?"
         params: list[object] = [*owners]
         if not is_derived:
             params.append(cik)
