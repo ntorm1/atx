@@ -436,6 +436,16 @@ global_dag_impl(const alpha::Program &prog, std::span<const alpha::FusedKernel> 
     }
   };
 
+  // Publish one computed node's first output into the cache (serial phase only).
+  auto publish_node = [&](atx::u32 v) {
+    const alpha::Instr &orig = prog.code[plan.instr[v]];
+    if (plan.kernel[v] < 0 && alpha::subtree_cacheable(orig)) {
+      const alpha::ExtSlot &s = table[plan.base[v]];
+      cache->publish(alpha::SubtreeKey{hashes[plan.instr[v]], pdig, opt.mode},
+                     alpha::PanelBuf(s.rd, s.rd + cells));
+    }
+  };
+
   const atx::usize max_chunks = std::max<atx::usize>(1, workers * opt.chunks_per_worker);
   std::vector<d::GdItem> items;
   std::vector<std::optional<atx::core::Error>> errs;
@@ -475,14 +485,12 @@ global_dag_impl(const alpha::Program &prog, std::span<const alpha::FusedKernel> 
         return atx::core::Err(*e);
       }
     }
-    // Serial phase: publish, then release buffers whose last consumer ran now.
+    // Serial phase: publish interior nodes (roots are published last, below), then
+    // release buffers whose last consumer ran now.
     if (cache != nullptr) {
       for (const atx::u32 v : by_level[lv]) {
-        const alpha::Instr &orig = prog.code[plan.instr[v]];
-        if (plan.kernel[v] < 0 && alpha::subtree_cacheable(orig)) {
-          const alpha::ExtSlot &s = table[plan.base[v]];
-          cache->publish(alpha::SubtreeKey{hashes[plan.instr[v]], pdig, opt.mode},
-                         alpha::PanelBuf(s.rd, s.rd + cells));
+        if (plan.root_outputs[v].empty()) {
+          publish_node(v);
         }
       }
     }
@@ -495,6 +503,20 @@ global_dag_impl(const alpha::Program &prog, std::span<const alpha::FusedKernel> 
         bufs.give(std::move(b));
       }
       owned[v].clear();
+    }
+  }
+
+  // Roots go into the cache LAST so they are the most-recently-used entries: a root
+  // hit prunes its whole cone on the next pass, so under a tight byte budget the
+  // LRU should evict interior values before any root (WQ101 bench: 72% -> ~100%
+  // warm hits at a 2 GiB budget).
+  if (cache != nullptr) {
+    for (atx::u32 lv = 0; lv < plan.n_levels; ++lv) {
+      for (const atx::u32 v : by_level[lv]) {
+        if (!plan.root_outputs[v].empty()) {
+          publish_node(v);
+        }
+      }
     }
   }
 
