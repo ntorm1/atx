@@ -1,0 +1,22 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "tests/test_dataset_failure_recovery.py",
+    "-n",
+    "0",
+    "-o",
+    "addopts=",
+    "-q"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 3.325847625732422,
+    "commit_free_gb": 5.3542938232421875
+  },
+  "child_pid": 14000,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.5914459228515625
+}

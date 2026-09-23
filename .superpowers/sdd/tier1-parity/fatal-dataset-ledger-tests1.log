@@ -1,0 +1,116 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+________ test_dataset_run_records_failure_after_invalidated_connection ________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-72/test_dataset_run_records_failu0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000192C318C830>
+
+    def test_dataset_run_records_failure_after_invalidated_connection(tmp_path, monkeypatch):
+        path = tmp_path / "dataset-failure.duckdb"
+        events = []
+        configs = []
+        original = duckdb.FatalException("original COMMIT failure: query memory exhausted")
+        real_connect = duckdb.connect
+    
+        def connect_spy(*args, **kwargs):
+            if "config" in kwargs:
+                events.append("bounded_reopen")
+                configs.append(kwargs["config"])
+            return real_connect(*args, **kwargs)
+    
+        def initialize(store):
+            events.append("initialize")
+            store.con.execute("""
+                CREATE TABLE dataset_runs (
+                    run_id VARCHAR PRIMARY KEY, dataset_id VARCHAR, status VARCHAR,
+                    started_at TIMESTAMP, finished_at TIMESTAMP, source VARCHAR,
+                    params_json VARCHAR, error_message VARCHAR, rows_loaded BIGINT
+                );
+                CREATE TABLE partial_rows (row_value INTEGER);
+            """)
+    
+        monkeypatch.setattr(duckdb, "connect", connect_spy)
+        monkeypatch.setattr(DuckDBStore, "initialize", initialize)
+        with DuckDBStore(path) as store:
+            store.analytical_memory_limit = "128MB"
+            store.analytical_threads = 1
+            with pytest.raises(duckdb.FatalException) as caught:
+                _FatalDataset(original, events).run(store, {"fixture": True})
+    
+        assert caught.value is original
+        assert events.count("load") == 1
+        assert events.count("ensure_schema") == 1
+        assert events.count("initialize") == 1
+        assert events.count("invalidated_execute") == 1
+        assert events.count("raw_close") == 1
+        assert events.index("raw_close") < events.index("bounded_reopen")
+        assert len(configs) == 1
+        assert configs[0]["memory_limit"] == "128MB"
+        assert configs[0]["threads"] == "1"
+        assert configs[0]["preserve_insertion_order"] == "false"
+    
+>       with real_connect(str(path), config={"memory_limit": "128MB", "threads": "1"}) as con:
+
+tests\test_dataset_failure_recovery.py:88: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-72/test_dataset_run_records_failu0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000192C318C830>
+
+    def test_dataset_run_records_failure_after_invalidated_connection(tmp_path, monkeypatch):
+        path = tmp_path / "dataset-failure.duckdb"
+        events = []
+        configs = []
+        original = duckdb.FatalException("original COMMIT failure: query memory exhausted")
+        real_connect = duckdb.connect
+    
+        def connect_spy(*args, **kwargs):
+            if "config" in kwargs:
+                events.append("bounded_reopen")
+                configs.append(kwargs["config"])
+            return real_connect(*args, **kwargs)
+    
+        def initialize(store):
+            events.append("initialize")
+            store.con.execute("""
+                CREATE TABLE dataset_runs (
+                    run_id VARCHAR PRIMARY KEY, dataset_id VARCHAR, status VARCHAR,
+                    started_at TIMESTAMP, finished_at TIMESTAMP, source VARCHAR,
+                    params_json VARCHAR, error_message VARCHAR, rows_loaded BIGINT
+                );
+                CREATE TABLE partial_rows (row_value INTEGER);
+            """)
+    
+        monkeypatch.setattr(duckdb, "connect", connect_spy)
+        monkeypatch.setattr(DuckDBStore, "initialize", initialize)
+        with DuckDBStore(path) as store:
+            store.analytical_memory_limit = "128MB"
+            store.analytical_threads = 1
+            with pytest.raises(duckdb.FatalException) as caught:
+                _FatalDataset(original, events).run(store, {"fixture": True})
+    
+        assert caught.value is original
+        assert events.count("load") == 1
+        assert events.count("ensure_schema") == 1
+        assert events.count("initialize") == 1
+        assert events.count("invalidated_execute") == 1
+        assert events.count("raw_close") == 1
+        assert events.index("raw_close") < events.index("bounded_reopen")
+        assert len(configs) == 1
+        assert configs[0]["memory_limit"] == "128MB"
+        assert configs[0]["threads"] == "1"
+        assert configs[0]["preserve_insertion_order"] == "false"
+    
+        with real_connect(str(path), config={"memory_limit": "128MB", "threads": "1"}) as con:
+            status, finished_at, error_message, rows_loaded = con.execute(
+                "SELECT status, finished_at, error_message, rows_loaded FROM dataset_runs"
+            ).fetchone()
+            assert status == "failed" and finished_at is not None
+            assert str(original) in error_message
+>           assert "_FatalDataset.load" in error_message
+E           assert '_FatalDataset.load' in 'original COMMIT failure: query memory exhausted\nTraceback (most recent call last):\n  File "C:\\atx\\atx-db\\src\\at..., line 41, in load\n    raise self.original\n_duckdb.FatalException: original COMMIT failure: query memory exhausted\n'
+
+tests\test_dataset_failure_recovery.py:94: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_dataset_failure_recovery.py::test_dataset_run_records_failure_after_invalidated_connection
+1 failed in 3.67s

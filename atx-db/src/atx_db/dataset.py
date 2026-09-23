@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import traceback
 import uuid
 from abc import ABC, abstractmethod
@@ -9,6 +10,8 @@ from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from typing import Any
 
 from .connection import DuckDBStore
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -79,14 +82,30 @@ class Dataset(ABC):
             result = self.load(store, with_run_id(options, run_id))
         except Exception as exc:
             finished_at = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
-            store.con.execute(
-                """
-                UPDATE dataset_runs
-                SET status = 'failed', finished_at = ?, error_message = ?
-                WHERE run_id = ?
-                """,
-                [finished_at, f"{exc}\n{traceback.format_exc(limit=20)}", run_id],
-            )
+            # Capture the load traceback before a failed ledger write replaces the
+            # active exception being formatted. The load error must remain primary.
+            error_message = f"{exc}\n{traceback.format_exc(limit=20)}"
+            for recover in (False, True):
+                try:
+                    if recover:
+                        store.recover_failed_connection()
+                    store.con.execute(
+                        """
+                        UPDATE dataset_runs
+                        SET status = 'failed', finished_at = ?, error_message = ?
+                        WHERE run_id = ?
+                        """,
+                        [finished_at, error_message, run_id],
+                    )
+                    break
+                except Exception as ledger_error:
+                    if recover:
+                        note = (
+                            f"Operator recovery required for dataset_runs run_id={run_id!r}: "
+                            f"could not record the original dataset failure: {ledger_error}"
+                        )
+                        exc.add_note(note)
+                        LOGGER.error("%s", note)
             raise
 
         finished_at = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
