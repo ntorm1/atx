@@ -1,0 +1,4 @@
+2026-09-23 18:09:01,447 INFO atx_db.fundamentals: companyfacts resume verifying receipts and retained fact/point rows
+2026-09-23 18:09:01,651 INFO atx_db._companyfacts_resume: companyfacts resume receipts=9462 lineage_runs=13; inventorying retained issuer counts
+2026-09-23 18:09:04,288 INFO atx_db._companyfacts_resume: companyfacts resume aggregating retained fact fingerprints
+2026-09-23 18:12:10,535 INFO atx_db._companyfacts_resume: companyfacts resume fact_identity_groups=12959; aggregating retained point fingerprints

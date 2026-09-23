@@ -1,0 +1,10 @@
+﻿{
+    "observed_at_utc":  "2026-09-23T22:19:29.1131723Z",
+    "run_id":  "activation-companyfacts-archive16",
+    "matching_process_count":  0,
+    "original_pid_count":  0,
+    "session_exit_code":  1,
+    "matching_pids":  [
+
+                      ]
+}

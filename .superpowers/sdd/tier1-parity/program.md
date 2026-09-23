@@ -1,5 +1,23 @@
 # Tier-1 parity program ledger (atx-db)
 
+## User platform-continuation ruling - 2026-09-23 22:20 UTC
+
+User explicitly directs platform/infrastructure work when host memory blocks
+backfill. Do not mark the overall goal blocked while useful platform tasks can
+proceed. Full-universe backfill/materialization/measurement/release scope stays
+open and unchanged; no data or alpha claims from static platform work.
+OPS1 bounded pipeline-status and FQ1 PIT fundamental signal-panel tables are
+authorized from their named briefs. Reserve migration0323 exclusively forFQ1;
+its implementer owns only its body/registration/schema additions. OPS1 owns
+cli.py; FQ1 uses a separate script. No parallel heavy runtime or tests.
+
+Archive16 recovery only used256MB DuckDB/one thread under a LOWER1GiB process
+cap with unchanged host runtime stop thresholds, after the2GiB-cap preflight
+refused. It completed22:19:32UTC, peak0.829GiB, both ledgers closed and CHECKPOINT
+passed. This narrow bookkeeping configuration does not change source loading
+defaults (1GBDuckDB/2GiBcap). Actual next UUID513cfbbc-096a-4186-9666-b6cc5170c4ad.
+
+
 ## Source restart waits for sustained headroom - 2026-09-23 01:29 UTC
 
 Archive14 stopped under the unchanged host guard during resume verification;

@@ -7,6 +7,17 @@ artifacts. Dated loader progress below is historical evidence.
 
 ## Latest durable warehouse measurement: 2026-09-23
 
+Archive16 stopped under the host memory guard at22:16UTC during point
+verification. Its ledger recovery and checkpoint completed22:19:32UTC,
+confirming the counts below and zero new attempt rows. Next source predecessor:
+`513cfbbc-096a-4186-9666-b6cc5170c4ad`. A smaller recovery-only budget completed
+at0.829GiB process peak; source loading keeps its existing1GB DuckDB/2GiB cap.
+
+While backfill awaits host capacity, platform development continues on bounded
+pipeline-status reporting and daily PIT fundamental signal research tables.
+These are implementation tasks, not new live coverage or alpha measurements.
+
+
 The later archive15 process disappeared before point verification finished.
 Its missing handle and absent workers were verified at22:01UTC; the stale
 run ledgers were closed and CHECKPOINT passed. No termination cause is

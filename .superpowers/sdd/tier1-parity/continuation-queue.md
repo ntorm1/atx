@@ -1,5 +1,35 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## User redirects blocked backfill time to platform work - 2026-09-23
+
+User explicitly says to continue platform/infrastructure work when backfill
+is memory-blocked. Overall goal remains active; do not mark it blocked while
+these concrete tasks are available. Full data/release objective is unchanged.
+
+Archive16/session78292 is terminal exit1; native19656/guard child17640 absent.
+Host guard stopped22:16:03UTC during point proof (physical1.405/commit3.912GiB).
+The2GiB-cap recovery preflight refused; a bookkeeping-only256MB DuckDB/1thread
+under LOWER1GiB cap completed22:19:32UTC at0.829GiB peak, both stale ledgers
+closed and CHECKPOINT passed. No new attempt rows. Retainedfacts=points47,941,000,
+prices31,959,271,customfeatures31,934,514,schema0322. Next actual predecessor
+513cfbbc-096a-4186-9666-b6cc5170c4ad. Do not repeat recovery. No warehouse job live.
+
+Active fresh Codex tasks, static edits only until root grants one test slot:
+- OPS1 pipeline_status_implementation: pipeline-status-brief.md. Owns new
+  pipeline_status.py,cli.py wiring,tiny tests/docs. Read-only bounded per-snapshot
+  stage/source UUID reporting; no false liveness/readiness, no raw params/errors.
+- FQ1 fundamental_signal_panel: fundamental-signal-panel-brief.md. Owns new
+  canonical PIT fundamentals signal tables/builder/script/tests/docs. Exclusive
+  migration0323 body/ownregistry/__init__/schema lines. OPS1 files disjoint.
+  Actual warehouse tables supersede audit's file-only suggestion. FQ2 general
+  forward-decile evaluator follows once FQ1 interface is fixed; not yet dispatched.
+
+No activation/jobs edits. Parent holds runtime slot. Fresh independent review
+per task, focused tests only; fullsuite still reserved for sprint gate.
+Lower bookkeeping budget is not authorization for512MB source writes (failed).
+Backfill next attempt remains1GB/1thread/2GiBguard after sustained memory window.
+
+
 ## Archive16 running after stable headroom - 2026-09-23 22:08 UTC
 
 Previous goal turn made authoritative progress recovering archive15; this turn

@@ -8,29 +8,27 @@ dummy SEC User-Agent `atx-db/0.1 atx-research@example.com`.
 
 ## Current source position and guard prerequisite
 
-Archive15 is stopped: session15424 is missing and native20652/guard child18896
-were absent at22:01UTC. The last receipt was stale-running and the last log was
-point-fingerprint verification; no host-stop or source error is asserted.
-Root recovered both stale ledgers22:01:31UTC and CHECKPOINT passed. No new
-attempt rows; retained facts=points47,941,000 and schema0322.
-Next actual predecessor: `4932365c-4b61-4437-b634-11b2a7284f6e`.
-Evidence:companyfacts-archive15-interruption-recovery.json. Do not rerun recovery.
+Archive16 is terminal after the22:16UTC host headroom stop. Both stale ledgers
+were recovered22:19:32UTC and CHECKPOINT passed; no new attempt rows, facts and
+points remain47,941,000, schema0322. Do not repeat that completed recovery.
+Next actual predecessor: `513cfbbc-096a-4186-9666-b6cc5170c4ad`.
+Use fresh archive17 receipt/log/error files for a later full-source attempt.
 
-Archive16 is the sole live writer, session78292/guard child17640, launched22:08UTC after the sustained-headroom check passed. Subsequent restarts wait for sustained headroom above
-6GiB physical/8GiB commit (three observations over at least two minutes), then
-uses unchanged2GiB job guard,1GB DuckDB,1thread,fullarchive_members,
-replacement,force,snapshot2026-09-20,backup-keep100,dummySECcontact.
-Launch observations are inarchive16-headroom-observations.jsonl. Earlier compiler
-bursts returned during this turn, so a single good sample is insufficient.
-Guard runtime thresholds remain1.5GiB physical/3GiB commit.
-Archive16 has fresh receipt/stdout/stderr files and prepared terminal SQL. Do not restart it while live.
+No warehouse writer is live. User directs platform work while backfill awaits
+host capacity: OPS1 pipeline-status plus FQ1 fundamental signal tables/builder
+are in progress (migration0323 reserved). Do not launch production over
+unreviewed/uncommitted shared edits or overlap root's focused tests. Recheck
+pending migrations after these tasks, using governed backup-keep100.
 
-Archive13's512MB query limit failed atCOMMIT, so it is not the source-write
-configuration. Dataset failure-ledger recovery is tested/reviewed in15235456.
-That code handles exceptions but cannot execute after its process disappears.
-After each stopped source job inspect guard and actual run ledgers, then derive
-the next UUID. Never restart a live session or overlap warehouse runtimes.
-Other workloads remain untouched.
+Source restarts retain sustained6GiB physical/8GiB commit observations over
+two minutes,1GB DuckDB/one thread,2GiB process cap,fullarchive_members,replacement,
+force,snapshot2026-09-20 and dummySECcontact. The unchanged runtime host stops
+are1.5GiB physical/3GiB commit. A passed window does not guarantee future host
+capacity; record any terminal state before another resume. The256MB/1GiB-cap
+operator recovery was bookkeeping only, not a source-write capacity claim.
+
+Full CompanyFacts->fullsubmissions->scopedCVXsource->fulluniverse run5 remains
+the materialization sequence. Never infer a live process from a running ledger.
 
 ## Submissions verified resume
 
