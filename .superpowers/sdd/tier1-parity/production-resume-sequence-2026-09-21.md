@@ -15,8 +15,9 @@ Next actual predecessor: `513cfbbc-096a-4186-9666-b6cc5170c4ad`.
 Use fresh archive17 receipt/log/error files for a later full-source attempt.
 
 No warehouse writer is live. User directs platform work while backfill awaits
-host capacity: OPS1 pipeline-status plus FQ1 fundamental signal tables/builder
-are in progress (migration0323 reserved). Do not launch production over
+host capacity: OPS1 pipeline-status is committed b814f4c1. DL1 selected-input
+lineage (migration0323) and FQ1 fundamental signal tables/builder (0324) are
+in progress; registry edits and focused tests are serialized. Do not launch production over
 unreviewed/uncommitted shared edits or overlap root's focused tests. Recheck
 pending migrations after these tasks, using governed backup-keep100.
 

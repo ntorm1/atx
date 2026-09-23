@@ -1,5 +1,31 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Platform implementation and serialized runtime - 2026-09-23
+
+OPS1 is committed b814f4c1: bounded read-only pipeline-status with distinct
+ledger completion/liveness/readiness and actual source run UUID correlation.
+Eight focused tests passed16.70s, peak0.657GiB; one fresh Codex review clean.
+No live status invocation or fullsuite yet.
+
+DL1 derived_selected_lineage owns canonical selected-input publisher/resolver
+and migration0323; sole registry lock until reviewed task commit. FQ1
+fundamental_signal_panel now owns0324 (unregistered pendingDL1), long PIT
+research tables/builder/script. Both are fresh Codex implementations. Root
+granted DL1 the sole guarded focused-test slot,1.5GiBcap, no live DB/network.
+FQ1/root remain static while tests run. No warehouse writer is live.
+
+Selected refs preserve direct actual operands, distinct from existing full
+candidate-frame inputs_hash. Strict transitive proof binds actual leaf CIK to
+dated trading-security CIK; issuer and trading owner IDs may differ. FQ1 caches
+bounded root proofs once per run. Freshness200days checks current root AND
+newest selected leaf anchors, not valid prior-year comparison leaves. A prior
+verified owner-CIK association is allowed only for conservative suppression
+of newer unqualified states, never score eligibility or backdated identity.
+
+FQ2 forward-decile evaluation over the frozen panel remains next. No live
+materialization, schema activation, alpha, coverage, release or merge claim.
+Archive16 is recovered; next source predecessor513cfbbc-096a-4186-9666-b6cc5170c4ad.
+
 ## User redirects blocked backfill time to platform work - 2026-09-23
 
 User explicitly says to continue platform/infrastructure work when backfill

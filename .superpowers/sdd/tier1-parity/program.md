@@ -1,5 +1,31 @@
 # Tier-1 parity program ledger (atx-db)
 
+## Selected-input prerequisite; migration reservation update - 2026-09-23
+
+FQ1's audit found derived inputs_hash stores candidate-frame identity but no
+recoverable exact selected leaves. AuthorizeDL1 fromderived-selected-lineage-brief.md
+before strict signal qualification. Persist actual chosen DSL/annual operands
+and provide bounded hash/CIK/clock qualification; no guessed reconstruction.
+Reassign uncommitted/unapplied0323 toDL1. FQ1 renamed its body to0324 and removed
+its own registration pendingDL1 commit. DL1 owns registry/__init__ until its
+own task is committed; thenFQ1 registers0324. No live migration has run.
+Preserve original metric numeric semantics and public record contracts.
+OPS1 is committedb814f4c1,8focused tests passed,reviewclean,scopedRuffpassed.
+
+FQ1 freshness ruling: default200days checks the actual current root fiscal end
+and newest selected leaf fiscal end. Prior-year comparison leaves remain valid
+when selected by declared offsets/spans and visible by the consumer event;
+retain oldest/newest leaf ends in audit rows. Prior verified owner-CIK evidence
+may suppress a newer unqualified owner state during ambiguity screening only;
+it never qualifies a score or invents historical identity.
+
+DL1 resolver must cap aggregate bytes/nodes across a batch before fetching
+payloads into Python, in addition to per-root limits. First focused pytest
+attempt was stopped by host guard atcommit2.906GiB, not an assertion result.
+Replace full-schema tmp_store inner-loop fixture with minimal isolated tables,
+256MB/one thread; unchanged1.5GiB test process cap and host stop thresholds.
+
+
 ## User platform-continuation ruling - 2026-09-23 22:20 UTC
 
 User explicitly directs platform/infrastructure work when host memory blocks

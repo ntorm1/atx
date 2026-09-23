@@ -11,10 +11,11 @@ Do not claim alpha or production eligibility from builder completion.
 
 Own new src/atx_db/fundamental_signal_research.py,
 scripts/research_fundamental_signals.py,tests/test_fundamental_signal_research.py,
-docs/FUNDAMENTAL_SIGNAL_RESEARCH.md and migration bodies_0323.py with ONLY its
+docs/FUNDAMENTAL_SIGNAL_RESEARCH.md and migration bodies_0324.py with ONLY its
 own registry/__init__ registration and required schema-contract fixtures.
-0323 is reserved exclusively for FQ1. No activation/jobs/cli.py/CF1 edits.
-OPS1 owns cli.py independently. No runtime/live DB/import/tests/network until
+0324 is reserved exclusively for FQ1, after DL1 commits0323 and releases the
+registry. No activation/jobs/cli.py/CF1 edits. OPS1 is committed b814f4c1.
+No runtime/live DB/import/tests/network until
 root grants the sole test slot. Tiny fixtures, no full warehouse setup.
 
 Public build API and CLI: build_fundamental_signal_panel(store, options),
@@ -73,9 +74,18 @@ snapshots; do not broadly exempt unrelated live serving data.
   cannot revive an older numeric revision or older fiscal period.
 - Require period and operand fiscal end<=T,available_at<=T22UTC,reconstructed
   history,exact definition contracts and valid input hashes/lineage. Enforce
-  configurable max age (default200days) on actual selected fiscal operands.
+  configurable max age (default200days) on the selected root fiscal end AND
+  newest actual selected leaf fiscal end/current anchor. Prior-year comparison
+  operands must match the declared offsets/spans and visibility; they need not
+  be within200days. Retain oldest/newest selected leaf fiscal ends for audit.
   Reuse/extend the reasoning in fundamental-desk-screen-acceptance.sql, including
   issuer qualification of actual selected operands rather than owner ID alone.
+- Select the whole current state per accounting owner before issuer/proof
+  screening. A prior <=decision verified owner/metric-to-CIK association can
+  associate a newer unqualified state for conservative suppression/ambiguity
+  only; it cannot qualify a score or backdate identity. This prevents a newer
+  NULL/unverifiable owner state from silently exposing another older owner.
+  Never infer association from owner text. Keep unmatched-state diagnostics.
 - Missing or invalid term invalidates the whole combination; no zero-fill.
   Apply cross-sectional transforms to the complete eligible signal cohort
   before labels exist. Equal input values have equal percentile rank; constant
