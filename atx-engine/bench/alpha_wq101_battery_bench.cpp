@@ -21,6 +21,7 @@
 
 #include <cstdlib>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -46,16 +47,23 @@ namespace par = atx::engine::parallel;
 
 constexpr atx::usize kDates = 2520;
 
+// ATX_WQ101_INSTRUMENTS, read once before any benchmark runs (single-threaded).
 [[nodiscard]] atx::usize instruments() {
-  // SAFETY: getenv is read once, single-threaded, before any benchmark runs.
-  const char *env = std::getenv("ATX_WQ101_INSTRUMENTS"); // NOLINT(concurrency-mt-unsafe)
-  if (env != nullptr) {
-    const long v = std::strtol(env, nullptr, 10);
-    if (v > 0) {
-      return static_cast<atx::usize>(v);
-    }
+  std::string val;
+#ifdef _WIN32
+  char *buf = nullptr;
+  std::size_t len = 0;
+  if (_dupenv_s(&buf, &len, "ATX_WQ101_INSTRUMENTS") == 0 && buf != nullptr) {
+    val = buf;
   }
-  return 500;
+  std::free(buf); // _dupenv_s allocates with malloc; free(nullptr) is a no-op
+#else
+  if (const char *env = std::getenv("ATX_WQ101_INSTRUMENTS"); env != nullptr) {
+    val = env;
+  }
+#endif
+  const long v = val.empty() ? 0L : std::strtol(val.c_str(), nullptr, 10);
+  return v > 0 ? static_cast<atx::usize>(v) : atx::usize{500};
 }
 
 struct Fixture {
