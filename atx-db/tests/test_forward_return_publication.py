@@ -50,7 +50,8 @@ def publication_store(tmp_path, request):
             is_delisted_in_horizon BOOLEAN NOT NULL, is_stitched BOOLEAN NOT NULL,
             delist_date DATE, terminal_return_source VARCHAR, return_observation_id VARCHAR,
             is_latest_revision BOOLEAN NOT NULL DEFAULT true, available_at TIMESTAMP NOT NULL,
-            run_id VARCHAR, source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
+            run_id VARCHAR, price_basis VARCHAR, calculation_version VARCHAR,
+            source_loaded_at TIMESTAMP NOT NULL DEFAULT now(),
             updated_at TIMESTAMP NOT NULL DEFAULT now()
         );
         CREATE VIEW v_forward_returns_survivorship_safe AS
@@ -147,6 +148,14 @@ def test_file_backed_prefix_reopen_matches_full_results_and_retains_foreign_sour
     assert store.con.execute("SELECT * FROM forward_returns_survivorship_safe WHERE source='other' ORDER BY 1").fetchall() == foreign
     assert _contract(store, "forward_returns_survivorship_safe") == contract
     assert store.con.execute("SELECT count(DISTINCT source_loaded_at), bool_and(source_loaded_at=updated_at) FROM forward_returns_survivorship_safe WHERE source='target'").fetchone() == (1, True)
+    assert store.con.execute("""
+        SELECT DISTINCT price_basis,calculation_version
+        FROM forward_returns_survivorship_safe WHERE source='target'
+    """).fetchall() == [(price_basis, publication.CALCULATION_VERSION)]
+    assert store.con.execute("""
+        SELECT count(*) FROM forward_returns_survivorship_safe
+        WHERE source='other' AND price_basis IS NULL AND calculation_version IS NULL
+    """).fetchone()[0] == 2
     _assert_cleanup(store)
 
 

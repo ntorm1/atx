@@ -1,0 +1,19 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "tests/test_fundamental_signal_evaluation.py",
+    "-q",
+    "-n0"
+  ],
+  "job_limit_gb": 1.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.591106414794922,
+    "commit_free_gb": 6.180072784423828
+  },
+  "child_pid": 8240,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.6135063171386719
+}

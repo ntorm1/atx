@@ -1,0 +1,25 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "ruff",
+    "check",
+    "src/atx_db/fundamental_signal_evaluation.py",
+    "src/atx_db/_forward_return_publication.py",
+    "src/atx_db/migrations/bodies_0325.py",
+    "src/atx_db/migrations/registry.py",
+    "src/atx_db/migrations/__init__.py",
+    "scripts/evaluate_fundamental_signals.py",
+    "tests/test_fundamental_signal_evaluation.py",
+    "tests/test_forward_return_publication.py"
+  ],
+  "job_limit_gb": 1.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 5.282413482666016,
+    "commit_free_gb": 4.799476623535156
+  },
+  "child_pid": 12308,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.06981277465820312
+}

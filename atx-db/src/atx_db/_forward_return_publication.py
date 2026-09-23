@@ -20,6 +20,9 @@ _LIVE = "forward_returns_survivorship_safe"
 _FORMATION_BATCH_ROWS = 100_000
 _SHADOW_BATCH_ROWS = 100_000
 _CHECKPOINT_ROWS = 400_000
+# This identifies the bounded SQL calculation below, including its selected bar
+# basis, terminal stitching, and observed trading-calendar endpoint rule.
+CALCULATION_VERSION = "forward_return_publication_v1"
 
 
 def _count(store: DuckDBStore, table: str) -> int:
@@ -174,6 +177,8 @@ def refresh_forward_return_publication(
     analytical settings. In-memory and unconfigured callers retain their entire
     existing connection/session; they still use the same bounded insert batches.
     """
+    if price_basis not in {"adjusted_close", "close"}:
+        raise ValueError("price_basis must be adjusted_close or close")
     build = _Build(store)
     try:
         stamp = store.con.execute("SELECT current_timestamp::TIMESTAMP").fetchone()
@@ -182,7 +187,10 @@ def refresh_forward_return_publication(
         physical = ", ".join(f'"{row[0]}"' for row in described)
         metadata = [name for name in ("source_loaded_at", "updated_at")
                     if name in {row[0] for row in described}]
-        insert_columns = ", ".join([*columns, *metadata])
+        required = {"price_basis", "calculation_version"}
+        if not required.issubset({row[0] for row in described}):
+            raise RuntimeError("forward-return publication requires migration 0325")
+        insert_columns = ", ".join([*columns, "price_basis", "calculation_version", *metadata])
         bars = build.create("bars", _BARS_SQL.format(name=build.name("bars"), price_basis=price_basis),
                             [cutoff, cutoff])
         calendar = build.create("calendar", _CALENDAR_SQL.format(name=build.name("calendar")),
@@ -212,7 +220,7 @@ def refresh_forward_return_publication(
                         metadata_select=", ?" * len(metadata),
                     ),
                     [horizon, *scope, lower, upper, source, horizon, source, horizon, run_id,
-                     *([stamp[0]] * len(metadata))],
+                     price_basis, CALCULATION_VERSION, *([stamp[0]] * len(metadata))],
                 ).fetchone()
                 assert inserted is not None
                 inserted_rows = int(inserted[0])
@@ -361,6 +369,6 @@ WITH legs AS (
                            raw_forward_return, terminal_return, forward_return,
                            terminal_return IS NOT NULL, terminal_return IS NOT NULL,
                            delist_date, terminal_return_source, return_observation_id,
-                           true, available_at, ?{metadata_select}
+                           true, available_at, ?, ?, ?{metadata_select}
                     FROM returns WHERE isfinite(forward_return)
 """
