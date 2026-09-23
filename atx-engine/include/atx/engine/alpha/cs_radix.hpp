@@ -23,15 +23,16 @@
 // pass, so equal keys keep their INPUT order — exactly stable_sort's tie-break.
 // That is what keeps the existing CsValidSet tie-order pins meaningful.
 //
-// COST: 8 byte passes over (key, id) pairs; a pass whose byte is constant across
-// the row (common in the exponent bytes) is skipped. All 8 histograms are built
-// in one read pass. Scratch is caller-owned and grows monotonically, so a warm
-// call allocates nothing.
+// COST: one MSD bucketing scatter on the top ~log2(n) varying key bits, then
+// insertion sort per (typically O(1)-sized) bucket; oversized buckets fall back
+// to the byte-LSD radix (8 byte passes, constant bytes skipped). Scratch is
+// caller-owned and grows monotonically, so a warm call allocates nothing.
 //
 // Header-only; every function is `inline`.
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -66,6 +67,7 @@ struct CsRadixScratch {
   std::vector<atx::u64> kb;
   std::vector<atx::u32> ia;
   std::vector<atx::u32> ib;
+  std::vector<atx::u32> hist; // MSD bucket counts / offsets
 
   void ensure(atx::usize n) {
     if (ka.size() < n) {
@@ -120,9 +122,40 @@ inline bool cs_radix_sort_pairs(atx::u64 *k, atx::u32 *id, atx::u64 *k2, atx::u3
   return in_second;
 }
 
+// Stable insertion sort of the (key, id) pairs of length n by key. Strict `>`
+// keeps equal keys in their current order. Used on the small buckets of the
+// MSD split, where it beats any pass-based sort.
+inline void cs_insertion_sort_pairs(atx::u64 *k, atx::u32 *id, atx::usize n) noexcept {
+  for (atx::usize i = 1; i < n; ++i) {
+    const atx::u64 key = k[i];
+    const atx::u32 v = id[i];
+    atx::usize j = i;
+    while (j > 0 && k[j - 1] > key) {
+      k[j] = k[j - 1];
+      id[j] = id[j - 1];
+      --j;
+    }
+    k[j] = key;
+    id[j] = v;
+  }
+}
+
+// Buckets of at most this many pairs are finished by insertion sort; larger ones
+// (a dense cluster, e.g. every key but one outlier) by the LSD radix above.
+inline constexpr atx::usize kCsBucketMaxInsertion = 32;
+
 // Sort `ids` in place ascending by x[id] with the radix path unconditionally,
 // stable w.r.t. the input order of `ids`; NaN values sort last. Precondition:
 // every id < x.size() and < 2^32.
+//
+// ALGORITHM (MSD split + finish): keys are rebased on the row minimum and
+// bucketed by their top ~log2(n) significant bits of (key - kmin) — one stable
+// counting scatter. A dense row (the usual case: prices, returns, volumes) then
+// has O(1) pairs per bucket, each finished by insertion sort; an oversized bucket
+// (a cluster squeezed by an outlier) is finished by the byte-LSD radix, which
+// skips the bytes its keys share. Every step is stable and orders by the full
+// key, so the permutation is the stable_sort permutation — bucketing only
+// changes the cost.
 inline void cs_radix_argsort(std::span<const atx::f64> x, std::span<atx::usize> ids,
                              CsRadixScratch &s) {
   const atx::usize n = ids.size();
@@ -130,16 +163,72 @@ inline void cs_radix_argsort(std::span<const atx::f64> x, std::span<atx::usize> 
     return;
   }
   s.ensure(n);
+  atx::u64 kmin = ~atx::u64{0};
+  atx::u64 kmax = 0;
   for (atx::usize i = 0; i < n; ++i) {
     const atx::usize id = ids[i];
     ATX_ASSERT(id < x.size() && id <= std::numeric_limits<atx::u32>::max());
-    s.ka[i] = cs_radix_key(x[id]);
+    const atx::u64 key = cs_radix_key(x[id]);
+    s.ka[i] = key;
     s.ia[i] = static_cast<atx::u32>(id);
+    kmin = std::min(kmin, key);
+    kmax = std::max(kmax, key);
   }
-  const bool in_second = cs_radix_sort_pairs(s.ka.data(), s.ia.data(), s.kb.data(), s.ib.data(), n);
-  const atx::u32 *res = in_second ? s.ib.data() : s.ia.data();
+  if (kmin == kmax) {
+    return; // every key ties: the stable order is the input order
+  }
+  const auto range_bits = static_cast<unsigned>(std::bit_width(kmax - kmin));
+  const unsigned bucket_bits =
+      std::clamp(static_cast<unsigned>(std::bit_width(n)), 8U, 16U);
+  // SAFETY: range_bits <= 64 and bucket_bits >= 8, so shift <= 56 < 64.
+  const unsigned shift = range_bits > bucket_bits ? range_bits - bucket_bits : 0U;
+  const atx::usize buckets = static_cast<atx::usize>((kmax - kmin) >> shift) + 1;
+  s.hist.assign(buckets, 0);
   for (atx::usize i = 0; i < n; ++i) {
-    ids[i] = res[i];
+    ++s.hist[static_cast<atx::usize>((s.ka[i] - kmin) >> shift)];
+  }
+  atx::u32 run = 0;
+  atx::u32 max_cnt = 0;
+  for (atx::u32 &c : s.hist) {
+    const atx::u32 cnt = c;
+    max_cnt = std::max(max_cnt, cnt);
+    c = run;
+    run += cnt;
+  }
+  // Stable scatter ka/ia -> kb/ib; afterwards hist[b] == end of bucket b.
+  for (atx::usize i = 0; i < n; ++i) {
+    const atx::u64 key = s.ka[i];
+    const atx::u32 pos = s.hist[static_cast<atx::usize>((key - kmin) >> shift)]++;
+    s.kb[pos] = key;
+    s.ib[pos] = s.ia[i];
+  }
+  if (max_cnt <= kCsBucketMaxInsertion) {
+    // Every bucket is small: ONE insertion pass over the whole array finishes
+    // them all (a pair never moves past a smaller-keyed bucket, since the bucket
+    // is monotone in the key) with a predictable loop and O(n * max_cnt) worst.
+    cs_insertion_sort_pairs(s.kb.data(), s.ib.data(), n);
+    for (atx::usize i = 0; i < n; ++i) {
+      ids[i] = s.ib[i];
+    }
+    return;
+  }
+  atx::usize start = 0;
+  for (atx::usize b = 0; b < buckets; ++b) {
+    const atx::usize end = s.hist[b];
+    const atx::usize cnt = end - start;
+    if (cnt > kCsBucketMaxInsertion) {
+      // ka/ia are free now: the bucket's ping-pong partner is the same range.
+      if (cs_radix_sort_pairs(s.kb.data() + start, s.ib.data() + start, s.ka.data() + start,
+                              s.ia.data() + start, cnt)) {
+        std::copy_n(s.ia.data() + start, cnt, s.ib.data() + start);
+      }
+    } else if (cnt > 1) {
+      cs_insertion_sort_pairs(s.kb.data() + start, s.ib.data() + start, cnt);
+    }
+    start = end;
+  }
+  for (atx::usize i = 0; i < n; ++i) {
+    ids[i] = s.ib[i];
   }
 }
 

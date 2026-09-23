@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <random>
@@ -150,6 +151,66 @@ TEST(CsRadixRank_Argsort, NaNsGoLastInInputOrder) {
   cs_radix_argsort(x, std::span<atx::usize>{ids}, rs);
   const std::vector<atx::usize> want{3, 4, 1, 0, 2};
   EXPECT_EQ(ids, want);
+}
+
+// Distribution shapes that stress a bucketed (MSD-first) radix: a dense
+// realistic price row, one huge outlier squeezing every other key into a single
+// bucket, a heavily-tied quantized row, and an all-equal row.
+[[nodiscard]] std::vector<atx::f64> shaped_row(atx::usize n, int shape, atx::u32 seed) {
+  std::mt19937_64 rng{seed};
+  std::normal_distribution<atx::f64> nd{0.0, 1.0};
+  std::uniform_int_distribution<int> q{0, 4};
+  std::vector<atx::f64> x(n);
+  for (atx::usize i = 0; i < n; ++i) {
+    switch (shape) {
+    case 0: // cent-rounded prices ~100 (many near-ties, some exact ties)
+      x[i] = std::round((100.0 + 5.0 * nd(rng)) * 100.0) / 100.0;
+      break;
+    case 1: // N(0,1) with a single 1e300 outlier
+      x[i] = i == n / 2 ? 1e300 : nd(rng);
+      break;
+    case 2: // quantized {0..4}
+      x[i] = static_cast<atx::f64>(q(rng));
+      break;
+    default: // all equal
+      x[i] = 7.25;
+      break;
+    }
+  }
+  return x;
+}
+
+TEST(CsRadixRank_Argsort, MatchesStableSortOnSkewedAndTiedShapes) {
+  CsRadixScratch rs;
+  for (int shape = 0; shape < 4; ++shape) {
+    for (const atx::usize n : {97U, 300U, 3000U, 20000U}) {
+      const std::vector<atx::f64> x = shaped_row(n, shape, static_cast<atx::u32>(n) + 5U);
+      std::vector<atx::usize> ids(n);
+      for (atx::usize i = 0; i < n; ++i) {
+        ids[i] = i; // ascending input order
+      }
+      const std::vector<atx::usize> want = reference_order(x, ids);
+      cs_radix_argsort(x, std::span<atx::usize>{ids}, rs);
+      ASSERT_EQ(ids, want) << "shape=" << shape << " n=" << n;
+    }
+  }
+}
+
+TEST(CsRadixRank_Argsort, MatchesStableSortOnShuffledInputOrder) {
+  CsRadixScratch rs;
+  for (int shape = 0; shape < 4; ++shape) {
+    const atx::usize n = 3000;
+    const std::vector<atx::f64> x = shaped_row(n, shape, 11U);
+    std::vector<atx::usize> ids(n);
+    for (atx::usize i = 0; i < n; ++i) {
+      ids[i] = i;
+    }
+    std::mt19937_64 rng{static_cast<std::uint64_t>(shape) + 3U};
+    std::shuffle(ids.begin(), ids.end(), rng);
+    const std::vector<atx::usize> want = reference_order(x, ids);
+    cs_radix_argsort(x, std::span<atx::usize>{ids}, rs);
+    ASSERT_EQ(ids, want) << "shape=" << shape;
+  }
 }
 
 // ---- row kernels: bit-identical to the stable_sort reference -------------
