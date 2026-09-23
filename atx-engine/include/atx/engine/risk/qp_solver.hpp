@@ -306,7 +306,9 @@ public:
       cert.admm_iters = cfg.iters;
       cert.rho_final = cfg.rho;
     } else {
-      ATX_TRY_VOID(run_admm_scheduled(scaled, p, sc, *sched, x_bar, y_bar, z_bar, cert));
+      const atx::f64 rho0 = (ws != nullptr && ws->rho > 0.0 && std::isfinite(ws->rho)) ? ws->rho
+                                                                                    : cfg.rho;
+      ATX_TRY_VOID(run_admm_scheduled(scaled, p, sc, *sched, rho0, x_bar, y_bar, z_bar, cert));
     }
 
     // (4) Un-scale to original units:  x = D_x x̄,  y = (1/c) E y_bar  (E = sc.e).
@@ -674,6 +676,7 @@ private:
   // -------------------------------------------------------------------------
   [[nodiscard]] atx::core::Status run_admm_scheduled(const AugmentedQp &aug, const QpProblem &p,
                                                      const Scaling &sc, const AdmmSchedule &s,
+                                                     atx::f64 rho0,
                                                      atx::core::linalg::VecX &x_out,
                                                      atx::core::linalg::VecX &y_out,
                                                      atx::core::linalg::VecX &z_out,
@@ -697,7 +700,7 @@ private:
         mult[i] = s.eq_rho_scale;
       }
     }
-    atx::f64 rho = cfg.rho;
+    atx::f64 rho = rho0;
     cl::VecX rho_vec = rho * mult;
     cl::VecX rho_inv = rho_vec.cwiseInverse();
 

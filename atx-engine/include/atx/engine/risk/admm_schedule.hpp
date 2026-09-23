@@ -52,6 +52,11 @@ struct AdmmSchedule {
 struct WarmStart {
   std::span<const atx::f64> x0;
   std::span<const atx::f64> y0;
+  // Optional: the previous scheduled solve's cert.rho_final. > 0 ⇒ the scheduled ADMM
+  // starts from it instead of cfg.rho (the adapted ρ carries over day to day, so a warm
+  // solve does not re-spend its first refactor points re-discovering it). 0 ⇒ cfg.rho.
+  // Ignored by the unscheduled path.
+  atx::f64 rho = 0.0;
 };
 
 // ∞-norm residual summary the ρ adaptation and the early exit consume (scaled units).

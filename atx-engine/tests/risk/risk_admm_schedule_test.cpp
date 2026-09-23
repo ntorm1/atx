@@ -182,4 +182,44 @@ TEST(RiskAdmmSchedule, WarmStartWithEarlyExitConvergesFasterToSameBook) {
   }
 }
 
+TEST(RiskAdmmSchedule, WarmStartZeroRhoIsByteIdenticalToOmittingIt) {
+  const auto fx = make_fixture(40, 3, 23);
+  risk::ConstrainedQpSolver solver;
+  const risk::AdmmSchedule sched{};
+  const auto cold = solver.solve_with_cert({fx.model, 1.0, fx.q, fx.c}, sched);
+  ASSERT_TRUE(cold) << cold.error().message();
+  const risk::WarmStart plain{cold->x_full, cold->y_full};
+  const risk::WarmStart zero{cold->x_full, cold->y_full, 0.0};
+  const auto a = solver.solve_with_cert({fx.model, 1.0, fx.q, fx.c}, sched, &plain);
+  const auto b = solver.solve_with_cert({fx.model, 1.0, fx.q, fx.c}, sched, &zero);
+  ASSERT_TRUE(a && b);
+  EXPECT_EQ(0, std::memcmp(a->book.data(), b->book.data(), a->book.size() * sizeof(f64)));
+}
+
+TEST(RiskAdmmSchedule, WarmStartCarriesAdaptedRhoAndStartsFromIt) {
+  // Seeding the previous solve's adapted rho must be honored: with no refactor points the
+  // run never adapts, so the final rho IS the seed; the warm solve stays on the same book.
+  const auto fx = make_fixture(60, 4, 29);
+  risk::ConstrainedQpSolver solver;
+  solver.cfg.iters = 400;
+  risk::AdmmSchedule sched;
+  sched.early_exit = true;
+  sched.eps_abs = 1e-9;
+  sched.eps_rel = 1e-9;
+  const auto cold = solver.solve_with_cert({fx.model, 1.0, fx.q, fx.c}, sched);
+  ASSERT_TRUE(cold) << cold.error().message();
+  const risk::WarmStart ws{cold->x_full, cold->y_full, cold->cert.rho_final};
+  const auto warm = solver.solve_with_cert({fx.model, 1.0, fx.q, fx.c}, sched, &ws);
+  ASSERT_TRUE(warm) << warm.error().message();
+  for (usize i = 0; i < cold->book.size(); ++i) {
+    EXPECT_NEAR(warm->book[i], cold->book[i], 1e-7) << i;
+  }
+  risk::AdmmSchedule frozen = sched;
+  frozen.refactor_at = {0U, 0U, 0U};
+  const risk::WarmStart seeded{cold->x_full, cold->y_full, 8.0};
+  const auto f = solver.solve_with_cert({fx.model, 1.0, fx.q, fx.c}, frozen, &seeded);
+  ASSERT_TRUE(f) << f.error().message();
+  EXPECT_EQ(f->cert.rho_final, 8.0);
+}
+
 } // namespace atx_test_l6_optim_admm_schedule
