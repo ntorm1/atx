@@ -18,9 +18,13 @@ committed (`b814f4c1`, eight focused checks passed). Platform work continues on
 daily PIT fundamental signal tables and forward-return decile evaluation.
 Selected-input lineage is committed (`1fa721c7`, 11 focused checks passed at
 0.683 GiB peak); its migration0323 has not been applied to the live warehouse.
-These are implementation tasks,
-not new live coverage or alpha measurements. New inner-loop checks use tiny
-isolated schemas; wider schema checks remain pending after a host guard stop.
+The PIT panel (`fbba7bf2`, 12 focused checks) and decile evaluator (`d82f9eca`,
+8 focused checks) are also committed. Their measured guarded peaks were
+0.657 and0.614 GiB. Migrations0324/0325 remain unapplied; no live research run
+or new alpha measurement is claimed. Wider schema checks remain pending after
+a host guard stop. The prepared fundamental decile acceptance SQL returns all
+five hypotheses across three splits and three horizons, including missing
+run/results diagnostics.
 
 
 The later archive15 process disappeared before point verification finished.

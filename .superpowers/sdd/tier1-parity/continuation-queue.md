@@ -1,5 +1,31 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Fundamental research platform committed; HEAD checks next - 2026-09-23
+
+DL1selectedlineage1fa721c7; FQ1PITsignalpanel fbba7bf2; FQ2decileevaluator and
+canonicalforwardlabelbasis d82f9eca are committed. Migrations0323/0324/0325
+registered, none appliedlive. All taskregistry/runtimelocks returnedtoroot.
+Independentreviewper task completed; noCritical, Importantfixesacceptedon
+implementerreports andfocusedproof. DL1=11checks peak0.683GiB; FQ1=12checks
+peak0.657GiB; FQ2=8checks peak0.614GiB, allrequired1.5GiBjobguardandscopedRuff.
+FQ2earlycustomWSsampler was rejected asmemoryproof; fq2-tests7-memory.json is
+the validfinalguardreceipt. Neverciteoldsampler asprocess-treeguardvalidation.
+
+OPS1live read-only check succeededexit0/0.645GiB, committed8291fc44. Live0322,
+nolower-versiongaps; incompleteladder andcorrectfailedsourceUUIDs. Nodatawrites.
+Rootpublic_api_snapshot additions for4newtopmodules and prepared45rowfundamental
+decileacceptanceSQL arebeingcommittednow. ExactHEADexport verifier supports
+--include-parity-regressions to run requiredmodule/schema plusaffectedderived/
+annual/PIT/forwardpublisherfiles inoneguardedfocusedbatch. FullsuiteNOT run.
+
+Next: HEADimport/boundary/schema+affectedregressions; updateDATA_DICTIONARY
+aftercatalogstable; governedpendingmigrationswithbackup-keep100 afterfree-disk
+check; sourcearchive17 onlyafter sustained6GiBphysical/8GiBcommittwominutes.
+Priorfullbootstrapcheckwasstoppedbyhostguardandisnotapass. Sourceactualpredecessor
+513cfbbc-096a-4186-9666-b6cc5170c4ad, fullsubmissions04cf947d-53bb-49b7-a276-b3c74a2a52c8.
+ThenCVXreportedEPSsource,fulluniverse run5fromstatement_points--force,
+CF1andnewFQmeasurements,coverage/quality/releasegates. Noalpha/release/mergeclaim.
+
 ## Selected-input lineage committed; panel tests active - 2026-09-23
 
 DL1 committed1fa721c7, registryreleasedtoFQ1. Exactselectedoperandspublisher,
