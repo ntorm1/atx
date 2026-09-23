@@ -8,26 +8,29 @@ dummy SEC User-Agent `atx-db/0.1 atx-research@example.com`.
 
 ## Current source position and guard prerequisite
 
-Archive14/session8538 is terminal after host-headroom guard stop01:24:21UTC,
-during raw resume verification. Root recovered its stale ledgers and CHECKPOINT
-passed01:28UTC. No attempt rows; retained facts=points47,941,000 and schema0322.
-The next actual predecessor is `96f93269-84b5-4854-8ebe-fc5b99ab6612`.
-Evidence:companyfacts-archive14-headroom-recovery.json. Do not repeat recovery.
+Archive15 is stopped: session15424 is missing and native20652/guard child18896
+were absent at22:01UTC. The last receipt was stale-running and the last log was
+point-fingerprint verification; no host-stop or source error is asserted.
+Root recovered both stale ledgers22:01:31UTC and CHECKPOINT passed. No new
+attempt rows; retained facts=points47,941,000 and schema0322.
+Next actual predecessor: `4932365c-4b61-4437-b634-11b2a7284f6e`.
+Evidence:companyfacts-archive15-interruption-recovery.json. Do not rerun recovery.
 
-Archive15 is live, session15424/guard child18896, launched01:34UTC after the sustained-headroom check passed. Before another source restart, allow sustained headroom above
+No warehouse writer is live. Archive16 waits for sustained headroom above
 6GiB physical/8GiB commit (three observations over at least two minutes), then
-use the unchanged2GiB job guard,1GB DuckDB,1thread,fullarchive_members,
+uses unchanged2GiB job guard,1GB DuckDB,1thread,fullarchive_members,
 replacement,force,snapshot2026-09-20,backup-keep100,dummySECcontact.
-This extra wait avoids immediate repeated expensive proofs on a fluctuating
-host; guard runtime thresholds remain1.5GiB physical/3GiB commit.
-Use fresh archive15 filenames. Terminal SQL is prepared.
+Current observations are inarchive16-headroom-observations.jsonl. Compiler
+bursts returned during this turn, so a single good sample is insufficient.
+Guard runtime thresholds remain1.5GiB physical/3GiB commit.
+Use fresh archive16 filenames and prepare its terminal SQL from archive15's.
 
 Archive13's512MB query limit failed atCOMMIT, so it is not the source-write
-configuration. Dataset failure-ledger recovery is now tested/reviewed in15235456.
-That code handles exceptions but cannot execute after the Windows guard kills
-its process tree. After each terminal source job inspect guard and actual run
-ledgers, then derive the next UUID. Never restart a live session or overlap
-warehouse runtimes. Other workloads remain untouched.
+configuration. Dataset failure-ledger recovery is tested/reviewed in15235456.
+That code handles exceptions but cannot execute after its process disappears.
+After each stopped source job inspect guard and actual run ledgers, then derive
+the next UUID. Never restart a live session or overlap warehouse runtimes.
+Other workloads remain untouched.
 
 ## Submissions verified resume
 

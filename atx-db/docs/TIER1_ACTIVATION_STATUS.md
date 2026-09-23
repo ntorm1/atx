@@ -7,6 +7,15 @@ artifacts. Dated loader progress below is historical evidence.
 
 ## Latest durable warehouse measurement: 2026-09-23
 
+The later archive15 process disappeared before point verification finished.
+Its missing handle and absent workers were verified at22:01UTC; the stale
+run ledgers were closed and CHECKPOINT passed. No termination cause is
+asserted from its stale-running guard receipt. Recovery reconfirmed every
+retained count below, with zero new attempt rows. The next actual predecessor
+is`4932365c-4b61-4437-b634-11b2a7284f6e`. Source loading remains pending a
+stable memory window; all existing process and host headroom limits remain.
+
+
 Archive14 was subsequently stopped by the host headroom guard during source
 verification at01:24UTC. Recovery at01:28UTC confirmed the same retained
 counts and zero new attempt rows; both run ledgers were closed and CHECKPOINT

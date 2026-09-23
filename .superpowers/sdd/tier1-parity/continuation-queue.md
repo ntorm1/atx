@@ -1,5 +1,27 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Archive15 interrupted and recovered - 2026-09-23 22:03 UTC
+
+The next goal turn revalidated authoritative state after the turn interruption:
+session15424 missing, native20652/guard child18896 and all warehouse guards
+absent. Archive15 receipt remained stale-running; last log was point-fingerprint
+verification01:37:24UTC. No terminal/error/host-stop cause is inferred.
+Root recovery at22:01:31UTC measured zero attempt rows, closed both stale
+ledgers, and CHECKPOINT passed (0.899GiB peak). Retainedfacts=points47,941,000,
+prices31,959,271,customfeatures31,934,514,schema0322.
+Next actual predecessor:4932365c-4b61-4437-b634-11b2a7284f6e.
+Evidencecompanyfacts-archive15-interruption-recovery.json and process/guard logs.
+Do not repeat recovery. No live warehouse job; only lightweight host monitor.
+
+Current memory observation again shows unrelated compiler bursts: zero at
+22:02:09UTC became14 at22:02:39UTC; physicalfree4.519->1.785GiB,commit9.696->5.656.
+Retain sustained6GiB physical/8GiB commit restart prerequisite and existing
+2GiB process guard,1GB DuckDB,1thread. Do not relax or launch on one good
+sample. archive16-headroom-observations.jsonl is the current observation file.
+No new source/materialization/coverage/release claim. CodeHEAD15235456 repairs
+exception-ledger recovery; fullscope next-stage sequence is unchanged.
+
+
 ## Sustained headroom passed; archive15 launch - 2026-09-23 01:34 UTC
 
 Lightweight monitor observed physical8.466-8.603GiB andcommit10.180-10.357GiB
