@@ -308,7 +308,7 @@ atx::core::Result<CombineWeights> FamaMacBethRidge::fit(const SignalStore &s, Fi
 // ---------------------------------------------------------------------------
 atx::core::Result<std::vector<f64>> kakushadze_weights(const MatX &r, std::span<const f64> expected,
                                                        std::span<const atx::u32> clusters,
-                                                       f64 ridge_rel) {
+                                                       f64 ridge_rel, usize n_factors) {
   const Eigen::Index m = r.rows();
   const Eigen::Index n = r.cols();
   if (m < 3 || n < 1 || static_cast<usize>(n) != expected.size() ||
@@ -369,29 +369,62 @@ atx::core::Result<std::vector<f64>> kakushadze_weights(const MatX &r, std::span<
     demean_rows_within(e_row, group, n_groups); // cluster dummies (Frisch-Waugh)
     et = e_row.transpose();
   }
-  // (ix) residual of Ẽ on L (no intercept): ε = ρ (L Lᵀ + ρ I)⁻¹ Ẽ, evaluated in the
-  // smaller dimension (push-through identity when Na > M−1).
+  // (ix) residual of Ẽ on L (no intercept).
+  //
+  // Demeaning makes 1 (or each cluster indicator) a null vector of L Lᵀ, so rank(L) <=
+  // min(M−1, Na − G). When Na − G <= M−1 (the usual zoo: fewer alphas than dates) the
+  // M−1 regressors span the WHOLE complement of the null space and the regression
+  // residual collapses to the null-space projection of Ẽ (≡ mean(Ẽ)·1 without
+  // clusters): every alpha would get w ∝ sign(mean Ẽ)/σ regardless of its own E. The
+  // paper assumes N >> M. In that saturated regime we use the Kakushadze-Yu
+  // factor-model variant instead: regress Ẽ on the top F principal components of
+  // C = L Lᵀ/(M−1) (the demeaned alpha correlation matrix), F = the count of
+  // eigenvalues above the Marchenko-Pastur edge σ̄²(1+√(p/(M−1)))² with p = Na − G and
+  // σ̄² = tr(C)/p (or the caller's n_factors), clamped to p − 1. With F = 0 this is the
+  // diagonal mean-variance solution w ∝ E/σ².
+  const Eigen::Index p_eff = na - static_cast<Eigen::Index>(n_groups);
   VecX eps;
-  if (na > cols) {
+  if (p_eff > cols) {
+    // Regression regime (N >> M). ε = ρ (L Lᵀ + ρ I)⁻¹ Ẽ evaluated through the
+    // push-through identity in the (M−1)-dim Gram: ε = Ẽ − L (LᵀL + ρ I)⁻¹ Lᵀ Ẽ.
+    // ρ = ridge_rel · tr(L Lᵀ)/Na (tr(LᵀL) = tr(L Lᵀ)).
     MatX g = MatX::Zero(cols, cols);
     g.selfadjointView<Eigen::Lower>().rankUpdate(l.transpose());
     g.triangularView<Eigen::StrictlyUpper>() = g.transpose();
-    const f64 rho = ridge_rel * g.trace() / static_cast<f64>(cols);
+    const f64 rho = ridge_rel * g.trace() / static_cast<f64>(na);
     if (rho > 0.0) {
       g.diagonal().array() += rho;
     }
     const Eigen::LDLT<MatX> ldlt(g);
     const VecX beta = ldlt.solve(l.transpose() * et);
     eps = et - l * beta;
+  } else if (p_eff <= 1) {
+    eps = et; // nothing but the (cluster) null space: no factor can be estimated
   } else {
-    MatX g = l * l.transpose();
-    const f64 rho = ridge_rel * g.trace() / static_cast<f64>(na);
-    if (!(rho > 0.0)) {
-      eps = et; // degenerate (no dispersion or ridge 0 with N <= M−1): nothing to project
+    MatX c = l * l.transpose();
+    c /= static_cast<f64>(cols);
+    const Eigen::SelfAdjointEigenSolver<MatX> es(c);
+    if (es.info() != Eigen::Success) {
+      return atx::core::Err(atx::core::ErrorCode::Internal,
+                            "kakushadze_weights: eigen-decomposition failed");
+    }
+    const VecX &lam = es.eigenvalues(); // ascending
+    Eigen::Index f = 0;
+    if (n_factors > 0U) {
+      f = static_cast<Eigen::Index>(n_factors);
     } else {
-      g.diagonal().array() += rho;
-      const Eigen::LDLT<MatX> ldlt(g);
-      eps = rho * ldlt.solve(et);
+      const f64 sbar = c.trace() / static_cast<f64>(p_eff);
+      const f64 q = static_cast<f64>(p_eff) / static_cast<f64>(cols);
+      const f64 edge = sbar * (1.0 + std::sqrt(q)) * (1.0 + std::sqrt(q));
+      for (Eigen::Index i = 0; i < na; ++i) {
+        f += (lam[i] > edge) ? 1 : 0;
+      }
+    }
+    f = std::min<Eigen::Index>(f, p_eff - 1);
+    eps = et;
+    if (f > 0) {
+      const auto u = es.eigenvectors().rightCols(f);
+      eps -= u * (u.transpose() * et);
     }
   }
   // (x) w = ε/σ, Σ|w| = 1.
@@ -426,7 +459,7 @@ atx::core::Result<CombineWeights> KakushadzeRegression::fit(const SignalStore &s
                               : std::min<Eigen::Index>(r.rows(), static_cast<Eigen::Index>(expected_window));
   const VecX e = r.bottomRows(tail).colwise().mean().transpose();
   ATX_TRY(std::vector<f64> wv, kakushadze_weights(r, std::span<const f64>(e.data(), k), clusters,
-                                                   ridge_rel));
+                                                   ridge_rel, n_factors));
   CombineWeights out;
   out.w = std::move(wv);
   out.tstat = column_tstats(r);

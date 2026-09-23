@@ -179,6 +179,43 @@ TEST(CombineWalkForward, HysteresisSuppressesReadoption) {
   EXPECT_TRUE(std::isfinite(pnl[kT - 1U]));
 }
 
+// FamaMacBethRidge returns raw betas (not gross-1); hysteresis is measured on
+// gross-normalized copies, so rescaling a combiner's output must not change which
+// refits are adopted, and a threshold in [0, 2) must bite for FMB as for the others.
+struct ScaledFmb {
+  f64 scale = 1.0;
+  [[nodiscard]] atx::core::Result<cb::CombineWeights> fit(const cb::SignalStore &s,
+                                                          cb::FitWindow w) const {
+    auto r = cb::FamaMacBethRidge{0.01}.fit(s, w);
+    if (r.has_value()) {
+      for (f64 &x : r->w) {
+        x *= scale;
+      }
+    }
+    return r;
+  }
+};
+static_assert(cb::Combiner<ScaledFmb>);
+
+TEST(CombineWalkForward, HysteresisIsScaleInvariantAcrossMethods) {
+  const cb::SignalStore st = to_store(make_raw(5U));
+  cb::WalkForwardCfg cfg;
+  cfg.min_train = 10U;
+  cfg.refit_every = 1U;
+  cfg.hysteresis = 0.05;
+  const auto small = cb::walk_forward(st, cfg, ScaledFmb{1e-3});
+  const auto big = cb::walk_forward(st, cfg, ScaledFmb{1e3});
+  const auto raw = cb::walk_forward(st, cfg, ScaledFmb{1.0});
+  ASSERT_TRUE(small.has_value());
+  ASSERT_TRUE(big.has_value());
+  ASSERT_TRUE(raw.has_value());
+  EXPECT_EQ(small->adopted_dates, raw->adopted_dates);
+  EXPECT_EQ(big->adopted_dates, raw->adopted_dates);
+  // The threshold actually suppresses some refits (it is not a no-op at FMB's scale).
+  EXPECT_LT(raw->adopted_dates.size(), raw->refit_dates.size());
+  EXPECT_GE(raw->adopted_dates.size(), 1U);
+}
+
 TEST(CombineWalkForward, RejectsBadConfig) {
   const cb::SignalStore st = to_store(make_raw(4U));
   cb::WalkForwardCfg cfg;
