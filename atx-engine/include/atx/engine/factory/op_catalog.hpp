@@ -66,6 +66,49 @@ using atx::engine::alpha::Shape;
 }
 
 // =========================================================================
+//  Invariance flags (L3 search quality) — algebraic identities of a unary op.
+//
+//  These are VALUE-level identities of the op's mathematical definition:
+//    idempotent : f(f(x)) == f(x)        (rank, abs, sign)
+//    involution : f(f(x)) == x           (neg)
+//    even       : f(-x)   == f(x)        (abs)
+//    pos_scale  : f(c*x)  == f(x), c > 0 (rank, sign, zscore)
+//  `bit_exact` additionally certifies that every flagged identity holds
+//  BIT-FOR-BIT through the VM kernel (incl. NaN / signed zero / ties), with the
+//  single documented caveat for `pos_scale`: `c*x` must not overflow, underflow
+//  into the subnormal range, or (for a non-power-of-two c) round two distinct
+//  cell values together. factory/rewrite.hpp only fires rules whose op is
+//  `bit_exact`; value-level-only flags (zscore: the mean/sd reductions re-round
+//  under scaling) are informational for the fingerprint / novelty layers.
+//  Every bit_exact claim is driven through the real VM by FactoryRewrite_*.
+// =========================================================================
+
+struct OpInvariance {
+  bool idempotent{false};
+  bool involution{false};
+  bool even{false};
+  bool pos_scale{false};
+  bool bit_exact{false};
+};
+
+[[nodiscard]] constexpr OpInvariance op_invariance(OpCode op) noexcept {
+  switch (op) {
+  case OpCode::Neg: // -(-x): a sign-bit flip twice — exact for every bit pattern
+    return OpInvariance{false, true, false, false, true};
+  case OpCode::Abs: // fabs clears the sign bit: fabs(fabs x) == fabs(-x) == fabs x
+    return OpInvariance{true, false, true, false, true};
+  case OpCode::Sign: // outputs {-1, +0, 1, NaN}, each a fixed point of sign
+    return OpInvariance{true, false, false, true, true};
+  case OpCode::CsRank: // ordinal ranks are distinct values in the same order
+    return OpInvariance{true, false, false, true, true};
+  case OpCode::CsZscore: // (cx - c*mu)/(c*sd): equal in value, re-rounded bits
+    return OpInvariance{false, false, false, true, false};
+  default:
+    return OpInvariance{};
+  }
+}
+
+// =========================================================================
 //  OpCatalog — named-Call op candidates bucketed by (shape-cat, dtype, arity).
 // =========================================================================
 
