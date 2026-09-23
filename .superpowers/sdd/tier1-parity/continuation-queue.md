@@ -1,5 +1,22 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Archive13 proof progressing at512MB — 2026-09-23 00:45 UTC
+
+Previous goal turn made progress (archive12 recovery,34,193net new facts and
+the lower-memory operating trial). This continuation is a verified wait:
+root has repeatedly re-polled live session67962 and native Python8692.
+The raw-fact fingerprint pass completed00:41:47UTC with12,959identity groups;
+point verification is still active. No OOM or source failure has been reported.
+
+Live sample archive13-lower-memory-progress1.json at00:44:34UTC records
+1.163GiB native private memory, host physical4.913GiB/commit6.101GiB free
+(guard sample00:44:16UTC), and50.499GiB free disk. This is a live sample,
+not a measured peak or a completed-source proof. Raw verification took longer
+than archive12 while process memory fell; keep512MB trial until terminal or
+an actual failure, without weakening the unchanged guard or scope.
+No second runtime, production code change, new warehouse measurement or
+downstream activation occurred during this wait. Session67962 remains owner.
+
 ## Archive13 lower-memory trial running — 2026-09-23 00:35 UTC
 
 Root launched sole writer session67962, guard child11304,
