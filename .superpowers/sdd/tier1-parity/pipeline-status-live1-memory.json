@@ -1,0 +1,19 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/atx-db.exe",
+    "pipeline-status",
+    "--db-path",
+    "C:/atx/atx-db/data/warehouse.duckdb",
+    "--as-of-date",
+    "2026-09-20"
+  ],
+  "job_limit_gb": 1.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 5.819332122802734,
+    "commit_free_gb": 5.751987457275391
+  },
+  "child_pid": 8620,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.6446266174316406
+}
