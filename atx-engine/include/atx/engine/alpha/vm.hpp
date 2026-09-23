@@ -68,8 +68,12 @@
 // second evaluate() allocates nothing in the dispatch loop. Header-only; every
 // free function is `inline`. Rule of Zero.
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -81,9 +85,11 @@
 
 #include "atx/engine/alpha/bytecode.hpp"
 #include "atx/engine/alpha/cs_ops.hpp"
+#include "atx/engine/alpha/fusion.hpp" // Lane 2: FusedProgram / FusedKernel
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/alpha/state_ops.hpp"
+#include "atx/engine/alpha/subtree_cache.hpp" // Lane 2: cross-program subtree cache
 #include "atx/engine/alpha/ts_ops.hpp"
 
 #include "atx/engine/parallel/det_pool.hpp" // optional intra-eval column pool (S3-3)
@@ -194,6 +200,98 @@ inline void vm_map_cmp(std::span<const atx::f64> a, std::span<const atx::f64> b,
   }
 }
 
+// THE element-wise kernel (Lane 2): one implementation shared by the unfused
+// per-instruction path (eval_unary/binary/cmp/logical/not/select) and the fused
+// micro-op path, so both apply the identical scalar function per cell. Operands
+// follow the instruction's src order (Select: x = condition, y = then, z = else);
+// unused operands are ignored. n cells from each pointer. Precondition: `op` is
+// is_fusible_elementwise.
+inline void vm_apply_ew(OpCode op, const atx::f64 *x, const atx::f64 *y, const atx::f64 *z,
+                        atx::f64 *o, atx::usize n) noexcept {
+  const std::span<const atx::f64> a{x, x == nullptr ? 0 : n};
+  const std::span<const atx::f64> b{y, y == nullptr ? 0 : n};
+  const std::span<atx::f64> out{o, n};
+  switch (op) {
+  case OpCode::Neg:
+    vm_map_unary(a, out, [](atx::f64 v) noexcept { return -v; });
+    return;
+  case OpCode::Abs:
+    vm_map_unary(a, out, [](atx::f64 v) noexcept { return std::fabs(v); });
+    return;
+  case OpCode::Sign:
+    vm_map_unary(a, out, vm_sign);
+    return;
+  case OpCode::Log:
+    vm_map_unary(a, out, [](atx::f64 v) noexcept { return std::log(v); });
+    return;
+  case OpCode::Sigmoid:
+    // 1/(1+exp(-x)); NaN -> NaN naturally. Bit-identical to oracle's op_sigmoid.
+    vm_map_unary(a, out, [](atx::f64 v) noexcept { return 1.0 / (1.0 + std::exp(-v)); });
+    return;
+  case OpCode::Tanh:
+    vm_map_unary(a, out, [](atx::f64 v) noexcept { return std::tanh(v); });
+    return;
+  case OpCode::Add:
+    vm_map_binary(a, b, out, [](atx::f64 p, atx::f64 q) noexcept { return p + q; });
+    return;
+  case OpCode::Sub:
+    vm_map_binary(a, b, out, [](atx::f64 p, atx::f64 q) noexcept { return p - q; });
+    return;
+  case OpCode::Mul:
+    vm_map_binary(a, b, out, [](atx::f64 p, atx::f64 q) noexcept { return p * q; });
+    return;
+  case OpCode::Div:
+    vm_map_binary(a, b, out, [](atx::f64 p, atx::f64 q) noexcept { return p / q; });
+    return;
+  case OpCode::Pow:
+    vm_map_binary(a, b, out, [](atx::f64 p, atx::f64 q) noexcept { return std::pow(p, q); });
+    return;
+  case OpCode::Spow:
+    vm_map_binary(a, b, out, vm_spow);
+    return;
+  case OpCode::MinP:
+    vm_map_binary(a, b, out, vm_min);
+    return;
+  case OpCode::MaxP:
+    vm_map_binary(a, b, out, vm_max);
+    return;
+  case OpCode::CmpLt:
+    vm_map_cmp(a, b, out, [](atx::f64 p, atx::f64 q) noexcept { return p < q; });
+    return;
+  case OpCode::CmpGt:
+    vm_map_cmp(a, b, out, [](atx::f64 p, atx::f64 q) noexcept { return p > q; });
+    return;
+  case OpCode::CmpLe:
+    vm_map_cmp(a, b, out, [](atx::f64 p, atx::f64 q) noexcept { return p <= q; });
+    return;
+  case OpCode::CmpGe:
+    vm_map_cmp(a, b, out, [](atx::f64 p, atx::f64 q) noexcept { return p >= q; });
+    return;
+  case OpCode::CmpEq:
+    vm_map_cmp(a, b, out, [](atx::f64 p, atx::f64 q) noexcept { return p == q; });
+    return;
+  case OpCode::CmpNe:
+    vm_map_cmp(a, b, out, [](atx::f64 p, atx::f64 q) noexcept { return p != q; });
+    return;
+  case OpCode::And:
+    vm_map_binary(a, b, out, vm_and);
+    return;
+  case OpCode::Or:
+    vm_map_binary(a, b, out, vm_or);
+    return;
+  case OpCode::Not:
+    vm_map_unary(a, out, vm_not);
+    return;
+  case OpCode::Select:
+    for (atx::usize i = 0; i < n; ++i) {
+      o[i] = vm_select(x[i], y[i], z[i]);
+    }
+    return;
+  default:
+    ATX_UNREACHABLE(); // precondition: an element-wise opcode
+  }
+}
+
 } // namespace detail
 
 // =========================================================================
@@ -216,6 +314,32 @@ inline void vm_map_cmp(std::span<const atx::f64> a, std::span<const atx::f64> b,
 enum class EvalMode : atx::u8 {
   AuditExact = 0, // default, inert: batch kernels, oracle-bit-exact
   ResearchFast,   // opt-in: online variance family (tolerance, not bit-exact)
+};
+
+// =========================================================================
+//  Range execution vocabulary (Lane 2 — strategy B / level-scheduled eval).
+//
+//  Every opcode's kernel is independent along ONE axis of the date-major panel:
+//    * Cells       — element-wise maps, Const, Select, Pin, Split2: cell i depends
+//                    only on input cell i;
+//    * Dates       — LoadField and every Cs* op: a date row depends only on that
+//                    date's rows;
+//    * Instruments — every Ts*/OU/recurrence/Kalman op: instrument column j
+//                    depends only on input column j.
+//  A kernel executed over a sub-range [lo, hi) of its axis therefore writes
+//  exactly the cells the full-range call writes for that range, with the SAME
+//  per-cell arithmetic in the SAME order — so any partition of the axis across
+//  workers is bit-identical to the serial full-range call.
+// =========================================================================
+enum class ChunkAxis : atx::u8 { Cells, Dates, Instruments };
+
+// A borrowed slot buffer for Engine::execute_range: `rd` is the readable view,
+// `wr` the writable one (null for read-only inputs such as a cache entry). `n`
+// is the buffer length in cells.
+struct ExtSlot {
+  const atx::f64 *rd{nullptr};
+  atx::f64 *wr{nullptr};
+  atx::usize n{0};
 };
 
 // =========================================================================
@@ -393,12 +517,7 @@ public:
         // single slot: column(src[0] + param) -> column(dst). One acquire for
         // the single dst slot; no dispatch needed (pure buffer copy).
         (void)pool_.acquire();
-        const std::span<const atx::f64> src = pool_.column(in.src[0] + in.param);
-        const std::span<atx::f64> dst_span = pool_.column(in.dst);
-        const atx::usize n = dst_span.size();
-        for (atx::usize ci = 0; ci < n; ++ci) {
-          dst_span[ci] = src[ci];
-        }
+        eval_pin(in, 0, cells);
         continue;
       }
       (void)pool_.acquire();
@@ -409,11 +528,529 @@ public:
     return atx::core::Ok(std::move(out));
   }
 
+  // =======================================================================
+  //  Lane 2 — cache-aware / subset evaluation.
+  //
+  //  evaluate(prog, cache): every root, reusing and publishing subtree results in
+  //    `cache` (null cache == the plain evaluate(prog) above, byte-identical).
+  //  evaluate_nodes(prog, roots, cache): ONLY the listed roots (indices into
+  //    prog.roots, unique, any order) — instructions no requested root depends on
+  //    are skipped (dead-code eliminated at run time), and a subtree found in the
+  //    cache is copied in instead of recomputed, which also skips its whole
+  //    producer cone. Output alphas follow `roots` order.
+  //  evaluate_root(prog, root, cache): one root into an Engine-owned buffer; the
+  //    span stays valid until the next evaluate_* call on this Engine.
+  //
+  //  Bit-identity: a skipped instruction's value is never read (liveness is exact);
+  //  a cache hit is the byte-exact buffer a fresh evaluation of the same subtree on
+  //  the same panel + mode produced. So the output equals evaluate(prog)'s alphas
+  //  byte-for-byte (tests: SubtreeCache_*, AlphaVmNodes_*).
+  //
+  //  Errors: Err(InvalidArgument) for an out-of-range / duplicate root index, plus
+  //  every evaluate() error. Allocation: planning scratch grows monotonically; each
+  //  publish copies the value (cold relative to the kernel that produced it).
+  // =======================================================================
+  [[nodiscard]] atx::core::Result<SignalSet> evaluate(const Program &prog, SubtreeCache *cache) {
+    if (cache == nullptr) {
+      return evaluate(prog);
+    }
+    all_roots_.resize(prog.roots.size());
+    for (atx::usize r = 0; r < prog.roots.size(); ++r) {
+      all_roots_[r] = static_cast<atx::u32>(r);
+    }
+    return evaluate_nodes(prog, all_roots_, cache);
+  }
+
+  [[nodiscard]] atx::core::Result<SignalSet>
+  evaluate_nodes(const Program &prog, std::span<const atx::u32> roots, SubtreeCache *cache) {
+    const atx::usize dates = panel_.dates();
+    const atx::usize instruments = panel_.instruments();
+    const atx::usize cells = dates * instruments;
+    ATX_TRY_VOID(resolve_fields(prog));
+    ensure_pool(prog.num_slots, cells);
+    ATX_TRY_VOID(map_requested_roots(prog, roots));
+    plan_needed(prog, cache);
+
+    SignalSet out;
+    out.dates = dates;
+    out.instruments = instruments;
+    out.alphas.resize(roots.size());
+    for (atx::usize k = 0; k < roots.size(); ++k) {
+      out.alphas[k].name = prog.roots[roots[k]].name;
+      out.alphas[k].values.assign(cells, detail::kVmNaN);
+    }
+    for (atx::usize i = 0; i < prog.code.size(); ++i) {
+      const Instr &in = prog.code[i];
+      if (in.op == OpCode::Free) {
+        pool_.release(in.dst);
+        continue;
+      }
+      if (in.op == OpCode::StoreAlpha) {
+        ATX_TRY_VOID(store_requested(in, out, cells));
+        continue;
+      }
+      (void)pool_.acquire();
+      ATX_TRY_VOID(run_planned(prog, i, cache, dates, instruments, cells));
+    }
+    return atx::core::Ok(std::move(out));
+  }
+
+  [[nodiscard]] atx::core::Result<std::span<const atx::f64>>
+  evaluate_root(const Program &prog, atx::u32 root, SubtreeCache *cache) {
+    const atx::u32 one[1] = {root};
+    ATX_TRY(SignalSet ss, evaluate_nodes(prog, std::span<const atx::u32>{one}, cache));
+    root_buf_ = std::move(ss.alphas.front().values);
+    return atx::core::Ok(std::span<const atx::f64>{root_buf_});
+  }
+
+  // The digest the cache keys this Engine's panel by. Computed lazily on first
+  // cache use (O(cells*fields)); a caller that already has it (e.g. a pool of
+  // Engines on one panel) injects it to skip the recomputation. PRECONDITION: the
+  // injected value is panel_content_digest(panel) for THIS Engine's panel.
+  void set_panel_digest(atx::u64 digest) noexcept { panel_digest_ = digest; }
+  [[nodiscard]] atx::u64 panel_digest_value() {
+    if (!panel_digest_.has_value()) {
+      panel_digest_ = panel_content_digest(panel_);
+    }
+    return *panel_digest_;
+  }
+
+  // Cross-sectional DATE parallelism (Lane 2). When a non-null pool is set, every
+  // Cs* op splits its date rows into contiguous bands across the pool's workers,
+  // each band using that worker's private valid-set / group scratch. Rows are
+  // independent (a date row reads only that date's rows) and each row's kernel
+  // runs the same scan in the same order, so the result is bit-identical to the
+  // serial loop for every pool size — AuditExact. Null (the DEFAULT) keeps the
+  // original serial loop. Same DEADLOCK CONSTRAINT as set_ts_pool: never the pool
+  // that is running this Engine's evaluate() as one of its jobs. It MAY be the same
+  // pool passed to set_ts_pool (the two are never nested).
+  void set_cs_pool(atx::engine::parallel::DetPool *pool) {
+    cs_pool_ = pool;
+    const atx::usize w = (pool != nullptr) ? pool->n_workers() : atx::usize{0};
+    if (cs_valid_thr_.size() < w) {
+      cs_valid_thr_.resize(w);
+      cs_scratch_thr_.resize(w);
+    }
+  }
+  [[nodiscard]] atx::engine::parallel::DetPool *cs_pool() const noexcept { return cs_pool_; }
+
+  // =======================================================================
+  //  Range execution (Lane 2 — strategy B). Executes ONE compute instruction over
+  //  the sub-range [lo, hi) of its chunk_axis(), reading and writing the borrowed
+  //  `slots` table (indexed by the instruction's SlotIds; a multi-output block
+  //  occupies consecutive entries) instead of the Engine's own SlotPool.
+  //  PRECONDITIONS: bind_fields(prog) ran for the Program the instruction came
+  //  from; every read slot has `rd`, every written slot `wr`, all of length cells;
+  //  hi <= axis length. Concurrent calls on DIFFERENT Engines over disjoint ranges
+  //  (or different destination slots) are race-free: kernels write only their range.
+  //  Errors: Err(InvalidArgument) for Free / StoreAlpha / an out-of-range slot.
+  // =======================================================================
+  [[nodiscard]] static ChunkAxis chunk_axis(OpCode op) noexcept {
+    if (op == OpCode::LoadField || is_cs_op(op)) {
+      return ChunkAxis::Dates;
+    }
+    if (is_instrument_op(op)) {
+      return ChunkAxis::Instruments;
+    }
+    return ChunkAxis::Cells;
+  }
+
+  [[nodiscard]] atx::core::Status bind_fields(const Program &prog) { return resolve_fields(prog); }
+
+  [[nodiscard]] atx::core::Status execute_range(const Instr &in, std::span<const ExtSlot> slots,
+                                                atx::usize lo, atx::usize hi) {
+    if (in.op == OpCode::Free || in.op == OpCode::StoreAlpha) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "Engine::execute_range: Free/StoreAlpha are not compute instructions");
+    }
+    if (!slots_cover(in, slots)) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "Engine::execute_range: instruction slot outside the slot table");
+    }
+    ext_ = slots;
+    const atx::core::Status s =
+        dispatch_range(in, panel_.dates(), panel_.instruments(), lo, hi);
+    ext_ = {};
+    return s;
+  }
+
+  // Range execution of a FUSED kernel writing slot `dst` over cells [lo, hi) (the
+  // fused counterpart of execute_range; same preconditions, Slot micro-op args and
+  // `dst` index `slots`).
+  [[nodiscard]] atx::core::Status execute_fused_range(const FusedKernel &k, SlotId dst,
+                                                      std::span<const ExtSlot> slots, atx::usize lo,
+                                                      atx::usize hi) {
+    if (!fused_slots_cover(k, dst, slots.size())) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "Engine::execute_fused_range: kernel slot outside the slot table");
+    }
+    ext_ = slots;
+    const atx::core::Status s = eval_fused(k, dst, lo, hi);
+    ext_ = {};
+    return s;
+  }
+
+  // Evaluate a FusedProgram (alpha/fusion.hpp): the plain evaluate() loop, with each
+  // fused sink running its blocked micro-program. Byte-identical to evaluating the
+  // unfused source Program. Errors: every evaluate() error, plus Err(InvalidArgument)
+  // when kernel_of does not align with the code or names a missing kernel.
+  [[nodiscard]] atx::core::Result<SignalSet> evaluate(const FusedProgram &fp) {
+    const Program &prog = fp.prog;
+    if (fp.kernel_of.size() != prog.code.size()) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "Engine::evaluate(FusedProgram): kernel_of misaligned with code");
+    }
+    const atx::usize dates = panel_.dates();
+    const atx::usize instruments = panel_.instruments();
+    const atx::usize cells = dates * instruments;
+    ATX_TRY_VOID(resolve_fields(prog));
+    ensure_pool(prog.num_slots, cells);
+    SignalSet out;
+    out.dates = dates;
+    out.instruments = instruments;
+    out.alphas.resize(prog.roots.size());
+    for (atx::usize r = 0; r < prog.roots.size(); ++r) {
+      out.alphas[r].name = prog.roots[r].name;
+      out.alphas[r].values.assign(cells, detail::kVmNaN);
+    }
+    for (atx::usize i = 0; i < prog.code.size(); ++i) {
+      const Instr &in = prog.code[i];
+      if (in.op == OpCode::Free) {
+        pool_.release(in.dst);
+        continue;
+      }
+      if (in.op == OpCode::StoreAlpha) {
+        ATX_TRY_VOID(store_alpha(in, out, cells));
+        continue;
+      }
+      (void)pool_.acquire();
+      const atx::i32 kid = fp.kernel_of[i];
+      if (kid >= 0) {
+        if (static_cast<atx::usize>(kid) >= fp.kernels.size()) {
+          return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                                "Engine::evaluate(FusedProgram): kernel index out of range");
+        }
+        ATX_TRY_VOID(eval_fused(fp.kernels[static_cast<atx::usize>(kid)], in.dst, 0, cells));
+        continue;
+      }
+      if (in.op == OpCode::Pin) {
+        eval_pin(in, 0, cells);
+        continue;
+      }
+      ATX_TRY_VOID(dispatch(in, dates, instruments, cells));
+    }
+    return atx::core::Ok(std::move(out));
+  }
+
 private:
-  // The Program SlotId indexes the pool buffer directly (see evaluate()).
-  [[nodiscard]] std::span<atx::f64> dst_col(const Instr &in) { return pool_.column(in.dst); }
+  // Column access. Normally a Program SlotId indexes the pool buffer directly (see
+  // evaluate()); under execute_range it indexes the borrowed ExtSlot table.
+  [[nodiscard]] std::span<atx::f64> wcol(SlotId s) {
+    if (!ext_.empty()) {
+      ATX_ASSERT(s < ext_.size() && ext_[s].wr != nullptr);
+      return std::span<atx::f64>{ext_[s].wr, ext_[s].n};
+    }
+    return pool_.column(s);
+  }
+  [[nodiscard]] std::span<const atx::f64> rcol(SlotId s) const {
+    if (!ext_.empty()) {
+      ATX_ASSERT(s < ext_.size() && ext_[s].rd != nullptr);
+      return std::span<const atx::f64>{ext_[s].rd, ext_[s].n};
+    }
+    return pool_.column(s);
+  }
+  [[nodiscard]] std::span<atx::f64> dst_col(const Instr &in) { return wcol(in.dst); }
   [[nodiscard]] std::span<const atx::f64> src_col(const Instr &in, atx::usize k) const {
-    return pool_.column(in.src.at(k));
+    return rcol(in.src.at(k));
+  }
+
+  [[nodiscard]] static bool is_cs_op(OpCode op) noexcept {
+    switch (op) {
+    case OpCode::CsRank:
+    case OpCode::CsZscore:
+    case OpCode::CsScale:
+    case OpCode::CsNormalize:
+    case OpCode::CsWinsorize:
+    case OpCode::CsDemeanG:
+    case OpCode::CsNeutG:
+    case OpCode::CsRankG:
+    case OpCode::CsZscoreG:
+    case OpCode::CsCountG:
+    case OpCode::CsMeanG:
+    case OpCode::CsScaleG:
+    case OpCode::CsResidualize:
+    case OpCode::CsQuantile:
+    case OpCode::CsVecSum:
+    case OpCode::CsVecAvg:
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  // Ts*/OU rolling, recurrences and the Kalman record op: per-instrument columns.
+  [[nodiscard]] static bool is_instrument_op(OpCode op) noexcept {
+    const auto v = static_cast<atx::u8>(op);
+    const bool ts_block = v >= static_cast<atx::u8>(OpCode::TsDelay) &&
+                          v <= static_cast<atx::u8>(OpCode::OuFilter);
+    return ts_block || op == OpCode::KalmanReg || op == OpCode::OuTheta ||
+           op == OpCode::OuHalflife || op == OpCode::OuMean || op == OpCode::OuZscore;
+  }
+
+  [[nodiscard]] atx::usize axis_len(OpCode op, atx::usize dates, atx::usize instruments) const {
+    switch (chunk_axis(op)) {
+    case ChunkAxis::Cells:
+      return dates * instruments;
+    case ChunkAxis::Dates:
+      return dates;
+    case ChunkAxis::Instruments:
+      return instruments;
+    }
+    ATX_UNREACHABLE();
+  }
+
+  [[nodiscard]] static bool slots_cover(const Instr &in, std::span<const ExtSlot> slots) noexcept {
+    const atx::usize n = slots.size();
+    if (static_cast<atx::usize>(in.dst) + in.n_out > n) {
+      return false;
+    }
+    for (atx::usize k = 0; k < in.src.size(); ++k) {
+      const SlotId s = in.src[k];
+      if (s == kNoSlot) {
+        continue;
+      }
+      const atx::usize extra = (in.op == OpCode::Pin && k == 0) ? in.param : atx::usize{0};
+      if (static_cast<atx::usize>(s) + extra >= n) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // ---- Lane 2 planning (evaluate_nodes) -----------------------------------
+  // want_pos_[root] = output position of a requested root, or kNotWanted.
+  static constexpr atx::u32 kNotWanted = ~atx::u32{0};
+  static constexpr atx::u32 kNoProducer = ~atx::u32{0};
+
+  [[nodiscard]] atx::core::Status map_requested_roots(const Program &prog,
+                                                      std::span<const atx::u32> roots) {
+    want_pos_.assign(prog.roots.size(), kNotWanted);
+    for (atx::usize k = 0; k < roots.size(); ++k) {
+      if (roots[k] >= prog.roots.size() || want_pos_[roots[k]] != kNotWanted) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "Engine::evaluate_nodes: root index out of range or duplicated");
+      }
+      want_pos_[roots[k]] = static_cast<atx::u32>(k);
+    }
+    return atx::core::Ok();
+  }
+
+  // Forward pass: producer instruction of every operand; backward pass: exact
+  // liveness from the requested StoreAlphas, stopping at cache hits.
+  void plan_needed(const Program &prog, SubtreeCache *cache) {
+    const atx::usize n = prog.code.size();
+    slot_producer_.assign(static_cast<atx::usize>(prog.num_slots) + 1U, kNoProducer);
+    producers_.assign(n, {kNoProducer, kNoProducer, kNoProducer});
+    for (atx::usize i = 0; i < n; ++i) {
+      const Instr &in = prog.code[i];
+      if (in.op == OpCode::Free) {
+        continue;
+      }
+      for (atx::usize k = 0; k < in.src.size(); ++k) {
+        if (in.src[k] != kNoSlot) {
+          producers_[i][k] = slot_producer_[in.src[k]];
+        }
+      }
+      if (in.op != OpCode::StoreAlpha) {
+        for (atx::usize k = 0; k < in.n_out; ++k) {
+          slot_producer_[static_cast<atx::usize>(in.dst) + k] = static_cast<atx::u32>(i);
+        }
+      }
+    }
+    needed_.assign(n, 0);
+    hits_.assign(n, nullptr);
+    if (cache != nullptr) {
+      subtree_hashes(prog, hashes_, slot_hash_scratch_);
+    }
+    const atx::u64 pdig = cache != nullptr ? panel_digest_value() : atx::u64{0};
+    const atx::usize cells = panel_.cells();
+    for (atx::usize ii = n; ii-- > 0;) {
+      const Instr &in = prog.code[ii];
+      if (in.op == OpCode::Free) {
+        continue;
+      }
+      if (in.op == OpCode::StoreAlpha) {
+        if (in.param < want_pos_.size() && want_pos_[in.param] != kNotWanted) {
+          mark_needed(producers_[ii][0]);
+        }
+        continue;
+      }
+      if (needed_[ii] == 0) {
+        continue;
+      }
+      if (cache != nullptr && subtree_cacheable(in)) {
+        std::shared_ptr<const PanelBuf> hit = cache->find(SubtreeKey{hashes_[ii], pdig, mode_});
+        if (hit != nullptr && hit->size() == cells) {
+          hits_[ii] = std::move(hit);
+          continue; // the cached value replaces this node's whole producer cone
+        }
+      }
+      for (const atx::u32 p : producers_[ii]) {
+        mark_needed(p);
+      }
+    }
+  }
+
+  void mark_needed(atx::u32 producer) noexcept {
+    if (producer != kNoProducer) {
+      needed_[producer] = 1;
+    }
+  }
+
+  [[nodiscard]] atx::core::Status store_requested(const Instr &in, SignalSet &out,
+                                                  atx::usize cells) {
+    if (in.param >= want_pos_.size()) {
+      return atx::core::Err(atx::core::ErrorCode::Internal,
+                            "Engine::evaluate_nodes: StoreAlpha output index out of range");
+    }
+    const atx::u32 pos = want_pos_[in.param];
+    if (pos == kNotWanted) {
+      return atx::core::Ok();
+    }
+    const std::span<const atx::f64> src = src_col(in, 0);
+    std::vector<atx::f64> &dst = out.alphas[pos].values;
+    for (atx::usize i = 0; i < cells; ++i) {
+      dst[i] = src[i];
+    }
+    return atx::core::Ok();
+  }
+
+  // Execute instruction i of a planned evaluation: skip if dead, copy if a cache
+  // hit, else compute (and publish when a cache is attached and the op qualifies).
+  [[nodiscard]] atx::core::Status run_planned(const Program &prog, atx::usize i,
+                                              SubtreeCache *cache, atx::usize dates,
+                                              atx::usize instruments, atx::usize cells) {
+    const Instr &in = prog.code[i];
+    if (needed_[i] == 0) {
+      return atx::core::Ok();
+    }
+    if (hits_[i] != nullptr) {
+      const std::span<atx::f64> dst = dst_col(in);
+      const PanelBuf &src = *hits_[i];
+      for (atx::usize c = 0; c < cells; ++c) {
+        dst[c] = src[c];
+      }
+      hits_[i].reset(); // drop our reference promptly (the cache may evict it)
+      return atx::core::Ok();
+    }
+    if (in.op == OpCode::Pin) {
+      eval_pin(in, 0, cells);
+      return atx::core::Ok();
+    }
+    ATX_TRY_VOID(dispatch(in, dates, instruments, cells));
+    if (cache != nullptr && subtree_cacheable(in)) {
+      const std::span<const atx::f64> v = src_view(in.dst);
+      cache->publish(SubtreeKey{hashes_[i], panel_digest_value(), mode_},
+                     PanelBuf(v.begin(), v.end()));
+    }
+    return atx::core::Ok();
+  }
+
+  [[nodiscard]] std::span<const atx::f64> src_view(SlotId s) const { return rcol(s); }
+
+  [[nodiscard]] static bool fused_slots_cover(const FusedKernel &k, SlotId dst,
+                                              atx::usize n) noexcept {
+    if (static_cast<atx::usize>(dst) >= n || k.ops.empty()) {
+      return false;
+    }
+    for (const MicroOp &m : k.ops) {
+      if (m.kind == MicroKind::Slot && static_cast<atx::usize>(m.arg) >= n) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Run a fused micro-program over cells [lo, hi) in kFuseBlock-cell blocks.
+  // Register r holds micro-op r's block; a Slot op ALIASES its source (no copy); the
+  // last op writes straight into `dst`. Every Op applies detail::vm_apply_ew — the
+  // same per-cell function the unfused instruction applies — and Field / Imm
+  // reproduce LoadField / Const exactly, so the result is byte-identical.
+  // SAFETY: operand registers always precede their consumer (fusion emits members
+  // in topological order); kernels whose register file outgrows the scratch grow
+  // it here once (cold), never inside the block loop.
+  [[nodiscard]] atx::core::Status eval_fused(const FusedKernel &k, SlotId dst, atx::usize lo,
+                                             atx::usize hi) {
+    const atx::usize nops = k.ops.size();
+    if (nops == 0 || k.ops.back().kind != MicroKind::Op) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "Engine: fused kernel must end in an element-wise op");
+    }
+    if (fuse_regs_.size() < nops * kFuseBlock) {
+      fuse_regs_.resize(nops * kFuseBlock);
+    }
+    if (fuse_ptr_.size() < nops) {
+      fuse_ptr_.resize(nops);
+    }
+    const std::span<atx::f64> out = wcol(dst);
+    for (atx::usize b = lo; b < hi; b += kFuseBlock) {
+      const atx::usize len = std::min(kFuseBlock, hi - b);
+      for (atx::usize r = 0; r < nops; ++r) {
+        ATX_TRY_VOID(fused_step(k.ops[r], r, r + 1 == nops ? out.data() + b : nullptr, b, len));
+      }
+    }
+    return atx::core::Ok();
+  }
+
+  // One micro-op over one block [b, b+len). `sink` (non-null only for the last op)
+  // receives the result directly; otherwise register r's scratch does.
+  [[nodiscard]] atx::core::Status fused_step(const MicroOp &m, atx::usize r, atx::f64 *sink,
+                                             atx::usize b, atx::usize len) {
+    atx::f64 *reg = sink != nullptr ? sink : fuse_regs_.data() + r * kFuseBlock;
+    switch (m.kind) {
+    case MicroKind::Slot:
+      fuse_ptr_[r] = rcol(m.arg).data() + b;
+      return atx::core::Ok();
+    case MicroKind::Imm:
+      for (atx::usize c = 0; c < len; ++c) {
+        reg[c] = m.imm;
+      }
+      break;
+    case MicroKind::Field: {
+      if (m.arg >= field_remap_.size()) {
+        return atx::core::Err(atx::core::ErrorCode::Internal,
+                              "Engine: fused LoadField param out of field-dictionary range");
+      }
+      const std::span<const atx::f64> field = panel_.field_all(field_remap_[m.arg]);
+      const atx::usize inst = panel_.instruments();
+      atx::usize d = b / inst;
+      atx::usize j = b % inst;
+      for (atx::usize c = 0; c < len; ++c) {
+        reg[c] = panel_.in_universe(d, j) ? field[b + c] : detail::kVmNaN;
+        if (++j == inst) {
+          j = 0;
+          ++d;
+        }
+      }
+      break;
+    }
+    case MicroKind::Op:
+      detail::vm_apply_ew(m.op, fuse_ptr_[m.in[0]], fuse_ptr_[m.in[1]], fuse_ptr_[m.in[2]], reg,
+                          len);
+      break;
+    }
+    fuse_ptr_[r] = reg;
+    return atx::core::Ok();
+  }
+
+  // Pin projects one output of its parent's contiguous block into its own single
+  // slot: column(src[0] + param) -> column(dst), over cells [lo, hi).
+  void eval_pin(const Instr &in, atx::usize lo, atx::usize hi) {
+    const std::span<const atx::f64> src = rcol(in.src[0] + in.param);
+    const std::span<atx::f64> dst_span = wcol(in.dst);
+    for (atx::usize ci = lo; ci < hi; ++ci) {
+      dst_span[ci] = src[ci];
+    }
   }
 
   // Resolve each program field name -> the Panel's FieldId ONCE, into the
@@ -458,12 +1095,20 @@ private:
   //  the switch total and are unreachable. Cs*/Ts* return NotImplemented.
   // =======================================================================
   [[nodiscard]] atx::core::Status dispatch(const Instr &in, atx::usize dates,
-                                           atx::usize instruments, atx::usize cells) {
+                                           atx::usize instruments, atx::usize /*cells*/) {
+    return dispatch_range(in, dates, instruments, 0, axis_len(in.op, dates, instruments));
+  }
+
+  // The range form of dispatch: [lo, hi) along chunk_axis(in.op). The full range
+  // is exactly the pre-Lane-2 serial kernel (same loops, same order).
+  [[nodiscard]] atx::core::Status dispatch_range(const Instr &in, atx::usize dates,
+                                                 atx::usize instruments, atx::usize lo,
+                                                 atx::usize hi) {
     switch (in.op) {
     case OpCode::LoadField:
-      return eval_load_field(in, dates, instruments);
+      return eval_load_field(in, instruments, lo, hi);
     case OpCode::Const:
-      return eval_const(in);
+      return eval_const(in, lo, hi);
     case OpCode::Add:
     case OpCode::Sub:
     case OpCode::Mul:
@@ -472,28 +1117,28 @@ private:
     case OpCode::Spow:
     case OpCode::MinP:
     case OpCode::MaxP:
-      return eval_binary(in);
+      return eval_elementwise(in, lo, hi);
     case OpCode::Neg:
     case OpCode::Abs:
     case OpCode::Sign:
     case OpCode::Log:
     case OpCode::Sigmoid:
     case OpCode::Tanh:
-      return eval_unary(in);
+      return eval_elementwise(in, lo, hi);
     case OpCode::CmpLt:
     case OpCode::CmpGt:
     case OpCode::CmpLe:
     case OpCode::CmpGe:
     case OpCode::CmpEq:
     case OpCode::CmpNe:
-      return eval_cmp(in);
+      return eval_elementwise(in, lo, hi);
     case OpCode::And:
     case OpCode::Or:
-      return eval_logical(in);
+      return eval_elementwise(in, lo, hi);
     case OpCode::Not:
-      return eval_not(in);
+      return eval_elementwise(in, lo, hi);
     case OpCode::Select:
-      return eval_select(in, cells);
+      return eval_elementwise(in, lo, hi);
     case OpCode::CsRank:
     case OpCode::CsZscore:
     case OpCode::CsScale:
@@ -510,7 +1155,7 @@ private:
     case OpCode::CsQuantile:
     case OpCode::CsVecSum:
     case OpCode::CsVecAvg:
-      return eval_cross_section(in, dates, instruments);
+      return eval_cross_section(in, instruments, lo, hi);
     case OpCode::TsDelay:
     case OpCode::TsDelta:
     case OpCode::TsSum:
@@ -551,44 +1196,46 @@ private:
     case OpCode::OuHalflife:
     case OpCode::OuMean:
     case OpCode::OuZscore:
-      return eval_time_series(in, dates, instruments);
+      return eval_time_series(in, dates, instruments, lo, hi);
     case OpCode::TradeWhen:
     case OpCode::Hump:
     case OpCode::KalmanLevel:
     case OpCode::OuFilter:
-      return eval_recurrence(in, dates, instruments);
+      return eval_recurrence(in, dates, instruments, lo, hi);
     case OpCode::Split2:
-      return eval_split2(in, cells);
+      return eval_split2(in, lo, hi);
     case OpCode::KalmanReg:
-      return eval_kalman_reg(in, dates, instruments);
+      return eval_kalman_reg(in, dates, instruments, lo, hi);
     case OpCode::Pin:
+      eval_pin(in, lo, hi);
+      return atx::core::Ok();
     case OpCode::StoreAlpha:
     case OpCode::Free:
-      ATX_UNREACHABLE(); // Pin/StoreAlpha/Free handled by evaluate(); never dispatched
+      ATX_UNREACHABLE(); // StoreAlpha/Free handled by evaluate(); never dispatched
     }
     ATX_UNREACHABLE(); // exhaustive switch — no valid fallthrough
   }
 
   // ---- leaves -------------------------------------------------------------
-  [[nodiscard]] atx::core::Status eval_const(const Instr &in) {
+  [[nodiscard]] atx::core::Status eval_const(const Instr &in, atx::usize lo, atx::usize hi) {
     const std::span<atx::f64> out = dst_col(in);
-    for (atx::f64 &c : out) {
-      c = in.imm[0];
+    for (atx::usize i = lo; i < hi; ++i) {
+      out[i] = in.imm[0];
     }
     return atx::core::Ok();
   }
 
   // LoadField copies the field, NaN-ing any out-of-universe cell (point-in-time).
   // `in.param` indexes the program's field dictionary; remap to the Panel id.
-  [[nodiscard]] atx::core::Status eval_load_field(const Instr &in, atx::usize dates,
-                                                  atx::usize instruments) {
+  [[nodiscard]] atx::core::Status eval_load_field(const Instr &in, atx::usize instruments,
+                                                  atx::usize d0, atx::usize d1) {
     if (in.param >= field_remap_.size()) {
       return atx::core::Err(atx::core::ErrorCode::Internal,
                             "Engine::evaluate: LoadField param out of field-dictionary range");
     }
     const std::span<atx::f64> out = dst_col(in);
     const std::span<const atx::f64> field = panel_.field_all(field_remap_[in.param]);
-    for (atx::usize d = 0; d < dates; ++d) {
+    for (atx::usize d = d0; d < d1; ++d) {
       for (atx::usize j = 0; j < instruments; ++j) {
         const atx::usize idx = d * instruments + j;
         out[idx] = panel_.in_universe(d, j) ? field[idx] : detail::kVmNaN;
@@ -597,123 +1244,15 @@ private:
     return atx::core::Ok();
   }
 
-  // ---- element-wise unary -------------------------------------------------
-  [[nodiscard]] atx::core::Status eval_unary(const Instr &in) {
-    const std::span<const atx::f64> a = src_col(in, 0);
-    const std::span<atx::f64> out = dst_col(in);
-    switch (in.op) {
-    case OpCode::Neg:
-      detail::vm_map_unary(a, out, [](atx::f64 x) noexcept { return -x; });
-      break;
-    case OpCode::Abs:
-      detail::vm_map_unary(a, out, [](atx::f64 x) noexcept { return std::fabs(x); });
-      break;
-    case OpCode::Sign:
-      detail::vm_map_unary(a, out, detail::vm_sign);
-      break;
-    case OpCode::Log:
-      detail::vm_map_unary(a, out, [](atx::f64 x) noexcept { return std::log(x); });
-      break;
-    case OpCode::Sigmoid:
-      // 1/(1+exp(-x)); NaN -> NaN naturally. Bit-identical to oracle's op_sigmoid.
-      detail::vm_map_unary(a, out, [](atx::f64 x) noexcept { return 1.0 / (1.0 + std::exp(-x)); });
-      break;
-    case OpCode::Tanh:
-      detail::vm_map_unary(a, out, [](atx::f64 x) noexcept { return std::tanh(x); });
-      break;
-    default:
-      ATX_UNREACHABLE();
-    }
-    return atx::core::Ok();
-  }
-
-  // ---- element-wise binary ------------------------------------------------
-  [[nodiscard]] atx::core::Status eval_binary(const Instr &in) {
-    const std::span<const atx::f64> a = src_col(in, 0);
-    const std::span<const atx::f64> b = src_col(in, 1);
-    const std::span<atx::f64> out = dst_col(in);
-    switch (in.op) {
-    case OpCode::Add:
-      detail::vm_map_binary(a, b, out, [](atx::f64 x, atx::f64 y) noexcept { return x + y; });
-      break;
-    case OpCode::Sub:
-      detail::vm_map_binary(a, b, out, [](atx::f64 x, atx::f64 y) noexcept { return x - y; });
-      break;
-    case OpCode::Mul:
-      detail::vm_map_binary(a, b, out, [](atx::f64 x, atx::f64 y) noexcept { return x * y; });
-      break;
-    case OpCode::Div:
-      detail::vm_map_binary(a, b, out, [](atx::f64 x, atx::f64 y) noexcept { return x / y; });
-      break;
-    case OpCode::Pow:
-      detail::vm_map_binary(a, b, out,
-                            [](atx::f64 x, atx::f64 y) noexcept { return std::pow(x, y); });
-      break;
-    case OpCode::Spow:
-      detail::vm_map_binary(a, b, out, detail::vm_spow);
-      break;
-    case OpCode::MinP:
-      detail::vm_map_binary(a, b, out, detail::vm_min);
-      break;
-    case OpCode::MaxP:
-      detail::vm_map_binary(a, b, out, detail::vm_max);
-      break;
-    default:
-      ATX_UNREACHABLE();
-    }
-    return atx::core::Ok();
-  }
-
-  // ---- comparisons --------------------------------------------------------
-  [[nodiscard]] atx::core::Status eval_cmp(const Instr &in) {
-    const std::span<const atx::f64> a = src_col(in, 0);
-    const std::span<const atx::f64> b = src_col(in, 1);
-    const std::span<atx::f64> out = dst_col(in);
-    switch (in.op) {
-    case OpCode::CmpLt:
-      detail::vm_map_cmp(a, b, out, [](atx::f64 x, atx::f64 y) noexcept { return x < y; });
-      break;
-    case OpCode::CmpGt:
-      detail::vm_map_cmp(a, b, out, [](atx::f64 x, atx::f64 y) noexcept { return x > y; });
-      break;
-    case OpCode::CmpLe:
-      detail::vm_map_cmp(a, b, out, [](atx::f64 x, atx::f64 y) noexcept { return x <= y; });
-      break;
-    case OpCode::CmpGe:
-      detail::vm_map_cmp(a, b, out, [](atx::f64 x, atx::f64 y) noexcept { return x >= y; });
-      break;
-    case OpCode::CmpEq:
-      detail::vm_map_cmp(a, b, out, [](atx::f64 x, atx::f64 y) noexcept { return x == y; });
-      break;
-    case OpCode::CmpNe:
-      detail::vm_map_cmp(a, b, out, [](atx::f64 x, atx::f64 y) noexcept { return x != y; });
-      break;
-    default:
-      ATX_UNREACHABLE();
-    }
-    return atx::core::Ok();
-  }
-
-  // ---- logical / not / select ---------------------------------------------
-  [[nodiscard]] atx::core::Status eval_logical(const Instr &in) {
-    detail::vm_map_binary(src_col(in, 0), src_col(in, 1), dst_col(in),
-                          in.op == OpCode::And ? detail::vm_and : detail::vm_or);
-    return atx::core::Ok();
-  }
-
-  [[nodiscard]] atx::core::Status eval_not(const Instr &in) {
-    detail::vm_map_unary(src_col(in, 0), dst_col(in), detail::vm_not);
-    return atx::core::Ok();
-  }
-
-  [[nodiscard]] atx::core::Status eval_select(const Instr &in, atx::usize cells) {
-    const std::span<const atx::f64> c = src_col(in, 0);
-    const std::span<const atx::f64> a = src_col(in, 1);
-    const std::span<const atx::f64> b = src_col(in, 2);
-    const std::span<atx::f64> out = dst_col(in);
-    for (atx::usize i = 0; i < cells; ++i) {
-      out[i] = detail::vm_select(c[i], a[i], b[i]);
-    }
+  // ---- element-wise (unary / binary / comparison / logical / not / select) --
+  // All route through detail::vm_apply_ew — the single implementation the fused
+  // kernels share — over the cell range [lo, hi).
+  [[nodiscard]] atx::core::Status eval_elementwise(const Instr &in, atx::usize lo, atx::usize hi) {
+    const atx::usize n = hi - lo;
+    const atx::f64 *x = in.src[0] != kNoSlot ? src_col(in, 0).data() + lo : nullptr;
+    const atx::f64 *y = in.src[1] != kNoSlot ? src_col(in, 1).data() + lo : nullptr;
+    const atx::f64 *z = in.src[2] != kNoSlot ? src_col(in, 2).data() + lo : nullptr;
+    detail::vm_apply_ew(in.op, x, y, z, dst_col(in).data() + lo, n);
     return atx::core::Ok();
   }
 
@@ -724,8 +1263,8 @@ private:
   // src[1], CsScale takes the scalar factor a == src[1][0]. EVERY output cell
   // is written (out-of-set -> NaN) since scratch slots are recycled. Mirrors
   // oracle.hpp's Oracle::eval_cross_section / cs_one_date dispatch exactly.
-  [[nodiscard]] atx::core::Status eval_cross_section(const Instr &in, atx::usize dates,
-                                                     atx::usize instruments) {
+  [[nodiscard]] atx::core::Status eval_cross_section(const Instr &in, atx::usize instruments,
+                                                     atx::usize d0, atx::usize d1) {
     const std::span<const atx::f64> x = src_col(in, 0);
     const std::span<atx::f64> out = dst_col(in);
     const bool grouped =
@@ -752,17 +1291,51 @@ private:
     // clear()s it before each rebuild, so no stale entry is ever read -> byte-identical
     // to the previous fresh-per-call vector. The Engine is single-owner per worker, so
     // this member is touched by exactly one thread at a time (no cross-worker sharing).
-    cs_valid_.reserve(instruments);
-    for (atx::usize d = 0; d < dates; ++d) {
-      const std::span<const atx::f64> xr = x.subspan(d * instruments, instruments);
-      const std::span<atx::f64> orow = out.subspan(d * instruments, instruments);
-      const std::span<const atx::f64> grow =
-          grouped ? g.subspan(d * instruments, instruments) : std::span<const atx::f64>{};
-      const std::span<const atx::f64> zrow =
-          z.empty() ? std::span<const atx::f64>{} : z.subspan(d * instruments, instruments);
-      cs_one_date(in.op, xr, grow, zrow, scale_a, orow, cs_valid_, cs_scratch_);
+    const CsRowsCtx ctx{in.op, x, g, z, out, scale_a, instruments, grouped};
+    // Lane 2: date-band parallelism. Each band is a contiguous date range run by
+    // ONE worker with ITS private valid/scratch, so every row executes the exact
+    // serial row kernel — bit-identical for any band split or pool size.
+    if (cs_pool_ != nullptr && d1 - d0 > 1) {
+      const atx::usize n_rows = d1 - d0;
+      const atx::usize bands = std::min(n_rows, cs_pool_->n_workers() * 4U);
+      cs_pool_->parallel_for(bands, [this, &ctx, d0, n_rows, bands](atx::usize b,
+                                                                    atx::usize wid) {
+        const atx::usize lo = d0 + (n_rows * b) / bands;
+        const atx::usize hi = d0 + (n_rows * (b + 1)) / bands;
+        cs_rows(ctx, lo, hi, cs_valid_thr_[wid], cs_scratch_thr_[wid]);
+      });
+      return atx::core::Ok();
     }
+    cs_rows(ctx, d0, d1, cs_valid_, cs_scratch_);
     return atx::core::Ok();
+  }
+
+  // Immutable per-op bundle for the Cs row loop (serial or banded).
+  struct CsRowsCtx {
+    OpCode op;
+    std::span<const atx::f64> x;
+    std::span<const atx::f64> g;
+    std::span<const atx::f64> z;
+    std::span<atx::f64> out;
+    atx::f64 scale_a;
+    atx::usize instruments;
+    bool grouped;
+  };
+
+  // Run the Cs row kernel for dates [d0, d1) with the caller's scratch.
+  static void cs_rows(const CsRowsCtx &c, atx::usize d0, atx::usize d1,
+                      std::vector<atx::usize> &valid, detail::CsScratch &scratch) {
+    const atx::usize instruments = c.instruments;
+    valid.reserve(instruments);
+    for (atx::usize d = d0; d < d1; ++d) {
+      const std::span<const atx::f64> xr = c.x.subspan(d * instruments, instruments);
+      const std::span<atx::f64> orow = c.out.subspan(d * instruments, instruments);
+      const std::span<const atx::f64> grow =
+          c.grouped ? c.g.subspan(d * instruments, instruments) : std::span<const atx::f64>{};
+      const std::span<const atx::f64> zrow =
+          c.z.empty() ? std::span<const atx::f64>{} : c.z.subspan(d * instruments, instruments);
+      cs_one_date(c.op, xr, grow, zrow, c.scale_a, orow, valid, scratch);
+    }
   }
 
   // Apply one cross-sectional op to a single date's row. `out` is reset to all
@@ -853,7 +1426,8 @@ private:
   //     / ou_value_at recompute over the full window, still bit-exact with the
   //     oracle. Mirrors oracle.hpp's eval_time_series structure.
   [[nodiscard]] atx::core::Status eval_time_series(const Instr &in, atx::usize dates,
-                                                   atx::usize instruments) {
+                                                   atx::usize instruments, atx::usize j0,
+                                                   atx::usize j1) {
     const std::span<const atx::f64> x = src_col(in, 0);
     const std::span<atx::f64> out = dst_col(in);
     // Window from the LAST populated operand (delay/delta/unary-window: src[1];
@@ -900,7 +1474,7 @@ private:
         ts_dq_lo_.resize(dates);
         ts_dq_hi_.resize(dates);
       }
-      for (atx::usize j = 0; j < instruments; ++j) {
+      for (atx::usize j = j0; j < j1; ++j) {
         if (extreme) {
           detail::ts_online_extreme(in.op, x, out, dates, j, d, instruments, ts_dq_lo_, ts_dq_hi_);
         } else {
@@ -916,7 +1490,7 @@ private:
     // below — byte-identical to the oracle. The Welford sweep is per-instrument-
     // column and self-contained (no scratch), so it needs no column-extract.
     if (mode_ == EvalMode::ResearchFast && detail::ts_is_online_variance_op(in.op)) {
-      for (atx::usize j = 0; j < instruments; ++j) {
+      for (atx::usize j = j0; j < j1; ++j) {
         detail::tsv_welford_dispatch(in.op, x, out, dates, j, d, instruments);
       }
       return atx::core::Ok();
@@ -927,7 +1501,7 @@ private:
     // bit-exact (it is the unmodified original lookup) — and it pays NO column
     // extraction cost, so these high-frequency ops keep their baseline speed.
     if (in.op == OpCode::TsDelay || in.op == OpCode::TsDelta) {
-      for (atx::usize j = 0; j < instruments; ++j) {
+      for (atx::usize j = j0; j < j1; ++j) {
         for (atx::usize t = 0; t < dates; ++t) {
           out[t * instruments + j] =
               detail::ts_value_at(in.op, x, t, j, d, instruments, ts_scratch_a_, in.imm[0]);
@@ -957,13 +1531,13 @@ private:
     // result bit-identical to serial, so this stays AuditExact. The pool is used
     // only for instruments>1 (a single column has no work to split).
     const TsBatchCtx ctx{in, x, y, out, dates, instruments, d, binary_series, ou_rolling};
-    if (ts_pool_ != nullptr && instruments > 1) {
+    if (ts_pool_ != nullptr && j1 - j0 > 1) {
       // Each index j is handled by exactly one worker `wid`; the body writes only
       // column j's output slots and reads only column j (+ shared read-only x/y),
       // using THIS worker's private scratch — no cross-thread shared mutable state.
-      ts_pool_->parallel_for(instruments, [this, &ctx](atx::usize j, atx::usize wid) {
-        eval_ts_column(ctx, j, ts_col_thr_[wid], ts_col_b_thr_[wid], ts_scratch_a_thr_[wid],
-                       ts_scratch_b_thr_[wid]);
+      ts_pool_->parallel_for(j1 - j0, [this, &ctx, j0](atx::usize jj, atx::usize wid) {
+        eval_ts_column(ctx, j0 + jj, ts_col_thr_[wid], ts_col_b_thr_[wid],
+                       ts_scratch_a_thr_[wid], ts_scratch_b_thr_[wid]);
       });
       return atx::core::Ok();
     }
@@ -971,7 +1545,7 @@ private:
       ts_col_.resize(dates);
       ts_col_b_.resize(dates);
     }
-    for (atx::usize j = 0; j < instruments; ++j) {
+    for (atx::usize j = j0; j < j1; ++j) {
       eval_ts_column(ctx, j, ts_col_, ts_col_b_, ts_scratch_a_, ts_scratch_b_);
     }
     return atx::core::Ok();
@@ -1062,13 +1636,14 @@ private:
   // after the grow-once resize) is sound because every read of state_[j] at date
   // t precedes its write for date t.
   [[nodiscard]] atx::core::Status eval_recurrence(const Instr &in, atx::usize dates,
-                                                  atx::usize instruments) {
+                                                  atx::usize instruments, atx::usize j0,
+                                                  atx::usize j1) {
     const std::span<atx::f64> out = dst_col(in);
     if (in.op == OpCode::KalmanLevel) {
-      return eval_kalman_level(in, out, dates, instruments);
+      return eval_kalman_level(in, out, dates, instruments, j0, j1);
     }
     if (in.op == OpCode::OuFilter) {
-      return eval_ou_filter(in, out, dates, instruments);
+      return eval_ou_filter(in, out, dates, instruments, j0, j1);
     }
     if (instruments > state_.size()) {
       state_.resize(instruments); // grow-once; reused across calls
@@ -1076,7 +1651,7 @@ private:
     if (in.op == OpCode::Hump) {
       const std::span<const atx::f64> x = src_col(in, 0);
       const atx::f64 thr = in.src.at(1) == kNoSlot ? atx::f64{0.01} : src_col(in, 1).front();
-      for (atx::usize j = 0; j < instruments; ++j) {
+      for (atx::usize j = j0; j < j1; ++j) {
         for (atx::usize t = 0; t < dates; ++t) {
           const atx::usize i = t * instruments + j;
           const atx::f64 v = detail::hump_step(state_[j], x[i], thr, /*first=*/t == 0);
@@ -1090,7 +1665,7 @@ private:
     const std::span<const atx::f64> trig = src_col(in, 0);
     const std::span<const atx::f64> alpha = src_col(in, 1);
     const std::span<const atx::f64> exit_v = src_col(in, 2);
-    for (atx::usize j = 0; j < instruments; ++j) {
+    for (atx::usize j = j0; j < j1; ++j) {
       for (atx::usize t = 0; t < dates; ++t) {
         const atx::usize i = t * instruments + j;
         const atx::f64 v =
@@ -1107,11 +1682,12 @@ private:
   // instrument (no pooled state_ buffer needed — the struct holds {x,P}). Reads
   // Q/R from in.imm[0/1]. The oracle restates this math INLINE for the diff.
   [[nodiscard]] atx::core::Status eval_kalman_level(const Instr &in, std::span<atx::f64> out,
-                                                    atx::usize dates, atx::usize instruments) {
+                                                    atx::usize dates, atx::usize instruments,
+                                                    atx::usize j0, atx::usize j1) {
     const std::span<const atx::f64> z = src_col(in, 0);
     const atx::f64 Q = in.imm[0];
     const atx::f64 R = in.imm[1];
-    for (atx::usize j = 0; j < instruments; ++j) {
+    for (atx::usize j = j0; j < j1; ++j) {
       detail::KalmanLevelState s{};
       bool seeded = false;
       for (atx::usize t = 0; t < dates; ++t) {
@@ -1126,11 +1702,12 @@ private:
   // kernel (state_ops::ou_filter_step). Stack-local {xhat, seeded} per instrument.
   // Reads theta/mu from in.imm[0/1]. The oracle restates this math INLINE.
   [[nodiscard]] atx::core::Status eval_ou_filter(const Instr &in, std::span<atx::f64> out,
-                                                 atx::usize dates, atx::usize instruments) {
+                                                 atx::usize dates, atx::usize instruments,
+                                                 atx::usize j0, atx::usize j1) {
     const std::span<const atx::f64> x = src_col(in, 0);
     const atx::f64 theta = in.imm[0];
     const atx::f64 mu = in.imm[1];
-    for (atx::usize j = 0; j < instruments; ++j) {
+    for (atx::usize j = j0; j < j1; ++j) {
       atx::f64 xhat = 0.0;
       bool seeded = false;
       for (atx::usize t = 0; t < dates; ++t) {
@@ -1146,11 +1723,11 @@ private:
   // two-slot block [dst, dst+1]; `out_col(in, k)` = pool_.column(in.dst + k).
   // SAFETY: the linearizer's acquire_block(2) ensured both buffer slots are
   // within the pre-sized pool; accessing in.dst+1 never exceeds capacity.
-  [[nodiscard]] atx::core::Status eval_split2(const Instr &in, atx::usize cells) {
+  [[nodiscard]] atx::core::Status eval_split2(const Instr &in, atx::usize c0, atx::usize c1) {
     const std::span<const atx::f64> x = src_col(in, 0);
-    const std::span<atx::f64> hi = pool_.column(in.dst + 0);
-    const std::span<atx::f64> lo = pool_.column(in.dst + 1);
-    for (atx::usize i = 0; i < cells; ++i) {
+    const std::span<atx::f64> hi = wcol(in.dst + 0);
+    const std::span<atx::f64> lo = wcol(in.dst + 1);
+    for (atx::usize i = c0; i < c1; ++i) {
       hi[i] = x[i];
       lo[i] = -x[i];
     }
@@ -1166,15 +1743,16 @@ private:
   // contiguous block [dst, dst+2] is within the pre-sized pool.
   // SAFETY: causal by construction (step reads only prior state + date-t inputs).
   [[nodiscard]] atx::core::Status eval_kalman_reg(const Instr &in, atx::usize dates,
-                                                  atx::usize instruments) {
+                                                  atx::usize instruments, atx::usize j0,
+                                                  atx::usize j1) {
     const std::span<const atx::f64> y = src_col(in, 0);
     const std::span<const atx::f64> x = src_col(in, 1);
     const atx::f64 delta = in.imm[0];
     const atx::f64 R = in.imm[1];
-    const std::span<atx::f64> oa = pool_.column(in.dst + 0);
-    const std::span<atx::f64> ob = pool_.column(in.dst + 1);
-    const std::span<atx::f64> orr = pool_.column(in.dst + 2);
-    for (atx::usize j = 0; j < instruments; ++j) {
+    const std::span<atx::f64> oa = wcol(in.dst + 0);
+    const std::span<atx::f64> ob = wcol(in.dst + 1);
+    const std::span<atx::f64> orr = wcol(in.dst + 2);
+    for (atx::usize j = j0; j < j1; ++j) {
       detail::KalmanRegState s{};
       bool seeded = false;
       for (atx::usize t = 0; t < dates; ++t) {
@@ -1216,6 +1794,26 @@ private:
   std::vector<std::vector<atx::f64>> ts_col_b_thr_;     // per-worker y column-extract (dates)
   std::vector<std::vector<atx::f64>> ts_scratch_a_thr_; // per-worker window scratch a (d)
   std::vector<std::vector<atx::f64>> ts_scratch_b_thr_; // per-worker window scratch b (d)
+  // Lane 2: optional Cs date-band pool + per-worker valid/scratch (sized in set_cs_pool).
+  atx::engine::parallel::DetPool *cs_pool_{nullptr}; // borrowed; null = serial rows
+  std::vector<std::vector<atx::usize>> cs_valid_thr_;
+  std::vector<detail::CsScratch> cs_scratch_thr_;
+  // Lane 2: execute_range's borrowed slot table (empty outside execute_range).
+  std::span<const ExtSlot> ext_{};
+  // Lane 2: evaluate_nodes planning scratch (grown monotonically).
+  std::vector<atx::u32> all_roots_;
+  std::vector<atx::u32> want_pos_;
+  std::vector<atx::u32> slot_producer_;
+  std::vector<std::array<atx::u32, 3>> producers_;
+  std::vector<atx::u8> needed_;
+  std::vector<std::shared_ptr<const PanelBuf>> hits_;
+  std::vector<SubtreeHash> hashes_;
+  std::vector<SubtreeHash> slot_hash_scratch_;
+  std::vector<atx::f64> root_buf_; // evaluate_root's output (valid until the next call)
+  std::optional<atx::u64> panel_digest_;
+  // Lane 2: fused-kernel register file (nops * kFuseBlock) + per-op block pointers.
+  std::vector<atx::f64> fuse_regs_;
+  std::vector<const atx::f64 *> fuse_ptr_;
 };
 
 } // namespace atx::engine::alpha
