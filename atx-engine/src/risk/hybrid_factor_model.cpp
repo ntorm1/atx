@@ -89,7 +89,13 @@ struct Workspace {
   std::vector<atx::usize> valid;  // valid asset list
   std::vector<atx::usize> free_;  // free full-coordinate index list
   std::vector<atx::f64> alpha;    // per free coord: coefficient in f_ref (0 for non-industry)
-  std::vector<atx::f64> xrow;     // one asset's style row
+  std::vector<atx::u8> ok;        // per-asset validity flag
+  std::vector<atx::usize> gv;     // industry of each valid asset
+  VecX wv;                        // regression weight of each valid asset
+  VecX rv;                        // return of each valid asset
+  MatX xv;                        // valid style rows (nv×Ks)
+  MatX xw;                        // W·xv
+  VecX fit;                       // style fit of each valid asset
   MatX af;                        // reduced normal matrix
   VecX bf;
 };
@@ -131,55 +137,85 @@ bool solve_date(const ExposureSeries &e, const Layout &lay, const MatX &xs, cons
                 Eigen::Index t, Workspace &ws, Eigen::Ref<VecX> f, Eigen::Ref<VecX> resid,
                 atx::f64 &r2) {
   const atx::usize n = static_cast<atx::usize>(rr.cols());
+  const Eigen::Index ks = static_cast<Eigen::Index>(lay.ks);
+  // Validity by contiguous column sweeps (the style block is column-major N×Ks).
+  ws.ok.assign(n, 0U);
+  for (atx::usize i = 0U; i < n; ++i) {
+    const bool ind_ok = lay.g == 0U || e.industry[i] < lay.g;
+    ws.ok[i] = (std::isfinite(rr(t, static_cast<Eigen::Index>(i))) && ind_ok &&
+                reg_weight(e, i) > 0.0)
+                   ? 1U
+                   : 0U;
+  }
+  for (Eigen::Index c = 0; c < ks; ++c) {
+    for (atx::usize i = 0U; i < n; ++i) {
+      if (ws.ok[i] != 0U && !std::isfinite(xs(static_cast<Eigen::Index>(i), c))) {
+        ws.ok[i] = 0U;
+      }
+    }
+  }
   ws.valid.clear();
   for (atx::usize i = 0U; i < n; ++i) {
-    if (std::isfinite(rr(t, static_cast<Eigen::Index>(i))) && asset_valid(e, lay, xs, i)) {
+    if (ws.ok[i] != 0U) {
       ws.valid.push_back(i);
     }
   }
+  const Eigen::Index nv = static_cast<Eigen::Index>(ws.valid.size());
+  // Gather the valid rows: weights, returns, industries, styles (column by column).
+  ws.wv.resize(nv);
+  ws.rv.resize(nv);
+  ws.gv.resize(ws.valid.size());
+  for (Eigen::Index j = 0; j < nv; ++j) {
+    const atx::usize i = ws.valid[static_cast<atx::usize>(j)];
+    ws.wv[j] = reg_weight(e, i);
+    ws.rv[j] = rr(t, static_cast<Eigen::Index>(i));
+    ws.gv[static_cast<atx::usize>(j)] = (lay.g > 0U) ? static_cast<atx::usize>(e.industry[i]) : 0U;
+  }
+  ws.xv.resize(nv, ks);
+  for (Eigen::Index c = 0; c < ks; ++c) {
+    for (Eigen::Index j = 0; j < nv; ++j) {
+      ws.xv(j, c) = xs(static_cast<Eigen::Index>(ws.valid[static_cast<atx::usize>(j)]), c);
+    }
+  }
+  ws.xw = ws.xv.array().colwise() * ws.wv.array(); // W·X  (nv×Ks)
+
   const Eigen::Index k = static_cast<Eigen::Index>(lay.k);
+  const Eigen::Index os = static_cast<Eigen::Index>(lay.os);
+  const Eigen::Index oi = static_cast<Eigen::Index>(lay.oi);
   ws.a.setZero(k, k);
   ws.b.setZero(k);
   std::fill(ws.cw.begin(), ws.cw.end(), 0.0);
   std::fill(ws.cnt.begin(), ws.cnt.end(), 0U);
-  const Eigen::Index os = static_cast<Eigen::Index>(lay.os);
-  const Eigen::Index oi = static_cast<Eigen::Index>(lay.oi);
-  for (const atx::usize i : ws.valid) {
-    const Eigen::Index ii = static_cast<Eigen::Index>(i);
-    const atx::f64 w = reg_weight(e, i);
-    const atx::f64 r = rr(t, ii);
-    const atx::f64 wr = w * r;
-    for (atx::usize l = 0U; l < lay.ks; ++l) {
-      ws.xrow[l] = xs(ii, static_cast<Eigen::Index>(l));
+  // Dense style block XᵀWX / XᵀWr (GEMM / GEMV).
+  if (ks > 0) {
+    ws.a.block(os, os, ks, ks).noalias() = ws.xw.transpose() * ws.xv;
+    ws.b.segment(os, ks).noalias() = ws.xw.transpose() * ws.rv;
+  }
+  if (lay.market) {
+    ws.a(0, 0) = ws.wv.sum();
+    ws.b[0] = ws.wv.dot(ws.rv);
+    if (ks > 0) {
+      ws.a.block(0, os, 1, ks) = ws.xw.colwise().sum();
     }
-    Eigen::Index gcol = -1;
-    if (lay.g > 0U) {
-      const atx::usize g = e.industry[i];
-      gcol = oi + static_cast<Eigen::Index>(g);
-      ws.cw[g] += cons_weight(e, i);
+  }
+  // One-hot industry blocks: scattered sums into the small G-row band.
+  if (lay.g > 0U) {
+    for (Eigen::Index j = 0; j < nv; ++j) {
+      const atx::usize g = ws.gv[static_cast<atx::usize>(j)];
+      const Eigen::Index gc = oi + static_cast<Eigen::Index>(g);
+      const atx::f64 w = ws.wv[j];
+      ws.cw[g] += cons_weight(e, ws.valid[static_cast<atx::usize>(j)]);
       ++ws.cnt[g];
-      ws.a(gcol, gcol) += w;
-      ws.b[gcol] += wr;
-    }
-    if (lay.market) {
-      ws.a(0, 0) += w;
-      ws.b[0] += wr;
-      if (gcol >= 0) {
-        ws.a(0, gcol) += w;
-      }
-    }
-    for (atx::usize j = 0U; j < lay.ks; ++j) {
-      const atx::f64 wx = w * ws.xrow[j];
-      const Eigen::Index cj = os + static_cast<Eigen::Index>(j);
-      ws.b[cj] += wx * r;
+      ws.a(gc, gc) += w;
+      ws.b[gc] += w * ws.rv[j];
       if (lay.market) {
-        ws.a(0, cj) += wx;
+        ws.a(0, gc) += w;
       }
-      if (gcol >= 0) {
-        ws.a(gcol, cj) += wx;
-      }
-      for (atx::usize l = j; l < lay.ks; ++l) {
-        ws.a(cj, os + static_cast<Eigen::Index>(l)) += wx * ws.xrow[l];
+    }
+    for (Eigen::Index c = 0; c < ks; ++c) {
+      for (Eigen::Index j = 0; j < nv; ++j) {
+        ws.a(oi + static_cast<Eigen::Index>(ws.gv[static_cast<atx::usize>(j)]), os + c) +=
+            ws.xw(j, c);
       }
     }
   }
@@ -231,31 +267,27 @@ bool solve_date(const ExposureSeries &e, const Layout &lay, const MatX &xs, cons
   if (con) {
     f[static_cast<Eigen::Index>(ref)] = f_ref;
   }
-  // Residuals + weighted R².
+  // Residuals + weighted R² (style fit as one GEMV).
   resid.setConstant(kNaN);
-  atx::f64 sw = 0.0;
-  atx::f64 swr = 0.0;
-  for (const atx::usize i : ws.valid) {
-    const atx::f64 w = reg_weight(e, i);
-    sw += w;
-    swr += w * rr(t, static_cast<Eigen::Index>(i));
+  ws.fit.resize(nv);
+  if (ks > 0) {
+    ws.fit.noalias() = ws.xv * f.segment(os, ks);
+  } else {
+    ws.fit.setZero();
   }
-  const atx::f64 rbar = swr / sw;
+  const atx::f64 sw = ws.wv.sum();
+  const atx::f64 rbar = ws.wv.dot(ws.rv) / sw;
   atx::f64 ssr = 0.0;
   atx::f64 sst = 0.0;
-  for (const atx::usize i : ws.valid) {
-    const Eigen::Index ii = static_cast<Eigen::Index>(i);
-    atx::f64 fit = lay.market ? f[0] : 0.0;
+  for (Eigen::Index j = 0; j < nv; ++j) {
+    atx::f64 fit = ws.fit[j] + (lay.market ? f[0] : 0.0);
     if (lay.g > 0U) {
-      fit += f[oi + static_cast<Eigen::Index>(e.industry[i])];
+      fit += f[oi + static_cast<Eigen::Index>(ws.gv[static_cast<atx::usize>(j)])];
     }
-    for (atx::usize l = 0U; l < lay.ks; ++l) {
-      fit += xs(ii, static_cast<Eigen::Index>(l)) * f[os + static_cast<Eigen::Index>(l)];
-    }
-    const atx::f64 r = rr(t, ii);
+    const atx::f64 r = ws.rv[j];
     const atx::f64 u = r - fit;
-    resid[ii] = u;
-    const atx::f64 w = reg_weight(e, i);
+    resid[static_cast<Eigen::Index>(ws.valid[static_cast<atx::usize>(j)])] = u;
+    const atx::f64 w = ws.wv[j];
     ssr += w * u * u;
     sst += w * (r - rbar) * (r - rbar);
   }
@@ -301,15 +333,17 @@ atx::f64 spec_var(const MatX &e, Eigen::Index row, atx::usize hl) {
   return var < kSpecFloor ? kSpecFloor : var;
 }
 
-// Descending copy of symmetric_eig's ascending eigenvalues.
-atx::core::Result<VecX> desc_eigenvalues(const MatX &gram) {
+// Eigendecomposition of an (exactly symmetrized) Gram.
+atx::core::Result<atx::core::linalg::EigResult> sym_eig(const MatX &gram) {
   const MatX sym = 0.5 * (gram + gram.transpose()); // exact symmetry for the eigensolver
-  ATX_TRY(atx::core::linalg::EigResult eig, atx::core::linalg::symmetric_eig(sym));
-  return atx::core::Ok(VecX(eig.values.reverse()));
+  return atx::core::linalg::symmetric_eig(sym);
 }
 
 // Chosen K_s for the APCA panel `ue` (Ne × T, NaN-filled with 0, row-demeaned).
-atx::core::Result<StatSelection> select_k(const MatX &ue, const HybridCfg &cfg) {
+// `gram_eig` receives the eigensystem of UᵀU when the rule computed it (Bai-Ng): it is
+// the APCA pass-1 Gram up to the 1/N scale, so the stat block reuses its eigenvectors.
+atx::core::Result<StatSelection> select_k(const MatX &ue, const HybridCfg &cfg,
+                                          atx::core::linalg::EigResult &gram_eig) {
   StatSelection sel;
   const atx::usize ne = static_cast<atx::usize>(ue.rows());
   const atx::usize t = static_cast<atx::usize>(ue.cols());
@@ -319,9 +353,11 @@ atx::core::Result<StatSelection> select_k(const MatX &ue, const HybridCfg &cfg) 
     sel.k = std::min(cfg.n_stat_fixed, k_cap);
     return atx::core::Ok(std::move(sel));
   case StatFactorSelect::BaiNgIc2: {
-    ATX_TRY(VecX ev, desc_eigenvalues(MatX(ue.transpose() * ue))); // μ of UᵀU
+    ATX_TRY(atx::core::linalg::EigResult eig, sym_eig(MatX(ue.transpose() * ue))); // UᵀU
+    VecX ev = eig.values.reverse();
     sel.k = std::min(detail::bai_ng_ic2(ev, ne, t, cfg.k_max), k_cap);
     sel.eigenvalues = std::move(ev);
+    gram_eig = std::move(eig);
     return atx::core::Ok(std::move(sel));
   }
   case StatFactorSelect::MarchenkoPastur: {
@@ -334,7 +370,9 @@ atx::core::Result<StatSelection> select_k(const MatX &ue, const HybridCfg &cfg) 
         z.row(r).setZero();
       }
     }
-    ATX_TRY(VecX ev, desc_eigenvalues(MatX((z.transpose() * z) / static_cast<atx::f64>(t))));
+    ATX_TRY(atx::core::linalg::EigResult eig,
+            sym_eig(MatX((z.transpose() * z) / static_cast<atx::f64>(t))));
+    VecX ev = eig.values.reverse();
     const detail::MpEdgeResult mp = detail::mp_edge_count(ev, ev.sum(), ne, t, cfg.k_max);
     sel.k = std::min(mp.k, k_cap);
     sel.mp_edge = mp.edge;
@@ -354,7 +392,8 @@ struct StatBlock {
 
 // APCA on the model's residual panel `u` (M × T, NaN = unobserved).
 atx::core::Result<StatBlock> stat_block(const MatX &u, atx::usize k, const HybridCfg &cfg,
-                                        const std::vector<atx::usize> &panel_rows) {
+                                        const std::vector<atx::usize> &panel_rows,
+                                        const atx::core::linalg::EigResult &gram_eig) {
   const Eigen::Index t = u.cols();
   MatX filled = u.unaryExpr([](atx::f64 v) { return std::isnan(v) ? 0.0 : v; });
   MatX ue(static_cast<Eigen::Index>(panel_rows.size()), t);
@@ -362,7 +401,13 @@ atx::core::Result<StatBlock> stat_block(const MatX &u, atx::usize k, const Hybri
     ue.row(static_cast<Eigen::Index>(j)) = filled.row(static_cast<Eigen::Index>(panel_rows[j]));
   }
   detail::demean_rows(ue);
-  ATX_TRY(MatX fhat, detail::apca_factor_returns(ue, k));
+  MatX fhat;
+  if (gram_eig.values.size() == t) {
+    fhat = detail::top_k_factors(gram_eig, k); // pass 1 from the selection's eigensystem
+  } else {
+    ATX_TRY(MatX f1, detail::apca_factor_returns(ue, k));
+    fhat = std::move(f1);
+  }
   if (cfg.gls_reweight) {
     ATX_TRY(MatX be, detail::exposures(ue, fhat));
     const VecX s = detail::specific_variances(ue, be, fhat);
@@ -415,7 +460,6 @@ atx::core::Result<FactorReturnSeries> estimate_factor_returns(const ReturnPanel 
   Workspace ws;
   ws.cw.assign(lay.g, 0.0);
   ws.cnt.assign(lay.g, 0U);
-  ws.xrow.assign(lay.ks, 0.0);
   ws.valid.reserve(n);
   VecX f(static_cast<Eigen::Index>(lay.k));
   VecX resid(static_cast<Eigen::Index>(n));
@@ -538,6 +582,7 @@ atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel
     }
   }
   StatSelection sel;
+  atx::core::linalg::EigResult gram_eig;
   if (panel_rows.size() >= 2U) {
     MatX ue(static_cast<Eigen::Index>(panel_rows.size()), tu);
     for (atx::usize j = 0U; j < panel_rows.size(); ++j) {
@@ -546,7 +591,7 @@ atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel
               .unaryExpr([](atx::f64 v) { return std::isnan(v) ? 0.0 : v; });
     }
     detail::demean_rows(ue);
-    ATX_TRY(StatSelection s, select_k(ue, cfg));
+    ATX_TRY(StatSelection s, select_k(ue, cfg, gram_eig));
     sel = std::move(s);
   }
   const atx::usize ks = sel.k;
@@ -554,7 +599,7 @@ atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel
   MatX fhat;
   MatX e = u;
   if (ks > 0U) {
-    ATX_TRY(StatBlock sb, stat_block(u, ks, cfg, panel_rows));
+    ATX_TRY(StatBlock sb, stat_block(u, ks, cfg, panel_rows, gram_eig));
     b = std::move(sb.b);
     fhat = std::move(sb.fhat);
     e = std::move(sb.resid);
