@@ -116,6 +116,30 @@ TEST(ParallelGlobalDag_Cache, WarmSecondPassServedFromCache) {
   EXPECT_LT(warm.computed, cold.computed / 4U);
 }
 
+// Regression for "publish roots last": under a byte budget that holds little more
+// than the root values, the roots must survive the cold pass (they are the MRU
+// entries), so the warm pass is served by root hits that prune every cone.
+TEST(ParallelGlobalDag_Cache, TightBudgetKeepsRootsWarm) {
+  const std::size_t panel_bytes = panel().cells() * sizeof(atx::f64);
+  const std::size_t roots = union_prog().roots.size();
+  alpha::SubtreeCache cache{(roots + 2U) * panel_bytes};
+  par::DetPool pool{4};
+  auto first = par::global_dag_evaluate(union_prog(), panel(), pool, &cache);
+  ASSERT_TRUE(first.has_value());
+  ASSERT_GT(cache.stats().evictions, 0U) << "budget must actually be tight";
+  const alpha::CacheStats before = cache.stats();
+  par::GlobalDagStats warm{};
+  auto second = par::global_dag_evaluate(union_prog(), panel(), pool, &cache, &warm);
+  ASSERT_TRUE(second.has_value());
+  EXPECT_EQ(par::signal_set_digest(first.value()), par::signal_set_digest(second.value()));
+  const alpha::CacheStats after = cache.stats();
+  const atx::u64 hits = after.hits - before.hits;
+  const atx::u64 misses = after.misses - before.misses;
+  ASSERT_GT(hits + misses, 0U);
+  EXPECT_GE(100.0 * static_cast<double>(hits) / static_cast<double>(hits + misses), 90.0);
+  EXPECT_EQ(warm.computed, 0U);
+}
+
 TEST(ParallelGlobalDag_Fused, FusedUnionIdentical) {
   auto fp = alpha::fuse(union_prog());
   ASSERT_TRUE(fp.has_value());
