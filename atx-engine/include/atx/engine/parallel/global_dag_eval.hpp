@@ -51,6 +51,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/core/macro.hpp"
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/bytecode.hpp"
@@ -320,22 +321,29 @@ struct GdItem {
   return 1;
 }
 
-// Owns whole-panel buffers and recycles them.
+// Owns whole-panel scratch buffers and recycles them. A fresh buffer is
+// allocated UNINITIALIZED: every kernel writes every cell of its output range
+// (recycled buffers already carry stale bytes, so nothing may read before
+// writing), and zero-filling here would run serially on the calling thread —
+// with first-touch page faults — for every buffer of the peak working set. The
+// workers' first writes fault the pages in parallel instead.
+using GdBuf = std::unique_ptr<atx::f64[]>;
+
 class GdBuffers {
 public:
   explicit GdBuffers(atx::usize cells) : cells_{cells} {}
 
-  [[nodiscard]] std::vector<atx::f64> take() {
+  [[nodiscard]] GdBuf take() {
     ++live_;
     peak_ = std::max(peak_, live_);
     if (!free_.empty()) {
-      std::vector<atx::f64> b = std::move(free_.back());
+      GdBuf b = std::move(free_.back());
       free_.pop_back();
       return b;
     }
-    return std::vector<atx::f64>(cells_);
+    return std::make_unique_for_overwrite<atx::f64[]>(cells_);
   }
-  void give(std::vector<atx::f64> &&b) {
+  void give(GdBuf &&b) {
     --live_;
     free_.push_back(std::move(b));
   }
@@ -350,7 +358,7 @@ private:
   atx::usize cells_;
   atx::usize live_{0};
   atx::usize peak_{0};
-  std::vector<std::vector<atx::f64>> free_;
+  std::vector<GdBuf> free_;
 };
 
 } // namespace detail
@@ -400,7 +408,7 @@ global_dag_impl(const alpha::Program &prog, std::span<const alpha::FusedKernel> 
   }
 
   std::vector<alpha::ExtSlot> table(plan.table_size);
-  std::vector<std::vector<std::vector<atx::f64>>> owned(n); // per node, per output
+  std::vector<std::vector<d::GdBuf>> owned(n); // per node, per output
   std::vector<std::vector<atx::u32>> by_level(plan.n_levels);
   std::vector<alpha::Instr> remapped(n);
   std::vector<alpha::FusedKernel> rkernels(n); // remapped kernels (fused nodes only)
@@ -429,17 +437,17 @@ global_dag_impl(const alpha::Program &prog, std::span<const alpha::FusedKernel> 
     const alpha::Instr &in = remapped[v];
     owned[v].resize(in.n_out);
     for (atx::usize k = 0; k < in.n_out; ++k) {
-      std::vector<atx::f64> *buf = nullptr;
+      atx::f64 *buf = nullptr;
       if (k == 0 && in.n_out == 1 && !plan.root_outputs[v].empty()) {
         std::vector<atx::f64> &dst = out.alphas[plan.root_outputs[v].front()].values;
-        dst.resize(cells);
-        buf = &dst;
+        ATX_ASSERT(dst.size() == cells); // sized by the level's pool pre-pass
+        buf = dst.data();
         bufs.count_external();
       } else {
         owned[v][k] = bufs.take();
-        buf = &owned[v][k];
+        buf = owned[v][k].get();
       }
-      table[plan.base[v] + k] = alpha::ExtSlot{buf->data(), buf->data(), cells};
+      table[plan.base[v] + k] = alpha::ExtSlot{buf, buf, cells};
     }
   };
 
@@ -455,9 +463,22 @@ global_dag_impl(const alpha::Program &prog, std::span<const alpha::FusedKernel> 
 
   const atx::usize max_chunks = std::max<atx::usize>(1, workers * opt.chunks_per_worker);
   std::vector<d::GdItem> items;
+  std::vector<atx::u32> root_sizing; // alpha indices whose vector a level sizes
   std::vector<std::optional<atx::core::Error>> errs;
   for (atx::u32 lv = 0; lv < plan.n_levels; ++lv) {
     items.clear();
+    // Size this level's root outputs across the pool first: the zero-fill (and
+    // first-touch page faults) of a whole-panel vector per root would otherwise
+    // run serially here. Each worker sizes one distinct alpha's vector.
+    root_sizing.clear();
+    for (const atx::u32 v : by_level[lv]) {
+      if (remapped[v].n_out == 1 && !plan.root_outputs[v].empty()) {
+        root_sizing.push_back(plan.root_outputs[v].front());
+      }
+    }
+    pool.parallel_for(root_sizing.size(), [&](atx::usize i, atx::usize /*wid*/) {
+      out.alphas[root_sizing[i]].values.resize(cells);
+    });
     for (const atx::u32 v : by_level[lv]) {
       bind_outputs(v);
       const alpha::ChunkAxis ax = plan.kernel[v] >= 0
@@ -506,7 +527,7 @@ global_dag_impl(const alpha::Program &prog, std::span<const alpha::FusedKernel> 
           owned[v].empty() || plan.last_use[v] != lv || !plan.root_outputs[v].empty()) {
         continue;
       }
-      for (std::vector<atx::f64> &b : owned[v]) {
+      for (d::GdBuf &b : owned[v]) {
         bufs.give(std::move(b));
       }
       owned[v].clear();
