@@ -24,13 +24,19 @@
 //   * asset-level     per-name bias b_i over its forecasts; reported as the mean and
 //     the mean rolling absolute deviation MRAD = mean |b_i − 1|.
 //
-//  The scorecard renders to deterministic JSON (fixed key order, %.10g numbers).
-//  A NaN next-period return counts as 0 for the book (a halted name) and is skipped
-//  for the asset-level statistic.
+//  The scorecard renders to deterministic JSON (fixed key order, %.10g numbers,
+//  escaped strings).
+//  A model asset whose next-period return is NaN (e.g. it left the universe at row
+//  a−1) is DROPPED from that period's books. Each book's remaining weights are
+//  renormalized: sum 1 for equal-weight and MinVar, unit gross for the others. This
+//  way no name adds predicted variance without also adding realized P&L. The mean
+//  number of dropped names per period is reported (mean_excluded). Such names are
+//  also skipped for the asset-level statistic.
 
-#include <functional> // std::function
-#include <string>     // std::string
-#include <vector>     // std::vector
+#include <functional>  // std::function
+#include <string>      // std::string
+#include <string_view> // std::string_view
+#include <vector>      // std::vector
 
 #include "atx/core/error.hpp" // Result
 #include "atx/core/types.hpp" // f64, u64, usize
@@ -102,9 +108,14 @@ struct ValidationScorecard {
   atx::f64 asset_mrad = 0.0;
   atx::f64 asset_in_band_frac = 0.0;
   atx::f64 mean_factors = 0.0; // mean K of the forecasting models
+  atx::f64 mean_excluded = 0.0; // mean model names per period dropped (NaN return at a−1)
 
   [[nodiscard]] std::string to_json() const;
 };
+
+// `s` as a JSON string literal (quoted; backslash, quote and control characters
+// escaped, other bytes passed through as UTF-8).
+[[nodiscard]] std::string json_quote(std::string_view s);
 
 // Walk-forward validation. Err when cfg.first_as_of == 0, n_periods == 0, step == 0,
 // the last as_of runs past the panel, a book's length != ret.n_assets(), or the

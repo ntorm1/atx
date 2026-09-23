@@ -10,9 +10,16 @@
 //
 // Inputs are PRICE styles only (the context panels carry no fundamentals): Size,
 // Volatility, Liquidity, ResidVol, STReversal, the market intercept and sector
-// dummies. CAVEAT: build_panel_series takes ONE cap vector; the converter writes each
-// name's LAST in-universe cap, which is later than the older as_of rows (it weights
-// the regression and defines Size; it never enters a return). Documented, not hidden.
+// dummies.
+//
+// Point in time. Caps are PER ROW (cap_tn.f64 -> build_panel_series_pit_caps): style
+// row t's Size exposure and the date-t regression weights use only the cap known at
+// that exposure row. The sector of a name is its FIRST in-universe sector id inside
+// the series span (oldest row first). A name enters a regression or a model only at
+// rows where it is in the universe, and those rows are never older than that first
+// observation, so no sector value from a later date is ever used. (An earlier revision
+// used each name's LAST cap and sector. That leaked the scored return into Size and
+// the weights; its 2014_t1000 scorecard is superseded.)
 
 #include <cmath>
 #include <cstdio>  // std::fprintf
@@ -134,10 +141,10 @@ void BM_L7RealScorecard(benchmark::State &state) {
   }
   const auto close = read_raw<f64>(dir + "/close.f64", t_all * n);
   const auto vol = read_raw<f64>(dir + "/volume.f64", t_all * n);
-  const auto cap = read_raw<f64>(dir + "/cap.f64", n);
-  const auto sector = read_raw<u32>(dir + "/sector.u32", n);
+  const auto cap_tn = read_raw<f64>(dir + "/cap_tn.f64", t_all * n);
+  const auto sector_tn = read_raw<f64>(dir + "/sector_tn.f64", t_all * n);
   const auto days = read_raw<atx::i64>(dir + "/dates.i64", t_all);
-  if (t_all == 0U || close.empty() || vol.empty() || cap.empty() || sector.empty() ||
+  if (t_all == 0U || close.empty() || vol.empty() || cap_tn.empty() || sector_tn.empty() ||
       days.empty()) {
     state.SkipWithError("cannot read the raw panel");
     return;
@@ -151,10 +158,24 @@ void BM_L7RealScorecard(benchmark::State &state) {
     state.SkipWithError("panel too short for window + periods + lookback");
     return;
   }
-  std::vector<f64> caps(cap);
-  for (f64 &c : caps) {
-    if (!std::isfinite(c) || c <= 0.0) {
-      c = 1.0; // no cap ever observed: weight floor
+  // Newest-first (series_window+1)×N cap rows: row r = date t_all−1−r (NaN ⇒ the name
+  // has no cap there and drops out of that row's Size exposure and regression).
+  std::vector<f64> cap_rows((series_window + 1U) * n);
+  for (usize r = 0; r <= series_window; ++r) {
+    for (usize i = 0; i < n; ++i) {
+      cap_rows[r * n + i] = cap_tn[(t_all - 1U - r) * n + i];
+    }
+  }
+  // Static sector = first in-universe observation inside the series span (see header).
+  constexpr u32 kUnknownSector = 0xFFFFFFFEU;
+  std::vector<u32> sector(n, kUnknownSector);
+  for (usize i = 0; i < n; ++i) {
+    for (usize r = series_window + 1U; r-- > 0U;) {
+      const f64 v = sector_tn[(t_all - 1U - r) * n + i];
+      if (std::isfinite(v)) {
+        sector[i] = static_cast<u32>(v);
+        break;
+      }
     }
   }
   FundamentalCfg fcfg;
@@ -171,8 +192,8 @@ void BM_L7RealScorecard(benchmark::State &state) {
   std::string json;
   for (auto _ : state) {
     const RingPanel ring(close, vol, n, t_all, rows);
-    auto ps = build_panel_series(ring.view(), nullptr, fcfg, row_dates, caps, sector,
-                                 series_window);
+    auto ps = build_panel_series_pit_caps(ring.view(), nullptr, fcfg, row_dates, cap_rows, sector,
+                                          series_window);
     if (!ps) {
       state.SkipWithError(ps.error().message().c_str());
       return;
@@ -198,7 +219,8 @@ void BM_L7RealScorecard(benchmark::State &state) {
         {"hybrid_mp", hyb_mp},
         {"hybrid_baing_ewma", hyb_ewma},
         {"hybrid_baing_lw2020_spec_ewma", hyb_lw}};
-    json = "{\"panel_dir\":\"" + dir + "\",\"n_assets\":" + std::to_string(n) +
+    json = "{\"panel_dir\":" + json_quote(dir) + ",\"pit_caps\":true,\"n_assets\":" +
+           std::to_string(n) +
            ",\"window\":" + std::to_string(window) + ",\"periods\":" + std::to_string(periods) +
            ",\"newest_day\":" + std::to_string(row_dates[0]) + ",\"scorecards\":[";
     bool first = true;
@@ -217,10 +239,11 @@ void BM_L7RealScorecard(benchmark::State &state) {
       }
       std::fprintf(stderr,
                    "%-30s K=%5.1f EW b=%.3f MinVar b=%.3f rand b=%.3f inband=%.2f opt b=%.3f "
-                   "opt inband=%.2f asset b=%.3f MRAD=%.3f\n",
+                   "opt inband=%.2f asset b=%.3f MRAD=%.3f excl=%.1f\n",
                    label.c_str(), sc->mean_factors, sc->equal_weight.bias, sc->min_variance.bias,
                    sc->random_bias_mean, sc->random_in_band_frac, sc->optimized_bias_mean,
-                   sc->optimized_in_band_frac, sc->asset_bias_mean, sc->asset_mrad);
+                   sc->optimized_in_band_frac, sc->asset_bias_mean, sc->asset_mrad,
+                   sc->mean_excluded);
       json += (first ? "" : ",") + sc->to_json();
       first = false;
     }

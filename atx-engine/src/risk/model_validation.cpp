@@ -81,7 +81,7 @@ std::string num(atx::f64 v) {
 }
 
 std::string bias_json(const BiasStat &b) {
-  return "{\"name\":\"" + b.name + "\",\"n\":" + std::to_string(b.n) + ",\"bias\":" +
+  return "{\"name\":" + json_quote(b.name) + ",\"n\":" + std::to_string(b.n) + ",\"bias\":" +
          num(b.bias) + ",\"q\":" + num(b.q) + ",\"mean_pred_vol\":" + num(b.mean_pred_vol) +
          ",\"realized_vol\":" + num(b.realized_vol) +
          ",\"in_band\":" + (b.in_band ? "true" : "false") + "}";
@@ -89,8 +89,44 @@ std::string bias_json(const BiasStat &b) {
 
 } // namespace
 
+std::string json_quote(std::string_view s) {
+  std::string out;
+  out.reserve(s.size() + 2U);
+  out += '"';
+  for (const char ch : s) {
+    const auto c = static_cast<unsigned char>(ch);
+    switch (ch) {
+    case '"':
+      out += "\\\"";
+      break;
+    case '\\':
+      out += "\\\\";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    case '\r':
+      out += "\\r";
+      break;
+    case '\t':
+      out += "\\t";
+      break;
+    default:
+      if (c < 0x20U) {
+        char buf[8];
+        const int len = std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(c));
+        out.append(buf, static_cast<atx::usize>(len > 0 ? len : 0));
+      } else {
+        out += ch;
+      }
+    }
+  }
+  out += '"';
+  return out;
+}
+
 std::string ValidationScorecard::to_json() const {
-  std::string s = "{\"label\":\"" + label + "\",\"n_periods\":" + std::to_string(n_periods);
+  std::string s = "{\"label\":" + json_quote(label) + ",\"n_periods\":" + std::to_string(n_periods);
   s += ",\"band\":[" + num(band_lo) + "," + num(band_hi) + "]";
   s += ",\"equal_weight\":" + bias_json(equal_weight);
   s += ",\"min_variance\":" + bias_json(min_variance);
@@ -107,7 +143,8 @@ std::string ValidationScorecard::to_json() const {
   s += ",\"asset\":{\"n\":" + std::to_string(n_assets_scored) +
        ",\"bias_mean\":" + num(asset_bias_mean) + ",\"mrad\":" + num(asset_mrad) +
        ",\"in_band_frac\":" + num(asset_in_band_frac) + "}";
-  s += ",\"mean_factors\":" + num(mean_factors) + "}";
+  s += ",\"mean_factors\":" + num(mean_factors);
+  s += ",\"mean_excluded\":" + num(mean_excluded) + "}";
   return s;
 }
 
@@ -159,6 +196,8 @@ validate_risk_model(const RiskModelFactory &factory, const ReturnPanel &ret,
   atx::usize scored = 0U;
   std::vector<atx::f64> w;
   std::vector<atx::f64> r;
+  std::vector<atx::u8> live; // per model row: 1 ⇔ the return at a−1 is observed
+  atx::f64 excluded_sum = 0.0;
   for (atx::usize p = 0U; p < cfg.n_periods; ++p) {
     const atx::usize a = cfg.first_as_of + p * cfg.step;
     ATX_TRY(ModelSnapshot snap, factory(a));
@@ -172,9 +211,19 @@ validate_risk_model(const RiskModelFactory &factory, const ReturnPanel &ret,
     k_sum += static_cast<atx::f64>(model.n_factors());
     const Eigen::Index row = static_cast<Eigen::Index>(a - 1U);
     r.assign(m, 0.0);
+    live.assign(m, 0U);
+    atx::usize n_live = 0U;
     for (atx::usize j = 0U; j < m; ++j) {
       const atx::f64 v = ret.r(row, static_cast<Eigen::Index>(snap.assets[j]));
-      r[j] = std::isnan(v) ? 0.0 : v;
+      if (!std::isnan(v)) {
+        r[j] = v;
+        live[j] = 1U;
+        ++n_live;
+      }
+    }
+    excluded_sum += static_cast<atx::f64>(m - n_live);
+    if (n_live == 0U) {
+      continue; // nothing realized this period: no book can be scored
     }
     auto book_ret = [&](const std::vector<atx::f64> &wt) {
       atx::f64 s = 0.0;
@@ -183,41 +232,43 @@ validate_risk_model(const RiskModelFactory &factory, const ReturnPanel &ret,
       }
       return s;
     };
-    // Equal weight.
-    w.assign(m, 1.0 / static_cast<atx::f64>(m));
-    ew.add(book_ret(w), model.risk(w));
-    // Random long/short books (unit gross).
-    for (atx::usize b = 0U; b < cfg.n_random; ++b) {
-      atx::f64 gross = 0.0;
+    // Drop the names with no realized return from `w` and renormalize to sum 1
+    // (`by_sum`) or unit gross; false when nothing (or a non-positive sum) remains.
+    auto restrict_live = [&](bool by_sum) {
+      atx::f64 s = 0.0;
       for (atx::usize j = 0U; j < m; ++j) {
-        w[j] = gw(static_cast<Eigen::Index>(snap.assets[j]), static_cast<Eigen::Index>(b));
-        gross += std::abs(w[j]);
+        if (live[j] == 0U) {
+          w[j] = 0.0;
+        }
+        s += by_sum ? w[j] : std::abs(w[j]);
       }
-      if (!(gross > 0.0)) {
-        continue;
-      }
-      for (atx::f64 &x : w) {
-        x /= gross;
-      }
-      rnd[b].add(book_ret(w), model.risk(w));
-    }
-    // Unit-gross book from panel-indexed weights `src(asset)`; false when all zero.
-    auto unit_gross = [&](auto &&src) {
-      atx::f64 gross = 0.0;
-      for (atx::usize j = 0U; j < m; ++j) {
-        w[j] = src(snap.assets[j]);
-        gross += std::abs(w[j]);
-      }
-      if (!(gross > 0.0)) {
+      if (!(s > 0.0)) {
         return false;
       }
       for (atx::f64 &x : w) {
-        x /= gross;
+        x /= s;
       }
       return true;
     };
+    // Equal weight over the live names.
+    w.assign(m, 1.0);
+    if (restrict_live(true)) {
+      ew.add(book_ret(w), model.risk(w));
+    }
+    // Random long/short books (unit gross over the live names).
+    for (atx::usize b = 0U; b < cfg.n_random; ++b) {
+      for (atx::usize j = 0U; j < m; ++j) {
+        w[j] = gw(static_cast<Eigen::Index>(snap.assets[j]), static_cast<Eigen::Index>(b));
+      }
+      if (restrict_live(false)) {
+        rnd[b].add(book_ret(w), model.risk(w));
+      }
+    }
     for (atx::usize b = 0U; b < cfg.books.size(); ++b) {
-      if (unit_gross([&](atx::usize i) { return cfg.books[b].w[i]; })) {
+      for (atx::usize j = 0U; j < m; ++j) {
+        w[j] = cfg.books[b].w[snap.assets[j]];
+      }
+      if (restrict_live(false)) {
         custom[b].add(book_ret(w), model.risk(w));
       }
     }
@@ -229,28 +280,16 @@ validate_risk_model(const RiskModelFactory &factory, const ReturnPanel &ret,
         alpha[j] = ga(static_cast<Eigen::Index>(snap.assets[j]), static_cast<Eigen::Index>(b));
       }
       model.apply_inverse(alpha, y);
-      atx::f64 gross = 0.0;
-      for (const atx::f64 v : y) {
-        gross += std::abs(v);
-      }
-      if (gross > 0.0) {
-        for (atx::usize j = 0U; j < m; ++j) {
-          w[j] = y[j] / gross;
-        }
+      w = y;
+      if (restrict_live(false)) {
         opt[b].add(book_ret(w), model.risk(w));
       }
     }
-    // Minimum variance (fully invested): w ∝ V⁻¹1.
+    // Minimum variance (fully invested): w ∝ V⁻¹1, restricted to the live names.
     const std::vector<atx::f64> ones(m, 1.0);
     model.apply_inverse(ones, y);
-    atx::f64 sy = 0.0;
-    for (const atx::f64 v : y) {
-      sy += v;
-    }
-    if (sy > 0.0) {
-      for (atx::usize j = 0U; j < m; ++j) {
-        w[j] = y[j] / sy;
-      }
+    w = y;
+    if (restrict_live(true)) {
       mv.add(book_ret(w), model.risk(w));
     }
     // Asset level: σ̂_i² = x_i F x_iᵀ + d_i.
@@ -328,6 +367,7 @@ validate_risk_model(const RiskModelFactory &factory, const ReturnPanel &ret,
     sc.asset_in_band_frac = static_cast<atx::f64>(na_in) / na;
   }
   sc.mean_factors = k_sum / static_cast<atx::f64>(scored);
+  sc.mean_excluded = excluded_sum / static_cast<atx::f64>(scored);
   return atx::core::Ok(std::move(sc));
 }
 

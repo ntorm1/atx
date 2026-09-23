@@ -27,6 +27,11 @@
 //  (upper_bound on a sorted series). Moving a record's availability date past the
 //  query date therefore removes it from the exposure — tested directly. Price styles
 //  read only panel rows >= `row` (PanelView is newest-first), as in exposures.hpp.
+//  Exposures are those KNOWN AT THE END of date `as_of`, and a release dated
+//  `available` may come after that day's close. The DEFAULT availability_lag is
+//  therefore 1: a record first enters the exposures of day available + 1. That is the
+//  first day it can be traded on and the first return it can be regressed against.
+//  Set availability_lag = 0 only when `available` is already the first tradable day.
 //
 // ===========================================================================
 //  Raw definitions (cap_i = market_cap[i] when given, else shares·close(row,i))
@@ -203,7 +208,7 @@ enum class MissingPolicy : atx::u8 { FillZero, Drop };
 struct FundamentalCfg {
   StyleMask mask{};                 // StyleFactor bits; bit Market adds the intercept
   bool sector_factors = true;       // one 0/1 dummy per group id (needs group_id)
-  atx::i64 availability_lag = 0;    // extra days added to every record's availability
+  atx::i64 availability_lag = 1;    // days added to every record's availability (see PIT)
   atx::i64 max_staleness = 0;       // days; 0 ⇒ a record never goes stale
   atx::i64 growth_lookback = 365;   // days between the two Sales observations of Growth
   atx::f64 winsor = 3.0;            // |z| clip before re-standardizing; <= 0 disables

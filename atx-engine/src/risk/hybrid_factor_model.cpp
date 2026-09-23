@@ -48,28 +48,42 @@ Layout layout_of(const ExposureSeries &e) noexcept {
   return Layout{m, m + e.n_ind(), e.n_ind(), e.n_style(), e.n_factors(), e.market};
 }
 
-// √cap regression weight (1 without caps); 0 ⇒ the asset is excluded.
-atx::f64 reg_weight(const ExposureSeries &e, atx::usize i) noexcept {
-  if (e.cap.empty()) {
+bool has_caps(const ExposureSeries &e) noexcept {
+  return !e.cap_series.empty() || !e.cap.empty();
+}
+
+// Cap of asset i at exposure row `row` (cap_series wins; the static `cap` otherwise).
+// PRECONDITION: has_caps(e).
+atx::f64 cap_at(const ExposureSeries &e, atx::usize i, atx::usize row) noexcept {
+  if (!e.cap_series.empty()) {
+    return (e.cap_series.size() == 1U ? e.cap_series[0] : e.cap_series[row])[i];
+  }
+  return e.cap[i];
+}
+
+// √cap regression weight (1 without caps); 0 ⇒ the asset is excluded. `row` is the
+// EXPOSURE row the weight is dated at (t+1 for return row t; as_of for the model).
+atx::f64 reg_weight(const ExposureSeries &e, atx::usize i, atx::usize row) noexcept {
+  if (!has_caps(e)) {
     return 1.0;
   }
-  const atx::f64 c = e.cap[i];
+  const atx::f64 c = cap_at(e, i, row);
   return (std::isfinite(c) && c > 0.0) ? std::sqrt(c) : 0.0;
 }
 
 // Cap weight of the industry sum-to-zero constraint (1 ⇒ name count without caps).
-atx::f64 cons_weight(const ExposureSeries &e, atx::usize i) noexcept {
-  return e.cap.empty() ? 1.0 : e.cap[i];
+atx::f64 cons_weight(const ExposureSeries &e, atx::usize i, atx::usize row) noexcept {
+  return has_caps(e) ? cap_at(e, i, row) : 1.0;
 }
 
 // An asset enters a date's design iff its style row is finite, it has an industry
 // (when industries are modelled) and a positive weight.
-bool asset_valid(const ExposureSeries &e, const Layout &lay, const MatX &xs,
-                 atx::usize i) noexcept {
+bool asset_valid(const ExposureSeries &e, const Layout &lay, const MatX &xs, atx::usize i,
+                 atx::usize xrow) noexcept {
   if (lay.g > 0U && e.industry[i] >= lay.g) {
     return false;
   }
-  if (!(reg_weight(e, i) > 0.0)) {
+  if (!(reg_weight(e, i, xrow) > 0.0)) {
     return false;
   }
   const Eigen::Index row = static_cast<Eigen::Index>(i);
@@ -132,11 +146,13 @@ atx::usize free_coords(const Layout &lay, const std::vector<atx::f64> &cw,
   return ref;
 }
 
-// One date's structured WLS. Writes f (full coordinates, length K) and the residual
-// row; returns false when the date is skipped.
+// One date's structured WLS: return row t on exposure row t+1 (styles `xs` and the
+// caps of that row). Writes f (full coordinates, length K) and the residual row;
+// returns false when the date is skipped.
 bool solve_date(const ExposureSeries &e, const Layout &lay, const MatX &xs, const MatX &rr,
                 Eigen::Index t, Workspace &ws, Eigen::Ref<VecX> f, Eigen::Ref<VecX> resid,
                 atx::f64 &r2) {
+  const atx::usize xrow = static_cast<atx::usize>(t) + 1U; // exposure / cap row
   const atx::usize n = static_cast<atx::usize>(rr.cols());
   const Eigen::Index ks = static_cast<Eigen::Index>(lay.ks);
   // Validity by contiguous column sweeps (the style block is column-major N×Ks).
@@ -144,7 +160,7 @@ bool solve_date(const ExposureSeries &e, const Layout &lay, const MatX &xs, cons
   for (atx::usize i = 0U; i < n; ++i) {
     const bool ind_ok = lay.g == 0U || e.industry[i] < lay.g;
     ws.ok[i] = (std::isfinite(rr(t, static_cast<Eigen::Index>(i))) && ind_ok &&
-                reg_weight(e, i) > 0.0)
+                reg_weight(e, i, xrow) > 0.0)
                    ? 1U
                    : 0U;
   }
@@ -168,7 +184,7 @@ bool solve_date(const ExposureSeries &e, const Layout &lay, const MatX &xs, cons
   ws.gv.resize(ws.valid.size());
   for (Eigen::Index j = 0; j < nv; ++j) {
     const atx::usize i = ws.valid[static_cast<atx::usize>(j)];
-    ws.wv[j] = reg_weight(e, i);
+    ws.wv[j] = reg_weight(e, i, xrow);
     ws.rv[j] = rr(t, static_cast<Eigen::Index>(i));
     ws.gv[static_cast<atx::usize>(j)] = (lay.g > 0U) ? static_cast<atx::usize>(e.industry[i]) : 0U;
   }
@@ -205,7 +221,7 @@ bool solve_date(const ExposureSeries &e, const Layout &lay, const MatX &xs, cons
       const atx::usize g = ws.gv[static_cast<atx::usize>(j)];
       const Eigen::Index gc = oi + static_cast<Eigen::Index>(g);
       const atx::f64 w = ws.wv[j];
-      ws.cw[g] += cons_weight(e, ws.valid[static_cast<atx::usize>(j)]);
+      ws.cw[g] += cons_weight(e, ws.valid[static_cast<atx::usize>(j)], xrow);
       ++ws.cnt[g];
       ws.a(gc, gc) += w;
       ws.b[gc] += w * ws.rv[j];
@@ -451,6 +467,16 @@ atx::core::Result<FactorReturnSeries> estimate_factor_returns(const ReturnPanel 
     return Err(ErrorCode::InvalidArgument,
                "estimate_factor_returns: industry / cap length must equal the asset count");
   }
+  if (exp.cap_series.size() > 1U && exp.cap_series.size() < as_of + window + 1U) {
+    return Err(ErrorCode::InvalidArgument,
+               "estimate_factor_returns: cap series must cover row as_of + window");
+  }
+  for (const std::vector<atx::f64> &c : exp.cap_series) {
+    if (c.size() != n) {
+      return Err(ErrorCode::InvalidArgument,
+                 "estimate_factor_returns: every cap_series row must have N entries");
+    }
+  }
   const Layout lay = layout_of(exp);
   if (lay.k == 0U) {
     return Err(ErrorCode::InvalidArgument, "estimate_factor_returns: no factor columns");
@@ -509,7 +535,7 @@ atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel
       obs += std::isnan(fr.resid(static_cast<Eigen::Index>(j), static_cast<Eigen::Index>(i))) ? 0U
                                                                                              : 1U;
     }
-    if (obs >= cfg.min_spec_obs && obs >= 2U && asset_valid(exp, lay, x0, i)) {
+    if (obs >= cfg.min_spec_obs && obs >= 2U && asset_valid(exp, lay, x0, i, as_of)) {
       assets.push_back(i);
     }
   }
@@ -524,7 +550,7 @@ atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel
   std::vector<atx::usize> cnt(lay.g, 1U); // keep every industry coordinate in the model
   for (const atx::usize i : assets) {
     if (lay.g > 0U) {
-      cw[exp.industry[i]] += cons_weight(exp, i);
+      cw[exp.industry[i]] += cons_weight(exp, i, as_of);
     }
   }
   std::vector<atx::usize> free_;
@@ -532,6 +558,10 @@ atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel
   const atx::usize ref = free_coords(lay, cw, cnt, free_, alpha);
   const bool con = ref < lay.k;
   const atx::usize kf = free_.size();
+  if (fr.n_used < kf) {
+    return Err(ErrorCode::InvalidArgument,
+               "HybridFactorModelBuilder: fewer usable dates than free fundamental factors");
+  }
 
   // X_fund·R (M×Kf): column p = X(:,P) + alpha_p·X(:,ref).
   MatX xf(m, static_cast<Eigen::Index>(kf));
@@ -637,10 +667,16 @@ atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel
                                    std::move(fr)});
 }
 
+namespace {
+
+// Shared body of the two build_panel_series entry points. `cap_of_row(t)` is the cap
+// span used for style row t; `pit_caps` stores those rows as cap_series (else the
+// row-0 span becomes the static ExposureSeries::cap).
+template <typename CapOfRow>
 atx::core::Result<PanelSeries>
-build_panel_series(const PanelView &panel, const FundamentalPanel *fund, const FundamentalCfg &cfg,
-                   std::span<const atx::i64> row_dates, std::span<const atx::f64> market_cap,
-                   std::span<const atx::u32> group_id, atx::usize window) {
+panel_series_impl(const PanelView &panel, const FundamentalPanel *fund, const FundamentalCfg &cfg,
+                  std::span<const atx::i64> row_dates, const CapOfRow &cap_of_row,
+                  std::span<const atx::u32> group_id, atx::usize window, bool pit_caps) {
   const atx::usize n = panel.instruments();
   if (window == 0U || panel.rows() < window + 2U || row_dates.size() < window + 1U) {
     return Err(ErrorCode::InvalidArgument,
@@ -662,14 +698,18 @@ build_panel_series(const PanelView &panel, const FundamentalPanel *fund, const F
   const Eigen::Index ks = static_cast<Eigen::Index>(out.exposures.style_tags.size());
   out.exposures.style.reserve(window + 1U);
   for (atx::usize t = 0U; t <= window; ++t) {
+    const std::span<const atx::f64> caps_t = cap_of_row(t);
     ATX_TRY(ExposureMatrix xm, build_fundamental_exposures(panel, fund, style_cfg, t, row_dates[t],
-                                                           market_cap, {}));
+                                                           caps_t, {}));
     MatX s = MatX::Constant(static_cast<Eigen::Index>(n), ks, kNaN);
     for (atx::usize r = 0U; r < xm.instrument_rows.size(); ++r) {
       s.row(static_cast<Eigen::Index>(xm.instrument_rows[r])) =
           xm.x.row(static_cast<Eigen::Index>(r));
     }
     out.exposures.style.push_back(std::move(s));
+    if (pit_caps) {
+      out.exposures.cap_series.emplace_back(caps_t.begin(), caps_t.end());
+    }
   }
   if (cfg.sector_factors && !group_id.empty()) {
     std::vector<atx::u32> ids(group_id.begin(), group_id.end());
@@ -682,7 +722,10 @@ build_panel_series(const PanelView &panel, const FundamentalPanel *fund, const F
           std::lower_bound(ids.begin(), ids.end(), g) - ids.begin()));
     }
   }
-  out.exposures.cap.assign(market_cap.begin(), market_cap.end());
+  if (!pit_caps) {
+    const std::span<const atx::f64> c0 = cap_of_row(0U);
+    out.exposures.cap.assign(c0.begin(), c0.end());
+  }
   out.returns.r.resize(static_cast<Eigen::Index>(window), static_cast<Eigen::Index>(n));
   for (atx::usize t = 0U; t < window; ++t) {
     for (atx::usize i = 0U; i < n; ++i) {
@@ -691,6 +734,32 @@ build_panel_series(const PanelView &panel, const FundamentalPanel *fund, const F
     }
   }
   return atx::core::Ok(std::move(out));
+}
+
+} // namespace
+
+atx::core::Result<PanelSeries>
+build_panel_series(const PanelView &panel, const FundamentalPanel *fund, const FundamentalCfg &cfg,
+                   std::span<const atx::i64> row_dates, std::span<const atx::f64> market_cap,
+                   std::span<const atx::u32> group_id, atx::usize window) {
+  return panel_series_impl(
+      panel, fund, cfg, row_dates, [market_cap](atx::usize) { return market_cap; }, group_id,
+      window, false);
+}
+
+atx::core::Result<PanelSeries>
+build_panel_series_pit_caps(const PanelView &panel, const FundamentalPanel *fund,
+                            const FundamentalCfg &cfg, std::span<const atx::i64> row_dates,
+                            std::span<const atx::f64> cap_rows,
+                            std::span<const atx::u32> group_id, atx::usize window) {
+  const atx::usize n = panel.instruments();
+  if (cap_rows.size() < (window + 1U) * n) {
+    return Err(ErrorCode::InvalidArgument,
+               "build_panel_series_pit_caps: cap_rows must hold (window+1)×N entries");
+  }
+  return panel_series_impl(
+      panel, fund, cfg, row_dates,
+      [cap_rows, n](atx::usize t) { return cap_rows.subspan(t * n, n); }, group_id, window, true);
 }
 
 } // namespace atx::engine::risk

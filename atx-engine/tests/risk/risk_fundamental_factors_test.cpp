@@ -261,6 +261,7 @@ TEST(RiskFundamentalFactors, MovingAvailabilityPastAsOfChangesExposure) {
   FundamentalCfg cfg;
   cfg.mask = style_bit(StyleFactor::BookToPrice);
   cfg.winsor = 0.0;
+  cfg.availability_lag = 0; // `available` treated as the first tradable day here
   auto fill = [&](i64 avail_of_inst3) {
     FundamentalPanel fp{w.inst};
     for (usize i = 0; i < w.inst; ++i) {
@@ -287,6 +288,35 @@ TEST(RiskFundamentalFactors, MovingAvailabilityPastAsOfChangesExposure) {
   const auto xlag = build_fundamental_exposures(p.view(), &early, cfg, 0U, 100, w.cap, {});
   ASSERT_TRUE(xlag);
   EXPECT_EQ(fnv(xlag->x), fnv(xn->x));
+}
+
+// Pins the default PIT convention: a record released on day d (possibly after the
+// close) is NOT in day d's end-of-day exposures; it first appears on day d + 1.
+TEST(RiskFundamentalFactors, DefaultLagHidesSameDayRelease) {
+  EXPECT_EQ(FundamentalCfg{}.availability_lag, 1);
+  const World w = make_world(40, 10, 5U);
+  const L7Panel p{w.rows, w.inst, w.close, w.volume};
+  FundamentalCfg cfg; // default lag
+  cfg.mask = style_bit(StyleFactor::BookToPrice);
+  cfg.winsor = 0.0;
+  auto fill = [&](i64 avail_of_inst3) {
+    FundamentalPanel fp{w.inst};
+    for (usize i = 0; i < w.inst; ++i) {
+      EXPECT_TRUE(fp.add(i, FundamentalField::BookEquity, 0, 1e7 * static_cast<f64>(i + 1U)));
+    }
+    EXPECT_TRUE(fp.add(3, FundamentalField::BookEquity, avail_of_inst3, 5e9));
+    return fp;
+  };
+  const FundamentalPanel released = fill(100);
+  const FundamentalPanel never = fill(1'000'000);
+  const auto same_day = build_fundamental_exposures(p.view(), &released, cfg, 0U, 100, w.cap, {});
+  const auto next_day = build_fundamental_exposures(p.view(), &released, cfg, 0U, 101, w.cap, {});
+  const auto none = build_fundamental_exposures(p.view(), &never, cfg, 0U, 100, w.cap, {});
+  ASSERT_TRUE(same_day);
+  ASSERT_TRUE(next_day);
+  ASSERT_TRUE(none);
+  EXPECT_EQ(fnv(same_day->x), fnv(none->x)); // invisible on its release day
+  EXPECT_NE(same_day->x(3, 0), next_day->x(3, 0)); // visible the next day
 }
 
 TEST(RiskFundamentalFactors, MissingPolicyFillZeroVersusDrop) {

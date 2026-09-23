@@ -239,6 +239,12 @@ TEST(RiskHybridModel, DeterministicAndPitSafe) {
   const usize n = 120;
   const usize t = 90;
   Sim s = simulate(n, t, 3, 2, 0.01, 505U);
+  // Dated (non-static) exposures and PIT caps, so the scramble below can prove that no
+  // exposure or cap row newer than as_of is read either.
+  const MatX style0 = s.exp.style[0]; // copy: assign() must not alias the container
+  s.exp.style.assign(t + 1U, style0);
+  s.exp.cap_series.assign(t + 1U, s.exp.cap);
+  s.exp.cap.clear();
   HybridCfg cfg;
   cfg.window = 60U;
   const auto a = HybridFactorModelBuilder::build(s.ret, s.exp, cfg, 5U);
@@ -248,9 +254,12 @@ TEST(RiskHybridModel, DeterministicAndPitSafe) {
   std::vector<f64> w(n, 1.0 / static_cast<f64>(n));
   EXPECT_EQ(std::bit_cast<std::uint64_t>(a->model.risk(w)),
             std::bit_cast<std::uint64_t>(b->model.risk(w)));
-  // Scramble the rows NEWER than as_of (rows 0..4): the model must not move.
+  // Scramble the return, exposure and cap rows NEWER than as_of (rows 0..4): the model
+  // must not move.
   for (Eigen::Index r = 0; r < 5; ++r) {
     s.ret.r.row(r).setConstant(0.5);
+    s.exp.style[static_cast<usize>(r)].setConstant(7.0);
+    s.exp.cap_series[static_cast<usize>(r)].assign(n, 1e15);
   }
   const auto c = HybridFactorModelBuilder::build(s.ret, s.exp, cfg, 5U);
   ASSERT_TRUE(c);
@@ -258,6 +267,22 @@ TEST(RiskHybridModel, DeterministicAndPitSafe) {
             std::bit_cast<std::uint64_t>(c->model.risk(w)));
   EXPECT_EQ(c->model.fit_begin(), 5U);
   EXPECT_EQ(c->model.fit_end(), 65U);
+  // Negative controls: the as_of exposure row and the cap row of a regression date
+  // ARE read, so changing either moves the model.
+  Sim s2 = s;
+  s2.exp.style[5](0, 0) += 1.0;
+  const auto d = HybridFactorModelBuilder::build(s2.ret, s2.exp, cfg, 5U);
+  ASSERT_TRUE(d);
+  EXPECT_NE(std::bit_cast<std::uint64_t>(a->model.risk(w)),
+            std::bit_cast<std::uint64_t>(d->model.risk(w)));
+  Sim s3 = s;
+  s3.exp.cap_series[6][0] *= 50.0; // weight of name 0 in the return-row-5 regression
+  const auto fr_a = estimate_factor_returns(s.ret, s.exp, 5U, 60U);
+  const auto fr_c = estimate_factor_returns(s3.ret, s3.exp, 5U, 60U);
+  ASSERT_TRUE(fr_a);
+  ASSERT_TRUE(fr_c);
+  EXPECT_NE(fr_a->f(0, 0), fr_c->f(0, 0));
+  EXPECT_EQ(fr_a->f(1, 0), fr_c->f(1, 0)); // return row 6 uses cap row 7, untouched
 }
 
 TEST(RiskHybridModel, SkipsDatesAndAssetsWithMissingData) {
@@ -406,6 +431,80 @@ TEST(RiskHybridModel, PanelAdapterEndToEnd) {
   EXPECT_EQ(hm->k_fundamental, 1U + 3U - 1U + 3U);
   std::vector<f64> w(inst, 1.0 / static_cast<f64>(inst));
   EXPECT_GT(hm->model.risk(w), 0.0);
+}
+
+// build_panel_series_pit_caps: constant cap rows reproduce the static-cap path bit for
+// bit; a cap row newer than as_of never reaches the model (Size or weights).
+TEST(RiskHybridModel, PanelAdapterPitCaps) {
+  const usize rows = 160;
+  const usize inst = 80;
+  const HybridPanel p{rows, inst, 809U};
+  std::vector<i64> dates(rows);
+  for (usize r = 0; r < rows; ++r) {
+    dates[r] = 1000 - static_cast<i64>(r);
+  }
+  std::vector<f64> cap(inst);
+  std::vector<u32> grp(inst);
+  for (usize i = 0; i < inst; ++i) {
+    cap[i] = 1e9 * (1.0 + static_cast<f64>(i % 7U));
+    grp[i] = static_cast<u32>(i % 3U);
+  }
+  const usize window = 80U;
+  std::vector<f64> cap_rows;
+  for (usize t = 0; t <= window; ++t) {
+    cap_rows.insert(cap_rows.end(), cap.begin(), cap.end());
+  }
+  FundamentalCfg fc;
+  fc.mask = style_bit(StyleFactor::Market) | style_bit(StyleFactor::Size) |
+            style_bit(StyleFactor::STReversal);
+  const auto st = build_panel_series(p.view(), nullptr, fc, dates, cap, grp, window);
+  const auto pit = build_panel_series_pit_caps(p.view(), nullptr, fc, dates, cap_rows, grp, window);
+  ASSERT_TRUE(st);
+  ASSERT_TRUE(pit) << pit.error().message();
+  EXPECT_TRUE(pit->exposures.cap.empty());
+  ASSERT_EQ(pit->exposures.cap_series.size(), window + 1U);
+  HybridCfg cfg;
+  cfg.window = 70U;
+  std::vector<f64> w(inst, 1.0 / static_cast<f64>(inst));
+  const auto ms = HybridFactorModelBuilder::build(st->returns, st->exposures, cfg, 1U);
+  const auto mp = HybridFactorModelBuilder::build(pit->returns, pit->exposures, cfg, 1U);
+  ASSERT_TRUE(ms);
+  ASSERT_TRUE(mp);
+  EXPECT_EQ(std::bit_cast<std::uint64_t>(ms->model.risk(w)),
+            std::bit_cast<std::uint64_t>(mp->model.risk(w)));
+  // A wildly different NEWEST cap row (row 0 > as_of = 1 is in the future) changes the
+  // row-0 Size exposure but not the model as of row 1.
+  std::vector<f64> future = cap_rows;
+  for (usize i = 0; i < inst; ++i) {
+    future[i] = 1e6 * static_cast<f64>(inst - i);
+  }
+  const auto pf = build_panel_series_pit_caps(p.view(), nullptr, fc, dates, future, grp, window);
+  ASSERT_TRUE(pf);
+  const auto mf = HybridFactorModelBuilder::build(pf->returns, pf->exposures, cfg, 1U);
+  ASSERT_TRUE(mf);
+  EXPECT_EQ(std::bit_cast<std::uint64_t>(mp->model.risk(w)),
+            std::bit_cast<std::uint64_t>(mf->model.risk(w)));
+  EXPECT_NE(pf->exposures.style[0](0, 0), pit->exposures.style[0](0, 0));
+  // Too few cap rows is rejected.
+  const std::vector<f64> short_rows(cap_rows.begin(), cap_rows.end() - 1);
+  EXPECT_FALSE(build_panel_series_pit_caps(p.view(), nullptr, fc, dates, short_rows, grp, window));
+}
+
+TEST(RiskHybridModel, RejectsBadCapSeriesAndTooFewDatesForK) {
+  Sim s = simulate(40, 30, 2, 2, 0.0, 710U);
+  ExposureSeries short_caps = s.exp;
+  short_caps.cap_series.assign(5, s.exp.cap); // non-static but too short
+  EXPECT_FALSE(estimate_factor_returns(s.ret, short_caps, 0U, 10U));
+  ExposureSeries ragged = s.exp;
+  ragged.cap_series.assign(1, std::vector<f64>(39, 1e9)); // static but wrong length
+  EXPECT_FALSE(estimate_factor_returns(s.ret, ragged, 0U, 10U));
+  // K_f = market + 2 industries − 1 + 2 styles = 4 free factors; 3 usable dates < 4.
+  HybridCfg cfg;
+  cfg.window = 3U;
+  cfg.min_spec_obs = 2U;
+  EXPECT_FALSE(HybridFactorModelBuilder::build(s.ret, s.exp, cfg, 0U));
+  cfg.window = 4U;
+  EXPECT_TRUE(HybridFactorModelBuilder::build(s.ret, s.exp, cfg, 0U));
 }
 
 } // namespace atx_test_l7_riskmodel_hybrid

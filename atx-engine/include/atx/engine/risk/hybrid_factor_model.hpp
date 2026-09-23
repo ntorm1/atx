@@ -76,6 +76,12 @@ struct ExposureSeries {
   atx::u32 n_industries = 0U;
   bool market = true;        // include the all-ones market intercept column
   std::vector<atx::f64> cap; // length N market caps (weights), or empty ⇒ equal weights
+  // Point-in-time caps per exposure row (aligned with `style`: cap_series[t] = caps
+  // KNOWN AT THE END of date t, each length N, NaN ⇒ the asset is excluded there).
+  // When non-empty it REPLACES `cap`: the date-t regression (return row t) is weighted
+  // with cap_series[t+1] — the same row as its exposures — and the model at as_of uses
+  // cap_series[as_of]. Size 1 ⇒ static (every date), like `style`.
+  std::vector<std::vector<atx::f64>> cap_series;
 
   [[nodiscard]] const atx::core::linalg::MatX &at(atx::usize t) const noexcept {
     return style.size() == 1U ? style[0] : style[t];
@@ -149,8 +155,10 @@ struct HybridModel {
 class HybridFactorModelBuilder {
 public:
   // Build the hybrid model as of row `as_of` (see the PIT convention above). Err when
-  // the regression window is invalid, fewer than max(2, K) dates are usable, or no
-  // asset has min_spec_obs residual observations.
+  // the regression window is invalid, fewer than max(2, K_f) dates are usable (K_f =
+  // the free fundamental factor count at as_of; below it the fundamental factor
+  // covariance would be rank-deficient), or no asset has min_spec_obs residual
+  // observations.
   [[nodiscard]] static atx::core::Result<HybridModel>
   build(const ReturnPanel &ret, const ExposureSeries &exp, const HybridCfg &cfg,
         atx::usize as_of = 0U);
@@ -175,5 +183,16 @@ struct PanelSeries {
 build_panel_series(const PanelView &panel, const FundamentalPanel *fund, const FundamentalCfg &cfg,
                    std::span<const atx::i64> row_dates, std::span<const atx::f64> market_cap,
                    std::span<const atx::u32> group_id, atx::usize window);
+
+// Point-in-time-cap variant: `cap_rows` is row-major (window+1)×N (or longer), row t =
+// the caps KNOWN AT THE END of panel row t (NaN = unknown ⇒ the asset drops out of that
+// row's Size exposure and regression). Style row t is built with cap_rows[t] and the
+// exposures carry them as ExposureSeries::cap_series, so no exposure or regression
+// weight ever reads a cap from a row newer than the one it is dated at.
+[[nodiscard]] atx::core::Result<PanelSeries>
+build_panel_series_pit_caps(const PanelView &panel, const FundamentalPanel *fund,
+                            const FundamentalCfg &cfg, std::span<const atx::i64> row_dates,
+                            std::span<const atx::f64> cap_rows,
+                            std::span<const atx::u32> group_id, atx::usize window);
 
 } // namespace atx::engine::risk

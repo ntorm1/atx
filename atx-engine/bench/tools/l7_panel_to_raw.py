@@ -7,11 +7,14 @@ the inputs the `BM_L7RealScorecard` bench consumes (env ATX_L7_REAL_DIR):
   meta.txt     "T N" (dates ascending, instruments)
   close.f64    T*N  adjusted close, NaN outside the universe mask
   volume.f64   T*N  volume, NaN outside the universe mask
-  cap.f64      N    last finite in-universe market cap (NaN if never)
-  sector.u32   N    sector id; missing -> 0xFFFFFFFE ("unknown" group of its own)
+  cap_tn.f64   T*N  market cap as of each row (NaN outside the universe mask or <= 0)
+  sector_tn.f64 T*N sector id as of each row (NaN outside the mask / missing)
   dates.i64    T    day number (unix days) of each row
 
-Read-only on the input; the digest trailer is verified.
+Point-in-time: every per-name field is written PER ROW. There are no "last value"
+summaries, which would carry information from later dates into earlier rows. The
+bench picks each row's cap and a PIT-safe static sector from these matrices.
+Read-only on the input. The digest trailer is verified only with L7_VERIFY_DIGEST=1.
 Usage: python l7_panel_to_raw.py <context.bin> <out_dir>
 """
 import os
@@ -66,17 +69,8 @@ def main() -> None:
     close = np.where(mask, cols["close"], np.nan)
     vol = np.where(mask, cols["volume"], np.nan) if "volume" in cols else np.full((d, n), np.nan)
     capm = np.where(mask, cols["market_cap"], np.nan)
-    cap = np.full(n, np.nan)
-    for i in range(n):
-        ok = np.isfinite(capm[:, i]) & (capm[:, i] > 0)
-        if ok.any():
-            cap[i] = capm[np.nonzero(ok)[0][-1], i]
-    sec = cols["sector"]
-    sector = np.full(n, 0xFFFFFFFE, dtype="<u4")
-    for i in range(n):
-        v = sec[:, i][np.isfinite(sec[:, i])]
-        if v.size:
-            sector[i] = int(v[-1])
+    capm = np.where(np.isfinite(capm) & (capm > 0), capm, np.nan)
+    sec = np.where(mask & np.isfinite(cols["sector"]), cols["sector"], np.nan)
     if date_ns is not None and len(date_ns) == d:
         days = np.array([int(x) // 86_400_000_000_000 for x in date_ns], dtype="<i8")
     else:
@@ -84,11 +78,12 @@ def main() -> None:
     open(os.path.join(out, "meta.txt"), "w").write(f"{d} {n}\n")
     close.astype("<f8").tofile(os.path.join(out, "close.f64"))
     vol.astype("<f8").tofile(os.path.join(out, "volume.f64"))
-    cap.astype("<f8").tofile(os.path.join(out, "cap.f64"))
-    sector.tofile(os.path.join(out, "sector.u32"))
+    capm.astype("<f8").tofile(os.path.join(out, "cap_tn.f64"))
+    sec.astype("<f8").tofile(os.path.join(out, "sector_tn.f64"))
     days.tofile(os.path.join(out, "dates.i64"))
     print(f"T={d} N={n} fields={names} in_universe={mask.mean():.3f} "
-          f"cap_ok={np.isfinite(cap).mean():.3f} sectors={len(set(sector.tolist()))}")
+          f"cap_ok={np.isfinite(capm[mask]).mean():.3f} "
+          f"sectors={len(np.unique(sec[np.isfinite(sec)]))}")
 
 
 if __name__ == "__main__":

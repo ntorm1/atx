@@ -10,9 +10,15 @@
 //    specific  = Σ_i w_i · (r_i − x_iᵀ f)          (idiosyncratic P&L)
 //    cost, borrow                                  (charged, positive = paid)
 //    total     = Σ_i w_i r_i − cost − borrow
-//  so that Σ_k factor_k + specific − cost − borrow == total up to rounding (the
-//  specific term is computed directly from the residual returns, NOT as a plug, so the
-//  identity is a real check of the inputs' consistency).
+//  so that Σ_k factor_k + specific − cost − borrow == total up to rounding. That sum
+//  is an ALGEBRAIC IDENTITY, true for any X, f and r, because specific is exactly
+//  gross − Σ_k factor_k. It checks only the floating-point bookkeeping, not whether
+//  the inputs are consistent with one another. The meaningful consistency check is
+//  against the model's estimated factor returns f̂ (the WLS solution of r = X f + u).
+//  A factor-mimicking book w_c = W X (XᵀWX)⁻¹ e_c has Xᵀw_c = e_c and, by the normal
+//  equations, zero specific P&L. Its whole P&L is attributed to f̂_c. That property
+//  is tested. With an f that is NOT the regression's (e.g. the true f), the specific
+//  P&L is nonzero.
 //
 //  AttributionLedger folds daily attributions; TrackingErrorCheck compares the
 //  realized active returns with the model's predicted tracking error (bias statistic

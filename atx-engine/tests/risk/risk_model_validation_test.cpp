@@ -9,6 +9,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -139,6 +140,48 @@ TEST(RiskModelValidation, JsonScorecardIsDeterministicAndComplete) {
   EXPECT_EQ(ja.find("null"), std::string::npos);
   EXPECT_EQ(ja.front(), '{');
   EXPECT_EQ(ja.back(), '}');
+}
+
+TEST(RiskModelValidation, JsonStringsAreEscaped) {
+  EXPECT_EQ(json_quote("C:\\atx\\data"), "\"C:\\\\atx\\\\data\"");
+  EXPECT_EQ(json_quote("a\"b"), "\"a\\\"b\"");
+  EXPECT_EQ(json_quote("x\ny\t\x01"), "\"x\\ny\\t\\u0001\"");
+  const TrueWorld w = true_world(30, 2, 40, 37U);
+  ValidationCfg cfg;
+  cfg.label = "C:\\runs\\\"q\"";
+  cfg.n_periods = 20U;
+  const auto sc = validate_risk_model(fixed_factory(w, 1.0), w.ret, cfg);
+  ASSERT_TRUE(sc);
+  EXPECT_NE(sc->to_json().find("\"label\":\"C:\\\\runs\\\\\\\"q\\\"\""), std::string::npos)
+      << sc->to_json();
+}
+
+// A name with no realized return at a−1 (it left the universe) is dropped from the
+// books, so the equal-weight book scores exactly like a model without that name.
+TEST(RiskModelValidation, NanReturnNamesAreDroppedFromBooks) {
+  TrueWorld w = true_world(80, 3, 140, 43U);
+  for (Eigen::Index d = 0; d < w.ret.r.rows(); ++d) {
+    w.ret.r(d, 0) = std::numeric_limits<f64>::quiet_NaN();
+  }
+  TrueWorld sub;
+  sub.x = w.x.bottomRows(79);
+  sub.f = w.f;
+  sub.d = w.d.tail(79);
+  sub.ret.r = w.ret.r.rightCols(79);
+  ValidationCfg cfg;
+  cfg.n_periods = 120U;
+  cfg.n_random = 5U;
+  cfg.n_optimized = 5U;
+  const auto full = validate_risk_model(fixed_factory(w, 1.0), w.ret, cfg);
+  const auto ref = validate_risk_model(fixed_factory(sub, 1.0), sub.ret, cfg);
+  ASSERT_TRUE(full);
+  ASSERT_TRUE(ref);
+  EXPECT_DOUBLE_EQ(full->mean_excluded, 1.0);
+  EXPECT_DOUBLE_EQ(ref->mean_excluded, 0.0);
+  EXPECT_EQ(full->equal_weight.n, ref->equal_weight.n);
+  EXPECT_NEAR(full->equal_weight.bias, ref->equal_weight.bias, 1e-9);
+  EXPECT_NEAR(full->equal_weight.mean_pred_vol, ref->equal_weight.mean_pred_vol, 1e-12);
+  EXPECT_NE(full->to_json().find("\"mean_excluded\":1"), std::string::npos);
 }
 
 TEST(RiskModelValidation, RejectsBadConfigAndPropagatesFactoryErrors) {

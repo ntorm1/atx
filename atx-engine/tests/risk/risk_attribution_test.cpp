@@ -10,6 +10,7 @@
 #include <limits>
 #include <vector>
 
+#include <Eigen/Dense> // Eigen::LLT, Eigen::Map
 #include <gtest/gtest.h>
 
 #include "atx/core/random.hpp"
@@ -57,6 +58,43 @@ Day make_day(usize m, usize k, std::uint64_t seed) {
   return d;
 }
 
+// A real consistency check (the sum identity below is algebraic): under the WLS
+// factor returns f̂ of r = X f + u, each factor-mimicking book w_c = W X (XᵀWX)⁻¹ e_c
+// has unit exposure to factor c only and ZERO specific P&L, so its whole P&L is f̂_c.
+// With the true f instead of f̂ the specific P&L is not zero (the check has teeth).
+TEST(RiskAttribution, MimickingBooksHaveZeroSpecificUnderWlsFactorReturns) {
+  const usize m = 300;
+  const usize k = 5;
+  const Day d = make_day(m, k, 91U);
+  atx::core::Xoshiro256pp rng{92U};
+  VecX wt(static_cast<Eigen::Index>(m));
+  for (Eigen::Index i = 0; i < wt.size(); ++i) {
+    wt[i] = 0.5 + rng.uniform01(); // √cap-like regression weights
+  }
+  const VecX r = Eigen::Map<const VecX>(d.r.data(), static_cast<Eigen::Index>(m));
+  const MatX xw = d.x.array().colwise() * wt.array(); // W X
+  const MatX a = d.x.transpose() * xw;                // XᵀWX
+  const Eigen::LLT<MatX> llt(a);
+  ASSERT_EQ(llt.info(), Eigen::Success);
+  const VecX fhat = llt.solve(xw.transpose() * r);
+  const MatX mimic = xw * llt.solve(MatX::Identity(static_cast<Eigen::Index>(k),
+                                                   static_cast<Eigen::Index>(k))); // M×K
+  const std::vector<f64> fh(fhat.data(), fhat.data() + fhat.size());
+  for (usize c = 0; c < k; ++c) {
+    const VecX col = mimic.col(static_cast<Eigen::Index>(c));
+    const std::vector<f64> w(col.data(), col.data() + col.size());
+    const Attribution at = attribute(w, d.x, fh, d.r, 0.0, 0.0);
+    EXPECT_NEAR(at.specific, 0.0, 1e-13) << "factor " << c;
+    for (usize q = 0; q < k; ++q) {
+      EXPECT_NEAR(at.factor[q], q == c ? fh[c] : 0.0, 1e-13) << c << "," << q;
+    }
+    EXPECT_NEAR(at.total, fh[c], 1e-13);
+    const Attribution truth = attribute(w, d.x, d.f, d.r, 0.0, 0.0);
+    EXPECT_GT(std::abs(truth.specific), 1e-6) << "true f is not the regression's f̂";
+  }
+}
+
+// Floating-point bookkeeping only: factor_total + specific ≡ gross algebraically.
 TEST(RiskAttribution, ComponentsSumToTotalWithin1e12) {
   for (std::uint64_t seed = 1U; seed <= 25U; ++seed) {
     const Day d = make_day(500, 12, seed);
