@@ -57,6 +57,22 @@ inline constexpr atx::f64 kOsNaN = std::numeric_limits<atx::f64>::quiet_NaN();
   return d == 1 ? 0.5 : avg / static_cast<atx::f64>(d - 1);
 }
 
+// Branchless counts of w[0..n) strictly below / equal to v. A flat compare-and-
+// add loop the compiler vectorizes: for the window sizes alpha formulas use
+// (d <= ~128) it beats a binary search, whose data-dependent branches mispredict
+// on every level.
+inline void count_less_equal(const atx::f64 *w, atx::usize n, atx::f64 v, atx::usize &less,
+                             atx::usize &equal) noexcept {
+  atx::usize l = 0;
+  atx::usize e = 0;
+  for (atx::usize i = 0; i < n; ++i) {
+    l += static_cast<atx::usize>(w[i] < v);
+    e += static_cast<atx::usize>(w[i] == v);
+  }
+  less = l;
+  equal = e;
+}
+
 // ===========================================================================
 //  SortedWindow — sorted array of the window's values. Capacity fixed at
 //  construction (grow-only via reset). push/pop are O(log d + d/4 moves).
@@ -80,7 +96,10 @@ public:
   void push(atx::f64 v) noexcept {
     ATX_ASSERT(n_ < vals_.size());
     atx::f64 *b = vals_.data();
-    const atx::usize pos = static_cast<atx::usize>(std::upper_bound(b, b + n_, v) - b);
+    atx::usize less = 0;
+    atx::usize equal = 0;
+    count_less_equal(b, n_, v, less, equal);
+    const atx::usize pos = less + equal; // == upper_bound on the sorted array
     std::memmove(b + pos + 1, b + pos, (n_ - pos) * sizeof(atx::f64));
     b[pos] = v;
     ++n_;
@@ -91,7 +110,9 @@ public:
   // the sweep never trusts the sign of a stored zero (see the header comment).
   void pop(atx::f64 v) noexcept {
     atx::f64 *b = vals_.data();
-    const atx::usize pos = static_cast<atx::usize>(std::lower_bound(b, b + n_, v) - b);
+    atx::usize pos = 0; // == lower_bound on the sorted array
+    atx::usize equal = 0;
+    count_less_equal(b, n_, v, pos, equal);
     ATX_ASSERT(pos < n_ && b[pos] == v);
     std::memmove(b + pos, b + pos + 1, (n_ - pos - 1) * sizeof(atx::f64));
     --n_;
@@ -99,11 +120,7 @@ public:
 
   // Counts of window values strictly below / equal to v.
   void counts(atx::f64 v, atx::usize &less, atx::usize &equal) const noexcept {
-    const atx::f64 *b = vals_.data();
-    const atx::f64 *lo = std::lower_bound(b, b + n_, v);
-    const atx::f64 *hi = std::upper_bound(lo, b + n_, v);
-    less = static_cast<atx::usize>(lo - b);
-    equal = static_cast<atx::usize>(hi - lo);
+    count_less_equal(vals_.data(), n_, v, less, equal);
   }
 
   // k-th smallest (0-based). Precondition: k < size().
@@ -285,6 +302,30 @@ struct SweepScratch {
   return true;
 }
 
+// ts_rank for small windows: the batch count (less / equal over the window) as a
+// branchless vectorized loop on the contiguous column, with the NaN gate kept
+// incrementally. Same integer counts -> same bits as tsv_rank.
+inline void sweep_rank_direct(std::span<const atx::f64> col, atx::usize d, std::span<atx::f64> out,
+                              atx::usize ostride, atx::usize ooff) noexcept {
+  const atx::usize dates = col.size();
+  atx::usize nan_cnt = 0;
+  for (atx::usize t = 0; t < dates; ++t) {
+    nan_cnt += static_cast<atx::usize>(std::isnan(col[t]));
+    if (t >= d) {
+      nan_cnt -= static_cast<atx::usize>(std::isnan(col[t - d]));
+    }
+    atx::f64 &o = out[t * ostride + ooff];
+    if (t + 1 < d || nan_cnt != 0) {
+      o = kOsNaN;
+      continue;
+    }
+    atx::usize less = 0;
+    atx::usize equal = 0;
+    count_less_equal(col.data() + (t + 1 - d), d, col[t], less, equal);
+    o = rank_from_counts(less, equal, d);
+  }
+}
+
 // Sweep one contiguous column `col` (length dates) for op in {TsRank, TsMed,
 // TsQuantile} with window d, writing out[t * ostride + ooff] for every t.
 inline void sweep_column(OpCode op, std::span<const atx::f64> col, atx::usize d,
@@ -300,6 +341,10 @@ inline void sweep_column(OpCode op, std::span<const atx::f64> col, atx::usize d,
   }
   const bool rank = (op == OpCode::TsRank);
   const bool fenwick = d > kSortedMaxWindow;
+  if (rank && !fenwick) {
+    sweep_rank_direct(col, d, out, ostride, ooff);
+    return;
+  }
   if (fenwick) {
     s.fenwick.reset(compress_column(col, s.comp));
   } else {

@@ -118,32 +118,35 @@ struct CoMoment {
     sxy -= a * b;
     --n;
   }
-  // Centred sums; a value inside the roundoff noise of its raw sum is zero.
-  [[nodiscard]] atx::f64 cxx() const noexcept {
-    const atx::f64 c = sxx - sx * sx / static_cast<atx::f64>(n);
+  // Centred sums given inv = 1/n (one division per output, not three); a value
+  // inside the roundoff noise of its raw sum is zero.
+  [[nodiscard]] atx::f64 cxx(atx::f64 inv) const noexcept {
+    const atx::f64 c = sxx - sx * sx * inv;
     return c <= kCancelGuard * sxx ? 0.0 : c;
   }
-  [[nodiscard]] atx::f64 cyy() const noexcept {
-    const atx::f64 c = syy - sy * sy / static_cast<atx::f64>(n);
+  [[nodiscard]] atx::f64 cyy(atx::f64 inv) const noexcept {
+    const atx::f64 c = syy - sy * sy * inv;
     return c <= kCancelGuard * syy ? 0.0 : c;
   }
-  [[nodiscard]] atx::f64 cxy() const noexcept { return sxy - sx * sy / static_cast<atx::f64>(n); }
+  [[nodiscard]] atx::f64 cxy(atx::f64 inv) const noexcept { return sxy - sx * sy * inv; }
+  [[nodiscard]] atx::f64 inv_n() const noexcept { return 1.0 / static_cast<atx::f64>(n); }
 
   // Sample (ddof=1) covariance; NaN for n < 2.
   [[nodiscard]] atx::f64 cov() const noexcept {
-    return n < 2 ? kSlNaN : cxy() / static_cast<atx::f64>(n - 1);
+    return n < 2 ? kSlNaN : cxy(inv_n()) / static_cast<atx::f64>(n - 1);
   }
   // Pearson correlation clamped to [-1, 1]; NaN for n < 2 or a zero variance.
   [[nodiscard]] atx::f64 corr() const noexcept {
     if (n < 2) {
       return kSlNaN;
     }
-    const atx::f64 vx = cxx();
-    const atx::f64 vy = cyy();
+    const atx::f64 inv = inv_n();
+    const atx::f64 vx = cxx(inv);
+    const atx::f64 vy = cyy(inv);
     if (vx == 0.0 || vy == 0.0) {
       return kSlNaN;
     }
-    const atx::f64 r = cxy() / std::sqrt(vx * vy);
+    const atx::f64 r = cxy(inv) / std::sqrt(vx * vy);
     return std::clamp(r, -1.0, 1.0);
   }
   // OLS slope of x (dependent) on y (predictor) — ts_regression; NaN if the
@@ -152,8 +155,9 @@ struct CoMoment {
     if (n < 2) {
       return kSlNaN;
     }
-    const atx::f64 vy = cyy();
-    return vy == 0.0 ? kSlNaN : cxy() / vy;
+    const atx::f64 inv = inv_n();
+    const atx::f64 vy = cyy(inv);
+    return vy == 0.0 ? kSlNaN : cxy(inv) / vy;
   }
   // Residual of the pair (x, y) against the x-on-y fit.
   [[nodiscard]] atx::f64 resid(atx::f64 x, atx::f64 y) const noexcept {
