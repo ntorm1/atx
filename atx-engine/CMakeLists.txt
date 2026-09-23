@@ -121,6 +121,18 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     # disk hive-parquet options store + quant (feat/disk-data-layer)
     src/data/disk.cpp
     src/quant/trading_calendar.cpp
+    # quant-platform swarm lanes (2026-09-22): scaffolded TUs, one owner each.
+    src/alpha/subtree_cache.cpp
+    src/factory/rewrite.cpp
+    src/factory/fidelity.cpp
+    src/eval/trial_registry.cpp
+    src/eval/multiple_testing.cpp
+    src/combine/signal_combiner.cpp
+    src/combine/orthogonalize.cpp
+    src/risk/model_validation.cpp
+    src/risk/hybrid_factor_model.cpp
+    src/risk/cost_terms.cpp
+    src/book/replay_cost.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 
