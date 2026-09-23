@@ -171,4 +171,12 @@ enum class Tag : atx::u8 {
   return canonical_hash(g.ast, g.ast.roots().front().root);
 }
 
+[[nodiscard]] atx::u64 canonical_hash(const Genome &g, const CanonCfg &cfg) {
+  if (!cfg.semantic) {
+    return canonical_hash(g);
+  }
+  const Ast normal = rewrite_ast(g.ast, g.ast.roots().front().root, cfg.rewrite);
+  return canonical_hash(normal, normal.roots().front().root);
+}
+
 } // namespace atx::engine::factory

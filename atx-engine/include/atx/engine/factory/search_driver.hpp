@@ -86,6 +86,8 @@
 #include "atx/engine/factory/behavior.hpp" // factory::BehavioralArchive, behavioral_distance (S4.2)
 #include "atx/engine/factory/canonical.hpp"  // factory::canonical_hash, CanonSet
 #include "atx/engine/factory/crossover.hpp"  // factory::subtree_crossover
+#include "atx/engine/factory/fidelity.hpp"   // factory::FidelityCfg, race (L3)
+#include "atx/engine/factory/fingerprint.hpp" // factory::FingerprintIndex (L3)
 #include "atx/engine/factory/fitness.hpp"    // factory::pool_aware_fitness, kMaxObjectives
 #include "atx/engine/factory/generate.hpp"   // factory::generate_genome, GenConfig (S3.5 wire)
 #include "atx/engine/factory/genome.hpp"     // factory::Genome
@@ -274,6 +276,30 @@ struct SearchConfig {
   // gen_fit derivation for the SearchConfig->FitnessCfg wire (S4-3).
   bool capacity_objective{false}; // --capacity-objective
   bool turnover_objective{false}; // --turnover-objective
+
+  // ---- L3 search throughput / quality (all default OFF -> byte-identical) ----
+  //
+  // canon.semantic: key the dedup CanonSet / fitness cache by the hash of the
+  // genome's bit-exact rewrite normal form (factory/rewrite.hpp), so e.g.
+  // rank(rank(x)) is a dedup hit on rank(x). Sound: the rules are VM bit-exact.
+  CanonCfg canon{};
+  // output_dedup: phenotype-level dedup. Each freshly evaluated representative's
+  // signal is fingerprinted (factory/fingerprint.hpp, rank-quantized on
+  // `fingerprint_rows` evenly spaced dates). A fingerprint first seen in an
+  // EARLIER generation reuses that owner's cached score instead of re-running
+  // fitness (the expensive CPCV/cost pass). Prior-generation-only lookup keeps
+  // the parallel region read-only on the index -> worker-count invariant.
+  bool output_dedup{false};
+  atx::usize fingerprint_rows{32};
+  atx::u32 fingerprint_quant{32};
+  // fidelity: successive-halving race (factory/fidelity.hpp) of each generation's
+  // distinct fresh candidates on strided sub-panels before the full-fidelity
+  // pass. Rung-rejected candidates are inserted into the CanonSet (they ARE
+  // trials) with a default (zero) score and are not fully evaluated / digested.
+  FidelityCfg fidelity{};
+  // Behavioral archive eviction: Fifo (legacy ring of recent elites) or
+  // FarthestPoint (max-min-distance set of elite behaviours, behavior.hpp).
+  ArchiveEviction archive_eviction{ArchiveEviction::Fifo};
 };
 
 // =========================================================================
@@ -291,6 +317,10 @@ struct SearchResult {
   std::vector<Genome> all_scored;             // every distinct genome that was scored (F5)
   std::vector<Genome> admitted_candidates;    // top survivors of the final gen
   atx::u64 seed{0};                           // == cfg.master_seed (artifact key)
+  // L3 counters (all 0 when the corresponding SearchConfig knob is off).
+  atx::usize fingerprint_hits{0};  // representatives whose score was reused by fingerprint
+  atx::usize fidelity_evals{0};    // low-rung evaluations (each one a trial)
+  atx::usize fidelity_rejected{0}; // candidates rejected before the full-fidelity pass
 };
 
 namespace detail {
@@ -635,6 +665,22 @@ private:
   // group_field_views_: fields where is_group_field (Group classifiers).
   std::vector<std::string_view> numeric_field_views_;
   std::vector<std::string_view> group_field_views_;
+
+  // ----- L3 per-run state (reset at the top of every run()) ------------------
+  // The canonical key used by every canon_hash assignment in this driver; the
+  // default CanonCfg is exactly the structural canonical_hash (byte-identical).
+  [[nodiscard]] atx::u64 canon_key(const Genome &g) const;
+  // Race `to_score` through the low-fidelity rungs; returns the canon hashes
+  // rejected before the full pass (empty when fidelity is off / batch small).
+  [[nodiscard]] std::vector<atx::u64>
+  fidelity_reject(const std::vector<const Genome *> &to_score, const SearchConfig &cfg,
+                  const FitnessCfg &gen_fit, const combine::AlphaStore &pool,
+                  parallel::DetPool &det_pool, SearchResult &res);
+  CanonCfg canon_cfg_{};
+  FingerprintIndex fp_index_{};
+  // Strided sub-panels per low rung (lazily built, keyed by the rung strides).
+  std::vector<Rung> rung_keys_;
+  std::vector<alpha::Panel> rung_panels_;
 };
 
 } // namespace atx::engine::factory
