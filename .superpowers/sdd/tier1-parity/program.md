@@ -3,6 +3,24 @@ Spec: docs/superpowers/specs/2026-09-19-tier1-parity-design.md
 Audits: .superpowers/sdd/tier1-parity/audit-atx-db.md, audit-ticker-zip.md
 Baseline: main a79f8371, smoke 6 passed.
 
+## Lower CompanyFacts memory trial — 2026-09-23 00:35 UTC
+
+Archive12's host-headroom stop preserved55,234 attempt rows/22CIKs and a
+checkpointed47,941,000 facts/points. Recent source verification used about
+1.62GiB private memory and writes about1.38GiB with a1GB DuckDB limit. Root
+authorizes the next CompanyFacts continuation to use a LOWER `512MB` DuckDB
+limit, retaining the2GiB Windows job cap, one thread, existing host stop and
+preflight thresholds, full archive scope, backup-keep100 and all resume proof.
+This is an operating-memory trial, not a source/schema/quality relaxation.
+
+Fresh static audit confirms the setting survives connection recycle/recovery;
+resume source identity does not depend on memory limit and the publication
+session guard specifies no numeric minimum. Runtime completion and actual
+memory reduction remain unproven. On failure, retain and inspect the terminal
+evidence before deciding the next action. Do not silently extend this512MB
+trial to other stages; their current planned limit remains1GB. Evidence and
+code locations: companyfacts-throughput-audit.md. No loader rewrite was made.
+
 ## Production-first earnings-source sequencing — 2026-09-22 23:56 UTC
 
 The current, incomplete submissions inventory contains 426,151 distinct
