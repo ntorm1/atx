@@ -46,6 +46,12 @@ struct EquityAllocationConfig {
     atx::u64 max_additional_bytes{3'000'000'000ULL};
     EquityAllocationRepresentation representation{EquityAllocationRepresentation::ExactWeights};
     EquityExecutionAvailability execution_availability{EquityExecutionAvailability::RequireRequestedMark};
+    // Opt-in factor constraints (negative == off, the historical default). Both
+    // are post-fee economic bounds; the QP enforces them on pre-fee weights
+    // scaled by the same fee reserve as gross/name, and certify() re-checks the
+    // represented book. They need the matching decision exposures (below).
+    atx::f64 beta_tolerance{-1.0};  // |sum_i beta_i w_i| <= this.
+    atx::f64 sector_net_cap{-1.0};  // |sum_{i in g} w_i| <= this for every sector g.
 };
 
 // Exactly 64 canonical, consecutive source observations ending at the decision.
@@ -75,6 +81,11 @@ struct EquityAllocationDecision {
     std::vector<atx::u8> eligibility;
     std::vector<atx::f64> variance; // Floor placeholder if count != 63; never fitted across gaps.
     std::vector<atx::usize> valid_return_count;
+    // Point-in-time exposures as of the decision, attached by
+    // attach_equity_exposures(). Empty == none. Required iff the matching
+    // config bound is enabled.
+    std::vector<atx::f64> beta;
+    std::vector<atx::usize> sector;
 };
 
 struct EquityAllocationExecution {
@@ -138,6 +149,9 @@ struct EquityAllocationCertificate {
     // precedence over execution reasons if a coordinate carries both.
     atx::f64 decision_fixed_zero_l1_change{};
     atx::f64 execution_fixed_zero_l1_change{};
+    // Represented post-fee factor exposures; 0 when the bound is off.
+    atx::f64 postfee_beta_exposure{};
+    atx::f64 postfee_max_sector_net{};
 };
 
 struct EquityAllocationResult {
@@ -155,6 +169,14 @@ freeze_equity_allocation_decision(const EquityAllocationRiskWindow &window,
                                   std::span<const atx::f64> preference,
                                   std::span<const atx::u8> eligibility,
                                   const EquityAllocationConfig &config = {});
+
+// Attaches decision-time beta (finite, one per canonical instrument) and sector
+// labels (one per instrument, any nonnegative id) to a frozen decision. Either
+// span may be empty to leave that exposure off. The caller owns the point-in-
+// time guarantee: exposures must be estimable at the decision session.
+[[nodiscard]] atx::core::Status
+attach_equity_exposures(EquityAllocationDecision &decision, std::span<const atx::f64> beta,
+                        std::span<const atx::usize> sector);
 
 // Conservative worst-case bound for the specific diagonal/net/box/gross/turnover
 // path, including dense ConstraintSet A, sparse assembly and both guarded factor

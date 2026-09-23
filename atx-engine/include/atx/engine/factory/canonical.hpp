@@ -61,6 +61,7 @@
 #include "atx/engine/alpha/registry.hpp"
 
 #include "atx/engine/factory/genome.hpp"
+#include "atx/engine/factory/rewrite.hpp"
 
 namespace atx::engine::factory {
 
@@ -118,6 +119,23 @@ using atx::engine::alpha::OpCode;
 // Convenience: hash a genome's single (first) root. A genome carries one root
 // (built from parse_expr / a bare splice), so this is the whole-program key.
 [[nodiscard]] atx::u64 canonical_hash(const Genome &g) noexcept;
+
+// =========================================================================
+//  CanonCfg — opt-in SEMANTIC canonicalization (L3).
+//
+//  semantic=false (default): exactly the structural `canonical_hash(g)` above —
+//  byte-identical off path. semantic=true: the genome is first normalized by
+//  factory/rewrite.hpp (bit-exact identities: neg∘neg, rank∘rank, abs∘abs,
+//  sign∘sign, abs∘neg, rank(c·x)), then hashed, so `rank(rank(close))` and
+//  `rank(close)` share one dedup slot. F6 soundness is preserved because every
+//  rule is VM bit-identical (FactoryRewrite_*).
+// =========================================================================
+struct CanonCfg {
+  bool semantic{false};
+  RewriteCfg rewrite{};
+};
+
+[[nodiscard]] atx::u64 canonical_hash(const Genome &g, const CanonCfg &cfg);
 
 // =========================================================================
 //  CanonSet — the u64 dedup set (the driver skips a candidate on a hit).
