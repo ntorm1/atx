@@ -140,7 +140,10 @@ romano_wolf(const PnlMatrix &pnl, const BootstrapCfg &cfg, atx::f64 alpha);
 //    rc_pvalue    : #{V*_b >= V} / B.
 //    best_index   : argmax_k of the studentized √T·d̄_k / ω̂_k.
 //  p_lower <= p_consistent <= p_upper always. A series with ω̂ == 0 (a
-//  constant differential) contributes nothing to the SPA maxima.
+//  constant differential) contributes nothing to the SPA maxima. When the
+//  statistic is 0 (no candidate ahead of the benchmark, or every candidate
+//  has ω̂ == 0) the three SPA p-values are 1: a max(0, ·) statistic of 0 is
+//  never evidence against the null.
 //
 //  Err(InvalidArgument) on the romano_wolf shape rules, or when
 //  benchmark.size() != T.

@@ -127,6 +127,7 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/factory/fidelity.cpp
     src/eval/trial_registry.cpp
     src/eval/multiple_testing.cpp
+    src/eval/lockbox_audit.cpp
     src/combine/signal_combiner.cpp
     src/combine/orthogonalize.cpp
     src/risk/model_validation.cpp

@@ -510,6 +510,16 @@ atx::core::Result<SpaResult> hansen_spa(const PnlMatrix &candidates,
   res.p_lower = static_cast<f64>(tot[0]) / bf;
   res.p_consistent = static_cast<f64>(tot[1]) / bf;
   res.p_upper = static_cast<f64>(tot[2]) / bf;
+  // The SPA statistic is max(0, ·): a statistic of 0 (no candidate beats the
+  // benchmark, or every candidate has zero bootstrap variance and is excluded)
+  // can never be evidence against the no-superiority null. The strict '>'
+  // count would give p = 0 there (e.g. all-constant differentials) — i.e.
+  // reject at any level — so pin p = 1, which is P(T* >= 0).
+  if (!(res.statistic > 0.0)) {
+    res.p_lower = 1.0;
+    res.p_consistent = 1.0;
+    res.p_upper = 1.0;
+  }
   res.rc_pvalue = static_cast<f64>(tot[3]) / bf;
   return atx::core::Ok(res);
 }

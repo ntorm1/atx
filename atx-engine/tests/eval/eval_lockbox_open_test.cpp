@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -187,6 +188,116 @@ TEST(EvalLockboxOpen, FileAuditPersistsAndDetectsTampering) {
   }
   EXPECT_FALSE(FileLockboxAudit::open(path).has_value());
   std::filesystem::remove(path, ec);
+}
+
+// Review finding 1: single-use is keyed on the held-out DATES, not on the
+// reservation geometry. Re-reserving the same panel with another embargo or
+// another frac (window moved by a date) must not re-open held-out history.
+TEST(EvalLockboxOpen, ReReservingWithOtherGeometryCannotReopenDates) {
+  const Panel full = build_panel(100U, 3U, 11U);
+  InMemoryLockboxAudit audit;
+  auto s1 = reserve_lockbox(full, 0.2, usize{2});
+  ASSERT_TRUE(s1.has_value());
+  ASSERT_TRUE(open_lockbox(std::move(*s1), full, request(1U), audit).has_value());
+  // Different embargo, same frac: same held-out dates [80, 100).
+  auto s2 = reserve_lockbox(full, 0.2, usize{3});
+  ASSERT_TRUE(s2.has_value());
+  ASSERT_NE(s2->reservation().content_address, audit.receipts()[0].content_address);
+  const auto e = open_lockbox(std::move(*s2), full, request(1U), audit);
+  ASSERT_FALSE(e.has_value());
+  EXPECT_EQ(e.error().code(), ErrorCode::AlreadyExists);
+  // Different frac: [79, 100) overlaps by all but one date.
+  auto s3 = reserve_lockbox(full, 0.21, usize{2});
+  ASSERT_TRUE(s3.has_value());
+  const auto f = open_lockbox(std::move(*s3), full, request(1U), audit);
+  ASSERT_FALSE(f.has_value());
+  EXPECT_EQ(f.error().code(), ErrorCode::AlreadyExists);
+  // A strictly earlier, disjoint window [60, 70) is still openable once.
+  auto s4 = reserve_window(full, 60U, 10U, 2U);
+  ASSERT_TRUE(s4.has_value());
+  OpenRequest q = request(1U);
+  q.holdout_len = 10U;
+  ASSERT_TRUE(open_lockbox(std::move(*s4), full, q, audit).has_value());
+  EXPECT_EQ(audit.receipts().size(), 2U);
+  EXPECT_EQ(audit.receipts()[1].sequence, 1U);
+  EXPECT_EQ(audit.receipts()[1].prev_receipt_hash, audit.receipts()[0].receipt_hash);
+}
+
+// Review finding 1 (append variant): the panel extended by new dates is a new
+// reservation, but its held-out window overlaps already-returned dates.
+TEST(EvalLockboxOpen, ExtendedPanelCannotReopenOldDatesButNewDatesOpen) {
+  const Panel longer = build_panel(130U, 2U, 12U);
+  // `full` is the first 100 dates of `longer` (same generator, same order).
+  const Panel full = build_panel(100U, 2U, 12U);
+  InMemoryLockboxAudit audit;
+  auto s1 = reserve_lockbox(full, 0.2, usize{1});
+  ASSERT_TRUE(s1.has_value());
+  ASSERT_TRUE(open_lockbox(std::move(*s1), full, request(3U), audit).has_value());
+  auto s2 = reserve_lockbox(longer, 0.2, usize{1}); // [104, 130): new dates only
+  ASSERT_TRUE(s2.has_value());
+  ASSERT_TRUE(open_lockbox(std::move(*s2), longer, request(3U), audit).has_value());
+  auto s3 = reserve_window(longer, 95U, 10U, 1U); // [95, 105): overlaps both
+  ASSERT_TRUE(s3.has_value());
+  OpenRequest q = request(3U);
+  q.holdout_len = 10U;
+  const auto e = open_lockbox(std::move(*s3), longer, q, audit);
+  ASSERT_FALSE(e.has_value());
+  EXPECT_EQ(e.error().code(), ErrorCode::AlreadyExists);
+}
+
+// Review finding 2: two handles on one durable log (same or different process)
+// cannot both open the same lockbox; the chain never forks and stays loadable.
+TEST(EvalLockboxOpen, TwoFileHandlesCannotBothOpen) {
+  const std::filesystem::path path =
+      std::filesystem::temp_directory_path() / "atx_l4_lockbox_audit_two_handles.log";
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+  const Panel full = build_panel(60U, 2U, 13U);
+  {
+    auto a = FileLockboxAudit::open(path);
+    auto b = FileLockboxAudit::open(path);
+    ASSERT_TRUE(a.has_value()) << a.error().to_string();
+    ASSERT_TRUE(b.has_value()) << b.error().to_string();
+    auto sa = reserve_lockbox(full, 0.25, usize{1});
+    auto sb = reserve_lockbox(full, 0.25, usize{1});
+    ASSERT_TRUE(sa.has_value());
+    ASSERT_TRUE(sb.has_value());
+    ASSERT_TRUE(open_lockbox(std::move(*sa), full, request(1U), *a).has_value());
+    // b's in-memory view is stale; commit re-reads the log under the lock.
+    const auto again = open_lockbox(std::move(*sb), full, request(2U), *b);
+    ASSERT_FALSE(again.has_value());
+    EXPECT_EQ(again.error().code(), ErrorCode::AlreadyExists);
+    // b catches up and chains a DIFFERENT lockbox after a's receipt.
+    auto sc = reserve_window(full, 20U, 5U, 1U);
+    ASSERT_TRUE(sc.has_value());
+    OpenRequest q = request(4U);
+    q.holdout_len = 5U;
+    auto other = open_lockbox(std::move(*sc), full, q, *b);
+    ASSERT_TRUE(other.has_value()) << other.error().to_string();
+    EXPECT_EQ(other->receipt.sequence, 1U);
+    EXPECT_EQ(other->receipt.prev_receipt_hash, a->receipts()[0].receipt_hash);
+  }
+  auto reloaded = FileLockboxAudit::open(path);
+  ASSERT_TRUE(reloaded.has_value()) << reloaded.error().to_string();
+  EXPECT_EQ(reloaded->receipts().size(), 2U);
+  std::filesystem::remove(path, ec);
+}
+
+// Review finding 6: the content address and date digests are this header's own
+// stable hash, not std::hash — pinned so a toolchain / library upgrade cannot
+// silently change the identities recorded in durable audit logs.
+TEST(EvalLockboxOpen, IdentitiesAreStableGoldenValues) {
+  const Panel full = build_panel(20U, 2U, 21U);
+  // Cross-checked against an independent Python reimplementation of StableHasher.
+  EXPECT_EQ(detail::content_address(full, 16U, 1U), 12278914135003548020ULL);
+  const std::vector<u64> d = detail::holdout_date_digests(full, 16U, 18U);
+  ASSERT_EQ(d.size(), 2U);
+  EXPECT_EQ(d[0], 13023105132293354827ULL);
+  // All-non-finite dates carry no information and are not keyed.
+  std::vector<f64> nan_col(4U, std::numeric_limits<f64>::quiet_NaN());
+  auto p = Panel::create(2U, 2U, {"close"}, {nan_col}, {});
+  ASSERT_TRUE(p.has_value());
+  EXPECT_TRUE(detail::holdout_date_digests(*p, 0U, 2U).empty());
 }
 
 } // namespace atx_test_l4_mtest_lockbox_open

@@ -36,8 +36,11 @@
 //    unit vector z (so z_i·z_j = ρ_ij), projected to s = S·z, and folded into
 //    the d × d Gram M += s·sᵀ. Then Σ_ij (s_i·s_j)² = ||M||_F². When
 //    sketch_dim >= pnl_len, S is the identity (exact). Otherwise S is a
-//    count-sketch (one ±1 per period, seeded, O(T) to apply) and the pairwise
-//    sketch noise (variance ≈ 1/d) is folded into the bias constant c.
+//    count-sketch (one ±1 per period, seeded, O(T) to apply), the sketch is
+//    renormalized to unit length (so s_i·s_j estimates the cosine, i.e. ρ,
+//    with no multiplicative norm error — identical trials give exactly 1), and
+//    the pairwise sketch noise (variance ≈ 1/d) is folded into the bias
+//    constant c.
 //    Cost per record: O(T + d²/2); memory O(d²) regardless of trial count.
 //  * registry_hash chains (id, sharpe bits) in append order: two registries
 //    with the same history have the same hash.
@@ -47,9 +50,14 @@
 // ===========================================================================
 //  open(path) creates or replays an append-only binary log. Each record is
 //  fixed-size and carries its own checksum; it is written and flushed before
-//  record() returns. On reopen, a torn / corrupt tail (a crash mid-append) is
-//  detected by size or checksum and truncated, so the registry comes back
-//  exactly as of the last completed record. The header pins pnl_len,
+//  record() returns. On reopen, a torn tail (a crash mid-append: a trailing
+//  partial record, or a bad-checksum record that is the LAST one in the file)
+//  is detected by size or checksum and truncated, so the registry comes back
+//  exactly as of the last completed record. A bad-checksum record with more
+//  data after it cannot come from a crash: open() returns Err(ParseError) and
+//  leaves the file untouched rather than deleting acknowledged trials (which
+//  would undercount N). Wholesale deletion of complete records is NOT
+//  detected (the registry_hash chain is not stored in the file). The header pins pnl_len,
 //  sketch_dim and sketch_seed; reopening with a different config is an Err.
 //  All digests are this file's own stable FNV-1a/splitmix64 functions, never
 //  std::hash, so ids and the file format are identical across processes.

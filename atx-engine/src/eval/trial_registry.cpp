@@ -247,7 +247,17 @@ atx::core::Result<TrialRegistry> TrialRegistry::open(const std::filesystem::path
              in.read(reinterpret_cast<char *>(rec.data()), static_cast<std::streamsize>(rb))) {
         const unsigned char *r = rec.data();
         if (get_u64(r + body) != stable_digest(r, body) || !valid_kind(get_u64(r + 24U))) {
-          break; // corrupt record: it and everything after it is a torn tail
+          // A crash can only tear the LAST append. A bad complete record that is
+          // the final bytes of the file is that torn tail (dropped below); a bad
+          // record with more data after it is mid-log corruption, and silently
+          // truncating would delete acknowledged trials and undercount N — so
+          // refuse and leave the file untouched.
+          if (good_len + rb < file_len) {
+            return Err(ErrorCode::ParseError,
+                       "TrialRegistry: corrupt record mid-log in " + path.string() +
+                           " (refusing to truncate acknowledged trials)");
+          }
+          break;
         }
         const u64 id = get_u64(r);
         const f64 sharpe = std::bit_cast<f64>(get_u64(r + 16U));
@@ -328,6 +338,20 @@ atx::core::Result<RecordOutcome> TrialRegistry::record(TrialKind kind, u64 confi
     std::fill(im.s.begin(), im.s.end(), 0.0);
     for (usize t = 0; t < oos_pnl.size(); ++t) {
       im.s[im.bucket[t]] += im.sign[t] * im.z[t];
+    }
+    // Renormalize: a count-sketch preserves norms only to 1 ± O(sqrt(2/d)), so
+    // unnormalized s_i·s_j is ρ times a random norm error that the additive
+    // 1/d correction cannot remove (identical trials would read as partially
+    // independent). The unit sketch estimates the cosine, i.e. ρ, directly.
+    f64 s2 = 0.0;
+    for (const f64 v : im.s) {
+      s2 += v * v;
+    }
+    if (s2 > 0.0) {
+      const f64 sinv = 1.0 / std::sqrt(s2);
+      for (f64 &v : im.s) {
+        v *= sinv;
+      }
     }
   }
   if (im.log.has_value()) {

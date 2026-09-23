@@ -319,6 +319,79 @@ TEST(EvalTrialRegistry, CorruptRecordBodyIsTruncated) {
   std::filesystem::remove(path, ec);
 }
 
+// Review finding: a bad checksum in the MIDDLE of the log is not a torn tail.
+// Reopen must refuse (ParseError) and leave the file byte-identical, never
+// silently truncate acknowledged trials (which would undercount N).
+TEST(EvalTrialRegistry, MidLogCorruptionIsRefusedNotTruncated) {
+  const std::filesystem::path path = fresh_path("midlog");
+  TrialRegistryConfig cfg;
+  cfg.pnl_len = 16U;
+  {
+    auto reg = TrialRegistry::open(path, cfg);
+    ASSERT_TRUE(reg.has_value());
+    for (usize i = 0; i < 10U; ++i) {
+      ASSERT_TRUE(reg->record(TrialKind::MinerExpr, i, noise(16U, 70U + i), 0.1).has_value());
+    }
+  }
+  const auto size = std::filesystem::file_size(path);
+  const usize rb = (size - 48U) / 10U; // header 48 bytes, 10 fixed-size records
+  ASSERT_EQ(48U + 10U * rb, size);
+  {
+    std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
+    f.seekp(static_cast<std::streamoff>(48U + 2U * rb + 20U)); // inside record 3
+    const char b = 0x5a;
+    f.write(&b, 1);
+  }
+  {
+    auto reg = TrialRegistry::open(path, cfg);
+    ASSERT_FALSE(reg.has_value());
+    EXPECT_EQ(reg.error().code(), atx::core::ErrorCode::ParseError);
+  }
+  EXPECT_EQ(std::filesystem::file_size(path), size); // nothing deleted
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+}
+
+// Review finding: in count-sketch mode the sketch is renormalized, so
+// identical trials collapse to exactly 1 for EVERY sketch seed (unnormalized
+// sketches read 1.2-3.4 at d = 32..64), while independent trials still count
+// about fully.
+TEST(EvalTrialRegistry, SketchModeIdenticalTrialsCollapseAcrossSeeds) {
+  const usize t = 2520U;
+  const usize n = 50U;
+  f64 indep_sum = 0.0;
+  const usize seeds = 12U;
+  for (usize k = 0; k < seeds; ++k) {
+    for (const usize d : {usize{32}, usize{64}}) {
+      TrialRegistryConfig cfg;
+      cfg.pnl_len = t;
+      cfg.sketch_dim = d;
+      cfg.sketch_seed = 0x1000U + k;
+      auto same = TrialRegistry::in_memory(cfg);
+      ASSERT_TRUE(same.has_value());
+      const std::vector<f64> base = noise(t, 7000U + k);
+      for (usize i = 0; i < n; ++i) {
+        std::vector<f64> y(t);
+        for (usize s = 0; s < t; ++s) {
+          y[s] = base[s] * (1.0 + 0.01 * static_cast<f64>(i)) + 0.001 * static_cast<f64>(i);
+        }
+        ASSERT_TRUE(same->record(TrialKind::MinerExpr, i, y, sharpe_of(y)).has_value());
+      }
+      EXPECT_NEAR(same->summary().n_eff, 1.0, 1e-6) << "d=" << d << " seed=" << k;
+      if (d == 64U) {
+        auto ind = TrialRegistry::in_memory(cfg);
+        ASSERT_TRUE(ind.has_value());
+        for (usize i = 0; i < n; ++i) {
+          const std::vector<f64> x = noise(t, 90000U + 100U * k + i);
+          ASSERT_TRUE(ind->record(TrialKind::MinerExpr, i, x, sharpe_of(x)).has_value());
+        }
+        indep_sum += ind->summary().n_eff;
+      }
+    }
+  }
+  EXPECT_NEAR(indep_sum / static_cast<f64>(seeds), static_cast<f64>(n), 8.0);
+}
+
 TEST(EvalTrialRegistry, RegistryFedDsrIsLessOverDeflatedOnCorrelatedTrials) {
   const usize t = 252U;
   TrialRegistry reg = must_mem(t);
