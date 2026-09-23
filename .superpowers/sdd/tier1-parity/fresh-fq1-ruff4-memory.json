@@ -1,0 +1,21 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "ruff",
+    "check",
+    "src/atx_db/fundamental_signal_research.py",
+    "src/atx_db/migrations/bodies_0324.py",
+    "scripts/research_fundamental_signals.py",
+    "tests/test_fundamental_signal_research.py"
+  ],
+  "job_limit_gb": 1.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 4.2415313720703125,
+    "commit_free_gb": 4.828620910644531
+  },
+  "child_pid": 19952,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.06087493896484375
+}
