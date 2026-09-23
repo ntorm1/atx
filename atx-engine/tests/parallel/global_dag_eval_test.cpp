@@ -140,6 +140,30 @@ TEST(ParallelGlobalDag_Cache, TightBudgetKeepsRootsWarm) {
   EXPECT_EQ(warm.computed, 0U);
 }
 
+// A caller that evaluates many programs on one panel (a GP loop) hashes the panel
+// once and passes the digest; the hint must key the cache exactly like the
+// computed digest, and a different hint must isolate (never alias) entries.
+TEST(ParallelGlobalDag_Cache, PanelDigestHintKeysLikeComputedDigest) {
+  alpha::SubtreeCache cache{std::size_t{1} << 30};
+  par::DetPool pool{2};
+  auto cold = par::global_dag_evaluate(union_prog(), panel(), pool, &cache);
+  ASSERT_TRUE(cold.has_value());
+  par::GlobalDagOptions hinted;
+  hinted.panel_digest = alpha::panel_content_digest(panel());
+  par::GlobalDagStats warm{};
+  auto again = par::global_dag_evaluate(union_prog(), panel(), pool, &cache, &warm, hinted);
+  ASSERT_TRUE(again.has_value());
+  EXPECT_EQ(par::signal_set_digest(cold.value()), par::signal_set_digest(again.value()));
+  EXPECT_EQ(warm.computed, 0U);
+  par::GlobalDagOptions other;
+  other.panel_digest = *hinted.panel_digest ^ 1U;
+  par::GlobalDagStats iso{};
+  auto fresh = par::global_dag_evaluate(union_prog(), panel(), pool, &cache, &iso, other);
+  ASSERT_TRUE(fresh.has_value());
+  EXPECT_EQ(iso.cache_hits, 0U);
+  EXPECT_EQ(par::signal_set_digest(cold.value()), par::signal_set_digest(fresh.value()));
+}
+
 TEST(ParallelGlobalDag_Fused, FusedUnionIdentical) {
   auto fp = alpha::fuse(union_prog());
   ASSERT_TRUE(fp.has_value());

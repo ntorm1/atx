@@ -139,10 +139,13 @@ void Wq101_WarmCache(benchmark::State &state) {
   const Fixture &f = fixture();
   par::DetPool pool{static_cast<atx::usize>(state.range(0))};
   alpha::SubtreeCache cache{std::size_t{2} << 30};
-  (void)par::global_dag_evaluate(f.union_prog, f.panel, pool, &cache); // warm
+  // A GP loop hashes its panel once per generation, not once per call.
+  par::GlobalDagOptions opt;
+  opt.panel_digest = alpha::panel_content_digest(f.panel);
+  (void)par::global_dag_evaluate(f.union_prog, f.panel, pool, &cache, nullptr, opt); // warm
   const alpha::CacheStats before = cache.stats();
   for (auto _ : state) {
-    auto r = par::global_dag_evaluate(f.union_prog, f.panel, pool, &cache);
+    auto r = par::global_dag_evaluate(f.union_prog, f.panel, pool, &cache, nullptr, opt);
     benchmark::DoNotOptimize(r);
   }
   const alpha::CacheStats after = cache.stats();

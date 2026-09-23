@@ -78,6 +78,12 @@ struct GlobalDagOptions {
   // Upper bound on chunks per node, as a multiple of the worker count.
   atx::usize chunks_per_worker{2};
   alpha::EvalMode mode{alpha::EvalMode::AuditExact};
+  // Precomputed alpha::panel_content_digest(panel) for the cache key. A caller that
+  // evaluates many programs on ONE panel (a GP generation) hashes it once and passes
+  // it here, saving an O(cells * fields) pass per call. It MUST be the digest of the
+  // panel being evaluated (a stale value would serve another panel's entries);
+  // empty = compute it. Ignored without a cache.
+  std::optional<atx::u64> panel_digest{};
 };
 
 namespace detail {
@@ -373,7 +379,7 @@ global_dag_impl(const alpha::Program &prog, std::span<const alpha::FusedKernel> 
   atx::u64 pdig = 0;
   if (cache != nullptr) {
     hashes = alpha::subtree_hashes(prog);
-    pdig = alpha::panel_content_digest(panel);
+    pdig = opt.panel_digest.has_value() ? *opt.panel_digest : alpha::panel_content_digest(panel);
   }
   d::GdPlan plan;
   d::gd_build_graph(prog, kernels, kernel_of, plan);
