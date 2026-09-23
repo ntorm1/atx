@@ -1,5 +1,19 @@
 # Tier-1 parity program ledger (atx-db)
 
+## Fundamental evaluation follow-on - 2026-09-23
+
+FQ2 is scoped by fundamental-signal-evaluation-brief.md and reserves0325 AFTER
+DL1 commits0323 and FQ1 commits0324. Registry edits stay serialized. It adds
+generic run-scoped decile inference over frozen fundamental signal panels and
+nullable actual price_basis/calculation_version on canonical forward labels.
+These fields must be written by the price calculation path; legacyNULL labels
+stay unverified. No inferred basis from source/run labels. A new whole-input
+hash manifest is not required for this bounded provenance prerequisite.
+Default evaluation cohort remains proved historical US-common with no claim
+of liquidity/capacity/borrow eligibility. Frozenfamily primary21/secondary5,63,
+chronological splits/embargo, localfamilyHolm and explicit label attrition.
+No performance-derived feature selection or production eligibility claims.
+
 ## Selected-input prerequisite; migration reservation update - 2026-09-23
 
 FQ1's audit found derived inputs_hash stores candidate-frame identity but no
