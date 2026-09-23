@@ -473,6 +473,161 @@ class Measurement:
         return {"status": "measured" if runs["rows"] else "empty", "runs": runs, "evaluation_inventory": summaries,
                 "inference": "No significance, candidacy, or production eligibility conclusion is made. Eligibility flags are recorded data only; CF1 design keeps production eligibility false pending independent certification."}
 
+    def fundamental_signals(self) -> dict[str, Any]:
+        """Inventory recorded research manifests and narrow, frozen aggregates only."""
+        def public_id(value: Any) -> str:
+            return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value) else "[invalid identifier]"
+
+        def public_status(value: Any) -> str:
+            return value if value in {"complete", "building", "blocked_empty", "failed",
+                                      "ok", "empty", "insufficient", "excluded",
+                                      "candidate", "untestable", "did_not_qualify"} else "other"
+
+        def run_inventory(table: str, fields: str) -> dict[str, Any]:
+            result = self.rows(f"""
+                SELECT {fields},
+                    CASE WHEN blockers_json IS NULL OR length(blockers_json)>{DETAIL_LIMIT} THEN NULL
+                         WHEN json_valid(blockers_json) AND json_type(blockers_json)='ARRAY'
+                         THEN json_array_length(blockers_json) END AS blocker_count
+                FROM main.{table} WHERE as_of_date<=?
+                ORDER BY run_at DESC,run_id DESC
+            """, [self.as_of])
+            for row in result["rows"]:
+                row["run_id"] = public_id(row["run_id"])
+                row["status"] = public_status(row["status"])
+                if "build_run_id" in row:
+                    row["build_run_id"] = public_id(row["build_run_id"])
+                row.pop("panel_sha256", None)
+                row.pop("build_sha256", None)
+                row.pop("result_sha256", None)
+                row["blocker_detail"] = "not_inspected"
+            return result
+
+        build_gap = self.missing({"fundamental_signal_runs": (
+            "run_id", "status", "as_of_date", "run_at", "start_date", "end_date",
+            "panel_sha256", "blockers_json", "production_eligible")})
+        coverage_gap = self.missing({"fundamental_signal_coverage": (
+            "run_id", "signal_id", "decision_date", "status", "visible_members",
+            "common_members", "overlap_members", "qualified_cik", "unmatched_owner_states",
+            "eligible_scores", "excluded_scores", "constant_scores")})
+        evaluation_gap = self.missing({"fundamental_signal_evaluation_runs": (
+            "run_id", "build_run_id", "status", "as_of_date", "run_at", "build_sha256",
+            "result_sha256", "blockers_json", "production_eligible")})
+        summary_gap = self.missing({"fundamental_signal_evaluation_summaries": (
+            "run_id", "signal_id", "horizon_sessions", "split", "primary_hypothesis",
+            "status", "spread_dates", "eligible_count", "labeled_count", "label_coverage",
+            "holm_p_value", "net_25bp", "candidate", "production_eligible")})
+        fq1: dict[str, Any] = {"status": "unmeasured", "manifest": build_gap,
+                               "coverage": coverage_gap, "selected_run": None}
+        fq2: dict[str, Any] = {"status": "unmeasured", "manifest": evaluation_gap,
+                               "summaries": summary_gap, "selected_run": None}
+        build_selected = None
+        if not build_gap:
+            runs = run_inventory("fundamental_signal_runs",
+                                 "run_id,status,as_of_date,run_at,start_date,end_date")
+            fq1.update(status="measured" if runs["rows"] else "not_run", manifest=runs)
+            build_selected = self.rows("""
+                SELECT run_id,status,as_of_date,run_at,start_date,end_date,panel_sha256
+                FROM main.fundamental_signal_runs
+                WHERE status='complete' AND as_of_date<=?
+                ORDER BY run_at DESC,run_id DESC LIMIT 1
+            """, [self.as_of])["rows"]
+            if build_selected:
+                selected = build_selected[0]
+                fq1["selected_run"] = {k: v for k, v in selected.items() if k != "panel_sha256"}
+                fq1["selected_run"]["run_id"] = public_id(selected["run_id"])
+                if not coverage_gap:
+                    coverage = self.rows("""
+                        SELECT signal_id,status,count(*) AS sessions,
+                            min(decision_date) AS first_decision_date,
+                            max(decision_date) AS last_decision_date,
+                            sum(eligible_scores) AS eligible_scores,
+                            sum(excluded_scores) AS excluded_scores,
+                            sum(unmatched_owner_states) AS unmatched_owner_states,
+                            count(*) FILTER (WHERE constant_scores) AS constant_score_sessions,
+                            count(*) FILTER (WHERE visible_members=0) AS zero_visible_sessions,
+                            count(*) FILTER (WHERE common_members=0) AS zero_common_sessions
+                        FROM main.fundamental_signal_coverage WHERE run_id=?
+                        GROUP BY signal_id,status ORDER BY signal_id,status
+                    """, [selected["run_id"]])
+                    for row in coverage["rows"]:
+                        row["signal_id"] = public_id(row["signal_id"])
+                        row["status"] = public_status(row["status"])
+                    fq1["coverage"] = coverage
+        if not evaluation_gap:
+            runs = run_inventory("fundamental_signal_evaluation_runs",
+                                 "run_id,build_run_id,status,as_of_date,run_at")
+            fq2.update(status="measured" if runs["rows"] else "not_run", manifest=runs)
+            if build_gap:
+                selected_without_link = self.rows("""
+                    SELECT run_id,build_run_id,as_of_date,run_at
+                    FROM main.fundamental_signal_evaluation_runs
+                    WHERE status='complete' AND as_of_date<=?
+                    ORDER BY run_at DESC,run_id DESC LIMIT 1
+                """, [self.as_of])["rows"]
+                if selected_without_link:
+                    selected = selected_without_link[0]
+                    fq2["selected_run"] = {
+                        "run_id": public_id(selected["run_id"]),
+                        "build_run_id": public_id(selected["build_run_id"]),
+                        "status": "complete", "as_of_date": selected["as_of_date"],
+                        "run_at": selected["run_at"], "linkage_status": "unmeasured",
+                        "linkage_schema_gaps": build_gap["schema_gaps"],
+                    }
+                fq2["selection_note"] = "FQ1 manifest schema is missing; evaluation linkage and summaries are unmeasured."
+            selected_rows = self.rows("""
+                SELECT e.run_id,e.build_run_id,e.status,e.as_of_date,e.run_at,
+                       e.build_sha256,e.result_sha256,b.panel_sha256 AS recorded_panel_sha256,
+                       b.status AS build_status,
+                       b.as_of_date AS build_as_of_date,b.start_date AS build_start_date,
+                       b.end_date AS build_end_date
+                FROM main.fundamental_signal_evaluation_runs e
+                LEFT JOIN main.fundamental_signal_runs b ON b.run_id=e.build_run_id
+                WHERE e.status='complete' AND e.as_of_date<=?
+                ORDER BY e.run_at DESC,e.run_id DESC LIMIT 1
+            """, [self.as_of]) if not build_gap else {"rows": []}
+            if selected_rows["rows"]:
+                selected = selected_rows["rows"][0]
+                hash_equal = (selected["recorded_panel_sha256"] is not None
+                              and selected["build_sha256"] == selected["recorded_panel_sha256"])
+                snapshot_eligible = (selected["build_status"] == "complete"
+                                     and selected["build_as_of_date"] is not None
+                                     and selected["build_as_of_date"] <= selected["as_of_date"]
+                                     and selected["build_as_of_date"] <= self.as_of)
+                linked = hash_equal and snapshot_eligible
+                fq2["selected_run"] = {
+                    "run_id": public_id(selected["run_id"]),
+                    "build_run_id": public_id(selected["build_run_id"]),
+                    "status": "complete", "as_of_date": selected["as_of_date"],
+                    "run_at": selected["run_at"], "build_as_of_date": selected["build_as_of_date"],
+                    "build_start_date": selected["build_start_date"],
+                    "build_end_date": selected["build_end_date"],
+                    "recorded_hash_equality": hash_equal,
+                    "linked_build_snapshot_eligible": snapshot_eligible,
+                }
+                if not linked:
+                    fq2["selection_note"] = "Latest complete evaluation has no complete snapshot-eligible build with equal recorded build/panel hash."
+                if linked and not summary_gap:
+                    summaries = self.rows("""
+                        SELECT s.signal_id,s.horizon_sessions,s.split,s.primary_hypothesis,
+                               s.status,s.spread_dates,s.eligible_count,s.labeled_count,
+                               s.label_coverage,s.holm_p_value,s.net_25bp,
+                               s.candidate AS recorded_research_candidate
+                        FROM main.fundamental_signal_evaluation_summaries s
+                        JOIN main.fundamental_signal_evaluation_runs e
+                          ON e.run_id=s.run_id AND e.status='complete'
+                        WHERE s.run_id=? ORDER BY s.signal_id,s.horizon_sessions,s.split
+                    """, [selected["run_id"]])
+                    for row in summaries["rows"]:
+                        row["signal_id"] = public_id(row["signal_id"])
+                        row["status"] = public_status(row["status"])
+                        row["split"] = row["split"] if row["split"] in {"train", "validation", "holdout"} else "other"
+                    fq2["summaries"] = summaries
+            elif not build_gap:
+                fq2["selection_note"] = "No complete evaluation with a complete snapshot-eligible build and equal recorded build/panel hash."
+        return {"fq1": fq1, "fq2": fq2, "certification": "unmeasured",
+                "note": "Recorded FQ1/FQ2 research evidence only. Manifest status, hashes, candidate flags and blocker counts are observations, not read-side digest validation, production eligibility, alpha certification or parity proof."}
+
 
 def markdown(report: dict[str, Any]) -> str:
     """Small overview followed by explicit control evidence, never security rows."""
@@ -497,7 +652,7 @@ def markdown(report: dict[str, Any]) -> str:
     lines += ["All numeric-field NULL/nonfinite counts, missing columns, lineage and cutoffs are retained in the JSON report.", "", "## Activation attempts", ""]
     activation = report["activation"]
     lines.extend(table(activation.get("rows", []), ("stage", "status", "run_id", "retained_attempts", "requested_as_of_date", "freshness", "error_excerpt")))
-    for heading, key in (("Annual item coverage", "annual_item_coverage"), ("Provider SLO evidence", "provider_coverage"), ("Historical evidence gaps", "historical_gaps"), ("Optional CF1 inventory", "cf1")):
+    for heading, key in (("Annual item coverage", "annual_item_coverage"), ("Provider SLO evidence", "provider_coverage"), ("Historical evidence gaps", "historical_gaps"), ("Optional CF1 inventory", "cf1"), ("Recorded FQ1/FQ2 research evidence", "fundamental_signal_research")):
         lines += ["## " + heading, "", "```json", json.dumps(report[key], indent=2, ensure_ascii=False), "```", ""]
     quality = report["quality"]
     lines += ["## Recorded quality results", "", quality.get("note", "Quality evidence unmeasured; see schema gaps below."), "",
@@ -516,6 +671,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-markdown", required=True, type=Path)
     parser.add_argument("--memory-limit", default="1GB")
     parser.add_argument("--include-cf1", action="store_true", help="Include bounded CF1 run/evaluation inventories.")
+    parser.add_argument("--include-fundamental-signals", action="store_true",
+                        help="Include bounded recorded FQ1/FQ2 research evidence.")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[1-9][0-9]*(?:\.[0-9]+)?\s*(?:MB|GB)", args.memory_limit, re.I):
         parser.error("--memory-limit must be a positive MB or GB quantity")
@@ -564,6 +721,8 @@ def main(argv: list[str] | None = None) -> int:
             "provider_coverage": measurement.provider_coverage(), "quality": measurement.quality(),
             "historical_gaps": measurement.historical_gaps(),
             "cf1": measurement.cf1() if args.include_cf1 else {"status": "not_requested"},
+            "fundamental_signal_research": (measurement.fundamental_signals()
+                                            if args.include_fundamental_signals else {"status": "not_requested"}),
             "limitations": [
                 "All SQL runs sequentially in one read-only snapshot; no migrations, activation, quality checks, schema flips or network access are performed.",
                 "Missing relations/columns are unmeasured. Query errors and memory/spill failures abort with a nonzero exit; they are not converted into absent evidence.",
@@ -571,6 +730,7 @@ def main(argv: list[str] | None = None) -> int:
                 "Only aggregates and bounded control records cross into Python. COUNT DISTINCT and SQL scans still consume memory and time; the DuckDB setting is not a process-tree memory cap. Use the controller guard with no competing writer or heavy workload.",
                 "Latest activation attempts, output run IDs and demonstrable dataset UUID lineage are reported separately. Unmatched lineage is unverified, not proof of staleness. No historical observation vintage is reconstructed.",
                 "Recorded quality results have no run_id. Date agreement alone cannot associate a check with a rebuild or prove it covers current stored rows.",
+                "Fundamental research manifests, recorded hash equality, coverage and frozen summaries do not rerun the FQ1 digest validator or FQ2 label digest; candidate flags are recorded research flags only.",
                 "Missing/undersized annual cohorts, empty quality or SLO results, and successful stage execution never certify parity. Historical listing, identity, adjustment and terminal-return completeness need independent evidence.",
             ],
         }
