@@ -4,7 +4,7 @@
 //    stationary-bootstrap replicates (mean block 10), arg = worker threads.
 //    The block-prefix-sum kernel makes one replicate O(K · T / L).
 //  * BM_TrialRegistryAppend: 10^6 in-memory records (T = 252, count-sketch
-//    d = 64) — per-record cost O(T + d²/2) — then one summary().
+//    d = 16 / 64; exact d = T at 10^5); per-record cost O(T + d²/2).
 //  * BM_TrialRegistrySummary: summary() alone on a 10^6-trial registry.
 //  * BM_TrialRegistryAppendDurable: 10^4 flushed appends to a temp file.
 
@@ -94,10 +94,10 @@ const std::vector<f64> &pnl_pool() {
   return v;
 }
 
-TrialRegistry fill(usize n) {
+TrialRegistry fill(usize n, usize sketch_dim = 64U) {
   TrialRegistryConfig cfg;
   cfg.pnl_len = kRegT;
-  cfg.sketch_dim = 64U;
+  cfg.sketch_dim = sketch_dim;
   TrialRegistry reg = std::move(*TrialRegistry::in_memory(cfg));
   const std::vector<f64> &pool = pnl_pool();
   for (usize i = 0; i < n; ++i) {
@@ -111,14 +111,16 @@ TrialRegistry fill(usize n) {
 void BM_TrialRegistryAppend(benchmark::State &state) {
   const usize n = static_cast<usize>(state.range(0));
   for (auto _ : state) {
-    TrialRegistry reg = fill(n);
+    TrialRegistry reg = fill(n, static_cast<usize>(state.range(1)));
     TrialSummary s = reg.summary();
     benchmark::DoNotOptimize(s);
   }
   state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(n));
 }
 BENCHMARK(BM_TrialRegistryAppend)
-    ->Arg(1000000)
+    ->Args({1000000, 16})
+    ->Args({1000000, 64})
+    ->Args({100000, 256})
     ->Unit(benchmark::kMillisecond)
     ->Iterations(1);
 

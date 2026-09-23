@@ -10,9 +10,12 @@
 #include <optional>
 #include <string>
 #include <system_error>
-#include <unordered_set>
 #include <utility>
 #include <vector>
+
+#include <Eigen/Core> // batched SYRK Gram update
+
+#include <ankerl/unordered_dense.h> // flat id set for 10^6-trial registries
 
 namespace atx::engine::eval {
 
@@ -29,6 +32,11 @@ constexpr u64 kVersion = 1U;
 constexpr usize kHeaderBytes = 48U; // magic, version, pnl_len, sketch_dim, seed, checksum
 constexpr usize kRecordFixed = 40U; // id, config_hash, sharpe, kind, (sketch), checksum
 constexpr usize kMinSketchDim = 8U;
+// Sketches are folded into the Gram in batches of this many columns with one
+// blocked, vectorized symmetric rank-k update (SYRK) instead of per-record
+// scalar rank-1 updates. Batch boundaries depend only on insertion order, so
+// the Gram is a pure function of the registry history.
+constexpr Eigen::Index kGramBatch = 32;
 
 [[nodiscard]] constexpr u64 splitmix64(u64 x) noexcept {
   u64 z = x + kGolden;
@@ -79,14 +87,16 @@ struct TrialRegistry::Impl {
   usize dim{}; // sketch width actually used: T when exact, else cfg.sketch_dim
   std::vector<usize> bucket;
   std::vector<f64> sign;
-  std::vector<f64> gram; // dim x dim, upper triangle (i <= j) maintained
+  Eigen::MatrixXd gram;    // dim x dim, upper triangle (i <= j) maintained
+  Eigen::MatrixXd pending; // dim x kGramBatch sketches not yet folded into gram
+  Eigen::Index n_pending{};
   f64 sum_s4{};          // Σ_i ||s_i||⁴ (the Gram's diagonal-pair mass)
   u64 n{};
   f64 sr_mean{};
   f64 sr_m2{};
   f64 sr_max{};
   u64 chain{0x6a09e667f3bcc909ULL};
-  std::unordered_set<u64> ids;
+  ankerl::unordered_dense::set<u64> ids;
   std::optional<std::ofstream> log; // present iff durable
   std::vector<unsigned char> rec_buf;
   std::vector<f64> z;
@@ -104,7 +114,9 @@ struct TrialRegistry::Impl {
         sign[t] = ((h >> 63U) != 0U) ? -1.0 : 1.0;
       }
     }
-    gram.assign(dim * dim, 0.0);
+    const auto d = static_cast<Eigen::Index>(dim);
+    gram = Eigen::MatrixXd::Zero(d, d);
+    pending = Eigen::MatrixXd::Zero(d, kGramBatch);
     rec_buf.resize(record_bytes());
     z.resize(cfg.pnl_len);
     s.resize(dim);
@@ -127,18 +139,21 @@ struct TrialRegistry::Impl {
       nrm2 += sk[i] * sk[i];
     }
     sum_s4 += nrm2 * nrm2;
-    // Rank-1 update of the upper triangle; zero rows are skipped (a sketch of a
-    // short-support vector is sparse).
-    for (usize i = 0; i < dim; ++i) {
-      const f64 si = sk[i];
-      if (si == 0.0) {
-        continue;
-      }
-      f64 *row = gram.data() + i * dim;
-      for (usize j = i; j < dim; ++j) {
-        row[j] += si * sk[j];
-      }
+    std::copy(sk, sk + dim, pending.col(n_pending).data());
+    ++n_pending;
+    if (n_pending == kGramBatch) {
+      gram.selfadjointView<Eigen::Upper>().rankUpdate(pending);
+      n_pending = 0;
     }
+  }
+
+  // The full Gram including the not-yet-folded batch (upper triangle valid).
+  [[nodiscard]] Eigen::MatrixXd current_gram() const {
+    Eigen::MatrixXd g = gram;
+    if (n_pending > 0) {
+      g.selfadjointView<Eigen::Upper>().rankUpdate(pending.leftCols(n_pending));
+    }
+    return g;
   }
 
   void encode(u64 id, u64 config_hash, f64 sharpe, TrialKind kind, const f64 *sk) {
@@ -342,17 +357,17 @@ TrialSummary TrialRegistry::summary() const {
   out.max_sr = im.sr_max;
 
   // ||M||_F² from the upper triangle, and tr M.
+  const Eigen::MatrixXd g = im.current_gram();
   f64 frob2 = 0.0;
   f64 trace = 0.0;
-  for (usize i = 0; i < im.dim; ++i) {
-    const f64 *row = im.gram.data() + i * im.dim;
-    trace += row[i];
-    frob2 += row[i] * row[i];
+  const auto d = static_cast<Eigen::Index>(im.dim);
+  for (Eigen::Index j = 0; j < d; ++j) {
     f64 off = 0.0;
-    for (usize j = i + 1U; j < im.dim; ++j) {
-      off += row[j] * row[j];
+    for (Eigen::Index i = 0; i < j; ++i) {
+      off += g(i, j) * g(i, j);
     }
-    frob2 += 2.0 * off;
+    trace += g(j, j);
+    frob2 += g(j, j) * g(j, j) + 2.0 * off;
   }
   out.n_eff_uncorrected = frob2 > 0.0 ? (trace * trace) / frob2 : 0.0;
 

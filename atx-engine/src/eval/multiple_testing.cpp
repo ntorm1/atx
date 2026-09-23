@@ -140,17 +140,36 @@ PrefixPanel build_prefix(const PnlMatrix &m, std::span<const f64> bench) {
   return (pre[t] - pre[s]) + pre[e - t];
 }
 
-// Bootstrap means of every series for one replicate, into `out` (size K).
-void replicate_means(const PrefixPanel &p, const std::vector<BootstrapBlock> &blocks,
-                     std::vector<f64> &out) {
+// Bootstrap means of every series for every replicate of one chunk.
+// means[r*K + k] = mean of series k under replicate b0 + r. Loop order is
+// series-outer / replicate-inner so a series' prefix row (8·(T+1) bytes) stays
+// in L1/L2 across the chunk's replicates instead of streaming the whole K×T
+// prefix panel from memory once per replicate. Each (replicate, series) sum
+// runs over that replicate's blocks in order, so the value does not depend on
+// chunking.
+struct ChunkScratch {
+  std::vector<std::vector<BootstrapBlock>> blocks;
+  std::vector<f64> means;
+};
+
+void chunk_means(const PrefixPanel &p, const BootstrapCfg &cfg, usize b0, usize b1,
+                 ChunkScratch &sc) {
+  const usize nb = b1 - b0;
+  sc.blocks.resize(nb);
+  for (usize r = 0; r < nb; ++r) {
+    stationary_bootstrap_blocks(p.t, cfg, b0 + r, sc.blocks[r]);
+  }
+  sc.means.assign(nb * p.k, 0.0);
   const f64 inv_t = 1.0 / static_cast<f64>(p.t);
   for (usize i = 0; i < p.k; ++i) {
     const f64 *pre = p.row(i);
-    f64 acc = 0.0;
-    for (const BootstrapBlock &blk : blocks) {
-      acc += block_sum(pre, p.t, blk);
+    for (usize r = 0; r < nb; ++r) {
+      f64 acc = 0.0;
+      for (const BootstrapBlock &blk : sc.blocks[r]) {
+        acc += block_sum(pre, p.t, blk);
+      }
+      sc.means[r * p.k + i] = acc * inv_t;
     }
-    out[i] = acc * inv_t;
   }
 }
 
@@ -334,13 +353,12 @@ atx::core::Result<RomanoWolfResult> romano_wolf(const PnlMatrix &pnl, const Boot
   std::vector<u64> chunk_counts(n_chunks * K, 0U);
 
   for_each_chunk(cfg.n_boot, cfg.threads, [&](usize c, usize b0, usize b1) {
-    std::vector<BootstrapBlock> blocks;
-    std::vector<f64> m_star(K);
+    ChunkScratch scr;
+    chunk_means(pre, cfg, b0, b1, scr);
     std::vector<f64> t_star(K);
     u64 *counts = chunk_counts.data() + c * K;
     for (usize b = b0; b < b1; ++b) {
-      stationary_bootstrap_blocks(T, cfg, b, blocks);
-      replicate_means(pre, blocks, m_star);
+      const f64 *m_star = scr.means.data() + (b - b0) * K;
       for (usize k = 0; k < K; ++k) {
         t_star[k] = sqrt_t * (m_star[k] - mean[k]) * inv_sd[k];
       }
@@ -406,13 +424,12 @@ atx::core::Result<SpaResult> hansen_spa(const PnlMatrix &candidates,
   std::vector<f64> chunk_s1(n_chunks * K, 0.0);
   std::vector<f64> chunk_s2(n_chunks * K, 0.0);
   for_each_chunk(cfg.n_boot, cfg.threads, [&](usize c, usize b0, usize b1) {
-    std::vector<BootstrapBlock> blocks;
-    std::vector<f64> m_star(K);
+    ChunkScratch scr;
+    chunk_means(pre, cfg, b0, b1, scr);
     f64 *s1 = chunk_s1.data() + c * K;
     f64 *s2 = chunk_s2.data() + c * K;
     for (usize b = b0; b < b1; ++b) {
-      stationary_bootstrap_blocks(T, cfg, b, blocks);
-      replicate_means(pre, blocks, m_star);
+      const f64 *m_star = scr.means.data() + (b - b0) * K;
       for (usize k = 0; k < K; ++k) {
         const f64 z = sqrt_t * (m_star[k] - dbar[k]);
         s1[k] += z;
@@ -460,12 +477,11 @@ atx::core::Result<SpaResult> hansen_spa(const PnlMatrix &candidates,
   // Per chunk: exceedance counts for {lower, consistent, upper, rc}.
   std::vector<u64> chunk_cnt(n_chunks * 4U, 0U);
   for_each_chunk(cfg.n_boot, cfg.threads, [&](usize c, usize b0, usize b1) {
-    std::vector<BootstrapBlock> blocks;
-    std::vector<f64> m_star(K);
+    ChunkScratch scr;
+    chunk_means(pre, cfg, b0, b1, scr);
     u64 *cnt = chunk_cnt.data() + c * 4U;
     for (usize b = b0; b < b1; ++b) {
-      stationary_bootstrap_blocks(T, cfg, b, blocks);
-      replicate_means(pre, blocks, m_star);
+      const f64 *m_star = scr.means.data() + (b - b0) * K;
       f64 tl = 0.0;
       f64 tc = 0.0;
       f64 tu = 0.0;
