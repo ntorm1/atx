@@ -8,24 +8,26 @@ dummy SEC User-Agent `atx-db/0.1 atx-research@example.com`.
 
 ## Current source position and guard prerequisite
 
-Archive13 is terminal after a DuckDB COMMIT OOM at512MB. Its actual dataset
-UUID is `22d51d47-2992-4043-95ef-54763a9dd45d`. Read-only inspection confirmed
-47,941,000 raw facts and points, with no new attempt facts. Root recovered
-only its stale dataset ledger; CHECKPOINT passed and the already-failed
-activation record is unchanged. Do not repeat recovery.
+Archive14/session8538 is terminal after host-headroom guard stop01:24:21UTC,
+during raw resume verification. Root recovered its stale ledgers and CHECKPOINT
+passed01:28UTC. No attempt rows; retained facts=points47,941,000 and schema0322.
+The next actual predecessor is `96f93269-84b5-4854-8ebe-fc5b99ab6612`.
+Evidence:companyfacts-archive14-headroom-recovery.json. Do not repeat recovery.
 
-The next continuation returns to the previously working `1GB` DuckDB limit,
-one thread and the unchanged2GiB Windows job cap. Full `archive_members`,
-replacement, force, snapshot, backup-keep100 and all resume proofs remain.
-The failure-ledger code repair passed its focused test/review and is committed15235456.
-Use fresh archive14 receipt/stdout/stderr filenames and the actual UUID above.
-Treat schema0322 as live. Archive14 is now the sole writer, session8538/guard child20960, launched01:20UTC. Re-poll it; do not restart.
+There is no current writer. Before archive15, allow sustained headroom above
+6GiB physical/8GiB commit (three observations over at least two minutes), then
+use the unchanged2GiB job guard,1GB DuckDB,1thread,fullarchive_members,
+replacement,force,snapshot2026-09-20,backup-keep100,dummySECcontact.
+This extra wait avoids immediate repeated expensive proofs on a fluctuating
+host; guard runtime thresholds remain1.5GiB physical/3GiB commit.
+Use fresh archive15 filenames. Terminal SQL is prepared.
 
-The guard preflight requires at least4GiB both physical and commit headroom;
-runtime stops below1.5GiB physical or3GiB commit. Never restart a live session
-or open another runtime while a guarded job owns the warehouse. After every
-terminal job, inspect its guard, activation/dataset ledgers and durable state
-before selecting a next resume UUID. Other workloads remain untouched.
+Archive13's512MB query limit failed atCOMMIT, so it is not the source-write
+configuration. Dataset failure-ledger recovery is now tested/reviewed in15235456.
+That code handles exceptions but cannot execute after the Windows guard kills
+its process tree. After each terminal source job inspect guard and actual run
+ledgers, then derive the next UUID. Never restart a live session or overlap
+warehouse runtimes. Other workloads remain untouched.
 
 ## Submissions verified resume
 

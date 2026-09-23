@@ -7,6 +7,15 @@ artifacts. Dated loader progress below is historical evidence.
 
 ## Latest durable warehouse measurement: 2026-09-23
 
+Archive14 was subsequently stopped by the host headroom guard during source
+verification at01:24UTC. Recovery at01:28UTC confirmed the same retained
+counts and zero new attempt rows; both run ledgers were closed and CHECKPOINT
+passed. The next predecessor is`96f93269-84b5-4854-8ebe-fc5b99ab6612`.
+Further source loading is waiting for sustained host headroom. The generic
+failure-ledger repair in15235456 passed its focused regression and independent
+review; forceful process termination still requires operator recovery.
+
+
 Archive13's lower-memory trial passed its resume proof but failed during a
 new issuer's commit at the512MB DuckDB limit. Read-only inspection at01:09UTC
 confirmed the retained counts below and zero newly committed fact rows.

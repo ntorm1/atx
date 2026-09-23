@@ -1,5 +1,17 @@
 # Tier-1 parity program ledger (atx-db)
 
+## Source restart waits for sustained headroom - 2026-09-23 01:29 UTC
+
+Archive14 stopped under the unchanged host guard during resume verification;
+recovery confirmed no new attempt rows and checkpointed both failed ledgers.
+Host free physical memory later moved from8.3GiB to2.4GiB with no warehouse
+job running. Before the next long source launch, require three observations
+over at least two minutes above6GiB physical and8GiB commit headroom. Retain
+the existing2GiB job cap,1GB DuckDB,one thread and runtime stop thresholds.
+This is a stricter launch wait, not permission to modify any other workload.
+Short operator recovery continues to use the existing guarded preflight.
+
+
 ## CompanyFacts commit OOM: restore measured working limit - 2026-09-23 01:17 UTC
 
 The archive13 512MB trial passed the full retained-row proof but failed its

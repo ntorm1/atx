@@ -1,5 +1,22 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Archive14 host stop and recovery - 2026-09-23 01:28 UTC
+
+Archive14/session8538 terminated under the guard at01:24:21UTC during raw
+resume verification. Physicalfree1.450GiB/commit3.115GiB; no source failure
+or completed proof. Original native10236/guard child20960 confirmed absent.
+First recovery launch refused before starting (physical3.131/commit4.067).
+After host headroom recovered to8GiB, recovery2 completed withCHECKPOINT and
+0.900GiB peak. Both stale ledgers closed; no new attempt rows and unchanged
+47,941,000facts/points,31,959,271prices,31,934,514features,schema0322.
+Actual UUID is incompanyfacts-archive14-headroom-recovery.json; resolve it
+before next resume. No runtime currently. Allow sustained host headroom before
+another long source run; do not merely repeat at a fleeting preflight pass.
+Existing2GiBcap/1GBDuckDB/1thread and guard thresholds remain unchanged.
+Dataset codefix15235456 is tested/reviewed; guard termination bypasses Python
+exception handling, so it cannot close ledgers for a forcibly killed process.
+
+
 ## Archive14 running after ledger repair - 2026-09-23 01:20 UTC
 
 Dataset.run fatal-connection failure-ledger repair is committed15235456.
