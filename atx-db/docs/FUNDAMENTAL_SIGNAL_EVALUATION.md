@@ -20,7 +20,7 @@ Run with an already migrated warehouse:
 ```powershell
 python scripts/evaluate_fundamental_signals.py --db-path warehouse.duckdb `
   --build-run-id completed_fq1 --run-id fq2_trial_1 `
-  --as-of-date 2026-09-23 --run-at 2026-09-23T22:30:00+00:00 `
+  --as-of-date 2026-09-20 --run-at 2026-09-20T22:00:00+00:00 `
   --label-source atx_forward_returns_survivorship_safe_v1
 ```
 
@@ -53,5 +53,7 @@ Local Holm correction does not account for earlier research searches. No alpha
 or live capacity claim follows from a completed run alone.
 
 The prepared [decile acceptance query](../sql/research/fundamental-signal-decile-acceptance.sql)
-reads only complete FQ2 manifests and displays the predeclared hypothesis family,
-coverage, cost scenarios and blockers. It has not been run on live labels.
+displays the predeclared hypothesis family, coverage, cost scenarios and
+blockers. Missing, incomplete and mismatched manifests receive explicit status
+labels; only a matching complete run can surface a statistical candidate. This
+inspection query does not revalidate digests and has not been run on live labels.

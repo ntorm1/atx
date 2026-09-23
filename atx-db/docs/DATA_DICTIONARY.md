@@ -7,7 +7,9 @@ when this file is stale.
 Sources of truth: `src/atx_db/seeds/fundamental_items.csv`,
 `src/atx_db/seeds/derived_metric_definitions.csv`, `src/atx_db/api/catalog.py`,
 `src/atx_db/universe_us_listed.py`, `src/atx_db/delisting_evidence.py`,
-`src/atx_db/delisting.py` and `src/atx_db/publication.py`.
+`src/atx_db/delisting.py`, `src/atx_db/publication.py`,
+`src/atx_db/fundamental_signal_research.py`, `src/atx_db/fundamental_signal_evaluation.py`
+and `src/atx_db/_forward_return_publication.py`.
 
 This is a field and policy contract, not a measurement of loaded rows, historical
 listing coverage, or passing quality gates. See [the production runbook](PRODUCTION_RUNBOOK.md)
@@ -603,6 +605,31 @@ The newest eligible Nasdaq directory snapshot on or before the delist date suppl
 
 Exchange evidence is selected from dated universe membership, exchange listings or Nasdaq snapshots known by the delist date at 22:00. Policy availability includes the selected exchange input. Imputations are tagged with `terminal_return_policy` values `performance_unknown` or `performance_unknown_nasdaq`; unresolved terminal gaps remain measurable through `delisting_events_without_terminal_return`. This definition does not assert that terminal returns have been built or their coverage passed.
 
+## Fundamental signal research
+
+The daily panel query version is `fundamental-signal-pit-v1`. The predeclared default family below is generated from the implemented signal specifications; custom runs freeze their own supported specifications before reading outcomes.
+
+| signal | term | metric | window | weight | transform |
+| --- | --- | --- | --- | --- | --- |
+| eps_growth_yoy | 1 | eps_diluted_q_growth_yoy | q | 1 | identity |
+| fundamental_rank_mix | 1 | eps_diluted_q_growth_yoy | q | 0.25 | cs_rank |
+| fundamental_rank_mix | 2 | operating_margin_change_yoy | ttm | 0.25 | cs_rank |
+| fundamental_rank_mix | 3 | total_accruals | ttm | -0.25 | cs_rank |
+| fundamental_rank_mix | 4 | net_debt_ebitda | ttm | -0.25 | cs_rank |
+| low_net_debt_ebitda | 1 | net_debt_ebitda | ttm | -1 | identity |
+| low_total_accruals | 1 | total_accruals | ttm | -1 | identity |
+| operating_margin_change_yoy | 1 | operating_margin_change_yoy | ttm | 1 | identity |
+
+The panel uses dated US-common membership and a unique dated CIK. Exact selected item/metric references in `derived_metric_values.selected_input_refs_json` and `selected_input_refs_hash` qualify issuer ownership and visibility; legacy NULL references remain unverified. `inputs_hash` retains its candidate-frame meaning.
+
+Only completed, digest-validated runs are consumable. NULL invalidations, ambiguous owners, missing legs and stale current accounting anchors cannot produce a score. Prior-year comparison leaves retain their original fiscal dates.
+
+Forward labels record the actual `price_basis` and `calculation_version` used by the publisher. FQ2 accepts `adjusted_close` with `forward_return_publication_v1`; legacy NULL or unsupported basis/version remains excluded. These fields do not certify vendor adjustment economics or original delivery vintages.
+
+Evaluation horizons are 5, 21, 63 observed sessions; 21 is primary. Deciles are fixed before label joins, with next-session close entry, chronological splits, boundary purge and embargo. Results retain coverage, terminal-policy counts, HAC uncertainty, local-family Holm correction and cost scenarios. Selected-label hashes do not archive old label values or automatically compare a later source replacement. `production_eligible` is false.
+
+See [panel tables and timing](FUNDAMENTAL_SIGNAL_RESEARCH.md), [evaluation tables and limits](FUNDAMENTAL_SIGNAL_EVALUATION.md), and the [prepared desk acceptance query](../sql/research/fundamental-signal-decile-acceptance.sql). These describe code contracts, not a measured alpha result.
+
 ## Public API schemas
 
 ### ATX.US.FUNDAMENTALS/reported
@@ -649,7 +676,7 @@ Canonical reported US equity fundamentals (v1.1.0) over `fundamental_statement_p
 
 ### ATX.US.FUNDAMENTALS/standardized
 
-Standardized US equity fundamentals (v2.0.0) over `fundamental_standardized`; time column `period_end`; natural key `security_id, item_id, basis, period_end`.
+Standardized US equity fundamentals (v3.0.0) over `fundamental_standardized`; time column `period_end`; natural key `security_id, item_id, basis, period_end`.
 
 | field | type | unit | nullable | filterable | description |
 | --- | --- | --- | --- | --- | --- |
@@ -663,7 +690,7 @@ Standardized US equity fundamentals (v2.0.0) over `fundamental_standardized`; ti
 | period_end | date |  | no | no | Fiscal period end. |
 | fiscal_year | int32 |  | yes | no | Issuer fiscal year. |
 | fiscal_period | string |  | yes | no | Issuer fiscal-period label. |
-| value | float64 |  | no | no | Standardized value. |
+| value | float64 |  | yes | no | Standardized value; NULL is an explicit unavailable state. |
 | unit | string |  | yes | no | As-reported measurement unit or currency unit. |
 | unit_type | string |  | yes | no | Canonical unit family. |
 | accession_number | string |  | yes | no | Source SEC accession number. |
@@ -918,6 +945,119 @@ US equity security master (v1.0.0) over `v_security_master_public`; time column 
 | available_at | timestamp |  | yes | no | Earliest timestamp at which ATX could have delivered this revision. |
 | source_loaded_at | timestamp |  | yes | no | Timestamp at which the source observation entered the warehouse. |
 | run_id | string |  | yes | no | Lineage identifier for the producing run. |
+
+### ATX.US.ISSUER_CONTENT/statements
+
+Issuer-owned financial statements (v1.0.0) over `fundamental_statement_points`; time column `period_end`; natural key `revision_group_id`.
+
+| field | type | unit | nullable | filterable | description |
+| --- | --- | --- | --- | --- | --- |
+| issuer_owner_id | string |  | no | no | Actual source-owner ID selected from visible rows. |
+| cik | string |  | no | no | Normalized SEC CIK that selected this issuer content. |
+| available_at | timestamp |  | yes | no | Selected financial-content availability timestamp. |
+| as_of_date | date |  | yes | no | Source observation date. |
+| source_loaded_at | timestamp |  | yes | no | Warehouse load timestamp. |
+| item | string |  | no | yes | Canonical statement item. |
+| period_start | date |  | yes | no | Fiscal duration start. |
+| period_end | date |  | no | no | Fiscal period end. |
+| value | float64 |  | yes | no | Sign-normalized statement value. |
+| unit | string |  | no | no | As-filed unit. |
+| fact_revision_id | string |  | no | no | Immutable raw fact-revision lineage. |
+| accession_number | string |  | yes | no | SEC accession lineage. |
+| source_url | string |  | yes | no | Authoritative filing URL. |
+| revision_group_id | string |  | yes | no | Statement revision lineage. |
+
+### ATX.US.ISSUER_CONTENT/standardized
+
+Issuer-owned standardized fundamentals (v1.0.0) over `fundamental_standardized`; time column `period_end`; natural key `security_id, item_id, basis, period_end`.
+
+| field | type | unit | nullable | filterable | description |
+| --- | --- | --- | --- | --- | --- |
+| issuer_owner_id | string |  | no | no | Actual source-owner ID selected from visible rows. |
+| cik | string |  | no | no | Normalized SEC CIK that selected this issuer content. |
+| available_at | timestamp |  | yes | no | Selected financial-content availability timestamp. |
+| as_of_date | date |  | yes | no | Source observation date. |
+| source_loaded_at | timestamp |  | yes | no | Warehouse load timestamp. |
+| item | string |  | no | yes | Canonical item. |
+| basis | string |  | no | yes | Fiscal basis. |
+| period_start | date |  | yes | no | Fiscal duration start. |
+| period_end | date |  | no | no | Fiscal period end. |
+| value | float64 |  | yes | no | Standardized value; NULL retains a visible reported-EPS conflict state. |
+| accession_number | string |  | yes | no | SEC accession lineage. |
+| rule_id | string |  | yes | no | Standardization-rule lineage. |
+| input_item_ids_json | json |  | yes | no | Immutable standardized-input item lineage. |
+| revision_group_id | string |  | yes | no | Standardized revision lineage. |
+
+### ATX.US.ISSUER_CONTENT/ttm
+
+Issuer-owned trailing fundamentals (v1.0.0) over `fundamental_ttm_points`; time column `ttm_end_date`; natural key `ttm_revision_group_id`.
+
+| field | type | unit | nullable | filterable | description |
+| --- | --- | --- | --- | --- | --- |
+| issuer_owner_id | string |  | no | no | Actual source-owner ID selected from visible rows. |
+| cik | string |  | no | no | Normalized SEC CIK that selected this issuer content. |
+| available_at | timestamp |  | yes | no | Selected financial-content availability timestamp. |
+| as_of_date | date |  | yes | no | Source observation date. |
+| source_loaded_at | timestamp |  | yes | no | Warehouse load timestamp. |
+| item | string |  | no | yes | Canonical item. |
+| period_end | date |  | no | no | Trailing-period end. |
+| value | float64 |  | yes | no | Trailing value. |
+| input_statement_point_ids_json | json |  | no | no | Statement-point lineage. |
+| input_accessions_json | json |  | no | no | SEC accession lineage. |
+| input_period_ends_json | json |  | no | no | Input fiscal-period lineage. |
+| ttm_revision_group_id | string |  | yes | no | TTM revision lineage. |
+
+### ATX.US.ISSUER_CONTENT/ratios
+
+Issuer-owned accounting ratios (v1.0.0) over `fundamental_ratios`; time column `period_end`; natural key `security_id, ratio_code, basis, period_end`.
+
+| field | type | unit | nullable | filterable | description |
+| --- | --- | --- | --- | --- | --- |
+| issuer_owner_id | string |  | no | no | Actual source-owner ID selected from visible rows. |
+| cik | string |  | no | no | Normalized SEC CIK that selected this issuer content. |
+| available_at | timestamp |  | yes | no | Selected financial-content availability timestamp. |
+| as_of_date | date |  | yes | no | Source observation date. |
+| source_loaded_at | timestamp |  | yes | no | Warehouse load timestamp. |
+| item | string |  | no | yes | Ratio code. |
+| basis | string |  | no | yes | Fiscal basis. |
+| period_end | date |  | no | no | Fiscal period end. |
+| value | float64 |  | yes | no | Ratio value. |
+| input_codes_json | json |  | yes | no | Formula input lineage. |
+
+### ATX.US.ISSUER_CONTENT/shares
+
+Issuer-owned reported shares (v1.0.0) over `shares_outstanding_history`; time column `effective_date`; natural key `security_id, share_count_type, effective_date, accession_number`.
+
+| field | type | unit | nullable | filterable | description |
+| --- | --- | --- | --- | --- | --- |
+| issuer_owner_id | string |  | no | no | Actual source-owner ID selected from visible rows. |
+| cik | string |  | no | no | Normalized SEC CIK that selected this issuer content. |
+| available_at | timestamp |  | yes | no | Selected financial-content availability timestamp. |
+| as_of_date | date |  | yes | no | Source observation date. |
+| source_loaded_at | timestamp |  | yes | no | Warehouse load timestamp. |
+| item | string |  | no | yes | Reported share-count type. |
+| period_end | date |  | no | no | Share fact effective date. |
+| value | float64 | shares | yes | no | Reported share count. |
+| accession_number | string |  | yes | no | SEC accession lineage. |
+
+### ATX.US.ISSUER_CONTENT/derived-metrics
+
+Issuer-owned derived metrics (v1.0.0) over `derived_metric_values`; time column `period_end`; natural key `revision_group_id`.
+
+| field | type | unit | nullable | filterable | description |
+| --- | --- | --- | --- | --- | --- |
+| issuer_owner_id | string |  | no | no | Actual source-owner ID selected from visible rows. |
+| cik | string |  | no | no | Normalized SEC CIK that selected this issuer content. |
+| available_at | timestamp |  | yes | no | Selected financial-content availability timestamp. |
+| as_of_date | date |  | yes | no | Source observation date. |
+| source_loaded_at | timestamp |  | yes | no | Warehouse load timestamp. |
+| metric | string |  | no | yes | Derived metric code. |
+| window | string |  | no | yes | Metric window. |
+| period_end | date |  | no | no | Fiscal period end. |
+| value | float64 |  | yes | no | Derived value; NULL retains unavailable state. |
+| value_status | string |  | yes | no | Derived-state status. |
+| inputs_hash | string |  | yes | no | Candidate input-frame fingerprint; exact selected operands are recorded separately. |
+| revision_group_id | string |  | yes | no | Derived revision lineage. |
 
 ### ATX.US.EQUITIES/ohlcv-1d
 

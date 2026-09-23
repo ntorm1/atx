@@ -21,8 +21,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
+from atx_db._forward_return_publication import CALCULATION_VERSION  # noqa: E402
 from atx_db.api.catalog import DATASETS  # noqa: E402
 from atx_db.derived_registry import DerivedMetricDefinition, default_derived_definitions  # noqa: E402
+from atx_db.fundamental_signal_evaluation import HORIZONS, LABEL_VERSION  # noqa: E402
+from atx_db.fundamental_signal_research import QUERY_VERSION, default_signals  # noqa: E402
 from atx_db.item_registry import read_fundamental_item_seed  # noqa: E402
 from atx_db.universe_us_listed import (  # noqa: E402
     ELIGIBLE_SECURITY_TYPES,
@@ -349,6 +352,55 @@ def _release_section() -> list[str]:
     return lines
 
 
+def _fundamental_research_section() -> list[str]:
+    if LABEL_VERSION != CALCULATION_VERSION:
+        raise RuntimeError("fundamental evaluator and forward publisher calculation versions disagree")
+    lines = [
+        "## Fundamental signal research",
+        "",
+        f"The daily panel query version is `{QUERY_VERSION}`. The predeclared default "
+        "family below is generated from the implemented signal specifications; custom "
+        "runs freeze their own supported specifications before reading outcomes.",
+        "",
+    ]
+    rows = [
+        (spec["signal_id"], ordinal, term["metric_code"], term["metric_window"],
+         term["weight"], term["transform"])
+        for spec in sorted(default_signals(), key=lambda item: item["signal_id"])
+        for ordinal, term in enumerate(spec["terms"], start=1)
+    ]
+    lines.extend(_table(("signal", "term", "metric", "window", "weight", "transform"), rows))
+    lines.extend([
+        "",
+        "The panel uses dated US-common membership and a unique dated CIK. Exact selected "
+        "item/metric references in `derived_metric_values.selected_input_refs_json` and "
+        "`selected_input_refs_hash` qualify issuer ownership and visibility; legacy NULL "
+        "references remain unverified. `inputs_hash` retains its candidate-frame meaning.",
+        "",
+        "Only completed, digest-validated runs are consumable. NULL invalidations, "
+        "ambiguous owners, missing legs and stale current accounting anchors cannot "
+        "produce a score. Prior-year comparison leaves retain their original fiscal dates.",
+        "",
+        "Forward labels record the actual `price_basis` and `calculation_version` used "
+        f"by the publisher. FQ2 accepts `adjusted_close` with `{LABEL_VERSION}`; legacy "
+        "NULL or unsupported basis/version remains excluded. These fields do not certify "
+        "vendor adjustment economics or original delivery vintages.",
+        "",
+        f"Evaluation horizons are {', '.join(str(value) for value in HORIZONS)} observed "
+        "sessions; 21 is primary. Deciles are fixed before label joins, with next-session "
+        "close entry, chronological splits, boundary purge and embargo. Results retain "
+        "coverage, terminal-policy counts, HAC uncertainty, local-family Holm correction "
+        "and cost scenarios. Selected-label hashes do not archive old label values or "
+        "automatically compare a later source replacement. `production_eligible` is false.",
+        "",
+        "See [panel tables and timing](FUNDAMENTAL_SIGNAL_RESEARCH.md), "
+        "[evaluation tables and limits](FUNDAMENTAL_SIGNAL_EVALUATION.md), and the "
+        "[prepared desk acceptance query](../sql/research/fundamental-signal-decile-acceptance.sql). "
+        "These describe code contracts, not a measured alpha result.",
+    ])
+    return lines
+
+
 def render_data_dictionary() -> str:
     """Render the full dictionary. Deterministic: no clock, no warehouse, sorted throughout."""
 
@@ -362,7 +414,9 @@ def render_data_dictionary() -> str:
         "Sources of truth: `src/atx_db/seeds/fundamental_items.csv`,",
         "`src/atx_db/seeds/derived_metric_definitions.csv`, `src/atx_db/api/catalog.py`,",
         "`src/atx_db/universe_us_listed.py`, `src/atx_db/delisting_evidence.py`,",
-        "`src/atx_db/delisting.py` and `src/atx_db/publication.py`.",
+        "`src/atx_db/delisting.py`, `src/atx_db/publication.py`,",
+        "`src/atx_db/fundamental_signal_research.py`, `src/atx_db/fundamental_signal_evaluation.py`",
+        "and `src/atx_db/_forward_return_publication.py`.",
         "",
         "This is a field and policy contract, not a measurement of loaded rows, historical",
         "listing coverage, or passing quality gates. See [the production runbook](PRODUCTION_RUNBOOK.md)",
@@ -375,6 +429,7 @@ def render_data_dictionary() -> str:
         _market_daily_section(),
         _universe_section(),
         _delisting_section(),
+        _fundamental_research_section(),
         _api_section(),
         _release_section(),
     ):

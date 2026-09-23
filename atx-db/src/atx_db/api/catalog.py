@@ -959,7 +959,7 @@ ISSUER_DERIVED_SCHEMA = RecordSchema(
         FieldSpec("period_end", "period_end", "date", "Fiscal period end.", nullable=False),
         FieldSpec("value", "value", "float64", "Derived value; NULL retains unavailable state."),
         FieldSpec("value_status", "value_status", "string", "Derived-state status."),
-        FieldSpec("inputs_hash", "inputs_hash", "string", "Selected standardized-input lineage fingerprint."),
+        FieldSpec("inputs_hash", "inputs_hash", "string", "Candidate input-frame fingerprint; exact selected operands are recorded separately."),
         FieldSpec("revision_group_id", "revision_group_id", "string", "Derived revision lineage."),
     ),
 )

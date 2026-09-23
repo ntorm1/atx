@@ -6,9 +6,9 @@ a UTC run timestamp and a unique run ID. It does not load source data, migrate a
 database, join outcomes, evaluate alpha, or mark a signal production eligible.
 
 ```powershell
-python scripts/research_fundamental_signals.py build --db-path PATH \
-  --start-date 2024-01-02 --end-date 2024-03-29 --as-of-date 2024-04-01 \
-  --run-at 2024-04-01T22:00:00+00:00 --run-id research_2024q1 \
+python scripts/research_fundamental_signals.py build --db-path PATH `
+  --start-date 2024-01-02 --end-date 2024-03-29 --as-of-date 2024-04-01 `
+  --run-at 2024-04-01T22:00:00+00:00 --run-id research_2024q1 `
   --memory-limit 256MB --threads 1
 ```
 

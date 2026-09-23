@@ -15,9 +15,11 @@ Next actual predecessor: `513cfbbc-096a-4186-9666-b6cc5170c4ad`.
 Use fresh archive17 receipt/log/error files for a later full-source attempt.
 
 No warehouse writer is live. User directs platform work while backfill awaits
-host capacity: OPS1 pipeline-status is committed b814f4c1. DL1 selected-input
-lineage (migration0323) and FQ1 fundamental signal tables/builder (0324) are
-in progress; registry edits and focused tests are serialized. Do not launch production over
+host capacity: OPS1 pipeline-status is committed b814f4c1 and live-read verified
+in8291fc44. DL1 selected-input lineage (0323,1fa721c7), FQ1 signal panel
+(0324,fbba7bf2), and FQ2 decile evaluation/label basis (0325,d82f9eca) are
+committed and focused-tested. Wider HEAD/schema checks remain pending after host
+guard stops/refusal. All runtime/registry locks returned to root. Do not launch production over
 unreviewed/uncommitted shared edits or overlap root's focused tests. Recheck
 pending migrations after these tasks, using governed backup-keep100.
 
@@ -113,6 +115,49 @@ time. A failed stage is an inspectable capacity/correctness task; it is not a
 reason to skip a later stage, widen memory, or reduce output scope.
 The run5 command has no `--earnings-release-cik` or other CIK filter: it must
 materialize the full universe.
+
+## Fundamental signal research after run5
+
+Run5 rebuilds the selected-input lineage and publishes forward-label basis
+under migrations0323 through0325. The FQ1/FQ2 research commands below operate
+on an existing migrated warehouse; they do not initialize or migrate it.
+First inspect dated historical US-common membership and CIK coverage, then
+choose an explicit bounded decision-date range and measure its build cost.
+Current directory rows must never be backdated to fill a historical cohort.
+An empty/blocked panel is diagnostic evidence, not a successful alpha sample.
+Do not launch an unmeasured full-history panel while the host is constrained.
+
+Replace the two date placeholders with that reviewed range. These are command
+templates, not executed results. Wrap each invocation in run_memory_guarded.py
+with its own fresh receipt/stdout/stderr, the existing2GiB process cap and host
+thresholds. The256MB DuckDB setting is the research builder's default, not a
+change to the1GB source-load budget. Run serially after the warehouse writer
+is terminal. IDs must match `[a-z][a-z0-9_]{0,63}` and be unused; update the
+prepared acceptance SQL if using different IDs.
+
+```powershell
+C:\atx\atx-db\.venv\Scripts\python.exe scripts\research_fundamental_signals.py build `
+  --db-path data\warehouse.duckdb --start-date REVIEWED_START_DATE `
+  --end-date REVIEWED_END_DATE --as-of-date 2026-09-20 `
+  --run-at 2026-09-20T22:00:00+00:00 --run-id fundamental_signals_build1 `
+  --memory-limit 256MB --threads 1
+
+# Evaluate only a completed panel; validation rejects stale/tampered manifests.
+C:\atx\atx-db\.venv\Scripts\python.exe scripts\evaluate_fundamental_signals.py `
+  --db-path data\warehouse.duckdb --build-run-id fundamental_signals_build1 `
+  --run-id fundamental_signals_evaluation1 --as-of-date 2026-09-20 `
+  --run-at 2026-09-20T22:00:00+00:00 `
+  --label-source atx_forward_returns_survivorship_safe_v1 `
+  --memory-limit 256MB --threads 1
+```
+
+Inspect `sql/research/fundamental-signal-decile-acceptance.sql` afterward. It
+retains all five predeclared hypotheses, three splits and three horizons,
+including missing results and label attrition. A short capacity sample cannot
+establish the required252 spread dates and annual stability. Preserve all
+predeclared results before extending the sample; do not choose hypotheses or
+date ranges from favorable forward returns. Statistical candidates remain
+research outputs with `production_eligible=false`.
 
 ## Required post-run outputs
 

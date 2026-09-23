@@ -4,8 +4,8 @@
 -- Inspect stored results for all five hypotheses, all splits and all horizons.
 -- This is not the builder's digest validator or a production certification.
 WITH requested AS (
-    SELECT 'fundamental-signals-build1'::VARCHAR AS build_run_id,
-           'fundamental-signals-evaluation1'::VARCHAR AS evaluation_run_id,
+    SELECT 'fundamental_signals_build1'::VARCHAR AS build_run_id,
+           'fundamental_signals_evaluation1'::VARCHAR AS evaluation_run_id,
            'atx_forward_returns_survivorship_safe_v1'::VARCHAR AS label_source,
            DATE '2026-09-20' AS snapshot_date,
            TIMESTAMP '2026-09-20 22:00:00' AS evaluation_cutoff

@@ -1,5 +1,16 @@
 # Tier-1 parity program ledger (atx-db)
 
+## Fundamental research operations follow-on - 2026-09-23
+
+FQ3 under fundamental-readiness-brief.md adds optional bounded FQ1/FQ2
+inventory to the existing read-only readiness report. Preserve certification
+unmeasured, separate missing schemas and explicit selected snapshots, and
+label hashes/candidates as recorded evidence. No wide score/proof/label scans,
+implicit migrations, unsafe JSON output, source changes or eligibility gates.
+Fresh Codex implementer, tiny focused fixtures, one independent review and
+serialized guarded runtime. This advances the user's platform-continuation
+instruction while production backfill awaits sustained host headroom.
+
 ## Fundamental evaluation follow-on - 2026-09-23
 
 FQ2 is scoped by fundamental-signal-evaluation-brief.md and reserves0325 AFTER

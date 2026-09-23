@@ -1,5 +1,34 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Dictionary current; FQ3 readiness integration underway - 2026-09-23
+
+Root regenerated DATA_DICTIONARY.md, including issuer-content APIs, nullable
+standardized values and the five frozen fundamental research hypotheses.
+Corrected the issuer derived inputs_hash description to candidate-frame
+identity; exact selected operands are separate. Existing12 dictionary checks
+and scoped generator Ruff passed under the1.5GiB process-tree guard, peak
+1.144GiB (quant-dictionary-check2). Final description-only regeneration,
+byte-current check and Ruff passed at0.617GiB (quant-dictionary3). The first
+dictionary invocation was safely refused; a subsequent inline-check command
+had a shell quoting error before any checks, replaced by a file-based helper.
+Seven documented PowerShell blocks parsed without execution. Prepared FQ SQL
+now uses valid underscore run IDs. No warehouse mutation or alpha claim.
+
+FQ3 is a fresh Codex implementation of fundamental-readiness-brief.md, using
+the independent static audit. It owns only the measured-readiness script,
+isolated tests and its new documentation. It reports bounded recorded run,
+coverage and summary evidence without wide value scans or certification.
+Agent is static-only; root owns the sole runtime slot and pending exact-HEAD
+import/module/schema plus affected derived/forward regressions. The first
+HEAD preflight quant-platform-head1 was refused, no checks ran. Registry and
+activation files are free of task edits. No source job is running.
+
+Next production state remains live0322, pending0323..0325, full CompanyFacts
+archive17 predecessor513cfbbc-096a-4186-9666-b6cc5170c4ad. Source launch still
+requires sustained6GiB physical/8GiB commit for two minutes. Free C: disk was
+34.883GiB at this check; recheck before any governed migration backup. Do not
+delete backups or touch the user's stash/unrelated EOL modifications.
+
 ## Fundamental research platform committed; HEAD checks next - 2026-09-23
 
 DL1selectedlineage1fa721c7; FQ1PITsignalpanel fbba7bf2; FQ2decileevaluator and
