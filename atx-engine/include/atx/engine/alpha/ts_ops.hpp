@@ -73,7 +73,9 @@
 #include "atx/core/macro.hpp"
 #include "atx/core/types.hpp"
 
-#include "atx/engine/alpha/registry.hpp" // OpCode
+#include "atx/engine/alpha/registry.hpp"      // OpCode
+#include "atx/engine/alpha/ts_order_stat.hpp" // Lane 1: O(log d) rank / median sweeps
+#include "atx/engine/alpha/ts_sliding.hpp"    // Lane 1: O(1) decay / time-regression lanes
 
 namespace atx::engine::alpha::detail {
 
@@ -373,6 +375,15 @@ struct TsvFit {
   case OpCode::TsMin:
   case OpCode::TsMax:
   case OpCode::TsScale:
+  // ORDER-STATISTIC online ops (Lane 1, ts_order_stat.hpp) — BIT-EXACT vs the
+  // batch oracle (integer rank counts / exact selected values; the signed-zero
+  // median corner falls back to the batch sort per cell), so they route on the
+  // default AuditExact path too. ts_online_sum_family forwards them. TsMad is
+  // NOT here: its mean-absolute-deviation is an FP reduction that cannot slide
+  // bit-exactly.
+  case OpCode::TsRank:
+  case OpCode::TsMed:
+  case OpCode::TsQuantile:
     return true;
   // THE VARIANCE FAMILY (ts_var / ts_std / ts_zscore / ts_av_diff) is NOT routed
   // by THIS helper. It has its own mode-gated dispatch (see ts_is_online_variance_op
@@ -408,6 +419,14 @@ struct TsvFit {
 inline void ts_online_sum_family(OpCode op, std::span<const atx::f64> x, std::span<atx::f64> out,
                                  atx::usize dates, atx::usize j, atx::usize d,
                                  atx::usize instruments) noexcept {
+  // Lane 1: the order-statistic ops share this online entry (vm.hpp routes every
+  // non-extreme ts_is_online_op here). Their sweep keeps grow-only thread_local
+  // scratch; an allocation failure there terminates (noexcept), which is the
+  // same failure mode as the VM's own scratch growth.
+  if (ordstat::is_order_stat_op(op)) {
+    ordstat::sweep_strided(op, x, out, dates, j, d, instruments);
+    return;
+  }
   atx::f64 sx = 0.0;
   atx::usize nan_cnt = 0;
   const atx::f64 nf = static_cast<atx::f64>(d);
@@ -563,6 +582,15 @@ inline void ts_online_extreme(OpCode op, std::span<const atx::f64> x, std::span<
   case OpCode::TsStd:
   case OpCode::TsZscore:
   case OpCode::TsAvDiff:
+  // Lane 1 (ts_sliding.hpp): O(1)-per-cell shifted-sum lanes, tolerance-
+  // conformant (atol=rtol=1e-9) — ResearchFast only. The PAIR ops (TsCorr /
+  // TsCov / TsRegression) are deliberately absent: this dispatch receives only
+  // the first operand; sliding::sweep_comoment is exported for the VM owner.
+  case OpCode::TsDecayLinear:
+  case OpCode::TsWma:
+  case OpCode::TsSlope:
+  case OpCode::TsRsquare:
+  case OpCode::TsResid:
     return true;
   default:
     return false;
@@ -721,6 +749,14 @@ inline void tsv_welford_dispatch(OpCode op, std::span<const atx::f64> x, std::sp
     break;
   case OpCode::TsAvDiff:
     tsv_welford_avdiff_col(x, out, dates, j, d, instruments);
+    break;
+  case OpCode::TsDecayLinear:
+  case OpCode::TsWma:
+  case OpCode::TsSlope:
+  case OpCode::TsRsquare:
+  case OpCode::TsResid:
+    // Single column [j, j+1): the lane lives on the stack (no allocation).
+    sliding::sweep_unary(op, x, out, dates, instruments, d, j, j + 1);
     break;
   default:
     ATX_UNREACHABLE(); // only the variance-family ops route here
