@@ -1,5 +1,22 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Archive13 resume proof passed at512MB — 2026-09-23 00:55 UTC
+
+Verified wait continues on live session67962/native Python8692. Point
+fingerprints completed00:49:06UTC; full resume proof passed00:49:15UTC for
+9462 targets and39,457,715rows. Both passes completed with the512MB setting.
+The20390-member loop is active; at00:55:10UTC:3575processed,2947loaded/reused,
+603empty,25unavailable,0failed,0newattemptrows so far. The prior durable
+47,941,000facts/points remains the last final measurement, not a new read.
+
+Observed private memory fell to0.756GiB after verification and varied below
+1GiB in the prefix loop. Full source-write capacity is still unproved at512MB.
+Earlier commentary inferred increased temporary-disk use from falling free
+space; root corrected that attribution. The shared host had~49.9GiB free,
+warehouse file11.999GiB, and no configured .warehouse.duckdb.duckdb_tmp
+directory at the later member-loop inspection. Disk free space is measured;
+the cause of its change was not established. No files were removed.
+
 ## Archive13 proof progressing at512MB — 2026-09-23 00:45 UTC
 
 Previous goal turn made progress (archive12 recovery,34,193net new facts and
