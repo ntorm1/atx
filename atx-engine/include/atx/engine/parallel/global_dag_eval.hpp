@@ -37,7 +37,8 @@
 // cache publication and buffer release run between barriers on the calling thread.
 //
 // Header-only; every function is `inline`. Allocation happens only in the serial
-// phases (buffer free-list growth, plan vectors).
+// phases (buffer free-list growth, plan vectors), except the final root-copy pass,
+// where each worker allocates the one output vector it fills.
 
 #include <algorithm>
 #include <array>
@@ -527,6 +528,11 @@ global_dag_impl(const alpha::Program &prog, std::span<const alpha::FusedKernel> 
   }
 
   // Remaining root outputs: duplicate stores, cache-hit roots, multi-output roots.
+  // Each copy fills a DISTINCT alpha's vector from an immutable source (a cache
+  // entry or a finished node buffer), so the copies run as one pool pass: on a warm
+  // cache they are nearly the whole call, and a serial memcpy of every root would
+  // leave the workers idle. Bytes are unaffected by which worker copies.
+  std::vector<std::pair<atx::u32, const atx::f64 *>> copies;
   for (atx::usize v = 0; v < n; ++v) {
     const std::vector<atx::u32> &ro = plan.root_outputs[v];
     if (ro.empty() || plan.needed[v] == 0) {
@@ -534,13 +540,16 @@ global_dag_impl(const alpha::Program &prog, std::span<const alpha::FusedKernel> 
     }
     const alpha::ExtSlot &s = table[plan.base[v]];
     for (atx::usize k = 0; k < ro.size(); ++k) {
-      std::vector<atx::f64> &dst = out.alphas[ro[k]].values;
+      const std::vector<atx::f64> &dst = out.alphas[ro[k]].values;
       if (dst.data() == s.rd && dst.size() == cells) {
         continue; // the node computed straight into this alpha
       }
-      dst.assign(s.rd, s.rd + cells);
+      copies.emplace_back(ro[k], s.rd);
     }
   }
+  pool.parallel_for(copies.size(), [&](atx::usize i, atx::usize /*wid*/) {
+    out.alphas[copies[i].first].values.assign(copies[i].second, copies[i].second + cells);
+  });
   st.levels = plan.n_levels;
   st.peak_buffers = bufs.peak();
   if (stats != nullptr) {
