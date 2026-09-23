@@ -3,7 +3,7 @@ Spec: docs/superpowers/specs/2026-09-19-tier1-parity-design.md
 Audits: .superpowers/sdd/tier1-parity/audit-atx-db.md, audit-ticker-zip.md
 Baseline: main a79f8371, smoke 6 passed.
 
-## Lower CompanyFacts memory trial — 2026-09-23 00:35 UTC
+## Lower CompanyFacts memory trial — 2026-09-23 00:33 UTC
 
 Archive12's host-headroom stop preserved55,234 attempt rows/22CIKs and a
 checkpointed47,941,000 facts/points. Recent source verification used about

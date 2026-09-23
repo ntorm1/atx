@@ -1,5 +1,22 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Archive13 lower-memory trial running — 2026-09-23 00:35 UTC
+
+Root launched sole writer session67962, guard child11304,
+activation-companyfacts-archive13, from actual recovered archive12 UUID
+6beba5d4-e530-45fd-ae04-f872d9c8a896. This trial lowers only CompanyFacts
+DuckDB memory to512MB. Windows job cap2GiB, one thread, guard thresholds,
+full archive_members/replacements/force, backup-keep100, dummy SEC contact
+and all retained-row proofs are unchanged. Fresh evidence uses
+activation-companyfacts-archive13-{memory.json,log,err}. No capacity or memory
+reduction claim yet. Do not open another runtime or restart a live handle.
+
+Static configuration audit is committedca63d9bf; archive12 recovery and
+47,941,000 retained facts/points are committeda5c65b78. Other planned stages
+still use1GB;512MB is not an implicit global setting. Full production source,
+materialization, item/provider/all-quality measurement, CF1 evaluation and
+first release remain incomplete. Code checks are unchanged since938ff7f1.
+
 ## Archive12 recovered; lower-memory configuration check — 2026-09-23 00:32 UTC
 
 Archive12 session45906 is terminal exit1. Guard stopped00:26:29UTC because

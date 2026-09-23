@@ -3,26 +3,31 @@
 Static source/dispatch audit only. The production snapshot remains **as of
 2026-09-20**. Run one guarded process tree at a time from `C:\atx\atx-db`.
 Every guarded invocation needs a fresh receipt, stdout, and stderr filename.
-Keep DuckDB at `1GB` and one thread, retain `--backup-keep 100`, and use the
+The next-stage commands below use DuckDB at `1GB` and one thread; retain `--backup-keep 100`, and use the
 dummy SEC User-Agent `atx-db/0.1 atx-research@example.com`.
 
 ## Current source position and guard prerequisite
 
-Root session 45906 (guard child 2324) is the sole live warehouse writer:
-`activation-companyfacts-archive12`. It resumes the recovered archive11 dataset UUID
-`694f056e-a268-4927-8500-990b62c9a9be` with full `archive_members`,
+Root session 67962 (guard child 11304; native Python8692) is the sole live writer:
+`activation-companyfacts-archive13`. It resumes the recovered archive12 dataset UUID
+`6beba5d4-e530-45fd-ae04-f872d9c8a896` with full `archive_members`,
 replacement, and `--force`. Its files are
-`activation-companyfacts-archive12-{memory.json,log,err}`. The last verified
-durable raw-fact and point count was 47,906,807, after archive11 recovery. Do not launch
+`activation-companyfacts-archive13-{memory.json,log,err}`. This CompanyFacts trial
+uses the LOWER `512MB` DuckDB limit, with all other guards and source scope
+unchanged. The limit survives connection recycling; full runtime capacity is
+not yet proved. Do not extend this trial implicitly to later stages.
+The last verified durable raw-fact and point count was47,941,000 after archive12
+recovery. Do not launch
 another runtime or restart because the tool session yields. Treat schema
-0322 as live: archive11 terminal inspection and recovery confirmed it. Archive11
-added no source facts before the headroom guard stopped its verification;
-both ledgers were recovered and checkpointed at00:08:15UTC on2026-09-23.
+0322 as live: terminal inspections and recovery confirmed it. Archive12 added
+55,234 attempt rows/22CIKs, including replacements, for a net+34,193facts/points
+before its host-headroom stop. Both ledgers were recovered and checkpointed
+at00:29:16UTC on2026-09-23.
 
 The guard's preflight remains `job_gb + 2` for both physical and commit
 headroom, and its runtime stop thresholds remain physical below 1.5 GiB or
 commit below 3 GiB. The two-GiB ceiling does not change DuckDB's one-GiB/
-one-thread limits or the loader's bounded batches. After archive12 is terminal,
+one-thread policy or the loader's bounded batches. After archive13 is terminal,
 root must inspect its guard receipt, activation-stage ledger, actual companyfacts
 dataset ledger and retained counts. If it failed, resolve the latest dataset
 UUID from the ledger before constructing another verified resume; never infer
