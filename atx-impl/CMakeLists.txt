@@ -30,6 +30,8 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/equity_baseline_views.cpp
     src/stage_equity_baseline.cpp
     src/equity_allocation.cpp
+    # Lane 8: combo -> per-decision preference seam for the equity book
+    src/preference_source.cpp
     src/stage_equity_book.cpp
     src/trial_ledger.cpp
     src/stage_equity_ic.cpp

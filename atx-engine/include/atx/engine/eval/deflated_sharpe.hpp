@@ -46,6 +46,7 @@
 
 #include "atx/core/types.hpp"            // atx::f64, atx::usize
 #include "atx/engine/eval/stats_ext.hpp" // norm_cdf, norm_ppf, mean_std_pop, skewness, excess_kurtosis
+#include "atx/engine/eval/trial_registry.hpp" // TrialSummary (registry-fed DSR)
 
 namespace atx::engine::eval {
 
@@ -144,6 +145,48 @@ struct DsrResult {
   const atx::f64 v = var.has_value() ? *var : var_term / static_cast<atx::f64>(T);
 
   const atx::f64 sr_star = expected_max_sharpe(N, v);
+  const atx::f64 psr = probabilistic_sharpe(sr, sr_star, T, skew, exkurt);
+  const atx::f64 haircut = std::max(0.0, sr - sr_star);
+  return DsrResult{psr, sr_star, psr, haircut};
+}
+
+// ===========================================================================
+//  expected_max_sharpe_eff — SR*_N for a REAL-valued effective trial count.
+//
+//  Same Gumbel-limit formula as expected_max_sharpe, evaluated at a continuous
+//  N (the registry's N_eff is a participation ratio, not an integer). N <= 1
+//  (or NaN) is "no selection" -> 0. A distinct name (not an overload) so an
+//  integer-literal call of expected_max_sharpe never becomes ambiguous.
+// ===========================================================================
+[[nodiscard]] inline atx::f64 expected_max_sharpe_eff(atx::f64 n_eff, atx::f64 var) noexcept {
+  if (!(n_eff > 1.0)) {
+    return 0.0;
+  }
+  const atx::f64 e = std::exp(1.0);
+  const atx::f64 q_hi = norm_ppf(1.0 - 1.0 / n_eff);
+  const atx::f64 q_lo = norm_ppf(1.0 - 1.0 / (n_eff * e));
+  const atx::f64 max_z = (1.0 - kEulerMascheroni) * q_hi + kEulerMascheroni * q_lo;
+  return std::sqrt(var) * max_z;
+}
+
+// ===========================================================================
+//  deflated_sharpe (registry-fed) — DSR with N and V taken from the global
+//  TrialRegistry summary instead of a hand-counted N.
+//
+//  N = summary.n_eff (effective INDEPENDENT trials, real-valued), and
+//  V = summary.var_sr (cross-trial variance of the per-period Sharpe) when at
+//  least two trials are registered; otherwise the single-stream estimator
+//  V̂ = (1 − γ3·SR + ((κ+2)/4)·SR²)/T. On correlated trial sets N_eff < n_raw,
+//  so the benchmark SR*_N is lower and the DSR is never more deflated than the
+//  raw-N form with the same V.
+// ===========================================================================
+[[nodiscard]] inline DsrResult deflated_sharpe(atx::f64 sr, const TrialSummary &trials,
+                                               atx::usize T, atx::f64 skew,
+                                               atx::f64 exkurt) noexcept {
+  const atx::f64 var_term = 1.0 - skew * sr + ((exkurt + 2.0) / 4.0) * sr * sr;
+  const atx::f64 v =
+      trials.n_raw >= 2U ? trials.var_sr : var_term / static_cast<atx::f64>(T);
+  const atx::f64 sr_star = expected_max_sharpe_eff(trials.n_eff, v);
   const atx::f64 psr = probabilistic_sharpe(sr, sr_star, T, skew, exkurt);
   const atx::f64 haircut = std::max(0.0, sr - sr_star);
   return DsrResult{psr, sr_star, psr, haircut};
