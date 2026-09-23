@@ -518,54 +518,66 @@ def quantiles(xs: list[float], qs=(0.05, 0.25, 0.5, 0.75, 0.95)) -> dict[str, fl
 
 def audit_context(ctx: Context, rows_by_sr: dict[str, list[dict]], lag_sessions: int,
                   cap_avail: int, cap_period: int) -> dict:
-    """Coverage of in-universe cells in the context's evaluation year."""
-    dates, insts, mask = read_apnl_mask(ctx.path / "context.bin")
-    keys = ctx.session_keys
+    """Coverage of in-universe cells in the context's evaluation (final) calendar year.
+
+    Mirrors fundamental_fields.hpp::align_pit_records: visibility = first session
+    at/after available_date plus `lag_sessions`; the visible record with the
+    latest period (ties: later availability) wins per field; both staleness caps.
+    """
+    import numpy as np
+
+    dates, insts, mask_bytes = read_apnl_mask(ctx.path / "context.bin")
+    keys = np.asarray(ctx.session_keys, dtype=np.int64)
     assert dates == len(keys) and insts == len(ctx.instrument_ids)
+    mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(dates, insts)
     day_ns = 86_400 * 10**9
-    last_day = dt.date(1970, 1, 1) + dt.timedelta(days=keys[-1] // day_ns)
+    epoch = dt.date(1970, 1, 1)
+    last_day = epoch + dt.timedelta(days=int(keys[-1] // day_ns))
     year_start = dt.date(last_day.year, 1, 1)
-    start_ns = (year_start - dt.date(1970, 1, 1)).days * day_ns
-    t0 = bisect.bisect_left(keys, start_ns)
+    t0 = int(np.searchsorted(keys, (year_start - epoch).days * day_ns, side="left"))
+    key_days = keys[t0:] // day_ns
+    in_univ = mask[t0:] != 0
     fields = ("book_equity", "net_income_ttm", "gross_profit_ttm", "sue", "shares_lag1y")
     covered = {f: 0 for f in fields}
-    in_universe = 0
-    age_days: list[float] = []
+    age_days: list[np.ndarray] = []
     for i, sr in enumerate(ctx.instrument_ids):
-        rows = rows_by_sr.get(sr, [])
+        rows = rows_by_sr.get(sr)
+        col = in_univ[:, i]
+        if not rows or not col.any():
+            continue
         vis = []
         for r in rows:
-            a_ns = (r["available_date"] - dt.date(1970, 1, 1)).days * day_ns
-            v = bisect.bisect_left(keys, a_ns) + lag_sessions
-            vis.append((v, r))
+            a_ns = (r["available_date"] - epoch).days * day_ns
+            vis.append((int(np.searchsorted(keys, a_ns, side="left")) + lag_sessions, r))
         vis.sort(key=lambda x: x[0])
-        for t in range(t0, dates):
-            if not mask[t * insts + i]:
+        for f in fields:
+            idx, best, best_rows = [], None, []
+            for v, r in vis:
+                if not math.isfinite(r[f]):
+                    continue
+                if best is None or (r["period_end"], r["available_date"]) >= (best["period_end"], best["available_date"]):
+                    best = r
+                idx.append(v)
+                best_rows.append(best)
+            if not idx:
                 continue
-            in_universe += 1
-            key_day = dt.date(1970, 1, 1) + dt.timedelta(days=keys[t] // day_ns)
-            for f in fields:
-                best = None
-                for v, r in vis:
-                    if v > t:
-                        break
-                    if math.isfinite(r[f]) and (best is None or (r["period_end"], r["available_date"])
-                                                >= (best["period_end"], best["available_date"])):
-                        best = r
-                if best is None:
-                    continue
-                if ((key_day - best["available_date"]).days > cap_avail
-                        or (key_day - best["period_end"]).days > cap_period):
-                    continue
-                covered[f] += 1
-                if f == "book_equity":
-                    age_days.append((key_day - best["period_end"]).days)
+            pos = np.searchsorted(np.asarray(idx), np.arange(t0, dates), side="right") - 1
+            has = pos >= 0
+            avail = np.array([(b["available_date"] - epoch).days for b in best_rows])
+            pend = np.array([(b["period_end"] - epoch).days for b in best_rows])
+            p = np.clip(pos, 0, None)
+            ok = has & ((key_days - avail[p]) <= cap_avail) & ((key_days - pend[p]) <= cap_period) & col
+            covered[f] += int(ok.sum())
+            if f == "book_equity":
+                age_days.append((key_days - pend[p])[ok])
+    n_univ = int(in_univ.sum())
+    ages = np.concatenate(age_days).astype(float).tolist() if age_days else []
     return {
         "context": ctx.name,
         "evaluation_year": year_start.year,
-        "in_universe_cells": in_universe,
-        "coverage": {f: (covered[f] / in_universe if in_universe else None) for f in fields},
-        "book_equity_days_since_period_end": quantiles(age_days),
+        "in_universe_cells": n_univ,
+        "coverage": {f: (covered[f] / n_univ if n_univ else None) for f in fields},
+        "book_equity_days_since_period_end": quantiles(ages),
     }
 
 

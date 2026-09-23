@@ -1,0 +1,149 @@
+# Fundamental / quality alpha zoo (lane 10, 2026-09-23).
+# Format: `<id>: <dsl-expression>`. Lines beginning with '#' are comments.
+#
+# Every expression parses + typechecks against an identified equity context panel
+#   close, raw_close, volume, high, low, open, market_cap, sector, earnFlag,
+#   atmCenI_21d, atmCenI_126d, nEarnCnt_5d
+# extended by atx/engine/data/fundamental_fields.hpp::with_fundamental_fields with
+#   raw:     book_equity, total_assets, total_liabilities, assets_lag1y, net_income_ttm,
+#            revenue_ttm, gross_profit_ttm, operating_cash_flow_ttm, operating_income_ttm,
+#            shares_outstanding, shares_lag1y, sue
+#   derived: book_to_price, earnings_yield, sales_yield, cashflow_yield, roe, roa,
+#            gross_profitability, operating_profitability, accruals, asset_growth,
+#            net_issuance, leverage, sue_score
+# (checked by atx-impl/tests/fundamental_zoo_test.cpp, suite FundamentalZoo).
+#
+# Sign convention: higher value = expected higher future return, as the cited
+# paper reports the anomaly (e.g. LOW asset growth earns more, so `-1 *`).
+# Fundamentals are point-in-time: filing snapshot visible from filed+1 day plus a
+# one-session lag, forward-filled at most 400 days from filing / 550 from period end.
+# Definitions follow the cited paper as closely as annual/TTM SEC Company Facts allow;
+# every deviation is noted inline. This file is a PRE-REGISTERED trial set: the
+# evaluation counts every line as a trial, including the ones that fail.
+
+# ---- Value -------------------------------------------------------------------
+# Fama & French (1992) "The Cross-Section of Expected Stock Returns", JF 47(2): B/M.
+val_bp: rank(book_to_price)
+# Basu (1977) JF 32(3): earnings-to-price (TTM net income / market cap).
+val_ep: rank(earnings_yield)
+# Barbee, Mukherji & Raines (1996) FAJ 52(2): sales-to-price.
+val_sp: rank(sales_yield)
+# Lakonishok, Shleifer & Vishny (1994) JF 49(5): cash-flow-to-price (CFO proxy for CF).
+val_cfp: rank(cashflow_yield)
+# Industry-adjusted value: Asness, Porter & Stevens (2000) "Predicting stock returns
+# using industry-relative firm characteristics" (within-industry B/M).
+val_bp_sn: group_neutralize(rank(book_to_price), sector)
+val_ep_sn: group_neutralize(rank(earnings_yield), sector)
+val_sp_sn: group_neutralize(rank(sales_yield), sector)
+val_cfp_sn: group_neutralize(rank(cashflow_yield), sector)
+# Log B/M as in Fama-MacBeth regressions of Fama & French (1992).
+val_logbp: zscore(log(book_to_price))
+# Composite value (LSV 1994 multi-ratio "glamour vs value" sort, equal-weight ranks).
+val_comp: rank(rank(book_to_price) + rank(earnings_yield) + rank(cashflow_yield) + rank(sales_yield))
+val_comp_sn: group_neutralize(rank(rank(book_to_price) + rank(earnings_yield) + rank(cashflow_yield) + rank(sales_yield)), sector)
+# Size- and sector-controlled B/M residual (Fama-French 1993 double sort in regression form).
+val_bp_ss: cs_residualize(rank(book_to_price), sector, market_cap)
+# Within-sector rank of E/P (group_rank) rather than de-meaned rank.
+val_ep_grank: group_rank(earnings_yield, sector)
+# Value relative to own history (Cohen, Polk & Vuolteenaho 2003 value spread, firm level).
+val_bp_ts: ts_rank(book_to_price, 252)
+
+# ---- Profitability / quality -------------------------------------------------
+# Novy-Marx (2013) "The other side of value" JFE 108(1): gross profits / assets.
+qual_gpa: rank(gross_profitability)
+qual_gpa_sn: group_neutralize(rank(gross_profitability), sector)
+# Haugen & Baker (1996) JFE 41(3); Fama-French (2006): ROE.
+qual_roe: rank(roe)
+qual_roe_sn: group_neutralize(rank(roe), sector)
+# Balakrishnan, Bartov & Faurel (2010); Chen, Novy-Marx & Zhang (2011): ROA.
+qual_roa: rank(roa)
+# Fama & French (2015) "A five-factor asset pricing model" JFE 116(1): operating profitability
+# (operating income / book equity; FF subtract interest expense — not available here).
+qual_op: rank(operating_profitability)
+qual_op_sn: group_neutralize(rank(operating_profitability), sector)
+# Ball, Gerakos, Linnainmaa & Nikolaev (2016) JFE 121(1): cash-based operating profitability
+# (operating income minus accruals, over assets).
+qual_cbop: rank((operating_income_ttm - (net_income_ttm - operating_cash_flow_ttm)) / total_assets)
+# Cash flow over assets (CFOA), a QMJ profitability component.
+qual_cfoa: rank(operating_cash_flow_ttm / total_assets)
+# Gross margin (GMAR), a QMJ profitability component.
+qual_gmar: rank(gross_profit_ttm / revenue_ttm)
+# Asness, Frazzini & Pedersen (2019) "Quality minus junk" RAST 24(1): profitability block
+# = GPOA + ROE + ROA + CFOA + GMAR + (-ACC), equal-weight ranks.
+qual_qmj_prof: rank(rank(gross_profitability) + rank(roe) + rank(roa) + rank(operating_cash_flow_ttm / total_assets) + rank(gross_profit_ttm / revenue_ttm) + rank(-1 * accruals))
+# QMJ safety block (subset available here): low leverage + low 252-session return volatility.
+qual_qmj_safe: rank(rank(-1 * leverage) + rank(-1 * stddev(close / delay(close, 1) - 1, 252)))
+# QMJ = profitability + safety (growth and payout blocks need 5-year history / dividends:
+# not available from TTM snapshots; documented omission).
+qual_qmj: rank(rank(rank(gross_profitability) + rank(roe) + rank(roa) + rank(operating_cash_flow_ttm / total_assets) + rank(-1 * accruals)) + rank(rank(-1 * leverage) + rank(-1 * stddev(close / delay(close, 1) - 1, 252))))
+qual_qmj_sn: group_neutralize(rank(rank(rank(gross_profitability) + rank(roe) + rank(roa) + rank(operating_cash_flow_ttm / total_assets) + rank(-1 * accruals)) + rank(rank(-1 * leverage) + rank(-1 * stddev(close / delay(close, 1) - 1, 252)))), sector)
+# Low leverage (Bhandari 1988 reports the opposite sign for D/E; QMJ safety uses low leverage).
+qual_lowlev: rank(-1 * leverage)
+# Piotroski (2000) JAR 38 F-score, 7 of 9 signals computable from TTM snapshots
+# (ROA>0, CFO>0, dROA>0, CFO>NI, dLEVER<0, no issuance, dGP/A>0 in place of dMargin;
+# current ratio and asset turnover omitted). 252 sessions ~ one fiscal year.
+qual_fscore: rank((roa > 0 ? 1 : 0) + (operating_cash_flow_ttm > 0 ? 1 : 0) + (delta(roa, 252) > 0 ? 1 : 0) + (operating_cash_flow_ttm > net_income_ttm ? 1 : 0) + (delta(leverage, 252) < 0 ? 1 : 0) + (net_issuance <= 0 ? 1 : 0) + (delta(gross_profitability, 252) > 0 ? 1 : 0))
+# Profitability trend: Akbas, Jiang & Koch (2017) TAR 92(5) — change in profitability.
+qual_droa: rank(delta(roa, 252))
+qual_droe: rank(delta(roe, 252))
+
+# ---- Investment / issuance ---------------------------------------------------
+# Cooper, Gulen & Schill (2008) "Asset growth and the cross-section of stock returns" JF 63(4).
+inv_ag: rank(-1 * asset_growth)
+inv_ag_sn: group_neutralize(rank(-1 * asset_growth), sector)
+# Fama & French (2015) CMA investment factor (same total-asset-growth definition).
+inv_ag_ss: cs_residualize(rank(-1 * asset_growth), sector, market_cap)
+# Pontiff & Woodgate (2008) "Share issuance and cross-sectional returns" JF 63(2).
+inv_iss: rank(-1 * net_issuance)
+inv_iss_sn: group_neutralize(rank(-1 * net_issuance), sector)
+# Daniel & Titman (2006) JF 61(4) composite issuance, approximated by share issuance:
+# repurchasers (negative issuance) as a binary long signal.
+inv_buyback: rank(net_issuance < 0 ? 1 : 0)
+# Investment composite (asset growth + issuance).
+inv_comp: rank(rank(-1 * asset_growth) + rank(-1 * net_issuance))
+
+# ---- Accruals ----------------------------------------------------------------
+# Sloan (1996) TAR 71(3), cash-flow-statement accruals (Hribar & Collins 2002 JAR 40(1)).
+acc_sloan: rank(-1 * accruals)
+acc_sloan_sn: group_neutralize(rank(-1 * accruals), sector)
+# Hafzalla, Lundholm & Van Winkle (2011) TAR 86(1): percent accruals (scaled by |earnings|).
+acc_pct: rank(-1 * (net_income_ttm - operating_cash_flow_ttm) / abs(net_income_ttm))
+# Accrual quality relative to own history.
+acc_ts: rank(-1 * ts_zscore(accruals, 252))
+
+# ---- Post-earnings-announcement drift ---------------------------------------
+# Bernard & Thomas (1989) JAR 27; Livnat & Mendenhall (2006) JAR 44(1): SUE, seasonal random
+# walk scaled by the std of the previous eight seasonal differences.
+pead_sue: rank(sue_score)
+pead_sue_sn: group_neutralize(rank(sue_score), sector)
+# Winsorized SUE z-score (fat tails in small-denominator SUE).
+pead_sue_w: zscore(winsorize(sue_score))
+# Fresh-SUE: SUE weighted toward the ~63 sessions after it changes (drift concentrates
+# in the first quarter after the announcement, Bernard-Thomas 1989 Table 3).
+pead_sue_fresh: rank(sue_score * (ts_std(sue_score, 63) > 0 ? 1 : 0.5))
+# Change in TTM earnings scaled by price (Foster, Olsen & Shevlin 1984 earnings surprise proxy).
+pead_de_p: rank(delta(net_income_ttm, 63) / market_cap)
+# Earnings-yield change: Chordia & Shivakumar (2006) earnings momentum proxy.
+pead_dey: rank(delta(earnings_yield, 63))
+
+# ---- Composites -------------------------------------------------------------
+# Novy-Marx (2013) profitability + value combination.
+comp_gp_bp: rank(rank(gross_profitability) + rank(book_to_price))
+comp_gp_bp_sn: group_neutralize(rank(rank(gross_profitability) + rank(book_to_price)), sector)
+# Greenblatt "magic formula" (earnings yield + return on capital; ROA proxies ROC).
+comp_magic: rank(rank(earnings_yield) + rank(roa))
+# Value + PEAD.
+comp_ep_sue: rank(rank(earnings_yield) + rank(sue_score))
+# Hou, Xue & Zhang (2015) q-factor spirit: ROE + low investment.
+comp_q: rank(rank(roe) + rank(-1 * asset_growth))
+# Fama-French (2015) three non-market non-size factors: value + profitability + investment.
+comp_ff5: rank(rank(book_to_price) + rank(operating_profitability) + rank(-1 * asset_growth))
+comp_ff5_sn: group_neutralize(rank(rank(book_to_price) + rank(operating_profitability) + rank(-1 * asset_growth)), sector)
+# Stambaugh & Yuan (2017) RFS 30(4) mispricing score, subset computable here
+# (net issuance, accruals, gross profitability, asset growth, ROA; NOA, O-score, distress,
+# momentum, composite issuance and investment-to-assets omitted).
+comp_mispricing: rank(rank(-1 * net_issuance) + rank(-1 * accruals) + rank(gross_profitability) + rank(-1 * asset_growth) + rank(roa))
+comp_mispricing_sn: group_neutralize(rank(rank(-1 * net_issuance) + rank(-1 * accruals) + rank(gross_profitability) + rank(-1 * asset_growth) + rank(roa)), sector)
+# Everything: value + quality + investment + accruals + PEAD, equal-weight ranks.
+comp_all: rank(rank(book_to_price) + rank(earnings_yield) + rank(gross_profitability) + rank(roe) + rank(-1 * asset_growth) + rank(-1 * net_issuance) + rank(-1 * accruals) + rank(sue_score))
+comp_all_sn: group_neutralize(rank(rank(book_to_price) + rank(earnings_yield) + rank(gross_profitability) + rank(roe) + rank(-1 * asset_growth) + rank(-1 * net_issuance) + rank(-1 * accruals) + rank(sue_score)), sector)
