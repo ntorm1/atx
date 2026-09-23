@@ -54,6 +54,9 @@ Status validate_config(const EquityAllocationConfig &c) {
          c.execution_availability != EquityExecutionAvailability::ObservedCloseEntryConstraintV1)) {
         return Err(ErrorCode::InvalidArgument, "equity allocation: invalid numeric/configuration bounds");
     }
+    if (!std::isfinite(c.beta_tolerance) || !std::isfinite(c.sector_net_cap)) {
+        return Err(ErrorCode::InvalidArgument, "equity allocation: nonfinite factor bound");
+    }
     const auto reserve = 1.0 - (c.trade_bps * 1e-4) * c.turnover_limit;
     if (!positive(reserve) || !nonnegative(c.gross_limit * reserve) ||
         !nonnegative(c.name_limit * reserve)) {
@@ -68,6 +71,76 @@ Result<atx::u64> snapshot_bound(atx::usize n) {
 }
 
 std::string at_instrument(atx::usize i) { return " instrument=" + std::to_string(i); }
+
+bool beta_enabled(const EquityAllocationConfig &c) { return c.beta_tolerance >= 0.0; }
+bool sector_enabled(const EquityAllocationConfig &c) { return c.sector_net_cap >= 0.0; }
+
+// An enabled bound needs its exposure; an attached exposure needs its bound.
+Status validate_exposures(const EquityAllocationDecision &d) {
+    const auto n = d.preference.size();
+    if (beta_enabled(d.config) != !d.beta.empty() || sector_enabled(d.config) != !d.sector.empty() ||
+        (!d.beta.empty() && d.beta.size() != n) || (!d.sector.empty() && d.sector.size() != n)) {
+        return Err(ErrorCode::InvalidArgument,
+                   "equity allocation: factor bound and decision exposure disagree");
+    }
+    for (const auto beta : d.beta) {
+        if (!std::isfinite(beta))
+            return Err(ErrorCode::InvalidArgument, "equity allocation: nonfinite beta exposure");
+    }
+    return Ok();
+}
+
+// Dense 0..S-1 labels for the sectors present in the solve union.
+std::vector<atx::usize> compact_sectors(const EquityAllocationDecision &d,
+                                        std::span<const atx::usize> union_indices,
+                                        atx::usize &sector_count) {
+    std::vector<atx::usize> labels;
+    labels.reserve(union_indices.size());
+    for (const auto i : union_indices) labels.push_back(d.sector[i]);
+    std::vector<atx::usize> unique = labels;
+    std::sort(unique.begin(), unique.end());
+    unique.erase(std::unique(unique.begin(), unique.end()), unique.end());
+    for (auto &label : labels) {
+        label = static_cast<atx::usize>(std::lower_bound(unique.begin(), unique.end(), label) -
+                                        unique.begin());
+    }
+    sector_count = unique.size();
+    return labels;
+}
+
+// Represented post-fee beta and worst sector net, checked against the bounds.
+Status certify_exposures(const EquityAllocationDecision &d, std::span<const atx::f64> values,
+                         EquityAllocationCertificate &cert) {
+    const auto tol = d.config.feasibility_tolerance;
+    if (beta_enabled(d.config)) {
+        atx::f64 exposure = 0.0;
+        for (atx::usize i = 0; i < values.size(); ++i) exposure += d.beta[i] * values[i];
+        cert.postfee_beta_exposure = exposure / cert.posttrade_nav;
+        if (!std::isfinite(cert.postfee_beta_exposure) ||
+            std::abs(cert.postfee_beta_exposure) > d.config.beta_tolerance + tol)
+            return Err(ErrorCode::InvalidArgument, "equity allocation: post-fee beta certificate failed");
+    }
+    if (sector_enabled(d.config)) {
+        std::vector<std::pair<atx::usize, atx::f64>> nets;
+        for (atx::usize i = 0; i < values.size(); ++i) {
+            if (values[i] != 0.0) nets.emplace_back(d.sector[i], values[i]);
+        }
+        std::sort(nets.begin(), nets.end(),
+                  [](const auto &a, const auto &b) { return a.first < b.first; });
+        atx::f64 worst = 0.0;
+        for (atx::usize k = 0; k < nets.size();) {
+            atx::f64 net = 0.0;
+            const auto label = nets[k].first;
+            for (; k < nets.size() && nets[k].first == label; ++k) net += nets[k].second;
+            worst = std::max(worst, std::abs(net));
+        }
+        cert.postfee_max_sector_net = worst / cert.posttrade_nav;
+        if (!std::isfinite(cert.postfee_max_sector_net) ||
+            cert.postfee_max_sector_net > d.config.sector_net_cap + tol)
+            return Err(ErrorCode::InvalidArgument, "equity allocation: post-fee sector certificate failed");
+    }
+    return Ok();
+}
 
 Status validate_decision(const EquityAllocationDecision &d) {
     ATX_TRY_VOID(validate_config(d.config));
@@ -89,7 +162,7 @@ Status validate_decision(const EquityAllocationDecision &d) {
                        "equity allocation: invalid frozen risk/preference" + at_instrument(i));
         }
     }
-    return Ok();
+    return validate_exposures(d);
 }
 
 // Scale by accumulated absolute economic amounts. This only checks accounting
@@ -255,6 +328,8 @@ Status certify(const EquityAllocationDecision &d, const EquityAllocationExecutio
     atx::f64 max_name = 0.0;
     atx::f64 cash = e.cash;
     atx::f64 gap_compensation = 0.0;
+    std::vector<atx::f64> exposure_values;
+    if (beta_enabled(c) || sector_enabled(c)) exposure_values.assign(n, 0.0);
     for (atx::usize i = 0; i < n; ++i) {
         const auto w = out.weights[i];
         const auto old_weight = e.marked_dollars[i] / e.pretrade_nav;
@@ -294,6 +369,7 @@ Status certify(const EquityAllocationDecision &d, const EquityAllocationExecutio
         cert.representation_objective_gap = next_gap;
         cash -= delta;
         cert.traded_dollars += std::abs(delta);
+        if (!exposure_values.empty()) exposure_values[i] = value;
         assets += value;
         gross += std::abs(value);
         max_name = std::max(max_name, std::abs(value));
@@ -348,7 +424,8 @@ Status certify(const EquityAllocationDecision &d, const EquityAllocationExecutio
                << " solver_dual_res=" << cert.solver.dual_res;
         return Err(ErrorCode::InvalidArgument, detail.str());
     }
-    return Ok();
+    if (exposure_values.empty()) return Ok();
+    return certify_exposures(d, exposure_values, cert);
 }
 } // namespace
 
@@ -495,6 +572,20 @@ Result<EquityAllocationPlan> plan_equity_allocation(atx::usize canonical, atx::u
     return Ok(EquityAllocationPlan{canonical, count, n, rows, kkt, bytes});
 }
 
+Status attach_equity_exposures(EquityAllocationDecision &decision, std::span<const atx::f64> beta,
+                               std::span<const atx::usize> sector) {
+    const auto n = decision.preference.size();
+    if ((!beta.empty() && beta.size() != n) || (!sector.empty() && sector.size() != n))
+        return Err(ErrorCode::InvalidArgument, "equity allocation: exposure shape mismatch");
+    for (const auto b : beta) {
+        if (!std::isfinite(b))
+            return Err(ErrorCode::InvalidArgument, "equity allocation: nonfinite beta exposure");
+    }
+    decision.beta.assign(beta.begin(), beta.end());
+    decision.sector.assign(sector.begin(), sector.end());
+    return Ok();
+}
+
 Result<EquityAllocationResult> allocate_equity_preference(const EquityAllocationDecision &d,
                                                          const EquityAllocationExecution &e) {
     ATX_TRY_VOID(validate_decision(d));
@@ -542,8 +633,38 @@ Result<EquityAllocationResult> allocate_equity_preference(const EquityAllocation
         constraints.gross = {d.config.gross_limit * out.certificate.fee_reserve, true};
         constraints.pos = risk::PositionCap{d.config.name_limit * out.certificate.fee_reserve};
         constraints.turn = risk::TurnoverBudget{d.config.turnover_limit};
+        // Opt-in factor rows follow the net row and the M identity boxes, so the
+        // box-row indexing below is unchanged. Union-local copies outlive
+        // materialize(), which reads them through spans.
+        std::vector<atx::f64> union_beta;
+        std::vector<atx::usize> union_sector;
+        atx::usize sector_rows = 0;
+        if (beta_enabled(d.config)) {
+            union_beta.reserve(count);
+            for (const auto i : out.union_indices) union_beta.push_back(d.beta[i]);
+            constraints.beta = risk::BetaNeutral{union_beta,
+                d.config.beta_tolerance * out.certificate.fee_reserve};
+        }
+        if (sector_enabled(d.config)) {
+            union_sector = compact_sectors(d, out.union_indices, sector_rows);
+            risk::SectorRiskBudget budget;
+            budget.sector_id = union_sector;
+            budget.cap.assign(sector_rows, d.config.sector_net_cap * out.certificate.fee_reserve);
+            constraints.sector = std::move(budget);
+        }
+        const auto factor_rows = (beta_enabled(d.config) ? 1U : 0U) + sector_rows;
+        if (factor_rows != 0) {
+            // Dense factor rows plus their share of every sparse/KKT copy.
+            ATX_TRY(auto dense, mul(static_cast<atx::u64>(factor_rows), static_cast<atx::u64>(count) + 1));
+            ATX_TRY(auto dense_bytes, mul(dense, 64));
+            ATX_TRY(auto linear_bytes, mul(static_cast<atx::u64>(factor_rows), 8192));
+            ATX_TRY(auto extra, add(dense_bytes, linear_bytes));
+            ATX_TRY(auto total, add(plan.additional_bytes_bound, extra));
+            if (total > d.config.max_additional_bytes)
+                return Err(ErrorCode::OutOfRange, "equity allocation: factor rows exceed additional byte budget");
+        }
         ATX_TRY(auto materialized, constraints.materialize(model.exposures(), previous, count));
-        if (materialized.A.rows() != static_cast<Eigen::Index>(count + 1))
+        if (materialized.A.rows() != static_cast<Eigen::Index>(count + 1 + factor_rows))
             return Err(ErrorCode::Internal, "equity allocation: unexpected constraint row layout");
         for (atx::usize j = 0; j < count; ++j) {
             if (out.required_zero_reasons[out.union_indices[j]] != 0) {
