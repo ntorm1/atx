@@ -1,4 +1,4 @@
-# Production resume sequence — 2026-09-21
+# Production resume sequence — updated 2026-09-23
 
 Static source/dispatch audit only. The production snapshot remains **as of
 2026-09-20**. Run one guarded process tree at a time from `C:\atx\atx-db`.
@@ -8,22 +8,26 @@ dummy SEC User-Agent `atx-db/0.1 atx-research@example.com`.
 
 ## Current source position and guard prerequisite
 
-Archive5 is terminal. Root recovered its actual companyfacts dataset UUID as
-`6400b3c2-f0d1-4f47-bcf0-95aadd9241de`, with 43,417,902 retained raw facts and
-points and schema 0319. Archive6 is now the sole live writer: it began at
-21:54:46 UTC under the root-approved two-GiB guard, resuming from that UUID and
-verifying 6,570 receipts. Its 21:57 UTC snapshot was 1.58 GiB private / 1.14
-GiB working, with 3.57 GiB physical and 9.68 GiB commit headroom. Do not launch
-another companyfacts command or reuse archive6's filenames while it is live.
+Root session 12556 (guard child 4108) is the sole live warehouse writer:
+`activation-companyfacts-archive11`. It is verifying 9,440 receipts while
+resuming the actual archive10 dataset UUID
+`ade90629-8e06-4186-9ea7-565cbd05e285` with full `archive_members`,
+replacement, and `--force`. Its files are
+`activation-companyfacts-archive11-{memory.json,log,err}`. The last verified
+durable raw-fact and point count was 47,906,807, before archive11. Do not launch
+another runtime or restart because the tool session yields. Treat schema
+0320–0322 as pending live proof until governed startup and the stage complete.
 
 The guard's preflight remains `job_gb + 2` for both physical and commit
 headroom, and its runtime stop thresholds remain physical below 1.5 GiB or
-commit below 3 GiB. The two-GiB ceiling was a root production decision; it did
-not change DuckDB's one-GiB/one-thread limits or the loader's bounded batches.
-After archive6 is terminal, inspect its receipt, activation-stage ledger, and
-new companyfacts dataset receipt before advancing. A pending migration, if any,
-is governed before the loader opens; `--backup-keep 100` applies only after that
-governed path succeeds.
+commit below 3 GiB. The two-GiB ceiling does not change DuckDB's one-GiB/
+one-thread limits or the loader's bounded batches. After archive11 is terminal,
+root must inspect its guard receipt, activation-stage ledger, actual companyfacts
+dataset ledger and retained counts. If it failed, resolve the latest dataset
+UUID from the ledger before constructing another verified resume; never infer
+it from the activation run label. A pending migration is governed before the
+loader opens; `--backup-keep 100` applies only after that governed path succeeds.
+Use fresh receipt/log/error filenames for every subsequent attempt.
 
 ## Submissions verified resume
 
@@ -51,9 +55,38 @@ archive hash receipt, an ordered contiguous committed lineage, and retained
 rows against every referenced archive member. It rejects any run that includes
 `sec_bulk_download`; do not add that stage.
 
+## CVX earnings-source acceptance wave
+
+After the full submissions resume is terminal and its actual ledger and archive
+counts are verified, run the governed source stage for only CVX CIK
+`0000093410`, through the fixed snapshot. The CIK scope is intentional evidence
+for this source acceptance wave. It must not be carried into run5.
+
+```powershell
+C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
+  --job-gb 2 `
+  --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-cvx-earnings-source1-memory.json `
+  --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-cvx-earnings-source1.log `
+  --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-cvx-earnings-source1.err `
+  -- C:\atx\atx-db\.venv\Scripts\python.exe scripts\warehouse_activate.py `
+  --db-path data\warehouse.duckdb --as-of-date 2026-09-20 `
+  --only earnings_release_facts --earnings-release-cik 0000093410 `
+  --earnings-release-history-end 2026-09-20 --force `
+  --memory-limit 1GB --threads 1 --backup-keep 100 `
+  --run-id activation-cvx-earnings-source1 `
+  --sec-user-agent "atx-db/0.1 atx-research@example.com"
+```
+
+Inspect the stage and source dataset receipts, including attempts, supported
+tables, and uncovered reasons. The pre-submissions measurement found 426,151
+unique historical Item 2.02 candidates; the full submissions resume can grow
+that queue. The CVX wave is neither full historical source coverage nor proof
+of the provider SLO. Schedule further measured source waves and affected
+downstream reruns after the first full fundamentals build.
+
 ## Full downstream run5
 
-After the submissions receipt proves completion, start at `statement_points`.
+After the CVX source receipt is inspected, start at `statement_points`.
 This selected suffix includes corrected shares, periods, TTM, calendarization,
 standardization, reconciliation (16 sequential shards), derived/market data,
 universe and delisting work, forward returns, item/provider coverage, price
@@ -76,6 +109,8 @@ C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_
 `--shards 16` is partitioning: the reconciliation runner invokes one child at a
 time. A failed stage is an inspectable capacity/correctness task; it is not a
 reason to skip a later stage, widen memory, or reduce output scope.
+The run5 command has no `--earnings-release-cik` or other CIK filter: it must
+materialize the full universe.
 
 ## Required post-run outputs
 
@@ -121,22 +156,14 @@ the CF1 evaluation (holdout decile spreads, label coverage, HAC uncertainty,
 Holm adjustment, and transaction-cost sensitivities). `production_eligible`
 remaining false is recorded evidence, not a reason to relabel the signals.
 
-## Concrete source mismatches resolved here
-
-* `production-resume-after-cf5.md` still names archive4 UUID
-  `c7c21cd1-c7c4-4de8-af64-4f2877ef6f59`; after archive5's terminal recovery,
-  the next resume must use `6400b3c2-f0d1-4f47-bcf0-95aadd9241de`.
-* Both `--backup-keep 100` and `--backup-keep=100` are valid argparse forms;
-  there is no flag-spelling defect. The outer guard owns the job cap; DuckDB
-  resource flags belong to the child activation command.
-* CF1 evaluation has no activation stage. Omitting the separate evaluator would
-  leave `custom_feature_evaluations` unrefreshed even if run5 reaches `quality`.
-* `publish-release` accepts `--release-id`, `--out-dir`, optional
-  `--previous-dir`, `--memory-limit`, `--threads`, and `--run-id`; it has no
-  `--created-at` CLI argument. Current `cli.py` supplies `datetime.now(UTC)` to
-  the publication library, so an operator-facing fixed release timestamp is
-  unavailable without a source change.
-
-No main merge follows this sequence. Preserve `stash@{0}`; after the release
-evidence, run the full non-slow suite once, obtain the whole-branch Codex review,
-and ask before merging to main.
+After CF1 evaluation, execute the versioned CVX quarterly EPS acceptance SQL,
+the fundamental desk acceptance SQL, and the custom-feature decile readout SQL
+under separate guarded, read-only sessions; record actual results and gaps.
+Run readiness measurement, assess item/provider/all-quality gates without
+weakening thresholds, regenerate and check the data dictionary, and publish the
+first release only if measured gates permit. Verify its manifest and hashes.
+The 426,151 pre-resume candidates plus any added historical earnings-source
+backfill remain open and cannot be counted as provider SLO proof. Run the full
+non-slow suite once at the sprint gate, obtain a fresh whole-branch Codex
+review, then ask before merging to main. Preserve `stash@{0}`; never apply or
+drop it.
