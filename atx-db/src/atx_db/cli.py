@@ -29,6 +29,7 @@ from .fundamental_reconciliation import (
 from .migration_admin import pending_migrations, run_governed_migrations
 from .migrations import MIGRATIONS
 from .openfigi_signals import OpenFigiSignalMapOptions, map_signal_cusips
+from .pipeline_status import pipeline_status
 from .provider_coverage import ProviderCoverageOptions, refresh_provider_coverage
 from .sec_submissions import SecSubmissionsBulkDataset, SecSubmissionsBulkOptions
 from .standardization import (
@@ -152,6 +153,12 @@ def _build_parser() -> argparse.ArgumentParser:
     status = commands.add_parser("status", help="Report schema and core dataset coverage")
     status.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     status.add_argument("--strict", action="store_true", help="Exit nonzero unless the schema is current")
+
+    pipeline = commands.add_parser(
+        "pipeline-status", help="Read the activation and source ledgers for one snapshot"
+    )
+    pipeline.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    pipeline.add_argument("--as-of-date", type=dt.date.fromisoformat, required=True)
 
     standardized = commands.add_parser(
         "refresh-standardized-fundamentals",
@@ -419,6 +426,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         status = warehouse_status(args.db_path)
         _json(status)
         return 0 if not args.strict or status["status"] == "ready" else 2
+
+    if args.command == "pipeline-status":
+        status = pipeline_status(args.db_path, args.as_of_date)
+        _json(status)
+        return 0 if status["status"] == "ok" else 2
 
     if args.command == "refresh-standardized-fundamentals":
         with DuckDBStore(args.db_path) as store:
