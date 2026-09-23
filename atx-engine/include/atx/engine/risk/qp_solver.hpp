@@ -112,6 +112,7 @@
 #include "atx/core/linalg/linalg.hpp" // MatX, VecX
 #include "atx/core/types.hpp"         // f64, usize
 
+#include "atx/engine/risk/admm_schedule.hpp" // AdmmSchedule / WarmStart (Lane 6 deterministic adaptive rho)
 #include "atx/engine/risk/cone.hpp"         // SocBlock + ball_project + soc_project (deterministic SOC z-projection, S8.5a/c)
 #include "atx/engine/risk/constraints.hpp"  // MaterializedConstraints
 #include "atx/engine/risk/factor_model.hpp" // FactorModel (apply / specific_var / factor_cov)
@@ -165,6 +166,10 @@ struct QpCertificate {
   bool primal_infeasible = false; // OSQP primal-infeasibility detector fired
   bool dual_infeasible = false;   // OSQP dual-infeasibility detector fired
   bool polished = false;          // the returned book is the polished one (else the ADMM book)
+  // Lane 6: ADMM iterations actually run (== cfg.iters unless a schedule's deterministic
+  // early exit fired) and the final base rho (== cfg.rho on the unscheduled path).
+  atx::usize admm_iters = 0;
+  atx::f64 rho_final = 0.0;
 };
 
 // The QP instance. P = 2·risk_aversion·V (V is NEVER densified — the augmentation
@@ -201,6 +206,11 @@ struct QpResult {
   // pin are untouched — `solve()` discards this field, and it is EMPTY whenever the
   // problem carries no variable-apex cone (box-only / ball-only paths, R10).
   std::vector<atx::f64> cone_apex;
+  // Lane 6 warm-start handles: the full augmented primal x = [w; y; aux] and dual (one
+  // entry per augmented row), ORIGINAL units, after polish. Feed them back through
+  // WarmStart on the next solve of a problem with the SAME augmented layout.
+  std::vector<atx::f64> x_full;
+  std::vector<atx::f64> y_full;
 };
 
 class ConstrainedQpSolver {
@@ -239,6 +249,19 @@ public:
     return solve_augmented_form(aug, p);
   }
 
+  // Lane 6: the same solve driven by a deterministic adaptive-rho schedule (per-row rho with
+  // equality rows boosted, rho adapted only at fixed iteration indices and snapped to a power
+  // of two, optional deterministic early exit), optionally warm-started from a previous
+  // QpResult's x_full / y_full. The unscheduled overload above is untouched.
+  [[nodiscard]] atx::core::Result<QpResult> solve_with_cert(const QpProblem &p,
+                                                            const AdmmSchedule &sched,
+                                                            const WarmStart *ws = nullptr) const {
+    const atx::usize m = p.V.n_instruments();
+    ATX_TRY_VOID(validate(p, m));
+    const AugmentedQp aug = build_augmented(p.V, p.risk_aversion, p.q, p.C);
+    return solve_augmented_form(aug, p, &sched, ws);
+  }
+
   // Solve a PRE-BUILT augmented form. The hard path (solve_with_cert) calls this directly
   // after build_augmented; the S8.6 elasticity layer (risk/elasticity.hpp) calls it with a
   // RELAXED AugmentedQp it assembled (the minimize-violation slack columns + penalty appended
@@ -249,7 +272,20 @@ public:
   // solve's tail).
   [[nodiscard]] atx::core::Result<QpResult> solve_augmented_form(const AugmentedQp &aug,
                                                                  const QpProblem &p) const {
+    return solve_augmented_form(aug, p, nullptr, nullptr);
+  }
+
+  // As above, optionally scheduled (sched != nullptr ⇒ run_admm_scheduled) and optionally
+  // warm-started (ws overrides p.x0 / p.y0). sched == nullptr && ws == nullptr is the
+  // historical fixed-rho operator, byte for byte.
+  [[nodiscard]] atx::core::Result<QpResult> solve_augmented_form(const AugmentedQp &aug,
+                                                                 const QpProblem &p_in,
+                                                                 const AdmmSchedule *sched,
+                                                                 const WarmStart *ws) const {
     namespace co = atx::core;
+    const QpProblem p = (ws == nullptr)
+                            ? QpProblem{p_in.V, p_in.risk_aversion, p_in.q, p_in.C, p_in.x0, p_in.y0}
+                            : QpProblem{p_in.V, p_in.risk_aversion, p_in.q, p_in.C, ws->x0, ws->y0};
     namespace cl = atx::core::linalg;
     const atx::usize m = p.V.n_instruments();
 
@@ -264,7 +300,14 @@ public:
     cl::VecX x_bar;
     cl::VecX y_bar;
     cl::VecX z_bar;
-    ATX_TRY_VOID(run_admm(scaled, p, sc, x_bar, y_bar, z_bar));
+    QpCertificate cert;
+    if (sched == nullptr) {
+      ATX_TRY_VOID(run_admm(scaled, p, sc, x_bar, y_bar, z_bar));
+      cert.admm_iters = cfg.iters;
+      cert.rho_final = cfg.rho;
+    } else {
+      ATX_TRY_VOID(run_admm_scheduled(scaled, p, sc, *sched, x_bar, y_bar, z_bar, cert));
+    }
 
     // (4) Un-scale to original units:  x = D_x x̄,  y = (1/c) E y_bar  (E = sc.e).
     cl::VecX x = unscale_primal(x_bar, sc);
@@ -272,7 +315,6 @@ public:
 
     // (5) Deterministic polish (R1, OSQP §4) — optional; guards the coherent
     //     primal/dual pair and compares objectives only to a feasible ADMM book.
-    QpCertificate cert;
     if (cfg.polish) {
       ATX_TRY_VOID(polish_book(aug, p, x, y, cert));
     }
@@ -290,6 +332,8 @@ public:
       out.book[i] = x[static_cast<Eigen::Index>(i)];
     }
     out.cert = cert;
+    out.x_full.assign(x.data(), x.data() + x.size());
+    out.y_full.assign(y.data(), y.data() + y.size());
     // (8b) S8.5c diagnostic — surface the achieved epigraph apex t of each variable-apex
     //      cone (the cone's row_start row of Ãx at the final x). PURELY a read of the
     //      already-built Ã and the returned x; it does NOT touch out.book or the solve.
@@ -616,6 +660,169 @@ private:
     y_out = std::move(y);
     z_out = std::move(z);
     return co::Ok();
+  }
+
+  // -------------------------------------------------------------------------
+  //  Lane 6: the SCHEDULED ADMM (admm_schedule.hpp). Differences from run_admm, all
+  //  deterministic:
+  //    * per-row rho: equality rows (l == u, finite, not a cone row) use
+  //      rho·eq_rho_scale (OSQP rho_eq) so the factor-definition rows converge fast;
+  //    * at the schedule's fixed iteration indices rho adapts by residual balancing,
+  //      snapped to a power of two; a change beyond adapt_ratio rewrites the −1/rho
+  //      diagonal and re-runs ONLY the numeric LDLᵀ (the pattern is unchanged);
+  //    * optional early exit tested only at multiples of check_every.
+  // -------------------------------------------------------------------------
+  [[nodiscard]] atx::core::Status run_admm_scheduled(const AugmentedQp &aug, const QpProblem &p,
+                                                     const Scaling &sc, const AdmmSchedule &s,
+                                                     atx::core::linalg::VecX &x_out,
+                                                     atx::core::linalg::VecX &y_out,
+                                                     atx::core::linalg::VecX &z_out,
+                                                     QpCertificate &cert) const {
+    namespace co = atx::core;
+    namespace cl = atx::core::linalg;
+    const auto n = static_cast<Eigen::Index>(aug.n_w + aug.n_y + aug.n_aux);
+    const Eigen::Index r = aug.A_tilde.rows();
+    const Eigen::Index dim = n + r;
+
+    std::vector<bool> is_cone_row(static_cast<atx::usize>(r), false);
+    for (const SocBlock &blk : aug.cones) {
+      for (atx::usize j = 0; j < blk.dim; ++j) {
+        is_cone_row[blk.row_start + j] = true;
+      }
+    }
+    cl::VecX mult = cl::VecX::Ones(r);
+    for (Eigen::Index i = 0; i < r; ++i) {
+      const bool eq = aug.l[i] == aug.u[i] && std::fabs(aug.l[i]) < kAugInf;
+      if (eq && !is_cone_row[static_cast<atx::usize>(i)]) {
+        mult[i] = s.eq_rho_scale;
+      }
+    }
+    atx::f64 rho = cfg.rho;
+    cl::VecX rho_vec = rho * mult;
+    cl::VecX rho_inv = rho_vec.cwiseInverse();
+
+    SpMat kkt = build_kkt(aug);
+    set_kkt_rho_diag(kkt, n, rho_inv);
+    QuasiDefiniteLdl ldl;
+    ATX_TRY_VOID(ldl.factor_symbolic(kkt, cfg.max_factor_bytes));
+    ATX_TRY_VOID(ldl.factor_numeric(kkt));
+
+    cl::VecX x = cl::VecX::Zero(n);
+    cl::VecX z = cl::VecX::Zero(r);
+    cl::VecX y = cl::VecX::Zero(r);
+    seed_warm_start(p, sc, aug, x, z, y);
+
+    std::vector<atx::f64> rhs(static_cast<atx::usize>(dim), 0.0);
+    std::vector<atx::f64> sol(static_cast<atx::usize>(dim), 0.0);
+    cl::VecX ax(r);
+    cl::VecX zr(r);
+    cl::VecX xt(n);
+    const atx::f64 alpha = s.relax_alpha;
+    atx::usize done = 0;
+    for (atx::usize it = 0; it < cfg.iters; ++it) { // bounded by cfg.iters
+      for (Eigen::Index i = 0; i < n; ++i) {
+        rhs[static_cast<atx::usize>(i)] = cfg.sigma * x[i] - aug.q_aug[i];
+      }
+      for (Eigen::Index i = 0; i < r; ++i) {
+        rhs[static_cast<atx::usize>(n + i)] = z[i] - rho_inv[i] * y[i];
+      }
+      ldl.solve(std::span<const atx::f64>(rhs), std::span<atx::f64>(sol));
+      // Over-relaxation (OSQP §3, alpha in (0,2)): x ← αx̃ + (1−α)x, and the relaxed
+      // splitting target zr = αÃx̃ + (1−α)z drives the z- and y-updates.
+      for (Eigen::Index i = 0; i < n; ++i) {
+        x[i] = alpha * sol[static_cast<atx::usize>(i)] + (1.0 - alpha) * x[i];
+      }
+      for (Eigen::Index i = 0; i < n; ++i) {
+        xt[i] = sol[static_cast<atx::usize>(i)];
+      }
+      ax.noalias() = aug.A_tilde * xt;
+      for (Eigen::Index i = 0; i < r; ++i) {
+        zr[i] = alpha * ax[i] + (1.0 - alpha) * z[i];
+      }
+      for (Eigen::Index i = 0; i < r; ++i) {
+        z[i] = clamp(zr[i] + rho_inv[i] * y[i], aug.l[i], aug.u[i]);
+      }
+      project_cones_rho(aug, zr, y, rho, z); // cone rows carry mult 1 ⇒ scalar rho
+      for (Eigen::Index i = 0; i < r; ++i) {
+        y[i] += rho_vec[i] * (zr[i] - z[i]);
+      }
+      done = it + 1U;
+
+      const bool refactor = is_refactor_point(s, done);
+      const bool check = s.early_exit && s.check_every > 0U && done % s.check_every == 0U;
+      if (!refactor && !check) {
+        continue;
+      }
+      ax.noalias() = aug.A_tilde * x;
+      const AdmmResidualNorms norms = residual_norms(aug, x, z, y, ax);
+      if (check && residuals_converged(norms, s)) {
+        break;
+      }
+      if (refactor) {
+        const atx::f64 next = adapt_rho(rho, norms, s);
+        if (next >= rho * s.adapt_ratio || next * s.adapt_ratio <= rho) {
+          rho = next;
+          rho_vec = rho * mult;
+          rho_inv = rho_vec.cwiseInverse();
+          set_kkt_rho_diag(kkt, n, rho_inv);
+          ATX_TRY_VOID(ldl.factor_numeric(kkt));
+        }
+      }
+    }
+    cert.admm_iters = done;
+    cert.rho_final = rho;
+    x_out = std::move(x);
+    y_out = std::move(y);
+    z_out = std::move(z);
+    return co::Ok();
+  }
+
+  // Overwrite the (2,2) block diagonal of an assembled KKT with −rho_inv (pattern fixed).
+  static void set_kkt_rho_diag(SpMat &kkt, Eigen::Index n, const atx::core::linalg::VecX &rho_inv) {
+    for (Eigen::Index i = 0; i < rho_inv.size(); ++i) {
+      kkt.coeffRef(n + i, n + i) = -rho_inv[i];
+    }
+  }
+
+  // ∞-norm residual summary in SCALED units (the schedule's adaptation / exit input).
+  [[nodiscard]] static AdmmResidualNorms residual_norms(const AugmentedQp &aug,
+                                                        const atx::core::linalg::VecX &x,
+                                                        const atx::core::linalg::VecX &z,
+                                                        const atx::core::linalg::VecX &y,
+                                                        const atx::core::linalg::VecX &ax) {
+    namespace cl = atx::core::linalg;
+    const cl::VecX px = aug.P * x;
+    const cl::VecX aty = aug.A_tilde.transpose() * y;
+    AdmmResidualNorms out;
+    out.prim = (ax - z).lpNorm<Eigen::Infinity>();
+    out.dual = (px + aug.q_aug + aty).lpNorm<Eigen::Infinity>();
+    out.ax = ax.lpNorm<Eigen::Infinity>();
+    // z on inert (±kAugInf) rows is bounded by |Ãx| there, so the ∞-norm stays finite.
+    out.z = z.lpNorm<Eigen::Infinity>();
+    out.px = px.lpNorm<Eigen::Infinity>();
+    out.aty = aty.lpNorm<Eigen::Infinity>();
+    out.q = aug.q_aug.lpNorm<Eigen::Infinity>();
+    return out;
+  }
+
+  // Cone z-projection with an explicit scalar rho (the scheduled loop's current base rho).
+  void project_cones_rho(const AugmentedQp &aug, const atx::core::linalg::VecX &ax,
+                         const atx::core::linalg::VecX &y, atx::f64 rho,
+                         atx::core::linalg::VecX &z) const {
+    for (const SocBlock &blk : aug.cones) {
+      const atx::usize d = blk.dim;
+      std::vector<atx::f64> arg(d, 0.0);
+      std::vector<atx::f64> proj(d, 0.0);
+      for (atx::usize j = 0; j < d; ++j) {
+        const auto row = static_cast<Eigen::Index>(blk.row_start + j);
+        arg[j] = (ax[row] + y[row] / rho) + blk.offset[static_cast<Eigen::Index>(j)];
+      }
+      project_block_arg(blk, arg, proj);
+      for (atx::usize j = 0; j < d; ++j) {
+        const auto row = static_cast<Eigen::Index>(blk.row_start + j);
+        z[row] = proj[j] - blk.offset[static_cast<Eigen::Index>(j)];
+      }
+    }
   }
 
   // Seed (x, z, y) from the optional warm-start (R6), in SCALED units. No-op (leaves

@@ -79,9 +79,12 @@ evaluate_trade_costs(const TradeCostTerms &terms, std::span<const atx::f64> w);
 
 // Build the augmented problem for `p`, append the trade-cost terms, and solve it through
 // the solver's standard pipeline (Ruiz → ADMM → polish → gate). Same error contract as
-// ConstrainedQpSolver::solve_with_cert plus the term validation above.
-[[nodiscard]] atx::core::Result<QpResult> solve_with_costs(const ConstrainedQpSolver &solver,
-                                                           const QpProblem &p,
-                                                           const TradeCostTerms &terms);
+// ConstrainedQpSolver::solve_with_cert plus the term validation above. `sched` (optional)
+// selects the deterministic adaptive-rho ADMM; `ws` (optional) warm-starts from a previous
+// costed solve's x_full / y_full (same terms layout).
+[[nodiscard]] atx::core::Result<QpResult>
+solve_with_costs(const ConstrainedQpSolver &solver, const QpProblem &p,
+                 const TradeCostTerms &terms, const AdmmSchedule *sched = nullptr,
+                 const WarmStart *ws = nullptr);
 
 } // namespace atx::engine::risk

@@ -289,12 +289,13 @@ atx::core::Result<TradeCostBreakdown> evaluate_trade_costs(const TradeCostTerms 
 }
 
 atx::core::Result<QpResult> solve_with_costs(const ConstrainedQpSolver &solver,
-                                             const QpProblem &p, const TradeCostTerms &terms) {
+                                             const QpProblem &p, const TradeCostTerms &terms,
+                                             const AdmmSchedule *sched, const WarmStart *ws) {
   ATX_TRY_VOID(ConstrainedQpSolver::check_problem(p));
   ATX_TRY_VOID(validate_cost_terms(terms, p.V.n_instruments()));
   AugmentedQp base = build_augmented(p.V, p.risk_aversion, p.q, p.C);
   ATX_TRY(AugmentedQp aug, append_cost_terms(std::move(base), terms));
-  return solver.solve_augmented_form(aug, p);
+  return solver.solve_augmented_form(aug, p, sched, ws);
 }
 
 } // namespace atx::engine::risk
