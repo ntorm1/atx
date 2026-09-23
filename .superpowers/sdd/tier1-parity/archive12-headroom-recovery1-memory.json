@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\close_companyfacts_archive12_headroom_stop.py"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 4.511505126953125,
+    "commit_free_gb": 5.760871887207031
+  },
+  "child_pid": 9784,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 1.4693069458007812
+}

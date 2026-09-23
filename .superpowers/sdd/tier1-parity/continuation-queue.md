@@ -1,5 +1,27 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Archive12 recovered; lower-memory configuration check — 2026-09-23 00:32 UTC
+
+Archive12 session45906 is terminal exit1. Guard stopped00:26:29UTC because
+host commit headroom fell to2.945GiB (physical1.707GiB). Last source log had
+0failures. Root confirmed original Python workers and all warehouse guards
+absent, then recovered both run ledgers at00:29:16UTC and CHECKPOINT passed.
+Recovery session35687 is terminal exit0, peak1.469GiB. Do not repeat recovery.
+
+Durable facts=points **47,941,000**, net+34,193. Attempt55,234rows/22CIKs
+0001495320–0001496383 includes replacements. Member receipts:22loaded,
+1327empty,43unavailable,0errors. Prices31,959,271, custom features31,934,514,
+schema0322. Next actual predecessor **6beba5d4-e530-45fd-ae04-f872d9c8a896**.
+Evidence companyfacts-archive12-headroom-recovery.json and guard/process logs.
+
+Fresh Codex static throughput audit found no proven redundant full-table work
+to justify another loader rewrite; VR1 already addressed verified-member
+recycle cost. Root is checking whether a LOWER512MB DuckDB limit survives
+recycles and preserves source-resume compatibility before the next attempt.
+The2GiB Windows job cap,1thread, guard thresholds, archive scope and proof
+semantics will remain unchanged. No experiment has launched; no writer active.
+Do not infer a512MB capacity guarantee from a static configuration check.
+
 ## Archive12 verification passed; member loop active — 2026-09-23 00:19 UTC
 
 This goal continuation is a verified wait with new source evidence. Root

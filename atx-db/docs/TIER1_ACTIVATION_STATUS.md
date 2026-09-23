@@ -7,6 +7,31 @@ artifacts. Dated loader progress below is historical evidence.
 
 ## Latest durable warehouse measurement: 2026-09-23
 
+Archive12's recovery checkpoint completed after its memory guard stopped the
+run at00:26:29UTC. It retained55,234 attempt rows across22 CIKs, including
+replacements, for a net increase of34,193 raw facts and points. The actual
+dataset receipt for the next resume is
+`6beba5d4-e530-45fd-ae04-f872d9c8a896`. Both interrupted run ledgers were closed
+as failed at00:29:16UTC; the recovery process exited successfully with a
+1.469GiB peak. These latest retained counts supersede the preceding snapshots.
+
+| Latest retained measurement | Result |
+| --- | ---: |
+| SEC CompanyFacts rows | 47,941,000 |
+| Fundamental points | 47,941,000 |
+| Daily price rows | 31,959,271 |
+| Custom-feature rows | 31,934,514 |
+| Applied production migration | 0322 |
+
+Archive12 verified9,440 prior targets covering39,402,481rows before loading
+additional issuers. It remained incomplete when host commit headroom dropped
+below3GiB. The source log had no reported loader failure. A static throughput
+audit did not identify a proven redundant query to justify another rewrite;
+a lower DuckDB memory setting is being assessed without changing proof,
+scope, the process cap, or the host stop thresholds.
+
+## Preceding checkpoints: archive10 and archive11
+
 Archive10 stopped under the memory guard at22:48:44 UTC. Recovery committed
 its two failed run records at22:52:07 UTC; independent verification completed
 the checkpoint at23:00:57 UTC. The retained raw facts and points increased by
@@ -27,8 +52,8 @@ run ledgers were closed as failed at00:08:15 UTC.
 | Archive11 attempt rows / loaded CIKs | 0 / 0 |
 
 Attempt rows include replacements and are not the net increase. Archive10's
-actual dataset run was `ade90629-8e06-4186-9ea7-565cbd05e285`. The next verified
-resume must use archive11's actual dataset receipt,
+actual dataset run was `ade90629-8e06-4186-9ea7-565cbd05e285`. Archive12 resumed
+using archive11's actual dataset receipt,
 `694f056e-a268-4927-8500-990b62c9a9be`. Archive10 checkpoint verification peaked at1.539GiB under
 the current2GiB process guard. Production DuckDB remains limited to1GB and
 one thread, with one heavy runtime at a time. The guard stopped only its own

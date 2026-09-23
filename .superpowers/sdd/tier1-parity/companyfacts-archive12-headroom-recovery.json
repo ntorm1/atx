@@ -1,0 +1,110 @@
+{
+  "observed_at_utc": "2026-09-23T00:29:16.889912+00:00",
+  "process_check": {
+    "observed_at_utc": "2026-09-23T00:29:11.3888364Z",
+    "run_id": "activation-companyfacts-archive12",
+    "original_python_pids": [
+      2324,
+      11568
+    ],
+    "original_pid_count": 0,
+    "matching_process_count": 0,
+    "session_exit_code": 1,
+    "guard_receipt_last_write_utc": "2026-09-23T00:26:29.9274448Z"
+  },
+  "guard_status": "stopped_low_headroom",
+  "guard_stop_headroom": {
+    "physical_free_gb": 1.7068252563476562,
+    "commit_free_gb": 2.945331573486328
+  },
+  "termination_cause": "host headroom guard; not a recorded source failure",
+  "actual_dataset_run_id": "6beba5d4-e530-45fd-ae04-f872d9c8a896",
+  "activation_before": [
+    [
+      "companyfacts_load",
+      "activation-companyfacts-archive12",
+      "running",
+      "2026-09-23 00:10:49.060766",
+      null,
+      null
+    ]
+  ],
+  "dataset_before": [
+    [
+      "6beba5d4-e530-45fd-ae04-f872d9c8a896",
+      "sec_company_facts",
+      "running",
+      "2026-09-23 00:10:49.068401",
+      null,
+      null
+    ]
+  ],
+  "retained_totals_columns": [
+    "facts",
+    "points",
+    "prices",
+    "custom_features",
+    "schema_version"
+  ],
+  "retained_totals": [
+    47941000,
+    47941000,
+    31959271,
+    31934514,
+    "0322"
+  ],
+  "attempt_columns": [
+    "rows",
+    "ciks",
+    "first_cik",
+    "last_cik"
+  ],
+  "attempt": [
+    55234,
+    22,
+    "0001495320",
+    "0001496383"
+  ],
+  "source_outcomes_columns": [
+    "status",
+    "members",
+    "reported_rows"
+  ],
+  "source_outcomes": [
+    [
+      "empty",
+      1327,
+      0
+    ],
+    [
+      "loaded",
+      22,
+      55234
+    ],
+    [
+      "unavailable",
+      43,
+      0
+    ]
+  ],
+  "activation_after": [
+    [
+      "companyfacts_load",
+      "activation-companyfacts-archive12",
+      "failed",
+      "2026-09-23 00:29:16.889912",
+      55234
+    ]
+  ],
+  "dataset_after": [
+    [
+      "6beba5d4-e530-45fd-ae04-f872d9c8a896",
+      "sec_company_facts",
+      "failed",
+      "2026-09-23 00:29:16.889912",
+      55234
+    ]
+  ],
+  "committed": true,
+  "checkpoint": "passed"
+}
