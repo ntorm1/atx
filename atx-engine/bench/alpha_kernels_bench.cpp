@@ -11,9 +11,12 @@
 //     sweep_unary (date-outer, all instruments) and the order-stat column sweep —
 //     vs the batch per-cell kernels they replace. corr/cov are measured here
 //     because the VM's pair dispatch (vm.hpp) is not yet wired to them.
-//   * BM_StreamingStep/<lookback>: see streaming_engine_bench section below.
+//   * BM_StreamingStep/<lookback>/<mode>: one StreamingEngine::step over a
+//     5-alpha battery after warm(lookback); time_per_alpha_day.
 
+#include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,6 +30,7 @@
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/parser.hpp"
 #include "atx/engine/alpha/registry.hpp"
+#include "atx/engine/alpha/streaming_engine.hpp"
 #include "atx/engine/alpha/ts_ops.hpp"
 #include "atx/engine/alpha/ts_order_stat.hpp"
 #include "atx/engine/alpha/ts_sliding.hpp"
@@ -37,6 +41,7 @@ namespace atx_bench_l1_kernels {
 
 using atx::engine::alpha::analyze;
 using atx::engine::alpha::compile;
+using atx::engine::alpha::CrossSection;
 using atx::engine::alpha::Engine;
 using atx::engine::alpha::EvalMode;
 using atx::engine::alpha::Library;
@@ -44,6 +49,7 @@ using atx::engine::alpha::OpCode;
 using atx::engine::alpha::Panel;
 using atx::engine::alpha::parse_expr;
 using atx::engine::alpha::Program;
+using atx::engine::alpha::StreamingEngine;
 namespace det = atx::engine::alpha::detail;
 namespace sliding = atx::engine::alpha::sliding;
 namespace ordstat = atx::engine::alpha::ordstat;
@@ -258,9 +264,7 @@ void BM_KernelCsRankStableSort(benchmark::State &state) {
   }
   set_ns_per_cell(state);
 }
-BENCHMARK(BM_KernelCsRankStableSort)->Unit(benchmark::kMillisecond);
-
-constexpr auto kCorr =static_cast<std::int64_t>(OpCode::TsCorr);
+constexpr auto kCorr = static_cast<std::int64_t>(OpCode::TsCorr);
 constexpr auto kCov = static_cast<std::int64_t>(OpCode::TsCov);
 constexpr auto kDecay = static_cast<std::int64_t>(OpCode::TsDecayLinear);
 constexpr auto kSlope = static_cast<std::int64_t>(OpCode::TsSlope);
@@ -281,6 +285,7 @@ BENCHMARK(BM_KernelOrderStatBatch)
     ->ArgsProduct({{kRank, kMed}, {10, 20, 60, 250}})
     ->Unit(benchmark::kMillisecond);
 BENCHMARK(BM_KernelCsRank)->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_KernelCsRankStableSort)->Unit(benchmark::kMillisecond);
 
 // ---- engine-level ----------------------------------------------------------
 
@@ -306,5 +311,73 @@ BENCHMARK(BM_KernelCsRank)->Unit(benchmark::kMillisecond);
   }
   return true;
 }();
+
+// ---- streaming -------------------------------------------------------------
+
+// A WQ101-flavoured battery over close/volume covering every streaming routing
+// class (lookback, running sum, deque extreme, order stat, generic pair window,
+// cross-sectional rank).
+constexpr std::string_view kStreamBattery =
+    "a1 = -1 * correlation(rank(close), rank(volume), 10)\n"
+    "a2 = -1 * ts_rank(rank(close), 9)\n"
+    "a3 = rank(close - ts_sum(close, 10) / 10)\n"
+    "a4 = (0 < ts_min(delta(close, 1), 5)) ? delta(close, 1) : -1 * delta(close, 1)\n"
+    "a5 = decay_linear(rank(volume), 20) * stddev(close, 20)\n";
+
+[[nodiscard]] Program compile_program(std::string_view src) {
+  auto ast = atx::engine::alpha::parse_program(src, shared_lib());
+  if (!ast) {
+    return Program{};
+  }
+  auto ana = analyze(ast.value());
+  if (!ana) {
+    return Program{};
+  }
+  return compile(ast.value(), ana.value()).value_or(Program{});
+}
+
+// BM_StreamingStep/<lookback>/<mode>: warm over `lookback` dates, then time one
+// step() per iteration (dates cycle through the remaining panel rows; the state
+// keeps advancing, so every step is a genuine live-day update). Reports
+// time_per_alpha_day. Acceptance: lookback 250 vs 60 within 10%.
+void BM_StreamingStep(benchmark::State &state) {
+  const auto lookback = static_cast<atx::usize>(state.range(0));
+  const auto mode = state.range(1) == 0 ? EvalMode::AuditExact : EvalMode::ResearchFast;
+  const Program prog = compile_program(kStreamBattery);
+  if (prog.roots.empty()) {
+    state.SkipWithError("compile failed");
+    return;
+  }
+  const Cols &c = shared_cols();
+  std::vector<std::vector<atx::f64>> cols;
+  for (const std::string &f : prog.fields) {
+    const std::vector<atx::f64> &src = f == "close" ? c.close : c.volume;
+    cols.emplace_back(src.begin(), src.begin() + static_cast<std::ptrdiff_t>(lookback * kInst));
+  }
+  auto panel = Panel::create(lookback, kInst, prog.fields, std::move(cols), {});
+  auto se = StreamingEngine::create(prog, static_cast<atx::u32>(kInst), mode);
+  if (!panel || !se || !se->warm(panel.value())) {
+    state.SkipWithError("streaming setup failed");
+    return;
+  }
+  CrossSection cs;
+  cs.fields.resize(prog.fields.size());
+  atx::usize t = lookback;
+  for (auto _ : state) {
+    for (atx::usize i = 0; i < prog.fields.size(); ++i) {
+      const std::vector<atx::f64> &src = prog.fields[i] == "close" ? c.close : c.volume;
+      cs.fields[i] = std::span<const atx::f64>{src.data() + t * kInst, kInst};
+    }
+    auto r = se->step(cs);
+    benchmark::DoNotOptimize(r);
+    t = t + 1 < kDates ? t + 1 : lookback;
+  }
+  state.counters["time_per_alpha_day"] = benchmark::Counter(
+      static_cast<double>(prog.roots.size()),
+      benchmark::Counter::kIsIterationInvariantRate | benchmark::Counter::kInvert);
+}
+BENCHMARK(BM_StreamingStep)
+    ->ArgsProduct({{60, 250}, {0, 1}})
+    ->Unit(benchmark::kMicrosecond);
 
 } // namespace atx_bench_l1_kernels
