@@ -1,5 +1,43 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Selected-input lineage committed; panel tests active - 2026-09-23
+
+DL1 committed1fa721c7, registryreleasedtoFQ1. Exactselectedoperandspublisher,
+boundedresolver and0323migration are included. OnefreshreviewImportant
+source/fiscal-span comparison gap is fixed andacceptedonimplementerreport;
+final11focusedchecks passed, peak0.683GiB, scopedRuffpassedpeak0.066GiB.
+Wider existingnumeric/module/schema checks remainpendinghostcapacity, notpassed.
+
+FQ1 ownsonly0324registry andsoleguardedtinytestslot. Firstisolatedbuildbatch
+11passed/1testNameError at0.655GiB; misplacedassertionsfixed, nextcheckpending
+including sourcecalendar validator. FQ2 staticimplementationcontinues with
+0325unregistered; no sharedFQ1edits. Rootowns public_api_snapshot.json additions
+for pipeline_status,derived_lineage,fundamental_signal_research/evaluation;
+these are stagedworkingedits only andmustnotcommituntilallnamedbodiescommitted.
+No livewarehousejob andno newproductionmeasurements. Archive17stillnextsource
+attempt aftercapacity andnewmigrationsgoverned; predecessor513cfbbc-096a-4186-9666-b6cc5170c4ad.
+
+## DL1 review fix; FQ2 implementation dispatched - 2026-09-23
+
+No warehouse writer is live. Rootregression1/session97298 exited1 under host
+guard atcommitfree2.785GiB; PID15868 absent. Fullschema fixture preparation
+was interrupted before pytest output. Existing DSL/annual/PIT, module boundary
+and schema-contract checks in that batch have NOT passed; do not infer success.
+
+DL1 isolated8checks passed0.682GiB. Freshreview: noCritical, oneImportant
+metricref source/fiscalspan comparison omitted. Implementer fixed it and its
+targeted tamper fixture passed; weighted-share fixture was corrected to select
+the intended annual branch. Subsequent tinytestpreflight refused beforechild;
+scopedRuff issues/ownedfile EOL cleanup are being finalized. DL1 owns0323 lock
+until pathspeccommit, then FQ1 registers0324. Final tinyproof pending.
+
+FQ1 has isolated end-to-end panel fixtures and is adding a shared versioned
+read-only digest validator for FQ2. FQ2 freshagentfundamental_signal_evaluation
+owns new evaluator/script/tests/docs and minimalcanonical label basis fields,
+reserved0325 only AFTER FQ1commit. Controllingbrief
+fundamental-signal-evaluation-brief.md is committedfa75f503. FQ2 is staticonly.
+All test/runtime slots remain serialized; root explicitly grants each launch.
+
 ## Platform implementation and serialized runtime - 2026-09-23
 
 OPS1 is committed b814f4c1: bounded read-only pipeline-status with distinct

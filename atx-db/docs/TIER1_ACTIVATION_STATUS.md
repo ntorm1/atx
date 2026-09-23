@@ -13,9 +13,14 @@ confirming the counts below and zero new attempt rows. Next source predecessor:
 `513cfbbc-096a-4186-9666-b6cc5170c4ad`. A smaller recovery-only budget completed
 at0.829GiB process peak; source loading keeps its existing1GB DuckDB/2GiB cap.
 
-While backfill awaits host capacity, platform development continues on bounded
-pipeline-status reporting and daily PIT fundamental signal research tables.
-These are implementation tasks, not new live coverage or alpha measurements.
+While backfill awaits host capacity, bounded read-only pipeline status is
+committed (`b814f4c1`, eight focused checks passed). Platform work continues on
+daily PIT fundamental signal tables and forward-return decile evaluation.
+Selected-input lineage is committed (`1fa721c7`, 11 focused checks passed at
+0.683 GiB peak); its migration0323 has not been applied to the live warehouse.
+These are implementation tasks,
+not new live coverage or alpha measurements. New inner-loop checks use tiny
+isolated schemas; wider schema checks remain pending after a host guard stop.
 
 
 The later archive15 process disappeared before point verification finished.
