@@ -1,5 +1,37 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Archive11 recovery complete — 2026-09-23 00:09 UTC
+
+Root recovery COMMITted both archive11 ledgers failed at00:08:15UTC and
+CHECKPOINT passed. Evidence companyfacts-archive11-headroom-recovery.json;
+guard archive11-headroom-recovery1-memory.json exited0, peak0.901GiB.
+Actual next predecessor is694f056e-a268-4927-8500-990b62c9a9be. Attempt rows,
+loaded CIKs and new member receipts are all0; retained facts=points47,906,807,
+prices31,959,271, custom features31,934,514 and live schema0322.
+DO NOT repeat the recovery mutation. No warehouse writer remains. Root is
+sampling host headroom/active compiler count before a fresh archive12 attempt;
+keep the unchanged2GiB/1GB/1thread guard and use fresh output filenames.
+
+## Archive11 stopped; retained state verified — 2026-09-23 00:08 UTC
+
+Session12556 is terminal exit1. The guard stopped archive11 at00:05:42UTC
+when physical headroom fell to1.393GiB (commit3.514GiB), during point
+fingerprint verification. Process absence was confirmed00:07:01UTC before a
+guarded read-only terminal inspection. No other workload was stopped.
+
+Inspection00:07:11UTC proves facts=points47,906,807 unchanged, prices31,959,271,
+custom features31,934,514 and **live schema0322**. The three production
+migrations therefore persisted. No archive11 facts or member receipts were
+committed. Actual dataset UUID is **694f056e-a268-4927-8500-990b62c9a9be**.
+Both ledgers are still stale-running and need operator recovery before any
+new source attempt. Root prepared close_companyfacts_archive11_headroom_stop.py
+from the prior proven scoped recovery, with fresh output and archive11 labels.
+DO NOT treat this paragraph as proof recovery ran; inspect its output first.
+Terminal inspection SQL/output SHA is42c6fada4a3cf1d1ab339aaf68c1f93270529d3e54fb468b09eae761883900d2,
+guard peak0.322GiB. Numerous separate clang-cl processes are currently active;
+wait for stable headroom before the next long source attempt. The2GiB/1GB/
+1thread safeguards remain unchanged.
+
 ## Archive11 resumed — 2026-09-23 00:00 UTC
 
 Required import/module/schema checks passed:57 passed,1 expected slow skip in

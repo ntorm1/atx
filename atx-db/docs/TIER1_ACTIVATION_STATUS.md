@@ -1,16 +1,20 @@
 # Tier-1 activation measurements
 
 The production snapshot remains 2026-09-20. This page records interim
-measurements, most recently observed on 2026-09-22; it is not a completed
+measurements, most recently observed on 2026-09-23; it is not a completed
 parity gate or a release. Completed counts come from SQL or pinned source
 artifacts. Dated loader progress below is historical evidence.
 
-## Latest durable warehouse measurement: 2026-09-22
+## Latest durable warehouse measurement: 2026-09-23
 
 Archive10 stopped under the memory guard at22:48:44 UTC. Recovery committed
 its two failed run records at22:52:07 UTC; independent verification completed
 the checkpoint at23:00:57 UTC. The retained raw facts and points increased by
-900,566 compared with the preceding checkpoint.
+900,566 compared with the preceding checkpoint. Archive11 then stopped on host
+headroom during resume verification at00:05:42 UTC on September23, before any
+new source rows. Read-only inspection and a successful recovery checkpoint
+confirmed the counts below and the newly applied schema0322. Both archive11
+run ledgers were closed as failed at00:08:15 UTC.
 
 | Measurement | Observed result |
 | --- | ---: |
@@ -18,12 +22,14 @@ the checkpoint at23:00:57 UTC. The retained raw facts and points increased by
 | Retained fundamental points | 47,906,807 |
 | Daily price rows | 31,959,271 |
 | Custom-feature rows | 31,934,514 |
-| Applied production migration | 0319 |
+| Applied production migration | 0322 |
 | Archive10 attempt rows / loaded CIKs | 1,753,504 / 621 |
+| Archive11 attempt rows / loaded CIKs | 0 / 0 |
 
 Attempt rows include replacements and are not the net increase. Archive10's
-actual dataset run is `ade90629-8e06-4186-9ea7-565cbd05e285`; verified resume
-must use that receipt. The checkpoint verification peaked at1.539GiB under
+actual dataset run was `ade90629-8e06-4186-9ea7-565cbd05e285`. The next verified
+resume must use archive11's actual dataset receipt,
+`694f056e-a268-4927-8500-990b62c9a9be`. Archive10 checkpoint verification peaked at1.539GiB under
 the current2GiB process guard. Production DuckDB remains limited to1GB and
 one thread, with one heavy runtime at a time. The guard stopped only its own
 work when host headroom fell; other workloads were left untouched.
@@ -37,9 +43,8 @@ extraction also pass. The core bridge and public standardized record contract
 upgrade/replay check passed. Issuer catalog migration0322 is committed in
 42883bff; its upgrade check passed. The required package import, boundary and
 schema checks now pass (57 passed, one expected slow skip, peak0.954GiB).
-The two integration repairs are committed in938ff7f1. CompanyFacts archive11
-has resumed from the verified archive10 receipt under the unchanged limits.
-Its running progress is not a replacement for the durable counts above.
+The two integration repairs are committed in938ff7f1. Archive11's interruption
+and recovery are recorded above; its source resume remains incomplete.
 These tests do not establish live metric coverage.
 The full statement/ratio/growth/daily-market rebuild,
 coverage and quality measurements, signal evaluation, and release remain

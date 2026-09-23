@@ -1,0 +1,19 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\run_acceptance_query.py",
+    "--sql",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\companyfacts-archive11-terminal-inspection.sql",
+    "--output",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\companyfacts-archive11-terminal-inspection.json"
+  ],
+  "job_limit_gb": 2.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 3.9581871032714844,
+    "commit_free_gb": 6.9089202880859375
+  },
+  "child_pid": 14604,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.3216667175292969
+}

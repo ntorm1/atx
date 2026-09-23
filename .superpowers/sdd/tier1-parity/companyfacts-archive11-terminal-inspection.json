@@ -1,0 +1,25 @@
+{
+  "observed_at_utc": "2026-09-23T00:07:11.113444+00:00",
+  "read_only": true,
+  "sql_file": "C:\\atx\\.superpowers\\sdd\\tier1-parity\\companyfacts-archive11-terminal-inspection.sql",
+  "sql_sha256": "42c6fada4a3cf1d1ab339aaf68c1f93270529d3e54fb468b09eae761883900d2",
+  "duckdb_version": "1.5.5",
+  "columns": [
+    "kind",
+    "evidence"
+  ],
+  "rows": [
+    [
+      "activation",
+      "{\"stage\":\"companyfacts_load\",\"run_id\":\"activation-companyfacts-archive11\",\"status\":\"running\",\"started_at\":\"2026-09-22 23:58:58.687585\",\"finished_at\":null,\"rows\":null}"
+    ],
+    [
+      "dataset",
+      "{\"run_id\":\"694f056e-a268-4927-8500-990b62c9a9be\",\"dataset_id\":\"sec_company_facts\",\"status\":\"running\",\"started_at\":\"2026-09-22 23:58:58.696801\",\"finished_at\":null,\"rows_loaded\":null}"
+    ],
+    [
+      "retained_totals",
+      "{\"facts\":47906807,\"points\":47906807,\"prices\":31959271,\"custom_features\":31934514,\"schema_version\":\"0322\"}"
+    ]
+  ]
+}

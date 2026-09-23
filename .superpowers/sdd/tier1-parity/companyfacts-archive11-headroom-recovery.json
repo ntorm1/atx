@@ -1,0 +1,94 @@
+{
+  "observed_at_utc": "2026-09-23T00:08:15.063794+00:00",
+  "process_check": {
+    "observed_at_utc": "2026-09-23T00:07:01.6136153Z",
+    "run_id": "activation-companyfacts-archive11",
+    "original_pids": [
+      4108,
+      3904
+    ],
+    "original_pid_count": 0,
+    "matching_process_count": 0,
+    "session_exit_code": 1,
+    "guard_receipt_last_write_utc": "2026-09-23T00:05:42.0973209Z"
+  },
+  "guard_status": "stopped_low_headroom",
+  "guard_stop_headroom": {
+    "physical_free_gb": 1.3929405212402344,
+    "commit_free_gb": 3.514087677001953
+  },
+  "termination_cause": "host headroom guard; not a recorded source failure",
+  "actual_dataset_run_id": "694f056e-a268-4927-8500-990b62c9a9be",
+  "activation_before": [
+    [
+      "companyfacts_load",
+      "activation-companyfacts-archive11",
+      "running",
+      "2026-09-22 23:58:58.687585",
+      null,
+      null
+    ]
+  ],
+  "dataset_before": [
+    [
+      "694f056e-a268-4927-8500-990b62c9a9be",
+      "sec_company_facts",
+      "running",
+      "2026-09-22 23:58:58.696801",
+      null,
+      null
+    ]
+  ],
+  "retained_totals_columns": [
+    "facts",
+    "points",
+    "prices",
+    "custom_features",
+    "schema_version"
+  ],
+  "retained_totals": [
+    47906807,
+    47906807,
+    31959271,
+    31934514,
+    "0322"
+  ],
+  "attempt_columns": [
+    "rows",
+    "ciks",
+    "first_cik",
+    "last_cik"
+  ],
+  "attempt": [
+    0,
+    0,
+    null,
+    null
+  ],
+  "source_outcomes_columns": [
+    "status",
+    "members",
+    "reported_rows"
+  ],
+  "source_outcomes": [],
+  "activation_after": [
+    [
+      "companyfacts_load",
+      "activation-companyfacts-archive11",
+      "failed",
+      "2026-09-23 00:08:15.063794",
+      0
+    ]
+  ],
+  "dataset_after": [
+    [
+      "694f056e-a268-4927-8500-990b62c9a9be",
+      "sec_company_facts",
+      "failed",
+      "2026-09-23 00:08:15.063794",
+      0
+    ]
+  ],
+  "committed": true,
+  "checkpoint": "passed"
+}

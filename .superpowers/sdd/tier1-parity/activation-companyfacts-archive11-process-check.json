@@ -1,0 +1,12 @@
+{
+    "observed_at_utc":  "2026-09-23T00:07:01.6136153Z",
+    "run_id":  "activation-companyfacts-archive11",
+    "original_pids":  [
+                          4108,
+                          3904
+                      ],
+    "original_pid_count":  0,
+    "matching_process_count":  0,
+    "session_exit_code":  1,
+    "guard_receipt_last_write_utc":  "2026-09-23T00:05:42.0973209Z"
+}

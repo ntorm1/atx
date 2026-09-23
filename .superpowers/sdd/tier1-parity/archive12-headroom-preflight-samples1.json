@@ -1,0 +1,14 @@
+[
+    {
+        "observed_at_utc":  "2026-09-23T00:08:42.8740323Z",
+        "physical_free_gib":  8.358,
+        "virtual_free_gib":  11.048,
+        "clang_cl_count":  0
+    },
+    {
+        "observed_at_utc":  "2026-09-23T00:09:12.9722199Z",
+        "physical_free_gib":  8.489,
+        "virtual_free_gib":  11.066,
+        "clang_cl_count":  0
+    }
+]
