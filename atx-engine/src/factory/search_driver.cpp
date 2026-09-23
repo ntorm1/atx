@@ -363,6 +363,9 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
         if (idx >= scored.size()) {
           continue; // defensive (population shrank) — never expected
         }
+        if (scored[idx].origin == ScoreOrigin::FidelityRejected) {
+          continue; // L3: never fully scored (sentinel raw) -> no realized gain to credit
+        }
         gain_sum[o] += scored[idx].fitness - prev_parent_best;
         ++gain_cnt[o];
       }
@@ -720,14 +723,24 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
 
   // L3 multi-fidelity race (opt-in). The distinct fresh candidates are raced on
   // strided sub-panels; the rejected ones leave `fresh` (no full eval, no digest
-  // fold) and keep a default score in score_slot, but stay in `to_score` so the
+  // fold) and get the worst-case sentinel score (rejected_score(): raw -inf,
+  // ScoreOrigin::FidelityRejected) in score_slot, but stay in `to_score` so the
   // Phase 4 merge still inserts them into canon (a rejected candidate IS a trial)
-  // and all_scored. Off (the default) -> `rejected` is empty -> no-op.
+  // and all_scored. The sentinel ranks them last in ScalarRaw, keeps them off the
+  // NSGA-II fronts of evaluated candidates and out of admitted_candidates (a
+  // default all-zero score would outrank negative-raw candidates and sit on
+  // front 0 whenever a negative objective such as parsimony is live).
+  // Off (the default) -> `rejected` is empty -> no-op.
   if (cfg.fidelity.enabled) {
     const std::vector<atx::u64> rejected =
-        fidelity_reject(to_score, cfg, gen_fit, pool, det_pool, res);
+        fidelity_reject(to_score, cfg, gen_fit, det_pool, res);
     if (!rejected.empty()) {
       const std::unordered_set<atx::u64> rej(rejected.begin(), rejected.end());
+      for (atx::usize j = 0; j < n_to_score; ++j) {
+        if (rej.find(to_score[j]->canon_hash) != rej.end()) {
+          score_slot[j] = rejected_score();
+        }
+      }
       std::vector<const Genome *> kept;
       kept.reserve(fresh.size());
       std::vector<atx::f64> kept_cost;
@@ -750,7 +763,10 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   // filled inside the parallel region (single writer per j). `fp_index_` is only
   // READ inside the region (it holds prior generations' fingerprints) and is
   // updated serially after the barrier -> worker-count invariant.
-  const bool fp_on = cfg.output_dedup;
+  // Gated on the Rank transform: the fingerprint is rank-quantized (monotone-
+  // invariant), so under ZScore/Raw weights x and f(x) trade different books and
+  // must not share a score.
+  const bool fp_on = cfg.output_dedup && policy_.transform == Transform::Rank;
   std::vector<atx::u64> fp_slot(fp_on ? n_to_score : 0U, atx::u64{0});
   std::vector<std::uint8_t> fp_valid(fp_on ? n_to_score : 0U, std::uint8_t{0});
   std::vector<atx::u64> fp_owner(fp_on ? n_to_score : 0U, atx::u64{0});
@@ -871,6 +887,15 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
         const auto it = fitness_cache.find(fp_owner[j]);
         if (it != fitness_cache.end()) {
           score_slot[j] = it->second;
+          score_slot[j].origin = ScoreOrigin::FingerprintBorrowed; // approximate
+          // Structural objective is per-genome: recompute parsimony from THIS
+          // genome's node count instead of inheriting the owner's.
+          if (cfg.enable_parsimony) {
+            score_slot[j].objectives[kObjParsimony] =
+                -static_cast<atx::f64>(to_score[j]->ast.nodes().size());
+            score_slot[j].n_objectives = static_cast<atx::u8>(
+                std::max<atx::usize>(score_slot[j].n_objectives, kObjParsimony + 1U));
+          }
         }
         ++res.fingerprint_hits;
       } else if (fp_valid[j] != std::uint8_t{0}) {
@@ -900,6 +925,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     s.objectives = cs.objectives;
     s.n_objectives = cs.n_objectives;
     s.descriptor = std::move(cs.descriptor); // S4.2: phenotype for the novelty pass
+    s.origin = cs.origin;                    // L3: Full / FingerprintBorrowed / FidelityRejected
     s.genome.canon_hash = g.canon_hash;
     out.push_back(std::move(s));
   }
@@ -1415,38 +1441,71 @@ void SearchDriver::assign_pareto_ranks(std::vector<Scored> &scored,
     return;
   }
 
-  // Flat row-major [n * k] objective buffer, sized once (cold per-generation path).
-  std::vector<atx::f64> flat(n * k);
+  // L3: fidelity-rejected rows (sentinel score, never fully evaluated) are kept
+  // OUT of the non-dominated sort — an all-zero / sentinel objective row would
+  // otherwise be mutually non-dominated with real candidates (e.g. a negative
+  // parsimony column). The sort runs over the "live" rows only, compacted in
+  // index order (so with no rejected rows local id == global id and the result
+  // is byte-identical to the pre-L3 path); rejected rows take the trailing front
+  // max_front + 1 with crowding 0. If EVERY row is rejected they form front 0.
+  std::vector<atx::usize> live;
+  live.reserve(n);
+  std::vector<atx::usize> local_of(n, n);
   for (atx::usize i = 0; i < n; ++i) {
-    for (atx::usize o = 0; o < k; ++o) {
-      flat[i * k + o] = scored[i].objectives[o];
+    if (scored[i].origin != ScoreOrigin::FidelityRejected) {
+      local_of[i] = live.size();
+      live.push_back(i);
     }
   }
-  const ObjMatrix obj{flat, n, k};
-  const std::vector<atx::u16> front_of = fast_nondominated_sort(obj, canon_order);
-  for (atx::usize i = 0; i < n; ++i) {
-    scored[i].rank = front_of[i];
-    scored[i].crowding = 0.0;
+  const atx::usize m = live.size();
+  if (m == 0) {
+    for (Scored &s : scored) {
+      s.rank = 0;
+      s.crowding = 0.0;
+    }
+    return;
   }
-  // Per-front crowding distance. Group ids by front (in canon_order so each
-  // front's member list is canonical-id stable), then score each group.
+  std::vector<atx::usize> local_canon;
+  local_canon.reserve(m);
+  for (const atx::usize i : canon_order) {
+    if (local_of[i] != n) {
+      local_canon.push_back(local_of[i]);
+    }
+  }
+
+  // Flat row-major [m * k] objective buffer, sized once (cold per-generation path).
+  std::vector<atx::f64> flat(m * k);
+  for (atx::usize l = 0; l < m; ++l) {
+    for (atx::usize o = 0; o < k; ++o) {
+      flat[l * k + o] = scored[live[l]].objectives[o];
+    }
+  }
+  const ObjMatrix obj{flat, m, k};
+  const std::vector<atx::u16> front_of = fast_nondominated_sort(obj, local_canon);
   atx::u16 max_front = 0;
   for (const atx::u16 f : front_of) {
     max_front = std::max(max_front, f);
   }
+  for (atx::usize i = 0; i < n; ++i) {
+    scored[i].rank = (local_of[i] != n) ? front_of[local_of[i]]
+                                        : static_cast<atx::u16>(max_front + 1U);
+    scored[i].crowding = 0.0;
+  }
+  // Per-front crowding distance. Group ids by front (in canon_order so each
+  // front's member list is canonical-id stable), then score each group.
   for (atx::u16 f = 0; f <= max_front; ++f) {
     std::vector<atx::usize> members;
-    for (const atx::usize i : canon_order) {
-      if (front_of[i] == f) {
-        members.push_back(i);
+    for (const atx::usize l : local_canon) {
+      if (front_of[l] == f) {
+        members.push_back(l);
       }
     }
     if (members.empty()) {
       continue;
     }
-    const std::vector<atx::f64> cd = crowding_distance(obj, members, canon_order);
-    for (const atx::usize i : members) {
-      scored[i].crowding = cd[i];
+    const std::vector<atx::f64> cd = crowding_distance(obj, members, local_canon);
+    for (const atx::usize l : members) {
+      scored[live[l]].crowding = cd[l];
     }
   }
 }
@@ -1561,6 +1620,11 @@ void SearchDriver::finalize(const std::vector<Scored> &scored, const CanonSet &c
   std::vector<atx::usize> order = pareto_ordered_indices(scored);
   for (const atx::usize i : order) {
     const Genome &g = scored[i].genome;
+    // L3: only a genome with a real full-fidelity score is emitted; a fidelity-
+    // rejected (sentinel) or fingerprint-borrowed (approximate) score is not.
+    if (scored[i].origin != ScoreOrigin::Full) {
+      continue;
+    }
     // Task 3.3: a tradeable alpha root must be F64. Reject bare Group (e.g.
     // a naked `sector` root) or Mask roots — they are not numeric signals.
     // Grammar partition (3.1) + dtype guard (3.2) prevent these from arising
@@ -1628,8 +1692,7 @@ SearchDriver::deserialize_population(const std::vector<std::string> &exprs) cons
 [[nodiscard]] std::vector<atx::u64>
 SearchDriver::fidelity_reject(const std::vector<const Genome *> &to_score,
                               const SearchConfig &cfg, const FitnessCfg &gen_fit,
-                              const combine::AlphaStore &pool, parallel::DetPool &det_pool,
-                              SearchResult &res) {
+                              parallel::DetPool &det_pool, SearchResult &res) {
   const FidelityCfg &fc = cfg.fidelity;
   const atx::usize n_low = first_full_rung(fc);
   if (n_low == 0 || to_score.size() < std::max<atx::usize>(fc.min_batch, 2U)) {
@@ -1674,6 +1737,13 @@ SearchDriver::fidelity_reject(const std::vector<const Genome *> &to_score,
     }
   }
   CpcvCache rung_cpcv{}; // thread-safe; shared by every rung evaluation below
+  // Low rungs score the POOL-INDEPENDENT fitness: the run's pool stores full-panel
+  // PnL streams, while a rung candidate's oos_pnl covers only the date-strided
+  // sub-panel, so corr_to_pool against the real pool would compare unequal-length
+  // (misaligned) streams (ATX_ASSERT abort in Debug). An empty pool -> redundancy 0
+  // -> diversify 1: the rung ranks on wq * robust alone; the full-fidelity pass
+  // still applies the real pool's diversification to every survivor.
+  const combine::AlphaStore no_pool{};
 
   std::vector<Genome> cands;
   cands.reserve(to_score.size());
@@ -1682,7 +1752,7 @@ SearchDriver::fidelity_reject(const std::vector<const Genome *> &to_score,
     cands.back().canon_hash = g->canon_hash;
   }
   // SAFETY (reentrancy): each call reads only const shared state (rp panels,
-  // pool, policy_, sim_, gen_fit copy); worker `wid` touches only
+  // no_pool, policy_, sim_, gen_fit copy); worker `wid` touches only
   // rung_engines[r][wid] (disjoint single owner); rung_cpcv serializes its own
   // cold inserts behind its mutex.
   const RungEvaluator eval = [&](const Genome &g, atx::usize r, const Rung &rung,
@@ -1694,7 +1764,7 @@ SearchDriver::fidelity_reject(const std::vector<const Genome *> &to_score,
       f.cpcv.n_groups = rung.n_folds;
       f.cpcv.n_test_groups = std::min<atx::usize>(f.cpcv.n_test_groups, rung.n_folds - 1U);
     }
-    auto rep = pool_aware_fitness(g, pool, *rp[r], policy_, sim_, f, /*weak_panel=*/nullptr,
+    auto rep = pool_aware_fitness(g, no_pool, *rp[r], policy_, sim_, f, /*weak_panel=*/nullptr,
                                   rung_engines[r][wid].get(), /*signals=*/nullptr, &rung_cpcv);
     if (!rep.has_value() || !std::isfinite(rep->raw)) {
       return std::numeric_limits<atx::f64>::quiet_NaN();

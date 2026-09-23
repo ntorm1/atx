@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <set>
 #include <vector>
 
@@ -127,6 +128,36 @@ TEST(FactorySketchIndex, DegenerateSeriesAreSafe) {
     EXPECT_EQ(n.corr, 0.0);
   }
   EXPECT_TRUE(SketchIndex{16}.topk(flat, 3).empty());
+}
+
+TEST(FactorySketchIndex, InfiniteDaysAreTreatedAsMissing) {
+  // A +-inf day must not turn the z-vector into NaN (NaN scores would break the
+  // strict weak ordering of the nth_element / partial_sort comparators). It is
+  // treated like a missing (NaN) day: the finite days still correlate.
+  constexpr usize kLen = 32;
+  std::vector<f64> a(kLen);
+  for (usize t = 0; t < kLen; ++t) {
+    a[t] = std::sin(0.5 * static_cast<f64>(t));
+  }
+  std::vector<f64> poisoned = a;
+  poisoned[3] = std::numeric_limits<f64>::infinity();
+  poisoned[7] = -std::numeric_limits<f64>::infinity();
+  SketchIndex idx{kLen, 2};
+  idx.add(1, poisoned);
+  idx.add(2, a);
+  const std::vector<f64> all_inf(kLen, std::numeric_limits<f64>::infinity());
+  idx.add(3, all_inf);
+  for (const auto &nn : {idx.topk(a, 3), idx.topk(poisoned, 3), idx.topk_exact(all_inf, 3)}) {
+    ASSERT_EQ(nn.size(), 3U);
+    for (const Neighbor &n : nn) {
+      EXPECT_TRUE(std::isfinite(n.corr)) << "id " << n.id;
+    }
+  }
+  const auto nn = idx.topk(a, 3);
+  EXPECT_EQ(nn[0].id, 2U);
+  EXPECT_GT(std::abs(nn[1].corr), 0.9); // the poisoned copy still matches on finite days
+  EXPECT_EQ(nn[2].id, 3U);
+  EXPECT_EQ(nn[2].corr, 0.0);
 }
 
 TEST(FactorySketchIndex, FarthestPointArchiveMinDistanceNeverDecreases) {
