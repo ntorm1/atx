@@ -1,5 +1,22 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Archive14 running after ledger repair - 2026-09-23 01:20 UTC
+
+Dataset.run fatal-connection failure-ledger repair is committed15235456.
+Focused regression passed (1test,3.05s,0.591GiB peak), one fresh Codex review
+clean; scopedRuffpasses excluding three verified pre-existingUP017 aliases.
+No fullsuite. Archive13 recovery/evidence and1GB ruling committed57ba8786.
+
+Sole writer is session8538,guard child20960,runactivation-companyfacts-archive14.
+Fullarchive_members/replacements/force resumes actual recoveredarchive13 UUID
+22d51d47-2992-4043-95ef-54763a9dd45d at1GB/1thread,2GiBguard,backup-keep100,
+snapshot2026-09-20 and dummySECcontact. Preflightfreephysical5.354/commit7.491GiB.
+Fresh filesactivation-companyfacts-archive14-{memory.json,log,err}.
+Re-poll live session; do not restart or open another runtime while it runs.
+Terminal SQL preparedcompanyfacts-archive14-terminal-inspection.sql.
+Next fullsubmissions->CVXsourceacceptance->fulluniverse run5 sequence unchanged.
+
+
 ## Archive13 terminal COMMIT OOM; recovered - 2026-09-23 01:17 UTC
 
 Session67962 is terminal exit1 and original workers are absent. The512MB

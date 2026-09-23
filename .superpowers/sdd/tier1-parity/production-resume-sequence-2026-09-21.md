@@ -17,9 +17,9 @@ activation record is unchanged. Do not repeat recovery.
 The next continuation returns to the previously working `1GB` DuckDB limit,
 one thread and the unchanged2GiB Windows job cap. Full `archive_members`,
 replacement, force, snapshot, backup-keep100 and all resume proofs remain.
-The failure-ledger code repair must pass focused testing/review before launch.
+The failure-ledger code repair passed its focused test/review and is committed15235456.
 Use fresh archive14 receipt/stdout/stderr filenames and the actual UUID above.
-Treat schema0322 as live. No current writer exists at this recorded checkpoint.
+Treat schema0322 as live. Archive14 is now the sole writer, session8538/guard child20960, launched01:20UTC. Re-poll it; do not restart.
 
 The guard preflight requires at least4GiB both physical and commit headroom;
 runtime stops below1.5GiB physical or3GiB commit. Never restart a live session
