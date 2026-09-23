@@ -1,5 +1,19 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Archive12 verification passed; member loop active — 2026-09-23 00:19 UTC
+
+This goal continuation is a verified wait with new source evidence. Root
+re-polled session45906 (live) and native Python11568; no restart. At00:16:44UTC
+the loader verified9440 prior targets covering39,402,481 rows, then entered
+the20390-member archive loop. At00:19:13UTC:3775 processed,3117 loaded/reused,
+633 empty,25 unavailable,0failed,0new attempt rows so far. Those progress
+counters are not final coverage or a new retained row measurement.
+Native private memory fell from~1.62GiB during fingerprints to~0.97GiB in the
+member loop; host free physical remained~7.5GiB. Keep sole writer session45906
+and guard child2324; no other runtime until terminal. Terminal SQL prepared
+as companyfacts-archive12-terminal-inspection.sql. Exact next production
+commands remain in production-resume-sequence-2026-09-21.md.
+
 ## Archive12 running — 2026-09-23 00:11 UTC
 
 After four headroom samples across00:08:42–00:10:25UTC (physical8.33–8.82GiB),
