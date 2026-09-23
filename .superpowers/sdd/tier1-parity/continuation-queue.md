@@ -1,5 +1,33 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Final platform checkpoint: committed module boundary passes - 2026-09-23
+
+Source checkpoint dc3c0a28 (FQ3 code77db2e77, dictionarya89c2677) was exported
+with git archive and verified independently of the shared tree. Import atx_db
+resolved to that export; all7 module-boundary checks passed. Guard receipt
+quant-platform-head3-memory.json completed exit0 at0.617GiB peak under the
+unchanged1.5GiB test cap. Session49631 and child18912 are terminal. No test,
+warehouse writer or root memory monitor remains active.
+
+The required schema-contract and affected derived/annual/PIT/forward numeric
+checks remain pending after head2's host stop. Do not count the module-only
+pass as schema or full-suite proof. Final task-focused evidence: DL1=11,
+FQ1=12, FQ2=8, FQ3=5, dictionary=12; no live fundamental research run. Only the
+four pre-existing unrelated EOL modifications remain under atx-db. Preserve
+those, other-session untracked files and stash@{0}. All task commits use
+explicit paths and the prescribed coauthor trailer; all agents used Codex.
+
+Next parent: read this checkpoint, current production-resume-sequence and
+program rulings. When host permits, finish schema/numeric verification, then
+governed migrations0323..0325 (check free disk; backup-keep100). After sustained
+6GiB physical/8GiB commit for two minutes, resume full CompanyFacts as archive17
+from513cfbbc-096a-4186-9666-b6cc5170c4ad; then fullsubmissions04cf947d-53bb-49b7-a276-b3c74a2a52c8,
+CVX source wave, full run5 from statement_points --force without CIK filter,
+research/coverage/quality measurements, first eligible release and sprint gates.
+If capacity stays insufficient, continue useful bounded platform work rather
+than repeated source launches or weakening guards. No source/release gate is
+waived, and main merge still requires explicit user approval.
+
 ## FQ3 committed; runtime returned to root - 2026-09-23
 
 FQ3 is committed77db2e77 (readiness script, isolated tests, operator docs and

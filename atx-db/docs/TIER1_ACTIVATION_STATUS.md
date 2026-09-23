@@ -39,6 +39,9 @@ export of commita89c2677 imported atx_db successfully. The broader required
 schema and affected-regression batch was interrupted by host memory pressure
 before completion and remains pending. None of these checks changed live
 warehouse rows, migrated0323..0325, or established an alpha result.
+The subsequent clean export ofdc3c0a28 passed import and all seven module-boundary
+checks at0.617GiB guarded peak. That module-only result does not close the
+pending schema/numeric checks or the full-suite sprint gate.
 
 
 The later archive15 process disappeared before point verification finished.
