@@ -60,9 +60,7 @@ inline void expect_identity(const book::ReplayResult &result) {
 inline std::vector<book::LiquidityRow> uniform_liquidity(atx::usize cells, atx::f64 adv) {
   return std::vector<book::LiquidityRow>(cells, book::LiquidityRow{adv, 0.02, 5.0});
 }
-} // namespace atx_test_l8_e2e_replay_cost
 
-using namespace atx_test_l8_e2e_replay_cost;
 
 TEST(BookReplayCost, FlatBpsCostIsBitIdenticalToTradeBps) {
   const auto panel = drifting_panel();
@@ -232,3 +230,5 @@ TEST(BookReplayCost, RejectsAmbiguousOrMisShapedConfiguration) {
   ASSERT_FALSE(rejected.has_value());
   EXPECT_NE(rejected.error().message().find("liquidity"), std::string::npos);
 }
+
+} // namespace atx_test_l8_e2e_replay_cost

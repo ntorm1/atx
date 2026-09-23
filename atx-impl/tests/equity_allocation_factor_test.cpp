@@ -72,9 +72,7 @@ inline atx::f64 sector_net(const Fixture &f, const std::vector<atx::f64> &w, atx
     for (atx::usize i = 0; i < kNames; ++i) if (f.sector[i] == label) sum += w[i];
     return sum;
 }
-} // namespace atx_test_l8_e2e_equity_factor
 
-using namespace atx_test_l8_e2e_equity_factor;
 
 TEST(EquityAllocationFactor, UnconstrainedPreferenceCarriesBetaAndSectorBets) {
     Fixture f;
@@ -142,3 +140,5 @@ TEST(EquityAllocationFactor, DefaultConfigIsUnchangedByTheOptInFields) {
     ASSERT_TRUE(plain && via_helper);
     for (atx::usize i = 0; i < kNames; ++i) EXPECT_EQ(plain->weights[i], via_helper->weights[i]);
 }
+
+} // namespace atx_test_l8_e2e_equity_factor

@@ -40,9 +40,7 @@ inline book::BorrowSchedule schedule(atx::usize dates, atx::usize instruments) {
   s.instruments = instruments;
   return s;
 }
-} // namespace atx_test_l8_e2e_borrow_schedule
 
-using namespace atx_test_l8_e2e_borrow_schedule;
 
 TEST(BookBorrowSchedule, ShortWithoutLocateIsRejected) {
   const auto panel = flat_panel(4, 2);
@@ -99,8 +97,9 @@ TEST(BookBorrowSchedule, PerNameFeesRebateAndCashRateAreChargedOnTheDayBasis) {
   const std::vector<atx::f64> targets{-0.1, -0.2}; // 100$ and 200$ short.
   const auto result = book::replay_scheduled_targets(panel, day_axis(3), decisions, targets, cfg);
   ASSERT_TRUE(result.has_value()) << result.error().message();
-  // One day on D360: fee (100*360 + 200*3600) bps, rebate 300*36, cash 1300*72.
-  const auto expected = (100.0 * 360.0 + 200.0 * 3600.0 - 300.0 * 36.0 - 1300.0 * 72.0) *
+  // One day on D360: fee (100*360 + 200*3600) bps, rebate 300*36 on the short
+  // proceeds, cash rate only on FREE cash 1300 - 300 = 1000 (no double count).
+  const auto expected = (100.0 * 360.0 + 200.0 * 3600.0 - 300.0 * 36.0 - 1000.0 * 72.0) *
                         1.0e-4 / 360.0;
   EXPECT_NEAR(result->intervals[0].borrow_cost, expected, 1.0e-12);
   for (const auto &row : result->intervals) {
@@ -142,3 +141,21 @@ TEST(BookBorrowSchedule, ScheduleValidationAndExclusivity) {
   cfg.annual_borrow_bps = 10.0;
   EXPECT_FALSE(book::replay_scheduled_targets(panel, day_axis(3), decisions, targets, cfg));
 }
+
+TEST(BookBorrowSchedule, DollarNeutralBookEarnsThePolicyRateOnlyOnceOnNav) {
+  // Rebate == cash rate == r and no fees: short proceeds earn the rebate, free
+  // cash earns r, so the whole book earns r on NAV (1000), not on NAV + shorts.
+  const auto panel = flat_panel(3, 2);
+  auto borrow = schedule(3, 2);
+  borrow.rebate_bps = 360.0;
+  borrow.cash_bps = 360.0;
+  auto cfg = immediate();
+  cfg.borrow_schedule = &borrow;
+  const std::vector<atx::usize> decisions{0};
+  const std::vector<atx::f64> targets{0.5, -0.5};
+  const auto result = book::replay_scheduled_targets(panel, day_axis(3), decisions, targets, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_NEAR(result->intervals[0].borrow_cost, -1000.0 * 0.036 / 360.0, 1.0e-12);
+}
+
+} // namespace atx_test_l8_e2e_borrow_schedule

@@ -13,10 +13,14 @@
 //   trade_{t,i}   = (w_{t,i} - drifted_{t,i}) * aum        (t = 0: from cash)
 //   cost_t        = sum_i model.cost(i, t, trade_{t,i}, liquidity_{t,i}) / aum
 //   gross_t       = sum_i w_{t,i} r_{t,i};   net_t = gross_t - cost_t
-// A research sim never rations fills: when a capped model fills only part of a
-// trade, the unfilled remainder is charged at the fill's average rate (and at
-// the model's zero-size rate when nothing fills). Weights of NaN mean "no
-// position"; a nonzero weight on a NaN return is rejected.
+// A research sim never rations fills: every requested trade is charged in full
+// through ReplayCostModel::unrationed_cost, i.e. at the model's UNCAPPED rate
+// for the full size (for sqrt impact that is (q/f)^delta above a capped fill's
+// average rate, so large trades are not undercharged). A trade the model cannot
+// price (no usable liquidity estimate: NaN/0/negative ADV) is NEVER free: it is
+// charged unusable_liquidity_penalty_bps, or rejected (Err) when that penalty is
+// NaN. Weights of NaN mean "no position"; a nonzero weight on a NaN return is
+// rejected.
 //
 // Admission: net annualized Sharpe >= min_net_sharpe AND mean net return > 0.
 
@@ -36,6 +40,11 @@ struct ResearchCostSimConfig {
     atx::f64 aum{1.0e8};
     atx::f64 min_net_sharpe{0.5};
     atx::f64 periods_per_year{252.0};
+    // Per-dollar charge (bps) on trades in names with no usable liquidity row.
+    // Deliberately punitive (10%): an alpha concentrated in names without a
+    // liquidity estimate must not look cheaper than one trading liquid names.
+    // NaN == reject the run instead. Must otherwise be finite and >= 0.
+    atx::f64 unusable_liquidity_penalty_bps{1000.0};
 };
 
 struct ResearchCostSimResult {
@@ -62,20 +71,15 @@ namespace research_cost_detail {
     return var > 0.0 ? mean / std::sqrt(var) * std::sqrt(periods) : 0.0;
 }
 
-// Cost of one requested trade in dollars, charging any unfilled remainder at
-// the realized average rate (see the header comment).
+// Cost of one requested trade in dollars at the model's unrationed full-size
+// rate; an unpriceable trade takes the penalty rate, or NaN when rejecting.
 [[nodiscard]] inline atx::f64 unrationed_cost(const atx::engine::book::ReplayCostModel &model,
                                               atx::usize i, atx::usize t, atx::f64 trade,
-                                              const atx::engine::book::LiquidityRow &row) {
-    const auto priced = model.cost(i, t, trade, row);
-    const auto filled = std::abs(priced.filled_dollars);
-    const auto requested = std::abs(trade);
-    if (filled == requested) return priced.cost_dollars;
-    if (filled > 0.0) return priced.cost_dollars * (requested / filled);
-    // Nothing filled: charge the zero-size marginal rate of a tiny probe.
-    const auto probe = model.cost(i, t, std::copysign(1.0, trade), row);
-    return std::abs(probe.filled_dollars) > 0.0
-        ? requested * (probe.cost_dollars / std::abs(probe.filled_dollars)) : 0.0;
+                                              const atx::engine::book::LiquidityRow &row,
+                                              atx::f64 penalty_bps) {
+    const auto charged = model.unrationed_cost(i, t, trade, row);
+    if (std::isfinite(charged) && charged >= 0.0) return charged;
+    return std::abs(trade) * penalty_bps * 1.0e-4; // NaN penalty -> NaN -> Err.
 }
 
 } // namespace research_cost_detail
@@ -94,7 +98,10 @@ research_cost_sim(std::span<const atx::f64> weights, std::span<const atx::f64> r
     if (periods == 0 || names == 0 || weights.size() != cells || returns.size() != cells ||
         (model.needs_liquidity() && liquidity.size() != cells) || !std::isfinite(cfg.aum) ||
         cfg.aum <= 0.0 || !std::isfinite(cfg.periods_per_year) || cfg.periods_per_year <= 0.0 ||
-        !std::isfinite(cfg.min_net_sharpe)) {
+        !std::isfinite(cfg.min_net_sharpe) ||
+        (!std::isnan(cfg.unusable_liquidity_penalty_bps) &&
+         (!std::isfinite(cfg.unusable_liquidity_penalty_bps) ||
+          cfg.unusable_liquidity_penalty_bps < 0.0))) {
         return Err(ErrorCode::InvalidArgument, "research cost sim: invalid shape or config");
     }
     ResearchCostSimResult out;
@@ -119,8 +126,13 @@ research_cost_sim(std::span<const atx::f64> weights, std::span<const atx::f64> r
             const auto delta = w - drifted[i];
             if (delta != 0.0) {
                 const auto &row = liquidity.empty() ? empty_row : liquidity[t * names + i];
-                cost += research_cost_detail::unrationed_cost(model, i, t, delta * cfg.aum, row) /
-                        cfg.aum;
+                const auto charged = research_cost_detail::unrationed_cost(
+                    model, i, t, delta * cfg.aum, row, cfg.unusable_liquidity_penalty_bps);
+                if (!std::isfinite(charged)) {
+                    return Err(ErrorCode::OutOfRange,
+                               "research cost sim: trade in a name with no usable liquidity");
+                }
+                cost += charged / cfg.aum;
                 traded += std::abs(delta);
             }
             if (w != 0.0) gross += w * r;

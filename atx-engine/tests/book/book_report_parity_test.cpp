@@ -27,9 +27,7 @@ struct Fixture {
     return Panel::create(2, 4, {"close", "ret"}, {close, ret}, {}).value();
   }
 };
-} // namespace atx_test_l8_e2e_report_parity
 
-using namespace atx_test_l8_e2e_report_parity;
 
 TEST(ReplayReportParity, OnePeriodPolicyReplayEqualsLegacyReport) {
   Fixture f;
@@ -82,3 +80,5 @@ TEST(ReplayReportParity, OnePeriodParityHoldsThroughAFlatCostModel) {
   EXPECT_NEAR(replay->intervals[0].net_return,
         legacy.pnl_gross - legacy.pnl_cost - legacy.pnl_borrow, 1e-15);
 }
+
+} // namespace atx_test_l8_e2e_report_parity

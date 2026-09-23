@@ -13,11 +13,15 @@
 //                execution period t. +inf == unlimited, 0 == hard-to-borrow with
 //                no locate. Empty grid == unlimited everywhere.
 //   rebate_bps   annual rebate earned on total short dollars (reduces the charge).
-//   cash_bps     annual rate earned on positive settled cash and paid on negative
-//                settled cash (a margin loan), after the trade.
+//                This is the ONLY return on short-sale proceeds (the usual
+//                rebate = policy rate - borrow spread definition).
+//   cash_bps     annual rate earned on positive FREE cash and paid on negative
+//                free cash (a margin loan), after the trade, where
+//                free cash = settled cash - short dollars. Short proceeds are
+//                collateral and do not also earn the cash rate.
 //
 // The replay charges, per interval and on the elapsed day basis,
-//   sum_i short_i * fee(i,t) - shorts * rebate - cash * cash_bps
+//   sum_i short_i * fee(i,t) - shorts * rebate - (cash - shorts) * cash_bps
 // as ReplayInterval::borrow_cost. That NET financing figure can be negative
 // (a cash-rich book earns interest); it is still reconciled exactly by
 //   nav(t+1) == pretrade_nav + gross_pnl - trade_cost - borrow_cost.

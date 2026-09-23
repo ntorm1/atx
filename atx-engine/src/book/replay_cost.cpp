@@ -82,4 +82,12 @@ TradeCost SqrtImpactCost::cost(atx::usize /*instrument*/, atx::usize /*period*/,
   return TradeCost{signed_fill, fill * fraction};
 }
 
+atx::f64 SqrtImpactCost::unrationed_cost(atx::usize /*instrument*/, atx::usize /*period*/,
+                                         atx::f64 trade_dollars,
+                                         const LiquidityRow &liquidity) const noexcept {
+  const auto requested = std::abs(trade_dollars);
+  if (requested == 0.0) return 0.0;
+  return requested * cost_fraction(requested, liquidity); // NaN propagates.
+}
+
 } // namespace atx::engine::book

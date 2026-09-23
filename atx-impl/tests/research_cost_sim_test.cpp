@@ -43,9 +43,6 @@ inline Path planted(bool flip, atx::u64 seed) {
     }
     return p;
 }
-} // namespace atx_test_l8_e2e_research_cost
-
-using namespace atx_test_l8_e2e_research_cost;
 
 TEST(ResearchCostSim, HighTurnoverAlphaLosesAdmission) {
     const auto flat = book::FlatBpsCost::create(8.0).value();
@@ -108,3 +105,52 @@ TEST(ResearchCostSim, RejectsBadShapesAndHeldNaNReturns) {
     r[1] = 0.0;
     EXPECT_FALSE(impl::research_cost_sim(w, r, 1, 2, {}, impact)); // Needs liquidity.
 }
+
+TEST(ResearchCostSim, UnusableLiquidityNameIsNeverCheaperThanALiquidOne) {
+    const auto impact = book::SqrtImpactCost::create({1.0, 0.5}, 0.1).value();
+    const std::vector<atx::f64> w{0.5, -0.5};
+    const std::vector<atx::f64> r{0.0, 0.0};
+    const book::LiquidityRow liquid{5.0e6, 0.02, 2.0};
+    const atx::f64 nan = std::numeric_limits<atx::f64>::quiet_NaN();
+    for (const auto bad : {book::LiquidityRow{nan, 0.02, 2.0}, book::LiquidityRow{0.0, 0.02, 2.0},
+                           book::LiquidityRow{-1.0, 0.02, 2.0}}) {
+        impl::ResearchCostSimConfig cfg;
+        cfg.aum = 1.0e6;
+        const std::vector<book::LiquidityRow> both_liquid{liquid, liquid};
+        const std::vector<book::LiquidityRow> one_bad{liquid, bad};
+        const auto base = impl::research_cost_sim(w, r, 1, 2, both_liquid, impact, cfg);
+        const auto thin = impl::research_cost_sim(w, r, 1, 2, one_bad, impact, cfg);
+        ASSERT_TRUE(base) << base.error().message();
+        ASSERT_TRUE(thin) << thin.error().message();
+        EXPECT_GT(thin->cost_drag_bps, 0.0);
+        EXPECT_GT(thin->cost_drag_bps, base->cost_drag_bps);
+        cfg.unusable_liquidity_penalty_bps = nan; // Reject instead of penalize.
+        EXPECT_FALSE(impl::research_cost_sim(w, r, 1, 2, one_bad, impact, cfg));
+        cfg.unusable_liquidity_penalty_bps = -1.0;
+        EXPECT_FALSE(impl::research_cost_sim(w, r, 1, 2, both_liquid, impact, cfg));
+    }
+}
+
+TEST(ResearchCostSim, CappedTradeIsChargedAtTheUncappedFullSizeRate) {
+    // 50% of ADV with a 10% cap: the whole request is charged at the 50% rate,
+    // (0.5/0.1)^0.5 ~= 2.24x the capped fill's average impact rate.
+    const auto capped = book::SqrtImpactCost::create({1.0, 0.5}, 0.1).value();
+    const auto uncapped = book::SqrtImpactCost::create(
+        {1.0, 0.5}, std::numeric_limits<atx::f64>::infinity()).value();
+    const book::LiquidityRow row{2.0e6, 0.02, 0.0};
+    const std::vector<atx::f64> w{1.0};
+    const std::vector<atx::f64> r{0.0};
+    const std::vector<book::LiquidityRow> liquidity{row};
+    impl::ResearchCostSimConfig cfg;
+    cfg.aum = 1.0e6; // 1e6 trade on 2e6 ADV == 50% participation.
+    const auto a = impl::research_cost_sim(w, r, 1, 1, liquidity, capped, cfg);
+    const auto b = impl::research_cost_sim(w, r, 1, 1, liquidity, uncapped, cfg);
+    ASSERT_TRUE(a && b);
+    EXPECT_DOUBLE_EQ(a->cost_drag_bps, b->cost_drag_bps);
+    const auto full_rate = 0.02 * std::sqrt(0.5);
+    EXPECT_NEAR(a->cost_drag_bps, full_rate * 1.0e4, 1.0e-9);
+    const auto capped_avg_rate = 0.02 * std::sqrt(0.1);
+    EXPECT_NEAR(a->cost_drag_bps / (capped_avg_rate * 1.0e4), std::sqrt(5.0), 1.0e-9);
+}
+
+} // namespace atx_test_l8_e2e_research_cost

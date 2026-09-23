@@ -33,9 +33,7 @@ inline impl::PanelArtifact combo(std::vector<atx::f64> alpha, atx::usize dates, 
         identity(dates, names), "", ""};
     return artifact;
 }
-} // namespace atx_test_l8_e2e_preference_source
 
-using namespace atx_test_l8_e2e_preference_source;
 
 TEST(PreferenceSource, RowIsDemeanedAndScaledToTargetGross) {
     const auto artifact = combo({1.0, 2.0, 3.0, 5.0, kNaN, 1.0}, 2, 3);
@@ -82,3 +80,5 @@ TEST(PreferenceSource, FlatOrEmptyRowGivesNoPreference) {
     EXPECT_EQ(source->preference(0).value(), (std::vector<atx::f64>{0.0, 0.0}));
     EXPECT_EQ(source->preference(1).value(), (std::vector<atx::f64>{0.0, 0.0}));
 }
+
+} // namespace atx_test_l8_e2e_preference_source
