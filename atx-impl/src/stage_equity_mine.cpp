@@ -707,6 +707,19 @@ void select_family(MineOutcome &out, const MineConfig &cfg, atx::usize pnl_len) 
     }
 }
 
+[[nodiscard]] bool gate_pass(const MineConfig &cfg, atx::f64 p_by, atx::f64 p_rw,
+                             atx::f64 sharpe_net) noexcept {
+    const bool by_ok = p_by <= cfg.fdr_q;
+    const bool rw_ok = p_rw <= cfg.rw_alpha;
+    bool pass = false;
+    switch (cfg.gate) {
+    case GateMode::By: pass = by_ok; break;
+    case GateMode::RomanoWolf: pass = rw_ok; break;
+    case GateMode::Both: pass = by_ok && rw_ok; break;
+    }
+    return pass && sharpe_net > 0.0;
+}
+
 } // namespace
 
 atx::core::Result<MineOutcome> mine_train(const alpha::Library &lib, const MineData &train,
@@ -799,36 +812,51 @@ atx::core::Status mine_validate(const alpha::Library &lib, const MineData &valid
         row.validation = std::move(*sc);
         row.validated = true;
     });
+    // Hypothesis K+1: the pre-registered equal-weight blend of the whole family.
+    out.family_blend_scored = false;
+    if (K >= 2) {
+        std::vector<CandidateRow> members(K);
+        for (atx::usize k = 0; k < K; ++k) {
+            members[k].dsl = out.candidates[out.family[k]].dsl;
+            members[k].sign = out.candidates[out.family[k]].sign;
+        }
+        ATX_TRY(out.family_blend_validation, evaluate_blend(lib, validation, members, cfg.score));
+        out.family_blend_scored = true;
+    }
+    const atx::usize H = K + (out.family_blend_scored ? 1 : 0);
     const atx::usize T = validation.window.size();
-    std::vector<atx::f64> p(K, 1.0);
-    std::vector<atx::f64> mat(K * T, 0.0);
+    std::vector<atx::f64> p(H, 1.0);
+    std::vector<atx::f64> mat(H * T, 0.0);
+    const auto put = [&](atx::usize h, const SignalScore &s) {
+        p[h] = s.p_one_sided;
+        std::copy(s.net.begin(), s.net.end(), mat.begin() + static_cast<std::ptrdiff_t>(h * T));
+    };
     for (atx::usize k = 0; k < K; ++k) {
         CandidateRow &row = out.candidates[out.family[k]];
         if (!row.validated) {
             row.error = "validation: " + errors[k];
             continue;
         }
-        p[k] = row.validation.p_one_sided;
-        std::copy(row.validation.net.begin(), row.validation.net.end(),
-                  mat.begin() + static_cast<std::ptrdiff_t>(k * T));
+        put(k, row.validation);
     }
+    if (out.family_blend_scored) put(K, out.family_blend_validation);
     const auto p_by = eval::p_adjust_by(p);
-    const eval::PnlMatrix pm{mat, K, T};
+    const eval::PnlMatrix pm{mat, H, T};
     ATX_TRY(const auto rw, eval::romano_wolf(pm, cfg.boot, cfg.rw_alpha));
     for (atx::usize k = 0; k < K; ++k) {
         CandidateRow &row = out.candidates[out.family[k]];
         row.p_by = p_by[k];
         row.p_rw = rw.p_adjusted[k];
-        const bool by_ok = row.p_by <= cfg.fdr_q;
-        const bool rw_ok = row.p_rw <= cfg.rw_alpha;
-        bool pass = false;
-        switch (cfg.gate) {
-        case GateMode::By: pass = by_ok; break;
-        case GateMode::RomanoWolf: pass = rw_ok; break;
-        case GateMode::Both: pass = by_ok && rw_ok; break;
-        }
-        row.admitted = row.validated && pass && row.validation.sharpe_net > 0.0;
+        row.admitted = row.validated &&
+                       gate_pass(cfg, row.p_by, row.p_rw, row.validation.sharpe_net);
         if (row.admitted) out.admitted.push_back(out.family[k]);
+    }
+    if (out.family_blend_scored) {
+        out.family_blend_p_by = p_by[K];
+        out.family_blend_p_rw = rw.p_adjusted[K];
+        out.family_blend_admitted =
+            gate_pass(cfg, out.family_blend_p_by, out.family_blend_p_rw,
+                      out.family_blend_validation.sharpe_net);
     }
     return Ok();
 }
@@ -875,6 +903,29 @@ void accumulate_blend(std::span<const atx::f64> sig, atx::f64 sign, const MineDa
 }
 
 } // namespace
+
+atx::core::Result<SignalScore> evaluate_blend(const alpha::Library &lib, const MineData &data,
+                                              std::span<const CandidateRow> rows,
+                                              const ScoreCfg &cfg) {
+    ATX_TRY_VOID(check_data(data, "blend"));
+    if (rows.empty()) return Err(ErrorCode::InvalidArgument, "evaluate_blend: no rows");
+    const alpha::Panel &panel = *data.panel;
+    ATX_TRY(const atx::u32 close_id, close_field_of(panel));
+    const atx::usize cells = panel.cells();
+    const auto close = panel.field_all(close_id);
+    std::vector<atx::f64> sum(cells, 0.0);
+    std::vector<atx::u32> cnt(cells, 0);
+    alpha::Engine engine{panel};
+    for (const CandidateRow &row : rows) {
+        ATX_TRY(auto sig, evaluate_dsl(lib, engine, row.dsl));
+        accumulate_blend(sig, row.sign, data, close, sum, cnt);
+    }
+    std::vector<atx::f64> blend(cells, kNaN);
+    for (atx::usize c = 0; c < cells; ++c) {
+        if (cnt[c] > 0) blend[c] = sum[c] / static_cast<atx::f64>(cnt[c]);
+    }
+    return score_signal(blend, 1.0, panel, close_id, data.member, data.window, cfg);
+}
 
 atx::core::Result<std::vector<HoldoutRow>>
 evaluate_holdout(const alpha::Library &lib, const MineData &holdout,
@@ -1312,13 +1363,18 @@ constexpr std::string_view kScoreHeader =
     return s;
 }
 
+constexpr std::string_view kFamilyBlend = "<family equal-weight blend>";
+
 [[nodiscard]] std::string holdout_csv(const std::vector<mine::HoldoutRow> &rows,
                                       const mine::MineOutcome &o) {
     std::string s = "row,sign," + std::string{kScoreHeader} + ",p_one_sided,dsl\n";
     for (atx::usize k = 0; k < rows.size(); ++k) {
         const bool blend = k >= o.admitted.size();
         const atx::f64 sign = blend ? 1.0 : o.candidates[o.admitted[k]].sign;
-        s += (blend ? std::string{"blend"} : "mine_" + std::to_string(k)) + ',' + num(sign) +
+        const std::string label = !blend ? "mine_" + std::to_string(k)
+                                  : rows[k].dsl == kFamilyBlend ? std::string{"family_blend"}
+                                                                : std::string{"admitted_blend"};
+        s += label + ',' + num(sign) +
              ',' + score_cols(rows[k].score) + ',' + num(rows[k].score.p_one_sided) + ',' +
              csv_quote(rows[k].dsl) + '\n';
     }
@@ -1533,6 +1589,17 @@ struct Windows {
         for (auto i : outcome.admitted) adm.push_back(outcome.candidates[i]);
         const auto cfg = make_config(a, hold.span.panel);
         ATX_TRY(holdout, mine::evaluate_holdout(lib, hold.data, adm, cfg.score));
+        if (outcome.family_blend_scored) {
+            std::vector<mine::CandidateRow> fam;
+            for (auto i : outcome.family) {
+                mine::CandidateRow r;
+                r.dsl = outcome.candidates[i].dsl;
+                r.sign = outcome.candidates[i].sign;
+                fam.push_back(std::move(r));
+            }
+            ATX_TRY(auto fb, mine::evaluate_blend(lib, hold.data, fam, cfg.score));
+            holdout.push_back(mine::HoldoutRow{std::string{kFamilyBlend}, std::move(fb)});
+        }
     }
 
     // ---- publish -----------------------------------------------------------
@@ -1586,7 +1653,17 @@ struct Windows {
                        {"holdout", score_json(holdout[k].score)}});
     }
     report["admitted"] = adm;
-    if (!outcome.admitted.empty()) report["holdout_blend"] = score_json(holdout.back().score);
+    if (!outcome.admitted.empty()) {
+        report["holdout_admitted_blend"] = score_json(holdout[outcome.admitted.size()].score);
+    }
+    if (outcome.family_blend_scored) {
+        report["family_blend"] = {{"members", outcome.family.size()},
+                                  {"validation", score_json(outcome.family_blend_validation)},
+                                  {"p_by", outcome.family_blend_p_by},
+                                  {"p_rw", outcome.family_blend_p_rw},
+                                  {"admitted", outcome.family_blend_admitted},
+                                  {"holdout", score_json(holdout.back().score)}};
+    }
     report["qualifications"] = json::array(
         {"session keys are labels, not availability times; one-session execution delay assumed",
          "membership as-of the PIT top-N cut; contexts are year-union compacted",
@@ -1634,6 +1711,7 @@ struct Windows {
               {"family", std::to_string(outcome.family.size())},
               {"admitted", std::to_string(outcome.admitted.size())},
               {"n_eff", num(t.n_eff)},
+              {"family_blend_admitted", outcome.family_blend_admitted ? "1" : "0"},
               {"out", a.out}};
     return Ok(std::move(sr));
 }

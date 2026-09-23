@@ -122,6 +122,10 @@ TEST(EquityMinePipeline, PlantedAlphaIsRecoveredAndAdmitted) {
     EXPECT_GT(top.validation.sharpe_net, 2.0);
     EXPECT_LE(top.p_by, 0.10);
     EXPECT_GT(top.train.ic_mean[0], 0.05);
+    // The pre-registered family blend is hypothesis K+1 and carries the plant.
+    ASSERT_TRUE(out->family_blend_scored);
+    EXPECT_GT(out->family_blend_validation.sharpe_net, 0.0);
+    EXPECT_LE(out->family_blend_p_by, 1.0);
     // Every scored candidate is a registered trial.
     std::size_t scored = 0;
     for (const auto &c : out->candidates) scored += c.scored ? 1 : 0;
@@ -143,7 +147,7 @@ TEST(EquityMinePipeline, NullPanelAdmitsAlmostNothingAfterFdr) {
         auto reg = make_registry();
         auto out = run_mine(panel, config(false), reg);
         ASSERT_TRUE(out.has_value()) << out.error().message();
-        runs_admitting += out->admitted.empty() ? 0 : 1;
+        runs_admitting += (out->admitted.empty() && !out->family_blend_admitted) ? 0 : 1;
         total_admitted += out->admitted.size();
         total_family += out->family.size();
     }
@@ -197,6 +201,24 @@ TEST(EquityMinePipeline, HoldoutScoresAdmittedAndBlend) {
     ASSERT_EQ(rows->size(), admitted.size() + 1);
     EXPECT_EQ(rows->back().dsl, "<equal-weight blend>");
     EXPECT_GT(rows->front().score.sharpe_net, 1.0);
+}
+
+TEST(EquityMinePipeline, BlendOfOneAlphaEqualsItsOwnBook) {
+    const Panel panel = synthetic_panel(0.004, 15);
+    static const atx::engine::alpha::Library lib;
+    const std::vector<std::uint8_t> member(panel.cells(), 1);
+    const mine::MineData data{&panel, member, {kValBegin, kHoldBegin}};
+    mine::CandidateRow row;
+    row.dsl = "rank(sig)";
+    row.sign = 1.0;
+    const std::vector<mine::CandidateRow> rows{row};
+    auto blend = mine::evaluate_blend(lib, data, rows, config(false).score);
+    ASSERT_TRUE(blend.has_value()) << blend.error().message();
+    auto hold = mine::evaluate_holdout(lib, data, rows, config(false).score);
+    ASSERT_TRUE(hold.has_value());
+    // A monotone transform of one signal ranks identically -> identical book.
+    EXPECT_NEAR(blend->sharpe_net, hold->front().score.sharpe_net, 1e-9);
+    EXPECT_FALSE(mine::evaluate_blend(lib, data, {}, config(false).score).has_value());
 }
 
 TEST(EquityMinePipeline, RejectsRegistryLengthMismatch) {

@@ -224,6 +224,14 @@ struct MineOutcome {
     atx::usize seeds_invalid{};
     atx::usize degenerate{};              // compiled but flat/non-finite pnl
     atx::usize family_rejected_corr{};
+    // Pre-registered breadth hypothesis: the equal-weight rank blend of the whole
+    // validation family (members and signs fixed on TRAIN), tested on validation
+    // as hypothesis K+1 inside the same BY / Romano-Wolf family.
+    bool family_blend_scored{false};
+    SignalScore family_blend_validation;
+    atx::f64 family_blend_p_by{1.0};
+    atx::f64 family_blend_p_rw{1.0};
+    bool family_blend_admitted{false};
     atx::u64 search_digest{};
     atx::usize search_trial_count{};
     atx::usize search_fidelity_evals{};
@@ -265,6 +273,13 @@ struct HoldoutRow {
 [[nodiscard]] atx::core::Result<std::vector<HoldoutRow>>
 evaluate_holdout(const atx::engine::alpha::Library &lib, const MineData &holdout,
                  std::span<const CandidateRow> admitted, const ScoreCfg &cfg);
+
+// Score the equal-weight blend of `rows` (each with its train-fixed sign) on
+// `data`: per date, the mean over alphas of each alpha's centered cross-
+// sectional rank, itself scored as one rank-L/S book. Err when rows is empty.
+[[nodiscard]] atx::core::Result<SignalScore>
+evaluate_blend(const atx::engine::alpha::Library &lib, const MineData &data,
+               std::span<const CandidateRow> rows, const ScoreCfg &cfg);
 
 // Built-in literature seed families (momentum, reversal, low-vol, liquidity,
 // value-of-range, implied-vol level/slope/change, size, 52-week high, ...).
