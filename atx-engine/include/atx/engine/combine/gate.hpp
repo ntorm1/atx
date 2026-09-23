@@ -53,7 +53,8 @@
 //  an Accept verdict). The verdict→action mapping is the CALLER's; where a caller
 //  switches on GateVerdict it must handle every enumerator (no `default`).
 
-#include <span> // std::span (candidate PnL view)
+#include <limits> // std::numeric_limits (fail-closed marginal_ic sentinel)
+#include <span>   // std::span (candidate PnL view)
 
 #include "atx/core/macro.hpp" // ATX_ASSERT (debug length precondition)
 #include "atx/core/types.hpp" // atx::f64, atx::u8, atx::usize
@@ -87,6 +88,16 @@ struct GateConfig {
   atx::f64 min_dsr              = 0.0;   // DSR floor; 0.0 => inert (DSR ∈ [0,1] always ≥ 0)
   atx::f64 max_pbo             = 1.0;   // PBO ceiling; 1.0 => inert (PBO ∈ [0,1] never > 1)
   bool     require_split_stable = false; // require split-half sign agreement; false => inert
+
+  // Lane 5: marginal-IC admission mode (inert at the default false). When set, the
+  // PnL-correlation screen (check 4) is REPLACED by a signal-space screen: admit iff
+  // GateDeflation::marginal_ic (the candidate's IC beyond the pool, from
+  // combine::marginal_ic in orthogonalize.hpp) >= min_marginal_ic. A PnL-correlated
+  // candidate that still adds orthogonal forecast information is admitted; a
+  // decorrelated one that adds none is rejected. Failure maps to RejectCorrelated
+  // (the frozen verdict histogram is not extended).
+  bool     use_marginal_ic      = false;
+  atx::f64 min_marginal_ic      = 0.0;
 };
 
 // ===========================================================================
@@ -136,6 +147,10 @@ struct GateDeflation {
   atx::f64 dsr          = 1.0;   // Deflated Sharpe Ratio ∈ [0,1]
   atx::f64 pbo          = 0.0;   // Probability of Backtest Overfitting ∈ [0,1]
   bool     split_stable = false; // both holdout halves share the full-sample Sharpe sign
+  // Lane 5: candidate's marginal IC beyond the pool (read only when
+  // GateConfig::use_marginal_ic). NaN default fails CLOSED: turning the mode on without
+  // supplying the scalar rejects rather than silently admitting.
+  atx::f64 marginal_ic = std::numeric_limits<atx::f64>::quiet_NaN();
 };
 
 // The inert default deflation input: passing this (or nothing) to admit() leaves
@@ -214,6 +229,14 @@ struct AlphaGate {
     // canonical failure mode).
     if (cfg.require_split_stable && !defl.split_stable) {
       return GateVerdict::RejectSplitUnstable;
+    }
+    // Lane 5 marginal-IC mode: replaces check 4 (inert unless use_marginal_ic). The
+    // negated >= also rejects a NaN (unsupplied) marginal_ic.
+    if (cfg.use_marginal_ic) {
+      if (!(defl.marginal_ic >= cfg.min_marginal_ic)) {
+        return GateVerdict::RejectCorrelated;
+      }
+      return GateVerdict::Accept;
     }
     // §5.2 check 4 (LAZY): only now — after the floors pass — pay the
     // O(|pool|·T) correlation cost. Empty pool ⇒ corr_to_pool = 0 (the loop
