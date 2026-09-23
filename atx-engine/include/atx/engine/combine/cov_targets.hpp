@@ -185,18 +185,30 @@ shrink_nonlinear_lw2020(const atx::core::linalg::MatX &x) {
   const atx::f64 pf = static_cast<atx::f64>(p);
   const atx::f64 nf = static_cast<atx::f64>(n);
   const MatX xc = cov_detail::demean_columns(x);
-  const MatX sample = (xc.transpose() * xc) / nf;
-  const Eigen::SelfAdjointEigenSolver<MatX> es(sample);
+  // Retained spectrum: the m = min(p, n) largest eigenpairs of S = XcᵀXc/n. When p > n
+  // they come from the T×T dual XcXcᵀ/n (u_j = Xcᵀv_j/√(nλ_j)), so the p×p
+  // eigendecomposition — O(p³), ~20 s at p = 2000 — is never formed.
+  const Eigen::Index m = std::min(p, n);
+  const bool dual = p > n;
+  const MatX gram = dual ? MatX((xc * xc.transpose()) / nf) : MatX((xc.transpose() * xc) / nf);
+  const Eigen::SelfAdjointEigenSolver<MatX> es(gram);
   if (es.info() != Eigen::Success) {
     return atx::core::Err(atx::core::ErrorCode::Internal,
                           "shrink_nonlinear_lw2020: eigendecomposition failed");
   }
-  const VecX &all = es.eigenvalues(); // ascending
-  const Eigen::Index m = std::min(p, n);
-  const VecX lam = all.tail(m);
+  const VecX lam = es.eigenvalues().tail(m); // ascending
   if ((lam.array() <= 0.0).any()) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "shrink_nonlinear_lw2020: non-positive retained eigenvalue");
+  }
+  MatX um; // p × m retained eigenvectors (ascending eigenvalue order)
+  if (dual) {
+    um = xc.transpose() * es.eigenvectors().rightCols(m);
+    for (Eigen::Index j = 0; j < m; ++j) {
+      um.col(j) /= std::sqrt(nf * lam[j]);
+    }
+  } else {
+    um = es.eigenvectors();
   }
   const atx::f64 h = std::pow(nf, -1.0 / 3.0);
   VecX ft(m);
@@ -218,14 +230,16 @@ shrink_nonlinear_lw2020(const atx::core::linalg::MatX &x) {
     ft[i] = (3.0 / 4.0 / sqrt5) * fsum / static_cast<atx::f64>(m);
     hft[i] = hsum / static_cast<atx::f64>(m);
   }
-  VecX d(p);
-  if (p <= n) {
+  VecX d(m);
+  MatX sigma;
+  if (!dual) {
     const atx::f64 c = pf / nf;
     for (Eigen::Index i = 0; i < p; ++i) {
       const atx::f64 a = kPi * c * lam[i] * ft[i];
       const atx::f64 b = 1.0 - c - kPi * c * lam[i] * hft[i];
       d[i] = lam[i] / (a * a + b * b);
     }
+    sigma = um * d.asDiagonal() * um.transpose();
   } else {
     const atx::f64 inv_mean = (1.0 / lam.array()).mean();
     const atx::f64 hf0 = (1.0 / kPi) *
@@ -233,15 +247,13 @@ shrink_nonlinear_lw2020(const atx::core::linalg::MatX &x) {
                                                      std::log((1.0 + sqrt5 * h) / (1.0 - sqrt5 * h))) *
                          inv_mean;
     const atx::f64 d0 = 1.0 / (kPi * (pf - nf) / nf * hf0);
-    for (Eigen::Index i = 0; i < p - n; ++i) {
-      d[i] = d0;
-    }
     for (Eigen::Index i = 0; i < m; ++i) {
-      d[p - n + i] = lam[i] / (kPi * kPi * lam[i] * lam[i] * (ft[i] * ft[i] + hft[i] * hft[i]));
+      d[i] = lam[i] / (kPi * kPi * lam[i] * lam[i] * (ft[i] * ft[i] + hft[i] * hft[i])) - d0;
     }
+    // Null space shares d0: Σ̃ = d0·I + U_m diag(d1 − d0) U_mᵀ.
+    sigma = um * d.asDiagonal() * um.transpose();
+    sigma.diagonal().array() += d0;
   }
-  const MatX &u = es.eigenvectors();
-  MatX sigma = u * d.asDiagonal() * u.transpose();
   sigma = 0.5 * (sigma + sigma.transpose()); // exact symmetry for downstream Cholesky
   return atx::core::Ok(std::move(sigma));
 }
