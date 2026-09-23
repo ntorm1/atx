@@ -1413,14 +1413,17 @@ void log_line(std::ostream &err, bool quiet, const std::string &msg) {
 
 [[nodiscard]] atx::core::Result<std::vector<mine::SeedExpr>> collect_seeds(const MineArgs &a) {
     std::vector<mine::SeedExpr> seeds;
+    // Literature families first: when the seed list exceeds the search population
+    // the SearchDriver keeps the leading seeds, and these are the economically
+    // motivated ones.
+    if (a.literature) {
+        auto lit = mine::literature_seeds();
+        seeds.insert(seeds.end(), lit.begin(), lit.end());
+    }
     if (!a.fixture.empty()) {
         ATX_TRY(auto text, read_text(a.fixture));
         auto fx = mine::parse_fixture_seeds(text);
         seeds.insert(seeds.end(), fx.begin(), fx.end());
-    }
-    if (a.literature) {
-        auto lit = mine::literature_seeds();
-        seeds.insert(seeds.end(), lit.begin(), lit.end());
     }
     if (!a.extra_seeds.empty()) {
         ATX_TRY(auto text, read_text(a.extra_seeds));
