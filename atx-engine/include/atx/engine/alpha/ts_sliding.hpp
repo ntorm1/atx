@@ -317,6 +317,17 @@ struct LinDecayLane {
   template <class Win>
   [[nodiscard]] atx::f64 step(atx::f64 xe, bool has_leave, atx::f64 xl, bool full, atx::usize d,
                               const Win &win) noexcept {
+    // Steady state: a full, all-finite window with finite enter/leave cells.
+    // Exactly the operations the general path below performs for that case
+    // (count() and the fin bookkeeping are no-ops / cancel), minus its branches.
+    if (full && has_leave && fin == d && nan == 0 && pinf == 0 && ninf == 0 &&
+        std::isfinite(xe) && std::isfinite(xl)) {
+      k.slide(xe - k.c, xl - k.c, d);
+      if (++age >= reseed_period(d)) {
+        recentre(xe, d, win);
+      }
+      return k.value(d);
+    }
     if (std::isfinite(xe)) {
       if (fin == 0) {
         k = LinDecay{}; // no finite cell in the window: every sum is exactly 0
@@ -342,16 +353,23 @@ struct LinDecayLane {
                        : -std::numeric_limits<atx::f64>::infinity();
     }
     if (++age >= reseed_period(d)) {
-      age = 0;
-      k = LinDecay{};
-      k.c = xe;
-      for (atx::usize i = 0; i < d; ++i) {
-        const atx::f64 v = win(i) - k.c;
-        k.s += v;
-        k.w += static_cast<atx::f64>(i + 1) * v;
-      }
+      recentre(xe, d, win);
     }
     return k.value(d);
+  }
+
+private:
+  // Rebuild (S, W) from the window around the newest value. Precondition: the
+  // window is full and every cell finite.
+  template <class Win> void recentre(atx::f64 xe, atx::usize d, const Win &win) noexcept {
+    age = 0;
+    k = LinDecay{};
+    k.c = xe;
+    for (atx::usize i = 0; i < d; ++i) {
+      const atx::f64 v = win(i) - k.c;
+      k.s += v;
+      k.w += static_cast<atx::f64>(i + 1) * v;
+    }
   }
 };
 
