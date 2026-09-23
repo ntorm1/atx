@@ -1,5 +1,18 @@
 # Tier-1 parity program ledger (atx-db)
 
+## Schema test bootstrap resource correction - 2026-09-23
+
+TB1 under schema-bootstrap-budget-brief.md closes a concrete fixture gap:
+DuckDBStore.__enter__ previously initialized the full schema before the test
+thread cap, with no explicit test memory setting. Configure1GB/one thread
+before real initialize() and on fixture copies; retain full migrations,
+fingerprint, cache-ready protocol and semantics. This changes no production
+limits. Codex static review is clean; scoped Ruff passed under the exact
+1.5GiB guard. Commit the reviewed fixture to make the following isolated HEAD
+export authoritative, then run required module/schema and affected numeric
+checks. Runtime proof remains pending until that batch completes; do not
+infer it from the source review or lint. No full suite at this step.
+
 ## Fundamental research operations follow-on - 2026-09-23
 
 FQ3 under fundamental-readiness-brief.md adds optional bounded FQ1/FQ2

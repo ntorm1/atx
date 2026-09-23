@@ -36,10 +36,10 @@ _SOURCE_ROOT = _PROJECT_ROOT / "src"
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
-# Keep per-connection DuckDB thread pools tiny. Under xdist we already have one
-# process per core; letting each connection default to (cores) threads would
-# oversubscribe badly on the heavy quality-check tests.
+# Bound every template and fixture-copy connection before running any bootstrap
+# SQL. Under xdist, one DuckDB thread per worker also avoids oversubscription.
 _DUCKDB_TEST_THREADS = 1
+_DUCKDB_TEST_MEMORY_LIMIT = "1GB"
 
 _SCHEMA_CACHE_DIR = _PROJECT_ROOT / ".pytest_cache" / "db_schema_templates"
 _SCHEMA_FINGERPRINT_FILES = (
@@ -78,11 +78,25 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_slow)
 
 
-def _cap_threads(con) -> None:
+def _open_budgeted_test_store(path: Path):
+    """Open a test store with resource limits active before bootstrap SQL."""
+    import duckdb
+
+    from atx_db.connection import DuckDBStore
+
+    store = DuckDBStore(path)
+    store.connection = duckdb.connect(
+        str(path),
+        config={"memory_limit": _DUCKDB_TEST_MEMORY_LIMIT, "threads": _DUCKDB_TEST_THREADS},
+    )
     try:
-        con.execute(f"PRAGMA threads={_DUCKDB_TEST_THREADS}")
+        store._configure_session(store.connection)
     except Exception:
-        pass
+        _close_store(store)
+        raise
+    store.analytical_memory_limit = _DUCKDB_TEST_MEMORY_LIMIT
+    store.analytical_threads = _DUCKDB_TEST_THREADS
+    return store
 
 
 def _build_template(dest: Path) -> None:
@@ -98,11 +112,11 @@ def _build_template(dest: Path) -> None:
     every test's queries far more than the cheaper copy saves. The per-test cost is
     the DuckDB operations, not the file copy, so the default block size wins.)
     """
-    from atx_db.connection import DuckDBStore
-
-    with DuckDBStore(dest) as store:
-        # __enter__ runs initialize() -> ensure_quant_schema + migrations.
-        _cap_threads(store.con)
+    store = _open_budgeted_test_store(dest)
+    try:
+        store.initialize()
+    finally:
+        _close_store(store)
 
 
 def _schema_fingerprint() -> str:
@@ -170,15 +184,8 @@ def _schema_template(tmp_path_factory) -> Path:
 
 
 def _open_template_copy(template_path: Path, db_path: Path):
-    import duckdb
-
-    from atx_db.connection import DuckDBStore
-
     shutil.copyfile(template_path, db_path)
-    store = DuckDBStore(db_path)
-    store.connection = duckdb.connect(str(db_path))
-    store._configure_session(store.connection)
-    _cap_threads(store.connection)
+    store = _open_budgeted_test_store(db_path)
     store._initialized = True
     return store
 
