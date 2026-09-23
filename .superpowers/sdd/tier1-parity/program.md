@@ -1,4 +1,22 @@
 # Tier-1 parity program ledger (atx-db)
+
+## CompanyFacts commit OOM: restore measured working limit - 2026-09-23 01:17 UTC
+
+The archive13 512MB trial passed the full retained-row proof but failed its
+first new issuer transaction at COMMIT (488.1/488.2MiB used). No new fact rows
+committed; the guard did not stop for host pressure. The read-only inspection
+confirmed47,941,000 raw facts and points. Root closed only the stale dataset
+ledger and CHECKPOINT passed; the existing activation failure is preserved.
+Actual next predecessor:22d51d47-2992-4043-95ef-54763a9dd45d.
+
+Restore the previously working1GB DuckDB limit for the next full-archive
+continuation, retaining one thread, the2GiB process cap and unchanged host
+headroom thresholds. Do not spend another full verification pass on an
+unmeasured intermediate limit. No source scope, proof or quality gate changes.
+Evidence:companyfacts-archive13-terminal-inspection.json and
+companyfacts-archive13-oom-recovery.json. Dataset failure-ledger recovery is
+being repaired and must pass its focused check/review before the next launch.
+
 Spec: docs/superpowers/specs/2026-09-19-tier1-parity-design.md
 Audits: .superpowers/sdd/tier1-parity/audit-atx-db.md, audit-ticker-zip.md
 Baseline: main a79f8371, smoke 6 passed.

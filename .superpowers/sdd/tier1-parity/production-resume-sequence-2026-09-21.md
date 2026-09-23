@@ -8,32 +8,24 @@ dummy SEC User-Agent `atx-db/0.1 atx-research@example.com`.
 
 ## Current source position and guard prerequisite
 
-Root session 67962 (guard child 11304; native Python8692) is the sole live writer:
-`activation-companyfacts-archive13`. It resumes the recovered archive12 dataset UUID
-`6beba5d4-e530-45fd-ae04-f872d9c8a896` with full `archive_members`,
-replacement, and `--force`. Its files are
-`activation-companyfacts-archive13-{memory.json,log,err}`. This CompanyFacts trial
-uses the LOWER `512MB` DuckDB limit, with all other guards and source scope
-unchanged. The limit survives connection recycling; full runtime capacity is
-not yet proved. Do not extend this trial implicitly to later stages.
-The last verified durable raw-fact and point count was47,941,000 after archive12
-recovery. Do not launch
-another runtime or restart because the tool session yields. Treat schema
-0322 as live: terminal inspections and recovery confirmed it. Archive12 added
-55,234 attempt rows/22CIKs, including replacements, for a net+34,193facts/points
-before its host-headroom stop. Both ledgers were recovered and checkpointed
-at00:29:16UTC on2026-09-23.
+Archive13 is terminal after a DuckDB COMMIT OOM at512MB. Its actual dataset
+UUID is `22d51d47-2992-4043-95ef-54763a9dd45d`. Read-only inspection confirmed
+47,941,000 raw facts and points, with no new attempt facts. Root recovered
+only its stale dataset ledger; CHECKPOINT passed and the already-failed
+activation record is unchanged. Do not repeat recovery.
 
-The guard's preflight remains `job_gb + 2` for both physical and commit
-headroom, and its runtime stop thresholds remain physical below 1.5 GiB or
-commit below 3 GiB. The two-GiB ceiling does not change DuckDB's one-GiB/
-one-thread policy or the loader's bounded batches. After archive13 is terminal,
-root must inspect its guard receipt, activation-stage ledger, actual companyfacts
-dataset ledger and retained counts. If it failed, resolve the latest dataset
-UUID from the ledger before constructing another verified resume; never infer
-it from the activation run label. A pending migration is governed before the
-loader opens; `--backup-keep 100` applies only after that governed path succeeds.
-Use fresh receipt/log/error filenames for every subsequent attempt.
+The next continuation returns to the previously working `1GB` DuckDB limit,
+one thread and the unchanged2GiB Windows job cap. Full `archive_members`,
+replacement, force, snapshot, backup-keep100 and all resume proofs remain.
+The failure-ledger code repair must pass focused testing/review before launch.
+Use fresh archive14 receipt/stdout/stderr filenames and the actual UUID above.
+Treat schema0322 as live. No current writer exists at this recorded checkpoint.
+
+The guard preflight requires at least4GiB both physical and commit headroom;
+runtime stops below1.5GiB physical or3GiB commit. Never restart a live session
+or open another runtime while a guarded job owns the warehouse. After every
+terminal job, inspect its guard, activation/dataset ledgers and durable state
+before selecting a next resume UUID. Other workloads remain untouched.
 
 ## Submissions verified resume
 

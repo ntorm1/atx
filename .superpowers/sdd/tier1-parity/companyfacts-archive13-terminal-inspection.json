@@ -1,0 +1,33 @@
+{
+  "observed_at_utc": "2026-09-23T01:09:45.360625+00:00",
+  "read_only": true,
+  "sql_file": "C:\\atx\\.superpowers\\sdd\\tier1-parity\\companyfacts-archive13-terminal-inspection.sql",
+  "sql_sha256": "cbf25e10cc5c96a27c1425aaa4b76aaa5fe259deb848be2d285527df8196586e",
+  "duckdb_version": "1.5.5",
+  "columns": [
+    "kind",
+    "evidence"
+  ],
+  "rows": [
+    [
+      "activation",
+      "{\"stage\":\"companyfacts_load\",\"run_id\":\"activation-companyfacts-archive13\",\"status\":\"failed\",\"started_at\":\"2026-09-23 00:34:53.037915\",\"finished_at\":\"2026-09-23 01:06:23.695783\",\"rows\":0}"
+    ],
+    [
+      "attempt_source_outcomes",
+      "{\"run_id\":\"22d51d47-2992-4043-95ef-54763a9dd45d\",\"status\":\"empty\",\"member_receipts\":1327,\"reported_rows\":0}"
+    ],
+    [
+      "attempt_source_outcomes",
+      "{\"run_id\":\"22d51d47-2992-4043-95ef-54763a9dd45d\",\"status\":\"unavailable\",\"member_receipts\":43,\"reported_rows\":0}"
+    ],
+    [
+      "dataset",
+      "{\"run_id\":\"22d51d47-2992-4043-95ef-54763a9dd45d\",\"dataset_id\":\"sec_company_facts\",\"status\":\"running\",\"started_at\":\"2026-09-23 00:34:53.06869\",\"finished_at\":null,\"rows_loaded\":null}"
+    ],
+    [
+      "retained_totals",
+      "{\"facts\":47941000,\"points\":47941000,\"prices\":31959271,\"custom_features\":31934514,\"schema_version\":\"0322\"}"
+    ]
+  ]
+}

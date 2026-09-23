@@ -7,6 +7,18 @@ artifacts. Dated loader progress below is historical evidence.
 
 ## Latest durable warehouse measurement: 2026-09-23
 
+Archive13's lower-memory trial passed its resume proof but failed during a
+new issuer's commit at the512MB DuckDB limit. Read-only inspection at01:09UTC
+confirmed the retained counts below and zero newly committed fact rows.
+The guard reported1.199GiB peak process-tree memory and healthy host headroom.
+The stale dataset run was then marked failed and checkpointed; the original
+activation failure was preserved. Its actual dataset ID,
+`22d51d47-2992-4043-95ef-54763a9dd45d`, is the next resume predecessor.
+The next run returns to the previously working1GB DuckDB limit, one thread,
+and the unchanged2GiB process cap and host headroom guard.
+
+The archive12 figures below describe the preceding successful source additions.
+
 Archive12's recovery checkpoint completed after its memory guard stopped the
 run at00:26:29UTC. It retained55,234 attempt rows across22 CIKs, including
 replacements, for a net increase of34,193 raw facts and points. The actual

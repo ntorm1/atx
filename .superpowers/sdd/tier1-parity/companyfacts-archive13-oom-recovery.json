@@ -1,0 +1,58 @@
+{
+  "observed_at_utc": "2026-09-23T01:16:04.493089+00:00",
+  "process_check": {
+    "observed_at_utc": "2026-09-23T01:15:51.7719813Z",
+    "run_id": "activation-companyfacts-archive13",
+    "matching_process_count": 0,
+    "original_pid_count": 0,
+    "matching_pids": []
+  },
+  "guard_status": "failed",
+  "guard_final_headroom": {
+    "physical_free_gb": 5.5128631591796875,
+    "commit_free_gb": 7.643207550048828
+  },
+  "actual_dataset_run_id": "22d51d47-2992-4043-95ef-54763a9dd45d",
+  "termination_cause": "DuckDB COMMIT OOM at512MB; not a host-headroom stop",
+  "activation_before": [
+    [
+      "companyfacts_load",
+      "activation-companyfacts-archive13",
+      "failed",
+      "2026-09-23 00:34:53.037915",
+      "2026-09-23 01:06:23.695783",
+      0,
+      "FATAL Error: Failed: database has been invalidated because of a previous fatal error. The database must be restarted prior to being used again.\nOriginal error: \"Failed to rollback transaction. Cannot continue operation.\nOriginal Error: Out of Memory Error: failed to pin block of size 256.0 KiB (488.1 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads\nRollback Error: Out of Memory Error: failed to pin block of size 256.0 KiB (488.1 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads\""
+    ]
+  ],
+  "dataset_before": [
+    [
+      "22d51d47-2992-4043-95ef-54763a9dd45d",
+      "sec_company_facts",
+      "running",
+      "2026-09-23 00:34:53.068690",
+      null,
+      null
+    ]
+  ],
+  "attempt_columns": [
+    "rows",
+    "ciks"
+  ],
+  "attempt": [
+    0,
+    0
+  ],
+  "dataset_after": [
+    [
+      "22d51d47-2992-4043-95ef-54763a9dd45d",
+      "sec_company_facts",
+      "failed",
+      "2026-09-23 01:16:04.493089",
+      0
+    ]
+  ],
+  "activation_unchanged": true,
+  "committed": true,
+  "checkpoint": "passed"
+}

@@ -1,5 +1,26 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Archive13 terminal COMMIT OOM; recovered - 2026-09-23 01:17 UTC
+
+Session67962 is terminal exit1 and original workers are absent. The512MB
+trial passed9462-target/39,457,715-row proof but failed during the first new
+issuer COMMIT (DuckDB488.1/488.2MiB). Guard peak1.199GiB, final host free
+physical5.513/commit7.643GiB: this was a query-limit failure, not host stop.
+Read-only inspection confirms47,941,000facts/points,31,959,271prices,
+31,934,514customfeatures and schema0322; no new attempt facts committed.
+Receipts1327empty/43unavailable. Activation already failed01:06:23UTC.
+
+Root recovered only stale dataset UUID22d51d47-2992-4043-95ef-54763a9dd45d;
+CHECKPOINT passed, recovery peak0.894GiB. Preserve existing stage error/time.
+Evidence:companyfacts-archive13-terminal-inspection.json,
+companyfacts-archive13-oom-recovery.json,archive13-oom-recovery1-memory.json.
+Do not repeat recovery. No live runtime. Next source resume uses that actual
+UUID and returns to1GB/1thread under unchanged2GiB guard, fullarchive scope.
+Fresh Codex Dataset.run failure-ledger fix is ready for focused test/review
+before launch; owns onlydataset.py and its regression test. No fullsuite.
+Full source,run5,measurements,CF1evaluation/release remain outstanding.
+
+
 ## Archive13 resume proof passed at512MB — 2026-09-23 00:55 UTC
 
 Verified wait continues on live session67962/native Python8692. Point

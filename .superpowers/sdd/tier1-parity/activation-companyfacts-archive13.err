@@ -1,0 +1,509 @@
+2026-09-22 20:34:57,911 INFO atx_db.fundamentals: companyfacts resume verifying receipts and retained fact/point rows
+2026-09-22 20:34:58,227 INFO atx_db._companyfacts_resume: companyfacts resume receipts=9462 lineage_runs=10; inventorying retained issuer counts
+2026-09-22 20:35:03,899 INFO atx_db._companyfacts_resume: companyfacts resume aggregating retained fact fingerprints
+2026-09-22 20:41:47,826 INFO atx_db._companyfacts_resume: companyfacts resume fact_identity_groups=12959; aggregating retained point fingerprints
+2026-09-22 20:49:06,841 INFO atx_db._companyfacts_resume: companyfacts resume point_identity_groups=12959; recovering unresolved issuer summaries
+2026-09-22 20:49:15,431 INFO atx_db.fundamentals: companyfacts resume verified targets=9462 rows=39457715
+2026-09-22 20:49:15,434 INFO atx_db.fundamentals: companyfacts processed=0 total=20390 loaded=0 empty=0 unavailable=0 failed=0 rows=0
+2026-09-22 20:49:20,571 INFO atx_db.fundamentals: companyfacts CIK inventory issuers=12959 spellings=12959 elapsed_seconds=4.640
+2026-09-22 20:49:21,715 INFO atx_db.fundamentals: companyfacts processed=25 total=20390 loaded=19 empty=5 unavailable=1 failed=0 rows=0
+2026-09-22 20:49:23,509 INFO atx_db.fundamentals: companyfacts processed=50 total=20390 loaded=40 empty=9 unavailable=1 failed=0 rows=0
+2026-09-22 20:49:27,243 INFO atx_db.fundamentals: companyfacts processed=75 total=20390 loaded=64 empty=10 unavailable=1 failed=0 rows=0
+2026-09-22 20:49:28,698 INFO atx_db.fundamentals: companyfacts processed=100 total=20390 loaded=87 empty=12 unavailable=1 failed=0 rows=0
+2026-09-22 20:49:30,144 INFO atx_db.fundamentals: companyfacts processed=125 total=20390 loaded=107 empty=17 unavailable=1 failed=0 rows=0
+2026-09-22 20:49:31,539 INFO atx_db.fundamentals: companyfacts processed=150 total=20390 loaded=130 empty=19 unavailable=1 failed=0 rows=0
+2026-09-22 20:49:35,471 INFO atx_db.fundamentals: companyfacts processed=175 total=20390 loaded=154 empty=20 unavailable=1 failed=0 rows=0
+2026-09-22 20:49:36,990 INFO atx_db.fundamentals: companyfacts processed=200 total=20390 loaded=178 empty=21 unavailable=1 failed=0 rows=0
+2026-09-22 20:49:38,605 INFO atx_db.fundamentals: companyfacts processed=225 total=20390 loaded=202 empty=21 unavailable=2 failed=0 rows=0
+2026-09-22 20:49:40,111 INFO atx_db.fundamentals: companyfacts processed=250 total=20390 loaded=224 empty=24 unavailable=2 failed=0 rows=0
+2026-09-22 20:49:41,438 INFO atx_db.fundamentals: companyfacts processed=275 total=20390 loaded=245 empty=28 unavailable=2 failed=0 rows=0
+2026-09-22 20:49:45,356 INFO atx_db.fundamentals: companyfacts processed=300 total=20390 loaded=266 empty=32 unavailable=2 failed=0 rows=0
+2026-09-22 20:49:46,769 INFO atx_db.fundamentals: companyfacts processed=325 total=20390 loaded=289 empty=34 unavailable=2 failed=0 rows=0
+2026-09-22 20:49:48,179 INFO atx_db.fundamentals: companyfacts processed=350 total=20390 loaded=309 empty=39 unavailable=2 failed=0 rows=0
+2026-09-22 20:49:52,264 INFO atx_db.fundamentals: companyfacts processed=375 total=20390 loaded=331 empty=42 unavailable=2 failed=0 rows=0
+2026-09-22 20:49:53,766 INFO atx_db.fundamentals: companyfacts processed=400 total=20390 loaded=353 empty=45 unavailable=2 failed=0 rows=0
+2026-09-22 20:49:55,170 INFO atx_db.fundamentals: companyfacts processed=425 total=20390 loaded=374 empty=48 unavailable=3 failed=0 rows=0
+2026-09-22 20:49:59,095 INFO atx_db.fundamentals: companyfacts processed=450 total=20390 loaded=397 empty=50 unavailable=3 failed=0 rows=0
+2026-09-22 20:50:00,601 INFO atx_db.fundamentals: companyfacts processed=475 total=20390 loaded=419 empty=53 unavailable=3 failed=0 rows=0
+2026-09-22 20:50:02,069 INFO atx_db.fundamentals: companyfacts processed=500 total=20390 loaded=444 empty=53 unavailable=3 failed=0 rows=0
+2026-09-22 20:50:03,610 INFO atx_db.fundamentals: companyfacts processed=525 total=20390 loaded=467 empty=55 unavailable=3 failed=0 rows=0
+2026-09-22 20:50:05,132 INFO atx_db.fundamentals: companyfacts processed=550 total=20390 loaded=490 empty=57 unavailable=3 failed=0 rows=0
+2026-09-22 20:50:09,457 INFO atx_db.fundamentals: companyfacts processed=575 total=20390 loaded=512 empty=60 unavailable=3 failed=0 rows=0
+2026-09-22 20:50:11,123 INFO atx_db.fundamentals: companyfacts processed=600 total=20390 loaded=537 empty=60 unavailable=3 failed=0 rows=0
+2026-09-22 20:50:12,693 INFO atx_db.fundamentals: companyfacts processed=625 total=20390 loaded=559 empty=63 unavailable=3 failed=0 rows=0
+2026-09-22 20:50:14,178 INFO atx_db.fundamentals: companyfacts processed=650 total=20390 loaded=581 empty=66 unavailable=3 failed=0 rows=0
+2026-09-22 20:50:18,589 INFO atx_db.fundamentals: companyfacts processed=675 total=20390 loaded=604 empty=68 unavailable=3 failed=0 rows=0
+2026-09-22 20:50:20,121 INFO atx_db.fundamentals: companyfacts processed=700 total=20390 loaded=625 empty=71 unavailable=4 failed=0 rows=0
+2026-09-22 20:50:24,050 INFO atx_db.fundamentals: companyfacts processed=725 total=20390 loaded=638 empty=83 unavailable=4 failed=0 rows=0
+2026-09-22 20:50:25,656 INFO atx_db.fundamentals: companyfacts processed=750 total=20390 loaded=662 empty=84 unavailable=4 failed=0 rows=0
+2026-09-22 20:50:29,843 INFO atx_db.fundamentals: companyfacts processed=775 total=20390 loaded=681 empty=90 unavailable=4 failed=0 rows=0
+2026-09-22 20:50:31,317 INFO atx_db.fundamentals: companyfacts processed=800 total=20390 loaded=703 empty=93 unavailable=4 failed=0 rows=0
+2026-09-22 20:50:32,807 INFO atx_db.fundamentals: companyfacts processed=825 total=20390 loaded=728 empty=93 unavailable=4 failed=0 rows=0
+2026-09-22 20:50:34,303 INFO atx_db.fundamentals: companyfacts processed=850 total=20390 loaded=752 empty=94 unavailable=4 failed=0 rows=0
+2026-09-22 20:50:38,600 INFO atx_db.fundamentals: companyfacts processed=875 total=20390 loaded=774 empty=97 unavailable=4 failed=0 rows=0
+2026-09-22 20:50:40,129 INFO atx_db.fundamentals: companyfacts processed=900 total=20390 loaded=796 empty=100 unavailable=4 failed=0 rows=0
+2026-09-22 20:50:44,188 INFO atx_db.fundamentals: companyfacts processed=925 total=20390 loaded=814 empty=106 unavailable=5 failed=0 rows=0
+2026-09-22 20:50:45,878 INFO atx_db.fundamentals: companyfacts processed=950 total=20390 loaded=837 empty=107 unavailable=6 failed=0 rows=0
+2026-09-22 20:50:47,495 INFO atx_db.fundamentals: companyfacts processed=975 total=20390 loaded=860 empty=109 unavailable=6 failed=0 rows=0
+2026-09-22 20:50:51,765 INFO atx_db.fundamentals: companyfacts processed=1000 total=20390 loaded=877 empty=116 unavailable=7 failed=0 rows=0
+2026-09-22 20:50:53,024 INFO atx_db.fundamentals: companyfacts processed=1025 total=20390 loaded=894 empty=123 unavailable=8 failed=0 rows=0
+2026-09-22 20:50:56,833 INFO atx_db.fundamentals: companyfacts processed=1050 total=20390 loaded=914 empty=128 unavailable=8 failed=0 rows=0
+2026-09-22 20:50:58,220 INFO atx_db.fundamentals: companyfacts processed=1075 total=20390 loaded=934 empty=133 unavailable=8 failed=0 rows=0
+2026-09-22 20:51:02,036 INFO atx_db.fundamentals: companyfacts processed=1100 total=20390 loaded=954 empty=138 unavailable=8 failed=0 rows=0
+2026-09-22 20:51:03,268 INFO atx_db.fundamentals: companyfacts processed=1125 total=20390 loaded=973 empty=143 unavailable=9 failed=0 rows=0
+2026-09-22 20:51:06,886 INFO atx_db.fundamentals: companyfacts processed=1150 total=20390 loaded=994 empty=147 unavailable=9 failed=0 rows=0
+2026-09-22 20:51:08,503 INFO atx_db.fundamentals: companyfacts processed=1175 total=20390 loaded=1016 empty=150 unavailable=9 failed=0 rows=0
+2026-09-22 20:51:09,995 INFO atx_db.fundamentals: companyfacts processed=1200 total=20390 loaded=1038 empty=153 unavailable=9 failed=0 rows=0
+2026-09-22 20:51:13,948 INFO atx_db.fundamentals: companyfacts processed=1225 total=20390 loaded=1060 empty=156 unavailable=9 failed=0 rows=0
+2026-09-22 20:51:15,298 INFO atx_db.fundamentals: companyfacts processed=1250 total=20390 loaded=1082 empty=158 unavailable=10 failed=0 rows=0
+2026-09-22 20:51:18,979 INFO atx_db.fundamentals: companyfacts processed=1275 total=20390 loaded=1098 empty=167 unavailable=10 failed=0 rows=0
+2026-09-22 20:51:20,151 INFO atx_db.fundamentals: companyfacts processed=1300 total=20390 loaded=1115 empty=175 unavailable=10 failed=0 rows=0
+2026-09-22 20:51:23,732 INFO atx_db.fundamentals: companyfacts processed=1325 total=20390 loaded=1134 empty=181 unavailable=10 failed=0 rows=0
+2026-09-22 20:51:25,098 INFO atx_db.fundamentals: companyfacts processed=1350 total=20390 loaded=1154 empty=185 unavailable=11 failed=0 rows=0
+2026-09-22 20:51:28,925 INFO atx_db.fundamentals: companyfacts processed=1375 total=20390 loaded=1176 empty=188 unavailable=11 failed=0 rows=0
+2026-09-22 20:51:30,316 INFO atx_db.fundamentals: companyfacts processed=1400 total=20390 loaded=1195 empty=194 unavailable=11 failed=0 rows=0
+2026-09-22 20:51:31,837 INFO atx_db.fundamentals: companyfacts processed=1425 total=20390 loaded=1219 empty=195 unavailable=11 failed=0 rows=0
+2026-09-22 20:51:35,964 INFO atx_db.fundamentals: companyfacts processed=1450 total=20390 loaded=1243 empty=196 unavailable=11 failed=0 rows=0
+2026-09-22 20:51:37,556 INFO atx_db.fundamentals: companyfacts processed=1475 total=20390 loaded=1267 empty=197 unavailable=11 failed=0 rows=0
+2026-09-22 20:51:38,986 INFO atx_db.fundamentals: companyfacts processed=1500 total=20390 loaded=1286 empty=202 unavailable=12 failed=0 rows=0
+2026-09-22 20:51:40,443 INFO atx_db.fundamentals: companyfacts processed=1525 total=20390 loaded=1309 empty=204 unavailable=12 failed=0 rows=0
+2026-09-22 20:51:44,237 INFO atx_db.fundamentals: companyfacts processed=1550 total=20390 loaded=1330 empty=208 unavailable=12 failed=0 rows=0
+2026-09-22 20:51:45,550 INFO atx_db.fundamentals: companyfacts processed=1575 total=20390 loaded=1353 empty=210 unavailable=12 failed=0 rows=0
+2026-09-22 20:51:46,846 INFO atx_db.fundamentals: companyfacts processed=1600 total=20390 loaded=1375 empty=213 unavailable=12 failed=0 rows=0
+2026-09-22 20:51:50,518 INFO atx_db.fundamentals: companyfacts processed=1625 total=20390 loaded=1393 empty=220 unavailable=12 failed=0 rows=0
+2026-09-22 20:51:53,996 INFO atx_db.fundamentals: companyfacts processed=1650 total=20390 loaded=1412 empty=226 unavailable=12 failed=0 rows=0
+2026-09-22 20:51:55,187 INFO atx_db.fundamentals: companyfacts processed=1675 total=20390 loaded=1432 empty=230 unavailable=13 failed=0 rows=0
+2026-09-22 20:51:56,190 INFO atx_db.fundamentals: companyfacts processed=1700 total=20390 loaded=1452 empty=234 unavailable=14 failed=0 rows=0
+2026-09-22 20:52:00,118 INFO atx_db.fundamentals: companyfacts processed=1725 total=20390 loaded=1473 empty=237 unavailable=15 failed=0 rows=0
+2026-09-22 20:52:01,256 INFO atx_db.fundamentals: companyfacts processed=1750 total=20390 loaded=1493 empty=242 unavailable=15 failed=0 rows=0
+2026-09-22 20:52:04,821 INFO atx_db.fundamentals: companyfacts processed=1775 total=20390 loaded=1514 empty=246 unavailable=15 failed=0 rows=0
+2026-09-22 20:52:06,118 INFO atx_db.fundamentals: companyfacts processed=1800 total=20390 loaded=1533 empty=250 unavailable=17 failed=0 rows=0
+2026-09-22 20:52:09,645 INFO atx_db.fundamentals: companyfacts processed=1825 total=20390 loaded=1552 empty=256 unavailable=17 failed=0 rows=0
+2026-09-22 20:52:10,946 INFO atx_db.fundamentals: companyfacts processed=1850 total=20390 loaded=1573 empty=260 unavailable=17 failed=0 rows=0
+2026-09-22 20:52:14,194 INFO atx_db.fundamentals: companyfacts processed=1875 total=20390 loaded=1591 empty=267 unavailable=17 failed=0 rows=0
+2026-09-22 20:52:15,567 INFO atx_db.fundamentals: companyfacts processed=1900 total=20390 loaded=1613 empty=270 unavailable=17 failed=0 rows=0
+2026-09-22 20:52:19,238 INFO atx_db.fundamentals: companyfacts processed=1925 total=20390 loaded=1631 empty=276 unavailable=18 failed=0 rows=0
+2026-09-22 20:52:20,503 INFO atx_db.fundamentals: companyfacts processed=1950 total=20390 loaded=1652 empty=280 unavailable=18 failed=0 rows=0
+2026-09-22 20:52:21,824 INFO atx_db.fundamentals: companyfacts processed=1975 total=20390 loaded=1672 empty=285 unavailable=18 failed=0 rows=0
+2026-09-22 20:52:25,312 INFO atx_db.fundamentals: companyfacts processed=2000 total=20390 loaded=1694 empty=288 unavailable=18 failed=0 rows=0
+2026-09-22 20:52:26,539 INFO atx_db.fundamentals: companyfacts processed=2025 total=20390 loaded=1716 empty=291 unavailable=18 failed=0 rows=0
+2026-09-22 20:52:29,789 INFO atx_db.fundamentals: companyfacts processed=2050 total=20390 loaded=1731 empty=301 unavailable=18 failed=0 rows=0
+2026-09-22 20:52:33,210 INFO atx_db.fundamentals: companyfacts processed=2075 total=20390 loaded=1749 empty=308 unavailable=18 failed=0 rows=0
+2026-09-22 20:52:34,395 INFO atx_db.fundamentals: companyfacts processed=2100 total=20390 loaded=1769 empty=312 unavailable=19 failed=0 rows=0
+2026-09-22 20:52:35,704 INFO atx_db.fundamentals: companyfacts processed=2125 total=20390 loaded=1791 empty=315 unavailable=19 failed=0 rows=0
+2026-09-22 20:52:39,425 INFO atx_db.fundamentals: companyfacts processed=2150 total=20390 loaded=1810 empty=319 unavailable=21 failed=0 rows=0
+2026-09-22 20:52:40,595 INFO atx_db.fundamentals: companyfacts processed=2175 total=20390 loaded=1830 empty=324 unavailable=21 failed=0 rows=0
+2026-09-22 20:52:43,834 INFO atx_db.fundamentals: companyfacts processed=2200 total=20390 loaded=1848 empty=329 unavailable=23 failed=0 rows=0
+2026-09-22 20:52:47,164 INFO atx_db.fundamentals: companyfacts processed=2225 total=20390 loaded=1864 empty=338 unavailable=23 failed=0 rows=0
+2026-09-22 20:52:48,450 INFO atx_db.fundamentals: companyfacts processed=2250 total=20390 loaded=1885 empty=342 unavailable=23 failed=0 rows=0
+2026-09-22 20:52:49,891 INFO atx_db.fundamentals: companyfacts processed=2275 total=20390 loaded=1907 empty=345 unavailable=23 failed=0 rows=0
+2026-09-22 20:52:53,415 INFO atx_db.fundamentals: companyfacts processed=2300 total=20390 loaded=1926 empty=351 unavailable=23 failed=0 rows=0
+2026-09-22 20:52:54,695 INFO atx_db.fundamentals: companyfacts processed=2325 total=20390 loaded=1947 empty=355 unavailable=23 failed=0 rows=0
+2026-09-22 20:52:58,556 INFO atx_db.fundamentals: companyfacts processed=2350 total=20390 loaded=1970 empty=357 unavailable=23 failed=0 rows=0
+2026-09-22 20:52:59,768 INFO atx_db.fundamentals: companyfacts processed=2375 total=20390 loaded=1987 empty=364 unavailable=24 failed=0 rows=0
+2026-09-22 20:53:03,762 INFO atx_db.fundamentals: companyfacts processed=2400 total=20390 loaded=2003 empty=372 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:05,615 INFO atx_db.fundamentals: companyfacts processed=2425 total=20390 loaded=2026 empty=374 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:10,051 INFO atx_db.fundamentals: companyfacts processed=2450 total=20390 loaded=2047 empty=378 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:11,515 INFO atx_db.fundamentals: companyfacts processed=2475 total=20390 loaded=2065 empty=385 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:15,691 INFO atx_db.fundamentals: companyfacts processed=2500 total=20390 loaded=2080 empty=395 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:20,059 INFO atx_db.fundamentals: companyfacts processed=2525 total=20390 loaded=2099 empty=401 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:21,697 INFO atx_db.fundamentals: companyfacts processed=2550 total=20390 loaded=2122 empty=403 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:25,891 INFO atx_db.fundamentals: companyfacts processed=2575 total=20390 loaded=2142 empty=408 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:27,411 INFO atx_db.fundamentals: companyfacts processed=2600 total=20390 loaded=2162 empty=413 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:29,087 INFO atx_db.fundamentals: companyfacts processed=2625 total=20390 loaded=2185 empty=415 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:33,390 INFO atx_db.fundamentals: companyfacts processed=2650 total=20390 loaded=2202 empty=423 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:37,288 INFO atx_db.fundamentals: companyfacts processed=2675 total=20390 loaded=2221 empty=429 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:38,683 INFO atx_db.fundamentals: companyfacts processed=2700 total=20390 loaded=2241 empty=434 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:42,505 INFO atx_db.fundamentals: companyfacts processed=2725 total=20390 loaded=2262 empty=438 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:43,911 INFO atx_db.fundamentals: companyfacts processed=2750 total=20390 loaded=2285 empty=440 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:45,130 INFO atx_db.fundamentals: companyfacts processed=2775 total=20390 loaded=2305 empty=445 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:49,119 INFO atx_db.fundamentals: companyfacts processed=2800 total=20390 loaded=2328 empty=447 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:50,614 INFO atx_db.fundamentals: companyfacts processed=2825 total=20390 loaded=2350 empty=450 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:51,963 INFO atx_db.fundamentals: companyfacts processed=2850 total=20390 loaded=2372 empty=453 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:53,314 INFO atx_db.fundamentals: companyfacts processed=2875 total=20390 loaded=2396 empty=454 unavailable=25 failed=0 rows=0
+2026-09-22 20:53:57,342 INFO atx_db.fundamentals: companyfacts processed=2900 total=20390 loaded=2417 empty=458 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:01,119 INFO atx_db.fundamentals: companyfacts processed=2925 total=20390 loaded=2432 empty=468 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:02,699 INFO atx_db.fundamentals: companyfacts processed=2950 total=20390 loaded=2453 empty=472 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:06,625 INFO atx_db.fundamentals: companyfacts processed=2975 total=20390 loaded=2474 empty=476 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:07,990 INFO atx_db.fundamentals: companyfacts processed=3000 total=20390 loaded=2491 empty=484 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:11,558 INFO atx_db.fundamentals: companyfacts processed=3025 total=20390 loaded=2510 empty=490 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:12,935 INFO atx_db.fundamentals: companyfacts processed=3050 total=20390 loaded=2533 empty=492 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:16,929 INFO atx_db.fundamentals: companyfacts processed=3075 total=20390 loaded=2554 empty=496 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:18,659 INFO atx_db.fundamentals: companyfacts processed=3100 total=20390 loaded=2576 empty=499 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:20,197 INFO atx_db.fundamentals: companyfacts processed=3125 total=20390 loaded=2597 empty=503 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:23,828 INFO atx_db.fundamentals: companyfacts processed=3150 total=20390 loaded=2616 empty=509 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:28,034 INFO atx_db.fundamentals: companyfacts processed=3175 total=20390 loaded=2634 empty=516 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:29,646 INFO atx_db.fundamentals: companyfacts processed=3200 total=20390 loaded=2655 empty=520 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:33,645 INFO atx_db.fundamentals: companyfacts processed=3225 total=20390 loaded=2673 empty=527 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:35,130 INFO atx_db.fundamentals: companyfacts processed=3250 total=20390 loaded=2696 empty=529 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:39,166 INFO atx_db.fundamentals: companyfacts processed=3275 total=20390 loaded=2714 empty=536 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:40,751 INFO atx_db.fundamentals: companyfacts processed=3300 total=20390 loaded=2734 empty=541 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:44,708 INFO atx_db.fundamentals: companyfacts processed=3325 total=20390 loaded=2749 empty=551 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:46,415 INFO atx_db.fundamentals: companyfacts processed=3350 total=20390 loaded=2771 empty=554 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:50,290 INFO atx_db.fundamentals: companyfacts processed=3375 total=20390 loaded=2789 empty=561 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:53,921 INFO atx_db.fundamentals: companyfacts processed=3400 total=20390 loaded=2808 empty=567 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:55,221 INFO atx_db.fundamentals: companyfacts processed=3425 total=20390 loaded=2826 empty=574 unavailable=25 failed=0 rows=0
+2026-09-22 20:54:59,097 INFO atx_db.fundamentals: companyfacts processed=3450 total=20390 loaded=2848 empty=577 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:00,448 INFO atx_db.fundamentals: companyfacts processed=3475 total=20390 loaded=2871 empty=579 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:01,806 INFO atx_db.fundamentals: companyfacts processed=3500 total=20390 loaded=2892 empty=583 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:05,219 INFO atx_db.fundamentals: companyfacts processed=3525 total=20390 loaded=2912 empty=588 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:06,485 INFO atx_db.fundamentals: companyfacts processed=3550 total=20390 loaded=2931 empty=594 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:10,188 INFO atx_db.fundamentals: companyfacts processed=3575 total=20390 loaded=2947 empty=603 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:13,795 INFO atx_db.fundamentals: companyfacts processed=3600 total=20390 loaded=2967 empty=608 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:15,194 INFO atx_db.fundamentals: companyfacts processed=3625 total=20390 loaded=2990 empty=610 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:16,597 INFO atx_db.fundamentals: companyfacts processed=3650 total=20390 loaded=3012 empty=613 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:18,015 INFO atx_db.fundamentals: companyfacts processed=3675 total=20390 loaded=3035 empty=615 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:21,448 INFO atx_db.fundamentals: companyfacts processed=3700 total=20390 loaded=3056 empty=619 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:22,758 INFO atx_db.fundamentals: companyfacts processed=3725 total=20390 loaded=3077 empty=623 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:26,338 INFO atx_db.fundamentals: companyfacts processed=3750 total=20390 loaded=3096 empty=629 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:27,749 INFO atx_db.fundamentals: companyfacts processed=3775 total=20390 loaded=3117 empty=633 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:31,690 INFO atx_db.fundamentals: companyfacts processed=3800 total=20390 loaded=3135 empty=640 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:33,101 INFO atx_db.fundamentals: companyfacts processed=3825 total=20390 loaded=3156 empty=644 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:36,808 INFO atx_db.fundamentals: companyfacts processed=3850 total=20390 loaded=3176 empty=649 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:38,352 INFO atx_db.fundamentals: companyfacts processed=3875 total=20390 loaded=3197 empty=653 unavailable=25 failed=0 rows=0
+2026-09-22 20:55:42,518 INFO atx_db.fundamentals: companyfacts processed=3900 total=20390 loaded=3218 empty=656 unavailable=26 failed=0 rows=0
+2026-09-22 20:55:43,934 INFO atx_db.fundamentals: companyfacts processed=3925 total=20390 loaded=3238 empty=661 unavailable=26 failed=0 rows=0
+2026-09-22 20:55:45,425 INFO atx_db.fundamentals: companyfacts processed=3950 total=20390 loaded=3263 empty=661 unavailable=26 failed=0 rows=0
+2026-09-22 20:55:46,790 INFO atx_db.fundamentals: companyfacts processed=3975 total=20390 loaded=3286 empty=663 unavailable=26 failed=0 rows=0
+2026-09-22 20:55:50,622 INFO atx_db.fundamentals: companyfacts processed=4000 total=20390 loaded=3308 empty=666 unavailable=26 failed=0 rows=0
+2026-09-22 20:55:52,028 INFO atx_db.fundamentals: companyfacts processed=4025 total=20390 loaded=3332 empty=667 unavailable=26 failed=0 rows=0
+2026-09-22 20:55:53,442 INFO atx_db.fundamentals: companyfacts processed=4050 total=20390 loaded=3355 empty=669 unavailable=26 failed=0 rows=0
+2026-09-22 20:55:54,920 INFO atx_db.fundamentals: companyfacts processed=4075 total=20390 loaded=3378 empty=671 unavailable=26 failed=0 rows=0
+2026-09-22 20:55:59,659 INFO atx_db.fundamentals: companyfacts processed=4100 total=20390 loaded=3401 empty=673 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:01,283 INFO atx_db.fundamentals: companyfacts processed=4125 total=20390 loaded=3424 empty=675 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:02,799 INFO atx_db.fundamentals: companyfacts processed=4150 total=20390 loaded=3446 empty=678 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:04,501 INFO atx_db.fundamentals: companyfacts processed=4175 total=20390 loaded=3470 empty=679 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:06,029 INFO atx_db.fundamentals: companyfacts processed=4200 total=20390 loaded=3494 empty=680 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:09,994 INFO atx_db.fundamentals: companyfacts processed=4225 total=20390 loaded=3516 empty=683 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:11,283 INFO atx_db.fundamentals: companyfacts processed=4250 total=20390 loaded=3535 empty=689 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:15,160 INFO atx_db.fundamentals: companyfacts processed=4275 total=20390 loaded=3559 empty=690 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:16,544 INFO atx_db.fundamentals: companyfacts processed=4300 total=20390 loaded=3583 empty=691 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:17,885 INFO atx_db.fundamentals: companyfacts processed=4325 total=20390 loaded=3604 empty=695 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:19,433 INFO atx_db.fundamentals: companyfacts processed=4350 total=20390 loaded=3629 empty=695 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:21,087 INFO atx_db.fundamentals: companyfacts processed=4375 total=20390 loaded=3652 empty=697 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:25,598 INFO atx_db.fundamentals: companyfacts processed=4400 total=20390 loaded=3675 empty=699 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:27,223 INFO atx_db.fundamentals: companyfacts processed=4425 total=20390 loaded=3694 empty=705 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:31,277 INFO atx_db.fundamentals: companyfacts processed=4450 total=20390 loaded=3716 empty=708 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:32,637 INFO atx_db.fundamentals: companyfacts processed=4475 total=20390 loaded=3738 empty=711 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:34,044 INFO atx_db.fundamentals: companyfacts processed=4500 total=20390 loaded=3758 empty=716 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:38,714 INFO atx_db.fundamentals: companyfacts processed=4525 total=20390 loaded=3782 empty=717 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:40,642 INFO atx_db.fundamentals: companyfacts processed=4550 total=20390 loaded=3807 empty=717 unavailable=26 failed=0 rows=0
+2026-09-22 20:56:42,167 INFO atx_db.fundamentals: companyfacts processed=4575 total=20390 loaded=3828 empty=720 unavailable=27 failed=0 rows=0
+2026-09-22 20:56:43,662 INFO atx_db.fundamentals: companyfacts processed=4600 total=20390 loaded=3849 empty=724 unavailable=27 failed=0 rows=0
+2026-09-22 20:56:48,165 INFO atx_db.fundamentals: companyfacts processed=4625 total=20390 loaded=3872 empty=726 unavailable=27 failed=0 rows=0
+2026-09-22 20:56:49,815 INFO atx_db.fundamentals: companyfacts processed=4650 total=20390 loaded=3896 empty=727 unavailable=27 failed=0 rows=0
+2026-09-22 20:56:51,415 INFO atx_db.fundamentals: companyfacts processed=4675 total=20390 loaded=3919 empty=729 unavailable=27 failed=0 rows=0
+2026-09-22 20:56:53,136 INFO atx_db.fundamentals: companyfacts processed=4700 total=20390 loaded=3942 empty=731 unavailable=27 failed=0 rows=0
+2026-09-22 20:56:57,301 INFO atx_db.fundamentals: companyfacts processed=4725 total=20390 loaded=3963 empty=735 unavailable=27 failed=0 rows=0
+2026-09-22 20:56:58,736 INFO atx_db.fundamentals: companyfacts processed=4750 total=20390 loaded=3984 empty=739 unavailable=27 failed=0 rows=0
+2026-09-22 20:57:02,742 INFO atx_db.fundamentals: companyfacts processed=4775 total=20390 loaded=4004 empty=744 unavailable=27 failed=0 rows=0
+2026-09-22 20:57:04,221 INFO atx_db.fundamentals: companyfacts processed=4800 total=20390 loaded=4027 empty=746 unavailable=27 failed=0 rows=0
+2026-09-22 20:57:05,701 INFO atx_db.fundamentals: companyfacts processed=4825 total=20390 loaded=4050 empty=748 unavailable=27 failed=0 rows=0
+2026-09-22 20:57:07,291 INFO atx_db.fundamentals: companyfacts processed=4850 total=20390 loaded=4073 empty=750 unavailable=27 failed=0 rows=0
+2026-09-22 20:57:11,216 INFO atx_db.fundamentals: companyfacts processed=4875 total=20390 loaded=4094 empty=754 unavailable=27 failed=0 rows=0
+2026-09-22 20:57:14,970 INFO atx_db.fundamentals: companyfacts processed=4900 total=20390 loaded=4100 empty=773 unavailable=27 failed=0 rows=0
+2026-09-22 20:57:19,013 INFO atx_db.fundamentals: companyfacts processed=4925 total=20390 loaded=4123 empty=775 unavailable=27 failed=0 rows=0
+2026-09-22 20:57:20,562 INFO atx_db.fundamentals: companyfacts processed=4950 total=20390 loaded=4144 empty=778 unavailable=28 failed=0 rows=0
+2026-09-22 20:57:22,077 INFO atx_db.fundamentals: companyfacts processed=4975 total=20390 loaded=4166 empty=781 unavailable=28 failed=0 rows=0
+2026-09-22 20:57:23,941 INFO atx_db.fundamentals: companyfacts processed=5000 total=20390 loaded=4191 empty=781 unavailable=28 failed=0 rows=0
+2026-09-22 20:57:28,513 INFO atx_db.fundamentals: companyfacts processed=5025 total=20390 loaded=4213 empty=784 unavailable=28 failed=0 rows=0
+2026-09-22 20:57:30,275 INFO atx_db.fundamentals: companyfacts processed=5050 total=20390 loaded=4238 empty=784 unavailable=28 failed=0 rows=0
+2026-09-22 20:57:32,036 INFO atx_db.fundamentals: companyfacts processed=5075 total=20390 loaded=4261 empty=786 unavailable=28 failed=0 rows=0
+2026-09-22 20:57:33,745 INFO atx_db.fundamentals: companyfacts processed=5100 total=20390 loaded=4285 empty=787 unavailable=28 failed=0 rows=0
+2026-09-22 20:57:38,018 INFO atx_db.fundamentals: companyfacts processed=5125 total=20390 loaded=4304 empty=793 unavailable=28 failed=0 rows=0
+2026-09-22 20:57:39,796 INFO atx_db.fundamentals: companyfacts processed=5150 total=20390 loaded=4326 empty=796 unavailable=28 failed=0 rows=0
+2026-09-22 20:57:41,749 INFO atx_db.fundamentals: companyfacts processed=5175 total=20390 loaded=4347 empty=800 unavailable=28 failed=0 rows=0
+2026-09-22 20:57:46,582 INFO atx_db.fundamentals: companyfacts processed=5200 total=20390 loaded=4368 empty=804 unavailable=28 failed=0 rows=0
+2026-09-22 20:57:48,394 INFO atx_db.fundamentals: companyfacts processed=5225 total=20390 loaded=4392 empty=805 unavailable=28 failed=0 rows=0
+2026-09-22 20:57:50,210 INFO atx_db.fundamentals: companyfacts processed=5250 total=20390 loaded=4416 empty=806 unavailable=28 failed=0 rows=0
+2026-09-22 20:57:51,846 INFO atx_db.fundamentals: companyfacts processed=5275 total=20390 loaded=4437 empty=810 unavailable=28 failed=0 rows=0
+2026-09-22 20:57:56,397 INFO atx_db.fundamentals: companyfacts processed=5300 total=20390 loaded=4459 empty=813 unavailable=28 failed=0 rows=0
+2026-09-22 20:57:58,144 INFO atx_db.fundamentals: companyfacts processed=5325 total=20390 loaded=4480 empty=817 unavailable=28 failed=0 rows=0
+2026-09-22 20:57:59,904 INFO atx_db.fundamentals: companyfacts processed=5350 total=20390 loaded=4503 empty=819 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:04,728 INFO atx_db.fundamentals: companyfacts processed=5375 total=20390 loaded=4526 empty=821 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:06,340 INFO atx_db.fundamentals: companyfacts processed=5400 total=20390 loaded=4545 empty=827 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:08,090 INFO atx_db.fundamentals: companyfacts processed=5425 total=20390 loaded=4569 empty=828 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:09,970 INFO atx_db.fundamentals: companyfacts processed=5450 total=20390 loaded=4593 empty=829 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:14,431 INFO atx_db.fundamentals: companyfacts processed=5475 total=20390 loaded=4616 empty=831 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:16,098 INFO atx_db.fundamentals: companyfacts processed=5500 total=20390 loaded=4639 empty=833 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:17,800 INFO atx_db.fundamentals: companyfacts processed=5525 total=20390 loaded=4663 empty=834 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:19,468 INFO atx_db.fundamentals: companyfacts processed=5550 total=20390 loaded=4685 empty=837 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:24,229 INFO atx_db.fundamentals: companyfacts processed=5575 total=20390 loaded=4709 empty=838 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:26,004 INFO atx_db.fundamentals: companyfacts processed=5600 total=20390 loaded=4733 empty=839 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:27,818 INFO atx_db.fundamentals: companyfacts processed=5625 total=20390 loaded=4758 empty=839 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:29,614 INFO atx_db.fundamentals: companyfacts processed=5650 total=20390 loaded=4780 empty=842 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:31,507 INFO atx_db.fundamentals: companyfacts processed=5675 total=20390 loaded=4804 empty=843 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:36,230 INFO atx_db.fundamentals: companyfacts processed=5700 total=20390 loaded=4827 empty=845 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:37,883 INFO atx_db.fundamentals: companyfacts processed=5725 total=20390 loaded=4852 empty=845 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:39,499 INFO atx_db.fundamentals: companyfacts processed=5750 total=20390 loaded=4876 empty=846 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:41,192 INFO atx_db.fundamentals: companyfacts processed=5775 total=20390 loaded=4898 empty=849 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:46,104 INFO atx_db.fundamentals: companyfacts processed=5800 total=20390 loaded=4922 empty=850 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:47,789 INFO atx_db.fundamentals: companyfacts processed=5825 total=20390 loaded=4943 empty=854 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:49,429 INFO atx_db.fundamentals: companyfacts processed=5850 total=20390 loaded=4967 empty=855 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:53,900 INFO atx_db.fundamentals: companyfacts processed=5875 total=20390 loaded=4987 empty=860 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:55,614 INFO atx_db.fundamentals: companyfacts processed=5900 total=20390 loaded=5011 empty=861 unavailable=28 failed=0 rows=0
+2026-09-22 20:58:57,380 INFO atx_db.fundamentals: companyfacts processed=5925 total=20390 loaded=5033 empty=864 unavailable=28 failed=0 rows=0
+2026-09-22 20:59:04,168 INFO atx_db.fundamentals: companyfacts processed=5950 total=20390 loaded=5043 empty=879 unavailable=28 failed=0 rows=0
+2026-09-22 20:59:06,137 INFO atx_db.fundamentals: companyfacts processed=5975 total=20390 loaded=5066 empty=881 unavailable=28 failed=0 rows=0
+2026-09-22 20:59:07,907 INFO atx_db.fundamentals: companyfacts processed=6000 total=20390 loaded=5088 empty=884 unavailable=28 failed=0 rows=0
+2026-09-22 20:59:09,647 INFO atx_db.fundamentals: companyfacts processed=6025 total=20390 loaded=5109 empty=888 unavailable=28 failed=0 rows=0
+2026-09-22 20:59:11,727 INFO atx_db.fundamentals: companyfacts processed=6050 total=20390 loaded=5134 empty=888 unavailable=28 failed=0 rows=0
+2026-09-22 20:59:16,244 INFO atx_db.fundamentals: companyfacts processed=6075 total=20390 loaded=5156 empty=891 unavailable=28 failed=0 rows=0
+2026-09-22 20:59:17,795 INFO atx_db.fundamentals: companyfacts processed=6100 total=20390 loaded=5177 empty=895 unavailable=28 failed=0 rows=0
+2026-09-22 20:59:19,439 INFO atx_db.fundamentals: companyfacts processed=6125 total=20390 loaded=5199 empty=898 unavailable=28 failed=0 rows=0
+2026-09-22 20:59:23,604 INFO atx_db.fundamentals: companyfacts processed=6150 total=20390 loaded=5218 empty=904 unavailable=28 failed=0 rows=0
+2026-09-22 20:59:25,089 INFO atx_db.fundamentals: companyfacts processed=6175 total=20390 loaded=5241 empty=906 unavailable=28 failed=0 rows=0
+2026-09-22 20:59:29,739 INFO atx_db.fundamentals: companyfacts processed=6200 total=20390 loaded=5262 empty=910 unavailable=28 failed=0 rows=0
+2026-09-22 20:59:31,321 INFO atx_db.fundamentals: companyfacts processed=6225 total=20390 loaded=5282 empty=915 unavailable=28 failed=0 rows=0
+2026-09-22 20:59:32,967 INFO atx_db.fundamentals: companyfacts processed=6250 total=20390 loaded=5306 empty=915 unavailable=29 failed=0 rows=0
+2026-09-22 20:59:34,682 INFO atx_db.fundamentals: companyfacts processed=6275 total=20390 loaded=5330 empty=916 unavailable=29 failed=0 rows=0
+2026-09-22 20:59:39,127 INFO atx_db.fundamentals: companyfacts processed=6300 total=20390 loaded=5351 empty=920 unavailable=29 failed=0 rows=0
+2026-09-22 20:59:40,844 INFO atx_db.fundamentals: companyfacts processed=6325 total=20390 loaded=5374 empty=922 unavailable=29 failed=0 rows=0
+2026-09-22 20:59:42,371 INFO atx_db.fundamentals: companyfacts processed=6350 total=20390 loaded=5398 empty=923 unavailable=29 failed=0 rows=0
+2026-09-22 20:59:44,161 INFO atx_db.fundamentals: companyfacts processed=6375 total=20390 loaded=5419 empty=927 unavailable=29 failed=0 rows=0
+2026-09-22 20:59:48,718 INFO atx_db.fundamentals: companyfacts processed=6400 total=20390 loaded=5440 empty=931 unavailable=29 failed=0 rows=0
+2026-09-22 20:59:50,253 INFO atx_db.fundamentals: companyfacts processed=6425 total=20390 loaded=5462 empty=934 unavailable=29 failed=0 rows=0
+2026-09-22 20:59:54,189 INFO atx_db.fundamentals: companyfacts processed=6450 total=20390 loaded=5481 empty=940 unavailable=29 failed=0 rows=0
+2026-09-22 20:59:55,678 INFO atx_db.fundamentals: companyfacts processed=6475 total=20390 loaded=5504 empty=942 unavailable=29 failed=0 rows=0
+2026-09-22 20:59:57,180 INFO atx_db.fundamentals: companyfacts processed=6500 total=20390 loaded=5528 empty=943 unavailable=29 failed=0 rows=0
+2026-09-22 20:59:58,518 INFO atx_db.fundamentals: companyfacts processed=6525 total=20390 loaded=5550 empty=945 unavailable=30 failed=0 rows=0
+2026-09-22 21:00:02,593 INFO atx_db.fundamentals: companyfacts processed=6550 total=20390 loaded=5566 empty=953 unavailable=31 failed=0 rows=0
+2026-09-22 21:00:04,205 INFO atx_db.fundamentals: companyfacts processed=6575 total=20390 loaded=5590 empty=954 unavailable=31 failed=0 rows=0
+2026-09-22 21:00:05,758 INFO atx_db.fundamentals: companyfacts processed=6600 total=20390 loaded=5612 empty=957 unavailable=31 failed=0 rows=0
+2026-09-22 21:00:09,621 INFO atx_db.fundamentals: companyfacts processed=6625 total=20390 loaded=5632 empty=961 unavailable=32 failed=0 rows=0
+2026-09-22 21:00:11,062 INFO atx_db.fundamentals: companyfacts processed=6650 total=20390 loaded=5650 empty=968 unavailable=32 failed=0 rows=0
+2026-09-22 21:00:15,347 INFO atx_db.fundamentals: companyfacts processed=6675 total=20390 loaded=5671 empty=972 unavailable=32 failed=0 rows=0
+2026-09-22 21:00:19,089 INFO atx_db.fundamentals: companyfacts processed=6700 total=20390 loaded=5687 empty=980 unavailable=33 failed=0 rows=0
+2026-09-22 21:00:22,946 INFO atx_db.fundamentals: companyfacts processed=6725 total=20390 loaded=5702 empty=989 unavailable=34 failed=0 rows=0
+2026-09-22 21:00:24,408 INFO atx_db.fundamentals: companyfacts processed=6750 total=20390 loaded=5722 empty=994 unavailable=34 failed=0 rows=0
+2026-09-22 21:00:25,788 INFO atx_db.fundamentals: companyfacts processed=6775 total=20390 loaded=5743 empty=998 unavailable=34 failed=0 rows=0
+2026-09-22 21:00:29,793 INFO atx_db.fundamentals: companyfacts processed=6800 total=20390 loaded=5765 empty=1001 unavailable=34 failed=0 rows=0
+2026-09-22 21:00:34,002 INFO atx_db.fundamentals: companyfacts processed=6825 total=20390 loaded=5782 empty=1009 unavailable=34 failed=0 rows=0
+2026-09-22 21:00:35,776 INFO atx_db.fundamentals: companyfacts processed=6850 total=20390 loaded=5802 empty=1014 unavailable=34 failed=0 rows=0
+2026-09-22 21:00:39,910 INFO atx_db.fundamentals: companyfacts processed=6875 total=20390 loaded=5821 empty=1019 unavailable=35 failed=0 rows=0
+2026-09-22 21:00:41,372 INFO atx_db.fundamentals: companyfacts processed=6900 total=20390 loaded=5841 empty=1024 unavailable=35 failed=0 rows=0
+2026-09-22 21:00:45,711 INFO atx_db.fundamentals: companyfacts processed=6925 total=20390 loaded=5859 empty=1031 unavailable=35 failed=0 rows=0
+2026-09-22 21:00:47,352 INFO atx_db.fundamentals: companyfacts processed=6950 total=20390 loaded=5881 empty=1034 unavailable=35 failed=0 rows=0
+2026-09-22 21:00:48,872 INFO atx_db.fundamentals: companyfacts processed=6975 total=20390 loaded=5905 empty=1035 unavailable=35 failed=0 rows=0
+2026-09-22 21:00:52,810 INFO atx_db.fundamentals: companyfacts processed=7000 total=20390 loaded=5926 empty=1039 unavailable=35 failed=0 rows=0
+2026-09-22 21:00:54,291 INFO atx_db.fundamentals: companyfacts processed=7025 total=20390 loaded=5948 empty=1042 unavailable=35 failed=0 rows=0
+2026-09-22 21:00:55,844 INFO atx_db.fundamentals: companyfacts processed=7050 total=20390 loaded=5971 empty=1044 unavailable=35 failed=0 rows=0
+2026-09-22 21:00:57,379 INFO atx_db.fundamentals: companyfacts processed=7075 total=20390 loaded=5993 empty=1047 unavailable=35 failed=0 rows=0
+2026-09-22 21:01:01,711 INFO atx_db.fundamentals: companyfacts processed=7100 total=20390 loaded=6015 empty=1050 unavailable=35 failed=0 rows=0
+2026-09-22 21:01:03,329 INFO atx_db.fundamentals: companyfacts processed=7125 total=20390 loaded=6037 empty=1053 unavailable=35 failed=0 rows=0
+2026-09-22 21:01:04,935 INFO atx_db.fundamentals: companyfacts processed=7150 total=20390 loaded=6059 empty=1056 unavailable=35 failed=0 rows=0
+2026-09-22 21:01:08,742 INFO atx_db.fundamentals: companyfacts processed=7175 total=20390 loaded=6076 empty=1064 unavailable=35 failed=0 rows=0
+2026-09-22 21:01:10,235 INFO atx_db.fundamentals: companyfacts processed=7200 total=20390 loaded=6100 empty=1065 unavailable=35 failed=0 rows=0
+2026-09-22 21:01:11,697 INFO atx_db.fundamentals: companyfacts processed=7225 total=20390 loaded=6122 empty=1068 unavailable=35 failed=0 rows=0
+2026-09-22 21:01:15,845 INFO atx_db.fundamentals: companyfacts processed=7250 total=20390 loaded=6145 empty=1069 unavailable=36 failed=0 rows=0
+2026-09-22 21:01:17,298 INFO atx_db.fundamentals: companyfacts processed=7275 total=20390 loaded=6166 empty=1073 unavailable=36 failed=0 rows=0
+2026-09-22 21:01:18,815 INFO atx_db.fundamentals: companyfacts processed=7300 total=20390 loaded=6188 empty=1076 unavailable=36 failed=0 rows=0
+2026-09-22 21:01:23,070 INFO atx_db.fundamentals: companyfacts processed=7325 total=20390 loaded=6210 empty=1079 unavailable=36 failed=0 rows=0
+2026-09-22 21:01:24,658 INFO atx_db.fundamentals: companyfacts processed=7350 total=20390 loaded=6233 empty=1081 unavailable=36 failed=0 rows=0
+2026-09-22 21:01:26,143 INFO atx_db.fundamentals: companyfacts processed=7375 total=20390 loaded=6257 empty=1082 unavailable=36 failed=0 rows=0
+2026-09-22 21:01:27,613 INFO atx_db.fundamentals: companyfacts processed=7400 total=20390 loaded=6281 empty=1083 unavailable=36 failed=0 rows=0
+2026-09-22 21:01:32,577 INFO atx_db.fundamentals: companyfacts processed=7425 total=20390 loaded=6303 empty=1084 unavailable=38 failed=0 rows=0
+2026-09-22 21:01:34,374 INFO atx_db.fundamentals: companyfacts processed=7450 total=20390 loaded=6327 empty=1085 unavailable=38 failed=0 rows=0
+2026-09-22 21:01:36,060 INFO atx_db.fundamentals: companyfacts processed=7475 total=20390 loaded=6350 empty=1087 unavailable=38 failed=0 rows=0
+2026-09-22 21:01:37,547 INFO atx_db.fundamentals: companyfacts processed=7500 total=20390 loaded=6372 empty=1089 unavailable=39 failed=0 rows=0
+2026-09-22 21:01:39,009 INFO atx_db.fundamentals: companyfacts processed=7525 total=20390 loaded=6395 empty=1091 unavailable=39 failed=0 rows=0
+2026-09-22 21:01:43,255 INFO atx_db.fundamentals: companyfacts processed=7550 total=20390 loaded=6415 empty=1096 unavailable=39 failed=0 rows=0
+2026-09-22 21:01:44,884 INFO atx_db.fundamentals: companyfacts processed=7575 total=20390 loaded=6439 empty=1097 unavailable=39 failed=0 rows=0
+2026-09-22 21:01:48,918 INFO atx_db.fundamentals: companyfacts processed=7600 total=20390 loaded=6456 empty=1105 unavailable=39 failed=0 rows=0
+2026-09-22 21:01:50,409 INFO atx_db.fundamentals: companyfacts processed=7625 total=20390 loaded=6480 empty=1106 unavailable=39 failed=0 rows=0
+2026-09-22 21:01:51,913 INFO atx_db.fundamentals: companyfacts processed=7650 total=20390 loaded=6505 empty=1106 unavailable=39 failed=0 rows=0
+2026-09-22 21:01:53,602 INFO atx_db.fundamentals: companyfacts processed=7675 total=20390 loaded=6529 empty=1107 unavailable=39 failed=0 rows=0
+2026-09-22 21:01:57,764 INFO atx_db.fundamentals: companyfacts processed=7700 total=20390 loaded=6554 empty=1107 unavailable=39 failed=0 rows=0
+2026-09-22 21:01:59,187 INFO atx_db.fundamentals: companyfacts processed=7725 total=20390 loaded=6576 empty=1110 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:00,493 INFO atx_db.fundamentals: companyfacts processed=7750 total=20390 loaded=6596 empty=1115 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:01,923 INFO atx_db.fundamentals: companyfacts processed=7775 total=20390 loaded=6620 empty=1116 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:06,021 INFO atx_db.fundamentals: companyfacts processed=7800 total=20390 loaded=6644 empty=1117 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:07,329 INFO atx_db.fundamentals: companyfacts processed=7825 total=20390 loaded=6668 empty=1118 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:08,606 INFO atx_db.fundamentals: companyfacts processed=7850 total=20390 loaded=6689 empty=1122 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:10,009 INFO atx_db.fundamentals: companyfacts processed=7875 total=20390 loaded=6712 empty=1124 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:14,103 INFO atx_db.fundamentals: companyfacts processed=7900 total=20390 loaded=6736 empty=1125 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:15,566 INFO atx_db.fundamentals: companyfacts processed=7925 total=20390 loaded=6760 empty=1126 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:16,986 INFO atx_db.fundamentals: companyfacts processed=7950 total=20390 loaded=6784 empty=1127 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:18,320 INFO atx_db.fundamentals: companyfacts processed=7975 total=20390 loaded=6807 empty=1129 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:19,713 INFO atx_db.fundamentals: companyfacts processed=8000 total=20390 loaded=6830 empty=1131 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:23,699 INFO atx_db.fundamentals: companyfacts processed=8025 total=20390 loaded=6853 empty=1133 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:24,896 INFO atx_db.fundamentals: companyfacts processed=8050 total=20390 loaded=6874 empty=1137 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:26,248 INFO atx_db.fundamentals: companyfacts processed=8075 total=20390 loaded=6898 empty=1138 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:27,710 INFO atx_db.fundamentals: companyfacts processed=8100 total=20390 loaded=6921 empty=1140 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:31,554 INFO atx_db.fundamentals: companyfacts processed=8125 total=20390 loaded=6946 empty=1140 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:32,826 INFO atx_db.fundamentals: companyfacts processed=8150 total=20390 loaded=6969 empty=1142 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:33,953 INFO atx_db.fundamentals: companyfacts processed=8175 total=20390 loaded=6990 empty=1146 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:35,278 INFO atx_db.fundamentals: companyfacts processed=8200 total=20390 loaded=7014 empty=1147 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:39,447 INFO atx_db.fundamentals: companyfacts processed=8225 total=20390 loaded=7038 empty=1148 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:40,861 INFO atx_db.fundamentals: companyfacts processed=8250 total=20390 loaded=7059 empty=1152 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:42,315 INFO atx_db.fundamentals: companyfacts processed=8275 total=20390 loaded=7084 empty=1152 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:44,081 INFO atx_db.fundamentals: companyfacts processed=8300 total=20390 loaded=7109 empty=1152 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:45,661 INFO atx_db.fundamentals: companyfacts processed=8325 total=20390 loaded=7133 empty=1153 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:49,608 INFO atx_db.fundamentals: companyfacts processed=8350 total=20390 loaded=7157 empty=1154 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:51,019 INFO atx_db.fundamentals: companyfacts processed=8375 total=20390 loaded=7182 empty=1154 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:52,577 INFO atx_db.fundamentals: companyfacts processed=8400 total=20390 loaded=7207 empty=1154 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:54,235 INFO atx_db.fundamentals: companyfacts processed=8425 total=20390 loaded=7232 empty=1154 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:58,374 INFO atx_db.fundamentals: companyfacts processed=8450 total=20390 loaded=7255 empty=1156 unavailable=39 failed=0 rows=0
+2026-09-22 21:02:59,918 INFO atx_db.fundamentals: companyfacts processed=8475 total=20390 loaded=7280 empty=1156 unavailable=39 failed=0 rows=0
+2026-09-22 21:03:01,366 INFO atx_db.fundamentals: companyfacts processed=8500 total=20390 loaded=7301 empty=1160 unavailable=39 failed=0 rows=0
+2026-09-22 21:03:05,228 INFO atx_db.fundamentals: companyfacts processed=8525 total=20390 loaded=7322 empty=1164 unavailable=39 failed=0 rows=0
+2026-09-22 21:03:06,483 INFO atx_db.fundamentals: companyfacts processed=8550 total=20390 loaded=7342 empty=1169 unavailable=39 failed=0 rows=0
+2026-09-22 21:03:07,941 INFO atx_db.fundamentals: companyfacts processed=8575 total=20390 loaded=7364 empty=1172 unavailable=39 failed=0 rows=0
+2026-09-22 21:03:09,363 INFO atx_db.fundamentals: companyfacts processed=8600 total=20390 loaded=7388 empty=1173 unavailable=39 failed=0 rows=0
+2026-09-22 21:03:13,272 INFO atx_db.fundamentals: companyfacts processed=8625 total=20390 loaded=7413 empty=1173 unavailable=39 failed=0 rows=0
+2026-09-22 21:03:14,935 INFO atx_db.fundamentals: companyfacts processed=8650 total=20390 loaded=7436 empty=1175 unavailable=39 failed=0 rows=0
+2026-09-22 21:03:16,439 INFO atx_db.fundamentals: companyfacts processed=8675 total=20390 loaded=7460 empty=1176 unavailable=39 failed=0 rows=0
+2026-09-22 21:03:17,966 INFO atx_db.fundamentals: companyfacts processed=8700 total=20390 loaded=7485 empty=1176 unavailable=39 failed=0 rows=0
+2026-09-22 21:03:19,504 INFO atx_db.fundamentals: companyfacts processed=8725 total=20390 loaded=7508 empty=1178 unavailable=39 failed=0 rows=0
+2026-09-22 21:03:23,553 INFO atx_db.fundamentals: companyfacts processed=8750 total=20390 loaded=7531 empty=1180 unavailable=39 failed=0 rows=0
+2026-09-22 21:03:24,963 INFO atx_db.fundamentals: companyfacts processed=8775 total=20390 loaded=7555 empty=1181 unavailable=39 failed=0 rows=0
+2026-09-22 21:03:26,248 INFO atx_db.fundamentals: companyfacts processed=8800 total=20390 loaded=7577 empty=1184 unavailable=39 failed=0 rows=0
+2026-09-22 21:03:27,577 INFO atx_db.fundamentals: companyfacts processed=8825 total=20390 loaded=7600 empty=1186 unavailable=39 failed=0 rows=0
+2026-09-22 21:03:31,851 INFO atx_db.fundamentals: companyfacts processed=8850 total=20390 loaded=7621 empty=1190 unavailable=39 failed=0 rows=0
+2026-09-22 21:03:33,220 INFO atx_db.fundamentals: companyfacts processed=8875 total=20390 loaded=7642 empty=1193 unavailable=40 failed=0 rows=0
+2026-09-22 21:03:34,708 INFO atx_db.fundamentals: companyfacts processed=8900 total=20390 loaded=7664 empty=1196 unavailable=40 failed=0 rows=0
+2026-09-22 21:03:38,640 INFO atx_db.fundamentals: companyfacts processed=8925 total=20390 loaded=7687 empty=1198 unavailable=40 failed=0 rows=0
+2026-09-22 21:03:39,965 INFO atx_db.fundamentals: companyfacts processed=8950 total=20390 loaded=7711 empty=1199 unavailable=40 failed=0 rows=0
+2026-09-22 21:03:41,259 INFO atx_db.fundamentals: companyfacts processed=8975 total=20390 loaded=7734 empty=1201 unavailable=40 failed=0 rows=0
+2026-09-22 21:03:42,800 INFO atx_db.fundamentals: companyfacts processed=9000 total=20390 loaded=7757 empty=1203 unavailable=40 failed=0 rows=0
+2026-09-22 21:03:47,081 INFO atx_db.fundamentals: companyfacts processed=9025 total=20390 loaded=7777 empty=1208 unavailable=40 failed=0 rows=0
+2026-09-22 21:03:48,444 INFO atx_db.fundamentals: companyfacts processed=9050 total=20390 loaded=7801 empty=1209 unavailable=40 failed=0 rows=0
+2026-09-22 21:03:49,645 INFO atx_db.fundamentals: companyfacts processed=9075 total=20390 loaded=7819 empty=1216 unavailable=40 failed=0 rows=0
+2026-09-22 21:03:50,934 INFO atx_db.fundamentals: companyfacts processed=9100 total=20390 loaded=7843 empty=1217 unavailable=40 failed=0 rows=0
+2026-09-22 21:03:54,796 INFO atx_db.fundamentals: companyfacts processed=9125 total=20390 loaded=7866 empty=1219 unavailable=40 failed=0 rows=0
+2026-09-22 21:03:55,980 INFO atx_db.fundamentals: companyfacts processed=9150 total=20390 loaded=7888 empty=1222 unavailable=40 failed=0 rows=0
+2026-09-22 21:03:57,083 INFO atx_db.fundamentals: companyfacts processed=9175 total=20390 loaded=7913 empty=1222 unavailable=40 failed=0 rows=0
+2026-09-22 21:03:58,356 INFO atx_db.fundamentals: companyfacts processed=9200 total=20390 loaded=7937 empty=1223 unavailable=40 failed=0 rows=0
+2026-09-22 21:04:02,401 INFO atx_db.fundamentals: companyfacts processed=9225 total=20390 loaded=7962 empty=1223 unavailable=40 failed=0 rows=0
+2026-09-22 21:04:03,654 INFO atx_db.fundamentals: companyfacts processed=9250 total=20390 loaded=7985 empty=1225 unavailable=40 failed=0 rows=0
+2026-09-22 21:04:04,830 INFO atx_db.fundamentals: companyfacts processed=9275 total=20390 loaded=8007 empty=1228 unavailable=40 failed=0 rows=0
+2026-09-22 21:04:05,969 INFO atx_db.fundamentals: companyfacts processed=9300 total=20390 loaded=8031 empty=1228 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:09,666 INFO atx_db.fundamentals: companyfacts processed=9325 total=20390 loaded=8055 empty=1229 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:11,006 INFO atx_db.fundamentals: companyfacts processed=9350 total=20390 loaded=8078 empty=1231 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:12,435 INFO atx_db.fundamentals: companyfacts processed=9375 total=20390 loaded=8101 empty=1233 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:13,826 INFO atx_db.fundamentals: companyfacts processed=9400 total=20390 loaded=8125 empty=1234 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:17,866 INFO atx_db.fundamentals: companyfacts processed=9425 total=20390 loaded=8149 empty=1235 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:19,357 INFO atx_db.fundamentals: companyfacts processed=9450 total=20390 loaded=8173 empty=1236 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:20,690 INFO atx_db.fundamentals: companyfacts processed=9475 total=20390 loaded=8198 empty=1236 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:22,109 INFO atx_db.fundamentals: companyfacts processed=9500 total=20390 loaded=8222 empty=1237 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:25,980 INFO atx_db.fundamentals: companyfacts processed=9525 total=20390 loaded=8246 empty=1238 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:27,394 INFO atx_db.fundamentals: companyfacts processed=9550 total=20390 loaded=8270 empty=1239 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:28,840 INFO atx_db.fundamentals: companyfacts processed=9575 total=20390 loaded=8294 empty=1240 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:30,366 INFO atx_db.fundamentals: companyfacts processed=9600 total=20390 loaded=8318 empty=1241 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:31,823 INFO atx_db.fundamentals: companyfacts processed=9625 total=20390 loaded=8342 empty=1242 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:35,865 INFO atx_db.fundamentals: companyfacts processed=9650 total=20390 loaded=8367 empty=1242 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:37,295 INFO atx_db.fundamentals: companyfacts processed=9675 total=20390 loaded=8391 empty=1243 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:38,723 INFO atx_db.fundamentals: companyfacts processed=9700 total=20390 loaded=8415 empty=1244 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:40,170 INFO atx_db.fundamentals: companyfacts processed=9725 total=20390 loaded=8439 empty=1245 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:43,894 INFO atx_db.fundamentals: companyfacts processed=9750 total=20390 loaded=8464 empty=1245 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:45,262 INFO atx_db.fundamentals: companyfacts processed=9775 total=20390 loaded=8487 empty=1247 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:46,642 INFO atx_db.fundamentals: companyfacts processed=9800 total=20390 loaded=8510 empty=1249 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:48,033 INFO atx_db.fundamentals: companyfacts processed=9825 total=20390 loaded=8534 empty=1250 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:52,075 INFO atx_db.fundamentals: companyfacts processed=9850 total=20390 loaded=8559 empty=1250 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:53,680 INFO atx_db.fundamentals: companyfacts processed=9875 total=20390 loaded=8584 empty=1250 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:55,280 INFO atx_db.fundamentals: companyfacts processed=9900 total=20390 loaded=8609 empty=1250 unavailable=41 failed=0 rows=0
+2026-09-22 21:04:56,798 INFO atx_db.fundamentals: companyfacts processed=9925 total=20390 loaded=8633 empty=1251 unavailable=41 failed=0 rows=0
+2026-09-22 21:05:00,660 INFO atx_db.fundamentals: companyfacts processed=9950 total=20390 loaded=8656 empty=1253 unavailable=41 failed=0 rows=0
+2026-09-22 21:05:02,001 INFO atx_db.fundamentals: companyfacts processed=9975 total=20390 loaded=8680 empty=1254 unavailable=41 failed=0 rows=0
+2026-09-22 21:05:03,360 INFO atx_db.fundamentals: companyfacts processed=10000 total=20390 loaded=8704 empty=1255 unavailable=41 failed=0 rows=0
+2026-09-22 21:05:04,763 INFO atx_db.fundamentals: companyfacts processed=10025 total=20390 loaded=8728 empty=1256 unavailable=41 failed=0 rows=0
+2026-09-22 21:05:08,681 INFO atx_db.fundamentals: companyfacts processed=10050 total=20390 loaded=8752 empty=1256 unavailable=42 failed=0 rows=0
+2026-09-22 21:05:10,026 INFO atx_db.fundamentals: companyfacts processed=10075 total=20390 loaded=8777 empty=1256 unavailable=42 failed=0 rows=0
+2026-09-22 21:05:11,337 INFO atx_db.fundamentals: companyfacts processed=10100 total=20390 loaded=8798 empty=1260 unavailable=42 failed=0 rows=0
+2026-09-22 21:05:12,770 INFO atx_db.fundamentals: companyfacts processed=10125 total=20390 loaded=8822 empty=1261 unavailable=42 failed=0 rows=0
+2026-09-22 21:05:16,677 INFO atx_db.fundamentals: companyfacts processed=10150 total=20390 loaded=8846 empty=1262 unavailable=42 failed=0 rows=0
+2026-09-22 21:05:17,981 INFO atx_db.fundamentals: companyfacts processed=10175 total=20390 loaded=8870 empty=1263 unavailable=42 failed=0 rows=0
+2026-09-22 21:05:19,116 INFO atx_db.fundamentals: companyfacts processed=10200 total=20390 loaded=8892 empty=1265 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:20,374 INFO atx_db.fundamentals: companyfacts processed=10225 total=20390 loaded=8916 empty=1266 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:21,712 INFO atx_db.fundamentals: companyfacts processed=10250 total=20390 loaded=8938 empty=1269 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:25,695 INFO atx_db.fundamentals: companyfacts processed=10275 total=20390 loaded=8962 empty=1270 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:26,918 INFO atx_db.fundamentals: companyfacts processed=10300 total=20390 loaded=8986 empty=1271 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:28,064 INFO atx_db.fundamentals: companyfacts processed=10325 total=20390 loaded=9008 empty=1274 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:29,395 INFO atx_db.fundamentals: companyfacts processed=10350 total=20390 loaded=9029 empty=1278 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:32,794 INFO atx_db.fundamentals: companyfacts processed=10375 total=20390 loaded=9047 empty=1285 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:36,520 INFO atx_db.fundamentals: companyfacts processed=10400 total=20390 loaded=9068 empty=1289 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:37,915 INFO atx_db.fundamentals: companyfacts processed=10425 total=20390 loaded=9090 empty=1292 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:39,339 INFO atx_db.fundamentals: companyfacts processed=10450 total=20390 loaded=9114 empty=1293 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:40,645 INFO atx_db.fundamentals: companyfacts processed=10475 total=20390 loaded=9135 empty=1297 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:44,206 INFO atx_db.fundamentals: companyfacts processed=10500 total=20390 loaded=9155 empty=1302 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:45,580 INFO atx_db.fundamentals: companyfacts processed=10525 total=20390 loaded=9180 empty=1302 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:46,829 INFO atx_db.fundamentals: companyfacts processed=10550 total=20390 loaded=9205 empty=1302 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:48,280 INFO atx_db.fundamentals: companyfacts processed=10575 total=20390 loaded=9229 empty=1303 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:52,107 INFO atx_db.fundamentals: companyfacts processed=10600 total=20390 loaded=9248 empty=1309 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:53,472 INFO atx_db.fundamentals: companyfacts processed=10625 total=20390 loaded=9272 empty=1310 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:54,702 INFO atx_db.fundamentals: companyfacts processed=10650 total=20390 loaded=9296 empty=1311 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:56,122 INFO atx_db.fundamentals: companyfacts processed=10675 total=20390 loaded=9320 empty=1312 unavailable=43 failed=0 rows=0
+2026-09-22 21:05:59,979 INFO atx_db.fundamentals: companyfacts processed=10700 total=20390 loaded=9344 empty=1313 unavailable=43 failed=0 rows=0
+2026-09-22 21:06:01,445 INFO atx_db.fundamentals: companyfacts processed=10725 total=20390 loaded=9367 empty=1315 unavailable=43 failed=0 rows=0
+2026-09-22 21:06:02,899 INFO atx_db.fundamentals: companyfacts processed=10750 total=20390 loaded=9391 empty=1316 unavailable=43 failed=0 rows=0
+2026-09-22 21:06:04,193 INFO atx_db.fundamentals: companyfacts processed=10775 total=20390 loaded=9412 empty=1320 unavailable=43 failed=0 rows=0
+2026-09-22 21:06:05,575 INFO atx_db.fundamentals: companyfacts processed=10800 total=20390 loaded=9435 empty=1322 unavailable=43 failed=0 rows=0
+2026-09-22 21:06:09,687 INFO atx_db.fundamentals: companyfacts processed=10825 total=20390 loaded=9456 empty=1326 unavailable=43 failed=0 rows=0
+Traceback (most recent call last):
+  File "C:\atx\atx-db\src\atx_db\dataset.py", line 79, in run
+    result = self.load(store, with_run_id(options, run_id))
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\atx\atx-db\src\atx_db\fundamentals.py", line 1313, in load
+    rows_loaded += self._replace_facts(
+                   ^^^^^^^^^^^^^^^^^^^^
+  File "C:\atx\atx-db\src\atx_db\fundamentals.py", line 1421, in _replace_facts
+    with store.transaction():
+  File "C:\Program Files\Python312\Lib\contextlib.py", line 144, in __exit__
+    next(self.gen)
+  File "C:\atx\atx-db\src\atx_db\connection.py", line 279, in transaction
+    con.execute("COMMIT")
+_duckdb.FatalException: FATAL Error: Failed to rollback transaction. Cannot continue operation.
+Original Error: Out of Memory Error: failed to pin block of size 256.0 KiB (488.1 MiB/488.2 MiB used)
+
+Possible solutions:
+* Reducing the number of threads (SET threads=X)
+* Disabling insertion-order preservation (SET preserve_insertion_order=false)
+* Increasing the memory limit (SET memory_limit='...GB')
+
+See also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads
+Rollback Error: Out of Memory Error: failed to pin block of size 256.0 KiB (488.1 MiB/488.2 MiB used)
+
+Possible solutions:
+* Reducing the number of threads (SET threads=X)
+* Disabling insertion-order preservation (SET preserve_insertion_order=false)
+* Increasing the memory limit (SET memory_limit='...GB')
+
+See also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\atx\atx-db\scripts\warehouse_activate.py", line 91, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "C:\atx\atx-db\scripts\warehouse_activate.py", line 85, in main
+    return run_activation_from_args(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\atx\atx-db\src\atx_db\activation.py", line 1369, in run_activation_from_args
+    run_activation(options, stages=stages)
+  File "C:\atx\atx-db\src\atx_db\activation.py", line 1149, in run_activation
+    result = STAGES[stage](store, options)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\atx\atx-db\src\atx_db\activation.py", line 617, in stage_companyfacts_load
+    result = SecCompanyFactsDataset().run(store, fact_options)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\atx\atx-db\src\atx_db\dataset.py", line 82, in run
+    store.con.execute(
+_duckdb.FatalException: FATAL Error: Failed: database has been invalidated because of a previous fatal error. The database must be restarted prior to being used again.
+Original error: "Failed to rollback transaction. Cannot continue operation.
+Original Error: Out of Memory Error: failed to pin block of size 256.0 KiB (488.1 MiB/488.2 MiB used)
+
+Possible solutions:
+* Reducing the number of threads (SET threads=X)
+* Disabling insertion-order preservation (SET preserve_insertion_order=false)
+* Increasing the memory limit (SET memory_limit='...GB')
+
+See also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads
+Rollback Error: Out of Memory Error: failed to pin block of size 256.0 KiB (488.1 MiB/488.2 MiB used)
+
+Possible solutions:
+* Reducing the number of threads (SET threads=X)
+* Disabling insertion-order preservation (SET preserve_insertion_order=false)
+* Increasing the memory limit (SET memory_limit='...GB')
+
+See also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads"
