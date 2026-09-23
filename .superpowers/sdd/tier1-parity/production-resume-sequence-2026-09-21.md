@@ -8,20 +8,21 @@ dummy SEC User-Agent `atx-db/0.1 atx-research@example.com`.
 
 ## Current source position and guard prerequisite
 
-Root session 12556 (guard child 4108) is the sole live warehouse writer:
-`activation-companyfacts-archive11`. It is verifying 9,440 receipts while
-resuming the actual archive10 dataset UUID
-`ade90629-8e06-4186-9ea7-565cbd05e285` with full `archive_members`,
+Root session 45906 (guard child 2324) is the sole live warehouse writer:
+`activation-companyfacts-archive12`. It resumes the recovered archive11 dataset UUID
+`694f056e-a268-4927-8500-990b62c9a9be` with full `archive_members`,
 replacement, and `--force`. Its files are
-`activation-companyfacts-archive11-{memory.json,log,err}`. The last verified
-durable raw-fact and point count was 47,906,807, before archive11. Do not launch
+`activation-companyfacts-archive12-{memory.json,log,err}`. The last verified
+durable raw-fact and point count was 47,906,807, after archive11 recovery. Do not launch
 another runtime or restart because the tool session yields. Treat schema
-0320–0322 as pending live proof until governed startup and the stage complete.
+0322 as live: archive11 terminal inspection and recovery confirmed it. Archive11
+added no source facts before the headroom guard stopped its verification;
+both ledgers were recovered and checkpointed at00:08:15UTC on2026-09-23.
 
 The guard's preflight remains `job_gb + 2` for both physical and commit
 headroom, and its runtime stop thresholds remain physical below 1.5 GiB or
 commit below 3 GiB. The two-GiB ceiling does not change DuckDB's one-GiB/
-one-thread limits or the loader's bounded batches. After archive11 is terminal,
+one-thread limits or the loader's bounded batches. After archive12 is terminal,
 root must inspect its guard receipt, activation-stage ledger, actual companyfacts
 dataset ledger and retained counts. If it failed, resolve the latest dataset
 UUID from the ledger before constructing another verified resume; never infer

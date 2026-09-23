@@ -1,5 +1,22 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Archive12 running — 2026-09-23 00:11 UTC
+
+After four headroom samples across00:08:42–00:10:25UTC (physical8.33–8.82GiB),
+root launched archive12 in sole writer session45906, guard child2324. Actual
+resume predecessor694f056e-a268-4927-8500-990b62c9a9be is the recovered
+archive11 dataset UUID. Full archive_members, replacement, force, unchanged
+2GiB guard/1GB DuckDB/1thread, backup-keep100, dummySECcontact. Fresh evidence:
+activation-companyfacts-archive12-{memory.json,log,err}. Do not restart while
+live or open another warehouse/runtime process. Prior durable state is
+schema0322, facts=points47,906,807; running progress is not a new final count.
+
+Archive11 recovery/evidence is committed162e002f. Required HEAD import/module/
+schema checks remain57passed/1slow skip on unchanged production code938ff7f1;
+later commits are docs/operator evidence. Full non-slow suite waits for gate.
+Next commands remain full submissions resume, explicitly scoped CVX source
+acceptance, then full-universe run5 and measured provider/quality/alpha gates.
+
 ## Archive11 recovery complete — 2026-09-23 00:09 UTC
 
 Root recovery COMMITted both archive11 ledgers failed at00:08:15UTC and
