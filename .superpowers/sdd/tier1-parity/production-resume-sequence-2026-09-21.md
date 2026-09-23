@@ -14,7 +14,7 @@ passed01:28UTC. No attempt rows; retained facts=points47,941,000 and schema0322.
 The next actual predecessor is `96f93269-84b5-4854-8ebe-fc5b99ab6612`.
 Evidence:companyfacts-archive14-headroom-recovery.json. Do not repeat recovery.
 
-There is no current writer. Before archive15, allow sustained headroom above
+Archive15 is live, session15424/guard child18896, launched01:34UTC after the sustained-headroom check passed. Before another source restart, allow sustained headroom above
 6GiB physical/8GiB commit (three observations over at least two minutes), then
 use the unchanged2GiB job guard,1GB DuckDB,1thread,fullarchive_members,
 replacement,force,snapshot2026-09-20,backup-keep100,dummySECcontact.

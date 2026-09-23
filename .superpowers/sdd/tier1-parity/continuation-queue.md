@@ -1,5 +1,18 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Sustained headroom passed; archive15 launch - 2026-09-23 01:34 UTC
+
+Lightweight monitor observed physical8.466-8.603GiB andcommit10.180-10.357GiB
+over121seconds at30second intervals before launch; evidence is
+archive15-headroom-observations.jsonl. Other processes were untouched.
+Sole writer session15424/guard child18896 is live. Archive15 resumes recovered UUID96f93269-84b5-4854-8ebe-fc5b99ab6612 with
+the full archive/replacement/proof scope,1GB/1thread and unchanged2GiBguard.
+Do not repeat the completed archive14 recovery or launch a competing runtime.
+Fresh activation-companyfacts-archive15-{memory.json,log,err}; terminal SQL
+companyfacts-archive15-terminal-inspection.sql. Subsequent fullsubmissions,
+CVXsourceacceptance,fulluniverse run5 and measurement/release sequence remains.
+
+
 ## Archive14 host stop and recovery - 2026-09-23 01:28 UTC
 
 Archive14/session8538 terminated under the guard at01:24:21UTC during raw
