@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/book/borrow_schedule.hpp"
 
 namespace atx::engine::book {
 namespace {
@@ -95,6 +96,63 @@ Status validate_target(const alpha::Panel &panel, atx::usize decision,
   return Ok();
 }
 
+// Opt-in ReplayConfig fields (cost model, liquidity, borrow schedule, delisting).
+// Every default leaves the historical path untouched.
+Status validate_cost_model(const ReplayConfig &cfg, atx::usize cells) {
+  if (cfg.cost_model == nullptr) return Ok();
+  if (cfg.trade_bps != 0.0) {
+    return Err(ErrorCode::InvalidArgument, "replay: cost_model and trade_bps are exclusive");
+  }
+  const auto rate = cfg.cost_model->proportional_rate();
+  if (rate.has_value() && (!std::isfinite(*rate) || *rate < 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "replay: invalid proportional cost rate");
+  }
+  if (cfg.cost_model->needs_liquidity() && cfg.liquidity.size() != cells) {
+    return Err(ErrorCode::InvalidArgument, "replay: liquidity shape mismatch");
+  }
+  return Ok();
+}
+
+Status validate_delistings(const ReplayConfig &cfg, atx::usize dates, atx::usize instruments) {
+  if (cfg.delisting_policy != DelistingPolicy::Abort &&
+      cfg.delisting_policy != DelistingPolicy::CrspDelistReturn &&
+      cfg.delisting_policy != DelistingPolicy::LastMarkZeroReturn) {
+    return Err(ErrorCode::InvalidArgument, "replay: unrecognized delisting policy");
+  }
+  std::vector<atx::u8> seen(cfg.delistings.empty() ? 0 : instruments, atx::u8{0});
+  for (const auto &event : cfg.delistings) {
+    if (event.instrument >= instruments || event.last_valid_period >= dates ||
+        seen[event.instrument] != 0) {
+      return Err(ErrorCode::InvalidArgument, "replay: invalid or duplicate delisting event");
+    }
+    seen[event.instrument] = 1;
+    if (cfg.delisting_policy == DelistingPolicy::CrspDelistReturn &&
+        (!std::isfinite(event.delist_return) || event.delist_return < -1.0)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "replay: missing or invalid delisting return for instrument=" +
+                     std::to_string(event.instrument));
+    }
+  }
+  return Ok();
+}
+
+Status validate_extensions(const ReplayConfig &cfg, atx::usize dates, atx::usize instruments) {
+  ATX_TRY_VOID(validate_cost_model(cfg, dates * instruments));
+  if (cfg.borrow_schedule != nullptr) {
+    if (cfg.annual_borrow_bps != 0.0) {
+      return Err(ErrorCode::InvalidArgument,
+                 "replay: borrow_schedule and annual_borrow_bps are exclusive");
+    }
+    ATX_TRY_VOID(cfg.borrow_schedule->validate(dates, instruments));
+  }
+  return validate_delistings(cfg, dates, instruments);
+}
+
+bool uses_extensions(const ReplayConfig &cfg) noexcept {
+  return cfg.cost_model != nullptr || cfg.borrow_schedule != nullptr ||
+         cfg.delisting_policy != DelistingPolicy::Abort;
+}
+
 Status validate_inputs(const alpha::Panel &panel, std::span<const atx::i64> times,
                        std::span<const atx::usize> decisions,
                        std::span<const atx::f64> weights, const ReplayConfig &cfg) {
@@ -113,6 +171,7 @@ Status validate_inputs(const alpha::Panel &panel, std::span<const atx::i64> time
        cfg.borrow_day_basis != ReplayDayBasis::D365)) {
     return Err(ErrorCode::InvalidArgument, "replay: invalid cost rate or day basis");
   }
+  ATX_TRY_VOID(validate_extensions(cfg, dates, instruments));
   for (atx::usize d = 1; d < dates; ++d) {
     ATX_TRY(auto days, elapsed_days(times[d - 1], times[d]));
     (void)days;
@@ -200,6 +259,118 @@ struct AppliedTarget {
   atx::f64 trade_cost{};
 };
 
+// Opt-in per-name execution terms. Default-constructed == the historical path:
+// no per-name model (the aggregate trade_rate applies), no working orders and
+// no locate check.
+struct TradeContext {
+  const ReplayCostModel *model{};          // Per-name model; null == aggregate rate.
+  std::span<const LiquidityRow> liquidity; // This period's N rows, or empty.
+  std::span<atx::f64> working;             // N goal TRI units; NaN == no working order.
+  const BorrowSchedule *borrow{};
+};
+
+constexpr atx::f64 kNoWorkingOrder = std::numeric_limits<atx::f64>::quiet_NaN();
+
+struct PricedFill {
+  atx::f64 tri_units{};
+  atx::f64 marked_dollars{};
+  atx::f64 dollar_delta{};
+  atx::f64 cost{};
+  bool residual{};
+};
+
+// Prices one requested move toward `goal_units` through the per-name model. A
+// complete fill lands exactly on the goal (the same representable units the
+// unconstrained replay would hold); a partial fill adds filled/price units.
+Result<PricedFill> priced_fill(const TradeContext &ctx, atx::usize period, atx::usize i,
+                               atx::f64 requested, atx::f64 price, atx::f64 units,
+                               atx::f64 value, atx::f64 goal_units, atx::f64 goal_value) {
+  const auto row = ctx.liquidity.empty() ? LiquidityRow{} : ctx.liquidity[i];
+  const auto priced = ctx.model->cost(i, period, requested, row);
+  const bool sign_ok = priced.filled_dollars == 0.0 ||
+                       std::signbit(priced.filled_dollars) == std::signbit(requested);
+  if (!std::isfinite(priced.filled_dollars) || !std::isfinite(priced.cost_dollars) ||
+      priced.cost_dollars < 0.0 || !sign_ok ||
+      std::abs(priced.filled_dollars) > std::abs(requested)) {
+    return Err(ErrorCode::OutOfRange, "replay: invalid cost model fill" + location(period, i));
+  }
+  PricedFill fill{units, value, 0.0, priced.cost_dollars, true};
+  if (priced.filled_dollars == requested) {
+    fill = PricedFill{goal_units, goal_value, goal_value - value, priced.cost_dollars, false};
+  } else if (priced.filled_dollars != 0.0) {
+    fill.tri_units = units + priced.filled_dollars / price;
+    fill.marked_dollars = fill.tri_units * price;
+    fill.dollar_delta = fill.marked_dollars - value;
+    if (!std::isfinite(fill.marked_dollars) || !std::isfinite(fill.dollar_delta)) {
+      return Err(ErrorCode::OutOfRange, "replay: partial fill overflow" + location(period, i));
+    }
+  }
+  return Ok(fill);
+}
+
+// A trade may not grow a short beyond its locate; carrying or covering is free.
+Status check_locate(const TradeContext &ctx, atx::usize period, atx::usize i,
+                    atx::f64 value_before, atx::f64 value_after) {
+  if (ctx.borrow == nullptr || value_after >= 0.0 || value_after >= value_before) return Ok();
+  if (-value_after > ctx.borrow->locate(i, period)) {
+    return Err(ErrorCode::InvalidArgument, "replay: short exceeds locate" + location(period, i));
+  }
+  return Ok();
+}
+
+// Books one executed move: cash, traded dollars and the trade record.
+Status book_move(atx::f64 delta, atx::usize period, atx::usize decision, atx::usize i,
+                 AppliedTarget &applied, atx::f64 &cash, std::vector<ReplayTrade> &trades) {
+  ATX_TRY_VOID(require_finite(delta, "trade delta" + location(period, i)));
+  if (delta == 0.0) return Ok();
+  cash -= delta;
+  applied.traded_dollars += std::abs(delta);
+  ATX_TRY_VOID(require_finite(cash, "cash after trade" + location(period, i)));
+  ATX_TRY_VOID(require_finite(applied.traded_dollars, "traded dollar sum"));
+  trades.push_back(ReplayTrade{period, decision, i, delta});
+  return Ok();
+}
+
+// Re-attempts every open working order at a period with no new decision. A name
+// without a valid mark keeps its order open; nothing is traded blind.
+Result<AppliedTarget> work_residuals(const TradeContext &ctx, std::span<const atx::f64> close,
+                                     atx::usize period, atx::usize decision, atx::f64 nav,
+                                     std::span<atx::f64> units, std::span<atx::f64> values,
+                                     atx::f64 &cash, std::vector<ReplayTrade> &trades) {
+  AppliedTarget applied;
+  atx::f64 model_cost = 0.0;
+  for (atx::usize i = 0; i < units.size(); ++i) {
+    const auto goal = ctx.working[i];
+    if (std::isnan(goal)) continue;
+    const auto price = close[period * units.size() + i];
+    if (!std::isfinite(price) || price <= 0.0) continue;
+    const auto goal_value = goal * price;
+    const auto requested = goal_value - values[i];
+    ATX_TRY_VOID(require_finite(requested, "working order" + location(period, i)));
+    if (requested == 0.0) {
+      ctx.working[i] = kNoWorkingOrder;
+      continue;
+    }
+    ATX_TRY(const auto fill, priced_fill(ctx, period, i, requested, price, units[i], values[i],
+                                         goal, goal_value));
+    ATX_TRY_VOID(check_locate(ctx, period, i, values[i], fill.marked_dollars));
+    ATX_TRY_VOID(book_move(fill.dollar_delta, period, decision, i, applied, cash, trades));
+    model_cost += fill.cost;
+    units[i] = fill.tri_units;
+    values[i] = fill.marked_dollars;
+    if (!fill.residual) ctx.working[i] = kNoWorkingOrder;
+  }
+  ATX_TRY(applied.marked, total_marked(values));
+  applied.trade_cost = model_cost;
+  ATX_TRY_VOID(require_finite(applied.trade_cost, "trade cost"));
+  cash -= applied.trade_cost;
+  ATX_TRY_VOID(require_finite(cash, "cash after trade cost"));
+  const auto accounted = cash + applied.marked.assets;
+  ATX_TRY_VOID(require_nav(accounted, period));
+  ATX_TRY_VOID(require_reconciled(accounted, nav - applied.trade_cost, period, units.size()));
+  return Ok(applied);
+}
+
 Result<AppliedTarget> apply_target(std::span<const atx::f64> weights,
                                    std::span<const ReplayTargetIntent> intents,
                                    std::span<const atx::u8> eligibility,
@@ -208,8 +379,10 @@ Result<AppliedTarget> apply_target(std::span<const atx::f64> weights,
                                    atx::usize decision, atx::f64 nav, atx::f64 trade_rate,
                                    std::span<atx::f64> units, std::span<atx::f64> values,
                                    atx::f64 &cash, std::vector<ReplayTrade> &trades,
-                                   atx::f64 signed_pending_claims = 0.0) {
+                                   atx::f64 signed_pending_claims = 0.0,
+                                   const TradeContext &ctx = {}) {
   AppliedTarget applied;
+  atx::f64 model_cost = 0.0;
   for (atx::usize i = 0; i < weights.size(); ++i) {
     const auto intent = intents.empty()
         ? ReplayTargetIntent{ReplayTargetAction::TargetWeight, weights[i]} : intents[i];
@@ -222,20 +395,26 @@ Result<AppliedTarget> apply_target(std::span<const atx::f64> weights,
     if (!resolved_weights.empty()) resolved_weights[i] = sized->resolved_weight;
     // Debit the actually representable new TRI holding, preserving self-financing
     // even when dividing target dollars by price rounds the requested unit count.
-    const auto delta = sized->dollar_delta;
-    ATX_TRY_VOID(require_finite(delta, "trade delta" + location(period, i)));
-    if (delta != 0.0) {
-      cash -= delta;
-      applied.traded_dollars += std::abs(delta);
-      ATX_TRY_VOID(require_finite(cash, "cash after trade" + location(period, i)));
-      ATX_TRY_VOID(require_finite(applied.traded_dollars, "traded dollar sum"));
-      trades.push_back(ReplayTrade{period, decision, i, delta});
+    auto fill = PricedFill{sized->tri_units, sized->marked_dollars, sized->dollar_delta, 0.0,
+                           false};
+    if (ctx.model != nullptr) {
+      ctx.working[i] = kNoWorkingOrder; // A new decision replaces every open order.
+      if (fill.dollar_delta != 0.0) {
+        ATX_TRY(fill, priced_fill(ctx, period, i, sized->dollar_delta,
+                                  close[period * units.size() + i], units[i], values[i],
+                                  sized->tri_units, sized->marked_dollars));
+        if (fill.residual) ctx.working[i] = sized->tri_units;
+      }
     }
-    units[i] = sized->tri_units;
-    values[i] = sized->marked_dollars;
-    ATX_TRY_VOID(add_mark(applied.marked, sized->marked_dollars));
+    ATX_TRY_VOID(check_locate(ctx, period, i, values[i], fill.marked_dollars));
+    ATX_TRY_VOID(book_move(fill.dollar_delta, period, decision, i, applied, cash, trades));
+    model_cost += fill.cost;
+    units[i] = fill.tri_units;
+    values[i] = fill.marked_dollars;
+    ATX_TRY_VOID(add_mark(applied.marked, fill.marked_dollars));
   }
   applied.trade_cost = applied.traded_dollars * trade_rate;
+  if (ctx.model != nullptr) applied.trade_cost = model_cost;
   ATX_TRY_VOID(require_finite(applied.trade_cost, "trade cost"));
   cash -= applied.trade_cost;
   ATX_TRY_VOID(require_finite(cash, "cash after trade cost"));
@@ -246,6 +425,23 @@ Result<AppliedTarget> apply_target(std::span<const atx::f64> weights,
   ATX_TRY_VOID(require_nav(accounted, period));
   ATX_TRY_VOID(require_reconciled(accounted, nav - applied.trade_cost, period, units.size()));
   return Ok(applied);
+}
+
+// Net financing under a BorrowSchedule: per-name fees on post-trade marked
+// short dollars, less the short rebate, less interest on settled cash.
+Result<atx::f64> scheduled_financing(const BorrowSchedule &schedule,
+                                     std::span<const atx::f64> values, atx::f64 shorts,
+                                     atx::f64 cash, atx::usize period, atx::f64 days,
+                                     const ReplayConfig &cfg) {
+  atx::f64 fee_dollars = 0.0;
+  for (atx::usize i = 0; i < values.size(); ++i) {
+    if (values[i] < 0.0) fee_dollars += -values[i] * schedule.fee(i, period);
+  }
+  const auto bps_dollars = fee_dollars - shorts * schedule.rebate_bps - cash * schedule.cash_bps;
+  const auto basis = static_cast<atx::f64>(cfg.borrow_day_basis);
+  const auto charge = bps_dollars * ((kBpsToFraction / basis) * days);
+  ATX_TRY_VOID(require_finite(charge, "scheduled financing charge"));
+  return Ok(charge);
 }
 
 Result<atx::f64> borrow_charge(atx::f64 short_dollars, atx::f64 days,
@@ -567,6 +763,121 @@ Result<ReplayAllocation> allocate_target(PolicyCapture &capture,
   return Ok(std::move(allocation));
 }
 
+// Replay-owned state for the opt-in ReplayConfig fields. With every field at its
+// default, init() allocates nothing and every query below is a no-op, so the
+// historical path executes exactly the same arithmetic.
+struct ReplayExtensions {
+  static constexpr atx::usize kNoEvent = std::numeric_limits<atx::usize>::max();
+  const ReplayConfig *config{};
+  atx::usize instruments{};
+  const ReplayCostModel *per_name_model{}; // Non-proportional cost model.
+  std::optional<atx::f64> proportional_rate;
+  std::vector<atx::f64> working;         // N goal units; NaN == none.
+  std::vector<atx::usize> delist_event;  // N indices into config->delistings.
+  std::vector<atx::u8> delisting;        // N mask for the pending valuation.
+  bool delisting_pending{};
+
+  void init(const ReplayConfig &cfg, atx::usize n) {
+    config = &cfg;
+    instruments = n;
+    if (cfg.cost_model != nullptr) {
+      proportional_rate = cfg.cost_model->proportional_rate();
+      if (!proportional_rate.has_value()) {
+        per_name_model = cfg.cost_model;
+        working.assign(n, kNoWorkingOrder);
+      }
+    }
+    if (cfg.delisting_policy != DelistingPolicy::Abort && !cfg.delistings.empty()) {
+      delist_event.assign(n, kNoEvent);
+      delisting.assign(n, atx::u8{0});
+      for (atx::usize k = 0; k < cfg.delistings.size(); ++k) {
+        delist_event[cfg.delistings[k].instrument] = k;
+      }
+    }
+  }
+
+  [[nodiscard]] atx::f64 trade_rate(const ReplayConfig &cfg) const noexcept {
+    return proportional_rate.has_value() ? *proportional_rate : cfg.trade_bps * kBpsToFraction;
+  }
+
+  [[nodiscard]] TradeContext context(atx::usize period) {
+    TradeContext ctx;
+    ctx.borrow = config->borrow_schedule;
+    if (per_name_model != nullptr) {
+      ctx.model = per_name_model;
+      ctx.working = working;
+      if (per_name_model->needs_liquidity()) {
+        ctx.liquidity = config->liquidity.subspan(period * instruments, instruments);
+      }
+    }
+    return ctx;
+  }
+
+  [[nodiscard]] atx::usize open_working_orders() const noexcept {
+    atx::usize open = 0;
+    for (const auto goal : working) open += std::isnan(goal) ? 0U : 1U;
+    return open;
+  }
+  [[nodiscard]] bool has_working_orders() const noexcept { return open_working_orders() != 0; }
+
+  [[nodiscard]] atx::f64 delist_return(atx::usize i) const noexcept {
+    return config->delisting_policy == DelistingPolicy::CrspDelistReturn
+        ? config->delistings[delist_event[i]].delist_return : 0.0;
+  }
+
+  // Flags held names that have printed their final close before `period` and
+  // have no valid mark at it. Returns whether any name is flagged.
+  bool flag_delistings(std::span<const atx::f64> close, atx::usize period,
+                       std::span<const atx::f64> units) noexcept {
+    delisting_pending = false;
+    if (delist_event.empty()) return false;
+    for (atx::usize i = 0; i < instruments; ++i) {
+      delisting[i] = 0;
+      const auto event = delist_event[i];
+      if (units[i] == 0.0 || event == kNoEvent) continue;
+      if (config->delistings[event].last_valid_period >= period) continue;
+      const auto price = close[period * instruments + i];
+      if (std::isfinite(price) && price > 0.0) continue;
+      delisting[i] = 1;
+      delisting_pending = true;
+    }
+    return delisting_pending;
+  }
+
+  // The flagged names were valued at their last mark; apply the delisting return.
+  Result<MarkedPortfolio> apply_delist_returns(atx::usize period,
+                                               std::span<atx::f64> end_values) const {
+    for (atx::usize i = 0; i < instruments; ++i) {
+      if (delisting[i] == 0) continue;
+      end_values[i] *= 1.0 + delist_return(i);
+      ATX_TRY_VOID(require_finite(end_values[i], "delisting value" + location(period, i)));
+    }
+    return total_marked(end_values);
+  }
+
+  // Converts every flagged name into signed cash at its delisting value. This is
+  // a mandatory movement, not a trade: no cost, no ReplayTrade, NAV unchanged.
+  Result<MarkedPortfolio> liquidate(atx::usize period, std::span<atx::f64> units,
+                                    std::span<const atx::f64> last_values,
+                                    std::span<atx::f64> end_values, atx::f64 &cash,
+                                    std::vector<ReplayDelisting> &out) {
+    for (atx::usize i = 0; i < instruments; ++i) {
+      if (delisting[i] == 0) continue;
+      const auto proceeds = end_values[i];
+      cash += proceeds;
+      ATX_TRY_VOID(require_finite(cash, "cash after delisting" + location(period, i)));
+      out.push_back(ReplayDelisting{period, i, units[i], last_values[i], delist_return(i),
+                                    proceeds});
+      units[i] = 0.0;
+      end_values[i] = 0.0;
+      if (!working.empty()) working[i] = kNoWorkingOrder;
+      delisting[i] = 0;
+    }
+    delisting_pending = false;
+    return total_marked(end_values);
+  }
+};
+
 // All entry points share this exact accounting path. The optional capture only
 // replaces the target at an existing execution seam; fixed replay allocates no
 // eligibility or allocation-history arrays. The optional claims capture adds the
@@ -597,6 +908,8 @@ Result<ReplayResult> replay_targets(
     capture->eligibility.resize(instruments);
     capture->allocations.reserve(decision_periods.size());
   }
+  ReplayExtensions ext;
+  ext.init(config, instruments);
   if (claims != nullptr) {
     claims->retired.assign(instruments, atx::u8{0});
     claims->carried.assign(instruments, atx::u8{0});
@@ -671,9 +984,9 @@ Result<ReplayResult> replay_targets(
       // Step 6: trades. Mandatory movements are not trades and contribute
       // exactly 0.0 to traded_dollars and trade_cost.
       ATX_TRY(auto applied, apply_target(weights, intents, eligibility, resolved,
-          close, d, *origin, pretrade_nav,
-          config.trade_bps * kBpsToFraction, result.final_tri_units, start_values,
-          result.final_cash, result.trades, claims_nav.signed_pending_claims));
+          close, d, *origin, pretrade_nav, ext.trade_rate(config), result.final_tri_units,
+          start_values, result.final_cash, result.trades, claims_nav.signed_pending_claims,
+          ext.context(d)));
       start = applied.marked;
       trade_cost = applied.trade_cost;
       traded = applied.traded_dollars;
@@ -690,6 +1003,12 @@ Result<ReplayResult> replay_targets(
       }
       ++next_decision;
       ++result.effective_rebalances;
+    } else if (ext.has_working_orders()) {
+      ATX_TRY(auto applied, work_residuals(ext.context(d), close, d, *origin, pretrade_nav,
+          result.final_tri_units, start_values, result.final_cash, result.trades));
+      start = applied.marked;
+      trade_cost = applied.trade_cost;
+      traded = applied.traded_dollars;
     }
     if (claims != nullptr) { // Step 7: settlement follows the trade.
       claims->state.settled_cash = result.final_cash;
@@ -701,8 +1020,15 @@ Result<ReplayResult> replay_targets(
     // Step 8: borrow on post-trade, post-settlement marked short equity
     // dollars; pending claims of either sign contribute nothing to the base.
     ATX_TRY(auto days, elapsed_days(session_keys[d], session_keys[d + 1]));
-    ATX_TRY(auto borrow, borrow_charge(start.shorts, days, config));
+    atx::f64 borrow = 0.0;
+    if (config.borrow_schedule != nullptr) {
+      ATX_TRY(borrow, scheduled_financing(*config.borrow_schedule, start_values, start.shorts,
+                                          result.final_cash, d, days, config));
+    } else {
+      ATX_TRY(borrow, borrow_charge(start.shorts, days, config));
+    }
     std::span<const atx::u8> next_carried;
+    if (ext.flag_delistings(close, d + 1, result.final_tri_units)) next_carried = ext.delisting;
     if (claims != nullptr) {
       // Step 0 for the NEXT observation, requested here because the valuation
       // of d + 1 happens first as this interval's end mark.
@@ -713,12 +1039,19 @@ Result<ReplayResult> replay_targets(
     }
     ATX_TRY(auto end, mark_holdings(result.final_tri_units, close, d + 1, end_values,
                                     next_carried, d));
+    if (ext.delisting_pending) {
+      ATX_TRY(end, ext.apply_delist_returns(d + 1, end_values));
+    }
     atx::f64 gross_pnl = 0.0;
     for (atx::usize i = 0; i < instruments; ++i) {
       gross_pnl += end_values[i] - start_values[i];
       ATX_TRY_VOID(require_finite(gross_pnl, "gross P&L"));
     }
     result.final_cash -= borrow;
+    if (ext.delisting_pending) {
+      ATX_TRY(end, ext.liquidate(d + 1, result.final_tri_units, start_values, end_values,
+                                 result.final_cash, result.delistings));
+    }
     result.final_assets = end.assets;
     result.final_nav = result.final_cash + end.assets;
     ClaimsNav end_nav{};
@@ -749,6 +1082,7 @@ Result<ReplayResult> replay_targets(
     result.intervals.push_back(interval);
   }
   result.unexecuted_decisions = decision_periods.size() - result.effective_rebalances;
+  result.open_working_orders = ext.open_working_orders();
   return Ok(std::move(result));
 }
 
@@ -869,6 +1203,11 @@ Result<ReplayClaimsResult> replay_scheduled_intents_with_events(
   if (!policy || !events) {
     return Err(ErrorCode::InvalidArgument,
                "replay: intent and mandatory event policies must not be empty");
+  }
+  if (uses_extensions(config)) {
+    return Err(ErrorCode::InvalidArgument,
+               "replay: cost model, borrow schedule and delisting policy are not supported "
+               "with mandatory events");
   }
   PolicyCapture capture{nullptr, &policy, {}, {}};
   auto owned = std::make_unique<ClaimsCapture>();
