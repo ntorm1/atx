@@ -207,6 +207,12 @@ class ConstrainedQpSolver {
 public:
   QpConfig cfg;
 
+  // Up-front shape/finiteness validation of a QpProblem, exactly as solve_with_cert runs
+  // it. Exposed for callers that assemble their own augmented form (cost_terms.hpp).
+  [[nodiscard]] static atx::core::Status check_problem(const QpProblem &p) {
+    return validate(p, p.V.n_instruments());
+  }
+
   // Solve the augmented constrained QP. Returns the length-M weight vector w (the
   // w-block of x). Err(InvalidArgument) on a dimension mismatch up front or an
   // infeasible set after the fixed loop. NEVER a silently-clamped book. (Historical
