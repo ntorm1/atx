@@ -87,7 +87,7 @@ def prepare_security(con: Any) -> None:
                    arg_max(struct_pack(value := value, available_at := available_at,
                        period_start := period_start, period_end := period_end,
                        state_id := standardized_id, source := source, rule_id := rule_id,
-                       basis := basis), (available_at, source, rule_id, standardized_id))
+                       basis := basis, cik := cik), (available_at, source, rule_id, standardized_id))
                    OVER (PARTITION BY security_id, canonical_code, period_start, period_end
                          ORDER BY available_at RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS state
             FROM _pit_raw WHERE basis = 'annual'
@@ -270,6 +270,15 @@ def frame_annual_columns(plan: AnnualPlan, quote: Any) -> tuple[list[str], list[
         projections.extend([
             f'{alias}.state.value AS "annual_{code}"',
             f'{alias}.state.available_at AS "annual_{code}__at"',
+            (f"to_json(struct_pack(kind := 'item', code := {quote(code)}, "
+             f'bucket := f.bucket, "offset" := f.target_bucket - f.bucket, '
+             f"status := CASE WHEN {alias}.state.state_id IS NULL OR {alias}.state.value IS NULL "
+             f"THEN 'missing' ELSE 'selected' END, state_id := {alias}.state.state_id, "
+             f"available_at := {alias}.state.available_at, cik := {alias}.state.cik, "
+             f"basis := {alias}.state.basis, source := {alias}.state.source, "
+             f"period_start := {alias}.state.period_start, period_end := {alias}.state.period_end, "
+             f"inputs_hash := NULL::VARCHAR, definition_hash := NULL::VARCHAR)) "
+             f'AS "annual_{code}__ref"'),
         ])
         lineage.append(f"struct_pack(kind := 'annual', code := {quote(code)}, state := to_json({alias}.state))")
     return joins, projections, lineage

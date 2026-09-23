@@ -61,6 +61,8 @@ class DerivedMetricsOptions:
     max_input_rows: int = 250000
     max_candidate_rows: int = 250000
     max_scope_rows: int = 100000
+    max_selected_ref_bytes: int = 32768
+    max_selected_ref_count: int = 128
     run_id: str | None = None
 
 
@@ -228,7 +230,8 @@ def refresh_derived_metrics(
     group. In-memory and unconfigured callers retain their existing session.
     """
     options = options or DerivedMetricsOptions()
-    for name in ("event_chunk_size", "max_frame_rows", "max_input_rows", "max_candidate_rows", "max_scope_rows"):
+    for name in ("event_chunk_size", "max_frame_rows", "max_input_rows", "max_candidate_rows", "max_scope_rows",
+                 "max_selected_ref_bytes", "max_selected_ref_count"):
         if getattr(options, name) < 1:
             raise ValueError(f"{name} must be positive")
     recycle = _can_reopen_derived_store(store)
@@ -307,6 +310,17 @@ def refresh_derived_metrics(
                         pit.finish_metric(store.con)
                         pit.enforce_count(store.con, "_pit_stage", options.max_scope_rows, "publication scope")
                     staged = pit.enforce_count(store.con, "_pit_stage", options.max_scope_rows, "publication scope")
+                    oversize = store.con.execute("""
+                        SELECT derived_value_id, octet_length(encode(selected_input_refs_json)),
+                               json_array_length(selected_input_refs_json, '$.refs')
+                        FROM _pit_stage
+                        WHERE selected_input_refs_json IS NULL OR selected_input_refs_hash IS NULL
+                           OR octet_length(encode(selected_input_refs_json)) > ?
+                           OR json_array_length(selected_input_refs_json, '$.refs') > ?
+                        LIMIT 1
+                    """, [options.max_selected_ref_bytes, options.max_selected_ref_count]).fetchone()
+                    if oversize is not None:
+                        raise RuntimeError(f"derived PIT selected-ref row exceeds bounded limit: {oversize}")
                     old_count_row = store.con.execute(
                         f"SELECT count(*) FROM derived_metric_values WHERE {predicate}", params
                     ).fetchone()

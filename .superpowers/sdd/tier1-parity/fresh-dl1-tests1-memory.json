@@ -1,0 +1,17 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "tests/test_derived_selected_lineage.py",
+    "-q",
+    "-n0"
+  ],
+  "job_limit_gb": 1.5,
+  "status": "stopped_low_headroom",
+  "headroom": {
+    "physical_free_gb": 2.3302040100097656,
+    "commit_free_gb": 2.905628204345703
+  },
+  "child_pid": 6568
+}

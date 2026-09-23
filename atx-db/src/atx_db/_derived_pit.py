@@ -11,7 +11,7 @@ import json
 from typing import Any
 
 from . import _derived_annual as annual
-from .derived_dsl import BinOp, Call, LowerContext, Lowered, lower, parse_expression
+from .derived_dsl import BinOp, Call, LowerContext, Lowered, lower, lower_selected_refs, parse_expression
 from .derived_registry import DerivedMetricDefinition
 
 STATE_COLUMNS = (
@@ -21,11 +21,27 @@ STATE_COLUMNS = (
     "revision_sequence", "revision_count", "valid_to", "target_bucket",
     "definition_hash", "arithmetic_available_at", "history_status",
     "value_origin", "fiscal_period_start", "fiscal_period_end",
+    "selected_input_refs_json", "selected_input_refs_hash",
 )
 
 
 def quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+def selected_ref_sql(kind: str, code: str, state: str, bucket: str) -> str:
+    """A direct operand, including a missing selected state, as one JSON scalar."""
+    return ("to_json(struct_pack(" +
+            f"kind := {quote(kind)}, code := {quote(code)}, bucket := {bucket}, " +
+            f'"offset" := f.target_bucket - {bucket}, ' +
+            f"status := CASE WHEN {state}.state_id IS NULL OR {state}.value IS NULL " +
+            "THEN 'missing' ELSE 'selected' END, " +
+            f"state_id := {state}.state_id, available_at := {state}.input_at, " +
+            f"cik := {state}.cik, basis := {state}.basis, " +
+            f"source := {state}.input_source, period_start := {state}.input_start, " +
+            f"period_end := {state}.input_end, " +
+            f"inputs_hash := {state}.dependency_inputs_hash, " +
+            f"definition_hash := {state}.dependency_definition_hash))")
 
 
 def bucket_sql(column: str) -> str:
@@ -61,7 +77,7 @@ def prepare_security(con: Any, security_id: str, input_limit: int) -> None:
         raise RuntimeError(f"derived PIT input limit for {security_id}: {count} > {input_limit}")
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _pit_raw AS
-        SELECT standardized_id, source, security_id, canonical_code, basis,
+        SELECT standardized_id, cik, source, security_id, canonical_code, basis,
                period_start, period_end, value, available_at, rule_id, {bucket_sql('period_end')} AS bucket
         FROM fundamental_standardized
         WHERE security_id = ? AND basis IN ('quarterly', 'instant', 'annual')
@@ -77,7 +93,7 @@ def prepare_security(con: Any, security_id: str, input_limit: int) -> None:
             SELECT security_id, canonical_code AS code, bucket, available_at AS event_at,
                    arg_max(struct_pack(value := value, available_at := available_at,
                        period_start := period_start, period_end := period_end, state_id := standardized_id,
-                       source := source, rule_id := rule_id, basis := basis),
+                       source := source, rule_id := rule_id, basis := basis, cik := cik),
                        (period_end, available_at, source, rule_id, basis, standardized_id))
                    OVER (PARTITION BY security_id, canonical_code, bucket
                          ORDER BY available_at RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS state
@@ -130,6 +146,10 @@ def prepare_metric(con: Any, definition: DerivedMetricDefinition, lag: int, cand
         SELECT security_id, 'item' AS kind, code, bucket, event_at, valid_to,
                state.value AS value, state.available_at AS input_at,
                to_json(state) AS lineage,
+               state.state_id AS state_id, state.cik AS cik, state.basis AS basis,
+               state.source AS input_source, state.period_start AS input_start,
+               state.period_end AS input_end, NULL::VARCHAR AS dependency_inputs_hash,
+               NULL::VARCHAR AS dependency_definition_hash,
                CASE WHEN state.basis = 'instant' THEN NULL ELSE state.period_start END AS fiscal_period_start,
                state.period_end AS fiscal_period_end, state.basis AS value_origin
         FROM _pit_items WHERE code IN ({items})
@@ -141,6 +161,8 @@ def prepare_metric(con: Any, definition: DerivedMetricDefinition, lag: int, cand
                    period_end := period_end, source := source, definition_hash := definition_hash,
                    value_origin := value_origin, fiscal_period_start := fiscal_period_start,
                    fiscal_period_end := fiscal_period_end)),
+               derived_value_id, NULL::VARCHAR, NULL::VARCHAR, source,
+               fiscal_period_start, fiscal_period_end, inputs_hash, definition_hash,
                fiscal_period_start, fiscal_period_end, value_origin
         FROM _pit_stage WHERE metric_code IN ({metrics})
     """)
@@ -182,6 +204,7 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
     joins: list[str] = []
     projections: list[str] = []
     lineage: list[str] = []
+    refs: dict[str, str] = {}
     span_refs: dict[str, annual.Span] = {}
     for index, (kind, code) in enumerate(
         [("item", c) for c in sorted(definition.item_inputs)]
@@ -197,7 +220,9 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
             f'{alias}.fiscal_period_start AS "{code}__start"',
             f'{alias}.fiscal_period_end AS "{code}__end"',
             f'{alias}.value_origin AS "{code}__origin"',
+            f'{selected_ref_sql(kind, code, alias, "f.bucket")} AS "{code}__ref"',
         ])
+        refs[code] = f'b."{code}__ref"'
         span_refs[code] = annual.Span(
             f'b."{code}__start"', f'b."{code}__end"',
             f'coalesce(b."{code}__origin" IN (\'annual_fallback\', \'annual_dependency\', \'annual\'), false)',
@@ -217,6 +242,7 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
         choose_annual = f"(({dependency_annual}) OR b.\"{code}\" IS NULL) AND b.annual_end IS NOT NULL"
         columns[code] = annual._case(choose_annual, f'b."annual_{code}"', columns[code])
         availability[code] = annual._case(choose_annual, f'b."annual_{code}__at"', availability[code])
+        refs[code] = annual._case(choose_annual, f'b."annual_{code}__ref"', refs[code])
         old = span_refs[code]
         span_refs[code] = annual.Span(
             annual._case(choose_annual, "b.annual_start", old.start),
@@ -224,9 +250,10 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
             annual._case(choose_annual, "true", old.annual),
             annual._case(choose_annual, "true", old.coherent), 0,
         )
-    context = LowerContext(context.grid, columns, availability, context.partition_sql, context.order_sql)
+    context = LowerContext(context.grid, columns, availability, context.partition_sql, context.order_sql, refs)
     node = parse_expression(definition.expression)
     lowered = lower(node, context)
+    selected_refs = lower_selected_refs(node, context)
     span = annual.lower_span(node, context, span_refs)
     coherent = f"coalesce(({span.coherent}), false)"
     # Only annual-backed arithmetic gets the new comparability gate. The
@@ -242,8 +269,10 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
             {code: f'b."annual_{code}"' for code in annual_plan.item_codes},
             {code: f'b."annual_{code}__at"' for code in annual_plan.item_codes},
             context.partition_sql, context.order_sql,
+            {code: f'b."annual_{code}__ref"' for code in annual_plan.item_codes},
         )
         alternative = lower(annual_plan.alternative, annual_context)
+        annual_refs = lower_selected_refs(annual_plan.alternative, annual_context)
         comparable_quarters = (
             f"b.annual_start IS NULL OR ({coherent} AND ({span.start}) = b.annual_start "
             f"AND ({span.end}) = b.annual_end)"
@@ -261,6 +290,7 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
             f"isfinite(({quarter_result})) AND (({comparable_quarters}) OR ({independent_quarters}))"
         )
         choose_annual = f"NOT coalesce(({prefer_quarters}), false) AND ({valid_annual})"
+        selected_refs = annual._case(choose_annual, annual_refs, selected_refs)
         result_sql = (f"CASE WHEN {prefer_quarters} THEN ({quarter_result}) "
                       f"WHEN {valid_annual} THEN ({alternative.value_sql}) "
                       f"WHEN {comparable_quarters} THEN ({quarter_result}) END")
@@ -301,10 +331,14 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
         ), computed AS (
             SELECT b.*, {result_sql} AS result,
                    {arithmetic_sql} AS arithmetic_at, {reason} AS invalid_reason,
-                   {origin_sql} AS selected_origin, {start_sql} AS selected_start, {end_sql} AS selected_end
+                   {origin_sql} AS selected_origin, {start_sql} AS selected_start, {end_sql} AS selected_end,
+                   to_json(struct_pack(version := 1,
+                       refs := list_sort(list_distinct(coalesce({selected_refs}, []::JSON[])))))
+                       AS selected_input_refs_json
             FROM base b
         ), target AS (
-            SELECT c.*, h.inputs_hash, ? AS output_source, ? AS output_run
+            SELECT c.*, h.inputs_hash, sha256(c.selected_input_refs_json) AS selected_input_refs_hash,
+                   ? AS output_source, ? AS output_run
             FROM computed c JOIN hashed h USING (key_number)
             WHERE c.bucket = c.target_bucket
         ), identified AS (
@@ -323,7 +357,7 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
                     ELSE 'valid' END,
                group_id, 1, 1, NULL, target_bucket, {fingerprint}, arithmetic_at, 'event_reconstructed',
                CASE WHEN result IS NULL OR NOT isfinite(result) THEN 'unavailable' ELSE selected_origin END,
-               selected_start, selected_end
+               selected_start, selected_end, selected_input_refs_json, selected_input_refs_hash
         FROM identified
     """
 
@@ -335,11 +369,11 @@ def finish_metric(con: Any) -> None:
         INSERT INTO _pit_stage ({', '.join(STATE_COLUMNS)})
         WITH changed AS (
             SELECT * FROM _pit_metric
-            QUALIFY lag(struct_pack(inputs := inputs_hash, value := value,
+            QUALIFY lag(struct_pack(inputs := inputs_hash, selected := selected_input_refs_hash, value := value,
                                     status := value_status, period := period_end, origin := value_origin,
                                     fiscal_start := fiscal_period_start, fiscal_end := fiscal_period_end))
                     OVER (PARTITION BY revision_group_id ORDER BY available_at)
-                IS DISTINCT FROM struct_pack(inputs := inputs_hash, value := value,
+                IS DISTINCT FROM struct_pack(inputs := inputs_hash, selected := selected_input_refs_hash, value := value,
                                              status := value_status, period := period_end, origin := value_origin,
                                              fiscal_start := fiscal_period_start, fiscal_end := fiscal_period_end)
         )
@@ -348,7 +382,8 @@ def finish_metric(con: Any) -> None:
                lead(available_at) OVER w IS NULL, run_id, value_status, revision_group_id,
                row_number() OVER w, count(*) OVER (PARTITION BY revision_group_id),
                lead(available_at) OVER w, target_bucket, definition_hash, arithmetic_available_at, history_status,
-               value_origin, fiscal_period_start, fiscal_period_end
+               value_origin, fiscal_period_start, fiscal_period_end,
+               selected_input_refs_json, selected_input_refs_hash
         FROM changed WINDOW w AS (PARTITION BY revision_group_id ORDER BY available_at)
     """)
 

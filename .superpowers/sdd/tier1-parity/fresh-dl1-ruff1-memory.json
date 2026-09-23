@@ -1,0 +1,22 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/ruff.exe",
+    "check",
+    "src/atx_db/_derived_pit.py",
+    "src/atx_db/_derived_annual.py",
+    "src/atx_db/derived_dsl.py",
+    "src/atx_db/derived_metrics.py",
+    "src/atx_db/derived_lineage.py",
+    "src/atx_db/migrations/bodies_0323.py",
+    "tests/test_derived_selected_lineage.py"
+  ],
+  "job_limit_gb": 1.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 7.3843231201171875,
+    "commit_free_gb": 6.932605743408203
+  },
+  "child_pid": 15104,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.06573104858398438
+}

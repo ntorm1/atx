@@ -35,6 +35,7 @@ __all__ = [
     "compile_expression",
     "expression_names",
     "lower",
+    "lower_selected_refs",
     "parse_expression",
     "tokenize",
 ]
@@ -291,6 +292,7 @@ class LowerContext:
     availability: dict[str, str]
     partition_sql: str
     order_sql: str
+    refs: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -550,3 +552,63 @@ def _lower_call(node: Call, context: LowerContext) -> Lowered:
 
 def compile_expression(expression: str, context: LowerContext) -> Lowered:
     return lower(parse_expression(expression), context)
+
+
+def lower_selected_refs(node: Node, context: LowerContext) -> str:
+    """SQL JSON-list expression for operands selected by the numeric DSL.
+
+    Window calls have the same non-nesting restriction as numeric lowering. The
+    final publisher sorts and deduplicates this direct list before serialization.
+    """
+    if isinstance(node, Number):
+        return "[]::JSON[]"
+    if isinstance(node, Ref):
+        if context.refs is None or node.name not in context.refs:
+            raise DslError(f"no selected-ref source for {node.name!r}")
+        return f"[{context.refs[node.name]}]"
+    if isinstance(node, Neg):
+        return lower_selected_refs(node.operand, context)
+    if isinstance(node, BinOp):
+        return (f"list_concat({lower_selected_refs(node.left, context)}, "
+                f"{lower_selected_refs(node.right, context)})")
+    if not isinstance(node, Call):
+        raise DslError(f"unsupported selected-ref node {node!r}")
+    name = node.name
+    children = [lower_selected_refs(arg, context) for arg in node.args]
+    if name == "coalesce":
+        result = "list_concat(" + ", ".join(children) + ")"
+        for arg, child in reversed(list(zip(node.args, children, strict=True))):
+            result = f"CASE WHEN ({lower(arg, context).value_sql}) IS NOT NULL THEN {child} ELSE {result} END"
+        return f"({result})"
+    if name in SCALAR_FUNCTIONS:
+        if name in ("min", "max"):
+            left, right = (lower(arg, context).value_sql for arg in node.args)
+            comparison = "<=" if name == "min" else ">="
+            return (f"(CASE WHEN ({left}) IS NULL AND ({right}) IS NOT NULL THEN {children[1]} "
+                    f"WHEN ({right}) IS NULL AND ({left}) IS NOT NULL THEN {children[0]} "
+                    f"WHEN ({left}) {comparison} ({right}) THEN {children[0]} "
+                    f"WHEN ({right}) IS NOT NULL THEN {children[1]} "
+                    f"ELSE list_concat({children[0]}, {children[1]}) END)")
+        return "list_concat(" + ", ".join(children) + ")" if len(children) > 1 else children[0]
+    if name not in _WINDOW_FUNCTIONS:
+        raise DslError(f"unhandled selected-ref function {name!r}")
+    for arg in node.args:
+        nested = _find_nested_window_call(arg)
+        if nested is not None:
+            raise DslError(f"selected refs cannot nest {nested.name!r} inside {name!r}")
+    inner = children[0]
+    if name in ("ttm", "stdev_q", "avg_d", "rvol"):
+        count = 4 if name == "ttm" else _integer_literal(node.args[1], function=name, expression_hint="window")
+        return f"flatten(list({inner}) OVER ({_frame(context, count - 1)}))"
+    if name == "avg2":
+        count = 4
+    elif name in ("yoy", "qoq"):
+        count = 4 if name == "yoy" else 1
+    elif name == "cagr":
+        count = 4 * _integer_literal(node.args[1], function=name, expression_hint="years")
+    else:
+        count = _integer_literal(node.args[1], function=name, expression_hint="periods")
+    previous = f"lag({inner}, {count}) OVER ({_unbounded(context)})"
+    if name in ("lag", "lag_d"):
+        return previous
+    return f"list_concat({inner}, {previous})"
