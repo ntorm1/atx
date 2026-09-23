@@ -324,8 +324,8 @@ struct GdItem {
 // Owns whole-panel scratch buffers and recycles them. A fresh buffer is
 // allocated UNINITIALIZED: every kernel writes every cell of its output range
 // (recycled buffers already carry stale bytes, so nothing may read before
-// writing), and zero-filling here would run serially on the calling thread —
-// with first-touch page faults — for every buffer of the peak working set. The
+// writing), and zero-filling here would run serially on the calling thread --
+// with first-touch page faults -- for every buffer of the peak working set. The
 // workers' first writes fault the pages in parallel instead.
 using GdBuf = std::unique_ptr<atx::f64[]>;
 

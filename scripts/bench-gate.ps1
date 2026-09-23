@@ -8,10 +8,16 @@
   (exit 1) when any benchmark present in both is slower than the baseline by more
   than -Threshold (default 0.20 = 20%). Times are compared as real_time normalized
   to nanoseconds, so a baseline recorded in ms and a run in us compare correctly.
-  Only plain iteration rows are compared (aggregates such as _mean/_stddev are
-  skipped); benchmarks missing from either side are listed, never fatal.
+  Plain iteration rows are compared; when a file was recorded with
+  --benchmark_repetitions=N its _median aggregate rows are used instead (keyed by
+  run_name) so noisy single repetitions do not trip the gate. Other aggregates
+  (_mean/_stddev/_cv) are skipped. A baseline benchmark missing from the current run FAILS the gate
+  (exit 1) unless -AllowMissing is passed for a deliberately partial run. A
+  current run with no comparable benchmarks (crashed after writing its header,
+  wrong filter) exits 2. Benchmarks new in the current run are listed, never fatal.
 
-  Exit codes: 0 = pass, 1 = regression, 2 = bad input.
+  Exit codes: 0 = pass, 1 = regression or missing benchmark, 2 = bad input
+  (including an empty current run).
 
 .EXAMPLE
   build-equity-rel\bin\atx-engine-bench.exe --benchmark_filter=Wq101 `
@@ -29,7 +35,8 @@ param(
   [Parameter(Mandatory = $true)][string] $Baseline,
   [double] $Threshold = 0.20,
   [string] $Filter = '.*',
-  [switch] $Update
+  [switch] $Update,
+  [switch] $AllowMissing
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,12 +65,25 @@ function Read-BenchJson([string] $path) {
   }
   $doc = $raw.Substring($start) | ConvertFrom-Json
   $map = @{}
+  $medians = @{}
   foreach ($b in $doc.benchmarks) {
-    $runType = if ($b.PSObject.Properties.Name -contains 'run_type') { $b.run_type } else { 'iteration' }
+    $props = $b.PSObject.Properties.Name
+    $runType = if ($props -contains 'run_type') { $b.run_type } else { 'iteration' }
+    $ns = [double]$b.real_time * (Get-UnitScale $b.time_unit)
+    if ($runType -eq 'aggregate') {
+      if (($props -contains 'aggregate_name') -and $b.aggregate_name -eq 'median') {
+        $key = if ($props -contains 'run_name') { $b.run_name } else { $b.name -replace '_median$', '' }
+        if ($key -match $Filter) { $medians[$key] = $ns }
+      }
+      continue
+    }
     if ($runType -ne 'iteration') { continue }
     if ($b.name -notmatch $Filter) { continue }
-    $map[$b.name] = [double]$b.real_time * (Get-UnitScale $b.time_unit)
+    # With repetitions each iteration row repeats the same name; the median
+    # aggregate (applied below) supersedes them.
+    $map[$b.name] = $ns
   }
+  foreach ($k in $medians.Keys) { $map[$k] = $medians[$k] }
   return @{ doc = $doc; times = $map }
 }
 
@@ -75,12 +95,19 @@ if ($Update) {
   exit 0
 }
 
+if ($cur.times.Count -eq 0) {
+  Write-Host "bench-gate: current run has no comparable benchmarks (filter '$Filter') in $Current"
+  exit 2
+}
+
 $base = Read-BenchJson $Baseline
 $regressions = 0
+$missing = 0
 $rows = @()
 foreach ($name in ($base.times.Keys | Sort-Object)) {
   if (-not $cur.times.ContainsKey($name)) {
     $rows += [pscustomobject]@{ Benchmark = $name; BaseNs = $base.times[$name]; CurNs = $null; Ratio = $null; Status = 'MISSING' }
+    $missing++
     continue
   }
   $b = $base.times[$name]
@@ -105,6 +132,10 @@ $rows | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
 if ($base.times.Count -eq 0) {
   Write-Host "bench-gate: baseline has no comparable benchmarks (filter '$Filter')"
   exit 2
+}
+if ($missing -gt 0 -and -not $AllowMissing) {
+  Write-Host "bench-gate: FAIL - $missing baseline benchmark(s) missing from the current run (pass -AllowMissing for a deliberately partial run)"
+  exit 1
 }
 if ($regressions -gt 0) {
   Write-Host "bench-gate: FAIL - $regressions benchmark(s) regressed by more than $([math]::Round($Threshold * 100))%"
