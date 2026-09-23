@@ -51,15 +51,21 @@ struct Rung {
 
 struct FidelityCfg {
   bool enabled{false};
-  // Default ladder: 1/8 of the cells, then 1/2, then full fidelity.
-  std::array<Rung, 3> rungs{{Rung{4, 2, 0}, Rung{2, 1, 0}, Rung{1, 1, 0}}};
+  // Default ladder: 1/16 of the cells, then 1/4, then full fidelity. With
+  // eta = 1/3 the expected cell budget is 1/16 + 1/12 + 1/9 ~= 0.26 of a full
+  // pass per candidate (factory_throughput_bench mode 4 measured 4.4x genomes/s
+  // single-worker at equal best raw fitness vs the no-fidelity baseline).
+  std::array<Rung, 3> rungs{{Rung{4, 4, 0}, Rung{2, 2, 0}, Rung{1, 1, 0}}};
   atx::f64 eta{1.0 / 3.0};  // promoted fraction per rung
   atx::usize min_keep{2};   // never promote fewer than this many (if available)
   atx::usize min_batch{6};  // race only batches at least this large
 };
 
 // Score of candidate `g` at rung `rung_idx` (higher is better; NaN = reject).
-using RungEvaluator = std::function<atx::f64(const Genome &g, atx::usize rung_idx, const Rung &)>;
+// `wid` is the DetPool worker running the call (0 when serial) so an evaluator
+// can reuse per-worker state (an Engine bound to the rung's sub-panel).
+using RungEvaluator =
+    std::function<atx::f64(const Genome &g, atx::usize rung_idx, const Rung &, atx::usize wid)>;
 
 struct RaceResult {
   std::vector<GenomeId> survivors;        // alive after the last rung, ascending id

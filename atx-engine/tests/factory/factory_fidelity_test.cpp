@@ -81,7 +81,7 @@ TEST(FactoryFidelity, RacePromotesBestAndCountsEveryEvalAsATrial) {
   FidelityCfg cfg{};
   cfg.enabled = true;
   const auto cands = dummy_genomes(27);
-  const auto eval = [](const Genome &g, usize r, const Rung &) {
+  const auto eval = [](const Genome &g, usize r, const Rung &, usize) {
     return quality(g) + 0.001 * static_cast<f64>(r);
   };
   const RaceResult rr = race(cands, cfg, eval);
@@ -109,7 +109,7 @@ TEST(FactoryFidelity, NaNIsRejectionAndTiesBreakByCanonHash) {
   cfg.min_keep = 1;
   cfg.eta = 0.25;
   auto cands = dummy_genomes(8);
-  const auto eval = [](const Genome &g, usize, const Rung &) {
+  const auto eval = [](const Genome &g, usize, const Rung &, usize) {
     return (g.canon_hash % 2U == 0U) ? std::numeric_limits<f64>::quiet_NaN() : 1.0;
   };
   const RaceResult rr = race(cands, cfg, eval, 2);
@@ -127,7 +127,7 @@ TEST(FactoryFidelity, NaNIsRejectionAndTiesBreakByCanonHash) {
 TEST(FactoryFidelity, RaceIsWorkerCountInvariant) {
   FidelityCfg cfg{};
   const auto cands = dummy_genomes(50);
-  const auto eval = [](const Genome &g, usize r, const Rung &rung) {
+  const auto eval = [](const Genome &g, usize r, const Rung &rung, usize) {
     return std::sin(static_cast<f64>(g.canon_hash) * (1.0 + static_cast<f64>(r))) +
            0.01 * static_cast<f64>(rung.date_stride);
   };

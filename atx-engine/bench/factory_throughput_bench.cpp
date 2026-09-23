@@ -5,7 +5,8 @@
 //   mode 0  baseline            (all L3 flags off — today's driver)
 //   mode 1  + semantic canon    (bit-exact rewrite before hashing)
 //   mode 2  + output dedup      (rank-quantized fingerprint reuses prior scores)
-//   mode 3  + fidelity race     (successive halving on strided sub-panels)
+//   mode 3  + fidelity race, conservative ladder {4x2, 2x1, full}
+//   mode 4  + fidelity race, default ladder {4x4, 2x2, full}
 // state.range(1) is the DetPool worker count.
 //
 // Counters:
@@ -22,6 +23,7 @@
 // (the plan's 2500 x 3000 is reachable via env; it needs several GB and minutes
 // per run, so it is not the default on the shared 16 GB lane box).
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <string>
@@ -62,11 +64,23 @@ using atx::engine::factory::SearchDriver;
 using atx::engine::factory::SearchResult;
 
 [[nodiscard]] usize env_or(const char *name, usize fallback) {
-  const char *v = std::getenv(name); // NOLINT(concurrency-mt-unsafe): bench setup only
-  if (v == nullptr) {
+  std::string v;
+#if defined(_MSC_VER) || defined(_WIN32)
+  char *e = nullptr;
+  std::size_t len = 0;
+  if (_dupenv_s(&e, &len, name) == 0 && e != nullptr) {
+    v = e;
+  }
+  free(e); // NOLINT(cppcoreguidelines-no-malloc): _dupenv_s heap copy
+#else
+  if (const char *e = std::getenv(name); e != nullptr) {
+    v = e;
+  }
+#endif
+  if (v.empty()) {
     return fallback;
   }
-  const long long n = std::strtoll(v, nullptr, 10);
+  const long long n = std::strtoll(v.c_str(), nullptr, 10);
   return n > 0 ? static_cast<usize>(n) : fallback;
 }
 
@@ -115,6 +129,11 @@ using atx::engine::factory::SearchResult;
   cfg.canon.semantic = mode >= 1;
   cfg.output_dedup = mode >= 2;
   cfg.fidelity.enabled = mode >= 3;
+  if (mode == 3) { // conservative ladder: 1/8 of the cells, then 1/2, then full
+    cfg.fidelity.rungs = {{atx::engine::factory::Rung{4, 2, 0},
+                           atx::engine::factory::Rung{2, 1, 0},
+                           atx::engine::factory::Rung{1, 1, 0}}};
+  }
   return cfg;
 }
 
@@ -161,7 +180,7 @@ void BM_SearchThroughput(benchmark::State &state) {
   state.counters["best_raw"] = best;
 }
 BENCHMARK(BM_SearchThroughput)
-    ->ArgsProduct({{0, 1, 2, 3}, {1, 4, 8}})
+    ->ArgsProduct({{0, 1, 2, 3, 4}, {1, 4, 8}})
     ->Unit(benchmark::kMillisecond)
     ->Iterations(1)
     ->UseRealTime();

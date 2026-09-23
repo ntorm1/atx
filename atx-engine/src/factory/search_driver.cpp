@@ -1663,6 +1663,18 @@ SearchDriver::fidelity_reject(const std::vector<const Genome *> &to_score,
     }
   }
 
+  // One reusable Engine per (low rung, worker), bound to that rung's sub-panel
+  // (rung_panels_ is not resized below, so the bound references stay valid).
+  // Engine::evaluate is idempotent, so reuse is byte-identical to fresh engines.
+  std::vector<std::vector<std::unique_ptr<alpha::Engine>>> rung_engines(n_low);
+  for (atx::usize r = 0; r < n_low; ++r) {
+    rung_engines[r].reserve(det_pool.n_workers());
+    for (atx::usize w = 0; w < det_pool.n_workers(); ++w) {
+      rung_engines[r].push_back(std::make_unique<alpha::Engine>(*rp[r]));
+    }
+  }
+  CpcvCache rung_cpcv{}; // thread-safe; shared by every rung evaluation below
+
   std::vector<Genome> cands;
   cands.reserve(to_score.size());
   for (const Genome *g : to_score) {
@@ -1670,9 +1682,11 @@ SearchDriver::fidelity_reject(const std::vector<const Genome *> &to_score,
     cands.back().canon_hash = g->canon_hash;
   }
   // SAFETY (reentrancy): each call reads only const shared state (rp panels,
-  // pool, policy_, sim_, gen_fit copy) and builds its own Engine inside
-  // pool_aware_fitness (engine = nullptr) -> no shared mutable state.
-  const RungEvaluator eval = [&](const Genome &g, atx::usize r, const Rung &rung) -> atx::f64 {
+  // pool, policy_, sim_, gen_fit copy); worker `wid` touches only
+  // rung_engines[r][wid] (disjoint single owner); rung_cpcv serializes its own
+  // cold inserts behind its mutex.
+  const RungEvaluator eval = [&](const Genome &g, atx::usize r, const Rung &rung,
+                                 atx::usize wid) -> atx::f64 {
     FitnessCfg f = gen_fit;
     f.capacity_objective = false;
     f.turnover_objective = false;
@@ -1680,7 +1694,8 @@ SearchDriver::fidelity_reject(const std::vector<const Genome *> &to_score,
       f.cpcv.n_groups = rung.n_folds;
       f.cpcv.n_test_groups = std::min<atx::usize>(f.cpcv.n_test_groups, rung.n_folds - 1U);
     }
-    auto rep = pool_aware_fitness(g, pool, *rp[r], policy_, sim_, f);
+    auto rep = pool_aware_fitness(g, pool, *rp[r], policy_, sim_, f, /*weak_panel=*/nullptr,
+                                  rung_engines[r][wid].get(), /*signals=*/nullptr, &rung_cpcv);
     if (!rep.has_value() || !std::isfinite(rep->raw)) {
       return std::numeric_limits<atx::f64>::quiet_NaN();
     }

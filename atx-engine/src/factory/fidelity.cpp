@@ -47,8 +47,8 @@ namespace atx::engine::factory {
     slot.assign(live.size(), 0.0);
     // SAFETY: shard p writes only slot[p]; cands / rung / eval are read-only
     // (the evaluator's own contract is to be reentrant).
-    auto body = [&](atx::usize p, atx::usize /*wid*/) {
-      slot[p] = eval(cands[live[p]], r, rung);
+    auto body = [&](atx::usize p, atx::usize wid) {
+      slot[p] = eval(cands[live[p]], r, rung, wid);
     };
     if (pool != nullptr) {
       pool->parallel_for(live.size(), body);
