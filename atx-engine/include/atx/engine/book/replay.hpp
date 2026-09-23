@@ -9,6 +9,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 #include "atx/engine/book/claims_state.hpp"
+#include "atx/engine/book/replay_cost.hpp"
 #include "atx/engine/data/security_transition.hpp"
 
 namespace atx::engine::alpha { class Panel; }
@@ -17,12 +18,59 @@ namespace atx::engine::book {
 
 enum class ReplayDayBasis : atx::u16 { D360 = 360, D365 = 365 };
 
+struct BorrowSchedule;
+
+// What the replay does when a HELD name has no valid close at a valuation.
+//   Abort              the historical behaviour: the replay fails.
+//   CrspDelistReturn   the name is liquidated into cash at its last accounted
+//                      value times (1 + delist_return) of its DelistingEvent;
+//                      a NaN return rejects (fill it explicitly, e.g. with a
+//                      Shumway-style replacement, in the event builder).
+//   LastMarkZeroReturn liquidated at its last accounted value (return 0).
+// Only names with a DelistingEvent whose last_valid_period precedes the missing
+// valuation are liquidated; any other missing held close still fails.
+enum class DelistingPolicy : atx::u8 { Abort = 0, CrspDelistReturn = 1, LastMarkZeroReturn = 2 };
+
+// One terminal delisting. last_valid_period is the name's final valid close;
+// the first held valuation after it with a missing close liquidates the name,
+// even when that is earlier than the recorded delisting date (a missing final
+// print before the formal delisting).
+struct DelistingEvent {
+  atx::usize instrument{};
+  atx::usize last_valid_period{};
+  atx::f64 delist_return{}; // Fraction; NaN == unknown.
+};
+
+// A liquidation the replay performed. Not a trade: no trade cost, no fill.
+struct ReplayDelisting {
+  atx::usize period{};      // Valuation at which the name was liquidated.
+  atx::usize instrument{};
+  atx::f64 tri_units{};     // Units removed.
+  atx::f64 last_value{};    // Last accounted marked dollars (at period - 1).
+  atx::f64 delist_return{}; // Return applied.
+  atx::f64 proceeds{};      // Signed cash credited (negative buys back a short).
+};
+
+// Every field added after borrow_day_basis is opt-in: with its default the
+// replay is bit-identical to the historical accounting. None of them is
+// supported on the claims-aware entry point, which rejects a non-default value.
 struct ReplayConfig {
   atx::f64 initial_nav{1.0};
   atx::usize execution_delay_periods{1};
   atx::f64 trade_bps{0.0};             // Per absolute dollar traded, each direction.
   atx::f64 annual_borrow_bps{0.0};     // Simple annual fee on post-trade short dollars.
   ReplayDayBasis borrow_day_basis{ReplayDayBasis::D365};
+  // Per-name cost model (exclusive with a nonzero trade_bps). Borrowed; must
+  // outlive the call. A capped model leaves a working order for the residual,
+  // re-attempted at every later observation until filled or replaced.
+  const ReplayCostModel *cost_model{nullptr};
+  // dates * instruments, period-major; required iff cost_model->needs_liquidity().
+  std::span<const LiquidityRow> liquidity{};
+  // Per-name fee/locate/rebate/cash schedule (exclusive with a nonzero
+  // annual_borrow_bps). Borrowed; must outlive the call.
+  const BorrowSchedule *borrow_schedule{nullptr};
+  DelistingPolicy delisting_policy{DelistingPolicy::Abort};
+  std::span<const DelistingEvent> delistings{}; // At most one per instrument.
 };
 
 // One observed interval. cash/assets/nav are END valuations after financing;
@@ -88,6 +136,9 @@ struct ReplayResult {
   atx::f64 final_nav{};
   atx::usize effective_rebalances{};  // Includes applied targets that trade zero dollars.
   atx::usize unexecuted_decisions{}; // Effective at/after the final valuation.
+  std::vector<ReplayDelisting> delistings; // Empty unless a delisting policy fired.
+  // Working orders still open after the final valuation (cost-model cap only).
+  atx::usize open_working_orders{};
 };
 
 // Borrowed only for the duration of the policy call. Instrument spans have the
