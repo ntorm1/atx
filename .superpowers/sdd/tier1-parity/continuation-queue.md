@@ -1,5 +1,20 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Archive16 running after stable headroom - 2026-09-23 22:08 UTC
+
+Previous goal turn made authoritative progress recovering archive15; this turn
+revalidated no live writer and observed a121second stable launch window:
+physicalfree7.288-7.869GiB,commit10.176-10.711GiB,zero compiler processes in
+the samples. Fullsource archive16 is now live as sole session78292/guard
+child17640,actual predecessor4932365c-4b61-4437-b634-11b2a7284f6e.
+Keep fullarchive_members,replacements,force,allretainedproofs,snapshotSep20,
+1GBDuckDB/1thread,2GiBguard,backup-keep100 and dummySECcontact.
+No competing runtime. Poll the same handle; do not restart on a wait timeout.
+Fresh activation-companyfacts-archive16-{memory.json,log,err}; terminal SQL
+companyfacts-archive16-terminal-inspection.sql prepared. On terminal, inspect
+actualrunUUID/durablecounts before further resume or next fullsubmissions stage.
+
+
 ## Archive15 interrupted and recovered - 2026-09-23 22:03 UTC
 
 The next goal turn revalidated authoritative state after the turn interruption:

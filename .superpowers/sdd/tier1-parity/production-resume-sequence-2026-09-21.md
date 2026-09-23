@@ -16,14 +16,14 @@ attempt rows; retained facts=points47,941,000 and schema0322.
 Next actual predecessor: `4932365c-4b61-4437-b634-11b2a7284f6e`.
 Evidence:companyfacts-archive15-interruption-recovery.json. Do not rerun recovery.
 
-No warehouse writer is live. Archive16 waits for sustained headroom above
+Archive16 is the sole live writer, session78292/guard child17640, launched22:08UTC after the sustained-headroom check passed. Subsequent restarts wait for sustained headroom above
 6GiB physical/8GiB commit (three observations over at least two minutes), then
 uses unchanged2GiB job guard,1GB DuckDB,1thread,fullarchive_members,
 replacement,force,snapshot2026-09-20,backup-keep100,dummySECcontact.
-Current observations are inarchive16-headroom-observations.jsonl. Compiler
+Launch observations are inarchive16-headroom-observations.jsonl. Earlier compiler
 bursts returned during this turn, so a single good sample is insufficient.
 Guard runtime thresholds remain1.5GiB physical/3GiB commit.
-Use fresh archive16 filenames and prepare its terminal SQL from archive15's.
+Archive16 has fresh receipt/stdout/stderr files and prepared terminal SQL. Do not restart it while live.
 
 Archive13's512MB query limit failed atCOMMIT, so it is not the source-write
 configuration. Dataset failure-ledger recovery is tested/reviewed in15235456.
