@@ -212,4 +212,92 @@ apca_factor_returns(const atx::core::linalg::MatX &r_for_gram, atx::usize k) {
   return rw;
 }
 
+// ===========================================================================
+//  L7 latent-factor COUNT selection (the hybrid model's K_s rules).
+// ===========================================================================
+
+// Bai-Ng (2002) IC_p2 factor count for an N×T panel U. `eig_desc` holds the
+// DESCENDING eigenvalues of UᵀU (equivalently UUᵀ; the non-zero spectra coincide), so
+// the residual mean square after k factors is V(k) = (Σ_{j>k} μ_j)/(N·T) and
+//   IC_p2(k) = ln V(k) + k·(N+T)/(N·T)·ln(min(N, T)).
+// Returns argmin over k ∈ [0, min(k_max, #eig − 1)] (ties ⇒ the smaller k). V(k) is
+// floored at a tiny positive value so an exactly-spanned panel stays finite.
+[[nodiscard]] inline atx::usize bai_ng_ic2(const atx::core::linalg::VecX &eig_desc, atx::usize n,
+                                           atx::usize t, atx::usize k_max) noexcept {
+  const Eigen::Index m = eig_desc.size();
+  if (m == 0 || n == 0U || t == 0U) {
+    return 0U;
+  }
+  const atx::f64 nt = static_cast<atx::f64>(n) * static_cast<atx::f64>(t);
+  const atx::f64 penalty = (static_cast<atx::f64>(n) + static_cast<atx::f64>(t)) / nt *
+                           std::log(static_cast<atx::f64>(n < t ? n : t));
+  atx::f64 tail = 0.0; // Σ_j μ_j (ascending-index order-fixed sum)
+  for (Eigen::Index j = 0; j < m; ++j) {
+    tail += (eig_desc[j] > 0.0) ? eig_desc[j] : 0.0;
+  }
+  const atx::usize k_hi = (k_max < static_cast<atx::usize>(m - 1)) ? k_max
+                                                                     : static_cast<atx::usize>(m - 1);
+  atx::usize best_k = 0U;
+  atx::f64 best = 0.0;
+  for (atx::usize k = 0U; k <= k_hi; ++k) {
+    if (k > 0U) {
+      const atx::f64 lam = eig_desc[static_cast<Eigen::Index>(k - 1U)];
+      tail -= (lam > 0.0) ? lam : 0.0;
+    }
+    const atx::f64 v = (tail > 1e-300 ? tail : 1e-300) / nt;
+    const atx::f64 ic = std::log(v) + static_cast<atx::f64>(k) * penalty;
+    if (k == 0U || ic < best) {
+      best = ic;
+      best_k = k;
+    }
+  }
+  return best_k;
+}
+
+// Marchenko-Pastur edge count. `eig_desc` holds the DESCENDING eigenvalues of the
+// correlation-like matrix (1/T)·Z·Zᵀ of an N×T panel Z whose rows are standardized
+// (or, identically, of (1/T)·ZᵀZ — the non-zero spectra coincide); `trace` is its trace
+// (== N for unit-variance rows). Noise eigenvalues lie below λ₊ = σ²(1 + √(N/T))² with
+// σ² = trace/N. When `refine` is set, σ² is re-estimated as the per-asset NOISE share
+// by the Laloux fixed point σ² = (trace − Σ_{signal} λ)/N (≤ 32 iterations, stops when
+// the count is stable). Refinement assumes HOMOSCEDASTIC noise across the standardized
+// rows; with a strong factor whose loadings vary by name the standardized noise is
+// heteroscedastic, the refined edge falls inside the true bulk and the count explodes,
+// so the hybrid builder uses the unrefined (conservative) edge. Returns {count, λ₊};
+// the count is capped at k_max.
+struct MpEdgeResult {
+  atx::usize k;
+  atx::f64 edge;
+};
+[[nodiscard]] inline MpEdgeResult mp_edge_count(const atx::core::linalg::VecX &eig_desc,
+                                                atx::f64 trace, atx::usize n, atx::usize t,
+                                                atx::usize k_max, bool refine = false) noexcept {
+  if (eig_desc.size() == 0 || n == 0U || t == 0U || !(trace > 0.0)) {
+    return MpEdgeResult{0U, 0.0};
+  }
+  const atx::f64 q = static_cast<atx::f64>(n) / static_cast<atx::f64>(t);
+  const atx::f64 shape = (1.0 + std::sqrt(q)) * (1.0 + std::sqrt(q));
+  atx::f64 sigma2 = trace / static_cast<atx::f64>(n);
+  atx::usize k = 0U;
+  atx::f64 edge = sigma2 * shape;
+  for (atx::usize it = 0U; it < 32U; ++it) {
+    edge = sigma2 * shape;
+    atx::usize cnt = 0U;
+    atx::f64 signal = 0.0;
+    while (static_cast<Eigen::Index>(cnt) < eig_desc.size() &&
+           eig_desc[static_cast<Eigen::Index>(cnt)] > edge) {
+      signal += eig_desc[static_cast<Eigen::Index>(cnt)];
+      ++cnt;
+    }
+    const atx::f64 next = (trace - signal) / static_cast<atx::f64>(n);
+    const bool stable = (cnt == k) && it > 0U;
+    k = cnt;
+    if (!refine || stable || !(next > 0.0)) {
+      break;
+    }
+    sigma2 = next;
+  }
+  return MpEdgeResult{k < k_max ? k : k_max, edge};
+}
+
 } // namespace atx::engine::risk::detail

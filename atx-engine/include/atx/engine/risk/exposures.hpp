@@ -99,10 +99,36 @@ namespace atx::engine::risk {
 
 // Barra-style style-factor identifier. Order is LOAD-BEARING: it fixes both the
 // style_mask bit assignment (bit i == StyleFactor i) and the emitted column order.
-enum class StyleFactor : atx::u8 { Size, Momentum, Volatility, Beta, Liquidity };
+// The first kStyleFactorCount enumerators are the P4 PANEL (OHLCV) styles the legacy
+// u8 `style_mask` addresses; the enumerators after them are the L7 FUNDAMENTAL styles
+// (+ the Market intercept) addressed ONLY by the 32-bit StyleMask of
+// risk/fundamental_factors.hpp. The legacy build_exposures never emits them (its mask
+// loop stops at kStyleFactorCount), so appending here leaves the P4 path byte-identical.
+enum class StyleFactor : atx::u8 {
+  Size,
+  Momentum,
+  Volatility,
+  Beta,
+  Liquidity,
+  // --- L7 fundamental block (fundamental_factors.hpp) ---
+  BookToPrice,
+  EarningsYield,
+  Growth,
+  Profitability,
+  Leverage,
+  DivYield,
+  ResidVol,
+  ShortInterest,
+  STReversal,
+  Market, // the all-ones market (country) intercept column
+};
 
-// Number of style factors (the style_mask is a bitset over [0, kStyleFactorCount)).
+// Number of P4 panel style factors (the legacy u8 style_mask is a bitset over
+// [0, kStyleFactorCount)).
 inline constexpr atx::usize kStyleFactorCount = 5U;
+
+// Number of StyleFactor enumerators overall (the L7 StyleMask addresses [0, this)).
+inline constexpr atx::usize kAllStyleFactorCount = 15U;
 
 // ===========================================================================
 //  §3 CovarianceConfig — the S8 covariance-construction knobs (all opt-in).
@@ -338,6 +364,56 @@ inline constexpr atx::usize kAdvWindow = 20U;   // adv20 lookback
   return (var <= 0.0) ? std::numeric_limits<atx::f64>::quiet_NaN() : cov / var;
 }
 
+// The equal-weight market return for rows [row, row + n) — mkt[k] ==
+// market_return(panel, row + k) BIT-FOR-BIT (same function, same order). Rows past
+// the panel end are NaN. Hoisting this out of the per-instrument beta loop turns the
+// cross-section's O(M²·252) market-return recompute into O(M·252): the values (and
+// therefore every downstream beta) are byte-identical to the uncached path.
+[[nodiscard]] inline std::vector<atx::f64> market_returns(const PanelView &panel, atx::usize row,
+                                                          atx::usize n) {
+  std::vector<atx::f64> mkt(n, std::numeric_limits<atx::f64>::quiet_NaN());
+  for (atx::usize k = 0U; k < n; ++k) {
+    if (row + k + 1U < panel.rows()) {
+      mkt[k] = market_return(panel, row + k);
+    }
+  }
+  return mkt;
+}
+
+// beta() with the market series precomputed by market_returns(panel, row, kBetaWindow).
+// Identical arithmetic (same accumulation order) to beta(); `mkt.size() >= kBetaWindow`.
+[[nodiscard]] inline atx::f64 beta_cached(const PanelView &panel, atx::usize row, atx::usize i,
+                                          std::span<const atx::f64> mkt) noexcept {
+  if (row + kBetaWindow + 1U > panel.rows() || mkt.size() < kBetaWindow) {
+    return std::numeric_limits<atx::f64>::quiet_NaN();
+  }
+  atx::f64 si = 0.0;
+  atx::f64 sm = 0.0;
+  atx::usize n = 0U;
+  for (atx::usize k = 0U; k < kBetaWindow; ++k) {
+    const atx::f64 ri = step_return(panel, row + k, i);
+    const atx::f64 rm = mkt[k];
+    if (std::isnan(ri) || std::isnan(rm)) {
+      return std::numeric_limits<atx::f64>::quiet_NaN();
+    }
+    si += ri;
+    sm += rm;
+    ++n;
+  }
+  const atx::f64 nf = static_cast<atx::f64>(n);
+  const atx::f64 mi = si / nf;
+  const atx::f64 mm = sm / nf;
+  atx::f64 cov = 0.0;
+  atx::f64 var = 0.0;
+  for (atx::usize k = 0U; k < kBetaWindow; ++k) {
+    const atx::f64 di = step_return(panel, row + k, i) - mi;
+    const atx::f64 dm = mkt[k] - mm;
+    cov += di * dm;
+    var += dm * dm;
+  }
+  return (var <= 0.0) ? std::numeric_limits<atx::f64>::quiet_NaN() : cov / var;
+}
+
 // Raw (un-standardized) style value for factor `f` at instrument i. Size reads the
 // external cap; the rest read the panel. EXHAUSTIVE switch over StyleFactor (no
 // default — a new enumerator is a compile error).
@@ -358,6 +434,19 @@ inline constexpr atx::usize kAdvWindow = 20U;   // adv20 lookback
     return beta(panel, row, i);
   case StyleFactor::Liquidity:
     return liquidity(panel, row, i);
+  case StyleFactor::BookToPrice:
+  case StyleFactor::EarningsYield:
+  case StyleFactor::Growth:
+  case StyleFactor::Profitability:
+  case StyleFactor::Leverage:
+  case StyleFactor::DivYield:
+  case StyleFactor::ResidVol:
+  case StyleFactor::ShortInterest:
+  case StyleFactor::STReversal:
+  case StyleFactor::Market:
+    // L7 fundamental/intercept styles are built by fundamental_factors.hpp; the
+    // legacy emit set (bits < kStyleFactorCount) never reaches here.
+    return std::numeric_limits<atx::f64>::quiet_NaN();
   }
   return std::numeric_limits<atx::f64>::quiet_NaN(); // unreachable (switch exhaustive)
 }
@@ -568,6 +657,15 @@ build_exposures(const PanelView &panel, const FactorModelConfig &cfg, atx::usize
   std::vector<std::vector<atx::f64>> raw; // raw[surviving_row][style_index]
   survivors.reserve(n_inst);
   raw.reserve(n_inst);
+  // Beta's market series is shared by every instrument of the cross-section: hoist it
+  // (byte-identical values, see detail::market_returns) instead of recomputing it per
+  // instrument.
+  bool need_mkt = false;
+  for (const StyleFactor f : styles) {
+    need_mkt = need_mkt || (f == StyleFactor::Beta);
+  }
+  const std::vector<atx::f64> mkt =
+      need_mkt ? detail::market_returns(panel, row, detail::kBetaWindow) : std::vector<atx::f64>{};
   for (atx::usize i = 0U; i < n_inst; ++i) {
     if (!panel.present(row, i)) {
       continue; // no bar at the current date -> not in the cross-section
@@ -575,7 +673,9 @@ build_exposures(const PanelView &panel, const FactorModelConfig &cfg, atx::usize
     std::vector<atx::f64> vals(styles.size());
     bool drop = false;
     for (atx::usize s = 0U; s < styles.size() && !drop; ++s) {
-      vals[s] = detail::raw_style(styles[s], panel, row, i, market_cap);
+      vals[s] = (styles[s] == StyleFactor::Beta)
+                    ? detail::beta_cached(panel, row, i, mkt)
+                    : detail::raw_style(styles[s], panel, row, i, market_cap);
       drop = std::isnan(vals[s]); // missing a required style -> drop the instrument
     }
     if (!drop) {
