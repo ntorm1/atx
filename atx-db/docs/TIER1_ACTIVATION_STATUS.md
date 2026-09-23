@@ -26,6 +26,20 @@ a host guard stop. The prepared fundamental decile acceptance SQL returns all
 five hypotheses across three splits and three horizons, including missing
 run/results diagnostics.
 
+The optional fundamental research readiness inventory is also implemented:
+five isolated checks passed under the1.5GiB guard at0.570GiB peak, with scoped
+Ruff and the two Important review fixes accepted. It reads bounded manifest,
+coverage and summary records, reports missing schemas separately, and keeps
+certification unmeasured. It does not revalidate panel or label digests. See
+[research readiness](FUNDAMENTAL_SIGNAL_READINESS.md).
+
+The dictionary was regenerated and its12 existing checks passed; it now
+includes issuer-content APIs and frozen fundamental hypotheses. A clean
+export of commita89c2677 imported atx_db successfully. The broader required
+schema and affected-regression batch was interrupted by host memory pressure
+before completion and remains pending. None of these checks changed live
+warehouse rows, migrated0323..0325, or established an alpha result.
+
 
 The later archive15 process disappeared before point verification finished.
 Its missing handle and absent workers were verified at22:01UTC; the stale

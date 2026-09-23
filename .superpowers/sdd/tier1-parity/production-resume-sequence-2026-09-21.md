@@ -181,7 +181,8 @@ C:\atx\atx-db\.venv\Scripts\python.exe scripts\build_custom_features.py evaluate
 # Read-only production metrics: activation lineage, item and provider coverage,
 # recorded quality, historical gaps, and the CF1 run/evaluation inventory.
 C:\atx\atx-db\.venv\Scripts\python.exe scripts\measure_tier1_readiness.py `
-  --db-path data\warehouse.duckdb --as-of-date 2026-09-20 --memory-limit 1GB --include-cf1 `
+  --db-path data\warehouse.duckdb --as-of-date 2026-09-20 --memory-limit 1GB `
+  --include-cf1 --include-fundamental-signals `
   --output-json C:\atx\.superpowers\sdd\tier1-parity\tier1-run5-measurement.json `
   --output-markdown C:\atx\.superpowers\sdd\tier1-parity\tier1-run5-measurement.md
 
@@ -203,8 +204,9 @@ the CF1 evaluation (holdout decile spreads, label coverage, HAC uncertainty,
 Holm adjustment, and transaction-cost sensitivities). `production_eligible`
 remaining false is recorded evidence, not a reason to relabel the signals.
 
-After CF1 evaluation, execute the versioned CVX quarterly EPS acceptance SQL,
-the fundamental desk acceptance SQL, and the custom-feature decile readout SQL
+After research evaluation, execute the versioned CVX quarterly EPS acceptance SQL,
+the fundamental desk acceptance SQL, and both price-feature and fundamental
+signal decile readout SQL
 under separate guarded, read-only sessions; record actual results and gaps.
 Run readiness measurement, assess item/provider/all-quality gates without
 weakening thresholds, regenerate and check the data dictionary, and publish the

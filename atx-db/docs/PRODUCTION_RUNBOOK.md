@@ -31,11 +31,17 @@ python scripts/db_dev_tests.py --smoke --workers 0
 Some analytical commands default to a 4 GB DuckDB cap and four threads. For the
 current roughly 16 GiB host, explicitly start with **1 GB and one DuckDB thread**,
 one heavy process tree at a time, under the controller's aggregate memory guard
-with a cap of at most 4 GiB and physical/commit headroom checks. A DuckDB setting
+with the current **2 GiB process-tree cap** and physical/commit headroom checks. A DuckDB setting
 does not cap pandas or other Python allocations. The guard limits the process
 tree; it does not prove that an unbounded operation can finish within that cap.
 Use bounded local test concurrency (`-n 0`); CI's four-worker lane runs on a
 separate machine and is not the local resource policy.
+
+Long source restarts additionally require at least two minutes of observations
+above 6 GiB free physical memory and 8 GiB free commit headroom. The guard stops
+its own job below 1.5 GiB physical or 3 GiB commit headroom. Do not lower these
+thresholds or terminate other workloads to force a backfill. Continue bounded
+platform work while waiting; preserve completed source rows and receipts.
 
 ## Activation from scratch
 
@@ -46,17 +52,21 @@ unless `--force` is given. Each stage prints exactly one JSON line to stdout.
 Stage completion records execution; coverage, historical population and release
 readiness must be measured separately.
 
-### Current rebuild evidence (2026-09-20)
+### Current rebuild evidence (observed 2026-09-23; snapshot 2026-09-20)
 
-The current [activation measurements](TIER1_ACTIVATION_STATUS.md) record run4's
-`statement_points` failure, the successful corrected-price publication, and
-the subsequent partial companyfacts archive3 load. Archive3 failed at COMMIT
-at 22:02:44 UTC; 38,500,008 raw facts and the same number of fundamental points
-were retained. No full downstream fundamentals build has completed. That record supersedes the older
+The current [activation measurements](TIER1_ACTIVATION_STATUS.md) record the
+successful corrected-price publication and incomplete source backfill. The
+archive16 checkpoint retained 47,941,000 raw facts and the same number of
+fundamental points. Its host-guard stop and ledger recovery are complete;
+schema0322 remains live. No full downstream fundamentals build has completed.
+That record supersedes the older
 [activation handoff](../../docs/superpowers/handoffs/2026-09-20-tier1-parity-handoff.md)
 status; source-ingestion counts are not full-universe coverage or quality gates.
 Run4 has stopped. Before any new warehouse operation, verify that no replacement
 writer is active and follow the controller's serialized, guarded launch policy.
+Use the [current resume sequence](../../.superpowers/sdd/tier1-parity/production-resume-sequence-2026-09-21.md)
+for actual source predecessor UUIDs and required ordering. The bootstrap
+examples below are not replacements for verified source resume.
 
 **Price-source correction:** both archive loaders now map finite positive
 `close * cumulReturnFactor` to `equity_daily_bars.adjusted_close`; missing,
@@ -139,7 +149,7 @@ atx-db activate --db-path $env:ATX_DB_PATH --dry-run --as-of-date $activationDat
 
 # 2. Run only after the controller clears the pending input/memory prerequisites.
 # Each guard receipt must have a new name; existing receipts cannot be overwritten.
-& $activationPython $memoryGuard --job-gb 4 `
+& $activationPython $memoryGuard --job-gb 2 `
   --receipt "$guardReceipts\activation-from-scratch-memory.json" -- `
   $activationPython scripts/warehouse_activate.py --db-path $env:ATX_DB_PATH `
   --ticker-history-zip $env:USERPROFILE\Downloads\tbltickerhistory3_10y.zip `
@@ -149,19 +159,19 @@ atx-db activate --db-path $env:ATX_DB_PATH --dry-run --as-of-date $activationDat
   --as-of-date $activationDate --backup-keep 100
 
 # 3. Resume after an interruption (completed stages are skipped automatically).
-& $activationPython $memoryGuard --job-gb 4 `
+& $activationPython $memoryGuard --job-gb 2 `
   --receipt "$guardReceipts\activation-resume-memory.json" -- `
   $activationPython scripts/warehouse_activate.py --db-path $env:ATX_DB_PATH `
   --memory-limit 1GB --threads 1 --shards 16 `
   --as-of-date $activationDate --backup-keep 100
 
 # 4. Resume from an explicit point, or rerun one stage.
-& $activationPython $memoryGuard --job-gb 4 `
+& $activationPython $memoryGuard --job-gb 2 `
   --receipt "$guardReceipts\activation-companyfacts-memory.json" -- `
   $activationPython scripts/warehouse_activate.py --db-path $env:ATX_DB_PATH `
   --start-stage companyfacts_load --memory-limit 1GB --threads 1 --shards 16 `
   --as-of-date $activationDate --backup-keep 100
-& $activationPython $memoryGuard --job-gb 4 `
+& $activationPython $memoryGuard --job-gb 2 `
   --receipt "$guardReceipts\activation-standardized-memory.json" -- `
   $activationPython scripts/warehouse_activate.py --db-path $env:ATX_DB_PATH `
   --only standardized --force --memory-limit 1GB --threads 1 --shards 16 `
@@ -194,7 +204,7 @@ migrates without the activation retention option.
 
 `migrate` -> `security_master` -> `symbol_directory` -> `ticker_history_extract`
 -> `ticker_history_publish` -> `sec_bulk_download` -> `submissions_load` ->
-`companyfacts_load` -> `statement_points` -> `periods` -> `ttm` ->
+`earnings_release_facts` -> `companyfacts_load` -> `statement_points` -> `periods` -> `ttm` ->
 `calendarization` -> `standardized` -> `industry_templates` -> `reconciliation`
 -> `derived_metrics` -> `market_daily` -> `legacy_liquid_universe`
 -> `factor_projections` -> `delisting_evidence`
@@ -267,8 +277,10 @@ does not build omitted prerequisites. LEI/FIGI activation is deferred and has
 no active stage or vendor-file flags. The existing `industry_templates` stage
 remains; expanded industry templates and their fixture corpus are deferred.
 
-Network is limited to `security_master`, `symbol_directory`, and
-`sec_bulk_download`; every other stage is offline. `sec_bulk_download` resumes a
+Network stages include `security_master`, `symbol_directory`,
+`sec_bulk_download`, and the source-document requests in `earnings_release_facts`.
+Archive-member CompanyFacts and submissions loading use the retained local
+archives. `sec_bulk_download` resumes a
 partial transfer and records each archive's sha256 in `raw_source_files`.
 `reconciliation` shells out to `scripts/refresh_reconciliation_sharded.py`, which
 runs the sixteen shards **sequentially, with one shard child active at a time**.

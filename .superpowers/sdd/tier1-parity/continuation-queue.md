@@ -1,5 +1,42 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## FQ3 committed; runtime returned to root - 2026-09-23
+
+FQ3 is committed77db2e77 (readiness script, isolated tests, operator docs and
+result report only). Five focused checks passed under the exact1.5GiB guard,
+peak0.570GiB; scoped Ruff passed at0.062GiB. Both Important findings fixed
+and accepted on implementation report, no Critical or rereview. The first
+two attempts found only fixture setup errors (column-discovery truncation and
+missing production safe() conversion); final fq3-tests3 is authoritative.
+No wide signal scans, live query, migration or alpha claim. All agents are
+terminal; root owns runtime and all shared-file locks. The production
+measurement command now includes --include-fundamental-signals.
+
+Root updated public runbook memory policy to current2GiB cap and sustained
+source headroom window, archive16 counts, earnings-source stage/network truth,
+and links to verified-resume instructions. README links the research surfaces.
+Public status reflects research code and interrupted HEAD checks accurately.
+Pending: complete committed module/schema/numeric checks, governed0323..0325,
+fullsource archive17 and remaining production sequence. Last host sample
+physical5.424GiB/commit approximation6.032GiB still fails source restart floor.
+
+## Committed import verified; broader batch interrupted - 2026-09-23
+
+Dictionary/rollout changes committed a89c2677. Exact-HEAD export imported
+atx_db from its isolated source successfully. The required module/schema plus
+affected numeric batch quant-platform-head2 (session94107, child9760) was
+then terminated by the host guard at physical2.339GiB/commit2.459GiB. Child
+is absent and session terminal. Seven test dots preceded schema bootstrap;
+there is no completed pytest result, so the batch is not a pass. Do not poll
+or recover this finished test job. No warehouse write occurred.
+
+FQ3 independent static review completed with two Important findings, no
+Critical: enforce build snapshot <= evaluation snapshot, and distinguish
+unmeasured FQ2 linkage from no evaluation when FQ1 schema is missing. Original
+implementer owns fixes and isolated proof; accept on report, no rereview.
+Root still owns runtime until explicit grant. Full source restart capacity
+requirements and all production/release/sprint gates remain unchanged.
+
 ## Dictionary current; FQ3 readiness integration underway - 2026-09-23
 
 Root regenerated DATA_DICTIONARY.md, including issuer-content APIs, nullable
