@@ -297,6 +297,9 @@ struct SearchConfig {
   // pass. Rung-rejected candidates are inserted into the CanonSet (they ARE
   // trials) with a default (zero) score and are not fully evaluated / digested.
   FidelityCfg fidelity{};
+  // Behavioral archive eviction: Fifo (legacy ring of recent elites) or
+  // FarthestPoint (max-min-distance set of elite behaviours, behavior.hpp).
+  ArchiveEviction archive_eviction{ArchiveEviction::Fifo};
 };
 
 // =========================================================================

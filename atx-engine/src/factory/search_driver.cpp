@@ -109,7 +109,8 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   // slate — F1). Empty + unused when the behavioral objective is inactive. `nbr`
   // is the per-generation k-nearest population scratch, sized once and reused (no
   // hot-path alloc in the inner generation loop).
-  BehavioralArchive behavior_archive{cfg.behavior_archive_cap};
+  BehavioralArchive behavior_archive{cfg.behavior_archive_cap, cfg.archive_eviction,
+                                     cfg.behavior_metric};
   std::vector<std::span<const atx::f64>> nbr;
 
   // Initial population + start generation. Off-path (resume == nullptr) this is
