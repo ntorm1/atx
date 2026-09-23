@@ -46,7 +46,7 @@
 
 #include "atx/core/types.hpp"            // atx::f64, atx::usize
 #include "atx/engine/eval/stats_ext.hpp" // norm_cdf, norm_ppf, mean_std_pop, skewness, excess_kurtosis
-#include "atx/engine/eval/trial_registry.hpp" // TrialSummary (registry-fed DSR overload)
+#include "atx/engine/eval/trial_registry.hpp" // TrialSummary (registry-fed DSR)
 
 namespace atx::engine::eval {
 

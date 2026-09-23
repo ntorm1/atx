@@ -201,27 +201,36 @@ atx::core::Result<TrialRegistry> TrialRegistry::open(const std::filesystem::path
   const bool exists = std::filesystem::exists(path, ec);
   usize good_len = 0U;
   if (exists) {
+    const usize file_len = static_cast<usize>(std::filesystem::file_size(path, ec));
+    if (ec) {
+      return Err(ErrorCode::IoError, "TrialRegistry: cannot stat " + path.string());
+    }
     std::ifstream in(path, std::ios::binary);
     if (!in) {
       return Err(ErrorCode::IoError, "TrialRegistry: cannot read " + path.string());
     }
-    std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)),
-                                     std::istreambuf_iterator<char>());
-    if (bytes.size() >= kHeaderBytes) {
-      if (std::memcmp(bytes.data(), kMagic.data(), kMagic.size()) != 0 ||
-          get_u64(bytes.data() + 40U) != stable_digest(bytes.data(), 40U)) {
+    // Stream the log one fixed-size record at a time: memory stays O(record),
+    // not O(file), however many trials are registered.
+    std::vector<unsigned char> head(kHeaderBytes);
+    if (file_len >= kHeaderBytes &&
+        in.read(reinterpret_cast<char *>(head.data()),
+                static_cast<std::streamsize>(kHeaderBytes))) {
+      if (std::memcmp(head.data(), kMagic.data(), kMagic.size()) != 0 ||
+          get_u64(head.data() + 40U) != stable_digest(head.data(), 40U)) {
         return Err(ErrorCode::ParseError, "TrialRegistry: bad header in " + path.string());
       }
-      if (std::memcmp(bytes.data(), want_header.data(), kHeaderBytes) != 0) {
+      if (std::memcmp(head.data(), want_header.data(), kHeaderBytes) != 0) {
         return Err(ErrorCode::InvalidArgument,
                    "TrialRegistry: config does not match the registry file header");
       }
       good_len = kHeaderBytes;
       const usize rb = impl->record_bytes();
       const usize body = rb - 8U;
+      std::vector<unsigned char> rec(rb);
       // Bounded replay: one iteration per complete record in the file.
-      while (good_len + rb <= bytes.size()) {
-        const unsigned char *r = bytes.data() + good_len;
+      while (good_len + rb <= file_len &&
+             in.read(reinterpret_cast<char *>(rec.data()), static_cast<std::streamsize>(rb))) {
+        const unsigned char *r = rec.data();
         if (get_u64(r + body) != stable_digest(r, body) || !valid_kind(get_u64(r + 24U))) {
           break; // corrupt record: it and everything after it is a torn tail
         }
@@ -236,7 +245,7 @@ atx::core::Result<TrialRegistry> TrialRegistry::open(const std::filesystem::path
     }
     // A header shorter than kHeaderBytes is a torn creation: nothing committed.
     in.close();
-    if (good_len != bytes.size()) {
+    if (good_len != file_len) {
       std::filesystem::resize_file(path, good_len, ec);
       if (ec) {
         return Err(ErrorCode::IoError, "TrialRegistry: cannot repair tail: " + ec.message());

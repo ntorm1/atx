@@ -83,7 +83,10 @@ struct TrialId {
 
 struct TrialRegistryConfig {
   atx::usize pnl_len{};          // T: every recorded OOS pnl has exactly this length (>= 3)
-  atx::usize sketch_dim{256};    // d: exact when >= pnl_len; count-sketch otherwise (>= 8)
+  // d: exact when >= pnl_len; count-sketch otherwise (>= 8). The Gram costs
+  // 8·min(d, T)² bytes and each durable record 40 + 8·min(d, T) bytes, so keep
+  // d modest (64-256) for multi-year daily pnl.
+  atx::usize sketch_dim{256};
   atx::u64 sketch_seed{0x7a1c}; // count-sketch hash key
 };
 
