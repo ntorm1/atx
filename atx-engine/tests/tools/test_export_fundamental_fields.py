@@ -136,6 +136,31 @@ class SnapshotPitTest(unittest.TestCase):
         self.assertEqual(latest["shares_outstanding"], 690.0)
         self.assertEqual(latest["shares_lag1y"], 700.0)
 
+    def test_share_pair_plausibility_rejects_xbrl_scale_errors(self):
+        self.assertTrue(ex.plausible_share_pair(690.0, 700.0))
+        self.assertTrue(ex.plausible_share_pair(1.5e6, 1.0e6))     # +50% issuance
+        self.assertTrue(ex.plausible_share_pair(8.0e6, 1.0e6))     # 8x: merger-sized, kept
+        self.assertFalse(ex.plausible_share_pair(51_471.0, 51_175_000.0))  # ~1000x down
+        self.assertFalse(ex.plausible_share_pair(45.96e9, 45.69e6))        # ~1000x up
+        self.assertFalse(ex.plausible_share_pair(2.0e12, 2.0e6))           # 10^6
+        self.assertFalse(ex.plausible_share_pair(35.86e6, 2_763.0))        # >100x
+        self.assertFalse(ex.plausible_share_pair(0.0, 1.0e6))
+        self.assertFalse(ex.plausible_share_pair(float("nan"), 1.0e6))
+
+    def test_scale_error_share_pair_is_dropped_from_snapshot(self):
+        w = "WeightedAverageNumberOfDilutedSharesOutstanding"
+        rows = [
+            fact(w, "2013-04-01", "2013-06-30", 51_175_000.0, "2013-08-01", "10-Q"),
+            fact(w, "2014-04-01", "2014-06-30", 51_471.0, "2014-08-01", "10-Q"),  # tagged in thousands
+            fact("Assets", None, "2014-06-30", 500.0, "2014-08-01", "10-Q"),
+        ]
+        snaps = ex.company_snapshots(ex.parse_company_facts(doc(rows)), seal=D(2020, 1, 1))
+        latest = snaps[-1]
+        self.assertEqual(latest["filed"], D(2014, 8, 1))
+        self.assertEqual(latest["total_assets"], 500.0)
+        self.assertTrue(math.isnan(latest["shares_outstanding"]))
+        self.assertTrue(math.isnan(latest["shares_lag1y"]))
+
     def test_future_period_and_non_event_forms_are_ignored(self):
         rows = [
             fact("Assets", None, "2013-12-31", 1.0, "2013-06-01", "10-Q"),  # ends after filing

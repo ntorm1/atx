@@ -50,7 +50,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-TOOL_VERSION = "fundamental-fields-export-v1"
+TOOL_VERSION = "fundamental-fields-export-v2"
 CLOCK_POLICY = "sec_filed_date_plus_46h_v1 (available_date = filed + 1 day)"
 
 # Raw output columns, in the exact order of fundamental_fields.hpp RawField.
@@ -117,6 +117,21 @@ def parse_date(s: str | None) -> dt.date | None:
 # ---------------------------------------------------------------------------
 # Fiscal-period arithmetic (pure; unit-tested in tests/tools)
 # ---------------------------------------------------------------------------
+
+# A one-year change in weighted-average shares of 100x or more is not a real
+# issuance for a listed name; it is an XBRL scale error (values tagged in
+# thousands or millions: ratios near 10^+-3 / 10^+-6) or a unit mix-up.
+SHARE_MAX_LOG10_CHANGE = 2.0
+SHARE_PAIR_RULE = "drop (shares, shares_lag1y) when |log10(shares/shares_lag1y)| >= 2 or either <= 0"
+SHARE_PAIRS_REJECTED = [0]  # export-wide counter, reported in the manifest
+
+
+def plausible_share_pair(current: float, lag: float) -> bool:
+    """False for a (shares, shares 1y earlier) pair that carries an XBRL scale error."""
+    if not (math.isfinite(current) and math.isfinite(lag)) or current <= 0.0 or lag <= 0.0:
+        return False
+    return abs(math.log10(current / lag)) < SHARE_MAX_LOG10_CHANGE
+
 
 def duration_days(start: dt.date, end: dt.date) -> int:
     return (end - start).days + 1
@@ -353,8 +368,13 @@ def snapshot(k: Knowledge) -> tuple[dt.date | None, dict[str, float]]:
         sh = latest(series)
         if sh is None:
             continue
-        parts["shares_outstanding"] = sh
         lag = instant_near(series, sh[0] - dt.timedelta(days=365), 20)
+        if lag is not None and not plausible_share_pair(sh[1], lag):
+            SHARE_PAIRS_REJECTED[0] += 1
+            # XBRL scale error on one side (thousands vs units, ...): which side
+            # is wrong is unknowable here, so neither count is published.
+            break
+        parts["shares_outstanding"] = sh
         if lag is not None:
             parts["shares_lag1y"] = (sh[0], lag)
         break
@@ -696,6 +716,12 @@ def main(argv: list[str] | None = None) -> int:
         },
         "columns": {"keys": list(KEY_COLUMNS), "raw_fields": list(RAW_FIELDS)},
         "consumer": "atx/engine/data/fundamental_fields.hpp (RawField order == raw_fields)",
+        "share_pair_plausibility": {"rule": SHARE_PAIR_RULE,
+                                    "knowledge_states_rejected": SHARE_PAIRS_REJECTED[0]},
+        "id_bridge_caveat": ("TBLTICKERHISTORY_SECURITY_ID -> SEC-CIK-* links come from matching the "
+                             "vendor's CURRENT ticker against the current SEC company_tickers file; a "
+                             "name is bridged only if its current ticker is still SEC-listed, so every "
+                             "field is survivor-conditioned (look-ahead selection), not point-in-time."),
         "outputs": {"points.csv": {"rows": n_rows, "sha256": sha256_file(points)}},
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
