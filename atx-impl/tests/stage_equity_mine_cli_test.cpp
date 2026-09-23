@@ -188,11 +188,33 @@ TEST_F(EquityMineCli, PublishesHashBoundLibraryWithPlantedAlpha) {
     ASSERT_FALSE(g["admitted"].empty());
     EXPECT_EQ(g["admitted"][0]["dsl"].get<std::string>(), "rank(sig)");
     EXPECT_GT(g["admitted"][0]["holdout"]["sharpe_net"].get<double>(), 1.0);
+    std::ifstream cands(out / "candidates.csv");
+    std::string cand_header;
+    std::getline(cands, cand_header);
+    EXPECT_NE(cand_header.find("train_sharpe_gross,train_ic_h1"), std::string::npos) << cand_header;
     std::ifstream lib(out / "library.tsv");
     std::string header, first;
     std::getline(lib, header);
     std::getline(lib, first);
     EXPECT_NE(first.find("rank(sig)"), std::string::npos);
+}
+
+TEST_F(EquityMineCli, SmoothWindowsAddDecayedVariantsAsTrials) {
+    const fs::path out = root_ / "smooth";
+    auto args = base_args(out);
+    args.insert(args.end(), {"--smooth-windows", "5;10"});
+    std::string o, e;
+    ASSERT_EQ(run(args, o, e), 0) << e;
+    std::ifstream gf(out / "gate_report.json");
+    const json g = json::parse(gf);
+    EXPECT_EQ(g["counts"]["seeds"].get<int>(), 15);        // 5 base lines x (1 + 2 windows)
+    EXPECT_EQ(g["counts"]["seeds_invalid"].get<int>(), 3); // the bad line in every form
+    EXPECT_EQ(g["trials"]["n_raw"].get<int>(), 12);        // 4 valid base seeds x 3 forms
+    std::string o2, e2;
+    auto bad = args;
+    bad.back() = (root_ / "smooth_bad").string();
+    bad.insert(bad.end(), {"--smooth-windows", "1"});
+    EXPECT_EQ(run(bad, o2, e2), 2);
 }
 
 TEST_F(EquityMineCli, RefusesContextsAtOrAfterTheSeal) {

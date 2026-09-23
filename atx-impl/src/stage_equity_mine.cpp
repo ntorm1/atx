@@ -931,6 +931,7 @@ struct MineArgs {
     std::string out;
     std::string fixture;
     std::string extra_seeds;
+    std::vector<atx::usize> smooth_windows;
     bool literature{true};
     bool search{true};
     bool fidelity{true};
@@ -1004,6 +1005,18 @@ template <class T>
     if (f == "out") { a.out = std::string{v}; return Ok(); }
     if (f == "fixture") { a.fixture = std::string{v}; return Ok(); }
     if (f == "extra-seeds") { a.extra_seeds = std::string{v}; return Ok(); }
+    if (f == "smooth-windows") {
+        a.smooth_windows.clear();
+        for (const auto &item : split_list(v)) {
+            atx::usize w = 0;
+            ATX_TRY_VOID(parse_num(f, item, w));
+            if (w < 2 || w > 63) {
+                return Err(ErrorCode::InvalidArgument, "--smooth-windows: each in [2, 63]");
+            }
+            a.smooth_windows.push_back(w);
+        }
+        return Ok();
+    }
     if (f == "seed") return parse_num(f, v, a.seed);
     if (f == "population") return parse_num(f, v, a.population);
     if (f == "generations") return parse_num(f, v, a.generations);
@@ -1231,6 +1244,21 @@ build_role(std::string name, const std::vector<std::string> &paths, atx::i64 sta
 constexpr std::string_view kScoreHeader =
     "sharpe_net,sharpe_gross,ic_h1,ic_h5,ic_h21,icir_h1,turnover,coverage,t_nw";
 
+// kScoreHeader with every column name prefixed (e.g. "train_").
+[[nodiscard]] std::string score_header(std::string_view prefix) {
+    std::string out;
+    std::size_t pos = 0;
+    while (pos < kScoreHeader.size()) {
+        std::size_t e = kScoreHeader.find(',', pos);
+        if (e == std::string_view::npos) e = kScoreHeader.size();
+        if (!out.empty()) out += ',';
+        out += prefix;
+        out += kScoreHeader.substr(pos, e - pos);
+        pos = e + 1;
+    }
+    return out;
+}
+
 [[nodiscard]] atx::core::Status write_file(const std::filesystem::path &p, const std::string &s) {
     std::ofstream f(p, std::ios::binary | std::ios::trunc);
     if (!f) return Err(ErrorCode::IoError, "cannot write " + p.string());
@@ -1242,7 +1270,7 @@ constexpr std::string_view kScoreHeader =
 
 [[nodiscard]] std::string candidates_csv(const mine::MineOutcome &o) {
     std::string s = "idx,origin,sign,scored,in_family,";
-    s += "train_" + std::string{kScoreHeader} + ",dsr_train,error,dsl\n";
+    s += score_header("train_") + ",dsr_train,error,dsl\n";
     std::vector<atx::u8> fam(o.candidates.size(), 0);
     for (auto i : o.family) fam[i] = 1;
     for (atx::usize i = 0; i < o.candidates.size(); ++i) {
@@ -1255,7 +1283,7 @@ constexpr std::string_view kScoreHeader =
 }
 
 [[nodiscard]] std::string validation_csv(const mine::MineOutcome &o) {
-    std::string s = "rank,idx,origin,sign,train_sharpe_net,val_" + std::string{kScoreHeader} +
+    std::string s = "rank,idx,origin,sign,train_sharpe_net," + score_header("val_") +
                     ",p_raw,p_by,p_rw,admitted,dsl\n";
     for (atx::usize k = 0; k < o.family.size(); ++k) {
         const auto &c = o.candidates[o.family[k]];
@@ -1350,6 +1378,17 @@ void log_line(std::ostream &err, bool quiet, const std::string &msg) {
     }
     if (seeds.empty()) {
         return Err(ErrorCode::InvalidArgument, "equity-mine: no seed expressions");
+    }
+    // Turnover-reducing variants: a daily-rebalanced rank book pays cost on every
+    // change of rank, so each base seed is also offered linearly decayed over each
+    // --smooth-windows length. Every variant is a separate registered trial.
+    const atx::usize base = seeds.size();
+    for (const atx::usize w : a.smooth_windows) {
+        for (atx::usize i = 0; i < base; ++i) {
+            seeds.push_back(mine::SeedExpr{
+                "decay_linear(" + seeds[i].dsl + ", " + std::to_string(w) + ")",
+                seeds[i].origin + "+decay" + std::to_string(w)});
+        }
     }
     return Ok(std::move(seeds));
 }
