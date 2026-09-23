@@ -41,6 +41,7 @@
 //  No RNG, no clock. All reductions are order-fixed (ascending date, asset, factor);
 //  APCA eigenvectors are sign-pinned. Same inputs ⇒ byte-identical model.
 
+#include <optional> // std::optional
 #include <span>   // std::span
 #include <vector> // std::vector
 
@@ -49,6 +50,7 @@
 
 #include "atx/core/linalg/linalg.hpp" // MatX, VecX
 
+#include "atx/engine/combine/cov_targets.hpp"       // CovTarget (factor_cov_target)
 #include "atx/engine/loop/panel_types.hpp"         // PanelView (adapter)
 #include "atx/engine/risk/exposures.hpp"           // StyleFactor
 #include "atx/engine/risk/factor_model.hpp"        // FactorModel
@@ -121,6 +123,11 @@ struct HybridCfg {
   atx::usize corr_halflife = 0U;
   atx::usize nw_lags = 0U;
   atx::usize spec_halflife = 0U; // EWMA half-life for specific variance (0 ⇒ equal weights)
+  // Opt-in factor-covariance estimator (risk::shrunk_factor_covariance over the
+  // combine::CovTarget family, e.g. LW2020 nonlinear). Unset ⇒ the legacy LW-identity
+  // path (factor_cov_shrink), byte-identical. The EWMA/Newey-West path above takes
+  // precedence when any of its knobs is set.
+  std::optional<atx::engine::combine::CovTarget> factor_cov_target;
 };
 
 // What the selection rule saw (reported in the validation scorecard).

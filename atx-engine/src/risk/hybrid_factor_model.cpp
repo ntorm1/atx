@@ -15,6 +15,7 @@
 #include "atx/core/linalg/decompose.hpp" // symmetric_eig
 
 #include "atx/engine/risk/cov_ewma.hpp"          // ewma_factor_covariance
+#include "atx/engine/risk/shrinkage.hpp"         // shrunk_factor_covariance
 #include "atx/engine/risk/stat_factor_model.hpp" // APCA kernels, bai_ng_ic2, mp_edge_count
 
 namespace atx::engine::risk {
@@ -296,11 +297,15 @@ bool solve_date(const ExposureSeries &e, const Layout &lay, const MatX &xs, cons
 }
 
 // Factor covariance of a (dates × factors, newest-first) series per the config.
-MatX factor_cov(const MatX &series, const HybridCfg &cfg) {
+atx::core::Result<MatX> factor_cov(const MatX &series, const HybridCfg &cfg) {
   if (cfg.vol_halflife > 0U || cfg.corr_halflife > 0U || cfg.nw_lags > 0U) {
-    return ewma_factor_covariance(series, cfg.vol_halflife, cfg.corr_halflife, cfg.nw_lags);
+    return atx::core::Ok(
+        ewma_factor_covariance(series, cfg.vol_halflife, cfg.corr_halflife, cfg.nw_lags));
   }
-  return detail::factor_covariance(series, cfg.factor_cov_shrink);
+  if (cfg.factor_cov_target.has_value()) {
+    return shrunk_factor_covariance(series, *cfg.factor_cov_target);
+  }
+  return atx::core::Ok(detail::factor_covariance(series, cfg.factor_cov_shrink));
 }
 
 // (Weighted) variance over the observed entries of one residual row; `hl` > 0 ⇒
@@ -614,13 +619,13 @@ atx::core::Result<HybridModel> HybridFactorModelBuilder::build(const ReturnPanel
   MatX f = MatX::Zero(kt, kt);
   if (kf > 0U) {
     x.leftCols(static_cast<Eigen::Index>(kf)) = xf;
-    f.topLeftCorner(static_cast<Eigen::Index>(kf), static_cast<Eigen::Index>(kf)) =
-        factor_cov(gser, cfg);
+    ATX_TRY(MatX ff, factor_cov(gser, cfg));
+    f.topLeftCorner(static_cast<Eigen::Index>(kf), static_cast<Eigen::Index>(kf)) = ff;
   }
   if (ks > 0U) {
     x.rightCols(static_cast<Eigen::Index>(ks)) = b;
-    f.bottomRightCorner(static_cast<Eigen::Index>(ks), static_cast<Eigen::Index>(ks)) =
-        factor_cov(fhat, cfg);
+    ATX_TRY(MatX fs, factor_cov(fhat, cfg));
+    f.bottomRightCorner(static_cast<Eigen::Index>(ks), static_cast<Eigen::Index>(ks)) = fs;
   }
   VecX d(m);
   for (Eigen::Index r = 0; r < m; ++r) {
