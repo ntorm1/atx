@@ -11,6 +11,7 @@
 #include "stage_equity_baseline.hpp"
 #include "stage_equity_book.hpp"
 #include "stage_equity_ic.hpp"
+#include "stage_equity_mine.hpp"
 #include "stage_equity_universe.hpp"
 
 namespace atx::impl {
@@ -108,6 +109,8 @@ static void print_usage(std::ostream& out) {
 // dispatch
 // ---------------------------------------------------------------------------
 int dispatch(int argc, char** argv, std::ostream& out, std::ostream& err) {
+    if (argc > 1 && std::string_view{argv[1]} == "equity-mine") // lane 9: owns its flags
+        return dispatch_equity_mine(argc, argv, out, err);
     // 1. Parse args.
     auto cfg_result = parse_args(argc, argv);
     if (!cfg_result) {
