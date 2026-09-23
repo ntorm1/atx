@@ -70,9 +70,9 @@ enum class RawField : atx::u8 {
   GrossProfitTtm,       // GrossProfit, or revenue - cost of revenue, TTM
   OperatingCashFlowTtm, // NetCashProvidedByUsedInOperatingActivities, TTM
   OperatingIncomeTtm,   // OperatingIncomeLoss, TTM
-  SharesOutstanding,    // dei:EntityCommonStockSharesOutstanding (all classes)
-  SharesLag1y,          // the same ~1 year earlier
-  Sue,                  // standardized unexpected EPS, seasonal random walk
+  SharesOutstanding,    // weighted-average diluted shares, latest discrete period
+  SharesLag1y,          // the same ~1 year earlier, as restated (split-consistent)
+  Sue,                  // standardized unexpected quarterly net income, seasonal RW
   Count
 };
 inline constexpr atx::usize kRawFieldCount = static_cast<atx::usize>(RawField::Count);

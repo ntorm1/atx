@@ -89,8 +89,8 @@ class SnapshotPitTest(unittest.TestCase):
             fact("StockholdersEquity", None, "2013-03-31", 44.0, "2013-05-01", "10-Q"),
             # The 10-K/A restating FY2012 equity lands AFTER the Q1 10-Q.
             fact("StockholdersEquity", None, "2012-12-31", 38.0, "2013-06-15", "10-K/A"),
-            fact("EntityCommonStockSharesOutstanding", None, "2013-04-25", 7.0, "2013-05-01", "10-Q"),
-            fact("EntityCommonStockSharesOutstanding", None, "2013-04-25", 3.0, "2013-05-01", "10-Q"),
+            fact("WeightedAverageNumberOfDilutedSharesOutstanding", "2013-01-01", "2013-03-31", 10.0,
+                 "2013-05-01", "10-Q"),
             # A fact available only after the seal must never be exported.
             fact("Assets", None, "2019-12-31", 999.0, "2020-02-01", "10-K"),
         ]
@@ -107,7 +107,7 @@ class SnapshotPitTest(unittest.TestCase):
         self.assertTrue(math.isnan(first["sue"]))
         self.assertEqual(second["period_end"], D(2013, 3, 31))
         self.assertEqual(second["total_assets"], 110.0)
-        self.assertEqual(second["shares_outstanding"], 10.0)  # two classes summed
+        self.assertEqual(second["shares_outstanding"], 10.0)
         # The older-period amendment never regresses the newer balance sheet.
         self.assertEqual(third["book_equity"], 44.0)
         self.assertEqual(third["period_end"], D(2013, 3, 31))
@@ -122,6 +122,19 @@ class SnapshotPitTest(unittest.TestCase):
         latest = snaps[-1]
         self.assertEqual(latest["period_end"], D(2012, 9, 30))
         self.assertTrue(math.isnan(latest["net_income_ttm"]))  # 273 days older than the period
+
+    def test_split_restated_comparative_keeps_issuance_split_consistent(self):
+        w = "WeightedAverageNumberOfDilutedSharesOutstanding"
+        rows = [
+            fact(w, "2013-04-01", "2013-06-30", 100.0, "2013-08-01", "10-Q"),
+            # 7:1 split; the 2014 10-Q restates the 2013 comparative to 700.
+            fact(w, "2014-04-01", "2014-06-30", 690.0, "2014-08-01", "10-Q"),
+            fact(w, "2013-04-01", "2013-06-30", 700.0, "2014-08-01", "10-Q"),
+        ]
+        snaps = ex.company_snapshots(ex.parse_company_facts(doc(rows)), seal=D(2020, 1, 1))
+        latest = snaps[-1]
+        self.assertEqual(latest["shares_outstanding"], 690.0)
+        self.assertEqual(latest["shares_lag1y"], 700.0)
 
     def test_future_period_and_non_event_forms_are_ignored(self):
         rows = [

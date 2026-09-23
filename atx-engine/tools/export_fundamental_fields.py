@@ -98,6 +98,7 @@ C_OPERATING_INCOME = ("OperatingIncomeLoss",)
 C_EPS = ("EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted", "EarningsPerShareBasic")
 C_SHARES_DEI = ("EntityCommonStockSharesOutstanding",)
 C_SHARES_GAAP = ("CommonStockSharesOutstanding",)
+C_WASO = ("WeightedAverageNumberOfDilutedSharesOutstanding", "WeightedAverageNumberOfSharesOutstandingBasic")
 
 EVENT_FORMS = {"10-K", "10-Q", "10-K/A", "10-Q/A", "10-KT", "10-QT", "20-F", "20-F/A", "40-F", "40-F/A"}
 
@@ -339,15 +340,28 @@ def snapshot(k: Knowledge) -> tuple[dt.date | None, dict[str, float]]:
     if gp is not None:
         parts["gross_profit_ttm"] = gp
 
-    shares_series = dict(k.shares) or k.instant_series(C_SHARES_GAAP)
-    sh = latest(shares_series)
-    if sh is not None:
+    # Share counts: weighted-average diluted (else basic) shares of the latest
+    # discrete period, and the same concept ~1 year earlier AS CURRENTLY KNOWN.
+    # Filings restate prior-year comparatives for splits, so the knowledge set's
+    # latest-filed value keeps the pair split-consistent; cover-page dei counts
+    # are not restated and would book a 7:1 split as a 600% issuance.
+    for c in C_WASO:
+        durs = k.durations.get(c, {})
+        series = {e: v for (st, e), v in durs.items() if is_quarter(duration_days(st, e))}
+        if not series:
+            series = {e: v for (st, e), v in durs.items() if is_annual(duration_days(st, e))}
+        sh = latest(series)
+        if sh is None:
+            continue
         parts["shares_outstanding"] = sh
-        lag = instant_near(shares_series, sh[0] - dt.timedelta(days=365), 45)
+        lag = instant_near(series, sh[0] - dt.timedelta(days=365), 20)
         if lag is not None:
             parts["shares_lag1y"] = (sh[0], lag)
+        break
 
-    for c in C_EPS:
+    # SUE on quarterly net income (split-invariant; the EPS form of Livnat &
+    # Mendenhall 2006 mixes pre- and post-split scales in its history window).
+    for c in C_NET_INCOME:
         q = derive_quarters(k.durations.get(c, {}))
         if q:
             got = sue_from_quarters(q)
@@ -356,14 +370,12 @@ def snapshot(k: Knowledge) -> tuple[dt.date | None, dict[str, float]]:
             break
 
     # The snapshot's fiscal period: the latest financial-statement period seen.
-    # Shares (a cover-page date) never define it.
-    statement_ends = [v[0] for n, v in parts.items() if n not in ("shares_outstanding", "shares_lag1y")]
+    statement_ends = [v[0] for v in parts.values()]
     if not statement_ends:
         return None, vals
     period_end = max(statement_ends)
     for name, (end, value) in parts.items():
-        is_shares = name in ("shares_outstanding", "shares_lag1y")
-        if is_shares or (period_end - end).days <= 100:
+        if (period_end - end).days <= 100:
             vals[name] = float(value)
     return period_end, vals
 
@@ -372,7 +384,7 @@ def parse_company_facts(doc: dict) -> list[Fact]:
     """Flatten a Company Facts JSON into Fact rows usable for PIT reconstruction."""
     wanted = set(C_EQUITY + C_EQUITY_NCI + C_ASSETS + C_LIABILITIES + C_NET_INCOME + C_REVENUE
                  + C_GROSS_PROFIT + C_COST_OF_REVENUE + C_CFO + C_OPERATING_INCOME + C_EPS
-                 + C_SHARES_GAAP)
+                 + C_SHARES_GAAP + C_WASO)
     out: list[Fact] = []
     facts = doc.get("facts", {})
     for taxonomy, concepts in facts.items():
