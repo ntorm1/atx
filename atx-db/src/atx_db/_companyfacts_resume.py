@@ -187,6 +187,7 @@ def verify_companyfacts_resume(
         "completion_evidence": "matching_receipt_and_retained_fact_point_sha256_multisets",
         "resume_empty_policy": "replay_zero_row_cleanup",
         "resume_unavailable_policy": "reobserve_without_replacement",
+        "resume_proof_connection_reopens": 0,
         "resume_verified_rows": 0, "previously_completed_targets": 0,
     }
     if not receipts:
@@ -202,6 +203,9 @@ def verify_companyfacts_resume(
         WHERE regexp_full_match(trim(cik), '[0-9]+') GROUP BY try_cast(cik AS BIGINT)""")
     for cik_number, count in _rows(store):
         counts[cik_number] = count
+    # The result is exhausted and only issuer aggregates survive in Python.
+    # Release metadata/count scan pages before opening the wider fact scan.
+    details["resume_proof_connection_reopens"] += int(reopen_companyfacts_store(store))
     expected: dict[str, tuple[int, ...]] = {}
     issuer_groups: dict[str, set[str]] = {}
     issuer_rows: dict[str, int] = {}
@@ -228,6 +232,9 @@ def verify_companyfacts_resume(
                     or first_url != f"{source_url_prefix}#CIK{cik}.json"
                     or last_url != first_url):
                 bad_issuers.add(cik)
+    # Facts and points each read the complete retained history. Keeping both
+    # phases on one connection needlessly retains the earlier scan's buffers.
+    details["resume_proof_connection_reopens"] += int(reopen_companyfacts_store(store))
     actual: dict[str, tuple[int, ...]] = {}
     LOGGER.info("companyfacts resume fact_identity_groups=%d; aggregating retained point fingerprints", len(expected))
     store.con.execute(
@@ -244,6 +251,7 @@ def verify_companyfacts_resume(
         if symbols:
             continue  # Archive points cannot carry current ticker symbols.
         actual[security_id] = (count, *sums)
+    details["resume_proof_connection_reopens"] += int(reopen_companyfacts_store(store))
     for cik, (_run_id, count) in receipts.items():
         if (cik in bad_issuers or counts.get(int(cik), 0) != count
                 or issuer_rows.get(cik, 0) != count
@@ -276,7 +284,7 @@ def verify_companyfacts_resume(
 
 
 def reopen_companyfacts_store(store: DuckDBStore) -> bool:
-    """Recycle only a configured persistent store, after committed issuer work."""
+    """Recycle a configured persistent store after consumed proof or committed work."""
     if (str(store.path).startswith(":memory:") or not store.path.is_file()
             or store.analytical_memory_limit is None or store.analytical_threads is None):
         return False

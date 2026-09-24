@@ -111,7 +111,8 @@ class DuckDBStore:
         the same tuning.
         """
         if self.connection is not None:
-            self.connection.execute("CHECKPOINT")
+            if not self.read_only:
+                self.connection.execute("CHECKPOINT")
             self.connection.close()
             self.connection = None
 
@@ -125,7 +126,23 @@ class DuckDBStore:
         inherit session-level ``SET`` state from the one it replaces.
         """
         if self.connection is None:
-            self.connection = open_duckdb_connection(self.path, read_only=self.read_only)
+            if self.analytical_memory_limit is not None and self.analytical_threads is not None:
+                # Opening may recover a WAL or allocate database state before
+                # any SET statement runs. Apply the recorded budget at connect.
+                config = {
+                    "memory_limit": self.analytical_memory_limit,
+                    "threads": str(self.analytical_threads),
+                    "preserve_insertion_order": "false",
+                }
+                if str(self.path) != ":memory:":
+                    config["temp_directory"] = (
+                        self.path.resolve().parent / f".{self.path.name}.duckdb_tmp"
+                    ).as_posix()
+                self.connection = duckdb.connect(
+                    str(self.path), read_only=self.read_only, config=config,
+                )
+            else:
+                self.connection = open_duckdb_connection(self.path, read_only=self.read_only)
             self._configure_session(self.connection)
             if self.analytical_memory_limit is not None and self.analytical_threads is not None:
                 self.connection.execute("PRAGMA disable_progress_bar")

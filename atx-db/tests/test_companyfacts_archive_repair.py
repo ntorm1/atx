@@ -431,8 +431,9 @@ def test_resume_reopens_after_proof_before_candidate_recovery(tmp_store, tmp_pat
 
     monkeypatch.setattr(tmp_store, "close", observe_before_close)
     result = SecCompanyFactsDataset().run(tmp_store, replace(options, resume_from_run_id=prior_id))
-    assert observations == [(2, 0), (3, 3)]
+    assert observations == [(2, 0)] * 4 + [(3, 3)]
     assert result.details["connection_reopens"] == 2
+    assert result.details["resume_proof_connection_reopens"] == 3
 
 
 def test_empty_replacement_is_tenth_raw_commit_before_next_target(tmp_store, tmp_path, monkeypatch):
@@ -558,8 +559,9 @@ def test_verified_resume_uses_independent_bounded_recycling_and_preserves_owned_
     monkeypatch.setattr(tmp_store, "close", observe_before_close)
     monkeypatch.setattr(tmp_store, "reopen", observe_reopen)
     result = SecCompanyFactsDataset().run(tmp_store, replace(options, resume_from_run_id=prior_id))
-    assert observations == [(200, 0), (200, 100), (200, 200), (201, 201)]
+    assert observations == [(200, 0)] * 4 + [(200, 100), (200, 200), (201, 201)]
     assert result.details["connection_reopens"] == 4
+    assert result.details["resume_proof_connection_reopens"] == 3
     assert result.details["connection_reopen_interval"] == 10
     assert result.rows_loaded == 11
     assert result.details["previously_completed_targets"] == result.details["resumed_loaded_targets"] == 190
