@@ -9,20 +9,30 @@
 //   mode 4  + fidelity race, default ladder {4x4, 2x2, full}
 // state.range(1) is the DetPool worker count.
 //
-// Counters:
-//   genomes_per_sec   candidates generated (children produced + scored or
-//                     deduped) per wall second — the search's raw throughput;
-//   trials_per_sec    distinct candidates LOOKED AT per second (trial_count);
+// Counters (ACCEPTANCE metric = trials_per_sec at equal front quality):
+//   trials_per_sec    distinct candidates LOOKED AT per second (trial_count) —
+//                     the spec's "distinct genomes/sec"; compare modes on THIS;
+//   genomes_per_sec   candidates generated incl. structural duplicates per wall
+//                     second (raw generation rate; NOT the acceptance metric);
 //   fitness_calls_per_sec candidates that paid the full fitness pass;
 //   dedup_pct         1 - trial_count / candidates_generated (structural+semantic);
 //   fp_hit_pct        fingerprint-reused representatives / trial_count;
 //   fid_reject_pct    rung-rejected / trial_count;
-//   best_raw          final generation's best raw fitness (the quality guard).
+//   best_raw          final generation's best raw fitness;
+//   front_topk_raw    quality guard: the first K (<= 8) admitted candidates are
+//                     RE-SCORED with a full-fidelity pool_aware_fitness on the full
+//                     panel (outside the timed region) — mean raw;
+//   front_hv          quality guard: 2-D hypervolume of those re-scored candidates
+//                     over (wq, robust) against the reference point (0, 0). The
+//                     spec's gate is front_hv within 5% of mode 0 at equal gens.
+// Generations: ATX_L3_BENCH_GENS (env), default 6; raise it (e.g. 20) for a
+// quality comparison that is not dominated by the seeds.
 //
 // Panel size: ATX_L3_BENCH_DATES x ATX_L3_BENCH_INSTS (env), default 756 x 500
 // (the plan's 2500 x 3000 is reachable via env; it needs several GB and minutes
 // per run, so it is not the default on the shared 16 GB lane box).
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -38,6 +48,7 @@
 #include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/combine/store.hpp"
 #include "atx/engine/exec/execution_sim.hpp"
+#include "atx/engine/factory/fitness.hpp"
 #include "atx/engine/factory/search_driver.hpp"
 #include "atx/engine/loop/weight_policy.hpp"
 
@@ -59,6 +70,8 @@ using atx::engine::exec::LatencyCfg;
 using atx::engine::exec::SlippageCfg;
 using atx::engine::exec::SlippageMode;
 using atx::engine::exec::VolumeCapCfg;
+using atx::engine::factory::FitnessCfg;
+using atx::engine::factory::Genome;
 using atx::engine::factory::SearchConfig;
 using atx::engine::factory::SearchDriver;
 using atx::engine::factory::SearchResult;
@@ -123,7 +136,7 @@ using atx::engine::factory::SearchResult;
   SearchConfig cfg;
   cfg.master_seed = 20260922;
   cfg.population = 32;
-  cfg.generations = 6;
+  cfg.generations = env_or("ATX_L3_BENCH_GENS", 6);
   cfg.n_workers = workers;
   cfg.stagnation_patience = 0;
   cfg.canon.semantic = mode >= 1;
@@ -135,6 +148,53 @@ using atx::engine::factory::SearchResult;
                            atx::engine::factory::Rung{1, 1, 0}}};
   }
   return cfg;
+}
+
+// 2-D hypervolume (maximization) of points against reference (0, 0); points not
+// strictly dominating the reference contribute nothing.
+[[nodiscard]] f64 hypervolume2(std::vector<std::pair<f64, f64>> pts) {
+  std::erase_if(pts, [](const auto &p) { return !(p.first > 0.0 && p.second > 0.0); });
+  std::sort(pts.begin(), pts.end(), [](const auto &a, const auto &b) {
+    return a.first != b.first ? a.first > b.first : a.second > b.second;
+  });
+  f64 hv = 0.0;
+  f64 best_y = 0.0;
+  for (const auto &[x, y] : pts) { // x descending: each new y-high adds a slab
+    if (y > best_y) {
+      hv += x * (y - best_y);
+      best_y = y;
+    }
+  }
+  return hv;
+}
+
+struct FrontQuality {
+  f64 topk_raw{0.0};
+  f64 hv{0.0};
+};
+
+// Full-fidelity re-score of the first K admitted candidates (survivor order).
+[[nodiscard]] FrontQuality front_quality(const std::vector<Genome> &admitted, const Panel &panel,
+                                         const WeightPolicy &policy,
+                                         const ExecutionSimulator &sim) {
+  constexpr usize kTop = 8;
+  const AlphaStore pool{};
+  const FitnessCfg fit{};
+  FrontQuality q{};
+  std::vector<std::pair<f64, f64>> pts;
+  usize n = 0;
+  for (usize i = 0; i < admitted.size() && n < kTop; ++i) {
+    auto rep = atx::engine::factory::pool_aware_fitness(admitted[i], pool, panel, policy, sim, fit);
+    if (!rep.has_value()) {
+      continue;
+    }
+    q.topk_raw += rep->raw;
+    pts.emplace_back(rep->objectives[0], rep->objectives[2]);
+    ++n;
+  }
+  q.topk_raw = n > 0 ? q.topk_raw / static_cast<f64>(n) : 0.0;
+  q.hv = hypervolume2(std::move(pts));
+  return q;
 }
 
 void BM_SearchThroughput(benchmark::State &state) {
@@ -157,6 +217,7 @@ void BM_SearchThroughput(benchmark::State &state) {
   f64 rejected = 0.0;
   f64 dedup = 0.0;
   f64 best = 0.0;
+  FrontQuality quality{};
   for (auto _ : state) {
     SearchDriver driver{lib, panel, policy, sim, seeds, {"close", "rev", "volume"}};
     const AlphaStore pool{};
@@ -168,6 +229,9 @@ void BM_SearchThroughput(benchmark::State &state) {
     rejected += static_cast<f64>(r.fidelity_rejected);
     dedup += r.dedup_pct;
     best = r.best_fitness_per_gen.empty() ? 0.0 : r.best_fitness_per_gen.back();
+    state.PauseTiming(); // quality re-score is not part of the throughput
+    quality = front_quality(r.admitted_candidates, panel, policy, sim);
+    state.ResumeTiming();
   }
   const f64 iters = static_cast<f64>(state.iterations());
   using C = benchmark::Counter;
@@ -178,6 +242,8 @@ void BM_SearchThroughput(benchmark::State &state) {
   state.counters["fp_hit_pct"] = trials > 0.0 ? fp_hits / trials : 0.0;
   state.counters["fid_reject_pct"] = trials > 0.0 ? rejected / trials : 0.0;
   state.counters["best_raw"] = best;
+  state.counters["front_topk_raw"] = quality.topk_raw;
+  state.counters["front_hv"] = quality.hv;
 }
 BENCHMARK(BM_SearchThroughput)
     ->ArgsProduct({{0, 1, 2, 3, 4}, {1, 4, 8}})

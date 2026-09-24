@@ -289,13 +289,22 @@ struct SearchConfig {
   // EARLIER generation reuses that owner's cached score instead of re-running
   // fitness (the expensive CPCV/cost pass). Prior-generation-only lookup keeps
   // the parallel region read-only on the index -> worker-count invariant.
+  // A hit's score is APPROXIMATE (the fingerprint is lossy: probe dates only,
+  // bucketed ranks, monotone-invariant): it is marked FingerprintBorrowed, keeps
+  // its own parsimony objective, may be selected, but is never emitted in
+  // admitted_candidates. Only active when the WeightPolicy transform is Rank
+  // (the transform under which a monotone-invariant fingerprint is meaningful);
+  // with ZScore/Raw weights the flag is inert.
   bool output_dedup{false};
   atx::usize fingerprint_rows{32};
   atx::u32 fingerprint_quant{32};
   // fidelity: successive-halving race (factory/fidelity.hpp) of each generation's
   // distinct fresh candidates on strided sub-panels before the full-fidelity
   // pass. Rung-rejected candidates are inserted into the CanonSet (they ARE
-  // trials) with a default (zero) score and are not fully evaluated / digested.
+  // trials) with the worst-case sentinel score (ScoreOrigin::FidelityRejected:
+  // raw -inf, last in every ordering, never emitted) and are not fully evaluated /
+  // digested. Low rungs score the pool-independent fitness (empty pool): the
+  // run's pool PnL is full-length and cannot be correlated on a strided panel.
   FidelityCfg fidelity{};
   // Behavioral archive eviction: Fifo (legacy ring of recent elites) or
   // FarthestPoint (max-min-distance set of elite behaviours, behavior.hpp).
@@ -380,6 +389,8 @@ struct Scored {
   // novelty pass to compute objectives[3] = mean k-nearest behavioral distance over
   // population ∪ archive. Owned by value (canon-cacheable; novelty itself is not).
   std::vector<atx::f64> descriptor{};
+  // L3 score provenance (search_state.hpp). Full on the default path.
+  ScoreOrigin origin{ScoreOrigin::Full};
 };
 
 // CachedScore — the per-canon_hash fitness cache value (F6 throughput, S4.1) — is
@@ -643,6 +654,8 @@ private:
   // Test-access friend for the population checkpoint round-trip test.
   // Unqualified: introduces SearchProgressTestAccess into atx::engine::factory.
   friend struct SearchProgressTestAccess;
+  // Test-access friend for the L3 score-provenance ranking tests (FactoryFidelity).
+  friend struct L3ScoreTestAccess;
 
   // SAFETY: each member borrows a const OpSig* from `lib_`; `lib_`/`panel_` etc.
   // are borrowed for the driver's lifetime and must outlive every produced genome.
@@ -674,8 +687,8 @@ private:
   // rejected before the full pass (empty when fidelity is off / batch small).
   [[nodiscard]] std::vector<atx::u64>
   fidelity_reject(const std::vector<const Genome *> &to_score, const SearchConfig &cfg,
-                  const FitnessCfg &gen_fit, const combine::AlphaStore &pool,
-                  parallel::DetPool &det_pool, SearchResult &res);
+                  const FitnessCfg &gen_fit, parallel::DetPool &det_pool,
+                  SearchResult &res);
   CanonCfg canon_cfg_{};
   FingerprintIndex fp_index_{};
   // Strided sub-panels per low rung (lazily built, keyed by the rung strides).

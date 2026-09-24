@@ -7,15 +7,17 @@
 // For a search that keeps 10^4..10^5 alphas that dominates the novelty step.
 //
 // SketchIndex stores, per series, its z-normalized PnL (mean 0, unit L2 norm; a
-// NaN day counts as 0 after centering) and a 128-dim random-projection sketch
+// non-finite day -- NaN or +-inf -- counts as 0 after centering) and a 128-dim random-projection sketch
 // s = R z, with R a fixed seeded +-1/sqrt(D) (Achlioptas) matrix. For unit
 // vectors <s_a, s_b> is an unbiased estimate of Pearson corr(a, b) with std
 // ~ sqrt((1 + rho^2) / D). A query:
 //   1. flat scan of the N x 128 f32 sketch matrix (contiguous, fixed inner
 //      length -> the compiler emits packed SIMD dot products);
 //   2. keeps the `shortlist` best |estimate| (nth_element, no heap churn);
-//   3. EXACT recheck of the shortlist against the stored z-vectors, returning
-//      the top-k by exact |corr| (ties -> lower id).
+//   3. full-length recheck of the shortlist against the stored f32 z-vectors
+//      (f64 accumulation), returning the top-k by |corr| (ties -> lower id).
+//      This is Pearson correlation up to f32 storage rounding (~1e-6), not
+//      bit-exact f64 Pearson.
 // Recall@10 vs brute force >= 0.95 on 10k clustered series (FactorySketchIndex).
 //
 // FarthestPointArchive keeps a bounded set of mutually-distant PnL profiles: a
@@ -42,19 +44,21 @@ inline constexpr atx::usize kSketchDim = 128;
 
 struct Neighbor {
   atx::u64 id{0};
-  atx::f64 corr{0.0}; // exact Pearson correlation (signed)
+  atx::f64 corr{0.0}; // Pearson correlation of the stored f32 z-vectors (f64 sum; signed)
 };
 
 namespace detail {
 
-// z-normalize to mean 0 / unit L2 norm (NaN -> 0 after centering). A constant
+// z-normalize to mean 0 / unit L2 norm (non-finite -> 0 after centering, so a
+// +-inf day cannot poison the mean into NaN scores that would break the strict
+// weak ordering of the nth_element / partial_sort comparators). A constant
 // or empty series maps to the zero vector (correlation 0 with everything).
 inline void sketch_znorm(std::span<const atx::f64> x, std::vector<atx::f32> &out) {
   out.assign(x.size(), 0.0F);
   atx::f64 sum = 0.0;
   atx::usize n = 0;
   for (const atx::f64 v : x) {
-    if (!std::isnan(v)) {
+    if (std::isfinite(v)) {
       sum += v;
       ++n;
     }
@@ -65,16 +69,16 @@ inline void sketch_znorm(std::span<const atx::f64> x, std::vector<atx::f32> &out
   const atx::f64 mean = sum / static_cast<atx::f64>(n);
   atx::f64 ss = 0.0;
   for (const atx::f64 v : x) {
-    if (!std::isnan(v)) {
+    if (std::isfinite(v)) {
       ss += (v - mean) * (v - mean);
     }
   }
-  if (!(ss > 0.0)) {
-    return;
+  if (!std::isfinite(mean) || !std::isfinite(ss) || !(ss > 0.0)) {
+    return; // degenerate or overflowing series -> zero vector (corr 0)
   }
   const atx::f64 inv = 1.0 / std::sqrt(ss);
   for (atx::usize i = 0; i < x.size(); ++i) {
-    out[i] = std::isnan(x[i]) ? 0.0F : static_cast<atx::f32>((x[i] - mean) * inv);
+    out[i] = !std::isfinite(x[i]) ? 0.0F : static_cast<atx::f32>((x[i] - mean) * inv);
   }
 }
 
@@ -93,6 +97,22 @@ inline void sketch_znorm(std::span<const atx::f64> x, std::vector<atx::f32> &out
     s0 += a[i] * b[i];
   }
   return static_cast<atx::f64>((s0 + s1) + (s2 + s3));
+}
+
+// f32 inputs, f64 accumulation: the full-length recheck dot (length up to ~10^4)
+// where f32 accumulation error would be visible in the reported correlation.
+[[nodiscard]] inline atx::f64 dot_f32_acc64(const atx::f32 *a, const atx::f32 *b,
+                                            atx::usize n) noexcept {
+  atx::f64 s0 = 0.0, s1 = 0.0;
+  atx::usize i = 0;
+  for (; i + 2 <= n; i += 2) {
+    s0 += static_cast<atx::f64>(a[i]) * static_cast<atx::f64>(b[i]);
+    s1 += static_cast<atx::f64>(a[i + 1]) * static_cast<atx::f64>(b[i + 1]);
+  }
+  for (; i < n; ++i) {
+    s0 += static_cast<atx::f64>(a[i]) * static_cast<atx::f64>(b[i]);
+  }
+  return s0 + s1;
 }
 
 [[nodiscard]] inline atx::u64 sketch_splitmix(atx::u64 &s) noexcept {
@@ -138,7 +158,7 @@ public:
     project(zbuf_.data(), sketch_.data() + base);
   }
 
-  // Top-k by exact |corr| among the sketch shortlist. Result sorted by
+  // Top-k by full-length |corr| among the sketch shortlist. Result sorted by
   // descending |corr|, ties -> ascending insertion order.
   [[nodiscard]] std::vector<Neighbor> topk(std::span<const atx::f64> pnl, atx::usize k) const {
     std::vector<atx::f32> zq;
@@ -160,7 +180,7 @@ public:
       cands.resize(m);
     }
     for (Cand &c : cands) { // exact recheck
-      c.score = detail::dot_f32(zq.data(), z_.data() + c.idx * length_, length_);
+      c.score = detail::dot_f32_acc64(zq.data(), z_.data() + c.idx * length_, length_);
     }
     return finish(cands, k);
   }
@@ -173,14 +193,14 @@ public:
     zq.resize(length_, 0.0F);
     std::vector<Cand> cands(ids_.size());
     for (atx::usize i = 0; i < ids_.size(); ++i) {
-      cands[i] = Cand{detail::dot_f32(zq.data(), z_.data() + i * length_, length_), i};
+      cands[i] = Cand{detail::dot_f32_acc64(zq.data(), z_.data() + i * length_, length_), i};
     }
     return finish(cands, k);
   }
 
 private:
   struct Cand {
-    atx::f64 score{0.0}; // |estimate| during the scan, signed exact corr after
+    atx::f64 score{0.0}; // |estimate| during the scan, signed full-length corr after
     atx::usize idx{0};
   };
 
@@ -288,7 +308,7 @@ private:
     return z_.data() + i * length_;
   }
   [[nodiscard]] atx::f64 dist(const atx::f32 *a, const atx::f32 *b) const noexcept {
-    return 1.0 - std::min(1.0, std::abs(detail::dot_f32(a, b, length_)));
+    return 1.0 - std::min(1.0, std::abs(detail::dot_f32_acc64(a, b, length_)));
   }
   void append(atx::u64 id, const std::vector<atx::f32> &z) {
     ids_.push_back(id);

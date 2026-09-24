@@ -25,6 +25,35 @@
 #include "atx/engine/factory/search_driver.hpp"
 #include "atx/engine/loop/weight_policy.hpp"
 #include "atx/engine/parallel/det_pool.hpp"
+#include "atx/engine/combine/store.hpp"
+
+namespace atx::engine::factory {
+// Friend of SearchDriver (search_driver.hpp): exposes the private ranking /
+// finalize seams so the L3 score-provenance contract can be pinned directly.
+struct L3ScoreTestAccess {
+  static void rank(std::vector<Scored> &scored, const SearchConfig &cfg) {
+    std::vector<atx::usize> canon(scored.size());
+    for (atx::usize i = 0; i < canon.size(); ++i) {
+      canon[i] = i;
+    }
+    SearchDriver::assign_pareto_ranks(scored, canon, cfg);
+  }
+  [[nodiscard]] static std::vector<atx::usize> order(const std::vector<Scored> &scored) {
+    return SearchDriver::pareto_ordered_indices(scored);
+  }
+  static void finalize(const SearchDriver &d, const std::vector<Scored> &scored,
+                       SearchResult &res) {
+    const CanonSet canon{};
+    d.finalize(scored, canon, res);
+  }
+  [[nodiscard]] static std::vector<Genome> genomes(const SearchDriver &d,
+                                                   const std::vector<std::string> &exprs) {
+    auto r = d.deserialize_population(exprs);
+    EXPECT_TRUE(r.has_value());
+    return r.has_value() ? std::move(r.value()) : std::vector<Genome>{};
+  }
+};
+} // namespace atx::engine::factory
 
 namespace atx_test_l3_search_fidelity {
 
@@ -44,7 +73,15 @@ using atx::engine::exec::LatencyCfg;
 using atx::engine::exec::SlippageCfg;
 using atx::engine::exec::SlippageMode;
 using atx::engine::exec::VolumeCapCfg;
+using atx::engine::Transform;
+using atx::engine::factory::CachedScore;
 using atx::engine::factory::FidelityCfg;
+using atx::engine::factory::kObjParsimony;
+using atx::engine::factory::L3ScoreTestAccess;
+using atx::engine::factory::ObjectiveMode;
+using atx::engine::factory::rejected_score;
+using atx::engine::factory::Scored;
+using atx::engine::factory::ScoreOrigin;
 using atx::engine::factory::Genome;
 using atx::engine::factory::GenomeId;
 using atx::engine::factory::promote_count;
@@ -262,6 +299,177 @@ TEST(FactoryFidelity, TrialCountIncludesRungRejections) {
   // Every distinct candidate the race looked at is a trial, rejected or not.
   EXPECT_EQ(r.trial_count, r.all_scored.size());
   EXPECT_GE(r.trial_count, r.fidelity_rejected);
+}
+
+// ---- review fixes (L3 re-review) ----------------------------------------------
+
+// A one-member pool whose PnL stream spans the FULL panel (the shape every real
+// caller's pool has). Low rungs run on date-strided sub-panels, so they must not
+// correlate against it (unequal lengths -> ATX_ASSERT abort in Debug).
+[[nodiscard]] AlphaStore full_length_pool(usize dates, usize insts) {
+  AlphaStore pool;
+  std::vector<f64> pnl(dates);
+  for (usize t = 0; t < dates; ++t) {
+    pnl[t] = 0.001 * std::sin(0.37 * static_cast<f64>(t)) + 0.0002;
+  }
+  const std::vector<f64> pos(dates * insts, 0.0);
+  const auto id = pool.insert(nullptr, pnl, pos, atx::engine::combine::AlphaMetrics{});
+  EXPECT_TRUE(id.has_value());
+  return pool;
+}
+
+TEST(FactoryFidelity, NonEmptyPoolDoesNotMisalignLowRungs) {
+  DriverFixture fx;
+  const AlphaStore pool = full_length_pool(fx.panel.dates(), fx.panel.instruments());
+  ASSERT_EQ(pool.n_alphas(), 1U);
+  // Fidelity off: the full-length pool is well-formed for the full pass.
+  const SearchResult off = fx.driver().run(cfg_of(29, 1), pool);
+  EXPECT_FALSE(off.admitted_candidates.empty());
+  // Fidelity on: low rungs score pool-free; must not abort and must stay
+  // worker-count invariant with a live pool.
+  SearchConfig c1 = cfg_of(29, 1);
+  c1.fidelity.enabled = true;
+  SearchConfig c4 = c1;
+  c4.n_workers = 4;
+  const SearchResult r1 = fx.driver().run(c1, pool);
+  const SearchResult r4 = fx.driver().run(c4, pool);
+  EXPECT_GT(r1.fidelity_rejected, 0U);
+  EXPECT_EQ(r1.digest, r4.digest);
+  EXPECT_EQ(r1.best_fitness_per_gen, r4.best_fitness_per_gen);
+  EXPECT_FALSE(r1.admitted_candidates.empty());
+}
+
+[[nodiscard]] Scored scored_of(const Genome &g, const CachedScore &cs) {
+  Scored s{g.clone(), cs.raw, cs.raw};
+  s.objectives = cs.objectives;
+  s.n_objectives = cs.n_objectives;
+  s.origin = cs.origin;
+  s.genome.canon_hash = g.canon_hash;
+  return s;
+}
+
+TEST(FactoryFidelity, RejectedRanksBelowNegativeRawInScalarMode) {
+  DriverFixture fx;
+  const SearchDriver d = fx.driver();
+  const std::vector<Genome> g =
+      L3ScoreTestAccess::genomes(d, {"rank(close)", "rank(rev)", "ts_mean(close, 5)"});
+  ASSERT_EQ(g.size(), 3U);
+  CachedScore neg_a{};
+  neg_a.raw = -0.5;
+  CachedScore neg_b{};
+  neg_b.raw = -1.25;
+  std::vector<Scored> scored;
+  scored.push_back(scored_of(g[0], rejected_score()));
+  scored.push_back(scored_of(g[1], neg_a));
+  scored.push_back(scored_of(g[2], neg_b));
+  SearchConfig cfg = cfg_of(1, 1);
+  cfg.objective_mode = ObjectiveMode::ScalarRaw;
+  L3ScoreTestAccess::rank(scored, cfg);
+  const std::vector<usize> ord = L3ScoreTestAccess::order(scored);
+  ASSERT_EQ(ord.size(), 3U);
+  EXPECT_EQ(ord[0], 1U);
+  EXPECT_EQ(ord[1], 2U);
+  EXPECT_EQ(ord[2], 0U) << "a never-evaluated rejected candidate must rank last";
+  SearchResult res;
+  L3ScoreTestAccess::finalize(d, scored, res);
+  ASSERT_EQ(res.admitted_candidates.size(), 2U);
+  for (const Genome &a : res.admitted_candidates) {
+    EXPECT_NE(a.canon_hash, g[0].canon_hash) << "rejected candidate must not be emitted";
+  }
+}
+
+TEST(FactoryFidelity, RejectedStaysOffFrontZeroWithParsimony) {
+  DriverFixture fx;
+  const SearchDriver d = fx.driver();
+  const std::vector<Genome> g = L3ScoreTestAccess::genomes(
+      d, {"rank(close)", "rank(rev)", "ts_mean(close, 5)", "delta(close, 2)"});
+  ASSERT_EQ(g.size(), 4U);
+  // Two evaluated rows with negative wq and a (negative) parsimony column: an
+  // all-zero row would be non-dominated and land on front 0. The sentinel must not.
+  auto eval = [](f64 wq, f64 div, f64 nodes) {
+    CachedScore cs{};
+    cs.raw = wq;
+    cs.objectives[0] = wq;
+    cs.objectives[1] = div;
+    cs.objectives[2] = 0.5;
+    cs.objectives[kObjParsimony] = -nodes;
+    cs.n_objectives = static_cast<atx::u8>(kObjParsimony + 1U);
+    return cs;
+  };
+  std::vector<Scored> scored;
+  scored.push_back(scored_of(g[0], eval(-0.2, 0.3, 3.0)));
+  scored.push_back(scored_of(g[1], rejected_score()));
+  scored.push_back(scored_of(g[2], eval(-0.4, 0.6, 5.0)));
+  scored.push_back(scored_of(g[3], rejected_score()));
+  SearchConfig cfg = cfg_of(1, 1);
+  cfg.objective_mode = ObjectiveMode::MultiObjective;
+  cfg.enable_parsimony = true;
+  L3ScoreTestAccess::rank(scored, cfg);
+  EXPECT_EQ(scored[0].rank, 0U);
+  EXPECT_EQ(scored[2].rank, 0U); // mutually non-dominated evaluated pair
+  EXPECT_EQ(scored[1].rank, 1U); // trailing front, after every live front
+  EXPECT_EQ(scored[3].rank, 1U);
+  const std::vector<usize> ord = L3ScoreTestAccess::order(scored);
+  ASSERT_EQ(ord.size(), 4U);
+  EXPECT_NE(scored[ord[0]].origin, ScoreOrigin::FidelityRejected);
+  EXPECT_NE(scored[ord[1]].origin, ScoreOrigin::FidelityRejected);
+  SearchResult res;
+  L3ScoreTestAccess::finalize(d, scored, res);
+  EXPECT_EQ(res.admitted_candidates.size(), 2U);
+}
+
+TEST(FactoryFidelity, BorrowedFingerprintScoresAreNotEmitted) {
+  DriverFixture fx;
+  const SearchDriver d = fx.driver();
+  const std::vector<Genome> g = L3ScoreTestAccess::genomes(d, {"rank(close)", "rank(rev)"});
+  ASSERT_EQ(g.size(), 2U);
+  CachedScore full{};
+  full.raw = 0.1;
+  CachedScore borrowed = full;
+  borrowed.raw = 0.2;
+  borrowed.origin = ScoreOrigin::FingerprintBorrowed;
+  std::vector<Scored> scored;
+  scored.push_back(scored_of(g[0], full));
+  scored.push_back(scored_of(g[1], borrowed));
+  L3ScoreTestAccess::rank(scored, cfg_of(1, 1));
+  SearchResult res;
+  L3ScoreTestAccess::finalize(d, scored, res);
+  ASSERT_EQ(res.admitted_candidates.size(), 1U);
+  EXPECT_EQ(res.admitted_candidates[0].canon_hash, g[0].canon_hash);
+}
+
+TEST(FactoryFidelity, MultiObjectiveParsimonyRunIsDeterministic) {
+  DriverFixture fx;
+  const AlphaStore pool{};
+  SearchConfig c1 = cfg_of(31, 1);
+  c1.fidelity.enabled = true;
+  c1.objective_mode = ObjectiveMode::MultiObjective;
+  c1.enable_parsimony = true;
+  SearchConfig c4 = c1;
+  c4.n_workers = 4;
+  const SearchResult r1 = fx.driver().run(c1, pool);
+  const SearchResult r4 = fx.driver().run(c4, pool);
+  EXPECT_GT(r1.fidelity_rejected, 0U);
+  EXPECT_EQ(r1.digest, r4.digest);
+  EXPECT_EQ(r1.trial_count, r4.trial_count);
+  EXPECT_FALSE(r1.admitted_candidates.empty());
+}
+
+// output_dedup's fingerprint is rank-quantized (monotone-invariant): it is only
+// meaningful under the Rank weight transform. Under ZScore it must be inert.
+TEST(FactoryFidelity, OutputDedupIsInertUnderZScoreTransform) {
+  DriverFixture fx;
+  fx.policy.transform = Transform::ZScore;
+  const AlphaStore pool{};
+  SearchConfig off = cfg_of(17, 1);
+  off.generations = 6;
+  SearchConfig on = off;
+  on.output_dedup = true;
+  const SearchResult r_off = fx.driver().run(off, pool);
+  const SearchResult r_on = fx.driver().run(on, pool);
+  EXPECT_EQ(r_on.fingerprint_hits, 0U);
+  EXPECT_EQ(r_on.digest, r_off.digest);
+  EXPECT_EQ(r_on.best_fitness_per_gen, r_off.best_fitness_per_gen);
 }
 
 } // namespace atx_test_l3_search_fidelity
