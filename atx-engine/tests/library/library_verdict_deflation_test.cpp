@@ -256,4 +256,58 @@ TEST(LibraryVerdict, MatchesAlphaGateAdmitAcrossDeflationBranches) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// (6) Lane 5 marginal-IC mode parity: with GateConfig::use_marginal_ic set, the
+// facade must apply the SAME screen as AlphaGate::admit (marginal IC replaces the
+// PnL corr screen; unsupplied NaN fails closed), with identical verdict classes.
+// ---------------------------------------------------------------------------
+TEST(LibraryVerdict, MatchesAlphaGateAdmitInMarginalIcMode) {
+  GateConfig cfg;
+  cfg.use_marginal_ic = true;
+  cfg.min_marginal_ic = 0.01;
+  cfg.min_dsr = 0.4;
+  cfg.max_pool_corr = -1.0; // any PnL corr would reject: proves the corr screen is replaced
+  const AlphaGate gate{cfg};
+  lib::Library facade = lib::Library::open(tmpdir("marginal_ic"), cfg, {kMasterSeed});
+
+  struct Case {
+    GateDeflation defl;
+    lib::AdmitKind expect;
+  };
+  GateDeflation pass;
+  pass.marginal_ic = 0.02;
+  GateDeflation low = pass;
+  low.marginal_ic = 0.001;
+  GateDeflation unset; // NaN marginal_ic
+  GateDeflation dsr_fail = low;
+  dsr_fail.dsr = 0.1; // gate order: DSR is checked before marginal IC
+  const std::vector<Case> cases = {
+      {pass, lib::AdmitKind::Accept},
+      {low, lib::AdmitKind::RejectCorrelated},
+      {unset, lib::AdmitKind::RejectCorrelated},
+      {dsr_fail, lib::AdmitKind::RejectDsr},
+  };
+  const auto to_kind = [](GateVerdict v) {
+    if (v == GateVerdict::Accept) {
+      return lib::AdmitKind::Accept;
+    }
+    if (v == GateVerdict::RejectCorrelated) {
+      return lib::AdmitKind::RejectCorrelated;
+    }
+    if (v == GateVerdict::RejectDsr) {
+      return lib::AdmitKind::RejectDsr;
+    }
+    return lib::AdmitKind::Duplicate; // sentinel: a verdict this test does not expect
+  };
+  u64 tag = 0xA000;
+  for (const Case &c : cases) {
+    const CandidateData cd = make_candidate(tag++, c.defl);
+    const lib::AdmitKind facade_kind = facade.admit_verdict_only(view_of(cd), gate);
+    const GateVerdict gate_verdict = gate.admit(cd.metrics, std::span<const f64>{cd.pnl},
+                                                atx::engine::combine::AlphaStore{}, c.defl);
+    EXPECT_EQ(facade_kind, c.expect) << "marginal_ic=" << c.defl.marginal_ic;
+    EXPECT_EQ(facade_kind, to_kind(gate_verdict)) << "marginal_ic=" << c.defl.marginal_ic;
+  }
+}
+
 } // namespace atxtest_library_verdict_deflation

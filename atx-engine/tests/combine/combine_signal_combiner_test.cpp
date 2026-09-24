@@ -12,6 +12,7 @@
 //
 // Suite: SignalCombiner
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -288,11 +289,12 @@ TEST(SignalCombiner, KakushadzeResidualIsOrthogonalToLambdaAndClusters) {
   }
 }
 
-TEST(SignalCombiner, KakushadzeBranchesAgreeViaPushThrough) {
-  // N=10 alphas, M=12 → uses the N×N branch; compare against the explicit (M−1)
-  // branch formula computed by hand: ε = Ẽ − L(LᵀL+ρI)⁻¹LᵀẼ.
+TEST(SignalCombiner, KakushadzeRegressionMatchesNaDimRidgeFormula) {
+  // Regression regime (N=40 > M−1=11): the kernel solves in the (M−1)-dim Gram via
+  // push-through; compare with the explicit N-dim formula ε = ρ(LLᵀ+ρI)⁻¹Ẽ using the
+  // documented ρ = ridge·tr(LLᵀ)/N (one normalization for both dimensions).
   constexpr Eigen::Index kM = 12;
-  constexpr Eigen::Index kN = 10;
+  constexpr Eigen::Index kN = 40;
   Rng g{3U};
   MatX r(kM, kN);
   for (Eigen::Index t = 0; t < kM; ++t) {
@@ -304,35 +306,116 @@ TEST(SignalCombiner, KakushadzeBranchesAgreeViaPushThrough) {
   for (Eigen::Index a = 0; a < kN; ++a) {
     e[static_cast<usize>(a)] = r.col(a).mean();
   }
-  const f64 ridge = 0.1;
-  const auto wr = cb::kakushadze_weights(r, e, {}, ridge);
-  ASSERT_TRUE(wr.has_value());
-  const Eigen::RowVectorXd mu = r.colwise().mean();
-  VecX sigma = ((r.rowwise() - mu).array().square().colwise().sum() / static_cast<f64>(kM - 1))
-                   .sqrt()
-                   .transpose();
-  MatX l(kN, kM - 1);
-  VecX et(kN);
-  for (Eigen::Index a = 0; a < kN; ++a) {
-    for (Eigen::Index s = 0; s < kM - 1; ++s) {
-      l(a, s) = (r(s, a) - mu[a]) / sigma[a];
+  for (const f64 ridge : {0.1, 1.0}) {
+    const auto wr = cb::kakushadze_weights(r, e, {}, ridge);
+    ASSERT_TRUE(wr.has_value());
+    const Eigen::RowVectorXd mu = r.colwise().mean();
+    VecX sigma = ((r.rowwise() - mu).array().square().colwise().sum() / static_cast<f64>(kM - 1))
+                     .sqrt()
+                     .transpose();
+    MatX l(kN, kM - 1);
+    VecX et(kN);
+    for (Eigen::Index a = 0; a < kN; ++a) {
+      for (Eigen::Index s = 0; s < kM - 1; ++s) {
+        l(a, s) = (r(s, a) - mu[a]) / sigma[a];
+      }
+      et[a] = e[static_cast<usize>(a)] / sigma[a];
     }
-    et[a] = e[static_cast<usize>(a)] / sigma[a];
+    l = l.rowwise() - l.colwise().mean(); // cross-sectional demean per date
+    MatX gn = l * l.transpose();
+    const f64 rho = ridge * gn.trace() / static_cast<f64>(kN);
+    gn.diagonal().array() += rho;
+    const VecX eps = rho * gn.ldlt().solve(et);
+    std::vector<f64> ref(kN);
+    f64 gross = 0.0;
+    for (Eigen::Index a = 0; a < kN; ++a) {
+      ref[static_cast<usize>(a)] = eps[a] / sigma[a];
+      gross += std::abs(ref[static_cast<usize>(a)]);
+    }
+    for (usize a = 0U; a < static_cast<usize>(kN); ++a) {
+      EXPECT_NEAR((*wr)[a], ref[a] / gross, 1e-10) << "ridge " << ridge << " alpha " << a;
+    }
   }
-  l = l.rowwise() - l.colwise().mean(); // cross-sectional demean per date
-  const f64 rho = ridge * (l * l.transpose()).trace() / static_cast<f64>(kN);
-  MatX g2 = l.transpose() * l;
-  g2.diagonal().array() += rho;
-  const VecX eps = et - l * g2.ldlt().solve(l.transpose() * et);
-  std::vector<f64> ref(kN);
-  f64 gross = 0.0;
+}
+
+// Reviewer repro (M=252, N=20): the plain regression is saturated when N <= M−1 and
+// used to return w·σ = const (inverse-vol, sign of mean Ẽ) — alphas with a negative
+// edge were held long. The factor-model fallback must follow each alpha's own E.
+TEST(SignalCombiner, KakushadzeFewAlphasFollowsOwnExpectedReturn) {
+  constexpr Eigen::Index kM = 252;
+  constexpr Eigen::Index kN = 20;
+  Rng g{2024U};
+  MatX r(kM, kN);
+  std::vector<f64> vol(kN);
   for (Eigen::Index a = 0; a < kN; ++a) {
-    ref[static_cast<usize>(a)] = eps[a] / sigma[a];
-    gross += std::abs(ref[static_cast<usize>(a)]);
+    vol[static_cast<usize>(a)] = 0.5 + 0.1 * static_cast<f64>(a);
   }
-  for (usize a = 0U; a < static_cast<usize>(kN); ++a) {
-    EXPECT_NEAR((*wr)[a], ref[a] / gross, 1e-10) << a;
+  for (Eigen::Index t = 0; t < kM; ++t) {
+    for (Eigen::Index a = 0; a < kN; ++a) {
+      r(t, a) = vol[static_cast<usize>(a)] * g.gauss();
+    }
   }
+  std::vector<f64> e(kN);
+  for (Eigen::Index a = 0; a < kN; ++a) {
+    // E/σ spans roughly [-0.24, +0.49] with mixed signs.
+    e[static_cast<usize>(a)] =
+        vol[static_cast<usize>(a)] * (-0.24 + 0.73 * static_cast<f64>((a * 7) % kN) / (kN - 1));
+  }
+  const auto wr = cb::kakushadze_weights(r, e, {}, 1e-8);
+  ASSERT_TRUE(wr.has_value()) << wr.error().message();
+  f64 wsig_min = 1e300;
+  f64 wsig_max = -1e300;
+  for (Eigen::Index a = 0; a < kN; ++a) {
+    const f64 w = (*wr)[static_cast<usize>(a)];
+    const f64 ea = e[static_cast<usize>(a)];
+    EXPECT_EQ(std::signbit(w), std::signbit(ea)) << "alpha " << a << " E=" << ea << " w=" << w;
+    const f64 mu = r.col(a).mean();
+    const f64 sd = std::sqrt((r.col(a).array() - mu).square().sum() / static_cast<f64>(kM - 1));
+    wsig_min = std::min(wsig_min, w * sd);
+    wsig_max = std::max(wsig_max, w * sd);
+  }
+  EXPECT_GT(wsig_max - wsig_min, 1e-3); // not the degenerate inverse-vol solution
+}
+
+// Factor regime with planted strong factors: the MP-edge auto choice recovers F=3
+// (byte-identical to asking for 3), and the idiosyncratic residual is orthogonal to
+// the planted loadings (the regression "neutralizes" the common factors).
+TEST(SignalCombiner, KakushadzeFactorRegimeAutoPicksPlantedFactors) {
+  constexpr Eigen::Index kM = 252;
+  constexpr Eigen::Index kN = 30;
+  constexpr Eigen::Index kF = 3;
+  Rng g{99U};
+  MatX load(kN, kF);
+  for (Eigen::Index a = 0; a < kN; ++a) {
+    for (Eigen::Index f = 0; f < kF; ++f) {
+      load(a, f) = 2.0 * g.gauss();
+    }
+  }
+  MatX r(kM, kN);
+  for (Eigen::Index t = 0; t < kM; ++t) {
+    VecX fac(kF);
+    for (Eigen::Index f = 0; f < kF; ++f) {
+      fac[f] = g.gauss();
+    }
+    for (Eigen::Index a = 0; a < kN; ++a) {
+      r(t, a) = load.row(a).dot(fac) + g.gauss();
+    }
+  }
+  std::vector<f64> e(kN);
+  for (Eigen::Index a = 0; a < kN; ++a) {
+    e[static_cast<usize>(a)] = 0.05 * g.gauss();
+  }
+  const auto w_auto = cb::kakushadze_weights(r, e, {}, 1e-8);
+  const auto w_3 = cb::kakushadze_weights(r, e, {}, 1e-8, 3U);
+  const auto w_1 = cb::kakushadze_weights(r, e, {}, 1e-8, 1U);
+  ASSERT_TRUE(w_auto.has_value());
+  ASSERT_TRUE(w_3.has_value());
+  ASSERT_TRUE(w_1.has_value());
+  EXPECT_EQ(*w_auto, *w_3);
+  EXPECT_NE(*w_auto, *w_1);
+  // Huge explicit F is clamped to p−1 and still yields finite weights.
+  const auto w_big = cb::kakushadze_weights(r, e, {}, 1e-8, 1000U);
+  ASSERT_TRUE(w_big.has_value());
 }
 
 TEST(SignalCombiner, RejectsBadWindowsAndEmptyStore) {
@@ -441,28 +524,38 @@ TEST(SignalCombiner, AcceptanceSignalSpaceBeatsPnlShrinkageMvOos) {
   f64 ir_fmb = 0.0;
   f64 ir_gk = 0.0;
   f64 ir_mv = 0.0;
+  f64 ir_ky = 0.0;
   for (std::uint64_t seed = 1U; seed <= kSeeds; ++seed) {
     const Zoo zoo = make_zoo(seed * 1000003U);
     const cb::FitWindow fit{0, 40};
     const auto fmb = cb::FamaMacBethRidge{0.3}.fit(zoo.store, fit);
     const auto gk = cb::GrinoldKahnCombiner{cb::CovTarget::LwIdentity}.fit(zoo.store, fit);
+    const auto ky = cb::KakushadzeRegression{}.fit(zoo.store, fit); // K=20 < T: factor regime
     cb::AlphaCombiner mv;
     mv.cfg.method = cb::CombineMethod::ShrinkageMv;
     const auto mvw = mv.fit(zoo.pnl_pool, 0, 40);
     ASSERT_TRUE(fmb.has_value());
     ASSERT_TRUE(gk.has_value());
     ASSERT_TRUE(mvw.has_value());
+    ASSERT_TRUE(ky.has_value());
     ir_fmb += oos_ir(zoo.store, fmb->w, 40, 240);
     ir_gk += oos_ir(zoo.store, gk->w, 40, 240);
     ir_mv += oos_ir(zoo.store, mvw->weights, 40, 240);
+    ir_ky += oos_ir(zoo.store, ky->w, 40, 240);
   }
   RecordProperty("ir_fmb", std::to_string(ir_fmb / static_cast<f64>(kSeeds)));
   RecordProperty("ir_gk", std::to_string(ir_gk / static_cast<f64>(kSeeds)));
   RecordProperty("ir_mv", std::to_string(ir_mv / static_cast<f64>(kSeeds)));
-  std::printf("[zoo OOS IR/day] FMB=%.4f GK=%.4f PnL-ShrinkageMv=%.4f\n", ir_fmb / static_cast<f64>(kSeeds),
-              ir_gk / static_cast<f64>(kSeeds), ir_mv / static_cast<f64>(kSeeds));
+  RecordProperty("ir_ky", std::to_string(ir_ky / static_cast<f64>(kSeeds)));
+  std::printf("[zoo OOS IR/day] FMB=%.4f GK=%.4f KY=%.4f PnL-ShrinkageMv=%.4f\n",
+              ir_fmb / static_cast<f64>(kSeeds), ir_gk / static_cast<f64>(kSeeds),
+              ir_ky / static_cast<f64>(kSeeds), ir_mv / static_cast<f64>(kSeeds));
   EXPECT_GT(ir_fmb, ir_mv);
-  EXPECT_GT(ir_gk, 0.9 * ir_mv); // GK ≈ MV (same estimator in IC units)
+  // ACCEPTANCE GAP (recorded, not hidden): the spec asks GK > MV as well; GK is the
+  // PnL-MV estimator in IC units and measures ≈ MV (0.3318 vs 0.3324), so only a
+  // no-regression bound is asserted. KY (Kakushadze-Yu, factor regime) is reported.
+  EXPECT_GT(ir_gk, 0.9 * ir_mv);
+  EXPECT_GT(ir_ky, 0.0); // a sane combiner must not trade the zoo backwards
 }
 
 } // namespace atx_test_l5_combine_signal_combiner

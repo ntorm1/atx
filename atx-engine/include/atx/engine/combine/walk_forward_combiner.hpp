@@ -15,9 +15,12 @@
 //  Cadence / hysteresis:
 //    * a refit is attempted on the first eligible date and then every refit_every
 //      dates;
-//    * a refit's weights are ADOPTED only if ‖w_new − w_cur‖₁ > hysteresis (the
-//      first successful fit is always adopted) — this suppresses turnover from
-//      re-estimation noise;
+//    * a refit's weights are ADOPTED only if ‖ŵ_new − ŵ_cur‖₁ > hysteresis, where
+//      ŵ = w/Σ|w| is the gross-normalized copy (so the threshold is in the same
+//      units, [0, 2], for every combiner — FamaMacBethRidge returns raw betas while
+//      the others return gross-1 weights). The first successful fit is always
+//      adopted; this suppresses turnover from re-estimation noise. The adopted
+//      weights themselves are stored un-normalized;
 //    * a fit that returns Err keeps the current weights (counted in failed_fits).
 //  Dates before the first adoption carry NaN weights (no forecast).
 
@@ -39,7 +42,7 @@ struct WalkForwardCfg {
   atx::usize min_train = 20U;  // minimum fit rows before a fit is attempted, >= 1
   atx::usize lookback = 0U;    // 0 → expanding window; else rolling window of this many rows
   atx::usize refit_every = 1U; // refit cadence in dates, >= 1
-  atx::f64 hysteresis = 0.0;   // adopt only when ‖w_new − w_cur‖₁ > hysteresis
+  atx::f64 hysteresis = 0.0;   // adopt only when ‖ŵ_new − ŵ_cur‖₁ > hysteresis (ŵ = w/Σ|w|)
 };
 
 struct WeightPath {
@@ -94,8 +97,18 @@ template <Combiner C>
         ++p.failed_fits;
       } else {
         atx::f64 dist = 0.0;
-        for (atx::usize a = 0U; a < p.n_alphas && !cur.empty(); ++a) {
-          dist += std::abs(r->w[a] - cur[a]);
+        if (!cur.empty()) {
+          atx::f64 g_new = 0.0;
+          atx::f64 g_cur = 0.0;
+          for (atx::usize a = 0U; a < p.n_alphas; ++a) {
+            g_new += std::abs(r->w[a]);
+            g_cur += std::abs(cur[a]);
+          }
+          const atx::f64 in = (g_new > 0.0) ? 1.0 / g_new : 0.0;
+          const atx::f64 ic = (g_cur > 0.0) ? 1.0 / g_cur : 0.0;
+          for (atx::usize a = 0U; a < p.n_alphas; ++a) {
+            dist += std::abs(r->w[a] * in - cur[a] * ic);
+          }
         }
         if (cur.empty() || dist > cfg.hysteresis) {
           cur = r->w;

@@ -22,7 +22,10 @@
 //                          returns on the serially- and cross-sectionally-demeaned
 //                          normalized alpha returns; w ∝ residual/σ. Optional
 //                          cluster dummies (within-cluster demeaning, Frisch-Waugh).
-//                          Cost O(N·M·min(N,M)) plus a min(N,M)² ridge solve.
+//                          Fewer alphas than dates saturates that regression, so
+//                          there it uses the principal-component factor-model
+//                          variant (see kakushadze_weights).
+//                          Cost O(N·M·min(N,M)) plus a min(N,M)³ solve/eigensolve.
 //
 //  All fits honor the fit/apply firewall: only date rows in [window.begin,
 //  window.end) (their signals AND their forward returns) are read — the
@@ -93,12 +96,23 @@ grinold_kahn_weights(const atx::core::linalg::MatX &ic, CovTarget target);
 
 // Kakushadze-Yu weights from alpha returns R (M×N, finite) and expected returns E
 // (length N). `clusters` empty → the paper's algorithm; else clusters[a] is alpha a's
-// cluster id (within-cluster demeaning ≡ cluster dummies). ρ = ridge_rel·tr(Gram)/dim
-// keeps the solve well-posed. Alphas with zero serial variance get w = 0; Σ|w| = 1.
-// Err on shape mismatch or M < 3.
+// cluster id (within-cluster demeaning ≡ cluster dummies). Alphas with zero serial
+// variance get w = 0; Σ|w| = 1. Err on shape mismatch or M < 3.
+//
+// Two regimes, split on p = N_active − G (G = number of clusters, 1 without):
+//   * p > M−1 (the paper's N >> M): regress Ẽ = E/σ on the demeaned design L
+//     (no intercept) with ridge ρ = ridge_rel·tr(L Lᵀ)/N, solved in the (M−1)-dim
+//     Gram via the push-through identity; w = ε/σ.
+//   * p <= M−1 (the usual zoo): the plain regression is SATURATED — its residual is
+//     only the null-space projection of Ẽ (w ∝ sign(mean Ẽ)/σ, independent of each
+//     alpha's own E) — so the factor-model variant is used instead: Ẽ is regressed
+//     on the top F principal components of the demeaned alpha correlation matrix
+//     L Lᵀ/(M−1). F = n_factors when > 0, else the number of eigenvalues above the
+//     Marchenko-Pastur edge; F <= p − 1. F = 0 gives w ∝ E/σ² (diagonal MV).
 [[nodiscard]] atx::core::Result<std::vector<atx::f64>>
 kakushadze_weights(const atx::core::linalg::MatX &r, std::span<const atx::f64> expected,
-                   std::span<const atx::u32> clusters, atx::f64 ridge_rel);
+                   std::span<const atx::u32> clusters, atx::f64 ridge_rel,
+                   atx::usize n_factors = 0U);
 
 // --- combiners ---------------------------------------------------------------
 
@@ -120,7 +134,8 @@ struct FamaMacBethRidge {
 
 struct KakushadzeRegression {
   atx::usize expected_window = 0U; // E_a = mean of the last k alpha returns; 0 → whole window
-  atx::f64 ridge_rel = 1e-8;
+  atx::f64 ridge_rel = 1e-8;       // regression regime (N_active − G > M−1) only
+  atx::usize n_factors = 0U;       // factor regime (N_active − G <= M−1): 0 → MP-edge auto
   std::vector<atx::u32> clusters; // optional cluster dummies (size n_alphas, or empty)
   [[nodiscard]] atx::core::Result<CombineWeights> fit(const SignalStore &s, FitWindow w) const;
 };
