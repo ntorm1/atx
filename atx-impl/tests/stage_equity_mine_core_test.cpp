@@ -148,6 +148,89 @@ TEST(EquityMineScore, RejectsShapeMismatch) {
     EXPECT_FALSE(w.has_value());
 }
 
+// --- realized-return guard ----------------------------------------------------
+
+// close (adjusted) + raw_close panel; universe all-valid.
+Panel adj_raw_panel(std::size_t dates, std::size_t inst, const std::vector<double> &adj,
+                    const std::vector<double> &raw) {
+    std::vector<std::vector<double>> cols{adj, raw};
+    auto p = Panel::create(dates, inst, {"close", "raw_close"}, std::move(cols),
+                           std::vector<std::uint8_t>(dates * inst, 1));
+    EXPECT_TRUE(p.has_value());
+    return std::move(p).value();
+}
+
+TEST(EquityMineGuard, PlantedAdjustmentBreakIsExcludedFromPnlAndIc) {
+    constexpr std::size_t D = 6, I = 4;
+    const auto raw = growth_close(D, I);
+    auto adj = raw;
+    // Adjustment break: name 3's adjusted close jumps x3 on session 2 while its
+    // raw close moves its ordinary +4% (the real 69872 2017-03-15 pattern).
+    for (std::size_t d = 2; d < D; ++d) adj[d * I + 3] *= 3.0;
+    const Panel p = adj_raw_panel(D, I, adj, raw);
+    const std::vector<std::uint8_t> member(D * I, 1);
+    auto cfg = small_cfg();
+
+    auto g = mine::build_return_guard(p, 0, cfg);
+    ASSERT_TRUE(g.has_value()) << g.error().message();
+    EXPECT_TRUE(g->has_raw);
+    ASSERT_EQ(g->excluded.size(), 1u);
+    EXPECT_EQ(g->excluded[0].date, 2u);
+    EXPECT_EQ(g->excluded[0].inst, 3u);
+    EXPECT_FALSE(g->excluded[0].cap); // below the cap: caught by the raw comparison
+    EXPECT_NEAR(g->excluded[0].adj_return, 1.04 * 3.0 - 1.0, 1e-12);
+    EXPECT_NEAR(g->excluded[0].raw_return, 0.04, 1e-12);
+    EXPECT_EQ(g->count_in(0, D), 1u);
+    EXPECT_EQ(g->count_in(3, D), 0u);
+
+    auto guarded = mine::score_signal(index_signal(D, I), 1.0, p, 0, member, {0, D}, cfg);
+    ASSERT_TRUE(guarded.has_value()) << guarded.error().message();
+    // Signal date 0 realizes session 1 -> 2: name 3 (w = +0.375) is dropped.
+    EXPECT_NEAR(guarded->gross[0], 0.01 * (-0.375 * 1 - 0.125 * 2 + 0.125 * 3), 1e-12);
+    EXPECT_NEAR(guarded->gross[1], 0.0125, 1e-12); // later dates are ordinary
+    EXPECT_EQ(guarded->excluded_returns, 1u);
+
+    cfg.guard_returns = false;
+    auto naive = mine::score_signal(index_signal(D, I), 1.0, p, 0, member, {0, D}, cfg);
+    ASSERT_TRUE(naive.has_value());
+    EXPECT_NEAR(naive->gross[0],
+                0.01 * (-0.375 * 1 - 0.125 * 2 + 0.125 * 3) + 0.375 * (1.04 * 3.0 - 1.0), 1e-12);
+    EXPECT_EQ(naive->excluded_returns, 0u);
+    EXPECT_GT(naive->gross[0], guarded->gross[0] + 0.5);
+}
+
+TEST(EquityMineGuard, RawSplitIsKeptAndCapExcludesAgreeingJumps) {
+    constexpr std::size_t D = 6, I = 4;
+    auto adj = growth_close(D, I);
+    auto raw = adj;
+    // A real 2:1 split of name 2 on session 3: raw halves, adjusted is smooth.
+    for (std::size_t d = 3; d < D; ++d) raw[d * I + 2] *= 0.5;
+    // Name 1 jumps x10 on session 4 in BOTH series: consistent, but beyond the
+    // declared |log| cap (ln 10 > 1.5).
+    for (std::size_t d = 4; d < D; ++d) {
+        adj[d * I + 1] *= 10.0;
+        raw[d * I + 1] *= 10.0;
+    }
+    const Panel p = adj_raw_panel(D, I, adj, raw);
+    auto g = mine::build_return_guard(p, 0, small_cfg());
+    ASSERT_TRUE(g.has_value());
+    ASSERT_EQ(g->excluded.size(), 1u);
+    EXPECT_EQ(g->excluded[0].date, 4u);
+    EXPECT_EQ(g->excluded[0].inst, 1u);
+    EXPECT_TRUE(g->excluded[0].cap);
+    // A multi-day return spanning session 4 is excluded as well (IC horizons).
+    EXPECT_TRUE(g->bad(2, 5, 1));
+    EXPECT_FALSE(g->bad(2, 3, 1));
+    EXPECT_FALSE(g->bad(2, 5, 2)); // the split day is not a break
+
+    // Without a raw column only the cap applies.
+    const Panel only_adj = close_panel(D, I, adj);
+    auto g2 = mine::build_return_guard(only_adj, 0, small_cfg());
+    ASSERT_TRUE(g2.has_value());
+    EXPECT_FALSE(g2->has_raw);
+    EXPECT_EQ(g2->excluded.size(), 1u);
+}
+
 // --- stitching ---------------------------------------------------------------
 
 mine::SpanSource source(std::vector<std::int64_t> keys, std::vector<std::int64_t> ids,

@@ -28,8 +28,15 @@
 //   6. GATE     the family is evaluated ONCE on the validation window; one-sided
 //               Newey-West p-values are Benjamini-Yekutieli adjusted and a
 //               Romano-Wolf stepdown runs on the family's validation net pnl.
-//   7. HOLDOUT  admitted alphas (and their equal-weight blend) are evaluated once
-//               on the holdout window and reported; nothing is re-selected.
+//   7. HOLDOUT  only with `--holdout publish` (default off: the holdout contexts
+//               are never loaded): admitted alphas, their blend and the family
+//               blend are scored on the holdout window and reported; nothing is
+//               re-selected. `--holdout-prior-reads` records earlier reads.
+//
+// Every role's stitched span must end before the next role starts (train <
+// validation-start, validation < holdout-start, holdout < holdout-end), and
+// realized returns failing the ReturnGuard (adjusted vs raw close / |log| cap)
+// are treated as missing and counted per role in the gate report.
 //
 // Nothing here reads a session >= the seal (2020-01-01 by default): the stage
 // refuses any context carrying such a session key.
@@ -114,6 +121,16 @@ asof_membership_mask(const atx::engine::data::PitMembershipImage &image, atx::us
 
 struct ScoreCfg {
     atx::f64 cost_bps{5.0};    // per unit of one-way traded weight (gross book 1.0)
+    // Realized-return plausibility guard (see ReturnGuard). A one-day adjusted
+    // return is excluded (treated as missing, and counted) when its |log| exceeds
+    // max_abs_log_return, or when a raw (unadjusted) close exists and the
+    // adjusted |log return| exceeds the raw one by more than adj_raw_log_tol --
+    // an adjustment can shrink a raw corporate-action jump (split, dividend) but
+    // never legitimately create one.
+    bool guard_returns{true};
+    atx::f64 max_abs_log_return{1.5}; // ~ +348% / -78% in one session
+    atx::f64 adj_raw_log_tol{0.10};
+    std::string raw_close_field{"raw_close"};
     atx::usize delay{1};       // sessions between signal close and trade close
     atx::usize min_names{20};  // fewer eligible names on a date -> flat that date
     std::array<atx::usize, 3> ic_horizons{{1, 5, 21}};
@@ -127,6 +144,36 @@ struct EvalWindow {
     atx::usize end{};
     [[nodiscard]] atx::usize size() const noexcept { return end > begin ? end - begin : 0; }
 };
+
+// Per-panel table of excluded one-day realized returns. bad_prefix[d * I + i]
+// counts the excluded one-day returns of instrument i ending at sessions
+// 1..d, so any multi-day return (from, to] is excluded iff the count differs.
+struct ReturnGuard {
+    struct Excluded {
+        atx::usize date{};  // session index the one-day return ends on
+        atx::usize inst{};
+        atx::f64 adj_return{};
+        atx::f64 raw_return{}; // NaN when no raw close
+        bool cap{};            // true: |log| cap; false: adjusted/raw disagreement
+    };
+    atx::usize dates{};
+    atx::usize instruments{};
+    bool has_raw{};
+    std::vector<atx::u32> bad_prefix;
+    std::vector<Excluded> excluded; // every excluded cell, date-major order
+    [[nodiscard]] bool empty() const noexcept { return bad_prefix.empty(); }
+    [[nodiscard]] bool bad(atx::usize from, atx::usize to, atx::usize inst) const noexcept {
+        return bad_prefix[to * instruments + inst] != bad_prefix[from * instruments + inst];
+    }
+    // Excluded one-day cells whose end session lies in [begin, end).
+    [[nodiscard]] atx::usize count_in(atx::usize begin, atx::usize end) const noexcept;
+};
+
+// Build the guard for `panel` from its adjusted close field and, when present,
+// cfg.raw_close_field. With cfg.guard_returns false the table is all-clear.
+[[nodiscard]] atx::core::Result<ReturnGuard>
+build_return_guard(const atx::engine::alpha::Panel &panel, atx::u32 close_field,
+                   const ScoreCfg &cfg);
 
 struct SignalScore {
     // Per signal date in the window (length window.size()). A flat date (too
@@ -145,6 +192,7 @@ struct SignalScore {
     atx::f64 mean_turnover{};
     atx::f64 coverage{};      // fraction of window dates that traded
     atx::f64 mean_names{};    // mean eligible names on traded dates
+    atx::usize excluded_returns{}; // held-name pnl terms dropped by the return guard
 };
 
 // Score one signal (dates x instruments, date-major, same shape as `panel`)
@@ -152,11 +200,14 @@ struct SignalScore {
 // rank-demeaned, scaled to gross 1 and held over the close-to-close return
 // ending at d + delay + 1. Eligibility uses information at d only (member,
 // finite signal, finite positive close); a missing realized return contributes
-// 0. `close` is the adjusted research close field id.
+// 0. `close` is the adjusted research close field id. Realized returns (pnl
+// and every IC horizon) flagged by the return guard are treated as missing;
+// `guard` must be built for `panel` (nullptr: built here from cfg).
 [[nodiscard]] atx::core::Result<SignalScore>
 score_signal(std::span<const atx::f64> signal, atx::f64 sign,
              const atx::engine::alpha::Panel &panel, atx::u32 close_field,
-             std::span<const atx::u8> member, EvalWindow window, const ScoreCfg &cfg);
+             std::span<const atx::u8> member, EvalWindow window, const ScoreCfg &cfg,
+             const ReturnGuard *guard = nullptr);
 
 // Flip a +1-signed score to sign -1 without re-scoring (gross/IC negate,
 // turnover and cost are sign-invariant); statistics are recomputed.
@@ -182,6 +233,8 @@ struct MineData {
     const atx::engine::alpha::Panel *panel{nullptr};
     std::vector<atx::u8> member;
     EvalWindow window;
+    // Optional prebuilt return guard for `panel` (empty: built per call).
+    ReturnGuard guard{};
 };
 
 struct MineConfig {

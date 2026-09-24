@@ -161,7 +161,9 @@ protected:
 TEST_F(EquityMineCli, PublishesHashBoundLibraryWithPlantedAlpha) {
     const fs::path out = root_ / "mine_out";
     std::string o, e;
-    const int rc = run(base_args(out), o, e);
+    auto args = base_args(out);
+    args.insert(args.end(), {"--holdout", "publish", "--holdout-prior-reads", "2"});
+    const int rc = run(args, o, e);
     ASSERT_EQ(rc, 0) << e;
     EXPECT_NE(o.find("[atx-impl] stage=equity-mine"), std::string::npos) << o;
     EXPECT_NE(o.find("admitted="), std::string::npos);
@@ -188,6 +190,13 @@ TEST_F(EquityMineCli, PublishesHashBoundLibraryWithPlantedAlpha) {
     ASSERT_FALSE(g["admitted"].empty());
     EXPECT_EQ(g["admitted"][0]["dsl"].get<std::string>(), "rank(sig)");
     EXPECT_GT(g["admitted"][0]["holdout"]["sharpe_net"].get<double>(), 1.0);
+    EXPECT_TRUE(g["holdout"]["evaluated"].get<bool>());
+    EXPECT_EQ(g["holdout"]["status"].get<std::string>(), "reused");
+    EXPECT_EQ(g["holdout"]["prior_reads"].get<int>(), 2);
+    for (const char *role : {"train", "validation", "holdout"}) {
+        EXPECT_TRUE(g[role]["return_guard"]["enabled"].get<bool>()) << role;
+        EXPECT_EQ(g[role]["return_guard"]["excluded_one_day_cells_span"].get<int>(), 0) << role;
+    }
     std::ifstream cands(out / "candidates.csv");
     std::string cand_header;
     std::getline(cands, cand_header);
@@ -220,12 +229,67 @@ TEST_F(EquityMineCli, SmoothWindowsAddDecayedVariantsAsTrials) {
 TEST_F(EquityMineCli, RefusesContextsAtOrAfterTheSeal) {
     const fs::path out = root_ / "sealed";
     auto args = base_args(out);
-    args.insert(args.end(), {"--seal", "2018-06-01"});
+    args.insert(args.end(), {"--seal", "2018-06-01", "--holdout", "publish"});
     args[std::find(args.begin(), args.end(), "--holdout-end") - args.begin() + 1] = "2018-05-01";
     std::string o, e;
     EXPECT_EQ(run(args, o, e), 1);
     EXPECT_NE(e.find("seal"), std::string::npos) << e;
     EXPECT_FALSE(fs::exists(out / "manifest.json"));
+}
+
+TEST_F(EquityMineCli, HoldoutOffByDefaultNeverLoadsHoldoutContexts) {
+    const fs::path out = root_ / "no_holdout";
+    auto args = base_args(out);
+    // Point the holdout at a file that does not exist: off must never open it.
+    args[std::find(args.begin(), args.end(), "--holdout-contexts") - args.begin() + 1] =
+        (root_ / "missing_holdout.bin").string();
+    std::string o, e;
+    ASSERT_EQ(run(args, o, e), 0) << e;
+    EXPECT_FALSE(fs::exists(out / "holdout.csv"));
+    std::ifstream gf(out / "gate_report.json");
+    const json g = json::parse(gf);
+    EXPECT_FALSE(g["holdout"]["evaluated"].get<bool>());
+    EXPECT_EQ(g["holdout"]["mode"].get<std::string>(), "off");
+    EXPECT_FALSE(g["holdout"].contains("contexts"));
+    for (const auto &a : g["admitted"]) EXPECT_FALSE(a.contains("holdout"));
+    std::ifstream mf(out / "manifest.json");
+    const json m = json::parse(mf);
+    EXPECT_EQ(m["files"].size(), 5u);
+    EXPECT_TRUE(m["inputs"]["holdout"].empty());
+
+    // publish without holdout contexts / end is a usage error.
+    std::string o2, e2;
+    EXPECT_EQ(run({"--train-contexts", "a", "--validation-contexts", "b", "--train-start",
+                   "2015-01-01", "--validation-start", "2016-01-01", "--holdout-start",
+                   "2017-01-01", "--holdout", "publish", "--out", (root_ / "p").string()},
+                  o2, e2),
+              2);
+    EXPECT_NE(e2.find("--holdout publish requires"), std::string::npos) << e2;
+}
+
+TEST_F(EquityMineCli, RefusesARoleSpanReachingTheNextRole) {
+    const fs::path out = root_ / "leak";
+    const auto base = base_args(out);
+    auto args = base;
+    // Sessions [0, 600) run past --validation-start 2017-01-01 (about index 522).
+    args[std::find(args.begin(), args.end(), "--train-contexts") - args.begin() + 1] =
+        context("train_long", 0, 600);
+    std::string o, e;
+    EXPECT_EQ(run(args, o, e), 1);
+    EXPECT_NE(e.find("leak"), std::string::npos) << e;
+    EXPECT_NE(e.find("train"), std::string::npos) << e;
+    EXPECT_FALSE(fs::exists(out / "manifest.json"));
+
+    const fs::path out2 = root_ / "leak_val";
+    auto args2 = base;
+    args2.back() = out2.string();
+    // Validation sessions [300, 800) run past --holdout-start 2018-01-01.
+    args2[std::find(args2.begin(), args2.end(), "--validation-contexts") - args2.begin() + 1] =
+        context("val_long", 300, 800);
+    std::string o3, e3;
+    EXPECT_EQ(run(args2, o3, e3), 1);
+    EXPECT_NE(e3.find("validation"), std::string::npos) << e3;
+    EXPECT_FALSE(fs::exists(out2 / "manifest.json"));
 }
 
 TEST_F(EquityMineCli, NeverWritesIntoAnExistingOut) {

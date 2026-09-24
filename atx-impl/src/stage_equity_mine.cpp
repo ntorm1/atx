@@ -350,10 +350,66 @@ SignalScore flip_score(const SignalScore &in, const ScoreCfg &cfg) {
     return s;
 }
 
+atx::usize ReturnGuard::count_in(atx::usize begin, atx::usize end) const noexcept {
+    atx::usize n = 0;
+    for (const Excluded &e : excluded) n += (e.date >= begin && e.date < end) ? 1 : 0;
+    return n;
+}
+
+atx::core::Result<ReturnGuard> build_return_guard(const alpha::Panel &panel, atx::u32 close_field,
+                                                  const ScoreCfg &cfg) {
+    if (close_field >= panel.num_fields()) {
+        return Err(ErrorCode::InvalidArgument, "build_return_guard: bad close field");
+    }
+    const atx::usize D = panel.dates();
+    const atx::usize I = panel.instruments();
+    ReturnGuard g;
+    g.dates = D;
+    g.instruments = I;
+    g.bad_prefix.assign(D * I, 0);
+    if (!cfg.guard_returns || D == 0) return Ok(std::move(g));
+    const auto close = panel.field_all(close_field);
+    std::span<const atx::f64> raw;
+    if (!cfg.raw_close_field.empty()) {
+        if (auto rid = panel.field_id(cfg.raw_close_field)) {
+            raw = panel.field_all(*rid);
+            g.has_raw = true;
+        }
+    }
+    const auto log_ret = [](std::span<const atx::f64> px, atx::usize a, atx::usize b) {
+        const atx::f64 x = px[a];
+        const atx::f64 y = px[b];
+        if (!std::isfinite(x) || !std::isfinite(y) || !(x > 0.0) || !(y > 0.0)) return kNaN;
+        return std::log(y / x);
+    };
+    const bool cap_on = cfg.max_abs_log_return > 0.0;
+    for (atx::usize d = 1; d < D; ++d) {
+        for (atx::usize i = 0; i < I; ++i) {
+            const atx::usize c = d * I + i;
+            const atx::usize p = (d - 1) * I + i;
+            atx::u32 bad = 0;
+            const atx::f64 la = log_ret(close, p, c);
+            if (std::isfinite(la)) {
+                const atx::f64 lr = g.has_raw ? log_ret(raw, p, c) : kNaN;
+                const bool cap = cap_on && std::abs(la) > cfg.max_abs_log_return;
+                const bool disagree =
+                    std::isfinite(lr) && std::abs(la) > std::abs(lr) + cfg.adj_raw_log_tol;
+                if (cap || disagree) {
+                    bad = 1;
+                    g.excluded.push_back(ReturnGuard::Excluded{
+                        d, i, std::expm1(la), std::isfinite(lr) ? std::expm1(lr) : kNaN, cap});
+                }
+            }
+            g.bad_prefix[c] = g.bad_prefix[p] + bad;
+        }
+    }
+    return Ok(std::move(g));
+}
+
 atx::core::Result<SignalScore> score_signal(std::span<const atx::f64> signal, atx::f64 sign,
                                             const alpha::Panel &panel, atx::u32 close_field,
                                             std::span<const atx::u8> member, EvalWindow window,
-                                            const ScoreCfg &cfg) {
+                                            const ScoreCfg &cfg, const ReturnGuard *guard) {
     const atx::usize D = panel.dates();
     const atx::usize I = panel.instruments();
     if (signal.size() != D * I || member.size() != D * I) {
@@ -366,6 +422,16 @@ atx::core::Result<SignalScore> score_signal(std::span<const atx::f64> signal, at
         return Err(ErrorCode::InvalidArgument, "score_signal: bad close field or sign");
     }
     const auto close = panel.field_all(close_field);
+    ReturnGuard local_guard;
+    if (cfg.guard_returns && guard == nullptr) {
+        ATX_TRY(local_guard, build_return_guard(panel, close_field, cfg));
+        guard = &local_guard;
+    }
+    if (!cfg.guard_returns) guard = nullptr;
+    if (guard != nullptr && (guard->dates != D || guard->instruments != I ||
+                             guard->bad_prefix.size() != D * I)) {
+        return Err(ErrorCode::InvalidArgument, "score_signal: return guard shape mismatch");
+    }
     const atx::usize T = window.size();
     const atx::f64 cost_rate = cfg.cost_bps * 1e-4;
     SignalScore s;
@@ -420,6 +486,10 @@ atx::core::Result<SignalScore> score_signal(std::span<const atx::f64> signal, at
         names_sum += static_cast<atx::f64>(names.size());
         atx::f64 pnl = 0.0;
         for (const atx::usize i : names) {
+            if (guard != nullptr && guard->bad(entry, entry + 1, i)) {
+                ++s.excluded_returns;
+                continue;
+            }
             const atx::f64 r = simple_return(close, I, entry, entry + 1, i);
             if (std::isfinite(r)) pnl += prev[i] * r;
         }
@@ -431,6 +501,7 @@ atx::core::Result<SignalScore> score_signal(std::span<const atx::f64> signal, at
             xs.clear();
             ys.clear();
             for (atx::usize k = 0; k < names.size(); ++k) {
+                if (guard != nullptr && guard->bad(entry, end, names[k])) continue;
                 const atx::f64 r = simple_return(close, I, entry, end, names[k]);
                 if (!std::isfinite(r)) continue;
                 xs.push_back(vals[k]);
@@ -573,6 +644,19 @@ evaluate_dsl(const alpha::Library &lib, alpha::Engine &engine, std::string_view 
     return Ok(static_cast<atx::u32>(id));
 }
 
+// The role's prebuilt guard when it matches the panel, else one built into
+// `local`; nullptr when the guard is disabled.
+[[nodiscard]] atx::core::Result<const ReturnGuard *>
+guard_for(const MineData &m, atx::u32 close_id, const ScoreCfg &cfg, ReturnGuard &local) {
+    if (!cfg.guard_returns) return Ok(static_cast<const ReturnGuard *>(nullptr));
+    if (!m.guard.empty() && m.guard.dates == m.panel->dates() &&
+        m.guard.instruments == m.panel->instruments()) {
+        return Ok(&m.guard);
+    }
+    ATX_TRY(local, build_return_guard(*m.panel, close_id, cfg));
+    return Ok(static_cast<const ReturnGuard *>(&local));
+}
+
 [[nodiscard]] atx::core::Status check_data(const MineData &m, std::string_view role) {
     if (m.panel == nullptr) {
         return Err(ErrorCode::InvalidArgument, std::string{role} + ": null panel");
@@ -621,14 +705,16 @@ void parallel_over(atx::usize n, atx::usize threads, const alpha::Panel &panel, 
 }
 
 void score_train_row(const alpha::Library &lib, alpha::Engine &engine, const MineData &train,
-                     atx::u32 close_id, const ScoreCfg &cfg, CandidateRow &row) {
+                     atx::u32 close_id, const ScoreCfg &cfg, const ReturnGuard *guard,
+                     CandidateRow &row) {
     if (!row.error.empty()) return;
     auto sig = evaluate_dsl(lib, engine, row.dsl);
     if (!sig) {
         row.error = "eval: " + sig.error().message();
         return;
     }
-    auto sc = score_signal(*sig, 1.0, *train.panel, close_id, train.member, train.window, cfg);
+    auto sc = score_signal(*sig, 1.0, *train.panel, close_id, train.member, train.window, cfg,
+                           guard);
     if (!sc) {
         row.error = "score: " + sc.error().message();
         return;
@@ -778,9 +864,12 @@ atx::core::Result<MineOutcome> mine_train(const alpha::Library &lib, const MineD
         }
     }
 
+    ReturnGuard local_guard;
+    ATX_TRY(const ReturnGuard *guard, guard_for(train, close_id, cfg.score, local_guard));
     parallel_over(out.candidates.size(), cfg.threads, panel,
                   [&](atx::usize i, alpha::Engine &engine) {
-                      score_train_row(lib, engine, train, close_id, cfg.score, out.candidates[i]);
+                      score_train_row(lib, engine, train, close_id, cfg.score, guard,
+                                      out.candidates[i]);
                   });
     ATX_TRY_VOID(register_trials(out, registry));
     select_family(out, cfg, train.window.size());
@@ -795,6 +884,8 @@ atx::core::Status mine_validate(const alpha::Library &lib, const MineData &valid
     const alpha::Panel &panel = *validation.panel;
     ATX_TRY(const atx::u32 close_id, close_field_of(panel));
     const atx::usize K = out.family.size();
+    ReturnGuard local_guard;
+    ATX_TRY(const ReturnGuard *guard, guard_for(validation, close_id, cfg.score, local_guard));
     std::vector<std::string> errors(K);
     parallel_over(K, cfg.threads, panel, [&](atx::usize k, alpha::Engine &engine) {
         CandidateRow &row = out.candidates[out.family[k]];
@@ -804,7 +895,7 @@ atx::core::Status mine_validate(const alpha::Library &lib, const MineData &valid
             return;
         }
         auto sc = score_signal(*sig, row.sign, panel, close_id, validation.member,
-                               validation.window, cfg.score);
+                               validation.window, cfg.score, guard);
         if (!sc) {
             errors[k] = sc.error().message();
             return;
@@ -924,7 +1015,9 @@ atx::core::Result<SignalScore> evaluate_blend(const alpha::Library &lib, const M
     for (atx::usize c = 0; c < cells; ++c) {
         if (cnt[c] > 0) blend[c] = sum[c] / static_cast<atx::f64>(cnt[c]);
     }
-    return score_signal(blend, 1.0, panel, close_id, data.member, data.window, cfg);
+    ReturnGuard local_guard;
+    ATX_TRY(const ReturnGuard *guard, guard_for(data, close_id, cfg, local_guard));
+    return score_signal(blend, 1.0, panel, close_id, data.member, data.window, cfg, guard);
 }
 
 atx::core::Result<std::vector<HoldoutRow>>
@@ -938,11 +1031,13 @@ evaluate_holdout(const alpha::Library &lib, const MineData &holdout,
     std::vector<HoldoutRow> rows;
     std::vector<atx::f64> blend_sum(cells, 0.0);
     std::vector<atx::u32> blend_n(cells, 0);
+    ReturnGuard local_guard;
+    ATX_TRY(const ReturnGuard *guard, guard_for(holdout, close_id, cfg, local_guard));
     alpha::Engine engine{panel};
     for (const CandidateRow &row : admitted) {
         ATX_TRY(auto sig, evaluate_dsl(lib, engine, row.dsl));
         ATX_TRY(auto sc, score_signal(sig, row.sign, panel, close_id, holdout.member,
-                                      holdout.window, cfg));
+                                      holdout.window, cfg, guard));
         rows.push_back(HoldoutRow{row.dsl, std::move(sc)});
         accumulate_blend(sig, row.sign, holdout, close, blend_sum, blend_n);
     }
@@ -952,7 +1047,7 @@ evaluate_holdout(const alpha::Library &lib, const MineData &holdout,
             if (blend_n[c] > 0) blend[c] = blend_sum[c] / static_cast<atx::f64>(blend_n[c]);
         }
         ATX_TRY(auto sc, score_signal(blend, 1.0, panel, close_id, holdout.member, holdout.window,
-                                      cfg));
+                                      cfg, guard));
         rows.push_back(HoldoutRow{"<equal-weight blend>", std::move(sc)});
     }
     return Ok(std::move(rows));
@@ -989,6 +1084,14 @@ struct MineArgs {
     bool semantic{true};
     bool output_dedup{true};
     bool quiet{false};
+    // Holdout discipline: "off" (default) never loads the holdout contexts, so
+    // smoke and development runs cannot read the holdout; "publish" scores it
+    // once. prior_reads records earlier reads of the same holdout period.
+    bool holdout_publish{false};
+    atx::usize holdout_prior_reads{0};
+    bool guard_returns{true};
+    atx::f64 max_abs_log_return{1.5};
+    atx::f64 adj_raw_log_tol{0.10};
     atx::u64 seed{20260923};
     atx::usize population{64};
     atx::usize generations{8};
@@ -1083,6 +1186,15 @@ template <class T>
     if (f == "n-boot") return parse_num(f, v, a.n_boot);
     if (f == "mean-block") return parse_num(f, v, a.mean_block);
     if (f == "max-working-bytes") return parse_num(f, v, a.max_working_bytes);
+    if (f == "holdout") {
+        if (v == "off") a.holdout_publish = false;
+        else if (v == "publish") a.holdout_publish = true;
+        else return Err(ErrorCode::InvalidArgument, "--holdout must be off|publish");
+        return Ok();
+    }
+    if (f == "holdout-prior-reads") return parse_num(f, v, a.holdout_prior_reads);
+    if (f == "max-abs-log-return") return parse_num(f, v, a.max_abs_log_return);
+    if (f == "adj-raw-log-tol") return parse_num(f, v, a.adj_raw_log_tol);
     if (f == "gate") {
         if (v == "by") a.gate = mine::GateMode::By;
         else if (v == "rw") a.gate = mine::GateMode::RomanoWolf;
@@ -1108,19 +1220,26 @@ template <class T>
         if (f == "no-semantic-canon") { a.semantic = false; continue; }
         if (f == "no-output-dedup") { a.output_dedup = false; continue; }
         if (f == "quiet") { a.quiet = true; continue; }
+        if (f == "no-return-guard") { a.guard_returns = false; continue; }
         if (i + 1 >= argc) {
             return Err(ErrorCode::InvalidArgument, "equity-mine: --" + std::string{f} +
                                                        " needs a value");
         }
         ATX_TRY_VOID(apply_value(a, f, argv[++i]));
     }
-    if (a.train_ctx.empty() || a.val_ctx.empty() || a.hold_ctx.empty() || a.out.empty() ||
-        a.train_start.empty() || a.val_start.empty() || a.hold_start.empty() ||
-        a.hold_end.empty()) {
+    if (a.train_ctx.empty() || a.val_ctx.empty() || a.out.empty() || a.train_start.empty() ||
+        a.val_start.empty() || a.hold_start.empty()) {
         return Err(ErrorCode::InvalidArgument,
-                   "equity-mine: --train-contexts --validation-contexts --holdout-contexts "
-                   "--train-start --validation-start --holdout-start --holdout-end --out are "
-                   "required");
+                   "equity-mine: --train-contexts --validation-contexts --train-start "
+                   "--validation-start --holdout-start --out are required");
+    }
+    if (a.holdout_publish && (a.hold_ctx.empty() || a.hold_end.empty())) {
+        return Err(ErrorCode::InvalidArgument,
+                   "equity-mine: --holdout publish requires --holdout-contexts and --holdout-end");
+    }
+    if (!(a.max_abs_log_return > 0.0) || a.adj_raw_log_tol < 0.0) {
+        return Err(ErrorCode::InvalidArgument,
+                   "equity-mine: --max-abs-log-return must be > 0 and --adj-raw-log-tol >= 0");
     }
     if (!(a.fdr_q > 0.0 && a.fdr_q < 1.0) || !(a.rw_alpha > 0.0 && a.rw_alpha < 1.0) ||
         a.n_boot == 0 || a.mean_block < 1.0 || a.threads == 0 || a.max_validate == 0 ||
@@ -1206,12 +1325,15 @@ struct Role {
     std::vector<ContextInfo> contexts;
     std::string membership_rule;
     atx::usize member_cells{};
+    atx::usize guard_excluded_window{};
 };
 
 [[nodiscard]] atx::core::Result<Role>
 build_role(std::string name, const std::vector<std::string> &paths, atx::i64 start_ns,
-           atx::i64 end_ns, atx::i64 seal_ns, const atx::engine::data::PitMembershipImage *image,
-           atx::usize cut, std::span<const atx::u16> adv_windows, atx::u64 max_bytes) {
+           atx::i64 end_ns, const std::string &end_label, atx::i64 seal_ns,
+           const atx::engine::data::PitMembershipImage *image, atx::usize cut,
+           std::span<const atx::u16> adv_windows, atx::u64 max_bytes,
+           const mine::ScoreCfg &score) {
     std::vector<ContextInfo> contexts;
     std::vector<mine::SpanSource> sources;
     for (const auto &p : paths) {
@@ -1221,6 +1343,15 @@ build_role(std::string name, const std::vector<std::string> &paths, atx::i64 sta
         contexts.push_back(std::move(info));
     }
     ATX_TRY(auto span, mine::stitch_span(sources));
+    // A role's span must end before the next role starts: search, scoring, the
+    // last signals' realized returns and the long IC horizons all read every
+    // session of the span, so a later session would leak the next role's data.
+    if (!span.session_keys.empty() && span.session_keys.back() >= end_ns) {
+        return Err(ErrorCode::InvalidArgument,
+                   name + ": contexts carry sessions at or after this role's end (" + end_label +
+                       "); they would leak the next role's data into this one. Pass contexts "
+                       "that end before it");
+    }
     const atx::usize D = span.session_keys.size();
     const atx::usize I = span.instrument_ids.size();
     const atx::u64 est = static_cast<atx::u64>(D) * I * 8ULL *
@@ -1254,9 +1385,17 @@ build_role(std::string name, const std::vector<std::string> &paths, atx::i64 sta
     for (atx::usize d = w.begin; d < w.end; ++d) {
         for (atx::usize i = 0; i < I; ++i) member_cells += member[d * I + i];
     }
+    ATX_TRY(const auto close_id, span.panel.field_id("close"));
+    ATX_TRY(auto guard, mine::build_return_guard(span.panel, static_cast<atx::u32>(close_id), score));
+    // Realized one-day returns this role's pnl can touch: signal dates in the
+    // window realize at d + delay + 1.
+    const atx::usize realized_end = std::min<atx::usize>(D, w.end + score.delay + 1);
+    const atx::usize excl_window = guard.count_in(w.begin + score.delay + 1, realized_end);
     // data.panel is bound by the caller once the Role sits at its final address.
-    return Ok(Role{std::move(name), std::move(span), mine::MineData{nullptr, std::move(member), w},
-                   std::move(contexts), std::move(rule), member_cells});
+    Role role{std::move(name), std::move(span), mine::MineData{nullptr, std::move(member), w, {}},
+              std::move(contexts), std::move(rule), member_cells, excl_window};
+    role.data.guard = std::move(guard);
+    return Ok(std::move(role));
 }
 
 [[nodiscard]] std::string csv_quote(std::string_view s) {
@@ -1283,7 +1422,8 @@ build_role(std::string name, const std::vector<std::string> &paths, atx::i64 sta
                 {"p_one_sided", s.p_one_sided},    {"ic_h1", s.ic_mean[0]},
                 {"ic_h5", s.ic_mean[1]},           {"ic_h21", s.ic_mean[2]},
                 {"icir_h1", s.icir},               {"turnover", s.mean_turnover},
-                {"coverage", s.coverage},          {"mean_names", s.mean_names}};
+                {"coverage", s.coverage},          {"mean_names", s.mean_names},
+                {"excluded_return_terms", s.excluded_returns}};
 }
 
 [[nodiscard]] std::string score_cols(const mine::SignalScore &s) {
@@ -1381,6 +1521,30 @@ constexpr std::string_view kFamilyBlend = "<family equal-weight blend>";
     return s;
 }
 
+[[nodiscard]] json guard_json(const Role &r, const mine::ScoreCfg &score) {
+    const mine::ReturnGuard &g = r.data.guard;
+    atx::usize cap = 0;
+    for (const auto &e : g.excluded) cap += e.cap ? 1 : 0;
+    json ex = json::array();
+    for (const auto &e : g.excluded) {
+        if (ex.size() >= 64) break;
+        ex.push_back({{"session_key", r.span.session_keys.at(e.date)},
+                      {"security_id", r.span.instrument_ids.at(e.inst)},
+                      {"adj_return", e.adj_return},
+                      {"raw_return", std::isfinite(e.raw_return) ? json(e.raw_return) : json()},
+                      {"reason", e.cap ? "abs-log-return-cap" : "adjusted-exceeds-raw"}});
+    }
+    return json{{"enabled", score.guard_returns},
+                {"has_raw_close", g.has_raw},
+                {"max_abs_log_return", score.max_abs_log_return},
+                {"adj_raw_log_tol", score.adj_raw_log_tol},
+                {"excluded_one_day_cells_span", g.excluded.size()},
+                {"excluded_by_cap_span", cap},
+                {"excluded_by_raw_disagreement_span", g.excluded.size() - cap},
+                {"excluded_one_day_cells_realized_window", r.guard_excluded_window},
+                {"examples", ex}};
+}
+
 [[nodiscard]] json role_json(const Role &r) {
     json ctx = json::array();
     for (const auto &c : r.contexts) {
@@ -1473,6 +1637,9 @@ void log_line(std::ostream &err, bool quiet, const std::string &msg) {
     cfg.score.cost_bps = a.cost_bps;
     cfg.score.delay = a.delay;
     cfg.score.min_names = a.min_names;
+    cfg.score.guard_returns = a.guard_returns;
+    cfg.score.max_abs_log_return = a.max_abs_log_return;
+    cfg.score.adj_raw_log_tol = a.adj_raw_log_tol;
     cfg.max_validate = a.max_validate;
     cfg.max_corr = a.max_corr;
     cfg.min_coverage = a.min_coverage;
@@ -1506,7 +1673,11 @@ struct Windows {
     ATX_TRY(w.train_start, mine::parse_iso_date_ns(a.train_start));
     ATX_TRY(w.val_start, mine::parse_iso_date_ns(a.val_start));
     ATX_TRY(w.hold_start, mine::parse_iso_date_ns(a.hold_start));
-    ATX_TRY(w.hold_end, mine::parse_iso_date_ns(a.hold_end));
+    if (a.hold_end.empty()) {
+        w.hold_end = w.seal; // unused unless the holdout is published
+    } else {
+        ATX_TRY(w.hold_end, mine::parse_iso_date_ns(a.hold_end));
+    }
     if (!(w.train_start < w.val_start && w.val_start < w.hold_start && w.hold_start < w.hold_end)) {
         return Err(ErrorCode::InvalidArgument,
                    "equity-mine: need train-start < validation-start < holdout-start < holdout-end");
@@ -1547,15 +1718,23 @@ struct Windows {
     report["membership"] = {{"path", a.membership}, {"sha256", membership_sha},
                             {"cut", a.membership_cut}};
 
+    mine::ScoreCfg score_cfg;
+    score_cfg.delay = a.delay;
+    score_cfg.guard_returns = a.guard_returns;
+    score_cfg.max_abs_log_return = a.max_abs_log_return;
+    score_cfg.adj_raw_log_tol = a.adj_raw_log_tol;
+
     // ---- TRAIN: search + honest scoring + registry + family ---------------
     log_line(err, a.quiet, "building train span");
     mine::MineOutcome outcome;
     atx::usize train_T = 0;
     {
-        ATX_TRY(Role train, build_role("train", a.train_ctx, w.train_start, w.val_start, w.seal, img,
-                                       a.membership_cut, adv, a.max_working_bytes));
+        ATX_TRY(Role train, build_role("train", a.train_ctx, w.train_start, w.val_start,
+                                       "--validation-start " + a.val_start, w.seal, img,
+                                       a.membership_cut, adv, a.max_working_bytes, score_cfg));
         train.data.panel = &train.span.panel;
         report["train"] = role_json(train);
+        report["train"]["return_guard"] = guard_json(train, score_cfg);
         train_T = train.data.window.size();
         eval::TrialRegistryConfig rc;
         rc.pnl_len = train_T;
@@ -1572,22 +1751,31 @@ struct Windows {
     // ---- VALIDATION: one pass, gate ---------------------------------------
     {
         log_line(err, a.quiet, "building validation span");
-        ATX_TRY(Role val, build_role("validation", a.val_ctx, w.val_start, w.hold_start, w.seal, img,
-                                     a.membership_cut, adv, a.max_working_bytes));
+        ATX_TRY(Role val, build_role("validation", a.val_ctx, w.val_start, w.hold_start,
+                                     "--holdout-start " + a.hold_start, w.seal, img,
+                                     a.membership_cut, adv, a.max_working_bytes, score_cfg));
         val.data.panel = &val.span.panel;
         report["validation"] = role_json(val);
+        report["validation"]["return_guard"] = guard_json(val, score_cfg);
         const auto cfg = make_config(a, val.span.panel);
         ATX_TRY_VOID(mine::mine_validate(lib, val.data, cfg, outcome));
         log_line(err, a.quiet, "validation done: admitted " + std::to_string(outcome.admitted.size()));
     }
-    // ---- HOLDOUT: reported once ------------------------------------------
+    // ---- HOLDOUT: only with --holdout publish; reported, never selected on --
     std::vector<mine::HoldoutRow> holdout;
-    {
+    report["holdout"] = {{"mode", a.holdout_publish ? "publish" : "off"},
+                         {"evaluated", false},
+                         {"prior_reads", a.holdout_prior_reads},
+                         {"status", a.holdout_prior_reads == 0 ? "fresh" : "reused"}};
+    if (a.holdout_publish) {
         log_line(err, a.quiet, "building holdout span");
-        ATX_TRY(Role hold, build_role("holdout", a.hold_ctx, w.hold_start, w.hold_end, w.seal, img,
-                                      a.membership_cut, adv, a.max_working_bytes));
+        ATX_TRY(Role hold, build_role("holdout", a.hold_ctx, w.hold_start, w.hold_end,
+                                      "--holdout-end " + a.hold_end, w.seal, img,
+                                      a.membership_cut, adv, a.max_working_bytes, score_cfg));
         hold.data.panel = &hold.span.panel;
-        report["holdout"] = role_json(hold);
+        report["holdout"].update(role_json(hold));
+        report["holdout"]["return_guard"] = guard_json(hold, score_cfg);
+        report["holdout"]["evaluated"] = true;
         std::vector<mine::CandidateRow> adm;
         for (auto i : outcome.admitted) adm.push_back(outcome.candidates[i]);
         const auto cfg = make_config(a, hold.span.panel);
@@ -1652,11 +1840,11 @@ struct Windows {
         adm.push_back({{"id", "mine_" + std::to_string(k)}, {"dsl", c.dsl}, {"sign", c.sign},
                        {"origin", c.origin}, {"train", score_json(c.train)},
                        {"validation", score_json(c.validation)}, {"p_by", c.p_by},
-                       {"p_rw", c.p_rw}, {"dsr_train", c.dsr_train},
-                       {"holdout", score_json(holdout[k].score)}});
+                       {"p_rw", c.p_rw}, {"dsr_train", c.dsr_train}});
+        if (a.holdout_publish) adm.back()["holdout"] = score_json(holdout[k].score);
     }
     report["admitted"] = adm;
-    if (!outcome.admitted.empty()) {
+    if (a.holdout_publish && !outcome.admitted.empty()) {
         report["holdout_admitted_blend"] = score_json(holdout[outcome.admitted.size()].score);
     }
     if (outcome.family_blend_scored) {
@@ -1664,23 +1852,32 @@ struct Windows {
                                   {"validation", score_json(outcome.family_blend_validation)},
                                   {"p_by", outcome.family_blend_p_by},
                                   {"p_rw", outcome.family_blend_p_rw},
-                                  {"admitted", outcome.family_blend_admitted},
-                                  {"holdout", score_json(holdout.back().score)}};
+                                  {"admitted", outcome.family_blend_admitted}};
+        if (a.holdout_publish) {
+            report["family_blend"]["holdout"] = score_json(holdout.back().score);
+        }
     }
     report["qualifications"] = json::array(
         {"session keys are labels, not availability times; one-session execution delay assumed",
          "membership as-of the PIT top-N cut; contexts are year-union compacted",
          "flat cost per unit of one-way traded weight; no borrow, impact or capacity model",
          "a missing realized return contributes zero (no delisting return imputation)",
-         "holdout evaluated once for admitted alphas; nothing re-selected on it",
+         a.holdout_publish
+             ? (a.holdout_prior_reads == 0
+                    ? "holdout evaluated once in this run; nothing re-selected on it"
+                    : "holdout evaluated in this run; the same period was read " +
+                          std::to_string(a.holdout_prior_reads) +
+                          " time(s) before, so it is a reused holdout (descriptive only)")
+             : "holdout not evaluated (--holdout off)",
+         "realized returns failing the adjusted-vs-raw / |log| cap guard are treated as missing",
          "sessions >= seal never read"});
 
-    const std::vector<std::pair<std::string, std::string>> files = {
+    std::vector<std::pair<std::string, std::string>> files = {
         {"candidates.csv", candidates_csv(outcome)},
         {"validation.csv", validation_csv(outcome)},
-        {"library.tsv", library_tsv(outcome)},
-        {"holdout.csv", holdout_csv(holdout, outcome)},
-        {"gate_report.json", report.dump(2)}};
+        {"library.tsv", library_tsv(outcome)}};
+    if (a.holdout_publish) files.emplace_back("holdout.csv", holdout_csv(holdout, outcome));
+    files.emplace_back("gate_report.json", report.dump(2));
     for (const auto &[name, body] : files) ATX_TRY_VOID(write_file(out / name, body));
     json manifest;
     manifest["schema"] = "atx.equity-mine.manifest";
@@ -1697,7 +1894,8 @@ struct Windows {
     manifest["files"] = listed;
     manifest["inputs"] = {{"train", report["train"]["contexts"]},
                           {"validation", report["validation"]["contexts"]},
-                          {"holdout", report["holdout"]["contexts"]},
+                          {"holdout", a.holdout_publish ? report["holdout"]["contexts"]
+                                                        : json::array()},
                           {"membership_sha256", membership_sha}};
     ATX_TRY(const auto exe_sha, current_executable_sha256());
     manifest["producer_executable_sha256"] = exe_sha;
