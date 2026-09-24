@@ -1,5 +1,15 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Verified capacity wait terminal — 2026-09-24 22:09 UTC
+
+Window4 (live session15674, now terminal) observed19samples over180seconds:
+physical4.530..5.848GiB, commit9.161..11.580GiB, zero qualifying6/8GiB interval.
+Receipt schema-headroom-window4.json reports no_sustained_window. This turn
+was a verified wait, not materialization progress. No test, migration, source
+write or new repair started. The committed independent repairs are complete;
+the next upgrade/source steps still depend on sustained host capacity. No
+source ledger recovery is due. Keep the goal active and all gates unchanged.
+
 ## ED1 committed and live prerequisite measured — 2026-09-24 evening UTC
 
 ED1 is44fb6392: generic scripts/read_quarterly_eps_growth.py delegates numeric

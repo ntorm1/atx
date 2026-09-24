@@ -1,5 +1,10 @@
 # Tier-1 parity handoff — 2026-09-24 evening UTC
 
+Latest capacity observation: window4/session15674 is terminal at22:09UTC,
+19samples over180seconds, physical4.530..5.848GiB and commit9.161..11.580GiB.
+No qualifying6/8GiB interval; no additional runtime or warehouse write.
+This continuation was a verified wait. Next actions below remain unchanged.
+
 Continue on `feat/tier1-parity`. Initial HEAD was2e0d738f; the checkout was on
 main, with both branch pointers identical. Root switched to the requested
 feature branch without changing files or merging. Preserve other-session
