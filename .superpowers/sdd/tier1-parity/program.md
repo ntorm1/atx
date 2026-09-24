@@ -1,5 +1,18 @@
 # Tier-1 parity program ledger (atx-db)
 
+## Live readiness baseline measured - 2026-09-24 UTC
+
+A bounded read-only interim inventory completed at1.538GiB peak under the
+existing2GiB guard, with DuckDB1GB/one thread and no warehouse writes. It is
+published as TIER1_INTERIM_READINESS_2026-09-24.md and its safe aggregate JSON.
+Raw facts/prices exist but canonical downstream tables remain empty; provider
+SLO snapshots and annual item measurements are missing, and quality has no
+fresh complete proof. This is measured stored evidence, not executed DQC,
+source completion, condition promotion, research validation or release proof.
+Keep the source/schema sustained-headroom prerequisite and all gates unchanged.
+Do not commit the full private diagnostic artifact; the public aggregate
+omits error text, stored JSON and source parameters and pins source hashes.
+
 ## Consumer repairs verified and committed - 2026-09-24 UTC
 
 IQ2 is fe7200db: 23 focused tests and scoped Ruff passed. DS2 is a1b59a43:

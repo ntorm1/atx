@@ -1,0 +1,332 @@
+{
+    "contract":  "tier1-interim-aggregate-v1",
+    "source_commit":  "33a0127c",
+    "generated_at_utc":  "2026-09-24T00:46:51.286927+00:00",
+    "as_of_date":  "2026-09-20",
+    "availability_cutoff":  "2026-09-20T22:00:00+00:00",
+    "certification":  "unmeasured",
+    "elapsed_seconds":  28.410851,
+    "warehouse_file_metadata_changed":  false,
+    "measurement_script_sha256":  "40fa2aa341a27176ba45ef3e4003edecc0bbf1edab3897c54397b831c7017a49",
+    "private_source_report_sha256":  "4bff41bccd998656c8a9290aa659f9b5652cd94c245d1e79fbfba2d5f7b227b9",
+    "guard":  {
+                  "status":  "completed",
+                  "returncode":  0,
+                  "job_limit_gb":  2.0,
+                  "peak_job_memory_gb":  1.5383949279785156
+              },
+    "surfaces":  [
+                     {
+                         "table":  "delisting_events",
+                         "status":  "empty",
+                         "rows":  0,
+                         "distinct_security_ids":  0,
+                         "minimum_date":  null,
+                         "maximum_date":  null
+                     },
+                     {
+                         "table":  "delisting_terminal_returns",
+                         "status":  "empty",
+                         "rows":  0,
+                         "distinct_security_ids":  0,
+                         "minimum_date":  null,
+                         "maximum_date":  null
+                     },
+                     {
+                         "table":  "derived_metric_values",
+                         "status":  "empty",
+                         "rows":  0,
+                         "distinct_security_ids":  0,
+                         "minimum_date":  null,
+                         "maximum_date":  null
+                     },
+                     {
+                         "table":  "equity_daily_bars",
+                         "status":  "measured",
+                         "rows":  31959271,
+                         "distinct_security_ids":  34251,
+                         "minimum_date":  "2012-03-26",
+                         "maximum_date":  "2026-09-18"
+                     },
+                     {
+                         "table":  "equity_price_metrics",
+                         "status":  "empty",
+                         "rows":  0,
+                         "distinct_security_ids":  0,
+                         "minimum_date":  null,
+                         "maximum_date":  null
+                     },
+                     {
+                         "table":  "exchange_listings",
+                         "status":  "measured",
+                         "rows":  45820,
+                         "distinct_security_ids":  36762,
+                         "minimum_date":  "2012-03-26",
+                         "maximum_date":  "2026-09-20"
+                     },
+                     {
+                         "table":  "forward_returns_survivorship_safe",
+                         "status":  "empty",
+                         "rows":  0,
+                         "distinct_security_ids":  0,
+                         "minimum_date":  null,
+                         "maximum_date":  null
+                     },
+                     {
+                         "table":  "fundamental_standardized",
+                         "status":  "empty",
+                         "rows":  0,
+                         "distinct_security_ids":  0,
+                         "minimum_date":  null,
+                         "maximum_date":  null
+                     },
+                     {
+                         "table":  "listing_status_intervals",
+                         "status":  "empty",
+                         "rows":  0,
+                         "distinct_security_ids":  0,
+                         "minimum_date":  null,
+                         "maximum_date":  null
+                     },
+                     {
+                         "table":  "market_daily_metrics",
+                         "status":  "empty",
+                         "rows":  0,
+                         "distinct_security_ids":  0,
+                         "minimum_date":  null,
+                         "maximum_date":  null
+                     },
+                     {
+                         "table":  "sec_company_facts",
+                         "status":  "measured",
+                         "rows":  47941000,
+                         "distinct_security_ids":  12959,
+                         "minimum_date":  "1927-02-17",
+                         "maximum_date":  "2026-09-18"
+                     },
+                     {
+                         "table":  "universe_us_listed_membership",
+                         "status":  "empty",
+                         "rows":  0,
+                         "distinct_security_ids":  0,
+                         "minimum_date":  null,
+                         "maximum_date":  null
+                     }
+                 ],
+    "prices":  {
+                   "close__null_rows":  0,
+                   "adjusted_close__null_rows":  0,
+                   "split_factor__null_rows":  31959271,
+                   "close__nonfinite_rows":  0,
+                   "adjusted_close__nonfinite_rows":  0,
+                   "missing_available_at":  0,
+                   "rows_recorded_available_after_cutoff":  0,
+                   "rows_linked_to_latest_attempt":  31959271
+               },
+    "listing_evidence":  {
+                             "row_count":  45820,
+                             "securities":  36762,
+                             "rows_with_venue":  0,
+                             "venue_rows_known_by_interval_start":  0,
+                             "missing_availability":  0
+                         },
+    "annual_item_coverage":  {
+                                 "status":  "empty",
+                                 "expected_completed_years":  [
+                                                                  2015,
+                                                                  2016,
+                                                                  2017,
+                                                                  2018,
+                                                                  2019,
+                                                                  2020,
+                                                                  2021,
+                                                                  2022,
+                                                                  2023,
+                                                                  2024,
+                                                                  2025
+                                                              ],
+                                 "items_meeting_every_completed_year":  0,
+                                 "minimum_item_coverage_pct":  90,
+                                 "required_cohort_size":  3000,
+                                 "target_items":  110,
+                                 "threshold_met_in_recorded_measurements":  false
+                             },
+    "annual_year_statuses":  [
+                                 {
+                                     "fiscal_year":  2015,
+                                     "evidence_status":  "not_run"
+                                 },
+                                 {
+                                     "fiscal_year":  2016,
+                                     "evidence_status":  "not_run"
+                                 },
+                                 {
+                                     "fiscal_year":  2017,
+                                     "evidence_status":  "not_run"
+                                 },
+                                 {
+                                     "fiscal_year":  2018,
+                                     "evidence_status":  "not_run"
+                                 },
+                                 {
+                                     "fiscal_year":  2019,
+                                     "evidence_status":  "not_run"
+                                 },
+                                 {
+                                     "fiscal_year":  2020,
+                                     "evidence_status":  "not_run"
+                                 },
+                                 {
+                                     "fiscal_year":  2021,
+                                     "evidence_status":  "not_run"
+                                 },
+                                 {
+                                     "fiscal_year":  2022,
+                                     "evidence_status":  "not_run"
+                                 },
+                                 {
+                                     "fiscal_year":  2023,
+                                     "evidence_status":  "not_run"
+                                 },
+                                 {
+                                     "fiscal_year":  2024,
+                                     "evidence_status":  "not_run"
+                                 },
+                                 {
+                                     "fiscal_year":  2025,
+                                     "evidence_status":  "not_run"
+                                 }
+                             ],
+    "provider_slos":  [
+                          {
+                              "dataset_id":  "ATX.US.EQUITIES",
+                              "schema_code":  "delistings",
+                              "minimum_security_count":  500,
+                              "minimum_item_count":  null,
+                              "maximum_freshness_lag_days":  30.0,
+                              "evidence_status":  "not_run"
+                          },
+                          {
+                              "dataset_id":  "ATX.US.EQUITIES",
+                              "schema_code":  "market-daily-1d",
+                              "minimum_security_count":  5000,
+                              "minimum_item_count":  30,
+                              "maximum_freshness_lag_days":  7.0,
+                              "evidence_status":  "not_run"
+                          },
+                          {
+                              "dataset_id":  "ATX.US.EQUITIES",
+                              "schema_code":  "ohlcv-1d",
+                              "minimum_security_count":  5000,
+                              "minimum_item_count":  null,
+                              "maximum_freshness_lag_days":  7.0,
+                              "evidence_status":  "not_run"
+                          },
+                          {
+                              "dataset_id":  "ATX.US.EQUITIES",
+                              "schema_code":  "universe",
+                              "minimum_security_count":  4000,
+                              "minimum_item_count":  null,
+                              "maximum_freshness_lag_days":  7.0,
+                              "evidence_status":  "not_run"
+                          },
+                          {
+                              "dataset_id":  "ATX.US.FUNDAMENTALS",
+                              "schema_code":  "derived-metrics",
+                              "minimum_security_count":  2500,
+                              "minimum_item_count":  120,
+                              "maximum_freshness_lag_days":  120.0,
+                              "evidence_status":  "not_run"
+                          },
+                          {
+                              "dataset_id":  "ATX.US.FUNDAMENTALS",
+                              "schema_code":  "industry-standardized",
+                              "minimum_security_count":  2500,
+                              "minimum_item_count":  200,
+                              "maximum_freshness_lag_days":  120.0,
+                              "evidence_status":  "not_run"
+                          },
+                          {
+                              "dataset_id":  "ATX.US.FUNDAMENTALS",
+                              "schema_code":  "ratios",
+                              "minimum_security_count":  2500,
+                              "minimum_item_count":  50,
+                              "maximum_freshness_lag_days":  120.0,
+                              "evidence_status":  "not_run"
+                          },
+                          {
+                              "dataset_id":  "ATX.US.FUNDAMENTALS",
+                              "schema_code":  "reconciliation",
+                              "minimum_security_count":  2500,
+                              "minimum_item_count":  15,
+                              "maximum_freshness_lag_days":  120.0,
+                              "evidence_status":  "not_run"
+                          },
+                          {
+                              "dataset_id":  "ATX.US.FUNDAMENTALS",
+                              "schema_code":  "reported",
+                              "minimum_security_count":  2500,
+                              "minimum_item_count":  90,
+                              "maximum_freshness_lag_days":  120.0,
+                              "evidence_status":  "not_run"
+                          },
+                          {
+                              "dataset_id":  "ATX.US.FUNDAMENTALS",
+                              "schema_code":  "restatements",
+                              "minimum_security_count":  1000,
+                              "minimum_item_count":  null,
+                              "maximum_freshness_lag_days":  120.0,
+                              "evidence_status":  "not_run"
+                          },
+                          {
+                              "dataset_id":  "ATX.US.FUNDAMENTALS",
+                              "schema_code":  "security-master",
+                              "minimum_security_count":  5000,
+                              "minimum_item_count":  null,
+                              "maximum_freshness_lag_days":  120.0,
+                              "evidence_status":  "not_run"
+                          },
+                          {
+                              "dataset_id":  "ATX.US.FUNDAMENTALS",
+                              "schema_code":  "standardized",
+                              "minimum_security_count":  2500,
+                              "minimum_item_count":  110,
+                              "maximum_freshness_lag_days":  120.0,
+                              "evidence_status":  "not_run"
+                          }
+                      ],
+    "quality":  {
+                    "reporting_entries":  379,
+                    "truncated":  false,
+                    "evidence_counts":  {
+                                            "newer_upstream_attempt_requires_review":  4,
+                                            "not_run":  375
+                                        },
+                    "recorded_status_counts":  [
+                                                   {
+                                                       "status":  "no_recorded_result",
+                                                       "count":  375
+                                                   },
+                                                   {
+                                                       "status":  "passed",
+                                                       "count":  3
+                                                   },
+                                                   {
+                                                       "status":  "warning",
+                                                       "count":  1
+                                                   }
+                                               ]
+                },
+    "research":  {
+                     "cf1_stored_run_count":  1,
+                     "cf1_stored_evaluation_count":  0,
+                     "fq1_status":  "unmeasured",
+                     "fq2_status":  "unmeasured"
+                 },
+    "limitations":  [
+                        "Inventory of stored evidence only; quality checks and provider coverage were not executed.",
+                        "Whole retained-table counts are not a qualified US listed common-equity denominator.",
+                        "No source completion, lineage certification, alpha, condition promotion or release is inferred.",
+                        "Raw errors, stored diagnostic JSON, source parameters and contact values are deliberately omitted."
+                    ]
+}

@@ -31,6 +31,7 @@ opt-in with `--run-slow`.
 | [Fundamentals provider design](docs/FUNDAMENTALS_PROVIDER_DESIGN.md) | Architecture and dated measurements from earlier warehouse builds; use each measurement's stated date and scope. |
 | [Tier-1 parity design](../docs/superpowers/specs/2026-09-19-tier1-parity-design.md) | Target design contract. Implementation does not by itself establish measured coverage. |
 | [Production runbook](docs/PRODUCTION_RUNBOOK.md) | Current activation commands, evidence limitations, terminal-return policy and release procedure. |
+| [Live interim readiness](docs/TIER1_INTERIM_READINESS_2026-09-24.md) | September 24 read-only counts and explicit missing coverage, quality and downstream outputs for the fixed September 20 snapshot. This is not release certification. |
 | [Fundamental clock policy](docs/FUNDAMENTAL_CLOCK_POLICY.md) | Conservative eligibility for date-only SEC facts, raw provenance boundaries and required downstream rebuilds. |
 | [Fundamental signal panel](docs/FUNDAMENTAL_SIGNAL_RESEARCH.md), [decile evaluation](docs/FUNDAMENTAL_SIGNAL_EVALUATION.md) | Frozen earnings, quality and leverage hypotheses with selected-input lineage, observed-session returns, chronological splits and recorded inference. No live alpha result or production eligibility is claimed. |
 | [Research readiness inventory](docs/FUNDAMENTAL_SIGNAL_READINESS.md) | Optional bounded build, coverage and evaluation evidence in the read-only readiness report; recorded manifests do not certify their underlying data. |

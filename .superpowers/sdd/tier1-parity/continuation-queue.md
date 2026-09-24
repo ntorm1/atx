@@ -1,5 +1,48 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Live interim readiness measured safely - 2026-09-24 00:47 UTC
+
+This goal turn made measured progress. After the independent static execution
+audit, root ran the existing read-only readiness script with include-cf1 and
+include-fundamental-signals, snapshot2026-09-20 / 22UTC, DuckDB1GB/one thread,
+2GB spill and the exact2GiB guard. tier1-interim-sep24-1 completed exit0 in
+28.411 seconds, peak1.538395GiB. Session48082 and child17196 are terminal,
+and the worker is absent. No warehouse file size/mtime change was observed.
+No writer, test or root monitor remains live. No quality checks, migrations,
+provider coverage recomputation, source writes or schema flips were run.
+
+Reconfirmed raw facts47,941,000 / 12,959 owner security IDs and prices31,959,271 /
+34,251 security IDs through2026-09-18. All canonical standardized/derived/
+market-daily/price-metric/universe/status/delisting/forward-return tables in the
+inventory remain empty. Existing45,820 listing rows have zero venue/MIC values.
+Do not interpret these source ID counts as a listed-common-equity denominator.
+Every price split_factor is NULL; finite adjusted_close alone is not complete
+corporate-action lineage. No imputation was performed.
+
+All12 configured provider SLO snapshots are not_run. Of379 quality reporting
+entries,375 have no stored result and4 predate a newer upstream attempt (3old
+passes/1warning). Annual2015..2025 coverage/cohorts are all not_run; unchanged
+target110 items,90percent,3000-name annual cohort has no passing evidence.
+CF1 has1stored run/0evaluation rows; FQ1/FQ2 tables are absent. No alpha, full
+source coverage or release eligibility is claimed.
+
+Public safe aggregate and explanation are at atx-db/docs/measurements/
+tier1-interim-2026-09-24.json and TIER1_INTERIM_READINESS_2026-09-24.md.
+Do not print or commit the private full report's stored error/details JSON;
+it can contain arbitrary secrets even though email redaction is applied.
+The safe artifact pins its SHA256 and measurement-script hash at33a0127c.
+Source/report/guard paths and resource interpretation are in
+interim-readiness-execution-audit.md. This successful bounded read does not
+waive the sustained6GiB physical/8GiB commit prerequisite for long source or
+schema jobs. Recent physical~6.4GiB / commit~7.8GiB still misses that window.
+
+No newer TickerDefinitionHist companion appeared in the scoped Downloads
+metadata check; the prior async source question remains unanswered and was
+not repeated. No new download, vendor contact, purchase or source pilot was
+started. Next required production sequence is unchanged below; archive16's
+ledger recovery remains complete, and archive17 still uses actual predecessor
+513cfbbc-096a-4186-9666-b6cc5170c4ad. Preserve stash@{0} and unrelated files.
+
 ## Committed issuer and desk consumers; runtime terminal - 2026-09-24 UTC
 
 Latest implementation HEAD is a1b59a43 (DS2); IQ2 is fe7200db. Both tasks are

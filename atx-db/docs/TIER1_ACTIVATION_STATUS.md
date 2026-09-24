@@ -1,11 +1,22 @@
 # Tier-1 activation measurements
 
 The production snapshot remains 2026-09-20. This page records interim
-measurements, most recently observed on 2026-09-23; it is not a completed
+measurements, most recently observed on 2026-09-24 UTC; it is not a completed
 parity gate or a release. Completed counts come from SQL or pinned source
 artifacts. Dated loader progress below is historical evidence.
 
-## Latest durable warehouse measurement: 2026-09-23
+## Latest read-only inventory: 2026-09-24 UTC
+
+The [live interim readiness report](TIER1_INTERIM_READINESS_2026-09-24.md)
+reconfirmed 47,941,000 raw facts and 31,959,271 price rows. Standardized,
+derived, market-daily and historical-universe outputs remain empty. All 12
+provider SLO snapshots are missing; 375 of 379 quality reporting entries have
+no result, and the other four predate a newer upstream attempt. No item-year
+coverage gate is measured. The bounded read completed at 1.538 GiB peak under
+the unchanged 2 GiB guard, with no warehouse file metadata change. It did not
+execute quality checks, change conditions, or certify a release.
+
+## Latest source-write recovery: 2026-09-23
 
 The subsequent issuer-serving repair `fe7200db` checks exact selected source
 lineage before returning derived values for a CIK. Its independent review
