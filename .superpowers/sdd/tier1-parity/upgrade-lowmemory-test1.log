@@ -1,0 +1,6 @@
+{"committed_sha": "7e0bcd02c1e789540b3ad998cfd493f5bf16da9c", "candidate_test_sha256": "9c564c5439310b01e28af1651bc3c62d8e0cee5f993dee5509414dbc24848dfd", "schema_fingerprint": "19b2c3a07814e600498c7d79", "export": "C:\\Users\\natha\\AppData\\Local\\Temp\\atx-pit-gate-revircnq\\atx-db", "selector": "test_populated_0314_upgrade_preserves_legacy_contract_and_reentry"}
+.                                                                        [100%]
+============================= slowest 2 durations =============================
+147.92s call     tests/test_derived_pit_revisions.py::test_populated_0314_upgrade_preserves_legacy_contract_and_reentry
+0.01s teardown tests/test_derived_pit_revisions.py::test_populated_0314_upgrade_preserves_legacy_contract_and_reentry
+1 passed in 154.60s (0:02:34)

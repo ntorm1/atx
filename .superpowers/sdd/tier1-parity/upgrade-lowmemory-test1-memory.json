@@ -1,0 +1,16 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "C:/atx/.superpowers/sdd/tier1-parity/verify_pit_gate_repair.py",
+    "upgrade"
+  ],
+  "job_limit_gb": 1.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 5.544330596923828,
+    "commit_free_gb": 10.892070770263672
+  },
+  "child_pid": 14712,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.8589744567871094
+}

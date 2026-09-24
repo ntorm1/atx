@@ -1,0 +1,6 @@
+.................                                                        [100%]
+============================= slowest 3 durations =============================
+110.65s setup    tests/test_source_index_memory.py::test_real_bootstrap_preserves_source_history_without_recreating_indexes
+31.49s call     tests/test_companyfacts_archive_repair.py::test_verified_resume_uses_independent_bounded_recycling_and_preserves_owned_rows
+1.54s call     tests/test_companyfacts_archive_repair.py::test_resume_reopens_after_proof_before_candidate_recovery
+17 passed in 155.07s (0:02:35)

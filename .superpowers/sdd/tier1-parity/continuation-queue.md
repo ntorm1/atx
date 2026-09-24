@@ -1,5 +1,18 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## User-authorized efficiency work resumes production — 2026-09-24 22:38 UTC
+
+The22:10blocked status below is historical and superseded. User explicitly
+allows lower memory requirements following efficiency/incrementality changes.
+UM1 real upgrade passes256MB/one thread at0.859GiB peak, commit4f9bfb90.
+SM1 phase recycling/open-time budgets and SI1 optional-source-index migration
+0326 passed9isolated and17integration checks; one root review each is clean.
+Commits and governed migrate0323..0326 are next, followed by actual full
+archive17 at512MB/one thread,1.5GiB process cap, no scope restriction. See
+low-memory-resume-profile-2026-09-24.md for120second4/6GiB launch floors and
+unchanged1.5/3GiB host hard stops. Only runtime source writes can qualify this
+profile. All quality/source/PIT/release gates and stash@{0} remain preserved.
+
 ## Goal blocked on host capacity — 2026-09-24 22:10 UTC
 
 The same sustained-headroom dependency has repeated for three consecutive

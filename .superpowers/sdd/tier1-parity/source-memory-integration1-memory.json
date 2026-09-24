@@ -1,0 +1,28 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "-m",
+    "pytest",
+    "tests/test_source_index_memory.py::test_real_bootstrap_preserves_source_history_without_recreating_indexes",
+    "tests/test_connection.py",
+    "tests/test_companyfacts_archive_repair.py::test_resume_reopens_after_proof_before_candidate_recovery",
+    "tests/test_companyfacts_archive_repair.py::test_verified_resume_uses_independent_bounded_recycling_and_preserves_owned_rows",
+    "tests/test_companyfacts_archive_repair.py::test_contradictory_completion_proof_fails_before_issuer_mutation",
+    "tests/test_module_boundaries.py::test_public_api_snapshot_matches_pinned_fixture",
+    "-n",
+    "0",
+    "-o",
+    "addopts=",
+    "-q",
+    "--durations=3"
+  ],
+  "job_limit_gb": 1.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 4.542736053466797,
+    "commit_free_gb": 10.215648651123047
+  },
+  "child_pid": 17612,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.8406143188476562
+}

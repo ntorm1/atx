@@ -1,0 +1,45 @@
+# Bounded efficiency experiment — 2026-09-24
+
+The user authorizes lower memory requirements when supported by more efficient,
+incremental code. This overrides the earlier fixed launch floor only for the
+following measured trials; data, scope and release thresholds are unchanged.
+
+UM1's real populated0314 upgrade passed at256MB DuckDB/one thread,1GiB process
+cap, peak0.858974457GiB, after120seconds sustained4GiB physical/6GiB commit.
+SM1 releases fully consumed source proof phases and applies recorded budgets
+before reopening. SI1 removes three verified nonunique source ART indexes,
+whose memory maintenance contributed a plausible write bottleneck. Actual
+source capacity remains to be demonstrated, not inferred from fixture passes.
+
+Next serialized trials use sustained4GiB physical/6GiB commit for120seconds
+and a1.5GiB process-tree cap. A fully consumed connection releases buffers at
+proof boundaries and each existing checkpointed issuer interval. In the worst
+case, a new1.5GiB allocation leaves2.5GiB physical/4.5GiB commit headroom from
+the launch floors. Native guard hard stops remain1.5GiB physical/3GiB commit;
+the guard preflight remains process cap plus2GiB. No concurrent heavy workload.
+
+1. Changed-source full schema/reentry plus affected lifecycle/connection and
+   contradictory-proof acceptance,1GB fixture cap, one thread. Fresh template
+   required because actual source fingerprint changed. Root single reviews
+   and isolated tests are clean; integration passed17checks in155.07seconds
+   at0.840614319GiB native peak, source-memory-integration1.
+2. Governed migration0323..0326, existing1GB startup budget/one thread,
+   backup-keep100, after all changes are reviewed, accepted and committed.
+   Inspect actual schema and source index catalog and preserve every backup.
+3. Actual full CompanyFacts archive17 at512MB/one thread, force replacement,
+   archive_members, no CIK/symbol restriction, snapshot2026-09-20. Predecessor
+   remains513cfbbc-096a-4186-9666-b6cc5170c4ad. Its full proof is the capacity
+   measurement; avoid a duplicate full read-only SHA scan beforehand.
+
+All runs use new guard receipts and terminal logs. Stop and diagnose any guard
+or DuckDB failure; do not silently raise limits, lower hard stops, skip source
+verification or narrow the universe. A terminal failure must be inspected and
+ledger recovery completed if needed before the next attempt.
+
+Archive13's earlier512MB proof success is a dated baseline over fewer rows;
+its first new write failed at the old indexed physical design. It is not a
+same-data A/B comparison. Archive17 must demonstrate verified retained data
+and actual new commits before claiming that lower source memory is workable.
+
+Other pipeline stages still need measured capacity profiles. No source,
+fundamental, market, quality, coverage, PIT or release gate is waived here.

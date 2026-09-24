@@ -14,13 +14,19 @@ from run_memory_guarded import GIB, Performance
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--physical-gib", type=float, default=6,
+                        help="Explicit experiment floor; production default remains 6 GiB")
+    parser.add_argument("--commit-gib", type=float, default=8,
+                        help="Explicit experiment floor; production default remains 8 GiB")
     args = parser.parse_args()
+    if not 3 <= args.physical_gib <= 64 or not 5 <= args.commit_gib <= 128:
+        parser.error("Observation floors must retain at least 3 GiB physical / 5 GiB commit")
     if args.receipt.exists():
         raise SystemExit("Refusing to overwrite an observation receipt")
     psapi = ctypes.WinDLL("psapi", use_last_error=True)
     psapi.GetPerformanceInfo.argtypes = [ctypes.POINTER(Performance), ctypes.c_ulong]
     psapi.GetPerformanceInfo.restype = ctypes.c_int
-    result = {"required_physical_gib": 6, "required_commit_gib": 8,
+    result = {"required_physical_gib": args.physical_gib, "required_commit_gib": args.commit_gib,
               "required_seconds": 120, "sample_interval_seconds": 10,
               "maximum_wait_seconds": 180, "samples": [], "status": "observing"}
     started = time.monotonic()
@@ -33,7 +39,7 @@ def main() -> int:
         physical = info.physical_available * info.page_size / GIB
         commit = (info.commit_limit - info.commit_total) * info.page_size / GIB
         now = time.monotonic()
-        if physical >= 6 and commit >= 8:
+        if physical >= args.physical_gib and commit >= args.commit_gib:
             qualified_since = now if qualified_since is None else qualified_since
         else:
             qualified_since = None

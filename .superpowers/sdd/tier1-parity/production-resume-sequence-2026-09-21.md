@@ -1,13 +1,18 @@
 # Production resume sequence — updated 2026-09-24
 
-**2026-09-24 evening reconciliation:** head6 completed with110passes,1skip and
-2test failures on the exact current atx-db source tree. PG1's chunk-case repair
-has passed under the1.5GiB guard; only the repaired populated0314 upgrade case
-is still needed before governed migration. Use the exact single-selector
-command in `resume-reconciliation-2026-09-24.md` after sustained headroom; do
-not repeat the entire prior passing batch or whole-branch review. Fresh live
-pipeline-status confirms schema322, pending323..325 and the source predecessor
-UUIDs below. Window3 found no sustained6/8GiB window, so no new writer started.
+**2026-09-24 22:38UTC reconciliation:** both head6 failures are repaired and
+accepted. UM1's populated0314 upgrade passed at256MB/one thread,1GiB cap,
+0.859GiB peak. SM1 source-phase recycling/open-time budgets and SI1 optional
+source-index migration0326 passed9isolated and17integration checks; root single
+reviews are clean. Live catalog confirms schema322 and all3optional indexes.
+After committing these accepted changes, governed migrate323..326 and full
+archive17 are next. Do not repeat the prior passing batch or branch review.
+
+User explicitly allows lower launch requirements after efficiency changes.
+Use `low-memory-resume-profile-2026-09-24.md`: sustained4GiB physical/6GiB
+commit120seconds,1.5GiB process cap for the next migration and source trials.
+Migration keeps its1GB budget; archive17 uses512MB/one thread. These are
+measured experiments pending actual new source commits, not release proof.
 
 Static source/dispatch audit only. The production snapshot remains **as of
 2026-09-20**. Run one guarded process tree at a time from `C:\atx\atx-db`.
@@ -32,9 +37,9 @@ guard stops/refusal. All runtime/registry locks returned to root. Do not launch 
 unreviewed/uncommitted shared edits or overlap root's focused tests. Recheck
 pending migrations after these tasks, using governed backup-keep100.
 
-Source restarts retain sustained6GiB physical/8GiB commit observations over
-two minutes,1GB DuckDB/one thread,2GiB process cap,fullarchive_members,replacement,
-force,snapshot2026-09-20 and dummySECcontact. The unchanged runtime host stops
+Archive17 uses the scoped low-memory profile above,fullarchive_members,
+replacement,force,snapshot2026-09-20 and dummySECcontact. Other stages still
+require their recorded capacity profile until separately measured. Runtime host stops
 are1.5GiB physical/3GiB commit. A passed window does not guarantee future host
 capacity; record any terminal state before another resume. The256MB/1GiB-cap
 operator recovery was bookkeeping only, not a source-write capacity claim.
@@ -48,17 +53,17 @@ After the required schema/numeric checks pass, inspect free disk before the
 governed migration. The last measured warehouse file was11.999GiB and free
 C: space was34.494GiB on2026-09-23; these are dated observations, not reserved
 capacity. Preserve all existing backups and retain --backup-keep100. Apply
-0323..0325 under the same2GiB guard with fresh artifacts:
+0323..0326 under the experimental1.5GiB guard with fresh artifacts:
 
 ```powershell
 C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
-  --job-gb 2 `
-  --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0325-memory.json `
-  --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0325.log `
-  --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0325.err `
+  --job-gb 1.5 `
+  --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0326-memory.json `
+  --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0326.log `
+  --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0326.err `
   -- C:\atx\atx-db\.venv\Scripts\python.exe scripts\warehouse_activate.py `
   --db-path data\warehouse.duckdb --as-of-date 2026-09-20 --only migrate `
-  --memory-limit 1GB --threads 1 --backup-keep 100 --run-id activation-migrate0325 `
+  --memory-limit 1GB --threads 1 --backup-keep 100 --run-id activation-migrate0326 `
   --sec-user-agent "atx-db/0.1 atx-research@example.com"
 ```
 
@@ -69,7 +74,7 @@ dataset UUID, not an activation label. Do not repeat archive16 recovery.
 
 ```powershell
 C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
-  --job-gb 2 `
+  --job-gb 1.5 `
   --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive17-memory.json `
   --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive17.log `
   --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive17.err `
@@ -77,7 +82,7 @@ C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_
   --db-path data\warehouse.duckdb --as-of-date 2026-09-20 --only companyfacts_load `
   --companyfacts-symbol-source archive_members --companyfacts-replace-existing `
   --companyfacts-resume-from-run-id 513cfbbc-096a-4186-9666-b6cc5170c4ad `
-  --memory-limit 1GB --threads 1 --backup-keep 100 --force `
+  --memory-limit 512MB --threads 1 --backup-keep 100 --force `
   --run-id activation-companyfacts-archive17 `
   --sec-user-agent "atx-db/0.1 atx-research@example.com"
 ```

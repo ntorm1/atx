@@ -1,89 +1,80 @@
 # Tier-1 parity handoff — 2026-09-24 evening UTC
 
-**Goal status: blocked on host capacity,22:10UTC.** The same dependency recurred
-across three consecutive goal turns. Fresh native counters at22:10:47UTC show
-5.619736GiB free physical/11.192596GiB free commit, below the required physical
-floor. No warehouse worker is live. All independent repairs identified in this
-continuation are committed; numerical/materialization prerequisites remain.
-Resume when the unchanged6/8GiB120second window can hold, then take the exact
-next steps below. The full objective is unchanged and remains incomplete.
+**Goal active: measured efficiency work supersedes the22:10host-capacity block.**
+The user explicitly permits lower memory requirements following efficiency and
+incrementality changes. Snapshot remains2026-09-20 and the production outcome
+is incomplete. Continue on feat/tier1-parity. Preserve unrelated risk-test and
+alpha-swarm files, every backup and **stash@{0}**; never apply/drop the stash.
+All implementation/review work uses Codex; no external model spending or merge.
 
-Latest capacity observation: window4/session15674 is terminal at22:09UTC,
-19samples over180seconds, physical4.530..5.848GiB and commit9.161..11.580GiB.
-No qualifying6/8GiB interval; no additional runtime or warehouse write.
-This continuation was a verified wait. Next actions below remain unchanged.
+Current writer: activation-migrate0326 started under1.5GiB cap after all source
+changes were committed; root session95160, guard child4216. Inspect its fresh
+terminal receipt/process state before another warehouse workload. A running
+process or partial log is not migration acceptance.
 
-Continue on `feat/tier1-parity`. Initial HEAD was2e0d738f; the checkout was on
-main, with both branch pointers identical. Root switched to the requested
-feature branch without changing files or merging. Preserve other-session
-risk-test/alpha-swarm files and **stash@{0}**; never apply, drop or rewrite them.
-All work this turn used Codex agents, with no external model spending.
+## Current accepted work
 
-The full production outcome is still incomplete. Snapshot remains2026-09-20.
-Do not advance it or describe empty jobs/fixtures as a populated provider.
+- UM1,4f9bfb90: real populated0314 upgrade split into checkpointed256MB sessions.
+  All legacy row, constraint, lineage and PIT assertions preserved. One pass
+  in154.60seconds, peak0.858974457GiB under1GiB. Root review and scoped Ruff clean.
+  This closes PG1's last pending original head6 repair check; do not rerun it
+  merely because earlier documents still describe it as pending.
+- SM1,ca9d9a8a: full CompanyFacts proof releases connections after consumed
+  aggregate phases; recorded budgets apply before reopen. Read-only close
+  skips CHECKPOINT. No weakened receipt, lineage or SHA multiset checks.
+- SI1,ec440e5a: reviewed migration0326 removes exactly three live-verified nonunique,
+  nonprimary raw-source indexes; fresh bootstrap omits their creation.
+  No source rows, columns or NOT NULL constraints are removed.
+- Combined new acceptance:9isolated passes in2.38seconds, peak0.595833GiB/1cap;
+  17integration passes in155.07seconds, peak0.840614GiB/1.5cap, including full
+  schema/reentry, existing connection/lifecycle, damaged-proof and API checks.
+  Root one independent review per task is clean. All three tasks are committed.
 
-## Delivered and measured
+## Runtime position before the new migration
 
-- be4c2614 reconciles the newer head6 receipt with actual Git content and live
-  source ledgers. It records exact commands and cache fingerprints. Existing
-  whole-branch review findings are already repaired; no repeat review is due.
-- ED1,44fb6392, adds the generic quarterly EPS reader and production docs.
-  Numeric output uses IQ2 selected-leaf qualification. Six focused checks,
-  two corrected negative/zero-base cases and scopedRuff passed. Parent's one
-  independent review is clean. Source or market identity is never invented.
-- Live `cvx-eps-desk1` returned `schema_prerequisite_missing`, exit2: missing
-  `selected_input_refs_hash/json`. It stopped at schema preflight, no numeric
-  rows. Peak0.642921GiB under the lower1GiB guard; DuckDB256MB/one thread.
-- PG1,6357e9f9, repairs two test integration failures: release a caller-owned temp
-  table before connection recycling; expect all current pending migrations
-  while retaining legacy-row/PIT/constraint assertions. Parent review clean.
-  The isolated chunk case passed (peak0.707485GiB); Ruff passed. The populated
-  0314 upgrade case is still pending. This is a reviewed repair checkpoint,
-  not a closed runtime gate.
+The source-index-catalog1 read-only receipt confirms schema0322 and all three
+expected optional indexes. Warehouse12,883,341,312bytes and mtime unchanged.
+The earlier full inventory measured47,941,000facts/points and31,959,271bars;
+canonical downstream surfaces remain empty. No source write has occurred yet
+in this efficiency continuation. Archive16 recovery remains complete.
 
-## Actual runtime/source state
+Actual terminal source predecessors:
 
-Fresh read-only `pipeline-status-sep24-evening2` confirms schema0322,
-pending0323..0325, no lower migration gaps, terminal failed source predecessors:
+- CompanyFacts:513cfbbc-096a-4186-9666-b6cc5170c4ad.
+- Submissions:04cf947d-53bb-49b7-a276-b3c74a2a52c8; all forms/all CIKs/history,
+  same retained archive and batch50 required.
 
-- CompanyFacts:513cfbbc-096a-4186-9666-b6cc5170c4ad (archive16 already recovered).
-- Submissions:04cf947d-53bb-49b7-a276-b3c74a2a52c8 (all forms/all CIKs/history,
-  batch50, same retained archive required).
+source-migration-lowmemory-window1 passed120.031seconds at4GiB physical/6GiB
+commit floors. The new guarded experiment uses1.5GiB process-tree cap and
+unchanged1.5GiB physical/3GiB commit emergency stops. It does not waive data or
+release thresholds. See low-memory-resume-profile-2026-09-24.md for scope.
+10backup files remain; C: free38,685,995,008bytes before migration. Preserve all
+backups and use backup-keep100. Do not infer a process from a running ledger.
 
-No migration, source write, recovery, quality run or materialization occurred
-this turn. Warehouse stayed12,883,341,312bytes with unchanged modification time.
-The earlier measured inventory remains the latest broad coverage receipt:
-47,941,000 raw facts;31,959,271 bars; canonical downstream surfaces empty;
-provider/annual item/quality readiness unqualified. Current schema-only reader
-does not remeasure those counts. Historical listing/adjustment/vintage evidence
-and all release thresholds remain open.
+## Next action
 
-`schema-headroom-window3` is terminal `no_sustained_window`,19samples over
-three minutes. Physical free4.002..5.717GiB; commit free10.704..12.610GiB; no
-qualifying6/8GiB window. Later samples also stayed below6GiB physical. Root
-asked whether the user can free other workloads; no response is required to
-continue independent work. Never terminate other sessions or lower thresholds.
+1. Finish the running governed migrate0323..0326 under1.5GiB with the
+   existing1GB/one-thread migration budget. Inspect terminal receipt, backup
+   evidence and actual applied schema/index catalog before another workload.
+2. Full retained CompanyFacts archive17 at512MB/one thread,1.5GiB process cap,
+   force replacement/archive_members and actual predecessor above. Its full
+   proof and new commits are the production capacity measurement; do not repeat
+   an extra full SHA scan merely as a read-only benchmark. No CIK filter.
+3. Full submissions resume, scoped CVX earnings source, full-universe run5
+   from statement_points, force and16sequential reconciliation shards. Other
+   stage capacity profiles still need evidence before being lowered.
+4. Execute actual qualified EPS/desk SQL, coverage/provider/all-quality checks,
+   PIT/survivorship and incremental recovery evidence. Publish only after the
+   unchanged release thresholds and full non-slow gate; verify manifests/hashes.
 
-## Next action, in order
+Use production-resume-sequence-2026-09-21.md for exact commands/fresh artifacts.
+The original head6 had110passes/1defaultslow skip and two now-repaired test
+integration failures. Its passing evidence stands for unchanged components.
+Existing whole-branch review is already resolved; review new tasks once and
+re-review only Critical repairs. Ask before merging to main.
 
-1. Observe the unchanged6GiB physical/8GiB commit floor for120seconds using
-   a fresh receipt. Run only the repaired populated0314 upgrade selector via
-   `verify_pit_gate_repair.py upgrade` under1.5GiB. Exact command is in
-   `.superpowers/sdd/tier1-parity/resume-reconciliation-2026-09-24.md`.
-   Head6's110passes/1defaultslow skip remain valid on their unchanged source;
-   its two failures are the PG1 cases. Do not rerun all113 checks unnecessarily.
-2. After acceptance, check free disk and execute governed migrate0325 with
-   backup-keep100 under2GiB,1GB/one thread. Preserve every backup.
-3. Full CompanyFacts archive17 from the actual UUID above; full submissions
-   resume; scoped CVX earnings source; full-universe run5 from statement_points
-   --force with16sequential reconciliation shards and no CIK filter.
-4. Execute live EPS/desk/feature readouts, research manifests/evaluations,
-   item/provider/all-quality measurements. Publish only if unchanged coverage,
-   PIT, survivorship and freshness gates pass; verify manifest/hashes.
-5. Full non-slow release gate remains pending. Existing branch review stands;
-   review new repairs once, rereview only Critical. Ask before merging to main.
-
-Use the updated production-resume-sequence for all commands and fresh artifact
-names. The canonical CVX consumer is now `read_quarterly_eps_growth.py`; frozen
-v1/v2 SQL remains diagnostic history. No numeric CVX production acceptance or
-alpha result has been claimed. Preserve stash@{0}; do not mark the goal complete.
+ED1,44fb6392, delivered read_quarterly_eps_growth.py over IQ2 exact selected-leaf
+qualification. Live cvx-eps-desk1 correctly stopped at missing323columns, exit2,
+peak0.643GiB, with no numeric rows. After migration it still needs actual
+materialization. No numeric CVX acceptance, alpha result or release is claimed.
+Preserve and remind the user about stash@{0}.

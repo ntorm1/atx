@@ -1,5 +1,24 @@
 # Tier-1 parity program ledger (atx-db)
 
+## User resource-efficiency authorization — 2026-09-24 resumed work
+
+The user explicitly allows lowering memory launch requirements if code is
+made more efficient and incremental. Reassess by measured workload profile;
+do not merely drop all thresholds. UM1 splits the real legacy-upgrade check
+into checkpointed256MB sessions; its real upgrade passed at1GiB process cap,
+0.858974457GiB peak in154.60seconds (4f9bfb90). SM1 adds proof-phase recycling
+and connection open-time budgets; SI1 removes exactly three verified optional
+source indexes via0326. Nine isolated checks and17integration checks passed;
+the latter included real full schema/reentry, source corruption refusals and
+API snapshot, peak0.840614319GiB under1.5GiB. Root single reviews are clean.
+
+Use low-memory-resume-profile-2026-09-24.md for the next bounded production
+experiment: sustained4/6GiB120seconds,1.5GiB process cap, unchanged1.5/3GiB
+emergency stops. Governed migration retains1GB/one thread and all backups;
+full archive17 uses512MB/one thread and every existing source proof. Actual
+new writes must demonstrate source capacity. Prior blocked status is
+superseded by this concrete efficiency work; no production readiness claimed.
+
 ## Selected-lineage EPS consumer delivered — 2026-09-24 evening UTC
 
 ED1 is44fb6392. Six focused real-IQ2 consumer checks passed; two corrected

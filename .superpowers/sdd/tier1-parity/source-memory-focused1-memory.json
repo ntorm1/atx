@@ -1,0 +1,26 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "-m",
+    "pytest",
+    "tests/test_connection_reopen_budget.py",
+    "tests/test_companyfacts_resume_memory.py",
+    "tests/test_source_index_memory.py",
+    "-k",
+    "not real_bootstrap",
+    "-n",
+    "0",
+    "-o",
+    "addopts=",
+    "-q"
+  ],
+  "job_limit_gb": 1.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 4.627285003662109,
+    "commit_free_gb": 10.359180450439453
+  },
+  "child_pid": 1612,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.5958328247070312
+}
