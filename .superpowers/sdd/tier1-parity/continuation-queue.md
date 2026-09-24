@@ -1,5 +1,22 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Sustained headroom observation terminal - 2026-09-24 00:59 UTC
+
+The interim measurement is committed df6ae26e. Root then observed the exact
+Windows GetPerformanceInfo counters every10seconds for180seconds with the
+small observe_headroom_window.py controller; it launches no workload. Receipt
+schema-headroom-window1.json is terminal no_sustained_window,19samples.
+Physical free ranged5.932..6.692GiB; commit free7.179..7.962GiB. No sample met
+both6/8GiB floors, so qualifying duration was0seconds. Session14470 is
+terminal. This is a capacity observation, not a schema-test or source failure.
+No long schema check or archive17 was started, and no ledger recovery is due.
+
+The four pre-existing modifications still have no difference when end-of-line
+whitespace is ignored; they were left untouched. Only safe aggregate evidence
+was committed from the measurement. All source, release and sprint gates stay
+open. This turn made progress through the completed live readiness inventory;
+the continuing long-runtime prerequisite is host capacity, not user approval.
+
 ## Live interim readiness measured safely - 2026-09-24 00:47 UTC
 
 This goal turn made measured progress. After the independent static execution
