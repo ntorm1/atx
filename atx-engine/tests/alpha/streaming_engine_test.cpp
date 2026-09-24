@@ -6,23 +6,34 @@
 // kernels' exact operation order) — on a WQ101-style battery exercising every
 // Ts routing class (lookback, running sum, deque extremes, order statistics,
 // generic windowed, Welford / sliding lanes, recurrences) plus Cs ops, NaN holes
-// and a moving universe.
+// and a moving universe, AND on all 101 canonical formulas (fixtures/alpha101.txt
+// on the augmented Alpha101 panel) at 24 and 128 names (radix rank path).
 //
 // Naming: Subject_Condition_ExpectedResult.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <random>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
+
+// The canonical-corpus reader + Alpha101 augmentation (header-only; engine deps
+// only). Quoted include resolves relative to this file.
+#include "../../../atx-impl/tests/alpha101_support.hpp"
 
 #include "atx/engine/alpha/bytecode.hpp"
 #include "atx/engine/alpha/panel.hpp"
@@ -46,6 +57,10 @@ using atx::engine::alpha::Program;
 using atx::engine::alpha::StreamingEngine;
 
 constexpr atx::f64 kNaN = std::numeric_limits<atx::f64>::quiet_NaN();
+// Canonical formulas StreamingEngine::create refuses (NotImplemented).
+constexpr atx::usize kExpectedNotImplemented = 0;
+// Streamed canonical alphas that must produce >= 1 finite cell in the window.
+constexpr atx::usize kMinFiniteAlphas = 85; // observed 97 @24 names, 90 @128
 
 [[nodiscard]] bool same_bits(atx::f64 a, atx::f64 b) noexcept {
   if (std::isnan(a) && std::isnan(b)) {
@@ -265,6 +280,195 @@ TEST(StreamingEngine_Batch, Wq101BatteryBitExactAuditExact) {
 TEST(StreamingEngine_Batch, Wq101BatteryBitExactResearchFast) {
   expect_stream_equals_batch(EvalMode::ResearchFast);
 }
+
+// ---- canonical 101-formula corpus -----------------------------------------
+//
+// Every one of the 101 canonical formulas (atx-impl/tests/fixtures/alpha101.txt,
+// the same corpus the ORATS harness verifies) on the fully augmented Alpha101
+// panel (with_alpha101_fields: returns, cap, vwap, every adv{d} the corpus
+// references, IndClass.{sector,industry,subindustry}). A formula is skipped ONLY
+// when StreamingEngine::create returns NotImplemented, and that skip set is
+// pinned; everything else must stream bit-for-bit. Run at 24 names and at 128
+// names (>= kCsRadixMinRow, so the radix rank path is exercised) in both modes.
+
+[[nodiscard]] std::string find_alpha101_fixture() {
+  namespace fs = std::filesystem;
+  const fs::path rel = fs::path("atx-impl") / "tests" / "fixtures" / "alpha101.txt";
+  std::error_code ec;
+  for (fs::path p : {fs::current_path(ec), fs::path(__FILE__).parent_path()}) {
+    p = fs::absolute(p, ec);
+    for (int up = 0; up < 10 && !p.empty(); ++up) {
+      if (fs::exists(p / rel, ec)) {
+        return (p / rel).string();
+      }
+      if (p == p.parent_path()) {
+        break;
+      }
+      p = p.parent_path();
+    }
+  }
+  return {};
+}
+
+// Base OHLCV + sector + market_cap panel (the ORATS shape with_alpha101_fields
+// augments), with close holes and a drifting universe.
+[[nodiscard]] Panel make_base_panel(atx::usize dates, atx::usize inst, std::uint64_t seed) {
+  const atx::usize cells = dates * inst;
+  std::vector<std::string> names = {"open",   "high",   "low",       "close",
+                                    "volume", "sector", "market_cap"};
+  std::vector<std::vector<atx::f64>> cols(names.size(), std::vector<atx::f64>(cells));
+  std::vector<std::uint8_t> uni(cells, 1);
+  std::mt19937_64 rng{seed};
+  std::normal_distribution<atx::f64> nd{0.0, 1.0};
+  std::uniform_real_distribution<atx::f64> u{0.0, 1.0};
+  std::vector<atx::f64> px(inst, 50.0);
+  for (atx::usize t = 0; t < dates; ++t) {
+    for (atx::usize j = 0; j < inst; ++j) {
+      const atx::usize i = t * inst + j;
+      const atx::f64 prev = px[j];
+      px[j] = std::max(1.0, px[j] * (1.0 + 0.02 * nd(rng)));
+      const atx::f64 o = prev * (1.0 + 0.005 * nd(rng));
+      const atx::f64 c = px[j];
+      cols[0][i] = o;
+      cols[1][i] = std::max(o, c) * (1.0 + 0.01 * u(rng));
+      cols[2][i] = std::min(o, c) * (1.0 - 0.01 * u(rng));
+      cols[3][i] = (u(rng) < 0.004) ? kNaN : c;
+      cols[4][i] = 1.0e5 * (0.5 + u(rng));
+      cols[5][i] = static_cast<atx::f64>(j % 6);
+      cols[6][i] = c * (1.0e7 + 5.0e7 * u(rng));
+      uni[i] = (u(rng) < 0.03) ? 0 : 1;
+    }
+  }
+  auto p = Panel::create(dates, inst, std::move(names), std::move(cols), std::move(uni));
+  EXPECT_TRUE(p.has_value());
+  return std::move(p).value();
+}
+
+// Re-express a Panel as a Fixture so prefix_panel / row_of drive it.
+[[nodiscard]] Fixture fixture_from_panel(const Panel &p) {
+  Fixture f;
+  f.dates = p.dates();
+  f.inst = p.instruments();
+  for (atx::usize k = 0; k < p.num_fields(); ++k) {
+    f.names.push_back(p.field_name(k));
+    auto id = p.field_id(p.field_name(k));
+    EXPECT_TRUE(id.has_value());
+    const std::span<const atx::f64> all = p.field_all(id.value());
+    f.cols.emplace_back(all.begin(), all.end());
+  }
+  f.universe.resize(p.cells());
+  for (atx::usize t = 0; t < f.dates; ++t) {
+    for (atx::usize j = 0; j < f.inst; ++j) {
+      f.universe[t * f.inst + j] =
+          p.in_universe(static_cast<atx::engine::alpha::DateIdx>(t), j) ? 1 : 0;
+    }
+  }
+  return f;
+}
+
+struct CorpusRun {
+  atx::usize streamed{0};
+  atx::usize with_finite{0}; // streamed alphas with >= 1 finite streamed cell
+  std::vector<int> not_implemented;
+};
+
+[[nodiscard]] CorpusRun run_corpus(EvalMode mode, atx::usize inst) {
+  constexpr atx::usize kDates = 300; // > 250 so ts_sum(returns, 250) alphas go finite
+  constexpr atx::usize kStream = 20;
+  CorpusRun run;
+  const std::string path = find_alpha101_fixture();
+  EXPECT_FALSE(path.empty()) << "atx-impl/tests/fixtures/alpha101.txt not found above cwd";
+  const auto alphas = atx_impl_test::read_alpha_fixture(path);
+  EXPECT_EQ(alphas.size(), 101U) << path;
+  const auto adv = atx_impl_test::collect_adv_windows(alphas);
+  auto aug = atx_impl_test::augment_for_alpha101(make_base_panel(kDates, inst, 0x101ULL + inst),
+                                                 adv);
+  EXPECT_TRUE(aug.has_value()) << (aug ? "" : aug.error().message());
+  if (!aug) {
+    return run;
+  }
+  const Fixture f = fixture_from_panel(aug.value());
+  const Panel warm_panel = prefix_panel(f, kDates - kStream);
+  for (const auto &fa : alphas) {
+    const std::string src = "a" + std::to_string(fa.id) + " = " + fa.dsl + "\n";
+    const Program prog = compile_ok(src);
+    if (prog.roots.empty()) {
+      ADD_FAILURE() << "alpha " << fa.id << " failed to compile";
+      continue;
+    }
+    auto se = StreamingEngine::create(prog, static_cast<atx::u32>(inst), mode);
+    if (!se.has_value()) {
+      EXPECT_EQ(se.error().code(), atx::core::ErrorCode::NotImplemented)
+          << "alpha " << fa.id << ": " << se.error().message();
+      run.not_implemented.push_back(fa.id);
+      continue;
+    }
+    Engine eng{aug.value()};
+    eng.set_eval_mode(mode);
+    auto batch = eng.evaluate(prog);
+    if (!batch.has_value()) {
+      ADD_FAILURE() << "alpha " << fa.id << " batch: " << batch.error().message();
+      continue;
+    }
+    auto w = se->warm(warm_panel);
+    if (!w.has_value()) {
+      ADD_FAILURE() << "alpha " << fa.id << " warm: " << w.error().message();
+      continue;
+    }
+    bool ok = true;
+    bool any_finite = false;
+    for (atx::usize t = kDates - kStream; t < kDates && ok; ++t) {
+      auto r = se->step(row_of(f, prog, t));
+      if (!r.has_value()) {
+        ADD_FAILURE() << "alpha " << fa.id << " step: " << r.error().message();
+        ok = false;
+        break;
+      }
+      const std::vector<atx::f64> &want = batch->alphas[0].values;
+      for (atx::usize j = 0; j < inst; ++j) {
+        any_finite = any_finite || std::isfinite((*r)[j]);
+        if (!same_bits((*r)[j], want[t * inst + j])) {
+          ADD_FAILURE() << "alpha " << fa.id << " t=" << t << " j=" << j << " got=" << (*r)[j]
+                        << " want=" << want[t * inst + j] << " mode=" << static_cast<int>(mode)
+                        << " inst=" << inst;
+          ok = false;
+          break;
+        }
+      }
+    }
+    run.streamed += ok ? 1U : 0U;
+    run.with_finite += (ok && any_finite) ? 1U : 0U;
+  }
+  return run;
+}
+
+class StreamingEngine_Corpus101
+    : public ::testing::TestWithParam<std::pair<EvalMode, atx::usize>> {};
+
+TEST_P(StreamingEngine_Corpus101, EverySupportedCanonicalAlphaStreamsBitExact) {
+  const auto [mode, inst] = GetParam();
+  const CorpusRun run = run_corpus(mode, inst);
+  std::string skipped;
+  for (const int id : run.not_implemented) {
+    skipped += std::to_string(id) + " ";
+  }
+  // Pinned refusal set: formulas create() declines (NotImplemented) — see the
+  // SCOPE / REFUSALS note in streaming_engine.hpp. A change here is a scope change.
+  EXPECT_EQ(run.not_implemented.size(), kExpectedNotImplemented) << "skipped ids: " << skipped;
+  EXPECT_EQ(run.streamed + run.not_implemented.size(), 101U) << "skipped ids: " << skipped;
+  // Non-vacuous: the comparison is over real values, not all-NaN columns.
+  EXPECT_GE(run.with_finite, kMinFiniteAlphas) << "streamed=" << run.streamed;
+  std::printf("[corpus101] mode=%d inst=%zu streamed=%zu with_finite=%zu not_impl=%zu\n",
+              static_cast<int>(mode), inst, run.streamed, run.with_finite,
+              run.not_implemented.size());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ModesAndWidths, StreamingEngine_Corpus101,
+    ::testing::Values(std::pair{EvalMode::AuditExact, atx::usize{24}},
+                      std::pair{EvalMode::ResearchFast, atx::usize{24}},
+                      std::pair{EvalMode::AuditExact, atx::usize{128}},
+                      std::pair{EvalMode::ResearchFast, atx::usize{128}}));
 
 TEST(StreamingEngine_Batch, ColdStartStepOnlyEqualsBatch) {
   // No warm(): stepping every date from the start is the same computation.
