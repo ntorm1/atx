@@ -8,3 +8,10 @@ Implemented in `atx-db/tests/conftest.py` on `feat/tier1-parity`.
 - The template fingerprint, file lock, ready marker, and copy behavior are unchanged.
 
 Implementer performed static inspection only. Independent static review is clean. Parent scoped Ruff passed under the exact1.5GiB process-tree guard (tb1-ruff1-memory.json, peak0.057GiB). Parent commits this reviewed fixture before the isolated HEAD export so the real required schema/numeric validation targets committed content. That runtime proof remains pending; no live database, source capacity or production claim follows from this fixture change.
+
+Parent runtime attempt: quant-platform-head4 exported commit7d0b7ee9,
+successfully imported atx_db and began the full real schema bootstrap. The
+host guard stopped it at free commit2.648GiB (physical3.028GiB), before a
+completed pytest result. The job is terminal; this is not a test pass or a
+schema assertion failure. No live warehouse was opened. Runtime proof remains
+pending a sustained memory window; no immediate repeated bootstrap is planned.

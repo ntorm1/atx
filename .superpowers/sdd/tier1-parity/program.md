@@ -1,5 +1,15 @@
 # Tier-1 parity program ledger (atx-db)
 
+## Sustained headroom for long verification - 2026-09-24 UTC
+
+The correctly bounded TB1 bootstrap still encountered host commit pressure
+during quant-platform-head4. Keep its1.5GiB job cap and1GB/one-thread DuckDB
+settings, but wait for the existing sustained6GiB physical/8GiB commit window
+before another long schema/numeric batch. This is a stricter launch wait,
+not a threshold relaxation or permission to change other workloads. Short
+isolated checks retain their current guarded preflight. No source restart,
+migration, quality gate or complete-schema claim follows from static review.
+
 ## Schema test bootstrap resource correction - 2026-09-23
 
 TB1 under schema-bootstrap-budget-brief.md closes a concrete fixture gap:

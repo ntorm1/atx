@@ -1,5 +1,39 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Bootstrap capped before SQL; long verification still pending - 2026-09-24 UTC
+
+Previous goal turn made concrete FQ3/dictionary/operations progress. This
+turn committed TB1 as7d0b7ee9: test schema bootstrap now opens DuckDB with
+1GB/one thread before real initialize(), and fixture copies/reopens preserve
+the same limits. Full schema, migration, checksum and cache-ready contracts
+remain. Fresh Codex implementation and independent static review are clean;
+scoped Ruff passed under the exact1.5GiB job guard, peak0.057GiB.
+
+Clean export quant-platform-head4 imported7d0b7ee9 correctly and advanced
+schema bootstrap, but host pressure stopped the guard at physical3.028GiB /
+commit2.648GiB. Session86551 is terminal; child9008 and nativepytest5140 are
+absent. Seven module dots preceded bootstrap; no complete pytest result.
+Schema/numeric checks remain pending, no warehouse changes or migrations.
+Do not repeat this expensive batch immediately under unchanged headroom.
+Use the sustained6GiB physical/8GiB commit window for the next long verification
+launch as well as the source restart, retaining the1.5GiB test process cap.
+Small isolated checks keep their existing guard; no memory thresholds weakened.
+
+The official SEC FSN source audit confirms the existing September20 finding:
+TXT includes actual contextual symbol/exchange/security-title facts, but
+neither full historical coverage nor listing intervals/vendor identity follows.
+See historical-listing-bulk-feasibility.md and its older referenced audit.
+No archive downloaded or new ingestion implemented; preserve the prior
+production-first sequencing instead of expanding an unmeasured source pilot.
+
+Current source sequence is now self-contained in production-resume-sequence:
+reviewed-schema checks -> guarded migrate0325 with preserved backups -> full
+archive17 actualpredecessor513cfbbc-096a-4186-9666-b6cc5170c4ad -> fullsubmissions
+04cf947d-53bb-49b7-a276-b3c74a2a52c8 -> CVX source -> full run5 -> measured
+research/item/provider/quality -> eligible release -> fullsuite once and whole-
+branch Codex review -> explicit permission before main merge. Stash0 and all
+unrelated files remain untouched. No runtime job remains active at checkpoint.
+
 ## Final platform checkpoint: committed module boundary passes - 2026-09-23
 
 Source checkpoint dc3c0a28 (FQ3 code77db2e77, dictionarya89c2677) was exported

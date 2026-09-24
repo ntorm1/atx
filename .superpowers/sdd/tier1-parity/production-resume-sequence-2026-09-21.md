@@ -33,6 +33,46 @@ operator recovery was bookkeeping only, not a source-write capacity claim.
 Full CompanyFacts->fullsubmissions->scopedCVXsource->fulluniverse run5 remains
 the materialization sequence. Never infer a live process from a running ledger.
 
+## Pending migration and full CompanyFacts resume
+
+After the required schema/numeric checks pass, inspect free disk before the
+governed migration. The last measured warehouse file was11.999GiB and free
+C: space was34.494GiB on2026-09-23; these are dated observations, not reserved
+capacity. Preserve all existing backups and retain --backup-keep100. Apply
+0323..0325 under the same2GiB guard with fresh artifacts:
+
+```powershell
+C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
+  --job-gb 2 `
+  --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0325-memory.json `
+  --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0325.log `
+  --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0325.err `
+  -- C:\atx\atx-db\.venv\Scripts\python.exe scripts\warehouse_activate.py `
+  --db-path data\warehouse.duckdb --as-of-date 2026-09-20 --only migrate `
+  --memory-limit 1GB --threads 1 --backup-keep 100 --run-id activation-migrate0325 `
+  --sec-user-agent "atx-db/0.1 atx-research@example.com"
+```
+
+Inspect the terminal migration receipt and actual applied versions. Only after
+that job is terminal and the sustained source memory window is met, resume
+the entire retained CompanyFacts archive. The argument is the actual failed
+dataset UUID, not an activation label. Do not repeat archive16 recovery.
+
+```powershell
+C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
+  --job-gb 2 `
+  --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive17-memory.json `
+  --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive17.log `
+  --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive17.err `
+  -- C:\atx\atx-db\.venv\Scripts\python.exe scripts\warehouse_activate.py `
+  --db-path data\warehouse.duckdb --as-of-date 2026-09-20 --only companyfacts_load `
+  --companyfacts-symbol-source archive_members --companyfacts-replace-existing `
+  --companyfacts-resume-from-run-id 513cfbbc-096a-4186-9666-b6cc5170c4ad `
+  --memory-limit 1GB --threads 1 --backup-keep 100 --force `
+  --run-id activation-companyfacts-archive17 `
+  --sec-user-agent "atx-db/0.1 atx-research@example.com"
+```
+
 ## Submissions verified resume
 
 Run only after the source resume is terminal and inspected:

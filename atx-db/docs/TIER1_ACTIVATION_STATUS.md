@@ -43,6 +43,12 @@ The subsequent clean export ofdc3c0a28 passed import and all seven module-bounda
 checks at0.617GiB guarded peak. That module-only result does not close the
 pending schema/numeric checks or the full-suite sprint gate.
 
+Test infrastructure correction7d0b7ee9 now applies1GB/one-thread DuckDB limits
+before schema bootstrap. Its independent review and lint are clean. The next
+full schema/numeric attempt still stopped on host commit pressure before a
+pytest result, so those gates remain open. Further long verification awaits
+the same sustained host headroom window required for source restarts.
+
 
 The later archive15 process disappeared before point verification finished.
 Its missing handle and absent workers were verified at22:01UTC; the stale
