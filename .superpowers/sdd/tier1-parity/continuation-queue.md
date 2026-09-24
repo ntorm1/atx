@@ -1,5 +1,27 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## ED1 committed and live prerequisite measured — 2026-09-24 evening UTC
+
+ED1 is44fb6392: generic scripts/read_quarterly_eps_growth.py delegates numeric
+reads to IQ2 exact selected-input qualification. Six tiny real-IQ2 checks
+passed; after correcting negative-base fixture wording, only those two cases
+were rerun and passed. ScopedRuff passed; one independent parent review clean.
+Live cvx-eps-desk1 returned controlled schema_prerequisite_missing, exit2,
+missing selected_input_refs_hash/json, no numeric rows, peak0.642921GiB under
+a lower1GiB guard with256MB/one-thread DuckDB. It stopped at schema preflight;
+this is NOT numerical/source acceptance. Warehouse size/mtime unchanged.
+
+PG1,6357e9f9: repaired chunk case and Ruff passed; its populated0314 upgrade case
+remains the sole pending prerequisite before governed migrate323..325. The
+reviewed test repair is checkpointed separately with that limitation. Source
+resumes and pinned2026-09-20 remain exactly as documented below. Latest host
+sample still below6GiB physical, so no long job or source writer started.
+The capacity question is optional and unanswered; no approval is needed for
+the documented next work once resource prerequisites hold. Root has not
+terminated or altered other workloads. Keep all quality/release gates open.
+
+Current concise handoff: docs/superpowers/handoffs/2026-09-24-tier1-parity-handoff.md.
+
 ## Current reconciliation and bounded repair — 2026-09-24 evening UTC
 
 Initial HEAD2e0d738f was checked out on main; main and feat/tier1-parity pointed

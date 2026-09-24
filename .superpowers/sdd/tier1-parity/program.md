@@ -1,5 +1,18 @@
 # Tier-1 parity program ledger (atx-db)
 
+## Selected-lineage EPS consumer delivered — 2026-09-24 evening UTC
+
+ED1 is44fb6392. Six focused real-IQ2 consumer checks passed; two corrected
+negative/zero-base cases passed separately after the implementer corrected
+fixture semantics. ScopedRuff passed and parent independent review is clean.
+Live CVX query correctly stopped at missing migration323 refs columns, exit2,
+under0.643GiB. This is measured schema diagnosis, no live numeric/source/PIT
+acceptance. Use the generic reader after materialization; frozen v1/v2 SQL
+retains diagnostic value but cannot replace selected-lineage qualification.
+The only remaining schema/numeric prerequisite is PG1's populated0314 upgrade
+case. Its reviewed repair is checkpointed; long runtime still awaits unchanged
+sustained headroom. No source loads, migrations or warehouse writes this turn.
+
 ## Reconciled newer runtime evidence — 2026-09-24 evening UTC
 
 The branch is now feat/tier1-parity at initial2e0d738f; main already pointed

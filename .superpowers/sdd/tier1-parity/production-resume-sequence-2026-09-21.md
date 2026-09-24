@@ -1,4 +1,4 @@
-# Production resume sequence — updated 2026-09-23
+# Production resume sequence — updated 2026-09-24
 
 **2026-09-24 evening reconciliation:** head6 completed with110passes,1skip and
 2test failures on the exact current atx-db source tree. PG1's chunk-case repair
@@ -253,9 +253,10 @@ the CF1 evaluation (holdout decile spreads, label coverage, HAC uncertainty,
 Holm adjustment, and transaction-cost sensitivities). `production_eligible`
 remaining false is recorded evidence, not a reason to relabel the signals.
 
-After research evaluation, execute the versioned CVX quarterly EPS acceptance
-SQL and both price-feature and fundamental signal decile readout SQL under
-separate guarded, read-only sessions; record actual results and gaps. Use the
+After research evaluation, execute the qualified CVX reader below and both
+price-feature and fundamental signal decile readout SQL under separate guarded,
+read-only sessions; record actual results and gaps. The frozen CVX SQL v1/v2
+remains a raw comparison diagnostic and does not qualify selected leaves. Use the
 DS2 reader below for the fundamental desk screen: it validates the selected
 completed default FQ1 panel before executing the prepared SQL in the same
 transaction. Bare SQL is not evidence that its panel digest was validated.
@@ -263,6 +264,31 @@ The reader reports the latest observed decision session separately from the
 September20 report date and keeps missing next-session research eligibility
 separate from qualified accounting inputs. It does not invent a later entry
 bar or include weekend filings in Friday's information set.
+
+The ED1 CVX read was executed before materialization as cvx-eps-desk1 and
+correctly returned schema_prerequisite_missing/exit2 with no numeric rows:
+schema322 lacks migration323's selected_input_refs_hash/json. The next run
+must use a fresh output tuple after migration and source/materialization:
+
+```powershell
+C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
+  --job-gb 2 `
+  --receipt C:\atx\.superpowers\sdd\tier1-parity\cvx-eps-desk2-memory.json `
+  --stdout C:\atx\.superpowers\sdd\tier1-parity\cvx-eps-desk2.log `
+  --stderr C:\atx\.superpowers\sdd\tier1-parity\cvx-eps-desk2.err `
+  -- C:\atx\atx-db\.venv\Scripts\python.exe scripts\read_quarterly_eps_growth.py `
+  --db-path data\warehouse.duckdb --cik 0000093410 `
+  --content-as-of 2026-09-20T22:00:00Z `
+  --start 2025-10-01 --end 2026-07-01 --latest 3 `
+  --output-json C:\atx\.superpowers\sdd\tier1-parity\cvx-eps-desk2.json
+```
+
+Exit0 means the requested count of qualified numerical observations, not
+release certification. Inspect the exact three fiscal periods and compare
+the documented independent source benchmark; current lookup clocks do not
+qualify historical market identity. Missing/ambiguous/NULL/lineage-rejected
+states return explicit diagnostics and exit2. Source gaps are never repaired
+by subtracting cumulative EPS.
 
 ```powershell
 C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
