@@ -79,9 +79,25 @@ struct GpPolicy {
   atx::usize iterations = 0;          // Riccati steps taken (dense) / 0 (factor-space)
   bool converged = true;              // dense infinite-horizon: fixed point reached
 
-  // x_t given x_{t−1} and the signal vector f_t.
-  [[nodiscard]] std::vector<atx::f64> step(std::span<const atx::f64> x_prev,
-                                           std::span<const atx::f64> f) const {
+  // Policy dimensions: M names, S signals (0 for a default-constructed policy).
+  [[nodiscard]] Eigen::Index n_names() const noexcept {
+    return factor_space ? aim_load.rows() : keep.rows();
+  }
+  [[nodiscard]] Eigen::Index n_signals() const noexcept {
+    return factor_space ? aim_load.cols() : load.cols();
+  }
+
+  // x_t given x_{t−1} (length M) and the signal vector f_t (length S). The lengths are
+  // checked here, not left to Eigen's debug-only asserts: a wrong-length span in Release
+  // would otherwise read out of bounds. Err(InvalidArgument) on a mismatch.
+  [[nodiscard]] atx::core::Result<std::vector<atx::f64>>
+  step(std::span<const atx::f64> x_prev, std::span<const atx::f64> f) const {
+    namespace co = atx::core;
+    if (static_cast<Eigen::Index>(x_prev.size()) != n_names() ||
+        static_cast<Eigen::Index>(f.size()) != n_signals()) {
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "GpPolicy::step: x_prev must have length M and f length S");
+    }
     const auto m = static_cast<Eigen::Index>(x_prev.size());
     const Eigen::Map<const atx::core::linalg::VecX> xp(x_prev.data(), m);
     const Eigen::Map<const atx::core::linalg::VecX> fv(f.data(),
@@ -93,11 +109,16 @@ struct GpPolicy {
     } else {
       x = keep * xp + load * fv;
     }
-    return {x.data(), x.data() + x.size()};
+    return co::Ok(std::vector<atx::f64>(x.data(), x.data() + x.size()));
   }
 
   // The aim portfolio aim_t = (J − Λ)⁻¹ G f_t (dense) / the GP closed form (factor-space).
-  [[nodiscard]] std::vector<atx::f64> aim(std::span<const atx::f64> f) const {
+  // Err(InvalidArgument) when f does not have length S.
+  [[nodiscard]] atx::core::Result<std::vector<atx::f64>> aim(std::span<const atx::f64> f) const {
+    namespace co = atx::core;
+    if (static_cast<Eigen::Index>(f.size()) != n_signals()) {
+      return co::Err(co::ErrorCode::InvalidArgument, "GpPolicy::aim: f must have length S");
+    }
     const Eigen::Map<const atx::core::linalg::VecX> fv(f.data(),
                                                        static_cast<Eigen::Index>(f.size()));
     atx::core::linalg::VecX a;
@@ -109,7 +130,7 @@ struct GpPolicy {
       const atx::core::linalg::MatX rate = atx::core::linalg::MatX::Identity(m, m) - keep;
       a = rate.partialPivLu().solve(load * fv);
     }
-    return {a.data(), a.data() + a.size()};
+    return co::Ok(std::vector<atx::f64>(a.data(), a.data() + a.size()));
   }
 };
 

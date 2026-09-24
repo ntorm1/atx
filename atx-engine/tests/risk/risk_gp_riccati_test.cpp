@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include "atx/core/error.hpp"
 #include "atx/core/linalg/linalg.hpp"
 #include "atx/engine/risk/factor_model.hpp"
 #include "atx/engine/risk/gp_riccati.hpp"
@@ -72,8 +73,9 @@ TEST(RiskGpRiccati, DenseProportionalMatchesGpClosedFormRateAndAim) {
   shrunk << f[0] / (1.0 + a * phi[0] / gamma), f[1] / (1.0 + a * phi[1] / gamma);
   const la::VecX expected = (gamma * sigma_of(v)).ldlt().solve(b * shrunk);
   const auto aim = pol->aim(f);
-  EXPECT_NEAR(aim[0], expected[0], 1e-8);
-  EXPECT_NEAR(aim[1], expected[1], 1e-8);
+  ASSERT_TRUE(aim) << aim.error().message();
+  EXPECT_NEAR((*aim)[0], expected[0], 1e-8);
+  EXPECT_NEAR((*aim)[1], expected[1], 1e-8);
 }
 
 TEST(RiskGpRiccati, FactorSpacePathMatchesDenseOracle) {
@@ -94,8 +96,21 @@ TEST(RiskGpRiccati, FactorSpacePathMatchesDenseOracle) {
   const std::vector<f64> f{0.5, 1.0};
   const auto xd = dense->step(x_prev, f);
   const auto xf = fast->step(x_prev, f);
-  EXPECT_NEAR(xd[0], xf[0], 1e-9);
-  EXPECT_NEAR(xd[1], xf[1], 1e-9);
+  ASSERT_TRUE(xd);
+  ASSERT_TRUE(xf);
+  EXPECT_NEAR((*xd)[0], (*xf)[0], 1e-9);
+  EXPECT_NEAR((*xd)[1], (*xf)[1], 1e-9);
+  // Wrong-length inputs fail typed on BOTH paths (no Release out-of-bounds read).
+  const std::vector<f64> x3{0.1, 0.2, 0.3};
+  const std::vector<f64> f1{0.5};
+  for (const auto *pol : {&*dense, &*fast}) {
+    EXPECT_FALSE(pol->step(x3, f));
+    EXPECT_FALSE(pol->step(x_prev, f1));
+    EXPECT_FALSE(pol->aim(f1));
+    const auto bad = pol->step(x3, f);
+    EXPECT_EQ(bad.error().code(), atx::core::ErrorCode::InvalidArgument);
+  }
+  EXPECT_FALSE(risk::GpPolicy{}.step(x_prev, f)); // default policy is 0 x 0
 }
 
 TEST(RiskGpRiccati, HorizonOneIsTheMyopicCostedTrade) {
@@ -121,8 +136,9 @@ TEST(RiskGpRiccati, HorizonOneIsTheMyopicCostedTrade) {
   fv << 0.7, 0.2;
   const la::VecX expected = j.llt().solve(lm * xp + rb * b * fv);
   const auto x = pol->step(std::vector<f64>{0.3, -0.2}, std::vector<f64>{0.7, 0.2});
-  EXPECT_NEAR(x[0], expected[0], 1e-14);
-  EXPECT_NEAR(x[1], expected[1], 1e-14);
+  ASSERT_TRUE(x);
+  EXPECT_NEAR((*x)[0], expected[0], 1e-14);
+  EXPECT_NEAR((*x)[1], expected[1], 1e-14);
 }
 
 TEST(RiskGpRiccati, LongHorizonConvergesToSteadyStateAndSatisfiesRiccati) {

@@ -155,4 +155,88 @@ TEST(RiskDiscretize, DeterministicAndRejectsBadInput) {
   EXPECT_FALSE(risk::discretize_and_resolve(solver, {model, 1.0, q, c}, prev, *w, bad));
 }
 
+// Review regression: the cap binds even when the continuous book already holds <= max_names
+// names. Name 1 is not held by w_cont but sits at 0.05 in w_prev; min-trade used to re-pin
+// it there (the all-pinned path, no solver call), returning 2 names under a cap of 1.
+TEST(RiskDiscretize, MaxNamesCapHoldsWhenMinTradeWouldRepinAnExitingName) {
+  auto model = risk::FactorModel::create(la::MatX::Zero(2, 1), la::MatX::Identity(1, 1),
+                                         la::VecX::Constant(2, 0.04), 0, 1);
+  ASSERT_TRUE(model);
+  const risk::MaterializedConstraints c{};
+  const std::vector<f64> q{-0.01, 0.0};
+  const std::vector<f64> w_cont{0.3, 0.0};
+  const std::vector<f64> w_prev{0.3, 0.05};
+  risk::DiscretizeCfg cfg;
+  cfg.max_names = 1;
+  cfg.min_trade = 0.1;
+  const risk::ConstrainedQpSolver solver;
+  const auto d = risk::discretize_and_resolve(solver, {*model, 1.0, q, c}, w_prev, w_cont, cfg);
+  ASSERT_TRUE(d) << d.error().message();
+  EXPECT_LE(d->n_names, 1U);
+  EXPECT_EQ(d->book[0], 0.3);
+  EXPECT_EQ(d->book[1], 0.0);
+  EXPECT_EQ(d->pinned[1], 1U);
+}
+
+// Same invariant through the re-solve path: an un-held name with a large w_prev must stay
+// flat even though the re-solve re-optimizes the book around the pins.
+TEST(RiskDiscretize, MaxNamesCapHoldsThroughResolveForUnheldNames) {
+  const auto model = diag_model();
+  const auto q = graded_q();
+  const risk::ConstrainedQpSolver solver;
+  std::vector<f64> prev(kM, 0.0);
+  const auto c0 = neutral_constraints(model, prev);
+  const auto w = solver.solve({model, 1.0, q, c0});
+  ASSERT_TRUE(w);
+  std::vector<f64> w_cont = *w;
+  for (const usize i : {2U, 3U, 4U, 5U, 6U, 7U}) {
+    w_cont[i] = 0.0; // a continuous book holding exactly 4 names
+  }
+  prev[3] = 0.2; // exiting positions the continuous book does not hold
+  prev[6] = -0.2;
+  risk::DiscretizeCfg cfg;
+  cfg.max_names = 4;
+  cfg.min_trade = 0.001;
+  const auto d = risk::discretize_and_resolve(solver, {model, 1.0, q, c0}, prev, w_cont, cfg);
+  ASSERT_TRUE(d) << d.error().message();
+  EXPECT_LE(d->n_names, 4U);
+  EXPECT_EQ(d->book[3], 0.0);
+  EXPECT_EQ(d->book[6], 0.0);
+}
+
+// The re-solve takes the caller's schedule and warm start: warm-started from the continuous
+// solve it reaches the cold re-solve's book to the solve tolerance.
+TEST(RiskDiscretize, ResolveHonoursScheduleAndWarmStart) {
+  const auto model = diag_model();
+  const std::vector<f64> prev(kM, 0.0);
+  const auto c = neutral_constraints(model, prev);
+  const auto q = graded_q();
+  risk::ConstrainedQpSolver solver;
+  solver.cfg.iters = 5000U;
+  risk::AdmmSchedule sched;
+  sched.early_exit = true;
+  sched.eps_abs = 1e-9;
+  sched.eps_rel = 1e-9;
+  const risk::QpProblem p{model, 1.0, q, c};
+  const auto cont = solver.solve_with_cert(p, sched);
+  ASSERT_TRUE(cont) << cont.error().message();
+  risk::DiscretizeCfg cfg;
+  cfg.max_names = 4;
+  cfg.schedule = sched;
+  const auto cold = risk::discretize_and_resolve(solver, p, prev, cont->book, cfg);
+  cfg.warm = &*cont;
+  const auto warm = risk::discretize_and_resolve(solver, p, prev, cont->book, cfg);
+  ASSERT_TRUE(cold) << cold.error().message();
+  ASSERT_TRUE(warm) << warm.error().message();
+  EXPECT_TRUE(warm->resolved);
+  for (usize i = 0; i < kM; ++i) {
+    EXPECT_NEAR(warm->book[i], cold->book[i], 1e-6) << i;
+  }
+  EXPECT_LE(warm->n_names, 4U);
+  // The pin dual re-layout: y_full of the un-pinned problem gains one 0 per pin row.
+  const auto seed = risk::detail::pin_dual_seed(p, cont->y_full, 6U);
+  EXPECT_EQ(seed.size(), cont->y_full.size() + 6U);
+  EXPECT_TRUE(risk::detail::pin_dual_seed(p, {}, 6U).empty());
+}
+
 } // namespace atx_test_l6_optim_discretize

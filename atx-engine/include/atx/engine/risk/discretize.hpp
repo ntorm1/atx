@@ -4,21 +4,31 @@
 // optimizer book into a tradable one (Lane 6). Three rules, applied in a fixed order:
 //
 //   (1) MAX-NAMES  — keep at most `max_names` held names: the largest |w_i| of the
-//       continuous book (ties → lower index); every other name is pinned at 0.
+//       continuous book (ties → lower index). EVERY other name, including one the
+//       continuous book does not hold at all, is pinned at 0, so no later rule (min-trade
+//       at a nonzero w_prev, the re-solve, lot rounding) can hand weight to it: the cap is
+//       an invariant of the result, not only of the continuous book.
 //   (2) MIN-TRADE  — a kept name whose trade |w_i − w0_i| is below `min_trade` is pinned at
-//       its previous weight w0_i (no trade).
-//   (3) RE-SOLVE   — when (1)/(2) pinned anything, the QP is solved again with each pinned
-//       name as an equality row w_i = target_i, so the free names re-optimize around the
-//       pins (risk, neutrality and budgets are re-balanced instead of silently broken).
+//       its previous weight w0_i (no trade). Excluded names are never re-pinned at w0_i.
+//   (3) RE-SOLVE   — when (1)/(2) pinned a name AWAY from its continuous weight (by more
+//       than hold_eps), the QP is solved again with each pinned name as an equality row
+//       w_i = target_i, so the free names re-optimize around the pins (risk, neutrality
+//       and budgets are re-balanced instead of silently broken). Pins that already
+//       coincide with the continuous book are snapped exactly and need no re-solve. The
+//       re-solve runs cfg.schedule and, when cfg.warm is set, is warm-started from the
+//       continuous solve (its primal, its duals re-laid-out around the pin rows, its ρ).
 //   (4) ROUND LOTS — each free name's trade is rounded to the nearest multiple of its lot
 //       (weight units); a rounded trade below `min_trade` is dropped.
 //
 //  The pass is heuristic (cardinality is non-convex) but deterministic: a pure function of
 //  (problem, w0, continuous book, cfg), one re-solve at most, no RNG. Lot rounding can move
 //  a linear constraint by up to Σ lot/2, so the result carries the realized worst violation
-//  of the ORIGINAL constraint set for the caller to gate on.
+//  of the ORIGINAL constraint set for the caller to gate on. With max_names > 0 the result
+//  is checked: n_names > max_names is Err(Internal) (unreachable by construction; it guards
+//  the invariant against future edits).
 
-#include <algorithm> // std::stable_sort, std::max
+#include <algorithm> // std::stable_sort, std::max, std::min
+#include <cstddef>   // std::ptrdiff_t
 #include <cmath>     // std::fabs, std::round, std::isfinite
 #include <span>      // std::span
 #include <utility>   // std::move
@@ -27,7 +37,9 @@
 #include "atx/core/error.hpp" // Result, Ok, Err
 #include "atx/core/types.hpp" // f64, u8, u32, usize
 
+#include "atx/engine/risk/admm_schedule.hpp" // AdmmSchedule, WarmStart
 #include "atx/engine/risk/constraints.hpp" // MaterializedConstraints
+#include "atx/engine/risk/qp_augment.hpp"  // detail::aug_total_rows (pin dual re-layout)
 #include "atx/engine/risk/qp_solver.hpp"   // ConstrainedQpSolver, QpProblem
 
 namespace atx::engine::risk {
@@ -37,6 +49,13 @@ struct DiscretizeCfg {
   std::span<const atx::f64> lot;  // per-name lot size in weight units; empty / ≤ 0 ⇒ continuous
   atx::u32 max_names = 0;         // cap on held names; 0 ⇒ no cap
   atx::f64 hold_eps = 1e-10;      // |w| ≤ this counts as "not held"
+  // The pin re-solve's ADMM schedule. At production scale set early_exit (with the solver's
+  // cfg.iters as a cap): the default fixed 300-iteration schedule can miss the 1e-6 gate.
+  AdmmSchedule schedule{};
+  // Optional: the CONTINUOUS solve's result for the same problem p. Its x_full seeds the
+  // re-solve's primal, its y_full is re-laid-out around the appended pin rows (pin duals
+  // seeded 0) and cert.rho_final seeds ρ. Must outlive the call. nullptr ⇒ cold re-solve.
+  const QpResult *warm = nullptr;
 };
 
 struct DiscretizedBook {
@@ -109,6 +128,29 @@ namespace detail {
   return out;
 }
 
+// Re-lay-out a continuous solve's augmented dual around the n_pins equality rows that
+// with_pins appends after C.A's rows: augmented rows are [K factor rows | C.A rows | rest],
+// so the pin rows land at K + C.A.rows(). Pin duals seed 0. Returns empty (⇒ the solver's
+// zero dual seed) when y_full does not have the un-pinned problem's augmented length.
+[[nodiscard]] inline std::vector<atx::f64> pin_dual_seed(const QpProblem &p,
+                                                         std::span<const atx::f64> y_full,
+                                                         atx::usize n_pins) {
+  const atx::usize k = p.V.n_factors();
+  const bool has_gross = p.C.gross_l1_budget >= 0.0;
+  const bool has_turn = p.C.has_turnover || p.C.turnover_penalty > 0.0;
+  const atx::usize r = aug_total_rows(p.V.n_instruments(), k, p.C, has_gross, has_turn);
+  if (y_full.size() != r) {
+    return {};
+  }
+  const auto split = static_cast<std::ptrdiff_t>(k + static_cast<atx::usize>(p.C.A.rows()));
+  std::vector<atx::f64> out;
+  out.reserve(r + n_pins);
+  out.insert(out.end(), y_full.begin(), y_full.begin() + split);
+  out.insert(out.end(), n_pins, 0.0);
+  out.insert(out.end(), y_full.begin() + split, y_full.end());
+  return out;
+}
+
 } // namespace detail
 
 // Run the discretization pass. `w_prev` and `w_cont` are length M (= p.V.n_instruments()).
@@ -143,8 +185,10 @@ discretize_and_resolve(const ConstrainedQpSolver &solver, const QpProblem &p,
   out.pinned.assign(m, 0U);
   std::vector<atx::f64> target(m, 0.0);
 
-  // (1) max-names: rank held names by |w| descending, ties by index (stable sort).
-  std::vector<atx::u8> kept(m, 1U);
+  // (1) max-names: rank held names by |w| descending, ties by index (stable sort). Every
+  //     name outside the kept set is pinned flat, also when held.size() <= max_names, so
+  //     rule (2) cannot re-pin an excluded name at a nonzero w_prev (review case: M=2, cap
+  //     1, w_cont=[0.3,0], w_prev=[0.3,0.05], min_trade 0.1 used to return 2 names).
   if (cfg.max_names > 0U) {
     std::vector<atx::usize> held;
     for (atx::usize i = 0; i < m; ++i) {
@@ -152,18 +196,18 @@ discretize_and_resolve(const ConstrainedQpSolver &solver, const QpProblem &p,
         held.push_back(i);
       }
     }
-    if (held.size() > cfg.max_names) {
-      std::stable_sort(held.begin(), held.end(), [&](atx::usize a, atx::usize b) {
-        return std::fabs(w_cont[a]) > std::fabs(w_cont[b]);
-      });
-      for (atx::usize k = cfg.max_names; k < held.size(); ++k) {
-        kept[held[k]] = 0U;
-      }
-      for (atx::usize i = 0; i < m; ++i) {
-        if (kept[i] == 0U || std::fabs(w_cont[i]) <= cfg.hold_eps) {
-          out.pinned[i] = 1U; // excluded or not held ⇒ pinned flat
-          target[i] = 0.0;
-        }
+    std::stable_sort(held.begin(), held.end(), [&](atx::usize a, atx::usize b) {
+      return std::fabs(w_cont[a]) > std::fabs(w_cont[b]);
+    });
+    std::vector<atx::u8> kept(m, 0U);
+    const atx::usize n_keep = std::min<atx::usize>(cfg.max_names, held.size());
+    for (atx::usize k = 0; k < n_keep; ++k) {
+      kept[held[k]] = 1U;
+    }
+    for (atx::usize i = 0; i < m; ++i) {
+      if (kept[i] == 0U) {
+        out.pinned[i] = 1U; // excluded or not held ⇒ pinned flat
+        target[i] = 0.0;
       }
     }
   }
@@ -176,24 +220,44 @@ discretize_and_resolve(const ConstrainedQpSolver &solver, const QpProblem &p,
       }
     }
   }
-  // (3) one re-solve around the pins.
+  // (3) one re-solve around the pins, only when a pin actually moves a name.
   atx::usize n_pinned = 0;
-  for (const atx::u8 v : out.pinned) {
-    n_pinned += (v != 0U) ? 1U : 0U;
+  bool pin_moves = false;
+  for (atx::usize i = 0; i < m; ++i) {
+    if (out.pinned[i] != 0U) {
+      ++n_pinned;
+      pin_moves = pin_moves || std::fabs(target[i] - w_cont[i]) > cfg.hold_eps;
+    }
   }
   if (n_pinned == m) {
     out.book = target; // every name pinned ⇒ the pins ARE the book (no solve needed)
-  } else if (n_pinned > 0U) {
+  } else if (pin_moves) {
     // The pins are equality rows: the scheduled ADMM (equality-row rho boost) converges on
     // them far faster than the fixed-rho loop.
     const MaterializedConstraints pinned_c = detail::with_pins(p.C, out.pinned, target);
     const QpProblem rp{p.V, p.risk_aversion, p.q, pinned_c};
-    ATX_TRY(QpResult r, solver.solve_with_cert(rp, AdmmSchedule{}));
+    std::vector<atx::f64> y_seed;
+    WarmStart ws;
+    const WarmStart *wsp = nullptr;
+    if (cfg.warm != nullptr) {
+      y_seed = detail::pin_dual_seed(p, cfg.warm->y_full, n_pinned);
+      ws.x0 = cfg.warm->x_full;
+      ws.y0 = y_seed;
+      ws.rho = cfg.warm->cert.rho_final;
+      wsp = &ws;
+    }
+    ATX_TRY(QpResult r, solver.solve_with_cert(rp, cfg.schedule, wsp));
     out.book = std::move(r.book);
     out.resolved = true;
     for (atx::usize i = 0; i < m; ++i) {
       if (out.pinned[i] != 0U) {
         out.book[i] = target[i]; // exact pin (the ADMM honours it only to feas_tol)
+      }
+    }
+  } else {
+    for (atx::usize i = 0; i < m; ++i) {
+      if (out.pinned[i] != 0U) {
+        out.book[i] = target[i]; // the pin coincides with w_cont to hold_eps: snap exactly
       }
     }
   }
@@ -218,6 +282,10 @@ discretize_and_resolve(const ConstrainedQpSolver &solver, const QpProblem &p,
     out.n_trades += out.book[i] != w_prev[i] ? 1U : 0U;
   }
   out.max_violation = std::max(0.0, detail::book_violation(p.C, out.book));
+  if (cfg.max_names > 0U && out.n_names > cfg.max_names) {
+    return co::Err(co::ErrorCode::Internal,
+                   "discretize_and_resolve: result holds more than max_names names");
+  }
   return co::Ok(std::move(out));
 }
 

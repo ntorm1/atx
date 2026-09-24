@@ -166,8 +166,9 @@ TEST(RiskMpcStack, HorizonThreeFirstMoveMatchesGpRiccatiBackwardRecursion) {
     const auto pol = risk::gp_riccati(v, gamma, {kLambda, 0.0}, phi, b, cfg);
     ASSERT_TRUE(pol) << pol.error().message();
     const auto x1 = pol->step(kPrev, f);
+    ASSERT_TRUE(x1) << x1.error().message();
     for (usize i = 0; i < kM; ++i) {
-      EXPECT_NEAR(r->path[0][i], x1[i], 1e-8) << "H=" << hz << " i=" << i;
+      EXPECT_NEAR(r->path[0][i], (*x1)[i], 1e-8) << "H=" << hz << " i=" << i;
     }
   }
 }

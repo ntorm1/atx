@@ -107,6 +107,25 @@ f64 max_group_net(std::span<const f64> w) {
   return m;
 }
 
+// sqrt(wᵀ V w) with V = X F Xᵀ + D: the norm every risk cone bounds (the cone rows are
+// [L_Fᵀ Xᵀ w ; sqrt(D)∘w], whose 2-norm is exactly this).
+f64 risk_sigma(const risk::FactorModel &v, std::span<const f64> w) {
+  return std::sqrt(v.risk(w));
+}
+
+// ‖Xᵀw‖₂: the robust-alpha cone's argument when Ω_f is the identity.
+f64 factor_norm(const risk::FactorModel &v, std::span<const f64> w) {
+  f64 s = 0.0;
+  for (Eigen::Index k = 0; k < v.exposures().cols(); ++k) {
+    const f64 e = factor_exposure(v, w, k);
+    s += e * e;
+  }
+  return std::sqrt(s);
+}
+
+// The cone tolerance: the solver gates each cone at feas_tol = 1e-6 in cone-row units.
+constexpr f64 kConeTol = 1e-5;
+
 class RiskConstraintDispatchMH : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -233,6 +252,19 @@ TEST_F(RiskConstraintDispatchMH, SectorSocBudgetAloneMoves) {
   const auto w = run_book(cs, v_);
   ASSERT_TRUE(w) << w.error().message();
   expect_moved(*w);
+  // Each sector's realized risk sqrt((m_g∘w)ᵀ V (m_g∘w)) respects its sigma budget, and the
+  // budget binds for at least one sector (it is what moved the book).
+  f64 worst = 0.0;
+  for (usize g = 0; g < 3U; ++g) {
+    std::vector<f64> masked(kM, 0.0);
+    for (usize i = 0; i < kM; ++i) {
+      masked[i] = (kGroups[i] == g) ? (*w)[i] : 0.0;
+    }
+    const f64 sg = risk_sigma(v_, masked);
+    EXPECT_LE(sg, 0.02 + kConeTol) << "sector " << g;
+    worst = std::max(worst, sg);
+  }
+  EXPECT_GT(worst, 0.02 - kConeTol);
 }
 
 TEST_F(RiskConstraintDispatchMH, TrackingErrorAloneMovesTheBook) {
@@ -241,6 +273,11 @@ TEST_F(RiskConstraintDispatchMH, TrackingErrorAloneMovesTheBook) {
   const auto w = run_book(cs, v_);
   ASSERT_TRUE(w) << w.error().message();
   expect_moved(*w);
+  // Empty benchmark ⇒ tracking error == total risk sqrt(wᵀVw): within the 0.05 budget, and
+  // binding (the unconstrained baseline carries more risk than the budget).
+  ASSERT_GT(risk_sigma(v_, base_), 0.05);
+  EXPECT_LE(risk_sigma(v_, *w), 0.05 + kConeTol);
+  EXPECT_GT(risk_sigma(v_, *w), 0.05 - kConeTol);
 }
 
 TEST_F(RiskConstraintDispatchMH, RobustAlphaAloneMovesTheBook) {
@@ -249,6 +286,17 @@ TEST_F(RiskConstraintDispatchMH, RobustAlphaAloneMovesTheBook) {
   const auto w = run_book(cs, v_);
   ASSERT_TRUE(w) << w.error().message();
   expect_moved(*w);
+  // The robust cone penalizes κ‖Ω_f^{1/2} Xᵀw‖₂ (Ω_f = I here). Against the NOMINAL solve of
+  // the same augmented QP (κ = 0 keeps the augmented dispatch but emits no cone) the penalized
+  // optimum must carry strictly less of that norm: for w₀ = argmin f and w₁ = argmin f + κg,
+  // f(w₀) ≤ f(w₁) and f(w₁) + κg(w₁) ≤ f(w₀) + κg(w₀) give g(w₁) ≤ g(w₀). (The minimal-set
+  // baseline base_ is solved by PortfolioOptimizer, a different algorithm, so it is not the
+  // reference here.)
+  auto nominal = minimal();
+  nominal.robust = risk::RobustAlpha{0.0};
+  const auto w0 = run_book(nominal, v_);
+  ASSERT_TRUE(w0) << w0.error().message();
+  EXPECT_LT(factor_norm(v_, *w), factor_norm(v_, *w0) - 1e-6);
 }
 
 TEST_F(RiskConstraintDispatchMH, CapacityDescriptorsAloneFailClosedTyped) {
