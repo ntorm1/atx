@@ -277,6 +277,10 @@ weakening thresholds, regenerate and check the data dictionary, and publish the
 first release only if measured gates permit. Verify its manifest and hashes.
 The 426,151 pre-resume candidates plus any added historical earnings-source
 backfill remain open and cannot be counted as provider SLO proof. Run the full
-non-slow suite once at the sprint gate, obtain a fresh whole-branch Codex
-review, then ask before merging to main. Preserve `stash@{0}`; never apply or
+non-slow suite once at the sprint gate. The whole-branch Codex static review
+of727e6b90 is recorded in whole-branch-review-2026-09-24.md; its Important and
+Moderate repairs are accepted in09fed606 and9e0b4ffa with17focused checks.
+Record any later production-repair review and affected paths; repeat review
+only for Critical fixes under the standing ruling. Runtime gates remain open.
+Then ask before merging to main. Preserve `stash@{0}`; never apply or
 drop it.
