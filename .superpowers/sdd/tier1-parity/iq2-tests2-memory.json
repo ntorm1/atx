@@ -1,0 +1,22 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "tests/test_issuer_content_query.py",
+    "tests/test_issuer_selected_lineage.py",
+    "tests/test_derived_selected_lineage.py",
+    "-n",
+    "0",
+    "-q"
+  ],
+  "job_limit_gb": 1.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 6.004932403564453,
+    "commit_free_gb": 7.594451904296875
+  },
+  "child_pid": 21388,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.6866836547851562
+}

@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+import duckdb
+
 from .derived_registry import DERIVED_SOURCE_NAME
 
 
@@ -228,6 +230,10 @@ def qualify_selected_lineage(
                     raise _LineageError("invalid", f"metric clock after consumer event: {metric_id}")
                 if parent_at is not None and row["valid_to"] is not None and row["valid_to"] <= parent_at:
                     raise _LineageError("invalid", f"metric dependency expired at consumer event: {metric_id}")
+                payload = row["selected_input_refs_json"]
+                stored_hash = row["selected_input_refs_hash"]
+                if payload is None or stored_hash is None:
+                    raise _LineageError("legacy_unverifiable", f"legacy metric {metric_id}")
                 if row["history_status"] != "event_reconstructed":
                     raise _LineageError("invalid", f"nonreconstructed metric {metric_id}")
                 if row["value_status"] != "valid" or row["value"] is None:
@@ -238,10 +244,6 @@ def qualify_selected_lineage(
                 expected_hash = expected_definition_hashes.get(key)
                 if expected_hash is None or expected_hash != row["definition_hash"]:
                     raise _LineageError("definition_unverified", f"definition hash mismatch: {key}")
-                payload = row["selected_input_refs_json"]
-                stored_hash = row["selected_input_refs_hash"]
-                if payload is None or stored_hash is None:
-                    raise _LineageError("legacy_unverifiable", f"legacy metric {metric_id}")
                 used_bytes += len(payload.encode("utf-8"))
                 if used_bytes > max_bytes:
                     raise _LineageError("limit_exceeded", "payload byte bound")
@@ -357,3 +359,103 @@ class _LineageError(Exception):
         self.status = status
         self.reason = reason
         super().__init__(reason)
+
+
+def registered_definition_hashes(con: Any) -> dict[tuple[str, str], str]:
+    """Hash only canonical definitions that still match the registered catalog.
+
+    This lives at the root package boundary so serving consumers need no private
+    publisher imports. The publisher's hash and annual plan are reused exactly.
+    """
+    from . import _derived_annual as annual
+    from . import _derived_pit as pit
+    from .derived_registry import default_derived_definitions
+
+    definitions = default_derived_definitions()
+    by_code = {definition.metric_code: definition for definition in definitions}
+    try:
+        registered = {
+            str(code): (str(expression), str(window), str(version), str(inputs))
+            for code, expression, window, version, inputs in con.execute(
+                "SELECT metric_code, expression, metric_window, version, inputs_json "
+                "FROM derived_metric_definitions"
+            ).fetchall()
+        }
+    except duckdb.Error as exc:
+        raise ValueError("issuer derived lineage requires the registered definition catalog") from exc
+    hashes: dict[tuple[str, str], str] = {}
+    for definition in definitions:
+        row = registered.get(definition.metric_code)
+        if row != (definition.expression, definition.window, definition.version,
+                   json.dumps(list(definition.inputs), separators=(",", ":"))):
+            continue
+        hashes[(definition.metric_code, definition.window)] = pit.definition_hash(
+            definition, annual.plan_for(definition, by_code)
+        )
+    return hashes
+
+
+def qualify_issuer_derived_page(
+    con: Any,
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    expected_cik: str,
+    expected_definition_hashes: Mapping[tuple[str, str], str],
+    max_batch_nodes: int = 4096,
+    max_batch_bytes: int = 8_388_608,
+) -> tuple[list[bool], list[dict[str, Any]]]:
+    """Check selected roots at their own events, returning bounded safe diagnostics.
+
+    A verified invalid NULL event may be shown as NULL. Numeric events require
+    full qualification. Reasons are fixed codes; stored source JSON is never echoed.
+    """
+    ids = [str(row["derived_value_id"]) for row in candidates]
+    proofs: dict[str, LineageQualification] = {}
+
+    def resolve(batch: list[str]) -> None:
+        try:
+            found = qualify_selected_lineage(
+                con, batch, expected_cik=expected_cik, decision_cutoff=None,
+                expected_definition_hashes=expected_definition_hashes,
+                max_batch_nodes=max_batch_nodes, max_batch_bytes=max_batch_bytes,
+            )
+        except duckdb.Error as exc:
+            raise ValueError("issuer derived selected lineage is unavailable in this schema") from exc
+        # An aggregate node/byte cap can reject a shared batch even when each
+        # root fits. Bisect without relaxing either aggregate or per-root caps.
+        if len(batch) > 1 and all(value.status == "limit_exceeded" for value in found.values()):
+            middle = len(batch) // 2
+            resolve(batch[:middle])
+            resolve(batch[middle:])
+        else:
+            proofs.update(found)
+
+    for offset in range(0, len(ids), 32):
+        resolve(ids[offset:offset + 32])
+
+    allowed: list[bool] = []
+    diagnostics: list[dict[str, Any]] = []
+    for row, root_id in zip(candidates, ids, strict=True):
+        proof = proofs[root_id]
+        numeric = row.get("value") is not None
+        valid = row.get("value_status") == "valid"
+        accepted = (proof.status == "qualified" and valid) if numeric else (
+            proof.selected_cik == expected_cik and proof.status in {"qualified", "invalid"}
+            and proof.reason in {"selected leaves verified", "selected source ownership verified; value invalid"}
+        )
+        allowed.append(accepted)
+        if not accepted:
+            reason = proof.status if proof.status in {
+                "mismatch", "missing", "invalid", "legacy_unverifiable",
+                "definition_unverified", "limit_exceeded",
+            } else "invalid"
+            if numeric and (not valid or proof.status == "invalid"):
+                reason = "invalid_numeric_state"
+            diagnostics.append({
+                "derived_value_id": root_id,
+                "period_end": row.get("period_end"),
+                "value_status": str(row.get("value_status")),
+                "lineage_status": proof.status,
+                "reason": reason,
+            })
+    return allowed, diagnostics

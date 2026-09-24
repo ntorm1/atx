@@ -1,0 +1,22 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "ruff",
+    "check",
+    "src/atx_db/api/service.py",
+    "src/atx_db/asof/fundamentals.py",
+    "src/atx_db/derived_lineage.py",
+    "tests/test_issuer_content_query.py",
+    "tests/test_issuer_selected_lineage.py"
+  ],
+  "job_limit_gb": 1.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 5.175697326660156,
+    "commit_free_gb": 6.893993377685547
+  },
+  "child_pid": 9228,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.062137603759765625
+}

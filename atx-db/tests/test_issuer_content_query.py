@@ -13,6 +13,20 @@ OWNER_SAFE = "SEC-COMPANYFACTS-UNRESOLVED-CIK-0000000123"
 OWNER_COLLIDING = "SEC-COMPANYFACTS-REUSED-OWNER"
 
 
+@pytest.fixture(autouse=True)
+def _bounded_duckdb_connections(monkeypatch) -> None:
+    """Keep writable fixtures and both read paths at 256 MB / one thread."""
+    original_connect = duckdb.connect
+
+    def bounded_connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        connection.execute("SET memory_limit='256MB'")
+        connection.execute("SET threads=1")
+        return connection
+
+    monkeypatch.setattr(duckdb, "connect", bounded_connect)
+
+
 def _service(tmp_path) -> WarehouseReadService:
     path = tmp_path / "issuer-content.duckdb"
     with duckdb.connect(str(path)) as conn:
@@ -106,6 +120,19 @@ def _service(tmp_path) -> WarehouseReadService:
                 ("cross-cik-leak", "eps-q2", OWNER_COLLIDING, "eps_diluted_q_growth_yoy", "q", dt.date(2026, 6, 30), 999.0, "valid", "b-only", dt.date(2026, 6, 30), dt.datetime(2026, 7, 1), dt.datetime(2026, 7, 1), "seed"),
             ],
         )
+        # Legacy rows have no exact selected refs. They must be diagnosed,
+        # including a NULL revision, rather than certified by owner alone.
+        for column in (
+            "source VARCHAR", "valid_to TIMESTAMP", "definition_hash VARCHAR",
+            "target_bucket BIGINT", "fiscal_period_start DATE", "fiscal_period_end DATE",
+            "history_status VARCHAR", "selected_input_refs_json VARCHAR",
+            "selected_input_refs_hash VARCHAR",
+        ):
+            conn.execute(f"ALTER TABLE derived_metric_values ADD COLUMN {column}")
+        conn.execute(
+            "CREATE TABLE derived_metric_definitions (metric_code VARCHAR, expression VARCHAR, "
+            "metric_window VARCHAR, version VARCHAR, inputs_json VARCHAR)"
+        )
     return WarehouseReadService(path)
 
 
@@ -131,15 +158,9 @@ def test_issuer_content_excludes_cross_cik_derived_owner_and_keeps_null_state(tm
     assert result.metadata["issuer_owner_ciks"][OWNER_COLLIDING] == (CIK_A, CIK_B)
     assert result.metadata["excluded_derived_owner_ids"] == [OWNER_COLLIDING]
     assert result.metadata["derived_issuer_owner_ids"] == [OWNER_SAFE]
-    assert result.data == [
-        {
-            "issuer_owner_id": OWNER_SAFE,
-            "cik": CIK_A,
-            "period_end": dt.date(2026, 3, 31),
-            "value": None,
-            "value_status": "missing_input_or_domain",
-        }
-    ]
+    assert result.data == []
+    assert result.metadata["derived_lineage_rejected_count"] == 1
+    assert result.metadata["derived_lineage_diagnostics"][0]["derived_value_id"] == "new-unavailable"
 
 
 def test_issuer_content_exact_cik_filter_and_vintage_clocks(tmp_path) -> None:

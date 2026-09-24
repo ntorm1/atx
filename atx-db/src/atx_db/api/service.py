@@ -13,6 +13,7 @@ import duckdb
 import pyarrow as pa  # type: ignore[import-untyped]
 
 from ..connection import DEFAULT_DB_PATH, open_duckdb_connection
+from ..derived_lineage import qualify_issuer_derived_page, registered_definition_hashes
 from .catalog import DATASETS, RecordSchema, get_dataset, get_schema, public_catalog, public_schema
 from .models import BatchRangeRequest, RangeRequest, SymbologyRequest, SymbolType
 
@@ -558,20 +559,21 @@ class WarehouseReadService:
             derived_owners = [owner for owner in owners if owner_map[owner] == (normalized_cik,)]
             excluded_derived_owners = [owner for owner in owners if owner not in derived_owners]
             if owners:
-                rows, columns, truncated = self._issuer_content_rows(
+                rows, columns, truncated, lineage_metadata = self._issuer_content_rows(
                     conn, schema=schema, cik=normalized_cik, owners=owners, start=start, end=end,
                     content_as_of=content_as_of, items=items or [], basis=basis or [], fields=requested,
                     vintage=vintage, limit=limit,
                     derived_owners=derived_owners,
                 )
             else:
-                rows, columns, truncated = [], requested, False
+                rows, columns, truncated, lineage_metadata = [], requested, False, {}
         data = [dict(zip(columns, row, strict=True)) for row in rows]
         metadata = self._issuer_metadata(
             schema=schema, content_as_of=content_as_of, lookup_cik=normalized_cik, owner_map=owner_map,
             derived_owners=derived_owners, excluded_derived_owners=excluded_derived_owners,
             issuer_lookup=lookup, fields=requested, record_count=len(data), truncated=truncated,
         )
+        metadata.update(lineage_metadata)
         response_bytes = len(json.dumps({"metadata": metadata, "data": data}, default=str, separators=(",", ":")).encode())
         return QueryResult(metadata=metadata, data=data, response_bytes=response_bytes,
                            billable_bytes=0 if not data else pa.Table.from_pylist(data).nbytes)
@@ -580,14 +582,19 @@ class WarehouseReadService:
         self, conn: duckdb.DuckDBPyConnection, *, schema: RecordSchema, cik: str, owners: list[str],
         start: dt.date, end: dt.date, content_as_of: dt.datetime, items: list[str], basis: list[str],
         fields: list[str], vintage: str, limit: int, derived_owners: list[str],
-    ) -> tuple[list[tuple[Any, ...]], list[str], bool]:
+    ) -> tuple[list[tuple[Any, ...]], list[str], bool, dict[str, Any]]:
         owner_marks = _placeholders(owners)
         direction = "ASC" if vintage == "first_reported" else "DESC"
         is_derived = schema.source_table == "derived_metric_values"
         if is_derived:
             owners = derived_owners
             if not owners:
-                return [], fields, False
+                return [], fields, False, {}
+            return self._issuer_derived_rows(
+                conn, schema=schema, cik=cik, owners=owners, start=start, end=end,
+                content_as_of=content_as_of, items=items, basis=basis, fields=fields,
+                vintage=vintage, limit=limit,
+            )
             owner_marks = _placeholders(owners)
         natural_key = "coalesce(b.revision_group_id, b.derived_value_id)" if is_derived else ", ".join(
             f"b.{_quote_identifier(name)}" for name in schema.natural_key
@@ -656,7 +663,112 @@ class WarehouseReadService:
         cursor = conn.execute(sql, params)
         rows = cursor.fetchall()
         columns = [str(column[0]) for column in cursor.description]
-        return rows[:limit], columns, len(rows) > limit
+        return rows[:limit], columns, len(rows) > limit, {}
+
+    def _issuer_derived_rows(
+        self, conn: duckdb.DuckDBPyConnection, *, schema: RecordSchema, cik: str,
+        owners: list[str], start: dt.date, end: dt.date, content_as_of: dt.datetime,
+        items: list[str], basis: list[str], fields: list[str], vintage: str, limit: int,
+    ) -> tuple[list[tuple[Any, ...]], list[str], bool, dict[str, Any]]:
+        """Page ranked whole states, then qualify exact leaves before output limit."""
+        direction = "ASC" if vintage == "first_reported" else "DESC"
+        conditions = [
+            f"b.security_id IN ({_placeholders(owners)})",
+            "coalesce(b.available_at, b.source_loaded_at) <= ?",
+            "coalesce(b.as_of_date, CAST(coalesce(b.available_at, b.source_loaded_at) AS DATE)) <= CAST(? AS DATE)",
+        ]
+        params: list[Any] = [*owners, _naive_utc(content_as_of), _naive_utc(content_as_of)]
+        if items:
+            conditions.append(f"b.metric_code IN ({_placeholders(items)})")
+            params.extend(items)
+        if basis:
+            conditions.append(f"b.metric_window IN ({_placeholders(basis)})")
+            params.extend(basis)
+        selected = []
+        for name in fields:
+            if name == "issuer_owner_id":
+                selected.append('v.security_id AS "issuer_owner_id"')
+            elif name == "cik":
+                selected.append('? AS "cik"')
+            else:
+                selected.append(f"v.{_quote_identifier(schema.field(name).source_column)} AS {_quote_identifier(name)}")
+        projection_params = [cik] if "cik" in fields else []
+        selected.extend([
+            'v.derived_value_id AS "_lineage_id"',
+            'v.period_end AS "_lineage_period_end"',
+            'v.value AS "_lineage_value"',
+            'v.value_status AS "_lineage_value_status"',
+        ])
+        query = f"""
+            WITH visible AS (
+                SELECT b.*, row_number() OVER (
+                    PARTITION BY coalesce(b.revision_group_id, b.derived_value_id)
+                    ORDER BY coalesce(b.available_at, b.source_loaded_at) {direction},
+                             b.derived_value_id {direction}
+                ) AS _revision_rank
+                FROM derived_metric_values b WHERE {' AND '.join(conditions)}
+            )
+            SELECT {', '.join(selected)} FROM visible v
+            WHERE v._revision_rank = 1 AND v.period_end >= ? AND v.period_end < ?
+            ORDER BY v.period_end, v.security_id, v.metric_code, v.derived_value_id
+            LIMIT ? OFFSET ?
+        """
+        page_params = [*params, *projection_params, start, end]
+        try:
+            hashes = registered_definition_hashes(conn)
+        except ValueError as exc:
+            raise ApiQueryError(str(exc)) from exc
+        output: list[tuple[Any, ...]] = []
+        diagnostics: list[dict[str, Any]] = []
+        rejected = 0
+        scanned = 0
+        max_scan = min(200_000, max(8_192, limit * 4))
+        max_output_bytes = 16 * 1024 * 1024
+        output_bytes = 0
+        exhausted = False
+        while scanned < max_scan and len(output) <= limit:
+            page_size = min(64, max_scan - scanned)
+            cursor = conn.execute(query, [*page_params, page_size, scanned])
+            page = cursor.fetchall()
+            if not page:
+                exhausted = True
+                break
+            names = [str(column[0]) for column in cursor.description]
+            mapped = [dict(zip(names, row, strict=True)) for row in page]
+            candidates = [{
+                "derived_value_id": row["_lineage_id"],
+                "period_end": row["_lineage_period_end"],
+                "value": row["_lineage_value"],
+                "value_status": row["_lineage_value_status"],
+            } for row in mapped]
+            try:
+                accepted, rejected_page = qualify_issuer_derived_page(
+                    conn, candidates, expected_cik=cik, expected_definition_hashes=hashes,
+                )
+            except ValueError as exc:
+                raise ApiQueryError(str(exc)) from exc
+            rejected += len(rejected_page)
+            diagnostics.extend(rejected_page[:max(0, 128 - len(diagnostics))])
+            for row, keep in zip(page, accepted, strict=True):
+                if keep and len(output) <= limit:
+                    projected = row[:len(fields)]
+                    output_bytes += len(json.dumps(projected, default=str).encode())
+                    if output_bytes > max_output_bytes:
+                        raise ApiQueryError("issuer derived output byte limit exceeded")
+                    output.append(projected)
+            scanned += len(page)
+            if len(page) < page_size:
+                exhausted = True
+                break
+        scan_limited = not exhausted and scanned >= max_scan
+        metadata = {
+            "derived_lineage_rejected_count": rejected,
+            "derived_lineage_diagnostics": diagnostics,
+            "derived_lineage_diagnostics_truncated": rejected > len(diagnostics),
+            "derived_lineage_scanned_count": scanned,
+            "derived_lineage_scan_limited": scan_limited,
+        }
+        return output[:limit], fields, len(output) > limit or scan_limited, metadata
 
     @staticmethod
     def _issuer_metadata(

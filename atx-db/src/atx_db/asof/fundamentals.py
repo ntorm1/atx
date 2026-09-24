@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .._fundamental_clock import EFFECTIVE_FUNDAMENTAL_POINTS_SQL
+from ..derived_lineage import qualify_issuer_derived_page, registered_definition_hashes
 from ._common import (
     DEFAULT_DB_PATH,
     Path,
@@ -475,7 +476,7 @@ def issuer_shares_asof(cik: str, content_as_of: dt.datetime, db_path: Path | str
 
 
 def issuer_derived_asof(cik: str, content_as_of: dt.datetime, db_path: Path | str = DEFAULT_DB_PATH) -> pd.DataFrame:
-    """Read only derived states whose selected owner belongs exclusively to ``cik``."""
+    """Read bounded visible states with selected source leaves owned by ``cik``."""
     normalized = _normalize_cik(cik)
     owner_ciks = issuer_owner_ciks_asof(normalized, content_as_of, db_path)
     owners = tuple(owner for owner, ciks in owner_ciks.items() if ciks == (normalized,))
@@ -488,29 +489,91 @@ def issuer_derived_asof(cik: str, content_as_of: dt.datetime, db_path: Path | st
         result.attrs["excluded_derived_owner_ids"] = excluded_owners
         return result
     placeholders = ",".join("?" for _ in owners)
+    query = f"""
+        WITH visible AS (
+            SELECT d.*, row_number() OVER (
+                PARTITION BY coalesce(d.revision_group_id, d.derived_value_id)
+                ORDER BY coalesce(d.available_at, d.source_loaded_at) DESC,
+                         d.derived_value_id DESC
+            ) AS _revision_rank
+            FROM derived_metric_values d
+            WHERE d.security_id IN ({placeholders})
+              AND coalesce(d.available_at, d.source_loaded_at) <= ?
+              AND coalesce(d.as_of_date, CAST(coalesce(d.available_at, d.source_loaded_at) AS DATE))
+                  <= CAST(? AS DATE)
+        )
+        SELECT * EXCLUDE (_revision_rank) FROM visible
+        WHERE _revision_rank = 1
+        ORDER BY period_end, security_id, metric_code, derived_value_id
+        LIMIT ? OFFSET ?
+    """
+    common_params = [*owners, content_as_of, content_as_of]
+    frames: list[pd.DataFrame] = []
+    result_columns: list[str] = []
+    diagnostics: list[dict[str, object]] = []
+    rejected = 0
+    scanned = 0
+    retained_bytes = 0
+    max_rows = 50_000
+    max_scan = 200_000
+    max_bytes = 16 * 1024 * 1024
+    scan_limited = False
     with connect(db_path, read_only=True) as store:
-        result = store.con.execute(
-            f"""
-            WITH visible AS (
-                SELECT d.*,
-                       row_number() OVER (
-                           PARTITION BY coalesce(d.revision_group_id, d.derived_value_id)
-                           ORDER BY coalesce(d.available_at, d.source_loaded_at) DESC,
-                                    d.derived_value_id DESC
-                       ) AS _revision_rank
-                FROM derived_metric_values d
-                WHERE d.security_id IN ({placeholders})
-                  AND coalesce(d.available_at, d.source_loaded_at) <= ?
-                  AND coalesce(d.as_of_date, CAST(coalesce(d.available_at, d.source_loaded_at) AS DATE))
-                      <= CAST(? AS DATE)
+        hashes = registered_definition_hashes(store.con)
+        while scanned < max_scan and sum(len(frame) for frame in frames) < max_rows:
+            size = min(64, max_scan - scanned)
+            params = [*common_params, size, scanned]
+            # SELECT * includes retained JSON refs. Bound each page in SQL before
+            # converting it into Python or a DataFrame.
+            lengths = store.con.execute(
+                f"SELECT count(*), coalesce(max(octet_length(encode(to_json(page)))), 0), "
+                f"coalesce(sum(octet_length(encode(to_json(page)))), 0) "
+                f"FROM ({query}) page", params,
+            ).fetchone()
+            count, largest, page_bytes = (int(value or 0) for value in lengths)
+            if not count:
+                break
+            if largest > 1_048_576 or retained_bytes + page_bytes > max_bytes:
+                raise ValueError("issuer derived as-of output byte limit exceeded")
+            retained_bytes += page_bytes
+            page = store.con.execute(query, params).df()
+            if not result_columns:
+                result_columns = list(page.columns)
+            candidates = [{
+                "derived_value_id": row.derived_value_id,
+                "period_end": row.period_end,
+                "value": None if pd.isna(row.value) else row.value,
+                "value_status": row.value_status,
+            } for row in page.itertuples(index=False)]
+            accepted, rejected_page = qualify_issuer_derived_page(
+                store.con, candidates, expected_cik=normalized,
+                expected_definition_hashes=hashes,
             )
-            SELECT * EXCLUDE (_revision_rank) FROM visible WHERE _revision_rank = 1
-            ORDER BY period_end, security_id, metric_code, derived_value_id
-            """,
-            [*owners, content_as_of, content_as_of],
-        ).df()
+            rejected += len(rejected_page)
+            diagnostics.extend(rejected_page[:max(0, 128 - len(diagnostics))])
+            if any(accepted):
+                frames.append(page.loc[accepted])
+            scanned += count
+            if count < size:
+                break
+        else:
+            # A cap alone does not prove truncation. Probe one SQL-bounded row
+            # without materializing its potentially large JSON in Python.
+            scan_limited = bool(store.con.execute(
+                f"SELECT count(*) FROM ({query}) page",
+                [*common_params, 1, scanned],
+            ).fetchone()[0])
+    result = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=result_columns)
+    if len(result) > max_rows:
+        result = result.iloc[:max_rows].copy()
+        scan_limited = True
     result.attrs["issuer_owner_status"] = (
         "ambiguous_owner_cik_collision" if excluded_owners else "resolved_single_owner"
     )
     result.attrs["excluded_derived_owner_ids"] = excluded_owners
+    result.attrs["derived_lineage_rejected_count"] = rejected
+    result.attrs["derived_lineage_diagnostics"] = diagnostics
+    result.attrs["derived_lineage_diagnostics_truncated"] = rejected > len(diagnostics)
+    result.attrs["derived_lineage_scanned_count"] = scanned
+    result.attrs["derived_lineage_scan_limited"] = scan_limited
     return result

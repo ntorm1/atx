@@ -33,12 +33,27 @@ requested period range is filtered, so a later NULL/unavailable invalidation
 does not resurrect an older valid value.
 
 Before a derived owner is used, the surface checks all raw CIKs whose
-availability and as-of date are visible at `content_as_of`.  An owner shared with another normalized CIK is
-excluded from derived output and is reported as
-`ambiguous_owner_cik_collision` with `excluded_derived_owner_ids` and
-`issuer_owner_ciks`.  CIK-bearing statement, standardized, TTM, ratio, and
-share tables use an exact normalized-CIK filter independently of owner
-discovery.
+availability and as-of date are visible at `content_as_of`. An owner shared
+with another normalized CIK is excluded and reported as
+`ambiguous_owner_cik_collision`. This owner check is coarse: each visible
+derived revision is also checked against its exact retained selected operands.
+Every selected standardized leaf must carry the requested CIK, and the
+canonical source, registered definition hashes, and operand clocks must verify.
+The proof uses the selected revision's own event clock, so a valid first
+reported state may be returned after its `valid_to` date.
+
+A numeric metric is returned only after full selected-lineage qualification.
+An unavailable NULL state is returned only if its selected source ownership is
+verified. Legacy NULL refs, foreign leaves, missing operands, and invalid
+numeric states are excluded with `derived_lineage_diagnostics` containing a
+bounded state ID, period, status, and fixed reason. The metadata also gives
+`derived_lineage_rejected_count`, `derived_lineage_scanned_count`, and explicit
+diagnostic and scan truncation flags. Pages are qualified before the requested
+row limit is applied. Large or unavailable lineage produces a controlled
+query error. The as-of DataFrame exposes equivalent diagnostics in its attrs.
+
+CIK-bearing statement, standardized, TTM, ratio, and share tables use an exact
+normalized-CIK filter independently of owner discovery.
 
 For a CVX quarterly diluted-EPS growth read, first resolve the current lookup
 clock and then use the accounting-content clock separately:
@@ -56,8 +71,10 @@ service.issuer_content_range(
 )
 ```
 
-The caller must inspect `issuer_owner_status`; a collision returns no derived
-row from the shared owner rather than exposing another CIK's value.
+The caller should inspect both `issuer_owner_status` and the derived-lineage
+diagnostics. A coarse owner collision excludes the shared owner; selected
+lineage excludes foreign or unverified states within an otherwise eligible
+owner.
 
 No market valuation conclusion follows from this surface.  Current directory
 evidence may identify a present market-security candidate, but remains
