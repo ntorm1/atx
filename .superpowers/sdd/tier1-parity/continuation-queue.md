@@ -1,5 +1,23 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Goal blocked on host capacity — 2026-09-24 22:10 UTC
+
+The same sustained-headroom dependency has repeated for three consecutive
+goal turns: repair progress/window3, verified wait/window4, and current-state
+revalidation. Native GetPerformanceInfo at22:10:47UTC reports5.619736GiB free
+physical and11.192596GiB free commit; the6GiB physical floor is still unmet.
+No warehouse/test/source worker is live, window4 is terminal, and the warehouse
+size/mtime remain unchanged. ED1/PG1 independent repair work is committed;
+no further identified independent work can close the current data prerequisites.
+The goal is marked blocked pending external host capacity, not completed or
+scope-reduced. Do not keep emitting observation-only automatic continuations.
+
+On resume, restart the blocked audit count and obtain the required120second
+6GiB physical/8GiB commit window. Then execute PG1 populated0314 upgrade,
+governed migrate323..325, full archive17, full submissions, CVX source and full
+run5 in the existing production-resume-sequence. No source recovery is due.
+Preserve all thresholds, source evidence, backups, unrelated work and stash@{0}.
+
 ## Verified capacity wait terminal — 2026-09-24 22:09 UTC
 
 Window4 (live session15674, now terminal) observed19samples over180seconds:

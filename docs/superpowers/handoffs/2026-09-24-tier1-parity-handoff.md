@@ -1,5 +1,13 @@
 # Tier-1 parity handoff — 2026-09-24 evening UTC
 
+**Goal status: blocked on host capacity,22:10UTC.** The same dependency recurred
+across three consecutive goal turns. Fresh native counters at22:10:47UTC show
+5.619736GiB free physical/11.192596GiB free commit, below the required physical
+floor. No warehouse worker is live. All independent repairs identified in this
+continuation are committed; numerical/materialization prerequisites remain.
+Resume when the unchanged6/8GiB120second window can hold, then take the exact
+next steps below. The full objective is unchanged and remains incomplete.
+
 Latest capacity observation: window4/session15674 is terminal at22:09UTC,
 19samples over180seconds, physical4.530..5.848GiB and commit9.161..11.580GiB.
 No qualifying6/8GiB interval; no additional runtime or warehouse write.
@@ -78,4 +86,4 @@ continue independent work. Never terminate other sessions or lower thresholds.
 Use the updated production-resume-sequence for all commands and fresh artifact
 names. The canonical CVX consumer is now `read_quarterly_eps_growth.py`; frozen
 v1/v2 SQL remains diagnostic history. No numeric CVX production acceptance or
-alpha result has been claimed. Keep the goal active and preserve stash@{0}.
+alpha result has been claimed. Preserve stash@{0}; do not mark the goal complete.
