@@ -1,0 +1,20 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "-m",
+    "pytest",
+    "tests/test_fundamental_desk_panel.py",
+    "-n",
+    "0",
+    "-q"
+  ],
+  "job_limit_gb": 1.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 5.296184539794922,
+    "commit_free_gb": 7.893787384033203
+  },
+  "child_pid": 2236,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.654998779296875
+}
