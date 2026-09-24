@@ -1,0 +1,20 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    ".superpowers/sdd/tier1-parity/candidate-index-lookup-diagnostic1.py"
+  ],
+  "job_limit_gb": 1.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 3.8674774169921875,
+    "commit_free_gb": 7.190570831298828
+  },
+  "disk": {
+    "path": "C:\\atx\\atx-db\\data",
+    "free_gb": 11.802230834960938,
+    "min_free_gb": 3.0
+  },
+  "child_pid": 19156,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.5480804443359375
+}

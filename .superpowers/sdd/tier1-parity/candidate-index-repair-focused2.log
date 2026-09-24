@@ -1,0 +1,154 @@
+FF....F                                                                  [100%]
+================================== FAILURES ===================================
+___ test_two_phase_rebuild_preserves_rows_constraints_and_candidate_reentry ___
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-82/test_two_phase_rebuild_preserv0')
+
+    def test_two_phase_rebuild_preserves_rows_constraints_and_candidate_reentry(tmp_path):
+        path = _database(tmp_path / "candidates.duckdb")
+        expected = _rows(path)
+        artifacts = tmp_path / "repair1"
+>       result = _call(path, artifacts)
+                 ^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_candidate_index_repair.py:65: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_candidate_index_repair.py:57: in _call
+    return repair.run_repair(db_path=path, artifact_dir=artifacts,
+..\.superpowers\sdd\tier1-parity\rebuild_candidate_target_index.py:344: in run_repair
+    _verify(con, before, before_rows, backup, candidate_id, target_security_id)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+con = <_duckdb.DuckDBPyConnection object at 0x000002831879D570>
+before = {'table': {'schema_name': 'main', 'table_name': 'identifier_resolution_candidates', 'sql': 'CREATE TABLE identifier_re...ntifier_resolution_candidates', 'index_name': 'idx_identifier_resolution_candidates_target', 'is_unique': False, ...}]}
+rows = {'rows': 3, 'ordered_row_sha256': '5f5138fab6c9c51cf4f80b0d1a114ee2534f530e85fd20e14d02d0341b23589e', 'encoding': 'utf8-json-array-default-str-length-prefix-u64be-v1'}
+backup = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-82/test_two_phase_rebuild_preserv0/repair1/identifier_resolution_candidates.parquet')
+candidate_id = 'candidate-a', target = 'issuer-a'
+
+    def _verify(con: duckdb.DuckDBPyConnection, before: dict[str, Any], rows: dict[str, Any],
+                backup: Path, candidate_id: str, target: str) -> dict[str, Any]:
+        after = _catalog(con)
+        _validate_catalog(after)
+        if after != before:
+            raise RuntimeError("Candidate columns, constraints, table, or index definitions changed")
+        after_rows = _row_evidence(con, f"main.{TABLE}")
+        if after_rows != rows:
+            raise RuntimeError("Candidate row count or logical digest changed")
+        _backup_equality(con, backup)
+        lookup = _lookup(con, candidate_id, target)
+        if not lookup["equivalent"] or not lookup["default_uses_index"]:
+>           raise RuntimeError("Rebuilt target index did not pass the indexed/sequential acceptance query")
+E           RuntimeError: Rebuilt target index did not pass the indexed/sequential acceptance query
+
+..\.superpowers\sdd\tier1-parity\rebuild_candidate_target_index.py:214: RuntimeError
+_ test_failed_recreation_retains_backup_and_only_absent_target_then_completes_verified_resume _
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-82/test_failed_recreation_retains0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000028339A2A840>
+
+    def test_failed_recreation_retains_backup_and_only_absent_target_then_completes_verified_resume(tmp_path, monkeypatch):
+        path = _database(tmp_path / "resume.duckdb")
+        expected = _rows(path)
+        artifacts = tmp_path / "failed-repair"
+        with duckdb.connect(str(path), read_only=True, config={"memory_limit": "64MB", "threads": 1}) as con:
+            before = repair._catalog(con)
+        _leave_index_absent(path, artifacts, monkeypatch)
+        receipt = json.loads((artifacts / "receipt.json").read_text())
+        assert receipt["failed_phase"] == "create_started"
+        assert receipt["repair_required"] and not receipt["safe_to_resume_source"]
+        assert Path(receipt["backup_path"]).is_file()
+        assert _rows(path) == expected
+        with duckdb.connect(str(path), read_only=True, config={"memory_limit": "64MB", "threads": 1}) as con:
+            current = repair._catalog(con)
+            assert current == {**before, "indexes": [row for row in before["indexes"]
+                                                    if row["index_name"] != repair.INDEX]}
+>       result = _resume(path, artifacts)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_candidate_index_repair.py:165: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_candidate_index_repair.py:145: in _resume
+    return repair.run_repair(db_path=path, resume_artifact_dir=artifacts,
+..\.superpowers\sdd\tier1-parity\rebuild_candidate_target_index.py:344: in run_repair
+    _verify(con, before, before_rows, backup, candidate_id, target_security_id)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+con = <_duckdb.DuckDBPyConnection object at 0x0000028339CC42B0>
+before = {'columns': [{'column_default': None, 'column_index': 1, 'column_name': 'candidate_id', 'data_type': 'VARCHAR', ...}, ...n_id VARCHAR, source_loaded_at TIMESTAMP DEFAULT(now()) NOT NULL);', 'table_name': 'identifier_resolution_candidates'}}
+rows = {'encoding': 'utf8-json-array-default-str-length-prefix-u64be-v1', 'ordered_row_sha256': '5f5138fab6c9c51cf4f80b0d1a114ee2534f530e85fd20e14d02d0341b23589e', 'rows': 3}
+backup = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-82/test_failed_recreation_retains0/failed-repair/identifier_resolution_candidates.parquet')
+candidate_id = 'candidate-a', target = 'issuer-a'
+
+    def _verify(con: duckdb.DuckDBPyConnection, before: dict[str, Any], rows: dict[str, Any],
+                backup: Path, candidate_id: str, target: str) -> dict[str, Any]:
+        after = _catalog(con)
+        _validate_catalog(after)
+        if after != before:
+            raise RuntimeError("Candidate columns, constraints, table, or index definitions changed")
+        after_rows = _row_evidence(con, f"main.{TABLE}")
+        if after_rows != rows:
+            raise RuntimeError("Candidate row count or logical digest changed")
+        _backup_equality(con, backup)
+        lookup = _lookup(con, candidate_id, target)
+        if not lookup["equivalent"] or not lookup["default_uses_index"]:
+>           raise RuntimeError("Rebuilt target index did not pass the indexed/sequential acceptance query")
+E           RuntimeError: Rebuilt target index did not pass the indexed/sequential acceptance query
+
+..\.superpowers\sdd\tier1-parity\rebuild_candidate_target_index.py:214: RuntimeError
+_______ test_resume_after_create_committed_only_verifies_existing_index _______
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-82/test_resume_after_create_commi0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000028339BBB290>
+
+    def test_resume_after_create_committed_only_verifies_existing_index(tmp_path, monkeypatch):
+        path = _database(tmp_path / "interrupted-verification.duckdb")
+        expected = _rows(path)
+        artifacts = tmp_path / "created-index"
+    
+        def interrupted_verification(*args, **kwargs):
+            raise RuntimeError("interrupted after CREATE committed")
+    
+        with monkeypatch.context() as patch:
+            patch.setattr(repair, "_verify", interrupted_verification)
+            with pytest.raises(RuntimeError, match="interrupted after CREATE committed"):
+                _call(path, artifacts)
+        state = json.loads((artifacts / "repair-state.json").read_text())
+        assert state["phase"] == "index_recreated" and not state["safe_to_resume_source"]
+>       result = _resume(path, artifacts)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_candidate_index_repair.py:220: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_candidate_index_repair.py:145: in _resume
+    return repair.run_repair(db_path=path, resume_artifact_dir=artifacts,
+..\.superpowers\sdd\tier1-parity\rebuild_candidate_target_index.py:344: in run_repair
+    _verify(con, before, before_rows, backup, candidate_id, target_security_id)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+con = <_duckdb.DuckDBPyConnection object at 0x00000283187E1930>
+before = {'columns': [{'column_default': None, 'column_index': 1, 'column_name': 'candidate_id', 'data_type': 'VARCHAR', ...}, ...n_id VARCHAR, source_loaded_at TIMESTAMP DEFAULT(now()) NOT NULL);', 'table_name': 'identifier_resolution_candidates'}}
+rows = {'encoding': 'utf8-json-array-default-str-length-prefix-u64be-v1', 'ordered_row_sha256': '5f5138fab6c9c51cf4f80b0d1a114ee2534f530e85fd20e14d02d0341b23589e', 'rows': 3}
+backup = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-82/test_resume_after_create_commi0/created-index/identifier_resolution_candidates.parquet')
+candidate_id = 'candidate-a', target = 'issuer-a'
+
+    def _verify(con: duckdb.DuckDBPyConnection, before: dict[str, Any], rows: dict[str, Any],
+                backup: Path, candidate_id: str, target: str) -> dict[str, Any]:
+        after = _catalog(con)
+        _validate_catalog(after)
+        if after != before:
+            raise RuntimeError("Candidate columns, constraints, table, or index definitions changed")
+        after_rows = _row_evidence(con, f"main.{TABLE}")
+        if after_rows != rows:
+            raise RuntimeError("Candidate row count or logical digest changed")
+        _backup_equality(con, backup)
+        lookup = _lookup(con, candidate_id, target)
+        if not lookup["equivalent"] or not lookup["default_uses_index"]:
+>           raise RuntimeError("Rebuilt target index did not pass the indexed/sequential acceptance query")
+E           RuntimeError: Rebuilt target index did not pass the indexed/sequential acceptance query
+
+..\.superpowers\sdd\tier1-parity\rebuild_candidate_target_index.py:214: RuntimeError
+=========================== short test summary info ===========================
+FAILED tests/test_candidate_index_repair.py::test_two_phase_rebuild_preserves_rows_constraints_and_candidate_reentry
+FAILED tests/test_candidate_index_repair.py::test_failed_recreation_retains_backup_and_only_absent_target_then_completes_verified_resume
+FAILED tests/test_candidate_index_repair.py::test_resume_after_create_committed_only_verifies_existing_index
+3 failed, 4 passed, 6 deselected in 2.78s

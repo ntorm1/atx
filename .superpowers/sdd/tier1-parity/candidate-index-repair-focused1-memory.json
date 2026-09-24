@@ -1,0 +1,22 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "-m",
+    "pytest",
+    "tests/test_candidate_index_repair.py",
+    "-n",
+    "0",
+    "-o",
+    "addopts=",
+    "-q"
+  ],
+  "job_limit_gb": 1.0,
+  "status": "failed",
+  "headroom": {
+    "physical_free_gb": 4.2317962646484375,
+    "commit_free_gb": 8.515369415283203
+  },
+  "child_pid": 13992,
+  "returncode": 1,
+  "native_peak_job_memory_gb": 0.5717887878417969
+}

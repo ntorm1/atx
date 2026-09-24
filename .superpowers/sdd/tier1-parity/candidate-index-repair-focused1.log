@@ -1,0 +1,39 @@
+F.......                                                                 [100%]
+================================== FAILURES ===================================
+_ test_transactional_rebuild_preserves_rows_constraints_and_candidate_reentry _
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-81/test_transactional_rebuild_pre0')
+
+    def test_transactional_rebuild_preserves_rows_constraints_and_candidate_reentry(tmp_path):
+        path = _database(tmp_path / "candidates.duckdb")
+        expected = _rows(path)
+        artifacts = tmp_path / "repair1"
+>       result = _call(path, artifacts)
+                 ^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_candidate_index_repair.py:65: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_candidate_index_repair.py:57: in _call
+    return repair.run_repair(db_path=path, artifact_dir=artifacts,
+..\.superpowers\sdd\tier1-parity\rebuild_candidate_target_index.py:256: in run_repair
+    _rebuild(con, create_sql)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+con = <_duckdb.DuckDBPyConnection object at 0x000001DC6CD3C130>
+create_sql = 'CREATE INDEX idx_identifier_resolution_candidates_target ON identifier_resolution_candidates(target_security_id);'
+
+    def _rebuild(con: duckdb.DuckDBPyConnection, create_sql: str) -> None:
+        """One transaction; failed recreation never commits an absent index."""
+        con.execute("BEGIN TRANSACTION")
+        try:
+            con.execute(f"DROP INDEX main.{INDEX}")
+            con.execute(create_sql)
+>           con.execute("COMMIT")
+E           _duckdb.InternalException: INTERNAL Error: BoundIndex::CreateDeltaIndex is not supported for this index type
+E           This error signals an assertion failure within DuckDB. This usually occurs due to unexpected conditions or errors in the program's logic.
+E           For more information, see https://duckdb.org/docs/stable/dev/internal_errors
+
+..\.superpowers\sdd\tier1-parity\rebuild_candidate_target_index.py:182: InternalException
+=========================== short test summary info ===========================
+FAILED tests/test_candidate_index_repair.py::test_transactional_rebuild_preserves_rows_constraints_and_candidate_reentry
+1 failed, 7 passed in 3.74s

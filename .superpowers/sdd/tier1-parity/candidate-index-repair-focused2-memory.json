@@ -1,0 +1,29 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "-m",
+    "pytest",
+    "tests/test_candidate_index_repair.py",
+    "-k",
+    "two_phase_rebuild or failed_recreation_retains or resume_refuses or resume_after_create",
+    "-n",
+    "0",
+    "-o",
+    "addopts=",
+    "-q"
+  ],
+  "job_limit_gb": 1.0,
+  "status": "failed",
+  "headroom": {
+    "physical_free_gb": 5.269001007080078,
+    "commit_free_gb": 8.94561767578125
+  },
+  "disk": {
+    "path": "C:\\atx\\atx-db\\data",
+    "free_gb": 11.812156677246094,
+    "min_free_gb": 3.0
+  },
+  "child_pid": 7436,
+  "returncode": 1,
+  "native_peak_job_memory_gb": 0.574188232421875
+}
