@@ -35,6 +35,7 @@
 
 #include <functional>
 #include <memory>
+#include <span> // std::span (RowGroups)
 #include <vector>
 
 #include "atx/core/error.hpp" // Result
@@ -89,10 +90,44 @@ using ModelFactory = std::function<std::unique_ptr<Module>(atx::u64 seed)>;
 //  Errors (Result): empty design, x/y row mismatch, x_train/x_val feature
 //  mismatch, batch_size == 0, ensemble_size == 0 -> InvalidArgument.
 // ===========================================================================
+//
+//  CHECKPOINT CONTRACT (W0-L0, L-01/L-07): the checkpoint is selected on x_val/y_val
+//  (on the training design when x_val is empty). x_val must therefore be disjoint
+//  from — and purged against — every row later scored out-of-sample; passing the
+//  test fold selects on test loss, and passing the training design selects on
+//  training loss. The learned sequence alphas carve a purged inner validation block
+//  (tcn_alpha.hpp, SeqFitProtocol).
+// ===========================================================================
 [[nodiscard]] atx::core::Result<std::vector<std::vector<atx::f64>>>
 train(const ModelFactory &make_model, Optimizer &opt, Loss &loss, const lin::MatX &x_train,
       const lin::MatX &y_train, const lin::MatX &x_val, const lin::MatX &y_val,
       const TrainConfig &cfg);
+
+// ===========================================================================
+//  RowGroups — per-row group labels (dates) for date-grouped training (W0-L0, L-08).
+//
+//  train[i] is the group of x_train row i, val[i] of x_val row i (an empty span means
+//  "no groups" for that design). With groups, every minibatch is a set of WHOLE
+//  groups: the ascending distinct group ids are shuffled per (member, epoch) with the
+//  same seed stream the row shuffle uses, their rows (ascending) are laid out in that
+//  order, and a batch closes before a group that would push it past batch_size (a
+//  group larger than batch_size is a batch of its own). Before every value()/grad()
+//  the loss receives the batch's labels via Loss::set_row_groups, so a per-date loss
+//  (IcLoss::PerGroupMeanV2) never mixes dates; the validation pass receives val (or
+//  train when there is no validation design). The groups are cleared on return.
+// ===========================================================================
+struct RowGroups {
+  std::span<const atx::u32> train;
+  std::span<const atx::u32> val;
+};
+
+// train() with date-grouped minibatches. Errors: as train(), plus a non-empty
+// groups.train / groups.val whose length differs from x_train / x_val rows ->
+// InvalidArgument. With both spans empty it is byte-identical to train().
+[[nodiscard]] atx::core::Result<std::vector<std::vector<atx::f64>>>
+train(const ModelFactory &make_model, Optimizer &opt, Loss &loss, const lin::MatX &x_train,
+      const lin::MatX &y_train, const lin::MatX &x_val, const lin::MatX &y_val,
+      const TrainConfig &cfg, const RowGroups &groups);
 
 // ===========================================================================
 //  ensemble_mean_predict — average the predictions of every ensemble member.

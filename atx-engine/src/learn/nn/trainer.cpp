@@ -1,7 +1,10 @@
 #include "atx/engine/learn/nn/trainer.hpp"
 
-#include <limits> // std::numeric_limits
-#include <numeric> // std::iota
+#include <algorithm> // std::sort, std::unique, std::lower_bound (row groups)
+#include <limits>    // std::numeric_limits
+#include <numeric>   // std::iota
+#include <span>      // std::span
+#include <utility>   // std::pair, std::swap
 #include <vector>
 
 #include <Eigen/Dense> // Eigen::Index
@@ -50,15 +53,78 @@ void seeded_shuffle(std::vector<atx::usize> &order, atx::u64 seed) {
   return (x > 0.0) ? 1.0 : ((x < 0.0) ? -1.0 : 0.0);
 }
 
-// One full-pass training epoch over the order-fixed minibatches of `order`.
+// A minibatch is the half-open slice [first, second) of the epoch's row order.
+using Batch = std::pair<atx::usize, atx::usize>;
+
+// The legacy fixed-size batch slices over an n-row order.
+[[nodiscard]] std::vector<Batch> fixed_batches(atx::usize n, atx::usize batch_size) {
+  std::vector<Batch> out;
+  for (atx::usize lo = 0; lo < n; lo += batch_size) {
+    out.emplace_back(lo, (lo + batch_size < n) ? lo + batch_size : n);
+  }
+  return out;
+}
+
+// The distinct group ids of `groups`, ascending, and each id's rows (ascending).
+struct GroupIndex {
+  std::vector<atx::u32> ids;
+  std::vector<std::vector<atx::usize>> rows; // rows[k] = rows of ids[k]
+};
+
+[[nodiscard]] GroupIndex index_groups(std::span<const atx::u32> groups) {
+  GroupIndex gi;
+  gi.ids.assign(groups.begin(), groups.end());
+  std::sort(gi.ids.begin(), gi.ids.end());
+  gi.ids.erase(std::unique(gi.ids.begin(), gi.ids.end()), gi.ids.end());
+  gi.rows.assign(gi.ids.size(), {});
+  for (atx::usize r = 0; r < groups.size(); ++r) {
+    const auto it = std::lower_bound(gi.ids.begin(), gi.ids.end(), groups[r]);
+    gi.rows[static_cast<atx::usize>(it - gi.ids.begin())].push_back(r);
+  }
+  return gi;
+}
+
+// Date-grouped epoch layout (RowGroups): shuffle the group order with `seed`, lay the
+// groups' rows out in that order, and close a batch before a group that would push it
+// past batch_size. Every batch holds whole groups only.
+void grouped_layout(const GroupIndex &gi, atx::usize batch_size, atx::u64 seed,
+                    std::vector<atx::usize> &order, std::vector<Batch> &batches) {
+  std::vector<atx::usize> gorder(gi.ids.size());
+  std::iota(gorder.begin(), gorder.end(), atx::usize{0});
+  seeded_shuffle(gorder, seed);
+  order.clear();
+  batches.clear();
+  atx::usize lo = 0;
+  for (const atx::usize k : gorder) {
+    const std::vector<atx::usize> &rows = gi.rows[k];
+    if (order.size() > lo && order.size() - lo + rows.size() > batch_size) {
+      batches.emplace_back(lo, order.size());
+      lo = order.size();
+    }
+    order.insert(order.end(), rows.begin(), rows.end());
+  }
+  if (order.size() > lo) {
+    batches.emplace_back(lo, order.size());
+  }
+}
+
+// One full-pass training epoch over the minibatch slices `batches` of `order`. When
+// `groups` is non-empty the loss receives each batch's row-group labels first.
 void run_epoch(Module &model, Optimizer &opt, Loss &loss, const lin::MatX &x_train,
                const lin::MatX &y_train, const std::vector<atx::usize> &order,
-               atx::usize batch_size, atx::f64 l2, atx::f64 l1) {
-  const atx::usize n = order.size();
-  for (atx::usize lo = 0; lo < n; lo += batch_size) {
-    const atx::usize hi = (lo + batch_size < n) ? lo + batch_size : n;
+               const std::vector<Batch> &batches, std::span<const atx::u32> groups,
+               atx::f64 l2, atx::f64 l1) {
+  std::vector<atx::u32> batch_groups;
+  for (const auto &[lo, hi] : batches) {
     const lin::MatX xb = gather_rows(x_train, order, lo, hi);
     const lin::MatX yb = gather_rows(y_train, order, lo, hi);
+    if (!groups.empty()) {
+      batch_groups.clear();
+      for (atx::usize k = lo; k < hi; ++k) {
+        batch_groups.push_back(groups[order[k]]);
+      }
+      loss.set_row_groups(std::span<const atx::u32>{batch_groups});
+    }
     // Zero grads, then accumulate this minibatch's gradient (R1: caller-zeroed).
     std::span<atx::f64> g = model.grads();
     for (atx::f64 &gi : g) {
@@ -118,18 +184,59 @@ void run_epoch(Module &model, Optimizer &opt, Loss &loss, const lin::MatX &x_tra
   return Ok();
 }
 
+// Clears the loss's row groups on every exit path of train() (RowGroups contract).
+class GroupsGuard {
+public:
+  explicit GroupsGuard(Loss &loss) noexcept : loss_{loss} {}
+  GroupsGuard(const GroupsGuard &) = delete;
+  GroupsGuard &operator=(const GroupsGuard &) = delete;
+  GroupsGuard(GroupsGuard &&) = delete;
+  GroupsGuard &operator=(GroupsGuard &&) = delete;
+  ~GroupsGuard() { loss_.set_row_groups({}); }
+
+private:
+  Loss &loss_;
+};
+
 } // namespace
 
 Result<std::vector<std::vector<atx::f64>>>
 train(const ModelFactory &make_model, Optimizer &opt, Loss &loss, const lin::MatX &x_train,
       const lin::MatX &y_train, const lin::MatX &x_val, const lin::MatX &y_val,
       const TrainConfig &cfg) {
+  return train(make_model, opt, loss, x_train, y_train, x_val, y_val, cfg, RowGroups{});
+}
+
+Result<std::vector<std::vector<atx::f64>>>
+train(const ModelFactory &make_model, Optimizer &opt, Loss &loss, const lin::MatX &x_train,
+      const lin::MatX &y_train, const lin::MatX &x_val, const lin::MatX &y_val,
+      const TrainConfig &cfg, const RowGroups &groups) {
   ATX_TRY_VOID(validate_shapes(x_train, y_train, x_val, y_val, cfg));
+  if (!groups.train.empty() && groups.train.size() != static_cast<atx::usize>(x_train.rows())) {
+    return Err(ErrorCode::InvalidArgument, "train: groups.train length != x_train rows");
+  }
+  if (!groups.val.empty() && groups.val.size() != static_cast<atx::usize>(x_val.rows())) {
+    return Err(ErrorCode::InvalidArgument, "train: groups.val length != x_val rows");
+  }
+  loss.set_row_groups({}); // no stale labels from an earlier caller
+  const GroupsGuard clear_on_exit{loss};
 
   std::vector<std::vector<atx::f64>> ensemble;
   ensemble.reserve(cfg.ensemble_size);
   const atx::usize n_train = static_cast<atx::usize>(x_train.rows());
   const bool have_val = x_val.rows() > 0;
+  const bool grouped = !groups.train.empty();
+  const GroupIndex gi = grouped ? index_groups(groups.train) : GroupIndex{};
+  // The checkpoint pass scores val (or train when there is no val design); its
+  // group labels follow the same design.
+  const std::span<const atx::u32> ckpt_groups = have_val ? groups.val : groups.train;
+  const auto eval_loss = [&](Module &model) -> atx::f64 {
+    loss.set_row_groups(ckpt_groups);
+    return have_val ? loss.value(model.forward(x_val), y_val)
+                    : loss.value(model.forward(x_train), y_train);
+  };
+  const std::vector<Batch> fixed = grouped ? std::vector<Batch>{}
+                                           : fixed_batches(n_train, cfg.batch_size);
 
   for (atx::usize m = 0; m < cfg.ensemble_size; ++m) {
     // Fresh reseeded model + fresh optimizer state for this member (R1).
@@ -141,30 +248,32 @@ train(const ModelFactory &make_model, Optimizer &opt, Loss &loss, const lin::Mat
     // never improves still returns a well-defined state).
     std::vector<atx::f64> best_state;
     model->state_to(best_state);
-    atx::f64 best_val = std::numeric_limits<atx::f64>::infinity();
-    {
-      model->train(false);
-      const atx::f64 v0 = have_val ? loss.value(model->forward(x_val), y_val)
-                                   : loss.value(model->forward(x_train), y_train);
-      best_val = v0; // epoch-0 baseline is the initial checkpoint
-    }
+    model->train(false);
+    atx::f64 best_val = eval_loss(*model); // epoch-0 baseline is the initial checkpoint
 
+    std::vector<atx::usize> order;
+    std::vector<Batch> grouped_batches;
     for (atx::usize epoch = 0; epoch < cfg.epochs; ++epoch) {
       // Minibatch order is a pure function of (master_seed, member, epoch) (R1b).
-      std::vector<atx::usize> order(n_train);
-      std::iota(order.begin(), order.end(), atx::usize{0});
-      seeded_shuffle(order, seed_for(cfg.master_seed, "nn-shuffle", m, epoch));
+      const atx::u64 shuffle_seed = seed_for(cfg.master_seed, "nn-shuffle", m, epoch);
+      if (grouped) {
+        grouped_layout(gi, cfg.batch_size, shuffle_seed, order, grouped_batches);
+      } else {
+        order.resize(n_train);
+        std::iota(order.begin(), order.end(), atx::usize{0});
+        seeded_shuffle(order, shuffle_seed);
+      }
 
       model->train(true);
-      run_epoch(*model, opt, loss, x_train, y_train, order, cfg.batch_size, cfg.l2, cfg.l1);
+      run_epoch(*model, opt, loss, x_train, y_train, order, grouped ? grouped_batches : fixed,
+                groups.train, cfg.l2, cfg.l1);
 
       // Checkpoint-at-best every ckpt_every epochs and always on the last epoch.
       const bool is_last = (epoch + 1 == cfg.epochs);
       const bool do_ckpt = (cfg.ckpt_every > 0 && (epoch + 1) % cfg.ckpt_every == 0) || is_last;
       if (do_ckpt) {
         model->train(false);
-        const lin::MatX vp = have_val ? model->forward(x_val) : model->forward(x_train);
-        const atx::f64 vl = have_val ? loss.value(vp, y_val) : loss.value(vp, y_train);
+        const atx::f64 vl = eval_loss(*model);
         if (vl < best_val) {
           best_val = vl;
           best_state.clear();
