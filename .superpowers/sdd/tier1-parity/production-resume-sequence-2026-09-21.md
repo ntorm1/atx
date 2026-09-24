@@ -1,5 +1,12 @@
 # Production resume sequence — updated 2026-09-24
 
+**23:53UTC ACTIVE:** archive18 command below is already running, root
+session55700, guard child1492/source child9152. It is the sole heavy workload;
+do not run the command again. Source window2 passed120.032seconds at4/6GiB.
+9,462receipts/15lineage runs inventoried and retained fact fingerprints started.
+First inspect its process, guard, logs and terminal ledgers. No source completion
+or new source writes have yet been established for this attempt.
+
 **23:48UTC prerequisites complete:** CC1 live target-index repair is durably
 verified, all 12,959 candidate rows/constraints/index definitions unchanged;
 native peak 0.829GiB/cap 1GiB. SA1 9a7a3ea8 passed actual full retained-directory

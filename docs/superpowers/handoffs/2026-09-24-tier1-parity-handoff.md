@@ -7,7 +7,16 @@ is incomplete. Continue on feat/tier1-parity. Preserve unrelated risk-test and
 alpha-swarm files, every backup and **stash@{0}**; never apply/drop the stash.
 All implementation/review work uses Codex; no external model spending or merge.
 
-**Archive17 is terminal FAILED (23:16:43UTC); no source writer is live.**
+**Archive18 is LIVE at 23:53UTC**, root session55700, guard child1492, actual
+warehouse Python child9152. It is the sole heavy process tree. Full scope,
+replacement/force, snapshot2026-09-20, 512MB/one thread, 1.5GiB cap and 3GiB
+data-disk floor. Source window2 passed 120.032seconds at 4/6GiB; initial guard
+headroom was 6.266GiB physical/8.687GiB commit and disk free10.613GiB.
+9,462 receipts across 15 lineage runs inventoried; retained fact fingerprints
+started23:53:21UTC. Inspect existing process and fresh archive18 receipts before
+any other heavy work. Do not launch archive18 again or repeat CC1/SA1 work.
+
+**Archive17 is terminal FAILED (23:16:43UTC).**
 It passed the complete retained fact and point fingerprint proof over 12,959
 owner identities, 9,462 receipt targets and 14 lineage ancestors. Its peak was
 1.223964691GiB under the unchanged 1.5GiB cap, using 512MB/one thread. It then
@@ -102,9 +111,10 @@ backups and use backup-keep100. Do not infer a process from a running ledger.
 
 ## Next action
 
-1. Launch fresh full archive18 from the terminal archive17 UUID above,
-   after sustained 4/6GiB headroom. Keep 512MB/one thread, 1.5GiB cap,
-   force replacement/archive_members and all full proof checks. No CIK filter.
+1. Monitor the existing full archive18 to a terminal state and inspect actual
+   dataset/stage results. It already uses the verified archive17 predecessor,
+   512MB/one thread, 1.5GiB cap, full replacement scope and every proof check.
+   No source completion/new facts are claimed yet. No concurrent heavy job.
 2. Full submissions resume, scoped CVX earnings source, full-universe run5
    from statement_points, force and16sequential reconciliation shards. Other
    stage capacity profiles still need evidence before being lowered.

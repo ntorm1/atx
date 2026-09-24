@@ -1,5 +1,14 @@
 # Tier-1 parity program ledger (atx-db)
 
+## Full archive18 resumed after verified repair — 2026-09-24 23:53UTC
+
+Root session55700/guard child1492/source child9152 is sole heavy job. Uses
+committed HEAD5b088e86, pinned full scope, archive17 predecessor,512MB/one
+thread,1.5GiB cap and3GiB data-disk floor. Source window2 passed120.032seconds
+at4/6GiB. 9,462receipts/15lineage runs inventoried; full fact fingerprints began
+23:53:21UTC. Existing writer must reach terminal state before any other heavy
+job. No archive18 source completion/new fact commits are claimed yet.
+
 ## CC1 live repair and SA1 retained-directory acceptance — 2026-09-24 23:48UTC
 
 CC1 committed 313848a7 and live repair completed at 256MB/one thread, peak

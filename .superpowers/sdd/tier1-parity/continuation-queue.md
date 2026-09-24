@@ -1,5 +1,16 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Archive18 LIVE — 2026-09-24 23:53UTC
+
+Root session55700, guard child1492/source child9152: sole heavy job. Full scope,
+replacement/force, snapshot2026-09-20; actual predecessor dd52e571-5786-42c5-
+bfaa-d7122b033912. 512MB/one thread,1.5GiB cap,3GiB disk floor. Sustained source
+window2 passed120.032seconds at4/6GiB. 9,462receipts/15lineage runs inventoried;
+retained fact fingerprints started23:53:21UTC. Monitor existing process and
+fresh archive18 artifacts first. Do not relaunch or overlap database/tests.
+CC1 live repair, SA1 retained-directory measurement and DG1 are complete and
+committed; preserve their evidence. Full source/new writes remain unqualified.
+
 ## Both production prerequisites delivered — 2026-09-24 23:48UTC
 
 CC1 live index repair verified at 0.829GiB native peak under 1GiB, with all
