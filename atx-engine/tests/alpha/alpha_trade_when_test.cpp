@@ -397,9 +397,10 @@ TEST(AlphaHump_Default, HumpXEqualsHumpX001) {
 }
 
 TEST(AlphaHump_NaN, NaNInputPropagatesPerOracle) {
-  // Hand-trace under "pass-if |x - prior| > thr, else hold": once x is NaN the
-  // difference is NaN, NaN > thr is false -> hold the prior. This is the pinned
-  // policy; the differential confirms VM==oracle on the NaN path.
+  // W0-A0 (A-02) re-pin. The pinned policy is now: a NaN x emits NaN (it no
+  // longer holds the prior — that let a stale value carry indefinitely after a
+  // universe exit), while the prior survives a short NaN run (<= 5 dates) so the
+  // next finite x is compared against it. The differential confirms VM==oracle.
   const std::vector<std::string> names{"x"};
   const std::vector<std::vector<atx::f64>> cols{{2.0, kNaN, 9.0}};
   const Panel panel = make_panel(3, 1, names, cols);
@@ -409,9 +410,9 @@ TEST(AlphaHump_NaN, NaNInputPropagatesPerOracle) {
   for (atx::usize i = 0; i < 3; ++i) {
     EXPECT_TRUE(same_cell(fast.alphas[0].values[i], oracle.alphas[0].values[i]));
   }
-  EXPECT_DOUBLE_EQ(fast.alphas[0].values[0], 2.0); // first date
-  EXPECT_DOUBLE_EQ(fast.alphas[0].values[1], 2.0); // |NaN-2| not > 1 -> hold
-  EXPECT_DOUBLE_EQ(fast.alphas[0].values[2], 9.0); // |9-2|=7 > 1 -> pass
+  EXPECT_DOUBLE_EQ(fast.alphas[0].values[0], 2.0);   // first finite x seeds
+  EXPECT_TRUE(std::isnan(fast.alphas[0].values[1])); // NaN in -> NaN out
+  EXPECT_DOUBLE_EQ(fast.alphas[0].values[2], 9.0);   // |9-2|=7 > 1 -> pass
 }
 
 // ===========================================================================

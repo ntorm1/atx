@@ -317,6 +317,39 @@ enum class EvalMode : atx::u8 {
 };
 
 // =========================================================================
+//  KernelPolicy (W0-A0) — the versioned numeric policies of the kernel fixes.
+//
+//  Every default is the corrected behaviour: average-rank ties (A-01), the
+//  seeding / NaN-emitting / stale-capped hump (A-02), the flat-window guard
+//  (A-09) and oracle-exact windowed AuditExact ts_sum/ts_mean with a Neumaier
+//  ResearchFast slide (A-13). legacy_v1() selects every pre-W0 rule at once and
+//  re-derives pre-W0 digests bit-exactly (AlphaCsRankTies_Digest and siblings).
+//  The oracle pins the default policy only. A non-default policy bypasses the
+//  SubtreeCache (its key does not carry the policy).
+// =========================================================================
+using RankTies = detail::RankTies;
+using HumpNaN = detail::HumpNaN;
+using FlatGuard = detail::FlatGuard;
+using TsSumPath = detail::TsSumPath;
+
+struct KernelPolicy {
+  RankTies rank_ties{RankTies::Average};
+  HumpNaN hump{HumpNaN::SeedCapV2};
+  FlatGuard flat{FlatGuard::RelativeV2};
+  TsSumPath ts_sum{TsSumPath::WindowedV2};
+
+  // Every pre-W0 rule (the policy the old golden digests were produced under).
+  [[nodiscard]] static constexpr KernelPolicy legacy_v1() noexcept {
+    return KernelPolicy{RankTies::OrdinalV1, HumpNaN::StickyV1, FlatGuard::NoneV1,
+                        TsSumPath::OnlineV1};
+  }
+  [[nodiscard]] constexpr bool is_default() const noexcept {
+    return rank_ties == RankTies::Average && hump == HumpNaN::SeedCapV2 &&
+           flat == FlatGuard::RelativeV2 && ts_sum == TsSumPath::WindowedV2;
+  }
+};
+
+// =========================================================================
 //  Range execution vocabulary (Lane 2 — strategy B / level-scheduled eval).
 //
 //  Every opcode's kernel is independent along ONE axis of the date-major panel:
@@ -373,6 +406,12 @@ public:
   // Set BEFORE evaluate(); affects only the variance-family ops, nothing else.
   void set_eval_mode(EvalMode mode) noexcept { mode_ = mode; }
   [[nodiscard]] EvalMode eval_mode() const noexcept { return mode_; }
+
+  // W0-A0 kernel policy (see KernelPolicy). Default-constructed == corrected
+  // behaviour; KernelPolicy::legacy_v1() re-derives pre-W0 outputs. Set BEFORE
+  // evaluate().
+  void set_kernel_policy(KernelPolicy policy) noexcept { policy_ = policy; }
+  [[nodiscard]] KernelPolicy kernel_policy() const noexcept { return policy_; }
 
   // Cross-instrument column parallelism (p7 S3-3). When a non-null DetPool is set,
   // the BATCH Ts path (eval_time_series's column-extract loop) dispatches its
@@ -563,6 +602,9 @@ public:
 
   [[nodiscard]] atx::core::Result<SignalSet>
   evaluate_nodes(const Program &prog, std::span<const atx::u32> roots, SubtreeCache *cache) {
+    if (!policy_.is_default()) {
+      cache = nullptr; // W0-A0: SubtreeKey does not carry the KernelPolicy
+    }
     const atx::usize dates = panel_.dates();
     const atx::usize instruments = panel_.instruments();
     const atx::usize cells = dates * instruments;
@@ -1273,8 +1315,11 @@ private:
          in.op == OpCode::CsScaleG || in.op == OpCode::CsResidualize);
     std::span<const atx::f64> g{};
     std::span<const atx::f64> z{}; // cs_residualize optional style covariate (src[2])
-    // The scalar 2nd operand: CsScale's target L1 norm `a`, or CsWinsorize's
-    // std multiplier `k`. Read EXACTLY as CsScale does (cell [0] of the slot).
+    // The scalar 2nd operand: CsScale's target L1 norm `a`, CsWinsorize's std
+    // multiplier `k` or CsQuantile's bucket count. Read EXACTLY as CsScale does
+    // (cell [0] of the slot). SAFETY (A-03): analyze() requires a finite Literal
+    // in this slot (detail::validate_scalar_literal_operand), so the slot is a
+    // Const broadcast and cell [0] IS the value — never a panel's first cell.
     atx::f64 scale_a = 1.0;
     if (grouped) {
       g = src_col(in, 1);
@@ -1291,7 +1336,7 @@ private:
     // clear()s it before each rebuild, so no stale entry is ever read -> byte-identical
     // to the previous fresh-per-call vector. The Engine is single-owner per worker, so
     // this member is touched by exactly one thread at a time (no cross-worker sharing).
-    const CsRowsCtx ctx{in.op, x, g, z, out, scale_a, instruments, grouped};
+    const CsRowsCtx ctx{in.op, x, g, z, out, scale_a, instruments, grouped, policy_.rank_ties};
     // Lane 2: date-band parallelism. Each band is a contiguous date range run by
     // ONE worker with ITS private valid/scratch, so every row executes the exact
     // serial row kernel — bit-identical for any band split or pool size.
@@ -1320,6 +1365,7 @@ private:
     atx::f64 scale_a;
     atx::usize instruments;
     bool grouped;
+    RankTies ties; // W0-A0 (A-01): rank-family tie policy
   };
 
   // Run the Cs row kernel for dates [d0, d1) with the caller's scratch.
@@ -1334,7 +1380,7 @@ private:
           c.grouped ? c.g.subspan(d * instruments, instruments) : std::span<const atx::f64>{};
       const std::span<const atx::f64> zrow =
           c.z.empty() ? std::span<const atx::f64>{} : c.z.subspan(d * instruments, instruments);
-      cs_one_date(c.op, xr, grow, zrow, c.scale_a, orow, valid, scratch);
+      cs_one_date(c.op, xr, grow, zrow, c.scale_a, orow, valid, scratch, c.ties);
     }
   }
 
@@ -1343,7 +1389,8 @@ private:
   // valid set is rebuilt into `valid` (caller-owned scratch), then dispatched.
   static void cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> g,
                           std::span<const atx::f64> z, atx::f64 scale_a, std::span<atx::f64> out,
-                          std::vector<atx::usize> &valid, detail::CsScratch &scratch) {
+                          std::vector<atx::usize> &valid, detail::CsScratch &scratch,
+                          RankTies ties) {
     // INVARIANT (REQUIRED — not accidental): the forward scan produces `valid`
     // in strictly ascending instrument-index order, and every downstream kernel
     // depends on it for AuditExact-determinism:
@@ -1363,7 +1410,7 @@ private:
     }
     switch (op) {
     case OpCode::CsRank:
-      detail::cs_rank_row(x, valid, out, scratch);
+      detail::cs_rank_row(x, valid, out, scratch, ties);
       break;
     case OpCode::CsZscore:
       detail::cs_zscore_row(x, valid, out);
@@ -1385,7 +1432,7 @@ private:
       detail::cs_residualize_row(x, g, z, valid, out, scratch);
       break;
     case OpCode::CsQuantile: // discretize the valid set into `scale_a` buckets
-      detail::cs_quantile_row(x, valid, scale_a, out, scratch);
+      detail::cs_quantile_row(x, valid, scale_a, out, scratch, ties);
       break;
     case OpCode::CsVecSum:
       detail::cs_vec_reduce_row(x, valid, out, /*want_avg=*/false);
@@ -1394,7 +1441,7 @@ private:
       detail::cs_vec_reduce_row(x, valid, out, /*want_avg=*/true);
       break;
     case OpCode::CsRankG:
-      detail::cs_group_row(x, g, valid, out, /*zscore=*/false, scratch);
+      detail::cs_group_row(x, g, valid, out, /*zscore=*/false, scratch, ties);
       break;
     case OpCode::CsZscoreG:
       detail::cs_group_row(x, g, valid, out, /*zscore=*/true, scratch);
@@ -1467,7 +1514,15 @@ private:
     }
     // Online path (Task 7): rolling sweep down each instrument column. The deque
     // scratch is sized to `dates` (grown once); the sweep allocates nothing.
-    if (detail::ts_is_online_op(in.op)) {
+    // W0-A0 (A-13): under AuditExact + TsSumPath::WindowedV2 (the default)
+    // TsSum/TsMean skip the online slide and fall through to the batch per-window
+    // recompute below (oracle-exact, independent of the panel start); under
+    // ResearchFast the slide is Neumaier-compensated. OnlineV1 is the pre-W0
+    // uncompensated slide in every mode.
+    const bool sum_op = (in.op == OpCode::TsSum || in.op == OpCode::TsMean);
+    const bool legacy_sum = policy_.ts_sum == TsSumPath::OnlineV1;
+    const bool windowed_sum = sum_op && !legacy_sum && mode_ == EvalMode::AuditExact;
+    if (detail::ts_is_online_op(in.op) && !windowed_sum) {
       const bool extreme =
           (in.op == OpCode::TsMin || in.op == OpCode::TsMax || in.op == OpCode::TsScale);
       if (extreme && dates > ts_dq_lo_.size()) {
@@ -1478,7 +1533,8 @@ private:
         if (extreme) {
           detail::ts_online_extreme(in.op, x, out, dates, j, d, instruments, ts_dq_lo_, ts_dq_hi_);
         } else {
-          detail::ts_online_sum_family(in.op, x, out, dates, j, d, instruments);
+          detail::ts_online_sum_family(in.op, x, out, dates, j, d, instruments,
+                                       /*compensated=*/!legacy_sum);
         }
       }
       return atx::core::Ok();
@@ -1530,7 +1586,8 @@ private:
     // independence (disjoint output slots, per-band scratch) makes the parallel
     // result bit-identical to serial, so this stays AuditExact. The pool is used
     // only for instruments>1 (a single column has no work to split).
-    const TsBatchCtx ctx{in, x, y, out, dates, instruments, d, binary_series, ou_rolling};
+    const TsBatchCtx ctx{in, x, y, out, dates, instruments, d, binary_series, ou_rolling,
+                         policy_.flat};
     if (ts_pool_ != nullptr && j1 - j0 > 1) {
       // Each index j is handled by exactly one worker `wid`; the body writes only
       // column j's output slots and reads only column j (+ shared read-only x/y),
@@ -1563,6 +1620,7 @@ private:
     atx::usize d;
     bool binary_series;
     bool ou_rolling;
+    FlatGuard flat; // W0-A0 (A-09): flat-window guard policy
   };
 
   // Evaluate ONE instrument column `j` of a batch Ts op into ctx.out, using the
@@ -1602,7 +1660,8 @@ private:
       }
       const std::span<const atx::f64> cb{col_b.data(), dates};
       for (atx::usize t = 0; t < dates; ++t) {
-        ctx.out[t * instruments + j] = detail::ts_pair_at(ctx.in.op, cspan, cb, t, 0, d, 1, sa, sb);
+        ctx.out[t * instruments + j] =
+            detail::ts_pair_at(ctx.in.op, cspan, cb, t, 0, d, 1, sa, sb, ctx.flat);
       }
     } else if (ctx.ou_rolling) {
       for (atx::usize t = 0; t < dates; ++t) {
@@ -1611,7 +1670,7 @@ private:
     } else {
       for (atx::usize t = 0; t < dates; ++t) {
         ctx.out[t * instruments + j] =
-            detail::ts_value_at(ctx.in.op, cspan, t, 0, d, 1, sa, ctx.in.imm[0]);
+            detail::ts_value_at(ctx.in.op, cspan, t, 0, d, 1, sa, ctx.in.imm[0], ctx.flat);
       }
     }
   }
@@ -1650,13 +1709,27 @@ private:
     }
     if (in.op == OpCode::Hump) {
       const std::span<const atx::f64> x = src_col(in, 0);
+      // SAFETY (A-03): analyze() requires a finite Literal threshold, so src[1]
+      // is a Const broadcast and cell [0] is the threshold itself.
       const atx::f64 thr = in.src.at(1) == kNoSlot ? atx::f64{0.01} : src_col(in, 1).front();
+      if (policy_.hump == HumpNaN::StickyV1) {
+        for (atx::usize j = j0; j < j1; ++j) {
+          for (atx::usize t = 0; t < dates; ++t) {
+            const atx::usize i = t * instruments + j;
+            const atx::f64 v = detail::hump_step_v1(state_[j], x[i], thr, /*first=*/t == 0);
+            out[i] = v;
+            state_[j] = v;
+          }
+        }
+        return atx::core::Ok();
+      }
+      // W0-A0 (A-02): per-instrument HumpState (prior + NaN-run length) lives on
+      // the stack for its column's forward scan — the column is independent.
       for (atx::usize j = j0; j < j1; ++j) {
+        detail::HumpState s{};
         for (atx::usize t = 0; t < dates; ++t) {
           const atx::usize i = t * instruments + j;
-          const atx::f64 v = detail::hump_step(state_[j], x[i], thr, /*first=*/t == 0);
-          out[i] = v;
-          state_[j] = v;
+          out[i] = detail::hump_step(s, x[i], thr);
         }
       }
       return atx::core::Ok();
@@ -1768,6 +1841,7 @@ private:
 
   const Panel &panel_;
   EvalMode mode_{EvalMode::AuditExact}; // determinism tier (p7 S3-1); default inert
+  KernelPolicy policy_{};               // W0-A0 versioned kernel policies; default corrected
   SlotPool pool_{1, 1};                // reused across calls; grown on demand
   std::vector<FieldId> field_remap_;   // program field id -> Panel FieldId scratch
   std::vector<atx::f64> ts_scratch_a_; // Ts* window scratch (sort/corr/cov); grown on demand

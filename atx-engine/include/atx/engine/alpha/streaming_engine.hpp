@@ -12,7 +12,8 @@
 //     scalar kernels and cs_ops row kernels the VM calls).
 //   * Ts* windowed ops                        — a ring of the input's last d+1
 //     rows per instruction, plus the op's online state where the VM carries one:
-//       - ts_sum / ts_mean       running Σ + missing count (always online in VM)
+//       - ts_sum / ts_mean       Neumaier running Σ + missing count (ResearchFast;
+//                                under AuditExact they are Generic, W0-A0 A-13)
 //       - ts_min / ts_max / ts_scale  per-instrument monotonic deque (VM deque)
 //       - variance family         Welford/Neumaier state (ResearchFast only)
 //       - decay_linear / wma / slope / rsquare / resid  sliding lanes
@@ -79,7 +80,7 @@ namespace streaming_detail {
 // How a Ts instruction advances (mirrors vm.hpp eval_time_series routing).
 enum class TsKind : atx::u8 {
   Lookback,  // delay / delta: x[t-d]
-  RunSum,    // ts_sum / ts_mean (online in every mode)
+  RunSum,    // ts_sum / ts_mean under ResearchFast (Neumaier slide; W0-A0 A-13)
   Extreme,   // ts_min / ts_max / ts_scale (monotonic deque, every mode)
   Welford,   // var / std / zscore / av_diff under ResearchFast
   Decay,     // decay_linear / wma under ResearchFast (sliding lane)
@@ -97,8 +98,8 @@ struct TsState {
   bool ou{false};   // ou_theta / ou_halflife / ou_mean / ou_zscore
   std::vector<atx::f64> ring_x;
   std::vector<atx::f64> ring_y;
-  // RunSum / Extreme bookkeeping (per instrument).
-  std::vector<atx::f64> sx;
+  // RunSum (W0-A0: Neumaier TsvRunSum) / Extreme bookkeeping (per instrument).
+  std::vector<detail::TsvRunSum> runsum;
   std::vector<atx::usize> miss;
   // Extreme deques: per instrument a ring of `cap` date indices.
   std::vector<atx::u64> dq_lo;
@@ -115,7 +116,8 @@ struct TsState {
 
 // Per-recurrence-instruction carried state.
 struct RecState {
-  std::vector<atx::f64> prior;               // trade_when / hump
+  std::vector<atx::f64> prior;               // trade_when
+  std::vector<detail::HumpState> hump;       // hump (W0-A0 A-02: prior + NaN-run)
   std::vector<detail::KalmanLevelState> kl;  // kalman_level
   std::vector<atx::f64> xhat;                // ou_filter
   std::vector<detail::KalmanRegState> kr;    // kalman_reg
@@ -203,7 +205,9 @@ struct RecState {
   if (op == OpCode::TsDelay || op == OpCode::TsDelta) {
     return TsKind::Lookback;
   }
-  if (op == OpCode::TsSum || op == OpCode::TsMean) {
+  // W0-A0 (A-13): AuditExact ts_sum/ts_mean are the batch per-window recompute
+  // (Generic below); only ResearchFast slides them online.
+  if ((op == OpCode::TsSum || op == OpCode::TsMean) && mode == EvalMode::ResearchFast) {
     return TsKind::RunSum;
   }
   if (op == OpCode::TsMin || op == OpCode::TsMax || op == OpCode::TsScale) {
@@ -410,8 +414,7 @@ private:
     }
     switch (st.kind) {
     case TsKind::RunSum:
-      st.sx.assign(inst_, 0.0);
-      st.miss.assign(inst_, 0);
+      st.runsum.assign(inst_, detail::TsvRunSum{});
       break;
     case TsKind::Extreme:
       st.miss.assign(inst_, 0);
@@ -685,6 +688,7 @@ private:
     const std::span<atx::f64> o = row(in.dst);
     if (rs.seeded.size() != inst_) {
       rs.prior.assign(inst_, 0.0);
+      rs.hump.assign(inst_, detail::HumpState{});
       rs.kl.assign(inst_, detail::KalmanLevelState{});
       rs.xhat.assign(inst_, 0.0);
       rs.kr.assign(inst_, detail::KalmanRegState{});
@@ -699,8 +703,7 @@ private:
         rs.prior[j] = o[j];
         break;
       case OpCode::Hump:
-        o[j] = detail::hump_step(rs.prior[j], src(in, 0)[j], scalar_[k][0], first);
-        rs.prior[j] = o[j];
+        o[j] = detail::hump_step(rs.hump[j], src(in, 0)[j], scalar_[k][0]);
         break;
       case OpCode::KalmanLevel:
         o[j] = detail::kalman_level_step(rs.kl[j], seeded, src(in, 0)[j], in.imm[0], in.imm[1]);
@@ -774,29 +777,21 @@ private:
     }
   }
 
-  // ts_online_sum_family, one date: add the entering finite cell, subtract the
-  // leaving one, gate on warm-up / missing — identical operation order.
+  // ts_online_sum_family (compensated, ResearchFast), one date: the SAME
+  // TsvRunSum enter/leave the VM sweep performs, gated on warm-up / missing —
+  // identical operation order (W0-A0 A-13).
   void ts_runsum(const Instr &in, TsState &st, std::span<atx::f64> o) const {
     const atx::f64 nf = static_cast<atx::f64>(st.d);
     for (atx::usize j = 0; j < inst_; ++j) {
-      const atx::f64 enter = at(st.ring_x, st, t_, j, inst_);
-      if (detail::ts_is_missing(enter)) {
-        ++st.miss[j];
-      } else {
-        st.sx[j] += enter;
-      }
+      detail::TsvRunSum &rs = st.runsum[j];
+      rs.enter(at(st.ring_x, st, t_, j, inst_));
       if (t_ >= st.d) {
-        const atx::f64 leave = at(st.ring_x, st, t_ - st.d, j, inst_);
-        if (detail::ts_is_missing(leave)) {
-          --st.miss[j];
-        } else {
-          st.sx[j] -= leave;
-        }
+        rs.leave(at(st.ring_x, st, t_ - st.d, j, inst_));
       }
-      if (t_ + 1 < st.d || st.miss[j] != 0) {
+      if (t_ + 1 < st.d || rs.nan_cnt != 0) {
         o[j] = detail::kTsNaN;
       } else {
-        o[j] = in.op == OpCode::TsSum ? st.sx[j] : st.sx[j] / nf;
+        o[j] = in.op == OpCode::TsSum ? rs.sum() : rs.sum() / nf;
       }
     }
   }

@@ -324,10 +324,24 @@ atx::core::Status validate_node_contract(const Expr &e) {
   return atx::core::Ok();
 }
 
+atx::core::Status validate_scalar_literal_operand(const Ast &ast, const Expr &e) {
+  if (!has_scalar_literal_slot(e.op->opcode) || e.b == kNoExpr) {
+    return atx::core::Ok();
+  }
+  const Expr &s = ast.node(e.b);
+  if (s.kind != Expr::Kind::Literal || !std::isfinite(s.value)) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          std::string{"scalar operand of '"} + std::string{e.op->name} +
+                              "' (arg 2) must be a finite compile-time literal");
+  }
+  return atx::core::Ok();
+}
+
 atx::core::Result<TypeInfo> analyze_call(const Ast &ast, std::span<const TypeInfo> out,
                                          const Expr &e) {
   ATX_TRY_VOID(reject_record_operands(out, e));
   ATX_TRY_VOID(validate_node_contract(e));
+  ATX_TRY_VOID(validate_scalar_literal_operand(ast, e)); // A-03
   // Hparam finite-constant check: each peeled hparam must be a finite literal.
   for (atx::u8 k = 0; k < e.n_hparams; ++k) {
     if (!std::isfinite(e.hparams[k])) {

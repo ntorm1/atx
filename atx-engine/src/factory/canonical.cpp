@@ -5,7 +5,9 @@
 #include <bit>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "atx/engine/alpha/parser.hpp"
@@ -155,7 +157,152 @@ enum class Tag : atx::u8 {
   return h;
 }
 
+// ---- canonical_string (W0-A0 / A-18) --------------------------------------
+
+// Append `v` as 16 lowercase hex digits (fixed width ⇒ self-delimiting).
+void put_hex(std::string &s, atx::u64 v) {
+  constexpr std::string_view kDigits = "0123456789abcdef";
+  for (int sh = 60; sh >= 0; sh -= 4) {
+    s.push_back(kDigits[static_cast<atx::usize>((v >> static_cast<unsigned>(sh)) & 0xFULL)]);
+  }
+}
+
+// Append a length-prefixed name ("<len>:<bytes>") so any byte content is safe.
+void put_name(std::string &s, std::string_view name) {
+  s += std::to_string(name.size());
+  s.push_back(':');
+  s.append(name);
+}
+
+// Join the children as "(c0,c1,...)"; each child form is itself balanced and
+// tag-prefixed, so the comma-joined list parses unambiguously.
+void put_children(std::string &s, std::vector<std::string> &ch, bool commutative) {
+  if (commutative) {
+    std::sort(ch.begin(), ch.end()); // canonical operand order for a symmetric op
+  }
+  s.push_back('(');
+  for (atx::usize i = 0; i < ch.size(); ++i) {
+    if (i > 0) {
+      s.push_back(',');
+    }
+    s += ch[i];
+  }
+  s.push_back(')');
+}
+
+// Recursive, memoized canonical form of node `id` (mirrors canon_visit's cases).
+const std::string &form_visit(const Ast &ast, ExprId id, std::vector<std::string> &memo,
+                              std::vector<std::uint8_t> &seen) {
+  if (seen[id] != 0) {
+    return memo[id];
+  }
+  const Expr &e = ast.node(id);
+  std::string s;
+  std::vector<std::string> ch;
+  switch (e.kind) {
+  case Expr::Kind::Literal:
+    s = "L";
+    put_hex(s, std::bit_cast<atx::u64>(e.value));
+    break;
+  case Expr::Kind::Field:
+    s = e.dollar ? "F$" : "F";
+    put_name(s, ast.field_name(e.name_id));
+    break;
+  case Expr::Kind::Unary:
+    s = "U" + std::to_string(static_cast<unsigned>(e.opcode));
+    ch.push_back(form_visit(ast, e.a, memo, seen));
+    put_children(s, ch, false);
+    break;
+  case Expr::Kind::Binary:
+    s = "B" + std::to_string(static_cast<unsigned>(e.opcode));
+    ch.push_back(form_visit(ast, e.a, memo, seen));
+    ch.push_back(form_visit(ast, e.b, memo, seen));
+    put_children(s, ch, is_hash_commutative(e.opcode));
+    break;
+  case Expr::Kind::Call:
+    s = "C" + std::to_string(static_cast<unsigned>(e.opcode));
+    put_name(s, (e.op != nullptr) ? std::string_view{e.op->name} : std::string_view{});
+    s.push_back('[');
+    for (atx::u8 k = 0; k < e.n_hparams; ++k) {
+      put_hex(s, std::bit_cast<atx::u64>(e.hparams[k]));
+    }
+    s.push_back(']');
+    for (const ExprId c : {e.a, e.b, e.c}) {
+      if (c != kNoExpr) {
+        ch.push_back(form_visit(ast, c, memo, seen));
+      }
+    }
+    put_children(s, ch, is_hash_commutative(e.opcode));
+    break;
+  case Expr::Kind::Select:
+    s = "S" + std::to_string(static_cast<unsigned>(e.opcode));
+    ch.push_back(form_visit(ast, e.a, memo, seen));
+    ch.push_back(form_visit(ast, e.b, memo, seen));
+    ch.push_back(form_visit(ast, e.c, memo, seen));
+    put_children(s, ch, false); // FIXED slot order (not commutative)
+    break;
+  case Expr::Kind::Member:
+    s = "M";
+    put_name(s, ast.field_name(e.name_id));
+    ch.push_back(form_visit(ast, e.a, memo, seen));
+    put_children(s, ch, false);
+    break;
+  }
+  seen[id] = std::uint8_t{1};
+  memo[id] = std::move(s);
+  return memo[id];
+}
+
 } // namespace detail
+
+// ---- CanonSet verified API (W0-A0 / A-18) ---------------------------------
+
+bool CanonSet::contains(atx::u64 h, std::string_view form) const {
+  if (seen.find(h) == seen.end()) {
+    return false;
+  }
+  const auto it = forms.find(h);
+  if (it == forms.end()) {
+    return true; // hash known without a form (legacy insert / resume): cannot disprove
+  }
+  return std::find(it->second.begin(), it->second.end(), form) != it->second.end();
+}
+
+bool CanonSet::insert(atx::u64 h, std::string form) {
+  const bool hash_known = seen.find(h) != seen.end();
+  std::vector<std::string> &fs = forms[h];
+  if (hash_known && fs.empty()) {
+    return false; // legacy hash-only entry: treated as seen (see CanonSet)
+  }
+  if (std::find(fs.begin(), fs.end(), form) != fs.end()) {
+    return false; // the same structure — a true duplicate
+  }
+  if (hash_known) {
+    ++n_collisions; // same 64-bit hash, different canonical form
+  }
+  fs.push_back(std::move(form));
+  seen.insert(h);
+  ++n_distinct;
+  return true;
+}
+
+[[nodiscard]] std::string canonical_string(const Ast &ast, ExprId root) {
+  std::vector<std::string> memo(ast.nodes().size());
+  std::vector<std::uint8_t> seen(ast.nodes().size(), std::uint8_t{0});
+  return detail::form_visit(ast, root, memo, seen);
+}
+
+[[nodiscard]] std::string canonical_string(const Genome &g) {
+  return canonical_string(g.ast, g.ast.roots().front().root);
+}
+
+[[nodiscard]] std::string canonical_string(const Genome &g, const CanonCfg &cfg) {
+  if (!cfg.semantic) {
+    return canonical_string(g);
+  }
+  const Ast normal = rewrite_ast(g.ast, g.ast.roots().front().root, cfg.rewrite);
+  return canonical_string(normal, normal.roots().front().root);
+}
 
 // Stable, sound, discriminating canonical hash of the sub-DAG rooted at `root`.
 // Recursive + memoized over the sub-DAG so a shared sub-expression is hashed once.
