@@ -1,0 +1,293 @@
+{
+  "catalog": {
+    "columns": [
+      {
+        "column_default": null,
+        "column_index": 1,
+        "column_name": "candidate_id",
+        "data_type": "VARCHAR",
+        "is_nullable": false
+      },
+      {
+        "column_default": null,
+        "column_index": 2,
+        "column_name": "source_dataset_id",
+        "data_type": "VARCHAR",
+        "is_nullable": false
+      },
+      {
+        "column_default": null,
+        "column_index": 3,
+        "column_name": "source_table",
+        "data_type": "VARCHAR",
+        "is_nullable": false
+      },
+      {
+        "column_default": null,
+        "column_index": 4,
+        "column_name": "source_period",
+        "data_type": "VARCHAR",
+        "is_nullable": true
+      },
+      {
+        "column_default": null,
+        "column_index": 5,
+        "column_name": "source_key_type",
+        "data_type": "VARCHAR",
+        "is_nullable": false
+      },
+      {
+        "column_default": null,
+        "column_index": 6,
+        "column_name": "source_key_value",
+        "data_type": "VARCHAR",
+        "is_nullable": false
+      },
+      {
+        "column_default": null,
+        "column_index": 7,
+        "column_name": "source_security_id",
+        "data_type": "VARCHAR",
+        "is_nullable": true
+      },
+      {
+        "column_default": null,
+        "column_index": 8,
+        "column_name": "source_name",
+        "data_type": "VARCHAR",
+        "is_nullable": true
+      },
+      {
+        "column_default": null,
+        "column_index": 9,
+        "column_name": "source_normalized_name",
+        "data_type": "VARCHAR",
+        "is_nullable": true
+      },
+      {
+        "column_default": null,
+        "column_index": 10,
+        "column_name": "target_security_id",
+        "data_type": "VARCHAR",
+        "is_nullable": false
+      },
+      {
+        "column_default": null,
+        "column_index": 11,
+        "column_name": "target_id_type",
+        "data_type": "VARCHAR",
+        "is_nullable": true
+      },
+      {
+        "column_default": null,
+        "column_index": 12,
+        "column_name": "target_id_value",
+        "data_type": "VARCHAR",
+        "is_nullable": true
+      },
+      {
+        "column_default": null,
+        "column_index": 13,
+        "column_name": "target_name",
+        "data_type": "VARCHAR",
+        "is_nullable": true
+      },
+      {
+        "column_default": null,
+        "column_index": 14,
+        "column_name": "target_normalized_name",
+        "data_type": "VARCHAR",
+        "is_nullable": true
+      },
+      {
+        "column_default": null,
+        "column_index": 15,
+        "column_name": "match_method",
+        "data_type": "VARCHAR",
+        "is_nullable": false
+      },
+      {
+        "column_default": null,
+        "column_index": 16,
+        "column_name": "confidence",
+        "data_type": "DOUBLE",
+        "is_nullable": false
+      },
+      {
+        "column_default": null,
+        "column_index": 17,
+        "column_name": "candidate_status",
+        "data_type": "VARCHAR",
+        "is_nullable": false
+      },
+      {
+        "column_default": null,
+        "column_index": 18,
+        "column_name": "as_of_date",
+        "data_type": "DATE",
+        "is_nullable": false
+      },
+      {
+        "column_default": null,
+        "column_index": 19,
+        "column_name": "available_at",
+        "data_type": "TIMESTAMP",
+        "is_nullable": true
+      },
+      {
+        "column_default": null,
+        "column_index": 20,
+        "column_name": "details_json",
+        "data_type": "VARCHAR",
+        "is_nullable": true
+      },
+      {
+        "column_default": null,
+        "column_index": 21,
+        "column_name": "run_id",
+        "data_type": "VARCHAR",
+        "is_nullable": true
+      },
+      {
+        "column_default": "now()",
+        "column_index": 22,
+        "column_name": "source_loaded_at",
+        "data_type": "TIMESTAMP",
+        "is_nullable": false
+      },
+      {
+        "column_default": null,
+        "column_index": 23,
+        "column_name": "is_latest_revision",
+        "data_type": "BOOLEAN",
+        "is_nullable": true
+      }
+    ],
+    "constraints": [
+      {
+        "constraint_column_names": [
+          "source_dataset_id"
+        ],
+        "constraint_text": "NOT NULL",
+        "constraint_type": "NOT NULL"
+      },
+      {
+        "constraint_column_names": [
+          "source_table"
+        ],
+        "constraint_text": "NOT NULL",
+        "constraint_type": "NOT NULL"
+      },
+      {
+        "constraint_column_names": [
+          "source_key_type"
+        ],
+        "constraint_text": "NOT NULL",
+        "constraint_type": "NOT NULL"
+      },
+      {
+        "constraint_column_names": [
+          "source_key_value"
+        ],
+        "constraint_text": "NOT NULL",
+        "constraint_type": "NOT NULL"
+      },
+      {
+        "constraint_column_names": [
+          "target_security_id"
+        ],
+        "constraint_text": "NOT NULL",
+        "constraint_type": "NOT NULL"
+      },
+      {
+        "constraint_column_names": [
+          "match_method"
+        ],
+        "constraint_text": "NOT NULL",
+        "constraint_type": "NOT NULL"
+      },
+      {
+        "constraint_column_names": [
+          "confidence"
+        ],
+        "constraint_text": "NOT NULL",
+        "constraint_type": "NOT NULL"
+      },
+      {
+        "constraint_column_names": [
+          "candidate_status"
+        ],
+        "constraint_text": "NOT NULL",
+        "constraint_type": "NOT NULL"
+      },
+      {
+        "constraint_column_names": [
+          "as_of_date"
+        ],
+        "constraint_text": "NOT NULL",
+        "constraint_type": "NOT NULL"
+      },
+      {
+        "constraint_column_names": [
+          "source_loaded_at"
+        ],
+        "constraint_text": "NOT NULL",
+        "constraint_type": "NOT NULL"
+      },
+      {
+        "constraint_column_names": [
+          "candidate_id"
+        ],
+        "constraint_text": "NOT NULL",
+        "constraint_type": "NOT NULL"
+      },
+      {
+        "constraint_column_names": [
+          "candidate_id"
+        ],
+        "constraint_text": "PRIMARY KEY(candidate_id)",
+        "constraint_type": "PRIMARY KEY"
+      }
+    ],
+    "indexes": [
+      {
+        "expressions": "[source_dataset_id, source_key_type, source_key_value]",
+        "index_name": "idx_identifier_resolution_candidates_key",
+        "is_primary": false,
+        "is_unique": false,
+        "schema_name": "main",
+        "sql": "CREATE INDEX idx_identifier_resolution_candidates_key ON identifier_resolution_candidates(source_dataset_id, source_key_type, source_key_value);",
+        "table_name": "identifier_resolution_candidates"
+      },
+      {
+        "expressions": "[target_security_id]",
+        "index_name": "idx_identifier_resolution_candidates_target",
+        "is_primary": false,
+        "is_unique": false,
+        "schema_name": "main",
+        "sql": "CREATE INDEX idx_identifier_resolution_candidates_target ON identifier_resolution_candidates(target_security_id);",
+        "table_name": "identifier_resolution_candidates"
+      }
+    ],
+    "table": {
+      "schema_name": "main",
+      "sql": "CREATE TABLE identifier_resolution_candidates(candidate_id VARCHAR PRIMARY KEY, source_dataset_id VARCHAR NOT NULL, source_table VARCHAR NOT NULL, source_period VARCHAR, source_key_type VARCHAR NOT NULL, source_key_value VARCHAR NOT NULL, source_security_id VARCHAR, source_name VARCHAR, source_normalized_name VARCHAR, target_security_id VARCHAR NOT NULL, target_id_type VARCHAR, target_id_value VARCHAR, target_name VARCHAR, target_normalized_name VARCHAR, match_method VARCHAR NOT NULL, confidence DOUBLE NOT NULL, candidate_status VARCHAR NOT NULL, as_of_date DATE NOT NULL, available_at TIMESTAMP, details_json VARCHAR, run_id VARCHAR, source_loaded_at TIMESTAMP DEFAULT(now()) NOT NULL, is_latest_revision BOOLEAN);",
+      "table_name": "identifier_resolution_candidates"
+    }
+  },
+  "duckdb_version": "1.5.5",
+  "lookup": {
+    "default_candidate_ids": [],
+    "default_uses_index": true,
+    "equivalent": false,
+    "sequential_candidate_ids": [
+      "5b162a89-35e4-58eb-bfb5-ae11932bb2d4"
+    ]
+  },
+  "recorded_at": "2026-09-24T23:45:38.623901+00:00",
+  "rows": {
+    "encoding": "utf8-json-array-default-str-length-prefix-u64be-v1",
+    "ordered_row_sha256": "9c1005fa3812733dbbd0fcbdc048e7545f81cb6e3be865a7f7bd05ecfacafc0a",
+    "rows": 12959
+  }
+}

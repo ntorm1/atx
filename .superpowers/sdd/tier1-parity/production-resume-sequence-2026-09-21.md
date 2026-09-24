@@ -1,5 +1,13 @@
 # Production resume sequence — updated 2026-09-24
 
+**23:48UTC prerequisites complete:** CC1 live target-index repair is durably
+verified, all 12,959 candidate rows/constraints/index definitions unchanged;
+native peak 0.829GiB/cap 1GiB. SA1 9a7a3ea8 passed actual full retained-directory
+measurement at 0.592GiB and affected focused/integration checks. No repeat of
+either task is due. Source archive18 below is next after sustained headroom;
+predecessor dd52e571-5786-42c5-bfaa-d7122b033912, 512MB/one thread, 1.5GiB cap,
+full archive_members/replacement/force. All source and release gates remain.
+
 **23:16UTC terminal:** archive17 passed full retained fact/point proof, then
 failed candidate COMMIT on a persisted nonunique target-index inconsistency.
 Native peak 1.223964691GiB at 512MB/one thread under 1.5GiB; no new raw facts.
@@ -9,6 +17,27 @@ resume. Next actual predecessor is `dd52e571-5786-42c5-bfaa-d7122b033912`.
 Use fresh **archive18** artifacts/run ID; do NOT execute the historical
 archive17 command below again. Preserve full scope, replacement and proof.
 SA1 bounded ZIP integration checks/retained-directory probe are also pending.
+
+Next source command, ONLY after CC1 live repair is durably verified and the
+120second 4/6GiB headroom window holds. DG1 adds a 3GiB disk floor without
+changing memory stops or source scope. Execute from `C:\atx\atx-db`:
+
+```powershell
+C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
+  --job-gb 1.5 --disk-path C:\atx\atx-db\data --min-free-disk-gb 3 `
+  --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive18-memory.json `
+  --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive18.log `
+  --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive18.err `
+  -- C:\atx\atx-db\.venv\Scripts\python.exe scripts\warehouse_activate.py `
+  --db-path data\warehouse.duckdb --as-of-date 2026-09-20 --only companyfacts_load `
+  --companyfacts-symbol-source archive_members --companyfacts-replace-existing `
+  --companyfacts-resume-from-run-id dd52e571-5786-42c5-bfaa-d7122b033912 `
+  --memory-limit 512MB --threads 1 --backup-keep 100 --force `
+  --run-id activation-companyfacts-archive18 `
+  --sec-user-agent "atx-db/0.1 atx-research@example.com"
+```
+
+The archive17 command farther below is retained historical evidence only.
 
 **22:54UTC ACTIVE:** archive17 command below has started. Root session89002,
 guard child7860; sole heavy job.9462receipts/14lineage runs inventoried and

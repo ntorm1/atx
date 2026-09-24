@@ -7,6 +7,22 @@ Ruff passes. Root's single independent review is complete; Important fixes are
 accepted on the implementer report plus focused evidence. Ready to commit and
 perform the guarded, backed-up live repair. No live repair is yet claimed.
 
+Production acceptance now complete: `candidate-index-repair-live1` finished
+2026-09-24 23:45:47UTC with 256MB/one thread, native peak 0.829055786GiB under
+1GiB. All 12,959 actual candidate rows retained logical SHA256
+9c1005fa3812733dbbd0fcbdc048e7545f81cb6e3be865a7f7bd05ecfacafc0a before,
+in the backup, and after checkpoint/reopen. Columns, constraints, both final
+index definitions and bidirectional Parquet equality are unchanged. The default
+target IndexScan returned zero before repair and the correct candidate after;
+forced sequential lookup agrees after repair. Source resumption may now pass
+this specific index prerequisite; full source/data qualification remains open.
+
+Backup retained at data/maintenance/candidate-target-index-20260924-1/
+identifier_resolution_candidates.parquet, 658,019bytes, SHA256
+e5d2872e18f38be95639634d3c964d3d3beeba6521dddb2054671c41daf81966.
+All 12 full warehouse backups are preserved. No source fact row was changed by
+this repair. Native receipt and before/after manifests are retained separately.
+
 Status: Important repairs after the focused runs, ready for root-controlled
 verification of the three remaining repaired paths. The implementer ran one
 explicitly authorized 64 MB read-only scratch diagnosis under the memory guard;

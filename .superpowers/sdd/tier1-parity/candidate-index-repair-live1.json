@@ -1,0 +1,53 @@
+{
+  "after_lookup": {
+    "default_candidate_ids": [
+      "5b162a89-35e4-58eb-bfb5-ae11932bb2d4"
+    ],
+    "default_uses_index": true,
+    "equivalent": true,
+    "sequential_candidate_ids": [
+      "5b162a89-35e4-58eb-bfb5-ae11932bb2d4"
+    ]
+  },
+  "after_manifest_sha256": "64fb4d41e1f304903b9f4d51be94ec538b5d85b4c798ff44201d8dc238d0d6f4",
+  "after_rows": {
+    "encoding": "utf8-json-array-default-str-length-prefix-u64be-v1",
+    "ordered_row_sha256": "9c1005fa3812733dbbd0fcbdc048e7545f81cb6e3be865a7f7bd05ecfacafc0a",
+    "rows": 12959
+  },
+  "artifact_dir": "C:\\atx\\atx-db\\data\\maintenance\\candidate-target-index-20260924-1",
+  "backup_bytes": 658019,
+  "backup_path": "C:\\atx\\atx-db\\data\\maintenance\\candidate-target-index-20260924-1\\identifier_resolution_candidates.parquet",
+  "backup_rows": {
+    "encoding": "utf8-json-array-default-str-length-prefix-u64be-v1",
+    "ordered_row_sha256": "9c1005fa3812733dbbd0fcbdc048e7545f81cb6e3be865a7f7bd05ecfacafc0a",
+    "rows": 12959
+  },
+  "backup_sha256": "e5d2872e18f38be95639634d3c964d3d3beeba6521dddb2054671c41daf81966",
+  "before_lookup": {
+    "default_candidate_ids": [],
+    "default_uses_index": true,
+    "equivalent": false,
+    "sequential_candidate_ids": [
+      "5b162a89-35e4-58eb-bfb5-ae11932bb2d4"
+    ]
+  },
+  "before_manifest_sha256": "300a553d4e424c11b8af306cea60aac00a474310c86dffc587e1d54efc4b0328",
+  "before_rows": {
+    "encoding": "utf8-json-array-default-str-length-prefix-u64be-v1",
+    "ordered_row_sha256": "9c1005fa3812733dbbd0fcbdc048e7545f81cb6e3be865a7f7bd05ecfacafc0a",
+    "rows": 12959
+  },
+  "candidate_id": "5b162a89-35e4-58eb-bfb5-ae11932bb2d4",
+  "db_path": "C:\\atx\\atx-db\\data\\warehouse.duckdb",
+  "finished_at": "2026-09-24T23:45:47.908779+00:00",
+  "inspect_only": false,
+  "memory_limit": "256MB",
+  "phase": "durable_verified",
+  "repair_required": false,
+  "safe_to_resume_source": true,
+  "started_at": "2026-09-24T23:45:36.016086+00:00",
+  "status": "completed",
+  "target_security_id": "SEC-COMPANYFACTS-UNRESOLVED-CIK-0001495229",
+  "threads": 1
+}

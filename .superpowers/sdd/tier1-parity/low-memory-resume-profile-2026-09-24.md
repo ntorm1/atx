@@ -1,5 +1,18 @@
 # Bounded efficiency experiment — 2026-09-24
 
+Operator-only profile refinement: CC1 rebuilds only the small candidate index,
+with 256MB/one-thread connections and a streamed table-specific Parquet backup.
+SA1's retained-directory probe uses an 8MiB SQLite cache, streamed names and at
+most 11 size-capped payloads. Both now have focused evidence below 0.68GiB; the
+live read-only candidate inspection used 0.812GiB. Their next actual production
+operator trials may use a 1GiB native process cap after 120seconds sustained
+3GiB physical/5GiB commit headroom, with a 3GiB disk floor. Worst-case guarded
+allocation leaves 2GiB physical/4GiB commit, above unchanged 1.5/3GiB emergency
+stops. Guard preflight still requires cap plus 2GiB. A cap or integrity failure
+requires diagnosis. This scoped refinement reflects bounded code and smaller
+operator work; full CompanyFacts writes retain 4/6GiB and a 1.5GiB cap. It is
+not blanket permission to reduce production-stage resource requirements.
+
 Latest actual outcomes supersede the planned trials below: governed migration
 0326b completed at 512MB/one thread and 1.209381104GiB native peak. Schema 326,
 constraints and backup hash were verified. Archive17 then passed its complete

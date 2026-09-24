@@ -1,5 +1,21 @@
 # Tier-1 parity program ledger (atx-db)
 
+## CC1 live repair and SA1 retained-directory acceptance — 2026-09-24 23:48UTC
+
+CC1 committed 313848a7 and live repair completed at 256MB/one thread, peak
+0.829055786GiB/cap 1GiB. All 12,959 candidate rows, logical hashes, columns,
+constraints and index definitions survive checkpoint/reopen; formerly missing
+target now agrees in default IndexScan and sequential lookup. Table Parquet
+backup and all 12 full backups retained. No source facts changed.
+SA1 committed 9a7a3ea8: six repaired archive checks, 45 integration passes plus
+two repaired integration passes accepted; one review only. Actual full retained
+directory probe passed all 991,042 entries / 985,667 main / 5,374 history with
+build/reuse digest agreement and four selected payloads, peak 0.591762543GiB.
+This is actual directory efficiency, not full submissions/source eligibility.
+DG1 4e0f59d8 adds verified optional disk stops; use data path and 3GiB floor.
+Archive18 full source remains next from dd52e571-5786-42c5-bfaa-d7122b033912
+after sustained source headroom. No source recovery is due. Preserve stash@{0}.
+
 ## Archive17 full proof passed; index repair required — 2026-09-24 23:16UTC
 
 Archive17 is terminal failed, with both dataset/stage ledgers closed and no

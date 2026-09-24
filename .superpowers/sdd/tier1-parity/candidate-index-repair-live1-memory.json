@@ -1,0 +1,30 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\rebuild_candidate_target_index.py",
+    "--db-path",
+    "C:\\atx\\atx-db\\data\\warehouse.duckdb",
+    "--artifact-dir",
+    "C:\\atx\\atx-db\\data\\maintenance\\candidate-target-index-20260924-1",
+    "--candidate-id",
+    "5b162a89-35e4-58eb-bfb5-ae11932bb2d4",
+    "--target-security-id",
+    "SEC-COMPANYFACTS-UNRESOLVED-CIK-0001495229",
+    "--memory-limit",
+    "256MB"
+  ],
+  "job_limit_gb": 1.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 4.295032501220703,
+    "commit_free_gb": 6.3111724853515625
+  },
+  "disk": {
+    "path": "C:\\atx\\atx-db\\data",
+    "free_gb": 11.47957992553711,
+    "min_free_gb": 3.0
+  },
+  "child_pid": 7436,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.8290557861328125
+}

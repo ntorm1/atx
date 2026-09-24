@@ -1,5 +1,17 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Both production prerequisites delivered — 2026-09-24 23:48UTC
+
+CC1 live index repair verified at 0.829GiB native peak under 1GiB, with all
+12,959 rows/constraints/index definitions unchanged and target IndexScan fixed.
+SA1 9a7a3ea8 full retained directory measurement passed at 0.592GiB: all 991,042
+entries, 985,667 main names, 5,374 history, source/build/reuse digests and four
+selected payloads. Both tasks have accepted focused checks and one review;
+do not repeat them. DG1 disk stop is committed, opt in at data path/3GiB.
+No source writer is live. Resume full archive18 from dd52e571-5786-42c5-bfaa-
+d7122b033912 after sustained source headroom. Keep full proof/scope/snapshot,
+512MB/one thread and 1.5GiB cap. All backups and stash@{0} remain intact.
+
 ## Archive17 terminal; CC1 and SA1 next — 2026-09-24 23:16UTC
 
 The LIVE entry below is historical. Full retained fact/point proof PASSED;

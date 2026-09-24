@@ -16,20 +16,35 @@ The latest dataset and stage ledgers are terminal failed; no recovery is due.
 No new raw facts were written. Source capacity is proven for full resume proof
 and candidate processing only, not the remaining full archive write workload.
 
-Read-only `candidate-index-inspect1` proves a persisted index inconsistency:
+Read-only `candidate-index-inspect1` proved a persisted index inconsistency:
 target `SEC-COMPANYFACTS-UNRESOLVED-CIK-0001495229` returns zero rows by the
 default target index, but one by forced sequential scan; PK lookup also finds
-candidate `5b162a89-35e4-58eb-bfb5-ae11932bb2d4`. CC1 is implementing a bounded,
-backed-up same-schema rebuild of only that verified nonunique target index.
-Preserve all 12 full backups; use a durable candidate-table backup and complete
-row/constraint/index verification for this physical index repair. Do not skip
-the candidate or replace DELETE with UPDATE to hide the inconsistency.
+candidate `5b162a89-35e4-58eb-bfb5-ae11932bb2d4`. CC1 (313848a7) now repaired it
+in the live warehouse at 23:45:47UTC: 256MB/one thread, native peak 0.829055786GiB
+under 1GiB. All 12,959 actual candidate rows, logical digest, columns,
+constraints and final index definitions are unchanged after checkpoint/reopen.
+Default IndexScan now finds the same candidate as the sequential scan. Durable
+658,019byte Parquet backup SHA256 is
+e5d2872e18f38be95639634d3c964d3d3beeba6521dddb2054671c41daf81966, retained in
+data/maintenance/candidate-target-index-20260924-1. All 12 full backups remain.
 
-SA1 streaming submissions directory is implemented and received its one clean
-independent static review. First focused runtime: 19 passed, 3 failed (two
-Windows fixture handles, one central-record mutation check under diagnosis).
-Repair, focused/integration checks and retained-archive measurement are pending;
-no submissions write capacity or source completion is claimed.
+SA1 streaming submissions directory is committed as 9a7a3ea8, with one review.
+First focused runtime: 19 passed, 3 failed. Important repairs closed Windows
+fixture handles and removed stale Python read-ahead from live central-record
+checks; all six affected cases now pass. Integration passed 45 cases, then two
+repaired fixture/API snapshot cases passed separately. Actual retained archive
+probe passed: all 991,042 directory entries, 985,667 main issuer names, 5,374
+history entries, source hash/stat, ordered-name digest and four selected payloads
+agree across build/reuse. Native peak 0.591762543GiB under 1GiB; sidecar is
+202,481,664bytes. This qualifies directory efficiency, not full filing ingestion.
+DG1 is committed as 4e0f59d8: optional disk-path/free-space floor, with 14 policy
+checks and actual Windows preflight refusal verified. All upcoming warehouse
+writes opt in to the data path and 3GiB floor; no backup cleanup is authorized.
+
+CC1 uses two durable phases because this DuckDB build rejects same-transaction
+DROP/CREATE. Verified interrupted-repair recovery and actual indexed lookup
+passed focused checks; root accepted Important fixes without repeat review.
+The live index prerequisite is closed; full source writes remain unqualified.
 
 ## Current accepted work
 
@@ -87,9 +102,7 @@ backups and use backup-keep100. Do not infer a process from a running ledger.
 
 ## Next action
 
-1. Complete CC1 index repair, its one review/focused checks and backed-up live
-   verification; finish SA1 focused checks and retained-directory measurement.
-   Then launch fresh full archive18 from the terminal archive17 UUID above,
+1. Launch fresh full archive18 from the terminal archive17 UUID above,
    after sustained 4/6GiB headroom. Keep 512MB/one thread, 1.5GiB cap,
    force replacement/archive_members and all full proof checks. No CIK filter.
 2. Full submissions resume, scoped CVX earnings source, full-universe run5
