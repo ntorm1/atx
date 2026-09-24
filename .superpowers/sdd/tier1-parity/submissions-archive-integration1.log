@@ -1,0 +1,70 @@
+.........F....................................F                          [100%]
+================================== FAILURES ===================================
+___________ test_bulk_preserves_caller_session_state[unconfigured] ____________
+
+tmp_store = <atx_db.connection.DuckDBStore object at 0x000001E9506FE270>
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-83/test_bulk_preserves_caller_ses0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001E97341F320>
+temporary_kind = 'unconfigured'
+
+    @pytest.mark.parametrize("temporary_kind", ["registered", "table", "unconfigured"])
+    def test_bulk_preserves_caller_session_state(
+        tmp_store, tmp_path, monkeypatch, temporary_kind
+    ) -> None:
+        if temporary_kind != "unconfigured":
+            _configure_bulk_session(tmp_store)
+        if temporary_kind == "registered":
+            tmp_store.con.register("caller_rows", pd.DataFrame({"value": [17]}))
+        elif temporary_kind == "table":
+            tmp_store.con.execute("CREATE TEMP TABLE caller_rows AS SELECT 17 AS value")
+        monkeypatch.setattr(sec_submissions, "_BULK_REOPEN_FLUSHES", 1)
+    
+        def unexpected_close() -> None:
+            raise AssertionError("caller-owned session state must prevent recycling")
+    
+        monkeypatch.setattr(tmp_store, "close", unexpected_close)
+        original_connection = tmp_store.con
+        settings = _bulk_session_settings(tmp_store)
+>       result = SecSubmissionsBulkDataset().load(
+            tmp_store,
+            SecSubmissionsBulkOptions(
+                zip_path=_write_bulk_zip(tmp_path), forms=None, batch_ciks=1
+            ),
+        )
+
+tests\test_sec_submissions_bulk.py:325: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\atx_db\sec_submissions.py:730: in load
+    flush()
+src\atx_db\sec_submissions.py:662: in flush
+    if flush_count % _BULK_REOPEN_FLUSHES == 0 and _reopen_bulk_store(store):
+                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+src\atx_db\sec_submissions.py:595: in _reopen_bulk_store
+    store.close()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    def unexpected_close() -> None:
+>       raise AssertionError("caller-owned session state must prevent recycling")
+E       AssertionError: caller-owned session state must prevent recycling
+
+tests\test_sec_submissions_bulk.py:320: AssertionError
+_______________ test_public_api_snapshot_matches_pinned_fixture _______________
+
+    def test_public_api_snapshot_matches_pinned_fixture():
+        expected = load_public_api_snapshot(SNAPSHOT_PATH)
+    
+>       assert compare_public_api_snapshot(expected) == ()
+E       AssertionError: assert (PublicApiDif..._archive',)),) == ()
+E         
+E         Left contains one more item: PublicApiDiff(module='atx_db', missing=(), extra=('_submissions_archive',))
+E         Use -v to get more diff
+
+tests\test_module_boundaries.py:43: AssertionError
+============================= slowest 3 durations =============================
+2.71s call     tests/test_sec_submissions_bulk.py::test_bulk_recycle_preserves_rows_replacement_and_session_caps
+0.54s setup    tests/test_sec_submissions_resume.py::test_resume_refuses_corrupt_prefix_without_writes[UPDATE sec_submissions SET form = '10-Q' WHERE accession_number = '1-old'-prefix rows do not match]
+0.51s setup    tests/test_sec_submissions_resume.py::test_uncommitted_batch_is_rolled_back_and_replayed
+=========================== short test summary info ===========================
+FAILED tests/test_sec_submissions_bulk.py::test_bulk_preserves_caller_session_state[unconfigured]
+FAILED tests/test_module_boundaries.py::test_public_api_snapshot_matches_pinned_fixture
+2 failed, 45 passed in 34.49s

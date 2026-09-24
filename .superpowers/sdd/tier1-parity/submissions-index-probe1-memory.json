@@ -1,0 +1,24 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\measure_submissions_archive.py",
+    "--output",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\submissions-index-probe1.json",
+    "--member",
+    "CIK0000093410.json"
+  ],
+  "job_limit_gb": 1.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 3.3644447326660156,
+    "commit_free_gb": 6.696037292480469
+  },
+  "disk": {
+    "path": "C:\\atx\\atx-db\\data",
+    "free_gb": 10.981895446777344,
+    "min_free_gb": 3.0
+  },
+  "child_pid": 19096,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.5917625427246094
+}

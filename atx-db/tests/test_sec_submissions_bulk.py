@@ -156,6 +156,23 @@ def test_bulk_load_is_idempotent_on_replay(tmp_store, tmp_path) -> None:
     assert count == 2
 
 
+def test_bulk_duplicate_main_member_keeps_last_source_payload(tmp_store, tmp_path) -> None:
+    zip_path = _write_bulk_zip(tmp_path)
+    with zipfile.ZipFile(zip_path, "a") as archive:
+        payload = json.loads(archive.read("CIK0000000002.json"))
+        payload["filings"]["recent"]["form"] = ["SC 13G"]
+        with pytest.warns(UserWarning, match="Duplicate name"):
+            archive.writestr("CIK0000000002.json", json.dumps(payload))
+    result = SecSubmissionsBulkDataset().load(
+        tmp_store, SecSubmissionsBulkOptions(zip_path=zip_path, forms=None, batch_ciks=1),
+    )
+    assert result.details["main_members"] == result.details["main_members_processed"] == 2
+    assert result.details["scope_complete"] is True
+    assert tmp_store.con.execute(
+        "SELECT form FROM sec_submissions WHERE cik='0000000002'",
+    ).fetchall() == [("SC 13G",)]
+
+
 def test_bulk_load_supports_cik_scope_and_no_form_filter(tmp_store, tmp_path) -> None:
     zip_path = _write_bulk_zip(tmp_path)
 
@@ -293,6 +310,12 @@ def test_bulk_preserves_caller_session_state(
 ) -> None:
     if temporary_kind != "unconfigured":
         _configure_bulk_session(tmp_store)
+    else:
+        # The shared fixture now records its bootstrap budget. Model a caller
+        # that did not opt into recyclable analytical-session settings while
+        # retaining the actual bounded DuckDB configuration for this test.
+        monkeypatch.setattr(tmp_store, "analytical_memory_limit", None)
+        monkeypatch.setattr(tmp_store, "analytical_threads", None)
     if temporary_kind == "registered":
         tmp_store.con.register("caller_rows", pd.DataFrame({"value": [17]}))
     elif temporary_kind == "table":

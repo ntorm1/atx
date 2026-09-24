@@ -4,7 +4,6 @@ import datetime as dt
 import json
 import logging
 import re
-import zipfile
 from collections.abc import Generator, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,10 +11,11 @@ from typing import Any, cast
 
 import pandas as pd
 
+from ._submissions_archive import SubmissionsArchive
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .security_master import SEC_USER_AGENT, sec_session
-from .warehouse import cik_security_id, file_sha256, insert_frame, quality_check, record_source_file, symbol_key
+from .warehouse import cik_security_id, insert_frame, quality_check, record_source_file, symbol_key
 
 SOURCE_NAME = "SEC submissions API"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
@@ -441,9 +441,7 @@ def _bulk_source_keys(columnar: dict[str, Any]) -> Iterator[tuple[str, str | Non
 def _verify_bulk_prefix(
     store: DuckDBStore,
     options: SecSubmissionsBulkOptions,
-    archive: zipfile.ZipFile,
-    main_members: list[str],
-    member_names: set[str],
+    archive: SubmissionsArchive,
     security_map: dict[str, str],
 ) -> _VerifiedBulkPrefix:
     """Prove a contiguous committed prefix; a maximum CIK alone proves nothing.
@@ -454,7 +452,8 @@ def _verify_bulk_prefix(
     """
     lineage, started_at = _bulk_resume_lineage(store, options)
     source_stat = options.zip_path.stat()
-    archive_sha = file_sha256(options.zip_path)
+    archive.assert_unchanged()
+    archive_sha = archive.sha256
     receipt = store.con.execute(
         """SELECT 1 FROM raw_source_files
            WHERE dataset_id = 'sec_submissions' AND cache_path = ?
@@ -482,7 +481,7 @@ def _verify_bulk_prefix(
         row_count += rows
         cik_count += ciks
         last_cik = last
-    if not row_count or f"CIK{last_cik}.json" not in member_names:
+    if not row_count or f"CIK{last_cik}.json" not in archive:
         raise ValueError("SEC submissions resume has no committed archive boundary")
     LOGGER.info("SEC submissions resume verifying prefix: runs=%s rows=%d boundary=%s",
                 lineage, row_count, last_cik)
@@ -495,7 +494,7 @@ def _verify_bulk_prefix(
     retained = _bulk_retained_rows(store)
     verified_rows = verified_ciks = processed = history_read = 0
     try:
-        for member in main_members:
+        for member in archive.main_members(through=f"CIK{last_cik}.json"):
             cik = member[3:13]
             if cik > last_cik:
                 break
@@ -513,7 +512,7 @@ def _verify_bulk_prefix(
                 name = item.get("name")
                 if not name:
                     continue
-                if name not in member_names:
+                if name not in archive:
                     raise ValueError("SEC submissions resume prefix is missing referenced history")
                 add_keys(json.loads(archive.read(name)), name, expected)
                 history_read += 1
@@ -528,7 +527,7 @@ def _verify_bulk_prefix(
             processed += 1
             if processed % _BULK_PROGRESS_MEMBERS == 0:
                 LOGGER.info("SEC submissions resume verification: main_members=%d/%d verified_rows=%d",
-                            processed, len(main_members), verified_rows)
+                            processed, archive.main_member_count, verified_rows)
         if next(retained, None) is not None or (verified_rows, verified_ciks) != (row_count, cik_count):
             raise ValueError("SEC submissions resume retained rows exceed the verified prefix")
     finally:
@@ -537,7 +536,7 @@ def _verify_bulk_prefix(
     if (source_stat.st_size, source_stat.st_mtime_ns) != (final_stat.st_size, final_stat.st_mtime_ns):
         raise ValueError("SEC submissions resume archive changed during verification")
     LOGGER.info("SEC submissions resume verified: main_members=%d/%d rows=%d boundary=%s",
-                processed, len(main_members), verified_rows, last_cik)
+                processed, archive.main_member_count, verified_rows, last_cik)
     return _VerifiedBulkPrefix(last_cik, verified_rows, verified_ciks, processed,
                                history_read, lineage, archive_sha)
 
@@ -640,7 +639,7 @@ class SecSubmissionsBulkDataset(Dataset):
                 "SEC submissions bulk progress: main_members_processed=%d/%d "
                 "ciks_loaded=%d committed_rows=%d flushes=%d",
                 main_members_processed,
-                len(main_members),
+                main_member_count,
                 ciks_loaded,
                 loaded + verified_prior_rows,
                 flush_count,
@@ -667,20 +666,18 @@ class SecSubmissionsBulkDataset(Dataset):
                     flush_count,
                 )
 
-        with zipfile.ZipFile(options.zip_path) as archive:
-            member_names = set(archive.namelist())
-            main_members = sorted(
-                name for name in member_names if _BULK_MAIN_MEMBER.match(name)
-            )
+        with SubmissionsArchive(options.zip_path) as archive:
+            main_member_count = archive.main_member_count
             if options.resume_from_run_id is not None:
                 verified_prefix = _verify_bulk_prefix(
-                    store, options, archive, main_members, member_names, security_map,
+                    store, options, archive, security_map,
                 )
                 main_members_processed = verified_prefix.main_members
                 ciks_loaded = verified_prefix.ciks
                 history_members_read = verified_prefix.history_members
                 verified_prior_rows = verified_prefix.rows
-            for member in main_members:
+            after_member = None if verified_prefix is None else f"CIK{verified_prefix.last_cik}.json"
+            for member in archive.main_members(after=after_member):
                 cik = cast(re.Match[str], _BULK_MAIN_MEMBER.match(member)).group(1)
                 if verified_prefix is not None and cik <= verified_prefix.last_cik:
                     continue
@@ -704,7 +701,7 @@ class SecSubmissionsBulkDataset(Dataset):
                         name = item.get("name")
                         if not name:
                             continue
-                        if name not in member_names:
+                        if name not in archive:
                             missing_history_members += 1
                             continue
                         history_payload = json.loads(archive.read(name))
@@ -733,6 +730,7 @@ class SecSubmissionsBulkDataset(Dataset):
                     flush()
                 elif main_members_processed % _BULK_PROGRESS_MEMBERS == 0:
                     log_progress()
+            archive.assert_unchanged()
         flush()
         log_progress()
 
@@ -750,7 +748,7 @@ class SecSubmissionsBulkDataset(Dataset):
             "main_members_processed": main_members_processed,
             "covered_rows": loaded + verified_prior_rows,
             "scope_complete": options.forms is None and cik_scope is None and options.include_history_files
-                              and main_members_processed == len(main_members) and missing_history_members == 0,
+                              and main_members_processed == main_member_count and missing_history_members == 0,
             **resume_details,
         }
 
@@ -760,7 +758,7 @@ class SecSubmissionsBulkDataset(Dataset):
             source_url=str(options.zip_path),
             status="fetched",
             metadata={
-                "main_members": len(main_members),
+                "main_members": main_member_count,
                 "ciks_loaded": ciks_loaded,
                 "history_members_read": history_members_read,
                 "missing_history_members": missing_history_members,
@@ -789,7 +787,7 @@ class SecSubmissionsBulkDataset(Dataset):
             run_id=options.run_id,
             details={
                 "zip_path": str(options.zip_path),
-                "main_members": len(main_members),
+                "main_members": main_member_count,
                 "ciks_loaded": ciks_loaded,
                 "history_members_read": history_members_read,
                 "missing_history_members": missing_history_members,

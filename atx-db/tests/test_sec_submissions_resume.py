@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import zipfile
 from dataclasses import replace
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from atx_db import activation, sec_submissions
+from atx_db._submissions_archive import SubmissionsArchive
 from atx_db.sec_submissions import SecSubmissionsBulkDataset, SecSubmissionsBulkOptions
 from atx_db.warehouse import record_source_file
 
@@ -117,6 +119,28 @@ def test_second_interruption_can_resume_verified_ancestry(interrupted_bulk, monk
     assert result.details["verified_prior_main_members"] == 6
     assert result.details["verified_prior_run_ids"] == (options.resume_from_run_id, successor_id)
     assert result.details["covered_rows"] == len(_filings(store)) == 7
+
+
+def test_resume_rebuilds_corrupt_directory_without_skipping_issuer(interrupted_bulk):
+    store, options = interrupted_bulk
+    before = _filings(store)
+    with SubmissionsArchive(options.zip_path) as archive:
+        index_path = archive.index_path
+    connection = sqlite3.connect(index_path)
+    try:
+        # Corrupt both a retained-prefix issuer and an unprocessed issuer. A
+        # cached denominator must not authorize either an unverified prefix or
+        # a narrowed successor scope, even when the SQLite file remains valid.
+        connection.execute("DELETE FROM members WHERE name IN ('CIK0000000001.json', 'CIK0000000006.json')")
+        connection.commit()
+    finally:
+        connection.close()
+    result = SecSubmissionsBulkDataset().run(store, options)
+    assert _filings(store)[:4] == before
+    assert result.details["main_members"] == result.details["main_members_processed"] == 7
+    assert result.details["verified_prior_rows"] == 4
+    assert result.details["covered_rows"] == len(_filings(store)) == 7
+    assert result.details["scope_complete"] is True
 
 
 def test_uncommitted_batch_is_rolled_back_and_replayed(interrupted_bulk, monkeypatch):

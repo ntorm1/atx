@@ -1,0 +1,21 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "-m",
+    "pytest",
+    "tests/test_submissions_archive.py",
+    "-k",
+    "cache_damage or cached_central_record",
+    "-n",
+    "0",
+    "-o",
+    "addopts=",
+    "-q"
+  ],
+  "job_limit_gb": 1.0,
+  "status": "refused_low_headroom",
+  "headroom": {
+    "physical_free_gb": 2.815998077392578,
+    "commit_free_gb": 6.8259429931640625
+  }
+}

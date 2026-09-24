@@ -1,0 +1,239 @@
+......FF.....F........                                                   [100%]
+================================== FAILURES ===================================
+_________ test_cache_damage_cannot_silently_narrow_scope[delete_main] _________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-80/test_cache_damage_cannot_silen0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000223FBE5FFE0>
+corruption = 'delete_main'
+
+    @pytest.mark.parametrize("corruption", ["delete_main", "rename_main", "missing_receipt", "bad_sqlite"])
+    def test_cache_damage_cannot_silently_narrow_scope(tmp_path, monkeypatch, corruption):
+        path = _write_archive(tmp_path / "submissions.zip")
+        with SubmissionsArchive(path) as archive:
+            index = archive.index_path
+        receipt = index.with_suffix(".sqlite3.sha256")
+        if corruption == "missing_receipt":
+            receipt.unlink()
+        elif corruption == "bad_sqlite":
+            index.write_bytes(b"damaged cache")
+        else:
+            with sqlite3.connect(index) as connection:
+                if corruption == "delete_main":
+                    connection.execute("DELETE FROM members WHERE name='CIK0000000002.json'")
+                else:
+                    connection.execute("UPDATE members SET name='CIK0000000009.json' WHERE name='CIK0000000002.json'")
+        builds = []
+        build = SubmissionsArchive._build_index
+    
+        def capture(self):
+            builds.append(self.path)
+            return build(self)
+    
+        monkeypatch.setattr(SubmissionsArchive, "_build_index", capture)
+>       with SubmissionsArchive(path) as recovered:
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_submissions_archive.py:102: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\atx_db\_submissions_archive.py:87: in __init__
+    self._build_index()
+tests\test_submissions_archive.py:99: in capture
+    return build(self)
+           ^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <atx_db._submissions_archive.SubmissionsArchive object at 0x00000223D94F5FA0>
+
+    def _build_index(self) -> None:
+        start, size, concat, expected_entries = self._directory_layout()
+        fd, temporary = tempfile.mkstemp(prefix=".submissions-directory-partial-", dir=self.index_path.parent)
+        os.close(fd)
+        temporary_path = Path(temporary)
+        receipt_temporary: Path | None = None
+        connection = sqlite3.connect(temporary_path)
+        try:
+            self._configure_index(connection)
+            connection.executescript("""
+                CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
+                CREATE TABLE members (
+                    name TEXT PRIMARY KEY, ordinal INTEGER NOT NULL,
+                    central_offset INTEGER NOT NULL, header_offset INTEGER NOT NULL,
+                    record BLOB NOT NULL, kind INTEGER NOT NULL
+                ) WITHOUT ROWID;
+                CREATE TABLE offsets (header_offset INTEGER NOT NULL, ordinal INTEGER PRIMARY KEY);
+            """)
+            count = compressed = expanded = 0
+            for position, record in self._central_records(start, size):
+                info = _one_info(record)
+                offset = info.header_offset + concat
+                if info.volume or offset < 0 or offset >= start:
+                    raise zipfile.BadZipFile("Invalid member volume or local-header offset")
+                kind = 1 if _MAIN.match(info.filename) else (2 if _HISTORY.match(info.filename) else 0)
+                connection.execute(
+                    "INSERT OR REPLACE INTO members VALUES (?, ?, ?, ?, ?, ?)",
+                    (info.filename, count, position, offset, record, kind),
+                )
+                connection.execute("INSERT INTO offsets VALUES (?, ?)", (offset, count))
+                count += 1
+                compressed += info.compress_size
+                expanded += info.file_size
+                if count % 10000 == 0:
+                    connection.commit()
+                if count % 100000 == 0:
+                    LOGGER.info("SEC submissions directory indexed: entries=%d/%d", count, expected_entries)
+            if count != expected_entries:
+                raise zipfile.BadZipFile("ZIP directory entry count mismatch")
+            connection.execute("CREATE INDEX offsets_ordered ON offsets(header_offset, ordinal)")
+            connection.execute("CREATE INDEX members_kind ON members(kind, name)")
+            metadata = {
+                "identity": json.dumps(self._identity, sort_keys=True),
+                "start_dir": str(start), "concat": str(concat), "entry_count": str(count),
+                "compressed_bytes": str(compressed), "expanded_bytes": str(expanded),
+            }
+            connection.executemany("INSERT INTO metadata VALUES (?, ?)", metadata.items())
+            connection.commit()
+            connection.close()
+            self.assert_unchanged()
+            digest = _digest(temporary_path)
+            fd, receipt_name = tempfile.mkstemp(prefix=".submissions-receipt-partial-", dir=self.index_path.parent)
+            receipt_temporary = Path(receipt_name)
+            with os.fdopen(fd, "w", encoding="ascii") as receipt:
+                receipt.write(digest + "\n")
+                receipt.flush()
+                os.fsync(receipt.fileno())
+            # If interrupted between replacements the old/missing digest cannot
+            # authorize the new file, so the next open builds a fresh index.
+>           os.replace(temporary_path, self.index_path)
+E           PermissionError: [WinError 5] Access is denied: 'C:\\Users\\natha\\AppData\\Local\\Temp\\pytest-of-natha\\pytest-80\\test_cache_damage_cannot_silen0\\.submissions-directory-partial-3yyn4tf2' -> 'C:\\Users\\natha\\AppData\\Local\\Temp\\pytest-of-natha\\pytest-80\\test_cache_damage_cannot_silen0\\submissions.zip.directory-v1-624025019ae8632325eb5ab1f70c681fb9740125a6673f808b71a1df263274de.sqlite3'
+
+src\atx_db\_submissions_archive.py:266: PermissionError
+_________ test_cache_damage_cannot_silently_narrow_scope[rename_main] _________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-80/test_cache_damage_cannot_silen1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000223FBEB9370>
+corruption = 'rename_main'
+
+    @pytest.mark.parametrize("corruption", ["delete_main", "rename_main", "missing_receipt", "bad_sqlite"])
+    def test_cache_damage_cannot_silently_narrow_scope(tmp_path, monkeypatch, corruption):
+        path = _write_archive(tmp_path / "submissions.zip")
+        with SubmissionsArchive(path) as archive:
+            index = archive.index_path
+        receipt = index.with_suffix(".sqlite3.sha256")
+        if corruption == "missing_receipt":
+            receipt.unlink()
+        elif corruption == "bad_sqlite":
+            index.write_bytes(b"damaged cache")
+        else:
+            with sqlite3.connect(index) as connection:
+                if corruption == "delete_main":
+                    connection.execute("DELETE FROM members WHERE name='CIK0000000002.json'")
+                else:
+                    connection.execute("UPDATE members SET name='CIK0000000009.json' WHERE name='CIK0000000002.json'")
+        builds = []
+        build = SubmissionsArchive._build_index
+    
+        def capture(self):
+            builds.append(self.path)
+            return build(self)
+    
+        monkeypatch.setattr(SubmissionsArchive, "_build_index", capture)
+>       with SubmissionsArchive(path) as recovered:
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_submissions_archive.py:102: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\atx_db\_submissions_archive.py:87: in __init__
+    self._build_index()
+tests\test_submissions_archive.py:99: in capture
+    return build(self)
+           ^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <atx_db._submissions_archive.SubmissionsArchive object at 0x00000223FBEB9070>
+
+    def _build_index(self) -> None:
+        start, size, concat, expected_entries = self._directory_layout()
+        fd, temporary = tempfile.mkstemp(prefix=".submissions-directory-partial-", dir=self.index_path.parent)
+        os.close(fd)
+        temporary_path = Path(temporary)
+        receipt_temporary: Path | None = None
+        connection = sqlite3.connect(temporary_path)
+        try:
+            self._configure_index(connection)
+            connection.executescript("""
+                CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
+                CREATE TABLE members (
+                    name TEXT PRIMARY KEY, ordinal INTEGER NOT NULL,
+                    central_offset INTEGER NOT NULL, header_offset INTEGER NOT NULL,
+                    record BLOB NOT NULL, kind INTEGER NOT NULL
+                ) WITHOUT ROWID;
+                CREATE TABLE offsets (header_offset INTEGER NOT NULL, ordinal INTEGER PRIMARY KEY);
+            """)
+            count = compressed = expanded = 0
+            for position, record in self._central_records(start, size):
+                info = _one_info(record)
+                offset = info.header_offset + concat
+                if info.volume or offset < 0 or offset >= start:
+                    raise zipfile.BadZipFile("Invalid member volume or local-header offset")
+                kind = 1 if _MAIN.match(info.filename) else (2 if _HISTORY.match(info.filename) else 0)
+                connection.execute(
+                    "INSERT OR REPLACE INTO members VALUES (?, ?, ?, ?, ?, ?)",
+                    (info.filename, count, position, offset, record, kind),
+                )
+                connection.execute("INSERT INTO offsets VALUES (?, ?)", (offset, count))
+                count += 1
+                compressed += info.compress_size
+                expanded += info.file_size
+                if count % 10000 == 0:
+                    connection.commit()
+                if count % 100000 == 0:
+                    LOGGER.info("SEC submissions directory indexed: entries=%d/%d", count, expected_entries)
+            if count != expected_entries:
+                raise zipfile.BadZipFile("ZIP directory entry count mismatch")
+            connection.execute("CREATE INDEX offsets_ordered ON offsets(header_offset, ordinal)")
+            connection.execute("CREATE INDEX members_kind ON members(kind, name)")
+            metadata = {
+                "identity": json.dumps(self._identity, sort_keys=True),
+                "start_dir": str(start), "concat": str(concat), "entry_count": str(count),
+                "compressed_bytes": str(compressed), "expanded_bytes": str(expanded),
+            }
+            connection.executemany("INSERT INTO metadata VALUES (?, ?)", metadata.items())
+            connection.commit()
+            connection.close()
+            self.assert_unchanged()
+            digest = _digest(temporary_path)
+            fd, receipt_name = tempfile.mkstemp(prefix=".submissions-receipt-partial-", dir=self.index_path.parent)
+            receipt_temporary = Path(receipt_name)
+            with os.fdopen(fd, "w", encoding="ascii") as receipt:
+                receipt.write(digest + "\n")
+                receipt.flush()
+                os.fsync(receipt.fileno())
+            # If interrupted between replacements the old/missing digest cannot
+            # authorize the new file, so the next open builds a fresh index.
+>           os.replace(temporary_path, self.index_path)
+E           PermissionError: [WinError 5] Access is denied: 'C:\\Users\\natha\\AppData\\Local\\Temp\\pytest-of-natha\\pytest-80\\test_cache_damage_cannot_silen1\\.submissions-directory-partial-u_krp_h2' -> 'C:\\Users\\natha\\AppData\\Local\\Temp\\pytest-of-natha\\pytest-80\\test_cache_damage_cannot_silen1\\submissions.zip.directory-v1-624025019ae8632325eb5ab1f70c681fb9740125a6673f808b71a1df263274de.sqlite3'
+
+src\atx_db\_submissions_archive.py:266: PermissionError
+__ test_cached_central_record_is_compared_to_source_even_with_restored_mtime __
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-80/test_cached_central_record_is_0')
+
+    def test_cached_central_record_is_compared_to_source_even_with_restored_mtime(tmp_path):
+        path = _write_archive(tmp_path / "submissions.zip")
+        with SubmissionsArchive(path) as archive:
+            before = path.stat()
+            with path.open("r+b") as source:
+                source.seek(archive.start_dir + 16)  # central CRC, not the payload
+                value = source.read(1)
+                source.seek(-1, os.SEEK_CUR)
+                source.write(bytes([value[0] ^ 1]))
+            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+>           with pytest.raises(zipfile.BadZipFile, match="central record differs"):
+E           Failed: DID NOT RAISE BadZipFile
+
+tests\test_submissions_archive.py:168: Failed
+=========================== short test summary info ===========================
+FAILED tests/test_submissions_archive.py::test_cache_damage_cannot_silently_narrow_scope[delete_main]
+FAILED tests/test_submissions_archive.py::test_cache_damage_cannot_silently_narrow_scope[rename_main]
+FAILED tests/test_submissions_archive.py::test_cached_central_record_is_compared_to_source_even_with_restored_mtime
+3 failed, 19 passed in 4.92s

@@ -1,0 +1,197 @@
+{
+  "started_at_utc": "2026-09-24T23:46:20.142507+00:00",
+  "source": "C:\\atx\\atx-db\\data\\cache\\submissions.zip",
+  "prior_inventory": "C:\\atx\\.superpowers\\sdd\\tier1-parity\\submissions-archive-inventory.json",
+  "scope": "Complete ZIP directory and all sorted main names; bounded selected payloads only; no warehouse access",
+  "all_payloads_validated": false,
+  "production_eligibility_established": false,
+  "maximum_selected_payload_bytes_each": 8388608,
+  "native_peak_memory": "Use the enclosing run_memory_guarded.py receipt; this script does not estimate native peak",
+  "source_stat_before": {
+    "device": 1921512957424284461,
+    "inode": 33495522228660532,
+    "bytes": 1564656199,
+    "mtime_ns": 1789862855073780900
+  },
+  "first_open": {
+    "source_sha256": "702fbcd8b4335bc649e9e4eab3a202f3effc314b43421664bfecb59365767165",
+    "directory_entries": 991042,
+    "unique_member_names": 991042,
+    "duplicate_name_entries": 0,
+    "unique_main_members": 985667,
+    "unique_history_members": 5374,
+    "unique_other_members": 1,
+    "declared_payload_compressed_bytes": 1401953251,
+    "declared_payload_expanded_bytes": 5741005528,
+    "main_traversal": {
+      "count": 985667,
+      "ordered_names_sha256": "935e26cacb36f4d5782e63d54f809f0c0e9a3514d3474fbc32d581bf2f119645",
+      "digest_encoding": "each UTF-8 name prefixed by its four-byte unsigned big-endian byte length",
+      "first": [
+        "CIK0000000003.json",
+        "CIK0000000013.json",
+        "CIK0000000014.json",
+        "CIK0000000017.json",
+        "CIK0000000018.json"
+      ],
+      "last": [
+        "CIK0002156206.json",
+        "CIK0002156236.json",
+        "CIK0002156274.json",
+        "CIK0002156277.json",
+        "CIK0002156279.json"
+      ]
+    },
+    "selected_payloads": [
+      {
+        "name": "CIK0000000003.json",
+        "status": "read_with_standard_zip_integrity_checks",
+        "bytes": 2284,
+        "sha256": "ce16c8538d26b90e1f128fb431ba73fbce08e0c47f95ac54c600059c7fc6987b"
+      },
+      {
+        "name": "CIK0002156279.json",
+        "status": "read_with_standard_zip_integrity_checks",
+        "bytes": 1350,
+        "sha256": "b724a0361e68db91ee6107a8887ab535e2133c53e224745e506197415eae284e"
+      },
+      {
+        "name": "CIK0000093410.json",
+        "status": "read_with_standard_zip_integrity_checks",
+        "bytes": 157822,
+        "sha256": "bf057bef16c6300d706fb699e86f92dd43d87751031d5080aa54aae61fdd54c3"
+      },
+      {
+        "name": "CIK0000001750-submissions-001.json",
+        "status": "read_with_standard_zip_integrity_checks",
+        "bytes": 216184,
+        "sha256": "c08352beb1dd75532596a327802f0c8ce51c0ac07385ad0d1821c4ad10068624"
+      }
+    ],
+    "index": {
+      "path": "C:\\atx\\atx-db\\data\\cache\\submissions.zip.directory-v1-702fbcd8b4335bc649e9e4eab3a202f3effc314b43421664bfecb59365767165.sqlite3",
+      "stat": {
+        "device": 1921512957424284461,
+        "inode": 14636698789735549,
+        "bytes": 202481664,
+        "mtime_ns": 1790293630455075400
+      },
+      "existed_before_open": false,
+      "file_identity_unchanged_from_before_open": false,
+      "observation": "created_or_rebuilt",
+      "digest_receipt_exists": true,
+      "validation": "reader verified full index SHA against receipt and source SHA/stat/version"
+    },
+    "open_seconds": 51.14099999999962,
+    "total_seconds": 53.26599999999962
+  },
+  "reuse_open": {
+    "source_sha256": "702fbcd8b4335bc649e9e4eab3a202f3effc314b43421664bfecb59365767165",
+    "directory_entries": 991042,
+    "unique_member_names": 991042,
+    "duplicate_name_entries": 0,
+    "unique_main_members": 985667,
+    "unique_history_members": 5374,
+    "unique_other_members": 1,
+    "declared_payload_compressed_bytes": 1401953251,
+    "declared_payload_expanded_bytes": 5741005528,
+    "main_traversal": {
+      "count": 985667,
+      "ordered_names_sha256": "935e26cacb36f4d5782e63d54f809f0c0e9a3514d3474fbc32d581bf2f119645",
+      "digest_encoding": "each UTF-8 name prefixed by its four-byte unsigned big-endian byte length",
+      "first": [
+        "CIK0000000003.json",
+        "CIK0000000013.json",
+        "CIK0000000014.json",
+        "CIK0000000017.json",
+        "CIK0000000018.json"
+      ],
+      "last": [
+        "CIK0002156206.json",
+        "CIK0002156236.json",
+        "CIK0002156274.json",
+        "CIK0002156277.json",
+        "CIK0002156279.json"
+      ]
+    },
+    "selected_payloads": [
+      {
+        "name": "CIK0000000003.json",
+        "status": "read_with_standard_zip_integrity_checks",
+        "bytes": 2284,
+        "sha256": "ce16c8538d26b90e1f128fb431ba73fbce08e0c47f95ac54c600059c7fc6987b"
+      },
+      {
+        "name": "CIK0002156279.json",
+        "status": "read_with_standard_zip_integrity_checks",
+        "bytes": 1350,
+        "sha256": "b724a0361e68db91ee6107a8887ab535e2133c53e224745e506197415eae284e"
+      },
+      {
+        "name": "CIK0000093410.json",
+        "status": "read_with_standard_zip_integrity_checks",
+        "bytes": 157822,
+        "sha256": "bf057bef16c6300d706fb699e86f92dd43d87751031d5080aa54aae61fdd54c3"
+      },
+      {
+        "name": "CIK0000001750-submissions-001.json",
+        "status": "read_with_standard_zip_integrity_checks",
+        "bytes": 216184,
+        "sha256": "c08352beb1dd75532596a327802f0c8ce51c0ac07385ad0d1821c4ad10068624"
+      }
+    ],
+    "index": {
+      "path": "C:\\atx\\atx-db\\data\\cache\\submissions.zip.directory-v1-702fbcd8b4335bc649e9e4eab3a202f3effc314b43421664bfecb59365767165.sqlite3",
+      "stat": {
+        "device": 1921512957424284461,
+        "inode": 14636698789735549,
+        "bytes": 202481664,
+        "mtime_ns": 1790293630455075400
+      },
+      "existed_before_open": true,
+      "file_identity_unchanged_from_before_open": true,
+      "observation": "existing_file_reused",
+      "digest_receipt_exists": true,
+      "validation": "reader verified full index SHA against receipt and source SHA/stat/version"
+    },
+    "open_seconds": 2.186999999999898,
+    "total_seconds": 4.436999999999898
+  },
+  "source_stat_after": {
+    "device": 1921512957424284461,
+    "inode": 33495522228660532,
+    "bytes": 1564656199,
+    "mtime_ns": 1789862855073780900
+  },
+  "prior_comparison": {
+    "prior_observed_at_utc": "2026-09-20T19:04:53.170947+00:00",
+    "checks": {
+      "source_path": true,
+      "archive_bytes": true,
+      "directory_entries": true,
+      "main_members": true,
+      "history_members": true,
+      "other_members": true,
+      "declared_expanded_bytes": true,
+      "no_duplicate_names_for_raw_to_unique_count_comparison": true
+    },
+    "all_recorded_comparisons_match": true,
+    "prior_source_sha256_available": false,
+    "identity_limit": "Prior inventory has no source SHA; matching path, byte size and denominators alone do not prove byte identity."
+  },
+  "reuse_parity": {
+    "source_sha256": true,
+    "directory_entries": true,
+    "unique_member_names": true,
+    "unique_main_members": true,
+    "unique_history_members": true,
+    "unique_other_members": true,
+    "declared_payload_expanded_bytes": true,
+    "declared_payload_compressed_bytes": true,
+    "main_traversal": true,
+    "selected_payloads": true
+  },
+  "source_stat_unchanged": true,
+  "status": "directory_and_selected_payload_probe_passed",
+  "finished_at_utc": "2026-09-24T23:47:17.858145+00:00"
+}

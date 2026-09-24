@@ -1,0 +1,28 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "-m",
+    "pytest",
+    "tests/test_sec_submissions_bulk.py::test_bulk_preserves_caller_session_state[unconfigured]",
+    "tests/test_module_boundaries.py::test_public_api_snapshot_matches_pinned_fixture",
+    "-n",
+    "0",
+    "-o",
+    "addopts=",
+    "-q"
+  ],
+  "job_limit_gb": 1.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 4.070098876953125,
+    "commit_free_gb": 7.533809661865234
+  },
+  "disk": {
+    "path": "C:\\atx\\atx-db\\data",
+    "free_gb": 11.606029510498047,
+    "min_free_gb": 3.0
+  },
+  "child_pid": 2708,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.6544647216796875
+}
