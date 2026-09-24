@@ -34,6 +34,7 @@ opt-in with `--run-slow`.
 | [Fundamental clock policy](docs/FUNDAMENTAL_CLOCK_POLICY.md) | Conservative eligibility for date-only SEC facts, raw provenance boundaries and required downstream rebuilds. |
 | [Fundamental signal panel](docs/FUNDAMENTAL_SIGNAL_RESEARCH.md), [decile evaluation](docs/FUNDAMENTAL_SIGNAL_EVALUATION.md) | Frozen earnings, quality and leverage hypotheses with selected-input lineage, observed-session returns, chronological splits and recorded inference. No live alpha result or production eligibility is claimed. |
 | [Research readiness inventory](docs/FUNDAMENTAL_SIGNAL_READINESS.md) | Optional bounded build, coverage and evaluation evidence in the read-only readiness report; recorded manifests do not certify their underlying data. |
+| [Fundamental desk screen](docs/FUNDAMENTAL_DESK_SCREEN_ACCEPTANCE.md) | Validates a frozen panel, then reads earnings growth, margin change, accruals, leverage and same-session market valuations. Qualified current inputs remain usable before a future return observation exists. |
 | [Parity gap](docs/PARITY_GAP.md), [roadmap](docs/ROADMAP_PARITY.md), [handoff](docs/WAREHOUSE_PARITY_NEXT_AGENT_README.md), [tranche ledger](docs/WAREHOUSE_PARITY_TRANCHES.md) | Historical build records, with supersession banners. |
 
 ## Data safety

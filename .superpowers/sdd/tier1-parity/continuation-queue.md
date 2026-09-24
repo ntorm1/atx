@@ -1,5 +1,74 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Committed issuer and desk consumers; runtime terminal - 2026-09-24 UTC
+
+Latest implementation HEAD is a1b59a43 (DS2); IQ2 is fe7200db. Both tasks are
+committed with only their owned paths and the required trailer. IQ2 passed
+23 focused tests at 0.687 GiB peak and DS2 passed eight at 0.655 GiB, each
+under the unchanged exact 1.5 GiB process guard; scoped Ruff passed for both.
+The DS2 review subagent failed on its usage limit, so the parent performed
+the one independent review. All four Important fixes are accepted on the
+original implementer's report and focused proof. No Critical finding remains.
+
+DS2 validates the default frozen FQ1 panel in a read-only transaction, checks
+bytes before fetching its bounded preview, and uses qualified raw inputs for
+the latest observed decision session. Research score eligibility stays separate
+when a future entry session is not yet observed. Foreign, stale or unverified
+raw inputs remain NULL with diagnostics. Its live command is now in the
+production resume sequence. No live screen or statistical result is claimed.
+
+Clean export quant-platform-head5 verified import from a1b59a43 and all seven
+module-boundary checks. Receipt completed exit0, peak 0.615635 GiB under the
+1.5 GiB guard. Session89194 / child11764 are terminal; all task agents are
+terminal and no root runtime job remains. Full schema/numeric checks still
+await sustained 6 GiB physical / 8 GiB commit for two minutes. Brief samples
+met those floors, but subsequent samples fell below them; no long run was
+started. Last sample 00:41:13UTC was 4.919 GiB physical / 7.554 GiB approximate
+commit. These module checks do not imply a complete schema or sprint gate.
+
+Next: finish schema/numeric verification when capacity permits, then governed
+migrate0325 with backup-keep100, archive17 from actual dataset predecessor
+513cfbbc-096a-4186-9666-b6cc5170c4ad, full submissions from
+04cf947d-53bb-49b7-a276-b3c74a2a52c8, scoped CVX source and full run5 from
+statement_points --force without a CIK filter. Follow with live research,
+desk/CVX readouts, item/provider/all-quality measurements, threshold assessment,
+first eligible release and sprint gates. Snapshot stays2026-09-20. No loader
+recovery is needed now; archive16 recovery already closed both ledgers.
+Source counts remain47,941,000 facts/points, live schema0322. Preserve the four
+unrelated EOL modifications, other-session files and stash@{0}; ask before main
+merge. If host capacity remains unavailable, continue useful platform work
+without weakening these source or verification prerequisites.
+
+Earlier checkpoints below are historical and superseded where noted above.
+
+## Issuer selected-input reads committed; desk consumer in review - 2026-09-24 UTC
+
+This turn made concrete platform progress: IQ2 is committed as fe7200db.
+The API and as-of reader now qualify actual selected leaves against requested
+CIK and canonical definitions at the selected root's own event. Whole-state
+ranking precedes screening, invalidation cannot reveal an older value, and
+page/byte bounds plus diagnostics preserve missingness. Independent Codex
+review findings are fixed. Root's iq2-tests2 passed all 23 focused cases at
+0.686684 GiB peak under the exact 1.5 GiB job cap; iq2-ruff2 passed. No live
+rows or migrations changed. Failed first collection was a corrected relative
+test import, not a warehouse failure.
+
+DS2 is implemented in four disjoint desk SQL/reader/docs/test files and is
+fixing Important findings from fundamental-desk-panel-review.md. The fresh
+review subagent hit a usage limit before producing a review; the parent,
+independent of the implementer, performed one static review. It found that
+current qualified inputs must not require a future entry session, rejected
+raw inputs must not become displayed metrics, bytes need a pre-fetch bound,
+and the successful real-validator path needs focused proof. Original Codex
+implementer owns fixes; root owns all runtime. DS2 remains uncommitted and
+unverified until the following checkpoint records its tests and commit.
+
+Host samples have permitted short checks but not the sustained 6 GiB physical /
+8 GiB commit window for full schema or source runtime. Latest durable source
+remains archive16 recovery: 47,941,000 facts/points, schema 0322, no live job.
+Next full-source predecessor stays 513cfbbc-096a-4186-9666-b6cc5170c4ad. Keep
+all release, measured coverage and sprint gates open, and preserve stash@{0}.
+
 ## Bootstrap capped before SQL; long verification still pending - 2026-09-24 UTC
 
 Previous goal turn made concrete FQ3/dictionary/operations progress. This

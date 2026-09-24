@@ -1,5 +1,46 @@
 # Tier-1 parity program ledger (atx-db)
 
+## Consumer repairs verified and committed - 2026-09-24 UTC
+
+IQ2 is fe7200db: 23 focused tests and scoped Ruff passed. DS2 is a1b59a43:
+eight focused tests and scoped Ruff passed after the one parent Codex review
+(the fresh review subagent hit its usage limit before producing a review).
+Both retain the exact 1.5 GiB guard and tiny 256 MB / one-thread fixtures.
+All Important fixes accepted on implementer reports, no Critical rereview.
+Clean exported a1b59a43 passed import and seven module-boundary checks in
+quant-platform-head5. Full schema/numeric, source, coverage, research, release
+and sprint gates remain open; no live writes followed archive16 recovery.
+
+## Validated fundamental desk screen - 2026-09-24 UTC
+
+DS2 under fundamental-desk-panel-brief.md replaces the never-executed desk
+SQL's owner-ID joins and approximate operand reconstruction with the existing
+FQ1 panel validator and historical trading-security mapping. Its read-only
+runner must validate the exact default frozen specs before numeric output,
+state the actual decision session/cutoff, preserve raw accounting signs and
+missing-market diagnostics, and bound output rows/bytes. This is descriptive
+screening, not alpha evidence or an eligible production portfolio. IQ2 owns
+issuer readers concurrently; the desk files are disjoint and all runtime
+remains serialized under root's guard. No warehouse or source gate is waived.
+
+DS2 review clarification: a descriptive current-session screen needs qualified
+accounting inputs, not a later observed entry bar. Keep FQ1 score eligibility
+and missing_next_session diagnostics separate from input eligibility. Numeric
+columns require input reason valid and selected lineage qualified; never show
+a rejected retained raw input as the company's metric. Do not change FQ1's
+research score or forward-return eligibility rules for this consumer.
+
+## Issuer selected-lineage consumer correction - 2026-09-24 UTC
+
+IQ2 under issuer-selected-lineage-brief.md closes the source-supported
+cross-CIK gap in issuer-derived-lineage-audit.md. Reuse DL1 selected leaves
+for API and asof issuer numeric reads, with event-time proof and complete
+revision selection before screening. Preserve first_reported historical
+states, explicit NULL/unverified diagnostics, bounded pages/bytes and all
+market-identity limitations. No migration, live write or new source claim.
+This is production-facing platform work while long runtime awaits host
+headroom, not a substitute for full source/measurement/release gates.
+
 ## Sustained headroom for long verification - 2026-09-24 UTC
 
 The correctly bounded TB1 bootstrap still encountered host commit pressure

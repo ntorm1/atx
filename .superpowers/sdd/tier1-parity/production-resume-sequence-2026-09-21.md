@@ -244,10 +244,34 @@ the CF1 evaluation (holdout decile spreads, label coverage, HAC uncertainty,
 Holm adjustment, and transaction-cost sensitivities). `production_eligible`
 remaining false is recorded evidence, not a reason to relabel the signals.
 
-After research evaluation, execute the versioned CVX quarterly EPS acceptance SQL,
-the fundamental desk acceptance SQL, and both price-feature and fundamental
-signal decile readout SQL
-under separate guarded, read-only sessions; record actual results and gaps.
+After research evaluation, execute the versioned CVX quarterly EPS acceptance
+SQL and both price-feature and fundamental signal decile readout SQL under
+separate guarded, read-only sessions; record actual results and gaps. Use the
+DS2 reader below for the fundamental desk screen: it validates the selected
+completed default FQ1 panel before executing the prepared SQL in the same
+transaction. Bare SQL is not evidence that its panel digest was validated.
+The reader reports the latest observed decision session separately from the
+September20 report date and keeps missing next-session research eligibility
+separate from qualified accounting inputs. It does not invent a later entry
+bar or include weekend filings in Friday's information set.
+
+```powershell
+C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
+  --job-gb 2 `
+  --receipt C:\atx\.superpowers\sdd\tier1-parity\fundamental-desk-screen1-memory.json `
+  --stdout C:\atx\.superpowers\sdd\tier1-parity\fundamental-desk-screen1.log `
+  --stderr C:\atx\.superpowers\sdd\tier1-parity\fundamental-desk-screen1.err `
+  -- C:\atx\atx-db\.venv\Scripts\python.exe scripts\read_fundamental_desk_screen.py `
+  --db-path data\warehouse.duckdb --build-run-id fundamental_signals_build1 `
+  --report-as-of 2026-09-20 `
+  --output-json C:\atx\.superpowers\sdd\tier1-parity\fundamental-desk-screen1.json
+```
+
+All output paths must be new. The reader itself sets256MB/one-thread DuckDB
+limits and bounds preview rows/bytes. A refusal is missing evidence, not a
+passing empty screen. Never mark the live acceptance complete from tiny
+fixtures or a prepared query alone.
+
 Run readiness measurement, assess item/provider/all-quality gates without
 weakening thresholds, regenerate and check the data dictionary, and publish the
 first release only if measured gates permit. Verify its manifest and hashes.

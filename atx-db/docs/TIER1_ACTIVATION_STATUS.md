@@ -7,6 +7,22 @@ artifacts. Dated loader progress below is historical evidence.
 
 ## Latest durable warehouse measurement: 2026-09-23
 
+The subsequent issuer-serving repair `fe7200db` checks exact selected source
+lineage before returning derived values for a CIK. Its independent review
+fixes and 23 focused checks passed under the 1.5 GiB guard (0.687 GiB peak),
+with scoped Ruff clean. It preserves historical first reports, explicit NULL
+events and bounded unavailable-lineage diagnostics. This is a code result;
+the live warehouse still needs migrations 0323..0325 and full materialization
+before its legacy derived rows can supply those proofs.
+
+The validated [desk screen](FUNDAMENTAL_DESK_SCREEN_ACCEPTANCE.md) is committed
+as `a1b59a43`. Eight focused checks passed at 0.655 GiB peak. It separates
+qualified current accounting inputs from future-entry research eligibility,
+joins the same observed market session and reports missing data explicitly.
+The clean export of that commit passed import and all seven module-boundary
+checks at 0.616 GiB peak. No live desk output has been produced; full schema
+and numeric verification still await the sustained host headroom window.
+
 Archive16 stopped under the host memory guard at22:16UTC during point
 verification. Its ledger recovery and checkpoint completed22:19:32UTC,
 confirming the counts below and zero new attempt rows. Next source predecessor:

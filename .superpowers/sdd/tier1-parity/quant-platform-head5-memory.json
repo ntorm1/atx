@@ -1,0 +1,16 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    "C:/atx/.superpowers/sdd/tier1-parity/verify_committed_head.py",
+    "--module-only"
+  ],
+  "job_limit_gb": 1.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 4.340785980224609,
+    "commit_free_gb": 6.949001312255859
+  },
+  "child_pid": 11764,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.6156349182128906
+}
