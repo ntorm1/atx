@@ -73,7 +73,9 @@
 #include "atx/core/macro.hpp"
 #include "atx/core/types.hpp"
 
-#include "atx/engine/alpha/registry.hpp" // OpCode
+#include "atx/engine/alpha/registry.hpp"      // OpCode
+#include "atx/engine/alpha/ts_order_stat.hpp" // Lane 1: O(log d) rank / median sweeps
+#include "atx/engine/alpha/ts_sliding.hpp"    // Lane 1: O(1) decay / time-regression lanes
 
 namespace atx::engine::alpha::detail {
 
@@ -373,6 +375,15 @@ struct TsvFit {
   case OpCode::TsMin:
   case OpCode::TsMax:
   case OpCode::TsScale:
+  // ORDER-STATISTIC online ops (Lane 1, ts_order_stat.hpp) — BIT-EXACT vs the
+  // batch oracle (integer rank counts / exact selected values; the signed-zero
+  // median corner falls back to the batch sort per cell), so they route on the
+  // default AuditExact path too. ts_online_sum_family forwards them. TsMad is
+  // NOT here: its mean-absolute-deviation is an FP reduction that cannot slide
+  // bit-exactly.
+  case OpCode::TsRank:
+  case OpCode::TsMed:
+  case OpCode::TsQuantile:
     return true;
   // THE VARIANCE FAMILY (ts_var / ts_std / ts_zscore / ts_av_diff) is NOT routed
   // by THIS helper. It has its own mode-gated dispatch (see ts_is_online_variance_op
@@ -408,6 +419,14 @@ struct TsvFit {
 inline void ts_online_sum_family(OpCode op, std::span<const atx::f64> x, std::span<atx::f64> out,
                                  atx::usize dates, atx::usize j, atx::usize d,
                                  atx::usize instruments) noexcept {
+  // Lane 1: the order-statistic ops share this online entry (vm.hpp routes every
+  // non-extreme ts_is_online_op here). Their sweep keeps grow-only thread_local
+  // scratch; an allocation failure there terminates (noexcept), which is the
+  // same failure mode as the VM's own scratch growth.
+  if (ordstat::is_order_stat_op(op)) {
+    ordstat::sweep_strided(op, x, out, dates, j, d, instruments);
+    return;
+  }
   atx::f64 sx = 0.0;
   atx::usize nan_cnt = 0;
   const atx::f64 nf = static_cast<atx::f64>(d);
@@ -563,6 +582,15 @@ inline void ts_online_extreme(OpCode op, std::span<const atx::f64> x, std::span<
   case OpCode::TsStd:
   case OpCode::TsZscore:
   case OpCode::TsAvDiff:
+  // Lane 1 (ts_sliding.hpp): O(1)-per-cell shifted-sum lanes, tolerance-
+  // conformant (atol=rtol=1e-9) — ResearchFast only. The PAIR ops (TsCorr /
+  // TsCov / TsRegression) are deliberately absent: this dispatch receives only
+  // the first operand; sliding::sweep_comoment is exported for the VM owner.
+  case OpCode::TsDecayLinear:
+  case OpCode::TsWma:
+  case OpCode::TsSlope:
+  case OpCode::TsRsquare:
+  case OpCode::TsResid:
     return true;
   default:
     return false;
@@ -595,68 +623,73 @@ enum class TsvVarOut : atx::u8 {
 // index (t-d)*I+j (evaluated only when t>=d, so t-d>=0) stay in [0, dates*I). The
 // add and remove operate on (sx, cx, S, n) only — no buffer is indexed past the
 // column.
-inline void tsv_welford_var_family(TsvVarOut which, std::span<const atx::f64> x,
-                                   std::span<atx::f64> out, atx::usize dates, atx::usize j,
-                                   atx::usize d, atx::usize instruments) noexcept {
-  atx::f64 sx = 0.0;      // Neumaier-compensated running sum of the window's finite cells
-  atx::f64 cx = 0.0;      // Neumaier correction (carried low-order bits of sx)
-  atx::f64 m = 0.0;       // current window mean (sx+cx)/n; the Welford reference
-  atx::f64 s = 0.0;       // Σ(vᵢ - m̄)² (sum of squared deviations)
-  atx::usize n = 0;       // live count of finite cells in the window
-  atx::usize nan_cnt = 0; // NaNs currently in the trailing window
+// Lane 1: the per-column Welford state, factored out of the sweep so the
+// StreamingEngine (streaming_engine.hpp) advances the IDENTICAL state machine
+// one date at a time. enter/leave/emit perform exactly the operations (same
+// order, same operands) the original inline loop did, so the sweep's output is
+// byte-identical to its pre-refactor form.
+struct TsvWelfordState {
+  atx::f64 sx{0.0};       // Neumaier-compensated running sum of the window's finite cells
+  atx::f64 cx{0.0};       // Neumaier correction (carried low-order bits of sx)
+  atx::f64 m{0.0};        // current window mean (sx+cx)/n; the Welford reference
+  atx::f64 s{0.0};        // Σ(vᵢ - m̄)² (sum of squared deviations)
+  atx::usize n{0};        // live count of finite cells in the window
+  atx::usize nan_cnt{0};  // NaNs (and +/-inf, R21-1) currently in the trailing window
+
   // Neumaier compensated accumulation of `v` into (sx, cx).
-  const auto neumaier_add = [&sx, &cx](atx::f64 v) noexcept {
+  void neumaier_add(atx::f64 v) noexcept {
     const atx::f64 tt = sx + v;
     cx += (std::fabs(sx) >= std::fabs(v)) ? (sx - tt) + v : (v - tt) + sx;
     sx = tt;
-  };
-  for (atx::usize t = 0; t < dates; ++t) {
-    const atx::f64 enter = x[t * instruments + j];
-    if (ts_is_missing(enter)) { // R21-1: NaN AND +/-inf are missing
+  }
+
+  // Welford add keyed on the freshly-recomputed compensated mean: n+1; delta =
+  // x - m_old; m_new = (sx+cx)/n; S += (x - m_old)*(x - m_new).
+  void enter(atx::f64 v) noexcept {
+    if (ts_is_missing(v)) { // R21-1: NaN AND +/-inf are missing
       ++nan_cnt;
+      return;
+    }
+    ++n;
+    const atx::f64 m_old = m;
+    neumaier_add(v);
+    m = (sx + cx) / static_cast<atx::f64>(n);
+    s += (v - m_old) * (v - m);
+  }
+
+  void leave(atx::f64 v) noexcept {
+    if (ts_is_missing(v)) {
+      --nan_cnt;
+    } else if (n <= 1) {
+      // The window's last finite cell leaves: reset to an empty, drift-free
+      // accumulator (avoids a divide-by-zero mean and clears residual roundoff).
+      n = 0;
+      sx = 0.0;
+      cx = 0.0;
+      m = 0.0;
+      s = 0.0;
     } else {
-      // Welford add keyed on the freshly-recomputed compensated mean: n+1; delta =
-      // x - m_old; m_new = (sx+cx)/n; S += (x - m_old)*(x - m_new).
-      ++n;
+      // Welford remove: n-1; delta = x_old - m_old; m_new = (sx+cx)/n;
+      // S -= (x_old - m_old)*(x_old - m_new). m_old is the pre-removal mean.
       const atx::f64 m_old = m;
-      neumaier_add(enter);
+      --n;
+      neumaier_add(-v);
       m = (sx + cx) / static_cast<atx::f64>(n);
-      s += (enter - m_old) * (enter - m);
+      s -= (v - m_old) * (v - m);
     }
-    if (t >= d) {
-      const atx::f64 leave = x[(t - d) * instruments + j];
-      if (ts_is_missing(leave)) {
-        --nan_cnt;
-      } else if (n <= 1) {
-        // The window's last finite cell leaves: reset to an empty, drift-free
-        // accumulator (avoids a divide-by-zero mean and clears residual roundoff).
-        n = 0;
-        sx = 0.0;
-        cx = 0.0;
-        m = 0.0;
-        s = 0.0;
-      } else {
-        // Welford remove: n-1; delta = x_old - m_old; m_new = (sx+cx)/n;
-        // S -= (x_old - m_old)*(x_old - m_new). m_old is the pre-removal mean.
-        const atx::f64 m_old = m;
-        --n;
-        neumaier_add(-leave);
-        m = (sx + cx) / static_cast<atx::f64>(n);
-        s -= (leave - m_old) * (leave - m);
-      }
-    }
-    const atx::usize oi = t * instruments + j;
+  }
+
+  // The cell value for the newest cell `xt`; `full` == (t+1 >= d).
+  [[nodiscard]] atx::f64 emit(TsvVarOut which, atx::f64 xt, bool full) const noexcept {
     // AvDiff is defined for n>=1 (oracle: w.back()-mean, finite at n==1 -> 0.0),
     // unlike var/std/zscore which need n>=2 (sample variance) and are NaN at n==1
     // in BOTH paths. Special-case AvDiff at n==1 so the ResearchFast kernel matches
     // the batch oracle at d==1 (x[oi]==m -> 0.0) instead of spuriously gating NaN.
-    if (which == TsvVarOut::AvDiff && n == 1 && t + 1 >= d && nan_cnt == 0) {
-      out[oi] = x[oi] - m; // m == x[oi] (sole finite cell) -> 0.0; oracle-exact
-      continue;
+    if (which == TsvVarOut::AvDiff && n == 1 && full && nan_cnt == 0) {
+      return xt - m; // m == xt (sole finite cell) -> 0.0; oracle-exact
     }
-    if (t + 1 < d || nan_cnt != 0 || n < 2) {
-      out[oi] = kTsNaN; // warm-up / any-NaN / n<2 -> NaN (matches tsv_var gate)
-      continue;
+    if (!full || nan_cnt != 0 || n < 2) {
+      return kTsNaN; // warm-up / any-NaN / n<2 -> NaN (matches tsv_var gate)
     }
     // S can drift very slightly negative on a constant window from the
     // add/remove roundoff; clamp at 0 so var/std are never spurious NaN/inf.
@@ -664,18 +697,29 @@ inline void tsv_welford_var_family(TsvVarOut which, std::span<const atx::f64> x,
     const atx::f64 var = ss / static_cast<atx::f64>(n - 1);
     switch (which) {
     case TsvVarOut::Var:
-      out[oi] = var;
-      break;
+      return var;
     case TsvVarOut::Std:
-      out[oi] = std::sqrt(var);
-      break;
+      return std::sqrt(var);
     case TsvVarOut::Zscore:
-      out[oi] = (x[oi] - m) / std::sqrt(var); // var==0 -> +/-inf or NaN (x==m)
-      break;
+      return (xt - m) / std::sqrt(var); // var==0 -> +/-inf or NaN (x==m)
     case TsvVarOut::AvDiff:
-      out[oi] = x[oi] - m;
-      break;
+      return xt - m;
     }
+    ATX_UNREACHABLE();
+  }
+};
+
+inline void tsv_welford_var_family(TsvVarOut which, std::span<const atx::f64> x,
+                                   std::span<atx::f64> out, atx::usize dates, atx::usize j,
+                                   atx::usize d, atx::usize instruments) noexcept {
+  TsvWelfordState st;
+  for (atx::usize t = 0; t < dates; ++t) {
+    const atx::usize oi = t * instruments + j;
+    st.enter(x[oi]);
+    if (t >= d) {
+      st.leave(x[(t - d) * instruments + j]);
+    }
+    out[oi] = st.emit(which, x[oi], t + 1 >= d);
   }
 }
 
@@ -721,6 +765,14 @@ inline void tsv_welford_dispatch(OpCode op, std::span<const atx::f64> x, std::sp
     break;
   case OpCode::TsAvDiff:
     tsv_welford_avdiff_col(x, out, dates, j, d, instruments);
+    break;
+  case OpCode::TsDecayLinear:
+  case OpCode::TsWma:
+  case OpCode::TsSlope:
+  case OpCode::TsRsquare:
+  case OpCode::TsResid:
+    // Single column [j, j+1): the lane lives on the stack (no allocation).
+    sliding::sweep_unary(op, x, out, dates, instruments, d, j, j + 1);
     break;
   default:
     ATX_UNREACHABLE(); // only the variance-family ops route here
