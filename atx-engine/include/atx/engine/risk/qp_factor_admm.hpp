@@ -45,8 +45,9 @@
 //  w_prev (turnover soft zone); the signs of the free names; the dense rows at a bound; the
 //  gross / turnover budgets when their τ is active. ONE equality-constrained QP over the
 //  free names is solved exactly (Woodbury again, plus an n_e × n_e Schur complement). The
-//  polished book is accepted only if it passes the feasibility gate and its objective is
-//  no worse than the ADMM book's (to a 1e-9 + 1e-7·|f| slack, the iterate's own accuracy).
+//  polished book is accepted only if it meets EVERY check at feas_tol (the L1 sums included)
+//  and its objective exceeds the ADMM book's by no more than that book's infeasibility can
+//  explain (first-order sensitivity: 2‖y‖∞·Σ violations, plus 1e-9 + 1e-7·|f|).
 //  The gate checks, in original units: each box bound and dense row to cfg.feas_tol, and
 //  the gross / turnover sums to (M + 1)·feas_tol — the tolerance the augmented gate
 //  implies (it checks each of the M split rows and the budget row at feas_tol).
