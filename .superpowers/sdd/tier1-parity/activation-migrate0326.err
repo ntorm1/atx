@@ -1,0 +1,14 @@
+Traceback (most recent call last):
+  File "C:\atx\atx-db\scripts\warehouse_activate.py", line 91, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "C:\atx\atx-db\scripts\warehouse_activate.py", line 85, in main
+    return run_activation_from_args(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\atx\atx-db\src\atx_db\activation.py", line 1367, in run_activation_from_args
+    governed_migrations(options.db_path)
+  File "C:\atx\atx-db\src\atx_db\migration_admin.py", line 453, in run_governed_migrations
+    checkpoint(con)
+  File "C:\atx\atx-db\src\atx_db\migration_admin.py", line 163, in checkpoint
+    conn.execute("CHECKPOINT")
+_duckdb.FatalException: FATAL Error: Failed to create checkpoint because of error: Allocation failure

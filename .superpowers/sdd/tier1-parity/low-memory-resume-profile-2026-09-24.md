@@ -23,7 +23,7 @@ the guard preflight remains process cap plus2GiB. No concurrent heavy workload.
    required because actual source fingerprint changed. Root single reviews
    and isolated tests are clean; integration passed17checks in155.07seconds
    at0.840614319GiB native peak, source-memory-integration1.
-2. Governed migration0323..0326, existing1GB startup budget/one thread,
+2. Governed migration0323..0326, MM1's512MB startup budget/one thread,
    backup-keep100, after all changes are reviewed, accepted and committed.
    Inspect actual schema and source index catalog and preserve every backup.
 3. Actual full CompanyFacts archive17 at512MB/one thread, force replacement,
@@ -43,3 +43,14 @@ and actual new commits before claiming that lower source memory is workable.
 
 Other pipeline stages still need measured capacity profiles. No source,
 fundamental, market, quality, coverage, PIT or release gate is waived here.
+
+The first production migration failed at final CHECKPOINT with its old1GB
+buffer budget and1.5GiB process cap. Recovery restored the pre-migrate backup;
+catalog/checksum/estimated-count equivalence and cleared locks were verified.
+Backup SHA25682781626397ee01629d6b843f1d9982052bf52efcbacc16faf6121c3b59d63ca
+is retained in migration0326-restore-proof2.json; this is not full source-row
+equality proof. The full source resume still requires its complete fingerprints.
+MM1 keeps the process cap and governance order, reserves more non-buffer memory
+by lowering DuckDB to512MB, and bounds restore cleanup before opening as well.
+Four focused success/failure recovery checks passed at0.603GiB peak. Retry uses
+fresh activation-migrate0326b artifacts; the original failure evidence remains.

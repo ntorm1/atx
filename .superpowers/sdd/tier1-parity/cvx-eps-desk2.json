@@ -1,0 +1,81 @@
+{
+  "cik": "0000093410",
+  "content_as_of": "2026-09-20 22:00:00+00:00",
+  "contract": "quarterly-eps-desk-reader-v1",
+  "issuer_diagnostics": {
+    "content_as_of": "2026-09-20 22:00:00+00:00",
+    "dataset": "ATX.US.ISSUER_CONTENT",
+    "derived_issuer_owner_ids": [],
+    "excluded_derived_owner_ids": [],
+    "fields": [
+      "period_end",
+      "value",
+      "value_status",
+      "issuer_owner_id",
+      "cik",
+      "available_at",
+      "as_of_date",
+      "source_loaded_at",
+      "revision_group_id",
+      "inputs_hash"
+    ],
+    "issuer_lookup": null,
+    "issuer_market_association": {
+      "association_method": null,
+      "association_scope": null,
+      "historical_security_qualified": false,
+      "market_security_id": null,
+      "unavailable_reason": "no_ticker_directory_candidate"
+    },
+    "issuer_owner_ciks": {},
+    "issuer_owner_ids": [],
+    "issuer_owner_status": "unresolved_no_visible_source_owner",
+    "lookup_cik": "0000093410",
+    "owner_semantics": "Company Facts source owner; not a tradable security or historical market association.",
+    "record_count": 0,
+    "schema": "derived-metrics",
+    "schema_version": "1.0.0",
+    "truncated": false
+  },
+  "issuer_lookup_as_of": null,
+  "limits": {
+    "duckdb_memory": "256MB",
+    "max_result_bytes": 2000000,
+    "max_visible_revisions": 2048,
+    "threads": 1
+  },
+  "metric": "eps_diluted_q_growth_yoy",
+  "numeric_state_count": 0,
+  "observed_period_count": 0,
+  "period_range": {
+    "end_exclusive": "2026-07-01",
+    "start": "2025-10-01"
+  },
+  "preflight": {
+    "definitions": {
+      "bytes": 0,
+      "rows": 0
+    },
+    "owner_pairs": {
+      "bytes": 0,
+      "rows": 0
+    },
+    "visible_metric_revisions": {
+      "bytes": 0,
+      "rows": 0
+    }
+  },
+  "qualified_state_count_in_range": 0,
+  "requested_period_count": 3,
+  "rows": [],
+  "source_limits": {
+    "authority": "WarehouseReadService.issuer_content_range selected-lineage qualification",
+    "availability": "Stored accounting event clocks; reconstructed history is not verified historical-vintage data.",
+    "growth": "Canonical (current-prior)/abs(prior); zero/missing bases retain NULL domain states. No local EPS reconstruction.",
+    "market": "CIK-selected issuer content; no historical security association or market-join certification.",
+    "periods": "Latest observed qualified states in requested range, including NULL; absent fiscal quarters are not inferred."
+  },
+  "status": "issuer_ownership_unresolved",
+  "vintage": "latest",
+  "window": "q"
+}

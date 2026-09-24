@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\verify_migration_restore0326.py"
+  ],
+  "job_limit_gb": 1.0,
+  "status": "failed",
+  "headroom": {
+    "physical_free_gb": 5.405994415283203,
+    "commit_free_gb": 10.568878173828125
+  },
+  "child_pid": 10028,
+  "returncode": 1,
+  "native_peak_job_memory_gb": 0.1806793212890625
+}

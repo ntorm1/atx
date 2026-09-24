@@ -1,5 +1,34 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Archive17 is LIVE — 2026-09-24 22:54UTC
+
+Do not launch another heavy job. Root session89002, guard child7860,
+descendants14380/13828 observed. Fullarchive_members/force replacement,
+snapshot2026-09-20, predecessor513cfbbc-096a-4186-9666-b6cc5170c4ad,
+512MB/one thread,1.5GiB process cap.9462receipts/14lineage runs inventoried;
+full retained-fact fingerprint aggregation started22:54:18UTC. The complete
+fact/point proof and actual new writes remain pending. Reconcile process and
+fresh archive17 receipts before proceeding; do not infer completion from logs.
+
+## Schema326 verified; source17 next — 2026-09-24 22:52UTC
+
+MM1 committed06ab073f, focused4passes, root review accepted. Governed0326b
+succeeded512MB/one thread under1.5GiB, peak1.209381104GiB. Persisted versions,
+source constraints, removed optional indexes, cleared lock and retained backup
+hash verified in migration0326-verify1. Original failure/restore evidence kept.
+Do not rerun migrations. CVX desk2 still has zero qualified/numeric states and
+issuer_ownership_unresolved; schema blocker closed, materialization remains.
+Fullarchive17 is next under the scoped low-memory profile, predecessor unchanged.
+
+## Migration terminal failure; MM1 next — 2026-09-24 22:43UTC
+
+activation-migrate0326 hit the1.5GiB process cap at final CHECKPOINT. Backup
+restore returned; catalog2 confirms original schema322/indexes/constraints.
+No writer is active. MM1 owns governed/restore512MB startup bounds preserving
+all existing migration semantics. After one review/focused tests/commit use
+fresh migrate0326b artifacts. Keep the cap and hard stops; do not overwrite
+failure evidence or repeat archive16 recovery. Source17 has not started.
+
 ## User-authorized efficiency work resumes production — 2026-09-24 22:38 UTC
 
 The22:10blocked status below is historical and superseded. User explicitly

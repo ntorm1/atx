@@ -1,5 +1,44 @@
 # Tier-1 parity program ledger (atx-db)
 
+## Archive17 active at512MB — 2026-09-24 22:54UTC
+
+Root session89002/guard child7860 is the sole heavy warehouse job. Full source
+scope and replacement/force retained; source archive pin and predecessor are
+unchanged.9462receipts/14lineage runs inventoried, fact fingerprint phase
+started22:54:18UTC. Complete proof and new source writes remain unqualified.
+Source memory experiment follows120.016seconds sustained4/6GiB and unchanged
+hard stops. No parallel tests/database jobs; monitor existing process first.
+
+## Governed migration delivered at lower memory — 2026-09-24 22:52UTC
+
+MM1,06ab073f, passed four governed success/failure checks and root review.
+Actual migrate0326b then completed at512MB/one thread under the SAME1.5GiB
+process cap, native peak1.209381104GiB. Governed read-back independently
+verified applied323..326, zero optional source indexes, unchanged source
+NOT NULL constraints, cleared locks and retained backup SHA256
+4bdc9bce37411ecfa4f3665f3341f2c9c3dad0971304e3608519cc1317904e6b.
+All12backups retained. Warehouse12,873,379,840bytes; C:free12,951,490,560bytes.
+Activation's stage-only migrate receipt was skipped as already completed;
+the actual migration proof is the persisted schema/backup read-back, not that
+zero-row stage. Do not repeat the migration or archive16 recovery.
+
+CVX desk2 now passes schema preflight but returns issuer_ownership_unresolved,
+zero numeric/qualified states/definitions, exit2, peak0.642475128GiB. This
+measures the remaining materialization/identity gap; no EPS acceptance claimed.
+Next is actual fullarchive17 at512MB/one thread and1.5GiB cap, full proof then
+new writes, unchanged snapshot/scope. Source capacity is not yet qualified.
+
+## Production checkpoint cap exposes MM1 — 2026-09-24 22:43UTC
+
+UM1/SM1/SI1 committed4f9bfb90/ca9d9a8a/ec440e5a, checks accepted. Actual
+governed activation-migrate0326 failed at final CHECKPOINT allocation under
+1.5GiB cap, peak1.500072GiB; host remained healthy. Governed failure recovery
+restored backup warehouse.duckdb.pre-migrate.20260924-224104.bak. Fresh
+catalog2 confirms schema322 and original three optional indexes/constraints.
+MM1 repairs the fixed1GB migration startup budget and unbounded restore
+cleanup to512MB/one thread. Same process cap, all backup/lock/verification
+contracts retained; no blind memory increase or source trial yet.
+
 ## User resource-efficiency authorization — 2026-09-24 resumed work
 
 The user explicitly allows lowering memory launch requirements if code is

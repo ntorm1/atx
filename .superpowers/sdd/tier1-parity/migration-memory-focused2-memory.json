@@ -1,0 +1,22 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "-m",
+    "pytest",
+    "tests/test_migration_memory_budget.py",
+    "-n",
+    "0",
+    "-o",
+    "addopts=",
+    "-q"
+  ],
+  "job_limit_gb": 1.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 4.916557312011719,
+    "commit_free_gb": 9.961345672607422
+  },
+  "child_pid": 18572,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.6025962829589844
+}

@@ -1,0 +1,29 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "scripts\\read_quarterly_eps_growth.py",
+    "--db-path",
+    "data\\warehouse.duckdb",
+    "--cik",
+    "0000093410",
+    "--content-as-of",
+    "2026-09-20T22:00:00Z",
+    "--start",
+    "2025-10-01",
+    "--end",
+    "2026-07-01",
+    "--latest",
+    "3",
+    "--output-json",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\cvx-eps-desk2.json"
+  ],
+  "job_limit_gb": 1.0,
+  "status": "failed",
+  "headroom": {
+    "physical_free_gb": 5.442752838134766,
+    "commit_free_gb": 9.50558853149414
+  },
+  "child_pid": 14164,
+  "returncode": 2,
+  "native_peak_job_memory_gb": 0.6424751281738281
+}

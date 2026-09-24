@@ -1,0 +1,31 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "scripts\\warehouse_activate.py",
+    "--db-path",
+    "data\\warehouse.duckdb",
+    "--as-of-date",
+    "2026-09-20",
+    "--only",
+    "migrate",
+    "--memory-limit",
+    "512MB",
+    "--threads",
+    "1",
+    "--backup-keep",
+    "100",
+    "--run-id",
+    "activation-migrate0326b",
+    "--sec-user-agent",
+    "atx-db/0.1 atx-research@example.com"
+  ],
+  "job_limit_gb": 1.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 5.631320953369141,
+    "commit_free_gb": 9.60256576538086
+  },
+  "child_pid": 14976,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 1.209381103515625
+}

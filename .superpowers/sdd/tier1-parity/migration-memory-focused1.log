@@ -1,0 +1,156 @@
+FFFF                                                                     [100%]
+================================== FAILURES ===================================
+______ test_governed_connections_are_bounded_and_preserve_recovery[None] ______
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-79/test_governed_connections_are_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000291A5160230>
+failure = None
+
+    @pytest.mark.parametrize("failure", [None, "schema", "checksum", "checkpoint"])
+    def test_governed_connections_are_bounded_and_preserve_recovery(tmp_path, monkeypatch, failure):
+        path = tmp_path / "governed.duckdb"
+        backup_dir = tmp_path / "backups"
+        original_connect = duckdb.connect
+>       with original_connect(str(path), config={"memory_limit": "512MB", "threads": "1"}) as con:
+
+tests\test_migration_memory_budget.py:63: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_migration_memory_budget.py:66: in test_governed_connections_are_bounded_and_preserve_recovery
+    assert admin.verify_schema(con) == ()
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+src\atx_db\migration_admin.py:307: in verify_schema
+    drift = tuple(detect_schema_drift(_ConnectionStore(conn), _load_persisted_contract(conn)))
+                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\atx_db\migration_admin.py:293: in _load_persisted_contract
+    ColumnSpec(
+<string>:13: in __init__
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = ColumnSpec(name='character_maximum_length', data_type='INTEGER', nullable=True, is_natural_key=False, is_pit_column=False, declared_in='small_governance_fixture', unit=None, sign=None, scale=None, natural_key=None)
+
+    def __post_init__(self) -> None:
+        if self.declared_in not in DECLARED_IN_VALUES:
+>           raise ValueError(
+                f"declared_in must be one of {sorted(DECLARED_IN_VALUES)}, got {self.declared_in!r}"
+            )
+E           ValueError: declared_in must be one of ['migration', 'schema_py'], got 'small_governance_fixture'
+
+src\atx_db\schema_contract.py:107: ValueError
+_____ test_governed_connections_are_bounded_and_preserve_recovery[schema] _____
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-79/test_governed_connections_are_1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000291A51602F0>
+failure = 'schema'
+
+    @pytest.mark.parametrize("failure", [None, "schema", "checksum", "checkpoint"])
+    def test_governed_connections_are_bounded_and_preserve_recovery(tmp_path, monkeypatch, failure):
+        path = tmp_path / "governed.duckdb"
+        backup_dir = tmp_path / "backups"
+        original_connect = duckdb.connect
+>       with original_connect(str(path), config={"memory_limit": "512MB", "threads": "1"}) as con:
+
+tests\test_migration_memory_budget.py:63: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_migration_memory_budget.py:66: in test_governed_connections_are_bounded_and_preserve_recovery
+    assert admin.verify_schema(con) == ()
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+src\atx_db\migration_admin.py:307: in verify_schema
+    drift = tuple(detect_schema_drift(_ConnectionStore(conn), _load_persisted_contract(conn)))
+                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\atx_db\migration_admin.py:293: in _load_persisted_contract
+    ColumnSpec(
+<string>:13: in __init__
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = ColumnSpec(name='character_maximum_length', data_type='INTEGER', nullable=True, is_natural_key=False, is_pit_column=False, declared_in='small_governance_fixture', unit=None, sign=None, scale=None, natural_key=None)
+
+    def __post_init__(self) -> None:
+        if self.declared_in not in DECLARED_IN_VALUES:
+>           raise ValueError(
+                f"declared_in must be one of {sorted(DECLARED_IN_VALUES)}, got {self.declared_in!r}"
+            )
+E           ValueError: declared_in must be one of ['migration', 'schema_py'], got 'small_governance_fixture'
+
+src\atx_db\schema_contract.py:107: ValueError
+____ test_governed_connections_are_bounded_and_preserve_recovery[checksum] ____
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-79/test_governed_connections_are_2')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000291A5162FF0>
+failure = 'checksum'
+
+    @pytest.mark.parametrize("failure", [None, "schema", "checksum", "checkpoint"])
+    def test_governed_connections_are_bounded_and_preserve_recovery(tmp_path, monkeypatch, failure):
+        path = tmp_path / "governed.duckdb"
+        backup_dir = tmp_path / "backups"
+        original_connect = duckdb.connect
+>       with original_connect(str(path), config={"memory_limit": "512MB", "threads": "1"}) as con:
+
+tests\test_migration_memory_budget.py:63: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_migration_memory_budget.py:66: in test_governed_connections_are_bounded_and_preserve_recovery
+    assert admin.verify_schema(con) == ()
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+src\atx_db\migration_admin.py:307: in verify_schema
+    drift = tuple(detect_schema_drift(_ConnectionStore(conn), _load_persisted_contract(conn)))
+                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\atx_db\migration_admin.py:293: in _load_persisted_contract
+    ColumnSpec(
+<string>:13: in __init__
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = ColumnSpec(name='character_maximum_length', data_type='INTEGER', nullable=True, is_natural_key=False, is_pit_column=False, declared_in='small_governance_fixture', unit=None, sign=None, scale=None, natural_key=None)
+
+    def __post_init__(self) -> None:
+        if self.declared_in not in DECLARED_IN_VALUES:
+>           raise ValueError(
+                f"declared_in must be one of {sorted(DECLARED_IN_VALUES)}, got {self.declared_in!r}"
+            )
+E           ValueError: declared_in must be one of ['migration', 'schema_py'], got 'small_governance_fixture'
+
+src\atx_db\schema_contract.py:107: ValueError
+___ test_governed_connections_are_bounded_and_preserve_recovery[checkpoint] ___
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-79/test_governed_connections_are_3')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000291A51D3020>
+failure = 'checkpoint'
+
+    @pytest.mark.parametrize("failure", [None, "schema", "checksum", "checkpoint"])
+    def test_governed_connections_are_bounded_and_preserve_recovery(tmp_path, monkeypatch, failure):
+        path = tmp_path / "governed.duckdb"
+        backup_dir = tmp_path / "backups"
+        original_connect = duckdb.connect
+>       with original_connect(str(path), config={"memory_limit": "512MB", "threads": "1"}) as con:
+
+tests\test_migration_memory_budget.py:63: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_migration_memory_budget.py:66: in test_governed_connections_are_bounded_and_preserve_recovery
+    assert admin.verify_schema(con) == ()
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+src\atx_db\migration_admin.py:307: in verify_schema
+    drift = tuple(detect_schema_drift(_ConnectionStore(conn), _load_persisted_contract(conn)))
+                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\atx_db\migration_admin.py:293: in _load_persisted_contract
+    ColumnSpec(
+<string>:13: in __init__
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = ColumnSpec(name='character_maximum_length', data_type='INTEGER', nullable=True, is_natural_key=False, is_pit_column=False, declared_in='small_governance_fixture', unit=None, sign=None, scale=None, natural_key=None)
+
+    def __post_init__(self) -> None:
+        if self.declared_in not in DECLARED_IN_VALUES:
+>           raise ValueError(
+                f"declared_in must be one of {sorted(DECLARED_IN_VALUES)}, got {self.declared_in!r}"
+            )
+E           ValueError: declared_in must be one of ['migration', 'schema_py'], got 'small_governance_fixture'
+
+src\atx_db\schema_contract.py:107: ValueError
+=========================== short test summary info ===========================
+FAILED tests/test_migration_memory_budget.py::test_governed_connections_are_bounded_and_preserve_recovery[None]
+FAILED tests/test_migration_memory_budget.py::test_governed_connections_are_bounded_and_preserve_recovery[schema]
+FAILED tests/test_migration_memory_budget.py::test_governed_connections_are_bounded_and_preserve_recovery[checksum]
+FAILED tests/test_migration_memory_budget.py::test_governed_connections_are_bounded_and_preserve_recovery[checkpoint]
+4 failed in 2.41s

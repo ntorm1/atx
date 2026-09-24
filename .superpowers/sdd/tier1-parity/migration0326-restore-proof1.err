@@ -1,0 +1,17 @@
+Traceback (most recent call last):
+  File "C:\atx\.superpowers\sdd\tier1-parity\verify_migration_restore0326.py", line 31, in <module>
+    restored, retained = evidence(warehouse), evidence(backup)
+                         ^^^^^^^^^^^^^^^^^^^
+  File "C:\atx\.superpowers\sdd\tier1-parity\verify_migration_restore0326.py", line 13, in evidence
+    with duckdb.connect(str(path), read_only=True,
+  File "C:\atx\.superpowers\sdd\tier1-parity\verify_migration_restore0326.py", line 18, in evidence
+    'source_rows': {name: con.execute(f'SELECT count(*) FROM {name}').fetchone()[0]
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_duckdb.OutOfMemoryException: Out of Memory Error: could not allocate block of size 256.0 KiB (122.0 MiB/122.0 MiB used)
+
+Possible solutions:
+* Reducing the number of threads (SET threads=X)
+* Disabling insertion-order preservation (SET preserve_insertion_order=false)
+* Increasing the memory limit (SET memory_limit='...GB')
+
+See also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads

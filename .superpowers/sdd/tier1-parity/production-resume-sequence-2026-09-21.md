@@ -1,5 +1,26 @@
 # Production resume sequence — updated 2026-09-24
 
+**22:54UTC ACTIVE:** archive17 command below has started. Root session89002,
+guard child7860; sole heavy job.9462receipts/14lineage runs inventoried and
+full fact fingerprints running. Do not launch that command again or overlap
+another heavy database/test workload. First inspect its actual process and
+terminal artifacts. No source completion or new writes claimed yet.
+
+**22:52UTC completed:** MM1 is06ab073f. Governed migrate0326b SUCCEEDED at512MB,
+native peak1.209381104GiB under1.5GiB. migration0326-verify1 confirms applied
+323..326, removed optional indexes, unchanged source constraints, cleared lock
+and a matching retained backup SHA256. Do not run the migration command again.
+All12backups remain. CVX desk2 now reaches the actual query but has unresolved
+qualified ownership and zero numeric states; full materialization is still due.
+Next command is full CompanyFacts archive17 below, after current headroom check.
+
+**22:48UTC correction:** first migrate0326 failed at its final checkpoint under
+the1.5GiB process cap; governed restore returned the warehouse to322. Catalog,
+checksum and estimated-count equivalence/cleared lock plus backup hash verified
+in migration0326-restore-proof2. MM1's512MB governed/restore startup budget passed
+four focused real success/failure cases. After its commit, use migrate0326b
+below with the SAME1.5GiB process cap. Archive17 has not started.
+
 **2026-09-24 22:38UTC reconciliation:** both head6 failures are repaired and
 accepted. UM1's populated0314 upgrade passed at256MB/one thread,1GiB cap,
 0.859GiB peak. SM1 source-phase recycling/open-time budgets and SI1 optional
@@ -11,7 +32,7 @@ archive17 are next. Do not repeat the prior passing batch or branch review.
 User explicitly allows lower launch requirements after efficiency changes.
 Use `low-memory-resume-profile-2026-09-24.md`: sustained4GiB physical/6GiB
 commit120seconds,1.5GiB process cap for the next migration and source trials.
-Migration keeps its1GB budget; archive17 uses512MB/one thread. These are
+Migration and archive17 use512MB/one thread after MM1. These are
 measured experiments pending actual new source commits, not release proof.
 
 Static source/dispatch audit only. The production snapshot remains **as of
@@ -58,12 +79,12 @@ capacity. Preserve all existing backups and retain --backup-keep100. Apply
 ```powershell
 C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
   --job-gb 1.5 `
-  --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0326-memory.json `
-  --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0326.log `
-  --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0326.err `
+  --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0326b-memory.json `
+  --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0326b.log `
+  --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0326b.err `
   -- C:\atx\atx-db\.venv\Scripts\python.exe scripts\warehouse_activate.py `
   --db-path data\warehouse.duckdb --as-of-date 2026-09-20 --only migrate `
-  --memory-limit 1GB --threads 1 --backup-keep 100 --run-id activation-migrate0326 `
+  --memory-limit 512MB --threads 1 --backup-keep 100 --run-id activation-migrate0326b `
   --sec-user-agent "atx-db/0.1 atx-research@example.com"
 ```
 
