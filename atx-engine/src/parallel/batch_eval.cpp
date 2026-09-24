@@ -27,8 +27,10 @@ namespace detail {
 void evaluate_into(atx::engine::alpha::Engine &engine,
                    const atx::engine::alpha::Program &prog, std::size_t offset,
                    atx::engine::alpha::SignalSet &out,
-                   std::optional<atx::core::Error> &slot) {
-  auto r = engine.evaluate(prog);
+                   std::optional<atx::core::Error> &slot,
+                   atx::engine::alpha::SubtreeCache *cache = nullptr) {
+  // Null cache -> the original Engine::evaluate(prog) path (byte-for-byte).
+  auto r = cache == nullptr ? engine.evaluate(prog) : engine.evaluate(prog, cache);
   if (!r.has_value()) {
     slot = r.error();
     return;
@@ -67,7 +69,7 @@ template <class Dispatch>
 [[nodiscard]] atx::core::Result<atx::engine::alpha::SignalSet>
 parallel_evaluate_impl(std::span<const atx::engine::alpha::Program> progs,
                        const atx::engine::alpha::Panel &panel, atx::usize n_workers,
-                       Dispatch &&dispatch) {
+                       Dispatch &&dispatch, atx::engine::alpha::SubtreeCache *cache = nullptr) {
   namespace alpha = atx::engine::alpha;
 
   // (2) Prefix-sum output offsets so each program's roots land in disjoint slots.
@@ -88,8 +90,12 @@ parallel_evaluate_impl(std::span<const atx::engine::alpha::Program> progs,
   // move-assignable ⇒ hold via unique_ptr so the vector never assigns on growth.
   std::vector<std::unique_ptr<alpha::Engine>> engines;
   engines.reserve(n_workers);
+  const atx::u64 pdig = cache != nullptr ? alpha::panel_content_digest(panel) : atx::u64{0};
   for (atx::usize w = 0; w < n_workers; ++w) {
     engines.push_back(std::make_unique<alpha::Engine>(panel));
+    if (cache != nullptr) {
+      engines.back()->set_panel_digest(pdig);
+    }
   }
 
   // (4) Warm each engine once so the timed dispatch loop allocates nothing (the
@@ -118,7 +124,7 @@ parallel_evaluate_impl(std::span<const atx::engine::alpha::Program> progs,
   // errs[k] — disjoint slots, no shared mutable state, panel is const. No cross-
   // worker FP accumulation ⇒ determinism by construction.
   ATX_TRY_VOID(dispatch(progs.size(), [&](std::size_t k, std::size_t wid) {
-    detail::evaluate_into(*engines[wid], progs[k], offsets[k], out, errs[k]);
+    detail::evaluate_into(*engines[wid], progs[k], offsets[k], out, errs[k], cache);
   }));
 
   // (7) After the barrier, scan ascending: the lowest-index error is the
@@ -244,6 +250,22 @@ parallel_evaluate(std::span<const atx::engine::alpha::Program> progs,
         pool.parallel_for(n, body);
         return atx::core::Ok();
       });
+}
+
+// Lane 2 — strategy A + shared SubtreeCache (see header). The warm-up pass stays
+// cache-free (it only grows slot pools), so the cache sees exactly one evaluation
+// per program per call.
+atx::core::Result<atx::engine::alpha::SignalSet>
+parallel_evaluate(std::span<const atx::engine::alpha::Program> progs,
+                  const atx::engine::alpha::Panel &panel, DetPool &pool,
+                  atx::engine::alpha::SubtreeCache *cache) {
+  return detail::parallel_evaluate_impl(
+      progs, panel, pool.n_workers(),
+      [&pool](std::size_t n, const std::function<void(std::size_t, std::size_t)> &body) {
+        pool.parallel_for(n, body);
+        return atx::core::Ok();
+      },
+      cache);
 }
 
 // S7.5a/S7.5c — the SAME batch eval over the substrate-agnostic IExecutor seam,
