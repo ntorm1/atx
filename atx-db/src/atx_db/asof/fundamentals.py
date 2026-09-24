@@ -532,6 +532,8 @@ def issuer_derived_asof(cik: str, content_as_of: dt.datetime, db_path: Path | st
             ).fetchone()
             count, largest, page_bytes = (int(value or 0) for value in lengths)
             if not count:
+                empty_page = store.con.execute(query, params)
+                result_columns = [column[0] for column in empty_page.description]
                 break
             if largest > 1_048_576 or retained_bytes + page_bytes > max_bytes:
                 raise ValueError("issuer derived as-of output byte limit exceeded")

@@ -239,6 +239,18 @@ def test_tampered_selected_lineage_is_excluded_and_empty_asof_keeps_columns(tmp_
     assert asof.attrs["derived_lineage_rejected_count"] >= 1
 
 
+def test_no_visible_derived_rows_keep_asof_columns(tmp_path) -> None:
+    _, path = _lineage_service(tmp_path)
+    with duckdb.connect(str(path)) as con:
+        con.execute("DELETE FROM derived_metric_values")
+
+    asof = issuer_derived_asof(CIK_A, dt.datetime(2026, 9, 1), path)
+    assert asof.empty
+    assert "derived_value_id" in asof.columns
+    assert asof["derived_value_id"].empty
+    assert asof.attrs["derived_lineage_scanned_count"] == 0
+
+
 def test_pre_0323_missing_refs_schema_fails_clearly(tmp_path) -> None:
     service, path = _lineage_service(tmp_path)
     with duckdb.connect(str(path)) as con:
