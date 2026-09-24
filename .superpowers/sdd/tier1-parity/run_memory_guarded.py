@@ -1,16 +1,41 @@
-"""Controller-only Windows job memory cap and headroom guard; no shell execution."""
+"""Controller-only Windows job memory/headroom guard with an optional disk floor."""
 from __future__ import annotations
 
 import argparse
 import ctypes as c
-from ctypes import wintypes as w
 import json
+import math
 import os
-from pathlib import Path
+import shutil
 import subprocess
 import time
+from ctypes import wintypes as w
+from pathlib import Path
 
 GIB = 1024 ** 3
+
+
+def validate_disk_options(disk_path: Path | None, min_free_disk_gb: float | None) -> None:
+    """Keep disk protection explicit and reject an incomplete or invalid policy."""
+    if (disk_path is None) != (min_free_disk_gb is None):
+        raise ValueError("Supply --disk-path and --min-free-disk-gb together.")
+    if min_free_disk_gb is not None and (not math.isfinite(min_free_disk_gb) or min_free_disk_gb <= 0):
+        raise ValueError("--min-free-disk-gb must be positive and finite.")
+
+
+def sample_disk(disk_path: Path, min_free_disk_gb: float) -> tuple[dict[str, object], str | None]:
+    """Measure the existing target's volume; unavailable evidence fails closed."""
+    sample: dict[str, object] = {
+        "path": str(disk_path), "free_gb": None, "min_free_gb": min_free_disk_gb,
+    }
+    try:
+        resolved = disk_path.resolve(strict=True)
+        sample["path"] = str(resolved)
+        free = shutil.disk_usage(resolved).free
+    except (OSError, ValueError, RuntimeError):
+        return sample, "disk_measurement_error"
+    sample["free_gb"] = free / GIB
+    return sample, "low_disk" if free < min_free_disk_gb * GIB else None
 
 
 class BasicLimit(c.Structure):
@@ -49,11 +74,17 @@ def main() -> int:
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--stdout", type=Path)
     parser.add_argument("--stderr", type=Path)
+    parser.add_argument("--disk-path", type=Path)
+    parser.add_argument("--min-free-disk-gb", type=float)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command or not 0 < args.job_gb <= 4:
         raise SystemExit("Supply a command and a positive job limit at most 4 GiB.")
+    try:
+        validate_disk_options(args.disk_path, args.min_free_disk_gb)
+    except ValueError as exc:
+        parser.error(str(exc))
     kernel = c.WinDLL("kernel32", use_last_error=True)
     psapi = c.WinDLL("psapi", use_last_error=True)
     signatures = {
@@ -94,6 +125,12 @@ def main() -> int:
         state["status"] = "refused_low_headroom"
         record()
         return 78
+    if args.disk_path is not None:
+        state["disk"], disk_failure = sample_disk(args.disk_path, args.min_free_disk_gb)
+        if disk_failure is not None:
+            state["status"] = f"refused_{disk_failure}"
+            record()
+            return 78
     job = kernel.CreateJobObjectW(None, None)
     if not job:
         raise c.WinError(c.get_last_error())
@@ -126,6 +163,14 @@ def main() -> int:
                 # Terminates only this explicitly assigned job, including supervisor.
                 kernel.TerminateJobObject(job, 137)
                 raise SystemExit(137)
+            if args.disk_path is not None:
+                state["disk"], disk_failure = sample_disk(args.disk_path, args.min_free_disk_gb)
+                if disk_failure is not None:
+                    state.update(status=f"stopped_{disk_failure}", headroom=memory)
+                    record()
+                    # The same owned job includes the child and supervisor only.
+                    kernel.TerminateJobObject(job, 137)
+                    raise SystemExit(137)
             if time.monotonic() >= next_report:
                 state["headroom"] = memory
                 record()

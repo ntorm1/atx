@@ -1,0 +1,18 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "-c",
+    "raise SystemExit(0)"
+  ],
+  "job_limit_gb": 0.25,
+  "status": "refused_low_disk",
+  "headroom": {
+    "physical_free_gb": 4.705955505371094,
+    "commit_free_gb": 9.02188491821289
+  },
+  "disk": {
+    "path": "C:\\atx\\atx-db\\data",
+    "free_gb": 11.798892974853516,
+    "min_free_gb": 100000.0
+  }
+}

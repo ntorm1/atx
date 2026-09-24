@@ -1,0 +1,30 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "-m",
+    "pytest",
+    "tests/test_operator_disk_guard.py",
+    "tests/test_submissions_archive.py",
+    "-k",
+    "disk_ or cache_damage or cached_central_record",
+    "-n",
+    "0",
+    "-o",
+    "addopts=",
+    "-q"
+  ],
+  "job_limit_gb": 1.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 4.0871429443359375,
+    "commit_free_gb": 8.458881378173828
+  },
+  "disk": {
+    "path": "C:\\atx\\atx-db\\data",
+    "free_gb": 11.803131103515625,
+    "min_free_gb": 3.0
+  },
+  "child_pid": 10964,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.5843238830566406
+}
