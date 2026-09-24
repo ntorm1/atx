@@ -261,8 +261,13 @@ def test_chunk_equivalence_ties_and_event_aware_stub_period(store, monkeypatch):
     # Reversing physical insertion order and changing run IDs must not alter
     # ties, revision groups, event identities, or selected input lineage.
     store.con.execute("CREATE TEMP TABLE reversed_raw AS SELECT * FROM fundamental_standardized ORDER BY standardized_id DESC")
-    store.con.execute("DELETE FROM fundamental_standardized")
-    store.con.execute("INSERT INTO fundamental_standardized SELECT * FROM reversed_raw")
+    try:
+        store.con.execute("DELETE FROM fundamental_standardized")
+        store.con.execute("INSERT INTO fundamental_standardized SELECT * FROM reversed_raw")
+    finally:
+        # The refresh may recycle its connection; finish this caller-owned
+        # staging table before entering the bounded production lifecycle.
+        store.con.execute("DROP TABLE reversed_raw")
     engine.refresh_derived_metrics(store, engine.DerivedMetricsOptions(event_chunk_size=100, run_id="different"))
     assert store.con.execute(sql).fetchall() == first
 
@@ -370,7 +375,7 @@ def test_candidate_and_local_frame_growth_is_linear_in_input_events(store):
 
 
 def test_populated_0314_upgrade_preserves_legacy_contract_and_reentry(tmp_path, monkeypatch):
-    """Exercise the real 0314 bootstrap and pending 0315/0316 with two rows."""
+    """Upgrade two legacy rows from the real 0314 bootstrap through current HEAD."""
     import duckdb
 
     import atx_db.migrations as migrations
@@ -412,7 +417,10 @@ def test_populated_0314_upgrade_preserves_legacy_contract_and_reentry(tmp_path, 
         original_sql = f"SELECT {original_columns} FROM derived_metric_values ORDER BY derived_value_id"
         before = con.execute(original_sql).fetchall()
 
-        assert migrations.apply_pending_migrations(con) == [315, 316]
+        pending_versions = [m.version for m in migrations.MIGRATIONS if m.version > 314]
+        assert pending_versions[:2] == [315, 316]
+        assert migrations.apply_pending_migrations(con) == pending_versions
+        assert con.execute("SELECT max(CAST(version AS INTEGER)) FROM schema_migrations").fetchone() == (pending_versions[-1],)
         assert con.execute(original_sql).fetchall() == before
         assert con.execute("""
             SELECT value_origin, fiscal_period_start, fiscal_period_end
