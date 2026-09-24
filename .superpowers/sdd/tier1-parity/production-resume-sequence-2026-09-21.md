@@ -1,5 +1,14 @@
 # Production resume sequence — updated 2026-09-23
 
+**2026-09-24 evening reconciliation:** head6 completed with110passes,1skip and
+2test failures on the exact current atx-db source tree. PG1's chunk-case repair
+has passed under the1.5GiB guard; only the repaired populated0314 upgrade case
+is still needed before governed migration. Use the exact single-selector
+command in `resume-reconciliation-2026-09-24.md` after sustained headroom; do
+not repeat the entire prior passing batch or whole-branch review. Fresh live
+pipeline-status confirms schema322, pending323..325 and the source predecessor
+UUIDs below. Window3 found no sustained6/8GiB window, so no new writer started.
+
 Static source/dispatch audit only. The production snapshot remains **as of
 2026-09-20**. Run one guarded process tree at a time from `C:\atx\atx-db`.
 Every guarded invocation needs a fresh receipt, stdout, and stderr filename.

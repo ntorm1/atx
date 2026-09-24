@@ -1,5 +1,26 @@
 # Tier-1 parity program ledger (atx-db)
 
+## Reconciled newer runtime evidence — 2026-09-24 evening UTC
+
+The branch is now feat/tier1-parity at initial2e0d738f; main already pointed
+to the same commit when this session started. No merge was performed. Preserve
+all other-session files and stash@{0}. Newer head6 is a completed verification
+failure, not a memory refusal:110passed,1skipped,2test integration failures.
+Its atx-db subtree equals currentHEAD, so completed passing checks stand.
+PG1 fixes only temporary staging lifecycle and the current pending-migration
+list expectation. Parent independent review clean; cached short chunk check
+and scopedRuff passed. Only populated0314 upgrade acceptance remains pending
+the unchanged sustained6GiB physical/8GiB commit window. No full-suite rerun.
+
+Fresh guarded read-only pipeline status confirms schema322, pending323..325,
+no lower gaps and unchanged terminal source predecessors. No ledger recovery
+is due. Window3 failed to meet physical headroom; no writer was launched.
+ED1 is the bounded follow-on production consumer task: generic quarterly EPS
+growth reader over the existing IQ2 validator, controlled missing-schema/data
+results and numerical output only from qualified selected leaves. Frozen old
+SQL/results remain diagnostic history. Source/materialization/coverage/PIT/
+release requirements and the pinned2026-09-20 snapshot remain unchanged.
+
 ## Live readiness baseline measured - 2026-09-24 UTC
 
 A bounded read-only interim inventory completed at1.538GiB peak under the

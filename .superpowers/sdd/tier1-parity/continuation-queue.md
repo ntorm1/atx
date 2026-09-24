@@ -1,5 +1,38 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Current reconciliation and bounded repair — 2026-09-24 evening UTC
+
+Initial HEAD2e0d738f was checked out on main; main and feat/tier1-parity pointed
+to the same commit. Root switched to feat/tier1-parity without changing files.
+Preserve unrelated risk-test/alpha-swarm files and stash@{0}; no merge was made.
+Graph MCP tools are unavailable in this session, so discovery used source reads.
+
+The newer quant-platform-head6 receipt supersedes the older capacity-only
+checkpoint below: it completed with110passes,1defaultslow skip and2test failures,
+peak0.890263GiB. Its09fed606 atx-db subtree is exactly the current2e0d738f
+subtree2166d90d282891d43d63233f850daeab5d6a808f. Do not repeat passing checks
+or the completed whole-branch review. PG1 repairs only the caller temporary
+table lifecycle and stale migration-list assertion; no production code changes.
+One independent parent review is clean. The repaired chunk selector passed
+pit-gate-chunk1 using the exact ready export cache, peak0.707485GiB; scopedRuff
+passed. The populated0314 upgrade selector remains pending sustained headroom.
+See resume-reconciliation-2026-09-24.md for the exact next guarded invocation.
+
+Fresh live pipeline-status-sep24-evening2 completed read-only at0.643406GiB:
+applied schema322, pending323..325, no lower gaps, both source predecessors
+unchanged and terminal. CompanyFacts remains513cfbbc-096a-4186-9666-b6cc5170c4ad;
+submissions remains04cf947d-53bb-49b7-a276-b3c74a2a52c8. Do not repeat archive16
+recovery. The first status invocation used an unsupported package entry point
+and failed before DB access; the corrected atx_db.cli invocation succeeded.
+
+schema-headroom-window3 is terminal no_sustained_window:19samples, physical
+4.002..5.717GiB and commit10.704..12.610GiB, no qualifying6/8GiB interval.
+No long upgrade, migration or source writer launched. A capacity question is
+pending; this is not an approval dependency. Root continues the bounded ED1
+EPS desk reader while waiting: reuse IQ2 exact selected-leaf qualification,
+explicit schema/missing-data diagnostics, no raw owner-join numeric bypass.
+No new data, quality certification, research result or release is claimed.
+
 ## Sustained headroom observation terminal - 2026-09-24 00:59 UTC
 
 The interim measurement is committed df6ae26e. Root then observed the exact
