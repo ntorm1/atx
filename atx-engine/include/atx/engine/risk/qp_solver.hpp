@@ -118,6 +118,7 @@
 #include "atx/engine/risk/factor_model.hpp" // FactorModel (apply / specific_var / factor_cov)
 #include "atx/engine/risk/kkt_ldl.hpp"      // QuasiDefiniteLdl (deterministic no-pivot KKT solve)
 #include "atx/engine/risk/qp_augment.hpp"   // build_augmented / AugmentedQp
+#include "atx/engine/risk/qp_factor_admm.hpp" // solve_factor_admm (Lane 6 factor-space x-update)
 
 namespace atx::engine::risk {
 
@@ -155,6 +156,15 @@ struct QpConfig {
   // (ADMM and optional polish). Symbolic/runtime/other solver storage is excluded.
   // A budget failure is a solve error even when the factorization is for polish.
   atx::u64 max_factor_bytes = std::numeric_limits<atx::u64>::max();
+  // Lane 6: route the SCHEDULED solve (solve_with_cert(p, sched, ws)) through the factor-space
+  // ADMM (qp_factor_admm.hpp) — risk exact in a Woodbury x-update, O(M(K + R_d)) per
+  // iteration, no KKT factorization — whenever the set carries no cone. Off by default: the
+  // augmented path and every byte pin are unchanged. The two paths share cfg.iters (a cap
+  // under an early-exit schedule), rho, sigma, feas_tol and polish; ruiz_passes and
+  // max_factor_bytes do not apply to the factor-space path. Its x_full / y_full use their
+  // own layout (x_full = w; see qp_factor_admm.hpp); a warm start from the other path's
+  // layout is detected by length and ignored (a cold start, never a mis-seeded one).
+  bool factor_space = false;
 };
 
 // A deterministic infeasibility / convergence certificate, computed from the FINAL
@@ -170,6 +180,7 @@ struct QpCertificate {
   // early exit fired) and the final base rho (== cfg.rho on the unscheduled path).
   atx::usize admm_iters = 0;
   atx::f64 rho_final = 0.0;
+  bool factor_space = false; // the factor-space ADMM produced this result (cfg.factor_space)
 };
 
 // The QP instance. P = 2·risk_aversion·V (V is NEVER densified — the augmentation
@@ -258,6 +269,9 @@ public:
                                                             const WarmStart *ws = nullptr) const {
     const atx::usize m = p.V.n_instruments();
     ATX_TRY_VOID(validate(p, m));
+    if (cfg.factor_space && factor_admm_eligible(p.C)) {
+      return solve_factor_space(p, sched, ws);
+    }
     const AugmentedQp aug = build_augmented(p.V, p.risk_aversion, p.q, p.C);
     return solve_augmented_form(aug, p, &sched, ws);
   }
@@ -346,6 +360,32 @@ public:
 
 private:
   using SpMat = Eigen::SparseMatrix<atx::f64>;
+
+  // The factor-space path (cfg.factor_space, no cones): map QpConfig / WarmStart onto
+  // solve_factor_admm and its output onto QpResult (book == x_full == w).
+  [[nodiscard]] atx::core::Result<QpResult> solve_factor_space(const QpProblem &p,
+                                                               const AdmmSchedule &sched,
+                                                               const WarmStart *ws) const {
+    namespace co = atx::core;
+    const FactorAdmmConfig fc{cfg.iters, cfg.rho, cfg.sigma, cfg.feas_tol, cfg.polish};
+    const std::span<const atx::f64> x0 = (ws != nullptr) ? ws->x0 : p.x0;
+    const std::span<const atx::f64> y0 = (ws != nullptr) ? ws->y0 : p.y0;
+    const atx::f64 rho0 = (ws != nullptr) ? ws->rho : 0.0;
+    ATX_TRY(FactorAdmmOutput fo,
+            solve_factor_admm(p.V, p.risk_aversion, p.q, p.C, fc, sched, x0, y0, rho0));
+    QpResult out;
+    out.book = fo.w;
+    out.x_full = std::move(fo.w);
+    out.y_full = std::move(fo.dual);
+    out.cert.prim_res = fo.prim_res;
+    out.cert.dual_res = fo.dual_res;
+    out.cert.primal_infeasible = fo.prim_res > 1e-3;
+    out.cert.polished = fo.polished;
+    out.cert.admm_iters = fo.iters;
+    out.cert.rho_final = fo.rho;
+    out.cert.factor_space = true;
+    return co::Ok(std::move(out));
+  }
 
   // Ruiz scaling state. D_x scales the n primal columns, e scales the R̃ constraint
   // rows; c is the scalar cost scaling. All diagonal/positive; the solve runs on the

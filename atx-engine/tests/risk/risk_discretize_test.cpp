@@ -239,4 +239,39 @@ TEST(RiskDiscretize, ResolveHonoursScheduleAndWarmStart) {
   EXPECT_TRUE(risk::detail::pin_dual_seed(p, {}, 6U).empty());
 }
 
+// The pin re-solve through the factor-space path (pins fold into the box block; the warm
+// dual layout is unchanged by the pins) agrees with the augmented re-solve.
+TEST(RiskDiscretize, FactorSpaceResolveMatchesAugmented) {
+  const auto model = diag_model();
+  const std::vector<f64> prev(kM, 0.0);
+  const auto c = neutral_constraints(model, prev);
+  const auto q = graded_q();
+  risk::AdmmSchedule sched;
+  sched.early_exit = true;
+  sched.eps_abs = 1e-10;
+  sched.eps_rel = 1e-10;
+  const risk::QpProblem p{model, 1.0, q, c};
+  risk::ConstrainedQpSolver aug;
+  aug.cfg.iters = 20000U;
+  risk::ConstrainedQpSolver fs = aug;
+  fs.cfg.factor_space = true;
+  const auto cont = fs.solve_with_cert(p, sched);
+  ASSERT_TRUE(cont) << cont.error().message();
+  ASSERT_TRUE(cont->cert.factor_space);
+  risk::DiscretizeCfg cfg;
+  cfg.max_names = 4;
+  cfg.schedule = sched;
+  const auto a = risk::discretize_and_resolve(aug, p, prev, cont->book, cfg);
+  cfg.warm = &*cont;
+  const auto f = risk::discretize_and_resolve(fs, p, prev, cont->book, cfg);
+  ASSERT_TRUE(a) << a.error().message();
+  ASSERT_TRUE(f) << f.error().message();
+  EXPECT_TRUE(f->resolved);
+  EXPECT_LE(f->n_names, 4U);
+  for (usize i = 0; i < kM; ++i) {
+    EXPECT_NEAR(f->book[i], a->book[i], 1e-7) << i;
+  }
+  EXPECT_LE(f->max_violation, 1e-9);
+}
+
 } // namespace atx_test_l6_optim_discretize

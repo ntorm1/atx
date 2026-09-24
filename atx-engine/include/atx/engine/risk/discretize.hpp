@@ -17,6 +17,8 @@
 //       coincide with the continuous book are snapped exactly and need no re-solve. The
 //       re-solve runs cfg.schedule and, when cfg.warm is set, is warm-started from the
 //       continuous solve (its primal, its duals re-laid-out around the pin rows, its ρ).
+//       With solver.cfg.factor_space the re-solve takes the factor-space path, where each
+//       pin is a single-name equality folded into the box block (exact after the polish).
 //   (4) ROUND LOTS — each free name's trade is rounded to the nearest multiple of its lot
 //       (weight units); a rounded trade below `min_trade` is dropped.
 //
@@ -240,7 +242,11 @@ discretize_and_resolve(const ConstrainedQpSolver &solver, const QpProblem &p,
     WarmStart ws;
     const WarmStart *wsp = nullptr;
     if (cfg.warm != nullptr) {
-      y_seed = detail::pin_dual_seed(p, cfg.warm->y_full, n_pinned);
+      // Factor-space layout: a pin is a single-name row folded into the box block, so the
+      // dual layout [y_box ; y_dense (; y_turn)] is unchanged by the pins.
+      y_seed = cfg.warm->cert.factor_space
+                   ? cfg.warm->y_full
+                   : detail::pin_dual_seed(p, cfg.warm->y_full, n_pinned);
       ws.x0 = cfg.warm->x_full;
       ws.y0 = y_seed;
       ws.rho = cfg.warm->cert.rho_final;
