@@ -147,3 +147,60 @@ prior-year match, as-of revision selection, and source lineage. Return the
 three rows above, with known availability for both EPS inputs, or identify
 the missing source or transformation explicitly. A source benchmark alone
 does not pass this acceptance case.
+
+## Current executable consumer: selected-lineage qualification
+
+Use the generic [quarterly EPS desk reader](../scripts/read_quarterly_eps_growth.py)
+for canonical output. It delegates numerical publication qualification to
+`WarehouseReadService.issuer_content_range` (IQ2). The frozen v1/v2 SQL and
+receipts above remain historical diagnostics; their coarse owner checks do
+not replace exact selected-leaf qualification.
+
+From `atx-db`, under the existing memory guard and after the controller grants
+the single runtime slot:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/read_quarterly_eps_growth.py `
+  --db-path data/warehouse.duckdb --cik 0000093410 `
+  --content-as-of 2026-09-20T22:00:00Z `
+  --start 2025-10-01 --end 2026-07-01 --latest 3 `
+  --output-json data/cvx-quarterly-eps-desk.json
+```
+
+Choose a fresh output filename. The reader opens one read-only transaction
+with 256MB memory, one thread, bounded spill, and row/byte preflights. The
+explicit period-end range is `[start,end)`. `--latest` defaults to 3 observed
+qualified periods and includes NULL unavailable revisions, so a subsequent
+invalidation never resurrects an older numeric state. It does not infer an
+absent fiscal quarter or calculate prior-year dates itself. Growth ratios
+and domain statuses come from the canonical publisher; `growth_percent`
+only changes the display unit. Canonical growth uses
+`(current - prior) / abs(prior)`: positive bases match `current / prior - 1`,
+negative bases retain the signed change relative to the base's magnitude,
+and zero/missing bases retain NULL and their original `value_status`.
+
+Schema 323's selected-input columns and prerequisite tables must exist.
+Missing schema, missing materialization, insufficient periods, ambiguous
+owners, rejected selected lineage, and unavailable values produce explicit
+JSON diagnoses and exit 2. Exit 0 means the requested count of unambiguous
+numeric observations was returned, not that a production release passed.
+Inspect `issuer_diagnostics`, including all rejection and truncation flags.
+
+This reader requires an explicit CIK and performs no ticker lookup. Resolve
+the ticker separately at an explicit `issuer_lookup_as_of` using the
+[issuer-content service](ISSUER_CONTENT_QUERY.md); do not substitute that
+clock for `--content-as-of`. Issuer accounting history is not historical
+security association, and reconstructed event availability is not verified
+historical-vintage data. This consumer does not repair source gaps or
+materialize missing data.
+
+The root-controlled live invocation on 2026-09-24 wrote
+[`cvx-eps-desk1.json`](../../.superpowers/sdd/tier1-parity/cvx-eps-desk1.json)
+with `schema_prerequisite_missing` and exit 2: the warehouse still lacked
+`derived_metric_values.selected_input_refs_hash` and
+`derived_metric_values.selected_input_refs_json`. It returned no numeric
+rows and stopped at schema preflight. The process peaked at 0.642921GiB
+under a 1GiB guard; the warehouse size and modification time were unchanged.
+This verifies controlled prerequisite reporting, not the numerical CVX
+acceptance case. The tiny real-IQ2 fixtures and corrected zero/negative-base
+cases passed; they do not establish production source coverage.
