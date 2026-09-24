@@ -1,0 +1,444 @@
+{
+  "date": "2026-09-20",
+  "goal_status": "active",
+  "scope": "Checkpoint 7: read-only required-mark source reconciliation, shared unchanged QA policy and terminal-event research",
+  "status": "audit_complete_baseline_data_economics_unresolved",
+  "tests": {
+    "passed": 12,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0,
+    "new_cases": 9,
+    "wall_seconds": 2.097,
+    "scope": "Eight reconciliation cases plus four preparation cases; one preparation predicate-order case is new.",
+    "recheck_reason": "Peer arithmetic review found adjusted-price product overflow could yield a finite wrong residual; guarded products and tested overflow/underflow.",
+    "cxx_builds_or_tests": "None required for this Python-only checkpoint."
+  },
+  "implementation": [
+    "Read-only audit with complete input/artifact/axis binding and fresh output ownership.",
+    "Shared pure row classification preserves QA-v1 reason order and nonrejecting share flags.",
+    "Original date/ID duplicate groups and nearest original neighbors retain exact row bytes.",
+    "Residuals require unambiguous adjacent original dn; no accepted-row bridging or economic acceptance.",
+    "Actual original/accepted compressed SHA256 verified before/after; CRC scope reported separately.",
+    "Exact failure token identity; finite positive intermediate adjusted-price products before return diagnostics."
+  ],
+  "native_measurement": {
+    "acceptance_scope": "Read-only source classification; no economic data certification or price repair",
+    "args": [
+      "C:\\Program Files\\Python312\\python.exe",
+      "C:\\atx\\atx-engine\\tools\\audit_tickerhistory_reconciliation.py",
+      "--source",
+      "C:/Users/natha/Downloads/tbltickerhistory3_10y.zip",
+      "--preparation-manifest",
+      "C:\\atx\\data\\tickerhistory_training_20120326_20131231_20260919\\manifest.json",
+      "--gaps",
+      "C:\\atx\\build-equity\\audits\\iteration6-baseline-required-marks.json",
+      "--attempt-dir",
+      "C:\\atx\\data\\equity_baseline_training_2013_20260919",
+      "--context-manifest",
+      "C:\\atx\\data\\tickerhistory_training_native_20260919\\context.bin.manifest.json",
+      "--evaluation-manifest",
+      "C:\\atx\\data\\equity_baseline_training_2013_20260919\\evaluation.bin.manifest.json",
+      "--books-manifest",
+      "C:\\atx\\data\\equity_baseline_training_2013_20260919\\books.bin.manifest.json",
+      "--ingestion-manifest",
+      "C:\\atx\\data\\tickerhistory_training_native_20260919\\segments\\_ingestion.manifest.json",
+      "--source-fidelity-receipt",
+      "C:\\atx\\build-equity\\audits\\iteration6-context-source-comparison.json",
+      "--output-dir",
+      "C:\\atx\\data\\equity_source_reconciliation_2013_20260919"
+    ],
+    "artifacts": [
+      {
+        "bytes": 16025,
+        "path": "C:\\atx\\data\\equity_source_reconciliation_2013_20260919\\evidence.zip",
+        "sha256": "b048bc1c6a6a3c21e4e66e565d0962b64e01622934691680c59d1e1dbab66a03"
+      },
+      {
+        "bytes": 278238,
+        "path": "C:\\atx\\data\\equity_source_reconciliation_2013_20260919\\manifest.json",
+        "sha256": "5aa7119684701827529591aa199a860b2e83a38eff17b3d5eb1168cc057032c1"
+      }
+    ],
+    "audit_id": "7dda241005f6f4f4549bba3acfab1e5982aeff0d71c9bc66443fada7d06965ea",
+    "classifications": {
+      "quarantined_by_qa_v1": 6,
+      "source_row_absent": 104
+    },
+    "exit_code": 0,
+    "finished_utc": "2026-09-20T11:12:57.378754+00:00",
+    "monitor": {
+      "api": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+      "limit_bytes": 3000000000,
+      "poll_seconds": 0.1,
+      "scope": "OS lifetime peak counters plus polling guard; not an instantaneous OS memory limit"
+    },
+    "original_member_crc_verified": false,
+    "os_peak_counters": {
+      "PageFaultCount": 4525995,
+      "PagefileUsage": 77213696,
+      "PeakPagefileUsage": 77402112,
+      "PeakWorkingSetSize": 85217280,
+      "PrivateUsage": 77213696,
+      "QuotaNonPagedPoolUsage": 14968,
+      "QuotaPagedPoolUsage": 124368,
+      "QuotaPeakNonPagedPoolUsage": 14968,
+      "QuotaPeakPagedPoolUsage": 124608,
+      "WorkingSetSize": 81936384
+    },
+    "pid": 17348,
+    "samples": 383,
+    "schema": "atx-measured-source-audit-v1",
+    "source_pins": {
+      "C:\\Program Files\\Python312\\python.exe": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "C:\\atx\\atx-engine\\tools\\audit_tickerhistory_reconciliation.py": "8731c003ac98811b297763293f1124d4f2b02a09c5c843cfcb46cb9fe05bb111",
+      "C:\\atx\\atx-engine\\tools\\prepare_tickerhistory.py": "2b0735c8256b640f7ceb5c96aebd5fa068475d1dccc33343dd16ef51a0512c2a",
+      "C:\\atx\\build-equity\\audits\\iteration6_build_training_context.py": "8280a4547d0ea29f80e514abed7d9934b09d76f7496cb851b6fdce7518f93ad1",
+      "C:\\atx\\build-equity\\audits\\iteration7_run_source_audit.py": "cd71b9bf945d6b4737e4f9f5197654d36cf7f7c7f753e25668a2416099be865b"
+    },
+    "source_pins_unchanged": true,
+    "started_utc": "2026-09-20T11:12:18.968845+00:00",
+    "status": "completed",
+    "wall_seconds": 38.40946269998676
+  },
+  "audit": {
+    "audit_id": "7dda241005f6f4f4549bba3acfab1e5982aeff0d71c9bc66443fada7d06965ea",
+    "classifications": {
+      "quarantined_by_qa_v1": 6,
+      "source_row_absent": 104
+    },
+    "requested_gaps": 110,
+    "affected_security_ids": 34,
+    "original_accepted_mismatches": 0,
+    "original_scan": {
+      "first_unprocessed_boundary_date": "2014-01-02",
+      "framed_data_rows": 2910734,
+      "member": "tbltickerhistory3_10y.txt",
+      "member_crc_verified": false,
+      "member_declared_crc32": "15b6e051",
+      "member_uncompressed_bytes": 11084562320,
+      "processed_through_date": "2013-12-31",
+      "scope": "date-ordered prefix through declared context; framing may read ahead"
+    },
+    "accepted_scan": {
+      "framed_data_rows": 2883147,
+      "member": "tbltickerhistory3_10y.txt",
+      "member_crc_verified": true,
+      "member_declared_crc32": "bb6f979f",
+      "member_uncompressed_bytes": 1012905050,
+      "processed_through_date": "2013-12-31",
+      "scope": "entire decompressed member consumed; ZIP CRC checked by zipfile"
+    },
+    "retained_evidence_bounds": {
+      "max_line_bytes": 1048576,
+      "max_retained_raw_bytes": 16777216,
+      "max_retained_rows": 20000,
+      "max_source_date_bytes": 134217728,
+      "retained_raw_bytes": 41424,
+      "retained_rows": 98
+    },
+    "inputs": {
+      "accepted_zip": {
+        "path": "C:\\atx\\data\\tickerhistory_training_20120326_20131231_20260919\\accepted.zip",
+        "sha256": "6131dc6482ee9e292c541bc14a76c0ba2b86c92582f7ed21cb8452985f509249",
+        "size_bytes": 326897120
+      },
+      "attempt_failure": {
+        "path": "C:\\atx\\data\\equity_baseline_training_2013_20260919\\failure.json",
+        "sha256": "826780789b9e935d4be0101994449c4c03bcf91731d309140cca6a7d1f2250e1",
+        "size_bytes": 5390
+      },
+      "attempt_request": {
+        "path": "C:\\atx\\data\\equity_baseline_training_2013_20260919\\request.json",
+        "sha256": "ca5b893d75c79c6f089785dff2090dca49b9edc8e58f6ad70b718a738d3acfae",
+        "size_bytes": 5236
+      },
+      "books_manifest": {
+        "path": "C:\\atx\\data\\equity_baseline_training_2013_20260919\\books.bin.manifest.json",
+        "sha256": "a67930ee992b5b2dfd6e74710ec1971c2d08c26cd3c8471f9b317dd42418ac26",
+        "size_bytes": 51347
+      },
+      "books_payload": {
+        "path": "C:\\atx\\data\\equity_baseline_training_2013_20260919\\books.bin",
+        "sha256": "d47cf12586bd3e86f09885a23b5edf0155fb3c769ad68c8af5c02be6713f8960",
+        "size_bytes": 568112
+      },
+      "context_manifest": {
+        "path": "C:\\atx\\data\\tickerhistory_training_native_20260919\\context.bin.manifest.json",
+        "sha256": "e9d53a8932b242750f44f8744a46856b535a0b1c27bd91dcf8dda60555e5f68a",
+        "size_bytes": 125854
+      },
+      "context_payload": {
+        "path": "C:\\atx\\data\\tickerhistory_training_native_20260919\\context.bin",
+        "sha256": "c219dc237a58574e4b55df8ee51e9f239ef9d5963903e54aa253bd07eafb85ef",
+        "size_bytes": 71697242
+      },
+      "evaluation_manifest": {
+        "path": "C:\\atx\\data\\equity_baseline_training_2013_20260919\\evaluation.bin.manifest.json",
+        "sha256": "25158e69ed35a86424a3958359541817f2330534851eabe58068915caf9e797b",
+        "size_bytes": 60632
+      },
+      "evaluation_payload": {
+        "path": "C:\\atx\\data\\equity_baseline_training_2013_20260919\\evaluation.bin",
+        "sha256": "bf0070e16c0cd1d66faac9e58f33ae7c0b9843566fc5d0804dc3c52724ab7835",
+        "size_bytes": 7848297
+      },
+      "ingestion": {
+        "path": "C:\\atx\\data\\tickerhistory_training_native_20260919\\segments\\_ingestion.manifest.json",
+        "sha256": "47db6b5d3486322a4f26bd5ba75f3f06b7b22fa6dd50fc54a232fd27d96d6d40",
+        "size_bytes": 72525
+      },
+      "original_zip": {
+        "path": "C:\\Users\\natha\\Downloads\\tbltickerhistory3_10y.zip",
+        "sha256": "7d2b7a615a08ef3b8686608eda384c4e30e2ce23bdee294ea141b3c9334acd8f",
+        "size_bytes": 3542506361
+      },
+      "preparation": {
+        "path": "C:\\atx\\data\\tickerhistory_training_20120326_20131231_20260919\\manifest.json",
+        "sha256": "ee17d68bfe33d58fa7279877c43d370a6b6b6a577bdb11082a70babec6e8c3df",
+        "size_bytes": 72831
+      },
+      "prior_source_fidelity": {
+        "path": "C:\\atx\\build-equity\\audits\\iteration6-context-source-comparison.json",
+        "sha256": "e8cca52e28cc7e865a9ce96768869a8487ce36324f72daa0f3f9499f8838b2e1",
+        "size_bytes": 73352
+      },
+      "required_gaps": {
+        "path": "C:\\atx\\build-equity\\audits\\iteration6-baseline-required-marks.json",
+        "sha256": "0c7c52106a3302f44c2c3331c9ee78d4858daa55eae6de05559e3069e45605c4",
+        "size_bytes": 65363
+      }
+    },
+    "artifacts": [
+      {
+        "path": "data/equity_source_reconciliation_2013_20260919/evidence.zip",
+        "sha256": "b048bc1c6a6a3c21e4e66e565d0962b64e01622934691680c59d1e1dbab66a03",
+        "bytes": 16025
+      },
+      {
+        "path": "data/equity_source_reconciliation_2013_20260919/manifest.json",
+        "sha256": "5aa7119684701827529591aa199a860b2e83a38eff17b3d5eb1168cc057032c1",
+        "bytes": 278238
+      }
+    ]
+  },
+  "independent_artifact_verification": {
+    "status": "passed",
+    "audit_id": "7dda241005f6f4f4549bba3acfab1e5982aeff0d71c9bc66443fada7d06965ea",
+    "manifest_sha256": "5aa7119684701827529591aa199a860b2e83a38eff17b3d5eb1168cc057032c1",
+    "evidence_zip_sha256": "b048bc1c6a6a3c21e4e66e565d0962b64e01622934691680c59d1e1dbab66a03",
+    "script_sha256": "82d55e87e8052b1a6eb890914c289ae09435f5307853063c99918c118e6ef614",
+    "exact_requested_gaps": 110,
+    "classifications": {
+      "source_row_absent": 104,
+      "quarantined_by_qa_v1": 6
+    },
+    "original_evidence_rows": 52,
+    "accepted_evidence_rows": 46,
+    "source_qa_reasons": {
+      "ohlc_order_violation": 6
+    },
+    "quarantines": [
+      {
+        "date": "2013-06-14",
+        "security_id": "42080",
+        "ticker": "ROK",
+        "ohlc": {
+          "open": "82.3",
+          "high": "87.1",
+          "low": "86.04",
+          "close": "86.69"
+        }
+      },
+      {
+        "date": "2013-10-17",
+        "security_id": "39962",
+        "ticker": "MHK",
+        "ohlc": {
+          "open": "132.06",
+          "high": "125.59",
+          "low": "119.59",
+          "close": "124.96"
+        }
+      },
+      {
+        "date": "2013-12-06",
+        "security_id": "42842",
+        "ticker": "SM",
+        "ohlc": {
+          "open": "95.35",
+          "high": "94",
+          "low": "84.58",
+          "close": "84.85"
+        }
+      },
+      {
+        "date": "2013-12-10",
+        "security_id": "734502",
+        "ticker": "N",
+        "ohlc": {
+          "open": "102.67",
+          "high": "98.55",
+          "low": "96.58",
+          "close": "97.83"
+        }
+      },
+      {
+        "date": "2013-12-27",
+        "security_id": "38165",
+        "ticker": "ITW",
+        "ohlc": {
+          "open": "87.33",
+          "high": "83.95",
+          "low": "83.5",
+          "close": "83.59"
+        }
+      },
+      {
+        "date": "2013-12-27",
+        "security_id": "42062",
+        "ticker": "RHI",
+        "ohlc": {
+          "open": "38.74",
+          "high": "42.26",
+          "low": "41.79",
+          "close": "41.92"
+        }
+      }
+    ],
+    "scope": "Independent artifact framing/hash/coverage and OHLC arithmetic; original ZIP was not rescanned.",
+    "economic_status": "unverified-no-data-repair"
+  },
+  "prior_baseline_receipt": {
+    "path": "atx-engine/reviews/2026-09-19-equity-baseline-validation.json",
+    "sha256": "05630de2967fdaba8c9f43fe90ab5930811e10d3f6537de421c98bda38458c64",
+    "bytes": 60331
+  },
+  "sources": [
+    {
+      "path": "atx-engine/tools/audit_tickerhistory_reconciliation.py",
+      "sha256": "8731c003ac98811b297763293f1124d4f2b02a09c5c843cfcb46cb9fe05bb111",
+      "bytes": 30821
+    },
+    {
+      "path": "atx-engine/tools/prepare_tickerhistory.py",
+      "sha256": "2b0735c8256b640f7ceb5c96aebd5fa068475d1dccc33343dd16ef51a0512c2a",
+      "bytes": 16665
+    },
+    {
+      "path": "atx-engine/tests/tools/test_audit_tickerhistory_reconciliation.py",
+      "sha256": "ae6df490494a978350851fdff28faf1e8ecfe9ecfc3eb7122680f394c360cc29",
+      "bytes": 14912
+    },
+    {
+      "path": "atx-engine/tests/tools/test_prepare_tickerhistory.py",
+      "sha256": "d5520e3faf3da213c6221215ed9c03941af32fb0864e063aba7e836a8b8a3c01",
+      "bytes": 5189
+    }
+  ],
+  "documents": [
+    {
+      "path": "atx-engine/docs/PLATFORM_PROGRESS.md",
+      "sha256": "6d789e1a415b93680b077e92df6f1dd94daf057ea84c6ba93599bffbea28500c",
+      "bytes": 37835
+    },
+    {
+      "path": "atx-engine/README.md",
+      "sha256": "e310756576c6794bdf3daf684ca2bc7df938054d392bdbfe2e6596c2f709fea5",
+      "bytes": 9213
+    },
+    {
+      "path": "atx-engine/reviews/2026-09-19-equity-source-reconciliation-design.md",
+      "sha256": "58399089203307d01cd4ee2b1a29371f04affa1bc90dcd0f9db2437aee131a11",
+      "bytes": 10234
+    },
+    {
+      "path": "atx-engine/reviews/2026-09-20-equity-required-marks-audit.md",
+      "sha256": "e627c14134a5417bed4bf13f9f1d83f0283fff9ee7e211320d7a5f8f2e88e8e6",
+      "bytes": 5837
+    },
+    {
+      "path": "atx-engine/reviews/2026-09-19-marked-holdings-allocation-design.md",
+      "sha256": "0b1d9ed58fa8e38d05bdfd22dbfae3ddaa3cf1295f95fad125a90e29ff7d5acb",
+      "bytes": 15130
+    }
+  ],
+  "evidence": [
+    {
+      "path": "build-equity/audits/iteration7-source-audit-measurement.json",
+      "sha256": "74767f7268b1a4c1870f69f259bcc5ca8ba7fc9c519cd055f31b71caa0482cd5",
+      "bytes": 3522
+    },
+    {
+      "path": "build-equity/audits/iteration7-source-audit-memory-samples.jsonl",
+      "sha256": "d060bbacd106dc7b6083515428e0446ab64152005687cba2cf7a1dedb6e3afc1",
+      "bytes": 132997
+    },
+    {
+      "path": "build-equity/audits/iteration7-source-audit.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "build-equity/audits/iteration7-source-audit.stdout.log",
+      "sha256": "d877ed41556eb16f4d43c3ed12eaf49f7aa0ea769bf031a350cfa7a1eea3701b",
+      "bytes": 216
+    },
+    {
+      "path": "build-equity/audits/iteration7-source-evidence-verification.json",
+      "sha256": "bc805ef5066405ad84d2420c48e5d1a3aac7e7822680da33e371360fbcfd34fe",
+      "bytes": 2188
+    },
+    {
+      "path": "build-equity/audits/iteration7_run_source_audit.py",
+      "sha256": "cd71b9bf945d6b4737e4f9f5197654d36cf7f7c7f753e25668a2416099be865b",
+      "bytes": 5862
+    },
+    {
+      "path": "build-equity/audits/iteration7_verify_source_evidence.py",
+      "sha256": "82d55e87e8052b1a6eb890914c289ae09435f5307853063c99918c118e6ef614",
+      "bytes": 4845
+    },
+    {
+      "path": "build-equity/audits/write_iteration7_receipt.py",
+      "sha256": "abf393c38c09b44cedc181f0bed3a374e6b7fecd108c1d6f0797ef94ca8802af",
+      "bytes": 5247
+    },
+    {
+      "path": "build-equity/iteration7-evidence-verification.log",
+      "sha256": "43bd94a68fe023b202ae0c768501c3fb238bac6e70fa24e529fd0458e4b5963d",
+      "bytes": 4378
+    },
+    {
+      "path": "build-equity/iteration7-native-audit.log",
+      "sha256": "800d522e260b054fad2ab22cc09fccb9a5e9c1c60c4f83a7571dc4fd1eb0d4ba",
+      "bytes": 1426
+    },
+    {
+      "path": "build-equity/iteration7-real-input-preflight.log",
+      "sha256": "b78769a34b9560830813988ffb92f38f0c24e32d5d7102247d48d6d14b583c9b",
+      "bytes": 224
+    },
+    {
+      "path": "build-equity/iteration7-tools-tests-final.log",
+      "sha256": "a66b9e81c34630d4009cd3e3f723a4e985184daa89753685e8f67710e6e93136",
+      "bytes": 5008
+    },
+    {
+      "path": "build-equity/iteration7-tools-tests.log",
+      "sha256": "e2e02115ce487481cb775a73107124c73705664c5514144d0938f453148a9e7a",
+      "bytes": 5622
+    }
+  ],
+  "findings": [
+    "First failing GNW/MA April12 observations are absent between April11/15 original rows; not a preparation or panel loss.",
+    "Representative HNZ/DELL/MOLX source endings align with primary SEC/issuer cash acquisitions; separate event/entitlement/cash accounting is needed.",
+    "Ticker to vendor-ID mapping comes from archive annotations, not external issuer-ID attestation.",
+    "No source prices, factors, accepted inputs, baseline panels or failed trial were modified.",
+    "Full-window strategy returns/Sharpe/capacity remain unavailable; same-vendor residuals cannot certify replacement prices."
+  ],
+  "next": [
+    "Source-evidenced missing observations and identified corporate-event accounting.",
+    "Actual-marked-holdings allocation through the existing QP solver with causal risk, trade budgets and bounded factor workspace."
+  ]
+}

@@ -26,6 +26,8 @@
 #include "config.hpp"
 #include "dead_alpha_wire.hpp"
 #include "serialize_panel.hpp"
+#include "panel_pipeline.hpp"
+#include "atx/core/sha256.hpp"
 #include "stage_riskmodel.hpp"
 
 namespace atx::impl {
@@ -64,8 +66,13 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
     }
 
     // 2. Load research and combo panels.
-    ATX_TRY(auto research, read_panel(cfg.panel));
-    ATX_TRY(auto combo, read_panel(cfg.combo));
+    ATX_TRY(auto research_input, read_pipeline_panel(cfg.panel, cfg.allow_unidentified_panels));
+    ATX_TRY(auto combo_input, read_pipeline_panel(cfg.combo, cfg.allow_unidentified_panels));
+    ATX_TRY_VOID(require_pipeline_parent(combo_input, research_input, "research"));
+    auto& research = research_input.panel;
+    auto& combo = combo_input.panel;
+    ATX_TRY(auto output_guard,
+            reserve_pipeline_output(cfg.books_out, research_input.identity.has_value()));
 
     if (combo.num_fields() < 1) {
         return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
@@ -116,7 +123,6 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
         std::vector<std::uint8_t> uni(S * M, 1u);
         ATX_TRY(auto cpanel,
                 alpha::Panel::create(S, M, {"weight"}, {books_flat}, uni));
-        ATX_TRY(auto digest, write_panel(cpanel, cfg.books_out));
 
         // Write sidecar .meta.txt
         {
@@ -140,7 +146,20 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
                    << " cost_bps=" << cost_bps[s]
                    << '\n';
             }
+            mf.close();
+            if (!mf) {
+                return atx::core::Err(atx::core::ErrorCode::IoError,
+                                      "optimize: schedule sidecar write failed");
+            }
         }
+
+        std::vector<PanelParent> parents;
+        if (research_input.identity) {
+            ATX_TRY(auto schedule_hash, atx::core::sha256_file(cfg.books_out + ".meta.txt"));
+            parents = {{"combo", combo_input.artifact_id}, {"book-schedule", schedule_hash}};
+        }
+        ATX_TRY(auto digest, write_pipeline_panel(cpanel, cfg.books_out, research_input,
+            sched.periods, "stage=optimize-v1\nstep=" + std::to_string(step), std::move(parents)));
 
         // Build StageResult with the same kvs keys for both branches.
         StageResult sr;

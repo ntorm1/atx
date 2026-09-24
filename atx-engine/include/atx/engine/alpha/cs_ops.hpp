@@ -59,6 +59,8 @@
 
 #include "atx/core/types.hpp"
 
+#include "atx/engine/alpha/cs_radix.hpp" // Lane 1: radix stable argsort (bit-identical)
+
 namespace atx::engine::alpha::detail {
 
 // ===========================================================================
@@ -163,6 +165,7 @@ struct CsScratch {
   std::vector<atx::usize> gmem;  // CsRankG flat members, ascending within group
   std::vector<atx::f64> fa;      // residualize within-group-demeaned x (∥ rset)
   std::vector<atx::f64> fb;      // residualize within-group-demeaned z (∥ rset)
+  CsRadixScratch radix;          // rank-family radix argsort ping-pong buffers (Lane 1)
   atx::usize ngroups = 0;
   atx::usize tmask = 0; // table.size()-1 (power of two); 0 when unsized
 
@@ -254,8 +257,9 @@ inline void cs_rank_row(std::span<const atx::f64> x, const std::vector<atx::usiz
   order.assign(valid.begin(), valid.end());       // already ascending in instrument index
   // Stable sort by value; ties keep ascending-index order -> deterministic
   // ordinal tie-break (identical to oracle.hpp's cs_rank).
-  std::stable_sort(order.begin(), order.end(),
-                   [&](atx::usize i, atx::usize j) { return x[i] < x[j]; });
+  // Lane 1: radix above kCsRadixMinRow — the SAME permutation as the stable_sort
+  // by `<` (ties keep this ascending-index order; -0.0 ties +0.0).
+  cs_stable_argsort(x, std::span<atx::usize>{order}, scratch.radix);
   for (atx::usize r = 0; r < n; ++r) {
     const atx::f64 pct = (n == 1) ? 0.5 : static_cast<atx::f64>(r) / static_cast<atx::f64>(n - 1);
     out[order[r]] = pct;
@@ -490,8 +494,9 @@ inline void cs_quantile_row(std::span<const atx::f64> x, const std::vector<atx::
   }
   std::vector<atx::usize> &order = scratch.order; // reused buffer (no per-date alloc)
   order.assign(valid.begin(), valid.end());       // already ascending in instrument index
-  std::stable_sort(order.begin(), order.end(),
-                   [&](atx::usize i, atx::usize j) { return x[i] < x[j]; });
+  // Lane 1: radix above kCsRadixMinRow — the SAME permutation as the stable_sort
+  // by `<` (ties keep this ascending-index order; -0.0 ties +0.0).
+  cs_stable_argsort(x, std::span<atx::usize>{order}, scratch.radix);
   const atx::f64 denom = static_cast<atx::f64>(nb - 1);
   for (atx::usize r = 0; r < m; ++r) {
     const atx::f64 p = (m == 1) ? 0.5 : static_cast<atx::f64>(r) / static_cast<atx::f64>(m - 1);
@@ -621,9 +626,7 @@ inline void cs_group_row(std::span<const atx::f64> x, std::span<const atx::f64> 
     const atx::usize b = scratch.goff[k];
     const atx::usize e = scratch.goff[k + 1];
     const atx::usize cnt = e - b;
-    std::stable_sort(scratch.gmem.begin() + static_cast<std::ptrdiff_t>(b),
-                     scratch.gmem.begin() + static_cast<std::ptrdiff_t>(e),
-                     [&](atx::usize i, atx::usize j) { return x[i] < x[j]; });
+    cs_stable_argsort(x, std::span<atx::usize>{scratch.gmem.data() + b, cnt}, scratch.radix);
     for (atx::usize r = 0; r < cnt; ++r) {
       const atx::f64 pct =
           (cnt == 1) ? 0.5 : static_cast<atx::f64>(r) / static_cast<atx::f64>(cnt - 1);

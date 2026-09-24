@@ -49,7 +49,7 @@ build_plug_index(std::span<const InstKey> plug_instruments) {
 
   DropReport drops;
   const std::span<const InstKey> plug_instruments = plug.instruments();
-  const std::span<const DateKey> plug_dates = plug.dates();
+  const std::span<const DateKey> plug_dates = plug.available_dates();
   for (atx::usize pi = 0; pi < plug_instruments.size(); ++pi) {
     const bool in_universe = canonical_universe.contains(plug_instruments[pi]);
     for (atx::usize pd = 0; pd < plug_dates.size(); ++pd) {
@@ -66,6 +66,10 @@ build_plug_index(std::span<const InstKey> plug_instruments) {
 } // namespace
 
 atx::core::Result<AlignedView> align_onto(const Dataset &canonical_price, const Dataset &plug) {
+  if (canonical_price.schema().date_encoding != plug.schema().date_encoding) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "align_onto: date encodings must match");
+  }
   if (!is_strictly_ascending(canonical_price.dates())) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "align_onto: canonical_price.dates() is not strictly ascending");
@@ -81,7 +85,6 @@ atx::core::Result<AlignedView> align_onto(const Dataset &canonical_price, const 
   const std::unordered_map<InstKey, atx::usize> plug_index = build_plug_index(plug.instruments());
   const std::span<const DateKey> canonical_dates = canonical_price.dates();
   const std::span<const InstKey> canonical_instruments = canonical_price.instruments();
-  const std::span<const DateKey> plug_dates = plug.dates();
   const atx::usize plug_ni = plug.num_instruments();
   constexpr atx::f64 nan = std::numeric_limits<atx::f64>::quiet_NaN();
 
@@ -93,7 +96,7 @@ atx::core::Result<AlignedView> align_onto(const Dataset &canonical_price, const 
 
   for (atx::usize d = 0; d < nd; ++d) {
     // As-of resolution is invariant across instruments — compute once per date.
-    const auto pd = as_of_index(plug_dates, canonical_dates[d]);
+    ATX_TRY(const auto pd, plug.available_as_of_index(canonical_dates[d]));
     if (!pd) {
       continue; // no plug row on/before this date — whole row stays NaN
     }

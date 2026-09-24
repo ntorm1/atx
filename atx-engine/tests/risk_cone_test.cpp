@@ -13,12 +13,13 @@
 //                 (RiskCone.TrackingErrorConstraintIsSatisfiedAndBinds)
 //   G-DET       — (a) the book is byte-identical across two solves;
 //                 (b) cone count 0 ⇒ the augmented book is byte-identical to the
-//                 pre-S8.5a (S8.4) path (no cone block ⇒ inert). ALSO a frozen
-//                 golden-digest pin (kZeroConeGolden, FNV-1a over ascending book
-//                 elements) — any drift in the box-only iterates fails the pin.
-//                 (RiskCone.*Deterministic*, RiskCone.ZeroConeIsByteIdenticalToS84Path)
+//                 plain box-only path (zero-effect descriptors are inert).
+//                 The box-only fixture also has an independent active-set KKT
+//                 certificate; no digest of a superseded solver is treated as truth.
+//                 (RiskCone.*Deterministic*, RiskCone.ZeroConeMatchesCertifiedBoxOnlyOptimum)
 
 #include <bit>     // std::bit_cast
+#include <array>   // independently specified active set for the box-only oracle
 #include <cmath>   // std::fabs, std::sqrt, std::isfinite, std::nextafter
 #include <cstdint> // std::uint64_t
 #include <limits>  // std::numeric_limits (κ=0 apex sentinel)
@@ -381,24 +382,103 @@ TEST(RiskCone, TrackingErrorSolveIsDeterministic) {
 }
 
 // ===========================================================================
-//  G-DET (b) — GOLDEN-DIGEST PIN against the box-only (S8.4) path.
-//  We build the problem with NO TrackingError descriptor (zero cones) and assert:
-//    (1) AugmentedQp carries exactly zero SocBlocks (box-only structural gate).
-//    (2) Two solves of the no-cone problem are byte-identical (self-consistency).
-//    (3) A 64-bit FNV-1a digest over the bit pattern of every book element matches
-//        kZeroConeGolden — a FROZEN constant computed once and pinned here. Any
-//        future change that silently perturbs the box-only iterates fails this pin
-//        (G-DET(b) absolute baseline, not merely a self-consistency check).
-//  FNV-1a parameters: basis = 1469598103934665603ULL, prime = 1099511628211ULL,
-//  accumulation order: ascending book index.
+//  G-DET + independent optimality: zero cones preserve a deterministic box-only
+//  solve. The 2026-09-20 original-KKT polish repair intentionally changes low bits;
+//  a historical solver digest is not an optimum oracle. Verify this fixed fixture
+//  against a separate small dense active-set solve, including inactive coordinates,
+//  dual signs, complementarity and ORIGINAL net/gross/name constraints.
 // ===========================================================================
 
-// Frozen golden digest of the box-only augmented book (M=12, lambda=0.7, 400 iters).
-// Computed on first run and pinned. Regenerate only when the S8.4 box-only path
-// is intentionally changed (update the constant and the commit message to say why).
-static constexpr std::uint64_t kZeroConeGolden = 0xffed7ec6c177aad2ULL;
+// Independent fixture oracle: alpha repeats (-.2,0,.2,.4). Only indices 0 mod 4
+// and 3 mod 4 are nonzero; net=0 and gross=1.5 bind, and no .4 name cap binds.
+// Solve that hypothesized active system, then VERIFY every KKT condition. The
+// strictly positive specific variances make P SPD, so a verified KKT point is
+// the unique global optimum. This does not use QP augmentation or ADMM/polish.
+void certify_box_only_fixture(const FactorModel &model, std::span<const f64> q,
+                              const std::vector<f64> &actual, f64 native_tolerance) {
+  constexpr Eigen::Index m = 12;
+  constexpr std::array<Eigen::Index, 6> active{0, 3, 4, 7, 8, 11};
+  constexpr std::array<f64, 6> signs{-1.0, 1.0, -1.0, 1.0, -1.0, 1.0};
+  constexpr f64 oracle_tolerance = 1e-10;
+  ASSERT_TRUE(std::isfinite(native_tolerance));
+  ASSERT_GT(native_tolerance, 0.0);
+  ASSERT_EQ(q.size(), static_cast<usize>(m));
+  ASSERT_EQ(actual.size(), static_cast<usize>(m));
+  ASSERT_EQ(model.n_instruments(), static_cast<usize>(m));
 
-TEST(RiskCone, ZeroConeIsByteIdenticalToS84Path) {
+  MatX covariance = model.exposures() * model.factor_cov() * model.exposures().transpose();
+  covariance.diagonal() += model.specific_var();
+  const MatX p = 1.4 * covariance; // 2*lambda*V, lambda=.7.
+  const Eigen::LLT<MatX> positive_definite(p);
+  ASSERT_EQ(positive_definite.info(), Eigen::Success);
+  MatX kkt = MatX::Zero(8, 8);
+  VecX rhs = VecX::Zero(8);
+  for (Eigen::Index i = 0; i < 6; ++i) {
+    const auto ii = static_cast<usize>(i);
+    rhs[i] = -q[static_cast<usize>(active[ii])];
+    for (Eigen::Index j = 0; j < 6; ++j) {
+      kkt(i, j) = p(active[ii], active[static_cast<usize>(j)]);
+    }
+    kkt(i, 6) = kkt(6, i) = 1.0;
+    kkt(i, 7) = kkt(7, i) = signs[ii];
+  }
+  rhs[7] = 1.5;
+  const Eigen::FullPivLU<MatX> direct(kkt);
+  ASSERT_TRUE(direct.isInvertible());
+  const VecX solution = direct.solve(rhs);
+  ASSERT_TRUE(solution.allFinite());
+  EXPECT_LE((kkt * solution - rhs).lpNorm<Eigen::Infinity>(), oracle_tolerance);
+  const f64 net_dual = solution[6];
+  const f64 gross_dual = solution[7];
+  ASSERT_GT(gross_dual, 0.0);
+  // Keep the direct oracle's strict tolerance separate from the native caller's
+  // requested row accuracy. L1 errors can accumulate over M split rows plus the
+  // sum row. Coordinate comparison uses the caller's declared original-unit
+  // scale; stationarity propagates it through P, not an empirically fitted slack.
+  const f64 gross_tolerance = static_cast<f64>(m + 1) * native_tolerance;
+  const f64 native_stationarity_tolerance =
+      p.cwiseAbs().rowwise().sum().maxCoeff() * native_tolerance + oracle_tolerance;
+
+  VecX expected = VecX::Zero(m);
+  VecX observed(m);
+  for (usize i = 0; i < active.size(); ++i) {
+    EXPECT_GT(solution[static_cast<Eigen::Index>(i)] * signs[i], 0.0);
+    expected[active[i]] = solution[static_cast<Eigen::Index>(i)];
+  }
+  f64 net = 0.0;
+  f64 gross = 0.0;
+  for (Eigen::Index i = 0; i < m; ++i) {
+    observed[i] = actual[static_cast<usize>(i)];
+    ASSERT_TRUE(std::isfinite(observed[i]));
+    EXPECT_NEAR(observed[i], expected[i], native_tolerance) << "coordinate=" << i;
+    EXPECT_LT(std::fabs(expected[i]), 0.4); // Name multipliers are zero.
+    EXPECT_LE(std::fabs(observed[i]), 0.4 + native_tolerance);
+    net += observed[i];
+    gross += std::fabs(observed[i]);
+  }
+  EXPECT_NEAR(net, 0.0, native_tolerance);
+  EXPECT_NEAR(gross, 1.5, gross_tolerance);
+  EXPECT_LE(std::fabs(gross_dual * (gross - 1.5)),
+            std::fabs(gross_dual) * gross_tolerance + oracle_tolerance);
+
+  // Active signed L1 derivatives and inactive subgradient intervals certify both
+  // the independent optimum and the native book using the independently found duals.
+  for (const VecX *weights : {&expected, &observed}) {
+    const f64 tolerance = weights == &expected ? oracle_tolerance : native_stationarity_tolerance;
+    VecX stationarity = p * *weights;
+    for (Eigen::Index i = 0; i < m; ++i) {
+      stationarity[i] += q[static_cast<usize>(i)] + net_dual;
+      if (expected[i] == 0.0) {
+        EXPECT_LE(std::fabs(stationarity[i]), gross_dual + tolerance) << "inactive=" << i;
+      } else {
+        const f64 sign = expected[i] > 0.0 ? 1.0 : -1.0;
+        EXPECT_NEAR(stationarity[i] + gross_dual * sign, 0.0, tolerance) << "active=" << i;
+      }
+    }
+  }
+}
+
+TEST(RiskCone, ZeroConeMatchesCertifiedBoxOnlyOptimum) {
   const usize m = 12U;
   const FactorModel model = make_multi_model(m);
   VecX alpha(static_cast<Eigen::Index>(m));
@@ -439,16 +519,8 @@ TEST(RiskCone, ZeroConeIsByteIdenticalToS84Path) {
     EXPECT_EQ(std::bit_cast<std::uint64_t>(a[i]), std::bit_cast<std::uint64_t>(b[i])) << "i=" << i;
   }
 
-  // (3) Golden-digest pin: FNV-1a over the bit pattern of every book element,
-  //     ascending index. Fails if the box-only iterates drift from the S8.4 baseline.
-  std::uint64_t h = 1469598103934665603ULL; // FNV-1a 64-bit basis
-  for (usize i = 0; i < a.size(); ++i) {
-    h ^= std::bit_cast<std::uint64_t>(a[i]);
-    h *= 1099511628211ULL; // FNV-1a 64-bit prime
-  }
-  // Emit the actual digest so we can read it off the first run (printed on FAILURE).
-  EXPECT_EQ(h, kZeroConeGolden) << "box-only augmented book drifted from the S8.4 golden digest"
-                                 << "; actual digest = 0x" << std::hex << h;
+  // (3) Original economic constraints and an independent global KKT certificate.
+  certify_box_only_fixture(model, q, a, solver.cfg.feas_tol);
 }
 
 // ===========================================================================
@@ -685,12 +757,11 @@ TEST(RiskCone, ImpactSurrogateReducesTurnoverMonotonically) {
 }
 
 // ===========================================================================
-//  G-DET (b) — zero sector cones + zero √-impact ⇒ byte-identical to the S8.5a path.
-//  (1) An empty SectorRiskSpec + empty ImpactSurrogateSpec carries zero SocBlocks and a
-//      P/q byte-identical to the build with NO such specs. (2) The box-only golden pin
-//      (kZeroConeGolden) still holds with the (inert) S8.5b specs present.
+//  G-DET (b) — explicit zero sector risks + zero impact have exactly the same book
+//  bytes as a plain solve under the SAME solver. Both books must also pass the
+//  independent fixture certificate; no replacement historical hash is introduced.
 // ===========================================================================
-TEST(RiskCone, ZeroSectorConeZeroImpactIsByteIdenticalToS85aPath) {
+TEST(RiskCone, ZeroSectorConeZeroImpactMatchesPlainBookBitwise) {
   const usize m = 12U;
   const FactorModel model = make_multi_model(m);
   VecX alpha(static_cast<Eigen::Index>(m));
@@ -723,6 +794,12 @@ TEST(RiskCone, ZeroSectorConeZeroImpactIsByteIdenticalToS85aPath) {
   MaterializedConstraints mc_inert = mc;
   mc_inert.impact.active = true;
   mc_inert.impact.coeff.assign(m, 0.0);
+  mc_inert.sector_risk.active = true;
+  mc_inert.sector_risk.sector_id.resize(m);
+  for (usize i = 0; i < m; ++i) {
+    mc_inert.sector_risk.sector_id[i] = i % 2U;
+  }
+  mc_inert.sector_risk.sigma = {0.0, 0.0}; // Existing builder omits nonpositive cones.
   const auto aug_inert =
       atx::engine::risk::build_augmented(model, 0.7, std::span<const f64>(q), mc_inert);
   ASSERT_EQ(aug.P.nonZeros(), aug_inert.P.nonZeros());
@@ -736,20 +813,23 @@ TEST(RiskCone, ZeroSectorConeZeroImpactIsByteIdenticalToS85aPath) {
   }
   EXPECT_TRUE(aug_inert.cones.empty()) << "inert impact must not add cones";
 
-  // The box-only golden pin still holds (the S8.5b specs are inert when off).
+  // Direct baseline-versus-inert solve identity, not a hash from an older solver.
   QpProblem prob{model, 0.7, std::span<const f64>(q), mc};
+  QpProblem inert_prob{model, 0.7, std::span<const f64>(q), mc_inert};
   ConstrainedQpSolver solver;
   solver.cfg.iters = 400U;
   auto r1 = solver.solve(prob);
+  auto r2 = solver.solve(inert_prob);
   ASSERT_TRUE(r1.has_value()) << (r1 ? "" : r1.error().to_string());
+  ASSERT_TRUE(r2.has_value()) << (r2 ? "" : r2.error().to_string());
   const std::vector<f64> &a = *r1;
-  std::uint64_t h = 1469598103934665603ULL;
+  const std::vector<f64> &b = *r2;
+  ASSERT_EQ(a.size(), b.size());
   for (usize i = 0; i < a.size(); ++i) {
-    h ^= std::bit_cast<std::uint64_t>(a[i]);
-    h *= 1099511628211ULL;
+    EXPECT_TRUE(bits_eq(a[i], b[i])) << "inert feature changed coordinate=" << i;
   }
-  EXPECT_EQ(h, kZeroConeGolden) << "box-only book drifted with the (inert) S8.5b specs present"
-                                << "; actual digest = 0x" << std::hex << h;
+  certify_box_only_fixture(model, q, a, solver.cfg.feas_tol);
+  certify_box_only_fixture(model, q, b, solver.cfg.feas_tol);
 }
 
 // ===========================================================================

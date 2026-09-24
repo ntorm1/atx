@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -136,5 +137,98 @@ TEST(OuDeriv, NaNBGivesNaNForAll) {
   EXPECT_TRUE(ts_is_nan(ou_zscore_of(f, 5.0)));
 }
 
+// ===========================================================================
+//  R21-1 — running-sum kernels treat +/-inf as missing (like NaN) and RECOVER
+//  once the inf leaves the window (previously inf - inf poisoned the online
+//  column permanently). Online sweep == batch ts_value_at on the same column.
+// ===========================================================================
+
+TEST(TsOnlineSumFamily, InfEntersAndLeaves_RecoversAndMatchesBatch) {
+  using atx::engine::alpha::OpCode;
+  constexpr atx::usize kDates = 90;
+  constexpr atx::usize kD = 21;
+  constexpr atx::usize kInfAt = 30;    // +inf (e.g. amihud with volume == 0)
+  constexpr atx::usize kNegInfAt = 60; // -inf
+  const atx::f64 inf = std::numeric_limits<atx::f64>::infinity();
+  // Quarter-steps are exactly representable, so every window sum is exact and
+  // the rolling and batch sums agree bit-for-bit.
+  std::vector<atx::f64> base(kDates);
+  for (atx::usize t = 0; t < kDates; ++t) {
+    base[t] = 1.0 + 0.25 * static_cast<atx::f64>(t);
+  }
+  std::vector<atx::f64> with_inf = base;
+  with_inf[kInfAt] = inf;
+  with_inf[kNegInfAt] = -inf;
+  std::vector<atx::f64> with_nan = base;
+  with_nan[kInfAt] = kTsNaN;
+  with_nan[kNegInfAt] = kTsNaN;
+
+  const auto online = [&](OpCode op, const std::vector<atx::f64> &x) {
+    std::vector<atx::f64> out(kDates, 0.0);
+    if (op == OpCode::TsSum || op == OpCode::TsMean) {
+      ts_online_sum_family(op, x, out, kDates, 0, kD, 1);
+    } else {
+      tsv_welford_dispatch(op, x, out, kDates, 0, kD, 1);
+    }
+    return out;
+  };
+  const auto batch = [&](OpCode op, const std::vector<atx::f64> &x) {
+    std::vector<atx::f64> out(kDates, 0.0);
+    std::vector<atx::f64> sort_buf(kD);
+    for (atx::usize t = 0; t < kDates; ++t) {
+      out[t] = ts_value_at(op, x, t, 0, kD, 1, sort_buf, 0.0);
+    }
+    return out;
+  };
+  const auto in_window = [](atx::usize t, atx::usize at) { return at <= t && t < at + kD; };
+
+  const std::vector<atx::f64> sum_inf = online(OpCode::TsSum, with_inf);
+  const std::vector<atx::f64> sum_nan = online(OpCode::TsSum, with_nan);
+  for (atx::usize t = 0; t < kDates; ++t) {
+    const bool gated = t + 1 < kD || in_window(t, kInfAt) || in_window(t, kNegInfAt);
+    // Plain-NaN semantics unchanged: NaN exactly on warm-up / NaN-in-window.
+    EXPECT_EQ(ts_is_nan(sum_nan[t]), gated) << "nan col t=" << t;
+    // An inf in the window yields exactly what a NaN in that slot gives.
+    EXPECT_EQ(ts_is_nan(sum_inf[t]), ts_is_nan(sum_nan[t])) << "t=" << t;
+    if (!gated) {
+      atx::f64 want = 0.0;
+      for (atx::usize k = t + 1 - kD; k <= t; ++k) {
+        want += base[k];
+      }
+      // After the inf leaves, the column recovers to the finite window sum.
+      EXPECT_EQ(sum_inf[t], want) << "t=" << t;
+      EXPECT_EQ(sum_inf[t], sum_nan[t]) << "t=" << t;
+    }
+  }
+  EXPECT_TRUE(std::isfinite(sum_inf[kInfAt + kD]));    // first cell after +inf leaves
+  EXPECT_TRUE(std::isfinite(sum_inf[kNegInfAt + kD])); // first cell after -inf leaves
+
+  // Online == batch on the inf column (sum/mean bit-exact on this exact data;
+  // the Welford variance family agrees on the NaN gate and to 1e-9 on values).
+  for (const OpCode op : {OpCode::TsSum, OpCode::TsMean}) {
+    const std::vector<atx::f64> on = online(op, with_inf);
+    const std::vector<atx::f64> ba = batch(op, with_inf);
+    for (atx::usize t = 0; t < kDates; ++t) {
+      EXPECT_TRUE((ts_is_nan(on[t]) && ts_is_nan(ba[t])) || on[t] == ba[t])
+          << "op=" << static_cast<int>(op) << " t=" << t << " online=" << on[t]
+          << " batch=" << ba[t];
+    }
+  }
+  for (const OpCode op : {OpCode::TsVar, OpCode::TsStd, OpCode::TsZscore, OpCode::TsAvDiff}) {
+    const std::vector<atx::f64> on = online(op, with_inf);
+    const std::vector<atx::f64> ba = batch(op, with_inf);
+    const std::vector<atx::f64> nan_ref = batch(op, with_nan);
+    for (atx::usize t = 0; t < kDates; ++t) {
+      ASSERT_EQ(ts_is_nan(on[t]), ts_is_nan(ba[t]))
+          << "op=" << static_cast<int>(op) << " t=" << t << " online=" << on[t]
+          << " batch=" << ba[t];
+      EXPECT_EQ(ts_is_nan(ba[t]), ts_is_nan(nan_ref[t])) << "op=" << static_cast<int>(op);
+      if (!ts_is_nan(ba[t])) {
+        EXPECT_NEAR(on[t], ba[t], 1e-9) << "op=" << static_cast<int>(op) << " t=" << t;
+      }
+    }
+    EXPECT_FALSE(ts_is_nan(on[kDates - 1])) << "op=" << static_cast<int>(op) << " never recovered";
+  }
+}
 
 }  // namespace atxtest_alpha_ts_ops_test

@@ -24,6 +24,7 @@
 #include <iterator>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -43,6 +44,21 @@
 namespace atxtest_provenance_digest {
 
 namespace fs = std::filesystem;
+
+// Resolve before recursive deletion; only this file's direct temp fixtures qualify.
+void remove_owned_test_tree(const fs::path &path, std::error_code &ec) {
+  const auto temp_root = fs::weakly_canonical(fs::temp_directory_path(), ec);
+  if (ec) { ADD_FAILURE() << ec.message(); return; }
+  const auto target = fs::weakly_canonical(path, ec);
+  if (ec || target.parent_path() != temp_root ||
+      target.filename().string().rfind("atx_provdig_", 0) != 0) {
+    ADD_FAILURE() << "refusing recursive cleanup outside owned temp fixture: " << path;
+    ec = std::make_error_code(std::errc::invalid_argument);
+    return;
+  }
+  fs::remove_all(target, ec);
+  EXPECT_FALSE(ec) << ec.message();
+}
 
 constexpr atx::i64 kDayNanos = 86400LL * 1'000'000'000LL;
 constexpr atx::i64 kDay0 = 18263LL * kDayNanos;
@@ -74,7 +90,7 @@ void write_seg_day(const fs::path &dir, int day_index, atx::i64 dn, int n_instr,
 fs::path make_partition(const char *tag, int dates = 10, int instr = 5) {
   const fs::path dir = fs::temp_directory_path() / (std::string("atx_provdig_") + tag);
   std::error_code ec;
-  fs::remove_all(dir, ec);
+  remove_owned_test_tree(dir, ec);
   fs::create_directories(dir, ec);
   for (int d = 0; d < dates; ++d) {
     const atx::i64 dn = kDay0 + static_cast<atx::i64>(d) * kDayNanos;
@@ -100,6 +116,7 @@ PanelOut run_panel_into(const std::string &seg_dir, const atx::impl::RunConfig &
   out.path =
       (fs::temp_directory_path() / (std::string("atx_provdig_out_") + tag + ".bin")).string();
   fs::remove(fs::path(out.path));
+  fs::remove(fs::path(out.path + ".manifest.json"));
   fs::remove(fs::path(out.path + ".meta.txt"));
   atx::impl::RunConfig cfg = base;
   cfg.segs = seg_dir;
@@ -115,6 +132,7 @@ PanelOut run_panel_into(const std::string &seg_dir, const atx::impl::RunConfig &
 void cleanup(const PanelOut &p) {
   std::error_code ec;
   fs::remove(fs::path(p.path), ec);
+  fs::remove(fs::path(p.path + ".manifest.json"), ec);
   fs::remove(fs::path(p.path + ".meta.txt"), ec);
 }
 
@@ -138,7 +156,7 @@ TEST(AtxImplProvenanceDigest, PanelDigestUnchangedByProvenance) {
   cleanup(a);
   cleanup(b);
   std::error_code ec;
-  fs::remove_all(seg_dir, ec);
+  remove_owned_test_tree(seg_dir, ec);
 }
 
 // ---------------------------------------------------------------------------
@@ -162,7 +180,7 @@ TEST(AtxImplProvenanceDigest, WallMsNotInPanelDigest) {
   cleanup(a);
   cleanup(b);
   std::error_code ec;
-  fs::remove_all(seg_dir, ec);
+  remove_owned_test_tree(seg_dir, ec);
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +217,7 @@ TEST(AtxImplProvenanceDigest, ConfigJsonNotInPanelDigest) {
   cleanup(a);
   cleanup(b);
   std::error_code ec;
-  fs::remove_all(seg_dir, ec);
+  remove_owned_test_tree(seg_dir, ec);
 }
 
 // ===========================================================================
@@ -263,6 +281,7 @@ atx::impl::RunConfig disc_gated_cfg(const std::string &panel_path,
                                     const std::string &alpha_out) {
   atx::impl::RunConfig cfg;
   cfg.subcommand = "discover";
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = panel_path;
   cfg.alpha_out = alpha_out;
   cfg.seed = 777ULL;
@@ -310,7 +329,7 @@ TEST(AtxImplProvenanceDigest, ConfigJsonNotInDiscoverDigest) {
     const std::string db_path =
         (fs::temp_directory_path() / (std::string("atx_provdig_disc_") + tag + ".db")).string();
     std::error_code ec0;
-    fs::remove_all(alpha_out, ec0);
+    remove_owned_test_tree(alpha_out, ec0);
     fs::remove(db_path, ec0);
 
     atx::impl::RunConfig cfg = disc_gated_cfg(panel_path, alpha_out);
@@ -328,7 +347,7 @@ TEST(AtxImplProvenanceDigest, ConfigJsonNotInDiscoverDigest) {
       out.config_json = read_run_config_json(db);
     }
 
-    fs::remove_all(alpha_out, ec0);
+    remove_owned_test_tree(alpha_out, ec0);
     fs::remove(db_path, ec0);
     return out;
   };

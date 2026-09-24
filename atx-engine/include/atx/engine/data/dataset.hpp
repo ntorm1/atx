@@ -47,6 +47,9 @@ public:
   //      (ragged rejected).
   //   4. mask, if non-empty, must be dates.size()*instruments.size() bytes of
   //      {0,1}.
+  //   5. A positive pit_delay requires an explicit date_encoding. Typed dates
+  //      must be valid and their availability dates representable. Delay uses
+  //      calendar days (24 hours for UnixNanoseconds), never trading sessions.
   //
   // Empty dates or instruments (zero-cell Dataset) is permitted as long as
   // all column vectors are also empty.
@@ -66,6 +69,18 @@ public:
   [[nodiscard]] atx::usize cells() const noexcept { return dates_.size() * instruments_.size(); }
 
   [[nodiscard]] std::span<const DateKey> dates() const noexcept { return dates_; }
+
+  // dates() plus the declared reporting delay, in the SAME explicit encoding.
+  // Opaque zero-delay datasets return the original keys unchanged.
+  [[nodiscard]] std::span<const DateKey> available_dates() const noexcept {
+    return available_dates_;
+  }
+
+  // Latest row available at decision_date. Unsorted axes or invalid typed query
+  // dates return InvalidArgument; no available observation returns an empty
+  // optional. Axis ordering is cached at construction, so lookup stays O(log D).
+  [[nodiscard]] atx::core::Result<std::optional<atx::usize>>
+  available_as_of_index(DateKey decision_date) const;
 
   [[nodiscard]] std::span<const InstKey> instruments() const noexcept { return instruments_; }
 
@@ -110,6 +125,8 @@ private:
 
   DatasetSchema schema_;
   std::vector<DateKey> dates_;
+  std::vector<DateKey> available_dates_;
+  bool dates_ascending_ = true;
   std::vector<InstKey> instruments_;
   // Owned columns; each inner vector has dates_.size()*instruments_.size() cells.
   // column() returns spans over the inner vectors — stable across Dataset moves

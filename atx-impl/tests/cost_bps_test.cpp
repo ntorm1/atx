@@ -185,6 +185,7 @@ protected:
 
         // --- Optimize ---
         atx::impl::RunConfig opt_cfg;
+        opt_cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         opt_cfg.panel         = research_path_;
         opt_cfg.combo         = combo_path;
         opt_cfg.books_out     = books_path.string();
@@ -204,6 +205,7 @@ protected:
 
         // --- Report ---
         atx::impl::RunConfig rep_cfg;
+        rep_cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         rep_cfg.panel      = research_path_;
         rep_cfg.books      = books_path.string();
         rep_cfg.report_out = report_path.string();
@@ -320,6 +322,7 @@ TEST_F(CostBpsTest, CostBpsHigherTurnoverLargerDrag)
     const fs::path whippy_books = work_dir_ / "drag_whippy_books.bin";
     {
         atx::impl::RunConfig cfg;
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel         = research_path_;
         cfg.combo         = whippy_combo_path_;
         cfg.books_out     = whippy_books.string();
@@ -336,6 +339,7 @@ TEST_F(CostBpsTest, CostBpsHigherTurnoverLargerDrag)
     const fs::path steady_books = work_dir_ / "drag_steady_books.bin";
     {
         atx::impl::RunConfig cfg;
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel         = research_path_;
         cfg.combo         = steady_combo_path_;
         cfg.books_out     = steady_books.string();

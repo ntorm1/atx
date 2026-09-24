@@ -116,6 +116,7 @@ protected:
   atx::impl::RunConfig base_cfg(const std::string& research, const std::string& combo,
                                 const std::string& books_out) {
     atx::impl::RunConfig cfg;
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel = research;
     cfg.combo = combo;
     cfg.gross = 1.0;

@@ -115,6 +115,7 @@ constexpr atx::usize kM = 6, kD = 17;
 
 [[nodiscard]] atx::impl::RunConfig base_cfg(const std::string &dir, atx::f64 p3, atx::f64 p16) {
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = make_research(std::filesystem::path(dir) / "research.bin", p3, p16);
   cfg.combo = make_combo(std::filesystem::path(dir) / "combo.bin");
   cfg.gross = 1.0;

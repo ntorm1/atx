@@ -461,6 +461,25 @@ private:
     if (cfg.min_holding_days > 0.0 && c.metrics.holding_days < cfg.min_holding_days) {
       return AdmitKind::RejectTurnover;
     }
+    // Lane 5 marginal-IC mode: mirrors AlphaGate::admit EXACTLY — the deflation
+    // screens run in the gate's order, then the marginal-IC check REPLACES the PnL
+    // corr screen (negated >= rejects an unsupplied NaN marginal_ic). Inert unless
+    // cfg.use_marginal_ic, so the default path below is byte-identical.
+    if (cfg.use_marginal_ic) {
+      if (cfg.min_dsr > 0.0 && c.defl.dsr < cfg.min_dsr) {
+        return AdmitKind::RejectDsr;
+      }
+      if (cfg.max_pbo < 1.0 && c.defl.pbo > cfg.max_pbo) {
+        return AdmitKind::RejectPbo;
+      }
+      if (cfg.require_split_stable && !c.defl.split_stable) {
+        return AdmitKind::RejectSplitUnstable;
+      }
+      if (!(c.defl.marginal_ic >= cfg.min_marginal_ic)) {
+        return AdmitKind::RejectCorrelated;
+      }
+      return AdmitKind::Accept;
+    }
     // The o(N) corr screen replaces AlphaGate's O(N) scan; worst_corr = MAX |corr|
     // over the SimHash neighbors (exact corr per neighbor). An empty pool (no admits
     // yet => corr_ unconstructed) has worst_corr = 0, matching AlphaGate's empty-pool

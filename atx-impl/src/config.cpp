@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <charconv>
+#include <cmath>
 #include <fstream>
 #include <string>
 #include <string_view>
@@ -20,6 +21,15 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
                                                 std::string_view flag,
                                                 std::string_view value) {
     using EC = atx::core::ErrorCode;
+
+    if (flag == "allow-unidentified-panels") {
+        if (value != "true" && value != "false") {
+            return atx::core::Err(EC::InvalidArgument,
+                "--allow-unidentified-panels requires true or false");
+        }
+        cfg.allow_unidentified_panels = value == "true";
+        return atx::core::Ok();
+    }
 
     // Boolean flags (value is ignored / empty for valueless booleans).
     if (flag == "help")           { cfg.help          = true; return atx::core::Ok(); }
@@ -58,6 +68,10 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "turnover-objective")  { cfg.turnover_objective   = true; return atx::core::Ok(); } // p9 S4
 
     // String flags
+    if (flag == "preparation-manifest") {
+        cfg.preparation_manifest = value;
+        return atx::core::Ok();
+    }
     if (flag == "zip")          { cfg.zip          = value; return atx::core::Ok(); }
     if (flag == "out")          { cfg.out           = value; return atx::core::Ok(); }
     if (flag == "min-date")     { cfg.min_date      = value; return atx::core::Ok(); }
@@ -65,6 +79,96 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "panel-out")    { cfg.panel_out     = value; return atx::core::Ok(); }
     if (flag == "start")        { cfg.start         = value; return atx::core::Ok(); }
     if (flag == "end")          { cfg.end           = value; return atx::core::Ok(); }
+    if (flag == "baseline-dir") {
+        if (value.empty() || value.starts_with("--")) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--baseline-dir requires a directory value");
+        }
+        cfg.equity_baseline_dir = value;
+        return atx::core::Ok();
+    }
+    if (flag == "trial-ledger") {
+        if (value.empty() || value.starts_with("--")) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--trial-ledger requires a ledger path value");
+        }
+        cfg.equity_trial_ledger = value;
+        return atx::core::Ok();
+    }
+    // Checkpoint 15 `equity-universe` flags (design §5.2): each rejects an empty or
+    // `--` value exactly as --trial-ledger does; list splitting and date validation
+    // belong to the stage.
+    if (flag == "segments-dirs" || flag == "preparation-manifests" || flag == "rank-start" ||
+        flag == "rank-end") {
+        if (value.empty() || value.starts_with("--")) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--" + std::string(flag) + " requires a value");
+        }
+        if (flag == "segments-dirs") cfg.equity_segments_dirs = value;
+        else if (flag == "preparation-manifests") cfg.equity_preparation_manifests = value;
+        else if (flag == "rank-start") cfg.equity_rank_start = value;
+        else cfg.equity_rank_end = value;
+        return atx::core::Ok();
+    }
+    // Checkpoint 16 `panel` membership-restriction flags. Only shape-free rejection
+    // here (empty / a stray `--`); cut spelling, date validity and the membership
+    // image itself are the panel stage's boundary checks.
+    if (flag == "universe-membership" || flag == "universe-cut" ||
+        flag == "universe-eval-start") {
+        if (value.empty() || value.starts_with("--")) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--" + std::string(flag) + " requires a value");
+        }
+        if (flag == "universe-membership") cfg.panel_universe_membership = value;
+        else if (flag == "universe-cut") cfg.panel_universe_cut = value;
+        else cfg.panel_universe_eval_start = value;
+        return atx::core::Ok();
+    }
+    // R21-3 `panel --asof-field <name>=<csv_path>` (repeatable, order preserved).
+    // Shape-only here: a non-empty name and path split on the FIRST '='. Identifier
+    // validity, name collisions and the CSV itself are the panel stage's checks.
+    if (flag == "asof-field") {
+        const auto eq = value.find('=');
+        if (value.starts_with("--") || eq == std::string_view::npos || eq == 0 ||
+            eq + 1 >= value.size()) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--asof-field requires <name>=<csv_path>: got '" + std::string(value) + "'");
+        }
+        cfg.panel_asof_fields.emplace_back(std::string(value.substr(0, eq)),
+                                           std::string(value.substr(eq + 1)));
+        return atx::core::Ok();
+    }
+    if (flag == "asof-max-stale-days") {
+        atx::i64 parsed = 0;
+        const auto [ptr, ec] =
+            std::from_chars(value.data(), value.data() + value.size(), parsed);
+        if (ec != std::errc{} || ptr != value.data() + value.size() || parsed < 0) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--asof-max-stale-days requires a nonnegative integer day count (0 = no cap)");
+        }
+        cfg.panel_asof_max_stale_days = parsed;
+        return atx::core::Ok();
+    }
+    if (flag == "evaluation-start" || flag == "evaluation-end") {
+        if (value.empty() || value.starts_with("--")) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--" + std::string(flag) + " requires a date value");
+        }
+        if (flag == "evaluation-start") cfg.equity_evaluation_start = value;
+        else cfg.equity_evaluation_end = value;
+        return atx::core::Ok();
+    }
+    if (flag == "max-working-bytes") {
+        atx::u64 parsed = 0;
+        const auto [ptr, ec] =
+            std::from_chars(value.data(), value.data() + value.size(), parsed);
+        if (ec != std::errc{} || ptr != value.data() + value.size() || parsed == 0) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--max-working-bytes requires a positive integer byte count");
+        }
+        cfg.equity_max_working_bytes = parsed;
+        return atx::core::Ok();
+    }
     if (flag == "panel")        { cfg.panel         = value; return atx::core::Ok(); }
     if (flag == "alpha-out")    { cfg.alpha_out     = value; return atx::core::Ok(); }
     if (flag == "run-db")       { cfg.run_db        = value; return atx::core::Ok(); }
@@ -342,9 +446,67 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
     if (flag == "si-publication-lag") return parse_long(cfg.si_publication_lag);   // S5-0 (p7 carry-forward)
     if (flag == "report-aum") {
         ATX_TRY_VOID(parse_double(cfg.report_aum));
-        if (cfg.report_aum <= 0.0) {
+        if (!std::isfinite(cfg.report_aum) || cfg.report_aum <= 0.0) {
             return atx::core::Err(EC::InvalidArgument,
-                "--report-aum must be > 0: got " + std::string(value));
+                "--report-aum must be finite and > 0: got " + std::string(value));
+        }
+        return atx::core::Ok();
+    }
+    if (flag == "replay-execution-delay") {
+        atx::usize parsed = 0;
+        const auto [ptr, ec] =
+            std::from_chars(value.data(), value.data() + value.size(), parsed);
+        if (ec != std::errc{} || ptr != value.data() + value.size()) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--replay-execution-delay requires a nonnegative observation count");
+        }
+        cfg.replay_execution_delay = parsed;
+        return atx::core::Ok();
+    }
+    if (flag == "replay-day-basis") {
+        int parsed = 0;
+        const auto [ptr, ec] =
+            std::from_chars(value.data(), value.data() + value.size(), parsed);
+        if (ec != std::errc{} || ptr != value.data() + value.size() ||
+            (parsed != 360 && parsed != 365)) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--replay-day-basis requires 360 or 365 calendar days");
+        }
+        cfg.replay_day_basis = parsed;
+        return atx::core::Ok();
+    }
+    if (flag == "min-dollar-adv") {
+        double parsed = 0.0;
+        ATX_TRY_VOID(parse_double(parsed));
+        if (!std::isfinite(parsed) || parsed < 0.0) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--min-dollar-adv requires a finite nonnegative dollar amount");
+        }
+        cfg.equity_min_dollar_adv = parsed;
+        return atx::core::Ok();
+    }
+    if (flag == "dollar-adv-window") {
+        atx::u64 parsed = 0;
+        const auto [ptr, ec] =
+            std::from_chars(value.data(), value.data() + value.size(), parsed);
+        if (ec != std::errc{} || ptr != value.data() + value.size() || parsed == 0) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--dollar-adv-window requires a positive session count");
+        }
+        cfg.equity_dollar_adv_window = static_cast<atx::usize>(parsed);
+        return atx::core::Ok();
+    }
+    if (flag == "replay-trade-bps" || flag == "replay-annual-borrow-bps") {
+        double parsed = 0.0;
+        ATX_TRY_VOID(parse_double(parsed));
+        if (!std::isfinite(parsed) || parsed < 0.0) {
+            return atx::core::Err(EC::InvalidArgument,
+                "--" + std::string(flag) + " requires a finite nonnegative rate");
+        }
+        if (flag == "replay-trade-bps") {
+            cfg.replay_trade_bps = parsed;
+        } else {
+            cfg.replay_annual_borrow_bps = parsed;
         }
         return atx::core::Ok();
     }
@@ -388,6 +550,21 @@ static atx::core::Result<void> apply_flag(RunConfig& cfg,
     auto r = apply_flag_value(cfg, flag, value);
     if (!r) return r;
     cfg.set_flags.emplace(flag);
+    return atx::core::Ok();
+}
+
+// ---------------------------------------------------------------------------
+// validate_membership_flags
+// ---------------------------------------------------------------------------
+atx::core::Status validate_membership_flags(const RunConfig& cfg) {
+    const int supplied = (cfg.panel_universe_membership.empty() ? 0 : 1)
+                       + (cfg.panel_universe_cut.empty() ? 0 : 1)
+                       + (cfg.panel_universe_eval_start.empty() ? 0 : 1);
+    if (supplied != 0 && supplied != 3) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+            "--universe-membership, --universe-cut and --universe-eval-start must be "
+            "supplied together");
+    }
     return atx::core::Ok();
 }
 
@@ -456,6 +633,10 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
         return atx::core::Err(EC::InvalidArgument,
             "--resume requires --run-db");
     }
+
+    // Cross-flag validation: the panel membership restriction is all-three-or-none.
+    // A partial set would silently pick a cut or a window the operator never named.
+    ATX_TRY_VOID(validate_membership_flags(cfg));
 
     return atx::core::Ok(cfg);
 }

@@ -1,13 +1,19 @@
+#include <array>
+#include <bit>
 #include <cmath>
 #include <filesystem>
+#include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "atx/engine/alpha/segment_panel.hpp"
 #include "atx/engine/data/history_panel.hpp"
 #include "atx/engine/data/orats_history.hpp"   // kOratsFields
+#include "atx/tsdb/builder.hpp"
 #include "atx/tsdb/load_parquet.hpp"
 
 namespace {
@@ -118,4 +124,384 @@ TEST(DataHistoryPanel, OptionsEarningsFieldsPresentAndFinite) {
     if (std::isfinite(v)) { found_finite = true; break; }
   }
   EXPECT_TRUE(found_finite) << "atmCenI_21d has no finite value — data did not flow through";
+}
+
+namespace {
+
+struct RawHistoryBar {
+  atx::f64 open;
+  atx::f64 high;
+  atx::f64 low;
+  atx::f64 close;
+  atx::f64 factor;
+  atx::f64 volume;
+  atx::f64 shares;
+};
+
+void write_price_day(const fs::path &dir, const char *name, atx::i64 day,
+                     const RawHistoryBar &bar) {
+  atx::tsdb::LongColumns cols;
+  cols.field_names.assign(kOratsFields.begin(), kOratsFields.end());
+  cols.times = {day_nanos(day)};
+  cols.symbols = {"7"};
+  cols.values.assign(kOratsFields.size(), std::vector<atx::f64>(1, 0.0));
+  cols.values[0][0] = bar.open;
+  cols.values[1][0] = bar.high;
+  cols.values[2][0] = bar.low;
+  cols.values[3][0] = bar.close;
+  cols.values[6][0] = bar.volume;
+  cols.values[7][0] = bar.shares;
+  cols.values[10][0] = bar.factor;
+  ASSERT_TRUE(atx::tsdb::build_from_long(cols, (dir / name).string(), 0).has_value());
+}
+
+HistoryDataConfig price_config(const fs::path &dir) {
+  HistoryDataConfig cfg;
+  cfg.seg_dir = dir.string();
+  cfg.universe.min_adv_usd = 0.0;
+  cfg.universe.adv_window = 1;
+  return cfg;
+}
+
+std::span<const atx::f64> field(const alpha::Panel &panel, std::string_view name) {
+  return panel.field_all(panel.field_id(name).value());
+}
+
+} // namespace
+
+TEST(DataHistoryPanel, CanonicalOhlcShareFactorWhileRawEconomicsRemain) {
+  const fs::path dir = fs::temp_directory_path() / "atx_hist_panel_basis";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  write_price_day(dir, "2020-01-02.seg", 18263,
+                  RawHistoryBar{96.0, 108.0, 92.0, 100.0, 0.25, 2000.0, 100.0});
+  HistoryDataConfig cfg = price_config(dir);
+  // All three screens pass on raw economics but would fail on adjusted prices.
+  cfg.universe.min_price = 90.0;
+  cfg.universe.min_mktcap_usd = 9000.0;
+  cfg.universe.min_adv_usd = 150'000.0;
+  const auto built = build_history_panel(cfg);
+  ASSERT_TRUE(built.has_value()) << built.error().to_string();
+  const alpha::Panel &panel = built->panel;
+  EXPECT_EQ(panel.num_fields(), 12U);
+  EXPECT_TRUE(panel.in_universe(0, 0));
+  EXPECT_DOUBLE_EQ(field(panel, "open")[0], 24.0);
+  EXPECT_DOUBLE_EQ(field(panel, "high")[0], 27.0);
+  EXPECT_DOUBLE_EQ(field(panel, "low")[0], 23.0);
+  EXPECT_DOUBLE_EQ(field(panel, "close")[0], 25.0);
+  EXPECT_DOUBLE_EQ(field(panel, "raw_close")[0], 100.0);
+  EXPECT_DOUBLE_EQ(field(panel, "volume")[0], 2000.0);
+  EXPECT_DOUBLE_EQ(field(panel, "market_cap")[0], 10'000.0);
+
+  const std::array<std::string, 6> source_fields{
+      "open", "high", "low", "close", "volume", "shares"};
+  const auto source = alpha::attach_multi_segment_panel(cfg.seg_dir, cfg.window, source_fields);
+  ASSERT_TRUE(source.has_value()) << source.error().to_string();
+  EXPECT_DOUBLE_EQ(field(*source, "open")[0], 96.0);
+  EXPECT_DOUBLE_EQ(field(*source, "high")[0], 108.0);
+  EXPECT_DOUBLE_EQ(field(*source, "low")[0], 92.0);
+  EXPECT_DOUBLE_EQ(field(*source, "close")[0], 100.0);
+  EXPECT_DOUBLE_EQ(field(*source, "volume")[0], 2000.0);
+  EXPECT_DOUBLE_EQ(field(*source, "shares")[0], 100.0);
+}
+
+TEST(DataHistoryPanel, SplitContinuityCoversEntireResearchCandle) {
+  const fs::path dir = fs::temp_directory_path() / "atx_hist_panel_split";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  // Pure four-for-one split with unchanged economic value and candle shape.
+  write_price_day(dir, "2020-01-02.seg", 18263,
+                  RawHistoryBar{390.0, 420.0, 380.0, 400.0, 0.25, 100.0, 1e6});
+  write_price_day(dir, "2020-01-03.seg", 18264,
+                  RawHistoryBar{97.5, 105.0, 95.0, 100.0, 1.0, 400.0, 4e6});
+  const auto built = build_history_panel(price_config(dir));
+  ASSERT_TRUE(built.has_value()) << built.error().to_string();
+  const alpha::Panel &panel = built->panel;
+  const std::array<std::string_view, 4> names{"open", "high", "low", "close"};
+  for (const auto name : names) {
+    const auto values = field(panel, name);
+    EXPECT_DOUBLE_EQ(values[0], values[1]) << name;
+  }
+  EXPECT_DOUBLE_EQ(field(panel, "close")[1] / field(panel, "close")[0] - 1.0, 0.0);
+  EXPECT_DOUBLE_EQ(field(panel, "volume")[0], 100.0);
+  EXPECT_DOUBLE_EQ(field(panel, "volume")[1], 400.0);
+  EXPECT_DOUBLE_EQ(field(panel, "market_cap")[0], 4e8);
+  EXPECT_DOUBLE_EQ(field(panel, "market_cap")[1], 4e8);
+}
+
+TEST(DataHistoryPanel, DividendFactorPreservesCandleRatiosAndRawSharesVolume) {
+  const fs::path dir = fs::temp_directory_path() / "atx_hist_panel_dividend";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  // One-dollar cash distribution: 125 becomes 124, with no total-return change.
+  // The source factor changes by 125/124; no split of shares/volume has occurred.
+  write_price_day(dir, "2020-01-02.seg", 18263,
+                  RawHistoryBar{124.0, 128.0, 122.0, 125.0, 1.0, 7000.0, 2e6});
+  write_price_day(dir, "2020-01-03.seg", 18264,
+                  RawHistoryBar{123.0, 127.0, 121.0, 124.0, 125.0 / 124.0, 9000.0, 2e6});
+  const auto built = build_history_panel(price_config(dir));
+  ASSERT_TRUE(built.has_value()) << built.error().to_string();
+  const alpha::Panel &panel = built->panel;
+  const atx::f64 close = field(panel, "close")[1];
+  EXPECT_NEAR(close, 125.0, 1e-12);
+  EXPECT_NEAR(close / field(panel, "close")[0] - 1.0, 0.0, 1e-15);
+  EXPECT_NEAR(field(panel, "open")[1] / close, 123.0 / 124.0, 1e-15);
+  EXPECT_NEAR(field(panel, "high")[1] / close, 127.0 / 124.0, 1e-15);
+  EXPECT_NEAR(field(panel, "low")[1] / close, 121.0 / 124.0, 1e-15);
+  EXPECT_DOUBLE_EQ(field(panel, "raw_close")[1], 124.0);
+  EXPECT_DOUBLE_EQ(field(panel, "volume")[0], 7000.0);
+  EXPECT_DOUBLE_EQ(field(panel, "volume")[1], 9000.0);
+  EXPECT_DOUBLE_EQ(field(panel, "market_cap")[0], 250e6);
+  EXPECT_DOUBLE_EQ(field(panel, "market_cap")[1], 248e6);
+}
+
+TEST(DataHistoryPanel, InvalidFactorsAreGapsForEveryResearchPrice) {
+  const fs::path dir = fs::temp_directory_path() / "atx_hist_panel_invalid_factor";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  const std::array<atx::f64, 5> factors{
+      0.0, -1.0, std::numeric_limits<atx::f64>::infinity(),
+      std::numeric_limits<atx::f64>::quiet_NaN(), 2.0};
+  const std::array<const char *, 5> dates{
+      "2020-01-02.seg", "2020-01-03.seg", "2020-01-04.seg", "2020-01-05.seg",
+      "2020-01-06.seg"};
+  for (atx::usize i = 0; i < factors.size(); ++i) {
+    write_price_day(dir, dates[i], 18263 + static_cast<atx::i64>(i),
+                    RawHistoryBar{99.0, 102.0, 98.0, 100.0, factors[i], 2000.0, 100.0});
+  }
+  const auto built = build_history_panel(price_config(dir));
+  ASSERT_TRUE(built.has_value()) << built.error().to_string();
+  const std::array<std::string_view, 4> names{"open", "high", "low", "close"};
+  for (const auto name : names) {
+    const auto prices = field(built->panel, name);
+    for (atx::usize i = 0; i < 4; ++i) {
+      EXPECT_TRUE(std::isnan(prices[i])) << name << " row=" << i;
+    }
+    EXPECT_TRUE(std::isfinite(prices[4]));
+  }
+  EXPECT_DOUBLE_EQ(field(built->panel, "close")[4], 200.0);
+  EXPECT_DOUBLE_EQ(field(built->panel, "raw_close")[0], 100.0);
+  EXPECT_DOUBLE_EQ(field(built->panel, "volume")[0], 2000.0);
+  EXPECT_DOUBLE_EQ(field(built->panel, "market_cap")[0], 10'000.0);
+}
+
+TEST(DataHistoryPanel, InvalidPricesAndUnrepresentableProductsNeverBecomeValidPrices) {
+  const atx::f64 nan = std::numeric_limits<atx::f64>::quiet_NaN();
+  const atx::f64 inf = std::numeric_limits<atx::f64>::infinity();
+  const std::array<atx::f64, 7> prices{
+      -2.0, 0.0, nan, inf, std::numeric_limits<atx::f64>::max(),
+      std::numeric_limits<atx::f64>::denorm_min(), 101.0};
+  const std::array<atx::f64, 7> factors{-3.0, 1.0, 1.0, 1.0, 2.0, 0.5, 0.5};
+  const auto adjusted = orats_total_return_close(prices, factors);
+  ASSERT_EQ(adjusted.size(), prices.size());
+  for (atx::usize i = 0; i < 6; ++i) {
+    EXPECT_TRUE(std::isnan(adjusted[i])) << "row=" << i;
+  }
+  EXPECT_DOUBLE_EQ(adjusted.back(), 50.5);
+  const auto mismatched = orats_total_return_close(
+      prices, std::span<const atx::f64>{factors}.first(1));
+  EXPECT_TRUE(mismatched.empty());
+}
+
+TEST(IndexedHistoryPanel, ActualTimesDetermineAxesAndSelectedSources) {
+  const fs::path dir = fs::temp_directory_path() / "atx_hist_indexed_order";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  // Lexical filename order is the reverse of chronological order.
+  write_day(dir, "a_later.seg", day_nanos(18264), {"333", "1001001001070"},
+            {22.0, 12.0}, {1.0, 1.0}, {100.0, 100.0});
+  write_day(dir, "z_earlier.seg", day_nanos(18263), {"1001001001070", "222"},
+            {10.0, 20.0}, {1.0, 1.0}, {100.0, 100.0});
+  write_day(dir, "outside.seg", day_nanos(18262), {"ignored"}, {1.0}, {1.0}, {1.0});
+  const alpha::TimeWindow window{day_nanos(18263), day_nanos(18265)};
+  const auto indexed = alpha::attach_indexed_multi_segment_panel(dir.string(), window);
+  ASSERT_TRUE(indexed.has_value()) << indexed.error().to_string();
+  EXPECT_EQ(indexed->session_keys, (std::vector<atx::i64>{day_nanos(18263), day_nanos(18264)}));
+  EXPECT_EQ(indexed->instrument_ids, (std::vector<std::string>{"1001001001070", "222", "333"}));
+  EXPECT_EQ(indexed->source_segment_paths,
+            (std::vector<std::string>{(dir / "a_later.seg").string(), (dir / "z_earlier.seg").string()}));
+  const auto close = field(indexed->panel, "close");
+  EXPECT_DOUBLE_EQ(close[0], 10.0);
+  EXPECT_DOUBLE_EQ(close[1], 20.0);
+  EXPECT_TRUE(std::isnan(close[2]));
+  EXPECT_DOUBLE_EQ(close[3], 12.0);
+  EXPECT_TRUE(std::isnan(close[4]));
+  EXPECT_DOUBLE_EQ(close[5], 22.0);
+
+  const auto legacy = alpha::attach_multi_segment_panel(dir.string(), window);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  const auto legacy_close = field(*legacy, "close");
+  for (atx::usize i = 0; i < close.size(); ++i) {
+    EXPECT_EQ(std::bit_cast<atx::u64>(close[i]), std::bit_cast<atx::u64>(legacy_close[i]));
+  }
+}
+
+TEST(IndexedHistoryPanel, DisjointSameTimeCellsMergeWithoutPaddingOverwrite) {
+  const fs::path dir = fs::temp_directory_path() / "atx_hist_indexed_padding";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  atx::tsdb::SegmentBuilder first({"close"}, {"A", "B"}, {10, 20});
+  first.set(0, 0, 0, 10.0); // A on first date
+  first.set(0, 1, 1, 21.0); // B on second date
+  ASSERT_TRUE(first.write((dir / "a.seg").string(), 0).has_value());
+  atx::tsdb::SegmentBuilder second({"close"}, {"B", "A"}, {10, 20});
+  second.set(0, 0, 0, 20.0); // B on first date; A is absent padding
+  second.set(0, 1, 1, 11.0); // A on second date; B is absent padding
+  ASSERT_TRUE(second.write((dir / "b.seg").string(), 0).has_value());
+  const auto indexed = alpha::attach_indexed_multi_segment_panel(dir.string());
+  ASSERT_TRUE(indexed.has_value()) << indexed.error().to_string();
+  EXPECT_EQ(indexed->session_keys, (std::vector<atx::i64>{10, 20}));
+  EXPECT_EQ(indexed->instrument_ids, (std::vector<std::string>{"A", "B"}));
+  const auto close = field(indexed->panel, "close");
+  const std::array<atx::f64, 4> expected{10.0, 20.0, 11.0, 21.0};
+  for (atx::usize k = 0; k < expected.size(); ++k) {
+    EXPECT_DOUBLE_EQ(close[k], expected[k]);
+    EXPECT_TRUE(indexed->panel.in_universe(k / 2, k % 2));
+  }
+}
+
+TEST(IndexedHistoryPanel, DuplicatePresentCellsRejectEvenWhenValuesMatchAndUniverseIsZero) {
+  const fs::path dir = fs::temp_directory_path() / "atx_hist_indexed_duplicate";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  atx::tsdb::SegmentBuilder source({"close", "universe"}, {"A"}, {10});
+  source.set(0, 0, 0, 100.0);
+  source.set(1, 0, 0, 0.0); // source observation exists despite exclusion from universe
+  ASSERT_TRUE(source.write((dir / "a.seg").string(), 0).has_value());
+  ASSERT_TRUE(source.write((dir / "b.seg").string(), 0).has_value());
+  const alpha::UniversePolicy policy{alpha::UniverseKind::Field, "universe"};
+  const auto indexed = alpha::attach_indexed_multi_segment_panel(dir.string(), {}, {}, policy);
+  ASSERT_FALSE(indexed.has_value());
+  EXPECT_EQ(indexed.error().code(), atx::core::ErrorCode::InvalidArgument);
+  EXPECT_NE(indexed.error().to_string().find("duplicate cell"), std::string::npos);
+  const auto legacy = alpha::attach_multi_segment_panel(dir.string(), {}, {}, policy);
+  EXPECT_FALSE(legacy.has_value());
+}
+
+TEST(IndexedHistoryPanel, InvalidSourceTimeAxesAreRejectedBeforeSorting) {
+  const fs::path dir = fs::temp_directory_path() / "atx_hist_indexed_bad_time";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  for (const auto &times : {std::vector<atx::i64>{20, 10}, std::vector<atx::i64>{10, 10}}) {
+    atx::tsdb::SegmentBuilder source({"close"}, {"A"}, times);
+    source.set(0, 0, 0, 100.0);
+    source.set(0, 1, 0, 101.0);
+    ASSERT_TRUE(source.write((dir / "invalid.seg").string(), 0).has_value());
+    const auto indexed = alpha::attach_indexed_multi_segment_panel(dir.string());
+    ASSERT_FALSE(indexed.has_value());
+    EXPECT_EQ(indexed.error().code(), atx::core::ErrorCode::InvalidArgument);
+  }
+}
+
+TEST(DataHistoryPanel, IdentityAndNonPrefixCompactionPreserveLargeSecurityIds) {
+  const fs::path dir = fs::temp_directory_path() / "atx_hist_compact_identity";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  write_day(dir, "2020-01-02.seg", day_nanos(18263), {"12", "1001001001070", "33"},
+            {0.5, 100.0, 0.25}, {1.0, 0.5, 1.0}, {100.0, 100.0, 100.0});
+  write_day(dir, "2020-01-03.seg", day_nanos(18264), {"33", "1001001001070", "44"},
+            {0.25, 101.0, 200.0}, {1.0, 0.5, 1.0}, {100.0, 100.0, 100.0});
+  auto cfg = price_config(dir);
+  cfg.universe.min_price = 1.0;
+  const auto full = build_history_panel(cfg);
+  ASSERT_TRUE(full.has_value()) << full.error().to_string();
+  EXPECT_EQ(full->instrument_ids, (std::vector<std::string>{"12", "1001001001070", "33", "44"}));
+  EXPECT_EQ(full->original_instrument_indices, (std::vector<atx::usize>{0, 1, 2, 3}));
+
+  cfg.compact_to_universe = true;
+  const auto compact = build_history_panel(cfg);
+  ASSERT_TRUE(compact.has_value()) << compact.error().to_string();
+  EXPECT_EQ(compact->session_keys, (std::vector<atx::i64>{day_nanos(18263), day_nanos(18264)}));
+  EXPECT_EQ(compact->instrument_ids, (std::vector<std::string>{"1001001001070", "44"}));
+  EXPECT_EQ(compact->original_instrument_indices, (std::vector<atx::usize>{1, 3}));
+  EXPECT_EQ(compact->source_segment_paths, full->source_segment_paths);
+  ASSERT_EQ(compact->panel.instruments(), 2u);
+  // Every field and mask cell follows precisely the retained source column.
+  for (atx::usize f = 0; f < compact->panel.num_fields(); ++f) {
+    const auto small = compact->panel.field_all(static_cast<alpha::FieldId>(f));
+    const auto large = full->panel.field_all(static_cast<alpha::FieldId>(f));
+    for (atx::usize d = 0; d < 2; ++d) {
+      for (atx::usize i = 0; i < 2; ++i) {
+        const auto original = compact->original_instrument_indices[i];
+        EXPECT_EQ(std::bit_cast<atx::u64>(small[d * 2 + i]),
+                  std::bit_cast<atx::u64>(large[d * 4 + original]));
+        EXPECT_EQ(compact->panel.in_universe(d, i), full->panel.in_universe(d, original));
+      }
+    }
+  }
+  EXPECT_DOUBLE_EQ(field(compact->panel, "close")[0], 50.0);
+  EXPECT_TRUE(std::isnan(field(compact->panel, "close")[1]));
+  EXPECT_DOUBLE_EQ(field(compact->panel, "close")[3], 200.0);
+}
+
+TEST(DataHistoryPanel, NoncanonicalOrUnrepresentableSecurityIdsFailAtHistoryBoundary) {
+  const fs::path dir = fs::temp_directory_path() / "atx_hist_invalid_identity";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  for (const char *id : {"0", "-1", "0012", "12x", "9223372036854775808"}) {
+    write_day(dir, "2020-01-02.seg", day_nanos(18263), {id}, {100.0}, {1.0}, {100.0});
+    const auto built = build_history_panel(price_config(dir));
+    ASSERT_FALSE(built.has_value()) << id;
+    EXPECT_EQ(built.error().code(), atx::core::ErrorCode::InvalidArgument);
+  }
+}
+
+TEST(DataHistoryPanel, MembershipAllowListRestrictsColumnsAndEmptyListIsOff) {
+  const fs::path dir = fs::temp_directory_path() / "atx_hist_allow_ids";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  write_day(dir, "2020-01-02.seg", day_nanos(18263), {"12", "34", "56"},
+            {10.0, 20.0, 30.0}, {1.0, 1.0, 1.0}, {100.0, 100.0, 100.0});
+  write_day(dir, "2020-01-03.seg", day_nanos(18264), {"12", "34", "56"},
+            {11.0, 21.0, 31.0}, {1.0, 1.0, 1.0}, {100.0, 100.0, 100.0});
+  auto cfg = price_config(dir);
+  cfg.compact_to_universe = true;
+
+  // Baseline: the screen alone keeps all three columns.
+  const auto baseline = build_history_panel(cfg);
+  ASSERT_TRUE(baseline.has_value()) << baseline.error().to_string();
+  EXPECT_EQ(baseline->instrument_ids, (std::vector<std::string>{"12", "34", "56"}));
+  EXPECT_EQ(baseline->allow_list_excluded_columns, atx::usize{0});
+
+  // An explicitly EMPTY allow-list is off: same kept count, same digest.
+  cfg.allow_ids = {};
+  const auto unrestricted = build_history_panel(cfg);
+  ASSERT_TRUE(unrestricted.has_value()) << unrestricted.error().to_string();
+  EXPECT_EQ(unrestricted->digest, baseline->digest);
+  EXPECT_EQ(unrestricted->instrument_ids, baseline->instrument_ids);
+  EXPECT_EQ(unrestricted->allow_list_excluded_columns, atx::usize{0});
+
+  // Restricting to {12, 56} drops "34", which the screen alone would have kept.
+  // The input is deliberately unsorted and duplicated: order must not matter.
+  cfg.allow_ids = {56, 12, 12};
+  const auto restricted = build_history_panel(cfg);
+  ASSERT_TRUE(restricted.has_value()) << restricted.error().to_string();
+  EXPECT_EQ(restricted->allow_list_excluded_columns, atx::usize{1});
+  EXPECT_EQ(restricted->instrument_ids, (std::vector<std::string>{"12", "56"}));
+  EXPECT_EQ(restricted->original_instrument_indices, (std::vector<atx::usize>{0, 2}));
+  ASSERT_EQ(restricted->panel.instruments(), 2u);
+  for (atx::usize d = 0; d < 2; ++d) {
+    EXPECT_TRUE(restricted->panel.in_universe(d, 0));
+    EXPECT_TRUE(restricted->panel.in_universe(d, 1));
+  }
+  // Retained columns carry precisely their source cells.
+  EXPECT_DOUBLE_EQ(field(restricted->panel, "close")[0], 10.0);
+  EXPECT_DOUBLE_EQ(field(restricted->panel, "close")[1], 30.0);
+
+  // Without compaction the restriction still removes membership on every date.
+  cfg.compact_to_universe = false;
+  const auto masked = build_history_panel(cfg);
+  ASSERT_TRUE(masked.has_value()) << masked.error().to_string();
+  ASSERT_EQ(masked->panel.instruments(), 3u);
+  for (atx::usize d = 0; d < 2; ++d) {
+    EXPECT_TRUE(masked->panel.in_universe(d, 0));
+    EXPECT_FALSE(masked->panel.in_universe(d, 1));
+    EXPECT_TRUE(masked->panel.in_universe(d, 2));
+  }
+
+  // An allow-list matching no column fails loudly instead of emptying the panel.
+  cfg.allow_ids = {999};
+  const auto none = build_history_panel(cfg);
+  ASSERT_FALSE(none.has_value());
+  EXPECT_EQ(none.error().code(), atx::core::ErrorCode::InvalidArgument);
 }

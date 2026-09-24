@@ -351,6 +351,7 @@ TEST(MetabookStageBoundary, SingleSleeveByteIdenticalToStageOptimizeBook) {
   ASSERT_TRUE(combo_r.has_value()) << (combo_r ? "" : combo_r.error().message());
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = *research_r;
   cfg.combo = *combo_r;
   cfg.gross = 1.0;
@@ -677,6 +678,7 @@ TEST(MetabookCloseBattery, TwiceRunStageKvsByteIdentical) {
   ASSERT_TRUE(combo_r.has_value());
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = *research_r;
   cfg.combo = *combo_r;
   cfg.gross = 1.0;
@@ -740,6 +742,7 @@ TEST(MetabookCloseBattery, MultiSleeveByCorrClusterReachesTheStageEndToEnd) {
   ASSERT_TRUE(facade.flush_all().has_value());
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = *research_r;
   cfg.combo = *combo_r;
   cfg.library_dir = lib_dir;

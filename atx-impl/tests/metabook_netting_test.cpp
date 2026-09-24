@@ -339,6 +339,7 @@ TEST(MetabookNetting, StageKvsSurfacesNettingTelemetrySingleSleeveNoCrossing) {
   ASSERT_TRUE(combo_r.has_value());
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = *research_r;
   cfg.combo = *combo_r;
   cfg.gross = 1.0;

@@ -235,6 +235,7 @@ protected:
         fs::create_directories(report_dir, ec);
 
         atx::impl::RunConfig cfg;
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel      = research_path_;
         cfg.books      = books_path_;
         cfg.report_out = report_dir.string();
@@ -366,6 +367,7 @@ TEST_F(ReportCapacity, ExistingSummaryPrefixUnchanged)
         fs::create_directories(report_b, ec);
     }
     atx::impl::RunConfig cfg_b;
+    cfg_b.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg_b.panel      = research_path_;
     cfg_b.books      = books_path_;
     cfg_b.report_out = report_b.string();
@@ -408,6 +410,7 @@ TEST_F(ReportCapacity, ExistingSummaryPrefixUnchanged)
         fs::create_directories(report_c, ec);
     }
     atx::impl::RunConfig cfg_c;
+    cfg_c.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg_c.panel      = research_path_;
     cfg_c.books      = books_path_;
     cfg_c.report_out = report_c.string();

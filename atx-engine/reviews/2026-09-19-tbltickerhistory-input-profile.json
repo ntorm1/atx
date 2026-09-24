@@ -1,0 +1,73 @@
+{
+  "source_path": "C:\\Users\\natha\\Downloads\\tbltickerhistory3_10y.zip",
+  "source_size_bytes": 3542506361,
+  "source_sha256": "7d2b7a615a08ef3b8686608eda384c4e30e2ce23bdee294ea141b3c9334acd8f",
+  "member": {
+    "name": "tbltickerhistory3_10y.txt",
+    "compressed_bytes": 3542506173,
+    "uncompressed_bytes": 11084562320,
+    "crc32": "15b6e051"
+  },
+  "rows": 31598499,
+  "columns": 71,
+  "date_min": "2012-03-26",
+  "date_max": "2026-06-15",
+  "date_count": 3576,
+  "unique_security_id_text_count": 24959,
+  "counts": {
+    "blank_ticker_rows": 892,
+    "zero_id_rows": 351651,
+    "positive_duplicate_rows": 489,
+    "conflicting_duplicate_rows": 489
+  },
+  "first_100000_numeric_profile": {
+    "rows": 100000,
+    "positive_id_rows": 99674,
+    "ohlc_order_violations": 6,
+    "low_negative": 130,
+    "shares_zero": 148,
+    "volume_zero": 2
+  },
+  "recent_numeric_start": "2026-04-01",
+  "recent_numeric_profile": {
+    "rows": 626602,
+    "positive_id_rows": 623400,
+    "ohlc_order_violations": 4336,
+    "shares_zero": 38518,
+    "volume_zero": 383,
+    "open_zero": 2
+  },
+  "elapsed_seconds": 158.04700000000594,
+  "method": "Python stdlib zipfile stream; 8MiB chunks; one date of duplicate rows; SHA256 and member CRC verified; no extraction",
+  "full_profile_path": "C:\\atx\\build-equity\\audits\\tbltickerhistory-input-profile.json",
+  "full_profile_sha256": "81bbf3d12001a6a431f078677f13ce8eeffb4fb5bd83e8c4c0f1957ec8f35223",
+  "profiler_path": "C:\\atx\\build-equity\\audits\\profile_tickerhistory.py",
+  "profiler_sha256": "d67536e6dd5f4ed3ef88dc8d7788591ba279c5697211bcca9288a22c194c7a33",
+  "positive_duplicate_date_count": 267,
+  "positive_duplicate_security_id_count": 300,
+  "latest_positive_duplicate_date": "2026-06-08",
+  "candidate_window": {
+    "start": "2026-05-01",
+    "end": "2026-06-15",
+    "rows": 375746,
+    "sessions": 31,
+    "positive_duplicate_dates": {
+      "2026-05-04": 1,
+      "2026-05-18": 4,
+      "2026-05-26": 2,
+      "2026-05-27": 2,
+      "2026-06-01": 1,
+      "2026-06-08": 6
+    },
+    "accepted": false,
+    "reason": "Positive securityID/date conflicts; native strict loader must reject"
+  },
+  "clean_tail": {
+    "start": "2026-06-09",
+    "end": "2026-06-15",
+    "rows": 61181,
+    "sessions": 5,
+    "positive_duplicate_rows": 0,
+    "limitation": "Insufficient 21-session liquidity warmup"
+  }
+}

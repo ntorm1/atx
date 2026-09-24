@@ -33,6 +33,8 @@
 #include "diag_risk.hpp"      // diagonal_risk_model (the shared S5/S6 diagonal model)
 #include "research_sim.hpp"   // frictionless_sim (shared atx-impl helper)
 #include "serialize_panel.hpp" // read_panel / write_panel
+#include "panel_pipeline.hpp"
+#include "atx/core/sha256.hpp"
 #include "stage_riskmodel.hpp" // build_risk_model (S1, frozen)
 
 namespace atx::impl {
@@ -423,15 +425,17 @@ build_metabook_result(const RunConfig &cfg, const MetaBookStageConfig &scfg_in) 
   return build_metabook_result(cfg, scfg_in, risk_cfg);
 }
 
-atx::core::Result<fund::MetaBookResult>
-build_metabook_result(const RunConfig &cfg, const MetaBookStageConfig &scfg_in,
-                      const risk::RiskModelConfig &risk_cfg) {
+static atx::core::Result<fund::MetaBookResult>
+build_metabook_from_inputs(const RunConfig &cfg, const MetaBookStageConfig &scfg_in,
+                          const risk::RiskModelConfig &risk_cfg,
+                          const PipelinePanel& research_input, const PipelinePanel& combo_input) {
   if (cfg.panel.empty() || cfg.combo.empty()) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "metabook: --panel and --combo required");
   }
-  ATX_TRY(auto research, read_panel(cfg.panel));
-  ATX_TRY(auto combo, read_panel(cfg.combo));
+  ATX_TRY_VOID(require_pipeline_parent(combo_input, research_input, "research"));
+  const auto& research = research_input.panel;
+  const auto& combo = combo_input.panel;
   if (combo.num_fields() < 1) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "metabook: combo panel must have at least one field");
@@ -632,6 +636,14 @@ build_metabook_result(const RunConfig &cfg, const MetaBookStageConfig &scfg_in,
   return mb.run(sched, sources_at, model_at, returns_at, cost);
 }
 
+atx::core::Result<fund::MetaBookResult>
+build_metabook_result(const RunConfig &cfg, const MetaBookStageConfig &scfg_in,
+                     const risk::RiskModelConfig &risk_cfg) {
+  ATX_TRY(auto research, read_pipeline_panel(cfg.panel, cfg.allow_unidentified_panels));
+  ATX_TRY(auto combo, read_pipeline_panel(cfg.combo, cfg.allow_unidentified_panels));
+  return build_metabook_from_inputs(cfg, scfg_in, risk_cfg, research, combo);
+}
+
 // S2 (p9): the 2-arg overload is now a thin cfg.risk_model-aware forwarder (mirroring
 // stage_optimize.cpp's run_optimize seam). risk_model=="diagonal" (default) => RiskModelConfig{}
 // (kind==Diagonal) => byte-identical to every pre-S2 caller. dead_alpha_factors IS copied
@@ -651,7 +663,12 @@ atx::core::Result<StageResult> run_metabook(const RunConfig &cfg, const MetaBook
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "metabook: --panel, --combo, and --out required");
   }
-  ATX_TRY(auto result, build_metabook_result(cfg, scfg, risk_cfg));
+  ATX_TRY(auto research_input, read_pipeline_panel(cfg.panel, cfg.allow_unidentified_panels));
+  ATX_TRY(auto combo_input, read_pipeline_panel(cfg.combo, cfg.allow_unidentified_panels));
+  ATX_TRY(auto output_guard,
+          reserve_pipeline_output(cfg.books_out, research_input.identity.has_value()));
+  ATX_TRY(auto result,
+          build_metabook_from_inputs(cfg, scfg, risk_cfg, research_input, combo_input));
 
   const atx::usize S = result.fund_books.size();
   const atx::usize M = (S > 0) ? result.fund_books[0].size() : 0U;
@@ -663,7 +680,15 @@ atx::core::Result<StageResult> run_metabook(const RunConfig &cfg, const MetaBook
 
   std::vector<std::uint8_t> uni(S * M, 1U);
   ATX_TRY(auto cpanel, alpha::Panel::create(S, M, {"weight"}, {flat}, uni));
-  ATX_TRY(auto digest, write_panel(cpanel, cfg.books_out));
+  const atx::usize step = cfg.rebalance == "daily" ? 1U : 5U;
+  std::vector<atx::usize> periods;
+  for (atx::usize d = 0; d < research_input.panel.dates(); d += step) {
+    periods.push_back(d);
+  }
+  if (periods.size() != S) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "metabook: realized book schedule mismatch");
+  }
 
   // Sidecar .meta.txt: a drop-in for stage_report per the sprint's run_all seam note, plus
   // the S2-3 netting telemetry per period (surfaced here too for offline inspection; the
@@ -679,11 +704,25 @@ atx::core::Result<StageResult> run_metabook(const RunConfig &cfg, const MetaBook
     mf << "instruments=" << M << '\n';
     mf << "sleeves=" << result.sleeve_results.size() << '\n';
     for (atx::usize s = 0; s < S; ++s) {
-      mf << "s=" << s << " turnover_net=" << result.report.turnover_net[s]
+      mf << "s=" << s << " period=" << periods[s]
+         << " turnover=" << result.report.turnover_net[s] << " cost_bps=0"
+         << " turnover_net=" << result.report.turnover_net[s]
          << " turnover_gross=" << result.report.turnover_gross[s]
          << " crossing_benefit_bps=" << result.report.crossing_benefit_bps[s] << '\n';
     }
+    mf.close();
+    if (!mf) {
+      return atx::core::Err(atx::core::ErrorCode::IoError,
+                            "metabook: schedule sidecar write failed");
+    }
   }
+  std::vector<PanelParent> parents;
+  if (research_input.identity) {
+    ATX_TRY(auto schedule_hash, atx::core::sha256_file(cfg.books_out + ".meta.txt"));
+    parents = {{"combo", combo_input.artifact_id}, {"book-schedule", schedule_hash}};
+  }
+  ATX_TRY(auto digest, write_pipeline_panel(cpanel, cfg.books_out, research_input, periods,
+      "stage=metabook-v1\nstep=" + std::to_string(step), std::move(parents)));
 
   // S2-3: netting telemetry -- the crossing win, aggregated over the whole schedule. The
   // naive baseline (sleeves traded SEPARATELY, no crossing) IS turnover_gross

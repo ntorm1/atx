@@ -50,6 +50,8 @@
 #include "research_sim.hpp"
 #include "sector_groups.hpp"
 #include "serialize_panel.hpp"
+#include "panel_pipeline.hpp"
+#include "atx/core/sha256.hpp"
 
 namespace atx::impl {
 
@@ -812,11 +814,17 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
     }
 
     // 2. Load the research panel.
-    ATX_TRY(auto panel, read_panel(cfg.panel));
+    ATX_TRY(auto input, read_pipeline_panel(cfg.panel, cfg.allow_unidentified_panels));
+    auto& panel = input.panel;
+    ATX_TRY(auto output_guard, reserve_pipeline_output(cfg.combo_out, input.identity.has_value()));
 
     // 3. Collect the alpha DSL sources + a per-alpha label (sidecar provenance).
     //    Two interchangeable sources; both yield `dsl` (expression strings, in a
     //    deterministic order) and `labels` (the weights-sidecar provenance string).
+    //    Bind the consumed expression and source-local identity, so relocating an
+    //    identical library or DSL directory does not change downstream artifact IDs.
+    //    The SHA covers the loaded text passed to compile_batch (including the
+    //    existing loose-file whitespace normalization), not raw source file bytes.
     std::vector<std::string> dsl;
     std::vector<std::string> labels;
     if (from_library) {
@@ -846,7 +854,9 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
         for (atx::u64 a = 0; a < n; ++a) {
             const auto rec = liblib.get(library::AlphaId{static_cast<atx::u32>(a)});
             dsl.push_back(rec.provenance.expr_source);
-            labels.push_back("lib:" + cfg.library_dir + "#alpha_" + std::to_string(a));
+            ATX_TRY(auto source_hash, atx::core::sha256_hex(dsl.back()));
+            labels.push_back("lib:alpha_" + std::to_string(a) +
+                             " dsl_sha256=" + source_hash);
         }
     } else {
         // 3b. Loose-.dsl input (backward compat): enumerate + sort .dsl files (sort for
@@ -889,7 +899,9 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
                 contents.pop_back();
             }
             dsl.push_back(std::move(contents));
-            labels.push_back(p.string());
+            ATX_TRY(auto source_hash, atx::core::sha256_hex(dsl.back()));
+            labels.push_back("dsl:" + p.filename().generic_string() +
+                             " dsl_sha256=" + source_hash);
         }
     }
 
@@ -1264,7 +1276,6 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
     }
     ATX_TRY(auto cpanel,
             alpha::Panel::create(D, N, {"alpha"}, {combined}, uni));
-    ATX_TRY(auto digest, write_panel(cpanel, cfg.combo_out));
 
     // 11. Write weights sidecar.
     {
@@ -1281,6 +1292,11 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
         for (atx::usize a = 0; a < combo.weights.size(); ++a) {
             wf << "w[" << a << "]=" << combo.weights[a]
                << ' ' << labels[a] << '\n';
+        }
+        wf.close();
+        if (!wf) {
+            return atx::core::Err(atx::core::ErrorCode::IoError,
+                                  "combine: weights sidecar write failed");
         }
     }
 
@@ -1301,7 +1317,19 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
         mf << "fit_end="       << fit_end                     << '\n';
         mf << "holdout_begin=" << fit_end                     << '\n';
         mf << "holdout_frac="  << cfg.combine_holdout_frac    << '\n';
+        mf.close();
+        if (!mf) {
+            return atx::core::Err(atx::core::ErrorCode::IoError,
+                                  "combine: fit-boundary sidecar write failed");
+        }
     }
+
+    ATX_TRY(auto weights_hash, atx::core::sha256_file(cfg.combo_out + ".weights.txt"));
+    ATX_TRY(auto boundary_hash, atx::core::sha256_file(cfg.combo_out + ".meta"));
+    ATX_TRY(auto digest, write_pipeline_panel(cpanel, cfg.combo_out, input, {},
+        "stage=combine-v1\nmethod=" + method_to_string(cm) +
+            "\nfit_begin=" + std::to_string(fit_begin) + "\nfit_end=" + std::to_string(fit_end),
+        {{"weights", weights_hash}, {"fit-boundary", boundary_hash}}));
 
     // 12. Breadth instrumentation (D3a — recorded-only / W5/C2.2 telemetry).
     //     Compute the Fundamental-Law-of-Active-Management decomposition of the

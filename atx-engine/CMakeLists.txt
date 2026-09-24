@@ -1,5 +1,8 @@
 add_library(atx-engine ${ATX_LIB_TYPE}
     src/engine.cpp
+    src/book/claims_state.cpp
+    src/book/replay.cpp
+    src/book/security_transition.cpp
     src/factory/canonical.cpp
     src/factory/crossover.cpp
     src/factory/factory.cpp
@@ -12,6 +15,7 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/factory/research_driver.cpp
     src/factory/search_driver.cpp
     src/eval/cpcv.cpp
+    src/eval/cross_section_ic.cpp
     src/eval/pbo.cpp
     src/eval/perf_metrics.cpp
     # breadth / effective-N instrumentation (S10-5)
@@ -73,6 +77,7 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/data/shm_bar_feed.cpp
     # universe construction: market-cap / ADV / sector / PIT membership (p3 S1-4)
     src/data/universe.cpp
+    src/data/point_in_time_universe.cpp
     # ORATS history loader: stream zip TSV -> per-date .seg partition (p3 S3-2)
     src/data/orats_history.cpp
     # ORATS history panel helpers: orats_total_return_close (p3 S3-3)
@@ -116,6 +121,19 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     # disk hive-parquet options store + quant (feat/disk-data-layer)
     src/data/disk.cpp
     src/quant/trading_calendar.cpp
+    # quant-platform swarm lanes (2026-09-22): scaffolded TUs, one owner each.
+    src/alpha/subtree_cache.cpp
+    src/factory/rewrite.cpp
+    src/factory/fidelity.cpp
+    src/eval/trial_registry.cpp
+    src/eval/multiple_testing.cpp
+    src/eval/lockbox_audit.cpp
+    src/combine/signal_combiner.cpp
+    src/combine/orthogonalize.cpp
+    src/risk/model_validation.cpp
+    src/risk/hybrid_factor_model.cpp
+    src/risk/cost_terms.cpp
+    src/book/replay_cost.cpp
 )
 add_library(atx::engine ALIAS atx-engine)
 

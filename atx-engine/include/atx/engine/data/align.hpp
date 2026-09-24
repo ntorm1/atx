@@ -13,9 +13,9 @@
 //     does not cover (instrument absent, or no plug row on/before that date)
 //     resolves to quiet NaN. NaN is never silently replaced by zero.
 //   * NO LOOK-AHEAD (truncation-invariant). Each canonical date reads the plug
-//     value AS OF that date (greatest plug row ≤ canonical_date). Appending a
+//     value AS OF that date (greatest availability date <= canonical_date). Appending a
 //     later-dated "restatement"/future plug row never changes an earlier
-//     aligned cell — see as_of_index in dataset.hpp.
+//     aligned cell. Availability includes the declared calendar-day pit_delay.
 //   * NO SURVIVORSHIP. A delisted plug instrument (no rows after some date)
 //     carries its FINAL value forward — the natural consequence of as-of
 //     resolution returning the last row ≤ the canonical date.
@@ -40,7 +40,7 @@ namespace atx::engine::data {
 struct DropReport {
   // Plug positions whose InstKey is NOT in the canonical universe.
   atx::usize extra_instrument_cells = 0;
-  // Plug positions whose InstKey IS canonical but whose DateKey is later than
+  // Plug positions whose InstKey IS canonical but whose availability is later than
   // the last canonical date — future rows that are never visible on the axis.
   atx::usize extra_date_cells = 0;
 
@@ -50,6 +50,8 @@ struct DropReport {
 };
 
 // The plug's columns re-expressed over the canonical (date × instrument) grid.
+// Values already include the plug's reporting delay. Rewrapping these values
+// into a Dataset requires pit_delay=0; retaining the original lag applies it twice.
 struct AlignedView {
   atx::usize num_dates = 0;         // == canonical num_dates
   atx::usize num_instruments = 0;   // == canonical num_instruments
@@ -64,7 +66,7 @@ struct AlignedView {
 // by `canonical_price`.
 //
 // Err(InvalidArgument) if either dataset's dates() are not strictly ascending
-// (strict ascent is required for as-of binary search).
+// or date encodings differ (including typed versus Opaque).
 [[nodiscard]] atx::core::Result<AlignedView> align_onto(const Dataset &canonical_price,
                                                         const Dataset &plug);
 

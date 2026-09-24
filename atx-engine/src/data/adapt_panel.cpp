@@ -21,6 +21,11 @@ namespace atx::engine::data {
 
 [[nodiscard]] atx::core::Result<alpha::Panel>
 price_to_panel(const Dataset &price, std::span<const atx::u16> adv_windows) {
+  if (price.schema().pit_delay != 0U) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "price_to_panel: align delayed data onto a zero-delay canonical "
+                          "grid before creating a date-free Panel");
+  }
   const atx::usize nd = price.num_dates();
   const atx::usize ni = price.num_instruments();
   const atx::usize ncols = price.schema().columns.size();

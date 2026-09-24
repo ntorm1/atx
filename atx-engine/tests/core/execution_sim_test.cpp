@@ -280,6 +280,52 @@ TEST(ExecSim, ZeroSize_Order_NeverFills) {
   EXPECT_TRUE(sim.settle_pending(ts(2000), b.market).empty());
 }
 
+TEST(ExecSim, ReplacePending_EmptyTarget_CancelsPartialRemainder) {
+  Book b{/*close=*/100, /*vol=*/4'000, InstrumentStats{}};
+  ExecutionSimulator sim = zero_cost_sim();
+  const std::array<OrderPayload, 1> orders{market_order(10, 250, 1000)};
+  sim.queue(orders, ts(1000));
+  const auto partial = sim.settle_pending(ts(2000), b.market);
+  ASSERT_EQ(partial.size(), 1U);
+  EXPECT_EQ(partial[0].qty, 100);
+
+  sim.replace_pending({}, ts(2000));
+  EXPECT_TRUE(sim.settle_pending(ts(3000), b.market).empty());
+}
+
+TEST(ExecSim, ReplacePending_ChangedIntent_UsesNewDecisionTime) {
+  Book b{/*close=*/100, /*vol=*/1'000'000, InstrumentStats{}};
+  ExecutionSimulator sim = zero_cost_sim();
+  const std::array<OrderPayload, 1> orders{market_order(10, 100, 1000)};
+  sim.queue(orders, ts(1000));
+  const std::array<OrderPayload, 1> replacement{market_order(10, -50, 1000)};
+  sim.replace_pending(replacement, ts(2000));
+
+  EXPECT_TRUE(sim.settle_pending(ts(2000), b.market).empty());
+  const auto fills = sim.settle_pending(ts(3000), b.market);
+  ASSERT_EQ(fills.size(), 1U);
+  EXPECT_EQ(fills[0].qty, -50);
+  EXPECT_TRUE(sim.settle_pending(ts(4000), b.market).empty());
+}
+
+TEST(ExecSim, ReplacePending_SameBar_DoesNotResetConsumedVolume) {
+  Book b{/*close=*/100, /*vol=*/4'000, InstrumentStats{}};
+  ExecutionSimulator sim = zero_cost_sim();
+  sim.set_allow_same_bar_fill(true);
+  const std::array<OrderPayload, 1> orders{market_order(10, 250, 1000)};
+  sim.queue(orders, ts(1000));
+  const auto partial = sim.settle_pending(ts(2000), b.market);
+  ASSERT_EQ(partial.size(), 1U);
+  EXPECT_EQ(partial[0].qty, 100);
+
+  const std::array<OrderPayload, 1> replacement{market_order(10, -100, 2000)};
+  sim.replace_pending(replacement, ts(2000));
+  EXPECT_TRUE(sim.settle_pending(ts(2000), b.market).empty());
+  const auto fills = sim.settle_pending(ts(3000), b.market);
+  ASSERT_EQ(fills.size(), 1U);
+  EXPECT_EQ(fills[0].qty, -100);
+}
+
 // =====================================================================
 //  Volume cap — partial fill, remainder spills, sum of partials == order qty.
 // =====================================================================

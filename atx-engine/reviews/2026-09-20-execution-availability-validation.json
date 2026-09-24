@@ -1,0 +1,690 @@
+{
+  "build": {
+    "cache_disabled": true,
+    "compiler": "VS2022 clang-cl 18.1.8",
+    "initial_test_compile_failure": "GoogleTest std::string-versus-JSON hash comparisons; four explicit JSON string extractions corrected the fixture. Production translation units and executable had already built; no production change for this correction.",
+    "jobs": 4,
+    "preset": "equity-dev",
+    "targets": [
+      "atx-impl",
+      "atx-impl-tests"
+    ],
+    "translation_units_checked": [
+      "atx-impl/src/equity_allocation.cpp",
+      "atx-impl/src/stage_equity_book.cpp"
+    ],
+    "wrapper": "scripts/atx-build.ps1"
+  },
+  "checkpoint": 11,
+  "date": "2026-09-20",
+  "documents": [
+    {
+      "bytes": 47687,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-engine\\docs\\PLATFORM_PROGRESS.md",
+      "sha256": "45194523bc0735843e116c8e2e09f02f27427d9cdb094e2e62bb7441be4dff4e"
+    },
+    {
+      "bytes": 10061,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-engine\\README.md",
+      "sha256": "134edcca0b369ef6086cf769d23d4d394c3f0f26b15ee755cfe754e89779615e"
+    },
+    {
+      "bytes": 3585,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\README.md",
+      "sha256": "b5625511f0317c7a8691d6eefd8b3b2ba16e16c512194c6f16ef5e9520fdcbf4"
+    },
+    {
+      "bytes": 22381,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\docs\\EQUITY_BOOK_CONSTRAINED.md",
+      "sha256": "2d95cec1fd227b3deb50a8cda95397161edbc1bd8c34d09521857b397328f8f0"
+    },
+    {
+      "bytes": 18609,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-engine\\reviews\\2026-09-20-iteration11-execution-availability-design.md",
+      "sha256": "ac180bd788098caade403641595e5f55f9ab7e4b3c49131c2c4f3fd0658c12da"
+    }
+  ],
+  "evidence": [
+    {
+      "bytes": 149381,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11-allocation-proposal-verification.json",
+      "sha256": "ce58228dd002a6f2d0b001f4080281cf727c8da54f1a2a6560ee600700da6be0"
+    },
+    {
+      "bytes": 1336466,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11-equity-book-measurement.json",
+      "sha256": "f2819139230814ed8d6e84154e2c753d1e7fb90efe9bbb961aee7c4e3717024a"
+    },
+    {
+      "bytes": 113144,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11-equity-book-memory-samples.jsonl",
+      "sha256": "52a8df5cb589cc46a8207ae9de1bb68d745217121272d805f4a6bde01953cc93"
+    },
+    {
+      "bytes": 127,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11-equity-book-native.stderr.log",
+      "sha256": "587e0778a87c01a0f66e6b446ac8581806b8420ece22727d069ef09a0fb97023"
+    },
+    {
+      "bytes": 0,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11-equity-book-native.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 41704,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11-equity-book-preflight.json",
+      "sha256": "6f386055aa654ef0655125a2f83969ac2e726a2b19134a3128a0ea16ff1d3d23"
+    },
+    {
+      "bytes": 3360,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11-execution-availability-plan.json",
+      "sha256": "2b5fbedb8f492df426ec3882bad023ea60cdcccee6839f4044a9618912097254"
+    },
+    {
+      "bytes": 12759,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11-held-gap-diagnostic-qualified.json",
+      "sha256": "46954dae8f1cd456ff6177af18be5a4c85aa106896dcbaf841959705ebd57916"
+    },
+    {
+      "bytes": 11101,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11-held-gap-diagnostic.json",
+      "sha256": "ed257ba2f17ac36ca5d4d1e272948a2921a9a70967344f094373031f7db5281d"
+    },
+    {
+      "bytes": 4868850,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11-native-snapshot.zip",
+      "sha256": "df04fa4d84402850db5b2d82532acd2ab9cfda1e1113d28722bfe74037c9f928"
+    },
+    {
+      "bytes": 54041,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11-second-decision-oracle.json",
+      "sha256": "76e785800183d87c3d45dc77d47f662fdd7e5b2114b89f00334f62e1146b8bdc"
+    },
+    {
+      "bytes": 250896,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11-startup-native-comparison.json",
+      "sha256": "e084fd49c32984388bf57eb9cfaa34cd954e6f42be8570b0aa8309b919641616"
+    },
+    {
+      "bytes": 32555,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11_compare_startup_proposal.py",
+      "sha256": "ce659541a6268938d805e0d66f76346fbd2ce33fcb748e742fedbd20d7b04fac"
+    },
+    {
+      "bytes": 6558,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11_held_gap_diagnostic.py",
+      "sha256": "da9ecd23db11607fcf6d22ce85fd78a7a9a288fc47d565c18ecddefef10f7262"
+    },
+    {
+      "bytes": 22130,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11_run_equity_book.py",
+      "sha256": "735fbf4531eec10e83c724b5c08619afb8091e9958a85c20c15620a3b5a4c4f9"
+    },
+    {
+      "bytes": 17266,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11_second_decision_oracle.py",
+      "sha256": "767d03de2ab6d1374f6a3a111eb9fc7d65a3794fe037dada7343bf1499f73e2b"
+    },
+    {
+      "bytes": 49894,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11_verify_allocation_proposals.py",
+      "sha256": "3fc0c92719ed882c2cda2575ac18babec229a7732c7a18523f5dcc02ee592750"
+    },
+    {
+      "bytes": 11760,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\write_iteration11_receipt.py",
+      "sha256": "16c6d53215a0740b4ce566e01f1d55ab226c3a041b0e8062664e18a89d934b35"
+    },
+    {
+      "bytes": 36326,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\iteration11-build.log",
+      "sha256": "02550d0c9037a6837e8714b508ac737ea69208d18ca04b59174527ebf3779504"
+    },
+    {
+      "bytes": 428,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\iteration11-helper-check.log",
+      "sha256": "453ece1a17a2cc704697ba88e2d3efd62a3fb36d0466f6d7325f85297b158474"
+    },
+    {
+      "bytes": 428,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\iteration11-stage-check.log",
+      "sha256": "686d32762212b3899457cbc82d6156164fa9d05b609f921f9ca63ed2adb3b689"
+    },
+    {
+      "bytes": 406,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\iteration11-tests-build-retry.log",
+      "sha256": "dd7ec4d08b7f0cbee4236b59c0918d19bb7ca6dbdce0871db513fb5bccf9a829"
+    },
+    {
+      "bytes": 10470,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\iteration11-tests.log",
+      "sha256": "4abbee758dc29e2c5a41215e127acdbe2a68bddc6ea07758f665db0616f586c4"
+    },
+    {
+      "bytes": 21973,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\iteration11-tests.xml",
+      "sha256": "818a3c525fd074690fce0a936bf4bd66d815574099c4127f6a77c62c8614739d"
+    }
+  ],
+  "goal_status": "active",
+  "held_gap_diagnostic": {
+    "archive_ticker_annotation": "PCS",
+    "artifact": {
+      "bytes": 12759,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11-held-gap-diagnostic-qualified.json",
+      "sha256": "46954dae8f1cd456ff6177af18be5a4c85aa106896dcbaf841959705ebd57916"
+    },
+    "event_applied": false,
+    "last_valid_mark": 11.84,
+    "last_valid_mark_date": "2013-04-30",
+    "last_valid_signed_notional_usd": -22360.28129944087,
+    "scope": "Archive annotation and measured TRI inventory; physical share basis, vendor identity mapping and short transition liabilities remain unverified.",
+    "source_classification": "source_row_absent",
+    "tri_research_units": -1888.5372719122356,
+    "vendor_security_id": "146189"
+  },
+  "implementation": [
+    "Strict RequireRequestedMark remains public helper default; stage explicitly selects ObservedCloseEntryConstraintV1.",
+    "Exactly unheld invalid current marks add weight=0 equalities before optimization; original union, frozen preference, eligibility and risk remain.",
+    "All held marks are validated before exclusion; no price imputation, current-volume filter or permanent security deletion.",
+    "One canonical reason vector governs QP boxes, exact-zero lifting, representation and final certification.",
+    "Disjoint decision/execution lifting components and conditional solver scope remain separate from ordinary representation corrections.",
+    "Record typed invalid-mark mappings, source/timing identities, reason digest and last callback status without inventing raw rejected candidates.",
+    "Reserve additional JSON/identifier memory before replay and preserve exact producer/selected source bytes in a verified archive."
+  ],
+  "independent_startup_comparison": {
+    "all_pins_unchanged": true,
+    "artifact": {
+      "bytes": 250896,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11-startup-native-comparison.json",
+      "sha256": "e084fd49c32984388bf57eb9cfaa34cd954e6f42be8570b0aa8309b919641616"
+    },
+    "scope": "Frozen startup oracle is used only after source-derived confirmation that availability adds no equality inside the original startup union.",
+    "status": "passed-first-startup-intent-comparison"
+  },
+  "independent_verification": {
+    "artifact": {
+      "bytes": 149381,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11-allocation-proposal-verification.json",
+      "sha256": "ce58228dd002a6f2d0b001f4080281cf727c8da54f1a2a6560ee600700da6be0"
+    },
+    "complete_observable_intervals": 18,
+    "failure_independently_reproduced": true,
+    "last_callback_evidence": {
+      "certified_proposal_index": 3,
+      "execution_period": 16,
+      "interpretation": "last callback successfully returned the recorded proposal; does not imply later replay completion",
+      "phase": "awaiting-replay-acceptance",
+      "status": "certified-proposal-returned"
+    },
+    "observation_stop": {
+      "incomplete_interval_borrow_debited": false,
+      "instrument": 1063,
+      "kind": "missing-held-mark",
+      "period": 19,
+      "security_id": "146189",
+      "session_key_ns": "1367366400000000000"
+    },
+    "proposal_count": 4,
+    "scope_limit": "All recorded representation and economic checks; no general QP optimality or source economics attestation. Native floating-point JSON mark digest is recorded, not independently recomputed; independent source-row bytes and integer reason digest are verified.",
+    "unchanged_checked_hashes": 63
+  },
+  "investment_evidence": {
+    "accepted_allocations_from_completed_report": 0,
+    "capacity": null,
+    "complete_replay": false,
+    "live_orders_authorized": false,
+    "qualification": "No investment acceptance; source economics, publication, classification, shorting and executable capacity remain unverified.",
+    "recorded_certified_proposals": 4,
+    "sharpe": null
+  },
+  "measurement": {
+    "all_input_source_executable_snapshot_pins_unchanged": true,
+    "artifact": {
+      "bytes": 1336466,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11-equity-book-measurement.json",
+      "sha256": "f2819139230814ed8d6e84154e2c753d1e7fb90efe9bbb961aee7c4e3717024a"
+    },
+    "exit_code": 1,
+    "failure": "InvalidArgument: replay: missing/nonpositive required close at period=19 instrument=1063 session_key_ns=1367366400000000000 security_id=146189",
+    "monitor_wall_seconds": 33.540474000008544,
+    "native_snapshot": {
+      "member_count": 39,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11-native-snapshot.zip",
+      "scope": "selected source and producer preservation; not a portable complete build",
+      "sha256": "df04fa4d84402850db5b2d82532acd2ab9cfda1e1113d28722bfe74037c9f928",
+      "size_bytes": 4868850,
+      "verified_member_bytes": true
+    },
+    "native_status": "failed",
+    "native_wall_seconds": 32.633553299994674,
+    "os_peak_private_commit_bytes": 152481792,
+    "os_peak_working_set_bytes": 163254272,
+    "producer": {
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\bin\\atx-impl.exe",
+      "sha256": "80e457527154cb2ca7e9409be1627305d1968caddc64545daa088c14d0ee4fa1",
+      "size_bytes": 12290048
+    },
+    "proposals": [
+      {
+        "actual_turnover": 0.1999999999999998,
+        "close_count": 1280,
+        "decision_fixed_zero_l1_change": 0.0,
+        "decision_period": 0,
+        "execution_fixed_zero_count": 0,
+        "execution_fixed_zero_l1_change": 0.0,
+        "execution_period": 1,
+        "execution_unavailable_count": 86,
+        "fixed_zero_count": 0,
+        "hold_count": 0,
+        "postfee_gross": 0.20002000200019998,
+        "postfee_max_name": 0.0010944199122894583,
+        "postfee_net": 1.2006530716474311e-18,
+        "posttrade_nav": 99989999.99999991,
+        "pretrade_nav": 100000000.0,
+        "representation_l1_budget": 7.803875854765961e-11,
+        "representation_l1_change": 3.044354519630099e-25,
+        "required_zero_count": 0,
+        "trade_cost": 9999.999999999989,
+        "traded_dollars": 19999999.999999978,
+        "union_instruments": 973
+      },
+      {
+        "actual_turnover": 0.19999999999999976,
+        "close_count": 1089,
+        "decision_fixed_zero_l1_change": 1.2339237196063773e-26,
+        "decision_period": 5,
+        "execution_fixed_zero_count": 2,
+        "execution_fixed_zero_l1_change": 1.8070036538906381e-28,
+        "execution_period": 6,
+        "execution_unavailable_count": 90,
+        "fixed_zero_count": 12,
+        "hold_count": 24,
+        "postfee_gross": 0.390991874270361,
+        "postfee_max_name": 0.0014900479686542005,
+        "postfee_net": -1.466048624630186e-17,
+        "posttrade_nav": 100252025.29935172,
+        "pretrade_nav": 100262051.50450218,
+        "representation_l1_budget": 7.803875854765961e-11,
+        "representation_l1_change": 1.0632360724624842e-25,
+        "required_zero_count": 14,
+        "trade_cost": 10026.205150450205,
+        "traded_dollars": 20052410.30090041,
+        "union_instruments": 988
+      },
+      {
+        "actual_turnover": 0.20000000000000012,
+        "close_count": 984,
+        "decision_fixed_zero_l1_change": 1.435223847064571e-26,
+        "decision_period": 10,
+        "execution_fixed_zero_count": 0,
+        "execution_fixed_zero_l1_change": 0.0,
+        "execution_period": 11,
+        "execution_unavailable_count": 86,
+        "fixed_zero_count": 26,
+        "hold_count": 59,
+        "postfee_gross": 0.5355100893377951,
+        "postfee_max_name": 0.0016825423778987112,
+        "postfee_net": -1.9116286129602964e-17,
+        "posttrade_nav": 100482530.8180465,
+        "pretrade_nav": 100492580.07605407,
+        "representation_l1_budget": 7.803875854765961e-11,
+        "representation_l1_change": 1.3469013076209566e-25,
+        "required_zero_count": 26,
+        "trade_cost": 10049.258007605413,
+        "traded_dollars": 20098516.015210826,
+        "union_instruments": 1009
+      },
+      {
+        "actual_turnover": 0.20000000000000007,
+        "close_count": 852,
+        "decision_fixed_zero_l1_change": 9.148616168413716e-27,
+        "decision_period": 15,
+        "execution_fixed_zero_count": 0,
+        "execution_fixed_zero_l1_change": 0.0,
+        "execution_period": 16,
+        "execution_unavailable_count": 85,
+        "fixed_zero_count": 19,
+        "hold_count": 108,
+        "postfee_gross": 0.7173734554324784,
+        "postfee_max_name": 0.0021263760732492315,
+        "postfee_net": 6.788392266017498e-18,
+        "posttrade_nav": 100751398.70113674,
+        "pretrade_nav": 100761474.84862141,
+        "representation_l1_budget": 7.803875854765961e-11,
+        "representation_l1_change": 1.449339273805256e-26,
+        "required_zero_count": 19,
+        "trade_cost": 10076.147484862146,
+        "traded_dollars": 20152294.96972429,
+        "union_instruments": 1002
+      }
+    ]
+  },
+  "native_evidence": [
+    {
+      "bytes": 1029713,
+      "path": "C:\\atx\\data\\equity_book_training_2013_observed_close_20260920\\allocation_certificates.json",
+      "sha256": "baabdfc800f28b58104a2a48e86047e0ddba38d0246f52759bea5e8bbfb69766"
+    },
+    {
+      "bytes": 29028,
+      "path": "C:\\atx\\data\\equity_book_training_2013_observed_close_20260920\\failure.json",
+      "sha256": "6ae10b24966368e0c7df56979eb9ca99ea9fafb8d0d71c7338c5bf0554d62e3d"
+    },
+    {
+      "bytes": 9516,
+      "path": "C:\\atx\\data\\equity_book_training_2013_observed_close_20260920\\request.json",
+      "sha256": "36bc39100d8fb7b7624dc936addee43769144955db2b138a6f01b56287e9597b"
+    }
+  ],
+  "next_iteration": "Research and implement a stock-and-cash security-transition accounting seam; preserve current failure and require explicit source/basis evidence before admitting a real event.",
+  "predeclared_plan": {
+    "availability_policy": {
+      "application": "Add weight=0 equality to the original union before optimization; preserve full canonical axes, union membership, original decision eligibility, preference and risk snapshot.",
+      "future_missingness": "unused",
+      "held_missing_marks": "Always fail before allocation; no imputation, exit deletion or stale mark.",
+      "later_valid_price": "A later valid execution snapshot may admit a new position subject to the original decision/risk/portfolio rules.",
+      "name": "ObservedCloseEntryConstraintV1",
+      "predicate": "exactly zero held TRI units AND current execution close absent/nonfinite/nonpositive",
+      "public_helper_default": "RequireRequestedMark",
+      "representation": "Unchanged MachinePrecisionIntentsV1 after solve; execution-price fixed-zero lifting recorded separately by reason.",
+      "retries": "No fallback, no tolerance/budget loosening, no unconstrained counterfactual solve.",
+      "timing": "simultaneous observed-close research abstraction; available_by_order_submission unverified",
+      "unavailable_price_meaning": "This supplied snapshot cannot price a new entry; it is not evidence of exchange halt, zero real volume, rejected order or permanent delisting.",
+      "volume_filter": "none"
+    },
+    "checkpoint": 11,
+    "evidence": [
+      "Conditional policy recipe and new attempt identity",
+      "Canonical availability reasons and eligible/risk-ready fixed-zero count",
+      "Raw solution, intents, zero lifting by reason, full represented economics",
+      "Failure callback context with times/IDs and explicit missing raw-candidate limitation",
+      "Independent verification of every published proposal and observed interval",
+      "One original-window attempt with input/source/executable pins and memory measurement"
+    ],
+    "fixed_trial": {
+      "annual_borrow_bps": 365,
+      "borrow_day_basis": 365,
+      "canonical_instruments": 1661,
+      "economic_tolerance": 1e-08,
+      "evaluation_end_exclusive": "2014-01-01",
+      "evaluation_start": "2013-04-04",
+      "execution_delay": 1,
+      "initial_nav": 100000000,
+      "max_working_bytes": 3000000000,
+      "observations": 189,
+      "polish_linear_solves": 4,
+      "scheduled_preferences": 38,
+      "solver_iterations": 1200,
+      "trade_bps": 5
+    },
+    "investment_qualification": "None; conditional entry changes the experiment and may alter selection. Source timing/economics, held marks, corporate events, shorting and capacity remain unverified.",
+    "new_attempt": "C:/atx/data/equity_book_training_2013_observed_close_20260920",
+    "prior_receipt_sha256": "8337f0c8b5f82a94e4f35573f7af2737594d20816f1d76bc11dbd2a3ebea603f",
+    "profile": "constrained-preference-weekly-observed-close-v3",
+    "purpose": "Condition a new-entry QP on the current sampled-price observation without erasing any held obligation or changing the frozen alpha decision.",
+    "references": [
+      "https://www.cvxportfolio.com/en/stable/_static/cvx_portfolio.pdf",
+      "https://raw.githubusercontent.com/cvxgrp/cvxportfolio/1.5.0/cvxportfolio/simulator.py",
+      "https://www.nyse.com/trade/auctions",
+      "https://www.quantconnect.com/docs/v2/writing-algorithms/reality-modeling/trade-fills/supported-models/equity-model"
+    ],
+    "research_design": "atx-engine/reviews/2026-09-20-iteration11-execution-availability-design.md",
+    "schema": "atx-observed-close-entry-plan-v1"
+  },
+  "prior_checkpoint": {
+    "bytes": 684879,
+    "path": "C:\\atx\\.worktrees\\equity-platform\\atx-engine\\reviews\\2026-09-20-execution-representation-validation.json",
+    "sha256": "8337f0c8b5f82a94e4f35573f7af2737594d20816f1d76bc11dbd2a3ebea603f"
+  },
+  "references": [
+    "https://www.cvxportfolio.com/en/stable/_static/cvx_portfolio.pdf",
+    "https://raw.githubusercontent.com/cvxgrp/cvxportfolio/1.5.0/cvxportfolio/simulator.py",
+    "https://www.nyse.com/trade/auctions",
+    "https://www.sec.gov/Archives/edgar/data/1283699/000119312513193449/d527693d8k.htm"
+  ],
+  "review": {
+    "helper": "root static review passed",
+    "stage": "independent helper-owner review passed",
+    "timing_limit": "Availability conditional on the same observed close is a sampled-price research abstraction; available_by_order_submission remains unverified."
+  },
+  "scope": "Observed-close entry equalities, conditional allocation provenance, callback diagnostics and original-window trial",
+  "sources": [
+    {
+      "bytes": 6363,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-engine\\CMakeLists.txt",
+      "sha256": "ef4b9bc868e9a75917ac9c99cf11a0ca5c7310d3b4145ab10a3f0ab058ba5bfc"
+    },
+    {
+      "bytes": 10548,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-engine\\include\\atx\\engine\\book\\replay.hpp",
+      "sha256": "376e14b159ba3ff594003dce7617bc1bd91cc6db6555e0a91fd25cdd9d7176b9"
+    },
+    {
+      "bytes": 42153,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-engine\\include\\atx\\engine\\risk\\constraints.hpp",
+      "sha256": "bbca317131375e58693b19fe613234de04e745497014b758deae7b2337e862b2"
+    },
+    {
+      "bytes": 22489,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-engine\\include\\atx\\engine\\risk\\factor_model.hpp",
+      "sha256": "f668ce6c735e9f2235551fde7331f86caacc118ee8ace1914ee06c367b806ea6"
+    },
+    {
+      "bytes": 35122,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-engine\\include\\atx\\engine\\risk\\kkt_ldl.hpp",
+      "sha256": "1f64c94cd5b4f5247d47ac15d252f7f7e0899496fca4fdb24a682ef50235edb5"
+    },
+    {
+      "bytes": 32177,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-engine\\include\\atx\\engine\\risk\\qp_augment.hpp",
+      "sha256": "cd0840c79b91ec3437c057523f6e662af7c39eeb6d4ca72a0bdc5592525ef2ed"
+    },
+    {
+      "bytes": 64328,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-engine\\include\\atx\\engine\\risk\\qp_solver.hpp",
+      "sha256": "1e06a12311a7637686b622815863eada268af082a23e334a0d7b66e297230922"
+    },
+    {
+      "bytes": 21758,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-engine\\src\\book\\replay.cpp",
+      "sha256": "c8aff90351eb883dc0f73a642aaea921809d686ac3c8d887c1fa3ed4fa122f4e"
+    },
+    {
+      "bytes": 37201,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-engine\\src\\risk\\factor_model.cpp",
+      "sha256": "3cc5f47f26ee3035cdbd5ddce5306aadc862799b13432b715faaec130c4f9a2b"
+    },
+    {
+      "bytes": 3468,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\CMakeLists.txt",
+      "sha256": "fecd8d88359ce223f7ab28f309aed8baace6ccfc0016391070726b622a31d153"
+    },
+    {
+      "bytes": 35457,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\config.cpp",
+      "sha256": "6467092efea989b737890f1a4e25f33d731a5e950902db795128d1454260dd4f"
+    },
+    {
+      "bytes": 35837,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\config.hpp",
+      "sha256": "2045562007604376849e232f0d38746d4cce8b21fc257360a6cc5b16918c1ce9"
+    },
+    {
+      "bytes": 7041,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\dispatch.cpp",
+      "sha256": "710d12042d46a9f9afe90b556d383fa7db0b0ecb9c38c74c355edc8f445c060e"
+    },
+    {
+      "bytes": 36546,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\equity_allocation.cpp",
+      "sha256": "674ed9daa584e343e09d8efdb5dd77b7a4731fbec70b48290a22aab43fd09ed6"
+    },
+    {
+      "bytes": 8956,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\equity_allocation.hpp",
+      "sha256": "bb6e8db016f3527a60acb84647c3928d7b9c50c612e51122a441aee49daba4c5"
+    },
+    {
+      "bytes": 13591,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\equity_baseline_views.cpp",
+      "sha256": "2e82d6dcc1cb2740f1727a007a60fbb7a2a29f565e702d515383abe5b66a4ace"
+    },
+    {
+      "bytes": 4519,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\equity_baseline_views.hpp",
+      "sha256": "13644795ff0962020833812ba2f61e71a7d68d57f18e156521fc511ad47ed465"
+    },
+    {
+      "bytes": 155,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\main.cpp",
+      "sha256": "e1a5560f06bb1b046ecdb99ebbde1c9cc929d9ffafbf0d4bdf0e0c1606703824"
+    },
+    {
+      "bytes": 26320,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\panel_artifact.cpp",
+      "sha256": "a3c6c9755310d7a57bafcd3c5c4559afa8df390c9389a6f3f13b3b1424c05937"
+    },
+    {
+      "bytes": 3959,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\panel_artifact.hpp",
+      "sha256": "3f1c8f77cd91701e338d72c7fa4b1a062e6f9a29ccf8c225c6ca8526d30c6392"
+    },
+    {
+      "bytes": 7089,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\panel_pipeline.cpp",
+      "sha256": "70025be6bcbb02a62bf8e61850f93607701eb22bdce969ca58a95a158cfa209a"
+    },
+    {
+      "bytes": 2284,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\panel_pipeline.hpp",
+      "sha256": "c07251a6ef122d00f502de51bc01fedb35094f561482e4d63b1975ce5cbda8db"
+    },
+    {
+      "bytes": 12737,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\replay_diagnostics.cpp",
+      "sha256": "1556f838ebb2dffa230ea04edb825f304b2c2dd5b56e40e6340d3a2537465d5c"
+    },
+    {
+      "bytes": 3385,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\replay_diagnostics.hpp",
+      "sha256": "c8a7cd610172bbf53287a9fe640a1d94d7582acb5d716865ab73db12ea470efb"
+    },
+    {
+      "bytes": 36428,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\replay_report.cpp",
+      "sha256": "565f1e3ddd946b5add12c3280ed9dec0ecafd0024cba355f5e5b174f03d0cb7f"
+    },
+    {
+      "bytes": 3476,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\replay_report.hpp",
+      "sha256": "e8c1da2f4512a23c92967fc6d93d42c1ccfc0a61a6cb8261b41165727fa8f60a"
+    },
+    {
+      "bytes": 13250,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\serialize_panel.cpp",
+      "sha256": "70755868cb279b52626c7bd2a837c09e055ada62bd4536f3c47356d528a0dbb1"
+    },
+    {
+      "bytes": 1996,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\serialize_panel.hpp",
+      "sha256": "84696932f875c47ab48fd60f1a390c403d1a1c2ae1c6f76a689ef29b9d049fa2"
+    },
+    {
+      "bytes": 19973,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\stage_data_provenance.cpp",
+      "sha256": "7e86772dfd1d93541d64b35e1f0b39ec6434eb5d102780a1f3900705d60c578f"
+    },
+    {
+      "bytes": 39102,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\stage_equity_book.cpp",
+      "sha256": "33167e6c83dabef4b09f4f42ba4c9d2885df1bb7db0ca0e1477f10664ad0c0b3"
+    },
+    {
+      "bytes": 400,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\stage_equity_book.hpp",
+      "sha256": "ebd90abb50ec7fd0eee229c85c2e26e774ea3dd58ff701c6bdabc0c6abc85844"
+    },
+    {
+      "bytes": 50379,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\stage_report.cpp",
+      "sha256": "972e78e26d776cde10691e5ee7f8d2e071714cf7ce3194467fb5645055b8a268"
+    },
+    {
+      "bytes": 1519,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\src\\stages.hpp",
+      "sha256": "ad8c565565511df5201fe91103a686f8e9d73a76d13f5106c4008f6e1e721eb4"
+    },
+    {
+      "bytes": 24135,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\tests\\equity_allocation_test.cpp",
+      "sha256": "79ac5c5e8b0ab1f8ec9ccb65796c533dc24d05a1458862f3c1d21e2bc791ef95"
+    },
+    {
+      "bytes": 26878,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\atx-impl\\tests\\stage_equity_baseline_test.cpp",
+      "sha256": "d22095a2a4288f883a5444c0a3ee9e9a6b5855c81a8ca9e5782c0ceecaf0b1db"
+    },
+    {
+      "bytes": 22130,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\audits\\iteration11_run_equity_book.py",
+      "sha256": "735fbf4531eec10e83c724b5c08619afb8091e9958a85c20c15620a3b5a4c4f9"
+    },
+    {
+      "bytes": 22478,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\CMakeLists.txt",
+      "sha256": "88cc22ad4a366e193ecc3fb9291da0fce5a009dbc325a01fad94d41409230ba2"
+    },
+    {
+      "bytes": 13934,
+      "path": "C:\\atx\\.worktrees\\equity-platform\\CMakePresets.json",
+      "sha256": "970cb6d7e3a6dae68622578e5949ead2283afcd74c976aa107e59b60a6040411"
+    },
+    {
+      "bytes": 18608,
+      "path": "C:\\atx\\build-equity\\audits\\iteration6_build_training_context.py",
+      "sha256": "8280a4547d0ea29f80e514abed7d9934b09d76f7496cb851b6fdce7518f93ad1"
+    },
+    {
+      "bytes": 15211,
+      "path": "C:\\atx\\build-equity\\audits\\iteration6_run_training_baseline.py",
+      "sha256": "4f656c9eb15ac109830a52c2c307cca46e418dbd1f66948a17f0ba4fd80eac8b"
+    }
+  ],
+  "status": "bounded_software_validation_complete_native_trial_recorded",
+  "tests": {
+    "cases": {
+      "EquityAllocation.AllCashStartupAndNextAllocationRespectFullL1WithoutGrossRenormalization": "passed",
+      "EquityAllocation.ExecutionAvailabilityNeverSuppressesMissingHeldMarkOrMandatoryExitValuation": "passed",
+      "EquityAllocation.FeeReserveCertifiesActualPostFeeCapsAndInvalidBudgetsFailClosed": "passed",
+      "EquityAllocation.MachineRepresentationClosesNumericalSupportBeforeRequiringUnusedMarks": "passed",
+      "EquityAllocation.MachineRepresentationPreservesExactHeldUnitsAndMandatoryClosePriority": "passed",
+      "EquityAllocation.MachineRepresentationRecertifiesEconomicLimitsAndRejectsUnrepresentableBudget": "passed",
+      "EquityAllocation.MandatoryExitRetainsHeldNameAndNeutralizingTradeCanMakeTurnoverInfeasible": "passed",
+      "EquityAllocation.ObservedCloseConstraintReoptimizesBalancedBookAndValidCurrentMarkRestoresEntry": "passed",
+      "EquityAllocation.RiskSnapshotExcludesFutureRowsAndNeverBridgesMissingObservations": "passed",
+      "EquityAllocation.UnchangedPreferenceTradesAgainstDriftedMarkedHoldings": "passed",
+      "StageEquityBaseline.CommonReadinessGatesBothStreamsBeforeRanking": "passed",
+      "StageEquityBaseline.ConstrainedBookPreservesMissingHeldMarkFailureOnOriginalWindow": "passed",
+      "StageEquityBaseline.ConstrainedBookPublishesActualAllocationsAndContextAncestry": "passed",
+      "StageEquityBaseline.ConstrainedBookRejectsExplicitEvaluationWindowOverride": "passed",
+      "StageEquityBaseline.ExplicitZeroCostsDelayAndGlobalDefaultAumArePreserved": "passed",
+      "StageEquityBaseline.FixedUnfitBlendReplaysOnlyEvaluationAndBindsAncestry": "passed",
+      "StageEquityBaseline.MissingHeldMarkPreservesBoundFailureAndNoCompleteManifest": "passed",
+      "StageEquityBaseline.ObservedCloseEntryConstraintBindsAvailabilityWithoutShrinkingUnion": "passed",
+      "StageEquityBaseline.PublicationHashesDeterminismAndNoOverwrite": "passed",
+      "StageEquityBaseline.RejectsUnknownPriceBasisBeforeNumericFeatureEvaluation": "passed",
+      "StageEquityBaseline.RejectsUnsupportedModesSealedDatesCoverageAndMemoryFloor": "passed"
+    },
+    "failed": 0,
+    "new_cases": 3,
+    "passed": 21,
+    "qualification": "Affected allocation/stage contracts only. Prior dense-PCG timeout remains incomplete; full repository, sanitizers and throughput unqualified.",
+    "skipped": 0,
+    "wall_seconds": 16.57
+  },
+  "workspace": {
+    "branch": "feat/equity-platform-20260920",
+    "path": "C:\\atx\\.worktrees\\equity-platform"
+  }
+}

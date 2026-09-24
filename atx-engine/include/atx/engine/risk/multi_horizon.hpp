@@ -126,7 +126,7 @@ struct MultiHorizonConfig {
   QpConfig qp{};                // ADMM knobs — used ONLY on the augmented path
   atx::usize horizon = 1;       // H (forward lookahead periods); H=1 + identity ⇒ S7 boundary
   atx::f64 trade_rate = 1.0;    // Gârleanu-Pedersen partial step ∈ (0,1]; 1 ⇒ full step
-  bool stacked_mpc = false;     // false ⇒ GP aim-collapse + cost-to-go (shipped); true ⇒ stacked O(N·H) path (benched)
+  bool stacked_mpc = false;     // false: horizon-average aim; true: geometric horizon blend
   atx::usize prox_max_iters = 64;   // PortfolioOptimizer max_iters for the minimal dispatch
   bool capacity_bound_gross = true; // capacity-clip the gross on the dispatch path (mirror S7)
 };
@@ -152,6 +152,10 @@ public:
   // solve toward the aim (minimal-constraint dispatch or augmented QP), partial-step
   // toward the target, and charge turnover/cost. See the header block for the full
   // contract and the boundary pin (R7). `[[nodiscard]] const`. Body in the .cpp (S8.8a).
+  // Returns InvalidArgument for participation/ownership caps: this driver has no
+  // per-period CapacityRef source and cannot evaluate those limits safely.
+  // Augmented constraints also require trade_rate=1. A post-solve partial blend
+  // is not guaranteed feasible when the previous book violates current limits.
   [[nodiscard]] atx::core::Result<MultiHorizonResult>
   run(const RebalanceSchedule &sched, const std::function<HorizonSources(atx::usize s)> &sources_at,
       const std::function<const FactorModel &(atx::usize s)> &model_at,
@@ -181,7 +185,7 @@ private:
 
   [[nodiscard]] atx::core::Result<std::vector<atx::f64>>
   solve_augmented(const std::vector<atx::f64> &aim, const FactorModel &V,
-                  std::span<const atx::f64> w_prev) const;
+                  std::span<const atx::f64> w_prev, const book::CostInputs &cost) const;
 
   // solve_stacked_mpc (S8.7) — the GEOMETRIC HORIZON-BLEND benched alternative (NOT a
   // true joint O(N·H) QP; the recorded lift). A constant trajectory ⇒ coincides with the

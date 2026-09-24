@@ -133,11 +133,19 @@ constexpr atx::usize kCorpColSic = 5;    // sic_code (kNoSector f64 sentinel if 
 // The corp Dataset stores codes f64-widened with kNoSector (-1.0) as the f64
 // "absent" sentinel; a present code is a non-negative integer. Missing → -1,
 // NEVER 0 (0 is a valid-looking sector and would silently misclassify).
+[[nodiscard]] bool valid_sector_value(atx::f64 value) noexcept {
+  // Conversion outside i32 range is undefined; fractional truncation would also
+  // manufacture a different classification. The i32 upper bound is exact in f64.
+  return std::isfinite(value) && value >= 0.0 &&
+         value <= static_cast<atx::f64>(std::numeric_limits<atx::i32>::max()) &&
+         std::trunc(value) == value;
+}
+
 [[nodiscard]] atx::i32 resolve_sector(atx::f64 gics, atx::f64 sic) noexcept {
-  if (gics != kNoSector && !std::isnan(gics)) {
+  if (valid_sector_value(gics)) {
     return static_cast<atx::i32>(gics);
   }
-  if (sic != kNoSector && !std::isnan(sic)) {
+  if (valid_sector_value(sic)) {
     return static_cast<atx::i32>(sic);
   }
   return kNoSectorCode;

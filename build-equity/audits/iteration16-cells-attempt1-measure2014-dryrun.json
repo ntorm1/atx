@@ -1,0 +1,148 @@
+{
+  "script": "C:/atx/.worktrees/equity-platform/build-equity/audits/iteration16_run_cells.py",
+  "script_sha256": "4c88159b2e4ce461430550121baa68701be3d26a7b56d4b73888b7af5b4443ed",
+  "generated_utc": "2026-09-21T22:30:37Z",
+  "attempt": 1,
+  "stamp": "20260920",
+  "dry_run": true,
+  "resume": false,
+  "stop_on_failure": true,
+  "evaluation_start_rule": "first NYSE session on/after Y-01-01, hard table {\"2013\": \"2013-04-04\", \"2014\": \"2014-01-02\", \"2015\": \"2015-01-02\", \"2016\": \"2016-01-04\", \"2017\": \"2017-01-03\", \"2018\": \"2018-01-02\", \"2019\": \"2019-01-02\"}",
+  "warmup_rule": "(Y-1)-01-01 minus 10 calendar days (~260 NYSE sessions, above the 256-row baseline warmup; surplus rows harmless); 2013 = 2012-03-26 (cp14 anchor); override with --warmup-start-<Y>",
+  "warmup_overrides": {},
+  "not_fit_cells": {
+    "2017_t3000": "5,072 > kMaxIcInstruments 4,096"
+  },
+  "preflight": {
+    "checked_utc": "2026-09-21T22:30:37Z",
+    "inputs": {
+      "atx_impl": {
+        "path": "build-equity-rel/bin/atx-impl.exe",
+        "exists": true,
+        "sha256": "d06a690d7a19d1f8c8f69ebb79cc72ee037b7f212c75c9268d9fc8085824b3cd"
+      },
+      "segs": {
+        "path": "C:/atx/data/tickerhistory_training_native_2012_2019_20260920/segments",
+        "exists": true
+      },
+      "prep_manifest": {
+        "path": "C:/atx/data/tickerhistory_training_20120326_20191231_20260920/manifest.json",
+        "exists": true,
+        "sha256": "06fb57b854769bc19559d545c6d33cce2494a896ebd3dbb34304f72d1da9982b"
+      },
+      "membership": {
+        "path": "C:/atx/data/equity_universe_pit_2013_2019_20260920/membership.bin",
+        "exists": true,
+        "sha256": "776bda8045feed80d1e21fd31a3130539a8d2f334bb8fd9bb372faceb1094ac4"
+      },
+      "cp14_design": {
+        "path": "C:/atx/.worktrees/equity-platform/atx-engine/reviews/2026-09-20-iteration14-cross-section-ic-design.md",
+        "exists": true,
+        "sha256": "888c726b123c02b39636876a667cfab890b4304794f6be42d46d35befbedbe25"
+      },
+      "cp16_design": {
+        "path": "C:/atx/.worktrees/equity-platform/atx-engine/reviews/2026-09-20-iteration16-alpha-scorecard-design.md",
+        "exists": true,
+        "sha256": "a83484037cae527e2fbfba5dce04289742d1c81666b2c03c132f3da9268c04d1"
+      },
+      "ledger_dir": {
+        "path": "atx-engine/reviews",
+        "exists": true
+      }
+    },
+    "errors": [],
+    "cp14_design_sha256_expected": "888c726b123c02b39636876a667cfab890b4304794f6be42d46d35befbedbe25",
+    "cp16_design_sha256": "a83484037cae527e2fbfba5dce04289742d1c81666b2c03c132f3da9268c04d1",
+    "cp16_design_sha256_expected": "a83484037cae527e2fbfba5dce04289742d1c81666b2c03c132f3da9268c04d1"
+  },
+  "ledger": {
+    "path": "atx-engine/reviews/trial-ledger-cp17-families.jsonl",
+    "lines_before": 0,
+    "lines_after": 0
+  },
+  "cells": [
+    {
+      "year": 2014,
+      "cut": 1000,
+      "eval_start": "2014-01-02",
+      "eval_end_exclusive": "2015-01-01",
+      "warmup_start": "2012-12-22",
+      "dirs": {
+        "ctx": "C:/atx/data/equity_scorecard16_ctx_2014_t1000_20260920",
+        "base": "C:/atx/data/equity_scorecard16_base_2014_t1000_20260920",
+        "ic": "C:/atx/data/equity_scorecard17_ic_2014_t1000_20260921"
+      },
+      "commands": {
+        "panel": [
+          "build-equity-rel/bin/atx-impl.exe",
+          "panel",
+          "--segs",
+          "C:/atx/data/tickerhistory_training_native_2012_2019_20260920/segments",
+          "--panel-out",
+          "C:/atx/data/equity_scorecard16_ctx_2014_t1000_20260920/context.bin",
+          "--start",
+          "2012-12-22",
+          "--end",
+          "2015-01-01",
+          "--min-adv-usd",
+          "0",
+          "--min-price",
+          "1",
+          "--top-n-by-adv",
+          "0",
+          "--compact-universe",
+          "true",
+          "--preparation-manifest",
+          "C:/atx/data/tickerhistory_training_20120326_20191231_20260920/manifest.json",
+          "--universe-membership",
+          "C:/atx/data/equity_universe_pit_2013_2019_20260920/membership.bin",
+          "--universe-cut",
+          "1000:0.00",
+          "--universe-eval-start",
+          "2014-01-01"
+        ],
+        "baseline": [
+          "build-equity-rel/bin/atx-impl.exe",
+          "equity-baseline",
+          "--panel",
+          "C:/atx/data/equity_scorecard16_ctx_2014_t1000_20260920/context.bin",
+          "--out",
+          "C:/atx/data/equity_scorecard16_base_2014_t1000_20260920",
+          "--evaluation-start",
+          "2014-01-02",
+          "--evaluation-end",
+          "2015-01-01",
+          "--max-working-bytes",
+          "3000000000"
+        ],
+        "ic": [
+          "build-equity-rel/bin/atx-impl.exe",
+          "equity-ic",
+          "--panel",
+          "C:/atx/data/equity_scorecard16_ctx_2014_t1000_20260920/context.bin",
+          "--baseline-dir",
+          "C:/atx/data/equity_scorecard16_base_2014_t1000_20260920",
+          "--out",
+          "C:/atx/data/equity_scorecard17_ic_2014_t1000_20260921",
+          "--evaluation-start",
+          "2014-01-02",
+          "--evaluation-end",
+          "2015-01-01",
+          "--max-working-bytes",
+          "3000000000",
+          "--trial-ledger",
+          "atx-engine/reviews/trial-ledger-cp17-families.jsonl"
+        ]
+      },
+      "phases": {},
+      "status": "dry_run"
+    }
+  ],
+  "phases": [
+    "ic"
+  ],
+  "ic_name_prefix": "equity_scorecard17",
+  "ic_stamp": "20260921",
+  "parallel": 1,
+  "all_run_cells_ok": true
+}

@@ -175,6 +175,7 @@ TEST_F(AtxImplNeutralize, GroupNeutralizeReachableFromRunOptimize) {
   ASSERT_TRUE(make_pure_tilt_combo(combo_path, M, D).has_value());
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = research_path.string();
   cfg.combo = combo_path.string();
   cfg.gross = 1.0;
@@ -218,6 +219,7 @@ TEST_F(AtxImplNeutralize, GroupNeutralizeInertOff) {
   ASSERT_TRUE(make_pure_tilt_combo(combo_path, M, D).has_value());
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = research_path.string();
   cfg.combo = combo_path.string();
   cfg.gross = 1.0;

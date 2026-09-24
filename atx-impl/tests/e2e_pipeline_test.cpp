@@ -12,6 +12,7 @@
 //   - stay fast (in-process zip build, no disk seg files needed for run mode)
 
 #include <array>
+#include <atomic>
 #include <cinttypes>
 #include <cmath>
 #include <cstdint>
@@ -19,11 +20,13 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 #include <miniz.h>
+#include <nlohmann/json.hpp>
 
 #include "artifacts.hpp"
 #include "config.hpp"
@@ -149,6 +152,9 @@ static atx::impl::RunConfig make_base_cfg(const std::string& zip,
     cfg.rebalance    = "weekly";
     cfg.risk_aversion = 1.0;
     cfg.report_out   = report_dir;
+    cfg.report_aum = 1'000'000.0;
+    cfg.replay_trade_bps = 5.0;
+    cfg.replay_annual_borrow_bps = 365.0;
     return cfg;
 }
 
@@ -210,6 +216,7 @@ static ::testing::AssertionResult run_staged(const atx::impl::RunConfig& base_cf
     c_comb.combo_out = (fs::path{work} / "combo.bin").string();
     // A1 — feed combine from the same accumulated library (mirrors run_all).
     c_comb.library_dir = c_disc.library_dir;
+    if (cfg.set_flags.count("holdout-frac") == 0) c_comb.combine_holdout_frac = 0.25;
     auto r_comb = atx::impl::run_combine(c_comb);
     if (!r_comb.has_value())
         return ::testing::AssertionFailure() << "run_combine: " << r_comb.error().message();
@@ -234,6 +241,8 @@ static ::testing::AssertionResult run_staged(const atx::impl::RunConfig& base_cf
     atx::impl::RunConfig c_rep = cfg;
     c_rep.panel      = (fs::path{work} / "panel.bin").string();
     c_rep.books      = (fs::path{work} / "books.bin").string();
+    c_rep.combo      = (fs::path{work} / "combo.bin").string();
+    c_rep.cost_bps   = 0.0;
     c_rep.report_out = report_dir;
     auto r_rep = atx::impl::run_report(c_rep);
     if (!r_rep.has_value())
@@ -266,11 +275,14 @@ protected:
 
     // Create a uniquely-named temp dir for this test (clean up in TearDown).
     fs::path make_work_dir(const char* tag) {
+        static std::atomic<unsigned long long> next{0};
         const fs::path d = fs::temp_directory_path() /
-                           (std::string("atx_impl_e2e_") + tag);
+                           (std::string("atx_impl_e2e_") + tag + "_" +
+                            std::to_string(next.fetch_add(1)));
         std::error_code ec;
-        fs::remove_all(d, ec);
-        fs::create_directories(d, ec);
+        if (!fs::create_directory(d, ec) || ec) {
+            throw std::runtime_error("cannot create fresh E2E fixture: " + d.string());
+        }
         work_dirs_.push_back(d);
         return d;
     }
@@ -278,7 +290,12 @@ protected:
     void TearDown() override {
         for (const auto& d : work_dirs_) {
             std::error_code ec;
-            fs::remove_all(d, ec);
+            const auto resolved = fs::weakly_canonical(d, ec);
+            const auto temporary = fs::weakly_canonical(fs::temp_directory_path(), ec);
+            if (!ec && resolved.parent_path() == temporary &&
+                resolved.filename().string().starts_with("atx_impl_e2e_")) {
+                fs::remove_all(resolved, ec);
+            }
         }
         work_dirs_.clear();
     }
@@ -300,6 +317,7 @@ TEST_F(AtxImplE2E, RunProducesReport) {
 
     atx::impl::RunConfig cfg =
         make_base_cfg(s_zip_, work.string(), report.string());
+    cfg.cost_bps = 20.0; // Planning charge differs from the actual 5 bps replay fee.
 
     auto result = atx::impl::run_all(cfg);
     ASSERT_TRUE(result.has_value()) << result.error().message();
@@ -320,15 +338,16 @@ TEST_F(AtxImplE2E, RunProducesReport) {
     }
     EXPECT_TRUE(has_dsl) << "no .dsl files in alphas/";
 
-    // Report canonical TSVs.
-    EXPECT_TRUE(fs::exists(report / "pnl.tsv"))          << "missing pnl.tsv";
-    EXPECT_TRUE(fs::exists(report / "leverage.tsv"))     << "missing leverage.tsv";
-    EXPECT_TRUE(fs::exists(report / "exposure.tsv"))     << "missing exposure.tsv";
-    EXPECT_TRUE(fs::exists(report / "census.tsv"))       << "missing census.tsv";
-
-    // Convenience files.
-    EXPECT_TRUE(fs::exists(report / "equity_curve.csv")) << "missing equity_curve.csv";
-    EXPECT_TRUE(fs::exists(report / "summary.txt"))      << "missing summary.txt";
+    for (const char* file : {"ledger.csv", "trades.csv", "final_tri_units.csv",
+                             "summary.json", "manifest.json"}) {
+        EXPECT_TRUE(fs::exists(report / file)) << "missing " << file;
+    }
+    std::ifstream summary_file(report / "summary.json");
+    const auto summary = nlohmann::json::parse(summary_file);
+    EXPECT_EQ(summary.at("full").at("observed_intervals"), kDates - 1);
+    EXPECT_GT(summary.at("full").at("trade_cost_dollars").get<double>(), 0.0);
+    EXPECT_GT(summary.at("full").at("borrow_cost_dollars").get<double>(), 0.0);
+    EXPECT_EQ(summary.at("strategy_capacity").at("status"), "unavailable");
 
     // Run digest must be non-zero.
     EXPECT_NE(result->digest, atx::u64{0}) << "run digest must be non-zero";
@@ -392,8 +411,8 @@ TEST_F(AtxImplE2E, StagedEqualsRun) {
 
 // ---------------------------------------------------------------------------
 // Test 3: ReportBytesDeterministic (R8)
-// Run the full pipeline twice into two separate dirs. Assert pnl.tsv (and all
-// other TSVs) are byte-identical and run digests are equal.
+// Run the full pipeline twice into separate dirs. Exact replay companions and
+// the identified report manifest must be byte-identical.
 // ---------------------------------------------------------------------------
 TEST_F(AtxImplE2E, ReportBytesDeterministic) {
     const fs::path work_a   = make_work_dir("det_work_a");
@@ -415,14 +434,15 @@ TEST_F(AtxImplE2E, ReportBytesDeterministic) {
     // Run digests must be equal.
     EXPECT_EQ(r_a->digest, r_b->digest) << "run digests differ across two runs";
 
-    // Each canonical TSV must be byte-identical.
+    // Every canonical replay companion must be byte-identical.
     auto read_file = [](const fs::path& p) -> std::vector<char> {
         std::ifstream f(p, std::ios::binary);
         return std::vector<char>((std::istreambuf_iterator<char>(f)),
                                   std::istreambuf_iterator<char>());
     };
 
-    for (const char* tsv : {"pnl.tsv", "leverage.tsv", "exposure.tsv", "census.tsv"}) {
+    for (const char* tsv : {"ledger.csv", "trades.csv", "final_tri_units.csv",
+                            "summary.json", "manifest.json"}) {
         const auto da = read_file(report_a / tsv);
         const auto db = read_file(report_b / tsv);
         EXPECT_FALSE(da.empty()) << tsv << " (run A) is empty";
@@ -515,28 +535,19 @@ TEST_F(AtxImplE2E, RunAccumulatesLibraryAndCombineConsumesIt) {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: parse a key=value line out of summary.txt (empty if absent).
+// Read the new identified replay summary; legacy tests below retain their format.
 // ---------------------------------------------------------------------------
-static std::string read_summary_kv(const fs::path& summary, const std::string& key) {
-    std::ifstream f(summary);
-    std::string line;
-    while (std::getline(f, line)) {
-        const auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        if (line.substr(0, eq) == key) return line.substr(eq + 1);
-    }
-    return "";
+static nlohmann::json read_replay_summary(const fs::path& directory) {
+    std::ifstream file(directory / "summary.json");
+    return nlohmann::json::parse(file);
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: RunAllEmitsFiniteOosPortfolioSharpe (A2b — the keystone metric)
-// run_all wires report at combo.bin so it reads combo.bin.meta and splits the
-// per-period series IS/OOS. Assert summary.txt carries a FINITE portfolio_sharpe
-// and a REAL OOS split (n_oos_periods >= 1, holdout_begin < n periods). We do
-// NOT hard-assert a positive Sharpe on the synthetic fixture — that data-gated
-// assertion is Task A4's job.
+// The identified report covers every daily interval and attributes post-fit
+// results only after a qualifying decision becomes effective. No signal merit
+// or valid model-selection holdout is inferred from this wiring fixture.
 // ---------------------------------------------------------------------------
-TEST_F(AtxImplE2E, RunAllEmitsFiniteOosPortfolioSharpe) {
+TEST_F(AtxImplE2E, RunAllEmitsCompleteDailyAndPostFitReplayStatistics) {
     const fs::path work   = make_work_dir("a2b_work");
     const fs::path report = make_work_dir("a2b_report");
 
@@ -546,53 +557,30 @@ TEST_F(AtxImplE2E, RunAllEmitsFiniteOosPortfolioSharpe) {
     auto result = atx::impl::run_all(cfg);
     ASSERT_TRUE(result.has_value()) << result.error().message();
 
-    const fs::path summary = report / "summary.txt";
-    ASSERT_TRUE(fs::exists(summary)) << "summary.txt missing";
+    ASSERT_TRUE(fs::exists(report / "summary.json"));
+    const auto summary = read_replay_summary(report);
 
     // combo.bin.meta must have been written by combine and read by report.
     ASSERT_TRUE(fs::exists(work / "combo.bin.meta")) << "combo.bin.meta missing";
 
-    // portfolio_sharpe (full series) must be present and FINITE.
-    const std::string ps_s = read_summary_kv(summary, "portfolio_sharpe");
-    ASSERT_FALSE(ps_s.empty()) << "summary.txt missing portfolio_sharpe=";
-    const double portfolio_sharpe = std::stod(ps_s);
-    EXPECT_TRUE(std::isfinite(portfolio_sharpe))
-        << "portfolio_sharpe is not finite: " << ps_s;
-
-    // OOS Sharpe key must be emitted (value may be NaN-free finite; the OOS
-    // split is real so it should parse).
-    const std::string oos_s = read_summary_kv(summary, "portfolio_oos_sharpe");
-    ASSERT_FALSE(oos_s.empty()) << "summary.txt missing portfolio_oos_sharpe=";
-
-    // A REAL OOS split actually happened.
-    const std::string n_oos_s = read_summary_kv(summary, "n_oos_periods");
-    ASSERT_FALSE(n_oos_s.empty()) << "summary.txt missing n_oos_periods=";
-    const long n_oos = std::stol(n_oos_s);
-    EXPECT_GE(n_oos, 1) << "expected a non-empty OOS window (n_oos_periods>=1)";
-
-    const std::string hb_s = read_summary_kv(summary, "holdout_begin");
-    ASSERT_FALSE(hb_s.empty()) << "summary.txt missing holdout_begin=";
-    const long holdout_begin = std::stol(hb_s);
-
-    const std::string nis_s = read_summary_kv(summary, "n_is_periods");
-    ASSERT_FALSE(nis_s.empty()) << "summary.txt missing n_is_periods=";
-    const long n_is = std::stol(nis_s);
-    EXPECT_GE(n_is, 1) << "expected a non-empty IS window (n_is_periods>=1)";
-
-    // holdout_begin must carve a real interior boundary (0 < hb < n_periods).
-    // n_periods is read from combo.bin.meta == research.dates().
-    EXPECT_GT(holdout_begin, 0) << "holdout_begin must be > 0";
-
-    // portfolio_sharpe (full) and oos kvs must also be on the StageResult,
-    // but run_all only surfaces per-stage digests; summary.txt is the contract.
+    const auto& full = summary.at("full");
+    EXPECT_EQ(full.at("observed_intervals"), kDates - 1);
+    ASSERT_FALSE(full.at("sharpe_252").is_null());
+    EXPECT_TRUE(std::isfinite(full.at("sharpe_252").get<double>()));
+    ASSERT_FALSE(summary.at("post_fit").is_null());
+    const auto& post = summary.at("post_fit");
+    // Fit ends at 75, a weekly decision takes effect at 76, and every interval
+    // through final valuation 99 is attributed. This does not certify selection.
+    EXPECT_EQ(post.at("observed_intervals"), 23);
+    ASSERT_FALSE(post.at("sharpe_252").is_null());
+    EXPECT_TRUE(std::isfinite(post.at("sharpe_252").get<double>()));
+    EXPECT_EQ(summary.at("investment_validity"), "unverified-research-diagnostic");
 }
 
 // ---------------------------------------------------------------------------
 // Test 6: ReportWithoutComboStillWorksAndIsByteIdentical (A2b)
-// Run report STANDALONE with cfg.combo empty: it must succeed, summary.txt must
-// carry portfolio_sharpe= (full series) and n_oos_periods=0 (no split), and the
-// report stage digest + canonical TSV bytes must match a baseline run (no
-// regression from the additive metrics).
+// A standalone identified report without combo metadata has no post-fit claim.
+// Its ledger and report identity remain deterministic across fresh output paths.
 // ---------------------------------------------------------------------------
 TEST_F(AtxImplE2E, ReportWithoutComboStillWorksAndIsByteIdentical) {
     const fs::path work = make_work_dir("a2b_nocombo_work");
@@ -631,28 +619,19 @@ TEST_F(AtxImplE2E, ReportWithoutComboStillWorksAndIsByteIdentical) {
     // Deterministic twice-run: digests equal.
     EXPECT_EQ(dig_a, dig_b) << "standalone report digest not deterministic";
 
-    // summary.txt: full-series portfolio_sharpe present + finite; no OOS split.
-    const fs::path summary = rep_a / "summary.txt";
-    ASSERT_TRUE(fs::exists(summary)) << "summary.txt missing";
+    ASSERT_TRUE(fs::exists(rep_a / "summary.json"));
+    const auto summary = read_replay_summary(rep_a);
+    EXPECT_EQ(summary.at("full").at("observed_intervals"), kDates - 1);
+    EXPECT_TRUE(summary.at("post_fit").is_null());
 
-    const std::string ps_s = read_summary_kv(summary, "portfolio_sharpe");
-    ASSERT_FALSE(ps_s.empty()) << "summary.txt missing portfolio_sharpe=";
-    EXPECT_TRUE(std::isfinite(std::stod(ps_s)))
-        << "portfolio_sharpe not finite (no-combo): " << ps_s;
-
-    const std::string n_oos_s = read_summary_kv(summary, "n_oos_periods");
-    ASSERT_FALSE(n_oos_s.empty()) << "summary.txt missing n_oos_periods=";
-    EXPECT_EQ(std::stol(n_oos_s), 0L)
-        << "no-combo report must have an empty OOS window (n_oos_periods=0)";
-
-    // Canonical TSVs byte-identical across the two standalone runs (R8 / digest
-    // proof: the additive metrics did not perturb write_report's output).
+    // Canonical replay outputs are identical across the two standalone runs.
     auto read_file = [](const fs::path& p) -> std::vector<char> {
         std::ifstream f(p, std::ios::binary);
         return std::vector<char>((std::istreambuf_iterator<char>(f)),
                                   std::istreambuf_iterator<char>());
     };
-    for (const char* tsv : {"pnl.tsv", "leverage.tsv", "exposure.tsv", "census.tsv"}) {
+    for (const char* tsv : {"ledger.csv", "trades.csv", "final_tri_units.csv",
+                            "summary.json", "manifest.json"}) {
         const auto da = read_file(rep_a / tsv);
         const auto db = read_file(rep_b / tsv);
         EXPECT_FALSE(da.empty()) << tsv << " (report A) is empty";
@@ -799,6 +778,7 @@ run_s6_chain(const std::string& panel_path,
     {
         atx::impl::RunConfig cfg;
         cfg.subcommand      = "combine";
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel           = panel_path;
         cfg.alphas          = alpha_dir;
         cfg.combo_out       = combo_out;
@@ -822,6 +802,7 @@ run_s6_chain(const std::string& panel_path,
     {
         atx::impl::RunConfig cfg;
         cfg.subcommand    = "optimize";
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel         = panel_path;
         cfg.combo         = combo_out;
         cfg.books_out     = books_out;
@@ -841,6 +822,7 @@ run_s6_chain(const std::string& panel_path,
     {
         atx::impl::RunConfig cfg;
         cfg.subcommand = "report";
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel      = panel_path;
         cfg.books      = books_out;
         cfg.report_out = report_dir.string();

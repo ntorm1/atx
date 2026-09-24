@@ -194,6 +194,7 @@ TEST(MetabookDeadAlphaWire, CrowdingDeleversMegaBook) {
 
   // Baseline: kind==Factor, crowding defense OFF.
   atx::impl::RunConfig cfg_base;
+  cfg_base.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg_base.panel = research_path.string();
   cfg_base.combo = combo_path.string();
   cfg_base.gross = 1.0;
@@ -239,6 +240,7 @@ TEST(MetabookDeadAlphaWire, MegaBookFailOpenByteIdentical) {
   const MetaBookStageConfig scfg;
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = research_path.string();
   cfg.combo = combo_path.string();
   cfg.gross = 1.0;

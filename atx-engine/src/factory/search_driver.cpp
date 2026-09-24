@@ -4,6 +4,7 @@
 #include <cmath>         // std::isfinite (mean_raw telemetry, NaN/inf-safe)
 #include <cstddef>       // std::size_t (hash_combine seed type)
 #include <cstdint>       // std::uint8_t (compiled[] flag vector)
+#include <limits>        // std::numeric_limits (L3 rung NaN rejection)
 #include <memory>        // std::unique_ptr, std::make_unique
 #include <optional>      // std::optional (per-child single-writer reproduce slots, Tier 5)
 #include <span>          // std::span
@@ -75,6 +76,10 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   SearchResult res;
   res.seed = cfg.master_seed;
   res.best_fitness_per_gen.reserve(cfg.generations);
+  // L3 per-run state: the canonical key config and the fingerprint index start
+  // clean on every run() so a same-seed replay is byte-identical (F1).
+  canon_cfg_ = cfg.canon;
+  fp_index_ = FingerprintIndex{};
 
   CanonSet canon; // F6 dedup: distinct structures scored so far
   // Run-LOCAL fitness cache keyed by canon_hash (F6 throughput: an equivalent
@@ -104,7 +109,8 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
   // slate — F1). Empty + unused when the behavioral objective is inactive. `nbr`
   // is the per-generation k-nearest population scratch, sized once and reused (no
   // hot-path alloc in the inner generation loop).
-  BehavioralArchive behavior_archive{cfg.behavior_archive_cap};
+  BehavioralArchive behavior_archive{cfg.behavior_archive_cap, cfg.archive_eviction,
+                                     cfg.behavior_metric};
   std::vector<std::span<const atx::f64>> nbr;
 
   // Initial population + start generation. Off-path (resume == nullptr) this is
@@ -357,6 +363,9 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
         if (idx >= scored.size()) {
           continue; // defensive (population shrank) — never expected
         }
+        if (scored[idx].origin == ScoreOrigin::FidelityRejected) {
+          continue; // L3: never fully scored (sentinel raw) -> no realized gain to credit
+        }
         gain_sum[o] += scored[idx].fitness - prev_parent_best;
         ++gain_cnt[o];
       }
@@ -402,7 +411,7 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
       continue;
     }
     Genome g{std::move(*ast), std::move(*info), 0};
-    g.canon_hash = canonical_hash(g);
+    g.canon_hash = canon_key(g);
     seeds.push_back(std::move(g));
   }
   std::vector<Genome> pop;
@@ -471,7 +480,7 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
         }
         static_cast<void>(op_used); // used only for the fallback logic above
         if (child.has_value()) {
-          child->canon_hash = canonical_hash(*child);
+          child->canon_hash = canon_key(*child);
           child->from_seed = true; // seed descendant: inherits the tag
           pop.push_back(std::move(*child));
         } else {
@@ -525,7 +534,7 @@ SearchDriver::SearchDriver(const alpha::Library &lib, const alpha::Panel &panel,
                                         kGenSeedAxis ^ static_cast<atx::u64>(attempt), i)};
       auto gen = generate_genome(gc, lib_, rng);
       if (!gen.has_value()) { continue; }
-      gen->canon_hash = canonical_hash(*gen);
+      gen->canon_hash = canon_key(*gen);
       if (seen0.insert(gen->canon_hash).second) { chosen = std::move(*gen); break; }
       // collision: keep the last valid sample as a fallback even if not distinct
       chosen = std::move(*gen);
@@ -619,7 +628,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   // No cross-genome substitution: fresh[k] digests from its OWN eval; fitness
   // for to_score[j] uses that SAME genome's SignalSet.
   // -----------------------------------------------------------------------
-  const atx::usize n_fresh = fresh.size();
+  atx::usize n_fresh = fresh.size();
   std::vector<atx::u64> digest_slot(n_fresh, atx::u64{0});
   std::vector<std::uint8_t> compiled(n_fresh, std::uint8_t{0});
 
@@ -651,7 +660,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   for (atx::usize k = 0; k < n_fresh; ++k) {
     cost_fresh[k] = static_cast<atx::f64>(fresh[k]->ast.nodes().size());
   }
-  const std::vector<parallel::ShardId> order_fresh = lpt.dispatch_order(cost_fresh);
+  std::vector<parallel::ShardId> order_fresh = lpt.dispatch_order(cost_fresh);
 
   // `engines` (one reusable Engine per worker, bound to panel_) is owned by run()
   // and passed in: it is built ONCE per run and reused across every generation
@@ -712,6 +721,59 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   gen_fit.capacity_objective = cfg.capacity_objective;
   gen_fit.turnover_objective = cfg.turnover_objective;
 
+  // L3 multi-fidelity race (opt-in). The distinct fresh candidates are raced on
+  // strided sub-panels; the rejected ones leave `fresh` (no full eval, no digest
+  // fold) and get the worst-case sentinel score (rejected_score(): raw -inf,
+  // ScoreOrigin::FidelityRejected) in score_slot, but stay in `to_score` so the
+  // Phase 4 merge still inserts them into canon (a rejected candidate IS a trial)
+  // and all_scored. The sentinel ranks them last in ScalarRaw, keeps them off the
+  // NSGA-II fronts of evaluated candidates and out of admitted_candidates (a
+  // default all-zero score would outrank negative-raw candidates and sit on
+  // front 0 whenever a negative objective such as parsimony is live).
+  // Off (the default) -> `rejected` is empty -> no-op.
+  if (cfg.fidelity.enabled) {
+    const std::vector<atx::u64> rejected =
+        fidelity_reject(to_score, cfg, gen_fit, det_pool, res);
+    if (!rejected.empty()) {
+      const std::unordered_set<atx::u64> rej(rejected.begin(), rejected.end());
+      for (atx::usize j = 0; j < n_to_score; ++j) {
+        if (rej.find(to_score[j]->canon_hash) != rej.end()) {
+          score_slot[j] = rejected_score();
+        }
+      }
+      std::vector<const Genome *> kept;
+      kept.reserve(fresh.size());
+      std::vector<atx::f64> kept_cost;
+      kept_cost.reserve(fresh.size());
+      for (const Genome *g : fresh) {
+        if (rej.find(g->canon_hash) == rej.end()) {
+          kept.push_back(g);
+          kept_cost.push_back(static_cast<atx::f64>(g->ast.nodes().size()));
+        }
+      }
+      fresh = std::move(kept);
+      n_fresh = fresh.size();
+      digest_slot.assign(n_fresh, atx::u64{0});
+      compiled.assign(n_fresh, std::uint8_t{0});
+      order_fresh = lpt.dispatch_order(kept_cost);
+    }
+  }
+
+  // L3 output-fingerprint dedup (opt-in): per-representative fingerprint slots,
+  // filled inside the parallel region (single writer per j). `fp_index_` is only
+  // READ inside the region (it holds prior generations' fingerprints) and is
+  // updated serially after the barrier -> worker-count invariant.
+  // Gated on the Rank transform: the fingerprint is rank-quantized (monotone-
+  // invariant), so under ZScore/Raw weights x and f(x) trade different books and
+  // must not share a score.
+  const bool fp_on = cfg.output_dedup && policy_.transform == Transform::Rank;
+  std::vector<atx::u64> fp_slot(fp_on ? n_to_score : 0U, atx::u64{0});
+  std::vector<std::uint8_t> fp_valid(fp_on ? n_to_score : 0U, std::uint8_t{0});
+  std::vector<atx::u64> fp_owner(fp_on ? n_to_score : 0U, atx::u64{0});
+  std::vector<std::uint8_t> fp_hit(fp_on ? n_to_score : 0U, std::uint8_t{0});
+  const std::vector<atx::usize> fp_rows =
+      fp_on ? probe_rows(panel_.dates(), cfg.fingerprint_rows) : std::vector<atx::usize>{};
+
   // S3-1 PERF: create a shared CpcvCache for this generation.  All workers in the
   // parallel_for share it (its internal mutex serialises the rare cold insert).
   // After the first genome is scored, every subsequent call for the same
@@ -734,6 +796,17 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     const auto it = score_j_of_ptr.find(fresh[k]);
     if (it != score_j_of_ptr.end() && ss.has_value()) {
       const atx::usize j = it->second;
+      if (fp_on && !ss->alphas.empty()) {
+        thread_local FingerprintScratch fp_scratch;
+        fp_slot[j] = signal_fingerprint(ss->alphas.front().values, panel_.instruments(),
+                                        fp_rows, fp_scratch, cfg.fingerprint_quant);
+        fp_valid[j] = std::uint8_t{1};
+        if (const atx::u64 *owner = fp_index_.find(fp_slot[j]); owner != nullptr) {
+          fp_owner[j] = *owner; // reuse the prior-generation owner's score (serial merge)
+          fp_hit[j] = std::uint8_t{1};
+          return;
+        }
+      }
       auto rep = pool_aware_fitness(*to_score[j], pool, panel_, policy_, sim_, gen_fit,
                                    /*weak_panel=*/weak_panel_, /*engine=*/engines[wid].get(),
                                    /*signals=*/&*ss, /*cpcv_cache=*/&cpcv_cache);
@@ -805,6 +878,31 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
   // to_score order (== pop first-occurrence order), identical to the prior
   // sequential implementation's per-pop-member insertion sequence.
   // -----------------------------------------------------------------------
+  if (fp_on) {
+    // Serial, to_score order: resolve fingerprint hits from the (prior-generation)
+    // owner's cached score, then publish this generation's new fingerprints with
+    // first-occurrence ownership.
+    for (atx::usize j = 0; j < n_to_score; ++j) {
+      if (fp_hit[j] != std::uint8_t{0}) {
+        const auto it = fitness_cache.find(fp_owner[j]);
+        if (it != fitness_cache.end()) {
+          score_slot[j] = it->second;
+          score_slot[j].origin = ScoreOrigin::FingerprintBorrowed; // approximate
+          // Structural objective is per-genome: recompute parsimony from THIS
+          // genome's node count instead of inheriting the owner's.
+          if (cfg.enable_parsimony) {
+            score_slot[j].objectives[kObjParsimony] =
+                -static_cast<atx::f64>(to_score[j]->ast.nodes().size());
+            score_slot[j].n_objectives = static_cast<atx::u8>(
+                std::max<atx::usize>(score_slot[j].n_objectives, kObjParsimony + 1U));
+          }
+        }
+        ++res.fingerprint_hits;
+      } else if (fp_valid[j] != std::uint8_t{0}) {
+        static_cast<void>(fp_index_.insert(fp_slot[j], to_score[j]->canon_hash));
+      }
+    }
+  }
   for (atx::usize j = 0; j < n_to_score; ++j) {
     const atx::u64 hash = to_score[j]->canon_hash;
     canon.insert(hash);
@@ -827,6 +925,7 @@ SearchDriver::evaluate_generation(const std::vector<Genome> &pop, const SearchCo
     s.objectives = cs.objectives;
     s.n_objectives = cs.n_objectives;
     s.descriptor = std::move(cs.descriptor); // S4.2: phenotype for the novelty pass
+    s.origin = cs.origin;                    // L3: Full / FingerprintBorrowed / FidelityRejected
     s.genome.canon_hash = g.canon_hash;
     out.push_back(std::move(s));
   }
@@ -1025,7 +1124,7 @@ void SearchDriver::update_archive(const std::vector<Scored> &scored,
     atx::u8 op_used = 0xFF;
     auto child = make_child(scored, canon_order, cfg, rng, op_weights, gen, op_used);
     if (child.has_value()) {
-      child->canon_hash = canonical_hash(*child);
+      child->canon_hash = canon_key(*child);
       child_slot[p] = std::move(*child);
       child_ops[p] = op_used; // 0xFF for a crossover child; 0/1/2 for a mutation child
     } else {
@@ -1066,7 +1165,7 @@ void SearchDriver::update_archive(const std::vector<Scored> &scored,
                                       n_elites + p)};
     auto imm = generate_genome(imm_gc, lib_, rng);
     if (imm.has_value()) {
-      imm->canon_hash = canonical_hash(*imm);
+      imm->canon_hash = canon_key(*imm);
       child_slot[p] = std::move(*imm);
       child_ops[p] = atx::u8{0xFF}; // immigrant overwrites the mutation child -> uncredited
     }
@@ -1342,38 +1441,71 @@ void SearchDriver::assign_pareto_ranks(std::vector<Scored> &scored,
     return;
   }
 
-  // Flat row-major [n * k] objective buffer, sized once (cold per-generation path).
-  std::vector<atx::f64> flat(n * k);
+  // L3: fidelity-rejected rows (sentinel score, never fully evaluated) are kept
+  // OUT of the non-dominated sort — an all-zero / sentinel objective row would
+  // otherwise be mutually non-dominated with real candidates (e.g. a negative
+  // parsimony column). The sort runs over the "live" rows only, compacted in
+  // index order (so with no rejected rows local id == global id and the result
+  // is byte-identical to the pre-L3 path); rejected rows take the trailing front
+  // max_front + 1 with crowding 0. If EVERY row is rejected they form front 0.
+  std::vector<atx::usize> live;
+  live.reserve(n);
+  std::vector<atx::usize> local_of(n, n);
   for (atx::usize i = 0; i < n; ++i) {
-    for (atx::usize o = 0; o < k; ++o) {
-      flat[i * k + o] = scored[i].objectives[o];
+    if (scored[i].origin != ScoreOrigin::FidelityRejected) {
+      local_of[i] = live.size();
+      live.push_back(i);
     }
   }
-  const ObjMatrix obj{flat, n, k};
-  const std::vector<atx::u16> front_of = fast_nondominated_sort(obj, canon_order);
-  for (atx::usize i = 0; i < n; ++i) {
-    scored[i].rank = front_of[i];
-    scored[i].crowding = 0.0;
+  const atx::usize m = live.size();
+  if (m == 0) {
+    for (Scored &s : scored) {
+      s.rank = 0;
+      s.crowding = 0.0;
+    }
+    return;
   }
-  // Per-front crowding distance. Group ids by front (in canon_order so each
-  // front's member list is canonical-id stable), then score each group.
+  std::vector<atx::usize> local_canon;
+  local_canon.reserve(m);
+  for (const atx::usize i : canon_order) {
+    if (local_of[i] != n) {
+      local_canon.push_back(local_of[i]);
+    }
+  }
+
+  // Flat row-major [m * k] objective buffer, sized once (cold per-generation path).
+  std::vector<atx::f64> flat(m * k);
+  for (atx::usize l = 0; l < m; ++l) {
+    for (atx::usize o = 0; o < k; ++o) {
+      flat[l * k + o] = scored[live[l]].objectives[o];
+    }
+  }
+  const ObjMatrix obj{flat, m, k};
+  const std::vector<atx::u16> front_of = fast_nondominated_sort(obj, local_canon);
   atx::u16 max_front = 0;
   for (const atx::u16 f : front_of) {
     max_front = std::max(max_front, f);
   }
+  for (atx::usize i = 0; i < n; ++i) {
+    scored[i].rank = (local_of[i] != n) ? front_of[local_of[i]]
+                                        : static_cast<atx::u16>(max_front + 1U);
+    scored[i].crowding = 0.0;
+  }
+  // Per-front crowding distance. Group ids by front (in canon_order so each
+  // front's member list is canonical-id stable), then score each group.
   for (atx::u16 f = 0; f <= max_front; ++f) {
     std::vector<atx::usize> members;
-    for (const atx::usize i : canon_order) {
-      if (front_of[i] == f) {
-        members.push_back(i);
+    for (const atx::usize l : local_canon) {
+      if (front_of[l] == f) {
+        members.push_back(l);
       }
     }
     if (members.empty()) {
       continue;
     }
-    const std::vector<atx::f64> cd = crowding_distance(obj, members, canon_order);
-    for (const atx::usize i : members) {
-      scored[i].crowding = cd[i];
+    const std::vector<atx::f64> cd = crowding_distance(obj, members, local_canon);
+    for (const atx::usize l : members) {
+      scored[live[l]].crowding = cd[l];
     }
   }
 }
@@ -1488,6 +1620,11 @@ void SearchDriver::finalize(const std::vector<Scored> &scored, const CanonSet &c
   std::vector<atx::usize> order = pareto_ordered_indices(scored);
   for (const atx::usize i : order) {
     const Genome &g = scored[i].genome;
+    // L3: only a genome with a real full-fidelity score is emitted; a fidelity-
+    // rejected (sentinel) or fingerprint-borrowed (approximate) score is not.
+    if (scored[i].origin != ScoreOrigin::Full) {
+      continue;
+    }
     // Task 3.3: a tradeable alpha root must be F64. Reject bare Group (e.g.
     // a naked `sector` root) or Mask roots — they are not numeric signals.
     // Grammar partition (3.1) + dtype guard (3.2) prevent these from arising
@@ -1528,10 +1665,130 @@ SearchDriver::deserialize_population(const std::vector<std::string> &exprs) cons
   for (const auto &src : exprs) {
     ATX_TRY(auto ast, alpha::parse_expr(src, lib_));
     ATX_TRY(auto g, analyze_into(std::move(ast)));
-    g.canon_hash = canonical_hash(g);
+    g.canon_hash = canon_key(g);
     out.push_back(std::move(g));
   }
   return atx::core::Ok(std::move(out));
+}
+
+// ----- L3: canonical key + multi-fidelity race ---------------------------------
+
+[[nodiscard]] atx::u64 SearchDriver::canon_key(const Genome &g) const {
+  return canonical_hash(g, canon_cfg_); // default CanonCfg == structural hash
+}
+
+// Race the distinct fresh candidates through the LOW rungs (those before the
+// first full-fidelity rung) on strided sub-panels and return the canon hashes
+// that do not survive to the full pass. The low-rung score is the same scalar
+// the search maximizes (pool_aware_fitness raw) at reduced fidelity; a fitness
+// error scores NaN (a rung rejection). Fail-open: a sub-panel that cannot be
+// built, or a race that would reject EVERY candidate, rejects nothing.
+//
+// DETERMINISM: candidates are raced in to_score order (population first-
+// occurrence order, itself a pure function of the seeded search), each (cand,
+// rung) evaluation writes a single slot, and promotion sorts by a total value
+// key (fidelity.hpp) -> worker-count invariant. The sub-panels depend only on
+// (panel_, rung strides).
+[[nodiscard]] std::vector<atx::u64>
+SearchDriver::fidelity_reject(const std::vector<const Genome *> &to_score,
+                              const SearchConfig &cfg, const FitnessCfg &gen_fit,
+                              parallel::DetPool &det_pool, SearchResult &res) {
+  const FidelityCfg &fc = cfg.fidelity;
+  const atx::usize n_low = first_full_rung(fc);
+  if (n_low == 0 || to_score.size() < std::max<atx::usize>(fc.min_batch, 2U)) {
+    return {};
+  }
+  std::vector<const alpha::Panel *> rp(n_low, nullptr);
+  for (atx::usize r = 0; r < n_low; ++r) {
+    const Rung &rung = fc.rungs[r];
+    for (atx::usize k = 0; k < rung_keys_.size(); ++k) {
+      if (rung_keys_[k].date_stride == rung.date_stride &&
+          rung_keys_[k].inst_stride == rung.inst_stride) {
+        rp[r] = &rung_panels_[k];
+      }
+    }
+    if (rp[r] == nullptr) {
+      auto sub = strided_panel(panel_, rung.date_stride, rung.inst_stride);
+      if (!sub.has_value()) {
+        return {};
+      }
+      rung_keys_.push_back(rung);
+      rung_panels_.push_back(std::move(*sub));
+      // Re-resolve every pointer: push_back may have reallocated rung_panels_.
+      for (atx::usize q = 0; q <= r; ++q) {
+        for (atx::usize k = 0; k < rung_keys_.size(); ++k) {
+          if (rung_keys_[k].date_stride == fc.rungs[q].date_stride &&
+              rung_keys_[k].inst_stride == fc.rungs[q].inst_stride) {
+            rp[q] = &rung_panels_[k];
+          }
+        }
+      }
+    }
+  }
+
+  // One reusable Engine per (low rung, worker), bound to that rung's sub-panel
+  // (rung_panels_ is not resized below, so the bound references stay valid).
+  // Engine::evaluate is idempotent, so reuse is byte-identical to fresh engines.
+  std::vector<std::vector<std::unique_ptr<alpha::Engine>>> rung_engines(n_low);
+  for (atx::usize r = 0; r < n_low; ++r) {
+    rung_engines[r].reserve(det_pool.n_workers());
+    for (atx::usize w = 0; w < det_pool.n_workers(); ++w) {
+      rung_engines[r].push_back(std::make_unique<alpha::Engine>(*rp[r]));
+    }
+  }
+  CpcvCache rung_cpcv{}; // thread-safe; shared by every rung evaluation below
+  // Low rungs score the POOL-INDEPENDENT fitness: the run's pool stores full-panel
+  // PnL streams, while a rung candidate's oos_pnl covers only the date-strided
+  // sub-panel, so corr_to_pool against the real pool would compare unequal-length
+  // (misaligned) streams (ATX_ASSERT abort in Debug). An empty pool -> redundancy 0
+  // -> diversify 1: the rung ranks on wq * robust alone; the full-fidelity pass
+  // still applies the real pool's diversification to every survivor.
+  const combine::AlphaStore no_pool{};
+
+  std::vector<Genome> cands;
+  cands.reserve(to_score.size());
+  for (const Genome *g : to_score) {
+    cands.push_back(g->clone());
+    cands.back().canon_hash = g->canon_hash;
+  }
+  // SAFETY (reentrancy): each call reads only const shared state (rp panels,
+  // no_pool, policy_, sim_, gen_fit copy); worker `wid` touches only
+  // rung_engines[r][wid] (disjoint single owner); rung_cpcv serializes its own
+  // cold inserts behind its mutex.
+  const RungEvaluator eval = [&](const Genome &g, atx::usize r, const Rung &rung,
+                                 atx::usize wid) -> atx::f64 {
+    FitnessCfg f = gen_fit;
+    f.capacity_objective = false;
+    f.turnover_objective = false;
+    if (rung.n_folds > 1) {
+      f.cpcv.n_groups = rung.n_folds;
+      f.cpcv.n_test_groups = std::min<atx::usize>(f.cpcv.n_test_groups, rung.n_folds - 1U);
+    }
+    auto rep = pool_aware_fitness(g, no_pool, *rp[r], policy_, sim_, f, /*weak_panel=*/nullptr,
+                                  rung_engines[r][wid].get(), /*signals=*/nullptr, &rung_cpcv);
+    if (!rep.has_value() || !std::isfinite(rep->raw)) {
+      return std::numeric_limits<atx::f64>::quiet_NaN();
+    }
+    return rep->raw;
+  };
+  const RaceResult rr = race(cands, fc, eval, n_low, &det_pool, /*promote_after_last=*/true);
+  res.fidelity_evals += rr.n_evals;
+  if (rr.survivors.empty()) {
+    return {}; // fail-open: never starve the full pass
+  }
+  std::vector<std::uint8_t> alive(cands.size(), std::uint8_t{0});
+  for (const GenomeId id : rr.survivors) {
+    alive[id] = std::uint8_t{1};
+  }
+  std::vector<atx::u64> rejected;
+  rejected.reserve(rr.n_rejected);
+  for (atx::usize i = 0; i < cands.size(); ++i) {
+    if (alive[i] == std::uint8_t{0}) {
+      rejected.push_back(cands[i].canon_hash);
+    }
+  }
+  res.fidelity_rejected += rejected.size();
+  return rejected;
 }
 
 } // namespace atx::engine::factory

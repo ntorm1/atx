@@ -5,7 +5,9 @@
 #include <filesystem>    // std::filesystem
 #include <limits>        // std::numeric_limits
 #include <optional>      // std::optional
+#include <string_view>
 #include <unordered_map> // std::unordered_map
+#include <unordered_set>
 
 namespace atx::engine::alpha {
 
@@ -106,11 +108,15 @@ attach_segment_panel(const std::string &path, TimeWindow window,
   return atx::core::Ok(MappedPanel{std::move(reader), std::move(panel)});
 }
 
-atx::core::Result<Panel>
-attach_multi_segment_panel(const std::string &seg_dir, TimeWindow window,
-                           std::span<const std::string> fields, UniversePolicy universe) {
+atx::core::Result<IndexedPanel>
+attach_indexed_multi_segment_panel(const std::string &seg_dir, TimeWindow window,
+                                   std::span<const std::string> fields, UniversePolicy universe) {
   namespace fs = std::filesystem;
-  // 1. Enumerate + sort .seg paths (ISO names sort chronologically).
+  if (window.start_nanos > window.end_nanos) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "attach_multi_segment_panel: reversed time window");
+  }
+  // 1. Deterministic path order is only a tie-break, never the time axis.
   std::vector<std::string> paths;
   std::error_code ec;
   for (const auto &e : fs::directory_iterator(seg_dir, ec)) {
@@ -135,19 +141,42 @@ attach_multi_segment_panel(const std::string &seg_dir, TimeWindow window,
     atx::i64 nanos;
   };
   std::vector<Row> rows;
+  std::vector<std::string> source_paths;
   for (const auto &p : paths) {
     ATX_TRY(auto rdr, atx::tsdb::SegmentReader::attach(p));
     const auto times = rdr.times();
+    bool selected = false;
     for (atx::usize t = 0; t < times.size(); ++t) {
-      if (times[t] >= window.start_nanos && times[t] < window.end_nanos)
+      if (t > 0 && times[t] <= times[t - 1]) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "attach_multi_segment_panel: non-ascending source timestamps in " + p);
+      }
+      if (times[t] >= window.start_nanos && times[t] < window.end_nanos) {
         rows.push_back({readers.size(), t, times[t]});
+        selected = true;
+      }
+    }
+    if (selected) {
+      std::unordered_set<std::string_view> names;
+      names.reserve(rdr.instrument_count());
+      for (atx::u32 j = 0; j < rdr.instrument_count(); ++j) {
+        const auto name = rdr.symbol_name(j);
+        if (name.empty() || !names.insert(name).second) {
+          return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                                "attach_multi_segment_panel: empty/duplicate symbol in " + p);
+        }
+      }
+      source_paths.push_back(p);
     }
     readers.push_back(std::move(rdr));
   }
   if (rows.empty())
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "attach_multi_segment_panel: window selects no dates");
-  // Global date axis (rows already in ascending path/date order; one date per row here).
+  std::stable_sort(rows.begin(), rows.end(), [](const Row &a, const Row &b) {
+    return a.nanos < b.nanos;
+  });
+  // Global date axis from actual timestamps, independent of file naming.
   std::vector<atx::i64> date_axis;
   for (const auto &r : rows)
     if (date_axis.empty() || date_axis.back() != r.nanos) date_axis.push_back(r.nanos);
@@ -166,6 +195,10 @@ attach_multi_segment_panel(const std::string &seg_dir, TimeWindow window,
     }
   }
   const atx::usize N = inst_names.size();
+  if (N != 0 && D > std::numeric_limits<atx::usize>::max() / N) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "attach_multi_segment_panel: date/instrument shape overflows");
+  }
 
   // 4. Resolve the field list (empty => first reader's fields in order).
   std::vector<std::string> field_names;
@@ -181,40 +214,70 @@ attach_multi_segment_panel(const std::string &seg_dir, TimeWindow window,
   const atx::f64 nan = std::numeric_limits<atx::f64>::quiet_NaN();
   std::vector<std::vector<atx::f64>> data(F, std::vector<atx::f64>(D * N, nan));
   std::vector<std::uint8_t> mask(D * N, 0);
+  // Separate source presence from universe eligibility: masked-out duplicate
+  // observations are still ambiguous. Only one date's seen set is needed.
+  std::vector<std::uint8_t> seen(N, 0);
+  std::optional<atx::usize> seen_date;
   for (const auto &r : rows) {
     const auto &rdr = readers[r.seg];
     const atx::usize d = date_row.at(r.nanos);
+    if (!seen_date || *seen_date != d) {
+      std::fill(seen.begin(), seen.end(), std::uint8_t{0});
+      seen_date = d;
+    }
     // Per-field local indices in THIS segment.
     std::vector<std::optional<atx::u32>> fmap(F);
-    for (atx::usize f = 0; f < F; ++f) fmap[f] = rdr.field_index(field_names[f]);
+    for (atx::usize f = 0; f < F; ++f) {
+      fmap[f] = rdr.field_index(field_names[f]);
+      if (!fmap[f] && !fields.empty()) {
+        return atx::core::Err(atx::core::ErrorCode::NotFound,
+                              "attach_multi_segment_panel: field '" + field_names[f] +
+                                  "' absent in a segment");
+      }
+    }
+    std::optional<atx::u32> universe_fid;
+    if (universe.kind == UniverseKind::Field) {
+      universe_fid = rdr.field_index(universe.field_name);
+      if (!universe_fid) {
+        return atx::core::Err(atx::core::ErrorCode::NotFound,
+                              "attach_multi_segment_panel: universe field absent in a segment");
+      }
+    }
     for (atx::u32 j = 0; j < rdr.instrument_count(); ++j) {
+      if (!rdr.present(r.t, j)) continue; // padding must not erase a present observation
       const atx::usize gi = inst_of.at(std::string{rdr.symbol_name(j)});
+      if (seen[gi] != 0) {
+        return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                              "attach_multi_segment_panel: duplicate cell for symbol '" +
+                                  inst_names[gi] + "' at timestamp " + std::to_string(r.nanos));
+      }
+      seen[gi] = 1;
       const atx::usize cell = d * N + gi;
-      bool present_here = false;
-      if (universe.kind == UniverseKind::PresentBitmap) present_here = rdr.present(r.t, j);
       for (atx::usize f = 0; f < F; ++f) {
-        if (!fmap[f].has_value()) {
-          if (!fields.empty())
-            return atx::core::Err(atx::core::ErrorCode::NotFound,
-                                  "attach_multi_segment_panel: field '" + field_names[f] +
-                                      "' absent in a segment");
-          continue;
-        }
+        if (!fmap[f]) continue;
         data[f][cell] = rdr.value(*fmap[f], r.t, j);
       }
+      bool present_here = true;
       if (universe.kind == UniverseKind::Field) {
-        const auto ufid = rdr.field_index(universe.field_name);
-        if (ufid.has_value()) {
-          const atx::f64 v = rdr.value(*ufid, r.t, j);
-          present_here = !std::isnan(v) && v != 0.0;
-        }
+        const atx::f64 v = rdr.value(*universe_fid, r.t, j);
+        present_here = !std::isnan(v) && v != 0.0;
       }
       if (present_here) mask[cell] = 1;
     }
   }
 
   // 6. Build the owned Panel; readers drop at scope exit (data is copied).
-  return Panel::create(D, N, std::move(field_names), std::move(data), std::move(mask));
+  ATX_TRY(auto panel,
+          Panel::create(D, N, std::move(field_names), std::move(data), std::move(mask)));
+  return atx::core::Ok(IndexedPanel{std::move(panel), std::move(date_axis),
+                                  std::move(inst_names), std::move(source_paths)});
+}
+
+atx::core::Result<Panel>
+attach_multi_segment_panel(const std::string &seg_dir, TimeWindow window,
+                           std::span<const std::string> fields, UniversePolicy universe) {
+  ATX_TRY(auto indexed, attach_indexed_multi_segment_panel(seg_dir, window, fields, universe));
+  return atx::core::Ok(std::move(indexed.panel));
 }
 
 } // namespace atx::engine::alpha

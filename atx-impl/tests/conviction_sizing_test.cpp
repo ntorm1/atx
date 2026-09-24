@@ -165,6 +165,7 @@ static void cleanup(const Fixture &fx, const std::vector<std::string> &combos) {
 static atx::impl::RunConfig base_cfg(const Fixture &fx, const std::string &combo_out) {
   atx::impl::RunConfig cfg;
   cfg.subcommand = "combine";
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.panel = fx.panel_path;
   cfg.alphas = fx.alphas_dir;
   cfg.combo_out = combo_out;

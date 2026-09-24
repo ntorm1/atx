@@ -1,0 +1,1278 @@
+{
+  "date": "2026-09-19",
+  "scope": "Equity platform checkpoint 3: supplied history input, strict identity/date loading, coherent OHLC adjustment",
+  "status": "passed_with_two_documented_skips",
+  "build": {
+    "preset": "equity-dev",
+    "type": "Debug",
+    "compiler": "clang-cl 18.1.8",
+    "targets": [
+      "atx-engine-data-tests",
+      "atx-impl"
+    ],
+    "dependencies": "Classic vcpkg Arrow 24.0.0 and GoogleTest 1.17.0; pinned manifest not resolved"
+  },
+  "ctest": {
+    "selected": 42,
+    "passed": 40,
+    "failed": 0,
+    "skipped": 2,
+    "wall_seconds": 16.24,
+    "new_cases_passed": 13,
+    "skipped_cases": [
+      "DataAdjust.SplitAdjustedNoDiscontinuityAtKnownAaplSplits",
+      "DataUniverse.SurvivorshipCaveatDocumentedOrDeferred"
+    ],
+    "skip_reasons": [
+      "Missing smoke security_master.parquet for external AAPL factor oracle",
+      "Deferred survivorship-documentation check, not a survivorship validation"
+    ],
+    "suites": {
+      "DataAdjust": {
+        "skipped": 1,
+        "passed": 5
+      },
+      "DataBoundaryPin": {
+        "passed": 1
+      },
+      "DataE2EByoCapstone": {
+        "passed": 1
+      },
+      "DataHistoryPanel": {
+        "passed": 7
+      },
+      "DataHistoryTri": {
+        "passed": 3
+      },
+      "DataOratsHistory": {
+        "passed": 16
+      },
+      "DataUniverse": {
+        "passed": 6,
+        "skipped": 1
+      },
+      "OratsE2ESmoke": {
+        "passed": 1
+      }
+    }
+  },
+  "preparation_fixture_tests": {
+    "passed": 3,
+    "receipt": "atx-engine/reviews/2026-09-19-tbltickerhistory-preparation.json"
+  },
+  "native_executable": {
+    "path": "build-equity/bin/atx-impl.exe",
+    "sha256": "2070b637c673d4712152567372888dbb58a27ebd8881c1ff3b48056bc6db7d1a",
+    "bytes": 10643456
+  },
+  "preparation": {
+    "manifest": {
+      "path": "data/tickerhistory_20260501_20260615_20260919/manifest.json",
+      "sha256": "82312b38f3197cdbf383261c584b568fb635984af9401f16337d7da1bf8c5422",
+      "bytes": 11813
+    },
+    "source": {
+      "crc_verified": true,
+      "member": "tbltickerhistory3_10y.txt",
+      "member_crc32": "15b6e051",
+      "member_uncompressed_bytes": 11084562320,
+      "path": "C:\\Users\\natha\\Downloads\\tbltickerhistory3_10y.zip",
+      "sha256": "7d2b7a615a08ef3b8686608eda384c4e30e2ce23bdee294ea141b3c9334acd8f",
+      "size_bytes": 3542506361
+    },
+    "counts": {
+      "accepted_rows": 372014,
+      "duplicate_positive_keys": 16,
+      "outside_window_rows": 31222753,
+      "rejected_rows": 3732,
+      "selected_rows": 375746,
+      "source_rows": 31598499
+    },
+    "primary_rejection_counts": {
+      "duplicate_positive_date_security_id": 32,
+      "invalid_or_nonpositive_ohlc": 1,
+      "invalid_or_nonpositive_security_id": 1916,
+      "ohlc_order_violation": 1783
+    },
+    "nonrejecting_flags": {
+      "accepted_zero_shares": 20829,
+      "accepted_zero_volume": 71,
+      "selected_zero_shares": 23296,
+      "selected_zero_volume": 219
+    },
+    "policy_version": "tickerhistory-qa-v1"
+  },
+  "native_duplicate_rejection": {
+    "exit_code": 1,
+    "security_id": 6459818,
+    "date": "2026-05-04",
+    "rows": 2,
+    "fixture": {
+      "path": "data/tickerhistory_20260501_20260615_20260919/conflict_fixture.zip",
+      "sha256": "84f836f630f2aedc27e1096db14ed4af356503f24f4065321ae45c9d7d3d7bbb",
+      "bytes": 742
+    }
+  },
+  "native_load": {
+    "exit_code": 0,
+    "wall_seconds_observed": 6.3700124,
+    "stage_digest": "a4b26313865bf000",
+    "manifest": {
+      "rows_read": 372014,
+      "rows_kept": 372014,
+      "rows_filtered": 0,
+      "rows_malformed": 0,
+      "dates_written": 31,
+      "distinct_securities": 12737,
+      "min_date_nanos": 1777593600000000000,
+      "fields": [
+        "open",
+        "high",
+        "low",
+        "close",
+        "closePr",
+        "closeUnadjPr",
+        "volume",
+        "shares",
+        "returnFactor",
+        "totalReturn",
+        "cumReturnFactor",
+        "gics",
+        "earnFlag",
+        "atmCenI_21d",
+        "atmCenI_126d",
+        "nEarnCnt_5d"
+      ]
+    },
+    "source": {
+      "path": "data/tickerhistory_20260501_20260615_20260919/accepted.zip",
+      "sha256": "907d877b4bbd11db6dc6d86bf5fc6cad92fc891fdadff16adfeb9ba6daa85c07",
+      "bytes": 44080207
+    }
+  },
+  "native_panel": {
+    "exit_code": 0,
+    "wall_seconds_observed": 1.3187126,
+    "stage_digest": "6b33b605820abd0c",
+    "engine_digest": "1a6a6769a0402772",
+    "config": {
+      "start_inclusive": "2026-05-01",
+      "end_exclusive": "2026-06-16",
+      "min_adv_usd": 5000000,
+      "adv_window_sessions": 21,
+      "top_n_by_adv": 200,
+      "min_raw_price": 1,
+      "compact_universe": true,
+      "optional_augmentation": false
+    },
+    "qa": {
+      "path": "C:\\atx\\data\\tickerhistory_native_20260919\\panel.bin",
+      "sha256": "4cf238d5ea396ead5cda5c5742f55ea93420346f82b56ada5d991c117eaaab6e",
+      "bytes": 640668,
+      "dates": 31,
+      "instruments": 213,
+      "fields": [
+        "close",
+        "raw_close",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "market_cap",
+        "sector",
+        "earnFlag",
+        "atmCenI_21d",
+        "atmCenI_126d",
+        "nEarnCnt_5d"
+      ],
+      "universe_cells": 2200,
+      "cells": 6603,
+      "finite_ohlc_cells": 6593,
+      "ohlc_order_violations": 0,
+      "field_statistics": {
+        "close": {
+          "finite": 6593,
+          "nan": 10,
+          "infinite": 0,
+          "finite_in_universe": 2200
+        },
+        "raw_close": {
+          "finite": 6593,
+          "nan": 10,
+          "infinite": 0,
+          "finite_in_universe": 2200
+        },
+        "volume": {
+          "finite": 6593,
+          "nan": 10,
+          "infinite": 0,
+          "finite_in_universe": 2200
+        },
+        "high": {
+          "finite": 6593,
+          "nan": 10,
+          "infinite": 0,
+          "finite_in_universe": 2200
+        },
+        "low": {
+          "finite": 6593,
+          "nan": 10,
+          "infinite": 0,
+          "finite_in_universe": 2200
+        },
+        "open": {
+          "finite": 6593,
+          "nan": 10,
+          "infinite": 0,
+          "finite_in_universe": 2200
+        },
+        "market_cap": {
+          "finite": 6593,
+          "nan": 10,
+          "infinite": 0,
+          "finite_in_universe": 2200
+        },
+        "sector": {
+          "finite": 6593,
+          "nan": 10,
+          "infinite": 0,
+          "finite_in_universe": 2200
+        },
+        "earnFlag": {
+          "finite": 260,
+          "nan": 6343,
+          "infinite": 0,
+          "finite_in_universe": 26
+        },
+        "atmCenI_21d": {
+          "finite": 6593,
+          "nan": 10,
+          "infinite": 0,
+          "finite_in_universe": 2200
+        },
+        "atmCenI_126d": {
+          "finite": 6593,
+          "nan": 10,
+          "infinite": 0,
+          "finite_in_universe": 2200
+        },
+        "nEarnCnt_5d": {
+          "finite": 6593,
+          "nan": 10,
+          "infinite": 0,
+          "finite_in_universe": 2200
+        }
+      },
+      "scope": "Binary layout and numeric QA only; date/security axes and historical availability are not encoded in APNL v1."
+    },
+    "repeat_byte_identical": true,
+    "metadata": {
+      "path": "data/tickerhistory_native_20260919/panel.bin.meta.txt",
+      "sha256": "fe0cbce2077b4bc34fa87d0d6dc824953a9c6546ce1ebcb5e5d11bfeb4b846fa",
+      "bytes": 327
+    },
+    "repeat": {
+      "path": "data/tickerhistory_native_20260919/panel-repeat.bin",
+      "sha256": "4cf238d5ea396ead5cda5c5742f55ea93420346f82b56ada5d991c117eaaab6e",
+      "bytes": 640668
+    }
+  },
+  "evidence": [
+    {
+      "path": "build-equity/iteration3-build.log",
+      "sha256": "d5f93f8365a6aab4e660a0382192579683370d6fb24c740511ac7bdfcf14af51",
+      "bytes": 3076
+    },
+    {
+      "path": "build-equity/iteration3-tests.log",
+      "sha256": "21a6efe166b49f7bf37f165c32aa2a03b9f6e11c9d24729ebe7f4f645cd2024c",
+      "bytes": 17748
+    },
+    {
+      "path": "build-equity/iteration3-tests.xml",
+      "sha256": "f76fc6aa365bb4cb4ef4013bfa50931dae803fb571111cf769607ac7468b631b",
+      "bytes": 38620
+    },
+    {
+      "path": "build-equity/iteration3-conflict.log",
+      "sha256": "85f1b1a8127355e35f883ce870245dcdfd1c45b2dc088f0fbde14e2614d78f8e",
+      "bytes": 826
+    },
+    {
+      "path": "build-equity/iteration3-native-load.log",
+      "sha256": "8d88063d9789552ad129058660f4b5d7d9a78a72689328009c187d5a334774be",
+      "bytes": 294
+    },
+    {
+      "path": "build-equity/iteration3-native-panel.log",
+      "sha256": "9a7d43ae02ecf5a3c963b05dbe7e9b295d442740b70bfd5dff40382a238195c2",
+      "bytes": 230
+    },
+    {
+      "path": "build-equity/iteration3-native-panel-repeat.log",
+      "sha256": "9a7d43ae02ecf5a3c963b05dbe7e9b295d442740b70bfd5dff40382a238195c2",
+      "bytes": 230
+    },
+    {
+      "path": "build-equity/audits/inspect_panel.py",
+      "sha256": "097a0de8d2858023daa3630af5ef4c3cdd91676135b03ec3a510efbb7fac47ef",
+      "bytes": 2225
+    },
+    {
+      "path": "build-equity/audits/iteration3-panel-qa.json",
+      "sha256": "52b83f2680058f4242929c1a16274553b958103e2709187f6b08ed612caf3e2e",
+      "bytes": 4348
+    },
+    {
+      "path": "build-equity/audits/iteration3-panel-source-comparison.json",
+      "sha256": "7c0d1f495565a593e965698b670f06710f20e41463531b37a4fab27ee68e95cd",
+      "bytes": 14313
+    },
+    {
+      "path": "build-equity/audits/validate_tickerhistory_panel.py",
+      "sha256": "81ec4ab8a2370d3669b84e73f5346b84e7ca3dd95ec6f626e6950de76d677909",
+      "bytes": 10549
+    }
+  ],
+  "sources": [
+    {
+      "path": "atx-engine/src/data/orats_history.cpp",
+      "sha256": "4818f611581064233a715906313151c0cb4c81326a2e1ed2073ae17a83b90942",
+      "bytes": 31088
+    },
+    {
+      "path": "atx-engine/include/atx/engine/data/orats_history.hpp",
+      "sha256": "50639dc10c53a09b1324961e6c56903eb1406de984deb4225c60474f2c0ae973",
+      "bytes": 4767
+    },
+    {
+      "path": "atx-engine/src/data/history_panel.cpp",
+      "sha256": "a3e825fbc640d0bee5681feb35023b4881fefc09b693256d4566d64a7a518223",
+      "bytes": 15936
+    },
+    {
+      "path": "atx-engine/include/atx/engine/data/history_panel.hpp",
+      "sha256": "17df65b9425f11a7e2509efb7e9139f31a8138089b764eded5074dba4cf54c01",
+      "bytes": 10064
+    },
+    {
+      "path": "atx-engine/tests/data/data_orats_history_test.cpp",
+      "sha256": "f123a50b37b244f38e800a7e151414c53e1325aef8ec06e4e5bff3791ee68fd0",
+      "bytes": 17808
+    },
+    {
+      "path": "atx-engine/tests/data/data_history_panel_test.cpp",
+      "sha256": "e4cba48e692e5e1549cec42aff8595ec7ec699704b70648b534bd4d04c893afd",
+      "bytes": 13360
+    },
+    {
+      "path": "atx-engine/tools/prepare_tickerhistory.py",
+      "sha256": "f153c3bf8de1595716c0527c847829a1819b57d79e1bbd95aa5af252d45ecb2f",
+      "bytes": 17006
+    },
+    {
+      "path": "atx-engine/tests/tools/test_prepare_tickerhistory.py",
+      "sha256": "beea0413dfd26564fa3ffad49fb19b2919db0a90ab15eaacb7bd88d48ebc2e1b",
+      "bytes": 4571
+    },
+    {
+      "path": "atx-impl/src/stage_load.cpp",
+      "sha256": "0caca55f806c8d7ef5f2e97f458b6964e36483a761789c97f3a0558f9ba116fd",
+      "bytes": 2510
+    },
+    {
+      "path": "atx-impl/src/dispatch.cpp",
+      "sha256": "f32ad8a61fc9be53c26fe6d1146947bbdc2f1f43293c1c509290f01d295af862",
+      "bytes": 4994
+    }
+  ],
+  "partition_artifacts": [
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-01.seg",
+      "sha256": "60be88c7ba5fdc9d4b2fdbcb3ec94d3c0b6f8cbb22bf897e830da6efcb21e7c5",
+      "bytes": 1691032
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-04.seg",
+      "sha256": "62d0e6cf4e92f66da1d75695e566601f743c31f7f158bd3e64a6fe3f84bc451d",
+      "bytes": 1700256
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-05.seg",
+      "sha256": "fcdce6afc764e24b1c3f42a419ce6b3b2b8dc4bf790b80f6b86ba809bf13658e",
+      "bytes": 1687640
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-06.seg",
+      "sha256": "c5c2b00e5581768bed39b5405c59196be5f1ec4a5849a8ac94535b622b8639db",
+      "bytes": 1693472
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-07.seg",
+      "sha256": "9c3e235493249fa4377dbaacc32592a5d5cb24037b4434f528c9401d95d2f7a7",
+      "bytes": 1700384
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-08.seg",
+      "sha256": "8d889f247b54a6664f4662fa5847798664064b8f41eec415897c62fc77b0202d",
+      "bytes": 1695712
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-11.seg",
+      "sha256": "cb9e5de01ce09ba913a590d41dd23117471e8d6e0eb15d1d626d69ca96e57642",
+      "bytes": 1706088
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-12.seg",
+      "sha256": "fe71c453eb2f29a69b3e4fc19ce32b85b2f46facd23e0a6a54622a0ebde2ec7e",
+      "bytes": 1703784
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-13.seg",
+      "sha256": "da09cbce5f50730259b7d49d6b681f4e54fdbecc9986f67e9c04d9ab91cc905a",
+      "bytes": 1699232
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-14.seg",
+      "sha256": "fbbb8ccebe52470a5b28cf267ded1743a26339c977924aefdf6496bb9d70a1b6",
+      "bytes": 1702568
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-15.seg",
+      "sha256": "c4802dcc90b611459f5bc114e8d6c339f298e9c660fd862247a239d1940e46ae",
+      "bytes": 1705000
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-18.seg",
+      "sha256": "8d090d48e448c508c41a5e62006ece670e6ce7ada39ff07c01326a6a7c82f5ed",
+      "bytes": 1709544
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-19.seg",
+      "sha256": "74a7315697b3db2e1c9a3ecceb9da6ce08b9875bc0acfd2782f5fb21ffbef9c6",
+      "bytes": 1706088
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-20.seg",
+      "sha256": "6f67a8275b6ca551790e7f1e3fcd0deb7f426a0c2e1c6f0d46fd47714306ca50",
+      "bytes": 1709480
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-21.seg",
+      "sha256": "f4200c88f5c2ad71f03aa6bb72523f0670cc59baa56ccdc9a1767405f352f801",
+      "bytes": 1710640
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-22.seg",
+      "sha256": "09faa6840eb6039daedb6065451b5d555d4df06442466195a576130e5888e47e",
+      "bytes": 1715312
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-26.seg",
+      "sha256": "e35c6640378bc17011483a94b0556e59f7ff58cfd8bee5fadfefd18edabdd496",
+      "bytes": 1723256
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-27.seg",
+      "sha256": "7146592407ba74ea7bb07abffe62bac7047e96cfe5b1cf01b64dc7c51c999259",
+      "bytes": 1722232
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-28.seg",
+      "sha256": "8b38cd25587d99f80af62e46272304645c4d4af384db4409211b5aa58c94ab25",
+      "bytes": 1724536
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-05-29.seg",
+      "sha256": "3e6f1300ba1cb3fe183e5800fb35963fd1e027fc5427265fe3d4410496914d08",
+      "bytes": 1724600
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-06-01.seg",
+      "sha256": "2a34adf5b3b9b7cf2dbca7dabced52b17a8c617b7cc3ac4a89571c949398657d",
+      "bytes": 1726712
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-06-02.seg",
+      "sha256": "1fea6d793b672841f6e82244dccddf1626fb0abcfe7baa1d701ba11ada682977",
+      "bytes": 1722168
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-06-03.seg",
+      "sha256": "fd447faf94fc8cae0b3faa07b1ed2163b670ded412c78886955bb42e87595773",
+      "bytes": 1729216
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-06-04.seg",
+      "sha256": "7db17603589a5c0bd7591623befa581ca750ebf2576b3f78357f59bfad395a09",
+      "bytes": 1720056
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-06-05.seg",
+      "sha256": "c60b7be8d1ee1979a1c41776094e71a27275bca532e6ec2b895694a9a0b32e6f",
+      "bytes": 1729216
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-06-08.seg",
+      "sha256": "a73fdbc7544f01bb8270c3cf1ed82bce4dacb30cb403732985b843d1f8986024",
+      "bytes": 1733760
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-06-09.seg",
+      "sha256": "a78954ea5ba637e893288407777174a02ad0c69ba239422c9510443069c21c11",
+      "bytes": 1727992
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-06-10.seg",
+      "sha256": "fb81af5e0711c115fddef1c64f5a0eef436730a7d5eb4848515bbdd992bf60b8",
+      "bytes": 1732608
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-06-11.seg",
+      "sha256": "e1ce2ae4f31cd14543c880b4e7d0b1754b19e39fc19677d03286edd501b05cb6",
+      "bytes": 1736064
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-06-12.seg",
+      "sha256": "dbcdae685632587c2034df5d2f3f5d7322f193d55f00697e708eb1ffc776bed8",
+      "bytes": 1730304
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/2026-06-15.seg",
+      "sha256": "9228290da842ca739547fdf1a692233441a7e86a8b81d6623c6677495800d984",
+      "bytes": 1738312
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/_manifest.json",
+      "sha256": "d1dffddca33325c170e25a30b2f2c9159e98f9b4e04f9d01119ae3962f29453a",
+      "bytes": 409
+    },
+    {
+      "path": "data/tickerhistory_native_20260919/segments/_symbology.parquet",
+      "sha256": "a0e237fc2a351f42e63058e489103e6de7727de1d2b9a060e516b0e510490a9e",
+      "bytes": 173603
+    }
+  ],
+  "limitations": [
+    "APNL v1 does not persist date/security axes or historical observation availability",
+    "Current archive snapshot cannot certify original publication/revision vintages",
+    "Same-date universe screening requires explicit future decision/execution timing",
+    "Liquidity screens do not establish common-stock eligibility; instrument-type reference classification remains required",
+    "Zero shares preserved; raw price times reported shares does not establish accurate historical market capitalization",
+    "Preparation does not validate all return-field identities, and native loader alone is not a complete numeric QA gate",
+    "Preparation header/range checks cover QA fields and datetime dates; other archives may miss native projected columns or timestamp range",
+    "Only 31 sessions selected; no investment performance, short availability, or trading capacity measured",
+    "Failed native loads may leave earlier completed partitions; all outputs used fresh directories",
+    "Optional Alpha101 augmentation was not run; its adjusted-close times raw-volume proxy remains unchanged",
+    "No full test suite, sanitizer, or performance benchmark was run; observed Debug wall times are descriptive",
+    "Concurrent independent warehouse edits preserved; source hashes pin the measured working tree"
+  ],
+  "source_panel_comparison": {
+    "status": "passed",
+    "source": {
+      "path": "C:\\atx\\data\\tickerhistory_20260501_20260615_20260919\\accepted.zip",
+      "sha256": "907d877b4bbd11db6dc6d86bf5fc6cad92fc891fdadff16adfeb9ba6daa85c07",
+      "rows": 372014
+    },
+    "panel": {
+      "path": "C:\\atx\\data\\tickerhistory_native_20260919\\panel.bin",
+      "sha256": "4cf238d5ea396ead5cda5c5742f55ea93420346f82b56ada5d991c117eaaab6e",
+      "fnv1a64_trailer": "6b33b605820abd0c",
+      "dates": 31,
+      "instruments": 213,
+      "fields": 12
+    },
+    "axis_reconstruction": {
+      "method": "Ascending source dates; first-seen canonical IDs; replay raw-dollar ADV and original-order ever-in-universe compaction",
+      "source_instruments": 12737,
+      "dates": [
+        "2026-05-01",
+        "2026-05-04",
+        "2026-05-05",
+        "2026-05-06",
+        "2026-05-07",
+        "2026-05-08",
+        "2026-05-11",
+        "2026-05-12",
+        "2026-05-13",
+        "2026-05-14",
+        "2026-05-15",
+        "2026-05-18",
+        "2026-05-19",
+        "2026-05-20",
+        "2026-05-21",
+        "2026-05-22",
+        "2026-05-26",
+        "2026-05-27",
+        "2026-05-28",
+        "2026-05-29",
+        "2026-06-01",
+        "2026-06-02",
+        "2026-06-03",
+        "2026-06-04",
+        "2026-06-05",
+        "2026-06-08",
+        "2026-06-09",
+        "2026-06-10",
+        "2026-06-11",
+        "2026-06-12",
+        "2026-06-15"
+      ],
+      "compacted_security_ids": [
+        "4156666",
+        "4091978",
+        "33449",
+        "3941726",
+        "32721",
+        "71402",
+        "32839",
+        "33382",
+        "32982",
+        "8452258",
+        "33465",
+        "32873",
+        "33349",
+        "33127",
+        "4235123",
+        "33360",
+        "82461",
+        "6805295",
+        "8149584",
+        "79250",
+        "6160823",
+        "1510642",
+        "33214",
+        "33775",
+        "33719",
+        "50908",
+        "4341652",
+        "33849",
+        "5572471",
+        "593034",
+        "7136399",
+        "41543",
+        "33992",
+        "34228",
+        "34926",
+        "34607",
+        "34400",
+        "7268636",
+        "34897",
+        "8597218",
+        "72865",
+        "34490",
+        "38153",
+        "6800318",
+        "35410",
+        "9293077",
+        "7254103",
+        "123898",
+        "5951588",
+        "9227389",
+        "34920",
+        "34839",
+        "6660282",
+        "6079691",
+        "5705036",
+        "549675",
+        "5972580",
+        "10451953",
+        "550072",
+        "550052",
+        "36101",
+        "549437",
+        "550007",
+        "37047",
+        "70905",
+        "1587369",
+        "551120",
+        "551498",
+        "37291",
+        "8478992",
+        "37367",
+        "549643",
+        "35378",
+        "4579564",
+        "4579561",
+        "37472",
+        "37945",
+        "37979",
+        "6986975",
+        "4617906",
+        "574466",
+        "8367157",
+        "38497",
+        "3918838",
+        "3918842",
+        "549964",
+        "38416",
+        "38597",
+        "7118282",
+        "7147509",
+        "38598",
+        "549231",
+        "550091",
+        "38793",
+        "38703",
+        "38946",
+        "35052",
+        "549805",
+        "4084976",
+        "7886758",
+        "4530900",
+        "36233",
+        "551113",
+        "39041",
+        "351548",
+        "39551",
+        "39809",
+        "39559",
+        "5277080",
+        "39651",
+        "622339",
+        "3513095",
+        "168498",
+        "39692",
+        "6886314",
+        "40015",
+        "39827",
+        "72978",
+        "39821",
+        "8922584",
+        "2681327",
+        "37093",
+        "6068442",
+        "96660",
+        "40470",
+        "75235",
+        "3697981",
+        "7159016",
+        "40678",
+        "7764659",
+        "7138022",
+        "2023821",
+        "6966325",
+        "40793",
+        "5416935",
+        "40859",
+        "3869417",
+        "5613345",
+        "41212",
+        "41251",
+        "41593",
+        "6564271",
+        "763665",
+        "41737",
+        "7553760",
+        "41729",
+        "551883",
+        "6601351",
+        "8460592",
+        "7076436",
+        "7337076",
+        "9405543",
+        "5495028",
+        "43909",
+        "747248",
+        "34786",
+        "6420609",
+        "4488982",
+        "551124",
+        "566954",
+        "3380070",
+        "9147631",
+        "6536729",
+        "43147",
+        "10062657",
+        "6927737",
+        "1816208",
+        "1816199",
+        "549959",
+        "39554",
+        "5474683",
+        "549535",
+        "551022",
+        "1793333",
+        "83714",
+        "6926831",
+        "43000",
+        "42263",
+        "43354",
+        "43480",
+        "551110",
+        "43408",
+        "4022531",
+        "1793331",
+        "1914754",
+        "7557924",
+        "75043",
+        "43374",
+        "1231940",
+        "5916150",
+        "43920",
+        "552504",
+        "787527",
+        "2108721",
+        "5626340",
+        "4918013",
+        "551888",
+        "44164",
+        "44515",
+        "44477",
+        "44366",
+        "549796",
+        "549716",
+        "549722",
+        "549728",
+        "549752",
+        "549700",
+        "549754",
+        "549725",
+        "549692",
+        "36574",
+        "5435967",
+        "10519627"
+      ],
+      "first_seen_historical_tickers": [
+        "AAL",
+        "AAOI",
+        "AAPL",
+        "ABBV",
+        "ABT",
+        "ACN",
+        "ADBE",
+        "ADI",
+        "AKAM",
+        "ALAB",
+        "AMAT",
+        "AMD",
+        "AMGN",
+        "AMZN",
+        "ANET",
+        "APH",
+        "APLD",
+        "APP",
+        "ARM",
+        "ASML",
+        "ASTS",
+        "AVGO",
+        "AXP",
+        "AXTI",
+        "AZO",
+        "BA",
+        "BABA",
+        "BAC",
+        "BE",
+        "BIL",
+        "BITO",
+        "BKNG",
+        "BRK.B",
+        "BSX",
+        "C",
+        "CAT",
+        "CDNS",
+        "CEG",
+        "CIEN",
+        "CLS",
+        "CME",
+        "COF",
+        "COHR",
+        "COIN",
+        "COST",
+        "CRCL",
+        "CRDO",
+        "CRM",
+        "CRWD",
+        "CRWV",
+        "CSCO",
+        "CVX",
+        "DASH",
+        "DDOG",
+        "DELL",
+        "DIA",
+        "DIS",
+        "DRAM",
+        "EEM",
+        "EFA",
+        "ETN",
+        "EWY",
+        "EWZ",
+        "F",
+        "FLEX",
+        "FTNT",
+        "FXI",
+        "GDX",
+        "GE",
+        "GEV",
+        "GILD",
+        "GLD",
+        "GLW",
+        "GOOG",
+        "GOOGL",
+        "GS",
+        "HD",
+        "HON",
+        "HOOD",
+        "HPE",
+        "HYG",
+        "IBIT",
+        "IBM",
+        "IEFA",
+        "IEMG",
+        "IGV",
+        "INTC",
+        "INTU",
+        "IONQ",
+        "IREN",
+        "ISRG",
+        "IVV",
+        "IWM",
+        "JNJ",
+        "JPM",
+        "KLAC",
+        "KO",
+        "KRE",
+        "KWEB",
+        "LIN",
+        "LITE",
+        "LLY",
+        "LQD",
+        "LRCX",
+        "MA",
+        "MCD",
+        "MCHP",
+        "MCK",
+        "MDB",
+        "MDT",
+        "MELI",
+        "META",
+        "MPWR",
+        "MRK",
+        "MRVL",
+        "MS",
+        "MSFT",
+        "MSTR",
+        "MU",
+        "MUU",
+        "NBIS",
+        "NEE",
+        "NET",
+        "NFLX",
+        "NKE",
+        "NOK",
+        "NOW",
+        "NU",
+        "NVDA",
+        "NVDL",
+        "NVTS",
+        "NXPI",
+        "OKLO",
+        "ON",
+        "ONDS",
+        "ORCL",
+        "PANW",
+        "PDD",
+        "PEP",
+        "PFE",
+        "PG",
+        "PLTR",
+        "PM",
+        "PWR",
+        "QBTS",
+        "QCOM",
+        "QQQ",
+        "QQQM",
+        "RDDT",
+        "RDW",
+        "RGTI",
+        "RKLB",
+        "RSP",
+        "RTX",
+        "SATS",
+        "SCHW",
+        "SGOV",
+        "SHOP",
+        "SLV",
+        "SMCI",
+        "SMH",
+        "SNDK",
+        "SNOW",
+        "SNPS",
+        "SNXX",
+        "SOFI",
+        "SOXL",
+        "SOXS",
+        "SOXX",
+        "SPGI",
+        "SPOT",
+        "SPY",
+        "SPYM",
+        "SQQQ",
+        "STM",
+        "STX",
+        "SYK",
+        "T",
+        "TER",
+        "TJX",
+        "TLT",
+        "TMO",
+        "TMUS",
+        "TQQQ",
+        "TSLA",
+        "TSLL",
+        "TSM",
+        "TXN",
+        "TZA",
+        "UBER",
+        "UNH",
+        "USO",
+        "V",
+        "VOO",
+        "VRT",
+        "VST",
+        "VTI",
+        "VZ",
+        "WDC",
+        "WFC",
+        "WMT",
+        "XBI",
+        "XLE",
+        "XLF",
+        "XLI",
+        "XLK",
+        "XLP",
+        "XLU",
+        "XLV",
+        "XLY",
+        "XOM",
+        "ZS",
+        "CBRS"
+      ]
+    },
+    "universe_recipe": {
+      "adv_window": 21,
+      "min_adv_usd": 5000000.0,
+      "top_n": 200,
+      "min_raw_price_strict": 1,
+      "min_market_cap": 0,
+      "require_sector": false,
+      "compact": true,
+      "augmented": false
+    },
+    "universe": {
+      "source_replay_cells": 2200,
+      "native_cells": 2200,
+      "mismatched_cells": 0,
+      "daily_membership_counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200
+      ]
+    },
+    "source_rows_on_compacted_axis": 6593,
+    "comparisons": {
+      "open": {
+        "finite_comparisons": 6593,
+        "exact_bit_matches": 6593,
+        "matching_nan_gaps": 10,
+        "tolerance_mismatches": 0,
+        "max_absolute_error": 0.0,
+        "max_relative_error": 0.0
+      },
+      "high": {
+        "finite_comparisons": 6593,
+        "exact_bit_matches": 6593,
+        "matching_nan_gaps": 10,
+        "tolerance_mismatches": 0,
+        "max_absolute_error": 0.0,
+        "max_relative_error": 0.0
+      },
+      "low": {
+        "finite_comparisons": 6593,
+        "exact_bit_matches": 6593,
+        "matching_nan_gaps": 10,
+        "tolerance_mismatches": 0,
+        "max_absolute_error": 0.0,
+        "max_relative_error": 0.0
+      },
+      "close": {
+        "finite_comparisons": 6593,
+        "exact_bit_matches": 6593,
+        "matching_nan_gaps": 10,
+        "tolerance_mismatches": 0,
+        "max_absolute_error": 0.0,
+        "max_relative_error": 0.0
+      },
+      "raw_close": {
+        "finite_comparisons": 6593,
+        "exact_bit_matches": 6593,
+        "matching_nan_gaps": 10,
+        "tolerance_mismatches": 0,
+        "max_absolute_error": 0.0,
+        "max_relative_error": 0.0
+      },
+      "volume": {
+        "finite_comparisons": 6593,
+        "exact_bit_matches": 6593,
+        "matching_nan_gaps": 10,
+        "tolerance_mismatches": 0,
+        "max_absolute_error": 0.0,
+        "max_relative_error": 0.0
+      },
+      "market_cap": {
+        "finite_comparisons": 6593,
+        "exact_bit_matches": 6593,
+        "matching_nan_gaps": 10,
+        "tolerance_mismatches": 0,
+        "max_absolute_error": 0.0,
+        "max_relative_error": 0.0
+      }
+    },
+    "tolerance": {
+      "absolute": 1e-10,
+      "relative": 2e-13
+    },
+    "examples": [
+      {
+        "date": "2026-05-01",
+        "security_id": "4156666",
+        "ticker_tk": "AAL",
+        "cumulative_factor": 1.0,
+        "expected": {
+          "open": 11.84,
+          "high": 12.2099,
+          "low": 11.625,
+          "close": 11.84,
+          "raw_close": 11.84,
+          "volume": 49175254.0,
+          "market_cap": 7830800022.08
+        },
+        "native": {
+          "open": 11.84,
+          "high": 12.2099,
+          "low": 11.625,
+          "close": 11.84,
+          "raw_close": 11.84,
+          "volume": 49175254.0,
+          "market_cap": 7830800022.08
+        }
+      },
+      {
+        "date": "2026-05-01",
+        "security_id": "4091978",
+        "ticker_tk": "AAOI",
+        "cumulative_factor": 1.0,
+        "expected": {
+          "open": 162.675,
+          "high": 191.87,
+          "low": 158.02,
+          "close": 183.51,
+          "raw_close": 183.51,
+          "volume": 13196743.0,
+          "market_cap": 14486856355.439999
+        },
+        "native": {
+          "open": 162.675,
+          "high": 191.87,
+          "low": 158.02,
+          "close": 183.51,
+          "raw_close": 183.51,
+          "volume": 13196743.0,
+          "market_cap": 14486856355.439999
+        }
+      },
+      {
+        "date": "2026-05-01",
+        "security_id": "33449",
+        "ticker_tk": "AAPL",
+        "cumulative_factor": 0.999080002307892,
+        "expected": {
+          "open": 278.59845404356724,
+          "high": 286.95575826287273,
+          "low": 278.11390024244787,
+          "close": 279.88227184653283,
+          "raw_close": 280.14,
+          "volume": 79915442.0,
+          "market_cap": 4112774559600.0
+        },
+        "native": {
+          "open": 278.59845404356724,
+          "high": 286.95575826287273,
+          "low": 278.11390024244787,
+          "close": 279.88227184653283,
+          "raw_close": 280.14,
+          "volume": 79915442.0,
+          "market_cap": 4112774559600.0
+        }
+      },
+      {
+        "date": "2026-05-01",
+        "security_id": "3941726",
+        "ticker_tk": "ABBV",
+        "cumulative_factor": 1.0,
+        "expected": {
+          "open": 211.0,
+          "high": 211.0,
+          "low": 205.57,
+          "close": 206.6,
+          "raw_close": 206.6,
+          "volume": 6343104.0,
+          "market_cap": 365303717879.2
+        },
+        "native": {
+          "open": 211.0,
+          "high": 211.0,
+          "low": 205.57,
+          "close": 206.6,
+          "raw_close": 206.6,
+          "volume": 6343104.0,
+          "market_cap": 365303717879.2
+        }
+      }
+    ],
+    "mismatch_examples": [],
+    "code_contract_sha256": {
+      "atx-tsdb/src/load_parquet.cpp": "29b34b2eb28e1887977b91150f13b578a5cca9b144432ad1e5be96d182e49cdb",
+      "atx-engine/src/alpha/segment_panel.cpp": "2f3e2da4291f42ded9d4400a1afa2689e9007c6fcca068ef05c34d37941d484d",
+      "atx-engine/src/data/history_panel.cpp": "a3e825fbc640d0bee5681feb35023b4881fefc09b693256d4566d64a7a518223",
+      "atx-engine/src/data/universe.cpp": "8ede905cc740113841c1e6724eb401e079869142fc46a3c72af498f3e7a2481b",
+      "atx-impl/src/stage_panel.cpp": "3311e27eeb61636a748c5e1019f4a897deb89bf90c36c93640b65357bdf7c610",
+      "atx-impl/src/serialize_panel.cpp": "fe9f7d5e8c67d3fadd578f101d5e53e2727e0465c4199f01fcd85151c3c8e306"
+    },
+    "validator_sha256": "81ec4ab8a2370d3669b84e73f5346b84e7ca3dd95ec6f626e6950de76d677909",
+    "elapsed_seconds": 9.093000000008033,
+    "limits": [
+      "APNL v1 omits axes; reconstruction only establishes correspondence for this declared source and build recipe",
+      "Validates seven price/economic fields and mask; other five panel fields are outside this comparison",
+      "No historical publication/PIT certification, shares adjustment inference, or performance claim"
+    ]
+  }
+}

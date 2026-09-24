@@ -259,6 +259,9 @@ deserialize_cache(const std::string &blob, std::vector<atx::u64> &keys,
       }
       cs.descriptor.push_back(v);
     }
+    if (cs.raw == kRejectedRaw) {
+      cs.origin = ScoreOrigin::FidelityRejected; // L3 sentinel survives the round-trip
+    }
     keys.push_back(key);
     vals.push_back(std::move(cs));
   }

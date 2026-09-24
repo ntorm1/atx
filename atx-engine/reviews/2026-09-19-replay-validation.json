@@ -1,0 +1,1202 @@
+{
+  "date": "2026-09-19",
+  "goal_status": "active",
+  "scope": "Checkpoint 5: daily marked TRI-unit holdings and cash, actual trade/borrow debits, report identity and snapshot-bound panel reads",
+  "status": "software_checks_passed_dataset_acceptance_exception_open",
+  "build": {
+    "preset": "equity-dev",
+    "groups": [
+      "risk",
+      "data",
+      "core",
+      "book"
+    ],
+    "type": "Debug",
+    "compiler": "clang-cl 18.1.8",
+    "targets": [
+      "atx-engine-book-tests",
+      "atx-impl-tests",
+      "atx-impl"
+    ],
+    "translation_unit_checks": [
+      "replay_report.cpp"
+    ],
+    "dependencies": "Existing classic vcpkg Arrow 24.0.0 / GoogleTest 1.17.0 and cached nlohmann_json; pinned manifest not resolved",
+    "configured_source_revision": "bf54b1e2635f76127eaeedde768fc1b5bf3ac4b3-dirty",
+    "revision_is_not_complete_source_identity": true
+  },
+  "ctest": {
+    "accepted_unique_cases": 105,
+    "passed": 105,
+    "failed": 0,
+    "skipped": 0,
+    "new_cases_passed": 30,
+    "new_cases": [
+      "BookReplay.DefaultDelayExcludesEarlierMoveAndPreservesOriginWhileHolding",
+      "BookReplay.EligibilityExitStillLosesMoneyAndOnlyUnusedMissingMarksAreIgnored",
+      "BookReplay.FinalObservationIsValuationOnlyAndEmptyScheduleRemainsCash",
+      "BookReplay.InvalidCostsInsolvencyAndUnrepresentablePositionsFailClosed",
+      "BookReplay.ReversalTradesFullDollarDeltaAndUnchangedInventoryDoesNotTrade",
+      "BookReplay.ShapesSchedulesTimesAndTargetsAreValidatedBeforeReplay",
+      "BookReplay.SmallHoldingsSurviveAndChangingTriScaleDoesNotChangeEconomics",
+      "BookReplay.TradeFeesUseActualDollarsAndLaterTargetsUseNavAfterEarlierFees",
+      "BookReplay.WeekendBorrowUsesStartShortNotionalAndCoverStopsFurtherAccrual",
+      "BookReplay.WeeklyHoldingsDriftAcrossEveryIntervalAndTerminalTargetDoesNotTrade",
+      "ConfigReplay.AnnualAndTradeUnitsAreDistinctFromLegacyCharges",
+      "ConfigReplay.ExplicitZeroRecordsHypotheticalSameCloseAndFrictionlessChoice",
+      "ConfigReplay.InvalidRatesTimingAndCalendarBasisReject",
+      "ConfigReplay.RunRejectsAmbiguousPlanningFeesBeforeAnyInputOrOutput",
+      "PanelArtifactTest.SnapshotDecodeRemainsBoundToCapturedBytesAfterSourceReplacement",
+      "PanelArtifactTest.SnapshotShapeBoundsHoldEvenWhenMalformedBytesHaveAValidFnv",
+      "ReplayDiagnosticsTest.AllIntervalsDriveNavDrawdownAndSampleSharpe",
+      "ReplayDiagnosticsTest.DollarCostsBorrowAndUnexecutedFinalDecision",
+      "ReplayDiagnosticsTest.MissingLiquidityIsUnknownAndDoesNotUseAdjustedClose",
+      "ReplayDiagnosticsTest.PostFitStartsAtQualifyingDecisionEvenWithoutNewTrade",
+      "ReplayDiagnosticsTest.PriorRawDollarAdvIsCausalAndUncapped",
+      "ReplayDiagnosticsTest.SingletonIsUnavailableAndMalformedLedgerFails",
+      "ReplayReport.DefaultDelayUsesNextObservationAndNeverTradesTerminalDecision",
+      "ReplayReport.DollarTradeFeesAndActualCalendarBorrowReconcileCashAndAssets",
+      "ReplayReport.EmptyDirectoryAllowedButCompletedAndPartialOutputsNeverOverwrite",
+      "ReplayReport.MissingHeldPriceMapsExactSecurityAndDateWithoutCompletePublication",
+      "ReplayReport.PostFitStartsAtNextEffectiveDecisionAndLiquidityRemainsExplicitlyUnknown",
+      "ReplayReport.RejectsIgnoredLegacyRatesAndRequiresExplicitFeeForCostlyBooks",
+      "ReplayReport.ScheduleBytesAreBoundAndDuplicateCostCannotDefaultToFreeReplay",
+      "ReplayReport.WeeklyCoverageDriftExactAxesAndDeterministicManifest"
+    ],
+    "book_selected": 21,
+    "impl_final_selected": 84,
+    "book_wall_seconds": 1.34,
+    "final_impl_wall_seconds": 31.35,
+    "initial_impl_gate": {
+      "selected": 80,
+      "passed": 77,
+      "failed": 3,
+      "failed_cases": [
+        "AtxImplE2E.ReportBytesDeterministic",
+        "AtxImplE2E.RunDefaultDeployEqualsExplicitPositionMode",
+        "AtxImplE2E.StagedEqualsRun"
+      ],
+      "resolution": "Absolute DSL/library paths in the bound weights sidecar made identical inputs location-dependent. Stable local alpha labels plus SHA256 of consumed DSL restore relocation-invariant identity without removing weights/fit parent bindings."
+    },
+    "accepted_outcomes": {
+      "AtxImplCli.CliOverridesFileOnExplicitZero": "passed",
+      "AtxImplCli.ConfigFileMatchesCliFlags": "passed",
+      "AtxImplCli.DigestLineFormat": "passed",
+      "AtxImplCli.FileSuppliesValueWhenCliOmits": "passed",
+      "AtxImplCli.HelpListsAllSubcommands": "passed",
+      "AtxImplCli.RegimeStageBuildsSegment": "passed",
+      "AtxImplCli.StageErrorsExitNonzero": "passed",
+      "AtxImplCli.UnknownSubcommandFails": "passed",
+      "AtxImplCombine.CombineFromLibraryMatchesDslPath": "passed",
+      "AtxImplCombine.CombinedEqualsWeightedSum": "passed",
+      "AtxImplCombine.CombinesEqualWeight": "passed",
+      "AtxImplCombine.DeterministicAcrossRuns": "passed",
+      "AtxImplE2E.ReportBytesDeterministic": "passed",
+      "AtxImplE2E.ReportWithoutComboStillWorksAndIsByteIdentical": "passed",
+      "AtxImplE2E.RunAccumulatesLibraryAndCombineConsumesIt": "passed",
+      "AtxImplE2E.RunAllEmitsCompleteDailyAndPostFitReplayStatistics": "passed",
+      "AtxImplE2E.RunDefaultDeployEqualsExplicitPositionMode": "passed",
+      "AtxImplE2E.RunProducesReport": "passed",
+      "AtxImplE2E.StagedEqualsRun": "passed",
+      "AtxImplPanel.BuildsPanelFromSegments": "passed",
+      "AtxImplPanel.DefaultPathByteIdentical": "passed",
+      "AtxImplPanel.DigestStableAndVerified": "passed",
+      "AtxImplPanel.RoundTripPreservesPanel": "passed",
+      "AtxImplPanel.SidecarMetaWrittenAlongsidePanel": "passed",
+      "BookReplay.DefaultDelayExcludesEarlierMoveAndPreservesOriginWhileHolding": "passed",
+      "BookReplay.EligibilityExitStillLosesMoneyAndOnlyUnusedMissingMarksAreIgnored": "passed",
+      "BookReplay.FinalObservationIsValuationOnlyAndEmptyScheduleRemainsCash": "passed",
+      "BookReplay.InvalidCostsInsolvencyAndUnrepresentablePositionsFailClosed": "passed",
+      "BookReplay.ReversalTradesFullDollarDeltaAndUnchangedInventoryDoesNotTrade": "passed",
+      "BookReplay.ShapesSchedulesTimesAndTargetsAreValidatedBeforeReplay": "passed",
+      "BookReplay.SmallHoldingsSurviveAndChangingTriScaleDoesNotChangeEconomics": "passed",
+      "BookReplay.TradeFeesUseActualDollarsAndLaterTargetsUseNavAfterEarlierFees": "passed",
+      "BookReplay.WeekendBorrowUsesStartShortNotionalAndCoverStopsFurtherAccrual": "passed",
+      "BookReplay.WeeklyHoldingsDriftAcrossEveryIntervalAndTerminalTargetDoesNotTrade": "passed",
+      "BookReport.AccumulatesNetOfCostEquityCurve": "passed",
+      "BookReport.CapacityUtilizationBounded": "passed",
+      "BookReport.FactorExposureIncludesDeadColumns": "passed",
+      "BookReport.LifecycleCensusCountsStates": "passed",
+      "BookReport.NoSurvivorship": "passed",
+      "BookReport.RejectsDimMismatch": "passed",
+      "BookReport.RejectsOutOfRangeScheduleDate": "passed",
+      "BookReport.WriteIsByteIdenticalAcrossRuns": "passed",
+      "Config.AcceptsRegimeSubcommand": "passed",
+      "Config.ConfigParsesOosFlags": "passed",
+      "Config.ParsesAdvWindowsList": "passed",
+      "Config.ParsesRegimeFlags": "passed",
+      "Config.ParsesRunDbAndResume": "passed",
+      "Config.ParsesS7GateKnobs": "passed",
+      "Config.ParsesS7SearchKnobs": "passed",
+      "Config.ResumeWithoutRunDbRejected": "passed",
+      "Config.S7FlagsConfigFileRoundTrip": "passed",
+      "ConfigReplay.AnnualAndTradeUnitsAreDistinctFromLegacyCharges": "passed",
+      "ConfigReplay.ExplicitZeroRecordsHypotheticalSameCloseAndFrictionlessChoice": "passed",
+      "ConfigReplay.InvalidRatesTimingAndCalendarBasisReject": "passed",
+      "ConfigReplay.RunRejectsAmbiguousPlanningFeesBeforeAnyInputOrOutput": "passed",
+      "ConfigS5BookGates.Defaults_AreInert": "passed",
+      "ConfigS5BookGates.Flags_RoundTrip": "passed",
+      "ConfigS5BookGates.NegativeBookTurnoverGateFailsClosed": "passed",
+      "ConfigS5BookGates.NegativeBorrowBpsFailsClosed": "passed",
+      "ConfigS5BookGates.NegativeParticipationCapFailsClosed": "passed",
+      "ConfigS5BookGates.ZeroDoublesAccepted": "passed",
+      "CostBpsConfig.ParsedFromCLI": "passed",
+      "CostBpsTest.CostBpsHigherTurnoverLargerDrag": "passed",
+      "CostBpsTest.CostBpsMvo_CostPositive": "passed",
+      "CostBpsTest.CostBpsNetSharpeBelowGross_PosMode": "passed",
+      "CostBpsTest.CostBpsPositionMode_CostPositive": "passed",
+      "CostBpsTest.CostBpsZero_ByteIdenticalPanel": "passed",
+      "CostBpsTest.CostBpsZero_TotalCostIsZero": "passed",
+      "PanelArtifactTest.EveryIdentityComponentChangesTheArtifactDespiteIdenticalPayload": "passed",
+      "PanelArtifactTest.ExactSignedDateBoundariesAndDifferentShapesAreChecked": "passed",
+      "PanelArtifactTest.ExcessiveManifestSizeAndDepthAreRejected": "passed",
+      "PanelArtifactTest.ExistingAndInterruptedOutputsCannotBeOverwritten": "passed",
+      "PanelArtifactTest.InvalidAxesSourceIdsAndParentRolesFailBeforePublication": "passed",
+      "PanelArtifactTest.MissingAndTamperedManifestsNeverFallBackToLegacyPayload": "passed",
+      "PanelArtifactTest.PayloadTamperingAndOversizedHeaderAreRejectedBeforeNumericRead": "passed",
+      "PanelArtifactTest.RoundTripPreservesApnlBytesExactAxesAndDeterministicIdentity": "passed",
+      "PanelArtifactTest.SnapshotDecodeRemainsBoundToCapturedBytesAfterSourceReplacement": "passed",
+      "PanelArtifactTest.SnapshotShapeBoundsHoldEvenWhenMalformedBytesHaveAValidFnv": "passed",
+      "PanelPipeline.MissingManifestRequiresExplicitLegacyDiagnosticMode": "passed",
+      "PanelPipeline.MixedKnownAndUnknownInputsNeverJoin": "passed",
+      "PanelPipeline.OptimizationRejectsEqualShapeWithShiftedSessionDates": "passed",
+      "PanelPipeline.OptimizationRejectsEqualShapeWithSwappedSecurityIdentities": "passed",
+      "PanelPipeline.OptimizationRejectsSameAxesWithWrongResearchParent": "passed",
+      "PanelPipeline.OversizedScheduleIntegerReturnsErrorWithoutThrowing": "passed",
+      "PanelPipeline.StageReservationPreservesPublishedCompanionBytes": "passed",
+      "PanelPipeline.WeeklyBooksCarryExactDatesAndReportRejectsScheduleMutation": "passed",
+      "ReplayDiagnosticsTest.AllIntervalsDriveNavDrawdownAndSampleSharpe": "passed",
+      "ReplayDiagnosticsTest.DollarCostsBorrowAndUnexecutedFinalDecision": "passed",
+      "ReplayDiagnosticsTest.MissingLiquidityIsUnknownAndDoesNotUseAdjustedClose": "passed",
+      "ReplayDiagnosticsTest.PostFitStartsAtQualifyingDecisionEvenWithoutNewTrade": "passed",
+      "ReplayDiagnosticsTest.PriorRawDollarAdvIsCausalAndUncapped": "passed",
+      "ReplayDiagnosticsTest.SingletonIsUnavailableAndMalformedLedgerFails": "passed",
+      "ReplayReport.DefaultDelayUsesNextObservationAndNeverTradesTerminalDecision": "passed",
+      "ReplayReport.DollarTradeFeesAndActualCalendarBorrowReconcileCashAndAssets": "passed",
+      "ReplayReport.EmptyDirectoryAllowedButCompletedAndPartialOutputsNeverOverwrite": "passed",
+      "ReplayReport.MissingHeldPriceMapsExactSecurityAndDateWithoutCompletePublication": "passed",
+      "ReplayReport.PostFitStartsAtNextEffectiveDecisionAndLiquidityRemainsExplicitlyUnknown": "passed",
+      "ReplayReport.RejectsIgnoredLegacyRatesAndRequiresExplicitFeeForCostlyBooks": "passed",
+      "ReplayReport.ScheduleBytesAreBoundAndDuplicateCostCannotDefaultToFreeReplay": "passed",
+      "ReplayReport.WeeklyCoverageDriftExactAxesAndDeterministicManifest": "passed",
+      "ReportBorrow.BorrowDebitsShortLeg": "passed",
+      "ReportBorrow.BorrowTwiceRunByteIdentical": "passed",
+      "ReportBorrow.BorrowZeroByteIdentical": "passed",
+      "StageReportBorrow.BorrowBpsAbsentIsByteIdenticalToOff": "passed",
+      "StageReportBorrow.BorrowBpsSetProducesNonZeroSummaryFigure": "passed"
+    }
+  },
+  "native_executable": {
+    "path": "build-equity/bin/atx-impl.exe",
+    "sha256": "9415a6ab798f0e5fd0eb4fec31a7d2b3d09a47dd7eaf48e668deb844f0fe4daa",
+    "bytes": 11589120
+  },
+  "previous_identity_validation": {
+    "path": "atx-engine/reviews/2026-09-19-panel-identity-validation.json",
+    "sha256": "2975b27ac26d2c55060318b8f47f2759b0d46b6fa89138c1204c84f9bf3ab672",
+    "bytes": 48450
+  },
+  "full_window_rejection": {
+    "exit_code": 1,
+    "completed_manifest_present": false,
+    "pending_directory_present": true,
+    "output": "data/tickerhistory_replay_full_rejected_20260919",
+    "observed_wall_seconds": 1.1430886,
+    "error": "replay: missing/nonpositive required close at period=29 instrument=95 session_key_ns=1781222400000000000 security_id=38946",
+    "source_exception": {
+      "path": "atx-engine/reviews/2026-09-19-klac-source-adjustment-audit.md",
+      "sha256": "4cfbef1ea4728a1fb9b003c5efab6cc7b6165ac1e7613f9c1476ae2dc69af009",
+      "bytes": 3342
+    },
+    "source_scan": {
+      "path": "build-equity/audits/iteration5-source-gap.json",
+      "sha256": "ba1e038d27993b77e9e252cfe97149245c93dc46a9d33f027ebcf0c044005942",
+      "bytes": 27698
+    },
+    "producer_executable_sha256": "9264ad07b4a643e05c4977e1b511e0be51543d39594d115dbaf0da15d13f57fa",
+    "original_compressed_zip_sha256_recomputed_this_checkpoint": false,
+    "complete_member_crc_reverified": true
+  },
+  "diagnostic_pipeline": {
+    "purpose": "Independent software accounting measurement; no investment acceptance",
+    "date_interval": {
+      "start_inclusive": "2026-05-01",
+      "end_exclusive": "2026-06-12"
+    },
+    "reason_for_prefix": "Full window rejected on held KLAC missing mark; prefix preserves that open data exception",
+    "expressions": [
+      "rank(delta(close,2))",
+      "rank((close-open)/(high-low))"
+    ],
+    "combine_method": "equal",
+    "holdout_frac": 0.25,
+    "fit_end": 22,
+    "portfolio": {
+      "position_mode": true,
+      "rebalance": "weekly",
+      "gross": 1.0,
+      "name_cap": 0.02
+    },
+    "replay_recipe": {
+      "annual_borrow_bps": 365.0,
+      "borrow_accrual": "simple-actual-calendar-time-post-trade-short-dollars",
+      "borrow_day_basis": 365,
+      "cash_interest": 0.0,
+      "combo_supplied_and_validated": true,
+      "dividends": "already-in-total-return-prices",
+      "eligibility_policy": "decision-target-gate-never-mask-held-PnL",
+      "execution_delay_observations": "1",
+      "execution_timing": "hypothetical-observation-close",
+      "fit_boundary_observation": "22",
+      "held_missing_price_policy": "reject",
+      "historical_availability": "unknown-archive-snapshot",
+      "historical_vintages_verified": false,
+      "initial_holdings": "all-cash",
+      "initial_nav": 1000000.0,
+      "instrument_type_eligibility": "unknown",
+      "intermediate_policy": "hold-TRI-units-no-implicit-rebalance",
+      "investment_validity": "unverified-research-diagnostic",
+      "market_impact_locates_settlement": "not-modeled",
+      "model": "daily-marked-total-return-index-holdings-v1",
+      "physical_share_execution": false,
+      "post_fit_policy": "first-effective-decision-at-or-after-fit-boundary",
+      "producer_executable_sha256": "9415a6ab798f0e5fd0eb4fec31a7d2b3d09a47dd7eaf48e668deb844f0fe4daa",
+      "replay_trade_bps_explicit": true,
+      "sharpe_annualization": "zero-risk-free;sample-standard-deviation;sqrt(252)-observations",
+      "stored_cost_bps_nonzero": false,
+      "stored_cost_bps_role": "planning-telemetry-not-realized-debits",
+      "target_basis": "pretrade-NAV",
+      "terminal_policy": "valuation-only-no-trade-no-liquidation",
+      "trade_ADV": "abs-realized-dollar-trade/mean(raw_close*raw-volume);21-prior-completed-observations",
+      "trade_bps_per_absolute_dollar": 5.0
+    },
+    "native_artifacts": {
+      "panel.bin": {
+        "payload": {
+          "path": "data/tickerhistory_replay_final_20260919/panel.bin",
+          "sha256": "f07a56dfeec71aa54326f7b056eb7541db0c25da2916a4a090fec9a3cd298166",
+          "bytes": 596533
+        },
+        "manifest": {
+          "path": "data/tickerhistory_replay_final_20260919/panel.bin.manifest.json",
+          "sha256": "66694e5f254088e19194ceab8bae14302cc2963485135a45aaf24af992ed617b",
+          "bytes": 14734
+        },
+        "artifact_id": "7d267e304c1d2ab39ac14d2e1cbedc6534221ad438292c9eade6495862a95cd9",
+        "shape": {
+          "dates": "29",
+          "fields": [
+            "close",
+            "raw_close",
+            "volume",
+            "high",
+            "low",
+            "open",
+            "market_cap",
+            "sector",
+            "earnFlag",
+            "atmCenI_21d",
+            "atmCenI_126d",
+            "nEarnCnt_5d"
+          ],
+          "instruments": "212"
+        },
+        "recipe": "{\"augmentation\":{\"adv_windows\":[],\"dollar_volume_basis\":\"adjusted-close*raw-volume-research-proxy\",\"enabled\":false},\"compact_to_universe\":true,\"compaction\":\"keep-original-order-if-ever-in-universe-in-selected-window\",\"end_exclusive_nanos\":\"1781222400000000000\",\"historical_availability\":\"unknown-archive-snapshot\",\"historical_vintages_verified\":false,\"ingestion_content_binding_verified\":true,\"instrument_type_eligibility\":\"unknown-includes-possible-funds-and-other-types\",\"invalid_price_factor_or_product\":\"NaN-gap-next-valid-cell-independent\",\"market_cap\":\"raw-close*reported-shares-no-share-revision-validation\",\"original_source_binding\":\"declared-by-bound-preparation-manifest-not-authenticated\",\"other_fields\":\"sector-and-earnings-options-columns-pass-through\",\"preparation_content_binding_verified\":true,\"producer_executable_sha256\":\"9264ad07b4a643e05c4977e1b511e0be51543d39594d115dbaf0da15d13f57fa\",\"raw_close\":\"unadjusted-as-traded\",\"research_ohlc\":\"raw-OHLC*cumulReturnFactor-pointwise\",\"session_keys\":\"session-label-not-availability-or-execution-time\",\"start_inclusive_nanos\":\"1777593600000000000\",\"todayTicker\":\"not-used-for-identity-or-universe\",\"universe\":{\"adv_basis\":\"raw_close*raw_volume\",\"adv_missing\":\"full-trailing-window-any-NaN-invalid\",\"adv_window_bars\":21,\"current_session_data_included\":true,\"min_adv_usd\":5000000.0,\"min_mktcap_usd\":0.0,\"min_raw_price_exclusive\":1.0,\"require_sector\":false,\"top_n_by_adv\":200,\"top_n_tie_break\":\"original-instrument-index\"},\"version\":\"tickerhistory-panel-v2-identified\",\"volume\":\"raw-reported-volume-no-total-return-factor-rescaling\"}",
+        "parents": [
+          {
+            "role": "ingestion_input_zip",
+            "sha256": "907d877b4bbd11db6dc6d86bf5fc6cad92fc891fdadff16adfeb9ba6daa85c07"
+          },
+          {
+            "role": "ingestion_manifest",
+            "sha256": "70df9e7e26c5dd26cca6882c594f277d7c849053e75e48b34985b66a529a80af"
+          },
+          {
+            "role": "preparation_declared_original_zip",
+            "sha256": "7d2b7a615a08ef3b8686608eda384c4e30e2ce23bdee294ea141b3c9334acd8f"
+          },
+          {
+            "role": "preparation_manifest",
+            "sha256": "82312b38f3197cdbf383261c584b568fb635984af9401f16337d7da1bf8c5422"
+          },
+          {
+            "role": "producer_executable",
+            "sha256": "9264ad07b4a643e05c4977e1b511e0be51543d39594d115dbaf0da15d13f57fa"
+          },
+          {
+            "role": "segment:2026-05-01.seg",
+            "sha256": "60be88c7ba5fdc9d4b2fdbcb3ec94d3c0b6f8cbb22bf897e830da6efcb21e7c5"
+          },
+          {
+            "role": "segment:2026-05-04.seg",
+            "sha256": "62d0e6cf4e92f66da1d75695e566601f743c31f7f158bd3e64a6fe3f84bc451d"
+          },
+          {
+            "role": "segment:2026-05-05.seg",
+            "sha256": "fcdce6afc764e24b1c3f42a419ce6b3b2b8dc4bf790b80f6b86ba809bf13658e"
+          },
+          {
+            "role": "segment:2026-05-06.seg",
+            "sha256": "c5c2b00e5581768bed39b5405c59196be5f1ec4a5849a8ac94535b622b8639db"
+          },
+          {
+            "role": "segment:2026-05-07.seg",
+            "sha256": "9c3e235493249fa4377dbaacc32592a5d5cb24037b4434f528c9401d95d2f7a7"
+          },
+          {
+            "role": "segment:2026-05-08.seg",
+            "sha256": "8d889f247b54a6664f4662fa5847798664064b8f41eec415897c62fc77b0202d"
+          },
+          {
+            "role": "segment:2026-05-11.seg",
+            "sha256": "cb9e5de01ce09ba913a590d41dd23117471e8d6e0eb15d1d626d69ca96e57642"
+          },
+          {
+            "role": "segment:2026-05-12.seg",
+            "sha256": "fe71c453eb2f29a69b3e4fc19ce32b85b2f46facd23e0a6a54622a0ebde2ec7e"
+          },
+          {
+            "role": "segment:2026-05-13.seg",
+            "sha256": "da09cbce5f50730259b7d49d6b681f4e54fdbecc9986f67e9c04d9ab91cc905a"
+          },
+          {
+            "role": "segment:2026-05-14.seg",
+            "sha256": "fbbb8ccebe52470a5b28cf267ded1743a26339c977924aefdf6496bb9d70a1b6"
+          },
+          {
+            "role": "segment:2026-05-15.seg",
+            "sha256": "c4802dcc90b611459f5bc114e8d6c339f298e9c660fd862247a239d1940e46ae"
+          },
+          {
+            "role": "segment:2026-05-18.seg",
+            "sha256": "8d090d48e448c508c41a5e62006ece670e6ce7ada39ff07c01326a6a7c82f5ed"
+          },
+          {
+            "role": "segment:2026-05-19.seg",
+            "sha256": "74a7315697b3db2e1c9a3ecceb9da6ce08b9875bc0acfd2782f5fb21ffbef9c6"
+          },
+          {
+            "role": "segment:2026-05-20.seg",
+            "sha256": "6f67a8275b6ca551790e7f1e3fcd0deb7f426a0c2e1c6f0d46fd47714306ca50"
+          },
+          {
+            "role": "segment:2026-05-21.seg",
+            "sha256": "f4200c88f5c2ad71f03aa6bb72523f0670cc59baa56ccdc9a1767405f352f801"
+          },
+          {
+            "role": "segment:2026-05-22.seg",
+            "sha256": "09faa6840eb6039daedb6065451b5d555d4df06442466195a576130e5888e47e"
+          },
+          {
+            "role": "segment:2026-05-26.seg",
+            "sha256": "e35c6640378bc17011483a94b0556e59f7ff58cfd8bee5fadfefd18edabdd496"
+          },
+          {
+            "role": "segment:2026-05-27.seg",
+            "sha256": "7146592407ba74ea7bb07abffe62bac7047e96cfe5b1cf01b64dc7c51c999259"
+          },
+          {
+            "role": "segment:2026-05-28.seg",
+            "sha256": "8b38cd25587d99f80af62e46272304645c4d4af384db4409211b5aa58c94ab25"
+          },
+          {
+            "role": "segment:2026-05-29.seg",
+            "sha256": "3e6f1300ba1cb3fe183e5800fb35963fd1e027fc5427265fe3d4410496914d08"
+          },
+          {
+            "role": "segment:2026-06-01.seg",
+            "sha256": "2a34adf5b3b9b7cf2dbca7dabced52b17a8c617b7cc3ac4a89571c949398657d"
+          },
+          {
+            "role": "segment:2026-06-02.seg",
+            "sha256": "1fea6d793b672841f6e82244dccddf1626fb0abcfe7baa1d701ba11ada682977"
+          },
+          {
+            "role": "segment:2026-06-03.seg",
+            "sha256": "fd447faf94fc8cae0b3faa07b1ed2163b670ded412c78886955bb42e87595773"
+          },
+          {
+            "role": "segment:2026-06-04.seg",
+            "sha256": "7db17603589a5c0bd7591623befa581ca750ebf2576b3f78357f59bfad395a09"
+          },
+          {
+            "role": "segment:2026-06-05.seg",
+            "sha256": "c60b7be8d1ee1979a1c41776094e71a27275bca532e6ec2b895694a9a0b32e6f"
+          },
+          {
+            "role": "segment:2026-06-08.seg",
+            "sha256": "a73fdbc7544f01bb8270c3cf1ed82bce4dacb30cb403732985b843d1f8986024"
+          },
+          {
+            "role": "segment:2026-06-09.seg",
+            "sha256": "a78954ea5ba637e893288407777174a02ad0c69ba239422c9510443069c21c11"
+          },
+          {
+            "role": "segment:2026-06-10.seg",
+            "sha256": "fb81af5e0711c115fddef1c64f5a0eef436730a7d5eb4848515bbdd992bf60b8"
+          },
+          {
+            "role": "segment:2026-06-11.seg",
+            "sha256": "e1ce2ae4f31cd14543c880b4e7d0b1754b19e39fc19677d03286edd501b05cb6"
+          }
+        ]
+      },
+      "combo.bin": {
+        "payload": {
+          "path": "data/tickerhistory_replay_final_20260919/combo.bin",
+          "sha256": "1a6eb0471debabaa1910023132de90dfc0feb2014d7f1c9abf3258a96777f53a",
+          "bytes": 55381
+        },
+        "manifest": {
+          "path": "data/tickerhistory_replay_final_20260919/combo.bin.manifest.json",
+          "sha256": "68e021b7a5d204d821c5da785b66616cfd30334f18a5e3e7ce1e79793ce4a571",
+          "bytes": 8640
+        },
+        "artifact_id": "752874d555e12e379b169f6a7d938f338f8b02707f13f182da34f4f6dc61cf92",
+        "shape": {
+          "dates": "29",
+          "fields": [
+            "alpha"
+          ],
+          "instruments": "212"
+        },
+        "recipe": "stage=combine-v1\nmethod=equal\nfit_begin=0\nfit_end=22",
+        "parents": [
+          {
+            "role": "fit-boundary",
+            "sha256": "d76c8a369c5d57d7154abda49e793655da5cea0096d4050d94de678d3e9b9c46"
+          },
+          {
+            "role": "research",
+            "sha256": "7d267e304c1d2ab39ac14d2e1cbedc6534221ad438292c9eade6495862a95cd9"
+          },
+          {
+            "role": "weights",
+            "sha256": "67c4abc9a7afea63a084145c5848faa446b28b84ef3c6c03141dc586de33917d"
+          }
+        ]
+      },
+      "books.bin": {
+        "payload": {
+          "path": "data/tickerhistory_replay_final_20260919/books.bin",
+          "sha256": "676e9d6776212610598b1e7cb956b1691f6bcce6b2103252370a59fe688b0dbc",
+          "bytes": 11498
+        },
+        "manifest": {
+          "path": "data/tickerhistory_replay_final_20260919/books.bin.manifest.json",
+          "sha256": "dc3b51699aba4a3f31dae67a49dbebfe62e92daf05d4793ded973dd70f112503",
+          "bytes": 7942
+        },
+        "artifact_id": "c233d3ed4aa1ad88911417e578616742adeee256fa0cb4afff7a3b9c9fb78229",
+        "shape": {
+          "dates": "6",
+          "fields": [
+            "weight"
+          ],
+          "instruments": "212"
+        },
+        "recipe": "stage=optimize-v1\nstep=5",
+        "parents": [
+          {
+            "role": "book-schedule",
+            "sha256": "047b16f38aac676daf62447ac3f87cd644bc151606ae3bedc32da810cb11b25c"
+          },
+          {
+            "role": "combo",
+            "sha256": "752874d555e12e379b169f6a7d938f338f8b02707f13f182da34f4f6dc61cf92"
+          },
+          {
+            "role": "research",
+            "sha256": "7d267e304c1d2ab39ac14d2e1cbedc6534221ad438292c9eade6495862a95cd9"
+          }
+        ]
+      }
+    },
+    "report_manifest": {
+      "path": "data/tickerhistory_replay_final_20260919/report/manifest.json",
+      "sha256": "6404a8a32b1794f797f15eb57f5ffc79a6469f80ba00e36be2b70fa1109df0ac",
+      "bytes": 10749
+    },
+    "report_id": "579afb153377618b1b298b1286d5d3ed54b3d306d1a2c99f4bb86a8a989fb3f1",
+    "report_summary": {
+      "actual_trade_count": 409,
+      "effective_rebalances": 6,
+      "final_assets": -2191.3605963375635,
+      "final_cash": 966331.3197772645,
+      "first_post_fit_effective_observation": 26,
+      "full": {
+        "absolute_trade_dollars": 2555115.104297998,
+        "borrow_cost_dollars": 440.09569169612837,
+        "final_nav": 964139.9591809269,
+        "gross_pnl_dollars": -34142.3875752283,
+        "initial_nav": 1000000.0,
+        "max_drawdown": 0.035860040819073125,
+        "net_pnl_dollars": -35860.040819073096,
+        "observed_intervals": 28,
+        "sharpe_252": -3.459594345688422,
+        "total_return": -0.035860040819073125,
+        "trade_cost_dollars": 1277.5575521489989
+      },
+      "investment_validity": "unverified-research-diagnostic",
+      "post_fit": {
+        "absolute_trade_dollars": 1555115.1042979977,
+        "borrow_cost_dollars": 95.271217097094,
+        "final_nav": 964139.9591809269,
+        "gross_pnl_dollars": -2191.3605963375467,
+        "initial_nav": 967204.1485465103,
+        "max_drawdown": 0.014765123170977557,
+        "net_pnl_dollars": -3064.1893655833555,
+        "observed_intervals": 2,
+        "sharpe_252": -1.2666151448878888,
+        "total_return": -0.0031680895601907677,
+        "trade_cost_dollars": 777.5575521489989
+      },
+      "schema": "atx-replay-summary-v1",
+      "sharpe_convention": "zero-risk-free;sample-standard-deviation;sqrt(252)-observations",
+      "strategy_capacity": {
+        "reason": "unavailable-without-chronological-impact-replay",
+        "status": "unavailable"
+      },
+      "trade_liquidity": {
+        "convention": "abs-realized-dollar-trade/mean(raw_close*raw-volume);21-prior-completed-observations",
+        "known_count": 409,
+        "max_known_participation": 1.7891085865633253e-05,
+        "max_participation": 1.7891085865633253e-05,
+        "unknown_count": 0
+      },
+      "unexecuted_decisions": 0
+    },
+    "reference_accounting_totals": {
+      "observed_intervals": 28,
+      "effective_rebalances": 6,
+      "unexecuted_decisions": 0,
+      "actual_trades": 409,
+      "initial_nav": "1000000",
+      "final_nav": "964139.95918092656956342376427852560004872729327815",
+      "gross_pnl": "-34142.387575228303601939052290890155554960262219074",
+      "trade_cost": "1277.5575521489984558438236171612104119730537378060",
+      "borrow_cost": "440.09569169612837879335981342303398433939076412694"
+    },
+    "independent_verification": {
+      "status": "passed",
+      "report_id": "579afb153377618b1b298b1286d5d3ed54b3d306d1a2c99f4bb86a8a989fb3f1",
+      "repeated_manifest_identical": true,
+      "reference": "C:\\atx\\build-equity\\audits\\iteration5-decimal-reference.json",
+      "reference_sha256": "64e1f0207b36962a4ddaee473980b2d7466ada8aeb53a4745d7ec418ab5c8e39",
+      "script_sha256": "2a5421f7d110f1a4a0db1cbf62d52ec9b9bb49c7679971916a854efb280cfee7",
+      "covered_intervals": 28,
+      "ledger_values_compared": 308,
+      "actual_trades_compared": 409,
+      "max_ledger_absolute_errors": {
+        "pretrade_nav": "3.709360877469657133575644609E-10",
+        "end_cash": "4.270211535267030844898752786E-10",
+        "end_assets": "2.854238374202680772406844762E-11",
+        "end_nav": "3.709360877469657133575644609E-10",
+        "gross_pnl_dollars": "1.095731796228943659175762997E-11",
+        "trade_cost_dollars": "5.194574053937460897312008166E-13",
+        "borrow_cost_dollars": "3.278363568699187165372121908E-14",
+        "net_return": "3.339779469988516931431977996E-16",
+        "absolute_trade_dollars": "9.389148107874921794624016331E-10",
+        "start_gross_dollars": "8.240390605432739146058379913E-10",
+        "end_gross_dollars": "8.240390605432739146058379913E-10"
+      },
+      "max_trade_dollar_error": "3.711071622171522315337769029E-12",
+      "dollar_tolerance": "1e-7",
+      "net_return_tolerance": "1e-13",
+      "strategy_capacity": "unavailable",
+      "investment_validity": "unverified-research-diagnostic"
+    },
+    "companions": [
+      {
+        "path": "data/tickerhistory_replay_final_20260919/combo.bin.meta",
+        "sha256": "d76c8a369c5d57d7154abda49e793655da5cea0096d4050d94de678d3e9b9c46",
+        "bytes": 76
+      },
+      {
+        "path": "data/tickerhistory_replay_final_20260919/combo.bin.weights.txt",
+        "sha256": "67c4abc9a7afea63a084145c5848faa446b28b84ef3c6c03141dc586de33917d",
+        "bytes": 242
+      },
+      {
+        "path": "data/tickerhistory_replay_final_20260919/books.bin.meta.txt",
+        "sha256": "047b16f38aac676daf62447ac3f87cd644bc151606ae3bedc32da810cb11b25c",
+        "bytes": 296
+      }
+    ]
+  },
+  "peer_review": {
+    "kernel_and_snapshot_read": "execution_intent",
+    "risk_and_actual_trade_diagnostics": "risk_execution_audit",
+    "report_identity_and_native_integration": "research_audit",
+    "cross_review": "All three implementations received independent peer review",
+    "integration_and_decimal_oracle": "root",
+    "native_liquidity_cutoff_and_relocation": {
+      "path": "build-equity/audits/iteration5-peer-native-review.json",
+      "sha256": "dfd40d7ef137458843c1e765d653bb98e0148f16d2433c07828e259a51b26989",
+      "bytes": 5566
+    }
+  },
+  "evidence": [
+    {
+      "path": "build-equity/iteration5-book-tests.log",
+      "sha256": "b9a9a0e40f5e3cd4730435f07f33a0f73d857a59323aa64905a8b607e0a6c6a3",
+      "bytes": 8538
+    },
+    {
+      "path": "build-equity/iteration5-book-tests.xml",
+      "sha256": "ecbb6ca2a2695bcaca9635280abf29afbab365da401def1a63afad0824c72cd5",
+      "bytes": 18825
+    },
+    {
+      "path": "build-equity/iteration5-build-book.log",
+      "sha256": "0bff7abea8b6832df649b54e91b3bf12fb2ccd4731c10a4e9d382b0cd53844f3",
+      "bytes": 5044
+    },
+    {
+      "path": "build-equity/iteration5-build-impl-final.log",
+      "sha256": "48a202e06622d1410c0a73c4e742c15cd97a0cff6971e426f7514cd7e2ba003c",
+      "bytes": 740
+    },
+    {
+      "path": "build-equity/iteration5-build-impl-recheck.log",
+      "sha256": "cde9586fe261e1bc31d1fe5e0b7290fb569718b1cccec88bbb6ae953a4803d1a",
+      "bytes": 996
+    },
+    {
+      "path": "build-equity/iteration5-build-impl.log",
+      "sha256": "980895f4fac4edfa3d7367933587a4465017c50786c2129dae6dc55795ce60f7",
+      "bytes": 19966
+    },
+    {
+      "path": "build-equity/iteration5-check-report.log",
+      "sha256": "ea63c669eebff8ebbd3dd673e10f3a1b1bf8b5aa2c2a0c5d6348ea5731fcadb5",
+      "bytes": 366
+    },
+    {
+      "path": "build-equity/iteration5-configure-classic.log",
+      "sha256": "09eaf94e29132f82df26a1ae796207e72097e202b168f9814ed972fe5955238e",
+      "bytes": 3790
+    },
+    {
+      "path": "build-equity/iteration5-configure.log",
+      "sha256": "d331e49ccd954b78bc872a2580b2ddd5963c0cbc9a97bb3cb2c33dfa625f1b9a",
+      "bytes": 3898
+    },
+    {
+      "path": "build-equity/iteration5-impl-filter.txt",
+      "sha256": "13e65c5a06895960dbe9da2611ce65d2396ecfc6c46d8f6d52157419f4b162b0",
+      "bytes": 188
+    },
+    {
+      "path": "build-equity/iteration5-impl-final-filter.txt",
+      "sha256": "b01544d8317d1b0d8682cfe08cf716529b97b76f7f5ee78d8c2191efe168488f",
+      "bytes": 313
+    },
+    {
+      "path": "build-equity/iteration5-impl-recheck.log",
+      "sha256": "3369d14ee00eb758e745e85985da2ef01f4fcf9c34c3aa9be6df81dac21156f4",
+      "bytes": 35220
+    },
+    {
+      "path": "build-equity/iteration5-impl-recheck.xml",
+      "sha256": "77bc9e56c0086d10c68792bc3f69215977ec29cd9fb9b0f41edc303e0ce59b8b",
+      "bytes": 74413
+    },
+    {
+      "path": "build-equity/iteration5-impl-tests.log",
+      "sha256": "300bf6598e973893ca224c8755a8345805bb0deb6281c5cf43ce7497a012f9d6",
+      "bytes": 42172
+    },
+    {
+      "path": "build-equity/iteration5-impl-tests.xml",
+      "sha256": "02e74e91bdb0fd82130ebd1173e268773fdf3b89c106d506a5899f920c569fe5",
+      "bytes": 73550
+    },
+    {
+      "path": "build-equity/iteration5-native-final-combine.log",
+      "sha256": "133ca07dac54b76df5ae570ead09ebb4f1450b0396e8e4b59281c4a6012635db",
+      "bytes": 444
+    },
+    {
+      "path": "build-equity/iteration5-native-final-optimize.log",
+      "sha256": "4105df3ae143a45666893f4f9c853d963333e318f4ae3b60e0897af27b37f442",
+      "bytes": 364
+    },
+    {
+      "path": "build-equity/iteration5-native-final-report-repeat.log",
+      "sha256": "876dab29e562455b9b13dc3918558501ab03b25db66321acae8348afef024a59",
+      "bytes": 1188
+    },
+    {
+      "path": "build-equity/iteration5-native-final-report.log",
+      "sha256": "876dab29e562455b9b13dc3918558501ab03b25db66321acae8348afef024a59",
+      "bytes": 1188
+    },
+    {
+      "path": "build-equity/iteration5-native-full-rejection.log",
+      "sha256": "440d988d2bcacc6e0b65607cf020beb43439071fc19d30424bfc5dbb7ae0a0b1",
+      "bytes": 1076
+    },
+    {
+      "path": "build-equity/iteration5-native-prefix-combine.log",
+      "sha256": "133ca07dac54b76df5ae570ead09ebb4f1450b0396e8e4b59281c4a6012635db",
+      "bytes": 444
+    },
+    {
+      "path": "build-equity/iteration5-native-prefix-optimize.log",
+      "sha256": "4105df3ae143a45666893f4f9c853d963333e318f4ae3b60e0897af27b37f442",
+      "bytes": 364
+    },
+    {
+      "path": "build-equity/iteration5-native-prefix-panel.log",
+      "sha256": "b74b09831123b901edb09a04d7bd8f9f549f035966cb628e9af88c99c8fa193b",
+      "bytes": 636
+    },
+    {
+      "path": "build-equity/iteration5-native-relocated-combine.log",
+      "sha256": "133ca07dac54b76df5ae570ead09ebb4f1450b0396e8e4b59281c4a6012635db",
+      "bytes": 444
+    },
+    {
+      "path": "build-equity/audits/iteration5_decimal_oracle.py",
+      "sha256": "1a13f7c4a3894d83aac7412afc0b12047819461abf2ea450766adc78bd8097a0",
+      "bytes": 6861
+    },
+    {
+      "path": "build-equity/audits/iteration5-decimal-reference.json",
+      "sha256": "64e1f0207b36962a4ddaee473980b2d7466ada8aeb53a4745d7ec418ab5c8e39",
+      "bytes": 100210
+    },
+    {
+      "path": "build-equity/audits/iteration5_verify_native_replay.py",
+      "sha256": "2a5421f7d110f1a4a0db1cbf62d52ec9b9bb49c7679971916a854efb280cfee7",
+      "bytes": 6077
+    },
+    {
+      "path": "build-equity/audits/iteration5-native-verification.json",
+      "sha256": "05aad28b1b3a54ef4c4f3b71d954d6d33a7e24847433b965b61e512866a5e7b2",
+      "bytes": 1448
+    },
+    {
+      "path": "build-equity/audits/iteration5_source_gap.py",
+      "sha256": "65fed39dcc47d911fcaf57a7b33f67ed369185ede67f59a5cb0883e5ff088bdc",
+      "bytes": 2113
+    },
+    {
+      "path": "build-equity/audits/iteration5-source-gap.json",
+      "sha256": "ba1e038d27993b77e9e252cfe97149245c93dc46a9d33f027ebcf0c044005942",
+      "bytes": 27698
+    },
+    {
+      "path": "build-equity/audits/iteration5-peer-native-review.json",
+      "sha256": "dfd40d7ef137458843c1e765d653bb98e0148f16d2433c07828e259a51b26989",
+      "bytes": 5566
+    },
+    {
+      "path": "build-equity/audits/write_iteration5_receipt.py",
+      "sha256": "a56aac679a6423781df45145f79c676c36a6fd38d17b0a70d0b01e0de8035560",
+      "bytes": 11157
+    }
+  ],
+  "measured_sources": [
+    {
+      "path": "atx-engine/CMakeLists.txt",
+      "sha256": "2a0946a91fdff401e444af41e1bc1e3d438d9dcae33a60e22106a2ddd3365ff8",
+      "bytes": 6361
+    },
+    {
+      "path": "atx-engine/include/atx/engine/book/replay.hpp",
+      "sha256": "be7f52ce5498252cd40fe7fa387bb22e911ac9c681710375e75e4d662421f5b8",
+      "bytes": 3664
+    },
+    {
+      "path": "atx-engine/src/book/replay.cpp",
+      "sha256": "67a206c070045d63cc1b64e6869fb570dc846205c4418bec8b50530851ef2ef8",
+      "bytes": 12880
+    },
+    {
+      "path": "atx-engine/tests/CMakeLists.txt",
+      "sha256": "98d597a2ce3cf2b6cad8a18db0633041184920f50c4424fee2bf4d8744a13f81",
+      "bytes": 7790
+    },
+    {
+      "path": "atx-engine/tests/book/book_replay_test.cpp",
+      "sha256": "4533438b02e3d04a081ee4d733b40e678ec642238a23ae4ac42782fef5e9f938",
+      "bytes": 15322
+    },
+    {
+      "path": "atx-impl/CMakeLists.txt",
+      "sha256": "63886a671ca5696402c17498c3fd4bd11b50fad6d85e4af0ec4981bd12d387b9",
+      "bytes": 3328
+    },
+    {
+      "path": "atx-impl/src/append_history_panel.cpp",
+      "sha256": "1fa579e6d5104c3e73ca41db921cd5fdd609507c6f61235ded77c9553ef326d3",
+      "bytes": 8472
+    },
+    {
+      "path": "atx-impl/src/config.cpp",
+      "sha256": "101ca22e4e5d6cb7266a7a4143d1f29c4bca399271b310dc7cbd6ad0106dd0c1",
+      "bytes": 34157
+    },
+    {
+      "path": "atx-impl/src/config.hpp",
+      "sha256": "9e67cccb402ab859ef45810cad46089a54a7961ee092287656f33a37d02f326c",
+      "bytes": 35173
+    },
+    {
+      "path": "atx-impl/src/dispatch.cpp",
+      "sha256": "87bc50f0b9653b5f3fffaa2ec86de52f796f71fb2b12a27ad0c0c93f2371f4d8",
+      "bytes": 5715
+    },
+    {
+      "path": "atx-impl/src/panel_artifact.cpp",
+      "sha256": "9dc29449f949b6937dc9dcae915792ca53dfe575081a5f69cfed7c061c2d8f9d",
+      "bytes": 25391
+    },
+    {
+      "path": "atx-impl/src/panel_artifact.hpp",
+      "sha256": "3e7517bf8cf3de98a463bff32e44ee3dc42b4188312f65203ba6520b79cff695",
+      "bytes": 3435
+    },
+    {
+      "path": "atx-impl/src/panel_pipeline.cpp",
+      "sha256": "70025be6bcbb02a62bf8e61850f93607701eb22bdce969ca58a95a158cfa209a",
+      "bytes": 7089
+    },
+    {
+      "path": "atx-impl/src/panel_pipeline.hpp",
+      "sha256": "c07251a6ef122d00f502de51bc01fedb35094f561482e4d63b1975ce5cbda8db",
+      "bytes": 2284
+    },
+    {
+      "path": "atx-impl/src/replay_diagnostics.cpp",
+      "sha256": "1556f838ebb2dffa230ea04edb825f304b2c2dd5b56e40e6340d3a2537465d5c",
+      "bytes": 12737
+    },
+    {
+      "path": "atx-impl/src/replay_diagnostics.hpp",
+      "sha256": "c8a7cd610172bbf53287a9fe640a1d94d7582acb5d716865ab73db12ea470efb",
+      "bytes": 3385
+    },
+    {
+      "path": "atx-impl/src/replay_report.cpp",
+      "sha256": "fa1618ac2400180a40314dcc766aba6a418104ae051cdcfec28d5f64a503e8e3",
+      "bytes": 26834
+    },
+    {
+      "path": "atx-impl/src/replay_report.hpp",
+      "sha256": "069d38121b1875bbce9b43eeaa9d6e0f80b62fbee1961b53385e9463124a0e4b",
+      "bytes": 1096
+    },
+    {
+      "path": "atx-impl/src/serialize_panel.cpp",
+      "sha256": "93b5d5b7f3280c4802991e669a9b3245bed5a4977ba80825137bc40d33e314ea",
+      "bytes": 13169
+    },
+    {
+      "path": "atx-impl/src/serialize_panel.hpp",
+      "sha256": "4ffb92f2ff26f074c5670ff2abbac6769e7678b9b5cde2ce779d6ee3dc46a87f",
+      "bytes": 1986
+    },
+    {
+      "path": "atx-impl/src/stage_combine.cpp",
+      "sha256": "6aa73c06c2a54361e4e54a1ed7a8b104b0ca6dd0f9b7726f9d92a6652ec805b8",
+      "bytes": 91159
+    },
+    {
+      "path": "atx-impl/src/stage_data_provenance.cpp",
+      "sha256": "7e86772dfd1d93541d64b35e1f0b39ec6434eb5d102780a1f3900705d60c578f",
+      "bytes": 19973
+    },
+    {
+      "path": "atx-impl/src/stage_data_provenance.hpp",
+      "sha256": "2b683c10a8396e4103c7fef254c5a426770c8e57d553f0ee78d8bafdc0f80ec8",
+      "bytes": 2993
+    },
+    {
+      "path": "atx-impl/src/stage_discover.cpp",
+      "sha256": "3f2cb0c46ead98eb2a14715d78af44d91dc182f9f304179070c7031c1c331af1",
+      "bytes": 64564
+    },
+    {
+      "path": "atx-impl/src/stage_load.cpp",
+      "sha256": "34ebdbce04a1e0ef945ccab1c88d9d652d5a74f304e0b0fc0a77680be09bdb66",
+      "bytes": 4016
+    },
+    {
+      "path": "atx-impl/src/stage_metabook.cpp",
+      "sha256": "8b68a68f24bab0a24d01dcd9dbaff06ff038aaadfd38f3cf9dff7ff4fb452b86",
+      "bytes": 40583
+    },
+    {
+      "path": "atx-impl/src/stage_optimize.cpp",
+      "sha256": "30cc15ffdeb7d1fe2258a8dfc1724241b91588ac1768fafad4c36a2771c7f5a7",
+      "bytes": 29411
+    },
+    {
+      "path": "atx-impl/src/stage_panel.cpp",
+      "sha256": "0f3d31d2003e1d7baf56edbb37639501f9b4bf9b6dacbe5e723eaa0492a01806",
+      "bytes": 12041
+    },
+    {
+      "path": "atx-impl/src/stage_report.cpp",
+      "sha256": "79d534438a8a9db01789dfc55532e3cdb30dd6dd2df52ce06421d1150504e12d",
+      "bytes": 47603
+    },
+    {
+      "path": "atx-impl/src/stage_run.cpp",
+      "sha256": "ac73302e9705a5cb726ac3f4dce8c2e45925d5bb144c7c278d53a7175ef4304c",
+      "bytes": 9482
+    },
+    {
+      "path": "atx-impl/src/stage_sweep.cpp",
+      "sha256": "48e1a6f0e3c2a6e063dc87169ce7df4753427837c48b1c6a00f0785b9492e9f8",
+      "bytes": 22803
+    },
+    {
+      "path": "atx-impl/tests/CMakeLists.txt",
+      "sha256": "1e78c634a6e9d4175aff6a44ebc915fb0e5626fbeda04f89f3f1ffa26f67f47d",
+      "bytes": 1571
+    },
+    {
+      "path": "atx-impl/tests/combine_test.cpp",
+      "sha256": "b4cae31090823e294af411d916e96c1e36e553b752557206c538a464375e0621",
+      "bytes": 109509
+    },
+    {
+      "path": "atx-impl/tests/config_replay_test.cpp",
+      "sha256": "dadb22407841a7e752cfe363fdf245d4f0af86ce659c2c16c73ec034aeee8f27",
+      "bytes": 3344
+    },
+    {
+      "path": "atx-impl/tests/conviction_sizing_test.cpp",
+      "sha256": "e3afc88a2a6f028950c2538c0065040f537577ab098d531a0ae70d9ce744dda0",
+      "bytes": 27433
+    },
+    {
+      "path": "atx-impl/tests/cost_bps_test.cpp",
+      "sha256": "20a71ab36e4c7a3dac1c203a9e6746fff1b9536c85c6d288b800476dc90fbece",
+      "bytes": 20448
+    },
+    {
+      "path": "atx-impl/tests/discover_test.cpp",
+      "sha256": "68d4606bcc3adf12e5affd4fea0e01185d2022da467efc3f559785948529a8db",
+      "bytes": 98627
+    },
+    {
+      "path": "atx-impl/tests/e2e_pipeline_test.cpp",
+      "sha256": "fb1bb4bf0c9ab3cd1ae1e256b13932781ad853d30dc38f2df22bf0a055844a42",
+      "bytes": 44148
+    },
+    {
+      "path": "atx-impl/tests/metabook_netting_test.cpp",
+      "sha256": "6701d19b90fa736020e9a61134f60b8fd7b88ad28a9bcc1ba9e022fb8254806a",
+      "bytes": 15497
+    },
+    {
+      "path": "atx-impl/tests/metabook_test.cpp",
+      "sha256": "16ef35a1c11ecbbe0bae36c3a963e7f2e53093cc89a400c4c4e8bda9adc89e54",
+      "bytes": 37454
+    },
+    {
+      "path": "atx-impl/tests/optimize_test.cpp",
+      "sha256": "562e41016b9874261a297692c187115090fab2f34dc9c69c42bb2d22d3b6d85e",
+      "bytes": 38297
+    },
+    {
+      "path": "atx-impl/tests/panel_artifact_test.cpp",
+      "sha256": "1f787330cec01ff36d6c116fd97c5bfbffd1f00a74c232e29740fa4856e5f9e7",
+      "bytes": 15150
+    },
+    {
+      "path": "atx-impl/tests/panel_pipeline_test.cpp",
+      "sha256": "0c64cbaf8039349366a4bd1b2aed28d9f803504bcc8f0ad485819b44768d0521",
+      "bytes": 9863
+    },
+    {
+      "path": "atx-impl/tests/panel_test.cpp",
+      "sha256": "3b4c0b80a672039d8f7ebf5d1fcc02c1ba6552978a0d5e71327e755da2081417",
+      "bytes": 19772
+    },
+    {
+      "path": "atx-impl/tests/provenance_digest_test.cpp",
+      "sha256": "7d4379744764734f28b16f3f4cadd7cb07b83d32a4a3cb22bb212a480722efe1",
+      "bytes": 16198
+    },
+    {
+      "path": "atx-impl/tests/provenance_test.cpp",
+      "sha256": "76f08c548f8d5bf9c77bcb6d769200230d0ac788596eea7b9d46f622b544dc7a",
+      "bytes": 12116
+    },
+    {
+      "path": "atx-impl/tests/replay_diagnostics_test.cpp",
+      "sha256": "67cc4154e1dfe7e4c879a0c9521dbbb68a4bc09c41f5bef3b2526bc1b45d68a7",
+      "bytes": 10257
+    },
+    {
+      "path": "atx-impl/tests/replay_report_test.cpp",
+      "sha256": "c0df0c3775d4f3633521bc07aa3154dcea86222fa93e9ab5d2b90b80470c2887",
+      "bytes": 16839
+    },
+    {
+      "path": "atx-impl/tests/report_capacity_test.cpp",
+      "sha256": "35788fe84295f2e12ce9bd180f68975a488a9f4c5bec8e119a44ba46e5f53af5",
+      "bytes": 18167
+    },
+    {
+      "path": "atx-impl/tests/report_participation_test.cpp",
+      "sha256": "787aa930cf140db6fb629ac02193ac00f578f1208414701140c24ff0aabcde5f",
+      "bytes": 13047
+    },
+    {
+      "path": "atx-impl/tests/sign_deploy_test.cpp",
+      "sha256": "db31a93a14090e82ae4e0f986f83dfbb62af7f24e18b27fde1d3e1c0f7bc96b7",
+      "bytes": 15295
+    },
+    {
+      "path": "atx-impl/tests/stage_combine_cleaned_cov_test.cpp",
+      "sha256": "fa0ff1dc7f9b9adeabf2ab099c62a8b12d94948bc06c7633f78956889d10fa78",
+      "bytes": 12881
+    },
+    {
+      "path": "atx-impl/tests/stage_combine_determinism_battery_test.cpp",
+      "sha256": "f08368221978aae24998d019d13c17d59622d99183321897fa15273ff45fc4ee",
+      "bytes": 14172
+    },
+    {
+      "path": "atx-impl/tests/stage_combine_participation_test.cpp",
+      "sha256": "817e4bbc545786076ae820916effb2c095b029d413b8f2120846542dcd601e4e",
+      "bytes": 13802
+    },
+    {
+      "path": "atx-impl/tests/stage_combine_riskmodel_wire_test.cpp",
+      "sha256": "68495fb3e37d85cf3f6aad9ff6416277eb1e0e7b26172f7d924e9333278147e2",
+      "bytes": 9938
+    },
+    {
+      "path": "atx-impl/tests/stage_combine_stack_test.cpp",
+      "sha256": "8a0f52ece0c3ef735f3d454f2ca082f0971189c2ca21082ebccb619322498451",
+      "bytes": 13241
+    },
+    {
+      "path": "atx-impl/tests/stage_data_provenance_test.cpp",
+      "sha256": "8cfcd71433824782aae4c6c27fdf1f24bdff13d196c282830367679ed21edeaa",
+      "bytes": 12647
+    },
+    {
+      "path": "atx-impl/tests/stage_metabook_book_turnover_test.cpp",
+      "sha256": "b32ab64102ee7f53992c6fff31336095e4fea864d05911e4d5ff6d0fc3e96f71",
+      "bytes": 9539
+    },
+    {
+      "path": "atx-impl/tests/stage_metabook_dead_alpha_wire_test.cpp",
+      "sha256": "2bf2ecc98863ed8211045d480d099d43d98e41e7697ce37d60cc54bd6f5baca0",
+      "bytes": 12424
+    },
+    {
+      "path": "atx-impl/tests/stage_metabook_riskmodel_wire_test.cpp",
+      "sha256": "99516c0ddf60e37115470b7bfc46dbf72e837732ac58bf316fe1b216619d6999",
+      "bytes": 13535
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_book_turnover_test.cpp",
+      "sha256": "99a3b6f6fdddd653e6433ba9d5a50adf782954bcd163e3f8fad1b05eaafdebca",
+      "bytes": 10501
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_dead_alpha_determinism_test.cpp",
+      "sha256": "fccd9dc4148e00f30dd9e32e63c5a091edc8ceb1b5be68aeac9f0d38ce06a2e1",
+      "bytes": 13390
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_dead_alpha_wire_test.cpp",
+      "sha256": "546a76181d681be50ec7a7691352106aae7e495df7e58811f9e877603800d2e1",
+      "bytes": 14522
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_gp_trading_test.cpp",
+      "sha256": "4966422014e5ff7fd131958c883f33ba70a1279eb602688609f325e79a41b3bf",
+      "bytes": 14597
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_neutralize_test.cpp",
+      "sha256": "ae0fc36af93a415a563c8b8c0c7fe15ab4050182c133c4533cb86e0fafa033c1",
+      "bytes": 15881
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_participation_cap_test.cpp",
+      "sha256": "c6b202f26d5f1894a91e5b1fd429d8fa4e4bf94c5d16e4ee434ef140edead51c",
+      "bytes": 11187
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_pit_test.cpp",
+      "sha256": "85e73c169897a383283d8ca0114ec70d97c1a5efc80c99e0576179213c64a774",
+      "bytes": 11281
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_riskmodel_test.cpp",
+      "sha256": "dc44ce8597912d434b885b2fae77744401cfb2e03d19f480b6762c13ca3af58e",
+      "bytes": 13592
+    },
+    {
+      "path": "atx-impl/tests/stage_report_borrow_test.cpp",
+      "sha256": "4d0b64e8aac26ae57e564cd77f36e1bcc59ca84cc8379a84262d692a417f1328",
+      "bytes": 9749
+    },
+    {
+      "path": "atx-impl/tests/stage_report_capacity_curve_test.cpp",
+      "sha256": "3365bd05fc9d55936ac77c8b25fc583040a3bc800294406b4484b239f49e7b74",
+      "bytes": 18215
+    },
+    {
+      "path": "atx-impl/tests/stage_run_synthetic_smoke_test.cpp",
+      "sha256": "4357f4f1a6cff96cb319a1dda8b75edb42e57dd16477ae98c385b2abb24105ba",
+      "bytes": 18062
+    },
+    {
+      "path": "atx-impl/tests/store_discover_test.cpp",
+      "sha256": "4768b4fdcb85ac01882e817621376b445f20c886de412eddb7bdba5e9787fdc4",
+      "bytes": 17740
+    },
+    {
+      "path": "atx-impl/tests/sweep_test.cpp",
+      "sha256": "f44d5a0670cec6811fad39f05e0a558c2feefc1284ff832551fdc447db3a3577",
+      "bytes": 47185
+    },
+    {
+      "path": "scripts/atx-build.ps1",
+      "sha256": "5714b352acf13fbaec677f9a5eee1e6c24704c632f15a8823d51ddfbdb1e9bf9",
+      "bytes": 14252
+    }
+  ],
+  "next_book_specification": {
+    "path": "atx-impl/docs/EQUITY_BOOK_BASELINE.md",
+    "sha256": "285b7be42ff6656201527f349e5ec8430548baa783ff82cbf06c99aee25efee5",
+    "bytes": 20128
+  },
+  "primary_references": [
+    "https://web.stanford.edu/~boyd/papers/pdf/cvx_portfolio.pdf",
+    "https://www.cvxportfolio.com/en/stable/simulator.html",
+    "https://www.cvxportfolio.com/en/stable/costs.html",
+    "https://web.stanford.edu/~wfsharpe/art/sr/SR.htm",
+    "https://ir.kla.com/sec-filings/all-sec-filings/content/0001193125-26-212093/d116682dex991.htm",
+    "https://www.sec.gov/Archives/edgar/data/319201/000119312526269375/d144278d8k.htm"
+  ],
+  "limitations": [
+    "TRI-unit research replay, not physical-share/corporate-action settlement or executable fills",
+    "Source factor has confirmed KLAC split exception; accepted-row transformation is not economic certification",
+    "One-observation hypothetical execution delay does not certify historical availability, vintages or tradable prices",
+    "Universe, common-stock eligibility, shares timing, delistings, borrow locates/recalls and classifications remain unverified",
+    "Flat per-traded-dollar and elapsed annual simple borrow fees are uncalibrated assumptions; cash interest omitted",
+    "No chronological calibrated impact, residual orders or strategy capacity estimate",
+    "Post-fit means decision-origin boundary only; it does not certify independent strategy selection",
+    "Meta target allocation still uses backward returns and defective capital-rotation turnover telemetry",
+    "Legacy attribution API remains unchanged; identified replay does not repair legacy research streams",
+    "Optimizer previous-target weights, whole-panel covariance and final-date participation shortcuts remain unsuitable for qualified book",
+    "Exact inputs/recipe/report bindings remain incomplete signal-library lineage; parent manifests are local integrity, not vendor authenticity",
+    "Manifest-last no-replace publication has no fsync/power-loss durability claim",
+    "No full suite, broad search battery, sanitizer or production performance benchmark; Debug timings may overlap other work",
+    "Goal remains active; next iteration uses atx-impl book requirements to guide engine development"
+  ]
+}

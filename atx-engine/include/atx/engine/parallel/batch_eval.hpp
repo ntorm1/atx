@@ -52,6 +52,7 @@
 
 #include "atx/engine/alpha/bytecode.hpp" // alpha::Program
 #include "atx/engine/alpha/panel.hpp"    // alpha::Panel, alpha::SignalSet
+#include "atx/engine/alpha/subtree_cache.hpp" // alpha::SubtreeCache (Lane 2)
 
 #include "atx/engine/parallel/det_pool.hpp" // DetPool
 #include "atx/engine/parallel/executor.hpp" // IExecutor (S7.5a substrate-agnostic overload)
@@ -66,6 +67,18 @@ namespace atx::engine::parallel {
 [[nodiscard]] atx::core::Result<atx::engine::alpha::SignalSet>
 parallel_evaluate(std::span<const atx::engine::alpha::Program> progs,
                   const atx::engine::alpha::Panel &panel, DetPool &pool);
+
+// Lane 2 — strategy A with a SHARED SubtreeCache: every worker's Engine evaluates
+// its programs through Engine::evaluate(prog, cache), reusing subtrees other
+// programs / workers / earlier calls already computed on this panel and publishing
+// what it computes. Output is byte-identical to the cache-free overload for every
+// worker count (a cache hit is the byte-exact value a fresh evaluation produces);
+// only the amount of work changes. A null cache IS the cache-free overload. The
+// panel digest is computed once here and injected into every worker Engine.
+[[nodiscard]] atx::core::Result<atx::engine::alpha::SignalSet>
+parallel_evaluate(std::span<const atx::engine::alpha::Program> progs,
+                  const atx::engine::alpha::Panel &panel, DetPool &pool,
+                  atx::engine::alpha::SubtreeCache *cache);
 
 // S7.5a — the SAME deterministic batch eval over the substrate-agnostic IExecutor
 // seam (THREAD substrate this unit). The map BODY is UNCHANGED — this overload

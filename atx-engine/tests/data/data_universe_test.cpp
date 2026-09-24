@@ -287,6 +287,60 @@ TEST(DataUniverse, SectorGicsThenSicFallbackThenSentinel) {
   EXPECT_EQ(kNoSectorCode, -1);              // sentinel is -1, never 0
 }
 
+TEST(DataUniverse, InvalidGicsUsesValidSicWithoutUnsafeConversion) {
+  const atx::f64 inf = std::numeric_limits<atx::f64>::infinity();
+  const atx::f64 upper = static_cast<atx::f64>(std::numeric_limits<atx::i32>::max());
+  const std::vector<atx::f64> gics{inf, -inf, kNaN, upper + 1.0, 45.5, -2.0, kNoSector};
+  const auto ni = gics.size();
+  const Panel panel = make_price_panel(1, ni, std::vector<atx::f64>(ni, 100.0),
+                                      std::vector<atx::f64>(ni, 1000.0));
+  const Dataset corp = make_corp_dataset(1, ni, std::vector<atx::f64>(ni, 1e6), gics,
+                                         std::vector<atx::f64>(ni, 2834.0));
+  UniverseConfig cfg;
+  cfg.adv_window = 1;
+  cfg.min_adv_usd = 0.0;
+  cfg.require_sector = true;
+  const auto result = build_universe(panel, corp, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  for (atx::usize i = 0; i < ni; ++i) {
+    EXPECT_EQ(result->sector_code[i], 2834) << i;
+    EXPECT_EQ(result->in_universe[i], 1) << i;
+  }
+}
+
+TEST(DataUniverse, InvalidGicsAndSicRemainUnknownAndFailSectorRequirement) {
+  const atx::f64 inf = std::numeric_limits<atx::f64>::infinity();
+  const atx::f64 upper = static_cast<atx::f64>(std::numeric_limits<atx::i32>::max());
+  const std::vector<atx::f64> invalid{inf, -inf, kNaN, upper + 1.0, 2834.5, -2.0, kNoSector};
+  const auto ni = invalid.size();
+  const Panel panel = make_price_panel(1, ni, std::vector<atx::f64>(ni, 100.0),
+                                      std::vector<atx::f64>(ni, 1000.0));
+  const Dataset corp = make_corp_dataset(1, ni, std::vector<atx::f64>(ni, 1e6), invalid, invalid);
+  UniverseConfig cfg;
+  cfg.adv_window = 1;
+  cfg.min_adv_usd = 0.0;
+  cfg.require_sector = true;
+  const auto result = build_universe(panel, corp, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  for (atx::usize i = 0; i < ni; ++i) {
+    EXPECT_EQ(result->sector_code[i], kNoSectorCode) << i;
+    EXPECT_EQ(result->in_universe[i], 0) << i;
+  }
+}
+
+TEST(DataUniverse, IntegralSectorBoundsAndGicsPreferenceArePreserved) {
+  const auto max_code = std::numeric_limits<atx::i32>::max();
+  const atx::f64 upper = static_cast<atx::f64>(max_code);
+  const Panel panel = make_price_panel(1, 4, {100.0, 100.0, 100.0, 100.0},
+                                      {1000.0, 1000.0, 1000.0, 1000.0});
+  const Dataset corp = make_corp_dataset(1, 4, {1e6, 1e6, 1e6, 1e6},
+                                         {0.0, 45.0, upper, kNoSector},
+                                         {2834.0, 3571.0, 1.0, upper});
+  const auto result = build_universe(panel, corp, UniverseConfig{});
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  EXPECT_EQ(result->sector_code, (std::vector<atx::i32>{0, 45, max_code, max_code}));
+}
+
 // ---------------------------------------------------------------------------
 // 6. MembershipExcludesNanPriceCells
 // ---------------------------------------------------------------------------

@@ -55,6 +55,7 @@
 #include <algorithm> // std::clamp
 #include <cmath>     // std::sqrt
 #include <utility>   // std::move
+#include <vector>    // std::vector
 
 #include <Eigen/Dense>
 
@@ -62,6 +63,8 @@
 #include "atx/core/linalg/decompose.hpp" // symmetric_eig
 #include "atx/core/linalg/linalg.hpp"    // MatX, VecX
 #include "atx/core/types.hpp"            // f64, usize
+
+#include "atx/engine/combine/cov_targets.hpp" // CovTarget, estimate_covariance (L7 factor cov)
 
 namespace atx::engine::risk {
 
@@ -290,6 +293,71 @@ namespace detail {
     }
   }
   return Ok(std::move(cleaned));
+}
+
+// ===========================================================================
+//  L7: factor-covariance estimator selection (opt-in; see HybridCfg)
+// ===========================================================================
+//  shrunk_factor_covariance(series, target) estimates the K×K factor covariance of a
+//  (dates × factors) factor-return series with any combine::CovTarget estimator
+//  (sample, LW identity / const-corr, LW2020 nonlinear, MP clip). Factor models have
+//  structurally DEAD columns (an industry with no members over the window ⇒ f ≡ 0),
+//  which the correlation-based estimators reject; those columns are carried at the
+//  variance floor kDeadFactorVar with zero covariance, and the estimator runs on the
+//  live columns only. The output is exactly symmetrized and, if its Cholesky fails,
+//  eigenvalue-floored at max(kDeadFactorVar, kSpdRelFloor·λ_max) so FactorModel::create
+//  always accepts it. Err: T < 2, K < 1, or a non-finite entry.
+
+inline constexpr atx::f64 kDeadFactorVar = 1e-12;
+inline constexpr atx::f64 kSpdRelFloor = 1e-10;
+
+[[nodiscard]] inline Result<MatX> shrunk_factor_covariance(const MatX &series,
+                                                           combine::CovTarget target) {
+  const Eigen::Index t = series.rows();
+  const Eigen::Index k = series.cols();
+  if (t < 2 || k < 1) {
+    return Err(ErrorCode::InvalidArgument, "shrunk_factor_covariance: need T >= 2 and K >= 1");
+  }
+  if (!series.allFinite()) {
+    return Err(ErrorCode::InvalidArgument, "shrunk_factor_covariance: non-finite factor return");
+  }
+  // Live columns: non-zero sample variance (exact test: a dead column is constant).
+  std::vector<Eigen::Index> live;
+  live.reserve(static_cast<std::size_t>(k));
+  for (Eigen::Index c = 0; c < k; ++c) {
+    const auto col = series.col(c);
+    if ((col.array() != col[0]).any()) {
+      live.push_back(c);
+    }
+  }
+  MatX out = MatX::Zero(k, k);
+  for (Eigen::Index c = 0; c < k; ++c) {
+    out(c, c) = kDeadFactorVar;
+  }
+  if (live.empty()) {
+    return Ok(std::move(out));
+  }
+  const Eigen::Index kl = static_cast<Eigen::Index>(live.size());
+  MatX xl(t, kl);
+  for (Eigen::Index j = 0; j < kl; ++j) {
+    xl.col(j) = series.col(live[static_cast<std::size_t>(j)]);
+  }
+  ATX_TRY(MatX est, combine::estimate_covariance(xl, target));
+  MatX sym = 0.5 * (est + est.transpose());
+  if (Eigen::LLT<MatX>(sym).info() != Eigen::Success) {
+    ATX_TRY(const auto eig, atx::core::linalg::symmetric_eig(sym));
+    const atx::f64 lmax = eig.values.maxCoeff();
+    const atx::f64 floor = std::max(kDeadFactorVar, kSpdRelFloor * std::max(lmax, 0.0));
+    const VecX lam = eig.values.cwiseMax(floor);
+    sym = eig.vectors * lam.asDiagonal() * eig.vectors.transpose();
+    sym = 0.5 * (sym + sym.transpose()).eval();
+  }
+  for (Eigen::Index a = 0; a < kl; ++a) {
+    for (Eigen::Index b = 0; b < kl; ++b) {
+      out(live[static_cast<std::size_t>(a)], live[static_cast<std::size_t>(b)]) = sym(a, b);
+    }
+  }
+  return Ok(std::move(out));
 }
 
 } // namespace atx::engine::risk

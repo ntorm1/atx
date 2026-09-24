@@ -1,0 +1,1747 @@
+{
+  "date": "2026-09-19",
+  "goal_status": "active",
+  "scope": "Checkpoint 6: observed-history momentum, common readiness, fixed equal weekly baseline and measured annual source context",
+  "status": "software_checks_passed_full_native_book_rejected_required_mark",
+  "build": {
+    "preset": "equity-dev",
+    "groups": [
+      "risk",
+      "data",
+      "core",
+      "book"
+    ],
+    "type": "Debug",
+    "compiler": "clang-cl 18.1.8",
+    "targets": [
+      "atx-impl-tests",
+      "atx-impl"
+    ],
+    "configured_source_revision": "2d2c4bd6f5d9e52fa7c5318d9760e903f23a1549-dirty",
+    "revision_is_not_complete_source_identity": true,
+    "source_identity": "Per-file SHA256 below; unrelated warehouse work shares this tree.",
+    "translation_unit_checks_passed": [
+      "equity_baseline_views.cpp",
+      "stage_equity_baseline.cpp"
+    ],
+    "initial_build_failure": "Test-only std::string/json equality needed explicit extraction; corrected before final build.",
+    "other_preserved_attempts": [
+      "View TU check before CMake source discovery had no target.",
+      "Context CLI first attempt omitted the required compact-universe boolean; rejected before output."
+    ],
+    "dependencies": "Existing classic vcpkg Arrow24 / GoogleTest1.17 and cached nlohmann_json; pinned manifest not resolved."
+  },
+  "ctest": {
+    "selected": 102,
+    "passed": 102,
+    "failed": 0,
+    "skipped": 0,
+    "new_cases_passed": 18,
+    "new_cases": [
+      "ConfigBaseline.DispatchAppliesConfigFileBeforeValidatingFixedRecipe",
+      "ConfigBaseline.EvaluationBoundsRemainDistinctFromContextWindow",
+      "ConfigBaseline.ExplicitZeroFeeScenarioKeepsItsPresence",
+      "ConfigBaseline.MalformedOrMissingBudgetNeverCoercesToAnUnboundedRun",
+      "EquityBaselineViews.EvaluationSliceBorrowsExactPricesAndRebasesOrdersAndScoring",
+      "EquityBaselineViews.ExplicitObservationMaskAndInvalidNumericClaimsAreChecked",
+      "EquityBaselineViews.FutureStorageMembersCannotEnterEarlierStaticUniverseWeights",
+      "EquityBaselineViews.InvalidDomainsAndInsufficientBudgetFailBeforeEvaluation",
+      "EquityBaselineViews.LateEntrantUsesObservedHistoryAndCommonReadiness",
+      "EquityBaselineViews.MissingLongHistoryBlocksBothSignalsUntilWindowRecovers",
+      "PanelArtifactTest.PayloadBudgetRejectsLargerReplacementsBeforeSnapshotRead",
+      "StageEquityBaseline.CommonReadinessGatesBothStreamsBeforeRanking",
+      "StageEquityBaseline.ExplicitZeroCostsDelayAndGlobalDefaultAumArePreserved",
+      "StageEquityBaseline.FixedUnfitBlendReplaysOnlyEvaluationAndBindsAncestry",
+      "StageEquityBaseline.MissingHeldMarkPreservesBoundFailureAndNoCompleteManifest",
+      "StageEquityBaseline.PublicationHashesDeterminismAndNoOverwrite",
+      "StageEquityBaseline.RejectsUnknownPriceBasisBeforeNumericFeatureEvaluation",
+      "StageEquityBaseline.RejectsUnsupportedModesSealedDatesCoverageAndMemoryFloor"
+    ],
+    "wall_seconds": 38.43,
+    "scope": "Focused implementation, identified-panel, replay and CLI integration checks; unchanged book suite not repeated."
+  },
+  "executables": [
+    {
+      "path": "build-equity/bin/atx-impl.exe",
+      "sha256": "c482790ab31c30a8fed824c55175099c60b93e567a0aa7941dde7ebde1db48dc",
+      "bytes": 11842560
+    },
+    {
+      "path": "build-equity/bin/atx-impl-tests.exe",
+      "sha256": "54fcb3a9063342462ca1a4d86d381975828b34b4a34ef3b913cbf16a8df66424",
+      "bytes": 17120768
+    }
+  ],
+  "context": {
+    "artifact_id": "ec572b826dce65fbd4cd391921f57f01e1ce084864ec84b3e6a944003ead8079",
+    "shape": {
+      "dates": "445",
+      "fields": [
+        "close",
+        "raw_close",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "market_cap",
+        "sector",
+        "earnFlag",
+        "atmCenI_21d",
+        "atmCenI_126d",
+        "nEarnCnt_5d"
+      ],
+      "instruments": "1661"
+    },
+    "payload": {
+      "path": "data/tickerhistory_training_native_20260919/context.bin",
+      "sha256": "c219dc237a58574e4b55df8ee51e9f239ef9d5963903e54aa253bd07eafb85ef",
+      "bytes": 71697242
+    },
+    "manifest": {
+      "path": "data/tickerhistory_training_native_20260919/context.bin.manifest.json",
+      "sha256": "e9d53a8932b242750f44f8744a46856b535a0b1c27bd91dcf8dda60555e5f68a",
+      "bytes": 125854
+    },
+    "preparation": {
+      "path": "data/tickerhistory_training_20120326_20131231_20260919/manifest.json",
+      "sha256": "ee17d68bfe33d58fa7279877c43d370a6b6b6a577bdb11082a70babec6e8c3df",
+      "bytes": 72831
+    },
+    "ingestion": {
+      "path": "data/tickerhistory_training_native_20260919/segments/_ingestion.manifest.json",
+      "sha256": "47db6b5d3486322a4f26bd5ba75f3f06b7b22fa6dd50fc54a232fd27d96d6d40",
+      "bytes": 72525
+    },
+    "native_wall_seconds": 66.94142059999285,
+    "memory_peaks": {
+      "PageFaultCount": 625749,
+      "PagefileUsage": 996429824,
+      "PeakPagefileUsage": 1017806848,
+      "PeakWorkingSetSize": 1026482176,
+      "PrivateUsage": 996429824,
+      "QuotaNonPagedPoolUsage": 74400,
+      "QuotaPagedPoolUsage": 1120792,
+      "QuotaPeakNonPagedPoolUsage": 74400,
+      "QuotaPeakPagedPoolUsage": 1120792,
+      "WorkingSetSize": 1005162496
+    },
+    "source_comparison": {
+      "status": "passed",
+      "universe": {
+        "source_replay_cells": 425000,
+        "native_cells": 425000,
+        "mismatched_cells": 0,
+        "daily_membership_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000,
+          1000
+        ]
+      },
+      "comparisons": {
+        "open": {
+          "finite_comparisons": 701333,
+          "exact_bit_matches": 701333,
+          "matching_nan_gaps": 37812,
+          "tolerance_mismatches": 0,
+          "max_absolute_error": 0.0,
+          "max_relative_error": 0.0
+        },
+        "high": {
+          "finite_comparisons": 701333,
+          "exact_bit_matches": 701333,
+          "matching_nan_gaps": 37812,
+          "tolerance_mismatches": 0,
+          "max_absolute_error": 0.0,
+          "max_relative_error": 0.0
+        },
+        "low": {
+          "finite_comparisons": 701333,
+          "exact_bit_matches": 701333,
+          "matching_nan_gaps": 37812,
+          "tolerance_mismatches": 0,
+          "max_absolute_error": 0.0,
+          "max_relative_error": 0.0
+        },
+        "close": {
+          "finite_comparisons": 701333,
+          "exact_bit_matches": 701333,
+          "matching_nan_gaps": 37812,
+          "tolerance_mismatches": 0,
+          "max_absolute_error": 0.0,
+          "max_relative_error": 0.0
+        },
+        "raw_close": {
+          "finite_comparisons": 701333,
+          "exact_bit_matches": 701333,
+          "matching_nan_gaps": 37812,
+          "tolerance_mismatches": 0,
+          "max_absolute_error": 0.0,
+          "max_relative_error": 0.0
+        },
+        "volume": {
+          "finite_comparisons": 701333,
+          "exact_bit_matches": 701333,
+          "matching_nan_gaps": 37812,
+          "tolerance_mismatches": 0,
+          "max_absolute_error": 0.0,
+          "max_relative_error": 0.0
+        },
+        "market_cap": {
+          "finite_comparisons": 701333,
+          "exact_bit_matches": 701333,
+          "matching_nan_gaps": 37812,
+          "tolerance_mismatches": 0,
+          "max_absolute_error": 0.0,
+          "max_relative_error": 0.0
+        }
+      },
+      "limits": [
+        "Identified axes checked against independently reconstructed source order and selection; no vendor authentication",
+        "Validates seven price/economic fields and mask; other five panel fields are outside this comparison",
+        "No historical publication/PIT certification, shares adjustment inference, or performance claim"
+      ]
+    }
+  },
+  "baseline_trial": {
+    "output_root": "data/equity_baseline_training_2013_20260919",
+    "recipe": {
+      "allocator": "existing-position-mode-shape_book",
+      "annual_borrow_bps": 365.0,
+      "borrow_day_basis": 365,
+      "combination": "equal-weighted-constituent-target-position-streams",
+      "constraint_tolerance": 1e-10,
+      "context_profile": {
+        "adv_window_bars": 21,
+        "compact_to_universe": true,
+        "current_session_data_included": true,
+        "min_adv_usd": 20000000.0,
+        "min_mktcap_usd": 0.0,
+        "min_raw_price_exclusive": 5.0,
+        "require_sector": false,
+        "top_n_by_adv": 1000
+      },
+      "decision_eligibility": "inherited-context-mask-intersect-common-readiness",
+      "decision_schedule": "every-five-evaluation-observations-starting-at-zero",
+      "evaluation_end_exclusive": "2014-01-01",
+      "evaluation_start": "2013-04-04",
+      "execution_delay_observations": "1",
+      "execution_timing": "hypothetical-observation-close-not-publication-certification",
+      "feature_observation_basis": "finite-positive-adjusted-close-and-raw-close-nonnegative-raw-volume",
+      "fit_kind": "unfit-constant-weights",
+      "fitted_observations": 0,
+      "held_missing_price_policy": "reject-entire-run-no-window-shortening",
+      "historical_availability": "unknown-archive-snapshot",
+      "hysteresis": "none",
+      "inherited_context_recipe": "{\"augmentation\":{\"adv_windows\":[],\"dollar_volume_basis\":\"adjusted-close*raw-volume-research-proxy\",\"enabled\":false},\"compact_to_universe\":true,\"compaction\":\"keep-original-order-if-ever-in-universe-in-selected-window\",\"end_exclusive_nanos\":\"1388534400000000000\",\"historical_availability\":\"unknown-archive-snapshot\",\"historical_vintages_verified\":false,\"ingestion_content_binding_verified\":true,\"instrument_type_eligibility\":\"unknown-includes-possible-funds-and-other-types\",\"invalid_price_factor_or_product\":\"NaN-gap-next-valid-cell-independent\",\"market_cap\":\"raw-close*reported-shares-no-share-revision-validation\",\"original_source_binding\":\"declared-by-bound-preparation-manifest-not-authenticated\",\"other_fields\":\"sector-and-earnings-options-columns-pass-through\",\"preparation_content_binding_verified\":true,\"producer_executable_sha256\":\"9415a6ab798f0e5fd0eb4fec31a7d2b3d09a47dd7eaf48e668deb844f0fe4daa\",\"raw_close\":\"unadjusted-as-traded\",\"research_ohlc\":\"raw-OHLC*cumulReturnFactor-pointwise\",\"session_keys\":\"session-label-not-availability-or-execution-time\",\"start_inclusive_nanos\":\"1332720000000000000\",\"todayTicker\":\"not-used-for-identity-or-universe\",\"universe\":{\"adv_basis\":\"raw_close*raw_volume\",\"adv_missing\":\"full-trailing-window-any-NaN-invalid\",\"adv_window_bars\":21,\"current_session_data_included\":true,\"min_adv_usd\":20000000.0,\"min_mktcap_usd\":0.0,\"min_raw_price_exclusive\":5.0,\"require_sector\":false,\"top_n_by_adv\":1000,\"top_n_tie_break\":\"original-instrument-index\"},\"version\":\"tickerhistory-panel-v2-identified\",\"volume\":\"raw-reported-volume-no-total-return-factor-rescaling\"}",
+      "inherited_universe_caveat": "context may require raw-close-times-shares validity and retain warmup-union columns",
+      "initial_holdings": "all-cash-at-evaluation-start",
+      "initial_nav": 100000000.0,
+      "instrument_type_eligibility": "unknown",
+      "investment_qualification": "unverified-no-promotion",
+      "legacy_post_fit_boundary": "zero-is-unfit-constant-weights-never-heldout-selection",
+      "live_orders_authorized": false,
+      "locates_impact_settlement": "not-modeled",
+      "max_working_bytes": "3000000000",
+      "name_cap": 0.01,
+      "planning_cost_bps": 0,
+      "producer_executable_sha256": "c482790ab31c30a8fed824c55175099c60b93e567a0aa7941dde7ebde1db48dc",
+      "profile": "slow-momentum-equal-weekly-shaping-v1",
+      "raw_data_economics": "unverified",
+      "replay_liquidity_context": "evaluation-only-prior-21-observations-first-21-trade-ADV-may-be-unknown",
+      "sector_beta_risk": "unqualified",
+      "signal_readiness": "both-finite-before-ranking",
+      "signals": [
+        {
+          "constant_weight": 0.5,
+          "dsl": "ts_mean(delay(close, 21) / delay(close, 252) - 1, 5)",
+          "dsl_sha256": "6340a0639c0ed6e461308da6c997de4cefe6bba5d006040f21b608a0e9ac3851",
+          "name": "momentum_252"
+        },
+        {
+          "constant_weight": 0.5,
+          "dsl": "ts_mean(delay(close, 21) / delay(close, 126) - 1, 5)",
+          "dsl_sha256": "5ce8bb0abc038b1117ee99cee40ca0a01460b1666642947cf8fdf85018cacbfe",
+          "name": "momentum_126"
+        }
+      ],
+      "strategy_capacity": "unavailable",
+      "target_gross": 1.0,
+      "target_net_qualification_tolerance": 1e-10,
+      "terminal_policy": "valuation-only-no-trade-no-liquidation",
+      "trade_bps_per_absolute_dollar": 5.0,
+      "trade_rate": 1.0,
+      "trial_purpose": "training-only-software-and-book-diagnostic",
+      "warmup_observations": 256,
+      "weight_policy": {
+        "gross_leverage": 1.0,
+        "industry_neutral": false,
+        "transform": "rank",
+        "winsorize_limit": 0.025
+      }
+    },
+    "source_context_artifact_id": "ec572b826dce65fbd4cd391921f57f01e1ce084864ec84b3e6a944003ead8079",
+    "failure": "InvalidArgument: replay: missing/nonpositive required close at period=6 instrument=604 session_key_ns=1365724800000000000 security_id=150340",
+    "native_exit_code": 1,
+    "completed_manifest_exists": false,
+    "native_wall_seconds": 8.957688100010273,
+    "memory_peaks": {
+      "PageFaultCount": 74214,
+      "PagefileUsage": 147775488,
+      "PeakPagefileUsage": 154447872,
+      "PeakWorkingSetSize": 165318656,
+      "PrivateUsage": 147775488,
+      "QuotaNonPagedPoolUsage": 14560,
+      "QuotaPagedPoolUsage": 303200,
+      "QuotaPeakNonPagedPoolUsage": 18192,
+      "QuotaPeakPagedPoolUsage": 304920,
+      "WorkingSetSize": 158613504
+    },
+    "target_diagnostics": {
+      "decisions": 38,
+      "max_abs_target_net": 1.2126801299250367e-16,
+      "max_target_gross": 1.0000000000000029,
+      "max_name_abs": 0.002277124358286722,
+      "sum_successive_target_l1_changes": 9.218658823402672,
+      "subsequent_target_changes_above_0_2": 31,
+      "shape_violation_decisions": 0,
+      "interpretation": "Proposed full-window targets; not executed turnover or a continuation after replay failure."
+    },
+    "independent_numeric_verification": {
+      "schema": "iteration6-baseline-independent-numeric-verification-v1",
+      "numeric_artifact_status": "passed",
+      "native_replay": {
+        "status": "native-failed-no-completed-report",
+        "error": "InvalidArgument: replay: missing/nonpositive required close at period=6 instrument=604 session_key_ns=1365724800000000000 security_id=150340",
+        "full_window_performance": "unavailable",
+        "failure_is_numeric_oracle_failure": false
+      },
+      "script_sha256": "9a2052f35d1da6235b0fd0f11ff1222fe7f213a5a64f608cbaffbb9393064ee3",
+      "numpy_version": "1.26.4",
+      "input_hashes": {
+        "C:\\atx\\data\\tickerhistory_training_native_20260919\\context.bin.manifest.json": "e9d53a8932b242750f44f8744a46856b535a0b1c27bd91dcf8dda60555e5f68a",
+        "C:\\atx\\data\\tickerhistory_training_native_20260919\\context.bin": "c219dc237a58574e4b55df8ee51e9f239ef9d5963903e54aa253bd07eafb85ef",
+        "C:\\atx\\data\\equity_baseline_training_2013_20260919\\evaluation.bin.manifest.json": "25158e69ed35a86424a3958359541817f2330534851eabe58068915caf9e797b",
+        "C:\\atx\\data\\equity_baseline_training_2013_20260919\\evaluation.bin": "bf0070e16c0cd1d66faac9e58f33ae7c0b9843566fc5d0804dc3c52724ab7835",
+        "C:\\atx\\data\\equity_baseline_training_2013_20260919\\combo.bin.manifest.json": "05f0426590676a2bbf1ab1a7055a1d4175da92e03978e217a507c41c9114af6c",
+        "C:\\atx\\data\\equity_baseline_training_2013_20260919\\combo.bin": "275c19f9b9b281755391c4a9c1bd23f880d5b0b3e400964927bd2438aa22e671",
+        "C:\\atx\\data\\equity_baseline_training_2013_20260919\\books.bin.manifest.json": "a67930ee992b5b2dfd6e74710ec1971c2d08c26cd3c8471f9b317dd42418ac26",
+        "C:\\atx\\data\\equity_baseline_training_2013_20260919\\books.bin": "d47cf12586bd3e86f09885a23b5edf0155fb3c769ad68c8af5c02be6713f8960",
+        "C:\\atx\\data\\equity_baseline_training_2013_20260919\\readiness.csv": "0b0fdb8389f2de75c05c9ed3a6356b23fc28582f2622ba768b2a7d7e77cf8a98",
+        "C:\\atx\\data\\equity_baseline_training_2013_20260919\\books.bin.meta.txt": "fde7da760df2ce90be1daea12d541945ad8ac8a4ff70598f2f3594f0172949c9",
+        "C:\\atx\\data\\equity_baseline_training_2013_20260919\\failure.json": "826780789b9e935d4be0101994449c4c03bcf91731d309140cca6a7d1f2250e1"
+      },
+      "all_read_inputs_unchanged": true,
+      "source_context_artifact_id": "ec572b826dce65fbd4cd391921f57f01e1ce084864ec84b3e6a944003ead8079",
+      "source_shape": [
+        445,
+        1661
+      ],
+      "evaluation_shape": [
+        189,
+        1661
+      ],
+      "context_evaluation_half_open_rows": [
+        256,
+        445
+      ],
+      "evaluation_first_session_key_ns": "1365033600000000000",
+      "evaluation_last_session_key_ns": "1388448000000000000",
+      "minimum_required_prior_observations": 256,
+      "cropped_numeric_cells_bit_exact": 941787,
+      "ready_cells": 287931,
+      "source_eligible_cells": 189000,
+      "admitted_cells": 185108,
+      "not_ready_eligible_cells": 3892,
+      "ready_but_ineligible_cells": 102823,
+      "combo_finite_cells_compared": 185108,
+      "combo_nan_cells_checked": 128821,
+      "max_combo_absolute_weight_error": 5.854691731421724e-18,
+      "weekly_decisions": 38,
+      "book_weight_cells_compared": 63118,
+      "max_book_absolute_weight_error": 9.540979117872439e-18,
+      "weight_tolerance": 1e-12,
+      "required_mark_coverage_evidence": "build-equity\\audits\\iteration6-baseline-required-marks.json",
+      "missing_required_mark_cells": 110,
+      "first_missing_required_mark": {
+        "evaluation_observation": 6,
+        "context_observation": 262,
+        "session_key_ns": "1365724800000000000",
+        "session_date_utc": "2013-04-12",
+        "instrument_index": 604,
+        "security_id": "150340",
+        "required_reasons": [
+          "mark-existing-position",
+          "price-effective-new-target"
+        ],
+        "held_target_origin_decision": 0,
+        "held_target_weight": 0.0007039690445176616,
+        "new_target_origin_decision": 5,
+        "new_target_weight": 0.0016070739825436052,
+        "invalid_close": "NaN",
+        "coverage_after_first_missing_mark": false
+      },
+      "cap_binding_cells": 0,
+      "max_abs_target_net": 8.886900276002668e-17,
+      "target_gross_min": 0.999999999999996,
+      "target_gross_max": 1.000000000000002,
+      "decimal_momentum_samples": [
+        {
+          "evaluation_observation": 0,
+          "context_observation": 256,
+          "security_id": "32952",
+          "lag": 252,
+          "decimal_signal": "-0.0553737663729688105397263354354636037856615690957033415828446",
+          "numpy_signal": -0.05537376637296883,
+          "absolute_error": "1.67698156149633887464046202988852536896671554E-17"
+        },
+        {
+          "evaluation_observation": 0,
+          "context_observation": 256,
+          "security_id": "32952",
+          "lag": 126,
+          "decimal_signal": "0.09648504682405716801332423694644523432178289500999658901577",
+          "numpy_signal": 0.09648504682405719,
+          "absolute_error": "2.045039487773296139555351941974830419223423E-17"
+        },
+        {
+          "evaluation_observation": 0,
+          "context_observation": 256,
+          "security_id": "38946",
+          "lag": 252,
+          "decimal_signal": "0.041869396389504742783121310636840509804448637158281374226244",
+          "numpy_signal": 0.04186939638950475,
+          "absolute_error": "8.282813984536563064349332300036542844523756E-18"
+        },
+        {
+          "evaluation_observation": 0,
+          "context_observation": 256,
+          "security_id": "38946",
+          "lag": 126,
+          "decimal_signal": "0.177550918702219806427026817879721680891765756317965449331132",
+          "numpy_signal": 0.17755091870221978,
+          "absolute_error": "2.2087280406673870207977546853730074824331132E-17"
+        },
+        {
+          "evaluation_observation": 0,
+          "context_observation": 256,
+          "security_id": "64120",
+          "lag": 252,
+          "decimal_signal": "0.18390679534773291768986658567937371063802624768031804066325",
+          "numpy_signal": 0.1839067953477329,
+          "absolute_error": "7.87211596176402923393819714611781804066325E-18"
+        },
+        {
+          "evaluation_observation": 0,
+          "context_observation": 256,
+          "security_id": "64120",
+          "lag": 126,
+          "decimal_signal": "0.120639610759925363082541536391122263970771640256978623721578",
+          "numpy_signal": 0.12063961075992538,
+          "absolute_error": "1.7773675211424656680670580059572122938778422E-17"
+        },
+        {
+          "evaluation_observation": 94,
+          "context_observation": 350,
+          "security_id": "32952",
+          "lag": 252,
+          "decimal_signal": "0.14339930668885938005499925814644938703256525307339919990649",
+          "numpy_signal": 0.14339930668885933,
+          "absolute_error": "4.520875708088267401229220308571500076240649E-17"
+        },
+        {
+          "evaluation_observation": 94,
+          "context_observation": 350,
+          "security_id": "32952",
+          "lag": 126,
+          "decimal_signal": "0.043790917013348716898271074299826979197783692909757114853462",
+          "numpy_signal": 0.043790917013348675,
+          "absolute_error": "4.1918415372905200457692368253304044224228462E-17"
+        },
+        {
+          "evaluation_observation": 94,
+          "context_observation": 350,
+          "security_id": "39042",
+          "lag": 252,
+          "decimal_signal": "0.354751440462532684442820517965748041543777342418748836980034",
+          "numpy_signal": 0.3547514404625327,
+          "absolute_error": "2.3355184076258291423645202760120313663019966E-17"
+        },
+        {
+          "evaluation_observation": 94,
+          "context_observation": 350,
+          "security_id": "39042",
+          "lag": 126,
+          "decimal_signal": "0.0157063671081644819047379813351955563694502224517172535813268",
+          "numpy_signal": 0.015706367108164487,
+          "absolute_error": "4.7353381815358869316123162398743325511061732E-18"
+        },
+        {
+          "evaluation_observation": 94,
+          "context_observation": 350,
+          "security_id": "3783801",
+          "lag": 252,
+          "decimal_signal": "0.663071576460690319639021702961652101439254715189954962475392",
+          "numpy_signal": 0.6630715764606904,
+          "absolute_error": "5.0963413747602719320493919418110826287524608E-17"
+        },
+        {
+          "evaluation_observation": 94,
+          "context_observation": 350,
+          "security_id": "3783801",
+          "lag": 126,
+          "decimal_signal": "-0.093041830259637944230873733954492071486558351602716239837411",
+          "numpy_signal": -0.09304183025963794,
+          "absolute_error": "2.162067096446686936385478410806817802337411E-18"
+        },
+        {
+          "evaluation_observation": 188,
+          "context_observation": 444,
+          "security_id": "32952",
+          "lag": 252,
+          "decimal_signal": "0.328852700422801106083702144533948702562247351126947145504494",
+          "numpy_signal": 0.3288527004228011,
+          "absolute_error": "1.9151437207764625819575394555611334104495506E-17"
+        },
+        {
+          "evaluation_observation": 188,
+          "context_observation": 444,
+          "security_id": "32952",
+          "lag": 126,
+          "decimal_signal": "0.251686639913997365633811738914197982405482459354389239199056",
+          "numpy_signal": 0.2516866399139973,
+          "absolute_error": "5.3576919242002156303380786109256732989199056E-17"
+        },
+        {
+          "evaluation_observation": 188,
+          "context_observation": 444,
+          "security_id": "106851",
+          "lag": 252,
+          "decimal_signal": "0.56170235067595661100679065900640759710284213471404921586352",
+          "numpy_signal": 0.5617023506759565,
+          "absolute_error": "8.111609289305652689281912784028045546586352E-17"
+        },
+        {
+          "evaluation_observation": 188,
+          "context_observation": 444,
+          "security_id": "106851",
+          "lag": 126,
+          "decimal_signal": "0.265254931935311259875275767579202446565184342877755806637136",
+          "numpy_signal": 0.2652549319353113,
+          "absolute_error": "4.0108916833607602958157506239397634818362864E-17"
+        },
+        {
+          "evaluation_observation": 188,
+          "context_observation": 444,
+          "security_id": "3911741",
+          "lag": 252,
+          "decimal_signal": "3.1918265680177040963794334404272159281593784600305955228798",
+          "numpy_signal": 3.1918265680177043,
+          "absolute_error": "1.612054765699096823391097560614537794771202E-16"
+        },
+        {
+          "evaluation_observation": 188,
+          "context_observation": 444,
+          "security_id": "3911741",
+          "lag": 126,
+          "decimal_signal": "0.255246808719055812704560558663210207543567212726772371145476",
+          "numpy_signal": 0.25524680871905575,
+          "absolute_error": "6.1624398050148151190898612531330287996145476E-17"
+        }
+      ],
+      "signal_verification_scope": "independently recomputed endpoint momentum, exact readiness, complete ranked blend; native pre-ranking signal magnitudes not persisted",
+      "book_oracle": "independent scalar capped water filling, not copied eight-pass native loop",
+      "warmup_orders_or_scoring": "none in published schedule; replay completion separately recorded",
+      "investment_qualification": "unverified-training-software-diagnostic",
+      "primary_references": [
+        "https://numpy.org/doc/stable/reference/generated/numpy.lib.stride_tricks.sliding_window_view.html",
+        "https://docs.python.org/3/library/math.html#math.fsum"
+      ]
+    },
+    "required_mark_coverage": {
+      "missing_cells": 110,
+      "affected_ids": 34,
+      "first_missing_cell": {
+        "evaluation_observation": 6,
+        "context_observation": 262,
+        "session_key_ns": "1365724800000000000",
+        "session_date_utc": "2013-04-12",
+        "instrument_index": 604,
+        "security_id": "150340",
+        "required_reasons": [
+          "mark-existing-position",
+          "price-effective-new-target"
+        ],
+        "held_target_origin_decision": 0,
+        "held_target_weight": 0.0007039690445176616,
+        "new_target_origin_decision": 5,
+        "new_target_weight": 0.0016070739825436052,
+        "invalid_close": "NaN",
+        "coverage_after_first_missing_mark": false
+      },
+      "scope": "nominal scheduled target-support coverage; after the first missing mark this is counterfactual coverage, NOT executed replay or hypothetical return continuation"
+    },
+    "result": "Full-window trial rejected; no valid full-window return, Sharpe, executed turnover or capacity estimate.",
+    "policy": "Original trial preserved; no shortening, imputed held mark, source alteration or strategy-dependent exclusion.",
+    "artifacts": [
+      {
+        "path": "data/equity_baseline_training_2013_20260919/books.bin",
+        "sha256": "d47cf12586bd3e86f09885a23b5edf0155fb3c769ad68c8af5c02be6713f8960",
+        "bytes": 568112
+      },
+      {
+        "path": "data/equity_baseline_training_2013_20260919/books.bin.manifest.json",
+        "sha256": "a67930ee992b5b2dfd6e74710ec1971c2d08c26cd3c8471f9b317dd42418ac26",
+        "bytes": 51347
+      },
+      {
+        "path": "data/equity_baseline_training_2013_20260919/books.bin.meta.txt",
+        "sha256": "fde7da760df2ce90be1daea12d541945ad8ac8a4ff70598f2f3594f0172949c9",
+        "bytes": 1777
+      },
+      {
+        "path": "data/equity_baseline_training_2013_20260919/combo.bin",
+        "sha256": "275c19f9b9b281755391c4a9c1bd23f880d5b0b3e400964927bd2438aa22e671",
+        "bytes": 2825410
+      },
+      {
+        "path": "data/equity_baseline_training_2013_20260919/combo.bin.manifest.json",
+        "sha256": "05f0426590676a2bbf1ab1a7055a1d4175da92e03978e217a507c41c9114af6c",
+        "bytes": 60966
+      },
+      {
+        "path": "data/equity_baseline_training_2013_20260919/combo.bin.meta",
+        "sha256": "4dd0093daf8492800abbbdb8de0bf08f2e8e2f4ccd55c5874688ae0a29c6e7a0",
+        "bytes": 144
+      },
+      {
+        "path": "data/equity_baseline_training_2013_20260919/combo.bin.weights.txt",
+        "sha256": "408c7ba261fd3212ee54caa11654af4f022143c96d19f66a7d646bee80de7608",
+        "bytes": 111
+      },
+      {
+        "path": "data/equity_baseline_training_2013_20260919/evaluation.bin",
+        "sha256": "bf0070e16c0cd1d66faac9e58f33ae7c0b9843566fc5d0804dc3c52724ab7835",
+        "bytes": 7848297
+      },
+      {
+        "path": "data/equity_baseline_training_2013_20260919/evaluation.bin.manifest.json",
+        "sha256": "25158e69ed35a86424a3958359541817f2330534851eabe58068915caf9e797b",
+        "bytes": 60632
+      },
+      {
+        "path": "data/equity_baseline_training_2013_20260919/failure.json",
+        "sha256": "826780789b9e935d4be0101994449c4c03bcf91731d309140cca6a7d1f2250e1",
+        "bytes": 5390
+      },
+      {
+        "path": "data/equity_baseline_training_2013_20260919/readiness.csv",
+        "sha256": "0b0fdb8389f2de75c05c9ed3a6356b23fc28582f2622ba768b2a7d7e77cf8a98",
+        "bytes": 6968
+      },
+      {
+        "path": "data/equity_baseline_training_2013_20260919/request.json",
+        "sha256": "ca5b893d75c79c6f089785dff2090dca49b9edc8e58f6ad70b718a738d3acfae",
+        "bytes": 5236
+      },
+      {
+        "path": "data/equity_baseline_training_2013_20260919/target_exposures.csv",
+        "sha256": "c63dd4d36c68da44a57ead6563b74a0fc410a17da722c31047f96d1ab1a3e0bc",
+        "bytes": 4297
+      }
+    ]
+  },
+  "documents": [
+    {
+      "path": "atx-impl/README.md",
+      "sha256": "326e46ffbe8cd38696d2ed9e666abd57767a1c17afbbe2c873b231b7b12dcd9a",
+      "bytes": 2421
+    },
+    {
+      "path": "atx-impl/docs/EQUITY_BOOK_BASELINE.md",
+      "sha256": "34f5b4e3c355a3bdb89c2dec0bb19af8a395d65a85715a8d998be2f1363909a2",
+      "bytes": 20649
+    },
+    {
+      "path": "atx-engine/docs/PLATFORM_PROGRESS.md",
+      "sha256": "3b5d55e07890bb6ecd4682a66183d6e7199f4fdedd1ab7620c737c112f801e98",
+      "bytes": 34976
+    },
+    {
+      "path": "atx-engine/reviews/2026-09-19-bounded-equity-panel-design.md",
+      "sha256": "1041d3fe77d26d70a5a6aa88571826c229eca70c957e28f09c08082114947270",
+      "bytes": 20801
+    },
+    {
+      "path": "atx-engine/reviews/2026-09-19-annual-panel-memory-review.md",
+      "sha256": "63a6c72ebf9b28462afae6bc25f6acccceecb0008d4841ba8436cc58176e4af3",
+      "bytes": 8355
+    },
+    {
+      "path": "atx-engine/reviews/2026-09-19-equity-source-reconciliation-design.md",
+      "sha256": "58399089203307d01cd4ee2b1a29371f04affa1bc90dcd0f9db2437aee131a11",
+      "bytes": 10234
+    }
+  ],
+  "sources": [
+    {
+      "path": "atx-engine/include/atx/engine/book/replay.hpp",
+      "sha256": "be7f52ce5498252cd40fe7fa387bb22e911ac9c681710375e75e4d662421f5b8",
+      "bytes": 3664
+    },
+    {
+      "path": "atx-engine/src/alpha/segment_panel.cpp",
+      "sha256": "98ad8ad1a53145bd3f3160d7670394cdc97404dee4a7fb776e903d2e89d9cce1",
+      "bytes": 12137
+    },
+    {
+      "path": "atx-engine/src/book/replay.cpp",
+      "sha256": "67a206c070045d63cc1b64e6869fb570dc846205c4418bec8b50530851ef2ef8",
+      "bytes": 12880
+    },
+    {
+      "path": "atx-engine/src/data/history_panel.cpp",
+      "sha256": "0318a210157d14ec542d9f2c34c92652534cfe7a6d2e555db43a4090ab5c8177",
+      "bytes": 17438
+    },
+    {
+      "path": "atx-engine/src/data/universe.cpp",
+      "sha256": "05fcc7fb9ae05a286eb67a95af1d00e558e8cf81f384118e50de20f0a04ea92b",
+      "bytes": 12942
+    },
+    {
+      "path": "atx-engine/tools/prepare_tickerhistory.py",
+      "sha256": "f153c3bf8de1595716c0527c847829a1819b57d79e1bbd95aa5af252d45ecb2f",
+      "bytes": 17006
+    },
+    {
+      "path": "atx-impl/CMakeLists.txt",
+      "sha256": "fcb802c23a562ba58d244dbce316638659749bbaf928f203de431e966cc82990",
+      "bytes": 3396
+    },
+    {
+      "path": "atx-impl/src/append_history_panel.cpp",
+      "sha256": "1fa579e6d5104c3e73ca41db921cd5fdd609507c6f61235ded77c9553ef326d3",
+      "bytes": 8472
+    },
+    {
+      "path": "atx-impl/src/config.cpp",
+      "sha256": "acd543f2de46c893315fcce2b4168242728e17853d26bae21348e37e33e03dc2",
+      "bytes": 35070
+    },
+    {
+      "path": "atx-impl/src/config.hpp",
+      "sha256": "b78d6d1fc244ee2abdf9cbcfe7aa7c0b43f489635a695a73a6102ea74932e5b8",
+      "bytes": 35507
+    },
+    {
+      "path": "atx-impl/src/dispatch.cpp",
+      "sha256": "6390db187b453f04168b1d6756f801c77a6731cb7bd6b852a9c4ca500dc3490f",
+      "bytes": 6381
+    },
+    {
+      "path": "atx-impl/src/equity_baseline_views.cpp",
+      "sha256": "2e82d6dcc1cb2740f1727a007a60fbb7a2a29f565e702d515383abe5b66a4ace",
+      "bytes": 13591
+    },
+    {
+      "path": "atx-impl/src/equity_baseline_views.hpp",
+      "sha256": "13644795ff0962020833812ba2f61e71a7d68d57f18e156521fc511ad47ed465",
+      "bytes": 4519
+    },
+    {
+      "path": "atx-impl/src/panel_artifact.cpp",
+      "sha256": "a3c6c9755310d7a57bafcd3c5c4559afa8df390c9389a6f3f13b3b1424c05937",
+      "bytes": 26320
+    },
+    {
+      "path": "atx-impl/src/panel_artifact.hpp",
+      "sha256": "3f1c8f77cd91701e338d72c7fa4b1a062e6f9a29ccf8c225c6ca8526d30c6392",
+      "bytes": 3959
+    },
+    {
+      "path": "atx-impl/src/panel_pipeline.cpp",
+      "sha256": "70025be6bcbb02a62bf8e61850f93607701eb22bdce969ca58a95a158cfa209a",
+      "bytes": 7089
+    },
+    {
+      "path": "atx-impl/src/panel_pipeline.hpp",
+      "sha256": "c07251a6ef122d00f502de51bc01fedb35094f561482e4d63b1975ce5cbda8db",
+      "bytes": 2284
+    },
+    {
+      "path": "atx-impl/src/replay_diagnostics.cpp",
+      "sha256": "1556f838ebb2dffa230ea04edb825f304b2c2dd5b56e40e6340d3a2537465d5c",
+      "bytes": 12737
+    },
+    {
+      "path": "atx-impl/src/replay_diagnostics.hpp",
+      "sha256": "c8a7cd610172bbf53287a9fe640a1d94d7582acb5d716865ab73db12ea470efb",
+      "bytes": 3385
+    },
+    {
+      "path": "atx-impl/src/replay_report.cpp",
+      "sha256": "fa1618ac2400180a40314dcc766aba6a418104ae051cdcfec28d5f64a503e8e3",
+      "bytes": 26834
+    },
+    {
+      "path": "atx-impl/src/replay_report.hpp",
+      "sha256": "069d38121b1875bbce9b43eeaa9d6e0f80b62fbee1961b53385e9463124a0e4b",
+      "bytes": 1096
+    },
+    {
+      "path": "atx-impl/src/serialize_panel.cpp",
+      "sha256": "93b5d5b7f3280c4802991e669a9b3245bed5a4977ba80825137bc40d33e314ea",
+      "bytes": 13169
+    },
+    {
+      "path": "atx-impl/src/serialize_panel.hpp",
+      "sha256": "4ffb92f2ff26f074c5670ff2abbac6769e7678b9b5cde2ce779d6ee3dc46a87f",
+      "bytes": 1986
+    },
+    {
+      "path": "atx-impl/src/stage_combine.cpp",
+      "sha256": "6aa73c06c2a54361e4e54a1ed7a8b104b0ca6dd0f9b7726f9d92a6652ec805b8",
+      "bytes": 91159
+    },
+    {
+      "path": "atx-impl/src/stage_data_provenance.cpp",
+      "sha256": "7e86772dfd1d93541d64b35e1f0b39ec6434eb5d102780a1f3900705d60c578f",
+      "bytes": 19973
+    },
+    {
+      "path": "atx-impl/src/stage_data_provenance.hpp",
+      "sha256": "2b683c10a8396e4103c7fef254c5a426770c8e57d553f0ee78d8bafdc0f80ec8",
+      "bytes": 2993
+    },
+    {
+      "path": "atx-impl/src/stage_discover.cpp",
+      "sha256": "3f2cb0c46ead98eb2a14715d78af44d91dc182f9f304179070c7031c1c331af1",
+      "bytes": 64564
+    },
+    {
+      "path": "atx-impl/src/stage_equity_baseline.cpp",
+      "sha256": "f2d513596cf987e11b531ec6fd44a5c670582b0a18c5d4180c5c77a9cbd77486",
+      "bytes": 32916
+    },
+    {
+      "path": "atx-impl/src/stage_equity_baseline.hpp",
+      "sha256": "abfccadb55ed6744544c16ee8e4b0abcef7f55874e3022b3dab132840b0246e2",
+      "bytes": 574
+    },
+    {
+      "path": "atx-impl/src/stage_load.cpp",
+      "sha256": "34ebdbce04a1e0ef945ccab1c88d9d652d5a74f304e0b0fc0a77680be09bdb66",
+      "bytes": 4016
+    },
+    {
+      "path": "atx-impl/src/stage_metabook.cpp",
+      "sha256": "8b68a68f24bab0a24d01dcd9dbaff06ff038aaadfd38f3cf9dff7ff4fb452b86",
+      "bytes": 40583
+    },
+    {
+      "path": "atx-impl/src/stage_optimize.cpp",
+      "sha256": "30cc15ffdeb7d1fe2258a8dfc1724241b91588ac1768fafad4c36a2771c7f5a7",
+      "bytes": 29411
+    },
+    {
+      "path": "atx-impl/src/stage_panel.cpp",
+      "sha256": "0f3d31d2003e1d7baf56edbb37639501f9b4bf9b6dacbe5e723eaa0492a01806",
+      "bytes": 12041
+    },
+    {
+      "path": "atx-impl/src/stage_report.cpp",
+      "sha256": "79d534438a8a9db01789dfc55532e3cdb30dd6dd2df52ce06421d1150504e12d",
+      "bytes": 47603
+    },
+    {
+      "path": "atx-impl/src/stage_run.cpp",
+      "sha256": "ac73302e9705a5cb726ac3f4dce8c2e45925d5bb144c7c278d53a7175ef4304c",
+      "bytes": 9482
+    },
+    {
+      "path": "atx-impl/src/stage_sweep.cpp",
+      "sha256": "48e1a6f0e3c2a6e063dc87169ce7df4753427837c48b1c6a00f0785b9492e9f8",
+      "bytes": 22803
+    },
+    {
+      "path": "atx-impl/tests/CMakeLists.txt",
+      "sha256": "1e78c634a6e9d4175aff6a44ebc915fb0e5626fbeda04f89f3f1ffa26f67f47d",
+      "bytes": 1571
+    },
+    {
+      "path": "atx-impl/tests/cli_smoke_test.cpp",
+      "sha256": "cc93eb397be05f2c32ebcd55e5db187c6ec5868f9a2371b3e779e5a02e675ccb",
+      "bytes": 19961
+    },
+    {
+      "path": "atx-impl/tests/combine_test.cpp",
+      "sha256": "b4cae31090823e294af411d916e96c1e36e553b752557206c538a464375e0621",
+      "bytes": 109509
+    },
+    {
+      "path": "atx-impl/tests/config_baseline_test.cpp",
+      "sha256": "d21852a60570e83c873a9800886bfe3dd2355f58e5e00709d3585d775ff154d0",
+      "bytes": 3078
+    },
+    {
+      "path": "atx-impl/tests/config_replay_test.cpp",
+      "sha256": "dadb22407841a7e752cfe363fdf245d4f0af86ce659c2c16c73ec034aeee8f27",
+      "bytes": 3344
+    },
+    {
+      "path": "atx-impl/tests/conviction_sizing_test.cpp",
+      "sha256": "e3afc88a2a6f028950c2538c0065040f537577ab098d531a0ae70d9ce744dda0",
+      "bytes": 27433
+    },
+    {
+      "path": "atx-impl/tests/cost_bps_test.cpp",
+      "sha256": "20a71ab36e4c7a3dac1c203a9e6746fff1b9536c85c6d288b800476dc90fbece",
+      "bytes": 20448
+    },
+    {
+      "path": "atx-impl/tests/discover_test.cpp",
+      "sha256": "68d4606bcc3adf12e5affd4fea0e01185d2022da467efc3f559785948529a8db",
+      "bytes": 98627
+    },
+    {
+      "path": "atx-impl/tests/e2e_pipeline_test.cpp",
+      "sha256": "fb1bb4bf0c9ab3cd1ae1e256b13932781ad853d30dc38f2df22bf0a055844a42",
+      "bytes": 44148
+    },
+    {
+      "path": "atx-impl/tests/equity_baseline_views_test.cpp",
+      "sha256": "9226f231546264b46eda2f4fec03f5fcbb52ef933b1740695e52a07106ba7fac",
+      "bytes": 13227
+    },
+    {
+      "path": "atx-impl/tests/fixtures/equity_baseline_rejected_override.cfg",
+      "sha256": "9d9d5164dcdd4e647c0bfd821a0703d3241c687439eecf5ce8f6b8c76fe1335e",
+      "bytes": 88
+    },
+    {
+      "path": "atx-impl/tests/metabook_netting_test.cpp",
+      "sha256": "6701d19b90fa736020e9a61134f60b8fd7b88ad28a9bcc1ba9e022fb8254806a",
+      "bytes": 15497
+    },
+    {
+      "path": "atx-impl/tests/metabook_test.cpp",
+      "sha256": "16ef35a1c11ecbbe0bae36c3a963e7f2e53093cc89a400c4c4e8bda9adc89e54",
+      "bytes": 37454
+    },
+    {
+      "path": "atx-impl/tests/optimize_test.cpp",
+      "sha256": "562e41016b9874261a297692c187115090fab2f34dc9c69c42bb2d22d3b6d85e",
+      "bytes": 38297
+    },
+    {
+      "path": "atx-impl/tests/panel_artifact_test.cpp",
+      "sha256": "a1239d8daa9bdceda405c37f226dfbf7e4664b73895f652fb979b854ee822811",
+      "bytes": 18059
+    },
+    {
+      "path": "atx-impl/tests/panel_pipeline_test.cpp",
+      "sha256": "0c64cbaf8039349366a4bd1b2aed28d9f803504bcc8f0ad485819b44768d0521",
+      "bytes": 9863
+    },
+    {
+      "path": "atx-impl/tests/panel_test.cpp",
+      "sha256": "3b4c0b80a672039d8f7ebf5d1fcc02c1ba6552978a0d5e71327e755da2081417",
+      "bytes": 19772
+    },
+    {
+      "path": "atx-impl/tests/provenance_digest_test.cpp",
+      "sha256": "7d4379744764734f28b16f3f4cadd7cb07b83d32a4a3cb22bb212a480722efe1",
+      "bytes": 16198
+    },
+    {
+      "path": "atx-impl/tests/provenance_test.cpp",
+      "sha256": "76f08c548f8d5bf9c77bcb6d769200230d0ac788596eea7b9d46f622b544dc7a",
+      "bytes": 12116
+    },
+    {
+      "path": "atx-impl/tests/replay_diagnostics_test.cpp",
+      "sha256": "67cc4154e1dfe7e4c879a0c9521dbbb68a4bc09c41f5bef3b2526bc1b45d68a7",
+      "bytes": 10257
+    },
+    {
+      "path": "atx-impl/tests/replay_report_test.cpp",
+      "sha256": "c0df0c3775d4f3633521bc07aa3154dcea86222fa93e9ab5d2b90b80470c2887",
+      "bytes": 16839
+    },
+    {
+      "path": "atx-impl/tests/report_capacity_test.cpp",
+      "sha256": "35788fe84295f2e12ce9bd180f68975a488a9f4c5bec8e119a44ba46e5f53af5",
+      "bytes": 18167
+    },
+    {
+      "path": "atx-impl/tests/report_participation_test.cpp",
+      "sha256": "787aa930cf140db6fb629ac02193ac00f578f1208414701140c24ff0aabcde5f",
+      "bytes": 13047
+    },
+    {
+      "path": "atx-impl/tests/sign_deploy_test.cpp",
+      "sha256": "db31a93a14090e82ae4e0f986f83dfbb62af7f24e18b27fde1d3e1c0f7bc96b7",
+      "bytes": 15295
+    },
+    {
+      "path": "atx-impl/tests/stage_combine_cleaned_cov_test.cpp",
+      "sha256": "fa0ff1dc7f9b9adeabf2ab099c62a8b12d94948bc06c7633f78956889d10fa78",
+      "bytes": 12881
+    },
+    {
+      "path": "atx-impl/tests/stage_combine_determinism_battery_test.cpp",
+      "sha256": "f08368221978aae24998d019d13c17d59622d99183321897fa15273ff45fc4ee",
+      "bytes": 14172
+    },
+    {
+      "path": "atx-impl/tests/stage_combine_participation_test.cpp",
+      "sha256": "817e4bbc545786076ae820916effb2c095b029d413b8f2120846542dcd601e4e",
+      "bytes": 13802
+    },
+    {
+      "path": "atx-impl/tests/stage_combine_riskmodel_wire_test.cpp",
+      "sha256": "68495fb3e37d85cf3f6aad9ff6416277eb1e0e7b26172f7d924e9333278147e2",
+      "bytes": 9938
+    },
+    {
+      "path": "atx-impl/tests/stage_combine_stack_test.cpp",
+      "sha256": "8a0f52ece0c3ef735f3d454f2ca082f0971189c2ca21082ebccb619322498451",
+      "bytes": 13241
+    },
+    {
+      "path": "atx-impl/tests/stage_data_provenance_test.cpp",
+      "sha256": "8cfcd71433824782aae4c6c27fdf1f24bdff13d196c282830367679ed21edeaa",
+      "bytes": 12647
+    },
+    {
+      "path": "atx-impl/tests/stage_equity_baseline_test.cpp",
+      "sha256": "45a3590d782e85927189a8e21de29117574af2ef8e20f1266b282304313fe99e",
+      "bytes": 13713
+    },
+    {
+      "path": "atx-impl/tests/stage_metabook_book_turnover_test.cpp",
+      "sha256": "b32ab64102ee7f53992c6fff31336095e4fea864d05911e4d5ff6d0fc3e96f71",
+      "bytes": 9539
+    },
+    {
+      "path": "atx-impl/tests/stage_metabook_dead_alpha_wire_test.cpp",
+      "sha256": "2bf2ecc98863ed8211045d480d099d43d98e41e7697ce37d60cc54bd6f5baca0",
+      "bytes": 12424
+    },
+    {
+      "path": "atx-impl/tests/stage_metabook_riskmodel_wire_test.cpp",
+      "sha256": "99516c0ddf60e37115470b7bfc46dbf72e837732ac58bf316fe1b216619d6999",
+      "bytes": 13535
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_book_turnover_test.cpp",
+      "sha256": "99a3b6f6fdddd653e6433ba9d5a50adf782954bcd163e3f8fad1b05eaafdebca",
+      "bytes": 10501
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_dead_alpha_determinism_test.cpp",
+      "sha256": "fccd9dc4148e00f30dd9e32e63c5a091edc8ceb1b5be68aeac9f0d38ce06a2e1",
+      "bytes": 13390
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_dead_alpha_wire_test.cpp",
+      "sha256": "546a76181d681be50ec7a7691352106aae7e495df7e58811f9e877603800d2e1",
+      "bytes": 14522
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_gp_trading_test.cpp",
+      "sha256": "4966422014e5ff7fd131958c883f33ba70a1279eb602688609f325e79a41b3bf",
+      "bytes": 14597
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_neutralize_test.cpp",
+      "sha256": "ae0fc36af93a415a563c8b8c0c7fe15ab4050182c133c4533cb86e0fafa033c1",
+      "bytes": 15881
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_participation_cap_test.cpp",
+      "sha256": "c6b202f26d5f1894a91e5b1fd429d8fa4e4bf94c5d16e4ee434ef140edead51c",
+      "bytes": 11187
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_pit_test.cpp",
+      "sha256": "85e73c169897a383283d8ca0114ec70d97c1a5efc80c99e0576179213c64a774",
+      "bytes": 11281
+    },
+    {
+      "path": "atx-impl/tests/stage_optimize_riskmodel_test.cpp",
+      "sha256": "dc44ce8597912d434b885b2fae77744401cfb2e03d19f480b6762c13ca3af58e",
+      "bytes": 13592
+    },
+    {
+      "path": "atx-impl/tests/stage_report_borrow_test.cpp",
+      "sha256": "4d0b64e8aac26ae57e564cd77f36e1bcc59ca84cc8379a84262d692a417f1328",
+      "bytes": 9749
+    },
+    {
+      "path": "atx-impl/tests/stage_report_capacity_curve_test.cpp",
+      "sha256": "3365bd05fc9d55936ac77c8b25fc583040a3bc800294406b4484b239f49e7b74",
+      "bytes": 18215
+    },
+    {
+      "path": "atx-impl/tests/stage_run_synthetic_smoke_test.cpp",
+      "sha256": "4357f4f1a6cff96cb319a1dda8b75edb42e57dd16477ae98c385b2abb24105ba",
+      "bytes": 18062
+    },
+    {
+      "path": "atx-impl/tests/store_discover_test.cpp",
+      "sha256": "4768b4fdcb85ac01882e817621376b445f20c886de412eddb7bdba5e9787fdc4",
+      "bytes": 17740
+    },
+    {
+      "path": "atx-impl/tests/sweep_test.cpp",
+      "sha256": "f44d5a0670cec6811fad39f05e0a558c2feefc1284ff832551fdc447db3a3577",
+      "bytes": 47185
+    },
+    {
+      "path": "scripts/atx-build.ps1",
+      "sha256": "5714b352acf13fbaec677f9a5eee1e6c24704c632f15a8823d51ddfbdb1e9bf9",
+      "bytes": 14252
+    }
+  ],
+  "evidence": [
+    {
+      "path": "build-equity/audits/iteration6-baseline-measurement.json",
+      "sha256": "aa77753b445ec4104208d8b4d69c83d595e97539496c07a167429fcc41dc61d6",
+      "bytes": 96141
+    },
+    {
+      "path": "build-equity/audits/iteration6-baseline-memory-samples.jsonl",
+      "sha256": "2bedf17ca1efe867589bcebe539bfaceedfb23cdb86f6e19a11c7088e16342a4",
+      "bytes": 31066
+    },
+    {
+      "path": "build-equity/audits/iteration6-baseline-native.stderr.log",
+      "sha256": "7052fcd31211ba817ed101456c92e0362821b655ed2b110a9336a760bdebab56",
+      "bytes": 125
+    },
+    {
+      "path": "build-equity/audits/iteration6-baseline-native.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "build-equity/audits/iteration6-baseline-numeric-verification.json",
+      "sha256": "4937277ade19b462ca9f4b170a1fc1f4446e5b85f150012be492027199601cf2",
+      "bytes": 11085
+    },
+    {
+      "path": "build-equity/audits/iteration6-baseline-preflight.json",
+      "sha256": "d9adf1271dddfd1d6520719bd453b7b5c342cecb16073bf8c96d1633031b82f3",
+      "bytes": 75376
+    },
+    {
+      "path": "build-equity/audits/iteration6-baseline-required-marks.json",
+      "sha256": "0c7c52106a3302f44c2c3331c9ee78d4858daa55eae6de05559e3069e45605c4",
+      "bytes": 65363
+    },
+    {
+      "path": "build-equity/audits/iteration6-baseline-verify.py",
+      "sha256": "9a2052f35d1da6235b0fd0f11ff1222fe7f213a5a64f608cbaffbb9393064ee3",
+      "bytes": 21572
+    },
+    {
+      "path": "build-equity/audits/iteration6-context-attempt1-measurement.json",
+      "sha256": "9d92c2a14aaa6a3a06a3f9d021abb660ebad1a4a275294c46fb746d3809ee8d2",
+      "bytes": 17224
+    },
+    {
+      "path": "build-equity/audits/iteration6-context-attempt1-memory-samples.jsonl",
+      "sha256": "5e54a735c40c56be79a4212fc77ab434a340801e6f3aed3ccf04fb04cd5437e4",
+      "bytes": 659
+    },
+    {
+      "path": "build-equity/audits/iteration6-context-attempt1-native.stderr.log",
+      "sha256": "7d1770cedebce5fbcfef06bd1908cfa282e2e1f40cd3e7f0c7715c60cdc62c07",
+      "bytes": 100
+    },
+    {
+      "path": "build-equity/audits/iteration6-context-attempt1-native.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "build-equity/audits/iteration6-context-attempt1-preflight.json",
+      "sha256": "2fa39d89c4def3087cc92e768cbd8e5df8e2cfc236bfa31c39e7035bb58f10b2",
+      "bytes": 13875
+    },
+    {
+      "path": "build-equity/audits/iteration6-context-measurement.json",
+      "sha256": "381a9cf3b74d031e922c97e70430db93b0b55a42e790ef3b7c571453fecf7641",
+      "bytes": 18396
+    },
+    {
+      "path": "build-equity/audits/iteration6-context-memory-samples.jsonl",
+      "sha256": "3dc98c0c6080ff09eb82345883312fbce711246c172098c596d2dbc3c18aed79",
+      "bytes": 230872
+    },
+    {
+      "path": "build-equity/audits/iteration6-context-native.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "build-equity/audits/iteration6-context-native.stdout.log",
+      "sha256": "93fbc68f4d82a18009ae23d2c76821cf52bd12800e0dc5b9a9fc0d8e23f704eb",
+      "bytes": 273
+    },
+    {
+      "path": "build-equity/audits/iteration6-context-preflight.json",
+      "sha256": "406ff5cdce509a164e243b86d937c829a88f29d9f14b1b008a10e74fb065d684",
+      "bytes": 13887
+    },
+    {
+      "path": "build-equity/audits/iteration6-context-source-comparison.json",
+      "sha256": "e8cca52e28cc7e865a9ce96768869a8487ce36324f72daa0f3f9499f8838b2e1",
+      "bytes": 73352
+    },
+    {
+      "path": "build-equity/audits/iteration6_build_training_context.attempt1.py",
+      "sha256": "365555be845c91f6c465958f728cc2b0fd7280f25d1e6f42ca4d9db3c2e7f1cb",
+      "bytes": 18600
+    },
+    {
+      "path": "build-equity/audits/iteration6_build_training_context.py",
+      "sha256": "8280a4547d0ea29f80e514abed7d9934b09d76f7496cb851b6fdce7518f93ad1",
+      "bytes": 18608
+    },
+    {
+      "path": "build-equity/audits/iteration6_run_training_baseline.py",
+      "sha256": "4f656c9eb15ac109830a52c2c307cca46e418dbd1f66948a17f0ba4fd80eac8b",
+      "bytes": 15211
+    },
+    {
+      "path": "build-equity/audits/iteration6_validate_training_context.py",
+      "sha256": "96aff03b61eb55bf168bb8d0c6b5ddf518c9914d950195da2c5c57f0dec17825",
+      "bytes": 10944
+    },
+    {
+      "path": "build-equity/audits/write_iteration6_receipt.py",
+      "sha256": "38ddedec09d58613d89de28e8ca34981f3cd7d8bed2c8d6fce8871ab7e4f3f23",
+      "bytes": 9441
+    },
+    {
+      "path": "build-equity/iteration6-build-impl-recheck.log",
+      "sha256": "56df642cf6eeaaadf493bf5f3cb93c5114c0505b1472a69da21dbebb5e273b3c",
+      "bytes": 4750
+    },
+    {
+      "path": "build-equity/iteration6-build-impl.log",
+      "sha256": "c6b4cc2c9953b9cb8a0cca0bda5d71f3bd29ca70e8075f3494012e429334a530",
+      "bytes": 47334
+    },
+    {
+      "path": "build-equity/iteration6-check-stage.log",
+      "sha256": "8d7ca0e3ac4b1289470f42562e3f755eb35d6fcb42c335832e631f0e632f96ab",
+      "bytes": 3662
+    },
+    {
+      "path": "build-equity/iteration6-check-views-configured.log",
+      "sha256": "477ac9fba7a6decbc87035a8f01eed0aff539aa21c523e5c811df871f9f0df28",
+      "bytes": 610
+    },
+    {
+      "path": "build-equity/iteration6-check-views.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "build-equity/iteration6-configure.log",
+      "sha256": "cba172bf7aabeb871bca15147072c51b32b4b7831cad26aa9e1ef7e2b69c3ea8",
+      "bytes": 4106
+    },
+    {
+      "path": "build-equity/iteration6-context-source-comparison.log",
+      "sha256": "fcd60fa335bc9d1586458b377393fafdde7a4a7585faf4a41c918e4b8ab19d2e",
+      "bytes": 8728
+    },
+    {
+      "path": "build-equity/iteration6-impl-filter.txt",
+      "sha256": "85ccc5f28f648ba2d1c673904eb56175a01aa26e5a570b477d424b0aa2b0d096",
+      "bytes": 373
+    },
+    {
+      "path": "build-equity/iteration6-impl-tests.log",
+      "sha256": "284be81dfe3aa8ff82042b223069cd1b55f7e8e6afde8416609a4a2d7448c053",
+      "bytes": 43016
+    },
+    {
+      "path": "build-equity/iteration6-impl-tests.xml",
+      "sha256": "98b06af5add9e519927701224c5bd09e887ff6de52ccd637f404209ea053c6e5",
+      "bytes": 92197
+    },
+    {
+      "path": "build-equity/iteration6-native-load.log",
+      "sha256": "812a0d84c6c22528ef5c9c3f2223fecf4454a66d1c8725b2afd8c77d4dcffa7b",
+      "bytes": 732
+    },
+    {
+      "path": "build-equity/iteration6-prepare-training.log",
+      "sha256": "3ef6c94f96b691fd76b91c7e916cf8993ea2df6bd83ad62f1bf3e09825587549",
+      "bytes": 914
+    }
+  ],
+  "not_run": [
+    "Full test suite",
+    "Release benchmarks",
+    "Sanitizers",
+    "Validation or sealed-holdout strategy metrics",
+    "Live orders"
+  ],
+  "limitations": [
+    "Archive source economics and publication vintages unverified.",
+    "Common-stock eligibility, delisting treatment and borrow availability unresolved.",
+    "Fixed-bps and simple annual borrow are explicit assumptions; no executable-capacity evidence.",
+    "Target shaping has no marked-holdings trade budget, post-fee constraints or interdecision risk guarantee.",
+    "Memory monitor uses lifetime peak counters and a polling guard, not an instantaneous OS cap.",
+    "Debug wall timings are observations of these runs, not throughput benchmarks."
+  ],
+  "next": "Reconcile required-mark coverage against original rows and official event/price evidence; use measured target turnover to drive marked-holdings constrained allocation."
+}

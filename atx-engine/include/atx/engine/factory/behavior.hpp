@@ -216,18 +216,33 @@ inline void rank_complete_case(std::span<const atx::f64> a, std::span<const atx:
 //  nothing to be redundant with). RNG-free; the k-nearest selection sorts with an
 //  index tie-break so equal distances resolve deterministically.
 // =========================================================================
+// Eviction policy once the archive is full (L3). Fifo is the legacy ring.
+// FarthestPoint keeps a max-min-distance set: a new descriptor replaces the
+// most-redundant member (smallest nearest-neighbour distance) only when the new
+// one is farther from every OTHER member than that member was from its nearest
+// neighbour — so the archive's minimum pairwise distance never decreases and
+// the archive retains the spread of behaviours rather than the latest ones.
+enum class ArchiveEviction : atx::u8 { Fifo, FarthestPoint };
+
 class BehavioralArchive {
 public:
-  // Construct with a fixed FIFO capacity. A capacity of 0 is a valid (degenerate)
+  // Construct with a fixed capacity. A capacity of 0 is a valid (degenerate)
   // archive that holds nothing — novelty then reads the population only.
-  explicit BehavioralArchive(atx::usize capacity) noexcept : capacity_{capacity} {}
+  explicit BehavioralArchive(atx::usize capacity,
+                             ArchiveEviction eviction = ArchiveEviction::Fifo,
+                             BehaviorMetric metric = BehaviorMetric::PnlCorr) noexcept
+      : capacity_{capacity}, eviction_{eviction}, metric_{metric} {}
 
-  // Insert one descriptor (copied by value). Evicts the OLDEST entries until the
-  // size is within capacity. With capacity 0 the insert is a no-op. The caller
-  // feeds descriptors in canonical-id order so the archive contents — and the
-  // eviction sequence — are deterministic.
+  // Insert one descriptor (copied by value). Fifo: evicts the OLDEST entries
+  // until the size is within capacity. FarthestPoint: see ArchiveEviction. With
+  // capacity 0 the insert is a no-op. The caller feeds descriptors in
+  // canonical-id order so the archive contents are deterministic.
   void insert(std::span<const atx::f64> desc) {
     if (capacity_ == 0) {
+      return;
+    }
+    if (eviction_ == ArchiveEviction::FarthestPoint && entries_.size() >= capacity_) {
+      insert_farthest(desc);
       return;
     }
     entries_.emplace_back(desc.begin(), desc.end());
@@ -285,7 +300,38 @@ public:
   }
 
 private:
-  atx::usize capacity_;                        // FIFO bound (ring of recent elites)
+  // FarthestPoint replacement for a FULL archive (see ArchiveEviction). O(C^2)
+  // distance evaluations per call — C is the small elite-archive capacity.
+  void insert_farthest(std::span<const atx::f64> desc) {
+    const atx::usize n = entries_.size();
+    std::vector<atx::f64> nn(n, 2.0);
+    for (atx::usize i = 0; i < n; ++i) {
+      for (atx::usize j = i + 1; j < n; ++j) {
+        const atx::f64 d = behavioral_distance(entries_[i], entries_[j], metric_);
+        nn[i] = std::min(nn[i], d);
+        nn[j] = std::min(nn[j], d);
+      }
+    }
+    atx::usize worst = 0;
+    for (atx::usize i = 1; i < n; ++i) {
+      if (nn[i] < nn[worst]) {
+        worst = i; // ties -> lowest (oldest) slot
+      }
+    }
+    atx::f64 d_new = 2.0;
+    for (atx::usize i = 0; i < n; ++i) {
+      if (i != worst) {
+        d_new = std::min(d_new, behavioral_distance(desc, entries_[i], metric_));
+      }
+    }
+    if (d_new > nn[worst]) {
+      entries_[worst].assign(desc.begin(), desc.end());
+    }
+  }
+
+  atx::usize capacity_;                        // bound on the number of entries
+  ArchiveEviction eviction_;                   // Fifo (legacy) or FarthestPoint
+  BehaviorMetric metric_;                      // distance for FarthestPoint eviction
   std::vector<std::vector<atx::f64>> entries_; // owned descriptors, oldest first
 };
 

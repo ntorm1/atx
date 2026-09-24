@@ -1,7 +1,7 @@
-// atx::engine::data — ORATS history Panel assembly (p3 S3-5).
+// atx::engine::data — historical Panel assembly (legacy ORATS API names).
 //
 // Implements:
-//   * orats_total_return_close (S3-3) — thin delegator to adjust_total_return.
+//   * orats_total_return_close — pointwise cumulative-factor price adjustment.
 //   * build_history_panel (S3-5) — the orchestrator that assembles a
 //     deterministic, digest-pinned alpha::Panel from the on-disk ORATS per-date
 //     partition. Mirrors the assembly order of real_panel.cpp (S1-5) but sources
@@ -9,9 +9,12 @@
 
 #include "atx/engine/data/history_panel.hpp"
 
+#include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <span>
 #include <string>
 #include <vector>
@@ -22,7 +25,6 @@
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/segment_panel.hpp"
 
-#include "atx/engine/data/adjust.hpp"
 #include "atx/engine/data/catalog.hpp"
 #include "atx/engine/data/corporate_actions.hpp"
 #include "atx/engine/data/dataset.hpp"
@@ -33,18 +35,40 @@
 
 namespace atx::engine::data {
 
+namespace {
+
+// The source cumulative factor already includes splits and cash distributions.
+// Apply it once to every research price; chaining ratios adds avoidable rounding
+// and can put close on a slightly different scale from the same row's O/H/L.
+[[nodiscard]] std::vector<atx::f64>
+adjusted_history_prices(std::span<const atx::f64> prices,
+                        std::span<const atx::f64> factors) {
+  if (prices.size() != factors.size()) {
+    return {};
+  }
+  std::vector<atx::f64> adjusted(prices.size(), std::numeric_limits<atx::f64>::quiet_NaN());
+  for (atx::usize i = 0; i < prices.size(); ++i) {
+    if (!std::isfinite(prices[i]) || prices[i] <= 0.0 ||
+        !std::isfinite(factors[i]) || factors[i] <= 0.0) {
+      continue;
+    }
+    const atx::f64 value = prices[i] * factors[i];
+    if (std::isfinite(value) && value > 0.0) {
+      adjusted[i] = value;
+    }
+  }
+  return adjusted;
+}
+
+} // namespace
+
 // ---------------------------------------------------------------------------
 //  orats_total_return_close (S3-3)
 // ---------------------------------------------------------------------------
 
 std::vector<atx::f64> orats_total_return_close(std::span<const atx::f64> close,
                                                std::span<const atx::f64> cum_return_factor) {
-  // Dividends are already folded into cum_return_factor, so the dividend input is 0:
-  // adjust_total_return then yields total_return_index == close * cum_return_factor,
-  // with the proven gap/NaN policy and return-invariance contract.
-  const std::vector<atx::f64> zero_div(close.size(), 0.0);
-  AdjustedSeries adj = adjust_total_return(close, cum_return_factor, zero_div);
-  return std::move(adj.total_return_index);
+  return adjusted_history_prices(close, cum_return_factor);
 }
 
 // ---------------------------------------------------------------------------
@@ -79,13 +103,30 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
   // an unexpected extra segment column.
   // -------------------------------------------------------------------------
   const std::vector<std::string> want_fields(kOratsFields.begin(), kOratsFields.end());
-  ATX_TRY(auto raw, alpha::attach_multi_segment_panel(cfg.seg_dir, cfg.window, want_fields));
+  ATX_TRY(auto indexed,
+          alpha::attach_indexed_multi_segment_panel(cfg.seg_dir, cfg.window, want_fields));
+  auto raw = std::move(indexed.panel);
   const atx::usize D = raw.dates();
   const atx::usize N = raw.instruments();
 
   if (D == 0 || N == 0) {
     return Err(ErrorCode::InvalidArgument,
                "build_history_panel: empty window or no instruments in partition");
+  }
+  // Canonical source identity is independent of local dense engine indices.
+  // Reject aliases such as "0012", rather than letting them join as a second ID.
+  for (const auto &id : indexed.instrument_ids) {
+    atx::i64 parsed{};
+    const auto result = std::from_chars(id.data(), id.data() + id.size(), parsed);
+    if (result.ec != std::errc{} || result.ptr != id.data() + id.size() ||
+        parsed <= 0 || std::to_string(parsed) != id) {
+      return Err(ErrorCode::InvalidArgument,
+                 "build_history_panel: noncanonical positive i64 securityID '" + id + "'");
+    }
+  }
+  if (N - 1 > std::numeric_limits<InstKey>::max()) {
+    return Err(ErrorCode::InvalidArgument,
+               "build_history_panel: too many instruments for local dense indices");
   }
 
   // Resolve field IDs we need from the raw panel.
@@ -117,14 +158,16 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
   // cum_adj_factor: panel's cumulReturnFactor column.
   std::vector<atx::f64> col_caf(cr.begin(), cr.end());
 
-  // cash_dividend: 0 (dividends already folded into cumulReturnFactor by ORATS).
+  // cash_dividend: 0 (the source cumulative factor already includes dividends).
   std::vector<atx::f64> col_div(cells, 0.0);
 
   // shares_outstanding: panel's shares column.
   const std::span<const atx::f64> shares_span = raw.field_all(shares_fid);
   std::vector<atx::f64> col_shares(shares_span.begin(), shares_span.end());
 
-  // shares_filed_date: kNoDate sentinel (ORATS row is already PIT-as-published).
+  // The archive has no per-observation filing, publication, or revision time.
+  // kNoDate means unknown provenance, not proof that these shares were available
+  // on the trading date. This panel is an archive replay, not a verified PIT view.
   std::vector<atx::f64> col_filed(cells, static_cast<atx::f64>(kNoDate));
 
   // gics_sector_code: panel's gics column (NaN -> kNoSector = -1).
@@ -167,25 +210,14 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
   ATX_TRY(auto uni, build_universe(raw, corp_ds, cfg.universe));
 
   // -------------------------------------------------------------------------
-  // Step 4: TRI close — per-instrument stride-N gather/scatter.
-  // cell = d * N + i  (date-major).
+  // Step 4: Research close on the source's cumulative-return basis, pointwise.
+  // Raw prices, shares, and volume above determine the economic universe screens.
   // -------------------------------------------------------------------------
-  std::vector<atx::f64> close_tri(cells);
-  std::vector<atx::f64> one_close(D), one_cr(D);
-  for (atx::usize i = 0; i < N; ++i) {
-    for (atx::usize d = 0; d < D; ++d) {
-      one_close[d] = rc[d * N + i];
-      one_cr[d]    = cr[d * N + i];
-    }
-    std::vector<atx::f64> one_tri = orats_total_return_close(one_close, one_cr);
-    for (atx::usize d = 0; d < D; ++d) {
-      close_tri[d * N + i] = one_tri[d];
-    }
-  }
+  std::vector<atx::f64> close_tri = orats_total_return_close(rc, cr);
 
   // -------------------------------------------------------------------------
   // Step 5: Assemble final Panel in kHistField* order.
-  // close  = TRI, raw_close = raw close, volume, high, low, open,
+  // close/high/low/open share one adjusted basis; raw_close and volume stay raw.
   // market_cap, sector (widened to f64). Mask = in_universe.
   // -------------------------------------------------------------------------
   std::vector<std::string> names;
@@ -201,32 +233,32 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
   names.emplace_back(kHistFieldRawClose);
   data.push_back(std::vector<atx::f64>(rc.begin(), rc.end()));
 
-  // volume
+  // Raw traded shares: the total-return factor is not a pure split factor.
   {
     const std::span<const atx::f64> s = raw.field_all(volume_fid);
     names.emplace_back(kHistFieldVolume);
     data.push_back(std::vector<atx::f64>(s.begin(), s.end()));
   }
 
-  // high
+  // Research O/H/L use the same cumulative factor and validity policy as close.
   {
     const std::span<const atx::f64> s = raw.field_all(high_fid);
     names.emplace_back(kHistFieldHigh);
-    data.push_back(std::vector<atx::f64>(s.begin(), s.end()));
+    data.push_back(adjusted_history_prices(s, cr));
   }
 
   // low
   {
     const std::span<const atx::f64> s = raw.field_all(low_fid);
     names.emplace_back(kHistFieldLow);
-    data.push_back(std::vector<atx::f64>(s.begin(), s.end()));
+    data.push_back(adjusted_history_prices(s, cr));
   }
 
   // open
   {
     const std::span<const atx::f64> s = raw.field_all(open_fid);
     names.emplace_back(kHistFieldOpen);
-    data.push_back(std::vector<atx::f64>(s.begin(), s.end()));
+    data.push_back(adjusted_history_prices(s, cr));
   }
 
   // market_cap
@@ -269,6 +301,40 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
     data.push_back(std::vector<atx::f64>(s.begin(), s.end())); }
 
   // -------------------------------------------------------------------------
+  // Step 5a-restrict (optional): point-in-time membership allow-list. A column
+  // whose securityID is absent from cfg.allow_ids is forced OUT of the universe on
+  // every date, before compaction, so the restriction composes with the
+  // never-in-universe drop below instead of racing it. This only ever removes
+  // membership; it cannot admit a name the screen rejected, and it does not claim
+  // per-session point-in-time membership — the caller supplies the set and owns
+  // that claim. The set is sorted once and binary-searched per column, never per cell.
+  // -------------------------------------------------------------------------
+  atx::usize allow_list_excluded_columns = 0;
+  if (!cfg.allow_ids.empty()) {
+    std::vector<atx::i64> allowed(cfg.allow_ids);
+    std::sort(allowed.begin(), allowed.end());
+    allowed.erase(std::unique(allowed.begin(), allowed.end()), allowed.end());
+    for (atx::usize i = 0; i < N; ++i) {
+      const std::string &id = indexed.instrument_ids[i];
+      atx::i64 security_id{};
+      // Every id was proved canonical above, so this parse cannot fail here.
+      (void)std::from_chars(id.data(), id.data() + id.size(), security_id);
+      if (std::binary_search(allowed.begin(), allowed.end(), security_id)) {
+        continue;
+      }
+      ++allow_list_excluded_columns;
+      for (atx::usize t = 0; t < D; ++t) {
+        uni.in_universe[t * N + i] = atx::u8{0};
+      }
+    }
+    if (allow_list_excluded_columns == N) {
+      return Err(ErrorCode::InvalidArgument,
+                 "build_history_panel: the membership allow-list excludes every instrument "
+                 "column in this window");
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Step 5b (optional): compact out instrument columns NEVER in-universe over the
   // whole window. Lossless — those columns are all-NaN-masked at eval — and it
   // shrinks the panel from "every symbol that ever traded" to "symbols that pass
@@ -276,6 +342,8 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
   // preserves the canonical column order (ascending original index).
   // -------------------------------------------------------------------------
   atx::usize N_out = N;
+  std::vector<atx::usize> original_instrument_indices(N);
+  std::iota(original_instrument_indices.begin(), original_instrument_indices.end(), atx::usize{0});
   std::vector<std::uint8_t> mask_out(uni.in_universe.begin(), uni.in_universe.end());
   if (cfg.compact_to_universe) {
     std::vector<atx::usize> keep;
@@ -315,7 +383,12 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
         }
       }
       mask_out = std::move(nm);
+      std::vector<std::string> kept_ids;
+      kept_ids.reserve(N_out);
+      for (const auto i : keep) kept_ids.push_back(std::move(indexed.instrument_ids[i]));
+      indexed.instrument_ids = std::move(kept_ids);
     }
+    original_instrument_indices = std::move(keep);
   }
 
   ATX_TRY(auto final_panel,
@@ -356,7 +429,10 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
                                {std::string{kDatasetOratsHistory}}));
 
   const atx::u64 digest = digest_panel(final_panel);
-  HistoryPanel result{std::move(final_panel), digest, catalog.names()};
+  HistoryPanel result{std::move(final_panel), digest, catalog.names(),
+                      std::move(indexed.session_keys), std::move(indexed.instrument_ids),
+                      std::move(original_instrument_indices),
+                      std::move(indexed.source_segment_paths), allow_list_excluded_columns};
   return Ok(std::move(result));
 }
 

@@ -32,9 +32,10 @@
 //  f64 market data (Market::mark), so the per-name term qty·mark is inherently
 //  f64. The charge crosses to exact Decimal EXACTLY ONCE, via from_double, at the
 //  ledger boundary — the same f64→Decimal idiom the execution simulator uses for
-//  its fill price / fee (value_or(Decimal{}) absorbs the non-finite case; a
-//  finite notional always converts). Downstream the charge is exact Decimal and
-//  rides Portfolio::accrue_financing with no further FP.
+//  its fill price / fee. The legacy daily helper retains a zero fallback on a
+//  failed conversion, including finite out-of-range charges. New callers should
+//  use the checked elapsed helpers below, which propagate conversion failures.
+//  Downstream the charge is exact Decimal with no further FP.
 //
 // ===========================================================================
 //  Why accrue_financing, not a synthetic fill (the S6-0 finding, §0.7)
@@ -54,9 +55,12 @@
 //  call. The Market and Portfolio are read-only inputs to daily_borrow; only
 //  accrue_borrow mutates (the cash ledger, via accrue_financing).
 
+#include <cmath> // std::isfinite
 #include <span> // std::span (universe view)
 
+#include "atx/core/datetime.hpp" // Duration (elapsed UTC nanoseconds)
 #include "atx/core/decimal.hpp" // atx::core::Decimal (exact charge at the ledger)
+#include "atx/core/error.hpp"   // Result, Status, Err
 #include "atx/core/macro.hpp"   // ATX_CHECK (exhaustive-switch fallthrough guard)
 #include "atx/core/types.hpp"   // atx::u8, atx::f64, atx::i64
 
@@ -82,7 +86,7 @@ enum class DayCount : atx::u8 { D360, D365, D252 }; // closed; no `default` in s
 //  day_count   : the annualization basis (default 360, the money-market norm).
 // ===========================================================================
 struct BorrowModel {
-  atx::f64 annual_rate;
+  atx::f64 annual_rate = 0.0;
   DayCount day_count = DayCount::D360;
 };
 
@@ -115,8 +119,9 @@ struct BorrowModel {
 /// short_notional · annual_rate / denom(day_count). A long-only book (no short
 /// names) returns exactly Decimal{} (zero). The short-notional sum is f64 (qty is
 /// integer, mark is f64 market data); it crosses to exact Decimal ONCE here, at
-/// the ledger boundary, via from_double (value_or absorbs the non-finite case —
-/// a finite notional always converts). SAFETY: `universe` is a non-owning view;
+/// the ledger boundary, via from_double. This legacy API returns zero if that
+/// conversion fails, including finite overflow; prefer borrow_for_elapsed for
+/// checked errors. SAFETY: `universe` is a non-owning view;
 /// the caller's InstrumentId storage must outlive the call.
 [[nodiscard]] inline atx::core::Decimal
 daily_borrow(const BorrowModel& b, const Portfolio& pf, const atx::engine::Market& mkt,
@@ -142,6 +147,86 @@ daily_borrow(const BorrowModel& b, const Portfolio& pf, const atx::engine::Marke
 inline void accrue_borrow(const BorrowModel& b, Portfolio& pf, const atx::engine::Market& mkt,
                           std::span<const InstrumentId> universe) {
   pf.accrue_financing(daily_borrow(b, pf, mkt, universe));
+}
+
+/// Validate the elapsed-time research convention, including an inert zero rate.
+/// D252 requires a trading calendar and is deliberately unsupported here. The
+/// legacy daily helpers above retain their one-specified-day D252 convention.
+[[nodiscard]] inline atx::core::Status validate_elapsed_borrow_model(const BorrowModel& b) {
+  if (!std::isfinite(b.annual_rate) || b.annual_rate < 0.0) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "elapsed borrow: annual_rate must be finite and nonnegative");
+  }
+  switch (b.day_count) {
+  case DayCount::D360:
+  case DayCount::D365:
+    return atx::core::Ok();
+  case DayCount::D252:
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "elapsed borrow: D252 requires a trading calendar");
+  }
+  return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                        "elapsed borrow: invalid day-count basis");
+}
+
+/// Continuous trade-date research accrual on the supplied, constant short book
+/// and marks over elapsed UTC time. D360/D365 count 24-hour calendar days,
+/// including weekends. This does not model settled collateral or broker fees.
+/// The caller supplies holdings/marks from the START of the elapsed interval.
+/// Preconditions: universe has unique IDs present in both portfolio and market;
+/// borrowed inputs remain alive, with no concurrent mutation during the call.
+/// Invalid configuration, negative elapsed time, nonpositive/nonfinite short
+/// marks or unrepresentable charge return an error. Configuration is checked
+/// even for zero elapsed/rate; those zero cases otherwise return zero directly.
+/// Fractional days apply BEFORE the single conversion to the Decimal nano grid.
+[[nodiscard]] inline atx::core::Result<atx::core::Decimal>
+borrow_for_elapsed(const BorrowModel& b, const Portfolio& pf, const Market& mkt,
+                    std::span<const InstrumentId> universe, atx::core::time::Duration elapsed) {
+  ATX_TRY_VOID(validate_elapsed_borrow_model(b));
+  if (elapsed.count_ns() < 0) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "elapsed borrow: duration must be nonnegative");
+  }
+  if (elapsed.count_ns() == 0 || b.annual_rate == 0.0) {
+    return atx::core::Ok(atx::core::Decimal{});
+  }
+  atx::f64 short_notional = 0.0;
+  for (const InstrumentId id : universe) {
+    const Holding& h = pf.holding(id);
+    if (h.qty >= 0) {
+      continue;
+    }
+    const atx::f64 mark = mkt.mark(id);
+    if (!std::isfinite(mark) || mark <= 0.0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "elapsed borrow: short mark must be finite and positive");
+    }
+    // Cast before negation: even INT64_MIN quantity cannot overflow signed math.
+    short_notional += -static_cast<atx::f64>(h.qty) * mark;
+  }
+  if (!std::isfinite(short_notional)) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "elapsed borrow: short notional is not finite");
+  }
+  const atx::f64 days = static_cast<atx::f64>(elapsed.count_ns()) /
+                       static_cast<atx::f64>(atx::core::time::Duration::kNsPerDay);
+  const atx::f64 charge = short_notional * b.annual_rate * days / day_count_denom(b.day_count);
+  return atx::core::Decimal::from_double(charge);
+}
+
+/// Debit elapsed borrow from cash only. Any returned error leaves the portfolio
+/// unchanged, including cash overflow. Same input/lifetime contract as above.
+[[nodiscard]] inline atx::core::Status
+accrue_borrow_for_elapsed(const BorrowModel& b, Portfolio& pf, const Market& mkt,
+                           std::span<const InstrumentId> universe,
+                           atx::core::time::Duration elapsed) {
+  ATX_TRY(const atx::core::Decimal charge, borrow_for_elapsed(b, pf, mkt, universe, elapsed));
+  // Portfolio's low-level debit assumes representable subtraction. Validate
+  // before that mutation rather than relying on its debug-only overflow guard.
+  ATX_TRY(const atx::core::Decimal remaining_cash, pf.cash().checked_sub(charge));
+  (void)remaining_cash;
+  pf.accrue_financing(charge);
+  return atx::core::Ok();
 }
 
 } // namespace atx::engine::cost

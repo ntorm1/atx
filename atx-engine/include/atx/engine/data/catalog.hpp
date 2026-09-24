@@ -116,12 +116,14 @@ public:
   // instrument `inst` in dataset `name`.
   //
   // Resolution rule (truncation-invariant — no look-ahead):
-  //   * Find the greatest DateKey d in dates() such that d ≤ canonical_date.
+  //   * Find the greatest availability date <= canonical_date. Availability
+  //     includes schema.pit_delay calendar days in the declared date encoding.
   //   * Return Ok(column[d_row * num_instruments + inst_idx]).
-  //   * If canonical_date < dates()[0] (no qualifying row exists), return
+  //   * If no observation is available yet, return
   //     Ok(NaN) — not an error. The caller distinguishes "no data yet" from
   //     "dataset absent" by the Err/Ok shape.
   //
+  // InvalidArgument if canonical_date is invalid for the dataset's encoding.
   // Errors (Err NotFound):
   //   * dataset name not registered,
   //   * column name not in schema,

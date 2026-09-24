@@ -35,6 +35,9 @@ namespace atx::engine::data {
 //
 // Returns Err(NotFound) if a required base field (close, volume, …) is missing.
 // Returns Err(InvalidArgument) for ragged column sizes (forwarded from Panel::create).
+// Positive pit_delay is also InvalidArgument: align onto a canonical decision
+// grid first and wrap the already-aligned values with zero delay. A Panel has
+// no date keys with which to enforce the source dataset's availability.
 [[nodiscard]] atx::core::Result<alpha::Panel> price_to_panel(const Dataset &price,
                                                              std::span<const atx::u16> adv_windows);
 

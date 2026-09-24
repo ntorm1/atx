@@ -38,7 +38,8 @@
 //  Variables (fixed column order):  x = [ w (M) ; y (K) ; s (M, gross) ; r (M, turn) ]
 //      n_w   = M
 //      n_y   = K
-//      n_aux = (has_gross ? M : 0) + (has_turnover ? M : 0)
+//      n_aux = (has_gross ? M : 0) + (has_turn ? M : 0) + (has_robust ? 1 : 0)
+//      has_turn means a hard turnover budget or a positive objective penalty.
 //
 //  Rows (fixed emission order — the offsets are reproducible for a fixed set):
 //    (0) the K FACTOR-DEFINITION equality rows  y − Xᵀw = 0  (l = u = 0):
@@ -49,8 +50,9 @@
 //        beta is one dense-ish row — all carried as SPARSE triplets.
 //    (2) gross L1 split (if has_gross):  w_i − s_i ≤ 0 ; −w_i − s_i ≤ 0 ;
 //        s_i ≥ 0 ; Σ s_i ≤ gross.  (structured sparse — never a dense block)
-//    (3) turnover L1 split (if has_turnover):  w_i − r_i ≤ ref_i ;
-//        −w_i − r_i ≤ −ref_i ; r_i ≥ 0 ; Σ r_i ≤ turnover.
+//    (3) turnover L1 split (budget or positive penalty): w_i - r_i <= ref_i;
+//        -w_i - r_i <= -ref_i; r_i >= 0. A hard budget adds sum(r) <= turnover;
+//        a positive penalty adds kappa*sum(r) to the objective independently.
 //    (4) tracking-error SOC (S8.5a, if tracking.active):  K + M cone rows whose product
 //        Ãx is [ L_Fᵀ y ; sqrt(D)∘w ]. These are NOT box rows — their [l, u] band is
 //        ±kAugInf and the row range is projected JOINTLY onto the ball ‖Ãx + offset‖₂ ≤
@@ -155,7 +157,7 @@ namespace detail {
     r += m + m + m + 1U;                         // (2) ±w−s≤0 ; s≥0 ; Σs≤L
   }
   if (has_turn) {
-    r += m + m + m + 1U;                         // (3) ±w−r≤ref ; r≥0 ; Σr≤T
+    r += m + m + m + (c.has_turnover ? 1U : 0U); // split plus optional hard budget
   }
   if (c.tracking.active) {
     r += k + m;                                  // (4) tracking-error SOC: K + M cone rows
@@ -179,6 +181,8 @@ namespace detail {
 // PRECONDITIONS (the solver validates these up front; build is a pure assembler):
 //   q.size() == V.n_instruments();  C.A.cols() == M when C.A has rows;
 //   C.l.size() == C.u.size() == C.A.rows();  λ ≥ 0.
+//   C.turnover_penalty is finite and >= 0; a budget or positive penalty requires
+//   M finite entries in C.turnover_ref.
 [[nodiscard]] inline AugmentedQp build_augmented(const FactorModel &V, atx::f64 lambda,
                                                  std::span<const atx::f64> q,
                                                  const MaterializedConstraints &C) {
@@ -191,7 +195,7 @@ namespace detail {
   const cl::VecX &D = V.specific_var();        // M floored specific variances (≥ d_min)
 
   const bool has_gross = C.gross_l1_budget >= 0.0;
-  const bool has_turn = C.has_turnover;
+  const bool has_turn = C.has_turnover || C.turnover_penalty > 0.0;
   // S8.5c robust alpha: ONE epigraph aux column t when κ > 0 (κ ≤ 0 ⇒ no column, no cone
   // ⇒ byte-identical to S8.5b, R10). Appended AFTER the gross/turnover aux columns.
   const bool has_robust = C.robust.active && C.robust.kappa > 0.0;
@@ -227,7 +231,7 @@ namespace detail {
   };
   // w_prev for the surrogate IS the turnover L1 reference (reused). Absent ⇒ flat zero.
   const auto impact_wprev = [&](atx::usize i) noexcept -> atx::f64 {
-    return (C.has_turnover && i < C.turnover_ref.size()) ? C.turnover_ref[i] : 0.0;
+    return (has_turn && i < C.turnover_ref.size()) ? C.turnover_ref[i] : 0.0;
   };
 
   // -------------------------------------------------------------------------
@@ -267,6 +271,11 @@ namespace detail {
     const atx::f64 ci = impact_c(i);
     out.q_aug[static_cast<Eigen::Index>(w_off + i)] =
         (ci > 0.0) ? (q[i] - 2.0 * ci * impact_wprev(i)) : q[i];
+  }
+  if (C.turnover_penalty > 0.0) {
+    for (atx::usize i = 0; i < m; ++i) {
+      out.q_aug[static_cast<Eigen::Index>(r_off + i)] = C.turnover_penalty;
+    }
   }
   // S8.5c robust epigraph cost: q_aug[t_col] = κ (the linear +κt term that, against the
   // SOC ‖Ω_f^{1/2} y‖₂ ≤ t, makes the effective penalty κ‖Ω_f^{1/2} y‖₂ at the optimum).
@@ -347,7 +356,7 @@ namespace detail {
     ++row;
   }
 
-  // (3) turnover L1 split (structured sparse): r_i ≥ |w_i − ref_i| and Σ r_i ≤ T.
+  // (3) turnover split: r_i >= |w_i-ref_i|, with an optional hard sum(r) budget.
   if (has_turn) {
     for (atx::usize i = 0; i < m; ++i) { // w_i − r_i ≤ ref_i
       a_trips.emplace_back(static_cast<int>(row), static_cast<int>(w_off + i), 1.0);
@@ -369,12 +378,14 @@ namespace detail {
       out.u[static_cast<Eigen::Index>(row)] = kAugInf;
       ++row;
     }
-    for (atx::usize i = 0; i < m; ++i) { // Σ r_i ≤ T
-      a_trips.emplace_back(static_cast<int>(row), static_cast<int>(r_off + i), 1.0);
+    if (C.has_turnover) {
+      for (atx::usize i = 0; i < m; ++i) { // sum(r_i) <= T, when explicitly requested
+        a_trips.emplace_back(static_cast<int>(row), static_cast<int>(r_off + i), 1.0);
+      }
+      out.l[static_cast<Eigen::Index>(row)] = -kAugInf;
+      out.u[static_cast<Eigen::Index>(row)] = C.turnover_budget;
+      ++row;
     }
-    out.l[static_cast<Eigen::Index>(row)] = -kAugInf;
-    out.u[static_cast<Eigen::Index>(row)] = C.turnover_budget;
-    ++row;
   }
 
   // (4) tracking-error SOC (S8.5a): K + M cone rows whose product Ãx is

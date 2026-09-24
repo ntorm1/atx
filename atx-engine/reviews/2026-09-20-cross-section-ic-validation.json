@@ -1,0 +1,1475 @@
+{
+  "schema": "atx-cross-section-ic-validation-v1",
+  "checkpoint": 14,
+  "date": "2026-09-20",
+  "status": "validated_stage1_sign_and_shape_only",
+  "summary": "Cross-sectional forecast evaluation (Pearson and rank IC per date, ICIR with circular block bootstrap, signal autocorrelation and implied turnover, decile spread gross and net for a gross-2.0 book with calendar-day borrow drag, per-date coverage, common-sample decay column, both forward-return variants, ex-34-audited-ID restriction) of the equity path's three deployed signals on the frozen 189-observation 2013 training context. Engine unit (64 native tests incl. 24 state/validation/seal) agrees with an independent exact oracle on 42/42 cases; the atx-impl equity-ic subcommand ran once on real data under a structural 2023-2025 seal, pre-registered N=30 trials in a hash-chained ledger before computing, and completed. Sign-and-shape evidence only.",
+  "sign_and_shape_statement": "A 189-observation result is sign-and-shape evidence only. It is not accepted alpha, not a Sharpe, not evidence of trading capacity, and not grounds for selecting a signal, a horizon, a cadence or a threshold. Research D-1: \"189 dates x roughly 200-400 admitted names is enough for a decay *shape* and a coverage table, and enough to expose a zero or negative IC - but it is a thin sample for an ICIR. Report the bootstrap interval, never a bare point estimate, and select nothing on it.\"",
+  "pre_registration": {
+    "trial_id": "iteration14-cross-section-ic-0001",
+    "trial_count_declared": 30,
+    "ledger_statuses": [
+      "pre-registered",
+      "completed"
+    ],
+    "ledger_lines": 2,
+    "design_note_sha256_embedded_in_stage": "888c726b123c02b39636876a667cfab890b4304794f6be42d46d35befbedbe25"
+  },
+  "native_measurement": {
+    "toolchain": "clang-cl 18.1.8, preset equity-dev (groups risk;data;core;book;eval), static Debug, /W4 /permissive- /WX, 4 build jobs, ccache disabled, PCH enabled (no hygiene claim)",
+    "engine_tests_final": "100% tests passed, 0 tests failed out of 63",
+    "engine_eval_group_regression_at_t1": "100% tests passed, 0 tests failed out of 100",
+    "trial_ledger_tests": "100% tests passed, 0 tests failed out of 16",
+    "stage_tests_final": "100% tests passed, 0 tests failed out of 16",
+    "full_regression": "99% tests passed, 5 tests failed out of 988",
+    "full_regression_note": "983/988; 4 NOT_BUILT placeholders (targets outside the configured groups) and 1 pre-existing failure StageRunSyntheticSmoke.SyntheticSmoke_OnFlagsProducesFiniteScorecard (invalid stod argument; stage_run.cpp and the test last modified before this checkpoint; in-process RunConfig, no CLI path; not caused by checkpoint 13/14; open defect)",
+    "failed_attempts_preserved": [
+      "iteration14-build-t1fix1.log: static_assert on kSealedBeginNs caught a wrong day count (19723 = 2024-01-01) before any run; fixed to 19358",
+      "iteration14-build-t4.log: atx-impl-tests build blocked by the in-flight engine TU",
+      "iteration14-build-t4fix1.log: -Wunused-result in trial_ledger_test.cpp:206",
+      "iteration14-check-t4.log: single-TU check before reconfigure (no object target)"
+    ]
+  },
+  "oracle_comparison": {
+    "oracle_v1_defect": "four F3 fixtures placed the last observed mark at t+h, which ruling A-6 assigns to the ordinary return; re-cut as v2 with unchanged expected values plus one new precedence case",
+    "final_status": "pass",
+    "final_counts": {
+      "oracle_cases": 42,
+      "required": 42,
+      "compared": 42,
+      "passed": 42,
+      "failed": 0,
+      "not_measured_natively": 0,
+      "global_failures": 0
+    },
+    "comparator_enum_enforcement": "unreportable_reason codes 1 and 2 asserted; full 0..4 enum enforcement deferred"
+  },
+  "real_data_run": {
+    "attempt": 1,
+    "command_line": "C:\\atx\\.worktrees\\equity-platform\\build-equity\\bin\\atx-impl.exe equity-ic --panel C:\\atx\\data\\tickerhistory_training_native_20260919\\context.bin --baseline-dir C:\\atx\\data\\equity_baseline_training_2013_20260919 --out C:\\atx\\data\\equity_ic_training_2013_20260920 --evaluation-start 2013-04-04 --evaluation-end 2014-01-01 --max-working-bytes 3000000000 --trial-ledger C:\\atx\\.worktrees\\equity-platform\\atx-engine\\reviews\\trial-ledger.jsonl",
+    "exit_code": 0,
+    "wall_seconds": 28.298875499982387,
+    "runner_accepted_as_written": false,
+    "runner_defect": "runner compared recorded path strings (absolute before, relative after); digests and byte counts were identical for every pin",
+    "accepted_reevaluated": true,
+    "pins_digest_unchanged": true,
+    "observations": 189,
+    "instruments": 1661,
+    "common_sample_dates": 126,
+    "cost_model_provenance": "trade_bps=constexpr EquityAllocationConfig{}.trade_bps (equity_allocation.hpp:40); annual_borrow_bps=365 literal from the deployed equity-book run config (handoff), NOT replay.hpp whose default is 0.0; no call into replay.cpp borrow_charge, which is file-local",
+    "output_directory": "C:\\atx\\data\\equity_ic_training_2013_20260920",
+    "output_pins": {
+      "coverage.csv": {
+        "path": "C:\\atx\\data\\equity_ic_training_2013_20260920\\coverage.csv",
+        "sha256": "274565a48e331688737e3fa591c5936282d9415e988b84f102e067805167388b",
+        "bytes": 933722
+      },
+      "ic.csv": {
+        "path": "C:\\atx\\data\\equity_ic_training_2013_20260920\\ic.csv",
+        "sha256": "00c98179adb312e4419aab5a4dcd58e0ca6e788cb98cad860ef121258dcfdcd2",
+        "bytes": 1988027
+      },
+      "ic_decay.csv": {
+        "path": "C:\\atx\\data\\equity_ic_training_2013_20260920\\ic_decay.csv",
+        "sha256": "998b4771a4341b313bdc7cbde1bb13748499fc815fa48601236b2b56350da47b",
+        "bytes": 15814
+      },
+      "ic_summary.json": {
+        "path": "C:\\atx\\data\\equity_ic_training_2013_20260920\\ic_summary.json",
+        "sha256": "f9706609157e1bacb4a62e56f55cda7c091f6eb5d29e7a28d54a4b3a9a3432f0",
+        "bytes": 445303
+      },
+      "manifest.json": {
+        "path": "C:\\atx\\data\\equity_ic_training_2013_20260920\\manifest.json",
+        "sha256": "d6c76698a2ddec7b672cad1b4d162c3cd37f7e5a605137f93e7bd8eb17b22d3c",
+        "bytes": 8342
+      },
+      "quantile_spread.csv": {
+        "path": "C:\\atx\\data\\equity_ic_training_2013_20260920\\quantile_spread.csv",
+        "sha256": "2f63a0873fc9dc97436cfa1b32fb88281bc8d79c509b4658d5ec9b2d9611fcba",
+        "bytes": 101506
+      },
+      "request.json": {
+        "path": "C:\\atx\\data\\equity_ic_training_2013_20260920\\request.json",
+        "sha256": "cc3f989dc539a15671b52b1095ccd4910fedc4dc3eaf6ead7d0765e9ab6a4fb5",
+        "bytes": 6150
+      },
+      "seal.json": {
+        "path": "C:\\atx\\data\\equity_ic_training_2013_20260920\\seal.json",
+        "sha256": "262219ac7a929dc1a530379bb6248ab8c05ba4f85ebff731f84e64fe432cad77",
+        "bytes": 380
+      },
+      "signal_autocorr.csv": {
+        "path": "C:\\atx\\data\\equity_ic_training_2013_20260920\\signal_autocorr.csv",
+        "sha256": "f15420bc2d688dc79ce674341185f632f7bffb9f4bec5920405635950c28c7f3",
+        "bytes": 634
+      }
+    },
+    "headline_full_sample": [
+      {
+        "signal": "momentum_252",
+        "variant": "DropMissingForward",
+        "restriction": "full",
+        "horizon": 1,
+        "dates_emitted": 188,
+        "ic_mean": 0.016842254618812974,
+        "rank_ic_mean": 0.02892541549329924,
+        "icir": 0.10978794326369613,
+        "ic_mean_ci_lo": -0.0037072557883184912,
+        "ic_mean_ci_hi": 0.03761475964678327,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.0015852468600330272,
+        "spread_net_mean": 0.0013708083499661748,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "DropMissingForward",
+        "restriction": "ex34",
+        "horizon": 1,
+        "dates_emitted": 188,
+        "ic_mean": 0.01695578752140535,
+        "rank_ic_mean": 0.028997715640908143,
+        "icir": 0.11025024608854096,
+        "ic_mean_ci_lo": -0.003901470477270173,
+        "ic_mean_ci_hi": 0.03866185691295922,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.0016759411562642004,
+        "spread_net_mean": 0.0014612834402600232,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "full",
+        "horizon": 1,
+        "dates_emitted": 188,
+        "ic_mean": 0.016842254618812974,
+        "rank_ic_mean": 0.02892541549329924,
+        "icir": 0.10978794326369613,
+        "ic_mean_ci_lo": -0.0031437341589449267,
+        "ic_mean_ci_hi": 0.03648218577193948,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.0015852468600330272,
+        "spread_net_mean": 0.0013708083499661748,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "ex34",
+        "horizon": 1,
+        "dates_emitted": 188,
+        "ic_mean": 0.01695578752140535,
+        "rank_ic_mean": 0.028997715640908143,
+        "icir": 0.11025024608854096,
+        "ic_mean_ci_lo": -0.00420577666625908,
+        "ic_mean_ci_hi": 0.03798001503159108,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.0016759411562642004,
+        "spread_net_mean": 0.0014612834402600232,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "DropMissingForward",
+        "restriction": "full",
+        "horizon": 5,
+        "dates_emitted": 184,
+        "ic_mean": 0.03740657181344227,
+        "rank_ic_mean": 0.05564334484277826,
+        "icir": 0.2699743616265082,
+        "ic_mean_ci_lo": 0.00453359370756109,
+        "ic_mean_ci_hi": 0.07138661667779658,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.008280733706855014,
+        "spread_net_mean": 0.0073079896303288325,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "DropMissingForward",
+        "restriction": "ex34",
+        "horizon": 5,
+        "dates_emitted": 184,
+        "ic_mean": 0.0375756052636992,
+        "rank_ic_mean": 0.05566875954558381,
+        "icir": 0.26983404584074794,
+        "ic_mean_ci_lo": 0.0009255646550388031,
+        "ic_mean_ci_hi": 0.07004947616587114,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.008330521448926612,
+        "spread_net_mean": 0.0073602595395830936,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "full",
+        "horizon": 5,
+        "dates_emitted": 184,
+        "ic_mean": 0.03740702074669061,
+        "rank_ic_mean": 0.05565072954129633,
+        "icir": 0.2699785402279717,
+        "ic_mean_ci_lo": 0.004124319566245042,
+        "ic_mean_ci_hi": 0.07177637996613863,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.008288710180913783,
+        "spread_net_mean": 0.00731603311305253,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "ex34",
+        "horizon": 5,
+        "dates_emitted": 184,
+        "ic_mean": 0.0375756052636992,
+        "rank_ic_mean": 0.05566875954558381,
+        "icir": 0.26983404584074794,
+        "ic_mean_ci_lo": 0.001438865427455306,
+        "ic_mean_ci_hi": 0.07136772181396031,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.008330521448926612,
+        "spread_net_mean": 0.0073602595395830936,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "DropMissingForward",
+        "restriction": "full",
+        "horizon": 10,
+        "dates_emitted": 179,
+        "ic_mean": 0.048460589335934764,
+        "rank_ic_mean": 0.07026867156831652,
+        "icir": 0.38689243280441843,
+        "ic_mean_ci_lo": 0.012474119717136734,
+        "ic_mean_ci_hi": 0.08219160221624061,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.01662269150209122,
+        "spread_net_mean": 0.014791732299288263,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "DropMissingForward",
+        "restriction": "ex34",
+        "horizon": 10,
+        "dates_emitted": 179,
+        "ic_mean": 0.048387649781785246,
+        "rank_ic_mean": 0.06996866102395763,
+        "icir": 0.3844735458519703,
+        "ic_mean_ci_lo": 0.013120105171108416,
+        "ic_mean_ci_hi": 0.08475924141508058,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.01647287070131299,
+        "spread_net_mean": 0.014644714656498792,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "full",
+        "horizon": 10,
+        "dates_emitted": 179,
+        "ic_mean": 0.048461025763517164,
+        "rank_ic_mean": 0.07027827321353632,
+        "icir": 0.38689803546820156,
+        "ic_mean_ci_lo": 0.01285982466716961,
+        "ic_mean_ci_hi": 0.08481024791782692,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.016609904254000333,
+        "spread_net_mean": 0.014778755720997846,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "ex34",
+        "horizon": 10,
+        "dates_emitted": 179,
+        "ic_mean": 0.048387649781785246,
+        "rank_ic_mean": 0.06996866102395763,
+        "icir": 0.3844735458519703,
+        "ic_mean_ci_lo": 0.012831058632133612,
+        "ic_mean_ci_hi": 0.08273667475595801,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.01647287070131299,
+        "spread_net_mean": 0.014644714656498792,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "DropMissingForward",
+        "restriction": "full",
+        "horizon": 21,
+        "dates_emitted": 168,
+        "ic_mean": 0.06613416700096515,
+        "rank_ic_mean": 0.09224166351215486,
+        "icir": 0.5753859581931121,
+        "ic_mean_ci_lo": 0.019536521837676225,
+        "ic_mean_ci_hi": 0.120876911235741,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.03330941370961043,
+        "spread_net_mean": 0.029690251835419408,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "DropMissingForward",
+        "restriction": "ex34",
+        "horizon": 21,
+        "dates_emitted": 168,
+        "ic_mean": 0.0659783405307149,
+        "rank_ic_mean": 0.09081953750527205,
+        "icir": 0.5708940639227136,
+        "ic_mean_ci_lo": 0.02017077630426436,
+        "ic_mean_ci_hi": 0.11940400053995512,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.03308028227859526,
+        "spread_net_mean": 0.029467516614353248,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "full",
+        "horizon": 21,
+        "dates_emitted": 168,
+        "ic_mean": 0.06613010212234566,
+        "rank_ic_mean": 0.09221864843887952,
+        "icir": 0.5753324779471902,
+        "ic_mean_ci_lo": 0.02159918327130707,
+        "ic_mean_ci_hi": 0.1203405555938839,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.033302179217605136,
+        "spread_net_mean": 0.029683003864474738,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "ex34",
+        "horizon": 21,
+        "dates_emitted": 168,
+        "ic_mean": 0.0659783405307149,
+        "rank_ic_mean": 0.09081953750527205,
+        "icir": 0.5708940639227136,
+        "ic_mean_ci_lo": 0.0192264041420369,
+        "ic_mean_ci_hi": 0.12146842999528518,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.03308028227859526,
+        "spread_net_mean": 0.029467516614353248,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "DropMissingForward",
+        "restriction": "full",
+        "horizon": 63,
+        "dates_emitted": 126,
+        "ic_mean": 0.10254501165301802,
+        "rank_ic_mean": 0.14630744491867662,
+        "icir": 1.157226004993069,
+        "ic_mean_ci_lo": null,
+        "ic_mean_ci_hi": null,
+        "ic_ci_reportable": false,
+        "spread_gross_mean": null,
+        "spread_net_mean": null,
+        "spread_reportable": false
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "DropMissingForward",
+        "restriction": "ex34",
+        "horizon": 63,
+        "dates_emitted": 126,
+        "ic_mean": 0.10173605877902431,
+        "rank_ic_mean": 0.14408987506895687,
+        "icir": 1.1499147098785045,
+        "ic_mean_ci_lo": null,
+        "ic_mean_ci_hi": null,
+        "ic_ci_reportable": false,
+        "spread_gross_mean": null,
+        "spread_net_mean": null,
+        "spread_reportable": false
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "full",
+        "horizon": 63,
+        "dates_emitted": 126,
+        "ic_mean": 0.10254755786945054,
+        "rank_ic_mean": 0.146099095561762,
+        "icir": 1.1568150862882431,
+        "ic_mean_ci_lo": null,
+        "ic_mean_ci_hi": null,
+        "ic_ci_reportable": false,
+        "spread_gross_mean": null,
+        "spread_net_mean": null,
+        "spread_reportable": false
+      },
+      {
+        "signal": "momentum_252",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "ex34",
+        "horizon": 63,
+        "dates_emitted": 126,
+        "ic_mean": 0.10173605877902431,
+        "rank_ic_mean": 0.14408987506895687,
+        "icir": 1.1499147098785045,
+        "ic_mean_ci_lo": null,
+        "ic_mean_ci_hi": null,
+        "ic_ci_reportable": false,
+        "spread_gross_mean": null,
+        "spread_net_mean": null,
+        "spread_reportable": false
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "DropMissingForward",
+        "restriction": "full",
+        "horizon": 1,
+        "dates_emitted": 188,
+        "ic_mean": 0.02834319609434568,
+        "rank_ic_mean": 0.030233443748194807,
+        "icir": 0.14574018264315075,
+        "ic_mean_ci_lo": 0.0007018987318282397,
+        "ic_mean_ci_hi": 0.055207079321038695,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.001627186508183999,
+        "spread_net_mean": 0.0013921880829182141,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "DropMissingForward",
+        "restriction": "ex34",
+        "horizon": 1,
+        "dates_emitted": 188,
+        "ic_mean": 0.028902864634753726,
+        "rank_ic_mean": 0.03048882424977902,
+        "icir": 0.14691021658252812,
+        "ic_mean_ci_lo": 0.00110231718560632,
+        "ic_mean_ci_hi": 0.05603646846220847,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.0016767882735563378,
+        "spread_net_mean": 0.0014420679148083974,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "full",
+        "horizon": 1,
+        "dates_emitted": 188,
+        "ic_mean": 0.02834319609434568,
+        "rank_ic_mean": 0.030233443748194807,
+        "icir": 0.14574018264315075,
+        "ic_mean_ci_lo": 0.0019120917550184296,
+        "ic_mean_ci_hi": 0.05456559376734511,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.001627186508183999,
+        "spread_net_mean": 0.0013921880829182141,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "ex34",
+        "horizon": 1,
+        "dates_emitted": 188,
+        "ic_mean": 0.028902864634753726,
+        "rank_ic_mean": 0.03048882424977902,
+        "icir": 0.14691021658252812,
+        "ic_mean_ci_lo": 0.0015299010193160947,
+        "ic_mean_ci_hi": 0.05412563295343153,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.0016767882735563378,
+        "spread_net_mean": 0.0014420679148083974,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "DropMissingForward",
+        "restriction": "full",
+        "horizon": 5,
+        "dates_emitted": 184,
+        "ic_mean": 0.053163443675052345,
+        "rank_ic_mean": 0.05154078204787685,
+        "icir": 0.29092240201393216,
+        "ic_mean_ci_lo": 0.004901867609010502,
+        "ic_mean_ci_hi": 0.0979210568687801,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.008146996179508963,
+        "spread_net_mean": 0.007091234101575089,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "DropMissingForward",
+        "restriction": "ex34",
+        "horizon": 5,
+        "dates_emitted": 184,
+        "ic_mean": 0.05426520376335506,
+        "rank_ic_mean": 0.05195918314454759,
+        "icir": 0.2918438604884097,
+        "ic_mean_ci_lo": 0.005582782139846918,
+        "ic_mean_ci_hi": 0.10250426308497915,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.008260335287562839,
+        "spread_net_mean": 0.007206862633009193,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "full",
+        "horizon": 5,
+        "dates_emitted": 184,
+        "ic_mean": 0.05316348078422601,
+        "rank_ic_mean": 0.051546761622317604,
+        "icir": 0.29092332227037604,
+        "ic_mean_ci_lo": 0.006852233650340837,
+        "ic_mean_ci_hi": 0.09788748895309507,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.008148341646082583,
+        "spread_net_mean": 0.00709271945051763,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "ex34",
+        "horizon": 5,
+        "dates_emitted": 184,
+        "ic_mean": 0.05426520376335506,
+        "rank_ic_mean": 0.05195918314454759,
+        "icir": 0.2918438604884097,
+        "ic_mean_ci_lo": 0.005231193876540874,
+        "ic_mean_ci_hi": 0.10220115721420815,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.008260335287562839,
+        "spread_net_mean": 0.007206862633009193,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "DropMissingForward",
+        "restriction": "full",
+        "horizon": 10,
+        "dates_emitted": 179,
+        "ic_mean": 0.06949228085471668,
+        "rank_ic_mean": 0.06423854681267253,
+        "icir": 0.3863214469582091,
+        "ic_mean_ci_lo": 0.01736491059556907,
+        "ic_mean_ci_hi": 0.12022496689442057,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.016366276758256925,
+        "spread_net_mean": 0.014408893037786665,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "DropMissingForward",
+        "restriction": "ex34",
+        "horizon": 10,
+        "dates_emitted": 179,
+        "ic_mean": 0.07065536930971981,
+        "rank_ic_mean": 0.06443356873028981,
+        "icir": 0.3853738827903178,
+        "ic_mean_ci_lo": 0.016757243834834363,
+        "ic_mean_ci_hi": 0.12277282478768571,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.01666158617833327,
+        "spread_net_mean": 0.014706923796074783,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "full",
+        "horizon": 10,
+        "dates_emitted": 179,
+        "ic_mean": 0.06949445501399723,
+        "rank_ic_mean": 0.06425637537384783,
+        "icir": 0.38633996768808737,
+        "ic_mean_ci_lo": 0.014709201566973834,
+        "ic_mean_ci_hi": 0.1199507259835407,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.016372973391208565,
+        "spread_net_mean": 0.014415373744273367,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "ex34",
+        "horizon": 10,
+        "dates_emitted": 179,
+        "ic_mean": 0.07065536930971981,
+        "rank_ic_mean": 0.06443356873028981,
+        "icir": 0.3853738827903178,
+        "ic_mean_ci_lo": 0.017098019047280925,
+        "ic_mean_ci_hi": 0.1226268540104568,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.01666158617833327,
+        "spread_net_mean": 0.014706923796074783,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "DropMissingForward",
+        "restriction": "full",
+        "horizon": 21,
+        "dates_emitted": 168,
+        "ic_mean": 0.0996546104968322,
+        "rank_ic_mean": 0.09293079067165906,
+        "icir": 0.6031376970826214,
+        "ic_mean_ci_lo": 0.021162679988170688,
+        "ic_mean_ci_hi": 0.17192460283896827,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.035702293368310864,
+        "spread_net_mean": 0.03191608407079537,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "DropMissingForward",
+        "restriction": "ex34",
+        "horizon": 21,
+        "dates_emitted": 168,
+        "ic_mean": 0.10090339152267107,
+        "rank_ic_mean": 0.09255484529043384,
+        "icir": 0.6005978402787695,
+        "ic_mean_ci_lo": 0.030083144090957623,
+        "ic_mean_ci_hi": 0.1727176084126895,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.03648405376990702,
+        "spread_net_mean": 0.03270455471616903,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "full",
+        "horizon": 21,
+        "dates_emitted": 168,
+        "ic_mean": 0.09967605281878394,
+        "rank_ic_mean": 0.09305142287551593,
+        "icir": 0.603323806635686,
+        "ic_mean_ci_lo": 0.028236930901016713,
+        "ic_mean_ci_hi": 0.1714343939515061,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.03569924192120336,
+        "spread_net_mean": 0.03191305987161119,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "ex34",
+        "horizon": 21,
+        "dates_emitted": 168,
+        "ic_mean": 0.10090339152267107,
+        "rank_ic_mean": 0.09255484529043384,
+        "icir": 0.6005978402787695,
+        "ic_mean_ci_lo": 0.027633864539060644,
+        "ic_mean_ci_hi": 0.17592290131170335,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.03648405376990702,
+        "spread_net_mean": 0.03270455471616903,
+        "spread_reportable": true
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "DropMissingForward",
+        "restriction": "full",
+        "horizon": 63,
+        "dates_emitted": 126,
+        "ic_mean": 0.17015836384810382,
+        "rank_ic_mean": 0.1542028520101048,
+        "icir": 2.1781414587770778,
+        "ic_mean_ci_lo": null,
+        "ic_mean_ci_hi": null,
+        "ic_ci_reportable": false,
+        "spread_gross_mean": null,
+        "spread_net_mean": null,
+        "spread_reportable": false
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "DropMissingForward",
+        "restriction": "ex34",
+        "horizon": 63,
+        "dates_emitted": 126,
+        "ic_mean": 0.17107305249862226,
+        "rank_ic_mean": 0.15316476778130664,
+        "icir": 2.1409646418746977,
+        "ic_mean_ci_lo": null,
+        "ic_mean_ci_hi": null,
+        "ic_ci_reportable": false,
+        "spread_gross_mean": null,
+        "spread_net_mean": null,
+        "spread_reportable": false
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "full",
+        "horizon": 63,
+        "dates_emitted": 126,
+        "ic_mean": 0.17014864596935705,
+        "rank_ic_mean": 0.15421218324868896,
+        "icir": 2.1800493394200533,
+        "ic_mean_ci_lo": null,
+        "ic_mean_ci_hi": null,
+        "ic_ci_reportable": false,
+        "spread_gross_mean": null,
+        "spread_net_mean": null,
+        "spread_reportable": false
+      },
+      {
+        "signal": "momentum_126",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "ex34",
+        "horizon": 63,
+        "dates_emitted": 126,
+        "ic_mean": 0.17107305249862226,
+        "rank_ic_mean": 0.15316476778130664,
+        "icir": 2.1409646418746977,
+        "ic_mean_ci_lo": null,
+        "ic_mean_ci_hi": null,
+        "ic_ci_reportable": false,
+        "spread_gross_mean": null,
+        "spread_net_mean": null,
+        "spread_reportable": false
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "DropMissingForward",
+        "restriction": "full",
+        "horizon": 1,
+        "dates_emitted": 188,
+        "ic_mean": 0.028587086570091565,
+        "rank_ic_mean": 0.031373294142251,
+        "icir": 0.15581658701101286,
+        "ic_mean_ci_lo": 0.006270142259591987,
+        "ic_mean_ci_hi": 0.05085735030156359,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.0016576338978759302,
+        "spread_net_mean": 0.0014281980509401595,
+        "spread_reportable": true
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "DropMissingForward",
+        "restriction": "ex34",
+        "horizon": 1,
+        "dates_emitted": 188,
+        "ic_mean": 0.02896851408456365,
+        "rank_ic_mean": 0.0315500845310503,
+        "icir": 0.15611755263310104,
+        "ic_mean_ci_lo": 0.00621529208114571,
+        "ic_mean_ci_hi": 0.051237505390544134,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.001661039418117591,
+        "spread_net_mean": 0.0014315660890611898,
+        "spread_reportable": true
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "full",
+        "horizon": 1,
+        "dates_emitted": 188,
+        "ic_mean": 0.028587086570091565,
+        "rank_ic_mean": 0.031373294142251,
+        "icir": 0.15581658701101286,
+        "ic_mean_ci_lo": 0.00437158668167277,
+        "ic_mean_ci_hi": 0.0501415383975421,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.0016576338978759302,
+        "spread_net_mean": 0.0014281980509401595,
+        "spread_reportable": true
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "ex34",
+        "horizon": 1,
+        "dates_emitted": 188,
+        "ic_mean": 0.02896851408456365,
+        "rank_ic_mean": 0.0315500845310503,
+        "icir": 0.15611755263310104,
+        "ic_mean_ci_lo": 0.005596689114088193,
+        "ic_mean_ci_hi": 0.051423952697327566,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.001661039418117591,
+        "spread_net_mean": 0.0014315660890611898,
+        "spread_reportable": true
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "DropMissingForward",
+        "restriction": "full",
+        "horizon": 5,
+        "dates_emitted": 184,
+        "ic_mean": 0.055849038299103065,
+        "rank_ic_mean": 0.05678326381088082,
+        "icir": 0.35151093976659303,
+        "ic_mean_ci_lo": 0.016613519480513574,
+        "ic_mean_ci_hi": 0.0925280502330861,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.008481503623808107,
+        "spread_net_mean": 0.007456693713714368,
+        "spread_reportable": true
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "DropMissingForward",
+        "restriction": "ex34",
+        "horizon": 5,
+        "dates_emitted": 184,
+        "ic_mean": 0.05631962105077368,
+        "rank_ic_mean": 0.05703725874488854,
+        "icir": 0.3494751751762573,
+        "ic_mean_ci_lo": 0.018782812027508717,
+        "ic_mean_ci_hi": 0.09497954126107597,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.00836219707615112,
+        "spread_net_mean": 0.007339015313746478,
+        "spread_reportable": true
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "full",
+        "horizon": 5,
+        "dates_emitted": 184,
+        "ic_mean": 0.05584881963915566,
+        "rank_ic_mean": 0.056790512785912795,
+        "icir": 0.35151412254953734,
+        "ic_mean_ci_lo": 0.016191196620321185,
+        "ic_mean_ci_hi": 0.0937301920723601,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.008486052460108758,
+        "spread_net_mean": 0.007461319549429694,
+        "spread_reportable": true
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "ex34",
+        "horizon": 5,
+        "dates_emitted": 184,
+        "ic_mean": 0.05631962105077368,
+        "rank_ic_mean": 0.05703725874488854,
+        "icir": 0.3494751751762573,
+        "ic_mean_ci_lo": 0.016544177640096813,
+        "ic_mean_ci_hi": 0.09560263920191955,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.00836219707615112,
+        "spread_net_mean": 0.007339015313746478,
+        "spread_reportable": true
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "DropMissingForward",
+        "restriction": "full",
+        "horizon": 10,
+        "dates_emitted": 179,
+        "ic_mean": 0.07416948646882336,
+        "rank_ic_mean": 0.07136344262703896,
+        "icir": 0.5288132088781771,
+        "ic_mean_ci_lo": 0.034607764217604066,
+        "ic_mean_ci_hi": 0.1110926376240889,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.01690077790411259,
+        "spread_net_mean": 0.014996915992573676,
+        "spread_reportable": true
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "DropMissingForward",
+        "restriction": "ex34",
+        "horizon": 10,
+        "dates_emitted": 179,
+        "ic_mean": 0.07414820887516053,
+        "rank_ic_mean": 0.07132138302017398,
+        "icir": 0.5200944912360467,
+        "ic_mean_ci_lo": 0.032696321513773635,
+        "ic_mean_ci_hi": 0.11139720766056171,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.016636387832224656,
+        "spread_net_mean": 0.01473600215438725,
+        "spread_reportable": true
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "full",
+        "horizon": 10,
+        "dates_emitted": 179,
+        "ic_mean": 0.07417568614206395,
+        "rank_ic_mean": 0.07137780214848279,
+        "icir": 0.5289026141104556,
+        "ic_mean_ci_lo": 0.033048716341492264,
+        "ic_mean_ci_hi": 0.11163546692040335,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.016904017980349142,
+        "spread_net_mean": 0.014999935747359607,
+        "spread_reportable": true
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "ex34",
+        "horizon": 10,
+        "dates_emitted": 179,
+        "ic_mean": 0.07414820887516053,
+        "rank_ic_mean": 0.07132138302017398,
+        "icir": 0.5200944912360467,
+        "ic_mean_ci_lo": 0.03346389152540712,
+        "ic_mean_ci_hi": 0.11139545555304518,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.016636387832224656,
+        "spread_net_mean": 0.01473600215438725,
+        "spread_reportable": true
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "DropMissingForward",
+        "restriction": "full",
+        "horizon": 21,
+        "dates_emitted": 168,
+        "ic_mean": 0.10168007969033271,
+        "rank_ic_mean": 0.09852210149550057,
+        "icir": 0.8724339292872781,
+        "ic_mean_ci_lo": 0.05071446704163358,
+        "ic_mean_ci_hi": 0.14622598254447478,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.03541924006278213,
+        "spread_net_mean": 0.03170603860034395,
+        "spread_reportable": true
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "DropMissingForward",
+        "restriction": "ex34",
+        "horizon": 21,
+        "dates_emitted": 168,
+        "ic_mean": 0.10114396337006337,
+        "rank_ic_mean": 0.09755860455720386,
+        "icir": 0.8604630730694681,
+        "ic_mean_ci_lo": 0.05141175032993061,
+        "ic_mean_ci_hi": 0.14888033764879363,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.03499034096623322,
+        "spread_net_mean": 0.031281147827538804,
+        "spread_reportable": true
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "full",
+        "horizon": 21,
+        "dates_emitted": 168,
+        "ic_mean": 0.10171258141430235,
+        "rank_ic_mean": 0.09858296781448393,
+        "icir": 0.8728981035875845,
+        "ic_mean_ci_lo": 0.05634062972557626,
+        "ic_mean_ci_hi": 0.1466885077242989,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.035408921817855134,
+        "spread_net_mean": 0.03169573613664138,
+        "spread_reportable": true
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "ex34",
+        "horizon": 21,
+        "dates_emitted": 168,
+        "ic_mean": 0.10114396337006337,
+        "rank_ic_mean": 0.09755860455720386,
+        "icir": 0.8604630730694681,
+        "ic_mean_ci_lo": 0.05019101763875149,
+        "ic_mean_ci_hi": 0.14542484742012368,
+        "ic_ci_reportable": true,
+        "spread_gross_mean": 0.03499034096623322,
+        "spread_net_mean": 0.031281147827538804,
+        "spread_reportable": true
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "DropMissingForward",
+        "restriction": "full",
+        "horizon": 63,
+        "dates_emitted": 126,
+        "ic_mean": 0.16357611833750066,
+        "rank_ic_mean": 0.15978583289463147,
+        "icir": 2.3161640386985316,
+        "ic_mean_ci_lo": null,
+        "ic_mean_ci_hi": null,
+        "ic_ci_reportable": false,
+        "spread_gross_mean": null,
+        "spread_net_mean": null,
+        "spread_reportable": false
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "DropMissingForward",
+        "restriction": "ex34",
+        "horizon": 63,
+        "dates_emitted": 126,
+        "ic_mean": 0.1624441159575258,
+        "rank_ic_mean": 0.157989723533173,
+        "icir": 2.2732207168673275,
+        "ic_mean_ci_lo": null,
+        "ic_mean_ci_hi": null,
+        "ic_ci_reportable": false,
+        "spread_gross_mean": null,
+        "spread_net_mean": null,
+        "spread_reportable": false
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "full",
+        "horizon": 63,
+        "dates_emitted": 126,
+        "ic_mean": 0.1634640189496352,
+        "rank_ic_mean": 0.1597019699097658,
+        "icir": 2.313801233548457,
+        "ic_mean_ci_lo": null,
+        "ic_mean_ci_hi": null,
+        "ic_ci_reportable": false,
+        "spread_gross_mean": null,
+        "spread_net_mean": null,
+        "spread_reportable": false
+      },
+      {
+        "signal": "blend_equal",
+        "variant": "IncludeAuditedTerminalV1",
+        "restriction": "ex34",
+        "horizon": 63,
+        "dates_emitted": 126,
+        "ic_mean": 0.1624441159575258,
+        "rank_ic_mean": 0.157989723533173,
+        "icir": 2.2732207168673275,
+        "ic_mean_ci_lo": null,
+        "ic_mean_ci_hi": null,
+        "ic_ci_reportable": false,
+        "spread_gross_mean": null,
+        "spread_net_mean": null,
+        "spread_reportable": false
+      }
+    ]
+  },
+  "review": {
+    "design": "Fix required (8 Critical) -> Fix required narrowly (1 Critical) -> Pass; six ruling blocks \u00a711.1-\u00a711.9 recorded in the design",
+    "t1": "SPEC/QUALITY Fix required (1 comment + 3 test gaps) -> Pass after one round; RR-1..RR-3 rulings",
+    "t2t3": "pass with findings (1 Critical export gap, 7 Important) -> fixed in one round, gated by 63/63 + comparator 42/42 (no re-review per directive)",
+    "t4": "pass with findings (4 Important: tail integrity, throwing fs call, torn-append claim, concurrency) -> fixed in one round, gated by 16/16",
+    "t5": "pass with findings, SAFE TO RUN: no (Critical: dangling pre-registration on failure) -> fixed in one round, gated by 16/16, then run",
+    "process_note": "user directive mid-checkpoint: fewer review/test cycles; scoped re-reviews dropped for fix rounds from T2T3 onward"
+  },
+  "qualifications": [
+    "A 189-observation result is sign-and-shape evidence only. It is not accepted alpha, not a Sharpe, not evidence of trading capacity, and not grounds for selecting a signal, a horizon, a cadence or a threshold. Research D-1: \"189 dates x roughly 200-400 admitted names is enough for a decay *shape* and a coverage table, and enough to expose a zero or negative IC - but it is a thin sample for an ICIR. Report the bootstrap interval, never a bare point estimate, and select nothing on it.\"",
+    "Stage 1 only (189 observations, 2013 training slice); Stage 2 (2013-2019 panel) not run. Bootstrap intervals at h=63 are null by pre-registered prediction.",
+    "No model was fitted; the three signals are the deployed ones read from the published baseline. IC is not net P&L; the net decile spread restates the deployed cost constants and is not a replay.",
+    "Survivorship: dropping missing forward returns is upward-biased; both variants and the ex-34 restriction are reported; only three terminal events are priced; PCS is never applied; the 29 unclassified audited IDs are not flagged terminal.",
+    "The 2023-2025 seal is non-vacuous by code and vacuous by data at Stage 1 (dates_at_or_after_sealed == 0 says nothing about 2013 leakage).",
+    "Not throughput, capacity, Sharpe, alpha-acceptance or production-readiness evidence. No live trading or broker actions performed or authorized.",
+    "One pre-existing unrelated test failure (StageRunSyntheticSmoke) remains open."
+  ],
+  "pins": {
+    "design": {
+      "path": "atx-engine/reviews/2026-09-20-iteration14-cross-section-ic-design.md",
+      "sha256": "888c726b123c02b39636876a667cfab890b4304794f6be42d46d35befbedbe25",
+      "bytes": 191479
+    },
+    "research": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/research-alpha-pipeline.md",
+      "sha256": "6c983746e9594c091c4250b66c88dce94a8b428fc594b43a0713a2aac9775ca8",
+      "bytes": 54330
+    },
+    "predecessor_receipt": {
+      "path": "atx-engine/reviews/2026-09-20-claims-aware-replay-validation.json",
+      "sha256": "982edfc422961ee3bb4cd9c697712aae905aee81dd0340a66ec50beab7475072",
+      "bytes": 10639
+    },
+    "engine_header": {
+      "path": "atx-engine/include/atx/engine/eval/cross_section_ic.hpp",
+      "sha256": "ae224f10b59ad4be35e9ca3c6cd4349e491520fc0a0d9adab343183d062b8c5f",
+      "bytes": 39927
+    },
+    "engine_source": {
+      "path": "atx-engine/src/eval/cross_section_ic.cpp",
+      "sha256": "4588906f099eeed90cb1c11c587da16e65b9c97032734954ee7ecff0e607a227",
+      "bytes": 51593
+    },
+    "engine_test": {
+      "path": "atx-engine/tests/eval/eval_cross_section_ic_test.cpp",
+      "sha256": "cee387208ee4bf1099080269c27ee61f77bc4e84e9d67918c6dfe3c66181cc7a",
+      "bytes": 128966
+    },
+    "engine_cmake": {
+      "path": "atx-engine/CMakeLists.txt",
+      "sha256": "abb4e726f83e36a1a180a1c7c486fad1f18e46d3ff54794e8e013f394384bf8d",
+      "bytes": 6467
+    },
+    "ledger_header": {
+      "path": "atx-impl/src/trial_ledger.hpp",
+      "sha256": "dee12d4d8f66f4a8e2ab25a2898fe1c0fd58177eb41156e7cd15b926d6eaa1d3",
+      "bytes": 14501
+    },
+    "ledger_source": {
+      "path": "atx-impl/src/trial_ledger.cpp",
+      "sha256": "7db2b3351c4276852b83966f0536c097be286eadc24ce2f0d638a2757e38f9be",
+      "bytes": 36833
+    },
+    "ledger_test": {
+      "path": "atx-impl/tests/trial_ledger_test.cpp",
+      "sha256": "20a8bcbfad3727396e2dec6ba635b27f6e6b3c108e3170bb3a6e6fcc1b4b472e",
+      "bytes": 23261
+    },
+    "stage_header": {
+      "path": "atx-impl/src/stage_equity_ic.hpp",
+      "sha256": "182d6b86798ad365dfddb6f6d26cb9ff242bddff07014fc0f18e48a64445dcbb",
+      "bytes": 2018
+    },
+    "stage_source": {
+      "path": "atx-impl/src/stage_equity_ic.cpp",
+      "sha256": "6a76cd774709290dbfc557d1cd90d81bb2af1b9d7637042c0f1c274d32188003",
+      "bytes": 71212
+    },
+    "stage_config_test": {
+      "path": "atx-impl/tests/config_equity_ic_test.cpp",
+      "sha256": "8fbff1d1d57c195926579e44c115ff0dfacf0765cbadde0c3c6114c924858f26",
+      "bytes": 8060
+    },
+    "stage_test": {
+      "path": "atx-impl/tests/stage_equity_ic_test.cpp",
+      "sha256": "47a3ce7dcdbc4cbf5b0448ae0e85571ca0c9f79a59c444d307a1a01c5812bcf7",
+      "bytes": 26933
+    },
+    "impl_config_hpp": {
+      "path": "atx-impl/src/config.hpp",
+      "sha256": "a434850380415cb1453f8e7b763dcd418118f10420dde8004a67b2752e6c45d8",
+      "bytes": 36073
+    },
+    "impl_config_cpp": {
+      "path": "atx-impl/src/config.cpp",
+      "sha256": "ed47f030c350fb5293b975a3bbf3414532cca058724a7dd793accb3bd41ac5bc",
+      "bytes": 35763
+    },
+    "impl_dispatch": {
+      "path": "atx-impl/src/dispatch.cpp",
+      "sha256": "96a97cb6d83a8139b67863c8a58192bffdf3589c8c9874cd3921d363ff6a7fef",
+      "bytes": 7837
+    },
+    "impl_cmake": {
+      "path": "atx-impl/CMakeLists.txt",
+      "sha256": "5cc2052bfa43e55cccecd10b22f8d7d2ad3954e53d1ca75ed071c80ba21d6f67",
+      "bytes": 3523
+    },
+    "docs_equity_ic": {
+      "path": "atx-impl/docs/EQUITY_IC.md",
+      "sha256": "8779f8d1522734704a04464cf385a8103b8881fef7681dab927fc447cb17628d",
+      "bytes": 13818
+    },
+    "oracle_v1_script": {
+      "path": "build-equity/audits/iteration14_cross_section_oracle.py",
+      "sha256": "92dc80af443c58f088a8a1f9e07c1fd29064afa7a87461710eb9ea1c6cce7807",
+      "bytes": 84639
+    },
+    "oracle_v1": {
+      "path": "build-equity/audits/iteration14-cross-section-oracle.json",
+      "sha256": "21c031bcc0b8aade8509e0756a544f684156c65d2ff8bab2e23e31e2feb4d2b2",
+      "bytes": 234083
+    },
+    "oracle_v2_script": {
+      "path": "build-equity/audits/iteration14_cross_section_oracle_v2.py",
+      "sha256": "b9b6838836822a14e3e53b9caa9fd200e2dac9fb21d835e0256bfb45154c4d67",
+      "bytes": 95635
+    },
+    "oracle_v2": {
+      "path": "build-equity/audits/iteration14-cross-section-oracle-v2.json",
+      "sha256": "641743470dcff8355c0f63442bc7f17e254ab474349d434cda49172965b9469e",
+      "bytes": 241359
+    },
+    "comparator": {
+      "path": "build-equity/audits/iteration14_native_comparator.py",
+      "sha256": "f2e6e4c8c8467b0699aef5c7ff83038e963a9d795fa4660640f5ea190bc88dee",
+      "bytes": 48303
+    },
+    "comparison_v1_oracle_prefix": {
+      "path": "build-equity/audits/iteration14-native-comparison-v1oracle.json",
+      "sha256": "5f897a8fa2301b93fc9d18f02d8226d909a74632e072bb0f3955f6d3f346e511",
+      "bytes": 103145
+    },
+    "comparison_v2_final": {
+      "path": "build-equity/audits/iteration14-native-comparison-v2.json",
+      "sha256": "e2378c7954c60e421190920d235324c51b2b81114d7252ef521c112e1fb492ba",
+      "bytes": 114353
+    },
+    "configure_log": {
+      "path": "build-equity/audits/iteration14-configure.log",
+      "sha256": "19b1c2a28984e50aee3af8056b221d8fee144ebd6f3580120a398abe5662a438",
+      "bytes": 2164
+    },
+    "configure_log_t4": {
+      "path": "build-equity/audits/iteration14-configure-t4.log",
+      "sha256": "3018ab871a314e39c178a5a7eddaa52e17de981dba1321f62b28bbeac2267792",
+      "bytes": 2164
+    },
+    "check_t1": {
+      "path": "build-equity/audits/iteration14-check-t1.log",
+      "sha256": "22afa56a91f992a6d568247e373aac4761a10cf681de198321714644ee307afb",
+      "bytes": 355
+    },
+    "build_t1": {
+      "path": "build-equity/audits/iteration14-build-t1.log",
+      "sha256": "77577f9e98b81a44f124d2ce135a2939c91b4397fcce316d0c862fa2e0decd6d",
+      "bytes": 1835
+    },
+    "tests_t1": {
+      "path": "build-equity/audits/iteration14-eval-t1-tests.log",
+      "sha256": "02cf4c072652173ac0329d7865860ab38c4c49543c27227a4d1863ee1d8169f2",
+      "bytes": 28696
+    },
+    "build_t1fix1_failed": {
+      "path": "build-equity/audits/iteration14-build-t1fix1.log",
+      "sha256": "dae1a261c9e868419f477331503446d11556a313cd31bfd4da710a38dd048337",
+      "bytes": 2469
+    },
+    "build_t1fix2": {
+      "path": "build-equity/audits/iteration14-build-t1fix2.log",
+      "sha256": "25ec912089094c03e50d82012d160c0b1fb717a7ecfaaaf7dbd001582b25cfef",
+      "bytes": 538
+    },
+    "tests_t1fix2": {
+      "path": "build-equity/audits/iteration14-eval-t1fix2-tests.log",
+      "sha256": "f87e48e21328e5fd097f7c8d3bb4dbcda0ed9350c5bb8139313794d1018523ff",
+      "bytes": 38236
+    },
+    "build_t2t3": {
+      "path": "build-equity/audits/iteration14-build-t2t3.log",
+      "sha256": "25ec912089094c03e50d82012d160c0b1fb717a7ecfaaaf7dbd001582b25cfef",
+      "bytes": 538
+    },
+    "tests_t2t3": {
+      "path": "build-equity/audits/iteration14-eval-t2t3-tests.log",
+      "sha256": "14d8933a31964c968f9bd6b2b359c71d9662e00d8ee0d344226a4de7b424714c",
+      "bytes": 109150
+    },
+    "build_t2t3fix1": {
+      "path": "build-equity/audits/iteration14-build-t2t3fix1.log",
+      "sha256": "97cbac2f736e9e79717058b4a37b050ab08d8e11307e7d2e07cbb089fb1dd771",
+      "bytes": 1793
+    },
+    "tests_t2t3fix1_final_engine": {
+      "path": "build-equity/audits/iteration14-eval-t2t3fix1-tests.log",
+      "sha256": "0fd1486686e001ec699d142b76176f666cdda6a186f44d65668a1b9cb7c0fde8",
+      "bytes": 112454
+    },
+    "junit_engine_final": {
+      "path": "build-equity/iteration14-eval-t2t3fix1-tests.xml",
+      "sha256": "3a7bcb8f4a3eefd96d56ac1f25482ead355a76906a0573e732aff82d802eb24f",
+      "bytes": 62931
+    },
+    "eval_group_regression_t1": {
+      "path": "build-equity/audits/iteration14-eval-group-tests.log",
+      "sha256": "9efef34e3f50c935e6f15c1af942d0872763ba37d33c144e46dccce258438187",
+      "bytes": 20343
+    },
+    "check_t4_unconfigured_failed": {
+      "path": "build-equity/audits/iteration14-check-t4.log",
+      "sha256": "16db4dace093fd5fa59ec20b17c05b6cd22c9cf4ada0e02721c99961405c2a7e",
+      "bytes": 572
+    },
+    "check_t4": {
+      "path": "build-equity/audits/iteration14-check-t4b.log",
+      "sha256": "6e9e1becce581dd839f063917863e170753ea44aa8e8bdda4732936cf2e3d62b",
+      "bytes": 272
+    },
+    "build_t4_blocked_by_inflight_engine": {
+      "path": "build-equity/audits/iteration14-build-t4.log",
+      "sha256": "1c92f26568cd38b53dde472dcf6fa73efacd03f73b5d6a383f57709f86fb03ad",
+      "bytes": 4622
+    },
+    "build_t4fix1_failed": {
+      "path": "build-equity/audits/iteration14-build-t4fix1.log",
+      "sha256": "a33f9174392fdd0077c7edb78888a961415c96f3d7121562686d6bcc4363111f",
+      "bytes": 3405
+    },
+    "build_t4fix1b": {
+      "path": "build-equity/audits/iteration14-build-t4fix1b.log",
+      "sha256": "c3353499fb0fb6ef9975cf928241a6caee92e9077ae5ca9badb1a11911e46426",
+      "bytes": 290
+    },
+    "tests_t4fix1b": {
+      "path": "build-equity/audits/iteration14-impl-t4fix1b-tests.log",
+      "sha256": "0282747625327f6bc364292195f42ea321ea4f691a49b7d4a542c21d68d73951",
+      "bytes": 23346
+    },
+    "build_t5": {
+      "path": "build-equity/audits/iteration14-build-t5.log",
+      "sha256": "88db959ded9325e88e59f5ddb45656791f626c4727f4fd41c4d2b49d33095a33",
+      "bytes": 7955
+    },
+    "tests_t5": {
+      "path": "build-equity/audits/iteration14-impl-t5-tests.log",
+      "sha256": "69bf79d4e2cf7e327ea384f90b42ae39a8ac86b7c94c308b2a559b20d485c7e3",
+      "bytes": 23174
+    },
+    "build_t5fix1": {
+      "path": "build-equity/audits/iteration14-build-t5fix1.log",
+      "sha256": "5f95c75087add55305ce8b1456a02c9cb356bbf73ed49e681c35b43849a3aaf4",
+      "bytes": 442
+    },
+    "tests_t5fix1_final_stage": {
+      "path": "build-equity/audits/iteration14-impl-t5fix1-tests.log",
+      "sha256": "cc77f86482f0bb7e0d4b3abfe911a75d67da309fc8fec9333368b0b987a33c41",
+      "bytes": 24707
+    },
+    "junit_stage_final": {
+      "path": "build-equity/iteration14-impl-t5fix1-tests.xml",
+      "sha256": "e8e6195201f2b2529d1da4d8b14351ce3271b4daac8baf4a1a7e4d26eb047fc5",
+      "bytes": 15625
+    },
+    "build_atx_impl": {
+      "path": "build-equity/audits/iteration14-build-atx-impl.log",
+      "sha256": "5532a8c257a1a51320fa0c012d8e6b6bd6cc72655bd46c9938d63e8ebe78e86c",
+      "bytes": 180
+    },
+    "full_regression_wrapper": {
+      "path": "build-equity/audits/iteration14-impl-full-wrapper.log",
+      "sha256": "fddb47cc72d6dfc07acb4bb74ed27e8246d7b8a67e2361b2198b0ead9f64799a",
+      "bytes": 213409
+    },
+    "full_regression_log": {
+      "path": "build-equity/audits/iteration14-impl-full-tests.log",
+      "sha256": "f78e97f557de6cbe7f81129d4cc05613041d46fa3a558c6bfbb79c64e1eefab1",
+      "bytes": 215505
+    },
+    "smoke_rerun_preexisting_failure": {
+      "path": "build-equity/audits/iteration14-smoke-rerun.log",
+      "sha256": "f7b25559bb86b0234a8e299a68724d8f7f5f58e44d4f7de7794443322d40ce86",
+      "bytes": 3555
+    },
+    "runner": {
+      "path": "build-equity/audits/iteration14_run_equity_ic.py",
+      "sha256": "d47edd9ca9d407ee51b4895889fac4f637a040fd370f0174618f31bfbd671476",
+      "bytes": 27125
+    },
+    "run_dryrun": {
+      "path": "build-equity/audits/iteration14-run-dryrun2.log",
+      "sha256": "ff07249ca154a614d3c0a49dfa7554a45c483a40f4826c87258e5eae3b20bc90",
+      "bytes": 4614
+    },
+    "run_attempt1_measurement": {
+      "path": "build-equity/audits/iteration14-equity-ic-measurement.json",
+      "sha256": "a423afc04dabbcbfa6bce8e251b3ecfa914746f6a915f1abd65587e473f20fe3",
+      "bytes": 23317
+    },
+    "run_attempt1_reevaluation_script": {
+      "path": "build-equity/audits/iteration14_reevaluate_attempt1.py",
+      "sha256": "1062cf5d3c6068eed0e367b3b39db0c1fad53dd42a8c7ed58da99e11ebe54fe0",
+      "bytes": 3228
+    },
+    "run_attempt1_reevaluation": {
+      "path": "build-equity/audits/iteration14-equity-ic-measurement-attempt1-reeval.json",
+      "sha256": "a678a166039f4bac5d71f97ed394a88a488ca11fdbe67dd3a167ab561ba6ab61",
+      "bytes": 1300
+    },
+    "trial_ledger": {
+      "path": "atx-engine/reviews/trial-ledger.jsonl",
+      "sha256": "cc888bde6b28f84b6e4860a7d2b507b2cb967022eed566fb067790f017809be7",
+      "bytes": 8219
+    },
+    "design_review": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp14-design-review.md",
+      "sha256": "f67f5a37d47d59d65f17e6cb03380cde7b424b9f99ffcf41cd051b2317842bd0",
+      "bytes": 35845
+    },
+    "design_rereview": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp14-design-rereview.md",
+      "sha256": "6af5a3b24aa4fd116becee8b873cd4f6c45c265fc7d182870ac6f3a5063b4af9",
+      "bytes": 27511
+    },
+    "design_rereview2": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp14-design-rereview2.md",
+      "sha256": "7d1b7d292d3cc56d5ab2df6845b876579c0835dbc867d4d3d533292abd6682cb",
+      "bytes": 13817
+    },
+    "t1_report": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp14-task-T1-report.md",
+      "sha256": "e364a01d38cddb188aa799bda1f7912c599e9e0489d5072f551d95344e61674c",
+      "bytes": 30233
+    },
+    "t1_review": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp14-task-T1-review.md",
+      "sha256": "f3000396192663e8a83bf81dce5f16d942792e5841cc8c27ec46f695756afa25",
+      "bytes": 22206
+    },
+    "t1_rereview": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp14-task-T1-rereview.md",
+      "sha256": "528f6538c6ea3bd13440bcf95c15484e3eb9d1247a8c589a5b867db55cecb014",
+      "bytes": 17371
+    },
+    "t2t3_report": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp14-task-T2T3-report.md",
+      "sha256": "3bd4438008ed1a95616161764190b4439c640eea1a009c07fe3d6c3b91e76de5",
+      "bytes": 43612
+    },
+    "t2t3_review": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp14-task-T2T3-review.md",
+      "sha256": "a7f06d25167e28002652060b70ac658f9d7f4dcac7f4394286ff36a06a0aaf99",
+      "bytes": 35234
+    },
+    "t4_report": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp14-task-T4-report.md",
+      "sha256": "34020f677ca5cc4b502c7715f6c228d863414b436ee24b91e85bb63b61df1a4e",
+      "bytes": 26098
+    },
+    "t4_review": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp14-task-T4-review.md",
+      "sha256": "a024bc43f32d7dfbb65caec499f3f1d415e2a4f48fffe026cefd279095e244cc",
+      "bytes": 20839
+    },
+    "t5_report": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp14-task-T5-report.md",
+      "sha256": "75866fd86ce39e8185636359f4102ba88c56864a7452e355c29778bd4d1c4e88",
+      "bytes": 31499
+    },
+    "t5_review": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp14-task-T5-review.md",
+      "sha256": "25d5f660b40f19cbaf3ef758846c6b26e2d8f46c11acb6a9c7ee2c430d3a18d3",
+      "bytes": 27079
+    },
+    "t7a_report": {
+      "path": ".superpowers/sdd/equity-platform-parent-goal/cp14-task-T7a-report.md",
+      "sha256": "a40ed6dc86adbf91c541a1ed7521373c93c3765871032875248e4bac58dac3c0",
+      "bytes": 28381
+    },
+    "engine_test_executable": {
+      "path": "build-equity/bin/atx-engine-eval-tests.exe",
+      "sha256": "d19f3e1ca93b2de7830626055e700e8c022cc4fef114f43af948083ce112dfd4",
+      "bytes": 6945792
+    },
+    "impl_test_executable": {
+      "path": "build-equity/bin/atx-impl-tests.exe",
+      "sha256": "f6018f69f97ec06d4cdd868a6396a91c288576c19e4ec6b3fbae848cab743401",
+      "bytes": 19081728
+    },
+    "impl_executable": {
+      "path": "build-equity/bin/atx-impl.exe",
+      "sha256": "ac3ab17f1202b0802ba7889ad220d065ee18f4fbea9493b6e372120d492b7eff",
+      "bytes": 12901376
+    }
+  }
+}

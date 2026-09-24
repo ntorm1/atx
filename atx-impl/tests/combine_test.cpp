@@ -157,6 +157,7 @@ TEST(AtxImplCombine, CombinedEqualsWeightedSum) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.combo_out  = combo_out;
@@ -257,6 +258,7 @@ TEST(AtxImplCombine, CombinesEqualWeight) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.combo_out  = combo_out;
@@ -323,6 +325,7 @@ TEST(AtxImplCombine, DeterministicAcrossRuns) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.method     = "equal";
@@ -392,6 +395,7 @@ TEST(AtxImplCombine, MarketCapResolves) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.combo_out  = combo_out;
@@ -477,6 +481,7 @@ TEST(AtxImplCombine, SectorNeutralCombinedBookIsPerSectorNeutral) {
   const std::string combo_out = (fs::temp_directory_path() / "atx_impl_combine_sector_neutral.bin").string();
 
   atx::impl::RunConfig cfg;
+  cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
   cfg.subcommand = "combine"; cfg.panel = panel_path; cfg.alphas = alphas_dir;
   cfg.combo_out = combo_out; cfg.method = "equal"; cfg.sector_neutral = true;
   auto r = atx::impl::run_combine(cfg);
@@ -533,6 +538,7 @@ TEST(AtxImplCombine, CombineFromLibraryMatchesDslPath) {
     {
         atx::impl::RunConfig cfg;
         cfg.subcommand   = "discover";
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel        = panel_path;
         cfg.alpha_out    = alpha_out;
         cfg.library_dir  = lib_dir;
@@ -560,6 +566,7 @@ TEST(AtxImplCombine, CombineFromLibraryMatchesDslPath) {
         -> atx::core::Result<atx::impl::StageResult> {
         atx::impl::RunConfig cfg;
         cfg.subcommand = "combine";
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel      = panel_path;
         cfg.combo_out  =
             (fs::temp_directory_path() / ("atx_impl_combine_lib_" + tag + ".bin")).string();
@@ -640,6 +647,7 @@ TEST(AtxImplCombine, CorrPenaltyZeroIsByteIdenticalToDefault) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.method     = "shrinkage-mv"; // exercise the real fitted weights (not equal)
@@ -707,6 +715,7 @@ TEST(AtxImplCombine, CorrPenaltyPositiveChangesWeightsAndIsDeterministic) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.method     = "shrinkage-mv";
@@ -795,6 +804,7 @@ TEST(AtxImplCombine, HoldoutFracZeroIsByteIdenticalToDefault) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.method     = "shrinkage-mv"; // exercise the real fitted weights (not equal)
@@ -876,6 +886,7 @@ TEST(AtxImplCombine, HoldoutFracPositiveShrinksFitWindowAndWritesMeta) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand           = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel                = panel_path;
     cfg.alphas               = alphas_dir;
     cfg.method               = "shrinkage-mv";
@@ -950,6 +961,7 @@ TEST(AtxImplCombine, HoldoutFracTooLargeErrors) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand           = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel                = panel_path;
     cfg.alphas               = alphas_dir;
     cfg.combo_out            = combo_out;
@@ -1034,6 +1046,7 @@ TEST(AtxImplCombine, HoldoutFracOutOfRangeRejected) {
 
         atx::impl::RunConfig cfg;
         cfg.subcommand            = "combine";
+        cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
         cfg.panel                 = panel_path;
         cfg.alphas                = alphas_dir;
         cfg.combo_out             = combo_out;
@@ -1090,6 +1103,7 @@ TEST(AtxImplCombine, ConvictionAbsentIsDefaultPath) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.method     = "shrinkage-mv";
@@ -1155,6 +1169,7 @@ TEST(AtxImplCombine, ConvictionScalesWeightsWhenEnabled) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.method     = "shrinkage-mv";
@@ -1236,6 +1251,7 @@ TEST(AtxImplCombine, ConvictionRunIsDeterministic) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.method     = "shrinkage-mv";
@@ -1297,6 +1313,7 @@ TEST(AtxImplCombine, BreadthTelemetryEmitted) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.combo_out  = combo_out;
@@ -1383,6 +1400,7 @@ TEST(AtxImplCombine, BreadthDeterministicAndDigestUnchanged) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.method     = "shrinkage-mv";
@@ -1459,6 +1477,7 @@ TEST(AtxImplCombine, WalkForwardOffIsByteIdentical) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.method     = "shrinkage-mv";
@@ -1536,6 +1555,7 @@ TEST(AtxImplCombine, WalkForwardRecordsOosFolds) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.method     = "shrinkage-mv";
@@ -1633,6 +1653,7 @@ TEST(AtxImplCombine, WalkForwardDeterministic) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand   = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel        = panel_path;
     cfg.alphas       = alphas_dir;
     cfg.method       = "shrinkage-mv";
@@ -1719,6 +1740,7 @@ TEST(AtxImplCombine, WalkForwardConvictionReflectsShippedBook) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.method     = "shrinkage-mv";
@@ -1875,6 +1897,7 @@ TEST(AtxImplCombine, CapacityFloorZeroOnVolumePanelIsByteIdenticalToDefault) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.method     = "shrinkage-mv";
@@ -1961,6 +1984,7 @@ TEST(AtxImplCombine, CapacityActivatesAndIsNonDegenerate) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.method     = "shrinkage-mv";
@@ -2068,6 +2092,7 @@ TEST(AtxImplCombine, CapacityRunIsDeterministic) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand     = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel          = panel_path;
     cfg.alphas         = alphas_dir;
     cfg.method         = "shrinkage-mv";
@@ -2201,6 +2226,7 @@ TEST(AtxImplCombine, S61_RealizedEdgeCapacityNonZeroForPositivePnlAlpha) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand     = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel          = panel_path;
     cfg.alphas         = alphas_dir;
     cfg.combo_out      = combo_out;
@@ -2282,6 +2308,7 @@ TEST(AtxImplCombine, S61_CapacityOffPathByteIdentical) {
 
     atx::impl::RunConfig cfg;
     cfg.subcommand = "combine";
+    cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
     cfg.panel      = panel_path;
     cfg.alphas     = alphas_dir;
     cfg.method     = "equal";

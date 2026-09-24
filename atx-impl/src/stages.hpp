@@ -8,7 +8,23 @@
 #include "atx/core/types.hpp"
 #include "config.hpp"
 
+namespace atx::engine::data { struct PitMembershipImage; }
+
 namespace atx::impl {
+
+// Checkpoint 16 panel membership restriction: the allow-list the `panel` stage
+// assigns to HistoryDataConfig::allow_ids. UNION of member securityIDs for the cut
+// index `cut` over every rebalance whose EFFECTIVE session lies in
+// [eval_start_nanos, end_exclusive_nanos), PLUS the single last rebalance effective
+// strictly before eval_start_nanos (the cut a session at eval_start actually trades
+// under). This is a window-union SUPERSET, deliberately NOT an as-of membership: it
+// restricts which columns the panel can ever hold, and proves nothing about
+// membership on any individual session. Returns ascending, deduplicated ids.
+// Err(InvalidArgument) when `cut` is out of range for a rebalance or the union is empty.
+[[nodiscard]] atx::core::Result<std::vector<atx::i64>>
+pit_membership_allow_ids(const atx::engine::data::PitMembershipImage& image,
+                         atx::usize cut, atx::i64 eval_start_nanos,
+                         atx::i64 end_exclusive_nanos);
 
 // Each stage returns a digest + printed key/value pairs on success.
 struct StageResult {
