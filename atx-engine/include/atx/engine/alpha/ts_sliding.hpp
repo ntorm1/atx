@@ -27,6 +27,12 @@
 //  cancellation (the window mean stays within a few window-spreads of c) and the
 //  add/subtract roundoff drift (it never accumulates for more than one reseed
 //  period). The rebuild costs O(d) per O(d) steps -> O(1) amortized.
+//  CoMoment and TimeReg additionally re-centre on DRIFT (kDriftRatio): after a
+//  level jump the centred second moment collapses relative to the raw shifted
+//  one long before the next scheduled reseed. LinDecay needs no drift trigger:
+//  its output is a first moment (c + W/Σk), so a far-away shift costs only
+//  eps*|c - level| absolute, well inside the 1e-9 contract (pinned by the
+//  TsSlidingUnary_LevelJump test).
 //
 //  A centred second moment that is below the rounding noise of the raw shifted
 //  sum (cxx <= kCancelGuard * sxx) is treated as exactly zero -> the zero-
@@ -68,6 +74,15 @@ inline constexpr atx::f64 kSlNaN = std::numeric_limits<atx::f64>::quiet_NaN();
 inline constexpr atx::f64 kCancelGuard = 64.0 * std::numeric_limits<atx::f64>::epsilon();
 inline constexpr atx::usize kReseedMul = 2;
 inline constexpr atx::usize kReseedMin = 4;
+// Drift trigger: a lane also re-centres (outside its schedule) when a centred
+// second moment has fallen below kDriftRatio of the PEAK raw shifted sum since
+// the last re-centre, i.e. the window has moved far from the shift c relative to
+// its own spread, or a far-off value has just left it (a level jump: unadjusted
+// price, unit error). Past that point the shifted raw
+// sums lose ~log10(1/kDriftRatio) digits to cancellation. A freshly re-centred
+// lane (c = newest window value) sits at ratio >= ~1/d, so the trigger does
+// not fire on ordinary data and costs one compare per output.
+inline constexpr atx::f64 kDriftRatio = 1.0e-6;
 
 [[nodiscard]] inline atx::usize reseed_period(atx::usize d) noexcept {
   return std::max(kReseedMin, kReseedMul * d);
@@ -84,6 +99,10 @@ struct CoMoment {
   atx::f64 sxx{0.0};
   atx::f64 syy{0.0};
   atx::f64 sxy{0.0};
+  // Peak sxx / syy since the last reset: the magnitude every later add/subtract
+  // was rounded against, i.e. the roundoff floor of the running sums.
+  atx::f64 pxx{0.0};
+  atx::f64 pyy{0.0};
   atx::usize n{0};
 
   void reset(atx::f64 shift_x, atx::f64 shift_y) noexcept {
@@ -102,6 +121,8 @@ struct CoMoment {
     sxx += a * a;
     syy += b * b;
     sxy += a * b;
+    pxx = std::max(pxx, sxx);
+    pyy = std::max(pyy, syy);
     ++n;
   }
   void pop(atx::f64 x, atx::f64 y) noexcept {
@@ -130,6 +151,15 @@ struct CoMoment {
   }
   [[nodiscard]] atx::f64 cxy(atx::f64 inv) const noexcept { return sxy - sx * sy * inv; }
   [[nodiscard]] atx::f64 inv_n() const noexcept { return 1.0 / static_cast<atx::f64>(n); }
+  // True when either centred second moment is below kDriftRatio of the PEAK raw
+  // shifted sum since the last reset (see kDriftRatio). Comparing against the
+  // peak rather than the current sum also catches an outlier LEAVING the window:
+  // its subtraction leaves roundoff of order eps*peak in every sum, which the
+  // current (already-corrupted) sxx cannot reveal. All-zero sums never drift.
+  [[nodiscard]] bool drifted() const noexcept {
+    const atx::f64 inv = inv_n();
+    return (sxx - sx * sx * inv) < kDriftRatio * pxx || (syy - sy * sy * inv) < kDriftRatio * pyy;
+  }
 
   // Sample (ddof=1) covariance; NaN for n < 2.
   [[nodiscard]] atx::f64 cov() const noexcept {
@@ -246,7 +276,7 @@ struct CoMomentLane {
     if (d <= kDirectMaxWindow) {
       return direct_pair(op, d, win);
     }
-    if (++age >= reseed_period(d)) {
+    if (++age >= reseed_period(d) || m.drifted()) {
       age = 0;
       m.reset(xe, ye);
       for (atx::usize i = 0; i < d; ++i) {
@@ -426,6 +456,7 @@ template <class Win>
 struct TimeRegLane {
   LinDecay k;      // shift c, S = Σ(v-c), W = Σ k (v-c)
   atx::f64 q{0.0};  // Σ (v - c)^2
+  atx::f64 qpk{0.0}; // peak q since the last re-centre (roundoff floor; see CoMoment::drifted)
   atx::usize miss{0}; // non-finite cells in the window
   atx::usize fin{0};  // finite cells in the window
   atx::usize age{0};
@@ -439,6 +470,7 @@ struct TimeRegLane {
         k = LinDecay{}; // empty of finite cells: re-centre for free
         k.c = xe;
         q = 0.0;
+        qpk = 0.0;
       }
       ++fin;
       e = xe - k.c;
@@ -456,13 +488,17 @@ struct TimeRegLane {
     }
     k.slide(e, l, d);
     q = q - l * l + e * e;
+    qpk = std::max(qpk, q);
     if (!full || miss != 0 || d < 2) {
       return kSlNaN;
     }
     if (d <= kDirectMaxWindow) {
       return direct_timereg(op, d, xe, win);
     }
-    if (++age >= reseed_period(d)) {
+    // Drift trigger (kDriftRatio): centred Σ(v - mean)² against the PEAK raw
+    // shifted Q since the last re-centre (see CoMoment::drifted).
+    const bool drifted = q - k.s * k.s / static_cast<atx::f64>(d) < kDriftRatio * qpk;
+    if (++age >= reseed_period(d) || drifted) {
       age = 0;
       k = LinDecay{};
       k.c = xe;
@@ -473,6 +509,7 @@ struct TimeRegLane {
         k.w += static_cast<atx::f64>(i + 1) * v;
         q += v * v;
       }
+      qpk = q;
       e = xe - k.c;
     }
     const atx::f64 df = static_cast<atx::f64>(d);

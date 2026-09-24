@@ -205,6 +205,48 @@ TEST(TsSlidingCoMoment_Adversarial, LargeOffsetSeriesDoesNotCancel) {
   }
 }
 
+// A level jump (unadjusted price / unit error): relative noise 1e-5 around a
+// level that jumps up 10 -> 1e5 at n/3 and back down 1e5 -> 10 at 2n/3. Right
+// after each jump the shift c sits ~1e5 away from a window whose spread is ~1
+// (up) or ~1e-4 (down), and when the last pre-jump value LEAVES a window that was
+// re-centred across the jump, its subtraction leaves eps*1e10 roundoff in every
+// sum. Without the drift-triggered re-centre (kDriftRatio against the peak raw
+// sum) the shifted sums cancel catastrophically until the next scheduled reseed.
+[[nodiscard]] std::vector<atx::f64> level_jump(atx::usize n, atx::u32 seed) {
+  std::mt19937_64 rng{seed};
+  std::normal_distribution<atx::f64> nd{0.0, 1.0};
+  std::vector<atx::f64> v(n);
+  for (atx::usize t = 0; t < n; ++t) {
+    const atx::f64 level = (t >= n / 3 && t < 2 * n / 3) ? 1.0e5 : 10.0;
+    v[t] = level * (1.0 + 1.0e-5 * nd(rng));
+  }
+  return v;
+}
+
+class TsSlidingCoMoment_LevelJump : public ::testing::TestWithParam<atx::usize> {};
+
+TEST_P(TsSlidingCoMoment_LevelJump, JumpUpAndDownStayWithinTolerance) {
+  const atx::usize d = GetParam();
+  constexpr atx::usize kDates = 900;
+  const std::vector<atx::f64> x = level_jump(kDates, 31U + static_cast<atx::u32>(d));
+  std::vector<atx::f64> y = level_jump(kDates, 57U + static_cast<atx::u32>(d));
+  for (atx::usize t = 0; t < kDates; ++t) {
+    y[t] += 0.5 * (x[t] - (x[t] > 1.0e3 ? 1.0e5 : 10.0)); // correlated component
+  }
+  for (const OpCode op : {OpCode::TsCorr, OpCode::TsCov, OpCode::TsRegression}) {
+    std::vector<atx::f64> got(kDates);
+    sliding::sweep_comoment(op, x, y, got, kDates, 1, d, 0, 1);
+    for (atx::usize t = d - 1; t < kDates; ++t) {
+      const atx::f64 want = ref_pair(op, x, y, t, d);
+      ASSERT_TRUE(close_cell(got[t], want, kTol, kTol))
+          << "op=" << static_cast<int>(op) << " d=" << d << " t=" << t << " got=" << got[t]
+          << " want=" << want;
+    }
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(Windows, TsSlidingCoMoment_LevelJump, ::testing::Values(5U, 20U, 60U));
+
 TEST(TsSlidingCoMoment_Adversarial, ExactConstantWindowIsNaNLikeBatch) {
   const std::vector<atx::f64> x{3.0, 3.0, 3.0, 3.0, 4.0, 5.0, 3.0};
   const std::vector<atx::f64> y{1.0, 2.0, 5.0, 7.0, 7.0, 7.0, 7.0};
@@ -328,6 +370,27 @@ TEST_P(TsSlidingUnary_Kernel, MatchesAccurateReferenceWithHoles) {
 
 INSTANTIATE_TEST_SUITE_P(Windows, TsSlidingUnary_Kernel,
                          ::testing::Values(1U, 2U, 5U, 20U, 60U, 250U));
+
+class TsSlidingUnary_LevelJump : public ::testing::TestWithParam<atx::usize> {};
+
+TEST_P(TsSlidingUnary_LevelJump, JumpUpAndDownStayWithinTolerance) {
+  const atx::usize d = GetParam();
+  constexpr atx::usize kDates = 900;
+  const std::vector<atx::f64> x = level_jump(kDates, 91U + static_cast<atx::u32>(d));
+  for (const OpCode op : {OpCode::TsDecayLinear, OpCode::TsWma, OpCode::TsSlope,
+                          OpCode::TsRsquare, OpCode::TsResid}) {
+    std::vector<atx::f64> got(kDates, 0.0);
+    sliding::sweep_unary(op, x, got, kDates, 1, d, 0, 1);
+    for (atx::usize t = d - 1; t < kDates; ++t) {
+      const atx::f64 want = ref_unary(op, x, t, d);
+      ASSERT_TRUE(close_cell(got[t], want, kTol, kTol))
+          << "op=" << static_cast<int>(op) << " d=" << d << " t=" << t << " got=" << got[t]
+          << " want=" << want;
+    }
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(Windows, TsSlidingUnary_LevelJump, ::testing::Values(5U, 20U, 60U));
 
 // ---- Engine-level: routed under ResearchFast only -------------------------
 
