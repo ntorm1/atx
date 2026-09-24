@@ -27,6 +27,8 @@
 #include <bit>       // std::bit_cast (determinism check)
 #include <cmath>     // std::fabs, std::isfinite
 #include <cstdint>   // std::uint64_t
+#include <cstdlib>   // _dupenv_s / std::free (nightly gate)
+#include <string>    // std::string (nightly gate, RecordProperty)
 #include <random>    // std::mt19937_64 (FIXED seed — deterministic battery)
 #include <span>
 #include <utility> // std::move
@@ -409,33 +411,8 @@ struct CaseSpec {
 // O(M²) dense-Ã oracle and the reformulation's correctness is M-independent.)
 constexpr f64 kDiffTol = 1e-8;
 
-TEST(RiskQpAugment, MatchesDenseOracleAcrossBattery) {
-  // M × K grid with varied constraint mixes. Both solvers run to the same per-case
-  // converged fixed budget and reach the same unique QP minimizer; the achieved
-  // ‖w_new−w_ref‖∞ is asserted ≤ kDiffTol (1e-8). The tightest observed bound is
-  // logged for the ledger.
-  // Per-case iters: pure-linear (no L1) cases converge in ~600–800; the gross/turnover
-  // L1 aux-splits converge slower (a fixed-iteration ADMM trades iterations for
-  // accuracy — R1/R6) so they carry 2000–2500. M ∈ {50, 120} keeps the as-built
-  // O(M²) dense-Ã oracle affordable in a Debug binary; full K-spread {4, 16, 64} and
-  // every constraint family (box / factor / group / beta / gross / turnover, alone and
-  // combined) are covered — the reformulation's correctness does not depend on M.
-  const std::vector<CaseSpec> battery = {
-      // M = 50 — full constraint-family sweep incl. the slow L1 splits
-      {50U, 4U, true, false, false, false, false, false, 11U, 600U},
-      {50U, 16U, true, true, false, false, false, false, 12U, 600U},
-      {50U, 64U, true, true, true, true, false, false, 13U, 800U},    // rich linear, large K
-      {50U, 16U, true, false, false, false, true, false, 14U, 2000U}, // gross L1
-      {50U, 16U, true, false, false, false, false, true, 15U, 2000U}, // turnover L1
-      {50U, 16U, true, true, true, true, true, true, 16U, 2500U},     // everything at once
-      {50U, 64U, true, true, false, true, true, true, 17U, 2500U},    // both L1 + large K
-      // M = 120 — pure-linear mixes (fast oracle), varied K + families
-      {120U, 4U, true, false, false, true, false, false, 21U, 600U},
-      {120U, 16U, true, true, true, false, false, false, 22U, 800U},
-      {120U, 64U, true, true, false, true, false, false, 23U, 800U},  // large K, beta
-      {120U, 16U, true, false, false, false, false, true, 24U, 2500U},// turnover at larger M
-  };
-
+// Run a battery and assert every case (and the battery-wide worst) is within kDiffTol.
+void run_battery(const std::vector<CaseSpec> &battery) {
   f64 worst = 0.0;
   for (const CaseSpec &c : battery) {
     const f64 d = run_case(c);
@@ -445,7 +422,88 @@ TEST(RiskQpAugment, MatchesDenseOracleAcrossBattery) {
   }
   // Surface the battery-wide achieved bound (visible on a failing run / -V).
   EXPECT_LE(worst, kDiffTol) << "battery-wide worst ‖w_new−w_ref‖∞ = " << worst;
-  RecordProperty("worst_winf", worst);
+  ::testing::Test::RecordProperty("worst_winf", std::to_string(worst));
+}
+
+// The Nightly battery runs only when ATX_RISK_NIGHTLY is set (to anything but "0"): the
+// default ctest run skips it, so the fast CI battery stays under its 30 s budget. MSVC-safe
+// _dupenv_s (std::getenv trips -Wdeprecated-declarations under /WX).
+[[nodiscard]] bool nightly_enabled() {
+  char *buf = nullptr;
+  std::size_t len = 0;
+  if (_dupenv_s(&buf, &len, "ATX_RISK_NIGHTLY") != 0 || buf == nullptr) {
+    return false;
+  }
+  const bool on = std::string(buf) != "0";
+  std::free(buf);
+  return on;
+}
+
+// FAST dense-oracle battery (default run, M <= 30, 20 cases, L1 splits only at M = 10).
+// Both solvers run to the same per-case converged fixed budget and reach the same unique
+// QP minimizer; the achieved ‖w_new−w_ref‖∞ is asserted ≤ kDiffTol (1e-8).
+// Per-case iters: pure-linear (no L1) cases converge in ~600–800; the gross/turnover
+// L1 aux-splits converge slower (a fixed-iteration ADMM trades iterations for
+// accuracy — R1/R6) so they carry 2000–2500. Full K-spread {4, 16, 64} and every
+// constraint family (box / factor / group / beta / gross / turnover, alone and
+// combined) are covered — the reformulation's correctness does not depend on M.
+TEST(RiskQpAugmentFast, MatchesDenseOracleAcrossBattery) {
+  const std::vector<CaseSpec> battery = {
+      // M = 10 — the ONLY L1 aux-split cases in the fast run (the slow ones: the dense
+      // oracle's cost grows ~M² and the L1 splits need 1500–2000 iterations)
+      {10U, 4U, true, false, false, false, false, false, 61U, 600U},
+      {10U, 4U, true, true, true, true, false, false, 62U, 800U},
+      {10U, 4U, true, false, false, false, true, false, 63U, 1500U},  // gross L1
+      {10U, 4U, true, false, false, false, false, true, 64U, 1500U},  // turnover L1
+      {10U, 4U, true, true, true, true, true, true, 65U, 2000U},      // everything
+      // M = 10 / 20 / 30 — pure-linear families, K-spread up to 64
+      {20U, 4U, true, false, false, false, false, false, 31U, 600U},
+      {20U, 16U, true, true, false, false, false, false, 32U, 600U},
+      {20U, 4U, true, true, true, true, false, false, 33U, 800U},
+      {20U, 16U, true, false, false, true, false, false, 37U, 600U},
+      {20U, 4U, false, true, true, false, false, false, 38U, 800U},   // no position box
+      {30U, 4U, true, false, false, true, false, false, 41U, 600U},
+      {30U, 16U, true, true, true, false, false, false, 42U, 800U},
+      {30U, 4U, true, false, false, false, false, false, 48U, 600U},
+      {30U, 16U, true, true, true, true, false, false, 49U, 800U},
+      {10U, 16U, true, true, false, false, false, false, 66U, 600U},
+      {10U, 4U, false, false, true, true, false, false, 67U, 600U},
+      {20U, 64U, true, true, true, true, false, false, 13U, 800U},    // rich linear, large K
+      {30U, 16U, false, false, false, true, false, false, 53U, 600U}, // beta only
+      {30U, 4U, true, false, true, false, false, false, 54U, 600U},   // group
+      {20U, 16U, true, true, false, true, false, false, 55U, 800U},
+  };
+  run_battery(battery);
+}
+
+// NIGHTLY dense-oracle battery (the L1 aux-split sweep at M 20–50, M = 50 linear, and
+// M 120/200): the as-built O(M²) dense-Ã oracle dominates the cost, so these cases run
+// only under ATX_RISK_NIGHTLY (see nightly_enabled).
+TEST(RiskQpAugmentNightly, MatchesDenseOracleAcrossLargeBattery) {
+  if (!nightly_enabled()) {
+    GTEST_SKIP() << "set ATX_RISK_NIGHTLY=1 to run the large dense-oracle battery";
+  }
+  const std::vector<CaseSpec> battery = {
+      // M = 50 — the L1 aux-split sweep (the historical battery's slow cases)
+      {50U, 16U, true, false, false, false, true, false, 14U, 2000U}, // gross L1
+      {50U, 16U, true, false, false, false, false, true, 15U, 2000U}, // turnover L1
+      {50U, 16U, true, true, true, true, true, true, 16U, 2500U},     // everything at once
+      {50U, 64U, true, true, false, true, true, true, 17U, 2500U},    // both L1 + large K
+      {20U, 16U, true, false, false, false, true, false, 34U, 2000U},
+      {20U, 16U, true, true, true, true, true, true, 36U, 2500U},
+      {35U, 16U, true, false, false, false, false, true, 44U, 2000U},
+      {35U, 4U, true, true, true, true, true, true, 45U, 2500U},
+      // M = 120 — pure-linear mixes (fast oracle), varied K + families
+      {120U, 4U, true, false, false, true, false, false, 21U, 600U},
+      {120U, 16U, true, true, true, false, false, false, 22U, 800U},
+      {120U, 64U, true, true, false, true, false, false, 23U, 800U},  // large K, beta
+      {120U, 16U, true, false, false, false, false, true, 24U, 2500U},// turnover at larger M
+      {200U, 16U, true, true, true, true, false, false, 51U, 800U},
+      {50U, 64U, true, true, true, true, false, false, 13U, 800U},    // rich linear, large K
+      {50U, 4U, true, false, false, false, false, false, 11U, 600U},
+      {50U, 16U, true, true, false, false, false, false, 12U, 600U},
+  };
+  run_battery(battery);
 }
 
 // ===========================================================================
