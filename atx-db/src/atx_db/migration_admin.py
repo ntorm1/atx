@@ -105,6 +105,17 @@ def _wal_path(db_path: Path) -> Path:
     return Path(f"{db_path}.wal")
 
 
+def _migration_connection_config(db_path: Path) -> dict[str, str]:
+    # Checkpoint/index work also allocates outside DuckDB's buffer budget. Leave
+    # room for that work and apply the limit before WAL recovery or any SQL.
+    config = {"memory_limit": "512MB", "threads": "1", "preserve_insertion_order": "false"}
+    if str(db_path) != ":memory:":
+        config["temp_directory"] = (
+            db_path.resolve().parent / f".{db_path.name}.duckdb_tmp"
+        ).as_posix()
+    return config
+
+
 def _numeric_versions(conn: duckdb.DuckDBPyConnection) -> tuple[int, ...]:
     try:
         rows = conn.execute(
@@ -324,7 +335,7 @@ def restore_database(
         target_wal.unlink()
 
     if clear_locks:
-        con = duckdb.connect(str(target_path))
+        con = duckdb.connect(str(target_path), config=_migration_connection_config(target_path))
         try:
             if _table_exists(con, "migration_apply_lock"):
                 con.execute("DELETE FROM migration_apply_lock WHERE lock_name = 'schema_migrations'")
@@ -405,7 +416,7 @@ def run_governed_migrations(
     backup: BackupArtifact | None = None
     # Migration work starts before activation configures its analytical session.
     # Apply the conservative budget at connection creation, including reopen.
-    config = {"memory_limit": "1GB", "threads": "1", "preserve_insertion_order": "false"}
+    config = _migration_connection_config(target)
     con: duckdb.DuckDBPyConnection | None = duckdb.connect(str(target), config=config)
     lock_claimed = False
     try:
