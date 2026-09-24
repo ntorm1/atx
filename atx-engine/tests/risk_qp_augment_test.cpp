@@ -27,7 +27,8 @@
 #include <bit>       // std::bit_cast (determinism check)
 #include <cmath>     // std::fabs, std::isfinite
 #include <cstdint>   // std::uint64_t
-#include <cstdlib>   // _dupenv_s / std::free (nightly gate)
+#include <cstdlib>   // _dupenv_s / _putenv_s / std::free (nightly gate)
+#include <optional>  // std::optional (nightly gate env read)
 #include <string>    // std::string (nightly gate, RecordProperty)
 #include <random>    // std::mt19937_64 (FIXED seed — deterministic battery)
 #include <span>
@@ -425,18 +426,36 @@ void run_battery(const std::vector<CaseSpec> &battery) {
   ::testing::Test::RecordProperty("worst_winf", std::to_string(worst));
 }
 
-// The Nightly battery runs only when ATX_RISK_NIGHTLY is set (to anything but "0"): the
-// default ctest run skips it, so the fast CI battery stays under its 30 s budget. MSVC-safe
-// _dupenv_s (std::getenv trips -Wdeprecated-declarations under /WX).
-[[nodiscard]] bool nightly_enabled() {
+// Nightly gate (W0-O1). The Nightly battery runs only when the repo-wide switch
+// ATX_NIGHTLY or the lane-6 switch ATX_RISK_NIGHTLY is set to a non-empty value other
+// than "0": the default ctest run skips it, so the fast battery stays under its 30 s
+// budget. The decision is a pure function of the two raw values (nullptr = unset) so
+// RiskNightlyGate_* can prove it without touching the environment.
+[[nodiscard]] constexpr bool nightly_value_on(const char *v) noexcept {
+  return v != nullptr && v[0] != '\0' && !(v[0] == '0' && v[1] == '\0');
+}
+[[nodiscard]] constexpr bool nightly_enabled_from(const char *atx_nightly,
+                                                  const char *atx_risk_nightly) noexcept {
+  return nightly_value_on(atx_nightly) || nightly_value_on(atx_risk_nightly);
+}
+
+// Reads one environment variable; nullopt when unset. MSVC-safe _dupenv_s (std::getenv
+// trips -Wdeprecated-declarations under /WX).
+[[nodiscard]] std::optional<std::string> read_env(const char *name) {
   char *buf = nullptr;
   std::size_t len = 0;
-  if (_dupenv_s(&buf, &len, "ATX_RISK_NIGHTLY") != 0 || buf == nullptr) {
-    return false;
+  if (_dupenv_s(&buf, &len, name) != 0 || buf == nullptr) {
+    return std::nullopt;
   }
-  const bool on = std::string(buf) != "0";
+  std::string out(buf);
   std::free(buf);
-  return on;
+  return out;
+}
+
+[[nodiscard]] bool nightly_enabled() {
+  const std::optional<std::string> a = read_env("ATX_NIGHTLY");
+  const std::optional<std::string> b = read_env("ATX_RISK_NIGHTLY");
+  return nightly_enabled_from(a ? a->c_str() : nullptr, b ? b->c_str() : nullptr);
 }
 
 // FAST dense-oracle battery (default run, M <= 30, 20 cases, L1 splits only at M = 10).
@@ -478,12 +497,11 @@ TEST(RiskQpAugmentFast, MatchesDenseOracleAcrossBattery) {
 
 // NIGHTLY dense-oracle battery (the L1 aux-split sweep at M 20–50, M = 50 linear, and
 // M 120/200): the as-built O(M²) dense-Ã oracle dominates the cost, so these cases run
-// only under ATX_RISK_NIGHTLY (see nightly_enabled).
-TEST(RiskQpAugmentNightly, MatchesDenseOracleAcrossLargeBattery) {
-  if (!nightly_enabled()) {
-    GTEST_SKIP() << "set ATX_RISK_NIGHTLY=1 to run the large dense-oracle battery";
-  }
-  const std::vector<CaseSpec> battery = {
+// only under ATX_NIGHTLY / ATX_RISK_NIGHTLY (see nightly_enabled). It is a superset of the
+// pre-split RiskQpAugment.MatchesDenseOracleAcrossBattery battery (all 11 original cases,
+// proven by RiskNightlyGate_Battery.ContainsEveryPreSplitCase).
+[[nodiscard]] std::vector<CaseSpec> nightly_battery() {
+  return {
       // M = 50 — the L1 aux-split sweep (the historical battery's slow cases)
       {50U, 16U, true, false, false, false, true, false, 14U, 2000U}, // gross L1
       {50U, 16U, true, false, false, false, false, true, 15U, 2000U}, // turnover L1
@@ -503,7 +521,14 @@ TEST(RiskQpAugmentNightly, MatchesDenseOracleAcrossLargeBattery) {
       {50U, 4U, true, false, false, false, false, false, 11U, 600U},
       {50U, 16U, true, true, false, false, false, false, 12U, 600U},
   };
-  run_battery(battery);
+}
+
+TEST(RiskQpAugmentNightly, MatchesDenseOracleAcrossLargeBattery) {
+  if (!nightly_enabled()) {
+    GTEST_SKIP() << "Nightly: set ATX_NIGHTLY=1 (or ATX_RISK_NIGHTLY=1) to run the large "
+                    "dense-oracle battery";
+  }
+  run_battery(nightly_battery());
 }
 
 // ===========================================================================
@@ -592,6 +617,122 @@ TEST(RiskQpAugment, TwoSolvesByteIdentical) {
     EXPECT_EQ(std::bit_cast<std::uint64_t>(a[i]), std::bit_cast<std::uint64_t>(b[i]))
         << "element " << i;
   }
+}
+
+// ===========================================================================
+//  4. W0-O1 Nightly gate: the large dense-oracle battery is Nightly-only.
+// ===========================================================================
+
+// Pure decision: unset / empty / "0" is off; any other value on either switch is on.
+TEST(RiskNightlyGate_Decision, UnsetEmptyOrZeroIsOff) {
+  static_assert(!nightly_enabled_from(nullptr, nullptr));
+  EXPECT_FALSE(nightly_enabled_from(nullptr, nullptr));
+  EXPECT_FALSE(nightly_enabled_from("", ""));
+  EXPECT_FALSE(nightly_enabled_from("0", nullptr));
+  EXPECT_FALSE(nightly_enabled_from(nullptr, "0"));
+  EXPECT_FALSE(nightly_enabled_from("0", "0"));
+}
+
+TEST(RiskNightlyGate_Decision, AnyOtherValueOnEitherSwitchIsOn) {
+  static_assert(nightly_enabled_from("1", nullptr));
+  EXPECT_TRUE(nightly_enabled_from("1", nullptr));
+  EXPECT_TRUE(nightly_enabled_from(nullptr, "1"));
+  EXPECT_TRUE(nightly_enabled_from("yes", "0"));
+  EXPECT_TRUE(nightly_enabled_from("0", "true"));
+  EXPECT_TRUE(nightly_enabled_from("00", nullptr)); // only the exact string "0" is off
+}
+
+// Environment wiring: saves both switches, drives them through _putenv_s, restores them.
+class RiskNightlyGate_Env : public ::testing::Test {
+protected:
+  void SetUp() override {
+    saved_a_ = read_env("ATX_NIGHTLY");
+    saved_b_ = read_env("ATX_RISK_NIGHTLY");
+    set("ATX_NIGHTLY", nullptr);
+    set("ATX_RISK_NIGHTLY", nullptr);
+  }
+  void TearDown() override {
+    set("ATX_NIGHTLY", saved_a_ ? saved_a_->c_str() : nullptr);
+    set("ATX_RISK_NIGHTLY", saved_b_ ? saved_b_->c_str() : nullptr);
+  }
+  // nullptr unsets (Windows _putenv_s with "" removes the variable).
+  static void set(const char *name, const char *value) {
+    ASSERT_EQ(_putenv_s(name, value == nullptr ? "" : value), 0) << name;
+  }
+
+private:
+  std::optional<std::string> saved_a_;
+  std::optional<std::string> saved_b_;
+};
+
+TEST_F(RiskNightlyGate_Env, DefaultEnvironmentSkipsNightly) {
+  EXPECT_FALSE(read_env("ATX_NIGHTLY").has_value());
+  EXPECT_FALSE(read_env("ATX_RISK_NIGHTLY").has_value());
+  EXPECT_FALSE(nightly_enabled());
+}
+
+TEST_F(RiskNightlyGate_Env, EitherSwitchEnablesNightly) {
+  set("ATX_NIGHTLY", "1");
+  EXPECT_TRUE(nightly_enabled());
+  set("ATX_NIGHTLY", "0");
+  EXPECT_FALSE(nightly_enabled());
+  set("ATX_NIGHTLY", nullptr);
+  set("ATX_RISK_NIGHTLY", "1");
+  EXPECT_TRUE(nightly_enabled());
+  set("ATX_RISK_NIGHTLY", "0");
+  EXPECT_FALSE(nightly_enabled());
+}
+
+// The Nightly test is registered (a skip, not a deletion) and the fast battery still runs
+// by default.
+TEST(RiskNightlyGate_Registry, NightlyAndFastBatteriesAreRegistered) {
+  const ::testing::UnitTest *ut = ::testing::UnitTest::GetInstance();
+  bool saw_nightly = false;
+  bool saw_fast = false;
+  for (int s = 0; s < ut->total_test_suite_count(); ++s) {
+    const ::testing::TestSuite *suite = ut->GetTestSuite(s);
+    for (int t = 0; t < suite->total_test_count(); ++t) {
+      const std::string full =
+          std::string(suite->name()) + "." + suite->GetTestInfo(t)->name();
+      saw_nightly = saw_nightly ||
+                    full == "RiskQpAugmentNightly.MatchesDenseOracleAcrossLargeBattery";
+      saw_fast = saw_fast || full == "RiskQpAugmentFast.MatchesDenseOracleAcrossBattery";
+    }
+  }
+  EXPECT_TRUE(saw_nightly);
+  EXPECT_TRUE(saw_fast);
+}
+
+// Not weakened: every case of the pre-split battery (base 458d0bef,
+// RiskQpAugment.MatchesDenseOracleAcrossBattery, copied verbatim) is in the Nightly battery
+// with the same seed and iteration budget.
+TEST(RiskNightlyGate_Battery, ContainsEveryPreSplitCase) {
+  const std::vector<CaseSpec> pre_split = {
+      {50U, 4U, true, false, false, false, false, false, 11U, 600U},
+      {50U, 16U, true, true, false, false, false, false, 12U, 600U},
+      {50U, 64U, true, true, true, true, false, false, 13U, 800U},
+      {50U, 16U, true, false, false, false, true, false, 14U, 2000U},
+      {50U, 16U, true, false, false, false, false, true, 15U, 2000U},
+      {50U, 16U, true, true, true, true, true, true, 16U, 2500U},
+      {50U, 64U, true, true, false, true, true, true, 17U, 2500U},
+      {120U, 4U, true, false, false, true, false, false, 21U, 600U},
+      {120U, 16U, true, true, true, false, false, false, 22U, 800U},
+      {120U, 64U, true, true, false, true, false, false, 23U, 800U},
+      {120U, 16U, true, false, false, false, false, true, 24U, 2500U},
+  };
+  const std::vector<CaseSpec> nightly = nightly_battery();
+  const auto same = [](const CaseSpec &a, const CaseSpec &b) {
+    return a.m == b.m && a.k == b.k && a.box == b.box && a.fexp == b.fexp &&
+           a.group == b.group && a.beta == b.beta && a.gross == b.gross &&
+           a.turnover == b.turnover && a.seed == b.seed && a.iters == b.iters;
+  };
+  for (const CaseSpec &c : pre_split) {
+    const bool found = std::any_of(nightly.begin(), nightly.end(),
+                                   [&](const CaseSpec &n) { return same(c, n); });
+    EXPECT_TRUE(found) << "pre-split case seed=" << c.seed << " M=" << c.m
+                       << " missing from the Nightly battery";
+  }
+  EXPECT_GE(nightly.size(), pre_split.size());
 }
 
 } // namespace atxtest_risk_qp_augment_test

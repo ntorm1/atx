@@ -19,12 +19,16 @@
 // timed loop. Counters: admm iterations actually run, final primal/dual residuals,
 // polished (1 ⇒ the polish was accepted).
 //
-// Build recipe (there is no equity-bench preset on this branch): configure the Release
-// equity tree with benches, then build the bench AND the shm worker (the bench exe's
+// Build recipe (W0-O1 equity-bench preset: Release equity tree, benches ON, every test
+// group, per-worktree deps): build the bench AND the shm worker (the bench exe's
 // parallel_run static init CHECKs that the worker exists):
-//   atx-build.ps1 configure -Preset equity-rel -Groups risk -Bench
-//   atx-build.ps1 build atx-engine-bench atx-shm-worker -Preset equity-rel
-//   build-equity-rel\bin\atx-engine-bench --benchmark_filter=BM_OptimizerProduction
+//   atx-build.ps1 configure -Preset equity-bench
+//   atx-build.ps1 build atx-engine-bench atx-shm-worker -Preset equity-bench
+//   build-equity-bench\bin\atx-engine-bench --benchmark_filter=BM_OptimizerProduction
+// SCOPE (R-14): every mode here solves a book with NO trade-cost terms and NO turnover
+// term (make_book materializes no TradeCostTerms, no TurnoverBudget, empty w_prev), so the
+// factor-space timings (modes 6/7, e.g. the 58 ms warm M=3000 K=64 figure) exclude costs
+// and turnover. The costed factor-space solve is W2-R3's work.
 
 #include <algorithm>
 #include <cmath>
