@@ -385,8 +385,11 @@ def test_populated_0314_upgrade_preserves_legacy_contract_and_reentry(tmp_path, 
     db_path = tmp_path / "populated-derived-0314.duckdb"
     # Configure before initialization; this separate tiny warehouse must not
     # inherit a machine-sized DuckDB budget while replaying schema migrations.
-    with duckdb.connect(str(db_path), config={"memory_limit": "1GB", "threads": "1"}) as con:
-        upgrade_store = DuckDBStore(db_path)
+    bounded_config = {"memory_limit": "256MB", "threads": "1", "preserve_insertion_order": "false"}
+    upgrade_store = DuckDBStore(db_path)
+    upgrade_store.analytical_memory_limit = bounded_config["memory_limit"]
+    upgrade_store.analytical_threads = int(bounded_config["threads"])
+    with duckdb.connect(str(db_path), config=bounded_config) as con:
         upgrade_store.connection = con
         upgrade_store._configure_session(con)
         with monkeypatch.context() as patch:
@@ -416,7 +419,13 @@ def test_populated_0314_upgrade_preserves_legacy_contract_and_reentry(tmp_path, 
         )
         original_sql = f"SELECT {original_columns} FROM derived_metric_values ORDER BY derived_value_id"
         before = con.execute(original_sql).fetchall()
+        # Commit the legacy fixture to disk and release the bootstrap session's
+        # buffers before exercising the populated upgrade in a fresh session.
+        con.execute("CHECKPOINT")
 
+    with duckdb.connect(str(db_path), config=bounded_config) as con:
+        upgrade_store.connection = con
+        upgrade_store._configure_session(con)
         pending_versions = [m.version for m in migrations.MIGRATIONS if m.version > 314]
         assert pending_versions[:2] == [315, 316]
         assert migrations.apply_pending_migrations(con) == pending_versions
