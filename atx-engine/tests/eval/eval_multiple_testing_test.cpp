@@ -263,4 +263,35 @@ TEST(EvalSpa, DeterministicAndBenchmarkLengthChecked) {
   EXPECT_FALSE(hansen_spa(PnlMatrix{x, k, t}, short_bench, cfg).has_value());
 }
 
+// Degenerate input (review finding): every candidate identical to the benchmark
+// (all-zero pnl) has zero bootstrap variance, so the statistic is 0 — the null
+// of no superiority must NOT be rejected (p = 1, not 0).
+TEST(EvalSpa, DegenerateZeroStatisticNeverRejects) {
+  const usize k = 3U;
+  const usize t = 100U;
+  const std::vector<f64> x(k * t, 0.0);
+  const std::vector<f64> bench(t, 0.0);
+  BootstrapCfg cfg;
+  cfg.n_boot = 200U;
+  const auto r = hansen_spa(PnlMatrix{x, k, t}, bench, cfg);
+  ASSERT_TRUE(r.has_value());
+  EXPECT_EQ(r->statistic, 0.0);
+  EXPECT_EQ(r->p_lower, 1.0);
+  EXPECT_EQ(r->p_consistent, 1.0);
+  EXPECT_EQ(r->p_upper, 1.0);
+  EXPECT_EQ(r->rc_pvalue, 1.0);
+  // Candidates that are the benchmark plus a constant shortfall: also statistic 0.
+  std::vector<f64> y = gaussian_panel(1U, t, 51U, std::vector<f64>(1U, 0.0), 1.0);
+  std::vector<f64> ys(k * t);
+  for (usize j = 0; j < k; ++j) {
+    for (usize s = 0; s < t; ++s) {
+      ys[j * t + s] = y[s] - 0.1;
+    }
+  }
+  const auto r2 = hansen_spa(PnlMatrix{ys, k, t}, y, cfg);
+  ASSERT_TRUE(r2.has_value());
+  EXPECT_EQ(r2->p_consistent, 1.0);
+  EXPECT_EQ(r2->p_lower, 1.0);
+}
+
 } // namespace atx_test_l4_mtest_multiple_testing

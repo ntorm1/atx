@@ -28,28 +28,26 @@
 //  Determinism (load-bearing) — content-addressed, NO RNG
 // ===========================================================================
 //  The reservation is a PURE function of (panel, frac, embargo_len). The content-
-//  address is a wyhash digest over the panel's shape, the reservation geometry,
-//  and the panel's field-column bytes (date-major) — so the SAME panel under the
-//  SAME geometry reproduces a BYTE-IDENTICAL seal (same boundaries, same address),
-//  while a different panel OR a different geometry shifts the address. No RNG, no
-//  clock, no address-dependence anywhere. reserve_lockbox is a COLD path (once per
-//  research engine), so the visible-panel copy is acceptable.
+//  address is a STABLE digest (this header's own FNV-1a/splitmix64 StableHasher,
+//  never std::hash / atx::core::hash, which are not stable across processes or
+//  toolchains) over the panel's shape, the reservation geometry, and the panel's
+//  field-column bytes (date-major) — so the SAME panel under the SAME geometry
+//  reproduces a BYTE-IDENTICAL seal (same boundaries, same address) in any
+//  process on any build, while a different panel OR a different geometry shifts
+//  the address. No RNG, no clock, no address-dependence anywhere. reserve_lockbox
+//  is a COLD path (once per research engine), so the visible-panel copy is
+//  acceptable.
 
-#include <charconv>      // std::to_chars, std::from_chars (audit log)
-#include <cmath>   // std::ceil
+#include <cmath>   // std::ceil, std::isfinite
 #include <cstdint> // (digest seed bytes)
+#include <cstring> // std::memcpy (StableHasher word loads)
 #include <filesystem>    // FileLockboxAudit
-#include <fstream>       // FileLockboxAudit
-#include <optional>      // parse results
 #include <span>    // std::span
 #include <string>  // std::string (field-name re-enumeration)
-#include <string_view>   // audit-log parsing
-#include <system_error>  // std::errc
-#include <unordered_set> // opened content addresses
+#include <unordered_set> // opened content addresses / date digests
 #include <vector>  // std::vector
 
 #include "atx/core/error.hpp" // atx::core::Result, Ok, Err, ErrorCode
-#include "atx/core/hash.hpp"  // atx::core::hash_bytes, hash_combine
 #include "atx/core/macro.hpp" // ATX_ASSERT
 #include "atx/core/types.hpp" // atx::f64, atx::u64, atx::usize
 
@@ -99,26 +97,111 @@ namespace detail {
   return static_cast<atx::usize>(raw);
 }
 
+// Stable digest (FNV-1a 64 over bytes, splitmix64 over 8-byte words, splitmix64
+// finalizer): identical across processes, platforms and toolchains, unlike
+// std::hash / atx::core::hash. Everything durable in this header — the content
+// address, the per-date holdout digests, the receipt chain and the audit-log
+// format — depends on that.
+struct StableHasher {
+  atx::u64 h{0xcbf29ce484222325ULL};
+  [[nodiscard]] static constexpr atx::u64 mix(atx::u64 x) noexcept {
+    atx::u64 z = x + 0x9e3779b97f4a7c15ULL;
+    z = (z ^ (z >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27U)) * 0x94d049bb133111ebULL;
+    return z ^ (z >> 31U);
+  }
+  void bytes(const void *p, atx::usize n) noexcept {
+    const auto *c = static_cast<const unsigned char *>(p);
+    for (atx::usize i = 0; i < n; ++i) {
+      h ^= static_cast<atx::u64>(c[i]);
+      h *= 0x100000001b3ULL;
+    }
+  }
+  // Bulk form for column data: one bijective splitmix step per 8-byte word
+  // (every input bit diffuses; no cancellation between words), bytes() for a
+  // ragged tail. Little-endian word loads (x64 / arm64).
+  void words(const void *p, atx::usize n) noexcept {
+    const auto *c = static_cast<const unsigned char *>(p);
+    atx::usize i = 0;
+    for (; i + 8U <= n; i += 8U) {
+      atx::u64 w = 0;
+      std::memcpy(&w, c + i, sizeof(w));
+      h = mix(h ^ w);
+    }
+    bytes(c + i, n - i);
+  }
+  void u64v(atx::u64 v) noexcept { bytes(&v, sizeof(v)); }
+  void str(const std::string &s) noexcept {
+    u64v(static_cast<atx::u64>(s.size())); // length-prefixed: no ambiguity
+    bytes(s.data(), s.size());
+  }
+  [[nodiscard]] atx::u64 finish() const noexcept { return mix(h); }
+};
+
 // ---------------------------------------------------------------------------
-//  content_address — a wyhash digest folding the panel SHAPE, the reservation
-//  GEOMETRY, and the panel's field-column bytes (date-major). Deterministic: the
-//  same panel + geometry reproduces it byte-identically; a different panel OR
-//  geometry shifts it. No RNG. The field bytes make it a true content-address
-//  (two panels with identical shape but different prices get distinct seals).
+//  content_address — a StableHasher digest folding the panel SHAPE, the
+//  reservation GEOMETRY, and the panel's field-column bytes (date-major).
+//  Deterministic and stable across processes/builds: the same panel + geometry
+//  reproduces it byte-identically; a different panel OR geometry shifts it. No
+//  RNG. The field bytes make it a true content-address (two panels with
+//  identical shape but different prices get distinct seals). NOTE: because it
+//  includes the geometry it identifies a RESERVATION, not the held-out data —
+//  single-use of the data is enforced on holdout_date_digests (below).
 // ---------------------------------------------------------------------------
 [[nodiscard]] inline atx::u64 content_address(const alpha::Panel &panel, atx::usize lockbox_begin,
                                               atx::usize embargo_len) {
-  // Fold the shape + geometry scalars (order-sensitive) into the seed.
-  std::size_t seed = atx::core::hash_combine(std::size_t{0}, panel.dates(), panel.instruments(),
-                                             lockbox_begin, embargo_len, panel.num_fields());
-  // Fold each field column's raw bytes (date-major) — the panel's content. Hashing
-  // every cell makes the address sensitive to the actual price/feature history.
+  StableHasher h;
+  h.bytes("ATXLBXC1", 8U);
+  h.u64v(static_cast<atx::u64>(panel.dates()));
+  h.u64v(static_cast<atx::u64>(panel.instruments()));
+  h.u64v(static_cast<atx::u64>(lockbox_begin));
+  h.u64v(static_cast<atx::u64>(embargo_len));
+  h.u64v(static_cast<atx::u64>(panel.num_fields()));
   for (atx::usize f = 0; f < panel.num_fields(); ++f) {
     const std::span<const atx::f64> col = panel.field_all(static_cast<alpha::FieldId>(f));
-    const atx::u64 col_digest = atx::core::hash_bytes(col.data(), col.size_bytes());
-    seed = atx::core::hash_combine(seed, col_digest);
+    h.words(col.data(), col.size_bytes());
   }
-  return static_cast<atx::u64>(seed);
+  return h.finish();
+}
+
+// ---------------------------------------------------------------------------
+//  holdout_date_digests — one GEOMETRY-FREE content digest per held-out date
+//  t in [begin, end): a StableHasher over (instrument count, field count, and
+//  every field's cross-section bytes at t). These — not the content address —
+//  are the single-use key: a date whose cross-section was already returned by
+//  an open can never be returned again, however the panel is re-reserved
+//  (different embargo, different frac, a window shifted by one date, the panel
+//  extended with new dates). Dates whose every cell is non-finite carry no
+//  information and are skipped (so padding rows shared by unrelated panels do
+//  not collide). Changing the panel's field set or instrument set changes every
+//  digest (it is then treated as a different dataset). Never returns 0.
+// ---------------------------------------------------------------------------
+[[nodiscard]] inline std::vector<atx::u64>
+holdout_date_digests(const alpha::Panel &panel, atx::usize begin, atx::usize end) {
+  const atx::usize insts = panel.instruments();
+  const atx::usize n_fields = panel.num_fields();
+  std::vector<atx::u64> out;
+  out.reserve(end > begin ? end - begin : 0U);
+  for (atx::usize t = begin; t < end; ++t) {
+    StableHasher h;
+    h.bytes("ATXLBXD1", 8U);
+    h.u64v(static_cast<atx::u64>(insts));
+    h.u64v(static_cast<atx::u64>(n_fields));
+    bool informative = false;
+    for (atx::usize f = 0; f < n_fields; ++f) {
+      const std::span<const atx::f64> row =
+          panel.field_all(static_cast<alpha::FieldId>(f)).subspan(t * insts, insts);
+      for (const atx::f64 v : row) {
+        informative = informative || std::isfinite(v);
+      }
+      h.words(row.data(), row.size_bytes());
+    }
+    if (informative) {
+      const atx::u64 d = h.finish();
+      out.push_back(d == 0U ? 1U : d);
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -386,11 +469,17 @@ reserve_window(const alpha::Panel &panel, atx::usize holdout_begin, atx::usize h
 //  The seal above is only as strong as the open is rare. open_lockbox makes
 //  the open a one-shot, recorded event:
 //
-//   * Single-use per reservation IDENTITY. The audit sink remembers every
-//     opened content_address; a second open of the same lockbox — even via a
-//     freshly re-reserved SealedPanel over the same panel and geometry — is
-//     refused with Err(AlreadyExists). A durable sink (FileLockboxAudit) makes
-//     that hold across processes.
+//   * Single-use per held-out DATE. The audit sink remembers the content
+//     address of every opened reservation AND a geometry-free digest of every
+//     held-out date it returned (detail::holdout_date_digests). An open is
+//     refused with Err(AlreadyExists) when its reservation was opened before
+//     OR when any date in its holdout was already returned by an earlier open
+//     — so re-reserving the same data with a different embargo, a different
+//     frac, a window shifted by a date, or a panel extended with new dates
+//     cannot re-open held-out history. A holdout made entirely of NEW dates
+//     (e.g. a later lockbox over data that arrived after the first open) is
+//     still openable. A durable sink (FileLockboxAudit) makes that hold across
+//     processes and across concurrent writers of one log.
 //   * Bound to the sealed data. The caller supplies the full panel; its
 //     content address under the reservation geometry must equal the sealed
 //     one, else Err(PermissionDenied). A different panel cannot be opened
@@ -400,12 +489,16 @@ reserve_window(const alpha::Panel &panel, atx::usize holdout_begin, atx::usize h
 //     candidate is fixed BEFORE the held-out data is seen, and the receipt
 //     binds the two together.
 //   * Tamper-evident. The receipt hash is a stable digest of every receipt
-//     field plus the previous receipt's hash (a hash chain), so editing any
-//     committed receipt — or the durable log — is detectable
-//     (verify_receipt / FileLockboxAudit::open).
-//   * Refusals consume nothing: the receipt is appended only after every
-//     check passes, and the held-out slice is returned only after the append
-//     succeeded.
+//     field (date digests included) plus the previous receipt's hash (a hash
+//     chain), so EDITING any committed receipt — or any line of the durable
+//     log — is detectable (verify_receipt / FileLockboxAudit::open).
+//     LIMITATION: removing whole trailing receipts leaves a valid chain prefix
+//     and is NOT detected (the chain head is not anchored outside the log);
+//     protect the log file itself (permissions / backup / WORM storage) if
+//     that threat matters.
+//   * Refusals consume nothing: the receipt is committed only after every
+//     check passes (the sink re-checks single-use atomically at commit), and
+//     the held-out slice is returned only after the commit succeeded.
 //
 //  The holdout returned is [lockbox_begin, lockbox_begin + holdout_len), or
 //  [lockbox_begin, T) when holdout_len == 0 (the reserve_lockbox case).
@@ -424,37 +517,15 @@ struct LockboxReceipt {
   atx::u64 candidate_hash{};
   atx::usize holdout_begin{};
   atx::usize holdout_end{}; // exclusive
-  std::string purpose;      // sanitized: no tab / CR / LF
-  std::string requester;    // sanitized: no tab / CR / LF
+  // Geometry-free digest of each informative held-out date (the single-use key).
+  std::vector<atx::u64> date_digests;
+  std::string purpose;   // sanitized: no tab / CR / LF
+  std::string requester; // sanitized: no tab / CR / LF
   atx::u64 prev_receipt_hash{};
   atx::u64 receipt_hash{};
 };
 
 namespace detail {
-
-// Stable digest (FNV-1a 64 + splitmix64 finalizer): identical across processes,
-// unlike std::hash; the receipt chain and its log format depend on that.
-struct StableHasher {
-  atx::u64 h{0xcbf29ce484222325ULL};
-  void bytes(const void *p, atx::usize n) noexcept {
-    const auto *c = static_cast<const unsigned char *>(p);
-    for (atx::usize i = 0; i < n; ++i) {
-      h ^= static_cast<atx::u64>(c[i]);
-      h *= 0x100000001b3ULL;
-    }
-  }
-  void u64v(atx::u64 v) noexcept { bytes(&v, sizeof(v)); }
-  void str(const std::string &s) noexcept {
-    u64v(static_cast<atx::u64>(s.size())); // length-prefixed: no ambiguity
-    bytes(s.data(), s.size());
-  }
-  [[nodiscard]] atx::u64 finish() const noexcept {
-    atx::u64 z = h + 0x9e3779b97f4a7c15ULL;
-    z = (z ^ (z >> 30U)) * 0xbf58476d1ce4e5b9ULL;
-    z = (z ^ (z >> 27U)) * 0x94d049bb133111ebULL;
-    return z ^ (z >> 31U);
-  }
-};
 
 [[nodiscard]] inline std::string sanitize_audit_text(std::string s) {
   for (char &c : s) {
@@ -470,12 +541,16 @@ struct StableHasher {
 // The receipt hash over every field except receipt_hash itself.
 [[nodiscard]] inline atx::u64 lockbox_receipt_hash(const LockboxReceipt &r) noexcept {
   detail::StableHasher h;
-  h.bytes("ATXLBX1", 7U);
+  h.bytes("ATXLBX2", 7U);
   h.u64v(r.sequence);
   h.u64v(r.content_address);
   h.u64v(r.candidate_hash);
   h.u64v(static_cast<atx::u64>(r.holdout_begin));
   h.u64v(static_cast<atx::u64>(r.holdout_end));
+  h.u64v(static_cast<atx::u64>(r.date_digests.size()));
+  for (const atx::u64 d : r.date_digests) {
+    h.u64v(d);
+  }
   h.str(r.purpose);
   h.str(r.requester);
   h.u64v(r.prev_receipt_hash);
@@ -486,178 +561,151 @@ struct StableHasher {
   return lockbox_receipt_hash(r) == r.receipt_hash;
 }
 
+namespace detail {
+
+// The in-memory state every sink keeps: the receipt chain plus the opened
+// reservation addresses and opened date digests (the single-use key set).
+class LockboxLedger {
+public:
+  [[nodiscard]] bool is_opened(atx::u64 content_address) const {
+    return opened_.find(content_address) != opened_.end();
+  }
+  [[nodiscard]] bool any_date_opened(std::span<const atx::u64> date_digests) const {
+    for (const atx::u64 d : date_digests) {
+      if (dates_.find(d) != dates_.end()) {
+        return true;
+      }
+    }
+    return false;
+  }
+  [[nodiscard]] atx::u64 next_sequence() const noexcept {
+    return static_cast<atx::u64>(receipts_.size());
+  }
+  [[nodiscard]] atx::u64 last_receipt_hash() const noexcept {
+    return receipts_.empty() ? 0U : receipts_.back().receipt_hash;
+  }
+  // Err(AlreadyExists) when the draft's reservation or any of its dates is opened.
+  [[nodiscard]] atx::core::Status check_fresh(const LockboxReceipt &draft) const {
+    if (is_opened(draft.content_address) || any_date_opened(draft.date_digests)) {
+      return atx::core::Err(atx::core::ErrorCode::AlreadyExists,
+                            "lockbox audit: this lockbox (or one of its held-out dates) "
+                            "was already opened");
+    }
+    return atx::core::Ok();
+  }
+  // Chain the draft onto the ledger head: sequence, prev hash, receipt hash.
+  [[nodiscard]] LockboxReceipt seal(LockboxReceipt draft) const {
+    draft.sequence = next_sequence();
+    draft.prev_receipt_hash = last_receipt_hash();
+    draft.receipt_hash = lockbox_receipt_hash(draft);
+    return draft;
+  }
+  // True when `r` is the valid next link of this chain.
+  [[nodiscard]] bool links(const LockboxReceipt &r) const noexcept {
+    return verify_receipt(r) && r.sequence == next_sequence() &&
+           r.prev_receipt_hash == last_receipt_hash();
+  }
+  void ingest(LockboxReceipt r) {
+    opened_.insert(r.content_address);
+    dates_.insert(r.date_digests.begin(), r.date_digests.end());
+    receipts_.push_back(std::move(r));
+  }
+  [[nodiscard]] const std::vector<LockboxReceipt> &receipts() const noexcept { return receipts_; }
+
+private:
+  std::unordered_set<atx::u64> opened_;
+  std::unordered_set<atx::u64> dates_;
+  std::vector<LockboxReceipt> receipts_;
+};
+
+} // namespace detail
+
 // ===========================================================================
-//  LockboxAuditSink — where opens are recorded. Implementations must make
-//  append() the commit point: after a successful append, is_opened() is true
-//  for that content address.
+//  LockboxAuditSink — where opens are recorded. commit() is the commit point
+//  and must be ATOMIC with respect to every other writer of the same backing
+//  store: it re-checks single-use (reservation address AND every date digest;
+//  Err(AlreadyExists) on overlap), chains the draft onto the CURRENT head
+//  (sequence, prev hash, receipt hash), persists it, and returns the committed
+//  receipt. After a successful commit, is_opened / any_date_opened are true
+//  for the receipt's address / dates.
 // ===========================================================================
 class LockboxAuditSink {
 public:
   virtual ~LockboxAuditSink() = default;
   [[nodiscard]] virtual bool is_opened(atx::u64 content_address) const = 0;
+  [[nodiscard]] virtual bool any_date_opened(std::span<const atx::u64> date_digests) const = 0;
   [[nodiscard]] virtual atx::u64 next_sequence() const = 0;
   [[nodiscard]] virtual atx::u64 last_receipt_hash() const = 0;
-  [[nodiscard]] virtual atx::core::Status append(const LockboxReceipt &receipt) = 0;
+  [[nodiscard]] virtual atx::core::Result<LockboxReceipt> commit(LockboxReceipt draft) = 0;
 };
 
-// Process-local sink (tests, single-run research engines).
+// Process-local sink (tests, single-run research engines). Single-threaded.
 class InMemoryLockboxAudit final : public LockboxAuditSink {
 public:
   [[nodiscard]] bool is_opened(atx::u64 content_address) const override {
-    return opened_.find(content_address) != opened_.end();
+    return ledger_.is_opened(content_address);
   }
-  [[nodiscard]] atx::u64 next_sequence() const override {
-    return static_cast<atx::u64>(receipts_.size());
+  [[nodiscard]] bool any_date_opened(std::span<const atx::u64> date_digests) const override {
+    return ledger_.any_date_opened(date_digests);
   }
-  [[nodiscard]] atx::u64 last_receipt_hash() const override {
-    return receipts_.empty() ? 0U : receipts_.back().receipt_hash;
+  [[nodiscard]] atx::u64 next_sequence() const override { return ledger_.next_sequence(); }
+  [[nodiscard]] atx::u64 last_receipt_hash() const override { return ledger_.last_receipt_hash(); }
+  [[nodiscard]] atx::core::Result<LockboxReceipt> commit(LockboxReceipt draft) override {
+    ATX_TRY_VOID(ledger_.check_fresh(draft));
+    LockboxReceipt r = ledger_.seal(std::move(draft));
+    ledger_.ingest(r);
+    return atx::core::Ok(std::move(r));
   }
-  [[nodiscard]] atx::core::Status append(const LockboxReceipt &receipt) override {
-    opened_.insert(receipt.content_address);
-    receipts_.push_back(receipt);
-    return atx::core::Ok();
+  [[nodiscard]] const std::vector<LockboxReceipt> &receipts() const noexcept {
+    return ledger_.receipts();
   }
-  [[nodiscard]] const std::vector<LockboxReceipt> &receipts() const noexcept { return receipts_; }
 
 private:
-  std::unordered_set<atx::u64> opened_;
-  std::vector<LockboxReceipt> receipts_;
+  detail::LockboxLedger ledger_;
 };
 
 // Durable, append-only, one tab-separated line per receipt:
-//   ATXLBX1 seq addr cand begin end prev hash purpose requester   (hex numbers)
+//   ATXLBX2 seq addr cand begin end prev hash digests purpose requester
+// (hex numbers; `digests` is a comma-separated hex list, "-" when empty).
 // open() replays and VERIFIES the whole chain (hash + prev link + sequence);
 // any mismatch is Err(ParseError) — the log was edited. A final line without
 // its newline is a torn append (crash) and is ignored and truncated.
+//
+// Concurrency: open() and commit() hold an exclusive OS file lock on the log
+// (LockFileEx / flock; released automatically if the process dies). commit()
+// first ingests every line other handles / processes appended since this
+// handle last looked, re-checks single-use against that fresh state, then
+// appends and flushes to stable storage (FlushFileBuffers / fsync). Two
+// handles on one path therefore cannot both open the same held-out dates, and
+// the chain never forks. A log that SHRANK under a handle is Err(ParseError).
+// Truncation of whole trailing lines between processes is not detectable
+// (see open_lockbox's LIMITATION note).
 class FileLockboxAudit final : public LockboxAuditSink {
 public:
   [[nodiscard]] static atx::core::Result<FileLockboxAudit>
-  open(const std::filesystem::path &path) {
-    using atx::core::Err;
-    using atx::core::ErrorCode;
-    FileLockboxAudit out;
-    out.path_ = path;
-    std::error_code ec;
-    if (std::filesystem::exists(path, ec)) {
-      std::ifstream in(path, std::ios::binary);
-      if (!in) {
-        return Err(ErrorCode::IoError, "FileLockboxAudit: cannot read " + path.string());
-      }
-      const std::string text((std::istreambuf_iterator<char>(in)),
-                             std::istreambuf_iterator<char>());
-      in.close();
-      atx::usize pos = 0;
-      // Bounded: each iteration consumes one complete line.
-      while (pos < text.size()) {
-        const atx::usize nl = text.find('\n', pos);
-        if (nl == std::string::npos) {
-          break; // torn tail
-        }
-        auto rec = parse_line(std::string_view(text).substr(pos, nl - pos));
-        if (!rec.has_value() || !verify_receipt(*rec) ||
-            rec->sequence != out.receipts_.size() ||
-            rec->prev_receipt_hash != out.last_receipt_hash()) {
-          return Err(ErrorCode::ParseError,
-                     "FileLockboxAudit: audit chain verification failed (log edited?)");
-        }
-        out.opened_.insert(rec->content_address);
-        out.receipts_.push_back(std::move(*rec));
-        pos = nl + 1U;
-      }
-      if (pos != text.size()) {
-        std::filesystem::resize_file(path, pos, ec);
-        if (ec) {
-          return Err(ErrorCode::IoError, "FileLockboxAudit: cannot repair torn tail");
-        }
-      }
-    }
-    return atx::core::Ok(std::move(out));
-  }
+  open(const std::filesystem::path &path);
 
   [[nodiscard]] bool is_opened(atx::u64 content_address) const override {
-    return opened_.find(content_address) != opened_.end();
+    return ledger_.is_opened(content_address);
   }
-  [[nodiscard]] atx::u64 next_sequence() const override {
-    return static_cast<atx::u64>(receipts_.size());
+  [[nodiscard]] bool any_date_opened(std::span<const atx::u64> date_digests) const override {
+    return ledger_.any_date_opened(date_digests);
   }
-  [[nodiscard]] atx::u64 last_receipt_hash() const override {
-    return receipts_.empty() ? 0U : receipts_.back().receipt_hash;
+  [[nodiscard]] atx::u64 next_sequence() const override { return ledger_.next_sequence(); }
+  [[nodiscard]] atx::u64 last_receipt_hash() const override { return ledger_.last_receipt_hash(); }
+  [[nodiscard]] atx::core::Result<LockboxReceipt> commit(LockboxReceipt draft) override;
+  [[nodiscard]] const std::vector<LockboxReceipt> &receipts() const noexcept {
+    return ledger_.receipts();
   }
-  [[nodiscard]] atx::core::Status append(const LockboxReceipt &r) override {
-    std::string line = "ATXLBX1";
-    for (const atx::u64 v : {r.sequence, r.content_address, r.candidate_hash,
-                             static_cast<atx::u64>(r.holdout_begin),
-                             static_cast<atx::u64>(r.holdout_end), r.prev_receipt_hash,
-                             r.receipt_hash}) {
-      line += '\t';
-      line += to_hex(v);
-    }
-    line += '\t';
-    line += detail::sanitize_audit_text(r.purpose);
-    line += '\t';
-    line += detail::sanitize_audit_text(r.requester);
-    line += '\n';
-    std::ofstream out(path_, std::ios::binary | std::ios::app);
-    out.write(line.data(), static_cast<std::streamsize>(line.size()));
-    out.flush();
-    if (!out) {
-      return atx::core::Err(atx::core::ErrorCode::IoError,
-                            "FileLockboxAudit: durable append failed");
-    }
-    opened_.insert(r.content_address);
-    receipts_.push_back(r);
-    return atx::core::Ok();
-  }
-  [[nodiscard]] const std::vector<LockboxReceipt> &receipts() const noexcept { return receipts_; }
 
 private:
   FileLockboxAudit() = default;
-
-  [[nodiscard]] static std::string to_hex(atx::u64 v) {
-    char buf[17] = {};
-    const auto res = std::to_chars(buf, buf + 16, v, 16);
-    return std::string(buf, res.ptr);
-  }
-
-  [[nodiscard]] static std::optional<LockboxReceipt> parse_line(std::string_view line) {
-    std::vector<std::string_view> f;
-    atx::usize p = 0;
-    // Bounded: a line has at most line.size() + 1 tab-separated fields.
-    for (atx::usize guard = 0; guard <= line.size(); ++guard) {
-      const atx::usize tab = line.find('\t', p);
-      f.push_back(line.substr(p, tab == std::string_view::npos ? line.size() - p : tab - p));
-      if (tab == std::string_view::npos) {
-        break;
-      }
-      p = tab + 1U;
-    }
-    if (f.size() != 10U || f[0] != "ATXLBX1") {
-      return std::nullopt;
-    }
-    atx::u64 v[7] = {};
-    for (atx::usize i = 0; i < 7U; ++i) {
-      const std::string_view s = f[i + 1U];
-      const auto res = std::from_chars(s.data(), s.data() + s.size(), v[i], 16);
-      if (res.ec != std::errc{} || res.ptr != s.data() + s.size() || s.empty()) {
-        return std::nullopt;
-      }
-    }
-    LockboxReceipt r;
-    r.sequence = v[0];
-    r.content_address = v[1];
-    r.candidate_hash = v[2];
-    r.holdout_begin = static_cast<atx::usize>(v[3]);
-    r.holdout_end = static_cast<atx::usize>(v[4]);
-    r.prev_receipt_hash = v[5];
-    r.receipt_hash = v[6];
-    r.purpose = std::string(f[8]);
-    r.requester = std::string(f[9]);
-    return r;
-  }
+  struct Io; // src/eval/lockbox_audit.cpp: locked file I/O + line codec
+  friend struct Io;
 
   std::filesystem::path path_;
-  std::unordered_set<atx::u64> opened_;
-  std::vector<LockboxReceipt> receipts_;
+  detail::LockboxLedger ledger_;
+  atx::u64 synced_len_{}; // bytes of the log already verified + ingested
 };
 
 struct LockboxOpening {
@@ -691,20 +739,22 @@ open_lockbox(SealedPanel &&sealed, const alpha::Panel &full, const OpenRequest &
   if (end > res.dates || end <= begin) {
     return Err(ErrorCode::InvalidArgument, "open_lockbox: holdout window past the panel end");
   }
+  LockboxReceipt draft;
+  draft.content_address = res.content_address;
+  draft.candidate_hash = req.candidate_hash;
+  draft.holdout_begin = begin;
+  draft.holdout_end = end;
+  draft.date_digests = detail::holdout_date_digests(full, begin, end);
+  if (sink.any_date_opened(draft.date_digests)) {
+    return Err(ErrorCode::AlreadyExists,
+               "open_lockbox: held-out dates were already returned by an earlier open");
+  }
+  draft.purpose = detail::sanitize_audit_text(req.purpose);
+  draft.requester = detail::sanitize_audit_text(req.requester);
   ATX_TRY(alpha::Panel holdout, detail::slice_panel(full, begin, end));
-
-  LockboxReceipt r;
-  r.sequence = sink.next_sequence();
-  r.content_address = res.content_address;
-  r.candidate_hash = req.candidate_hash;
-  r.holdout_begin = begin;
-  r.holdout_end = end;
-  r.purpose = detail::sanitize_audit_text(req.purpose);
-  r.requester = detail::sanitize_audit_text(req.requester);
-  r.prev_receipt_hash = sink.last_receipt_hash();
-  r.receipt_hash = lockbox_receipt_hash(r);
-  ATX_TRY_VOID(sink.append(r));
-  return atx::core::Ok(LockboxOpening{std::move(holdout), std::move(r)});
+  // The sink re-checks single-use atomically and chains the receipt.
+  ATX_TRY(LockboxReceipt receipt, sink.commit(std::move(draft)));
+  return atx::core::Ok(LockboxOpening{std::move(holdout), std::move(receipt)});
 }
 
 } // namespace atx::engine::eval
