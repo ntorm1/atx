@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 
 import duckdb
 import pytest
@@ -305,6 +306,58 @@ def test_tampered_frozen_panel_is_rejected_before_evaluation(tmp_path):
         store.con.execute("UPDATE fundamental_signal_values SET score=999 WHERE security_id='S000'")
         with pytest.raises(ValueError, match="digest mismatch"):
             validate_fundamental_signal_panel(store.con, "build")
+    finally:
+        store.connection.close()
+
+
+def test_selected_label_evidence_covers_revision_order_and_stitching(tmp_path):
+    store, day, as_of, signal = _warehouse(tmp_path)
+
+    def evaluate(run_id):
+        evaluate_fundamental_signals(store, FundamentalSignalEvaluationOptions(
+            build_run_id="build", run_id=run_id, as_of_date=as_of,
+            run_at=dt.datetime.combine(as_of, dt.time(22, 30), dt.UTC),
+            label_source="labels",
+        ))
+        config_json, sample_sha = store.con.execute("""
+            SELECT config_json,sample_sha256 FROM fundamental_signal_evaluation_runs
+            WHERE run_id=?
+        """, [run_id]).fetchone()
+        selected_sha = store.con.execute("""
+            SELECT selected_sha256 FROM fundamental_signal_evaluation_label_evidence
+            WHERE run_id=? AND signal_id=? AND decision_date=? AND horizon_sessions=21
+        """, [run_id, signal, day]).fetchone()[0]
+        labeled = store.con.execute("""
+            SELECT labeled_count FROM fundamental_signal_evaluation_deciles
+            WHERE run_id=? AND signal_id=? AND decision_date=?
+              AND horizon_sessions=21 AND decile=1
+        """, [run_id, signal, day]).fetchone()[0]
+        return json.loads(config_json), sample_sha, selected_sha, labeled
+
+    try:
+        baseline = evaluate("baseline")
+        assert baseline[0]["evaluation_version"] == "fq2_v2"
+        assert baseline[0]["label_evidence_version"] == "selected_label_v2"
+        assert baseline[3] == 20
+
+        store.con.execute("""
+            UPDATE forward_returns_survivorship_safe
+            SET source_loaded_at=source_loaded_at+INTERVAL 1 SECOND
+            WHERE forward_return_id='L000_21'
+        """)
+        reordered = evaluate("revision_clock")
+        assert reordered[1] != baseline[1]
+        assert reordered[2] != baseline[2]
+        assert reordered[3] == baseline[3]
+
+        store.con.execute("""
+            UPDATE forward_returns_survivorship_safe SET is_stitched=true
+            WHERE forward_return_id='L000_21'
+        """)
+        stitched = evaluate("stitched")
+        assert stitched[1] != reordered[1]
+        assert stitched[2] != reordered[2]
+        assert stitched[3] == 19
     finally:
         store.connection.close()
 

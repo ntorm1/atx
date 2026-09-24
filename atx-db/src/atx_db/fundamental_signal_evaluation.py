@@ -186,7 +186,8 @@ def _join_labels(con: Any, source: str, entry: dt.date, horizon: int,
                l.calculation_version,l.raw_forward_return,l.terminal_return,
                l.forward_return,l.forward_end_date,l.delist_date,
                l.terminal_return_source,l.return_observation_id,
-               l.is_delisted_in_horizon,l.available_at,
+               l.is_delisted_in_horizon,l.is_stitched,l.available_at,
+               l.source_loaded_at,
                CASE WHEN l.forward_return_id IS NULL THEN 'missing'
                     WHEN l.price_basis<>'adjusted_close' OR l.price_basis IS NULL
                       OR l.calculation_version<>? OR l.calculation_version IS NULL
@@ -337,9 +338,10 @@ def evaluate_fundamental_signals(
         raise ValueError("evaluation cutoff precedes completed build")
     source = json.loads(build[3])["market_source"]
     cutoff = dt.datetime.combine(options.as_of_date, dt.time(22))
-    config = {"evaluation_version": "fq2_v1",
+    config = {"evaluation_version": "fq2_v2",
               "build_run_id": options.build_run_id, "label_source": options.label_source,
               "as_of_date": options.as_of_date.isoformat(), "label_version": LABEL_VERSION,
+              "label_evidence_version": "selected_label_v2",
               "primary_horizon": 21, "secondary_horizons": [5, 63],
               "signals": list(verified.signal_ids), "cohort": "FQ1 dated US-common issuer-qualified",
               "min_names": 200, "min_per_decile": 20,
@@ -372,7 +374,8 @@ def evaluate_fundamental_signals(
                             SELECT security_id,forward_return_id,price_basis,calculation_version,
                                    raw_forward_return,terminal_return,forward_return,
                                    forward_end_date,delist_date,terminal_return_source,
-                                   return_observation_id,is_delisted_in_horizon,available_at
+                                   return_observation_id,is_delisted_in_horizon,is_stitched,
+                                   available_at,source_loaded_at
                             FROM _fq2_join WHERE forward_return_id IS NOT NULL ORDER BY security_id
                         """, [])
                         with store.transaction():

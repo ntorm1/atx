@@ -44,6 +44,14 @@ replacement. Split rules are fixed: train through 2020, validation 2021–2023,
 holdout from 2024; crossing outcomes are purged and the first 63 observed
 sessions of later splits are embargoed.
 
+New runs declare `evaluation_version=fq2_v2` and
+`label_evidence_version=selected_label_v2` in their sealed configuration. The
+selected-row digest includes `is_stitched`, which affects label validity, and
+`source_loaded_at`, which orders otherwise tied revisions. Earlier `fq2_v1`
+runs keep their original selected and sample hashes; those hashes have the v1
+field coverage and must not be interpreted or recomputed as v2 evidence. The
+publisher's `forward_return_publication_v1` label version is unchanged.
+
 Daily equal-weight Q10–Q1 horizon spreads use calendar-aware Bartlett HAC with
 lag horizon minus one. Holm correction covers the entire frozen primary 21-day
 family in each split, including untestable hypotheses. Secondary 5/63-session
