@@ -114,6 +114,7 @@ inline std::vector<atx::f64> combine(const World &w, atx::usize dates) {
 struct Run {
     book::ReplayPolicyResult replay;
     std::vector<impl::EquityAllocationResult> allocations;
+    std::vector<impl::EquityAllocationDecision> decisions; // Frozen, with exposures.
 };
 
 inline impl::EquityAllocationConfig allocation_config() {
@@ -131,7 +132,8 @@ inline impl::EquityAllocationConfig allocation_config() {
 // discover (zoo) -> combine -> PreferenceSource -> constrained QP -> impact replay,
 // on the first `dates` observations only.
 inline atx::core::Result<Run> run_book(const World &w, atx::usize dates,
-                                       const book::ReplayCostModel &cost) {
+                                       const book::ReplayCostModel &cost,
+                                       atx::f64 adv_dollars = 5.0e7) {
     const auto close = std::vector<atx::f64>(w.close.begin(),
                                              w.close.begin() + static_cast<std::ptrdiff_t>(dates * kNames));
     auto panel = Panel::create(dates, kNames, {"close"}, {close}, {}).value();
@@ -163,6 +165,7 @@ inline atx::core::Result<Run> run_book(const World &w, atx::usize dates,
         ATX_TRY(auto allocated, impl::allocate_equity_preference(decision, execution));
         auto intents = allocated.intents;
         run.allocations.push_back(std::move(allocated));
+        run.decisions.push_back(std::move(decision));
         return atx::core::Ok(std::move(intents));
     };
     book::ReplayConfig cfg;
@@ -170,7 +173,7 @@ inline atx::core::Result<Run> run_book(const World &w, atx::usize dates,
     cfg.execution_delay_periods = 1;
     cfg.cost_model = &cost;
     const std::vector<book::LiquidityRow> liquidity(dates * kNames,
-                                                    book::LiquidityRow{5.0e7, 0.02, 3.0});
+                                                    book::LiquidityRow{adv_dollars, 0.02, 3.0});
     cfg.liquidity = liquidity;
     ATX_TRY(auto replay, book::replay_scheduled_intents(panel, keys, decisions, preferences,
                                                         policy, cfg));
@@ -181,9 +184,7 @@ inline atx::core::Result<Run> run_book(const World &w, atx::usize dates,
 inline bool same_bits(atx::f64 a, atx::f64 b) {
     return std::bit_cast<atx::u64>(a) == std::bit_cast<atx::u64>(b);
 }
-} // namespace atx_test_l8_e2e_zoo
 
-using namespace atx_test_l8_e2e_zoo;
 
 TEST(ZooToBookE2E, ConstrainedCostAwareBookHoldsItsFactorBounds) {
     const auto world = make_world();
@@ -252,3 +253,48 @@ TEST(ZooToBookE2E, TruncationInvariance) {
         EXPECT_TRUE(same_bits(a[k].gross_pnl, b[k].gross_pnl)) << k;
     }
 }
+
+// With ADV 2e6 and a 10% cap a name fills at most 2e5 per day, while the QP asks
+// for up to name_limit * NAV = 1e6: the cap binds and the replay holds a book
+// that differs from the certified request. measure_equity_exposures reports the
+// realized beta/sector exposure of the HELD book so the drift is visible.
+TEST(ZooToBookE2E, BindingCapHeldBookExposureIsMeasuredNotAssumed) {
+    const auto world = make_world();
+    const auto cost = book::SqrtImpactCost::create({0.8, 0.5}, 0.1).value();
+    const auto run = run_book(world, kDates, cost, 2.0e6);
+    ASSERT_TRUE(run) << run.error().message();
+    ASSERT_EQ(run->replay.allocations.size(), run->decisions.size());
+    atx::usize capped = 0;
+    atx::f64 worst_beta_drift = 0.0;
+    for (atx::usize k = 0; k < run->decisions.size(); ++k) {
+        const auto &held = run->replay.allocations[k];
+        const auto &requested = run->allocations[k];
+        const auto realized = impl::measure_equity_exposures(
+            run->decisions[k], held.posttrade_marked_dollars, held.pretrade_nav);
+        ASSERT_TRUE(realized) << realized.error().message();
+        EXPECT_TRUE(std::isfinite(realized->beta_exposure));
+        EXPECT_TRUE(std::isfinite(realized->max_sector_net));
+        // The held book is the requested book exactly when nothing was capped.
+        atx::f64 shortfall = 0.0;
+        for (atx::usize i = 0; i < kNames; ++i) {
+            shortfall += std::abs(requested.weights[i] * held.pretrade_nav -
+                                  held.posttrade_marked_dollars[i]);
+        }
+        if (shortfall > 1.0e-6 * kNav) {
+            ++capped;
+            worst_beta_drift = std::max(worst_beta_drift,
+                std::abs(realized->beta_exposure - requested.certificate.postfee_beta_exposure));
+        } else {
+            EXPECT_TRUE(realized->within_bounds) << held.decision_period;
+        }
+    }
+    EXPECT_GT(capped, 0U) << "the participation cap never bound";
+    EXPECT_GT(worst_beta_drift, 0.0);
+    // Bad inputs are rejected, not silently measured.
+    EXPECT_FALSE(impl::measure_equity_exposures(run->decisions[0],
+        std::vector<atx::f64>(kNames - 1, 0.0), kNav));
+    EXPECT_FALSE(impl::measure_equity_exposures(run->decisions[0],
+        std::vector<atx::f64>(kNames, 0.0), 0.0));
+}
+
+} // namespace atx_test_l8_e2e_zoo

@@ -428,7 +428,9 @@ Result<AppliedTarget> apply_target(std::span<const atx::f64> weights,
 }
 
 // Net financing under a BorrowSchedule: per-name fees on post-trade marked
-// short dollars, less the short rebate, less interest on settled cash.
+// short dollars, less the short rebate, less interest on FREE cash. Short-sale
+// proceeds sit in settled cash but are collateral: they earn only the rebate,
+// so the cash rate accrues on (cash - shorts), never on the proceeds as well.
 Result<atx::f64> scheduled_financing(const BorrowSchedule &schedule,
                                      std::span<const atx::f64> values, atx::f64 shorts,
                                      atx::f64 cash, atx::usize period, atx::f64 days,
@@ -437,7 +439,9 @@ Result<atx::f64> scheduled_financing(const BorrowSchedule &schedule,
   for (atx::usize i = 0; i < values.size(); ++i) {
     if (values[i] < 0.0) fee_dollars += -values[i] * schedule.fee(i, period);
   }
-  const auto bps_dollars = fee_dollars - shorts * schedule.rebate_bps - cash * schedule.cash_bps;
+  const auto free_cash = cash - shorts;
+  const auto bps_dollars =
+    fee_dollars - shorts * schedule.rebate_bps - free_cash * schedule.cash_bps;
   const auto basis = static_cast<atx::f64>(cfg.borrow_day_basis);
   const auto charge = bps_dollars * ((kBpsToFraction / basis) * days);
   ATX_TRY_VOID(require_finite(charge, "scheduled financing charge"));
@@ -813,12 +817,16 @@ struct ReplayExtensions {
     return ctx;
   }
 
-  [[nodiscard]] atx::usize open_working_orders() const noexcept {
-    atx::usize open = 0;
-    for (const auto goal : working) open += std::isnan(goal) ? 0U : 1U;
-    return open;
+  // Open-order count, refreshed after every trading step (recount) and every
+  // cancellation, so the per-period has_working_orders() query is O(1). The
+  // recount itself only runs on periods that already did O(N) trade work.
+  atx::usize open_orders{};
+  void recount_working_orders() noexcept {
+    open_orders = 0;
+    for (const auto goal : working) open_orders += std::isnan(goal) ? 0U : 1U;
   }
-  [[nodiscard]] bool has_working_orders() const noexcept { return open_working_orders() != 0; }
+  [[nodiscard]] atx::usize open_working_orders() const noexcept { return open_orders; }
+  [[nodiscard]] bool has_working_orders() const noexcept { return open_orders != 0; }
 
   [[nodiscard]] atx::f64 delist_return(atx::usize i) const noexcept {
     return config->delisting_policy == DelistingPolicy::CrspDelistReturn
@@ -834,8 +842,15 @@ struct ReplayExtensions {
     for (atx::usize i = 0; i < instruments; ++i) {
       delisting[i] = 0;
       const auto event = delist_event[i];
-      if (units[i] == 0.0 || event == kNoEvent) continue;
+      if (event == kNoEvent) continue;
       if (config->delistings[event].last_valid_period >= period) continue;
+      // A delisted name can never fill again: cancel its working order even when
+      // nothing is held yet, so the order cannot stay open silently for good.
+      if (!working.empty() && !std::isnan(working[i])) {
+        working[i] = kNoWorkingOrder;
+        --open_orders;
+      }
+      if (units[i] == 0.0) continue;
       const auto price = close[period * instruments + i];
       if (std::isfinite(price) && price > 0.0) continue;
       delisting[i] = 1;
@@ -870,7 +885,10 @@ struct ReplayExtensions {
                                     proceeds});
       units[i] = 0.0;
       end_values[i] = 0.0;
-      if (!working.empty()) working[i] = kNoWorkingOrder;
+      if (!working.empty() && !std::isnan(working[i])) {
+        working[i] = kNoWorkingOrder;
+        --open_orders;
+      }
       delisting[i] = 0;
     }
     delisting_pending = false;
@@ -987,6 +1005,7 @@ Result<ReplayResult> replay_targets(
           close, d, *origin, pretrade_nav, ext.trade_rate(config), result.final_tri_units,
           start_values, result.final_cash, result.trades, claims_nav.signed_pending_claims,
           ext.context(d)));
+      ext.recount_working_orders();
       start = applied.marked;
       trade_cost = applied.trade_cost;
       traded = applied.traded_dollars;
@@ -1006,6 +1025,7 @@ Result<ReplayResult> replay_targets(
     } else if (ext.has_working_orders()) {
       ATX_TRY(auto applied, work_residuals(ext.context(d), close, d, *origin, pretrade_nav,
           result.final_tri_units, start_values, result.final_cash, result.trades));
+      ext.recount_working_orders();
       start = applied.marked;
       trade_cost = applied.trade_cost;
       traded = applied.traded_dollars;

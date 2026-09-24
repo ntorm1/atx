@@ -130,6 +130,18 @@ foreach(grp IN LISTS _atx_groups)
                 ${CMAKE_CURRENT_SOURCE_DIR}/factory/factory_nsga_search_test.cpp
                 PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
         endif()
+        # book group only: the same unnamed-namespace collision. book_claims_state_test
+        # and security_transition_test redefine digest()/evidence() from
+        # book_claims_replay_test; book_replay_test redefines its kDay/kNaN/days()/
+        # prices(). Verified: the remaining 10 book files (including the named-namespace
+        # lane-8 files) compile as one concatenated TU.
+        if(grp STREQUAL "book")
+            set_source_files_properties(
+                ${CMAKE_CURRENT_SOURCE_DIR}/book/book_claims_state_test.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/book/security_transition_test.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/book/book_replay_test.cpp
+                PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+        endif()
     endif()
 
     # data group only: the miniz/zstd link line for the databento e2e fixture.

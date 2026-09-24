@@ -178,6 +178,23 @@ freeze_equity_allocation_decision(const EquityAllocationRiskWindow &window,
 attach_equity_exposures(EquityAllocationDecision &decision, std::span<const atx::f64> beta,
                         std::span<const atx::usize> sector);
 
+// Beta and worst-sector net exposure of a HELD book (marked dollars / nav),
+// measured against the decision's attached exposures and enabled bounds. The
+// allocation certificate describes the REQUESTED book; when a participation cap
+// leaves working orders, the replay holds a different book, and this is how a
+// caller measures the book actually held (e.g. from
+// ReplayAllocation::posttrade_marked_dollars). Never fails on a breach: it
+// reports within_bounds instead. Disabled bounds report 0 and never breach.
+struct EquityRealizedExposure {
+    atx::f64 beta_exposure{};
+    atx::f64 max_sector_net{};
+    bool within_bounds{true};
+};
+
+[[nodiscard]] atx::core::Result<EquityRealizedExposure>
+measure_equity_exposures(const EquityAllocationDecision &decision,
+                         std::span<const atx::f64> held_marked_dollars, atx::f64 nav);
+
 // Conservative worst-case bound for the specific diagonal/net/box/gross/turnover
 // path, including dense ConstraintSet A, sparse assembly and both guarded factor
 // budgets. This is admission control, not an OS RSS ceiling. Oversized unions

@@ -27,6 +27,7 @@
 // The caller must build that row from information available before the fill
 // (for example a trailing ADV that ends at the previous session).
 
+#include <limits>
 #include <optional>
 
 #include "atx/core/error.hpp"
@@ -70,6 +71,24 @@ public:
 
   // False when cost() never reads its liquidity row, so none is required.
   [[nodiscard]] virtual bool needs_liquidity() const noexcept { return true; }
+
+  // Research (unrationed) cost in dollars of executing the WHOLE request, as if
+  // no participation cap applied; NaN when the model cannot price it (e.g. no
+  // usable liquidity estimate), never a silent zero. The default is exact for
+  // any model that fills the full request and scales a partial fill at its
+  // average rate; capped nonlinear models override it with the full-size rate.
+  [[nodiscard]] virtual atx::f64 unrationed_cost(atx::usize instrument, atx::usize period,
+                                                 atx::f64 trade_dollars,
+                                                 const LiquidityRow &liquidity) const noexcept {
+    const auto requested = trade_dollars < 0.0 ? -trade_dollars : trade_dollars;
+    if (requested == 0.0) return 0.0;
+    const auto priced = cost(instrument, period, trade_dollars, liquidity);
+    const auto filled = priced.filled_dollars < 0.0 ? -priced.filled_dollars
+                                                    : priced.filled_dollars;
+    if (filled == requested) return priced.cost_dollars;
+    if (filled > 0.0) return priced.cost_dollars * (requested / filled);
+    return std::numeric_limits<atx::f64>::quiet_NaN();
+  }
 };
 
 class FlatBpsCost final : public ReplayCostModel {
@@ -114,6 +133,13 @@ public:
   // exposed so optimizers can reuse the same kappa_i. NaN on an unusable row.
   [[nodiscard]] atx::f64 cost_fraction(atx::f64 abs_dollars,
                                        const LiquidityRow &liquidity) const noexcept;
+
+  // Full request at the UNCAPPED rate: cost_fraction(|trade|) * |trade|. Under
+  // sqrt impact this is (q/f)^delta above a capped fill's average rate. NaN on
+  // an unusable liquidity row.
+  [[nodiscard]] atx::f64 unrationed_cost(atx::usize instrument, atx::usize period,
+                                         atx::f64 trade_dollars,
+                                         const LiquidityRow &liquidity) const noexcept override;
 
   [[nodiscard]] const ReplayImpactCfg &impact() const noexcept { return cfg_; }
   [[nodiscard]] atx::f64 max_participation() const noexcept { return max_participation_; }

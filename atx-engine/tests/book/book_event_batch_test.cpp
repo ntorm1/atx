@@ -8,6 +8,7 @@
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/book/event_batch_builder.hpp"
 #include "atx/engine/book/replay.hpp"
+#include "atx/engine/book/replay_cost.hpp"
 
 namespace atx_test_l8_e2e_event_batch {
 namespace book = atx::engine::book;
@@ -47,9 +48,7 @@ inline void expect_identity(const book::ReplayResult &result) {
                 1.0e-9);
   }
 }
-} // namespace atx_test_l8_e2e_event_batch
 
-using namespace atx_test_l8_e2e_event_batch;
 
 TEST(BookEventBatch, AbortPolicyStillFailsOnTheMissingHeldClose) {
   const auto panel = delisting_panel();
@@ -237,3 +236,37 @@ TEST(BookEventBatch, ClaimsReplayRejectsTheOptInReplayExtensions) {
   EXPECT_FALSE(book::replay_scheduled_intents_with_events(
       panel, day_axis(3), decisions, prefs, intents, policy, cfg, book::ReplayClaimsConfig{}));
 }
+
+TEST(BookEventBatch, DelistingCancelsAnUnfilledWorkingOrderOnAnUnheldName) {
+  // Name 1 prints only at period 0 and has no usable liquidity there, so the
+  // decision fills nothing and leaves a working order with zero units held.
+  // Once the name is past its last valid period the order must be cancelled
+  // instead of surviving silently to the end of the run.
+  const std::vector<atx::f64> close{100, 50, 100, kNaN, 100, kNaN, 100, kNaN, 100, kNaN};
+  std::vector<atx::u8> universe{1, 1, 1, 0, 1, 0, 1, 0, 1, 0};
+  const auto panel = Panel::create(5, 2, {"close"}, {close}, std::move(universe)).value();
+  const std::vector<book::DelistingRecord> records{{1, 1, kNaN}};
+  const auto events = book::delisting_events_from_records(close, 5, 2, records);
+  ASSERT_TRUE(events.has_value()) << events.error().message();
+  std::vector<book::LiquidityRow> liquidity;
+  for (atx::usize d = 0; d < 5; ++d) {
+    liquidity.push_back({1.0e9, 0.02, 1.0});
+    liquidity.push_back({0.0, 0.02, 1.0}); // Unusable: fills nothing.
+  }
+  const auto model = book::SqrtImpactCost::create({0.0, 0.5}, 0.1).value();
+  auto cfg = immediate();
+  cfg.cost_model = &model;
+  cfg.liquidity = liquidity;
+  cfg.delisting_policy = book::DelistingPolicy::LastMarkZeroReturn;
+  cfg.delistings = *events;
+  const std::vector<atx::usize> decisions{0};
+  const std::vector<atx::f64> targets{0.5, 0.2};
+  const auto result = book::replay_scheduled_targets(panel, day_axis(5), decisions, targets, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_DOUBLE_EQ(result->final_tri_units[1], 0.0);
+  EXPECT_TRUE(result->delistings.empty()); // Nothing held, nothing liquidated.
+  EXPECT_EQ(result->open_working_orders, 0U);
+  expect_identity(*result);
+}
+
+} // namespace atx_test_l8_e2e_event_batch

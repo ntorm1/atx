@@ -108,17 +108,18 @@ std::vector<atx::usize> compact_sectors(const EquityAllocationDecision &d,
     return labels;
 }
 
-// Represented post-fee beta and worst sector net, checked against the bounds.
-Status certify_exposures(const EquityAllocationDecision &d, std::span<const atx::f64> values,
-                         EquityAllocationCertificate &cert) {
+// Beta and worst sector net of `values` over `nav`; 0 for a disabled bound.
+EquityRealizedExposure exposures_of(const EquityAllocationDecision &d,
+                                    std::span<const atx::f64> values, atx::f64 nav) {
+    EquityRealizedExposure out;
     const auto tol = d.config.feasibility_tolerance;
     if (beta_enabled(d.config)) {
         atx::f64 exposure = 0.0;
         for (atx::usize i = 0; i < values.size(); ++i) exposure += d.beta[i] * values[i];
-        cert.postfee_beta_exposure = exposure / cert.posttrade_nav;
-        if (!std::isfinite(cert.postfee_beta_exposure) ||
-            std::abs(cert.postfee_beta_exposure) > d.config.beta_tolerance + tol)
-            return Err(ErrorCode::InvalidArgument, "equity allocation: post-fee beta certificate failed");
+        out.beta_exposure = exposure / nav;
+        if (!std::isfinite(out.beta_exposure) ||
+            std::abs(out.beta_exposure) > d.config.beta_tolerance + tol)
+            out.within_bounds = false;
     }
     if (sector_enabled(d.config)) {
         std::vector<std::pair<atx::usize, atx::f64>> nets;
@@ -134,10 +135,27 @@ Status certify_exposures(const EquityAllocationDecision &d, std::span<const atx:
             for (; k < nets.size() && nets[k].first == label; ++k) net += nets[k].second;
             worst = std::max(worst, std::abs(net));
         }
-        cert.postfee_max_sector_net = worst / cert.posttrade_nav;
-        if (!std::isfinite(cert.postfee_max_sector_net) ||
-            cert.postfee_max_sector_net > d.config.sector_net_cap + tol)
-            return Err(ErrorCode::InvalidArgument, "equity allocation: post-fee sector certificate failed");
+        out.max_sector_net = worst / nav;
+        if (!std::isfinite(out.max_sector_net) ||
+            out.max_sector_net > d.config.sector_net_cap + tol)
+            out.within_bounds = false;
+    }
+    return out;
+}
+
+// Represented post-fee beta and worst sector net, checked against the bounds.
+Status certify_exposures(const EquityAllocationDecision &d, std::span<const atx::f64> values,
+                         EquityAllocationCertificate &cert) {
+    const auto measured = exposures_of(d, values, cert.posttrade_nav);
+    cert.postfee_beta_exposure = measured.beta_exposure;
+    cert.postfee_max_sector_net = measured.max_sector_net;
+    if (!measured.within_bounds) {
+        const bool beta_bad = beta_enabled(d.config) &&
+            (!std::isfinite(measured.beta_exposure) ||
+             std::abs(measured.beta_exposure) > d.config.beta_tolerance + d.config.feasibility_tolerance);
+        return Err(ErrorCode::InvalidArgument,
+                   beta_bad ? "equity allocation: post-fee beta certificate failed"
+                            : "equity allocation: post-fee sector certificate failed");
     }
     return Ok();
 }
@@ -570,6 +588,21 @@ Result<EquityAllocationPlan> plan_equity_allocation(atx::usize canonical, atx::u
                    " budget=" + std::to_string(config.max_additional_bytes));
     }
     return Ok(EquityAllocationPlan{canonical, count, n, rows, kkt, bytes});
+}
+
+Result<EquityRealizedExposure> measure_equity_exposures(const EquityAllocationDecision &decision,
+                                                        std::span<const atx::f64> held_marked_dollars,
+                                                        atx::f64 nav) {
+    ATX_TRY_VOID(validate_exposures(decision));
+    if (held_marked_dollars.size() != decision.preference.size() || !std::isfinite(nav) ||
+        nav <= 0.0) {
+        return Err(ErrorCode::InvalidArgument, "equity allocation: invalid held book for exposure");
+    }
+    for (const auto v : held_marked_dollars) {
+        if (!std::isfinite(v))
+            return Err(ErrorCode::InvalidArgument, "equity allocation: nonfinite held dollars");
+    }
+    return Ok(exposures_of(decision, held_marked_dollars, nav));
 }
 
 Status attach_equity_exposures(EquityAllocationDecision &decision, std::span<const atx::f64> beta,
