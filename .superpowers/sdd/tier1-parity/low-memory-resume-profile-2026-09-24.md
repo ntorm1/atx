@@ -1,5 +1,23 @@
 # Bounded efficiency experiment — 2026-09-24
 
+Latest actual outcomes supersede the planned trials below: governed migration
+0326b completed at 512MB/one thread and 1.209381104GiB native peak. Schema 326,
+constraints and backup hash were verified. Archive17 then passed its complete
+retained fact/point proof and candidate processing at 1.223964691GiB peak under
+the same 1.5GiB cap. It failed a persisted candidate secondary-index integrity
+check at COMMIT, with healthy host headroom; no new raw facts were written.
+CC1 index repair is required before fresh archive18, whose predecessor is
+dd52e571-5786-42c5-bfaa-d7122b033912. The reduced profile is measured for proof
+and migration, but full source writes still require runtime acceptance.
+
+SA1 replaces the eager submissions ZIP directory with a bounded disk-backed
+index and streaming main-name traversal, preserving batch50 and history scope.
+Its separate retained-directory probe may use a 1GiB process cap following the
+same 120second 4/6GiB window. This probe cannot qualify actual normalization or
+full source writes. A later 512MB/one-thread, 1.5GiB submissions write trial is
+conditional on accepted implementation, retained-directory evidence and the
+completed CompanyFacts source prerequisite. Emergency stops remain unchanged.
+
 The user authorizes lower memory requirements when supported by more efficient,
 incremental code. This overrides the earlier fixed launch floor only for the
 following measured trials; data, scope and release thresholds are unchanged.

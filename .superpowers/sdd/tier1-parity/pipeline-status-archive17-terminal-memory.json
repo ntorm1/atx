@@ -1,0 +1,21 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "-m",
+    "atx_db.cli",
+    "pipeline-status",
+    "--db-path",
+    "data\\warehouse.duckdb",
+    "--as-of-date",
+    "2026-09-20"
+  ],
+  "job_limit_gb": 1.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 4.629360198974609,
+    "commit_free_gb": 8.511032104492188
+  },
+  "child_pid": 19004,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.8407821655273438
+}

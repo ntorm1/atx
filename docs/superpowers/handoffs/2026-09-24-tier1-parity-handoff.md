@@ -7,14 +7,29 @@ is incomplete. Continue on feat/tier1-parity. Preserve unrelated risk-test and
 alpha-swarm files, every backup and **stash@{0}**; never apply/drop the stash.
 All implementation/review work uses Codex; no external model spending or merge.
 
-**Current writer: full CompanyFacts archive17**, started22:53UTC from committed
-06ab073f. Root session89002, guard child7860; observed descendants14380/13828.
-512MB/one thread,1.5GiB process cap, force replacement/archive_members, no CIK
-filter, pinned snapshot. At22:54:18UTC its9462receipts/14ancestor runs passed
-inventory and entered full retained-fact fingerprint aggregation. No completed
-source proof or new source commits claimed yet. Inspect process plus fresh
-activation-companyfacts-archive17 memory/log/error artifacts before any other
-heavy work. Do not start another database/test job alongside this writer.
+**Archive17 is terminal FAILED (23:16:43UTC); no source writer is live.**
+It passed the complete retained fact and point fingerprint proof over 12,959
+owner identities, 9,462 receipt targets and 14 lineage ancestors. Its peak was
+1.223964691GiB under the unchanged 1.5GiB cap, using 512MB/one thread. It then
+failed candidate replacement at COMMIT: `Failed to delete all rows from index`.
+The latest dataset and stage ledgers are terminal failed; no recovery is due.
+No new raw facts were written. Source capacity is proven for full resume proof
+and candidate processing only, not the remaining full archive write workload.
+
+Read-only `candidate-index-inspect1` proves a persisted index inconsistency:
+target `SEC-COMPANYFACTS-UNRESOLVED-CIK-0001495229` returns zero rows by the
+default target index, but one by forced sequential scan; PK lookup also finds
+candidate `5b162a89-35e4-58eb-bfb5-ae11932bb2d4`. CC1 is implementing a bounded,
+backed-up same-schema rebuild of only that verified nonunique target index.
+Preserve all 12 full backups; use a durable candidate-table backup and complete
+row/constraint/index verification for this physical index repair. Do not skip
+the candidate or replace DELETE with UPDATE to hide the inconsistency.
+
+SA1 streaming submissions directory is implemented and received its one clean
+independent static review. First focused runtime: 19 passed, 3 failed (two
+Windows fixture handles, one central-record mutation check under diagnosis).
+Repair, focused/integration checks and retained-archive measurement are pending;
+no submissions write capacity or source completion is claimed.
 
 ## Current accepted work
 
@@ -54,12 +69,12 @@ Activation's stage-only migrate receipt was skipped as already completed;
 acceptance comes from actual persisted schema/backup proof, not zero-row output.
 
 The earlier full inventory measured47,941,000facts/points and31,959,271bars;
-canonical downstream surfaces remain empty. Archive17 is now verifying all
-retained source evidence. Archive16 recovery remains complete.
+canonical downstream surfaces remain empty. Archive17 passed retained source
+proof but stopped on the index defect above. Archive16 recovery remains complete.
 
 Actual terminal source predecessors:
 
-- CompanyFacts:513cfbbc-096a-4186-9666-b6cc5170c4ad.
+- CompanyFacts:dd52e571-5786-42c5-bfaa-d7122b033912 (archive17).
 - Submissions:04cf947d-53bb-49b7-a276-b3c74a2a52c8; all forms/all CIKs/history,
   same retained archive and batch50 required.
 
@@ -72,11 +87,11 @@ backups and use backup-keep100. Do not infer a process from a running ledger.
 
 ## Next action
 
-1. Monitor existing full retained CompanyFacts archive17 to a terminal state;
-   it already uses512MB/one thread,1.5GiB cap, force replacement/archive_members
-   and the actual predecessor above. Its full
-   proof and new commits are the production capacity measurement; do not repeat
-   an extra full SHA scan merely as a read-only benchmark. No CIK filter.
+1. Complete CC1 index repair, its one review/focused checks and backed-up live
+   verification; finish SA1 focused checks and retained-directory measurement.
+   Then launch fresh full archive18 from the terminal archive17 UUID above,
+   after sustained 4/6GiB headroom. Keep 512MB/one thread, 1.5GiB cap,
+   force replacement/archive_members and all full proof checks. No CIK filter.
 2. Full submissions resume, scoped CVX earnings source, full-universe run5
    from statement_points, force and16sequential reconciliation shards. Other
    stage capacity profiles still need evidence before being lowered.

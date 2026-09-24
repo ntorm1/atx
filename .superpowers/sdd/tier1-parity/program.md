@@ -1,5 +1,24 @@
 # Tier-1 parity program ledger (atx-db)
 
+## Archive17 full proof passed; index repair required — 2026-09-24 23:16UTC
+
+Archive17 is terminal failed, with both dataset/stage ledgers closed and no
+operator recovery due. Full retained facts and points proof passed over 12,959
+owner identities; native peak 1.223964691GiB at 512MB/one thread, cap 1.5GiB.
+No new raw facts committed. COMMIT during candidate replacement failed because
+a persisted nonunique target index misses a row visible by sequential/PK reads.
+Read-only candidate-index-inspect1 proves the mismatch for CIK 0001495229.
+CC1 now owns a same-schema, table-backed-up physical index rebuild with full
+row/constraint/catalog verification. No migration replay or scope reduction.
+Next CompanyFacts predecessor is dd52e571-5786-42c5-bfaa-d7122b033912; use new
+archive18 artifacts only after accepted repair and sustained headroom.
+
+SA1 bounded submissions directory implementation has one clean static review;
+first focused runtime 19 passed/3 failed, repair in progress. Full retained ZIP
+measurement and affected integration checks remain; no full submissions claim.
+The source proof fits the reduced profile, but remaining writes are unqualified.
+All production/release gates, source scope, backups and stash@{0} are preserved.
+
 ## Archive17 active at512MB — 2026-09-24 22:54UTC
 
 Root session89002/guard child7860 is the sole heavy warehouse job. Full source

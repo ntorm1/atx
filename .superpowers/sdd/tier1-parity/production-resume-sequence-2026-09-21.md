@@ -1,5 +1,15 @@
 # Production resume sequence — updated 2026-09-24
 
+**23:16UTC terminal:** archive17 passed full retained fact/point proof, then
+failed candidate COMMIT on a persisted nonunique target-index inconsistency.
+Native peak 1.223964691GiB at 512MB/one thread under 1.5GiB; no new raw facts.
+Both ledgers terminal failed; no operator recovery due. CC1 physical index
+repair must pass its backup/data/catalog/index verification before source
+resume. Next actual predecessor is `dd52e571-5786-42c5-bfaa-d7122b033912`.
+Use fresh **archive18** artifacts/run ID; do NOT execute the historical
+archive17 command below again. Preserve full scope, replacement and proof.
+SA1 bounded ZIP integration checks/retained-directory probe are also pending.
+
 **22:54UTC ACTIVE:** archive17 command below has started. Root session89002,
 guard child7860; sole heavy job.9462receipts/14lineage runs inventoried and
 full fact fingerprints running. Do not launch that command again or overlap

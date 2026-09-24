@@ -1,5 +1,22 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Archive17 terminal; CC1 and SA1 next — 2026-09-24 23:16UTC
+
+The LIVE entry below is historical. Full retained fact/point proof PASSED;
+archive17 subsequently failed candidate COMMIT with a persisted secondary
+target-index inconsistency. Peak 1.223964691GiB/cap 1.5, 512MB/one thread;
+no new raw facts. Dataset and stage are terminal failed, no recovery due.
+Default target lookup gives zero versus one by sequential/PK lookup for
+CIK 0001495229 (candidate-index-inspect1). CC1 is implementing a verified,
+candidate-table-backed-up same-schema index rebuild. Do not mask or skip rows.
+Next actual predecessor: dd52e571-5786-42c5-bfaa-d7122b033912, fresh archive18.
+
+SA1 streaming ZIP directory received one clean review; first focused checks
+19 passed/3 failed, repairs pending. Complete its focused/integration evidence
+and retained archive directory probe while CC1 proceeds on disjoint files.
+Root serializes all runtime work. Then full CompanyFacts, full submissions,
+CVX source and full downstream run5. All 12 backups and stash@{0} remain intact.
+
 ## Archive17 is LIVE — 2026-09-24 22:54UTC
 
 Do not launch another heavy job. Root session89002, guard child7860,
