@@ -54,7 +54,7 @@ constexpr atx::f64 kNaN = std::numeric_limits<atx::f64>::quiet_NaN();
 
 AdjustedSeries adjust_total_return(std::span<const atx::f64> raw_close,
                                    std::span<const atx::f64> cum_adj_factor,
-                                   std::span<const atx::f64> cash_dividend) {
+                                   std::span<const atx::f64> cash_dividend, TriGapRule gap_rule) {
   AdjustedSeries out{};
   const atx::usize n = raw_close.size();
   // Guard: the three parallel arrays must align index-for-index. A mismatch is a
@@ -69,27 +69,37 @@ AdjustedSeries adjust_total_return(std::span<const atx::f64> raw_close,
 
   // Running state for the geometric chain. `prev_s` is the split-adjusted close
   // of the immediately-preceding cell (NaN after a gap); `prev_tri` is the last
-  // finite TRI level. When `prev_s` is NaN (the first valid cell, or the first
-  // valid cell after a gap) we ANCHOR: r=0, TRI=S — there is no defined return to
-  // chain across a gap. Otherwise we extend the chain by (1 + r_t).
+  // finite TRI level and `last_s` the split-adjusted close it was set on. The
+  // first valid cell ANCHORS (r=0, TRI=S). A valid cell after a gap has no defined
+  // one-day return (r=0, as before), and its TRI level depends on `gap_rule`:
+  //   ReanchorV1   — TRI=S (legacy): drops every dividend accumulated so far (D-04).
+  //   RatioChainV2 — TRI=prev_tri·S_t/S_last: the gap's price move is carried and
+  //                  the accumulated dividends are kept (default).
+  // Otherwise we extend the chain by (1 + r_t).
   atx::f64 prev_s = kNaN;
   atx::f64 prev_tri = kNaN;
+  atx::f64 last_s = kNaN;
 
   for (atx::usize t = 0; t < n; ++t) {
     const atx::f64 s = split_adjusted(raw_close[t], cum_adj_factor[t]);
     out.split_adj_close[t] = s;
 
     if (!is_valid_close(s)) {
-      // Gap: NaN r and TRI for this cell; the next valid cell re-anchors.
+      // Gap: NaN r and TRI for this cell; the next valid cell resumes the index.
       prev_s = kNaN;
       continue;
     }
 
     if (!is_valid_close(prev_s)) {
-      // First valid close, or resumption after a gap: anchor the index here.
+      // First valid close, or resumption after a gap.
       out.total_return[t] = 0.0;
-      out.total_return_index[t] = s;
-      prev_tri = s;
+      const bool chain = gap_rule == TriGapRule::RatioChainV2 && is_valid_close(last_s) &&
+                         std::isfinite(prev_tri);
+      // (prev_tri * s) / last_s: both factors are finite and positive, so the
+      // result is finite unless it overflows, which a real price series cannot do.
+      const atx::f64 tri = chain ? (prev_tri * s) / last_s : s;
+      out.total_return_index[t] = tri;
+      prev_tri = tri;
     } else {
       const atx::f64 d_adj = dividend_on_basis(cash_dividend[t], cum_adj_factor[t]);
       const atx::f64 r = (s + d_adj) / prev_s - 1.0;
@@ -98,6 +108,7 @@ AdjustedSeries adjust_total_return(std::span<const atx::f64> raw_close,
       out.total_return_index[t] = prev_tri;
     }
     prev_s = s;
+    last_s = s;
   }
 
   return out;

@@ -72,6 +72,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -89,10 +90,24 @@ namespace atx::engine::data {
 //  Configuration
 // =========================================================================
 
+// How a NaN market cap / ADV meets the dollar floors (W0-D0, D-09).
+//   NanFailsV1            — legacy `value >= floor`: a NaN fails EVERY floor, even a
+//                           disabled floor of 0, so "floor 0 disables" was false for
+//                           names with no shares or an unfilled ADV window.
+//   DisabledFloorPassesV2 — a floor <= 0 is no screen (every cell passes, NaN
+//                           included); an enabled floor (> 0) still fails NaN. Default.
+// In both rules a NaN ADV that survives into the top-N cap ranks after every finite
+// ADV (it can only get there when the ADV floor is disabled).
+enum class NanFloorRule : std::uint8_t {
+  NanFailsV1 = 1,
+  DisabledFloorPassesV2 = 2,
+};
+
 // Screen parameters for one universe build. Defaults are the S1 convention: a
 // 21-bar (≈ one trading month) causal ADV window with a $1M/day liquidity floor
-// and no market-cap floor / count cap. A floor of 0 disables that screen; a
-// top_n_by_adv of 0 disables the count cap.
+// and no market-cap floor / count cap. A floor <= 0 disables that screen for every
+// cell, NaN included (NanFloorRule::DisabledFloorPassesV2); a top_n_by_adv of 0
+// disables the count cap.
 struct UniverseConfig {
   atx::usize adv_window = 21;        // trailing bars for ADV (causal); 0 ⇒ ADV all-NaN
   atx::f64 min_adv_usd = 1.0e6;      // liquidity floor (dollars/day); 0 ⇒ no floor
@@ -103,6 +118,7 @@ struct UniverseConfig {
   bool require_sector = false;       // exclude names with no GICS/SIC sector (a single-stock /
                                      // ETF-fund proxy: ETFs carry no GICS classifier). false ⇒
                                      // no sector requirement (legacy).
+  NanFloorRule nan_floor_rule = NanFloorRule::DisabledFloorPassesV2; // D-09; see NanFloorRule
 };
 
 // =========================================================================

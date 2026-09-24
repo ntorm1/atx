@@ -26,6 +26,7 @@
 //
 // Cold-path (once per backtest window); vector/map allocation is intentional.
 
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -62,12 +63,56 @@ struct AlignedView {
   DropReport drops;
 };
 
+// =========================================================================
+//  Event columns and staleness caps (W0-D0, D-05)
+// =========================================================================
+//
+// The plain as-of join forward-fills every column without limit. That is right
+// for a slowly-changing reference value, but wrong for EVENT columns: a cash
+// dividend forward-filled onto the following sessions is counted again on each of
+// them, and a split factor forward-filled past the plug's last row freezes. A
+// column rule caps how stale the joined row may be, counted in CANONICAL sessions:
+//
+//   staleness(d) = number of canonical dates in (row availability, canonical_date[d]]
+//
+// so staleness 0 means the row is available exactly on the canonical session (or,
+// when its date is not on the canonical axis, on the first canonical session after
+// it — once, never again). A row available before the first canonical date has
+// unknown staleness and never passes a finite cap (fail closed). A cell whose row
+// is staler than the cap is NaN.
+inline constexpr atx::usize kAlignUnboundedStaleness = std::numeric_limits<atx::usize>::max();
+inline constexpr atx::usize kAlignEventSession = 0; // event column: join once, never fill
+
+struct AlignColumnRule {
+  // Largest allowed staleness in canonical sessions; kAlignUnboundedStaleness is the
+  // legacy unlimited forward fill.
+  atx::usize max_stale_sessions = kAlignUnboundedStaleness;
+};
+
+struct AlignOptions {
+  // Empty: every column uses the legacy unlimited as-of join. Otherwise exactly one
+  // rule per plug column, in plug column order.
+  std::vector<AlignColumnRule> column_rules{};
+  // When true, a canonical date later than the plug's last availability date fails
+  // with Err(OutOfRange) instead of silently reusing the plug's final row.
+  bool require_coverage = false;
+};
+
 // Align every `plug` column onto the canonical (date × instrument) axis fixed
-// by `canonical_price`.
+// by `canonical_price`, with the legacy unlimited as-of join on every column
+// (== align_onto(canonical_price, plug, AlignOptions{})). Correct for reference /
+// feature plugs; event plugs (corporate actions) use the options overload.
 //
 // Err(InvalidArgument) if either dataset's dates() are not strictly ascending
 // or date encodings differ (including typed versus Opaque).
 [[nodiscard]] atx::core::Result<AlignedView> align_onto(const Dataset &canonical_price,
                                                         const Dataset &plug);
+
+// Same join with per-column staleness caps and an optional coverage guard (see
+// above). Additional errors: Err(InvalidArgument) if column_rules is neither empty
+// nor one per plug column; Err(OutOfRange) if require_coverage and the canonical
+// dates extend past the plug's last availability date (or the plug has no dates).
+[[nodiscard]] atx::core::Result<AlignedView>
+align_onto(const Dataset &canonical_price, const Dataset &plug, const AlignOptions &options);
 
 } // namespace atx::engine::data
