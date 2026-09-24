@@ -19,6 +19,13 @@
 //   ATX_L10_FUNDZOO_OUT      fresh output directory (must not exist)
 //   ATX_L10_FUND_POINTS      points.csv from atx-engine/tools/export_fundamental_fields.py
 //   ATX_L10_CONTEXTS         ';'-separated identified context directories
+//   ATX_L10_SURVIVOR_CONTEXTS optional ';'-separated contexts whose final 21
+//                            sessions define "survivors" (ids in universe there).
+//                            When set, every signal is also measured on the
+//                            survivor / non-survivor sub-universes and the
+//                            momentum reference on bridged / unbridged names.
+//                            This is an EX-POST diagnostic of the survivor-
+//                            conditioned SR-id -> CIK bridge, never a signal input.
 
 #define _CRT_SECURE_NO_WARNINGS 1
 
@@ -37,6 +44,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -331,6 +339,7 @@ struct YearResult {
   std::string context;
   i64 year{};
   std::string signal;
+  std::string split{"all"}; // all | survivor | nonsurvivor | bridged | unbridged
   std::array<f64, 2> rank_ic{kNaN, kNaN};
   std::array<f64, 2> rank_icir{kNaN, kNaN};
   std::array<f64, 2> rank_ic_lo{kNaN, kNaN};
@@ -382,8 +391,8 @@ namespace atx_test_l10_fundzoo_fundamental_zoo {
 
 // One context: align, extend, evaluate every signal, measure IC in its year.
 void run_context(const std::filesystem::path &dir, const std::vector<PointRow> &points,
-                 const std::vector<ZooLine> &zoo, std::vector<YearResult> &results,
-                 nlohmann::json &align_log) {
+                 const std::vector<ZooLine> &zoo, const std::set<std::string> *survivors,
+                 std::vector<YearResult> &results, nlohmann::json &align_log) {
   std::ifstream mf(dir / "context.bin.manifest.json");
   ASSERT_TRUE(mf.is_open()) << dir;
   const auto man = nlohmann::json::parse(mf);
@@ -403,10 +412,12 @@ void run_context(const std::filesystem::path &dir, const std::vector<PointRow> &
   auto map = fund::map_security_ids(ids, rec_ids);
   ASSERT_TRUE(map.has_value());
   std::vector<fund::PitRecord> recs;
+  std::vector<std::uint8_t> bridged(ids.size(), 0U);
   for (usize k = 0; k < points.size(); ++k) {
     if (!(*map)[k].has_value()) continue;
     fund::PitRecord r = points[k].rec;
     r.instrument = *(*map)[k];
+    bridged[r.instrument] = 1U;
     recs.push_back(r);
   }
   const fund::AlignConfig cfg{};
@@ -467,20 +478,62 @@ void run_context(const std::filesystem::path &dir, const std::vector<PointRow> &
   const auto mom_full = evaluate(mom_expr, *panel, err);
   ASSERT_FALSE(mom_full.empty()) << err;
 
+  // Sub-universe masks for the ex-post survivorship diagnostic.
+  std::vector<std::uint8_t> mask_surv, mask_nonsurv, mask_bridged, mask_unbridged;
+  if (survivors != nullptr) {
+    mask_surv.assign(D * I, 0U);
+    mask_nonsurv.assign(D * I, 0U);
+    mask_bridged.assign(D * I, 0U);
+    mask_unbridged.assign(D * I, 0U);
+    usize n_bridged_surv = 0, n_bridged_non = 0;
+    std::vector<std::uint8_t> surv(I, 0U);
+    for (usize i = 0; i < I; ++i) surv[i] = survivors->count(ids[i]) ? 1U : 0U;
+    for (usize d = 0; d < D; ++d)
+      for (usize i = 0; i < I; ++i) {
+        const usize c = d * I + i;
+        if (mask[c] == 0U) continue;
+        (surv[i] ? mask_surv : mask_nonsurv)[c] = 1U;
+        (bridged[i] ? mask_bridged : mask_unbridged)[c] = 1U;
+      }
+    std::vector<std::uint8_t> ever(I, 0U);
+    for (usize d = 0; d < D; ++d)
+      for (usize i = 0; i < I; ++i) ever[i] |= mask[d * I + i];
+    usize n_ever = 0, n_bridged_ever = 0, n_surv_ever = 0;
+    for (usize i = 0; i < I; ++i) {
+      if (ever[i] == 0U) continue;
+      ++n_ever;
+      n_bridged_ever += bridged[i];
+      n_surv_ever += surv[i];
+      if (bridged[i]) (surv[i] ? n_bridged_surv : n_bridged_non) += 1U;
+    }
+    alog["survivorship"] = {{"eval_year_names", n_ever},
+                            {"bridged", n_bridged_ever},
+                            {"survivors", n_surv_ever},
+                            {"bridged_survivors", n_bridged_surv},
+                            {"bridged_nonsurvivors", n_bridged_non},
+                            {"survivor_bridge_rate",
+                             n_surv_ever ? static_cast<f64>(n_bridged_surv) / static_cast<f64>(n_surv_ever) : kNaN},
+                            {"nonsurvivor_bridge_rate",
+                             (n_ever - n_surv_ever)
+                                 ? static_cast<f64>(n_bridged_non) / static_cast<f64>(n_ever - n_surv_ever)
+                                 : kNaN}};
+    align_log.back() = alog;
+  }
+
   std::vector<ZooLine> signals = zoo;
   signals.push_back({"ref_momentum_12_1", mom_expr});
+  const usize ref_index = signals.size() - 1;
   const std::array<usize, 2> horizons{5, 21};
-  for (usize s = 0; s < signals.size(); ++s) {
-    const auto full = evaluate(signals[s].expr, *panel, err);
-    ASSERT_FALSE(full.empty()) << signals[s].id << ": " << err;
-    std::vector<f64> sig(full.begin() + static_cast<std::ptrdiff_t>(t0 * I), full.end());
+  // One IC measurement of `sig` on the admission mask `m`, appended to results.
+  auto measure = [&](const std::vector<f64> &sig, const std::vector<std::uint8_t> &m, usize s,
+                     const char *split, usize draws) {
     eval::CrossSectionIcInput in{};
     in.dates = D;
     in.instruments = I;
     in.signal = sig;
     in.price = price;
     in.raw_price = raw_price;
-    in.mask = mask;
+    in.mask = m;
     in.terminal = zeros_u8;
     in.terminal_evidenced = zeros_u8;
     in.terminal_value = zeros_f64;
@@ -490,7 +543,7 @@ void run_context(const std::filesystem::path &dir, const std::vector<PointRow> &
     icfg.horizons = horizons;
     icfg.quantiles = 10;
     icfg.min_names_per_date = 30;
-    icfg.bootstrap_draws = 1000;
+    icfg.bootstrap_draws = draws;
     icfg.bootstrap_seed = 0x10F0'2026'0923ULL;
     icfg.stream_signal_index = s % 256;
     icfg.trade_bps = 10.0;
@@ -507,6 +560,7 @@ void run_context(const std::filesystem::path &dir, const std::vector<PointRow> &
     yr.context = dir.filename().string();
     yr.year = year;
     yr.signal = signals[s].id;
+    yr.split = split;
     for (usize h = 0; h < horizons.size(); ++h) {
       const auto &hs = res->horizons[h];
       if (hs.full.summary_reportable != 0U) {
@@ -537,7 +591,7 @@ void run_context(const std::filesystem::path &dir, const std::vector<PointRow> &
     for (usize d = 0; d < D; d += 5) {
       std::vector<f64> a(I, kNaN), b(I, kNaN);
       for (usize i = 0; i < I; ++i) {
-        if (mask[d * I + i] == 0U) continue;
+        if (m[d * I + i] == 0U) continue;
         a[i] = sig[d * I + i];
         b[i] = mom_full[(t0 + d) * I + i];
       }
@@ -549,6 +603,23 @@ void run_context(const std::filesystem::path &dir, const std::vector<PointRow> &
     }
     yr.corr_momentum = cn ? csum / static_cast<f64>(cn) : kNaN;
     results.push_back(std::move(yr));
+  };
+
+  constexpr usize kSplitDraws = 200; // split rows report means / t, not bootstrap CIs
+  for (usize s = 0; s < signals.size(); ++s) {
+    const auto full = evaluate(signals[s].expr, *panel, err);
+    ASSERT_FALSE(full.empty()) << signals[s].id << ": " << err;
+    const std::vector<f64> sig(full.begin() + static_cast<std::ptrdiff_t>(t0 * I), full.end());
+    measure(sig, mask, s, "all", 1000);
+    if (::testing::Test::HasFatalFailure()) return;
+    if (survivors == nullptr) continue;
+    measure(sig, mask_surv, s, "survivor", kSplitDraws);
+    measure(sig, mask_nonsurv, s, "nonsurvivor", kSplitDraws);
+    if (s == ref_index) {
+      measure(sig, mask_bridged, s, "bridged", kSplitDraws);
+      measure(sig, mask_unbridged, s, "unbridged", kSplitDraws);
+    }
+    if (::testing::Test::HasFatalFailure()) return;
   }
 }
 
@@ -577,11 +648,37 @@ TEST(FundamentalZoo, RealDataIcReport) {
   const auto zoo = z::read_zoo(std::string(ATX_IMPL_TESTS_DIR) + "/fixtures/fundamental_zoo.txt");
   ASSERT_FALSE(zoo.empty());
 
+  // Survivors (ex-post diagnostic only): ids in universe on any of the final
+  // 21 sessions of the survivor contexts.
+  const char *surv_env = std::getenv("ATX_L10_SURVIVOR_CONTEXTS");
+  std::set<std::string> survivors;
+  const bool with_survivors = surv_env != nullptr && *surv_env != '\0';
+  if (with_survivors) {
+    for (const auto &ctx : z::split(surv_env, ';')) {
+      if (ctx.empty()) continue;
+      const std::filesystem::path d{ctx};
+      std::ifstream mf(d / "context.bin.manifest.json");
+      ASSERT_TRUE(mf.is_open()) << d;
+      const auto man = nlohmann::json::parse(mf);
+      std::vector<std::string> ids;
+      for (const auto &v : man["axes"]["instrument_ids"]) ids.push_back(v.get<std::string>());
+      const auto last_key = std::stoll(man["axes"]["session_keys"].back().get<std::string>());
+      ASSERT_LT(last_key, z::kHoldoutBeginNs) << "survivor context reaches the 2019 holdout";
+      auto p = atx::impl::read_panel((d / "context.bin").string());
+      ASSERT_TRUE(p.has_value()) << p.error().message();
+      const atx::usize D = p->dates();
+      for (atx::usize t = D > 21 ? D - 21 : 0; t < D; ++t)
+        for (atx::usize i = 0; i < ids.size(); ++i)
+          if (p->in_universe(t, i)) survivors.insert(ids[i]);
+    }
+    ASSERT_FALSE(survivors.empty());
+  }
+
   std::vector<z::YearResult> results;
   nlohmann::json align_log = nlohmann::json::array();
   for (const auto &ctx : z::split(ctx_env, ';')) {
     if (ctx.empty()) continue;
-    z::run_context(ctx, points, zoo, results, align_log);
+    z::run_context(ctx, points, zoo, with_survivors ? &survivors : nullptr, results, align_log);
     if (::testing::Test::HasFatalFailure()) return;
   }
   std::filesystem::create_directories(out_dir);
@@ -591,6 +688,7 @@ TEST(FundamentalZoo, RealDataIcReport) {
          "rank_ic_h21_hi,spread_gross_h21,decile_turnover_h21,implied_turnover,corr_momentum,"
          "signal_coverage,names_used\n";
     for (const auto &r : results) {
+      if (r.split != "all") continue;
       o << r.context << ',' << r.year << ',' << r.signal << ',' << z::num(r.rank_ic[0]) << ','
         << z::num(r.rank_icir[0]) << ',' << z::num(r.rank_ic[1]) << ',' << z::num(r.rank_icir[1])
         << ',' << z::num(r.rank_ic_lo[1]) << ',' << z::num(r.rank_ic_hi[1]) << ','
@@ -603,19 +701,27 @@ TEST(FundamentalZoo, RealDataIcReport) {
     // Pooled over years (per context cut): mean of the per-date h=21 rank IC,
     // ICIR, a non-overlapping t-statistic (every 21st emitted date) and sign
     // stability of the yearly means.
-    std::map<std::pair<std::string, std::string>, std::vector<const z::YearResult *>> groups;
+    std::map<std::tuple<std::string, std::string, std::string>, std::vector<const z::YearResult *>> groups;
     for (const auto &r : results) {
       const auto cut = r.context.find("t3000") != std::string::npos ? "t3000" : "t1000";
-      groups[{cut, r.signal}].push_back(&r);
+      groups[{r.split, cut, r.signal}].push_back(&r);
     }
     std::ofstream o(out_dir / "zoo_pooled.csv");
     o << "cut,signal,years,pooled_rank_ic_h21,pooled_icir_h21,t_nonoverlap_h21,years_positive,"
          "mean_rank_ic_h5,mean_implied_turnover,mean_corr_momentum,mean_coverage\n";
-    for (const auto &[key, rows] : groups) {
+    std::ofstream os;
+    if (with_survivors) {
+      os.open(out_dir / "zoo_pooled_splits.csv");
+      os << "split,cut,signal,years,pooled_rank_ic_h21,pooled_icir_h21,t_nonoverlap_h21,years_positive,"
+            "mean_rank_ic_h5,mean_implied_turnover,mean_corr_momentum,mean_coverage,mean_names_used\n";
+    }
+    for (const auto &[gkey, rows] : groups) {
+      const auto &[split, cut, signal] = gkey;
+      const std::pair<std::string, std::string> key{cut, signal};
       std::vector<atx::f64> all, nov;
       atx::usize pos = 0;
-      atx::f64 h5 = 0.0, to = 0.0, cm = 0.0, cov = 0.0;
-      atx::usize n5 = 0, nto = 0, ncm = 0, ncov = 0;
+      atx::f64 h5 = 0.0, to = 0.0, cm = 0.0, cov = 0.0, nu = 0.0;
+      atx::usize n5 = 0, nto = 0, ncm = 0, ncov = 0, nnu = 0;
       for (const auto *r : rows) {
         for (atx::usize k = 0; k < r->ic21_series.size(); ++k) {
           all.push_back(r->ic21_series[k]);
@@ -626,6 +732,7 @@ TEST(FundamentalZoo, RealDataIcReport) {
         if (std::isfinite(r->implied_turnover)) { to += r->implied_turnover; ++nto; }
         if (std::isfinite(r->corr_momentum)) { cm += r->corr_momentum; ++ncm; }
         if (std::isfinite(r->coverage)) { cov += r->coverage; ++ncov; }
+        if (std::isfinite(r->names_used)) { nu += r->names_used; ++nnu; }
       }
       auto mean_sd = [](const std::vector<atx::f64> &v) {
         if (v.size() < 2) return std::pair<atx::f64, atx::f64>{z::kNaN, z::kNaN};
@@ -637,21 +744,36 @@ TEST(FundamentalZoo, RealDataIcReport) {
       const auto [m, sd] = mean_sd(all);
       const auto [mn, sdn] = mean_sd(nov);
       const atx::f64 t = (sdn > 0.0) ? mn / (sdn / std::sqrt(static_cast<atx::f64>(nov.size()))) : z::kNaN;
-      o << key.first << ',' << key.second << ',' << rows.size() << ',' << z::num(m) << ','
-        << z::num(sd > 0.0 ? m / sd : z::kNaN) << ',' << z::num(t) << ',' << pos << ','
-        << z::num(n5 ? h5 / static_cast<atx::f64>(n5) : z::kNaN) << ','
-        << z::num(nto ? to / static_cast<atx::f64>(nto) : z::kNaN) << ','
-        << z::num(ncm ? cm / static_cast<atx::f64>(ncm) : z::kNaN) << ','
-        << z::num(ncov ? cov / static_cast<atx::f64>(ncov) : z::kNaN) << '\n';
+      std::ostringstream row;
+      row << key.first << ',' << key.second << ',' << rows.size() << ',' << z::num(m) << ','
+          << z::num(sd > 0.0 ? m / sd : z::kNaN) << ',' << z::num(t) << ',' << pos << ','
+          << z::num(n5 ? h5 / static_cast<atx::f64>(n5) : z::kNaN) << ','
+          << z::num(nto ? to / static_cast<atx::f64>(nto) : z::kNaN) << ','
+          << z::num(ncm ? cm / static_cast<atx::f64>(ncm) : z::kNaN) << ','
+          << z::num(ncov ? cov / static_cast<atx::f64>(ncov) : z::kNaN);
+      if (split == "all") {
+        o << row.str() << '\n';
+      } else {
+        os << split << ',' << row.str() << ',' << z::num(nnu ? nu / static_cast<atx::f64>(nnu) : z::kNaN)
+           << '\n';
+      }
     }
   }
   std::ofstream(out_dir / "alignment.json") << align_log.dump(2);
   nlohmann::json man;
-  man["schema"] = "atx.fundamental-zoo-ic/v1";
+  man["schema"] = "atx.fundamental-zoo-ic/v2";
   man["points"] = points_env;
   man["contexts"] = ctx_env;
   man["zoo_lines"] = zoo.size();
-  man["trials_declared"] = zoo.size() * 2;
+  man["trials_declared"] = zoo.size() * 2; // zoo lines x 2 horizons
+  man["reference_signals_not_trials"] = {"ref_momentum_12_1"};
+  man["id_bridge"] = "survivor-conditioned: SR id -> CIK via current-ticker match (see points manifest)";
+  if (with_survivors) {
+    man["survivor_contexts"] = surv_env;
+    man["survivor_definition"] = "id in universe on any of the final 21 sessions of a survivor context "
+                                 "(ex-post diagnostic split; never a signal input)";
+    man["survivor_ids"] = survivors.size();
+  }
   man["horizons"] = {5, 21};
   man["align"] = {{"lag_sessions", 1}, {"max_days_since_available", 400},
                   {"max_days_since_period_end", 550}};
