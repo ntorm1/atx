@@ -90,6 +90,13 @@ Format: assumption — why — cost if wrong.
 
 ## Log
 
+- 2026-09-25 Codex continuation: P-2 public-combiner reproducibility deferral is resolved
+  by reviewed inference repair52b8c6ea (26/26 focused,6/6 independent,3PCH-off TUs).
+  Replay consumer/default/causality repair47e5ef8e is merged at33c9f194 (128/128book,
+  32/32focusedimpl,6PCH-off TUs). P-7 is being replaced with an actual scoped ASan gate,
+  not treated as accepted by the owner. Active state is tracked in
+  `.superpowers/sdd/alpha-engine-20260925/progress.md`. W0 itself is NOT gated yet.
+
 - 2026-09-24 23:0xZ — setup: all 11 stale qps leases released (keepers dead); qps notes archived;
   pool-1 leased as `feat/w0-integration` (run `aes-w0-integ`).
 - 2026-09-25T01:05:47Z — O1 merged @ 14ce9172 (lane head 3ccf012c): lane 6 + equity-bench preset + red stage_run smoke test integrated conflict-free (28 files); quiet-host bench baselines deferred to gate.
