@@ -633,12 +633,14 @@ def test_vendor_and_archive_last_trade_disagreement_is_keyed_to_the_event(tmp_st
     )
 
 
-def _insert_observation(store, observation_id, delist_date, delisting_return, available_at):
+def _insert_observation(store, observation_id, delist_date, delisting_return, available_at, *, as_of_date=None):
+    # as_of_date defaults to delist_date (a row landed on its own DLSTDT, unshifted); the loader
+    # leaves as_of_date on the vendor DLSTDT when it shifts delist_date to the next session.
     store.con.execute(
         "INSERT INTO delisting_return_observations (delisting_return_observation_id, source, provider, "
         "security_id, symbol, delist_date, as_of_date, available_at, delisting_return, return_basis) VALUES "
         "(?, 'crsp', 'CRSP', ?, ?, ?, ?, ?, ?, 'CRSP_DLRET')",
-        [observation_id, "SEC-OBS", "OBS", delist_date, delist_date, available_at, delisting_return],
+        [observation_id, "SEC-OBS", "OBS", delist_date, as_of_date or delist_date, available_at, delisting_return],
     )
 
 
@@ -671,8 +673,14 @@ def test_vendor_earlier_observation_is_rebased_so_the_drop_is_counted_once(tmp_s
     refresh_delisting_evidence(tmp_store, options)
     assert fold_evidence_into_delisting_events(tmp_store, options) == 1
     # Effective basis of the vendor's DLSTDT (session 98) is session 99; the event is session 101.
-    _insert_observation(tmp_store, "obs-p7", OBS_SESSIONS[99], -0.5,
-                        dt.datetime.combine(OBS_SESSIONS[106], dt.time(12)))
+    _insert_observation(
+        tmp_store,
+        "obs-p7",
+        OBS_SESSIONS[99],
+        -0.5,
+        dt.datetime.combine(OBS_SESSIONS[106], dt.time(12)),
+        as_of_date=OBS_SESSIONS[98],
+    )
 
     assert refresh_delisting_terminal_returns(tmp_store) == 1
     [(delist_date, terminal_return, source, basis, available_at)] = tmp_store.con.execute(
@@ -698,6 +706,97 @@ def test_vendor_earlier_observation_is_rebased_so_the_drop_is_counted_once(tmp_s
     ).fetchone()
     assert raw == pytest.approx(-0.5)  # the archive's own leg to its last close (5)
     assert label == pytest.approx(-0.5)  # vendor-consistent; the round-1 re-key gave -0.75
+
+
+@pytest.mark.parametrize("landing", ["csv_loader", "unshifted_dlstdt_row"])
+def test_vendor_last_trade_one_session_early_is_rebased_not_rekeyed_as_is(tmp_store, tmp_path, landing):
+    # AF1 review I1: the vendor's last exchange price is session 99 (8.0); the archive prints 6.0
+    # on session 100 (its last trade), so the event is session 101. The loader shifts DLSTDT 99 to
+    # session 100 == the event's last_observed_trade_date -- the same key a row landed on the
+    # CRSP DLSTDT basis carries, but NOT that cessation seen on the event basis: re-keyed as is,
+    # the vendor's -0.4 (from 8.0) would be applied after the archive's 8 -> 6 move as well.
+    # A row landed on its own DLSTDT (session 99, unshifted) is the same economics (review M4:
+    # P(T') is the close ON the DLSTDT, not the one before it).
+    from atx_db.asof import delisting_events_asof
+    from atx_db.calendar import TradingCalendarDataset, TradingCalendarOptions
+    from atx_db.delisting import (
+        REBASED_RETURN_BASIS_SUFFIX,
+        DelistingReturnObservationOptions,
+        load_delisting_return_observations,
+        refresh_delisting_terminal_returns,
+        refresh_survivorship_safe_forward_returns,
+    )
+    from atx_db.delisting_evidence import (
+        DelistingEvidenceOptions,
+        fold_evidence_into_delisting_events,
+        refresh_delisting_evidence,
+    )
+
+    prices = {99: 8.0, 100: 6.0}
+    rows = [("SEC-LIVE", "LIVE", day, 10.0) for day in OBS_SESSIONS]
+    rows += [("SEC-OBS", "OBS", day, prices.get(i, 10.0)) for i, day in enumerate(OBS_SESSIONS[:101])]
+    tmp_store.con.executemany(
+        "INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, close, adjusted_close, "
+        "volume, available_at, as_of_date, is_latest_revision) VALUES ('test', ?, ?, ?, ?, ?, 1000, ?, ?, true)",
+        [(sid, sym, day, px, px, dt.datetime.combine(day, dt.time(22)), day) for sid, sym, day, px in rows],
+    )
+    options = DelistingEvidenceOptions(run_id="i1")
+    refresh_delisting_evidence(tmp_store, options)
+    assert fold_evidence_into_delisting_events(tmp_store, options) == 1
+    visible_at = dt.datetime.combine(OBS_SESSIONS[106], dt.time(12))
+    if landing == "csv_loader":
+        csv_path = tmp_path / "dlret.csv"
+        csv_path.write_text(
+            "security_id,symbol,dlstdt,dlret,available_at\n"
+            f"SEC-OBS,OBS,{OBS_SESSIONS[99].isoformat()},-0.4,{visible_at.isoformat(sep=' ')}\n",
+            encoding="utf-8",
+        )
+        load_options = DelistingReturnObservationOptions(source_file=csv_path, run_id="i1")
+        assert load_delisting_return_observations(tmp_store, load_options) == 1
+        assert tmp_store.con.execute(
+            "SELECT delist_date, as_of_date FROM delisting_return_observations"
+        ).fetchone() == (OBS_SESSIONS[100], OBS_SESSIONS[99])  # shifted onto the event's last trade
+    else:
+        _insert_observation(tmp_store, "obs-dlstdt", OBS_SESSIONS[99], -0.4, visible_at)
+
+    assert refresh_delisting_terminal_returns(tmp_store) == 1
+    [(delist_date, terminal_return, source, basis)] = tmp_store.con.execute(
+        "SELECT delist_date, terminal_return, terminal_return_source, return_basis FROM delisting_terminal_returns"
+    ).fetchall()
+    assert (delist_date, source) == (OBS_SESSIONS[101], "observed")
+    assert terminal_return == pytest.approx((1 - 0.4) * 8.0 / 6.0 - 1.0)  # -0.2, not the raw -0.4
+    assert basis == "CRSP_DLRET" + REBASED_RETURN_BASIS_SUFFIX
+
+    TradingCalendarDataset().load(tmp_store, TradingCalendarOptions())
+    refresh_survivorship_safe_forward_returns(tmp_store)
+    label = tmp_store.con.execute(
+        "SELECT forward_return FROM forward_returns_survivorship_safe "
+        "WHERE security_id = 'SEC-OBS' AND as_of_date = ? AND horizon_days = 10",
+        [OBS_SESSIONS[95]],
+    ).fetchone()[0]
+    # Vendor-consistent P(99)/P(95) * (1 - 0.4) - 1 = -0.52; the un-rebased re-key gave -0.64.
+    assert label == pytest.approx(8.0 / 10.0 * 0.6 - 1.0)
+
+    # The as-of API attaches the raw row only on the event's key or, unshifted, on its last trade.
+    db_path = tmp_store.path
+    tmp_store.connection.close()
+    tmp_store.connection = None
+    [event] = delisting_events_asof(OBS_SESSIONS[-1], db_path=db_path, symbols=("OBS",)).to_dict("records")
+    assert pd.isna(event["return_observation_id"])
+
+
+def test_asof_events_observation_match_plans_as_hash_joins(tmp_store):
+    # AF1 review I2: an OR of the two date keys planned as BLOCKWISE_NL_JOIN (every event x
+    # observation pair, 5k x 5k = 11 s); the UNION ALL keeps each date match an equi-join.
+    from atx_db.asof import DELISTING_EVENTS_ASOF_SQL
+
+    sql = DELISTING_EVENTS_ASOF_SQL.format(symbol_join="", code_join="")
+    plan = "\n".join(
+        str(row[-1])
+        for row in tmp_store.con.execute("EXPLAIN " + sql, [OBS_SESSIONS[-1], dt.datetime(2030, 1, 1)]).fetchall()
+    )
+    assert "BLOCKWISE_NL_JOIN" not in plan
+    assert plan.count("HASH_JOIN") >= 3  # exact key, unshifted last trade, candidate attach
 
 
 def test_vendor_later_observation_is_rekeyed_without_rebasing(tmp_store):
