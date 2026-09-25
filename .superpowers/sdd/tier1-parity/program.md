@@ -1,5 +1,25 @@
 # Tier-1 parity program ledger (atx-db)
 
+## Recovery capacity window failed — 2026-09-25 00:01UTC
+
+archive18-recovery-window1 observed180seconds but could not sustain the scoped
+3/5GiB operator floors; no recovery SQL executed. Last transient sample4.220/
+5.519GiB. All source/guard/observer processes are absent. CR18 process evidence
+must be refreshed (preserving history) before fresh recovery3; actual source18
+UUID remains unread, so archive19 is not yet runnable. This resumed goal turn
+delivered CC1/SA1/DG1 and now ends on renewed host capacity; do not count multiple
+windows as multiple blocked goal turns. Goal active, production incomplete.
+
+## Archive18 host stop; recovery pending — 2026-09-24 23:58UTC
+
+The LIVE entry below is historical. Guard stopped archive18's retained-fact
+proof at physical1.330GiB/commit3.548GiB; no source writes reached. Root session
+55700 terminal exit1 and all original/warehouse guard PIDs absent. CR18 exact
+identity-only reuse of the reviewed archive16 recovery procedure is ready;
+two1GiB attempts refused preflight at2.225/2.264GiB physical. Do not count this
+as ledger recovery. Complete bookkeeping, checkpoint and read actual dataset
+UUID before archive19. CC1/SA1/DG1 remain delivered; all backups and stash kept.
+
 ## Full archive18 resumed after verified repair — 2026-09-24 23:53UTC
 
 Root session55700/guard child1492/source child9152 is sole heavy job. Uses

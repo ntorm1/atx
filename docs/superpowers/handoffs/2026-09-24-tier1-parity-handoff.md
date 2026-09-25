@@ -7,7 +7,27 @@ is incomplete. Continue on feat/tier1-parity. Preserve unrelated risk-test and
 alpha-swarm files, every backup and **stash@{0}**; never apply/drop the stash.
 All implementation/review work uses Codex; no external model spending or merge.
 
-**Archive18 is LIVE at 23:53UTC**, root session55700, guard child1492, actual
+**Archive18 STOPPED on host headroom; no writer is live.** Guard terminated
+its owned job during retained-fact proof at physical1.330GiB/commit3.548GiB.
+Session55700 is terminal exit1; all original PIDs and warehouse guards are gone.
+No new source writes were reached. CR18 identity-only adaptation of the existing
+reviewed recovery helper is ready, but its first two 1GiB guarded launches were
+refused at physical2.225/2.264GiB. Recovery is PENDING; actual archive18 dataset
+UUID must come from recovery before a fresh archive19 can run. Do not infer
+ledger completion from the terminated process or reuse archive17 as predecessor.
+
+Latest recovery observation,2026-09-25 00:01:34UTC: the 180second window could
+not sustain even the scoped3GiB physical/5GiB commit operator floors. Last sample
+4.220GiB physical/5.519GiB commit is transient, not a passed window. No observer,
+warehouse or guard worker remains. Recovery still has not run. On continuation,
+preserve the old process-check receipt under a fresh history name, then refresh
+the current evidence (helper requires age under5minutes) before a guarded retry.
+Use fresh recovery3 artifacts, then obtain actual archive18 UUID from its output.
+This is the first resumed goal turn ending on the renewed host-capacity block,
+after completing independent repairs. Count blocked goal turns, not repeated
+window samples; keep the goal active until the three-turn rule actually applies.
+
+Historical launch: archive18 at23:53UTC, root session55700, guard child1492, actual
 warehouse Python child9152. It is the sole heavy process tree. Full scope,
 replacement/force, snapshot2026-09-20, 512MB/one thread, 1.5GiB cap and 3GiB
 data-disk floor. Source window2 passed 120.032seconds at 4/6GiB; initial guard
@@ -111,10 +131,11 @@ backups and use backup-keep100. Do not infer a process from a running ledger.
 
 ## Next action
 
-1. Monitor the existing full archive18 to a terminal state and inspect actual
-   dataset/stage results. It already uses the verified archive17 predecessor,
-   512MB/one thread, 1.5GiB cap, full replacement scope and every proof check.
-   No source completion/new facts are claimed yet. No concurrent heavy job.
+1. Finish the bounded archive18 operator ledger recovery after headroom allows;
+   refresh process-check evidence if older than five minutes. Its script is the
+   exact archive16 procedure with run identities changed. Then use its actual
+   terminal dataset UUID for archive19, fresh artifacts and full source proof.
+   Keep512MB/one thread,1.5GiB cap,4/6GiB sustained window and3GiB disk floor.
 2. Full submissions resume, scoped CVX earnings source, full-universe run5
    from statement_points, force and16sequential reconciliation shards. Other
    stage capacity profiles still need evidence before being lowered.

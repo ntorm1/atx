@@ -1,5 +1,25 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## No live worker; bounded recovery still awaits capacity — 2026-09-25 00:01UTC
+
+Recovery window1 is terminal no_sustained_window after180seconds at3/5GiB floors.
+Last4.220physical/5.519commit sample does not qualify. No guard/observer/source
+worker remains. Preserve then refresh process evidence under5minutes; use fresh
+recovery3 filenames and the ready close_companyfacts_archive18_headroom_stop.py.
+Actual source18 UUID is still unknown until recovery; never reuse source17 for
+archive19. Goal remains active; this is the first renewed blocked goal turn
+after independent progress, not three turns merely because windows repeated.
+
+## Archive18 terminal guard stop; recovery PENDING — 2026-09-24 23:58UTC
+
+No writer is live. Physical1.330GiB triggered unchanged host stop during full
+fact proof, before new writes. Session55700 exit1 and process absence verified.
+CR18 existing-procedure adaptation is ready but two bounded recovery launches
+were refused for physical headroom2.225/2.264GiB. Refresh process evidence if
+older than5minutes, finish256MB/one-thread recovery under1GiB, read actualUUID,
+then fresh archive19 after source headroom. Do not relaunch archive18 or use
+the archive17 predecessor again. All completed repairs/evidence remain valid.
+
 ## Archive18 LIVE — 2026-09-24 23:53UTC
 
 Root session55700, guard child1492/source child9152: sole heavy job. Full scope,

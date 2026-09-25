@@ -1,5 +1,21 @@
 # Production resume sequence — updated 2026-09-24
 
+**2026-09-25 00:01UTC:** recovery-window1 is terminal no_sustained_window after
+180seconds at3/5GiB operator floors. No process remains; recovery SQL has not
+run. Preserve prior process evidence, refresh its current file (under5minutes),
+then invoke close_companyfacts_archive18_headroom_stop.py with fresh recovery3
+guard artifacts,256MB internal/one thread,1GiB job cap and3GiB data-disk floor.
+Only its completed receipt/checkpoint and actual dataset UUID authorize building
+the future archive19 command. No source or ledger completion is claimed now.
+
+**23:58UTC STOPPED:** archive18's guard terminated its owned process tree at
+physical1.330GiB/commit3.548GiB during retained-fact proof. No new source writes
+were reached. Session55700 is terminal exit1; all original warehouse PIDs are
+absent. CR18 recovery helper is ready but two guarded preflights refused low
+headroom. Recovery is still due; obtain actual dataset UUID from its result
+before constructing archive19. Commands below are historical, not a fresh
+resume instruction. Never repeat archive18 or skip pending ledger recovery.
+
 **23:53UTC ACTIVE:** archive18 command below is already running, root
 session55700, guard child1492/source child9152. It is the sole heavy workload;
 do not run the command again. Source window2 passed120.032seconds at4/6GiB.
