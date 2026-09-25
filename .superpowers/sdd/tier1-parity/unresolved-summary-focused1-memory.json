@@ -1,0 +1,27 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "-m",
+    "pytest",
+    "tests/test_companyfacts_unresolved_summary.py",
+    "-n",
+    "0",
+    "-o",
+    "addopts=",
+    "-q"
+  ],
+  "job_limit_gb": 1.0,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 5.031547546386719,
+    "commit_free_gb": 7.622642517089844
+  },
+  "disk": {
+    "path": "C:\\atx\\atx-db\\data",
+    "free_gb": 34.45259094238281,
+    "min_free_gb": 3.0
+  },
+  "child_pid": 20164,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.593109130859375
+}

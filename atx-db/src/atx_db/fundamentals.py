@@ -520,31 +520,32 @@ def resolve_company_facts_identifiers(
             for cik, available_at, security_id, entity_id in resolved_rows
         }
 
-    unresolved_rows: list[dict[str, Any]] = []
+    # Only one summary per CIK is returned. Aggregate while resolving instead
+    # of retaining one dictionary plus groupby arrays for every unresolved fact.
+    # Insertion order and the first unresolved row's identity/clock are retained.
+    unresolved_by_cik: dict[str, dict[str, Any]] = {}
     for idx in out.index:
         cik = str(out.at[idx, "__cik_key"]).strip()
         available_at = out.at[idx, "__available_key"]
         match = None if pd.isna(available_at) else resolved_by_key.get((cik, pd.Timestamp(str(available_at))))
-        if match is None:
-            unresolved_rows.append(
-                {"cik": cik, "security_id": out.at[idx, "security_id"], "available_at": available_at,
-                 "security_unresolved_count": 1, "entity_unresolved_count": 1}
-            )
-            continue
-        out.at[idx, "security_id"], out.at[idx, "entity_id"] = match
-        if not allow_current_fallback and match[1] is None:
-            unresolved_rows.append(
-                {"cik": cik, "security_id": match[0], "available_at": available_at,
-                 "security_unresolved_count": 0, "entity_unresolved_count": 1}
-            )
+        if match is not None:
+            out.at[idx, "security_id"], out.at[idx, "entity_id"] = match
+            if allow_current_fallback or match[1] is not None:
+                continue
+        summary = unresolved_by_cik.get(cik)
+        if summary is None:
+            summary = {
+                "cik": cik, "security_id": out.at[idx, "security_id"], "available_at": available_at,
+                "security_unresolved_count": 0, "entity_unresolved_count": 0, "fact_count": 0,
+            }
+            unresolved_by_cik[cik] = summary
+        summary["security_unresolved_count"] += int(match is None)
+        summary["entity_unresolved_count"] += 1
+        summary["fact_count"] += 1
     out = out.drop(columns=["__cik_key", "__available_key"])
 
-    if unresolved_rows:
-        unresolved = pd.DataFrame(unresolved_rows)
-        unresolved["fact_count"] = unresolved.groupby("cik")["cik"].transform("size")
-        for column in ("security_unresolved_count", "entity_unresolved_count"):
-            unresolved[column] = unresolved.groupby("cik")[column].transform("sum")
-        unresolved = unresolved.drop_duplicates(subset=["cik"]).reset_index(drop=True)
+    if unresolved_by_cik:
+        unresolved = pd.DataFrame(unresolved_by_cik.values())
     else:
         unresolved = pd.DataFrame(columns=["cik", "security_id", "available_at"])
     return out, unresolved
