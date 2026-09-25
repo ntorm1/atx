@@ -158,6 +158,8 @@ from .catalog import (
     warehouse_catalog_asof,
 )
 
+from .cross_section import CrossSectionResult, ScreenField, ScreenStore, cross_section_asof, run_cross_section
+
 from .cli import (
     _parse_csv_arg,
     _build_arg_parser,
