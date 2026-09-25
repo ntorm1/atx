@@ -95,3 +95,47 @@ atx-impl/tests/stage_equity_mine_cli_test.cpp:224-229 | minor | This existing ex
 - [x] Causality-harness registration: n/a in W0.
 - [x] The work is wired into the real stages: `run_equity_baseline`, `run_equity_ic`, the equity-mine dispatch, `replay_config` and `dispatch`. The owning executable runs whole, with only the two failures above, which are not from this lane.
 - [x] The report's evidence matches the claims. The build, the 30/30 lane suites, the 563/556/5/2 whole-executable counts and every printed measurement were reproduced.
+
+## Re-review 1
+
+Reviewed SHA: `190c2fb4c0832d60a11fe40b75e1c91e92b705b2` (fix commit `190c2fb4` over `95ed4a88`).
+Verdict: **APPROVE**. The one major is fixed, all but one of the minors are fixed, and nothing regressed.
+
+### Evidence
+- Build: `atx-build.ps1 build -Preset equity-dev atx-impl-tests atx-shm-worker`, with `CMAKE_BUILD_PARALLEL_LEVEL=2` and 2.08 GB free RAM at the start. Exit 0. The atx-impl objects were already up to date for the clean tree (/W4 /WX), so only a relink ran.
+- Affected suites, run directly from the exe. The filter was `ImplConfigBool_*:ImplConfigFinite_*:ImplIcAsOfMembership_*:ImplMineRequiresMembership_*:ImplPendingOrder_*:ImplDelayGuard_*:StageEquityIc*:StageEquityMine*:CliSmoke*:ConfigEquity*`. Result: **53/53 passed**. It printed `dsr rules: n_raw=4 n_eff=1.6143, 4 scored rows compared, 1 raised`.
+- Whole owning executable (`atx-impl-tests.exe --gtest_brief=1`): **567 tests ran: 560 passed, 5 skipped, 2 failed**, exit 1. Before the fix the counts were 563 ran and 556 passed, with the same 5 skipped and 2 failed. The 4 extra tests are the new fix-pass tests. The two failures are the same pre-existing, non-lane ones as before: `FundamentalZoo.FixtureParsesTypechecksAndEvaluates` and `TrialLedgerRepository.ExistingCp14Ledger_StillVerifies` (the CRLF issue).
+- Test diff `95ed4a88..HEAD`: 239 lines added and 1 line removed. The removed line is the `write_context` signature, which gained a defaulted `halt` parameter. No assertion was loosened, no test was disabled or skipped, and no golden value was re-baselined.
+
+### Per finding
+1. **major, bool 1/0 literals: FIXED.**
+   - `is_bool_literal` (true/false/1/0) drives the `parse_args` look-ahead, and `parse_bool_flag_value` maps 1 to true and 0 to false for both the CLI and files.
+   - `ImplConfigBool_Cli.CommittedRunbooksNumericBooleanLiteralsStillParse` pins both runbooks' exact flag sets (`--require-sector 1 --compact-universe 1`). It also covers `0` meaning false, the refusal of `2` and `yes`, and the literals in a file. It passes.
+   - A scan of the committed scripts turned up no other boolean flag followed by a non-literal value.
+2. **minor, unclassified count: FIXED.**
+   - A single helper, `unclassified_mark_count`, feeds the ledger, `request.json` (`required_mark_audit.unclassified_id_count`) and `manifest.json` (`terminal_evidence.unclassified_id_count`).
+   - `StageEquityIc` pins 29 in both files, and the as-of test pins 0 in both files and in the ledger.
+3. **minor, resumed-halt look-ahead: FIXED (refused).**
+   - `build_cells` finds the last priced close for a `terminal_return` row. It then returns Err if an earlier priced close exists before an interior gap.
+   - Leading NaNs from a mid-window listing are correctly not treated as a gap.
+   - The precondition is stated in the `stage_equity_ic.hpp` table contract.
+   - Test `TerminalReturnRowAfterAResumedHaltIsRefused` passes. The halted return row is refused, while a real delisting's return row and a value row both run.
+   - The default frozen 2013 table has value rows only (`equity_ic_frozen_terminal_table` sets `terminal_value` only), so the canonical path is unaffected.
+4. **minor, cross-flag pass vs `--config`: FIXED.**
+   - `parse_args` skips the pass only when `config_file` is set. `dispatch.cpp:137-153` always runs `validate_cross_flags` after the merge. Subcommands that reject `--config` still exit 2 before stage routing.
+   - `dispatch` is the only non-test caller of `parse_args`; equity-mine has its own parser.
+   - Test `AConfigFileOptInCountsForACliZeroDelay` covers three cases: the file opt-in is accepted, a missing opt-in is refused, and a CLI `false` beats the file's `true`.
+5. **minor, equity-mine `--allow-same-close [true|false|1|0]`: FIXED.**
+   - The flag consumes one literal, validated through `parse_bool_flag_value`, and the usage text now says `true|false|1|0`.
+   - The extended `DelayZeroNeedsAllowSameClose` test covers `true` and `1`, `false` and `0`, a following `--quiet` that is not swallowed, and `maybe` refused as a stray argument.
+6. **minor, versioned DSR selector: FIXED.**
+   - The new flag is `--dsr-rule cluster-mc-floor-v2|summary-raw-n-v2|summary-n-eff-v1`. I checked `summary-n-eff-v1` against base `458d0bef`: the pre-W0 `deflated_sharpe(sr, TrialSummary, ...)` used `expected_max_sharpe_eff(n_eff, var_sr)`, which is exactly `eval::SummaryDsrRule::NEffCrossVarV1`. So the pre-W0 rule really was n_eff (the original finding's "raw-N" wording was inexact), and it is now reproducible.
+   - The default path (cluster rule, falling back to raw-N) is unchanged from `95ed4a88`.
+   - The requested rule and the applied rule are both recorded.
+   - The test proves that only `dsr_train` differs and that the admitted set is identical.
+   - Disclosed caveat: E-16 widened the registry calendar, so n_eff inputs can move. The rule itself is reproducible.
+7. **minor (optional), I-17 stage-level test: NOT FIXED. Accepted.** A stage-level test would need a failure seam in production code. The helper unit test and the three call sites carry the proof. It was optional.
+8. **minor, A-01 re-pin: no change needed.** The orchestrator still needs to confirm the A0 attribution on `feat/w0-integration`.
+
+### New issues from the fix
+None blocking. One observation, which is not a finding because this fix did not introduce it: the halt guard refuses the whole run rather than skipping the row. With real W2-D2 data, one vendor gap in a return-row security's closes stops the stage. This fails closed. W2-D2 should know about it when it supplies real rows.
