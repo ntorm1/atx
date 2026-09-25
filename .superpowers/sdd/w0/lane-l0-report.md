@@ -291,3 +291,36 @@ build-equity\bin\atx-engine-learn-tests.exe --gtest_brief=1
 ```
 
 The acceptance measurements are unchanged. The mutation-invariance lines are identical to the review: tcn V2 `identical=1`, tcn V1 `max|dpred|=1.45626`, gru V1 `1.25447`, linear V2 `identical=1`, linear V1 `0.0562598`, gbt V1 `0.119193`. Golden-digest table: none.
+
+## Post-merge sync (final, pre-orchestrator-merge)
+
+- Head before sync: `86bb8bdb892c89fe71efd5ad05d6846eefd540cf` (`w0-l0: re-review 1 (APPROVE: all 3 findings fixed)`).
+- `git -C C:\atx-wt\pool-3 status --porcelain` -> empty; no `MERGE_HEAD`.
+- `git -C C:\atx-wt\pool-3 merge-base --is-ancestor feat/w0-integration HEAD` -> exit 1 (integration
+  had moved since the last sync and was not yet contained).
+- `git -C C:\atx-wt\pool-3 merge --no-ff feat/w0-integration -m "w0-l0: merge feat/w0-integration" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"`
+  -> "Merge made by the 'ort' strategy.", **no conflicts**, 35 files changed (O1's CMake/preset work,
+  W2 risk/cost/ADMM/MPC/discretize/riccati headers+sources+tests, W0 workflow scaffolding, handoff
+  docs). Nothing touched an L0-owned file.
+- Rebuild (`CMAKE_BUILD_PARALLEL_LEVEL=2`, 2.27 GB free RAM at start, threshold met):
+  ```
+  scripts\atx-build.ps1 build -Preset equity-dev atx-engine-learn-tests
+  [14/17] Linking CXX executable bin\atx-engine-learn-tests.exe          build exit=0
+  ```
+  (PowerShell 5.1 reported the wrapper call's own exit code as 1 solely because ninja's benign
+  "-- GLOB mismatch!" reconfigure notice went to stderr; the binary was produced and every anchored
+  run below used the freshly linked exe.)
+- Anchored suites (`-Ctest -Preset equity-dev -R '^<Suite>'`):
+  ```
+  ^LearnLabelMutationInvariance_ -> 100% tests passed, 0 tests failed out of 9    exit=0
+  ^LearnLabelMaturity_           -> 100% tests passed, 0 tests failed out of 7    exit=0
+  ^LearnFoldLocalAug_            -> 100% tests passed, 0 tests failed out of 11   exit=0
+  ^LearnIcLossPerDate_           -> 100% tests passed, 0 tests failed out of 17   exit=0
+  ```
+- Whole owning executable: `build-equity\bin\atx-engine-learn-tests.exe --gtest_brief=1` ->
+  `[==========] 193 tests from 31 test suites ran. (102586 ms total)` / `[  PASSED  ] 193 tests.`
+  exit=0 — unchanged from the pre-sync count (193), confirming the W2/O1 merge touched nothing the
+  learn layer depends on.
+- Nothing needed fixing: no code change was required by the merge.
+- Head after sync (pre-report-commit): `42aeb8b56c0d06036beefe91741966d6ead38682`. The report commit
+  sits on top of it (its SHA is returned in the structured result).
