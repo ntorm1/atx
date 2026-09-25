@@ -566,22 +566,106 @@ def test_combined_basic_and_diluted_line_is_basic_eps_only() -> None:
         document, measure="diluted", period_end=dt.date(2025, 12, 31)
     )
     assert diluted is None
-    assert diluted_reason == "rejected_non_gaap_or_adjusted"
+    assert diluted_reason == "diluted_row_mentions_basic"
 
 
-@pytest.mark.parametrize("label", [
-    "Adjusted basic earnings per share",
-    "Basic earnings per share from continuing operations",
-    "Non-GAAP basic earnings per share",
-    "Non GAAP net income per share - basic",
+@pytest.mark.parametrize(("measure", "label"), [
+    ("basic", "Adjusted basic earnings per share"),
+    ("basic", "Basic earnings per share from continuing operations"),
+    ("basic", "Non-GAAP basic earnings per share"),
+    ("basic", "Non GAAP net income per share - basic"),
+    ("basic", "Basic earnings per share from discontinued operations"),
+    ("basic", "Core earnings per share - basic"),
+    ("diluted", "Diluted earnings per share - discontinued operations"),
+    ("diluted", "Core earnings per diluted share"),
+    ("diluted", "Pro forma diluted earnings per share"),
 ])
-def test_non_gaap_continuing_or_adjusted_basic_eps_is_rejected(label: str) -> None:
+def test_non_gaap_or_component_eps_is_rejected(measure: str, label: str) -> None:
     fact, reason = extract_reported_gaap_eps(
-        _single_row_table(label), measure="basic", period_end=dt.date(2025, 12, 31)
+        _single_row_table(label), measure=measure, period_end=dt.date(2025, 12, 31)
     )
 
     assert fact is None
     assert reason == "rejected_non_gaap_or_adjusted"
+
+
+def _rows_table(rows: list[tuple[str, str]]) -> str:
+    body = "".join(f"<tr><td>{label}</td><td>{value}</td></tr>" for label, value in rows)
+    return f"""
+    <table><tr><th></th><th>Three Months Ended December 31,</th></tr>
+    <tr><th></th><th>2025</th></tr>{body}</table>
+    """
+
+
+def _both(document: str) -> dict[str, tuple]:
+    end = dt.date(2025, 12, 31)
+    result = {}
+    for measure in ("basic", "diluted"):
+        fact, reason = extract_reported_gaap_eps(document, measure=measure, period_end=end)
+        result[measure] = (None if fact is None else fact["value"], reason)
+    return result
+
+
+def test_combined_share_count_row_is_never_basic_eps() -> None:
+    """Review probe B: a 'basic and diluted' share-count row next to the EPS row."""
+
+    share_row = ("Weighted average shares used to compute net loss per share, basic and diluted", "45,123,456")
+    eps_row = ("Basic and diluted net loss per common share", "(0.25)")
+    assert _both(_rows_table([eps_row, share_row])) == {
+        "basic": (-0.25, None), "diluted": (None, "diluted_row_mentions_basic"),
+    }
+    # Without a recognizable EPS row the share count is still never a value.
+    assert _both(_rows_table([share_row]))["basic"] == (None, "reported_gaap_basic_eps_not_found")
+    # Even an EPS-shaped (decimal, in-millions) count is excluded by its wording.
+    assert _both(_rows_table([(share_row[0], "45.1")]))["basic"] == (None, "reported_gaap_basic_eps_not_found")
+
+
+def test_per_basic_and_per_diluted_share_rows_beat_share_count_rows() -> None:
+    """Review probe C: 'per basic/diluted share' EPS rows plus 'Shares used ...' rows."""
+
+    share_rows = [
+        ("Shares used in computing basic net income per share", "125,432"),
+        ("Shares used in computing diluted net income per share", "127,001"),
+    ]
+    eps_rows = [("Net income per basic share", "$ 1.21"), ("Net income per diluted share", "$ 1.18")]
+    assert _both(_rows_table([*eps_rows, *share_rows])) == {"basic": (1.21, None), "diluted": (1.18, None)}
+    assert _both(_rows_table(share_rows)) == {
+        "basic": (None, "reported_gaap_basic_eps_not_found"),
+        "diluted": (None, "reported_gaap_diluted_eps_not_found"),
+    }
+
+
+def test_share_count_section_under_per_share_heading_is_excluded() -> None:
+    document = """
+    <table><tr><th></th><th>Three Months Ended December 31,</th></tr>
+    <tr><th></th><th>2025</th></tr>
+    <tr><td colspan="2">PER SHARE DATA</td></tr>
+    <tr><td colspan="2">Weighted average common shares (millions):</td></tr>
+    <tr><td>- Basic</td><td>875.4</td></tr>
+    <tr><td>- Diluted</td><td>880.1</td></tr>
+    <tr><td colspan="2">Net income per common share:</td></tr>
+    <tr><td>- Basic</td><td>1.12</td></tr>
+    <tr><td>- Diluted</td><td>1.11</td></tr></table>
+    """
+    assert _both(document) == {"basic": (1.12, None), "diluted": (1.11, None)}
+
+
+@pytest.mark.parametrize(("cell", "value"), [
+    ("1.39", 1.39), ("(0.25)", -0.25), ("$ .25", 0.25), ("-0.10", -0.10), ("999.99", 999.99),
+    ("45,123,456", None), ("125432", None), ("2", None), ("1250.00", None), ("(1,234.5)", None),
+])
+def test_eps_value_is_decimal_and_below_one_thousand(cell: str, value: float | None) -> None:
+    assert press_release._parse_eps_value(cell) == value
+
+
+def test_same_gaap_value_in_highlights_and_statement_is_one_fact() -> None:
+    table = _rows_table([("Diluted earnings per share", "1.39")])
+    fact, reason = extract_reported_gaap_eps(table + table, measure="diluted", period_end=dt.date(2025, 12, 31))
+    assert (fact["value"], reason) == (1.39, None)
+    conflicting = table + _rows_table([("Diluted earnings per share", "1.40")])
+    assert extract_reported_gaap_eps(
+        conflicting, measure="diluted", period_end=dt.date(2025, 12, 31)
+    ) == (None, "ambiguous_eps_candidates")
 
 
 def test_diluted_row_under_basic_heading_is_never_basic_eps() -> None:
@@ -624,3 +708,43 @@ def test_rejected_receipt_names_each_measure_reason(tmp_store, tmp_path) -> None
         "EPS_DILUTED:rejected_non_gaap_or_adjusted;EPS_BASIC:reported_gaap_basic_eps_not_found",
     )]
     assert tmp_store.con.execute("SELECT count(*) FROM press_release_facts").fetchone() == (0,)
+
+
+@pytest.mark.parametrize(("basic", "diluted", "reason"), [
+    # Dilution cannot raise EPS: flagged and withheld, never swapped.
+    ("1.20", "1.30", "diluted_exceeds_basic:basic=1.2;diluted=1.3"),
+    # A loss cannot become income through dilution.
+    ("(0.10)", "0.05", "diluted_exceeds_basic:basic=-0.1;diluted=0.05"),
+    # Rounding tolerance and anti-dilutive losses are consistent.
+    ("1.20", "1.204", None),
+    ("(0.40)", "(0.38)", None),
+])
+def test_diluted_above_basic_income_is_flagged_and_withheld(tmp_store, tmp_path, basic, diluted, reason) -> None:
+    tmp_store.con.execute(
+        """INSERT INTO sec_submissions (
+               security_id, cik, accession_number, filing_date, report_date,
+               acceptance_datetime_raw, form, items, source_url
+           ) VALUES ('SEC-CIK-0000093410', '0000093410', '0000093410-26-000019',
+                     DATE '2026-01-30', DATE '2025-12-31', '2026-01-30T18:17:00-05:00',
+                     '8-K', '2.02', 'bulk-fixture')"""
+    )
+    document = f"""
+    <p>Fourth Quarter 2025</p><table>
+    <tr><th></th><th>Three Months Ended December 31,</th></tr><tr><th></th><th>2025</th></tr>
+    <tr><td colspan="2">Earnings per share:</td></tr>
+    <tr><td>- Basic</td><td>{basic}</td></tr>
+    <tr><td>- Diluted</td><td>{diluted}</td></tr></table>
+    """.encode()
+    options = SecEarningsReleaseOptions(cache_dir=tmp_path / "cache", run_id="dilution-check")
+    result = refresh_sec_earnings_release_facts(
+        tmp_store, options, session=_Session([COMPACT_FILING_INDEX.encode(), document])
+    )
+
+    receipts = tmp_store.con.execute(
+        "SELECT outcome, rejection_reason FROM sec_earnings_release_receipts"
+    ).fetchall()
+    facts = tmp_store.con.execute("SELECT count(*) FROM press_release_facts").fetchone()[0]
+    if reason is None:
+        assert (result["accepted"], receipts, facts) == (1, [("accepted", None)], 2)
+    else:
+        assert (result["rejected"], receipts, facts) == (1, [("rejected", reason)], 0)

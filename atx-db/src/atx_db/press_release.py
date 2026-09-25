@@ -76,7 +76,26 @@ SEC_FILING_DATE_CLOCK_POLICY = "sec_filed_date_plus_46h_v1"
 # document under one receipt; each measure keeps the same duration proof.
 REPORTED_EPS_EXTRACTOR_VERSION = "reported_gaap_eps_basic_diluted_v2"
 REPORTED_EPS_MEASURE_CODES = {"diluted": DILUTED_EPS.measure_code, "basic": BASIC_EPS.measure_code}
-_NON_GAAP_EPS_TERMS = ("continuing", "adjusted", "non-gaap", "non gaap")
+# Rows that are not total GAAP EPS: non-GAAP/adjusted measures and per-share
+# components (continuing or discontinued operations).
+_NON_TOTAL_GAAP_EPS_RE = re.compile(
+    r"continuing|adjusted|non-gaap|non gaap"
+    r"|\b(?:discontinued|core|pro[- ]?forma|excluding|operating|cash)\b"
+)
+# "per share", "per common share", "per diluted share", "per basic and diluted share" ...
+_PER_SHARE_RE = re.compile(r"\bper\s+(?:(?:basic|diluted|common|ordinary|and)\s+)*share\b")
+# Share-count rows ("Weighted average shares used in computing ... per share,
+# basic and diluted", "Shares used in computing diluted net income per share").
+_SHARE_COUNT_RE = re.compile(r"\b(?:shares|weighted|denominator|share\s+count)\b")
+# A reported EPS amount is a decimal with 1-4 fraction digits and magnitude
+# below $1,000. Integers and thousands-separated numbers (share counts, dollar
+# amounts) never qualify. Per-share amounts of $1,000 or more (e.g. some
+# Class A shares) are rejected by design rather than risk a share count.
+_EPS_VALUE_RE = re.compile(r"\d{0,3}\.\d{1,4}")
+_EPS_VALUE_BOUND = 1000.0
+# Under GAAP, dilution never raises EPS: diluted EPS above basic EPS (beyond
+# rounding) means the document or its extraction is inconsistent.
+_DILUTION_TOLERANCE = 0.005
 # Release-duration windows (inclusive days) used to match a preliminary fact
 # to a final actual by period geometry rather than by fiscal labels.
 _RELEASE_DURATION_WINDOWS = {
@@ -536,6 +555,28 @@ def _parse_eps_number(value: str) -> float | None:
     return -result if negative else result
 
 
+def _parse_eps_value(value: str) -> float | None:
+    """Parse only an EPS-shaped amount; see ``_EPS_VALUE_RE``/``_EPS_VALUE_BOUND``.
+
+    ``_parse_eps_number`` still detects numeric table rows; this stricter
+    parser decides whether a cell can be a reported per-share amount.
+    """
+
+    token = value.replace("$", "").replace(chr(0x2212), "-").strip()  # U+2212 minus sign
+    if "," in token:
+        return None
+    negative = token.startswith("(") and token.endswith(")")
+    token = token.strip("() ")
+    if token.startswith("-") and not negative:
+        negative, token = True, token[1:].strip()
+    if not _EPS_VALUE_RE.fullmatch(token):
+        return None
+    result = float(token)
+    if abs(result) >= _EPS_VALUE_BOUND:
+        return None
+    return -result if negative else result
+
+
 def _duration_evidence(header_text: str) -> str | None:
     normalized = _normalized_cell(header_text)
     if "three months" in normalized:
@@ -687,7 +728,7 @@ def _label_lineage(grid: list[list[str]], row_number: int, column: int) -> tuple
             if re.match(r"^[-\u2013\u2014\u2022]\s*", leading):
                 continue
             break
-        is_per_share = "per share" in _normalized_cell(leading)
+        is_per_share = _PER_SHARE_RE.search(_normalized_cell(leading)) is not None
         if is_per_share and found_per_share:
             break
         parents.append(leading)
@@ -814,6 +855,34 @@ def _eps_row_semantics(lineage: tuple[str, ...]) -> str | None:
     return None
 
 
+def _share_count_context(lineage: tuple[str, ...]) -> bool:
+    """True when the row, or its nearest per-share heading, counts shares.
+
+    Only the row itself and the headings up to the nearest per-share label
+    describe the row; an earlier share-count section above an EPS heading does not.
+    """
+
+    for part in reversed(lineage):
+        text = _normalized_cell(part)
+        if _SHARE_COUNT_RE.search(text):
+            return True
+        if _PER_SHARE_RE.search(text):
+            return False
+    return False
+
+
+def _dilution_inconsistency(extractions: dict[str, dict[str, Any]]) -> str | None:
+    """Flag diluted EPS above basic EPS for income (never swap the values)."""
+
+    basic = extractions.get(BASIC_EPS.measure_code)
+    diluted = extractions.get(DILUTED_EPS.measure_code)
+    if basic is None or diluted is None:
+        return None
+    if diluted["value"] > 0 and diluted["value"] - basic["value"] > _DILUTION_TOLERANCE:
+        return f"diluted_exceeds_basic:basic={basic['value']:g};diluted={diluted['value']:g}"
+    return None
+
+
 def extract_reported_gaap_diluted_eps(
     document: str,
     *,
@@ -840,12 +909,15 @@ def extract_reported_gaap_eps(
     """Extract one reported GAAP basic or diluted quarter EPS or reject.
 
     The parser deliberately needs a table row and aligned current-period column;
-    a nearby narrative number, adjusted EPS and continuing-operations EPS never
-    qualify.  A missing/ambiguous period is a rejection rather than a synthetic
-    fiscal boundary.  Diluted rows must not mention basic EPS.  Basic rows must
-    state basic EPS explicitly; a combined ``basic and diluted`` line is basic
-    EPS (the Company Facts ``EarningsPerShareBasicAndDiluted`` convention),
-    while a diluted row under a basic-mentioning heading never is.
+    a nearby narrative number, adjusted/core/non-GAAP EPS and continuing- or
+    discontinued-operations components never qualify.  Share-count rows never
+    qualify, and the value must be EPS-shaped (``_parse_eps_value``).  A
+    missing/ambiguous period is a rejection rather than a synthetic fiscal
+    boundary.  Diluted rows must not mention basic EPS.  Basic rows must state
+    basic EPS explicitly; a combined ``basic and diluted`` line is basic EPS
+    (the Company Facts ``EarningsPerShareBasicAndDiluted`` convention), while a
+    diluted row under a basic-mentioning heading never is.  Identical GAAP
+    values repeated in several tables (highlights and statements) are one fact.
     """
 
     if measure not in REPORTED_EPS_MEASURE_CODES:
@@ -859,6 +931,7 @@ def extract_reported_gaap_eps(
         return None, "period_end_missing"
     candidates: list[dict[str, Any]] = []
     rejected_semantics = False
+    diluted_mentions_basic = False
     duration_rejection: str | None = None
     for table_number, table in enumerate(tables):
         columns, _column_reason = _header_columns(table, period_end)
@@ -879,28 +952,28 @@ def extract_reported_gaap_eps(
         prior_columns, _ = _header_columns(table, prior_end) if prior_end else ({}, None)
         for row_number, row in enumerate(table):
             prior_values = [value for prior_column in prior_columns if prior_column < len(row)
-                            if (value := _parse_eps_number(row[prior_column])) is not None]
+                            if (value := _parse_eps_value(row[prior_column])) is not None]
             prior_value = prior_values[0] if len(prior_values) == 1 else None
             for column in columns:
                 if column >= len(row):
                     continue
                 lineage = _label_lineage(table, row_number, column)
                 label = _normalized_cell(" | ".join(lineage))
-                if measure not in label or "per share" not in label:
+                if measure not in label or not _PER_SHARE_RE.search(label) or _share_count_context(lineage):
+                    continue
+                if _NON_TOTAL_GAAP_EPS_RE.search(label):
+                    rejected_semantics = True
                     continue
                 if measure == "diluted":
                     row_semantics = "diluted"
-                    if "basic" in label or any(term in label for term in _NON_GAAP_EPS_TERMS):
-                        rejected_semantics = True
+                    if "basic" in label:
+                        diluted_mentions_basic = True
                         continue
                 else:
                     row_semantics = _eps_row_semantics(lineage)
                     if row_semantics not in ("basic", "basic_and_diluted"):
                         continue
-                    if any(term in label for term in _NON_GAAP_EPS_TERMS):
-                        rejected_semantics = True
-                        continue
-                value = _parse_eps_number(row[column])
+                value = _parse_eps_value(row[column])
                 if value is None:
                     continue
                 candidates.append({
@@ -919,10 +992,14 @@ def extract_reported_gaap_eps(
                     "duration_evidence": evidence["duration_evidence"],
                     **(period_evidence or {}),
                 })
+    if len({(c["value"], c["duration_evidence"], c.get("period_start")) for c in candidates}) == 1:
+        # The same GAAP amount for the same span in several tables is one fact.
+        candidates = candidates[:1]
     if len(candidates) != 1:
         return None, "ambiguous_eps_candidates" if candidates else (
             duration_rejection or (
                 "rejected_non_gaap_or_adjusted" if rejected_semantics
+                else "diluted_row_mentions_basic" if diluted_mentions_basic
                 else f"reported_gaap_{measure}_eps_not_found"
             )
         )
@@ -1321,6 +1398,11 @@ def refresh_sec_earnings_release_facts(
             else:
                 extractions[measure_code] = extracted
                 measure_outcomes[measure_code] = "accepted"
+        dilution = _dilution_inconsistency(extractions)
+        if dilution is not None:
+            # Which measure is wrong is unknowable: withhold both, keep the flag.
+            measure_outcomes = {code: dilution for code in measure_outcomes}
+            extractions = {}
         if not extractions:
             outcome = SecEarningsReleaseOutcome(
                 candidate, "rejected", _combined_rejection_reason(measure_outcomes), document_name,
