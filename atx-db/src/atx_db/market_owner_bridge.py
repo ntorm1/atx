@@ -69,6 +69,27 @@ symbol is normalized (upper case; ``.``, ``/`` and blanks -> ``-``):
    (``identity_basis='shared_security_id_unverified'``).
 4. otherwise unlinked as ``no_current_ticker`` (delisted/renamed lines whose
    last symbol no longer maps) -- counted, never silently dropped.
+5. ``reconstructed_history`` (P1): a line left unlinked by rules 1-4 (except a
+   symbol-keyed line) takes its RI1 reconstructed issuer links
+   (:mod:`atx_db.identity_reconstruction`, ``security_identity_evidence`` rows
+   with ``method='ri1_share_fingerprint_v1'``). ``identity_basis=
+   'reconstructed_history'``, ``availability_basis='modeled'``; each row keeps
+   its ``evidence_id`` and ``available_at`` is exactly the RI1 evidence clock
+   (the link is never visible before it). The RI1 tier is point in time: the
+   link is split at its ``tier_history`` steps (a step at clock ``C`` applies
+   from the first trade date whose 22:00 cutoff is at or after ``C``) and each
+   segment carries the tier in force at its bars' cutoffs (``tier``,
+   ``link_method='reconstructed_history_<tier>'``) -- never the final tier.
+   Only tiers in the filter are linked: ``high``+``medium`` by default,
+   ``high`` as a labelled sensitivity (``reconstruction_tiers``); ``low`` (a
+   dominance-resolved conflict) is never linked. A line whose RI1 candidates
+   conflict, or whose only link is contested (``low``), is unlinked as
+   ``conflicting_reconstruction``; one whose link is below the filter as
+   ``reconstruction_below_tier``. Owner links are deduplicated per CIK per day:
+   an issuer already linked on another line that day (current-ticker rules
+   first, then the reconstructed line with more bars, then the smaller id)
+   keeps it and the other reconstructed segment is trimmed -- counted. Strict
+   mode never consumes these links (they are not ``verified_dated``).
 
 Stale current-ticker holders stay linked (a delisted issuer that still files
 under the same ticker is common) but are counted (``stale_links``).
@@ -162,9 +183,10 @@ evidence and are not withheld.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from itertools import groupby, pairwise
@@ -183,22 +205,29 @@ __all__ = [
     "CURRENCY_UNKNOWN",
     "CURRENCY_VALUE_COLUMNS",
     "IDENTITY_BASIS_CURRENT_TICKER",
+    "IDENTITY_BASIS_RECONSTRUCTED_HISTORY",
     "IDENTITY_BASIS_SHARED_ID",
     "IDENTITY_BASIS_VERIFIED_DATED",
     "LINK_CIK_SECURITY_ID",
     "LINK_CURRENT_SEC_TICKER",
     "LINK_DATED_EVIDENCE",
+    "LINK_RECONSTRUCTED_HISTORY",
     "LINK_SHARED_SECURITY_ID",
     "MEMBER_VALUE_COLUMNS",
     "OWNER_MODES",
     "OWNER_MODE_RECONSTRUCTED",
     "OWNER_MODE_STRICT",
+    "RECONSTRUCTION_TIERS_DEFAULT",
+    "RECONSTRUCTION_TIERS_HIGH_ONLY",
     "SHARE_BASIS_ADR",
     "SHARE_BASIS_MULTI_CLASS",
     "SHARE_BASIS_SINGLE",
     "SHARE_BASIS_WITHHELD",
     "SINGLE_CLASS_LINK_COLUMNS",
     "STALE_LINK_DAYS",
+    "UNLINKED_CONFLICTING_RECONSTRUCTION",
+    "UNLINKED_RECONSTRUCTED_CIK_ON_OTHER_LINE",
+    "UNLINKED_RECONSTRUCTION_BELOW_TIER",
     "WITHHELD_MULTI_COMMON_CLASS",
     "WITHHELD_NON_COMMON_LINE",
     "WITHHELD_UNVERIFIED_CLASS_LINE",
@@ -208,11 +237,13 @@ __all__ = [
     "MarketOwnerBridge",
     "OwnerLinkEvidence",
     "PriceLine",
+    "ReconstructedLinkEvidence",
     "TickerClass",
     "are_class_siblings",
     "bridge_value_params",
     "build_market_owner_bridge",
     "classify_reconstructed",
+    "classify_reconstructed_with_history",
     "classify_sec_tickers",
     "classify_strict",
     "currency_status",
@@ -221,6 +252,7 @@ __all__ = [
     "normalize_cik",
     "normalize_symbol",
     "parse_ads_ratio",
+    "reconstructed_link_evidence",
     "values_relation_sql",
 ]
 
@@ -231,6 +263,7 @@ OWNER_MODES = (OWNER_MODE_STRICT, OWNER_MODE_RECONSTRUCTED)
 IDENTITY_BASIS_CURRENT_TICKER = "current_ticker_unverified"
 IDENTITY_BASIS_SHARED_ID = "shared_security_id_unverified"
 IDENTITY_BASIS_VERIFIED_DATED = "verified_dated"
+IDENTITY_BASIS_RECONSTRUCTED_HISTORY = "reconstructed_history"
 AVAILABILITY_MODELED = "modeled"
 AVAILABILITY_VERIFIED = "verified"
 
@@ -245,6 +278,17 @@ UNLINKED_AMBIGUOUS_CURRENT_TICKER = "ambiguous_current_ticker"
 UNLINKED_NO_DATED_EVIDENCE = "no_dated_evidence"
 UNLINKED_SYMBOL_KEYED_LINE = "symbol_keyed_line"
 UNLINKED_SUPERSEDED_CIK_LINE = "superseded_cik_line"
+UNLINKED_CONFLICTING_RECONSTRUCTION = "conflicting_reconstruction"
+UNLINKED_RECONSTRUCTION_BELOW_TIER = "reconstruction_below_tier"
+UNLINKED_RECONSTRUCTED_CIK_ON_OTHER_LINE = "reconstructed_cik_on_other_line"
+
+#: ``link_method`` prefix of reconstructed-history rows (suffixed with the tier in force).
+LINK_RECONSTRUCTED_HISTORY = "reconstructed_history"
+#: RI1 confidence tiers the bridge may link (``low`` is a dominance-resolved conflict: never).
+RECONSTRUCTION_TIERS_DEFAULT: tuple[str, ...] = ("high", "medium")
+RECONSTRUCTION_TIERS_HIGH_ONLY: tuple[str, ...] = ("high",)
+_RECONSTRUCTION_TIER_FILTERS = {RECONSTRUCTION_TIERS_DEFAULT: "high_medium", RECONSTRUCTION_TIERS_HIGH_ONLY: "high"}
+_RI1_TIERS = ("high", "medium", "low")
 
 #: A line whose last bar is more than this many calendar days before the bar
 #: horizon (latest last bar of any line) is *stale* for the reuse checks.
@@ -406,6 +450,31 @@ class PriceLine:
     bar_rows: int
     #: Missing/non-positive vendor id: the loader keyed the line by symbol.
     symbol_keyed: bool = False
+    #: The line's single positive vendor id (TickerHistory3 ``securityID``), when known.
+    vendor_id: int | None = None
+
+
+@dataclass(frozen=True)
+class ReconstructedLinkEvidence:
+    """One RI1 ``issuer_link`` evidence row as the bridge consumes it (see :func:`reconstructed_link_evidence`).
+
+    ``evidence_status`` is ``reconstructed`` (an accepted link segment) or
+    ``conflicting`` (one side of a two-CIK conflict; never linked).
+    ``tier_history`` holds the point-in-time ``(tier, from)`` steps.
+    """
+
+    evidence_id: str
+    evidence_status: str
+    cik: str | None
+    vendor_id: int | None
+    price_security_id: str | None
+    valid_from: dt.date | None
+    valid_to: dt.date | None
+    available_at: dt.datetime | None
+    tier_history: tuple[tuple[str, dt.datetime], ...] = ()
+    share_class_symbol: str | None = None
+    rejection_reason: str | None = None
+    observed_at: dt.datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -467,6 +536,10 @@ class BridgeRow:
     sibling_lines: int = 0
     #: Ordinary shares per ADS stated by the directory name (ADR lines only).
     adr_ratio: float | None = None
+    #: Reconstructed-history rows (P1): the RI1 tier in force at this segment's bar cutoffs,
+    #: and the RI1 evidence row it comes from.
+    tier: str | None = None
+    evidence_id: str | None = None
 
     @property
     def linked(self) -> bool:
@@ -542,6 +615,8 @@ class MarketOwnerBridge:
     #: Monetary unit events of every content id whose CIK declares a non-USD
     #: (or undeclared) monetary unit anywhere (see :func:`currency_status`).
     currency_events: dict[str, tuple[CurrencyEvent, ...]] = field(default_factory=dict)
+    #: Reconstructed-history (RI1) accounting of rule 5 (reconstructed mode only).
+    reconstruction: dict[str, object] = field(default_factory=dict)
 
     @property
     def identity_basis(self) -> str:
@@ -892,6 +967,8 @@ class MarketOwnerBridge:
                 "supplied": self.evidence_supplied,
                 "rejected_by_reason": dict(sorted(self.rejected_evidence.items())),
             }
+        elif self.reconstruction:
+            summary["reconstructed_history"] = dict(self.reconstruction)
         return summary
 
 
@@ -1226,14 +1303,36 @@ def _with_class_guards(
 
     line_category = {row.price_security_id: kinds[id(row)][2] for row in rows if row.owner_security_id is not None}
 
+    def link_span(row: BridgeRow) -> tuple[dt.date, dt.date]:
+        line = lines[row.price_security_id]
+        return (
+            max(row.valid_from or line.first_trade_date, line.first_trade_date),
+            min(row.valid_to or dt.date.max, line.last_trade_date + dt.timedelta(days=1)),
+        )
+
+    # Rule-5 rows are deduplicated per CIK per day, so a reconstructed line is concurrent with
+    # another line of its issuer only where their *link* intervals overlap, not their trading spans.
+    reconstructed = {row.price_security_id for row in rows if row.identity_basis == IDENTITY_BASIS_RECONSTRUCTED_HISTORY}
+    link_spans: dict[str, list[tuple[dt.date, dt.date]]] = defaultdict(list)
+    for row in rows:
+        if row.owner_security_id is not None and (reconstructed and row.cik is not None):
+            link_spans[row.price_security_id].append(link_span(row))
+
+    def overlapping(row: BridgeRow, other_id: str) -> bool:
+        line, other = lines[row.price_security_id], lines[other_id]
+        if row.price_security_id in reconstructed or other_id in reconstructed:
+            low, high = link_span(row)
+            return other_id == row.price_security_id or any(
+                other_low < high and low < other_high for other_low, other_high in link_spans[other_id]
+            )
+        return other.first_trade_date <= line.last_trade_date and line.first_trade_date <= other.last_trade_date
+
     def concurrent_lines(row: BridgeRow, category: str | None = None) -> int:
         """Linked (non-non-common) lines of the issuer trading concurrently, optionally one category."""
-        line = lines[row.price_security_id]
         return sum(
             1
             for other_id in issuer_lines[_issuer_key(row)]
-            if lines[other_id].first_trade_date <= line.last_trade_date
-            and line.first_trade_date <= lines[other_id].last_trade_date
+            if overlapping(row, other_id)
             and (category is None or other_id == row.price_security_id or line_category.get(other_id) == category)
         )
 
@@ -1399,15 +1498,50 @@ def classify_reconstructed(
     directory: dict[str, str] | None = None,
     line_symbols: Sequence[LineSymbol] = (),
     adr_ratios: dict[str, float] | None = None,
+    *,
+    reconstructed: Sequence[ReconstructedLinkEvidence] = (),
+    reconstruction_tiers: Sequence[str] = RECONSTRUCTION_TIERS_DEFAULT,
 ) -> tuple[tuple[BridgeRow, ...], dict[str, tuple[str, ...]], int]:
     """Current-ticker backcast bridge. ``tickers`` rows are ``(cik, ticker, observed_at)``.
 
     ``directory`` (symbol -> A2 security type) feeds only the class guard;
     ``line_symbols`` (every symbol each line traded under) feeds the
     historical sibling-class guard; ``adr_ratios`` (normalized symbol ->
-    ordinary shares per ADS) annotates ADR rows.
+    ordinary shares per ADS) annotates ADR rows; ``reconstructed`` (RI1
+    evidence) feeds rule 5 (see :func:`classify_reconstructed_with_history`).
     Returns ``(rows, owner_members, ambiguous_content_ids)``.
     """
+    rows, members, ambiguous, _stats = classify_reconstructed_with_history(
+        lines,
+        tickers,
+        content,
+        directory,
+        line_symbols,
+        adr_ratios,
+        reconstructed=reconstructed,
+        reconstruction_tiers=reconstruction_tiers,
+    )
+    return rows, members, ambiguous
+
+
+def classify_reconstructed_with_history(
+    lines: Sequence[PriceLine],
+    tickers: Sequence[tuple[str, str, dt.datetime | None]],
+    content: dict[str, frozenset[str]],
+    directory: dict[str, str] | None = None,
+    line_symbols: Sequence[LineSymbol] = (),
+    adr_ratios: dict[str, float] | None = None,
+    *,
+    reconstructed: Sequence[ReconstructedLinkEvidence] = (),
+    reconstruction_tiers: Sequence[str] = RECONSTRUCTION_TIERS_DEFAULT,
+) -> tuple[tuple[BridgeRow, ...], dict[str, tuple[str, ...]], int, dict[str, object]]:
+    """:func:`classify_reconstructed` plus rule 5 (RI1 reconstructed history) and its accounting.
+
+    Returns ``(rows, owner_members, ambiguous_content_ids, reconstruction_stats)``.
+    """
+    tiers = tuple(reconstruction_tiers)
+    if tiers not in _RECONSTRUCTION_TIER_FILTERS:
+        raise ValueError(f"reconstruction_tiers must be one of {sorted(_RECONSTRUCTION_TIER_FILTERS)}; got {tiers}")
     index, _counts = _ticker_index(tickers)
     classes = classify_sec_tickers(tickers, directory, (line.last_symbol for line in lines))
     horizon = max((line.last_trade_date for line in lines), default=None)
@@ -1501,10 +1635,321 @@ def classify_reconstructed(
             rows.append(BridgeRow(**unlinked, unlinked_reason=UNLINKED_NO_CURRENT_TICKER))
 
     by_id = {line.price_security_id: line for line in lines}
+    rows, stats = _with_reconstructed_history(rows, by_id, reconstructed, tiers)
     resolved = _with_class_guards(rows, by_id, classes, strict=False)
     resolved = _with_adr_ratios(_with_sibling_segments(resolved, line_symbols, directory), adr_ratios or {})
     members, ambiguous = _owner_members(resolved, content)
-    return resolved, members, ambiguous
+    return resolved, members, ambiguous, stats
+
+
+# ---------------------------------------------------------------------------
+# Rule 5: RI1 reconstructed history (P1)
+# ---------------------------------------------------------------------------
+
+
+def _as_datetime(value: object) -> dt.datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, dt.datetime):
+        return value
+    return dt.datetime.fromisoformat(str(value))
+
+
+def _as_date(value: object) -> dt.date | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, dt.datetime):
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+    return dt.date.fromisoformat(str(value)[:10])
+
+
+def reconstructed_link_evidence(rows: Iterable[Mapping[str, object]]) -> list[ReconstructedLinkEvidence]:
+    """RI1 evidence from ``security_identity_evidence`` rows (0327 column names; other rows are skipped).
+
+    Keeps the latest ``issuer_link`` rows written by the RI1 method with status
+    ``reconstructed`` or ``conflicting``; the tier history comes from
+    ``value_json.tier_history`` and the vendor id from the native key.
+    """
+    from .identity_reconstruction import METHOD, VENDOR_NAMESPACE
+
+    out: list[ReconstructedLinkEvidence] = []
+    for row in rows:
+        status = str(row.get("evidence_status") or "")
+        if (
+            row.get("fact_kind") != "issuer_link"
+            or row.get("method") != METHOD
+            or row.get("is_latest_revision") is False
+            or status not in ("reconstructed", "conflicting")
+        ):
+            continue
+        raw = row.get("value_json")
+        payload = json.loads(str(raw)) if status == "reconstructed" and raw else {}
+        history = tuple(
+            (str(tier), since)
+            for tier, stamp in payload.get("tier_history") or ()
+            if (since := _as_datetime(stamp)) is not None
+        )
+        native = str(row.get("native_key") or "")
+        vendor = int(native) if row.get("native_key_namespace") == VENDOR_NAMESPACE and native.isdigit() else None
+        out.append(
+            ReconstructedLinkEvidence(
+                evidence_id=str(row.get("evidence_id")),
+                evidence_status=status,
+                cik=normalize_cik(row.get("cik")),
+                vendor_id=vendor,
+                price_security_id=(str(row["security_id"]) if row.get("security_id") else None),
+                valid_from=_as_date(row.get("valid_from")),
+                valid_to=_as_date(row.get("valid_to")),
+                available_at=_as_datetime(row.get("available_at")),
+                tier_history=history,
+                share_class_symbol=(str(row["symbol"]) if row.get("symbol") else None),
+                rejection_reason=(str(row["rejection_reason"]) if row.get("rejection_reason") else None),
+                observed_at=_as_datetime(row.get("observed_at")),
+            )
+        )
+    return out
+
+
+def _line_vendor_id(line: PriceLine) -> int | None:
+    if line.vendor_id is not None:
+        return line.vendor_id
+    if _POSITIVE_VENDOR_LINE.fullmatch(line.price_security_id):
+        return int(line.price_security_id[len(_VENDOR_LINE_PREFIX) :])
+    return None
+
+
+def _cutoff_date(clock: dt.datetime) -> dt.date:
+    """The first trade date whose end-of-day cutoff (22:00) is at or after ``clock``."""
+    return clock.date() if clock.time() <= dt.time(_MODELED_LINK_HOURS) else clock.date() + dt.timedelta(days=1)
+
+
+def _tier_segments(evidence: ReconstructedLinkEvidence) -> list[tuple[dt.date, dt.date | None, str]]:
+    """``[from, to)`` trade-date segments carrying the RI1 tier in force at their bars' cutoffs.
+
+    The first step starts at the link's ``valid_from`` (bars before its
+    ``available_at`` are invisible through the clock join anyway); a later step
+    at clock ``C`` applies from :func:`_cutoff_date` of ``C``.
+    """
+    assert evidence.valid_from is not None
+    steps = evidence.tier_history
+    end = evidence.valid_to
+    out: list[tuple[dt.date, dt.date | None, str]] = []
+    for index, (tier, since) in enumerate(steps):
+        low = evidence.valid_from if index == 0 else max(evidence.valid_from, _cutoff_date(since))
+        high = end if index + 1 == len(steps) else _cutoff_date(steps[index + 1][1])
+        if end is not None and high is not None:
+            high = min(high, end)
+        if high is None or low < high:
+            out.append((low, high, tier))
+    return out
+
+
+def _reconstruction_rejection(evidence: ReconstructedLinkEvidence) -> str | None:
+    if evidence.evidence_status != "reconstructed":
+        return None
+    if evidence.cik is None:
+        return "invalid_cik"
+    if evidence.valid_from is None or (evidence.valid_to is not None and evidence.valid_to <= evidence.valid_from):
+        return "invalid_interval"
+    if evidence.available_at is None:
+        return "missing_available_at"
+    if not evidence.tier_history or any(tier not in _RI1_TIERS for tier, _since in evidence.tier_history):
+        return "missing_tier_history"
+    return None
+
+
+_MAX_DATE = dt.date.max
+
+
+def _subtract(low: dt.date, high: dt.date, cuts: Iterable[tuple[dt.date, dt.date]]) -> list[tuple[dt.date, dt.date]]:
+    pieces = [(low, high)]
+    for cut_low, cut_high in cuts:
+        kept: list[tuple[dt.date, dt.date]] = []
+        for piece_low, piece_high in pieces:
+            if cut_high <= piece_low or cut_low >= piece_high:
+                kept.append((piece_low, piece_high))
+                continue
+            if piece_low < cut_low:
+                kept.append((piece_low, cut_low))
+            if cut_high < piece_high:
+                kept.append((cut_high, piece_high))
+        pieces = kept
+    return pieces
+
+
+def _with_reconstructed_history(
+    rows: list[BridgeRow],
+    lines: dict[str, PriceLine],
+    evidence: Sequence[ReconstructedLinkEvidence],
+    tiers: tuple[str, ...],
+) -> tuple[list[BridgeRow], dict[str, object]]:
+    """Rule 5: link lines the current-ticker rules left unlinked through RI1 evidence (module docstring)."""
+    by_vendor: dict[int, str] = {}
+    for line in lines.values():
+        vendor = _line_vendor_id(line)
+        if vendor is not None and not (line.symbol_keyed or _is_symbol_keyed(line.price_security_id)):
+            by_vendor[vendor] = line.price_security_id
+    invalid: dict[str, int] = defaultdict(int)
+    by_line: dict[str, list[ReconstructedLinkEvidence]] = defaultdict(list)
+    without_line = 0
+    for item in evidence:
+        reason = _reconstruction_rejection(item)
+        if reason is not None:
+            invalid[reason] += 1
+            continue
+        line_id = by_vendor.get(item.vendor_id) if item.vendor_id is not None else None
+        if line_id is None and item.price_security_id in lines:
+            line_id = item.price_security_id
+        if line_id is None:
+            without_line += 1
+            continue
+        by_line[line_id].append(item)
+
+    base = {row.price_security_id: row for row in rows}
+    eligible = {
+        line_id
+        for line_id, row in base.items()
+        if not row.linked and row.unlinked_reason != UNLINKED_SYMBOL_KEYED_LINE
+    }
+    ignored_on_linked = sum(
+        1
+        for line_id, items in by_line.items()
+        if line_id not in eligible
+        for item in items
+        if item.evidence_status == "reconstructed"
+    )
+    # Per eligible line: the tier segments inside the filter, and why a line stays unlinked.
+    kept: dict[str, list[tuple[dt.date, dt.date | None, str, ReconstructedLinkEvidence]]] = {}
+    excluded: dict[str, int] = defaultdict(int)
+    reasons: dict[str, str] = {}
+    for line_id in sorted(eligible & set(by_line)):
+        items = by_line[line_id]
+        accepted = [item for item in items if item.evidence_status == "reconstructed"]
+        contested = not accepted and any(item.evidence_status == "conflicting" for item in items)
+        seen: set[str] = set()
+        segments: list[tuple[dt.date, dt.date | None, str, ReconstructedLinkEvidence]] = []
+        for item in sorted(accepted, key=lambda ev: (ev.valid_from or dt.date.min, ev.evidence_id)):
+            for low, high, tier in _tier_segments(item):
+                seen.add(tier)
+                if tier in tiers:
+                    segments.append((low, high, tier, item))
+                else:
+                    excluded[tier] += 1
+        if segments:
+            kept[line_id] = segments
+        elif contested or seen == {"low"}:
+            # Unresolved RI1 conflict, or a link contested by a rival (low): never auto-picked.
+            reasons[line_id] = UNLINKED_CONFLICTING_RECONSTRUCTION
+        elif seen:
+            reasons[line_id] = UNLINKED_RECONSTRUCTION_BELOW_TIER
+
+    # Dedupe per CIK per day: one line per issuer on any day. Current-ticker links
+    # win; then the reconstructed line with more bars, then the smaller id.
+    def span(row_from: dt.date | None, row_to: dt.date | None, line_id: str) -> tuple[dt.date, dt.date]:
+        line = lines[line_id]
+        low = max(row_from or line.first_trade_date, line.first_trade_date)
+        high = min(row_to or _MAX_DATE, line.last_trade_date + dt.timedelta(days=1))
+        return low, high
+
+    taken: dict[str, list[tuple[dt.date, dt.date, str]]] = defaultdict(list)
+    for row in rows:
+        if row.linked and row.cik is not None:
+            low, high = span(row.valid_from, row.valid_to, row.price_security_id)
+            if low < high:
+                taken[row.cik].append((low, high, row.price_security_id))
+    order = sorted(kept, key=lambda line_id: (-lines[line_id].bar_rows, line_id))
+    trimmed = days_removed = 0
+    dedupe_ciks: set[str] = set()
+    new_rows: dict[str, list[BridgeRow]] = {}
+    for line_id in order:
+        line_rows: list[BridgeRow] = []
+        for low, high, tier, item in kept[line_id]:
+            assert item.cik is not None
+            seg_low, seg_high = span(low, high, line_id)
+            if seg_low >= seg_high:
+                continue
+            others = [(o_low, o_high) for o_low, o_high, other in taken[item.cik] if other != line_id]
+            pieces = _subtract(seg_low, seg_high, others)
+            removed = (seg_high - seg_low).days - sum((p_high - p_low).days for p_low, p_high in pieces)
+            if removed:
+                trimmed += 1
+                days_removed += removed
+                dedupe_ciks.add(item.cik)
+            for piece_low, piece_high in pieces:
+                # Keep an open RI1 end open when the piece reaches the line's last bar.
+                piece_to: dt.date | None = piece_high
+                if high is None and piece_high == lines[line_id].last_trade_date + dt.timedelta(days=1):
+                    piece_to = None
+                line_rows.append(
+                    BridgeRow(
+                        price_security_id=line_id,
+                        owner_security_id=cik_security_id(item.cik),
+                        cik=item.cik,
+                        share_class_symbol=item.share_class_symbol or lines[line_id].last_symbol,
+                        valid_from=piece_low,
+                        valid_to=piece_to,
+                        available_at=item.available_at,
+                        identity_basis=IDENTITY_BASIS_RECONSTRUCTED_HISTORY,
+                        availability_basis=AVAILABILITY_MODELED,
+                        link_method=f"{LINK_RECONSTRUCTED_HISTORY}_{tier}",
+                        evidence_observed_at=item.observed_at,
+                        tier=tier,
+                        evidence_id=item.evidence_id,
+                    )
+                )
+                taken[item.cik].append((piece_low, piece_high, line_id))
+        if line_rows:
+            new_rows[line_id] = line_rows
+        else:
+            reasons[line_id] = UNLINKED_RECONSTRUCTED_CIK_ON_OTHER_LINE
+
+    out: list[BridgeRow] = []
+    for row in rows:
+        line_id = row.price_security_id
+        if line_id in new_rows:
+            out.extend(new_rows[line_id])
+        elif line_id in reasons:
+            out.append(replace(row, unlinked_reason=reasons[line_id]))
+        else:
+            out.append(row)
+    linked_by_tier: dict[str, int] = defaultdict(int)
+    segments_by_tier: dict[str, int] = defaultdict(int)
+    for line_rows in new_rows.values():
+        for tier in sorted({str(row.tier) for row in line_rows}):
+            linked_by_tier[tier] += 1
+        for row in line_rows:
+            segments_by_tier[str(row.tier)] += 1
+    unlinked_reasons: dict[str, int] = defaultdict(int)
+    for reason in reasons.values():
+        unlinked_reasons[reason] += 1
+    stats: dict[str, object] = {
+        "tier_filter": _RECONSTRUCTION_TIER_FILTERS[tiers],
+        "tiers_linked": list(tiers),
+        "tier_basis": "in_force_at_bar_cutoff",
+        "evidence_rows": len(evidence),
+        "evidence_accepted_rows": sum(1 for item in evidence if item.evidence_status == "reconstructed"),
+        "evidence_conflicting_rows": sum(1 for item in evidence if item.evidence_status == "conflicting"),
+        "evidence_invalid": dict(sorted(invalid.items())),
+        "evidence_without_price_line": without_line,
+        "evidence_on_current_linked_lines_ignored": ignored_on_linked,
+        "eligible_lines": len(eligible),
+        "eligible_lines_with_evidence": len(eligible & set(by_line)),
+        "linked_lines": len(new_rows),
+        "linked_lines_by_tier": dict(sorted(linked_by_tier.items())),
+        "segments_by_tier": dict(sorted(segments_by_tier.items())),
+        "segments_excluded_by_tier": dict(sorted(excluded.items())),
+        "unlinked_lines_by_reason": dict(sorted(unlinked_reasons.items())),
+        "cik_day_dedupe": {
+            "rule": "current_ticker_first_then_more_bars_then_smaller_id",
+            "ciks": len(dedupe_ciks),
+            "segments_trimmed": trimmed,
+            "days_removed": days_removed,
+            "lines_removed": unlinked_reasons.get(UNLINKED_RECONSTRUCTED_CIK_ON_OTHER_LINE, 0),
+        },
+    }
+    return out, stats
 
 
 def _evidence_rejection(evidence: OwnerLinkEvidence, lines: dict[str, PriceLine]) -> str | None:
@@ -1686,7 +2131,14 @@ def _read_lines(store: DuckDBStore) -> list[PriceLine]:
                -- ticker-history lines without any positive vendor id were keyed
                -- by symbol upstream and may concatenate issuers.
                coalesce(bool_or(source = ?), false)
-                   AND NOT coalesce(bool_or(try_cast(vendor_security_id AS BIGINT) > 0), false) AS symbol_keyed
+                   AND NOT coalesce(bool_or(try_cast(vendor_security_id AS BIGINT) > 0), false) AS symbol_keyed,
+               -- the line's single positive vendor id (RI1 evidence is keyed by it)
+               CASE WHEN min(try_cast(vendor_security_id AS BIGINT)) FILTER (
+                             WHERE try_cast(vendor_security_id AS BIGINT) > 0)
+                         = max(try_cast(vendor_security_id AS BIGINT)) FILTER (
+                             WHERE try_cast(vendor_security_id AS BIGINT) > 0)
+                    THEN max(try_cast(vendor_security_id AS BIGINT)) FILTER (
+                             WHERE try_cast(vendor_security_id AS BIGINT) > 0) END AS vendor_id
         FROM equity_daily_bars
         WHERE close > 0 AND trade_date IS NOT NULL
         GROUP BY security_id
@@ -1694,7 +2146,35 @@ def _read_lines(store: DuckDBStore) -> list[PriceLine]:
         """,
         [TICKER_HISTORY_SOURCE_NAME],
     ).fetchall()
-    return [PriceLine(str(r[0]), r[1], r[2], r[3], int(r[4]), bool(r[5])) for r in rows]
+    return [
+        PriceLine(str(r[0]), r[1], r[2], r[3], int(r[4]), bool(r[5]), int(r[6]) if r[6] is not None else None)
+        for r in rows
+    ]
+
+
+def _read_reconstructed_evidence(store: DuckDBStore) -> list[ReconstructedLinkEvidence]:
+    """RI1 issuer-link evidence from ``security_identity_evidence`` (0327), when the table has any.
+
+    One bounded read (one row per RI1 link segment or conflict side, ~10^4).
+    """
+    if not _table_exists(store, "security_identity_evidence"):
+        return []
+    from .identity_reconstruction import METHOD
+
+    cursor = store.con.execute(
+        """
+        SELECT evidence_id, fact_kind, method, evidence_status, is_latest_revision, cik, native_key_namespace,
+               native_key, security_id, symbol, valid_from, valid_to, available_at, observed_at, rejection_reason,
+               CASE WHEN evidence_status = 'reconstructed' THEN value_json END AS value_json
+        FROM security_identity_evidence
+        WHERE fact_kind = 'issuer_link' AND method = ? AND coalesce(is_latest_revision, true)
+          AND evidence_status IN ('reconstructed', 'conflicting')
+        ORDER BY evidence_id
+        """,
+        [METHOD],
+    )
+    names = [column[0] for column in cursor.description]
+    return reconstructed_link_evidence(dict(zip(names, row, strict=True)) for row in cursor.fetchall())
 
 
 def _read_tickers(store: DuckDBStore) -> list[tuple[str, str, dt.datetime | None]]:
@@ -1894,6 +2374,8 @@ def build_market_owner_bridge(
     item_codes: Sequence[str] = (),
     metric_codes: Sequence[str] = (),
     derived_source: str,
+    reconstructed_evidence: Sequence[ReconstructedLinkEvidence] | None = None,
+    reconstruction_tiers: Sequence[str] = RECONSTRUCTION_TIERS_DEFAULT,
 ) -> MarketOwnerBridge:
     """Resolve every price line's accounting owner under ``mode``.
 
@@ -1902,7 +2384,11 @@ def build_market_owner_bridge(
     accounting-content id, and the monetary-unit events of the content ids
     that declare a non-USD unit. ``evidence`` is used only in strict mode;
     ``None`` means no qualified evidence source is wired yet, so the strict
-    bridge links nothing.
+    bridge links nothing. ``reconstructed_evidence`` (RI1, rule 5) is used only
+    in reconstructed mode; ``None`` reads the RI1 rows of
+    ``security_identity_evidence``. ``reconstruction_tiers`` is the tier filter
+    (default high+medium; :data:`RECONSTRUCTION_TIERS_HIGH_ONLY` is the
+    labelled sensitivity).
     """
     if mode not in OWNER_MODES:
         raise ValueError(f"unknown owner mode {mode!r}; expected one of {OWNER_MODES}")
@@ -1927,8 +2413,18 @@ def build_market_owner_bridge(
             ambiguous_content_ids=ambiguous,
         )
     else:
-        rows, members, ambiguous = classify_reconstructed(
-            lines, tickers, content, directory, line_symbols, snapshot.adr_ratios
+        history = (
+            _read_reconstructed_evidence(store) if reconstructed_evidence is None else list(reconstructed_evidence)
+        )
+        rows, members, ambiguous, reconstruction = classify_reconstructed_with_history(
+            lines,
+            tickers,
+            content,
+            directory,
+            line_symbols,
+            snapshot.adr_ratios,
+            reconstructed=history,
+            reconstruction_tiers=reconstruction_tiers,
         )
         bridge = MarketOwnerBridge(
             mode=mode,
@@ -1938,6 +2434,7 @@ def build_market_owner_bridge(
             ticker_snapshot_observed_at=max(observed) if observed else None,
             ticker_snapshot_oldest_observed_at=min(observed) if observed else None,
             ambiguous_content_ids=ambiguous,
+            reconstruction=reconstruction,
         )
     return replace(
         bridge,
