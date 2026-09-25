@@ -154,7 +154,7 @@ if (-not $Ctest -and ($verb -eq "build" -or $verb -eq "check")) {
   # Native flags after -- would override the enforced limit. Keep a single
   # unambiguous knob instead of silently launching more workers than requested.
   foreach ($arg in $rest) {
-    if ($arg -match '^(?:-j(?:[0-9]+)?|--(?:parallel|jobs)(?:=.*)?)$') {
+    if ($arg -match '^-j' -or $arg -match '^--(?:parallel|jobs)(?:=.*)?$') {
       throw "Use -Jobs for worker limits; native parallel flags are not accepted"
     }
   }

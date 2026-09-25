@@ -122,6 +122,8 @@ foreach ($argv in @(
   @("-DryRun", "build"),
   @("-DryRun", "-Jobs", "1", "build", "atx-impl-tests", "--parallel", "8"),
   @("-DryRun", "build", "atx-impl-tests", "-j8"),
+  @("-DryRun", "build", "atx-impl-tests", "-j+4"),
+  @("-DryRun", "build", "atx-impl-tests", "-j=4"),
   @("-DryRun", "build", "atx-impl-tests", "--jobs=8")
 )) {
   $ErrorActionPreference = "Continue"
