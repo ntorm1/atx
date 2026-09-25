@@ -174,9 +174,55 @@ def _create_panel_tables(con: duckdb.DuckDBPyConnection) -> None:
     """)
 
 
+def _panel_scale_and_survivorship(con: duckdb.DuckDBPyConnection) -> None:
+    """Version 2 (R2a fix round 1): slim proofs, eligible-member accounting, primary lines.
+
+    * ``research_lineage_proofs``: one summary row per proved root per run (no
+      per-leaf JSON; ``proof_digest`` content-addresses the full proof, which the
+      deterministic resolver re-derives from the warehouse). No primary key: an
+      ART index over ~1e8 keys would not fit the research memory budget; the
+      builder inserts only roots that are not yet proved.
+    * The value grid is dense over eligible members, so rows excluded before
+      selection (``missing_owner_link``, ``secondary_issuer_line``) carry no
+      state clock: ``available_at`` becomes nullable.
+    """
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS research_lineage_proofs (
+            run_id VARCHAR NOT NULL,
+            derived_value_id VARCHAR NOT NULL,
+            derived_owner_security_id VARCHAR NOT NULL,
+            metric_code VARCHAR NOT NULL,
+            metric_window VARCHAR NOT NULL,
+            root_available_at TIMESTAMP NOT NULL,
+            root_as_of_date DATE,
+            selected_cik VARCHAR,
+            status VARCHAR NOT NULL,
+            reason VARCHAR NOT NULL,
+            proof_digest VARCHAR,
+            oldest_fiscal_end DATE,
+            newest_fiscal_end DATE,
+            latest_input_clock TIMESTAMP,
+            leaf_count INTEGER NOT NULL,
+            method VARCHAR NOT NULL
+        );
+        ALTER TABLE research_panel_values ALTER COLUMN available_at DROP NOT NULL;
+        ALTER TABLE research_panel_values ADD COLUMN IF NOT EXISTS feature_scope VARCHAR;
+        ALTER TABLE research_panel_coverage ADD COLUMN IF NOT EXISTS eligible_members BIGINT;
+        ALTER TABLE research_panel_coverage ADD COLUMN IF NOT EXISTS feature_scope VARCHAR;
+        ALTER TABLE research_panel_calendar ADD COLUMN IF NOT EXISTS owner_unlinked_members BIGINT;
+        ALTER TABLE research_panel_calendar ADD COLUMN IF NOT EXISTS owner_link_attrition DOUBLE;
+        ALTER TABLE research_panel_calendar ADD COLUMN IF NOT EXISTS multi_line_issuers BIGINT;
+        ALTER TABLE research_panel_cohort ADD COLUMN IF NOT EXISTS eligible BOOLEAN;
+        ALTER TABLE research_panel_cohort ADD COLUMN IF NOT EXISTS issuer_lines INTEGER;
+        ALTER TABLE research_panel_cohort ADD COLUMN IF NOT EXISTS primary_line BOOLEAN;
+        ALTER TABLE research_panel_cohort ADD COLUMN IF NOT EXISTS primary_line_rule VARCHAR;
+    """)
+
+
 #: Append-only bootstrap: (version, name, body). Never edit a released body.
 RESEARCH_STORE_MIGRATIONS: tuple[tuple[int, str, Callable[[duckdb.DuckDBPyConnection], None]], ...] = (
     (1, "monthly_pit_panel", _create_panel_tables),
+    (2, "panel_scale_and_survivorship", _panel_scale_and_survivorship),
 )
 RESEARCH_STORE_VERSION = max(version for version, _, _ in RESEARCH_STORE_MIGRATIONS)
 

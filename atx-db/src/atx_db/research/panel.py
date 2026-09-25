@@ -1,15 +1,9 @@
-"""Monthly point-in-time research panel (task R2a).
+"""Monthly point-in-time research panel (task R2a; fix round 1).
 
 One formation per closed calendar month: the month's last NYSE session, when
 it was observed. The decision cutoff is that session at 22:00 UTC and entry is
 the next observed session. A month whose last session is missing is recorded as
 ``missing_month_end`` and never replaced by an earlier (mid-month) session.
-
-Selection, owner association, lineage proof and rejection rules are the FQ1
-builder's (:func:`atx_db.fundamental_signal_research.stage_selected_states`)
-run over a one-row month-end calendar relation and a metric batch. Lineage is
-resolved once per selected ``derived_value_id`` per run (the proof table is the
-run cache), never once per date.
 
 Bases (rulings RX1/RX6):
 
@@ -21,21 +15,54 @@ Bases (rulings RX1/RX6):
 ``strict``
     ``us_listed_v1`` membership with CIKs from dated identifier history only. It
     is always attempted; with no valid cohort anywhere the run is sealed as
-    ``untestable_strict`` with zero value rows.
+    ``untestable_strict``.
 
-Output is a long raw panel in the research store, bounded to one month-end and
-one metric batch per transaction:
-``research_panel_values(formation_date, security_id, feature_id, raw_value,
-reason, lineage_status, available_at, fiscal_period_end, owner_cik, bases...)``.
-Only valid-cohort members with a selected state get a value row; every other
-outcome (cohort exclusions, ``missing_metric_state``, missing market rows) is
-counted per formation and feature in ``research_panel_coverage.reasons_json``
-and per member in ``research_panel_cohort``. ``raw_value`` is kept only for
-``valid`` and ``stale_current_anchor`` rows (both point-in-time safe); every
-other reason carries NULL so a rejected value cannot leak downstream.
-Consumers must read only runs whose status is ``complete`` (or inspect
-``untestable_strict`` / ``blocked_empty`` as evidence) after
-:func:`validate_research_panel`.
+Grain and survivorship. The value panel is dense over the *eligible* members
+of each formation (eligible type and venue, or the retained delisted tail):
+exactly one row per (formation, eligible member, feature), so every coverage
+row's ``reasons_json`` sums to its ``eligible_members``. Features have a scope:
+
+``price_line``
+    Identity-free market features (returns, momentum, volatility, dollar
+    volume, and ``line_market_cap`` = the line's own close x its own vendor
+    share count). They need no owner link and are published for every eligible
+    member, linked or not, labeled ``identity_basis='price_line'``. The
+    delisted tail that the owner bridge cannot link (``no_current_ticker``)
+    therefore stays in every market feature and control.
+``owner``
+    Fundamental (derived) features and issuer-share market features
+    (``market_cap``, valuation ratios). They attach to exactly one line per
+    issuer per formation: the owner-linked (``cohort_reason='valid'``) line with
+    the highest trailing 30-day dollar volume (``primary_line_rule`` labels how
+    the primary was chosen; ties and missing volume fall back to the smallest
+    ``security_id``). Every other eligible member has a NULL row whose reason
+    is its cohort exclusion (``missing_owner_link``, ``ambiguous_owner_link``,
+    ...) or ``secondary_issuer_line``.
+
+The share of eligible members lacking an owner link is recorded per formation
+(``research_panel_calendar.owner_unlinked_members`` / ``owner_link_attrition``)
+and as the counted run blocker ``owner_link_attrition:<unlinked>/<eligible>``.
+
+Selection and lineage. Per derived metric batch the warehouse is scanned once
+for all formations: the selected state per (owner, metric, formation) is the
+FQ1 rule (bucket-latest, then latest period, visible at the cutoff) computed as
+a running arg-max over the formation calendar, which equals the FQ1 ranking
+whenever each bucket has one period end and each period end one bucket; any
+(owner, metric) history that breaks that falls back to the FQ1 ranking itself.
+Lineage is proved once per selected ``derived_value_id`` per run by the
+set-based prover (:mod:`atx_db.research.lineage`, provably equal to the
+Python resolver) into the slim ``research_lineage_proofs`` table, in committed
+chunks, so an interrupted run resumes after the last proved chunk. Owners whose
+identifier names a CIK that no owner-linked member has at any formation cannot
+match a member (their leaves' CIK would have to differ from their owner CIK)
+and are not proved; the count is reported. There is no state-count abort:
+selection and prior-owner history sizes are counted in ``diagnostic_json``.
+
+``raw_value`` is kept only for ``valid`` and ``stale_current_anchor`` rows (both
+point-in-time safe); every other reason carries NULL. Consumers read
+``reason='valid'`` (stale anchors carry a value for diagnostics only), and only
+runs whose status is ``complete`` (or ``untestable_strict`` / ``blocked_empty``
+as evidence) after :func:`validate_research_panel`.
 """
 
 from __future__ import annotations
@@ -43,22 +70,28 @@ from __future__ import annotations
 import calendar as _calendar
 import datetime as dt
 import hashlib
+import itertools
 import json
 import math
 import re
+import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .. import derived_lineage as _derived_lineage
 from .. import fundamental_signal_research as fsr
+from .. import market_owner_bridge as _market_owner_bridge
 from .._fundamental_clock import FUNDAMENTAL_CLOCK_POLICY
 from ..derived_registry import DERIVED_SOURCE_NAME
 from ..market_daily import MARKET_DAILY_SOURCE_NAME, MARKET_DAILY_STRICT_SOURCE_NAME
 from ..universe_us_listed import UNIVERSE_SOURCE_NAME
+from . import lineage as _lineage
+from . import store as _store
 from .store import ResearchStore
 
-QUERY_VERSION = "research-monthly-pit-panel-v1"
+QUERY_VERSION = "research-monthly-pit-panel-v2"
 BASIS_STRICT = "strict"
 BASIS_RECONSTRUCTED = "reconstructed"
 BASES = (BASIS_STRICT, BASIS_RECONSTRUCTED)
@@ -73,6 +106,33 @@ DEFAULT_ANNUAL_MAX_AGE_DAYS = 400
 # Reasons whose selected value is point-in-time safe to publish.
 VALUE_BEARING_REASONS = ("valid", "stale_current_anchor")
 SEALED_STATUSES = ("complete", "untestable_strict", "blocked_empty")
+
+SCOPE_OWNER = "owner"
+SCOPE_PRICE_LINE = "price_line"
+PRICE_LINE_IDENTITY_BASIS = "price_line"
+SECONDARY_LINE_REASON = "secondary_issuer_line"
+PRIMARY_RULE_SINGLE = "single_line"
+PRIMARY_RULE_DOLLAR_VOLUME = "max_trailing_dollar_volume_30d"
+PRIMARY_RULE_TIEBREAK = "security_id_tiebreak"
+TRAILING_DOLLAR_VOLUME_DAYS = 30
+# Cohort reasons that mean "eligible, but no usable owner link".
+OWNER_LINK_FAILURES = ("missing_owner_link", "invalid_owner_link_cik", "ambiguous_owner_link",
+                       "missing_dated_cik", "invalid_dated_cik", "ambiguous_dated_cik")
+# market_daily inputs that carry issuer-level (owner) share counts.
+OWNER_MARKET_INPUTS = frozenset({"shares_outstanding", "dei_shares"})
+OWNER_MARKET_CODES = frozenset({"market_cap"})
+# Panel-native identity-free features (not warehouse metrics).
+NATIVE_FEATURES: dict[str, dict[str, Any]] = {
+    "line_market_cap": {
+        "metric_window": MARKET_WINDOW,
+        "expression": "close * shares_outstanding",
+        "inputs": ["equity_daily_bars.close", "equity_daily_bars.shares_outstanding"],
+        "version": "1",
+        "source_column": "equity_daily_bars.close*equity_daily_bars.shares_outstanding",
+    },
+}
+DEFAULT_PROOF_CHUNK_ROOTS = 8192
+FORMATION_CHUNK = 12
 
 CALENDAR_FORMED = "formed"
 CALENDAR_MISSING_MONTH_END = "missing_month_end"
@@ -95,7 +155,10 @@ NYSE_SPECIAL_CLOSURES = frozenset({
     dt.date(2012, 10, 30), dt.date(2018, 12, 5), dt.date(2025, 1, 9),
 })
 
-_CODE_FILES = (Path(__file__), Path(fsr.__file__))
+# Every module whose semantics a run's rows depend on: a change between a
+# failed run and its resume refuses the resume.
+_CODE_FILES = (*(Path(str(module.__file__)) for module in (
+    fsr, _derived_lineage, _lineage, _market_owner_bridge, _store)), Path(__file__))
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +201,10 @@ def _utc_naive(value: dt.datetime, label: str) -> dt.datetime:
 
 def _sql_text(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+def _sql_list(values: Iterable[str]) -> str:
+    return ",".join(_sql_text(value) for value in values)
 
 
 # ---------------------------------------------------------------------------
@@ -283,18 +350,47 @@ class PanelFeature:
         return self.metric_window == MARKET_WINDOW
 
 
+def price_line_codes(definitions: Iterable[Any]) -> frozenset[str]:
+    """Daily metrics computable from a price line alone, plus the native features.
+
+    A daily metric is owner-scoped when it is ``market_cap``, reads an item, a
+    non-daily metric or an issuer-level share input (``shares_outstanding``
+    may be the owner's DEI count), or reads another owner-scoped metric.
+    """
+    daily = {d.metric_code: d for d in definitions if d.window == MARKET_WINDOW}
+    owner = set(OWNER_MARKET_CODES & daily.keys())
+    changed = True
+    while changed:
+        changed = False
+        for code, definition in sorted(daily.items()):
+            if code in owner:
+                continue
+            if (definition.item_inputs or OWNER_MARKET_INPUTS & set(definition.market_inputs)
+                    or any(metric not in daily or metric in owner for metric in definition.metric_inputs)):
+                owner.add(code)
+                changed = True
+    return frozenset(set(daily) - owner) | frozenset(NATIVE_FEATURES)
+
+
+def feature_scopes(features: Iterable[PanelFeature]) -> dict[str, str]:
+    """``feature_id`` -> ``price_line`` or ``owner``."""
+    line_codes = price_line_codes(fsr.default_derived_definitions())
+    return {f.feature_id: SCOPE_PRICE_LINE if f.is_market and f.metric_code in line_codes else SCOPE_OWNER
+            for f in features}
+
+
 def default_panel_features() -> tuple[PanelFeature, ...]:
-    """Every seed metric with a panel window; ``feature_id`` = ``metric_code``."""
-    return tuple(sorted(
-        (PanelFeature(row.metric_code, row.metric_code, row.window)
-         for row in fsr.default_derived_definitions() if row.window in PANEL_WINDOWS),
-        key=lambda feature: feature.feature_id,
-    ))
+    """Every seed metric with a panel window plus the native features; id = code."""
+    seeds = [PanelFeature(row.metric_code, row.metric_code, row.window)
+             for row in fsr.default_derived_definitions() if row.window in PANEL_WINDOWS]
+    natives = [PanelFeature(code, code, spec["metric_window"]) for code, spec in NATIVE_FEATURES.items()]
+    return tuple(sorted(seeds + natives, key=lambda feature: feature.feature_id))
 
 
 def canonical_features(features: Iterable[PanelFeature | dict[str, Any]] | None) -> tuple[PanelFeature, ...]:
     source = default_panel_features() if features is None else tuple(features)
-    registry = {row.metric_code: row for row in fsr.default_derived_definitions()}
+    registry = {row.metric_code: row.window for row in fsr.default_derived_definitions()}
+    registry.update({code: spec["metric_window"] for code, spec in NATIVE_FEATURES.items()})
     result: list[PanelFeature] = []
     ids: set[str] = set()
     keys: set[tuple[str, str]] = set()
@@ -310,8 +406,7 @@ def canonical_features(features: Iterable[PanelFeature | dict[str, Any]] | None)
                 raise ValueError(f"invalid feature identifier: {text!r}")
         if item.metric_window not in PANEL_WINDOWS:
             raise ValueError(f"{item.feature_id}: unsupported window {item.metric_window!r}")
-        definition = registry.get(item.metric_code)
-        if definition is None or definition.window != item.metric_window:
+        if registry.get(item.metric_code) != item.metric_window:
             raise ValueError(f"{item.feature_id}: unknown seed metric {item.metric_code}/{item.metric_window}")
         key = (item.metric_code, item.metric_window)
         if item.feature_id in ids or key in keys:
@@ -339,6 +434,10 @@ class ResearchPanelOptions:
     eligible_security_types: tuple[str, ...] = fsr.RECONSTRUCTED_ELIGIBLE_TYPES
     include_unlisted_tail: bool = True
     resume: bool = False
+    # Execution granularity; output-invariant, so not part of the spec:
+    # roots proved (and committed) per chunk, formations associated per pass.
+    proof_chunk_roots: int = DEFAULT_PROOF_CHUNK_ROOTS
+    formation_chunk: int = FORMATION_CHUNK
 
 
 @dataclass(frozen=True)
@@ -413,6 +512,12 @@ def _validate(options: ResearchPanelOptions) -> tuple[dt.datetime, tuple[PanelFe
     size = options.metric_batch_size
     if isinstance(size, bool) or not isinstance(size, int) or not 1 <= size <= 64:
         raise ValueError("metric_batch_size must be 1..64")
+    chunk = options.proof_chunk_roots
+    if isinstance(chunk, bool) or not isinstance(chunk, int) or not 1 <= chunk <= 1_000_000:
+        raise ValueError("proof_chunk_roots must be 1..1000000")
+    part = options.formation_chunk
+    if isinstance(part, bool) or not isinstance(part, int) or not 1 <= part <= 120:
+        raise ValueError("formation_chunk must be 1..120")
     types = tuple(options.eligible_security_types)
     if not types or any(not isinstance(t, str) or not re.fullmatch(r"[A-Za-z_]{1,32}", t) for t in types):
         raise ValueError("eligible_security_types must be simple type names")
@@ -420,12 +525,13 @@ def _validate(options: ResearchPanelOptions) -> tuple[dt.datetime, tuple[PanelFe
     if run_at.date() < options.as_of_date:
         raise ValueError("run_at precedes as_of_date")
     features = canonical_features(options.features)
+    scopes = feature_scopes(features)
     labels = _basis_labels(options.basis)
     spec = {
         "basis": options.basis,
         "universe_id": labels["universe_id"],
         "identity_basis": labels["identity_basis"],
-        "features": [[f.feature_id, f.metric_code, f.metric_window] for f in features],
+        "features": [[f.feature_id, f.metric_code, f.metric_window, scopes[f.feature_id]] for f in features],
         "metric_batch_size": size,
         "max_age_days": options.max_age_days,
         "annual_max_age_days": options.annual_max_age_days,
@@ -435,6 +541,9 @@ def _validate(options: ResearchPanelOptions) -> tuple[dt.datetime, tuple[PanelFe
         else False,
         "value_bearing_reasons": list(VALUE_BEARING_REASONS),
         "decision_policy": "last NYSE session of each closed month at 22:00 UTC; next observed session entry",
+        "grain": "dense over eligible members; owner features on one primary line per issuer",
+        "primary_line_policy": [PRIMARY_RULE_DOLLAR_VOLUME, TRAILING_DOLLAR_VOLUME_DAYS, PRIMARY_RULE_TIEBREAK],
+        "owner_link_failures": list(OWNER_LINK_FAILURES),
     }
     return run_at, features, spec
 
@@ -456,10 +565,14 @@ def _require_inputs(store: ResearchStore, basis: str, features: tuple[PanelFeatu
         raise RuntimeError(f"warehouse is missing research inputs: {missing}")
     if not store.warehouse_has("derived_metric_values", "selected_input_refs_hash"):
         raise RuntimeError("warehouse must already have DL1 selected-input lineage migration 0323")
-    absent = [f.metric_code for f in features if f.is_market
-              and not store.warehouse_has("market_daily_metrics", f.metric_code)]
+    columns = [("market_daily_metrics", c) for c in ("close", "volume", "fundamental_available_at")]
+    columns += [("market_daily_metrics", f.metric_code) for f in features
+                if f.is_market and f.metric_code not in NATIVE_FEATURES]
+    if any(f.metric_code == "line_market_cap" for f in features):
+        columns += [("equity_daily_bars", c) for c in ("close", "adjusted_close", "shares_outstanding")]
+    absent = [f"{table}.{column}" for table, column in columns if not store.warehouse_has(table, column)]
     if absent:
-        raise RuntimeError(f"market_daily_metrics lacks daily feature columns: {absent}")
+        raise RuntimeError(f"warehouse lacks panel input columns: {absent}")
 
 
 def observed_sessions(con: Any, *, market_source: str, first_day: dt.date,
@@ -522,13 +635,22 @@ def _owner_bridge_rows(store: ResearchStore) -> tuple[tuple[Any, ...], dict[str,
 
 _COHORT_COLUMNS = ("security_id", "symbol", "security_type", "exchange_code", "membership_reason",
                    "membership_cik", "owner_cik", "identity_basis", "owner_link_method",
-                   "owner_link_reason", "cohort_reason")
+                   "owner_link_reason", "cohort_reason", "eligible", "issuer_lines", "primary_line",
+                   "primary_line_rule")
 _VALUE_COLUMNS = ("formation_date", "security_id", "feature_id", "metric_code", "metric_window",
                   "raw_value", "reason", "lineage_status", "available_at", "latest_input_clock",
                   "period_end", "fiscal_period_start", "fiscal_period_end", "value_origin",
                   "age_days", "max_age_days", "owner_cik", "derived_value_id",
                   "derived_owner_security_id", "lineage_digest", "identity_basis",
-                  "universe_basis", "availability_basis")
+                  "universe_basis", "availability_basis", "feature_scope")
+_CALENDAR_STAT_COLUMNS = ("visible_members", "eligible_members", "valid_members", "owner_unlinked_members",
+                          "owner_link_attrition", "multi_line_issuers", "cohort_reasons_json", "cohort_sha256")
+_COVERAGE_COLUMNS = ("run_id", "formation_date", "feature_id", "metric_code", "metric_window", "batch_ordinal",
+                     "status", "eligible_members", "valid_members", "selected_states", "values_emitted",
+                     "values_valid", "unmatched_owner_states", "reasons_json", "values_sha256", "feature_scope")
+_PROOF_COLUMNS = ("run_id", "derived_value_id", "derived_owner_security_id", "metric_code", "metric_window",
+                  "root_available_at", "root_as_of_date", "selected_cik", "status", "reason", "proof_digest",
+                  "oldest_fiscal_end", "newest_fiscal_end", "latest_input_clock", "leaf_count", "method")
 
 
 def _row_json(columns: Sequence[str]) -> str:
@@ -542,8 +664,16 @@ _VALUE_DIGEST_SQL = ("SELECT feature_id, sha256(coalesce(string_agg(" + _row_jso
 _EMPTY_SHA = hashlib.sha256(b"").hexdigest()
 
 
+def _leak_predicate(cutoff: str, prefix: str = "") -> str:
+    """Rows knowable only after the cutoff, or value-bearing rows the rules reject."""
+    p = prefix
+    return (f"({p}available_at>{cutoff} OR (({p}reason='valid' OR {p}raw_value IS NOT NULL) AND "
+            f"({p}latest_input_clock IS NULL OR {p}latest_input_clock>{cutoff})) OR "
+            f"({p}raw_value IS NOT NULL AND {p}reason NOT IN ({_sql_list(VALUE_BEARING_REASONS)})))")
+
+
 # ---------------------------------------------------------------------------
-# Builder
+# Builder: calendar, cohorts, primary lines
 # ---------------------------------------------------------------------------
 
 def _code_sha() -> str:
@@ -562,21 +692,28 @@ def _definitions(con: Any, features: tuple[PanelFeature, ...]) -> tuple[str, str
         encoded, _, hashes = fsr.resolve_definitions(con, roots)
         derived = json.loads(encoded)
     registry = {row.metric_code: row for row in fsr.default_derived_definitions()}
-    market = [{"metric_code": f.metric_code, "metric_window": f.metric_window,
-               "expression": registry[f.metric_code].expression,
-               "inputs": list(registry[f.metric_code].inputs),
-               "version": registry[f.metric_code].version,
-               "source_column": f"market_daily_metrics.{f.metric_code}"}
-              for f in features if f.is_market]
+    market = []
+    for f in features:
+        if not f.is_market:
+            continue
+        if f.metric_code in NATIVE_FEATURES:
+            market.append({"metric_code": f.metric_code, **NATIVE_FEATURES[f.metric_code]})
+            continue
+        row = registry[f.metric_code]
+        market.append({"metric_code": f.metric_code, "metric_window": f.metric_window,
+                       "expression": row.expression, "inputs": list(row.inputs), "version": row.version,
+                       "source_column": f"market_daily_metrics.{f.metric_code}"})
     encoded = _canonical({"derived": derived, "market": sorted(market, key=lambda m: m["metric_code"])})
     return encoded, _sha(encoded), hashes
 
 
 def _blockers(basis: str, formations: int, valid_members: int, valid_values: int,
-              calendar_rows: Sequence[CalendarRow]) -> tuple[str, ...]:
+              calendar_rows: Sequence[CalendarRow], unlinked: int, eligible: int) -> tuple[str, ...]:
     blockers = list(_BASE_BLOCKERS)
     if basis == BASIS_RECONSTRUCTED:
         blockers.append("reconstructed_identity_universe_and_availability_not_certifiable")
+    if unlinked:
+        blockers.append(f"owner_link_attrition:{unlinked}/{eligible}")
     if any(row.status in (CALENDAR_MISSING_MONTH_END, CALENDAR_RULE_CONFLICT) for row in calendar_rows):
         blockers.append("missing_or_conflicting_month_end_sessions")
     if not formations:
@@ -588,55 +725,390 @@ def _blockers(basis: str, formations: int, valid_members: int, valid_values: int
     return tuple(blockers)
 
 
-def _stage_formation_cohort(store: ResearchStore, row: CalendarRow, spec: dict[str, Any]) -> dict[str, Any]:
+def _stage_run_calendar(con: Any, formed: Sequence[CalendarRow]) -> None:
+    """``_rp_calendar`` (all formations) and ``_rp_cal_ord`` (with 0-based ordinals)."""
+    pairs = [(row.formation_date, row.cutoff) for row in formed]
+    if any(later[1] <= earlier[1] for earlier, later in itertools.pairwise(pairs)):  # type: ignore[operator]
+        raise RuntimeError("formation cutoffs must increase with the formation date")
+    fsr.stage_calendar(con, pairs, table="_rp_calendar")  # type: ignore[arg-type]
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE _rp_cal_ord AS
+        SELECT CAST(row_number() OVER (ORDER BY decision_date) - 1 AS INTEGER) AS ord, decision_date, cutoff
+        FROM _rp_calendar
+    """)
+
+
+def _stage_cohorts(store: ResearchStore, spec: dict[str, Any], market_source: str) -> dict[dt.date, dict[str, Any]]:
+    """Stage ``_rp_cohort_all`` for every formation; return per-formation statistics."""
     con = store.con
-    counts = fsr.stage_cohort(
+    fsr.stage_cohort(
         con, calendar_table="_rp_calendar", universe_id=spec["universe_id"],
         identity_basis=spec["identity_basis"], universe_source=UNIVERSE_SOURCE_NAME,
         owner_links_table="_fs_owner_links" if spec["basis"] == BASIS_RECONSTRUCTED else None,
         eligible_security_types=tuple(spec["eligible_security_types"]),
         include_unlisted_tail=spec["include_unlisted_tail"], membership_detail=True,
     )
-    visible, eligible, _, valid = counts.get(row.formation_date, (0, 0, 0, 0))
-    con.execute("""
-        CREATE OR REPLACE TEMP TABLE _rp_cohort_rows AS
-        SELECT decision_date AS formation_date, security_id, symbol, security_type, exchange_code,
-               membership_reason, membership_cik, cik AS owner_cik, identity_basis,
-               owner_link_method, owner_link_reason, cohort_reason
-        FROM _fs_cohort_cal
+    # Trailing dollar volume, only for lines of multi-line issuers.
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _rp_line_dv AS
+        WITH groups AS (
+          SELECT decision_date, cik FROM _fs_cohort_cal WHERE cohort_reason='valid'
+          GROUP BY ALL HAVING count(*)>1
+        ), lines AS (
+          SELECT k.decision_date, k.security_id, c.cutoff
+          FROM _fs_cohort_cal k JOIN groups g ON g.decision_date=k.decision_date AND g.cik=k.cik
+          JOIN _rp_calendar c ON c.decision_date=k.decision_date
+          WHERE k.cohort_reason='valid'
+        ), sessions AS (
+          SELECT l.decision_date, l.security_id, m.trade_date,
+                 arg_max(CAST(m.close AS DOUBLE)*CAST(m.volume AS DOUBLE),
+                         (m.available_at, m.market_daily_id)) AS dollar_volume
+          FROM lines l JOIN market_daily_metrics m ON m.security_id=l.security_id
+           AND m.trade_date BETWEEN l.decision_date-{TRAILING_DOLLAR_VOLUME_DAYS} AND l.decision_date
+           AND m.available_at<=l.cutoff AND m.as_of_date<=l.decision_date
+          WHERE m.source=?
+          GROUP BY ALL
+        )
+        SELECT decision_date, security_id,
+               sum(dollar_volume) FILTER (WHERE isfinite(dollar_volume) AND dollar_volume>0) AS dollar_volume
+        FROM sessions GROUP BY ALL
+    """, [market_source])
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _rp_cohort_all AS
+        WITH valid AS (
+          SELECT k.decision_date, k.security_id, k.cik, d.dollar_volume,
+                 count(*) OVER (PARTITION BY k.decision_date, k.cik) AS issuer_lines,
+                 row_number() OVER (PARTITION BY k.decision_date, k.cik
+                                    ORDER BY coalesce(d.dollar_volume, -1) DESC, k.security_id) AS line_rank
+          FROM _fs_cohort_cal k
+          LEFT JOIN _rp_line_dv d ON d.decision_date=k.decision_date AND d.security_id=k.security_id
+          WHERE k.cohort_reason='valid'
+        ), groups AS (
+          SELECT decision_date, cik,
+                 max(coalesce(dollar_volume, -1)) FILTER (WHERE line_rank=1) AS top,
+                 max(coalesce(dollar_volume, -1)) FILTER (WHERE line_rank=2) AS second
+          FROM valid GROUP BY ALL
+        )
+        SELECT k.decision_date, k.security_id, k.symbol, k.security_type, k.exchange_code,
+               k.membership_reason, k.membership_cik, k.cik AS owner_cik, k.identity_basis,
+               k.owner_link_method, k.owner_link_reason, k.cohort_reason,
+               coalesce(k.is_common, false) AS eligible,
+               CAST(v.issuer_lines AS INTEGER) AS issuer_lines,
+               CASE WHEN v.security_id IS NOT NULL THEN v.line_rank=1 END AS primary_line,
+               CASE WHEN v.security_id IS NULL THEN NULL
+                    WHEN v.issuer_lines=1 THEN '{PRIMARY_RULE_SINGLE}'
+                    WHEN g.top>0 AND g.top>coalesce(g.second, -1) THEN '{PRIMARY_RULE_DOLLAR_VOLUME}'
+                    ELSE '{PRIMARY_RULE_TIEBREAK}' END AS primary_line_rule,
+               CASE WHEN k.cohort_reason='valid' AND v.line_rank>1 THEN '{SECONDARY_LINE_REASON}'
+                    ELSE k.cohort_reason END AS leg_reason
+        FROM _fs_cohort_cal k
+        LEFT JOIN valid v ON v.decision_date=k.decision_date AND v.security_id=k.security_id
+        LEFT JOIN groups g ON g.decision_date=k.decision_date AND g.cik=k.cik
     """)
-    reasons = {
-        "cohort_reason": dict(con.execute(
-            "SELECT cohort_reason, count(*) FROM _rp_cohort_rows GROUP BY 1 ORDER BY 1").fetchall()),
-        "owner_link_reason": dict(con.execute("""
-            SELECT coalesce(owner_link_reason,'linked'), count(*) FROM _rp_cohort_rows
-            WHERE cohort_reason NOT IN ('overlapping_membership','not_common') GROUP BY 1 ORDER BY 1
-        """).fetchall()),
-    }
-    digest = con.execute(_COHORT_DIGEST_SQL.format(relation="_rp_cohort_rows", where="")).fetchone()[0]
-    return {"visible": visible, "eligible": eligible, "valid": valid,
-            "reasons_json": _canonical(reasons), "digest": digest}
+    failures = _sql_list(OWNER_LINK_FAILURES)
+    stats: dict[dt.date, dict[str, Any]] = {}
+    for day, visible, eligible, valid, unlinked, multi in con.execute(f"""
+        SELECT decision_date, count(*), count(*) FILTER (WHERE eligible),
+               count(*) FILTER (WHERE cohort_reason='valid'),
+               count(*) FILTER (WHERE eligible AND cohort_reason IN ({failures})),
+               count(DISTINCT owner_cik) FILTER (WHERE issuer_lines>1)
+        FROM _rp_cohort_all GROUP BY 1
+    """).fetchall():
+        stats[day] = {"visible": int(visible), "eligible": int(eligible), "valid": int(valid),
+                      "unlinked": int(unlinked), "multi_line_issuers": int(multi),
+                      "attrition": round(int(unlinked) / int(eligible), 9) if eligible else None,
+                      "reasons": {"cohort_reason": {}, "owner_link_reason": {}, "primary_line_rule": {},
+                                  "eligible_cohort_reason": {}}}
+    for key, sql in (
+        ("cohort_reason", "SELECT decision_date, cohort_reason, count(*) FROM _rp_cohort_all GROUP BY ALL"),
+        ("eligible_cohort_reason", """
+            SELECT decision_date, leg_reason, count(*) FROM _rp_cohort_all WHERE eligible GROUP BY ALL"""),
+        ("owner_link_reason", """
+            SELECT decision_date, coalesce(owner_link_reason,'linked'), count(*) FROM _rp_cohort_all
+            WHERE cohort_reason NOT IN ('overlapping_membership','not_common') GROUP BY ALL"""),
+        ("primary_line_rule", """
+            SELECT decision_date, primary_line_rule, count(*) FROM _rp_cohort_all
+            WHERE primary_line GROUP BY ALL"""),
+    ):
+        for day, reason, n in con.execute(sql).fetchall():
+            stats[day]["reasons"][key][str(reason)] = int(n)
+    return stats
 
 
-def _derived_batch(store: ResearchStore, run_id: str, batch: _Batch, spec: dict[str, Any],
-                   hashes: dict[tuple[str, str], str]) -> dict[str, Any]:
+def _persist_cohorts(store: ResearchStore, run_id: str, formed: Sequence[CalendarRow],
+                     stats: dict[dt.date, dict[str, Any]]) -> None:
     con = store.con
+    done = dict(con.execute("""
+        SELECT formation_date, cohort_sha256 FROM research_panel_calendar
+        WHERE run_id=? AND cohort_sha256 IS NOT NULL
+    """, [run_id]).fetchall())
+    for row in formed:
+        day = row.formation_date
+        cohort = stats.setdefault(day, {  # type: ignore[arg-type]
+            "visible": 0, "eligible": 0, "valid": 0, "unlinked": 0, "multi_line_issuers": 0,
+            "attrition": None, "reasons": {"cohort_reason": {}, "owner_link_reason": {},
+                                           "primary_line_rule": {}, "eligible_cohort_reason": {}}})
+        cohort["digest"] = con.execute(_COHORT_DIGEST_SQL.format(
+            relation="_rp_cohort_all", where="WHERE decision_date=?"), [day]).fetchone()[0]
+        stored = done.get(day)
+        if stored is not None:
+            if stored != cohort["digest"]:
+                raise RuntimeError(f"cohort for {day} changed since the interrupted run")
+            continue
+        with store.transaction():
+            con.execute(f"INSERT INTO research_panel_cohort (run_id,formation_date,{','.join(_COHORT_COLUMNS)}) "
+                        f"SELECT ?,decision_date,{','.join(_COHORT_COLUMNS)} FROM _rp_cohort_all "
+                        f"WHERE decision_date=?", [run_id, day])
+            con.execute(f"""
+                UPDATE research_panel_calendar
+                SET {','.join(f'{c}=?' for c in _CALENDAR_STAT_COLUMNS)}
+                WHERE run_id=? AND month_start=?
+            """, [cohort["visible"], cohort["eligible"], cohort["valid"], cohort["unlinked"],
+                  cohort["attrition"], cohort["multi_line_issuers"], _canonical(cohort["reasons"]),
+                  cohort["digest"], run_id, row.month_start])
+
+
+# ---------------------------------------------------------------------------
+# Builder: derived metric batches (selection across formations, proofs)
+# ---------------------------------------------------------------------------
+
+_BUCKET_SQL = ("coalesce(d.target_bucket, CAST(floor((year(d.period_end)*12+month(d.period_end)-1+"
+               "CASE WHEN day(d.period_end)>=15 THEN 1 ELSE 0 END)/3.0) AS BIGINT))")
+
+
+def _stage_segments(con: Any, formations: int) -> dict[str, int]:
+    """``_rp_seg``: the selected state per (owner, metric) as [from_ord, to_ord) runs.
+
+    Fast path (exact under I: one period end per bucket, and J: one bucket per
+    period end): the FQ1 selection at a formation is the arg-max of
+    (period_end, available_at, derived_value_id) over the states visible there,
+    and visibility only grows with the formation, so a running maximum over each
+    state's first visible formation gives every formation's selection. Owners x
+    metrics that break I or J are selected by the FQ1 ranking itself.
+    """
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE _rp_irregular AS
+        SELECT DISTINCT security_id, metric_code, metric_window FROM (
+          SELECT security_id, metric_code, metric_window FROM _rp_states
+          GROUP BY security_id, metric_code, metric_window, bucket HAVING count(DISTINCT period_end)>1
+          UNION ALL
+          SELECT security_id, metric_code, metric_window FROM _rp_states
+          GROUP BY security_id, metric_code, metric_window, period_end HAVING count(DISTINCT bucket)>1)
+    """)
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _rp_seg AS
+        WITH regular AS (
+          SELECT s.security_id, s.metric_code, s.metric_window, s.period_end, s.available_at,
+                 greatest(s.period_end, s.as_of_date) AS need_date, s.derived_value_id
+          FROM _rp_states s ANTI JOIN _rp_irregular i
+            ON i.security_id=s.security_id AND i.metric_code=s.metric_code
+           AND i.metric_window=s.metric_window
+        ), by_clock AS (
+          SELECT r.*, c.ord AS clock_ord FROM regular r ASOF JOIN _rp_cal_ord c ON r.available_at<=c.cutoff
+        ), visible AS (
+          SELECT b.*, greatest(b.clock_ord, c.ord) AS first_ord
+          FROM by_clock b ASOF JOIN _rp_cal_ord c ON b.need_date<=c.decision_date
+        ), firsts AS (
+          SELECT security_id, metric_code, metric_window, first_ord,
+                 max(struct_pack(p := period_end, a := available_at, i := derived_value_id)) AS k
+          FROM visible GROUP BY ALL
+        ), running AS (
+          SELECT *, max(k) OVER (PARTITION BY security_id, metric_code, metric_window ORDER BY first_ord
+                                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS best
+          FROM firsts
+        )
+        SELECT security_id, metric_code, metric_window, CAST(first_ord AS INTEGER) AS from_ord,
+               CAST(lead(first_ord, 1, {int(formations)}) OVER (
+                 PARTITION BY security_id, metric_code, metric_window ORDER BY first_ord) AS INTEGER) AS to_ord,
+               best.i AS derived_value_id
+        FROM running
+    """)
+    irregular = int(con.execute("SELECT count(*) FROM _rp_irregular").fetchone()[0])
+    if irregular:
+        con.execute("""
+            CREATE OR REPLACE TEMP TABLE _rp_irr_states AS
+            SELECT s.* FROM _rp_states s SEMI JOIN _rp_irregular i
+              ON i.security_id=s.security_id AND i.metric_code=s.metric_code AND i.metric_window=s.metric_window
+        """)
+        for start in range(0, formations, FORMATION_CHUNK):
+            con.execute("""
+                CREATE OR REPLACE TEMP TABLE _rp_cal_chunk AS
+                SELECT decision_date, cutoff FROM _rp_cal_ord WHERE ord BETWEEN ? AND ?
+            """, [start, start + FORMATION_CHUNK - 1])
+            fsr.stage_state_selection(con, calendar_table="_rp_cal_chunk", metrics_table="_rp_metrics",
+                                      metric_source=DERIVED_SOURCE_NAME, state_source="_rp_irr_states")
+            con.execute("""
+                INSERT INTO _rp_seg
+                SELECT k.security_id, k.metric_code, k.metric_window, c.ord, c.ord+1, k.derived_value_id
+                FROM _fs_selected_keys k JOIN _rp_cal_ord c ON c.decision_date=k.decision_date
+            """)
+    segments = int(con.execute("SELECT count(*) FROM _rp_seg").fetchone()[0])
+    return {"irregular_owner_metrics": irregular, "segments": segments}
+
+
+def _prove_todo(store: ResearchStore, run_id: str, hashes: dict[tuple[str, str], str],
+                todo_sql: str, params: list[Any], chunk: int) -> dict[str, int]:
+    """Prove every root of ``todo_sql`` (columns: root_id) into the slim proof table.
+
+    Each chunk commits on its own, so an interrupted run resumes after the last
+    committed chunk (the todo relation excludes proved roots).
+    """
+    con = store.con
+    # Owner-ordered chunks: an owner's states, their metric children and their
+    # leaves land in the same chunk (fetched once, from nearby storage).
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _rp_todo AS
+        SELECT t.root_id, s.security_id, s.metric_code, s.metric_window, s.available_at, s.as_of_date,
+               row_number() OVER (ORDER BY s.security_id, s.available_at, t.root_id) AS n
+        FROM ({todo_sql}) t JOIN _rp_states s ON s.derived_value_id=t.root_id
+    """, params)
+    total = int(con.execute("SELECT count(*) FROM _rp_todo").fetchone()[0])
+    counts: dict[str, int] = {"roots": total}
+    for start in range(1, total + 1, chunk):
+        with store.transaction():
+            con.execute("CREATE OR REPLACE TEMP TABLE _rp_chunk AS SELECT * FROM _rp_todo WHERE n BETWEEN ? AND ?",
+                        [start, start + chunk - 1])
+            got = _lineage.prove_roots(con, hashes, roots_table="_rp_chunk")
+            con.execute(f"""
+                INSERT INTO research_lineage_proofs ({','.join(_PROOF_COLUMNS)})
+                SELECT ?, r.root_id, c.security_id, c.metric_code, c.metric_window, c.available_at,
+                       c.as_of_date, r.selected_cik, r.status, r.reason, r.proof_digest, r.oldest_fiscal_end,
+                       r.newest_fiscal_end, r.latest_input_clock, r.leaf_count, r.method
+                FROM _lp_result r JOIN _rp_chunk c ON c.root_id=r.root_id
+            """, [run_id])
+        for key, value in got.items():
+            if key != "levels":
+                counts[key] = counts.get(key, 0) + int(value)
+        counts["max_levels"] = max(counts.get("max_levels", 0), int(got.get("levels", 0)))
+    return counts
+
+
+def _stage_batch_proofs(con: Any, run_id: str) -> None:
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE _rp_batch_proofs AS
+        SELECT p.* FROM research_lineage_proofs p
+        JOIN _rp_metrics m ON m.metric_code=p.metric_code AND m.metric_window=p.metric_window
+        WHERE p.run_id=?
+    """, [run_id])
+
+
+def _derived_selection(store: ResearchStore, run_id: str, batch: _Batch, spec: dict[str, Any],
+                       hashes: dict[tuple[str, str], str], formations: int, chunk: int) -> dict[str, Any]:
+    """Select, fetch and prove one derived metric batch for every formation at once."""
+    con = store.con
+    started = time.perf_counter()
     fsr.stage_metric_legs(con, [
         fsr.MetricLeg(f.metric_code, f.metric_window, hashes[(f.metric_code, f.metric_window)],
                       spec["max_age_days"], spec["annual_max_age_days"],
                       f.metric_code == "eps_diluted_q_growth_yoy")
         for f in batch.features
     ], table="_rp_metrics")
-    fsr.stage_selected_states(
-        con, run_id=run_id, all_hashes=hashes, calendar_table="_rp_calendar",
-        cohort_table="_fs_cohort_cal", metrics_table="_rp_metrics",
-        proof_table="research_panel_proofs", metric_source=DERIVED_SOURCE_NAME,
-        max_selected_states=100_000 * len(batch.features),
-        max_prior_states=100_000 * len(batch.features),
-    )
-    # A stale state keeps its value only when every later rule of the cascade
-    # (input clock, expiry) also holds; any other rejection publishes NULL.
+    last_date, last_cutoff = con.execute("SELECT max(decision_date), max(cutoff) FROM _rp_cal_ord").fetchone()
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _rp_states AS
+        SELECT d.derived_value_id, d.source, d.security_id, d.metric_code, d.metric_window, d.target_bucket,
+               {_BUCKET_SQL} AS bucket, d.period_end, d.available_at, d.as_of_date
+        FROM derived_metric_values d
+        JOIN _rp_metrics m ON m.metric_code=d.metric_code AND m.metric_window=d.metric_window
+        WHERE d.source=? AND d.period_end<=? AND d.available_at<=? AND d.as_of_date<=?
+    """, [DERIVED_SOURCE_NAME, last_date, last_cutoff, last_date])
+    stats: dict[str, Any] = {"states": int(con.execute("SELECT count(*) FROM _rp_states").fetchone()[0])}
+    stats.update(_stage_segments(con, formations))
     con.execute("""
+        CREATE OR REPLACE TEMP TABLE _rp_sel_rows AS
+        SELECT d.derived_value_id, d.source, d.security_id, d.metric_code, d.metric_window, d.target_bucket,
+               d.period_end, d.value, d.available_at, d.as_of_date, d.valid_to, d.inputs_hash,
+               d.definition_hash, d.history_status, d.value_status, d.selected_input_refs_hash,
+               d.fiscal_period_start, d.fiscal_period_end, d.value_origin
+        FROM derived_metric_values d
+        JOIN _rp_metrics m ON m.metric_code=d.metric_code AND m.metric_window=d.metric_window
+        WHERE d.source=? AND d.derived_value_id IN (SELECT derived_value_id FROM _rp_seg)
+    """, [DERIVED_SOURCE_NAME])
+    stats["selection_seconds"] = round(time.perf_counter() - started, 3)
+    # Owners that can match a member: id names a linked member's CIK, the id is
+    # a member line, or the id names no CIK at all (cannot judge: prove).
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE _rp_owner_keep AS
+        WITH owners AS (
+          SELECT DISTINCT security_id, regexp_extract(security_id, 'CIK-([0-9]{1,10})$', 1) AS id_cik
+          FROM _rp_seg
+        ), linked AS (
+          SELECT DISTINCT owner_cik FROM _rp_cohort_all WHERE cohort_reason='valid'
+        ), lines AS (
+          SELECT DISTINCT security_id FROM _rp_cohort_all WHERE cohort_reason='valid'
+        )
+        SELECT o.security_id FROM owners o
+        WHERE o.id_cik=''
+           OR lpad(o.id_cik, 10, '0') IN (SELECT owner_cik FROM linked)
+           OR o.security_id IN (SELECT security_id FROM lines)
+    """)
+    stats["selected_roots"], stats["skipped_unlinked_roots"] = (int(v) for v in con.execute("""
+        SELECT count(DISTINCT derived_value_id),
+               count(DISTINCT derived_value_id) FILTER (WHERE security_id NOT IN (SELECT security_id FROM _rp_owner_keep))
+        FROM _rp_seg
+    """).fetchone())
+    started = time.perf_counter()
+    _stage_batch_proofs(con, run_id)
+    stats["proofs_selected"] = _prove_todo(store, run_id, hashes, """
+        SELECT DISTINCT s.derived_value_id AS root_id FROM _rp_seg s
+        SEMI JOIN _rp_owner_keep o ON o.security_id=s.security_id
+        ANTI JOIN _rp_batch_proofs p ON p.derived_value_id=s.derived_value_id
+    """, [], chunk)
+    _stage_batch_proofs(con, run_id)
+    # Prior history of owners whose selected state proves no CIK (FQ1's
+    # prior-owner association), proved once per root; no count abort.
+    stats["proofs_prior"] = _prove_todo(store, run_id, hashes, """
+        WITH unowned AS (
+          SELECT p.derived_owner_security_id AS security_id, p.metric_code, p.metric_window,
+                 max(p.root_available_at) AS upto
+          FROM _rp_batch_proofs p SEMI JOIN _rp_seg s ON s.derived_value_id=p.derived_value_id
+          WHERE p.selected_cik IS NULL GROUP BY ALL
+        )
+        SELECT DISTINCT st.derived_value_id AS root_id
+        FROM _rp_states st JOIN unowned u ON u.security_id=st.security_id
+         AND u.metric_code=st.metric_code AND u.metric_window=st.metric_window
+        WHERE st.available_at<u.upto
+          AND st.derived_value_id NOT IN (SELECT derived_value_id FROM _rp_batch_proofs)
+    """, [], chunk)
+    _stage_batch_proofs(con, run_id)
+    stats["proof_seconds"] = round(time.perf_counter() - started, 3)
+    return stats
+
+
+def _derived_formations(store: ResearchStore, run_id: str, batch: _Batch, spec: dict[str, Any],
+                        rows: Sequence[CalendarRow], ordinals: Sequence[int]) -> dict[str, Any]:
+    """Associate the batch's selected states with the eligible members of a few formations.
+
+    One pass per formation chunk: the batch-wide state and proof relations are
+    joined once per chunk, not once per formation.
+    """
+    con = store.con
+    con.execute("CREATE OR REPLACE TEMP TABLE _rp_cal_part (ord INTEGER, decision_date DATE, cutoff TIMESTAMP)")
+    con.executemany("INSERT INTO _rp_cal_part VALUES (?,?,?)",
+                    [[ordinal, row.formation_date, row.cutoff] for row, ordinal in zip(rows, ordinals, strict=True)])
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE _fs_selected_keys AS
+        SELECT c.decision_date, s.metric_code, s.metric_window, s.security_id, s.derived_value_id
+        FROM _rp_seg s JOIN _rp_cal_part c ON c.ord>=s.from_ord AND c.ord<s.to_ord
+    """)
+    fsr.stage_selected_rows(con, calendar_table="_rp_cal_part", metric_source=DERIVED_SOURCE_NAME,
+                            rows_source="_rp_sel_rows")
+    # Only the primary line of an owner-linked issuer competes for owner
+    # features; every other eligible member keeps its exclusion reason.
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE _rp_leg_cohort AS
+        SELECT k.decision_date, k.security_id, k.owner_cik AS cik, k.leg_reason AS cohort_reason
+        FROM _rp_cohort_all k SEMI JOIN _rp_cal_part c ON c.decision_date=k.decision_date
+        WHERE k.eligible
+    """)
+    fsr.stage_owner_legs(con, run_id=run_id, calendar_table="_rp_cal_part", cohort_table="_rp_leg_cohort",
+                         metrics_table="_rp_metrics", proof_table="_rp_batch_proofs", staged_slim=True)
+    kept = "l.cohort_reason='valid'"
+    state = {column: f"CASE WHEN {kept} THEN l.{column} END" for column in (
+        "lineage_status", "available_at", "latest_input_clock", "period_end", "fiscal_period_start",
+        "fiscal_period_end", "value_origin", "derived_value_id", "derived_owner_security_id",
+        "lineage_digest")}
+    con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _rp_batch_values AS
         SELECT l.decision_date AS formation_date, l.security_id, f.feature_id,
                l.metric_code, l.metric_window,
@@ -646,146 +1118,187 @@ def _derived_batch(store: ResearchStore, run_id: str, batch: _Batch, spec: dict[
                               AND l.latest_input_clock<=l.available_at
                               AND (l.state_valid_to IS NULL OR l.state_valid_to>l.cutoff)
                          THEN l.raw_value END AS DOUBLE) AS raw_value,
-               l.reason, l.lineage_status, l.available_at, l.latest_input_clock,
-               l.period_end, l.fiscal_period_start, l.fiscal_period_end, l.value_origin,
-               CAST(l.age_days AS INTEGER) AS age_days, CAST(l.max_age_days AS INTEGER) AS max_age_days,
-               l.cik AS owner_cik, l.derived_value_id, l.derived_owner_security_id,
-               l.lineage_digest, c.identity_basis, ? AS universe_basis, ? AS availability_basis
+               l.reason, {state['lineage_status']} AS lineage_status,
+               {state['available_at']} AS available_at, {state['latest_input_clock']} AS latest_input_clock,
+               {state['period_end']} AS period_end, {state['fiscal_period_start']} AS fiscal_period_start,
+               {state['fiscal_period_end']} AS fiscal_period_end, {state['value_origin']} AS value_origin,
+               CASE WHEN {kept} THEN CAST(l.age_days AS INTEGER) END AS age_days,
+               CASE WHEN {kept} THEN CAST(l.max_age_days AS INTEGER) END AS max_age_days,
+               k.owner_cik, {state['derived_value_id']} AS derived_value_id,
+               {state['derived_owner_security_id']} AS derived_owner_security_id,
+               {state['lineage_digest']} AS lineage_digest, k.identity_basis,
+               ? AS universe_basis, ? AS availability_basis, '{SCOPE_OWNER}' AS feature_scope
         FROM _fs_leg l
         JOIN _rp_features f ON f.metric_code=l.metric_code AND f.metric_window=l.metric_window
-        JOIN _fs_cohort_cal c ON c.decision_date=l.decision_date AND c.security_id=l.security_id
-        WHERE l.cohort_reason='valid' AND l.derived_value_id IS NOT NULL
+        JOIN _rp_cohort_all k ON k.decision_date=l.decision_date AND k.security_id=l.security_id
     """, [spec["universe_id"], FUNDAMENTAL_AVAILABILITY_BASIS])
-    reason_rows = con.execute("""
-        SELECT metric_code, metric_window, reason, count(*) FROM _fs_leg
-        WHERE cohort_reason='valid' GROUP BY ALL ORDER BY ALL
-    """).fetchall()
-    unmatched = {(code, window): int(n) for code, window, n in con.execute("""
-        SELECT metric_code, metric_window, count(*) FROM _fs_owner_state
+    features = {(f.metric_code, f.metric_window): f.feature_id for f in batch.features}
+    unmatched: dict[tuple[dt.date, str], int] = {}
+    for day, code, window, n in con.execute("""
+        SELECT decision_date, metric_code, metric_window, count(*) FROM _fs_owner_state
         WHERE association_cik IS NULL GROUP BY ALL
+    """).fetchall():
+        unmatched[(day, features[(code, window)])] = int(n)
+    selected = {(day, feature): int(n) for day, feature, n in con.execute("""
+        SELECT formation_date, feature_id, count(*) FILTER (WHERE derived_value_id IS NOT NULL)
+        FROM _rp_batch_values GROUP BY ALL
     """).fetchall()}
-    by_metric: dict[tuple[str, str], dict[str, int]] = {}
-    for code, window, reason, n in reason_rows:
-        by_metric.setdefault((code, window), {})[reason] = int(n)
-    return {"reasons": by_metric, "unmatched": unmatched}
+    return {"unmatched": unmatched, "selected": selected}
 
 
-def _market_batch(store: ResearchStore, batch: _Batch, spec: dict[str, Any], market_source: str) -> dict[str, Any]:
+# ---------------------------------------------------------------------------
+# Builder: market batch
+# ---------------------------------------------------------------------------
+
+def _market_formation(store: ResearchStore, batch: _Batch, spec: dict[str, Any], market_source: str,
+                      row: CalendarRow) -> dict[str, Any]:
     con = store.con
-    columns = [f.metric_code for f in batch.features]
-    picks = ",\n".join(f'arg_max(m."{code}", (m.available_at, m.market_daily_id)) AS "{code}"' for code in columns)
-    con.execute(f"""
-        CREATE OR REPLACE TEMP TABLE _rp_market AS
-        SELECT c.decision_date, c.cutoff, m.security_id,
-               max(m.available_at) AS available_at,
-               arg_max(m.fundamental_available_at, (m.available_at, m.market_daily_id)) AS fundamental_available_at,
-               {picks}
-        FROM market_daily_metrics m
-        JOIN _rp_calendar c ON m.trade_date=c.decision_date AND m.available_at<=c.cutoff
-                           AND m.as_of_date<=c.decision_date
-        JOIN _fs_cohort_cal k ON k.decision_date=c.decision_date AND k.security_id=m.security_id
-                             AND k.cohort_reason='valid'
-        WHERE m.source=?
-        GROUP BY c.decision_date, c.cutoff, m.security_id
-    """, [market_source])
-    unions = "\nUNION ALL\n".join(
-        f"SELECT decision_date, cutoff, security_id, {_sql_text(f.feature_id)} AS feature_id, "
-        f"{_sql_text(f.metric_code)} AS metric_code, CAST(\"{f.metric_code}\" AS DOUBLE) AS value, "
-        f"available_at, fundamental_available_at FROM _rp_market"
-        for f in batch.features
-    )
+    fsr.stage_calendar(con, [(row.formation_date, row.cutoff)], table="_rp_cal_one")  # type: ignore[list-item]
+    columns = [f.metric_code for f in batch.features if f.metric_code not in NATIVE_FEATURES]
+    long_parts = []
+    if columns:
+        picks = ",\n".join(f'arg_max(m."{code}", (m.available_at, m.market_daily_id)) AS "{code}"'
+                           for code in columns)
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE _rp_market AS
+            SELECT m.security_id, max(m.available_at) AS available_at,
+                   arg_max(m.fundamental_available_at, (m.available_at, m.market_daily_id))
+                     AS fundamental_available_at,
+                   {picks}
+            FROM market_daily_metrics m
+            JOIN _rp_cal_one c ON m.trade_date=c.decision_date AND m.available_at<=c.cutoff
+                              AND m.as_of_date<=c.decision_date
+            JOIN _rp_cohort_all k ON k.decision_date=c.decision_date AND k.security_id=m.security_id
+                                 AND k.eligible
+            WHERE m.source=?
+            GROUP BY m.security_id
+        """, [market_source])
+        long_parts += [
+            f"SELECT security_id, {_sql_text(f.feature_id)} AS feature_id, CAST(\"{f.metric_code}\" AS DOUBLE) "
+            f"AS value, available_at, fundamental_available_at, 'market_daily' AS value_origin FROM _rp_market"
+            for f in batch.features if f.metric_code in columns]
+    if any(f.metric_code == "line_market_cap" for f in batch.features):
+        # The line's own close x its own vendor share count, as market_daily
+        # dedups a session (latest physical row) and clocks it (end of day).
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE _rp_line_cap AS
+            SELECT b.security_id,
+                   CAST(arg_max(b.close, (b.available_at, b.source)) AS DOUBLE)
+                   * CAST(arg_max(b.shares_outstanding, (b.available_at, b.source)) AS DOUBLE) AS value,
+                   greatest(max(b.available_at), CAST(b.trade_date AS TIMESTAMP) + INTERVAL {DECISION_HOUR} HOUR)
+                     AS available_at
+            FROM equity_daily_bars b
+            JOIN _rp_cohort_all k ON k.decision_date=? AND k.security_id=b.security_id AND k.eligible
+            WHERE b.trade_date=? AND b.close>0 AND b.adjusted_close>0
+            GROUP BY b.security_id, b.trade_date
+        """, [row.formation_date, row.formation_date])
+        feature = next(f for f in batch.features if f.metric_code == "line_market_cap")
+        long_parts.append(f"SELECT security_id, {_sql_text(feature.feature_id)} AS feature_id, value, "
+                          f"available_at, CAST(NULL AS TIMESTAMP) AS fundamental_available_at, "
+                          f"'equity_daily_bars' AS value_origin FROM _rp_line_cap")
+    con.execute("CREATE OR REPLACE TEMP TABLE _rp_batch_features "
+                "(feature_id VARCHAR, metric_code VARCHAR, feature_scope VARCHAR)")
+    con.executemany("INSERT INTO _rp_batch_features VALUES (?,?,?)",
+                    [[f.feature_id, f.metric_code, spec["scopes"][f.feature_id]] for f in batch.features])
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _rp_batch_values AS
-        WITH long AS ({unions}), judged AS (
-          SELECT *, CASE WHEN available_at>cutoff
-                              OR coalesce(fundamental_available_at>cutoff, false)
-                         THEN 'invalid_input_clock'
-                         WHEN value IS NULL OR NOT isfinite(value) THEN 'invalid_current_state'
-                         ELSE 'valid' END AS reason
-          FROM long
+        WITH long AS ({' UNION ALL '.join(long_parts)}), grid AS (
+          SELECT k.decision_date, c.cutoff, k.security_id, k.owner_cik, k.identity_basis, k.cohort_reason,
+                 k.leg_reason, f.feature_id, f.metric_code, f.feature_scope
+          FROM _rp_cohort_all k JOIN _rp_cal_one c ON c.decision_date=k.decision_date
+          CROSS JOIN _rp_batch_features f
+          WHERE k.eligible
+        ), judged AS (
+          SELECT g.*, x.value, x.available_at, x.fundamental_available_at, x.value_origin,
+                 x.security_id IS NOT NULL AS has_row,
+                 CASE WHEN g.feature_scope='{SCOPE_OWNER}' AND g.leg_reason<>'valid' THEN g.leg_reason
+                      WHEN g.cohort_reason='overlapping_membership' THEN 'overlapping_membership'
+                      WHEN x.security_id IS NULL THEN 'missing_market_row'
+                      WHEN x.available_at>g.cutoff OR coalesce(x.fundamental_available_at>g.cutoff, false)
+                           THEN 'invalid_input_clock'
+                      WHEN x.value IS NULL OR NOT isfinite(x.value) THEN 'invalid_current_state'
+                      ELSE 'valid' END AS reason,
+                 (g.feature_scope='{SCOPE_PRICE_LINE}' OR g.leg_reason='valid')
+                   AND g.cohort_reason<>'overlapping_membership' AS kept
+          FROM grid g LEFT JOIN long x ON x.security_id=g.security_id AND x.feature_id=g.feature_id
         )
-        SELECT j.decision_date AS formation_date, j.security_id, j.feature_id, j.metric_code,
+        SELECT decision_date AS formation_date, security_id, feature_id, metric_code,
                '{MARKET_WINDOW}' AS metric_window,
-               CAST(CASE WHEN j.reason='valid' THEN j.value END AS DOUBLE) AS raw_value,
-               j.reason, CAST(NULL AS VARCHAR) AS lineage_status, j.available_at,
-               j.available_at AS latest_input_clock, CAST(NULL AS DATE) AS period_end,
-               CAST(NULL AS DATE) AS fiscal_period_start, CAST(NULL AS DATE) AS fiscal_period_end,
-               'market_daily' AS value_origin, CAST(0 AS INTEGER) AS age_days,
-               CAST(NULL AS INTEGER) AS max_age_days, k.cik AS owner_cik,
+               CAST(CASE WHEN reason='valid' THEN value END AS DOUBLE) AS raw_value,
+               reason, CAST(NULL AS VARCHAR) AS lineage_status,
+               CASE WHEN kept THEN available_at END AS available_at,
+               CASE WHEN kept THEN available_at END AS latest_input_clock,
+               CAST(NULL AS DATE) AS period_end, CAST(NULL AS DATE) AS fiscal_period_start,
+               CAST(NULL AS DATE) AS fiscal_period_end, CASE WHEN kept THEN value_origin END AS value_origin,
+               CASE WHEN kept AND has_row THEN CAST(0 AS INTEGER) END AS age_days,
+               CAST(NULL AS INTEGER) AS max_age_days, owner_cik,
                CAST(NULL AS VARCHAR) AS derived_value_id,
                CAST(NULL AS VARCHAR) AS derived_owner_security_id,
-               CAST(NULL AS VARCHAR) AS lineage_digest, k.identity_basis,
-               ? AS universe_basis, ? AS availability_basis
-        FROM judged j JOIN _fs_cohort_cal k
-          ON k.decision_date=j.decision_date AND k.security_id=j.security_id
+               CAST(NULL AS VARCHAR) AS lineage_digest,
+               CASE WHEN feature_scope='{SCOPE_PRICE_LINE}' THEN '{PRICE_LINE_IDENTITY_BASIS}'
+                    ELSE identity_basis END AS identity_basis,
+               ? AS universe_basis, ? AS availability_basis, feature_scope
+        FROM judged
     """, [spec["universe_id"], MARKET_AVAILABILITY_BASIS])
-    valid_members = int(con.execute(
-        "SELECT count(*) FROM _fs_cohort_cal WHERE cohort_reason='valid'").fetchone()[0])
-    by_metric: dict[tuple[str, str], dict[str, int]] = {}
-    for code, reason, n in con.execute(
-            "SELECT metric_code, reason, count(*) FROM _rp_batch_values GROUP BY ALL ORDER BY ALL").fetchall():
-        by_metric.setdefault((code, MARKET_WINDOW), {})[reason] = int(n)
-    for f in batch.features:
-        counts = by_metric.setdefault((f.metric_code, MARKET_WINDOW), {})
-        missing = valid_members - sum(counts.values())
-        if missing:
-            counts["missing_market_row"] = missing
-    return {"reasons": by_metric, "unmatched": {}}
+    selected = {(row.formation_date, feature): int(n) for feature, n in con.execute("""
+        SELECT feature_id, count(*) FILTER (WHERE available_at IS NOT NULL) FROM _rp_batch_values GROUP BY 1
+    """).fetchall()}
+    return {"unmatched": {}, "selected": selected}
 
+
+# ---------------------------------------------------------------------------
+# Builder: writes, finalize
+# ---------------------------------------------------------------------------
 
 def _write_batch(store: ResearchStore, run_id: str, row: CalendarRow, batch: _Batch,
-                 result: dict[str, Any], valid_members: int) -> None:
+                 result: dict[str, Any], cohort: dict[str, Any], scopes: dict[str, str]) -> None:
     con = store.con
-    leaks = con.execute("""
-        SELECT count(*) FROM _rp_batch_values v JOIN _rp_calendar c ON c.decision_date=v.formation_date
-        WHERE v.available_at>c.cutoff
-           OR ((v.reason='valid' OR v.raw_value IS NOT NULL) AND
-               (v.latest_input_clock IS NULL OR v.latest_input_clock>c.cutoff))
-           OR (v.raw_value IS NOT NULL AND v.reason NOT IN ({reasons}))
-    """.format(reasons=",".join(_sql_text(reason) for reason in VALUE_BEARING_REASONS))).fetchone()[0]
+    day = row.formation_date
+    con.execute("CREATE OR REPLACE TEMP TABLE _rp_formation_values AS "
+                "SELECT * FROM _rp_batch_values WHERE formation_date=?", [day])
+    leaks = con.execute(f"""
+        SELECT count(*) FROM _rp_formation_values v JOIN _rp_calendar c ON c.decision_date=v.formation_date
+        WHERE {_leak_predicate('c.cutoff', 'v.')}
+    """).fetchone()[0]
     if leaks:
         raise RuntimeError(f"{leaks} staged values are not visible at the formation cutoff")
-    digests = dict(con.execute(_VALUE_DIGEST_SQL.format(relation="_rp_batch_values", where="")).fetchall())
-    emitted = dict(con.execute("SELECT feature_id, count(*) FROM _rp_batch_values GROUP BY 1").fetchall())
+    digests = dict(con.execute(_VALUE_DIGEST_SQL.format(relation="_rp_formation_values", where="")).fetchall())
+    emitted = dict(con.execute("SELECT feature_id, count(*) FROM _rp_formation_values GROUP BY 1").fetchall())
+    reasons: dict[str, dict[str, int]] = {}
+    for feature_id, reason, n in con.execute(
+            "SELECT feature_id, reason, count(*) FROM _rp_formation_values GROUP BY ALL ORDER BY ALL").fetchall():
+        reasons.setdefault(feature_id, {})[reason] = int(n)
     con.execute(f"INSERT INTO research_panel_values (run_id,{','.join(_VALUE_COLUMNS)}) "
-                f"SELECT ?,{','.join(_VALUE_COLUMNS)} FROM _rp_batch_values", [run_id])
+                f"SELECT ?,{','.join(_VALUE_COLUMNS)} FROM _rp_formation_values", [run_id])
     coverage = []
     for feature in batch.features:
-        reasons = result["reasons"].get((feature.metric_code, feature.metric_window), {})
-        values_valid = int(reasons.get("valid", 0))
-        selected = sum(n for reason, n in reasons.items()
-                       if reason not in ("missing_metric_state", "missing_market_row"))
+        counts = reasons.get(feature.feature_id, {})
+        values_valid = int(counts.get("valid", 0))
         coverage.append([
-            run_id, row.formation_date, feature.feature_id, feature.metric_code, feature.metric_window,
-            batch.ordinal, "formed" if values_valid else "no_valid_values", valid_members, selected,
-            int(emitted.get(feature.feature_id, 0)), values_valid,
-            int(result["unmatched"].get((feature.metric_code, feature.metric_window), 0)),
-            _canonical(dict(sorted(reasons.items()))), digests.get(feature.feature_id, _EMPTY_SHA),
+            run_id, day, feature.feature_id, feature.metric_code, feature.metric_window,
+            batch.ordinal, "formed" if values_valid else "no_valid_values", cohort["eligible"], cohort["valid"],
+            int(result["selected"].get((day, feature.feature_id), 0)), int(emitted.get(feature.feature_id, 0)),
+            values_valid, int(result["unmatched"].get((day, feature.feature_id), 0)), _canonical(counts),
+            digests.get(feature.feature_id, _EMPTY_SHA), scopes[feature.feature_id],
         ])
     _insert_coverage(con, coverage)
 
 
 def _insert_coverage(con: Any, rows: list[list[Any]]) -> None:
-    con.executemany("""
-        INSERT INTO research_panel_coverage
-        (run_id,formation_date,feature_id,metric_code,metric_window,batch_ordinal,status,
-         valid_members,selected_states,values_emitted,values_valid,unmatched_owner_states,
-         reasons_json,values_sha256)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    con.executemany(f"""
+        INSERT INTO research_panel_coverage ({','.join(_COVERAGE_COLUMNS)})
+        VALUES ({','.join('?' * len(_COVERAGE_COLUMNS))})
     """, rows)
 
 
 def _panel_digest(con: Any, run_id: str, manifest: Sequence[Any]) -> str:
-    calendar_sha = _stream_digest(con, """
+    calendar_sha = _stream_digest(con, f"""
         SELECT month_start,expected_session,last_observed_session,formation_date,cutoff,
-               entry_date,status,visible_members,eligible_members,valid_members,
-               cohort_reasons_json,cohort_sha256
+               entry_date,status,{','.join(_CALENDAR_STAT_COLUMNS)}
         FROM research_panel_calendar WHERE run_id=? ORDER BY month_start
     """, [run_id])
-    coverage_sha = _stream_digest(con, """
-        SELECT formation_date,feature_id,metric_code,metric_window,status,valid_members,
-               selected_states,values_emitted,values_valid,unmatched_owner_states,
-               reasons_json,values_sha256
+    coverage_sha = _stream_digest(con, f"""
+        SELECT {','.join(_COVERAGE_COLUMNS[1:5] + _COVERAGE_COLUMNS[6:])}
         FROM research_panel_coverage WHERE run_id=? ORDER BY formation_date,feature_id
     """, [run_id])
     return _sha(_canonical([*manifest, calendar_sha, coverage_sha]))
@@ -805,6 +1318,8 @@ def build_research_panel(store: ResearchStore, options: ResearchPanelOptions, *,
     labels = _basis_labels(basis)
     _require_inputs(store, basis, features, build_bridge=owner_links is None)
     batches = _batches(features, options.metric_batch_size)
+    scopes = {item[0]: item[3] for item in spec["features"]}
+    work_spec = {**spec, "scopes": scopes}
     definitions_json, definitions_sha, hashes = _definitions(con, features)
     spec_json = _canonical(spec)
     spec_sha = _sha(spec_json)
@@ -826,6 +1341,8 @@ def build_research_panel(store: ResearchStore, options: ResearchPanelOptions, *,
     }
     source_json = _canonical(source_ids)
     bridge_json = None
+    phases: dict[str, float] = {}
+    started = time.perf_counter()
     if basis == BASIS_RECONSTRUCTED:
         if owner_links is None:
             rows, summary = _owner_bridge_rows(store)
@@ -833,7 +1350,7 @@ def build_research_panel(store: ResearchStore, options: ResearchPanelOptions, *,
             rows, summary = tuple(owner_links), None
         staged = stage_owner_links(con, rows)
         bridge_json = _canonical({"staged": staged, "bridge_summary": summary})
-    fsr.stage_calendar(con, [], table="_rp_calendar")
+    phases["owner_bridge"] = time.perf_counter() - started
     con.execute("CREATE OR REPLACE TEMP TABLE _rp_features "
                 "(feature_id VARCHAR, metric_code VARCHAR, metric_window VARCHAR)")
     con.executemany("INSERT INTO _rp_features VALUES (?,?,?)",
@@ -841,7 +1358,7 @@ def build_research_panel(store: ResearchStore, options: ResearchPanelOptions, *,
     now = dt.datetime.now(dt.UTC).replace(tzinfo=None)
     existing = con.execute("""
         SELECT status,spec_sha256,definitions_sha256,code_sha256,calendar_sha256,source_ids_json,
-               owner_bridge_json
+               owner_bridge_json,query_version
         FROM research_panel_runs WHERE run_id=?
     """, [options.run_id]).fetchone()
     with store.transaction():
@@ -851,7 +1368,7 @@ def build_research_panel(store: ResearchStore, options: ResearchPanelOptions, *,
             if existing[0] not in ("building", "failed"):
                 raise ValueError(f"run {options.run_id} is sealed ({existing[0]}); it cannot be resumed")
             if tuple(existing[1:]) != (spec_sha, definitions_sha, code_sha, calendar_sha, source_json,
-                                       bridge_json):
+                                       bridge_json, QUERY_VERSION):
                 raise ValueError("resume refused: spec, definitions, code, calendar, sources or bridge changed")
             con.execute("UPDATE research_panel_runs SET status='building' WHERE run_id=?", [options.run_id])
         else:
@@ -875,64 +1392,68 @@ def build_research_panel(store: ResearchStore, options: ResearchPanelOptions, *,
                 VALUES (?,?,?,?,?,?,?,?)
             """, [[options.run_id, row.month_start, row.expected_session, row.last_observed_session,
                    row.formation_date, row.cutoff, row.entry_date, row.status] for row in calendar_rows])
+    formed = [row for row in calendar_rows if row.status == CALENDAR_FORMED]
+    batch_stats: list[dict[str, Any]] = []
     try:
-        done_cohorts = dict(con.execute("""
-            SELECT formation_date, cohort_sha256 FROM research_panel_calendar
-            WHERE run_id=? AND cohort_sha256 IS NOT NULL
-        """, [options.run_id]).fetchall())
-        done_features = {(row[0], row[1]) for row in con.execute(
+        started = time.perf_counter()
+        _stage_run_calendar(con, formed)
+        cohorts = _stage_cohorts(store, spec, labels["market_source"]) if formed else {}
+        _persist_cohorts(store, options.run_id, formed, cohorts)
+        phases["cohorts"] = time.perf_counter() - started
+        done = {(row[0], row[1]) for row in con.execute(
             "SELECT formation_date, feature_id FROM research_panel_coverage WHERE run_id=?",
             [options.run_id]).fetchall()}
-        for row in calendar_rows:
-            if row.status != CALENDAR_FORMED:
-                continue
-            assert row.formation_date is not None and row.cutoff is not None
-            fsr.stage_calendar(con, [(row.formation_date, row.cutoff)], table="_rp_calendar")
-            with store.transaction():
-                cohort = _stage_formation_cohort(store, row, spec)
-                stored = done_cohorts.get(row.formation_date)
-                if stored is not None and stored != cohort["digest"]:
-                    raise RuntimeError(f"cohort for {row.formation_date} changed since the interrupted run")
-                if stored is None:
-                    con.execute(f"INSERT INTO research_panel_cohort (run_id,formation_date,"
-                                f"{','.join(_COHORT_COLUMNS)}) SELECT ?,formation_date,"
-                                f"{','.join(_COHORT_COLUMNS)} FROM _rp_cohort_rows", [options.run_id])
-                    con.execute("""
-                        UPDATE research_panel_calendar
-                        SET visible_members=?,eligible_members=?,valid_members=?,
-                            cohort_reasons_json=?,cohort_sha256=?
-                        WHERE run_id=? AND month_start=?
-                    """, [cohort["visible"], cohort["eligible"], cohort["valid"],
-                          cohort["reasons_json"], cohort["digest"], options.run_id, row.month_start])
-            for batch in batches:
-                if all((row.formation_date, f.feature_id) in done_features for f in batch.features):
-                    continue
-                with store.transaction():
-                    if cohort["valid"] == 0:
+        ordinals = {row.formation_date: index for index, row in enumerate(formed)}
+        for batch in batches:
+            pending = [row for row in formed
+                       if not all((row.formation_date, f.feature_id) in done for f in batch.features)]
+            live = [row for row in pending if cohorts[row.formation_date]["eligible"]]
+            for row in pending:
+                if row not in live:
+                    with store.transaction():
                         _insert_coverage(con, [[
-                            options.run_id, row.formation_date, f.feature_id, f.metric_code,
-                            f.metric_window, batch.ordinal, "empty_common_cohort", 0, 0, 0, 0, 0,
-                            _canonical({}), _EMPTY_SHA] for f in batch.features])
-                        continue
-                    if batch.is_market:
-                        result = _market_batch(store, batch, spec, labels["market_source"])
-                    else:
-                        result = _derived_batch(store, options.run_id, batch, spec, hashes)
-                    _write_batch(store, options.run_id, row, batch, result, cohort["valid"])
+                            options.run_id, row.formation_date, f.feature_id, f.metric_code, f.metric_window,
+                            batch.ordinal, "empty_common_cohort", 0, 0, 0, 0, 0, 0, _canonical({}), _EMPTY_SHA,
+                            scopes[f.feature_id]] for f in batch.features])
+            if not live:
+                continue
+            stats: dict[str, Any] = {"batch": batch.ordinal, "features": len(batch.features)}
+            if not batch.is_market:
+                stats.update(_derived_selection(store, options.run_id, batch, work_spec, hashes, len(formed),
+                                                options.proof_chunk_roots))
+            started = time.perf_counter()
+            if batch.is_market:
+                for row in live:
+                    with store.transaction():
+                        result = _market_formation(store, batch, work_spec, labels["market_source"], row)
+                        _write_batch(store, options.run_id, row, batch, result, cohorts[row.formation_date], scopes)
+            else:
+                for start in range(0, len(live), options.formation_chunk):
+                    part = live[start:start + options.formation_chunk]
+                    with store.transaction():
+                        result = _derived_formations(store, options.run_id, batch, work_spec, part,
+                                                     [ordinals[row.formation_date] for row in part])
+                        for row in part:
+                            _write_batch(store, options.run_id, row, batch, result, cohorts[row.formation_date],
+                                         scopes)
+            stats["formation_seconds"] = round(time.perf_counter() - started, 3)
+            batch_stats.append(stats)
         return _finalize(store, options.run_id, basis, calendar_rows,
                          [QUERY_VERSION, spec_sha, definitions_sha, code_sha, calendar_sha,
-                          source_json, bridge_json])
+                          source_json, bridge_json], {"phase_seconds": {k: round(v, 3) for k, v in phases.items()},
+                                                      "batches": batch_stats})
     except Exception as exc:
         with store.transaction():
             con.execute("""
                 UPDATE research_panel_runs SET status='failed',diagnostic_json=?
                 WHERE run_id=? AND status='building'
-            """, [_canonical({"error": type(exc).__name__, "message": str(exc)}), options.run_id])
+            """, [_canonical({"error": type(exc).__name__, "message": str(exc),
+                              "this_invocation": {"batches": batch_stats}}), options.run_id])
         raise
 
 
 def _finalize(store: ResearchStore, run_id: str, basis: str, calendar_rows: Sequence[CalendarRow],
-              manifest: Sequence[Any]) -> ResearchPanelResult:
+              manifest: Sequence[Any], invocation: dict[str, Any]) -> ResearchPanelResult:
     con = store.con
     formed = [row for row in calendar_rows if row.status == CALENDAR_FORMED]
     value_rows, valid_values = con.execute("""
@@ -952,13 +1473,36 @@ def _finalize(store: ResearchStore, run_id: str, basis: str, calendar_rows: Sequ
     status_counts: dict[str, int] = {}
     for row in calendar_rows:
         status_counts[row.status] = status_counts.get(row.status, 0) + 1
-    proofs = con.execute("SELECT count(*) FROM research_panel_proofs WHERE run_id=?", [run_id]).fetchone()[0]
+    attrition = con.execute("""
+        SELECT formation_date, eligible_members, owner_unlinked_members FROM research_panel_calendar
+        WHERE run_id=? AND status='formed' ORDER BY formation_date
+    """, [run_id]).fetchall()
+    eligible = sum(int(row[1] or 0) for row in attrition)
+    unlinked = sum(int(row[2] or 0) for row in attrition)
+    shares = [int(row[2]) / int(row[1]) for row in attrition if row[1]]
+    proofs: dict[str, dict[str, int]] = {"method": {}, "status": {}}
+    for method, proof_status, n in con.execute("""
+        SELECT method, status, count(*) FROM research_lineage_proofs WHERE run_id=? GROUP BY ALL ORDER BY ALL
+    """, [run_id]).fetchall():
+        proofs["method"][method] = proofs["method"].get(method, 0) + int(n)
+        proofs["status"][proof_status] = proofs["status"].get(proof_status, 0) + int(n)
+    con.execute("CHECKPOINT")
     diagnostic = {"months": len(calendar_rows), "formations": len(formed),
                   "calendar_status": dict(sorted(status_counts.items())),
                   "cohort_rows": int(cohort_rows), "valid_cohort_rows": int(valid_members),
                   "coverage_rows": int(coverage_rows), "value_rows": int(value_rows),
-                  "valid_values": int(valid_values), "lineage_proofs": int(proofs)}
-    blockers = _blockers(basis, len(formed), int(valid_members), int(valid_values), calendar_rows)
+                  "valid_values": int(valid_values), "lineage_proofs": sum(proofs["method"].values()),
+                  "lineage_proofs_by_method": proofs["method"], "lineage_proofs_by_status": proofs["status"],
+                  "owner_link_attrition": {
+                      "unlinked_member_formations": unlinked, "eligible_member_formations": eligible,
+                      "share": round(unlinked / eligible, 9) if eligible else None,
+                      "max_formation_share": round(max(shares), 9) if shares else None,
+                      "by_formation": {row[0].isoformat(): (round(int(row[2]) / int(row[1]), 9) if row[1] else None)
+                                       for row in attrition}},
+                  "research_db_bytes": store.path.stat().st_size if store.path.is_file() else None,
+                  "this_invocation": invocation}
+    blockers = _blockers(basis, len(formed), int(valid_members), int(valid_values), calendar_rows,
+                         unlinked, eligible)
     if basis == BASIS_STRICT and not valid_members:
         status = "untestable_strict"
     elif not valid_values:
@@ -982,7 +1526,11 @@ def _finalize(store: ResearchStore, run_id: str, basis: str, calendar_rows: Sequ
 # ---------------------------------------------------------------------------
 
 def validate_research_panel(store: ResearchStore, run_id: str) -> ResearchPanelValidation:
-    """Reject unsealed, changed or point-in-time-unsafe panels before any use."""
+    """Reject unsealed, changed or point-in-time-unsafe panels before any use.
+
+    Bounded like the build: every check runs per formation and per chunk of at
+    most 16 features.
+    """
     con = store.con
     row = con.execute("""
         SELECT status,basis,query_version,spec_json,spec_sha256,definitions_json,definitions_sha256,
@@ -1002,7 +1550,7 @@ def validate_research_panel(store: ResearchStore, run_id: str) -> ResearchPanelV
     features = tuple(item[0] for item in spec["features"])
     calendar = con.execute("""
         SELECT month_start,expected_session,last_observed_session,formation_date,cutoff,entry_date,
-               status,cohort_sha256
+               status,cohort_sha256,eligible_members
         FROM research_panel_calendar WHERE run_id=? ORDER BY month_start
     """, [run_id]).fetchall()
     rebuilt = _sha(_canonical([[_iso(v) for v in item[:7]] for item in calendar]))
@@ -1010,49 +1558,52 @@ def validate_research_panel(store: ResearchStore, run_id: str) -> ResearchPanelV
         raise ValueError("research panel calendar digest mismatch")
     formed = [item for item in calendar if item[6] == CALENDAR_FORMED]
     for item in formed:
-        if item[3] != item[1] or item[4] != dt.datetime.combine(item[1], dt.time(DECISION_HOUR)) \
+        formation, cutoff, eligible = item[3], item[4], int(item[8] or 0)
+        if item[3] != item[1] or cutoff != dt.datetime.combine(item[1], dt.time(DECISION_HOUR)) \
                 or item[5] is None or item[5] <= item[3]:
             raise ValueError("research panel formation calendar contract changed")
         digest = con.execute(_COHORT_DIGEST_SQL.format(
             relation="research_panel_cohort", where="WHERE run_id=? AND formation_date=?"),
-            [run_id, item[3]]).fetchone()[0]
+            [run_id, formation]).fetchone()[0]
         if digest != item[7]:
-            raise ValueError(f"research panel cohort digest mismatch at {item[3]}")
-        stored = dict(con.execute("""
-            SELECT feature_id, values_sha256 FROM research_panel_coverage
+            raise ValueError(f"research panel cohort digest mismatch at {formation}")
+        stored = {feature: (sha, int(emitted), int(members)) for feature, sha, emitted, members in con.execute("""
+            SELECT feature_id, values_sha256, values_emitted, eligible_members FROM research_panel_coverage
             WHERE run_id=? AND formation_date=?
-        """, [run_id, item[3]]).fetchall())
+        """, [run_id, formation]).fetchall()}
         if set(stored) != set(features):
-            raise ValueError(f"research panel coverage incomplete at {item[3]}")
-        # Bounded like the build: at most 16 features' rows per ordered aggregate.
+            raise ValueError(f"research panel coverage incomplete at {formation}")
         rebuilt_values: dict[str, str] = {}
+        grain: dict[str, tuple[int, int, int]] = {}
         for start in range(0, len(features), 16):
             chunk = features[start:start + 16]
+            where = f"WHERE run_id=? AND formation_date=? AND feature_id IN ({','.join('?' * len(chunk))})"
             rebuilt_values.update(con.execute(_VALUE_DIGEST_SQL.format(
-                relation="research_panel_values",
-                where=f"WHERE run_id=? AND formation_date=? AND feature_id IN ({','.join('?' * len(chunk))})"),
-                [run_id, item[3], *chunk]).fetchall())
+                relation="research_panel_values", where=where), [run_id, formation, *chunk]).fetchall())
+            cutoff_sql = f"TIMESTAMP '{cutoff.isoformat(sep=' ')}'"
+            for feature, rows, distinct, leaks in con.execute(f"""
+                SELECT feature_id, count(*), count(DISTINCT security_id),
+                       count(*) FILTER (WHERE {_leak_predicate(cutoff_sql)})
+                FROM research_panel_values {where} GROUP BY feature_id
+            """, [run_id, formation, *chunk]).fetchall():
+                grain[feature] = (int(rows), int(distinct), int(leaks))
         stray = con.execute("""
             SELECT count(*) FROM research_panel_values WHERE run_id=? AND formation_date=?
-        """, [run_id, item[3]]).fetchone()[0] - con.execute("""
-            SELECT coalesce(sum(values_emitted),0) FROM research_panel_coverage
-            WHERE run_id=? AND formation_date=?
-        """, [run_id, item[3]]).fetchone()[0]
-        if stray or any(rebuilt_values.get(feature, _EMPTY_SHA) != stored[feature] for feature in features):
-            raise ValueError(f"research panel value digest mismatch at {item[3]}")
-    leaks, orphans, duplicates = con.execute("""
-        SELECT count(*) FILTER (WHERE c.formation_date IS NOT NULL AND (v.available_at>c.cutoff
-                  OR ((v.reason='valid' OR v.raw_value IS NOT NULL)
-                      AND (v.latest_input_clock IS NULL OR v.latest_input_clock>c.cutoff))
-                  OR (v.raw_value IS NOT NULL AND v.reason NOT IN ({reasons})))),
-               count(*) FILTER (WHERE c.formation_date IS NULL),
-               count(*) - count(DISTINCT (v.formation_date, v.feature_id, v.security_id))
-        FROM research_panel_values v LEFT JOIN research_panel_calendar c
-          ON c.run_id=v.run_id AND c.formation_date=v.formation_date AND c.status='formed'
+        """, [run_id, formation]).fetchone()[0] - sum(value[1] for value in stored.values())
+        if stray or any(rebuilt_values.get(feature, _EMPTY_SHA) != stored[feature][0] for feature in features):
+            raise ValueError(f"research panel value digest mismatch at {formation}")
+        for feature in features:
+            rows, distinct, leaks = grain.get(feature, (0, 0, 0))
+            if leaks or rows != distinct or rows != stored[feature][1] or stored[feature][2] != eligible \
+                    or rows != eligible:
+                raise ValueError(f"research panel point-in-time or grain contract violated at {formation}")
+    orphans = con.execute("""
+        SELECT count(*) FROM research_panel_values v
+        ANTI JOIN (SELECT formation_date FROM research_panel_calendar WHERE run_id=? AND status='formed') c
+          ON c.formation_date=v.formation_date
         WHERE v.run_id=?
-    """.format(reasons=",".join(_sql_text(reason) for reason in VALUE_BEARING_REASONS)),
-        [run_id]).fetchone()
-    if leaks or orphans or duplicates:
+    """, [run_id, run_id]).fetchone()[0]
+    if orphans:
         raise ValueError("research panel point-in-time or grain contract violated")
     manifest = [QUERY_VERSION, spec_sha, definitions_sha, code_sha, calendar_sha, source_json, bridge_json]
     if _panel_digest(con, run_id, manifest) != panel_sha:
@@ -1075,7 +1626,13 @@ __all__ = [
     "CALENDAR_RULE_CONFLICT",
     "FUNDAMENTAL_AVAILABILITY_BASIS",
     "MARKET_AVAILABILITY_BASIS",
+    "NATIVE_FEATURES",
+    "OWNER_LINK_FAILURES",
+    "PRICE_LINE_IDENTITY_BASIS",
     "QUERY_VERSION",
+    "SCOPE_OWNER",
+    "SCOPE_PRICE_LINE",
+    "SECONDARY_LINE_REASON",
     "CalendarRow",
     "PanelFeature",
     "ResearchPanelOptions",
@@ -1085,9 +1642,11 @@ __all__ = [
     "canonical_features",
     "default_panel_features",
     "expected_month_end_session",
+    "feature_scopes",
     "month_end_calendar",
     "nyse_full_day_closures",
     "observed_sessions",
+    "price_line_codes",
     "stage_owner_links",
     "validate_research_panel",
 ]

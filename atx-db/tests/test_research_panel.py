@@ -41,8 +41,11 @@ def _definitions() -> tuple[DerivedMetricDefinition, ...]:
     derived = tuple(DerivedMetricDefinition(
         metric_code=code, family="test", expression="x", window=window, inputs=("item:x",),
         requires_market=False, description="test", version="1") for code, window in DERIVED)
+    # market_cap reads the (possibly issuer-level DEI) share count: owner scope.
+    # momentum reads only the line's own prices: price-line scope.
+    inputs = {"market_cap": ("market:close", "market:shares_outstanding"), "momentum_12_1": ("market:adj_close",)}
     market = tuple(DerivedMetricDefinition(
-        metric_code=code, family="market", expression="close", window="daily", inputs=("item:x",),
+        metric_code=code, family="market", expression="close", window="daily", inputs=inputs[code],
         requires_market=True, description="test", version="1") for code in MARKET)
     return derived + market
 
@@ -87,7 +90,7 @@ class Warehouse:
             CREATE TABLE fundamental_standardized (
               standardized_id VARCHAR PRIMARY KEY, security_id VARCHAR, canonical_code VARCHAR,
               cik VARCHAR, basis VARCHAR, source VARCHAR, period_start DATE, period_end DATE,
-              available_at TIMESTAMP, value DOUBLE);
+              available_at TIMESTAMP, value DOUBLE, unit VARCHAR, unit_type VARCHAR);
             CREATE TABLE universe_us_listed_membership (
               universe_id VARCHAR, source VARCHAR, security_id VARCHAR, symbol VARCHAR,
               security_type VARCHAR, exchange_code VARCHAR, has_cik BOOLEAN, cik VARCHAR,
@@ -98,10 +101,11 @@ class Warehouse:
               valid_to DATE, available_at TIMESTAMP, as_of_date DATE);
             CREATE TABLE market_daily_metrics (
               market_daily_id VARCHAR PRIMARY KEY, source VARCHAR, security_id VARCHAR,
-              trade_date DATE, available_at TIMESTAMP, as_of_date DATE, close DOUBLE,
+              trade_date DATE, available_at TIMESTAMP, as_of_date DATE, close DOUBLE, volume BIGINT,
               fundamental_available_at TIMESTAMP, market_cap DOUBLE, momentum_12_1 DOUBLE);
             CREATE TABLE equity_daily_bars (
               security_id VARCHAR, symbol VARCHAR, trade_date DATE, close DOUBLE,
+              adjusted_close DOUBLE, shares_outstanding BIGINT, available_at TIMESTAMP,
               source VARCHAR, vendor_security_id VARCHAR);
             CREATE TABLE sec_company_tickers (cik VARCHAR, ticker VARCHAR, source_loaded_at TIMESTAMP);
             CREATE TABLE shares_outstanding_history (
@@ -118,10 +122,15 @@ class Warehouse:
                                   '["item:x"]', definition.version])
 
     def listing(self, cik: int, line: str, symbol: str, security_type: str, exchange: str, *,
-                first: dt.date, last: dt.date, reason: str = "member", ticker: bool = True) -> None:
+                first: dt.date, last: dt.date, reason: str = "member", ticker: bool = True,
+                volume: int = 1000, shares: int = 1_000_000) -> None:
         for day in (d for d in self.sessions if first <= d <= last):
-            self.con.execute("INSERT INTO equity_daily_bars VALUES (?,?,?,100.0,'test_bars','1')",
-                             [line, symbol, day])
+            self.con.execute("""
+                INSERT INTO equity_daily_bars
+                (security_id, symbol, trade_date, close, adjusted_close, shares_outstanding, available_at,
+                 source, vendor_security_id)
+                VALUES (?,?,?,100.0,100.0,?,NULL,'test_bars','1')
+            """, [line, symbol, day, shares])
         if ticker:
             self.con.execute("INSERT INTO sec_company_tickers VALUES (?,?, TIMESTAMP '2024-04-05 06:00:00')",
                              [str(cik), symbol])
@@ -145,8 +154,8 @@ class Warehouse:
         for day in (d for d in self.sessions if first <= d <= last):
             cutoff = dt.datetime.combine(day, dt.time(21))
             self.con.execute("""
-                INSERT INTO market_daily_metrics VALUES (?,?,?,?,?,?,100.0,NULL,?,0.1)
-            """, [f"{line}|{day}", MARKET_DAILY_SOURCE_NAME, line, day, cutoff, day,
+                INSERT INTO market_daily_metrics VALUES (?,?,?,?,?,?,100.0,?,NULL,?,0.1)
+            """, [f"{line}|{day}", MARKET_DAILY_SOURCE_NAME, line, day, cutoff, day, volume,
                   1000.0 * cik + day.toordinal() % 7])
 
     def state(self, cik: int, code: str, window: str, period_end: dt.date, value: float | None,
@@ -156,7 +165,8 @@ class Warehouse:
         leaf_id = f"leaf_{state_id}"
         leaf_clock = clock - dt.timedelta(hours=1)
         bucket = _bucket(period_end)
-        self.con.execute("INSERT INTO fundamental_standardized VALUES (?,?,'x',?,'quarterly','test',NULL,?,?,1.0)",
+        self.con.execute("INSERT INTO fundamental_standardized VALUES "
+                         "(?,?,'x',?,'quarterly','test',NULL,?,?,1.0,'USD','monetary')",
                          [leaf_id, owner, str(cik), period_end, leaf_clock])
         payload = json.dumps({"version": 1, "refs": [{
             "kind": "item", "code": "x", "bucket": bucket, "offset": 0, "status": "selected",
@@ -213,6 +223,8 @@ def _populate(wh: Warehouse) -> dict[str, str]:
     # CCC's value is an annual fallback for FY ending 2023-03-31: 400-day bound.
     wh.state(3, "accruals_ttm", "ttm", dt.date(2023, 3, 31), -0.02, _at("2023-06-01"), origin="annual_fallback")
     wh.state(3, "roa_q", "q", dt.date(2023, 9, 30), 0.05, _at("2023-11-09"))
+    # The delisted tail's issuer has content but no owner-linked member anywhere.
+    ids["tail_q"] = wh.state(7, "roa_q", "q", dt.date(2023, 6, 30), 0.07, _at("2023-08-10"))
     return ids
 
 
@@ -323,6 +335,10 @@ def test_reconstructed_panel_is_point_in_time_and_labeled(tmp_path, warehouse):
         cap = _value(con, "recon", dt.date(2024, 1, 31), aaa, "market_cap")
         assert cap[1] == "valid" and cap[8] == rp.MARKET_AVAILABILITY_BASIS
         assert cap[2] == dt.datetime(2024, 1, 31, 21)
+        assert cap[6] == "current_ticker_unverified"  # issuer-share feature: owner scope
+        line_cap = _value(con, "recon", dt.date(2024, 1, 31), aaa, "line_market_cap")
+        assert line_cap[:2] == (100.0 * 1_000_000, "valid") and line_cap[6] == rp.PRICE_LINE_IDENTITY_BASIS
+        assert line_cap[2] == dt.datetime(2024, 1, 31, 22)
         # Cohort exclusions are explicit, including the delisted tail.
         cohort = dict(con.execute("""
             SELECT security_id, cohort_reason || ':' || coalesce(owner_link_reason,'linked')
@@ -334,6 +350,36 @@ def test_reconstructed_panel_is_point_in_time_and_labeled(tmp_path, warehouse):
         assert TAIL not in dict(con.execute("""
             SELECT security_id, 1 FROM research_panel_cohort
             WHERE run_id='recon' AND formation_date='2023-11-30'""").fetchall())
+        # Survivorship (I1): the unlinked tail keeps every identity-free market
+        # feature; owner features are NULL rows carrying the cohort exclusion.
+        october = dt.date(2023, 10, 31)
+        momentum = _value(con, "recon", october, TAIL, "momentum_12_1")
+        assert momentum[:2] == (0.1, "valid")
+        assert momentum[6] == rp.PRICE_LINE_IDENTITY_BASIS and momentum[9] is None
+        assert _value(con, "recon", october, TAIL, "line_market_cap")[1] == "valid"
+        for feature in ("roa_q", "accruals_ttm", "market_cap"):
+            tail_row = _value(con, "recon", october, TAIL, feature)
+            assert tail_row[:4] == (None, "missing_owner_link", None, None)
+        assert _value(con, "recon", october, FUND, "momentum_12_1") is None  # not eligible
+        coverage = {row[0]: (row[1], row[2], row[3], json.loads(row[4])) for row in con.execute("""
+            SELECT feature_id, eligible_members, valid_members, values_emitted, reasons_json
+            FROM research_panel_coverage WHERE run_id='recon' AND formation_date='2023-10-31'
+        """).fetchall()}
+        assert coverage["momentum_12_1"] == (4, 3, 4, {"valid": 4})
+        assert coverage["roa_q"][:3] == (4, 3, 4)
+        assert coverage["roa_q"][3] == {"valid": 2, "missing_metric_state": 1, "missing_owner_link": 1}
+        assert all(sum(item[3].values()) == item[0] for item in coverage.values())
+        attrition = con.execute("""
+            SELECT formation_date, eligible_members, owner_unlinked_members, owner_link_attrition
+            FROM research_panel_calendar WHERE run_id='recon' AND status='formed' ORDER BY 1
+        """).fetchall()
+        assert attrition[0] == (october, 4, 1, 0.25)
+        assert all(row[1:3] == (3, 0) for row in attrition[1:])
+        assert "owner_link_attrition:1/19" in result.blockers
+        diagnostic = json.loads(con.execute(
+            "SELECT diagnostic_json FROM research_panel_runs WHERE run_id='recon'").fetchone()[0])
+        assert diagnostic["owner_link_attrition"]["by_formation"]["2023-10-31"] == 0.25
+        assert diagnostic["lineage_proofs_by_method"] == {"set_exact": diagnostic["lineage_proofs"]}
         validated = rp.validate_research_panel(store, "recon")
         assert validated.panel_sha256 == result.panel_sha256
         assert validated.formations == tuple(FORMATIONS)
@@ -377,13 +423,14 @@ def test_strict_basis_on_v6_state_is_untestable_and_empty(tmp_path, warehouse):
         assert con.execute("""
             SELECT count(*), count(DISTINCT status), min(status)
             FROM research_panel_coverage WHERE run_id='strict'
-        """).fetchone() == (6 * 4, 1, "empty_common_cohort")
+        """).fetchone() == (6 * 5, 1, "empty_common_cohort")
         assert "no_valid_cohort_members" in strict.blockers
         assert recon.status == "complete" and recon.valid_values > 0
         assert con.execute("""
-            SELECT DISTINCT identity_basis, universe_basis FROM research_panel_values
+            SELECT DISTINCT feature_scope, identity_basis, universe_basis FROM research_panel_values
             WHERE run_id='recon' ORDER BY 1
-        """).fetchall() == [("current_ticker_unverified", "us_listed_reconstructed_v1")]
+        """).fetchall() == [("owner", "current_ticker_unverified", "us_listed_reconstructed_v1"),
+                            ("price_line", "price_line", "us_listed_reconstructed_v1")]
         assert rp.validate_research_panel(store, "strict").status == "untestable_strict"
 
 
@@ -407,10 +454,31 @@ def test_lineage_is_resolved_once_per_selected_state(tmp_path, warehouse, monkey
             SELECT count(*) FROM (SELECT derived_value_id FROM research_panel_values
             WHERE run_id='once' AND derived_value_id IS NOT NULL GROUP BY 1 HAVING count(*)>1)
         """).fetchone()[0]
+        proofs = con.execute("""
+            SELECT derived_value_id, count(*), min(method), min(proof_digest) FROM research_lineage_proofs
+            WHERE run_id='once' GROUP BY 1
+        """).fetchall()
+        digests = dict(con.execute("""
+            SELECT DISTINCT derived_value_id, lineage_digest FROM research_panel_values
+            WHERE run_id='once' AND derived_value_id IS NOT NULL""").fetchall())
+        # The slim proof row equals the Python resolver's proof of the same root.
+        python = real(con, [ids["q3_1_rev"]], expected_cik=None, decision_cutoff=None,
+                      expected_definition_hashes={
+                          ("roa_q", "q"): con.execute(
+                              "SELECT DISTINCT definition_hash FROM derived_metric_values "
+                              "WHERE derived_value_id=?", [ids["q3_1_rev"]]).fetchone()[0]},
+                      max_depth=16, max_nodes=512, max_bytes=1_048_576)[ids["q3_1_rev"]]
+        batches = json.loads(con.execute(
+            "SELECT diagnostic_json FROM research_panel_runs WHERE run_id='once'").fetchone()[0]
+        )["this_invocation"]["batches"]
     assert repeats > 0  # the same state is selected at several month ends ...
-    assert len(calls) == len(set(calls))  # ... but qualified exactly once
-    assert selected <= set(calls)
-    assert ids["q3_1_rev"] in calls
+    assert all(n == 1 for _, n, _, _ in proofs)  # ... but proved exactly once
+    # An owner whose CIK no owner-linked member has is never proved (counted).
+    assert ids["tail_q"] not in {row[0] for row in proofs}
+    assert sum(item.get("skipped_unlinked_roots", 0) for item in batches) == 1
+    assert selected <= {row[0] for row in proofs}
+    assert {row[2] for row in proofs} == {"set_exact"} and not calls  # no Python fallback needed
+    assert digests[ids["q3_1_rev"]] == python.digest == dict((r[0], r[3]) for r in proofs)[ids["q3_1_rev"]]
 
 
 def test_batching_and_resume_reproduce_the_same_panel(tmp_path, warehouse, monkeypatch):
@@ -432,20 +500,24 @@ def test_batching_and_resume_reproduce_the_same_panel(tmp_path, warehouse, monke
         assert digests("one") == digests("two")
         assert again.panel_sha256 == two.panel_sha256
         assert one.panel_sha256 != two.panel_sha256  # batch size is part of the frozen spec
-        real = rp._derived_batch
+        real = rp._derived_formations
 
-        def fail_in_january(store_, run_id, batch, spec, hashes):
-            if con.execute("SELECT decision_date FROM _rp_calendar").fetchone()[0] == dt.date(2024, 1, 31):
+        def fail_in_january(store_, run_id, batch, spec, rows, ordinals):
+            if any(row.formation_date == dt.date(2024, 1, 31) for row in rows):
                 raise RuntimeError("injected failure")
-            return real(store_, run_id, batch, spec, hashes)
+            return real(store_, run_id, batch, spec, rows, ordinals)
 
-        monkeypatch.setattr(rp, "_derived_batch", fail_in_january)
+        monkeypatch.setattr(rp, "_derived_formations", fail_in_january)
         with pytest.raises(RuntimeError, match="injected failure"):
-            rp.build_research_panel(store, _options("resumed", metric_batch_size=2))
+            rp.build_research_panel(store, _options("resumed", metric_batch_size=2, formation_chunk=2))
         assert con.execute("SELECT status FROM research_panel_runs WHERE run_id='resumed'").fetchone()[0] == "failed"
+        # Formation chunks before January committed; January's chunk did not.
+        assert [row[0] for row in con.execute("""
+            SELECT DISTINCT formation_date FROM research_panel_coverage
+            WHERE run_id='resumed' AND metric_window<>'daily' ORDER BY 1""").fetchall()] == FORMATIONS[:2]
         with pytest.raises(ValueError, match="not sealed"):
             rp.validate_research_panel(store, "resumed")
-        monkeypatch.setattr(rp, "_derived_batch", real)
+        monkeypatch.setattr(rp, "_derived_formations", real)
         with pytest.raises(ValueError, match="already exists"):
             rp.build_research_panel(store, _options("resumed", metric_batch_size=2))
         resumed = rp.build_research_panel(store, _options("resumed", metric_batch_size=2, resume=True))
@@ -454,12 +526,131 @@ def test_batching_and_resume_reproduce_the_same_panel(tmp_path, warehouse, monke
         assert digests("resumed") == digests("two")
         with pytest.raises(ValueError, match="sealed"):
             rp.build_research_panel(store, _options("resumed", metric_batch_size=2, resume=True))
+        # Proofs commit per chunk: a failure mid-proof resumes after the last
+        # committed chunk, never re-proves a root, and reproduces the panel.
+        real_prove = rp._lineage.prove_roots
+        chunks: list[int] = []
+
+        def fail_third_chunk(con_, hashes, **kwargs):
+            chunks.append(1)
+            if len(chunks) == 3:
+                raise RuntimeError("injected proof failure")
+            return real_prove(con_, hashes, **kwargs)
+
+        monkeypatch.setattr(rp._lineage, "prove_roots", fail_third_chunk)
+        with pytest.raises(RuntimeError, match="injected proof failure"):
+            rp.build_research_panel(store, _options("chunked", metric_batch_size=2, proof_chunk_roots=2))
+        assert con.execute("SELECT count(*) FROM research_lineage_proofs WHERE run_id='chunked'").fetchone()[0] == 4
+        chunked = rp.build_research_panel(store, _options("chunked", metric_batch_size=2, proof_chunk_roots=2,
+                                                          resume=True))
+        assert chunked.panel_sha256 == two.panel_sha256
+        assert con.execute("""
+            SELECT count(*) = count(DISTINCT derived_value_id) FROM research_lineage_proofs WHERE run_id='chunked'
+        """).fetchone()[0]
+        rp.validate_research_panel(store, "chunked")
+
+
+def test_owner_features_attach_to_one_primary_line_per_issuer(tmp_path, registry):
+    wh = Warehouse(tmp_path / "wh.duckdb")
+    ids = _populate(wh)
+    # A second current class line of issuer 1, trading 5x AAA's volume.
+    wh.listing(1, "TBLTICKERHISTORY-8", "AAA-B", "common", "XNAS", first=dt.date(2023, 9, 1), last=AS_OF,
+               volume=5000, shares=250_000)
+    wh.close()
+    aaa, class_b = LINES[1][0], "TBLTICKERHISTORY-8"
+    with ResearchStore(tmp_path / "research.duckdb", warehouse_path=tmp_path / "wh.duckdb") as store:
+        rp.build_research_panel(store, _options("lines"))
+        con = store.con
+        cohort = dict((row[0], row[1:]) for row in con.execute("""
+            SELECT security_id, issuer_lines, primary_line, primary_line_rule, owner_cik FROM research_panel_cohort
+            WHERE run_id='lines' AND formation_date='2024-01-31' AND security_id IN (?, ?)
+        """, [aaa, class_b]).fetchall())
+        assert cohort[class_b] == (2, True, rp.PRIMARY_RULE_DOLLAR_VOLUME, "0000000001")
+        assert cohort[aaa] == (2, False, rp.PRIMARY_RULE_DOLLAR_VOLUME, "0000000001")
+        january = dt.date(2024, 1, 31)
+        # The issuer's fundamental and issuer-share rows exist once, on the primary line.
+        primary = _value(con, "lines", january, class_b, "roa_q")
+        assert primary[:2] == (0.025, "valid") and primary[3] == ids["q3_1_rev"]
+        for feature in ("roa_q", "accruals_ttm", "market_cap"):
+            assert _value(con, "lines", january, aaa, feature)[:4] == (None, rp.SECONDARY_LINE_REASON, None, None)
+        assert con.execute("""
+            SELECT count(*) FROM research_panel_values
+            WHERE run_id='lines' AND feature_scope='owner' AND raw_value IS NOT NULL
+            GROUP BY formation_date, feature_id, owner_cik ORDER BY 1 DESC LIMIT 1
+        """).fetchone()[0] == 1
+        # Price-line features stay on every line, with the line's own size.
+        assert _value(con, "lines", january, aaa, "momentum_12_1")[1] == "valid"
+        assert _value(con, "lines", january, aaa, "line_market_cap")[0] == 100.0 * 1_000_000
+        assert _value(con, "lines", january, class_b, "line_market_cap")[0] == 100.0 * 250_000
+        coverage = json.loads(con.execute("""
+            SELECT reasons_json FROM research_panel_coverage
+            WHERE run_id='lines' AND formation_date='2024-01-31' AND feature_id='roa_q'
+        """).fetchone()[0])
+        assert coverage[rp.SECONDARY_LINE_REASON] == 1
+        rp.validate_research_panel(store, "lines")
+
+
+def _selection_fixture(con, seed: int) -> list[tuple[dt.date, dt.datetime]]:
+    """Random derived histories, including I/J violations and late as_of dates."""
+    import random
+
+    rng = random.Random(seed)
+    con.execute("""
+        CREATE TABLE derived_metric_values (derived_value_id VARCHAR, source VARCHAR, security_id VARCHAR,
+          metric_code VARCHAR, metric_window VARCHAR, target_bucket BIGINT, period_end DATE,
+          available_at TIMESTAMP, as_of_date DATE)
+    """)
+    rows = []
+    quarter_ends = [dt.date(2022, 3, 31), dt.date(2022, 6, 30), dt.date(2022, 9, 30), dt.date(2022, 12, 31),
+                    dt.date(2023, 3, 31), dt.date(2023, 6, 30), dt.date(2023, 9, 30)]
+    for owner in range(12):
+        for code in ("m_a", "m_b"):
+            for n in range(rng.randint(0, 9)):
+                period = rng.choice(quarter_ends)
+                if rng.random() < 0.15:  # a shifted fiscal end in the same bucket (breaks I)
+                    period = period - dt.timedelta(days=rng.randint(1, 4))
+                bucket = None if rng.random() < 0.7 else _bucket(period) + rng.choice((0, 0, 1))  # J
+                at = dt.datetime.combine(period, dt.time(17)) + dt.timedelta(days=rng.randint(20, 400),
+                                                                              hours=rng.choice((0, 5, 6)))
+                as_of = at.date() + dt.timedelta(days=rng.choice((0, 0, 0, 40)))
+                rows.append([f"s{owner}_{code}_{n}_{rng.randint(0, 9)}", DERIVED_SOURCE_NAME, f"O{owner}",
+                             code, "q", bucket, period, at, as_of])
+    con.executemany("INSERT INTO derived_metric_values VALUES (?,?,?,?,?,?,?,?,?)", rows)
+    formations = [rp.expected_month_end_session(2022 + (m // 12), m % 12 + 1) for m in range(3, 27)]
+    return [(day, dt.datetime.combine(day, dt.time(22))) for day in formations]
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_cross_formation_selection_equals_the_fq1_ranking(seed):
+    con = duckdb.connect()
+    con.execute("SET TimeZone='UTC'")
+    calendar = _selection_fixture(con, seed)
+    fsr.stage_metric_legs(con, [fsr.MetricLeg(code, "q", "a" * 64, 200, 400) for code in ("m_a", "m_b")],
+                          table="_rp_metrics")
+    rp._stage_run_calendar(con, [rp.CalendarRow(day.replace(day=1), day, day, day, cutoff, day, "formed")
+                                 for day, cutoff in calendar])
+    con.execute(f"""
+        CREATE TEMP TABLE _rp_states AS
+        SELECT d.*, {rp._BUCKET_SQL} AS bucket FROM derived_metric_values d
+    """)
+    stats = rp._stage_segments(con, len(calendar))
+    fast = set(con.execute("""
+        SELECT c.decision_date, s.metric_code, s.metric_window, s.security_id, s.derived_value_id
+        FROM _rp_seg s JOIN _rp_cal_ord c ON c.ord>=s.from_ord AND c.ord<s.to_ord
+    """).fetchall())
+    fsr.stage_state_selection(con, calendar_table="_rp_calendar", metrics_table="_rp_metrics",
+                              metric_source=DERIVED_SOURCE_NAME)
+    exact = set(con.execute("SELECT * FROM _fs_selected_keys").fetchall())
+    assert stats["irregular_owner_metrics"] > 0 and len(exact) > 50
+    assert fast == exact
+    # One selection per (formation, owner, metric): segments never overlap.
+    assert len(fast) == len({row[:4] for row in fast})
 
 
 def test_research_store_attaches_the_warehouse_read_only(tmp_path, warehouse):
     wh_path, _ = warehouse
     with ResearchStore(tmp_path / "research.duckdb", warehouse_path=wh_path) as store:
-        assert store.status().versions == (1,)
+        assert store.status().versions == (1, 2)
         with pytest.raises(duckdb.Error):
             store.con.execute("DELETE FROM derived_metric_values")
         assert store.warehouse_has("derived_metric_values", "selected_input_refs_hash")
@@ -585,7 +776,7 @@ def build_scale_warehouse(path: Path, issuers: int, quarters: int = 62) -> tuple
     sessions = _sessions(dt.date(2023, 1, 2), dt.date(2024, 1, 10))
     con.execute("""
         CREATE TABLE market_daily_metrics (market_daily_id VARCHAR, source VARCHAR, security_id VARCHAR,
-          trade_date DATE, available_at TIMESTAMP, as_of_date DATE, close DOUBLE,
+          trade_date DATE, available_at TIMESTAMP, as_of_date DATE, close DOUBLE, volume BIGINT,
           fundamental_available_at TIMESTAMP);
         CREATE TABLE universe_us_listed_membership AS
         SELECT 'us_listed_reconstructed_v1' AS universe_id, ? AS source,
@@ -596,16 +787,228 @@ def build_scale_warehouse(path: Path, issuers: int, quarters: int = 62) -> tuple
                DATE '2020-01-02' AS as_of_date
         FROM range(1, ?) t(i);
     """, [UNIVERSE_SOURCE_NAME, issuers + 1])
-    con.executemany("INSERT INTO market_daily_metrics VALUES (?,?,'SEC-CIK-0000000001',?,?,?,100.0,NULL)",
+    con.executemany("INSERT INTO market_daily_metrics VALUES (?,?,'SEC-CIK-0000000001',?,?,?,100.0,1000,NULL)",
                     [[f"m{day}", MARKET_DAILY_SOURCE_NAME, day, dt.datetime.combine(day, dt.time(21)), day]
                      for day in sessions])
     con.close()
     return int(rows), [_Link(i) for i in range(1, issuers + 1)]
 
 
+# Realistic lineage shapes: multi-leaf depth-0 rollups, depth-1 and depth-2
+# metrics over metric children, restatements (new leaves, a revised state, the
+# superseded state closed by valid_to) and NULL-valued states.
+REALISTIC_ITEMS = ("rev", "ni", "eq")
+REALISTIC_METRICS = (
+    # code, window, inputs, refs: ("item", code, offsets) or ("metric", code, offsets)
+    ("rq_margin", "q", ("item:ni", "item:rev"), (("item", "ni", (0,)), ("item", "rev", (0,)))),
+    ("ra_equity", "avg2", ("item:eq",), (("item", "eq", (0, 1)),)),
+    ("rt_rev", "ttm", ("item:rev",), (("item", "rev", (0, 1, 2, 3)),)),
+    ("rt_roe", "ttm", ("item:ni", "item:eq"), (("item", "ni", (0, 1, 2, 3)), ("item", "eq", (0, 4)))),
+    ("gt_growth", "ttm", ("metric:rt_rev",), (("metric", "rt_rev", (0, 4)),)),
+    ("gt_mix", "ttm", ("metric:rt_roe", "metric:rt_rev"), (("metric", "rt_roe", (0,)), ("metric", "rt_rev", (0,)))),
+    ("ht_mix_growth", "ttm", ("metric:gt_mix",), (("metric", "gt_mix", (0, 4)),)),
+)
+
+
+def realistic_definitions() -> tuple[DerivedMetricDefinition, ...]:
+    return tuple(DerivedMetricDefinition(
+        metric_code=code, family="test", expression="x", window=window, inputs=inputs,
+        requires_market=False, description="test", version="1") for code, window, inputs, _ in REALISTIC_METRICS)
+
+
+def _quarter_end(q: int) -> dt.date:
+    month = 3 * (q % 4) + 3
+    year = 2011 + q // 4
+    return dt.date(year, month, _calendar_days(year, month))
+
+
+def _calendar_days(year: int, month: int) -> int:
+    import calendar
+
+    return calendar.monthrange(year, month)[1]
+
+
+def _bulk(con, table: str, types: tuple[str, ...], rows: list[list]) -> None:
+    if rows:
+        columns = ",".join(f"unnest(CAST(? AS {kind}[]))" for kind in types)
+        con.execute(f"INSERT INTO {table} SELECT {columns}", [list(column) for column in zip(*rows, strict=True)])
+
+
+def build_realistic_warehouse(path: Path, issuers: int, quarters: int = 48, seed: int = 7,
+                              first_session: dt.date = dt.date(2019, 1, 2),
+                              last_session: dt.date = dt.date(2023, 1, 10)) -> dict[str, int]:
+    """issuers x quarters x 7 metrics (2-20 leaves, depth 0-2) with restatements and NULLs."""
+    import random
+
+    from atx_db import _derived_annual as annual
+
+    rng = random.Random(seed)
+    defs = {d.metric_code: d for d in realistic_definitions()}
+    hashes = {code: pit.definition_hash(d, annual.plan_for(d, defs)) for code, d in defs.items()}
+    con = duckdb.connect(str(path), config={"memory_limit": "256MB", "threads": "1"})
+    con.execute("SET TimeZone='UTC'")
+    con.execute("""
+        CREATE TABLE derived_metric_definitions (metric_code VARCHAR, metric_window VARCHAR,
+          expression VARCHAR, inputs_json VARCHAR, version VARCHAR);
+        CREATE TABLE fundamental_standardized (standardized_id VARCHAR PRIMARY KEY, security_id VARCHAR,
+          canonical_code VARCHAR, cik VARCHAR, basis VARCHAR, source VARCHAR, period_start DATE,
+          period_end DATE, available_at TIMESTAMP, value DOUBLE);
+        CREATE TABLE derived_metric_values (derived_value_id VARCHAR PRIMARY KEY, source VARCHAR,
+          security_id VARCHAR, metric_code VARCHAR, metric_window VARCHAR, target_bucket BIGINT,
+          period_end DATE, value DOUBLE, available_at TIMESTAMP, valid_to TIMESTAMP, inputs_hash VARCHAR,
+          definition_hash VARCHAR, history_status VARCHAR, value_status VARCHAR,
+          selected_input_refs_json VARCHAR, selected_input_refs_hash VARCHAR, as_of_date DATE,
+          fiscal_period_start DATE, fiscal_period_end DATE, value_origin VARCHAR);
+    """)
+    for code, d in defs.items():
+        con.execute("INSERT INTO derived_metric_definitions VALUES (?,?,?,?,?)",
+                    [code, d.window, d.expression, json.dumps(list(d.inputs), separators=(",", ":")), d.version])
+    leaf_types = ("VARCHAR",) * 6 + ("DATE", "DATE", "TIMESTAMP", "DOUBLE")
+    state_types = ("VARCHAR",) * 5 + ("BIGINT", "DATE", "DOUBLE", "TIMESTAMP", "TIMESTAMP") + ("VARCHAR",) * 6 \
+        + ("DATE", "DATE", "DATE", "VARCHAR")
+    counts = {"leaves": 0, "states": 0, "null_states": 0, "restated_quarters": 0}
+    leaves: list[list] = []
+    states: list[list] = []
+    for issuer in range(1, issuers + 1):
+        owner = f"SEC-COMPANYFACTS-UNRESOLVED-CIK-{issuer:010d}"
+        restated = [rng.random() < 0.2 for _ in range(quarters)]
+        counts["restated_quarters"] += sum(restated)
+
+        def leaf(item: str, q: int, version: int, issuer: int = issuer) -> tuple[str, dt.datetime]:
+            end = _quarter_end(q)
+            return (f"L{issuer}_{item}_{q}_{version}",
+                    dt.datetime.combine(end, dt.time(17)) + dt.timedelta(days=40 if version == 0 else 100))
+
+        for q in range(quarters):
+            end = _quarter_end(q)
+            for item in REALISTIC_ITEMS:
+                for version in (0, 1) if restated[q] else (0,):
+                    leaf_id, at = leaf(item, q, version)
+                    leaves.append([leaf_id, owner, item, str(issuer), "quarterly", "test", None, end, at,
+                                   rng.uniform(1, 100)])
+        state_index: dict[tuple[str, int, int], tuple[str, dt.datetime]] = {}
+        depths: dict[str, int] = {}
+        for code, window, _, spec in REALISTIC_METRICS:
+            depth = depths[code] = max((1 + depths[ref] for kind, ref, _ in spec if kind == "metric"), default=0)
+            for q in range(4 + 4 * depth, quarters):
+                end = _quarter_end(q)
+                versions = (0, 1) if restated[q] else (0,)
+                for version in versions:
+                    at = dt.datetime.combine(end, dt.time(18 + depth)) + dt.timedelta(
+                        days=40 if version == 0 else 100)
+                    refs = []
+                    for kind, ref_code, offsets in spec:
+                        for offset in offsets:
+                            q_ref = q - offset
+                            ref_version = version if offset == 0 else int(restated[q_ref])
+                            ref_end = _quarter_end(q_ref)
+                            if kind == "item":
+                                leaf_id, leaf_at = leaf(ref_code, q_ref, ref_version)
+                                refs.append({"kind": "item", "code": ref_code, "bucket": _bucket(ref_end),
+                                             "offset": offset, "status": "selected", "state_id": leaf_id,
+                                             "available_at": str(leaf_at), "cik": str(issuer),
+                                             "basis": "quarterly", "source": "test", "period_start": None,
+                                             "period_end": ref_end.isoformat()})
+                            else:
+                                child_id, child_at = state_index[(ref_code, q_ref, ref_version)]
+                                refs.append({"kind": "metric", "code": ref_code, "bucket": _bucket(ref_end),
+                                             "offset": offset, "status": "selected", "state_id": child_id,
+                                             "available_at": str(child_at), "cik": None, "basis": None,
+                                             "source": DERIVED_SOURCE_NAME, "period_start": None,
+                                             "period_end": ref_end.isoformat(), "inputs_hash": "b" * 64,
+                                             "definition_hash": hashes[ref_code]})
+                    payload = json.dumps({"version": 1, "refs": refs}, sort_keys=True, separators=(",", ":"))
+                    state_id = hashlib.sha256(f"{owner}|{code}|{q}|{version}".encode()).hexdigest()
+                    state_index[(code, q, version)] = (state_id, at)
+                    null = rng.random() < 0.05
+                    counts["null_states"] += null
+                    superseded = version == 0 and restated[q]
+                    valid_to = dt.datetime.combine(end, dt.time(18 + depth)) + dt.timedelta(days=100) \
+                        if superseded else None
+                    states.append([state_id, DERIVED_SOURCE_NAME, owner, code, window, _bucket(end), end,
+                                   None if null else rng.uniform(-1, 1), at, valid_to, "b" * 64, hashes[code],
+                                   "event_reconstructed", "missing_input_or_domain" if null else "valid",
+                                   payload, hashlib.sha256(payload.encode()).hexdigest(), at.date(), None, end,
+                                   "quarterly"])
+        if len(states) > 20_000 or issuer == issuers:
+            counts["leaves"] += len(leaves)
+            counts["states"] += len(states)
+            _bulk(con, "fundamental_standardized", leaf_types, leaves)
+            _bulk(con, "derived_metric_values", state_types, states)
+            leaves, states = [], []
+    sessions = _sessions(first_session, last_session)
+    con.execute("""
+        CREATE TABLE market_daily_metrics (market_daily_id VARCHAR, source VARCHAR, security_id VARCHAR,
+          trade_date DATE, available_at TIMESTAMP, as_of_date DATE, close DOUBLE, volume BIGINT,
+          fundamental_available_at TIMESTAMP);
+        CREATE TABLE universe_us_listed_membership AS
+        SELECT 'us_listed_reconstructed_v1' AS universe_id, ? AS source,
+               'SEC-CIK-' || lpad(CAST(i AS VARCHAR),10,'0') AS security_id, 'S' || i AS symbol,
+               'common' AS security_type, 'XNAS' AS exchange_code, true AS has_cik,
+               lpad(CAST(i AS VARCHAR),10,'0') AS cik, 'member' AS reason, DATE '2010-01-04' AS valid_from,
+               CAST(NULL AS DATE) AS valid_to, TIMESTAMP '2010-01-04 22:00:00' AS available_at,
+               DATE '2010-01-04' AS as_of_date
+        FROM range(1, ?) t(i);
+    """, [UNIVERSE_SOURCE_NAME, issuers + 1])
+    _bulk(con, "market_daily_metrics", ("VARCHAR", "VARCHAR", "VARCHAR", "DATE", "TIMESTAMP", "DATE", "DOUBLE",
+                                        "BIGINT", "TIMESTAMP"),
+          [[f"m{day}", MARKET_DAILY_SOURCE_NAME, "SEC-CIK-0000000001", day, dt.datetime.combine(day, dt.time(21)),
+            day, 100.0, 1000, None] for day in sessions])
+    con.close()
+    return counts
+
+
+def realistic_links(issuers: int, unlinked_share: float = 0.0) -> list[_Link]:
+    """One reconstructed link per issuer line; the first ``unlinked_share`` of every 10 stay unlinked."""
+    links = [_Link(i) for i in range(1, issuers + 1)]
+    for link in links:
+        link.valid_from, link.available_at = dt.date(2010, 1, 4), dt.datetime(2010, 1, 4, 22)
+        if int(link.cik) % 10 < round(unlinked_share * 10):
+            link.cik, link.link_method, link.unlinked_reason = None, None, "no_current_ticker"
+    return links
+
+
+@pytest.mark.slow
+def test_realistic_multileaf_lineage_panel(tmp_path, monkeypatch):
+    defs = realistic_definitions()
+    monkeypatch.setattr(fsr, "default_derived_definitions", lambda: defs)
+    issuers = 60
+    counts = build_realistic_warehouse(tmp_path / "wh.duckdb", issuers, quarters=48)
+    options = rp.ResearchPanelOptions(
+        run_id="real", basis=rp.BASIS_RECONSTRUCTED, start_month=dt.date(2021, 1, 1), end_month=dt.date(2022, 12, 1),
+        as_of_date=dt.date(2023, 1, 10), run_at=dt.datetime(2023, 1, 11, tzinfo=dt.UTC), metric_batch_size=6,
+        features=tuple(rp.PanelFeature(code, code, window) for code, window, _, _ in REALISTIC_METRICS))
+    with ResearchStore(tmp_path / "research.duckdb", warehouse_path=tmp_path / "wh.duckdb") as store:
+        result = rp.build_research_panel(store, options, owner_links=realistic_links(issuers))
+        con = store.con
+        methods = dict(con.execute("""
+            SELECT method, count(*) FROM research_lineage_proofs WHERE run_id='real' GROUP BY 1""").fetchall())
+        statuses = dict(con.execute("""
+            SELECT status, count(*) FROM research_lineage_proofs WHERE run_id='real' GROUP BY 1""").fetchall())
+        # Spot-check the set-based rows against the Python resolver (all shapes).
+        sample = con.execute("""
+            SELECT derived_value_id, status, reason, selected_cik, proof_digest, leaf_count
+            FROM research_lineage_proofs WHERE run_id='real' USING SAMPLE 40 ROWS (reservoir, 3)
+        """).fetchall()
+        _, _, expected = fsr.resolve_definitions(con, {(c, w) for c, w, _, _ in REALISTIC_METRICS})
+        python = derived_lineage.qualify_selected_lineage(
+            con, [row[0] for row in sample], expected_cik=None, decision_cutoff=None,
+            expected_definition_hashes=expected, max_depth=16, max_nodes=512, max_bytes=1_048_576)
+        rp.validate_research_panel(store, "real")
+    assert counts["null_states"] > 0 and counts["restated_quarters"] > 0
+    assert result.status == "complete" and result.formations == 24
+    assert set(methods) == {"set_exact", "set_certified"}  # no Python fallback on well-formed lineage
+    assert statuses.keys() == {"qualified", "invalid"}
+    for root, status, reason, cik, digest, leaves in sample:
+        proof = python[root]
+        assert (status, reason, cik, digest, leaves) == (proof.status, proof.reason, proof.selected_cik,
+                                                         proof.digest, len(proof.leaf_ids))
+
+
 SCALE_OPTIONS = dict(basis=rp.BASIS_RECONSTRUCTED, start_month=dt.date(2023, 1, 1),
                      end_month=dt.date(2023, 12, 1), as_of_date=dt.date(2024, 1, 10),
-                     run_at=dt.datetime(2024, 1, 11, tzinfo=dt.UTC), metric_batch_size=4)
+                     run_at=dt.datetime(2024, 1, 11, tzinfo=dt.UTC), metric_batch_size=4,
+                     features=tuple(rp.PanelFeature(code, code, window) for code, window in SCALE_CODES))
 
 
 @pytest.mark.slow
@@ -623,11 +1026,13 @@ def test_one_million_derived_rows_stay_memory_bounded(tmp_path, monkeypatch):
         result = rp.build_research_panel(store, options, owner_links=links)
         _, python_peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-        proofs = store.con.execute("SELECT count(*) FROM research_panel_proofs").fetchone()[0]
+        proofs = store.con.execute("SELECT count(*) FROM research_lineage_proofs").fetchone()[0]
+        diagnostic = store.con.execute("SELECT diagnostic_json FROM research_panel_runs").fetchone()[0]
     working_set = _peak_working_set_mb()
     print(f"R2A_MEMORY rows={rows} status={result.status} formations={result.formations} "
           f"values={result.value_rows} valid={result.valid_values} proofs={proofs} "
           f"python_peak_mb={python_peak / 2**20:.1f} process_peak_working_set_mb={working_set}")
+    print(f"R2A_DIAGNOSTIC {diagnostic}")
     assert result.status == "complete"
     assert result.formations == 12
     assert result.valid_values == 12 * 4 * issuers

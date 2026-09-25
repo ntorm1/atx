@@ -576,8 +576,13 @@ LISTED_EXCHANGE_CODES = ("XNAS", "XNYS", "XASE", "ARCX", "BATS")
 RECONSTRUCTED_ELIGIBLE_TYPES = ("common", "common_unverified")
 # Values whose selected operand is a fiscal year may be older than a quarter.
 ANNUAL_VALUE_ORIGINS = ("annual_fallback", "annual_dependency")
-PROOF_TABLES = frozenset({"fundamental_signal_proofs", "research_panel_proofs"})
+PROOF_TABLES = frozenset({"fundamental_signal_proofs", "research_panel_proofs",
+                          "research_lineage_proofs"})
+# Summary-only proof tables (no per-leaf JSON; the digest content-addresses the
+# full proof, which the deterministic resolver re-derives from the warehouse).
+SLIM_PROOF_TABLES = frozenset({"research_lineage_proofs"})
 _PROOF_SOURCES = frozenset({"_fs_selected", "_fs_prior_candidates"})
+_STATE_SOURCES = frozenset({"derived_metric_values"})
 _PROOF_COLUMNS_SQL = ",".join(f"unnest(CAST(? AS {kind}[]))" for kind in (
     "VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR", "TIMESTAMP", "VARCHAR", "VARCHAR",
     "VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR", "DATE", "DATE",
@@ -664,7 +669,7 @@ def resolve_lineage_proofs(con: Any, run_id: str,
 
     if source_table not in _PROOF_SOURCES:
         raise ValueError("unsupported proof staging relation")
-    if proof_table not in PROOF_TABLES:
+    if proof_table not in PROOF_TABLES or proof_table in SLIM_PROOF_TABLES:
         raise ValueError("unsupported proof table")
 
     con.execute("""
@@ -914,23 +919,43 @@ def stage_selected_states(
     ``metrics_table`` (see :func:`stage_metric_legs`). Every derived state is
     selected as visible at its own decision cutoff; lineage proofs are cached in
     ``proof_table`` per run and resolved once per ``derived_value_id``.
+
+    Composition of :func:`stage_state_selection`, :func:`stage_selected_rows`,
+    :func:`resolve_owner_proofs` and :func:`stage_owner_legs`.
+    """
+    stage_state_selection(con, calendar_table=calendar_table, metrics_table=metrics_table,
+                          metric_source=metric_source)
+    stage_selected_rows(con, calendar_table=calendar_table, metric_source=metric_source)
+    resolve_owner_proofs(con, run_id=run_id, all_hashes=all_hashes, proof_table=proof_table,
+                         max_selected_states=max_selected_states, max_prior_states=max_prior_states)
+    stage_owner_legs(con, run_id=run_id, calendar_table=calendar_table, cohort_table=cohort_table,
+                     metrics_table=metrics_table, proof_table=proof_table)
+
+
+def _state_source(name: str) -> str:
+    return name if name in _STATE_SOURCES else _relation(name)
+
+
+def stage_state_selection(
+    con: Any, *, calendar_table: str = "_fs_calendar", metrics_table: str = "_fs_metrics",
+    metric_source: str = SOURCE_IDS["metric_source"],
+    state_source: str = "derived_metric_values",
+) -> None:
+    """Stage ``_fs_selected_keys``: the selected state per (date, owner, metric).
+
+    ``state_source`` is ``derived_metric_values`` or a staged relation with its
+    columns (security_id, metric_code, metric_window, target_bucket,
+    period_end, available_at, as_of_date, derived_value_id, source).
     """
     calendar_table = _relation(calendar_table)
-    cohort_table = _relation(cohort_table)
     metrics_table = _relation(metrics_table)
-    if proof_table not in PROOF_TABLES:
-        raise ValueError("unsupported proof table")
-
-    def sql(text: str) -> str:
-        return (text.replace("{calendar}", calendar_table).replace("{cohort}", cohort_table)
-                .replace("{metrics}", metrics_table).replace("{proofs}", proof_table))
-
+    source = _state_source(state_source)
     # Select complete visible publisher states by owner before testing status.
     # An issuer-owned state may have a different security_id than the listed
     # security; exact selected leaf CIK proof supplies the joining identity.
     # The two rankings sort only narrow keys (the wide state row is joined
     # back by its primary key): identical selection, ~4x less sort volume.
-    con.execute(sql("""
+    con.execute("""
         CREATE OR REPLACE TEMP TABLE _fs_selected_keys AS
         WITH bucket_states AS (
           SELECT c.decision_date,d.metric_code,d.metric_window,d.security_id,
@@ -941,7 +966,7 @@ def stage_selected_states(
                      CAST(floor((year(d.period_end)*12+month(d.period_end)-1+
                        CASE WHEN day(d.period_end)>=15 THEN 1 ELSE 0 END)/3.0) AS BIGINT))
                    ORDER BY d.available_at DESC,d.derived_value_id DESC) AS bucket_rank
-          FROM derived_metric_values d
+          FROM {source} d
           JOIN {metrics} m ON m.metric_code=d.metric_code AND m.metric_window=d.metric_window
           JOIN {calendar} c ON d.period_end<=c.decision_date AND d.available_at<=c.cutoff
                            AND d.as_of_date<=c.decision_date
@@ -954,8 +979,23 @@ def stage_selected_states(
         )
         SELECT decision_date,metric_code,metric_window,security_id,derived_value_id
         FROM selected WHERE period_rank=1
-    """), [metric_source])
-    con.execute(sql("""
+    """.replace("{source}", source).replace("{metrics}", metrics_table)
+       .replace("{calendar}", calendar_table), [metric_source])
+
+
+def stage_selected_rows(
+    con: Any, *, calendar_table: str = "_fs_calendar",
+    metric_source: str = SOURCE_IDS["metric_source"],
+    rows_source: str = "derived_metric_values",
+) -> None:
+    """Stage ``_fs_selected``: the wide state row of every ``_fs_selected_keys`` row.
+
+    ``rows_source`` is ``derived_metric_values`` or a staged relation holding at
+    least the selected rows with the same columns.
+    """
+    calendar_table = _relation(calendar_table)
+    source = _state_source(rows_source)
+    con.execute("""
         CREATE OR REPLACE TEMP TABLE _fs_selected AS
         SELECT k.decision_date,c.cutoff,d.derived_value_id,d.source,d.security_id,
                d.metric_code,d.metric_window,d.target_bucket,d.period_end,d.value,
@@ -964,11 +1004,28 @@ def stage_selected_states(
                d.selected_input_refs_hash,d.fiscal_period_start,
                d.fiscal_period_end,d.value_origin
         FROM _fs_selected_keys k JOIN {calendar} c ON c.decision_date=k.decision_date
-        JOIN derived_metric_values d ON d.derived_value_id=k.derived_value_id
+        JOIN {source} d ON d.derived_value_id=k.derived_value_id
          AND d.security_id=k.security_id AND d.metric_code=k.metric_code
          AND d.metric_window=k.metric_window
         WHERE d.source=?
-    """), [metric_source])
+    """.replace("{calendar}", calendar_table).replace("{source}", source), [metric_source])
+
+
+def resolve_owner_proofs(
+    con: Any, *, run_id: str, all_hashes: dict[tuple[str, str], str],
+    proof_table: str = "fundamental_signal_proofs",
+    max_selected_states: int = 100_000, max_prior_states: int = 100_000,
+) -> None:
+    """Prove every ``_fs_selected`` root, then the prior history of unowned roots.
+
+    Bounded (FQ1): a breach of either state bound aborts the run.
+    """
+    if proof_table not in PROOF_TABLES or proof_table in SLIM_PROOF_TABLES:
+        raise ValueError("unsupported proof table")
+
+    def sql(text: str) -> str:
+        return text.replace("{proofs}", proof_table)
+
     candidate_count = int(con.execute("SELECT count(*) FROM _fs_selected").fetchone()[0])
     if candidate_count > max_selected_states:
         raise RuntimeError(
@@ -1013,17 +1070,56 @@ def stage_selected_states(
     """).replace("{history}", history), [run_id])
     resolve_lineage_proofs(con, run_id, all_hashes, source_table="_fs_prior_candidates",
                            proof_table=proof_table)
+
+
+def stage_owner_legs(
+    con: Any, *, run_id: str, calendar_table: str = "_fs_calendar",
+    cohort_table: str = "_fs_leg_cohort", metrics_table: str = "_fs_metrics",
+    proof_table: str = "fundamental_signal_proofs", staged_slim: bool = False,
+) -> None:
+    """Associate proved ``_fs_selected`` states with cohort members; stage ``_fs_leg``.
+
+    Every ``_fs_selected`` root must already have a row in ``proof_table``
+    (roots without one are treated as unproved and drop out of association).
+    ``proof_table`` is a proof table or, with ``staged_slim``, a staged
+    relation with the slim proof columns (a run's proofs for one metric batch).
+    """
+    calendar_table = _relation(calendar_table)
+    cohort_table = _relation(cohort_table)
+    metrics_table = _relation(metrics_table)
+    if staged_slim:
+        proof_table = _relation(proof_table)
+        slim = True
+    elif proof_table in PROOF_TABLES:
+        slim = proof_table in SLIM_PROOF_TABLES
+    else:
+        raise ValueError("unsupported proof table")
+    # A slim proof row carries its root's as_of_date; the prior-owner scan then
+    # admits exactly the prior states visible at the decision. It also scans
+    # only unowned states: a prior CIK is used only when the current proof has
+    # none (``coalesce`` below), so the association is identical.
+    prior_visible = "AND p.root_as_of_date<=s.decision_date" if slim else ""
+    prior_scope = ("SEMI JOIN {proofs} u ON u.run_id=? AND u.derived_value_id=s.derived_value_id "
+                   "AND u.selected_cik IS NULL") if slim else ""
+    leaf_ids = "CAST(NULL AS VARCHAR)" if slim else "p.leaf_ids_json"
+
+    def sql(text: str) -> str:
+        return (text.replace("{prior_scope}", prior_scope).replace("{calendar}", calendar_table)
+                .replace("{cohort}", cohort_table).replace("{metrics}", metrics_table)
+                .replace("{proofs}", proof_table).replace("{prior_visible}", prior_visible)
+                .replace("{leaf_ids}", leaf_ids))
+
     con.execute(sql("""
         CREATE OR REPLACE TEMP TABLE _fs_prior_owner_cik AS
         SELECT s.decision_date,s.derived_value_id,
                arg_max(p.selected_cik,(p.root_available_at,p.derived_value_id)) AS prior_cik
-        FROM _fs_selected s JOIN {proofs} p
+        FROM _fs_selected s {prior_scope} JOIN {proofs} p
           ON p.run_id=? AND p.derived_owner_security_id=s.security_id
          AND p.metric_code=s.metric_code AND p.metric_window=s.metric_window
          AND p.root_available_at<s.available_at AND p.root_available_at<=s.cutoff
-         AND p.status='qualified' AND p.selected_cik IS NOT NULL
+         AND p.status='qualified' AND p.selected_cik IS NOT NULL {prior_visible}
         GROUP BY s.decision_date,s.derived_value_id
-    """), [run_id])
+    """), [run_id, run_id] if slim else [run_id])
     con.execute(sql("""
         CREATE OR REPLACE TEMP TABLE _fs_owner_state AS
         SELECT s.decision_date,s.metric_code,s.metric_window,
@@ -1034,7 +1130,7 @@ def stage_selected_states(
                s.value AS raw_value,s.valid_to,
                p.selected_cik,coalesce(p.selected_cik,a.prior_cik) AS association_cik,
                p.status AS lineage_status,p.reason AS lineage_reason,
-               p.proof_digest AS lineage_digest,p.leaf_ids_json AS lineage_leaf_ids_json,
+               p.proof_digest AS lineage_digest,{leaf_ids} AS lineage_leaf_ids_json,
                p.oldest_fiscal_end,p.newest_fiscal_end,p.latest_input_clock
         FROM _fs_selected s JOIN {proofs} p
           ON p.run_id=? AND p.derived_value_id=s.derived_value_id
