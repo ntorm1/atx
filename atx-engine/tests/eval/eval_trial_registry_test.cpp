@@ -392,7 +392,15 @@ TEST(EvalTrialRegistry, SketchModeIdenticalTrialsCollapseAcrossSeeds) {
   EXPECT_NEAR(indep_sum / static_cast<f64>(seeds), static_cast<f64>(n), 8.0);
 }
 
-TEST(EvalTrialRegistry, RegistryFedDsrIsLessOverDeflatedOnCorrelatedTrials) {
+// W0-E0b (findings E-01): this test replaces
+// RegistryFedDsrIsLessOverDeflatedOnCorrelatedTrials, which locked the defect
+// in (it asserted that pairing N_eff with the cross-trial variance lowers SR*).
+// The cross-trial variance has already removed the component the trials
+// share, so the correlation must be discounted ONCE: the registry-fed
+// benchmark has to equal the expected maximum Sharpe of these trials under
+// their estimated correlation (the Monte-Carlo cross-check), and the pre-W0
+// rule — kept only as SummaryDsrRule::NEffCrossVarV1 — understates it.
+TEST(EvalTrialRegistry, RegistryFedDsrDiscountsCorrelationOnce) {
   const usize t = 252U;
   TrialRegistry reg = must_mem(t);
   const std::vector<f64> base = noise(t, 17U);
@@ -407,10 +415,19 @@ TEST(EvalTrialRegistry, RegistryFedDsrIsLessOverDeflatedOnCorrelatedTrials) {
   const TrialSummary s = reg.summary();
   ASSERT_LT(s.n_eff, 5.0);
   const f64 sr = s.max_sr;
-  const DsrResult raw = deflated_sharpe(sr, t, 0.0, 0.0, static_cast<usize>(s.n_raw), s.var_sr);
-  const DsrResult fed = deflated_sharpe(sr, s, t, 0.0, 0.0);
-  EXPECT_GE(fed.dsr, raw.dsr);
-  EXPECT_LE(fed.sr_star, raw.sr_star);
+  const DsrResult fed = deflated_sharpe(sr, s, t, 0.0, 0.0); // default: RawNCrossVarV2
+  EXPECT_DOUBLE_EQ(fed.sr_star, expected_max_sharpe(static_cast<usize>(s.n_raw), s.var_sr));
+  // The benchmark is the expected maximum under the estimated correlation.
+  auto mc = reg.mc_max_null(4000U, 3U);
+  ASSERT_TRUE(mc.has_value());
+  EXPECT_NEAR(fed.sr_star / mc->mean, 1.0, 0.2)
+      << "fed SR*=" << fed.sr_star << " MC E[max]=" << mc->mean;
+  // The pre-W0 rule double-discounts: its SR* is far below the true E[max],
+  // so it deflates less than it must.
+  const DsrResult v1 = deflated_sharpe(sr, s, t, 0.0, 0.0, SummaryDsrRule::NEffCrossVarV1);
+  EXPECT_LT(v1.sr_star, 0.5 * mc->mean);
+  EXPECT_GE(v1.dsr, fed.dsr);
+  EXPECT_DOUBLE_EQ(v1.sr_star, expected_max_sharpe_eff(s.n_eff, s.var_sr));
   // One trial == no selection: the overload collapses to PSR(0).
   TrialRegistry one = must_mem(t);
   const std::vector<f64> x = noise(t, 4U);
