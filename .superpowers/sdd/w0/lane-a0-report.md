@@ -3,8 +3,10 @@
 ## Outcome
 
 **DONE.** Every Build item of plan §7 W0-A0 is implemented, every Accept item is MET with a
-named test and a measured number, and all six cited defects are closed. Both owning test
-executables are fully green (alpha 703/703, factory 299/299).
+named test and a measured number. Five cited defects are closed; A-18 is DEFERRED for its
+production wiring (the verified CanonSet API is done here, the driver still uses the hash-only
+API; see Fix pass 1). Both owning test executables are fully green (after fix pass 1: alpha
+704/704, factory 299/299).
 
 ## Branch / SHA / base / pool
 
@@ -98,7 +100,7 @@ bit-exact for every new behaviour (ties, hump, flat, sums, both modes).
 | A-03 | CLOSED | `typecheck.cpp` `validate_scalar_literal_operand` (finite Literal required in scale/winsorize/quantile/hump arg 2); `crossover.cpp` literal-only donors for such a cut; VM read sites documented. |
 | A-09 | CLOSED | `ts_ops.hpp` `tsv_is_flat` guard in var/std/zscore/skew/kurt/slope/rsquare/resid/corr/regression on the batch path; identical `window_is_flat` in the oracle; `FlatGuard::NoneV1` reproduces old digests. |
 | A-13 | CLOSED | `vm.hpp` routes AuditExact TsSum/TsMean to the batch recompute (oracle-exact); ResearchFast uses the Neumaier `TsvRunSum`; `TsSumPath::OnlineV1` reproduces old digests. |
-| A-18 | CLOSED (lane scope) | `CanonSet` stores canonical strings and compares them on a hash hit (`insert(h, form)`, `contains(h, form)`, `collisions()`); `canonical_string` is the exact form. The search driver (`search_driver.cpp`, not owned) still calls the hash-only overloads, so wiring it onto the verified API is an integration item (see Integration notes). |
+| A-18 | DEFERRED (driver + `fitness_cache` wiring, factory track) | This lane delivers the verified API: `CanonSet` stores canonical strings and compares them on a hash hit (`insert(h, form)`, `contains(h, form)`, `collisions()`); `canonical_string` is the exact form. Production is still collision-blind: `search_driver.cpp:165,576,587,908` (not owned) call the hash-only overloads and `fitness_cache` is keyed by hash. Handoff = the A-18 Integration note. |
 
 ## Existing tests changed (each pins a cited defect)
 
@@ -272,9 +274,25 @@ the owning targets fixed them. The remaining 7 were the golden pins re-baselined
   report's attribution.
 - `combine/combined_source.hpp` has its own copy of the ordinal rank kernel (E track). It still
   breaks ties by index; the E lane may want to adopt average ties for consistency.
-- Pre-existing, not changed: `cs_quantile_row` casts the bucket-count literal to `int` without a
-  range check (a huge literal such as `quantile(x, 1e20)` is undefined behaviour). Typecheck now
-  guarantees a finite literal; a range rail belongs to whoever next owns the typecheck rules.
+- `cs_quantile_row` int-cast UB (pre-existing): fixed in fix pass 1 (typecheck bounds the
+  CsQuantile literal to int's range).
+- **Flat guard not yet on the OU fit and `ts_cov` (for W1-A1, next `ts_ops.hpp` owner).** Same
+  class as A-09, outside the cited lines: `ou_ar1_fit` (`ts_ops.hpp` ~1288-1293) divides by the
+  raw-moment `sxx - sx*sx/n`, which on a flat forward-filled window is rounding noise rather than
+  0, so ou_theta / ou_mean / ou_zscore / ou_halflife can be finite and meaningless (reasoned from
+  the code, not run); `ts_cov` (~1223-1229) gives ~1e-18 noise instead of 0. Extend
+  `tsv_is_flat` to both, restate it in the oracle, and keep `FlatGuard::NoneV1` reproducing the
+  old digests.
+- **StreamingEngine has no `KernelPolicy`** (`streaming_engine.hpp` ~116-120, 205-212). It always
+  runs the corrected default kernels, so stream == batch holds only under the default policy and
+  `KernelPolicy::legacy_v1()` cannot be reproduced on the streaming path. A later lane that owns
+  the file should thread `KernelPolicy` through `StreamingEngine::create` if legacy streaming is
+  ever needed.
+- **G0 truth-delta caveat (for the orchestrator):** the factory pins `kGoldenMultiObjectiveOffPath`
+  (`factory_nsga_search_test.cpp:91`), R3b and HoldoutEngineReuse (`factory_oos_test.cpp:891,
+  1587`) were re-baselined with the A-03 share attributed by elimination only. No versioned switch
+  restores the pre-W0 typecheck/crossover rule, so their old digests are **not reproducible**.
+  Carry "not reproducible; A-03 by elimination" into the G0 report.
 
 ## Ledger candidates
 
@@ -284,3 +302,54 @@ the owning targets fixed them. The remaining 7 were the golden pins re-baselined
   cells (1e8-scale data); the windowed recompute is 0/43200 and panel-start independent.
 - Factory seq==parallel digest failures after an alpha-kernel change are usually a stale
   `atx-shm-worker.exe` — build it with the owning test targets.
+
+## Fix pass 1
+
+Responds to `lane-a0-review.md` (reviewed SHA `9cf203a3`, verdict BLOCK on one major). Code fix
+commit: `b74e27d3`; this report update is the commit on top of it.
+
+| # | Sev | Finding | What changed | Evidence |
+|---|---|---|---|---|
+| 1 | major | `CanonSet::insert(h, form)` default-inserted an empty `forms[h]` for a hash-only key, after which `contains(h, form)` returned false | `canonical.cpp`: `insert` now looks up with `forms.find(h)` and returns false for a hash-only key **before** creating any entry; `forms[h]` is touched only on the admit path. Defence in depth: `contains(h, form)` treats an empty form list as hash-only ("cannot disprove"). | `FactoryCanonCollision_Set.LegacyHashOnlyEntryIsNotDisproven` extended: after `insert(42, "anything")` it asserts `contains(42, "anything")` and `contains(42, "something else")` stay true, `forms.find(42) == end` and `forms.empty()`; repeated verified inserts stay false with `size()==1`, `collisions()==0`; a planted empty list still counts as seen; a verified key (7, "form-a") still disproves "form-b", also after a legacy `insert(7)`. On the old code the `forms.find(42) == end` and post-insert `contains` assertions fail (the old `forms[h]` created the empty entry). `^FactoryCanonCollision_` 4/4. |
+| 2 | minor | Report marked A-18 "CLOSED (lane scope)" although production stays collision-blind | Defect table: A-18 is now **DEFERRED (driver + `fitness_cache` wiring, factory track)**, with the Integration note as the handoff; the Outcome paragraph now matches. | This report. |
+| 3 | minor | OU fit and `ts_cov` unguarded on flat windows | Not in scope (cited lines only; the next `ts_ops.hpp` owner is W1-A1). Added an Integration note for W1-A1 (extend `tsv_is_flat` to `ou_ar1_fit` and `ts_cov`, oracle restatement, `FlatGuard::NoneV1`). | Integration notes. |
+| 4 | minor | `static_cast<int>(n_real)` in `cs_quantile_row` / oracle is UB for a literal outside int's range | Fixed in lane (cheap; `typecheck.cpp` is owned): `validate_scalar_literal_operand` rejects a CsQuantile literal unless `INT_MIN-1 < n < INT_MAX+1`, so its truncation always fits in `int`. n < 2 stays legal (documented NaN output). Contract comment updated in `typecheck.hpp`. | New `AlphaTypecheckScalarLiteral_Analyze.QuantileBucketCountMustFitInInt`: `quantile(close, 1e20 / -1e20 / 2147483648 / -2147483649 / 1e308)` give `InvalidArgument`; `quantile(close, 2147483647 / 2147483647.9 / 1 / 0 / -2147483648 / -2147483648.9)` and `scale/winsorize/hump(close, 1e20)` are accepted. `^AlphaTypecheckScalarLiteral_` 6/6 (was 5). The 10k crossover stress is unchanged (`scalar_rejects=0`). |
+| 5 | minor | Three factory re-baselines not reproducible (A-03 by elimination) | Not blocking. Caveat carried into the Integration notes as a G0 truth-delta item ("not reproducible; A-03 by elimination"). | Integration notes. |
+| 6 | minor | StreamingEngine has no `KernelPolicy` | Documented as a limitation in the Integration notes. Not threaded: `streaming_engine.hpp` is not owned by any W0 lane and the existing edit is already a disclosed deviation. | Integration notes. |
+
+Fix-pass evidence (all from `C:\atx-wt\pool-2`, free RAM 5.22 GB before the build,
+`CMAKE_BUILD_PARALLEL_LEVEL=2`, `ATX_TEST_GROUPS=alpha;factory`, so no reconfigure):
+
+```
+atx-build.ps1 build -Preset equity-dev atx-engine-alpha-tests atx-engine-factory-tests atx-shm-worker
+  [131/134] Linking CXX executable bin\atx-shm-worker.exe
+  [133/134] Linking CXX executable bin\atx-engine-factory-tests.exe
+  exit=0   (/W4 /WX)
+
+build-equity\bin\atx-engine-alpha-tests.exe --gtest_brief=1
+  [==========] 704 tests from 273 test suites ran. (39319 ms total)
+  [  PASSED  ] 704 tests.                                  alpha exit=0
+build-equity\bin\atx-engine-factory-tests.exe --gtest_brief=1
+  [w0a0] crossover stress: children=10000 attempts=12045 scalar_slots=13591 non_literal=0 scalar_rejects=0
+  [==========] 299 tests from 57 test suites ran. (54046 ms total)
+  [  PASSED  ] 299 tests.                                  factory exit=0
+
+atx-build.ps1 -Ctest -Preset equity-dev -R '^<Suite>'   (each exit=0)
+  ^AlphaCsRankTies_              100% tests passed, 0 tests failed out of 7
+  ^AlphaHumpWarmup_              100% tests passed, 0 tests failed out of 4
+  ^AlphaTypecheckScalarLiteral_  100% tests passed, 0 tests failed out of 6
+  ^AlphaFlatWindow_              100% tests passed, 0 tests failed out of 5
+  ^AlphaAuditExactParity_        100% tests passed, 0 tests failed out of 5
+  ^FactoryCanonCollision_        100% tests passed, 0 tests failed out of 4
+```
+
+No factory golden moved in this pass (factory 299/299 with the same pins). No existing test was
+weakened, skipped or deleted.
+
+Re-verification after the fix pass was interrupted. The code commit `b74e27d3` was re-read
+against every finding, and all six are covered: the major by the code and test in `b74e27d3`,
+and minors 2, 3, 5 and 6 by this report. The build was then re-run with free RAM at 2.41 GB,
+`CMAKE_BUILD_PARALLEL_LEVEL=2`, and the same three targets. It exited 0 (`[11/12] Linking ...
+atx-engine-factory-tests.exe`). Alpha was 704/704 (exit 0) and factory 299/299 (exit 0), with
+the same crossover-stress line. All six anchored suites passed again with the counts above
+(7/4/6/5/5/4, each exit 0).
