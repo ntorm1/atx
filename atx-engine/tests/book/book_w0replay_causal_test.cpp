@@ -159,12 +159,13 @@ TEST(BookLegacyReportCausal, FuturePrintsCannotReclassifyAHoldingWindow) {
 }
 
 TEST(BookLegacyReportCausal, ReappearanceInsideHoldingWindowDoesNotUndoFirstMissingFallback) {
-    const std::vector<atx::usize> periods{0};
-    const std::vector<std::vector<double>> books{{-0.4}};
+    const std::vector<atx::usize> periods{0, 4};
+    const std::vector<std::vector<double>> books{{-0.4}, {0.0}};
     const std::vector<double> close{100, 110, kNan, 200, 300};
     const auto result = book::holding_interval_returns(close, 5, 1, periods, books,
         book::LegacyReportRule::HoldingIntervalV3);
     ASSERT_TRUE(result);
+    ASSERT_EQ(result->holding_sessions[0], 4U);
     EXPECT_NEAR(result->returns[0], 0.43, 1e-14); // Positive mark return debits the short.
     ASSERT_EQ(result->terminals.size(), 1U);
     EXPECT_EQ(result->terminals[0].last_valid_date, 1U);
