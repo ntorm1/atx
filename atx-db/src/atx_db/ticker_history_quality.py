@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 from typing import Any
 
@@ -195,4 +196,20 @@ def source_diagnostics(con: duckdb.DuckDBPyConnection) -> dict[str, Any]:
     residual_counts = con.execute("SELECT " + ", ".join(selections) + " FROM ticker_history_pairs")
     metrics.update({str(key): value for key, value in residual_counts.fetchdf().iloc[0].to_dict().items()})
     con.execute("DROP TABLE ticker_history_pairs")
-    return metrics
+    return {key: _json_native(value) for key, value in metrics.items()}
+
+
+def _json_native(value: Any) -> Any:
+    """Plain JSON types: the diagnostics travel into stage details, run ledgers and quality checks.
+
+    pandas hands back numpy scalars and Timestamps; source dates become ISO dates.
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dt.datetime):  # pandas Timestamp (and NaT, NaT != NaT) subclass datetime
+        return None if value != value else value.date().isoformat()
+    if isinstance(value, dt.date):
+        return value.isoformat()
+    if hasattr(value, "item"):
+        return value.item()  # numpy scalar
+    return value

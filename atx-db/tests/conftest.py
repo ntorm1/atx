@@ -22,8 +22,13 @@ not each spin up (cores) threads and oversubscribe the box.
 
 from __future__ import annotations
 
-import hashlib
 import os
+
+# Before anything imports numpy (pandas/pyarrow/atx_db): OpenBLAS otherwise commits a
+# buffer per core (16 here): a small pytest process holds 588 MB private commit vs 105 MB.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
+import hashlib
 import shutil
 import sys
 from pathlib import Path

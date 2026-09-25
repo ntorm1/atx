@@ -944,7 +944,7 @@ def test_full_rebuild_partition_deletes_only_within_window(tmp_store):
         the assertion above isn't vacuously true because nothing ran).
     """
     from atx_db.backfill import run_backfill
-    from atx_db.enterprise_value import EnterpriseValueOptions, refresh_enterprise_value
+    from atx_db.enterprise_value import EnterpriseValueDataset, EnterpriseValueOptions, refresh_enterprise_value
     from atx_db.warehouse import insert_frame
 
     security_id = "SEC-EV-WINDOW"
@@ -1059,6 +1059,14 @@ def test_full_rebuild_partition_deletes_only_within_window(tmp_store):
     assert before_rows[jan_trade_date][1] == "seed-run"
     assert before_rows[feb_trade_date][1] == "seed-run"
 
+    # dae4220e retired enterprise_value from the scheduled DATASET_REGISTRY (superseded
+    # by market_daily; the module and its data are retained), so register the retained
+    # dataset explicitly with the window option mapping it had there.
+    def _enterprise_value_options(params):
+        return EnterpriseValueOptions(
+            start_date=params.get("start_date"), end_date=params.get("end_date"), run_id=params.get("run_id"),
+        )
+
     # A single-partition full_rebuild backfill window that covers ONLY February.
     result = run_backfill(
         tmp_store,
@@ -1066,6 +1074,7 @@ def test_full_rebuild_partition_deletes_only_within_window(tmp_store):
         dt.date(2020, 2, 1),
         dt.date(2020, 3, 1),
         "1mo",
+        registry={"enterprise_value": (EnterpriseValueDataset, _enterprise_value_options)},
         include_dependencies=False,
         backfill_run_id="s3-11-feb-full-rebuild",
         clock=TickClock(),

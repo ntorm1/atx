@@ -258,8 +258,12 @@ def test_archive_stage_failure_keeps_partial_rows_and_durable_details(tmp_store,
     with zipfile.ZipFile(options.companyfacts_zip, "a") as archive:
         archive.writestr("CIK0000000001.json", "broken JSON")
     emitted = []
+    # The ladder opens its own store on this file; DuckDB refuses a second in-process
+    # connection whose configuration differs from conftest's budgeted one (7d0b7ee9).
+    tmp_store.close()
     with pytest.raises(ActivationStageError) as caught:
         run_activation(options, stages=("companyfacts_load",), emit=emitted.append)
+    tmp_store.reopen()
     result = caught.value.result
     assert result.rows == 1
     assert result.detail["skip_loaded"] is False

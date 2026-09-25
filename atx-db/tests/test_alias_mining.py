@@ -25,6 +25,9 @@ FACTS = [
     ("0000034088", "us-gaap", "Revenues", "Revenues", 2016, 2.0e11),
     ("0000034088", "us-gaap", "Revenues", "Revenues", 2017, 2.4e11),
     ("0000019617", "us-gaap", "RevenuesNetOfInterestExpense", "Revenues net of interest expense", 2019, 1.1e11),
+    # A revenue variant no seed maps (RevenuesNetOfInterestExpense is curated for 1001 since 8d4ff9ac).
+    ("0000070858", "us-gaap", "RevenuesExcludingInterestAndDividends", "Revenues excluding interest and dividends",
+     2019, 4.0e10),
     ("0000019617", "us-gaap", "InterestAndDividendIncomeOperating", "Interest and dividend income operating", 2019, 5.5e10),
     ("0000004977", "us-gaap", "PremiumsEarnedNet", "Premiums earned net", 2018, 1.8e10),
 ]
@@ -124,13 +127,17 @@ def test_load_concept_profiles_counts_filers_years_and_calculation_parent(tmp_st
 
 def test_mine_ranks_revenue_variants_against_item_1001(tmp_store):
     _seed_corpus(tmp_store)
-    candidates = mine_alias_candidates(tmp_store, AliasMiningOptions(minimum_filer_count=1, top_n=5))
+    # top_n covers the whole 7-concept corpus: the plural "Revenues*" concepts score 0 against
+    # item 1001's labels and order by tie-break alone, so a cut at 5 would decide membership by name.
+    candidates = mine_alias_candidates(tmp_store, AliasMiningOptions(minimum_filer_count=1, top_n=10))
     for_1001 = [c for c in candidates if c.item_id == 1001]
     assert [c.rank for c in for_1001] == list(range(1, len(for_1001) + 1))
-    assert "RevenuesNetOfInterestExpense" in {c.concept for c in for_1001}
+    assert for_1001[0].concept == "RevenueFromContractWithCustomerExcludingAssessedTax"  # best label match
+    assert {"RevenuesNetOfInterestExpense", "RevenuesExcludingInterestAndDividends"} <= {c.concept for c in for_1001}
     mapped = {c.concept: c.already_mapped for c in for_1001}
     assert mapped["Revenues"] is True
-    assert mapped["RevenuesNetOfInterestExpense"] is False
+    assert mapped["RevenuesNetOfInterestExpense"] is True  # curated alias of 1001 (priority 60)
+    assert mapped["RevenuesExcludingInterestAndDividends"] is False
 
 
 def test_mining_is_byte_identical_across_two_runs(tmp_store, tmp_path):
