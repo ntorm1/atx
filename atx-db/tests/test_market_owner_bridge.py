@@ -1223,6 +1223,8 @@ def test_delisted_line_takes_its_reconstructed_owner_point_in_time_and_never_in_
         available_at = dt.datetime.combine(period_end + dt.timedelta(days=40), dt.time(21))
         _fact(tmp_store, OLD_OWNER, "revenue", "quarterly", period_end, 1_000_000.0 + index, available_at)
         _fact(tmp_store, OLD_OWNER, "net_income_to_common", "quarterly", period_end, 100_000.0, available_at)
+        _fact(tmp_store, OLD_OWNER, "common_equity", "instant", period_end, 5_000_000.0, available_at)
+    refresh_derived_metrics(tmp_store, DerivedMetricsOptions())
     result, evidence_rows = _ri1_rows(dates[0], dates[-1])
     (link,) = result.links
     names = [name for name, _kind in EVIDENCE_COLUMNS]
