@@ -6,6 +6,7 @@ import ctypes
 import datetime as dt
 import hashlib
 import json
+import math
 import sys
 import tracemalloc
 from pathlib import Path
@@ -239,7 +240,13 @@ def warehouse(tmp_path, registry):
     return tmp_path / "wh.duckdb", ids
 
 
+#: The fixture registry's features. Pinned so the fixtures do not track the default set,
+#: which also carries the P2 natives (their inputs are added only by the P2 test).
+BASE_FEATURES = tuple(rp.PanelFeature(code, code, window) for code, window in (*DERIVED, *((m, "daily") for m in MARKET)))
+
+
 def _options(run_id: str, basis: str = rp.BASIS_RECONSTRUCTED, **extra) -> rp.ResearchPanelOptions:
+    extra.setdefault("features", BASE_FEATURES)
     return rp.ResearchPanelOptions(run_id=run_id, basis=basis, start_month=START, end_month=END,
                                    as_of_date=AS_OF, run_at=RUN_AT, **extra)
 
@@ -431,7 +438,8 @@ def test_newest_market_revision_wins_even_when_null_and_one_formation_equals_the
             SELECT feature_id, values_sha256 FROM research_panel_coverage WHERE run_id='newest' AND formation_date=?
         """, [november]).fetchall())
         staged = rp.stage_formation(store, basis=rp.BASIS_RECONSTRUCTED, formation_date=november,
-                                    cutoff=dt.datetime(2023, 11, 30, 22, tzinfo=dt.UTC), run_id="one_formation")
+                                    cutoff=dt.datetime(2023, 11, 30, 22, tzinfo=dt.UTC), run_id="one_formation",
+                                    features=BASE_FEATURES)
         assert staged.eligible == con.execute("SELECT eligible_members FROM research_panel_calendar "
                                               "WHERE run_id='newest' AND formation_date=?", [november]).fetchone()[0]
         digests = {}
@@ -445,7 +453,90 @@ def test_newest_market_revision_wins_even_when_null_and_one_formation_equals_the
         assert digests == coverage and len(digests) == 4
         with pytest.raises(ValueError, match="names a panel run"):
             rp.stage_formation(store, basis=rp.BASIS_RECONSTRUCTED, formation_date=november,
-                               cutoff=dt.datetime(2023, 11, 30, 22, tzinfo=dt.UTC), run_id="newest")
+                               cutoff=dt.datetime(2023, 11, 30, 22, tzinfo=dt.UTC), run_id="newest",
+                               features=BASE_FEATURES)
+        # R2e m3: re-staging (same session, later cutoff) while the generator is suspended is refused.
+        batches = rp.formation_batches(store, staged)
+        next(batches)
+        rp.stage_formation(store, basis=rp.BASIS_RECONSTRUCTED, formation_date=november,
+                           cutoff=dt.datetime(2023, 12, 1, 12, tzinfo=dt.UTC), run_id="one_later",
+                           features=BASE_FEATURES)
+        with pytest.raises(RuntimeError, match="replaced"):
+            next(batches)
+
+
+P2_FEATURES = tuple(rp.PanelFeature(code, code, "daily") for code in sorted(rp.PRICE_WINDOW_FEATURES))
+
+
+def test_price_liquidity_natives_equal_hand_computation_and_never_read_a_bar_after_the_cutoff(tmp_path, warehouse):
+    """P2: AAA's MAX, 52-week-high ratio, Amihud, downside deviation and turnover at the January formation
+    equal a hand computation from its own bars. Two bars knowable only after the cutoff (a late vendor row
+    of the session itself and a later revision of an earlier bar) are never inputs. Turnover is NULL with a
+    reason on unverified shares, a short history is labeled, and unlinked lines keep the price-line natives."""
+    wh_path, _ = warehouse
+    aaa, bbb, ccc = (LINES[i][0] for i in (1, 2, 3))
+    october, january = dt.date(2023, 10, 31), dt.date(2024, 1, 31)
+    con = duckdb.connect(str(wh_path))
+    con.execute("ALTER TABLE equity_daily_bars ADD COLUMN volume BIGINT")
+    con.execute("ALTER TABLE market_daily_metrics ADD COLUMN shares_outstanding DOUBLE")
+    con.execute("UPDATE market_daily_metrics SET shares_outstanding = 2000000")   # AAA's is a DEI count
+    # CCC: a 2:1 split on 2024-01-22 (back-adjusted closes halve before it) inside its turnover window.
+    con.execute("UPDATE equity_daily_bars SET volume = 5000, adjusted_close = CASE WHEN trade_date < "
+                "DATE '2024-01-22' THEN 50.0 ELSE 100.0 END WHERE security_id=?", [ccc])
+    con.execute("DELETE FROM equity_daily_bars WHERE security_id=?", [aaa])
+    series = []
+    for i, day in enumerate(_sessions(dt.date(2023, 9, 1), AS_OF)):
+        adj = 50.0 + 10.0 * math.sin(i / 3.0) + 0.05 * i
+        series.append((day, adj * 1.25, adj, 10_000 + 997 * (i % 13)))
+    con.executemany("""
+        INSERT INTO equity_daily_bars (security_id, symbol, trade_date, close, adjusted_close, shares_outstanding,
+                                       available_at, source, vendor_security_id, volume)
+        VALUES (?, 'AAA', ?, ?, ?, 1000000, NULL, 'test_bars', '1', ?)
+    """, [[aaa, day, close, adj, volume] for day, close, adj, volume in series])
+    for day, clock in ((january, dt.datetime(2024, 1, 31, 23, 30)), (dt.date(2024, 1, 10), dt.datetime(2024, 2, 5))):
+        con.execute("INSERT INTO equity_daily_bars (security_id, symbol, trade_date, close, adjusted_close, "
+                    "shares_outstanding, available_at, source, vendor_security_id, volume) "
+                    "VALUES (?, 'AAA', ?, 999.0, 999.0, 1000000, ?, 'z_late_vendor', '1', 999999999)",
+                    [aaa, day, clock])
+    con.close()
+    # Hand computation over the bars dated up to January 31 (the late rows excluded).
+    bars = [row for row in series if row[0] <= january]
+    close, adj, volume = ([row[k] for row in bars] for k in (1, 2, 3))
+    returns = [adj[i] / adj[i - 1] - 1.0 for i in range(1, len(adj))]
+    last = range(len(adj) - 21, len(adj))
+    expected = {
+        "max_daily_return_21d": max(returns[-21:]),
+        "pct_from_high_252d": adj[-1] / max(adj[-252:]) - 1.0,
+        "amihud_illiquidity_21d": sum(abs(adj[i] / adj[i - 1] - 1.0) / (close[i] * volume[i]) for i in last)
+        / 21 * 1e9,
+        "downside_deviation_60d": math.sqrt(sum(min(r, 0.0) ** 2 for r in returns[-60:]) / 60) * math.sqrt(252),
+        "turnover_21d": sum(volume[-21:]) / 21 / 2_000_000,
+    }
+    with ResearchStore(tmp_path / "research.duckdb", warehouse_path=wh_path) as store:
+        assert rp.build_research_panel(store, _options("p2", features=P2_FEATURES)).status == "complete"
+        con = store.con
+        for feature, value in expected.items():
+            row = _value(con, "p2", january, aaa, feature)
+            assert row[1] == "valid" and row[0] == pytest.approx(value, rel=1e-12, abs=0), (feature, row, value)
+            assert row[2] == dt.datetime(2024, 1, 31, 22)          # the session bar's clock, never 23:30
+        assert expected["pct_from_high_252d"] < 0 and expected["max_daily_return_21d"] > 0
+        size = dict((row[0], row[1:]) for row in con.execute("""
+            SELECT security_id, raw_value, reason, shares_source, size_status FROM research_panel_values
+            WHERE run_id='p2' AND formation_date=? AND feature_id='turnover_21d'""", [january]).fetchall())
+        assert size[aaa][2:] == ("dei", rp.SIZE_VERIFIED)
+        assert size[bbb] == (None, rp.UNVERIFIED_SHARES_REASON, "archive", rp.UNVERIFIED_VENDOR_SHARES)
+        assert size[ccc][:2] == (None, rp.SPLIT_WINDOW_REASON)
+        # 42 bars since September 1 (41 returns): the 60-return window is incomplete in October.
+        assert _value(con, "p2", october, aaa, "downside_deviation_60d")[:2] == (None, rp.INCOMPLETE_WINDOW_REASON)
+        # The unlinked delisted tail keeps the identity-free natives; turnover is owner-scoped.
+        tail = _value(con, "p2", october, TAIL, "max_daily_return_21d")
+        assert tail[:2] == (0.0, "valid") and tail[6] == rp.PRICE_LINE_IDENTITY_BASIS
+        assert _value(con, "p2", october, TAIL, "turnover_21d")[1] == "missing_owner_link"
+        definitions = json.loads(con.execute("SELECT definitions_json FROM research_panel_runs WHERE run_id='p2'"
+                                             ).fetchone()[0])
+        assert {m["metric_code"]: m["source"] for m in definitions["market"]} == {
+            f.metric_code: rp.BARS_SOURCE for f in P2_FEATURES}
+        rp.validate_research_panel(store, "p2")
 
 
 def test_missing_month_end_gets_no_formation_rows(tmp_path, registry):
@@ -618,7 +709,7 @@ def test_owner_features_attach_to_one_primary_line_per_issuer(tmp_path, registry
     line_cap = rp.PanelFeature("line_market_cap", "line_market_cap", "daily")
     with ResearchStore(tmp_path / "research.duckdb", warehouse_path=tmp_path / "wh.duckdb") as store:
         rp.build_research_panel(store, _options("lines", unverified_vendor_shares=True,
-                                                features=(*rp.default_panel_features(), line_cap)))
+                                                features=(*BASE_FEATURES, line_cap)))
         con = store.con
         cohort = dict((row[0], row[1:]) for row in con.execute("""
             SELECT security_id, issuer_lines, primary_line, primary_line_rule, owner_cik FROM research_panel_cohort

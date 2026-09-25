@@ -694,9 +694,17 @@ def _parse_operand(text: str | None) -> tuple[str, str] | None:
     return match.group(1), match.group(2)
 
 
+#: Catalog source kinds planned as one panel feature. ``panel_native`` is the kind
+#: proposed for the R2a panel-native features (P2 price/liquidity natives); the
+#: catalog lane decides the name and validates it against ``panel.NATIVE_FEATURES``.
+PANEL_FEATURE_SOURCE_KINDS = ("seed_metric", "panel_native")
+
+
 def _plan_features(entries: Sequence[AnomalyCatalogEntry], context: _PanelContext,
                    options: FeatureStoreOptions) -> list[_Plan]:
     windows = {d.metric_code: d.window for d in default_derived_definitions()}
+    # Panel natives (P2) can be a seed row, a composition leg or a domain operand too.
+    windows.update({code: spec["metric_window"] for code, spec in _panel.NATIVE_FEATURES.items()})
 
     def panel_feature(code: str) -> str | None:
         window = windows.get(code)
@@ -713,7 +721,7 @@ def _plan_features(entries: Sequence[AnomalyCatalogEntry], context: _PanelContex
             plans.append(_Plan(entry, FEATURE_EXCLUDED, "feature_subset"))
             continue
         domain = _parse_operand(entry.domain_operand)
-        if entry.source_kind == "seed_metric":
+        if entry.source_kind in PANEL_FEATURE_SOURCE_KINDS:
             code = entry.metric_code or ""
             feature = context.features.get((code, entry.metric_window or ""))
             if feature is None:
@@ -1951,12 +1959,13 @@ def validate_feature_version(store: ResearchStore, feature_version: str, *,
     con = store.con
     _require_feature_schema(con)
     row = con.execute("""
-        SELECT status, basis, panel_run_id, panel_sha256, values_sha256, spec_json, spec_sha256
+        SELECT status, basis, panel_run_id, panel_sha256, values_sha256, spec_json, spec_sha256, blockers_json,
+               diagnostic_json
         FROM research_feature_versions WHERE feature_version=?
     """, [feature_version]).fetchone()
     if row is None or row[0] not in SEALED_STATUSES:
         raise FeatureStoreError(f"feature version {feature_version!r} is absent or not sealed")
-    status, basis, run_id, panel_sha, values_sha, spec_json, spec_sha = row
+    status, basis, run_id, panel_sha, values_sha, spec_json, spec_sha, blockers_json, diagnostic_json = row
     if _sha(spec_json) != spec_sha:
         raise FeatureStoreError("feature version spec digest mismatch")
     spec = json.loads(spec_json)
@@ -2110,6 +2119,19 @@ def validate_feature_version(store: ResearchStore, feature_version: str, *,
                                 f"outside_universe={context_outside}, unlinked_with_owner_covariates="
                                 f"{context_owner})")
     checks["context_rows"] = context_rows
+    # The version-level summary of the (digested, re-derived) date-row labels (R2e m8):
+    # blockers_json and the diagnostic are outside every digest, so re-count them here.
+    conditioned = int(con.execute("SELECT count(*) FROM research_feature_dates WHERE feature_version=? "
+                                  "AND sample_conditioning IS NOT NULL", [feature_version]).fetchone()[0])
+    stated = sorted(b for b in json.loads(blockers_json or "[]")
+                    if str(b).startswith(f"{NEUTRAL_CONDITIONING_BLOCKER}:"))
+    diagnostic = json.loads(diagnostic_json or "{}")
+    if stated != ([f"{NEUTRAL_CONDITIONING_BLOCKER}:{conditioned}"] if conditioned else []) \
+            or diagnostic.get("survivor_conditioned_date_rows", conditioned) != conditioned:
+        raise FeatureStoreError(f"survivor-conditioning summary {stated} / diagnostic "
+                                f"{diagnostic.get('survivor_conditioned_date_rows')} disagrees with "
+                                f"{conditioned} labeled date rows")
+    checks["survivor_conditioned_date_rows"] = conditioned
     combined, _, total = _combined_digest(con, feature_version,
                                           _context_digest(con, feature_version, formations, chunk))
     if combined != values_sha:
@@ -2143,7 +2165,10 @@ def _version_references(store: ResearchStore) -> dict[str, tuple[str, ...]]:
       e.g. ``research_eval_series``, belong to the run);
     - a qualification ledger's ``manifest_json`` ``evaluation.feature_versions`` (R4);
     - any other base table of the research catalog with a ``feature_version`` column.
-    An unreadable reference refuses the prune (fail closed).
+    An unreadable reference refuses the prune (fail closed): a referrer table without
+    its id/payload columns, a payload that is not JSON, not an object, or lacks the
+    list at its path (R2e m6). There is no override: a failed evaluation run still pins
+    its versions until its run row is removed.
     """
     con = store.con
     columns: dict[str, set[str]] = {}
@@ -2164,18 +2189,23 @@ def _version_references(store: ResearchStore) -> dict[str, tuple[str, ...]]:
     json_refs = (("research_eval_runs", "run_id", "spec_json", ("feature_versions",)),
                  ("research_qualification_ledgers", "ledger_id", "manifest_json", ("evaluation", "feature_versions")))
     for table, key, payload, path in json_refs:
-        if not {key, payload} <= columns.get(table, set()):
+        if table not in columns:
             continue
+        if not {key, payload} <= columns[table]:
+            raise FeatureStoreError(f"{table} lacks {key}/{payload}: its feature version references cannot be "
+                                    "read; not pruning")
         for ident, text in con.execute(f"SELECT {key}, {payload} FROM {table}").fetchall():
             try:
-                node: Any = json.loads(text) if text is not None else {}
-                for step in path:
-                    node = node.get(step) if isinstance(node, dict) else None
-            except ValueError as exc:
+                node: Any = json.loads(text)
+            except (TypeError, ValueError) as exc:
                 raise FeatureStoreError(f"{table}:{ident}: unreadable {payload}; not pruning") from exc
-            if node is not None and not isinstance(node, list):
+            for step in path:
+                if not isinstance(node, dict) or step not in node:
+                    raise FeatureStoreError(f"{table}:{ident}: {payload} has no {'.'.join(path)}; not pruning")
+                node = node[step]
+            if not isinstance(node, list):
                 raise FeatureStoreError(f"{table}:{ident}: {'.'.join(path)} is not a list; not pruning")
-            for version in node or ():
+            for version in node:
                 add(version, f"{table}:{ident}")
     for table, names in sorted(columns.items()):
         if table in _VERSION_TABLES or "feature_version" not in names:
@@ -2196,7 +2226,11 @@ def prune_feature_versions(store: ResearchStore, *, versions: Sequence[str] | No
     inputs would resume it, so prune it only when it is abandoned) and, with
     ``superseded=True``, every sealed version that is not the latest sealed version
     of its basis. "Latest" is registration order (``created_at``, then id), not
-    ``finished_at``, which a resumed build moves. Never deleted, even when named:
+    ``finished_at``, which a resumed build moves. It is keyed on the basis only (R2e
+    m5): a later sensitivity build (for example winsor 2%) becomes the latest, so an
+    *unreferenced* primary build of the same basis is prunable with
+    ``superseded=True``; an evaluated one is reference-protected. Never deleted, even
+    when named:
     - the latest sealed version of a basis;
     - any version an evaluation run (R3b), a qualification ledger (R4) or another
       research table references (:func:`_version_references`; listed in
