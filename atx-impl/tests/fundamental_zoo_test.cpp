@@ -163,6 +163,11 @@ Panel synthetic_panel() {
 }
 
 // Quarterly filings with drifting fundamentals so deltas and SUE vary.
+// Operating cash flow carries a per-quarter term that is NOT proportional to the
+// scale `s`: accruals = (NI - CFO) / mean(assets, assets_lag1y) is a ratio in
+// which a common scale cancels, so with CFO = 12*s it was the same number every
+// quarter (to 1-2 ulp) and every ts_zscore(accruals, d) window was flat, which
+// the A-09 flat-window guard correctly scores as NaN (0/0).
 std::vector<fund::PitRecord> synthetic_records(usize instruments) {
   std::vector<fund::PitRecord> recs;
   for (usize i = 0; i < instruments; ++i) {
@@ -173,8 +178,9 @@ std::vector<fund::PitRecord> synthetic_records(usize instruments) {
       r.available_ns = r.period_end_ns + 20 * kDay;
       const f64 s = 1.0 + 0.1 * static_cast<f64>(i) + 0.03 * static_cast<f64>(q * (i % 4));
       const f64 sign = (i % 5 == 0) ? -1.0 : 1.0;
+      const f64 cfo = (12.0 + static_cast<f64>(q)) * s;
       r.values = {40.0 * s, 100.0 * s, 60.0 * s, 90.0 * s,     10.0 * s * sign, 200.0 * s,
-                  70.0 * s, 12.0 * s,  15.0 * s, 1.0e6 * s,  1.0e6,           0.5 * sign * s};
+                  70.0 * s, cfo,       15.0 * s, 1.0e6 * s,  1.0e6,           0.5 * sign * s};
       recs.push_back(r);
     }
   }
