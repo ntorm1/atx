@@ -33,10 +33,12 @@ def _weekdays(start: dt.date, end: dt.date):
 
 
 def _bars(con, security_id, start=START, end=END, *, split=None, dividends=(), shares=None, drop=(),
-          factorless=(), flat_factor=False, factor_scale=1.0, source="vendor", run_id=None, split_field=None,
+          factorless=(), flat_factor=False, factor_scale=0.95, source="vendor", run_id=None, split_field=None,
           share_steps=(), price_moves=()):
     """Daily bars whose vendor factor is ``adjusted_close / close``.
 
+    ``factor_scale`` 0.95 is a total-return factor carrying later dividends (a
+    load whose factor is 1 everywhere is factor-free and proves nothing).
     ``split=(ex_date, k)``: k new shares per old share from ``ex_date``; the raw
     close moves by 1/k and history is back-adjusted (factor 1/k before the
     split) unless ``flat_factor`` (a vendor factor that misses it).
@@ -111,18 +113,49 @@ def test_a_split_is_known_once_the_share_count_follows_the_factor():
     _bars(con, "REV", dt.date(2021, 1, 1), dt.date(2021, 6, 30), split=(dt.date(2021, 4, 1), 0.1),
           shares=(1000, 100, 0))
     # The share count moves on 2021-03-18: the split is known from that bar, pending before.
-    # A 2 % dividend is no candidate; a 10 % special dividend with a flat count is a distribution
-    # once its share window (one quarter of sessions) closes.
-    close = _window_close(dt.date(2021, 5, 10))
+    # A 2 % dividend is no candidate; a 10 % special dividend (k = 10/9, not a stock-dividend
+    # ratio) is a distribution at once.
     assert _events(con, "FWD") == [
         ("split", dt.date(2021, 3, 15), _at(dt.date(2021, 3, 18)), 2.0, "vendor_factor+shares"),
-        ("distribution", dt.date(2021, 5, 10), _at(close), 1.111111, "distribution")]
+        ("distribution", dt.date(2021, 5, 10), _at(dt.date(2021, 5, 10)), 1.111111, "distribution")]
     assert _hazards(con) == [
-        (dt.date(2021, 3, 15), _at(dt.date(2021, 3, 15)), _at(dt.date(2021, 3, 18)), 2.0, "pending_confirmation"),
-        (dt.date(2021, 5, 10), _at(dt.date(2021, 5, 10)), _at(close), 1.111111, "pending_confirmation")]
+        (dt.date(2021, 3, 15), _at(dt.date(2021, 3, 15)), _at(dt.date(2021, 3, 18)), 2.0,
+         "split_pending_share_confirmation")]
     assert _events(con, "REV") == [
         ("split", dt.date(2021, 4, 1), _at(dt.date(2021, 4, 1)), 0.1, "vendor_factor+shares")]
     assert _hazards(con) == []
+    con.close()
+
+
+EX = dt.date(2021, 3, 15)
+
+
+@pytest.mark.parametrize(("bars", "events", "hazards"), [
+    # N1: an exact 2:1 whose vendor count follows 100 days later is a split from that bar, pending before.
+    (dict(split=(EX, 2.0), shares=(1000, 2000, 100)),
+     [("split", EX, _at(dt.date(2021, 6, 23)), 2.0, "vendor_factor+shares")],
+     [(EX, _at(EX), _at(dt.date(2021, 6, 23)), 2.0, "split_pending_share_confirmation")]),
+    # N1: the same with a count that never moves is never a distribution: basis unknown for good.
+    (dict(split=(EX, 2.0), shares=(1000, 1000, 0)), [], [(EX, _at(EX), None, 2.0, "split_unconfirmed")]),
+    # N1: a 1:30 reverse split (NKLA 2024) with a count 200 days late.
+    (dict(split=(EX, 1 / 30), shares=(3000, 100, 200)),
+     [("split", EX, _at(dt.date(2021, 10, 1)), 0.033333, "vendor_factor+shares")],
+     [(EX, _at(EX), _at(dt.date(2021, 10, 1)), 0.033333, "split_pending_share_confirmation")]),
+    # N2: a 7 % distribution (inexact) with a 6 % issuance four weeks later: a distribution at once.
+    (dict(dividends=((EX, 0.07),), price_moves=((EX, 0.93),), shares=(1000, 1000, 0),
+          share_steps=((dt.date(2021, 4, 12), 1060),)),
+     [("distribution", EX, _at(EX), 1.075269, "distribution")], []),
+    # N2: an exact 6:5 whose count only drifts 6 % (issuance, not the ratio) is a distribution.
+    (dict(split=(EX, 1.2), shares=(1000, 1000, 0), share_steps=((dt.date(2021, 4, 1), 1060),)),
+     [("distribution", EX, _at(_window_close(EX)), 1.2, "distribution")],
+     [(EX, _at(EX), _at(_window_close(EX)), 1.2, "pending_confirmation")]),
+], ids=["n1_count_lags", "n1_count_stale", "n1_reverse_1_30_lags", "n2_distribution_and_issuance",
+        "n2_exact_ratio_issuance_drift"])
+def test_exact_ratios_wait_for_shares_and_inexact_in_band_steps_are_distributions(bars, events, hazards):
+    con = _con()
+    _bars(con, "X", dt.date(2021, 1, 1), dt.date(2022, 6, 30), **bars)
+    assert _events(con, "X") == events
+    assert _hazards(con) == hazards
     con.close()
 
 
@@ -325,10 +358,10 @@ def test_without_bars_or_near_a_split_the_basis_is_unproven(store):
         pytest.approx((POST[9] - POST[8]) / POST[8]), "valid", "quarterly")
 
 
-@pytest.mark.parametrize("cut", [0.30, 0.50], ids=["special_dividend", "spin_off"])
+@pytest.mark.parametrize("cut", [0.2937, 0.4731], ids=["special_dividend", "spin_off"])
 def test_a_distribution_is_never_rebased(store, cut):
-    # No split; a 30 % special dividend, or a spin-off worth half the price (a factor step of
-    # exactly 2, like a 2:1 split), goes ex 2021-01-15 with a flat share count.
+    # No split; a 29.37 % special dividend, or a spin-off worth 47.31 % of the price (a factor step
+    # of 1.90, near 2:1 but not an exact split ratio), goes ex 2021-01-15 with a flat share count.
     _seed(store, "D", split_filed_after=NO_SPLIT)
     _bars(store.con, "D", dividends=((dt.date(2021, 1, 15), cut),), price_moves=((dt.date(2021, 1, 15), 1 - cut),),
           shares=(1000, 1000, 0))

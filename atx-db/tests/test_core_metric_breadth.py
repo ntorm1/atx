@@ -251,15 +251,16 @@ def _seed_statement(store, security_id: str, quarters: tuple[dt.date, ...],
 def _bars(store, security_id: str, split: tuple[dt.date, float] | None = None) -> None:
     """Weekday bars covering every filing clock, so the split basis is proven (R1d).
 
-    The vendor factor (adjusted / raw close) and the archive share count step by
-    ``k`` on a split's ex-date.
+    The vendor factor (adjusted / raw close; 0.95, a total-return factor carrying
+    later dividends, since a load whose factor is 1 everywhere proves nothing) and
+    the archive share count step by ``k`` on a split's ex-date.
     """
     ex_date, ratio = split or (dt.date(1900, 1, 1), 1.0)
     store.con.execute(
         """
         INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, close, adjusted_close,
                                        shares_outstanding, available_at)
-        SELECT 'test', ?, ?, d::DATE, 10.0, CASE WHEN d::DATE < ? THEN 10.0 / ? ELSE 10.0 END,
+        SELECT 'test', ?, ?, d::DATE, 10.0, CASE WHEN d::DATE < ? THEN 9.5 / ? ELSE 9.5 END,
                CASE WHEN d::DATE < ? THEN 1000 ELSE round(1000 * ?) END, d::DATE + INTERVAL 22 HOUR
         FROM generate_series(TIMESTAMP '2018-12-01', TIMESTAMP '2022-06-30', INTERVAL 1 DAY) t(d)
         WHERE dayofweek(d) BETWEEN 1 AND 5
