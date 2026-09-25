@@ -478,6 +478,26 @@ TEST(AlphaTypecheckScalarLiteral_Analyze, LiteralsAndDefaultsAccepted) {
   }
 }
 
+TEST(AlphaTypecheckScalarLiteral_Analyze, QuantileBucketCountMustFitInInt) {
+  // Review fix (minor 4): cs_quantile_row / the oracle do static_cast<int>(n),
+  // which is UB for a finite literal outside int's range.
+  for (const std::string_view src :
+       {"quantile(close, 1e20)", "quantile(close, -1e20)", "quantile(close, 2147483648)",
+        "quantile(close, -2147483649)", "quantile(close, 1e308)"}) {
+    const atx::core::Status s = analyze_src(src);
+    ASSERT_FALSE(s.has_value()) << src;
+    EXPECT_EQ(s.error().code(), atx::core::ErrorCode::InvalidArgument) << src;
+  }
+  // In-range values (incl. the degenerate n < 2 that yields NaN) stay legal, and
+  // the bound applies to quantile only.
+  for (const std::string_view src :
+       {"quantile(close, 2147483647)", "quantile(close, 2147483647.9)", "quantile(close, 1)",
+        "quantile(close, 0)", "quantile(close, -2147483648)", "quantile(close, -2147483648.9)",
+        "scale(close, 1e20)", "winsorize(close, 1e20)", "hump(close, 1e20)"}) {
+    EXPECT_TRUE(analyze_src(src).has_value()) << src;
+  }
+}
+
 TEST(AlphaTypecheckScalarLiteral_Analyze, SlotPredicateCoversExactlyTheFourOps) {
   using atx::engine::alpha::OpCode;
   using atx::engine::alpha::detail::has_scalar_literal_slot;

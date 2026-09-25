@@ -262,7 +262,7 @@ bool CanonSet::contains(atx::u64 h, std::string_view form) const {
     return false;
   }
   const auto it = forms.find(h);
-  if (it == forms.end()) {
+  if (it == forms.end() || it->second.empty()) {
     return true; // hash known without a form (legacy insert / resume): cannot disprove
   }
   return std::find(it->second.begin(), it->second.end(), form) != it->second.end();
@@ -270,17 +270,20 @@ bool CanonSet::contains(atx::u64 h, std::string_view form) const {
 
 bool CanonSet::insert(atx::u64 h, std::string form) {
   const bool hash_known = seen.find(h) != seen.end();
-  std::vector<std::string> &fs = forms[h];
-  if (hash_known && fs.empty()) {
+  const auto it = forms.find(h);
+  // Decide BEFORE touching `forms`: a hash-only key must never gain an (empty)
+  // forms entry, or contains(h, form) would flip it to "unseen" (review A-18 fix 1).
+  if (hash_known && (it == forms.end() || it->second.empty())) {
     return false; // legacy hash-only entry: treated as seen (see CanonSet)
   }
-  if (std::find(fs.begin(), fs.end(), form) != fs.end()) {
+  if (it != forms.end() &&
+      std::find(it->second.begin(), it->second.end(), form) != it->second.end()) {
     return false; // the same structure — a true duplicate
   }
   if (hash_known) {
     ++n_collisions; // same 64-bit hash, different canonical form
   }
-  fs.push_back(std::move(form));
+  forms[h].push_back(std::move(form));
   seen.insert(h);
   ++n_distinct;
   return true;

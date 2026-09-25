@@ -129,7 +129,8 @@ namespace detail {
 }
 
 // Ok iff `e` has no scalar-literal slot, the slot is absent, or it holds a
-// finite Literal; Err(InvalidArgument) otherwise. Precondition: `e.kind ==
+// finite Literal (for CsQuantile additionally one whose truncation fits in an
+// `int`, the kernels' bucket-count type); Err(InvalidArgument) otherwise. Precondition: `e.kind ==
 // Call` and `e.op != nullptr`.
 [[nodiscard]] atx::core::Status validate_scalar_literal_operand(const Ast &ast, const Expr &e);
 

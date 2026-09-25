@@ -334,6 +334,17 @@ atx::core::Status validate_scalar_literal_operand(const Ast &ast, const Expr &e)
                           std::string{"scalar operand of '"} + std::string{e.op->name} +
                               "' (arg 2) must be a finite compile-time literal");
   }
+  // CsQuantile truncates its bucket count to `int` (cs_quantile_row / the oracle);
+  // a finite literal whose truncation is outside int's range would make that
+  // static_cast UB, so the slot is bounded here. n < 2 stays legal (NaN output).
+  if (e.op->opcode == OpCode::CsQuantile) {
+    constexpr atx::f64 kIntLoExcl = static_cast<atx::f64>(std::numeric_limits<int>::min()) - 1.0;
+    constexpr atx::f64 kIntHiExcl = static_cast<atx::f64>(std::numeric_limits<int>::max()) + 1.0;
+    if (!(s.value > kIntLoExcl && s.value < kIntHiExcl)) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "quantile: bucket count (arg 2) must fit in a 32-bit int");
+    }
+  }
   return atx::core::Ok();
 }
 

@@ -137,6 +137,32 @@ TEST(FactoryCanonCollision_Set, LegacyHashOnlyEntryIsNotDisproven) {
   EXPECT_TRUE(set.contains(42, "anything"));
   EXPECT_FALSE(set.insert(42, "anything"));
   EXPECT_EQ(set.size(), 1U);
+  // Review fix 1: the verified insert on a hash-only key must not create a
+  // (empty) forms entry, so the key stays "seen" for every later lookup.
+  EXPECT_TRUE(set.contains(42, "anything"));
+  EXPECT_TRUE(set.contains(42, "something else"));
+  EXPECT_EQ(set.forms.find(atx::u64{42}), set.forms.end());
+  EXPECT_TRUE(set.forms.empty());
+  // Repeated verified inserts stay idempotent and never count a collision.
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_FALSE(set.insert(42, "anything"));
+    EXPECT_FALSE(set.insert(42, "other"));
+  }
+  EXPECT_TRUE(set.contains(42, "anything"));
+  EXPECT_TRUE(set.forms.empty());
+  EXPECT_EQ(set.size(), 1U);
+  EXPECT_EQ(set.collisions(), 0U);
+  // Defence in depth: an empty forms list (e.g. from a caller that default-
+  // inserted one) is treated as hash-only, not as "no form matches".
+  set.forms[atx::u64{42}];
+  EXPECT_TRUE(set.contains(42, "anything"));
+  EXPECT_FALSE(set.insert(42, "anything"));
+  // A verified key still disproves a different form, and legacy insert of it is a no-op.
+  EXPECT_TRUE(set.insert(7, "form-a"));
+  EXPECT_TRUE(set.contains(7, "form-a"));
+  EXPECT_FALSE(set.contains(7, "form-b"));
+  EXPECT_FALSE(set.insert(atx::u64{7}));
+  EXPECT_FALSE(set.contains(7, "form-b"));
 }
 
 // ===========================================================================
