@@ -40,15 +40,17 @@ Reuse existing pools, -MaxPool11; do not create more. Four agent slots including
 
 ## Live jobs (latest checkpoint)
 
-Root session56041 runs .superpowers/sdd/w0/run-integrated-gate.ps1. Configure passed with
-isolated pool-2/deps/equity-dev, PCH ON and groups alpha/factory/learn/data/eval/combine/risk/book.
-The 394-output build completed in2375.269s (~39.6min), no compiler failures. Nine whole
-test executables are running sequentially, with data exclusions and cleared opt-ins.
-Passed so far: alpha706/706 (48.014s),factory299/299 (66.431s),learn193/193 (72.214s),
-data238 passed+1skip (16.018s),eval251/251 (127.502s). Combine/risk/book/impl remain. Source compiled is
-b185d056440704e7ebcfe2b9395601d7e5264269; later root commits change documentation only.
-Do not modify root production sources during the build. Logs/hashes are under
-build-equity/w0-integrated-gate/ (configure.log, build.log, results.txt, per-target logs).
+Root session56041 COMPLETE exit0. Integrated sourceb185d056 built394 outputs in2375.269s,
+then all9 exes passed:3074 passed,7 documented skips,3081 run. Per-target counts/seconds,
+source/exe/log hashes and data exclusions are recorded in build-equity/w0-integrated-gate;
+report .superpowers/sdd/w0/integrated-correctness-report-codex.md committedc040476d.
+No root compiler or test process remains. W0 is still NOT gated.
+
+Root merged reviewed ASan/disclosure plus W1 prep through911071f1 at6f0e8d81 AFTER the
+integrated job finished. Actual new production is stage_equity_baseline.cpp and
+stage_equity_book.cpp; ASan CMake/fixture/script also merged. Root must qualify only these
+affected target closures after compiler fixes, not rerun untouched8 groups. Benchmark engine
+include/src/bench/core/tsdb are byte-identical to b185 (independently checked).
 
 Root's first launch correctly stopped before configuration at2.39GiB free. A membership
 hygiene check accidentally expanded through a test-object worker dependency to182 actions;
@@ -118,9 +120,9 @@ fail qualification on assumed liquidations and hash-bind the book summary. Numer
 is unchanged. Both production TUs passed PCH-off checks. Focused32/32 passed40.32s.
 Independent review766bac4a approved exact code and ran2/2 changed fixtures in1.820s.
 Root imported that review as6e2a3c4e, path review-replay-disclosure-codex.md.
-ASan+summary production remain unmerged pending the running root build; pool-4 head
-edbcb2063ac517e3122c8c45c95192996b005d23 also contains W1-B1 preparation docs.
-Merge these only after root's build stops, then qualify changed impl/risk closures.
+ASan+summary production and all three W1 prep briefs were merged at6f0e8d81 after the
+root job completed. Final changed impl/risk closure is pending; original broad run stays valid
+for unchanged groups. Independent ASan5/5 and disclosure32/32 plus fresh2/2 remain recorded.
 G0 imported only summary production; its final disclosed binary is built already.
 
 ## G0 evidence (all pre-2020, no tuning)
@@ -181,12 +183,15 @@ Pool-6 baseline at O1 configured equity-bench successfully: Release, equity-only
 groups all, isolated deps/equity-bench. Build completed235/235 exit0 (~20min).
 Baseline exe SHA2568bd72411065d71edbdd62eb37ffc2230aee0bf050681aa2096d85b5f04eea966.
 Registry verified exactly81 cases (66 earlier was wrong:15 SearchThroughput also match).
-Current pool-5 configure passed63.7s; build waits for >4GiB free, recent3.37GiB.
-161 normalized selected production/bench command lines exactly match baseline.
-Per-build ccache stats/debug logs will be enabled to diagnose cache failures without flag changes. No processes
-belonging to other sessions may be killed. Current sourceb185d056 has only a later review doc.
-ASan target defaults OFF and summary impl changes do not affect engine benchmark links.
-Build bench+worker serially. Full filter (never narrow):
+Current pool-5 configured63.7s and completed235-action benchmark+worker build, exit0,
+original session59572 revalidated terminal (do not restart). Source766bac4a is docs-only child
+ofb185. All224 compiler calls cacheable:84 direct hits,140 misses,ZERO preprocessing failures.
+Dedicated w0-current-ccache log/statslog/own reports are in build-equity-bench. Baseline/current
+161 normalized selected production/bench commands exactly match. Registry must verify81 cases.
+No timings yet. Sole compiler slot released; host now~1.3GiB free, all new compilation held.
+Baseline exe SHA recorded above; current owner collecting final binary/registry receipts.
+
+Full filter (never narrow):
 ^BM_Kernel|^Wq101_|^BM_Search|^BM_OptimizerProduction/M:(1000|3000|5000)/mode:(4|6|7)/
 81 cases:33 kernels,20 WQ,19 search,9 optimizer. Repetitions3, exact same keys, no skips/errors,
 finite positive timings; gate threshold0.20, no AllowMissing or Update bypass.
@@ -247,3 +252,34 @@ Audit owner will capture per-build CCACHE_STATSLOG/LOGFILE; avoid duplicate diag
 Confirmed avoidable triggers: Git SHA macro on all34 impl-core TUs but only stage_discover uses it;
 engine-test PCH owner changes with first configured group; wrapper -Jobs absent from build/check.
 No claim of measured improvement until no-op/localized-rebuild/cache diagnostics are verified.
+
+## Recovery / current build-tools follow-up
+
+Previous goal turn made concrete progress (completed integrated gate, merged reviewed repairs,
+G0 report/import and committed build-tool improvements), not no-progress. Two agents hit a
+transient authentication failure; root later recovered both through followup_task. No secrets
+were inspected or changed. Original benchmark session59572 finished exit0 while the agent was
+unavailable; authoritative terminal status was inspected, never restarted from old intention.
+
+Pool4 HEAD464d0483 (440116f3 base build fixes,464d0483 rejects attached -j+4/-j=4 overrides).
+Dirty pending PCH edits: atx-engine/tests/CMakeLists.txt,pch.hpp,new pch.cpp. Two minimal carriers
+(common and data-specific miniz include path), exact options preserved; no worker/test
+dependency. Configured344 existing commands match modulo PCH/output and deliberate SHA
+localization; exactly1SHA consumer stage_discover. Common matches18book consumers; data37.
+Each carrier closure exactly2 commands. No actual carrier/consumer compile proof yet.
+Seven oracle-targeted-gate.ps1 raw--parallel2 call sites +four assertions being migrated to
+-Jobs2 as required compatibility; no oracle workflow execution. Full old script suite depends
+on removed atx-vol files, so owner validates focused pure argument-spec functions honestly.
+Fresh adversarial review by audit owner remains pending final SHA/proof. Keep stable-PCH
+commit separate to avoid forcing a second broad test rebuild solely for build wiring.
+
+Scheduling refinement: original4GiB launch floor was an orchestrator precaution. Current
+benchmark was allowed >3GiB, ZERO other compiler, exactly1 worker with >2GiB reserve monitoring;
+launched at3.736GiB and completed. At current~1.3GiB no new compile/benchmark is allowed. Never
+kill another session's Code/Chrome/Python/processes. Small existing configure/graph inspection
+may proceed if no dependency/package compilation is triggered. No compiler flags changed.
+
+G0 agent independently diagnoses current ccache misses. Fresh224/224 cacheable with zero
+errors disproves a CURRENT preprocessing-failure claim; historical7581 errors remain
+unattributed. Missing Clang PCH timestamp option and BASEDIR /FI rewriting are only old
+hypotheses; do not change flags/config without an actual reproduced failure.
