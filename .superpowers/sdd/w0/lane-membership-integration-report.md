@@ -32,7 +32,10 @@ member sets without changing the shared cache format.
 ## Verification status
 
 Implementation preceded tests, as requested. No real market inputs were read.
-Builds are held until the root grants the shared host's build slot.
+The root granted a single-worker build slot after the frozen G0 Release build
+completed. An independent static review by `g0_evidence` found no blockers.
+The build and runtime acceptance checks below passed without a source fix pass;
+the implementation remains `af40186d23ae6a2ee6fa35f728315e768249fffa`.
 
 Added verification:
 
@@ -45,7 +48,86 @@ Added verification:
 - Immediate raw-history readiness at entry versus truthful CS-history warmup.
 - Constant-membership bit parity and mask-memory preflight rejection.
 
-Commands/results and review will be appended after the build slot is available.
+Configuration completed successfully with isolated dependencies:
+
+```powershell
+Set-Location C:\atx-wt\pool-5
+$env:CMAKE_BUILD_PARALLEL_LEVEL='1'
+& C:\atx-wt\pool-5\scripts\atx-build.ps1 configure -Preset equity-dev -Jobs 1 -Groups 'alpha;eval;combine' -DFETCHCONTENT_BASE_DIR=C:/atx-wt/pool-5/deps/equity-dev
+# exit=0; FETCHCONTENT_BASE_DIR verified in build-equity/CMakeCache.txt
+& C:\atx-wt\pool-5\scripts\atx-build.ps1 build -Preset equity-dev -Jobs 1 atx-engine-alpha-tests atx-impl-tests atx-shm-worker
+```
+
+Available memory at build startup was 4.205 GiB with one other compiler worker.
+The build completed with exit 0, linking both tests and the worker. Logs are
+`build-equity/w0-membership-configure.log` and `w0-membership-build.log`.
+
+Before execution, cleared `ATX_DATA_DIR`, `ATX_ORATS_ZIP`, `ATX_ALPHA101_PANEL`,
+`ATX_ALPHA101_FIXTURE`, all four L10 input/output variables, `ATX_NIGHTLY` and
+`ATX_RISK_NIGHTLY`. The existing date-labelled fixtures are synthetic; no real
+market input was used.
+
+```powershell
+& C:\atx-wt\pool-5\scripts\atx-build.ps1 -Ctest -Preset equity-dev -Jobs 1 -R '^(AlphaCrossSectionMembership|ImplMembershipCrossSection|EquityBaselineViews|ImplIcAsOfMembership_[^.]+|StageEquityIc)\.' --output-on-failure
+# 27/27 passed, 96.01 seconds, exit=0
+& C:\atx-wt\pool-5\build-equity\bin\atx-engine-alpha-tests.exe
+# 706/706 passed, 274 suites, 33.190 seconds, exit=0
+```
+
+Logs: `build-equity/w0-membership-focused.log` and
+`build-equity/w0-membership-alpha-all.log`. An earlier pre-link discovery attempt
+found zero tests and is not counted as validation. Root explicitly owns the
+whole-impl run after integration; this lane did not duplicate that gate.
+
+Runtime acceptance includes all 16 CS operators versus a physically reduced
+universe, mask ownership/validation/cache behavior, incumbent invariance under
+nonmember-price perturbation, retained raw-history warmup, truthful pre-entry CS
+history, constant-membership bit parity, and all existing equity membership and
+IC-stage checks. Both new impl and VM test files compiled on the first pass.
+
+Built executable SHA256:
+
+- Alpha: `90FCBC5C23C2F4A7A0749F8AAF3959B87ACE995905B439A8D89B0E82F1E2637B`.
+- Impl: `E2E09E774F9B657836FE0922BE9644BB8EC9043D556A31E5E21324BED180ADA7`.
+
+Independent reviewer `g0_evidence` approved runtime acceptance after inspecting
+both logs, verifying the alpha binary SHA256 and rerunning the reduced-universe
+test (1/1 passed). Receipt:
+`C:/atx-wt/g0-data/bc5cc646_20260925/logs/membership-independent.receipt.json`.
+Root authorized the corrected G0 run after these results; release was sent.
+
+## Hygiene incident and final verification
+
+The separate `hygiene` configure succeeded with `ATX_EQUITY_ONLY=ON`, PCH off,
+and isolated `pool-5/deps/hygiene`. A four-TU wrapper `check` unexpectedly pulled
+182 dependency actions through the impl-test target's worker dependency.
+`atx-build.ps1 check` invokes Ninja directly without forwarding `-Jobs`; unlike
+the build verb, `CMAKE_BUILD_PARALLEL_LEVEL=1` does not cap it. This caused an
+observed 17 global compiler processes, despite the requested single-worker check.
+The owner stopped only its verified pool-5 hygiene Ninja descendant tree. No
+other pool was stopped; RAM recovered to 7.84 GiB and one global compiler.
+
+That interrupted command is not a hygiene pass. Logs are
+`build-equity/w0-membership-hygiene-{configure,check}.log`. Root asked this lane to
+wait for a compiler slot, then verify only the two production TUs individually,
+after checking their dependency dry-runs. No source or tested Debug binary was
+changed by the interrupted hygiene attempt. Functional acceptance above remains
+valid; no include-clean claim is made until the serial checks finish.
+
+The subsequent production-only dependency query confirmed exactly two compiler
+commands, without worker/test dependencies. After G0 released its compiler slot,
+both were invoked individually and passed with exit 0 at 5.40 GiB available RAM:
+
+```powershell
+& C:\atx-wt\pool-5\scripts\atx-build.ps1 check -Preset hygiene atx-impl/src/equity_baseline_views.cpp
+& C:\atx-wt\pool-5\scripts\atx-build.ps1 check -Preset hygiene atx-impl/src/stage_equity_ic.cpp
+```
+
+`build-equity/w0-membership-hygiene-serial.log` records the two completed objects.
+The completed hygiene cache verifies PCH off, equity only and isolated deps.
+**Lane verification is complete:** implementation unchanged, functional gates
+passed, independent review approved, and the touched production includes compile
+without PCH. Whole-impl qualification remains root's integrated gate.
 
 ## Scope
 
