@@ -102,7 +102,8 @@ class Warehouse:
             CREATE TABLE market_daily_metrics (
               market_daily_id VARCHAR PRIMARY KEY, source VARCHAR, security_id VARCHAR,
               trade_date DATE, available_at TIMESTAMP, as_of_date DATE, close DOUBLE, volume BIGINT,
-              fundamental_available_at TIMESTAMP, market_cap DOUBLE, momentum_12_1 DOUBLE);
+              fundamental_available_at TIMESTAMP, market_cap DOUBLE, momentum_12_1 DOUBLE,
+              shares_source VARCHAR);
             CREATE TABLE equity_daily_bars (
               security_id VARCHAR, symbol VARCHAR, trade_date DATE, close DOUBLE,
               adjusted_close DOUBLE, shares_outstanding BIGINT, available_at TIMESTAMP,
@@ -123,7 +124,7 @@ class Warehouse:
 
     def listing(self, cik: int, line: str, symbol: str, security_type: str, exchange: str, *,
                 first: dt.date, last: dt.date, reason: str = "member", ticker: bool = True,
-                volume: int = 1000, shares: int = 1_000_000) -> None:
+                volume: int = 1000, shares: int = 1_000_000, shares_source: str = "dei") -> None:
         for day in (d for d in self.sessions if first <= d <= last):
             self.con.execute("""
                 INSERT INTO equity_daily_bars
@@ -154,9 +155,9 @@ class Warehouse:
         for day in (d for d in self.sessions if first <= d <= last):
             cutoff = dt.datetime.combine(day, dt.time(21))
             self.con.execute("""
-                INSERT INTO market_daily_metrics VALUES (?,?,?,?,?,?,100.0,?,NULL,?,0.1)
+                INSERT INTO market_daily_metrics VALUES (?,?,?,?,?,?,100.0,?,NULL,?,0.1,?)
             """, [f"{line}|{day}", MARKET_DAILY_SOURCE_NAME, line, day, cutoff, day, volume,
-                  1000.0 * cik + day.toordinal() % 7])
+                  1000.0 * cik + day.toordinal() % 7, shares_source])
 
     def state(self, cik: int, code: str, window: str, period_end: dt.date, value: float | None,
               clock: dt.datetime, *, origin: str = "quarterly", state_id: str | None = None) -> str:
@@ -198,7 +199,9 @@ def registry(monkeypatch):
 
 def _populate(wh: Warehouse) -> dict[str, str]:
     for cik, (line, symbol, security_type, exchange) in LINES.items():
-        wh.listing(cik, line, symbol, security_type, exchange, first=dt.date(2023, 9, 1), last=AS_OF)
+        # BBB's market_cap uses the vendor (archive) share count: unverified size.
+        wh.listing(cik, line, symbol, security_type, exchange, first=dt.date(2023, 9, 1), last=AS_OF,
+                   shares_source="archive" if cik == 2 else "dei")
     wh.listing(7, TAIL, "OLD", "unknown", "UNKNOWN", first=dt.date(2023, 9, 1),
                last=dt.date(2023, 11, 10), reason="reconstructed_no_listing_evidence", ticker=False)
     wh.con.execute("""
@@ -336,9 +339,19 @@ def test_reconstructed_panel_is_point_in_time_and_labeled(tmp_path, warehouse):
         assert cap[1] == "valid" and cap[8] == rp.MARKET_AVAILABILITY_BASIS
         assert cap[2] == dt.datetime(2024, 1, 31, 21)
         assert cap[6] == "current_ticker_unverified"  # issuer-share feature: owner scope
-        line_cap = _value(con, "recon", dt.date(2024, 1, 31), aaa, "line_market_cap")
-        assert line_cap[:2] == (100.0 * 1_000_000, "valid") and line_cap[6] == rp.PRICE_LINE_IDENTITY_BASIS
-        assert line_cap[2] == dt.datetime(2024, 1, 31, 22)
+        # Size carries its share basis: only a DEI count is verified (N1).
+        size = dict((row[0], row[1:]) for row in con.execute("""
+            SELECT security_id || '/' || feature_id, shares_source, size_status FROM research_panel_values
+            WHERE run_id='recon' AND formation_date='2024-01-31'
+        """).fetchall())
+        assert size[f"{aaa}/market_cap"] == ("dei", rp.SIZE_VERIFIED)
+        assert size[f"{bbb}/market_cap"] == ("archive", rp.UNVERIFIED_VENDOR_SHARES)
+        assert size[f"{aaa}/momentum_12_1"] == (None, None) and size[f"{aaa}/roa_q"] == (None, None)
+        policy = json.loads(con.execute("SELECT spec_json FROM research_panel_runs WHERE run_id='recon'"
+                                        ).fetchone()[0])["size_policy"]
+        assert policy["size_features"] == ["market_cap"] and policy["verified_status"] == rp.SIZE_VERIFIED
+        assert "line_market_cap" not in {row[0] for row in con.execute(
+            "SELECT DISTINCT feature_id FROM research_panel_values WHERE run_id='recon'").fetchall()}
         # Cohort exclusions are explicit, including the delisted tail.
         cohort = dict(con.execute("""
             SELECT security_id, cohort_reason || ':' || coalesce(owner_link_reason,'linked')
@@ -356,7 +369,6 @@ def test_reconstructed_panel_is_point_in_time_and_labeled(tmp_path, warehouse):
         momentum = _value(con, "recon", october, TAIL, "momentum_12_1")
         assert momentum[:2] == (0.1, "valid")
         assert momentum[6] == rp.PRICE_LINE_IDENTITY_BASIS and momentum[9] is None
-        assert _value(con, "recon", october, TAIL, "line_market_cap")[1] == "valid"
         for feature in ("roa_q", "accruals_ttm", "market_cap"):
             tail_row = _value(con, "recon", october, TAIL, feature)
             assert tail_row[:4] == (None, "missing_owner_link", None, None)
@@ -423,7 +435,7 @@ def test_strict_basis_on_v6_state_is_untestable_and_empty(tmp_path, warehouse):
         assert con.execute("""
             SELECT count(*), count(DISTINCT status), min(status)
             FROM research_panel_coverage WHERE run_id='strict'
-        """).fetchone() == (6 * 5, 1, "empty_common_cohort")
+        """).fetchone() == (6 * 4, 1, "empty_common_cohort")
         assert "no_valid_cohort_members" in strict.blockers
         assert recon.status == "complete" and recon.valid_values > 0
         assert con.execute("""
@@ -558,8 +570,10 @@ def test_owner_features_attach_to_one_primary_line_per_issuer(tmp_path, registry
                volume=5000, shares=250_000)
     wh.close()
     aaa, class_b = LINES[1][0], "TBLTICKERHISTORY-8"
+    line_cap = rp.PanelFeature("line_market_cap", "line_market_cap", "daily")
     with ResearchStore(tmp_path / "research.duckdb", warehouse_path=tmp_path / "wh.duckdb") as store:
-        rp.build_research_panel(store, _options("lines"))
+        rp.build_research_panel(store, _options("lines", unverified_vendor_shares=True,
+                                                features=(*rp.default_panel_features(), line_cap)))
         con = store.con
         cohort = dict((row[0], row[1:]) for row in con.execute("""
             SELECT security_id, issuer_lines, primary_line, primary_line_rule, owner_cik FROM research_panel_cohort
@@ -578,16 +592,34 @@ def test_owner_features_attach_to_one_primary_line_per_issuer(tmp_path, registry
             WHERE run_id='lines' AND feature_scope='owner' AND raw_value IS NOT NULL
             GROUP BY formation_date, feature_id, owner_cik ORDER BY 1 DESC LIMIT 1
         """).fetchone()[0] == 1
-        # Price-line features stay on every line, with the line's own size.
+        # Price-line features stay on every line; the opt-in line size is the
+        # line's own vendor count, labeled unverified end to end (N1).
         assert _value(con, "lines", january, aaa, "momentum_12_1")[1] == "valid"
         assert _value(con, "lines", january, aaa, "line_market_cap")[0] == 100.0 * 1_000_000
-        assert _value(con, "lines", january, class_b, "line_market_cap")[0] == 100.0 * 250_000
+        b_cap = _value(con, "lines", january, class_b, "line_market_cap")
+        assert b_cap[0] == 100.0 * 250_000 and b_cap[8] == rp.VENDOR_SHARES_AVAILABILITY_BASIS
+        assert con.execute("""
+            SELECT DISTINCT shares_source, size_status FROM research_panel_values
+            WHERE run_id='lines' AND feature_id='line_market_cap' AND raw_value IS NOT NULL
+        """).fetchall() == [("equity_daily_bars_vendor", rp.UNVERIFIED_VENDOR_SHARES)]
+        spec = json.loads(con.execute("SELECT spec_json FROM research_panel_runs WHERE run_id='lines'").fetchone()[0])
+        assert spec["unverified_vendor_shares"] is True
+        assert spec["size_policy"]["size_features"] == ["line_market_cap", "market_cap"]
         coverage = json.loads(con.execute("""
             SELECT reasons_json FROM research_panel_coverage
             WHERE run_id='lines' AND formation_date='2024-01-31' AND feature_id='roa_q'
         """).fetchone()[0])
         assert coverage[rp.SECONDARY_LINE_REASON] == 1
         rp.validate_research_panel(store, "lines")
+
+
+def test_vendor_share_size_is_opt_in_only(registry):
+    line_cap = rp.PanelFeature("line_market_cap", "line_market_cap", "daily")
+    assert "line_market_cap" not in {f.feature_id for f in rp.default_panel_features()}
+    with pytest.raises(ValueError, match="unverified_vendor_shares"):
+        rp._validate(_options("gate", features=(line_cap,)))
+    _, features, spec = rp._validate(_options("gate", features=(line_cap,), unverified_vendor_shares=True))
+    assert [f.feature_id for f in features] == ["line_market_cap"] and spec["unverified_vendor_shares"] is True
 
 
 def _selection_fixture(con, seed: int) -> list[tuple[dt.date, dt.datetime]]:
@@ -650,7 +682,7 @@ def test_cross_formation_selection_equals_the_fq1_ranking(seed):
 def test_research_store_attaches_the_warehouse_read_only(tmp_path, warehouse):
     wh_path, _ = warehouse
     with ResearchStore(tmp_path / "research.duckdb", warehouse_path=wh_path) as store:
-        assert store.status().versions == (1, 2)
+        assert store.status().versions == (1, 2, 3)
         with pytest.raises(duckdb.Error):
             store.con.execute("DELETE FROM derived_metric_values")
         assert store.warehouse_has("derived_metric_values", "selected_input_refs_hash")

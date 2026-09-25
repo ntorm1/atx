@@ -219,10 +219,25 @@ def _panel_scale_and_survivorship(con: duckdb.DuckDBPyConnection) -> None:
     """)
 
 
+def _panel_size_verification(con: duckdb.DuckDBPyConnection) -> None:
+    """Version 3 (R2a fix round 2): the share basis of every size value.
+
+    ``shares_source`` is market_daily's share basis for ``market_cap`` and the
+    features that read it (or ``equity_daily_bars_vendor`` for the opt-in
+    ``line_market_cap``); ``size_status`` is ``verified_dei_shares`` only for a
+    DEI count, else ``unverified_vendor_shares``.
+    """
+    con.execute("""
+        ALTER TABLE research_panel_values ADD COLUMN IF NOT EXISTS shares_source VARCHAR;
+        ALTER TABLE research_panel_values ADD COLUMN IF NOT EXISTS size_status VARCHAR;
+    """)
+
+
 #: Append-only bootstrap: (version, name, body). Never edit a released body.
 RESEARCH_STORE_MIGRATIONS: tuple[tuple[int, str, Callable[[duckdb.DuckDBPyConnection], None]], ...] = (
     (1, "monthly_pit_panel", _create_panel_tables),
     (2, "panel_scale_and_survivorship", _panel_scale_and_survivorship),
+    (3, "panel_size_verification", _panel_size_verification),
 )
 RESEARCH_STORE_VERSION = max(version for version, _, _ in RESEARCH_STORE_MIGRATIONS)
 

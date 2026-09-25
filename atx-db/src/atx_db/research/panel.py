@@ -24,11 +24,21 @@ row's ``reasons_json`` sums to its ``eligible_members``. Features have a scope:
 
 ``price_line``
     Identity-free market features (returns, momentum, volatility, dollar
-    volume, and ``line_market_cap`` = the line's own close x its own vendor
-    share count). They need no owner link and are published for every eligible
+    volume). They need no owner link and are published for every eligible
     member, linked or not, labeled ``identity_basis='price_line'``. The
     delisted tail that the owner bridge cannot link (``no_current_ticker``)
     therefore stays in every market feature and control.
+
+Size (interim, R2a fix round 2). Vendor share counts (``equity_daily_bars``
+and market_daily's ``archive*``/``class_sum`` share sources) are in vendor
+units (thousands) and dated from the cover as-of date, before the filing is
+public. Until the filing-matched share relation (A8) lands (follow-up R2d):
+``line_market_cap`` (own close x own vendor count) is not a default feature
+and is computed only with ``unverified_vendor_shares=True`` (rows labeled
+``availability_basis='vendor_shares_bar_clock_unverified'``); every size row
+carries ``shares_source`` and ``size_status`` (``verified_dei_shares`` only
+for DEI counts, else ``unverified_vendor_shares``), and the spec's
+``size_policy`` tells R2b to use only verified size.
 ``owner``
     Fundamental (derived) features and issuer-share market features
     (``market_cap``, valuation ratios). They attach to exactly one line per
@@ -91,7 +101,7 @@ from . import lineage as _lineage
 from . import store as _store
 from .store import ResearchStore
 
-QUERY_VERSION = "research-monthly-pit-panel-v2"
+QUERY_VERSION = "research-monthly-pit-panel-v3"
 BASIS_STRICT = "strict"
 BASIS_RECONSTRUCTED = "reconstructed"
 BASES = (BASIS_STRICT, BASIS_RECONSTRUCTED)
@@ -121,7 +131,14 @@ OWNER_LINK_FAILURES = ("missing_owner_link", "invalid_owner_link_cik", "ambiguou
 # market_daily inputs that carry issuer-level (owner) share counts.
 OWNER_MARKET_INPUTS = frozenset({"shares_outstanding", "dei_shares"})
 OWNER_MARKET_CODES = frozenset({"market_cap"})
-# Panel-native identity-free features (not warehouse metrics).
+# Size verification (interim until the A8 filing-matched share relation, R2d).
+UNVERIFIED_VENDOR_SHARES = "unverified_vendor_shares"
+VENDOR_SHARES_AVAILABILITY_BASIS = "vendor_shares_bar_clock_unverified"
+VERIFIED_SHARES_SOURCES = ("dei",)
+SIZE_VERIFIED = "verified_dei_shares"
+LINE_SHARES_SOURCE = "equity_daily_bars_vendor"
+# Panel-native identity-free features (not warehouse metrics). ``requires``
+# names the option that must be set to compute one.
 NATIVE_FEATURES: dict[str, dict[str, Any]] = {
     "line_market_cap": {
         "metric_window": MARKET_WINDOW,
@@ -129,6 +146,8 @@ NATIVE_FEATURES: dict[str, dict[str, Any]] = {
         "inputs": ["equity_daily_bars.close", "equity_daily_bars.shares_outstanding"],
         "version": "1",
         "source_column": "equity_daily_bars.close*equity_daily_bars.shares_outstanding",
+        "unit_basis": "vendor_units_unverified",
+        "requires": UNVERIFIED_VENDOR_SHARES,
     },
 }
 DEFAULT_PROOF_CHUNK_ROOTS = 8192
@@ -372,6 +391,25 @@ def price_line_codes(definitions: Iterable[Any]) -> frozenset[str]:
     return frozenset(set(daily) - owner) | frozenset(NATIVE_FEATURES)
 
 
+def size_codes(definitions: Iterable[Any]) -> frozenset[str]:
+    """Daily metrics that read a share count (``market_cap`` and everything built on it).
+
+    Their rows carry ``shares_source`` / ``size_status``; the native
+    ``line_market_cap`` is always a size feature.
+    """
+    daily = {d.metric_code: d for d in definitions if d.window == MARKET_WINDOW}
+    size = set(OWNER_MARKET_CODES & daily.keys())
+    changed = True
+    while changed:
+        changed = False
+        for code, definition in sorted(daily.items()):
+            if code not in size and (OWNER_MARKET_INPUTS & set(definition.market_inputs)
+                                     or any(metric in size for metric in definition.metric_inputs)):
+                size.add(code)
+                changed = True
+    return frozenset(size) | frozenset(NATIVE_FEATURES)
+
+
 def feature_scopes(features: Iterable[PanelFeature]) -> dict[str, str]:
     """``feature_id`` -> ``price_line`` or ``owner``."""
     line_codes = price_line_codes(fsr.default_derived_definitions())
@@ -380,14 +418,20 @@ def feature_scopes(features: Iterable[PanelFeature]) -> dict[str, str]:
 
 
 def default_panel_features() -> tuple[PanelFeature, ...]:
-    """Every seed metric with a panel window plus the native features; id = code."""
+    """Every seed metric with a panel window plus the ungated native features; id = code.
+
+    ``line_market_cap`` is gated behind ``unverified_vendor_shares`` (R2a fix
+    round 2) and is never a default feature.
+    """
     seeds = [PanelFeature(row.metric_code, row.metric_code, row.window)
              for row in fsr.default_derived_definitions() if row.window in PANEL_WINDOWS]
-    natives = [PanelFeature(code, code, spec["metric_window"]) for code, spec in NATIVE_FEATURES.items()]
+    natives = [PanelFeature(code, code, spec["metric_window"]) for code, spec in NATIVE_FEATURES.items()
+               if not spec.get("requires")]
     return tuple(sorted(seeds + natives, key=lambda feature: feature.feature_id))
 
 
-def canonical_features(features: Iterable[PanelFeature | dict[str, Any]] | None) -> tuple[PanelFeature, ...]:
+def canonical_features(features: Iterable[PanelFeature | dict[str, Any]] | None, *,
+                       unverified_vendor_shares: bool = False) -> tuple[PanelFeature, ...]:
     source = default_panel_features() if features is None else tuple(features)
     registry = {row.metric_code: row.window for row in fsr.default_derived_definitions()}
     registry.update({code: spec["metric_window"] for code, spec in NATIVE_FEATURES.items()})
@@ -416,6 +460,11 @@ def canonical_features(features: Iterable[PanelFeature | dict[str, Any]] | None)
         result.append(item)
     if not 1 <= len(result) <= 1024:
         raise ValueError("feature count must be between 1 and 1024")
+    gated = [f.feature_id for f in result
+             if NATIVE_FEATURES.get(f.metric_code, {}).get("requires") == UNVERIFIED_VENDOR_SHARES]
+    if gated and not unverified_vendor_shares:
+        raise ValueError(f"{gated} read vendor share counts (vendor units, cover-date clock); they need "
+                         f"{UNVERIFIED_VENDOR_SHARES}=True until the A8 share relation lands (R2d)")
     return tuple(sorted(result, key=lambda feature: feature.feature_id))
 
 
@@ -438,6 +487,9 @@ class ResearchPanelOptions:
     # roots proved (and committed) per chunk, formations associated per pass.
     proof_chunk_roots: int = DEFAULT_PROOF_CHUNK_ROOTS
     formation_chunk: int = FORMATION_CHUNK
+    # Explicit opt-in to size from vendor share counts (``line_market_cap``);
+    # its rows are labeled unverified and R2b size logic must exclude them.
+    unverified_vendor_shares: bool = False
 
 
 @dataclass(frozen=True)
@@ -524,14 +576,27 @@ def _validate(options: ResearchPanelOptions) -> tuple[dt.datetime, tuple[PanelFe
     run_at = _utc_naive(options.run_at, "run_at")
     if run_at.date() < options.as_of_date:
         raise ValueError("run_at precedes as_of_date")
-    features = canonical_features(options.features)
+    if not isinstance(options.unverified_vendor_shares, bool):
+        raise ValueError(f"{UNVERIFIED_VENDOR_SHARES} must be a bool")
+    features = canonical_features(options.features, unverified_vendor_shares=options.unverified_vendor_shares)
     scopes = feature_scopes(features)
+    sized = size_codes(fsr.default_derived_definitions())
     labels = _basis_labels(options.basis)
     spec = {
         "basis": options.basis,
         "universe_id": labels["universe_id"],
         "identity_basis": labels["identity_basis"],
         "features": [[f.feature_id, f.metric_code, f.metric_window, scopes[f.feature_id]] for f in features],
+        UNVERIFIED_VENDOR_SHARES: options.unverified_vendor_shares,
+        # R2b-facing contract: size, breakpoint and size-neutral logic may use a
+        # size feature's value only where size_status is verified.
+        "size_policy": {
+            "size_features": sorted(f.feature_id for f in features if f.is_market and f.metric_code in sized),
+            "verified_shares_sources": list(VERIFIED_SHARES_SOURCES),
+            "verified_status": SIZE_VERIFIED,
+            "unverified_status": UNVERIFIED_VENDOR_SHARES,
+            "rule": "use a size feature only where size_status = verified_status",
+        },
         "metric_batch_size": size,
         "max_age_days": options.max_age_days,
         "annual_max_age_days": options.annual_max_age_days,
@@ -568,6 +633,9 @@ def _require_inputs(store: ResearchStore, basis: str, features: tuple[PanelFeatu
     columns = [("market_daily_metrics", c) for c in ("close", "volume", "fundamental_available_at")]
     columns += [("market_daily_metrics", f.metric_code) for f in features
                 if f.is_market and f.metric_code not in NATIVE_FEATURES]
+    sized = size_codes(fsr.default_derived_definitions())
+    if any(f.is_market and f.metric_code in sized and f.metric_code not in NATIVE_FEATURES for f in features):
+        columns.append(("market_daily_metrics", "shares_source"))
     if any(f.metric_code == "line_market_cap" for f in features):
         columns += [("equity_daily_bars", c) for c in ("close", "adjusted_close", "shares_outstanding")]
     absent = [f"{table}.{column}" for table, column in columns if not store.warehouse_has(table, column)]
@@ -642,7 +710,7 @@ _VALUE_COLUMNS = ("formation_date", "security_id", "feature_id", "metric_code", 
                   "period_end", "fiscal_period_start", "fiscal_period_end", "value_origin",
                   "age_days", "max_age_days", "owner_cik", "derived_value_id",
                   "derived_owner_security_id", "lineage_digest", "identity_basis",
-                  "universe_basis", "availability_basis", "feature_scope")
+                  "universe_basis", "availability_basis", "feature_scope", "shares_source", "size_status")
 _CALENDAR_STAT_COLUMNS = ("visible_members", "eligible_members", "valid_members", "owner_unlinked_members",
                           "owner_link_attrition", "multi_line_issuers", "cohort_reasons_json", "cohort_sha256")
 _COVERAGE_COLUMNS = ("run_id", "formation_date", "feature_id", "metric_code", "metric_window", "batch_ordinal",
@@ -1127,7 +1195,8 @@ def _derived_formations(store: ResearchStore, run_id: str, batch: _Batch, spec: 
                k.owner_cik, {state['derived_value_id']} AS derived_value_id,
                {state['derived_owner_security_id']} AS derived_owner_security_id,
                {state['lineage_digest']} AS lineage_digest, k.identity_basis,
-               ? AS universe_basis, ? AS availability_basis, '{SCOPE_OWNER}' AS feature_scope
+               ? AS universe_basis, ? AS availability_basis, '{SCOPE_OWNER}' AS feature_scope,
+               CAST(NULL AS VARCHAR) AS shares_source, CAST(NULL AS VARCHAR) AS size_status
         FROM _fs_leg l
         JOIN _rp_features f ON f.metric_code=l.metric_code AND f.metric_window=l.metric_window
         JOIN _rp_cohort_all k ON k.decision_date=l.decision_date AND k.security_id=l.security_id
@@ -1155,15 +1224,22 @@ def _market_formation(store: ResearchStore, batch: _Batch, spec: dict[str, Any],
     con = store.con
     fsr.stage_calendar(con, [(row.formation_date, row.cutoff)], table="_rp_cal_one")  # type: ignore[list-item]
     columns = [f.metric_code for f in batch.features if f.metric_code not in NATIVE_FEATURES]
+    sized = set(spec["size_policy"]["size_features"])
     long_parts = []
     if columns:
         picks = ",\n".join(f'arg_max(m."{code}", (m.available_at, m.market_daily_id)) AS "{code}"'
                            for code in columns)
+        # The share basis of the row's size (market_cap and what reads it):
+        # only a DEI count is verified; vendor ('archive*', 'class_sum') is not.
+        shares = ("arg_max(m.shares_source, (m.available_at, m.market_daily_id))"
+                  if any(f.feature_id in sized for f in batch.features if f.metric_code in columns)
+                  else "CAST(NULL AS VARCHAR)")
         con.execute(f"""
             CREATE OR REPLACE TEMP TABLE _rp_market AS
             SELECT m.security_id, max(m.available_at) AS available_at,
                    arg_max(m.fundamental_available_at, (m.available_at, m.market_daily_id))
                      AS fundamental_available_at,
+                   {shares} AS shares_source,
                    {picks}
             FROM market_daily_metrics m
             JOIN _rp_cal_one c ON m.trade_date=c.decision_date AND m.available_at<=c.cutoff
@@ -1175,11 +1251,15 @@ def _market_formation(store: ResearchStore, batch: _Batch, spec: dict[str, Any],
         """, [market_source])
         long_parts += [
             f"SELECT security_id, {_sql_text(f.feature_id)} AS feature_id, CAST(\"{f.metric_code}\" AS DOUBLE) "
-            f"AS value, available_at, fundamental_available_at, 'market_daily' AS value_origin FROM _rp_market"
+            f"AS value, available_at, fundamental_available_at, 'market_daily' AS value_origin, "
+            f"{'shares_source' if f.feature_id in sized else 'CAST(NULL AS VARCHAR)'} AS shares_source "
+            f"FROM _rp_market"
             for f in batch.features if f.metric_code in columns]
     if any(f.metric_code == "line_market_cap" for f in batch.features):
-        # The line's own close x its own vendor share count, as market_daily
-        # dedups a session (latest physical row) and clocks it (end of day).
+        # UNVERIFIED (opt-in only): the line's own close x its own vendor share
+        # count, deduped and clocked as market_daily does a bar. The vendor
+        # count is in vendor units and dated from the cover as-of date, which
+        # precedes the filing; R2d replaces it with the A8 share relation.
         con.execute(f"""
             CREATE OR REPLACE TEMP TABLE _rp_line_cap AS
             SELECT b.security_id,
@@ -1195,21 +1275,26 @@ def _market_formation(store: ResearchStore, batch: _Batch, spec: dict[str, Any],
         feature = next(f for f in batch.features if f.metric_code == "line_market_cap")
         long_parts.append(f"SELECT security_id, {_sql_text(feature.feature_id)} AS feature_id, value, "
                           f"available_at, CAST(NULL AS TIMESTAMP) AS fundamental_available_at, "
-                          f"'equity_daily_bars' AS value_origin FROM _rp_line_cap")
-    con.execute("CREATE OR REPLACE TEMP TABLE _rp_batch_features "
-                "(feature_id VARCHAR, metric_code VARCHAR, feature_scope VARCHAR)")
-    con.executemany("INSERT INTO _rp_batch_features VALUES (?,?,?)",
-                    [[f.feature_id, f.metric_code, spec["scopes"][f.feature_id]] for f in batch.features])
+                          f"'equity_daily_bars' AS value_origin, '{LINE_SHARES_SOURCE}' AS shares_source "
+                          f"FROM _rp_line_cap")
+    con.execute("CREATE OR REPLACE TEMP TABLE _rp_batch_features (feature_id VARCHAR, metric_code VARCHAR, "
+                "feature_scope VARCHAR, size_feature BOOLEAN, availability_basis VARCHAR)")
+    con.executemany("INSERT INTO _rp_batch_features VALUES (?,?,?,?,?)", [
+        [f.feature_id, f.metric_code, spec["scopes"][f.feature_id], f.feature_id in sized,
+         VENDOR_SHARES_AVAILABILITY_BASIS if NATIVE_FEATURES.get(f.metric_code, {}).get("requires")
+         == UNVERIFIED_VENDOR_SHARES else MARKET_AVAILABILITY_BASIS]
+        for f in batch.features])
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _rp_batch_values AS
         WITH long AS ({' UNION ALL '.join(long_parts)}), grid AS (
           SELECT k.decision_date, c.cutoff, k.security_id, k.owner_cik, k.identity_basis, k.cohort_reason,
-                 k.leg_reason, f.feature_id, f.metric_code, f.feature_scope
+                 k.leg_reason, f.feature_id, f.metric_code, f.feature_scope, f.size_feature,
+                 f.availability_basis AS feature_availability_basis
           FROM _rp_cohort_all k JOIN _rp_cal_one c ON c.decision_date=k.decision_date
           CROSS JOIN _rp_batch_features f
           WHERE k.eligible
         ), judged AS (
-          SELECT g.*, x.value, x.available_at, x.fundamental_available_at, x.value_origin,
+          SELECT g.*, x.value, x.available_at, x.fundamental_available_at, x.value_origin, x.shares_source,
                  x.security_id IS NOT NULL AS has_row,
                  CASE WHEN g.feature_scope='{SCOPE_OWNER}' AND g.leg_reason<>'valid' THEN g.leg_reason
                       WHEN g.cohort_reason='overlapping_membership' THEN 'overlapping_membership'
@@ -1237,9 +1322,13 @@ def _market_formation(store: ResearchStore, batch: _Batch, spec: dict[str, Any],
                CAST(NULL AS VARCHAR) AS lineage_digest,
                CASE WHEN feature_scope='{SCOPE_PRICE_LINE}' THEN '{PRICE_LINE_IDENTITY_BASIS}'
                     ELSE identity_basis END AS identity_basis,
-               ? AS universe_basis, ? AS availability_basis, feature_scope
+               ? AS universe_basis, feature_availability_basis AS availability_basis, feature_scope,
+               CASE WHEN kept AND size_feature THEN shares_source END AS shares_source,
+               CASE WHEN kept AND size_feature AND has_row AND shares_source IS NOT NULL THEN
+                    CASE WHEN shares_source IN ({_sql_list(VERIFIED_SHARES_SOURCES)}) THEN '{SIZE_VERIFIED}'
+                         ELSE '{UNVERIFIED_VENDOR_SHARES}' END END AS size_status
         FROM judged
-    """, [spec["universe_id"], MARKET_AVAILABILITY_BASIS])
+    """, [spec["universe_id"]])
     selected = {(row.formation_date, feature): int(n) for feature, n in con.execute("""
         SELECT feature_id, count(*) FILTER (WHERE available_at IS NOT NULL) FROM _rp_batch_values GROUP BY 1
     """).fetchall()}
@@ -1633,6 +1722,10 @@ __all__ = [
     "SCOPE_OWNER",
     "SCOPE_PRICE_LINE",
     "SECONDARY_LINE_REASON",
+    "SIZE_VERIFIED",
+    "UNVERIFIED_VENDOR_SHARES",
+    "VENDOR_SHARES_AVAILABILITY_BASIS",
+    "VERIFIED_SHARES_SOURCES",
     "CalendarRow",
     "PanelFeature",
     "ResearchPanelOptions",
@@ -1647,6 +1740,7 @@ __all__ = [
     "nyse_full_day_closures",
     "observed_sessions",
     "price_line_codes",
+    "size_codes",
     "stage_owner_links",
     "validate_research_panel",
 ]

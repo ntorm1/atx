@@ -202,3 +202,101 @@ def test_set_prover_is_independent_of_how_roots_are_chunked(chunk):
         lineage.prove_roots(con, HASHES)
         for row in lineage.result_rows(con):
             assert row == together[row[0]]
+
+
+# m9 (re-review 1): the reviewer's 26 depth>0 failure and edge shapes
+# (<scratchpad>/rv-R2a-parity/test_rv_r2a_lineage_probe.py), committed so an
+# edit to lineage.py can never certify a root the resolver rejects.
+DEEP_CERTIFIED = {"p_valid_to_after", "p_child_missing_ref", "p_child_leafnull", "p_child_nonfinite",
+                  "p_mixed_leaf_and_child", "p_ok_two"}
+
+
+def _deep_graph() -> tuple[Graph, list[str]]:
+    hour = dt.timedelta(hours=1)
+    g = Graph()
+    for n in range(3):
+        g.leaf(f"L{n}")
+    g.leaf("Lmid", at=T0 - 0.5 * hour)  # after a child's clock, before the root's
+    g.leaf("Lnull", value=None)
+    g.leaf("Lnocik", cik=None)
+    g.node("c_ok", [g.item("L0"), g.item("L1")], at=T0 - hour)
+    g.node("c_ok2", [g.item("L2")], at=T0 - 2 * hour)
+    g.node("c_expired", [g.item("L0")], at=T0 - hour, valid_to=T0 - 0.25 * hour)
+    g.node("c_after_parent_ok", [g.item("L0")], at=T0 - hour, valid_to=T0 + hour)
+    g.node("c_leaf_late", [g.item("Lmid", at=T0 - 0.5 * hour)], at=T0 - hour)
+    g.node("c_badhash", [g.item("L0")], at=T0 - hour, stored_hash="0" * 64)
+    g.node("c_defhash", [g.item("L0")], at=T0 - hour, definition_hash="9" * 64)
+    g.node("c_legacy", [g.item("L0")], at=T0 - hour, history="legacy_latest_only")
+    g.node("c_missing_ref", [g.item("L0"), g.item("L1", status="missing")], at=T0 - hour)
+    g.node("c_leafnull", [g.item("L0"), g.item("Lnull")], at=T0 - hour)
+    g.node("c_badframe", [g.item("L0", bucket=1)], at=T0 - hour)
+    g.node("c_tzref", [g.item("L0", available_at="2023-11-09T16:00:00+00:00")], at=T0 - hour)
+    g.node("c_nocik", [g.item("Lnocik", cik=None)], at=T0 - hour)
+    g.node("c_version_float", [g.item("L0")], at=T0 - hour, version=1.0)
+    g.node("c_value_nonfinite", [g.item("L0")], at=T0 - hour, value=None, status="nonfinite")
+    g.node("gc_late", [g.item("L0")], at=T0 - 0.5 * hour)  # grandchild after its parent's clock
+    g.node("c_with_late_gc", [g.metric("gc_late")], at=T0 - hour, code="m_c")
+    g.node("c_early_parent", [g.metric("c_ok")], at=T0 - 2 * hour, code="m_c")  # revisit before the child
+    m_c = HASHES[("m_c", "q")]
+    cases = {
+        "p_expired": [g.metric("c_expired")],
+        "p_valid_to_after": [g.metric("c_after_parent_ok")],
+        "p_child_leaf_late": [g.metric("c_leaf_late")],
+        "p_child_badhash": [g.metric("c_badhash")],
+        "p_child_defhash": [g.metric("c_defhash", definition_hash="9" * 64)],
+        "p_child_legacy": [g.metric("c_legacy")],
+        "p_child_missing_ref": [g.metric("c_ok"), g.metric("c_missing_ref")],
+        "p_child_leafnull": [g.metric("c_leafnull")],
+        "p_child_badframe": [g.metric("c_badframe")],
+        "p_child_tzref": [g.metric("c_tzref")],
+        "p_child_nocik": [g.metric("c_nocik")],
+        "p_child_version_float": [g.metric("c_version_float")],
+        "p_child_nonfinite": [g.metric("c_value_nonfinite")],
+        "p_ref_inputs": [g.metric("c_ok", inputs_hash="c" * 64)],
+        "p_ref_clock": [g.metric("c_ok", available_at=str(T0 - 3 * hour))],
+        "p_ref_source": [g.metric("c_ok", source="other")],
+        "p_ref_period": [g.metric("c_ok", period_end="2023-09-29")],
+        "p_ref_bucket": [g.metric("c_ok", bucket=g.nodes["c_ok"]["bucket"] - 1, offset=1)],
+        "p_ref_to_leaf": [dict(g.metric("c_ok"), state_id="L0")],
+        "p_late_grandchild": [g.metric("c_with_late_gc", definition_hash=m_c)],
+        "p_shared_early_parent": [g.metric("c_ok"), g.metric("c_early_parent", definition_hash=m_c)],
+        "p_dup_ref_mixed": [g.metric("c_ok"), g.metric("c_ok", inputs_hash="c" * 64)],
+        "p_mixed_leaf_and_child": [g.item("L2"), g.metric("c_ok")],
+        "p_ok_two": [g.metric("c_ok"), g.metric("c_ok2")],
+    }
+    roots = []
+    for root, refs in cases.items():
+        g.node(root, refs, code="m_g")
+        roots.append(root)
+    previous = "c_ok"  # a metric chain 18 levels deep (past the 16 limit)
+    for level in range(18):
+        name = f"chain{level}"
+        g.node(name, [g.metric(previous, definition_hash=HASHES[(g.nodes[previous]["code"], "q")])],
+               at=T0 - hour + dt.timedelta(seconds=level + 1), code="m_c")
+        previous = name
+    g.node("p_too_deep", [g.metric(previous, definition_hash=m_c)], code="m_g")
+    roots.append("p_too_deep")
+    g.node("cyc_b", [g.item("L0")], at=T0 - hour, code="m_c")  # cycle: cyc_a -> cyc_b -> cyc_a
+    g.node("cyc_a", [g.metric("cyc_b", definition_hash=m_c)], at=T0 - 0.5 * hour, code="m_c")
+    payload = json.dumps({"version": 1, "refs": [g.metric("cyc_a", definition_hash=m_c)]},
+                         sort_keys=True, separators=(",", ":"))
+    g.con.execute("UPDATE derived_metric_values SET selected_input_refs_json=?, selected_input_refs_hash=? "
+                  "WHERE derived_value_id='cyc_b'", [payload, hashlib.sha256(payload.encode()).hexdigest()])
+    g.node("p_cycle", [g.metric("cyc_a", definition_hash=m_c)], code="m_g")
+    roots.append("p_cycle")
+    return g, roots
+
+
+def test_deep_failure_shapes_are_never_falsely_certified():
+    g, roots = _deep_graph()
+    con = g.con
+    con.execute("CREATE TEMP TABLE _lp_roots (root_id VARCHAR)")
+    con.executemany("INSERT INTO _lp_roots VALUES (?)", [[root] for root in roots])
+    lineage.prove_roots(con, HASHES)
+    rows = {row[0]: row for row in lineage.result_rows(con)}
+    assert len(roots) == 26 and set(rows) == set(roots)
+    for root in roots:
+        row = rows[root]
+        assert (row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8]) == _python(con, root), root
+    assert {root for root in roots if rows[root][9] == lineage.METHOD_CERTIFIED} == DEEP_CERTIFIED
+    assert {rows[root][9] for root in set(roots) - DEEP_CERTIFIED} == {lineage.METHOD_FALLBACK}
