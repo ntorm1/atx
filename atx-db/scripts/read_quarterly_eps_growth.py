@@ -1,4 +1,4 @@
-"""Read recent issuer quarterly diluted-EPS YoY states through IQ2 qualification."""
+"""Read recent issuer quarterly diluted- or basic-EPS YoY states through IQ2 qualification."""
 
 from __future__ import annotations
 
@@ -15,7 +15,10 @@ import duckdb
 
 from atx_db.api.service import WarehouseReadService
 
-METRIC = "eps_diluted_q_growth_yoy"
+# Each measure reads its own canonical growth metric; the reader never
+# substitutes one EPS measure for the other or rebuilds EPS locally.
+METRICS = {"diluted": "eps_diluted_q_growth_yoy", "basic": "eps_basic_q_growth_yoy"}
+METRIC = METRICS["diluted"]
 MAX_ROWS = 2048
 MAX_BYTES = 2_000_000
 FIELDS = [
@@ -68,6 +71,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--start", type=dt.date.fromisoformat, required=True)
     p.add_argument("--end", type=dt.date.fromisoformat, required=True, help="Exclusive period-end boundary")
     p.add_argument("--latest", type=int, default=3, help="Distinct observed periods, including unavailable states (1-12)")
+    p.add_argument("--measure", choices=sorted(METRICS), default="diluted",
+                   help="GAAP quarterly EPS measure whose canonical YoY growth is read")
     p.add_argument("--output-json", type=Path, required=True)
     return p
 
@@ -98,7 +103,7 @@ def _check_transfer(con, sql: str, parameters: list, *, rows: int, byte_limit: i
     return {"rows": count, "bytes": size}
 
 
-def _preflight(con, cik: str, cutoff: dt.datetime) -> dict:
+def _preflight(con, cik: str, cutoff: dt.datetime, metric: str = METRIC) -> dict:
     # Match IQ2's discovery and collision-check clocks exactly. Never fabricate
     # an unresolved-owner identifier or use today's ticker as historical proof.
     normalized = WarehouseReadService._normalized_cik_sql("cik")
@@ -134,13 +139,16 @@ def _preflight(con, cik: str, cutoff: dt.datetime) -> dict:
           AND d.metric_code=? AND d.metric_window='q'
     """
     result["visible_metric_revisions"] = _check_transfer(
-        con, roots, [*parameters, naive, naive, METRIC], rows=MAX_ROWS, byte_limit=MAX_BYTES,
+        con, roots, [*parameters, naive, naive, metric], rows=MAX_ROWS, byte_limit=MAX_BYTES,
     )
     return result
 
 
 def read_quarterly_eps(con, *, cik: str, content_as_of: dt.datetime,
-                       start: dt.date, end: dt.date, latest: int = 3) -> dict:
+                       start: dt.date, end: dt.date, latest: int = 3, measure: str = "diluted") -> dict:
+    if measure not in METRICS:
+        raise ValueError(f"measure must be one of {sorted(METRICS)}")
+    metric = METRICS[measure]
     if not cik.isascii() or not cik.isdecimal() or not 1 <= len(cik) <= 10 or int(cik) == 0:
         raise ValueError("CIK must contain 1-10 decimal digits and be nonzero")
     if content_as_of.tzinfo is None:
@@ -153,7 +161,7 @@ def read_quarterly_eps(con, *, cik: str, content_as_of: dt.datetime,
         "contract": "quarterly-eps-desk-reader-v1",
         "cik": cik, "content_as_of": cutoff, "issuer_lookup_as_of": None,
         "period_range": {"start": start, "end_exclusive": end}, "requested_period_count": latest,
-        "metric": METRIC, "window": "q", "vintage": "latest",
+        "measure": measure, "metric": metric, "window": "q", "vintage": "latest",
         "source_limits": {
             "authority": "WarehouseReadService.issuer_content_range selected-lineage qualification",
             "availability": "Stored accounting event clocks; reconstructed history is not verified historical-vintage data.",
@@ -170,10 +178,10 @@ def read_quarterly_eps(con, *, cik: str, content_as_of: dt.datetime,
         report.update(status="schema_prerequisite_missing", missing_columns=missing,
                       required_schema="Migration 323 selected input refs and its prerequisite tables/columns")
         return report
-    report["preflight"] = _preflight(con, cik, cutoff)
+    report["preflight"] = _preflight(con, cik, cutoff, metric)
     result = _SnapshotService(con).issuer_content_range(
         schema_name="derived-metrics", cik=cik, content_as_of=cutoff, start=start, end=end,
-        items=[METRIC], basis=["q"], fields=FIELDS, vintage="latest", limit=MAX_ROWS,
+        items=[metric], basis=["q"], fields=FIELDS, vintage="latest", limit=MAX_ROWS,
     )
     report["issuer_diagnostics"] = result.metadata
     if result.metadata.get("truncated") or result.metadata.get("derived_lineage_scan_limited"):
@@ -244,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 result = read_quarterly_eps(
                     con, cik=args.cik, content_as_of=args.content_as_of,
-                    start=args.start, end=args.end, latest=args.latest,
+                    start=args.start, end=args.end, latest=args.latest, measure=args.measure,
                 )
                 con.execute("COMMIT")
             except Exception:
@@ -252,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise
     except (ValueError, RuntimeError, OSError, duckdb.Error) as exc:
         result = {"contract": "quarterly-eps-desk-reader-v1", "status": "query_unavailable",
-                  "error": str(exc)[:512], "rows": []}
+                  "measure": args.measure, "error": str(exc)[:512], "rows": []}
     try:
         _write_report(output, result)
     except (ValueError, OSError) as exc:

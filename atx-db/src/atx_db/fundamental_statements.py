@@ -11,7 +11,7 @@ from .connection import DuckDBStore
 from .industry_templates import refresh_entity_industry_templates
 from .reported_eps_core import (
     COMPANYFACTS_SOURCE,
-    EPS_CONCEPT,
+    RELEASE_EPS_CONCEPTS,
     REPORTED_EPS_RELEASE_SOURCE,
     reported_eps_source_facts_cte,
 )
@@ -21,6 +21,9 @@ from .statement_map_seed import (
 )
 
 SOURCE_NAME = "SEC companyfacts"
+# Release EPS facts borrow the Company Facts statement-map rows of their own
+# concept (basic -> eps_basic 1034, diluted -> eps_diluted 1035).
+_RELEASE_EPS_CONCEPT_SQL = ", ".join(f"'{concept}'" for concept in RELEASE_EPS_CONCEPTS)
 
 
 def __getattr__(name: str) -> object:
@@ -1167,7 +1170,7 @@ def refresh_fundamental_statement_points(
                             r.source = '{REPORTED_EPS_RELEASE_SOURCE}'
                             AND m.source = '{COMPANYFACTS_SOURCE}'
                             AND r.taxonomy = 'us-gaap'
-                            AND r.concept = '{EPS_CONCEPT}'
+                            AND r.concept IN ({_RELEASE_EPS_CONCEPT_SQL})
                         )
                      )
                  AND m.taxonomy = r.taxonomy

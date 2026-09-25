@@ -44,34 +44,41 @@ def con():
         """)
         db.execute("INSERT INTO fundamental_fact_revisions VALUES (?,?, '2025-01-01','2025-01-01','2025-01-01')",
                    [OWNER, CIK])
-        definition = next(d for d in default_derived_definitions() if d.metric_code == reader.METRIC)
-        db.execute("INSERT INTO derived_metric_definitions VALUES (?,?,?,?,?)", [
-            definition.metric_code, definition.expression, definition.window, definition.version,
-            json.dumps(list(definition.inputs), separators=(",", ":")),
-        ])
+        for definition in default_derived_definitions():
+            if definition.metric_code not in reader.METRICS.values():
+                continue
+            db.execute("INSERT INTO derived_metric_definitions VALUES (?,?,?,?,?)", [
+                definition.metric_code, definition.expression, definition.window, definition.version,
+                json.dumps(list(definition.inputs), separators=(",", ":")),
+            ])
         yield db
 
 
-def seed(db, *, period_end="2026-06-30", value=1.0, prior=1.0, current=2.0, leaf_cik=CIK):
+LEAF_CODES = {"diluted": "eps_diluted__1035", "basic": "eps_basic__1034"}
+
+
+def seed(db, *, period_end="2026-06-30", value=1.0, prior=1.0, current=2.0, leaf_cik=CIK, measure="diluted"):
+    metric, code = reader.METRICS[measure], LEAF_CODES[measure]
+    tag = "" if measure == "diluted" else f"{measure}-"
     end = dt.date.fromisoformat(period_end)
     prior_end = end.replace(year=end.year - 1)  # Explicitly a calendar-year fixture.
     bucket = (end.year * 12 + end.month) // 3
     at = dt.datetime(2026, 8, 1)
     refs = []
     for role, leaf_end, amount, offset in (("current", end, current, 0), ("prior", prior_end, prior, 4)):
-        leaf = f"{role}-{end}"
+        leaf = f"{role}-{tag}{end}"
         db.execute("INSERT INTO fundamental_standardized VALUES (?,?,?,?,?,?,?,?,?)", [
-            leaf, "eps_diluted__1035", leaf_cik, "quarterly", "statement", None, leaf_end, at, amount,
+            leaf, code, leaf_cik, "quarterly", "statement", None, leaf_end, at, amount,
         ])
-        refs.append({"kind": "item", "code": "eps_diluted__1035", "bucket": bucket - offset,
+        refs.append({"kind": "item", "code": code, "bucket": bucket - offset,
                      "offset": offset, "status": "selected", "state_id": leaf,
                      "available_at": at.isoformat(), "cik": leaf_cik, "basis": "quarterly",
                      "source": "statement", "period_start": None, "period_end": leaf_end.isoformat()})
     payload = json.dumps({"version": 1, "refs": refs}, separators=(",", ":"))
     db.execute("INSERT INTO derived_metric_values VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [
-        f"root-{end}", f"eps-{end}", OWNER, reader.METRIC, "q", end, value,
+        f"root-{tag}{end}", f"eps-{tag}{end}", OWNER, metric, "q", end, value,
         "valid" if value is not None else "missing_input_or_domain", "frame", at.date(), at, at,
-        DERIVED_SOURCE_NAME, None, registered_definition_hashes(db)[(reader.METRIC, "q")],
+        DERIVED_SOURCE_NAME, None, registered_definition_hashes(db)[(metric, "q")],
         bucket, None, end, "event_reconstructed", payload, hashlib.sha256(payload.encode()).hexdigest(),
     ])
 
@@ -122,6 +129,28 @@ def test_zero_and_negative_base_canonical_states_are_preserved(con, prior, value
     assert result["status"] == status
     assert result["rows"][0]["value"] == value
     assert result["rows"][0]["growth_percent"] == percent
+
+
+def test_basic_measure_reads_only_its_own_growth_series(con):
+    for end in ("2025-12-31", "2026-03-31", "2026-06-30"):
+        seed(con, period_end=end)
+    diluted_only = read(con, measure="basic")
+    # No basic materialization: the diluted series is never substituted.
+    assert diluted_only["rows"] == []
+    assert diluted_only["status"] == "materialization_missing_for_request"
+    assert (diluted_only["measure"], diluted_only["metric"]) == ("basic", "eps_basic_q_growth_yoy")
+
+    for end in ("2025-12-31", "2026-03-31", "2026-06-30"):
+        seed(con, period_end=end, measure="basic", value=0.5, prior=2.0, current=3.0)
+    basic = read(con, measure="basic")
+    assert basic["status"] == "qualified_numeric_observations"
+    assert [row["growth_percent"] for row in basic["rows"]] == [50.0] * 3
+    assert all(row["revision_group_id"].startswith("eps-basic-") for row in basic["rows"])
+    diluted = read(con)
+    assert (diluted["measure"], diluted["metric"]) == ("diluted", "eps_diluted_q_growth_yoy")
+    assert [row["growth_percent"] for row in diluted["rows"]] == [100.0] * 3
+    with pytest.raises(ValueError, match="measure"):
+        read(con, measure="adjusted")
 
 
 def test_missing_migration_and_missing_materialization_are_distinct(con):

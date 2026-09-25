@@ -1,22 +1,81 @@
-"""PIT bridge for accepted SEC reported quarterly diluted EPS."""
+"""PIT bridge for accepted SEC reported quarterly GAAP EPS (basic and diluted).
+
+Each accepted Item 2.02 EX-99 release fact is projected under its exact CIK's
+single Company Facts owner as the us-gaap concept of its measure, so the same
+statement map, duration proof, conflict nulling and availability contracts
+apply to basic and diluted EPS alike.  Quarterly EPS is never derived from
+annual or year-to-date per-share values.
+"""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 REPORTED_EPS_RELEASE_SOURCE = "SEC 8-K Item 2.02 reported earnings release"
 COMPANYFACTS_SOURCE = "SEC companyfacts"
-EPS_CONCEPT = "EarningsPerShareDiluted"
-EPS_ITEM_ID = 1035
 EPS_CONFLICT_TOLERANCE = 0.005
 
 
-def reported_eps_source_facts_cte() -> str:
+@dataclass(frozen=True)
+class ReportedEpsMeasure:
+    """One release measure and the Company Facts concepts it is audited against.
+
+    ``release_concept`` is the us-gaap concept a release fact is projected as
+    (and therefore mapped through ``fundamental_statement_map``).
+    ``direct_concepts`` are the Company Facts concepts that populate the same
+    warehouse item and so can contradict a release for the same period.
+    """
+
+    measure_code: str
+    release_concept: str
+    item_id: int
+    direct_concepts: tuple[str, ...]
+
+
+DILUTED_EPS = ReportedEpsMeasure("EPS_DILUTED", "EarningsPerShareDiluted", 1035, ("EarningsPerShareDiluted",))
+# A single combined basic-and-diluted line populates the basic item in the
+# statement map (priority 20), so it is also a direct basic-EPS counterparty.
+BASIC_EPS = ReportedEpsMeasure(
+    "EPS_BASIC", "EarningsPerShareBasic", 1034,
+    ("EarningsPerShareBasic", "EarningsPerShareBasicAndDiluted"),
+)
+REPORTED_EPS_MEASURES: tuple[ReportedEpsMeasure, ...] = (DILUTED_EPS, BASIC_EPS)
+RELEASE_EPS_CONCEPTS: tuple[str, ...] = tuple(m.release_concept for m in REPORTED_EPS_MEASURES)
+
+# Historical single-measure names (diluted); retained for existing importers.
+EPS_CONCEPT = DILUTED_EPS.release_concept
+EPS_ITEM_ID = DILUTED_EPS.item_id
+
+
+def _sql_list(values: tuple[str, ...]) -> str:
+    for value in values:
+        if "'" in value:
+            raise ValueError(f"unsafe SQL literal {value!r}")
+    return ", ".join(f"'{value}'" for value in values)
+
+
+def _measures(measures: tuple[ReportedEpsMeasure, ...] | None) -> tuple[ReportedEpsMeasure, ...]:
+    selected = REPORTED_EPS_MEASURES if measures is None else tuple(measures)
+    if not selected:
+        raise ValueError("at least one reported EPS measure is required")
+    return selected
+
+
+def reported_eps_source_facts_cte(measures: tuple[ReportedEpsMeasure, ...] | None = None) -> str:
     """Project accepted releases under their exact CIK's single CF owner.
 
     The CTE preserves direct and release events independently.  Releases need
     explicit three-month evidence, or an explicit start for 13/14-week periods;
     it never derives a quarterly per-share value from annual or YTD figures.
+    Every measure uses the same receipt, duration and ownership proof; only
+    the projected concept differs.
     """
 
+    selected = _measures(measures)
+    measure_codes = _sql_list(tuple(m.measure_code for m in selected))
+    concept_case = " ".join(
+        f"WHEN '{m.measure_code}' THEN '{m.release_concept}'" for m in selected
+    )
     return f"""
             source_facts AS (
                 WITH release_windows AS (
@@ -37,7 +96,7 @@ def reported_eps_source_facts_cte() -> str:
                     WHERE p.source = '{REPORTED_EPS_RELEASE_SOURCE}'
                       AND p.form = '8-K'
                       AND p.source_item = '2.02 / EX-99'
-                      AND p.measure_code = 'EPS_DILUTED'
+                      AND p.measure_code IN ({measure_codes})
                       AND p.basis = 'GAAP'
                       AND p.unit = 'USD_PER_SHARE'
                       AND p.is_preliminary = true
@@ -54,6 +113,7 @@ def reported_eps_source_facts_cte() -> str:
                 accepted_releases AS (
                     SELECT
                         p.*,
+                        CASE p.measure_code {concept_case} END AS release_concept,
                         CASE
                             WHEN duration_evidence = 'three_months_explicit'
                                 THEN CAST(p.period_end + INTERVAL 1 DAY - INTERVAL 3 MONTH AS DATE)
@@ -100,7 +160,7 @@ def reported_eps_source_facts_cte() -> str:
                     owner.accounting_owner AS security_id,
                     p.normalized_cik AS cik,
                     'us-gaap' AS taxonomy,
-                    '{EPS_CONCEPT}' AS concept,
+                    p.release_concept AS concept,
                     'USD/shares' AS unit,
                     p.period_start,
                     p.period_end,
@@ -134,6 +194,7 @@ def reported_eps_source_facts_cte() -> str:
                 FROM accepted_releases p
                 JOIN companyfacts_owner owner ON owner.cik = p.normalized_cik
                 WHERE p.period_start IS NOT NULL
+                  AND p.release_concept IS NOT NULL
                   -- The release parser supplies this label from the table header.
                   -- Keep the exact qualified 13/14-week spans; never admit a
                   -- generic 70--115-day release as a discrete EPS quarter.
@@ -149,9 +210,23 @@ def reported_eps_source_facts_cte() -> str:
     """
 
 
-def reported_eps_conflict_candidates_cte() -> str:
-    """Return NULL states that supersede a visible conflicting EPS release."""
+def reported_eps_conflict_candidates_cte(measures: tuple[ReportedEpsMeasure, ...] | None = None) -> str:
+    """Return NULL states that supersede a visible conflicting EPS release.
 
+    A release and a Company Facts fact conflict only for the same warehouse
+    item (basic 1034 or diluted 1035), owner, CIK and exact period geometry;
+    basic and diluted values are never compared with each other.
+    """
+
+    selected = _measures(measures)
+    release_filter = " OR ".join(
+        f"(release.concept = '{m.release_concept}' AND release.item_id = {int(m.item_id)})"
+        for m in selected
+    )
+    direct_filter = " OR ".join(
+        f"(direct.item_id = {int(m.item_id)} AND direct.concept IN ({_sql_list(m.direct_concepts)}))"
+        for m in selected
+    )
     return f"""
             reported_eps_conflict_candidates AS (
                 WITH release_eps AS (
@@ -168,8 +243,7 @@ def reported_eps_conflict_candidates_cte() -> str:
                     FROM fundamental_statement_points release
                     WHERE release.source = '{REPORTED_EPS_RELEASE_SOURCE}'
                       AND release.taxonomy = 'us-gaap'
-                      AND release.concept = '{EPS_CONCEPT}'
-                      AND release.item_id = {EPS_ITEM_ID}
+                      AND ({release_filter})
                       AND release.period_start IS NOT NULL
                       AND release.period_end IS NOT NULL
                       AND release.value IS NOT NULL
@@ -200,8 +274,7 @@ def reported_eps_conflict_candidates_cte() -> str:
                     FROM fundamental_statement_points direct
                     WHERE direct.source = '{COMPANYFACTS_SOURCE}'
                       AND direct.taxonomy = 'us-gaap'
-                      AND direct.concept = '{EPS_CONCEPT}'
-                      AND direct.item_id = {EPS_ITEM_ID}
+                      AND ({direct_filter})
                       AND direct.period_start IS NOT NULL
                       AND direct.period_end IS NOT NULL
                       AND direct.value IS NOT NULL

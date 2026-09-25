@@ -16,6 +16,7 @@ from atx_db.press_release import (
     _ex99_documents,
     _explicit_sec_clock,
     extract_reported_gaap_diluted_eps,
+    extract_reported_gaap_eps,
     refresh_sec_earnings_release_facts,
 )
 
@@ -137,6 +138,15 @@ def test_fiscal_year_ahead_comparative_first_thirteen_week_quarter() -> None:
     assert fact["period_start"] == dt.date(2025, 1, 27)
     assert fact["duration_days"] == 91
     assert fact["fiscal_period_evidence"] == "Q1 2026"
+    basic, basic_reason = extract_reported_gaap_eps(
+        document, measure="basic", period_end=None, filed_on=event_date, fiscal_quarter=fiscal
+    )
+    assert basic_reason is None
+    assert basic is not None
+    assert (basic["value"], basic["measure_code"], basic["row_semantics"]) == (1.41, "EPS_BASIC", "basic")
+    assert (basic["period_end"], basic["period_start"], basic["duration_days"]) == (
+        period_end, dt.date(2025, 1, 27), 91
+    )
 
 
 def test_explicit_sec_offset_is_preserved_but_daily_clock_is_conservative() -> None:
@@ -374,17 +384,27 @@ def test_accepted_receipt_rolls_back_with_fact_failure_then_resumes(tmp_store, t
     assert tmp_store.con.execute(
         "SELECT count(*) FROM sec_earnings_release_receipts WHERE outcome = 'accepted'"
     ).fetchone() == (1,)
-    assert tmp_store.con.execute(
-        "SELECT count(*) FROM press_release_facts WHERE accession_number = '0000093410-26-000019'"
-    ).fetchone() == (1,)
-    fiscal_year, fiscal_period, period_end, as_of_date, raw_payload = tmp_store.con.execute(
-        "SELECT fiscal_year, fiscal_period, period_end, as_of_date, raw_payload_json FROM press_release_facts "
-        "WHERE accession_number = '0000093410-26-000019'"
-    ).fetchone()
-    assert (fiscal_year, fiscal_period) == (2025, "Q4")
-    assert period_end == as_of_date == dt.date(2025, 12, 31)
-    assert json.loads(raw_payload)["event_report_date"] == "2026-01-30"
-    assert json.loads(raw_payload)["prior_year_quarter_value"] == 1.84
+    facts = tmp_store.con.execute(
+        "SELECT measure_code, value, fiscal_year, fiscal_period, period_end, as_of_date, available_at, "
+        "raw_payload_json FROM press_release_facts "
+        "WHERE accession_number = '0000093410-26-000019' ORDER BY measure_code"
+    ).fetchall()
+    assert [(row[0], row[1]) for row in facts] == [("EPS_BASIC", 1.39), ("EPS_DILUTED", 1.39)]
+    basic_payload, diluted_payload = (json.loads(row[7]) for row in facts)
+    for _, _, fiscal_year, fiscal_period, period_end, as_of_date, _, _ in facts:
+        assert (fiscal_year, fiscal_period) == (2025, "Q4")
+        assert period_end == as_of_date == dt.date(2025, 12, 31)
+    assert facts[0][6] == facts[1][6]
+    # Both measures are backed by the one immutable document receipt.
+    assert basic_payload["receipt_id"] == diluted_payload["receipt_id"]
+    assert basic_payload["document_sha256"] == diluted_payload["document_sha256"]
+    assert diluted_payload["event_report_date"] == "2026-01-30"
+    assert diluted_payload["prior_year_quarter_value"] == 1.84
+    assert basic_payload["prior_year_quarter_value"] == 1.85
+    assert basic_payload["row_lineage"] == [
+        "PER SHARE OF COMMON STOCK", "Net income attributable to the corporation", "- Basic"
+    ]
+    assert basic_payload["measure_outcomes"] == {"EPS_DILUTED": "accepted", "EPS_BASIC": "accepted"}
 
 
 def test_fetch_failed_retries_and_corrupt_cache_is_refetched(tmp_store, tmp_path) -> None:
@@ -424,6 +444,14 @@ def test_fetch_failed_retries_and_corrupt_cache_is_refetched(tmp_store, tmp_path
     assert tmp_store.con.execute(
         "SELECT outcome FROM sec_earnings_release_receipts ORDER BY outcome"
     ).fetchall() == [("accepted",), ("fetch_failed",)]
+    facts = tmp_store.con.execute(
+        "SELECT measure_code, json_extract_string(raw_payload_json, '$.measure_outcomes') "
+        "FROM press_release_facts"
+    ).fetchall()
+    assert [row[0] for row in facts] == ["EPS_DILUTED"]
+    assert json.loads(facts[0][1]) == {
+        "EPS_DILUTED": "accepted", "EPS_BASIC": "reported_gaap_basic_eps_not_found",
+    }
 
 
 def test_malformed_200_index_is_retryable_then_valid_index_accepts(tmp_store, tmp_path) -> None:
@@ -454,7 +482,7 @@ def test_malformed_200_index_is_retryable_then_valid_index_accepts(tmp_store, tm
     ).fetchall() == [("accepted",), ("fetch_failed",)]
     assert tmp_store.con.execute(
         "SELECT count(*) FROM press_release_facts WHERE accession_number = '0000093410-26-000019'"
-    ).fetchone() == (1,)
+    ).fetchone() == (2,)
 
 
 def test_valid_index_without_ex99_is_terminal(tmp_store, tmp_path) -> None:
@@ -479,3 +507,120 @@ def test_valid_index_without_ex99_is_terminal(tmp_store, tmp_path) -> None:
     second = refresh_sec_earnings_release_facts(tmp_store, options, session=unused_session)
     assert second["skipped_terminal"] == 1
     assert len(unused_session.responses) == 2
+
+
+SPAN_GRID_ATTACHMENT = """
+<p>Fourth Quarter 2025 results compared with Fourth Quarter 2024.</p>
+<table>
+  <tr><th rowspan="2"></th><th colspan="2">Three Months Ended December 31,</th>
+      <th colspan="2">Year Ended December 31,</th></tr>
+  <tr><th>2025</th><th>2024</th><th>2025</th><th>2024</th></tr>
+  <tr><td colspan="5">Net income attributable to the corporation</td></tr>
+  <tr><td colspan="5">per share:</td></tr>
+  <tr><td>- Basic</td><td>1.40</td><td>1.85</td><td>6.64</td><td>7.20</td></tr>
+  <tr><td>- Diluted</td><td>1.39</td><td>1.84</td><td>6.63</td><td>7.18</td></tr>
+  <tr><td colspan="5">Adjusted earnings per share:</td></tr>
+  <tr><td>- Basic</td><td>1.53</td><td>1.89</td><td>9.98</td><td>9.87</td></tr>
+  <tr><td>- Diluted</td><td>1.52</td><td>1.88</td><td>9.99</td><td>9.88</td></tr>
+</table>
+"""
+
+
+def test_explicit_gaap_basic_row_is_extracted_not_adjusted_or_annual() -> None:
+    fact, reason = extract_reported_gaap_eps(
+        SPAN_GRID_ATTACHMENT, measure="basic", period_end=dt.date(2025, 12, 31)
+    )
+
+    assert reason is None
+    assert fact is not None
+    assert (fact["value"], fact["prior_year_quarter_value"]) == (1.40, 1.85)
+    assert (fact["measure_code"], fact["row_semantics"]) == ("EPS_BASIC", "basic")
+    assert fact["column_number"] == 1
+    assert "Year Ended" not in fact["column_heading"]
+    assert fact["row_lineage"] == (
+        "Net income attributable to the corporation", "per share:", "- Basic"
+    )
+    diluted, _ = extract_reported_gaap_eps(
+        SPAN_GRID_ATTACHMENT, measure="diluted", period_end=dt.date(2025, 12, 31)
+    )
+    assert diluted is not None and diluted["value"] == 1.39
+
+
+def _single_row_table(label: str, value: str = "(0.12)") -> str:
+    return f"""
+    <table><tr><th></th><th>Three Months Ended December 31,</th></tr>
+    <tr><th></th><th>2025</th></tr>
+    <tr><td>{label}</td><td>{value}</td></tr></table>
+    """
+
+
+def test_combined_basic_and_diluted_line_is_basic_eps_only() -> None:
+    document = _single_row_table("Net loss per share - basic and diluted")
+    basic, reason = extract_reported_gaap_eps(document, measure="basic", period_end=dt.date(2025, 12, 31))
+
+    assert reason is None
+    assert basic is not None
+    assert (basic["value"], basic["row_semantics"]) == (-0.12, "basic_and_diluted")
+    # The Company Facts convention maps the combined line to basic EPS only.
+    diluted, diluted_reason = extract_reported_gaap_eps(
+        document, measure="diluted", period_end=dt.date(2025, 12, 31)
+    )
+    assert diluted is None
+    assert diluted_reason == "rejected_non_gaap_or_adjusted"
+
+
+@pytest.mark.parametrize("label", [
+    "Adjusted basic earnings per share",
+    "Basic earnings per share from continuing operations",
+    "Non-GAAP basic earnings per share",
+    "Non GAAP net income per share - basic",
+])
+def test_non_gaap_continuing_or_adjusted_basic_eps_is_rejected(label: str) -> None:
+    fact, reason = extract_reported_gaap_eps(
+        _single_row_table(label), measure="basic", period_end=dt.date(2025, 12, 31)
+    )
+
+    assert fact is None
+    assert reason == "rejected_non_gaap_or_adjusted"
+
+
+def test_diluted_row_under_basic_heading_is_never_basic_eps() -> None:
+    document = """
+    <table><tr><th></th><th>Three Months Ended December 31,</th></tr>
+    <tr><th></th><th>2025</th></tr>
+    <tr><td colspan="2">Earnings per share, basic and diluted:</td></tr>
+    <tr><td>- Diluted</td><td>1.39</td></tr></table>
+    """
+    fact, reason = extract_reported_gaap_eps(document, measure="basic", period_end=dt.date(2025, 12, 31))
+
+    assert fact is None
+    assert reason == "reported_gaap_basic_eps_not_found"
+
+
+def test_rejected_receipt_names_each_measure_reason(tmp_store, tmp_path) -> None:
+    tmp_store.con.execute(
+        """INSERT INTO sec_submissions (
+               security_id, cik, accession_number, filing_date, report_date,
+               acceptance_datetime_raw, form, items, source_url
+           ) VALUES ('SEC-CIK-0000093410', '0000093410', '0000093410-26-000019',
+                     DATE '2026-01-30', DATE '2025-12-31', '2026-01-30T18:17:00-05:00',
+                     '8-K', '2.02', 'bulk-fixture')"""
+    )
+    document = b"""
+    <p>Fourth Quarter 2025</p><table>
+    <tr><th></th><th>Three Months Ended December 31,</th></tr><tr><th></th><th>2025</th></tr>
+    <tr><td>Adjusted diluted earnings per share</td><td>1.52</td></tr></table>
+    """
+    options = SecEarningsReleaseOptions(cache_dir=tmp_path / "cache", run_id="per-measure-reject")
+    result = refresh_sec_earnings_release_facts(
+        tmp_store, options, session=_Session([COMPACT_FILING_INDEX.encode(), document])
+    )
+
+    assert (result["accepted"], result["rejected"]) == (0, 1)
+    assert tmp_store.con.execute(
+        "SELECT outcome, rejection_reason FROM sec_earnings_release_receipts"
+    ).fetchall() == [(
+        "rejected",
+        "EPS_DILUTED:rejected_non_gaap_or_adjusted;EPS_BASIC:reported_gaap_basic_eps_not_found",
+    )]
+    assert tmp_store.con.execute("SELECT count(*) FROM press_release_facts").fetchone() == (0,)

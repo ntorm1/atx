@@ -25,6 +25,7 @@ import pandas as pd
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
+from .reported_eps_core import BASIC_EPS, DILUTED_EPS
 from .sec_submissions import EarningsReleaseCandidate, select_earnings_release_candidates
 from .security_master import sec_session
 from .estimates import (
@@ -71,6 +72,20 @@ SEC_EARNINGS_RELEASE_USER_AGENT = "atx-db/0.1 atx-research@example.com"
 DEFAULT_RECONCILIATION_TOLERANCE = 0.02
 EPS_CONFLICT_TOLERANCE = 0.005
 SEC_FILING_DATE_CLOCK_POLICY = "sec_filed_date_plus_46h_v1"
+# Governed EX-99 extraction emits GAAP basic and diluted quarterly EPS from one
+# document under one receipt; each measure keeps the same duration proof.
+REPORTED_EPS_EXTRACTOR_VERSION = "reported_gaap_eps_basic_diluted_v2"
+REPORTED_EPS_MEASURE_CODES = {"diluted": DILUTED_EPS.measure_code, "basic": BASIC_EPS.measure_code}
+_NON_GAAP_EPS_TERMS = ("continuing", "adjusted", "non-gaap", "non gaap")
+# Release-duration windows (inclusive days) used to match a preliminary fact
+# to a final actual by period geometry rather than by fiscal labels.
+_RELEASE_DURATION_WINDOWS = {
+    "three_months_explicit": (89, 93),
+    "thirteen_weeks_explicit": (91, 91),
+    "fourteen_weeks_explicit": (98, 98),
+}
+_QUARTER_DAYS = (70, 115)
+_ANNUAL_DAYS = (330, 380)
 
 
 PRESS_RELEASE_FACT_COLUMNS = [
@@ -780,6 +795,25 @@ def _reported_fiscal_quarter(document: str, period_end: dt.date | None) -> tuple
     return None
 
 
+def _eps_row_semantics(lineage: tuple[str, ...]) -> str | None:
+    """Return the nearest explicit basic/diluted statement, own label first.
+
+    A ``- Diluted`` row under a heading that mentions basic EPS is a diluted
+    row; a combined ``basic and diluted`` label states both measures at once.
+    """
+
+    for part in reversed(lineage):
+        text = _normalized_cell(part)
+        basic, diluted = "basic" in text, "diluted" in text
+        if basic and diluted:
+            return "basic_and_diluted"
+        if basic:
+            return "basic"
+        if diluted:
+            return "diluted"
+    return None
+
+
 def extract_reported_gaap_diluted_eps(
     document: str,
     *,
@@ -787,14 +821,35 @@ def extract_reported_gaap_diluted_eps(
     fiscal_quarter: tuple[int, str] | None = None,
     filed_on: dt.date | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """Extract one reported GAAP diluted quarter EPS or reject the document.
+    """Extract one reported GAAP diluted quarter EPS or reject the document."""
+
+    return extract_reported_gaap_eps(
+        document, measure="diluted", period_end=period_end,
+        fiscal_quarter=fiscal_quarter, filed_on=filed_on,
+    )
+
+
+def extract_reported_gaap_eps(
+    document: str,
+    *,
+    measure: str,
+    period_end: dt.date | None,
+    fiscal_quarter: tuple[int, str] | None = None,
+    filed_on: dt.date | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Extract one reported GAAP basic or diluted quarter EPS or reject.
 
     The parser deliberately needs a table row and aligned current-period column;
     a nearby narrative number, adjusted EPS and continuing-operations EPS never
     qualify.  A missing/ambiguous period is a rejection rather than a synthetic
-    fiscal boundary.
+    fiscal boundary.  Diluted rows must not mention basic EPS.  Basic rows must
+    state basic EPS explicitly; a combined ``basic and diluted`` line is basic
+    EPS (the Company Facts ``EarningsPerShareBasicAndDiluted`` convention),
+    while a diluted row under a basic-mentioning heading never is.
     """
 
+    if measure not in REPORTED_EPS_MEASURE_CODES:
+        raise ValueError(f"unsupported reported EPS measure {measure!r}")
     parser = _HtmlTableCollector()
     parser.feed(document)
     tables = [_span_expanded_grid(table) for table in parser.tables]
@@ -831,16 +886,27 @@ def extract_reported_gaap_diluted_eps(
                     continue
                 lineage = _label_lineage(table, row_number, column)
                 label = _normalized_cell(" | ".join(lineage))
-                if "diluted" not in label or "per share" not in label:
+                if measure not in label or "per share" not in label:
                     continue
-                if any(term in label for term in ("basic", "continuing", "adjusted", "non-gaap", "non gaap")):
-                    rejected_semantics = True
-                    continue
+                if measure == "diluted":
+                    row_semantics = "diluted"
+                    if "basic" in label or any(term in label for term in _NON_GAAP_EPS_TERMS):
+                        rejected_semantics = True
+                        continue
+                else:
+                    row_semantics = _eps_row_semantics(lineage)
+                    if row_semantics not in ("basic", "basic_and_diluted"):
+                        continue
+                    if any(term in label for term in _NON_GAAP_EPS_TERMS):
+                        rejected_semantics = True
+                        continue
                 value = _parse_eps_number(row[column])
                 if value is None:
                     continue
                 candidates.append({
                     "value": value,
+                    "measure_code": REPORTED_EPS_MEASURE_CODES[measure],
+                    "row_semantics": row_semantics,
                     "period_end": period_end,
                     "prior_year_quarter_value": prior_value,
                     "evidence_text": " | ".join((*lineage, row[column])),
@@ -856,7 +922,8 @@ def extract_reported_gaap_diluted_eps(
     if len(candidates) != 1:
         return None, "ambiguous_eps_candidates" if candidates else (
             duration_rejection or (
-                "rejected_non_gaap_or_adjusted" if rejected_semantics else "reported_gaap_diluted_eps_not_found"
+                "rejected_non_gaap_or_adjusted" if rejected_semantics
+                else f"reported_gaap_{measure}_eps_not_found"
             )
         )
     return candidates[0], None
@@ -1042,6 +1109,88 @@ def _terminal_sec_receipt_exists(store: DuckDBStore, candidate: EarningsReleaseC
     return bool(row and row[0])
 
 
+def _combined_rejection_reason(measure_outcomes: dict[str, str]) -> str:
+    """One receipt reason; per-measure detail only when the measures differ."""
+
+    reasons = set(measure_outcomes.values())
+    if len(reasons) == 1:
+        return next(iter(reasons))
+    return ";".join(f"{code}:{reason}" for code, reason in measure_outcomes.items())
+
+
+def _sec_reported_eps_fact(
+    candidate: EarningsReleaseCandidate,
+    extracted: dict[str, Any],
+    *,
+    measure_code: str,
+    fiscal: tuple[int, str],
+    clock: SecSourceClock,
+    receipt_id: str,
+    document_name: str,
+    document_sha: str,
+    index_url: str,
+    document_url: str,
+    measure_outcomes: dict[str, str],
+    run_id: str | None,
+) -> dict[str, Any]:
+    assert clock.available_at is not None
+    return {
+        "source": SEC_EARNINGS_RELEASE_SOURCE,
+        "security_id": cik_security_id(candidate.cik),
+        "cik": candidate.cik,
+        "accession_number": candidate.accession_number,
+        "form": "8-K",
+        "source_item": "2.02 / EX-99",
+        "source_url": document_url,
+        "measure_code": measure_code,
+        "fiscal_year": fiscal[0],
+        "fiscal_period": fiscal[1],
+        "period_end": extracted["period_end"],
+        "value": extracted["value"],
+        "unit": "USD_PER_SHARE",
+        "basis": "GAAP",
+        "is_preliminary": True,
+        "extraction_confidence": 1.0,
+        "evidence_text": extracted["evidence_text"],
+        "filing_date": candidate.filing_date,
+        "release_date": clock.available_at.date(),
+        "as_of_date": extracted["period_end"],
+        "available_at": clock.available_at,
+        "raw_payload_json": json_dumps({
+            "receipt_id": receipt_id,
+            "extractor_version": REPORTED_EPS_EXTRACTOR_VERSION,
+            "measure_code": measure_code,
+            "row_semantics": extracted["row_semantics"],
+            "measure_outcomes": measure_outcomes,
+            "cik": candidate.cik,
+            "source_security_id": cik_security_id(candidate.cik),
+            "accession_number": candidate.accession_number,
+            "event_report_date": candidate.report_date.isoformat() if candidate.report_date else None,
+            "document_name": document_name,
+            "document_sha256": document_sha,
+            "index_url": index_url,
+            "document_url": document_url,
+            "raw_acceptance_timestamp": clock.raw_timestamp,
+            "acceptance_utc_offset": clock.utc_offset,
+            "timestamp_zone_status": clock.timezone_status,
+            "table_number": extracted["table_number"],
+            "row_number": extracted["row_number"],
+            "column_number": extracted["column_number"],
+            "column_heading": extracted["column_heading"],
+            "header_trace": extracted["header_trace"],
+            "row_lineage": extracted["row_lineage"],
+            "duration_evidence": extracted["duration_evidence"],
+            "period_start": extracted["period_start"].isoformat() if extracted["period_start"] else None,
+            "period_start_basis": extracted["period_start_basis"],
+            "duration_days": extracted["duration_days"],
+            "week_count": extracted.get("week_count"),
+            "fiscal_period_evidence": extracted.get("fiscal_period_evidence"),
+            "prior_year_quarter_value": extracted["prior_year_quarter_value"],
+        }),
+        "run_id": run_id,
+    }
+
+
 def _iter_sec_earnings_release_candidates(
     store: DuckDBStore, options: SecEarningsReleaseOptions
 ) -> Iterable[EarningsReleaseCandidate]:
@@ -1158,78 +1307,48 @@ def refresh_sec_earnings_release_facts(
             candidate.filing_date or candidate.report_date,
         ) if candidate.filing_date or candidate.report_date else None
         fiscal = _reported_fiscal_quarter(document_text, headed_end)
-        extracted, reason = extract_reported_gaap_diluted_eps(
-            document_text, period_end=headed_end, fiscal_quarter=fiscal,
-        )
-        if fiscal is None and reason is None:
-            reason = "fiscal_period_missing_or_ambiguous"
-            extracted = None
-        if extracted is None:
+        extractions: dict[str, dict[str, Any]] = {}
+        measure_outcomes: dict[str, str] = {}
+        for measure, measure_code in REPORTED_EPS_MEASURE_CODES.items():
+            extracted, reason = extract_reported_gaap_eps(
+                document_text, measure=measure, period_end=headed_end, fiscal_quarter=fiscal,
+            )
+            if fiscal is None and reason is None:
+                reason = "fiscal_period_missing_or_ambiguous"
+                extracted = None
+            if extracted is None:
+                measure_outcomes[measure_code] = reason or "reported_gaap_eps_not_found"
+            else:
+                extractions[measure_code] = extracted
+                measure_outcomes[measure_code] = "accepted"
+        if not extractions:
             outcome = SecEarningsReleaseOutcome(
-                candidate, "rejected", reason, document_name, index_url, document_url,
-                document_sha, clock,
+                candidate, "rejected", _combined_rejection_reason(measure_outcomes), document_name,
+                index_url, document_url, document_sha, clock,
             )
             _write_sec_receipt(store, outcome)
             counts["rejected"] += 1
             continue
+        assert fiscal is not None
         receipt_outcome = SecEarningsReleaseOutcome(
             candidate, "accepted", None, document_name, index_url, document_url, document_sha, clock
         )
-        fact = {
-            "source": SEC_EARNINGS_RELEASE_SOURCE,
-            "security_id": cik_security_id(candidate.cik),
-            "cik": candidate.cik,
-            "accession_number": candidate.accession_number,
-            "form": "8-K",
-            "source_item": "2.02 / EX-99",
-            "source_url": document_url,
-            "measure_code": "EPS_DILUTED",
-            "fiscal_year": fiscal[0],
-            "fiscal_period": fiscal[1],
-            "period_end": extracted["period_end"],
-            "value": extracted["value"],
-            "unit": "USD_PER_SHARE",
-            "basis": "GAAP",
-            "is_preliminary": True,
-            "extraction_confidence": 1.0,
-            "evidence_text": extracted["evidence_text"],
-            "filing_date": candidate.filing_date,
-            "release_date": clock.available_at.date(),
-            "as_of_date": extracted["period_end"],
-            "available_at": clock.available_at,
-            "raw_payload_json": json_dumps({
-                "receipt_id": _receipt_id(receipt_outcome),
-                "cik": candidate.cik,
-                "source_security_id": cik_security_id(candidate.cik),
-                "accession_number": candidate.accession_number,
-                "event_report_date": candidate.report_date.isoformat() if candidate.report_date else None,
-                "document_name": document_name,
-                "document_sha256": document_sha,
-                "index_url": index_url,
-                "document_url": document_url,
-                "raw_acceptance_timestamp": clock.raw_timestamp,
-                "acceptance_utc_offset": clock.utc_offset,
-                "timestamp_zone_status": clock.timezone_status,
-                "table_number": extracted["table_number"],
-                "row_number": extracted["row_number"],
-                "column_number": extracted["column_number"],
-                "column_heading": extracted["column_heading"],
-                "header_trace": extracted["header_trace"],
-                "row_lineage": extracted["row_lineage"],
-                "duration_evidence": extracted["duration_evidence"],
-                "period_start": extracted["period_start"].isoformat() if extracted["period_start"] else None,
-                "period_start_basis": extracted["period_start_basis"],
-                "duration_days": extracted["duration_days"],
-                "week_count": extracted.get("week_count"),
-                "fiscal_period_evidence": extracted.get("fiscal_period_evidence"),
-                "prior_year_quarter_value": extracted["prior_year_quarter_value"],
-            }),
-            "run_id": options.run_id,
-        }
+        # One immutable document receipt backs every accepted measure; each
+        # measure is its own fact with the same clock and period evidence.
+        fact_rows = [
+            _sec_reported_eps_fact(
+                candidate, extracted, measure_code=measure_code, fiscal=fiscal, clock=clock,
+                receipt_id=_receipt_id(receipt_outcome), document_name=document_name,
+                document_sha=document_sha, index_url=index_url, document_url=document_url,
+                measure_outcomes=measure_outcomes, run_id=options.run_id,
+            )
+            for measure_code, extracted in extractions.items()
+        ]
         outcome = SecEarningsReleaseOutcome(
-            candidate, "accepted", None, document_name, index_url, document_url, document_sha, clock, fact
+            candidate, "accepted", None, document_name, index_url, document_url, document_sha, clock,
+            fact_rows[0],
         )
-        facts = normalize_press_release_rows(pd.DataFrame([fact]), options=PressReleaseOptions(
+        facts = normalize_press_release_rows(pd.DataFrame(fact_rows), options=PressReleaseOptions(
             source=SEC_EARNINGS_RELEASE_SOURCE, min_confidence=1.0, run_id=options.run_id
         ))
         # Accepted evidence is terminal only when its immutable source fact is
@@ -1791,18 +1910,40 @@ def refresh_press_release_facts(
     return {"fact_rows": rows_loaded, "parsed_rows": int(len(facts))}
 
 
+def _release_duration_case(bound: int) -> str:
+    """SQL CASE arms giving a release's own duration window bound in days."""
+
+    arms = [
+        f"WHEN r.duration_evidence = '{evidence}' THEN {int(window[bound])}"
+        for evidence, window in _RELEASE_DURATION_WINDOWS.items()
+    ]
+    arms.append(
+        "WHEN r.duration_evidence IS NULL AND r.fiscal_period IN ('Q1', 'Q2', 'Q3', 'Q4') "
+        f"THEN {int(_QUARTER_DAYS[bound])}"
+    )
+    arms.append(f"WHEN r.duration_evidence IS NULL AND r.fiscal_period = 'FY' THEN {int(_ANNUAL_DAYS[bound])}")
+    return " ".join(arms)
+
+
 def refresh_press_release_reconciliation(
     store: DuckDBStore,
     options: PressReleaseOptions | None = None,
 ) -> int:
-    """Reconcile preliminary press-release facts to final ``est_actual`` rows."""
+    """Reconcile preliminary press-release facts to final ``est_actual`` rows.
+
+    A final actual matches by owner, measure and period geometry (period end
+    plus a duration compatible with the release's own), never by fiscal
+    labels: release and filing labels follow different conventions (52/53-week
+    and Jan--May year ends, fiscal-year-end changes), and a 10-Q's year-to-date
+    value shares its quarter's end and filing labels.
+    """
 
     options = options or PressReleaseOptions()
     tolerance = float(options.reconciliation_tolerance)
     with store.transaction():
         store.con.execute("DELETE FROM press_release_reconciliation WHERE source = ?", [options.source])
         store.con.execute(
-            """
+            f"""
             INSERT INTO press_release_reconciliation (
                 press_release_reconciliation_id,
                 source,
@@ -1833,7 +1974,71 @@ def refresh_press_release_reconciliation(
                 run_id,
                 source_loaded_at
             )
-            WITH candidates AS (
+            WITH releases AS (
+                SELECT
+                    pr.*,
+                    CASE WHEN json_valid(pr.raw_payload_json)
+                         THEN json_extract_string(pr.raw_payload_json, '$.duration_evidence')
+                    END AS duration_evidence
+                FROM press_release_facts pr
+                WHERE pr.source = ?
+                  AND pr.is_preliminary
+            ),
+            release_geometry AS (
+                -- The preliminary fact's own duration: the explicit table
+                -- evidence recorded by the governed extractor, else the
+                -- release's own period kind. Filing labels never join.
+                SELECT
+                    r.*,
+                    CASE {_release_duration_case(0)} END AS min_days,
+                    CASE {_release_duration_case(1)} END AS max_days
+                FROM releases r
+            ),
+            release_keys AS (
+                SELECT DISTINCT security_id, measure_code, period_end
+                FROM release_geometry
+            ),
+            measure_concepts AS (
+                -- The same measure -> us-gaap concept map that builds est_actual.
+                SELECT measure_code, unnest(from_json(us_gaap_concepts, '["VARCHAR"]')) AS concept
+                FROM est_measure
+                WHERE us_gaap_concepts IS NOT NULL
+                  AND json_valid(us_gaap_concepts)
+            ),
+            final_geometry AS (
+                -- est_actual keeps Company Facts filing-context fiscal labels
+                -- and no period start, and one filing can carry both a
+                -- quarter and a year-to-date value at the same end. Its own
+                -- geometry is the duration of the exact Company Facts fact it
+                -- copied (owner, accession, end, measure concept, unit, value).
+                SELECT DISTINCT
+                    a.security_id,
+                    a.measure_code,
+                    a.period_end,
+                    a.value,
+                    a.basis,
+                    a.source,
+                    a.available_at,
+                    a.accession_number,
+                    date_diff('day', f.period_start, f.period_end) + 1 AS duration_days
+                FROM est_actual a
+                JOIN release_keys k
+                  ON k.security_id = a.security_id
+                 AND k.measure_code = a.measure_code
+                 AND k.period_end = a.period_end
+                JOIN measure_concepts mc
+                  ON mc.measure_code = a.measure_code
+                JOIN sec_company_facts f
+                  ON f.security_id = a.security_id
+                 AND f.accession_number = a.accession_number
+                 AND f.period_end = a.period_end
+                 AND f.concept = mc.concept
+                 AND f.value = a.value
+                 AND f.unit IS NOT DISTINCT FROM a.unit
+                WHERE a.value IS NOT NULL
+                  AND f.period_start IS NOT NULL
+            ),
+            candidates AS (
                 SELECT
                     pr.press_release_fact_id,
                     pr.source,
@@ -1854,21 +2059,17 @@ def refresh_press_release_reconciliation(
                     a.accession_number AS final_actual_accession_number,
                     row_number() OVER (
                         PARTITION BY pr.press_release_fact_id
-                        ORDER BY a.available_at ASC NULLS LAST, a.accession_number
+                        ORDER BY a.available_at ASC NULLS LAST, a.accession_number, a.duration_days
                     ) AS rn
-                FROM press_release_facts pr
-                LEFT JOIN est_actual a
+                FROM release_geometry pr
+                LEFT JOIN final_geometry a
                   ON a.security_id = pr.security_id
                  AND a.measure_code = pr.measure_code
-                 AND a.fiscal_year = pr.fiscal_year
-                 AND a.fiscal_period = pr.fiscal_period
                  AND a.period_end = pr.period_end
-                 AND a.value IS NOT NULL
+                 AND a.duration_days BETWEEN pr.min_days AND pr.max_days
                  AND (a.available_at IS NULL OR pr.available_at IS NULL OR a.available_at >= pr.available_at)
                  AND (pr.basis IS NULL OR a.basis IS NULL OR upper(a.basis) = upper(pr.basis))
                  AND coalesce(a.source, '') <> pr.source
-                WHERE pr.source = ?
-                  AND pr.is_preliminary
             ),
             selected AS (
                 SELECT *

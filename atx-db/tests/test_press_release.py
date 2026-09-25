@@ -1,19 +1,26 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 
 import pandas as pd
 import pytest
 
-from atx_db.estimates import EstimateSurpriseDataset, EstimateSurpriseOptions
+from atx_db.estimates import (
+    EstimateMeasureSeedDataset,
+    EstimateMeasureSeedOptions,
+    EstimateSurpriseDataset,
+    EstimateSurpriseOptions,
+)
 from atx_db.press_release import (
+    SEC_EARNINGS_RELEASE_SOURCE,
     PressReleaseDataset,
     PressReleaseOptions,
     normalize_press_release_rows,
     press_release_facts_asof,
+    refresh_press_release_reconciliation,
 )
 from atx_db.quality import run_warehouse_quality_checks
-
 
 SECURITY_ID = "sec_pr_001"
 SYMBOL = "PRCO"
@@ -59,7 +66,30 @@ def _write_press_release_csv(tmp_path) -> object:
     return source_file
 
 
-def _insert_final_actual(store, *, measure_code: str, value: float, basis: str = "GAAP") -> None:
+def _companyfact(
+    store, *, security_id: str, cik: str, concept: str, unit: str, start: dt.date, end: dt.date,
+    value: float, accession: str, filed: dt.date, fiscal_year: int, fiscal_period: str, form: str,
+) -> None:
+    at = dt.datetime.combine(filed, dt.time()) + dt.timedelta(hours=46)
+    store.con.execute(
+        """
+        INSERT INTO sec_company_facts (
+            source, security_id, cik, taxonomy, concept, unit, period_start, period_end,
+            filed_date, fiscal_year, fiscal_period, form, accession_number, value,
+            available_at, source_url, source_loaded_at
+        ) VALUES ('SEC companyfacts', ?, ?, 'us-gaap', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                  'https://example.invalid/companyfacts', ?)
+        """,
+        [security_id, cik, concept, unit, start, end, filed, fiscal_year, fiscal_period, form,
+         accession, value, at, at],
+    )
+
+
+def _est_actual(
+    store, *, security_id: str, measure_code: str, fiscal_year: int, fiscal_period: str,
+    period_end: dt.date, value: float, unit: str, accession: str, available_at: dt.datetime,
+    basis: str = "GAAP", form: str = "10-Q",
+) -> None:
     store.con.execute(
         """
         INSERT INTO est_actual (
@@ -67,20 +97,29 @@ def _insert_final_actual(store, *, measure_code: str, value: float, basis: str =
             period_end, value, unit, basis, form, accession_number,
             announce_date, as_of_date, available_at, source
         )
-        VALUES (?, ?, 2025, 'Q3', ?, ?, ?, ?, '10-Q', ?, ?, ?, ?, 'sec_company_facts')
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sec_company_facts')
         """,
-        [
-            SECURITY_ID,
-            measure_code,
-            PERIOD_END,
-            value,
-            "USD_PER_SHARE" if measure_code.startswith("EPS") else "USD",
-            basis,
-            f"{ACCESSION}-FINAL-{measure_code}",
-            FINAL_AT.date(),
-            PERIOD_END,
-            FINAL_AT,
-        ],
+        [security_id, measure_code, fiscal_year, fiscal_period, period_end, value, unit, basis,
+         form, accession, available_at.date(), period_end, available_at],
+    )
+
+
+def _insert_final_actual(store, *, measure_code: str, value: float, basis: str = "GAAP") -> None:
+    """A final actual backed by the exact Company Facts fact it was copied from."""
+
+    EstimateMeasureSeedDataset().load(store, EstimateMeasureSeedOptions())
+    concept = {"REVENUE": "Revenues", "EPS_DILUTED": "EarningsPerShareDiluted"}[measure_code]
+    unit = "USD/shares" if measure_code.startswith("EPS") else "USD"
+    accession = f"{ACCESSION}-FINAL-{measure_code}"
+    _companyfact(
+        store, security_id=SECURITY_ID, cik=CIK, concept=concept, unit=unit, start=PERIOD_START,
+        end=PERIOD_END, value=value, accession=accession, filed=FINAL_AT.date(),
+        fiscal_year=2025, fiscal_period="Q3", form="10-Q",
+    )
+    _est_actual(
+        store, security_id=SECURITY_ID, measure_code=measure_code, fiscal_year=2025, fiscal_period="Q3",
+        period_end=PERIOD_END, value=value, unit=unit, accession=accession, available_at=FINAL_AT,
+        basis=basis,
     )
 
 
@@ -258,6 +297,99 @@ def test_press_release_refresh_reconciles_and_updates_period_dates(tmp_store, tm
         "press_release_no_lookahead": "passed",
         "press_release_preliminary_vintage_retained": "passed",
     }
+
+
+SEC_SECURITY = "SEC-CIK-0000009999"
+
+
+def _sec_release(
+    store, fact_id: str, *, measure_code: str, fiscal_year: int, fiscal_period: str,
+    period_end: dt.date, value: float, available_at: dt.datetime,
+) -> None:
+    payload = json.dumps({"receipt_id": f"receipt-{fact_id}", "duration_evidence": "three_months_explicit"})
+    store.con.execute(
+        """
+        INSERT INTO press_release_facts (
+            press_release_fact_id, source, security_id, cik, accession_number, form,
+            source_item, source_url, measure_code, fiscal_year, fiscal_period,
+            period_end, value, unit, basis, is_preliminary, extraction_confidence,
+            filing_date, release_date, as_of_date, available_at, raw_payload_json, run_id,
+            input_codes_json
+        ) VALUES (?, ?, ?, ?, ?, '8-K', '2.02 / EX-99', 'https://example.invalid/ex99.htm',
+                  ?, ?, ?, ?, ?, 'USD_PER_SHARE', 'GAAP', true, 1.0, ?, ?, ?, ?, ?, 'fixture', '[]')
+        """,
+        [fact_id, SEC_EARNINGS_RELEASE_SOURCE, SEC_SECURITY, CIK, f"release-{fact_id}", measure_code,
+         fiscal_year, fiscal_period, period_end, value, available_at.date(), available_at.date(),
+         period_end, available_at, payload],
+    )
+
+
+def test_reconciliation_matches_period_geometry_not_fiscal_labels(tmp_store) -> None:
+    """Final actuals match on owner, measure, period end and duration only.
+
+    The Q2 2025 10-Q carries both the quarter and the six-month YTD value at
+    the same end and filing labels (est_actual keeps the YTD one); the
+    quarter's final value arrives as a comparative in the Q2 2026 10-Q under
+    that filing's labels (2026, Q2).
+    """
+
+    store = tmp_store
+    EstimateMeasureSeedDataset().load(store, EstimateMeasureSeedOptions())
+    q2_end, q4_end = dt.date(2025, 6, 30), dt.date(2025, 12, 31)
+    release_at = dt.datetime(2025, 7, 26, 22)
+    _sec_release(store, "q2-basic", measure_code="EPS_BASIC", fiscal_year=2025, fiscal_period="Q2",
+                 period_end=q2_end, value=1.40, available_at=release_at)
+    _sec_release(store, "q2-diluted", measure_code="EPS_DILUTED", fiscal_year=2025, fiscal_period="Q2",
+                 period_end=q2_end, value=1.38, available_at=release_at)
+    _sec_release(store, "q4-basic", measure_code="EPS_BASIC", fiscal_year=2025, fiscal_period="Q4",
+                 period_end=q4_end, value=0.50, available_at=dt.datetime(2026, 1, 30, 22))
+    facts = (
+        # concept, start, end, value, accession, filed, fiscal year/period, form
+        ("EarningsPerShareBasic", dt.date(2025, 4, 1), q2_end, 1.40, "q2-2025", dt.date(2025, 8, 5), 2025, "Q2", "10-Q"),
+        ("EarningsPerShareBasic", dt.date(2025, 1, 1), q2_end, 2.80, "q2-2025", dt.date(2025, 8, 5), 2025, "Q2", "10-Q"),
+        ("EarningsPerShareDiluted", dt.date(2025, 4, 1), q2_end, 1.38, "q2-2025", dt.date(2025, 8, 5), 2025, "Q2", "10-Q"),
+        ("EarningsPerShareBasic", dt.date(2025, 4, 1), q2_end, 1.40, "q2-2026", dt.date(2026, 8, 4), 2026, "Q2", "10-Q"),
+        ("EarningsPerShareBasic", dt.date(2025, 1, 1), q4_end, 3.10, "fy-2025", dt.date(2026, 2, 20), 2025, "FY", "10-K"),
+    )
+    for concept, start, end, value, accession, filed, fiscal_year, fiscal_period, form in facts:
+        _companyfact(
+            store, security_id=SEC_SECURITY, cik=CIK, concept=concept, unit="USD/shares", start=start,
+            end=end, value=value, accession=accession, filed=filed, fiscal_year=fiscal_year,
+            fiscal_period=fiscal_period, form=form,
+        )
+    finals = (
+        # est_actual keeps one row per (measure, filing labels, accession).
+        ("EPS_BASIC", 2025, "Q2", q2_end, 2.80, "q2-2025", dt.datetime(2025, 8, 6, 22), "10-Q"),
+        ("EPS_DILUTED", 2025, "Q2", q2_end, 1.38, "q2-2025", dt.datetime(2025, 8, 6, 22), "10-Q"),
+        ("EPS_BASIC", 2026, "Q2", q2_end, 1.40, "q2-2026", dt.datetime(2026, 8, 5, 22), "10-Q"),
+        ("EPS_BASIC", 2025, "FY", q4_end, 3.10, "fy-2025", dt.datetime(2026, 2, 21, 22), "10-K"),
+    )
+    for measure_code, fiscal_year, fiscal_period, end, value, accession, at, form in finals:
+        _est_actual(
+            store, security_id=SEC_SECURITY, measure_code=measure_code, fiscal_year=fiscal_year,
+            fiscal_period=fiscal_period, period_end=end, value=value, unit="USD/shares",
+            accession=accession, available_at=at, form=form,
+        )
+
+    assert refresh_press_release_reconciliation(
+        store, PressReleaseOptions(source=SEC_EARNINGS_RELEASE_SOURCE)
+    ) == 3
+    rows = store.con.execute(
+        """
+        SELECT press_release_fact_id, fiscal_year, fiscal_period, final_actual_value,
+               final_actual_accession_number, reconciliation_status
+        FROM press_release_reconciliation WHERE source = ? ORDER BY press_release_fact_id
+        """,
+        [SEC_EARNINGS_RELEASE_SOURCE],
+    ).fetchall()
+    assert rows == [
+        # The YTD value under matching labels is not this quarter's final; the
+        # comparative under the next year's labels is.
+        ("q2-basic", 2025, "Q2", 1.40, "q2-2026", "matched_final"),
+        ("q2-diluted", 2025, "Q2", 1.38, "q2-2025", "matched_final"),
+        # An annual value sharing the Q4 end is never a fourth-quarter final.
+        ("q4-basic", 2025, "Q4", None, None, "pending_final"),
+    ]
 
 
 def _insert_sue_actual(store, fy: int, value: float) -> None:
