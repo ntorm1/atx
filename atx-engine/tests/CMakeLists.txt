@@ -38,6 +38,79 @@ include(GoogleTest)
 find_package(zstd CONFIG REQUIRED)
 set(_atx_core_tests_inc ${CMAKE_CURRENT_SOURCE_DIR}/../../atx-core/tests)
 
+option(ATX_RISK_SECTOR_ASAN "Build the scoped W0-R04 native AddressSanitizer gate" OFF)
+if(ATX_RISK_SECTOR_ASAN)
+    if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
+       OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+        message(FATAL_ERROR "ATX_RISK_SECTOR_ASAN requires native Windows x64 clang-cl")
+    endif()
+    if(NOT CMAKE_BUILD_TYPE STREQUAL "Release" OR ATX_SHARED_LIBS OR ATX_USE_PCH
+       OR NOT CMAKE_MSVC_RUNTIME_LIBRARY STREQUAL "MultiThreadedDLL")
+        message(FATAL_ERROR "Use equity-asan: Release CRT, static libraries, PCH disabled")
+    endif()
+    execute_process(COMMAND "${CMAKE_CXX_COMPILER}" -print-resource-dir
+        RESULT_VARIABLE _asan_resource_status OUTPUT_VARIABLE _asan_resource
+        ERROR_VARIABLE _asan_resource_error OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT _asan_resource_status EQUAL 0 OR _asan_resource STREQUAL "")
+        message(FATAL_ERROR "Cannot detect clang ASan runtime: ${_asan_resource_error}")
+    endif()
+    file(TO_CMAKE_PATH "${_asan_resource}" _asan_resource)
+    set(ATX_RISK_SECTOR_ASAN_RUNTIME "msvc" CACHE STRING "ASan runtime provider: msvc or clang")
+    if(ATX_RISK_SECTOR_ASAN_RUNTIME STREQUAL "msvc")
+        # Use one coherent runtime/import/thunk set from the active MSVC CRT.
+        # The older bundled clang runtime cannot initialize on every Windows CRT.
+        if(NOT DEFINED ENV{VCToolsInstallDir})
+            message(FATAL_ERROR "MSVC ASan runtime detection needs vcvars64; use atx-build.ps1")
+        endif()
+        file(TO_CMAKE_PATH "$ENV{VCToolsInstallDir}" _asan_vctools)
+        set(_asan_dir "${_asan_vctools}/lib/x64")
+        set(_asan_dll "${_asan_vctools}/bin/Hostx64/x64/clang_rt.asan_dynamic-x86_64.dll")
+    elseif(ATX_RISK_SECTOR_ASAN_RUNTIME STREQUAL "clang")
+        set(_asan_dir "${_asan_resource}/lib/windows")
+        set(_asan_dll "${_asan_dir}/clang_rt.asan_dynamic-x86_64.dll")
+    else()
+        message(FATAL_ERROR "ATX_RISK_SECTOR_ASAN_RUNTIME must be msvc or clang")
+    endif()
+    set(_asan_import "${_asan_dir}/clang_rt.asan_dynamic-x86_64.lib")
+    set(_asan_thunk "${_asan_dir}/clang_rt.asan_dynamic_runtime_thunk-x86_64.lib")
+    foreach(_asan_file IN ITEMS "${_asan_import}" "${_asan_thunk}" "${_asan_dll}")
+        if(NOT EXISTS "${_asan_file}")
+            message(FATAL_ERROR "clang ASan runtime component missing: ${_asan_file}")
+        endif()
+    endforeach()
+    get_filename_component(_asan_bin "${_asan_resource}/../../../bin" ABSOLUTE)
+    find_program(ATX_RISK_SECTOR_ASAN_SYMBOLIZER llvm-symbolizer HINTS "${_asan_bin}" REQUIRED)
+    set(ATX_RISK_SECTOR_ASAN_RUNTIME_DIR "${_asan_dir}" CACHE INTERNAL "Detected ASan runtime libs")
+    message(STATUS "W0-R04 ASan: ${_asan_dll}; symbolizer=${ATX_RISK_SECTOR_ASAN_SYMBOLIZER}")
+    message(STATUS "W0-R04 ASan scope: production factor_model.cpp and fixture; deps uninstrumented")
+    message(STATUS "W0-R04 ASan: STL logical-size annotations off for prebuilt dependency ABI")
+
+    # Compile the real production TU directly: do not pull in or rebuild every
+    # unrelated engine source merely to qualify this particular bounds defect.
+    add_executable(atx-engine-risk-sector-asan
+        ../src/risk/factor_model.cpp risk/risk_w0r0_sector_columns_test.cpp)
+    target_include_directories(atx-engine-risk-sector-asan PRIVATE ../include)
+    target_compile_features(atx-engine-risk-sector-asan PRIVATE cxx_std_20)
+    target_compile_options(atx-engine-risk-sector-asan PRIVATE /fsanitize=address /Oy- /Z7)
+    # The prebuilt MSVC-STL dependencies have annotate_string/vector=0. Match
+    # their ABI without suppressing ASan heap-access instrumentation: the exact
+    # Eigen beta[2] positive control must still detect the allocation overflow.
+    # This gate does not qualify logical size-vs-capacity STL annotations.
+    target_compile_definitions(atx-engine-risk-sector-asan PRIVATE
+        ATX_RISK_SECTOR_ASAN=1 _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION)
+    target_link_libraries(atx-engine-risk-sector-asan PRIVATE
+        atx::core GTest::gtest_main Threads::Threads atx_warnings atx-test-scratch "${_asan_import}")
+    # CMake invokes lld-link directly, so reproduce the runtime options selected
+    # by clang-cl's sanitizer driver rather than relying on an implicit link.
+    target_link_options(atx-engine-risk-sector-asan PRIVATE
+        "/WHOLEARCHIVE:${_asan_thunk}" /INCLUDE:__asan_seh_interceptor /INCREMENTAL:NO /DEBUG)
+    add_custom_command(TARGET atx-engine-risk-sector-asan POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_asan_dll}" "$<TARGET_FILE_DIR:atx-engine-risk-sector-asan>" VERBATIM)
+    gtest_discover_tests(atx-engine-risk-sector-asan TEST_PREFIX "RiskSectorAsan."
+        DISCOVERY_TIMEOUT 60 PROPERTIES LABELS "risk_sector_asan")
+endif()
+
 # First configured group owns the shared PCH; the rest REUSE_FROM it so gtest+Eigen
 # are parsed exactly once across the whole suite. Compile flags are kept identical
 # across every group target (same include dirs) so the PCH is reuse-compatible — the

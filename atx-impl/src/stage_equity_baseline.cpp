@@ -610,14 +610,27 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
     if (!summary_bound) return Err(ErrorCode::ParseError, "equity baseline: replay summary is not bound");
     const Json replay_summary = strict_json(summary_text);
     const bool failed_shape = exposures.at("shape_violation_decisions").get<atx::usize>() != 0;
+    const bool assumed_liquidations =
+        replay_summary.at("assumed_liquidation_count").get<atx::usize>() != 0;
+    const char *qualification = failed_shape || assumed_liquidations ? "failed" : "unknown";
     Json summary{{"schema", "atx-equity-baseline-summary-v1"}, {"purpose", "training-only-software-and-book-diagnostic"},
         {"readiness", inputs.readiness}, {"target_exposures", exposures}, {"memory_preflight", inputs.memory},
         {"replay", replay_summary.at("full")}, {"trade_liquidity", replay_summary.at("trade_liquidity")},
-        {"strategy_capacity", "unavailable"}, {"qualification", failed_shape ? "failed" : "unknown"},
+        {"strategy_capacity", "unavailable"}, {"qualification", qualification},
         {"qualification_reasons", Json::array({"source-economics-and-publication-vintages-unverified",
             "instrument-types-and-locates-unknown", "post-cost-and-between-decision-risk-not-enforced",
             "no-heldout-selection-evidence"})},
         {"post_fit_interpretation", "unfit-constant-weights-boundary-zero-is-not-out-of-sample-selection"}};
+    for (const char *key : {"usable_for_alpha_evidence", "performance_evidence_eligibility",
+             "terminal_liquidation_count", "evidenced_delisting_count", "flagged_delistings",
+             "flagged_short_delistings", "flagged_short_pnl_dollars", "assumed_liquidation_count",
+             "assumed_liquidation_pnl_dollars", "gap_carry_count"}) {
+        summary[key] = replay_summary.at(key);
+    }
+    if (assumed_liquidations) {
+        summary["qualification_reasons"].push_back(
+            replay_summary.at("performance_evidence_eligibility"));
+    }
     if (failed_shape) summary["qualification_reasons"].push_back("target-shaping-violates-declared-neutrality-or-cap-tolerance");
     ATX_TRY(auto summary_file, write_text(directory, "summary.json", summary.dump(2) + "\n"));
     files.push_back(std::move(summary_file));
@@ -629,7 +642,7 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
                               {"size_bytes", number(fs::file_size(directory / name))}});
     }
     Json manifest{{"schema", "atx-equity-baseline-v1"}, {"status", "complete"},
-        {"qualification", failed_shape ? "failed" : "unknown"}, {"recipe", profile.recipe},
+        {"qualification", qualification}, {"recipe", profile.recipe},
         {"parents", Json::array({Json{{"role", "source-context"}, {"sha256", attempt.at("source_context_artifact_id")}},
             Json{{"role", "evaluation"}, {"sha256", inputs.evaluation.artifact_id}},
             Json{{"role", "combo"}, {"sha256", inputs.combo.artifact_id}},
@@ -641,7 +654,7 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
     StageResult result = std::move(reported);
     result.digest = fnv1a64(baseline_id.data(), baseline_id.size());
     result.kvs.emplace_back("baseline_id", baseline_id);
-    result.kvs.emplace_back("qualification", failed_shape ? "failed" : "unknown");
+    result.kvs.emplace_back("qualification", qualification);
     result.kvs.emplace_back("target_shape_violations", exposures.at("shape_violation_decisions").dump());
     result.kvs.emplace_back("actual_absolute_trade_dollars", replay_summary.at("full").at("absolute_trade_dollars").dump());
     result.kvs.emplace_back("admitted_evaluation_cells", inputs.readiness.at("admitted_evaluation_cells").dump());
