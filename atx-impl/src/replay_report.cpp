@@ -428,6 +428,15 @@ Result<book::ReplayConfig> replay_config(const RunConfig &cfg,
     result.annual_borrow_bps = cfg.replay_annual_borrow_bps;
     result.borrow_day_basis = cfg.replay_day_basis == 360
         ? book::ReplayDayBasis::D360 : book::ReplayDayBasis::D365;
+    // W0-B0/I0b integration handoff (lane-b0-report.md "Major 1" / "3."): the engine's
+    // TerminalReturn default silently carries or liquidates a held name with a missing
+    // close instead of failing. The identified report has no delisting table, exchange
+    // list, or locate schedule to feed that policy, so a missing close here is a data
+    // defect, not a real delisting; ask the engine to keep failing fast on it (its
+    // pre-B0 behavior, and what every existing identified-report test still expects).
+    // A future lane can add `--replay-delisting-policy abort|terminal-return` plus the
+    // delisting/exchange inputs if the identified report needs to price real delistings.
+    result.delisting_policy = book::DelistingPolicy::Abort;
     return Ok(result);
 }
 
