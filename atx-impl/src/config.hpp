@@ -557,14 +557,16 @@ read_seed_file(const std::string& path);
 // replay_execution_delay and equity_ic_execution_delay unless allow_same_close.
 [[nodiscard]] atx::core::Status validate_execution_delay(const RunConfig& cfg);
 
-// Every cross-flag rule parse_args applies (--resume needs --run-db, membership
-// all-three-or-none, the execution-delay guard, the si-lag rule). dispatch calls it
-// again after a --config merge so a file cannot bypass what the CLI enforces.
+// Every cross-flag rule (--resume needs --run-db, membership all-three-or-none, the
+// execution-delay guard, the si-lag rule). parse_args applies it when no --config is
+// given; with --config it is deferred and the caller (dispatch) MUST run it on the
+// merged result, so a file cannot bypass what the CLI enforces and an opt-in named in
+// the file (allow-same-close=true) counts for a CLI value.
 [[nodiscard]] atx::core::Status validate_cross_flags(const RunConfig& cfg);
 
 // Parse a boolean flag value (W0-I0b / I-10): "" (a valueless CLI flag or a bare
-// `flag=` config line) and "true" mean true, "false" means false; anything else is
-// Err(InvalidArgument). Exposed for the stages that parse their own flags.
+// `flag=` config line), "true" and "1" mean true, "false" and "0" mean false; anything
+// else is Err(InvalidArgument). Exposed for the stages that parse their own flags.
 [[nodiscard]] atx::core::Result<bool> parse_bool_flag_value(std::string_view flag,
                                                             std::string_view value);
 
@@ -573,12 +575,14 @@ read_seed_file(const std::string& path);
 [[nodiscard]] bool subcommand_rejects_config(std::string_view subcommand) noexcept;
 
 // Parse CLI arguments.
-// argv[1] is the subcommand (or --help/-h).
+// argv[1] is the subcommand (or --help/-h). A boolean flag consumes one following
+// literal true / false / 1 / 0 token as its value. Runs validate_cross_flags unless
+// --config is present (see validate_cross_flags).
 // Returns Err(InvalidArgument) on unknown flag/subcommand.
 [[nodiscard]] atx::core::Result<RunConfig> parse_args(int argc, char** argv);
 
 // Parse a config file (newline-separated flag=value, # comments). A boolean key takes
-// true|false (or an empty value, meaning true). A nested `config=` key is refused.
+// true|false|1|0 (or an empty value, meaning true). A nested `config=` key is refused.
 // Returns Err(IoError/ParseError) on failure.
 [[nodiscard]] atx::core::Result<RunConfig> parse_config_file(
         const std::string& path,

@@ -71,7 +71,7 @@ static void print_usage(std::ostream& out) {
            "\n"
            "Global flags: --help, --quiet, --digest-only, --config <file> (every stage\n"
            "  except equity-ic and equity-universe, which reject it).\n"
-           "Boolean flags take an optional true|false (--metabook false; key=false in a file).\n"
+           "Boolean flags take an optional true|false|1|0 (--metabook false; key=false in a file).\n"
            "Double-valued flags must be finite (nan/inf are rejected).\n"
            "Panel inputs require matching .manifest.json identity files.\n"
            "Legacy diagnostics: --allow-unidentified-panels true (unknown identity).\n"

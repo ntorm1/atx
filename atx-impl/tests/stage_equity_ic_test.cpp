@@ -441,6 +441,9 @@ TEST_F(StageEquityIc, TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput
     EXPECT_EQ(request.at("required_mark_audit").at("required_mark_id_count"), 34);
     EXPECT_EQ(request.at("required_mark_audit").at("terminal_unevidenced_ids"),
               Json::array({146189}));
+    // W0-I0b fix pass 1: the computed R-A count (34 audited - 3 evidenced terminal - 2
+    // evidenced non-terminal) is published again, here and in the manifest.
+    EXPECT_EQ(request.at("required_mark_audit").at("unclassified_id_count"), 29);
     ASSERT_EQ(request.at("terminal_evidence").size(), 3U);
     EXPECT_EQ(request.at("terminal_evidence").at(1).at("security_id"), 35715);
     EXPECT_EQ(request.at("terminal_evidence").at(1).at("record_date"), "2013-10-28");
@@ -448,6 +451,7 @@ TEST_F(StageEquityIc, TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput
     const auto manifest = Json::parse(contents(root / "ic1" / "manifest.json"));
     EXPECT_EQ(manifest.at("status"), "complete");
     EXPECT_EQ(manifest.at("terminal_evidence").at("pcs_applied"), false);
+    EXPECT_EQ(manifest.at("terminal_evidence").at("unclassified_id_count"), 29);
     EXPECT_EQ(manifest.at("predictions_confirmed").at("modulo_fallbacks"), 0);
     EXPECT_NE(manifest.at("cost_model_provenance").get<std::string>().find(
                   "no call into replay.cpp borrow_charge"), std::string::npos);

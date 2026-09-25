@@ -61,6 +61,49 @@ TEST(ImplConfigBool_Cli, ANonLiteralTokenAfterABooleanIsNotSwallowed) {
     EXPECT_NE(stray.error().message().find("unexpected argument"), std::string::npos);
 }
 
+TEST(ImplConfigBool_Cli, CommittedRunbooksNumericBooleanLiteralsStillParse) {
+    // Fix pass 1: scripts/canonical-acceptance-run.ps1:88 and
+    // scripts/build-tradeable-alphas.ps1:51 pass `--require-sector 1 --compact-universe 1`.
+    // `1` / `0` are boolean literals, so both runbooks keep parsing (and mean true).
+    const auto canonical = parse({"atx-impl", "panel", "--segs", "segs", "--panel-out", "p.bin",
+                                  "--min-price", "1.0", "--min-adv-usd", "25000000",
+                                  "--adv-window", "20", "--top-n-by-adv", "0",
+                                  "--require-sector", "1", "--compact-universe", "1"});
+    ASSERT_TRUE(canonical.has_value()) << canonical.error().message();
+    EXPECT_TRUE(canonical->require_sector);
+    EXPECT_TRUE(canonical->compact_universe);
+    EXPECT_EQ(canonical->top_n_by_adv, 0L);
+    const auto dev = parse({"atx-impl", "panel", "--segs", "segs", "--panel-out", "dev.bin",
+                            "--start", "2012-01-01", "--end", "2013-12-31", "--min-price", "1.0",
+                            "--min-adv-usd", "25000000", "--adv-window", "20", "--top-n-by-adv",
+                            "300", "--augment-panel", "--adv-windows", "5,10,20,60",
+                            "--require-sector", "1", "--compact-universe", "1"});
+    ASSERT_TRUE(dev.has_value()) << dev.error().message();
+    EXPECT_TRUE(dev->augment_panel);
+    EXPECT_TRUE(dev->require_sector);
+    EXPECT_TRUE(dev->compact_universe);
+    // `0` is false, and a numeric literal followed by another flag leaves it alone.
+    const auto zero = parse({"atx-impl", "optimize", "--metabook", "0", "--exclude-no-sector",
+                             "0", "--gated", "1", "--gross", "1.5"});
+    ASSERT_TRUE(zero.has_value()) << zero.error().message();
+    EXPECT_FALSE(zero->metabook);
+    EXPECT_FALSE(zero->exclude_no_sector);
+    EXPECT_TRUE(zero->gated);
+    EXPECT_DOUBLE_EQ(zero->gross, 1.5);
+    // Other numbers are not boolean literals: `2` is a stray token, not a value.
+    const auto two = parse({"atx-impl", "panel", "--require-sector", "2"});
+    ASSERT_FALSE(two.has_value());
+    EXPECT_NE(two.error().message().find("unexpected argument"), std::string::npos);
+    // The same literals are accepted from a config file.
+    const auto path = write_config("numeric_bool.cfg", "require-sector=1\ncompact-universe=0\n");
+    const auto file = impl::parse_config_file(path.string(), "panel");
+    ASSERT_TRUE(file.has_value()) << file.error().message();
+    EXPECT_TRUE(file->require_sector);
+    EXPECT_FALSE(file->compact_universe);
+    EXPECT_FALSE(impl::parse_bool_flag_value("metabook", "2").has_value());
+    EXPECT_FALSE(impl::parse_bool_flag_value("metabook", "yes").has_value());
+}
+
 TEST(ImplConfigBool_File, FalseTurnsAFlagOffAndGarbageIsRejected) {
     const auto path = write_config("bool.cfg", "metabook=false\ngated=true\nconviction=\n"
                                                "group-neutralize=false\n");
@@ -201,6 +244,34 @@ TEST(ImplDelayGuard_Config, ZeroDelayNeedsAllowSameCloseInAnyOrder) {
     const auto one = parse({"atx-impl", "report", "--replay-execution-delay", "1"});
     ASSERT_TRUE(one.has_value());
     EXPECT_FALSE(one->allow_same_close);
+}
+
+TEST(ImplDelayGuard_Config, AConfigFileOptInCountsForACliZeroDelay) {
+    // Fix pass 1: with --config the cross-flag pass runs on the MERGED result, so the
+    // opt-in may come from the file; without any opt-in the merge is still refused.
+    const auto opt_in = write_config("same_close_opt_in.cfg", "allow-same-close=true\n");
+    const auto parsed = parse({"atx-impl", "report", "--replay-execution-delay", "0",
+                               "--config", opt_in.string()});
+    ASSERT_TRUE(parsed.has_value()) << parsed.error().message();
+    auto merged = *parsed;
+    ASSERT_TRUE(impl::merge_config_file(merged, opt_in.string()));
+    EXPECT_TRUE(merged.allow_same_close);
+    EXPECT_TRUE(impl::validate_cross_flags(merged));
+    const auto accepted = dispatch({"atx-impl", "report", "--replay-execution-delay", "0",
+                                    "--config", opt_in.string()});
+    EXPECT_EQ(accepted.err.find("--allow-same-close"), std::string::npos) << accepted.err;
+    EXPECT_EQ(accepted.code, 1) << "parsed and merged; the report then fails on its inputs";
+
+    const auto no_opt_in = write_config("same_close_none.cfg", "quiet=true\n");
+    const auto refused = dispatch({"atx-impl", "report", "--replay-execution-delay", "0",
+                                   "--config", no_opt_in.string()});
+    EXPECT_EQ(refused.code, 2);
+    EXPECT_NE(refused.err.find("--allow-same-close"), std::string::npos) << refused.err;
+    // An explicit CLI false still beats a file's true (CLI wins the merge).
+    const auto cli_false = dispatch({"atx-impl", "report", "--replay-execution-delay", "0",
+                                     "--allow-same-close", "false", "--config", opt_in.string()});
+    EXPECT_EQ(cli_false.code, 2);
+    EXPECT_NE(cli_false.err.find("--allow-same-close"), std::string::npos) << cli_false.err;
 }
 
 TEST(ImplDelayGuard_Config, ProgrammaticValidationMatchesTheCli) {

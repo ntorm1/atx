@@ -46,6 +46,11 @@ constexpr atx::usize kJoinRow = 30; // evaluation row where the joiners' rebalan
 constexpr atx::usize kDelistRow = 50; // evaluation row from which three names have no close
 // Names 3, 6 and 9 (ids 900004, 900007, 900010) delist; the joiners are 12..15.
 constexpr bool is_delisted(atx::usize i) { return i == 3 || i == 6 || i == 9; }
+// Fix pass 1: with `halt`, name 5 (id 900006) has no close on evaluation rows
+// [kHaltRow, kResumeRow) and then trades again (a halt that resumed).
+constexpr atx::usize kHaltName = 5;
+constexpr atx::usize kHaltRow = 20;
+constexpr atx::usize kResumeRow = 25;
 constexpr const char *kStart = "2013-04-04";
 constexpr const char *kEnd = "2013-06-13"; // exclusive; 70 observations
 
@@ -261,7 +266,8 @@ protected:
 
     // A checkpoint-16 context: the universe mask is the year union (every name, every
     // evaluation row), exactly what `panel --universe-membership` publishes.
-    void write_context(const std::string &name, const std::string &membership_sha) {
+    void write_context(const std::string &name, const std::string &membership_sha,
+                       bool halt = false) {
         const atx::usize dates = kWarmup + kEval;
         std::vector<double> close(dates * kNames);
         std::vector<atx::u8> mask(dates * kNames, 0);
@@ -276,6 +282,11 @@ protected:
                 // Three names stop trading at evaluation row kDelistRow (the terminal
                 // table test prices two of them and flags the third).
                 if (is_delisted(i) && d >= kWarmup + kDelistRow) {
+                    close[d * kNames + i] = std::nan("");
+                    mask[d * kNames + i] = 0;
+                }
+                if (halt && i == kHaltName && d >= kWarmup + kHaltRow &&
+                    d < kWarmup + kResumeRow) {
                     close[d * kNames + i] = std::nan("");
                     mask[d * kNames + i] = 0;
                 }
@@ -614,6 +625,45 @@ TEST_F(ImplIcAsOfMembership_Stage, TerminalReturnTableReplacesTheFrozen2013Table
     EXPECT_GT(
         manifest.at("terminal_evidence").at("n_terminal_unevidenced_cells_measured").get<int>(),
         0);
+    // Fix pass 1: the computed R-A unclassified count is published in request.json and
+    // manifest.json as well as the ledger (no audit here, so the partition is empty).
+    EXPECT_EQ(request.at("required_mark_audit").at("unclassified_id_count"), 0);
+    EXPECT_EQ(manifest.at("terminal_evidence").at("unclassified_id_count"), 0);
+    EXPECT_NE(contents(root / "ledger.jsonl").find("\"unclassified_id_count\":0"),
+              std::string::npos);
+}
+
+TEST_F(ImplIcAsOfMembership_Stage, TerminalReturnRowAfterAResumedHaltIsRefused) {
+    // A return row prices off the security's last close. For a halt that resumed, a
+    // horizon ending inside the halt would be priced off a later close (look-ahead),
+    // so the view is refused; a value row does not depend on any close and still runs.
+    const auto sha = write_membership("constant.bin", 0);
+    ASSERT_NO_FATAL_FAILURE(write_context("ctx.bin", sha, /*halt=*/true));
+    ASSERT_TRUE(impl::run_equity_baseline(
+        baseline_cfg("ctx.bin", "base", "constant.bin", "as-of-v2")).has_value());
+    const auto run_with = [&](const std::string &leaf, const std::string &row) {
+        const auto table_path = root / (leaf + ".csv");
+        {
+            std::ofstream out(table_path, std::ios::binary);
+            out << "security_id,terminal_value,terminal_return,special_dividend,record_date,"
+                   "evidenced,source\n"
+                << row;
+        }
+        auto cfg = ic_cfg("ctx.bin", "base", leaf, "constant.bin", "as-of-v2");
+        cfg.equity_terminal_returns = table_path.string();
+        cfg.set_flags = {"min-names-per-date", "terminal-returns"};
+        return impl::run_equity_ic(cfg);
+    };
+    const auto halted = run_with("ic_halt_return", "900006,,-0.3,,,true,synthetic halt\n");
+    ASSERT_FALSE(halted.has_value());
+    EXPECT_NE(halted.error().message().find("after an interior gap"), std::string::npos)
+        << halted.error().message();
+    EXPECT_NE(halted.error().message().find("900006"), std::string::npos);
+    // A genuine delisting (no close after its gap) still prices off its last close.
+    const auto delisted = run_with("ic_delist_return", "900007,,-0.3,,,true,synthetic delist\n");
+    ASSERT_TRUE(delisted.has_value()) << delisted.error().message();
+    const auto valued = run_with("ic_halt_value", "900006,75.5,,,,true,synthetic merger\n");
+    ASSERT_TRUE(valued.has_value()) << valued.error().message();
 }
 
 TEST(ImplIcAsOfMembership_TerminalTable, ParserEnforcesTheContract) {

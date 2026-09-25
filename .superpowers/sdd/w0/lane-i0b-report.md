@@ -286,3 +286,128 @@ None. No committed digest was re-baselined.
       A-09 attribution). Not a lane failure.
   - Both failures match the pre-merge/A0-merge baseline exactly (2 failed / 556 passed / 5
     skipped), so the merged head is confirmed clean from this lane's perspective.
+
+## Fix pass 1
+
+Addresses `.superpowers/sdd/w0/lane-i0b-review.md` (reviewed SHA `95ed4a88`, verdict BLOCK on one
+major). Every finding is listed with what changed and the evidence.
+
+| # | Sev | Finding | Outcome |
+|---|---|---|---|
+| 1 | major | I-10 broke `--require-sector 1 --compact-universe 1` in two runbooks | FIXED |
+| 2 | minor | `unclassified_id_count` dropped from request.json / manifest.json | FIXED |
+| 3 | minor | terminal-return row priced off a close after a resumed halt (latent look-ahead) | FIXED (refused) |
+| 4 | minor | cross-flag pass ran before the `--config` merge | FIXED |
+| 5 | minor | equity-mine `--allow-same-close true` rejected | FIXED |
+| 6 | minor | no selector reproduces the pre-W0 train DSR (RULES §2) | FIXED (`--dsr-rule`) |
+| 7 | minor (optional) | I-17 stage-level test checks only the final state | NOT FIXED (reason below) |
+| 8 | minor | A-01 re-pin of `n_raw` 12 → 9 in `stage_equity_mine_cli_test.cpp` | no change needed (orchestrator to confirm A0 attribution) |
+
+1. **Boolean literals `1` / `0` (major).** `config.cpp`: new `is_bool_literal` (true / false / 1 /
+   0) drives the `parse_args` look-ahead, and `parse_bool_flag_value` maps `1` → true and `0` →
+   false (so config files accept them too). Any other token after a boolean is still a stray
+   argument (`yes` and `2` are refused). `config.hpp` contracts and the dispatch usage line
+   (`true|false|1|0`) are updated. Both runbooks work unchanged:
+   `scripts/canonical-acceptance-run.ps1:88` and `scripts/build-tradeable-alphas.ps1:51`.
+   Test `ImplConfigBool_Cli.CommittedRunbooksNumericBooleanLiteralsStillParse` parses both
+   runbooks' exact flag sets (the dev-panel dates are replaced with 2012/2013 strings; no data is
+   read). It also covers `--metabook 0` → false, `--exclude-no-sector 0`, `--gated 1`, refusal of
+   `--require-sector 2`, and `require-sector=1` / `compact-universe=0` in a file. The existing
+   `ANonLiteralTokenAfterABooleanIsNotSwallowed` (`yes`) still passes. No integration note is
+   needed, because the scripts need no change.
+2. **Unclassified count published.** New helper `unclassified_mark_count(marks, table)` in
+   `stage_equity_ic.cpp` is the single computation. It feeds the ledger entry (as before), and
+   the count is published again as `request.json` `required_mark_audit.unclassified_id_count` and
+   `manifest.json` `terminal_evidence.unclassified_id_count`. The value is computed, not the
+   pre-W0 constant. Tests:
+   - `StageEquityIc` (existing test, assertions added, none changed) pins 29 in both files for
+     the 34-id audit: 34 − 3 evidenced terminal − 2 evidenced non-terminal.
+   - `ImplIcAsOfMembership_Stage.TerminalReturnTableReplacesTheFrozen2013Table` pins 0 (no
+     audit) in both files and in the ledger line.
+3. **Resumed halt refused for return rows.** `build_cells` now checks the table contract's
+   precondition that the last finite raw close is the delisting observation. For a
+   `terminal_return` row, if a finite close exists before an interior gap that itself precedes
+   the last finite close, the run is refused with `Err(InvalidArgument)` ("has a finite raw close
+   after an interior gap …"). Value rows are unaffected, because they do not depend on any close.
+   The contract is stated in `stage_equity_ic.hpp`. New test
+   `ImplIcAsOfMembership_Stage.TerminalReturnRowAfterAResumedHaltIsRefused` uses name 900006,
+   which is halted on evaluation rows 20–24 and resumes. Its return row is refused (the message
+   names the id). A real delisting's return row (900007) still runs, and a value row for the
+   halted name also runs.
+4. **Cross-flag pass after the merge.** `parse_args` skips `validate_cross_flags` when
+   `--config` is present. `dispatch` already runs it on the merged result, and the contract now
+   requires every caller to do the same (`config.hpp`). New test
+   `ImplDelayGuard_Config.AConfigFileOptInCountsForACliZeroDelay` covers three cases:
+   - CLI `--replay-execution-delay 0` plus a file with `allow-same-close=true`: parsed, merged,
+     `validate_cross_flags` Ok, and dispatch reaches the stage (exit 1 on missing inputs, with no
+     guard message).
+   - The same with a file that has no opt-in: exit 2 with the guard message.
+   - A CLI `--allow-same-close false` beats the file's true: exit 2.
+
+   The existing `AMergedFileMeetsTheSameCrossFlagRules` still passes.
+5. **equity-mine `--allow-same-close [true|false|1|0]`.** The mine parser consumes one following
+   literal (validated through `parse_bool_flag_value`), matching the main parser. Test
+   `ImplDelayGuard_Mine.DelayZeroNeedsAllowSameClose` was extended:
+   - `true` and `1` pass parsing (exit 1 on missing inputs).
+   - `false` and `0` are refused (exit 2, delay message).
+   - A following `--quiet` is not swallowed.
+   - `maybe` is a stray argument.
+6. **Versioned train-DSR selector.** New `mine::TrainDsrRule` has three values:
+   - `ClusterMcFloorV2` is the default and is unchanged. Without accounting it falls back to
+     raw-N, as before.
+   - `SummaryRawNV2` is the summary DSR with N = n_raw.
+   - `SummaryNEffV1` is the pre-W0 rule: the summary DSR with N = n_eff,
+     `eval::SummaryDsrRule::NEffCrossVarV1`. This is exactly the pre-W0 `deflated_sharpe(sr,
+     summary, …)` body at base `458d0bef`.
+
+   The rule is selected with `--dsr-rule cluster-mc-floor-v2|summary-raw-n-v2|summary-n-eff-v1`
+   and recorded twice. `config.dsr_rule_requested` holds the request, and `trials.dsr_rule` holds
+   the rule actually applied (`train_dsr_rule_label`). Summary rules never run accounting
+   (`dsr_clusters` 0, no fallback reason). `dsr_train` stays report-only, and selection is
+   unaffected.
+
+   New test `ImplMineRequiresMembership_Cli.DsrRuleSelectorReproducesThePreW0SummaryRule` uses
+   correlated seeds, which give n_raw 4 and n_eff 1.6143. Every candidate column except
+   `dsr_train` is identical across the two rules, and so is the admitted set. The n-eff-v1 DSR is
+   at least the raw-n-v2 DSR on all 4 scored rows and strictly higher on 1. A bad value is
+   refused.
+
+   Caveat: pre-W0 `dsr_train` values are reproduced exactly only for the rule. E-16 (E0b)
+   separately extends the registry calendar to train + validation, which can move the sketched
+   n_eff.
+7. **Not fixed (optional).** A stage-level injected manifest-write failure needs a failure seam
+   inside `run_equity_baseline` / `run_equity_book`, meaning a test hook in production code, and
+   the stage offers no external way to make the manifest write fail after the `.pending`
+   reservation. The order is proven by the helper unit test
+   (`ImplPendingOrder_Stages.AFailedManifestWriteLeavesThePendingMarker`), and all three call sites
+   route through `publish_manifest_then_release_pending`.
+8. **No change.** The A-01 re-pin stays as disclosed under "Existing-test expectation changes".
+
+**Files changed (fix pass 1):** `atx-impl/src/{config.cpp, config.hpp, dispatch.cpp,
+stage_equity_ic.cpp, stage_equity_ic.hpp, stage_equity_mine.cpp, stage_equity_mine.hpp}`;
+tests `atx-impl/tests/{w0i0b_config_test.cpp, w0i0b_ic_asof_membership_test.cpp,
+w0i0b_mine_membership_test.cpp, stage_equity_ic_test.cpp}` (the last only gains two assertions).
+No existing expectation was changed or weakened. No golden digest moved.
+
+**Evidence (fix pass 1).** Free RAM was ≥ 2.4 GB before each build, and every build used
+`CMAKE_BUILD_PARALLEL_LEVEL=2`.
+```
+powershell -NoProfile -File scripts/atx-build.ps1 build -Preset equity-dev atx-impl-tests atx-shm-worker
+[5/6] Linking CXX executable bin/atx-impl-tests.exe
+exit=0
+powershell -NoProfile -File scripts/atx-build.ps1 -Ctest -Preset equity-dev -R '^(ImplConfigBool_|ImplConfigFinite_|ImplIcAsOfMembership_|ImplMineRequiresMembership_|ImplPendingOrder_|ImplDelayGuard_|StageEquityIc)'
+100% tests passed, 0 tests failed out of 37
+Total Test time (real) = 217.69 sec
+exit=0
+build-equity/bin/atx-impl-tests.exe --gtest_brief=1
+[ImplMineRequiresMembership] dsr rules: n_raw=4 n_eff=1.6143, 4 scored rows compared, 1 raised (n-eff-v1 >= raw-n-v2)
+[  FAILED  ] FundamentalZoo.FixtureParsesTypechecksAndEvaluates (217 ms)
+[  FAILED  ] TrialLedgerRepository.ExistingCp14Ledger_StillVerifies (4 ms)
+[==========] 567 tests from 115 test suites ran. (484071 ms total)
+[  PASSED  ] 560 tests.
+[  SKIPPED ] 5 tests.
+exit=1
+```
+The whole executable has 4 more tests than before (563 → 567), all passing. The 2 failures are
+the same pre-existing, non-lane failures recorded above: the CRLF ledger checkout and the A0
+A-09 FundamentalZoo fixture.

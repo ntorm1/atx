@@ -637,19 +637,41 @@ Result<CellArrays> build_cells(const EquityBaselineEvaluation &view,
         const EquityTerminalEvent *event = table.find(id);
         const bool evidenced = event != nullptr && event->evidenced;
         // A return row prices off the security's LAST finite raw close in the view.
+        // Precondition (checked): that close is the delisting observation, i.e. the
+        // security's closes have no interior gap. The engine applies the terminal leg
+        // to ANY forward gap, so after a halt that later resumes, a cell whose
+        // horizon ends inside the halt would be priced off a close that comes after
+        // its horizon (a look-ahead). Such a view is refused, never priced.
         atx::f64 return_base = 0.0;
         if (evidenced && event->terminal_return) {
-            for (atx::usize d = dates; d-- > 0;) {
+            const auto priced = [&](atx::usize d) {
                 const auto value = raw[d * names + i];
-                if (std::isfinite(value) && value > 0.0) {
-                    return_base = value;
+                return std::isfinite(value) && value > 0.0;
+            };
+            atx::usize last = dates;
+            for (atx::usize d = dates; d-- > 0;) {
+                if (priced(d)) {
+                    last = d;
                     break;
                 }
             }
-            if (return_base <= 0.0) {
+            if (last == dates) {
                 return Err(ErrorCode::InvalidArgument,
                            "equity ic: terminal-return row for security " + number(id) +
                                " has no finite raw close in the evaluated window");
+            }
+            return_base = raw[last * names + i];
+            bool in_gap = false;
+            for (atx::usize d = last; d-- > 0;) {
+                if (!priced(d)) {
+                    in_gap = true;
+                } else if (in_gap) {
+                    return Err(ErrorCode::InvalidArgument,
+                               "equity ic: terminal-return row for security " + number(id) +
+                                   " has a finite raw close after an interior gap; the last "
+                                   "close must be the delisting observation (a resumed halt "
+                                   "would price earlier horizons off a later close)");
+                }
             }
         }
         if (audited) ++out.excluded_columns;
@@ -673,6 +695,23 @@ Result<CellArrays> build_cells(const EquityBaselineEvaluation &view,
         }
     }
     return Ok(std::move(out));
+}
+
+// R-A partition: every audited id that is neither an evidenced terminal event nor an
+// evidenced non-terminal id (PCS, unevidenced, is inside this count). Published in
+// request.json, manifest.json and the ledger entry (pre-W0 a constant 29).
+[[nodiscard]] atx::i64 unclassified_mark_count(const RequiredMarks &marks,
+                                               const EquityTerminalReturnTable &table) {
+    atx::i64 unclassified = 0;
+    for (const auto id : marks.ids) {
+        const auto *event = table.find(id);
+        const bool terminal = event != nullptr && event->evidenced;
+        const bool non_terminal =
+            std::find(kEvidencedNonTerminalIds.begin(), kEvidencedNonTerminalIds.end(), id) !=
+            kEvidencedNonTerminalIds.end();
+        if (!terminal && !non_terminal) ++unclassified;
+    }
+    return unclassified;
 }
 
 Json terminal_ids(const EquityTerminalReturnTable &table, bool evidenced) {
@@ -1035,18 +1074,8 @@ TrialLedgerEntry base_entry(const RunConfig &cfg, const Profile &profile,
         }
     }
     if (!marks.present) entry.source_exclusions.evidenced_non_terminal_ids.clear();
-    // R-A partition: every audited id that is neither an evidenced terminal event nor
-    // an evidenced non-terminal id (PCS, unevidenced, is inside this count).
-    atx::i64 unclassified = 0;
-    for (const auto id : marks.ids) {
-        const auto *event = profile.terminal.find(id);
-        const bool terminal = event != nullptr && event->evidenced;
-        const bool non_terminal =
-            std::find(kEvidencedNonTerminalIds.begin(), kEvidencedNonTerminalIds.end(), id) !=
-            kEvidencedNonTerminalIds.end();
-        if (!terminal && !non_terminal) ++unclassified;
-    }
-    entry.source_exclusions.unclassified_id_count = unclassified;
+    entry.source_exclusions.unclassified_id_count =
+        unclassified_mark_count(marks, profile.terminal);
     entry.producer_executable_sha256 =
         profile.recipe.at("producer_executable_sha256").get<std::string>();
     entry.notes = "Checkpoint 17 Stage 3 families; sign-and-shape only; not accepted alpha. " +
@@ -1358,6 +1387,7 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
             {"terminal_hypothesis_ids", terminal_ids(profile.terminal, true)},
             {"evidenced_non_terminal_ids",
              Json::array({kEvidencedNonTerminalIds[0], kEvidencedNonTerminalIds[1]})},
+            {"unclassified_id_count", unclassified_mark_count(marks, profile.terminal)},
             {"terminal_unevidenced_ids", terminal_ids(profile.terminal, false)},
             {"pcs_statement", "PCS is never applied; admission remains rejected"},
             {"membership_checked_at_runtime", marks.present && frozen_terminal_table},
@@ -1571,6 +1601,7 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
                 {"terminal_hypothesis_ids", terminal_ids(profile.terminal, true)},
                 {"evidenced_non_terminal_ids",
              Json::array({kEvidencedNonTerminalIds[0], kEvidencedNonTerminalIds[1]})},
+                {"unclassified_id_count", unclassified_mark_count(marks, profile.terminal)},
                 {"terminal_unevidenced_ids", terminal_ids(profile.terminal, false)},
                 {"n_terminal_applied_cells_measured", terminal_applied},
                 {"n_terminal_unevidenced_cells_measured", terminal_unevidenced},

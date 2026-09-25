@@ -248,6 +248,23 @@ struct MineData {
     ReturnGuard guard{};
 };
 
+// W0-I0b (RULES §2): the versioned rule behind every row's report-only dsr_train.
+//   ClusterMcFloorV2 (default): the cluster-N DSR of TrialRegistry::accounting()
+//     (E-01 wiring, E0b note), falling back to SummaryRawNV2 when accounting is
+//     unavailable (the report names the reason).
+//   SummaryRawNV2: the registry-summary DSR with N = n_raw (no accounting).
+//   SummaryNEffV1: the pre-W0 rule, N = n_eff over the registry summary (E-01
+//     double discount), kept so pre-W0 dsr_train values can be re-derived.
+enum class TrainDsrRule : atx::u8 {
+    ClusterMcFloorV2 = 0,
+    SummaryRawNV2 = 1,
+    SummaryNEffV1 = 2,
+};
+
+// The stable label of a TrainDsrRule ("cluster-mc-floor-v2", "summary-raw-n-v2",
+// "summary-n-eff-v1"): the --dsr-rule spelling and the gate report's dsr_rule value.
+[[nodiscard]] std::string_view train_dsr_rule_label(TrainDsrRule rule) noexcept;
+
 struct MineConfig {
     bool run_search{true};
     atx::engine::factory::SearchConfig search{};
@@ -262,6 +279,7 @@ struct MineConfig {
     atx::engine::eval::BootstrapCfg boot{};
     GateMode gate{GateMode::By};
     atx::usize threads{1};
+    TrainDsrRule dsr_rule{TrainDsrRule::ClusterMcFloorV2};
 };
 
 struct CandidateRow {
@@ -302,8 +320,10 @@ struct MineOutcome {
     atx::usize search_fidelity_rejected{};
     atx::usize search_fingerprint_hits{};
     // W0-I0b recording (E-16 / E-01 wiring). dsr_rule names the rule behind every
-    // row's dsr_train: "cluster-mc-floor-v2" (TrialRegistry::accounting(), the
-    // default) or "summary-raw-n-v2" when accounting is unavailable (reason given).
+    // row's dsr_train (train_dsr_rule_label): "cluster-mc-floor-v2" (the default,
+    // TrialRegistry::accounting()), "summary-raw-n-v2" (requested, or the default's
+    // fallback when accounting is unavailable, reason given) or "summary-n-eff-v1"
+    // (the pre-W0 rule, requested explicitly).
     std::string dsr_rule;
     std::string dsr_fallback_reason;
     atx::usize dsr_clusters{};  // ONC clusters behind the cluster-N DSR (0 on fallback)

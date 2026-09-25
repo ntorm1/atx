@@ -18,7 +18,13 @@ namespace {
 // W0-I0b / I-10: every boolean flag in one table. A boolean's value is PARSED
 // (parse_bool_flag_value) rather than ignored, so `metabook=false` in a config file
 // turns the stage off instead of on. On the CLI a boolean is valueless, optionally
-// followed by a literal `true` / `false` token (parse_args).
+// followed by one boolean literal token (parse_args). The literals are `true` /
+// `false` and their numeric spellings `1` / `0`, which committed runbooks pass
+// (`--require-sector 1 --compact-universe 1`, fix pass 1).
+[[nodiscard]] constexpr bool is_bool_literal(std::string_view token) noexcept {
+    return token == "true" || token == "false" || token == "1" || token == "0";
+}
+
 struct BoolFlag {
     std::string_view name;
     bool RunConfig::*field;
@@ -85,10 +91,11 @@ constexpr std::array<BoolFlag, 35> kBoolFlags{{
 } // namespace
 
 atx::core::Result<bool> parse_bool_flag_value(std::string_view flag, std::string_view value) {
-    if (value.empty() || value == "true") return atx::core::Ok(true);
-    if (value == "false") return atx::core::Ok(false);
+    if (value.empty() || value == "true" || value == "1") return atx::core::Ok(true);
+    if (value == "false" || value == "0") return atx::core::Ok(false);
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-        "--" + std::string(flag) + " takes true or false: got '" + std::string(value) + "'");
+        "--" + std::string(flag) + " takes true or false (or 1 / 0): got '" +
+            std::string(value) + "'");
 }
 
 bool subcommand_rejects_config(std::string_view subcommand) noexcept {
@@ -738,13 +745,13 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
         std::string_view flag = tok.substr(2); // strip leading "--"
 
         // Boolean flags (kBoolFlags): valueless means true; an immediately following
-        // literal `true` / `false` token is consumed as the value (I-10), so
-        // `--metabook false` is off and `--compact-universe true` keeps working.
+        // boolean literal (true / false / 1 / 0) is consumed as the value (I-10), so
+        // `--metabook false` is off and `--compact-universe 1` keeps working.
         if (find_bool_flag(flag) != nullptr) {
             std::string_view bool_value;
             if (i + 1 < argc) {
                 const std::string_view next{argv[i + 1]};
-                if (next == "true" || next == "false") {
+                if (is_bool_literal(next)) {
                     bool_value = next;
                     ++i;
                 }
@@ -767,7 +774,10 @@ atx::core::Result<RunConfig> parse_args(int argc, char** argv) {
         ++i;
     }
 
-    ATX_TRY_VOID(validate_cross_flags(cfg));
+    // With --config the cross-flag pass runs after the file merge instead (dispatch),
+    // so an opt-in the file supplies (allow-same-close=true) counts for a CLI
+    // --replay-execution-delay 0. The merged result meets the same rules.
+    if (cfg.config_file.empty()) ATX_TRY_VOID(validate_cross_flags(cfg));
     return atx::core::Ok(cfg);
 }
 

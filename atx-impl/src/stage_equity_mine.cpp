@@ -42,6 +42,7 @@
 #include "atx/engine/loop/weight_policy.hpp"
 
 #include "artifacts.hpp"
+#include "config.hpp"
 #include "dispatch.hpp"
 #include "panel_artifact.hpp"
 #include "research_sim.hpp"
@@ -618,6 +619,15 @@ atx::core::Result<atx::i64> parse_iso_date_ns(std::string_view text) {
     return Ok(days * 86400LL * 1000000000LL);
 }
 
+std::string_view train_dsr_rule_label(TrainDsrRule rule) noexcept {
+    switch (rule) {
+    case TrainDsrRule::ClusterMcFloorV2: return "cluster-mc-floor-v2";
+    case TrainDsrRule::SummaryRawNV2: return "summary-raw-n-v2";
+    case TrainDsrRule::SummaryNEffV1: return "summary-n-eff-v1";
+    }
+    return "unknown";
+}
+
 std::string trial_family_of(std::string_view origin) {
     const auto cut = origin.find_first_of(":+");
     return std::string{origin.substr(0, cut)};
@@ -738,7 +748,8 @@ void score_train_row(const alpha::Library &lib, alpha::Engine &engine, const Min
     row.scored = true;
 }
 
-[[nodiscard]] atx::core::Status register_trials(MineOutcome &out, eval::TrialRegistry &registry) {
+[[nodiscard]] atx::core::Status register_trials(MineOutcome &out, eval::TrialRegistry &registry,
+                                               TrainDsrRule dsr_rule) {
     for (CandidateRow &row : out.candidates) {
         if (!row.scored) continue;
         if (degenerate(row.train)) {
@@ -772,19 +783,30 @@ void score_train_row(const alpha::Library &lib, alpha::Engine &engine, const Min
     out.chain_head = registry.chain_head();
     // E-01 wiring: the cluster-N DSR through TrialRegistry::accounting(). When the
     // registry cannot produce it (empty, or more than max_trials trials) every row
-    // falls back to the summary DSR (N = n_raw) and the report says why.
+    // falls back to the summary DSR (N = n_raw) and the report says why. The summary
+    // rules (--dsr-rule) skip accounting altogether.
     std::optional<eval::TrialAccounting> acct;
-    if (out.trials.n_raw > 0) {
-        auto computed = registry.accounting(eval::TrialAccountingConfig{});
-        if (computed) {
-            acct = std::move(*computed);
+    if (dsr_rule == TrainDsrRule::ClusterMcFloorV2) {
+        if (out.trials.n_raw > 0) {
+            auto computed = registry.accounting(eval::TrialAccountingConfig{});
+            if (computed) {
+                acct = std::move(*computed);
+            } else {
+                out.dsr_fallback_reason = computed.error().message();
+            }
         } else {
-            out.dsr_fallback_reason = computed.error().message();
+            out.dsr_fallback_reason = "no recorded trials";
         }
-    } else {
-        out.dsr_fallback_reason = "no recorded trials";
     }
-    out.dsr_rule = acct ? "cluster-mc-floor-v2" : "summary-raw-n-v2";
+    // The rule actually applied: the default falls back to raw-N without accounting.
+    TrainDsrRule applied = dsr_rule;
+    if (dsr_rule == TrainDsrRule::ClusterMcFloorV2 && !acct) {
+        applied = TrainDsrRule::SummaryRawNV2;
+    }
+    out.dsr_rule = std::string{train_dsr_rule_label(applied)};
+    const eval::SummaryDsrRule summary_rule = applied == TrainDsrRule::SummaryNEffV1
+                                                  ? eval::SummaryDsrRule::NEffCrossVarV1
+                                                  : eval::SummaryDsrRule::RawNCrossVarV2;
     if (acct) {
         out.dsr_clusters = acct->clusters.n_clusters;
         out.dsr_sr_star_mc = acct->mc.sorted_max.empty() ? 0.0 : acct->mc.mean;
@@ -799,8 +821,9 @@ void score_train_row(const alpha::Library &lib, alpha::Engine &engine, const Min
             row.dsr_train = eval::deflated_sharpe(sr, *acct, row.train.net.size(), skew, kurt)
                                 .result.dsr;
         } else {
-            row.dsr_train =
-                eval::deflated_sharpe(sr, out.trials, row.train.net.size(), skew, kurt).dsr;
+            row.dsr_train = eval::deflated_sharpe(sr, out.trials, row.train.net.size(), skew,
+                                                  kurt, summary_rule)
+                                .dsr;
         }
     }
     return Ok();
@@ -918,7 +941,7 @@ atx::core::Result<MineOutcome> mine_train(const alpha::Library &lib, const MineD
                       score_train_row(lib, engine, train, close_id, cfg.score, guard,
                                       out.candidates[i]);
                   });
-    ATX_TRY_VOID(register_trials(out, registry));
+    ATX_TRY_VOID(register_trials(out, registry, cfg.dsr_rule));
     select_family(out, cfg, train.window.size());
     return Ok(std::move(out));
 }
@@ -1123,6 +1146,8 @@ struct MineArgs {
     // explicit, labelled pre-W0 fallback and takes no image.
     std::string membership_rule{"as-of-v2"};
     bool allow_same_close{false}; // B-02: --delay 0 needs this opt-in
+    // RULES §2: the report-only train DSR rule; summary-n-eff-v1 re-derives pre-W0.
+    mine::TrainDsrRule dsr_rule{mine::TrainDsrRule::ClusterMcFloorV2};
     std::string train_start, val_start, hold_start, hold_end;
     std::string seal{"2020-01-01"};
     std::string out;
@@ -1210,6 +1235,16 @@ template <class T>
         a.membership_rule = std::string{v};
         return Ok();
     }
+    if (f == "dsr-rule") {
+        if (v == "cluster-mc-floor-v2") a.dsr_rule = mine::TrainDsrRule::ClusterMcFloorV2;
+        else if (v == "summary-raw-n-v2") a.dsr_rule = mine::TrainDsrRule::SummaryRawNV2;
+        else if (v == "summary-n-eff-v1") a.dsr_rule = mine::TrainDsrRule::SummaryNEffV1;
+        else {
+            return Err(ErrorCode::InvalidArgument,
+                       "--dsr-rule must be cluster-mc-floor-v2|summary-raw-n-v2|summary-n-eff-v1");
+        }
+        return Ok();
+    }
     if (f == "train-start") { a.train_start = std::string{v}; return Ok(); }
     if (f == "validation-start") { a.val_start = std::string{v}; return Ok(); }
     if (f == "holdout-start") { a.hold_start = std::string{v}; return Ok(); }
@@ -1280,7 +1315,21 @@ template <class T>
         if (f == "no-output-dedup") { a.output_dedup = false; continue; }
         if (f == "quiet") { a.quiet = true; continue; }
         if (f == "no-return-guard") { a.guard_returns = false; continue; }
-        if (f == "allow-same-close") { a.allow_same_close = true; continue; }
+        if (f == "allow-same-close") {
+            // As parse_args: valueless means true; one following boolean literal
+            // (true / false / 1 / 0) is consumed as the value.
+            std::string_view value;
+            if (i + 1 < argc) {
+                const std::string_view next{argv[i + 1]};
+                if (!next.empty() && parse_bool_flag_value(f, next).has_value()) {
+                    value = next;
+                    ++i;
+                }
+            }
+            ATX_TRY(const bool allow, parse_bool_flag_value(f, value));
+            a.allow_same_close = allow;
+            continue;
+        }
         if (i + 1 >= argc) {
             return Err(ErrorCode::InvalidArgument, "equity-mine: --" + std::string{f} +
                                                        " needs a value");
@@ -1756,6 +1805,7 @@ void log_line(std::ostream &err, bool quiet, const std::string &msg) {
     cfg.boot.threads = a.threads;
     cfg.gate = a.gate;
     cfg.threads = a.threads;
+    cfg.dsr_rule = a.dsr_rule;
     return cfg;
 }
 
@@ -1922,6 +1972,7 @@ struct Windows {
                         {"ic_horizons", score_cfg.ic_horizons},
                         {"periods_per_year", score_cfg.periods_per_year},
                         {"membership_rule", a.membership_rule},
+                        {"dsr_rule_requested", mine::train_dsr_rule_label(a.dsr_rule)},
                         {"min_names", a.min_names},
                         {"max_validate", a.max_validate},
                         {"max_corr", a.max_corr},

@@ -40,7 +40,11 @@ namespace atx::impl {
 //  never derives a terminal return: this table supplies the terminal cash VALUE per
 //  share for every cell of the security, either directly (`terminal_value`) or as a
 //  return on the security's last finite raw close in the evaluated view
-//  (`terminal_return`, value = last_raw_close * (1 + return)). A special dividend is
+//  (`terminal_return`, value = last_raw_close * (1 + return)). A return row requires
+//  that last close to be the delisting observation: a security whose raw closes have
+//  an interior gap followed by a later finite close (a halt that resumed) is refused
+//  (Err(InvalidArgument)), since a horizon ending inside the gap would otherwise be
+//  priced off a close observed after it. A special dividend is
 //  added to the value for sessions at or before `record_session_key` (ruling AR-2).
 //  An UNEVIDENCED row flags the security terminal without pricing it: its cells are
 //  dropped and counted, never priced (ruling AR-1, the PCS rule).
