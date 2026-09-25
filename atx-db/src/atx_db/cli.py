@@ -763,7 +763,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_activation_from_args(args, governed_migrations=run_governed_migrations)
 
     if args.command == "publish-release":
-        from .publication import publish_release
+        from .publication import publish_release, release_exit_code
 
         pending = pending_migrations(args.db_path)
         if pending:
@@ -790,9 +790,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "previous_release_id": release_result.previous_release_id,
                 "dataset_count": len(release_result.datasets),
                 "total_rows": release_result.total_rows,
+                "eligibility": release_result.eligibility,
+                "gates_not_passed": list(release_result.gates_not_passed),
             }
         )
-        return 0
+        # 0 = eligible; publication.CANDIDATE_EXIT_CODE (3) = written, but only a candidate.
+        return release_exit_code(release_result.eligibility)
 
     raise AssertionError(f"Unhandled command: {args.command}")
 

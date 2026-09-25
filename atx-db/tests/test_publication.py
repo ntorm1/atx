@@ -76,21 +76,32 @@ def _seed_release_inputs(store, *, universe_rows=2):
     """)
 
 
-def _seed_all_gates_passing(con, as_of=dt.date(2026, 9, 18)):
-    """A warehouse whose every stored release gate passes, measured on ``as_of``.
+def _seed_all_gates_passing(con, as_of=dt.date(2026, 9, 17), run_start=None, slo_observed_at=None):
+    """A warehouse whose every stored release gate passes, activation-shaped.
 
-    Activation produced every released dataset at 09:00; raw receipts are pinned at 07:00;
-    completeness, critical DQC and SLO evidence were recorded at 10:00 (after the data);
-    FY2015..FY(as_of.year-1) coverage has 110 items at 95 % on a complete 3000-name cohort
-    ranked on the strict-identity panel over the certified strict universe.
+    A ladder pinned to ``as_of`` runs on a later wall-clock day (``run_start``, default the
+    next day 08:00): release stages 08:00-09:00, evidence stages (item_coverage,
+    provider_coverage, quality) start 10:00; raw receipts are pinned at 07:00; DQC and
+    completeness rows are written (wall clock) at 10:15; SLO snapshots carry the pinned
+    ``as_of`` 22:00 stamp and the 'run5-coverage' run id. FY2015..FY(as_of.year-1) coverage
+    has 110 items at 95 % on complete 3000-member cohorts whose members resolve to certified
+    strict-universe memberships and strict-identity market rows.
     """
 
     from atx_db.item_coverage import DEFAULT_SOURCE, DEFAULT_UNIVERSE_ID
     from atx_db.market_daily import MARKET_DAILY_STRICT_SOURCE_NAME
-    from atx_db.publication import RELEASE_DATASET_STAGES, RELEASE_SOURCES
+    from atx_db.publication import (
+        COVERAGE_FIRST_FISCAL_YEAR,
+        EVIDENCE_STAGES,
+        RELEASE_DATASET_STAGES,
+        RELEASE_SOURCES,
+    )
 
-    def at(hour):
-        return dt.datetime.combine(as_of, dt.time(hour))
+    run_start = run_start or dt.datetime.combine(as_of + dt.timedelta(days=1), dt.time(8))
+    slo_observed_at = slo_observed_at or dt.datetime.combine(as_of, dt.time(22))
+
+    def at(minutes):
+        return run_start + dt.timedelta(minutes=minutes)
 
     _seed_release_inputs(types.SimpleNamespace(con=con))
     con.execute(
@@ -99,15 +110,43 @@ def _seed_all_gates_passing(con, as_of=dt.date(2026, 9, 18)):
     con.executemany(
         "INSERT INTO activation_stage_runs (stage, run_id, status, started_at, finished_at) "
         "VALUES (?, 'run5', 'completed', ?, ?)",
-        [[stage, at(8), at(9)] for stage in sorted(set(RELEASE_DATASET_STAGES.values()))],
+        [[stage, at(0), at(60)] for stage in sorted(set(RELEASE_DATASET_STAGES.values()))]
+        + [[stage, at(120), at(150)] for stage in sorted(set(EVIDENCE_STAGES.values()))],
     )
     con.executemany(
         "INSERT INTO raw_source_files (source_id, dataset_id, source_url, sha256, byte_count, fetched_at, "
         "status, metadata_json) VALUES (?, ?, ?, ?, 1, ?, 'available', '{}')",
         [
-            [f"src-{key}", dataset_id, f"file:///{key}", hashlib.sha256(key.encode()).hexdigest(), at(7)]
+            [f"src-{key}", dataset_id, f"file:///{key}", hashlib.sha256(key.encode()).hexdigest(), at(-60)]
             for key, dataset_id in RELEASE_SOURCES
         ],
+    )
+    # Cohort members: 3000 securities per completed year, each a certified strict-universe
+    # membership and a strict-identity market row the coverage cohort references.
+    years = [COVERAGE_FIRST_FISCAL_YEAR, as_of.year]
+    con.execute(
+        "INSERT INTO universe_us_listed_membership (membership_id, universe_id, security_id, symbol, valid_from, "
+        "valid_to, available_at, security_type, exchange_code, has_cik, cik, market_cap_decile, reason, rules_json, "
+        "decision_count, as_of_date, source, run_id) "
+        "SELECT 'cm-' || y || '-' || r, 'us_listed_v1', 'CS-' || r, 'S' || r, make_date(y, 1, 2), "
+        "make_date(y, 12, 31), make_date(y, 1, 2) + INTERVAL 22 HOUR, 'common', 'XNYS', true, "
+        "lpad(r::VARCHAR, 10, '0'), 1, 'member', ?, 1, ?, 't', 'r' FROM range(?, ?) a(y), range(1, 3001) b(r)",
+        [CERTIFIED_RULES, as_of, *years],
+    )
+    con.execute(
+        "INSERT INTO market_daily_metrics (market_daily_id, source, security_id, trade_date, available_at, "
+        "inputs_hash, as_of_date) SELECT 'cmd-' || y || '-' || r, ?, 'CS-' || r, make_date(y, 12, 31), "
+        "make_date(y, 12, 31) + INTERVAL 22 HOUR, 'h', make_date(y, 12, 31) FROM range(?, ?) a(y), range(1, 3001) b(r)",
+        [MARKET_DAILY_STRICT_SOURCE_NAME, *years],
+    )
+    con.execute(
+        "INSERT INTO item_coverage_annual_cohort (universe_id, fiscal_year, security_id, ranking_date, "
+        "market_cap_rank, market_cap, market_daily_id, membership_id, market_available_at, listing_available_at, "
+        "available_at, as_of_date, source, run_id) SELECT ?, y, 'CS-' || r, make_date(y, 12, 31), r, 1e9 - r, "
+        "'cmd-' || y || '-' || r, 'cm-' || y || '-' || r, make_date(y, 12, 31) + INTERVAL 22 HOUR, "
+        "make_date(y, 1, 2) + INTERVAL 22 HOUR, make_date(y, 12, 31) + INTERVAL 22 HOUR, ?, 'fixture', 'fixture' "
+        "FROM range(?, ?) a(y), range(1, 3001) b(r)",
+        [DEFAULT_UNIVERSE_ID, as_of, *years],
     )
     # A fixture critical check: the DQC gate can never pass on an empty critical set.
     con.execute(
@@ -118,12 +157,12 @@ def _seed_all_gates_passing(con, as_of=dt.date(2026, 9, 18)):
         "INSERT INTO data_quality_checks (check_id, dataset_id, table_name, check_name, status, severity, "
         "details_json, checked_at) SELECT 'pass-' || check_name, dataset_id, coalesce(table_name, dataset_id), "
         "check_name, 'passed', 'critical', '{}', ? FROM quality_check_registry WHERE enabled AND severity = 'critical'",
-        [at(10)],
+        [at(135)],
     )
     con.executemany(
         "INSERT INTO data_quality_checks (check_id, dataset_id, table_name, check_name, status, severity, "
         "details_json, checked_at) VALUES (?, ?, 'raw_source_files', 'source_completeness', 'passed', 'error', '{}', ?)",
-        [[f"complete-{key}", dataset_id, at(10)] for key, dataset_id in RELEASE_SOURCES],
+        [[f"complete-{key}", dataset_id, at(135)] for key, dataset_id in RELEASE_SOURCES],
     )
     con.execute(
         """
@@ -131,11 +170,11 @@ def _seed_all_gates_passing(con, as_of=dt.date(2026, 9, 18)):
             source_relation, time_column, observed_at, record_count, security_count, condition,
             failed_slos_json, slo_version, run_id)
         SELECT 'slo-' || dataset_id || '-' || schema_code, dataset_id, schema_code, '1', 'fixture', 'as_of_date',
-               ?, 1, 1, 'available', '[]', slo_version, 'fixture'
+               ?, 1, 1, 'available', '[]', slo_version, 'run5-coverage'
         FROM api_schema_coverage_slo WHERE is_active
         QUALIFY row_number() OVER (PARTITION BY dataset_id, schema_code ORDER BY valid_from DESC, slo_version DESC) = 1
         """,
-        [at(10)],
+        [slo_observed_at],
     )
     con.execute(
         """
@@ -151,7 +190,7 @@ def _seed_all_gates_passing(con, as_of=dt.date(2026, 9, 18)):
             as_of,
             MARKET_DAILY_STRICT_SOURCE_NAME,
             json.dumps({"listing_universe_id": "us_listed_v1"}),
-            at(22),
+            dt.datetime.combine(as_of, dt.time(22)),
             as_of.year,
         ],
     )
@@ -331,10 +370,14 @@ def test_the_cli_publishes_a_release(tmp_store, tmp_path, built_warehouse, capsy
             str(tmp_path),
         ]
     )
-    assert code == 0
+    # An empty warehouse is written as a candidate, with a distinct exit code.
+    from atx_db.publication import CANDIDATE_EXIT_CODE
+
+    assert code == CANDIDATE_EXIT_CODE
     payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert payload["release_id"] == "cli-1"
     assert payload["dataset_count"] == 6
+    assert payload["eligibility"] == "candidate" and payload["gates_not_passed"] == list(ALL_GATES)
     assert (tmp_path / "cli-1" / "manifest.json").exists()
 
 
@@ -619,6 +662,10 @@ _FAILED_DQC = (
     "INSERT INTO data_quality_checks (check_id, dataset_id, table_name, check_name, status, severity, details_json, "
     "checked_at) VALUES (?, ?, ?, ?, 'failed', ?, '{}', TIMESTAMP '2026-09-18 11:00:00')"
 )
+_ATTEMPT = (
+    "INSERT INTO activation_stage_runs (stage, run_id, status, started_at, finished_at) "
+    "VALUES (?, ?, ?, CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP))"
+)
 # scenario -> (break one stored measurement of the all-pass fixture, gates that stop passing)
 _BREAKS = {
     # One item misses 90 % in FY2019 only: 109 < 110 items over every completed year.
@@ -647,16 +694,35 @@ _BREAKS = {
         lambda con: con.execute(_FAILED_DQC, ["f1", "fixture", "fixture", "fixture_critical_check", "critical"]),
         {"critical_dqc": "failed"},
     ),
-    # market_daily rebuilt after the SLO/DQC evidence was recorded: that evidence is stale.
+    # Same-day market_daily rerun completed after the evidence stages: all evidence is stale.
     "market_rebuilt_after_evidence": (
         lambda con: con.execute(
-            "UPDATE activation_stage_runs SET finished_at = TIMESTAMP '2026-09-18 11:00:00' WHERE stage = 'market_daily'"
+            _ATTEMPT, ["market_daily", "run6", "completed", "2026-09-18 11:00", "2026-09-18 11:30"]
         ),
-        {"provider_slos": "unmeasured", "critical_dqc": "unmeasured"},
+        dict.fromkeys(("item_coverage", "provider_slos", "critical_dqc"), "unmeasured"),
+    ),
+    # I1: a market_daily rerun failed mid-way (batches half-committed) BEFORE the evidence
+    # stages started: the floor alone would call the evidence fresh; the failed newest
+    # attempt of a release stage makes it unmeasured.
+    "market_rerun_failed_before_evidence": (
+        lambda con: con.execute(_ATTEMPT, ["market_daily", "run6", "failed", "2026-09-18 09:30", "2026-09-18 09:45"]),
+        dict.fromkeys(("item_coverage", "provider_slos", "critical_dqc"), "unmeasured"),
     ),
     "no_activation_provenance": (
         lambda con: con.execute("DELETE FROM activation_stage_runs"),
-        {"provider_slos": "unmeasured", "critical_dqc": "unmeasured"},
+        dict.fromkeys(("item_coverage", "provider_slos", "critical_dqc"), "unmeasured"),
+    ),
+    # I2: the latest snapshot of one SLO was written by an older provider_coverage run.
+    "slo_from_older_coverage_run": (
+        lambda con: con.execute(
+            "UPDATE api_schema_coverage_snapshot SET run_id = 'run4-coverage' WHERE schema_code = 'universe'"
+        ),
+        {"provider_slos": "unmeasured"},
+    ),
+    # I3: a universe rebuild after the cohort dropped one referenced membership row.
+    "cohort_membership_rebuilt": (
+        lambda con: con.execute("DELETE FROM universe_us_listed_membership WHERE membership_id = 'cm-2019-7'"),
+        {"item_coverage": "failed"},
     ),
     "companyfacts_source_incomplete": (
         lambda con: con.execute(
@@ -827,9 +893,13 @@ def test_publish_script_exit_code_distinguishes_candidate_from_eligible(built_wa
 
     db_path = built_warehouse("publish_script.duckdb")
     if all_pass:
+        now = dt.datetime.now(dt.UTC).replace(tzinfo=None)
+        start = now - dt.timedelta(hours=4)
         with duckdb.connect(str(db_path)) as con:
-            # The CLI stamps the release with the wall clock: measure "today".
-            _seed_all_gates_passing(con, as_of=dt.datetime.now(dt.UTC).date())
+            # The CLI stamps the release with the wall clock: every piece of evidence precedes it.
+            _seed_all_gates_passing(
+                con, as_of=now.date(), run_start=start, slo_observed_at=start + dt.timedelta(hours=2)
+            )
     out_dir = tmp_path / "out"
     code = _load_publish_script().main(["--db-path", str(db_path), "--release-id", "s1", "--out-dir", str(out_dir)])
     report = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
@@ -841,12 +911,12 @@ def test_publish_script_exit_code_distinguishes_candidate_from_eligible(built_wa
 
 
 def test_release_producing_stages_run_before_the_gate_evidence_stages():
-    """One full activation always leaves SLO and DQC evidence fresh (not stale)."""
+    """One full activation always leaves coverage, SLO and DQC evidence fresh (not stale)."""
 
     from atx_db.activation import STAGE_ORDER
-    from atx_db.publication import RELEASE_DATASET_STAGES, RELEASE_DATASETS
+    from atx_db.publication import EVIDENCE_STAGES, RELEASE_DATASET_STAGES, RELEASE_DATASETS
 
     order = {stage: index for index, stage in enumerate(STAGE_ORDER)}
     assert set(RELEASE_DATASET_STAGES) == {dataset.name for dataset in RELEASE_DATASETS}
     for stage in RELEASE_DATASET_STAGES.values():
-        assert order[stage] < order["provider_coverage"] < order["quality"]
+        assert all(order[stage] < order[evidence] for evidence in EVIDENCE_STAGES.values())

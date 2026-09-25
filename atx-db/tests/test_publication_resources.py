@@ -58,5 +58,6 @@ def test_cli_configures_publication_resources_and_replays_on_reopen(
         ]
     )
 
-    assert code == 0
+    # The stub release was never gate-evaluated: fail closed as a candidate.
+    assert code == publication.CANDIDATE_EXIT_CODE
     assert observed_settings == [expected_settings, expected_settings]

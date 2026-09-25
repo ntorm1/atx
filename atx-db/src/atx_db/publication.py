@@ -84,6 +84,7 @@ __all__ = [
     "CANDIDATE_EXIT_CODE",
     "ELIGIBLE",
     "ELIGIBLE_EXIT_CODE",
+    "EVIDENCE_STAGES",
     "FUNDAMENTALS_AVAILABILITY_BASIS",
     "GATE_FAILED",
     "GATE_PASSED",
@@ -162,6 +163,12 @@ RELEASE_DATASET_STAGES: dict[str, str] = {
     "fundamentals_core": "standardized",
     "derived_metrics": "derived_metrics",
     "market_daily": "market_daily",
+}
+#: Gate -> the activation stage that produces its evidence (runs after every release stage).
+EVIDENCE_STAGES: dict[str, str] = {
+    "item_coverage": "item_coverage",
+    "provider_slos": "provider_coverage",
+    "critical_dqc": "quality",
 }
 _FAILURE_STATUSES = frozenset({"failed", "error"})
 _LIST_CAP = 50
@@ -260,8 +267,9 @@ class ReleaseResult:
     manifest_sha256: str
     previous_release_id: str | None
     datasets: tuple[ReleaseDatasetResult, ...]
-    eligibility: str
-    gates_not_passed: tuple[str, ...]
+    # Fail-safe defaults for any external constructor: an unevaluated release is a candidate.
+    eligibility: str = CANDIDATE
+    gates_not_passed: tuple[str, ...] = RELEASE_GATES
 
     @property
     def total_rows(self) -> int:
@@ -473,6 +481,12 @@ def _key(value: object) -> str:
     return "null" if value is None else str(value)
 
 
+def _sort_key(value: object) -> tuple[bool, str, str]:
+    """Total order for mixed values: None, 'null', True and 'True' never tie."""
+
+    return (value is not None, type(value).__name__, str(value))
+
+
 def _marks(values: Sequence[object]) -> str:
     return ", ".join(["?"] * len(values))
 
@@ -493,7 +507,7 @@ def _count_rows(rows: Iterable[Sequence[Any]], fields: Sequence[str]) -> list[di
         {**{field: _iso(value) for field, value in zip(fields, row[:-1], strict=True)}, "rows": int(row[-1])}
         for row in rows
     ]
-    return sorted(items, key=lambda item: tuple(_key(item[field]) for field in fields))
+    return sorted(items, key=lambda item: tuple(_sort_key(item[field]) for field in fields))
 
 
 def _capped(values: Iterable[str]) -> tuple[list[str], bool]:
@@ -515,30 +529,122 @@ def _gate(failed: Iterable[str], unmeasured: Iterable[str], requirement: str, **
     }
 
 
-def _evidence_floor(store: DuckDBStore) -> tuple[dt.datetime | None, dict[str, object]]:
-    """Newest completed activation run of any release-producing stage."""
+@dataclass(frozen=True)
+class _Attempt:
+    run_id: str
+    status: str
+    started_at: dt.datetime
+    finished_at: dt.datetime | None
+
+
+@dataclass(frozen=True)
+class _StageLedger:
+    newest: _Attempt | None
+    completed: _Attempt | None
+    latest_stamp: dt.datetime | None
+
+
+def _stage_ledger(store: DuckDBStore, stages: Sequence[str]) -> dict[str, _StageLedger]:
+    """Every activation attempt per stage, newest first (``activation.completed_stages`` order).
+
+    ``activation_stage_runs`` is the single wall clock gate freshness is judged on:
+    activation stamps SLO snapshots with the pinned ``as_of_date`` 22:00, not the run time.
+    """
+
+    rows = store.con.execute(
+        f"SELECT stage, run_id, status, started_at, finished_at FROM activation_stage_runs "
+        f"WHERE stage IN ({_marks(stages)})",
+        list(stages),
+    ).fetchall()
+    ledger: dict[str, _StageLedger] = {}
+    for stage in stages:
+        attempts = sorted(
+            (_Attempt(str(row[1]), str(row[2]), row[3], row[4]) for row in rows if row[0] == stage),
+            key=lambda attempt: (attempt.started_at, attempt.run_id),
+            reverse=True,
+        )
+        ledger[stage] = _StageLedger(
+            newest=attempts[0] if attempts else None,
+            completed=next((attempt for attempt in attempts if attempt.status == "completed"), None),
+            latest_stamp=max((max(a.started_at, a.finished_at or a.started_at) for a in attempts), default=None),
+        )
+    return ledger
+
+
+def _attempt_block(attempt: _Attempt | None) -> dict[str, object] | None:
+    if attempt is None:
+        return None
+    return {
+        "run_id": attempt.run_id,
+        "status": attempt.status,
+        "started_at": _iso(attempt.started_at),
+        "finished_at": _iso(attempt.finished_at),
+    }
+
+
+def _evidence_floor(ledger: Mapping[str, _StageLedger]) -> tuple[dt.datetime | None, list[str], dict[str, object]]:
+    """The latest activation stamp (any attempt, any status) of a release-producing stage.
+
+    A release stage whose newest attempt is not ``completed`` (failed, running: batches may
+    be half-committed) or that never completed makes every freshness-bound gate unmeasured.
+    """
 
     stages = sorted(set(RELEASE_DATASET_STAGES.values()))
-    rows = store.con.execute(
-        f"""
-        SELECT stage, max(coalesce(finished_at, started_at))
-        FROM activation_stage_runs
-        WHERE status = 'completed' AND stage IN ({_marks(stages)})
-        GROUP BY stage
-        """,
-        stages,
-    ).fetchall()
-    completed: dict[str, dt.datetime] = {str(stage): at for stage, at in rows if at is not None}
-    floor = max(completed.values(), default=None)
-    return floor, {
-        "floor": _iso(floor),
-        "stages": {stage: _iso(completed.get(stage)) for stage in stages},
-        "stages_without_completed_run": [stage for stage in stages if stage not in completed],
-        "rule": (
-            "SLO snapshots and DQC results recorded before the newest completed activation run of a "
-            "release-producing stage describe an older warehouse state and are stale (unmeasured)."
-        ),
-    }
+    reasons: list[str] = []
+    for stage in stages:
+        entry = ledger[stage]
+        if entry.completed is None:
+            reasons.append(f"release_stage_never_completed:{stage}")
+        elif entry.newest is not None and entry.newest.status != "completed":
+            reasons.append(f"release_stage_not_completed:{stage}")
+    stamps = [stamp for stage in stages if (stamp := ledger[stage].latest_stamp) is not None]
+    floor = max(stamps, default=None)
+    return (
+        floor,
+        reasons,
+        {
+            "floor": _iso(floor),
+            "unmeasured_reasons": reasons,
+            "stages": {
+                stage: {
+                    "newest_attempt": _attempt_block(ledger[stage].newest),
+                    "newest_completed": _attempt_block(ledger[stage].completed),
+                }
+                for stage in stages
+            },
+            "evidence_stages": {
+                stage: {
+                    "newest_attempt": _attempt_block(ledger[stage].newest),
+                    "newest_completed": _attempt_block(ledger[stage].completed),
+                }
+                for stage in sorted(EVIDENCE_STAGES.values())
+            },
+            "rule": (
+                "Gate evidence counts only when produced by the newest, completed attempt of its "
+                "evidence stage (item_coverage, provider_coverage, quality) started at or after the "
+                "latest activation stamp of any release-producing stage, whose newest attempts must all "
+                "be completed. Writers outside activation must be followed by item_coverage, "
+                "provider_coverage and quality runs before publishing."
+            ),
+        },
+    )
+
+
+def _evidence_run(
+    ledger: Mapping[str, _StageLedger], stage: str, floor: dt.datetime | None, floor_reasons: Sequence[str]
+) -> tuple[_Attempt | None, list[str]]:
+    """The completed evidence-stage attempt a gate may use, or the reasons it may not."""
+
+    entry = ledger[stage]
+    reasons = list(floor_reasons)
+    if entry.completed is None:
+        reasons.append(f"{stage}_never_completed")
+        return None, reasons
+    if entry.newest is not None and entry.newest.status != "completed":
+        reasons.append(f"{stage}_not_completed")
+    if floor is not None and entry.completed.started_at < floor:
+        reasons.append(f"{stage}_older_than_release_data")
+    return entry.completed, reasons
 
 
 def _source_pins_and_gate(store: DuckDBStore) -> tuple[dict[str, object], dict[str, object]]:
@@ -579,7 +685,7 @@ def _source_pins_and_gate(store: DuckDBStore) -> tuple[dict[str, object], dict[s
     unmeasured: list[str] = []
     for key, dataset_id in RELEASE_SOURCES:
         pin_rows = sorted(
-            ((pin, int(n), at) for source, pin, n, at in by_pin if source == dataset_id), key=lambda r: _key(r[0])
+            ((pin, int(n), at) for source, pin, n, at in by_pin if source == dataset_id), key=lambda r: _sort_key(r[0])
         )
         hashed = [row for row in pin_rows if row[0] is not None]
         statuses = {_key(status): int(n) for source, status, n in by_status if source == dataset_id}
@@ -595,6 +701,8 @@ def _source_pins_and_gate(store: DuckDBStore) -> tuple[dict[str, object], dict[s
             "distinct_sha256": len(hashed),
             "sha256": [{"sha256": pin, "receipts": n, "last_fetched_at": _iso(at)} for pin, n, at in hashed[:_PIN_CAP]],
             "sha256_truncated": len(hashed) > _PIN_CAP,
+            # Digest of the full sorted distinct-hash set, so a truncated list still pins it.
+            "sha256_set_digest": hashlib.sha256("\n".join(str(row[0]) for row in hashed).encode()).hexdigest(),
             "last_fetched_at": _iso(newest),
         }
         source_failed: list[str] = []
@@ -633,8 +741,15 @@ def _source_pins_and_gate(store: DuckDBStore) -> tuple[dict[str, object], dict[s
     return pins, gate
 
 
-def _critical_dqc_gate(store: DuckDBStore, floor: dt.datetime | None) -> dict[str, object]:
-    """Every enabled critical check (registry, plus any recorded critical result) passed, fresh."""
+def _critical_dqc_gate(
+    store: DuckDBStore, run: _Attempt | None, run_reasons: Sequence[str], created_at: dt.datetime
+) -> dict[str, object]:
+    """Every enabled critical check (registry, plus any recorded critical result) passed, fresh.
+
+    ``data_quality_checks.checked_at`` is wall-clock insertion time, the ledger's clock:
+    a result counts only when recorded at or after the start of the newest completed
+    ``quality`` attempt (``run``) and not after the release's ``created_at``.
+    """
 
     rows = store.con.execute(
         """
@@ -647,31 +762,39 @@ def _critical_dqc_gate(store: DuckDBStore, floor: dt.datetime | None) -> dict[st
                 PARTITION BY dataset_id, table_name, check_name ORDER BY checked_at DESC, check_id DESC
             ) = 1
         ), registry AS (
-            SELECT dataset_id, check_name, enabled, severity FROM quality_check_registry
+            SELECT check_name, dataset_id, enabled, severity FROM quality_check_registry
         ), critical AS (
-            SELECT dataset_id, check_name, true AS registered
+            -- The registry is keyed by check_name (quality._resolve_spec); results may carry
+            -- another dataset_id than the registry row, so registered checks join by name.
+            SELECT check_name, dataset_id, true AS registered
             FROM registry WHERE enabled AND severity = 'critical'
-            UNION
-            SELECT l.dataset_id, l.check_name, false
+            UNION ALL
+            SELECT l.check_name, min(l.dataset_id), false
             FROM latest l
-            WHERE l.severity = 'critical' AND NOT EXISTS (
-                SELECT 1 FROM registry r
-                WHERE r.check_name = l.check_name AND (NOT r.enabled OR r.dataset_id = l.dataset_id)
-            )
+            WHERE l.severity = 'critical'
+              AND NOT EXISTS (SELECT 1 FROM registry r WHERE r.check_name = l.check_name)
+            GROUP BY l.check_name
         )
-        SELECT c.dataset_id, c.check_name, bool_or(c.registered),
+        SELECT c.dataset_id, c.check_name, c.registered,
                count(l.status)::BIGINT,
                count(l.status) FILTER (WHERE l.status = 'passed')::BIGINT,
                count(l.status) FILTER (WHERE l.status = 'skipped' OR l.missing_inputs)::BIGINT,
-               min(l.checked_at)
+               min(l.checked_at), max(l.checked_at)
         FROM critical c
-        LEFT JOIN latest l ON l.dataset_id = c.dataset_id AND l.check_name = c.check_name
-        GROUP BY c.dataset_id, c.check_name
+        LEFT JOIN latest l ON l.check_name = c.check_name
+        GROUP BY c.dataset_id, c.check_name, c.registered
         """
     ).fetchall()
-    outcomes: dict[str, list[str]] = {"passed": [], "failed": [], "not_run": [], "not_evaluated": [], "stale": []}
+    outcomes: dict[str, list[str]] = {
+        "passed": [],
+        "failed": [],
+        "not_run": [],
+        "not_evaluated": [],
+        "stale": [],
+        "recorded_after_release": [],
+    }
     registered = 0
-    for dataset_id, check_name, is_registered, results, passed, not_evaluated, oldest in rows:
+    for dataset_id, check_name, is_registered, results, passed, not_evaluated, oldest, newest in rows:
         name = f"{dataset_id}/{check_name}"
         registered += bool(is_registered)
         if not results:
@@ -683,22 +806,34 @@ def _critical_dqc_gate(store: DuckDBStore, floor: dt.datetime | None) -> dict[st
         elif not_evaluated:
             # Skipped, or a warning recorded because the check's input tables were missing.
             outcomes["not_evaluated"].append(name)
-        elif floor is not None and oldest < floor:
+        elif newest > created_at:
+            outcomes["recorded_after_release"].append(name)
+        elif run is not None and oldest < run.started_at:
             outcomes["stale"].append(name)
         else:
             outcomes["passed"].append(name)
-    unmeasured = [outcome for outcome in ("not_run", "not_evaluated", "stale") if outcomes[outcome]]
+    unmeasured = [
+        outcome for outcome in ("not_run", "not_evaluated", "stale", "recorded_after_release") if outcomes[outcome]
+    ]
     if not rows:
         unmeasured.append("no_critical_checks")
-    if floor is None:
-        unmeasured.append("evidence_floor_unknown")
+    unmeasured.extend(run_reasons)
     failed_checks, failed_truncated = _capped(outcomes["failed"])
-    open_checks, open_truncated = _capped(outcomes["not_run"] + outcomes["not_evaluated"] + outcomes["stale"])
+    open_checks, open_truncated = _capped(
+        [
+            name
+            for outcome in ("not_run", "not_evaluated", "stale", "recorded_after_release")
+            for name in outcomes[outcome]
+        ]
+    )
     return _gate(
         ["critical_check_failed"] if outcomes["failed"] else [],
         unmeasured,
-        "Every enabled critical quality check has a latest result 'passed' recorded no earlier "
-        "than the evidence floor; skipped, missing-input, not-run and stale checks never pass.",
+        "Every enabled critical quality check has a latest result 'passed', recorded (wall clock) "
+        "at or after the start of the newest completed 'quality' activation attempt, which itself "
+        "started after all release data, and not after the release; skipped, missing-input, not-run "
+        "and stale checks never pass.",
+        quality_run=_attempt_block(run),
         critical_checks=len(rows),
         registered_critical_checks=registered,
         outcomes={outcome: len(names) for outcome, names in outcomes.items()},
@@ -708,8 +843,15 @@ def _critical_dqc_gate(store: DuckDBStore, floor: dt.datetime | None) -> dict[st
     )
 
 
-def _provider_slo_gate(store: DuckDBStore, floor: dt.datetime | None) -> dict[str, object]:
-    """Every active provider SLO (a superset of the code defaults) latest-measured available."""
+def _provider_slo_gate(
+    store: DuckDBStore, run: _Attempt | None, run_reasons: Sequence[str], created_at: dt.datetime
+) -> dict[str, object]:
+    """Every active provider SLO (a superset of the code defaults) available in the latest run.
+
+    Snapshot ``observed_at`` is the pinned ``as_of_date`` 22:00 in activation, not a wall
+    clock, so freshness comes from the ledger: every latest snapshot must carry the run id
+    of the newest completed ``provider_coverage`` attempt (``run``).
+    """
 
     rows = store.con.execute(
         """
@@ -720,17 +862,19 @@ def _provider_slo_gate(store: DuckDBStore, floor: dt.datetime | None) -> dict[st
                 PARTITION BY dataset_id, schema_code ORDER BY valid_from DESC, slo_version DESC
             ) = 1
         ), snaps AS (
-            SELECT dataset_id, schema_code, slo_version, condition, observed_at
+            SELECT dataset_id, schema_code, slo_version, condition, observed_at, run_id
             FROM api_schema_coverage_snapshot
             QUALIFY row_number() OVER (
                 PARTITION BY dataset_id, schema_code
                 ORDER BY observed_at DESC, source_loaded_at DESC, coverage_snapshot_id DESC
             ) = 1
         )
-        SELECT s.dataset_id, s.schema_code, s.slo_version, p.slo_version, p.condition, p.observed_at
+        SELECT s.dataset_id, s.schema_code, s.slo_version, p.slo_version, p.condition, p.observed_at, p.run_id
         FROM slos s LEFT JOIN snaps p ON p.dataset_id = s.dataset_id AND p.schema_code = s.schema_code
         """
     ).fetchall()
+    # activation.stage_provider_coverage: ProviderCoverageOptions(run_id=f"{options.run_id}-coverage").
+    expected_run_id = None if run is None else f"{run.run_id}-coverage"
     required = sorted({(slo.dataset_id, slo.schema_code) for slo in DEFAULT_PROVIDER_COVERAGE_SLOS})
     active = {(str(row[0]), str(row[1])) for row in rows}
     inactive_required = [
@@ -739,15 +883,17 @@ def _provider_slo_gate(store: DuckDBStore, floor: dt.datetime | None) -> dict[st
     slos: list[dict[str, object]] = []
     failed: list[str] = ["required_slo_not_active"] if inactive_required else []
     unmeasured: list[str] = [] if rows else ["no_active_slos"]
-    for dataset_id, schema_code, active_version, measured_version, condition, observed_at in rows:
+    for dataset_id, schema_code, active_version, measured_version, condition, observed_at, run_id in rows:
         if condition is None:
             outcome = "not_run"
         elif measured_version != active_version:
             outcome = "slo_version_mismatch"
         elif condition != "available":
             outcome = f"condition_{condition}"
-        elif floor is not None and observed_at < floor:
-            outcome = "stale"
+        elif run_id != expected_run_id:
+            outcome = "not_from_latest_coverage_run"
+        elif observed_at > created_at:
+            outcome = "observed_after_release"
         else:
             outcome = "available"
         if outcome.startswith("condition_"):
@@ -760,16 +906,18 @@ def _provider_slo_gate(store: DuckDBStore, floor: dt.datetime | None) -> dict[st
                 "outcome": outcome,
                 "condition": condition,
                 "observed_at": _iso(observed_at),
+                "run_id": run_id,
             }
         )
-    if floor is None:
-        unmeasured.append("evidence_floor_unknown")
+    unmeasured.extend(run_reasons)
     return _gate(
         failed,
         unmeasured,
         "Every active provider coverage SLO (including every code-defined default) has a latest "
-        "snapshot with condition 'available' at the active SLO version, observed no earlier than the "
-        "evidence floor.",
+        "snapshot with condition 'available' at the active SLO version, written by the newest completed "
+        "'provider_coverage' activation attempt (run id '<run>-coverage'), which started after all "
+        "release data, and observed no later than the release.",
+        coverage_run=_attempt_block(run),
         required_slos=len(required),
         active_slos=len(rows),
         available_slos=sum(1 for slo in slos if slo["outcome"] == "available"),
@@ -854,16 +1002,54 @@ def _universe_certification_gate(universes: Mapping[str, Mapping[str, object]]) 
     )
 
 
+def _cohort_members(store: DuckDBStore, last_year: int) -> dict[int, tuple[int, int, int, object, object]]:
+    """Per cohort year: (members, missing memberships, missing market rows, min/max member universe).
+
+    Bounded: the ids are semi-joined into the big tables (at most 3000 per year).
+    """
+
+    rows = store.con.execute(
+        """
+        WITH cohort AS (
+            SELECT fiscal_year, membership_id, market_daily_id FROM item_coverage_annual_cohort
+            WHERE universe_id = ? AND fiscal_year BETWEEN ? AND ?
+        ), members AS (
+            SELECT DISTINCT membership_id, universe_id FROM universe_us_listed_membership
+            WHERE membership_id IN (SELECT membership_id FROM cohort)
+        ), market AS (
+            SELECT DISTINCT market_daily_id FROM market_daily_metrics
+            WHERE market_daily_id IN (SELECT market_daily_id FROM cohort)
+        )
+        SELECT c.fiscal_year, count(*)::BIGINT,
+               count(*) FILTER (WHERE u.membership_id IS NULL)::BIGINT,
+               count(*) FILTER (WHERE m.market_daily_id IS NULL)::BIGINT,
+               min(u.universe_id), max(u.universe_id)
+        FROM cohort c
+        LEFT JOIN members u ON u.membership_id = c.membership_id
+        LEFT JOIN market m ON m.market_daily_id = c.market_daily_id
+        GROUP BY c.fiscal_year
+        """,
+        [ANNUAL_COHORT_UNIVERSE_ID, COVERAGE_FIRST_FISCAL_YEAR, last_year],
+    ).fetchall()
+    return {int(row[0]): (int(row[1]), int(row[2]), int(row[3]), row[4], row[5]) for row in rows}
+
+
 def _item_coverage_gate(
-    store: DuckDBStore, created_at: dt.datetime, universes: Mapping[str, Mapping[str, object]]
+    store: DuckDBStore,
+    created_at: dt.datetime,
+    universes: Mapping[str, Mapping[str, object]],
+    run: _Attempt | None,
+    run_reasons: Sequence[str],
 ) -> dict[str, object]:
     last_year = created_at.year - 1
     requirement = (
         f"FY{COVERAGE_FIRST_FISCAL_YEAR}-FY{last_year} {ITEM_COVERAGE_GATE_BASIS}: at least "
         f"{ITEM_COVERAGE_TARGET_ITEMS} items at >= {ITEM_COVERAGE_TARGET_PCT:g}% coverage in every completed "
-        f"year of the {COHORT_SIZE}-name {ANNUAL_COHORT_UNIVERSE_ID} cohort, measured in the release year; "
-        "the cohort is certified only when its listing universe is certified and its market-cap ranking "
-        f"uses the strict-identity market panel ({MARKET_DAILY_STRICT_SOURCE_NAME!r})."
+        f"year of the {COHORT_SIZE}-name {ANNUAL_COHORT_UNIVERSE_ID} cohort, measured in the release year by "
+        "the newest completed 'item_coverage' activation attempt, which started after all release data; "
+        "a cohort year is certified only when its 3000 members still resolve to current membership rows of "
+        "its certified listing universe and to current market-panel rows, and its market-cap ranking uses "
+        f"the strict-identity market panel ({MARKET_DAILY_STRICT_SOURCE_NAME!r})."
     )
     measured_row = store.con.execute(
         "SELECT max(as_of_date) FROM fundamental_item_coverage WHERE source = ? AND universe_id = ? AND basis = ?",
@@ -871,8 +1057,14 @@ def _item_coverage_gate(
     ).fetchone()
     measured = None if measured_row is None else measured_row[0]
     if measured is None:
-        return _gate([], ["no_coverage_measurement"], requirement, measured_as_of_date=None)
-    unmeasured: list[str] = []
+        return _gate(
+            [],
+            ["no_coverage_measurement", *run_reasons],
+            requirement,
+            coverage_run=_attempt_block(run),
+            measured_as_of_date=None,
+        )
+    unmeasured: list[str] = list(run_reasons)
     if measured > created_at.date():
         unmeasured.append("measurement_after_release_date")
     if measured.year != created_at.year:
@@ -900,13 +1092,19 @@ def _item_coverage_gate(
             [ANNUAL_COHORT_UNIVERSE_ID, COVERAGE_FIRST_FISCAL_YEAR, measured.year - 1],
         ).fetchall()
     }
+    members = _cohort_members(store, measured.year - 1)
     years: list[dict[str, object]] = []
     for fiscal_year in range(COVERAGE_FIRST_FISCAL_YEAR, measured.year):
         status, selected, market_source, listing = cohort.get(fiscal_year, (None, None, None, None))
+        count, missing_membership, missing_market, low, high = members.get(fiscal_year, (0, 0, 0, None, None))
         listing_status = (universes.get(str(listing)) or {}).get("certification_status") if listing else None
         certified = (
             status == "complete"
             and selected == COHORT_SIZE
+            and count == COHORT_SIZE
+            and not missing_membership
+            and not missing_market
+            and low == high == listing
             and listing_status == "certified"
             and market_source == MARKET_DAILY_STRICT_SOURCE_NAME
         )
@@ -915,6 +1113,9 @@ def _item_coverage_gate(
                 "fiscal_year": fiscal_year,
                 "cohort_status": status,
                 "selected_count": selected,
+                "member_rows": count,
+                "members_missing_membership": missing_membership,
+                "members_missing_market_row": missing_market,
                 "listing_universe_id": listing,
                 "listing_certification_status": listing_status,
                 "market_source": market_source,
@@ -932,6 +1133,7 @@ def _item_coverage_gate(
         failed,
         unmeasured,
         requirement,
+        coverage_run=_attempt_block(run),
         measured_as_of_date=_iso(measured),
         completed_fiscal_years=[COVERAGE_FIRST_FISCAL_YEAR, measured.year - 1],
         items_meeting_every_completed_year=items,
@@ -1269,13 +1471,15 @@ def _publish_snapshot(
         )
 
     # Evidence and gates share the exports' snapshot, so they describe exactly these files.
-    floor, floor_block = _evidence_floor(store)
+    ledger = _stage_ledger(store, sorted({*RELEASE_DATASET_STAGES.values(), *EVIDENCE_STAGES.values()}))
+    floor, floor_reasons, floor_block = _evidence_floor(ledger)
+    runs = {gate: _evidence_run(ledger, stage, floor, floor_reasons) for gate, stage in EVIDENCE_STAGES.items()}
     source_pins, source_gate = _source_pins_and_gate(store)
     universes = _universe_evidence(store)
     gates: dict[str, dict[str, object]] = {
-        "item_coverage": _item_coverage_gate(store, created_at, universes),
-        "provider_slos": _provider_slo_gate(store, floor),
-        "critical_dqc": _critical_dqc_gate(store, floor),
+        "item_coverage": _item_coverage_gate(store, created_at, universes, *runs["item_coverage"]),
+        "provider_slos": _provider_slo_gate(store, *runs["provider_slos"], created_at),
+        "critical_dqc": _critical_dqc_gate(store, *runs["critical_dqc"], created_at),
         "source_completeness": source_gate,
         "universe_certification": _universe_certification_gate(universes),
     }
