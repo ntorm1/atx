@@ -253,3 +253,36 @@ None. No committed digest was re-baselined.
 - W0-I0b: IC default (delay 1, maxH 63) gives `common_sample_dates = T - 64`, versus the legacy
   (delay 0) `T - 63`. The equity-mine registry `pnl_len` = train + validation sessions (388 + 255
   = 643 on the lane fixture).
+
+## Post-merge sync
+
+- **Status:** lane already contained `feat/w0-integration` at sync time (`git merge-base
+  --is-ancestor feat/w0-integration HEAD` succeeded before this block was written). No merge was
+  performed by this sync pass; `f8bdb167` (lane report commit) added only this report file on top
+  of `a28a6c1e` — no source change, so the suites had not previously been re-run under this
+  "Post-merge sync" label. Ran them now to confirm.
+- **Head SHA (pre-sync-commit):** `f8bdb16774e3d3743dbaa698412cf17ce5fa2050`
+- **Commands:**
+  ```powershell
+  Set-Location C:\atx-wt\pool-11; $env:CMAKE_BUILD_PARALLEL_LEVEL='2'; powershell -NoProfile -File scripts\atx-build.ps1 build -Preset equity-dev atx-impl-tests atx-shm-worker
+  Set-Location C:\atx-wt\pool-11; powershell -NoProfile -File scripts\atx-build.ps1 -Ctest -Preset equity-dev -R '^(ImplConfigBool_|ImplConfigFinite_|ImplIcAsOfMembership_|ImplMineRequiresMembership_|ImplPendingOrder_|ImplDelayGuard_)'
+  Set-Location C:\atx-wt\pool-11; .\build-equity\bin\atx-impl-tests.exe --gtest_brief=1
+  ```
+  - Build: exit 0 (already-current object files relinked; no owned-file recompilation triggered).
+  - Anchored ctest (`^(ImplConfigBool_|ImplConfigFinite_|ImplIcAsOfMembership_|ImplMineRequiresMembership_|ImplPendingOrder_|ImplDelayGuard_)`): 30/30 passed, 0 failed. Total time 170.6 s.
+  - Whole owning executable (`atx-impl-tests.exe --gtest_brief=1`): 563 tests from 115 suites,
+    **556 passed**, **5 skipped**, **2 failed**, exit=1. Identical counts and identical failing
+    tests to the "final" run already recorded above under HEAD `a28a6c1e` — no regression from
+    this sync.
+    - `[FAILED] TrialLedgerRepository.ExistingCp14Ledger_StillVerifies` — `ParseError: trial
+      ledger: CR in line 0 (LF endings only)`. Pre-existing CRLF checkout hazard on
+      `atx-engine/reviews/trial-ledger.jsonl` (O1 finding; per
+      `.superpowers/sdd/w0/w0b-integration-notes.md` "Not for W0b", to be fixed at the W0 gate via
+      `.gitattributes`). Not a lane failure.
+    - `[FAILED] FundamentalZoo.FixtureParsesTypechecksAndEvaluates` — `acc_ts` (synthetic
+      accruals) is flat over the fixture window and A0's A-09 flat-window guard NaNs it out.
+      Caused by W0-A0 code brought in by the `feat/w0-integration` merge, not by I0b; already
+      flagged to the A0 owner in Integration notes above (re-seed fixture accruals or re-pin with
+      A-09 attribution). Not a lane failure.
+  - Both failures match the pre-merge/A0-merge baseline exactly (2 failed / 556 passed / 5
+    skipped), so the merged head is confirmed clean from this lane's perspective.
