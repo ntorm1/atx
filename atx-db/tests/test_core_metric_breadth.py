@@ -22,6 +22,23 @@ _QUARTERS = (
 )
 
 
+_QUARTERLY_MARGIN_AND_ACCELERATION = (
+    "gross_margin_q", "operating_margin_q", "net_margin_q",
+    "gross_margin_q_change_yoy", "operating_margin_q_change_yoy", "net_margin_q_change_yoy",
+    "eps_basic_q_growth_yoy", "eps_basic_q_growth_qoq",
+    "eps_diluted_q_growth_yoy_accel", "revenue_q_growth_yoy_accel",
+    "gross_margin_q_change_yoy_accel", "operating_margin_q_change_yoy_accel",
+)
+
+# A 52/53-week retailer-style calendar: fiscal quarters end on Saturdays, and
+# the 53-week fiscal 2020 closes with a 14-week quarter on 2021-01-02.
+_RETAIL_QUARTERS = (
+    dt.date(2019, 3, 30), dt.date(2019, 6, 29), dt.date(2019, 9, 28), dt.date(2019, 12, 28),
+    dt.date(2020, 3, 28), dt.date(2020, 6, 27), dt.date(2020, 9, 26), dt.date(2021, 1, 2),
+    dt.date(2021, 4, 3), dt.date(2021, 7, 3), dt.date(2021, 10, 2), dt.date(2022, 1, 1),
+)
+
+
 def _available(period_end: dt.date, delay: int = 40) -> dt.datetime:
     return dt.datetime.combine(period_end + dt.timedelta(days=delay), dt.time(21, 0))
 
@@ -93,9 +110,22 @@ def test_core_metric_breadth_preserves_the_prior_catalog_and_declares_the_new_fa
         *(f"{series}_q_growth_qoq" for series in ("revenue", "gross_profit", "operating_income", "net_income", "eps_diluted", "cfo", "fcf", "capex", "rd_expense")),
         "gross_profit_cagr_3y", "operating_income_cagr_3y", "ebitda_cagr_3y", "fcf_cagr_3y", "common_equity_cagr_3y",
         "eps_basic_ttm", "dso_days", "dio_days", "dpo_days", "cash_conversion_cycle",
+        *_QUARTERLY_MARGIN_AND_ACCELERATION,
     }
-    assert len(definitions) == 201
+    assert len(definitions) == 213
     assert expected <= definitions.keys()
+    # Single-quarter margin levels, changes, basic-EPS growth and accelerations
+    # live on the quarter grid; the existing *_margin_change_yoy stay trailing.
+    assert {definitions[code].window for code in _QUARTERLY_MARGIN_AND_ACCELERATION} == {"q"}
+    for margin in ("gross", "operating", "net"):
+        assert definitions[f"{margin}_margin_change_yoy"].window == "ttm"
+        assert definitions[f"{margin}_margin_q_change_yoy"].expression == (
+            f"{margin}_margin_q - lag({margin}_margin_q, 4)"
+        )
+    assert definitions["eps_basic_q_growth_yoy"].item_inputs == ("eps_basic__1034",)
+    assert definitions["revenue_q_growth_yoy_accel"].expression == (
+        "revenue_q_growth_yoy - lag(revenue_q_growth_yoy, 1)"
+    )
     assert definitions["dso_days"].expression == "safe_div(receivables_avg2 * 365, max(revenue_ttm, 0))"
     reclaimed = {"dso_days", "dio_days", "dpo_days", "cash_conversion_cycle"}
     assert reclaimed <= RECLAIMED_ITEM_CODES
@@ -171,3 +201,166 @@ def test_cagr_has_no_numeric_value_when_an_endpoint_is_nonpositive(tmp_store):
         "missing_input_or_domain",
         _available(_QUARTERS[15], 50),
     )
+
+
+# Seasonal single-quarter statements (Q4 spike) so single-quarter and trailing
+# margin changes diverge. Index i is _QUARTERS[i] or _RETAIL_QUARTERS[i].
+_STATEMENT = {
+    "revenue": (100.0, 110.0, 120.0, 200.0, 120.0, 130.0, 140.0, 260.0, 150.0, 160.0, 170.0, 300.0),
+    "gross_profit__1004": (40.0, 45.0, 50.0, 100.0, 50.0, 52.0, 60.0, 150.0, 63.0, 64.0, 75.0, 180.0),
+    "operating_income": (10.0, 12.0, 14.0, 40.0, 12.0, 13.0, 16.0, 70.0, 18.0, 17.0, 20.0, 90.0),
+    "net_income_total": (7.0, 8.0, 10.0, 30.0, 8.0, 9.0, 11.0, 50.0, 12.0, 11.0, 14.0, 66.0),
+    "eps_diluted": (0.5, 0.6, 0.7, 1.5, 0.4, 0.7, 0.9, 2.5, 0.6, 0.6, 1.0, 3.2),
+    # Loss-to-profit (-1 -> 2) at index 4; a zero base at index 1 feeds index 5.
+    "eps_basic__1034": (-1.0, 0.0, 0.8, 1.6, 2.0, 0.9, 1.0, 2.6, 2.5, 0.7, 1.1, 3.3),
+}
+
+
+def _seed_statement(store, security_id: str, quarters: tuple[dt.date, ...]) -> None:
+    """Quarterly duration facts with contiguous fiscal spans, as SEC quarters carry."""
+    for index, period_end in enumerate(quarters):
+        period_start = quarters[index - 1] + dt.timedelta(days=1) if index else period_end - dt.timedelta(days=90)
+        available_at = _available(period_end)
+        for code, series in _STATEMENT.items():
+            store.con.execute(
+                """
+                INSERT INTO fundamental_standardized (
+                    standardized_id, source, security_id, item_id, canonical_code, basis,
+                    period_start, period_end, value, as_of_date, available_at, input_codes_json,
+                    input_item_ids_json, rule_id, combination_rule, revision_sequence,
+                    is_latest_revision
+                ) VALUES (?, 'test', ?, 1, ?, 'quarterly', ?, ?, ?, ?, ?, '[]', '[]', 'r', 'direct', 1, true)
+                """,
+                [f"{security_id}|{code}|{period_end}", security_id, code, period_start, period_end,
+                 series[index], available_at.date(), available_at],
+            )
+
+
+def _ratio(numerator: str, index: int) -> float:
+    return _STATEMENT[numerator][index] / _STATEMENT["revenue"][index]
+
+
+def _growth(code: str, index: int, periods: int = 4) -> float:
+    base = _STATEMENT[code][index - periods]
+    return (_STATEMENT[code][index] - base) / abs(base)
+
+
+def _ttm_margin(numerator: str, index: int) -> float:
+    window = range(index - 3, index + 1)
+    return sum(_STATEMENT[numerator][i] for i in window) / sum(_STATEMENT["revenue"][i] for i in window)
+
+
+def _refresh_quarterly_family(store) -> None:
+    seed_derived_metric_definitions(store)
+    refresh_derived_metrics(store, DerivedMetricsOptions(
+        metric_codes=(*_QUARTERLY_MARGIN_AND_ACCELERATION, "gross_margin_change_yoy"),
+    ))
+
+
+def test_single_quarter_margins_and_their_yoy_changes_differ_from_trailing_margin_changes(tmp_store):
+    _seed_statement(tmp_store, "S1", _QUARTERS[:12])
+    _refresh_quarterly_family(tmp_store)
+
+    for level, numerator in (("gross_margin_q", "gross_profit__1004"), ("operating_margin_q", "operating_income"),
+                             ("net_margin_q", "net_income_total")):
+        assert _latest_state(tmp_store, level, _QUARTERS[8]) == (
+            pytest.approx(_ratio(numerator, 8)), "valid", _available(_QUARTERS[8]))
+        change, status, _ = _latest_state(tmp_store, f"{level}_change_yoy", _QUARTERS[8])
+        # Fraction points against the same fiscal quarter one year earlier.
+        assert (change, status) == (pytest.approx(_ratio(numerator, 8) - _ratio(numerator, 4)), "valid")
+
+    quarterly_change, _, _ = _latest_state(tmp_store, "gross_margin_q_change_yoy", _QUARTERS[11])
+    trailing_change, _, _ = _latest_state(tmp_store, "gross_margin_change_yoy", _QUARTERS[11])
+    assert quarterly_change == pytest.approx(_ratio("gross_profit__1004", 11) - _ratio("gross_profit__1004", 7))
+    assert trailing_change == pytest.approx(
+        _ttm_margin("gross_profit__1004", 11) - _ttm_margin("gross_profit__1004", 7))
+    # 180/300 - 150/260 = +0.0231 versus a trailing +0.0056: not interchangeable.
+    assert abs(quarterly_change - trailing_change) > 0.01
+
+
+def test_basic_eps_growth_uses_absolute_base_and_has_no_value_for_zero_or_missing_bases(tmp_store):
+    _seed_statement(tmp_store, "S1", _QUARTERS[:12])
+    _seed_statement(tmp_store, "S2", _QUARTERS[:12])
+    tmp_store.con.execute(
+        "DELETE FROM fundamental_standardized WHERE security_id = 'S2' AND canonical_code = 'eps_basic__1034' "
+        "AND period_end = ?", [_QUARTERS[6]],
+    )
+    _refresh_quarterly_family(tmp_store)
+
+    # -1 -> 2 is (2 - (-1)) / |-1| = +3.0, from basic (not diluted) EPS.
+    assert _latest_state(tmp_store, "eps_basic_q_growth_yoy", _QUARTERS[4]) == (
+        pytest.approx(3.0), "valid", _available(_QUARTERS[4]))
+    qoq, status, _ = _latest_state(tmp_store, "eps_basic_q_growth_qoq", _QUARTERS[4])
+    assert (qoq, status) == (pytest.approx((2.0 - 1.6) / 1.6), "valid")
+    assert _latest_state(tmp_store, "eps_basic_q_growth_yoy", _QUARTERS[5]) == (
+        None, "missing_input_or_domain", _available(_QUARTERS[5]))
+    # S2's basic-EPS bucket for _QUARTERS[6] is absent: growth four buckets later
+    # has no value rather than a row-lag comparison with _QUARTERS[5].
+    assert _latest_state(tmp_store, "eps_basic_q_growth_yoy", _QUARTERS[10], "S2")[:2] == (
+        None, "missing_input_or_domain")
+    assert _latest_state(tmp_store, "eps_basic_q_growth_yoy", _QUARTERS[10])[:2] == (
+        pytest.approx(_growth("eps_basic__1034", 10)), "valid")
+
+
+def test_acceleration_is_exactly_the_bucket_growth_less_the_prior_bucket_growth(tmp_store):
+    _seed_statement(tmp_store, "S1", _QUARTERS[:12])
+    _seed_statement(tmp_store, "S2", _QUARTERS[:12])
+    tmp_store.con.execute(
+        "DELETE FROM fundamental_standardized WHERE security_id = 'S2' AND canonical_code = 'revenue' "
+        "AND period_end = ?", [_QUARTERS[6]],
+    )
+    tmp_store.con.execute(
+        "UPDATE fundamental_standardized SET value = 0 WHERE security_id = 'S2' AND canonical_code = 'revenue' "
+        "AND period_end = ?", [_QUARTERS[3]],
+    )
+    _refresh_quarterly_family(tmp_store)
+
+    pairs = (
+        ("revenue_q_growth_yoy_accel", "revenue_q_growth_yoy"),
+        ("eps_diluted_q_growth_yoy_accel", "eps_diluted_q_growth_yoy"),
+        ("gross_margin_q_change_yoy_accel", "gross_margin_q_change_yoy"),
+        ("operating_margin_q_change_yoy_accel", "operating_margin_q_change_yoy"),
+    )
+    for index in (9, 10, 11):
+        for accel_code, growth_code in pairs:
+            current, current_status, _ = _latest_state(tmp_store, growth_code, _QUARTERS[index])
+            prior, prior_status, _ = _latest_state(tmp_store, growth_code, _QUARTERS[index - 1])
+            accel, accel_status, accel_available = _latest_state(tmp_store, accel_code, _QUARTERS[index])
+            assert (current_status, prior_status, accel_status) == ("valid", "valid", "valid")
+            assert accel == current - prior
+            assert accel_available == _available(_QUARTERS[index])
+    assert _latest_state(tmp_store, "revenue_q_growth_yoy_accel", _QUARTERS[11])[0] == pytest.approx(
+        _growth("revenue", 11) - _growth("revenue", 10))
+
+    # S2 lacks revenue at _QUARTERS[6], so growth at _QUARTERS[10] has no base and
+    # acceleration at _QUARTERS[11] has no value: it never reaches back to _QUARTERS[9].
+    assert _latest_state(tmp_store, "revenue_q_growth_yoy", _QUARTERS[11], "S2")[:2] == (
+        pytest.approx(_growth("revenue", 11)), "valid")
+    assert _latest_state(tmp_store, "revenue_q_growth_yoy", _QUARTERS[10], "S2")[:2] == (
+        None, "missing_input_or_domain")
+    assert _latest_state(tmp_store, "revenue_q_growth_yoy_accel", _QUARTERS[11], "S2")[:2] == (
+        None, "missing_input_or_domain")
+    assert _latest_state(tmp_store, "gross_margin_q_change_yoy", _QUARTERS[10], "S2")[:2] == (
+        None, "missing_input_or_domain")
+    # Zero quarterly revenue has no margin, so the next year's margin change has no value either.
+    assert _latest_state(tmp_store, "gross_margin_q", _QUARTERS[3], "S2")[:2] == (None, "zero_denominator")
+    assert _latest_state(tmp_store, "gross_margin_q", _QUARTERS[7], "S2")[1] == "valid"
+    assert _latest_state(tmp_store, "gross_margin_q_change_yoy", _QUARTERS[7], "S2")[:2] == (
+        None, "missing_input_or_domain")
+
+
+def test_fifty_three_week_year_compares_the_same_fiscal_quarter_bucket(tmp_store):
+    _seed_statement(tmp_store, "S3", _RETAIL_QUARTERS)
+    _refresh_quarterly_family(tmp_store)
+
+    # The 14-week quarter ending 2021-01-02 compares with the quarter ending
+    # 2019-12-28, and the next fiscal Q1 (2021-04-03) with 2020-03-28.
+    for index in (7, 8):
+        value, status, _ = _latest_state(tmp_store, "eps_basic_q_growth_yoy", _RETAIL_QUARTERS[index], "S3")
+        assert (value, status) == (pytest.approx(_growth("eps_basic__1034", index)), "valid")
+        accel, status, _ = _latest_state(tmp_store, "revenue_q_growth_yoy_accel", _RETAIL_QUARTERS[index], "S3")
+        assert (accel, status) == (
+            pytest.approx(_growth("revenue", index) - _growth("revenue", index - 1)), "valid")
+    change, status, _ = _latest_state(tmp_store, "gross_margin_q_change_yoy", _RETAIL_QUARTERS[11], "S3")
+    assert (change, status) == (
+        pytest.approx(_ratio("gross_profit__1004", 11) - _ratio("gross_profit__1004", 7)), "valid")
