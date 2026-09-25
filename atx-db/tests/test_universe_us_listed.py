@@ -1205,3 +1205,29 @@ def test_reconstructed_deciles_rank_delisted_names_instead_of_survivors_only(tmp
     # Strict ranks only strict members (G has no strict listing evidence at all).
     strict = {row[0]: row for row in _membership(tmp_store)}
     assert set(strict) == {"SEC-A"} and strict["SEC-A"][9] == 1
+
+
+def test_build_script_knowledge_cutoff_is_its_own_flag_not_the_window_end(monkeypatch, tmp_path, capsys):
+    """AF1 (A2-review M3): --end-date bounds trade dates; --as-of-date is the knowledge cutoff."""
+    import contextlib
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "build_universe_us_listed.py"
+    spec = importlib.util.spec_from_file_location("build_universe_us_listed_cli", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    captured = []
+    monkeypatch.setattr(module, "DuckDBStore", lambda path: contextlib.nullcontext(path))
+    monkeypatch.setattr(module, "refresh_universe_us_listed", lambda store, options: captured.append(options) or 3)
+    monkeypatch.setattr(module, "utc_today", lambda: dt.date(2026, 9, 25))
+    db = str(tmp_path / "w.duckdb")
+
+    # run5 shape: last session 2026-09-18, directory snapshot received 2026-09-20.
+    assert module.main(["--db-path", db, "--end-date", "2026-09-18", "--as-of-date", "2026-09-20"]) == 0
+    assert (captured[-1].end_date, captured[-1].as_of_date) == (dt.date(2026, 9, 18), dt.date(2026, 9, 20))
+    assert json.loads(capsys.readouterr().out)["as_of_date"] == "2026-09-20"
+    # A historical window rebuilt today keeps inputs loaded after the window (cutoff = today).
+    assert module.main(["--db-path", db, "--end-date", "2020-12-31"]) == 0
+    assert (captured[-1].end_date, captured[-1].as_of_date) == (dt.date(2020, 12, 31), dt.date(2026, 9, 25))

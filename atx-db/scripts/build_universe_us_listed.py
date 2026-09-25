@@ -22,7 +22,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--universe-id", default=DEFAULT_US_LISTED_UNIVERSE_ID)
     parser.add_argument("--lookback-days", type=int, default=20)
     parser.add_argument("--start-date", type=dt.date.fromisoformat)
-    parser.add_argument("--end-date", type=dt.date.fromisoformat)
+    parser.add_argument("--end-date", type=dt.date.fromisoformat, help="last trade date of the build window")
+    parser.add_argument(
+        "--as-of-date",
+        type=dt.date.fromisoformat,
+        help=(
+            "knowledge cutoff: inputs known after the end of this day are not used "
+            "(default: today, UTC). Independent of --end-date: a historical window "
+            "rebuilt today still sees inputs loaded after the window."
+        ),
+    )
     parser.add_argument("--run-id")
     args = parser.parse_args(argv)
 
@@ -31,12 +40,17 @@ def main(argv: list[str] | None = None) -> int:
         lookback_days=args.lookback_days,
         start_date=args.start_date,
         end_date=args.end_date,
-        as_of_date=args.end_date or utc_today(),
+        as_of_date=args.as_of_date or utc_today(),
         run_id=args.run_id,
     )
     with DuckDBStore(args.db_path) as store:
         rows = refresh_universe_us_listed(store, options)
-    print(json.dumps({"universe_id": options.universe_id, "intervals": rows}, sort_keys=True))
+    print(
+        json.dumps(
+            {"universe_id": options.universe_id, "intervals": rows, "as_of_date": options.as_of_date.isoformat()},
+            sort_keys=True,
+        )
+    )
     return 0
 
 
