@@ -2,10 +2,19 @@
 
 Two access modes; every output keeps ``production_qualified=false``.
 
-L1 inspection (default): schema copies and small fixture databases only. The
-production warehouse, every database under atx-db/data (also through a hard
-link) and the checkout-root warehouse_template.duckdb are refused before any
-DuckDB call. DuckDB 32-512MB, 1-2 threads, no spill, 1-60 s per query.
+The governed warehouse is anchored explicitly (PRODUCTION_DB =
+C:\\atx\\atx-db\\data\\warehouse.duckdb), never derived from this script's own
+location, so a copy of the runner (RX3 pinned export, pool worktree) protects
+the same file. Q3 needs schema >= 0327 (A5 identity label columns); on an older
+schema it is reported unavailable.
+
+L1 inspection (default): schema copies and small fixture databases only.
+Refused before any DuckDB call: the governed warehouse (also through a hard
+link), any file inside an ``atx-db/data`` directory of any checkout, export or
+worktree (and inside the governed warehouse's directory), the checkout-root
+warehouse_template.duckdb, and any database larger than 1 GiB (fixtures and
+schema templates are far smaller; warehouses and backups are not). DuckDB
+32-512MB, 1-2 threads, no spill, 1-60 s per query.
 Bind against a copy of the current test-harness template, e.g. (PowerShell,
 from atx-db):
   Copy-Item .pytest_cache/db_schema_templates/<fingerprint>/warehouse_template.duckdb "$env:TEMP/l1-schema.duckdb"
@@ -15,27 +24,34 @@ from atx-db):
 Governed production read (--production): the production warehouse only, only
 inside the controller memory guard. All of these are required, else the run is
 refused before DuckDB is imported:
-  * the explicit --production flag and --db-path naming data/warehouse.duckdb;
+  * the explicit --production flag and --db-path naming the governed warehouse
+    (PRODUCTION_DB, or --governed-warehouse PATH, which must then also appear in
+    the guard receipt's command with the same path);
   * ATX_DESK_GUARD_RECEIPT naming the run_memory_guarded.py receipt of THIS
     launch: status "running", child_pid = this process (or its venv launcher),
     rewritten within the last 120 s, job_limit_gb <= 2, command naming this
     script with --production;
   * this process inside a Windows job whose memory limit is <= that cap;
   * >= 3 GiB free beside the output (spill cap 2GB + 1 GiB floor).
+The runner may run from an RX3 pinned export (it then executes the export's SQL
+files); the receipt records the runner root, its script sha256 and the export
+commit when the root sits in exports/<sha>/atx-db.
 Connection: read_only, memory_limit 1GB, 1 thread, spill <= 2GB in a private
 temporary directory beside the output (removed afterwards), external access
 disabled once the spill directory is set, UTC; the effective DuckDB settings are
-re-read and must not exceed those limits. Per-query deadline 1-1800 s (default
-600), row cap 1-1000 plus a truncation sentinel, transfer byte cap. The guard
-receipt, effective settings, schema version and warehouse file metadata before
-and after are recorded in the output receipt. A governed read is inspection of
-production data, not a qualification of it.
+re-read (access_mode read_only, the private temp_directory, limits as ceilings)
+and then locked (lock_configuration=true), so no SQL can lift them. Per-query
+deadline 1-1800 s (default 600), row cap 1-1000 plus a truncation sentinel,
+transfer byte cap. The guard receipt, effective settings, schema version and
+warehouse file metadata before and after are recorded in the output receipt. A
+governed read is inspection of production data, not a qualification of it.
 Operator sequence (PowerShell, from C:\\atx\\atx-db, no warehouse writer running;
-observe headroom first per the controller rules):
+observe headroom first per the controller rules; <runner> is scripts\\ of the
+live tree or of the pinned export):
   $env:ATX_DESK_GUARD_RECEIPT = "<dir>\\desk-guard.json"
   .venv\\Scripts\\python.exe ..\\.superpowers\\sdd\\tier1-parity\\run_memory_guarded.py `
     --job-gb 2 --receipt "<dir>\\desk-guard.json" -- `
-    .venv\\Scripts\\python.exe scripts\\read_desk_question_pack.py --production `
+    .venv\\Scripts\\python.exe <runner>\\read_desk_question_pack.py --production `
     --db-path data\\warehouse.duckdb --mode run --output-json "<dir>\\desk-pack.json"
 """
 
@@ -45,6 +61,7 @@ import argparse
 import contextlib
 import datetime as dt
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -69,8 +86,11 @@ SQL_FILES = {
 MAX_RECEIPT_BYTES = 10_000_000
 GIB = 1024 ** 3
 
-#: The only database the governed production mode may read.
-PRODUCTION_DB = ROOT / "data" / "warehouse.duckdb"
+#: The only database the governed production mode may read. Anchored to the
+#: live checkout, never to this script's location (copies run from exports).
+PRODUCTION_DB = Path(r"C:\atx\atx-db\data\warehouse.duckdb")
+#: L1 never opens a database larger than this (schema templates are ~60 MB).
+L1_MAX_DATABASE_BYTES = GIB
 #: Environment variable naming the controller guard receipt of this launch.
 GUARD_RECEIPT_ENV = "ATX_DESK_GUARD_RECEIPT"
 GUARD_RECEIPT_MAX_BYTES = 1_000_000
@@ -130,7 +150,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--db-path", type=Path, required=True)
     p.add_argument("--output-json", type=Path, required=True)
     p.add_argument("--production", action="store_true",
-                   help="governed read of data/warehouse.duckdb inside the controller guard")
+                   help="governed read of the governed warehouse inside the controller guard")
+    p.add_argument("--governed-warehouse", type=Path, default=None,
+                   help="production only: override PRODUCTION_DB; must also appear in the guard receipt's command")
     p.add_argument("--query", choices=("all", *SQL_FILES), default="all")
     p.add_argument("--mode", choices=("explain", "run"), default="explain")
     p.add_argument("--memory-limit", type=memory_limit, default=None, help="L1 only (default 256MB)")
@@ -154,24 +176,36 @@ def _same_file(left: Path, right: Path) -> bool:
     return left == right or (left.exists() and right.exists() and left.samefile(right))
 
 
-def validate_paths(db_path: Path, output: Path, *, production: bool) -> tuple[Path, Path]:
+def _in_data_directory(path: Path) -> bool:
+    """Inside any ``atx-db/data`` directory (any checkout, export or worktree) or this runner's own."""
+    parts = [part.lower() for part in path.parts]
+    return (any(pair == ("atx-db", "data") for pair in itertools.pairwise(parts))
+            or path.is_relative_to((ROOT / "data").resolve()))
+
+
+def validate_paths(db_path: Path, output: Path, *, production: bool,
+                   governed: Path | None = None) -> tuple[Path, Path]:
     """Resolve links and classify the database before any DuckDB call."""
     db_path, output = db_path.resolve(), output.resolve()
-    data_root = (ROOT / "data").resolve()
-    if _same_file(db_path, (ROOT / "warehouse_template.duckdb").resolve()):
-        raise Refused("the checkout-root template is forbidden; use a copy")
-    is_production = _same_file(db_path, PRODUCTION_DB.resolve())
+    governed = (governed or PRODUCTION_DB).resolve()
+    for template in (ROOT / "warehouse_template.duckdb", governed.parent.parent / "warehouse_template.duckdb"):
+        if _same_file(db_path, template.resolve()):
+            raise Refused("the checkout-root template is forbidden; use a copy")
+    is_production = _same_file(db_path, governed)
     if production and not is_production:
-        raise Refused(f"--production reads only the governed warehouse {PRODUCTION_DB}")
-    if not production and (is_production or db_path.is_relative_to(data_root)):
-        raise Refused("the production warehouse and every database under atx-db/data require --production "
-                      f"and the {GUARD_RECEIPT_ENV} guard receipt; L1 inspection reads a copy or tiny fixture")
+        raise Refused(f"--production reads only the governed warehouse {governed}")
+    if not production:
+        if is_production or _in_data_directory(db_path):
+            raise Refused("the governed warehouse and every database in an atx-db/data directory require "
+                          f"--production and the {GUARD_RECEIPT_ENV} guard receipt; L1 reads a copy or tiny fixture")
+        if db_path.is_file() and db_path.stat().st_size > L1_MAX_DATABASE_BYTES:
+            raise Refused(f"L1 opens only fixtures and schema copies up to {L1_MAX_DATABASE_BYTES} bytes")
     if not db_path.is_file():
         raise ValueError("db-path must be an existing database file")
     if output == db_path or output.exists() or output.suffix.lower() != ".json" or not output.parent.is_dir():
         raise ValueError("output-json must be a fresh .json path in an existing directory")
-    if output.is_relative_to(data_root):
-        raise ValueError("output-json must not be written under atx-db/data")
+    if _in_data_directory(output):
+        raise ValueError("output-json must not be written in an atx-db/data directory")
     return db_path, output
 
 
@@ -255,8 +289,12 @@ def _read_guard_receipt(path: Path) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-def verify_guard_receipt() -> dict:
-    """Prove this process runs inside the controller guard's memory-capped job."""
+def verify_guard_receipt(governed_override: Path | None = None) -> dict:
+    """Prove this process runs inside the controller guard's memory-capped job.
+
+    ``governed_override`` (--governed-warehouse) must be named in the receipt's
+    command with the same resolved path, so the override is part of the guard record.
+    """
     named = os.environ.get(GUARD_RECEIPT_ENV)
     if not named:
         raise Refused(f"{GUARD_RECEIPT_ENV} is not set: production reads run only under run_memory_guarded.py")
@@ -285,6 +323,11 @@ def verify_guard_receipt() -> dict:
     if not isinstance(command, list) or not all(isinstance(part, str) for part in command) \
             or not any(Path(part).name == SCRIPT_NAME for part in command) or "--production" not in command:
         raise Refused(f"guard receipt command must launch {SCRIPT_NAME} with --production")
+    if governed_override is not None:
+        flag = "--governed-warehouse"
+        named = [Path(command[i + 1]).resolve() for i, part in enumerate(command[:-1]) if part == flag]
+        if named != [governed_override.resolve()]:
+            raise Refused(f"{flag} must appear once in the guard receipt's command with the same path")
     job_bytes = job_memory_limit_bytes()
     if job_bytes is None:
         raise Refused("this process is not inside a memory-capped job object")
@@ -322,16 +365,28 @@ def _setting_bytes(text: str) -> float | None:
     return float(match[1]) * _SIZE_UNITS[match[2].lower()]
 
 
-def verify_settings(con, limits: Limits) -> dict:
-    """Re-read DuckDB's effective settings; a setting above the limit aborts."""
-    settings = dict(con.execute("""
-        SELECT name, value FROM duckdb_settings()
-        WHERE name IN ('memory_limit','threads','max_temp_directory_size','enable_external_access',
-                       'preserve_insertion_order','access_mode','TimeZone')
-    """).fetchall())
+_SETTINGS_SQL = """
+    SELECT name, value FROM duckdb_settings()
+    WHERE name IN ('memory_limit','threads','max_temp_directory_size','enable_external_access',
+                   'preserve_insertion_order','access_mode','TimeZone','temp_directory','lock_configuration')
+"""
+
+
+def verify_settings(con, limits: Limits, spill_directory: str | None = None) -> dict:
+    """Re-read DuckDB's effective settings, enforce them, then lock the configuration.
+
+    Limits are ceilings; access must be read_only; a governed spill must use the
+    private directory. After ``lock_configuration`` no SET/RESET/PRAGMA can lift them.
+    """
+    settings = dict(con.execute(_SETTINGS_SQL).fetchall())
     memory = _setting_bytes(settings.get("memory_limit"))
     spill = _setting_bytes(settings.get("max_temp_directory_size"))
     problems = []
+    if settings.get("access_mode") != "read_only":
+        problems.append(f"access_mode {settings.get('access_mode')}")
+    if spill_directory is not None and not _same_file(Path(str(settings.get("temp_directory"))).resolve(),
+                                                      Path(spill_directory).resolve()):
+        problems.append(f"temp_directory {settings.get('temp_directory')}")
     if memory is None or memory > limits.memory_bytes * _SETTING_TOLERANCE:
         problems.append(f"memory_limit {settings.get('memory_limit')}")
     if spill is None or spill > limits.spill_bytes * _SETTING_TOLERANCE:
@@ -342,7 +397,12 @@ def verify_settings(con, limits: Limits) -> dict:
         problems.append("external access enabled")
     if problems:
         raise RuntimeError("effective DuckDB settings exceed the declared limits: " + "; ".join(problems))
-    return settings
+    con.execute("SET lock_configuration = true")
+    locked = dict(con.execute(_SETTINGS_SQL).fetchall())
+    if str(locked.get("lock_configuration")).lower() != "true" or locked != {**settings, "lock_configuration":
+                                                                              locked.get("lock_configuration")}:
+        raise RuntimeError("DuckDB configuration did not lock with the verified settings")
+    return locked
 
 
 def schema_version(con) -> str | None:
@@ -412,6 +472,13 @@ def inspect_query(con, name: str, parameters: dict, limits: Limits, mode: str) -
     return result
 
 
+def runner_provenance() -> dict:
+    """Which runner and SQL tree ran: the live checkout or an RX3 pinned export (exports/<sha>/atx-db)."""
+    commit = ROOT.parent.name if re.fullmatch(r"[0-9a-f]{40}", ROOT.parent.name) else None
+    return {"root": str(ROOT), "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "export_commit": commit}
+
+
 def _file_state(path: Path) -> dict:
     stat = path.stat()
     return {"bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns}
@@ -435,7 +502,11 @@ def write_receipt(output: Path, receipt: dict) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
-        db_path, output = validate_paths(args.db_path, args.output_json, production=args.production)
+        if args.governed_warehouse is not None and not args.production:
+            raise Refused("--governed-warehouse is a production-only override")
+        governed = args.governed_warehouse or PRODUCTION_DB
+        db_path, output = validate_paths(args.db_path, args.output_json, production=args.production,
+                                         governed=governed)
         limits = resolve_limits(args)
         if not args.cik.isascii() or not args.cik.isdecimal() or not 1 <= len(args.cik) <= 10 or int(args.cik) == 0:
             raise ValueError("cik requires 1..10 digits, nonzero")
@@ -445,7 +516,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("date range must lie within 2015..2026")
         guard = None
         if args.production:
-            guard = verify_guard_receipt()
+            guard = verify_guard_receipt(args.governed_warehouse)
             free = shutil.disk_usage(output.parent).free
             if free < PRODUCTION_DISK_FLOOR_BYTES:
                 raise Refused(f"{free} bytes free beside the output; the spill cap needs "
@@ -458,14 +529,17 @@ def main(argv: list[str] | None = None) -> int:
                    "access_mode": limits.access_mode, "database": str(db_path),
                    "read_only": True, "mode": args.mode, "production_qualified": False,
                    "limits": limits._asdict(), "guard": guard, "database_file_before": _file_state(db_path),
-                   "queries": []}
+                   "governed_warehouse": str(governed), "governed_warehouse_override": args.governed_warehouse
+                   is not None, "runner": runner_provenance(), "queries": []}
         try:
-            spill_scope = (tempfile.TemporaryDirectory(prefix=".desk-pack-spill-", dir=output.parent)
+            spill_scope = (tempfile.TemporaryDirectory(prefix=".desk-pack-spill-", dir=output.parent,
+                                                       ignore_cleanup_errors=True)
                            if args.production else contextlib.nullcontext(None))
             with spill_scope as spill, open_read_only(db_path, limits.memory_limit, limits.threads, spill,
                                                       limits.spill_limit) as con:
+                receipt["spill_directory"] = spill
                 con.execute("SET TimeZone='UTC'")
-                receipt["effective_settings"] = verify_settings(con, limits)
+                receipt["effective_settings"] = verify_settings(con, limits, spill)
                 receipt["schema_version"] = schema_version(con)
                 for name in SQL_FILES if args.query == "all" else (args.query,):
                     receipt["queries"].append(inspect_query(con, name, parameters, limits, args.mode))
@@ -474,6 +548,10 @@ def main(argv: list[str] | None = None) -> int:
             ) else "inspection_complete"
         except Exception as exc:
             receipt.update(status="unavailable", error_type=type(exc).__name__, error=str(exc)[:6000])
+        if receipt.get("spill_directory"):
+            # Cleanup errors are ignored (a lingering DuckDB handle must not fail a
+            # completed read); a leftover directory is recorded instead.
+            receipt["spill_directory_removed"] = not Path(receipt["spill_directory"]).exists()
         receipt["database_file_after"] = _file_state(db_path)
         receipt["database_file_changed"] = receipt["database_file_after"] != receipt["database_file_before"]
         write_receipt(output, receipt)

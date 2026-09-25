@@ -142,6 +142,24 @@ def test_production_path_is_refused_without_flag_and_live_guard(case, governed, 
     assert "desk pack refused" in capsys.readouterr().err
 
 
+def test_relocated_runner_refuses_live_data_paths_and_warehouse_sized_files(tmp_path, monkeypatch):
+    # A copy of the runner (RX3 pinned export, pool worktree) has its own ROOT; the
+    # governed warehouse and every atx-db/data directory must stay protected.
+    monkeypatch.setattr(reader, "ROOT", tmp_path / "exports" / ("0" * 40) / "atx-db")
+    monkeypatch.setattr(reader, "open_read_only", lambda *_a, **_k: pytest.fail("database opened"))
+    live_data = tmp_path / "live" / "atx-db" / "data"
+    live_data.mkdir(parents=True)
+    backup = live_data / "warehouse.pre-migrate.duckdb"
+    backup.write_bytes(b"x")
+    fixture = tmp_path / "fixture.duckdb"
+    fixture.write_bytes(b"x" * 2048)
+    monkeypatch.setattr(reader, "L1_MAX_DATABASE_BYTES", 1024)
+    for index, database in enumerate((backup, reader.PRODUCTION_DB, fixture)):
+        output = tmp_path / f"out{index}.json"
+        assert reader.main(["--db-path", str(database), "--output-json", str(output)]) == 2
+        assert not output.exists()
+
+
 def test_production_flag_never_reads_another_database(governed, tmp_path, monkeypatch):
     other = tmp_path / "fixture.duckdb"
     with duckdb.connect(str(other)) as con:
@@ -178,8 +196,8 @@ def test_governed_production_read_binds_and_runs_every_query_inside_the_guard(
     settings = receipt["effective_settings"]
     assert reader._setting_bytes(settings["memory_limit"]) <= 10 ** 9
     assert 0 < reader._setting_bytes(settings["max_temp_directory_size"]) <= 2 * 10 ** 9
-    assert (settings["threads"], settings["enable_external_access"], settings["access_mode"]) == (
-        "1", "false", "read_only")
+    assert (settings["threads"], settings["enable_external_access"], settings["access_mode"],
+            settings["lock_configuration"]) == ("1", "false", "read_only", "true")
     assert receipt["guard"]["child_pid"] == os.getpid() and receipt["guard"]["job_memory_limit_bytes"] == 2 * reader.GIB
     # Every desk query binds and executes on the current (>= 0327) schema template.
     assert int(receipt["schema_version"]) >= 327
@@ -438,8 +456,10 @@ def test_q3_share_basis_owner_link_deciles_floor_and_latest_null(tmp_store):
     for index in range(12):
         owner, cik = f"issuer_{index:02}", str(index + 1).zfill(10)
         _q3_owner(con, owner, cik, latest_null_roe=index == 10)
+        # trading_02's panel owner is the bridge's SEC-CIK key for the same CIK: same issuer, no mismatch.
         _q3_line(con, f"trading_{index:02}", owner, cik, pe=float(10 + index), cap=1e8 if index == 11 else 2e9,
-                 shares_source="archive" if index == 9 else "dei")
+                 shares_source="archive" if index == 9 else "dei",
+                 market_owner=f"SEC-CIK-{cik}" if index == 2 else None)
     # A resolved two-class issuer: both class lines carry the class-summed issuer cap.
     _q3_owner(con, "issuer_12", "0000000013")
     _q3_line(con, "class_a", "issuer_12", "0000000013", pe=100.0, cap=5e9, shares_source="class_sum", volume=100)

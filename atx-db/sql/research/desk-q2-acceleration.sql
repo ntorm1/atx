@@ -65,7 +65,12 @@ joined AS (
                 WHEN x.derived_value_id IS NULL THEN 'accel_state_missing'
                 WHEN x.value_status IS DISTINCT FROM 'valid' OR x.value IS NULL OR NOT isfinite(x.value)
                   THEN 'accel_missing_input_or_domain'
-                WHEN x.value_origin IS DISTINCT FROM 'quarterly' THEN 'accel_adjacency_unproven'
+                -- The engine propagates incomparable from an incomparable growth input
+                -- (e.g. per-share YoY without a proven split basis): name that apart
+                -- from a one-quarter fiscal-adjacency failure.
+                WHEN x.value_origin IS DISTINCT FROM 'quarterly' THEN
+                     CASE WHEN c.value_origin IS DISTINCT FROM 'quarterly' OR b.value_origin IS DISTINCT FROM 'quarterly'
+                          THEN 'growth_origin_not_quarterly' ELSE 'accel_adjacency_unproven' END
                 WHEN abs(x.value-(c.value-b.value))>1e-9*greatest(1.0,abs(x.value))
                   THEN 'accel_growth_state_mismatch'
                 ELSE 'registered_candidate_lineage_unverified' END AS status

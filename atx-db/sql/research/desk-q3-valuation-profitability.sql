@@ -13,7 +13,9 @@
 -- Withheld bases (multiclass_unresolved, adr_ratio_unresolved,
 -- dei_archive_conflict, split_unresolved) and rows without a share-basis label
 -- never show a market cap or multiple, whatever the stored row holds.
--- The market row's owner (A5 bridge) must equal this reader's dated-CIK owner.
+-- The market row's owner (A5 bridge) must be this reader's dated-CIK issuer:
+-- CIKs are compared when the owner id carries one (SEC-CIK-X, *-CIK-X member
+-- ids), else the owner ids. Requires schema >= 0327 (identity label columns).
 -- One line per CIK is ranked (highest same-session close x volume, then
 -- security_id); other candidate lines of that CIK are secondary_issuer_line.
 -- Reporting currency (A8 guard) is not stored per row: a currency-withheld row
@@ -75,7 +77,8 @@ session AS (
       m.shares_source,m.share_basis_status,
       CASE m.share_basis_status WHEN 'verified_dei_shares' THEN 'filing_available_at'
            WHEN 'unverified_vendor_shares' THEN 'vendor_run_clock' END AS shares_availability_basis,
-      m.owner_security_id AS market_owner_security_id,m.identity_basis,
+      m.owner_security_id AS market_owner_security_id,
+      nullif(regexp_extract(m.owner_security_id,'CIK-([0-9]{10})$',1),'') AS market_owner_cik,m.identity_basis,
       m.availability_basis AS owner_link_availability_basis,m.link_method,
       m.close*m.volume AS dollar_volume,
       m.share_basis_status IN ('verified_dei_shares','unverified_vendor_shares') AS basis_shown,
@@ -127,7 +130,8 @@ session AS (
            WHEN m.share_basis_status='withheld' THEN 'share_basis_withheld'
            WHEN m.share_basis_status='unlabeled' THEN 'share_basis_unlabeled'
            WHEN m.market_owner_security_id IS NULL OR m.identity_basis IS NULL THEN 'market_owner_link_unlabeled'
-           WHEN m.market_owner_security_id<>o.security_id THEN 'market_owner_mismatch'
+           WHEN CASE WHEN m.market_owner_cik IS NOT NULL THEN m.market_owner_cik<>i.cik
+                     ELSE m.market_owner_security_id<>o.security_id END THEN 'market_owner_mismatch'
            WHEN m.market_cap IS NULL OR NOT isfinite(m.market_cap) OR m.market_cap<p.floor THEN 'market_cap_floor_or_missing'
            WHEN f.oldest_fiscal_end IS NULL OR f.fiscal_endpoints<>1
              OR date_diff('day',f.oldest_fiscal_end,c.trade_date)>200 THEN 'profitability_stale_or_mixed'
