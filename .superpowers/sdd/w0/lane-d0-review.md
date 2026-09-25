@@ -90,3 +90,34 @@ path:line | severity | problem | required fix
   - 3% payer across a gap: step 0.000000 vs -0.132351 legacy; it would fail on the old code.
 - [x] Evidence in the report matches what I re-ran (36 lane tests, 235 data, 678 alpha, 8 anchored suites).
 - [x] Owning executables pass whole, except the real-data tests that data discipline forbids a lane from running (G0 item).
+
+## Re-review 1
+
+### Verdict
+APPROVE
+
+Fix-only re-review of `be32d7ac2cf55ab3609e07e37b3856c8d9068436` against the first review at
+`1f2810740d14efbaf9a9443fb43860e68fa751a7`. Fix commits: `1f73a0cf` (review file only) and
+`be32d7ac` (fix pass 1). There are no blockers and no majors. Findings 1 and 4 are fixed in code
+and have tests. Finding 2 has been relabelled and now waits on an owner waiver. Finding 3 has been
+correctly handed to G0 and also waits on an owner waiver. The fixes introduce no regression and
+weaken no test.
+
+### Per-finding status
+| # | Finding | Status | Evidence |
+|---|---|---|---|
+| 1 | RatioChainV2 dropped a dividend on the resumption cell or inside the gap | **FIXED** | `adjust.cpp` accumulates each gap-cell dividend on its own ex-date basis (`gap_div_adj`, factor finite and > 0). A gap dividend with no usable factor goes to `gap_div_raw` and is converted only when `last_factor == f`. The resume step is `prev_tri*((s + carried)/last_s)`, and a non-finite `carried` is guarded to 0. The accumulators reset on every valid cell, so a dividend in a leading gap is dropped at the anchor. ReanchorV1 is unchanged (`tri = s` when not chaining). `r_t` at resumption is still 0. New tests: `DataAdjustGap_W0d0.DividendOnTheResumptionCellIsReinvested` covers the reviewer's case {100,NaN,99}/{0,0,1}, where TRI_2 == 100 exactly. It also covers the factor-0.5 basis and V1 = 99. `DividendInsideTheGapIsReinvestedAtResumption` covers one gap dividend, two gap dividends plus a resumption dividend, a split inside the gap, a NaN gap factor with the factor unchanged (converted) and with a split (dropped), a leading gap, and V1. I checked the expected values by hand. |
+| 2 | vwap row labelled "MET (with deviation)" | **FIXED (relabel); owner waiver still needed** | The report's Build-items row now reads "**DEVIATION — owner waiver needed**". There is no code change, as the finding asked. |
+| 3 | `build_real_panel` D-03/D-05 wiring untested in lane; `kGoldenDigest` stale | **HANDED OFF to G0 (correct); owner waiver still needed** | The report's "Fix pass 1" item 3 lists (a) the 14 excluded real-data tests by name, (b) the re-pin of `kGoldenDigest` with an old->new row tied to D-03/D-04 (+ gap dividends)/D-05/D-09, (c) the `require_coverage` OutOfRange check and (d) `SharesOutstandingPitForwardFill`. Data discipline rules out closing it in the lane. |
+| 4 | `history_field_level_basis` tags liquidity by name only | **FIXED** | Added a new overload `history_field_level_basis(name, alpha::DollarVolumeBasis)`. RawCloseV2 returns the name-only tag. CloseV1 and unknown enum values fail closed to AdjustedLevel for `dollar_volume`/`adv{d}` only. Unknown names still return nullopt. The opaque `enum class DollarVolumeBasis : std::uint8_t;` matches its definition in `augment.hpp`, and `<cstdint>` is already included. The name-only overload now carries a doc caveat. The Integration notes now name `atx-impl/src/stage_discover.cpp:315`, with the suggested switch to `with_alpha101_fields` or a pre-supplied raw `dollar_volume`, and also flag the adjusted-close price floor. New test `DataLevelBasis_W0d0.LiquidityTagFollowsTheDollarVolumeBasis` checks every augmented field under both bases and the unknown-enum and unknown-name cases. It also shows that `with_datafields` run directly on a history panel is bit-identical to CloseV1. |
+
+### Regression / test-integrity checks
+- `git diff --numstat 1f281074 HEAD`: the two test files have +80/-0 and +65/-0 lines, so they only gained lines. No expectation, tolerance, DISABLED_ or GTEST_SKIP was touched. The code diff is confined to owned files `adjust.{hpp,cpp}` and `history_panel.{hpp,cpp}`.
+- Build (reviewer, `C:\atx-wt\pool-4`, equity-dev, `CMAKE_BUILD_PARALLEL_LEVEL=2`, 5.48 GB free): `build atx-engine-data-tests atx-engine-alpha-tests` exit=0. `check atx-impl\src\stage_augment.cpp` exit=0, since that consumer includes the changed header.
+- `atx-engine-data-tests.exe --gtest_filter=*W0d0*`: 39/39 passed, exit=0. The output includes `[tri-gap]` and `[resnapshot] ... halved=112/112; RawCloseV2 moved=0`.
+- The whole `atx-engine-data-tests.exe` minus the 14 real-data tests (same filter as the report): 237/237 passed, exit=0. `OratsE2ESmoke.SyntheticPartitionRunsUnchangedRobustPipeline` also passed, 1/1, exit=0.
+- The whole `atx-engine-alpha-tests.exe`: 678/678 passed, exit=0.
+- Anchored ctest: `^DataAdjustGap_` 7/7, `^DataLevelBasis_` 7/7 and `^DataAdjust\.` 6/6, all exit=0. The AAPL real-data test SKIPPED because no smoke data is in the pool, so nothing real was read.
+
+### New findings introduced by the fix
+None. One cosmetic note, not a finding: the comment on the new basis test says "measured: it moves under a factor re-snapshot". That measurement lives in `FactorResnapshotLeavesRawLiquidityInvariant`, not in this test.
