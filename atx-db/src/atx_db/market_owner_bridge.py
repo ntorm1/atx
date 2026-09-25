@@ -48,28 +48,46 @@ Modes
 Reconstructed link rules, in precedence order, for a line whose last traded
 symbol is normalized (upper case; ``.``, ``/`` and blanks -> ``-``):
 
+0. Symbol-keyed vendor lines (missing/non-positive vendor id: the loader keys
+   them by symbol, so one line can concatenate two issuers) never link:
+   ``symbol_keyed_line``.
 1. ``current_sec_ticker``: the symbol is a current SEC ticker of exactly one
-   CIK, and this line is that symbol's latest holder (latest last bar, then
-   most bar rows, then id). Former holders of a reused symbol are unlinked as
-   ``symbol_held_by_other_line``; a symbol mapped to several CIKs is unlinked
-   as ``ambiguous_current_ticker``. A secondary class line
-   (``TBLTICKERHISTORY-7`` trading the current class-B ticker of X) links to
-   ``SEC-CIK-X`` with its class symbol.
+   CIK (newest snapshot row per ticker), and this line is that symbol's latest
+   holder (latest last bar, then most bar rows, then id). Former holders of a
+   reused symbol are unlinked as ``symbol_held_by_other_line``; a symbol
+   mapped to several CIKs is unlinked as ``ambiguous_current_ticker``. A
+   secondary class line (``TBLTICKERHISTORY-7`` trading the current class-B
+   ticker of X) links to ``SEC-CIK-X`` with its class symbol.
 2. ``cik_security_id``: no current SEC ticker matches, but the line id is itself
-   ``SEC-CIK-##########`` (assigned upstream by a current-symbol map).
+   ``SEC-CIK-##########`` (assigned upstream by a current-symbol map). A
+   *stale* such line (last bar > ``STALE_LINK_DAYS`` before the bar horizon)
+   whose CIK already has a current-ticker holder line is a superseded
+   predecessor or a reused-symbol victim: ``superseded_cik_line``.
 3. ``shared_security_id``: no CIK evidence at all, but accounting content is
    keyed by the line's own id -- the legacy equal-id join, retained so
-   non-SEC identity namespaces keep working.
+   non-SEC identity namespaces keep working
+   (``identity_basis='shared_security_id_unverified'``).
 4. otherwise unlinked as ``no_current_ticker`` (delisted/renamed lines whose
    last symbol no longer maps) -- counted, never silently dropped.
 
-DEI shares
-----------
-A DEI share count is an issuer-level (or undetermined-class) count. The bridge
-marks ``dei_shares_eligible`` only for a line that is its owner's *sole*
-concurrently trading linked line; owners with overlapping linked lines
-(multi-class, units/warrants) keep their line-level archive shares until A8
-defines a per-class share basis. ``concurrent_owner_lines`` exposes that count.
+Stale current-ticker holders stay linked (a delisted issuer that still files
+under the same ticker is common) but are counted (``stale_links``).
+
+Share class guard (until A8 defines a class share basis)
+-------------------------------------------------------
+A DEI count is issuer-level (or an arbitrary per-class pick). An issuer (CIK)
+is *multi-line* when it has more than one current SEC ticker -- linked or not
+-- or more than one concurrently trading linked line (strict owner-key splits
+included). For every line of a multi-line issuer the bridge withholds DEI
+shares **and** marks ``valuation_eligible=False``: the panel then NULLs every
+daily metric that combines market value with fundamentals, instead of pairing
+one class line's price with issuer-total or other-class counts. Strict mode
+assigns no DEI shares at all (no class basis exists yet). The panel adds a
+data-side guard: a DEI state whose filing carries more than one count or
+share class (per-class DEI) is never used and withholds valuation too.
+Known residual for A8: a multi-class issuer with only one current SEC ticker,
+one linked line and a single issuer-total DEI count is indistinguishable here
+from a single-class issuer.
 """
 
 from __future__ import annotations
@@ -83,6 +101,7 @@ from functools import cached_property
 from itertools import pairwise
 
 from .connection import DuckDBStore
+from .ticker_history import SOURCE_NAME as TICKER_HISTORY_SOURCE_NAME
 from .warehouse import cik_security_id
 
 __all__ = [
@@ -90,6 +109,7 @@ __all__ = [
     "AVAILABILITY_VERIFIED",
     "BRIDGE_VALUE_COLUMNS",
     "IDENTITY_BASIS_CURRENT_TICKER",
+    "IDENTITY_BASIS_SHARED_ID",
     "IDENTITY_BASIS_VERIFIED_DATED",
     "LINK_CIK_SECURITY_ID",
     "LINK_CURRENT_SEC_TICKER",
@@ -99,6 +119,7 @@ __all__ = [
     "OWNER_MODES",
     "OWNER_MODE_RECONSTRUCTED",
     "OWNER_MODE_STRICT",
+    "STALE_LINK_DAYS",
     "BridgeRow",
     "MarketOwnerBridge",
     "OwnerLinkEvidence",
@@ -118,6 +139,7 @@ OWNER_MODE_RECONSTRUCTED = "reconstructed"
 OWNER_MODES = (OWNER_MODE_STRICT, OWNER_MODE_RECONSTRUCTED)
 
 IDENTITY_BASIS_CURRENT_TICKER = "current_ticker_unverified"
+IDENTITY_BASIS_SHARED_ID = "shared_security_id_unverified"
 IDENTITY_BASIS_VERIFIED_DATED = "verified_dated"
 AVAILABILITY_MODELED = "modeled"
 AVAILABILITY_VERIFIED = "verified"
@@ -131,6 +153,12 @@ UNLINKED_NO_CURRENT_TICKER = "no_current_ticker"
 UNLINKED_SYMBOL_HELD_BY_OTHER_LINE = "symbol_held_by_other_line"
 UNLINKED_AMBIGUOUS_CURRENT_TICKER = "ambiguous_current_ticker"
 UNLINKED_NO_DATED_EVIDENCE = "no_dated_evidence"
+UNLINKED_SYMBOL_KEYED_LINE = "symbol_keyed_line"
+UNLINKED_SUPERSEDED_CIK_LINE = "superseded_cik_line"
+
+#: A line whose last bar is more than this many calendar days before the bar
+#: horizon (latest last bar of any line) is *stale* for the reuse checks.
+STALE_LINK_DAYS = 30
 
 #: Modeled reconstructed-link availability: the first bar's end-of-day cutoff
 #: (same ``trade_date + 22h`` convention as ``market_daily.END_OF_DAY_HOURS``).
@@ -145,6 +173,7 @@ BRIDGE_VALUE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("valid_to", "DATE"),
     ("available_at", "TIMESTAMP"),
     ("dei_shares_eligible", "BOOLEAN"),
+    ("valuation_eligible", "BOOLEAN"),
     ("identity_basis", "VARCHAR"),
 )
 #: Column layout of the per-batch ``owner_members`` VALUES relation.
@@ -154,6 +183,8 @@ MEMBER_VALUE_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 
 _SEC_CIK_ID = re.compile(r"SEC-CIK-(\d{10})")
+_VENDOR_LINE_PREFIX = "TBLTICKERHISTORY-"
+_POSITIVE_VENDOR_LINE = re.compile(r"TBLTICKERHISTORY-[1-9]\d*")
 _SYMBOL_SEPARATORS = re.compile(r"[./\s]+")
 _CIK_DIGITS = re.compile(r"\d{1,10}")
 
@@ -185,6 +216,8 @@ class PriceLine:
     first_trade_date: dt.date
     last_trade_date: dt.date
     bar_rows: int
+    #: Missing/non-positive vendor id: the loader keyed the line by symbol.
+    symbol_keyed: bool = False
 
 
 @dataclass(frozen=True)
@@ -227,7 +260,12 @@ class BridgeRow:
     unlinked_reason: str | None = None
     evidence_observed_at: dt.datetime | None = None
     dei_shares_eligible: bool = False
+    #: False for every line of a multi-line issuer until A8's class basis.
+    valuation_eligible: bool = False
+    #: Linked lines of the same issuer (CIK) trading concurrently with this one.
     concurrent_owner_lines: int = 0
+    #: max(concurrent linked lines, current SEC tickers) of the issuer.
+    issuer_class_lines: int = 0
 
     @property
     def linked(self) -> bool:
@@ -245,6 +283,7 @@ class MarketOwnerBridge:
     evidence_supplied: int = 0
     rejected_evidence: dict[str, int] = field(default_factory=dict)
     ticker_snapshot_observed_at: dt.datetime | None = None
+    ticker_snapshot_oldest_observed_at: dt.datetime | None = None
     ambiguous_content_ids: int = 0
     #: Every accounting-content id seen (lets summary() flag owners with no
     #: content without another warehouse scan).
@@ -260,6 +299,11 @@ class MarketOwnerBridge:
 
     def line_ids(self) -> list[str]:
         return sorted(self.lines)
+
+    @property
+    def bar_horizon(self) -> dt.date | None:
+        """Latest last bar of any price line (the reconstructed 'now')."""
+        return max((line.last_trade_date for line in self.lines.values()), default=None)
 
     @cached_property
     def _by_line(self) -> dict[str, tuple[BridgeRow, ...]]:
@@ -282,9 +326,9 @@ class MarketOwnerBridge:
     def owner_aligned_batches(self, identifiers: Sequence[str], batch_size: int) -> list[tuple[str, ...]]:
         """Pack identifiers into batches that never split one owner's lines.
 
-        Every price line that links (in any interval) to the same owner lands in
-        the same batch, so issuer-level aggregation over an owner's class lines
-        (A8) can run inside one statement. A group larger than ``batch_size``
+        Every price line that links (in any interval) to the same owner or CIK
+        lands in the same batch, so issuer-level aggregation over an issuer's
+        class lines (A8) can run inside one statement. A group larger than ``batch_size``
         forms its own batch. Single-line groups keep the sorted-id order.
         """
         size = max(1, int(batch_size))
@@ -303,9 +347,11 @@ class MarketOwnerBridge:
             find("line:" + identifier)
         for row in self.rows:
             if row.linked and row.price_security_id in wanted:
-                left, right = find("line:" + row.price_security_id), find("owner:" + str(row.owner_security_id))
-                if left != right:
-                    parent[right] = left
+                keys = ["owner:" + str(row.owner_security_id)] + (["cik:" + row.cik] if row.cik else [])
+                for key in keys:
+                    left, right = find("line:" + row.price_security_id), find(key)
+                    if left != right:
+                        parent[right] = left
         groups: dict[str, list[str]] = defaultdict(list)
         for identifier in ordered:
             groups[find("line:" + identifier)].append(identifier)
@@ -329,10 +375,12 @@ class MarketOwnerBridge:
         by_line = self._by_line
         linked_by_method: dict[str, int] = defaultdict(int)
         unlinked_by_reason: dict[str, int] = defaultdict(int)
+        linked_by_basis: dict[str, int] = defaultdict(int)
         linked_lines = unlinked_lines = linked_bar_rows = unlinked_bar_rows = 0
-        secondary = dei_withheld = id_disagreements = 0
+        secondary = dei_withheld = valuation_withheld = id_disagreements = stale = 0
         owners: set[str] = set()
-        multi_line_owners: set[str] = set()
+        multi_line_issuers: set[str] = set()
+        horizon = self.bar_horizon
         for price_id in sorted(wanted):
             line = self.lines.get(price_id)
             rows = by_line.get(price_id, ())
@@ -342,14 +390,19 @@ class MarketOwnerBridge:
                 linked_lines += 1
                 linked_bar_rows += bar_rows
                 linked_by_method[str(linked[0].link_method)] += 1
+                linked_by_basis[str(linked[0].identity_basis)] += 1
                 for row in linked:
                     owners.add(str(row.owner_security_id))
-                    if row.concurrent_owner_lines > 1:
-                        multi_line_owners.add(str(row.owner_security_id))
+                    if row.issuer_class_lines > 1:
+                        multi_line_issuers.add(_issuer_key(row))
                 if any(row.owner_security_id != price_id for row in linked):
                     secondary += 1
                 if not any(row.dei_shares_eligible for row in linked):
                     dei_withheld += 1
+                if not any(row.valuation_eligible for row in linked):
+                    valuation_withheld += 1
+                if line is not None and horizon is not None and _is_stale(line, horizon):
+                    stale += 1
                 match = _SEC_CIK_ID.fullmatch(price_id)
                 if match is not None and any(row.cik not in (None, match.group(1)) for row in linked):
                     id_disagreements += 1
@@ -372,16 +425,24 @@ class MarketOwnerBridge:
             "linked_bar_rows": linked_bar_rows,
             "unlinked_bar_rows": unlinked_bar_rows,
             "linked_by_method": dict(sorted(linked_by_method.items())),
+            "linked_by_identity_basis": dict(sorted(linked_by_basis.items())),
             "unlinked_by_reason": dict(sorted(unlinked_by_reason.items())),
             "secondary_lines_linked": secondary,
             "owners": len(owners),
-            "multi_line_owners": len(multi_line_owners),
+            "multi_line_issuers": len(multi_line_issuers),
             "owners_without_accounting_content": without_content,
             "dei_shares_withheld_lines": dei_withheld,
+            "valuation_withheld_lines": valuation_withheld,
+            "stale_links": stale,
+            "stale_link_days": STALE_LINK_DAYS,
+            "bar_horizon": horizon.isoformat() if horizon is not None else None,
             "line_id_cik_disagreements": id_disagreements,
             "ambiguous_content_owner_ids": self.ambiguous_content_ids,
             "ticker_snapshot_observed_at": (
                 self.ticker_snapshot_observed_at.isoformat() if self.ticker_snapshot_observed_at else None
+            ),
+            "ticker_snapshot_oldest_observed_at": (
+                self.ticker_snapshot_oldest_observed_at.isoformat() if self.ticker_snapshot_oldest_observed_at else None
             ),
         }
         if self.mode == OWNER_MODE_STRICT:
@@ -428,12 +489,69 @@ def _owner_members(
     return {owner: tuple(sorted(ids)) for owner, ids in sorted(members.items())}, ambiguous
 
 
-def _with_share_eligibility(rows: list[BridgeRow], lines: dict[str, PriceLine]) -> tuple[BridgeRow, ...]:
-    """Count each owner's concurrently trading linked lines; DEI only for a sole line."""
-    owner_lines: dict[str, set[str]] = defaultdict(set)
+def _issuer_key(row: BridgeRow) -> str:
+    """The issuer a linked row belongs to: its CIK, else its owner id."""
+    return f"cik:{row.cik}" if row.cik else f"owner:{row.owner_security_id}"
+
+
+def _is_stale(line: PriceLine, horizon: dt.date) -> bool:
+    return (horizon - line.last_trade_date).days > STALE_LINK_DAYS
+
+
+def _is_symbol_keyed(price_security_id: str) -> bool:
+    return price_security_id.startswith(_VENDOR_LINE_PREFIX) and not _POSITIVE_VENDOR_LINE.fullmatch(price_security_id)
+
+
+def _ticker_index(
+    tickers: Sequence[tuple[str, str, dt.datetime | None]],
+) -> tuple[dict[str, dict[str, tuple[str, dt.datetime | None]]], dict[str, int]]:
+    """``symbol key -> {cik: (ticker, observed_at)}`` and ``cik -> current ticker count``.
+
+    A ticker keeps only its newest snapshot row(s): the security-master load
+    replaces rows per CIK, so a CIK that dropped out of the SEC file leaves a
+    stale row behind that must not make a live holder's ticker ambiguous.
+    """
+    latest: dict[str, dt.datetime] = {}
+    rows: list[tuple[str, str, str, dt.datetime | None]] = []
+    for raw_cik, raw_ticker, observed_at in tickers:
+        cik, key = normalize_cik(raw_cik), normalize_symbol(raw_ticker)
+        if cik is None or key is None:
+            continue
+        rows.append((key, cik, str(raw_ticker).strip().upper(), observed_at))
+        stamp = observed_at or dt.datetime.min
+        latest[key] = max(latest.get(key, dt.datetime.min), stamp)
+    index: dict[str, dict[str, tuple[str, dt.datetime | None]]] = defaultdict(dict)
+    for key, cik, ticker, observed_at in rows:
+        if (observed_at or dt.datetime.min) < latest[key]:
+            continue
+        previous = index[key].get(cik)
+        if previous is None or ticker < previous[0]:
+            index[key][cik] = (ticker, observed_at)
+    per_cik: dict[str, set[str]] = defaultdict(set)
+    for key, owners in index.items():
+        for cik in owners:
+            per_cik[cik].add(key)
+    return dict(index), {cik: len(keys) for cik, keys in per_cik.items()}
+
+
+def _with_class_guards(
+    rows: list[BridgeRow],
+    lines: dict[str, PriceLine],
+    cik_tickers: dict[str, int],
+    *,
+    strict: bool,
+) -> tuple[BridgeRow, ...]:
+    """Mark multi-line issuers: no DEI, no valuation until A8's class basis.
+
+    An issuer (CIK, else owner id) is multi-line when it has more than one
+    current SEC ticker -- counted whether or not those lines are linked -- or
+    more than one concurrently trading linked line. Strict mode never assigns
+    DEI shares (no class basis exists yet).
+    """
+    issuer_lines: dict[str, set[str]] = defaultdict(set)
     for row in rows:
         if row.owner_security_id is not None:
-            owner_lines[row.owner_security_id].add(row.price_security_id)
+            issuer_lines[_issuer_key(row)].add(row.price_security_id)
     resolved: list[BridgeRow] = []
     for row in rows:
         if row.owner_security_id is None:
@@ -442,11 +560,21 @@ def _with_share_eligibility(rows: list[BridgeRow], lines: dict[str, PriceLine]) 
         line = lines[row.price_security_id]
         concurrent = sum(
             1
-            for other_id in owner_lines[row.owner_security_id]
+            for other_id in issuer_lines[_issuer_key(row)]
             if lines[other_id].first_trade_date <= line.last_trade_date
             and line.first_trade_date <= lines[other_id].last_trade_date
         )
-        resolved.append(replace(row, concurrent_owner_lines=concurrent, dei_shares_eligible=concurrent == 1))
+        class_lines = max(concurrent, cik_tickers.get(row.cik, 0) if row.cik else 0)
+        single = class_lines <= 1
+        resolved.append(
+            replace(
+                row,
+                concurrent_owner_lines=concurrent,
+                issuer_class_lines=class_lines,
+                dei_shares_eligible=single and not strict,
+                valuation_eligible=single,
+            )
+        )
     return tuple(sorted(resolved, key=lambda row: (row.price_security_id, row.valid_from or dt.date.min)))
 
 
@@ -459,25 +587,23 @@ def classify_reconstructed(
 
     Returns ``(rows, owner_members, ambiguous_content_ids)``.
     """
-    index: dict[str, dict[str, tuple[str, dt.datetime | None]]] = defaultdict(dict)
-    for raw_cik, raw_ticker, observed_at in tickers:
-        cik, key = normalize_cik(raw_cik), normalize_symbol(raw_ticker)
-        if cik is None or key is None:
-            continue
-        ticker = str(raw_ticker).strip().upper()
-        previous = index[key].get(cik)
-        if previous is None or (observed_at or dt.datetime.min) > (previous[1] or dt.datetime.min):
-            index[key][cik] = (ticker, observed_at)
+    index, cik_tickers = _ticker_index(tickers)
+    horizon = max((line.last_trade_date for line in lines), default=None)
+
+    def symbol_keyed(line: PriceLine) -> bool:
+        return line.symbol_keyed or _is_symbol_keyed(line.price_security_id)
 
     holders: dict[str, str] = {}
     matched: dict[str, list[PriceLine]] = defaultdict(list)
     for line in lines:
         key = normalize_symbol(line.last_symbol)
-        if key is not None and key in index:
+        if key is not None and key in index and not symbol_keyed(line):
             matched[key].append(line)
     for key, candidates in matched.items():
         best = min(candidates, key=lambda c: (-c.last_trade_date.toordinal(), -c.bar_rows, c.price_security_id))
         holders[key] = best.price_security_id
+    # CIKs that already have a current-ticker holder line (for the rule-2 reuse check).
+    held_ciks = {next(iter(index[key])) for key in holders if len(index[key]) == 1}
 
     rows: list[BridgeRow] = []
     for line in sorted(lines, key=lambda item: item.price_security_id):
@@ -503,6 +629,9 @@ def classify_reconstructed(
             "availability_basis": None,
             "link_method": None,
         }
+        if symbol_keyed(line):
+            rows.append(BridgeRow(**unlinked, unlinked_reason=UNLINKED_SYMBOL_KEYED_LINE))
+            continue
         if key is not None and key in index:
             owners = index[key]
             if len(owners) > 1:
@@ -523,7 +652,9 @@ def classify_reconstructed(
                 )
             continue
         match = _SEC_CIK_ID.fullmatch(price_id)
-        if match is not None:
+        if match is not None and horizon is not None and _is_stale(line, horizon) and match.group(1) in held_ciks:
+            rows.append(BridgeRow(**unlinked, unlinked_reason=UNLINKED_SUPERSEDED_CIK_LINE))
+        elif match is not None:
             rows.append(
                 BridgeRow(
                     **linked,
@@ -537,7 +668,7 @@ def classify_reconstructed(
             ciks = content[price_id]
             rows.append(
                 BridgeRow(
-                    **linked,
+                    **{**linked, "identity_basis": IDENTITY_BASIS_SHARED_ID},
                     owner_security_id=price_id,
                     cik=next(iter(ciks)) if len(ciks) == 1 else None,
                     share_class_symbol=line.last_symbol,
@@ -548,7 +679,7 @@ def classify_reconstructed(
             rows.append(BridgeRow(**unlinked, unlinked_reason=UNLINKED_NO_CURRENT_TICKER))
 
     by_id = {line.price_security_id: line for line in lines}
-    resolved = _with_share_eligibility(rows, by_id)
+    resolved = _with_class_guards(rows, by_id, cik_tickers, strict=False)
     members, ambiguous = _owner_members(resolved, content)
     return resolved, members, ambiguous
 
@@ -645,12 +776,15 @@ def classify_strict(
     lines: Sequence[PriceLine],
     evidence: Sequence[OwnerLinkEvidence],
     content: dict[str, frozenset[str]],
+    tickers: Sequence[tuple[str, str, dt.datetime | None]] = (),
 ) -> tuple[tuple[BridgeRow, ...], dict[str, tuple[str, ...]], int, dict[str, int]]:
     """Dated-evidence bridge. Returns ``(rows, members, ambiguous_content_ids, rejected)``.
 
     Evidence is validated per row; overlapping intervals that assign one price
     line to *different* owners are rejected as ``conflicting_evidence``.
     Lines without accepted evidence are unlinked as ``no_dated_evidence``.
+    ``tickers`` (the current SEC snapshot) is used only by the conservative
+    multi-line guard, never to create a link.
     """
     by_id = {line.price_security_id: line for line in lines}
     rejected: dict[str, int] = defaultdict(int)
@@ -696,7 +830,7 @@ def classify_strict(
                     unlinked_reason=UNLINKED_NO_DATED_EVIDENCE,
                 )
             )
-    resolved = _with_share_eligibility(rows, by_id)
+    resolved = _with_class_guards(rows, by_id, _ticker_index(tickers)[1], strict=True)
     members, ambiguous = _owner_members(resolved, content)
     return resolved, members, ambiguous, dict(sorted(rejected.items()))
 
@@ -722,14 +856,19 @@ def _read_lines(store: DuckDBStore) -> list[PriceLine]:
                arg_max(symbol, (trade_date, source)) AS last_symbol,
                min(trade_date) AS first_trade_date,
                max(trade_date) AS last_trade_date,
-               count(*) AS bar_rows
+               count(*) AS bar_rows,
+               -- ticker-history lines without any positive vendor id were keyed
+               -- by symbol upstream and may concatenate issuers.
+               coalesce(bool_or(source = ?), false)
+                   AND NOT coalesce(bool_or(try_cast(vendor_security_id AS BIGINT) > 0), false) AS symbol_keyed
         FROM equity_daily_bars
         WHERE close > 0 AND trade_date IS NOT NULL
         GROUP BY security_id
         ORDER BY security_id
-        """
+        """,
+        [TICKER_HISTORY_SOURCE_NAME],
     ).fetchall()
-    return [PriceLine(str(r[0]), r[1], r[2], r[3], int(r[4])) for r in rows]
+    return [PriceLine(str(r[0]), r[1], r[2], r[3], int(r[4]), bool(r[5])) for r in rows]
 
 
 def _read_tickers(store: DuckDBStore) -> list[tuple[str, str, dt.datetime | None]]:
@@ -805,10 +944,12 @@ def build_market_owner_bridge(
         raise ValueError(f"unknown owner mode {mode!r}; expected one of {OWNER_MODES}")
     lines = _read_lines(store)
     content = _read_content(store, item_codes=item_codes, metric_codes=metric_codes, derived_source=derived_source)
+    tickers = _read_tickers(store)
+    observed = [loaded for _cik, _ticker, loaded in tickers if loaded is not None]
     by_id = {line.price_security_id: line for line in lines}
     if mode == OWNER_MODE_STRICT:
         supplied = tuple(evidence or ())
-        rows, members, ambiguous, rejected = classify_strict(lines, supplied, content)
+        rows, members, ambiguous, rejected = classify_strict(lines, supplied, content, tickers)
         bridge = MarketOwnerBridge(
             mode=mode,
             lines=by_id,
@@ -819,15 +960,14 @@ def build_market_owner_bridge(
             ambiguous_content_ids=ambiguous,
         )
     else:
-        tickers = _read_tickers(store)
         rows, members, ambiguous = classify_reconstructed(lines, tickers, content)
-        observed = [loaded for _cik, _ticker, loaded in tickers if loaded is not None]
         bridge = MarketOwnerBridge(
             mode=mode,
             lines=by_id,
             rows=rows,
             owner_members=members,
             ticker_snapshot_observed_at=max(observed) if observed else None,
+            ticker_snapshot_oldest_observed_at=min(observed) if observed else None,
             ambiguous_content_ids=ambiguous,
         )
     return replace(bridge, content_ids=frozenset(content))
@@ -863,6 +1003,7 @@ def bridge_value_params(rows: Sequence[BridgeRow]) -> list[object]:
                 row.valid_to,
                 row.available_at,
                 row.dei_shares_eligible,
+                row.valuation_eligible,
                 row.identity_basis,
             ]
         )

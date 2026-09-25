@@ -61,6 +61,7 @@ __all__ = [
     "owner_bridge_report",
     "refresh_market_daily_metrics",
     "shares_reconciliation_report",
+    "valuation_dependent_codes",
 ]
 
 #: Stable provenance tag for rows this engine writes (reconstructed-identity
@@ -234,10 +235,13 @@ def build_market_daily_sql(
     ``trade_date`` and whose link ``available_at`` is at or before its cutoff;
     fundamentals, derived metrics and DEI shares are read from every member id
     of that owner and re-keyed to ``owner_key`` before the ASOF joins. DEI
-    shares join only when the row is ``dei_shares_eligible``.
+    shares join only when the row is ``dei_shares_eligible`` and the selected
+    DEI filing is not a per-class disclosure; every metric in
+    :func:`valuation_dependent_codes` is NULL when the bridge row is not
+    ``valuation_eligible`` or the DEI state is per-class (``valuation_withheld``).
 
     Bind order, matching the placeholders in the query text left to right:
-    the bridge rows then the member rows (7 and 2 values per row, in
+    the bridge rows then the member rows (8 and 2 values per row, in
     ``BRIDGE_VALUE_COLUMNS``/``MEMBER_VALUE_COLUMNS`` order), then
     the effective start date (the ``is_recent`` computation -- it's in
     the ``SELECT`` list, textually *before* the ``security_id IN (...)``
@@ -267,14 +271,20 @@ def build_market_daily_sql(
 
     chain: list[str] = []
     previous = "panel"
+    withheld_codes = valuation_dependent_codes(daily_definitions)
     for rank, definition in enumerate(daily_definitions):
         names = tuple(definition.item_inputs) + tuple(definition.metric_inputs) + tuple(definition.market_inputs)
         lowered = compile_expression(definition.expression, daily_context(names=names))
         alias = f"m{rank}"
+        value_sql = lowered.value_sql
+        if definition.metric_code in withheld_codes:
+            # A5 class guard: no line-price x issuer-fundamental metric for a
+            # multi-line issuer (or a per-class DEI state) until A8's class basis.
+            value_sql = f"CASE WHEN p.valuation_withheld THEN NULL ELSE ({value_sql}) END"
         chain.append(
             f"""{alias} AS (
     SELECT p.*,
-           {lowered.value_sql} AS "{definition.metric_code}",
+           {value_sql} AS "{definition.metric_code}",
            {lowered.availability_sql} AS "{definition.metric_code}__at"
     FROM {previous} p
 )"""
@@ -348,7 +358,8 @@ WITH owner_bridge AS (
     -- market_owner_bridge), so at most one matches a bar; a link not yet
     -- available at the bar's cutoff leaves owner_key NULL.
     SELECT b.*, o.owner_key, o.identity_basis,
-           CASE WHEN o.dei_shares_eligible THEN o.owner_key END AS dei_owner_key
+           coalesce(o.dei_shares_eligible, false) AS dei_shares_eligible,
+           coalesce(NOT o.valuation_eligible, false) AS bridge_valuation_withheld
     FROM bars b
     LEFT JOIN owner_bridge o
       ON o.price_security_id = b.security_id
@@ -390,33 +401,45 @@ WITH owner_bridge AS (
                      RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
     )
     WHERE rk = 1
+), shares_filings AS (
+    -- Data-side class guard: one filing (owner, accession, effective date,
+    -- load clock) that carries more than one count or share class is a
+    -- per-class DEI disclosure; no single count of it is an issuer total.
+    SELECT m.owner_key, h.share_history_id, h.share_count, h.effective_date, h.available_at,
+           min(h.share_count) OVER f IS DISTINCT FROM max(h.share_count) OVER f
+           OR min(coalesce(h.share_class, '')) OVER f <> max(coalesce(h.share_class, '')) OVER f AS per_class
+    FROM shares_outstanding_history h
+    JOIN owner_members m ON m.member_security_id = h.security_id
+    WHERE h.share_count_type = 'shares_outstanding' AND h.taxonomy = 'dei'
+      AND h.available_at IS NOT NULL
+    WINDOW f AS (PARTITION BY m.owner_key, coalesce(h.accession_number, h.share_history_id),
+                              h.effective_date, h.available_at)
 ), shares_state AS (
     SELECT security_id, available_at,
            state.state_id AS state_id,
-           CASE WHEN state.share_count > 0 THEN state.share_count END AS share_count
+           CASE WHEN state.share_count > 0 THEN state.share_count END AS share_count,
+           state.per_class AS per_class
     FROM (
-        SELECT m.owner_key AS security_id, h.available_at,
-               arg_max(struct_pack(share_count := h.share_count, state_id := h.share_history_id),
-                       (h.effective_date, h.available_at, h.share_history_id)) OVER w AS state,
-               row_number() OVER (PARTITION BY m.owner_key, h.available_at
-                                  ORDER BY h.effective_date DESC, h.share_history_id DESC) AS rk
-        FROM shares_outstanding_history h
-        JOIN owner_members m ON m.member_security_id = h.security_id
-        WHERE h.share_count_type = 'shares_outstanding' AND h.taxonomy = 'dei'
-          AND h.available_at IS NOT NULL
-        WINDOW w AS (PARTITION BY m.owner_key ORDER BY h.available_at
+        SELECT owner_key AS security_id, available_at,
+               arg_max(struct_pack(share_count := share_count, state_id := share_history_id, per_class := per_class),
+                       (effective_date, available_at, share_history_id)) OVER w AS state,
+               row_number() OVER (PARTITION BY owner_key, available_at
+                                  ORDER BY effective_date DESC, share_history_id DESC) AS rk
+        FROM shares_filings
+        WINDOW w AS (PARTITION BY owner_key ORDER BY available_at
                      RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
     )
     WHERE rk = 1), joined AS (
     SELECT b.security_id, b.trade_date, b.symbol, b.close, b.adj_close, b.volume,
            b.archive_shares, b.bar_at, b.cutoff, b.owner_key, b.identity_basis,
-           s.share_count AS dei_shares,
-           s.state_id AS dei_state_id,
+           CASE WHEN b.dei_shares_eligible AND NOT coalesce(s.per_class, false) THEN s.share_count END AS dei_shares,
+           CASE WHEN b.dei_shares_eligible AND NOT coalesce(s.per_class, false) THEN s.state_id END AS dei_state_id,
+           (b.bridge_valuation_withheld OR coalesce(s.per_class, false)) AS valuation_withheld,
            {projections}
            {"," if projections else ""}{fundamental_at} AS fundamental_available_at
     FROM bars_owned b
     ASOF LEFT JOIN shares_state s
-      ON s.security_id = b.dei_owner_key AND b.cutoff >= s.available_at
+      ON s.security_id = b.owner_key AND b.cutoff >= s.available_at
     {joins}
 ), panel AS (
     SELECT j.security_id, j.trade_date, j.symbol, j.close, j.adj_close, j.volume,
@@ -457,6 +480,7 @@ SELECT sha256(? || '|' || f.security_id || '|' || CAST(f.trade_date AS VARCHAR))
               close := f.close, adj_close := f.adj_close, shares := f."shares_outstanding",
               shares_source := f.shares_source, dei_state_id := f.dei_state_id,
               owner_key := f.owner_key, identity_basis := f.identity_basis,
+              valuation_withheld := f.valuation_withheld,
               fundamental_available_at := f.fundamental_available_at, states := {state_lineage}))),
        f.trade_date, true, ?
 FROM final f
@@ -464,6 +488,24 @@ WHERE {row_available_at} IS NOT NULL
   {output_date_predicate}
 ORDER BY f.security_id, f.trade_date
 """
+
+
+def valuation_dependent_codes(daily_definitions: tuple[DerivedMetricDefinition, ...]) -> frozenset[str]:
+    """Daily metrics that (transitively) combine market data with fundamentals.
+
+    ``market_cap`` (price x shares), returns, volatility and dollar volume are
+    market-only; anything reading an ``item:`` or a non-daily ``metric:`` --
+    or a daily metric that does -- is a valuation metric withheld by the class
+    guard. ``daily_definitions`` must be in topological order.
+    """
+    daily_codes = {definition.metric_code for definition in daily_definitions}
+    dependent: set[str] = set()
+    for definition in daily_definitions:
+        if definition.item_inputs or any(
+            code not in daily_codes or code in dependent for code in definition.metric_inputs
+        ):
+            dependent.add(definition.metric_code)
+    return frozenset(dependent)
 
 
 def _daily_definitions() -> tuple[DerivedMetricDefinition, ...]:
@@ -727,6 +769,10 @@ class MarketDailyDataset(Dataset):
         details: dict[str, Any] = dict(
             shares_reconciliation_report(store, source=resolved.source, tolerance=resolved.shares_tolerance)
         )
+        # Every run is labeled with its identity basis at top level (RX1).
+        details["owner_mode"] = bridge_summary.get("mode")
+        details["identity_basis"] = bridge_summary.get("identity_basis")
+        details["availability_basis"] = bridge_summary.get("availability_basis")
         details["owner_bridge"] = bridge_summary
         return DatasetLoadResult(
             dataset_id=self.dataset_id,
