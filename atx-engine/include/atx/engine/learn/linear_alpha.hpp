@@ -84,6 +84,10 @@ namespace lin = atx::core::linalg;
 //  master_seed       : the deterministic seed root (M1; the linear arm is
 //                      RNG-free, carried for ensemble-level reproducibility).
 //  horizons          : the forward-return horizons to fit + blend (§0.6).
+//  protocol          : the versioned CV-protocol rules (W0-L0): fold-local
+//                      augmentation (L-03), trial counting and the horizon-blend IC
+//                      (L-08). Defaults are the corrected behaviour; the V1 values
+//                      reproduce the legacy numbers.
 // ===========================================================================
 struct LinearAlphaCfg {
   ElasticNetCfg en;
@@ -91,6 +95,7 @@ struct LinearAlphaCfg {
   eval::CpcvConfig cpcv;
   atx::u64 master_seed;
   std::vector<atx::u16> horizons;
+  LearnProtocol protocol{};
 };
 
 namespace detail {
@@ -145,14 +150,19 @@ build_design(const FeatureMatrix &fm, const LearnedModel &model_shell,
 // ===========================================================================
 //  fit_linear — assemble the deployed multi-horizon learned LINEAR alpha.
 //
-//  See the header: per-horizon CPCV OOS fit (trial_count per fit), a deployed
-//  refit on the full trailing window, and §0.6 horizon-blend weights from the
-//  OOS IC. The latent basis / interactions in `aug` are taken AS GIVEN (S5-2
-//  fit them on the trailing window); fit_linear adds only the standardization
-//  stats + coefficients + blend. PURE in (fm, aug, cfg).
+//  See the header: per-horizon CPCV OOS fit, a deployed refit on the full trailing
+//  window, and §0.6 horizon-blend weights from the OOS IC. The DEPLOYED model uses
+//  `aug` AS GIVEN; under cfg.protocol.fold_aug == FoldLocalV2 (default) every CV fold
+//  refits the augmentation recipe on its own train rows (fit_fold_augmentation), so
+//  no fold's OOS prediction depends on its test rows (L-03). trial_count follows
+//  cfg.protocol.trials (one configuration by default, L-08). PURE in (fm, aug, cfg).
+//  The overload with `trace` also records every fold's OOS predictions and training
+//  artifact (LearnFitTrace); a null trace records nothing.
 // ===========================================================================
 [[nodiscard]] LearnedModel fit_linear(const FeatureMatrix &fm, const LatentAugmentation &aug,
                                       const LinearAlphaCfg &cfg);
+[[nodiscard]] LearnedModel fit_linear(const FeatureMatrix &fm, const LatentAugmentation &aug,
+                                      const LinearAlphaCfg &cfg, LearnFitTrace *trace);
 
 // ===========================================================================
 //  predict_at — the emitted cross-section at a single date (deployed model).

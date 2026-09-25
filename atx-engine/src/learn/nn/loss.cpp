@@ -1,11 +1,16 @@
 #include "atx/engine/learn/nn/loss.hpp"
 
-#include <cmath> // std::fabs, std::sqrt
+#include <algorithm> // std::stable_sort (row groups)
+#include <cmath>     // std::fabs, std::sqrt
+#include <cstddef>   // std::size_t
+#include <span>      // std::span
+#include <utility>   // std::pair
+#include <vector>    // std::vector
 
 #include <Eigen/Dense> // Eigen::Index
 
-#include "atx/core/macro.hpp" // ATX_ASSERT
-#include "atx/core/types.hpp" // f64
+#include "atx/core/macro.hpp" // ATX_ASSERT, ATX_CHECK
+#include "atx/core/types.hpp" // f64, u32, usize
 
 namespace atx::engine::learn::nn {
 
@@ -144,10 +149,100 @@ struct IcMoments {
   return m;
 }
 
+// Pearson moments over the rows `rows` of one group (all columns), as ascending
+// (column, then listed-row) scalar folds (R1). Same contract as ic_moments.
+[[nodiscard]] IcMoments group_moments(const lin::MatX &pred, const lin::MatX &target,
+                                      std::span<const Eigen::Index> rows, atx::f64 eps) {
+  const Eigen::Index C = pred.cols();
+  const atx::f64 n = static_cast<atx::f64>(rows.size()) * static_cast<atx::f64>(C);
+  atx::f64 sp = 0.0;
+  atx::f64 st = 0.0;
+  for (Eigen::Index c = 0; c < C; ++c) {
+    for (const Eigen::Index r : rows) {
+      sp += pred(r, c);
+      st += target(r, c);
+    }
+  }
+  IcMoments m{};
+  m.pbar = sp / n;
+  m.tbar = st / n;
+  atx::f64 spt = 0.0;
+  atx::f64 spp = 0.0;
+  atx::f64 stt = 0.0;
+  for (Eigen::Index c = 0; c < C; ++c) {
+    for (const Eigen::Index r : rows) {
+      const atx::f64 pc = pred(r, c) - m.pbar;
+      const atx::f64 tc = target(r, c) - m.tbar;
+      spt += pc * tc;
+      spp += pc * pc;
+      stt += tc * tc;
+    }
+  }
+  m.spp = spp;
+  if (n < 2.0 || spp <= eps || stt <= eps) {
+    m.degenerate = true;
+    m.rho = 0.0;
+    m.root = 0.0;
+    return m;
+  }
+  m.root = std::sqrt(spp * stt);
+  m.rho = spt / m.root;
+  m.degenerate = false;
+  return m;
+}
+
+// The batch rows partitioned by group label: rows sorted by (group, row) with a stable
+// sort, then cut into runs. Deterministic for any label values (R1).
+struct GroupRuns {
+  std::vector<Eigen::Index> rows;               // all rows, grouped
+  std::vector<std::pair<std::size_t, std::size_t>> runs; // [lo, hi) into rows, ascending group
+};
+
+[[nodiscard]] GroupRuns group_runs(std::span<const atx::u32> groups) {
+  GroupRuns g;
+  g.rows.resize(groups.size());
+  for (std::size_t i = 0; i < groups.size(); ++i) {
+    g.rows[i] = static_cast<Eigen::Index>(i);
+  }
+  std::stable_sort(g.rows.begin(), g.rows.end(), [&groups](Eigen::Index a, Eigen::Index b) {
+    return groups[static_cast<std::size_t>(a)] < groups[static_cast<std::size_t>(b)];
+  });
+  std::size_t lo = 0;
+  while (lo < g.rows.size()) {
+    const atx::u32 id = groups[static_cast<std::size_t>(g.rows[lo])];
+    std::size_t hi = lo;
+    while (hi < g.rows.size() && groups[static_cast<std::size_t>(g.rows[hi])] == id) {
+      ++hi;
+    }
+    g.runs.emplace_back(lo, hi);
+    lo = hi;
+  }
+  return g;
+}
+
 } // namespace
+
+void IcLoss::set_row_groups(std::span<const atx::u32> groups) {
+  groups_.assign(groups.begin(), groups.end());
+}
 
 atx::f64 IcLoss::value(const lin::MatX &pred, const lin::MatX &target) {
   ATX_ASSERT(pred.rows() == target.rows() && pred.cols() == target.cols());
+  if (reduction_ == IcReduction::PerGroupMeanV2 && !groups_.empty()) {
+    ATX_CHECK(groups_.size() == static_cast<std::size_t>(pred.rows()));
+    const GroupRuns g = group_runs(std::span<const atx::u32>{groups_});
+    atx::f64 sum = 0.0;
+    atx::usize n_groups = 0;
+    for (const auto &[lo, hi] : g.runs) {
+      const std::span<const Eigen::Index> rows{g.rows.data() + lo, hi - lo};
+      const IcMoments m = group_moments(pred, target, rows, eps_);
+      if (!m.degenerate) {
+        sum += m.rho;
+        ++n_groups;
+      }
+    }
+    return (n_groups == 0U) ? 1.0 : 1.0 - sum / static_cast<atx::f64>(n_groups);
+  }
   const IcMoments m = ic_moments(pred, target, eps_);
   return 1.0 - m.rho; // degenerate => rho 0 => loss 1 (no signal)
 }
@@ -156,6 +251,38 @@ lin::MatX IcLoss::grad(const lin::MatX &pred, const lin::MatX &target) {
   ATX_ASSERT(pred.rows() == target.rows() && pred.cols() == target.cols());
   const Eigen::Index B = pred.rows();
   const Eigen::Index C = pred.cols();
+  if (reduction_ == IcReduction::PerGroupMeanV2 && !groups_.empty()) {
+    ATX_CHECK(groups_.size() == static_cast<std::size_t>(B));
+    const GroupRuns gr = group_runs(std::span<const atx::u32>{groups_});
+    std::vector<IcMoments> mom;
+    mom.reserve(gr.runs.size());
+    atx::usize n_groups = 0;
+    for (const auto &[lo, hi] : gr.runs) {
+      const std::span<const Eigen::Index> rows{gr.rows.data() + lo, hi - lo};
+      mom.push_back(group_moments(pred, target, rows, eps_));
+      n_groups += mom.back().degenerate ? 0U : 1U;
+    }
+    lin::MatX g = lin::MatX::Zero(B, C);
+    if (n_groups == 0U) {
+      return g; // no group carries a defined correlation
+    }
+    const atx::f64 inv_g = 1.0 / static_cast<atx::f64>(n_groups);
+    for (std::size_t k = 0; k < gr.runs.size(); ++k) {
+      const IcMoments &m = mom[k];
+      if (m.degenerate) {
+        continue;
+      }
+      for (std::size_t i = gr.runs[k].first; i < gr.runs[k].second; ++i) {
+        const Eigen::Index r = gr.rows[i];
+        for (Eigen::Index c = 0; c < C; ++c) {
+          const atx::f64 pc = pred(r, c) - m.pbar;
+          const atx::f64 tc = target(r, c) - m.tbar;
+          g(r, c) = -inv_g * (tc / m.root - m.rho * pc / m.spp);
+        }
+      }
+    }
+    return g;
+  }
   const IcMoments m = ic_moments(pred, target, eps_);
   lin::MatX g(B, C);
   if (m.degenerate) {

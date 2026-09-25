@@ -86,6 +86,9 @@ namespace gbt_lin = atx::core::linalg;
 //                                 depth->=1 split clears it and fires. Together with
 //                                 kOofDispersionFloor this is the M3 noise gate.
 //  master_seed / cpcv / horizons: determinism root, CPCV fold config, horizons.
+//  protocol                     : the versioned CV-protocol rules (W0-L0): fold-local
+//                                 augmentation (L-03), trial counting and the
+//                                 horizon-blend IC (L-08); V1 values = legacy numbers.
 // ===========================================================================
 struct GbtCfg {
   atx::u32 n_trees{30};
@@ -100,6 +103,7 @@ struct GbtCfg {
   atx::u64 master_seed{0};
   eval::CpcvConfig cpcv{};
   std::vector<atx::u16> horizons{1};
+  LearnProtocol protocol{};
 };
 
 // The OOF dispersion floor (in units of the OOF label std): a per-date prediction
@@ -265,17 +269,22 @@ oof_ic_series_floored(const FeatureMatrix &fm, std::span<const atx::f64> oof_sum
 //  predict path: per horizon, walk the CPCV date-folds; on each fold fit
 //  TRAIN-only bin edges + a TRAIN-only forest (seeded subsample), predict
 //  OUT-OF-FOLD on the test rows (genuine OOS), accumulate the horizon-0 OOF
-//  predictions, bump trial_count per fit. The DEPLOYED per-horizon forest is a
-//  refit on the full trailing window. Horizon blend = normalize(max(oos_IC, 0)).
+//  predictions; trial_count follows cfg.protocol.trials (L-08). Under
+//  cfg.protocol.fold_aug == FoldLocalV2 (default) each fold refits the augmentation
+//  recipe on its train rows (L-03). The DEPLOYED per-horizon forest is a refit on
+//  the full trailing window. Horizon blend = normalize(max(oos_IC, 0)).
 //  The OOS skill series is assembled from the OOF predictions (the SAME helper
 //  fit_linear uses) so oos_deflated_sharpe is genuinely out-of-fold (M3).
 //
 //  Standardization stats are full-window (forward-applied — M2); the augmented
 //  row layout is the shared build_augmented_row, so train/eval cannot drift and
-//  the GBT trains/infers on the exact layout the linear model does.
+//  the GBT trains/infers on the exact layout the linear model does. The `trace`
+//  overload records every fold's OOS predictions + training artifact.
 // ===========================================================================
 [[nodiscard]] LearnedModel fit_gbt(const FeatureMatrix &fm, const LatentAugmentation &aug,
                                    const GbtCfg &cfg);
+[[nodiscard]] LearnedModel fit_gbt(const FeatureMatrix &fm, const LatentAugmentation &aug,
+                                   const GbtCfg &cfg, LearnFitTrace *trace);
 
 // ===========================================================================
 //  oos_ic — the mean per-date OUT-OF-FOLD information coefficient of a fitted
