@@ -150,8 +150,12 @@ def test_security_master_stage_uses_the_injected_downloader(tmp_store, tmp_path,
         )
         return dest.stat().st_size
 
+    from atx_db.clock import utc_today
+
+    # First acquisition happens now, so the cutoff must not be a past day (receipt guard).
     options = ActivationOptions(
-        **{**_options(tmp_path, three_symbol_zip).as_dict(), "downloader": fake_downloader}
+        **{**_options(tmp_path, three_symbol_zip).as_dict(), "downloader": fake_downloader,
+           "as_of_date": utc_today()}
     )
     result = stage_security_master(tmp_store, options)
     assert calls == ["https://www.sec.gov/files/company_tickers.json"]
@@ -162,6 +166,67 @@ def test_security_master_stage_uses_the_injected_downloader(tmp_store, tmp_path,
         "SELECT sha256 FROM raw_source_files WHERE dataset_id = 'sec_security_master'"
     ).fetchone()
     assert sha_row is not None and sha_row[0] and len(sha_row[0]) == 64
+
+
+_COMPANY_TICKERS_JSON = '{"0":{"cik_str":320193,"ticker":"AAPL","title":"Apple Inc."}}'
+
+
+def _retained_company_tickers(tmp_path: Path, received_utc: dt.datetime) -> Path:
+    """A retained company_tickers.json with no cache receipt, so its mtime is its receipt."""
+    import calendar
+    import os
+
+    path = tmp_path / "cache" / "company_tickers.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_COMPANY_TICKERS_JSON, encoding="utf-8")
+    stamp = calendar.timegm(received_utc.timetuple())
+    os.utime(path, (stamp, stamp))
+    return path
+
+
+def _refusing_downloader(url: str, dest: Path, *, user_agent: str) -> int:
+    raise AssertionError(f"a retained snapshot must load without a request: {url}")
+
+
+def test_security_master_file_received_after_the_cutoff_day_fails_loudly(tmp_store, tmp_path, three_symbol_zip):
+    """A retained company_tickers.json received after the cutoff never loads (available_at > cutoff)."""
+    from atx_db.activation import stage_security_master
+    from atx_db.symbol_directory import SnapshotAfterCutoffError
+
+    _retained_company_tickers(tmp_path, dt.datetime(2024, 1, 5, 3, 0))  # cutoff day is 2024-01-04
+    options = ActivationOptions(
+        **{**_options(tmp_path, three_symbol_zip).as_dict(), "downloader": _refusing_downloader}
+    )
+    with pytest.raises(SnapshotAfterCutoffError, match=r"2024-01-05T03:00:00 .*file_mtime.*cutoff day 2024-01-04"):
+        stage_security_master(tmp_store, options)
+    written = tmp_store.con.execute(
+        "SELECT (SELECT count(*) FROM sec_company_tickers), "
+        "(SELECT count(*) FROM security_identifier_history WHERE source = 'SEC company_tickers'), "
+        "(SELECT count(*) FROM exchange_listings WHERE source = 'SEC company_tickers')"
+    ).fetchone()
+    assert written == (0, 0, 0)
+
+
+def test_security_master_rows_are_available_at_the_files_receipt_not_the_load(tmp_store, tmp_path, three_symbol_zip):
+    from atx_db.activation import stage_security_master
+
+    received = dt.datetime(2024, 1, 4, 1, 30)  # inside the 2024-01-04 cutoff day
+    _retained_company_tickers(tmp_path, received)
+    options = ActivationOptions(
+        **{**_options(tmp_path, three_symbol_zip).as_dict(), "downloader": _refusing_downloader}
+    )
+    result = stage_security_master(tmp_store, options)
+    assert result.rows == 1
+    assert result.detail["acquisition"] == "retained" and result.detail["receipt_basis"] == "file_mtime"
+    clocks = tmp_store.con.execute(
+        "SELECT min(available_at), max(available_at), min(as_of_date), max(as_of_date) "
+        "FROM security_identifier_history WHERE source = 'SEC company_tickers'"
+    ).fetchone()
+    assert clocks == (received, received, dt.date(2024, 1, 4), dt.date(2024, 1, 4))
+    listing = tmp_store.con.execute(
+        "SELECT max(available_at) FROM exchange_listings WHERE source = 'SEC company_tickers'"
+    ).fetchone()
+    assert listing == (received,)
 
 
 _NASDAQ_LISTED_TXT = (

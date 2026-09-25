@@ -103,8 +103,10 @@ STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "derived_metrics": ("standardized", "reconciliation"),
     "market_daily": ("ticker_history_publish", "statement_points", "derived_metrics"),
     "equity_price_metrics": ("ticker_history_publish",),
-    "listing_events": ("security_master",),
-    "listing_status": ("security_master", "symbol_directory", "listing_events"),
+    # Both resolve symbols to security ids through security_identifier_history TICKER
+    # rows, which ticker_history_publish writes (ticker_history_bulk).
+    "listing_events": ("security_master", "ticker_history_publish"),
+    "listing_status": ("security_master", "symbol_directory", "ticker_history_publish", "listing_events"),
     "legacy_liquid_universe": ("ticker_history_publish", "listing_status"),
     "factor_projections": ("legacy_liquid_universe", "derived_metrics", "market_daily"),
     "delisting_evidence": (
@@ -539,7 +541,10 @@ def stage_security_master(store: DuckDBStore, options: ActivationOptions) -> Sta
 
     Uses the retained cache file; network only for a first acquisition or with
     ``--allow-network-refresh``. The file carries no date of its own, so rows are
-    stamped with the operator cutoff (``as_of_basis='operator_cutoff'``).
+    stamped with the operator cutoff (``as_of_basis='operator_cutoff'``). Row
+    ``available_at`` is the file's ORIGINAL receipt time (cache receipt, else mtime; a
+    fresh download's own time); a file received after the cutoff day fails the stage
+    (``SnapshotAfterCutoffError``) before anything is written, as for the directory.
     """
     cache_path = Path(options.cache_dir) / "company_tickers.json"
     acquisition = _acquire_snapshot_file(
@@ -557,6 +562,9 @@ def stage_security_master(store: DuckDBStore, options: ActivationOptions) -> Sta
         source="SEC company_tickers",
         as_of_date=as_of_date,
         run_id=f"{options.run_id}-security-master",
+        received_at=acquisition.received_at,
+        receipt_basis=acquisition.receipt_basis,
+        source_url=SEC_COMPANY_TICKERS_URL,
     )
     checksum = acquisition.sha256 or sha256_file(cache_path)
     byte_count = cache_path.stat().st_size
@@ -1165,12 +1173,24 @@ def stage_market_daily(store: DuckDBStore, options: ActivationOptions) -> StageR
     """Build the daily market panel from bars plus the point-in-time fundamental state."""
     from .market_daily import (
         MarketDailyOptions,
+        owner_bridge_report,
         refresh_market_daily_metrics,
         shares_reconciliation_report,
     )
 
-    rows = refresh_market_daily_metrics(store, MarketDailyOptions(run_id=options.run_id))
-    return StageResult(rows=rows, detail=dict(shares_reconciliation_report(store)))
+    market_options = MarketDailyOptions(run_id=options.run_id)
+    rows = refresh_market_daily_metrics(store, market_options)
+    # The price-line -> accounting-owner bridge accounting this refresh recorded: linked /
+    # unlinked lines and bar rows, unlinked counts by reason, links by method and identity
+    # basis, the bridge mode and its identity/availability basis. It is the durable
+    # owner_bridge_linkage quality row; ``owner_bridge_current`` says whether that row
+    # describes this refresh (its row count equals this stage's).
+    bridge = owner_bridge_report(store, source=market_options.source)
+    return StageResult(rows=rows, detail={
+        **shares_reconciliation_report(store),
+        "owner_bridge": bridge,
+        "owner_bridge_current": bridge is not None and bridge.get("rows") == rows,
+    })
 
 
 def stage_delisting_evidence(store: DuckDBStore, options: ActivationOptions) -> StageResult:

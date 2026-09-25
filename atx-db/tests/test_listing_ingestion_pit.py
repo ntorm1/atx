@@ -144,6 +144,47 @@ def test_misordered_ladder_is_rejected():
         validate_stage_dependencies(tuple(swapped))
 
 
+def test_listing_stages_declare_the_ticker_identity_rows_they_resolve_through():
+    # AF1 (A1-review M4): listing_events and listing_status resolve symbols through the
+    # security_identifier_history TICKER rows ticker_history_publish writes.
+    assert "ticker_history_publish" in STAGE_DEPENDENCIES["listing_events"]
+    assert "ticker_history_publish" in STAGE_DEPENDENCIES["listing_status"]
+    moved = [stage for stage in STAGE_ORDER if stage != "listing_events"]
+    moved.insert(moved.index("ticker_history_publish"), "listing_events")
+    with pytest.raises(RuntimeError, match="listing_events <- ticker_history_publish"):
+        validate_stage_dependencies(tuple(moved))
+
+
+def test_market_daily_stage_detail_carries_the_owner_bridge_accounting(tmp_store, monkeypatch):
+    # AF1 (A5-review M6): the stage detail reports the bridge accounting the refresh recorded.
+    from atx_db import market_daily
+    from atx_db.activation import ActivationOptions, stage_market_daily
+    from atx_db.warehouse import quality_check
+
+    bridge = {
+        "source": market_daily.MARKET_DAILY_SOURCE_NAME, "rows": 7, "mode": "reconstructed",
+        "identity_basis": "current_ticker_unverified", "availability_basis": "modeled",
+        "linked_lines": 2, "unlinked_lines": 1, "unlinked_by_reason": {"no_current_ticker": 1},
+        "linked_by_identity_basis": {"current_ticker_unverified": 2},
+    }
+
+    def fake_refresh(store, options):
+        assert options.source == market_daily.MARKET_DAILY_SOURCE_NAME
+        quality_check(store, dataset_id=market_daily.MarketDailyDataset.dataset_id,
+                      table_name="market_daily_metrics", check_name=market_daily.OWNER_BRIDGE_CHECK_NAME,
+                      status="warning", severity="warning", observed_value=2.0, threshold_value=3.0,
+                      details=bridge)
+        return 7
+
+    monkeypatch.setattr(market_daily, "refresh_market_daily_metrics", fake_refresh)
+    monkeypatch.setattr(market_daily, "shares_reconciliation_report", lambda store: {"shares_basis": "fixture"})
+    result = stage_market_daily(tmp_store, ActivationOptions(run_id="af1"))
+    assert result.rows == 7
+    assert result.detail["shares_basis"] == "fixture"
+    assert result.detail["owner_bridge"] == bridge
+    assert result.detail["owner_bridge_current"] is True
+
+
 def test_run5_suffix_is_the_22_stage_ladder():
     assert select_stages(start="statement_points") == RUN5_SUFFIX
     assert len(RUN5_SUFFIX) == 22

@@ -16,6 +16,7 @@ from urllib3.util.retry import Retry
 from .clock import resolve_as_of_date
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
+from .symbol_directory import APPROVED_USER_AGENT, SnapshotAfterCutoffError, cutoff_end
 from .warehouse import (
     cik_security_id,
     insert_frame,
@@ -26,7 +27,8 @@ from .warehouse import (
 )
 
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
-SEC_USER_AGENT = "atx-db security master nathan.tormaschy@gmail.com"
+# The only approved SEC contact (global rules); ATX_SEC_USER_AGENT overrides it at the CLI edge.
+SEC_USER_AGENT = APPROVED_USER_AGENT
 SECURITY_MASTER_SOURCE = "SEC company_tickers"
 ENTITY_IDENTIFIER_TYPE = "ENTITY_ID"
 SEC_REQUEST_INTERVAL_SECONDS = 0.11
@@ -444,6 +446,31 @@ def collapse_identifier_history_open_duplicates(conn: duckdb.DuckDBPyConnection)
     return before - int(after_row[0])
 
 
+def guard_snapshot_received_by_cutoff(
+    received_at: dt.datetime,
+    cutoff: dt.date,
+    *,
+    source_url: str,
+    receipt_basis: str | None = None,
+) -> None:
+    """Fail loudly when snapshot bytes were received after the cutoff day.
+
+    The same rule the Nasdaq directory loader applies (A1): a file received -- per its
+    cache receipt, its mtime, or a download's own time -- after ``cutoff`` cannot evidence
+    the ``cutoff`` snapshot, and loading it would stamp rows ``available_at`` after the
+    cutoff, silently hiding them from every as-of-cutoff reader.
+    """
+
+    if received_at > cutoff_end(cutoff):
+        raise SnapshotAfterCutoffError(
+            f"{source_url} snapshot bytes were received at "
+            f"{received_at.isoformat()} (receipt basis {receipt_basis or 'unknown'}), after the "
+            f"cutoff day {cutoff.isoformat()}; it cannot be loaded as that snapshot. Restore the "
+            "retained file with its original .receipt.json/mtime, or use --as-of-date on/after "
+            "the receipt date"
+        )
+
+
 def upsert_security_master_from_frame(
     store: DuckDBStore,
     frame: pd.DataFrame,
@@ -451,12 +478,27 @@ def upsert_security_master_from_frame(
     source: str,
     as_of_date: dt.date,
     run_id: str | None = None,
+    received_at: dt.datetime | None = None,
+    receipt_basis: str | None = None,
+    source_url: str = SEC_COMPANY_TICKERS_URL,
 ) -> None:
+    """Upsert a company_tickers snapshot stamped ``as_of_date``.
+
+    ``received_at`` is when the snapshot bytes were received (cache receipt, file mtime,
+    or the download's own time). When given, it is every row's ``available_at`` and it
+    must fall within the ``as_of_date`` day: a snapshot received later raises
+    :class:`SnapshotAfterCutoffError` before anything is written. Without it (fixtures,
+    seed callers) rows are stamped with this load's time, as before.
+    """
+    if received_at is not None:
+        guard_snapshot_received_by_cutoff(
+            received_at, as_of_date, source_url=source_url, receipt_basis=receipt_basis
+        )
     if frame.empty:
         return
     frame = ensure_security_frame_entity_ids(frame)
     today = as_of_date
-    available_at = now_utc_naive()
+    available_at = received_at if received_at is not None else now_utc_naive()
     securities = pd.DataFrame(
         {
             "security_id": frame["security_id"],
@@ -698,6 +740,7 @@ class SecurityMasterDataset(Dataset):
     def load(self, store: DuckDBStore, options: SecurityMasterOptions) -> DatasetLoadResult:
         response = sec_session(options.user_agent).get(options.source_url, timeout=options.request_timeout)
         response.raise_for_status()
+        received_at = now_utc_naive()
         frame = normalize_company_tickers(response.json())
         record_source_file(
             store,
@@ -712,6 +755,9 @@ class SecurityMasterDataset(Dataset):
             source=self.source_name,
             as_of_date=resolve_as_of_date(options.as_of_date, source_max_date=None),
             run_id=options.run_id,
+            received_at=received_at,
+            receipt_basis="network_download",
+            source_url=options.source_url,
         )
         quality_check(
             store,
