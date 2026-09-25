@@ -91,3 +91,33 @@ Integration-gate note (not a finding against this lane): the new defaults (Lagge
 
 ## Waiver needed
 The "run the test under the UBSan/ASan config" part of acceptance item 2 is infeasible, because the repo has no sanitizer preset (agent.md §8). It is met by the brief-prescribed substitute: a Debug `/RTC1` + `-MDd` build with Eigen/ATX_ASSERT checked indexing, a death test on the exact pre-W0 read, and the corrected path run to completion on the same fixture. The owner must accept or waive this.
+
+## Re-review 1
+
+- **Reviewer:** fresh fix-only re-reviewer (round 1). Lane head `bde13cc8e131fc6359bba6aa201b6125c66c7f27`. Fix range `f1d9d5fa..bde13cc8`: `75743944` (the review itself) and `bde13cc8` (fix pass 1).
+- **Verdict: APPROVE.** All 6 minors are addressed: 4 are fixed in code with discriminating tests, 1 is tracked as a W1 item, and 1 is fixed in documentation. The original review had no blockers or majors. Nothing regressed, and no test was weakened.
+
+### Evidence (re-run by this reviewer from `C:\atx-wt\pool-8`, `CMAKE_BUILD_PARALLEL_LEVEL=2`, 2.78 GB free)
+- `scripts\atx-build.ps1 build -Preset equity-dev atx-engine-risk-tests` → `[9/10] Linking CXX executable bin\atx-engine-risk-tests.exe`, exit 0 (/W4 /WX).
+- Whole executable `build-equity\bin\atx-engine-risk-tests.exe --gtest_brief=1` → `471 tests from 62 test suites ran`, `470 PASSED`, `1 SKIPPED` (pre-existing nightly gate `risk_qp_augment_test.cpp:528`), exit 0. Every `[W0-R0 evidence]` line matches the report byte for byte, including all pre-existing numbers from the first review.
+
+### Per finding
+| # | Finding | Status | Evidence |
+|---|---|---|---|
+| 1 | `ModelBuiltAtTInvariantToFuturePerturbation` is non-discriminating | **FIXED** | The test header now reads "HARNESS-SHAPE SMOKE TEST (not the R-03 discriminator)", and the report's acceptance row demotes it the same way. New `PassBSeriesInvariantToInteriorPerturbation` has an exact-fit DGP (r_s = f_s·z_{s+1}, dollar volume set directly, so the pass-A d0 weights cannot matter). It perturbs closes at rows 0..s0−1 and volumes at 0..s0. Measured: LaggedV2 max\|Δf\| over s≥s0 = 2.429e-17, and recovery against the planted f = 3.1e-17. The test checks that the perturbation is live (\|Δf_{s0−1}\| = 2.4e-2) and that ContemporaneousV1 moves (\|Δf_s0\| = 8.2e-4 > 1e-6), so it discriminates against the pre-W0 timing within the test itself. |
+| 2 | Missing-factor return 0 enters F | **FIXED (tracked)** | This is the W1 item the finding asked for. There is a `KNOWN LIMITATION (W1 risk item ...)` comment at the `fkept` compaction in `build_components`. Report integration note 5 names the owner (W1-R2 or the W1 covariance owner), the magnitude and the fix options, and it appears in the ledger candidates. Behaviour is unchanged, as intended. |
+| 3 | Post-centring ±3 clip pins the small-cap tail | **FIXED** | The decision is recorded in the `ZScoreRule` doc, the `zscore_column_v2` contract comment, report row 3 and integration note 6 (which warns downstream not to assume \|z\|≤3). The clip is removed: `x = (x − μ_w)·inv_sigma`. The ±3σ winsorizing of the raw descriptor, which is the brief's "±3 winsorizing", is kept. New `SizeSmallCapTailKeepsItsOrder` covers 400 names at ln-cap sd 2: 26 names below −3 keep their order, 1 name at the minimum, 0 adjacent ties, monotone in cap, cap-weighted mean 0 and eq-std 1 at 1e-12. The only other place `kZScoreWinsor` appears is `exposures.hpp` (grep). |
+| 4 | APCA path not floored | **FIXED** | `build_stat_factor_model` applies `detail::floor_at_median`, shared with `floor_specific_variances`, under `StructuralMedianV2`. NoneV1 keeps the raw s_n, and the switch is exhaustive. `StatisticalModelIsFlooredToo`: the stale name moves from 4.289e-12 to 3.491e-05 (= 0.1 × median 3.491e-04). Exactly 1 name changes, the median is unchanged, and 0 names are below the floor. |
+| 5 | NaN `specific_floor_frac` poisons D/d0 | **FIXED** | `run_passes` (serving `build_components`, `factor_returns` and `build`) and `build_stat_factor_model` return `Err(InvalidArgument)` for a non-finite frac. `effective_floor_frac` maps a non-finite value to 0 in both the kernel and the pass-A d0 floor (`accumulate_ols` is reached only through `run_passes`, grep). `NonFiniteFloorFracIsRejected` covers NaN and ±Inf on all 3 entry points, with finite controls that build and give a finite D, plus the kernel's behaviour on direct calls. |
+| 6 | V1 "bit-for-bit" overclaim | **FIXED** | The comment is rewritten to "restores the pre-W0 arithmetic OF ITS OWN RULE". It lists the three unversioned defect fixes, (a) the empty-sector drop, (b) id mapping and (c) the kNoGroup drop, and names the panels on which pre-W0 output is reproduced. The optional digest pin was not added, and the report justifies this (no pre-W0 digest exists in the tree). That is acceptable, because the pin was optional. |
+
+### Regression / test-integrity check
+- The only existing expectation that changed is in this lane's own `ZScoreIsCapWeightedAndWinsorized`, which pinned the clip that finding 3 removed. The report lists the change.
+  - `max|z| ≤ 3+1e-12` became `max|z − mean_eq(z)| ≤ 3+1e-6`. Measured value: 3.000000044. The 1e-6 allowance covers the bounded-iteration residual δ, which is documented in the contract. The old exact bound held only because of the removed clip.
+  - The cap-weighted-mean check tightened from a conditional 0.05 to an unconditional 1e-12, and the eq-std check became unconditional. On balance the test is stronger.
+- No test was skipped, disabled or deleted. The test count went from 467 to 471 (4 new tests). No golden digest was re-baselined.
+- Production impact of the clip removal is nil today. Without caps, μ_w = μ_eq, so \|z\| ≤ 3+δ with δ ≈ 4e-8 in the worst measured case. After caps are wired, the change is intended (note 6).
+- The diff stays in owned files (`exposures.hpp`, `factor_model.hpp`, `factor_model.cpp`), the lane test files and the lane sdd report. There are no CMake edits and no new `src/` files.
+
+### New findings introduced by the fix
+None.
