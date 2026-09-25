@@ -124,6 +124,31 @@ The old progress file lists provisional P1-P11: these are not owner waivers or a
 
 ### Current live jobs and repair status
 
+Latest checkpoint (supersedes pending statuses below): root has no active shell job.
+Inference52b8c6ea passed26/26 focused tests and independent6/6 rerun; corrected MA20
+rejection126/2000=6.3%, obsoletekernel-bandwidth141/2000=7.05%,zero fallback,averageoldlag30.98
+versusHH20. Scoped hygiene3TUs passed with isolateddeps/PCHoff. Replay fully reviewed and
+merged33c9f194; report/gate runner inrootc225b2cf, ledgerc239974c, runner optins fix a43775de.
+Root .superpowers/sdd/w0/run-integrated-gate.ps1 is ready; after D12 merge, run it through
+PowerShell to build all8groups+impl+worker and sequential testexes with audited data filters.
+Clear extra ATX_PNL_CSV/ATX_MIN_PRICE/ATX_MIN_ADV/ATX_ADV_WINDOW too. DataUniverse doc-only
+test is safe and INCLUDED; hardcoded arithmeticfixtures do not open externalmarketdata.
+
+Membershippool5 build passed;27focusedchecks thenwholealpha currently running. Final independent
+inference/replay reviews and full66-case benchmarkplan are committed9e6b9f275c1edab1bc517367444e430fa26b950e
+on memberbranch (import with finalD12merge, no separatecherry-pick). G0agent will independently
+spotcheck D12masktests/logs once ready. G0 frozenL9 completed987.109s,peak1.007GiB,zero admitted:
+2243->2504candidates,2065->2306scored,52->56families,n_eff5.714->6.7503,
+validationnetSR-1.218738->-.535778,p.950334->.770325;stillBY/RW1. CorrectedReleasebuild
+pool3@8ee78be4 continues; no correctedrealrun untilD12runtimepass.
+
+Replayagent now owns a bounded W0-O1 gate extension: native equity-asan preset and minimal
+instrumented actual factor_model.cpp+existingsector-columns test target. LLVM18ASan installed;
+DebugCRT/MDd rejected, ReleaseCRT/MD /Od supported. Instrumentedownedcode/uninstrumenteddeps
+disclosed. This implements cpp§8's explicit reversal condition for concreteR04OOB; no owner
+waiver requested/assumed. Agent authorized minimumCMakePresets and guardedCMake wiring.
+Root must fresh-review diff+runtimepositivecontrol. <=3compileworkers/freeRAM>4GB applies.
+
 - Root pool2 session60207: inference bandwidth rebuild plus focused26 tests. Earlier
   sync build passed, first test run25/26: MA20 rejection141/2000=7.05% above unchanged7%
   ceiling. Fixed actual kernel mismatch by matching existing cross_section_ic HH
