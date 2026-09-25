@@ -67,7 +67,8 @@ enum class TStatRule : atx::u8 {
   NeweyWestAutoV2 = 2, // Bartlett at `newey_west_auto_lag`, with the n / (n - 1) correction so
                        // that lag 0 reproduces IidV1 exactly.
   HorizonAwareV3 = 3, // Uniform kernel for overlapping labels, lag >= horizon - 1;
-                      // horizon 1 retains NeweyWestAutoV2. Non-positive LRV falls back.
+                      // unweighted horizon 1 retains V2; weighted inference uses the
+                      // exact sandwich variance. Non-positive LRV falls back.
 };
 
 inline constexpr TStatRule kDefaultTStatRule = TStatRule::NeweyWestAutoV2;

@@ -20,7 +20,8 @@ ICIR-EWMA, Fama-MacBeth, and Kakushadze, plus explicit rule/horizon on marginal_
 
 - IidV1 plus RawV1 remains available to reconstruct earlier fits.
 - NeweyWestAutoV2 remains available unchanged.
-- HorizonAwareV3 defaults to the V2 daily-label behavior. When callers declare overlapping
+- HorizonAwareV3 retains V2 unweighted daily-label behavior. Weighted EWMA uses the exact
+  sandwich variance even at horizon one. When callers declare overlapping
   labels it uses a Hansen-Hodrick kernel and at least h-1 lags, with the existing positive
   Bartlett fallback. The weighted ICIR haircut has matching horizon-aware inference.
 - Callers must declare the horizon of their supplied return stream. Existing streams have
@@ -74,13 +75,15 @@ Independent w0_gate_audit reviewed 9caf9e85 and requested changes:
 - M1/M2: documented the IC-only return-treatment scope; added invalid-enum coverage and
   a nontrivial two-alpha legacy-weight comparison against the two-dimensional closed form.
 
-Fix-only re-review and execution remain pending.
+Fix-only static re-review at c8e7e990 found H1/H2 resolved and no remaining blocker.
+Runtime approval remains pending. Clarified weighted daily behavior and finite-row compaction
+per the reviewer; the five-point regression now also exercises the cancellation fallback.
 
 ## Deviations and remaining limits
 
 This is an authorized cross-lane integration repair of the W0 documented public API gap.
-Finite-date compaction remains the existing behavior: lags count usable rows, which is
-conservative for overlap when observations are missing, but not exact calendar HAC.
+Finite-date compaction remains the existing behavior: lags count usable rows, an approximation
+that does not preserve exact calendar HAC for irregularly missing observations.
 No economics or profitable-alpha assertion follows from this inference repair.
 
 ## Ledger candidates

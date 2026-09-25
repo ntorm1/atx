@@ -470,6 +470,10 @@ TEST(CombineInferenceConfig, UnsupportedOverlapDoesNotCreateInfiniteSignificance
       .032102668894305145, .03600658924381094, .039304876836250696};
   EXPECT_EQ(hac::mean_tstat(x, hac::TStatRule::HorizonAwareV3, 5U).defined, 0U);
   EXPECT_EQ(hac::mean_tstat(x, hac::TStatRule::HorizonAwareV3, 99U).defined, 0U);
+  const auto guarded = hac::mean_inference(x, hac::Kernel::UniformV1, 4U, true, true);
+  EXPECT_EQ(guarded.defined, 1U);
+  EXPECT_EQ(guarded.fell_back, 1U);
+  EXPECT_EQ(guarded.kernel, hac::Kernel::BartlettV1);
 }
 
 TEST(CombineInferenceConfig, UnequalDecayWeightsUseDirectSandwichVariance) {
