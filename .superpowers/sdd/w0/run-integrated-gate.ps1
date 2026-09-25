@@ -16,6 +16,7 @@ $env:CMAKE_BUILD_PARALLEL_LEVEL = '1'
 $optIns = @('ATX_DATA_DIR', 'ATX_ORATS_ZIP', 'ATX_ALPHA101_PANEL', 'ATX_ALPHA101_FIXTURE',
   'ATX_L10_FUNDZOO_OUT', 'ATX_L10_CONTEXTS', 'ATX_L10_FUND_POINTS',
   'ATX_L10_SURVIVOR_CONTEXTS', 'ATX_NIGHTLY', 'ATX_RISK_NIGHTLY')
+$optIns += @('ATX_PNL_CSV', 'ATX_MIN_PRICE', 'ATX_MIN_ADV', 'ATX_ADV_WINDOW')
 foreach ($name in $optIns) {
   [Environment]::SetEnvironmentVariable($name, $null, 'Process')
 }
@@ -36,7 +37,7 @@ if (-not $SkipBuild) {
 }
 
 # These fixtures auto-discover the live checkout's 2024/2026 data even without env vars.
-# Other DataAdjust tests use hard-coded synthetic prices and remain enabled.
+# Other DataAdjust tests use hard-coded arithmetic fixtures and remain enabled.
 $dataExcluded = @('DataRealPanel.*',
   'DataCorporateActions.LoadsSmokeMasterRowShapeMatchesManifest',
   'DataCorporateActions.DividendZeroFilledOffExDates',
