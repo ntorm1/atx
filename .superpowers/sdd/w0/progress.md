@@ -21,11 +21,11 @@ names). Goal prompt: `docs/plans/2026-09-24-alpha-engine-swarm-goal-prompt.md`; 
 | Lane | Batch | Pool | Branch | Run id | Owns (summary; exact list in brief) | Cited IDs | Suites | State |
 |---|---|---|---|---|---|---|---|---|
 | O1 | W0a | pool-7 | feat/w0-o1-l6 | aes-w0-o1 | lane-6 merge, `CMakePresets.json` equity-bench, Nightly gate, stod fix site | R-14 (ledger) | risk + atx-impl whole targets | merged @ 14ce9172; review APPROVE after 1 fix round(s) |
-| A0 | W0a | pool-2 | feat/w0-a0 | aes-w0-a0 | alpha cs/state/typecheck/oracle, factory crossover/canonical, ts_ops (guard+AuditExact), vm.hpp (A-02/03/13 sites) | A-01 A-02 A-03 A-09 A-13 A-18 | AlphaCsRankTies AlphaHumpWarmup AlphaTypecheckScalarLiteral AlphaFlatWindow AlphaAuditExactParity FactoryCanonCollision | leased |
-| L0 | W0a | pool-3 | feat/w0-l0 | aes-w0-l0 | learn tcn/trainer/loss/latent, linear_alpha+gbt (aug + count sites), feature_matrix.hpp (label meta) | L-01 L-02 L-03 L-07 L-08 | LearnLabelMutationInvariance LearnLabelMaturity LearnFoldLocalAug LearnIcLossPerDate | leased |
-| D0 | W0a | pool-4 | feat/w0-d0 | aes-w0-d0 | data history_panel/finra/adjust/align/corp_actions/context/universe/real_panel, augment.hpp (dollar_volume) | D-01 D-02 D-03 D-04 D-05 D-06 D-08 D-09 | DataLevelBasis DataFinraLag DataAdjustGap DataAlignEvent DataCorpActRebase DataContextAsOf | leased |
-| E0a | W0a | pool-5 | feat/w0-e0a | aes-w0-e0a | eval/hac.hpp (new), cross_section_ic, combine t-stat sites, signal_store winsor | E-02 E-03 E-08 E-09 E-15 | EvalHac EvalIcCoverage EvalIcDelay EvalIcCaps | leased |
-| E0b | W0a | pool-6 | feat/w0-e0b | aes-w0-e0b | eval/trial_clusters.hpp (new), deflated_sharpe, trial_registry, lockbox | E-01 E-16 E-17 L-08 | EvalTrialClusters EvalRegistryWindows EvalLockboxEmbargo | leased |
+| A0 | W0a | pool-2 | feat/w0-a0 | aes-w0-a0 | alpha cs/state/typecheck/oracle, factory crossover/canonical, ts_ops (guard+AuditExact), vm.hpp (A-02/03/13 sites) | A-01 A-02 A-03 A-09 A-13 A-18 | AlphaCsRankTies AlphaHumpWarmup AlphaTypecheckScalarLiteral AlphaFlatWindow AlphaAuditExactParity FactoryCanonCollision | PAUSED: review BLOCK (1 major CanonSet); fix pass 1 interrupted @ b74e27d3 + uncommitted report edit |
+| L0 | W0a | pool-3 | feat/w0-l0 | aes-w0-l0 | learn tcn/trainer/loss/latent, linear_alpha+gbt (aug + count sites), feature_matrix.hpp (label meta) | L-01 L-02 L-03 L-07 L-08 | LearnLabelMutationInvariance LearnLabelMaturity LearnFoldLocalAug LearnIcLossPerDate | APPROVED (re-review 1) @ 86bb8bdb; final sync + merge pending |
+| D0 | W0a | pool-4 | feat/w0-d0 | aes-w0-d0 | data history_panel/finra/adjust/align/corp_actions/context/universe/real_panel, augment.hpp (dollar_volume) | D-01 D-02 D-03 D-04 D-05 D-06 D-08 D-09 | DataLevelBasis DataFinraLag DataAdjustGap DataAlignEvent DataCorpActRebase DataContextAsOf | APPROVED (re-review 1) @ 531f73c5; final sync + merge pending; waivers needed (vwap, G0 real-data tests) |
+| E0a | W0a | pool-5 | feat/w0-e0a | aes-w0-e0a | eval/hac.hpp (new), cross_section_ic, combine t-stat sites, signal_store winsor | E-02 E-03 E-08 E-09 E-15 | EvalHac EvalIcCoverage EvalIcDelay EvalIcCaps | APPROVED (re-review 1) @ e365e0e0; final sync + merge pending; owner reading needed (MA(20) coverage) |
+| E0b | W0a | pool-6 | feat/w0-e0b | aes-w0-e0b | eval/trial_clusters.hpp (new), deflated_sharpe, trial_registry, lockbox | E-01 E-16 E-17 L-08 | EvalTrialClusters EvalRegistryWindows EvalLockboxEmbargo | APPROVED (re-review 1); synced @ 35198851 (stale MERGE_HEAD, post-merge suites not run); merge pending |
 | R0 | W0b | pool-8 | feat/w0-r0 | aes-w0-r0 | risk/factor_model, risk/exposures.hpp | R-03 R-04 R-05 R-06 | RiskFactorModelPit RiskSectorColumnsById RiskThinNameFloor | leased (idle until W0b) |
 | B0 | W0b | pool-9 | feat/w0-b0 | aes-w0-b0 | book replay/borrow_schedule/report, stage_report.cpp (minus diag-risk site) | B-02 B-03 B-04 B-05 | BookReplayDelay BookReplayDelist BookBorrowSingleCount BookLegacyReport | leased (idle until W0b) |
 | I0a | W0b | pool-10 | feat/w0-i0a | aes-w0-i0a | stage_discover/run/combine/optimize/metabook, dead_alpha_wire, diag_risk, stage_report diag site | I-01 I-02 I-03 I-04 I-06 I-07 I-08 R-12 | ImplNestedSplits ImplCombineNoHoldoutRead ImplOptimizePit ImplDeadAlpha ImplMetabookUsesCombo | leased (idle until W0b) |
@@ -62,8 +62,37 @@ pre-merges integration after O1 landed), then W0b lanes (R0 only after O1).
    stod fix site wherever it lies (its owners start after O1 merges).
 8. The goal prompt itself is committed beside the plan docs for resumability.
 
+## Provisional orchestrator rulings at resume (2026-09-25) — NOT owner waivers
+
+The owner's 2026-09-25 instruction is to complete the sprint series. These are the orchestrator's
+working assumptions on the hand-off §5 questions so work can continue. None of them is an owner
+waiver; each stays open for the owner to confirm or overturn (listed again at the pre-W5 stop).
+Format: assumption — why — cost if wrong.
+
+- P-1. E0a MA(20) coverage item treated as met by the HAC interval `ic_mean_hac` (94.5%) — the
+  item exists to force a HAC interval — if overturned: E0a/E2 rework of the bootstrap CI.
+- P-2. E0a combiner-level V1 reproducibility deferred to W2-E3 (owns `signal_combiner.hpp`,
+  `orthogonalize.hpp`) — ownership — cost: pre-W0 GK/ICIR-EWMA weights not reproducible until W2.
+- P-3. E0b DSR FPR item read as `AccountingDsrRule::MonteCarloMaxV2`; default stays the
+  conservative `ClusterMcFloorV2` — conservative gate bias — cost: flip one default.
+- P-4. D0 vwap stays adjusted-basis typical price tagged `adjusted_level` (flagged for owner
+  waiver) — vwap is a price, not dollar volume — cost: rework if the owner wants raw basis.
+- P-5. D0 real-data tests reading ≥ 2020 data stay excluded (data discipline, no reads ≥ 2020
+  before W5); pre-2020-only ones run in G0 — cost: none (conservative).
+- P-6. A0 `alpha/streaming_engine.hpp` edit accepted as Track-A scope (flagged for owner grant).
+- P-7. R0 sanitizer item: Debug checked iterators used as substitute (flagged for owner waiver).
+- P-8. Ledger lines go to `atx-engine/docs/LEDGER.md` (old path deleted on main).
+- P-9. G0 outputs under `C:\atx-wt\g0-data\<name>_20260925\` (keeps `C:\atx` untouched); cp21
+  re-run on a G0-only branch pinned to cp21's 26 families.
+- P-10. `atx-impl/src/trial_ledger.hpp:89-90` hunk assigned to I0b (no W0 owner).
+- P-11. Lane concurrency capped at 5 (2.65 GB free RAM at resume).
+
 ## Log
 
 - 2026-09-24 23:0xZ — setup: all 11 stale qps leases released (keepers dead); qps notes archived;
   pool-1 leased as `feat/w0-integration` (run `aes-w0-integ`).
 - 2026-09-25T01:05:47Z — O1 merged @ 14ce9172 (lane head 3ccf012c): lane 6 + equity-bench preset + red stage_run smoke test integrated conflict-free (28 files); quiet-host bench baselines deferred to gate.
+- 2026-09-25T01:08Z — **PAUSED on owner request** (W0a workflow stopped). L0/D0/E0a/E0b approved,
+  awaiting final sync + merge; A0 mid-fix; W0b, gate and G0 not started. Full state, owner
+  decisions and resume procedure: `docs/superpowers/handoffs/2026-09-24-alpha-engine-w0-handoff.md`.
+  W0 base SHA = `458d0bef480a624e258070c9d45174a9984466bf`.
