@@ -216,10 +216,15 @@ _STATEMENT = {
 }
 
 
-def _seed_statement(store, security_id: str, quarters: tuple[dt.date, ...]) -> None:
-    """Quarterly duration facts with contiguous fiscal spans, as SEC quarters carry."""
+def _seed_statement(store, security_id: str, quarters: tuple[dt.date, ...],
+                    starts: dict[int, dt.date] | None = None) -> None:
+    """Quarterly duration facts with contiguous fiscal spans, as SEC quarters carry.
+
+    ``starts`` overrides individual period starts to model gaps between quarters.
+    """
     for index, period_end in enumerate(quarters):
         period_start = quarters[index - 1] + dt.timedelta(days=1) if index else period_end - dt.timedelta(days=90)
+        period_start = (starts or {}).get(index, period_start)
         available_at = _available(period_end)
         for code, series in _STATEMENT.items():
             store.con.execute(
@@ -253,8 +258,18 @@ def _ttm_margin(numerator: str, index: int) -> float:
 def _refresh_quarterly_family(store) -> None:
     seed_derived_metric_definitions(store)
     refresh_derived_metrics(store, DerivedMetricsOptions(
-        metric_codes=(*_QUARTERLY_MARGIN_AND_ACCELERATION, "gross_margin_change_yoy"),
+        metric_codes=(*_QUARTERLY_MARGIN_AND_ACCELERATION, "gross_margin_change_yoy",
+                      "revenue_q_growth_qoq", "revenue_growth_qoq"),
     ))
+
+
+def _origin(store, code: str, period_end: dt.date, security_id: str = "S1") -> str:
+    return store.con.execute(
+        """SELECT value_origin FROM derived_metric_values
+           WHERE security_id = ? AND metric_code = ? AND period_end = ?
+           ORDER BY available_at DESC, derived_value_id DESC LIMIT 1""",
+        [security_id, code, period_end],
+    ).fetchone()[0]
 
 
 def test_single_quarter_margins_and_their_yoy_changes_differ_from_trailing_margin_changes(tmp_store):
@@ -340,6 +355,7 @@ def test_acceleration_is_exactly_the_bucket_growth_less_the_prior_bucket_growth(
         None, "missing_input_or_domain")
     assert _latest_state(tmp_store, "revenue_q_growth_yoy_accel", _QUARTERS[11], "S2")[:2] == (
         None, "missing_input_or_domain")
+    assert _origin(tmp_store, "revenue_q_growth_yoy_accel", _QUARTERS[11], "S2") == "unavailable"
     assert _latest_state(tmp_store, "gross_margin_q_change_yoy", _QUARTERS[10], "S2")[:2] == (
         None, "missing_input_or_domain")
     # Zero quarterly revenue has no margin, so the next year's margin change has no value either.
@@ -361,6 +377,45 @@ def test_fifty_three_week_year_compares_the_same_fiscal_quarter_bucket(tmp_store
         accel, status, _ = _latest_state(tmp_store, "revenue_q_growth_yoy_accel", _RETAIL_QUARTERS[index], "S3")
         assert (accel, status) == (
             pytest.approx(_growth("revenue", index) - _growth("revenue", index - 1)), "valid")
+        # The contiguous 98-day quarter is a proven adjacent fiscal quarter.
+        assert _origin(tmp_store, "revenue_q_growth_yoy_accel", _RETAIL_QUARTERS[index], "S3") == "quarterly"
     change, status, _ = _latest_state(tmp_store, "gross_margin_q_change_yoy", _RETAIL_QUARTERS[11], "S3")
     assert (change, status) == (
         pytest.approx(_ratio("gross_profit__1004", 11) - _ratio("gross_profit__1004", 7)), "valid")
+
+
+_ONE_QUARTER_APART = (
+    "eps_basic_q_growth_qoq", "revenue_q_growth_qoq", "revenue_q_growth_yoy_accel",
+    "eps_diluted_q_growth_yoy_accel", "gross_margin_q_change_yoy_accel", "operating_margin_q_change_yoy_accel",
+)
+
+
+def test_one_quarter_comparisons_are_quarterly_only_when_fiscal_spans_prove_adjacency(tmp_store):
+    _seed_statement(tmp_store, "S1", _QUARTERS[:12])
+    # _QUARTERS[9] starts after a 7-day gap (tolerated) in S4 and an 8-day gap in S5.
+    _seed_statement(tmp_store, "S4", _QUARTERS[:12], starts={9: _QUARTERS[8] + dt.timedelta(days=8)})
+    _seed_statement(tmp_store, "S5", _QUARTERS[:12], starts={9: _QUARTERS[8] + dt.timedelta(days=9)})
+    # Fiscal-year change: contiguous quarters with a 66-day stub from 2021-04-11 to 2021-06-15.
+    stub_calendar = (*_QUARTERS[:8], dt.date(2021, 4, 10), dt.date(2021, 6, 15), *_QUARTERS[10:12])
+    _seed_statement(tmp_store, "S6", stub_calendar)
+    _refresh_quarterly_family(tmp_store)
+
+    for index in (9, 10, 11):
+        for code in _ONE_QUARTER_APART:
+            assert _latest_state(tmp_store, code, _QUARTERS[index])[1] == "valid", code
+            assert _origin(tmp_store, code, _QUARTERS[index]) == "quarterly", code
+            assert _origin(tmp_store, code, _QUARTERS[index], "S4") == "quarterly", code
+    for code in ("eps_basic_q_growth_yoy", "gross_margin_q_change_yoy", "revenue_q_growth_yoy"):
+        assert _origin(tmp_store, code, _QUARTERS[9], "S5") == "quarterly", code
+    # Overlapping trailing windows are never adjacent quarters.
+    assert _latest_state(tmp_store, "revenue_growth_qoq", _QUARTERS[11])[1] == "valid"
+    assert _origin(tmp_store, "revenue_growth_qoq", _QUARTERS[11]) == "incomparable"
+
+    for code in _ONE_QUARTER_APART:
+        # Unproven adjacency keeps the arithmetic but labels it incomparable.
+        assert _latest_state(tmp_store, code, _QUARTERS[9], "S5")[1] == "valid", code
+        assert _origin(tmp_store, code, _QUARTERS[9], "S5") == "incomparable", code
+        assert _origin(tmp_store, code, _QUARTERS[10], "S5") == "quarterly", code
+        for period_end in stub_calendar[9:11]:
+            assert _origin(tmp_store, code, period_end, "S6") == "incomparable", (code, period_end)
+        assert _origin(tmp_store, code, stub_calendar[11], "S6") == "quarterly", code

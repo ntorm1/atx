@@ -138,6 +138,28 @@ def _years_apart(current: str, prior: str, years: int) -> str:
     return f"(date_diff('day', {prior}, {current}) BETWEEN {330 * years} AND {380 * years})"
 
 
+#: Largest gap, in days, between a prior quarter's end and the next quarter's start.
+ADJACENT_QUARTER_MAX_GAP_DAYS = 7
+
+
+def _quarter_length(span: Span) -> str:
+    return f"(date_diff('day', {span.start}, {span.end}) + 1 BETWEEN 70 AND 120)"
+
+
+def _adjacent_quarters(newer: Span, older: Span) -> str:
+    """Prove consecutive fiscal quarters one bucket apart from their own spans.
+
+    Both spans must be complete 70-120 day quarters and the newer must start
+    1 to 1 + ADJACENT_QUARTER_MAX_GAP_DAYS days after the older ends. A missing
+    start (instant, legacy or absent operand), an overlap, a stub or a
+    fiscal-year-change gap proves nothing and stays incomparable.
+    """
+    return (
+        f"coalesce({_quarter_length(newer)} AND {_quarter_length(older)} AND "
+        f"date_diff('day', {older.end}, {newer.start}) BETWEEN 1 AND {1 + ADJACENT_QUARTER_MAX_GAP_DAYS}, false)"
+    )
+
+
 def _combine(left: Span, right: Span) -> Span:
     if left.offset is None:
         return right
@@ -150,6 +172,8 @@ def _combine(left: Span, right: Span) -> Span:
             f"(({left.end}) IS NULL OR ({right.end}) IS NULL OR ({left.end}) = ({right.end})) AND "
             f"(({left.start}) IS NULL OR ({right.start}) IS NULL OR ({left.start}) = ({right.start}))"
         )
+    elif distance == 1:
+        comparable = _adjacent_quarters(newer, older)
     elif distance % 4:
         comparable = "false"
     else:
