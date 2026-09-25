@@ -8,10 +8,12 @@ from dataclasses import dataclass, replace
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .delisting import (
+    POLICY_BIAS_EXPOSURE_CHECK_NAME,
     DelistingCodeReconciliationOptions,
     DelistingTerminalReturnOptions,
     ShumwayPerformancePolicy,
     SurvivorshipSafeForwardReturnOptions,
+    delisting_policy_bias_exposure,
     reconcile_delisting_codes,
     refresh_delisting_terminal_returns,
     refresh_survivorship_safe_forward_returns,
@@ -126,15 +128,21 @@ class DelistingTerminalDataset(_ProductionDataset):
             run_id=options.run_id, performance_delisting_return=ShumwayPerformancePolicy(),
         ))
         reconciled = reconcile_delisting_codes(store, DelistingCodeReconciliationOptions(run_id=options.run_id))
+        cutoff = dt.datetime.combine(options.as_of_date, dt.time(22))
+        # Grouped by the event's own attributed reason (merger_acquisition, voluntary, ...),
+        # not by the primary member's delist_code category, which reads exchange_delist /
+        # dropped for merger events that RX2 deliberately leaves without a policy terminal.
         missing = store.con.execute(
-            "SELECT coalesce(c.reason_category,'unmapped'),count(*) FROM delisting_events e "
-            "LEFT JOIN delist_code_dim c USING(delist_code) WHERE e.available_at<=? "
+            "SELECT coalesce(nullif(trim(e.delist_reason),''),'unspecified'),count(*) FROM delisting_events e "
+            "WHERE e.available_at<=? "
             "AND NOT EXISTS (SELECT 1 FROM delisting_terminal_returns t WHERE t.security_id=e.security_id "
-            "AND t.delist_date=e.delist_date AND t.available_at<=? AND isfinite(t.terminal_return)) GROUP BY 1",
-            [dt.datetime.combine(options.as_of_date, dt.time(22))]*2,
+            "AND t.delist_date=e.delist_date AND t.available_at<=? AND isfinite(t.terminal_return)) "
+            "GROUP BY 1 ORDER BY 1",
+            [cutoff, cutoff],
         ).fetchall()
         return DatasetLoadResult(self.dataset_id, rows, self.source_name,
                                  {"reconciliation_rows": reconciled, "uncovered_by_reason": dict(missing),
+                                  POLICY_BIAS_EXPOSURE_CHECK_NAME: delisting_policy_bias_exposure(store, cutoff=cutoff),
                                   "policy": "Shumway default: NASDAQ -0.55, other performance -0.30; observed wins"})
 
 

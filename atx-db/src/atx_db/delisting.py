@@ -1396,7 +1396,11 @@ def _same_type_date(value: object, like: pd.Series) -> object:
     return stamp if pd.api.types.is_datetime64_any_dtype(like) else stamp.date()
 
 
-def _align_observations_to_events(obs: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
+def _align_observations_to_events(
+    obs: pd.DataFrame,
+    events: pd.DataFrame,
+    closes: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """Re-key observed returns onto the delisting event they describe.
 
     1. An observation of the same security (or, lacking a security_id, the same symbol) dated on
@@ -1409,6 +1413,20 @@ def _align_observations_to_events(obs: pd.DataFrame, events: pd.DataFrame) -> pd
        that same cessation: it takes the event's ``delist_date`` too, so the event's own key is
        covered (no false "event without terminal") and labels up to the event are stitched.
        Cessation-anchored public events are preferred, then the nearest date, then the earliest.
+
+       * Vendor date at or after the event's: the archive has no bar of the security from the
+         event's date on, so the stitched leg is the same either way; the row is re-keyed as is.
+       * Vendor date BEFORE the event's (the archive kept printing after the vendor's last
+         exchange price, e.g. OTC/grey or stale bars): the vendor's return is measured from its
+         own last price P(T'), but the re-keyed leg would run on to the archive's last close
+         P(T), counting the same delisting drop twice. The return is therefore rebased onto the
+         archive's last close, ``(1 + r) * P(T') / P(T) - 1`` (P(T') = the archive's close before
+         the vendor's date, P(T) = its close before the event's, from ``closes`` --
+         :func:`_load_observation_rebase_closes`), so the stitched label equals the vendor's
+         ``P(T') / P0 * (1 + r)``. ``return_basis`` gains :data:`REBASED_RETURN_BASIS_SUFFIX` and
+         ``available_at`` covers both closes. Without both closes the row keeps the vendor's own
+         date (economically exact; :func:`_drop_events_covered_by_observed` still treats the
+         event as covered, so no policy row is added beside it).
     The vendor's date stays on the observation row (``return_observation_id`` links to it).
     """
 
@@ -1439,6 +1457,7 @@ def _align_observations_to_events(obs: pd.DataFrame, events: pd.DataFrame) -> pd
             if pd.notna(symbol):
                 by_symbol.setdefault((symbol, trade_key), (security, delist))
     tolerance = pd.Timedelta(days=OBSERVED_TERMINAL_MATCH_DAYS)
+    close_lookup = _rebase_close_lookup(closes)
     out = obs.copy()
     obs_keys = pd.to_datetime(out["delist_date"], errors="coerce")
     has_symbol = "symbol" in out.columns
@@ -1462,10 +1481,137 @@ def _align_observations_to_events(obs: pd.DataFrame, events: pd.DataFrame) -> pd
                     if abs(event_key - key) <= tolerance
                 ]
                 if near:
-                    delist = min(near, key=lambda item: item[:3])[3]
+                    _private, _gap, event_key, value = min(near, key=lambda item: item[:3])
+                    if event_key <= key or _rebase_onto_archive_last_close(
+                        out, index, close_lookup.get((security, key)), close_lookup.get((security, event_key))
+                    ):
+                        delist = value
         if delist is not None:
             out.at[index, "delist_date"] = _same_type_date(delist, out["delist_date"])
     return out
+
+
+REBASED_RETURN_BASIS_SUFFIX = "+rebased_to_archive_last_close"
+
+# One archive close per (security, key date): the security's last bar strictly before the key,
+# picked exactly as the forward-return stitcher picks its bar (``_forward_return_publication``),
+# so a rebased terminal telescopes with the stitched leg. Only the keys of observations that
+# have a same-security event later within OBSERVED_TERMINAL_MATCH_DAYS (vendor-earlier
+# disagreement) are priced, so the bar scan is restricted to those few securities.
+_OBSERVATION_REBASE_CLOSES_SQL = f"""
+    WITH obs AS (
+        SELECT DISTINCT security_id, delist_date AS obs_key
+        FROM delisting_return_observations
+        WHERE security_id IS NOT NULL AND delist_date IS NOT NULL
+    ),
+    ev AS (
+        SELECT DISTINCT security_id, delist_date AS event_key
+        FROM delisting_events
+        WHERE security_id IS NOT NULL
+    ),
+    pairs AS (
+        SELECT o.security_id, o.obs_key, e.event_key
+        FROM obs o
+        JOIN ev e
+          ON e.security_id = o.security_id
+         AND e.event_key > o.obs_key
+         AND e.event_key <= o.obs_key + {OBSERVED_TERMINAL_MATCH_DAYS}
+    ),
+    keys AS (
+        SELECT security_id, obs_key AS key_date FROM pairs
+        UNION
+        SELECT security_id, event_key AS key_date FROM pairs
+    ),
+    bars AS (
+        SELECT b.security_id, b.trade_date, b.close, b.adjusted_close,
+               coalesce(b.available_at, CAST(b.trade_date AS TIMESTAMP) + INTERVAL 22 HOUR) AS price_available_at
+        FROM equity_daily_bars b
+        WHERE b.security_id IN (SELECT security_id FROM keys)
+        QUALIFY row_number() OVER (
+            PARTITION BY b.security_id, b.trade_date
+            ORDER BY coalesce(b.available_at, CAST(b.trade_date AS TIMESTAMP) + INTERVAL 22 HOUR) DESC,
+                     b.source ASC, b.vendor_security_id ASC NULLS LAST, b.symbol ASC,
+                     b.adjusted_close DESC NULLS LAST, b.close DESC NULLS LAST, b.source_loaded_at DESC
+        ) = 1
+    )
+    SELECT k.security_id, k.key_date, b.trade_date AS close_date, b.close, b.adjusted_close,
+           b.price_available_at
+    FROM keys k
+    ASOF LEFT JOIN bars b
+      ON b.security_id = k.security_id AND k.key_date > b.trade_date
+    ORDER BY k.security_id, k.key_date
+"""
+
+
+def _load_observation_rebase_closes(store: DuckDBStore) -> pd.DataFrame:
+    """Archive closes that vendor-earlier observations are rebased with (see ``_align_observations_to_events``)."""
+
+    return store.con.execute(_OBSERVATION_REBASE_CLOSES_SQL).df()
+
+
+def _rebase_close_lookup(closes: pd.DataFrame | None) -> dict[tuple[object, pd.Timestamp], dict[str, Any]]:
+    if closes is None or closes.empty:
+        return {}
+    lookup: dict[tuple[object, pd.Timestamp], dict[str, Any]] = {}
+    for row in closes.to_dict("records"):
+        key_date = pd.to_datetime(row.get("key_date"), errors="coerce")
+        if pd.isna(key_date) or pd.isna(row.get("close_date")):
+            continue
+        lookup[(row["security_id"], key_date)] = row
+    return lookup
+
+
+def _positive_ratio(numerator: object, denominator: object) -> float | None:
+    try:
+        top, bottom = float(numerator), float(denominator)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(top) and math.isfinite(bottom)) or top <= 0 or bottom <= 0:
+        return None
+    return top / bottom
+
+
+def _rebase_onto_archive_last_close(
+    out: pd.DataFrame,
+    index: object,
+    vendor_close: dict[str, Any] | None,
+    archive_close: dict[str, Any] | None,
+) -> bool:
+    """Rebase a vendor-earlier observed return onto the archive's last close, in place.
+
+    ``vendor_close`` / ``archive_close`` are the archive's closes strictly before the vendor's
+    and the event's dates. Returns False -- the caller then leaves the row on the vendor's own
+    date -- when either close is missing or non-positive.
+    """
+
+    if vendor_close is None or archive_close is None:
+        return False
+    if pd.Timestamp(archive_close["close_date"]) <= pd.Timestamp(vendor_close["close_date"]):
+        return True  # no archive bar between the two dates: the stitched leg is unchanged
+    price_ratio = _positive_ratio(vendor_close.get("close"), archive_close.get("close"))
+    total_ratio = _positive_ratio(vendor_close.get("adjusted_close"), archive_close.get("adjusted_close"))
+    total_ratio = total_ratio if total_ratio is not None else price_ratio
+    if total_ratio is None:
+        return False
+    out.at[index, "delisting_return"] = (1.0 + float(out.at[index, "delisting_return"])) * total_ratio - 1.0
+    if "delisting_return_ex_div" in out.columns and pd.notna(out.at[index, "delisting_return_ex_div"]):
+        ex_ratio = price_ratio if price_ratio is not None else total_ratio
+        out.at[index, "delisting_return_ex_div"] = (
+            (1.0 + float(out.at[index, "delisting_return_ex_div"])) * ex_ratio - 1.0
+        )
+    if "return_basis" in out.columns:
+        basis = out.at[index, "return_basis"]
+        out.at[index, "return_basis"] = f"{'observed' if pd.isna(basis) else basis}{REBASED_RETURN_BASIS_SUFFIX}"
+    if "available_at" in out.columns:
+        clocks = (
+            out.at[index, "available_at"],
+            vendor_close.get("price_available_at"),
+            archive_close.get("price_available_at"),
+        )
+        stamps = [pd.Timestamp(clock) for clock in clocks if clock is not None and pd.notna(clock)]
+        if stamps:
+            out.at[index, "available_at"] = max(stamps)
+    return True
 
 
 def _drop_events_covered_by_observed(events: pd.DataFrame, observed: pd.DataFrame) -> pd.DataFrame:
@@ -1499,6 +1645,7 @@ def compute_delisting_terminal_returns(
     run_id: str | None = None,
     corporate_actions: pd.DataFrame | None = None,
     performance_delisting_return: ShumwayPerformancePolicy | float | None = None,
+    observation_closes: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Collapse ``delisting_return_observations`` to one terminal return per
     ``(security_id, delist_date)``, then fill remaining coverage gaps from (S4-1) the
@@ -1521,6 +1668,10 @@ def compute_delisting_terminal_returns(
     it is attached here from ``corporate_actions.action_type``, joined on ``(security_id,
     delist_date == ex_date)`` -- an event with no matching corporate action simply gets no policy
     row, it is never invented.
+
+    ``observation_closes`` (keyword-only, from :func:`_load_observation_rebase_closes`) prices the
+    rebase of an observation whose vendor last-trade date is earlier than its event's (see
+    :func:`_align_observations_to_events`); without it such a row stays on the vendor's date.
 
     ``performance_delisting_return`` (S4-4) is independent of ``corporate_actions`` -- a
     public-evidence-only warehouse has no licensed corporate-action feed at all, which is
@@ -1562,7 +1713,7 @@ def compute_delisting_terminal_returns(
                 )
                 obs.loc[missing, "security_id"] = backfilled["security_id"].to_numpy()
 
-        obs = _align_observations_to_events(obs, events)
+        obs = _align_observations_to_events(obs, events, observation_closes)
         obs = obs[
             obs["security_id"].notna() & obs["delist_date"].notna() & obs["delisting_return"].notna()
         ].copy()
@@ -2167,6 +2318,7 @@ def refresh_delisting_terminal_returns(
         """
     ).df()
     corporate_actions = _corporate_action_price_inputs(store)
+    observation_closes = None if observations.empty else _load_observation_rebase_closes(store)
 
     terminal_returns = compute_delisting_terminal_returns(
         observations,
@@ -2176,6 +2328,7 @@ def refresh_delisting_terminal_returns(
         run_id=options.run_id,
         corporate_actions=corporate_actions,
         performance_delisting_return=options.performance_delisting_return,
+        observation_closes=observation_closes,
     )
 
     with store.transaction():

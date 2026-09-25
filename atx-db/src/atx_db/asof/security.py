@@ -84,6 +84,10 @@ visible_events AS (
       AND d.available_at <= p.as_of_ts
 ),
 observation_candidates AS (
+    -- An observation keyed on the event's delist_date (the first session after the last
+    -- trade; loads normalize the vendor DLSTDT to it) is the event's.  Rows stored before
+    -- that normalization still carry the vendor DLSTDT, i.e. the event's last observed
+    -- trade date: they match through that fallback, ranked after any exact-date match.
     SELECT
         d.delisting_event_id,
         o.delisting_return_observation_id,
@@ -92,11 +96,15 @@ observation_candidates AS (
         o.delisting_return,
         row_number() OVER (
             PARTITION BY d.delisting_event_id
-            ORDER BY o.available_at DESC, o.source_loaded_at DESC, o.delisting_return_observation_id DESC
+            ORDER BY (o.delist_date = d.delist_date) DESC,
+                     o.available_at DESC, o.source_loaded_at DESC, o.delisting_return_observation_id DESC
         ) AS observation_rank
     FROM visible_events d
     JOIN delisting_return_observations o
-      ON o.delist_date = d.delist_date
+      ON (
+            o.delist_date = d.delist_date
+         OR o.delist_date = TRY_CAST(json_extract_string(d.details_json, '$.last_observed_trade_date') AS DATE)
+     )
      AND (
             (
                 o.security_id IS NOT NULL
