@@ -1,8 +1,36 @@
 # W0 fair benchmark gate preparation
 
-Preparation only; no new lease, configure, build or measurement has started.
-Begin only after the D-12 gate and inference review are complete and root grants
-the next bounded task. Root owns integrated correctness and merges.
+Baseline lease and configuration preparation are complete; no target build or
+measurement has started. Root owns integrated correctness and merges, and will
+release compiler slots and the later quiet measurement window separately.
+
+## Authorized preparation receipt
+
+D-12 functional acceptance and both independent reviews completed. Root then
+authorized lease/configuration preparation while holding compilation and all
+measurements. Baseline lease is `C:/atx-wt/pool-6`, branch
+`feat/w0-bench-baseline-codex-20260925`, run
+`aes-w0-bench-baseline-codex-20260925`, heartbeat suffix `-ct1`.
+Frozen base/HEAD: `3ccf012c40ef42c49ed21aaec96476455e06e049`.
+The lease's automatic dev configure failed on removed optional modules; the lease
+was explicitly verified as held. The subsequent isolated equity-bench configure
+exited 0 (52.9 seconds). Its completed cache confirms Release, equity only,
+benchmarks enabled, all test groups, and
+`FETCHCONTENT_BASE_DIR=C:/atx-wt/pool-6/deps/equity-bench`.
+
+No target compilation or measurement has started. The read-only Ninja command
+graph contains 224 compiler commands / 234 total commands for bench plus worker;
+this is the full dependency closure, not a claim of remaining cache misses.
+The dry-run stopped at CMake regeneration, so an exact remaining-action count
+will be recorded when the build slot opens. Baseline source remains clean.
+
+Windows `GetSystemCpuSetInformation`, decoded against the installed SDK's
+`SYSTEM_CPU_SET_INFORMATION` layout, reports the i7-1260P's higher-performance
+class 1 at logical CPUs 0-7 (four SMT core pairs) and class 0 at 8-15. Verified
+P-core affinity mask: `0xFF`. The raw API response is archived in
+`pool-6/build-equity-bench/w0-cpu-topology.json`; CPU parking flags are transient.
+Use the same inherited process affinity for both measurement launches, verify
+it on the running benchmark, and archive a fresh topology receipt then.
 
 ## Comparable builds
 
