@@ -2,6 +2,22 @@
 -- Parameters: cutoff TIMESTAMP, market_cap_floor DOUBLE.
 -- Dated CIK bridge follows FQ1 interval conventions; source owners are never
 -- equated to trading security IDs. ADRs and non-common types remain diagnostics.
+-- Share basis (A8 market_daily_metrics.shares_source) and owner link (A5 labels,
+-- migration 0327) are exposed on every row. market_cap and every multiple are
+-- shown only under a named share basis:
+--   verified_dei_shares      dei: the owner's DEI count, known at its filing clock;
+--   unverified_vendor_shares archive / archive_ads / archive_split_adjusted /
+--                            class_sum: vendor counts on the modeled vendor-run
+--                            clock (class_sum = multi-class issuer cap, sum of
+--                            close_i x class count_i; archive_ads = ADS basis).
+-- Withheld bases (multiclass_unresolved, adr_ratio_unresolved,
+-- dei_archive_conflict, split_unresolved) and rows without a share-basis label
+-- never show a market cap or multiple, whatever the stored row holds.
+-- The market row's owner (A5 bridge) must equal this reader's dated-CIK owner.
+-- One line per CIK is ranked (highest same-session close x volume, then
+-- security_id); other candidate lines of that CIK are secondary_issuer_line.
+-- Reporting currency (A8 guard) is not stored per row: a currency-withheld row
+-- keeps market_cap and surfaces as valuation_nonpositive_denominator_or_missing.
 -- Deciles are descriptive, 1=lowest, with security_id tie-breaks. Rank the full
 -- complete-case cohort before the runner's output cap. No certified market PIT.
 WITH p AS (SELECT $cutoff::TIMESTAMP AS cutoff,$market_cap_floor::DOUBLE AS floor),
@@ -45,6 +61,34 @@ session AS (
     FROM market_daily_metrics m,clock c
     WHERE m.source='atx-db daily market panel v1' AND m.trade_date=c.trade_date
       AND m.available_at<=c.cutoff AND m.as_of_date<=c.trade_date
+), market_labeled AS (
+    SELECT m.*,
+      CASE WHEN m.shares_source='dei' THEN 'verified_dei_shares'
+           WHEN m.shares_source IN ('archive','archive_ads','archive_split_adjusted','class_sum')
+             THEN 'unverified_vendor_shares'
+           WHEN m.shares_source IN ('multiclass_unresolved','adr_ratio_unresolved',
+                                    'dei_archive_conflict','split_unresolved') THEN 'withheld'
+           ELSE 'unlabeled' END AS share_basis_status
+    FROM market_ranked m WHERE m.state_rank=1
+), market AS (
+    SELECT m.security_id,m.symbol,m.market_daily_id,m.available_at AS market_available_at,
+      m.shares_source,m.share_basis_status,
+      CASE m.share_basis_status WHEN 'verified_dei_shares' THEN 'filing_available_at'
+           WHEN 'unverified_vendor_shares' THEN 'vendor_run_clock' END AS shares_availability_basis,
+      m.owner_security_id AS market_owner_security_id,m.identity_basis,
+      m.availability_basis AS owner_link_availability_basis,m.link_method,
+      m.close*m.volume AS dollar_volume,
+      m.share_basis_status IN ('verified_dei_shares','unverified_vendor_shares') AS basis_shown,
+      CASE WHEN basis_shown THEN m.shares_outstanding END AS shares_outstanding,
+      CASE WHEN basis_shown THEN m.shares_reconciliation_ratio END AS shares_reconciliation_ratio,
+      CASE WHEN basis_shown THEN m.market_cap END AS market_cap,
+      CASE WHEN basis_shown THEN m.pe_ttm END AS pe_ttm,
+      CASE WHEN basis_shown THEN m.ev_ebitda END AS ev_ebitda,
+      CASE WHEN basis_shown THEN m.pb END AS pb,
+      CASE WHEN basis_shown THEN m.fcf_yield END AS fcf_yield,
+      CASE WHEN basis_shown AND m.ebit_to_ev>0 AND isfinite(m.ebit_to_ev) AND m.enterprise_value>0
+           THEN 1.0/m.ebit_to_ev END AS ev_ebit
+    FROM market_labeled m
 ), derived_ranked AS (
     SELECT d.*,row_number() OVER (PARTITION BY security_id,metric_code,metric_window,target_bucket
         ORDER BY available_at DESC,derived_value_id DESC) AS state_rank
@@ -68,10 +112,7 @@ session AS (
 ), joined AS (
     SELECT u.security_id,i.cik,o.security_id AS issuer_owner_id,c.trade_date,c.cutoff AS decision_at,
       date_diff('day',c.trade_date,p.cutoff::DATE) AS market_session_lag_days,
-      m.symbol,m.market_daily_id,m.available_at AS market_available_at,m.market_cap,
-      m.pe_ttm,m.ev_ebitda,m.pb,m.fcf_yield,
-      CASE WHEN m.ebit_to_ev>0 AND isfinite(m.ebit_to_ev) AND m.enterprise_value>0
-           THEN 1.0/m.ebit_to_ev END AS ev_ebit,
+      m.* EXCLUDE (security_id,basis_shown),
       f.roic,f.roe,f.gross_profitability,f.oldest_fiscal_end,f.input_states,
       CASE WHEN u.membership_rows<>1 THEN 'overlapping_membership'
            WHEN u.security_type IS DISTINCT FROM 'common'
@@ -82,6 +123,11 @@ session AS (
              (NOT regexp_full_match(u.membership_cik,'[0-9]{1,10}') OR lpad(u.membership_cik,10,'0')<>i.cik)
              THEN 'membership_CIK_mismatch'
            WHEN o.security_id IS NULL THEN 'issuer_owner_unresolved_or_ambiguous'
+           WHEN m.market_daily_id IS NULL THEN 'market_row_missing'
+           WHEN m.share_basis_status='withheld' THEN 'share_basis_withheld'
+           WHEN m.share_basis_status='unlabeled' THEN 'share_basis_unlabeled'
+           WHEN m.market_owner_security_id IS NULL OR m.identity_basis IS NULL THEN 'market_owner_link_unlabeled'
+           WHEN m.market_owner_security_id<>o.security_id THEN 'market_owner_mismatch'
            WHEN m.market_cap IS NULL OR NOT isfinite(m.market_cap) OR m.market_cap<p.floor THEN 'market_cap_floor_or_missing'
            WHEN f.oldest_fiscal_end IS NULL OR f.fiscal_endpoints<>1
              OR date_diff('day',f.oldest_fiscal_end,c.trade_date)>200 THEN 'profitability_stale_or_mixed'
@@ -90,12 +136,23 @@ session AS (
              OR m.ev_ebitda IS NULL OR NOT isfinite(m.ev_ebitda) OR m.ev_ebitda<=0
              OR m.pb IS NULL OR NOT isfinite(m.pb) OR m.pb<=0
              OR m.fcf_yield IS NULL OR NOT isfinite(m.fcf_yield)
-             OR ev_ebit IS NULL THEN 'valuation_nonpositive_denominator_or_missing'
+             OR m.ev_ebit IS NULL THEN 'valuation_nonpositive_denominator_or_missing'
            ELSE 'candidate_complete' END AS status
     FROM members u CROSS JOIN clock c CROSS JOIN p LEFT JOIN ids i USING (security_id)
     LEFT JOIN owners o ON o.cik=i.cik AND o.owners_per_cik=1 AND o.ciks_per_owner=1
-    LEFT JOIN market_ranked m ON m.security_id=u.security_id AND m.state_rank=1
+    LEFT JOIN market m ON m.security_id=u.security_id
     LEFT JOIN profit f ON f.security_id=o.security_id
+), issuer_lines AS (
+    -- One ranked line per issuer: class lines of a multi-class issuer carry the
+    -- same issuer cap and fundamentals and must not be ranked twice.
+    SELECT security_id,
+      row_number() OVER (PARTITION BY cik ORDER BY dollar_volume DESC NULLS LAST,security_id) AS issuer_line_rank,
+      count(*) OVER (PARTITION BY cik) AS issuer_candidate_lines
+    FROM joined WHERE status='candidate_complete'
+), screened AS (
+    SELECT j.* REPLACE (CASE WHEN l.issuer_line_rank>1 THEN 'secondary_issuer_line' ELSE j.status END AS status),
+      l.issuer_candidate_lines
+    FROM joined j LEFT JOIN issuer_lines l USING (security_id)
 ), deciles AS (
     SELECT security_id,
       ntile(10) OVER (ORDER BY pe_ttm,security_id) AS pe_decile,
@@ -106,11 +163,13 @@ session AS (
       ntile(10) OVER (ORDER BY roic,security_id) AS roic_decile,
       ntile(10) OVER (ORDER BY roe,security_id) AS roe_decile,
       ntile(10) OVER (ORDER BY gross_profitability,security_id) AS gross_profitability_decile,
-      count(*) OVER () AS ranked_names
-    FROM joined WHERE status='candidate_complete'
+      count(*) OVER () AS ranked_names,
+      count(*) FILTER (WHERE share_basis_status='unverified_vendor_shares') OVER () AS ranked_unverified_share_basis
+    FROM screened WHERE status='candidate_complete'
     QUALIFY ranked_names>=10
 )
 SELECT j.*,d.* EXCLUDE (security_id),count(*) OVER () AS visible_members,
        false AS production_qualified,
-       'requires_selected_leaf_proof_USD_currency_and_share_class_share_count_PIT_certification' AS qualification
-FROM joined j LEFT JOIN deciles d USING (security_id) ORDER BY j.security_id;
+       'requires_selected_leaf_proof_row_level_USD_currency_verified_share_basis_and_dated_identity_certification'
+           AS qualification
+FROM screened j LEFT JOIN deciles d USING (security_id) ORDER BY j.security_id;
