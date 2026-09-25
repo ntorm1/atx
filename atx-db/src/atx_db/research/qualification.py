@@ -29,6 +29,8 @@ whose content hash differs from its pin in :data:`FROZEN_POLICY_SHA256` is refus
 and the research store refuses to register a second hash under a registered version.
 Changing the policy therefore always means a new ``policy_version`` (and a new pin).
 An evaluation run is qualified only when its frozen split is the policy's split.
+Versions: ``r4-qualification-v1`` (kept in ``seeds/research_qualification_policy_v1.json``)
+and ``r4-qualification-v2`` (current, same split; created before any real-data result).
 
 Gates (controller R4 ruling; first failing tier sets the status)
 -----------------------------------------------------------------
@@ -50,13 +52,16 @@ the holdout).
    (``expected_sign = 0``) qualifies on ``|z|``; its realized sign is then fixed and
    reported, and every later check must keep it.
 4. ``unstable``: the holdout IC has the opposite sign; fewer than 2 of the 3
-   subperiods have the fixed sign; or the small or the large NYSE size bucket
-   (point-in-time venue, ``venue_basis='nyse_pit'``) has the opposite sign (microcap
-   false-discovery guard).
+   subperiods have the fixed sign; or the small or the large size bucket has the
+   opposite sign (microcap false-discovery guard). Buckets are R3b's point-in-time NYSE
+   20/50 slices (``size_bucket``, ``venue_basis='nyse_pit'``) when both have >= 36
+   formations; under v2 the rule otherwise gates on R3b's labeled verified-cap tercile
+   slices (``size_tercile``, ``cap_terciles``) and the row records ``size_venue_basis``.
 5. ``candidate``: holdout ``z`` below 1.5 in the fixed direction (or untestable);
-   deflated Sharpe gate failed (``dsr_z > 0``: the EW decile long-short Sharpe beats
-   the expected maximum of the whole family, ``horizon_periods = h``); size-bucket or
-   subperiod evidence missing.
+   size-bucket or subperiod evidence missing; under v1 only, the deflated Sharpe
+   (``dsr_z > 0``: the EW decile long-short Sharpe beats the expected maximum of the
+   whole family, ``horizon_periods = h``). Under v2 it is reported and flagged
+   (``dsr_pass``), never gating.
 6. Otherwise ``qualified_strict`` on the strict basis with strict labels and
    ``qualified_reconstructed`` on any other basis. A reconstructed-basis pass is never
    labeled strict (RX1); a strict-basis row whose identity/universe labels are not
@@ -109,11 +114,16 @@ from .evaluation import FrozenSplit, load_frozen_split, results_digest
 
 QUALIFICATION_VERSION = "research-qualification-v1"
 QUALIFICATION_SCHEMA_VERSION = 1
+#: The current policy (the RR4 ``--split-file``); superseded versions stay in the seeds as history.
 POLICY_PATH = Path(__file__).resolve().parents[1] / "seeds" / "research_qualification_policy.json"
+POLICY_HISTORY_PATHS: Mapping[str, Path] = {
+    "r4-qualification-v1": POLICY_PATH.with_name("research_qualification_policy_v1.json"),
+}
 #: Every committed policy version and its canonical content hash. Editing a frozen
 #: policy is refused; a changed policy needs a new version and a new pin here.
 FROZEN_POLICY_SHA256: Mapping[str, str] = {
     "r4-qualification-v1": "d33ac7044a5b67d656f37a4f9c0ef61afacc403b4e4ff65ae6eec595452f4f22",
+    "r4-qualification-v2": "d517b6c8372ae8ee18d09418be5f400d6b797f1015098c37f0aab1b2813093c2",
 }
 
 QUALIFIED_STRICT = "qualified_strict"
@@ -213,6 +223,7 @@ def _g(value: float | None) -> str:
 _POLICY_KEYS = frozenset({"policy_version", "title", "frozen_on", "authority", "split", "primary", "significance",
                           "deflated_sharpe", "coverage", "holdout", "subperiods", "size_buckets", "strict_evidence",
                           "reported", "statuses", "policy_sha256"})
+_POLICY_OPTIONAL_KEYS = frozenset({"supersedes"})
 
 
 @dataclass(frozen=True)
@@ -248,6 +259,11 @@ class QualificationPolicy:
     monotonicity_min: float
     net_cost_bps: int
     psr_benchmark: float
+    #: v1: the deflated Sharpe gates (``candidate``); v2: reported and flagged (``dsr_pass``) only.
+    dsr_gating: bool
+    #: v2: the size-bucket rule falls back to these labeled slices where NYSE-PIT buckets are too thin.
+    size_fallback_kind: str | None
+    size_fallback_venue: str | None
     #: sha256 of the policy file's bytes with LF and with CRLF line endings (what the
     #: R3b CLI records as the run's ``policy_sha256``); empty for a mapping.
     file_sha256s: frozenset[str] = field(default_factory=frozenset)
@@ -313,9 +329,10 @@ def load_policy(source: Path | str | Mapping[str, Any] = POLICY_PATH, *,
         file_hashes = policy_file_sha256s(path)
     if not isinstance(content, dict):
         raise PolicyError("policy must be a JSON object")
-    if set(content) != _POLICY_KEYS:
-        raise PolicyError(f"policy keys must be exactly {sorted(_POLICY_KEYS)}; "
-                          f"unknown {sorted(set(content) - _POLICY_KEYS)}, missing {sorted(_POLICY_KEYS - set(content))}")
+    if not _POLICY_KEYS <= set(content) <= _POLICY_KEYS | _POLICY_OPTIONAL_KEYS:
+        raise PolicyError(f"policy keys must be {sorted(_POLICY_KEYS)} (+ optional {sorted(_POLICY_OPTIONAL_KEYS)}); "
+                          f"unknown {sorted(set(content) - _POLICY_KEYS - _POLICY_OPTIONAL_KEYS)}, "
+                          f"missing {sorted(_POLICY_KEYS - set(content))}")
     version = content["policy_version"]
     if not isinstance(version, str) or not 0 < len(version) <= 64:
         raise PolicyError("policy_version must be a short string")
@@ -353,6 +370,11 @@ def load_policy(source: Path | str | Mapping[str, Any] = POLICY_PATH, *,
     if net_bps not in (10, 25, 50):
         raise PolicyError("reported.net_cost_bps must be one of the R3b costs 10/25/50")
     subperiod_names = _names(subperiods, "names")
+    gating = dsr.get("gating", True)
+    fallback_kind, fallback_venue = size.get("fallback_slice_kind"), size.get("fallback_venue_basis")
+    if not isinstance(gating, bool) or (fallback_kind is None) != (fallback_venue is None) \
+            or any(v is not None and (not isinstance(v, str) or not v) for v in (fallback_kind, fallback_venue)):
+        raise PolicyError("deflated_sharpe.gating must be a boolean; size fallback kind and venue come together")
     return QualificationPolicy(
         version=version, sha256=actual, content=content, split=split,
         primary_horizon=horizon, primary_variant=str(primary["variant"]),
@@ -375,6 +397,7 @@ def load_policy(source: Path | str | Mapping[str, Any] = POLICY_PATH, *,
         neutral_min_abs_z=_number(reported, "neutral_min_abs_z", 0.0, 10.0),
         monotonicity_min=_number(reported, "decile_monotonicity_min", -1.0, 1.0),
         net_cost_bps=net_bps, psr_benchmark=_number(reported, "psr_benchmark_sharpe", -10.0, 10.0),
+        dsr_gating=gating, size_fallback_kind=fallback_kind, size_fallback_venue=fallback_venue,
         file_sha256s=file_hashes,
     )
 
@@ -384,9 +407,10 @@ def load_policy(source: Path | str | Mapping[str, Any] = POLICY_PATH, *,
 # ---------------------------------------------------------------------------
 
 _CELL_KEYS = ("basis", "feature_id", "variant", "horizon_months")
-#: Cell columns R4 reads (R3b result contract ``research-monthly-evaluation-v2``).
+#: Cell columns R4 reads (R3b result contract ``research-monthly-evaluation-v2``, fix 1 = 4d122b00).
 CELL_INPUT_COLUMNS = (
-    *_CELL_KEYS, "status", "sample", "anomaly_class", "expected_sign", "identity_basis", "universe_basis",
+    *_CELL_KEYS, "status", "status_reason", "sample", "anomaly_class", "hypothesis_family", "expected_sign",
+    "universe_scope", "identity_basis", "universe_basis",
     "classification_basis", "availability_basis", "label_basis", "formations_usable", "stitched_observed",
     "stitched_policy", "mean_names", "mean_coverage", "min_coverage", "ic_mean", "ic_n", "ic_robust_p",
     "ic_robust_df", "ic_z", "ic_nw_t", "ic_boot_low", "ic_boot_high", "ls_ew10_mean", "ls_ew10_z", "ls_vw10_mean",
@@ -394,10 +418,8 @@ CELL_INPUT_COLUMNS = (
     "top_turnover_h", "bottom_turnover_h", "net10_mean", "net25_mean", "net50_mean", "family_member", "bh_q",
     "holm_p", "dsr_n_trials", "dsr_sharpe_variance", "sharpe", "sharpe_skew", "sharpe_kurt", "sharpe_n",
 )
-SLICE_INPUT_COLUMNS = (*_CELL_KEYS, "slice_kind", "slice_name", "formations", "ic_mean", "ic_z")
+SLICE_INPUT_COLUMNS = (*_CELL_KEYS, "slice_kind", "slice_name", "formations", "ic_mean", "ic_z", "venue_basis")
 SERIES_INPUT_COLUMNS = ("basis", "feature_id", "formation_date", "in_selection", "coverage")
-#: The slice venue label (R3b fix round renamed ``breakpoint_basis`` to ``venue_basis``).
-_SLICE_VENUE_COLUMNS = ("venue_basis", "breakpoint_basis")
 
 
 @dataclass(frozen=True)
@@ -451,15 +473,13 @@ def load_evaluation_results(con: duckdb.DuckDBPyConnection, run_id: str, policy:
     if row is None:
         raise QualificationError(f"evaluation run {run_id!r} is absent")
     _require(con, "research_eval_cells", CELL_INPUT_COLUMNS)
-    slice_columns = _require(con, "research_eval_slices", SLICE_INPUT_COLUMNS)
+    _require(con, "research_eval_slices", SLICE_INPUT_COLUMNS)
     _require(con, "research_eval_series", (*SERIES_INPUT_COLUMNS, "variant", "horizon_months"))
-    venue = next((name for name in _SLICE_VENUE_COLUMNS if name in slice_columns), None)
     stored = results_digest(con, run_id)[0] if verify_seal else None
     cells = con.execute(f"SELECT {', '.join(CELL_INPUT_COLUMNS)} FROM research_eval_cells WHERE run_id = ? "
                         f"ORDER BY {', '.join(_CELL_KEYS)}", [run_id]).df()
-    venue_select = f"{venue} AS venue_basis" if venue else "CAST(NULL AS VARCHAR) AS venue_basis"
     slices = con.execute(f"""
-        SELECT {', '.join(SLICE_INPUT_COLUMNS)}, {venue_select} FROM research_eval_slices
+        SELECT {', '.join(SLICE_INPUT_COLUMNS)} FROM research_eval_slices
         WHERE run_id = ? AND variant = ?
         ORDER BY basis, feature_id, horizon_months, slice_kind, slice_name
     """, [run_id, policy.primary_variant]).df()
@@ -564,13 +584,13 @@ def refusal_reasons(results: EvaluationResults, policy: QualificationPolicy,
 
 BASIS_COLUMNS: tuple[tuple[str, str], ...] = (
     ("feature_id", "VARCHAR"), ("basis", "VARCHAR"), ("status", "VARCHAR"), ("status_reasons", "VARCHAR"),
-    ("evidence_basis", "VARCHAR"), ("cell_status", "VARCHAR"), ("expected_sign", "INTEGER"),
-    ("direction", "INTEGER"), ("raw_direction", "INTEGER"),
+    ("evidence_basis", "VARCHAR"), ("cell_status", "VARCHAR"), ("cell_status_reason", "VARCHAR"),
+    ("expected_sign", "INTEGER"), ("direction", "INTEGER"), ("raw_direction", "INTEGER"),
     ("identity_basis", "VARCHAR"), ("universe_basis", "VARCHAR"), ("classification_basis", "VARCHAR"),
-    ("availability_basis", "VARCHAR"), ("label_basis", "VARCHAR"),
+    ("availability_basis", "VARCHAR"), ("label_basis", "VARCHAR"), ("universe_scope", "VARCHAR"),
     ("gate_coverage", "BOOLEAN"), ("gate_significance", "BOOLEAN"), ("gate_sign", "BOOLEAN"),
     ("gate_holdout_sign", "BOOLEAN"), ("gate_holdout_strength", "BOOLEAN"), ("gate_subperiods", "BOOLEAN"),
-    ("gate_size_buckets", "BOOLEAN"), ("gate_dsr", "BOOLEAN"),
+    ("gate_size_buckets", "BOOLEAN"), ("dsr_pass", "BOOLEAN"),
     ("ic_n", "INTEGER"), ("effective_n", "INTEGER"), ("selection_formations", "INTEGER"),
     ("covered_formations", "INTEGER"), ("coverage_share", "DOUBLE"), ("mean_coverage", "DOUBLE"),
     ("min_coverage", "DOUBLE"),
@@ -601,14 +621,15 @@ FEATURE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("identity_basis", "VARCHAR"), ("universe_basis", "VARCHAR"), ("classification_basis", "VARCHAR"),
     ("availability_basis", "VARCHAR"), ("label_basis", "VARCHAR"),
     ("ic_mean", "DOUBLE"), ("ic_z", "DOUBLE"), ("bh_q", "DOUBLE"), ("hlz", "BOOLEAN"), ("dsr_z", "DOUBLE"),
-    ("psr", "DOUBLE"), ("holdout_ic_z", "DOUBLE"), ("coverage_share", "DOUBLE"), ("ic_n", "INTEGER"),
+    ("dsr_pass", "BOOLEAN"), ("psr", "DOUBLE"), ("holdout_ic_z", "DOUBLE"), ("size_venue_basis", "VARCHAR"),
+    ("coverage_share", "DOUBLE"), ("ic_n", "INTEGER"),
     ("effective_n", "INTEGER"), ("ls_ew10_mean", "DOUBLE"), ("mono_ew10", "DOUBLE"), ("net_mean", "DOUBLE"),
     ("top_turnover_h", "DOUBLE"), ("bottom_turnover_h", "DOUBLE"), ("policy_terminal_share", "DOUBLE"),
 )
 _COPIED_FROM_BASIS = ("identity_basis", "universe_basis", "classification_basis", "availability_basis",
-                      "label_basis", "ic_mean", "ic_z", "bh_q", "hlz", "dsr_z", "psr", "holdout_ic_z",
-                      "coverage_share", "ic_n", "effective_n", "ls_ew10_mean", "mono_ew10", "net_mean",
-                      "top_turnover_h", "bottom_turnover_h", "policy_terminal_share")
+                      "label_basis", "ic_mean", "ic_z", "bh_q", "hlz", "dsr_z", "dsr_pass", "psr", "holdout_ic_z",
+                      "size_venue_basis", "coverage_share", "ic_n", "effective_n", "ls_ew10_mean", "mono_ew10",
+                      "net_mean", "top_turnover_h", "bottom_turnover_h", "policy_terminal_share")
 
 
 @dataclass(frozen=True)
@@ -707,10 +728,12 @@ def _grade_basis(feature_id: str, basis: str, cells: Mapping[tuple[Any, ...], di
     cell_status = str(cell["status"])
     expected = _i(cell.get("expected_sign"))
     row: dict[str, Any] = {name: None for name, _ in BASIS_COLUMNS}
-    row.update({"feature_id": feature_id, "basis": basis, "cell_status": cell_status, "expected_sign": expected,
+    row.update({"feature_id": feature_id, "basis": basis, "cell_status": cell_status,
+                "cell_status_reason": _s(cell.get("status_reason")), "expected_sign": expected,
                 "identity_basis": _s(cell.get("identity_basis")), "universe_basis": _s(cell.get("universe_basis")),
                 "classification_basis": _s(cell.get("classification_basis")),
-                "availability_basis": _s(cell.get("availability_basis")), "label_basis": _s(cell.get("label_basis"))})
+                "availability_basis": _s(cell.get("availability_basis")), "label_basis": _s(cell.get("label_basis")),
+                "universe_scope": _s(cell.get("universe_scope"))})
     if cell_status == _CELL_UNTESTABLE:
         row.update({"status": UNTESTABLE_STRICT, "status_reasons": "basis_untestable"})
         return row
@@ -738,7 +761,8 @@ def _grade_basis(feature_id: str, basis: str, cells: Mapping[tuple[Any, ...], di
 
     coverage_fail: list[str] = []
     if not tested:
-        coverage_fail.append(f"cell_{cell_status}")
+        why = _s(cell.get("status_reason"))
+        coverage_fail.append(f"cell_{cell_status}" + (f"({why})" if why else ""))
     if ic_n < policy.min_observations:
         coverage_fail.append(f"observations={ic_n}<{policy.min_observations}")
     if share is None or share < policy.min_formation_share:
@@ -779,36 +803,50 @@ def _grade_basis(feature_id: str, basis: str, cells: Mapping[tuple[Any, ...], di
         (candidate if same + missing >= policy.subperiod_min_same_sign else unstable).append(text)
     row.update({"subperiod_same_sign": same, "subperiod_signs": ",".join(signs), "gate_subperiods": sub_ok})
 
-    # NYSE size buckets (point-in-time venue): the fixed sign in small AND large.
-    size_ok = True
-    venues: set[str] = set()
-    for bucket in ("micro", "small", "large"):
-        item = slices.get((basis, feature_id, h, policy.size_slice_kind, bucket), {})
-        b_mean, b_z, b_n = _f(item.get("ic_mean")), _f(item.get("ic_z")), _i(item.get("formations"))
-        venue = _s(item.get("venue_basis"))
-        row[f"{bucket}_ic_mean"], row[f"{bucket}_ic_z"] = b_mean, b_z
-        if bucket != "micro":
-            row[f"{bucket}_formations"] = b_n
-        if bucket not in policy.size_buckets:
-            continue
-        if venue is not None:
-            venues.add(venue)
-        if b_mean is None or (b_n or 0) < policy.size_min_formations or venue not in (None, policy.size_venue_basis):
-            size_ok = False
-            candidate.append(f"size_{bucket}_untestable(formations={b_n},venue={venue})")
-        elif not direction * b_mean > 0:
-            size_ok = False
-            unstable.append(f"size_{bucket}_sign(ic={_g(b_mean)})")
-    row.update({"gate_size_buckets": size_ok, "size_venue_basis": ",".join(sorted(venues)) or None})
+    # Size buckets: the fixed sign in small AND large. Point-in-time NYSE breakpoints when both
+    # buckets have enough formations; else (v2) R3b's labeled verified-cap tercile slices.
+    sources = [(policy.size_slice_kind, policy.size_venue_basis)]
+    if policy.size_fallback_kind is not None and policy.size_fallback_venue is not None:
+        sources.append((policy.size_fallback_kind, policy.size_fallback_venue))
 
-    # Deflated Sharpe of the fixed-direction EW decile long-short (whole family, horizon h).
+    def bucket_slices(kind: str, venue: str) -> dict[str, dict[str, Any]]:
+        return {bucket: item for bucket in ("micro", "small", "large")
+                if (item := slices.get((basis, feature_id, h, kind, bucket))) is not None
+                and _s(item.get("venue_basis")) in (None, venue)}
+
+    def usable(found: Mapping[str, Mapping[str, Any]]) -> bool:
+        return all(_f(found.get(b, {}).get("ic_mean")) is not None
+                   and (_i(found.get(b, {}).get("formations")) or 0) >= policy.size_min_formations
+                   for b in policy.size_buckets)
+
+    size_kind, size_venue = sources[0]
+    chosen_slices = bucket_slices(size_kind, size_venue)
+    for kind, venue in sources[1:]:
+        if not usable(chosen_slices):
+            size_kind, size_venue, chosen_slices = kind, venue, bucket_slices(kind, venue)
+    size_ok = usable(chosen_slices)
+    if not size_ok:
+        candidate.append(f"size_buckets_untestable({'/'.join(v for _, v in sources)})")
+    for bucket in ("micro", "small", "large"):
+        item = chosen_slices.get(bucket, {})
+        b_mean = _f(item.get("ic_mean"))
+        row[f"{bucket}_ic_mean"], row[f"{bucket}_ic_z"] = b_mean, _f(item.get("ic_z"))
+        if bucket != "micro":
+            row[f"{bucket}_formations"] = _i(item.get("formations"))
+        if size_ok and bucket in policy.size_buckets and b_mean is not None and not direction * b_mean > 0:
+            size_ok = False
+            unstable.append(f"size_{bucket}_sign(ic={_g(b_mean)},{size_venue})")
+    row.update({"gate_size_buckets": size_ok, "size_venue_basis": size_venue if chosen_slices else None})
+
+    # Deflated Sharpe of the fixed-direction EW decile long-short (whole family, horizon h):
+    # gating under v1, reported and flagged under v2.
     deflated, psr = _deflated(cell, direction, h, policy)
     dsr_ok = deflated is not None and deflated.z > policy.dsr_min_z
-    if deflated is None:
+    if policy.dsr_gating and deflated is None:
         candidate.append("dsr_unavailable")
-    elif not dsr_ok:
-        candidate.append(f"dsr_z={_g(deflated.z)}<={policy.dsr_min_z:g}")
-    row.update({"gate_dsr": dsr_ok, "psr": psr, "sharpe": _f(cell.get("sharpe")),
+    elif policy.dsr_gating and not dsr_ok:
+        candidate.append(f"dsr_z={_g(_f(deflated.z) if deflated else None)}<={policy.dsr_min_z:g}")
+    row.update({"dsr_pass": dsr_ok, "psr": psr, "sharpe": _f(cell.get("sharpe")),
                 "dsr_n_trials": _i(cell.get("dsr_n_trials")),
                 "dsr": None if deflated is None else _f(deflated.deflated_sharpe_ratio),
                 "dsr_z": None if deflated is None else _f(deflated.z),
@@ -938,7 +976,8 @@ def qualify(results: EvaluationResults, policy: QualificationPolicy,
             "role": None if anomaly_class is None else ("control" if anomaly_class in CONTROL_CLASSES else "anomaly"),
             "expected_sign": expected, "two_sided": None if expected is None else expected == 0,
             "raw_direction": chosen.get("raw_direction"),
-            "hypothesis_family": _s(getattr(entry, "hypothesis_family", None)), "prior_evidence": prior,
+            "hypothesis_family": _s(getattr(entry, "hypothesis_family", None)) or _s(cell.get("hypothesis_family")),
+            "prior_evidence": prior,
             "exploratory": None if prior is None else prior == "economic_conjecture",
             "admission": _s(getattr(entry, "admission", None)),
             "caveat_codes": "|".join(getattr(entry, "caveat_codes", ()) or ()) or None,
@@ -987,7 +1026,11 @@ def _manifest(results: EvaluationResults, policy: QualificationPolicy, catalog_r
         row.get(f"{bucket}_ic_mean") is None or (row.get(f"{bucket}_formations") or 0) < policy.size_min_formations
         for bucket in policy.size_buckets))
     if size_missing:
-        blockers.add(f"nyse_pit_size_bucket_evidence_missing:{size_missing}")
+        blockers.add(f"size_bucket_evidence_missing:{size_missing}")
+    fallback = sum(1 for row in bases if policy.size_fallback_venue is not None
+                   and row.get("size_venue_basis") == policy.size_fallback_venue)
+    if fallback:
+        blockers.add(f"size_buckets_on_{policy.size_fallback_venue}_fallback:{fallback}")
     family = results.family
     return {
         "qualification_version": QUALIFICATION_VERSION,
@@ -1170,10 +1213,10 @@ _STATUS_MEANING = {
     QUALIFIED_STRICT: "passes every gate on the strict (verified identity/universe) basis",
     QUALIFIED_RECONSTRUCTED: "passes every gate on labeled reconstructed evidence (RX1); not certifiable",
     CANDIDATE: "significant with a stable sign, but a strength gate failed or evidence is missing "
-               "(holdout z, deflated Sharpe, size buckets, subperiods)",
+               "(holdout z, size buckets, subperiods; the deflated Sharpe only where the policy gates on it)",
     NOT_SIGNIFICANT: "fails the family-corrected rank-IC significance gate",
     SIGN_REVERSED: "significant against the pre-registered sign",
-    UNSTABLE: "the sign flips in the holdout or in a NYSE size bucket, fewer than 2 of 3 subperiods keep it, "
+    UNSTABLE: "the sign flips in the holdout or in a small/large size bucket, fewer than 2 of 3 subperiods keep it, "
               "or a testable strict basis reverses it",
     INSUFFICIENT_COVERAGE: "too few observations or too little value coverage to test",
     UNTESTABLE_STRICT: "no testable basis (the strict cohort is empty and no other basis was testable)",
@@ -1194,6 +1237,9 @@ def render_qualified_signals_markdown(policy: QualificationPolicy, ledger: Quali
     """The generated ``docs/research/QUALIFIED_SIGNALS.md`` (policy, and the ledger when given)."""
     split = policy.split
     segments = "; ".join(f"{name} {start.isoformat()}..{end.isoformat()}" for name, start, end in split.segments)
+    size_rule = f"`{policy.size_venue_basis}`" + (
+        "" if policy.size_fallback_venue is None
+        else f", else the labeled `{policy.size_fallback_venue}` fallback")
     lines = [
         "# Qualified research signals",
         "",
@@ -1219,11 +1265,15 @@ def render_qualified_signals_markdown(policy: QualificationPolicy, ledger: Quali
         f"{policy.bh_max_q:g} with \\|z\\| >= {policy.bh_min_abs_z:g} | `{NOT_SIGNIFICANT}` |",
         f"| 3 | sign | z > 0 on the sign-oriented value; two-sided rows fix their realized sign | `{SIGN_REVERSED}` |",
         f"| 4 | stability | holdout IC, >= {policy.subperiod_min_same_sign} of {len(policy.subperiods)} subperiods, "
-        f"NYSE {' and '.join(policy.size_buckets)} buckets ({policy.size_venue_basis}) keep the sign | `{UNSTABLE}` |",
-        f"| 5 | strength | holdout z >= {policy.holdout_min_signed_z:g}; deflated Sharpe z > {policy.dsr_min_z:g} "
-        f"(whole family, horizon h); size buckets with >= {policy.size_min_formations} formations | `{CANDIDATE}` |",
+        f"{' and '.join(policy.size_buckets)} size buckets ({size_rule}) keep the sign | `{UNSTABLE}` |",
+        f"| 5 | strength | holdout z >= {policy.holdout_min_signed_z:g};"
+        + (f" deflated Sharpe z > {policy.dsr_min_z:g} (whole family, horizon h);" if policy.dsr_gating else "")
+        + f" size buckets with >= {policy.size_min_formations} formations | `{CANDIDATE}` |",
         "",
-        "Supporting evidence (reported, never gating): decile spreads (EW/VW, NYSE breakpoints), monotonicity >= "
+        "Supporting evidence (reported, never gating): "
+        + ("" if policy.dsr_gating else f"deflated Sharpe (`dsr_pass` = z > {policy.dsr_min_z:g} over the whole "
+           "family at horizon h) and PSR; ")
+        + "decile spreads (EW/VW, NYSE breakpoints), monotonicity >= "
         f"{policy.monotonicity_min:g}, net spread at {policy.net_cost_bps} bp, Fama-MacBeth, "
         f"{', '.join(policy.neutral_variants)} survival (\\|z\\| >= {policy.neutral_min_abs_z:g}), other horizons.",
         "",

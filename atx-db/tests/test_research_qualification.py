@@ -24,6 +24,7 @@ START = dt.date(2012, 1, 1)
 MONTHS = 170  # formations 2012-01-31 .. 2026-02-28; the frozen holdout starts 2024-01
 NAMES = 300
 HOLDOUT_INDEX = 144  # 2024-01-31
+PIT_VENUE_FROM = 108  # listing evidence (point-in-time NYSE venue) only from 2021-01: 33 selection formations
 STRONG, MODERATE = 0.22, 0.06
 N_NOISE = 20
 REPO = Path(__file__).resolve().parents[1]
@@ -37,9 +38,10 @@ def _month(offset: int) -> dt.date:
 class Market:
     """Month-end formations; ``returns[t]`` is realized over the month after formation t.
 
-    Caps rise with the security index and every third name is on the NYSE (point in
-    time), so the NYSE 20/50 breakpoints split micro / small / large at about 20% and
-    50% of the names.
+    Caps rise with the security index and every third name is on the NYSE. The venue is
+    known point in time only from ``PIT_VENUE_FROM``, so NYSE-PIT size buckets are too
+    thin in the selection sample and the size rule falls back to R3b's cap terciles
+    (names in thirds by index).
     """
 
     def __init__(self, returns: np.ndarray, months: int) -> None:
@@ -72,10 +74,10 @@ class Market:
 
     def context(self) -> pd.DataFrame:
         nyse = np.tile(self.nyse, self.months)
-        return pd.DataFrame({"month_index": np.repeat(np.arange(self.months), self.names),
-                             "security": np.tile(np.arange(self.names), self.months),
+        month = np.repeat(np.arange(self.months), self.names)
+        return pd.DataFrame({"month_index": month, "security": np.tile(np.arange(self.names), self.months),
                              "market_cap": np.tile(self.caps, self.months), "is_nyse": nyse,
-                             "venue_pit": True, "is_nyse_pit": nyse})
+                             "venue_pit": month >= PIT_VENUE_FROM, "is_nyse_pit": nyse & (month >= PIT_VENUE_FROM)})
 
     def feature(self, feature_id: str, values: np.ndarray, sign: int, variants: tuple[str, ...],
                 names: np.ndarray | None = None) -> ev.FeatureData:
@@ -117,7 +119,7 @@ def _evaluated() -> tuple[ev.EvaluationTables, ev.EvaluationSpec, tuple[ev.Catal
     periods = MONTHS + 12
     values = {name: _ar1(rng, periods, NAMES) for name in MAIN_FEATURES}
     index = np.arange(NAMES)
-    small = (index >= 0.2 * NAMES) & (index < 0.5 * NAMES)  # NYSE-PIT small bucket (20th..50th NYSE pct)
+    small = (index >= NAMES // 3) & (index < 2 * NAMES // 3)  # the middle cap tercile
     holdout = (np.arange(periods) >= HOLDOUT_INDEX)[:, None]
     ones = np.ones((periods, NAMES))
     loading = {
@@ -203,11 +205,17 @@ def test_ledger_end_to_end_statuses_refusals_and_reproducible_bytes(tmp_path: Pa
         planted = rows[("planted", "reconstructed")]
         assert planted["hlz"] and planted["ic_n"] >= POLICY.min_observations and planted["coverage_share"] == 1.0
         assert planted["holdout_ic_z"] >= POLICY.holdout_min_signed_z and planted["subperiod_same_sign"] == 3
+        # Too few point-in-time NYSE formations in selection: the size rule gates on the labeled terciles.
+        assert planted["size_venue_basis"] == "cap_terciles" and planted["small_formations"] >= 36
         assert planted["small_ic_mean"] > 0 and planted["large_ic_mean"] > 0
+        assert f"size_buckets_on_cap_terciles_fallback:{len(MAIN_FEATURES)}" in ledger.manifest["blockers"]
         cell = tables.cells.set_index(["basis", "feature_id", "variant", "horizon_months"]).loc[
             ("reconstructed", "planted", "rank_normal", POLICY.primary_horizon)]
-        assert planted["dsr_n_trials"] == tables.family["n_trials"] and planted["sharpe"] > planted["dsr_benchmark"]
+        assert planted["dsr_n_trials"] == tables.family["n_trials"]
         assert math.isclose(planted["dsr"], cell.dsr, rel_tol=0, abs_tol=1e-12)  # R3b's DSR, whole family
+        # v2: the deflated Sharpe is reported and flagged, never a reason for a status.
+        assert all(row["dsr_pass"] is not None for row in ledger.features if row["status"] != rq.UNTESTABLE_STRICT)
+        assert not any("dsr" in (row["status_reasons"] or "") for row in ledger.bases)
         assert all(row["status"] == rq.UNTESTABLE_STRICT for (_, basis), row in rows.items() if basis == "strict")
         assert rq.QUALIFIED_STRICT not in status.values()
         # Two-sided hypothesis: qualifies on |z|; its realized negative sign is fixed and reported.
@@ -226,6 +234,7 @@ def test_ledger_end_to_end_statuses_refusals_and_reproducible_bytes(tmp_path: Pa
         size_split = rows[("size_split", "reconstructed")]
         assert size_split["ic_z"] > 3.0 and size_split["small_ic_mean"] < 0 < size_split["large_ic_mean"]
         assert size_split["status"] == rq.UNSTABLE and "size_small_sign" in size_split["status_reasons"]
+        assert "cap_terciles" in size_split["status_reasons"]  # the fallback is labeled on the row
         assert status["fades"] == rq.UNSTABLE and "holdout_sign_flip" in rows[("fades", "reconstructed")][
             "status_reasons"]
         assert status["sparse"] == rq.INSUFFICIENT_COVERAGE  # significant, but half the universe
@@ -237,19 +246,23 @@ def test_ledger_end_to_end_statuses_refusals_and_reproducible_bytes(tmp_path: Pa
         with pytest.raises(rq.QualificationError, match="sealed"):
             rq.persist_ledger(con, dataclasses.replace(again, sha256="0" * 64))
 
-        # Unproduced cells are a blocker, never a smaller family.
+        # Unproduced cells, or any run R3b does not call family_complete, are refused: never a smaller family.
         results = rq.load_evaluation_results(con, "r4_main", POLICY)
         cells = results.cells.copy()
         cells.loc[(cells.feature_id == "noise_00") & (cells.basis == "reconstructed"), "status"] = "not_produced"
         with pytest.raises(rq.QualificationRefused, match="cells_not_produced:4"):
             rq.qualify(dataclasses.replace(results, cells=cells, family_complete=False), POLICY)
+        with pytest.raises(rq.QualificationRefused, match="family_not_complete"):
+            rq.qualify(dataclasses.replace(results, family_complete=False), POLICY)
 
-        # RX7: a frozen policy edited in place (even re-hashed) is refused; a change needs a new version.
+        # RX7: a frozen policy edited in place (even re-hashed) is refused; v1 stays loadable as history.
         edited = json.loads(json.dumps(dict(POLICY.content)))
         edited["coverage"]["min_observations"] = 60
         edited["policy_sha256"] = rq.policy_sha256(edited)
         with pytest.raises(rq.PolicyError, match="frozen with sha256"):
             rq.load_policy(edited)
+        v1 = rq.load_policy(rq.POLICY_HISTORY_PATHS["r4-qualification-v1"])
+        assert v1.sha256 == rq.FROZEN_POLICY_SHA256["r4-qualification-v1"] and v1.split == POLICY.split
         doc = (REPO / "docs" / "research" / "QUALIFIED_SIGNALS.md").read_text(encoding="utf-8")
         assert POLICY.sha256 in doc and POLICY.split.sha256 in doc  # the committed doc is current
     finally:

@@ -1,9 +1,8 @@
 {
-  "policy_version": "r4-qualification-v2",
-  "supersedes": "r4-qualification-v1",
+  "policy_version": "r4-qualification-v1",
   "title": "Frozen qualification policy for standardized cross-sectional research metrics (R4)",
   "frozen_on": "2026-09-25",
-  "authority": "controller R4 brief 2026-09-25 (amends plan-s2 section 8.3 R4) and controller rebind ruling 2026-09-25 (v2: labeled cap-tercile size-bucket fallback; deflated Sharpe reported, not gating); rulings RX1 (labeled bases) and RX7 (frozen before real data: no real-data result existed under v1)",
+  "authority": "controller R4 brief 2026-09-25 (amends plan-s2 section 8.3 R4); rulings RX1 (labeled bases) and RX7 (frozen before real data)",
   "split": {
     "split_version": "r4-split-v1",
     "segments": [
@@ -31,8 +30,7 @@
     "series": "ls_ew10",
     "n_trials": "whole_family",
     "min_z": 0.0,
-    "gating": false,
-    "meaning": "reported and flagged (dsr_pass = dsr_z > 0, i.e. SR beats E[max SR | whole family] at horizon_periods = h), never gating: HLZ / BH+|z|>=2, holdout, subperiods and the size-bucket sign rule handle multiplicity"
+    "meaning": "gate: deflated excess Sharpe SR - E[max SR | n_trials, cross-trial variance] > 0, i.e. dsr_z > 0 (DSR probability > 0.5), with horizon_periods = h"
   },
   "coverage": {
     "min_value_coverage": 0.6,
@@ -50,11 +48,8 @@
   "size_buckets": {
     "slice_kind": "size_bucket",
     "venue_basis": "nyse_pit",
-    "fallback_slice_kind": "size_tercile",
-    "fallback_venue_basis": "cap_terciles",
     "buckets": ["small", "large"],
-    "min_formations": 36,
-    "meaning": "point-in-time NYSE 20/50 breakpoints where both buckets have >= min_formations formations, else the verified-cap tercile slices R3b emits; the rule gates either way and the ledger row records which (size_venue_basis)"
+    "min_formations": 36
   },
   "strict_evidence": {
     "basis": "strict",
@@ -77,5 +72,5 @@
     "insufficient_coverage",
     "untestable_strict"
   ],
-  "policy_sha256": "d517b6c8372ae8ee18d09418be5f400d6b797f1015098c37f0aab1b2813093c2"
+  "policy_sha256": "d33ac7044a5b67d656f37a4f9c0ef61afacc403b4e4ff65ae6eec595452f4f22"
 }
