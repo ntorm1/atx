@@ -15,6 +15,7 @@
 
 #include "atx/engine/risk/factor_model.hpp"      // FactorModel (exposures / n_instruments)
 #include "atx/engine/risk/garleanu_pedersen.hpp" // gp_aim_and_value (GP closed form, S8.7)
+#include "atx/engine/risk/mpc_stack.hpp"         // solve_mpc_stack (Lane 6 true stacked MPC)
 #include "atx/engine/risk/optimizer.hpp" // OptimizerConfig, PortfolioOptimizer (minimal dispatch)
 
 namespace atx::engine::risk {
@@ -51,6 +52,26 @@ MultiHorizonOptimizer::run(const RebalanceSchedule &sched,
     return co::Err(co::ErrorCode::InvalidArgument,
                    "MultiHorizonOptimizer::run: capacity_gross must be nonnegative, not NaN");
   }
+  if (cfg.true_mpc) {
+    if (cfg.stacked_mpc) {
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "MultiHorizonOptimizer::run: true_mpc and stacked_mpc are exclusive");
+    }
+    if (cfg.trade_rate != 1.0) {
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "MultiHorizonOptimizer::run: true_mpc requires trade_rate=1 (the MPC's "
+                     "trade cost already sets the partial move)");
+    }
+    if (cost.kappa > 0.0) {
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "MultiHorizonOptimizer::run: true_mpc prices trades through "
+                     "mpc_impact_diag; cost.kappa must be 0");
+    }
+    if (cfg.horizon == 0U || cfg.horizon > kMpcMaxHorizon) {
+      return co::Err(co::ErrorCode::OutOfRange,
+                     "MultiHorizonOptimizer::run: true_mpc needs horizon in [1, 3]");
+    }
+  }
   // stacked_mpc selects a geometric blend of the horizon forecasts, followed by
   // the same single-period constrained solve. It is not a joint multi-period QP.
   // The default uses the horizon-average GP aim; the schedule walk is shared.
@@ -81,8 +102,9 @@ MultiHorizonOptimizer::run(const RebalanceSchedule &sched,
     //   * stacked_mpc == true (benched): the geometric horizon-blend stand-in (NOT a true
     //     joint O(N·H) QP — that is the recorded lift, sprint-1 §0.6).
     ATX_TRY(std::vector<atx::f64> target,
-            cfg.stacked_mpc ? solve_stacked_mpc(traj, V, w_prev, cost)
-                            : solve_toward_aim(aim, V, w_prev, cost));
+            cfg.true_mpc      ? solve_true_mpc(traj, V, w_prev, cost)
+            : cfg.stacked_mpc ? solve_stacked_mpc(traj, V, w_prev, cost)
+                              : solve_toward_aim(aim, V, w_prev, cost));
 
     // (4) first-move execution — GP partial step + accounting (S7 walk, verbatim).
     std::vector<atx::f64> book = blend_toward(w_prev, target, cfg.trade_rate);
@@ -253,6 +275,48 @@ MultiHorizonOptimizer::solve_stacked_mpc(const HorizonForecast &traj, const Fact
   // Drive the SAME dispatch toward the stacked return-space aim — identical constraint
   // surface, first-move execution, and threading as the shipped aim-collapse path.
   return solve_toward_aim(alpha_stacked, V, w_prev, cost);
+}
+
+// solve_true_mpc (Lane 6) — the TRUE joint multi-period QP: α_h = trajectory row h−1
+// (NaN ⇒ no opinion ⇒ 0), γ = 2λ, Λ = diag(mpc_impact_diag), constraints materialized
+// against w_prev exactly as the augmented dispatch does (capacity-clipped gross). Returns
+// the first move w_1. run() has already validated the mode's scalar requirements.
+atx::core::Result<std::vector<atx::f64>>
+MultiHorizonOptimizer::solve_true_mpc(const HorizonForecast &traj, const FactorModel &V,
+                                      std::span<const atx::f64> w_prev,
+                                      const book::CostInputs &cost) const {
+  const atx::usize m = V.n_instruments();
+  if (!w_prev.empty() && w_prev.size() != m) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "MultiHorizonOptimizer: previous book length must match the model");
+  }
+  if (traj.alpha.size() < cfg.horizon) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "MultiHorizonOptimizer: trajectory shorter than the MPC horizon");
+  }
+  ConstraintSet effective = cfg.constraints;
+  if (cfg.capacity_bound_gross) {
+    effective.gross.gross_leverage =
+        std::min(effective.gross.gross_leverage, cost.capacity_gross);
+  }
+  ATX_TRY(MaterializedConstraints C, effective.materialize(V.exposures(), w_prev, m));
+  std::vector<std::vector<atx::f64>> alpha(cfg.horizon, std::vector<atx::f64>(m, 0.0));
+  for (atx::usize h = 0; h < cfg.horizon; ++h) {
+    for (atx::usize i = 0; i < m; ++i) {
+      const atx::f64 a = traj.alpha[h][i];
+      alpha[h][i] = std::isnan(a) ? 0.0 : a; // no opinion ⇒ 0 (mirrors q = −ᾱ, NaN ⇒ 0)
+    }
+  }
+  const ConstrainedQpSolver solver{cfg.qp};
+  const MpcStackProblem p{V,
+                          2.0 * cfg.risk_aversion,
+                          std::span<const atx::f64>(cfg.mpc_impact_diag),
+                          std::span<const std::vector<atx::f64>>(alpha),
+                          w_prev,
+                          C,
+                          cfg.mpc_discount};
+  ATX_TRY(MpcStackResult r, solve_mpc_stack(solver, p, &cfg.mpc_schedule));
+  return atx::core::Ok(std::move(r.path.front()));
 }
 
 // blend_toward / l1_diff — REPLICATED VERBATIM from multi_period.hpp. The byte-identity

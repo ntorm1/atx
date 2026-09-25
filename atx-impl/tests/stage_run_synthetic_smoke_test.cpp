@@ -33,6 +33,7 @@
 #include "config.hpp"
 #include "serialize_panel.hpp"
 #include "stages.hpp"
+#include "w0o1_report_kv.hpp"
 
 #include "atx/engine/alpha/panel.hpp"
 
@@ -264,7 +265,9 @@ TEST_F(StageRunSyntheticSmoke, SyntheticSmoke_OnFlagsProducesFiniteScorecard) {
     for (const auto &[k, v] : res->opt.kvs) {
         if (k == "book_turnover_per_day") {
             saw_turnover_kv = true;
-            EXPECT_TRUE(std::isfinite(std::stod(v))) << "book_turnover_per_day must be finite: " << v;
+            const auto x = atx_test_w0_o1_report_kv::parse_numeric_kv(v);
+            ASSERT_TRUE(x.has_value()) << "book_turnover_per_day must be a number: " << v;
+            EXPECT_TRUE(std::isfinite(*x)) << "book_turnover_per_day must be finite: " << v;
         }
     }
     EXPECT_TRUE(saw_turnover_kv) << "book_turnover_per_day kv missing from the optimize stage";
@@ -273,10 +276,25 @@ TEST_F(StageRunSyntheticSmoke, SyntheticSmoke_OnFlagsProducesFiniteScorecard) {
     // proper: portfolio_sharpe, the capacity-footprint fields, total_pnl_borrow
     // (S5-4), ...) must be finite -- this synthetic (never a real V1) run's
     // honest scorecard.
+    //
+    // W0-O1 fix ("invalid stod argument"): the report also carries two IDENTITY kvs
+    // (research_artifact_id / books_artifact_id), which are "unknown" for this
+    // unidentified legacy panel. The old loop fed them to std::stod, which threw and
+    // aborted the test. The audit checks identity kvs as ids and every other kv as a
+    // fully-parsed finite number, and reports malformed values instead of throwing
+    // (regression: w0o1_stage_run_smoke_malformed_test.cpp).
     ASSERT_FALSE(res->rep.kvs.empty());
+    const atx_test_w0_o1_report_kv::KvAudit audit =
+        atx_test_w0_o1_report_kv::audit_report_kvs(res->rep.kvs);
+    EXPECT_EQ(audit.failures, std::vector<std::string>{});
+    EXPECT_EQ(audit.identity_checked, atx_test_w0_o1_report_kv::kReportIdentityKeys.size())
+        << "both report identity kvs must be present and well-formed";
+    EXPECT_EQ(audit.numeric_checked + audit.identity_checked, res->rep.kvs.size());
+    EXPECT_GE(audit.numeric_checked, 12U) << "the scorecard's numeric kvs must all be checked";
     for (const auto &[k, v] : res->rep.kvs) {
-        const f64 parsed = std::stod(v);
-        EXPECT_TRUE(std::isfinite(parsed)) << "report kv '" << k << "' is not finite: " << v;
+        if (atx_test_w0_o1_report_kv::is_identity_key(k)) {
+            EXPECT_EQ(v, "unknown") << k << ": the smoke panel is an unidentified legacy panel";
+        }
     }
 
     // Sanity: the borrow lever is genuinely non-zero-financed (S5-4 actually
@@ -287,8 +305,10 @@ TEST_F(StageRunSyntheticSmoke, SyntheticSmoke_OnFlagsProducesFiniteScorecard) {
     for (const auto &[k, v] : res->rep.kvs) {
         if (k == "total_pnl_borrow") {
             saw_borrow_kv = true;
-            EXPECT_GT(std::stod(v), 0.0) << "a positive borrow_bps with a real short leg must "
-                                            "produce a genuinely non-zero total_pnl_borrow debit";
+            const auto x = atx_test_w0_o1_report_kv::parse_numeric_kv(v);
+            ASSERT_TRUE(x.has_value()) << "total_pnl_borrow must be a number: " << v;
+            EXPECT_GT(*x, 0.0) << "a positive borrow_bps with a real short leg must "
+                                  "produce a genuinely non-zero total_pnl_borrow debit";
         }
     }
     EXPECT_TRUE(saw_borrow_kv) << "total_pnl_borrow kv missing from the report stage";
