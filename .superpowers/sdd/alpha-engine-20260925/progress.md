@@ -1,213 +1,171 @@
-# Alpha-engine DAG continuation — 2026-09-25
+# Alpha-engine DAG continuation - 2026-09-25
 
-## Resume point
+## Objective and boundaries
 
-User requested completion of the 2026-09-24 DAG series with sub-agent-driven development,
-implementation before tests, and real engine and tradeable alpha work. The active goal remains
-open. Authoritative scope: docs/plans/2026-09-24-alpha-engine-production-swarm.md and findings.
-The companion goal prompt supplies the pre-registered defaults and data discipline. The current
-request authorizes continuation; do not repeat the old W0 permission stop. The owner-controlled
-2020+ unseal remains closed.
+Complete the 2026-09-24 DAG series with sub-agent development, implementation before tests,
+and real engine/alpha improvements. The goal remains ACTIVE and unlimited; do not create
+another goal or claim series completion. W0's original ten lanes and FIXUP were merged at
+bc5cc646b46f6a7c23a60e87d28dfa9b972671ec, but its integrated gates and G0 are still open.
+W1-W5 implementation has not started.
 
-## Worktrees and ownership
+The current user request authorizes continuation beyond the old W0 stop. Owner-controlled
+2020+ data remains sealed. Only 2013-2019 development data may be evaluated. Do not write,
+build, switch, stash, commit, or run migrations in C:/atx, which belongs to tier1-parity.
+The sole permitted coordination write there is the token-owned data/.heavy-run.lock.
+No pushes, raw worktree creation, warehouse writes, or killing others' processes.
 
-- C:\atx is the dirty feat/tier1-parity checkout: read-only for this work.
-- Prior integration: C:\atx-wt\pool-1, feat/w0-integration @ bc5cc646. Its heartbeat is alive;
-  leave that lease and worktree untouched.
-- Current integration: C:\atx-wt\pool-2, feat/aes-codex-integration-20260925,
-  frozen base bc5cc646b46f6a7c23a60e87d28dfa9b972671ec.
-- Lease run aes-codex-integ-20260925, heartbeat aes-codex-integ-20260925T2130.
-  Lease auto-configure fails on the deleted optional modules, after publishing a valid lease.
-  Build through the wrapper with equity-dev/equity-rel/equity-bench, never bare dev.
-- No pushes. No writes/migrations to warehouse.duckdb. No reads dated >= 2020-01-01.
-- Existing graph MCP tools are unavailable in this session: targeted rg/source reads are the fallback.
-- Four agent slots total; root orchestrates and three agents handle bounded tasks. Serialize
-  compilation and heavy real-data runs as required by RAM (about 4 GB free at resume).
+Authoritative scope: docs/plans/2026-09-24-alpha-engine-production-swarm.md, its review-findings
+companion, and the swarm-goal-prompt. Read CLAUDE.md, .agents/cpp/agent.md and harness contracts.
+No graph MCP is available, so targeted rg is the discovery fallback. The deleted atx-vol
+ledger is continued in atx-engine/docs/LEDGER.md. Only root appends ledger facts.
 
-## Recovered state
+## Ownership
 
-All ten W0 lanes and FIXUP are merged in bc5cc646. Their reports/reviews live in
-.superpowers/sdd/w0/. The integrated gate, quiet-host performance gate and G0 remain pending.
-Main still points to 2e0d738f. Do not advance it until gate evidence is complete.
-The old progress file lists provisional P1-P11: these are not owner waivers or acceptance proof.
+- Root: pool-2, feat/aes-codex-integration-20260925; lease aes-codex-integ-20260925,
+  heartbeat aes-codex-integ-20260925T2130. Frozen original base bc5cc646.
+- g0_evidence: pool-3, feat/w0-g0-codex-20260925; lease aes-w0-g0-codex-20260925.
+- w0_replay_integration: pool-4, feat/w0-replay-integration-codex-20260925;
+  lease aes-w0-replay-codex-20260925. Now also owns scoped ASan and summary disclosure fixes.
+- w0_gate_audit: pool-5, feat/w0-membership-integration-codex-20260925;
+  lease aes-w0-membership-codex-20260925. Also leases pool-6 for the benchmark baseline:
+  feat/w0-bench-baseline-codex-20260925, run aes-w0-bench-baseline-codex-20260925,
+  keeper23348, base3ccf012c40ef42c49ed21aaec96476455e06e049.
+- Prior pool-1 feat/w0-integration at bc5cc646 has a live old heartbeat; leave it untouched.
+- Main remains 2e0d738f. Local fast-forward is authorized only after actual wave gates.
 
-## Active work
+All commands need explicit workdir/path. Lease acquisition can fail in automatic dev
+configuration AFTER publishing a valid lease; inspect the record, then use equity presets.
+Reuse existing pools, -MaxPool11; do not create more. Four agent slots including root.
 
-| Task | Agent | State |
-|---|---|---|
-| G0 old-vs-new reruns | g0_evidence | Own leased pool; first Release build slot, then serial heavy slot granted. Fresh outputs C:\atx-wt\g0-data. |
-| Independent W0 gate audit | w0_gate_audit | Read-only audit of acceptance, commands, and data-safe test selection. |
-| Replay integration correction | w0_replay_integration | Own pool-4. Confirmed replay_config silently pins Abort; implementing corrected TerminalReturn default plus explicit legacy selector. Waiting for build slot. |
-| Integration/docs | root | I-24 guard-run headline corrected from source artifact; no alpha profitability claim. |
+## Live jobs (latest checkpoint)
 
-### Follow-up assignments
+Root session56041 runs .superpowers/sdd/w0/run-integrated-gate.ps1. Configure passed with
+isolated pool-2/deps/equity-dev, PCH ON and groups alpha/factory/learn/data/eval/combine/risk/book.
+The 394-step build was at102/394 at last inspection. It then automatically runs nine whole
+test executables sequentially, with data exclusions and cleared opt-ins. Source compiled is
+b185d056440704e7ebcfe2b9395601d7e5264269; later root commits change documentation only.
+Do not modify root production sources during the build. Logs/hashes are under
+build-equity/w0-integrated-gate/ (configure.log, build.log, results.txt, per-target logs).
 
-- g0_evidence: pool-3 feat/w0-g0-codex-20260925, Release build ongoing. Frozen input
-  manifest preflight confirms all 13 context date axes end before 2020. Do not rebuild solely
-  to relocate deps if successful binaries are valid; isolate before any later rebuild.
-- w0_replay_integration: pool-4, implementing/configuring corrected first-missing terminal
-  fallback and explicit ex-post legacy mode. As-of terminal-event handling required.
-  Granted isolated Debug configure/build with env CMAKE_BUILD_PARALLEL_LEVEL=1 if free RAM >4GB.
-- w0_gate_audit: finished independent audit, now implements D-12 in pool-5 on
-  feat/w0-membership-integration-codex-20260925. Narrow VM CS eligibility mask preserves
-  temporal history; post-masking alone is insufficient. Builds held pending slot.
-- root: implemented E0a public versioned inference/return-treatment config and declared
-  horizon-aware t-statistics, tests added after implementation. See
-  .superpowers/sdd/w0/lane-inference-integration-report.md. Root configure in progress,
-  compilation waits replay build slot. Every repair still needs fresh adversarial review.
+Root's first launch correctly stopped before configuration at2.39GiB free. A membership
+hygiene check accidentally expanded through a test-object worker dependency to182 actions;
+direct Ninja ignored CMAKE_BUILD_PARALLEL_LEVEL and spawned many workers. Its owner stopped
+ONLY the verified pool-5/build-hygiene Ninja824 process tree. No other pool was killed.
+Memory recovered to7.8GiB and regular root/G0/ASan one-worker builds resumed.
 
-### Later progress
+Use CMAKE_BUILD_PARALLEL_LEVEL=1 for build (Jobs controls ctest). Wrapper check invokes Ninja
+directly, so use one production TU per check and inspect dependency closure; never test
+objects that pull worker/link dependencies. New builds require >4GiB free and <=3 total
+compiler workers. Existing jobs may continue above2GiB. No quiet performance claims while
+other builds, tests, or G0 runs are active.
 
-- Root inference code committed 9caf9e85, then fresh review found undersampled HH
-  cancellation and unequal-weight HAC normalization issues. Fixes implemented, post-fix TU
-  check passed; combine/eval target build running (session33388). Root deps verified isolated.
-- Membership branch code af40186d/report39347e28, fresh static review by g0_evidence found
-  no blockers. Runtime approval pending. Pool5 may configure/build after G0 frozen Release
-  finishes, with one worker, freeRAM>4GB and <=3 total compiler workers.
-- Replay config + future-evidence fix expanded to avoid artificial short gains from unknown
-  price holes. Unknown-price haircut is adverse to each position, source5
-  AssumedMissingPriceAdverse, with assumed PnL/counts and unusable-for-alpha-evidence flag.
-  This explicitly deviates from the literal old B0 negative-return-on-every-missing-short
-  clause, whose economic flaw the independent reviewer found. Do not mark that literal
-  item met or imply an owner waiver. True due+available events retain table/Shumway returns.
-- G0 build reached263/266 with no errors. L7/L10/L9 can use archived bc5cc646 binaries,
-  since current repairs do not affect those paths. Baseline2013 needs replay fix rerun.
-  cp21 MUST wait for reviewed membership merge before the 13 expensive cells; no redundant
-  pre-mask run. Pin original26 families in the diagnostic branch only; never merge the pin.
+## Repairs merged and reviewed
 
-## Acceptance gaps to resolve
+- Inference52b8c6ea: public versioned inference/raw-return config and declared label horizon.
+  V3 overlapping labels use HH Uniform max(h-1, rule-of-thumb lag), matching existing eval;
+  NW1994 plug-in is Bartlett-specific. Weighted V3 uses the exact sandwich variance; full-lag
+  cancellation guarded. V1/V2 remain reproducible. Callers still must declare horizon;
+  irregular finite-row compaction is an approximation. Focused26/26, independent6/6,
+  scoped PCH-off production3TUs pass. Fixed2000-stream MA20 null:6.30% versus obsolete7.05%,
+  unchanged3%-7% bounds and seed, zero old fallbacks, mean old lag30.98 versus HH20.
+- Replay47e5ef8e (production8ba15b0e, fixture4f257729) merged33c9f194. Correct default and
+  explicit Abort reach baseline/book consumers. No future last-print or unpublished-event
+  evidence enters default prefix NAV. Whole book128/128, focused impl32/32, PCH-off6TUs pass;
+  independent review APPROVE. Unevidenced shorts now receive adverse stress losses, not
+  fabricated gains. Assumptions are distinct from actual terminal events and invalidate
+  alpha evidence. This deliberately corrects the literal old all-sides-negative B0 clause;
+  do not claim that literal clause passed or that the owner waived it.
+- Membership productionaf40186d/report39347e28, reviews9e6b9f27 mergedf390f6d2. VM owns a
+  validated CS eligibility mask across all16 CS opcodes, fused/date-parallel included;
+  raw time-series history is preserved. Masked panels bypass the old subtree cache.
+  Family masks cover warmup and evaluation. Focused27/27 (96.01s), whole alpha706/706
+  (33.190s), independent physical reduced-universe oracle1/1 (14ms) pass. G0 reviewer APPROVE.
+  Two production-only hygiene checks remain; their dependency closure is exactly2 compiles.
+  Reports d988f7b8 and benchmark preparation224be5f7 are docs-only and not yet imported.
 
-- Replay consumer forces Abort despite B0 engine TerminalReturn default. G0 baseline cannot
-  satisfy B-04 until the adapter is corrected and actual run completes.
-- E0a combiner public V1 configuration is absent; horizon-blind NW rejects 13.3% under MA(20).
-  Correct the real API/wiring rather than marking a documented limitation as completed work.
-- E0a published HAC interval passes 94.5% coverage. The bootstrap interval is a distinct
-  estimator; retain both evidence and definitions without conflating them.
-- R0 sanitizer acceptance was replaced by checked iterators; neither is equivalent evidence.
-- Quiet-host benchmarks, complete touched-target gate, G0 metrics and all W1-W5 work pending.
-- Fresh audit found B0 last_print scanning future closes; current missing-close NAV changes
-  when future prices change. Replay agent owns repair and future mutation proof.
-- D-12 only admission was masked; family cross-sectional operators saw year-union names.
-  Membership agent owns repair inside the VM, keeping rolling warmup data separate.
-- A-18 search-driver/fitness cache remains hash-only (W2-A4 production follow-through).
-- R-06 stage_riskmodel still uses static groups/no PIT cap (W3-R4 production follow-through).
-- Full gate must explicitly exclude DataRealPanel and corporate-action real-data smoke tests
-  using 2024/2026 inputs, even with environment variables cleared. No sanitizer proof yet.
-- For performance, compare identical equity-bench runs at O1 head 3ccf012c and current head
-  on quiet host; checked-in alpha_throughput.json is a busy-host legacy sample. No false
-  pass via bench-gate -Update/-AllowMissing. Filters: BM_Kernel, Wq101_, BM_Search,
-  BM_OptimizerProduction M=1000/3000/5000 modes 4/6/7; repetitions=3.
+## Active ASan and reporting follow-up (pool-4)
 
-## Evidence recorded this continuation
+The concrete R04 out-of-bounds defect triggers cpp instruction section8's explicit reversal
+of its earlier sanitizer decline. Native LLVM18 ASan is installed. Debug CRT /MDd fails;
+scoped equity-asan uses Release CRT /MD, /Od, NDEBUG, PCH OFF, static libs, isolated deps.
+The dedicated target instruments actual factor_model.cpp and the existing sector fixture.
+Root's independent static review has no blocker so far; actual runtime proof remains pending.
 
-- Source gate_report.json family_blend.validation: sharpe_net=-1.218738142997244,
-  p_one_sided=0.9503335211679915; family_blend.holdout.sharpe_net=1.729687486711181;
-  holdout.prior_reads=3. Corrected QUANT_PLATFORM_SWARM_STATUS.md (I-24).
-- No engine or economics acceptance claimed yet by this continuation.
+Files: CMakePresets.json, atx-engine/tests/CMakeLists.txt, sector-columns fixture,
+and scripts/test-risk-sector-asan.ps1. Build preset defaults to the scoped target. Runtime
+components and symbolizer are discovered and validated. Exact old beta[2] read must emit
+ASan heap-buffer-overflow in a positive detection control; corrected five-test suite must pass.
+No UBSan or whole-engine instrumentation claim. Support/vcpkg dependencies are uninstrumented.
+Mixed STL annotations initially failed linking; target-private string/vector annotation
+suppression is allowed, with explicit exclusion of logical size-within-capacity checks.
+Raw allocation bounds remain instrumented and must be proven by the negative-control read.
+A getenv warning was fixed with getenv_s, without weakening /WX.
 
-### G0 measured results so far (agent receipts; no final G0 gate yet)
+G0 found an additional real presentation defect: nested replay summary flags assumptions,
+but top-level baseline summary copied performance without eligibility fields. Replay owner
+is authorized to propagate eligibility, reasons, counts and PnL into BOTH baseline/book
+summaries, implement first then extend focused tests. Keep this production commit separate
+from ASan wiring so G0 can import it for a tiny Release rebuild and seconds-long rerun.
+Restore pool-4 equity-dev PCH ON before its regular impl target build; use sequential checks.
+Root will review the new summary patch; no metric/math changes are intended.
 
-- Frozen baseline2013 @bc5cc646: exit1, 2.031s, peak0.146GiB, missing-price abort at
-  period6 / 2013-04-12 / security150340. Corrected replay rerun still required.
-- L7 @bc5cc646: exit0, 61.625s, peak0.105GiB. Of151 fields, only path separator
-  metadata and three tiny numeric changes (~1e-9/1e-10); headline verdict unchanged.
-- L10 @bc5cc646: exit0, harness1/1, 302.079s, peak1.201GiB. NO CANDIDATE remains:
-  no non-reference expression with positive nonoverlap t>2 in either universe.
-  qual_gpa t1000 IC .01652 -> .0166986 and t1.670 ->1.76392; t3000 IC .02324 ->
-  .0226574 and t1.816 ->1.65685. Full pooled deltas1098 cells,758 changed.
-- L9 is running under the shared heavy lock. Data dated2020+ remains unread.
-- G0 harness/progress/static-membership review commit1e048eac in pool3. Later import
-  reviewed replay+D12 repairs before corrected baseline; then archive unpinned binary and
-  pin cp21's original26 families only in its diagnostic branch. No tuning.
+## G0 evidence (all pre-2020, no tuning)
 
-## Next sequence
+Immutable original binaries at C:/atx-wt/g0-data/bc5cc646_20260925/bin/unpinned, with hashes.
+Corrected unpinned source8ee78be46c0cfc01d0c892e77fd4a2671ce942f7 includes D12+replay.
+L7/L9/L10 do not use the later repair paths; no duplicate rerun solely for those changes.
 
-### Current live jobs and repair status
+- Frozen2013 baseline: exit1,2.031s,peak0.146GiB, abort security150340 at period6/2013-04-12.
+- Corrected2013 baseline: exit0,2.266s,peak0.146GiB; Abort control exit1 at same point,1.766s.
+  INELIGIBLE as alpha evidence:32 assumed liquidations,0 evidenced, stress PnL-$1,957,929.80;
+  7 flagged shorts lost$154,981.83. Diagnostic SR1.333373/return5.91% are not alpha evidence.
+  Nested report has flags; top-level propagation fix above must be retested/rerun.
+- L7: exit0,61.625s,peak0.105GiB;151 fields differ only in path separators and3 tiny numeric
+  values (~1e-9/1e-10), unchanged headline verdict.
+- L10: exit0,302.079s,peak1.201GiB, NO CANDIDATE. No positive non-reference nonoverlap t>2.
+  qual_gpa t1000 IC .01652->.0166986,t1.670->1.76392; t3000 IC .02324->.0226574,
+  t1.816->1.65685. Full1098-cell comparison has758 changes.
+- L9: exit0,987.109s,peak1.007GiB,zero admitted. Candidates2243->2504,scored2065->2306,
+  families52->56,n_eff5.714->6.7503. Validation netSR-1.218738->-.535778,
+  p.950334->.770325, still BY/RW1. New digestcdf326b6f5d6e3a8.
+- I24 old report correction is committed: old saved validation netSR was-1.218738142997244,
+  p.9503335211679915, not the previously claimed positive figure; reused2019 netSR1.7296874867
+  with3 prior reads. Source SHA256cd8ac431e797d902fd93a558184a26d919f809336c95b6f906b1ed7e27b15824.
 
-Latest checkpoint (supersedes pending statuses below): root has no active shell job.
-NEWER: root integratedrunner is ACTIVE session56041; source stamp b185d056440704e7ebcfe2b9395601d7e5264269.
-Configurepassed (8groups, isolatedequity-dev,PCHon), targetbuild394steps, mostrecent37/394,
-oneworker. It will automatically run9testexes sequentially after build; outputtails pertarget.
-Logs build-equity/w0-integrated-gate/{configure,build,results}.log (results is .txt), eachtestexe.log,
-source/exehashes. Do not change production sources while this build runs.
+G0 is finishing the7-step diagnostic26-family rebuild, then13 serial cp21 cells (~12min
+historically) and frozen Python scorecard (perhaps15min). Pin is NEVER committed: archive
+unpinned source/exe, apply local pin, archive pin patch/exe, restore both source files, then
+run immutable diagnostic binary. Final report/harness commit must contain no pin sources.
+Heavy lock is atomic token/PID-owned and removed only by its matching owner. Publish final
+hash-bound manifest last. G0 will release its compiler slot to the audit agent after pin build.
 
-Memberagent discovered directNinja testobject check dragged182orderdependencies and spawned
-manyworkers; stoppedONLYverifiedpool5/build-hygiene Ninja824 descendanttree. FreeRAMrecovered
-7.8GiB; onlyG0workerremained. Root+ASan eachgranted1worker, so regular3workerbudgetrestored.
-Membershipreportd988f7b8b9bedad24103f62dc9f63d8e7d5a860e is docs-only, notyetimported; production
-codealreadyinroot. Functional27/27+706/706 andG0independent1/1approved; two production-only
-PCHoffcheckcommands remainhelduntilslotfree. Agentverifiedexact2compilerdependencyclosure,
-no testobject/workerfanout. Newbenchmarkbaseline pool6 ownedbyauditagent:
-feat/w0-bench-baseline-codex-20260925 base3ccf012c40ef42c49ed21aaec96476455e06e049,
-run aes-w0-bench-baseline-codex-20260925,keeper23348; configuredisolatedequity-benchsuccessfully,
-Release/benchON/allgroups. NO BUILD YET. VerifiedCPUtopologyi7-1260P Pcoreslogical0-7,
-affinity0xFF forlaterquietmeasurements. Plan66cases,reps3; old/newmustsamecasekeys.
+## Benchmark preparation (audit agent)
 
-ASanagentpool4 coldtarget52/65, oneworker. Exactly2instrumentedcompilecommands actualfactor_model.cpp
-+existingsectorfixture, /MD /Od /DNDEBUG /fsanitize=address /WX/PCHoff. Rootfreshstaticreviewno
-blocker; runtimepositivecontrol and5testfixtures pending. AgentwillrestrictbuildPresetdefaulttarget
-aftercompile, commitcode, thenre-runfinalsmallgate oncommittedSHA. SourcechangeslimitedCMakePresets,
-engine/tests/CMakeLists,sectorfixtureandnew scripts/test-risk-sector-asan.ps1. OrdinaryDebug
-assertions retained; ASanbranchaddsexactoldOOBnegativecontrolonly. NoUBSanclaim.
+Pool-6 baseline at O1 configured equity-bench successfully: Release, equity-only, bench ON,
+groups all, isolated deps/equity-bench. No baseline build or measurements yet. Current may
+freeze b185d056 production, provided later ASan edits change no engine/benchmark behavior;
+top-level reporting follow-up changes must be disclosed and inspected for benchmark relevance.
+Build bench+worker serially. Complete66-case filter:
+^BM_Kernel|^Wq101_|^BM_Search|^BM_OptimizerProduction/M:(1000|3000|5000)/mode:(4|6|7)/
+Verify actual registration names, same keys, repetitions3, no AllowMissing or Update bypass.
+Windows CPU-set API verified i7-1260P P-core logical0-7, affinity0xFF; topology archived.
+Measure only after G0 and root tests/builds are quiet. Gate threshold20% stays fixed.
 
-G0correctedRelease191/210 atlastreceipt; keepsworkerthroughdiagnostic26-familyrebuildthen
-notifiesaudit/replayofreeslot. Correctedbaseline+Abortseconds,13cp21cells~12minuteshistorically,
-frozenPythonscorecardmaybe15minutes. PinwillNEVERbecommitted: archiveunpinned@8ee78be4,
-applylocalpin, build/archiveexe+patch, restore2sourcefilesimmediately, runimmutablepinbinary.
-FinalG0report/harnesscommitcontainsNOdiagnosticsource. Remainingallpost-2019dataUNREAD.
+## Remaining wave gate and next sequence
 
-Root nowf390f6d2 mergesD12code+reviews9e6b. D12focused27/27 andwholealpha706/706passed;
-G0independent16CSopcodephysical-universe test1/1 passed14ms, reviewerAPPROVE. Rootintegrated
-runnerattemptexitedbeforeconfigure/build atfree2.39GiB; source treeclean. Rootmustretryafter
-free>4GiB andworkerbudgetallows. Member4TUhygiene plusG0compile exposed wrappercheck directNinja
-fanout (envCMAKE_BUILD_PARALLEL_LEVEL doesnotcapcheck). Allagentsnotified:no newcompileuntil
-checksfinish; subsequentcheck oneTUpercall sequential. Fiveclangworkersobserved,nonekilled.
-ReplayagentpreparingASanCMake changes; memberbenchmarkfollowup authorizedafterfinalreport,
-baselineprepacquisition/config permitted but no compile/measurement whilememorylimited.
+Finish the active combined correctness run, scoped ASan, membership hygiene, top-level
+summary repair, G0 comparison/hash manifest and fair quiet performance gate. Merge only
+reviewed code and report commits (never diagnostic pin). Qualify newly changed target
+closures after these follow-ups. Current data gate excludes actual external2024/2026
+fixtures even when env vars are cleared; DataUniverse doc-only test stays included.
 
-Inference52b8c6ea passed26/26 focused tests and independent6/6 rerun; corrected MA20
-rejection126/2000=6.3%, obsoletekernel-bandwidth141/2000=7.05%,zero fallback,averageoldlag30.98
-versusHH20. Scoped hygiene3TUs passed with isolateddeps/PCHoff. Replay fully reviewed and
-merged33c9f194; report/gate runner inrootc225b2cf, ledgerc239974c, runner optins fix a43775de.
-Root .superpowers/sdd/w0/run-integrated-gate.ps1 is ready; after D12 merge, run it through
-PowerShell to build all8groups+impl+worker and sequential testexes with audited data filters.
-Clear extra ATX_PNL_CSV/ATX_MIN_PRICE/ATX_MIN_ADV/ATX_ADV_WINDOW too. DataUniverse doc-only
-test is safe and INCLUDED; hardcoded arithmeticfixtures do not open externalmarketdata.
+Acceptance limits stay explicit: E0a HAC interval coverage94.5% passes; bootstrap92.5%
+is a distinct estimator. E0b MonteCarloMaxV2 gate FPR5.45% is calibrated; conservative
+ClusterMcFloorV2 default <=1.41% is a different rule. D0 VWAP is an adjusted typical-price
+proxy, not dollar turnover. No quiet benchmark or profitable-alpha claim yet.
 
-Membershippool5 build passed;27focusedchecks thenwholealpha currently running. Final independent
-inference/replay reviews and full66-case benchmarkplan are committed9e6b9f275c1edab1bc517367444e430fa26b950e
-on memberbranch (import with finalD12merge, no separatecherry-pick). G0agent will independently
-spotcheck D12masktests/logs once ready. G0 frozenL9 completed987.109s,peak1.007GiB,zero admitted:
-2243->2504candidates,2065->2306scored,52->56families,n_eff5.714->6.7503,
-validationnetSR-1.218738->-.535778,p.950334->.770325;stillBY/RW1. CorrectedReleasebuild
-pool3@8ee78be4 continues; no correctedrealrun untilD12runtimepass.
-
-Replayagent now owns a bounded W0-O1 gate extension: native equity-asan preset and minimal
-instrumented actual factor_model.cpp+existingsector-columns test target. LLVM18ASan installed;
-DebugCRT/MDd rejected, ReleaseCRT/MD /Od supported. Instrumentedownedcode/uninstrumenteddeps
-disclosed. This implements cpp§8's explicit reversal condition for concreteR04OOB; no owner
-waiver requested/assumed. Agent authorized minimumCMakePresets and guardedCMake wiring.
-Root must fresh-review diff+runtimepositivecontrol. <=3compileworkers/freeRAM>4GB applies.
-
-- Root pool2 session60207: inference bandwidth rebuild plus focused26 tests. Earlier
-  sync build passed, first test run25/26: MA20 rejection141/2000=7.05% above unchanged7%
-  ceiling. Fixed actual kernel mismatch by matching existing cross_section_ic HH
-  max(h-1, rule-of-thumb) rule, with paired obsolete-rule diagnostics; result pending.
-- Replay production8ba15b0efeaff53587cc0ac36493cd159247b126 passed wholebook128/128,
-  focusedimpl32/32. Test-fixture correction4f257729d2949f082c818f53b42c2c7aca3b9cf9
-  expands holding-window fixture to4days. Independent reviewer verified logs; PCH-off
-  check/report pending. Replay agent will then scope native ASan risk acceptance gate.
-- D12 report39347e28 build near completion inpool5; focusedimpl/wholealpha pending.
-- G0 pool3 merged D12+replay provisionally at8ee78be46c0cfc01d0c892e77fd4a2671ce942f7,
-  isolated Release rebuild underway, worker1. Corrected baseline authorized after D12
-  runtime gate; replay gate passed. Frozen L9 still runs from archivedbc5 binary.
-- Final wholeimpl belongs only to integrated root correctness gate (not duplicated across
-  repair lanes). Data exclusions and environment clearing remain mandatory.
-- Benchmark follow-up assigned to audit agent after current tasks: oldO1 3ccf012c vs
-  final integrated equity-bench, identical filtered repetitions3, quiet host. Not started.
-
-Finish G0/build audit and integration repairs; run focused post-implementation validation,
-fresh adversarial review, and the W0 integrated gates. Record honest old/new metrics and
-benchmark evidence. Then scaffold W1, begin D1/D5 data foundations with new modules avoiding
-tier1-parity ownership, and schedule A1/E1/R1/B1 followed by the remaining DAG dependencies.
-Keep this file current before handoff/context compaction.
+Then freeze W0 gate SHA, fast-forward local main only, and scaffold W1. Start D1 PIT identity
+and D5 data foundations on the critical path, with new atx-db modules avoiding tier1-parity
+ownership. Follow DAG through W4 and W5 development evidence; owner-only2020+ unseal stays
+closed. A18 production hash-only caches belong to W2-A4, R06 production PIT exposures to
+W3-R4; these are not already closed. Keep this checkpoint current before compaction.
