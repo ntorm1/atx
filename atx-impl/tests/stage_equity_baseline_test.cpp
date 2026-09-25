@@ -159,6 +159,10 @@ TEST_F(StageEquityBaseline, FixedUnfitBlendReplaysOnlyEvaluationAndBindsAncestry
     const auto report = json_file(directory / "report/summary.json");
     EXPECT_EQ(report["effective_rebalances"], 2);
     EXPECT_EQ(report["actual_trade_count"], 4);
+    EXPECT_EQ(summary["usable_for_alpha_evidence"], false);
+    EXPECT_EQ(summary["performance_evidence_eligibility"], "unverified-research-diagnostic");
+    EXPECT_EQ(summary["assumed_liquidation_count"], 0);
+    EXPECT_EQ(summary["assumed_liquidation_pnl_dollars"], 0);
     const auto ledger = contents(directory / "report/ledger.csv");
     // The first complete interval is all cash under the default one-observation delay.
     EXPECT_NE(ledger.find(",1000,1000,0,1000,0,0,0,0,0,0,0\n"), std::string::npos);
@@ -241,6 +245,40 @@ TEST_F(StageEquityBaseline, CorrectedDefaultCompletesOriginalWindowAndConstraine
     EXPECT_EQ(book_summary["flagged_delistings"], 1);
     EXPECT_EQ(json_file(root / "book_causal/report/manifest.json")
         ["recipe"]["replay_delisting_policy"], "terminal-return");
+    for (const auto &directory : {root / "baseline", root / "book_causal"}) {
+        const auto outer = json_file(directory / "summary.json");
+        const auto nested = json_file(directory / "report/summary.json");
+        EXPECT_EQ(outer["replay"], nested["full"]);
+        for (const char *key : {"usable_for_alpha_evidence", "performance_evidence_eligibility",
+                 "terminal_liquidation_count", "evidenced_delisting_count", "flagged_delistings",
+                 "flagged_short_delistings", "flagged_short_pnl_dollars",
+                 "assumed_liquidation_count",
+                 "assumed_liquidation_pnl_dollars", "gap_carry_count"}) {
+            EXPECT_EQ(outer.at(key), nested.at(key)) << directory << " " << key;
+        }
+        EXPECT_EQ(outer["usable_for_alpha_evidence"], false);
+        EXPECT_EQ(outer["assumed_liquidation_count"], 1);
+        EXPECT_EQ(outer["evidenced_delisting_count"], 0);
+        EXPECT_LT(outer["assumed_liquidation_pnl_dollars"].get<double>(), 0);
+        EXPECT_EQ(outer["qualification"], "failed");
+        EXPECT_EQ(outer["performance_evidence_eligibility"],
+                  "ineligible-assumed-missing-price-liquidation");
+        const auto &reasons = outer.at("qualification_reasons");
+        EXPECT_NE(std::find(reasons.begin(), reasons.end(),
+            "ineligible-assumed-missing-price-liquidation"), reasons.end());
+        const auto manifest = json_file(directory / "manifest.json");
+        EXPECT_EQ(manifest["qualification"], "failed");
+        const auto sha = atx::core::sha256_file((directory / "summary.json").string());
+        ASSERT_TRUE(sha);
+        bool bound = false;
+        for (const auto &file : manifest.at("files")) {
+            if (file.at("filename") == "summary.json") {
+                bound = true;
+                EXPECT_EQ(file.at("sha256"), *sha);
+            }
+        }
+        EXPECT_TRUE(bound) << directory;
+    }
 }
 
 TEST_F(StageEquityBaseline, RejectsUnsupportedModesSealedDatesCoverageAndMemoryFloor) {

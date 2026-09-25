@@ -578,10 +578,44 @@ Result<StageResult> execute(const RunConfig &cfg, const fs::path &directory, Jso
     ATX_TRY(auto actual_id, atx::core::sha256_hex("atx-replay-report-v1\n" + report_manifest.dump()));
     if (actual_id != report_id || report_manifest.at("status") != "complete")
         return Err(ErrorCode::ParseError, "equity book: report identity mismatch");
+    ATX_TRY(auto summary_text, read_small(directory / "report/summary.json"));
+    ATX_TRY(auto summary_sha, atx::core::sha256_hex(summary_text));
+    bool summary_bound = false;
+    for (const auto &file : report_manifest.at("files")) {
+        if (file.at("filename") == "summary.json" && file.at("sha256") == summary_sha)
+            summary_bound = true;
+    }
+    if (!summary_bound)
+        return Err(ErrorCode::ParseError, "equity book: replay summary is not bound");
+    const Json replay_summary = parse(summary_text);
+    const bool assumed_liquidations =
+        replay_summary.at("assumed_liquidation_count").get<atx::usize>() != 0;
+    const char *qualification = assumed_liquidations ? "failed" : "unknown";
+    Json summary{{"schema", "atx-equity-book-summary-v1"},
+        {"purpose", "training-only-software-and-book-diagnostic"},
+        {"replay", replay_summary.at("full")},
+        {"trade_liquidity", replay_summary.at("trade_liquidity")},
+        {"strategy_capacity", "unavailable"}, {"qualification", qualification},
+        {"qualification_reasons", Json::array({
+            "source-economics-and-publication-vintages-unverified",
+            "instrument-types-and-locates-unknown", "no-heldout-selection-evidence"})}};
+    for (const char *key : {"usable_for_alpha_evidence", "performance_evidence_eligibility",
+             "terminal_liquidation_count", "evidenced_delisting_count", "flagged_delistings",
+             "flagged_short_delistings", "flagged_short_pnl_dollars", "assumed_liquidation_count",
+             "assumed_liquidation_pnl_dollars", "gap_carry_count"}) {
+        summary[key] = replay_summary.at(key);
+    }
+    if (assumed_liquidations) {
+        summary["qualification_reasons"].push_back(
+            replay_summary.at("performance_evidence_eligibility"));
+    }
+    ATX_TRY(auto summary_file, publish(directory, "summary.json", summary));
     ATX_TRY(auto report_sha, atx::core::sha256_hex(report_text));
-    Json manifest{{"schema", "atx-equity-book-v1"}, {"status", "complete"}, {"qualification", "unknown"},
+    Json manifest{{"schema", "atx-equity-book-v1"}, {"status", "complete"},
+        {"qualification", qualification},
         {"recipe", recipe}, {"parents", parents}, {"report_id", report_id},
-        {"files", Json::array({request_file, certificate_file, Json{{"filename", "report/manifest.json"},
+        {"files", Json::array({request_file, certificate_file, summary_file,
+            Json{{"filename", "report/manifest.json"},
             {"sha256", report_sha}, {"size_bytes", std::to_string(report_text.size())}}})}};
     ATX_TRY(auto book_id, atx::core::sha256_hex("atx-equity-book-v1\n" + manifest.dump()));
     manifest["book_id"] = book_id;
@@ -593,7 +627,7 @@ Result<StageResult> execute(const RunConfig &cfg, const fs::path &directory, Jso
     }));
     reported->digest = fnv1a64(book_id.data(), book_id.size());
     reported->kvs.emplace_back("book_id", book_id);
-    reported->kvs.emplace_back("qualification", "unknown");
+    reported->kvs.emplace_back("qualification", qualification);
     return Ok(std::move(*reported));
 }
 } // namespace
