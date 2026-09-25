@@ -11,8 +11,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from .connection import DuckDBStore
-from .custom_features import calendar_hac_statistics
 from .fundamental_signal_research import validate_fundamental_signal_panel
+from .research.labels import label_revision_order_sql, label_status_sql
+from .research.stats import calendar_hac_statistics
+from .research.stats import holm as holm_family
 
 HORIZONS = (5, 21, 63)
 SPLITS = ("train", "validation", "holdout")
@@ -50,18 +52,9 @@ def _digest_rows(con: Any, sql: str, params: list[Any]) -> tuple[int, str]:
     return count, digest.hexdigest()
 
 
-def holm_family(p_values: dict[str, float | None]) -> dict[str, float | None]:
-    """Holm step-down over every frozen hypothesis, including untestable p=1."""
-    ordered = sorted(p_values, key=lambda key: (1 if p_values[key] is None else p_values[key], key))
-    result: dict[str, float | None] = {}
-    running = 0.0
-    for index, key in enumerate(ordered):
-        p = p_values[key]
-        if p is not None and (not math.isfinite(p) or not 0 <= p <= 1):
-            raise ValueError("p-values must be finite and within [0,1]")
-        running = max(running, (len(ordered) - index) * (1.0 if p is None else p))
-        result[key] = None if p is None else min(1.0, running)
-    return result
+# ``holm_family`` (Holm over every frozen hypothesis, untestable kept as p=1) and
+# ``calendar_hac_statistics`` live in ``research.stats`` and are re-exported here by
+# the imports above; the label-validity CASE is ``research.labels.label_status_sql``.
 
 
 @dataclass(frozen=True)
@@ -170,12 +163,13 @@ def _join_labels(con: Any, source: str, entry: dt.date, horizon: int,
                  cutoff: dt.datetime, end: dt.date | None) -> None:
     # Revisions are selected before economic validity. A newer invalid row
     # suppresses older valid rows; is_latest_revision is deliberately ignored.
-    con.execute("""
+    # label_status_sql binds (calculation_version, end, entry, end, cutoff).
+    con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _fq2_join AS
         WITH revisions AS (
           SELECT l.*,row_number() OVER (
             PARTITION BY l.security_id,l.as_of_date,l.horizon_days
-            ORDER BY l.available_at DESC,l.source_loaded_at DESC,l.forward_return_id DESC
+            ORDER BY {label_revision_order_sql("l")}
           ) AS revision
           FROM forward_returns_survivorship_safe l JOIN _fq2_rank r
             ON r.security_id=l.security_id
@@ -188,38 +182,7 @@ def _join_labels(con: Any, source: str, entry: dt.date, horizon: int,
                l.terminal_return_source,l.return_observation_id,
                l.is_delisted_in_horizon,l.is_stitched,l.available_at,
                l.source_loaded_at,
-               CASE WHEN l.forward_return_id IS NULL THEN 'missing'
-                    WHEN l.price_basis<>'adjusted_close' OR l.price_basis IS NULL
-                      OR l.calculation_version<>? OR l.calculation_version IS NULL
-                      THEN 'unsupported_basis'
-                    WHEN l.forward_return IS NULL OR NOT isfinite(l.forward_return)
-                      OR l.forward_return < -1 OR l.forward_end_date IS DISTINCT FROM ?
-                      OR (l.is_delisted_in_horizon AND
-                          (NOT l.is_stitched OR l.terminal_return IS NULL
-                           OR NOT isfinite(l.terminal_return) OR l.terminal_return < -1
-                           OR l.raw_forward_return IS NULL OR NOT isfinite(l.raw_forward_return)
-                           OR l.raw_forward_return < -1 OR l.delist_date IS NULL
-                           OR l.delist_date <= ? OR l.delist_date > ?
-                           OR l.terminal_return_source NOT IN ('observed','policy')
-                           OR l.terminal_return_source IS NULL
-                           OR (l.terminal_return_source='observed'
-                               AND l.return_observation_id IS NULL)
-                           OR (l.terminal_return_source='policy'
-                               AND l.return_observation_id IS NOT NULL)
-                           OR abs(l.forward_return -
-                             ((1+l.raw_forward_return)*(1+l.terminal_return)-1))
-                              > 1e-10*greatest(1.0,abs(l.forward_return))))
-                      OR (NOT l.is_delisted_in_horizon AND
-                          (l.is_stitched OR l.terminal_return IS NOT NULL
-                           OR l.delist_date IS NOT NULL OR l.terminal_return_source IS NOT NULL
-                           OR l.return_observation_id IS NOT NULL
-                           OR l.raw_forward_return IS NULL OR NOT isfinite(l.raw_forward_return)
-                           OR l.raw_forward_return < -1
-                           OR abs(l.forward_return-l.raw_forward_return)
-                              > 1e-10*greatest(1.0,abs(l.forward_return))))
-                      OR greatest(l.available_at,l.forward_end_date::TIMESTAMP+INTERVAL 1 DAY+INTERVAL 12 HOUR)>?
-                      THEN 'invalid'
-                    ELSE 'valid' END AS label_status
+               {label_status_sql(label="l")} AS label_status
         FROM _fq2_rank r LEFT JOIN selected l USING(security_id)
     """, [source, entry, horizon, cutoff, LABEL_VERSION, end, entry, end, cutoff])
 

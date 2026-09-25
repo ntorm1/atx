@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .connection import DuckDBStore
+from .research.stats import calendar_hac_statistics, holm
 
 FEATURE_VERSION = "cf1_v1"
 FEATURE_SOURCE = "atx_custom_price_liquidity_v1"
@@ -253,54 +254,13 @@ def refresh_custom_features(store: DuckDBStore, options: CustomFeatureOptions) -
             con.execute(f"DROP TABLE IF EXISTS {table}")
 
 
-def calendar_hac_statistics(values: list[tuple[int, float]], horizon: int) -> dict[str, Any]:
-    """Bartlett HAC for a mean, with actual session differences and no gap compression.
-
-    Missing observations have zero estimating-equation contribution. Autocovariance
-    sums use observed pairs at each exact calendar lag and denominator n**2 for the
-    variance of the observed mean. Normal approximation; no significance on fewer
-    than max(30,2*horizon) dates, a zero variance, or a degenerate constant series.
-    """
-    data = {int(session): float(value) for session, value in values if math.isfinite(value)}
-    n = len(data)
-    lags = max(horizon-1, 0)
-    result: dict[str, Any] = {"spread_dates": n, "gross_mean": None, "hac_lags": lags,
-                              "hac_standard_error": None, "z_statistic": None,
-                              "p_value": None, "ci95_low": None, "ci95_high": None}
-    if not n:
-        return result
-    mean = math.fsum(data.values()) / n
-    result["gross_mean"] = mean
-    if n < max(30, 2*horizon):
-        return result
-    centered = {session: value-mean for session, value in data.items()}
-    variance_sum = math.fsum(value*value for value in centered.values())
-    if variance_sum <= 1e-24:
-        return result
-    for lag in range(1, lags+1):
-        cross = math.fsum(value*centered.get(session-lag, 0.0) for session, value in centered.items())
-        variance_sum += 2*(1-lag/(lags+1))*cross
-    if variance_sum <= 0:
-        return result
-    standard_error = math.sqrt(variance_sum)/n
-    z_statistic = mean/standard_error
-    result.update(hac_standard_error=standard_error, z_statistic=z_statistic,
-                  p_value=math.erfc(abs(z_statistic)/math.sqrt(2)),
-                  ci95_low=mean-1.959963984540054*standard_error,
-                  ci95_high=mean+1.959963984540054*standard_error)
-    return result
-
-
 def holm_eight(p_values: dict[str, float | None]) -> dict[str, float | None]:
-    """Eight predeclared primary hypotheses; missing tests remain in the family."""
-    ordered = sorted(((p_values.get(feature), feature) for feature in FEATURE_DEFINITIONS),
-                     key=lambda item: (1.0 if item[0] is None else item[0], item[1]))
-    adjusted: dict[str, float | None] = {}
-    running = 0.0
-    for rank, (p_value, feature) in enumerate(ordered):
-        running = max(running, (8-rank)*(1.0 if p_value is None else p_value))
-        adjusted[feature] = None if p_value is None else min(1.0, running)
-    return adjusted
+    """Eight predeclared primary hypotheses; missing tests remain in the family.
+
+    Delegates to ``research.stats.holm`` over exactly ``FEATURE_DEFINITIONS``;
+    ``calendar_hac_statistics`` is re-exported from ``research.stats`` unchanged.
+    """
+    return holm({feature: p_values.get(feature) for feature in FEATURE_DEFINITIONS})
 
 
 def evaluate_custom_features(store: DuckDBStore, options: CustomEvaluationOptions) -> dict[str, Any]:

@@ -805,3 +805,34 @@ def test_signal_eval_tables_are_catalogued(tmp_store) -> None:
     field_counts_by_table = dict(field_counts)
     for table in tables:
         assert field_counts_by_table.get(table, 0) >= 1, f"{table} has no field_catalog rows"
+
+
+@pytest.mark.parametrize(
+    ("dates", "horizon", "expected_lags"),
+    [
+        # Daily IC of 21-session labels overlaps its next 20 formations (old rule: 1 lag).
+        (list(pd.bdate_range("2021-01-04", periods=150).date), 21, 20),
+        # Month-end formations: 63 sessions = 3 months -> max(2, floor(4 (40/100)^(2/9))=3).
+        (list(pd.date_range("2020-01-31", periods=40, freq="BME").date), 63, 3),
+        # Weekly formations: 63 sessions span 13 weeks -> 12 lags (old rule: 3).
+        (_dates(40), 63, 12),
+    ],
+)
+def test_ic_hac_lags_cover_label_overlap_in_formation_units(dates, horizon, expected_lags) -> None:
+    rng = np.random.default_rng(3)
+    panel_rows, fr_rows = [], []
+    for d in dates:
+        for s in range(12):
+            value = rng.normal()
+            panel_rows.append({"security_id": f"S{s}", "as_of_date": d, "factor_id": "f", "value": value})
+            fr_rows.append({"security_id": f"S{s}", "as_of_date": d, "horizon": horizon,
+                            "forward_return": 0.3 * value + rng.normal()})
+    result = compute_information_coefficient(pd.DataFrame(panel_rows), pd.DataFrame(fr_rows), horizons=(horizon,))
+    row = result.ic.iloc[0]
+    assert row["hac_lags"] == expected_lags
+    ordered = result.per_date.sort_values("as_of_date")["rank_ic"].to_numpy()
+    demeaned = ordered - ordered.mean()
+    n = len(ordered)
+    long_run = demeaned @ demeaned / n + 2 * sum(
+        (1 - k / (expected_lags + 1)) * (demeaned[k:] @ demeaned[:-k]) / n for k in range(1, expected_lags + 1))
+    assert row["hac_standard_error"] == pytest.approx(np.sqrt(long_run / n), rel=1e-12)

@@ -21,8 +21,14 @@ _FORMATION_BATCH_ROWS = 100_000
 _SHADOW_BATCH_ROWS = 100_000
 _CHECKPOINT_ROWS = 400_000
 # This identifies the bounded SQL calculation below, including its selected bar
-# basis, terminal stitching, and observed trading-calendar endpoint rule.
+# basis, terminal stitching, and observed trading-calendar endpoint rule. The
+# formation filter only selects WHICH anchor rows are computed; every published
+# row is the identical per-row calculation, so the version is shared.
 CALCULATION_VERSION = "forward_return_publication_v1"
+# every_session: every positive selected bar is an anchor (the daily panel).
+# month_end_next_session: only the first observed session after the last observed
+# session of each closed calendar month (entry after a month-end decision).
+FORMATION_RULES = ("every_session", "month_end_next_session")
 
 
 def _count(store: DuckDBStore, table: str) -> int:
@@ -170,8 +176,13 @@ def refresh_forward_return_publication(
     horizons: Sequence[int],
     calendar_id: str,
     calendar_source: str,
+    formation: str = "every_session",
 ) -> int:
     """Build every horizon and publish one source, retaining other sources.
+
+    ``formation`` filters the anchor (``as_of_date``) rows only; see ``FORMATION_RULES``.
+    Endpoints, terminal stitching and exclusions still use the full bar/calendar
+    snapshot, so a filtered row equals the every-session row on the same anchor.
 
     Connection lifetime is bounded only for persistent callers with recorded
     analytical settings. In-memory and unconfigured callers retain their entire
@@ -179,6 +190,10 @@ def refresh_forward_return_publication(
     """
     if price_basis not in {"adjusted_close", "close"}:
         raise ValueError("price_basis must be adjusted_close or close")
+    if formation not in FORMATION_RULES:
+        raise ValueError(f"formation must be one of {FORMATION_RULES}")
+    if not horizons or any(int(h) != h or h < 1 for h in horizons) or len(set(horizons)) != len(horizons):
+        raise ValueError("horizons must be distinct positive session counts")
     build = _Build(store)
     try:
         stamp = store.con.execute("SELECT current_timestamp::TIMESTAMP").fetchone()
@@ -202,13 +217,18 @@ def refresh_forward_return_publication(
                 name=build.name("terminal_prices"), terminals=terminals, bars=bars,
             ),
         )
+        formations = bars if formation == "every_session" else build.create(
+            "formations", _MONTH_END_FORMATIONS_SQL.format(
+                name=build.name("formations"), bars=bars, calendar=calendar,
+            ),
+        )
         stage = build.create("stage", f"CREATE TABLE {build.name('stage')} AS SELECT * FROM {_LIVE} WHERE FALSE")
-        bars_count = _count(store, bars)
+        formations_count = _count(store, formations)
         rows = 0
-        for lower in range(1, bars_count + 1, _FORMATION_BATCH_ROWS):
+        for lower in range(1, formations_count + 1, _FORMATION_BATCH_ROWS):
             upper = lower + _FORMATION_BATCH_ROWS - 1
             scope = store.con.execute(f"""
-                SELECT min(security_id), max(security_id) FROM {bars}
+                SELECT min(security_id), max(security_id) FROM {formations}
                 WHERE formation_number BETWEEN ? AND ?
             """, [lower, upper]).fetchone()
             assert scope is not None
@@ -216,6 +236,7 @@ def refresh_forward_return_publication(
                 inserted = store.con.execute(
                     _RESULT_SQL.format(
                         stage=stage, insert_columns=insert_columns, bars=bars,
+                        formations=formations,
                         calendar=calendar, terminal_prices=terminal_prices,
                         metadata_select=", ?" * len(metadata),
                     ),
@@ -230,7 +251,7 @@ def refresh_forward_return_publication(
             raise RuntimeError("forward-return stage count differs from committed result batches")
         # Release all input snapshots before sorting the expanded panel. This CTAS
         # has no ART index and uses DuckDB's external sort/spill implementation.
-        for table in (terminal_prices, terminals, calendar, bars):
+        for table in dict.fromkeys((formations, terminal_prices, terminals, calendar, bars)):
             build.drop(table)
         ordered = build.create("ordered", f"""
             CREATE TABLE {build.name('ordered')} AS
@@ -292,6 +313,25 @@ CREATE TABLE {name} AS
                 )
 """
 
+# Anchor = first observed session whose predecessor lies in an earlier calendar
+# month, i.e. the entry session after the last observed session of a CLOSED month
+# (a month is closed once a later session exists). Same bars, same numbering rule.
+_MONTH_END_FORMATIONS_SQL = """
+CREATE TABLE {name} AS
+                WITH entries AS (
+                    SELECT entry.trade_date
+                    FROM {calendar} entry
+                    JOIN {calendar} decision
+                      ON decision.session_number = entry.session_number - 1
+                    WHERE date_trunc('month', decision.trade_date)
+                          <> date_trunc('month', entry.trade_date)
+                )
+                SELECT b.security_id, b.symbol, b.trade_date, b.price, b.price_available_at,
+                       row_number() OVER (ORDER BY b.security_id, b.trade_date) AS formation_number
+                FROM {bars} b JOIN entries e ON e.trade_date = b.trade_date
+                ORDER BY b.security_id, b.trade_date
+"""
+
 _TERMINALS_SQL = """
 CREATE TABLE {name} AS
                 WITH revisions AS (
@@ -342,7 +382,7 @@ WITH legs AS (
                                         THEN greatest(t.last_price_available_at,
                                                       t.terminal_available_at)
                                         ELSE e.price_available_at END) AS available_at
-                        FROM {bars} f
+                        FROM {formations} f
                         JOIN {calendar} anchor ON anchor.trade_date = f.trade_date
                         JOIN {calendar} ending
                           ON ending.session_number = anchor.session_number + ?

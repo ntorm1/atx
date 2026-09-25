@@ -26,6 +26,7 @@ import pandas as pd
 
 from .connection import DEFAULT_DB_PATH, connect  # noqa: F401  (re-exported per interfaces contract)
 from .quality import QualityResult, _registry_allows_check
+from .research import stats as research_stats
 from .warehouse import insert_frame, json_dumps, quality_check  # noqa: F401  (quality_check reused by later tasks)
 
 IC_HORIZONS: tuple[int, ...] = (1, 5, 10, 21, 63)
@@ -333,22 +334,25 @@ def _newey_west_mean_statistics(
     *,
     lags: int,
 ) -> tuple[int, float, float]:
-    """Bartlett-kernel HAC standard error and t-statistic of a sample mean."""
+    """Bartlett-kernel HAC standard error and t-statistic of a sample mean.
 
-    array = pd.to_numeric(values, errors="coerce").dropna().to_numpy(dtype=float)
-    n_obs = len(array)
-    if n_obs < 2:
-        return 0, float("nan"), float("nan")
-    used_lags = min(max(int(lags), 0), n_obs - 1)
-    demeaned = array - float(array.mean())
-    long_run_variance = float(np.dot(demeaned, demeaned) / n_obs)
-    for lag in range(1, used_lags + 1):
-        weight = 1.0 - lag / (used_lags + 1.0)
-        autocovariance = float(np.dot(demeaned[lag:], demeaned[:-lag]) / n_obs)
-        long_run_variance += 2.0 * weight * autocovariance
-    standard_error = math.sqrt(max(long_run_variance, 0.0) / n_obs)
-    tstat = float("nan") if standard_error == 0.0 else float(array.mean()) / standard_error
-    return used_lags, standard_error, tstat
+    Thin delegation to ``research.stats.newey_west_mean`` (same estimator).
+    """
+
+    return research_stats.newey_west_mean(values, lags=lags)
+
+
+def _ic_hac_lags(as_of_dates: pd.Series, horizon: int, n_dates: int) -> int:
+    """NW lags for an IC series in its own formation units (R3a rule).
+
+    The horizon is in sessions; the IC series is sampled at the panel's as-of dates
+    (daily, weekly or month-end). Overlap is measured from those dates, then
+    ``max(h-1, floor(4 (T/100)^(2/9)))`` applies. Replaces ``ceil(h/21)``, which was
+    only right for month-spaced panels (a daily 63-session IC got 3 lags, not 62).
+    """
+
+    units = research_stats.horizon_in_formation_units(as_of_dates, int(horizon))
+    return research_stats.newey_west_lags(units, n_dates)
 
 
 def _empty_ic_result() -> IcResult:
@@ -395,10 +399,10 @@ def _aggregate_ic(per_date: pd.DataFrame) -> pd.DataFrame:
             if not math.isnan(ic_information_ratio)
             else float("nan")
         )
-        requested_hac_lags = max(1, math.ceil(int(horizon) / 21))
+        ordered_ic = valid.sort_values("as_of_date", kind="stable")
         hac_lags, hac_standard_error, hac_tstat = _newey_west_mean_statistics(
-            valid.sort_values("as_of_date", kind="stable")["rank_ic"],
-            lags=requested_hac_lags,
+            ordered_ic["rank_ic"],
+            lags=_ic_hac_lags(ordered_ic["as_of_date"], int(horizon), n_dates),
         )
         sign_target = np.sign(mean_rank_ic)
         sign_consistency = float((np.sign(valid["rank_ic"]) == sign_target).mean())
