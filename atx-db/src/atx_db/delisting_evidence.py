@@ -28,12 +28,15 @@ explains *that* the security left, not *why*: both stay ``unknown``.
 
 Clocks. Every timestamp is sourced: SEC acceptance datetimes, Nasdaq publication times, or
 ``trade_date`` + 22 hours (the archive's own end-of-day convention); nothing reads a wall
-clock. An evidence row's ``available_at`` covers everything that row asserts. An event's
-``available_at`` is its *existence* clock -- the earliest moment the cessation qualified
-(the gap-establishing session, or a corroborating notice together with the first absent
-session). Reason evidence never delays existence: a reason first known later is a reason
-revision, recorded as ``details_json.reason_available_at`` / ``reason_at_existence`` (the
-single-row table carries the latest visible reason).
+clock. An evidence row's ``available_at`` covers everything that row asserts, and so does an
+event row. Its *existence* clock is the earliest moment the cessation qualified (the
+gap-establishing session, or a corroborating notice together with the first absent session),
+recorded as ``details_json.existence_available_at``; reason evidence never moves it. The row
+asserts the latest visible reason, so its ``available_at`` is the existence clock or -- when
+that reason became public later (a reason revision, e.g. a Form 15 filed days after the
+cessation) -- the reason's clock. A reason is never visible before it was public; the delay
+is bounded by the merger look-ahead (30 days) and the notice window (10 sessions).
+``reason_at_existence`` records what was known at the existence clock.
 """
 
 from __future__ import annotations
@@ -899,14 +902,17 @@ def fold_evidence_into_delisting_events(
     session. Uncorroborated notices never form events.
 
     * ``delist_date``: the first session after the last observed trade.
-    * ``available_at``: the existence clock -- the earliest qualifying member's clock
-      (gap-establishing session, or max(notice, first absent session)). Reason evidence and
-      additional notices never delay it.
+    * existence clock (``details_json.existence_available_at``): the earliest qualifying
+      member's clock (gap-establishing session, or max(notice, first absent session)); reason
+      evidence and additional notices never move it.
     * ``delist_reason``: the first of :data:`EVENT_REASON_PRECEDENCE` among visible members
-      and the cessation's visible merger evidence. When that reason became known only after
-      existence it is a reason *revision*: ``details_json.reason_available_at`` gives its
-      clock and ``reason_at_existence`` what was known at ``available_at`` (this single-row
-      table carries the latest visible reason; see the A3 report for the revision chain).
+      and the cessation's visible merger evidence.
+    * ``available_at``: max(existence clock, clock at which that reason became public). A
+      reason first public after existence is a *revision* (``reason_revised_after_existence``,
+      ``reason_at_existence``): this single-row table then becomes visible only once the
+      revised reason was public, so no consumer filtering on ``available_at`` sees a reason
+      -- and the terminal-policy decision it drives -- before it existed. A revision chain
+      would publish the pre-revision row from the existence clock (A3 report follow-up 7).
     * Primary row (``source_listing_status_id`` / ``delist_code`` / ``source_event_id``): the
       best-reason member with the best ``evidence_rank``.
 
@@ -1057,8 +1063,8 @@ def fold_evidence_into_delisting_events(
                 c.security_id,
                 coalesce(c.last_observed_symbol, p.symbol) AS symbol,
                 c.delist_date,
-                greatest(c.delist_date, CAST(c.existence_at AS DATE)) AS as_of_date,
-                c.existence_at AS available_at,
+                greatest(c.delist_date, CAST({reason_available_at} AS DATE)) AS as_of_date,
+                {reason_available_at} AS available_at,
                 p.delist_code,
                 {_reason_text_sql("c.reason_rank")} AS delist_reason,
                 CAST(NULL AS DOUBLE) AS delisting_return,

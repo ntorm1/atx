@@ -598,16 +598,53 @@ def test_observation_load_moves_dlstdt_to_the_next_observed_session(tmp_store, t
     )
 
 
-def test_vendor_and_archive_last_trade_disagreement_still_yields_one_terminal(tmp_store):
+def test_vendor_and_archive_last_trade_disagreement_is_keyed_to_the_event(tmp_store):
+    # Review probe P6: the vendor's last exchange price is two sessions before the archive's
+    # last bar. The observed return is that cessation: it lands on the event's own key, so the
+    # event is covered and no Shumway row sits beside it.
     from atx_db.delisting import refresh_delisting_terminal_returns
 
     _seed_observed_cessation(tmp_store)
-    # Vendor says the exchange price ended two sessions before the archive's last bar.
     tmp_store.con.execute(
         "INSERT INTO delisting_return_observations (delisting_return_observation_id, source, provider, "
         "security_id, symbol, delist_date, as_of_date, available_at, delisting_return, return_basis) VALUES "
         "('obs-2','crsp','CRSP','SEC-OBS','OBS',?,?,?,-0.8,'CRSP_DLRET')",
-        [OBS_SESSIONS[LAST - 1], OBS_SESSIONS[LAST - 1], dt.datetime.combine(OBS_SESSIONS[LAST + 5], dt.time(12))],
+        [OBS_SESSIONS[LAST - 1], OBS_SESSIONS[LAST - 2], dt.datetime.combine(OBS_SESSIONS[LAST + 5], dt.time(12))],
     )
-    assert refresh_delisting_terminal_returns(tmp_store) == 1  # no Shumway row beside the observed one
-    assert _terminals(tmp_store) == [(OBS_SESSIONS[LAST - 1], -0.8, "observed")]
+    assert refresh_delisting_terminal_returns(tmp_store) == 1
+    assert _terminals(tmp_store) == [(OBS_SESSIONS[LAST + 1], -0.8, "observed")]
+    uncovered = tmp_store.con.execute(
+        "SELECT count(*) FROM delisting_events e LEFT JOIN delisting_terminal_returns t "
+        "ON t.security_id = e.security_id AND t.delist_date = e.delist_date "
+        "WHERE e.security_id IS NOT NULL AND t.terminal_return_id IS NULL"
+    ).fetchone()[0]
+    assert uncovered == 0
+    # The vendor's own date stays on the observation the terminal links to.
+    assert (
+        tmp_store.con.execute(
+            "SELECT o.delist_date FROM delisting_terminal_returns t "
+            "JOIN delisting_return_observations o ON o.delisting_return_observation_id = t.return_observation_id"
+        ).fetchone()[0]
+        == OBS_SESSIONS[LAST - 1]
+    )
+
+
+def test_pre_archive_dlstdt_keeps_its_own_date(tmp_store, tmp_path):
+    # Review probe P5: a 1995 DLSTDT is outside the archive's session range and must never be
+    # stamped with the archive's first session.
+    from atx_db.delisting import DelistingReturnObservationOptions, load_delisting_return_observations
+
+    _seed_observed_cessation(tmp_store)
+    csv_path = tmp_path / "old.csv"
+    csv_path.write_text(
+        "symbol,dlstdt,dlret,available_at\nOLDCO,1995-06-30,-0.4,1995-08-01 00:00:00\n", encoding="utf-8"
+    )
+    assert (
+        load_delisting_return_observations(
+            tmp_store, DelistingReturnObservationOptions(source_file=csv_path, run_id="p5")
+        )
+        == 1
+    )
+    assert tmp_store.con.execute("SELECT delist_date FROM delisting_return_observations").fetchone()[0] == dt.date(
+        1995, 6, 30
+    )

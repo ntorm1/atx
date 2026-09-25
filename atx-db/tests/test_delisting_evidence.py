@@ -402,7 +402,7 @@ def test_delete_and_directory_ignore_superseded_revisions(tmp_store):
     ]
 
 
-def test_as_of_bounds_merger_reason_and_it_never_delays_existence(tmp_store):
+def test_as_of_bounds_merger_reason_which_is_visible_only_once_public(tmp_store):
     from atx_db.delisting_evidence import (
         DelistingEvidenceOptions,
         fold_evidence_into_delisting_events,
@@ -419,17 +419,20 @@ def test_as_of_bounds_merger_reason_and_it_never_delays_existence(tmp_store):
         "('SEC-GONE','0000000002','MERGER',DATE '2024-01-10','DEFM14A',TIMESTAMP '2024-01-17 17:00:00','file://t')"
     )
     existence = dt.datetime(2024, 1, 15, 22)
-    for day, expected in [(16, "unknown"), (17, "merger_acquisition")]:
+    for day, reason, available_at in [
+        (16, "unknown", existence),
+        # The revised (merger) row is never visible before the merger form was public.
+        (17, "merger_acquisition", dt.datetime(2024, 1, 17, 17)),
+    ]:
         options = DelistingEvidenceOptions(as_of_date=dt.date(2024, 1, day), include_archive_inference=False)
         refresh_delisting_evidence(tmp_store, options)
         assert fold_evidence_into_delisting_events(tmp_store, options) == 1
         row = tmp_store.con.execute(
             "SELECT delist_reason, available_at, json_extract_string(details_json, '$.reason_at_existence'), "
-            "CAST(json_extract_string(details_json, '$.reason_available_at') AS TIMESTAMP) FROM delisting_events"
+            "CAST(json_extract_string(details_json, '$.existence_available_at') AS TIMESTAMP) FROM delisting_events"
         ).fetchone()
-        # Existence never waits for the reason; the merger is a revision with its own clock.
-        assert row[0] == expected and row[1] == existence and row[2] == "unknown"
-        assert row[3] == (existence if day == 16 else dt.datetime(2024, 1, 17, 17))
+        # The existence clock itself never waits for the reason; it stays in details.
+        assert row == (reason, available_at, "unknown", existence)
 
 
 def test_as_of_bounds_bankruptcy_reason_and_carries_its_availability(tmp_store):
@@ -856,3 +859,55 @@ def test_nasdaq_delete_availability_is_the_receipt_clock_not_file_creation(tmp_s
     # Before receipt the file does not exist for the warehouse, whatever its footer says.
     before_receipt = DelistingEvidenceOptions(as_of_date=dt.date(2024, 1, 19), include_archive_inference=False)
     assert refresh_delisting_evidence(tmp_store, before_receipt) == 0
+
+
+# ---------------------------------------------------------------------------
+# A3 fix round 2: a revised reason is never visible before it was public (review N1, P4).
+# ---------------------------------------------------------------------------
+
+
+def test_reason_revised_after_existence_is_never_asserted_before_it_was_public(tmp_store):
+    # Review probe P4: a bare Form 25 at T-7d corroborates the cessation (existence T+1);
+    # the Form 15 filed T+5d revises unknown -> voluntary. The final vintage must not show
+    # "voluntary" -- nor withhold the Shumway row -- from T+1.
+    from atx_db.delisting import refresh_delisting_terminal_returns
+
+    security = "SEC-CIK-0000000060"
+    last = 100
+    _seed_priced_bars(tmp_store, "SEC-LIVE", "LIVE", LONG_SESSIONS[:200])
+    _seed_priced_bars(tmp_store, security, "VOL", LONG_SESSIONS[: last + 1])
+    _file(tmp_store, security, "0000000060", "F25", _plus_days(LONG_SESSIONS[last], -7), "25")
+    form15_filed = _plus_days(LONG_SESSIONS[last], 5)
+    _file(tmp_store, security, "0000000060", "F15", form15_filed, "15-12B")
+    existence = dt.datetime.fromisoformat(LONG_SESSIONS[last + 1]) + dt.timedelta(hours=22)
+    form15_clock = dt.datetime.fromisoformat(form15_filed) + dt.timedelta(hours=17)
+
+    assert _build(tmp_store) == 1
+    final = tmp_store.con.execute(
+        "SELECT delist_reason, available_at, as_of_date, "
+        "CAST(json_extract_string(details_json, '$.existence_available_at') AS TIMESTAMP), "
+        "json_extract_string(details_json, '$.reason_at_existence'), "
+        "json_extract(details_json, '$.reason_revised_after_existence')::BOOLEAN FROM delisting_events"
+    ).fetchone()
+    assert final == ("voluntary", form15_clock, form15_clock.date(), existence, "unknown", True)
+    assert refresh_delisting_terminal_returns(tmp_store) == 0  # RX2: voluntary, no Shumway
+    # Nothing asserting "voluntary" is visible before the Form 15 was public.
+    assert (
+        tmp_store.con.execute(
+            "SELECT count(*) FROM delisting_events WHERE delist_reason = 'voluntary' AND available_at < ?",
+            [form15_clock],
+        ).fetchone()[0]
+        == 0
+    )
+
+    # Point-in-time rebuild two sessions after the last trade: unknown, Shumway, from existence.
+    assert _build(tmp_store, as_of_date=dt.date.fromisoformat(LONG_SESSIONS[last + 2])) == 1
+    assert tmp_store.con.execute("SELECT delist_reason, available_at FROM delisting_events").fetchone() == (
+        "unknown",
+        existence,
+    )
+    assert refresh_delisting_terminal_returns(tmp_store) == 1
+    assert tmp_store.con.execute("SELECT terminal_return, available_at FROM delisting_terminal_returns").fetchone() == (
+        -0.30,
+        existence,
+    )

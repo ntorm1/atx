@@ -492,10 +492,12 @@ def _effective_observation_delist_dates(store: DuckDBStore, observations: pd.Dat
     (A3) dates a cessation at the first observed session AFTER the last observed trade, and the
     forward stitcher prices the pre-terminal leg strictly before ``delist_date`` -- so an
     observation left on DLSTDT would both miss its event and drop the final session's return.
-    Each DLSTDT maps to the next latest-revision bar session of the archive. With no later
-    observed session the native date is kept; :func:`compute_delisting_terminal_returns` still
-    re-keys such a row against an event's ``last_observed_trade_date``. The vendor's DLSTDT stays
-    in ``raw_payload_json``. Identifier resolution runs before this, on DLSTDT, when the id was live.
+    A DLSTDT inside the archive's observed session range maps to the next latest-revision bar
+    session. Outside that range the archive cannot place it -- a 1995 DLSTDT must never become
+    the archive's first session -- so the native date is kept, as it is when no later session
+    exists; :func:`compute_delisting_terminal_returns` still re-keys such a row against an
+    event's ``last_observed_trade_date``. The vendor's DLSTDT stays in ``raw_payload_json``.
+    Identifier resolution runs before this, on DLSTDT, when the id was live.
     """
 
     if observations.empty or "delist_date" not in observations.columns:
@@ -514,11 +516,14 @@ def _effective_observation_delist_dates(store: DuckDBStore, observations: pd.Dat
                 SELECT DISTINCT trade_date
                 FROM equity_daily_bars
                 WHERE is_latest_revision = true
-                  AND trade_date > (SELECT min(dlstdt) FROM {relation_name})
+            ),
+            bounds AS (
+                SELECT min(trade_date) AS first_date FROM sessions
             )
-            SELECT d.dlstdt, s.trade_date
+            SELECT d.dlstdt, CASE WHEN d.dlstdt >= b.first_date THEN s.trade_date END
             FROM {relation_name} d
             ASOF LEFT JOIN sessions s ON d.dlstdt < s.trade_date
+            CROSS JOIN bounds b
             """
         ).fetchall()
     finally:
@@ -1392,34 +1397,48 @@ def _same_type_date(value: object, like: pd.Series) -> object:
 
 
 def _align_observations_to_events(obs: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
-    """Re-key observations still on the vendor DLSTDT basis onto their event's delist_date.
+    """Re-key observed returns onto the delisting event they describe.
 
-    An observation of the same security (or, lacking a security_id, the same symbol) dated on
-    an event's ``last_observed_trade_date`` is that cessation seen on the CRSP basis: it takes
-    the event's ``delist_date`` (first session after the last trade), so the pair joins exactly
-    and the stitched leg ends at the last traded close. Loads normalize on the way in (see
-    :func:`_effective_observation_delist_dates`); this covers rows landed without it.
+    1. An observation of the same security (or, lacking a security_id, the same symbol) dated on
+       an event's ``last_observed_trade_date`` is that cessation seen on the CRSP DLSTDT basis:
+       it takes the event's ``delist_date`` (first session after the last trade), so the pair
+       joins exactly and the stitched leg ends at the last traded close. Loads normalize on the
+       way in (see :func:`_effective_observation_delist_dates`); this covers rows landed without it.
+    2. Otherwise an observation of a security with an event within
+       :data:`OBSERVED_TERMINAL_MATCH_DAYS` (vendor and archive disagree on the last trade) is
+       that same cessation: it takes the event's ``delist_date`` too, so the event's own key is
+       covered (no false "event without terminal") and labels up to the event are stitched.
+       Cessation-anchored public events are preferred, then the nearest date, then the earliest.
+    The vendor's date stays on the observation row (``return_observation_id`` links to it).
     """
 
-    needed = {"security_id", "delist_date", "last_observed_trade_date"}
-    if obs.empty or events is None or events.empty or not needed.issubset(events.columns):
+    if obs.empty or events is None or events.empty or not {"security_id", "delist_date"}.issubset(events.columns):
         return obs
-    anchors = events.dropna(subset=["delist_date", "last_observed_trade_date"])
-    if anchors.empty:
+    events = events.dropna(subset=["security_id", "delist_date"])
+    if events.empty:
         return obs
-    trade_keys = pd.to_datetime(anchors["last_observed_trade_date"], errors="coerce")
-    by_security = {
-        (security, key): delist
-        for security, key, delist in zip(anchors["security_id"], trade_keys, anchors["delist_date"], strict=True)
-        if pd.notna(security) and pd.notna(key)
-    }
+    event_keys = pd.to_datetime(events["delist_date"], errors="coerce")
+    has_trade = "last_observed_trade_date" in events.columns
+    trade_keys = (
+        pd.to_datetime(events["last_observed_trade_date"], errors="coerce")
+        if has_trade
+        else pd.Series(pd.NaT, index=events.index)
+    )
+    by_trade: dict[tuple[object, object], object] = {}
     by_symbol: dict[tuple[object, object], tuple[object, object]] = {}
-    if "symbol" in anchors.columns:
-        for symbol, key, security, delist in zip(
-            anchors["symbol"], trade_keys, anchors["security_id"], anchors["delist_date"], strict=True
-        ):
-            if pd.notna(symbol) and pd.notna(key) and pd.notna(security):
-                by_symbol.setdefault((symbol, key), (security, delist))
+    by_security: dict[object, list[tuple[bool, pd.Timestamp, object]]] = {}
+    symbols = events["symbol"] if "symbol" in events.columns else pd.Series(pd.NA, index=events.index)
+    for security, symbol, delist, delist_key, trade_key in zip(
+        events["security_id"], symbols, events["delist_date"], event_keys, trade_keys, strict=True
+    ):
+        if pd.isna(delist_key):
+            continue
+        by_security.setdefault(security, []).append((pd.notna(trade_key), delist_key, delist))
+        if pd.notna(trade_key):
+            by_trade.setdefault((security, trade_key), delist)
+            if pd.notna(symbol):
+                by_symbol.setdefault((symbol, trade_key), (security, delist))
+    tolerance = pd.Timedelta(days=OBSERVED_TERMINAL_MATCH_DAYS)
     out = obs.copy()
     obs_keys = pd.to_datetime(out["delist_date"], errors="coerce")
     has_symbol = "symbol" in out.columns
@@ -1428,12 +1447,22 @@ def _align_observations_to_events(obs: pd.DataFrame, events: pd.DataFrame) -> pd
             continue
         delist = None
         security = out.at[index, "security_id"]
-        if pd.notna(security):
-            delist = by_security.get((security, key))
-        elif has_symbol and pd.notna(out.at[index, "symbol"]):
+        if pd.isna(security) and has_symbol and pd.notna(out.at[index, "symbol"]):
             match = by_symbol.get((out.at[index, "symbol"], key))
             if match is not None:
-                out.at[index, "security_id"], delist = match
+                security, delist = match
+                out.at[index, "security_id"] = security
+        elif pd.notna(security):
+            delist = by_trade.get((security, key))
+            candidates = by_security.get(security, [])
+            if delist is None and not any(event_key == key for _public, event_key, _value in candidates):
+                near = [
+                    (not public, abs(event_key - key), event_key, value)
+                    for public, event_key, value in candidates
+                    if abs(event_key - key) <= tolerance
+                ]
+                if near:
+                    delist = min(near, key=lambda item: item[:3])[3]
         if delist is not None:
             out.at[index, "delist_date"] = _same_type_date(delist, out["delist_date"])
     return out
