@@ -1231,7 +1231,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-macro", action="store_true")
 
     parser.add_argument("--sec-request-timeout", type=int, default=120)
-    parser.add_argument("--sec-user-agent", default="atx-db public-source bootstrap nathan.tormaschy@gmail.com")
+    parser.add_argument("--sec-user-agent", default="atx-db/0.1 atx-research@example.com")
     parser.add_argument("--sec-concepts", default="")
     parser.add_argument("--sec-company-facts-symbol-source", choices=COMPANY_FACT_SYMBOL_SOURCES, default="symbols")
     parser.add_argument("--sec-company-facts-symbol-limit", type=int)
@@ -1247,10 +1247,10 @@ def parse_args() -> argparse.Namespace:
         help="Optional balanced cap per security before the overall --xbrl-context-max-filings cap.",
     )
     parser.add_argument("--xbrl-context-request-timeout", type=int, default=120)
-    parser.add_argument("--xbrl-context-user-agent", default="atx-db XBRL filing context bootstrap nathan.tormaschy@gmail.com")
+    parser.add_argument("--xbrl-context-user-agent", default="atx-db/0.1 atx-research@example.com")
     parser.add_argument("--xbrl-taxonomy-urls", default=",".join(DEFAULT_XBRL_TAXONOMY_PACKAGE_URLS))
     parser.add_argument("--xbrl-request-timeout", type=int, default=120)
-    parser.add_argument("--xbrl-user-agent", default="atx-db XBRL taxonomy bootstrap nathan.tormaschy@gmail.com")
+    parser.add_argument("--xbrl-user-agent", default="atx-db/0.1 atx-research@example.com")
     parser.add_argument("--fundamental-feature-set", default="sec_fundamentals_v1")
     parser.add_argument("--fundamental-feature-start-date", type=parse_date)
     parser.add_argument("--fundamental-feature-end-date", type=parse_date)
@@ -1259,7 +1259,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--listing-events-as-of-date", type=parse_date)
     parser.add_argument("--listing-events-url")
     parser.add_argument("--nasdaq-request-timeout", type=int, default=60)
-    parser.add_argument("--nasdaq-user-agent", default="atx-db symbol directory nathan.tormaschy@gmail.com")
+    parser.add_argument("--nasdaq-user-agent", default="atx-db/0.1 atx-research@example.com")
 
     parser.add_argument("--finra-mode", choices=("symbol", "dates"), default="symbol")
     parser.add_argument("--finra-symbol")
@@ -1286,7 +1286,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--full-13f-holdings", action="store_true")
     parser.add_argument("--sec-13f-chunk-size", type=int, default=200_000)
     parser.add_argument("--sec-13f-request-timeout", type=int, default=180)
-    parser.add_argument("--sec-13f-user-agent", default="atx-db 13F dataset loader nathan.tormaschy@gmail.com")
+    parser.add_argument("--sec-13f-user-agent", default="atx-db/0.1 atx-research@example.com")
     parser.add_argument("--sec-13f-ownership-feature-set", default="sec_13f_ownership_v1")
     parser.add_argument("--compute-source-hash", action="store_true")
 
@@ -1306,7 +1306,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--macro-start-date", type=parse_date)
     parser.add_argument("--macro-end-date", type=parse_date)
     parser.add_argument("--macro-request-timeout", type=int, default=60)
-    parser.add_argument("--macro-user-agent", default="atx-db macro loader nathan.tormaschy@gmail.com")
+    parser.add_argument("--macro-user-agent", default="atx-db/0.1 atx-research@example.com")
 
     parser.add_argument("--skip-lake-export", action="store_true")
     parser.add_argument("--lake-root", type=Path, default=DEFAULT_LAKE_ROOT)

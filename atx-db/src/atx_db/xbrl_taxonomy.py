@@ -42,7 +42,7 @@ FRAME_RE = re.compile(r"^CY(?P<year>\d{4})(?:Q(?P<quarter>[1-4]))?(?P<instant>I)
 class XbrlTaxonomyOptions:
     package_urls: tuple[str, ...] = DEFAULT_XBRL_TAXONOMY_PACKAGE_URLS
     request_timeout: int = 120
-    user_agent: str = "atx-db XBRL taxonomy loader nathan.tormaschy@gmail.com"
+    user_agent: str = "atx-db/0.1 atx-research@example.com"
     run_id: str | None = None
 
 

@@ -1102,7 +1102,7 @@ class NaicsTaxonomyDataset(Dataset):
 # SEC submission fetcher
 # ---------------------------------------------------------------------------
 
-_DEFAULT_USER_AGENT = "atx-db reference-classifications loader nathan.tormaschy@gmail.com"
+_DEFAULT_USER_AGENT = "atx-db/0.1 atx-research@example.com"
 _SEC_SUBMISSION_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 _MAX_REQUESTS_PER_SEC = 5
 

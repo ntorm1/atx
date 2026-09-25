@@ -23,7 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument("--package-urls", default=",".join(DEFAULT_XBRL_TAXONOMY_PACKAGE_URLS))
     parser.add_argument("--request-timeout", type=int, default=120)
-    parser.add_argument("--user-agent", default="atx-db XBRL taxonomy loader nathan.tormaschy@gmail.com")
+    parser.add_argument("--user-agent", default="atx-db/0.1 atx-research@example.com")
     return parser.parse_args()
 
 

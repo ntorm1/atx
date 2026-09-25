@@ -663,7 +663,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sec-company-facts-as-of-date", type=parse_date)
     parser.add_argument("--xbrl-taxonomy-urls", default=",".join(DEFAULT_XBRL_TAXONOMY_PACKAGE_URLS))
     parser.add_argument("--xbrl-request-timeout", type=int, default=120)
-    parser.add_argument("--xbrl-user-agent", default="atx-db XBRL taxonomy research bootstrap nathan.tormaschy@gmail.com")
+    parser.add_argument("--xbrl-user-agent", default="atx-db/0.1 atx-research@example.com")
     parser.add_argument("--include-sec-submissions", action="store_true")
     parser.add_argument("--sec-forms", default="10-K,10-Q,8-K")
     parser.add_argument("--include-xbrl-filing-contexts", action="store_true")
@@ -675,7 +675,7 @@ def parse_args() -> argparse.Namespace:
         help="Optional balanced cap per security before the overall --xbrl-context-max-filings cap.",
     )
     parser.add_argument("--xbrl-context-request-timeout", type=int, default=120)
-    parser.add_argument("--xbrl-context-user-agent", default="atx-db XBRL filing context research bootstrap nathan.tormaschy@gmail.com")
+    parser.add_argument("--xbrl-context-user-agent", default="atx-db/0.1 atx-research@example.com")
 
     parser.add_argument("--skip-lake-export", action="store_true")
     parser.add_argument("--lake-root", type=Path, default=DEFAULT_LAKE_ROOT)

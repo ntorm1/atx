@@ -61,7 +61,7 @@ class FredMacroOptions:
     start_date: dt.date | None = None
     end_date: dt.date | None = None
     request_timeout: int = 60
-    user_agent: str = "atx-db macro loader nathan.tormaschy@gmail.com"
+    user_agent: str = "atx-db/0.1 atx-research@example.com"
     run_id: str | None = None
 
 

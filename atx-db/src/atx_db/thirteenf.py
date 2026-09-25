@@ -18,7 +18,7 @@ from .warehouse import cik_security_id, insert_frame, record_source_file, securi
 SEC_13F_DATASETS_PAGE = "https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets"
 SEC_USER_AGENT = os.getenv(
     "ATX_SEC_USER_AGENT",
-    "atx-db/0.2 SEC filings pipeline nathan.tormaschy@gmail.com",
+    "atx-db/0.1 atx-research@example.com",
 )
 AAPL_CUSIP = "037833100"
 AAPL_CIK = "0000320193"

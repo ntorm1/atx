@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
         help="Optional balanced cap applied within each security before the overall --max-filings cap.",
     )
     parser.add_argument("--request-timeout", type=int, default=120)
-    parser.add_argument("--user-agent", default="atx-db XBRL filing context loader nathan.tormaschy@gmail.com")
+    parser.add_argument("--user-agent", default="atx-db/0.1 atx-research@example.com")
     return parser.parse_args()
 
 
