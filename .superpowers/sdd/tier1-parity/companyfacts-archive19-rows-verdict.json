@@ -1,0 +1,486 @@
+{
+  "observed_at_utc": "2026-09-25T10:36:53.006158+00:00",
+  "config": {
+    "memory_limit": "256MB",
+    "threads": 1,
+    "read_only": true
+  },
+  "lineage_newest_first": [
+    {
+      "dataset_run_id": "e27c8a4e-2d29-47bb-b657-fc1855ea4cec",
+      "status": "failed",
+      "started_at": "2026-09-25 00:53:51.480416",
+      "finished_at": "2026-09-25 10:35:44.937122",
+      "rows_loaded": 0,
+      "activation_run": "activation-companyfacts-archive19-companyfacts",
+      "resume_from_run_id": "a4942a4b-9d16-46ef-9dc6-d1e8ada7d16a"
+    },
+    {
+      "dataset_run_id": "a4942a4b-9d16-46ef-9dc6-d1e8ada7d16a",
+      "status": "failed",
+      "started_at": "2026-09-24 23:53:08.215195",
+      "finished_at": "2026-09-25 00:18:29.479452",
+      "rows_loaded": 0,
+      "activation_run": "activation-companyfacts-archive18-companyfacts",
+      "resume_from_run_id": "dd52e571-5786-42c5-bfaa-d7122b033912"
+    },
+    {
+      "dataset_run_id": "dd52e571-5786-42c5-bfaa-d7122b033912",
+      "status": "failed",
+      "started_at": "2026-09-24 22:53:45.911895",
+      "finished_at": "2026-09-24 23:16:42.389637",
+      "rows_loaded": null,
+      "activation_run": "activation-companyfacts-archive17-companyfacts",
+      "resume_from_run_id": "513cfbbc-096a-4186-9666-b6cc5170c4ad"
+    },
+    {
+      "dataset_run_id": "513cfbbc-096a-4186-9666-b6cc5170c4ad",
+      "status": "failed",
+      "started_at": "2026-09-23 22:08:59.121354",
+      "finished_at": "2026-09-23 22:19:32.614888",
+      "rows_loaded": 0,
+      "activation_run": "activation-companyfacts-archive16-companyfacts",
+      "resume_from_run_id": "4932365c-4b61-4437-b634-11b2a7284f6e"
+    },
+    {
+      "dataset_run_id": "4932365c-4b61-4437-b634-11b2a7284f6e",
+      "status": "failed",
+      "started_at": "2026-09-23 01:34:32.946730",
+      "finished_at": "2026-09-23 22:01:31.212132",
+      "rows_loaded": 0,
+      "activation_run": "activation-companyfacts-archive15-companyfacts",
+      "resume_from_run_id": "96f93269-84b5-4854-8ebe-fc5b99ab6612"
+    },
+    {
+      "dataset_run_id": "96f93269-84b5-4854-8ebe-fc5b99ab6612",
+      "status": "failed",
+      "started_at": "2026-09-23 01:20:12.210818",
+      "finished_at": "2026-09-23 01:28:00.807938",
+      "rows_loaded": 0,
+      "activation_run": "activation-companyfacts-archive14-companyfacts",
+      "resume_from_run_id": "22d51d47-2992-4043-95ef-54763a9dd45d"
+    },
+    {
+      "dataset_run_id": "22d51d47-2992-4043-95ef-54763a9dd45d",
+      "status": "failed",
+      "started_at": "2026-09-23 00:34:53.068690",
+      "finished_at": "2026-09-23 01:16:04.493089",
+      "rows_loaded": 0,
+      "activation_run": "activation-companyfacts-archive13-companyfacts",
+      "resume_from_run_id": "6beba5d4-e530-45fd-ae04-f872d9c8a896"
+    },
+    {
+      "dataset_run_id": "6beba5d4-e530-45fd-ae04-f872d9c8a896",
+      "status": "failed",
+      "started_at": "2026-09-23 00:10:49.068401",
+      "finished_at": "2026-09-23 00:29:16.889912",
+      "rows_loaded": 55234,
+      "activation_run": "activation-companyfacts-archive12-companyfacts",
+      "resume_from_run_id": "694f056e-a268-4927-8500-990b62c9a9be"
+    },
+    {
+      "dataset_run_id": "694f056e-a268-4927-8500-990b62c9a9be",
+      "status": "failed",
+      "started_at": "2026-09-22 23:58:58.696801",
+      "finished_at": "2026-09-23 00:08:15.063794",
+      "rows_loaded": 0,
+      "activation_run": "activation-companyfacts-archive11-companyfacts",
+      "resume_from_run_id": "ade90629-8e06-4186-9ea7-565cbd05e285"
+    },
+    {
+      "dataset_run_id": "ade90629-8e06-4186-9ea7-565cbd05e285",
+      "status": "failed",
+      "started_at": "2026-09-22 22:13:14.418372",
+      "finished_at": "2026-09-22 22:52:07.512781",
+      "rows_loaded": 1753504,
+      "activation_run": "activation-companyfacts-archive10-companyfacts",
+      "resume_from_run_id": "b6dd979e-4c97-4cac-a785-c0114887052c"
+    },
+    {
+      "dataset_run_id": "b6dd979e-4c97-4cac-a785-c0114887052c",
+      "status": "failed",
+      "started_at": "2026-09-22 21:53:53.626084",
+      "finished_at": "2026-09-22 22:12:44.285016",
+      "rows_loaded": 0,
+      "activation_run": "activation-companyfacts-archive9-companyfacts",
+      "resume_from_run_id": "17ac14e8-f2f4-4dbf-91c3-fe55be5ab480"
+    },
+    {
+      "dataset_run_id": "17ac14e8-f2f4-4dbf-91c3-fe55be5ab480",
+      "status": "failed",
+      "started_at": "2026-09-22 00:23:26.490339",
+      "finished_at": "2026-09-22 00:44:36.104103",
+      "rows_loaded": 589436,
+      "activation_run": "activation-companyfacts-archive8-companyfacts",
+      "resume_from_run_id": "404f66a2-655b-4611-a7a0-b71d4dc6d4d3"
+    },
+    {
+      "dataset_run_id": "404f66a2-655b-4611-a7a0-b71d4dc6d4d3",
+      "status": "failed",
+      "started_at": "2026-09-21 22:27:53.732580",
+      "finished_at": "2026-09-22 00:01:37.301740",
+      "rows_loaded": 5351787,
+      "activation_run": "activation-companyfacts-archive7-companyfacts",
+      "resume_from_run_id": "7da8bd67-de3a-4fe6-a9bc-08a7a7d4cce7"
+    },
+    {
+      "dataset_run_id": "7da8bd67-de3a-4fe6-a9bc-08a7a7d4cce7",
+      "status": "failed",
+      "started_at": "2026-09-21 21:54:48.986768",
+      "finished_at": "2026-09-21 22:27:11.401503",
+      "rows_loaded": 699244,
+      "activation_run": "activation-companyfacts-archive6-companyfacts",
+      "resume_from_run_id": "6400b3c2-f0d1-4f47-bcf0-95aadd9241de"
+    },
+    {
+      "dataset_run_id": "6400b3c2-f0d1-4f47-bcf0-95aadd9241de",
+      "status": "failed",
+      "started_at": "2026-09-21 01:09:02.993280",
+      "finished_at": "2026-09-21 21:53:52.273576",
+      "rows_loaded": 2803031,
+      "activation_run": "activation-companyfacts-archive5-companyfacts",
+      "resume_from_run_id": "c7c21cd1-c7c4-4de8-af64-4f2877ef6f59"
+    },
+    {
+      "dataset_run_id": "c7c21cd1-c7c4-4de8-af64-4f2877ef6f59",
+      "status": "failed",
+      "started_at": "2026-09-20 23:04:15.595138",
+      "finished_at": "2026-09-21 00:36:56.065104",
+      "rows_loaded": 7999850,
+      "activation_run": "activation-companyfacts-archive4-companyfacts",
+      "resume_from_run_id": "758f7d5c-73ae-4b66-a8c9-f1996afa163a"
+    },
+    {
+      "dataset_run_id": "758f7d5c-73ae-4b66-a8c9-f1996afa163a",
+      "status": "failed",
+      "started_at": "2026-09-20 20:03:29.064043",
+      "finished_at": "2026-09-20 22:02:44.547910",
+      "rows_loaded": null,
+      "activation_run": "activation-companyfacts-archive3-companyfacts",
+      "resume_from_run_id": null
+    }
+  ],
+  "lineage_length": 17,
+  "facts_by_run_columns": [
+    "run_id",
+    "in_lineage",
+    "rows",
+    "ciks",
+    "min_period_end",
+    "max_period_end"
+  ],
+  "facts_by_run": [
+    [
+      "758f7d5c-73ae-4b66-a8c9-f1996afa163a",
+      true,
+      20205629,
+      3750,
+      "1967-05-25",
+      "2026-09-18"
+    ],
+    [
+      "c6bfbb1e-76b9-436e-ae94-907d2f4fc59b",
+      false,
+      8483285,
+      3497,
+      "1993-04-21",
+      "2026-09-17"
+    ],
+    [
+      "c7c21cd1-c7c4-4de8-af64-4f2877ef6f59",
+      true,
+      7999850,
+      2042,
+      "1977-06-15",
+      "2026-09-17"
+    ],
+    [
+      "404f66a2-655b-4611-a7a0-b71d4dc6d4d3",
+      true,
+      5351787,
+      1785,
+      "1961-03-26",
+      "2026-09-11"
+    ],
+    [
+      "6400b3c2-f0d1-4f47-bcf0-95aadd9241de",
+      true,
+      2803031,
+      778,
+      "1995-07-18",
+      "2026-09-10"
+    ],
+    [
+      "ade90629-8e06-4186-9ea7-565cbd05e285",
+      true,
+      1753504,
+      621,
+      "1927-02-17",
+      "2026-09-11"
+    ],
+    [
+      "7da8bd67-de3a-4fe6-a9bc-08a7a7d4cce7",
+      true,
+      699244,
+      235,
+      "1994-03-14",
+      "2026-09-14"
+    ],
+    [
+      "17ac14e8-f2f4-4dbf-91c3-fe55be5ab480",
+      true,
+      589436,
+      229,
+      "1978-08-20",
+      "2026-08-18"
+    ],
+    [
+      "6beba5d4-e530-45fd-ae04-f872d9c8a896",
+      true,
+      55234,
+      22,
+      "1998-06-03",
+      "2026-09-08"
+    ]
+  ],
+  "facts_totals": [
+    47941000,
+    12959,
+    39457715,
+    9462,
+    "1927-02-17",
+    "2026-09-18"
+  ],
+  "facts_totals_columns": [
+    "rows",
+    "ciks",
+    "lineage_rows",
+    "lineage_ciks",
+    "min_period_end",
+    "max_period_end"
+  ],
+  "points_by_run_columns": [
+    "run_id",
+    "in_lineage",
+    "rows",
+    "security_ids",
+    "min_period_end",
+    "max_period_end"
+  ],
+  "points_by_run": [
+    [
+      "758f7d5c-73ae-4b66-a8c9-f1996afa163a",
+      true,
+      20205629,
+      3750,
+      "1967-05-25",
+      "2026-09-18"
+    ],
+    [
+      "c6bfbb1e-76b9-436e-ae94-907d2f4fc59b",
+      false,
+      8483285,
+      3497,
+      "1993-04-21",
+      "2026-09-17"
+    ],
+    [
+      "c7c21cd1-c7c4-4de8-af64-4f2877ef6f59",
+      true,
+      7999850,
+      2042,
+      "1977-06-15",
+      "2026-09-17"
+    ],
+    [
+      "404f66a2-655b-4611-a7a0-b71d4dc6d4d3",
+      true,
+      5351787,
+      1785,
+      "1961-03-26",
+      "2026-09-11"
+    ],
+    [
+      "6400b3c2-f0d1-4f47-bcf0-95aadd9241de",
+      true,
+      2803031,
+      778,
+      "1995-07-18",
+      "2026-09-10"
+    ],
+    [
+      "ade90629-8e06-4186-9ea7-565cbd05e285",
+      true,
+      1753504,
+      621,
+      "1927-02-17",
+      "2026-09-11"
+    ],
+    [
+      "7da8bd67-de3a-4fe6-a9bc-08a7a7d4cce7",
+      true,
+      699244,
+      235,
+      "1994-03-14",
+      "2026-09-14"
+    ],
+    [
+      "17ac14e8-f2f4-4dbf-91c3-fe55be5ab480",
+      true,
+      589436,
+      229,
+      "1978-08-20",
+      "2026-08-18"
+    ],
+    [
+      "6beba5d4-e530-45fd-ae04-f872d9c8a896",
+      true,
+      55234,
+      22,
+      "1998-06-03",
+      "2026-09-08"
+    ]
+  ],
+  "points_total_all_sources": 47941000,
+  "receipts_by_run_status_columns": [
+    "run_id",
+    "status",
+    "members",
+    "reported_rows",
+    "first_fetched",
+    "last_fetched"
+  ],
+  "receipts_by_run_status": [
+    [
+      "758f7d5c-73ae-4b66-a8c9-f1996afa163a",
+      "loaded",
+      3750,
+      20205629,
+      "2026-09-20 20:03:36.030178",
+      "2026-09-20 22:02:40.884256"
+    ],
+    [
+      "c7c21cd1-c7c4-4de8-af64-4f2877ef6f59",
+      "loaded",
+      2042,
+      7999850,
+      "2026-09-20 23:16:30.683878",
+      "2026-09-21 00:25:26.702673"
+    ],
+    [
+      "6400b3c2-f0d1-4f47-bcf0-95aadd9241de",
+      "loaded",
+      778,
+      2803031,
+      "2026-09-21 01:26:13.146659",
+      "2026-09-21 01:48:04.680665"
+    ],
+    [
+      "7da8bd67-de3a-4fe6-a9bc-08a7a7d4cce7",
+      "loaded",
+      235,
+      699244,
+      "2026-09-21 22:15:57.476197",
+      "2026-09-21 22:23:24.003752"
+    ],
+    [
+      "404f66a2-655b-4611-a7a0-b71d4dc6d4d3",
+      "loaded",
+      1785,
+      5351787,
+      "2026-09-21 22:53:26.905656",
+      "2026-09-21 23:52:44.840536"
+    ],
+    [
+      "17ac14e8-f2f4-4dbf-91c3-fe55be5ab480",
+      "loaded",
+      229,
+      589436,
+      "2026-09-22 00:36:52.750446",
+      "2026-09-22 00:43:16.726306"
+    ],
+    [
+      "ade90629-8e06-4186-9ea7-565cbd05e285",
+      "loaded",
+      621,
+      1753504,
+      "2026-09-22 22:29:14.211859",
+      "2026-09-22 22:48:39.354065"
+    ],
+    [
+      "6beba5d4-e530-45fd-ae04-f872d9c8a896",
+      "loaded",
+      22,
+      55234,
+      "2026-09-23 00:24:58.790151",
+      "2026-09-23 00:26:19.339548"
+    ],
+    [
+      "22d51d47-2992-4043-95ef-54763a9dd45d",
+      "empty",
+      4,
+      0,
+      "2026-09-23 01:06:09.114412",
+      "2026-09-23 01:06:09.777548"
+    ],
+    [
+      "dd52e571-5786-42c5-bfaa-d7122b033912",
+      "empty",
+      398,
+      0,
+      "2026-09-24 23:10:09.800620",
+      "2026-09-24 23:16:37.250668"
+    ],
+    [
+      "dd52e571-5786-42c5-bfaa-d7122b033912",
+      "unavailable",
+      14,
+      0,
+      "2026-09-24 23:10:21.992501",
+      "2026-09-24 23:15:22.179156"
+    ],
+    [
+      "e27c8a4e-2d29-47bb-b657-fc1855ea4cec",
+      "empty",
+      925,
+      0,
+      "2026-09-25 01:02:43.976512",
+      "2026-09-25 01:11:42.741437"
+    ],
+    [
+      "e27c8a4e-2d29-47bb-b657-fc1855ea4cec",
+      "unavailable",
+      29,
+      0,
+      "2026-09-25 01:02:44.411499",
+      "2026-09-25 01:11:34.568497"
+    ]
+  ],
+  "zip_path": "data\\cache\\companyfacts.zip",
+  "archive_targets": 20390,
+  "dispositions_all": {
+    "loaded_receipt": 9462,
+    "empty_receipt": 1327,
+    "unavailable_receipt": 43,
+    "no_lineage_receipt": 9558,
+    "no_lineage_receipt_but_retained_facts": 3497
+  },
+  "dispositions_archive19_processed_prefix": {
+    "loaded_receipt": 5398,
+    "empty_receipt": 923,
+    "unavailable_receipt": 29,
+    "no_lineage_receipt_but_retained_facts": 0
+  },
+  "dispositions_remaining_after_archive19": {
+    "loaded_receipt": 4064,
+    "empty_receipt": 404,
+    "unavailable_receipt": 14,
+    "no_lineage_receipt": 9558,
+    "no_lineage_receipt_but_retained_facts": 3497
+  },
+  "first_no_receipt_position": 10832,
+  "first_no_receipt_cik": "0001496443",
+  "last_loaded_receipt_position": 10831,
+  "last_loaded_receipt_cik": "0001496383",
+  "no_receipt_positions_before_last_loaded": 0
+}

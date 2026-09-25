@@ -1,0 +1,20 @@
+{
+  "command": [
+    "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\claude-ctl\\archive19_rows_verdict.py"
+  ],
+  "job_limit_gb": 0.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 4.016326904296875,
+    "commit_free_gb": 9.730228424072266
+  },
+  "disk": {
+    "path": "C:\\atx\\atx-db\\data",
+    "free_gb": 50.39437484741211,
+    "min_free_gb": 3.0
+  },
+  "child_pid": 16236,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.3274269104003906
+}

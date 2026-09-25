@@ -1,0 +1,50 @@
+{
+    "observed_at_utc":  "2026-09-25T10:35:44.3438103Z",
+    "run_id":  "activation-companyfacts-archive19",
+    "matching_process_count":  0,
+    "original_pid_count":  0,
+    "original_child_pid":  10272,
+    "session_exit_code":  null,
+    "termination_cause":  "controller session 1 closed; guard and child killed without guard terminal status (memory receipt stale status=running)",
+    "matching_pids":  [
+
+                      ],
+    "python_processes":  [
+                             {
+                                 "pid":  17944,
+                                 "ppid":  16048,
+                                 "cmd_head":  "C:\\Users\\natha\\miniconda3\\envs\\atlas\\python.exe -m mypy.dmypy --status-file c:\\Users\\natha\\AppData\\Roaming\\Code\\User\\wor"
+                             },
+                             {
+                                 "pid":  20284,
+                                 "ppid":  6392,
+                                 "cmd_head":  "C:\\Users\\natha\\miniconda3\\envs\\atlas\\python.exe -m mypy.dmypy --status-file c:\\Users\\natha\\AppData\\Roaming\\Code\\User\\wor"
+                             },
+                             {
+                                 "pid":  10436,
+                                 "ppid":  11464,
+                                 "cmd_head":  "c:\\atx\\atx-db\\.venv\\Scripts\\python.exe c:\\Users\\natha\\.vscode\\extensions\\ms-python.black-formatter-2026.7.12671008\\bundl"
+                             },
+                             {
+                                 "pid":  18248,
+                                 "ppid":  10436,
+                                 "cmd_head":  "\"C:\\Program Files\\Python312\\python.exe\" c:\\Users\\natha\\.vscode\\extensions\\ms-python.black-formatter-2026.7.12671008\\bund"
+                             },
+                             {
+                                 "pid":  2036,
+                                 "ppid":  11464,
+                                 "cmd_head":  "c:\\atx\\atx-db\\.venv\\Scripts\\python.exe c:\\Users\\natha\\.vscode\\extensions\\ms-python.mypy-type-checker-2026.7.12601009\\bun"
+                             },
+                             {
+                                 "pid":  16144,
+                                 "ppid":  2036,
+                                 "cmd_head":  "\"C:\\Program Files\\Python312\\python.exe\" c:\\Users\\natha\\.vscode\\extensions\\ms-python.mypy-type-checker-2026.7.12601009\\bu"
+                             }
+                         ],
+    "warehouse_exclusive_open_ok":  true,
+    "warehouse_exclusive_open_error":  null,
+    "warehouse_bytes":  12873379840,
+    "warehouse_mtime_utc":  "2026-09-25T01:11:38.2348170Z",
+    "wal_bytes":  81056,
+    "wal_mtime_utc":  "2026-09-25T01:11:43.5031784Z"
+}

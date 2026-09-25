@@ -1,0 +1,181 @@
+{
+  "observed_at_utc": "2026-09-25T10:35:44.937122+00:00",
+  "process_check": {
+    "observed_at_utc": "2026-09-25T10:35:44.3438103Z",
+    "run_id": "activation-companyfacts-archive19",
+    "matching_process_count": 0,
+    "original_pid_count": 0,
+    "original_child_pid": 10272,
+    "session_exit_code": null,
+    "termination_cause": "controller session 1 closed; guard and child killed without guard terminal status (memory receipt stale status=running)",
+    "matching_pids": [],
+    "python_processes": [
+      {
+        "pid": 17944,
+        "ppid": 16048,
+        "cmd_head": "C:\\Users\\natha\\miniconda3\\envs\\atlas\\python.exe -m mypy.dmypy --status-file c:\\Users\\natha\\AppData\\Roaming\\Code\\User\\wor"
+      },
+      {
+        "pid": 20284,
+        "ppid": 6392,
+        "cmd_head": "C:\\Users\\natha\\miniconda3\\envs\\atlas\\python.exe -m mypy.dmypy --status-file c:\\Users\\natha\\AppData\\Roaming\\Code\\User\\wor"
+      },
+      {
+        "pid": 10436,
+        "ppid": 11464,
+        "cmd_head": "c:\\atx\\atx-db\\.venv\\Scripts\\python.exe c:\\Users\\natha\\.vscode\\extensions\\ms-python.black-formatter-2026.7.12671008\\bundl"
+      },
+      {
+        "pid": 18248,
+        "ppid": 10436,
+        "cmd_head": "\"C:\\Program Files\\Python312\\python.exe\" c:\\Users\\natha\\.vscode\\extensions\\ms-python.black-formatter-2026.7.12671008\\bund"
+      },
+      {
+        "pid": 2036,
+        "ppid": 11464,
+        "cmd_head": "c:\\atx\\atx-db\\.venv\\Scripts\\python.exe c:\\Users\\natha\\.vscode\\extensions\\ms-python.mypy-type-checker-2026.7.12601009\\bun"
+      },
+      {
+        "pid": 16144,
+        "ppid": 2036,
+        "cmd_head": "\"C:\\Program Files\\Python312\\python.exe\" c:\\Users\\natha\\.vscode\\extensions\\ms-python.mypy-type-checker-2026.7.12601009\\bu"
+      }
+    ],
+    "warehouse_exclusive_open_ok": true,
+    "warehouse_exclusive_open_error": null,
+    "warehouse_bytes": 12873379840,
+    "warehouse_mtime_utc": "2026-09-25T01:11:38.2348170Z",
+    "wal_bytes": 81056,
+    "wal_mtime_utc": "2026-09-25T01:11:43.5031784Z"
+  },
+  "guard_status_stale": "running",
+  "guard_child_pid": 10272,
+  "guard_last_headroom": {
+    "physical_free_gb": 3.2545242309570312,
+    "commit_free_gb": 5.734870910644531
+  },
+  "last_progress_line": "2026-09-24 21:11:42,180 INFO atx_db.fundamentals: companyfacts processed=6350 total=20390 loaded=5398 empty=923 unavailable=29 failed=0 rows=0",
+  "last_progress": {
+    "processed": 6350,
+    "total": 20390,
+    "loaded": 5398,
+    "empty": 923,
+    "unavailable": 29,
+    "failed": 0,
+    "rows": 0
+  },
+  "termination_cause": "controller session exit killed guard+child; not a guard stop, not a recorded source failure",
+  "actual_dataset_run_id": "e27c8a4e-2d29-47bb-b657-fc1855ea4cec",
+  "resume_from_run_id": "a4942a4b-9d16-46ef-9dc6-d1e8ada7d16a",
+  "activation_before": [
+    [
+      "companyfacts_load",
+      "activation-companyfacts-archive19",
+      "running",
+      "2026-09-25 00:53:51.458478",
+      null,
+      null
+    ]
+  ],
+  "dataset_before": [
+    [
+      "e27c8a4e-2d29-47bb-b657-fc1855ea4cec",
+      "sec_company_facts",
+      "running",
+      "2026-09-25 00:53:51.480416",
+      null,
+      null
+    ]
+  ],
+  "retained_totals_columns": [
+    "facts",
+    "points",
+    "prices",
+    "custom_features",
+    "schema_version"
+  ],
+  "retained_totals": [
+    47941000,
+    47941000,
+    31959271,
+    31934514,
+    "0326"
+  ],
+  "attempt_columns": [
+    "rows",
+    "ciks",
+    "first_cik",
+    "last_cik",
+    "min_period_end",
+    "max_period_end"
+  ],
+  "attempt": [
+    0,
+    0,
+    null,
+    null,
+    null,
+    null
+  ],
+  "attempt_points_columns": [
+    "rows",
+    "security_ids",
+    "min_period_end",
+    "max_period_end"
+  ],
+  "attempt_points": [
+    0,
+    0,
+    null,
+    null
+  ],
+  "source_outcomes_columns": [
+    "status",
+    "members",
+    "reported_rows",
+    "first_cik",
+    "last_cik",
+    "first_fetched_at",
+    "last_fetched_at"
+  ],
+  "source_outcomes": [
+    [
+      "empty",
+      925,
+      0,
+      "0000002110",
+      "0001165509",
+      "2026-09-25 01:02:43.976512",
+      "2026-09-25 01:11:42.741437"
+    ],
+    [
+      "unavailable",
+      29,
+      0,
+      "0000003521",
+      "0001156906",
+      "2026-09-25 01:02:44.411499",
+      "2026-09-25 01:11:34.568497"
+    ]
+  ],
+  "activation_after": [
+    [
+      "companyfacts_load",
+      "activation-companyfacts-archive19",
+      "failed",
+      "2026-09-25 10:35:44.937122",
+      0
+    ]
+  ],
+  "dataset_after": [
+    [
+      "e27c8a4e-2d29-47bb-b657-fc1855ea4cec",
+      "sec_company_facts",
+      "failed",
+      "2026-09-25 10:35:44.937122",
+      0
+    ]
+  ],
+  "committed": true,
+  "checkpoint": "passed"
+}
