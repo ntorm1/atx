@@ -137,3 +137,86 @@ validated at every entry.
   report stage. The book executable is green whole (117/117). atx-impl-tests is red: 12 failures
   are caused by the plan-required defaults at I0b-owned call sites, and 4 are not related to
   this lane. See waiver_needed.
+
+## Re-review 1
+
+Fresh fix-only re-review of lane head `8421646fb91e4dd30ee68df1bf0eab03932ae99e` (fix commit
+`8421646f` on top of review commit `5637f57e`; range `2762b878..HEAD`). Read-only on code; this
+section is the only file written.
+
+### Verdict
+
+**APPROVE.** The major finding is fixed, with discriminating tests, and nothing regressed. The
+three minors are fixed or carried as the required Integration notes. One new trivial style nit
+(an over-limit comment line introduced by the fix) is non-blocking.
+
+### Per finding
+
+1. **major: interior gap liquidated under TerminalReturn -- FIXED.**
+   - `ReplayExtensions::scan_last_print` (init, once) records each name's last valid-close period.
+     `gap_carried()` carries a held name with no valid close when no event is due and either
+     `last_print > period` (the same last-print rule as `holding_interval_returns`) or its table
+     event is not yet due (`last_valid_period >= period`, the related case). Only a name that
+     never prints again, or whose event is due, reaches `resolve_terminal` / liquidation.
+   - Carry valuation uses one per-name seam, `carry_from`, passed to `mark_holdings` at **both** the
+     start mark (`replay.cpp` start `mark_holdings(..., ext.carry_view())`) and the end mark. It
+     persists across a multi-session gap and is reset on reprint, flat, or liquidation. The old
+     `next_carried = ext.delisting` wiring is replaced; for CrspDelistReturn/LastMarkZeroReturn
+     the flagged name still gets `carry_from = period - 1` (same value as the old `carry_period =
+     d`), and non-due names under those policies `continue` before `carry_from` is touched, so a
+     gap there still aborts as before. The claims path forces `DelistingPolicy::Abort`
+     (`replay.cpp:1488`), so `carry_from` is empty there and cannot interact with `claims->carried`.
+   - No trade on a carried name: `apply_target` holds it at the carried value, cancels its working
+     order (open_orders is recounted after each trading step), sets `trade_blocked` for a non-Hold
+     instruction, and still validates the payload; `work_residuals` already skips a name without a
+     valid close. Every carried valuation is recorded in `ReplayResult::gap_carries`.
+   - Tests (new, `BookReplayDelist`): `InteriorGapCarriesAHeldLongAndShortAtTheLastPrint` (long and
+     short over a one-session gap: no liquidation, no flag, carry row, gap-interval P&L 0, NAV
+     1000, assets 500 +/- 400, reprint books +/-80, identity, explicit Abort still fails at
+     `period=2 instrument=1`), `GapCarryBlocksTradesUntilThePrintAndSpansSessions`,
+     `TableStillListedCarriesThenLiquidatesAtTheTableReturn`, `IntentOnAGapCarriedNameIsNotExecuted`.
+     Each asserts `delistings.empty()` / `gap_carries` rows that the pre-fix code cannot satisfy.
+     Measured (re-run here): `gap short=0 ... final_nav=1080.0000 (pre-fix 780)`, `gap short=1 ...
+     final_nav=920.0000 (pre-fix 1120)` -- the spurious +120 short windfall is gone.
+
+2. **minor: inconsistent failure counts -- FIXED.** Outcome (line 7), acceptance row, Evidence
+   group 1 ("8 tests", 8 names), Integration note 1 and Ledger candidate 3 all say 12 (8 B-02 +
+   4 B-04). A grep for a stray "11"/"7 tests" finds only unrelated matches (suite sizes, I-11).
+   (Pre-existing, not introduced: the "Must stay green: whole book target" row still reads
+   117/117; the Fix pass 1 section states 122/122.)
+
+3. **minor: Shumway fallback credits shorts on known venues -- FIXED (reporting option; rule left
+   to owner).** `ReplayResult::flagged_short_delistings` / `flagged_short_pnl` accumulate in
+   `liquidate()` over flagged rows with `units < 0` (pnl = proceeds - last_value, finite-checked).
+   `FlaggedShortProceedsAreReportedApart`: NYSE short -> 1 / +120 (= proceeds - last_value); long
+   -> 0 / 0; table-sourced short -> 0 / 0. The owner/G0 decision is recorded in Integration notes
+   ("For the owner / G0"), and Integration note 2 asks I0b to publish these fields and
+   `gap_carries` in the identified report's manifest.
+
+4. **minor: stage V1 legacy report only by recompiling -- FIXED as required (note kept).**
+   Integration note 4 states the exact I0b change (`RunConfig::legacy_report_rule` default 2,
+   `--legacy-report-rule 1|2`, passed instead of `kLegacyReportRule`). `RunConfig`/`config.cpp`
+   are I0b-owned, so no lane code change is expected.
+
+### No regression, no weakened test
+
+- Test diff `2762b878..HEAD`: additions only (5 new tests) plus moving the `day_axis` helper above
+  its first use; no assertion changed or removed, no DISABLED_/GTEST_SKIP.
+- Tree clean at HEAD; `atx-build.ps1 build -Preset equity-dev atx-engine-book-tests atx-impl-tests`
+  (PARALLEL_LEVEL=2, 3.63 GB free) -> `ninja: no work to do` (binaries newer than sources).
+- `build-equity\bin\atx-engine-book-tests.exe --gtest_brief=1` -> 122 tests from 18 suites,
+  **122 passed**. `--gtest_filter=BookReplayDelist.*` -> 14/14 passed.
+- `build-equity\bin\atx-impl-tests.exe --gtest_brief=1` -> 535 ran, 514 passed, 5 skipped,
+  16 failed. The failing set is identical by name to the report's classification: 8 B-02
+  (ReplayPolicyStage x2, ReplayReport Weekly/Dollar/Policy/ExplicitIntent/LaterPolicy,
+  StageEquityBaseline.ExplicitZeroCostsDelay...), 4 B-04 (ReplayReport.MissingHeldPrice...,
+  StageEquityBaseline MissingHeldMark / ConstrainedBook / ObservedCloseEntry), 3 from the
+  integration merge (FundamentalZoo, StageEquityIc.TwoRuns, EquityMineCli.SmoothWindows), 1 CRLF
+  (TrialLedgerRepository.ExistingCp14Ledger). No new failure; the waiver_needed for the 12
+  I0b-owned call-site failures stands as before.
+
+### New (introduced by the fix, non-blocking)
+
+- minor/style: `atx-engine/include/atx/engine/book/replay.hpp:414` is a 113-column comment line
+  (`.clang-format` ColumnLimit 100), from the fix's rewording of the replay contract comment.
+  Rewrap at the next touch of the file.
