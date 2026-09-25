@@ -12,6 +12,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
+#include "atx/engine/eval/hac.hpp" // W0-E0a: HAC t-statistics (E-03)
 
 namespace atx::engine::combine {
 
@@ -44,7 +45,21 @@ namespace {
   return out;
 }
 
-// Per-column t-stat mean/(sd/√T) (sample sd); NaN when T < 2 or sd == 0.
+// W0-E0a / E-03: every per-alpha t-stat in this file runs through one versioned rule.
+// A per-date IC or alpha-return series built on an h-day forward return is MA(h-1), so
+// the pre-W0 IID t (TStatRule::IidV1) overstated significance by about sqrt(h) and the
+// ICIR-EWMA haircut barely bit. The default is Newey-West at the NW-1994 automatic lag;
+// IidV1 stays callable through eval::hac::mean_tstat / ewma_variance_inflation so a
+// frozen fit can be re-derived term for term.
+//
+// Known limitation (W0-E0a review): the NW-1994 automatic lag does not know the horizon.
+// On an MA(20) null at T = 500 it still rejects about 13% at a nominal 5% (the IID rule
+// rejected 67%). When the combiner headers gain `tstat_rule`, also pass the horizon and
+// floor the lag at h - 1, as eval's IcHacRule already does.
+constexpr eval::hac::TStatRule kCombineTStatRule = eval::hac::kDefaultTStatRule;
+
+// Per-column t-stat of the column mean under kCombineTStatRule; NaN when the rule
+// leaves it undefined (T < 2, or a zero (long-run) variance).
 [[nodiscard]] std::vector<f64> column_tstats(const MatX &x) {
   const Eigen::Index t = x.rows();
   std::vector<f64> out(static_cast<usize>(x.cols()), kSignalNaN);
@@ -52,11 +67,11 @@ namespace {
     return out;
   }
   for (Eigen::Index c = 0; c < x.cols(); ++c) {
-    const f64 mean = x.col(c).mean();
-    const f64 ss = (x.col(c).array() - mean).square().sum();
-    const f64 sd = std::sqrt(ss / static_cast<f64>(t - 1));
-    if (sd > 0.0) {
-      out[static_cast<usize>(c)] = mean / (sd / std::sqrt(static_cast<f64>(t)));
+    // MatX is column-major, so a column is one contiguous run of `t` values.
+    const std::span<const f64> col{x.col(c).data(), static_cast<usize>(t)};
+    const eval::hac::MeanInference mi = eval::hac::mean_tstat(col, kCombineTStatRule);
+    if (mi.defined != 0U) {
+      out[static_cast<usize>(c)] = mi.t;
     }
   }
   return out;
@@ -197,16 +212,25 @@ atx::core::Result<CombineWeights> IcirEwmaCombiner::fit(const SignalStore &s, Fi
   CombineWeights out;
   out.w.assign(k, 0.0);
   out.tstat.assign(k, kSignalNaN);
+  // The finite (IC, weight) pairs of one alpha, compacted for the HAC correction.
+  std::vector<f64> xs;
+  std::vector<f64> ws;
+  xs.reserve(rows);
+  ws.reserve(rows);
   for (usize a = 0U; a < k; ++a) {
     f64 sw = 0.0;
     f64 sw2 = 0.0;
     f64 swx = 0.0;
+    xs.clear();
+    ws.clear();
     for (usize r = 0U; r < rows; ++r) {
       const f64 x = ic[r * k + a];
       if (std::isfinite(x)) {
         sw += rw[r];
         sw2 += rw[r] * rw[r];
         swx += rw[r] * x;
+        xs.push_back(x);
+        ws.push_back(rw[r]);
       }
     }
     if (!(sw > 0.0)) {
@@ -228,7 +252,12 @@ atx::core::Result<CombineWeights> IcirEwmaCombiner::fit(const SignalStore &s, Fi
     // dropped, so it dominates the normalized blend instead of vanishing.
     const f64 sd = std::sqrt(std::max(swv / sw, 1e-24));
     const f64 icir = mean / sd;
-    const f64 t = icir * std::sqrt(n_eff);
+    // E-03: the IID t is icir * sqrt(n_eff); the HAC t divides the effective count by
+    // the weighted long-run variance inflation (exactly 1.0 under TStatRule::IidV1, so
+    // the pre-W0 t is reproduced bit for bit there). Rows with a NaN IC are skipped,
+    // so lags run over consecutive FINITE rows.
+    const f64 vif = eval::hac::ewma_variance_inflation(xs, ws, mean, kCombineTStatRule);
+    const f64 t = icir * std::sqrt(n_eff / vif);
     out.tstat[a] = t;
     const f64 shrink = (tstat_haircut > 0.0) ? std::max(0.0, 1.0 - tstat_haircut / std::abs(t)) : 1.0;
     out.w[a] = icir * shrink;

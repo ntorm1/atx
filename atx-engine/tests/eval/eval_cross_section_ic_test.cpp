@@ -106,6 +106,12 @@ struct Panel {
   cfg.common_sample_dates = 0U;
   cfg.forward_variant = ForwardReturnVariant::DropMissingForward;
   cfg.ties = IcTieHandling::AverageRanksV1;
+  // W0-E0a (E-02, E-09): every case in this file pins the checkpoint-14 frozen numbers,
+  // which were published under the half-horizon block rule and the signal-close forward
+  // return. They are reproduced here through the versioned legacy settings; the corrected
+  // defaults are exercised by the eval_w0e0a_* suites.
+  cfg.block_len_rule = BlockLenRule::HalfHorizonV1;
+  cfg.execution_delay = 0U;
   return cfg;
 }
 
