@@ -1,4 +1,4 @@
-"""Frozen W0 G0 evidence runner. Only pre-2020 inputs; never writes C:/atx."""
+"""Frozen W0 G0 evidence runner; pre-2020 inputs and one authorized data lock."""
 from __future__ import annotations
 
 import argparse
@@ -59,6 +59,10 @@ def heavy_lease(name):
         path.unlink()
 
 def run(name, exe, args, env=None, expected=0):
+    with heavy_lease(name):
+        return run_locked(name,exe,args,env,expected)
+
+def run_locked(name, exe, args, env=None, expected=0):
     logs = OUT / 'logs'
     logs.mkdir(parents=True, exist_ok=True)
     receipt = logs / f'{name}.receipt.json'
@@ -72,6 +76,11 @@ def run(name, exe, args, env=None, expected=0):
         source_sha=BASE_SHA
     elif Path(exe).parent==OUT/'bin/corrected':
         source_sha=(OUT/'bin/corrected-source-sha.txt').read_text(encoding='utf-8-sig').strip()
+    elif Path(exe).parent==OUT/'bin/corrected-disclosed':
+        source_sha=(OUT/'bin/corrected-disclosed-source-sha.txt').read_text(encoding='utf-8-sig').strip()
+    elif Path(exe).parent==OUT/'bin/cp21-pinned':
+        source_sha=(OUT/'bin/corrected-source-sha.txt').read_text(encoding='utf-8-sig').strip()
+        source_diff=(OUT/'bin/cp21-pin.patch').read_bytes()
     else:
         source_sha=subprocess.run(['git','-C',str(TREE),'rev-parse','HEAD'],
             capture_output=True,text=True,check=True).stdout.strip()
@@ -84,7 +93,7 @@ def run(name, exe, args, env=None, expected=0):
     start, peak = time.monotonic(), 0
     child_env = dict(os.environ)
     child_env.update(env or {})
-    with heavy_lease(name), (logs / f'{name}.out').open('w', encoding='utf-8') as stdout, \
+    with (logs / f'{name}.out').open('w', encoding='utf-8') as stdout, \
          (logs / f'{name}.err').open('w', encoding='utf-8') as stderr:
         child = subprocess.Popen(argv, cwd=TREE, env=child_env, stdout=stdout,
                                  stderr=stderr, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -160,7 +169,7 @@ def l7():
 def baseline(mode='frozen'):
     suffix='' if mode=='frozen' else '_'+mode
     policy=[] if mode=='frozen' else ['--replay-delisting-policy',
-                                    'abort' if mode=='abort_control' else 'terminal-return']
+                                    'abort' if mode in ('abort_control','abort_disclosed') else 'terminal-return']
     run('base2013'+suffix,BIN/'atx-impl.exe',[
         'equity-baseline','--panel',DATA/'tickerhistory_training_native_20260919/context.bin',
         '--out',OUT/f'data/equity_baseline_training_2013_g0_{SHA}{suffix}',
@@ -168,13 +177,19 @@ def baseline(mode='frozen'):
         '--max-working-bytes',3000000000,'--report-aum',100000000,
         '--replay-execution-delay',1,'--replay-trade-bps',5,
         '--replay-annual-borrow-bps',365,'--replay-day-basis',365,*policy],
-        expected=0 if mode=='corrected' else 1)
+        expected=0 if mode in ('corrected','disclosed') else 1)
 
 def baseline_corrected():
     baseline('corrected')
 
 def baseline_abort_control():
     baseline('abort_control')
+
+def baseline_disclosed():
+    baseline('disclosed')
+
+def baseline_abort_disclosed():
+    baseline('abort_disclosed')
 
 def cp21():
     membership=DATA/'equity_universe_pit_2013_2019_20260920/membership.bin'
@@ -191,6 +206,7 @@ def cp21():
             '--trial-ledger',OUT/'ledger/trial-ledger-g0-cp21.jsonl'])
 
 def scorecard():
+    corrected=(OUT/'bin/corrected-source-sha.txt').read_text(encoding='utf-8-sig').strip()
     run('cp21_scorecard',Path(sys.executable),[
         TREE/'build-equity/audits/iteration16_equity_scorecard.py','--cells',
         *[f'{OUT}/data/equity_g0cp21_ic_{y}_t{c}_{SHA}:{y}:{c}' for y,c in CELLS],
@@ -198,18 +214,99 @@ def scorecard():
         '--out',OUT/f'data/equity_g0cp21_scorecard_{SHA}',
         '--headline-variant','include_audited_terminal_v1','--headline-restriction','full',
         '--cp16-design',TREE/'atx-engine/reviews/2026-09-20-iteration16-alpha-scorecard-design.md',
-        '--declared-n',570,'--n-note',f'G0 truth-delta W0 {SHA}: as-of membership, delay 1; no new trials',
-        '--title',f'G0 cp21 W0 {SHA}; as-of membership, delay 1'])
+        '--declared-n',570,'--n-note',f'G0 W0 {SHA} plus replay/D12 fixes {corrected}: as-of per-feature-date membership, delay 1; no new trials',
+        '--title',f'G0 cp21 W0 {SHA} plus D12 repair {corrected[:8]}; as-of membership, delay 1'])
 
 def verify():
+    required=[OUT/f'data/equity_mine_l9_guard_g0_{SHA}/manifest.json',
+        OUT/f'data/equity_fund_zoo_ic_l10_g0_{SHA}/manifest.json',
+        OUT/f'data/l7_riskmodel_scorecard_pit_2014_t1000_g0_{SHA}/l7_scorecards.json',
+        OUT/f'data/equity_baseline_training_2013_g0_{SHA}/failure.json',
+        OUT/f'data/equity_baseline_training_2013_g0_{SHA}_corrected/manifest.json',
+        OUT/f'data/equity_baseline_training_2013_g0_{SHA}_disclosed/manifest.json',
+        OUT/f'data/equity_baseline_training_2013_g0_{SHA}_abort_control/failure.json',
+        OUT/f'data/equity_baseline_training_2013_g0_{SHA}_abort_disclosed/failure.json',
+        OUT/f'data/equity_g0cp21_scorecard_{SHA}/receipt.json',
+        OUT/f'data/equity_g0cp21_scorecard_{SHA}/scorecard.csv']
+    required.extend(OUT/f'data/equity_g0cp21_{kind}_{year}_t{cut}_{SHA}/manifest.json'
+                    for year,cut in CELLS for kind in ('base','ic'))
+    for path in required:
+        assert path.is_file(),f'Required evidence missing: {path}'
+    receipts=[json.loads(path.read_text(encoding='utf-8-sig'))
+              for path in sorted((OUT/'logs').glob('*.receipt.json'))
+              if path.name!='membership-independent.receipt.json']
+    assert len(receipts)==35,('expected 35 completed measurement receipts',len(receipts))
+    for receipt in receipts:
+        assert receipt.get('exit_code')==receipt['expected_exit'],receipt['name']
+        assert receipt.get('completed_utc'),receipt['name']
+        if receipt['name'].startswith(('base_','ic_')):
+            assert receipt['binary_sha256']==digest(OUT/'bin/cp21-pinned/atx-impl.exe')
+            assert receipt['cp21_source_diff_sha256']==digest(OUT/'bin/cp21-pin.patch')
+            assert receipt['source_sha']==(OUT/'bin/corrected-source-sha.txt')\
+                .read_text(encoding='utf-8-sig').strip()
+    scorecard_dir=OUT/f'data/equity_g0cp21_scorecard_{SHA}'
+    scorecard_receipt=json.loads((scorecard_dir/'receipt.json').read_text(encoding='utf-8-sig'))
+    assert scorecard_receipt['declared_n']==570
+    assert len(scorecard_receipt['cells'])==13
+    for filename,bound_hash in scorecard_receipt['outputs_sha256'].items():
+        assert digest(scorecard_dir/filename)==bound_hash,filename
+    for filename,bound_hash in scorecard_receipt['inputs_sha256'].items():
+        path=Path(filename)
+        assert path.is_relative_to(OUT) or path.is_relative_to(DATA/'equity_ic_training_2013_20260920'),path
+        assert digest(path)==bound_hash,path
+    assert digest(scorecard_receipt['script'])==scorecard_receipt['script_sha256']
+    assert digest(scorecard_receipt['cp16_design'])==scorecard_receipt['cp16_design_sha256']
+    native=OUT/f'data/equity_baseline_training_2013_g0_{SHA}'
+    disclosed=native.with_name(native.name+'_disclosed')
+    top=json.loads((disclosed/'summary.json').read_text(encoding='utf-8-sig'))
+    nested=json.loads((disclosed/'report/summary.json').read_text(encoding='utf-8-sig'))
+    before=json.loads((native.with_name(native.name+'_corrected')/'report/summary.json')
+                      .read_text(encoding='utf-8-sig'))
+    assert nested==before,'Disclosure patch changed nested replay metrics'
+    for key in ('usable_for_alpha_evidence','performance_evidence_eligibility',
+                'terminal_liquidation_count','evidenced_delisting_count','flagged_delistings',
+                'flagged_short_delistings','flagged_short_pnl_dollars','assumed_liquidation_count',
+                'assumed_liquidation_pnl_dollars','gap_carry_count'):
+        assert top[key]==nested[key],('top-level disclosure mismatch',key)
+    assert top['qualification']=='failed' and top['usable_for_alpha_evidence'] is False
+    assert top['replay']==nested['full']
+    abort=json.loads((native/'failure.json').read_text(encoding='utf-8-sig'))['error']
+    for suffix in ('_abort_control','_abort_disclosed'):
+        assert json.loads((native.with_name(native.name+suffix)/'failure.json')
+                          .read_text(encoding='utf-8-sig'))['error']==abort
+    recipe_checks=[]
+    for year,cut in CELLS:
+        old=json.loads((DATA/f'equity_scorecard21_ic_{year}_t{cut}_20260922/manifest.json')
+                       .read_text(encoding='utf-8-sig'))
+        new=json.loads((OUT/f'data/equity_g0cp21_ic_{year}_t{cut}_{SHA}/manifest.json')
+                       .read_text(encoding='utf-8-sig'))
+        a,b=old['recipe'],new['recipe']
+        assert a['signals']==b['signals'],(year,cut,'signal recipes changed')
+        assert a['cost']==b['cost'],(year,cut,'cost recipe changed')
+        assert b['checkpoint']==21 and b['trial_count_declared']==80,(year,cut)
+        assert len(b['signals'])==29,(year,cut,'expected 3 baseline + 26 families')
+        assert new['membership']['dsl_cross_section_mask']=='as-of-per-feature-date'
+        recipe_checks.append(dict(year=year,cut=cut,signals_equal=True,cost_equal=True,
+            checkpoint=b['checkpoint'],trial_count_declared=b['trial_count_declared'],
+            changed_recipe_fields=sorted(key for key in a.keys()|b.keys() if a.get(key)!=b.get(key))))
+    (OUT/'cp21-frozen-recipe-checks.json').write_text(json.dumps(recipe_checks,indent=2),encoding='utf-8')
+    expected_failures={f'equity_baseline_training_2013_g0_{SHA}',
+                       f'equity_baseline_training_2013_g0_{SHA}_abort_control',
+                       f'equity_baseline_training_2013_g0_{SHA}_abort_disclosed'}
+    pending=list((OUT/'data').glob('*/.pending'))
+    assert all(path.parent.name in expected_failures for path in pending),pending
     scripts=OUT/'scripts'
     scripts.mkdir(exist_ok=True)
     for name in ('g0_measure.py','g0_compare.py'):
         shutil.copyfile(TREE/'.superpowers/sdd/w0'/name,scripts/name)
     shutil.copyfile(TREE/'build-equity/audits/iteration16_equity_scorecard.py',
                     scripts/'iteration16_equity_scorecard.py')
+    reports=OUT/'reports'
+    reports.mkdir(exist_ok=True)
+    for name in ('lane-g0-codex-report.md','review-membership-codex.md','g0-progress-codex.md'):
+        shutil.copyfile(TREE/'.superpowers/sdd/w0'/name,reports/name)
     verified=[]
-    for manifest in sorted((OUT/'data').glob('*/manifest.json')):
+    for manifest in sorted((OUT/'data').rglob('manifest.json')):
         value=json.loads(manifest.read_text(encoding='utf-8-sig'))
         entries=value.get('files',[])
         for entry in entries:
@@ -231,22 +328,34 @@ def verify():
            for path in sorted(OUT.rglob('*')) if path.is_file() and path!=artifact]
     record=dict(schema='atx.g0-truth-delta-evidence/v1',frozen_source_sha=BASE_SHA,
                 created_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),
-                verified_engine_manifests=verified,files=files,
+                verified_engine_manifests=verified,completed_measurement_receipts=len(receipts),
+                disclosure_replay_metrics_identical=True,files=files,
+                expected_failed_attempts=sorted(expected_failures),
+                preserved_failed_pending_markers=[str(path.relative_to(OUT)) for path in pending],
                 caveats=['same prebuilt contexts; D0 panel construction changes not measured',
                          'cp21 frozen scorecard metadata still labels membership year-union',
+                         'diagnostic cp21 retains production iteration22 trial-id prefix/prose; numeric checkpoint is 21, declared cell N is 80, frozen scorecard N is 570',
+                         'native baseline assumed missing-price liquidations are stress diagnostics, not alpha performance evidence',
                          'historical peak RAM missing for L10 and L7',
                          'baseline failure retained and explicitly classified in report'])
-    artifact.write_text(json.dumps(record,indent=2),encoding='utf-8')
+    temporary=artifact.with_suffix('.json.tmp')
+    temporary.write_text(json.dumps(record,indent=2),encoding='utf-8')
+    temporary.replace(artifact)
     print('Verified',len(verified),'engine manifests;',len(files),'evidence files; published manifest last.')
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('phase',choices=['preflight','l9','l10','l7','baseline',
-        'baseline_corrected','baseline_abort_control','cp21','scorecard','verify'])
+        'baseline_corrected','baseline_abort_control','baseline_disclosed',
+        'baseline_abort_disclosed','cp21','scorecard','verify'])
     phase=parser.parse_args().phase
     frozen=OUT/'bin/unpinned'
     if phase in ('baseline_corrected','baseline_abort_control'):
         BIN=OUT/'bin/corrected'
+    elif phase in ('baseline_disclosed','baseline_abort_disclosed'):
+        BIN=OUT/'bin/corrected-disclosed'
+    elif phase=='cp21':
+        BIN=OUT/'bin/cp21-pinned'
     elif phase not in ('cp21','scorecard','preflight','verify') and frozen.exists():
         BIN=frozen
     globals()[phase]()

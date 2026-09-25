@@ -7,6 +7,7 @@ from g0_measure import CELLS, DATA, OUT, SHA
 
 DEST=OUT/'comparisons'
 DEST.mkdir(exist_ok=True)
+COUNTS={}
 
 def flatten(obj, path=''):
     if isinstance(obj,dict):
@@ -29,7 +30,9 @@ def write(name,rows):
         writer=csv.DictWriter(out,fieldnames=['key','metric','old','new','delta','changed'])
         writer.writeheader()
         writer.writerows(rows)
-    print(name,len(rows),'metrics',sum(bool(row['changed']) for row in rows),'changed')
+    changed=sum(bool(row['changed']) for row in rows)
+    COUNTS[name]=dict(metrics=len(rows),changed=changed)
+    print(name,len(rows),'metrics',changed,'changed')
 
 def json_diff(name,old,new):
     a=flatten(json.loads(old.read_text(encoding='utf-8-sig')))
@@ -57,9 +60,49 @@ def csv_diff(name,old,new,keys):
                              delta=delta(v1,v2),changed=v1!=v2))
     write(name,rows)
 
+def l9_validation():
+    def summarize(path):
+        with path.open(encoding='utf-8-sig',newline='') as stream:
+            rows=list(csv.DictReader(stream))
+        values=[float(row['val_sharpe_net']) for row in rows]
+        train=[float(row['train_sharpe_net']) for row in rows]
+        return dict(families=len(rows),mean_val_sharpe_net=sum(values)/len(values),
+            positive_val_sharpe_net=sum(value>0 for value in values),best_val_sharpe_net=max(values),
+            min_p_raw=min(float(row['p_raw']) for row in rows),
+            min_p_by=min(float(row['p_by']) for row in rows),
+            min_p_rw=min(float(row['p_rw']) for row in rows),
+            mean_train_sharpe_net=sum(train)/len(train),positive_train_sharpe_net=sum(v>0 for v in train),
+            top_train_sharpe_net=max(train))
+    a=summarize(DATA/'equity_mine_l9_guard_20260923/validation.csv')
+    b=summarize(OUT/f'data/equity_mine_l9_guard_g0_{SHA}/validation.csv')
+    write('l9_validation_aggregates',[dict(key='',metric=key,old=a[key],new=b[key],
+        delta=delta(a[key],b[key]),changed=a[key]!=b[key]) for key in a])
+
+def native_baseline():
+    base=OUT/f'data/equity_baseline_training_2013_g0_{SHA}'
+    corrected=base.with_name(base.name+'_corrected')
+    disclosed=base.with_name(base.name+'_disclosed')
+    json_diff('native2013_abort_control',base/'failure.json',
+              base.with_name(base.name+'_abort_control')/'failure.json')
+    json_diff('native2013_abort_disclosed',base/'failure.json',
+              base.with_name(base.name+'_abort_disclosed')/'failure.json')
+    # Frozen replay aborted before producing a summary. Blank old fields mean
+    # unavailable, never a zero return or a fabricated completed baseline.
+    values=flatten(json.loads((disclosed/'summary.json').read_text(encoding='utf-8-sig')))
+    write('native2013_new_summary',[dict(key='',metric=key,old=None,new=value,
+        delta='',changed=True) for key,value in sorted(values.items())])
+    json_diff('native2013_disclosure_top_level',corrected/'summary.json',disclosed/'summary.json')
+    json_diff('native2013_disclosure_replay',corrected/'report/summary.json',
+              disclosed/'report/summary.json')
+    a=json.loads((corrected/'report/summary.json').read_text(encoding='utf-8-sig'))
+    b=json.loads((disclosed/'report/summary.json').read_text(encoding='utf-8-sig'))
+    assert a==b,'Presentation-only follow-up changed underlying replay summary'
+    assert b['usable_for_alpha_evidence'] is False
+
 if __name__=='__main__':
     json_diff('l9_gate',DATA/'equity_mine_l9_guard_20260923/gate_report.json',
               OUT/f'data/equity_mine_l9_guard_g0_{SHA}/gate_report.json')
+    l9_validation()
     old=DATA/'equity_fund_zoo_ic_l10v2_20260923'
     new=OUT/f'data/equity_fund_zoo_ic_l10_g0_{SHA}'
     csv_diff('l10_pooled',old/'zoo_pooled.csv',new/'zoo_pooled.csv',['cut','signal'])
@@ -68,8 +111,10 @@ if __name__=='__main__':
     csv_diff('l10_splits',old/'zoo_pooled_splits.csv',new/'zoo_pooled_splits.csv',
              ['split','cut','signal'])
     json_diff('l10_alignment',old/'alignment.json',new/'alignment.json')
+    json_diff('l10_manifest',old/'manifest.json',new/'manifest.json')
     json_diff('l7_all',DATA/'l7_riskmodel_scorecard_pit_2014_t1000_20260923/l7_scorecards.json',
               OUT/f'data/l7_riskmodel_scorecard_pit_2014_t1000_g0_{SHA}/l7_scorecards.json')
+    native_baseline()
     old=DATA/'equity_scorecard21_scorecard_20260922'
     new=OUT/f'data/equity_g0cp21_scorecard_{SHA}'
     csv_diff('cp21_all',old/'scorecard.csv',new/'scorecard.csv',
@@ -83,3 +128,7 @@ if __name__=='__main__':
         json_diff(f'ic_{year}_t{cut}',
                   DATA/f'equity_scorecard21_ic_{year}_t{cut}_20260922/ic_summary.json',
                   OUT/f'data/equity_g0cp21_ic_{year}_t{cut}_{SHA}/ic_summary.json')
+        json_diff(f'ic_manifest_{year}_t{cut}',
+                  DATA/f'equity_scorecard21_ic_{year}_t{cut}_20260922/manifest.json',
+                  OUT/f'data/equity_g0cp21_ic_{year}_t{cut}_{SHA}/manifest.json')
+    (DEST/'index.json').write_text(json.dumps(COUNTS,indent=2),encoding='utf-8')

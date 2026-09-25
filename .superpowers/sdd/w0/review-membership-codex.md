@@ -1,10 +1,11 @@
 # Fresh membership repair review
 
 Reviewed `af40186d` relative to `bc5cc646` and the scope/report commit `39347e28`.
-Review mode: static; implementation author and this reviewer are separate agents.
+Review mode: static plus independent runtime check; implementation author and this
+reviewer are separate agents. Final status: APPROVE.
 
-No blocking code findings. Runtime acceptance remains conditional on the implementation
-agent's pending focused and full target results; this review did not run those tests.
+No blocking code findings. The owning focused/full logs passed and were independently
+read; a separately executed mask spotcheck passed. Exact evidence is recorded below.
 
 - The VM owns the mask and rejects invalid shape/binary values without mutation.
 - Every one of the 16 CS opcodes uses the same masked valid-index construction. The
@@ -23,3 +24,26 @@ agent's pending focused and full target results; this review did not run those t
 
 G0 integration consequence: all 13 cp21 cells must use this repair before measurement.
 Frozen L7/L10/L9 use an empty new CS mask and do not require reruns solely for this change.
+
+## Runtime closure: APPROVE
+
+Production source remains `af40186d`, with no fix pass. Independently read the owning
+agent's focused log (27/27 passed, 96.01 seconds) and whole alpha executable output
+(706/706 passed, 33.190 seconds). Verified its alpha executable SHA256:
+`90FCBC5C23C2F4A7A0749F8AAF3959B87ACE995905B439A8D89B0E82F1E2637B`.
+
+Then independently ran the unchanged pool-5 binary, read only from pool-3 cwd:
+
+```
+C:/atx-wt/pool-5/build-equity/bin/atx-engine-alpha-tests.exe
+  --gtest_filter=AlphaCrossSectionMembership.EveryCsOpcodeMatchesAnActuallyReducedUniverse
+[==========] 1 test from 1 test suite ran. (14 ms total)
+[  PASSED  ] 1 test.
+exit=0
+```
+
+Receipt/stdout/stderr live under
+`C:/atx-wt/g0-data/bc5cc646_20260925/logs/membership-independent.*`.
+Owning focused/full logs are copied beside that receipt for durable evidence. No
+pool-5 files, source, build cache or binary were written by this reviewer. Root and
+implementation agent received the runtime approval; corrected G0 runs are released.
