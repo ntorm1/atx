@@ -756,3 +756,31 @@ def test_entity_classification_stage_is_offline_receipt_dated_and_bitemporal(tmp
     with pytest.raises(SnapshotAfterCutoffError):
         stage_entity_classification(tmp_store, ActivationOptions(
             cache_dir=tmp_path, as_of_date=dt.date(2026, 9, 19), downloader=no_network))
+
+    # A later snapshot moves MSFT 7372 -> 9995 (no FF49 industry): its FF49 Softw interval
+    # must close at the new receipt date, not outlive the SIC that implied it.
+    later = dt.datetime(2026, 9, 21, 0, 0, 0)
+    with zipfile.ZipFile(archive, "w") as zf:
+        for cik, sic in (("0000789019", "9995"), ("0000019617", "6022"), ("0000000555", "9995")):
+            zf.writestr(f"CIK{cik}.json", json.dumps({"cik": cik, "sic": sic, "filings": {"recent": {}}}))
+    (tmp_path / "submissions.zip.receipt.json").write_text(json.dumps(
+        {"received_at": later.isoformat(), "sha256": hashlib.sha256(archive.read_bytes()).hexdigest()}),
+        encoding="utf-8")
+    second = stage_entity_classification(tmp_store, ActivationOptions(
+        cache_dir=tmp_path, as_of_date=later.date(), downloader=no_network))
+    assert second.detail["by_taxonomy"]["FAMA_FRENCH_49"]["closed_no_mapping"] == 1
+    msft = tmp_store.con.execute("""
+        SELECT t.code, ec.node_code, ec.valid_from, ec.valid_to
+        FROM entity_classification ec JOIN taxonomy t USING (taxonomy_id)
+        WHERE ec.security_id = 'SEC-CIK-0000789019' AND ec.classification_id <> 'legacy-1'
+        ORDER BY t.code, ec.valid_from
+    """).fetchall()
+    assert msft == [
+        ("FAMA_FRENCH_12", "BusEq", received.date(), later.date()),
+        ("FAMA_FRENCH_12", "Other", later.date(), None),
+        ("FAMA_FRENCH_49", "Softw", received.date(), later.date()),
+        ("NAICS_2022", "54", received.date(), later.date()),
+        ("NAICS_2022", "92", later.date(), None),
+        ("SIC", "7372", received.date(), later.date()),
+        ("SIC", "9995", later.date(), None),
+    ]

@@ -1003,11 +1003,16 @@ def feature_catalog_check_specs(
             dataset_id="entity_classification",
             table_name="entity_classification",
             check_name="orphan_entity_classification_security_ids",
+            # Company Facts accounting owners keyed SEC-COMPANYFACTS-UNRESOLVED-CIK-##########
+            # (delisted issuers absent from the current ticker map) are legitimate classification
+            # subjects with no `securities` row (A5 owner model, P6 stage); every other id --
+            # including an unknown SEC-CIK-* -- must exist in `securities`.
             sql="""
                 SELECT count(*)::DOUBLE
                 FROM entity_classification ec
                 LEFT JOIN securities s ON s.security_id = ec.security_id
                 WHERE s.security_id IS NULL
+                  AND NOT regexp_full_match(ec.security_id, 'SEC-COMPANYFACTS-UNRESOLVED-CIK-[0-9]{10}')
             """,
             threshold=0.0,
             required_tables=("entity_classification", "securities"),

@@ -461,7 +461,7 @@ FF49_INDUSTRIES: list[tuple[int, str, str, tuple[tuple[int, int], ...]]] = [
         (5950, 5959), (5960, 5969), (5970, 5979), (5980, 5989), (5990, 5990), (5992, 5992),
         (5993, 5993), (5994, 5994), (5995, 5995), (5999, 5999),
     )),
-    (44, "Meals", "Restaraunts, Hotels, Motels", (
+    (44, "Meals", "Restaurants, Hotels, Motels", (
         (5800, 5819), (5820, 5829), (5890, 5899), (7000, 7000), (7010, 7019), (7040, 7049),
         (7213, 7213),
     )),
@@ -484,7 +484,7 @@ FF49_INDUSTRIES: list[tuple[int, str, str, tuple[tuple[int, int], ...]]] = [
     (48, "Fin", "Trading", (
         (6200, 6299), (6700, 6700), (6710, 6719), (6720, 6722), (6723, 6723), (6724, 6724),
         (6725, 6725), (6726, 6726), (6730, 6733), (6740, 6779), (6790, 6791), (6792, 6792),
-        (6793, 6793), (6794, 6795), (6798, 6798), (6799, 6799),
+        (6793, 6793), (6794, 6794), (6795, 6795), (6798, 6798), (6799, 6799),
     )),
     (49, "Other", "Almost Nothing", ((4950, 4959), (4960, 4961), (4970, 4971), (4990, 4991))),
 ]
@@ -1451,9 +1451,12 @@ def _write_derived_rows(
     written = 0
     sic2 = str(sic4 // 100).zfill(2)
 
-    # FF49 derived row (none for a SIC French lists under no FF49 industry)
+    # FF49 derived row (none for a SIC French lists under no FF49 industry: any open FF49
+    # interval from an earlier SIC is then closed, never left to outlive its SIC)
     ff49_code = fama_french_49_for_sic(sic4)
-    if ff49_taxonomy_id and ff49_code is not None:
+    if ff49_taxonomy_id and ff49_code is None:
+        _close_open_derived_rows(store, security_id=security_id, taxonomy_id=ff49_taxonomy_id, today=today)
+    elif ff49_taxonomy_id and ff49_code is not None:
         ff49_node_id = _node_id_for(store, ff49_taxonomy_id, ff49_code)
         if ff49_node_id:
             written += _write_open_derived_row(
@@ -1525,6 +1528,9 @@ def _write_derived_rows(
             """,
             [sic2, naics_taxonomy_id],
         ).fetchone()
+        if not naics_row:
+            # No NAICS-2 sector for this SIC: close any open NAICS interval from an earlier SIC.
+            _close_open_derived_rows(store, security_id=security_id, taxonomy_id=naics_taxonomy_id, today=today)
         if naics_row:
             naics_code = naics_row[0]
             naics_node_id = _node_id_for(store, naics_taxonomy_id, naics_code)
@@ -1574,6 +1580,17 @@ def _write_derived_rows(
                     written += 1
 
     return written
+
+
+def _close_open_derived_rows(store: DuckDBStore, *, security_id: str, taxonomy_id: str, today: dt.date) -> None:
+    """Close every open derived interval of ``taxonomy_id`` (the new SIC maps to no industry there)."""
+    store.con.execute(
+        """
+        UPDATE entity_classification SET valid_to = ?
+        WHERE security_id = ? AND taxonomy_id = ? AND is_primary = false AND valid_to IS NULL
+        """,
+        [today, security_id, taxonomy_id],
+    )
 
 
 def _write_open_derived_row(
@@ -1796,12 +1813,15 @@ def refresh_entity_classification_snapshot(
     and derived FAMA_FRENCH_12, FAMA_FRENCH_49 (when French lists the SIC) and
     NAICS_2022 (partial, approximate) rows. Every new row has ``valid_from`` =
     ``as_of_date`` = the snapshot's receipt date and ``available_at`` = its receipt
-    time; the ``source`` label carries ``classification_basis=current_sic_snapshot``
-    and, for derived rows, the mapping version. Per (security, taxonomy, primary):
-    the same open code is kept (idempotent rerun); a differing open interval is
-    closed at the snapshot date and the new code opened; an open interval that
-    starts AFTER this snapshot is never overwritten by it (``stale_snapshot_skipped``).
-    Nothing is backdated and no absent SIC is inferred.
+    time; the ``source`` label carries ``classification_basis=current_sic_snapshot``,
+    the archive hash prefix and, for derived rows, the mapping version. Per
+    (security, taxonomy, primary): the same open code is kept (idempotent rerun); a
+    differing open interval is closed at the snapshot date and the new code opened;
+    when the new SIC has no industry in a derived taxonomy (FF49-unlisted, no NAICS-2
+    sector) the open derived interval is closed and nothing opened
+    (``closed_no_mapping``); an open interval from a LATER snapshot (receipt time,
+    then archive hash) is never overwritten (``stale_snapshot_skipped``). Nothing is
+    backdated and no absent SIC is inferred.
     """
     SicTaxonomyDataset().load(store, SicTaxonomyOptions())
     FamaFrenchTaxonomyDataset().load(store, FamaFrenchTaxonomyOptions())
@@ -1822,15 +1842,22 @@ def refresh_entity_classification_snapshot(
     }
     naics_for_sic2 = dict(SIC_TO_NAICS_PARTIAL)
 
-    rows: list[tuple[str, str, str, str, bool, str]] = []
+    # Row-level provenance: the archive hash prefix rides in `source` (M8) and is the
+    # deterministic tie-break between snapshots received at the same instant (M1).
+    archive_tag = snapshot.sha256[:16]
+    sic_source = f"{SOURCE_SIC_SNAPSHOT} archive:{archive_tag}"
+    # (security_id, taxonomy_id, node_id, node_code, is_primary, source, mapping_version, close_only)
+    rows: list[tuple[str, str, str | None, str | None, bool, str, str | None, bool]] = []
+    unclassified: list[str] = []
     ff49_unlisted = naics_unmapped = 0
     for security_id, cik in zip(targets["security_id"], targets["cik"], strict=True):
         sic = sics.get(cik)
         if sic is None:
+            unclassified.append(security_id)
             continue
         sic_code = f"{sic:04d}"
-        rows.append((security_id, str(taxonomy_ids["SIC"]), sic_nodes[sic_code], sic_code, True,
-                     SOURCE_SIC_SNAPSHOT))
+        rows.append((security_id, str(taxonomy_ids["SIC"]), sic_nodes[sic_code], sic_code, True, sic_source,
+                     None, False))
         derived = {
             "FAMA_FRENCH_12": fama_french_12_for_sic(sic),
             "FAMA_FRENCH_49": fama_french_49_for_sic(sic),
@@ -1839,12 +1866,15 @@ def refresh_entity_classification_snapshot(
         ff49_unlisted += derived["FAMA_FRENCH_49"] is None
         naics_unmapped += derived["NAICS_2022"] is None
         for code, node_code in derived.items():
-            if node_code is None:
-                continue
-            rows.append((security_id, str(taxonomy_ids[code]), derived_nodes[code][node_code], node_code, False,
-                         f"{SOURCE_SIC_SNAPSHOT}; {CLASSIFICATION_MAPPING_VERSIONS[code]}"))
+            version = CLASSIFICATION_MAPPING_VERSIONS[code]
+            # A SIC with no industry in this taxonomy is a CLOSE-ONLY candidate: an open
+            # row of that taxonomy (from an earlier SIC) is closed at the snapshot date and
+            # nothing is opened -- a stale industry never outlives the SIC that implied it.
+            rows.append((security_id, str(taxonomy_ids[code]),
+                         None if node_code is None else derived_nodes[code][node_code], node_code, False,
+                         f"{sic_source}; {version}", version, node_code is None))
     candidates = pd.DataFrame(rows, columns=["security_id", "taxonomy_id", "node_id", "node_code", "is_primary",
-                                             "source"])
+                                             "source", "mapping_version", "close_only"])
     snap = snapshot.valid_from
     con = store.con
     con.register("_ec_candidates_df", candidates)
@@ -1853,7 +1883,8 @@ def refresh_entity_classification_snapshot(
             CREATE OR REPLACE TEMP TABLE _ec_candidates AS
             SELECT CAST(security_id AS VARCHAR) AS security_id, CAST(taxonomy_id AS VARCHAR) AS taxonomy_id,
                    CAST(node_id AS VARCHAR) AS node_id, CAST(node_code AS VARCHAR) AS node_code,
-                   CAST(is_primary AS BOOLEAN) AS is_primary, CAST(source AS VARCHAR) AS source
+                   CAST(is_primary AS BOOLEAN) AS is_primary, CAST(source AS VARCHAR) AS source,
+                   CAST(mapping_version AS VARCHAR) AS mapping_version, CAST(close_only AS BOOLEAN) AS close_only
             FROM _ec_candidates_df
         """)
     finally:
@@ -1861,12 +1892,18 @@ def refresh_entity_classification_snapshot(
     con.execute("""
         CREATE OR REPLACE TEMP TABLE _ec_plan AS
         WITH open_rows AS (
-            SELECT e.security_id, e.taxonomy_id, e.is_primary, e.node_code, e.valid_from
+            SELECT e.security_id, e.taxonomy_id, e.is_primary, e.node_code, e.valid_from,
+                   coalesce(e.available_at, CAST(e.valid_from AS TIMESTAMP)) AS known_at,
+                   regexp_extract(coalesce(e.source, ''), 'archive:([0-9a-f]{16})', 1) AS archive_tag
             FROM entity_classification e
             WHERE e.valid_to IS NULL AND e.security_id IN (SELECT security_id FROM _ec_candidates)
         ), flags AS (
+            -- An open row from a LATER snapshot is never overwritten by this one. Snapshots
+            -- are ordered by receipt time, then archive hash (deterministic same-instant
+            -- tie-break), so out-of-order same-day reruns cannot leave a key with no open row.
             SELECT c.security_id, c.taxonomy_id, c.is_primary,
-                   coalesce(bool_or(o.valid_from > ?), false) AS newer_open,
+                   coalesce(bool_or(o.valid_from > ? OR o.known_at > ?
+                                    OR (o.known_at = ? AND o.archive_tag > ?)), false) AS newer_open,
                    coalesce(bool_or(o.node_code = c.node_code), false) AS same_open
             FROM _ec_candidates c
             LEFT JOIN open_rows o
@@ -1874,19 +1911,27 @@ def refresh_entity_classification_snapshot(
             GROUP BY c.security_id, c.taxonomy_id, c.is_primary
         )
         SELECT c.*, f.newer_open, f.same_open,
-               sha256(concat_ws('|', 'entity_classification', ?, c.security_id, c.taxonomy_id, c.node_code,
-                                CAST(c.is_primary AS VARCHAR), c.source)) AS classification_id
+               sha256(concat_ws('|', 'entity_classification', ?, c.security_id, c.taxonomy_id,
+                                coalesce(c.node_code, ''), CAST(c.is_primary AS VARCHAR), c.source))
+                   AS classification_id
         FROM _ec_candidates c
         JOIN flags f USING (security_id, taxonomy_id, is_primary)
-    """, [snap, snapshot.sha256])
-    close_row = con.execute("""
-        SELECT count(*), count(*) FILTER (WHERE e.valid_from = ?)
-        FROM entity_classification e
-        JOIN _ec_plan p ON p.security_id = e.security_id AND p.taxonomy_id = e.taxonomy_id
-         AND p.is_primary = e.is_primary
-        WHERE NOT p.newer_open AND e.valid_to IS NULL AND e.node_code <> p.node_code
-    """, [snap]).fetchone()
-    closed, superseded_same_day = (int(close_row[0]), int(close_row[1])) if close_row else (0, 0)
+    """, [snap, snapshot.received_at, snapshot.received_at, archive_tag, snapshot.sha256])
+    close_counts = {
+        code: (int(closed), int(same_day), int(no_mapping), int(other_version))
+        for code, closed, same_day, no_mapping, other_version in con.execute("""
+            SELECT t.code, count(*), count(*) FILTER (WHERE e.valid_from = ?),
+                   count(*) FILTER (WHERE p.close_only),
+                   count(*) FILTER (WHERE p.mapping_version IS NOT NULL
+                                      AND NOT contains(coalesce(e.source, ''), p.mapping_version))
+            FROM entity_classification e
+            JOIN _ec_plan p ON p.security_id = e.security_id AND p.taxonomy_id = e.taxonomy_id
+             AND p.is_primary = e.is_primary
+            JOIN taxonomy t ON t.taxonomy_id = p.taxonomy_id
+            WHERE NOT p.newer_open AND e.valid_to IS NULL AND e.node_code IS DISTINCT FROM p.node_code
+            GROUP BY t.code
+        """, [snap]).fetchall()
+    }
     con.execute("""
         UPDATE entity_classification SET valid_to = ?
         FROM _ec_plan p
@@ -1895,20 +1940,24 @@ def refresh_entity_classification_snapshot(
           AND entity_classification.is_primary = p.is_primary
           AND NOT p.newer_open
           AND entity_classification.valid_to IS NULL
-          AND entity_classification.node_code <> p.node_code
+          AND entity_classification.node_code IS DISTINCT FROM p.node_code
     """, [snap])
-    plan_counts = con.execute("""
-        SELECT t.code,
-               count(*) FILTER (WHERE p.newer_open) AS stale,
-               count(*) FILTER (WHERE NOT p.newer_open AND p.same_open) AS unchanged,
-               count(*) FILTER (WHERE NOT p.newer_open AND NOT p.same_open
-                                  AND e.classification_id IS NULL) AS inserted,
-               count(*) FILTER (WHERE NOT p.newer_open AND NOT p.same_open
-                                  AND e.classification_id IS NOT NULL) AS id_collision
-        FROM _ec_plan p JOIN taxonomy t ON t.taxonomy_id = p.taxonomy_id
-        LEFT JOIN entity_classification e ON e.classification_id = p.classification_id
-        GROUP BY t.code ORDER BY t.code
-    """).fetchall()
+    plan_counts = {
+        code: (int(stale), int(unchanged), int(inserted), int(collision))
+        for code, stale, unchanged, inserted, collision in con.execute("""
+            SELECT t.code,
+                   count(*) FILTER (WHERE p.newer_open) AS stale,
+                   count(*) FILTER (WHERE NOT p.newer_open AND p.same_open) AS unchanged,
+                   count(*) FILTER (WHERE NOT p.newer_open AND NOT p.same_open
+                                      AND e.classification_id IS NULL) AS inserted,
+                   count(*) FILTER (WHERE NOT p.newer_open AND NOT p.same_open
+                                      AND e.classification_id IS NOT NULL) AS id_collision
+            FROM _ec_plan p JOIN taxonomy t ON t.taxonomy_id = p.taxonomy_id
+            LEFT JOIN entity_classification e ON e.classification_id = p.classification_id
+            WHERE NOT p.close_only
+            GROUP BY t.code
+        """).fetchall()
+    }
     con.execute("""
         INSERT INTO entity_classification
             (classification_id, security_id, taxonomy_id, node_id, node_code, is_primary,
@@ -1916,7 +1965,7 @@ def refresh_entity_classification_snapshot(
         SELECT p.classification_id, p.security_id, p.taxonomy_id, p.node_id, p.node_code, p.is_primary,
                ?, NULL, ?, ?, ?, p.source
         FROM _ec_plan p
-        WHERE NOT p.newer_open AND NOT p.same_open
+        WHERE NOT p.close_only AND NOT p.newer_open AND NOT p.same_open
           AND NOT EXISTS (SELECT 1 FROM entity_classification e WHERE e.classification_id = p.classification_id)
     """, [snap, snap, snapshot.received_at, run_id])
     open_counts = dict(con.execute("""
@@ -1925,6 +1974,20 @@ def refresh_entity_classification_snapshot(
         WHERE e.valid_to IS NULL AND e.security_id IN (SELECT security_id FROM _ec_candidates)
         GROUP BY t.code
     """).fetchall())
+    # Ids whose CIK carries no SIC in THIS snapshot keep any earlier open rows (absence is
+    # not evidence of change); counted so a stale carry is visible (M7).
+    open_without_current_sic = 0
+    if unclassified:
+        con.register("_ec_unclassified_df", pd.DataFrame({"security_id": unclassified}))
+        try:
+            row = con.execute("""
+                SELECT count(DISTINCT e.security_id) FROM entity_classification e
+                JOIN _ec_unclassified_df u ON u.security_id = e.security_id
+                WHERE e.valid_to IS NULL
+            """).fetchone()
+        finally:
+            con.unregister("_ec_unclassified_df")
+        open_without_current_sic = int(row[0]) if row else 0
     con.execute("DROP TABLE IF EXISTS _ec_plan")
     con.execute("DROP TABLE IF EXISTS _ec_candidates")
 
@@ -1938,16 +2001,27 @@ def refresh_entity_classification_snapshot(
         metadata={"source_kind": "SEC nightly bulk submissions archive (retained)",
                   "classification_basis": CLASSIFICATION_BASIS_CURRENT_SIC_SNAPSHOT, **snapshot.as_detail()},
     )
-    by_taxonomy = {
-        code: {"inserted": int(inserted), "unchanged": int(unchanged), "stale_snapshot_skipped": int(stale),
-               "id_collision": int(collision), "open_ids": int(open_counts.get(code, 0))}
-        for code, stale, unchanged, inserted, collision in plan_counts
-    }
+    by_taxonomy: dict[str, dict[str, int]] = {}
+    for code in sorted(set(plan_counts) | set(close_counts) | set(open_counts)):
+        stale, unchanged, inserted, collision = plan_counts.get(code, (0, 0, 0, 0))
+        closed, _, no_mapping, other_version = close_counts.get(code, (0, 0, 0, 0))
+        by_taxonomy[code] = {
+            "inserted": inserted, "unchanged": unchanged, "stale_snapshot_skipped": stale,
+            "id_collision": collision, "closed": closed,
+            # closed because the new SIC has no industry in this taxonomy (close-only candidate)
+            "closed_no_mapping": no_mapping,
+            # closed rows written under another mapping version (e.g. the pre-Siccodes12 FF12 table):
+            # their earlier interval still carries that version's code (M3)
+            "closed_other_mapping_version": other_version,
+            "open_ids": int(open_counts.get(code, 0)),
+        }
+    closed = sum(item[0] for item in close_counts.values())
+    superseded_same_day = sum(item[1] for item in close_counts.values())
     classified_ids = int(targets["cik"].isin(list(sics)).sum())
     return {
         "classification_basis": CLASSIFICATION_BASIS_CURRENT_SIC_SNAPSHOT,
         "basis_note": CLASSIFICATION_BASIS_NOTE,
-        "source": SOURCE_SIC_SNAPSHOT,
+        "source": sic_source,
         "snapshot": snapshot.as_detail(),
         "mapping_versions": dict(CLASSIFICATION_MAPPING_VERSIONS),
         "targets": {
@@ -1957,7 +2031,7 @@ def refresh_entity_classification_snapshot(
             "from_company_facts": int(targets["from_company_facts"].sum()),
             "cik_conflict": int(targets["cik_conflict"].sum()),
             # Company Facts owners (e.g. SEC-COMPANYFACTS-UNRESOLVED-CIK-*, delisted issuers) have no
-            # `securities` row; the legacy orphan_entity_classification_security_ids check counts them.
+            # `securities` row; orphan_entity_classification_security_ids accepts the unresolved-owner ids.
             "outside_securities": int(targets["outside_securities"].sum()),
             "classified_ids": classified_ids,
             "unclassified_ids": len(targets) - classified_ids,
@@ -1968,5 +2042,6 @@ def refresh_entity_classification_snapshot(
         "rows_inserted": sum(item["inserted"] for item in by_taxonomy.values()),
         "intervals_closed": closed,
         "superseded_same_day": superseded_same_day,
+        "open_without_current_sic": open_without_current_sic,
         "by_taxonomy": by_taxonomy,
     }
