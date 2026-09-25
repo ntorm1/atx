@@ -119,13 +119,28 @@ def _build_template(dest: Path) -> None:
         _close_store(store)
 
 
+def _imported_migration_registry() -> list[tuple[int, str]]:
+    """(version, source checksum) of the registry this process will actually apply."""
+    from atx_db.migrations import MIGRATIONS, _migration_source_checksum
+
+    return [(migration.version, _migration_source_checksum(migration)) for migration in MIGRATIONS]
+
+
 def _schema_fingerprint() -> str:
-    """Hash the bootstrap inputs that make a warehouse template valid."""
+    """Hash the bootstrap inputs that make a warehouse template valid.
+
+    The files on disk AND the migration registry imported by this process: a
+    session that imported the registry before a migration was added (or edited)
+    builds its template from that older registry, so it must not publish it under
+    the fingerprint a fresh session computes from the newer files.
+    """
     import duckdb
 
     h = hashlib.sha256()
     h.update(f"python={sys.implementation.cache_tag}\n".encode())
     h.update(f"duckdb={duckdb.__version__}\n".encode())
+    for version, checksum in _imported_migration_registry():
+        h.update(f"migration={version}:{checksum}\n".encode())
     paths = sorted(
         (
             *_SCHEMA_FINGERPRINT_FILES,
@@ -164,9 +179,36 @@ def _cached_schema_template() -> Path:
                 stale.unlink()
 
         _build_template(tmp_path)
+        try:
+            _assert_template_at_registry_head(tmp_path)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
         os.replace(tmp_path, template_path)
         ready_path.write_text(key, encoding="ascii")
     return template_path
+
+
+def _assert_template_at_registry_head(path: Path) -> None:
+    """Refuse to mark a template ready unless it is at the imported registry's head."""
+    import duckdb
+
+    from atx_db.migrations import MIGRATIONS
+
+    expected = max(migration.version for migration in MIGRATIONS)
+    con = duckdb.connect(str(path), read_only=True, config={"memory_limit": "256MB", "threads": 1})
+    try:
+        row = con.execute(
+            "SELECT max(CAST(version AS INTEGER)) FROM schema_migrations WHERE version ~ '^[0-9]+$'"
+        ).fetchone()
+    finally:
+        con.close()
+    built = None if row is None else row[0]
+    if built != expected:
+        raise RuntimeError(
+            f"test schema template {path} is at migration {built}, but the imported registry "
+            f"head is {expected}; refusing to publish a stale template"
+        )
 
 
 @pytest.fixture(scope="session")
