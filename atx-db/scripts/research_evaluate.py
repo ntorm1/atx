@@ -10,7 +10,12 @@ Examples (heavy slot, pinned export, warehouse attached read-only)::
     python scripts/research_evaluate.py verify --run-id eval_2026_09_rr4
 
 ``run`` refuses to start without a frozen split (RX7) unless ``--allow-unsplit`` marks the
-run as exploratory (recorded as a blocker). ``verify`` re-derives the run from its sealed
+run as exploratory (recorded as a blocker). The family is the R1a catalog's expected
+cells: ``--features``/``--variants``/``--horizons`` subsets still correct for the whole
+family, carry the blocker ``partial_family_subset`` and are never ``family_complete``
+(qualification must refuse them); a run without both bases is not ``family_complete``
+either. Size is verified (DEI-share) market cap only and NYSE size buckets use the
+point-in-time venue (``venue_basis``). ``verify`` re-derives the run from its sealed
 manifest and reports whether the stored rows and a recomputation are byte-identical.
 """
 
@@ -67,7 +72,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--bootstrap-resamples", type=int, default=1999)
     parser.add_argument("--no-label-diagnostics", action="store_true")
     parser.add_argument("--skip-panel-validation", action="store_true",
-                        help="trust the R2a panel seal without re-validating every digest")
+                        help="trust the R2a panel seal and the R2b version seal without running their validators")
     parser.add_argument("--resume", action="store_true", help="continue a building/failed run with the same spec")
     return parser.parse_args(argv)
 
@@ -95,7 +100,8 @@ def main(argv: list[str] | None = None) -> int:
         result = run_evaluation(store, spec, resume=args.resume)
         print(json.dumps({"run_id": result.run_id, "status": result.status, "cells": result.cells,
                           "results_sha256": result.results_sha256, "inputs_sha256": result.inputs_sha256,
-                          "family": result.family, "blockers": list(result.blockers)}, indent=2, sort_keys=True))
+                          "family_complete": result.family_complete, "family": result.family,
+                          "blockers": list(result.blockers)}, indent=2, sort_keys=True))
     return 0
 
 

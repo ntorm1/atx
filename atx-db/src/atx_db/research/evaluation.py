@@ -11,15 +11,49 @@ measures, on month-end formations:
   availability-lag sensitivity (feature of the previous formation, +1 month);
 * turnover (rank autocorrelation, one-way top/bottom decile turnover) and net spreads
   at 10/25/50 bp per unit traded;
-* size-bucket (micro/small/large by NYSE 20th/50th percentile breakpoints when NYSE
-  names are identifiable, else market-cap terciles), subperiod and frozen
-  train/validation/holdout slices;
+* size-bucket (micro/small/large by point-in-time NYSE 20th/50th percentile
+  breakpoints; market-cap terciles, reported apart, where no point-in-time venue
+  exists), subperiod and frozen train/validation/holdout slices, and decile spreads on
+  point-in-time NYSE breakpoints next to the all-name deciles;
 * label attrition (missing/invalid/unsupported labels, observed/policy terminals) and
   the R3a per-horizon cause classification;
+* a per-formation series of every cell (IC, spreads, FM slopes, names, coverage);
 * family-wide Benjamini-Hochberg q-values, Holm p-values, the Harvey-Liu-Zhu hurdle
   and the deflated Sharpe ratio of every cell.
 
 Results and a sealed, reproducible run manifest live in the research store (RX6).
+
+Ranked universe
+---------------
+Every statistic ranks one universe per formation: the eligible R2a cohort rows with
+``cohort_reason='valid'`` on the issuer's primary line (``primary_line``), so an
+issuer counts once and non-common, overlapping or secondary rows never enter. Per the
+controller ruling on R2b I1, an identity-free price-line feature also ranks every
+eligible line without an owner link as its own name (R2b ``owner_basis='unlinked_line'``;
+cells say ``universe_scope``), so the survivor-conditioned owner link of the
+reconstructed basis does not drop the delisted tail from momentum/volatility/reversal;
+fundamentals and size stay linked-only. The engine drops any other value and counts
+the drops per formation (``dropped_not_valid`` / ``dropped_not_primary``); the store
+adapter refuses them. Coverage is measured against the feature's own ranked universe.
+
+Size and venue
+--------------
+* Size is the R2a panel's ``market_cap`` only where its ``size_status`` is the panel's
+  verified status (``size_policy.verified_status``: DEI share counts). Unverified
+  (vendor/archive share) caps are NULL here: they never weight a portfolio, set or fall
+  into a size bucket, or enter the Fama-MacBeth size control.
+* The venue is point in time: the strict ``us_listed_v1`` membership row visible at the
+  formation cutoff (listing evidence as of the formation). The cohort's own exchange
+  code (a current-directory backcast on the reconstructed basis) is never used.
+* Size buckets (``slice_kind='size_bucket'``, ``venue_basis='nyse_pit'``): NYSE 20th/50th
+  percentile breakpoints of the ranked universe's point-in-time NYSE names with a
+  verified cap, at formations with at least ``nyse_min_names`` of them. Other formations
+  are bucketed by verified-cap terciles of the ranked universe and reported separately
+  (``slice_kind='size_tercile'``, ``venue_basis='cap_terciles'``), so an NYSE-bucket
+  statistic never mixes in another breakpoint rule. NYSE-breakpoint deciles use the
+  point-in-time NYSE names of the ranked universe. Cells and the per-formation series
+  carry ``venue_basis``; formations without point-in-time NYSE breakpoints are a counted
+  run blocker.
 
 Inference policy (controller ruling on the R3a review)
 ------------------------------------------------------
@@ -40,19 +74,41 @@ Inference policy (controller ruling on the R3a review)
   feature-variant x 2 basis run cannot afford. Portfolios are formed on every name with
   a feature value at the formation (FQ2 rule); returns average over names with a valid
   label, and unlabeled names are counted as attrition, never dropped before ranking.
-* The family is every cell whose status is ``tested`` or ``insufficient_formations``:
-  a hypothesis that had data and could have been selected. ``untestable_strict`` and
-  ``no_values`` cells have no data; they are reported, never counted. BH and Holm run
-  over the primary-sample IC robust p-values (insufficient cells enter as untestable,
-  i.e. p = 1). The deflated Sharpe ratio of a cell uses its equal-weighted decile
-  long-short series, ``horizon_periods = h``, ``n_trials`` = the whole family and the
-  cross-trial variance of the Sharpe ratios of tested cells at the same horizon (the
-  same period units).
+* The family is anchored to the catalog, not to what was produced: by default the
+  catalog snapshot R2b stored with the feature versions (sign, class, hypothesis family
+  as built; a later catalog edit cannot change a finished evaluation, and a snapshot
+  that differs from the committed catalog is a blocker). The expected family is every
+  research-eligible catalog feature x its expected variants x the default horizons on
+  every testable basis. A cell that is ``tested`` enters BH and
+  Holm with its primary-sample IC robust p-value; an expected cell that is
+  ``insufficient_formations``, ``no_values``, ``not_produced`` (R2b wrote no such
+  feature/variant) or ``excluded_by_subset`` (the run's features/variants/horizons
+  left it out) enters as untestable, i.e. p = 1 (conservative: omissions and subset
+  runs can never shrink m). ``untestable_strict`` cells (a data-less basis) are
+  reported outside the family. A run is ``family_complete`` only when nothing expected
+  was excluded or missing; subset runs carry the blocker ``partial_family_subset`` and
+  must not be qualified (R4); a run that did not supply both bases is not complete
+  either. Without a catalog (pure-engine callers) the family is the produced cells.
+  Significance is the IC's; decile spreads, Fama-MacBeth slopes and Sharpe-based
+  statistics are supporting evidence. The probabilistic and deflated Sharpe ratios of
+  a cell use its equal-weighted decile long-short series with ``horizon_periods = h``
+  (``floor(n/h)`` independent returns); the DSR uses ``n_trials`` = the whole family
+  and the cross-trial variance of the Sharpe ratios of tested cells at the same horizon
+  (the same period units). Rank-equivalent variants (``signed_raw``/``zscore``/
+  ``rank_normal`` give identical IC and deciles) are near-duplicate members: BH is
+  unaffected, Holm and ``n_trials`` are conservative. Two-sided hypotheses
+  (``expected_sign`` 0) are tested like the others (the EWC p-value is two-sided);
+  their values are unoriented, so the sign of the IC is the finding.
 * Selection sample. With a frozen split (RX7) the primary statistics, the family and
   every derived slice (subperiods, size buckets, decay, quantiles) use only the
   selection sample: train + validation formations whose label window ends before the
   holdout starts. Holdout statistics appear only as ``slice_kind='split'`` rows. Without
-  a split the primary sample is every formation and the run carries a blocker.
+  a split the primary sample is every formation and the run carries a blocker. A
+  subperiod that overlaps the holdout is truncated to its selection formations (its
+  ``formations`` count says how many remain; it may be empty).
+* Reproducibility scope: the code digest covers this module, ``stats.py`` and
+  ``labels.py``; panel/store/catalog inputs are covered by their manifests. Byte
+  identity relies on batched LAPACK solves, so ``verify`` belongs on the same host/BLAS.
 
 Point-in-time guards
 --------------------
@@ -67,37 +123,48 @@ Point-in-time guards
 * A feature value whose ``available_at`` is after its formation cutoff raises
   :class:`LookaheadError`.
 
-R2b feature-table contract (declared by R3b; R2b conforms or updates the adapter)
-----------------------------------------------------------------------------------
-R2b is not built yet. :func:`load_feature_table` is the only function that reads R2b
-tables. It expects, in the research store:
+R2b feature store (``atx_db.research.features``, query version research-feature-store-v1)
+-----------------------------------------------------------------------------------------
+:func:`load_feature_table` is the only function that reads R2b tables (with
+``verify_panels`` the R2b validator, :func:`features.validate_feature_version`, re-checks
+the version first). It reads, in the research store:
 
 ``research_feature_versions`` (one row per immutable version)
-    ``feature_version`` (sha256 hex of spec + code + input digests), ``status``
-    (``sealed``; ``untestable_strict`` for a strict build over an empty cohort), ``basis``
-    (``strict`` | ``reconstructed``), ``panel_run_id`` and ``panel_sha256`` (the sealed R2a
-    run it was built from), ``classification_basis`` (e.g. a current-SIC backcast label,
-    RX1) and ``values_sha256`` (R2b's own digest of its value rows).
-``research_feature_values`` (long: formation x security x feature x variant)
-    ``feature_version``, ``formation_date`` (the R2a formation date), ``security_id`` (the
-    R2a price line), ``feature_id`` (R1a catalog id), ``variant`` (``signed_raw``,
-    ``winsor``, ``zscore``, ``rank_normal``, ``industry_neutral``, ``size_neutral``; any
-    lower-case id is accepted), ``value`` (sign-oriented by the catalog ``expected_sign``,
-    so higher always means higher expected return; NULL when not standardized),
-    ``expected_sign`` (+1/-1, constant per feature) and ``available_at`` (latest input
-    clock; must be <= the formation cutoff). One row per (formation, security, feature,
-    variant); multi-line issuers already collapsed to one line (R2a m1).
+    ``feature_version``, ``status`` (``sealed``, or ``untestable_strict`` for a strict
+    build over an empty cohort; ``building``/``failed`` versions are refused), ``basis``,
+    ``panel_run_id`` and ``panel_sha256`` (the sealed R2a run; the seal must still hold),
+    ``classification_basis`` (RX1 label), ``values_sha256``, ``query_version`` (one of
+    :data:`FEATURE_QUERY_VERSIONS`), ``universe_rule`` (one of
+    :data:`FEATURE_UNIVERSE_RULES`), ``catalog_sha256`` (compared with the committed
+    catalog's file digest) and ``blockers_json`` (carried into the run blockers).
+``research_feature_catalog`` (version x catalog row: the catalog snapshot)
+    ``feature_id``, ``anomaly_class``, ``hypothesis_family``, ``expected_sign``,
+    ``status``, ``status_reason``. Every row not ``blocked_admission`` is a hypothesis of
+    the expected family (:func:`feature_version_catalog`); the status explains
+    ``not_produced`` cells (input not in the panel, ...).
+``research_feature_values`` (a long VIEW over the wide ``research_feature_matrix``)
+    ``feature_version``, ``formation_date``, ``security_id``, ``feature_id``, ``variant``,
+    ``value`` (sign-oriented by the catalog ``expected_sign``; unoriented for a two-sided
+    row; NULL outside the domain and for standardized variants on a non-``formed``
+    formation), ``expected_sign`` (+1/-1/0, equal to the R1a catalog) and
+    ``available_at`` (latest input clock; must be <= the formation cutoff). A value
+    exists only on an eligible R2a cohort row with ``cohort_reason='valid'`` on the
+    issuer's ``primary_line`` whose panel row is valid, or, when the optional
+    ``owner_basis`` column says ``unlinked_line``, on an eligible line without an owner
+    link (identity-free price-line features); the adapter refuses any other valued row
+    and a second valued line of one owner.
 ``research_feature_dates`` (formation x feature x variant)
-    ``feature_version``, ``formation_date``, ``feature_id``, ``variant``, ``date_status``
-    (``formed``; ``thin_cross_section`` when fewer than 200 valid names, which carries no
-    standardized values), ``eligible_members``, ``valid_names``, ``coverage_fraction``.
+    ``date_status`` (only ``formed`` formations are ranked: ``thin_cross_section``,
+    ``thin_covariate_coverage``, ``degenerate_cross_section`` and ``empty_common_cohort``
+    are not), ``eligible_members``, ``valid_names``, ``coverage_fraction``. The variants
+    of a feature are its date rows' variants.
 
-Market cap (value weights, size buckets, size control) and the NYSE venue flag are read
-from the R2a panel of the version (``market_cap`` daily feature, ``research_panel_cohort``
-exchange code), not from R2b. Controls ``book_to_market`` and ``momentum_12_1`` are read
-from the same feature version at ``control_variant`` (default ``rank_normal``). R3b's
-access pattern is one query per (feature, all variants): R2b should cluster its value
-table by ``feature_id`` (insertion order) so each query prunes row groups.
+Market cap (value weights, size buckets, size control), the cohort flags and the venue
+are read from the R2a panel of the version (``market_cap`` daily feature with verified
+``size_status``, ``research_panel_cohort``) and the warehouse's strict membership, not
+from R2b. Controls ``book_to_market`` and ``momentum_12_1`` are read from the same
+feature version at ``control_variant`` (default ``rank_normal``); one query per
+(feature, all variants).
 """
 
 from __future__ import annotations
@@ -108,7 +175,9 @@ import itertools
 import json
 import math
 import re
+import tempfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext, suppress
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
@@ -118,6 +187,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 
+from ..universe_us_listed import DEFAULT_US_LISTED_UNIVERSE_ID, UNIVERSE_SOURCE_NAME
 from . import stats
 from .labels import (
     HORIZON_FORMATION_UNITS,
@@ -128,14 +198,31 @@ from .labels import (
     monthly_label_diagnostics,
 )
 from .labels import _calendar_keys as _label_calendar_keys  # same package: the label calendar identity
-from .panel import CALENDAR_FORMED, validate_research_panel
+from .panel import CALENDAR_FORMED, OWNER_LINK_FAILURES, validate_research_panel
 from .store import ResearchStore
 
-EVALUATION_VERSION = "research-monthly-evaluation-v1"
-EVALUATION_SCHEMA_VERSION = 1
-FEATURE_CONTRACT = "r2b-feature-table-v1-declared-by-r3b"
+EVALUATION_VERSION = "research-monthly-evaluation-v2"
+EVALUATION_SCHEMA_VERSION = 2
+FEATURE_CONTRACT = "r2b-research-feature-store-v1"
+#: R2b query versions whose tables this adapter reads (a new R2b version needs review here);
+#: v2 is R2b fix round 1 (identity-free price-line features also rank unlinked lines).
+FEATURE_QUERY_VERSIONS = ("research-feature-store-v1", "research-feature-store-v2")
 FEATURE_VERSION_STATUSES = ("sealed", "untestable_strict")
 FEATURE_VARIANTS = ("signed_raw", "winsor", "zscore", "rank_normal", "industry_neutral", "size_neutral")
+#: Variants on a standardized scale (FM slopes comparable across features); the others are raw units.
+STANDARDIZED_VARIANTS = frozenset({"zscore", "rank_normal", "industry_neutral", "size_neutral"})
+UNIVERSE_RULE = "cohort_reason_valid_on_primary_line"
+#: Controller ruling on R2b I1: identity-free price-line features also rank every eligible line
+#: without an owner link as its own name (``owner_basis='unlinked_line'``); fundamentals and
+#: size stay on linked primary lines.
+UNIVERSE_RULE_WITH_UNLINKED = "cohort_reason_valid_on_primary_line_price_line_unlinked_lines"
+FEATURE_UNIVERSE_RULES = (UNIVERSE_RULE, UNIVERSE_RULE_WITH_UNLINKED)
+OWNER_BASIS_UNLINKED = "unlinked_line"
+UNIVERSE_SCOPE_LINKED = "valid_primary_lines"
+UNIVERSE_SCOPE_WITH_UNLINKED = "valid_primary_and_unlinked_lines"
+#: Point-in-time venue: the strict universe's membership visible at the formation cutoff.
+PIT_VENUE_UNIVERSE_ID = DEFAULT_US_LISTED_UNIVERSE_ID
+PIT_VENUE_SOURCE = UNIVERSE_SOURCE_NAME
 BASES = ("strict", "reconstructed")
 BASIS_AVAILABLE = "available"
 BASIS_UNTESTABLE = "untestable_strict"
@@ -150,11 +237,23 @@ DEFAULT_SUBPERIODS: tuple[tuple[str, dt.date, dt.date], ...] = (
 SPLIT_SEGMENTS = ("train", "validation", "holdout")
 SIZE_BUCKETS = ("unknown", "micro", "small", "large")
 NYSE_EXCHANGE_CODE = "XNYS"
+#: ``venue_basis`` of a formation's size breakpoints: point-in-time NYSE 20/50, verified-cap
+#: terciles (no point-in-time venue), none (fewer than 3 verified caps), no context rows.
+VENUE_NYSE_PIT, VENUE_CAP_TERCILES = "nyse_pit", "cap_terciles"
+VENUE_BASES = (VENUE_NYSE_PIT, VENUE_CAP_TERCILES, "none", "no_context")
+#: Size-bucket slice kind per breakpoint basis (an NYSE-bucket slice never mixes in terciles).
+SIZE_SLICE_KINDS = {VENUE_NYSE_PIT: "size_bucket", VENUE_CAP_TERCILES: "size_tercile"}
 SIZE_FEATURES = frozenset({"market_cap"})
 LABEL_BASIS = "adjusted_close_forward_return_with_observed_or_policy_terminal_stitch"
 BH_ALPHA = 0.05
-FAMILY_STATUSES = ("tested", "insufficient_formations")
-CELL_STATUSES = ("tested", "insufficient_formations", "no_values", BASIS_UNTESTABLE)
+NOT_PRODUCED = "not_produced"
+EXCLUDED_BY_SUBSET = "excluded_by_subset"
+FAMILY_STATUSES = ("tested", "insufficient_formations", "no_values", NOT_PRODUCED, EXCLUDED_BY_SUBSET)
+CELL_STATUSES = (*FAMILY_STATUSES, BASIS_UNTESTABLE)
+#: Status-only rows are rebuilt by the family stage (never by the per-feature engine).
+STATUS_ONLY = (NOT_PRODUCED, EXCLUDED_BY_SUBSET, BASIS_UNTESTABLE)
+#: Label-window alignments that are normal operation, not a blocker.
+BENIGN_ALIGNMENTS = frozenset({"aligned", "entry_after_label_cutoff"})
 
 LABEL_VALID, LABEL_INVALID, LABEL_UNSUPPORTED, LABEL_MISSING = 0, 1, 2, 3
 TERMINAL_NONE, TERMINAL_OBSERVED, TERMINAL_POLICY = 0, 1, 2
@@ -447,7 +546,9 @@ class FeatureData:
     """One feature, every variant, in canonical integer keys.
 
     ``values``: ``month_index``, ``security`` (int code), ``variant``, ``value`` and
-    optionally ``available_at`` (checked against the formation cutoff). ``dates``
+    optionally ``available_at`` (checked against the formation cutoff) and
+    ``unlinked_line`` (R2b ``owner_basis='unlinked_line'``: an eligible line without an
+    owner link, ranked as its own name by an identity-free price-line feature). ``dates``
     (optional): ``month_index``, ``variant``, ``date_status`` and optionally
     ``coverage_fraction``; months whose status is not ``formed`` carry no values.
     """
@@ -457,6 +558,94 @@ class FeatureData:
     values: pd.DataFrame
     dates: pd.DataFrame | None = None
     anomaly_class: str | None = None
+    hypothesis_family: str | None = None
+
+
+@dataclass(frozen=True)
+class CatalogFeature:
+    """One pre-registered hypothesis of the expected family (an R1a catalog row)."""
+
+    feature_id: str
+    expected_sign: int  # +1, -1, or 0 (two-sided)
+    anomaly_class: str
+    variants: tuple[str, ...] = FEATURE_VARIANTS
+    #: R1b grouping of near-duplicate / same-construct hypotheses (carried to every cell).
+    hypothesis_family: str | None = None
+
+
+def expected_variants(anomaly_class: str) -> tuple[str, ...]:
+    """Variants expected of a catalog feature: all six, except ``size_neutral`` for the size
+    class (a residual on its own log size is identically zero)."""
+    return tuple(v for v in FEATURE_VARIANTS if not (v == "size_neutral" and anomaly_class == "size"))
+
+
+def catalog_features(entries: Iterable[Any] | None = None) -> tuple[CatalogFeature, ...]:
+    """The expected family from R1a catalog rows: research-eligible rows x their variants.
+
+    ``entries`` default to the committed catalog, validated (``load_anomaly_catalog``).
+    Store runs take the family from the feature version's own catalog snapshot instead
+    (:func:`feature_version_catalog`), so a later catalog edit cannot change a finished
+    evaluation.
+    """
+    from .catalog import load_anomaly_catalog
+
+    rows = load_anomaly_catalog() if entries is None else entries
+    features = []
+    for entry in rows:
+        if not entry.is_research_eligible:
+            continue
+        features.append(CatalogFeature(entry.feature_id, int(entry.expected_sign), entry.anomaly_class,
+                                       expected_variants(entry.anomaly_class),
+                                       getattr(entry, "hypothesis_family", None)))
+    return tuple(sorted(features, key=lambda item: item.feature_id))
+
+
+def _catalog_map(catalog: Iterable[CatalogFeature] | None) -> dict[str, CatalogFeature] | None:
+    if catalog is None:
+        return None
+    mapping: dict[str, CatalogFeature] = {}
+    for item in catalog:
+        if not isinstance(item, CatalogFeature) or not _ID.fullmatch(item.feature_id) or item.feature_id in mapping:
+            raise EvaluationInputError("catalog must hold unique CatalogFeature rows")
+        if item.expected_sign not in (-1, 0, 1) or not item.variants or len(set(item.variants)) != len(item.variants):
+            raise EvaluationInputError(f"catalog row {item.feature_id}: bad expected_sign or variants")
+        mapping[item.feature_id] = item
+    return mapping
+
+
+def _catalog_sha(catalog: Mapping[str, CatalogFeature] | None) -> str | None:
+    if catalog is None:
+        return None
+    return _sha(_canonical([[f.feature_id, f.expected_sign, f.anomaly_class, list(f.variants), f.hypothesis_family]
+                            for _, f in sorted(catalog.items())]))
+
+
+def _resolve_catalog(store: ResearchStore, spec: EvaluationSpec, catalog: Iterable[CatalogFeature] | None
+                     ) -> tuple[dict[str, CatalogFeature] | None, dict[str, Any]]:
+    """The expected family of a store run and its provenance.
+
+    An injected ``catalog`` wins (fixtures, explicit families). Otherwise the family is
+    the catalog snapshot R2b stored with the feature versions (sign, class and
+    hypothesis family as they were when the features were built); every version of the
+    run must carry the same snapshot. The committed catalog's file digest is recorded
+    so a snapshot that differs from today's catalog is flagged, never silently mixed.
+    """
+    from .catalog import anomaly_catalog_sha256
+
+    committed = anomaly_catalog_sha256()
+    if catalog is not None:
+        return _catalog_map(catalog), {"catalog_source": "injected", "committed_catalog_sha256": committed}
+    snapshots = {version: feature_version_catalog(store, version) for version in spec.feature_versions}
+    digests = {(sha, _catalog_sha(_catalog_map(features))) for sha, features in snapshots.values()}
+    if len(digests) != 1:
+        raise EvaluationInputError("the feature versions were built from different catalog snapshots "
+                                   f"({sorted(str(d) for d, _ in digests)}): one run tests one pre-registered family")
+    feature_catalog_sha, features = next(iter(snapshots.values()))
+    if not features:
+        raise EvaluationInputError("the feature versions carry no research-eligible catalog snapshot rows")
+    return _catalog_map(features), {"catalog_source": "feature_version_snapshot",
+                                    "feature_catalog_sha256": feature_catalog_sha,
+                                    "committed_catalog_sha256": committed}
 
 
 @dataclass
@@ -470,8 +659,13 @@ class BasisInputs:
       ``status`` (0 valid, 1 invalid, 2 unsupported basis), ``terminal`` (0 none,
       1 observed, 2 policy stitch) and ``anchor_date`` (the label's as-of session).
     * ``maturity``: ``month_index``, ``horizon_months``, ``expected_end``, ``matured``.
-    * ``context``: ``month_index``, ``security``, ``market_cap``, ``is_nyse`` and
-      optionally ``valid_member`` (the cohort at the formation).
+    * ``context``: ``month_index``, ``security``, ``market_cap`` (verified size only, NaN
+      otherwise) and optionally ``valid_member`` (eligible with ``cohort_reason`` valid),
+      ``primary_line`` (the issuer's primary line), ``unlinked_member`` (eligible, no owner
+      link), ``venue_pit`` (a point-in-time venue observation exists) and ``is_nyse_pit``
+      (that venue is NYSE). Absent flags mean valid / primary / linked / no point-in-time
+      venue. Valid primary rows are ranked; unlinked members only for values flagged
+      ``unlinked_line``.
     * ``controls``: ``month_index``, ``security``, ``control``, ``value``.
     """
 
@@ -615,6 +809,35 @@ def grouped_quantiles(group: np.ndarray, values: np.ndarray, tiebreak: np.ndarra
     return out
 
 
+def breakpoint_quantiles(group: np.ndarray, values: np.ndarray, reference: np.ndarray, n_groups: int, q: int,
+                         min_reference: int) -> np.ndarray:
+    """Quantile 1..q of every row by breakpoints from the ``reference`` rows of its group.
+
+    The Fama-French NYSE rule: the breakpoints are the k/q percentiles (numpy linear
+    interpolation) of the reference (NYSE) values; a value equal to a breakpoint goes to
+    the lower quantile. 0 when the group has fewer than ``max(q, min_reference)``
+    reference rows. ``group`` must be sorted (rows of a group contiguous).
+    """
+    group = np.asarray(group, dtype=np.int64)
+    values = np.asarray(values, dtype=float)
+    reference = np.asarray(reference, dtype=bool)
+    out = np.zeros(len(values), dtype=np.int16)
+    if not len(values):
+        return out
+    if np.any(group[1:] < group[:-1]):
+        raise ValueError("breakpoint_quantiles needs rows sorted by group")
+    counts = np.bincount(group, minlength=n_groups)[:n_groups]
+    references = np.bincount(group[reference], minlength=n_groups)[:n_groups]
+    starts = _starts(counts)
+    percentiles = np.arange(1, q) * (100.0 / q)
+    for g in np.flatnonzero(references >= max(q, min_reference)):
+        begin, end = int(starts[g]), int(starts[g] + counts[g])
+        chunk = values[begin:end]
+        breaks = np.percentile(chunk[reference[begin:end]], percentiles)
+        out[begin:end] = np.searchsorted(breaks, chunk, side="left") + 1
+    return out
+
+
 def _bucket_means(group: np.ndarray, bucket: np.ndarray, returns: np.ndarray, n_groups: int, q: int,
                   weight: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray | None, np.ndarray]:
     sel = bucket > 0
@@ -731,7 +954,15 @@ class _Prepared:
     context_cap: np.ndarray
     context_size: np.ndarray
     context_member: np.ndarray
-    size_method: list[str]
+    context_universe: np.ndarray
+    context_unlinked: np.ndarray
+    context_nyse: np.ndarray
+    venue_basis: list[str]
+    venue_pit_share: np.ndarray
+    nyse_pit_names: np.ndarray
+    universe_names: np.ndarray
+    unlinked_names: np.ndarray
+    segment: np.ndarray
     control_keys: dict[str, np.ndarray]
     control_values: dict[str, np.ndarray]
     samples: dict[int, _Samples]
@@ -771,31 +1002,71 @@ def _keys_from(month: np.ndarray, security: np.ndarray, months: int, span: int,
     return keys, order
 
 
-def _size_buckets(keys: np.ndarray, cap: np.ndarray, nyse: np.ndarray, months: int, span: int,
-                  spec: EvaluationSpec) -> tuple[np.ndarray, list[str]]:
-    """Micro/small/large by NYSE 20th/50th percentiles, else cap terciles; 0 = unknown cap."""
+@dataclass(frozen=True)
+class _SizeBuckets:
+    buckets: np.ndarray          # per context row: 0 unknown (no verified cap), 1 micro, 2 small, 3 large
+    venue_basis: list[str]       # per formation: VENUE_BASES
+    venue_pit_share: np.ndarray  # per formation: share of universe rows with a point-in-time venue
+    nyse_pit_names: np.ndarray   # per formation: universe rows on the point-in-time NYSE with a verified cap
+
+
+def _size_buckets(keys: np.ndarray, cap: np.ndarray, months: int, span: int, spec: EvaluationSpec, *,
+                  universe: np.ndarray | None = None, venue_pit: np.ndarray | None = None,
+                  nyse_pit: np.ndarray | None = None) -> _SizeBuckets:
+    """Micro/small/large per formation (0 = unknown: no verified cap).
+
+    ``keys`` must be sorted. Breakpoints come only from ranked-universe rows with a
+    positive (verified) cap: the 20th and 50th percentiles of those on the point-in-time
+    NYSE (``venue_pit & nyse_pit``) when at least ``nyse_min_names`` exist
+    (``nyse_pit``), else their cap terciles (``cap_terciles``), else none. A backcast or
+    current venue is never used.
+    """
+    size = len(keys)
+    universe = np.ones(size, dtype=bool) if universe is None else universe
+    venue_pit = np.zeros(size, dtype=bool) if venue_pit is None else venue_pit
+    nyse_pit = np.zeros(size, dtype=bool) if nyse_pit is None else nyse_pit
     month = keys // span
     counts = np.bincount(month, minlength=months)[:months]
     starts = _starts(counts)
-    buckets = np.zeros(len(keys), dtype=np.int8)
+    buckets = np.zeros(size, dtype=np.int8)
+    pit_share = np.full(months, _NAN)
+    nyse_names = np.zeros(months, dtype=np.int64)
     methods: list[str] = []
     for m in range(months):
         begin, end = int(starts[m]), int(starts[m] + counts[m])
-        caps = cap[begin:end]
-        positive = np.isfinite(caps) & (caps > 0)
-        nyse_caps = caps[positive & nyse[begin:end]]
-        if len(nyse_caps) >= spec.nyse_min_names:
-            low, high = np.percentile(nyse_caps, [20.0, 50.0])
-            methods.append("nyse_20_50")
-        elif positive.sum() >= 3:
-            low, high = np.percentile(caps[positive], [100.0 / 3.0, 200.0 / 3.0])
-            methods.append("cap_terciles")
-        else:
-            methods.append("none" if counts[m] else "no_context")
+        if end == begin:
+            methods.append("no_context")
             continue
+        caps = cap[begin:end]
+        members = universe[begin:end]
+        known = np.isfinite(caps) & (caps > 0)
+        positive = known & members
+        if members.any():
+            pit_share[m] = float(venue_pit[begin:end][members].mean())
+        reference = positive & venue_pit[begin:end] & nyse_pit[begin:end]
+        nyse_names[m] = int(reference.sum())
+        if nyse_names[m] >= spec.nyse_min_names:
+            method = VENUE_NYSE_PIT
+            low, high = np.percentile(caps[reference], [20.0, 50.0])
+        elif positive.sum() >= 3:
+            method = VENUE_CAP_TERCILES
+            low, high = np.percentile(caps[positive], [100.0 / 3.0, 200.0 / 3.0])
+        else:
+            methods.append("none")
+            continue
+        methods.append(method)
         segment = np.where(caps < low, 1, np.where(caps < high, 2, 3)).astype(np.int8)
-        buckets[begin:end] = np.where(positive, segment, 0)
-    return buckets, methods
+        buckets[begin:end] = np.where(known, segment, 0)
+    return _SizeBuckets(buckets, methods, pit_share, nyse_names)
+
+
+def _method_counts(methods: Sequence[str], mask: np.ndarray) -> str | None:
+    """``method:count`` pairs over the masked formations, e.g. ``cap_terciles:40,nyse_pit:120``."""
+    counts: dict[str, int] = {}
+    for method, chosen in zip(methods, mask, strict=True):
+        if chosen:
+            counts[method] = counts.get(method, 0) + 1
+    return ",".join(f"{name}:{count}" for name, count in sorted(counts.items())) or None
 
 
 def _samples(formed: np.ndarray, formation: np.ndarray, expected_end: np.ndarray,
@@ -915,13 +1186,31 @@ def _prepare(inputs: BasisInputs, spec: EvaluationSpec) -> _Prepared:
     if len(context):
         ctx_keys, order = _keyed(context, months, span, "context")
         cap = pd.to_numeric(context["market_cap"], errors="coerce").to_numpy(dtype=float)[order]
-        nyse = context["is_nyse"].fillna(False).to_numpy(dtype=bool)[order]
-        member = (context["valid_member"].fillna(False).to_numpy(dtype=bool)[order] if "valid_member" in context
-                  else np.ones(len(context), dtype=bool))
+
+        def flag(name: str, default: bool) -> np.ndarray:
+            if name not in context:
+                return np.full(len(context), default, dtype=bool)
+            return context[name].fillna(False).to_numpy(dtype=bool)[order]
+
+        member, primary = flag("valid_member", True), flag("primary_line", True)
+        unlinked = flag("unlinked_member", False)
+        venue_pit, nyse_pit = flag("venue_pit", False), flag("is_nyse_pit", False)
     else:
-        ctx_keys, cap, nyse, member = np.zeros(0, np.int64), np.zeros(0), np.zeros(0, bool), np.zeros(0, bool)
-    size, methods = _size_buckets(ctx_keys, cap, nyse, months, span, spec)
-    digests["context_sha256"] = _array_digest(ctx_keys, cap, nyse, member)
+        ctx_keys, cap = np.zeros(0, np.int64), np.zeros(0)
+        member = primary = unlinked = venue_pit = nyse_pit = np.zeros(0, bool)
+    universe = member & primary
+    unlinked &= ~universe
+    sized = _size_buckets(ctx_keys, cap, months, span, spec, universe=universe, venue_pit=venue_pit,
+                          nyse_pit=nyse_pit)
+    universe_names = np.bincount(ctx_keys[universe] // span, minlength=months)[:months] if len(ctx_keys) \
+        else np.zeros(months, np.int64)
+    unlinked_names = np.bincount(ctx_keys[unlinked] // span, minlength=months)[:months] if len(ctx_keys) \
+        else np.zeros(months, np.int64)
+    digests["context_sha256"] = _array_digest(ctx_keys, cap, member, primary, unlinked, venue_pit, nyse_pit)
+    segment = np.full(months, "full" if spec.split is None else "outside", dtype=object)
+    if spec.split is not None:
+        for name, start, end in spec.split.segments:
+            segment[(formation >= np.datetime64(start)) & (formation <= np.datetime64(end))] = name
 
     control_keys: dict[str, np.ndarray] = {}
     control_values: dict[str, np.ndarray] = {}
@@ -940,7 +1229,9 @@ def _prepare(inputs: BasisInputs, spec: EvaluationSpec) -> _Prepared:
         inputs.labels = inputs.context = inputs.controls = pd.DataFrame()
     return _Prepared(inputs.basis, months, span, month_start, formation, cutoff, formed, eligible,
                      label_keys, label_return, label_status, label_terminal, matured, expected_end,
-                     ctx_keys, cap, size, member, methods, control_keys, control_values, samples, digests)
+                     ctx_keys, cap, sized.buckets, member, universe, unlinked, venue_pit & nyse_pit,
+                     sized.venue_basis, sized.venue_pit_share, sized.nyse_pit_names, universe_names, unlinked_names,
+                     segment, control_keys, control_values, samples, digests)
 
 
 # ---------------------------------------------------------------------------
@@ -995,6 +1286,16 @@ class _Arrays:
     thin: np.ndarray
     coverage: np.ndarray
     rows: int
+    dropped_not_valid: np.ndarray
+    dropped_not_primary: np.ndarray
+    #: per formation: ranked values on unlinked lines (their own names)
+    unlinked_values: np.ndarray
+
+
+def _has_unlinked_lines(feature: FeatureData) -> bool:
+    """True for an identity-free price-line feature that ranks unlinked lines as their own names."""
+    values = feature.values
+    return "unlinked_line" in values and bool(np.asarray(values["unlinked_line"].fillna(False), dtype=bool).any())
 
 
 def _variant_arrays(prep: _Prepared, feature: FeatureData, variant: str) -> _Arrays:
@@ -1014,7 +1315,8 @@ def _variant_arrays(prep: _Prepared, feature: FeatureData, variant: str) -> _Arr
                 coverage[index] = pd.to_numeric(dates["coverage_fraction"], errors="coerce").to_numpy(dtype=float)
     if not len(part):
         empty = np.zeros(0, np.int64)
-        return _Arrays(empty, empty, np.zeros(0), thin, coverage, 0)
+        return _Arrays(empty, empty, np.zeros(0), thin, coverage, 0, np.zeros(months, np.int64),
+                       np.zeros(months, np.int64), np.zeros(months, np.int64))
     keys, order = _keyed(part, months, span, f"{feature.feature_id}/{variant}")
     month = keys // span
     security = keys % span
@@ -1033,7 +1335,23 @@ def _variant_arrays(prep: _Prepared, feature: FeatureData, variant: str) -> _Arr
             raise LookaheadError(f"{feature.feature_id}/{variant}: {int(late.sum())} values available after "
                                  f"their formation cutoff")
     keep = np.isfinite(value) & ~thin[month]
-    return _Arrays(month[keep], security[keep], value[keep], thin, coverage, len(part))
+    # The ranked universe: valid cohort rows on the issuer's primary line (one line per issuer),
+    # plus, for values R2b flags as unlinked lines, eligible lines without an owner link.
+    context_index = _lookup(prep.context_keys, keys)
+    valid = _take(prep.context_member, context_index, False).astype(bool)
+    universe = _take(prep.context_universe, context_index, False).astype(bool)
+    flagged = (part["unlinked_line"].fillna(False).to_numpy(dtype=bool)[order] if "unlinked_line" in part
+               else np.zeros(len(keys), dtype=bool))
+    linked_ok = universe & ~flagged
+    unlinked_ok = flagged & _take(prep.context_unlinked, context_index, False).astype(bool)
+    not_primary = keep & ~flagged & valid & ~universe
+    not_valid = keep & ~linked_ok & ~unlinked_ok & ~not_primary
+    dropped_not_valid = np.bincount(month[not_valid], minlength=months)[:months]
+    dropped_not_primary = np.bincount(month[not_primary], minlength=months)[:months]
+    keep &= linked_ok | unlinked_ok
+    unlinked_values = np.bincount(month[keep & unlinked_ok], minlength=months)[:months]
+    return _Arrays(month[keep], security[keep], value[keep], thin, coverage, len(part), dropped_not_valid,
+                   dropped_not_primary, unlinked_values)
 
 
 def _cell_identity(prep: _Prepared, feature: FeatureData, variant: str, h: int, meta: Mapping[str, Any],
@@ -1041,10 +1359,12 @@ def _cell_identity(prep: _Prepared, feature: FeatureData, variant: str, h: int, 
     return {
         "basis": prep.basis, "feature_id": feature.feature_id, "variant": variant, "horizon_months": h,
         "horizon_sessions": HORIZON_SESSIONS[h], "sample": sample,
-        "anomaly_class": feature.anomaly_class, "expected_sign": int(feature.expected_sign),
+        "anomaly_class": feature.anomaly_class, "hypothesis_family": feature.hypothesis_family,
+        "expected_sign": int(feature.expected_sign),
         "identity_basis": meta.get("identity_basis"), "universe_basis": meta.get("universe_basis"),
         "classification_basis": meta.get("classification_basis"),
         "availability_basis": meta.get("availability_basis"), "label_basis": LABEL_BASIS,
+        "universe_rule": UNIVERSE_RULE, "fm_standardized": variant in STANDARDIZED_VARIANTS,
     }
 
 
@@ -1108,19 +1428,31 @@ def _fama_macbeth(month: np.ndarray, y: np.ndarray, columns: Mapping[str, np.nda
 
 
 def _evaluate_variant(prep: _Prepared, spec: EvaluationSpec, feature: FeatureData, variant: str,
-                      arrays: _Arrays, meta: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+                      arrays: _Arrays, meta: Mapping[str, Any], unlinked_scope: bool = False
+                      ) -> dict[str, list[dict[str, Any]]]:
     months, span = prep.months, prep.span
     month, security, value = arrays.month, arrays.security, arrays.value
-    out: dict[str, list[dict[str, Any]]] = {"cells": [], "slices": [], "quantiles": [], "decay": []}
+    out: dict[str, list[Any]] = {"cells": [], "slices": [], "quantiles": [], "decay": [], "series": []}
     sample_name = "full" if spec.split is None else "selection"
     counts = np.bincount(month, minlength=months)[:months]
     formation_ok = counts >= spec.min_names
+    # Coverage denominator: the feature's ranked universe (valid primary lines, plus eligible
+    # unlinked lines for an identity-free price-line feature).
+    universe_names = prep.universe_names + (prep.unlinked_names if unlinked_scope else 0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        value_coverage = counts / np.where(universe_names > 0, universe_names, np.nan)
     keys = month * span + security
     deciles = grouped_quantiles(month, value, security, months, 10, 1)
     quintiles = grouped_quantiles(month, value, security, months, 5, 1)
     context_index = _lookup(prep.context_keys, keys)
     cap = _take(prep.context_cap, context_index, _NAN)
     size = _take(prep.context_size, context_index, 0).astype(np.int8)
+    nyse_deciles = breakpoint_quantiles(month, value, _take(prep.context_nyse, context_index, False).astype(bool),
+                                        months, 10, spec.nyse_min_names)
+    del context_index
+    formed_index = np.flatnonzero(prep.formed)
+    venue_masks = {venue: np.array([basis == venue for basis in prep.venue_basis], dtype=bool)
+                   for venue in SIZE_SLICE_KINDS}
 
     # Turnover and rank autocorrelation (horizon independent).
     top = (deciles == 10) & formation_ok[month]
@@ -1164,10 +1496,13 @@ def _evaluate_variant(prep: _Prepared, spec: EvaluationSpec, feature: FeatureDat
         u_cap = cap[use]
         ew10, vw10, count10 = _bucket_means(u_month, deciles[use], u_return, months, 10, u_cap)
         ew5, vw5, count5 = _bucket_means(u_month, quintiles[use], u_return, months, 5, u_cap)
+        nyse_ew10, nyse_vw10, _ = _bucket_means(u_month, nyse_deciles[use], u_return, months, 10, u_cap)
         del u_cap
-        assert vw10 is not None and vw5 is not None
+        assert vw10 is not None and vw5 is not None and nyse_vw10 is not None
         spreads = {"ew10": ew10[:, 9] - ew10[:, 0], "vw10": vw10[:, 9] - vw10[:, 0],
-                   "ew5": ew5[:, 4] - ew5[:, 0], "vw5": vw5[:, 4] - vw5[:, 0]}
+                   "ew5": ew5[:, 4] - ew5[:, 0], "vw5": vw5[:, 4] - vw5[:, 0],
+                   "nyse_ew10": nyse_ew10[:, 9] - nyse_ew10[:, 0], "nyse_vw10": nyse_vw10[:, 9] - nyse_vw10[:, 0]}
+        del nyse_ew10, nyse_vw10
         for series in spreads.values():
             series[~usable] = _NAN
         fm = _fama_macbeth(u_month, u_return, {"x": u_value}, months, spec)
@@ -1211,8 +1546,7 @@ def _evaluate_variant(prep: _Prepared, spec: EvaluationSpec, feature: FeatureDat
         counted = matured_row & primary[month]
         status_primary = status[counted]
         used_primary = use & primary[month]
-        with np.errstate(invalid="ignore", divide="ignore"):
-            coverage = used_counts[in_sample] / prep.eligible[in_sample]
+        coverage = value_coverage[primary]
         n_formations = int(in_sample.sum())
         testable = ic_inf.n_obs >= spec.min_formations and ic_inf.robust_df >= 1 and \
             math.isfinite(ic_inf.robust_p_value)
@@ -1223,6 +1557,8 @@ def _evaluate_variant(prep: _Prepared, spec: EvaluationSpec, feature: FeatureDat
         row = _cell_identity(prep, feature, variant, h, meta, sample_name)
         row.update({
             "status": cell_status,
+            "status_reason": {"tested": None, "no_values": "no_values_in_primary_sample"}.get(
+                cell_status, f"ic_formations_{ic_inf.n_obs}_below_{spec.min_formations}_or_no_ewc_df"),
             "formations_calendar": months, "formations_formed": int(prep.formed.sum()),
             "formations_with_values": int(((counts > 0) & primary).sum()),
             "formations_thin": int((arrays.thin & primary).sum()),
@@ -1238,8 +1574,14 @@ def _evaluate_variant(prep: _Prepared, spec: EvaluationSpec, feature: FeatureDat
             "stitched_policy": int((terminal[used_primary] == TERMINAL_POLICY).sum()),
             "mean_names": float(used_counts[in_sample].mean()) if n_formations else None,
             "min_names_used": int(used_counts[in_sample].min()) if n_formations else None,
-            "mean_coverage": _nanmean(coverage) if n_formations else None,
+            "universe_scope": UNIVERSE_SCOPE_WITH_UNLINKED if unlinked_scope else UNIVERSE_SCOPE_LINKED,
+            "values_unlinked_lines": int(arrays.unlinked_values[primary].sum()),
+            "mean_universe_names": _nanmean(universe_names[primary].astype(float)),
+            "mean_coverage": _nanmean(coverage),
+            "min_coverage": float(np.nanmin(coverage)) if np.isfinite(coverage).any() else None,
             "mean_feature_coverage": _nanmean(arrays.coverage[primary]),
+            "values_dropped_not_valid": int(arrays.dropped_not_valid[primary].sum()),
+            "values_dropped_not_primary": int(arrays.dropped_not_primary[primary].sum()),
             "ic_mean": _num(ic_inf.mean), "ic_sd": _num(ic_sd),
             "ic_ir": _num(ic_inf.mean / ic_sd) if ic_sd and math.isfinite(ic_sd) and ic_sd > 0 else None,
             "ic_positive_share": float((ic_values > 0).mean()) if len(ic_values) else None,
@@ -1259,6 +1601,10 @@ def _evaluate_variant(prep: _Prepared, spec: EvaluationSpec, feature: FeatureDat
             "ls_ew10_boot_high": None if ls_boot is None else _num(ls_boot.high),
             "ls_ew10_n": ls_inf["ew10"].n_obs,
             **_short("ls_vw10", ls_inf["vw10"]), **_short("ls_ew5", ls_inf["ew5"]), **_short("ls_vw5", ls_inf["vw5"]),
+            **_short("ls_nyse_ew10", ls_inf["nyse_ew10"]), **_short("ls_nyse_vw10", ls_inf["nyse_vw10"]),
+            "ls_nyse_n": ls_inf["nyse_ew10"].n_obs,
+            "venue_basis": _method_counts(prep.venue_basis, primary),
+            "venue_pit_share": _nanmean(prep.venue_pit_share[primary]),
             "fm_slope": _num(fm_inf.mean), "fm_robust_t": _num(fm_inf.robust_t),
             "fm_robust_p": _num(fm_inf.robust_p_value), "fm_z": _num(fm_inf.z_equivalent),
             "fm_nw_t": _num(fm_inf.nw_t), "fm_n": fm_inf.n_obs,
@@ -1284,6 +1630,25 @@ def _evaluate_variant(prep: _Prepared, spec: EvaluationSpec, feature: FeatureDat
         out["cells"].append(row)
         out["decay"].append(_decay_row(prep, feature, variant, "availability_lag1", h, lag_inf,
                                        lag_inf.mean / ic_inf.mean if ic_inf.mean else _NAN))
+        chosen_months = formed_index
+        out["series"].append(pd.DataFrame({
+            "basis": prep.basis, "feature_id": feature.feature_id, "variant": variant, "horizon_months": h,
+            "formation_date": prep.formation[chosen_months], "segment": prep.segment[chosen_months],
+            "in_selection": primary[chosen_months], "matured": prep.matured[h][chosen_months],
+            "usable": usable[chosen_months], "universe_names": universe_names[chosen_months],
+            "n_values": counts[chosen_months], "n_unlinked": arrays.unlinked_values[chosen_months],
+            "n_used": used_counts[chosen_months],
+            "coverage": value_coverage[chosen_months],
+            "dropped_not_valid": arrays.dropped_not_valid[chosen_months],
+            "dropped_not_primary": arrays.dropped_not_primary[chosen_months],
+            "venue_basis": [prep.venue_basis[i] for i in chosen_months],
+            "nyse_pit_names": prep.nyse_pit_names[chosen_months],
+            "ic": ic[chosen_months], "ls_ew10": spreads["ew10"][chosen_months],
+            "ls_vw10": spreads["vw10"][chosen_months], "ls_ew5": spreads["ew5"][chosen_months],
+            "ls_vw5": spreads["vw5"][chosen_months], "ls_nyse_ew10": spreads["nyse_ew10"][chosen_months],
+            "ls_nyse_vw10": spreads["nyse_vw10"][chosen_months], "fm_slope": fm[chosen_months],
+            "fmc_slope": fmc[chosen_months], "net25_ew10": net[25][chosen_months],
+            "ic_lag1": lag_ic[chosen_months]}))
         # Slices: frozen split segments and subperiods.
         for (kind, name), mask in samples.masks.items():
             slice_mask = mask & usable
@@ -1291,8 +1656,9 @@ def _evaluate_variant(prep: _Prepared, spec: EvaluationSpec, feature: FeatureDat
             out["slices"].append(_slice_row(
                 prep, feature, variant, h, kind, name, _infer(ic, mask, h), _infer(spreads["ew10"], mask, h), "ew10",
                 int(slice_mask.sum()), purged, embargoed,
-                float(used_counts[slice_mask].mean()) if slice_mask.any() else None, None))
-        # Size buckets on the primary sample.
+                float(used_counts[slice_mask].mean()) if slice_mask.any() else None, None, None, None))
+        # Size buckets on the primary sample, one slice kind per breakpoint basis: point-in-time
+        # NYSE buckets never mix in formations bucketed by cap terciles.
         for bucket, bucket_name in enumerate(SIZE_BUCKETS):
             in_bucket = size == bucket
             chosen = use & in_bucket
@@ -1308,12 +1674,15 @@ def _evaluate_variant(prep: _Prepared, spec: EvaluationSpec, feature: FeatureDat
             bucket_ls[bucket_n < spec.min_bucket_names] = _NAN
             with np.errstate(invalid="ignore", divide="ignore"):
                 share = bucket_n / used_counts
-            valid_months = in_sample & (bucket_n >= spec.min_bucket_names)
-            out["slices"].append(_slice_row(
-                prep, feature, variant, h, "size_bucket", bucket_name, _infer(bucket_ic, primary, h),
-                _infer(bucket_ls, primary, h), "ew5", int(valid_months.sum()), 0, 0,
-                float(bucket_n[valid_months].mean()) if valid_months.any() else None,
-                _nanmean(share[in_sample])))
+            for venue, kind in SIZE_SLICE_KINDS.items():
+                sample = primary & venue_masks[venue]
+                valid_months = in_sample & venue_masks[venue] & (bucket_n >= spec.min_bucket_names)
+                out["slices"].append(_slice_row(
+                    prep, feature, variant, h, kind, bucket_name, _infer(bucket_ic, sample, h),
+                    _infer(bucket_ls, sample, h), "ew5", int(valid_months.sum()), 0, 0,
+                    float(bucket_n[valid_months].mean()) if valid_months.any() else None,
+                    _nanmean(share[in_sample & venue_masks[venue]]), venue,
+                    _nanmean(prep.venue_pit_share[sample])))
 
     first = cumulative[0][1].mean if cumulative else _NAN
     for h, inference in cumulative:
@@ -1359,10 +1728,12 @@ def _decay_row(prep: _Prepared, feature: FeatureData, variant: str, kind: str, h
 
 def _slice_row(prep: _Prepared, feature: FeatureData, variant: str, h: int, kind: str, name: str,
                ic: stats.MeanInference, ls: stats.MeanInference, ls_kind: str, formations: int, purged: int,
-               embargoed: int, mean_names: float | None, share: float | None) -> dict[str, Any]:
+               embargoed: int, mean_names: float | None, share: float | None, venue_basis: str | None,
+               venue_pit_share: float | None) -> dict[str, Any]:
     return {"basis": prep.basis, "feature_id": feature.feature_id, "variant": variant, "horizon_months": h,
             "slice_kind": kind, "slice_name": name, "formations": formations, "purged": purged,
             "embargoed": embargoed, "mean_names": mean_names, "name_share": share,
+            "venue_basis": venue_basis, "venue_pit_share": venue_pit_share,
             "ic_mean": _num(ic.mean), "ic_robust_t": _num(ic.robust_t), "ic_robust_p": _num(ic.robust_p_value),
             "ic_robust_df": ic.robust_df, "ic_z": _num(ic.z_equivalent), "ic_nw_t": _num(ic.nw_t),
             "ls_kind": ls_kind, "ls_mean": _num(ls.mean), "ls_robust_t": _num(ls.robust_t),
@@ -1400,54 +1771,190 @@ def _marginal_decay(prep: _Prepared, spec: EvaluationSpec, feature: FeatureData,
     return rows
 
 
-def _evaluate_feature(prep: _Prepared, inputs: BasisInputs, spec: EvaluationSpec,
-                      feature_id: str) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+def _evaluate_feature(prep: _Prepared, inputs: BasisInputs, spec: EvaluationSpec, feature_id: str,
+                      catalog: Mapping[str, CatalogFeature] | None = None
+                      ) -> tuple[dict[str, list[Any]], dict[str, Any]]:
     feature = inputs.load_feature(feature_id)
     if feature.feature_id != feature_id:
         raise EvaluationInputError(f"loader returned {feature.feature_id} for {feature_id}")
-    if feature.expected_sign not in (-1, 1):
-        raise EvaluationInputError(f"{feature_id}: expected_sign must be +1 or -1")
+    if feature.expected_sign not in (-1, 0, 1):
+        raise EvaluationInputError(f"{feature_id}: expected_sign must be +1, -1 or 0 (two-sided)")
+    entry = None if catalog is None else catalog.get(feature_id)
+    if entry is not None:
+        if feature.expected_sign != entry.expected_sign:
+            raise EvaluationInputError(f"{feature_id}: expected_sign {feature.expected_sign} differs from the R1a "
+                                       f"catalog ({entry.expected_sign})")
+        feature = replace(feature, anomaly_class=feature.anomaly_class or entry.anomaly_class,
+                          hypothesis_family=feature.hypothesis_family or entry.hypothesis_family)
     variants = [v for v in inputs.variants_by_feature.get(feature_id, ())
                 if spec.variants is None or v in spec.variants]
-    out: dict[str, list[dict[str, Any]]] = {"cells": [], "slices": [], "quantiles": [], "decay": []}
+    out: dict[str, list[Any]] = {"cells": [], "slices": [], "quantiles": [], "decay": [], "series": []}
     digest = hashlib.sha256(feature_id.encode("utf-8"))
     total = 0
+    unlinked_scope = _has_unlinked_lines(feature)
     for variant in variants:
         arrays = _variant_arrays(prep, feature, variant)
         digest.update(variant.encode("utf-8"))
         digest.update(_array_digest(arrays.month, arrays.security, arrays.value, arrays.thin,
                                     arrays.coverage).encode("ascii"))
         total += arrays.rows
-        for key, rows in _evaluate_variant(prep, spec, feature, variant, arrays, inputs.meta).items():
+        for key, rows in _evaluate_variant(prep, spec, feature, variant, arrays, inputs.meta,
+                                           unlinked_scope).items():
             out[key].extend(rows)
     return out, {"basis": prep.basis, "feature_id": feature_id, "status": "evaluated",
                  "expected_sign": int(feature.expected_sign), "variants": _canonical(variants),
                  "value_rows": total, "values_sha256": digest.hexdigest()}
 
 
-def _untestable_cells(inputs: BasisInputs, spec: EvaluationSpec,
-                      evaluated: Iterable[tuple[str, str]]) -> list[dict[str, Any]]:
-    """Status-only cells of a data-less basis for every evaluated or declared (feature, variant)."""
-    rows = []
-    meta = inputs.meta
-    declared = {(f, v) for f, variants in inputs.variants_by_feature.items() for v in variants
-                if (spec.features is None or f in spec.features) and (spec.variants is None or v in spec.variants)}
-    for feature_id, variant in sorted(set(evaluated) | declared):
-        for h in spec.horizons_months:
-            rows.append({"basis": inputs.basis, "feature_id": feature_id, "variant": variant,
-                         "horizon_months": h, "horizon_sessions": HORIZON_SESSIONS[h],
-                         "sample": "full" if spec.split is None else "selection", "status": inputs.status,
-                         "identity_basis": meta.get("identity_basis"), "universe_basis": meta.get("universe_basis"),
-                         "classification_basis": meta.get("classification_basis"),
-                         "availability_basis": meta.get("availability_basis"), "label_basis": LABEL_BASIS,
-                         "formations_usable": 0, "feature_rows": 0, "ic_hlz_pass": False})
-    return rows
+@dataclass(frozen=True)
+class _BasisInfo:
+    status: str
+    meta: Mapping[str, Any]
+    declared: frozenset[tuple[str, str]]
+
+
+def _subset_excluded(spec: EvaluationSpec, feature_id: str, variant: str, h: int | None = None) -> bool:
+    return ((spec.features is not None and feature_id not in spec.features)
+            or (spec.variants is not None and variant not in spec.variants)
+            or (h is not None and h not in spec.horizons_months))
+
+
+def _is_subset(spec: EvaluationSpec) -> bool:
+    return spec.features is not None or spec.variants is not None or spec.horizons_months != DEFAULT_HORIZONS
+
+
+def _status_reason(info: _BasisInfo, feature_id: str, status: str) -> str:
+    """Why a status-only cell has no statistics (R2b's catalog status for an unproduced feature)."""
+    if status == BASIS_UNTESTABLE:
+        return "basis_untestable"
+    if status == EXCLUDED_BY_SUBSET:
+        return "run_subset"
+    listed = info.meta.get("feature_catalog_status")
+    if not isinstance(listed, Mapping):
+        return "not_supplied"
+    if feature_id not in listed:
+        return "r2b:not_listed"
+    return f"r2b:{listed[feature_id]}" if not str(listed[feature_id]).startswith("built") else "r2b:variant_not_built"
+
+
+def _status_row(basis: str, info: _BasisInfo, spec: EvaluationSpec, feature_id: str, variant: str, h: int,
+                status: str, catalog: Mapping[str, CatalogFeature] | None) -> dict[str, Any]:
+    """A cell with a status and no statistics (untestable basis, not produced, excluded by subset)."""
+    meta = info.meta
+    entry = None if catalog is None else catalog.get(feature_id)
+    return {"basis": basis, "feature_id": feature_id, "variant": variant, "horizon_months": h,
+            "horizon_sessions": HORIZON_SESSIONS[h], "sample": "full" if spec.split is None else "selection",
+            "status": status, "status_reason": _status_reason(info, feature_id, status),
+            "anomaly_class": None if entry is None else entry.anomaly_class,
+            "hypothesis_family": None if entry is None else entry.hypothesis_family,
+            "expected_sign": None if entry is None else entry.expected_sign,
+            "identity_basis": meta.get("identity_basis"), "universe_basis": meta.get("universe_basis"),
+            "classification_basis": meta.get("classification_basis"),
+            "availability_basis": meta.get("availability_basis"), "label_basis": LABEL_BASIS,
+            "universe_rule": UNIVERSE_RULE, "fm_standardized": variant in STANDARDIZED_VARIANTS,
+            "formations_usable": 0, "feature_rows": 0, "ic_hlz_pass": False}
+
+
+def _status_cells(con: duckdb.DuckDBPyConnection, run_id: str, spec: EvaluationSpec,
+                  info: Mapping[str, _BasisInfo], catalog: Mapping[str, CatalogFeature] | None
+                  ) -> tuple[list[dict[str, Any]], dict[str, dict[str, int]]]:
+    """Status rows that complete the expected family, and per-basis completeness counts.
+
+    Expected cells: catalog feature x catalog variants x default horizons (or, without a
+    catalog, the produced and declared cells). On a testable basis an expected cell the
+    engine did not produce is ``excluded_by_subset`` when the run's subset left it out,
+    else ``not_produced``; a data-less basis reports every expected, declared or produced
+    (feature, variant) as ``untestable_strict``.
+    """
+    produced: dict[str, set[tuple[str, str, int]]] = {}
+    for basis, feature_id, variant, h in con.execute(f"""
+        SELECT basis, feature_id, variant, horizon_months FROM research_eval_cells
+        WHERE run_id=? AND status NOT IN ({', '.join('?' * len(STATUS_ONLY))})
+    """, [run_id, *STATUS_ONLY]).fetchall():
+        produced.setdefault(str(basis), set()).add((str(feature_id), str(variant), int(h)))
+    produced_pairs = {(f, v) for cells in produced.values() for f, v, _ in cells}
+    expected = sorted((f, v) for f, entry in (catalog or {}).items() for v in entry.variants)
+    horizons = DEFAULT_HORIZONS if catalog is not None else spec.horizons_months
+    rows: list[dict[str, Any]] = []
+    counts: dict[str, dict[str, int]] = {}
+    for basis, item in sorted(info.items()):
+        done = produced.get(basis, set())
+        if item.status == BASIS_UNTESTABLE:
+            declared = {(f, v) for f, v in item.declared if not _subset_excluded(spec, f, v)}
+            for feature_id, variant in sorted(set(expected) | declared | produced_pairs):
+                for h in sorted(set(horizons) | set(spec.horizons_months)):
+                    rows.append(_status_row(basis, item, spec, feature_id, variant, h, BASIS_UNTESTABLE, catalog))
+            continue
+        missing = excluded = 0
+        for feature_id, variant in expected:
+            for h in horizons:
+                if (feature_id, variant, h) in done:
+                    continue
+                status = EXCLUDED_BY_SUBSET if _subset_excluded(spec, feature_id, variant, h) else NOT_PRODUCED
+                missing += status == NOT_PRODUCED
+                excluded += status == EXCLUDED_BY_SUBSET
+                rows.append(_status_row(basis, item, spec, feature_id, variant, h, status, catalog))
+        outside = len({f for f, _, _ in done if catalog is not None and f not in catalog})
+        counts[basis] = {"expected_cells": len(expected) * len(horizons), "produced_cells": len(done),
+                         "not_produced": missing, "excluded_by_subset": excluded,
+                         "features_outside_catalog": outside}
+    return rows, counts
+
+
+def _finish_family(con: duckdb.DuckDBPyConnection, run_id: str, spec: EvaluationSpec, info: Mapping[str, _BasisInfo],
+                   catalog: Mapping[str, CatalogFeature] | None,
+                   transaction: Callable[[], AbstractContextManager[Any]], *,
+                   catalog_info: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Rebuild the status rows, then compute and store the family columns of every cell."""
+    provenance = dict(catalog_info or {"catalog_source": None if catalog is None else "injected"})
+    rows, counts = _status_cells(con, run_id, spec, info, catalog)
+    with transaction():
+        con.execute(f"DELETE FROM research_eval_cells WHERE run_id=? AND status IN "
+                    f"({', '.join('?' * len(STATUS_ONLY))})", [run_id, *STATUS_ONLY])
+        _insert(con, "cells", run_id, _frame(rows, "cells"))
+    del rows
+    cells = con.execute("""
+        SELECT basis, feature_id, variant, horizon_months, status, ic_robust_p, ic_hlz_pass,
+               sharpe, sharpe_skew, sharpe_kurt, sharpe_n
+        FROM research_eval_cells WHERE run_id=? ORDER BY basis, feature_id, variant, horizon_months
+    """, [run_id]).df()
+    if not len(cells):
+        return {"family_complete": False, "catalog_sha256": _catalog_sha(catalog), **provenance, "bases": counts,
+                "bases_supplied": sorted(info)}
+    family, summary = compute_family(cells)
+    with transaction():
+        typed = _typed(family, [(name, kind) for name, kind in CELL_COLUMNS if name in family.columns])
+        con.register("_ev_family", typed)
+        try:
+            assignments = ", ".join(f"{name}=f.{name}" for name in FAMILY_COLUMNS)
+            con.execute(f"""
+                UPDATE research_eval_cells AS c SET {assignments} FROM _ev_family f
+                WHERE c.run_id=? AND c.basis=f.basis AND c.feature_id=f.feature_id
+                  AND c.variant=f.variant AND c.horizon_months=f.horizon_months
+            """, [run_id])
+        finally:
+            con.unregister("_ev_family")
+    missing = sum(item["not_produced"] for item in counts.values())
+    summary.update({
+        "catalog_sha256": _catalog_sha(catalog),
+        **provenance,
+        "catalog_anchored": catalog is not None,
+        "subset": None if not _is_subset(spec) else {
+            "features": None if spec.features is None else list(spec.features),
+            "variants": None if spec.variants is None else list(spec.variants),
+            "horizons_months": list(spec.horizons_months)},
+        "bases": counts,
+        "bases_supplied": sorted(info),
+        "family_complete": (catalog is not None and not _is_subset(spec) and missing == 0
+                            and set(BASES) <= set(info)),
+    })
+    return summary
 
 
 def _basis_attrition(prep: _Prepared, spec: EvaluationSpec) -> list[dict[str, Any]]:
-    """Label accounting over the basis cohort (context members) at matured formations."""
+    """Label accounting over the ranked universe (valid primary cohort rows) at matured formations."""
     rows: list[dict[str, Any]] = []
-    member_keys = prep.context_keys[prep.context_member]
+    member_keys = prep.context_keys[prep.context_universe]
     for h in spec.horizons_months:
         matured = prep.matured[h]
         keys = prep.label_keys[h]
@@ -1477,7 +1984,7 @@ def _basis_attrition(prep: _Prepared, spec: EvaluationSpec) -> list[dict[str, An
 # Family-wide multiple testing and deflated Sharpe
 # ---------------------------------------------------------------------------
 
-FAMILY_COLUMNS = ("family_member", "bh_q", "holm_p", "bh_discovery", "hlz_pass", "dsr", "dsr_z",
+FAMILY_COLUMNS = ("family_member", "bh_q", "holm_p", "bh_discovery", "hlz_pass", "psr", "dsr", "dsr_z",
                   "dsr_benchmark", "dsr_n_trials", "dsr_effective_n", "dsr_sharpe_variance", "family_best")
 
 
@@ -1512,7 +2019,7 @@ def compute_family(cells: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
         record: dict[str, Any] = dict(zip(key_columns, key, strict=True))
         record.update({"family_member": bool(member[i]), "bh_q": None, "holm_p": None, "bh_discovery": False,
                        "hlz_pass": bool(member[i] and status[i] == "tested" and bool(frame["ic_hlz_pass"].iloc[i])),
-                       "dsr": None, "dsr_z": None, "dsr_benchmark": None, "dsr_n_trials": None,
+                       "psr": None, "dsr": None, "dsr_z": None, "dsr_benchmark": None, "dsr_n_trials": None,
                        "dsr_effective_n": None, "dsr_sharpe_variance": None, "family_best": False})
         if member[i]:
             q = bh.get(key)
@@ -1523,6 +2030,10 @@ def compute_family(cells: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
             record["dsr_n_trials"], record["dsr_sharpe_variance"] = n_trials, _num(variances[h])
             record["dsr_effective_n"] = stats.effective_sample_size(int(sharpe_n[i]), h)
             record["family_best"] = best[h] == i
+            with suppress(ValueError, ArithmeticError):  # PSR vs zero, floor(n/h) independent returns
+                record["psr"] = _num(stats.probabilistic_sharpe_ratio(
+                    float(sharpe[i]), 0.0, n_obs=int(sharpe_n[i]), skewness=float(frame["sharpe_skew"].iloc[i]),
+                    kurtosis=float(frame["sharpe_kurt"].iloc[i]), horizon_periods=h))
             try:
                 result = stats.deflated_sharpe_ratio(
                     float(sharpe[i]), n_obs=int(sharpe_n[i]),
@@ -1540,13 +2051,22 @@ def compute_family(cells: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
         summary_horizons[str(h)] = {
             "tested": int((tested & (horizons == h)).sum()), "sharpe_variance": _num(variances[h]),
             "best": {"key": list(keys[i]), "sharpe": _num(sharpe[i]), "dsr": _num(family.loc[i, "dsr"])}}
+    composition: dict[str, dict[str, int]] = {}
+    for (basis, _, _, _), cell_status in zip(keys, status, strict=True):
+        by_status = composition.setdefault(basis, {})
+        by_status[str(cell_status)] = by_status.get(str(cell_status), 0) + 1
     summary = {
         "family_cells": int(member.sum()), "n_trials": n_trials, "tested_cells": int((status == "tested").sum()),
         "bh_alpha": BH_ALPHA, "bh_discoveries": int(family["bh_discovery"].sum()),
         "holm_discoveries": int(sum(1 for v in holm.values() if v is not None and v <= BH_ALPHA)),
         "hlz_passes": int(family["hlz_pass"].sum()),
-        "family_rule": "cells with status tested or insufficient_formations; insufficient enter BH/Holm as p=1",
-        "significance": "EWC fixed-b robust p (stats.mean_inference); NW t secondary",
+        "family_rule": ("every expected cell on a testable basis; only tested cells carry their IC robust p, "
+                        "insufficient_formations/no_values/not_produced/excluded_by_subset enter BH/Holm as p=1; "
+                        "untestable_strict cells are reported outside the family"),
+        "significance": ("IC mean, EWC fixed-b robust p / z (stats.mean_inference, horizon_periods=h); NW t "
+                         "secondary; decile spreads, FM slopes, PSR and DSR (EW10 long-short, horizon_periods=h, "
+                         "DSR n_trials = the whole family) are supporting evidence"),
+        "composition": {basis: dict(sorted(items.items())) for basis, items in sorted(composition.items())},
         "horizons": summary_horizons,
     }
     return family, summary
@@ -1559,15 +2079,18 @@ def compute_family(cells: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
 _D, _I, _B, _V = "DOUBLE", "INTEGER", "BOOLEAN", "VARCHAR"
 _IDENTITY = (("basis", _V), ("feature_id", _V), ("variant", _V), ("horizon_months", _I))
 CELL_COLUMNS: tuple[tuple[str, str], ...] = (
-    *_IDENTITY, ("horizon_sessions", _I), ("status", _V), ("sample", _V), ("anomaly_class", _V),
+    *_IDENTITY, ("horizon_sessions", _I), ("status", _V), ("status_reason", _V), ("sample", _V),
+    ("anomaly_class", _V), ("hypothesis_family", _V),
     ("expected_sign", _I), ("identity_basis", _V), ("universe_basis", _V), ("classification_basis", _V),
-    ("availability_basis", _V), ("label_basis", _V),
+    ("availability_basis", _V), ("label_basis", _V), ("universe_rule", _V), ("fm_standardized", _B),
     ("formations_calendar", _I), ("formations_formed", _I), ("formations_with_values", _I),
     ("formations_thin", _I), ("formations_matured", _I), ("formations_usable", _I),
     ("feature_rows", "BIGINT"), ("labels_valid", "BIGINT"), ("labels_missing", "BIGINT"),
     ("labels_invalid", "BIGINT"), ("labels_unsupported", "BIGINT"), ("stitched_observed", "BIGINT"),
-    ("stitched_policy", "BIGINT"), ("mean_names", _D), ("min_names_used", _I), ("mean_coverage", _D),
-    ("mean_feature_coverage", _D),
+    ("stitched_policy", "BIGINT"), ("mean_names", _D), ("min_names_used", _I), ("universe_scope", _V),
+    ("values_unlinked_lines", "BIGINT"), ("mean_universe_names", _D),
+    ("mean_coverage", _D), ("min_coverage", _D), ("mean_feature_coverage", _D),
+    ("values_dropped_not_valid", "BIGINT"), ("values_dropped_not_primary", "BIGINT"),
     ("ic_mean", _D), ("ic_sd", _D), ("ic_ir", _D), ("ic_positive_share", _D), ("ic_n", _I),
     ("ic_robust_t", _D), ("ic_robust_p", _D), ("ic_robust_df", _I), ("ic_z", _D), ("ic_ci_low", _D),
     ("ic_ci_high", _D), ("ic_nw_t", _D), ("ic_nw_p", _D), ("ic_nw_lags", _I), ("ic_boot_low", _D),
@@ -1578,6 +2101,9 @@ CELL_COLUMNS: tuple[tuple[str, str], ...] = (
     ("ls_vw10_mean", _D), ("ls_vw10_robust_t", _D), ("ls_vw10_robust_p", _D), ("ls_vw10_z", _D),
     ("ls_ew5_mean", _D), ("ls_ew5_robust_t", _D), ("ls_ew5_robust_p", _D), ("ls_ew5_z", _D),
     ("ls_vw5_mean", _D), ("ls_vw5_robust_t", _D), ("ls_vw5_robust_p", _D), ("ls_vw5_z", _D),
+    ("ls_nyse_ew10_mean", _D), ("ls_nyse_ew10_robust_t", _D), ("ls_nyse_ew10_robust_p", _D), ("ls_nyse_ew10_z", _D),
+    ("ls_nyse_vw10_mean", _D), ("ls_nyse_vw10_robust_t", _D), ("ls_nyse_vw10_robust_p", _D), ("ls_nyse_vw10_z", _D),
+    ("ls_nyse_n", _I), ("venue_basis", _V), ("venue_pit_share", _D),
     ("mono_ew10", _D), ("mono_vw10", _D), ("mono_ew5", _D), ("mono_vw5", _D),
     ("fm_slope", _D), ("fm_robust_t", _D), ("fm_robust_p", _D), ("fm_z", _D), ("fm_nw_t", _D), ("fm_n", _I),
     ("fmc_slope", _D), ("fmc_robust_t", _D), ("fmc_robust_p", _D), ("fmc_z", _D), ("fmc_nw_t", _D),
@@ -1588,7 +2114,8 @@ CELL_COLUMNS: tuple[tuple[str, str], ...] = (
     ("net25_z", _D), ("net50_mean", _D), ("net50_z", _D),
     ("ic_lag1_mean", _D), ("ic_lag1_robust_p", _D), ("ic_lag1_z", _D), ("ic_lag1_n", _I),
     ("sharpe", _D), ("sharpe_skew", _D), ("sharpe_kurt", _D), ("sharpe_n", _I),
-    ("family_member", _B), ("bh_q", _D), ("holm_p", _D), ("bh_discovery", _B), ("hlz_pass", _B), ("dsr", _D),
+    ("family_member", _B), ("bh_q", _D), ("holm_p", _D), ("bh_discovery", _B), ("hlz_pass", _B), ("psr", _D),
+    ("dsr", _D),
     ("dsr_z", _D), ("dsr_benchmark", _D), ("dsr_n_trials", _I), ("dsr_effective_n", _I),
     ("dsr_sharpe_variance", _D), ("family_best", _B),
 )
@@ -1596,7 +2123,17 @@ SLICE_COLUMNS: tuple[tuple[str, str], ...] = (
     *_IDENTITY, ("slice_kind", _V), ("slice_name", _V), ("formations", _I), ("purged", _I), ("embargoed", _I),
     ("mean_names", _D), ("name_share", _D), ("ic_mean", _D), ("ic_robust_t", _D), ("ic_robust_p", _D),
     ("ic_robust_df", _I), ("ic_z", _D), ("ic_nw_t", _D), ("ls_kind", _V), ("ls_mean", _D), ("ls_robust_t", _D),
-    ("ls_robust_p", _D), ("ls_z", _D),
+    ("ls_robust_p", _D), ("ls_z", _D), ("venue_basis", _V), ("venue_pit_share", _D),
+)
+_DATE = "DATE"
+SERIES_COLUMNS: tuple[tuple[str, str], ...] = (
+    *_IDENTITY, ("formation_date", _DATE), ("segment", _V), ("in_selection", _B), ("matured", _B), ("usable", _B),
+    ("universe_names", _I), ("n_values", _I), ("n_unlinked", _I), ("n_used", _I), ("coverage", _D),
+    ("dropped_not_valid", _I),
+    ("dropped_not_primary", _I), ("venue_basis", _V), ("nyse_pit_names", _I), ("ic", _D), ("ls_ew10", _D),
+    ("ls_vw10", _D),
+    ("ls_ew5", _D), ("ls_vw5", _D), ("ls_nyse_ew10", _D), ("ls_nyse_vw10", _D), ("fm_slope", _D), ("fmc_slope", _D),
+    ("net25_ew10", _D), ("ic_lag1", _D),
 )
 QUANTILE_COLUMNS: tuple[tuple[str, str], ...] = (
     *_IDENTITY, ("weighting", _V), ("n_quantiles", _I), ("quantile", _I), ("mean_return", _D),
@@ -1622,6 +2159,8 @@ RESULT_TABLES: dict[str, tuple[str, tuple[tuple[str, str], ...], tuple[str, ...]
     "decay": ("research_eval_decay", DECAY_COLUMNS, ("basis", "feature_id", "variant", "kind", "horizon_months")),
     "attrition": ("research_eval_attrition", ATTRITION_COLUMNS, ("scope", "horizon_months", "measure")),
     "feature_inputs": ("research_eval_feature_inputs", FEATURE_INPUT_COLUMNS, ("basis", "feature_id")),
+    "series": ("research_eval_series", SERIES_COLUMNS,
+               ("basis", "feature_id", "variant", "horizon_months", "formation_date")),
 }
 _RUN_DDL = """
     CREATE TABLE IF NOT EXISTS research_eval_runs (
@@ -1638,13 +2177,19 @@ _RUN_DDL = """
         blockers_json VARCHAR,
         diagnostic_json VARCHAR,
         created_at TIMESTAMP NOT NULL,
-        finished_at TIMESTAMP
+        finished_at TIMESTAMP,
+        family_complete BOOLEAN
     )"""
+_SCHEMA_VERSIONS = {1: "monthly_evaluation", 2: "catalog_family_universe_series"}
 
 
 def ensure_evaluation_schema(con: duckdb.DuckDBPyConnection) -> None:
-    """Create the ``research_eval_*`` tables (schema version 1) if absent.
+    """Create or upgrade the ``research_eval_*`` tables to schema version 2.
 
+    Version 2 adds the catalog-anchored family flag, status reasons, the ranked-universe
+    and point-in-time venue columns, PSR and ``research_eval_series``; a version-1 store
+    is upgraded by adding the
+    new columns (writers name their columns, so the physical order does not matter).
     Kept inside this module until the research-store owner registers it as a store
     migration; the version table refuses a newer, unknown schema.
     """
@@ -1652,15 +2197,23 @@ def ensure_evaluation_schema(con: duckdb.DuckDBPyConnection) -> None:
         CREATE TABLE IF NOT EXISTS research_eval_schema (
             version INTEGER PRIMARY KEY, name VARCHAR NOT NULL, applied_at TIMESTAMP NOT NULL)""")
     versions = {int(row[0]) for row in con.execute("SELECT version FROM research_eval_schema").fetchall()}
-    if versions - {EVALUATION_SCHEMA_VERSION}:
+    if versions - set(_SCHEMA_VERSIONS):
         raise RuntimeError(f"research evaluation schema has unknown versions {sorted(versions)}; code is older")
+    if EVALUATION_SCHEMA_VERSION in versions:
+        return
     con.execute(_RUN_DDL)
     for table, columns, _ in RESULT_TABLES.values():
         body = ", ".join(f"{name} {kind}" for name, kind in columns)
         con.execute(f"CREATE TABLE IF NOT EXISTS {table} (run_id VARCHAR NOT NULL, {body})")
-    if not versions:
-        con.execute("INSERT INTO research_eval_schema VALUES (?, ?, ?)",
-                    [EVALUATION_SCHEMA_VERSION, "monthly_evaluation", dt.datetime.now(dt.UTC).replace(tzinfo=None)])
+    if versions:  # upgrade an older schema in place
+        con.execute("ALTER TABLE research_eval_runs ADD COLUMN IF NOT EXISTS family_complete BOOLEAN")
+        for table, columns, _ in RESULT_TABLES.values():
+            for name, kind in columns:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {kind}")
+    now = dt.datetime.now(dt.UTC).replace(tzinfo=None)
+    for version, name in sorted(_SCHEMA_VERSIONS.items()):
+        if version not in versions:
+            con.execute("INSERT INTO research_eval_schema VALUES (?, ?, ?)", [version, name, now])
 
 
 def _typed(frame: pd.DataFrame, columns: Sequence[tuple[str, str]]) -> pd.DataFrame:
@@ -1677,22 +2230,45 @@ def _typed(frame: pd.DataFrame, columns: Sequence[tuple[str, str]]) -> pd.DataFr
             data[name] = numbers.where(np.isfinite(numbers)).astype("Int64")
         elif kind == _B:
             data[name] = series.astype("boolean")
+        elif kind == _DATE:
+            data[name] = pd.to_datetime(series).astype("datetime64[us]")
         else:
             data[name] = pd.Series([None if pd.isna(v) else str(v) for v in series], dtype=object)
     return pd.DataFrame(data)
 
 
+_INSERT_CHUNK_ROWS = 16_384
+
+
 def _insert(con: duckdb.DuckDBPyConnection, key: str, run_id: str, frame: pd.DataFrame) -> None:
+    """Typed insert in bounded chunks (typing a large frame at once costs ~1 kB per row)."""
     if frame is None or not len(frame):
         return
     table, columns, _ = RESULT_TABLES[key]
-    typed = _typed(frame, columns)
-    typed.insert(0, "run_id", run_id)
-    con.register("_ev_insert", typed)
-    try:
-        con.execute(f"INSERT INTO {table} SELECT * FROM _ev_insert")
-    finally:
-        con.unregister("_ev_insert")
+    names = ", ".join(name for name, _ in columns)
+    select = ", ".join(f"CAST({name} AS {kind})" for name, kind in columns)
+    for start in range(0, len(frame), _INSERT_CHUNK_ROWS):
+        typed = _typed(frame.iloc[start:start + _INSERT_CHUNK_ROWS], columns)
+        con.register("_ev_insert", typed)
+        try:
+            con.execute(f"INSERT INTO {table} (run_id, {names}) SELECT CAST(? AS VARCHAR), {select} "
+                        f"FROM _ev_insert", [run_id])
+        finally:
+            con.unregister("_ev_insert")
+        del typed
+
+
+def _insert_frames(con: duckdb.DuckDBPyConnection, key: str, run_id: str, frames: list[pd.DataFrame]) -> None:
+    """Insert many small frames, concatenated into chunks of about ``_INSERT_CHUNK_ROWS`` rows."""
+    group: list[pd.DataFrame] = []
+    rows = 0
+    while frames:
+        frame = frames.pop(0)
+        group.append(frame)
+        rows += len(frame)
+        if rows >= _INSERT_CHUNK_ROWS or not frames:
+            _insert(con, key, run_id, pd.concat(group, ignore_index=True) if len(group) > 1 else group[0])
+            group, rows = [], 0
 
 
 def _canon(value: Any) -> Any:
@@ -1734,6 +2310,7 @@ class EvaluationTables:
     decay: pd.DataFrame
     attrition: pd.DataFrame
     feature_inputs: pd.DataFrame
+    series: pd.DataFrame
     family: dict[str, Any]
     bases: dict[str, Any]
     results_sha256: str
@@ -1750,16 +2327,16 @@ def _selected_features(inputs: BasisInputs, spec: EvaluationSpec) -> tuple[list[
     return [f for f in available if f in spec.features], sorted(set(spec.features) - set(available))
 
 
-def _basis_manifest(inputs: BasisInputs, prep: _Prepared | None, absent: Sequence[str]) -> dict[str, Any]:
+def _basis_manifest(inputs: BasisInputs, prep: _Prepared | None, absent: Sequence[str],
+                    catalog_sha: str | None) -> dict[str, Any]:
     manifest = {"basis": inputs.basis, "status": inputs.status, "meta": dict(inputs.meta),
                 "digests": dict(inputs.digests), "features_absent": list(absent),
-                "features": len(inputs.variants_by_feature)}
+                "features": len(inputs.variants_by_feature), "catalog_sha256": catalog_sha,
+                "universe_rule": UNIVERSE_RULE}
     if prep is not None:
         manifest["prepared_digests"] = prep.digests
-        methods: dict[str, int] = {}
-        for method in prep.size_method:
-            methods[method] = methods.get(method, 0) + 1
-        manifest["size_breakpoint_methods"] = dict(sorted(methods.items()))
+        manifest["venue_basis_formations"] = _method_counts(prep.venue_basis, prep.formed)
+        manifest["universe_member_formations"] = int(prep.universe_names.sum())
     return json.loads(_canonical(manifest))
 
 
@@ -1780,57 +2357,129 @@ def _label_source_attrition(diagnostics: Mapping[str, Any]) -> list[dict[str, An
     return rows
 
 
-def _frame(rows: list[dict[str, Any]], key: str) -> pd.DataFrame:
+def _frame(rows: Sequence[Any], key: str) -> pd.DataFrame:
     columns = [name for name, _ in RESULT_TABLES[key][1]]
-    return pd.DataFrame(rows, columns=columns) if rows else pd.DataFrame(columns=columns)
+    if rows and isinstance(rows[0], pd.DataFrame):
+        return pd.concat(rows, ignore_index=True)
+    return pd.DataFrame(list(rows), columns=columns) if rows else pd.DataFrame(columns=columns)
 
 
-def evaluate_bases(bases: Iterable[BasisInputs], spec: EvaluationSpec, *,
-                   label_diagnostics: Mapping[str, Any] | None = None) -> EvaluationTables:
-    """Evaluate every basis in memory and seal the result digest (no store needed)."""
-    spec = validate_spec(spec)
-    rows: dict[str, list[dict[str, Any]]] = {key: [] for key in RESULT_TABLES}
+def _read_table(con: duckdb.DuckDBPyConnection, key: str, run_id: str) -> pd.DataFrame:
+    table, columns, order = RESULT_TABLES[key]
+    return con.execute(f"SELECT {', '.join(name for name, _ in columns)} FROM {table} WHERE run_id=? "
+                       f"ORDER BY {', '.join(order)}", [run_id]).df()
+
+
+def _evaluate_into(con: duckdb.DuckDBPyConnection | None, run_id: str, bases: Iterable[BasisInputs],
+                   spec: EvaluationSpec, catalog: Mapping[str, CatalogFeature] | None, *,
+                   transaction: Callable[[], AbstractContextManager[Any]],
+                   done: frozenset[tuple[str, str]] = frozenset(), previous: Mapping[str, Any] | None = None,
+                   on_manifest: Callable[[dict[str, Any]], None] | None = None,
+                   sink: Callable[[str, pd.DataFrame], None] | None = None
+                   ) -> tuple[dict[str, Any], dict[str, _BasisInfo]]:
+    """Evaluate every basis feature by feature into ``con`` (one transaction per feature).
+
+    ``done`` (resume) skips (basis, feature) pairs already written; ``previous`` refuses a
+    resume whose basis input manifest changed. With ``sink`` the rows go to the sink
+    instead (``con`` unused), so no database is open while the engine works.
+    """
     manifests: dict[str, Any] = {}
-    pairs: set[tuple[str, str]] = set()
-    untestable: list[BasisInputs] = []
+    info: dict[str, _BasisInfo] = {}
+    catalog_sha = _catalog_sha(catalog)
+
+    def write(key: str, frame: pd.DataFrame) -> None:
+        if sink is not None:
+            sink(key, frame)
+        elif con is not None:
+            _insert(con, key, run_id, frame)
+
+    def attrition_written(basis: str) -> bool:
+        if sink is not None or con is None:
+            return False
+        row = con.execute("SELECT count(*) FROM research_eval_attrition WHERE run_id=? AND scope=?",
+                          [run_id, basis]).fetchone()
+        return bool(row and row[0])
+
     for inputs in bases:
         if inputs.basis in manifests:
             raise EvaluationInputError(f"basis {inputs.basis} supplied twice")
-        features, absent = _selected_features(inputs, spec)
-        if inputs.status == BASIS_UNTESTABLE:
-            manifests[inputs.basis] = _basis_manifest(inputs, None, absent)
-            untestable.append(inputs)
-            continue
-        if inputs.status != BASIS_AVAILABLE:
+        if inputs.status not in (BASIS_AVAILABLE, BASIS_UNTESTABLE):
             raise EvaluationInputError(f"basis {inputs.basis}: unknown status {inputs.status!r}")
-        prep = _prepare(inputs, spec)
-        manifests[inputs.basis] = _basis_manifest(inputs, prep, absent)
-        rows["attrition"].extend(_basis_attrition(prep, spec))
+        features, absent = _selected_features(inputs, spec)
+        prep = None if inputs.status == BASIS_UNTESTABLE else _prepare(inputs, spec)
+        manifests[inputs.basis] = _basis_manifest(inputs, prep, absent, catalog_sha)
+        if previous is not None and previous.get(inputs.basis) not in (None, manifests[inputs.basis]):
+            raise EvaluationInputError(f"resume refused: basis {inputs.basis} inputs changed")
+        if on_manifest is not None:
+            on_manifest(manifests)
+        info[inputs.basis] = _BasisInfo(inputs.status, dict(inputs.meta), frozenset(
+            (f, v) for f, variants in inputs.variants_by_feature.items() for v in variants))
+        if prep is None:
+            continue
+        if not attrition_written(inputs.basis):
+            with transaction():
+                write("attrition", _frame(_basis_attrition(prep, spec), "attrition"))
         for feature_id in features:
-            produced, input_row = _evaluate_feature(prep, inputs, spec, feature_id)
-            for key, items in produced.items():
-                rows[key].extend(items)
-            rows["feature_inputs"].append(input_row)
-            pairs.update((feature_id, variant) for variant in json.loads(input_row["variants"]))
-    for inputs in untestable:
-        rows["cells"].extend(_untestable_cells(inputs, spec, pairs))
-    if label_diagnostics is not None:
-        rows["attrition"].extend(_label_source_attrition(label_diagnostics))
-    frames = {key: _frame(items, key) for key, items in rows.items()}
-    family_summary: dict[str, Any] = {}
-    if len(frames["cells"]):
-        family, family_summary = compute_family(frames["cells"])
-        cells = frames["cells"].drop(columns=list(FAMILY_COLUMNS))
-        frames["cells"] = cells.merge(family, on=["basis", "feature_id", "variant", "horizon_months"],
-                                      how="left", validate="one_to_one")
-    con = duckdb.connect(config={"threads": 1, "memory_limit": "256MB"})
-    try:
-        ensure_evaluation_schema(con)
-        for key, frame in frames.items():
-            _insert(con, key, "memory", frame)
-        digest, parts = results_digest(con, "memory")
-    finally:
-        con.close()
+            if (inputs.basis, feature_id) in done:
+                continue
+            produced, input_row = _evaluate_feature(prep, inputs, spec, feature_id, catalog)
+            with transaction():
+                for key, items in produced.items():
+                    write(key, _frame(items, key))
+                write("feature_inputs", _frame([input_row], "feature_inputs"))
+            del produced
+        del prep
+    return manifests, info
+
+
+def evaluate_bases(bases: Iterable[BasisInputs], spec: EvaluationSpec, *,
+                   label_diagnostics: Mapping[str, Any] | None = None,
+                   catalog: Iterable[CatalogFeature] | None = None,
+                   keep_frames: bool | Iterable[str] = True,
+                   catalog_info: Mapping[str, Any] | None = None) -> EvaluationTables:
+    """Evaluate every basis in memory and seal the result digest (no research store needed).
+
+    ``catalog`` anchors the family to the expected cells (see the module docstring);
+    without it the family is the produced cells (``catalog_info`` only labels the
+    family summary's catalog provenance). ``keep_frames`` names the result tables
+    to return (``True``: all; ``False``: none, e.g. a full-catalog recomputation that only
+    needs the digest); tables not kept come back empty, the digest always covers all.
+    """
+    spec = validate_spec(spec)
+    expected = _catalog_map(catalog)
+    kept = set(RESULT_TABLES) if keep_frames is True else set() if keep_frames is False else set(keep_frames)
+    if kept - set(RESULT_TABLES):
+        raise EvaluationInputError(f"keep_frames names unknown tables {sorted(kept - set(RESULT_TABLES))}")
+    config = {"threads": 1, "memory_limit": "256MB"}
+    with tempfile.TemporaryDirectory(prefix="atx_r3b_eval_") as scratch:
+        con: duckdb.DuckDBPyConnection | None = None
+        try:
+            if keep_frames is not False:
+                # Small results: buffer them, and open the database only after the engine is done
+                # (a database growing next to the engine's arrays would double the peak).
+                buffered: dict[str, list[pd.DataFrame]] = {key: [] for key in RESULT_TABLES}
+                manifests, info = _evaluate_into(None, "memory", bases, spec, expected, transaction=nullcontext,
+                                                 sink=lambda key, frame: buffered[key].append(frame))
+                con = duckdb.connect(":memory:", config=config)
+                ensure_evaluation_schema(con)
+                for key in RESULT_TABLES:
+                    _insert_frames(con, key, "memory", buffered[key])
+            else:
+                # A full-catalog recomputation (~1.4M series rows): stream into a file-backed scratch DB.
+                con = duckdb.connect(str(Path(scratch) / "evaluation.duckdb"),
+                                     config={**config, "temp_directory": scratch})
+                ensure_evaluation_schema(con)
+                manifests, info = _evaluate_into(con, "memory", bases, spec, expected, transaction=nullcontext)
+            family_summary = _finish_family(con, "memory", spec, info, expected, nullcontext,
+                                            catalog_info=catalog_info)
+            if label_diagnostics is not None:
+                _insert(con, "attrition", "memory", _frame(_label_source_attrition(label_diagnostics), "attrition"))
+            digest, parts = results_digest(con, "memory")
+            frames = {key: _read_table(con, key, "memory") if key in kept else _frame([], key)
+                      for key in RESULT_TABLES}
+        finally:
+            if con is not None:
+                con.close()
     return EvaluationTables(**frames, family=family_summary, bases=manifests, results_sha256=digest,
                             table_digests=parts)
 
@@ -1841,7 +2490,10 @@ def evaluate_bases(bases: Iterable[BasisInputs], spec: EvaluationSpec, *,
 
 _FEATURE_CONTRACT_COLUMNS: dict[str, tuple[str, ...]] = {
     "research_feature_versions": ("feature_version", "status", "basis", "panel_run_id", "panel_sha256",
-                                  "classification_basis", "values_sha256"),
+                                  "classification_basis", "values_sha256", "query_version", "universe_rule",
+                                  "catalog_sha256", "blockers_json"),
+    "research_feature_catalog": ("feature_version", "feature_id", "anomaly_class", "hypothesis_family",
+                                 "expected_sign", "status", "status_reason"),
     "research_feature_values": ("feature_version", "formation_date", "security_id", "feature_id", "variant",
                                 "value", "expected_sign", "available_at"),
     "research_feature_dates": ("feature_version", "formation_date", "feature_id", "variant", "date_status",
@@ -1862,6 +2514,11 @@ class FeatureTable:
     values_sha256: str | None
     dates: pd.DataFrame
     load_values: Callable[[str, Sequence[str]], dict[str, np.ndarray]]
+    query_version: str | None = None
+    catalog_sha256: str | None = None
+    blockers: tuple[str, ...] = ()
+    #: R2b's status of every catalog row it listed, ``status`` or ``status:reason``.
+    catalog_status: Mapping[str, str] = field(default_factory=dict)
 
 
 def _research_columns(con: duckdb.DuckDBPyConnection, table: str) -> set[str]:
@@ -1871,34 +2528,89 @@ def _research_columns(con: duckdb.DuckDBPyConnection, table: str) -> set[str]:
     return {row[0] for row in rows}
 
 
-def load_feature_table(store: ResearchStore, feature_version: str) -> FeatureTable:
-    """R2b adapter: read one feature version under the contract in the module docstring.
-
-    ``load_values(feature_id, variants)`` returns numpy arrays ``month_index``,
-    ``security``, ``variant_code`` (index into ``variants``), ``value`` (NaN for NULL),
-    ``available_at_us`` (epoch microseconds, -1 for NULL) and ``expected_sign``. It
-    needs the caller's temp tables ``_ev_months(formation_date, month_index)`` and
-    ``_ev_securities(security_id, code)``; unmapped rows come back as -1 and are refused
-    by the caller.
-    """
-    con = store.con
-    for table, required in _FEATURE_CONTRACT_COLUMNS.items():
-        missing = sorted(set(required) - _research_columns(con, table))
+def _check_contract(con: duckdb.DuckDBPyConnection, tables: Iterable[str]) -> None:
+    for table in tables:
+        missing = sorted(set(_FEATURE_CONTRACT_COLUMNS[table]) - _research_columns(con, table))
         if missing:
             raise EvaluationInputError(f"R2b feature contract: research store table {table} lacks {missing} "
                                        f"(contract {FEATURE_CONTRACT}, atx_db.research.evaluation docstring)")
+
+
+#: R2b catalog statuses of a row that is not a research hypothesis (blocked at admission).
+_NOT_A_HYPOTHESIS = ("blocked_admission",)
+
+
+def feature_version_catalog(store: ResearchStore, feature_version: str) -> tuple[str | None, tuple[CatalogFeature, ...]]:
+    """The catalog snapshot R2b stored with a version: its catalog digest and the expected
+    family (every row R2b did not block at admission, with its sign, class and hypothesis
+    family as built, and :func:`expected_variants`)."""
+    con = store.con
+    _check_contract(con, ("research_feature_versions", "research_feature_catalog"))
+    row = con.execute("SELECT catalog_sha256 FROM research_feature_versions WHERE feature_version=?",
+                      [feature_version]).fetchall()
+    if len(row) != 1:
+        raise EvaluationInputError(f"feature version {feature_version!r} is absent or duplicated")
+    features = []
+    for feature_id, anomaly_class, family, sign in con.execute(f"""
+        SELECT feature_id, anomaly_class, hypothesis_family, expected_sign FROM research_feature_catalog
+        WHERE feature_version=? AND status NOT IN ({', '.join('?' * len(_NOT_A_HYPOTHESIS))}) ORDER BY feature_id
+    """, [feature_version, *_NOT_A_HYPOTHESIS]).fetchall():
+        if sign not in (-1, 0, 1):
+            raise EvaluationInputError(f"feature version {feature_version}: catalog row {feature_id} has sign {sign!r}")
+        features.append(CatalogFeature(str(feature_id), int(sign), str(anomaly_class),
+                                       expected_variants(str(anomaly_class)), None if family is None else str(family)))
+    return (None if row[0][0] is None else str(row[0][0])), tuple(features)
+
+
+def load_feature_table(store: ResearchStore, feature_version: str) -> FeatureTable:
+    """R2b adapter: read one feature version under the contract in the module docstring.
+
+    The version must be ``sealed``/``untestable_strict``, of an accepted R2b query
+    version and built under one of :data:`FEATURE_UNIVERSE_RULES`.
+    ``load_values(feature_id, variants)`` returns numpy arrays ``month_index``,
+    ``security``, ``variant_code`` (index into ``variants``), ``value`` (NaN for NULL),
+    ``available_at_us`` (epoch microseconds, -1 for NULL), ``expected_sign`` and
+    ``unlinked_line`` (``owner_basis='unlinked_line'``; all False when the view has no
+    ``owner_basis``). It needs the caller's temp tables ``_ev_months(formation_date,
+    month_index)`` and ``_ev_securities(security_id, code)``; unmapped rows come back as
+    -1 and are refused by the caller. Before returning it asserts the universe clause of
+    the contract against the version's R2a cohort: a linked valued row outside the
+    cohort, not eligible with ``cohort_reason='valid'``, not on the ``primary_line``, or a
+    second valued line of one owner at a formation, and an unlinked-line row whose cohort
+    row is not an eligible line without an owner link, raise :class:`EvaluationInputError`.
+    """
+    con = store.con
+    _check_contract(con, _FEATURE_CONTRACT_COLUMNS)
+    owner = ("coalesce(v.owner_basis = '" + OWNER_BASIS_UNLINKED + "', false)"
+             if "owner_basis" in _research_columns(con, "research_feature_values") else "false")
     row = con.execute("""
-        SELECT status, basis, panel_run_id, panel_sha256, classification_basis, values_sha256
+        SELECT status, basis, panel_run_id, panel_sha256, classification_basis, values_sha256, query_version,
+               universe_rule, catalog_sha256, blockers_json
         FROM research_feature_versions WHERE feature_version=?
     """, [feature_version]).fetchall()
     if len(row) != 1:
         raise EvaluationInputError(f"feature version {feature_version!r} is absent or duplicated")
-    status, basis, panel_run_id, panel_sha, classification, values_sha = row[0]
+    (status, basis, panel_run_id, panel_sha, classification, values_sha, query_version, universe_rule,
+     catalog_sha, blockers_json) = row[0]
     if status not in FEATURE_VERSION_STATUSES:
         raise EvaluationInputError(f"feature version {feature_version} is {status!r}; only {FEATURE_VERSION_STATUSES}"
                                    " versions are evaluated")
     if basis not in BASES:
         raise EvaluationInputError(f"feature version {feature_version} has unknown basis {basis!r}")
+    if query_version not in FEATURE_QUERY_VERSIONS:
+        raise EvaluationInputError(f"R2b feature contract: version {feature_version} has query version "
+                                   f"{query_version!r}; this adapter reads {FEATURE_QUERY_VERSIONS}")
+    if universe_rule not in FEATURE_UNIVERSE_RULES:
+        raise EvaluationInputError(f"R2b feature contract: version {feature_version} ranks universe "
+                                   f"{universe_rule!r}, the evaluation reads {FEATURE_UNIVERSE_RULES}")
+    try:
+        blockers = tuple(str(item) for item in json.loads(blockers_json or "[]"))
+    except (TypeError, ValueError) as error:
+        raise EvaluationInputError(f"feature version {feature_version}: unreadable blockers_json") from error
+    catalog_status = {str(feature): str(state) if reason is None else f"{state}:{reason}"
+                      for feature, state, reason in con.execute("""
+                          SELECT feature_id, status, status_reason FROM research_feature_catalog
+                          WHERE feature_version=? ORDER BY feature_id""", [feature_version]).fetchall()}
     dates = con.execute("""
         SELECT formation_date, feature_id, variant, date_status, eligible_members, valid_names, coverage_fraction
         FROM research_feature_dates WHERE feature_version=?
@@ -1906,12 +2618,47 @@ def load_feature_table(store: ResearchStore, feature_version: str) -> FeatureTab
     """, [feature_version]).df()
 
     def load_values(feature_id: str, variants: Sequence[str]) -> dict[str, np.ndarray]:
-        result = con.execute("""
+        violations = con.execute(f"""
+            WITH valued AS (
+                SELECT v.formation_date, v.security_id, v.variant, {owner} AS unlinked_line,
+                       c.security_id IS NOT NULL AS in_cohort, coalesce(c.eligible, false) AS eligible,
+                       c.cohort_reason, coalesce(c.primary_line, false) AS primary_line, c.owner_cik
+                FROM research_feature_values v
+                LEFT JOIN research_panel_cohort c
+                  ON c.run_id = ? AND c.formation_date = v.formation_date AND c.security_id = v.security_id
+                WHERE v.feature_version = ? AND v.feature_id = ? AND list_contains(?::VARCHAR[], v.variant)
+                  AND v.value IS NOT NULL
+            ), lines AS (
+                SELECT count(*) AS extra FROM (
+                    SELECT formation_date, variant, owner_cik FROM valued
+                    WHERE in_cohort AND NOT unlinked_line AND owner_cik IS NOT NULL
+                    GROUP BY ALL HAVING count(DISTINCT security_id) > 1)
+            )
+            SELECT count(*) FILTER (WHERE NOT in_cohort),
+                   count(*) FILTER (WHERE in_cohort AND NOT unlinked_line
+                                    AND (cohort_reason IS DISTINCT FROM 'valid' OR NOT eligible)),
+                   count(*) FILTER (WHERE in_cohort AND NOT unlinked_line AND cohort_reason = 'valid' AND eligible
+                                    AND NOT primary_line),
+                   (SELECT extra FROM lines),
+                   count(*) FILTER (WHERE in_cohort AND unlinked_line
+                                    AND NOT (eligible AND list_contains(?::VARCHAR[], cohort_reason)))
+            FROM valued
+        """, [panel_run_id, feature_version, feature_id, list(variants), list(OWNER_LINK_FAILURES)]).fetchone()
+        if violations is not None and any(violations):
+            outside, not_valid, not_primary, multi, unlinked = (int(v or 0) for v in violations)
+            raise EvaluationInputError(
+                f"R2b feature contract: {feature_id} has valued rows outside the ranked universe "
+                f"(outside_cohort={outside}, not_valid={not_valid}, not_primary_line={not_primary}, "
+                f"multi_line_owner_formations={multi}, unlinked_line_not_an_unlinked_member={unlinked}); value "
+                f"must be NULL unless the R2a cohort row is eligible and valid on the primary line (or, for "
+                f"owner_basis='{OWNER_BASIS_UNLINKED}', an eligible line without an owner link)")
+        result = con.execute(f"""
             SELECT coalesce(m.month_index, -1) AS month_index, coalesce(s.code, -1) AS security,
                    list_position(?::VARCHAR[], v.variant) - 1 AS variant_code,
                    coalesce(v.value, 'NaN'::DOUBLE) AS value,
                    coalesce(epoch_us(v.available_at), -1) AS available_at_us,
-                   coalesce(v.expected_sign, 0) AS expected_sign
+                   coalesce(v.expected_sign, -9) AS expected_sign,
+                   {owner} AS unlinked_line
             FROM research_feature_values v
             LEFT JOIN _ev_months m ON m.formation_date = v.formation_date
             LEFT JOIN _ev_securities s ON s.security_id = v.security_id
@@ -1921,19 +2668,28 @@ def load_feature_table(store: ResearchStore, feature_version: str) -> FeatureTab
 
     return FeatureTable(feature_version, str(status), str(basis), str(panel_run_id), str(panel_sha),
                         None if classification is None else str(classification),
-                        None if values_sha is None else str(values_sha), dates, load_values)
+                        None if values_sha is None else str(values_sha), dates, load_values,
+                        str(query_version), None if catalog_sha is None else str(catalog_sha), blockers,
+                        catalog_status)
 
 
 def _panel_run(store: ResearchStore, table: FeatureTable, verify: bool) -> dict[str, Any]:
     con = store.con
     row = con.execute("""
         SELECT status, basis, identity_basis, universe_basis, fundamental_availability_basis,
-               market_availability_basis, panel_sha256, blockers_json, diagnostic_json
+               market_availability_basis, panel_sha256, blockers_json, diagnostic_json, spec_json
         FROM research_panel_runs WHERE run_id=?
     """, [table.panel_run_id]).fetchone()
     if row is None:
         raise EvaluationInputError(f"feature version {table.feature_version}: panel run {table.panel_run_id} absent")
-    status, basis, identity, universe, fundamental_clock, market_clock, panel_sha, blockers, diagnostic = row
+    status, basis, identity, universe, fundamental_clock, market_clock, panel_sha, blockers, diagnostic, spec = row
+    try:
+        policy = json.loads(spec or "{}").get("size_policy")
+    except (AttributeError, ValueError) as error:
+        raise EvaluationInputError(f"panel run {table.panel_run_id}: unreadable spec_json") from error
+    if not isinstance(policy, Mapping) or not isinstance(policy.get("verified_status"), str):
+        raise EvaluationInputError(f"panel run {table.panel_run_id} has no size_policy.verified_status (R2a query "
+                                   "version v3): the evaluation uses verified size only")
     if status not in ("complete", "untestable_strict"):
         raise EvaluationInputError(f"panel run {table.panel_run_id} is {status!r}, not sealed")
     if panel_sha != table.panel_sha256:
@@ -1945,6 +2701,7 @@ def _panel_run(store: ResearchStore, table: FeatureTable, verify: bool) -> dict[
         validate_research_panel(store, table.panel_run_id)
     return {"panel_run_id": table.panel_run_id, "panel_status": status, "panel_sha256": panel_sha,
             "identity_basis": identity, "universe_basis": universe,
+            "size_verified_status": str(policy["verified_status"]),
             "availability_basis": f"fundamentals:{fundamental_clock};market:{market_clock}",
             "panel_blockers": json.loads(blockers) if blockers else [],
             "panel_diagnostic": json.loads(diagnostic) if diagnostic else None}
@@ -2002,7 +2759,8 @@ def load_label_inputs(store: ResearchStore, calendar: pd.DataFrame, spec: Evalua
             SELECT unnest(?::INTEGER[]) AS horizon_months, unnest(?::INTEGER[]) AS horizon_days
         )
         SELECT a.month_index, a.entry_date, h.horizon_months, h.horizon_days,
-               CASE WHEN a.decision_session IS NULL THEN 'decision_not_in_label_calendar'
+               CASE WHEN a.entry_date > CAST(? AS DATE) THEN 'entry_after_label_cutoff'
+                    WHEN a.decision_session IS NULL THEN 'decision_not_in_label_calendar'
                     WHEN a.label_entry IS NULL THEN 'no_label_entry_session'
                     WHEN a.label_entry <> a.entry_date THEN 'entry_calendar_mismatch'
                     ELSE 'aligned' END AS alignment,
@@ -2011,7 +2769,7 @@ def load_label_inputs(store: ResearchStore, calendar: pd.DataFrame, spec: Evalua
                  AND x.trade_date::TIMESTAMP + INTERVAL 1 DAY + INTERVAL 12 HOUR <= ? AS matured
         FROM aligned a CROSS JOIN horizons h
         LEFT JOIN _ev_sessions x ON x.session_number = a.entry_session + h.horizon_days
-    """, [horizons, [HORIZON_SESSIONS[h] for h in horizons], cutoff])
+    """, [horizons, [HORIZON_SESSIONS[h] for h in horizons], cutoff, cutoff])
     maturity = con.execute("""
         SELECT month_index, horizon_months, expected_end, coalesce(matured, false) AS matured, alignment
         FROM _ev_windows ORDER BY horizon_months, month_index
@@ -2053,13 +2811,56 @@ def load_label_inputs(store: ResearchStore, calendar: pd.DataFrame, spec: Evalua
     return result, maturity.drop(columns=["alignment"]), info
 
 
-def open_basis_inputs(store: ResearchStore, feature_version: str, spec: EvaluationSpec) -> BasisInputs:
-    """Assemble one basis from the store: R2b adapter + R2a panel context + R3a labels."""
+def _stage_pit_venue(con: duckdb.DuckDBPyConnection) -> bool:
+    """``_ev_pit_venue(month_index, security, exchange_code)``: the venue as of each formation.
+
+    Listing evidence as of the formation: the strict ``us_listed_v1`` membership interval
+    covering the formation date, visible at its cutoff (the R2a cohort's own as-of rule);
+    a security with several visible rows has no point-in-time venue. False when the
+    warehouse has no membership table (every venue is then the cohort's).
+    """
+    present = con.execute("SELECT count(*) FROM duckdb_tables() WHERE table_name='universe_us_listed_membership'"
+                          ).fetchone()
+    if not (present and present[0]):
+        con.execute("CREATE OR REPLACE TEMP TABLE _ev_pit_venue (month_index BIGINT, security BIGINT, "
+                    "exchange_code VARCHAR)")
+        return False
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE _ev_pit_venue AS
+        SELECT m.month_index, s.code AS security, max(u.exchange_code) AS exchange_code
+        FROM universe_us_listed_membership u
+        JOIN _ev_securities s ON s.security_id = u.security_id
+        JOIN _ev_months m
+          ON u.valid_from <= m.formation_date AND (u.valid_to IS NULL OR u.valid_to >= m.formation_date)
+         AND u.available_at <= m.cutoff AND u.as_of_date <= m.formation_date
+        WHERE u.universe_id = ? AND u.source = ? AND u.exchange_code IS NOT NULL AND u.exchange_code <> 'UNKNOWN'
+        GROUP BY ALL HAVING count(*) = 1
+    """, [PIT_VENUE_UNIVERSE_ID, PIT_VENUE_SOURCE])
+    return True
+
+
+def open_basis_inputs(store: ResearchStore, feature_version: str, spec: EvaluationSpec,
+                      catalog: Mapping[str, CatalogFeature] | None = None) -> BasisInputs:
+    """Assemble one basis from the store: R2b adapter + R2a panel context + R3a labels.
+
+    With ``spec.verify_panels`` the R2a panel validator and the R2b version validator
+    (digests, universe, clocks, domain, formed-date rules) run before anything is read.
+    """
     con = store.con
     table = load_feature_table(store, feature_version)
     panel = _panel_run(store, table, spec.verify_panels)
+    if spec.verify_panels:
+        from .features import FeatureStoreError, validate_feature_version
+
+        try:
+            validate_feature_version(store, feature_version, verify_panel=False)  # the panel was just validated
+        except FeatureStoreError as error:
+            raise EvaluationInputError(f"R2b feature version {feature_version} fails its validator: {error}") \
+                from error
     meta = {"feature_version": feature_version, "feature_version_status": table.status,
             "classification_basis": table.classification_basis, "r2b_values_sha256": table.values_sha256,
+            "feature_query_version": table.query_version, "feature_catalog_sha256": table.catalog_sha256,
+            "feature_blockers": list(table.blockers), "feature_catalog_status": dict(table.catalog_status),
             **{k: v for k, v in panel.items() if k != "panel_diagnostic"}}
     variants_by_feature: dict[str, tuple[str, ...]] = {}
     for (feature_id, variant), _ in table.dates.groupby(["feature_id", "variant"], sort=True):
@@ -2074,32 +2875,56 @@ def open_basis_inputs(store: ResearchStore, feature_version: str, spec: Evaluati
     calendar.insert(0, "month_index", np.arange(len(calendar), dtype=np.int64))
     formed = calendar[calendar["status"] == CALENDAR_FORMED]
     _register(con, "_ev_months", pd.DataFrame({"formation_date": _days(formed["formation_date"]),
-                                               "month_index": formed["month_index"].to_numpy(np.int64)}),
-              (("formation_date", "DATE"), ("month_index", "BIGINT")))
+                                               "month_index": formed["month_index"].to_numpy(np.int64),
+                                               "cutoff": _stamps(formed["cutoff"])}),
+              (("formation_date", "DATE"), ("month_index", "BIGINT"), ("cutoff", "TIMESTAMP")))
     securities = [row[0] for row in con.execute(
         "SELECT DISTINCT security_id FROM research_panel_cohort WHERE run_id=? ORDER BY security_id",
         [table.panel_run_id]).fetchall()]
     _register(con, "_ev_securities", pd.DataFrame({"security_id": pd.Series(securities, dtype=object),
                                                    "code": np.arange(len(securities), dtype=np.int64)}),
               (("security_id", "VARCHAR"), ("code", "BIGINT")))
+    pit_table = _stage_pit_venue(con)
+    verified = panel["size_verified_status"]
+    # Size: the panel's market cap only where its share count is verified (R2a size_policy).
+    # Venue: point-in-time listing evidence only; the cohort's (backcast) exchange code is not read.
     context = con.execute("""
         WITH cap AS (
             SELECT formation_date, security_id, max(raw_value) AS market_cap
             FROM research_panel_values
             WHERE run_id=? AND metric_code='market_cap' AND metric_window='daily' AND reason='valid'
-              AND raw_value > 0 AND isfinite(raw_value)
+              AND size_status = ? AND raw_value > 0 AND isfinite(raw_value)
             GROUP BY ALL
         )
         SELECT m.month_index, s.code AS security, max(cap.market_cap) AS market_cap,
-               bool_or(coalesce(c.exchange_code = ?, false)) AS is_nyse,
-               bool_or(c.cohort_reason = 'valid') AS valid_member
+               bool_or(coalesce(c.eligible, false) AND c.cohort_reason = 'valid') AS valid_member,
+               bool_or(coalesce(c.primary_line, false)) AS primary_line,
+               bool_or(coalesce(c.eligible, false) AND list_contains(?::VARCHAR[], c.cohort_reason))
+                   AS unlinked_member,
+               bool_or(p.security IS NOT NULL) AS venue_pit,
+               bool_or(coalesce(p.exchange_code = ?, false)) AS is_nyse_pit
         FROM research_panel_cohort c
         JOIN _ev_months m ON m.formation_date = c.formation_date
         JOIN _ev_securities s ON s.security_id = c.security_id
         LEFT JOIN cap ON cap.formation_date = c.formation_date AND cap.security_id = c.security_id
+        LEFT JOIN _ev_pit_venue p ON p.month_index = m.month_index AND p.security = s.code
         WHERE c.run_id=?
         GROUP BY ALL ORDER BY 1, 2
-    """, [table.panel_run_id, NYSE_EXCHANGE_CODE, table.panel_run_id]).df()
+    """, [table.panel_run_id, verified, list(OWNER_LINK_FAILURES), NYSE_EXCHANGE_CODE, table.panel_run_id]).df()
+    venue_rows = int(context["venue_pit"].sum()) if len(context) else 0
+    universe = context["valid_member"].fillna(False) & context["primary_line"].fillna(False) if len(context) \
+        else pd.Series(dtype=bool)
+    size_rows = con.execute("""
+        SELECT count(*) FILTER (WHERE size_status = ?), count(*) FILTER (WHERE size_status IS DISTINCT FROM ?)
+        FROM research_panel_values
+        WHERE run_id=? AND metric_code='market_cap' AND metric_window='daily' AND reason='valid'
+          AND raw_value > 0 AND isfinite(raw_value)
+    """, [verified, verified, table.panel_run_id]).fetchone()
+    size_info = {"verified_status": verified, "verified_cap_rows": int(size_rows[0]) if size_rows else 0,
+                 "unverified_cap_rows_excluded": int(size_rows[1]) if size_rows else 0,
+                 "universe_rows": int(universe.sum()),
+                 "universe_rows_with_verified_cap": int((universe & context["market_cap"].notna()).sum())
+                 if len(context) else 0}
     labels, maturity, label_info = load_label_inputs(store, calendar, spec)
     controls = []
     for name in spec.control_features:
@@ -2113,7 +2938,6 @@ def open_basis_inputs(store: ResearchStore, feature_version: str, spec: Evaluati
     controls_frame = (pd.concat(controls, ignore_index=True) if controls
                       else pd.DataFrame(columns=["month_index", "security", "control", "value"]))
     month_of = dict(zip(_days(formed["formation_date"]).tolist(), formed["month_index"].tolist(), strict=True))
-    catalog_classes = _catalog_classes()
 
     def load_feature(feature_id: str) -> FeatureData:
         variants = variants_by_feature[feature_id]
@@ -2123,15 +2947,16 @@ def open_basis_inputs(store: ResearchStore, feature_version: str, spec: Evaluati
         if (arrays["security"] < 0).any():
             raise EvaluationInputError(f"{feature_id}: values for securities outside the panel cohort")
         signs = set(np.unique(arrays["expected_sign"]).tolist())
-        if len(signs) != 1 or signs - {-1, 1}:
-            raise EvaluationInputError(f"{feature_id}: expected_sign must be one of +1/-1, got {sorted(signs)}")
+        if len(signs) != 1 or signs - {-1, 0, 1}:
+            raise EvaluationInputError(f"{feature_id}: expected_sign must be one of +1/-1/0, got {sorted(signs)}")
         available = arrays["available_at_us"].astype("int64")
         stamps = available.astype("datetime64[us]")
         stamps[available < 0] = np.datetime64("NaT", "us")
         values = pd.DataFrame({
             "month_index": arrays["month_index"], "security": arrays["security"],
             "variant": pd.Categorical.from_codes(arrays["variant_code"].astype("int64"), categories=list(variants)),
-            "value": arrays["value"].astype(float), "available_at": stamps})
+            "value": arrays["value"].astype(float), "available_at": stamps,
+            "unlinked_line": np.asarray(arrays["unlinked_line"], dtype=bool)})
         dates = table.dates[table.dates["feature_id"] == feature_id]
         date_frame = pd.DataFrame({
             "month_index": [month_of.get(day, -1) for day in _days(dates["formation_date"]).tolist()],
@@ -2139,25 +2964,16 @@ def open_basis_inputs(store: ResearchStore, feature_version: str, spec: Evaluati
             "coverage_fraction": pd.to_numeric(dates["coverage_fraction"], errors="coerce").to_numpy(dtype=float)})
         if (date_frame["month_index"] < 0).any():
             raise EvaluationInputError(f"{feature_id}: date rows at a non-formed panel formation")
-        return FeatureData(feature_id, int(signs.pop()), values, date_frame, catalog_classes.get(feature_id))
+        entry = None if catalog is None else catalog.get(feature_id)
+        return FeatureData(feature_id, int(signs.pop()), values, date_frame,
+                           None if entry is None else entry.anomaly_class)
 
-    digests = {"securities_sha256": _sha(_canonical(securities)), "label": label_info,
-               "catalog_sha256": _catalog_sha()}
+    digests = {"securities_sha256": _sha(_canonical(securities)), "label": label_info, "size": size_info,
+               "venue": {"pit_membership_table": pit_table, "pit_venue_rows": venue_rows,
+                         "pit_universe_id": PIT_VENUE_UNIVERSE_ID, "cohort_rows": len(context)}}
     return BasisInputs(table.basis, BASIS_AVAILABLE, max(len(securities), 1), calendar, labels, maturity,
                        context, controls_frame, variants_by_feature, load_feature, meta, digests,
                        release_frames=True)
-
-
-def _catalog_classes() -> dict[str, str]:
-    from .catalog import read_anomaly_catalog
-
-    return {entry.feature_id: entry.anomaly_class for entry in read_anomaly_catalog()}
-
-
-def _catalog_sha() -> str:
-    from .catalog import anomaly_catalog_sha256
-
-    return anomaly_catalog_sha256()
 
 
 # ---------------------------------------------------------------------------
@@ -2173,22 +2989,33 @@ class EvaluationRunResult:
     cells: int
     family: dict[str, Any]
     blockers: tuple[str, ...]
+    #: True only for a catalog-anchored run with no subset, no missing expected cell and both
+    #: bases supplied (R4 must refuse to qualify from any other run).
+    family_complete: bool = False
 
 
 def _code_sha() -> str:
     digest = hashlib.sha256()
     for path in _CODE_FILES:
         digest.update(path.name.encode("utf-8"))
-        digest.update(path.read_bytes())
+        digest.update(path.read_bytes().replace(b"\r\n", b"\n"))  # checkout line endings do not matter
     return digest.hexdigest()
 
 
-def _blockers(spec: EvaluationSpec, manifests: Mapping[str, Any]) -> list[str]:
+def _blockers(spec: EvaluationSpec, manifests: Mapping[str, Any], family: Mapping[str, Any]) -> list[str]:
     blockers = ["research_only_not_release_eligible"]
     if spec.split is None:
         blockers.append("no_frozen_split_selection_uses_all_formations")
+    if _is_subset(spec):
+        blockers.append("partial_family_subset")
+    if not family.get("catalog_anchored"):
+        blockers.append("family_not_catalog_anchored")
+    if family.get("catalog_source") == "injected":
+        blockers.append("family_catalog_injected_not_the_feature_version_snapshot")
+    committed = family.get("committed_catalog_sha256")
     if "strict" not in manifests:
         blockers.append("strict_basis_not_supplied")
+    counts = family.get("bases", {})
     for basis, manifest in sorted(manifests.items()):
         if manifest["status"] == BASIS_UNTESTABLE:
             blockers.append(f"{basis}_basis_untestable")
@@ -2196,22 +3023,36 @@ def _blockers(spec: EvaluationSpec, manifests: Mapping[str, Any]) -> list[str]:
             blockers.append("reconstructed_identity_universe_and_availability_not_certifiable")
         for blocker in manifest["meta"].get("panel_blockers", []):
             blockers.append(f"{basis}_panel:{blocker}")
+        for blocker in manifest["meta"].get("feature_blockers", []):
+            blockers.append(f"{basis}_features:{blocker}")
+        built_from = manifest["meta"].get("feature_catalog_sha256")
+        if committed is not None and built_from is not None and built_from != committed:
+            blockers.append(f"{basis}_feature_catalog_differs_from_committed_catalog")
         alignment = manifest["digests"].get("label", {}).get("alignment", {}) if manifest["digests"] else {}
         for status, count in sorted(alignment.items()):
-            if status != "aligned" and count:
+            if status not in BENIGN_ALIGNMENTS and count:
                 blockers.append(f"{basis}_{status}:{count}")
         if manifest["features_absent"]:
             blockers.append(f"{basis}_features_absent:{len(manifest['features_absent'])}")
-    if FEATURE_CONTRACT.endswith("declared-by-r3b"):
-        blockers.append("feature_table_contract_declared_by_r3b_pending_r2b")
+        venues = {name: int(count) for name, count in (
+            item.split(":") for item in (manifest.get("venue_basis_formations") or "").split(",") if item)}
+        without_pit = sum(count for name, count in venues.items() if name != VENUE_NYSE_PIT)
+        if without_pit:
+            blockers.append(f"{basis}_size_buckets_without_pit_nyse_venue:{without_pit}")
+        basis_counts = counts.get(basis, {})
+        if basis_counts.get("not_produced"):
+            blockers.append(f"{basis}_catalog_cells_not_produced:{basis_counts['not_produced']}")
+        if basis_counts.get("features_outside_catalog"):
+            blockers.append(f"{basis}_features_outside_catalog:{basis_counts['features_outside_catalog']}")
     if not spec.label_diagnostics:
         blockers.append("label_source_attrition_not_measured")
     return blockers
 
 
-def _open_bases(store: ResearchStore, spec: EvaluationSpec) -> Iterable[BasisInputs]:
+def _open_bases(store: ResearchStore, spec: EvaluationSpec,
+                catalog: Mapping[str, CatalogFeature] | None) -> Iterable[BasisInputs]:
     for version in spec.feature_versions:
-        yield open_basis_inputs(store, version, spec)
+        yield open_basis_inputs(store, version, spec, catalog)
 
 
 def _diagnostics(store: ResearchStore, spec: EvaluationSpec) -> dict[str, Any] | None:
@@ -2224,12 +3065,15 @@ def _diagnostics(store: ResearchStore, spec: EvaluationSpec) -> dict[str, Any] |
     return result
 
 
-def run_evaluation(store: ResearchStore, spec: EvaluationSpec, *, resume: bool = False) -> EvaluationRunResult:
+def run_evaluation(store: ResearchStore, spec: EvaluationSpec, *, resume: bool = False,
+                   catalog: Iterable[CatalogFeature] | None = None) -> EvaluationRunResult:
     """Evaluate the spec's feature versions and persist a sealed run in the research store.
 
     One transaction per (basis, feature); ``resume=True`` continues a ``building`` or
     ``failed`` run with an identical spec and code, skipping features already written.
     RX7: a frozen split is required unless ``allow_unsplit`` (recorded as a blocker).
+    The family is anchored to ``catalog`` (default: the R1a catalog's research-eligible
+    rows, :func:`catalog_features`); ``family_complete`` is stored on the run row.
     """
     spec = validate_spec(spec)
     if not spec.feature_versions:
@@ -2265,65 +3109,21 @@ def run_evaluation(store: ResearchStore, spec: EvaluationSpec, *, resume: bool =
                 VALUES (?, 'building', ?, ?, ?, ?, ?)
             """, [spec.run_id, EVALUATION_VERSION, spec_json, spec_sha, code_sha, now])
     try:
-        manifests: dict[str, Any] = {}
-        untestable: list[BasisInputs] = []
-        done = {(row[0], row[1]) for row in con.execute(
-            "SELECT basis, feature_id FROM research_eval_feature_inputs WHERE run_id=?", [spec.run_id]).fetchall()}
-        for inputs in _open_bases(store, spec):
-            if inputs.basis in manifests:
-                raise EvaluationInputError(f"basis {inputs.basis} supplied twice")
-            features, absent = _selected_features(inputs, spec)
-            prep = None if inputs.status == BASIS_UNTESTABLE else _prepare(inputs, spec)
-            manifests[inputs.basis] = _basis_manifest(inputs, prep, absent)
-            previous = stored_inputs.get("bases", {}).get(inputs.basis)
-            if previous is not None and previous != manifests[inputs.basis]:
-                raise EvaluationInputError(f"resume refused: basis {inputs.basis} inputs changed")
+        expected, catalog_info = _resolve_catalog(store, spec, catalog)
+        done = frozenset((row[0], row[1]) for row in con.execute(
+            "SELECT basis, feature_id FROM research_eval_feature_inputs WHERE run_id=?", [spec.run_id]).fetchall())
+
+        def record(manifests: dict[str, Any]) -> None:
             with store.transaction():
                 con.execute("UPDATE research_eval_runs SET inputs_json=? WHERE run_id=?",
                             [_canonical({"bases": manifests}), spec.run_id])
-            if prep is None:
-                untestable.append(inputs)
-                continue
-            scope_written = con.execute("SELECT count(*) FROM research_eval_attrition WHERE run_id=? AND scope=?",
-                                        [spec.run_id, inputs.basis]).fetchone()
-            if not (scope_written and scope_written[0]):
-                with store.transaction():
-                    _insert(con, "attrition", spec.run_id, _frame(_basis_attrition(prep, spec), "attrition"))
-            for feature_id in features:
-                if (inputs.basis, feature_id) in done:
-                    continue
-                produced, input_row = _evaluate_feature(prep, inputs, spec, feature_id)
-                with store.transaction():
-                    for key, items in produced.items():
-                        _insert(con, key, spec.run_id, _frame(items, key))
-                    _insert(con, "feature_inputs", spec.run_id, _frame([input_row], "feature_inputs"))
-        pairs = {(row[0], row[1]) for row in con.execute(
-            "SELECT DISTINCT feature_id, variant FROM research_eval_cells WHERE run_id=? AND status<>?",
-            [spec.run_id, BASIS_UNTESTABLE]).fetchall()}
+
+        manifests, info = _evaluate_into(con, spec.run_id, _open_bases(store, spec, expected), spec, expected,
+                                         transaction=store.transaction, done=done,
+                                         previous=stored_inputs.get("bases", {}), on_manifest=record)
+        family_summary = _finish_family(con, spec.run_id, spec, info, expected, store.transaction,
+                                        catalog_info=catalog_info)
         with store.transaction():
-            for inputs in untestable:
-                con.execute("DELETE FROM research_eval_cells WHERE run_id=? AND basis=?", [spec.run_id, inputs.basis])
-                _insert(con, "cells", spec.run_id, _frame(_untestable_cells(inputs, spec, pairs), "cells"))
-        cells = con.execute("""
-            SELECT basis, feature_id, variant, horizon_months, status, ic_robust_p, ic_hlz_pass,
-                   sharpe, sharpe_skew, sharpe_kurt, sharpe_n
-            FROM research_eval_cells WHERE run_id=? ORDER BY basis, feature_id, variant, horizon_months
-        """, [spec.run_id]).df()
-        family, family_summary = compute_family(cells) if len(cells) else (pd.DataFrame(), {})
-        with store.transaction():
-            if len(family):
-                typed = _typed(family, [(name, kind) for name, kind in CELL_COLUMNS
-                                        if name in family.columns])
-                con.register("_ev_family", typed)
-                try:
-                    assignments = ", ".join(f"{name}=f.{name}" for name in FAMILY_COLUMNS)
-                    con.execute(f"""
-                        UPDATE research_eval_cells AS c SET {assignments} FROM _ev_family f
-                        WHERE c.run_id=? AND c.basis=f.basis AND c.feature_id=f.feature_id
-                          AND c.variant=f.variant AND c.horizon_months=f.horizon_months
-                    """, [spec.run_id])
-                finally:
-                    con.unregister("_ev_family")
             con.execute("DELETE FROM research_eval_attrition WHERE run_id=? AND scope='label_source'", [spec.run_id])
         diagnostics = _diagnostics(store, spec)
         with store.transaction():
@@ -2332,17 +3132,18 @@ def run_evaluation(store: ResearchStore, spec: EvaluationSpec, *, resume: bool =
         results_sha, parts = results_digest(con, spec.run_id)
         inputs_json = _canonical({"bases": manifests, "feature_inputs": parts["feature_inputs"],
                                   "label_source": spec.label_source, "code_sha256": code_sha})
-        blockers = _blockers(spec, manifests)
+        blockers = _blockers(spec, manifests, family_summary)
+        complete = bool(family_summary.get("family_complete"))
         with store.transaction():
             con.execute("""
                 UPDATE research_eval_runs SET status='complete', inputs_json=?, inputs_sha256=?, results_sha256=?,
-                    family_json=?, blockers_json=?, diagnostic_json=?, finished_at=?
+                    family_json=?, blockers_json=?, diagnostic_json=?, finished_at=?, family_complete=?
                 WHERE run_id=? AND status='building'
             """, [inputs_json, _sha(inputs_json), results_sha, _canonical(family_summary), _canonical(blockers),
                   _canonical({"tables": parts, "label_diagnostics": diagnostics}),
-                  dt.datetime.now(dt.UTC).replace(tzinfo=None), spec.run_id])
+                  dt.datetime.now(dt.UTC).replace(tzinfo=None), complete, spec.run_id])
         return EvaluationRunResult(spec.run_id, "complete", results_sha, _sha(inputs_json),
-                                   int(parts["cells"]["rows"]), family_summary, tuple(blockers))
+                                   int(parts["cells"]["rows"]), family_summary, tuple(blockers), complete)
     except Exception as exc:
         with store.transaction():
             con.execute("UPDATE research_eval_runs SET status='failed', diagnostic_json=? "
@@ -2351,12 +3152,13 @@ def run_evaluation(store: ResearchStore, spec: EvaluationSpec, *, resume: bool =
         raise
 
 
-def verify_evaluation_run(store: ResearchStore, run_id: str) -> dict[str, Any]:
+def verify_evaluation_run(store: ResearchStore, run_id: str, *,
+                          catalog: Iterable[CatalogFeature] | None = None) -> dict[str, Any]:
     """Re-derive a sealed run from its manifest and compare digests.
 
     ``stored_rows_match``: the persisted rows still hash to the sealed digest (no
     tampering). ``reproduced``: recomputing from the manifest's spec over the current
-    inputs gives byte-identical results and identical input digests.
+    inputs (and the same catalog) gives byte-identical results and identical input digests.
     """
     con = store.con
     row = con.execute("SELECT status, spec_json, results_sha256, inputs_json FROM research_eval_runs WHERE run_id=?",
@@ -2365,7 +3167,10 @@ def verify_evaluation_run(store: ResearchStore, run_id: str) -> dict[str, Any]:
         raise EvaluationInputError(f"evaluation run {run_id} is absent or not sealed")
     spec = spec_from_payload(json.loads(row[1]), run_id)
     stored_sha, _ = results_digest(con, run_id)
-    tables = evaluate_bases(_open_bases(store, spec), spec, label_diagnostics=_diagnostics(store, spec))
+    expected, catalog_info = _resolve_catalog(store, spec, catalog)
+    tables = evaluate_bases(_open_bases(store, spec, expected), spec, label_diagnostics=_diagnostics(store, spec),
+                            catalog=None if expected is None else expected.values(), keep_frames=False,
+                            catalog_info=catalog_info)
     stored_bases = json.loads(row[3]).get("bases", {}) if row[3] else {}
     return {"run_id": run_id, "sealed_results_sha256": row[2], "stored_rows_sha256": stored_sha,
             "recomputed_results_sha256": tables.results_sha256,
@@ -2381,10 +3186,17 @@ __all__ = [
     "DEFAULT_SUBPERIODS",
     "EVALUATION_VERSION",
     "FEATURE_CONTRACT",
+    "FEATURE_QUERY_VERSIONS",
+    "FEATURE_UNIVERSE_RULES",
     "FEATURE_VARIANTS",
     "HORIZON_SESSIONS",
+    "OWNER_BASIS_UNLINKED",
     "SIZE_BUCKETS",
+    "SIZE_SLICE_KINDS",
+    "UNIVERSE_RULE",
+    "VENUE_BASES",
     "BasisInputs",
+    "CatalogFeature",
     "EvaluationInputError",
     "EvaluationRunResult",
     "EvaluationSpec",
@@ -2393,10 +3205,14 @@ __all__ = [
     "FeatureTable",
     "FrozenSplit",
     "LookaheadError",
+    "breakpoint_quantiles",
+    "catalog_features",
     "compute_family",
     "empty_basis",
     "ensure_evaluation_schema",
     "evaluate_bases",
+    "expected_variants",
+    "feature_version_catalog",
     "freeze_split",
     "grouped_average_ranks",
     "grouped_quantiles",
