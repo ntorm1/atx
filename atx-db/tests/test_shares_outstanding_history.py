@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import datetime as dt
 
-
 SECURITY_ID = "SEC-CIK-0000320193"
 
 
@@ -337,6 +336,46 @@ def test_refresh_materializes_float_treasury_and_share_class_counts(tmp_store):
         """
     ).fetchall()
     assert legacy_counts == [("shares_basic_avg", 1), ("shares_outstanding", 2)]
+
+
+def test_issuer_total_share_concepts_keep_their_taxonomy_and_concept(tmp_store):
+    """A8 reads the us-gaap CommonStockSharesOutstanding balance-sheet total (never
+    CommonStockSharesIssued, which includes treasury shares) as the issuer total that a
+    multi-class cap's class counts must reconcile to, and only DEI rows as line counts."""
+    from atx_db.shares_outstanding import refresh_shares_outstanding_history
+
+    _seed_share_statement_points(tmp_store)
+    for point_id, concept, value in (
+        ("gaap-outstanding-2023fy", "CommonStockSharesOutstanding", 15_441_881_000),
+        ("gaap-issued-2023fy", "CommonStockSharesIssued", 15_550_000_000),
+    ):
+        _insert_statement_point(
+            tmp_store,
+            statement_point_id=point_id,
+            metric="shares_outstanding",
+            value=value,
+            period_start=None,
+            period_end=dt.date(2023, 12, 30),
+            as_of_date=dt.date(2024, 2, 2),
+            available_at=dt.datetime(2024, 2, 2, 21, 30),
+            accession_number="0000320193-24-000006",
+            taxonomy="us-gaap",
+            concept=concept,
+        )
+    assert refresh_shares_outstanding_history(tmp_store) == 5
+    rows = tmp_store.con.execute(
+        """
+        SELECT taxonomy, concept, effective_date, share_count
+        FROM shares_outstanding_history
+        WHERE share_count_type = 'shares_outstanding' AND effective_date = DATE '2023-12-30'
+        ORDER BY taxonomy, concept
+        """
+    ).fetchall()
+    assert rows == [
+        ("dei", "EntityCommonStockSharesOutstanding", dt.date(2023, 12, 30), 15_442_000_000),
+        ("us-gaap", "CommonStockSharesIssued", dt.date(2023, 12, 30), 15_550_000_000),
+        ("us-gaap", "CommonStockSharesOutstanding", dt.date(2023, 12, 30), 15_441_881_000),
+    ]
 
 
 def test_dataset_wrapper_records_run_and_quality(tmp_store):

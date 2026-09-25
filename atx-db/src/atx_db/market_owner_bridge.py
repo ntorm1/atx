@@ -73,22 +73,28 @@ symbol is normalized (upper case; ``.``, ``/`` and blanks -> ``-``):
 Stale current-ticker holders stay linked (a delisted issuer that still files
 under the same ticker is common) but are counted (``stale_links``).
 
-Share class guard (until A8 defines a class share basis)
--------------------------------------------------------
-A DEI count is issuer-level (or an arbitrary per-class pick). An issuer (CIK)
-is *multi-line* when it has more than one **common-equity-class** current SEC
-ticker -- linked or not -- or more than one concurrently trading common linked
-line (strict owner-key splits included). Every current SEC ticker of the CIK
-is classified first:
+Share class structure (A5 guard, A8 share basis)
+-----------------------------------------------
+A DEI count is issuer-level (or an arbitrary per-class pick), so it may only
+ever price a line of a single-class issuer. An issuer (CIK) is *multi-class*
+when it has more than one **common-equity-class** current SEC ticker -- linked
+or not -- or more than one concurrently trading common linked line (strict
+owner-key splits included). Every current SEC ticker of the CIK is classified
+first:
 
 * ``directory_name``: A2's ``universe_us_listed.classify_security_type`` over
   the newest Nasdaq symbol-directory security name (reused, not forked);
   A2's strict eligible types common/ADR/REIT/LP are common-equity classes;
   preferred, warrant, right, unit, note, ETN, fund, ETF and test are not;
   ``common_unverified`` (no common-share evidence in the name: ZONES,
-  capital-trust, agency securities, a few class shares) is not counted, and
-  such a *line* keeps DEI/valuation only when it is the issuer's only line
-  and the issuer has no common ticker (else ``unverified_class_line``);
+  capital-trust, agency securities) is not counted, and such a *line* keeps
+  DEI/valuation only when it is the issuer's only line and the issuer has no
+  common ticker (else ``unverified_class_line``);
+* ``class_share`` (A8): a ``common_unverified`` name that states a share class
+  (``Class B``/``Series A``, e.g. "Lennar Corporation Class B"), or an SEC
+  ticker ``ROOT-X`` (X in A/B/C/K) whose ``ROOT`` or ``ROOT-Y`` is another
+  ticker of the same CIK (``ticker_class_suffix``), *is* a common class
+  (LEN/LEN-B);
 * ``ticker_suffix`` (no directory row): SEC suffix conventions ``-P*``/``-PR*``
   preferred, ``-W``/``-WS``/``-WT`` warrant, ``-U``/``-UN`` unit, ``-R``/``-RT``
   right, and a 5th letter W/U/R/P (or ``WS``) on another ticker of the same CIK;
@@ -97,19 +103,59 @@ is classified first:
   untraded ticker of a directory-covered CIK is an unlisted (OTC-style) line
   and is ignored (``unlisted_untraded``).
 
-Non-common tickers never withhold the common line's DEI or valuation. A linked
-line that is itself non-common (a preferred or warrant line) gets no DEI and
-no valuation (``non_common_line``). For every line of a multi-common-class
-issuer the bridge withholds DEI shares **and** marks
-``valuation_eligible=False`` (``multi_common_class``): the panel then NULLs
-every daily metric that combines market value with fundamentals, instead of
-pairing one class line's price with issuer-total or other-class counts. Strict
-mode assigns no DEI shares at all (no class basis exists yet). The panel adds
-a data-side guard: a DEI state whose filing carries more than one count or
-share class (per-class DEI) is never used and withholds valuation too.
-Known residual for A8: a multi-class issuer with only one listed common
-ticker, one linked line and a single issuer-total DEI count is
-indistinguishable here from a single-class issuer.
+Historical sibling classes (A8): a sibling class that was delisted, renamed or
+collapsed before the ticker snapshot (DISCA/DISCK before WBD) or never entered
+the SEC map (CWEN-A) has no current ticker and is unlinked, so the surviving
+line looks single-class. The bridge therefore also scans each linked common
+line's *symbol history* (every symbol it traded under, with dates) against the
+unlinked lines' symbol histories: two concurrently trading symbols are class
+siblings when they share a root and differ only by a class designator --
+``ROOT``/``ROOT-X`` or ``ROOT-X``/``ROOT-Y`` (X, Y in A/B/C/K), or a 5-letter
+Nasdaq ``ROOTX``/``ROOTY`` (or 4-letter ``ROOT``/``ROOTX``, X, Y in A/B/K). A
+sibling whose directory type is non-common (a preferred written ``ADC-A``) is
+ignored. The linked line's bridge interval is split at the overlap bounds and
+each segment carries ``sibling_lines`` (unbridged sibling classes trading in
+it); a segment with siblings is multi-class. This is reconstructed evidence
+(symbol structure), used only to *withhold* a share basis, never to link.
+
+Every linked row then carries a ``share_basis`` the panel resolves per bar:
+
+* ``single``: one common class. Reconstructed mode prices it with the owner's
+  DEI count behind a DEI/archive basis-and-split guard (see ``market_daily``);
+  strict mode assigns no DEI (``strict_no_dei_basis``) and uses the line's own
+  vendor count.
+* ``multi_class``: the issuer cap is only ``sum(close_i x class shares_i)`` over
+  the issuer's bridged class lines trading that day, with each line's own
+  vendor count as its class count, and only when every known class is bridged
+  and priced and the counts reconcile to an issuer total; otherwise the cap and
+  every valuation metric are NULL (``multiclass_unresolved``). DEI never prices
+  a class line. Strict mode has no class basis yet (always unresolved).
+* ``adr``: an ADR line (A2 directory type ``ADR``) never uses the ordinary-share
+  DEI count: the vendor ADS-basis count, else NULL (``adr_ratio_unresolved``);
+  ``adr_ratio`` is the ordinary shares per ADS parsed from the directory name
+  when it states one, used to reject a vendor count that is not ADS-basis.
+* ``withheld``: a non-common (preferred, warrant) or unverified line: its own
+  vendor count, no DEI, no valuation (``non_common_line``,
+  ``unverified_class_line``).
+
+Non-common tickers never withhold the common line. The panel adds a data-side
+guard: a DEI state whose filing carries more than one count or share class
+(per-class DEI) makes the row multi-class. Residuals: a multi-class issuer with
+one listed class, no historical sibling line and a single issuer-total DEI
+count equal to the line's own class count is indistinguishable from a
+single-class issuer; unlisted classes (META class B) are outside the
+``sum`` by definition.
+
+Reporting currency (A8)
+-----------------------
+Valuation metrics combine a USD market value with monetary fundamentals, so an
+owner whose current monetary facts are not declared in USD is withheld: the
+bridge reads, once, every content id with a declared non-USD (or undeclared
+on a ``monetary``/``per_share`` item) unit plus every content id of the same
+CIKs, and turns the per-filing unit flags into point-in-time status intervals
+per owner (``non_usd``, ``mixed``, ``unknown``; see :func:`currency_status`).
+Rows with no unit metadata at all (legacy rows, fixtures) carry no currency
+evidence and are not withheld.
 """
 
 from __future__ import annotations
@@ -120,7 +166,8 @@ from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cached_property
-from itertools import pairwise
+from itertools import groupby, pairwise
+from typing import NamedTuple
 
 from .connection import DuckDBStore
 from .ticker_history import SOURCE_NAME as TICKER_HISTORY_SOURCE_NAME
@@ -130,6 +177,10 @@ __all__ = [
     "AVAILABILITY_MODELED",
     "AVAILABILITY_VERIFIED",
     "BRIDGE_VALUE_COLUMNS",
+    "CURRENCY_MIXED",
+    "CURRENCY_NON_USD",
+    "CURRENCY_UNKNOWN",
+    "CURRENCY_VALUE_COLUMNS",
     "IDENTITY_BASIS_CURRENT_TICKER",
     "IDENTITY_BASIS_SHARED_ID",
     "IDENTITY_BASIS_VERIFIED_DATED",
@@ -141,23 +192,34 @@ __all__ = [
     "OWNER_MODES",
     "OWNER_MODE_RECONSTRUCTED",
     "OWNER_MODE_STRICT",
+    "SHARE_BASIS_ADR",
+    "SHARE_BASIS_MULTI_CLASS",
+    "SHARE_BASIS_SINGLE",
+    "SHARE_BASIS_WITHHELD",
+    "SINGLE_CLASS_LINK_COLUMNS",
     "STALE_LINK_DAYS",
     "WITHHELD_MULTI_COMMON_CLASS",
     "WITHHELD_NON_COMMON_LINE",
     "WITHHELD_UNVERIFIED_CLASS_LINE",
     "BridgeRow",
+    "CurrencyEvent",
+    "LineSymbol",
     "MarketOwnerBridge",
     "OwnerLinkEvidence",
     "PriceLine",
     "TickerClass",
+    "are_class_siblings",
     "bridge_value_params",
     "build_market_owner_bridge",
     "classify_reconstructed",
     "classify_sec_tickers",
     "classify_strict",
+    "currency_status",
+    "currency_value_params",
     "member_value_params",
     "normalize_cik",
     "normalize_symbol",
+    "parse_ads_ratio",
     "values_relation_sql",
 ]
 
@@ -190,15 +252,41 @@ STALE_LINK_DAYS = 30
 #: How a current SEC ticker's security class was determined.
 CLASS_BASIS_DIRECTORY = "directory_name"
 CLASS_BASIS_SUFFIX = "ticker_suffix"
+CLASS_BASIS_CLASS_SUFFIX = "ticker_class_suffix"
 CLASS_BASIS_UNCLASSIFIED = "unclassified"
 CLASS_BASIS_UNLISTED = "unlisted_untraded"
 
 #: Why a linked line's DEI shares / valuation metrics are withheld.
+#: ``multi_common_class`` now marks a multi-class issuer's lines as priced only
+#: by the class sum (A8), not a bridge-level withhold.
 WITHHELD_MULTI_COMMON_CLASS = "multi_common_class"
 WITHHELD_NON_COMMON_LINE = "non_common_line"
 WITHHELD_UNVERIFIED_CLASS_LINE = "unverified_class_line"
 WITHHELD_STRICT_NO_DEI = "strict_no_dei_basis"
 _UNVERIFIED_COMMON = "common_unverified"
+#: A8 class evidence: a ``common_unverified`` name or ticker that states a share class.
+_CLASS_SHARE = "class_share"
+_ADR = "ADR"
+
+#: A8 share basis of a linked row (see the module docstring).
+SHARE_BASIS_SINGLE = "single"
+SHARE_BASIS_MULTI_CLASS = "multi_class"
+SHARE_BASIS_ADR = "adr"
+SHARE_BASIS_WITHHELD = "withheld"
+
+#: Owner reporting-currency statuses that withhold valuation metrics.
+CURRENCY_NON_USD = "non_usd"
+CURRENCY_MIXED = "mixed"
+CURRENCY_UNKNOWN = "unknown"
+
+#: Class designators: ``ROOT-X`` separator form, and the Nasdaq fifth letter.
+_SEPARATOR_CLASS_LETTERS = frozenset("ABCK")
+_FIFTH_LETTER_CLASS_LETTERS = frozenset("ABK")
+_SEPARATOR_CLASS = re.compile(r"([A-Z]{1,5})-([A-Z])")
+_PLAIN_SYMBOL = re.compile(r"[A-Z]{1,5}")
+#: A ``common_unverified`` directory name that states a share class.
+_CLASS_NAME = re.compile(r"\b(?:CLASS|SERIES) [A-Z]\b")
+_CLASS_NAME_EXCLUSIONS = re.compile(r"\b(?:TRUST|NOTES?|BONDS?|DEBENTURES?|ZONES|DEPOSITARY|INTEREST)\b")
 
 #: SEC ``company_tickers`` suffix conventions for non-common lines, applied to a
 #: normalized ticker (separators folded to ``-``) only when the symbol
@@ -241,11 +329,44 @@ BRIDGE_VALUE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("dei_shares_eligible", "BOOLEAN"),
     ("valuation_eligible", "BOOLEAN"),
     ("identity_basis", "VARCHAR"),
+    # A8 share basis: the issuer the class sum groups by (CIK, else owner),
+    # the row's share basis, the issuer's known common classes, the unbridged
+    # sibling class lines trading in this interval, and the ADS ratio.
+    ("issuer_key", "VARCHAR"),
+    ("share_basis", "VARCHAR"),
+    ("issuer_class_lines", "INTEGER"),
+    ("sibling_lines", "INTEGER"),
+    ("adr_ratio", "DOUBLE"),
+    # Row-level identity lineage (A9 columns, written when the table has them).
+    ("availability_basis", "VARCHAR"),
+    ("link_method", "VARCHAR"),
 )
 #: Column layout of the per-batch ``owner_members`` VALUES relation.
 MEMBER_VALUE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("owner_key", "VARCHAR"),
     ("member_security_id", "VARCHAR"),
+)
+#: Column layout of :meth:`MarketOwnerBridge.single_class_link_rows` (split
+#: evidence lookup for derived metrics, R1e).
+SINGLE_CLASS_LINK_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("content_security_id", "VARCHAR"),
+    ("price_security_id", "VARCHAR"),
+    ("issuer_key", "VARCHAR"),
+    ("valid_from", "DATE"),
+    ("valid_to", "DATE"),
+    ("available_at", "TIMESTAMP"),
+    ("issuer_multi_class", "BOOLEAN"),
+    ("link_method", "VARCHAR"),
+    ("identity_basis", "VARCHAR"),
+    ("availability_basis", "VARCHAR"),
+)
+#: Column layout of the per-batch ``currency_guard`` VALUES relation: the
+#: owner's non-USD reporting-currency status over ``[from_at, to_at)``.
+CURRENCY_VALUE_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("owner_key", "VARCHAR"),
+    ("from_at", "TIMESTAMP"),
+    ("to_at", "TIMESTAMP"),
+    ("currency_status", "VARCHAR"),
 )
 
 _SEC_CIK_ID = re.compile(r"SEC-CIK-(\d{10})")
@@ -339,10 +460,20 @@ class BridgeRow:
     #: Why DEI/valuation is withheld (``multi_common_class``, ``non_common_line``,
     #: ``strict_no_dei_basis``), or None.
     withheld_reason: str | None = None
+    #: A8 share basis (``single``/``multi_class``/``adr``/``withheld``), None if unlinked.
+    share_basis: str | None = None
+    #: Unbridged sibling class lines trading during this interval (A8).
+    sibling_lines: int = 0
+    #: Ordinary shares per ADS stated by the directory name (ADR lines only).
+    adr_ratio: float | None = None
 
     @property
     def linked(self) -> bool:
         return self.owner_security_id is not None
+
+    @property
+    def issuer_key(self) -> str:
+        return _issuer_key(self)
 
 
 @dataclass(frozen=True)
@@ -355,6 +486,35 @@ class TickerClass:
     basis: str
     #: True when the ticker counts as a common-equity class of the issuer.
     counted_common: bool
+
+
+@dataclass(frozen=True)
+class LineSymbol:
+    """One symbol a price line traded under, with its first and last bar dates."""
+
+    price_security_id: str
+    symbol: str
+    first_trade_date: dt.date
+    last_trade_date: dt.date
+
+
+@dataclass(frozen=True)
+class CurrencyEvent:
+    """Monetary unit flags of one content id's facts for one (period_end, available_at)."""
+
+    security_id: str
+    period_end: dt.date
+    available_at: dt.datetime
+    has_usd: bool
+    has_foreign: bool
+    has_unknown: bool
+
+
+class DirectorySnapshot(NamedTuple):
+    """Newest symbol-directory classification: symbol -> type, and ADS ratios by symbol key."""
+
+    types: dict[str, str]
+    adr_ratios: dict[str, float]
 
 
 @dataclass(frozen=True)
@@ -378,6 +538,9 @@ class MarketOwnerBridge:
     per_class_dei_ids: frozenset[str] = frozenset()
     #: Classification of every current SEC ticker (for the reason counters).
     ticker_classes: tuple[TickerClass, ...] = ()
+    #: Monetary unit events of every content id whose CIK declares a non-USD
+    #: (or undeclared) monetary unit anywhere (see :func:`currency_status`).
+    currency_events: dict[str, tuple[CurrencyEvent, ...]] = field(default_factory=dict)
 
     @property
     def identity_basis(self) -> str:
@@ -412,6 +575,134 @@ class MarketOwnerBridge:
     def members_for(self, rows: Iterable[BridgeRow]) -> list[tuple[str, str]]:
         owners = sorted({row.owner_security_id for row in rows if row.owner_security_id is not None})
         return [(owner, member) for owner in owners for member in self.owner_members.get(owner, (owner,))]
+
+    @cached_property
+    def _owners_by_member(self) -> dict[str, tuple[str, ...]]:
+        owners: dict[str, set[str]] = defaultdict(set)
+        for owner, members in self.owner_members.items():
+            for member in (owner, *members):
+                owners[member].add(owner)
+        return {member: tuple(sorted(found)) for member, found in owners.items()}
+
+    def single_class_lines(
+        self, content_security_id: str, on: dt.date, *, as_of: dt.datetime | None = None
+    ) -> tuple[BridgeRow, ...]:
+        """The single-common-class price line(s) linked to an accounting id on a date (vendor split evidence).
+
+        PIT-safe split-evidence lookup (R1e): ``content_security_id`` is any
+        accounting id -- an owner (``SEC-CIK-*``) or one of its members
+        (``SEC-COMPANYFACTS-UNRESOLVED-CIK-*``); ``on`` is the date the price
+        line must be linked on (``valid_from <= on < valid_to``); ``as_of`` is
+        the clock the link must be available by (default ``on`` + 22h, the bar
+        cutoff). Returns the linked rows with ``share_basis='single'`` -- each
+        carries ``price_security_id``, ``link_method``, ``identity_basis`` and
+        ``availability_basis`` -- or ``()`` when the issuer is multi-class on
+        that date (a ``multi_class`` row, including a historical sibling-class
+        segment), has only ADR / non-common lines (an ADS price factor is not an
+        ordinary-share split), or has no available link. The panel's data-side
+        per-class DEI guard is not applied here. Reconstructed links are
+        ``current_ticker_unverified`` with modeled availability; never present
+        them as verified.
+        """
+        clock = as_of if as_of is not None else dt.datetime.combine(on, dt.time(_MODELED_LINK_HOURS))
+        owners = set(self._owners_by_member.get(content_security_id, ()))
+        issuers: set[str] = set()
+        for row in self.rows:
+            if row.linked and row.owner_security_id in owners:
+                issuers.add(_issuer_key(row))
+        covering = [
+            row
+            for row in self.rows
+            if row.linked
+            and _issuer_key(row) in issuers
+            and row.valid_from is not None
+            and row.valid_from <= on
+            and (row.valid_to is None or on < row.valid_to)
+            and row.available_at is not None
+            and row.available_at <= clock
+        ]
+        if any(row.share_basis == SHARE_BASIS_MULTI_CLASS for row in covering):
+            return ()
+        return tuple(row for row in covering if row.share_basis == SHARE_BASIS_SINGLE)
+
+    def single_class_link_rows(self) -> list[tuple[object, ...]]:
+        """Every (member content id, single-class link interval) as :data:`SINGLE_CLASS_LINK_COLUMNS` tuples.
+
+        The set-based form of :meth:`single_class_lines` for binding as a
+        VALUES relation: a split-evidence query joins its accounting id and
+        date to ``content_security_id`` with ``valid_from <= date < valid_to``
+        and ``available_at <= cutoff``, and must also require that no
+        ``multi_class`` interval of the same ``issuer_key`` covers the date
+        (``issuer_multi_class=true`` rows are included for that purpose).
+        """
+        out: list[tuple[object, ...]] = []
+        for row in self.rows:
+            if not row.linked or row.share_basis not in (SHARE_BASIS_SINGLE, SHARE_BASIS_MULTI_CLASS):
+                continue
+            for member in self.owner_members.get(str(row.owner_security_id), (str(row.owner_security_id),)):
+                out.append(
+                    (
+                        member,
+                        row.price_security_id,
+                        _issuer_key(row),
+                        row.valid_from,
+                        row.valid_to,
+                        row.available_at,
+                        row.share_basis == SHARE_BASIS_MULTI_CLASS,
+                        row.link_method,
+                        row.identity_basis,
+                        row.availability_basis,
+                    )
+                )
+        return out
+
+    def expand_to_issuers(self, identifiers: Iterable[str]) -> list[str]:
+        """``identifiers`` plus every price line linked to the same issuer (CIK or owner).
+
+        A multi-class issuer's cap is a sum over all of its bridged class lines,
+        so a refresh scoped to one class line must compute (and rewrite) its
+        whole issuer group to match an unscoped run.
+        """
+        wanted = set(identifiers)
+        issuers = {_issuer_key(row) for row in self.rows if row.linked and row.price_security_id in wanted}
+        wanted.update(row.price_security_id for row in self.rows if row.linked and _issuer_key(row) in issuers)
+        return sorted(wanted)
+
+    def currency_intervals(self, rows: Iterable[BridgeRow]) -> list[tuple[str, dt.datetime, dt.datetime | None, str]]:
+        """Non-USD reporting-currency intervals ``(owner, from_at, to_at, status)`` for the rows' owners.
+
+        The owner's status at a clock is :func:`currency_status` of the unit
+        flags of its latest ``(period_end, available_at)`` monetary filing
+        event available by then (all member content ids merged). USD intervals
+        are not emitted; intervals are disjoint per owner, ``to_at`` exclusive.
+        """
+        intervals: list[tuple[str, dt.datetime, dt.datetime | None, str]] = []
+        owners = sorted({row.owner_security_id for row in rows if row.owner_security_id is not None})
+        for owner in owners:
+            events = [
+                event
+                for member in self.owner_members.get(owner, (owner,))
+                for event in self.currency_events.get(member, ())
+            ]
+            if not events:
+                continue
+            merged: dict[tuple[dt.date, dt.datetime], tuple[bool, bool, bool]] = {}
+            changes: list[tuple[dt.datetime, str | None]] = []
+            ordered = sorted(events, key=lambda e: e.available_at)
+            for available_at, group in groupby(ordered, key=lambda e: e.available_at):
+                for event in group:
+                    key = (event.period_end, event.available_at)
+                    usd, foreign, unknown = merged.get(key, (False, False, False))
+                    merged[key] = (usd or event.has_usd, foreign or event.has_foreign, unknown or event.has_unknown)
+                status = currency_status(*merged[max(merged)])
+                if not changes or changes[-1][1] != status:
+                    changes.append((available_at, status))
+            for index, (start, status) in enumerate(changes):
+                if status is None:
+                    continue
+                end = changes[index + 1][0] if index + 1 < len(changes) else None
+                intervals.append((owner, start, end, status))
+        return intervals
 
     def owner_aligned_batches(self, identifiers: Sequence[str], batch_size: int) -> list[tuple[str, ...]]:
         """Pack identifiers into batches that never split one owner's lines.
@@ -469,8 +760,10 @@ class MarketOwnerBridge:
         linked_lines = unlinked_lines = linked_bar_rows = unlinked_bar_rows = 0
         secondary = dei_withheld = valuation_withheld = id_disagreements = stale = per_class_dei = 0
         withheld_by_reason: dict[str, int] = defaultdict(int)
+        basis_lines: dict[str, int] = defaultdict(int)
         owners: set[str] = set()
         multi_line_issuers: set[str] = set()
+        multi_class_lines = sibling_class_lines = adr_ratio_lines = 0
         horizon = self.bar_horizon
         for price_id in sorted(wanted):
             line = self.lines.get(price_id)
@@ -482,10 +775,18 @@ class MarketOwnerBridge:
                 linked_bar_rows += bar_rows
                 linked_by_method[str(linked[0].link_method)] += 1
                 linked_by_basis[str(linked[0].identity_basis)] += 1
+                for basis in sorted({str(row.share_basis) for row in linked}):
+                    basis_lines[basis] += 1
                 for row in linked:
                     owners.add(str(row.owner_security_id))
                     if row.withheld_reason == WITHHELD_MULTI_COMMON_CLASS:
                         multi_line_issuers.add(_issuer_key(row))
+                if any(row.withheld_reason == WITHHELD_MULTI_COMMON_CLASS for row in linked):
+                    multi_class_lines += 1
+                if any(row.sibling_lines > 0 for row in linked):
+                    sibling_class_lines += 1
+                if any(row.adr_ratio is not None for row in linked):
+                    adr_ratio_lines += 1
                 if any(row.owner_security_id != price_id for row in linked):
                     secondary += 1
                 if not any(row.dei_shares_eligible for row in linked):
@@ -536,10 +837,23 @@ class MarketOwnerBridge:
             "valuation_withheld_lines": valuation_withheld,
             # Reason counters (N1/N2): lines withheld at the bridge, by reason,
             # and bridge-eligible lines the per-class DEI guard withholds later.
-            "withheld_multi_common_class": withheld_by_reason.get(WITHHELD_MULTI_COMMON_CLASS, 0),
+            # A8: a multi-common-class line is no longer withheld at the bridge;
+            # it is priced only by the class sum (never by DEI), and the panel
+            # counts its resolved/unresolved rows (``multi_class_lines`` here).
+            "withheld_multi_common_class": multi_class_lines,
             "withheld_non_common_line": withheld_by_reason.get(WITHHELD_NON_COMMON_LINE, 0),
             "withheld_unverified_class_line": withheld_by_reason.get(WITHHELD_UNVERIFIED_CLASS_LINE, 0),
+            # Upper bound (R2-M2): lines whose owner has *any* per-class DEI
+            # filing; the panel treats only rows whose as-of DEI state is
+            # per-class as multi-class.
             "withheld_per_class_dei": per_class_dei,
+            "multi_class_lines": multi_class_lines,
+            "sibling_class_lines": sibling_class_lines,
+            "adr_ratio_lines": adr_ratio_lines,
+            "share_basis_lines": dict(sorted(basis_lines.items())),
+            # Content ids read for the currency guard (declared non-USD or
+            # undeclared monetary units, plus every id of the same CIKs).
+            "currency_evidence_content_ids": len(self.currency_events),
             # Current SEC tickers (whole snapshot) by class decision.
             "non_common_tickers_ignored": sum(
                 1 for item in self.ticker_classes if item.basis != CLASS_BASIS_UNLISTED and not item.counted_common
@@ -619,6 +933,101 @@ def _owner_members(
 def _issuer_key(row: BridgeRow) -> str:
     """The issuer a linked row belongs to: its CIK, else its owner id."""
     return f"cik:{row.cik}" if row.cik else f"owner:{row.owner_security_id}"
+
+
+def currency_status(has_usd: bool, has_foreign: bool, has_unknown: bool) -> str | None:
+    """Reporting-currency status of one monetary filing event, or None when USD.
+
+    ``has_foreign``: some monetary fact declares an ISO currency other than USD
+    (``CAD``, ``EUR/shares``); ``has_usd``: some declares USD; ``has_unknown``:
+    some monetary/per-share fact carries no parseable currency. Any foreign unit
+    withholds (``mixed`` when USD appears too -- e.g. a convenience
+    translation); undeclared units withhold only when nothing declares USD.
+    """
+    if has_foreign:
+        return CURRENCY_MIXED if has_usd else CURRENCY_NON_USD
+    if has_unknown and not has_usd:
+        return CURRENCY_UNKNOWN
+    return None
+
+
+def _class_families(symbol: str | None) -> list[tuple[str, str, str]]:
+    """``(family, root, designator)`` memberships of a symbol that can name a share class.
+
+    ``sep``: ``ROOT-X`` (X in A/B/C/K) and its plain base ``ROOT``; ``nq``: a
+    5-letter Nasdaq ``ROOTX`` (X in A/B/K) and its 4-letter base ``ROOT``.
+    """
+    key = normalize_symbol(symbol)
+    if key is None:
+        return []
+    families: list[tuple[str, str, str]] = []
+    match = _SEPARATOR_CLASS.fullmatch(key)
+    if match is not None and match.group(2) in _SEPARATOR_CLASS_LETTERS:
+        families.append(("sep", match.group(1), match.group(2)))
+    elif _PLAIN_SYMBOL.fullmatch(key):
+        families.append(("sep", key, ""))
+        if len(key) == 5 and key[4] in _FIFTH_LETTER_CLASS_LETTERS:
+            families.append(("nq", key[:4], key[4]))
+        elif len(key) == 4:
+            families.append(("nq", key, ""))
+    return families
+
+
+def are_class_siblings(left: str | None, right: str | None) -> bool:
+    """True when two symbols name different share classes of one root (``LEN``/``LEN-B``, ``DISCA``/``DISCK``)."""
+    left_families = {(family, root): designator for family, root, designator in _class_families(left)}
+    for family, root, designator in _class_families(right):
+        other = left_families.get((family, root))
+        if other is not None and other != designator:
+            return True
+    return False
+
+
+_UNITS = ("ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "TEN", "ELEVEN", "TWELVE")
+_TENS = (("FIFTEEN", 15), ("TWENTY", 20), ("TWENTY-FIVE", 25), ("THIRTY", 30), ("FORTY", 40), ("FIFTY", 50))
+_NUMBER_WORDS: dict[str, float] = {
+    **{word: float(value) for value, word in enumerate(_UNITS, start=1)},
+    **{word: float(value) for word, value in _TENS},
+    "HUNDRED": 100.0,
+}
+_FRACTION_WORDS: dict[str, float] = {
+    **dict.fromkeys(("ONE-HALF", "ONE HALF"), 0.5),
+    **dict.fromkeys(("ONE-QUARTER", "ONE-FOURTH"), 0.25),
+    **{"ONE-THIRD": 1 / 3, "ONE-FIFTH": 0.2, "ONE-TENTH": 0.1},
+}
+_ADS_REPRESENTING = re.compile(r"EACH\s+(?:ADS\s+)?REPRESENT(?:ING|S)\s+(?:AN?\s+)?(?P<rest>.*)$")
+_ADS_UNDERLYING = re.compile(r"\b(?:ORDINARY|COMMON)\b|\bSHARES?\b")
+
+
+def parse_ads_ratio(name: str | None) -> float | None:
+    """Ordinary shares per ADS stated by an ADR directory name, or None.
+
+    "... American Depositary Shares, each representing eight Ordinary shares"
+    -> 8.0; "(each representing ten (10) Common Shares)" -> 10.0; "each
+    representing one-half of one ordinary share" -> 0.5; "1/4" -> 0.25.
+    """
+    if not name:
+        return None
+    match = _ADS_REPRESENTING.search(str(name).upper())
+    if match is None:
+        return None
+    rest = match.group("rest").strip()
+    if not _ADS_UNDERLYING.search(rest[:80]) or "INTEREST" in rest[:80]:
+        return None
+    number = re.match(r"\(?(\d+(?:\.\d+)?)\)?(?!\s*/)", rest)
+    fraction = re.match(r"(\d+)\s*/\s*(\d+)", rest)
+    if fraction is not None and int(fraction.group(2)) > 0:
+        return int(fraction.group(1)) / int(fraction.group(2))
+    if number is not None:
+        value = float(number.group(1))
+        return value if value > 0 else None
+    for words, value in sorted(_FRACTION_WORDS.items(), key=lambda item: -len(item[0])):
+        if rest.startswith(words):
+            return value
+    for words, value in sorted(_NUMBER_WORDS.items(), key=lambda item: -len(item[0])):
+        if re.match(re.escape(words) + r"\b", rest):
+            return value
+    return None
 
 
 def _is_stale(line: PriceLine, horizon: dt.date) -> bool:
@@ -711,6 +1120,17 @@ def _suffix_class(key: str, cik_keys: set[str]) -> str | None:
     return None
 
 
+def _is_class_suffix_sibling(key: str, cik_keys: set[str]) -> bool:
+    """``ROOT-X`` (X in A/B/C/K) whose ``ROOT`` or another ``ROOT-Y`` is a ticker of the same CIK."""
+    match = _SEPARATOR_CLASS.fullmatch(key)
+    if match is None or match.group(2) not in _SEPARATOR_CLASS_LETTERS:
+        return False
+    root = match.group(1)
+    return root in cik_keys or any(
+        other != key and other.startswith(root + "-") and are_class_siblings(other, key) for other in cik_keys
+    )
+
+
 def classify_sec_tickers(
     tickers: Sequence[tuple[str, str, dt.datetime | None]],
     directory: dict[str, str] | None = None,
@@ -738,8 +1158,14 @@ def classify_sec_tickers(
         covered = any(_directory_type(directory, ticker) is not None for _key, ticker in items)
         for key, ticker in sorted(items):
             kind = _directory_type(directory, ticker)
+            if kind == _UNVERIFIED_COMMON and _is_class_suffix_sibling(key, cik_keys):
+                # A8 (LEN-B): A2 finds no common-share wording, but the ticker
+                # is a class designator of another ticker of the same CIK.
+                classes.append(TickerClass(cik, ticker, _CLASS_SHARE, CLASS_BASIS_CLASS_SUFFIX, True))
+                continue
             if kind is not None:
-                classes.append(TickerClass(cik, ticker, kind, CLASS_BASIS_DIRECTORY, kind in common_types))
+                counted = kind in common_types or kind == _CLASS_SHARE
+                classes.append(TickerClass(cik, ticker, kind, CLASS_BASIS_DIRECTORY, counted))
                 continue
             suffix = _suffix_class(key, cik_keys)
             if suffix is not None:
@@ -760,13 +1186,16 @@ def _with_class_guards(
     *,
     strict: bool,
 ) -> tuple[BridgeRow, ...]:
-    """Mark multi-common-class issuers and non-common lines: no DEI, no valuation.
+    """Assign each linked row its share basis and DEI/valuation eligibility.
 
-    An issuer (CIK, else owner id) is multi-line when it has more than one
+    An issuer (CIK, else owner id) is multi-class when it has more than one
     common-equity-class current SEC ticker (see :func:`classify_sec_tickers`)
-    or more than one concurrently trading common linked line. Non-common
-    tickers never count. A linked line that is itself non-common gets neither
-    DEI nor valuation. Strict mode never assigns DEI shares (no class basis).
+    or more than one concurrently trading common linked line; its lines get
+    ``share_basis='multi_class'`` (no DEI; priced only by the class sum).
+    Non-common tickers never count. A linked line that is itself non-common
+    gets neither DEI nor valuation. An ADR line of a single-class issuer gets
+    ``share_basis='adr'`` (no DEI). Strict mode never assigns DEI shares and has
+    no class basis yet (a strict multi-class line is valuation-withheld).
     """
     common_types = _common_equity_types()
     by_key = {(item.cik, normalize_symbol(item.ticker)): item for item in classes}
@@ -784,7 +1213,7 @@ def _with_class_guards(
         else:
             suffix = _suffix_class(key, set()) if key else None
             kind, basis = (suffix, CLASS_BASIS_SUFFIX) if suffix else ("unclassified", CLASS_BASIS_UNCLASSIFIED)
-        if kind in common_types or kind == "unclassified":
+        if kind in common_types or kind in ("unclassified", _CLASS_SHARE):
             return kind, basis, "common"
         return kind, basis, "unverified" if kind == _UNVERIFIED_COMMON else "non_common"
 
@@ -822,23 +1251,33 @@ def _with_class_guards(
                     dei_shares_eligible=False,
                     valuation_eligible=False,
                     withheld_reason=WITHHELD_NON_COMMON_LINE,
+                    share_basis=SHARE_BASIS_WITHHELD,
                 )
             )
             continue
         listed = common_counts.get(row.cik, 0) if row.cik else 0
         if category == "unverified":
             # A name without common-share evidence (ZONES, capital-trust or
-            # agency securities, some class shares): it is the issuer's equity
-            # line only when nothing else is -- no common ticker, no other line.
+            # agency securities): it is the issuer's equity line only when
+            # nothing else is -- no common ticker, no other line.
             concurrent = concurrent_lines(row)
             class_lines = max(concurrent, listed + 1)
             single = listed == 0 and concurrent == 1
             reason = None if single else WITHHELD_UNVERIFIED_CLASS_LINE
+            share_basis = SHARE_BASIS_SINGLE if single else SHARE_BASIS_WITHHELD
+            valuation = single
         else:
             concurrent = concurrent_lines(row, "common")
             class_lines = max(concurrent, listed)
             single = class_lines <= 1
+            # A8: a multi-class line is priced only by the issuer class sum,
+            # never by DEI; strict mode has no class basis yet.
             reason = None if single else WITHHELD_MULTI_COMMON_CLASS
+            if not single:
+                share_basis = SHARE_BASIS_MULTI_CLASS
+            else:
+                share_basis = SHARE_BASIS_ADR if security_class == _ADR else SHARE_BASIS_SINGLE
+            valuation = single or not strict
         if single and strict:
             reason = WITHHELD_STRICT_NO_DEI
         resolved.append(
@@ -848,12 +1287,108 @@ def _with_class_guards(
                 issuer_class_lines=class_lines,
                 security_class=security_class,
                 class_basis=basis,
-                dei_shares_eligible=single and not strict,
-                valuation_eligible=single,
+                dei_shares_eligible=single and not strict and share_basis == SHARE_BASIS_SINGLE,
+                valuation_eligible=valuation,
                 withheld_reason=reason,
+                share_basis=share_basis,
             )
         )
     return tuple(sorted(resolved, key=lambda row: (row.price_security_id, row.valid_from or dt.date.min)))
+
+
+def _with_sibling_segments(
+    rows: Sequence[BridgeRow],
+    line_symbols: Sequence[LineSymbol],
+    directory: dict[str, str] | None = None,
+) -> tuple[BridgeRow, ...]:
+    """Split linked common rows where an unbridged sibling class line traded concurrently.
+
+    A sibling is an *unlinked* price line that traded under a symbol that is a
+    class sibling (:func:`are_class_siblings`) of a symbol this line traded
+    under, while both traded (inclusive first/last bar dates). A sibling whose
+    symbol the directory types as a non-common instrument is ignored. Each
+    resulting segment carries ``sibling_lines`` (distinct siblings trading in
+    it); a ``single``/``adr`` segment with siblings becomes ``multi_class`` with
+    no DEI (the class sum cannot cover an unbridged class, so the panel
+    withholds it). Only the withholding direction is ever inferred.
+    """
+    if not line_symbols:
+        return tuple(rows)
+    directory = directory or {}
+    common_types = _common_equity_types() | {"unclassified", _CLASS_SHARE, _UNVERIFIED_COMMON}
+    linked_lines = {row.price_security_id for row in rows if row.linked}
+    by_family: dict[tuple[str, str], list[tuple[str, LineSymbol]]] = defaultdict(list)
+    spans_by_line: dict[str, list[LineSymbol]] = defaultdict(list)
+    for span in line_symbols:
+        spans_by_line[span.price_security_id].append(span)
+        if span.price_security_id in linked_lines:
+            continue
+        kind = _directory_type(directory, normalize_symbol(span.symbol) or "")
+        if kind is not None and kind not in common_types:
+            continue
+        for family, root, designator in _class_families(span.symbol):
+            by_family[(family, root)].append((designator, span))
+
+    out: list[BridgeRow] = []
+    for row in rows:
+        if not row.linked or row.share_basis not in (SHARE_BASIS_SINGLE, SHARE_BASIS_ADR, SHARE_BASIS_MULTI_CLASS):
+            out.append(row)
+            continue
+        start = row.valid_from or dt.date.min
+        end = row.valid_to  # exclusive
+        intervals: list[tuple[dt.date, dt.date, str]] = []
+        for own in spans_by_line.get(row.price_security_id, ()):
+            for family, root, designator in _class_families(own.symbol):
+                for other_designator, other in by_family.get((family, root), ()):
+                    if other_designator == designator or other.price_security_id == row.price_security_id:
+                        continue
+                    lo = max(own.first_trade_date, other.first_trade_date, start)
+                    hi = min(own.last_trade_date, other.last_trade_date) + dt.timedelta(days=1)
+                    if end is not None:
+                        hi = min(hi, end)
+                    if lo < hi:
+                        intervals.append((lo, hi, other.price_security_id))
+        if not intervals:
+            out.append(row)
+            continue
+        bounds = sorted(
+            {start, *(lo for lo, _hi, _id in intervals), *(hi for _lo, hi, _id in intervals)}
+            | ({end} if end is not None else set())
+        )
+        edges: list[tuple[dt.date, dt.date | None]] = list(pairwise(bounds))
+        if end is None:
+            edges.append((bounds[-1], None))
+        segments: list[BridgeRow] = []
+        for lo, hi in edges:
+            count = len({line for s, e, line in intervals if s <= lo < e})
+            basis = row.share_basis if count == 0 else SHARE_BASIS_MULTI_CLASS
+            segment = replace(
+                row,
+                valid_from=lo,
+                valid_to=hi,
+                sibling_lines=count,
+                share_basis=basis,
+                dei_shares_eligible=row.dei_shares_eligible and count == 0,
+            )
+            previous = segments[-1] if segments else None
+            if previous is not None and (previous.sibling_lines, previous.share_basis) == (count, basis):
+                segments[-1] = replace(previous, valid_to=segment.valid_to)
+            else:
+                segments.append(segment)
+        out.extend(segments)
+    return tuple(sorted(out, key=lambda row: (row.price_security_id, row.valid_from or dt.date.min)))
+
+
+def _with_adr_ratios(rows: Sequence[BridgeRow], adr_ratios: dict[str, float]) -> tuple[BridgeRow, ...]:
+    """Attach the directory-stated ordinary shares per ADS to ADR rows."""
+    if not adr_ratios:
+        return tuple(rows)
+    return tuple(
+        replace(row, adr_ratio=adr_ratios.get(normalize_symbol(row.share_class_symbol) or ""))
+        if row.share_basis == SHARE_BASIS_ADR
+        else row
+        for row in rows
+    )
 
 
 def classify_reconstructed(
@@ -861,10 +1396,15 @@ def classify_reconstructed(
     tickers: Sequence[tuple[str, str, dt.datetime | None]],
     content: dict[str, frozenset[str]],
     directory: dict[str, str] | None = None,
+    line_symbols: Sequence[LineSymbol] = (),
+    adr_ratios: dict[str, float] | None = None,
 ) -> tuple[tuple[BridgeRow, ...], dict[str, tuple[str, ...]], int]:
     """Current-ticker backcast bridge. ``tickers`` rows are ``(cik, ticker, observed_at)``.
 
-    ``directory`` (symbol -> A2 security type) feeds only the class guard.
+    ``directory`` (symbol -> A2 security type) feeds only the class guard;
+    ``line_symbols`` (every symbol each line traded under) feeds the
+    historical sibling-class guard; ``adr_ratios`` (normalized symbol ->
+    ordinary shares per ADS) annotates ADR rows.
     Returns ``(rows, owner_members, ambiguous_content_ids)``.
     """
     index, _counts = _ticker_index(tickers)
@@ -961,6 +1501,7 @@ def classify_reconstructed(
 
     by_id = {line.price_security_id: line for line in lines}
     resolved = _with_class_guards(rows, by_id, classes, strict=False)
+    resolved = _with_adr_ratios(_with_sibling_segments(resolved, line_symbols, directory), adr_ratios or {})
     members, ambiguous = _owner_members(resolved, content)
     return resolved, members, ambiguous
 
@@ -1059,14 +1600,15 @@ def classify_strict(
     content: dict[str, frozenset[str]],
     tickers: Sequence[tuple[str, str, dt.datetime | None]] = (),
     directory: dict[str, str] | None = None,
+    line_symbols: Sequence[LineSymbol] = (),
 ) -> tuple[tuple[BridgeRow, ...], dict[str, tuple[str, ...]], int, dict[str, int]]:
     """Dated-evidence bridge. Returns ``(rows, members, ambiguous_content_ids, rejected)``.
 
     Evidence is validated per row; overlapping intervals that assign one price
     line to *different* owners are rejected as ``conflicting_evidence``.
     Lines without accepted evidence are unlinked as ``no_dated_evidence``.
-    ``tickers`` (the current SEC snapshot) is used only by the conservative
-    multi-line guard, never to create a link.
+    ``tickers`` (the current SEC snapshot), ``directory`` and ``line_symbols``
+    are used only by the conservative class guards, never to create a link.
     """
     by_id = {line.price_security_id: line for line in lines}
     rejected: dict[str, int] = defaultdict(int)
@@ -1113,7 +1655,7 @@ def classify_strict(
                 )
             )
     classes = classify_sec_tickers(tickers, directory, (line.last_symbol for line in lines))
-    resolved = _with_class_guards(rows, by_id, classes, strict=True)
+    resolved = _with_sibling_segments(_with_class_guards(rows, by_id, classes, strict=True), line_symbols, directory)
     members, ambiguous = _owner_members(resolved, content)
     return resolved, members, ambiguous, dict(sorted(rejected.items()))
 
@@ -1165,15 +1707,18 @@ def _read_tickers(store: DuckDBStore) -> list[tuple[str, str, dt.datetime | None
     ]
 
 
-def _read_directory(store: DuckDBStore) -> dict[str, str]:
+def _read_directory(store: DuckDBStore) -> DirectorySnapshot:
     """Newest Nasdaq symbol-directory row per symbol, typed by A2's classifier.
 
     Keys are upper-case symbols with blank/``/`` class separators folded to
     ``.`` (the directory's class convention; ``-`` stays, it marks preferreds
-    there). Only the distinct (name, etf, test) tuples are classified.
+    there). Only the distinct (name, etf, test) tuples are classified. A8: a
+    ``common_unverified`` name that states a share class ("... Class B") is
+    typed ``class_share``; ADR names that state an ADS ratio yield
+    ``adr_ratios`` keyed by :func:`normalize_symbol`.
     """
     if not _table_exists(store, "nasdaq_symbol_directory"):
-        return {}
+        return DirectorySnapshot({}, {})
     from .universe_us_listed import classify_security_type
 
     rows = store.con.execute(
@@ -1189,13 +1734,93 @@ def _read_directory(store: DuckDBStore) -> dict[str, str]:
     ).fetchall()
     kinds: dict[tuple[object, object, object], str] = {}
     directory: dict[str, str] = {}
+    adr_ratios: dict[str, float] = {}
     for symbol, name, etf, test_issue in rows:
         signature = (name, etf, test_issue)
         if signature not in kinds:
-            kinds[signature] = classify_security_type(name, etf=etf, test_issue=test_issue)
+            kind = classify_security_type(name, etf=etf, test_issue=test_issue)
+            upper = str(name or "").upper()
+            if kind == _UNVERIFIED_COMMON and _CLASS_NAME.search(upper) and not _CLASS_NAME_EXCLUSIONS.search(upper):
+                kind = _CLASS_SHARE
+            kinds[signature] = kind
         key = re.sub(r"[\s/]+", ".", str(symbol))
         directory[key] = kinds[signature]
-    return directory
+        if kinds[signature] == _ADR:
+            ratio = parse_ads_ratio(name)
+            symbol_key = normalize_symbol(key)
+            if ratio is not None and symbol_key is not None:
+                adr_ratios[symbol_key] = ratio
+    return DirectorySnapshot(directory, adr_ratios)
+
+
+def _read_line_symbols(store: DuckDBStore) -> list[LineSymbol]:
+    """Every (price line, symbol) with its first/last bar date: one bounded aggregate."""
+    rows = store.con.execute(
+        """
+        SELECT security_id, symbol, min(trade_date), max(trade_date)
+        FROM equity_daily_bars
+        WHERE close > 0 AND trade_date IS NOT NULL AND nullif(trim(symbol), '') IS NOT NULL
+        GROUP BY security_id, symbol
+        ORDER BY security_id, min(trade_date), symbol
+        """
+    ).fetchall()
+    return [LineSymbol(str(r[0]), str(r[1]), r[2], r[3]) for r in rows]
+
+
+#: A monetary unit that names an ISO currency (``USD``, ``CAD``, ``EUR/shares``).
+_CURRENCY_UNIT_SQL = "regexp_full_match(upper(unit), '[A-Z]{3}(/SHARES)?')"
+
+
+def _read_currency_events(
+    store: DuckDBStore, content: dict[str, frozenset[str]]
+) -> dict[str, tuple[CurrencyEvent, ...]]:
+    """Monetary unit events of every content id whose CIK declares a non-USD/undeclared unit.
+
+    Two bounded reads: the (few) content ids with a monetary or per-share fact
+    whose unit is not USD, then every fact event of those ids and of every id
+    sharing their CIK (an owner merges them). USD-only owners are never read.
+    """
+    if not _table_exists(store, "fundamental_standardized"):
+        return {}
+    monetary = f"(lower(unit_type) IN ('monetary', 'per_share') OR (unit_type IS NULL AND {_CURRENCY_UNIT_SQL}))"
+    flagged = {
+        str(row[0])
+        for row in store.con.execute(
+            f"""
+            SELECT DISTINCT security_id FROM fundamental_standardized
+            WHERE available_at IS NOT NULL AND security_id IS NOT NULL AND {monetary}
+              AND (unit IS NULL OR upper(unit) NOT IN ('USD', 'USD/SHARES'))
+            """
+        ).fetchall()
+    }
+    if not flagged:
+        return {}
+    ciks = {cik for security_id in flagged for cik in content.get(security_id, frozenset())}
+    wanted = sorted(flagged | {security_id for security_id, owned in content.items() if owned & ciks})
+    events: dict[str, list[CurrencyEvent]] = defaultdict(list)
+    for start in range(0, len(wanted), 1000):
+        chunk = wanted[start : start + 1000]
+        rows = store.con.execute(
+            f"""
+            SELECT security_id, period_end, available_at,
+                   bool_or({_CURRENCY_UNIT_SQL} AND upper(left(unit, 3)) = 'USD'),
+                   bool_or({_CURRENCY_UNIT_SQL} AND upper(left(unit, 3)) <> 'USD'),
+                   bool_or(unit IS NULL OR NOT {_CURRENCY_UNIT_SQL})
+            FROM fundamental_standardized
+            WHERE available_at IS NOT NULL AND period_end IS NOT NULL AND {monetary}
+              AND security_id IN ({", ".join(["?"] * len(chunk))})
+            GROUP BY security_id, period_end, available_at
+            """,
+            chunk,
+        ).fetchall()
+        for security_id, period_end, available_at, usd, foreign, unknown in rows:
+            events[str(security_id)].append(
+                CurrencyEvent(str(security_id), period_end, available_at, bool(usd), bool(foreign), bool(unknown))
+            )
+    return {
+        security_id: tuple(sorted(items, key=lambda e: (e.available_at, e.period_end)))
+        for security_id, items in events.items()
+    }
 
 
 def _read_per_class_dei_ids(store: DuckDBStore) -> frozenset[str]:
@@ -1271,22 +1896,26 @@ def build_market_owner_bridge(
 ) -> MarketOwnerBridge:
     """Resolve every price line's accounting owner under ``mode``.
 
-    Reads three bounded aggregates: one row per price line, the current SEC
-    ticker snapshot, and one row per accounting-content id. ``evidence`` is
-    used only in strict mode; ``None`` means no qualified evidence source is
-    wired yet, so the strict bridge links nothing.
+    Reads bounded aggregates only: one row per price line, one per (line,
+    symbol), the current SEC ticker snapshot and symbol directory, one row per
+    accounting-content id, and the monetary-unit events of the content ids
+    that declare a non-USD unit. ``evidence`` is used only in strict mode;
+    ``None`` means no qualified evidence source is wired yet, so the strict
+    bridge links nothing.
     """
     if mode not in OWNER_MODES:
         raise ValueError(f"unknown owner mode {mode!r}; expected one of {OWNER_MODES}")
     lines = _read_lines(store)
     content = _read_content(store, item_codes=item_codes, metric_codes=metric_codes, derived_source=derived_source)
     tickers = _read_tickers(store)
-    directory = _read_directory(store)
+    snapshot = _read_directory(store)
+    directory = snapshot.types
+    line_symbols = _read_line_symbols(store)
     observed = [loaded for _cik, _ticker, loaded in tickers if loaded is not None]
     by_id = {line.price_security_id: line for line in lines}
     if mode == OWNER_MODE_STRICT:
         supplied = tuple(evidence or ())
-        rows, members, ambiguous, rejected = classify_strict(lines, supplied, content, tickers, directory)
+        rows, members, ambiguous, rejected = classify_strict(lines, supplied, content, tickers, directory, line_symbols)
         bridge = MarketOwnerBridge(
             mode=mode,
             lines=by_id,
@@ -1297,7 +1926,9 @@ def build_market_owner_bridge(
             ambiguous_content_ids=ambiguous,
         )
     else:
-        rows, members, ambiguous = classify_reconstructed(lines, tickers, content, directory)
+        rows, members, ambiguous = classify_reconstructed(
+            lines, tickers, content, directory, line_symbols, snapshot.adr_ratios
+        )
         bridge = MarketOwnerBridge(
             mode=mode,
             lines=by_id,
@@ -1312,6 +1943,7 @@ def build_market_owner_bridge(
         content_ids=frozenset(content),
         per_class_dei_ids=_read_per_class_dei_ids(store),
         ticker_classes=classify_sec_tickers(tickers, directory, (line.last_symbol for line in lines)),
+        currency_events=_read_currency_events(store, content),
     )
 
 
@@ -1347,6 +1979,13 @@ def bridge_value_params(rows: Sequence[BridgeRow]) -> list[object]:
                 row.dei_shares_eligible,
                 row.valuation_eligible,
                 row.identity_basis,
+                _issuer_key(row),
+                row.share_basis,
+                max(1, row.issuer_class_lines),
+                row.sibling_lines,
+                row.adr_ratio,
+                row.availability_basis,
+                row.link_method,
             ]
         )
     return params
@@ -1354,3 +1993,7 @@ def bridge_value_params(rows: Sequence[BridgeRow]) -> list[object]:
 
 def member_value_params(members: Sequence[tuple[str, str]]) -> list[object]:
     return [value for pair in members for value in pair]
+
+
+def currency_value_params(intervals: Sequence[tuple[str, dt.datetime, dt.datetime | None, str]]) -> list[object]:
+    return [value for interval in intervals for value in interval]
