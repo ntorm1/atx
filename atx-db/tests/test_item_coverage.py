@@ -188,6 +188,48 @@ def test_historical_revision_is_selected_before_latest_flag(coverage_store):
     assert rows.iloc[0].n_with_value == 1
 
 
+def _eps_state(store, key, *, value, available, sequence, upstream):
+    store.con.execute(
+        """INSERT INTO fundamental_standardized
+        (standardized_id,source,upstream_source,security_id,cik,item_id,canonical_code,basis,
+         period_start,period_end,fiscal_year,fiscal_period,value,available_at,as_of_date,
+         input_codes_json,input_item_ids_json,rule_id,combination_rule,revision_group_id,
+         revision_sequence,is_latest_revision,source_accession)
+        VALUES (?,?,?,'S00000','1',1035,'eps_diluted','quarterly',DATE '2020-10-01',
+                DATE '2020-12-31',2020,'Q4',?,?,DATE '2020-12-31','[]','[]',
+                'std_quarterly_1035','coalesce_priority','eps-2020q4',?,?,?)""",
+        [key, DEFAULT_SOURCE, upstream, value, available, sequence, upstream == "reported_eps_conflict", key],
+    )
+
+
+def test_reported_eps_conflict_null_state_removes_quarterly_coverage(coverage_store):
+    """The release's own revision group gains a later NULL conflict state: coverage must drop it."""
+    coverage_store.con.execute(
+        "INSERT INTO fundamental_item (item_id,canonical_code,statement,section,data_type,"
+        "unit_type,sign_convention,is_derived,definition) VALUES "
+        "(1035,'eps_diluted','income','eps','per_share','USD/shares','positive',false,'test')"
+    )
+    _market_and_listing(coverage_store)
+    _cohort(coverage_store)
+    options = replace(OPTIONS, bases=("quarterly",), item_ids=(1035,))
+
+    def fy2020() -> int:
+        rows = measure_item_coverage(coverage_store, options)
+        return int(rows.loc[rows.fiscal_year == 2020, "n_with_value"].iloc[0])
+
+    _eps_state(coverage_store, "release", value=1.5, available=dt.datetime(2021, 2, 3, 22),
+               sequence=1, upstream="fundamental_statement_points")
+    assert fy2020() == 1
+    _eps_state(coverage_store, "conflict", value=None, available=dt.datetime(2021, 2, 20, 22),
+               sequence=2, upstream="reported_eps_conflict")
+    assert fy2020() == 0
+    facts = coverage_store.con.execute("SELECT * FROM fundamental_standardized").df()
+    members = coverage_store.con.execute("SELECT * FROM item_coverage_annual_cohort").df()
+    registry = pd.DataFrame([(1035, "eps_diluted")], columns=["item_id", "canonical_code"])
+    pure = compute_item_coverage_rows(facts, members, options, registry=registry)
+    assert pure.loc[pure.fiscal_year == 2020, "n_with_value"].eq(0).all()
+
+
 def test_legacy_membership_is_member_and_inclusive_endpoint(coverage_store):
     coverage_store.con.execute(
         """INSERT INTO universe_membership

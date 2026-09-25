@@ -64,6 +64,23 @@ def _years(options: ItemCoverageOptions) -> range:
     return range(low, high + 1)
 
 
+def _selected_states(facts: pd.DataFrame) -> pd.DataFrame:
+    """Latest visible state per revision group, chosen before fiscal-year attribution.
+
+    Mirrors the SQL: a NULL group id is its own group, and the selected state's
+    period-own ``fiscal_year`` (not an earlier state's) is the year it counts in.
+    """
+    if facts.empty or "revision_group_id" not in facts:
+        return facts
+    order = [c for c in ("available_at", "revision_sequence", "standardized_id") if c in facts]
+    ranked = facts.sort_values(order, kind="mergesort") if order else facts
+    fallback = pd.Series("row:" + ranked.index.astype(str), index=ranked.index)
+    if "standardized_id" in ranked:
+        fallback = ranked["standardized_id"].where(ranked["standardized_id"].notna(), fallback)
+    group = ranked["revision_group_id"].where(ranked["revision_group_id"].notna(), fallback)
+    return ranked[~group.duplicated(keep="last")]
+
+
 def compute_item_coverage_rows(
     standardized: pd.DataFrame,
     universe: pd.DataFrame,
@@ -96,6 +113,7 @@ def compute_item_coverage_rows(
             facts = facts[
                 pd.to_datetime(facts["available_at"]) <= pd.Timestamp(options.as_of_date) + pd.Timedelta(hours=22)
             ]
+        facts = _selected_states(facts)
         facts = facts.merge(members, on=["security_id", "fiscal_year"], how="inner")
         facts = facts[facts["basis"].isin(options.bases) & facts["value"].notna()]
     evidence = {} if cohort_years is None else {int(row["fiscal_year"]): row for row in cohort_years.to_dict("records")}
@@ -173,7 +191,16 @@ def measure_item_coverage(store: DuckDBStore, options: ItemCoverageOptions) -> p
     bases_values = ",".join("(?)" for _ in sorted(set(options.bases)))
     params.extend(sorted(set(options.bases)))
     params.extend(
-        [options.source, cutoff, options.source, options.universe_id, options.as_of_date, options.as_of_date.year]
+        [
+            options.source,
+            cutoff,
+            years.start - 2,
+            years.stop + 1,  # last requested year + 2 (range stop is exclusive)
+            options.source,
+            options.universe_id,
+            options.as_of_date,
+            options.as_of_date.year,
+        ]
     )
     return store.con.execute(
         f"""
@@ -184,26 +211,37 @@ def measure_item_coverage(store: DuckDBStore, options: ItemCoverageOptions) -> p
         denominators AS (
             SELECT fiscal_year,count(DISTINCT security_id) AS n,max(available_at) AS available_at
             FROM members GROUP BY fiscal_year
-        ), eligible_facts AS (
+        ), visible_states AS (
             SELECT f.security_id,f.item_id,f.basis,f.fiscal_year,f.value,f.available_at,
                    row_number() OVER (
-                       -- State selection must precede usability filtering.  A
-                       -- later NULL reported-EPS conflict shares this revision
-                       -- group with the earlier release and must remove that
-                       -- formerly valid value from coverage.
-                       PARTITION BY f.revision_group_id
+                       -- State selection precedes attribution and usability
+                       -- filtering.  A later NULL reported-EPS conflict shares
+                       -- this revision group with the earlier release and must
+                       -- remove that formerly valid value from coverage, and the
+                       -- selected state's period-own fiscal_year -- never a
+                       -- re-reporting filing's label -- names the year it counts in.
+                       PARTITION BY coalesce(f.revision_group_id,f.standardized_id)
                        ORDER BY f.available_at DESC,f.revision_sequence DESC,f.standardized_id DESC
                    ) AS revision_rank
             FROM fundamental_standardized f
-            JOIN (SELECT DISTINCT security_id,fiscal_year FROM members) u
-              ON f.security_id=u.security_id AND f.fiscal_year=u.fiscal_year
             JOIN items i ON i.item_id=f.item_id JOIN bases b ON b.basis=f.basis
             WHERE f.source=? AND f.available_at<=?
+              AND f.security_id IN (SELECT security_id FROM members)
+              -- period_end is constant within a revision group and a period-own
+              -- fiscal year lies within year(period_end)+-1; with a further year
+              -- of margin this bound never splits a group or drops a requested year.
+              AND f.period_end BETWEEN make_date(?,1,1) AND make_date(?,12,31)
+        ), eligible_facts AS (
+            SELECT s.security_id,s.item_id,s.basis,s.fiscal_year,s.value,s.available_at
+            FROM visible_states s
+            JOIN (SELECT DISTINCT security_id,fiscal_year FROM members) u
+              ON s.security_id=u.security_id AND s.fiscal_year=u.fiscal_year
+            WHERE s.revision_rank=1
         ), numerators AS (
             SELECT item_id,basis,fiscal_year,count(DISTINCT security_id) AS k,
                    max(available_at) AS available_at
             FROM eligible_facts
-            WHERE revision_rank=1 AND value IS NOT NULL AND isfinite(value)
+            WHERE value IS NOT NULL AND isfinite(value)
             GROUP BY item_id,basis,fiscal_year
         )
         SELECT ? AS source,? AS universe_id,i.item_id,i.canonical_code,b.basis,y.fiscal_year,

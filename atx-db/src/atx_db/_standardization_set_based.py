@@ -1,7 +1,16 @@
-"""Set-based, revision-complete standardized-fundamentals materialization."""
+"""Set-based, revision-complete standardized-fundamentals materialization.
+
+Fiscal labels are period-own.  Company Facts ``fy``/``fp`` describe the *filing*
+that carried a fact, so a comparative period re-reported in a later 10-K/10-Q
+inherits that later filing's labels.  ``fundamental_standardized.fiscal_year`` /
+``fiscal_period`` are therefore derived from the fact's own period geometry
+against the issuer's observed fiscal-year calendar (see ``_create_fiscal_labels``);
+the filing's own labels stay recoverable through ``source_accession``.
+"""
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import uuid
@@ -13,12 +22,43 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from ._fundamental_publication import check_publication_session, fundamental_publication
+from .calendarization import fiscal_year_label
 from .connection import DuckDBStore
 from .item_registry import seed_fundamental_item_registry
 from .reported_eps_core import reported_eps_conflict_candidates_cte
 
 if TYPE_CHECKING:
     from .standardization import FundamentalStandardizationOptions, StandardizationRule
+
+# A 52/53-week fiscal year ending in the first week of a month belongs to the
+# prior month (Saturday-nearest-Dec-31 ending 2021-01-02 is a December year).
+FISCAL_YEAR_END_SPILL_DAYS = 7
+# A period is positioned by a date inside its final quarter, never on a fiscal
+# boundary, so 13/14-week quarters and 52/53-week years cannot straddle a label.
+FISCAL_POSITION_LAG_DAYS = 45
+# Two observed annual periods overlapping by more than this are rival calendars
+# (for example a trailing-twelve-month disclosure); the broader-supported wins.
+FISCAL_ANCHOR_OVERLAP_DAYS = 31
+FISCAL_YEAR_DAYS = 365.2425
+
+
+def fiscal_year_end_label(fiscal_year_end: dt.date) -> int:
+    """Compustat fiscal-year label of the fiscal year ending on ``fiscal_year_end``.
+
+    Applies ``calendarization.fiscal_year_label`` (Jan-May year ends label the prior
+    calendar year) to the 52/53-week-adjusted year-end month.  This is the label the
+    set-based SQL assigns to an observed annual period; A7-style consumers matching
+    by period geometry can reuse it to name a fiscal year without filing labels.
+    """
+
+    return fiscal_year_label(fiscal_year_end - dt.timedelta(days=FISCAL_YEAR_END_SPILL_DAYS))
+
+
+def _fiscal_year_end_label_sql(date_sql: str) -> str:
+    shifted = f"CAST({date_sql} - {FISCAL_YEAR_END_SPILL_DAYS} AS DATE)"
+    return (
+        f"CAST(year({shifted}) - CASE WHEN month({shifted}) <= 5 THEN 1 ELSE 0 END AS INTEGER)"
+    )
 
 
 @dataclass(frozen=True)
@@ -581,6 +621,187 @@ def _create_discrete_quarters(store: DuckDBStore, *, symbols: tuple[str, ...]) -
     )
 
 
+def _create_fiscal_labels(store: DuckDBStore) -> None:
+    """Label every standardized (security, period_end) by its own fiscal period.
+
+    Fiscal-year anchors are the issuer's observed annual (330-380 day) reported
+    periods; an anchor rivalled by a broader-supported overlapping annual period
+    (a trailing-twelve-month disclosure, an off-by-one start) is dropped.  Each
+    anchor is named by ``fiscal_year_end_label``.  A period is positioned at
+    ``period_end - FISCAL_POSITION_LAG_DAYS`` and takes, in order:
+
+    0. the anchor containing that position (quarter = position within the anchor);
+    1. else the nearest *following* anchor projected backward whole fiscal years
+       (history before the first anchor, and fiscal-year-end transition gaps:
+       a transition period ends on the new calendar, as the Compustat FYR rule has it);
+    2. else the nearest *preceding* anchor projected forward (the current,
+       not-yet-annually-reported fiscal year).
+
+    An issuer with no annual period at all falls back to its latest filing whose
+    declared fiscal period positions that filing's own primary (latest-ending)
+    period; with neither, labels stay NULL rather than inherit filing labels.
+    Across a fiscal-year-end change (fy, fp) need not be unique -- as with
+    Compustat duplicates at FYR changes, ``period_end`` is the identity.
+    """
+
+    anchor_label = _fiscal_year_end_label_sql("period_end")
+    store.con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE _std_fiscal_anchors AS
+        WITH annual_periods AS (
+            SELECT
+                security_id,
+                period_start,
+                period_end,
+                count(DISTINCT concat_ws(':', taxonomy, concept)) AS concept_support,
+                count(*) AS row_support
+            FROM _std_candidates_all
+            WHERE basis = 'annual'
+              AND upstream_source IN ('fundamental_statement_points', 'fundamental_xbrl_metric')
+              AND security_id IS NOT NULL
+              AND period_start IS NOT NULL
+              AND period_end IS NOT NULL
+            GROUP BY security_id, period_start, period_end
+        ),
+        observed AS (
+            SELECT a.security_id, a.period_start, a.period_end, 'observed_annual_period' AS anchor_basis
+            FROM annual_periods a
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM annual_periods b
+                WHERE b.security_id = a.security_id
+                  AND date_diff('day', greatest(a.period_start, b.period_start),
+                                least(a.period_end, b.period_end)) + 1 > {FISCAL_ANCHOR_OVERLAP_DAYS}
+                  AND (b.concept_support, b.row_support, b.period_end, b.period_start)
+                      > (a.concept_support, a.row_support, a.period_end, a.period_start)
+            )
+        ),
+        declared_filings AS (
+            SELECT
+                c.security_id,
+                c.accession_number,
+                max(c.period_end) AS primary_end,
+                min(upper(c.fiscal_period)) AS filing_period
+            FROM _std_candidates_all c
+            WHERE c.upstream_source = 'fundamental_statement_points'
+              AND c.basis IN ('quarterly', 'annual')
+              AND c.security_id IS NOT NULL
+              AND c.accession_number IS NOT NULL
+              AND c.period_end IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM annual_periods a WHERE a.security_id = c.security_id)
+            GROUP BY c.security_id, c.accession_number
+            HAVING count(DISTINCT upper(c.fiscal_period)) = 1
+               AND count(c.fiscal_period) = count(*)
+               AND min(upper(c.fiscal_period)) IN ('Q1', 'Q2', 'Q3', 'Q4', 'FY')
+        ),
+        declared AS (
+            SELECT
+                security_id,
+                CAST(primary_end + 1 - to_months(3 * position) AS DATE) AS period_start,
+                CAST(primary_end + 1 - to_months(3 * position) + INTERVAL 12 MONTH - INTERVAL 1 DAY AS DATE)
+                    AS period_end,
+                'declared_primary_period' AS anchor_basis
+            FROM (
+                SELECT
+                    *,
+                    CASE filing_period WHEN 'Q1' THEN 1 WHEN 'Q2' THEN 2 WHEN 'Q3' THEN 3 ELSE 4 END AS position
+                FROM declared_filings
+            )
+            QUALIFY row_number() OVER (
+                PARTITION BY security_id ORDER BY primary_end DESC, accession_number DESC
+            ) = 1
+        )
+        SELECT security_id, period_start, period_end, anchor_basis, {anchor_label} AS fiscal_year
+        FROM (SELECT * FROM observed UNION ALL SELECT * FROM declared)
+        """
+    )
+    store.con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE _std_fiscal_labels AS
+        WITH periods AS (
+            SELECT DISTINCT
+                security_id,
+                period_end,
+                CAST(period_end - {FISCAL_POSITION_LAG_DAYS} AS DATE) AS position_date
+            FROM _std_output_raw
+            WHERE security_id IS NOT NULL
+              AND period_end IS NOT NULL
+        ),
+        bracketed AS (
+            -- Anchors overlap by at most FISCAL_ANCHOR_OVERLAP_DAYS and last >= 330
+            -- days, so the latest-starting anchor at or before the position is the
+            -- only one that can contain it.
+            SELECT
+                p.security_id,
+                p.period_end,
+                p.position_date,
+                prior.period_start AS prior_start,
+                prior.period_end AS prior_end,
+                prior.fiscal_year AS prior_fiscal_year,
+                following.period_start AS following_start,
+                following.fiscal_year AS following_fiscal_year
+            FROM periods p
+            ASOF LEFT JOIN _std_fiscal_anchors prior
+              ON prior.security_id = p.security_id
+             AND prior.period_start <= p.position_date
+            ASOF LEFT JOIN _std_fiscal_anchors following
+              ON following.security_id = p.security_id
+             AND following.period_start > p.position_date
+        ),
+        references_ AS (
+            SELECT
+                security_id,
+                period_end,
+                position_date,
+                CASE
+                    WHEN prior_end >= position_date THEN 0
+                    WHEN following_start IS NOT NULL THEN 1
+                    ELSE 2
+                END AS reference_kind,
+                CASE
+                    WHEN prior_end >= position_date THEN prior_start
+                    WHEN following_start IS NOT NULL THEN following_start
+                    ELSE CAST(prior_end + 1 AS DATE)
+                END AS base_start,
+                CASE
+                    WHEN prior_end >= position_date THEN prior_fiscal_year
+                    WHEN following_start IS NOT NULL THEN following_fiscal_year
+                    ELSE prior_fiscal_year + 1
+                END AS base_fiscal_year,
+                CASE
+                    WHEN prior_end >= position_date THEN date_diff('day', prior_start, prior_end) + 1
+                    ELSE {FISCAL_YEAR_DAYS}
+                END AS year_days
+            FROM bracketed
+            WHERE prior_end IS NOT NULL
+               OR following_start IS NOT NULL
+        ),
+        offsets AS (
+            SELECT
+                *,
+                CASE
+                    WHEN reference_kind = 0 THEN 0
+                    ELSE CAST(floor(date_diff('day', base_start, position_date) / {FISCAL_YEAR_DAYS}) AS INTEGER)
+                END AS year_offset
+            FROM references_
+        )
+        SELECT
+            security_id,
+            period_end,
+            reference_kind,
+            base_fiscal_year + year_offset AS fiscal_year,
+            CAST(least(4, greatest(1, floor(
+                date_diff(
+                    'day',
+                    CAST(base_start + CAST(round(year_offset * {FISCAL_YEAR_DAYS}) AS INTEGER) AS DATE),
+                    position_date
+                ) / (year_days / 4.0)
+            ) + 1)) AS INTEGER) AS fiscal_quarter
+        FROM offsets
+        """
+    )
+
+
 def _create_output(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
     store.con.execute(
         """
@@ -828,12 +1049,25 @@ def _create_output(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
         SELECT * FROM _std_combinations
         """
     )
+    _create_fiscal_labels(store)
     store.con.execute(
         """
         CREATE OR REPLACE TEMP TABLE _std_output AS
         WITH sequenced AS (
             SELECT
-                raw.*,
+                raw.* EXCLUDE (fiscal_year, fiscal_period),
+                -- Period-own labels; the carrying filing's fy/fp stay recoverable
+                -- through source_accession and are never copied here.
+                label.fiscal_year,
+                CASE
+                    WHEN label.fiscal_quarter IS NULL THEN NULL
+                    WHEN raw.basis = 'annual' THEN 'FY'
+                    WHEN raw.basis = 'instant' AND label.fiscal_quarter = 4 THEN 'FY'
+                    WHEN raw.basis = 'quarterly'
+                     AND raw.upstream_source LIKE '%fundamental_statement_points_derived_quarter%'
+                        THEN 'Q' || label.fiscal_quarter || '_DERIVED'
+                    ELSE 'Q' || label.fiscal_quarter
+                END AS fiscal_period,
                 sha256(concat_ws('|', ctx.source, raw.security_id, CAST(raw.item_id AS VARCHAR),
                                  raw.basis, CAST(raw.period_end AS VARCHAR), raw.rule_id)) AS revision_group_id,
                 row_number() OVER revision_window AS revision_sequence,
@@ -841,6 +1075,9 @@ def _create_output(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
                 lag(raw.value) OVER revision_window AS previous_value,
                 lead(raw.available_at) OVER revision_window AS valid_to
             FROM _std_output_raw raw
+            LEFT JOIN _std_fiscal_labels label
+              ON label.security_id = raw.security_id
+             AND label.period_end = raw.period_end
             CROSS JOIN _std_context ctx
             WINDOW revision_window AS (
                 PARTITION BY raw.security_id, raw.item_id, raw.basis, raw.period_end, raw.rule_id
@@ -961,6 +1198,8 @@ def _drop_temporary_relations(store: DuckDBStore) -> None:
     for table_name in (
         "_std_exceptions",
         "_std_output",
+        "_std_fiscal_labels",
+        "_std_fiscal_anchors",
         "_std_output_raw",
         "_std_combinations",
         "_std_combination_candidates",
@@ -1076,7 +1315,8 @@ def refresh_standardized_set_based(
             ),
             replace_params=(options.source,),
             owned_registrations=(
-                "_std_exceptions", "_std_output", "_std_output_raw", "_std_combinations",
+                "_std_exceptions", "_std_output", "_std_fiscal_labels", "_std_fiscal_anchors",
+                "_std_output_raw", "_std_combinations",
                 "_std_combination_candidates", "_std_derived_quarters", "_std_direct",
                 "_std_quarter_inputs", "_std_candidates", "_std_candidates_all",
                 "_std_context", "_std_rule_inputs", "_std_rules", "_std_symbol_filter",
