@@ -986,8 +986,10 @@ atx::core::Result<StageResult> run_report_impl(const RunConfig& cfg,
             // (S5-4) total realized borrow debit -- additive, same digest exemption
             // (rep.pnl_net already reflects it; this kv is a convenience readback).
             {"total_pnl_borrow",      std::to_string(total_pnl_borrow)},
-            // (W0-B0, B-03) additive disclosure, same digest exemption.
-            {"legacy_report_rule",       std::string{legacy_rule_name()}},
+            // (W0-B0, B-03) additive disclosure, same digest exemption. Report
+            // kvs stay numeric: the rule is its LegacyReportRule value (1 or 2).
+            {"legacy_report_rule",
+             std::to_string(static_cast<unsigned>(kLegacyReportRule))},
             {"terminal_returns_flagged", std::to_string(terminal_returns)},
             {"interior_gap_marks",       std::to_string(holding.gap_marks)},
         };
