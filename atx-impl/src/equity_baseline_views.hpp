@@ -132,11 +132,12 @@ struct EquityBaselineWindow {
 //  equity-universe stage publishes). ContextYearUnionV1 reproduces the pre-W0 mask
 //  exactly, for re-deriving frozen artifacts. Frozen integer values.
 //
-//  The as-of mask gates ADMISSION: every cross-section the views feed (the weight
-//  policy's ranks, the IC engine's per-date ranks/deciles, the families' admitted
-//  values) sees as-of members only. The VM feature view still loads each column's
-//  own observed history, so a time-series feature of a joiner uses its public past
-//  prices; see the lane report for the DSL-internal cross-sectional-op residual.
+//  The as-of mask gates admission AND every DSL-internal cross-sectional op,
+//  including those inside a rolling feature's warmup window. The VM loads each
+//  column's observed history independently: a joiner's price-only time-series
+//  feature retains its public past prices. A cross-sectional feature is NaN while
+//  the name is not a member; rolling that feature observes the actual historical
+//  membership and cannot invent pre-entry normalized values.
 // ---------------------------------------------------------------------------
 enum class EquityMembershipRule : atx::u8 {
     ContextYearUnionV1 = 1, // pre-W0: the context mask alone (year-union allow-list)
@@ -298,6 +299,9 @@ struct EquityFamilyEvaluation {
 // which must fit before the evaluation window; the admission gate is the baseline's
 // (universe eligibility AND both momentum signals ready), so every family is
 // measured on exactly the checkpoint-16 universe. Budget covers VM slots + signals.
+// Under AsOfV2 with membership, every cross-sectional opcode uses the as-of set
+// for its own feature date, including warmup dates. Raw time-series observations
+// are retained independently. ContextYearUnionV1 preserves the old VM behavior.
 [[nodiscard]] atx::core::Result<EquityFamilyEvaluation>
 evaluate_equity_families(const PanelArtifact &context, const EquityBaselineConfig &config,
                          const EquityBaselineEvaluation &baseline,

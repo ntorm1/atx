@@ -1163,6 +1163,7 @@ Result<Bound> load_bound_inputs(const RunConfig &cfg, Profile &profile, Json &at
         {"context_restricted", context_has_membership},
         {"rule", equity_membership_rule_label(profile.views.membership_rule)},
         {"applied", membership.has_value()},
+        {"dsl_cross_section_mask", membership ? "as-of-per-feature-date" : "observed-context"},
         {"membership_sha256", membership ? Json(membership->sha256) : Json(nullptr)},
         {"rebalances", membership ? membership->rebalances : 0U}};
     if (membership) profile.views.membership = std::move(membership->asof);
