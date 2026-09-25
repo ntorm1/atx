@@ -114,3 +114,51 @@ path:line | severity | problem | required fix
 ## Diagnostics
 
 None. Every command the reviewer ran exited 0.
+
+## Re-review 1
+
+Reviewer: fresh fix-only re-reviewer. Reviewed SHA: `c962996a8cca2f98697dbce9ac1d2e8fac3863e9`. Fix range: `1a241884..c962996a` (commit `c962996a`, "fix pass 1").
+
+**Verdict: APPROVE.** All three findings are fixed. The fix introduces no regression, and no test was weakened.
+
+### Findings
+
+1. **FIXED (major): a stale validation-groups abort with `RowGroups{train = {}, val = gv}`.**
+   - `run_epoch` (`trainer.cpp:123-131`) now calls `loss.set_row_groups({})` before every ungrouped batch. The labels that `eval_loss` sets for validation (length n_val) can therefore never reach `IcLoss::grad` or `IcLoss::value` during training.
+   - The `RowGroups` contract table in `trainer.hpp` documents this combination.
+   - New tests:
+     - `LearnIcLossPerDate_Trainer.UngroupedTrainWithGroupedValDoesNotAbort` runs a real `IcLoss` with batch 8, n_val 6 and n_train 20, so the batches are 8, 8 and 4. Before the fix this reached `ATX_CHECK` and aborted. A spy then checks, at `bs` = 6 (the silent mis-grouping case) and at `bs` = 8, that every training batch sees empty groups and all 10 validation passes see `gv`.
+     - `UngroupedTrainWithGroupedValSelectsOnPerDateLoss` confirms that the kept state's per-date validation loss equals the recorded minimum and differs from its pooled loss by more than 1e-3.
+   - For callers without groups the extra `set_row_groups({})` does not change the numbers: `NoGroupsIsByteIdenticalToLegacyTrainer` still passes byte for byte.
+2. **FIXED (minor): selecting on a pooled validation IC with `RowGroups{train = g, val = {}}`.**
+   - `train()` (`trainer.cpp:225-230`) now returns `InvalidArgument` when `groups.train` is non-empty, `groups.val` is empty and `x_val` has rows. The case with an empty `x_val` is still allowed; its checkpoint scores train grouped by `g`.
+   - Both the header error list and the contract table document this.
+   - `RejectsGroupedTrainWithUngroupedVal` covers both branches.
+   - No source caller passes `RowGroups`. Only tests do, so nothing that already runs is newly rejected.
+   - `RejectsMismatchedGroupLengths` is unchanged and still rejects both cases.
+3. **FIXED (minor): a hand-built non-clique pair list was refit as a top-m selection.**
+   - `fit_fold_augmentation` (`latent.cpp:236-244`) now refits only when `!interactions_fixed && detail::is_selected_clique(...)`. Any other list is reused verbatim.
+   - `is_selected_clique` matches exactly what `select_interactions_on_rows` emits, which the reviewer read at `latent.cpp:94-111`: an ascending sorted feature set with every `(F[i], F[j])`, i < j, in nested-loop order. Every real selection output therefore still refits, and the fold-local (FoldLocalV2) leakage fix is preserved.
+   - Empty lists behave as before, and so does the selection-returns-nothing case for m <= 1.
+   - Tests:
+     - `OnlyCompleteCanonicalCliqueIsASelection` checks the negative cases (partial, out of order, a > b, self pair, duplicates) and real `select_interactions` outputs for m = 2..5.
+     - `NonCliquePairsAreReusedVerbatimNotRefit` is non-vacuous: the same four features as a full clique do refit, to a different top-4.
+     - `LearnFoldLocalAug_Linear.NonCliquePairsReachEveryFoldUnchanged` checks that the fold artifacts carry the deployed structure in all 4 folds.
+
+### Regression and test-integrity check
+
+- The fix diff to the test files contains additions only: 6 new tests and one `#include <algorithm>`. No expectation changed, and nothing was deleted, disabled or skipped.
+- `latent.hpp` and `trainer.hpp` changed only in comments and a new `detail::is_selected_clique` declaration. The signatures are unchanged.
+- Callers of the changed APIs are `tcn_alpha.cpp`, `autoencoder_alpha.cpp` and `linear_alpha`. All of them are exercised by `atx-engine-learn-tests`.
+
+### Commands run
+
+- `Set-Location C:\atx-wt\pool-3; $env:CMAKE_BUILD_PARALLEL_LEVEL='2'; powershell -NoProfile -File scripts\atx-build.ps1 build -Preset equity-dev atx-engine-learn-tests`
+  - Free RAM was 5.6 GB. The build exited 0 and linked `bin\atx-engine-learn-tests.exe`.
+  - The executable's timestamp is later than the fixed sources.
+- `build-equity\bin\atx-engine-learn-tests.exe --gtest_filter='LearnIcLossPerDate_*:LearnFoldLocalAug_*:Latent.*' --gtest_brief=1`
+  - Result: 33 tests from 8 suites, PASSED.
+- `build-equity\bin\atx-engine-learn-tests.exe --gtest_brief=1`
+  - Result: **193 tests from 31 suites, PASSED**, exit=0. The previous count was 187; the difference is the 6 new tests.
+
+No new findings.
