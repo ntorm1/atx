@@ -42,8 +42,10 @@ Reuse existing pools, -MaxPool11; do not create more. Four agent slots including
 
 Root session56041 runs .superpowers/sdd/w0/run-integrated-gate.ps1. Configure passed with
 isolated pool-2/deps/equity-dev, PCH ON and groups alpha/factory/learn/data/eval/combine/risk/book.
-The 394-step build was at345/394 at last inspection. It then automatically runs nine whole
-test executables sequentially, with data exclusions and cleared opt-ins. Source compiled is
+The 394-output build completed in2375.269s (~39.6min), no compiler failures. Nine whole
+test executables are running sequentially, with data exclusions and cleared opt-ins.
+Passed so far: alpha706/706 (48.014s),factory299/299 (66.431s),learn193/193 (72.214s),
+data238 passed+1skip (16.018s),eval251/251 (127.502s). Combine/risk/book/impl remain. Source compiled is
 b185d056440704e7ebcfe2b9395601d7e5264269; later root commits change documentation only.
 Do not modify root production sources during the build. Logs/hashes are under
 build-equity/w0-integrated-gate/ (configure.log, build.log, results.txt, per-target logs).
@@ -151,13 +153,27 @@ recorded as erratum alongside frozen Python scorer's stale year-union label. No 
 rerun solely for prose. Diagnostic source pin was never committed; both files are restored.
 Patch and diagnostic exe are archived. Production diff is empty.
 
-Frozen Python scorecard remains active session74687, ~10min elapsed at18:09ET, no stderr.
-Compiler slot is released. Final disclosed sourcec32df9512075879827b75f5e465f2640c579d4c8
-is built and archived under bin/corrected-disclosed (14 files); atx-impl SHA256
+G0 COMPLETE: report08cb4ae37381e294d6c5129b599f2e13c45881a7, imported on root9225cb30
+(after metadata commits1e048eac/b289bdb9 -> rootb004d7c7/f19d522b). Python scorecard exit0,
+938.703s,peak0.303GiB; R16-8 remains0/29. Intraday_mom_252 t3000 h21 netSR .676475
+[.003924,1.383343] -> .492608[-.225724,1.280178]. All individual h21 pooled-cut lower
+confidence limits are now <=0. No alpha promoted. E18 minimum50 plus other fixes materially
+increase sparse counts; these are summed over horizons, not unique dates.
+
+Final disclosed sourcec32df9512075879827b75f5e465f2640c579d4c8 is built and archived
+under bin/corrected-disclosed; atx-impl SHA256
 2edbf4f5177ca3f9a8169ff6ee8ba3e4e939ceaf98e9b450a0bad77ee2f0870e.
-After scorecard, rerun the two seconds-scale corrected/Abort controls to validate outer flags
-and unchanged numbers. Then finish all35 receipts/comparisons; publish recursive hash-bound
-manifest LAST. Heavy lock is atomic token/PID-owned; only matching owner removes it.
+Final disclosed native exit0,3.782s; explicit Abort exit1,same error,2.015s. Both0.146GiB.
+Top qualification failed and all10 fields match nested summary; nested replay bytes exactly
+match prior8ee output (49 leaves unchanged), only12 outer-summary leaves changed.
+
+Final g0-artifact-manifest.json published22:19:45Z, SHA256
+3e2fd328a15c6671d81aff9aa2012388aad924e995b6b8185591259f117da679.
+35 receipts,33 recursive manifests,597 evidence files,13 exact frozen recipes;
+54 comparison tables/2,027,028 metric+metadata cells. Heavy lock clear, no active G0 process.
+Root independently matched final manifest hash and5 selected comparison/receipt file hashes.
+G0 owner now prepares W1-I1 sidecar/prereg docs. Pool3 CRLF ledger failure is local checkout
+state; root independently verified all9 ledgers i/lf,w/lf under *.jsonl text eol=lf.
 
 ## Benchmark preparation (audit agent)
 
@@ -165,7 +181,9 @@ Pool-6 baseline at O1 configured equity-bench successfully: Release, equity-only
 groups all, isolated deps/equity-bench. Build completed235/235 exit0 (~20min).
 Baseline exe SHA2568bd72411065d71edbdd62eb37ffc2230aee0bf050681aa2096d85b5f04eea966.
 Registry verified exactly81 cases (66 earlier was wrong:15 SearchThroughput also match).
-Current pool-5 configure/build waits for >4GiB free; recent host free2.13GiB. No processes
+Current pool-5 configure passed63.7s; build waits for >4GiB free, recent3.37GiB.
+161 normalized selected production/bench command lines exactly match baseline.
+Per-build ccache stats/debug logs will be enabled to diagnose cache failures without flag changes. No processes
 belonging to other sessions may be killed. Current sourceb185d056 has only a later review doc.
 ASan target defaults OFF and summary impl changes do not affect engine benchmark links.
 Build bench+worker serially. Full filter (never narrow):
@@ -207,3 +225,25 @@ and D5 data foundations on the critical path, with new atx-db modules avoiding t
 ownership. Follow DAG through W4 and W5 development evidence; owner-only2020+ unseal stays
 closed. A18 production hash-only caches belong to W2-A4, R06 production PIT exposures to
 W3-R4; these are not already closed. Keep this checkpoint current before compaction.
+
+## User steering: compiler setup and incremental compilation
+
+User explicitly asked to optimize compiler setup/incremental compilation because builds are slow.
+Keep original DAG goal active. Replay owner now implements bounded build fixes in pool4 after
+read-only prep911071f186ed43bdbfc8baab110392e7fc21af02 (A1) andd3e0c59a (D1/D5).
+Approved owned scope: scripts/atx-build.ps1 + script tests/docs; CMakePresets equity-hygiene;
+atx-impl/CMakeLists source-local Git-SHA define; atx-engine/tests/CMakeLists stable PCH carrier
+plus minimal carrier source. Implementation first. Preserve warning/FP/ISA/CRT flags.
+Explicit -Jobs wins for build/check, else valid CMAKE_BUILD_PARALLEL_LEVEL, else1; ctest unchanged.
+Use dedicated equity-hygiene binary/deps directory, NEVER toggle PCH off/on in equity-dev.
+Stable PCH must match consumers exactly and avoid worker dependency explosion. Keep that change
+separate to avoid invalidating every already-built test object in W0. Review by audit agent.
+No compilation until >4GiB and coordinated slot. Benchmark flags/preset snapshots stay frozen.
+
+Measured root build:222 engine-test outputs1367s,93 impl-test outputs542s,67 production/deps404s,
+12 links61.5s. Global ccache cumulative11124/18787 cacheable,5754 hits,5370 misses,7663 uncacheable
+(7581 preprocessing failures). These historical totals are NOT attributable to this build.
+Audit owner will capture per-build CCACHE_STATSLOG/LOGFILE; avoid duplicate diagnostic compiles.
+Confirmed avoidable triggers: Git SHA macro on all34 impl-core TUs but only stage_discover uses it;
+engine-test PCH owner changes with first configured group; wrapper -Jobs absent from build/check.
+No claim of measured improvement until no-op/localized-rebuild/cache diagnostics are verified.
