@@ -340,6 +340,99 @@ def test_ten_q_twelve_months_ended_column_is_not_a_fiscal_year(tmp_store):
     }
 
 
+def test_old_calendar_year_seen_only_as_a_comparative_still_anchors(tmp_store):
+    """A6 r1-m1: Dec -> Sep change; FY2018's own 10-K is absent from the build, so FY2018 is
+    seen only as a comparative in the first September-year 10-K.  Declared years exist, but the
+    observed FY2018 overlaps none of them, so it still anchors its own fiscal year -- the (2018,
+    FY) label annual coverage attributes by -- instead of being projected as (2019, Q1)."""
+
+    sid = "SEC-CIK-GAP"
+    d = dt.date
+    _point(tmp_store, security_id=sid, accession="10k-2017", fy=2017, fp="FY", filed=d(2018, 2, 20),
+           start=d(2017, 1, 1), end=d(2017, 12, 31), value=380.0, form="10-K")
+    _point(tmp_store, security_id=sid, accession="10k-2020", fy=2020, fp="FY", filed=d(2020, 11, 20),
+           start=d(2019, 10, 1), end=d(2020, 9, 30), value=440.0, form="10-K")
+    _point(tmp_store, security_id=sid, accession="10k-2020", fy=2020, fp="FY", filed=d(2020, 11, 20),
+           start=d(2018, 1, 1), end=d(2018, 12, 31), value=400.0, form="10-K")  # old-calendar comparative
+
+    refresh_fundamental_standardized(tmp_store)
+
+    assert _labels(tmp_store, sid, "annual") == {
+        (d(2017, 12, 31), 380.0): (2017, "FY"),
+        (d(2018, 12, 31), 400.0): (2018, "FY"),
+        (d(2020, 9, 30), 440.0): (2020, "FY"),
+    }
+
+
+def test_year_end_filing_beats_a_ten_q_twelve_months_column_without_declared_years(tmp_store):
+    """A6 r1-m2: no fp=FY filing at all (the 10-K's facts are tagged fp=Q4), so every anchor is
+    an observed period.  At equal breadth the 10-Q's 12-months-ended-June column is seen first,
+    but the primary period of the filing that declares the fiscal year end wins."""
+
+    sid = "SEC-CIK-OBS"
+    d = dt.date
+    _point(tmp_store, security_id=sid, accession="q2-2021", fy=2021, fp="Q2", filed=d(2021, 8, 1),
+           start=d(2021, 4, 1), end=d(2021, 6, 30), value=25.0)
+    _point(tmp_store, security_id=sid, accession="q2-2021", fy=2021, fp="Q2", filed=d(2021, 8, 1),
+           start=d(2020, 7, 1), end=d(2021, 6, 30), value=99.0)
+    _point(tmp_store, security_id=sid, accession="10k-2021", fy=2021, fp="Q4", filed=d(2022, 2, 15),
+           start=d(2021, 1, 1), end=d(2021, 12, 31), value=101.0, form="10-K")
+
+    refresh_fundamental_standardized(tmp_store)
+
+    assert _labels(tmp_store, sid, "annual") == {
+        (d(2021, 6, 30), 99.0): (2021, "Q2"),
+        (d(2021, 12, 31), 101.0): (2021, "FY"),
+    }
+    assert _labels(tmp_store, sid, "quarterly") == {(d(2021, 6, 30), 25.0): (2021, "Q2")}
+
+
+def test_pandas_standardization_path_carries_the_same_period_own_labels(tmp_store):
+    """AF1 (A6 m7): the exported pandas transform no longer copies the carrying filing's fy/fp;
+    its labels are the set-based build's, including for re-reported comparatives."""
+
+    import pandas as pd
+
+    from atx_db.standardization import (
+        FundamentalStandardizationOptions,
+        compute_standardized_rows,
+        load_standardization_inputs,
+    )
+
+    sid = "SEC-CIK-PANDAS"
+    d = dt.date
+    _point(tmp_store, security_id=sid, accession="10k-2020", fy=2020, fp="FY", filed=d(2021, 2, 15),
+           start=d(2020, 1, 1), end=d(2020, 12, 31), value=100.0, form="10-K")
+    _point(tmp_store, security_id=sid, accession="10k-2021", fy=2021, fp="FY", filed=d(2022, 2, 15),
+           start=d(2021, 1, 1), end=d(2021, 12, 31), value=120.0, form="10-K")
+    _point(tmp_store, security_id=sid, accession="10k-2021", fy=2021, fp="FY", filed=d(2022, 2, 15),
+           start=d(2020, 1, 1), end=d(2020, 12, 31), value=101.0, form="10-K")  # restated comparative
+    _point(tmp_store, security_id=sid, accession="q1-2022", fy=2022, fp="Q1", filed=d(2022, 5, 10),
+           start=d(2022, 1, 1), end=d(2022, 3, 31), value=31.0)
+    _point(tmp_store, security_id=sid, accession="q1-2022", fy=2022, fp="Q1", filed=d(2022, 5, 10),
+           start=d(2021, 1, 1), end=d(2021, 3, 31), value=29.0)  # prior-year comparative
+
+    refresh_fundamental_standardized(tmp_store)
+    set_based = {
+        end: labels
+        for basis in ("annual", "quarterly")
+        for (end, _value), labels in _labels(tmp_store, sid, basis).items()
+    }
+    # The legacy input loader tags every duration fact 'annual' (its own basis rule), so the
+    # two paths are compared by period.
+    inputs = load_standardization_inputs(tmp_store, FundamentalStandardizationOptions())
+    rows = compute_standardized_rows(inputs[inputs["security_id"] == sid])
+    rows = rows[rows["canonical_code"] == "revenue"]
+    pandas_labels = {
+        pd.Timestamp(row.period_end).date(): (row.fiscal_year, row.fiscal_period)
+        for row in rows.itertuples(index=False)
+    }
+
+    assert pandas_labels == set_based
+    assert pandas_labels[d(2020, 12, 31)] == (2020, "FY")  # not the re-reporting 10-K's fy 2021
+    assert pandas_labels[d(2021, 3, 31)] == (2021, "Q1")  # not the re-reporting 10-Q's fy 2022
+
+
 def test_twelve_months_ended_column_cannot_stand_in_for_missing_fiscal_year_coverage(tmp_store):
     sid = "SEC-CIK-UTILCOV"
     d = dt.date

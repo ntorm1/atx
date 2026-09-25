@@ -168,6 +168,34 @@ def _midpoint_date(period_start: dt.date | None, period_end: dt.date) -> dt.date
     return period_start + dt.timedelta(days=max((length - 1) // 2, 0))
 
 
+# A 52/53-week fiscal year ending in the first week of a month belongs to the prior month;
+# must equal _standardization_set_based.FISCAL_YEAR_END_SPILL_DAYS (which imports this module).
+_FISCAL_YEAR_END_SPILL_DAYS = 7
+
+
+def _optional_month(value: object) -> int | None:
+    if value is None or value is pd.NA:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+        month = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return None
+    return month if 1 <= month <= 12 else None
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None or value is pd.NA:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+        return int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return None
+
+
 def _reported_fiscal_quarter(reported_period: object, fallback_end: dt.date) -> int:
     text = "" if reported_period is None else str(reported_period).upper()
     for quarter in (1, 2, 3, 4):
@@ -184,7 +212,18 @@ def compute_calendar_map_rows(
     source: str = SOURCE_NAME,
     run_id: str | None = None,
 ) -> pd.DataFrame:
-    """Return deterministic calendar-map rows for fundamental_periods-like input."""
+    """Return deterministic calendar-map rows for fundamental_periods-like input.
+
+    ``fiscal_scheme_*`` is the period's OWN fiscal label when the input carries
+    ``period_fiscal_year`` / ``period_fiscal_quarter`` / ``period_fyr`` -- the standardized
+    build's anchors and placement (A6), which :func:`refresh_fundamental_calendar_map`
+    supplies for every period of an issuer with any statement-point fiscal calendar -- so a
+    comparative re-reported in a later filing keeps its own label, and ``fyr`` is the
+    period's own fiscal-year-end month (a fiscal-year-end change never re-labels earlier
+    history with the latest calendar). The carrying filing's fy/fp stay in
+    ``reported_fiscal_*``. Only a period without any such evidence (fixtures, pure callers)
+    keeps the previous derivation: the reported label, else the issuer ``fyr`` rule.
+    """
 
     records: list[dict[str, object]] = []
     for raw in periods.to_dict("records"):
@@ -192,10 +231,10 @@ def compute_calendar_map_rows(
         if period_end is None:
             continue
         period_start = _as_date(raw.get("period_start"))
-        try:
-            fyr = int(raw.get("fyr") or fyr_from_period_end(period_end))
-        except (TypeError, ValueError):
-            fyr = fyr_from_period_end(period_end)
+        own_year = _optional_int(raw.get("period_fiscal_year"))
+        own_quarter = _optional_int(raw.get("period_fiscal_quarter"))
+        own_fyr = _optional_month(raw.get("period_fyr"))
+        fyr = own_fyr or _optional_month(raw.get("fyr")) or fyr_from_period_end(period_end)
         length_days = period_length_days(period_start, period_end)
         weeks = period_week_count(length_days)
         normalized_period_type = raw.get("normalized_period_type")
@@ -210,8 +249,11 @@ def compute_calendar_map_rows(
             raw.get("reported_fiscal_periods_json", raw.get("fiscal_period"))
         )
 
-        fiscal_year = reported_year if reported_year is not None else fiscal_year_label(period_end, fyr)
-        fiscal_quarter = _reported_fiscal_quarter(reported_period, period_end)
+        if own_year is not None and own_quarter is not None and 1 <= own_quarter <= 4:
+            fiscal_year, fiscal_quarter = own_year, own_quarter
+        else:
+            fiscal_year = reported_year if reported_year is not None else fiscal_year_label(period_end, fyr)
+            fiscal_quarter = _reported_fiscal_quarter(reported_period, period_end)
         fiscal_period = calendar_period_label(fiscal_year, fiscal_quarter)
 
         containing_year = int(period_end.year)
@@ -222,6 +264,9 @@ def compute_calendar_map_rows(
         if length_days is not None and 70 <= length_days <= 120:
             quarter_anchor = _midpoint_date(period_start, period_end)
             overlap_year = int(quarter_anchor.year)
+        elif own_fyr is not None:
+            # The period-own FYR is spill-adjusted (a year ending 2021-01-02 is December).
+            overlap_year = fiscal_year_label(period_end - dt.timedelta(days=_FISCAL_YEAR_END_SPILL_DAYS), fyr)
         else:
             overlap_year = fiscal_year_label(period_end, fyr)
         overlap_quarter = calendar_quarter(quarter_anchor.month)
@@ -286,15 +331,97 @@ def refresh_fundamental_calendar_map(
     Both full-sized staging tables remain inside DuckDB's memory/spill budget.
     """
 
+    from ._standardization_set_based import (
+        FISCAL_ANCHOR_EVIDENCE_TABLES,
+        create_fiscal_calendar_labels,
+        fiscal_anchor_candidates_sql,
+    )
+
     options = options or CalendarizationOptions()
     columns = ", ".join(CALENDAR_MAP_COLUMNS)
     row_count = 0
+    evidence = tuple(
+        str(row[0])
+        for row in store.con.execute(
+            "SELECT DISTINCT table_name FROM duckdb_tables() WHERE NOT temporary AND table_name IN (?, ?)",
+            list(FISCAL_ANCHOR_EVIDENCE_TABLES),
+        ).fetchall()
+    )
     with fundamental_publication(
         store, ("fundamental_calendar_map",),
         replace_where="source = ?", replace_params=(options.source,),
     ):
+        # Period-own fiscal labels: the same anchors and placement the standardized build
+        # uses (A6), from the same statement-point / XBRL-metric evidence, never the carrying
+        # filing's fy/fp (those stay in reported_fiscal_*). Temp relations are dropped before
+        # the publication swap, which refuses a session holding caller temp state.
+        try:
+            if evidence:
+                store.con.execute(
+                    f"CREATE TEMP VIEW _calendar_fiscal_candidates AS {fiscal_anchor_candidates_sql(evidence)}"
+                )
+                create_fiscal_calendar_labels(
+                    store,
+                    candidates="_calendar_fiscal_candidates",
+                    periods="fundamental_periods",
+                    prefix="_calendar_fiscal",
+                )
+            _create_calendar_map_input(store, labeled=bool(evidence))
+        finally:
+            for relation in _CALENDAR_FISCAL_TEMP_TABLES:
+                store.con.execute(f"DROP TABLE IF EXISTS {relation}")
+            store.con.execute("DROP VIEW IF EXISTS _calendar_fiscal_candidates")
         store.con.execute(
-            """
+            f"CREATE TEMP TABLE _calendar_map_output AS "
+            f"SELECT {columns} FROM fundamental_calendar_map WHERE false"
+        )
+        count_result = store.con.execute("SELECT count(*) FROM _calendar_map_input").fetchone()
+        assert count_result is not None
+        input_count = int(count_result[0])
+        for offset in range(0, input_count, _CALENDAR_MAP_BATCH_SIZE):
+            periods = store.con.execute(
+                "SELECT * EXCLUDE (_batch_row) FROM _calendar_map_input "
+                "WHERE _batch_row > ? AND _batch_row <= ? ORDER BY _batch_row",
+                [offset, offset + _CALENDAR_MAP_BATCH_SIZE],
+            ).df()
+            rows = compute_calendar_map_rows(periods, source=options.source, run_id=options.run_id)
+            row_count += insert_frame(store, rows, "_calendar_map_output", "_calendar_map_rows")
+            del periods, rows
+        store.con.execute(
+            f"INSERT INTO fundamental_calendar_map_bulk_stage ({columns}) "
+            f"SELECT {columns} FROM _calendar_map_output"
+        )
+        store.con.execute("DROP TABLE _calendar_map_output")
+        store.con.execute("DROP TABLE _calendar_map_input")
+    return row_count
+
+
+_CALENDAR_FISCAL_TEMP_TABLES = (
+    "_calendar_fiscal_labels",
+    "_calendar_fiscal_anchors",
+    "_calendar_fiscal_anchor_candidates",
+)
+
+
+def _create_calendar_map_input(store: DuckDBStore, *, labeled: bool) -> None:
+    """Snapshot every period with its issuer FYR and (``labeled``) its period-own fiscal label."""
+
+    label_join = (
+        """
+        LEFT JOIN _calendar_fiscal_labels label
+          ON label.security_id = fp.security_id
+         AND label.period_end = fp.period_end"""
+        if labeled
+        else """
+        LEFT JOIN (
+            SELECT CAST(NULL AS VARCHAR) AS security_id, CAST(NULL AS DATE) AS period_end,
+                   CAST(NULL AS INTEGER) AS fiscal_year, CAST(NULL AS INTEGER) AS fiscal_quarter,
+                   CAST(NULL AS INTEGER) AS fiscal_year_end_month
+            WHERE false
+        ) label ON false"""
+    )
+    store.con.execute(
+        f"""
         CREATE TEMP TABLE _calendar_map_input AS
         WITH issuer_fyr AS (
             SELECT
@@ -319,6 +446,9 @@ def refresh_fundamental_calendar_map(
             fp.period_end,
             fp.normalized_period_type,
             coalesce(issuer_fyr.fyr, CAST(EXTRACT(MONTH FROM fp.period_end) AS INTEGER)) AS fyr,
+            label.fiscal_year AS period_fiscal_year,
+            label.fiscal_quarter AS period_fiscal_quarter,
+            label.fiscal_year_end_month AS period_fyr,
             fp.reported_fiscal_years_json,
             fp.reported_fiscal_periods_json,
             fp.as_of_date,
@@ -328,32 +458,9 @@ def refresh_fundamental_calendar_map(
         FROM fundamental_periods fp
         LEFT JOIN issuer_fyr
           ON issuer_fyr.source = fp.source
-         AND issuer_fyr.security_id = fp.security_id
+         AND issuer_fyr.security_id = fp.security_id{label_join}
         """
-        )
-        store.con.execute(
-            f"CREATE TEMP TABLE _calendar_map_output AS "
-            f"SELECT {columns} FROM fundamental_calendar_map WHERE false"
-        )
-        count_result = store.con.execute("SELECT count(*) FROM _calendar_map_input").fetchone()
-        assert count_result is not None
-        input_count = int(count_result[0])
-        for offset in range(0, input_count, _CALENDAR_MAP_BATCH_SIZE):
-            periods = store.con.execute(
-                "SELECT * EXCLUDE (_batch_row) FROM _calendar_map_input "
-                "WHERE _batch_row > ? AND _batch_row <= ? ORDER BY _batch_row",
-                [offset, offset + _CALENDAR_MAP_BATCH_SIZE],
-            ).df()
-            rows = compute_calendar_map_rows(periods, source=options.source, run_id=options.run_id)
-            row_count += insert_frame(store, rows, "_calendar_map_output", "_calendar_map_rows")
-            del periods, rows
-        store.con.execute(
-            f"INSERT INTO fundamental_calendar_map_bulk_stage ({columns}) "
-            f"SELECT {columns} FROM _calendar_map_output"
-        )
-        store.con.execute("DROP TABLE _calendar_map_output")
-        store.con.execute("DROP TABLE _calendar_map_input")
-    return row_count
+    )
 
 
 def refresh_fundamental_calendar_ttm(

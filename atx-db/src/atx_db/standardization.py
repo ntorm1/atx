@@ -501,6 +501,99 @@ def _active_rules_by_group(
     return out
 
 
+_FISCAL_EVIDENCE_TEXT_COLUMNS = (
+    "upstream_source", "security_id", "taxonomy", "concept", "basis", "fiscal_period", "accession_number",
+)
+_FISCAL_EVIDENCE_DATE_COLUMNS = ("period_start", "period_end", "filed_date", "available_at")
+
+
+def _apply_period_own_fiscal_labels(out: pd.DataFrame, inputs: pd.DataFrame) -> pd.DataFrame:
+    """Replace the carried filing fy/fp with the set-based build's period-own labels (A6).
+
+    The candidate facts are the fiscal-calendar evidence exactly as ``_std_candidates_all``
+    is for the SQL build, and the same shared routine
+    (``_standardization_set_based.create_fiscal_calendar_labels`` / ``fiscal_period_label_sql``)
+    labels each output ``(security_id, period_end)``; a period without calendar evidence gets
+    NULL labels, never the carrying filing's.
+    """
+
+    import types
+
+    import duckdb
+
+    from ._standardization_set_based import (
+        create_fiscal_calendar_labels,
+        fiscal_evidence_basis_sql,
+        fiscal_period_label_sql,
+    )
+
+    evidence = pd.DataFrame(index=inputs.index)
+    for column in _FISCAL_EVIDENCE_TEXT_COLUMNS:
+        values = inputs[column] if column in inputs.columns else pd.Series(pd.NA, index=inputs.index)
+        evidence[column] = values.astype("string")
+    for column in _FISCAL_EVIDENCE_DATE_COLUMNS:
+        values = inputs[column] if column in inputs.columns else pd.Series(pd.NaT, index=inputs.index)
+        evidence[column] = pd.to_datetime(values, errors="coerce")
+    evidence["has_value"] = inputs["value"].notna() if "value" in inputs.columns else False
+    # Classified by period geometry as _std_candidates_all is, not by the caller's basis
+    # (the legacy loader tags every duration fact 'annual').
+    geometry_basis = fiscal_evidence_basis_sql(
+        "(period_start IS NULL OR basis = 'instant')", "CAST(period_start AS DATE)", "CAST(period_end AS DATE)"
+    )
+    periods = pd.DataFrame({
+        "_row": range(len(out)),
+        "security_id": out["security_id"].astype("string"),
+        "period_end": pd.to_datetime(out["period_end"], errors="coerce"),
+        "basis": out["basis"].astype("string"),
+        "upstream_source": out["upstream_source"].astype("string"),
+    })
+    con = duckdb.connect(config={"threads": 1})
+    try:
+        con.register("_pandas_fiscal_evidence_frame", evidence)
+        con.register("_pandas_fiscal_periods_frame", periods)
+        con.execute(
+            "CREATE TEMP TABLE _pandas_fiscal_evidence AS SELECT "
+            + ", ".join(
+                f"CAST({column} AS VARCHAR) AS {column}"
+                for column in _FISCAL_EVIDENCE_TEXT_COLUMNS
+                if column != "basis"
+            )
+            + f", {geometry_basis} AS basis, CAST(period_start AS DATE) AS period_start, "
+            "CAST(period_end AS DATE) AS period_end, CAST(filed_date AS DATE) AS filed_date, "
+            "CAST(available_at AS TIMESTAMP) AS available_at "
+            "FROM _pandas_fiscal_evidence_frame "
+            f"WHERE has_value AND available_at IS NOT NULL AND {geometry_basis} IS NOT NULL"
+        )
+        con.execute(
+            "CREATE TEMP TABLE _pandas_fiscal_periods AS SELECT _row, CAST(security_id AS VARCHAR) AS security_id, "
+            "CAST(period_end AS DATE) AS period_end, CAST(basis AS VARCHAR) AS basis, "
+            "CAST(upstream_source AS VARCHAR) AS upstream_source FROM _pandas_fiscal_periods_frame"
+        )
+        create_fiscal_calendar_labels(
+            types.SimpleNamespace(con=con),  # type: ignore[arg-type]
+            candidates="_pandas_fiscal_evidence",
+            periods="_pandas_fiscal_periods",
+            prefix="_pandas_fiscal",
+        )
+        labelled = con.execute(
+            f"""
+            SELECT p._row, label.fiscal_year,
+                   {fiscal_period_label_sql("p.basis", "p.upstream_source", "label.fiscal_quarter")} AS fiscal_period
+            FROM _pandas_fiscal_periods p
+            LEFT JOIN _pandas_fiscal_labels label
+              ON label.security_id = p.security_id
+             AND label.period_end = p.period_end
+            ORDER BY p._row
+            """
+        ).fetchall()
+    finally:
+        con.close()
+    out = out.copy()
+    out["fiscal_year"] = [None if row[1] is None else int(row[1]) for row in labelled]
+    out["fiscal_period"] = [row[2] for row in labelled]
+    return out
+
+
 def compute_standardized_rows(
     inputs: pd.DataFrame,
     *,
@@ -508,7 +601,12 @@ def compute_standardized_rows(
     source: str = DEFAULT_SOURCE,
     run_id: str | None = None,
 ) -> pd.DataFrame:
-    """Pure transform: long candidate facts -> standardized long facts."""
+    """Pure transform: long candidate facts -> standardized long facts.
+
+    ``fiscal_year`` / ``fiscal_period`` are period-own labels from the candidates' fiscal
+    calendar -- the same routine as the set-based build (A6) -- never the filing labels a
+    re-reported comparative carries; see :func:`_apply_period_own_fiscal_labels`.
+    """
 
     if inputs is None or inputs.empty:
         return pd.DataFrame(columns=STANDARDIZED_COLUMNS)
@@ -540,7 +638,7 @@ def compute_standardized_rows(
             )
     if not records:
         return pd.DataFrame(columns=STANDARDIZED_COLUMNS)
-    return pd.DataFrame(records, columns=STANDARDIZED_COLUMNS)
+    return _apply_period_own_fiscal_labels(pd.DataFrame(records, columns=STANDARDIZED_COLUMNS), inputs)
 
 
 def compute_standardization_exceptions(

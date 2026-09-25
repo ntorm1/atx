@@ -413,6 +413,82 @@ def test_refresh_calendar_map_and_quality_checks(tmp_store) -> None:
     assert result.status == "failed"
 
 
+def test_calendar_map_labels_each_period_by_its_own_fiscal_calendar(tmp_store) -> None:
+    """AF1 (A6 follow-up): fiscal_scheme_* are the standardized build's period-own labels.
+
+    A comparative re-reported in a later filing keeps its own fiscal year (the filing's
+    fy/fp stay in reported_fiscal_*), and after a December -> March fiscal-year-end change
+    the earlier December years keep FYR 12 instead of inheriting the latest calendar.
+    """
+    from atx_db._standardization_set_based import FISCAL_YEAR_END_SPILL_DAYS
+    from atx_db.calendarization import (
+        _FISCAL_YEAR_END_SPILL_DAYS,
+        CalendarizationOptions,
+        refresh_fundamental_calendar_map,
+    )
+
+    assert _FISCAL_YEAR_END_SPILL_DAYS == FISCAL_YEAR_END_SPILL_DAYS
+    d = dt.date
+    comparative, fye_change = "SEC-CIK-0000000201", "SEC-CIK-0000000202"
+    points = [
+        # Calendar-year issuer: FY2020 10-K re-reports FY2019; Q1 2021 10-Q re-reports Q1 2020.
+        (comparative, "CMP", "10k-2019", 2019, "FY", d(2019, 1, 1), d(2019, 12, 31), d(2020, 2, 15)),
+        (comparative, "CMP", "10k-2020", 2020, "FY", d(2020, 1, 1), d(2020, 12, 31), d(2021, 2, 15)),
+        (comparative, "CMP", "10k-2020", 2020, "FY", d(2019, 1, 1), d(2019, 12, 31), d(2021, 2, 15)),
+        (comparative, "CMP", "q1-2021", 2021, "Q1", d(2021, 1, 1), d(2021, 3, 31), d(2021, 5, 10)),
+        (comparative, "CMP", "q1-2021", 2021, "Q1", d(2020, 1, 1), d(2020, 3, 31), d(2021, 5, 10)),
+        # December year through 2019, then a March year (SEC fy 2021 for the year ending 2021-03-31).
+        (fye_change, "FYM", "10k-2019", 2019, "FY", d(2019, 1, 1), d(2019, 12, 31), d(2020, 2, 20)),
+        (fye_change, "FYM", "10k-2021", 2021, "FY", d(2020, 4, 1), d(2021, 3, 31), d(2021, 6, 1)),
+    ]
+    for security_id, symbol, accession, fy, fp, start, end, filed in points:
+        _insert_statement_point(
+            tmp_store, statement_id=f"{security_id}|{accession}|{start}|{end}", security_id=security_id,
+            symbol=symbol, metric="revenue", value=100.0, start=start, end=end, fiscal_year=fy,
+            fiscal_period=fp, accession=accession, available_at=dt.datetime.combine(filed, dt.time(22)),
+        )
+    periods = [
+        ("cmp-fy2019-in-10k-2020", comparative, "CMP", d(2019, 1, 1), d(2019, 12, 31), "annual", 2020, "FY",
+         "10k-2020"),
+        ("cmp-q1-2020-in-q1-2021", comparative, "CMP", d(2020, 1, 1), d(2020, 3, 31), "quarter", 2021, "Q1",
+         "q1-2021"),
+        ("cmp-q1-2021", comparative, "CMP", d(2021, 1, 1), d(2021, 3, 31), "quarter", 2021, "Q1", "q1-2021"),
+        ("fym-fy2019", fye_change, "FYM", d(2019, 1, 1), d(2019, 12, 31), "annual", 2019, "FY", "10k-2019"),
+        ("fym-fy-mar-2021", fye_change, "FYM", d(2020, 4, 1), d(2021, 3, 31), "annual", 2021, "FY", "10k-2021"),
+    ]
+    for period_id, security_id, symbol, start, end, kind, fy, fp, accession in periods:
+        _insert_period(
+            tmp_store, period_id=period_id, security_id=security_id, symbol=symbol, start=start, end=end,
+            normalized_period_type=kind, fiscal_year=fy, fiscal_period=fp, accession=accession,
+        )
+
+    assert refresh_fundamental_calendar_map(tmp_store, CalendarizationOptions(run_id="af1")) == len(periods)
+    rows = {
+        row[0]: row[1:]
+        for row in tmp_store.con.execute(
+            "SELECT fundamental_period_id, fiscal_scheme_period, reported_fiscal_year, fyr, "
+            "greatest_overlap_calendar_year FROM fundamental_calendar_map"
+        ).fetchall()
+    }
+    assert rows == {
+        # Own labels; the re-reporting filing's fy stays in reported_fiscal_year.
+        "cmp-fy2019-in-10k-2020": ("2019Q4", 2020, 12, 2019),
+        "cmp-q1-2020-in-q1-2021": ("2020Q1", 2021, 12, 2020),
+        "cmp-q1-2021": ("2021Q1", 2021, 12, 2021),
+        # The December year keeps FYR 12 (the latest calendar is March): its overlap year is
+        # 2019, not the 2018 a March FYR would give.
+        "fym-fy2019": ("2019Q4", 2019, 12, 2019),
+        # Compustat FYR convention (Jan-May year ends name the prior year), as standardized.
+        "fym-fy-mar-2021": ("2020Q4", 2021, 3, 2020),
+    }
+    # The shared anchors' temp relations never outlive the build (the publication swap
+    # refuses a session holding caller temp state).
+    assert tmp_store.con.execute(
+        "SELECT (SELECT count(*) FROM duckdb_tables() WHERE temporary AND NOT internal) "
+        "+ (SELECT count(*) FROM duckdb_views() WHERE temporary AND NOT internal)"
+    ).fetchone()[0] == 0
+
+
 def test_calendarization_coverage_is_byte_identical_across_reruns_with_a_pinned_as_of_date(
     tmp_store,
 ) -> None:
