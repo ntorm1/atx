@@ -748,13 +748,13 @@ def feature_catalog_check_specs(
                     UNION ALL
                     SELECT 'sec_submissions', 'max_filing_date', count(*) FROM sec_submissions
                     UNION ALL
-                    SELECT 'nasdaq_symbol_directory', 'max_as_of_date', count(*) FROM nasdaq_symbol_directory
+                    SELECT 'nasdaq_symbol_directory', 'max_as_of_date', count(*) FROM nasdaq_symbol_directory WHERE coalesce(is_latest_revision, true)
                     UNION ALL
-                    SELECT 'nasdaq_listing_events', 'max_effective_date', count(*) FROM nasdaq_listing_events
+                    SELECT 'nasdaq_listing_events', 'max_effective_date', count(*) FROM nasdaq_listing_events WHERE coalesce(is_latest_revision, true)
                     UNION ALL
-                    SELECT 'nasdaq_listing_events', 'max_as_of_date', count(*) FROM nasdaq_listing_events
+                    SELECT 'nasdaq_listing_events', 'max_as_of_date', count(*) FROM nasdaq_listing_events WHERE coalesce(is_latest_revision, true)
                     UNION ALL
-                    SELECT 'nasdaq_listing_events', 'max_source_file_created_at', count(*) FROM nasdaq_listing_events
+                    SELECT 'nasdaq_listing_events', 'max_source_file_created_at', count(*) FROM nasdaq_listing_events WHERE coalesce(is_latest_revision, true)
                     UNION ALL
                     SELECT 'listing_status_intervals', 'max_valid_from', count(*) FROM listing_status_intervals
                     UNION ALL

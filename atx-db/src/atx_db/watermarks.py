@@ -478,21 +478,25 @@ WATERMARK_QUERIES: tuple[str, ...] = (
     """
     SELECT 'nasdaq_symbol_directory', 'max_as_of_date', max(as_of_date)::VARCHAR
     FROM nasdaq_symbol_directory
+    WHERE coalesce(is_latest_revision, true)
     HAVING count(*) > 0
     """,
     """
     SELECT 'nasdaq_listing_events', 'max_effective_date', max(effective_date)::VARCHAR
     FROM nasdaq_listing_events
+    WHERE coalesce(is_latest_revision, true)
     HAVING count(*) > 0
     """,
     """
     SELECT 'nasdaq_listing_events', 'max_as_of_date', max(as_of_date)::VARCHAR
     FROM nasdaq_listing_events
+    WHERE coalesce(is_latest_revision, true)
     HAVING count(*) > 0
     """,
     """
     SELECT 'nasdaq_listing_events', 'max_source_file_created_at', max(source_file_created_at)::VARCHAR
     FROM nasdaq_listing_events
+    WHERE coalesce(is_latest_revision, true)
     HAVING count(*) > 0
     """,
     """

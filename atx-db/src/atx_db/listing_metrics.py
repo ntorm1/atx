@@ -248,7 +248,10 @@ def compute_security_listing_metrics(
 
 
 def _load_listing_inputs(store: DuckDBStore, options: SecurityListingMetricsOptions) -> pd.DataFrame:
-    dir_filters: list[str] = []
+    # A re-dated or reloaded snapshot supersedes its earlier rows (is_latest_revision=false,
+    # kept for audit); each snapshot date's metrics come from its latest revision only.
+    # Legacy rows without the flag are latest.
+    dir_filters: list[str] = ["coalesce(is_latest_revision, true)"]
     listing_filters = ["security_id IS NOT NULL"]
     params: list[Any] = []
     registered: list[str] = []

@@ -938,12 +938,15 @@ def market_reference_check_specs(
             dataset_id="nasdaq_listing_events",
             table_name="nasdaq_listing_events",
             check_name="bad_listing_event_actions",
+            # Loaders store the canonical 'add'/'delete' (symbol_directory.normalize_nasdaq_action);
+            # rows landed before that keep the raw 'A'/'Add'/'D'/'Delete' spellings. Both are valid,
+            # case-insensitively; anything else is an unrecognized action code.
             sql="""
                 SELECT count(*)::DOUBLE
                 FROM nasdaq_listing_events
-                WHERE coalesce(nasdaq_action, '') NOT IN ('', 'Add', 'Delete')
-                   OR coalesce(bx_action, '') NOT IN ('', 'Add', 'Delete')
-                   OR coalesce(psx_action, '') NOT IN ('', 'Add', 'Delete')
+                WHERE lower(trim(coalesce(nasdaq_action, ''))) NOT IN ('', 'a', 'add', 'd', 'delete')
+                   OR lower(trim(coalesce(bx_action, ''))) NOT IN ('', 'a', 'add', 'd', 'delete')
+                   OR lower(trim(coalesce(psx_action, ''))) NOT IN ('', 'a', 'add', 'd', 'delete')
             """,
             threshold=0.0,
             required_tables=("nasdaq_listing_events",),
