@@ -114,7 +114,7 @@ CLASSIFICATION_CASES = (
     ("Prologis, Inc. Common Stock (REIT)", "REIT"),
     ("Realty Income Corporation Real Estate Investment Trust", "REIT"),
     ("Enterprise Products Partners L.P.", "LP"),
-    ("Energy Transfer LP Common Units", "unit"),
+    ("Energy Transfer LP Common Units", "LP"),
     ("Bank of America Corporation Depositary Shares Series GG", "preferred"),
     ("Wells Fargo & Company 7.5% Preferred Series L", "preferred"),
     ("Churchill Capital Corp VII Warrant", "warrant"),
@@ -133,6 +133,16 @@ CLASSIFICATION_CASES = (
     ("Shopify Inc. Class A Subordinate Voting Shares", "common"),
     ("Alibaba Group Holding Limited American Depositary Shares each representing eight Ordinary share", "ADR"),
     ("Spotify Technology S.A. Ordinary Shares", "common"),
+    # A2 fix round 1 (I1): MLP / LP equity units are LP, not excluded SPAC-style units.
+    ("Plains All American Pipeline, L.P. - Common Units representing Limited Partner Interests", "LP"),
+    ("Brookfield Infrastructure Partners LP Limited Partnership Units", "LP"),
+    ("AllianceBernstein Holding L.P.  Units", "LP"),
+    ("Kimbell Royalty Partners Common Units Representing Limited Partner Interests", "LP"),
+    ("Icahn Enterprises L.P. - Depositary Units representing Limited Partner Interests", "LP"),
+    ("XYZ Acquisition Corp - Units", "unit"),
+    ("Archimedes Tech SPAC Partners III Co. - Unit", "unit"),
+    ("Brookfield Renewable Partners L.P. 5.25% Class A Preferred Limited Partnership Units, Series 17", "preferred"),
+    ("Some Acquisition LP - Units, each consisting of one share and one-half of one warrant", "warrant"),
 )
 
 
@@ -623,11 +633,12 @@ def _add_bars(store, rows):
 
 
 def _add_directory(store, rows):
-    """rows: (symbol, security_name, exchange, as_of_date, available_at[, etf])."""
+    """rows: (symbol, security_name, exchange, as_of_date, available_at[, etf[, is_latest]])."""
 
     store.con.executemany(
         "INSERT INTO nasdaq_symbol_directory (directory, symbol, security_name, exchange, etf, "
-        "test_issue, as_of_date, source_url, available_at) VALUES (?, ?, ?, ?, ?, false, ?, 'file://t', ?)",
+        "test_issue, as_of_date, source_url, available_at, is_latest_revision) "
+        "VALUES (?, ?, ?, ?, ?, false, ?, 'file://t', ?, ?)",
         [
             (
                 "nasdaqlisted" if row[2] == "NASDAQ" else "otherlisted",
@@ -637,6 +648,7 @@ def _add_directory(store, rows):
                 bool(row[5]) if len(row) > 5 else False,
                 _D(row[3]),
                 _TS(row[4]),
+                bool(row[6]) if len(row) > 6 else True,
             )
             for row in rows
         ],
@@ -796,6 +808,8 @@ def test_knowledge_cutoff_hides_inputs_loaded_after_it(tmp_store):
     reconstructed = _membership(tmp_store, "us_listed_reconstructed_v1")
     assert {row[10] for row in reconstructed} == {"reconstructed_no_listing_evidence"}
     assert {(row[5], row[6]) for row in reconstructed} == {("unknown", "UNKNOWN")}
+    # Rows exist, but nothing is anchored to listing evidence: the check must not be green.
+    assert _latest_check_status(tmp_store, "rows_loaded_reconstructed") == "warning"
 
 
 def test_late_known_run_is_split_from_on_time_decisions(tmp_store):
@@ -1085,3 +1099,109 @@ def test_two_million_bar_build_is_memory_bounded(tmp_store):
         "AND market_cap_decile IS NULL"
     ).fetchone()[0]
     assert int(missing_deciles) == 0
+
+
+# --- A2 fix round 1: run5 directory shapes (C1), survivorship-safe deciles (I2). ---
+
+
+def _latest_check_status(store, check_name):
+    return store.con.execute(
+        "SELECT status FROM data_quality_checks WHERE dataset_id = 'universe_us_listed' AND check_name = ? "
+        "ORDER BY checked_at DESC LIMIT 1",
+        [check_name],
+    ).fetchone()[0]
+
+
+_RUN5_SESSIONS = ("2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18")
+
+
+def _seed_run5_bars(store):
+    # XCO trades through the last session (Fri 2026-09-18); DEAD stopped in 2026-09-14.
+    _add_bars(store, [("SEC-X", "XCO", day) for day in _RUN5_SESSIONS] + [("SEC-D", "DEAD", "2026-09-14")])
+
+
+def test_snapshot_dated_after_the_last_session_builds_both_variants(tmp_store):
+    """V6 run5 state: the only directory snapshot is operator-dated 2026-09-20 (a Sunday,
+    after the last bar session 2026-09-18). The anchor ceiling must not overflow: both
+    variants are written, strict has nothing before the snapshot date, the currently
+    trading name is anchored and backcast, the dead name is retained unlabeled-type."""
+
+    from atx_db.universe_us_listed import UniverseUsListedOptions, build_universe_us_listed
+
+    _seed_run5_bars(tmp_store)
+    _add_directory(tmp_store, [("XCO", "X Corp - Common Stock", "NASDAQ", "2026-09-20", "2026-09-20 10:00:00")])
+    summary = build_universe_us_listed(
+        tmp_store, UniverseUsListedOptions(lookback_days=3, as_of_date=_D("2026-09-25"), run_id="t")
+    )
+    assert summary.rows_by_universe["us_listed_v1"] == 0
+    assert summary.dispositions["strict"]["no_listing_reference"] == 6
+    recon = {row[0]: row for row in _membership(tmp_store, "us_listed_reconstructed_v1")}
+    assert (recon["SEC-X"][2], recon["SEC-X"][5], recon["SEC-X"][6]) == (_D("2026-09-14"), "common", "XNAS")
+    assert recon["SEC-X"][10] == "member_no_cik"
+    assert (recon["SEC-D"][5], recon["SEC-D"][10]) == ("unknown", "reconstructed_no_listing_evidence")
+    assert _latest_check_status(tmp_store, "rows_loaded") == "warning"
+    assert _latest_check_status(tmp_store, "rows_loaded_reconstructed") == "passed"
+
+
+def test_a1_redated_directory_shape_is_late_on_its_footer_date_only(tmp_store):
+    """A1 contract: legacy operator-dated rows (as-of 2026-09-20) are superseded and the
+    footer-dated rows (as-of 2026-09-18) keep the original receipt clock (2026-09-20
+    00:06 UTC). Strict: one late decision on 2026-09-18 at the receipt clock, nothing
+    earlier; the superseded rows are never used."""
+
+    from atx_db.universe_us_listed import UniverseUsListedOptions, build_universe_us_listed
+
+    _seed_run5_bars(tmp_store)
+    _add_directory(
+        tmp_store,
+        [
+            ("XCO", "X Corp - Common Stock", "NASDAQ", "2026-09-20", "2026-09-20 10:00:00", False, False),
+            ("XCO", "X Corp - Common Stock", "NASDAQ", "2026-09-18", "2026-09-20 00:06:00", False, True),
+        ],
+    )
+    summary = build_universe_us_listed(
+        tmp_store, UniverseUsListedOptions(lookback_days=3, as_of_date=_D("2026-09-25"), run_id="t")
+    )
+    assert summary.diagnostics["directory_rows_superseded"] == 1
+    assert summary.late_decisions["strict"] == 1
+    assert [(row[0], row[2], row[3], row[4]) for row in _membership(tmp_store)] == [
+        ("SEC-X", _D("2026-09-18"), None, _TS("2026-09-20 00:06:00"))
+    ]
+    recon = {row[0]: row for row in _membership(tmp_store, "us_listed_reconstructed_v1")}
+    assert (recon["SEC-X"][2], recon["SEC-X"][5], recon["SEC-X"][4]) == (
+        _D("2026-09-14"),
+        "common",
+        _TS("2026-09-14 22:00:00"),
+    )
+
+
+def test_reconstructed_deciles_rank_delisted_names_instead_of_survivors_only(tmp_store):
+    from atx_db.universe_us_listed import UniverseUsListedOptions, build_universe_us_listed
+
+    days = ("2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08", "2024-01-09", "2024-01-10")
+    # SEC-A lists through the snapshot; SEC-G (delisted) traded only 01-02 with a market cap.
+    _add_bars(tmp_store, [("SEC-A", "AAA", day) for day in days] + [("SEC-G", "GONE", "2024-01-02")])
+    _add_directory(
+        tmp_store,
+        [
+            ("AAA", "A Corp - Common Stock", "NASDAQ", "2024-01-01", "2024-01-01 12:00:00"),
+            ("AAA", "A Corp - Common Stock", "NASDAQ", "2024-01-10", "2024-01-10 12:00:00"),
+        ],
+    )
+    _add_market_caps(
+        tmp_store,
+        [
+            ("SEC-A", "2024-01-02", 100.0, "2024-01-02 22:00:00", True, "r1"),
+            ("SEC-G", "2024-01-02", 50.0, "2024-01-02 22:00:00", True, "r1"),
+        ],
+    )
+    build_universe_us_listed(tmp_store, UniverseUsListedOptions(lookback_days=2, run_id="t"))
+    recon = {row[0]: row for row in _membership(tmp_store, "us_listed_reconstructed_v1")}
+    assert recon["SEC-G"][10] == "reconstructed_no_listing_evidence"
+    # The delisted name is in the ranking population: A is above it, G gets a decile.
+    assert (recon["SEC-A"][9], recon["SEC-G"][9]) == (2, 1)
+    rules = json.loads(recon["SEC-A"][11])
+    assert rules["decile_population"] == "common_common_unverified_and_no_listing_evidence_with_market_cap"
+    # Strict ranks only strict members (G has no strict listing evidence at all).
+    strict = {row[0]: row for row in _membership(tmp_store)}
+    assert set(strict) == {"SEC-A"} and strict["SEC-A"][9] == 1

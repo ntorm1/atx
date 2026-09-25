@@ -121,10 +121,23 @@ ELIGIBLE_EXCHANGE_CODES: tuple[str, ...] = tuple(sorted(EXCHANGE_LABELS))
 ELIGIBLE_SECURITY_TYPES: tuple[str, ...] = ("ADR", "LP", "REIT", "common")
 RECONSTRUCTED_ELIGIBLE_SECURITY_TYPES: tuple[str, ...] = (*ELIGIBLE_SECURITY_TYPES, "common_unverified")
 
+# Limited-partnership equity units (MLP "Common Units representing Limited Partner
+# Interests", "L.P. Limited Partnership Units", "Depositary Units representing Limited
+# Partner Interests"): LP / limited-partner evidence plus a UNIT(S) word, with no SPAC
+# marker. Checked after fund and preferred (so "Preferred Limited Partnership Units" stays
+# preferred) and before the warrant/right/unit exclusions (so an MLP's common units are
+# not excluded as SPAC-style units).
+LP_EQUITY_UNITS_PATTERN: re.Pattern[str] = re.compile(
+    r"^(?!.*(?:EACH CONSISTING OF|ONE SHARE|\bWARRANTS?\b|\bRIGHTS?\b|\bACQUISITION\b|\bSPAC\b))"
+    r"(?=.*(?:\bL\.?P\.?\b|LIMITED PARTNERSHIP|LIMITED PARTNER\b))"
+    r".*\bUNITS?\b"
+)
+
 # Ordered classification table; first match wins. Every exclusion (ETN, fund /
-# closed-end fund, preferred, warrant, right, unit, note) precedes every eligible type,
-# so an exclusion can never be masked by an eligible pattern ("XYZ Fund LP" is a fund,
-# a preferred ADS is a preferred, a partnership *unit* is a unit).
+# closed-end fund, preferred, warrant, right, unit, note) precedes the eligible types
+# ADR/REIT/LP, so an exclusion can never be masked by an eligible pattern ("XYZ Fund LP"
+# is a fund, a preferred ADS or preferred LP unit is a preferred). The one eligible entry
+# ahead of the unit exclusion is LP equity units (see LP_EQUITY_UNITS_PATTERN).
 SECURITY_TYPE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("ETN", re.compile(r"\bETNS?\b|EXCHANGE[- ]TRADED NOTE")),
     ("fund", re.compile(r"\bETFS?\b|\bFUND\b|CLOSED[- ]END|\bINDEX TRUST\b|\bPORTFOLIO\b")),
@@ -132,6 +145,7 @@ SECURITY_TYPE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "preferred",
         re.compile(r"\bPREFERRED\b|\bPREFERENCE\b|\bPFD\b|(?<!AMERICAN )DEPOSITARY (?:SHARE|SHS|SHARES)"),
     ),
+    ("LP", LP_EQUITY_UNITS_PATTERN),
     ("warrant", re.compile(r"\bWARRANTS?\b|\bWTS?\b")),
     ("right", re.compile(r"\bRIGHTS?\b")),
     ("unit", re.compile(r"\bUNITS?\b")),
@@ -284,6 +298,7 @@ class UniverseBuildSummary:
 
     rows_by_universe: dict[str, int] = field(default_factory=dict)
     intervals_with_cik: dict[str, int] = field(default_factory=dict)
+    intervals_with_listing_evidence: dict[str, int] = field(default_factory=dict)
     dispositions: dict[str, dict[str, int]] = field(default_factory=dict)
     late_decisions: dict[str, int] = field(default_factory=dict)
     batch_count: int = 0
@@ -339,6 +354,14 @@ def _rules(options: UniverseUsListedOptions, variant: str = STRICT_VARIANT) -> d
         "identity_basis": "current_ticker_unverified",
         "availability_basis": "modeled_backcast",
         "listing_basis": "current_directory_backcast_by_latest_symbol",
+        "decile_basis": (
+            "market_daily_metrics.market_cap at valid_from, newest revision visible at "
+            "the bar-close cutoff, ranked (ntile 10) among the session's common, "
+            "common_unverified AND reconstructed_no_listing_evidence rows (delisted names "
+            "are ranked, not dropped; their instrument type is unverified), tie-broken by "
+            "security_id"
+        ),
+        "decile_population": "common_common_unverified_and_no_listing_evidence_with_market_cap",
         "backcast_anchor": (
             "the security traded under its latest symbol within lookback_days sessions "
             "of the current snapshot date; otherwise reconstructed_no_listing_evidence"
@@ -815,7 +838,12 @@ def build_universe_decision_sql(variant: str, *, has_security_filter: bool = Fal
              AND m.trade_date = k.trade_date
              AND m.source = $market_source
              AND m.available_at <= greatest(k.bar_at, k.session_cutoff)
-            WHERE k.disposition = 'eligible' AND k.security_type = 'common'
+            -- Decile population: every retained row not positively typed as a
+            -- non-common eligible type (ADR/REIT/LP) -- common, common_unverified and
+            -- the untyped no-listing-evidence (delisted) tail -- so size breakpoints are
+            -- not computed over current survivors only.
+            WHERE (k.disposition = 'eligible' AND k.security_type IN ('common', 'common_unverified'))
+               OR k.disposition = 'no_listing_evidence'
             GROUP BY k.security_id, k.trade_date
         ),
         decided AS (
@@ -996,13 +1024,17 @@ def _prepare_inputs(
     )
     # Reconstruction: the current row per symbol as of the knowledge cutoff, with the
     # sessions bracketing its snapshot date (latest on/before, earliest on/after) that
-    # the backcast anchor window is built around.
+    # the backcast anchor window is built around. A snapshot dated before the first
+    # session gets floor 0; one dated after the last session (weekend/holiday footer, or
+    # a directory loaded before that day's bars) gets ceiling last_rank + 1 -- a virtual
+    # next session, never an overflow sentinel.
     con.execute(
         """
         CREATE OR REPLACE TEMP TABLE _uul_dir_current AS
         SELECT r.symbol, r.as_of_date, r.security_type, r.exchange_code,
                coalesce(f.session_rank, 0) AS snapshot_floor_rank,
-               coalesce(c.session_rank, 9223372036854775807) AS snapshot_ceil_rank
+               coalesce(c.session_rank,
+                        (SELECT coalesce(max(session_rank), 0) FROM _uul_sessions) + 1) AS snapshot_ceil_rank
         FROM (SELECT * FROM _uul_dir_rows WHERE pref_rank = 1) r
         ASOF LEFT JOIN _uul_sessions f ON r.as_of_date >= f.trade_date
         ASOF LEFT JOIN _uul_sessions c ON c.trade_date >= r.as_of_date
@@ -1297,11 +1329,13 @@ def build_universe_us_listed(
         with store.transaction():
             for variant, universe_id in variants:
                 summary.rows_by_universe[universe_id] = _write_variant(store, options, variant, universe_id)
-                summary.intervals_with_cik[universe_id] = int(
-                    con.execute(
-                        "SELECT count(*) FROM _uul_intervals WHERE universe_id = ? AND has_cik", [universe_id]
-                    ).fetchone()[0]
-                )
+                with_cik, with_listing = con.execute(
+                    "SELECT count(*) FILTER (WHERE has_cik), count(*) FILTER (WHERE reason <> ?) "
+                    "FROM _uul_intervals WHERE universe_id = ?",
+                    [REASON_RECONSTRUCTED_NO_LISTING_EVIDENCE, universe_id],
+                ).fetchone()
+                summary.intervals_with_cik[universe_id] = int(with_cik)
+                summary.intervals_with_listing_evidence[universe_id] = int(with_listing)
         summary.tick("write", started)
     finally:
         _drop_temp_tables(con)
@@ -1311,12 +1345,20 @@ def build_universe_us_listed(
     for variant, universe_id in variants:
         rows = summary.rows_by_universe.get(universe_id, 0)
         with_cik = summary.intervals_with_cik.get(universe_id, 0)
+        with_listing = summary.intervals_with_listing_evidence.get(universe_id, 0)
+        # A reconstruction with no directory rows visible at the knowledge cutoff, or
+        # with no interval anchored to listing evidence, is every traded instrument typed
+        # 'unknown' -- rows exist, but it is not a usable research universe: warn.
+        healthy = rows > 0 and (
+            variant == STRICT_VARIANT
+            or (with_listing > 0 and int(summary.diagnostics.get("directory_rows_visible", 0) or 0) > 0)
+        )
         quality_check(
             store,
             dataset_id="universe_us_listed",
             table_name="universe_us_listed_membership",
             check_name="rows_loaded" if variant == STRICT_VARIANT else "rows_loaded_reconstructed",
-            status="passed" if rows > 0 else "warning",
+            status="passed" if healthy else "warning",
             observed_value=float(rows),
             threshold_value=1.0,
             details={
@@ -1325,6 +1367,8 @@ def build_universe_us_listed(
                 "intervals": rows,
                 "intervals_with_cik": with_cik,
                 "intervals_without_cik": rows - with_cik,
+                "intervals_with_listing_evidence": with_listing,
+                "intervals_without_listing_evidence": rows - with_listing,
                 "decision_dispositions": summary.dispositions.get(variant, {}),
                 "late_known_decisions": summary.late_decisions.get(variant, 0),
                 "bar_rows": summary.bar_rows,
