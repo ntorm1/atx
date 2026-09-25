@@ -361,3 +361,50 @@ Whole alpha executable (`atx-engine-alpha-tests.exe --gtest_brief=1`):
 ```
 Golden digests: no new in-lane change (the real-panel digest was already "not measured in lane";
 row 3(b) above adds this pass's gap-dividend fix to the defects G0 ties to it).
+
+## Post-merge sync (final sync before orchestrator merge)
+
+Head before sync: `531f73c57732a86400d087379d86b92e458b0b7a` (feat/w0-d0).
+`feat/w0-integration` head at sync time: `85242e69bc9918143c69cda5687ca810bf7560a1`.
+`git -C C:\atx-wt\pool-4 merge-base --is-ancestor feat/w0-integration HEAD` failed (exit 1) —
+integration had moved, so a merge was required.
+
+```
+git -C C:\atx-wt\pool-4 status --porcelain                              -> clean (no MERGE_HEAD)
+git -C C:\atx-wt\pool-4 merge --no-ff feat/w0-integration -m "w0-d0: merge feat/w0-integration" \
+    -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"   exit=0
+```
+Merge was clean — no conflicts (strategy 'ort'), 35 files changed, none inside W0-D0-owned files
+(the incoming diff was risk/engine/optimizer + W0 harness/docs files only; no `data/*` or
+`alpha/augment.hpp` touched).
+
+Rebuild (RAM checked >= 2.0 GB free before each build, `CMAKE_BUILD_PARALLEL_LEVEL=2`; test
+groups already `data;alpha` in `build-equity\CMakeCache.txt`, no reconfigure needed):
+```
+build -Preset equity-dev atx-engine-data-tests    exit=0
+build -Preset equity-dev atx-engine-alpha-tests   exit=0
+```
+
+Anchored suites (`-Ctest -Preset equity-dev -R '^<Suite>'`), all exit 0:
+```
+^DataLevelBasis_               7/7
+^DataFinraLag_                 4/4
+^DataAdjustGap_                7/7
+^DataAlignEvent_               7/7
+^DataCorpActRebase_            5/5
+^DataContextAsOf_              3/3
+^DataHistoryPanelFuturePerturb_ 2/2
+```
+
+Whole owning executables (`--gtest_brief=1`):
+```
+atx-engine-data-tests.exe   [PASSED] 238 tests, [SKIPPED] 14 (real-data-fixture guards:
+    ATX_DATA_DIR / security_master.parquet / ORATS partition not present in this pool —
+    pre-existing skip condition, not caused by the merge), 0 failed, exit=0
+atx-engine-alpha-tests.exe  [PASSED] 678 tests, 0 failed, exit=0
+```
+
+No merged code touched W0-D0-owned files or the acceptance/defect tables above; no fixes were
+required post-merge. Tree clean, report committed on `feat/w0-d0`.
+
+Head after sync (commit that includes this block): see commit below.
