@@ -5,9 +5,17 @@ Examples (heavy slot, pinned export, warehouse attached read-only)::
 
     python scripts/research_evaluate.py run --run-id eval_2026_09_rr4 \
         --feature-version <reconstructed sha> --feature-version <strict sha> \
-        --label-cutoff 2026-09-20T22:00:00Z --split-file seeds/research_qualification_policy.json
+        --label-cutoff 2026-09-20T22:00:00Z --policy src/atx_db/seeds/research_qualification_policy.json
 
     python scripts/research_evaluate.py verify --run-id eval_2026_09_rr4
+
+``--policy`` builds the spec from a frozen R4 qualification policy (v3+) through
+``qualification.evaluation_spec_kwargs``: split, horizons, subperiods, the name and
+formation thresholds and ``verify_panels`` come from the policy, and the policy file's
+byte hash is recorded as the run's ``policy_sha256``. It is the qualifying (RR4) form: R4
+refuses a run whose sealed spec differs from its policy. The flags the policy pins
+(``--split-file``, ``--allow-unsplit``, ``--horizons``, ``--min-names``,
+``--min-formations``, ``--skip-panel-validation``) cannot be combined with it.
 
 ``run`` refuses to start without a frozen split (RX7) unless ``--allow-unsplit`` marks the
 run as exploratory (recorded as a blocker). The family is the R1a catalog's expected
@@ -27,6 +35,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -38,6 +47,9 @@ from atx_db.research.evaluation import (
     verify_evaluation_run,
 )
 from atx_db.research.store import ResearchStore
+
+DEFAULT_MIN_NAMES = 200
+DEFAULT_MIN_FORMATIONS = 36
 
 
 def _utc(value: str) -> dt.datetime:
@@ -62,19 +74,52 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--feature-version", action="append", default=[],
                         help="R2b feature version; pass one per basis (strict is always attempted)")
     parser.add_argument("--label-cutoff", type=_utc, help="observation vintage of the labels (UTC)")
-    parser.add_argument("--split-file", type=Path, help="frozen split JSON (or a policy JSON with a 'split')")
-    parser.add_argument("--allow-unsplit", action="store_true", help="exploratory run without a frozen split")
+    parser.add_argument("--policy", type=Path, default=None,
+                        help="frozen R4 qualification policy (v3+): the spec values it pins come from it")
+    pinned = parser.add_argument_group("spec values a --policy pins (not allowed with --policy)")
+    pinned.add_argument("--split-file", type=Path, help="frozen split JSON (or a policy JSON with a 'split')")
+    pinned.add_argument("--allow-unsplit", action="store_true", help="exploratory run without a frozen split")
+    pinned.add_argument("--horizons", type=int, nargs="+", default=None,
+                        help=f"default {' '.join(map(str, DEFAULT_HORIZONS))}")
+    pinned.add_argument("--min-names", type=int, default=None, help=f"default {DEFAULT_MIN_NAMES}")
+    pinned.add_argument("--min-formations", type=int, default=None, help=f"default {DEFAULT_MIN_FORMATIONS}")
+    pinned.add_argument("--skip-panel-validation", action="store_true",
+                        help="trust the R2a panel seal and the R2b version seal without running their validators")
     parser.add_argument("--features", type=_names, default=None, help="comma list; default: every feature")
     parser.add_argument("--variants", type=_names, default=None, help="comma list; default: every variant")
-    parser.add_argument("--horizons", type=int, nargs="+", default=list(DEFAULT_HORIZONS))
-    parser.add_argument("--min-names", type=int, default=200)
-    parser.add_argument("--min-formations", type=int, default=36)
     parser.add_argument("--bootstrap-resamples", type=int, default=1999)
     parser.add_argument("--no-label-diagnostics", action="store_true")
-    parser.add_argument("--skip-panel-validation", action="store_true",
-                        help="trust the R2a panel seal and the R2b version seal without running their validators")
     parser.add_argument("--resume", action="store_true", help="continue a building/failed run with the same spec")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.policy is not None:
+        given = [flag for flag, value in (("--split-file", args.split_file), ("--allow-unsplit", args.allow_unsplit),
+                                          ("--horizons", args.horizons), ("--min-names", args.min_names),
+                                          ("--min-formations", args.min_formations),
+                                          ("--skip-panel-validation", args.skip_panel_validation))
+                 if value not in (None, False)]
+        if given:
+            parser.error(f"--policy pins these spec values; drop {', '.join(given)}")
+    return args
+
+
+def build_spec(args: argparse.Namespace) -> EvaluationSpec:
+    """The run's EvaluationSpec: from the policy (``evaluation_spec_kwargs``) or from the flags."""
+    common: dict[str, Any] = {
+        "run_id": args.run_id, "feature_versions": tuple(args.feature_version), "label_cutoff": args.label_cutoff,
+        "features": args.features, "variants": args.variants, "bootstrap_resamples": args.bootstrap_resamples,
+        "label_diagnostics": not args.no_label_diagnostics}
+    if args.policy is not None:
+        from atx_db.research.qualification import evaluation_spec_kwargs, load_policy
+
+        return EvaluationSpec(**common, **evaluation_spec_kwargs(load_policy(args.policy)))
+    min_names = DEFAULT_MIN_NAMES if args.min_names is None else args.min_names
+    return EvaluationSpec(
+        **common, horizons_months=tuple(args.horizons or DEFAULT_HORIZONS),
+        split=None if args.split_file is None else load_frozen_split(args.split_file),
+        policy_sha256=None if args.split_file is None else hashlib.sha256(args.split_file.read_bytes()).hexdigest(),
+        allow_unsplit=args.allow_unsplit, min_names=min_names, fm_min_obs=min_names,
+        min_formations=DEFAULT_MIN_FORMATIONS if args.min_formations is None else args.min_formations,
+        verify_panels=not args.skip_panel_validation)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -89,15 +134,7 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("run needs at least one --feature-version")
         if args.label_cutoff is None:
             raise SystemExit("run needs --label-cutoff (the observation vintage of the labels)")
-        spec = EvaluationSpec(
-            run_id=args.run_id, feature_versions=tuple(args.feature_version), label_cutoff=args.label_cutoff,
-            horizons_months=tuple(args.horizons), features=args.features, variants=args.variants,
-            split=None if args.split_file is None else load_frozen_split(args.split_file),
-            policy_sha256=None if args.split_file is None else hashlib.sha256(args.split_file.read_bytes()).hexdigest(),
-            allow_unsplit=args.allow_unsplit, min_names=args.min_names, fm_min_obs=args.min_names,
-            min_formations=args.min_formations, bootstrap_resamples=args.bootstrap_resamples,
-            label_diagnostics=not args.no_label_diagnostics, verify_panels=not args.skip_panel_validation)
-        result = run_evaluation(store, spec, resume=args.resume)
+        result = run_evaluation(store, build_spec(args), resume=args.resume)
         print(json.dumps({"run_id": result.run_id, "status": result.status, "cells": result.cells,
                           "results_sha256": result.results_sha256, "inputs_sha256": result.inputs_sha256,
                           "family_complete": result.family_complete, "family": result.family,
