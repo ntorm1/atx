@@ -159,3 +159,48 @@ These are the measured lines from this run, after the merge:
   - `StageRunMegabook` and the e2e tests pass through `run_all`.
 - [x] The report's evidence matches its claims, apart from the stale numbers in finding 4.
   The discover geometry mirrors `factory::mine_into_oos` and `eval::reserve_lockbox`.
+
+## Re-review 1
+
+Reviewer: a fresh fix-only re-reviewer. Lane head `5559417ccd88b420b067d5b12df3739747585cfe`. Fix range `172038881264d02299f1031fb5cb5e4eb3451c67..HEAD` (`8398d536` review, `5559417c` fix pass 1).
+
+**Verdict: APPROVE.** All four minor findings are fixed. The fixes introduce no regression, and no test was weakened.
+
+### Findings
+
+- **F1 (the participation cap never binds end to end): FIXED.**
+  - The new test `ImplOptimizePit.BindingParticipationCapIsPitPerRebalance` runs at NAV 2e6 with cap 0.05, and holds the diagonal lens at `PerStepPitV2` in both runs, so only `ParticipationAdvRule` differs.
+  - The test proves the cap binds in two ways. It asserts `bound_cells > 0`: 13 past (step, name) cells sit on their per-rebalance box, where box < name_cap. It also asserts `capped_steps > 0`: 14/14 past books differ from the slack-cap run.
+  - Measured by me: `TrailingPitPerRebalanceV2 14/14, LastDateV1 0/14 (diag PerStepPitV2 in both)`. The V1 failure now comes from `ParticipationAdvRule::LastDateV1` alone.
+  - The report records the solver non-convergence at other binding NAVs as a pre-existing limit.
+- **F2 (library_period_axis places the holdout by raw index): FIXED.**
+  - `library_period_axis(lib_dir, lib, deploy_n_dates, deploy_session_keys)` now locates the recorded holdout on the deploy panel.
+  - Keyed case: it finds `begin_key` in the deploy keys and requires the deploy key at b+len-1 to equal `last_key`. It then re-maps the holdout to b.
+  - Unkeyed case: it requires the deploy panel's `n_dates` to equal the recorded `n_dates`.
+  - Every other case fails open: mixed axes, a key axis whose length is not n_dates, a missing first session, or an interior gap.
+  - Both production call sites pass the research panel's `D` and `identity->session_keys`: `stage_optimize.cpp:523` and `stage_metabook.cpp:729`. Discover records the same panel's keys (`stage_discover.cpp:1085`), so on the `run_all` path the axis is unchanged.
+  - The new test `ImplDeadAlpha.DeployPanelMustMatchTheRecordedHoldout` asserts each fail-open case. Measured: `key-mapped dead sets match 65/65 dates; raw-index placement reads the future on 5 dates`.
+  - The two existing call-site edits in `w0i0a_dead_alpha_test.cpp` only adapt to the new signature (60, unkeyed = the recorded panel). Their assertions are unchanged.
+  - The wire suites `AtxImplOptimizeDeadAlphaWire*` and `MetabookDeadAlphaWire*` pass.
+- **F3 (combo weights double-counted for duplicate-DSL members): FIXED.**
+  - `member_combo_weights` gives each of the k library members that share a sha the weight W(sha)/k.
+  - The count k runs over all `lib.n_alphas()`. That is the same enumeration `stage_combine` uses to build a library-backed combo (`stage_combine.cpp:1257-1269`) and `assign_sleeves` partitions, so the per-sha totals add back to W exactly.
+  - A member with no weight is still refused with the same message.
+  - The new test `ImplMetabookUsesCombo.DuplicateDslMembersSplitTheirComboWeight` measured `w=0.25,0.25 on rank(close) ... 24/24`. The report's teeth check (the pre-fix weighting gives 1/24) is consistent: 2×W changes the blend.
+- **F4 (stale pre-merge numbers in the report): FIXED.**
+  - The acceptance and defect tables now quote the post-merge values, and the verbatim block is labelled PRE-MERGE.
+  - My run reproduces every refreshed value exactly: V1 leak 0.0632524; OOS Sharpes 0.663941 and 2.413094 (mean 1.538518); `factory_digest` 78bca49224a4678f; I-07 V1 gap 0.283872; 3-sleeve V2 gap 0.0420907.
+
+### Regression and test-integrity check
+
+- The diff touches only owned sources (`dead_alpha_wire.hpp`, `stage_optimize.cpp`, `stage_metabook.cpp`), lane tests and SDD docs.
+- The test changes are additive: three new tests, plus two call-site signature adaptations. No assertion was removed or loosened. The new std usage has its includes (`<algorithm>`, `<span>`, `<optional>`).
+- Build: `atx-build.ps1 build -Preset equity-dev atx-impl-tests atx-shm-worker`, with `CMAKE_BUILD_PARALLEL_LEVEL=2` and 3.45 GB free. Exit 0.
+- Lane and wire suites: `ImplNestedSplits`, `ImplCombineNoHoldoutRead`, `ImplOptimizePit`, `ImplDeadAlpha`, `ImplMetabookUsesCombo`, `AtxImplOptimizeDeadAlphaWire*` and `MetabookDeadAlphaWire*` all pass: 33/33 PASSED.
+- Whole `atx-impl-tests.exe`, run from the ctest working directory: 560 ran, 551 passed, 6 skipped, 3 failed.
+  - The 3 failures are the known out-of-scope ones: `FundamentalZoo.FixtureParsesTypechecksAndEvaluates` (W0-FIXUP), and `StageEquityIc.TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput` and `EquityMineCli.SmoothWindowsAddDecayedVariantsAsTrials` (I0b).
+  - This set is identical to the lane's pre-review sync, so the fixes add no new failure.
+
+### New findings
+
+None.
