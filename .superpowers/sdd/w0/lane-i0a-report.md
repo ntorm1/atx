@@ -256,3 +256,46 @@ format change, not a digest.
 - W0-I0a: `ConstrainedQpSolver`'s augmented path hits its iteration budget on tightly binding
   participation caps, with either reference rule. Use cap 0.05 at a NAV of 3e5 on synthetic
   fixtures.
+
+## Post-merge sync
+
+- Merge: `git merge --no-ff feat/w0-integration` — clean (ORT strategy), no conflicts. The merge
+  touched only `atx-engine/{include,src,tests}/**` (alpha/factory/eval/combine kernels from lanes
+  A0/E0a) and `.superpowers/sdd/w0/*` progress/report files; no file in this lane's owned scope
+  (`atx-impl/src/stage_discover.cpp`, `stage_run.cpp`, `stage_combine.{hpp,cpp}`,
+  `stage_optimize.cpp`, `stage_metabook.{hpp,cpp}`, `dead_alpha_wire.hpp`, `diag_risk.hpp`,
+  `stage_report.cpp`) was touched.
+- Head after merge: `2ec4e7a1e2a2c031f0db6df04eb9893a6a440f56`.
+- Build: `Set-Location C:\atx-wt\pool-10; $env:CMAKE_BUILD_PARALLEL_LEVEL='2'; powershell -NoProfile -File scripts\atx-build.ps1 build -Preset equity-dev atx-impl-tests atx-shm-worker`
+  — exit 0 (134/134; reconfigure ran because of a glob mismatch, no `CMakeLists.txt` edits made).
+- Anchored suites (`-Ctest -Preset equity-dev -R '^<Suite>'`), all green:
+  - `ImplNestedSplits` 7/7 passed (10.76s)
+  - `ImplCombineNoHoldoutRead` 5/5 passed (11.38s)
+  - `ImplOptimizePit` 5/5 passed (12.74s)
+  - `ImplDeadAlpha` 3/3 passed (1.13s)
+  - `ImplMetabookUsesCombo` 4/4 passed (2.31s)
+  - Total: 24/24 lane-suite tests passed.
+- Whole owning executable (`build-equity\bin\atx-impl-tests.exe --gtest_brief=1`, `atx-shm-worker`
+  already built alongside): exit 1. 557 tests ran, 548 passed, 5 skipped, **4 failed**:
+  - `TrialLedgerRepository.ExistingCp14Ledger_StillVerifies` — pre-existing CRLF issue, already
+    recorded above as not in scope.
+  - `StageEquityIc.TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput` — NEW after this
+    merge. `stage_equity_ic_test.cpp` is not in this lane's owned scope.
+  - `EquityMineCli.SmoothWindowsAddDecayedVariantsAsTrials` — NEW after this merge (`n_raw` 9 vs
+    expected 12). `stage_equity_mine_cli_test.cpp` is not in this lane's owned scope; the test's
+    expectation was itself re-pinned by `a28a6c1e` ("w0-i0b: re-pin mine smooth-window trial
+    count after A0 average rank ties (A-01)"), a commit that reached this tree only through this
+    merge, and it is still red against the current `atx-engine` kernels.
+  - `FundamentalZoo.FixtureParsesTypechecksAndEvaluates` — NEW after this merge (`acc_ts produced
+    no finite cell`). `fundamental_zoo_test.cpp` is not in this lane's owned scope; the failure
+    traces to `atx-engine/include/atx/engine/alpha/ts_ops.hpp`, which the merge changed by +167/-
+    lines (lane A0).
+  - Verified these 3 are new, not pre-existing: `a28a6c1e` (which touches the equity-mine test's
+    expectation) does not merge-base-ancestor this lane's pre-merge head
+    (`e488ac16`), so it — and the `ts_ops.hpp`/`cross_section_ic.cpp` kernel changes feeding the
+    other two — arrived only via `feat/w0-integration` in this sync.
+- Disposition: all 3 new failures are outside this lane's owned-files scope (RULES §2 "Owned
+  files only"; brief "Files forbidden: everything else"), so per RULES §3 they are reported, not
+  fixed here. Lane suites (this lane's actual acceptance surface) stay 24/24 green; the whole-
+  executable "must stay green" bar is not met because of out-of-scope regressions from lanes
+  A0/E0a/I0b landing on `feat/w0-integration`.
