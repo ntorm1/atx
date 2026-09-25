@@ -177,7 +177,7 @@ Describe 'oracle targeted gate production adapter' {
     $script:captured.Program | Should Be 'powershell'
     ($script:captured.Arguments -join ' ') | Should Match '-Ctest -R \^OracleBench\.\*\$ --no-tests=error'
     $script:captured.RequiredExecutables[0] | Should Be (Join-Path $script:OracleRepoRoot 'build\bin\atx-vol-tests.exe')
-    ($script:captured.PrepareArguments -join ' ') | Should Match 'build atx-vol-tests atx-vol-oracle-bench --parallel 2$'
+    ($script:captured.PrepareArguments -join ' ') | Should Match '-Jobs 2 build atx-vol-tests atx-vol-oracle-bench$'
     $result.schema_version | Should Be 1
     $result.status | Should Be 'PASS'
     $result.command_id | Should Be 'mode_a_targeted_tests'
@@ -274,14 +274,14 @@ Describe 'oracle targeted gate production adapter' {
   It 'binds Stage 3 to one isolated test target, one closed smoke+tune sweep, and cached exact-SHA floor verification' {
     $identity = Get-OracleGitIdentity
     $tests = Get-OracleTargetedGateSpec 'convention_tests' $identity
-    ($tests.PrepareArguments -join ' ') | Should Match 'build atx-vol-oracle-convention-tests --parallel 2$'
+    ($tests.PrepareArguments -join ' ') | Should Match '-Jobs 2 build atx-vol-oracle-convention-tests$'
     ($tests.Arguments -join ' ') | Should Match '-Ctest -R \^OracleConvention\\\. --no-tests=error'
     # Same source-of-truth pin as the OracleBench registry above.
     (Test-OracleExactStringSet @($tests.ExpectedTestIds) $script:OracleConventionGtestIds) | Should Be $true
     $tests.ExpectedTestIds.Count | Should Be $script:OracleConventionGtestIds.Count
     @($tests.ExpectedTestIds | Where-Object { $_ -notmatch '^OracleConvention\.[A-Za-z0-9_]+$' }).Count | Should Be 0
     $sweep = Get-OracleTargetedGateSpec 'mode_a_smoke_tune' $identity
-    ($sweep.PrepareArguments -join ' ') | Should Match 'build atx-vol-oracle-bench --parallel 2$'
+    ($sweep.PrepareArguments -join ' ') | Should Match '-Jobs 2 build atx-vol-oracle-bench$'
     ($sweep.Arguments -join ' ') | Should Match '--convention-sweep --smoke .+smoke\.json --tune .+tune\.json'
     ($sweep.Arguments -join ' ') | Should Not Match 'holdout'
     $floor = Get-OracleTargetedGateSpec 'residual_floor' $identity
@@ -456,7 +456,7 @@ Describe 'oracle targeted gate production adapter' {
     $measure = Get-OracleTargetedGateSpec 'convention_speed_measure' $identity
     $measure.Kind | Should Be 'oracle_speed'
     $measure.ExpectedFloorPath | Should Be ''
-    ($measure.PrepareArguments -join ' ') | Should Match '-Preset rel-avx2 build atx-vol-oracle-bench --parallel 2$'
+    ($measure.PrepareArguments -join ' ') | Should Match '-Preset rel-avx2 -Jobs 2 build atx-vol-oracle-bench$'
     ($measure.Arguments -join ' ') | Should Not Match 'holdout'
     $pinned = Get-OracleTargetedGateSpec 'convention_speed' $identity
     $pinned.ExpectedFloorPath | Should Match 'iter-000\.json$'
