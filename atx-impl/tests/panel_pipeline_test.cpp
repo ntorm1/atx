@@ -182,6 +182,8 @@ TEST_F(PanelPipeline, WeeklyBooksCarryExactDatesAndReportRejectsScheduleMutation
     report.panel = cfg.panel;
     report.books = cfg.books_out;
     report.report_out = path("report");
+    // W0-I0b / I-11: report costs are mandatory; frictionless is an explicit choice here.
+    report.set_flags = {"replay-trade-bps", "replay-annual-borrow-bps"};
     auto result = impl::run_report(report);
     ASSERT_TRUE(result.has_value()) << result.error().message();
     std::ofstream corrupt(path("books.bin.meta.txt"), std::ios::app);

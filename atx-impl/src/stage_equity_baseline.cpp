@@ -69,7 +69,8 @@ Result<Profile> resolve(const RunConfig &cfg) {
     const std::set<std::string> allowed{"panel", "out", "evaluation-start", "evaluation-end",
         "max-working-bytes", "report-aum", "replay-execution-delay", "replay-trade-bps",
         "replay-annual-borrow-bps", "replay-day-basis", "quiet", "digest-only", "config",
-        "min-dollar-adv", "dollar-adv-window"};
+        "min-dollar-adv", "dollar-adv-window", "membership", "membership-rule",
+        "allow-same-close"};
     for (const auto &flag : cfg.set_flags) {
         if (!allowed.contains(flag)) {
             return Err(ErrorCode::InvalidArgument, "equity baseline: unsupported flag --" + flag);
@@ -123,6 +124,15 @@ Result<Profile> resolve(const RunConfig &cfg) {
     profile.replay.replay_annual_borrow_bps = cfg.set_flags.contains("replay-annual-borrow-bps") ||
         cfg.replay_annual_borrow_bps != 0 ? cfg.replay_annual_borrow_bps : 365;
     profile.replay.replay_day_basis = cfg.replay_day_basis;
+    // B-02: a same-close fill must be requested explicitly.
+    profile.replay.allow_same_close = cfg.allow_same_close;
+    if (profile.replay.replay_execution_delay < 1 && !cfg.allow_same_close) {
+        return Err(ErrorCode::InvalidArgument,
+                   "equity baseline: execution delay 0 fills at the signal close; pass "
+                   "--allow-same-close to request it explicitly");
+    }
+    ATX_TRY(profile.views.membership_rule,
+            parse_equity_membership_rule(cfg.equity_membership_rule));
     // Deliberately supplied zeros and profile defaults are both explicit at the report seam.
     profile.replay.set_flags = {"replay-trade-bps", "replay-annual-borrow-bps"};
     if (!std::isfinite(profile.replay.report_aum) || profile.replay.report_aum <= 0 ||
@@ -211,6 +221,17 @@ Result<Json> write_text(const fs::path &directory, const std::string &name, std:
     fs::remove(partial, ec);
     if (ec) return Err(ErrorCode::IoError, "equity baseline: cannot remove published partial");
     return Ok(Json{{"filename", name}, {"sha256", sha}, {"size_bytes", number(text.size())}});
+}
+
+// W0-I0b / I-17: the manifest is published FIRST and `.pending` released LAST, so a
+// failure between the two leaves a directory that still advertises itself as
+// incomplete (a reader never sees "no .pending and no manifest").
+Status publish_manifest_then_release(const fs::path &directory, const Json &manifest) {
+    return publish_manifest_then_release_pending(directory, [&]() -> Status {
+        ATX_TRY(auto final_file, write_text(directory, "manifest.json", manifest.dump(2) + "\n"));
+        (void)final_file;
+        return Ok();
+    });
 }
 
 Result<std::string> read_small(const fs::path &path) {
@@ -353,6 +374,32 @@ Result<Inputs> make_inputs(const RunConfig &cfg, Profile &profile, Json &attempt
     profile.recipe["membership_mode"] = membership_mode;
     profile.recipe["replay"] = membership_mode
         ? "skipped-membership-context-signals-only-no-book-result" : "full-book-replay";
+    // D-12: a membership context's allow-list is the YEAR UNION of the cut; admission
+    // is re-derived AS OF each session from the same membership.bin (default rule).
+    const bool context_has_membership = context_recipe.contains("universe_membership_sha256");
+    ATX_TRY(auto membership, resolve_equity_membership(context_has_membership,
+        context_has_membership ? context_recipe.at("universe_membership_sha256").get<std::string>()
+                               : std::string(),
+        context_has_membership ? context_recipe.at("universe_cut").get<std::string>()
+                               : std::string(),
+        profile.views.membership_rule, cfg.equity_membership));
+    if (context_has_membership) {
+        // Additive: a context without a restriction keeps a byte-identical recipe.
+        const bool asof = membership.has_value();
+        profile.recipe["membership_mask"] = Json{
+            {"rule", equity_membership_rule_label(profile.views.membership_rule)},
+            {"membership_sha256", context_recipe.at("universe_membership_sha256")},
+            {"cut", context_recipe.at("universe_cut")},
+            {"rebalances", asof ? membership->rebalances : 0U},
+            {"semantics", asof
+                ? "admitted iff the last rebalance effective on or before the session lists the "
+                  "security (as-of); the context's year-union allow-list is intersected with it"
+                : "pre-W0 year-union allow-list (D-12 look-ahead, reproduced deliberately)"}};
+        profile.recipe["decision_eligibility"] = asof
+            ? "inherited-context-mask-intersect-as-of-membership-intersect-common-readiness"
+            : "inherited-context-year-union-mask-intersect-common-readiness";
+        if (asof) profile.views.membership = std::move(membership->asof);
+    }
     attempt["recipe"] = profile.recipe;
     ATX_TRY(auto request, write_text(directory, "request.json", attempt.dump(2) + "\n"));
     files.push_back(std::move(request));
@@ -439,6 +486,7 @@ Result<Inputs> make_inputs(const RunConfig &cfg, Profile &profile, Json &attempt
              {"ready_evaluation_cells", view.ready_evaluation_cells},
              {"admitted_evaluation_cells", view.admitted_evaluation_cells},
              {"liquidity_floor_rejected_cells", view.liquidity_floor_rejected_cells},
+             {"membership_rejected_cells", view.membership_rejected_cells},
              {"empty_evaluation_rows", empty_rows}, {"minimum_admitted_names", minimum_admitted}};
     inputs.memory =
         Json{{"estimated_peak_bytes", number(estimated_peak)}, {"context_reader_peak_bytes", number(read_peak)},
@@ -472,12 +520,7 @@ Result<StageResult> commit_signals_only(const Inputs &inputs, const Profile &pro
             Json{{"role", "combo"}, {"sha256", inputs.combo.artifact_id}}})}, {"files", files}};
     ATX_TRY(auto baseline_id, atx::core::sha256_hex(std::string(kDomain) + manifest.dump()));
     manifest["baseline_id"] = baseline_id;
-    std::error_code ec;
-    if (!fs::remove(directory / ".pending", ec) || ec) {
-        return Err(ErrorCode::IoError, "equity baseline: cannot release pending marker");
-    }
-    ATX_TRY(auto final_file, write_text(directory, "manifest.json", manifest.dump(2) + "\n"));
-    (void)final_file;
+    ATX_TRY_VOID(publish_manifest_then_release(directory, manifest));
     StageResult result;
     result.digest = fnv1a64(baseline_id.data(), baseline_id.size());
     result.kvs.emplace_back("baseline_id", baseline_id);
@@ -588,12 +631,7 @@ Result<StageResult> execute(const RunConfig &cfg, Profile &profile, Json &attemp
             Json{{"role", "report"}, {"sha256", report_id}}})}, {"files", files}};
     ATX_TRY(auto baseline_id, atx::core::sha256_hex(std::string(kDomain) + manifest.dump()));
     manifest["baseline_id"] = baseline_id;
-    std::error_code ec;
-    if (!fs::remove(directory / ".pending", ec) || ec) {
-        return Err(ErrorCode::IoError, "equity baseline: cannot release pending marker");
-    }
-    ATX_TRY(auto final_file, write_text(directory, "manifest.json", manifest.dump(2) + "\n"));
-    (void)final_file;
+    ATX_TRY_VOID(publish_manifest_then_release(directory, manifest));
     StageResult result = std::move(reported);
     result.digest = fnv1a64(baseline_id.data(), baseline_id.size());
     result.kvs.emplace_back("baseline_id", baseline_id);

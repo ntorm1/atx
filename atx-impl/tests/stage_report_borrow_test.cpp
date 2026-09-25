@@ -111,11 +111,14 @@ static atx::core::Result<std::string> make_books_panel(const fs::path &out, atx:
     return atx::core::Ok(out.string());
 }
 
+// B-03 (W0-B0): the book now sits at period 0 so it is HELD for one session
+// (period 0 -> 1). The pre-W0 fixture placed it at the final date, where it has
+// no forward window at all, yet was still charged a full flat borrow period.
 static void write_books_meta(const fs::path &books_path, atx::usize dates) {
     std::ofstream f(books_path.string() + ".meta.txt");
     f << "periods=1\n";
     f << "instruments=2\n";
-    f << "s=0 period=" << (dates - 1) << " turnover=0.5 cost_bps=0.0\n"; // cost_bps=0 isolates borrow
+    f << "s=0 period=" << (dates - 2) << " turnover=0.5 cost_bps=0.0\n"; // cost_bps=0 isolates borrow
 }
 
 struct RunResult {
@@ -157,7 +160,8 @@ static atx::core::Result<RunResult> run_and_parse(const std::string &research_pa
 // =============================================================================
 //  BorrowBpsSetProducesNonZeroSummaryFigure — --borrow-bps threaded through
 //  run_report produces a non-zero total_pnl_borrow kv/summary figure matching
-//  the closed-form short-notional debit exactly (0.5 short * 50 bps * 1e-4).
+//  the closed-form short-notional debit exactly (0.5 short * 2520 bps/yr * 1e-4 *
+//  1 session / 252; W0-B0 made the rate annual, accrued over the sessions held).
 // =============================================================================
 TEST(StageReportBorrow, BorrowBpsSetProducesNonZeroSummaryFigure) {
     Fixture fx{"on"};
@@ -168,11 +172,15 @@ TEST(StageReportBorrow, BorrowBpsSetProducesNonZeroSummaryFigure) {
     write_books_meta(fx.work_dir / "books.bin", 2U);
 
     const fs::path report_dir = fx.work_dir / "report";
-    auto rr = run_and_parse(*r_res, *r_bk, report_dir, /*borrow_bps=*/50.0);
+    // 2520 bps/yr (25.2 %) keeps the 1-session debit exact in the 6-decimal kv.
+    auto rr = run_and_parse(*r_res, *r_bk, report_dir, /*borrow_bps=*/2520.0);
     ASSERT_TRUE(rr.has_value()) << rr.error().message();
 
     ASSERT_TRUE(rr->has_total_pnl_borrow_kv) << "total_pnl_borrow missing from sr.kvs";
-    constexpr atx::f64 kExpected = 0.5 * 50.0 * 1e-4; // short notional * bps * 1e-4
+    // B-03 (W0-B0): --borrow-bps is an ANNUAL rate accrued over the sessions held
+    // (1 of 252 here): 0.5 * 2520 * 1e-4 / 252 = 0.0005. Pre-W0 charged the rate flat
+    // per rebalance (0.5 * bps * 1e-4) whatever the holding length.
+    constexpr atx::f64 kExpected = 0.5 * 2520.0 * 1e-4 * (1.0 / 252.0);
     EXPECT_NEAR(rr->total_pnl_borrow, kExpected, 1e-12)
         << "run_report's total_pnl_borrow diverged from the closed-form short-notional debit";
     EXPECT_GT(rr->total_pnl_borrow, 0.0);

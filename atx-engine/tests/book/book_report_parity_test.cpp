@@ -42,6 +42,7 @@ TEST(ReplayReportParity, OnePeriodPolicyReplayEqualsLegacyReport) {
   book::ReplayConfig cfg;
   cfg.initial_nav = 1.0;
   cfg.execution_delay_periods = 0;
+  cfg.allow_same_close = true; // B-02: same-close fills are an explicit opt-in.
   cfg.trade_bps = kTradeBps;
   const book::ReplayAllocationPolicy identity = [](const book::ReplayAllocationState &s)
     -> atx::core::Result<std::vector<atx::f64>> {
@@ -67,6 +68,7 @@ TEST(ReplayReportParity, OnePeriodParityHoldsThroughAFlatCostModel) {
   book::ReplayConfig cfg;
   cfg.initial_nav = 1.0;
   cfg.execution_delay_periods = 0;
+  cfg.allow_same_close = true; // B-02: same-close fills are an explicit opt-in.
   cfg.cost_model = &flat;
   const std::vector<atx::i64> keys{0, kDay};
   const std::vector<atx::usize> decisions{0};

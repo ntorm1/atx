@@ -13,8 +13,10 @@
 //   2. MASK     trading eligibility is the AS-OF point-in-time membership of the
 //               checkpoint 15 universe (membership.bin, cut top-N/band): a name is
 //               tradeable on session d only when the last rebalance effective on
-//               or before d lists it. Without a membership image the mask falls
-//               back to the context year-union (declared in the gate report).
+//               or before d lists it. W0-I0b / I-16: `--membership` is REQUIRED;
+//               the pre-W0 context year-union fallback (a within-year selection
+//               look-ahead) is reachable only by asking for it explicitly with
+//               `--membership-rule year-union-v1` (declared in the gate report).
 //   3. SEARCH   factory::SearchDriver (L3 multi-fidelity racing, semantic canon,
 //               output-fingerprint dedup) over the TRAIN span only, seeded by the
 //               WQ101 fixture + literature families + grammar-random genomes.
@@ -22,7 +24,10 @@
 //               window by one honest evaluator: delay-`delay` rank-weighted
 //               dollar-neutral long/short (gross 1), net of `cost_bps` per unit of
 //               one-way traded weight. The sign is fixed on TRAIN gross Sharpe.
-//               Every scored candidate is recorded in an eval::TrialRegistry.
+//               Every scored candidate is recorded in an eval::TrialRegistry with
+//               its window, IS flag and family/theme tags (E-16), and its train
+//               DSR is the cluster-N DSR of TrialRegistry::accounting() (E-01).
+//               `--delay 0` (same-close fills) needs --allow-same-close (B-02).
 //   5. FAMILY   the validation family = top `max_validate` by train net Sharpe,
 //               greedily de-duplicated by train-pnl correlation (SketchIndex).
 //   6. GATE     the family is evaluated ONCE on the validation window; one-sided
@@ -228,6 +233,12 @@ struct SeedExpr {
     std::string origin; // "wq101:<id>", "lit:<name>", "extra"
 };
 
+// E-16 registry tags from a candidate origin. family = the origin up to its first
+// ':' or '+' ("wq101", "lit", "search", "extra"); theme = the origin without any
+// "+decay<N>" smoothing suffix ("lit:momentum_12_1+decay5" -> "lit:momentum_12_1").
+[[nodiscard]] std::string trial_family_of(std::string_view origin);
+[[nodiscard]] std::string trial_theme_of(std::string_view origin);
+
 // One role's evaluation data. `panel` is borrowed for the call.
 struct MineData {
     const atx::engine::alpha::Panel *panel{nullptr};
@@ -236,6 +247,23 @@ struct MineData {
     // Optional prebuilt return guard for `panel` (empty: built per call).
     ReturnGuard guard{};
 };
+
+// W0-I0b (RULES §2): the versioned rule behind every row's report-only dsr_train.
+//   ClusterMcFloorV2 (default): the cluster-N DSR of TrialRegistry::accounting()
+//     (E-01 wiring, E0b note), falling back to SummaryRawNV2 when accounting is
+//     unavailable (the report names the reason).
+//   SummaryRawNV2: the registry-summary DSR with N = n_raw (no accounting).
+//   SummaryNEffV1: the pre-W0 rule, N = n_eff over the registry summary (E-01
+//     double discount), kept so pre-W0 dsr_train values can be re-derived.
+enum class TrainDsrRule : atx::u8 {
+    ClusterMcFloorV2 = 0,
+    SummaryRawNV2 = 1,
+    SummaryNEffV1 = 2,
+};
+
+// The stable label of a TrainDsrRule ("cluster-mc-floor-v2", "summary-raw-n-v2",
+// "summary-n-eff-v1"): the --dsr-rule spelling and the gate report's dsr_rule value.
+[[nodiscard]] std::string_view train_dsr_rule_label(TrainDsrRule rule) noexcept;
 
 struct MineConfig {
     bool run_search{true};
@@ -251,6 +279,7 @@ struct MineConfig {
     atx::engine::eval::BootstrapCfg boot{};
     GateMode gate{GateMode::By};
     atx::usize threads{1};
+    TrainDsrRule dsr_rule{TrainDsrRule::ClusterMcFloorV2};
 };
 
 struct CandidateRow {
@@ -290,11 +319,24 @@ struct MineOutcome {
     atx::usize search_fidelity_evals{};
     atx::usize search_fidelity_rejected{};
     atx::usize search_fingerprint_hits{};
+    // W0-I0b recording (E-16 / E-01 wiring). dsr_rule names the rule behind every
+    // row's dsr_train (train_dsr_rule_label): "cluster-mc-floor-v2" (the default,
+    // TrialRegistry::accounting()), "summary-raw-n-v2" (requested, or the default's
+    // fallback when accounting is unavailable, reason given) or "summary-n-eff-v1"
+    // (the pre-W0 rule, requested explicitly).
+    std::string dsr_rule;
+    std::string dsr_fallback_reason;
+    atx::usize dsr_clusters{};  // ONC clusters behind the cluster-N DSR (0 on fallback)
+    atx::f64 dsr_sr_star_mc{};  // Monte-Carlo E[max SR] under the estimated correlation
+    atx::engine::eval::TrialChainHead chain_head{}; // registry head after recording
 };
 
 // Steps 3-5 on the TRAIN span only (search, score, registry, family). The
 // Library must be the one every parse in the run uses and must outlive the
-// call. `registry` must be configured with pnl_len == train.window.size().
+// call. `registry` must be configured with pnl_len >= train.window.size(): its
+// calendar may extend past the train window (the stage uses train + validation,
+// E-16); train trials are recorded on the window [0, train.window.size() - 1] as
+// TrialSample::InSample with family / theme tags derived from the seed origin.
 // The validation span is not needed yet, so a caller can free the train span
 // before building it (memory bound on a shared 16 GB machine).
 [[nodiscard]] atx::core::Result<MineOutcome>

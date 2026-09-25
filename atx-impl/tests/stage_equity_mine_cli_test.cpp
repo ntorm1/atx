@@ -151,6 +151,9 @@ protected:
                 "--cost-bps", "1",
                 "--n-boot", "200",
                 "--threads", "2",
+                // W0-I0b / D-12: as-of membership is the default and needs an
+                // image; this fixture has none, so it opts into the legacy rule.
+                "--membership-rule", "year-union-v1",
                 "--out", out.string()};
     }
 
@@ -218,7 +221,12 @@ TEST_F(EquityMineCli, SmoothWindowsAddDecayedVariantsAsTrials) {
     const json g = json::parse(gf);
     EXPECT_EQ(g["counts"]["seeds"].get<int>(), 15);        // 5 base lines x (1 + 2 windows)
     EXPECT_EQ(g["counts"]["seeds_invalid"].get<int>(), 3); // the bad line in every form
-    EXPECT_EQ(g["trials"]["n_raw"].get<int>(), 12);        // 4 valid base seeds x 3 forms
+    // 4 valid base seeds x 3 forms = 12 scored candidates. W0-A0 / A-01 (average rank
+    // ties): the world's volume is a constant 1e6, so rank(volume) and its two decayed
+    // forms are all-tie cross-sections and now degenerate (ordinal ties used to break
+    // them by index into a spurious signal); they are never registered as trials.
+    EXPECT_EQ(g["counts"]["degenerate"].get<int>(), 3);
+    EXPECT_EQ(g["trials"]["n_raw"].get<int>(), 9);
     std::string o2, e2;
     auto bad = args;
     bad.back() = (root_ / "smooth_bad").string();
