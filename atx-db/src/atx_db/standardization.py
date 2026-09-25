@@ -522,6 +522,7 @@ def _apply_period_own_fiscal_labels(out: pd.DataFrame, inputs: pd.DataFrame) -> 
     import duckdb
 
     from ._standardization_set_based import (
+        FISCAL_YEAR_END_FORMS,
         create_fiscal_calendar_labels,
         fiscal_evidence_basis_sql,
         fiscal_period_label_sql,
@@ -535,22 +536,52 @@ def _apply_period_own_fiscal_labels(out: pd.DataFrame, inputs: pd.DataFrame) -> 
         values = inputs[column] if column in inputs.columns else pd.Series(pd.NaT, index=inputs.index)
         evidence[column] = pd.to_datetime(values, errors="coerce")
     evidence["has_value"] = inputs["value"].notna() if "value" in inputs.columns else False
+    # Filings on an annual-report form declare their fiscal year whatever fp their facts
+    # carry, exactly as fiscal_year_end_form_filings_sql() tells the SQL build (AF1-review
+    # N3). A frame without a form column declares years by fp tags only.
+    forms = inputs["form"] if "form" in inputs.columns else pd.Series(pd.NA, index=inputs.index)
+    form_filings = pd.DataFrame({
+        "security_id": evidence["security_id"],
+        "accession_number": evidence["accession_number"],
+        "form": forms.astype("string"),
+    })
+    annual_forms = ", ".join(f"'{form}'" for form in FISCAL_YEAR_END_FORMS)
+    annual_form_filings = f"""
+            SELECT DISTINCT CAST(security_id AS VARCHAR) AS security_id,
+                   CAST(accession_number AS VARCHAR) AS accession_number
+            FROM _pandas_form_filings_frame
+            WHERE security_id IS NOT NULL
+              AND accession_number IS NOT NULL
+              AND upper(trim(CAST(form AS VARCHAR))) IN ({annual_forms})"""
     # Classified by period geometry as _std_candidates_all is, not by the caller's basis
-    # (the legacy loader tags every duration fact 'annual').
+    # (a caller-built input frame may carry any basis tag).
     geometry_basis = fiscal_evidence_basis_sql(
         "(period_start IS NULL OR basis = 'instant')", "CAST(period_start AS DATE)", "CAST(period_end AS DATE)"
     )
+    period_starts = out["period_start"] if "period_start" in out.columns else pd.Series(pd.NaT, index=out.index)
     periods = pd.DataFrame({
         "_row": range(len(out)),
         "security_id": out["security_id"].astype("string"),
+        "period_start": pd.to_datetime(period_starts, errors="coerce"),
         "period_end": pd.to_datetime(out["period_end"], errors="coerce"),
         "basis": out["basis"].astype("string"),
         "upstream_source": out["upstream_source"].astype("string"),
     })
-    con = duckdb.connect(config={"threads": 1})
+    # The label's basis is the output period's own geometry too (AF1-review M3): a
+    # 3-month fiscal-Q4 row tagged 'annual' by its caller is labelled Q4, never FY.
+    # TTM and instant rows keep their basis; unclassifiable spans keep the caller's.
+    label_basis = (
+        "CASE WHEN basis IN ('instant', 'ttm') OR period_start IS NULL THEN CAST(basis AS VARCHAR) "
+        "ELSE coalesce("
+        + fiscal_evidence_basis_sql("false", "CAST(period_start AS DATE)", "CAST(period_end AS DATE)")
+        + ", CAST(basis AS VARCHAR)) END"
+    )
+    # A bounded session: this is a public transform, never 80% of host RAM (AF1-review M11).
+    con = duckdb.connect(config={"threads": 1, "memory_limit": "512MB"})
     try:
         con.register("_pandas_fiscal_evidence_frame", evidence)
         con.register("_pandas_fiscal_periods_frame", periods)
+        con.register("_pandas_form_filings_frame", form_filings)
         con.execute(
             "CREATE TEMP TABLE _pandas_fiscal_evidence AS SELECT "
             + ", ".join(
@@ -566,7 +597,7 @@ def _apply_period_own_fiscal_labels(out: pd.DataFrame, inputs: pd.DataFrame) -> 
         )
         con.execute(
             "CREATE TEMP TABLE _pandas_fiscal_periods AS SELECT _row, CAST(security_id AS VARCHAR) AS security_id, "
-            "CAST(period_end AS DATE) AS period_end, CAST(basis AS VARCHAR) AS basis, "
+            f"CAST(period_end AS DATE) AS period_end, {label_basis} AS basis, "
             "CAST(upstream_source AS VARCHAR) AS upstream_source FROM _pandas_fiscal_periods_frame"
         )
         create_fiscal_calendar_labels(
@@ -574,6 +605,7 @@ def _apply_period_own_fiscal_labels(out: pd.DataFrame, inputs: pd.DataFrame) -> 
             candidates="_pandas_fiscal_evidence",
             periods="_pandas_fiscal_periods",
             prefix="_pandas_fiscal",
+            annual_form_filings=annual_form_filings,
         )
         labelled = con.execute(
             f"""
@@ -739,8 +771,17 @@ def load_standardization_inputs(
     store: DuckDBStore,
     options: FundamentalStandardizationOptions,
 ) -> pd.DataFrame:
-    """Load latest-revision candidate facts from warehouse fundamentals surfaces."""
+    """Load latest-revision candidate facts from warehouse fundamentals surfaces.
 
+    Legacy pandas path (production builds use ``refresh_standardized_set_based``). Facts are
+    typed by period geometry exactly as the set-based candidates are: instant, 70-120 days
+    ``quarterly``, 330-380 days ``annual``; other durations (6/9-month YTD) are not
+    standardization evidence and are not loaded (a YTD value is never an annual value).
+    """
+
+    from ._standardization_set_based import fiscal_evidence_basis_sql
+
+    basis = fiscal_evidence_basis_sql("src.period_type = 'instant'", "src.period_start", "src.period_end")
     symbols = tuple(s for s in (options.symbols or ()) if str(s).strip())
     registered = False
     symbol_join = ""
@@ -795,7 +836,8 @@ def load_standardization_inputs(
             CAST(NULL AS DATE) AS filed_date,
             src.ttm_value AS value,
             src.available_at,
-            0 AS input_rank
+            0 AS input_rank,
+            CAST(NULL AS VARCHAR) AS form
         FROM fundamental_ttm_points src
         LEFT JOIN metric_map m ON m.canonical_metric = src.canonical_metric
         LEFT JOIN fundamental_item mi ON mi.item_id = m.item_id
@@ -820,7 +862,7 @@ def load_standardization_inputs(
             src.taxonomy,
             src.unit,
             coalesce(src.unit_type, mi.unit_type, i.unit_type) AS unit_type,
-            CASE WHEN src.period_type = 'instant' THEN 'instant' ELSE 'annual' END AS basis,
+            {basis} AS basis,
             src.period_start,
             src.period_end,
             src.fiscal_year,
@@ -830,7 +872,8 @@ def load_standardization_inputs(
             src.filed_date,
             src.value,
             src.available_at,
-            0 AS input_rank
+            0 AS input_rank,
+            src.form
         FROM fundamental_statement_points src
         LEFT JOIN metric_map m ON m.canonical_metric = src.canonical_metric
         LEFT JOIN fundamental_item mi ON mi.item_id = m.item_id
@@ -839,6 +882,7 @@ def load_standardization_inputs(
         WHERE src.is_latest_revision
           AND src.value IS NOT NULL
           AND src.available_at IS NOT NULL
+          AND {basis} IS NOT NULL
         """
     )
     queries.append(
@@ -855,7 +899,7 @@ def load_standardization_inputs(
             src.taxonomy,
             src.unit,
             coalesce(mi.unit_type, i.unit_type, ai.unit_type, vi.unit_type) AS unit_type,
-            CASE WHEN src.period_type = 'instant' THEN 'instant' ELSE 'annual' END AS basis,
+            {basis} AS basis,
             src.period_start,
             src.period_end,
             src.fiscal_year,
@@ -865,7 +909,8 @@ def load_standardization_inputs(
             CAST(NULL AS DATE) AS filed_date,
             src.value,
             src.available_at,
-            coalesce(a.input_rank, 50) AS input_rank
+            coalesce(a.input_rank, 50) AS input_rank,
+            CAST(NULL AS VARCHAR) AS form
         FROM fundamental_xbrl_metric src
         LEFT JOIN metric_map m ON m.canonical_metric = src.canonical_metric
         LEFT JOIN fundamental_item mi ON mi.item_id = m.item_id
@@ -878,6 +923,7 @@ def load_standardization_inputs(
         WHERE src.is_latest_revision
           AND src.value IS NOT NULL
           AND src.available_at IS NOT NULL
+          AND {basis} IS NOT NULL
         """
     )
     sql = lookup_ctes + "\n" + "\nUNION ALL\n".join(queries)

@@ -80,3 +80,37 @@ def test_ten_q_twelve_months_column_does_not_anchor_a_missing_ten_k_year(tmp_sto
         2021: (1, 0),
         2022: (1, 1),
     }
+
+
+def test_pandas_path_reads_annual_report_forms_like_the_sql_build(tmp_store):
+    """AF1-review N3: the legacy pandas path loads each point's form, so a blank-fp 10-K
+    declares its year there too; before, it kept the June twelve-months column as
+    (2021, FY), Dec-2021 as (2022, Q2) and Apr-Jun as (2021, Q4)."""
+    import pandas as pd
+
+    from atx_db.standardization import (
+        FundamentalStandardizationOptions,
+        compute_standardized_rows,
+        load_standardization_inputs,
+    )
+
+    sid = "SEC-CIK-BLANKFP"
+    ten_k = [("10k-2021", None, None, "10-K", D(2022, 2, 15), D(2021, 1, 1), D(2021, 12, 31), 101.0)]
+    _points(tmp_store, sid, TEN_Q_JUNE_2021 + ten_k)
+    refresh_fundamental_standardized(tmp_store)
+
+    inputs = load_standardization_inputs(tmp_store, FundamentalStandardizationOptions())
+    rows = compute_standardized_rows(inputs[inputs["security_id"] == sid])
+    rows = rows[rows["canonical_code"] == "revenue"]
+    pandas_labels = {
+        (row.basis, pd.Timestamp(row.period_end).date(), row.value): (row.fiscal_year, row.fiscal_period)
+        for row in rows.itertuples(index=False)
+    }
+    sql_labels = {
+        (basis, end, value): labels
+        for basis in ("annual", "quarterly")
+        for (end, value), labels in _labels(tmp_store, sid, basis).items()
+    }
+    assert pandas_labels == sql_labels
+    assert pandas_labels[("annual", D(2021, 12, 31), 101.0)] == (2021, "FY")
+    assert pandas_labels[("quarterly", D(2021, 6, 30), 25.0)] == (2021, "Q2")

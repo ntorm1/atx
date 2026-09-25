@@ -411,6 +411,8 @@ def test_pandas_standardization_path_carries_the_same_period_own_labels(tmp_stor
            start=d(2022, 1, 1), end=d(2022, 3, 31), value=31.0)
     _point(tmp_store, security_id=sid, accession="q1-2022", fy=2022, fp="Q1", filed=d(2022, 5, 10),
            start=d(2021, 1, 1), end=d(2021, 3, 31), value=29.0)  # prior-year comparative
+    _point(tmp_store, security_id=sid, accession="q2-2022", fy=2022, fp="Q2", filed=d(2022, 8, 10),
+           start=d(2022, 1, 1), end=d(2022, 6, 30), value=65.0)  # 6-month YTD: never an annual value
 
     refresh_fundamental_standardized(tmp_store)
     set_based = {
@@ -418,8 +420,11 @@ def test_pandas_standardization_path_carries_the_same_period_own_labels(tmp_stor
         for basis in ("annual", "quarterly")
         for (end, _value), labels in _labels(tmp_store, sid, basis).items()
     }
-    # The legacy input loader tags every duration fact 'annual' (its own basis rule), so the
-    # two paths are compared by period.
+    set_based_bases = {
+        (end, basis) for basis in ("annual", "quarterly") for (end, _value) in _labels(tmp_store, sid, basis)
+    }
+    # The legacy input loader types facts by period geometry as the set-based build does
+    # (it used to tag every duration fact 'annual', including 3-month quarters and YTD spans).
     inputs = load_standardization_inputs(tmp_store, FundamentalStandardizationOptions())
     rows = compute_standardized_rows(inputs[inputs["security_id"] == sid])
     rows = rows[rows["canonical_code"] == "revenue"]
@@ -428,9 +433,60 @@ def test_pandas_standardization_path_carries_the_same_period_own_labels(tmp_stor
         for row in rows.itertuples(index=False)
     }
 
+    # The set-based build derives Q2 = 6M YTD - Q1; the pandas path never derives, and before
+    # geometry typing it published the 65.0 YTD span as an 'annual' value at 2022-06-30.
+    assert set_based.pop(d(2022, 6, 30)) == (2022, "Q2_DERIVED")
+    set_based_bases.discard((d(2022, 6, 30), "quarterly"))
+    assert d(2022, 6, 30) not in pandas_labels
     assert pandas_labels == set_based
+    assert {(pd.Timestamp(row.period_end).date(), row.basis) for row in rows.itertuples(index=False)} == (
+        set_based_bases
+    )
+    assert (d(2022, 3, 31), "quarterly") in set_based_bases
     assert pandas_labels[d(2020, 12, 31)] == (2020, "FY")  # not the re-reporting 10-K's fy 2021
     assert pandas_labels[d(2021, 3, 31)] == (2021, "Q1")  # not the re-reporting 10-Q's fy 2022
+
+
+def test_pandas_path_labels_a_three_month_fiscal_q4_q4_whatever_its_input_basis(tmp_store):
+    """AF1-review M3: a 3-month period ending at fiscal year end is Q4, never FY, on both
+    pandas input paths -- the warehouse loader and a caller frame that tags it 'annual'."""
+
+    import pandas as pd
+
+    from atx_db.standardization import (
+        FundamentalStandardizationOptions,
+        compute_standardized_rows,
+        load_standardization_inputs,
+    )
+
+    sid = "SEC-CIK-PANDASQ4"
+    d = dt.date
+    _point(tmp_store, security_id=sid, accession="10k-2020", fy=2020, fp="FY", filed=d(2021, 2, 15),
+           start=d(2020, 1, 1), end=d(2020, 12, 31), value=100.0, form="10-K")
+    _point(tmp_store, security_id=sid, accession="10k-2020", fy=2020, fp="FY", filed=d(2021, 2, 15),
+           start=d(2019, 1, 1), end=d(2019, 12, 31), value=90.0, form="10-K")
+    _point(tmp_store, security_id=sid, accession="10k-2020", fy=2020, fp="FY", filed=d(2021, 2, 15),
+           start=d(2020, 10, 1), end=d(2020, 12, 31), value=25.0, form="10-K", metric=RND)
+
+    refresh_fundamental_standardized(tmp_store)
+    assert _labels(tmp_store, sid, "quarterly", "r_and_d_expense") == {(d(2020, 12, 31), 25.0): (2020, "Q4")}
+
+    def labels(frame, code):
+        rows = compute_standardized_rows(frame)
+        rows = rows[rows["canonical_code"] == code]
+        return {
+            (pd.Timestamp(row.period_end).date(), row.basis): (row.fiscal_year, row.fiscal_period)
+            for row in rows.itertuples(index=False)
+        }
+
+    inputs = load_standardization_inputs(tmp_store, FundamentalStandardizationOptions())
+    inputs = inputs[inputs["security_id"] == sid]
+    assert labels(inputs, "r_and_d_expense") == {(d(2020, 12, 31), "quarterly"): (2020, "Q4")}
+    assert labels(inputs, "revenue")[(d(2020, 12, 31), "annual")] == (2020, "FY")
+
+    legacy = inputs.copy()
+    legacy.loc[legacy["canonical_metric"] == "rd_expense", "basis"] = "annual"  # the old loader's tag
+    assert labels(legacy, "r_and_d_expense") == {(d(2020, 12, 31), "annual"): (2020, "Q4")}
 
 
 def test_twelve_months_ended_column_cannot_stand_in_for_missing_fiscal_year_coverage(tmp_store):
