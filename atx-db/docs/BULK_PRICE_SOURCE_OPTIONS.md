@@ -72,8 +72,14 @@ its documented US history starts2010-01-04, with dated vendor IDs, security type
 MIC and identifiers. However, its v7-backfill notes say `primaryExch` and newly
 added `cik`/issue-class fields are null in backfilled history. Historical MIC and
 classification could therefore help the listing gate, while CIK linkage would
-still need measured evidence. Its shares field is in thousands, unlike the raw
-price file's share count. No companion archive has been downloaded or assumed
+still need measured evidence. Its shares field is in thousands, and so is the
+`shares` column of `TickerHistory3.parquet` (measured: AAPL run from 2024-07-19 =
+15,204,137 vs its 10-Q cover 15,204,137,000; CELG 2012 = 438,810); only the
+`tbltickerhistory3_10y` TSV export reports units. `ticker_history_bulk` scales by
+format and checks the result against DEI (A8), so `equity_daily_bars` stores shares.
+The vendor starts each share run on the DEI cover date, before the filing is
+public, so bar-date share counts are not point-in-time without a filing clock.
+No companion archive has been downloaded or assumed
 available. [Reference dictionary](https://docs.spiderrockconnect.com/docs/next/HistoricalData/Data%20Dictionaries/TickerDefinitionHist/).
 
 Local operator receipts: `.superpowers/sdd/tier1-parity/updated-price-footer.json`,

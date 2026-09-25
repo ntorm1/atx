@@ -24,12 +24,32 @@ from .ticker_history import SOURCE_NAME, TBLTICKERHISTORY_ID_TYPE
 from .ticker_history_quality import (
     SOURCE_PROVENANCE,
     source_diagnostics,
+    source_format,
     source_provenance,
     stage_source,
 )
 from .warehouse import quality_check, record_source_file
 
 LOGGER = logging.getLogger(__name__)
+
+#: Unit of the vendor ``shares`` column by input format (A8, measured read-only):
+#: ``TickerHistory3.parquet`` reports shares in THOUSANDS in every year 2012-2026
+#: (AAPL run from 2026-07-17 = 14,594,180 vs its 10-Q cover 14,594,180,000; CELG
+#: 2012 = 438,810; median positive shares per year 17.6K-29.5K), while the
+#: ``tbltickerhistory3_10y`` TSV export reports UNITS (AAPL 2025-01-02 =
+#: 15,204,137,000; NVDA 2024-07-05 = 24,598,341,970). ``equity_daily_bars``
+#: always stores shares (units); ``BulkTickerHistoryOptions.shares_unit``
+#: overrides the format default.
+SHARES_UNIT_BY_FORMAT: dict[str, str] = {"parquet": "thousands", "tsv": "units"}
+SHARES_UNIT_SCALE: dict[str, int] = {"units": 1, "thousands": 1000}
+#: Plausible median of positive stored share counts on the latest date for a
+#: real-size source (>= ``_UNIT_MAGNITUDE_MIN_ROWS`` lines): a unit mix-up moves
+#: it by 1000x out of this band (units ~1e7; thousands mistaken for units ~2e4).
+SHARES_MEDIAN_BAND: tuple[float, float] = (1e5, 1e9)
+_UNIT_MAGNITUDE_MIN_ROWS = 1000
+#: Stored vendor shares vs DEI EntityCommonStockSharesOutstanding on its cover date.
+SHARES_DEI_RATIO_BAND: tuple[float, float] = (0.5, 2.0)
+SHARES_UNIT_CHECK_NAME = "vendor_shares_unit"
 
 
 @dataclass(frozen=True)
@@ -44,10 +64,18 @@ class BulkTickerHistoryOptions:
     minimum_latest_date_securities: int = 5_000
     run_id: str | None = None
     source_path: Path | None = None
+    #: Unit of the source ``shares`` column (``units``/``thousands``); None uses
+    #: :data:`SHARES_UNIT_BY_FORMAT` for the input's format.
+    shares_unit: str | None = None
+    #: DEI-matched (line, cover date) pairs needed before a unit disagreement
+    #: with DEI fails the publication (fewer pairs only flag it).
+    shares_unit_min_pairs: int = 20
 
     def __post_init__(self) -> None:
         if (self.source_path is None) == (self.tsv_path is None):
             raise ValueError("supply exactly one source_path or legacy tsv_path")
+        if self.shares_unit is not None and self.shares_unit not in SHARES_UNIT_SCALE:
+            raise ValueError(f"shares_unit must be one of {sorted(SHARES_UNIT_SCALE)}, got {self.shares_unit!r}")
         if self.threads < 1:
             raise ValueError("threads must be positive")
         if min(
@@ -62,6 +90,10 @@ class BulkTickerHistoryOptions:
         path = self.source_path if self.source_path is not None else self.tsv_path
         assert path is not None  # Validated in __post_init__.
         return path
+
+    @property
+    def resolved_shares_unit(self) -> str:
+        return self.shares_unit or SHARES_UNIT_BY_FORMAT[source_format(self.input_path)]
 
 
 @dataclass(frozen=True)
@@ -229,6 +261,7 @@ def _create_line_map(store: DuckDBStore, options: BulkTickerHistoryOptions) -> N
 
 def _create_next_table(store: DuckDBStore, options: BulkTickerHistoryOptions) -> None:
     con = store.con
+    scale = SHARES_UNIT_SCALE[options.resolved_shares_unit]
     con.execute("DROP TABLE IF EXISTS equity_daily_bars_bulk_next")
     con.execute(
         """
@@ -298,11 +331,12 @@ def _create_next_table(store: DuckDBStore, options: BulkTickerHistoryOptions) ->
             NULL::DOUBLE, NULL::DOUBLE, split_factor, false,
             trade_date::TIMESTAMP + INTERVAL 22 HOUR,
             ?, current_timestamp, NULL::DATE, NULL::BOOLEAN,
-            shares_outstanding, shares_outstanding * close
+            -- A8: stored in shares (units) whatever the source unit.
+            shares_outstanding * ?, shares_outstanding * ? * close
         FROM valid
         QUALIFY count(*) OVER (PARTITION BY security_id, trade_date) = 1
         """,
-        [options.source, options.run_id],
+        [options.source, options.run_id, scale, scale],
     )
 
 
@@ -386,6 +420,117 @@ def _validate_next(
         int(invalid_rows),
         int(duplicate_keys),
     )
+
+
+def _check_share_units(store: DuckDBStore, options: BulkTickerHistoryOptions) -> dict[str, object]:
+    """Sanity-check the stored (scaled) vendor share counts before publication (A8).
+
+    Two independent checks on ``equity_daily_bars_bulk_next``:
+
+    * magnitude: the median positive share count on the latest date must lie in
+      :data:`SHARES_MEDIAN_BAND` once at least ``_UNIT_MAGNITUDE_MIN_ROWS`` lines
+      carry shares (a 1000x unit error moves it out of the band);
+    * DEI: for lines whose CIK has exactly one SEC ticker, the first bar on or
+      within four days after a dei:EntityCommonStockSharesOutstanding cover date
+      (the vendor starts its share run on that date) is compared with the DEI
+      count; the median ratio must lie in :data:`SHARES_DEI_RATIO_BAND`.
+
+    A conclusive disagreement (enough rows or ``shares_unit_min_pairs`` pairs)
+    records a failed ``vendor_shares_unit`` check and raises before the swap; a
+    disagreement on fewer pairs is flagged as a warning, as is a run with no
+    conclusive evidence either way.
+    """
+    unit = options.resolved_shares_unit
+    magnitude = store.con.execute(
+        """
+        SELECT count(*), median(shares_outstanding)
+        FROM equity_daily_bars_bulk_next
+        WHERE source = ? AND shares_outstanding > 0
+          AND trade_date = (SELECT max(trade_date) FROM equity_daily_bars_bulk_next WHERE source = ?)
+        """,
+        [options.source, options.source],
+    ).fetchone()
+    latest_rows, latest_median = (int(magnitude[0]), magnitude[1]) if magnitude else (0, None)
+    dei = store.con.execute(
+        """
+        WITH single_ciks AS (
+            SELECT try_cast(cik AS BIGINT) AS cik
+            FROM sec_company_tickers
+            GROUP BY 1
+            HAVING count(DISTINCT upper(trim(ticker))) = 1
+        ),
+        covers AS (
+            SELECT t.security_id, d.effective_date, max(d.share_count) AS dei_shares
+            FROM shares_outstanding_history d
+            JOIN single_ciks c ON c.cik = try_cast(d.cik AS BIGINT)
+            JOIN sec_company_tickers t ON try_cast(t.cik AS BIGINT) = c.cik
+            WHERE d.taxonomy = 'dei' AND d.concept = 'EntityCommonStockSharesOutstanding'
+              AND d.share_class IS NULL AND d.share_count > 0
+            GROUP BY ALL
+            HAVING count(DISTINCT d.share_count) = 1
+        ),
+        candidates AS (
+            SELECT c.*, o.lag_days, c.effective_date + CAST(o.lag_days AS INTEGER) AS trade_date
+            FROM covers c CROSS JOIN range(0, 5) AS o(lag_days)
+        ),
+        pairs AS (
+            SELECT c.security_id, c.effective_date,
+                   arg_min(b.shares_outstanding / c.dei_shares, c.lag_days) AS ratio
+            FROM candidates c
+            JOIN equity_daily_bars_bulk_next b
+              ON b.security_id = c.security_id AND b.trade_date = c.trade_date
+            WHERE b.source = ? AND b.shares_outstanding > 0
+            GROUP BY ALL
+        )
+        SELECT count(*), median(ratio) FROM pairs
+        """,
+        [options.source],
+    ).fetchone()
+    dei_pairs, dei_median = (int(dei[0]), dei[1]) if dei else (0, None)
+    low, high = SHARES_DEI_RATIO_BAND
+    magnitude_low, magnitude_high = SHARES_MEDIAN_BAND
+    magnitude_conclusive = latest_rows >= _UNIT_MAGNITUDE_MIN_ROWS and latest_median is not None
+    magnitude_ok = not magnitude_conclusive or magnitude_low <= latest_median <= magnitude_high
+    dei_ok = dei_median is None or low <= dei_median <= high
+    dei_conclusive = dei_pairs >= options.shares_unit_min_pairs
+    failures = []
+    if not magnitude_ok:
+        failures.append(f"latest-date median shares {latest_median:,.0f} outside {SHARES_MEDIAN_BAND}")
+    if dei_conclusive and not dei_ok:
+        failures.append(f"median vendor/DEI share ratio {dei_median:.4g} over {dei_pairs:,} pairs outside {low}-{high}")
+    if failures:
+        status = "failed"
+    elif dei_ok and (magnitude_conclusive or dei_conclusive):
+        status = "passed"
+    else:
+        status = "warning"
+    details: dict[str, object] = {
+        "run_id": options.run_id,
+        "shares_unit": unit,
+        "shares_scale": SHARES_UNIT_SCALE[unit],
+        "latest_date_share_rows": latest_rows,
+        "latest_date_median_shares": latest_median,
+        "median_band": list(SHARES_MEDIAN_BAND),
+        "dei_pairs": dei_pairs,
+        "dei_median_ratio": dei_median,
+        "dei_ratio_band": list(SHARES_DEI_RATIO_BAND),
+        "dei_min_pairs": options.shares_unit_min_pairs,
+        "failures": failures,
+    }
+    quality_check(
+        store,
+        dataset_id="tbltickerhistory_daily",
+        table_name="equity_daily_bars",
+        check_name=SHARES_UNIT_CHECK_NAME,
+        status=status,
+        severity="error" if failures else "warning",
+        observed_value=dei_median,
+        threshold_value=1.0,
+        details=details,
+    )
+    if failures:
+        raise RuntimeError(f"vendor share unit {unit!r} check failed: " + "; ".join(failures))
+    return details
 
 
 def _publish(store: DuckDBStore, options: BulkTickerHistoryOptions) -> None:
@@ -488,7 +633,15 @@ def publish_bulk_ticker_history(
 ) -> BulkTickerHistoryResult:
     if not options.input_path.is_file():
         raise FileNotFoundError(options.input_path)
-    provenance = source_provenance(options.input_path)
+    # The resolved unit is part of the run's params_json and provenance, so every
+    # stored share count names the unit it was scaled from (A8).
+    options = BulkTickerHistoryOptions(**{**asdict(options), "shares_unit": options.resolved_shares_unit})
+    provenance = {
+        **source_provenance(options.input_path),
+        "shares_unit": options.resolved_shares_unit,
+        "shares_scale": str(SHARES_UNIT_SCALE[options.resolved_shares_unit]),
+        "shares_outstanding_unit": "shares",
+    }
     started = time.perf_counter()
     run_id = options.run_id or f"broad-bars-bulk-{uuid.uuid4()}"
     options = BulkTickerHistoryOptions(**{**asdict(options), "run_id": run_id})
@@ -542,6 +695,8 @@ def publish_bulk_ticker_history(
             metrics[1],
             metrics[3],
         )
+        share_units = _check_share_units(store, options)
+        LOGGER.info("vendor share unit check: %s", share_units)
         _publish(store, options)
         LOGGER.info("atomically published bars and canonical indexes")
     except Exception as exc:
@@ -577,6 +732,7 @@ def publish_bulk_ticker_history(
             "invalid_rows": invalid_rows,
             "source_diagnostics": diagnostics,
             "provenance": provenance,
+            "share_units": share_units,
         },
     )
     store.con.execute("CHECKPOINT")

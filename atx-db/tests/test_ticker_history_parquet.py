@@ -63,10 +63,12 @@ def test_typed_parquet_publishes_same_bars_diagnostics_and_hash_lineage_as_tsv(t
     published = []
     diagnostics = []
     for path, source_format in [(tsv, "tsv"), (parquet, "parquet")]:
+        # Both files carry the same share numbers, so pin one unit: the real parquet
+        # reports thousands (the format default; see test_ticker_history_bulk).
         result = publish_bulk_ticker_history(tmp_store, BulkTickerHistoryOptions(
             source_path=path, memory_limit="128MB", threads=1, minimum_rows=3,
             minimum_securities=2, minimum_latest_date_securities=2,
-            run_id="parquet-test-" + source_format,
+            run_id="parquet-test-" + source_format, shares_unit="units",
         ))
         published.append(tmp_store.con.execute(
             "SELECT security_id, symbol, trade_date, close, adjusted_close, volume, "
