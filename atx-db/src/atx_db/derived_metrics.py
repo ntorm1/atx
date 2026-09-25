@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from . import _derived_annual as annual
 from . import _derived_pit as pit
+from . import _split_epochs
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .derived_dsl import LowerContext, Lowered, compile_expression
@@ -253,7 +254,9 @@ def refresh_derived_metrics(
     if options.metric_codes is not None:
         predicate += f" AND metric_code IN ({', '.join('?' for _ in codes)})"
     inserted = committed_since_reopen = 0
-    with closing(select_security_batches(store, options)) as batches:
+    # Split epochs are staged in one pass over the bars for the whole refresh.
+    with _split_epochs.refresh_scope(store, options.security_ids, persistent=recycle), \
+            closing(select_security_batches(store, options)) as batches:
         for batch in batches:
             for security_id in batch:
                 params: list[Any] = [options.source, security_id]

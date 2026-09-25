@@ -169,7 +169,9 @@ def test_core_quarterly_growth_cagrs_basic_eps_and_cash_cycle_are_pit_derived(tm
     assert dso_available == _available(_QUARTERS[4], 50)
 
 
-def test_quarterly_growth_and_cash_cycle_have_no_numeric_value_for_missing_or_nonpositive_bases(tmp_store):
+# The missing-base and non-positive-base cases are separate tests (one derived refresh each)
+# so every test process stays under the suite's ~300 MB per-process budget (A4-review rm2).
+def test_quarterly_growth_has_no_numeric_value_for_a_missing_base_quarter(tmp_store):
     seed_derived_metric_definitions(tmp_store)
     _seed_core_series(tmp_store)
     tmp_store.con.execute(
@@ -180,6 +182,9 @@ def test_quarterly_growth_and_cash_cycle_have_no_numeric_value_for_missing_or_no
     missing_quarter = _latest_state(tmp_store, "revenue_q_growth_yoy", _QUARTERS[4])
     assert missing_quarter == (None, "missing_input_or_domain", _available(_QUARTERS[4]))
 
+
+def test_cash_cycle_has_no_numeric_value_for_nonpositive_bases(tmp_store):
+    seed_derived_metric_definitions(tmp_store)
     _seed_core_series(tmp_store, "S2", negative_bases=True)
     refresh_derived_metrics(tmp_store, DerivedMetricsOptions(metric_codes=("dso_days", "dio_days", "dpo_days", "cash_conversion_cycle")))
     for code in ("dso_days", "dio_days", "dpo_days", "cash_conversion_cycle"):
@@ -246,18 +251,20 @@ def _seed_statement(store, security_id: str, quarters: tuple[dt.date, ...],
 def _bars(store, security_id: str, split: tuple[dt.date, float] | None = None) -> None:
     """Weekday bars covering every filing clock, so the split basis is proven (R1d).
 
-    The vendor factor (adjusted / raw close) steps by ``k`` on a split's ex-date.
+    The vendor factor (adjusted / raw close) and the archive share count step by
+    ``k`` on a split's ex-date.
     """
     ex_date, ratio = split or (dt.date(1900, 1, 1), 1.0)
     store.con.execute(
         """
-        INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, close, adjusted_close, available_at)
+        INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, close, adjusted_close,
+                                       shares_outstanding, available_at)
         SELECT 'test', ?, ?, d::DATE, 10.0, CASE WHEN d::DATE < ? THEN 10.0 / ? ELSE 10.0 END,
-               d::DATE + INTERVAL 22 HOUR
+               CASE WHEN d::DATE < ? THEN 1000 ELSE round(1000 * ?) END, d::DATE + INTERVAL 22 HOUR
         FROM generate_series(TIMESTAMP '2018-12-01', TIMESTAMP '2022-06-30', INTERVAL 1 DAY) t(d)
         WHERE dayofweek(d) BETWEEN 1 AND 5
         """,
-        [security_id, security_id, ex_date, ratio],
+        [security_id, security_id, ex_date, ratio, ex_date, ratio],
     )
 
 
@@ -413,15 +420,19 @@ _ONE_QUARTER_APART = (
 _PER_SHARE_QOQ = ("eps_basic_q_growth_qoq", "eps_diluted_q_growth_qoq")
 
 
+# Fiscal-year change: contiguous quarters with a 66-day stub from 2021-04-11 to 2021-06-15.
+_STUB_CALENDAR = (*_QUARTERS[:8], dt.date(2021, 4, 10), dt.date(2021, 6, 15), *_QUARTERS[10:12])
+
+
+# Proven adjacency (S1 contiguous, S4 7-day gap) and unproven adjacency (S5 8-day gap,
+# S6 fiscal-year-change stub) are separate tests, one derived refresh each, so every
+# test process stays under the suite's ~300 MB per-process budget (A4-review rm2).
+# Securities are derived independently, so the split changes no expectation.
 def test_one_quarter_comparisons_are_quarterly_only_when_fiscal_spans_prove_adjacency(tmp_store):
     _seed_statement(tmp_store, "S1", _QUARTERS[:12])
-    # _QUARTERS[9] starts after a 7-day gap (tolerated) in S4 and an 8-day gap in S5.
+    # _QUARTERS[9] starts after a 7-day gap (tolerated) in S4.
     _seed_statement(tmp_store, "S4", _QUARTERS[:12], starts={9: _QUARTERS[8] + dt.timedelta(days=8)})
-    _seed_statement(tmp_store, "S5", _QUARTERS[:12], starts={9: _QUARTERS[8] + dt.timedelta(days=9)})
-    # Fiscal-year change: contiguous quarters with a 66-day stub from 2021-04-11 to 2021-06-15.
-    stub_calendar = (*_QUARTERS[:8], dt.date(2021, 4, 10), dt.date(2021, 6, 15), *_QUARTERS[10:12])
-    _seed_statement(tmp_store, "S6", stub_calendar)
-    for security_id in ("S1", "S4", "S5", "S6"):
+    for security_id in ("S1", "S4"):
         _bars(tmp_store, security_id)
     _refresh_quarterly_family(tmp_store)
 
@@ -435,20 +446,29 @@ def test_one_quarter_comparisons_are_quarterly_only_when_fiscal_spans_prove_adja
             # Bars show no split between the two filings: one proven share basis
             # (without bars see the reverse-split test below).
             assert _origin(tmp_store, code, _QUARTERS[index]) == "quarterly", code
-    for code in ("eps_basic_q_growth_yoy", "gross_margin_q_change_yoy", "revenue_q_growth_yoy"):
-        assert _origin(tmp_store, code, _QUARTERS[9], "S5") == "quarterly", code
     # Overlapping trailing windows are never adjacent quarters.
     assert _latest_state(tmp_store, "revenue_growth_qoq", _QUARTERS[11])[1] == "valid"
     assert _origin(tmp_store, "revenue_growth_qoq", _QUARTERS[11]) == "incomparable"
 
+
+def test_one_quarter_comparisons_are_incomparable_across_a_span_gap_or_fiscal_year_change_stub(tmp_store):
+    # _QUARTERS[9] starts after an 8-day gap in S5.
+    _seed_statement(tmp_store, "S5", _QUARTERS[:12], starts={9: _QUARTERS[8] + dt.timedelta(days=9)})
+    _seed_statement(tmp_store, "S6", _STUB_CALENDAR)
+    for security_id in ("S5", "S6"):
+        _bars(tmp_store, security_id)
+    _refresh_quarterly_family(tmp_store)
+
+    for code in ("eps_basic_q_growth_yoy", "gross_margin_q_change_yoy", "revenue_q_growth_yoy"):
+        assert _origin(tmp_store, code, _QUARTERS[9], "S5") == "quarterly", code
     for code in _ONE_QUARTER_APART:
         # Unproven adjacency keeps the arithmetic but labels it incomparable.
         assert _latest_state(tmp_store, code, _QUARTERS[9], "S5")[1] == "valid", code
         assert _origin(tmp_store, code, _QUARTERS[9], "S5") == "incomparable", code
         assert _origin(tmp_store, code, _QUARTERS[10], "S5") == "quarterly", code
-        for period_end in stub_calendar[9:11]:
+        for period_end in _STUB_CALENDAR[9:11]:
             assert _origin(tmp_store, code, period_end, "S6") == "incomparable", (code, period_end)
-        assert _origin(tmp_store, code, stub_calendar[11], "S6") == "quarterly", code
+        assert _origin(tmp_store, code, _STUB_CALENDAR[11], "S6") == "quarterly", code
 
 
 def test_per_share_qoq_across_a_reverse_split_is_rebased_or_labeled_incomparable(tmp_store):

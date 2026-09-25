@@ -230,8 +230,14 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
             known = _split_epochs.basis_known_sql(f"{alias}.input_at", "f.event_at")
             value, basis = f"({value} * {factor})", f'b."{code}__basis"'
             projections.append(f'{known} AS "{code}__basis"')
+            # An operand of the frame's own filing is on its basis by construction;
+            # any other proof rests on reconstructed vendor bars, never a verified record.
+            events = _split_epochs.applied_events_sql(f"{alias}.input_at", "f.event_at")
+            proof = (f"CASE WHEN {alias}.input_at = f.event_at THEN 'frame_filing' "
+                     f"WHEN {known} THEN 'vendor_reconstructed' ELSE 'unproven' END")
             lineage.append(f"struct_pack(kind := 'split_basis', code := {quote(code)}, "
-                           f"state := to_json(struct_pack(factor := {factor}, basis_known := {known})))")
+                           f"state := to_json(struct_pack(factor := {factor}, basis_known := {known}, "
+                           f"proof := {proof}, events := {events})))")
         projections.extend([
             f'{value} AS "{code}"', f'{alias}.input_at AS "{code}__at"',
             f'{alias}.fiscal_period_start AS "{code}__start"',
@@ -330,6 +336,8 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
     )
     projection = ", " + ", ".join(projections) if projections else ""
     line = "to_json([" + ",".join(lineage) + "])" if lineage else "'[]'"
+    if any(f"{_split_epochs.LISTS_ALIAS}." in part for part in (*projections, *lineage)):
+        joins.insert(0, _split_epochs.LISTS_JOIN)
     denominator = None
     if isinstance(node, BinOp) and node.op == "/":
         denominator = node.right

@@ -277,7 +277,7 @@ def _split_after_2020(store, security_id: str) -> None:
 
 
 def _bars_with_split(store, security_id: str, ex_date: dt.date, ratio: float) -> None:
-    """Weekday bars whose vendor factor (adjusted / raw close) steps by ``ratio`` on ``ex_date``."""
+    """Weekday bars whose vendor factor (adjusted / raw close) and archive share count step by ``ratio``."""
     store.con.execute("""
         CREATE TABLE IF NOT EXISTS equity_daily_bars (
             source VARCHAR, security_id VARCHAR, trade_date DATE, close DOUBLE,
@@ -285,11 +285,11 @@ def _bars_with_split(store, security_id: str, ex_date: dt.date, ratio: float) ->
     """)
     store.con.execute("""
         INSERT INTO equity_daily_bars
-        SELECT 'vendor', ?, d::DATE, 10.0, CASE WHEN d::DATE < ? THEN 10.0 / ? ELSE 10.0 END, NULL,
-               d::DATE + INTERVAL 22 HOUR
+        SELECT 'vendor', ?, d::DATE, 10.0, CASE WHEN d::DATE < ? THEN 10.0 / ? ELSE 10.0 END,
+               CASE WHEN d::DATE < ? THEN 1000 ELSE round(1000 * ?) END, d::DATE + INTERVAL 22 HOUR
         FROM generate_series(TIMESTAMP '2018-12-01', TIMESTAMP '2022-06-30', INTERVAL 1 DAY) t(d)
         WHERE dayofweek(d) BETWEEN 1 AND 5
-    """, [security_id, ex_date, ratio])
+    """, [security_id, ex_date, ratio, ex_date, ratio])
 
 
 def test_split_sensitive_comparisons_across_filings_need_a_proven_split_basis(store):
