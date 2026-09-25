@@ -443,3 +443,60 @@ before the last edit, a comment-only change to `dead_alpha_wire.hpp`; the three 
 depend on that header were re-run after the final build and pass.
 
 Golden digests: none moved in this pass.
+
+## Post-merge sync (final, before orchestrator merge)
+
+Head before sync: `2a86af12` (re-review 1, APPROVE). Integration (`feat/w0-integration`) was
+not yet an ancestor of the lane head (`merge-base --is-ancestor` exit 1), so the lane merged it.
+
+```
+git -C C:\atx-wt\pool-10 merge --no-ff feat/w0-integration -m "w0-i0a: merge feat/w0-integration" ...
+Merge made by the 'ort' strategy. (auto-merged atx-impl/src/stage_report.cpp, no conflicts)
+```
+
+No files in this lane's owned scope conflicted; `stage_report.cpp` (the one file this lane
+partially owns, only the I-04 diagonal-risk call site near line 499) auto-merged cleanly against
+B0's changes to the rest of that file. Ledger refresh per instructions:
+
+```
+rm atx-engine/reviews/*.jsonl ; git checkout -- atx-engine/reviews
+git status --porcelain -> clean
+```
+
+Head after merge: `69d5138c`.
+
+Build (RAM check: 4.1 GB free before build, >= 2 GB floor; `CMAKE_BUILD_PARALLEL_LEVEL=2`):
+
+```
+Set-Location C:\atx-wt\pool-10; powershell -NoProfile -File scripts\atx-build.ps1 build -Preset equity-dev atx-impl-tests atx-shm-worker
+[138/141] Linking CXX executable bin\atx-impl-tests.exe
+exit=0
+```
+
+Anchored suites (`-Ctest -Preset equity-dev -R '^<Suite>'`):
+
+```
+=== ImplNestedSplits          100% tests passed, 0 tests failed out of 7  exit=0
+=== ImplCombineNoHoldoutRead  100% tests passed, 0 tests failed out of 5  exit=0
+=== ImplOptimizePit           100% tests passed, 0 tests failed out of 6  exit=0
+=== ImplDeadAlpha             100% tests passed, 0 tests failed out of 4  exit=0
+=== ImplMetabookUsesCombo     100% tests passed, 0 tests failed out of 5  exit=0
+```
+
+All 27 lane tests still pass post-merge.
+
+Whole owning executable (`atx-impl-tests.exe --gtest_brief=1` from the ctest working directory):
+
+```
+[==========] 597 tests from 121 test suites ran. (432698 ms total)
+[  PASSED  ] 591 tests.
+[  SKIPPED ] 6 tests.
+exit=0
+```
+
+Zero failures. Notably `FundamentalZoo.FixtureParsesTypechecksAndEvaluates`,
+`StageEquityIc.TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput` and
+`EquityMineCli.SmoothWindowsAddDecayedVariantsAsTrials` — the 3 out-of-scope failures recorded
+before this sync (W0-FIXUP and I0b owned) — now pass, since `feat/w0-integration` already
+carries those fixes. No new failures were introduced by the merge. Head at commit time:
+`69d5138c8d06352cba0ad7252c29a3a5107b7ef2` (before this report commit).
