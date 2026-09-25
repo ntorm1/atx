@@ -161,9 +161,12 @@ CAVEAT_CODES: Mapping[str, str] = {
     "non_monotone": "the published relation is U-shaped or holds only within a subgroup",
     "mixed_evidence": "published evidence disagrees on the sign; the hypothesis is two-sided",
     "coverage_bias": "an input is missing for a non-random group of filers",
-    "presence_rule": "a value can rest on a zero imputed from a concept's absence under a presence guard (the "
-                     "issuer tags the statement but never the concept throughout the window); a tag switch or "
-                     "skipped quarter has no value",
+    "presence_rule": "a value can rest on a zero imputed from a concept's absence under a presence guard: a "
+                     "balance (debt, inventory) only when the issuer has never tagged a mapped alias up to that "
+                     "quarter, a trailing flow only when no quarter of the year tags it while each reports operating "
+                     "cash flow; a switch to an unmapped alias or a partial year has no value",
+    "unguarded_zero": "a missing optional balance (preferred stock, minority interest, goodwill, other "
+                      "intangibles) is read as zero with no presence guard",
     "construct_deviation": "the definition deviates from the published construction (see the note)",
     "filing_clock_lag": "the filing clock trails the market's first information (the earnings release)",
 }
@@ -198,9 +201,10 @@ _SUPERSEDES = re.compile(r"^factor:([a-z][a-z0-9_]{1,95})$")
 #: monotone inverse ``<id>`` is cataloged), ``component_of:<id>`` (a term of the
 #: cataloged composite ``<id>``), ``duplicate_of:<id>`` (equal to the cataloged
 #: ``<id>`` for every value in its domain), ``negation_of:<id>`` (exactly minus the
-#: cataloged ``<id>``) and ``conflicting_prior:<id>`` (a conjecture nearly identical
+#: cataloged ``<id>``), ``conflicting_prior:<id>`` (a conjecture nearly identical
 #: to the cataloged ``<id>`` but argued with the opposite sign; one family member
-#: would be chosen by data, so it is dropped).
+#: would be chosen by data, so it is dropped) and ``presence_indicator`` (a 0/1
+#: building block of an ever-reported missing-is-not-zero rule).
 EXCLUDED_SEED_METRICS: Mapping[str, str] = {
     **{code: "dollar_level_input" for code in (
         "gross_profit_q", "ebitda_q", "cash_st_investments_q", "common_equity_q", "total_debt_q",
@@ -238,6 +242,11 @@ EXCLUDED_SEED_METRICS: Mapping[str, str] = {
         "ohlson_tlta", "ohlson_wcta", "ohlson_clca", "ohlson_oeneg", "ohlson_nita", "ohlson_futl",
         "ohlson_intwo", "ohlson_chin",
     )},
+    # Ever-reported presence indicators of the missing-is-not-zero rules (debt, inventory).
+    **dict.fromkeys((
+        "debt_alias_seen_q", "debt_alias_seen_4q", "debt_alias_seen_20q", "debt_alias_ever_q",
+        "inventory_alias_seen_q", "inventory_alias_seen_4q", "inventory_alias_seen_20q", "inventory_alias_ever_q",
+    ), "presence_indicator"),
     "effective_tax_rate_ttm": "component_of:roic",
     "no_equity_issuance_ttm": "component_of:piotroski_f_cash_issuance",
     # cagr(x, 1) = x / x_-4 - 1 = yoy(x) whenever both endpoints are positive.
@@ -397,6 +406,9 @@ class MetricShape:
     #: The value (or an input) applies a presence rule: a zero imputed from a
     #: concept's absence (the DSL idiom ``x * 0``), never a reported zero.
     reads_absence: bool = False
+    #: The value (or an input) reads a missing input as a literal constant with no
+    #: presence guard (``coalesce(<input>, 0)``).
+    reads_unguarded_zero: bool = False
 
 
 @dataclass(frozen=True)
@@ -555,6 +567,20 @@ def _reads_absence(node: Node) -> bool:
     return False
 
 
+def _reads_unguarded_zero(node: Node) -> bool:
+    """True for ``coalesce(<input>, <number>)``: a missing input read as a constant, unguarded."""
+    if isinstance(node, Call):
+        if node.name == "coalesce" and isinstance(node.args[0], Ref) and any(
+                isinstance(argument, Number) for argument in node.args[1:]):
+            return True
+        return any(_reads_unguarded_zero(argument) for argument in node.args)
+    if isinstance(node, BinOp):
+        return _reads_unguarded_zero(node.left) or _reads_unguarded_zero(node.right)
+    if isinstance(node, Neg):
+        return _reads_unguarded_zero(node.operand)
+    return False
+
+
 def _history(node: Node, quarters: Mapping[str, int], sessions: Mapping[str, int]) -> tuple[int, int]:
     """(fiscal quarters, daily bars) a value needs; ``coalesce`` takes its cheapest branch."""
     if isinstance(node, Number):
@@ -660,6 +686,8 @@ def derive_metric_shapes(
         if filing:
             filing_clocked.add(code)
         absence = _reads_absence(node) or any(shapes[name].reads_absence for name in definition.metric_inputs)
+        unguarded = _reads_unguarded_zero(node) or any(
+            shapes[name].reads_unguarded_zero for name in definition.metric_inputs)
         reason: str | None = None
         gated = False
         if definition.window in QUARTER_GRID_WINDOWS:
@@ -672,7 +700,7 @@ def derive_metric_shapes(
             clock = CLOCK_FILING
         else:
             clock = CLOCK_MAX if filing else CLOCK_BAR
-        shapes[code] = MetricShape(history[0], history[1], clock, reason, gated, absence)
+        shapes[code] = MetricShape(history[0], history[1], clock, reason, gated, absence, unguarded)
     return shapes
 
 
@@ -808,7 +836,8 @@ def validate_anomaly_catalog(
                 shape = MetricShape(quarters, sessions, clock,
                                     f"incomparable_input:{reasons[0]}" if reasons else None,
                                     any(leg.split_gated for leg in leg_shapes),
-                                    any(leg.reads_absence for leg in leg_shapes))
+                                    any(leg.reads_absence for leg in leg_shapes),
+                                    any(leg.reads_unguarded_zero for leg in leg_shapes))
         else:
             errors.append(f"{where}: source_kind must be one of {sorted(SOURCE_KINDS)}")
         if entry.anomaly_class not in ANOMALY_CLASSES + CONTROL_CLASSES:
@@ -877,6 +906,9 @@ def validate_anomaly_catalog(
         if ("presence_rule" in entry.caveat_codes) != shape.reads_absence:
             errors.append(f"{where}: caveat presence_rule goes with a definition that reads a zero from a "
                           "concept's absence (itself or through an input) and only with one")
+        if ("unguarded_zero" in entry.caveat_codes) != shape.reads_unguarded_zero:
+            errors.append(f"{where}: caveat unguarded_zero goes with a definition that reads a missing input as "
+                          "a constant without a presence guard (itself or through an input) and only with one")
         blocked = entry.admission == "blocked_incomparable_origin"
         if shape.incomparable_reason and not blocked:
             errors.append(f"{where}: every quarterly value is labeled incomparable "
@@ -890,7 +922,7 @@ def validate_anomaly_catalog(
         if code in cataloged:
             errors.append(f"seed metric {code!r} is both cataloged and excluded")
         kind, _, target = reason.partition(":")
-        if (kind in ("dollar_level_input", "per_share_level") and not target) or (
+        if (kind in ("dollar_level_input", "per_share_level", "presence_indicator") and not target) or (
                 kind in _TARGETED_EXCLUSIONS and target in feature_ids):
             continue
         errors.append(f"exclusion {code!r} has an invalid reason {reason!r}")

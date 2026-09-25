@@ -124,11 +124,14 @@ def _seed(store, security_id: str, *, drop: frozenset[tuple[str, int]] = frozens
 
 def _flat_bars(store, security_id: str) -> None:
     """Weekday bars with a flat vendor factor over every filing clock: no split
-    happened and the split basis of every share-basis operand is proven (R1d)."""
+    happened and the split basis of every share-basis operand is proven (R1d).
+
+    The factor is 0.95 (a total-return factor carrying later dividends): a load
+    whose factor is 1 everywhere proves nothing under R1d fix 2."""
     store.con.execute(
         """
         INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, close, adjusted_close, available_at)
-        SELECT 'test', ?, ?, d::DATE, 10.0, 10.0, d::DATE + INTERVAL 22 HOUR
+        SELECT 'test', ?, ?, d::DATE, 10.0, 9.5, d::DATE + INTERVAL 22 HOUR
         FROM generate_series(TIMESTAMP '2017-12-01', TIMESTAMP '2023-06-30', INTERVAL 1 DAY) t(d)
         WHERE dayofweek(d) BETWEEN 1 AND 5
         """,
@@ -166,22 +169,24 @@ def engine_store(_schema_template, tmp_path_factory) -> Iterator[object]:
         _seed(store, "S5", drop=frozenset(("stock_issuance", index) for index in range(len(_ENDS))))
         _seed(store, "S6", drop=frozenset({("stock_issuance", 17), ("stock_issuance", 18)}))
         # S7 never reports debt, inventory or dividends; S8 reports long-term debt
-        # only; S9 stops tagging debt and inventory at bucket 16 and skips its
-        # common dividend at bucket 18 (tag switches, not genuine zeros).
+        # only; S9 switches its debt to unmapped aliases at bucket 8 (twelve quarters
+        # of post-switch window, far past any five-quarter window), stops tagging
+        # inventory at bucket 16 and skips its common dividend at bucket 18.
         _seed(store, "S7", drop=frozenset(
             (code, index) for code in (*_DEBT, "inventory", "common_dividends_paid", "total_dividends_paid")
             for index in range(len(_ENDS))))
         _seed(store, "S8", drop=frozenset(
             (code, index) for code in ("total_debt", "short_term_debt") for index in range(len(_ENDS))))
         _seed(store, "S9", drop=frozenset(
-            {(code, index) for code in (*_DEBT, "inventory") for index in range(16, len(_ENDS))}
+            {(code, index) for code in _DEBT for index in range(8, len(_ENDS))}
+            | {("inventory", index) for index in range(16, len(_ENDS))}
             | {("common_dividends_paid", 18)}))
         refresh_derived_metrics(store, DerivedMetricsOptions(
             security_ids=("S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9"),
             metric_codes=("sue_ni", "roe_variability_8q", "investment_to_assets", "inventory_change_to_assets",
                           "piotroski_f_cash_issuance", "debt_to_assets", "debt_to_assets_change_yoy",
                           "net_debt_to_book_equity", "sustainable_growth", "long_term_debt_to_assets",
-                          "quick_ratio", "working_capital_accruals"),
+                          "quick_ratio", "working_capital_accruals", "net_equity_issuance"),
         ))
         yield store
     finally:
@@ -426,8 +431,8 @@ def test_investment_to_assets_keeps_one_ppe_basis_and_treats_missing_inventory_l
 
 def test_missing_debt_inventory_and_dividends_are_zero_only_for_issuers_that_never_report_them(engine_store):
     # R1b J4 / R1a M5. S7 never reports any debt, inventory or dividend concept.
-    # Presence windows: five quarterly balance sheets for debt and inventory, the
-    # trailing four cash-flow statements for dividends.
+    # Presence rules: debt and inventory never tagged up to the quarter (the
+    # ever-reported chains), dividends untagged in all trailing four cash-flow statements.
     i = _LAST
     assert _state(engine_store, "debt_to_assets", i, "S7")[:2] == (0.0, "valid")
     # The zeros keep the spans of their statements: comparable, not incomparable.
@@ -435,9 +440,8 @@ def test_missing_debt_inventory_and_dividends_are_zero_only_for_issuers_that_nev
                  "inventory_change_to_assets", "investment_to_assets", "sustainable_growth"):
         assert _state(engine_store, code, i, "S7")[2] != "incomparable", code
     assert _state(engine_store, "debt_to_assets", i, "S8")[2] != "incomparable"
-    # Too short a window is missing, not zero: bucket 3 has four balance sheets.
-    assert _state(engine_store, "debt_to_assets", 3, "S7")[0] is None
-    assert _state(engine_store, "debt_to_assets", 4, "S7")[:2] == (0.0, "valid")
+    # An issuer that has never tagged a debt alias reads zero from its first balance sheet.
+    assert _state(engine_store, "debt_to_assets", 0, "S7")[:2] == (0.0, "valid")
     assert _state(engine_store, "debt_to_assets_change_yoy", i, "S7")[:2] == (0.0, "valid")
     assert _state(engine_store, "net_debt_to_book_equity", i, "S7")[0] == pytest.approx(
         -_v("cash_and_st_investments", i) / _v("common_equity", i), rel=1e-12)
@@ -451,7 +455,6 @@ def test_missing_debt_inventory_and_dividends_are_zero_only_for_issuers_that_nev
     # debt in operating working capital and inventory in the quick ratio: a debt-free,
     # inventory-free issuer keeps its leverage signal, F-score, accruals and quick ratio.
     assert _state(engine_store, "long_term_debt_to_assets", i, "S7")[:2] == (0.0, "valid")
-    assert _state(engine_store, "long_term_debt_to_assets", 3, "S7")[0] is None
     assert _state(engine_store, "quick_ratio", i, "S7")[0] == pytest.approx(
         _v("current_assets", i) / _v("current_liabilities", i), rel=1e-12)
 
@@ -469,13 +472,16 @@ def test_missing_debt_inventory_and_dividends_are_zero_only_for_issuers_that_nev
         _v("long_term_debt", i) / _v("total_assets", i), rel=1e-12)
     assert _state(engine_store, "working_capital_accruals", i, "S8")[0] == pytest.approx(
         (owc(i) - owc(i - 4)) / _avg_assets(i), rel=1e-12)
-    # S9 stops tagging debt and inventory at bucket 16: a tag switch is missing, not zero.
-    assert _state(engine_store, "debt_to_assets", 15, "S9")[0] == pytest.approx(
-        _v("total_debt", 15) / _v("total_assets", 15), rel=1e-12)
-    for index in range(16, len(_ENDS)):
+    # S9 switches debt to unmapped aliases at bucket 8: once a mapped alias has been
+    # seen, absence is missing for every later quarter, never a zero (Re-review 1 N1).
+    assert _state(engine_store, "debt_to_assets", 7, "S9")[0] == pytest.approx(
+        _v("total_debt", 7) / _v("total_assets", 7), rel=1e-12)
+    for index in range(8, len(_ENDS)):
         for code in ("debt_to_assets", "debt_to_assets_change_yoy", "net_debt_to_book_equity",
-                     "investment_to_assets", "inventory_change_to_assets", "long_term_debt_to_assets",
-                     "quick_ratio", "working_capital_accruals", "piotroski_f_cash_issuance"):
+                     "long_term_debt_to_assets", "working_capital_accruals", "piotroski_f_cash_issuance"):
+            assert _state(engine_store, code, index, "S9")[0] is None, (code, index)
+    for index in range(16, len(_ENDS)):
+        for code in ("investment_to_assets", "inventory_change_to_assets", "quick_ratio"):
             assert _state(engine_store, code, index, "S9")[0] is None, (code, index)
     # S9 skips its common dividend at bucket 18: the payer never reads as a non-payer.
     assert _state(engine_store, "sustainable_growth", 17, "S9")[0] == pytest.approx(
@@ -532,6 +538,11 @@ def test_cash_issuance_signal_distinguishes_untagged_years_from_partial_years(en
     assert _state(engine_store, "no_equity_issuance_ttm", _LAST, "S6")[:2] == (None, "missing_input_or_domain")
     assert _state(engine_store, "piotroski_f_cash_issuance", _LAST, "S6")[0] is None
     assert _state(engine_store, "no_equity_issuance_ttm", 15, "S6")[:2] == (0.0, "valid")
+    # Re-review 1 N2: the same presence guard on the trailing flow itself. A never-
+    # issuer's issuance is an imputed zero; a partly tagged year has no value.
+    assert _state(engine_store, "net_equity_issuance", _LAST, "S5")[:2] == (
+        pytest.approx(-_ttm("stock_repurchases_buybacks", _LAST) / _avg_assets(_LAST), rel=1e-12), "valid")
+    assert _state(engine_store, "net_equity_issuance", _LAST, "S6")[0] is None
 
 
 # ------------------------------------------------- catalog admission vs the engine

@@ -59,6 +59,8 @@ SPLIT_GATED = {
 KNOWN_BIAS = {
     "eps_diluted_growth_yoy", "eps_cagr_3y", "eps_diluted_q_growth_qoq", "eps_basic_q_growth_qoq",
     "shares_growth_yoy", "share_issuance_3y", "piotroski_f",
+    # Re-review 1 n1: every share-basis row until the R1d fix re-review passes.
+    "eps_diluted_q_growth_yoy", "eps_basic_q_growth_yoy", "eps_diluted_q_growth_yoy_accel", "share_issuance_1y",
 }
 #: Contested signs pre-registered two-sided (R1a I3/I5, R1b J1).
 TWO_SIDED = {"revenue_growth_yoy", "debt_to_market", "assets_to_market", "sga_to_sales"}
@@ -146,12 +148,14 @@ def test_presence_rule_caveat_marks_exactly_the_rows_that_can_read_an_imputed_ze
         assert shapes[code].reads_absence, code
     # Every catalog row reading them, directly or through debt in NOA, EV or invested capital.
     assert {"debt_to_assets", "debt_to_assets_change_yoy", "long_term_debt_to_assets", "net_debt_to_book_equity",
-            "debt_to_market", "working_capital_accruals", "rsst_accruals", "delta_noa", "noa_to_assets", "rnoa_q",
+            "debt_to_market", "working_capital_accruals", "delta_noa", "noa_to_assets", "rnoa_q",
             "ebitda_to_ev", "gross_profit_to_ev", "roic", "quick_ratio", "investment_to_assets",
-            "inventory_change_to_assets", "cash_profitability", "piotroski_f_cash_issuance"} <= presence
-    # Rows on reported concepts only never carry it.
-    for code in ("roa", "current_ratio", "cash_ratio", "book_to_market", "market_cap", "net_equity_issuance",
-                 "dividend_yield"):
+            "inventory_change_to_assets", "cash_profitability", "piotroski_f_cash_issuance",
+            # Re-review 1 N2: presence-guarded trailing payout and issuance flows.
+            "net_equity_issuance", "external_financing", "net_payout_yield", "total_payout_yield",
+            "dividend_yield"} <= presence
+    # Rows on reported concepts only never carry it (rsst_accruals: debt cancels).
+    for code in ("roa", "current_ratio", "cash_ratio", "book_to_market", "market_cap", "rsst_accruals"):
         assert code not in presence, code
         assert not shapes[code].reads_absence, code
     assert "sales_to_price" not in presence
