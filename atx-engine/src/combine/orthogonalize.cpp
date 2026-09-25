@@ -193,7 +193,15 @@ lowdin_orthogonalize(std::span<const PanelView> panels) {
 }
 
 atx::core::Result<MarginalIc> marginal_ic(PanelView cand, std::span<const PanelView> pool,
-                                          PanelView fwd, usize begin, usize end) {
+                                          PanelView fwd, usize begin, usize end,
+                                          eval::hac::TStatRule tstat_rule, usize label_horizon) {
+  using eval::hac::TStatRule;
+  if (label_horizon == 0U ||
+      (tstat_rule != TStatRule::IidV1 && tstat_rule != TStatRule::NeweyWestAutoV2 &&
+       tstat_rule != TStatRule::HorizonAwareV3)) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "marginal_ic: invalid inference rule or label horizon");
+  }
   const usize t_n = cand.n_dates;
   const usize n = cand.n_instruments;
   if (end == 0U) {
@@ -268,7 +276,7 @@ atx::core::Result<MarginalIc> marginal_ic(PanelView cand, std::span<const PanelV
   // TStatRule::IidV1 reproduces the pre-W0 mean / (sd / sqrt(n)) term for term. Lags run
   // over consecutive USABLE dates (skipped dates are dropped, not NaN-filled). The
   // contract is unchanged: 0 when n < 2 or the (long-run) variance is zero.
-  const eval::hac::MeanInference mi = eval::hac::mean_tstat(ics, eval::hac::kDefaultTStatRule);
+  const eval::hac::MeanInference mi = eval::hac::mean_tstat(ics, tstat_rule, label_horizon);
   out.tstat = (mi.defined != 0U) ? mi.t : 0.0;
   return atx::core::Ok(out);
 }

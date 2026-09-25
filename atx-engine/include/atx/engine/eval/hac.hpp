@@ -32,6 +32,7 @@
 //  call site compacts its series to finite values first; a non-finite value here yields a
 //  non-finite result, flagged by `MeanInference::defined == 0`.
 
+#include <algorithm>
 #include <cmath>
 #include <span>
 
@@ -64,6 +65,8 @@ enum class TStatRule : atx::u8 {
                        // MA(h-1) series.
   NeweyWestAutoV2 = 2, // Bartlett at `newey_west_auto_lag`, with the n / (n - 1) correction so
                        // that lag 0 reproduces IidV1 exactly.
+  HorizonAwareV3 = 3, // Uniform kernel for overlapping labels, lag >= horizon - 1;
+                      // horizon 1 retains NeweyWestAutoV2. Non-positive LRV falls back.
 };
 
 inline constexpr TStatRule kDefaultTStatRule = TStatRule::NeweyWestAutoV2;
@@ -255,7 +258,8 @@ namespace detail {
 //  `Unknown` returns an undefined result.
 // ---------------------------------------------------------------------------
 [[nodiscard]] inline MeanInference mean_tstat(std::span<const atx::f64> x,
-                                              TStatRule rule) noexcept {
+                                              TStatRule rule,
+                                              atx::usize label_horizon = 1U) noexcept {
   switch (rule) {
   case TStatRule::IidV1: {
     MeanInference out{};
@@ -287,6 +291,12 @@ namespace detail {
   }
   case TStatRule::NeweyWestAutoV2:
     return mean_inference(x, Kernel::BartlettV1, newey_west_auto_lag(x), true);
+  case TStatRule::HorizonAwareV3:
+    if (label_horizon == 0U) {
+      return MeanInference{};
+    }
+    return mean_inference(x, label_horizon > 1U ? Kernel::UniformV1 : Kernel::BartlettV1,
+                          std::max(label_horizon - 1U, newey_west_auto_lag(x)), true);
   case TStatRule::Unknown:
     break;
   }
@@ -309,12 +319,16 @@ namespace detail {
 [[nodiscard]] inline atx::f64 ewma_variance_inflation(std::span<const atx::f64> x,
                                                       std::span<const atx::f64> w,
                                                       atx::f64 weighted_mean,
-                                                      TStatRule rule) noexcept {
-  if (rule != TStatRule::NeweyWestAutoV2 || x.size() != w.size() || x.size() < 2U) {
+                                                      TStatRule rule,
+                                                      atx::usize label_horizon = 1U) noexcept {
+  if ((rule != TStatRule::NeweyWestAutoV2 && rule != TStatRule::HorizonAwareV3) ||
+      label_horizon == 0U || x.size() != w.size() || x.size() < 2U) {
     return 1.0;
   }
   const atx::usize n = x.size();
-  const atx::usize lag = newey_west_auto_lag(x);
+  const bool overlap = rule == TStatRule::HorizonAwareV3 && label_horizon > 1U;
+  const atx::usize lag = std::min(n - 1U,
+      std::max(overlap ? label_horizon - 1U : 0U, newey_west_auto_lag(x)));
   const auto u = [&](atx::usize r) noexcept { return w[r] * (x[r] - weighted_mean); };
   atx::f64 s0 = 0.0;
   for (atx::usize r = 0U; r < n; ++r) {
@@ -324,12 +338,18 @@ namespace detail {
     return 1.0;
   }
   atx::f64 s = s0;
+  atx::f64 bartlett = s0;
   for (atx::usize k = 1U; k <= lag && k < n; ++k) {
     atx::f64 c = 0.0;
     for (atx::usize r = k; r < n; ++r) {
       c += u(r) * u(r - k);
     }
-    s += 2.0 * kernel_weight(Kernel::BartlettV1, k, lag) * c;
+    const atx::f64 tapered = 2.0 * kernel_weight(Kernel::BartlettV1, k, lag) * c;
+    bartlett += tapered;
+    s += overlap ? 2.0 * c : tapered;
+  }
+  if (overlap && (!(s > 0.0) || !std::isfinite(s))) {
+    s = bartlett;
   }
   const atx::f64 vif = s / s0;
   return (vif > 0.0 && std::isfinite(vif)) ? vif : 1.0;

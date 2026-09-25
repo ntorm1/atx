@@ -26,6 +26,7 @@
 
 #include "atx/core/error.hpp" // Result
 #include "atx/core/types.hpp" // f64, usize
+#include "atx/engine/eval/hac.hpp"
 
 namespace atx::engine::combine {
 
@@ -62,16 +63,19 @@ lowdin_orthogonalize(std::span<const PanelView> panels);
 
 struct MarginalIc {
   atx::f64 mean_ic = 0.0; // mean over usable dates of IC(residual_t, fwd_t)
-  atx::f64 tstat = 0.0;   // mean_ic / (sd/√n); 0 when n < 2 or sd == 0
+  atx::f64 tstat = 0.0;   // versioned HAC t; 0 when inference is undefined
   atx::usize n_dates = 0U;
 };
 
 // Marginal IC of `cand` beyond `pool` against forward returns `fwd` over date rows
 // [begin, end) (end == 0 → all dates). Empty pool → plain mean IC. Err on shape
-// mismatch or an empty date range.
+// mismatch, an empty date range, or zero label_horizon. Declare the overlap horizon
+// in stream dates; IidV1 restores the historical mean/(sd/sqrt(n)) statistic.
 [[nodiscard]] atx::core::Result<MarginalIc> marginal_ic(PanelView cand,
                                                         std::span<const PanelView> pool,
                                                         PanelView fwd, atx::usize begin = 0U,
-                                                        atx::usize end = 0U);
+                                                        atx::usize end = 0U,
+                         eval::hac::TStatRule tstat_rule = eval::hac::TStatRule::HorizonAwareV3,
+                         atx::usize label_horizon = 1U);
 
 } // namespace atx::engine::combine

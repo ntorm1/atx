@@ -40,6 +40,22 @@ The old progress file lists provisional P1-P11: these are not owner waivers or a
 | Replay integration correction | w0_replay_integration | Own pool-4. Confirmed replay_config silently pins Abort; implementing corrected TerminalReturn default plus explicit legacy selector. Waiting for build slot. |
 | Integration/docs | root | I-24 guard-run headline corrected from source artifact; no alpha profitability claim. |
 
+### Follow-up assignments
+
+- g0_evidence: pool-3 feat/w0-g0-codex-20260925, Release build ongoing. Frozen input
+  manifest preflight confirms all 13 context date axes end before 2020. Do not rebuild solely
+  to relocate deps if successful binaries are valid; isolate before any later rebuild.
+- w0_replay_integration: pool-4, implementing/configuring corrected first-missing terminal
+  fallback and explicit ex-post legacy mode. As-of terminal-event handling required.
+  Granted isolated Debug configure/build with env CMAKE_BUILD_PARALLEL_LEVEL=1 if free RAM >4GB.
+- w0_gate_audit: finished independent audit, now implements D-12 in pool-5 on
+  feat/w0-membership-integration-codex-20260925. Narrow VM CS eligibility mask preserves
+  temporal history; post-masking alone is insufficient. Builds held pending slot.
+- root: implemented E0a public versioned inference/return-treatment config and declared
+  horizon-aware t-statistics, tests added after implementation. See
+  .superpowers/sdd/w0/lane-inference-integration-report.md. Root configure in progress,
+  compilation waits replay build slot. Every repair still needs fresh adversarial review.
+
 ## Acceptance gaps to resolve
 
 - Replay consumer forces Abort despite B0 engine TerminalReturn default. G0 baseline cannot
@@ -50,6 +66,18 @@ The old progress file lists provisional P1-P11: these are not owner waivers or a
   estimator; retain both evidence and definitions without conflating them.
 - R0 sanitizer acceptance was replaced by checked iterators; neither is equivalent evidence.
 - Quiet-host benchmarks, complete touched-target gate, G0 metrics and all W1-W5 work pending.
+- Fresh audit found B0 last_print scanning future closes; current missing-close NAV changes
+  when future prices change. Replay agent owns repair and future mutation proof.
+- D-12 only admission was masked; family cross-sectional operators saw year-union names.
+  Membership agent owns repair inside the VM, keeping rolling warmup data separate.
+- A-18 search-driver/fitness cache remains hash-only (W2-A4 production follow-through).
+- R-06 stage_riskmodel still uses static groups/no PIT cap (W3-R4 production follow-through).
+- Full gate must explicitly exclude DataRealPanel and corporate-action real-data smoke tests
+  using 2024/2026 inputs, even with environment variables cleared. No sanitizer proof yet.
+- For performance, compare identical equity-bench runs at O1 head 3ccf012c and current head
+  on quiet host; checked-in alpha_throughput.json is a busy-host legacy sample. No false
+  pass via bench-gate -Update/-AllowMissing. Filters: BM_Kernel, Wq101_, BM_Search,
+  BM_OptimizerProduction M=1000/3000/5000 modes 4/6/7; repetitions=3.
 
 ## Evidence recorded this continuation
 

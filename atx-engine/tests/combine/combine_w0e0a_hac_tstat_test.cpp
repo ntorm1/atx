@@ -367,4 +367,98 @@ TEST(CombineHacTstatStoreWinsor, IcMatrix_WinsorizedReturnsTameAnOutlier_RawV1Re
   EXPECT_LT(std::fabs(win_ic - clean), std::fabs(raw_ic - clean));
 }
 
+TEST(CombineInferenceConfig, PublicCombinersRestoreLegacyInferenceAndRawReturns) {
+  constexpr std::size_t kT = 160U;
+  const auto store = overlapping_store(kT, 40U, 0.02, 731U, nullptr);
+  const cb::FitWindow win{0U, kT};
+  const cb::SignalInferenceConfig legacy{hac::TStatRule::IidV1, 21U,
+                                          cb::IcReturnTreatment::RawV1};
+  const auto raw_ic = cb::ic_matrix(store, win, cb::IcReturnTreatment::RawV1);
+  double mean = 0.0;
+  for (double v : raw_ic) {
+    mean += v;
+  }
+  mean /= static_cast<double>(kT);
+  double ss = 0.0;
+  for (double v : raw_ic) {
+    ss += (v - mean) * (v - mean);
+  }
+  const double legacy_t = mean / (std::sqrt(ss / static_cast<double>(kT - 1U)) /
+                                   std::sqrt(static_cast<double>(kT)));
+  cb::GrinoldKahnCombiner gk;
+  gk.inference = legacy;
+  const auto gr = gk.fit(store, win);
+  ASSERT_TRUE(gr.has_value());
+  EXPECT_EQ(gr->tstat[0], legacy_t);
+
+  cb::IcirEwmaCombiner ewma{0.0, 0.0};
+  ewma.inference = legacy;
+  const auto er = ewma.fit(store, win);
+  ASSERT_TRUE(er.has_value());
+  // The historical EWMA estimator uses the population weighted variance.
+  EXPECT_NEAR(er->tstat[0], mean / std::sqrt(ss / static_cast<double>(kT)) *
+                               std::sqrt(static_cast<double>(kT)), 1e-12);
+
+  cb::KakushadzeRegression ky;
+  ky.inference = legacy;
+  const auto kr = ky.fit(store, win);
+  ASSERT_TRUE(kr.has_value());
+  const auto ar = cb::alpha_return_matrix(store, win);
+  EXPECT_EQ(kr->tstat[0], hac::mean_tstat(ar, hac::TStatRule::IidV1).t);
+  cb::FamaMacBethRidge fmb;
+  fmb.inference = legacy;
+  const auto fr = fmb.fit(store, win);
+  ASSERT_TRUE(fr.has_value());
+  EXPECT_NEAR(fr->tstat[0], kr->tstat[0], 1e-11);
+
+  const auto mr = cb::marginal_ic({store.signal(0U), kT, 40U}, {},
+      {store.forward_returns(), kT, 40U}, 0U, kT, hac::TStatRule::IidV1, 21U);
+  ASSERT_TRUE(mr.has_value());
+  EXPECT_NEAR(mr->tstat, legacy_t, 1e-11);
+}
+
+TEST(CombineInferenceConfig, DeclaredHorizonCalibratesOverlappingNull) {
+  constexpr std::size_t kReps = 2000U;
+  constexpr std::size_t kT = 1750U;
+  atx::core::Xoshiro256pp rng{0xC01ULL};
+  cb::SignalInferenceConfig cfg;
+  cfg.label_horizon = kH;
+  std::size_t rejected = 0U;
+  for (std::size_t rep = 0U; rep < kReps; ++rep) {
+    const auto series = ma20(rng, kT, 0.0, 0.01);
+    MatX ic(static_cast<Eigen::Index>(kT), 1);
+    for (std::size_t t = 0U; t < kT; ++t) {
+      ic(static_cast<Eigen::Index>(t), 0) = series[t];
+    }
+    const auto fit = cb::grinold_kahn_weights(ic, cb::CovTarget::Sample, cfg);
+    ASSERT_TRUE(fit.has_value());
+    rejected += std::abs(fit->tstat[0]) > 1.96 ? 1U : 0U;
+  }
+  const double rate = static_cast<double>(rejected) / static_cast<double>(kReps);
+  std::printf("[CombineInferenceConfig] MA(20) null, n=%zu, reps=%zu, rejection=%.4f\n",
+              kT, kReps, rate);
+  EXPECT_GE(rate, 0.03);
+  EXPECT_LE(rate, 0.07);
+}
+
+TEST(CombineInferenceConfig, HorizonChangesWeightedHaircutAndValidatesBoundary) {
+  const auto store = overlapping_store(400U, 80U, 0.02, 23U, nullptr);
+  cb::IcirEwmaCombiner daily{0.0, 2.0};
+  cb::IcirEwmaCombiner overlap = daily;
+  overlap.inference.label_horizon = 21U;
+  const auto dr = daily.fit(store, {0U, 400U});
+  const auto hr = overlap.fit(store, {0U, 400U});
+  ASSERT_TRUE(dr.has_value());
+  ASSERT_TRUE(hr.has_value());
+  EXPECT_LT(std::abs(hr->tstat[0]), std::abs(dr->tstat[0]));
+  overlap.inference.label_horizon = 0U;
+  EXPECT_FALSE(overlap.fit(store, {0U, 400U}).has_value());
+  overlap.inference.label_horizon = 1U;
+  overlap.inference.tstat_rule = hac::TStatRule::Unknown;
+  EXPECT_FALSE(overlap.fit(store, {0U, 400U}).has_value());
+  EXPECT_FALSE(cb::marginal_ic({store.signal(0U), 400U, 80U}, {},
+      {store.forward_returns(), 400U, 80U}, 0U, 400U,
+      hac::TStatRule::HorizonAwareV3, 0U).has_value());
+}
+
 } // namespace atx_test_w0_e0a_hac_tstat

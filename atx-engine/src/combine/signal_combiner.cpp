@@ -45,22 +45,22 @@ namespace {
   return out;
 }
 
-// W0-E0a / E-03: every per-alpha t-stat in this file runs through one versioned rule.
-// A per-date IC or alpha-return series built on an h-day forward return is MA(h-1), so
-// the pre-W0 IID t (TStatRule::IidV1) overstated significance by about sqrt(h) and the
-// ICIR-EWMA haircut barely bit. The default is Newey-West at the NW-1994 automatic lag;
-// IidV1 stays callable through eval::hac::mean_tstat / ewma_variance_inflation so a
-// frozen fit can be re-derived term for term.
-//
-// Known limitation (W0-E0a review): the NW-1994 automatic lag does not know the horizon.
-// On an MA(20) null at T = 500 it still rejects about 13% at a nominal 5% (the IID rule
-// rejected 67%). When the combiner headers gain `tstat_rule`, also pass the horizon and
-// floor the lag at h - 1, as eval's IcHacRule already does.
-constexpr eval::hac::TStatRule kCombineTStatRule = eval::hac::kDefaultTStatRule;
+[[nodiscard]] atx::core::Status validate_inference(SignalInferenceConfig cfg) {
+  using eval::hac::TStatRule;
+  if (cfg.label_horizon == 0U ||
+      (cfg.tstat_rule != TStatRule::IidV1 && cfg.tstat_rule != TStatRule::NeweyWestAutoV2 &&
+       cfg.tstat_rule != TStatRule::HorizonAwareV3) ||
+      (cfg.return_treatment != IcReturnTreatment::RawV1 &&
+       cfg.return_treatment != IcReturnTreatment::WinsorizedV2)) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "signal combiner: invalid inference rule or label horizon");
+  }
+  return atx::core::Ok();
+}
 
-// Per-column t-stat of the column mean under kCombineTStatRule; NaN when the rule
+// Per-column t-stat under the caller's versioned inference; NaN when the rule
 // leaves it undefined (T < 2, or a zero (long-run) variance).
-[[nodiscard]] std::vector<f64> column_tstats(const MatX &x) {
+[[nodiscard]] std::vector<f64> column_tstats(const MatX &x, SignalInferenceConfig cfg) {
   const Eigen::Index t = x.rows();
   std::vector<f64> out(static_cast<usize>(x.cols()), kSignalNaN);
   if (t < 2) {
@@ -69,7 +69,8 @@ constexpr eval::hac::TStatRule kCombineTStatRule = eval::hac::kDefaultTStatRule;
   for (Eigen::Index c = 0; c < x.cols(); ++c) {
     // MatX is column-major, so a column is one contiguous run of `t` values.
     const std::span<const f64> col{x.col(c).data(), static_cast<usize>(t)};
-    const eval::hac::MeanInference mi = eval::hac::mean_tstat(col, kCombineTStatRule);
+    const eval::hac::MeanInference mi =
+        eval::hac::mean_tstat(col, cfg.tstat_rule, cfg.label_horizon);
     if (mi.defined != 0U) {
       out[static_cast<usize>(c)] = mi.t;
     }
@@ -148,7 +149,9 @@ atx::core::Status validate_window(const SignalStore &s, FitWindow w, usize min_r
 // ---------------------------------------------------------------------------
 //  Grinold-Kahn
 // ---------------------------------------------------------------------------
-atx::core::Result<CombineWeights> grinold_kahn_weights(const MatX &ic, CovTarget target) {
+atx::core::Result<CombineWeights> grinold_kahn_weights(const MatX &ic, CovTarget target,
+                                                     SignalInferenceConfig inference) {
+  ATX_TRY_VOID(validate_inference(inference));
   const usize k = static_cast<usize>(ic.cols());
   std::vector<f64> flat(static_cast<usize>(ic.rows()) * k);
   for (Eigen::Index r = 0; r < ic.rows(); ++r) {
@@ -178,16 +181,17 @@ atx::core::Result<CombineWeights> grinold_kahn_weights(const MatX &ic, CovTarget
   CombineWeights out;
   out.w.assign(sol.data(), sol.data() + sol.size());
   normalize_gross(out.w);
-  out.tstat = column_tstats(x);
+  out.tstat = column_tstats(x, inference);
   return atx::core::Ok(std::move(out));
 }
 
 atx::core::Result<CombineWeights> GrinoldKahnCombiner::fit(const SignalStore &s, FitWindow w) const {
   ATX_TRY_VOID(validate_window(s, w, 2U));
+  ATX_TRY_VOID(validate_inference(inference));
   const usize k = s.n_alphas();
-  const std::vector<f64> flat = ic_matrix(s, w);
+  const std::vector<f64> flat = ic_matrix(s, w, inference.return_treatment);
   const MatX ic = complete_rows(flat, w.size(), k);
-  ATX_TRY(CombineWeights out, grinold_kahn_weights(ic, target));
+  ATX_TRY(CombineWeights out, grinold_kahn_weights(ic, target, inference));
   out.fit_begin = w.begin;
   out.fit_end = w.end;
   return atx::core::Ok(std::move(out));
@@ -198,9 +202,10 @@ atx::core::Result<CombineWeights> GrinoldKahnCombiner::fit(const SignalStore &s,
 // ---------------------------------------------------------------------------
 atx::core::Result<CombineWeights> IcirEwmaCombiner::fit(const SignalStore &s, FitWindow w) const {
   ATX_TRY_VOID(validate_window(s, w, 2U));
+  ATX_TRY_VOID(validate_inference(inference));
   const usize k = s.n_alphas();
   const usize rows = w.size();
-  const std::vector<f64> ic = ic_matrix(s, w);
+  const std::vector<f64> ic = ic_matrix(s, w, inference.return_treatment);
   const f64 decay = (half_life > 0.0) ? std::pow(0.5, 1.0 / half_life) : 1.0;
   // Row weights: newest row (rows-1) has weight 1; row r has decay^(rows-1-r).
   std::vector<f64> rw(rows);
@@ -256,7 +261,8 @@ atx::core::Result<CombineWeights> IcirEwmaCombiner::fit(const SignalStore &s, Fi
     // the weighted long-run variance inflation (exactly 1.0 under TStatRule::IidV1, so
     // the pre-W0 t is reproduced bit for bit there). Rows with a NaN IC are skipped,
     // so lags run over consecutive FINITE rows.
-    const f64 vif = eval::hac::ewma_variance_inflation(xs, ws, mean, kCombineTStatRule);
+    const f64 vif = eval::hac::ewma_variance_inflation(
+        xs, ws, mean, inference.tstat_rule, inference.label_horizon);
     const f64 t = icir * std::sqrt(n_eff / vif);
     out.tstat[a] = t;
     const f64 shrink = (tstat_haircut > 0.0) ? std::max(0.0, 1.0 - tstat_haircut / std::abs(t)) : 1.0;
@@ -273,6 +279,7 @@ atx::core::Result<CombineWeights> IcirEwmaCombiner::fit(const SignalStore &s, Fi
 // ---------------------------------------------------------------------------
 atx::core::Result<CombineWeights> FamaMacBethRidge::fit(const SignalStore &s, FitWindow w) const {
   ATX_TRY_VOID(validate_window(s, w, 1U));
+  ATX_TRY_VOID(validate_inference(inference));
   if (lambda < 0.0) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "FamaMacBethRidge: lambda < 0");
   }
@@ -326,7 +333,7 @@ atx::core::Result<CombineWeights> FamaMacBethRidge::fit(const SignalStore &s, Fi
   CombineWeights out;
   const VecX mean = bm.colwise().mean().transpose();
   out.w.assign(mean.data(), mean.data() + mean.size());
-  out.tstat = column_tstats(bm);
+  out.tstat = column_tstats(bm, inference);
   out.fit_begin = w.begin;
   out.fit_end = w.end;
   return atx::core::Ok(std::move(out));
@@ -471,6 +478,7 @@ atx::core::Result<std::vector<f64>> kakushadze_weights(const MatX &r, std::span<
 }
 
 atx::core::Result<CombineWeights> KakushadzeRegression::fit(const SignalStore &s, FitWindow w) const {
+  ATX_TRY_VOID(validate_inference(inference));
   ATX_TRY_VOID(validate_window(s, w, 3U));
   const usize k = s.n_alphas();
   if (!clusters.empty() && clusters.size() != k) {
@@ -491,7 +499,7 @@ atx::core::Result<CombineWeights> KakushadzeRegression::fit(const SignalStore &s
                                                    ridge_rel, n_factors));
   CombineWeights out;
   out.w = std::move(wv);
-  out.tstat = column_tstats(r);
+  out.tstat = column_tstats(r, inference);
   out.fit_begin = w.begin;
   out.fit_end = w.end;
   return atx::core::Ok(std::move(out));
