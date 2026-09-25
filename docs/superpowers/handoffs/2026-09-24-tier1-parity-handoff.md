@@ -1,5 +1,29 @@
 # Tier-1 parity handoff — 2026-09-24 evening UTC
 
+**Current state, 2026-09-25 00:19UTC: archive18 recovery is complete.**
+LR1 (9983509a) measured an avoidable 0.510460GiB private-memory allocation on
+DuckDB's first scalar binding. LR2 (1670833b) removes that import path from the
+operator recovery only, with validated/escaped typed SQL literals. One review
+and its focused transaction/scope/value checks passed. Actual full recovery
+then passed at **0.315971375GiB native peak under a 0.5GiB cap**, 256MB/one
+thread, unchanged host stops and 3GiB disk floor. Both stale ledgers are failed
+and CHECKPOINT passed. Do not repeat this recovery.
+
+The actual archive18 dataset UUID, and next CompanyFacts predecessor, is
+**a4942a4b-9d16-46ef-9dc6-d1e8ada7d16a**. It committed zero new rows/CIKs.
+Full retained counts: 47,941,000 facts and points each; 31,959,271 price bars;
+31,934,514 custom-feature rows; schema0326. These raw counts do not establish
+canonical fundamentals coverage or production eligibility. Receipts:
+companyfacts-archive18-headroom-recovery.json and archive18-recovery3-memory.json.
+Earlier process-check evidence is preserved as process-check1.json.
+
+No source writer is live. Source-archive19-lowmemory-window1 failed after180s
+(last qualifying interval40s); window2 is now observing the
+unchanged 4/6GiB,120second sustained source profile. Only after it passes, run
+fresh archive19, full archive_members/replacement/force,512MB/one thread,
+1.5GiB cap,3GiB disk floor, pinned2026-09-20. The entries below are historical;
+their pending recovery and old predecessor instructions are superseded here.
+
 **Goal active: measured efficiency work supersedes the22:10host-capacity block.**
 The user explicitly permits lower memory requirements following efficiency and
 incrementality changes. Snapshot remains2026-09-20 and the production outcome
@@ -131,10 +155,8 @@ backups and use backup-keep100. Do not infer a process from a running ledger.
 
 ## Next action
 
-1. Finish the bounded archive18 operator ledger recovery after headroom allows;
-   refresh process-check evidence if older than five minutes. Its script is the
-   exact archive16 procedure with run identities changed. Then use its actual
-   terminal dataset UUID for archive19, fresh artifacts and full source proof.
+1. After the sustained source window passes, resume full archive19 from
+   a4942a4b-9d16-46ef-9dc6-d1e8ada7d16a using fresh artifacts and full source proof.
    Keep512MB/one thread,1.5GiB cap,4/6GiB sustained window and3GiB disk floor.
 2. Full submissions resume, scoped CVX earnings source, full-universe run5
    from statement_points, force and16sequential reconciliation shards. Other

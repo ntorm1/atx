@@ -1,5 +1,11 @@
 # Bounded efficiency experiment — 2026-09-24
 
+LR2 live acceptance,2026-09-25 00:18UTC: archive18-recovery3 completed all
+original production scans, exact ledger transaction and checkpoint at
+0.315971375GiB native peak under0.5GiB. Both ledgers terminal; zero attempt
+rows; all retained counts unchanged. The short recovery profile below is
+now measured on the actual warehouse. This does not qualify source writes.
+
 LR2 short ledger-recovery trial: the first Python scalar binding was measured
 to import pandas/NumPy and add 548,102,144 private bytes. The recovery script now
 uses validated internal scalar SQL literals while retaining every full source

@@ -1,5 +1,19 @@
 # Latest controller state: full source audit complete, production and CF1
 
+## Archive18 recovery complete; archive19 next — 2026-09-25 00:19UTC
+
+LR1/LR2 committed9983509a/1670833b; one review and focused contracts accepted.
+Actual recovery3 completed at0.315971375GiB native peak under0.5GiB cap with
+256MB/one thread; both stale ledgers failed, checkpoint passed, no new source
+rows. Actual next predecessor:a4942a4b-9d16-46ef-9dc6-d1e8ada7d16a. Full counts
+remain47,941,000facts/points,31,959,271bars,31,934,514features,schema0326.
+No recovery is due. source-archive19-lowmemory-window1 failed at180s after a
+maximum40s qualifying interval; window2 now observes the unchanged
+4/6GiB,120second source prerequisite. After success, full archive19 at512MB,
+one thread,1.5GiB cap,3GiB disk floor and pinned2026-09-20. No source writer
+is live yet; all older pending recovery/predecessor instructions are historical.
+Then full submissions, CVX source and full run5. Preserve stash@{0} and backups.
+
 ## No live worker; bounded recovery still awaits capacity — 2026-09-25 00:01UTC
 
 Recovery window1 is terminal no_sustained_window after180seconds at3/5GiB floors.

@@ -1,5 +1,19 @@
 # Tier-1 parity program ledger (atx-db)
 
+## Measured recovery efficiency and live acceptance — 2026-09-25 00:19UTC
+
+LR1(9983509a) measured0.510460GiB avoidable private bytes on first scalar bind.
+LR2(1670833b) removed that import path from the bounded recovery helper only;
+exact scope, transaction, escaping, timestamp and rollback checks plus one
+review passed. Live archive18 recovery3 then completed all retained scans and
+checkpoint at0.315971375GiB native peak/cap0.5GiB,256MB/one thread. Both ledgers
+are terminal failed, no new attempt rows. Next predecessor is actual archive18
+UUID a4942a4b-9d16-46ef-9dc6-d1e8ada7d16a. Raw totals remain47,941,000facts and
+points,31,959,271bars,31,934,514features,schema0326. Source19 sustained4/6GiB
+window1 failed at180s after a maximum40s qualifying interval; window2 is now
+observing. No writer live yet. This scoped recovery improvement does
+not qualify source writes or relax data/release gates. Production incomplete.
+
 ## Recovery capacity window failed — 2026-09-25 00:01UTC
 
 archive18-recovery-window1 observed180seconds but could not sustain the scoped

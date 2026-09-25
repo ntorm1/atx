@@ -1,5 +1,31 @@
 # Production resume sequence — updated 2026-09-24
 
+**CURRENT,2026-09-25 00:19UTC:** archive18 recovery is complete; both stale
+ledgers closed and checkpoint passed at0.315971375GiB native peak/cap0.5GiB.
+Its actual dataset UUID is a4942a4b-9d16-46ef-9dc6-d1e8ada7d16a. Do not repeat
+recovery. All older commands/statuses below are historical. The only next
+CompanyFacts command is archive19 below, after source-archive19-lowmemory-window2
+passes120seconds at4/6GiB and no other heavy process is present:
+
+```powershell
+C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
+  --job-gb 1.5 --disk-path C:\atx\atx-db\data --min-free-disk-gb 3 `
+  --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive19-memory.json `
+  --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive19.log `
+  --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive19.err `
+  -- C:\atx\atx-db\.venv\Scripts\python.exe scripts\warehouse_activate.py `
+  --db-path data\warehouse.duckdb --as-of-date 2026-09-20 --only companyfacts_load `
+  --companyfacts-symbol-source archive_members --companyfacts-replace-existing `
+  --companyfacts-resume-from-run-id a4942a4b-9d16-46ef-9dc6-d1e8ada7d16a `
+  --memory-limit 512MB --threads 1 --backup-keep 100 --force `
+  --run-id activation-companyfacts-archive19 `
+  --sec-user-agent "atx-db/0.1 atx-research@example.com"
+```
+
+Execute from C:\atx\atx-db. Preserve full proof and scope. Inspect actual
+terminal artifacts before full submissions, CVX source and full run5. The
+latest disk free sample was34.538GiB at00:18UTC; it is not reserved capacity.
+
 **2026-09-25 00:01UTC:** recovery-window1 is terminal no_sustained_window after
 180seconds at3/5GiB operator floors. No process remains; recovery SQL has not
 run. Preserve prior process evidence, refresh its current file (under5minutes),
