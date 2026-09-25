@@ -7,15 +7,17 @@
 // wrong factor. The corrected passes solve each date with its own K_s and scatter the
 // coefficients by identity (detail::map_columns).
 //
-// Sanitizer note (brief lane notes): this repo has no UBSan/ASan preset. The OOB proof
-// is the Debug build's live checked indexing — Eigen's eigen_assert on operator[] and
-// ATX_ASSERT — shown to abort on the exact pre-W0 access (CheckedIndexingCatchesThe
-// PreW0Read), plus explicit shape/index assertions on the corrected path.
+// The equity-asan target instruments the actual production factor-model TU and
+// these fixtures. Its Release CRT/NDEBUG build requires the exact pre-W0 read to
+// produce a native ASan heap-buffer-overflow; Debug also retains checked indexing.
+// Dependencies remain uninstrumented: this is a scoped bounds gate, not full-engine
+// sanitizer qualification. Run scripts/test-risk-sector-asan.ps1 for both controls.
 //
 // Suite: RiskSectorColumnsById.
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <span>
 #include <vector>
 
@@ -161,11 +163,11 @@ TEST(RiskSectorColumnsById, GroupMissingAtOlderDatesBuildsAndMapsById) {
               fr->dates.size(), fr->missing[col_of_group(fr->columns, 3U)]);
 }
 
-// The exact pre-W0 access on this fixture's older date — beta has K_s = 2 entries and
-// the old loop read beta[2] — aborts under this build's checked indexing. This is the
-// sanitizer substitute: the corrected path above ran the same dates to completion.
+// The exact pre-W0 access on this fixture's older date: beta has K_s = 2 entries and
+// the old loop read beta[2]. The dedicated ASan build checks its native diagnostic;
+// ordinary Debug builds retain the Eigen checked-indexing death test.
 TEST(RiskSectorColumnsById, CheckedIndexingCatchesThePreW0Read) {
-#ifdef NDEBUG
+#if defined(NDEBUG) && !defined(ATX_RISK_SECTOR_ASAN)
   GTEST_SKIP() << "checked indexing is a Debug-build property";
 #else
   const usize window = 30U;
@@ -198,7 +200,20 @@ TEST(RiskSectorColumnsById, CheckedIndexingCatchesThePreW0Read) {
     }
     std::printf("%f\n", sink);
   };
+#if defined(ATX_RISK_SECTOR_ASAN)
+#if !__has_feature(address_sanitizer)
+#error "The native ASan gate must instrument this fixture"
+#endif
+  // The scoped runner invokes this path in a separate process to retain the
+  // actual ASan diagnostic. NDEBUG ensures an Eigen assertion cannot stand in
+  // for instrumentation. Only this intentional negative-control child has UB.
+  std::size_t control_size = 0U;
+  ASSERT_EQ(::getenv_s(&control_size, nullptr, 0U, "ATX_ASAN_FORCE_PRE_W0_OOB"), 0);
+  if (control_size != 0U) pre_w0_copy();
+  EXPECT_DEATH(pre_w0_copy(), "AddressSanitizer: heap-buffer-overflow");
+#else
   EXPECT_DEATH(pre_w0_copy(), ".*");
+#endif
 #endif
 }
 

@@ -54,6 +54,25 @@
       }
     },
     {
+      "name": "equity-asan",
+      "inherits": "equity-rel",
+      "displayName": "equity-asan: scoped native sector-column bounds gate",
+      "description": "W0-R04 sanitizer reversal: actual factor_model.cpp and sector-column fixtures are instrumented by a dedicated target. LLVM Windows ASan requires Release CRT; /Od retains simple diagnostic code generation. Dependencies remain uninstrumented. This is a bounded memory-access gate, not whole-engine sanitizer qualification.",
+      "binaryDir": "${sourceDir}/build-equity-asan",
+      "cacheVariables": {
+        "ATX_RISK_SECTOR_ASAN": "ON",
+        "ATX_RISK_SECTOR_ASAN_RUNTIME": "msvc",
+        "ATX_TEST_GROUPS": "risk",
+        "ATX_USE_PCH": "OFF",
+        "ATX_SHARED_LIBS": "OFF",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "OFF",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDLL",
+        "CMAKE_C_FLAGS_RELEASE": "/Od /Ob0 /DNDEBUG",
+        "CMAKE_CXX_FLAGS_RELEASE": "/Od /Ob0 /DNDEBUG",
+        "FETCHCONTENT_BASE_DIR": "${sourceDir}/deps/equity-asan"
+      }
+    },
+    {
       "name": "equity-bench",
       "inherits": "equity-rel",
       "displayName": "equity-bench: equity-rel + benchmarks + every test group (bench measurement tree)",
@@ -152,6 +171,10 @@
     { "name": "dev", "configurePreset": "dev" },
     { "name": "equity-dev", "configurePreset": "equity-dev" },
     { "name": "equity-rel", "configurePreset": "equity-rel" },
+    {
+      "name": "equity-asan", "configurePreset": "equity-asan",
+      "targets": ["atx-engine-risk-sector-asan"]
+    },
     { "name": "equity-bench", "configurePreset": "equity-bench" },
     { "name": "dev-counters", "configurePreset": "dev-counters" },
     { "name": "dev-shared", "configurePreset": "dev-shared" },
@@ -162,6 +185,13 @@
     { "name": "vs", "configurePreset": "vs", "configuration": "Debug" }
   ],
   "testPresets": [
+    {
+      "name": "equity-asan",
+      "configurePreset": "equity-asan",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 1, "scheduleRandom": false },
+      "filter": { "include": { "name": "^RiskSectorAsan\\." } }
+    },
     {
       "name": "equity-dev",
       "configurePreset": "equity-dev",
