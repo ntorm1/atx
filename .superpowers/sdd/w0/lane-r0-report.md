@@ -225,3 +225,27 @@ integration note 2).
   book pre-W0; StructuralMedianV2 gives D = 2.4e-4 and 2.9%.
 - W0-R0: winsorizing around a cap-weighted centre is unsafe (one mega-cap captures it); centre
   the ±3σ bounds on the equal-weight mean, then standardize with the cap-weighted mean.
+
+## Post-merge sync (feat/w0-integration → feat/w0-r0)
+
+- Pre-merge lane head: `16728a9d` (already contained an earlier sync from feat/w0-integration,
+  point-in-time risk estimator commit `40e26729`, lane report `d5d7d9a0`).
+- `feat/w0-integration` had advanced past that point (A0 lane merged: alpha kernel correctness,
+  new `eval/hac.hpp`, factory canonical/crossover, learn/latent/gbt/tcn/nn changes, plus D0/E0A/L0
+  lane reports). None of it touches `risk/factor_model.{hpp,cpp}` or `risk/exposures.hpp`.
+- `git -C C:\atx-wt\pool-8 merge --no-ff feat/w0-integration -m "w0-r0: merge feat/w0-integration" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"`
+  — clean merge, **no conflicts** (93 files changed, all outside the risk lane's owned files).
+  Merge commit: `dbea09f1012bbeabfd296721d826ba006e9d29c9`.
+- Rebuild: `Set-Location C:\atx-wt\pool-8; $env:CMAKE_BUILD_PARALLEL_LEVEL='2'; powershell -NoProfile -File scripts\atx-build.ps1 build -Preset equity-dev atx-engine-risk-tests`
+  — exit 0 (linked `bin\atx-engine-risk-tests.exe`; a first attempt returned exit 1 under RAM
+  pressure with all steps otherwise complete through linking — an immediate rebuild with nothing
+  changed relinked cleanly at exit 0, treated as transient host load, not a code issue).
+- Anchored suite reruns (`ctest --test-dir build-equity -R '^<Suite>\.'`, `-j 1`):
+  - `RiskFactorModelPit.*` — 7/7 passed (1.88s).
+  - `RiskSectorColumnsById.*` — 5/5 passed (1.19s).
+  - `RiskThinNameFloor.*` — 4/4 passed (0.61s).
+- Whole owning executable, `build-equity\bin\atx-engine-risk-tests.exe --gtest_brief=1`:
+  466 passed, 1 skipped (Nightly-gated dense-oracle battery, opt-in via `ATX_NIGHTLY`/
+  `ATX_RISK_NIGHTLY`, correctly not run here), 0 failed. Exit 0.
+- No code changes were needed post-merge; the risk lane's files were untouched by the merge.
+- Head after this sync + report commit: see structured result `head_sha`.
