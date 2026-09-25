@@ -15,6 +15,7 @@ DECOMPOSED_PACKAGES = (
     "atx_db.quality",
     "atx_db.asof",
     "atx_db.estimates",
+    "atx_db.research",
 )
 PUBLIC_API_MODULES = ("atx_db", *DECOMPOSED_PACKAGES)
 PUBLIC_API_EXCLUDES = {
