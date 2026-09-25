@@ -44,7 +44,7 @@ No `CMakeLists.txt` edits. No new `src/` files. No product (`src/`) code changed
 | # | Plan accept item | Test(s) / evidence | Measured result | Status |
 |---|---|---|---|---|
 | 1 | `atx-engine-risk-tests` green, Nightly skipped | whole exe `build-equity\bin\atx-engine-risk-tests.exe --gtest_brief=1`; anchored ctest `^(RiskNightlyGate_\|RiskQpAugment)` | 451 tests from 59 suites: **450 passed, 1 skipped** (`RiskQpAugmentNightly.MatchesDenseOracleAcrossLargeBattery`), 0 failed, exit 0, 123.4 s. ctest: 13/13 passed ("100% tests passed"), `447 - RiskQpAugmentNightly.MatchesDenseOracleAcrossLargeBattery (Skipped)`, exit 0. | MET |
-| 1a | Move `RiskQpAugment.MatchesDenseOracleAcrossBattery` to Nightly | `RiskNightlyGate_Decision.*` (2), `RiskNightlyGate_Env.*` (2), `RiskNightlyGate_Registry.NightlyAndFastBatteriesAreRegistered`, `RiskNightlyGate_Battery.ContainsEveryPreSplitCase` | All 6 pass. All 11 pre-split cases (copied verbatim from base `458d0bef`) are in the Nightly battery with the same seed and iteration budget. With neither switch set, `nightly_enabled()` is false. `"1"` on either switch turns it on; `"0"`, `""` or unset leaves it off. The fast battery (`RiskQpAugmentFast`, 20 cases, M ≤ 30) runs by default: passed, 44.7 s Debug on a loaded host. | MET |
+| 1a | Move `RiskQpAugment.MatchesDenseOracleAcrossBattery` to Nightly | `RiskNightlyGate_Decision.*` (2), `RiskNightlyGate_Env.*` (2), `RiskNightlyGate_Registry.NightlyAndFastBatteriesAreRegistered`, `RiskNightlyGate_Battery.ContainsEveryPreSplitCase` | All 6 pass. All 11 pre-split cases (copied verbatim from base `458d0bef`) are in the Nightly battery with the same seed and iteration budget. With neither switch set, `nightly_enabled()` is false. `"1"` on either switch turns it on; `"0"`, `""` or unset leaves it off. The fast battery (`RiskQpAugmentFast`, 20 cases, M ≤ 30) runs by default: passed, 44.7 s Debug on a loaded host. Switch-on run (reviewer, `ATX_NIGHTLY=1`): Nightly battery PASS, 1364 s Debug; see Integration note 6 and "Fix pass 1". | MET |
 | 2 | `atx-impl-tests` 521/521 | whole exe `build-equity\bin\atx-impl-tests.exe --gtest_brief=1`, run from the ctest working dir `build-equity\atx-impl\tests` | 533 tests from 101 suites: **527 passed, 6 skipped, 0 failed**, exit 0, 309 s. Of the 533 tests, 527 come from the base suite (the plan's "521" is an older count) and 6 are new. Every test that runs passes, including `StageRunSyntheticSmoke` 3/3. The 6 skips are pre-existing opt-in gates (5 need real data, `ATX_ALPHA101_PANEL` / `ATX_L10_FUNDZOO_OUT`; 1 is `TrialLedgerRepository.ExistingCp14Ledger_StillVerifies`, "not run from the repository root"). See the caveat below. | MET |
 | 2a | Fix `StageRunSyntheticSmoke` + regression test with the malformed input | anchored ctest `^(StageRunSyntheticSmoke\|ImplStageRunSmokeMalformed_)` | 9/9 passed ("100% tests passed, 0 tests failed out of 9"), exit 0. | MET |
 | 3 | Quiet-host baselines for the L1 kernels, L2 WQ101 battery, L3 search, and L6 modes 4/6/7 | `equity-bench` configures (exit 0) and builds `atx-engine-bench` + `atx-shm-worker` (exit 0, 22.2 min at `-j2`). One smoke run per category (below). | Every bench binary runs. The numbers are **not** baselines: the host was busy with other lanes. | **DEFERRED-to-gate (orchestrator)**, as the brief instructs |
@@ -140,9 +140,46 @@ None. No product code changed. All changes are to tests, comments and the preset
    Filters used for the smoke runs: `^BM_Kernel` (L1), `^Wq101_` (L2), `^BM_Search` (L3), `^BM_OptimizerProduction/M:(1000|3000|5000)/mode:(4|6|7)/` (L6). Compare with `scripts\bench-gate.ps1`.
 4. **The fast augment battery takes 44.7 s in Debug on a loaded host.** Lane 6's comment says it stays under a 30 s budget; that only holds on a quiet host.
 5. **R0 may start.** The lane-6 merge brings new `risk/` headers but does not touch `risk/factor_model.*` or `risk/exposures.hpp`.
+6. **W0 gate note: Nightly battery cost.** `RiskQpAugmentNightly.MatchesDenseOracleAcrossLargeBattery` was run with the switch on by the reviewer at `edc7724a` (`ATX_NIGHTLY=1 atx-engine-risk-tests.exe --gtest_filter=RiskQpAugmentNightly.*`): **PASS, 1364360 ms (about 23 min), Debug `equity-dev`**. Budget about 23 min per Nightly run in Debug; it must never be part of the default or fast gate.
 
 ## Ledger candidates (for the orchestrator to append; ≤ 3)
 
 1. `2026-09-24 R-14: the lane-6 factor-space solve figure (58 ms; 57.7 ms warm, M=3000 K=64, eps 2e-7, BM_OptimizerProduction mode 6, commit d72d96fe) EXCLUDES trade costs and turnover: the bench book has no TradeCostTerms and no TurnoverBudget, and solve_with_costs never reaches the factor-space path. The costed factor-space solve is W2-R3.`
 2. `2026-09-24 StageRunSyntheticSmoke "invalid stod argument" root cause: run_report's identity kvs (research_artifact_id/books_artifact_id = "unknown" on unidentified panels) were fed to std::stod by the test; fixed test-side with a strict non-throwing kv audit (W0-O1).`
 3. `2026-09-24 core.autocrlf=true checks out atx-engine/reviews/trial-ledger.jsonl as CRLF; ExistingCp14Ledger_StillVerifies then fails when atx-impl-tests runs from the repo root (the verifier is LF-only). Needs a .gitattributes eol=lf rule.`
+
+## Fix pass 1
+
+Review: `.superpowers/sdd/w0/lane-o1-review.md` (verdict APPROVE, reviewed `edc7724a`). No blocker or major findings; both minors were in scope and cheap, so both are fixed.
+
+| Finding | What changed | Evidence |
+|---|---|---|
+| `risk_qp_augment_test.cpp:668` (minor): `RiskNightlyGate_Env.DefaultEnvironmentSkipsNightly` clears both switches in `SetUp()`, so it proves "unset means off", not the ambient default | Renamed to `RiskNightlyGate_Env.UnsetSwitchesSkipNightly`, body unchanged (no assertion removed). A comment above it says what it proves and cites the whole-exe / ctest `Skipped` line for `RiskQpAugmentNightly.MatchesDenseOracleAcrossLargeBattery` as the default-environment proof. No other reference to the old name exists outside build trees. | ctest `Test #450: RiskNightlyGate_Env.UnsetSwitchesSkipNightly ... Passed`; the default-environment skip is the whole-exe line `risk_qp_augment_test.cpp(528): Skipped` / `[  SKIPPED ] 1 test.` below, run with both switches removed from the process environment. |
+| `lane-o1-report.md:47` (minor): acceptance 1a claimed "not weakened" without an `ATX_NIGHTLY=1` run | The reviewer's run is carried into the gate notes: Integration note 6 records `ATX_NIGHTLY=1 ... --gtest_filter=RiskQpAugmentNightly.*` -> PASS, 1364360 ms (about 23 min) Debug `equity-dev`, at `edc7724a`. Acceptance 1a's evidence is now case-list equality (`ContainsEveryPreSplitCase`) plus that passing switch-on run. The Nightly body and `kDiffTol` are untouched by this pass, so the run still applies. | Review "Evidence": `[       OK ] RiskQpAugmentNightly.MatchesDenseOracleAcrossLargeBattery (1364360 ms)`, `[  PASSED  ] 1 test.`, exit 0. Not re-run in this pass (23 min of Debug CPU on a shared host, no change to the tested code). |
+
+Re-verification after the fix (Debug `equity-dev`, `CMAKE_BUILD_PARALLEL_LEVEL=2`, 5.2 GB free):
+```
+build -Preset equity-dev atx-engine-risk-tests
+  [9/11] Building CXX object ...atx-engine-risk-tests.dir\risk_qp_augment_test.cpp.obj
+  [10/11] Linking CXX executable bin\atx-engine-risk-tests.exe      exit=0
+build -Preset equity-dev atx-impl-tests atx-engine-risk-tests
+  [2/3] Linking CXX executable bin\atx-impl-tests.exe               exit=0
+
+-Ctest -Preset equity-dev -R '^(StageRunSyntheticSmoke|ImplStageRunSmokeMalformed_|RiskNightlyGate_|RiskQpAugment)'
+  10/22 Test #450: RiskNightlyGate_Env.UnsetSwitchesSkipNightly ...   Passed    0.03 sec
+  100% tests passed, 0 tests failed out of 22     Total Test time (real) = 46.63 sec
+  The following tests did not run:
+	447 - RiskQpAugmentNightly.MatchesDenseOracleAcrossLargeBattery (Skipped)
+  exit=0
+
+atx-engine-risk-tests.exe --gtest_brief=1  (cwd build-equity\atx-engine\tests; ATX_NIGHTLY / ATX_RISK_NIGHTLY unset)
+  ..\atx-engine\tests\risk_qp_augment_test.cpp(528): Skipped
+  [==========] 451 tests from 59 test suites ran. (81147 ms total)
+  [  PASSED  ] 450 tests.
+  [  SKIPPED ] 1 test.                        risk exit=0 secs=81.2
+atx-impl-tests.exe --gtest_brief=1  (cwd build-equity\atx-impl\tests)
+  [==========] 533 tests from 101 test suites ran. (204711 ms total)
+  [  PASSED  ] 527 tests.
+  [  SKIPPED ] 6 tests.                       impl exit=0 secs=204.9
+```
+Files touched in this pass: `atx-engine/tests/risk_qp_augment_test.cpp` (rename + comment; CRLF working tree kept, 0 bare LF) and this report. No product code; no test weakened, skipped or deleted.

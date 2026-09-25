@@ -665,7 +665,10 @@ private:
   std::optional<std::string> saved_b_;
 };
 
-TEST_F(RiskNightlyGate_Env, DefaultEnvironmentSkipsNightly) {
+// Proves "both switches unset => Nightly off". SetUp() clears both switches first, so this
+// is not a probe of the ambient environment; the default-run skip itself is proven by the
+// whole-exe / ctest "Skipped" line for RiskQpAugmentNightly.MatchesDenseOracleAcrossLargeBattery.
+TEST_F(RiskNightlyGate_Env, UnsetSwitchesSkipNightly) {
   EXPECT_FALSE(read_env("ATX_NIGHTLY").has_value());
   EXPECT_FALSE(read_env("ATX_RISK_NIGHTLY").has_value());
   EXPECT_FALSE(nightly_enabled());
