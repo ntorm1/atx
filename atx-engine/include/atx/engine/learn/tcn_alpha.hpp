@@ -180,6 +180,7 @@ struct AttnAlphaCfg {
 //    - seq.lookback == 0    => Err(InvalidArgument)
 //    - protocol.inner_val_frac outside (0, 0.5] (or NaN) under an inner-split rule
 //                           => Err(InvalidArgument)
+//    - cpcv.embargo outside [0, 1] (or NaN) => Err(InvalidArgument)
 // ===========================================================================
 [[nodiscard]] atx::core::Result<LearnedModel> fit_tcn(const SequenceTensor &seq,
                                                       const TcnAlphaCfg &cfg);
@@ -204,7 +205,9 @@ namespace detail {
 //  them (at least one). inner_train keeps every other ordinal of `train_ord` whose
 //  span does not overlap any block span and that is not within `embargo_len`
 //  ordinals after a block ordinal (the eval::cpcv purge + embargo rule, reused).
-//  Both outputs are ascending. PRECONDITION: frac in (0, 0.5]; ordinals < spans.size().
+//  Both outputs are ascending. An empty train_ord or a frac outside (0, 0.5] (NaN
+//  included) yields an empty (degenerate) split. PRECONDITION: every ordinal <
+//  spans.size() (ATX_CHECK).
 // ===========================================================================
 struct InnerSplit {
   std::vector<atx::usize> inner_train;

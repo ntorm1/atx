@@ -15,7 +15,10 @@
 // LearnLabelMutationInvariance_Deploy pins L-07: the deployed ensemble selects its
 // checkpoint on the inner validation block, not on training loss.
 
+#include <cmath>   // std::fabs
 #include <cstring> // std::memcmp
+#include <iostream> // measured-number lines for the lane report
+#include <limits>  // std::numeric_limits
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -140,7 +143,22 @@ struct SeqRound {
   bool artifacts_identical = true;
   bool oof_identical = true;
   usize n_test = 0;
+  usize artifact_len = 0;
+  f64 max_pred_delta = 0.0; // max |pred_after - pred_before| over the fold's test keys
 };
+
+// Max absolute element difference of two equal-length vectors (0 when sizes differ).
+[[nodiscard]] f64 max_abs_delta(const std::vector<f64> &a, const std::vector<f64> &b) {
+  f64 m = 0.0;
+  if (a.size() != b.size()) {
+    return m;
+  }
+  for (usize i = 0; i < a.size(); ++i) {
+    const f64 d = std::fabs(a[i] - b[i]);
+    m = (d > m) ? d : m;
+  }
+  return m;
+}
 
 template <typename Cfg, typename FitFn>
 [[nodiscard]] SeqRound seq_round(const learn::SequenceTensor &st, const Cfg &cfg, FitFn fit,
@@ -168,6 +186,9 @@ template <typename Cfg, typename FitFn>
     }
     out.preds_identical = out.preds_identical && bytes_equal(a->test_pred, b->test_pred);
     out.artifacts_identical = out.artifacts_identical && bytes_equal(a->artifact, b->artifact);
+    out.artifact_len += a->artifact.size();
+    const f64 d = max_abs_delta(a->test_pred, b->test_pred);
+    out.max_pred_delta = (d > out.max_pred_delta) ? d : out.max_pred_delta;
   }
   for (const usize s : r0->test_keys) {
     const f64 p0 = t0.oof_pred[s];
@@ -196,6 +217,9 @@ TEST(LearnLabelMutationInvariance_Seq, TcnTestFoldLabelsDoNotReachFoldModel) {
     EXPECT_TRUE(r.preds_identical) << "A1: fold " << fold << " OOS predictions moved";
     EXPECT_TRUE(r.oof_identical) << "A1: fold " << fold << " OOF predictions moved";
     EXPECT_TRUE(r.artifacts_identical) << "A2: fold " << fold << " member states moved";
+    std::cout << "[W0-L0 tcn V2] fold=" << fold << " n_test=" << r.n_test
+              << " artifact_f64=" << r.artifact_len << " max|dpred|=" << r.max_pred_delta
+              << " identical=" << (r.preds_identical && r.artifacts_identical) << "\n";
   }
 }
 
@@ -208,6 +232,8 @@ TEST(LearnLabelMutationInvariance_Seq, TcnLegacyTestFoldValidationLeaks) {
   // L-01: the checkpoint was selected on the mutated test labels.
   EXPECT_FALSE(r.artifacts_identical) << "legacy V1 must show the test-label leak";
   EXPECT_FALSE(r.preds_identical);
+  std::cout << "[W0-L0 tcn V1] fold=1 n_test=" << r.n_test << " max|dpred|=" << r.max_pred_delta
+            << " identical=" << (r.preds_identical && r.artifacts_identical) << "\n";
 }
 
 TEST(LearnLabelMutationInvariance_Seq, GruTestFoldLabelsDoNotReachFoldModel) {
@@ -225,6 +251,7 @@ TEST(LearnLabelMutationInvariance_Seq, GruTestFoldLabelsDoNotReachFoldModel) {
   const SeqRound leak = seq_round(st, legacy, kFitGru, 1U);
   ASSERT_TRUE(leak.fold_recorded);
   EXPECT_FALSE(leak.artifacts_identical) << "legacy V1 must show the test-label leak";
+  std::cout << "[W0-L0 gru V1] fold=1 max|dpred|=" << leak.max_pred_delta << "\n";
 }
 
 // The inner validation block is carved from the fold's TRAIN dates: it never touches
@@ -314,6 +341,11 @@ TEST(LearnLabelMutationInvariance_Deploy, RejectsOutOfContractValFraction) {
   cfg.protocol.inner_val_frac = 0.0;
   cfg.train.epochs = 1;
   EXPECT_TRUE(learn::fit_gru(st, cfg).has_value());
+  // An embargo fraction outside [0, 1] (NaN included) is rejected, not cast.
+  for (const f64 bad : {-0.01, 1.5, std::numeric_limits<f64>::quiet_NaN()}) {
+    cfg.cpcv.embargo = bad;
+    EXPECT_FALSE(learn::fit_gru(st, cfg).has_value()) << "embargo " << bad;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +413,8 @@ struct TabRound {
   bool artifacts_identical = true;
   bool oof_identical = true;
   usize n_test = 0;
+  usize artifact_len = 0;
+  f64 max_pred_delta = 0.0;
 };
 
 template <typename Cfg, typename FitFn>
@@ -410,6 +444,8 @@ template <typename Cfg, typename FitFn>
   }
   out.preds_identical = bytes_equal(r0->test_pred, r1->test_pred);
   out.artifacts_identical = bytes_equal(r0->artifact, r1->artifact);
+  out.artifact_len = r0->artifact.size();
+  out.max_pred_delta = max_abs_delta(r0->test_pred, r1->test_pred);
   for (const usize r : r0->test_keys) {
     const f64 p0 = t0.oof_pred[r];
     const f64 p1 = t1.oof_pred[r];
@@ -436,6 +472,9 @@ TEST(LearnLabelMutationInvariance_Tabular, LinearTestFoldLabelsDoNotReachFoldMod
     EXPECT_TRUE(r.preds_identical) << "A1: fold " << fold;
     EXPECT_TRUE(r.oof_identical) << "A1: fold " << fold;
     EXPECT_TRUE(r.artifacts_identical) << "A2: fold " << fold;
+    std::cout << "[W0-L0 linear V2] fold=" << fold << " n_test=" << r.n_test
+              << " artifact_f64=" << r.artifact_len << " aug_flipped=" << r.aug_flipped
+              << " identical=" << (r.preds_identical && r.artifacts_identical) << "\n";
   }
 }
 
@@ -447,6 +486,8 @@ TEST(LearnLabelMutationInvariance_Tabular, LinearLegacyFullWindowAugLeaks) {
   ASSERT_TRUE(r.aug_flipped) << "fixture: the mutation must flip the caller's selection";
   EXPECT_FALSE(r.artifacts_identical) << "legacy V1 copies the leaked selection into folds";
   EXPECT_FALSE(r.preds_identical);
+  std::cout << "[W0-L0 linear V1] fold=1 n_test=" << r.n_test
+            << " max|dpred|=" << r.max_pred_delta << "\n";
 }
 
 TEST(LearnLabelMutationInvariance_Tabular, GbtTestFoldLabelsDoNotReachFoldModel) {
@@ -469,6 +510,7 @@ TEST(LearnLabelMutationInvariance_Tabular, GbtTestFoldLabelsDoNotReachFoldModel)
   const TabRound leak = tab_round(fm, legacy, kFitGbt, 1U);
   ASSERT_TRUE(leak.aug_flipped);
   EXPECT_FALSE(leak.artifacts_identical) << "legacy V1 copies the leaked selection into folds";
+  std::cout << "[W0-L0 gbt V1] fold=1 max|dpred|=" << leak.max_pred_delta << "\n";
 }
 
 } // namespace atx_test_w0_l0_label_mutation

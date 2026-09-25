@@ -355,6 +355,12 @@ fit_seq_alpha(const SequenceTensor &seq, ModelKind kind, const FactoryBuilder &b
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "fit_seq_alpha: protocol.inner_val_frac must be in (0, 0.5]");
   }
+  // The embargo fraction is turned into a date count below (embargo_len_of); a NaN or
+  // out-of-range value would make that float->usize conversion undefined.
+  if (!(cpcv.embargo >= 0.0 && cpcv.embargo <= 1.0)) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "fit_seq_alpha: cpcv.embargo must be in [0, 1]");
+  }
   const atx::usize L = seq.lookback;
   const atx::usize F = seq.n_features;
   const atx::usize wlen = L * F;
