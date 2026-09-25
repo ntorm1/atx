@@ -299,6 +299,19 @@ def test_ledger_end_to_end_statuses_refusals_and_reproducible_bytes(tmp_path: Pa
             rq.load_policy(edited)
         for version, path in rq.POLICY_HISTORY_PATHS.items():
             assert rq.load_policy(path).sha256 == rq.FROZEN_POLICY_SHA256[version]
+        # N1: superseded / spec-less history is never frozen, graded or stored, even post hoc
+        # (the review probe: v2, thinner formations, no panel verification).
+        v2 = rq.load_policy(rq.POLICY_HISTORY_PATHS["r4-qualification-v2"])
+        with pytest.raises(rq.PolicyError, match="policy_superseded"):
+            rq.register_policy(con, v2)
+        probe = dataclasses.replace(thin, spec={**thin.spec, "verify_panels": False})
+        with pytest.raises(rq.QualificationRefused) as caught:
+            rq.qualify(probe, v2, annotations, policy_registered_at=frozen_at, allow_post_hoc_policy=True)
+        assert "policy_superseded:r4-qualification-v2" in caught.value.reasons
+        history_ledger = dataclasses.replace(ledger, manifest={**ledger.manifest, "policy": {
+            **ledger.manifest["policy"], "version": v2.version, "sha256": v2.sha256}})
+        with pytest.raises(rq.PolicyError, match="never persisted"):  # verify-only history ledger
+            rq.persist_ledger(con, history_ledger)
         doc = (REPO / "docs" / "research" / "QUALIFIED_SIGNALS.md").read_text(encoding="utf-8")
         assert POLICY.sha256 in doc and POLICY.split.sha256 in doc  # the committed doc is current
     finally:

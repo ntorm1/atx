@@ -20,7 +20,10 @@ stores the sealed ledger and writes the versioned JSON/CSV artifacts.
 ``--allow-post-hoc-policy`` passes only the policy-order refusals and stamps the ledger,
 every row and the doc. ``--no-catalog`` / ``--no-verify-seal`` are allowed only with
 ``--dry-run`` (nothing is stored). ``verify`` recomputes the stored ledger from the run and
-the ledger's own catalog snapshot and compares the sha (exit 1 on a mismatch).
+what the ledger sealed (catalog snapshot, post-hoc flag, recorded policy registration
+time) and compares the sha (exit 1 on a mismatch, exit 2 with the reasons when refused).
+Superseded or spec-less policies (v1, v2) are refused by ``freeze`` and ``qualify`` (exit
+2); ``verify`` alone still rebuilds a historical ledger under them.
 """
 
 from __future__ import annotations
@@ -71,17 +74,16 @@ def _connect(args: argparse.Namespace, *, read_only: bool = False) -> duckdb.Duc
 
 
 def _verify(con: duckdb.DuckDBPyConnection, args: argparse.Namespace, policy: rq.QualificationPolicy) -> int:
-    ledger_id = f"{args.run_id}:{policy.version}"
-    row = con.execute("SELECT manifest_json, ledger_sha256 FROM research_qualification_ledgers WHERE ledger_id = ?",
-                      [ledger_id]).fetchone() if rq.stored_ledger_sha256(con, ledger_id) else None
-    if row is None:
-        raise SystemExit(f"no stored ledger {ledger_id}")
-    manifest = json.loads(row[0])
-    ledger = rq.qualify_run(con, args.run_id, policy, catalog=rq.stored_catalog_snapshot(con, ledger_id),
-                            persist=False, allow_post_hoc_policy=bool(manifest.get("post_hoc_policy")))
-    print(json.dumps({"ledger_id": ledger_id, "stored_sha256": row[1], "recomputed_sha256": ledger.sha256,
-                      "reproduced": row[1] == ledger.sha256}, indent=2, sort_keys=True))
-    return 0 if row[1] == ledger.sha256 else 1
+    if rq.stored_ledger_sha256(con, f"{args.run_id}:{policy.version}") is None:
+        raise SystemExit(f"no stored ledger {args.run_id}:{policy.version}")
+    outcome = rq.verify_ledger(con, args.run_id, policy)  # refusals are handled by main (exit 2)
+    print(json.dumps(outcome, indent=2, sort_keys=True))
+    return 0 if outcome["reproduced"] else 1
+
+
+def _refused(run_id: str | None, reasons: tuple[str, ...] | list[str]) -> int:
+    print(json.dumps({"run_id": run_id, "refused": list(reasons)}, indent=2))
+    return 2
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -100,6 +102,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {doc}")
         return 0
     if args.command == "freeze":
+        problem = rq.current_policy_problem(policy)
+        if problem is not None:  # N1: superseded / spec-less history is never frozen
+            return _refused(None, [problem])
         con = _connect(args)
         try:
             outcome = rq.register_policy(con, policy)
@@ -115,15 +120,14 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--no-catalog / --no-verify-seal are allowed only with --dry-run (never persisted)")
     con = _connect(args, read_only=args.command == "verify" or args.dry_run)
     try:
-        if args.command == "verify":
-            return _verify(con, args, policy)
-        catalog = None if args.no_catalog else read_anomaly_catalog()
         try:
+            if args.command == "verify":
+                return _verify(con, args, policy)
+            catalog = None if args.no_catalog else read_anomaly_catalog()
             ledger = rq.qualify_run(con, args.run_id, policy, catalog=catalog, verify_seal=not args.no_verify_seal,
                                     persist=not args.dry_run, allow_post_hoc_policy=args.allow_post_hoc_policy)
-        except rq.QualificationRefused as refused:
-            print(json.dumps({"run_id": args.run_id, "refused": list(refused.reasons)}, indent=2))
-            return 2
+        except rq.QualificationRefused as refused:  # qualify and verify (N3): exit 2, every reason, no traceback
+            return _refused(args.run_id, refused.reasons)
         summary = {"ledger_id": ledger.ledger_id, "ledger_sha256": ledger.sha256, "dry_run": args.dry_run,
                    "post_hoc_policy": ledger.manifest.get("post_hoc_policy"),
                    "status_counts": ledger.manifest["status_counts"], "blockers": ledger.manifest["blockers"]}

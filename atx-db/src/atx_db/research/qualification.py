@@ -40,7 +40,12 @@ the research store (``research_qualify.py freeze``) before the run was created. 
 explicit ``allow_post_hoc_policy`` passes the last two, and it stamps the manifest,
 every feature row and the generated doc. Versions: v1 and v2 are kept as
 ``seeds/research_qualification_policy_v1.json`` / ``_v2.json``; v3 is current (same
-split; every version predates any real-data result).
+split; every version predates any real-data result). Superseded or spec-less versions
+(v1, v2: any version a committed file ``supersedes``, or without ``evaluation_spec``)
+stay loadable but are refused for freeze, qualify and persist (N1); only
+:func:`verify_ledger` grades under them, to reproduce a historical ledger. A new
+version must pin ``evaluation_spec``. A ledger seals the registration time it saw and
+the post-hoc reasons that followed; ``verify_ledger`` reproduces from those (N2).
 
 Gates (controller R4 ruling; first failing tier sets the status)
 -----------------------------------------------------------------
@@ -118,6 +123,7 @@ import json
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -138,6 +144,8 @@ POLICY_HISTORY_PATHS: Mapping[str, Path] = {
     "r4-qualification-v1": POLICY_PATH.with_name("research_qualification_policy_v1.json"),
     "r4-qualification-v2": POLICY_PATH.with_name("research_qualification_policy_v2.json"),
 }
+#: Versions committed before ``evaluation_spec`` existed; any other version must pin it.
+_SPECLESS_HISTORY = frozenset({"r4-qualification-v1", "r4-qualification-v2"})
 #: Every committed policy version and its canonical content hash. Editing a frozen
 #: policy is refused; a changed policy needs a new version and a new pin here.
 FROZEN_POLICY_SHA256: Mapping[str, str] = {
@@ -454,6 +462,8 @@ def load_policy(source: Path | str | Mapping[str, Any] = POLICY_PATH, *,
     size = _section(content, "size_buckets")
     strict = _section(content, "strict_evidence")
     reported = _section(content, "reported")
+    if "evaluation_spec" not in content and version not in _SPECLESS_HISTORY:
+        raise PolicyError(f"policy {version} must pin an evaluation_spec (only v1/v2 history predate it)")
     evaluation = _evaluation_spec(_section(content, "evaluation_spec")) if "evaluation_spec" in content else None
     if dsr["n_trials"] != "whole_family" or dsr["series"] != "ls_ew10":
         raise PolicyError("deflated_sharpe must use the whole family and the ls_ew10 series (R3b)")
@@ -509,6 +519,26 @@ def load_policy(source: Path | str | Mapping[str, Any] = POLICY_PATH, *,
         size_min_venue_pit_share=venue_floor, evaluation_spec=evaluation,
         file_sha256s=file_hashes, file_sha256=file_sha,
     )
+
+
+@lru_cache(maxsize=1)
+def superseded_policy_versions() -> frozenset[str]:
+    """Versions a committed policy file ``supersedes`` (history: loadable, never used to grade)."""
+    names = set()
+    for path in (POLICY_PATH, *POLICY_HISTORY_PATHS.values()):
+        superseded = json.loads(path.read_bytes().decode("utf-8")).get("supersedes")
+        if isinstance(superseded, str):
+            names.add(superseded)
+    return frozenset(names)
+
+
+def current_policy_problem(policy: QualificationPolicy) -> str | None:
+    """Why a policy may not freeze, grade or persist (N1): superseded, or pins no evaluation spec."""
+    if policy.version in superseded_policy_versions():
+        return f"policy_superseded:{policy.version}"
+    if policy.evaluation_spec is None:
+        return f"policy_pins_no_evaluation_spec:{policy.version}"
+    return None
 
 
 def evaluation_spec_kwargs(policy: QualificationPolicy) -> dict[str, Any]:
@@ -667,13 +697,18 @@ def _post_hoc_reasons(results: EvaluationResults, policy: QualificationPolicy,
 
 
 def refusal_reasons(results: EvaluationResults, policy: QualificationPolicy,
-                    catalog: Iterable[Any] | None = None, *, policy_registered_at: str | None = None) -> list[str]:
+                    catalog: Iterable[Any] | None = None, *, policy_registered_at: str | None = None,
+                    historical: bool = False) -> list[str]:
     """Every reason the run cannot be qualified (empty: qualifiable). Sorted, deterministic.
 
     ``policy_registered_at`` is the research store's freeze time of this policy version
-    (ISO, naive UTC); the post-hoc reasons (:data:`POST_HOC_REASONS`) need it.
+    (ISO, naive UTC); the post-hoc reasons (:data:`POST_HOC_REASONS`) need it. A superseded
+    or spec-less policy is refused (N1) unless ``historical`` (:func:`verify_ledger` only).
     """
     reasons: set[str] = _post_hoc_reasons(results, policy, policy_registered_at)
+    problem = None if historical else current_policy_problem(policy)
+    if problem is not None:
+        reasons.add(problem)
     if results.status != "complete":
         reasons.add(f"evaluation_run_not_sealed:{results.status}")
     if results.stored_rows_sha256 is not None and results.stored_rows_sha256 != results.results_sha256:
@@ -1107,7 +1142,8 @@ def _resolve(rows: Mapping[str, dict[str, Any]], policy: QualificationPolicy) ->
 
 
 def qualify(results: EvaluationResults, policy: QualificationPolicy, catalog: Iterable[Any] | None = None, *,
-            policy_registered_at: str | None = None, allow_post_hoc_policy: bool = False) -> QualificationLedger:
+            policy_registered_at: str | None = None, allow_post_hoc_policy: bool = False,
+            historical: bool = False) -> QualificationLedger:
     """Grade every feature of a sealed run under a frozen policy (pure; no I/O).
 
     ``catalog`` (R1a entries; research-eligible rows are the family) is checked against
@@ -1116,11 +1152,13 @@ def qualify(results: EvaluationResults, policy: QualificationPolicy, catalog: It
     store's freeze time of the policy. A run not evaluated under this frozen policy
     file, or created before the freeze, is refused unless ``allow_post_hoc_policy``,
     which stamps ``post_hoc_policy`` on the manifest, every feature row and the doc.
+    A superseded or spec-less policy (v1, v2) is always refused (N1); ``historical``
+    waives that for :func:`verify_ledger` alone, and such a ledger is never persisted.
     Raises :class:`QualificationRefused` for an unqualifiable run.
     """
     catalog_rows = _catalog_rows(catalog)
     reasons = refusal_reasons(results, policy, None if catalog_rows is None else catalog_rows.values(),
-                              policy_registered_at=policy_registered_at)
+                              policy_registered_at=policy_registered_at, historical=historical)
     post_hoc = sorted(set(reasons) & set(POST_HOC_REASONS))
     if allow_post_hoc_policy:
         reasons = [reason for reason in reasons if reason not in POST_HOC_REASONS]
@@ -1309,8 +1347,12 @@ class _Transaction:
 def register_policy(con: duckdb.DuckDBPyConnection, policy: QualificationPolicy) -> str:
     """Record the policy hash in the research store (RX7); ``'registered'`` or ``'exists'``.
 
-    A registered version is frozen: another content hash under it is refused.
+    A registered version is frozen: another content hash under it is refused. A
+    superseded or spec-less policy (v1, v2) is never frozen (N1).
     """
+    problem = current_policy_problem(policy)
+    if problem is not None:
+        raise PolicyError(f"{problem}: only the current policy with a pinned evaluation_spec can be frozen")
     with _Transaction(con):
         ensure_qualification_schema(con)
         row = con.execute("SELECT policy_sha256 FROM research_qualification_policies WHERE policy_version = ?",
@@ -1345,8 +1387,12 @@ def persist_ledger(con: duckdb.DuckDBPyConnection, ledger: QualificationLedger) 
 
     A sealed ledger is immutable: different content under the same ledger id is refused.
     Dry-run ledgers (built without the catalog check or without re-hashing the run's
-    seal) are refused (I1, M3).
+    seal) are refused (I1, M3), and so is any ledger under a superseded or spec-less
+    policy (N1: those are rebuilt by :func:`verify_ledger` only).
     """
+    version = ledger.manifest["policy"]["version"]
+    if version in superseded_policy_versions() or version in _SPECLESS_HISTORY:
+        raise PolicyError(f"policy_superseded:{version}: a ledger under a superseded policy is never persisted")
     if not ledger.manifest.get("catalog_checked") or not ledger.manifest.get("seal_verified"):
         raise QualificationError("only a ledger built with the catalog check and a verified run seal can be "
                                  "persisted (--no-catalog / --no-verify-seal are dry-run only)")
@@ -1423,7 +1469,9 @@ def qualify_run(con: duckdb.DuckDBPyConnection, run_id: str, policy: Qualificati
     The policy must have been frozen in this store (``research_qualify.py freeze``) before
     the run was created, and the run evaluated under its file; otherwise the run is
     refused unless ``allow_post_hoc_policy`` (stamped). Persisting needs the catalog
-    check and a verified seal.
+    check and a verified seal. The manifest seals the registration time read *before*
+    this call registers the policy (None when it was not yet frozen) and the post-hoc
+    reasons that followed from it; :func:`verify_ledger` reproduces from those.
     """
     results = load_evaluation_results(con, run_id, policy, verify_seal=verify_seal)
     ledger = qualify(results, policy, catalog, policy_registered_at=policy_registered_at(con, policy),
@@ -1432,6 +1480,34 @@ def qualify_run(con: duckdb.DuckDBPyConnection, run_id: str, policy: Qualificati
         register_policy(con, policy)
         persist_ledger(con, ledger)
     return ledger
+
+
+def verify_ledger(con: duckdb.DuckDBPyConnection, run_id: str, policy: QualificationPolicy) -> dict[str, Any]:
+    """Rebuild a stored ledger from its run and compare the sha (read-only).
+
+    N2: the rebuild uses what the ledger sealed at qualification, not the store's state
+    now: its catalog snapshot, its post-hoc flag and its recorded ``policy_registered_at``
+    (None when the policy was frozen only by that ledger's own persist). Registration is
+    immutable, so a recorded time must still equal the store's; otherwise the verify is
+    refused. N1: this is the one path that grades under a superseded or spec-less policy
+    (``historical``); nothing it builds is persisted. Raises :class:`QualificationError`
+    when no ledger is stored and :class:`QualificationRefused` when the run is refused.
+    """
+    ledger_id = f"{run_id}:{policy.version}"
+    stored = stored_ledger_sha256(con, ledger_id)
+    if stored is None:
+        raise QualificationError(f"no stored ledger {ledger_id}")
+    row = con.execute("SELECT manifest_json FROM research_qualification_ledgers WHERE ledger_id = ?",
+                      [ledger_id]).fetchone()
+    manifest = json.loads(row[0])
+    recorded = manifest.get("policy_registered_at")
+    if recorded is not None and recorded != policy_registered_at(con, policy):
+        raise QualificationRefused(["policy_registration_differs_from_ledger"])
+    results = load_evaluation_results(con, run_id, policy)
+    ledger = qualify(results, policy, stored_catalog_snapshot(con, ledger_id), policy_registered_at=recorded,
+                     allow_post_hoc_policy=bool(manifest.get("post_hoc_policy")), historical=True)
+    return {"ledger_id": ledger_id, "stored_sha256": stored, "recomputed_sha256": ledger.sha256,
+            "reproduced": stored == ledger.sha256}
 
 
 def write_artifacts(ledger: QualificationLedger, out_dir: Path | str) -> tuple[Path, Path]:
@@ -1617,6 +1693,7 @@ __all__ = [
     "QualificationLedger",
     "QualificationPolicy",
     "QualificationRefused",
+    "current_policy_problem",
     "ensure_qualification_schema",
     "evaluation_spec_kwargs",
     "load_evaluation_results",
@@ -1633,5 +1710,7 @@ __all__ = [
     "render_qualified_signals_markdown",
     "stored_catalog_snapshot",
     "stored_ledger_sha256",
+    "superseded_policy_versions",
+    "verify_ledger",
     "write_artifacts",
 ]
