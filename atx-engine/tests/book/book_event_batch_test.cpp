@@ -26,6 +26,9 @@ inline book::ReplayConfig immediate() {
   book::ReplayConfig cfg;
   cfg.initial_nav = 1000.0;
   cfg.execution_delay_periods = 0;
+  cfg.allow_same_close = true; // B-02: same-close fills are an explicit opt-in.
+  // B-04: the pre-W0 default was Abort; cases that set no policy pin it.
+  cfg.delisting_policy = book::DelistingPolicy::Abort;
   return cfg;
 }
 

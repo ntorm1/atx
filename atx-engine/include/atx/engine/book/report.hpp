@@ -34,18 +34,28 @@
 //    * pnl_gross[s] = Σ_i book[i]·r[i], where r is the realized return cross-
 //        section panel.field_cross_section(returns_field, sched.periods[s]). A NaN
 //        r[i] — OR a name out of the point-in-time universe at that date — is
-//        treated as 0 (no-survivorship: a missing/delisted name's holding earns
-//        nothing; it never poisons the reduction with a NaN).
+//        treated as 0 (it never poisons the reduction with a NaN). A delisting
+//        must therefore be priced INTO r by the returns builder: under
+//        holding_interval_returns' HoldingIntervalV2 (W0-B0, B-03) a held name
+//        that stops printing carries a flagged Shumway terminal return, so NaN
+//        only means "no entry mark" (the name could not be held at that date).
 //    * pnl_cost[s] = books.cost_bps[s] · 1e-4. UNIT CONVENTION: MultiPeriodResult
 //        .cost_bps[s] is the per-period charge in BASIS POINTS (turnover ×
 //        round_trip_cost_bps, see risk::MultiPeriodOptimizer::run). pnl_gross is a
 //        FRACTIONAL return (Σ weight·return), so we convert bps→fraction by ·1e-4
 //        before subtracting.
 //    * pnl_borrow[s] = (Σ_i |book[i]| over SHORT names only) · borrow_bps · 1e-4
-//        (S5-4): a flat per-period financing charge on the book's short notional,
-//        the SAME bps-per-period → fraction convention pnl_cost uses. borrow_bps
-//        defaults to 0.0 (inert; pnl_borrow[s] is then exactly 0.0 for every s).
+//        · accrual[s] (S5-4, W0-B0). Under ReportBorrowAccrual::AnnualBySessionsV2
+//        (the default) borrow_bps is an ANNUAL rate and accrual[s] =
+//        holding_sessions[s] / sessions_per_year, so a weekly book pays five
+//        days of borrow and a book with no forward window pays none (B-03).
+//        FlatPerRebalanceV1 (pre-W0) charges the rate once per rebalance
+//        whatever its length (accrual 1). borrow_bps defaults to 0.0 (inert;
+//        pnl_borrow[s] is then exactly 0.0 for every s).
 //        pnl_net[s] = pnl_gross[s] − pnl_cost[s] − pnl_borrow[s].
+//    * holding_sessions[s]: the sessions book s is held — to the next rebalance,
+//        and for the final book the previous spacing (1 for a single book)
+//        capped at the panel end. See report_holding_sessions().
 //    * gross_leverage[s] = Σ_i |book[i]|; net_exposure[s] = Σ_i book[i];
 //        turnover[s]      = books.turnover[s].
 //    * equity_curve[s] = cumulative SUM of pnl_net (a net-return series; simplest
@@ -84,6 +94,7 @@
 #include <cmath>      // std::isnan, std::isfinite, std::fabs
 #include <filesystem> // create dir, path join
 #include <fstream>    // std::ofstream (binary write)
+#include <limits>     // std::numeric_limits (NaN return cells)
 #include <span>        // std::span (realized return cross-section, emit_tsv headers)
 #include <string>      // file buffer
 #include <string_view> // std::string_view (emit_tsv column headers)
@@ -99,6 +110,7 @@
 #include "atx/core/types.hpp"         // f64, usize
 
 #include "atx/engine/alpha/panel.hpp"       // alpha::Panel, FieldId
+#include "atx/engine/book/replay.hpp"       // ListingExchange, shumway_terminal_return
 #include "atx/engine/combine/store.hpp"     // combine::AlphaId
 #include "atx/engine/library/library.hpp"   // library::Library
 #include "atx/engine/library/lifecycle.hpp" // library::LifecycleState (census index bound)
@@ -122,7 +134,167 @@ struct BookReport {
   atx::core::linalg::MatX factor_exposures;           // per-period Xᵀw (rows=periods, cols=n_factors)
   std::vector<atx::f64> capacity_utilization;         // gross / capacity per period
   std::array<atx::usize, 6> lifecycle_census{};       // count per LifecycleState at as_of
+  std::vector<atx::usize> holding_sessions;           // W0-B0: sessions each book is held
 };
+
+// ===========================================================================
+//  Versioned legacy-report rules (W0-B0, closes B-03)
+// ===========================================================================
+//  LegacyReportRule picks how the weight report's per-name returns are built
+//  (holding_interval_returns below):
+//    OnePeriodV1 (pre-W0): the 1-session-forward TRI return at each rebalance,
+//      whatever the rebalance spacing, and a missing close is 0 (NaN → 0).
+//    HoldingIntervalV2 (THE DEFAULT): the TRI return compounded over the whole
+//      holding window [periods[s], periods[s] + holding_sessions[s]]; a held name
+//      that stops printing inside the window and never prints again takes its
+//      last print times (1 + Shumway fallback), flagged (see replay.hpp's
+//      TerminalReturn policy); an interior gap marks at the last print.
+//  ReportBorrowAccrual picks the borrow accrual (see pnl_borrow above).
+enum class LegacyReportRule : atx::u8 { OnePeriodV1 = 1, HoldingIntervalV2 = 2 };
+enum class ReportBorrowAccrual : atx::u8 { FlatPerRebalanceV1 = 1, AnnualBySessionsV2 = 2 };
+inline constexpr atx::f64 kReportSessionsPerYear = 252.0;
+
+struct ReportAccrual {
+  atx::f64 borrow_bps{0.0};
+  ReportBorrowAccrual borrow_rule{ReportBorrowAccrual::AnnualBySessionsV2};
+  // Empty == derived from the schedule by report_holding_sessions(); otherwise
+  // one entry per schedule period (e.g. a row-indexed returns panel).
+  std::span<const atx::usize> holding_sessions{};
+  atx::f64 sessions_per_year{kReportSessionsPerYear};
+};
+
+// Sessions each rebalance's book is held: periods[s+1] - periods[s] (0 for a
+// non-increasing pair); the final book holds the previous spacing (1 when it is
+// the only book, or when that spacing is 0) capped at the sessions left in the
+// panel. PRECONDITION: every periods[s] < dates.
+[[nodiscard]] inline std::vector<atx::usize>
+report_holding_sessions(std::span<const atx::usize> periods, atx::usize dates) {
+  const atx::usize n = periods.size();
+  std::vector<atx::usize> held(n, 0U);
+  for (atx::usize s = 0; s + 1 < n; ++s) {
+    held[s] = periods[s + 1] > periods[s] ? periods[s + 1] - periods[s] : 0U;
+  }
+  if (n > 0) {
+    const atx::usize last = periods[n - 1];
+    const atx::usize nominal = (n > 1 && held[n - 2] > 0U) ? held[n - 2] : 1U;
+    const atx::usize remaining = last + 1U < dates ? dates - 1U - last : 0U;
+    held[n - 1] = nominal < remaining ? nominal : remaining;
+  }
+  return held;
+}
+
+// One terminal (delisting) return applied by holding_interval_returns.
+struct ReportTerminal {
+  atx::usize schedule_index{};
+  atx::usize instrument{};
+  atx::usize last_valid_date{}; // The name's final print inside the window.
+  atx::f64 terminal_return{};
+  TerminalReturnSource source{TerminalReturnSource::ShumwayUnknownAdverse};
+};
+
+struct HoldingReturns {
+  std::vector<atx::f64> returns;           // S × M, schedule-major; NaN == no entry mark.
+  std::vector<atx::usize> holding_sessions; // S.
+  std::vector<ReportTerminal> terminals;   // One per held (s, i) that delisted (all flagged).
+  atx::usize gap_marks{};                  // Held (s, i) marked at an interior last print.
+};
+
+// Per-name returns for each rebalance of a weight book, built from a
+// date-major TRI close (dates × instruments). `books` supplies the side of each
+// held name (for the Shumway adverse choice when `exchange` is empty/Unknown).
+// Validates shapes, the rule, every period < dates and every book length.
+// A close is valid iff finite and > 0 (V2); V1 reproduces the pre-W0
+// arithmetic exactly (!isnan(p0) && !isnan(p1) && p0 != 0). Pure; no RNG.
+[[nodiscard]] inline atx::core::Result<HoldingReturns>
+holding_interval_returns(std::span<const atx::f64> close, atx::usize dates,
+                         atx::usize instruments, std::span<const atx::usize> periods,
+                         std::span<const std::vector<atx::f64>> books, LegacyReportRule rule,
+                         std::span<const ListingExchange> exchange = {}) {
+  using atx::core::Err;
+  using atx::core::ErrorCode;
+  const atx::usize n = periods.size();
+  if (dates == 0U || instruments == 0U || close.size() / instruments != dates ||
+      close.size() % instruments != 0U || books.size() != n ||
+      (!exchange.empty() && exchange.size() != instruments)) {
+    return Err(ErrorCode::InvalidArgument, "holding_interval_returns: shape mismatch");
+  }
+  if (rule != LegacyReportRule::OnePeriodV1 && rule != LegacyReportRule::HoldingIntervalV2) {
+    return Err(ErrorCode::InvalidArgument, "holding_interval_returns: unrecognized rule");
+  }
+  for (atx::usize s = 0; s < n; ++s) {
+    if (periods[s] >= dates || books[s].size() != instruments) {
+      return Err(ErrorCode::InvalidArgument,
+                 "holding_interval_returns: period out of range or book length mismatch");
+    }
+  }
+  const auto nan = std::numeric_limits<atx::f64>::quiet_NaN();
+  HoldingReturns out;
+  out.returns.assign(n * instruments, nan);
+  if (rule == LegacyReportRule::OnePeriodV1) {
+    out.holding_sessions.assign(n, 0U);
+    for (atx::usize s = 0; s < n; ++s) {
+      const atx::usize d = periods[s];
+      if (d + 1U >= dates) continue;
+      out.holding_sessions[s] = 1U;
+      for (atx::usize i = 0; i < instruments; ++i) {
+        const atx::f64 p0 = close[d * instruments + i];
+        const atx::f64 p1 = close[(d + 1U) * instruments + i];
+        if (!std::isnan(p0) && !std::isnan(p1) && p0 != 0.0) {
+          out.returns[s * instruments + i] = p1 / p0 - 1.0;
+        }
+      }
+    }
+    return atx::core::Ok(std::move(out));
+  }
+  const auto valid = [](atx::f64 price) noexcept { return std::isfinite(price) && price > 0.0; };
+  // Final valid print per name (the "last bar" evidence); dates == never printed.
+  std::vector<atx::usize> last_print(instruments, dates);
+  for (atx::usize t = 0; t < dates; ++t) {
+    for (atx::usize i = 0; i < instruments; ++i) {
+      if (valid(close[t * instruments + i])) last_print[i] = t;
+    }
+  }
+  out.holding_sessions = report_holding_sessions(periods, dates);
+  for (atx::usize s = 0; s < n; ++s) {
+    const atx::usize d = periods[s];
+    const atx::usize h = out.holding_sessions[s];
+    if (h == 0U) continue; // No forward window: nothing is earned.
+    const atx::usize end = d + h;
+    for (atx::usize i = 0; i < instruments; ++i) {
+      const atx::f64 p0 = close[d * instruments + i];
+      if (!valid(p0)) continue; // No entry mark: the name cannot be charged.
+      const atx::f64 p1 = close[end * instruments + i];
+      atx::f64 &r = out.returns[s * instruments + i];
+      if (valid(p1)) {
+        r = p1 / p0 - 1.0;
+        continue;
+      }
+      // Exit mark missing: the name's last print inside (d, end), else d.
+      atx::usize t_last = d;
+      for (atx::usize k = 1; k < h; ++k) {
+        if (valid(close[(end - k) * instruments + i])) {
+          t_last = end - k;
+          break;
+        }
+      }
+      const atx::f64 partial = close[t_last * instruments + i] / p0;
+      const atx::f64 w = books[s][i];
+      const bool held = std::isfinite(w) && w != 0.0;
+      if (last_print[i] != dates && last_print[i] > end) {
+        r = partial - 1.0; // Prints again later: an interior gap, not a delisting.
+        out.gap_marks += held ? 1U : 0U;
+        continue;
+      }
+      const auto venue = exchange.empty() ? ListingExchange::Unknown : exchange[i];
+      const TerminalReturn terminal = shumway_terminal_return(venue, w < 0.0);
+      r = partial * (1.0 + terminal.value) - 1.0;
+      if (held) {
+        out.terminals.push_back(ReportTerminal{s, i, t_last, terminal.value, terminal.source});
+      }
+    }
+  }
+  return atx::core::Ok(std::move(out));
+}
 
 // The census array is indexed by LifecycleState's underlying value (0..5), so its
 // size MUST equal the enumerator count — pinned here so a new state forces a bump
@@ -153,11 +325,14 @@ struct PeriodAccum {
 // charged), mirroring cost_bps's own bps-per-period convention. borrow_bps==0.0
 // (the default) makes pnl_borrow exactly 0.0 for every book — the trailing
 // defaulted parameter keeps every pre-S5-4 caller byte-identical automatically.
+// W0-B0: `borrow_accrual` scales the charge (1.0 == the pre-W0 flat charge,
+// bit-identical; holding_sessions / sessions_per_year under AnnualBySessionsV2).
 [[nodiscard]] inline PeriodAccum accumulate_period(const std::vector<atx::f64> &book,
                                                    std::span<const atx::f64> r,
                                                    const alpha::Panel &panel, atx::usize date,
                                                    atx::f64 cost_bps,
-                                                   atx::f64 borrow_bps = 0.0) noexcept {
+                                                   atx::f64 borrow_bps = 0.0,
+                                                   atx::f64 borrow_accrual = 1.0) noexcept {
   atx::f64 pnl_gross = 0.0;
   atx::f64 gross = 0.0;
   atx::f64 net = 0.0;
@@ -175,7 +350,8 @@ struct PeriodAccum {
     }
   }
   return PeriodAccum{pnl_gross, cost_bps * 1e-4 /*bps → fractional return*/,
-                     short_w * borrow_bps * 1e-4 /*bps → fractional return*/, gross, net};
+                     short_w * borrow_bps * 1e-4 * borrow_accrual /*bps → fraction*/, gross,
+                     net};
 }
 
 // Shortest exact round-trip decimal of a finite f64 (locale-INDEPENDENT, the same
@@ -253,12 +429,16 @@ template <class Cell>
 //  FRONT-DOOR GUARDED (no release UB): the three MultiPeriodResult vectors must
 //  each match the schedule length; every schedule date must be < panel.dates();
 //  every book must match V.n_instruments(). Any violation returns Err.
+//
+//  W0-B0: `accrual` carries the borrow rate and its accrual rule (B-03); an
+//  unrecognized rule, a nonfinite/negative borrow rate, a nonpositive
+//  sessions_per_year or a holding_sessions span of the wrong length is Err.
 // ===========================================================================
 [[nodiscard]] inline atx::core::Result<BookReport>
 accumulate_report(const risk::MultiPeriodResult &books, const alpha::Panel &panel,
                   alpha::FieldId returns_field, const risk::RebalanceSchedule &sched,
                   const risk::FactorModel &V, atx::f64 capacity_gross, const library::Library &lib,
-                  atx::usize as_of, atx::f64 borrow_bps = 0.0) {
+                  atx::usize as_of, const ReportAccrual &accrual) {
   const atx::usize n = sched.periods.size();
   const atx::usize m = V.n_instruments();
   if (books.books.size() != n || books.cost_bps.size() != n || books.turnover.size() != n) {
@@ -275,6 +455,19 @@ accumulate_report(const risk::MultiPeriodResult &books, const alpha::Panel &pane
                             "accumulate_report: book length must equal V.n_instruments()");
     }
   }
+  if ((accrual.borrow_rule != ReportBorrowAccrual::FlatPerRebalanceV1 &&
+       accrual.borrow_rule != ReportBorrowAccrual::AnnualBySessionsV2) ||
+      !std::isfinite(accrual.borrow_bps) || accrual.borrow_bps < 0.0 ||
+      !std::isfinite(accrual.sessions_per_year) || accrual.sessions_per_year <= 0.0 ||
+      (!accrual.holding_sessions.empty() && accrual.holding_sessions.size() != n)) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "accumulate_report: invalid borrow accrual");
+  }
+  const std::vector<atx::usize> held =
+      accrual.holding_sessions.empty()
+          ? report_holding_sessions(sched.periods, panel.dates())
+          : std::vector<atx::usize>(accrual.holding_sessions.begin(),
+                                    accrual.holding_sessions.end());
 
   BookReport rep;
   rep.equity_curve.reserve(n);
@@ -293,9 +486,13 @@ accumulate_report(const risk::MultiPeriodResult &books, const alpha::Panel &pane
   for (atx::usize s = 0; s < n; ++s) {
     const std::vector<atx::f64> &book = books.books[s];
     const atx::usize date = sched.periods[s];
+    const atx::f64 borrow_accrual =
+        accrual.borrow_rule == ReportBorrowAccrual::FlatPerRebalanceV1
+            ? 1.0
+            : static_cast<atx::f64>(held[s]) / accrual.sessions_per_year;
     const detail::PeriodAccum acc = detail::accumulate_period(
         book, panel.field_cross_section(returns_field, date), panel, date, books.cost_bps[s],
-        borrow_bps);
+        accrual.borrow_bps, borrow_accrual);
     const atx::f64 pnl_net = acc.pnl_gross - acc.pnl_cost - acc.pnl_borrow;
     equity += pnl_net;
 
@@ -327,7 +524,23 @@ accumulate_report(const risk::MultiPeriodResult &books, const alpha::Panel &pane
       ++rep.lifecycle_census[static_cast<atx::usize>(*st)];
     }
   }
+  rep.holding_sessions = held;
   return atx::core::Ok(std::move(rep));
+}
+
+// The pre-W0 call shape. `borrow_bps` is now an ANNUAL rate accrued over each
+// book's holding sessions (ReportBorrowAccrual::AnnualBySessionsV2, the
+// corrected default); pass a ReportAccrual with FlatPerRebalanceV1 to
+// reproduce the pre-W0 flat per-rebalance charge.
+[[nodiscard]] inline atx::core::Result<BookReport>
+accumulate_report(const risk::MultiPeriodResult &books, const alpha::Panel &panel,
+                  alpha::FieldId returns_field, const risk::RebalanceSchedule &sched,
+                  const risk::FactorModel &V, atx::f64 capacity_gross, const library::Library &lib,
+                  atx::usize as_of, atx::f64 borrow_bps = 0.0) {
+  ReportAccrual accrual;
+  accrual.borrow_bps = borrow_bps;
+  return accumulate_report(books, panel, returns_field, sched, V, capacity_gross, lib, as_of,
+                           accrual);
 }
 
 // ===========================================================================

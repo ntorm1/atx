@@ -30,7 +30,10 @@ inline book::ReplayConfig immediate() {
   book::ReplayConfig cfg;
   cfg.initial_nav = 1000.0;
   cfg.execution_delay_periods = 0;
+  cfg.allow_same_close = true; // B-02: same-close fills are an explicit opt-in.
   cfg.borrow_day_basis = book::ReplayDayBasis::D360;
+  // B-04: these cases pin the pre-W0 locate rejection (now LocateBreach::AbortV1).
+  cfg.locate_breach = book::LocateBreach::AbortV1;
   return cfg;
 }
 
@@ -38,6 +41,8 @@ inline book::BorrowSchedule schedule(atx::usize dates, atx::usize instruments) {
   book::BorrowSchedule s;
   s.dates = dates;
   s.instruments = instruments;
+  // B-05: these cases pin the pre-W0 fee-and-rebate financing formula.
+  s.financing = book::ShortFinancing::FeeAndRebateV1;
   return s;
 }
 

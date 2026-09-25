@@ -30,6 +30,7 @@ inline book::ReplayConfig base_config() {
   book::ReplayConfig cfg;
   cfg.initial_nav = 1000.0;
   cfg.execution_delay_periods = 0;
+  cfg.allow_same_close = true; // B-02: same-close fills are an explicit opt-in.
   return cfg;
 }
 
