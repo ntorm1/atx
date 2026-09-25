@@ -432,14 +432,44 @@ atx::core::Result<std::vector<ComboWeight>> load_combo_weights(const PipelinePan
   return atx::core::Ok(std::move(out));
 }
 
+// The fitted combo weight each LIBRARY alpha carries under SleeveSignalRule::ComboWeightsV2,
+// indexed by AlphaId value (nullopt: the combo never weighted this DSL). The combo sidecar is
+// keyed by DSL SHA-256 and load_combo_weights sums the combo's weights per DSL, so W(sha) is
+// the combo's total exposure to that expression (identical DSL -> identical positions). When
+// the library holds k > 1 members with the same DSL, each carries W(sha) / k: the members of
+// a one-sleeve partition then sum back to exactly W(sha) -- never k * W(sha) -- whichever
+// sleeves the duplicates land in.
+atx::core::Result<std::vector<std::optional<atx::f64>>>
+member_combo_weights(const library::Library &lib, const std::vector<ComboWeight> &weights) {
+  const atx::usize n = static_cast<atx::usize>(lib.n_alphas());
+  std::vector<std::string> sha(n);
+  for (atx::usize a = 0; a < n; ++a) {
+    ATX_TRY(sha[a], atx::core::sha256_hex(
+                        lib.get(AlphaId{static_cast<atx::u32>(a)}).provenance.expr_source));
+  }
+  std::vector<std::optional<atx::f64>> out(n);
+  for (atx::usize a = 0; a < n; ++a) {
+    const auto it = std::find_if(weights.begin(), weights.end(),
+                                 [&](const ComboWeight &c) { return c.dsl_sha256 == sha[a]; });
+    if (it == weights.end()) {
+      continue;
+    }
+    const auto k = static_cast<atx::usize>(std::count(sha.begin(), sha.end(), sha[a]));
+    out[a] = it->w / static_cast<atx::f64>(k); // k >= 1: sha[a] itself is counted
+  }
+  return atx::core::Ok(std::move(out));
+}
+
 // The sleeve's signal under SleeveSignalRule::ComboWeightsV2: sum_j w_j * position_j(t, i)
-// over the sleeve members, w_j the fitted combo weight of member j (matched by DSL SHA-256),
-// NaN outside the research universe -- stage_combine's own blend (step 9), restricted to the
-// sleeve. The members' positions are extracted with the SAME WeightPolicy / sector map
-// stage_combine used (cfg.sector_neutral), so a one-sleeve partition reproduces the combo.
+// over the sleeve members, w_j the member's share of the fitted combo weight on its DSL
+// (member_combo_weights), NaN outside the research universe -- stage_combine's own blend
+// (step 9), restricted to the sleeve. The members' positions are extracted with the SAME
+// WeightPolicy / sector map stage_combine used (cfg.sector_neutral), so a one-sleeve
+// partition reproduces the combo.
 atx::core::Result<std::vector<atx::f64>>
 combo_weighted_sleeve_signal(const library::Library &lib, const std::vector<AlphaId> &members,
-                             const alpha::Panel &research, const std::vector<ComboWeight> &weights,
+                             const alpha::Panel &research,
+                             const std::vector<std::optional<atx::f64>> &member_w,
                              bool sector_neutral) {
   if (members.empty()) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
@@ -450,17 +480,14 @@ combo_weighted_sleeve_signal(const library::Library &lib, const std::vector<Alph
   dsl.reserve(members.size());
   w.reserve(members.size());
   for (const AlphaId id : members) {
-    dsl.push_back(lib.get(id).provenance.expr_source);
-    ATX_TRY(auto sha, atx::core::sha256_hex(dsl.back()));
-    const auto it = std::find_if(weights.begin(), weights.end(),
-                                 [&](const ComboWeight &c) { return c.dsl_sha256 == sha; });
-    if (it == weights.end()) {
+    if (id.value >= member_w.size() || !member_w[id.value].has_value()) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                             "metabook: library alpha " + std::to_string(id.value) +
                                 " has no fitted combo weight (the combo was built from a "
                                 "different pool)");
     }
-    w.push_back(it->w);
+    dsl.push_back(lib.get(id).provenance.expr_source);
+    w.push_back(*member_w[id.value]);
   }
   alpha::Library dsl_lib{};
   const std::vector<std::string_view> views(dsl.begin(), dsl.end());
@@ -653,9 +680,10 @@ build_metabook_from_inputs(const RunConfig &cfg, const MetaBookStageConfig &scfg
   } else {
     // I-07: each sleeve blends its members with the FITTED combo weights.
     ATX_TRY(const auto weights, load_combo_weights(combo_input, cfg.combo));
+    ATX_TRY(const auto member_w, member_combo_weights(*lib_holder, weights));
     for (atx::usize j = 0; j < n_sleeves; ++j) {
       ATX_TRY(auto sig, combo_weighted_sleeve_signal(*lib_holder, sleeve_cfgs[j].members,
-                                                     research, weights, cfg.sector_neutral));
+                                                     research, member_w, cfg.sector_neutral));
       sleeve_signal[j] = std::move(sig);
     }
   }
@@ -698,7 +726,11 @@ build_metabook_from_inputs(const RunConfig &cfg, const MetaBookStageConfig &scfg
     const library::Library *dead_lib_ptr = dead_lib_opt.has_value() ? &*dead_lib_opt : nullptr;
     const LibraryPeriodAxis dead_axis =
         (dead_lib_ptr != nullptr)
-            ? library_period_axis(resolve_dead_alpha_lib_dir(cfg), *dead_lib_ptr)
+            ? library_period_axis(resolve_dead_alpha_lib_dir(cfg), *dead_lib_ptr, D,
+                                  research_input.identity
+                                      ? std::span<const atx::i64>{research_input.identity
+                                                                      ->session_keys}
+                                      : std::span<const atx::i64>{})
             : LibraryPeriodAxis{};
 
     for (atx::usize s = 0; s < n_steps; ++s) {

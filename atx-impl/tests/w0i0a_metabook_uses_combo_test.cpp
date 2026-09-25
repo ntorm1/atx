@@ -8,6 +8,9 @@
 //   * SleevesFollowTheFittedWeights — multi-sleeve (BySignalFamily): refitting the combo
 //     with a different method moves the V2 books; the V1 books ignore the combo entirely.
 //   * MemberWithoutAComboWeightIsRefused — a library alpha the combo never weighted.
+//   * DuplicateDslMembersSplitTheirComboWeight — a library holding the same DSL twice: the
+//     combo's total weight on that DSL is shared between the duplicates (not given to each),
+//     so one sleeve still reproduces the combo book byte for byte.
 //   * FutureMutationLeavesPastBooksIdentical — prices and volumes mutated from kMutate on
 //     (combo refit on each panel over a fit window ending at kMutate): every mega-book row
 //     dated before kMutate is byte-identical; the V1 whole-panel risk lens moves them.
@@ -84,7 +87,8 @@ struct World {
     std::string lib_dir;
 };
 
-[[nodiscard]] World make_world(const std::string& tag, usize mutate_from = fx::kNever) {
+[[nodiscard]] World make_world(const std::string& tag, usize mutate_from = fx::kNever,
+                               const std::vector<std::string>& exprs = kExprs) {
     World w;
     w.dir = fx::fresh_dir("mbc_" + tag);
     fx::PanelSpec spec;
@@ -94,7 +98,7 @@ struct World {
     EXPECT_TRUE(p.has_value());
     w.panel = (w.dir / "research.bin").string();
     w.lib_dir = (w.dir / "lib").string();
-    make_library(w.lib_dir, kExprs);
+    make_library(w.lib_dir, exprs);
     return w;
 }
 
@@ -221,6 +225,37 @@ TEST(ImplMetabookUsesCombo, MemberWithoutAComboWeightIsRefused) {
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().message().find("no fitted combo weight"), std::string::npos)
         << r.error().message();
+}
+
+TEST(ImplMetabookUsesCombo, DuplicateDslMembersSplitTheirComboWeight) {
+    // rank(close) is admitted twice (the pool-correlation gate is open here); the combo
+    // weights both copies, and its sidecar lists both lines under one DSL SHA-256.
+    const std::vector<std::string> exprs{"rank(close)", "rank(close)", "ts_mean(close,10)",
+                                         "delta(close,2)"};
+    const World w = make_world("dup", fx::kNever, exprs);
+    const std::string combo = combine_from_library(w, "equal", 90, "dup");
+    const std::vector<f64> cw = fx::weight_values(combo);
+    ASSERT_EQ(cw.size(), 4U);
+    const std::vector<std::string> lines = fx::weight_lines(combo);
+    const auto sha_of = [](const std::string& line) {
+        return line.substr(line.find("dsl_sha256="));
+    };
+    ASSERT_EQ(sha_of(lines[0]), sha_of(lines[1])) << "the duplicates share one DSL hash";
+    ASSERT_NE(cw[0] + cw[1], 0.0) << "the duplicated DSL must carry combo weight";
+    MetaBookStageConfig scfg; // SingleSleeve, ComboWeightsV2
+    const auto from_combo = fund_books(meta_cfg(w, combo, /*lib=*/false), scfg);
+    const auto from_lib = fund_books(meta_cfg(w, combo, /*lib=*/true), scfg);
+    ASSERT_EQ(from_combo.size(), kDates / 5U);
+    ASSERT_EQ(from_lib.size(), from_combo.size());
+    usize identical = 0;
+    for (usize s = 0; s < from_combo.size(); ++s) {
+        identical += bit_equal(from_combo[s], from_lib[s]) ? 1U : 0U;
+    }
+    std::printf("[W0-I0a I-07] duplicate-DSL library (w=%.6g,%.6g on rank(close)): one sleeve "
+                "rows identical to the combo book %zu/%zu\n",
+                cw[0], cw[1], identical, from_combo.size());
+    EXPECT_EQ(identical, from_combo.size())
+        << "each duplicate carries half the combo's weight on the shared DSL";
 }
 
 TEST(ImplMetabookUsesCombo, FutureMutationLeavesPastBooksIdentical) {

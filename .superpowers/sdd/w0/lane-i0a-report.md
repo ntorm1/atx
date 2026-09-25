@@ -74,9 +74,9 @@ Existing tests were changed only where they pinned a cited defect:
 
 | Plan acceptance item | Test(s) | Measured | Status |
 |---|---|---|---|
-| Mutating holdout PnL leaves the shipped weights byte-identical | `ImplCombineNoHoldoutRead.ShippedWeightsIgnoreHoldoutMutation`, `ImplNestedSplits.FinalTestMutationLeavesShippedWeightsIdentical` | Under V2 the `weights.txt` sidecar (17 significant digits) is byte-identical when every row from the final test on is mutated. The V1 rules (full-stream conviction, full-period capacity) move the weights by up to 0.0720029 (`LegacyRulesReadTheHoldout`). | MET |
-| Mutating future volumes or prices leaves past books byte-identical | `ImplOptimizePit.FutureMutationLeavesPastBooksIdentical`, `ImplMetabookUsesCombo.FutureMutationLeavesPastBooksIdentical`, `ImplOptimizePit.ParticipationReferenceIsTrailingPit`, `ImplNestedSplits.DiscoverWindowIgnoresLaterRows` | Past optimize books identical under mutation of rows 66+, V2 vs V1: mvo-diagonal 14/14 vs 0/14; mvo-participation-cap 14/14 vs 0/14; position-mode-gp 14/14 vs 0/14; mvo-factor 14/14 vs 14/14. Metabook past rows identical: V2 16/16, V1 0/16, with both 1 and 3 sleeves. The participation reference at every date d < 66 is bit-identical under the mutation. The discover prefix `[0,96)` gives the same `factory_digest` (`108d8eff5befc20a`, 21 admitted) when rows 96+ are mutated. | MET |
-| Walk-forward with `--method stack` runs | `ImplCombineNoHoldoutRead.WalkForwardStackRuns`, `ImplCombineNoHoldoutRead.WalkForwardFoldsStayInsideTheFitWindow` | The stack walk-forward runs: 2 folds, embargo 2 (h=1 + delay 1), OOS Sharpes 0.684542 and 2.212081 (mean 1.448312). Every fold's train and test windows lie inside `[fit_begin, fit_end)`, and each test begins at least one embargo after its train window. | MET |
+| Mutating holdout PnL leaves the shipped weights byte-identical | `ImplCombineNoHoldoutRead.ShippedWeightsIgnoreHoldoutMutation`, `ImplNestedSplits.FinalTestMutationLeavesShippedWeightsIdentical` | Under V2 the `weights.txt` sidecar (17 significant digits) is byte-identical when every row from the final test on is mutated. The V1 rules (full-stream conviction, full-period capacity) move the weights by up to 0.0632524 (`LegacyRulesReadTheHoldout`; post-merge, fix pass 1 run). | MET |
+| Mutating future volumes or prices leaves past books byte-identical | `ImplOptimizePit.FutureMutationLeavesPastBooksIdentical`, `ImplMetabookUsesCombo.FutureMutationLeavesPastBooksIdentical`, `ImplOptimizePit.ParticipationReferenceIsTrailingPit`, `ImplNestedSplits.DiscoverWindowIgnoresLaterRows` | Past optimize books identical under mutation of rows 66+, V2 vs V1: mvo-diagonal 14/14 vs 0/14; mvo-participation-cap 14/14 vs 0/14 (V1 there is `WholePanelV1` + `LastDateV1`; the cap does not bind at NAV 3e5); **binding** participation cap (NAV 2e6, 13 past cells on their %ADV box, diagonal lens held at `PerStepPitV2`): `TrailingPitPerRebalanceV2` 14/14 vs `LastDateV1` 0/14 (`ImplOptimizePit.BindingParticipationCapIsPitPerRebalance`, fix pass 1); position-mode-gp 14/14 vs 0/14; mvo-factor 14/14 vs 14/14. Metabook past rows identical: V2 16/16, V1 0/16, with both 1 and 3 sleeves. The participation reference at every date d < 66 is bit-identical under the mutation. The discover prefix `[0,96)` gives the same `factory_digest` (`78bca49224a4678f` post-merge; `108d8eff5befc20a` pre-merge; 21 admitted) when rows 96+ are mutated. | MET |
+| Walk-forward with `--method stack` runs | `ImplCombineNoHoldoutRead.WalkForwardStackRuns`, `ImplCombineNoHoldoutRead.WalkForwardFoldsStayInsideTheFitWindow` | The stack walk-forward runs: 2 folds, embargo 2 (h=1 + delay 1), OOS Sharpes 0.663941 and 2.413094 (mean 1.538518; post-merge, fix pass 1 run). Every fold's train and test windows lie inside `[fit_begin, fit_end)`, and each test begins at least one embargo after its train window. | MET |
 
 ## Defect table
 
@@ -87,7 +87,7 @@ Existing tests were changed only where they pinned a cited defect:
 | I-03 | CLOSED | `CapacityRule::TrailingPitTradesV2` computes:<br>• edge = mean PnL over the fit window;<br>• cost from \|Δw\| trades, not holdings;<br>• a trailing 20-day dollar ADV and 60-return volatility per date, PIT (`build_liquidity_panels`, `alpha_capacity_trades`).<br>Test: `CapacityChargesTradesNotHoldings`. For (rank(size), delta(close,1)), V2 gives inf and 17800.0 while V1 gives 387899.1 and 4886.6. The low-turnover alpha is no longer penalized. |
 | I-04 | CLOSED | `DiagRiskRule::PerStepPitV2` fits one expanding PIT diagonal model per rebalance (`diagonal_risk_models_expanding`, `diag_risk.hpp`). It is used in optimize (MVO and GP) and in metabook. The report's call site uses a 1-row fit; its V is never read, so its output is unchanged. `ImplOptimizePit.ExpandingDiagonalMatchesTwoPass` gives a maximum relative difference of 7.42e-16. |
 | I-06 | CLOSED | `DeadAlphaRule::DeadOrDecayingPerStepV2`: an alpha is "dead" when the lifecycle journal says it was Dead or Decaying as of each step's date, mapped onto the library's period axis. If the axis is unrecorded, the rule fails open and returns an empty set. Tests `ImplDeadAlpha.*`:<br>• `DeadSetFollowsTheLifecycleAsOfEachDate`: V2 gives {}, {}, {}, {1}, {0,1}, …, while V1 gives {0,1,2} on every date.<br>• `CrowdingStartsWhenTheAlphasDie`: under V2 the centre weight stays 0.100000 until the step at date 15 and is 0.090216 from then on. Under V1 it is 0.090216 from step 0. |
-| I-07 | CLOSED | `SleeveSignalRule::ComboWeightsV2`: a sleeve signal is Σ w_j·pos_j, using the combo's fitted weights (read from `<combo>.weights.txt` and matched by DSL sha256). It uses the same weight policy and sector map as combine. A member with no fitted weight is refused. Tests `ImplMetabookUsesCombo.*`:<br>• With one sleeve, the metabook reproduces the combo book: 24/24 rows identical, against a V1 gap of 0.347627.<br>• With 3 sleeves, the gap between the shrinkage-mv and ic combos is 0.0460013 under V2 and 0 under V1. |
+| I-07 | CLOSED | `SleeveSignalRule::ComboWeightsV2`: a sleeve signal is Σ w_j·pos_j, using the combo's fitted weights (read from `<combo>.weights.txt` and matched by DSL sha256). It uses the same weight policy and sector map as combine. A member with no fitted weight is refused. Tests `ImplMetabookUsesCombo.*`:<br>• With one sleeve, the metabook reproduces the combo book: 24/24 rows identical, against a V1 gap of 0.283872 (post-merge).<br>• With 3 sleeves, the gap between the shrinkage-mv and ic combos is 0.0420907 under V2 (post-merge) and 0 under V1.<br>• Fix pass 1: a library holding the same DSL twice shares the combo's weight on that DSL between the duplicates (`member_combo_weights`); one sleeve still reproduces the combo 24/24 (`DuplicateDslMembersSplitTheirComboWeight`). |
 | I-08 | CLOSED | `WalkForwardRule::ShippedFitEmbargoedV2`: the walk-forward folds run inside the fit window, through the same `fit_shipped_weights` dispatch as the shipped weights: stack, the cleaned-cov methods, and every AlphaCombiner method. They use an embargo of h + execution delay, and the rule errors when a segment is too short. Tests: `WalkForwardStackRuns`, `WalkForwardFoldsStayInsideTheFitWindow`. |
 | R-12 | CLOSED | `ParticipationAdvRule::TrailingPitPerRebalanceV2` refreshes the reference at each rebalance to the mean volume over `[d-19,d]` and the close at d (`trailing_participation_reference`, `diag_risk.hpp`). The optimizer loop is per step (`run_multi_period_step_ref`).<br>**Tests.**<br>• `ParticipationReferenceIsTrailingPit`: the reference is PIT. The delisted name 11 has adv=1384831 and px=70.69 at d=59, and cap 0 after delisting. V1 gave it adv=0 and px=0 for its whole history.<br>• `PerStepLoopMirrorsTheDriver`: when the reference is static, the V2 digest equals the V1 digest.<br>• `DelistedNameKeepsItsCapWhileListed`: the delisted name holds weight while listed and none after delisting. |
 
@@ -153,7 +153,11 @@ Every other test passes. This includes the existing tests that were changed (`Si
 both dead-alpha wire suites, `MetaBook`, `StageRunSyntheticSmoke` 3/3 and the E2E pipeline) and
 all 24 new tests.
 
-### Verbatim measured output (from the whole run)
+### Verbatim measured output (from the whole run, PRE-MERGE: first implementation run)
+
+The numbers in this block and the paragraph after it are from before the `feat/w0-integration`
+merge. The merged kernels move several of them; the post-merge values are in the tables above
+and in "Fix pass 1" below.
 
 ```
 [W0-I0a I-06] date 22: V2 dead={} (as_of 2)  V1 'dead'={0,1,2} (as_of 9)
@@ -299,3 +303,143 @@ format change, not a digest.
   fixed here. Lane suites (this lane's actual acceptance surface) stay 24/24 green; the whole-
   executable "must stay green" bar is not met because of out-of-scope regressions from lanes
   A0/E0a/I0b landing on `feat/w0-integration`.
+
+## Fix pass 1
+
+Addresses the four minor findings in `lane-i0a-review.md` (verdict APPROVE, no blocker or major).
+Files changed: `atx-impl/src/dead_alpha_wire.hpp`, `atx-impl/src/stage_optimize.cpp`,
+`atx-impl/src/stage_metabook.cpp` (all owned), `atx-impl/tests/w0i0a_optimize_pit_test.cpp`,
+`atx-impl/tests/w0i0a_dead_alpha_test.cpp`, `atx-impl/tests/w0i0a_metabook_uses_combo_test.cpp`
+(lane tests), this report. No existing assertion was weakened; the only edit to an existing test
+is the two `library_period_axis` call sites in `w0i0a_dead_alpha_test.cpp`, which now pass the
+deploy panel (60 dates, unkeyed: the recorded panel) because the signature gained it.
+
+### Finding 1 (participation cap never binds end to end) -- FIXED
+
+New test `ImplOptimizePit.BindingParticipationCapIsPitPerRebalance`. At NAV 2e6 the %ADV box
+0.05·ADV·px/NAV is about 0.125 for the least liquid name, below `name_cap` 0.5 and below the
+uncapped weights (up to 0.22). The diagonal lens is held at `PerStepPitV2` in both runs, so only
+`ParticipationAdvRule` differs. Binding is shown two ways: past (step, name) cells sitting on
+their per-rebalance box, and past books that differ from the same augmented QP run with a slack
+cap (NAV 3e5).
+
+```
+[W0-I0a R-12] binding cap (NAV 2e+06): 13 past (step,name) cells on their %ADV box, 14/14 past steps differ from the slack-cap run; past books identical under future mutation: TrailingPitPerRebalanceV2 14/14, LastDateV1 0/14 (diag PerStepPitV2 in both)
+```
+
+So the per-rebalance reference alone keeps past books identical, and `LastDateV1` alone carries
+the future into all 14 past books. Solver note (pre-existing, recorded, not fixed here): a
+one-off NAV x cap sweep (not committed) showed that `ConstrainedQpSolver`'s augmented path
+does not converge at many binding points, including NAV 5e5, 6e5, 1e6, 1.3e6, 1.6e6 and 3e6
+at cap 0.05. Convergence is not monotone in NAV; 8e5 at cap 0.02 and 2e6 at cap 0.05 converge
+for all four runs. The test uses 2e6/0.05. This refines the earlier ledger candidate about the
+solver.
+
+### Finding 2 (library period axis placed by raw index) -- FIXED
+
+`library_period_axis(lib_dir, lib, deploy_n_dates, deploy_session_keys)` now places the recorded
+holdout on the deploy panel. `stage_optimize.cpp` and `stage_metabook.cpp` pass `D` and the
+research panel's session keys (empty for an unidentified panel).
+
+- When both sides are session-keyed, the recorded `begin_key` must be a deploy key at index b,
+  and the deploy key at b+len-1 must equal the recorded `last_key`. The holdout is then re-mapped
+  to b, so a panel with a different start gets the correct dates.
+- When both sides are unkeyed, the deploy panel must have the recorded `n_dates`.
+- In every other case the axis is unknown and the dead set is empty (fail open): mixed axes, a
+  key axis whose length is not `deploy_n_dates`, a missing first session, or a different session
+  count inside the holdout.
+
+New test `ImplDeadAlpha.DeployPanelMustMatchTheRecordedHoldout`:
+
+```
+[W0-I0a I-06] deploy panel starting 5 sessions earlier: key-mapped dead sets match 65/65 dates; raw-index placement reads the future on 5 dates
+```
+
+The test also asserts each fail-open case above. The existing wire tests
+(`AtxImplOptimizeDeadAlphaWire`, `MetabookDeadAlphaWire`) record index-axis holdouts on their
+own panel length, so their axis is still known and they still pass (whole run below).
+
+### Finding 3 (duplicate-DSL members double-counted) -- FIXED
+
+New `member_combo_weights` in `stage_metabook.cpp`. The combo weight per DSL sha, W(sha), is
+still the sum over the combo's lines, which is the combo's total exposure to that expression.
+Each of the k library members with that sha now carries W(sha)/k, so the members add back to
+W(sha) in whichever sleeves they land. The multiplicity is computed once over the whole library.
+`combo_weighted_sleeve_signal` takes the per-AlphaId weights, and a member with no weight is
+still refused with the same message.
+
+New test `ImplMetabookUsesCombo.DuplicateDslMembersSplitTheirComboWeight`: the library holds
+`rank(close)` twice, the combo is fitted from the library with the equal method, and the combo's
+two lines share one sha.
+
+- Fixed code: 24/24 rows identical to the combo book.
+- Teeth check, with the pre-fix weighting (`out[a] = it->w`) temporarily restored, rebuilt and
+  then reverted: 1/24 rows identical, and the test FAILED.
+
+```
+[W0-I0a I-07] duplicate-DSL library (w=0.25,0.25 on rank(close)): one sleeve rows identical to the combo book 24/24
+```
+
+### Finding 4 (stale pre-merge numbers) -- FIXED
+
+The acceptance and defect tables now quote the post-merge values measured in this pass:
+
+| Quantity | Post-merge value (was, pre-merge) |
+|---|---|
+| V1 leak | 0.0632524 (was 0.0720029) |
+| Stack OOS Sharpes | 0.663941 / 2.413094, mean 1.538518 (was 0.684542 / 2.212081) |
+| `factory_digest` | 78bca49224a4678f (was 108d8eff5befc20a) |
+| I-07 V1 gap | 0.283872 (was 0.347627) |
+| 3-sleeve V2 gap | 0.0420907 (was 0.0460013) |
+
+Unchanged values: capacity V2 inf / 17800.003404 against V1 387899.144436 / 4886.626736, and
+max_part V2 0.539954 against V1 0.515169. The verbatim block under Evidence is now labelled
+PRE-MERGE. No MET/CLOSED status changed.
+
+### Evidence (fix pass 1)
+
+Every build ran with `CMAKE_BUILD_PARALLEL_LEVEL=2` after a free-RAM check (2.26 to 4.06 GB).
+One exploratory build started at 1.61 GB, below the RULES §1 2 GB floor; it completed without
+incident. The final build ran after the last source edit:
+
+```
+Set-Location C:\atx-wt\pool-10; powershell -NoProfile -File scripts\atx-build.ps1 build -Preset equity-dev atx-impl-tests atx-shm-worker
+[21/22] Linking CXX executable bin\atx-impl-tests.exe
+exit=0
+```
+
+Anchored suites (`-Ctest -Preset equity-dev -R '^<Suite>'`):
+
+```
+=== ImplNestedSplits          100% tests passed, 0 tests failed out of 7 exit=0
+=== ImplCombineNoHoldoutRead  100% tests passed, 0 tests failed out of 5 exit=0
+=== ImplOptimizePit           100% tests passed, 0 tests failed out of 6 exit=0
+=== ImplDeadAlpha             100% tests passed, 0 tests failed out of 4 exit=0
+=== ImplMetabookUsesCombo     100% tests passed, 0 tests failed out of 5 exit=0
+```
+
+In total 27 of the 27 lane tests pass: the 24 existing tests and the 3 new ones. The
+`ImplDeadAlpha`, `ImplOptimizePit` and `ImplMetabookUsesCombo` suites were re-run after the
+final build.
+
+The whole owning executable was run from the ctest working directory:
+`Set-Location C:\atx-wt\pool-10\build-equity\atx-impl\tests; ..\..\bin\atx-impl-tests.exe --gtest_brief=1`
+
+```
+[  FAILED  ] FundamentalZoo.FixtureParsesTypechecksAndEvaluates (403 ms)
+[  FAILED  ] StageEquityIc.TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput (49487 ms)
+[  FAILED  ] EquityMineCli.SmoothWindowsAddDecayedVariantsAsTrials (4382 ms)
+[==========] 560 tests from 106 test suites ran. (500896 ms total)
+[  PASSED  ] 551 tests.
+[  SKIPPED ] 6 tests.
+exit=1
+```
+
+The only failures are the 3 out-of-scope ones the orchestrator recorded: `FundamentalZoo` is
+fixed by W0-FIXUP, and `StageEquityIc` and `EquityMineCli` are owned by I0b. Every other test
+passes, including the `SignDeploy` pin, the two dead-alpha wire suites, `MetaBook`,
+`StageRunMegabook`, `StageRunSyntheticSmoke` and the e2e pipeline test. That run was built
+before the last edit, a comment-only change to `dead_alpha_wire.hpp`; the three suites that
+depend on that header were re-run after the final build and pass.
+
+Golden digests: none moved in this pass.

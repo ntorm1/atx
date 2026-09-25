@@ -520,7 +520,11 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg,
     const library::Library* dead_lib_ptr = dead_lib_opt.has_value() ? &*dead_lib_opt : nullptr;
     const LibraryPeriodAxis dead_axis =
         (dead_lib_ptr != nullptr)
-            ? library_period_axis(resolve_dead_alpha_lib_dir(cfg), *dead_lib_ptr)
+            ? library_period_axis(resolve_dead_alpha_lib_dir(cfg), *dead_lib_ptr, D,
+                                  research_input.identity
+                                      ? std::span<const atx::i64>{research_input.identity
+                                                                      ->session_keys}
+                                      : std::span<const atx::i64>{})
             : LibraryPeriodAxis{};
     ATX_TRY(const StepModels models,
             build_step_models(research, risk_cfg, pit, sched, dead_lib_ptr, dead_axis));

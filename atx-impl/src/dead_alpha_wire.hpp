@@ -90,7 +90,8 @@ maybe_open_dead_lib(const RunConfig& cfg, const risk::RiskModelConfig& risk_cfg)
 //  lifecycle state AS OF THAT STEP is Decaying or Dead. The step's panel date is
 //  mapped onto the library's period axis through the split-range ledger
 //  (library_as_of below); a step before the library's first period, or a library
-//  whose axis is not recorded, has no dead set (fail-open, like a missing library).
+//  whose axis is not recorded or cannot be located on the deploy panel
+//  (library_period_axis), has no dead set (fail-open, like a missing library).
 //  AdmittedAsOfLastPeriodV1: the pre-W0 reading -- every alpha not Candidate/Recycled
 //  as of the library's LAST period, applied to every step. That set is the live pool,
 //  not the dead one, and it is read from the end of the sample (look-ahead). Kept only
@@ -369,18 +370,29 @@ read_split_ranges(const std::string& lib_dir) {
 //  LibraryPeriodAxis — where the library's period 0 sits on the panel date axis.
 // ===========================================================================
 //  A library's stored pnl/positions cover the discover admission holdout, so library
-//  period p is panel date holdout_begin + p. Known only when the ledger records
-//  exactly one distinct holdout range whose length equals lib.n_periods(); anything
-//  else (legacy library, several holdouts, geometry drift) leaves it unknown and the
-//  V2 dead set is empty (fail-open).
+//  period p is the holdout's p-th date. Known only when the ledger records exactly one
+//  distinct holdout range whose length equals lib.n_periods() AND that range can be
+//  located on the DEPLOY panel (the panel optimize/metabook is running on, which need
+//  not be the panel discover recorded the range on):
+//    * both axes session-keyed: the recorded begin key must be a deploy session key at
+//      some index b, and the deploy key at b + len - 1 must be the recorded last key
+//      (same first/last session, same session count) -> holdout_begin = b;
+//    * both axes index-only (unidentified legacy panels): the deploy panel must have the
+//      recorded n_dates -> holdout_begin = the recorded begin;
+//    * anything else (mixed axes, a deploy key axis whose length is not deploy_n_dates, a
+//      holdout the deploy panel does not contain) cannot be placed.
+//  An axis that cannot be placed is unknown and the V2 dead set is empty (fail-open):
+//  placing the library's periods by raw index on a panel with a different start would
+//  put the dead set on the wrong dates -- early dates would read later lifecycle states.
 struct LibraryPeriodAxis {
     bool known = false;
-    atx::usize holdout_begin = 0;
+    atx::usize holdout_begin = 0; // on the DEPLOY panel's date axis
     atx::usize n_periods = 0;
 };
 
-[[nodiscard]] inline LibraryPeriodAxis library_period_axis(const std::string& lib_dir,
-                                                           const library::Library& lib) {
+[[nodiscard]] inline LibraryPeriodAxis
+library_period_axis(const std::string& lib_dir, const library::Library& lib,
+                    atx::usize deploy_n_dates, std::span<const atx::i64> deploy_session_keys) {
     LibraryPeriodAxis axis;
     auto ranges = read_split_ranges(lib_dir);
     if (!ranges.has_value()) {
@@ -400,8 +412,34 @@ struct LibraryPeriodAxis {
         holdout->end - holdout->begin != lib.n_periods()) {
         return axis;
     }
+    const atx::usize len = holdout->end - holdout->begin;
+    const bool deploy_keyed = !deploy_session_keys.empty();
+    if (deploy_keyed && deploy_session_keys.size() != deploy_n_dates) {
+        return axis; // malformed deploy axis: cannot place anything on it
+    }
+    if (holdout->session_keyed != deploy_keyed) {
+        return axis; // one side keyed, the other not: the two axes are incomparable
+    }
+    atx::usize begin = 0;
+    if (deploy_keyed) {
+        const auto it = std::find(deploy_session_keys.begin(), deploy_session_keys.end(),
+                                  holdout->begin_key);
+        if (it == deploy_session_keys.end()) {
+            return axis; // the deploy panel does not contain the holdout's first session
+        }
+        begin = static_cast<atx::usize>(it - deploy_session_keys.begin());
+        if (begin + len > deploy_n_dates ||
+            deploy_session_keys[begin + len - 1U] != holdout->last_key) {
+            return axis; // different session count between the holdout's endpoints
+        }
+    } else {
+        if (holdout->n_dates != deploy_n_dates) {
+            return axis; // a different unidentified panel: raw indices are not comparable
+        }
+        begin = holdout->begin;
+    }
     axis.known = true;
-    axis.holdout_begin = holdout->begin;
+    axis.holdout_begin = begin;
     axis.n_periods = lib.n_periods();
     return axis;
 }

@@ -17,6 +17,10 @@
 //     risk::MultiPeriodOptimizer::run bit-for-bit when the reference does not move.
 //   * DelistedNameKeepsItsCapWhileListed — R-12 end to end: the delisted name carries
 //     weight while listed and none afterwards.
+//   * BindingParticipationCapIsPitPerRebalance — R-12 end to end with the cap BINDING (a
+//     NAV at which the %ADV box is below name_cap for the illiquid names) and the diagonal
+//     lens held at PerStepPitV2: past books are identical under future mutation with the
+//     per-rebalance reference and move with the LastDateV1 reference alone.
 
 #include <bit>
 #include <cmath>
@@ -350,6 +354,67 @@ TEST(ImplOptimizePit, DelistedNameKeepsItsCapWhileListed) {
     std::printf("[W0-I0a R-12] delisted name 11: sum|w| while listed V2=%.6f V1=%s; "
                 "after delisting V2=%.3g\n",
                 listed_gross, v1_str.c_str(), delisted_gross);
+}
+
+TEST(ImplOptimizePit, BindingParticipationCapIsPitPerRebalance) {
+    // At NAV 2e6 the box 0.05 * ADV * px / NAV is ~0.125 for the least liquid name and rises
+    // along the 30x liquidity ladder, so it sits below name_cap (0.5) on the illiquid names
+    // and below their uncapped weights (up to ~0.2). (The augmented ConstrainedQpSolver does
+    // not converge at every binding NAV -- e.g. 5e5, 1e6, 3e6 hit its fixed iteration budget
+    // under either reference rule, a pre-existing solver limit -- 2e6 converges for all four
+    // runs below.)
+    constexpr f64 kBindNav = 2.0e6;
+    fx::PanelSpec spec;
+    const Pair p = make_pair("bind", spec);
+    spec.dates = kDates;
+    spec.insts = kInsts;
+    const fx::PanelColumns cols = fx::make_columns(spec); // == the base panel's columns
+    atx::impl::RunConfig cfg = opt_cfg(p);
+    const risk::RiskModelConfig rc{};
+    cfg.participation_cap = kPartCap;
+    cfg.report_aum = kPartNav; // box >= 0.83 > name_cap: the same augmented QP, cap slack
+    const auto slack = books(cfg, p.base, p.dir / "slack", rc, {});
+    cfg.report_aum = kBindNav;
+    const auto b2 = books(cfg, p.base, p.dir / "b2", rc, {});
+    const auto m2 = books(cfg, p.mut, p.dir / "m2", rc, {});
+    DeployPitConfig last_date; // diagonal lens stays PerStepPitV2: only the reference moves
+    last_date.participation = atx::impl::ParticipationAdvRule::LastDateV1;
+    const auto b1 = books(cfg, p.base, p.dir / "b1", rc, last_date);
+    const auto m1 = books(cfg, p.mut, p.dir / "m1", rc, last_date);
+    ASSERT_EQ(slack.size(), kDates / 5U);
+    ASSERT_EQ(b2.size(), slack.size());
+    ASSERT_EQ(b1.size(), slack.size());
+
+    // The cap binds: past V2 books sit ON their per-rebalance box for some names, and differ
+    // from the books of the same QP with a slack cap.
+    std::vector<f64> adv(kInsts);
+    std::vector<f64> px(kInsts);
+    usize bound_cells = 0;
+    usize capped_steps = 0;
+    for (usize s = 0; s < kPastSteps; ++s) {
+        atx::impl::trailing_participation_reference(cols.volume, cols.close, kInsts, s * 5U,
+                                                    adv, px);
+        for (usize i = 0; i < kInsts; ++i) {
+            const f64 box = kPartCap * adv[i] * px[i] / kBindNav;
+            if (box < cfg.name_cap && std::fabs(b2[s][i]) >= box * (1.0 - 1e-3)) {
+                ++bound_cells;
+            }
+        }
+        capped_steps += (b2[s] != slack[s]) ? 1U : 0U;
+    }
+    const usize same_v2 = identical_past_steps(b2, m2);
+    const usize same_last_date = identical_past_steps(b1, m1);
+    std::printf("[W0-I0a R-12] binding cap (NAV %.0e): %zu past (step,name) cells on their "
+                "%%ADV box, %zu/%zu past steps differ from the slack-cap run; past books identical under "
+                "future mutation: TrailingPitPerRebalanceV2 %zu/%zu, LastDateV1 %zu/%zu "
+                "(diag PerStepPitV2 in both)\n",
+                kBindNav, bound_cells, capped_steps, kPastSteps, same_v2, kPastSteps,
+                same_last_date, kPastSteps);
+    EXPECT_GT(bound_cells, 0U) << "the %ADV box must bind on this fixture";
+    EXPECT_GT(capped_steps, 0U) << "the binding cap must change the past books";
+    EXPECT_EQ(same_v2, kPastSteps) << "the per-rebalance reference reads rows <= d only";
+    EXPECT_LT(same_last_date, kPastSteps)
+        << "the last-date reference alone carries the future into past books";
 }
 
 } // namespace atx_test_w0_i0a_optimize_pit

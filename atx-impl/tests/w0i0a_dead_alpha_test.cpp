@@ -6,6 +6,10 @@
 //     Decaying or Dead as of that date; the pre-W0 V1 set is the admitted/live pool read
 //     at the library's last period, for every date.
 //   * UnrecordedAxisIsFailOpen — a library without a recorded holdout has no V2 dead set.
+//   * DeployPanelMustMatchTheRecordedHoldout — the recorded holdout is placed on the DEPLOY
+//     panel by its session keys (a panel with a later start re-maps it to the right dates)
+//     or, for unidentified panels, only on a panel of the recorded length; any panel the
+//     holdout cannot be located on has no V2 dead set (fail-open), never a raw-index guess.
 //   * CrowdingStartsWhenTheAlphasDie — through run_optimize: books before the alphas' death
 //     date are byte-identical to the crowding-off run; books after it are de-levered on the
 //     crowded name. Under V1 even the first book is already de-levered (look-ahead).
@@ -16,6 +20,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <numbers>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -101,6 +106,23 @@ void record_holdout(const fs::path& dir, usize begin, usize end, usize n_dates) 
     ASSERT_TRUE(atx::impl::append_split_range(dir.string(), *r).has_value());
 }
 
+void record_keyed_holdout(const fs::path& dir, usize begin, usize end,
+                          const std::vector<atx::i64>& keys) {
+    auto r = atx::impl::make_split_range(atx::impl::SplitRole::DiscoverHoldout, begin, end,
+                                         keys.size(), keys);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_TRUE(atx::impl::append_split_range(dir.string(), *r).has_value());
+}
+
+// Session keys k(d) = 1000 + 10 * d for panel dates d in [first, first + n).
+[[nodiscard]] std::vector<atx::i64> session_axis(usize first, usize n) {
+    std::vector<atx::i64> keys(n);
+    for (usize d = 0; d < n; ++d) {
+        keys[d] = 1000 + 10 * static_cast<atx::i64>(first + d);
+    }
+    return keys;
+}
+
 [[nodiscard]] std::string ids_str(const std::vector<lib::AlphaId>& ids) {
     std::string s = "{";
     for (usize k = 0; k < ids.size(); ++k) {
@@ -130,7 +152,7 @@ TEST(ImplDeadAlpha, DeadSetFollowsTheLifecycleAsOfEachDate) {
     lib::Library library =
         lib::Library::open(dir.string(), atx::engine::combine::GateConfig{}, {9ULL});
     const atx::impl::LibraryPeriodAxis axis =
-        atx::impl::library_period_axis(dir.string(), library);
+        atx::impl::library_period_axis(dir.string(), library, 60, {});
     ASSERT_TRUE(axis.known);
     EXPECT_EQ(axis.holdout_begin, 20U);
     EXPECT_EQ(axis.n_periods, kT);
@@ -169,11 +191,98 @@ TEST(ImplDeadAlpha, UnrecordedAxisIsFailOpen) {
     lib::Library library =
         lib::Library::open(dir.string(), atx::engine::combine::GateConfig{}, {9ULL});
     const atx::impl::LibraryPeriodAxis axis =
-        atx::impl::library_period_axis(dir.string(), library);
+        atx::impl::library_period_axis(dir.string(), library, 60, {});
     EXPECT_FALSE(axis.known);
     const auto ds = atx::impl::dead_set_at(library, axis,
                                            atx::impl::DeadAlphaRule::DeadOrDecayingPerStepV2, 50);
     EXPECT_TRUE(ds.ids.empty()) << "no recorded period axis -> no PIT mapping -> no dead set";
+}
+
+TEST(ImplDeadAlpha, DeployPanelMustMatchTheRecordedHoldout) {
+    constexpr usize kT = 10;
+    // Two libraries with the same lifecycle (alpha 1: Live@1 -> Decaying@3 -> Dead@7): one
+    // whose holdout [20, 30) was recorded on an unidentified 60-date panel, one on a
+    // session-keyed 60-date panel.
+    const auto make = [&](const fs::path& dir) {
+        lib::Library library = lib::Library::open(dir.string(), permissive_gate(), {9ULL});
+        const auto ids = seed(library, 2, kT, 6, 2);
+        ASSERT_TRUE(library.mark(ids[1], LS::Live, 1).has_value());
+        ASSERT_TRUE(library.mark(ids[1], LS::Decaying, 3).has_value());
+        ASSERT_TRUE(library.mark(ids[1], LS::Dead, 7).has_value());
+        ASSERT_TRUE(library.flush_all().has_value());
+    };
+    const fs::path dir_idx = fx::fresh_dir("dead_deploy_idx");
+    const fs::path dir_key = fx::fresh_dir("dead_deploy_key");
+    make(dir_idx);
+    make(dir_key);
+    record_holdout(dir_idx, 20, 30, 60);
+    const std::vector<atx::i64> recorded = session_axis(5, 60); // sessions 5..64
+    record_keyed_holdout(dir_key, 20, 30, recorded);
+    lib::Library li =
+        lib::Library::open(dir_idx.string(), atx::engine::combine::GateConfig{}, {9ULL});
+    lib::Library lk =
+        lib::Library::open(dir_key.string(), atx::engine::combine::GateConfig{}, {9ULL});
+    const auto axis = [](const fs::path& dir, const lib::Library& l, usize n,
+                         const std::vector<atx::i64>& keys) {
+        return atx::impl::library_period_axis(dir.string(), l, n,
+                                              std::span<const atx::i64>{keys});
+    };
+    const std::vector<atx::i64> none;
+
+    // Index axis: only a panel of the recorded length can use the raw indices.
+    const auto idx_same = axis(dir_idx, li, 60, none);
+    ASSERT_TRUE(idx_same.known);
+    EXPECT_EQ(idx_same.holdout_begin, 20U);
+    EXPECT_FALSE(axis(dir_idx, li, 80, none).known) << "another unidentified panel";
+    EXPECT_FALSE(axis(dir_idx, li, 60, recorded).known) << "keyed deploy vs index record";
+
+    // Session axis, same panel: the recorded place.
+    const auto key_same = axis(dir_key, lk, 60, recorded);
+    ASSERT_TRUE(key_same.known);
+    EXPECT_EQ(key_same.holdout_begin, 20U);
+    // A deploy panel that starts 5 sessions EARLIER (sessions 0..64): the holdout sits at
+    // deploy index 25.
+    const std::vector<atx::i64> earlier = session_axis(0, 65);
+    const auto key_earlier = axis(dir_key, lk, earlier.size(), earlier);
+    ASSERT_TRUE(key_earlier.known);
+    EXPECT_EQ(key_earlier.holdout_begin, 25U);
+    usize same_dates = 0;
+    usize raw_index_early = 0;
+    for (usize d = 0; d < earlier.size(); ++d) {
+        // Deploy date d is recorded date d - 5 (before the recorded panel: nothing known).
+        const auto want =
+            d < 5U ? atx::impl::DeadSet{}
+                   : atx::impl::dead_set_at(lk, key_same,
+                                            atx::impl::DeadAlphaRule::DeadOrDecayingPerStepV2,
+                                            d - 5U);
+        const auto got = atx::impl::dead_set_at(
+            lk, key_earlier, atx::impl::DeadAlphaRule::DeadOrDecayingPerStepV2, d);
+        same_dates += (got.ids == want.ids) ? 1U : 0U;
+        // The pre-fix raw-index placement (holdout_begin 20 on the deploy axis) reads the
+        // lifecycle 5 sessions early: at deploy date d it uses the state of date d + 5.
+        const auto raw = atx::impl::dead_set_at(
+            lk, key_same, atx::impl::DeadAlphaRule::DeadOrDecayingPerStepV2, d);
+        raw_index_early += (raw.ids != want.ids) ? 1U : 0U;
+    }
+    std::printf("[W0-I0a I-06] deploy panel starting 5 sessions earlier: key-mapped dead sets "
+                "match %zu/%zu dates; raw-index placement reads the future on %zu dates\n",
+                same_dates, earlier.size(), raw_index_early);
+    EXPECT_EQ(same_dates, earlier.size());
+    EXPECT_GT(raw_index_early, 0U);
+    // Failures to place: the first holdout session missing, a session missing INSIDE the
+    // holdout (same endpoints, different count), an index deploy panel, a key axis of the
+    // wrong length.
+    const std::vector<atx::i64> too_late = session_axis(26, 39); // holdout = sessions 25..34
+    EXPECT_FALSE(axis(dir_key, lk, too_late.size(), too_late).known);
+    std::vector<atx::i64> gap = recorded;
+    gap.erase(gap.begin() + 25);
+    EXPECT_FALSE(axis(dir_key, lk, gap.size(), gap).known);
+    EXPECT_FALSE(axis(dir_key, lk, 60, none).known);
+    EXPECT_FALSE(axis(dir_key, lk, 61, recorded).known);
+    const auto dead_fail_open = atx::impl::dead_set_at(
+        lk, axis(dir_key, lk, gap.size(), gap),
+        atx::impl::DeadAlphaRule::DeadOrDecayingPerStepV2, 50);
+    EXPECT_TRUE(dead_fail_open.ids.empty());
 }
 
 // A gently trending research panel and a constant long-half / short-half combo (the same
