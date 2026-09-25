@@ -134,14 +134,16 @@ TEST(AlphaOracle_Rank, DistinctValues_PercentileRanks) {
 }
 
 TEST(AlphaOracle_Rank, AllEqual_DeterministicOrdinalTieBreak) {
-  // All equal -> ordinal tie-break by instrument index -> 0/3,1/3,2/3,3/3.
+  // W0-A0 (A-01) re-pin: all equal -> the oracle's average-rank policy gives
+  // every tied name the mean ordinal position 1.5/3 = 0.5 (it was the pre-W0
+  // ordinal tie-break 0/3,1/3,2/3,3/3 by instrument index).
   const Panel p = panel_ok(1, 4, {"close"}, {{5.0, 5.0, 5.0, 5.0}});
   const auto v = eval_single("a = rank(close)", p);
   ASSERT_EQ(v.size(), 4U);
-  EXPECT_DOUBLE_EQ(v[0], 0.0);
-  EXPECT_DOUBLE_EQ(v[1], 1.0 / 3.0);
-  EXPECT_DOUBLE_EQ(v[2], 2.0 / 3.0);
-  EXPECT_DOUBLE_EQ(v[3], 1.0);
+  EXPECT_DOUBLE_EQ(v[0], 0.5);
+  EXPECT_DOUBLE_EQ(v[1], 0.5);
+  EXPECT_DOUBLE_EQ(v[2], 0.5);
+  EXPECT_DOUBLE_EQ(v[3], 0.5);
 }
 
 TEST(AlphaOracle_Rank, OutOfUniverseInstrument_IsNaNAndExcluded) {
