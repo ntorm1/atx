@@ -99,7 +99,7 @@ Result<atx::i64> integer(const Json &value) {
 Status arguments(const RunConfig &cfg) {
     const std::set<std::string> allowed{"panel", "baseline-dir", "out", "max-working-bytes",
         "report-aum", "replay-execution-delay", "replay-trade-bps", "replay-annual-borrow-bps",
-        "replay-day-basis", "quiet", "digest-only", "config"};
+        "replay-day-basis", "quiet", "digest-only", "config", "allow-same-close"};
     for (const auto &flag : cfg.set_flags) if (!allowed.contains(flag))
         return Err(ErrorCode::InvalidArgument, "equity book: unsupported flag --" + flag);
     if (cfg.panel.empty() || cfg.equity_baseline_dir.empty() || cfg.out.empty() ||
@@ -364,6 +364,13 @@ Result<StageResult> execute(const RunConfig &cfg, const fs::path &directory, Jso
         return Err(ErrorCode::InvalidArgument, "equity book: invalid inherited delay");
     report.replay_execution_delay = cfg.set_flags.contains("replay-execution-delay") || cfg.replay_execution_delay != 1
         ? cfg.replay_execution_delay : static_cast<atx::usize>(delay);
+    // B-02: an inherited or explicit zero delay (same-close fills) needs the opt-in,
+    // so a legacy delay-0 baseline cannot silently seed a same-close book.
+    report.allow_same_close = cfg.allow_same_close;
+    if (report.replay_execution_delay < 1 && !cfg.allow_same_close)
+        return Err(ErrorCode::InvalidArgument,
+                   "equity book: execution delay 0 fills at the signal close; pass "
+                   "--allow-same-close to request it explicitly");
     if (!base.at("borrow_day_basis").is_number_integer() ||
         (base.at("borrow_day_basis") != 360 && base.at("borrow_day_basis") != 365))
         return Err(ErrorCode::InvalidArgument, "equity book: invalid inherited borrow day basis");
@@ -570,11 +577,12 @@ Result<StageResult> execute(const RunConfig &cfg, const fs::path &directory, Jso
             {"sha256", report_sha}, {"size_bytes", std::to_string(report_text.size())}}})}};
     ATX_TRY(auto book_id, atx::core::sha256_hex("atx-equity-book-v1\n" + manifest.dump()));
     manifest["book_id"] = book_id;
-    std::error_code ec;
-    if (!fs::remove(directory / ".pending", ec) || ec)
-        return Err(ErrorCode::IoError, "equity book: cannot release pending marker");
-    ATX_TRY(auto completed, publish(directory, "manifest.json", manifest));
-    (void)completed;
+    // I-17: manifest first, `.pending` released last.
+    ATX_TRY_VOID(publish_manifest_then_release_pending(directory, [&]() -> Status {
+        ATX_TRY(auto completed, publish(directory, "manifest.json", manifest));
+        (void)completed;
+        return Ok();
+    }));
     reported->digest = fnv1a64(book_id.data(), book_id.size());
     reported->kvs.emplace_back("book_id", book_id);
     reported->kvs.emplace_back("qualification", "unknown");

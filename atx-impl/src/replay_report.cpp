@@ -363,6 +363,19 @@ atx::core::Error identified_error(const atx::core::Error &error,
     return atx::core::Error(error.code(), message + context);
 }
 
+// W0-B0 adds `ReplayConfig::allow_same_close` to the engine (reject delay 0 unless
+// set). This lane runs concurrently, so the flag is forwarded whenever the engine
+// field exists and the call compiles either way (no merge-order dependency).
+template <class Config>
+void set_allow_same_close(Config &config, bool allow) {
+    if constexpr (requires { config.allow_same_close = allow; }) {
+        config.allow_same_close = allow;
+    } else {
+        (void)config;
+        (void)allow;
+    }
+}
+
 Result<book::ReplayConfig> replay_config(const RunConfig &cfg,
                                         std::span<const atx::f64> planning_costs) {
     if (cfg.cost_bps != 0.0 || cfg.borrow_bps != 0.0) {
@@ -389,9 +402,28 @@ Result<book::ReplayConfig> replay_config(const RunConfig &cfg,
                    "identified report: book has nonzero planning costs; choose "
                    "--replay-trade-bps explicitly (including an intentional zero)");
     }
+    // W0-I0b / I-11: report costs are mandatory. A headline replayed at the silent
+    // 0/0 defaults is frictionless without anyone having chosen that; both rates must
+    // be chosen (a flag or config key — an intentional 0 included — or a nonzero value).
+    const bool trade_chosen =
+        cfg.replay_trade_bps != 0.0 || cfg.set_flags.count("replay-trade-bps") != 0;
+    const bool borrow_chosen = cfg.replay_annual_borrow_bps != 0.0 ||
+                               cfg.set_flags.count("replay-annual-borrow-bps") != 0;
+    if (!trade_chosen || !borrow_chosen) {
+        return Err(ErrorCode::InvalidArgument,
+                   "identified report: report costs are mandatory; choose --replay-trade-bps "
+                   "and --replay-annual-borrow-bps explicitly (0 only as a deliberate choice)");
+    }
+    // W0-I0b / B-02: a zero delay fills at the decision's own close.
+    if (cfg.replay_execution_delay < 1 && !cfg.allow_same_close) {
+        return Err(ErrorCode::InvalidArgument,
+                   "identified report: --replay-execution-delay 0 fills at the signal close; "
+                   "pass --allow-same-close to request it explicitly");
+    }
     book::ReplayConfig result;
     result.initial_nav = cfg.report_aum;
     result.execution_delay_periods = cfg.replay_execution_delay;
+    set_allow_same_close(result, cfg.allow_same_close);
     result.trade_bps = cfg.replay_trade_bps;
     result.annual_borrow_bps = cfg.replay_annual_borrow_bps;
     result.borrow_day_basis = cfg.replay_day_basis == 360

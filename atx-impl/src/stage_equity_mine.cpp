@@ -618,6 +618,16 @@ atx::core::Result<atx::i64> parse_iso_date_ns(std::string_view text) {
     return Ok(days * 86400LL * 1000000000LL);
 }
 
+std::string trial_family_of(std::string_view origin) {
+    const auto cut = origin.find_first_of(":+");
+    return std::string{origin.substr(0, cut)};
+}
+
+std::string trial_theme_of(std::string_view origin) {
+    const auto decay = origin.find("+decay");
+    return std::string{origin.substr(0, decay)};
+}
+
 // ===========================================================================
 // Mining
 // ===========================================================================
@@ -739,8 +749,18 @@ void score_train_row(const alpha::Library &lib, alpha::Engine &engine, const Min
         }
         row.config_hash = candidate_hash(row);
         const atx::f64 sd = sample_sd(row.train.net);
-        auto rec = registry.record(eval::TrialKind::MinerExpr, row.config_hash, row.train.net,
-                                   row.train.mean_net / sd);
+        // E-16: train pnl is IN-SAMPLE on the calendar window [0, T - 1]; the registry
+        // calendar may extend past it (train + validation), and the family / theme
+        // tags let accounting() group trials that share a seed family.
+        eval::TrialMeta meta;
+        meta.window_start = 0;
+        meta.window_end = row.train.net.empty() ? 0 : row.train.net.size() - 1U;
+        meta.fidelity = 0;
+        meta.sample = eval::TrialSample::InSample;
+        meta.family_tag = eval::trial_tag(trial_family_of(row.origin));
+        meta.theme_tag = eval::trial_tag(trial_theme_of(row.origin));
+        auto rec = registry.record(eval::TrialKind::MinerExpr, row.config_hash, meta,
+                                   row.train.net, row.train.mean_net / sd);
         if (!rec) {
             if (rec.error().code() != ErrorCode::InvalidArgument) return Err(rec.error());
             row.scored = false;
@@ -749,13 +769,39 @@ void score_train_row(const alpha::Library &lib, alpha::Engine &engine, const Min
         }
     }
     out.trials = registry.summary();
+    out.chain_head = registry.chain_head();
+    // E-01 wiring: the cluster-N DSR through TrialRegistry::accounting(). When the
+    // registry cannot produce it (empty, or more than max_trials trials) every row
+    // falls back to the summary DSR (N = n_raw) and the report says why.
+    std::optional<eval::TrialAccounting> acct;
+    if (out.trials.n_raw > 0) {
+        auto computed = registry.accounting(eval::TrialAccountingConfig{});
+        if (computed) {
+            acct = std::move(*computed);
+        } else {
+            out.dsr_fallback_reason = computed.error().message();
+        }
+    } else {
+        out.dsr_fallback_reason = "no recorded trials";
+    }
+    out.dsr_rule = acct ? "cluster-mc-floor-v2" : "summary-raw-n-v2";
+    if (acct) {
+        out.dsr_clusters = acct->clusters.n_clusters;
+        out.dsr_sr_star_mc = acct->mc.sorted_max.empty() ? 0.0 : acct->mc.mean;
+    }
     for (CandidateRow &row : out.candidates) {
         if (!row.scored) continue;
         const atx::f64 sd = sample_sd(row.train.net);
-        const auto dsr = eval::deflated_sharpe(row.train.mean_net / sd, out.trials,
-                                               row.train.net.size(), eval::skewness(row.train.net),
-                                               eval::excess_kurtosis(row.train.net));
-        row.dsr_train = dsr.dsr;
+        const atx::f64 sr = row.train.mean_net / sd;
+        const atx::f64 skew = eval::skewness(row.train.net);
+        const atx::f64 kurt = eval::excess_kurtosis(row.train.net);
+        if (acct) {
+            row.dsr_train = eval::deflated_sharpe(sr, *acct, row.train.net.size(), skew, kurt)
+                                .result.dsr;
+        } else {
+            row.dsr_train =
+                eval::deflated_sharpe(sr, out.trials, row.train.net.size(), skew, kurt).dsr;
+        }
     }
     return Ok();
 }
@@ -812,10 +858,11 @@ atx::core::Result<MineOutcome> mine_train(const alpha::Library &lib, const MineD
                                           std::span<const SeedExpr> seeds, const MineConfig &cfg,
                                           eval::TrialRegistry &registry) {
     ATX_TRY_VOID(check_data(train, "train"));
-    if (registry.config().pnl_len != train.window.size()) {
+    // E-16: the calendar may extend past the train window (train + validation).
+    if (registry.config().pnl_len < train.window.size()) {
         return Err(ErrorCode::InvalidArgument,
                    "mine_train: registry pnl_len " + std::to_string(registry.config().pnl_len) +
-                       " != train window " + std::to_string(train.window.size()));
+                       " < train window " + std::to_string(train.window.size()));
     }
     const alpha::Panel &panel = *train.panel;
     ATX_TRY(const atx::u32 close_id, close_field_of(panel));
@@ -1072,6 +1119,10 @@ struct MineArgs {
     std::vector<std::string> train_ctx, val_ctx, hold_ctx;
     std::string membership;
     atx::usize membership_cut{0};
+    // I-16: "as-of-v2" (default) REQUIRES --membership; "year-union-v1" is the
+    // explicit, labelled pre-W0 fallback and takes no image.
+    std::string membership_rule{"as-of-v2"};
+    bool allow_same_close{false}; // B-02: --delay 0 needs this opt-in
     std::string train_start, val_start, hold_start, hold_end;
     std::string seal{"2020-01-01"};
     std::string out;
@@ -1151,6 +1202,14 @@ template <class T>
     if (f == "holdout-contexts") { a.hold_ctx = split_list(v); return Ok(); }
     if (f == "membership") { a.membership = std::string{v}; return Ok(); }
     if (f == "membership-cut") return parse_num(f, v, a.membership_cut);
+    if (f == "membership-rule") {
+        if (v != "as-of-v2" && v != "year-union-v1") {
+            return Err(ErrorCode::InvalidArgument,
+                       "--membership-rule must be as-of-v2 or year-union-v1");
+        }
+        a.membership_rule = std::string{v};
+        return Ok();
+    }
     if (f == "train-start") { a.train_start = std::string{v}; return Ok(); }
     if (f == "validation-start") { a.val_start = std::string{v}; return Ok(); }
     if (f == "holdout-start") { a.hold_start = std::string{v}; return Ok(); }
@@ -1221,6 +1280,7 @@ template <class T>
         if (f == "no-output-dedup") { a.output_dedup = false; continue; }
         if (f == "quiet") { a.quiet = true; continue; }
         if (f == "no-return-guard") { a.guard_returns = false; continue; }
+        if (f == "allow-same-close") { a.allow_same_close = true; continue; }
         if (i + 1 >= argc) {
             return Err(ErrorCode::InvalidArgument, "equity-mine: --" + std::string{f} +
                                                        " needs a value");
@@ -1245,6 +1305,24 @@ template <class T>
         a.n_boot == 0 || a.mean_block < 1.0 || a.threads == 0 || a.max_validate == 0 ||
         !(a.max_corr > 0.0 && a.max_corr <= 1.0) || a.cost_bps < 0.0 || a.min_names < 2) {
         return Err(ErrorCode::InvalidArgument, "equity-mine: a numeric flag is out of range");
+    }
+    // W0-I0b / I-16: no silent year-union fallback. The as-of rule needs the image;
+    // the pre-W0 fallback must be named and then takes no image.
+    if (a.membership_rule == "as-of-v2" && a.membership.empty()) {
+        return Err(ErrorCode::InvalidArgument,
+                   "equity-mine: --membership <membership.bin> is required (as-of point-in-time "
+                   "mask); --membership-rule year-union-v1 reproduces the pre-W0 context "
+                   "year-union fallback, a within-year selection look-ahead");
+    }
+    if (a.membership_rule == "year-union-v1" && !a.membership.empty()) {
+        return Err(ErrorCode::InvalidArgument,
+                   "equity-mine: --membership-rule year-union-v1 takes no --membership");
+    }
+    // W0-I0b / B-02: a zero delay trades at the close that produced the signal.
+    if (a.delay < 1 && !a.allow_same_close) {
+        return Err(ErrorCode::InvalidArgument,
+                   "equity-mine: --delay 0 fills at the signal close; pass --allow-same-close "
+                   "to request it explicitly");
     }
     return Ok(std::move(a));
 }
@@ -1316,6 +1394,33 @@ struct ContextInfo {
     info.dates = src.panel.dates();
     info.instruments = src.panel.instruments();
     return Ok(std::move(src));
+}
+
+// E-16: the number of distinct sessions in [start_ns, end_ns) across `paths`, read
+// from each context's manifest axes only (no numeric payload is loaded), so the
+// registry calendar can span train + validation before the validation span exists.
+[[nodiscard]] atx::core::Result<atx::usize>
+count_role_sessions(const std::vector<std::string> &paths, atx::i64 start_ns, atx::i64 end_ns) {
+    std::set<atx::i64> keys;
+    for (const auto &p : paths) {
+        ATX_TRY(const auto text, read_text(p + ".manifest.json"));
+        json manifest;
+        try {
+            manifest = json::parse(text);
+            for (const auto &key : manifest.at("axes").at("session_keys")) {
+                const auto s = key.get<std::string>();
+                atx::i64 v = 0;
+                const auto r = std::from_chars(s.data(), s.data() + s.size(), v);
+                if (r.ec != std::errc{} || r.ptr != s.data() + s.size()) {
+                    return Err(ErrorCode::ParseError, p + ": noncanonical manifest session key");
+                }
+                if (v >= start_ns && v < end_ns) keys.insert(v);
+            }
+        } catch (const std::exception &e) {
+            return Err(ErrorCode::ParseError, p + ": unreadable manifest axes: " + e.what());
+        }
+    }
+    return Ok(keys.size());
 }
 
 struct Role {
@@ -1700,6 +1805,7 @@ struct Windows {
 
     std::optional<atx::engine::data::PitMembershipImage> image;
     std::string membership_sha;
+    // parse_mine_args already refused an as-of run without an image (I-16).
     if (!a.membership.empty()) {
         ATX_TRY(auto bytes, read_text(a.membership));
         ATX_TRY(auto img, atx::engine::data::decode_membership_bin(bytes));
@@ -1716,7 +1822,12 @@ struct Windows {
     report["schema_version"] = 1;
     report["seal"] = a.seal;
     report["membership"] = {{"path", a.membership}, {"sha256", membership_sha},
-                            {"cut", a.membership_cut}};
+                            {"cut", a.membership_cut}, {"rule", a.membership_rule}};
+
+    // E-16: one registry calendar for train AND validation (train trials occupy its
+    // first train_T periods); counted from manifests before any span is built.
+    ATX_TRY(const atx::usize val_sessions,
+            count_role_sessions(a.val_ctx, w.val_start, w.hold_start));
 
     mine::ScoreCfg score_cfg;
     score_cfg.delay = a.delay;
@@ -1737,7 +1848,7 @@ struct Windows {
         report["train"]["return_guard"] = guard_json(train, score_cfg);
         train_T = train.data.window.size();
         eval::TrialRegistryConfig rc;
-        rc.pnl_len = train_T;
+        rc.pnl_len = train_T + val_sessions;
         rc.sketch_dim = 256;
         ATX_TRY(auto registry, eval::TrialRegistry::open(out / "trial_registry.bin", rc));
         const auto cfg = make_config(a, train.span.panel);
@@ -1805,6 +1916,12 @@ struct Windows {
                         {"output_dedup", a.output_dedup},
                         {"cost_bps_per_unit_turnover", a.cost_bps},
                         {"delay_sessions", a.delay},
+                        {"allow_same_close", a.allow_same_close},
+                        // I-23: the scorer's statistics knobs, recorded (were implicit).
+                        {"nw_lags", score_cfg.nw_lags},
+                        {"ic_horizons", score_cfg.ic_horizons},
+                        {"periods_per_year", score_cfg.periods_per_year},
+                        {"membership_rule", a.membership_rule},
                         {"min_names", a.min_names},
                         {"max_validate", a.max_validate},
                         {"max_corr", a.max_corr},
@@ -1833,6 +1950,17 @@ struct Windows {
                         {"n_eff_uncorrected", t.n_eff_uncorrected},
                         {"mean_sr_per_period", t.mean_sr}, {"var_sr", t.var_sr},
                         {"max_sr_per_period", t.max_sr},   {"pnl_len", t.pnl_len},
+                        {"train_window_len", train_T},
+                        {"calendar", "train + validation sessions; train trials on [0, "
+                                     "train_window_len - 1], TrialSample::InSample"},
+                        {"n_in_sample", t.n_in_sample},
+                        {"n_out_of_sample", t.n_out_of_sample},
+                        {"dsr_rule", outcome.dsr_rule},
+                        {"dsr_fallback_reason", outcome.dsr_fallback_reason},
+                        {"dsr_clusters", outcome.dsr_clusters},
+                        {"dsr_sr_star_mc_per_period", outcome.dsr_sr_star_mc},
+                        {"chain_head", {{"records", outcome.chain_head.records},
+                                        {"head", to_hex16(outcome.chain_head.head)}}},
                         {"registry_hash", to_hex16(t.registry_hash)}};
     json adm = json::array();
     for (atx::usize k = 0; k < outcome.admitted.size(); ++k) {
@@ -1859,7 +1987,9 @@ struct Windows {
     }
     report["qualifications"] = json::array(
         {"session keys are labels, not availability times; one-session execution delay assumed",
-         "membership as-of the PIT top-N cut; contexts are year-union compacted",
+         a.membership_rule == "as-of-v2"
+             ? "membership as-of the PIT top-N cut; contexts are year-union compacted"
+             : "membership: context year-union (pre-W0 look-ahead, requested explicitly)",
          "flat cost per unit of one-way traded weight; no borrow, impact or capacity model",
          "a missing realized return contributes zero (no delisting return imputation)",
          a.holdout_publish
@@ -1897,6 +2027,9 @@ struct Windows {
                           {"holdout", a.holdout_publish ? report["holdout"]["contexts"]
                                                         : json::array()},
                           {"membership_sha256", membership_sha}};
+    // E-16: the registry's tamper-evident head, exported OUTSIDE the log.
+    manifest["trial_registry_chain_head"] = {{"records", outcome.chain_head.records},
+                                             {"head", to_hex16(outcome.chain_head.head)}};
     ATX_TRY(const auto exe_sha, current_executable_sha256());
     manifest["producer_executable_sha256"] = exe_sha;
     ATX_TRY_VOID(write_file(out / "manifest.json", manifest.dump(2)));

@@ -2,15 +2,19 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
+#include <fstream>
 #include <limits>
 #include <optional>
 #include <set>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "atx/core/sha256.hpp"
 #include "atx/engine/alpha/bytecode.hpp"
 #include "atx/engine/alpha/parser.hpp"
 #include "atx/engine/alpha/vm.hpp"
@@ -164,6 +168,12 @@ struct Prepared {
     ATX_TRY_VOID(add_bytes(plan.additional_array_bytes, feature_rows, 2 * sizeof(atx::f64)));
     ATX_TRY_VOID(add_bytes(plan.additional_array_bytes, 252, 2 * sizeof(atx::f64)));
     ATX_TRY_VOID(add_bytes(plan.additional_array_bytes, program.fields.size(), sizeof(alpha::FieldId)));
+    if (config.membership) {
+        // D-12 as-of flags (one byte per evaluation cell) and the parsed id column.
+        ATX_TRY_VOID(add_bytes(plan.additional_array_bytes, plan.evaluation_cells, sizeof(atx::u8)));
+        ATX_TRY_VOID(add_bytes(plan.additional_array_bytes, context.panel.instruments(),
+                               sizeof(atx::i64)));
+    }
     if (plan.additional_array_bytes > config.max_additional_bytes ||
         slot_cells > std::numeric_limits<atx::usize>::max() ||
         plan.vm_slot_bytes > std::numeric_limits<atx::usize>::max()) {
@@ -226,7 +236,209 @@ struct FeatureView {
     return Ok(FeatureView{std::move(view), observed_count});
 }
 
+// D-12: one as-of membership flag per (evaluation row, instrument), date-major.
+// Empty when the rule does not apply (no membership, or ContextYearUnionV1).
+[[nodiscard]] Result<std::vector<atx::u8>>
+asof_member_cells(const PanelArtifact &context, const EquityBaselineConfig &config,
+                  const EquityBaselinePlan &plan) {
+    if (!config.membership) return Ok(std::vector<atx::u8>{});
+    if (config.membership_rule != EquityMembershipRule::AsOfV2) {
+        return Err(ErrorCode::InvalidArgument,
+                   "equity baseline: a membership image requires the as-of rule");
+    }
+    const auto instruments = context.panel.instruments();
+    std::vector<atx::i64> ids(instruments, 0);
+    for (atx::usize i = 0; i < instruments; ++i) {
+        const auto &text = context.identity.instrument_ids[i];
+        const auto parsed = std::from_chars(text.data(), text.data() + text.size(), ids[i]);
+        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) {
+            return Err(ErrorCode::InvalidArgument,
+                       "equity baseline: as-of membership needs integer instrument ids");
+        }
+    }
+    const auto rows = plan.evaluation_end - plan.evaluation_begin;
+    std::vector<atx::u8> member(plan.evaluation_cells, 0);
+    for (atx::usize row = 0; row < rows; ++row) {
+        const auto key = context.identity.session_keys[plan.evaluation_begin + row];
+        for (atx::usize i = 0; i < instruments; ++i) {
+            member[row * instruments + i] = config.membership->member(key, ids[i]) ? 1U : 0U;
+        }
+    }
+    return Ok(std::move(member));
+}
+
 } // namespace
+
+std::string_view equity_membership_rule_label(EquityMembershipRule rule) noexcept {
+    switch (rule) {
+    case EquityMembershipRule::ContextYearUnionV1: return "context-year-union-v1";
+    case EquityMembershipRule::AsOfV2: return "as-of-pit-membership-v2";
+    }
+    return "unknown";
+}
+
+Result<EquityMembershipRule> parse_equity_membership_rule(std::string_view text) {
+    if (text == "as-of-v2") return Ok(EquityMembershipRule::AsOfV2);
+    if (text == "year-union-v1") return Ok(EquityMembershipRule::ContextYearUnionV1);
+    return Err(ErrorCode::InvalidArgument,
+               "equity membership rule must be as-of-v2 or year-union-v1: " + std::string(text));
+}
+
+bool EquityAsOfMembership::member(atx::i64 session_key, atx::i64 security_id) const noexcept {
+    // The last rebalance effective on or before the session governs it.
+    const auto after = std::upper_bound(effective_session_keys.begin(),
+                                        effective_session_keys.end(), session_key);
+    if (after == effective_session_keys.begin()) return false;
+    const auto index = static_cast<atx::usize>(after - effective_session_keys.begin()) - 1U;
+    const auto &ids = security_ids[index];
+    return std::binary_search(ids.begin(), ids.end(), security_id);
+}
+
+Result<EquityAsOfMembership> equity_asof_membership(
+    const atx::engine::data::PitMembershipImage &image, atx::usize cut) {
+    if (image.rebalances.empty()) {
+        return Err(ErrorCode::InvalidArgument, "equity membership: image has no rebalances");
+    }
+    std::vector<atx::usize> order(image.rebalances.size());
+    for (atx::usize r = 0; r < order.size(); ++r) {
+        if (cut >= image.rebalances[r].cuts.size()) {
+            return Err(ErrorCode::InvalidArgument, "equity membership: cut index out of range");
+        }
+        order[r] = r;
+    }
+    std::stable_sort(order.begin(), order.end(), [&](atx::usize a, atx::usize b) {
+        return image.rebalances[a].effective_session_key <
+               image.rebalances[b].effective_session_key;
+    });
+    EquityAsOfMembership out;
+    out.effective_session_keys.reserve(order.size());
+    out.security_ids.reserve(order.size());
+    for (const auto r : order) {
+        const auto &rebalance = image.rebalances[r];
+        if (!out.effective_session_keys.empty() &&
+            out.effective_session_keys.back() == rebalance.effective_session_key) {
+            return Err(ErrorCode::InvalidArgument,
+                       "equity membership: two rebalances share an effective session");
+        }
+        auto ids = rebalance.cuts[cut].security_ids;
+        if (!std::is_sorted(ids.begin(), ids.end()) ||
+            std::adjacent_find(ids.begin(), ids.end()) != ids.end()) {
+            return Err(ErrorCode::InvalidArgument,
+                       "equity membership: cut ids are not strictly ascending");
+        }
+        out.effective_session_keys.push_back(rebalance.effective_session_key);
+        out.security_ids.push_back(std::move(ids));
+    }
+    return Ok(std::move(out));
+}
+
+Result<atx::usize> equity_membership_cut_index(const atx::engine::data::PitMembershipImage &image,
+                                               std::string_view cut_text) {
+    // Same spelling as `panel --universe-cut`: "<top_n>:<units>.<hundredths>", the band
+    // carried as basis points ("0.10" -> 1000), parsed digit-wise (no double rounding).
+    const auto colon = cut_text.find(':');
+    const auto dot = cut_text.find('.', colon == std::string_view::npos ? 0 : colon);
+    if (colon == std::string_view::npos || colon == 0 || dot == std::string_view::npos ||
+        dot == colon + 1 || cut_text.size() - dot != 3) {
+        return Err(ErrorCode::InvalidArgument,
+                   "equity membership: cut must be <top_n>:<units>.<hh>: " + std::string(cut_text));
+    }
+    const auto parse_u32 = [](std::string_view text, atx::u32 &out) {
+        const auto r = std::from_chars(text.data(), text.data() + text.size(), out);
+        return !text.empty() && r.ec == std::errc{} && r.ptr == text.data() + text.size();
+    };
+    atx::u32 top_n = 0;
+    atx::u32 units = 0;
+    atx::u32 hundredths = 0;
+    if (!parse_u32(cut_text.substr(0, colon), top_n) || top_n == 0 ||
+        !parse_u32(cut_text.substr(colon + 1, dot - colon - 1), units) || units > 100U ||
+        !parse_u32(cut_text.substr(dot + 1), hundredths)) {
+        return Err(ErrorCode::InvalidArgument,
+                   "equity membership: malformed cut: " + std::string(cut_text));
+    }
+    const atx::u32 band_bp = (units * 100U + hundredths) * 100U;
+    const auto ti = std::find(image.top_n.begin(), image.top_n.end(), top_n);
+    const auto bi = std::find(image.band_bp.begin(), image.band_bp.end(), band_bp);
+    if (ti == image.top_n.end() || bi == image.band_bp.end()) {
+        return Err(ErrorCode::InvalidArgument,
+                   "equity membership: the image carries no cut " + std::string(cut_text));
+    }
+    return Ok(static_cast<atx::usize>(ti - image.top_n.begin()) * image.band_bp.size() +
+              static_cast<atx::usize>(bi - image.band_bp.begin()));
+}
+
+Result<LoadedEquityMembership> load_equity_membership(const std::string &path,
+                                                      std::string_view cut_text) {
+    constexpr std::streamoff kMaxBytes = 512LL * 1024LL * 1024LL;
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    if (!in.is_open()) {
+        return Err(ErrorCode::IoError, "equity membership: cannot open " + path);
+    }
+    const std::streamoff size = in.tellg();
+    if (size <= 0 || size > kMaxBytes) {
+        return Err(ErrorCode::IoError, "equity membership: empty or oversized image " + path);
+    }
+    std::string bytes(static_cast<atx::usize>(size), '\0');
+    in.seekg(0, std::ios::beg);
+    if (!in.read(bytes.data(), static_cast<std::streamsize>(size))) {
+        return Err(ErrorCode::IoError, "equity membership: cannot read " + path);
+    }
+    LoadedEquityMembership out;
+    ATX_TRY(out.sha256, atx::core::sha256_hex(std::string_view{bytes}));
+    ATX_TRY(auto image, atx::engine::data::decode_membership_bin(bytes));
+    ATX_TRY(out.cut_index, equity_membership_cut_index(image, cut_text));
+    ATX_TRY(out.asof, equity_asof_membership(image, out.cut_index));
+    out.rebalances = image.rebalances.size();
+    return Ok(std::move(out));
+}
+
+Status publish_manifest_then_release_pending(const std::filesystem::path &directory,
+                                             const std::function<Status()> &write_manifest) {
+    std::error_code ec;
+    if (!std::filesystem::exists(directory / ".pending", ec) || ec) {
+        return Err(ErrorCode::IoError, "equity publication: no pending marker to release");
+    }
+    ATX_TRY_VOID(write_manifest());
+    if (!std::filesystem::remove(directory / ".pending", ec) || ec) {
+        return Err(ErrorCode::IoError, "equity publication: cannot release pending marker");
+    }
+    return Ok();
+}
+
+Result<std::optional<LoadedEquityMembership>>
+resolve_equity_membership(bool context_has_membership, std::string_view recipe_sha256,
+                          std::string_view recipe_cut, EquityMembershipRule rule,
+                          const std::string &membership_path) {
+    using Loaded = std::optional<LoadedEquityMembership>;
+    if (!context_has_membership) {
+        if (!membership_path.empty()) {
+            return Err(ErrorCode::InvalidArgument,
+                       "equity membership: the context declares no membership restriction; "
+                       "--membership does not apply");
+        }
+        return Ok(Loaded{});
+    }
+    if (rule == EquityMembershipRule::ContextYearUnionV1) {
+        if (!membership_path.empty()) {
+            return Err(ErrorCode::InvalidArgument,
+                       "equity membership: --membership-rule year-union-v1 takes no --membership");
+        }
+        return Ok(Loaded{});
+    }
+    if (membership_path.empty()) {
+        return Err(ErrorCode::InvalidArgument,
+                   "equity membership: the context carries a year-union membership allow-list "
+                   "(a within-window look-ahead); pass --membership <membership.bin> for the "
+                   "as-of mask, or --membership-rule year-union-v1 to reproduce pre-W0 output");
+    }
+    ATX_TRY(auto loaded, load_equity_membership(membership_path, recipe_cut));
+    if (loaded.sha256 != recipe_sha256) {
+        return Err(ErrorCode::InvalidArgument,
+                   "equity membership: --membership hashes to " + loaded.sha256 +
+                       " but the context was built from " + std::string(recipe_sha256));
+    }
+    return Ok(Loaded{std::move(loaded)});
+}
 
 Result<EquityBaselinePlan> plan_equity_baseline(const PanelArtifact &context,
                                               const EquityBaselineConfig &config) {
@@ -238,6 +450,7 @@ Result<EquityBaselineEvaluation> evaluate_equity_baseline(const PanelArtifact &c
                                                         const EquityBaselineConfig &config) {
     ATX_TRY(auto prepared, prepare(context, config));
     const auto &plan = prepared.plan;
+    ATX_TRY(const auto asof_member, asof_member_cells(context, config, plan));
     ATX_TRY(auto feature, feature_view(context, plan));
     alpha::SignalSet full_signals;
     {
@@ -269,6 +482,7 @@ Result<EquityBaselineEvaluation> evaluate_equity_baseline(const PanelArtifact &c
     atx::usize eligible_cells = 0;
     atx::usize ready_cells = 0;
     atx::usize floor_rejected = 0;
+    atx::usize membership_rejected = 0;
     atx::usize admitted_cells = 0;
     std::span<const atx::f64> raw_close_feature;
     std::span<const atx::f64> volume_feature;
@@ -299,7 +513,13 @@ Result<EquityBaselineEvaluation> evaluate_equity_baseline(const PanelArtifact &c
     for (atx::usize cell = 0; cell < plan.evaluation_cells; ++cell) {
         const auto row = cell / instruments;
         const auto instrument = cell % instruments;
-        const bool eligible = context.panel.in_universe(plan.evaluation_begin + row, instrument);
+        const bool context_eligible =
+            context.panel.in_universe(plan.evaluation_begin + row, instrument);
+        // D-12: the year-union context mask is intersected with as-of membership, so a
+        // mid-window joiner is invisible before the session its rebalance takes effect.
+        const bool member = asof_member.empty() || asof_member[cell] != 0U;
+        membership_rejected += (context_eligible && !member) ? 1U : 0U;
+        const bool eligible = context_eligible && member;
         const auto first = full_signals.alphas[0].values[warmup_cells + cell];
         const auto second = full_signals.alphas[1].values[warmup_cells + cell];
         const bool ready = std::isfinite(first) && std::isfinite(second);
@@ -334,7 +554,8 @@ Result<EquityBaselineEvaluation> evaluate_equity_baseline(const PanelArtifact &c
     }
     return Ok(EquityBaselineEvaluation{std::move(panel), std::move(signals), std::move(keys),
         std::move(context_rows), std::move(ready_by_observation), std::move(admitted_by_observation),
-        plan, feature.observed_cells, eligible_cells, floor_rejected, ready_cells, admitted_cells});
+        plan, feature.observed_cells, eligible_cells, floor_rejected, ready_cells, admitted_cells,
+        membership_rejected});
 }
 
 Result<EquityFamilyEvaluation> evaluate_equity_families(const PanelArtifact &context,

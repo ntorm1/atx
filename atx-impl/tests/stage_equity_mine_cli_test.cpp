@@ -151,6 +151,9 @@ protected:
                 "--cost-bps", "1",
                 "--n-boot", "200",
                 "--threads", "2",
+                // W0-I0b / D-12: as-of membership is the default and needs an
+                // image; this fixture has none, so it opts into the legacy rule.
+                "--membership-rule", "year-union-v1",
                 "--out", out.string()};
     }
 

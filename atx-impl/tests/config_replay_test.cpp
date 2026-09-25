@@ -58,7 +58,7 @@ TEST(ConfigReplay, ExplicitZeroRecordsHypotheticalSameCloseAndFrictionlessChoice
     EXPECT_EQ(defaults->replay_day_basis, 365);
     const auto explicit_zero = parse_replay({"atx-impl", "report",
         "--replay-execution-delay", "0", "--replay-trade-bps", "0",
-        "--replay-annual-borrow-bps", "0"});
+        "--replay-annual-borrow-bps", "0", "--allow-same-close"}); // W0-I0b / B-02 opt-in
     ASSERT_TRUE(explicit_zero.has_value());
     EXPECT_EQ(explicit_zero->replay_execution_delay, 0U);
     EXPECT_TRUE(explicit_zero->set_flags.contains("replay-trade-bps"));
