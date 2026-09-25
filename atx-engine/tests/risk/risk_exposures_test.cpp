@@ -157,7 +157,10 @@ TEST(RiskExposures, SizeIsLnCapStandardized) {
   const usize rows = 1U, inst = 2U;
   PanelFixture fx{rows, inst, {{100.0, 100.0}}, {{10.0, 10.0}}};
   const std::vector<f64> cap{std::exp(1.0), std::exp(3.0)}; // ln -> 1, 3
-  const FactorModelConfig cfg = only_style(StyleFactor::Size);
+  FactorModelConfig cfg = only_style(StyleFactor::Size);
+  // W0-R0 (R-06): the hand math below is the EQUAL-weight z-score, now the versioned
+  // V1 rule; the default cap-weighted V2 rule is pinned in risk_w0r0_pit_test.cpp.
+  cfg.zscore_rule = atx::engine::risk::ZScoreRule::EqualWeightV1;
 
   const auto r =
       build_exposures(fx.view(), cfg, 0U, std::span<const f64>{cap}, std::span<const u32>{});
