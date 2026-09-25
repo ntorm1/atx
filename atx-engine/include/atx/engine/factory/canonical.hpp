@@ -53,7 +53,11 @@
 // Header-only; COLD path (run once per candidate, never on the VM hot path), so
 // the recursion + memo map allocate freely.
 
+#include <string>
+#include <string_view>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "atx/core/types.hpp"
 
@@ -138,21 +142,64 @@ struct CanonCfg {
 [[nodiscard]] atx::u64 canonical_hash(const Genome &g, const CanonCfg &cfg);
 
 // =========================================================================
-//  CanonSet — the u64 dedup set (the driver skips a candidate on a hit).
+//  canonical_string (W0-A0 / A-18) — the EXACT canonical form behind the hash.
+//
+//  A deterministic, self-delimiting serialization of the same normalized
+//  structure canonical_hash folds: literals by bit pattern, fields/pins/op names
+//  length-prefixed, hparams by bit pattern, and the children of an
+//  is_hash_commutative op SORTED (lexicographically by their own canonical
+//  strings). Two sub-DAGs have equal strings iff they are structurally equal up
+//  to that commutative reorder — so equal strings imply equal canonical hashes,
+//  and a hash hit with a DIFFERENT string is a proven 64-bit collision.
+//  COLD path: the string grows with the expanded tree (shared sub-DAGs are
+//  re-spelled at each use), which is fine for genome-sized expressions.
 // =========================================================================
+[[nodiscard]] std::string canonical_string(const Ast &ast, ExprId root);
+[[nodiscard]] std::string canonical_string(const Genome &g);
+// The CanonCfg-aware form (semantic=true normalizes via rewrite first, exactly
+// as canonical_hash(g, cfg) does).
+[[nodiscard]] std::string canonical_string(const Genome &g, const CanonCfg &cfg);
 
-// A thin wrapper over a u64 hash set giving the dedup vocabulary the search
-// driver uses: `contains(h)` to test, `insert(h)` returning true iff `h` was
-// NEW (false ⇒ a structural duplicate, skip re-evaluation).
+// =========================================================================
+//  CanonSet — the dedup set (the driver skips a candidate on a hit).
+//
+//  A-18: a bare u64 set silently treats a 64-bit hash collision as a duplicate
+//  and reuses the other genome's score. The verified API stores each distinct
+//  canonical string under its hash and COMPARES the string on a hash hit, so a
+//  colliding-but-different structure is admitted as fresh (and counted in
+//  collisions()). The hash-only contains(h)/insert(h) remain for callers that
+//  have not been moved to the verified API yet (they keep the old,
+//  collision-blind behaviour) and for resume snapshots, which persist hashes
+//  only: a hash known WITHOUT a form cannot be disproven and counts as seen.
+// =========================================================================
 struct CanonSet {
-  std::unordered_set<atx::u64> seen;
+  std::unordered_set<atx::u64> seen; // every distinct hash (persisted by resume snapshots)
+  std::unordered_map<atx::u64, std::vector<std::string>> forms; // hash -> distinct forms
+  atx::usize n_distinct{0};   // distinct structures admitted (both APIs)
+  atx::usize n_collisions{0}; // hash hits whose canonical string differed
 
+  // ---- hash-only (legacy, collision-blind) ----
   [[nodiscard]] bool contains(atx::u64 h) const noexcept { return seen.find(h) != seen.end(); }
 
   // Insert `h`; return true iff it was not already present (a fresh structure).
-  bool insert(atx::u64 h) { return seen.insert(h).second; }
+  bool insert(atx::u64 h) {
+    const bool fresh = seen.insert(h).second;
+    n_distinct += fresh ? 1U : 0U;
+    return fresh;
+  }
 
-  [[nodiscard]] atx::usize size() const noexcept { return seen.size(); }
+  // ---- verified (hash + canonical string) ----
+  // True iff a structure with canonical string `form` was admitted under `h`
+  // (or `h` is known only as a bare hash — see the struct comment).
+  [[nodiscard]] bool contains(atx::u64 h, std::string_view form) const;
+
+  // Admit (h, form); return true iff it is a NEW structure. A hash hit whose
+  // stored forms all differ from `form` is a 64-bit collision: the structure is
+  // admitted as fresh and n_collisions is incremented.
+  bool insert(atx::u64 h, std::string form);
+
+  [[nodiscard]] atx::usize size() const noexcept { return n_distinct; }
+  [[nodiscard]] atx::usize collisions() const noexcept { return n_collisions; }
 };
 
 } // namespace atx::engine::factory

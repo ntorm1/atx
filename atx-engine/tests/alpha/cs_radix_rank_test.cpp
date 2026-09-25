@@ -214,6 +214,14 @@ TEST(CsRadixRank_Argsort, MatchesStableSortOnShuffledInputOrder) {
 }
 
 // ---- row kernels: bit-identical to the stable_sort reference -------------
+//
+// W0-A0 (A-01): the row kernels now default to average-rank ties. The ordinal
+// references below are the pre-W0 bodies and are checked against the kernels
+// run with the legacy RankTies::OrdinalV1 policy (expectations unchanged); each
+// test also checks the default Average policy against an average-rank
+// reference built from the SAME stable_sort permutation.
+
+using atx::engine::alpha::detail::RankTies;
 
 // Reference ordinal rank (the pre-radix cs_rank_row body).
 void ref_rank(const std::vector<atx::f64> &x, const std::vector<atx::usize> &valid,
@@ -223,6 +231,36 @@ void ref_rank(const std::vector<atx::f64> &x, const std::vector<atx::usize> &val
   for (atx::usize r = 0; r < n; ++r) {
     out[order[r]] =
         (n == 1) ? 0.5 : static_cast<atx::f64>(r) / static_cast<atx::f64>(n - 1);
+  }
+}
+
+// Average-rank position of every sorted slot: a run of equal values (-0.0 ties
+// +0.0) shares lo + (hi-lo)/2.
+[[nodiscard]] std::vector<atx::f64> ref_avg_pos(const std::vector<atx::f64> &x,
+                                                const std::vector<atx::usize> &order) {
+  const atx::usize n = order.size();
+  std::vector<atx::f64> pos(n);
+  for (atx::usize lo = 0; lo < n;) {
+    atx::usize hi = lo;
+    while (hi + 1 < n && x[order[hi + 1]] == x[order[lo]]) {
+      ++hi;
+    }
+    for (atx::usize r = lo; r <= hi; ++r) {
+      pos[r] = static_cast<atx::f64>(lo) + static_cast<atx::f64>(hi - lo) / 2.0;
+    }
+    lo = hi + 1;
+  }
+  return pos;
+}
+
+// Reference average rank.
+void ref_rank_avg(const std::vector<atx::f64> &x, const std::vector<atx::usize> &valid,
+                  std::vector<atx::f64> &out) {
+  const std::vector<atx::usize> order = reference_order(x, valid);
+  const std::vector<atx::f64> pos = ref_avg_pos(x, order);
+  const atx::usize n = order.size();
+  for (atx::usize r = 0; r < n; ++r) {
+    out[order[r]] = (n == 1) ? 0.5 : pos[r] / static_cast<atx::f64>(n - 1);
   }
 }
 
@@ -247,9 +285,16 @@ TEST(CsRadixRank_Row, RankRowBitIdenticalToStableSortReference) {
     std::vector<atx::f64> want(n, kNaN);
     ref_rank(x, valid, want);
     std::vector<atx::f64> got(n, kNaN);
-    cs_rank_row(x, valid, got, scratch);
+    cs_rank_row(x, valid, got, scratch, RankTies::OrdinalV1);
     for (atx::usize i = 0; i < n; ++i) {
       ASSERT_TRUE(same_bits(got[i], want[i])) << "n=" << n << " i=" << i;
+    }
+    std::vector<atx::f64> want_avg(n, kNaN);
+    ref_rank_avg(x, valid, want_avg);
+    std::vector<atx::f64> got_avg(n, kNaN);
+    cs_rank_row(x, valid, got_avg, scratch);
+    for (atx::usize i = 0; i < n; ++i) {
+      ASSERT_TRUE(same_bits(got_avg[i], want_avg[i])) << "avg n=" << n << " i=" << i;
     }
   }
 }
@@ -273,9 +318,25 @@ TEST(CsRadixRank_Row, QuantileRowBitIdenticalToStableSortReference) {
     want[order[r]] = static_cast<atx::f64>(b) / static_cast<atx::f64>(nb - 1);
   }
   std::vector<atx::f64> got(n, kNaN);
-  cs_quantile_row(x, valid, static_cast<atx::f64>(nb), got, scratch);
+  cs_quantile_row(x, valid, static_cast<atx::f64>(nb), got, scratch, RankTies::OrdinalV1);
   for (atx::usize i = 0; i < n; ++i) {
     ASSERT_TRUE(same_bits(got[i], want[i])) << "i=" << i;
+  }
+  // Default Average policy: the bucket of a tie run comes from its mean position.
+  const std::vector<atx::f64> pos = ref_avg_pos(x, order);
+  std::vector<atx::f64> want_avg(n, kNaN);
+  for (atx::usize r = 0; r < m; ++r) {
+    const atx::f64 p = pos[r] / static_cast<atx::f64>(m - 1);
+    int b = static_cast<int>(p * static_cast<atx::f64>(nb));
+    if (b >= nb) {
+      b = nb - 1;
+    }
+    want_avg[order[r]] = static_cast<atx::f64>(b) / static_cast<atx::f64>(nb - 1);
+  }
+  std::vector<atx::f64> got_avg(n, kNaN);
+  cs_quantile_row(x, valid, static_cast<atx::f64>(nb), got_avg, scratch);
+  for (atx::usize i = 0; i < n; ++i) {
+    ASSERT_TRUE(same_bits(got_avg[i], want_avg[i])) << "avg i=" << i;
   }
 }
 
@@ -292,6 +353,7 @@ TEST(CsRadixRank_Row, GroupRankBitIdenticalToPerGroupReference) {
   g[3] = kNaN; // NaN label stays out-of-set
   const std::vector<atx::usize> valid = valid_of(x);
   std::vector<atx::f64> want(n, kNaN);
+  std::vector<atx::f64> want_avg(n, kNaN);
   for (int k = 0; k <= 6; ++k) {
     std::vector<atx::usize> members;
     for (const atx::usize i : valid) {
@@ -300,11 +362,17 @@ TEST(CsRadixRank_Row, GroupRankBitIdenticalToPerGroupReference) {
       }
     }
     ref_rank(x, members, want);
+    ref_rank_avg(x, members, want_avg);
   }
   std::vector<atx::f64> got(n, kNaN);
-  cs_group_row(x, g, valid, got, /*zscore=*/false, scratch);
+  cs_group_row(x, g, valid, got, /*zscore=*/false, scratch, RankTies::OrdinalV1);
   for (atx::usize i = 0; i < n; ++i) {
     ASSERT_TRUE(same_bits(got[i], want[i])) << "i=" << i;
+  }
+  std::vector<atx::f64> got_avg(n, kNaN);
+  cs_group_row(x, g, valid, got_avg, /*zscore=*/false, scratch);
+  for (atx::usize i = 0; i < n; ++i) {
+    ASSERT_TRUE(same_bits(got_avg[i], want_avg[i])) << "avg i=" << i;
   }
 }
 

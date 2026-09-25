@@ -1,10 +1,12 @@
 #include "atx/engine/factory/crossover.hpp"
 
+#include <cmath>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "atx/engine/alpha/parser.hpp"
+#include "atx/engine/alpha/typecheck.hpp"
 
 namespace atx::engine::factory {
 
@@ -39,6 +41,20 @@ ExprId splice_visit(const Ast &src, ExprId s, ExprId cut, ExprId spliced, Ast &d
   const ExprId d = dst.add(e);
   memo[s] = d;
   return d;
+}
+
+// W0-A0 (A-03): true iff `cut` is the scalar-literal operand (arg `b`) of some
+// Call in `ast` (scale / winsorize / quantile / hump — see
+// alpha::detail::has_scalar_literal_slot). Such a slot must stay a Literal, so
+// only Literal donors are offered there. A linear scan over the arena: COLD path.
+[[nodiscard]] bool is_scalar_literal_cut(const Ast &ast, ExprId cut) noexcept {
+  for (const Expr &p : ast.nodes()) {
+    if (p.kind == Expr::Kind::Call && p.op != nullptr && p.b == cut &&
+        atx::engine::alpha::detail::has_scalar_literal_slot(p.op->opcode)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Draw a uniform index in [0, n). Precondition: n > 0. One u64 of entropy.
@@ -76,14 +92,25 @@ subtree_crossover(const Genome &a, const Genome &b, Xoshiro256pp &rng, Crossover
   const TypeInfo &want = a.analysis.info(cut);
 
   // (3) Donor candidates in B: type-compatible AND within the lookback cap, in
-  //     ascending-ExprId order (fixed before the donor draw).
+  //     ascending-ExprId order (fixed before the donor draw). W0-A0 (A-03): a
+  //     cut in a scalar-literal slot (scale/winsorize/quantile/hump arg 2)
+  //     accepts ONLY a finite Literal donor — a panel there would be read as its
+  //     (date 0, instrument 0) cell.
+  const bool literal_only = detail::is_scalar_literal_cut(a.ast, cut);
   std::vector<ExprId> donors;
   const atx::usize b_n = b.ast.nodes().size();
   for (atx::usize i = 0; i < b_n; ++i) {
     const TypeInfo &have = b.analysis.info(static_cast<ExprId>(i));
-    if (compatible(have, want) && have.lookback <= cfg.max_lookback) {
-      donors.push_back(static_cast<ExprId>(i));
+    if (!compatible(have, want) || have.lookback > cfg.max_lookback) {
+      continue;
     }
+    if (literal_only) {
+      const Expr &dn = b.ast.node(static_cast<ExprId>(i));
+      if (dn.kind != Expr::Kind::Literal || !std::isfinite(dn.value)) {
+        continue;
+      }
+    }
+    donors.push_back(static_cast<ExprId>(i));
   }
   if (donors.empty()) {
     return atx::core::Err(atx::core::ErrorCode::NotFound,

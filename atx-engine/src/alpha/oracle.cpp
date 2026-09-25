@@ -14,23 +14,46 @@ namespace detail {
 //  Cross-sectional kernels — per date-row over the valid set.
 // =========================================================================
 
-// Ordinal percentile rank in [0,1] over `valid` indices, tie-broken by ascending
-// instrument index (NaNs already excluded). Rank r (0-based) of n maps to
-// r/(n-1); a singleton set maps to 0.5 (centred — avoids a degenerate 0/0).
+// Average-rank position of every valid cell (W0-A0 / A-01): sort ascending by
+// value, then give each run of EQUAL values (-0.0 == +0.0) the mean of its
+// ordinal positions, lo + (hi-lo)/2 — an exact half-integer, so this restatement
+// agrees bit-for-bit with cs_ops.hpp's (lo+hi)*0.5. `pos[k]` is the rank of
+// `order[k]`. Returns the sorted order.
+[[nodiscard]] static std::vector<atx::usize>
+average_rank_order(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,
+                   std::vector<atx::f64> &pos) {
+  std::vector<atx::usize> order = valid;
+  std::stable_sort(order.begin(), order.end(),
+                   [&](atx::usize i, atx::usize j) { return x[i] < x[j]; });
+  const atx::usize n = order.size();
+  pos.assign(n, 0.0);
+  for (atx::usize lo = 0; lo < n;) {
+    atx::usize hi = lo;
+    while (hi + 1 < n && x[order[hi + 1]] == x[order[lo]]) {
+      ++hi;
+    }
+    const atx::f64 avg = static_cast<atx::f64>(lo) + static_cast<atx::f64>(hi - lo) / 2.0;
+    for (atx::usize r = lo; r <= hi; ++r) {
+      pos[r] = avg;
+    }
+    lo = hi + 1;
+  }
+  return order;
+}
+
+// Average-rank percentile in [0,1] over `valid` indices (NaNs already
+// excluded): ties share the mean of their ordinal positions, so an all-tied row
+// is 0.5 everywhere. Rank r of n maps to r/(n-1); a singleton set maps to 0.5.
 void cs_rank(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,
              std::span<atx::f64> out) {
   const atx::usize n = valid.size();
   if (n == 0) {
     return;
   }
-  std::vector<atx::usize> order = valid;
-  // Stable sort by value, ties by instrument index (order already ascending in
-  // index, std::stable_sort preserves it) -> deterministic ordinal tie-break.
-  std::stable_sort(order.begin(), order.end(),
-                   [&](atx::usize i, atx::usize j) { return x[i] < x[j]; });
+  std::vector<atx::f64> pos;
+  const std::vector<atx::usize> order = average_rank_order(x, valid, pos);
   for (atx::usize r = 0; r < n; ++r) {
-    const atx::f64 pct = (n == 1) ? 0.5 : static_cast<atx::f64>(r) / static_cast<atx::f64>(n - 1);
-    out[order[r]] = pct;
+    out[order[r]] = (n == 1) ? 0.5 : pos[r] / static_cast<atx::f64>(n - 1);
   }
 }
 
@@ -131,8 +154,8 @@ void cs_residualize(std::span<const atx::f64> x, std::span<const atx::f64> g,
   }
 }
 
-// CsRankG / CsZscoreG: rank (ordinal percentile) or sample-zscore WITHIN each
-// group of the valid set. `zscore` selects the variant.
+// CsRankG / CsZscoreG: rank (average-rank percentile, as cs_rank) or
+// sample-zscore WITHIN each group of the valid set. `zscore` selects the variant.
 void cs_group(std::span<const atx::f64> x, std::span<const atx::f64> g,
               const std::vector<atx::usize> &valid, std::span<atx::f64> out, bool zscore) {
   for (const atx::usize i : valid) {
@@ -222,11 +245,10 @@ void cs_group_scale(std::span<const atx::f64> x, std::span<const atx::f64> g,
   }
 }
 
-// CsQuantile (S3.3): discretize the valid set into `n` buckets. Ordinal-rank
-// each valid cell (ascending value, tie-broken by ascending instrument index,
-// as cs_rank), map percentile p to bucket b = floor(p·n) clamped to [0, n-1],
-// emit b/(n-1). Singleton -> p == 0.5. n < 2 -> NaN. Summation/sort order is
-// bit-identical to cs_ops.hpp's cs_quantile_row.
+// CsQuantile (S3.3): discretize the valid set into `n` buckets. Average-rank
+// each valid cell exactly as cs_rank (ties share one bucket), map percentile p
+// to bucket b = floor(p·n) clamped to [0, n-1], emit b/(n-1). Singleton ->
+// p == 0.5. n < 2 -> NaN. Bit-identical to cs_ops.hpp's cs_quantile_row.
 void cs_quantile(std::span<const atx::f64> x, const std::vector<atx::usize> &valid, atx::f64 n_real,
                  std::span<atx::f64> out) {
   const atx::usize m = valid.size();
@@ -240,12 +262,11 @@ void cs_quantile(std::span<const atx::f64> x, const std::vector<atx::usize> &val
     }
     return;
   }
-  std::vector<atx::usize> order = valid;
-  std::stable_sort(order.begin(), order.end(),
-                   [&](atx::usize i, atx::usize j) { return x[i] < x[j]; });
+  std::vector<atx::f64> pos;
+  const std::vector<atx::usize> order = average_rank_order(x, valid, pos);
   const atx::f64 denom = static_cast<atx::f64>(nb - 1);
   for (atx::usize r = 0; r < m; ++r) {
-    const atx::f64 p = (m == 1) ? 0.5 : static_cast<atx::f64>(r) / static_cast<atx::f64>(m - 1);
+    const atx::f64 p = (m == 1) ? 0.5 : pos[r] / static_cast<atx::f64>(m - 1);
     int b = static_cast<int>(p * static_cast<atx::f64>(nb));
     if (b >= nb) {
       b = nb - 1;
@@ -447,6 +468,9 @@ atx::f64 pearson(const std::vector<atx::f64> &a,
     saa += (a[i] - ma) * (a[i] - ma);
     sbb += (b[i] - mb) * (b[i] - mb);
   }
+  if (window_is_flat(saa, ma, n) || window_is_flat(sbb, mb, n)) {
+    return kNaN; // A-09: correlation with a flat window is undefined
+  }
   const atx::f64 denom = std::sqrt(saa * sbb);
   return denom == 0.0 ? kNaN : sab / denom;
 }
@@ -484,6 +508,21 @@ LinFit lin_fit(const std::vector<atx::f64> &y) noexcept {
     sy += y[i];
     sxx += xi * xi;
     sxy += xi * y[i];
+  }
+  // A-09: a flat value window fits slope 0 / intercept mean, r2 NaN, and its
+  // fitted last value is the newest observation (resid exactly 0).
+  {
+    const atx::f64 my0 = sy / nf;
+    atx::f64 ss_y = 0.0;
+    for (atx::usize i = 0; i < n; ++i) {
+      ss_y += (y[i] - my0) * (y[i] - my0);
+    }
+    if (window_is_flat(ss_y, my0, n)) {
+      f.slope = 0.0;
+      f.intercept = my0;
+      f.fitted_last = y[n - 1];
+      return f;
+    }
   }
   const atx::f64 denom = nf * sxx - sx * sx;
   if (denom == 0.0) {
@@ -758,6 +797,9 @@ atx::f64 Oracle::ts_unary_at(OpCode op, std::span<const atx::f64> x, atx::usize 
     // (x[t] - mean) / sample-std over the window; same reductions as mean/std.
     const atx::f64 mean = detail::sum_of(w) / static_cast<atx::f64>(n);
     const atx::f64 sd = std::sqrt(detail::sample_var(w));
+    if (sd == 0.0) {
+      return detail::kNaN; // A-09: a flat window has no dispersion to score against
+    }
     return (w.back() - mean) / sd; // sd NaN (n<2) -> NaN
   }
   case OpCode::TsAvDiff:
@@ -868,6 +910,9 @@ atx::f64 Oracle::ts_binary_at(OpCode op, std::span<const atx::f64> x,
     for (atx::usize i = 0; i < n; ++i) {
       sab += (wy[i] - my) * (wx[i] - mx);
       sbb += (wy[i] - my) * (wy[i] - my);
+    }
+    if (detail::window_is_flat(sbb, my, n)) {
+      return detail::kNaN; // A-09: a flat predictor has no variance to regress on
     }
     return sbb == 0.0 ? detail::kNaN : sab / sbb;
   }
@@ -1037,15 +1082,30 @@ atx::core::Status Oracle::eval_recurrence(const Instr &in) {
     // absent optional -> the 0.01 default (P3b-1 default-fill usually supplies it).
     const atx::f64 thr =
         in.src.at(1) == kNoSlot ? atx::f64{0.01} : detail::scalar_of(src_col(in, 1));
+    // W0-A0 (A-02) pinned policy, restated independently of state_ops.hpp: a NaN
+    // x[t] emits NaN and ages the carried prior (dropped once it has sat through
+    // more than kHumpStaleCap consecutive NaN dates); a finite x[t] seeds a
+    // missing prior, else passes iff |x[t]-prior| STRICTLY > thr, else holds.
+    constexpr atx::u32 kHumpStaleCap = 5; // == state_ops kHumpMaxStaleDates (test-pinned)
     for (atx::usize j = 0; j < instruments_; ++j) {
       atx::f64 prior = detail::kNaN;
+      atx::u32 nan_run = 0;
       for (atx::usize t = 0; t < dates_; ++t) {
         const atx::usize i = t * instruments_ + j;
-        // first date -> x[0]; else pass x[t] iff |x[t]-prior| STRICTLY > thr,
-        // holding the prior otherwise (a NaN diff is never > thr -> holds).
-        const atx::f64 v = (t == 0) ? x[i] : (std::fabs(x[i] - prior) > thr ? x[i] : prior);
-        out[i] = v;
-        prior = v;
+        const atx::f64 xv = x[i];
+        if (detail::is_nan(xv)) {
+          ++nan_run;
+          if (nan_run > kHumpStaleCap) {
+            prior = detail::kNaN;
+          }
+          out[i] = detail::kNaN;
+          continue;
+        }
+        nan_run = 0;
+        if (detail::is_nan(prior) || std::fabs(xv - prior) > thr) {
+          prior = xv;
+        }
+        out[i] = prior;
       }
     }
     return atx::core::Ok();

@@ -390,8 +390,10 @@ TEST(DataAdjust, NanRawCloseDoesNotZeroFill) {
   EXPECT_TRUE(std::isnan(adj.total_return[1]));
   EXPECT_TRUE(std::isnan(adj.total_return_index[1]));
 
-  // The series resumes at the next valid close, re-anchoring (r = 0, TRI = S);
-  // there is no defined return across the gap, so no fabricated jump.
+  // The series resumes at the next valid close with r = 0 (there is no defined
+  // one-day return across the gap). W0-D0 (D-04): the TRI level resumes by the
+  // ratio prev_TRI * S_t / S_last = 100 * 105 / 100 = 105 — equal to S here only
+  // because no dividend accrued before the gap (DataAdjustGap_* pins the payer case).
   EXPECT_DOUBLE_EQ(adj.total_return[0], 0.0);
   EXPECT_DOUBLE_EQ(adj.total_return[2], 0.0);
   EXPECT_DOUBLE_EQ(adj.total_return_index[2], 105.0);

@@ -176,9 +176,16 @@ void apply_top_n(std::span<atx::u8> mask_row, std::span<const atx::f64> adv_row,
   if (passing.size() <= top_n) {
     return; // already within the cap
   }
-  // Descending by ADV; canonical-id ascending tie-break (deterministic).
+  // Descending by ADV; canonical-id ascending tie-break (deterministic). A NaN ADV
+  // reaches here only when the ADV floor is disabled (D-09); it has no rank, so it
+  // sorts after every finite ADV (a strict weak order — NaN never compares directly).
   std::stable_sort(passing.begin(), passing.end(), [&](atx::usize a, atx::usize b) {
-    if (adv_row[a] != adv_row[b]) {
+    const bool a_nan = std::isnan(adv_row[a]);
+    const bool b_nan = std::isnan(adv_row[b]);
+    if (a_nan != b_nan) {
+      return b_nan; // finite before NaN
+    }
+    if (!a_nan && adv_row[a] != adv_row[b]) {
       return adv_row[a] > adv_row[b];
     }
     return a < b;
@@ -189,9 +196,9 @@ void apply_top_n(std::span<atx::u8> mask_row, std::span<const atx::f64> adv_row,
 }
 
 // Build the PIT membership mask: present(t,i) ∧ mktcap-floor ∧ adv-floor, then the
-// optional top-N-by-ADV cap per date. A NaN market_cap or adv_usd FAILS its floor
-// (NaN compares false), so a NaN price/shares cell is excluded — the no-
-// survivorship / no-look-ahead guard.
+// optional top-N-by-ADV cap per date. A NaN market_cap or adv_usd FAILS an enabled
+// floor (NaN compares false), so a NaN price/shares cell is excluded — the no-
+// survivorship / no-look-ahead guard. A disabled floor (<= 0) is no screen at all.
 [[nodiscard]] std::vector<atx::u8> membership_mask(const alpha::Panel &p,
                                                    std::span<const atx::f64> market_cap,
                                                    std::span<const atx::f64> adv_usd,
@@ -204,8 +211,19 @@ void apply_top_n(std::span<atx::u8> mask_row, std::span<const atx::f64> adv_row,
     for (atx::usize i = 0; i < instruments; ++i) {
       const atx::usize flat = t * instruments + i;
       const bool present = p.in_universe(t, i);
-      const bool cap_ok = market_cap[flat] >= cfg.min_mktcap_usd; // NaN -> false
-      const bool adv_ok = adv_usd[flat] >= cfg.min_adv_usd;       // NaN -> false
+      // An ENABLED floor (> 0) fails a NaN value (NaN compares false). Under
+      // NanFloorRule::DisabledFloorPassesV2 a floor <= 0 is the documented "no
+      // floor" and passes every cell, NaN included (D-09); NanFailsV1 keeps the
+      // legacy `value >= floor` test, where a NaN failed even a disabled floor.
+      const bool floors_v2 = cfg.nan_floor_rule == NanFloorRule::DisabledFloorPassesV2;
+      // V2: a cell without a traded price (NaN / non-positive raw close) is never a
+      // member, whatever the floors — the legacy rule excluded it only through the
+      // NaN market cap, which a disabled cap floor no longer tests.
+      const bool traded = !floors_v2 || (std::isfinite(raw_close[flat]) && raw_close[flat] > 0.0);
+      const bool cap_ok = (floors_v2 && cfg.min_mktcap_usd <= 0.0) ||
+                          market_cap[flat] >= cfg.min_mktcap_usd;
+      const bool adv_ok =
+          (floors_v2 && cfg.min_adv_usd <= 0.0) || adv_usd[flat] >= cfg.min_adv_usd;
       // Price floor: STRICT raw_close > min_price (NaN -> false). Disabled (no
       // change) when min_price <= 0 so legacy panels are byte-identical.
       const bool price_ok = (cfg.min_price <= 0.0) || (raw_close[flat] > cfg.min_price);
@@ -213,7 +231,8 @@ void apply_top_n(std::span<atx::u8> mask_row, std::span<const atx::f64> adv_row,
       // carry no GICS, so sector_code == kNoSectorCode excludes them. Off by default.
       const bool sector_ok = !cfg.require_sector || (sector_code[flat] != kNoSectorCode);
       mask[flat] =
-          (present && cap_ok && adv_ok && price_ok && sector_ok) ? atx::u8{1} : atx::u8{0};
+          (present && traded && cap_ok && adv_ok && price_ok && sector_ok) ? atx::u8{1}
+                                                                            : atx::u8{0};
     }
     if (cfg.top_n_by_adv > 0) {
       apply_top_n(std::span<atx::u8>{mask}.subspan(t * instruments, instruments),
