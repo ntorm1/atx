@@ -915,6 +915,9 @@ def fold_evidence_into_delisting_events(
       would publish the pre-revision row from the existence clock (A3 report follow-up 7).
     * Primary row (``source_listing_status_id`` / ``delist_code`` / ``source_event_id``): the
       best-reason member with the best ``evidence_rank``.
+    * The existence clock, reason clock, reason at existence and revision flag are written
+      both to ``details_json`` and to the migration-0327 columns, with
+      ``delisting_event_key = delisting_event_id`` (one row per event).
 
     Rows written by ``delisting.refresh_delisting_events`` are never touched: the DELETE is
     scoped to ``options.event_source``. The optional as-of bound also applies when folding
@@ -962,7 +965,8 @@ def fold_evidence_into_delisting_events(
                 delist_reason, delisting_return, delisting_return_type, is_return_imputed,
                 return_policy, return_confidence, evidence_source, evidence_source_table,
                 source_event_id, method, evidence_confidence, inferred_from_absence,
-                details_json, run_id
+                details_json, run_id, delisting_event_key, existence_available_at,
+                reason_available_at, reason_at_existence, reason_revised_after_existence
             )
             WITH members AS (
                 SELECT
@@ -1101,7 +1105,15 @@ def fold_evidence_into_delisting_events(
                     'evidence', c.evidence,
                     'fold_as_of_date', ?::DATE
                 )::VARCHAR AS details_json,
-                ? AS run_id
+                ? AS run_id,
+                -- Migration 0327 columns: the same values as details_json. One row per event, so
+                -- the event key is the row id.
+                sha256(concat_ws('|', ?, c.security_id, CAST(c.delist_date AS VARCHAR)))
+                    AS delisting_event_key,
+                c.existence_at AS existence_available_at,
+                {reason_available_at} AS reason_available_at,
+                {_reason_text_sql(rank_at_existence)} AS reason_at_existence,
+                ({rank_at_existence}) <> c.reason_rank AS reason_revised_after_existence
             FROM clusters c
             JOIN primary_members p
               ON p.security_id = c.security_id
@@ -1109,7 +1121,8 @@ def fold_evidence_into_delisting_events(
              AND p.rn = 1
             ORDER BY c.security_id, c.delist_date
             """,
-            [options.source, options.event_source, options.event_source, as_of_text, options.run_id],
+            [options.source, options.event_source, options.event_source, as_of_text, options.run_id,
+             options.event_source],
         )
         event_count_row = store.con.execute(
             "SELECT count(*) FROM delisting_events WHERE source = ?", [options.event_source]

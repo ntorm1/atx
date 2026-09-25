@@ -916,10 +916,26 @@ def _bars(con):
     """).fetchall()
 
 
+def _run(con, run_id, params_json):
+    con.execute(
+        "INSERT INTO dataset_runs (run_id, dataset_id, status, started_at, source, params_json) "
+        "VALUES (?, 'tbltickerhistory_daily', 'succeeded', TIMESTAMP '2026-09-24 00:00:00', ?, ?)",
+        [run_id, b0327.TICKER_HISTORY_SOURCE, params_json],
+    )
+
+
+# Input paths exactly as the old loaders recorded them (json.dumps(asdict(options), default=str)).
+_PARQUET = json.dumps({"source_path": "C:\\Users\\ops\\Downloads\\TickerHistory3.parquet", "tsv_path": None})
+_TSV = json.dumps({"source_path": None, "tsv_path": "C:\\atx\\staging\\tbltickerhistory3_10y.txt"})
+_ZIP = json.dumps({"zip_path": "C:\\Users\\ops\\Downloads\\tbltickerhistory3_10y.zip", "symbols": ["SEB", "NEW"]})
+
+
 def test_ticker_history_thousands_runs_are_scaled_once_and_nothing_else_moves(tmp_store):
     con = tmp_store.con
     con.execute("DROP TABLE IF EXISTS equity_bar_unit_corrections")  # a pre-0327 warehouse state
     th = b0327.TICKER_HISTORY_SOURCE
+    _run(con, "parquet-run", _PARQUET)
+    _run(con, "tsv-run", _TSV)
     # Parquet delivery (vendor thousands): AAPL 15,204,137 = 15.2B shares.
     _bar(con, source=th, run_id="parquet-run", security="AAPL", shares=15_204_137)
     _bar(con, source=th, run_id="parquet-run", security="MID", shares=17_644, close=20.0)
@@ -942,19 +958,28 @@ def test_ticker_history_thousands_runs_are_scaled_once_and_nothing_else_moves(tm
         (th, "tsv-run", "AAPL", 15_204_137_000, 15_204_137_000 * 250.0),
         (th, "tsv-run", "NVDA", 24_598_341_970, 24_598_341_970 * 120.0),
     ]
-    ledger = con.execute("""
-        SELECT run_id, rows_in_run, median_positive_value, decision_basis, loader_shares_unit,
-               decision, factor, rows_corrected
+    assert con.execute("""
+        SELECT run_id, rows_in_run, distinct_securities, source_format, format_unit, median_verdict,
+               decision_basis, decision, factor, rows_corrected
         FROM equity_bar_unit_corrections ORDER BY run_id
-    """).fetchall()
-    assert ledger == [
-        ("parquet-run", 3, 29_464.0, "median_rule", None, "scaled_thousands_to_shares", 1000.0, 3),
-        ("tsv-run", 2, pytest.approx(ledger[1][2]), "median_rule", None, "already_shares", 1.0, 0),
+    """).fetchall() == [
+        ("parquet-run", 3, 3, "parquet", "thousands", "either", "format_and_median",
+         "scaled_thousands_to_shares", 1000.0, 3),
+        ("tsv-run", 2, 2, "tsv", "units", "units", "format_and_median", "already_shares", 1.0, 0),
     ]
-    assert ledger[1][2] >= b0327.THOUSANDS_MEDIAN_CEILING
+    # The ledger refuses a row whose decision contradicts its evidence.
+    with pytest.raises(duckdb.ConstraintException):
+        con.execute("""
+            INSERT INTO equity_bar_unit_corrections (correction_id, table_name, source, run_id, column_name,
+                rows_in_run, distinct_securities, median_verdict, format_unit, decision_basis, decision,
+                factor, rows_corrected, recomputed_columns, rule, applied_by)
+            VALUES ('x', 'equity_daily_bars', 'tbltickerhistory3_10y', 'x', 'shares_outstanding', 1, 1,
+                'units', 'thousands', 'format_and_median', 'scaled_thousands_to_shares', 1000.0, 1, 'm', 'r', 't')
+        """)
 
     # Re-running never double-scales; a later thousands run is corrected on its own.
     _in_transaction(con, b0327._ticker_history_share_units)
+    _run(con, "late-parquet", _PARQUET)
     for security, shares in (("MSFT", 8_390_771), ("TINY", 17_000), ("MIDB", 25_000)):
         _bar(con, source=th, run_id="late-parquet", security=security, shares=shares, close=30.0)
     _in_transaction(con, b0327._ticker_history_share_units)
@@ -969,58 +994,72 @@ def test_ticker_history_thousands_runs_are_scaled_once_and_nothing_else_moves(tm
     assert con.execute("SELECT count(*) FROM equity_bar_unit_corrections").fetchone() == (3,)
 
 
-def _run(con, run_id, params_json):
-    con.execute(
-        "INSERT INTO dataset_runs (run_id, dataset_id, status, started_at, source, params_json) "
-        "VALUES (?, 'tbltickerhistory_daily', 'succeeded', TIMESTAMP '2026-09-24 00:00:00', ?, ?)",
-        [run_id, b0327.TICKER_HISTORY_SOURCE, params_json],
-    )
-
-
-def test_ticker_history_runs_recorded_by_the_unit_aware_loader_are_never_rescaled(tmp_store):
+@pytest.mark.parametrize(
+    ("params_json", "shares", "expected"),
+    [
+        # A8 loader (records shares_unit and a parquet path): stored shares, never rescaled, even
+        # though the parquet rule alone would say thousands.
+        pytest.param(json.dumps({"shares_unit": "thousands", "source_path": "C:\\d\\TickerHistory3.parquet"}),
+                     [450_000, 820_000, 610_000], ("none", "loader_params"), id="unit-aware-loader-run-kept"),
+        # rv-a9 probe (a): SEB 968K and a new ETF's 400K shares from the units ZIP; the old median
+        # rule scaled them to 968M shares and a $2.9T cap.
+        pytest.param(_ZIP, [968_000, 400_000], ("none", "format_and_median"), id="units-run-sub-1M-names-kept"),
+        # rv-a9 probe (b): AAPL and MSFT in parquet thousands; the old median rule left them 1000x small.
+        pytest.param(_PARQUET, [15_204_137, 7_433_982], ("scale_x1000", "format_and_median"),
+                     id="thousands-run-mega-caps-scaled"),
+        # A full-universe run (1,200 names stand in for it) with no format evidence: median decides.
+        pytest.param(None, 20_000, ("scale_x1000", "median_full_universe"), id="full-universe-no-evidence-median"),
+        # A units cross-section recorded as parquet: the path says thousands, the median says shares.
+        pytest.param(_PARQUET, 25_000_000, ("abort", "disagreement"), id="format-median-disagreement-raises"),
+        pytest.param("{not json", [15_204_137, 17_644, 29_464], ("abort", "no format evidence"),
+                     id="small-run-without-format-evidence-raises"),
+        pytest.param(_PARQUET, 1_000_000, ("abort", "ambiguous band"), id="ambiguous-median-band-raises"),
+    ],
+)
+def test_ticker_history_unit_needs_format_evidence_and_median_to_agree(
+    tmp_store, monkeypatch, params_json, shares, expected
+):
+    """I1: never scale a production run on a guess; every doubt aborts 0327 before any write."""
+    monkeypatch.setattr(b0327, "NO_EVIDENCE_MIN_ROWS", 1_000)
     con = tmp_store.con
-    con.execute("DROP TABLE IF EXISTS equity_bar_unit_corrections")
+    con.execute("DROP TABLE IF EXISTS equity_bar_unit_corrections")  # a pre-0327 warehouse state
     th = b0327.TICKER_HISTORY_SOURCE
-    # A8 loader run: stored shares already scaled from thousands; a micro-cap-only run
-    # has a median below the ceiling, so only the recorded unit keeps it from a 1000x error.
-    _run(con, "a8-run", json.dumps({"shares_unit": "thousands", "run_id": "a8-run"}))
-    for security, shares in (("MICRO1", 450_000), ("MICRO2", 820_000), ("MICRO3", 610_000)):
-        _bar(con, source=th, run_id="a8-run", security=security, shares=shares, close=2.0)
-    # Old-loader runs: params without shares_unit, or unparseable params, fall to the median rule.
-    _run(con, "old-run", json.dumps({"run_id": "old-run", "source": th}))
-    _run(con, "bad-json-run", "{not json")
-    for run_id in ("old-run", "bad-json-run"):
-        for security, shares in (("AAPL", 15_204_137), ("MID", 17_644), ("SMALL", 29_464)):
-            _bar(con, source=th, run_id=run_id, security=security, shares=shares)
+    if params_json is not None:
+        _run(con, "run", params_json)
+    if isinstance(shares, int):  # a cross-section: 1,200 securities at this share count
+        con.execute(
+            """
+            INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, "close", adjusted_close,
+                run_id, shares_outstanding, market_cap_usd)
+            SELECT ?, 'S' || i, 'S' || i, DATE '2025-01-02', 250.0, 250.0, 'run', ?, ? * 250.0 FROM range(1200) t(i)
+            """,
+            [th, shares, shares],
+        )
+    else:
+        for index, count in enumerate(shares):
+            _bar(con, source=th, run_id="run", security=f"S{index}", shares=count)
+    before = _bars(con)
+    action, detail = expected
 
+    # The read-only B0 inventory reports exactly what the migration then does.
+    [run] = b0327.ticker_history_unit_inventory(con)
+    assert (run["run_id"], run["action"]) == ("run", action)
+
+    if action == "abort":
+        assert detail in run["reason"]
+        with pytest.raises(RuntimeError, match=detail):
+            _in_transaction(con, b0327._ticker_history_share_units)
+        assert _bars(con) == before
+        return
     _in_transaction(con, b0327._ticker_history_share_units)
-
-    stored = con.execute(
-        "SELECT run_id, security_id, shares_outstanding FROM equity_daily_bars ORDER BY run_id, security_id"
-    ).fetchall()
-    assert stored == [
-        ("a8-run", "MICRO1", 450_000), ("a8-run", "MICRO2", 820_000), ("a8-run", "MICRO3", 610_000),
-        ("bad-json-run", "AAPL", 15_204_137_000), ("bad-json-run", "MID", 17_644_000),
-        ("bad-json-run", "SMALL", 29_464_000),
-        ("old-run", "AAPL", 15_204_137_000), ("old-run", "MID", 17_644_000), ("old-run", "SMALL", 29_464_000),
+    factor = 1000 if action == "scale_x1000" else 1
+    assert _bars(con) == [
+        (source, run_id, security, stored * factor, stored * factor * 250.0)
+        for source, run_id, security, stored, _ in before
     ]
-    assert con.execute("""
-        SELECT run_id, decision_basis, loader_shares_unit, decision, factor, rows_corrected
-        FROM equity_bar_unit_corrections ORDER BY run_id
-    """).fetchall() == [
-        ("a8-run", "loader_params", "thousands", "already_shares", 1.0, 0),
-        ("bad-json-run", "median_rule", None, "scaled_thousands_to_shares", 1000.0, 3),
-        ("old-run", "median_rule", None, "scaled_thousands_to_shares", 1000.0, 3),
-    ]
-    # The ledger refuses a loader_params row that claims a rescale.
-    with pytest.raises(duckdb.ConstraintException):
-        con.execute("""
-            INSERT INTO equity_bar_unit_corrections (correction_id, table_name, source, run_id, column_name,
-                rows_in_run, loader_shares_unit, decision_basis, decision, factor, rows_corrected,
-                recomputed_columns, rule, applied_by)
-            VALUES ('x', 'equity_daily_bars', 'tbltickerhistory3_10y', 'x', 'shares_outstanding', 1,
-                'thousands', 'loader_params', 'scaled_thousands_to_shares', 1000.0, 1, 'market_cap_usd', 'r', 't')
-        """)
+    assert con.execute(
+        "SELECT decision_basis, factor, rows_corrected FROM equity_bar_unit_corrections"
+    ).fetchall() == [(detail, float(factor), len(before) if factor == 1000 else 0)]
 
 
 # --------------------------------------------------------------------------- helpers
