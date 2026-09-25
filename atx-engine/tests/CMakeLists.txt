@@ -111,11 +111,17 @@ if(ATX_RISK_SECTOR_ASAN)
         DISCOVERY_TIMEOUT 60 PROPERTIES LABELS "risk_sector_asan")
 endif()
 
-# First configured group owns the shared PCH; the rest REUSE_FROM it so gtest+Eigen
-# are parsed exactly once across the whole suite. Compile flags are kept identical
-# across every group target (same include dirs) so the PCH is reuse-compatible — the
-# data group's extra dependency is link-only (miniz/zstd), which does not affect PCH.
-set(_atx_pch_owner "")
+# Minimal, stable PCH carriers avoid making one test executable a dependency of
+# every other group. Changing -Groups order must not change the PCH path.
+# Data needs its own compatible carrier: miniz adds a PUBLIC include directory,
+# contrary to the previous comment claiming that all group flags were identical.
+function(atx_engine_test_compile_environment target)
+    target_link_libraries(${target} PRIVATE
+        atx::engine GTest::gtest_main atx_warnings Threads::Threads)
+    target_include_directories(${target} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${_atx_core_tests_inc})
+endfunction()
 
 foreach(grp IN LISTS _atx_groups)
     if(NOT grp IN_LIST ATX_ALL_TEST_GROUPS)
@@ -140,34 +146,33 @@ foreach(grp IN LISTS _atx_groups)
     set(_tgt atx-engine-${grp}-tests)
     add_executable(${_tgt} ${_grp_sources})
 
-    target_link_libraries(${_tgt}
-        PRIVATE
-            atx::engine
-            GTest::gtest_main
-            atx_warnings
-            Threads::Threads
-            # FIX-3/F3-B: per-process temp root, on EVERY group (48 files in this
-            # suite build fixed-name scratch paths under the machine-wide temp dir and
-            # remove_all them on entry -- canonically store/store_db_test.cpp's
-            # tmp_dir()). Linked as an OBJECT library, so it is never folded into a
-            # group's UNITY_BUILD batch. See //tests/CMakeLists.txt.
-            atx-test-scratch)
+    atx_engine_test_compile_environment(${_tgt})
+    # FIX-3/F3-B: per-process scratch isolation belongs in executable consumers,
+    # never in a PCH carrier. Keep the OBJECT library on each executable link line.
+    target_link_libraries(${_tgt} PRIVATE atx-test-scratch)
 
     # tests root: "fixtures/..." is referenced relative to it (e.g. the alpha
     # kalman reference), so it must resolve from any group subdir.
     # atx-core/tests: dbn_fixture.hpp for the data group's databento e2e test.
-    # Added to every group target (uniform flags) to keep the shared PCH reusable.
-    target_include_directories(${_tgt} PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${_atx_core_tests_inc})
+    # The compile-environment helper gives each carrier these same include paths.
 
     if(ATX_USE_PCH)
-        if(_atx_pch_owner STREQUAL "")
-            target_precompile_headers(${_tgt} PRIVATE pch.hpp)
-            set(_atx_pch_owner ${_tgt})
+        if(grp STREQUAL "data")
+            set(_atx_pch_owner atx-engine-data-test-pch)
         else()
-            target_precompile_headers(${_tgt} REUSE_FROM ${_atx_pch_owner})
+            set(_atx_pch_owner atx-engine-test-pch)
         endif()
+        # Create only carriers with configured consumers, and only when PCH is
+        # enabled. A tracked empty TU avoids configure-time timestamp churn.
+        if(NOT TARGET ${_atx_pch_owner})
+            add_library(${_atx_pch_owner} OBJECT EXCLUDE_FROM_ALL pch.cpp)
+            atx_engine_test_compile_environment(${_atx_pch_owner})
+            if(grp STREQUAL "data")
+                target_link_libraries(${_atx_pch_owner} PRIVATE atx_miniz zstd::libzstd)
+            endif()
+            target_precompile_headers(${_atx_pch_owner} PRIVATE pch.hpp)
+        endif()
+        target_precompile_headers(${_tgt} REUSE_FROM ${_atx_pch_owner})
     endif()
 
     # The `parallel` group is opted OUT of Unity batching entirely: its test files
