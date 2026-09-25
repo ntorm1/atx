@@ -221,3 +221,30 @@ Verification (pool-5, `equity-dev`, `CMAKE_BUILD_PARALLEL_LEVEL=2`, 4.0 GB free 
   - `atx-engine-eval-tests.exe --gtest_brief=1`: 223 tests from 29 suites, PASSED, `eval_exit=0`. That is 222 plus the one new caps test.
   - `atx-engine-combine-tests.exe --gtest_brief=1`: 183 tests from 34 suites, PASSED, `combine_exit=0`.
 - No test was weakened, skipped or deleted. The two test edits only add assertions or a new test.
+
+## Post-merge sync
+
+Merged `feat/w0-integration` (`85242e69`, W0-O1's risk/QP-optimizer files plus workflow/report
+scaffolding) into `feat/w0-e0a` for the final orchestrator merge. Head before merge: `e365e0e0`.
+Merge commit: `2021523a` (`git merge --no-ff feat/w0-integration`).
+
+- No conflicts: the merge touched only `atx-engine/{include,src,tests}/risk/**`,
+  `atx-engine/bench/**`, `atx-engine/include/atx/engine/cost/**`, `CMakePresets.json`,
+  `atx-impl/tests/w0o1_*`, and `.superpowers/sdd/**` docs/workflow scaffolding — none of it
+  overlaps this lane's owned files (`eval/hac.hpp`, `eval/cross_section_ic.{hpp,cpp}`,
+  `combine/signal_combiner.cpp`, `combine/orthogonalize.cpp`, `combine/signal_store.hpp`).
+- Commands (pool-5, `equity-dev`, `CMAKE_BUILD_PARALLEL_LEVEL=2`, >=2 GB free RAM confirmed before
+  each build):
+  - `build atx-engine-eval-tests`: exit 0.
+  - `build atx-engine-combine-tests`: exit 0.
+  - Anchored `-Ctest -R`, all exit 0: `^EvalHac` 14/14, `^EvalIcCoverage` 3/3, `^EvalIcDelay` 6/6,
+    `^EvalIcCaps` 5/5, `^CombineHacTstat` 6/6, `^EvalCrossSectionIc` 63/63.
+  - Whole executables:
+    - `atx-engine-eval-tests.exe --gtest_brief=1`: 223 tests from 29 suites, PASSED, exit 0.
+      Identical count to the pre-merge run; frozen digests and print lines unchanged
+      (`W0E0A_FROZEN_DIGEST` / `W0E0A_DEFAULT_DIGEST` values match the golden table above).
+    - `atx-engine-combine-tests.exe --gtest_brief=1`: 183 tests from 34 suites, PASSED, exit 0.
+      Zoo OOS IR print unchanged (`FMB=0.3456 GK=0.3325`). The two `CHECK failed` lines
+      (`regime_combiner.cpp:24`, `correlation.hpp:78`) are the same pre-existing death tests noted
+      pre-merge.
+  - No test was weakened, skipped or deleted; no owned file needed a fix for the merged code.
