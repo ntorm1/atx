@@ -90,3 +90,31 @@ No blocker or major findings.
 - [x] No test weakened: the only pre-existing tests modified are the augment battery (split into Fast + Nightly superset, tolerance unchanged, body intact, Nightly passes) and the smoke test (stricter parsing; identity kvs checked as ids). No DISABLED_; the only new GTEST_SKIP is the brief-mandated Nightly gate.
 - [x] Numeric behaviour: no default changed; new behaviour is behind opt-in flags. No golden re-baseline ("none" is correct).
 - [x] Evidence in the report matches the claims (every whole-exe / ctest count reproduced by the reviewer).
+
+## Re-review 1
+
+Reviewer: fresh fix-only re-reviewer. Reviewed lane head `853d1dd9fda6966cb4a9e9195ee691e2e4a4cce9` (fix commit `853d1dd9` on top of review commit `0e0fb051`; previous review at `edc7724a`).
+
+**Verdict: APPROVE.** Both minors are fixed. There were no blockers or majors. The fix is a rename plus a comment (4 insertions, 1 deletion in `risk_qp_augment_test.cpp`) and report text. No product code changed. No test was weakened, skipped or deleted, and nothing regressed.
+
+| Finding | Status | Evidence |
+|---|---|---|
+| `risk_qp_augment_test.cpp:668` (minor): `DefaultEnvironmentSkipsNightly` only proves "unset means off" | **FIXED** | Renamed to `RiskNightlyGate_Env.UnsetSwitchesSkipNightly`. The body is byte-identical: all 3 `EXPECT_FALSE`s are kept. A 3-line comment (lines 668-670; 91/90/98 cols, within the 100-column limit) says what the test proves and cites the whole-exe / ctest Skipped line as the proof of the default-environment skip. A grep of the tree outside the build dirs finds no reference to the old name. The file is still CRLF with 0 bare LF. ctest `Test #450: RiskNightlyGate_Env.UnsetSwitchesSkipNightly ... Passed`. |
+| `lane-o1-report.md:47` (minor): acceptance 1a had no `ATX_NIGHTLY=1` run | **FIXED** | Acceptance row 1a now cites the switch-on run: "Nightly battery PASS, 1364 s Debug". Integration note 6, "W0 gate note: Nightly battery cost", records `ATX_NIGHTLY=1 ... --gtest_filter=RiskQpAugmentNightly.*` → PASS, 1364360 ms (about 23 min), Debug `equity-dev`, at `edc7724a`, and says the Nightly run must never be part of the default or fast gate. The run was not repeated, which is justified: the Nightly body and `kDiffTol` do not change between `edc7724a` and `853d1dd9` (the only test-file hunk is the rename and comment). |
+
+Re-verification by the re-reviewer (Debug `equity-dev`, `CMAKE_BUILD_PARALLEL_LEVEL=2`, 4.3 GB free before the build):
+```
+build -Preset equity-dev atx-engine-risk-tests
+  [9/10] Linking CXX executable bin\atx-engine-risk-tests.exe      exit=0
+atx-engine-risk-tests.exe --gtest_brief=1  (cwd build-equity\atx-engine\tests; ATX_NIGHTLY / ATX_RISK_NIGHTLY removed)
+  ..\atx-engine\tests\risk_qp_augment_test.cpp(528): Skipped
+  [==========] 451 tests from 59 test suites ran. (92255 ms total)
+  [  PASSED  ] 450 tests.
+  [  SKIPPED ] 1 test.                                              exit=0
+-Ctest -Preset equity-dev -R '^(RiskNightlyGate_|RiskQpAugment)'
+  100% tests passed, 0 tests failed out of 13
+  447 - RiskQpAugmentNightly.MatchesDenseOracleAcrossLargeBattery (Skipped)   exit=0
+```
+I did not re-run `atx-impl-tests`: the fix touches no file that it compiles. The fixer's own run after the fix (533 tests: 527 passed, 6 skipped, exit 0) is recorded in the report.
+
+New findings introduced by the fix: none.
