@@ -1,0 +1,76 @@
+{
+  "policy_version": "r4-qualification-v1",
+  "title": "Frozen qualification policy for standardized cross-sectional research metrics (R4)",
+  "frozen_on": "2026-09-25",
+  "authority": "controller R4 brief 2026-09-25 (amends plan-s2 section 8.3 R4); rulings RX1 (labeled bases) and RX7 (frozen before real data)",
+  "split": {
+    "split_version": "r4-split-v1",
+    "segments": [
+      {"name": "train", "start": "2000-01-01", "end": "2019-12-31"},
+      {"name": "validation", "start": "2020-01-01", "end": "2023-12-31"},
+      {"name": "holdout", "start": "2024-01-01", "end": "2026-12-31"}
+    ],
+    "embargo_months": 0,
+    "sha256": "b1271e3f38186897649ce8b327e4259e9df6934ec017d290d4708b994e286f26"
+  },
+  "primary": {
+    "horizon_months": 3,
+    "variant": "rank_normal",
+    "reported_horizons_months": [1, 6, 12],
+    "rationale": "3 months is the pre-registered medium horizon: with month-end formations from 2012 and a 2024 holdout the selection sample keeps >=120 IC observations and the holdout keeps an EWC df of 3; 6 and 12 months are reported (decay), never selected on"
+  },
+  "significance": {
+    "family": "rank_ic",
+    "inference": "ewc_fixed_b_z_equivalent",
+    "hlz_min_abs_z": 3.0,
+    "bh_max_q": 0.05,
+    "bh_min_abs_z": 2.0
+  },
+  "deflated_sharpe": {
+    "series": "ls_ew10",
+    "n_trials": "whole_family",
+    "min_z": 0.0,
+    "meaning": "gate: deflated excess Sharpe SR - E[max SR | n_trials, cross-trial variance] > 0, i.e. dsr_z > 0 (DSR probability > 0.5), with horizon_periods = h"
+  },
+  "coverage": {
+    "min_value_coverage": 0.6,
+    "min_formation_share": 0.9,
+    "min_observations": 120
+  },
+  "holdout": {
+    "slice_name": "holdout",
+    "min_signed_z": 1.5
+  },
+  "subperiods": {
+    "names": ["sub_2013_2016", "sub_2017_2020", "sub_2021_2025"],
+    "min_same_sign": 2
+  },
+  "size_buckets": {
+    "slice_kind": "size_bucket",
+    "venue_basis": "nyse_pit",
+    "buckets": ["small", "large"],
+    "min_formations": 36
+  },
+  "strict_evidence": {
+    "basis": "strict",
+    "non_strict_label_tokens": ["reconstruct", "unverified", "backcast"]
+  },
+  "reported": {
+    "neutral_variants": ["industry_neutral", "size_neutral"],
+    "neutral_min_abs_z": 2.0,
+    "decile_monotonicity_min": 0.7,
+    "net_cost_bps": 25,
+    "psr_benchmark_sharpe": 0.0
+  },
+  "statuses": [
+    "qualified_strict",
+    "qualified_reconstructed",
+    "candidate",
+    "not_significant",
+    "sign_reversed",
+    "unstable",
+    "insufficient_coverage",
+    "untestable_strict"
+  ],
+  "policy_sha256": "d33ac7044a5b67d656f37a4f9c0ef61afacc403b4e4ff65ae6eec595452f4f22"
+}
