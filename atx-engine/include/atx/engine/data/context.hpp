@@ -80,8 +80,8 @@ public:
          std::vector<atx::u16> adv_windows = {});
 
   // Move-only (owns move-only SignalAdmissions + a cached Panel). The move ops NULL the
-  // source's catalog_ borrow so a moved-from DataContext fails LOUDLY (nullptr deref)
-  // rather than silently aliasing the catalog — a moved-from DataContext must not be used.
+  // source's catalog_ borrow so a moved-from DataContext fails LOUDLY (every accessor
+  // returns Err) rather than silently aliasing the catalog — it must not be used.
   DataContext(DataContext &&other) noexcept;
   DataContext &operator=(DataContext &&other) noexcept;
   DataContext(const DataContext &) = delete;
@@ -110,6 +110,11 @@ public:
   // Builds + OWNS the SignalAdmission(s) for every Role::Signal dataset (ascending
   // name), returns a flat view of all candidates. The candidates' spans point into
   // the OWNED SignalAdmissions held in *this — valid while the DataContext lives.
+  // The candidates are realized as-of the FIRST call's `as_of` and cached; a later
+  // call with a different as_of returns Err(InvalidArgument) in every build type
+  // (D-08: an earlier as_of would otherwise see candidates realized over later
+  // data). The cache is not disturbed by the rejected call. Every accessor on a
+  // moved-from DataContext returns Err(InvalidArgument).
   [[nodiscard]] atx::core::Result<std::span<const library::AlphaCandidate>>
   signal_admit_candidates(const exec::ExecutionSimulator &sim,
                           const atx::engine::WeightPolicy &policy, atx::usize as_of);

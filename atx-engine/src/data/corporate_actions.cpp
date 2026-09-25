@@ -10,8 +10,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional> // std::greater
 #include <limits>
 #include <optional>
+#include <queue>
 #include <set>
 #include <span>
 #include <string>
@@ -250,13 +252,52 @@ struct Filing {
   atx::f64 shares{};
 };
 
-// PIT-correct one symbol's fundamentals. For each ascending date d:
+// True iff a cum_adj_factor can carry a share basis (finite and positive).
+[[nodiscard]] bool valid_basis_factor(atx::f64 f) noexcept { return std::isfinite(f) && f > 0.0; }
+
+// Shares of the filing carried by `src`, restated on the share basis of `dst`
+// (D-06 rebase): shares · f(dst) / f(src). Identical factors (the common case, no
+// split in between) and the row's own date need no restatement; differing factors
+// with an invalid side leave the basis unknown -> NaN.
+[[nodiscard]] atx::f64 rebased_shares(const RawRow &src, const RawRow &dst) noexcept {
+  if (src.date == dst.date || src.cum_adj_factor == dst.cum_adj_factor) {
+    return src.shares;
+  }
+  if (!valid_basis_factor(src.cum_adj_factor) || !valid_basis_factor(dst.cum_adj_factor)) {
+    return kNaN;
+  }
+  return src.shares * (dst.cum_adj_factor / src.cum_adj_factor);
+}
+
+// Sector forward-fill on the row date (metadata, not a forecast); shared by both
+// shares rules. Also copies the mechanical per-row facts.
+struct SectorFill {
+  atx::i32 last_gics = kNoSectorCode;
+  atx::i32 last_sic = kNoSectorCode;
+
+  void apply(const RawRow &r, atx::usize k, CorpActionColumns &out) noexcept {
+    out.dates[k] = r.date;
+    out.cum_adj_factor[k] = r.cum_adj_factor;
+    out.cash_dividend[k] = r.cash_dividend;
+    if (r.gics != kNoSectorCode) {
+      last_gics = r.gics;
+    }
+    if (r.sic != kNoSectorCode) {
+      last_sic = r.sic;
+    }
+    out.gics_sector_code[k] = last_gics;
+    out.sic_code[k] = last_sic;
+  }
+};
+
+// SharesPitRule::AsFiledV1 (legacy). For each ascending date d:
 //   * shares visible at d = shares of the filing with greatest filed_date <= d
-//     (the knowledge-date leak guard); NaN before the first filing.
+//     (the knowledge-date leak guard); NaN before the first filing. A tie on
+//     filed_date resolves to the LAST such row in row order, even one dated after d.
 //   * sector (gics/sic) is reference metadata joined on the row's own date
 //     (forward-filled) — not a forecast, no separate knowledge date exists.
 // Writes into the CorpActionColumns arrays already sized to this symbol's dates.
-void pit_fill_symbol(const std::vector<RawRow> &rows, CorpActionColumns &out) {
+void pit_fill_symbol_v1(const std::vector<RawRow> &rows, CorpActionColumns &out) {
   // Collect filings (distinct knowledge events), ascending by filed_date.
   std::vector<Filing> filings;
   for (const RawRow &r : rows) {
@@ -267,13 +308,10 @@ void pit_fill_symbol(const std::vector<RawRow> &rows, CorpActionColumns &out) {
   std::stable_sort(filings.begin(), filings.end(),
                    [](const Filing &a, const Filing &b) { return a.filed_date < b.filed_date; });
 
-  atx::i32 last_gics = kNoSectorCode;
-  atx::i32 last_sic = kNoSectorCode;
+  SectorFill sectors;
   for (atx::usize k = 0; k < rows.size(); ++k) {
     const RawRow &r = rows[k];
-    out.dates[k] = r.date;
-    out.cum_adj_factor[k] = r.cum_adj_factor;
-    out.cash_dividend[k] = r.cash_dividend;
+    sectors.apply(r, k, out);
 
     // As-of: greatest filed_date <= r.date (upper_bound then step back). The row's
     // OWN raw filed_date may be a FUTURE filing (the leak window) — we ignore it
@@ -289,16 +327,67 @@ void pit_fill_symbol(const std::vector<RawRow> &rows, CorpActionColumns &out) {
       out.shares_outstanding[k] = (it - 1)->shares;
       out.shares_filed_date[k] = (it - 1)->filed_date;
     }
+  }
+}
 
-    // Sector forward-fill on the row date (metadata, not a forecast).
-    if (r.gics != kNoSectorCode) {
-      last_gics = r.gics;
+// SharesPitRule::RebasedRowDatedV2 (default). At date d the resolving filing is the
+// greatest filed_date <= d among rows DATED <= d (ties -> the latest such row, then
+// the later row in input order), and its count is rebased to d's share basis.
+// Incremental: rows enter a pending min-heap (by filed_date) once their row date
+// is <= d and leave it for the eligible set once their filed_date is <= d; the
+// eligible set only grows, so the best filing is a running maximum. O(n log n).
+void pit_fill_symbol_v2(const std::vector<RawRow> &rows, CorpActionColumns &out) {
+  using Pending = std::pair<atx::i64, atx::usize>; // (filed_date, row index)
+  std::priority_queue<Pending, std::vector<Pending>, std::greater<>> pending;
+  std::optional<atx::usize> best;
+  const auto better = [&rows](atx::usize a, atx::usize b) noexcept {
+    if (rows[a].filed_date != rows[b].filed_date) {
+      return rows[a].filed_date > rows[b].filed_date;
     }
-    if (r.sic != kNoSectorCode) {
-      last_sic = r.sic;
+    if (rows[a].date != rows[b].date) {
+      return rows[a].date > rows[b].date;
     }
-    out.gics_sector_code[k] = last_gics;
-    out.sic_code[k] = last_sic;
+    return a > b;
+  };
+
+  SectorFill sectors;
+  atx::usize next_row = 0;
+  for (atx::usize k = 0; k < rows.size(); ++k) {
+    const RawRow &r = rows[k];
+    sectors.apply(r, k, out);
+    const atx::i64 d = r.date;
+    // Rows dated <= d become candidates (same-date rows after k included).
+    while (next_row < rows.size() && rows[next_row].date <= d) {
+      const RawRow &c = rows[next_row];
+      if (c.filed_date != kNoDate && !std::isnan(c.shares)) {
+        pending.emplace(c.filed_date, next_row);
+      }
+      ++next_row;
+    }
+    // Candidates whose filing is public by d become eligible.
+    while (!pending.empty() && pending.top().first <= d) {
+      const atx::usize idx = pending.top().second;
+      pending.pop();
+      if (!best.has_value() || better(idx, *best)) {
+        best = idx;
+      }
+    }
+    if (!best.has_value()) {
+      out.shares_outstanding[k] = kNaN;
+      out.shares_filed_date[k] = kNoDate;
+    } else {
+      out.shares_outstanding[k] = rebased_shares(rows[*best], r);
+      out.shares_filed_date[k] = rows[*best].filed_date;
+    }
+  }
+}
+
+void pit_fill_symbol(const std::vector<RawRow> &rows, CorpActionColumns &out,
+                     SharesPitRule rule) {
+  if (rule == SharesPitRule::AsFiledV1) {
+    pit_fill_symbol_v1(rows, out);
+  } else {
+    pit_fill_symbol_v2(rows, out);
   }
 }
 
@@ -401,12 +490,13 @@ void scatter_columns(const std::vector<DateKey> &dates,
 
 // Build the Dataset from grouped + currency-checked master columns. Shared by the
 // single-file and partitioned loaders.
-[[nodiscard]] Result<Dataset> assemble_dataset(GroupedRows &&g, const DatasetSchema &schema) {
+[[nodiscard]] Result<Dataset> assemble_dataset(GroupedRows &&g, const DatasetSchema &schema,
+                                        SharesPitRule shares_rule) {
   const atx::usize ni = g.symbols.size();
   std::vector<CorpActionColumns> per_symbol(ni);
   for (atx::usize i = 0; i < ni; ++i) {
     resize_corp_columns(per_symbol[i], g.per_symbol[i].size());
-    pit_fill_symbol(g.per_symbol[i], per_symbol[i]);
+    pit_fill_symbol(g.per_symbol[i], per_symbol[i], shares_rule);
   }
 
   const std::vector<DateKey> dates = union_dates(g);
@@ -427,6 +517,19 @@ void scatter_columns(const std::vector<DateKey> &dates,
 
 } // namespace
 
+AlignOptions corp_action_align_options(CorpAlignRule rule) {
+  AlignOptions options;
+  if (rule == CorpAlignRule::AsOfForwardFillV1) {
+    return options; // legacy: unlimited as-of on every column, no coverage guard
+  }
+  // Canonical column order: 0 cum_adj_factor, 1 cash_dividend, 2 shares,
+  // 3 shares_filed_date, 4 gics, 5 sic. Only the dividend is an event column.
+  options.column_rules.assign(kCorpActionColumnCount, AlignColumnRule{kCorpMaxStaleSessions});
+  options.column_rules[1] = AlignColumnRule{kAlignEventSession};
+  options.require_coverage = true;
+  return options;
+}
+
 DatasetSchema corp_action_schema(std::string region, std::string universe_tag) {
   DatasetSchema s;
   s.columns = {std::string{kColCumAdjFactor},      std::string{kColCashDividend},
@@ -442,7 +545,8 @@ DatasetSchema corp_action_schema(std::string region, std::string universe_tag) {
 }
 
 atx::core::Result<Dataset> load_security_master(std::string_view master_parquet_path,
-                                                const DatasetSchema &schema) {
+                                                const DatasetSchema &schema,
+                                                SharesPitRule shares_rule) {
   if (auto v = validate_schema(schema); !v.has_value()) {
     return Err(v.error());
   }
@@ -460,12 +564,12 @@ atx::core::Result<Dataset> load_security_master(std::string_view master_parquet_
     return Err(usd.error());
   }
   GroupedRows g = group_by_symbol(cols.value());
-  return assemble_dataset(std::move(g), schema);
+  return assemble_dataset(std::move(g), schema, shares_rule);
 }
 
 atx::core::Result<Dataset>
 load_security_master_partitioned(std::string_view root_dir, std::span<const std::string> symbols,
-                                 const DatasetSchema &schema) {
+                                 const DatasetSchema &schema, SharesPitRule shares_rule) {
   if (auto v = validate_schema(schema); !v.has_value()) {
     return Err(v.error());
   }
@@ -504,7 +608,7 @@ load_security_master_partitioned(std::string_view root_dir, std::span<const std:
       g.per_symbol[it->second] = std::move(all.per_symbol[s]);
     }
   }
-  return assemble_dataset(std::move(g), schema);
+  return assemble_dataset(std::move(g), schema, shares_rule);
 }
 
 atx::core::Result<CorpActionColumns> extract_symbol(const Dataset &corp_actions, InstKey inst) {

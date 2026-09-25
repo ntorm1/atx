@@ -346,8 +346,9 @@ TEST(DataUniverse, IntegralSectorBoundsAndGicsPreferenceArePreserved) {
 // ---------------------------------------------------------------------------
 TEST(DataUniverse, MembershipExcludesNanPriceCells) {
   // Two instruments, one date, both PRESENT (empty universe == all in). Inst 0 has
-  // a valid close; inst 1 has a NaN close. NaN close -> NaN market_cap -> the cap
-  // floor (>= 0) is FALSE for NaN, so inst 1 is excluded even though present.
+  // a valid close; inst 1 has a NaN close. A cell with no traded price is never a
+  // member (W0-D0 D-09: a disabled cap floor no longer fails a NaN cap, so the
+  // exclusion now comes from the traded-price test, not from `NaN >= 0`).
   const atx::usize ni = 2;
   const std::vector<atx::f64> close = {100.0, kNaN};
   const std::vector<atx::f64> vol = {1000.0, 1000.0};
@@ -357,7 +358,7 @@ TEST(DataUniverse, MembershipExcludesNanPriceCells) {
   UniverseConfig cfg;
   cfg.adv_window = 1;
   cfg.min_adv_usd = 0.0;    // no liquidity floor -> isolate the NaN-price effect
-  cfg.min_mktcap_usd = 0.0; // floor 0; NaN cap still fails (NaN >= 0 is false)
+  cfg.min_mktcap_usd = 0.0; // floor 0: disabled
 
   const auto r = build_universe(p, corp, cfg);
   ASSERT_TRUE(r.has_value()) << (r.has_value() ? "" : r.error().to_string());
