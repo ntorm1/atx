@@ -75,22 +75,30 @@ conflict, the currency guard). The row is then ``invalid_current_state``. An
 older revision's value is never revived under the newer revision's clock:
 DuckDB's ``arg_max`` skips NULL arguments, so every pick uses ``arg_max_null``.
 The same rule applies to ``shares_source``, the fundamental clock, the trailing
-dollar volume of the primary-line rule and turnover's share count. Bars are
-different: the rows of one bar session are vendors, not revisions, and are
-deduped exactly as market_daily dedupes them (each column from the newest vendor
-row that has it).
+dollar volume of the primary-line rule and turnover's share count. Bars follow
+market_daily's one bar rule (``market_daily._bars_by_session_sql``): the rows of
+one ``(security_id, trade_date)`` are ranked by ``(available_at, source)`` and
+every column comes from the newest row visible at the cutoff, a NULL included
+(``arg_max_null``); the price is checked after the pick, so a session whose newest
+row has no positive close and adjusted close has no price (never an older row's).
 
-Price/liquidity natives (P2). Identity-free (``price_line``) for every eligible
-line: ``amihud_illiquidity_21d``, ``pct_from_high_252d``, ``max_daily_return_21d``
-and ``downside_deviation_60d``. ``turnover_21d`` is owner-scoped (volume over the
-issuer's verified DEI share count; ``unverified_shares`` with NULL otherwise, and
-``split_in_price_window`` when a split falls inside its 21 bars).
-They are computed from the line's own bars in the 400 days before the session,
-with row windows as ``equity_price_metrics`` defines them; only bars whose clock
-is at or before the cutoff are read. Where ``equity_price_metrics`` holds a
-feature's column with values, the run reads that column instead (one source per
-feature per run, recorded in the definitions). A window without the bars it needs
-is ``incomplete_price_window``.
+Price/liquidity natives (P2, fix round 1). Identity-free (``price_line``) for
+every eligible line: ``amihud_illiquidity_21d``, ``pct_from_high_252d``,
+``max_daily_return_21d`` and ``downside_deviation_60d``. ``turnover_21d`` is
+owner-scoped (volume over the issuer's verified DEI share count). They are
+computed from the line's own bars only (never ``equity_price_metrics``, whose
+row-count windows are another definition), on the XNYS session calendar: a
+window is the last N rule sessions ending at the formation session, a line
+*observes* a session when it has a valid-price bar on it, and a daily return
+exists only between two consecutive sessions both observed. A line whose history
+does not reach the window's first session (for returns, the session before it)
+is ``insufficient_history``; one observing fewer than ``MIN_OBSERVED_SHARE`` of
+the window's sessions (returns) is ``window_gaps``; Amihud averages
+positive-volume days and is ``zero_volume_in_window`` below that share. Turnover
+is NULL with ``unverified_shares`` (a vendor count), the A8 withheld label (a
+withheld count) or ``split_in_price_window`` (an exact split or stock-dividend
+ratio by R1d's classifier inside its window). Only bars whose clock is at or
+before the cutoff are read.
 
 One formation (public). :func:`stage_formation` and :func:`formation_batches`
 run this builder for a single (session, cutoff) and yield per-batch values and
@@ -118,12 +126,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .. import _split_epochs
 from .. import derived_lineage as _derived_lineage
 from .. import fundamental_signal_research as fsr
 from .. import market_owner_bridge as _market_owner_bridge
 from .._fundamental_clock import FUNDAMENTAL_CLOCK_POLICY
 from ..derived_registry import DERIVED_SOURCE_NAME
-from ..market_daily import MARKET_DAILY_SOURCE_NAME, MARKET_DAILY_STRICT_SOURCE_NAME
+from ..market_daily import MARKET_DAILY_SOURCE_NAME, MARKET_DAILY_STRICT_SOURCE_NAME, SHARES_SOURCES_WITHHELD
 from ..universe_us_listed import UNIVERSE_SOURCE_NAME
 from . import catalog as _catalog
 from . import lineage as _lineage
@@ -132,9 +141,10 @@ from .store import ResearchStore
 
 # v4 (R2e): the newest visible market revision wins even when NULL. Pre-v4 runs can
 # carry an older revision's value under a newer clock; the validator refuses them.
-# v5 (P2): price/liquidity natives; line_market_cap reads bars with market_daily's
-# vendor rule (R2e m2). Existing features' value digests are unchanged.
-QUERY_VERSION = "research-monthly-pit-panel-v5"
+# v5 (P2): price/liquidity natives. Existing features' value digests are unchanged.
+# v6 (P2 fix round 1): the natives' windows are XNYS session windows over bars read
+# with market_daily's one bar rule (arg_max_null); equity_price_metrics is never read.
+QUERY_VERSION = "research-monthly-pit-panel-v6"
 MARKET_REVISION_RULE = ("newest market_daily revision visible at the cutoff wins per column, "
                         "a NULL included (arg_max_null)")
 BASIS_STRICT = "strict"
@@ -174,21 +184,29 @@ SIZE_VERIFIED = "verified_dei_shares"
 LINE_SHARES_SOURCE = "equity_daily_bars_vendor"
 # P2 price/liquidity natives: where they read from, and their reasons.
 BARS_SOURCE = "equity_daily_bars"
-PRICE_METRICS_SOURCE = "equity_price_metrics"
-#: ``equity_price_metrics.DEFAULT_SOURCE`` (not imported: that module loads the as-of layer).
-PRICE_METRICS_SOURCE_NAME = "derived_equity_price_metrics_v1"
-#: Calendar days of bars read per formation: 252 sessions plus holidays, with slack.
+#: Calendar days of bars read per formation: 252 XNYS sessions plus holidays, with slack.
 PRICE_LOOKBACK_DAYS = 400
-PRICE_WINDOW_BARS = 252
+PRICE_WINDOW_SESSIONS = 252
 AMIHUD_SCALE = 1e9
-INCOMPLETE_WINDOW_REASON = "incomplete_price_window"
+#: The declared minimum share of a window's sessions (daily returns for the return
+#: windows) a line must observe; below it the value is NULL with ``window_gaps``.
+MIN_OBSERVED_SHARE = 0.9
+INSUFFICIENT_HISTORY_REASON = "insufficient_history"
+WINDOW_GAPS_REASON = "window_gaps"
+ZERO_VOLUME_REASON = "zero_volume_in_window"
 UNVERIFIED_SHARES_REASON = "unverified_shares"
-#: Turnover divides 21 bars of volume by today's share count: a split inside the window
-#: mixes share bases. The back-adjustment factor close/adj of the window's bars then
-#: moves by the split ratio (a 5:4 split or more); ordinary dividends move it by about
-#: the yield. Such a window is NULL with this reason.
+#: Turnover divides 21 sessions of volume by today's share count: a split or stock
+#: dividend inside the window mixes share bases. A step of the vendor factor
+#: adj/close between two consecutive observed bars of the window that R1d's classifier
+#: calls an exact ratio (``_split_epochs``: at least a 5 % step; a whole number of
+#: half-percent steps inside [0.8, 1.25], else p/q with q <= 10) makes the window NULL
+#: with this reason. Share evidence is not waited for (it arrives after the cutoff),
+#: so a cash distribution that happens to match an exact ratio also fails closed.
 SPLIT_WINDOW_REASON = "split_in_price_window"
-SPLIT_RATIO_LIMIT = 1.25
+
+
+def _min_observed(sessions: int) -> int:
+    return math.ceil(MIN_OBSERVED_SHARE * sessions - 1e-9)
 #: P11 hook (not assigned yet): an owner whose statements are IFRS (20-F/40-F) and not
 #: standardized will carry this reason on owner (derived) features instead of
 #: ``missing_metric_state``. See ``_derived_formations``.
@@ -196,9 +214,11 @@ IFRS_REPORTER_REASON = "ifrs_reporter_not_standardized"
 # Panel-native features (not warehouse metrics). ``scope``: price_line (every
 # eligible line) or owner (the issuer's primary line); ``size``: the value reads a
 # share count, so rows carry ``shares_source``/``size_status``; ``requires`` names
-# the option that must be set to compute one. P2 natives use the line's own bars
-# (``window_bars``: the bars the window needs), or the ``equity_price_metrics``
-# column of the same definition when the warehouse has it with values.
+# the option that must be set to compute one. P2 natives use the line's own bars on
+# the XNYS session calendar: ``window_sessions`` rule sessions ending at the
+# formation session, ``min_history_sessions`` sessions of history (the window, plus
+# the session before it for daily returns) and ``min_observed`` observed sessions
+# (daily returns for the return windows).
 NATIVE_FEATURES: dict[str, dict[str, Any]] = {
     "line_market_cap": {
         "metric_window": MARKET_WINDOW,
@@ -213,69 +233,80 @@ NATIVE_FEATURES: dict[str, dict[str, Any]] = {
     },
     "amihud_illiquidity_21d": {
         "metric_window": MARKET_WINDOW,
-        "expression": "1e9 * mean(|r_t| / (close_t * volume_t)) over the last 21 bars; all 21 required",
+        "expression": "1e9 * mean(|r_t| / (close_t * volume_t)) over the daily returns of the last 21 XNYS sessions "
+                      "with positive volume; >= 19 such days required",
         "inputs": ["equity_daily_bars.adjusted_close", "equity_daily_bars.close", "equity_daily_bars.volume"],
-        "version": "1",
+        "version": "2",
         "unit_basis": "abs_return_per_1e9_dollars_traded",
         "reference": "Amihud (2002)",
         "scope": SCOPE_PRICE_LINE,
         "size": False,
-        "window_bars": 22,
-        "price_metrics_column": "amihud_illiquidity_21d",
+        "window_sessions": 21,
+        "min_history_sessions": 22,
+        "min_observed": _min_observed(21),
     },
     "pct_from_high_252d": {
         "metric_window": MARKET_WINDOW,
-        "expression": "adj_t / max(adj over the last 252 bars) - 1",
+        "expression": "adj_t / max(adj over the observed sessions of the last 252 XNYS sessions) - 1",
         "inputs": ["equity_daily_bars.adjusted_close"],
-        "version": "1",
+        "version": "2",
         "unit_basis": "fraction",
         "reference": "George and Hwang (2004)",
         "scope": SCOPE_PRICE_LINE,
         "size": False,
-        "window_bars": 1,
-        "price_metrics_column": "pct_from_high_252d",
+        "window_sessions": PRICE_WINDOW_SESSIONS,
+        "min_history_sessions": PRICE_WINDOW_SESSIONS,
+        "min_observed": _min_observed(PRICE_WINDOW_SESSIONS),
     },
     "max_daily_return_21d": {
         "metric_window": MARKET_WINDOW,
-        "expression": "max(r_t) over the last 21 bars; all 21 returns required",
+        "expression": "max(r_t) over the daily returns of the last 21 XNYS sessions; >= 19 returns required",
         "inputs": ["equity_daily_bars.adjusted_close"],
-        "version": "1",
+        "version": "2",
         "unit_basis": "fraction",
         "reference": "Bali, Cakici and Whitelaw (2011)",
         "scope": SCOPE_PRICE_LINE,
         "size": False,
-        "window_bars": 22,
+        "window_sessions": 21,
+        "min_history_sessions": 22,
+        "min_observed": _min_observed(21),
     },
     "downside_deviation_60d": {
         "metric_window": MARKET_WINDOW,
-        "expression": "sqrt(252 * mean(min(r_t, 0)^2)) over the last 60 bars; all 60 returns required",
+        "expression": "sqrt(252 * mean(min(r_t, 0)^2)) over the daily returns of the last 60 XNYS sessions; "
+                      ">= 54 returns required (zero-target semideviation, LPM2)",
         "inputs": ["equity_daily_bars.adjusted_close"],
-        "version": "1",
+        "version": "2",
         "unit_basis": "annualized_fraction",
-        "reference": "Ang, Chen and Xing (2006)",
+        "reference": "published analogue: downside risk of Ang, Chen and Xing (2006), who price downside beta; "
+                     "this is the Sortino zero-target semideviation",
         "scope": SCOPE_PRICE_LINE,
         "size": False,
-        "window_bars": 61,
-        "price_metrics_column": "downside_deviation_60d",
+        "window_sessions": 60,
+        "min_history_sessions": 61,
+        "min_observed": _min_observed(60),
     },
     "turnover_21d": {
         "metric_window": MARKET_WINDOW,
-        "expression": "mean(volume over the last 21 bars) / verified (DEI) shares outstanding; all 21 required; "
-                      "NULL when close/adj moves by more than 25% in the window (a split)",
-        "inputs": ["equity_daily_bars.volume", "market_daily_metrics.shares_outstanding",
-                   "market_daily_metrics.shares_source"],
-        "version": "1",
+        "expression": "mean(volume over the observed sessions of the last 21 XNYS sessions) / verified (DEI) "
+                      "shares outstanding; >= 19 sessions required; NULL when an exact split or stock-dividend "
+                      "ratio (R1d classifier) lies inside the window",
+        "inputs": ["equity_daily_bars.volume", "equity_daily_bars.close", "equity_daily_bars.adjusted_close",
+                   "market_daily_metrics.shares_outstanding", "market_daily_metrics.shares_source"],
+        "version": "2",
         "unit_basis": "fraction_of_shares_per_day",
         "reference": "Datar, Naik and Radcliffe (1998)",
         # Owner scope: the denominator is the issuer's DEI count (the panel's rule for
         # share inputs); only a single-class line carries shares_source='dei'.
         "scope": SCOPE_OWNER,
         "size": True,
-        "window_bars": 21,
+        "window_sessions": 21,
+        "min_history_sessions": 21,
+        "min_observed": _min_observed(21),
     },
 }
 #: The natives computed from the P2 bar window (every native but line_market_cap).
-PRICE_WINDOW_FEATURES = frozenset(code for code, spec in NATIVE_FEATURES.items() if "window_bars" in spec)
+PRICE_WINDOW_FEATURES = frozenset(code for code, spec in NATIVE_FEATURES.items() if "window_sessions" in spec)
 #: Seed-metric roles (catalog ``EXCLUDED_SEED_METRICS`` reasons) the panel never carries as
 #: research features: ``presence_indicator`` is a 0/1 building block of an ever-reported
 #: missing-is-not-zero rule (catalog round 2), not a characteristic.
@@ -312,7 +343,7 @@ NYSE_SPECIAL_CLOSURES = frozenset({
 # Every module whose semantics a run's rows depend on: a change between a
 # failed run and its resume refuses the resume.
 _CODE_FILES = (*(Path(str(module.__file__)) for module in (
-    fsr, _derived_lineage, _lineage, _market_owner_bridge, _store)), Path(__file__))
+    fsr, _derived_lineage, _lineage, _market_owner_bridge, _store, _split_epochs)), Path(__file__))
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +462,17 @@ def expected_month_end_session(year: int, month: int) -> dt.date:
     while day.weekday() >= 5 or day in closures:
         day -= dt.timedelta(days=1)
     return day
+
+
+def xnys_sessions(first: dt.date, last: dt.date) -> list[dt.date]:
+    """The XNYS rule sessions in ``[first, last]`` (weekdays that are not full-day closures)."""
+    closures: dict[int, frozenset[dt.date]] = {}
+    days, day = [], first
+    while day <= last:
+        if day.weekday() < 5 and day not in closures.setdefault(day.year, nyse_full_day_closures(day.year)):
+            days.append(day)
+        day += dt.timedelta(days=1)
+    return days
 
 
 @dataclass(frozen=True)
@@ -785,7 +827,6 @@ def _require_inputs(store: ResearchStore, basis: str, features: tuple[PanelFeatu
     if any(f.metric_code == "line_market_cap" for f in features):
         columns += [("equity_daily_bars", c) for c in ("close", "adjusted_close", "shares_outstanding")]
     if any(f.metric_code in PRICE_WINDOW_FEATURES for f in features):
-        # The bar window is always available as the fallback source.
         columns += [("equity_daily_bars", c) for c in ("trade_date", "close", "adjusted_close", "volume",
                                                        "available_at", "source")]
     if any(f.metric_code == "turnover_21d" for f in features):
@@ -905,29 +946,14 @@ def _code_sha() -> str:
 
 
 def _native_sources(store: ResearchStore, features: Iterable[PanelFeature]) -> dict[str, str]:
-    """Where each P2 native reads from in this run: one source per feature per run.
+    """Where each P2 native reads from in this run (recorded in the definitions): the line's own bars.
 
-    ``equity_price_metrics`` (source ``derived_equity_price_metrics_v1``) when the
-    warehouse has the feature's column *with values* (the same row-window definition,
-    precomputed); otherwise the line's own bars. The table can exist with its columns
-    and no rows, and "column exists" alone would then drop every value. The choice is
-    recorded in the run's definitions, so a resume after it changes is refused.
+    ``equity_price_metrics`` is never read (P2 fix round 1, I-1): its windows count
+    rows, not XNYS sessions, and its clock is a market-wide running max, so none of
+    its columns is the same feature under the same clock.
     """
-    sources: dict[str, str] = {}
-    for feature in features:
-        spec = NATIVE_FEATURES.get(feature.metric_code, {})
-        if feature.metric_code not in PRICE_WINDOW_FEATURES:
-            continue
-        column = spec.get("price_metrics_column")
-        populated = False
-        if column and all(store.warehouse_has("equity_price_metrics", c) for c in (
-                column, "source", "trade_date", "as_of_date", "available_at", "metric_id")):
-            populated = bool(store.con.execute(f"""
-                SELECT count(*) FROM (SELECT 1 FROM equity_price_metrics
-                                      WHERE source=? AND "{column}" IS NOT NULL LIMIT 1)
-            """, [PRICE_METRICS_SOURCE_NAME]).fetchone()[0])
-        sources[feature.metric_code] = PRICE_METRICS_SOURCE if populated else BARS_SOURCE
-    return sources
+    del store
+    return {f.metric_code: BARS_SOURCE for f in features if f.metric_code in PRICE_WINDOW_FEATURES}
 
 
 def _definitions(con: Any, features: tuple[PanelFeature, ...], native_sources: dict[str, str] | None = None,
@@ -1413,97 +1439,141 @@ def _derived_formations(store: ResearchStore, run_id: str, batch: _Batch, spec: 
 _BAR_CLOCK_SQL = f"greatest(b.available_at, CAST(b.trade_date AS TIMESTAMP) + INTERVAL {DECISION_HOUR} HOUR)"
 
 
+#: Why a session has no price: its newest visible bar row has no positive, finite
+#: close and adjusted close (market_daily's A8 label for the same bar).
+BAR_PRICE_INVALID_REASON = "bar_price_invalid"
+
+
+def _split_step_sql(k: str) -> str:
+    """Whether the vendor-factor step ``k`` is an exact split or stock-dividend ratio (R1d's classifier)."""
+    return (f"(abs({k} - 1) >= {_split_epochs.STOCK_DIVIDEND_MIN_STEP!r} AND CASE WHEN {k} BETWEEN "
+            f"{_split_epochs.SPLIT_MIN_RATIO!r} AND {_split_epochs.SPLIT_MAX_RATIO!r} "
+            f"THEN {_split_epochs._stock_dividend_sql(k)} ELSE {_split_epochs._simple_sql(k)} END)")
+
+
 def _stage_price_window(con: Any, row: CalendarRow) -> None:
-    """``_rp_price_window``: per eligible line, the P2 aggregates over its last 252 bars.
+    """``_rp_price_window``: per eligible line with a bar on the session, its P2 window aggregates.
 
-    A bar is one session of the line's positive-price vendor rows whose clock
-    (``greatest(available_at, trade_date 22:00)``) is at or before the cutoff,
-    deduped like market_daily dedupes a bar (each column from the newest
-    ``(available_at, source)`` row that has it). Only bars dated in the
-    ``PRICE_LOOKBACK_DAYS`` before the session are read, so no input is dated
-    after the session or knowable only after the cutoff.
+    Bars follow market_daily's one bar rule: the rows of one ``(security_id,
+    trade_date)`` whose clock (``greatest(available_at, trade_date 22:00)``) is at or
+    before the cutoff are ranked by ``(available_at, source)``, and every column comes
+    from the newest one, a NULL included (``arg_max_null``). The price is checked
+    after the pick: a session whose picked close or adjusted close is not positive
+    and finite is not observed (and at the formation session it is
+    ``bar_price_invalid``). Only bars dated in the ``PRICE_LOOKBACK_DAYS`` before the
+    session are read, so no input is dated after the session or knowable only after
+    the cutoff; the scan is bounded by the formation (eligible lines x lookback).
 
-    Windows count bars (rows), as ``equity_price_metrics`` does. Returns are
-    ``adj_t / adj_(t-1) - 1`` of consecutive bars; the first bar read has none.
-    ``back`` = 1 is the latest bar; a line whose latest bar is not the formation
-    session gets no value (``missing_market_row``). The scan is bounded by the
-    formation (eligible lines x lookback), never the whole bar history.
+    Windows are XNYS rule sessions (``_rp_xnys``: ``back`` = 1 is the formation
+    session). ``history_sessions`` is the ``back`` of the line's earliest observed
+    session read. A daily return ``adj_t / adj_(t-1) - 1`` exists only when the
+    line observed both ``t`` and the session right before it (``back + 1``); a
+    return across a gap is not daily and is not used. ``split_21`` is a vendor-factor
+    step (``(adj/close)_t / (adj/close)_(t-1)`` between consecutive observed bars of
+    the 21-session window) that R1d's classifier calls an exact ratio.
     """
     first = row.formation_date - dt.timedelta(days=PRICE_LOOKBACK_DAYS)
+    sessions = sorted({*xnys_sessions(first, row.formation_date), row.formation_date}, reverse=True)
+    con.execute("CREATE OR REPLACE TEMP TABLE _rp_xnys (session DATE, back INTEGER)")
+    con.executemany("INSERT INTO _rp_xnys VALUES (?, ?)", [[day, back] for back, day in enumerate(sessions, 1)])
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _rp_price_window AS
-        WITH bars AS (
+        WITH picked AS (
           SELECT b.security_id, b.trade_date,
-                 CAST(arg_max(b.close, (b.available_at, b.source)) AS DOUBLE) AS close,
-                 CAST(arg_max(b.adjusted_close, (b.available_at, b.source)) AS DOUBLE) AS adj,
-                 CAST(arg_max(b.volume, (b.available_at, b.source)) AS DOUBLE) AS volume,
+                 CAST(arg_max_null(b.close, (b.available_at, b.source)) AS DOUBLE) AS close,
+                 CAST(arg_max_null(b.adjusted_close, (b.available_at, b.source)) AS DOUBLE) AS adj,
+                 CAST(arg_max_null(b.volume, (b.available_at, b.source)) AS DOUBLE) AS volume,
                  max({_BAR_CLOCK_SQL}) AS bar_at
           FROM equity_daily_bars b
           SEMI JOIN (SELECT security_id FROM _rp_cohort_all WHERE decision_date=? AND eligible) k
             ON k.security_id=b.security_id
-          WHERE b.trade_date BETWEEN ? AND ? AND b.close>0 AND b.adjusted_close>0
-            AND isfinite(b.close) AND isfinite(b.adjusted_close) AND {_BAR_CLOCK_SQL}<=?
+          WHERE b.trade_date BETWEEN ? AND ? AND {_BAR_CLOCK_SQL}<=?
           GROUP BY b.security_id, b.trade_date
+        ), obs AS (
+          SELECT p.security_id, x.back, p.close, p.adj, p.volume, p.bar_at
+          FROM picked p JOIN _rp_xnys x ON x.session=p.trade_date
+          WHERE p.close>0 AND p.adj>0 AND isfinite(p.close) AND isfinite(p.adj)
         ), seq AS (
-          SELECT *, lag(adj) OVER w AS prior_adj,
-                 count(*) OVER (PARTITION BY security_id) - row_number() OVER w + 1 AS back
-          FROM bars WINDOW w AS (PARTITION BY security_id ORDER BY trade_date)
+          SELECT *, lag(back) OVER w AS prior_back, lag(adj) OVER w AS prior_adj, lag(close) OVER w AS prior_close
+          FROM obs WINDOW w AS (PARTITION BY security_id ORDER BY back DESC)
         ), r AS (
-          SELECT security_id, trade_date, adj, volume, bar_at, back, adj / prior_adj - 1.0 AS ret,
-                 CASE WHEN close * volume > 0 THEN abs(adj / prior_adj - 1.0) / (close * volume) END AS illiq,
-                 close / adj AS basis
-          FROM seq WHERE back <= {PRICE_WINDOW_BARS}
+          SELECT security_id, back, close, adj, volume, bar_at, prior_back,
+                 CASE WHEN prior_back = back + 1 THEN adj / prior_adj - 1.0 END AS ret,
+                 (adj / close) / (prior_adj / prior_close) AS step_k
+          FROM seq
+        ), line AS (
+          SELECT security_id, max(back) AS history_sessions,
+                 max(bar_at) FILTER (WHERE back <= {PRICE_WINDOW_SESSIONS}) AS available_at,
+                 max(adj) FILTER (WHERE back = 1) AS adj_last,
+                 max(adj) FILTER (WHERE back <= {PRICE_WINDOW_SESSIONS}) AS high_252,
+                 count(*) FILTER (WHERE back <= {PRICE_WINDOW_SESSIONS}) AS n_obs_252,
+                 count(ret) FILTER (WHERE back <= 21) AS n_ret_21, max(ret) FILTER (WHERE back <= 21) AS max_ret_21,
+                 count(ret) FILTER (WHERE back <= 21 AND volume IS NOT NULL) AS n_ret_vol_21,
+                 count(ret) FILTER (WHERE back <= 21 AND volume > 0) AS n_illiq_21,
+                 avg(abs(ret) / (close * volume)) FILTER (WHERE back <= 21 AND volume > 0) AS illiq_21,
+                 count(ret) FILTER (WHERE back <= 60) AS n_ret_60,
+                 avg(power(least(ret, 0.0), 2)) FILTER (WHERE back <= 60) AS down_sq_60,
+                 count(volume) FILTER (WHERE back <= 21) AS n_vol_21,
+                 avg(volume) FILTER (WHERE back <= 21) AS volume_21,
+                 coalesce(bool_or({_split_step_sql('step_k')}) FILTER (WHERE back <= 21 AND prior_back <= 21),
+                          false) AS split_21
+          FROM r GROUP BY security_id
         )
-        SELECT security_id, max(trade_date) AS last_date, max(bar_at) AS available_at,
-               max(adj) FILTER (WHERE back = 1) AS adj_last, max(adj) AS high_252,
-               count(ret) FILTER (WHERE back <= 21) AS n_ret_21, max(ret) FILTER (WHERE back <= 21) AS max_ret_21,
-               count(illiq) FILTER (WHERE back <= 21) AS n_illiq_21,
-               avg(illiq) FILTER (WHERE back <= 21) AS illiq_21,
-               count(ret) FILTER (WHERE back <= 60) AS n_ret_60,
-               avg(power(least(ret, 0.0), 2)) FILTER (WHERE back <= 60) AS down_sq_60,
-               count(volume) FILTER (WHERE back <= 21) AS n_vol_21,
-               avg(volume) FILTER (WHERE back <= 21) AS volume_21,
-               max(basis) FILTER (WHERE back <= 21) / min(basis) FILTER (WHERE back <= 21) AS basis_move_21
-        FROM r GROUP BY security_id
-    """, [row.formation_date, first, row.formation_date, row.cutoff])
+        SELECT p.security_id, coalesce(l.available_at, p.bar_at) AS available_at,
+               NOT coalesce(p.close>0 AND p.adj>0 AND isfinite(p.close) AND isfinite(p.adj), false) AS price_invalid,
+               l.* EXCLUDE (security_id, available_at)
+        FROM picked p LEFT JOIN line l ON l.security_id=p.security_id
+        WHERE p.trade_date=?
+    """, [row.formation_date, first, row.formation_date, row.cutoff, row.formation_date])
+
+
+def _window_gate_sql(code: str, count_column: str, prefix: str = "") -> str:
+    """The ``reason_hint`` CASE arms of a P2 window: price, history, observed sessions."""
+    spec, p = NATIVE_FEATURES[code], prefix
+    return (f"WHEN {p}price_invalid THEN {_sql_text(BAR_PRICE_INVALID_REASON)} "
+            f"WHEN {p}history_sessions < {spec['min_history_sessions']} "
+            f"THEN {_sql_text(INSUFFICIENT_HISTORY_REASON)} "
+            f"WHEN {p}{count_column} < {spec['min_observed']} THEN {_sql_text(WINDOW_GAPS_REASON)} ")
 
 
 def _price_window_parts(con: Any, features: Sequence[PanelFeature], spec: dict[str, Any], market_source: str,
                         row: CalendarRow) -> list[str]:
     """Long-form value rows of the P2 natives of one formation (see ``NATIVE_FEATURES``).
 
-    ``reason_hint`` names why a present row has no value: ``incomplete_price_window``
-    (fewer bars or returns than the window needs), ``unverified_shares`` (turnover
-    whose share count is not a DEI count), ``split_in_price_window`` (turnover
-    across a split) or ``missing_market_row`` (turnover without a market_daily row
-    for its share count).
+    ``reason_hint`` names why a present row has no value: ``bar_price_invalid`` (the
+    session's picked bar has no valid price), ``insufficient_history`` (the line's
+    history does not reach the window's first session), ``window_gaps`` (fewer
+    observed sessions or daily returns than the declared minimum),
+    ``zero_volume_in_window`` (Amihud: too few positive-volume days), and for
+    turnover ``missing_market_row`` (no market_daily row for its share count), the A8
+    withheld label of a withheld count, ``unverified_shares`` (a count that is not
+    DEI) or ``split_in_price_window``. A row has a value only when it has no hint.
     """
-    sources = spec["native_sources"]
-    from_bars = [f for f in features if sources[f.metric_code] == BARS_SOURCE]
-    from_metrics = [f for f in features if sources[f.metric_code] == PRICE_METRICS_SOURCE]
+    if any(spec["native_sources"][f.metric_code] != BARS_SOURCE for f in features):
+        raise RuntimeError("P2 natives read the line's own bars only")
     parts: list[str] = []
-    session = f"DATE '{row.formation_date.isoformat()}'"
-    incomplete = _sql_text(INCOMPLETE_WINDOW_REASON)
-    if from_bars:
-        _stage_price_window(con, row)
+    _stage_price_window(con, row)
     window_sql = {
-        "pct_from_high_252d": ("CASE WHEN high_252 > 0 THEN adj_last / high_252 - 1.0 END", "NULL"),
-        "max_daily_return_21d": ("CASE WHEN n_ret_21 = 21 THEN max_ret_21 END",
-                                 f"CASE WHEN n_ret_21 < 21 THEN {incomplete} END"),
-        "amihud_illiquidity_21d": (f"CASE WHEN n_illiq_21 = 21 THEN illiq_21 * {AMIHUD_SCALE!r} END",
-                                   f"CASE WHEN n_illiq_21 < 21 THEN {incomplete} END"),
-        "downside_deviation_60d": ("CASE WHEN n_ret_60 = 60 THEN sqrt(down_sq_60) * sqrt(252.0) END",
-                                   f"CASE WHEN n_ret_60 < 60 THEN {incomplete} END"),
+        "pct_from_high_252d": ("adj_last / high_252 - 1.0", "n_obs_252", ""),
+        "max_daily_return_21d": ("max_ret_21", "n_ret_21", ""),
+        "amihud_illiquidity_21d": (f"illiq_21 * {AMIHUD_SCALE!r}", "n_ret_vol_21",
+                                   f"WHEN n_illiq_21 < {NATIVE_FEATURES['amihud_illiquidity_21d']['min_observed']} "
+                                   f"THEN {_sql_text(ZERO_VOLUME_REASON)} "),
+        "downside_deviation_60d": ("sqrt(down_sq_60) * sqrt(252.0)", "n_ret_60", ""),
     }
-    for f in from_bars:
+    for f in features:
         if f.metric_code == "turnover_21d":
             continue
-        value, hint = window_sql[f.metric_code]
-        parts.append(f"SELECT security_id, {_sql_text(f.feature_id)} AS feature_id, CAST({value} AS DOUBLE) AS "
-                     f"value, available_at, CAST(NULL AS TIMESTAMP) AS fundamental_available_at, "
-                     f"'{BARS_SOURCE}' AS value_origin, CAST(NULL AS VARCHAR) AS shares_source, "
-                     f"CAST({hint} AS VARCHAR) AS reason_hint FROM _rp_price_window WHERE last_date={session}")
-    turnover = next((f for f in from_bars if f.metric_code == "turnover_21d"), None)
+        value, count_column, extra = window_sql[f.metric_code]
+        parts.append(f"""
+            SELECT security_id, feature_id, CAST(CASE WHEN reason_hint IS NULL THEN v END AS DOUBLE) AS value,
+                   available_at, fundamental_available_at, value_origin, shares_source, reason_hint
+            FROM (SELECT security_id, {_sql_text(f.feature_id)} AS feature_id, {value} AS v, available_at,
+                         CAST(NULL AS TIMESTAMP) AS fundamental_available_at, '{BARS_SOURCE}' AS value_origin,
+                         CAST(NULL AS VARCHAR) AS shares_source,
+                         CAST(CASE {_window_gate_sql(f.metric_code, count_column)}{extra}END AS VARCHAR) AS reason_hint
+                  FROM _rp_price_window)""")
+    turnover = next((f for f in features if f.metric_code == "turnover_21d"), None)
     if turnover is not None:
         # The line's verified share count at the session: the newest visible
         # market_daily revision (arg_max_null, as every market pick).
@@ -1524,39 +1594,21 @@ def _price_window_parts(con: Any, features: Sequence[PanelFeature], spec: dict[s
         """, [market_source])
         verified = _sql_list(VERIFIED_SHARES_SOURCES)
         parts.append(f"""
-            SELECT w.security_id, {_sql_text(turnover.feature_id)} AS feature_id,
-                   CAST(CASE WHEN s.shares_source IN ({verified}) AND w.n_vol_21 = 21 AND s.shares > 0
-                             THEN w.volume_21 / s.shares END AS DOUBLE) AS value,
-                   greatest(w.available_at, s.available_at) AS available_at, s.fundamental_available_at,
-                   '{BARS_SOURCE}' AS value_origin, s.shares_source,
-                   CASE WHEN s.security_id IS NULL THEN 'missing_market_row'
-                        WHEN s.shares_source IS NULL OR s.shares_source NOT IN ({verified})
-                             THEN {_sql_text(UNVERIFIED_SHARES_REASON)}
-                        WHEN w.n_vol_21 < 21 THEN {incomplete}
-                        WHEN w.basis_move_21 > {SPLIT_RATIO_LIMIT!r} THEN {_sql_text(SPLIT_WINDOW_REASON)}
-                        END AS reason_hint
-            FROM _rp_price_window w LEFT JOIN _rp_line_shares s ON s.security_id=w.security_id
-            WHERE w.last_date={session}""")
-    if from_metrics:
-        # The same definitions, precomputed by equity_price_metrics (its clock is the
-        # running max of its input bars' clocks): the session's newest visible row.
-        columns = [NATIVE_FEATURES[f.metric_code]["price_metrics_column"] for f in from_metrics]
-        picks = ", ".join(f'arg_max_null(p."{c}", (p.available_at, p.metric_id)) AS "{c}"' for c in columns)
-        con.execute(f"""
-            CREATE OR REPLACE TEMP TABLE _rp_price_metrics AS
-            SELECT p.security_id, max(p.available_at) AS available_at, {picks}
-            FROM equity_price_metrics p
-            JOIN _rp_cal_one c ON p.trade_date=c.decision_date AND p.available_at<=c.cutoff
-                              AND p.as_of_date<=c.decision_date
-            JOIN _rp_cohort_all k ON k.decision_date=c.decision_date AND k.security_id=p.security_id AND k.eligible
-            WHERE p.source=?
-            GROUP BY p.security_id
-        """, [PRICE_METRICS_SOURCE_NAME])
-        for f, column in zip(from_metrics, columns, strict=True):
-            parts.append(f"SELECT security_id, {_sql_text(f.feature_id)} AS feature_id, CAST(\"{column}\" AS DOUBLE) "
-                         f"AS value, available_at, CAST(NULL AS TIMESTAMP) AS fundamental_available_at, "
-                         f"'{PRICE_METRICS_SOURCE}' AS value_origin, CAST(NULL AS VARCHAR) AS shares_source, "
-                         f"CAST(NULL AS VARCHAR) AS reason_hint FROM _rp_price_metrics")
+            SELECT security_id, feature_id,
+                   CAST(CASE WHEN reason_hint IS NULL AND shares > 0 THEN volume_21 / shares END AS DOUBLE) AS value,
+                   available_at, fundamental_available_at, value_origin, shares_source, reason_hint
+            FROM (
+              SELECT w.security_id, {_sql_text(turnover.feature_id)} AS feature_id, w.volume_21, s.shares,
+                     greatest(w.available_at, s.available_at) AS available_at, s.fundamental_available_at,
+                     '{BARS_SOURCE}' AS value_origin, s.shares_source,
+                     CAST(CASE WHEN s.security_id IS NULL THEN 'missing_market_row'
+                               WHEN s.shares_source IN ({_sql_list(SHARES_SOURCES_WITHHELD)}) THEN s.shares_source
+                               WHEN s.shares_source IS NULL OR s.shares_source NOT IN ({verified})
+                                    THEN {_sql_text(UNVERIFIED_SHARES_REASON)}
+                               {_window_gate_sql('turnover_21d', 'n_vol_21', 'w.')}
+                               WHEN w.split_21 THEN {_sql_text(SPLIT_WINDOW_REASON)}
+                               END AS VARCHAR) AS reason_hint
+              FROM _rp_price_window w LEFT JOIN _rp_line_shares s ON s.security_id=w.security_id)""")
     return parts
 
 
@@ -1601,25 +1653,25 @@ def _market_formation(store: ResearchStore, batch: _Batch, spec: dict[str, Any],
             for f in batch.features if f.metric_code in columns]
     if any(f.metric_code == "line_market_cap" for f in batch.features):
         # UNVERIFIED (opt-in only): the line's own close x its own vendor share
-        # count, deduped and clocked exactly as market_daily dedupes a bar
-        # (``_bars_by_session_sql``): positive-price rows, each column from the
-        # newest (available_at, source) row that has it. The rows of one session
-        # are vendors, not revisions (each vendor's rows are replaced in place),
-        # so a price-only vendor's missing count is taken from another vendor, as
-        # market_daily's ``archive_shares`` is (R2e m2). The vendor count is in
-        # vendor units and dated from the cover as-of date, which precedes the
-        # filing; R2d replaces it with the A8 share relation.
+        # count, picked with market_daily's one bar rule (``_bars_by_session_sql``):
+        # every column from the newest (available_at, source) row, a NULL included
+        # (arg_max_null), and the price checked after the pick. The vendor count is
+        # dated from the cover as-of date, which precedes the filing; R2d replaces it
+        # with the A8 share relation.
         con.execute(f"""
             CREATE OR REPLACE TEMP TABLE _rp_line_cap AS
-            SELECT b.security_id,
-                   CAST(arg_max(b.close, (b.available_at, b.source)) AS DOUBLE)
-                   * CAST(arg_max(b.shares_outstanding, (b.available_at, b.source)) AS DOUBLE) AS value,
-                   greatest(max(b.available_at), CAST(b.trade_date AS TIMESTAMP) + INTERVAL {DECISION_HOUR} HOUR)
-                     AS available_at
-            FROM equity_daily_bars b
-            JOIN _rp_cohort_all k ON k.decision_date=? AND k.security_id=b.security_id AND k.eligible
-            WHERE b.trade_date=? AND b.close>0 AND b.adjusted_close>0
-            GROUP BY b.security_id, b.trade_date
+            SELECT security_id, CASE WHEN close > 0 AND adj > 0 THEN close * shares END AS value, available_at
+            FROM (
+              SELECT b.security_id,
+                     CAST(arg_max_null(b.close, (b.available_at, b.source)) AS DOUBLE) AS close,
+                     CAST(arg_max_null(b.adjusted_close, (b.available_at, b.source)) AS DOUBLE) AS adj,
+                     CAST(arg_max_null(b.shares_outstanding, (b.available_at, b.source)) AS DOUBLE) AS shares,
+                     greatest(max(b.available_at), CAST(b.trade_date AS TIMESTAMP) + INTERVAL {DECISION_HOUR} HOUR)
+                       AS available_at
+              FROM equity_daily_bars b
+              JOIN _rp_cohort_all k ON k.decision_date=? AND k.security_id=b.security_id AND k.eligible
+              WHERE b.trade_date=?
+              GROUP BY b.security_id, b.trade_date)
         """, [row.formation_date, row.formation_date])
         feature = next(f for f in batch.features if f.metric_code == "line_market_cap")
         long_parts.append(f"SELECT security_id, {_sql_text(feature.feature_id)} AS feature_id, value, "
