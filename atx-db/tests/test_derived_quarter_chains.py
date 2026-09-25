@@ -39,6 +39,19 @@ CHAIN_CATALOG = (
                 ("item:net_income_total", "item:common_equity")),
     _definition("equity_qoq_t", "qoq(common_equity)", ("item:common_equity",)),
     _definition("shares_qoq_t", "qoq(shares_outstanding_period_end)", ("item:shares_outstanding_period_end",)),
+    # R1b's SUE form: the current change over the prior quarter's rolling volatility.
+    _definition("sd4_t", "stdev_q(ni_change_t, 4)", ("metric:ni_change_t",)),
+    _definition("sue_lag_t", "safe_div(ni_change_t, lag(sd4_t, 1))", ("metric:ni_change_t", "metric:sd4_t")),
+    # A per-share seasonal difference outside the per_share family, and its window.
+    _definition("eps_change_t", "eps_diluted - lag(eps_diluted, 4)", ("item:eps_diluted",)),
+    _definition("eps_sd4_t", "stdev_q(eps_change_t, 4)", ("metric:eps_change_t",)),
+    # Split-sensitive comparisons across periods.
+    _definition("eps_yoy_t", "yoy(eps_diluted)", ("item:eps_diluted",)),
+    _definition("wshares_yoy_t", "yoy(weighted_avg_shares_diluted)", ("item:weighted_avg_shares_diluted",)),
+    _definition("shares_yoy_t", "yoy(shares_outstanding_period_end)", ("item:shares_outstanding_period_end",)),
+    _definition("share_issuance_2y_t", "ln(safe_div(shares_outstanding_period_end, "
+                "lag(shares_outstanding_period_end, 8)))", ("item:shares_outstanding_period_end",)),
+    _definition("eps_cagr_2y_t", "cagr(eps_diluted, 2)", ("item:eps_diluted",)),
 )
 
 QUARTERS = tuple(
@@ -107,7 +120,8 @@ def _seed(store, security_id: str, starts: dict[int, dt.date] | None = None) -> 
     for index, end in enumerate(QUARTERS):
         start = QUARTERS[index - 1] + dt.timedelta(days=1) if index else end - dt.timedelta(days=90)
         start = (starts or {}).get(index, start)
-        for code, series in (("net_income_total", NET_INCOME), ("eps_diluted", EPS), ("revenue", REVENUE)):
+        for code, series in (("net_income_total", NET_INCOME), ("eps_diluted", EPS), ("revenue", REVENUE),
+                             ("weighted_avg_shares_diluted", SHARES)):
             _insert(store, security_id, code, "quarterly", start, end, series[index])
         for code, series in (("common_equity", EQUITY), ("shares_outstanding_period_end", SHARES)):
             _insert(store, security_id, code, "instant", None, end, series[index])
@@ -131,8 +145,28 @@ def test_share_basis_codes_cover_per_share_values_and_every_share_count():
                     if row.unit_type == "quantity" and "shares" in row.canonical_code}
     # Drift guard: every registered share-count item is named explicitly.
     assert share_counts == annual.SHARE_COUNT_CODES
-    assert annual.SHARE_COUNT_CODES | {"eps_diluted", "eps_basic__1034", "eps_diluted_ttm"} <= basis
-    assert not {"net_income_total", "common_equity", "total_assets", "revenue"} & basis
+    assert annual.SHARE_COUNT_CODES | {"eps_diluted", "eps_basic__1034", "eps_diluted_ttm", "eps_ttm"} <= basis
+    assert not {"net_income_total", "common_equity", "total_assets", "revenue",
+                "eps_diluted_q_growth_yoy", "shares_growth_yoy"} & basis
+
+
+def test_split_sensitivity_follows_formula_operands_not_the_family():
+    by_code = {definition.metric_code: definition for definition in CHAIN_CATALOG}
+    exponents = dict(annual.plan_for(by_code["eps_sd4_t"], by_code).share_exponents)
+    # A growth-family per-share difference is still a per-share value.
+    assert exponents == {"eps_change_t": -1}
+    assert dict(annual.plan_for(by_code["sue_lag_t"], by_code).share_exponents) == {
+        "ni_change_t": 0, "sd4_t": 0}
+    unit = {"eps_diluted": -1, "weighted_avg_shares_diluted": 1, "net_income_total": 0}.get
+
+    def exponent(expression):
+        return annual.share_exponent(annual.parse_expression(expression), unit)
+
+    assert exponent("safe_div(net_income_total, weighted_avg_shares_diluted)") == -1
+    assert exponent("eps_diluted * weighted_avg_shares_diluted") == 0
+    assert exponent("yoy(eps_diluted)") == 0
+    assert exponent("stdev_q(eps_diluted, 4)") == -1
+    assert exponent("eps_diluted + net_income_total") is None
 
 
 def test_rolling_standard_deviation_is_quarterly_only_across_a_proven_quarter_chain(store):
@@ -159,9 +193,28 @@ def test_rolling_standard_deviation_is_quarterly_only_across_a_proven_quarter_ch
             assert _state(store, "S5", code, index)[1:] == ("valid", "incomparable"), (code, index)
     assert _state(store, "S5", "sue_t", 8)[1:] == ("valid", "quarterly")
 
-    # Per-share operands have no split guard; trailing windows are not single quarters.
+    # Per-share operands have no split guard, even inside a growth-family metric;
+    # trailing windows are not single quarters.
     assert _state(store, "S1", "eps_vol_t", 11)[1:] == ("valid", "incomparable")
+    assert _state(store, "S1", "eps_sd4_t", 11)[1:] == ("valid", "incomparable")
     assert _state(store, "S1", "rev_ttm_vol_t", 11)[1:] == ("valid", "incomparable")
+
+
+def test_one_unproven_element_poisons_every_window_and_sue_that_contains_it(store):
+    _seed(store, "S1")
+    # S7: the Q5 flow starts 40 days early, so the Q9 seasonal change fails its own
+    # year-over-year start check while the Q8..Q11 quarter chain is intact.
+    _seed(store, "S7", {5: QUARTERS[4] - dt.timedelta(days=40)})
+    engine.refresh_derived_metrics(store)
+
+    for index in (8, 11):
+        # R1b's form: the current change over the rolling volatility through t-1.
+        expected = _change(index) / statistics.stdev(_change(i) for i in range(index - 4, index))
+        assert _state(store, "S1", "sue_lag_t", index) == (pytest.approx(expected), "valid", "quarterly")
+    assert _state(store, "S7", "ni_change_t", 9)[1:] == ("valid", "incomparable")
+    for index in (9, 10, 11):
+        assert _state(store, "S7", "sd4_t", index)[1:] == ("valid", "incomparable"), index
+        assert _state(store, "S7", "sue_lag_t", index)[1:] == ("valid", "incomparable"), index
 
 
 def test_flows_over_prior_quarter_balances_prove_the_balance_date(store):
@@ -187,6 +240,44 @@ def test_flows_over_prior_quarter_balances_prove_the_balance_date(store):
     assert _state(store, "S5", "roe_q_t", 10)[1:] == ("valid", "quarterly")
 
 
+@pytest.mark.parametrize(("balance_date", "lagged", "averaged"), [
+    (dt.date(2021, 3, 31), "quarterly", "quarterly"),  # the day before the flow starts
+    (dt.date(2021, 3, 28), "quarterly", "incomparable"),  # 3 days early: averaged form needs exact
+    (dt.date(2021, 4, 5), "incomparable", "incomparable"),  # inside the flow period
+    (dt.date(2021, 4, 21), "incomparable", "incomparable"),  # 20 days inside, 70 days before the next
+])
+def test_opening_balance_is_never_dated_inside_the_flow(store, balance_date, lagged, averaged):
+    _seed(store, "S8")
+    store.con.execute("""
+        UPDATE fundamental_standardized SET period_end = ?
+        WHERE security_id = 'S8' AND canonical_code = 'common_equity' AND period_end = ?
+    """, [balance_date, QUARTERS[8]])
+    engine.refresh_derived_metrics(store)
+    # The flow ending 2021-06-30 starts 2021-04-01.
+    assert _state(store, "S8", "roe_q_t", 9)[1:] == ("valid", lagged)
+    assert _state(store, "S8", "roe_avg_q_t", 9)[1:] == ("valid", averaged)
+
+
+def test_split_sensitive_comparisons_across_periods_need_flows_four_quarters_apart(store):
+    _seed(store, "S10")
+    # 2:1 split after 2020-12-31: later period-end share counts double, while the
+    # current 10-Q restates the prior-year quarter's weighted shares and EPS.
+    store.con.execute("""
+        UPDATE fundamental_standardized SET value = value * 2
+        WHERE security_id = 'S10' AND canonical_code = 'shares_outstanding_period_end'
+          AND period_end > DATE '2020-12-31'
+    """)
+    engine.refresh_derived_metrics(store)
+
+    assert _state(store, "S10", "eps_yoy_t", 8)[1:] == ("valid", "quarterly")
+    assert _state(store, "S10", "wshares_yoy_t", 8)[1:] == ("valid", "quarterly")
+    # Balances are never restated for a split, and nothing two or more years back is.
+    assert _state(store, "S10", "shares_yoy_t", 8) == (
+        pytest.approx(2 * SHARES[8] / SHARES[4] - 1), "valid", "incomparable")
+    assert _state(store, "S10", "share_issuance_2y_t", 11)[1:] == ("valid", "incomparable")
+    assert _state(store, "S10", "eps_cagr_2y_t", 11)[1:] == ("valid", "incomparable")
+
+
 def _pair(older: tuple[dt.date | None, dt.date], newer: tuple[dt.date | None, dt.date]) -> bool:
     def span(dates, offset):
         start, end = (f"DATE '{value}'" if value is not None else "NULL::DATE" for value in dates)
@@ -204,8 +295,8 @@ _Q2_2024 = (dt.date(2024, 4, 1), dt.date(2024, 6, 30))
     ((None, dt.date(2024, 3, 31)), _Q2_2024, True),  # balance the day before the flow
     ((None, dt.date(2024, 3, 24)), _Q2_2024, True),  # 7 days early
     ((None, dt.date(2024, 3, 23)), _Q2_2024, False),  # 8 days early
-    ((None, dt.date(2024, 4, 7)), _Q2_2024, True),  # 7 days late
-    ((None, dt.date(2024, 4, 8)), _Q2_2024, False),  # 8 days late
+    ((None, dt.date(2024, 4, 1)), _Q2_2024, False),  # on the flow's first day
+    ((None, dt.date(2024, 4, 7)), _Q2_2024, False),  # inside the flow period
     ((None, dt.date(2024, 3, 31)), (dt.date(2024, 4, 1), dt.date(2024, 5, 30)), False),  # 60-day stub flow
     ((None, dt.date(2024, 3, 31)), (None, dt.date(2024, 6, 30)), True),  # balances 91 days apart
     ((None, dt.date(2024, 4, 21)), (None, dt.date(2024, 6, 30)), True),  # 70 days apart

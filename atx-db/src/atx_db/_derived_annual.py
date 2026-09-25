@@ -7,6 +7,7 @@ values under their quarterly codes. The arithmetic DSL remains unchanged.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import Any
@@ -24,10 +25,25 @@ from .derived_dsl import (
     lower,
     parse_expression,
 )
-from .derived_registry import DerivedMetricDefinition, default_derived_definitions, topological_order
+from .derived_registry import DerivedMetricDefinition, default_derived_definitions
 from .item_registry import read_fundamental_item_seed
 
 WEIGHTED_SHARES = frozenset({"weighted_avg_shares_basic", "weighted_avg_shares_diluted"})
+
+#: Share-count items. ``unit_type='quantity'`` also covers non-share counts
+#: (leasable area, subscribers), so the share counts are named explicitly.
+SHARE_COUNT_CODES = WEIGHTED_SHARES | frozenset({
+    "shares_outstanding_period_end", "treasury_stock_shares", "entity_public_float_shares",
+    "class_a_common_shares_outstanding", "class_b_common_shares_outstanding",
+    "class_c_common_shares_outstanding", "class_d_common_shares_outstanding",
+})
+
+#: Exponent of "shares" in a value's unit: -1 per share, +1 a share count, 0
+#: basis-free, None mixed or unknown (treated as split-sensitive).
+ShareExponent = int | None
+
+_BASIS_FREE_CALLS = frozenset({"yoy", "qoq", "cagr", "tret", "rvol", "indicator_gt", "indicator_lt"})
+_SAME_UNIT_CALLS = frozenset({"coalesce", "min", "max"})
 
 
 @dataclass(frozen=True)
@@ -35,6 +51,9 @@ class AnnualPlan:
     alternative: Node | None = None
     item_codes: tuple[str, ...] = ()
     weighted_codes: tuple[str, ...] = ()
+    #: Share exponent of each operand under the catalog being refreshed. Not in
+    #: the definition hash; None falls back to the shipped catalog.
+    share_exponents: tuple[tuple[str, ShareExponent], ...] | None = None
 
     @property
     def codes(self) -> tuple[str, ...]:
@@ -42,6 +61,99 @@ class AnnualPlan:
 
 
 EMPTY_PLAN = AnnualPlan()
+
+
+@lru_cache(maxsize=1)
+def _item_share_exponents() -> dict[str, int]:
+    exponents = {row.canonical_code: -1 for row in read_fundamental_item_seed() if row.unit_type == "per_share"}
+    exponents.update(dict.fromkeys(SHARE_COUNT_CODES, 1))
+    return exponents
+
+
+def share_exponent(node: Node, exponent_of: Any) -> ShareExponent:
+    """Unit algebra over a formula: which values move with a stock split.
+
+    ``exponent_of(name)`` resolves an operand. Products add exponents and
+    quotients subtract them (per share x shares is basis-free), sums and
+    selections need one unit, windows keep their operand's unit, and relative
+    changes and indicators are basis-free. The split sensitivity of each
+    comparison inside the formula is proven separately by ``_combine``.
+    """
+    def same(nodes: tuple[Node, ...]) -> ShareExponent:
+        units = {share_exponent(item, exponent_of) for item in nodes if not isinstance(item, Number)}
+        return units.pop() if len(units) == 1 else (0 if not units else None)
+
+    def ratio(numerator: Node, denominator: Node, op: str) -> ShareExponent:
+        left, right = share_exponent(numerator, exponent_of), share_exponent(denominator, exponent_of)
+        if left is None or right is None:
+            return None
+        return left + right if op == "*" else left - right
+
+    if isinstance(node, Number):
+        return 0
+    if isinstance(node, Ref):
+        return exponent_of(node.name)
+    if isinstance(node, Neg):
+        return share_exponent(node.operand, exponent_of)
+    if isinstance(node, BinOp):
+        return same((node.left, node.right)) if node.op in "+-" else ratio(node.left, node.right, node.op)
+    if isinstance(node, Call):
+        if node.name in _BASIS_FREE_CALLS:
+            return 0
+        if node.name == "safe_div":
+            return ratio(node.args[0], node.args[1], "/")
+        if node.name in _SAME_UNIT_CALLS:
+            return same(node.args)
+        inner = share_exponent(node.args[0], exponent_of)
+        if node.name == "ln":
+            return 0 if inner == 0 else None
+        return inner  # abs, ttm, avg2, lag, lag_d, stdev_q, avg_d keep the operand's unit
+    raise TypeError(node)
+
+
+def _metric_share_exponents(definitions: Mapping[str, DerivedMetricDefinition]) -> dict[str, ShareExponent]:
+    """Every metric's share exponent derived from its formula operands.
+
+    Family ``per_share`` is a floor: such a metric is never basis-free.
+    """
+    items = _item_share_exponents()
+    memo: dict[str, ShareExponent] = {}
+
+    def metric(code: str) -> ShareExponent:
+        if code not in memo:
+            definition = definitions[code]
+            memo[code] = None  # the validated catalog is acyclic; a cycle stays split-sensitive
+            value = share_exponent(
+                parse_expression(definition.expression),
+                lambda name: metric(name) if name in definition.metric_inputs and name in definitions
+                else items.get(name, 0))
+            memo[code] = None if definition.family == "per_share" and value == 0 else value
+        return memo[code]
+
+    for code in definitions:
+        metric(code)
+    return memo
+
+
+_CATALOG_EXPONENTS: list[Any] = [None, None]
+
+
+def _catalog_share_exponents(definitions: Mapping[str, DerivedMetricDefinition]) -> dict[str, ShareExponent]:
+    # plan_for runs per security and metric with one catalog object: cache by identity.
+    if _CATALOG_EXPONENTS[0] is not definitions:
+        _CATALOG_EXPONENTS[:] = [definitions, _metric_share_exponents(definitions)]
+    return _CATALOG_EXPONENTS[1]
+
+
+@lru_cache(maxsize=1)
+def _default_ref_exponents() -> dict[str, ShareExponent]:
+    metrics = _metric_share_exponents({d.metric_code: d for d in default_derived_definitions()})
+    return {**_item_share_exponents(), **metrics}
+
+
+def share_basis_codes() -> frozenset[str]:
+    """Items and shipped metrics whose values move with a split (per share or share counts)."""
+    return frozenset(code for code, exponent in _default_ref_exponents().items() if exponent != 0)
 
 
 def plan_for(definition: DerivedMetricDefinition,
@@ -76,7 +188,11 @@ def plan_for(definition: DerivedMetricDefinition,
             alternative = None
     weighted = tuple(sorted(WEIGHTED_SHARES.intersection(definition.item_inputs))) \
         if definition.window == "ttm" else ()
-    return AnnualPlan(alternative, expression_names(alternative) if alternative is not None else (), weighted)
+    metrics, items = _catalog_share_exponents(definitions), _item_share_exponents()
+    exponents = tuple((name, metrics.get(name, 0) if name in definition.metric_inputs else items.get(name, 0))
+                      for name in definition.bare_names)
+    return AnnualPlan(alternative, expression_names(alternative) if alternative is not None else (), weighted,
+                      exponents)
 
 
 def prepare_security(con: Any) -> None:
@@ -151,33 +267,6 @@ def _quarter_length(span: Span) -> str:
     return f"(date_diff('day', {span.start}, {span.end}) + 1 BETWEEN 70 AND 120)"
 
 
-#: Share-count items. ``unit_type='quantity'`` also covers non-share counts
-#: (leasable area, subscribers), so the share counts are named explicitly.
-SHARE_COUNT_CODES = WEIGHTED_SHARES | frozenset({
-    "shares_outstanding_period_end", "treasury_stock_shares", "entity_public_float_shares",
-    "class_a_common_shares_outstanding", "class_b_common_shares_outstanding",
-    "class_c_common_shares_outstanding", "class_d_common_shares_outstanding",
-})
-
-
-@lru_cache(maxsize=1)
-def share_basis_codes() -> frozenset[str]:
-    """Operand codes whose values move with a split, from existing registry attributes.
-
-    Items with ``unit_type='per_share'`` and the share counts in
-    ``SHARE_COUNT_CODES``, plus derived metrics of family ``per_share`` or
-    ``rollup`` metrics over such operands (e.g. ``eps_diluted_ttm``). Growth,
-    margin and other ratio families are basis-free values.
-    """
-    codes = {row.canonical_code for row in read_fundamental_item_seed() if row.unit_type == "per_share"}
-    codes |= SHARE_COUNT_CODES
-    for definition in topological_order(default_derived_definitions()):
-        if definition.family == "per_share" or (
-                definition.family == "rollup" and codes.intersection(definition.bare_names)):
-            codes.add(definition.metric_code)
-    return frozenset(codes)
-
-
 def _one_quarter_apart(newer: Span, older: Span) -> str:
     """Prove that two operands one bucket apart are consecutive fiscal quarters.
 
@@ -187,10 +276,14 @@ def _one_quarter_apart(newer: Span, older: Span) -> str:
 
     - flow after flow: both spans 70-120 days and the newer starts 1 to
       1 + ADJACENT_QUARTER_MAX_GAP_DAYS days after the older ends;
-    - flow after a lagged instant (``NI_q / lag(equity, 1)``): the flow spans
-      70-120 days and the instant is dated within ADJACENT_QUARTER_MAX_GAP_DAYS
-      days of the day before the flow starts;
-    - instant after instant (quarterly average balances): 70-120 days apart.
+    - flow after a lagged opening balance (``NI_q / lag(equity, 1)``): the flow
+      spans 70-120 days and the balance is dated on the day before the flow
+      starts or at most ADJACENT_QUARTER_MAX_GAP_DAYS days earlier, never inside
+      the flow period;
+    - instant after instant: 70-120 days apart. The pair then spans the quarter
+      between the balances (see ``_combine``), so an averaged balance meets a
+      flow only when the opening balance is dated exactly the day before the
+      flow starts.
 
     An instant after a flow, an overlap, a stub, a fiscal-year-change gap or a
     missing date proves nothing and stays incomparable.
@@ -199,7 +292,7 @@ def _one_quarter_apart(newer: Span, older: Span) -> str:
     flow_after_flow = (f"{_quarter_length(newer)} AND {_quarter_length(older)} AND "
                        f"date_diff('day', {older.end}, {newer.start}) BETWEEN 1 AND {1 + gap}")
     flow_after_instant = (f"{_quarter_length(newer)} AND "
-                          f"date_diff('day', {older.end}, {newer.start}) BETWEEN {1 - gap} AND {1 + gap}")
+                          f"date_diff('day', {older.end}, {newer.start}) BETWEEN 1 AND {1 + gap}")
     instant_after_instant = f"date_diff('day', {older.end}, {newer.end}) BETWEEN 70 AND 120"
     return (f"coalesce(CASE WHEN ({newer.start}) IS NOT NULL AND ({older.start}) IS NOT NULL "
             f"THEN {flow_after_flow} WHEN ({newer.start}) IS NOT NULL THEN {flow_after_instant} "
@@ -237,12 +330,24 @@ def _combine(left: Span, right: Span) -> Span:
             f"(({left.end}) IS NULL OR ({right.end}) IS NULL OR ({left.end}) = ({right.end})) AND "
             f"(({left.start}) IS NULL OR ({right.start}) IS NULL OR ({left.start}) = ({right.start}))"
         )
+    # A 10-Q restates only the prior-year quarter's flows for a split; the
+    # preceding quarters, balances and anything two or more years back stay as
+    # first reported. Until a split guard exists, a split-sensitive comparison
+    # across periods is proven only between flows exactly four quarters apart.
+    split_sensitive = newer.share_basis or older.share_basis
+    start = newer.start
+    if distance == 0:
+        comparable = (
+            f"(({left.end}) IS NULL OR ({right.end}) IS NULL OR ({left.end}) = ({right.end})) AND "
+            f"(({left.start}) IS NULL OR ({right.start}) IS NULL OR ({left.start}) = ({right.start}))"
+        )
+        start = f"coalesce({newer.start}, {older.start})"
     elif distance == 1:
-        # A 10-Q restates its prior-year comparative, never the preceding quarter,
-        # so a share-basis pair one quarter apart may straddle a split: span
-        # adjacency is not a share-basis proof and the pair stays incomparable.
-        comparable = "false" if newer.share_basis or older.share_basis else _one_quarter_apart(newer, older)
-    elif distance % 4:
+        comparable = "false" if split_sensitive else _one_quarter_apart(newer, older)
+        # Two balances one quarter apart span the quarter between them.
+        start = (f"(CASE WHEN ({newer.start}) IS NULL AND ({older.start}) IS NULL "
+                 f"THEN CAST(({older.end}) + INTERVAL 1 DAY AS DATE) ELSE {newer.start} END)")
+    elif distance % 4 or (split_sensitive and distance != 4):
         comparable = "false"
     else:
         comparable = (
@@ -250,8 +355,10 @@ def _combine(left: Span, right: Span) -> Span:
             f"(({newer.start}) IS NULL OR ({older.start}) IS NULL OR "
             f"{_years_apart(newer.start, older.start, distance // 4)})"
         )
+        if split_sensitive:
+            comparable = f"({newer.start}) IS NOT NULL AND ({older.start}) IS NOT NULL AND {comparable}"
     return Span(
-        f"coalesce({newer.start}, {older.start})" if distance == 0 else newer.start,
+        start,
         f"coalesce({newer.end}, {older.end})" if distance == 0 else newer.end,
         f"(({left.annual}) OR ({right.annual}))",
         f"(({left.coherent}) AND ({right.coherent}) AND ({comparable}))",
@@ -260,24 +367,35 @@ def _combine(left: Span, right: Span) -> Span:
     )
 
 
-def lower_span(node: Node, context: LowerContext, refs: dict[str, Span]) -> Span:
+def lower_span(node: Node, context: LowerContext, refs: dict[str, Span],
+               share_exponents: Mapping[str, ShareExponent] | None = None) -> Span:
     """Follow DSL-selected branches and window offsets without changing formulas.
 
     Coherence is recorded for all states but only gates arithmetic when annual
     evidence participates. This leaves historical quarterly-only rules intact.
+    ``share_exponents`` gives each operand's unit under the refreshed catalog
+    (``AnnualPlan.share_exponents``); the shipped catalog is the fallback.
     """
+    exponents = _default_ref_exponents() if share_exponents is None else share_exponents
+    span = _lower_span(node, context, refs, exponents)
+    split_sensitive = share_exponent(node, lambda name: exponents.get(name, 0)) != 0
+    return span if span.share_basis == split_sensitive else replace(span, share_basis=split_sensitive)
+
+
+def _lower_span(node: Node, context: LowerContext, refs: dict[str, Span],
+                exponents: Mapping[str, ShareExponent]) -> Span:
     if isinstance(node, Number):
         return Span()
     if isinstance(node, Ref):
-        span = refs[node.name]
-        return replace(span, share_basis=True) if node.name in share_basis_codes() else span
+        return refs[node.name]
     if isinstance(node, Neg):
-        return lower_span(node.operand, context, refs)
+        return lower_span(node.operand, context, refs, exponents)
     if isinstance(node, BinOp):
-        return _combine(lower_span(node.left, context, refs), lower_span(node.right, context, refs))
+        return _combine(lower_span(node.left, context, refs, exponents),
+                        lower_span(node.right, context, refs, exponents))
     if not isinstance(node, Call):
         raise TypeError(node)
-    children = [lower_span(arg, context, refs) for arg in node.args]
+    children = [lower_span(arg, context, refs, exponents) for arg in node.args]
     inner = children[0]
     if node.name == "coalesce":
         result = Span()

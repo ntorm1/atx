@@ -254,7 +254,8 @@ def frame_sql(definition: DerivedMetricDefinition, lowered: Lowered, context: Lo
     node = parse_expression(definition.expression)
     lowered = lower(node, context)
     selected_refs = lower_selected_refs(node, context)
-    span = annual.lower_span(node, context, span_refs)
+    exponents = None if annual_plan.share_exponents is None else dict(annual_plan.share_exponents)
+    span = annual.lower_span(node, context, span_refs, exponents)
     coherent = f"coalesce(({span.coherent}), false)"
     # Only annual-backed arithmetic gets the new comparability gate. The
     # existing quarter-only arithmetic and its missing-start legacy inputs stay.
