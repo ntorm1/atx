@@ -77,10 +77,13 @@ EIGHT_KS = [
 # sue_ni derived states: (id, owner, period end, value, available_at, value_status)
 SUE_STATES = [
     ("sue-a1", 1, "2023-03-31", 1.5, "2023-05-07 22:00", "valid"),
-    ("sue-a1r", 1, "2023-03-31", 1.7, "2023-09-01 00:00", "valid"),
-    ("sue-a1n", 1, "2023-03-31", None, "2023-10-15 00:00", "insufficient_history"),  # I1: newer NULL state
+    ("sue-a1r", 1, "2023-03-31", 1.7, "2023-05-20 00:00", "valid"),
+    ("sue-a1n", 1, "2023-03-31", None, "2023-06-20 00:00", "insufficient_history"),  # I1: newer NULL state
     ("sue-b1", 2, "2023-03-31", -0.8, "2023-05-10 22:00", "valid"),
 ]
+# N1: an unrelated universe line delists inside A-Q1's EAR window with a terminal known months later;
+# it must not touch the market or delay any other name's EAR / run-up.
+LATE_TERMINAL = [("M1", dt.date(2023, 4, 26), -0.3, dt.datetime(2023, 12, 15, 22))]
 
 
 def _make_store(tmp_path, terminals=()):
@@ -156,7 +159,7 @@ def _make_store(tmp_path, terminals=()):
 
 @pytest.fixture
 def store(tmp_path):
-    research = _make_store(tmp_path)
+    research = _make_store(tmp_path, terminals=LATE_TERMINAL)
     try:
         yield research
     finally:
@@ -197,26 +200,29 @@ def test_event_dataset_sessions_basis_returns_and_pit_clocks(store):
     line = {_cik(1): "LA", _cik(2): "LB", _cik(3): "LC", _cik(4): "LD"}
     for (owner, end), row in ev.items():
         session = expected[(owner, end)][3]
-        assert row[4] == row[6] == _next_close(session)                        # visible at close of E+1
+        assert row[4] == row[6] == _next_close(session)          # visible at close of E+1 (N1: A-Q1 not delayed)
         assert row[5] == pytest.approx(_car(line[owner], session, -1, 1), abs=1e-12)
         assert row[7] == pytest.approx(_car(line[owner], session, -21, -2), abs=1e-12)
     d_q2 = ev[(_cik(4), "2023-06-30")]
     assert d_q2[11:13] == ("report_date_implausible", d("2023-07-31")) and d_q2[13] > 4
     a_q1, b_q1 = ev[(_cik(1), "2023-03-31")], ev[(_cik(2), "2023-03-31")]
-    # event row: first state as first reported, valid until the next state's clock
-    assert a_q1[8:11] == (1.5, dt.datetime(2023, 5, 7, 22), dt.datetime(2023, 9, 1))
+    # event row: the state current when the SUE becomes visible, valid until the next state's clock
+    assert a_q1[8:11] == (1.5, dt.datetime(2023, 5, 7, 22), dt.datetime(2023, 5, 20))
     assert b_q1[8:10] == (-0.8, dt.datetime(2023, 5, 10, 22))
+    assert store.con.execute("SELECT names, available_at FROM research_event_market WHERE event_version=? "
+                             "AND trade_date='2023-04-26'", [result.event_version]).fetchone() == (
+        6, dt.datetime(2023, 4, 26, 22))                                       # N1: bar returns, close clock
 
     feats = {(r[0], r[1], r[2]): r[3:] for r in store.con.execute("""
         SELECT formation_date, security_id, feature_id, raw_value, reason, available_at, event_session
         FROM research_event_features WHERE event_version=?""", [result.event_version]).fetchall()}
-    apr, may, jun, sep, oct_ = d("2023-04-28"), d("2023-05-31"), d("2023-06-30"), d("2023-09-29"), d("2023-10-31")
+    apr, may, jun, sep = d("2023-04-28"), d("2023-05-31"), d("2023-06-30"), d("2023-09-29")
     assert feats[(apr, "LA", "ear_m1p1")][0] == pytest.approx(a_q1[5], abs=1e-15)
     assert feats[(apr, "LA", "days_since_announcement")][0] == 2.0
-    assert feats[(apr, "LA", "sue_ni_event")][:2] == (None, "no_recent_visible_sue")   # own clock 05-07
-    assert feats[(may, "LA", "sue_ni_event")][0] == 1.5
-    assert feats[(sep, "LA", "sue_ni_event")][0] == 1.7                                # newest visible state
-    assert feats[(oct_, "LA", "sue_ni_event")][:2] == (None, "invalid_current_state")  # I1: no revival
+    assert feats[(apr, "LA", "sue_ni_event")][:2] == (None, "event_value_pending")     # own clock 05-07
+    assert feats[(may, "LA", "sue_ni_event")][0] == 1.7                                # newest visible state
+    assert feats[(jun, "LA", "sue_ni_event")][:2] == (None, "invalid_current_state")   # I1: no revival
+    assert feats[(sep, "LA", "sue_ni_event")][:2] == (None, "event_value_pending")     # N2: Q2 has no SUE yet
     assert feats[(may, "LC", "ear_m1p1")][:2] == (None, "no_recent_event")             # E = formation day
     assert feats[(jun, "LC", "ear_m1p1")][0] == pytest.approx(ev[(_cik(3), "2023-03-31")][5], abs=1e-15)
     assert feats[(jun, "LD", "ear_m1p1")][:2] == (None, "no_periodic_quarterly_filer")

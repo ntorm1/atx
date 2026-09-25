@@ -51,7 +51,9 @@ archive) is converted to America/New_York. Session day before 09:30 ET ->
 ``after_close`` next session; not a session day -> ``non_session_day`` next session; no
 usable time (missing, zone-less or date-only stamp, or an 8-K accepted within the deadline
 but on a later day than its report date) -> ``unknown_time``: next session after the
-announcement date. Early closes are not modeled (blocker).
+announcement date. An announcement before the calendar's first session is out of range:
+no session, ``event_reason='before_session_calendar'`` (counted). Early closes are not
+modeled (blocker).
 
 Clocks (point in time)
 ----------------------
@@ -63,13 +65,16 @@ input bars, terminal returns and market days.
 
 Returns (survivorship)
 ----------------------
-One-session ``adjusted_close`` returns (the forward-label bar pick). A line's selected
-delisting terminal (the forward-label terminal and halt-gap dating) enters as the return
-of its delisting session (first session on or after the effective delist date) when the
-terminal is valid and a prior price exists; bars on or after that session are dropped.
-The market is the equal-weighted mean over the panel's eligible lines of the latest
-formation before the day (linked, unlinked and delisting lines), published only when at
-least ``market_min_names`` lines have a return (else ``missing_market_return``). With
+One-session ``adjusted_close`` returns (the forward-label bar pick). The market is the
+equal-weighted mean of **bar returns only** over the panel's eligible lines of the latest
+formation before the day (linked, unlinked, later-delisting lines; a name leaves after its
+last bar: CRSP EW ex-DLRET), counting a return only when both bars were known at the day's
+22:00 UTC close clock, so every market row's clock is its session close (seal check) and no
+other name's late terminal can delay an event. It is published only when at least
+``market_min_names`` lines have a return (else ``missing_market_return``). In an event
+line's *own* windows its selected delisting terminal (the forward-label terminal and
+halt-gap dating) enters as the return of its delisting session (first session on or after
+the effective delist date) when valid with a prior price; its later bars are dropped. With
 ``AR = r - m`` and ``AR = 0`` after a valid delisting inside the window (proceeds held in
 the market): ``ear_m1p1`` = sum over E-1..E+1 (all 3 days), ``runup_m21_m2`` = sum over
 E-21..E-2 (all 20); a window that starts after the delisting is ``delisted_before_window``.
@@ -81,22 +86,26 @@ Every ``sue_ni`` state of the event's fiscal period is staged, NULL states inclu
 a state reason: ``ambiguous_derived_owner``, ``uncertified_history`` (not
 ``event_reconstructed``), ``definition_hash_mismatch`` (seed hash), ``invalid_current_state``
 (value_status not valid / NULL / non-finite), ``invalid_value_origin``, else ``valid``.
-The event row's ``sue`` is the period's *first* state (as first reported), valid over
-``[sue_available_at, sue_valid_to)`` (the next state's clock). The formation feature
-``sue_ni_event`` takes the latest fiscal period with any visible state and its newest
-visible state (ties: state clock, then ``derived_value_id``); the newest state wins even
-when it is invalid (value NULL with its reason, no fallback to an older value or period).
-Its clock is never earlier than the state's own clock or the event clock. It is the
+The event row's ``sue`` is the state current at ``sue_available_at`` = max(the period's
+first state clock, event clock) (the newest state not after it; ``sue_first_available_at``
+holds that state's own clock), valid over ``[sue_available_at, sue_valid_to)`` with
+``sue_valid_to`` the next state's clock (seal check: later than ``sue_available_at``). The
+formation feature ``sue_ni_event`` belongs to the latest visible event (below): its newest
+state visible at the cutoff (ties: state clock, then ``derived_value_id``); the newest state
+wins even when it is invalid (value NULL with its reason, no fallback to an older value or
+period). Its clock is never earlier than the state's own clock or the event clock. It is the
 event-clocked variant of the panel's ``sue_ni`` (same states): catalog at most one of the
 two as a hypothesis.
 
 Formation view
 --------------
 ``research_event_features``: dense over the panel's valid primary lines x
-:data:`EVENT_FEATURES` per formation. Each feature takes the owner's latest fiscal period
-whose value clock is at or before the formation cutoff and whose event session is at most
-``max_age_days`` old; otherwise ``no_periodic_quarterly_filer`` (no periodic filing and no
-event visible yet: 20-F/40-F filers), ``no_recent_visible_sue`` or ``no_recent_event``.
+:data:`EVENT_FEATURES` per formation. Per line the owner's latest *visible* event is chosen
+first (event clock at or before the cutoff, event session at most ``max_age_days`` old);
+each feature is that event's value when its own clock is at or before the cutoff, else
+NULL with ``event_value_pending`` (never the prior period's value). Without a visible event:
+``no_periodic_quarterly_filer`` (no periodic filing and no event visible yet: 20-F/40-F
+filers) or ``no_recent_event``.
 ``days_since_announcement`` = formation date - event session (calendar days). The shape
 (formation x security x feature: raw_value, reason, available_at, fiscal_period_end,
 event_session, announcement_basis) is the contract for the planned feature-store adapter.
@@ -171,7 +180,7 @@ FILING_DATE_ROLLOVER_DAYS = 1
 BAR_CLOCK_HOURS = 22
 EVIDENCE_FLOOR_HOURS = 46
 PRICE_BASIS = "adjusted_close"
-MARKET_BASIS = "equal_weight_panel_eligible_lines_with_delisting_returns"
+MARKET_BASIS = "equal_weight_panel_eligible_lines_bar_returns_at_session_close"
 EAR_WINDOW = (-1, 1)
 RUNUP_WINDOW = (-21, -2)
 TERMINAL_LOOKBACK_DAYS = 400
@@ -191,6 +200,7 @@ EVENT_FEATURES = (FEATURE_EAR, FEATURE_RUNUP, FEATURE_DAYS_SINCE, FEATURE_SUE)
 
 VALID = "valid"
 REASON_NO_CLOCK = "no_announcement_clock"
+REASON_BEFORE_CALENDAR = "before_session_calendar"
 REASON_NOT_MATURED = "event_window_not_matured"
 REASON_NO_FORMATION = "no_prior_formation"
 REASON_NO_LINE = "no_owner_price_line"
@@ -199,7 +209,7 @@ REASON_INCOMPLETE = "incomplete_price_window"
 REASON_NO_MARKET = "missing_market_return"
 REASON_NO_SUE = "missing_sue"
 REASON_NO_RECENT = "no_recent_event"
-REASON_NO_RECENT_SUE = "no_recent_visible_sue"
+REASON_PENDING = "event_value_pending"
 REASON_NO_FILER = "no_periodic_quarterly_filer"
 
 STATUS_BUILDING = "building"
@@ -234,7 +244,7 @@ _TEMP_TABLES = ("_ev_cal", "_ev_days", "_ev_forms", "_ev_cohort", "_ev_owners", 
                 "_ev_day_formation", "_ev_per_filing", "_ev_owner_ids", "_ev_originals", "_ev_base", "_ev_8k",
                 "_ev_periodic_acc", "_ev_match", "_ev_events", "_ev_term_sel", "_ev_term_bars", "_ev_terminals",
                 "_ev_mkt", "_ev_windows", "_ev_chunk", "_ev_chunk_lines", "_ev_bars", "_ev_ret", "_ev_sue_rev",
-                "_ev_candidates", "_ev_filers")
+                "_ev_vis", "_ev_filers")
 _ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _PKG = Path(__file__).resolve().parents[1]
 #: Every module whose rules or constants shape the output (M3).
@@ -531,7 +541,9 @@ def _spec(options: EarningsEventOptions, context: dict[str, Any], calendar: tupl
                 "definition_hash": sue_definition_hash(), "history_status": SUE_HISTORY_STATUS,
                 "invalid_value_origins": list(INVALID_VALUE_ORIGINS),
                 "period_tolerance_days": options.sue_period_tolerance_days,
-                "event_row": "first_state", "feature": "newest_visible_state_of_latest_period"},
+                "event_row": "state_current_at_visibility",
+                "feature": "newest_visible_state_of_latest_visible_event"},
+        "formation_pick": "latest_visible_event_then_value_or_event_value_pending",
         "features": list(EVENT_FEATURES),
         "inputs": inputs,
         "duckdb": duckdb.__version__,
@@ -780,12 +792,16 @@ def _stage_announcements(store: ResearchStore, options: EarningsEventOptions) ->
                    dd.next_session
             FROM dated d LEFT JOIN _ev_days dd ON dd.day=d.announcement_date
         ), sessioned AS (
-            SELECT a.*, CASE WHEN a.session_timing IN ({same}) THEN a.announcement_date ELSE a.next_session END
-                            AS event_session
+            -- An announcement before the calendar's first session is out of range (N3): no session.
+            SELECT a.*, a.announcement_date < (SELECT min(trade_date) FROM _ev_cal) AS before_calendar,
+                   CASE WHEN a.announcement_date < (SELECT min(trade_date) FROM _ev_cal) THEN NULL
+                        WHEN a.session_timing IN ({same}) THEN a.announcement_date ELSE a.next_session END
+                       AS event_session
             FROM attributed a
         )
         SELECT x.*, s.session_number AS e_num,
                CASE WHEN x.evidence_available_at IS NULL THEN '{REASON_NO_CLOCK}'
+                    WHEN coalesce(x.before_calendar, false) THEN '{REASON_BEFORE_CALENDAR}'
                     WHEN n.trade_date IS NULL THEN '{REASON_NOT_MATURED}'
                     ELSE '{VALID}' END AS event_reason,
                CASE WHEN x.evidence_available_at IS NOT NULL AND n.trade_date IS NOT NULL
@@ -861,25 +877,32 @@ def _stage_terminals(store: ResearchStore) -> dict[str, Any]:
     return {"terminals": int(total), "usable": int(usable)}
 
 
-def _stage_returns(con: Any, lines_table: str, first_day: dt.date, last_day: dt.date) -> None:
-    """``_ev_ret``: one-session returns of ``lines_table`` in the range, terminal returns spliced in."""
+def _stage_returns(con: Any, lines_table: str, first_day: dt.date, last_day: dt.date, *, terminals: bool) -> None:
+    """``_ev_ret``: one-session returns of ``lines_table`` in the range.
+
+    With ``terminals`` (event lines' own windows only) the line's delisting terminal is spliced in
+    on its delisting session and later bars are dropped; the market uses bar returns only (N1).
+    """
     row = con.execute("SELECT max(trade_date) FROM _ev_cal WHERE trade_date < ?", [first_day]).fetchone()
     start = row[0] if row and row[0] is not None else first_day
     bars = _publication.selected_bars_sql(PRICE_BASIS, security_filter=(
         f"trade_date BETWEEN DATE '{start.isoformat()}' AND DATE '{last_day.isoformat()}' "
         f"AND security_id IN (SELECT security_id FROM {lines_table})"))
     con.execute(f"CREATE OR REPLACE TEMP TABLE _ev_bars AS {bars}", [None, None])
-    con.execute(f"""
-        CREATE OR REPLACE TEMP TABLE _ev_ret AS
-        WITH base AS (
+    base = """
             SELECT b.security_id, b.trade_date, b.price / p.price - 1 AS r,
                    greatest(b.price_available_at, p.price_available_at) AS clock
             FROM _ev_bars b
             JOIN _ev_cal s ON s.trade_date=b.trade_date
             JOIN _ev_cal ps ON ps.session_number=s.session_number-1
             JOIN _ev_bars p ON p.security_id=b.security_id AND p.trade_date=ps.trade_date
-            WHERE b.trade_date BETWEEN ? AND ?
-        )
+            WHERE b.trade_date BETWEEN ? AND ?"""
+    if not terminals:
+        con.execute(f"CREATE OR REPLACE TEMP TABLE _ev_ret AS {base}", [first_day, last_day])
+        return
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _ev_ret AS
+        WITH base AS ({base})
         SELECT base.* FROM base LEFT JOIN _ev_terminals t ON t.security_id=base.security_id
         WHERE t.delist_session IS NULL OR base.trade_date < t.delist_session
         UNION ALL
@@ -900,31 +923,41 @@ def _build_market(store: ResearchStore, version: str, options: EarningsEventOpti
     bounds = con.execute("SELECT min(trade_date), max(trade_date) FROM _ev_day_formation").fetchone()
     if bounds is None or bounds[0] is None:
         return {"days": 0}
-    below = 0
+    below = late = 0
+    close = f"CAST(r.trade_date AS TIMESTAMP) + INTERVAL {BAR_CLOCK_HOURS} HOUR"
     for first, last in _year_ranges(bounds[0], bounds[1]):
-        _stage_returns(con, "_ev_universe_lines", first, last)
-        con.execute("""
+        # Bar returns only (no terminal splice, no terminal-based drop): a name leaves the market
+        # after its last bar, and a return enters only when both bars were known at the day's close
+        # clock, so the market row's clock is always the session close (N1).
+        _stage_returns(con, "_ev_universe_lines", first, last, terminals=False)
+        con.execute(f"""
             CREATE OR REPLACE TEMP TABLE _ev_mkt AS
-            SELECT r.trade_date, d.formation_date, avg(r.r) AS market_return, count(*) AS names,
-                   count(*) FILTER (WHERE abs(r.r) > 1.0) AS extreme, max(r.clock) AS clock
+            SELECT r.trade_date, d.formation_date,
+                   avg(r.r) FILTER (WHERE r.clock <= {close}) AS market_return,
+                   count(*) FILTER (WHERE r.clock <= {close}) AS names,
+                   count(*) FILTER (WHERE r.clock <= {close} AND abs(r.r) > 1.0) AS extreme,
+                   count(*) FILTER (WHERE r.clock > {close}) AS late
             FROM _ev_ret r
             JOIN _ev_day_formation d ON d.trade_date=r.trade_date
             JOIN _ev_universe u ON u.formation_date=d.formation_date AND u.security_id=r.security_id
             GROUP BY r.trade_date, d.formation_date
         """)
-        below += int(con.execute("SELECT count(*) FROM _ev_mkt WHERE names < ?",
-                                 [options.market_min_names]).fetchone()[0])
+        below_n, late_n = con.execute("SELECT count(*) FILTER (WHERE names < ?), coalesce(sum(late), 0) FROM _ev_mkt",
+                                      [options.market_min_names]).fetchone()
+        below, late = below + int(below_n), late + int(late_n)
         with store.transaction():
-            con.execute("""
+            con.execute(f"""
                 INSERT INTO research_event_market
-                SELECT ?, trade_date, formation_date, market_return, names, extreme, clock FROM _ev_mkt
-                WHERE names >= ?
+                SELECT ?, trade_date, formation_date, market_return, names, extreme,
+                       CAST(trade_date AS TIMESTAMP) + INTERVAL {BAR_CLOCK_HOURS} HOUR
+                FROM _ev_mkt WHERE names >= ?
             """, [version, options.market_min_names])
     days, low, mean, extreme = con.execute("""
         SELECT count(*), min(names), avg(names), count(*) FILTER (WHERE extreme_returns > 0)
         FROM research_event_market WHERE event_version=?
     """, [version]).fetchone()
-    return {"days": int(days), "days_below_min_names": below, "min_names": None if low is None else int(low),
+    return {"days": int(days), "days_below_min_names": below, "late_bar_returns_excluded": late,
+            "min_names": None if low is None else int(low),
             "mean_names": None if mean is None else round(float(mean), 3),
             "days_with_abs_return_over_100pct": int(extreme)}
 
@@ -960,7 +993,7 @@ def _build_windows(store: ResearchStore, version: str) -> None:
         """).fetchone()
         if span is None or span[0] is None:
             continue
-        _stage_returns(con, "_ev_chunk_lines", span[0], span[1])
+        _stage_returns(con, "_ev_chunk_lines", span[0], span[1], terminals=True)
         ear, runup = f"rel BETWEEN {lo_e} AND {hi_e}", f"rel BETWEEN {lo_r} AND {hi_r}"
         con.execute(f"""
             INSERT INTO _ev_windows
@@ -1053,10 +1086,19 @@ def _insert_events(store: ResearchStore, version: str) -> None:
     with store.transaction():
         store.con.execute(f"""
             INSERT INTO research_earnings_events ({", ".join(_EVENT_COLUMNS)})
-            WITH first_sue AS (
-                SELECT * FROM _ev_sue_rev
-                QUALIFY row_number() OVER (PARTITION BY owner_cik, fiscal_period_end
-                                           ORDER BY available_at, derived_value_id) = 1
+            WITH sue_clock AS (
+                -- visibility clock of the period's SUE: its first state, never before the event clock
+                SELECT r.owner_cik, r.fiscal_period_end,
+                       greatest(min(r.available_at), any_value(e.event_available_at)) AS visible_at
+                FROM _ev_sue_rev r JOIN _ev_events e ON e.owner_cik=r.owner_cik AND e.period_end=r.fiscal_period_end
+                GROUP BY r.owner_cik, r.fiscal_period_end
+            ), first_sue AS (
+                -- the state current at that clock (N5): newest state not after it
+                SELECT r.* FROM _ev_sue_rev r
+                JOIN sue_clock c ON c.owner_cik=r.owner_cik AND c.fiscal_period_end=r.fiscal_period_end
+                WHERE r.available_at <= c.visible_at
+                QUALIFY row_number() OVER (PARTITION BY r.owner_cik, r.fiscal_period_end
+                                           ORDER BY r.available_at DESC, r.derived_value_id DESC) = 1
             ), scored AS (
                 SELECT e.*, w.ear_sum, w.ear_clock, w.runup_sum, w.runup_clock, w.delisting_session,
                        {reason('w.ear_line_n', 'w.ear_n', 'w.ear_all_post', ear_days)} AS ear_reason,
@@ -1094,25 +1136,19 @@ def _insert_events(store: ResearchStore, version: str) -> None:
 
 
 def _insert_features(store: ResearchStore, version: str, options: EarningsEventOptions) -> int:
-    """Dense formation view; returns the row count."""
+    """Dense formation view; returns the row count.
+
+    Per formation and line: the owner's latest *visible* event (event clock <= cutoff, session within
+    ``max_age_days``) is chosen first; a feature whose value clock is still after the cutoff is
+    ``event_value_pending`` (NULL), never the prior period's value (N2). ``sue_ni_event`` is the newest
+    state of that event's period visible at the cutoff (the newest wins even when invalid).
+    """
     con = store.con
     con.execute(f"""
-        CREATE OR REPLACE TEMP TABLE _ev_candidates AS
-        WITH ev AS (SELECT * FROM research_earnings_events WHERE event_version=? AND event_reason='{VALID}')
-        SELECT owner_cik, fiscal_period_end, event_session, announcement_basis, '{FEATURE_EAR}' AS feature_id,
-               ear_m1p1 AS value, ear_reason AS reason, ear_available_at AS clock, ear_available_at AS state_at,
-               '' AS state_id FROM ev
-        UNION ALL
-        SELECT owner_cik, fiscal_period_end, event_session, announcement_basis, '{FEATURE_RUNUP}',
-               runup_m21_m2, runup_reason, runup_available_at, runup_available_at, '' FROM ev
-        UNION ALL
-        SELECT owner_cik, fiscal_period_end, event_session, announcement_basis, '{FEATURE_DAYS_SINCE}',
-               NULL, '{VALID}', event_available_at, event_available_at, '' FROM ev
-        UNION ALL
-        SELECT e.owner_cik, e.fiscal_period_end, e.event_session, e.announcement_basis, '{FEATURE_SUE}',
-               CASE WHEN r.state_reason='{VALID}' THEN r.value END, r.state_reason,
-               greatest(r.available_at, e.event_available_at), r.available_at, r.derived_value_id
-        FROM ev e JOIN _ev_sue_rev r ON r.owner_cik=e.owner_cik AND r.fiscal_period_end=e.fiscal_period_end
+        CREATE OR REPLACE TEMP TABLE _ev_vis AS
+        SELECT owner_cik, fiscal_period_end, event_session, announcement_basis, event_available_at,
+               ear_m1p1, ear_reason, ear_available_at, runup_m21_m2, runup_reason, runup_available_at
+        FROM research_earnings_events WHERE event_version=? AND event_reason='{VALID}'
     """, [version])
     # An owner is a periodic filer at a formation once a 10-K/10-Q or an event is visible (M6).
     con.execute(f"""
@@ -1135,32 +1171,58 @@ def _insert_features(store: ResearchStore, version: str, options: EarningsEventO
                     FROM _ev_cohort c JOIN _ev_forms f ON f.formation_date=c.formation_date
                     WHERE c.valid_primary AND c.formation_date BETWEEN ? AND ?
                 ), picked AS (
-                    SELECT l.formation_date, l.security_id, x.feature_id, x.value, x.reason, x.clock,
-                           x.fiscal_period_end, x.event_session, x.announcement_basis
-                    FROM lines l JOIN _ev_candidates x
-                      ON x.owner_cik=l.owner_cik AND x.clock <= l.cutoff
-                     AND x.event_session >= l.formation_date - CAST(? AS INTEGER)
-                    QUALIFY row_number() OVER (PARTITION BY l.formation_date, l.security_id, x.feature_id
-                                               ORDER BY x.fiscal_period_end DESC, x.state_at DESC,
-                                                        x.state_id DESC) = 1
+                    SELECT l.formation_date, l.cutoff, l.security_id, e.*
+                    FROM lines l JOIN _ev_vis e
+                      ON e.owner_cik=l.owner_cik AND e.event_available_at <= l.cutoff
+                     AND e.event_session >= l.formation_date - CAST(? AS INTEGER)
+                    QUALIFY row_number() OVER (PARTITION BY l.formation_date, l.security_id
+                                               ORDER BY e.fiscal_period_end DESC) = 1
+                ), sue AS (
+                    SELECT p.formation_date, p.security_id, r.value, r.state_reason,
+                           greatest(r.available_at, p.event_available_at) AS clock
+                    FROM picked p JOIN _ev_sue_rev r
+                      ON r.owner_cik=p.owner_cik AND r.fiscal_period_end=p.fiscal_period_end
+                     AND greatest(r.available_at, p.event_available_at) <= p.cutoff
+                    QUALIFY row_number() OVER (PARTITION BY p.formation_date, p.security_id
+                                               ORDER BY r.available_at DESC, r.derived_value_id DESC) = 1
+                ), vals AS (
+                    SELECT formation_date, security_id, '{FEATURE_EAR}' AS feature_id,
+                           CASE WHEN ear_available_at <= cutoff THEN ear_m1p1 END AS value,
+                           CASE WHEN ear_available_at <= cutoff THEN ear_reason ELSE '{REASON_PENDING}' END AS reason,
+                           CASE WHEN ear_available_at <= cutoff THEN ear_available_at END AS clock,
+                           fiscal_period_end, event_session, announcement_basis
+                    FROM picked
+                    UNION ALL
+                    SELECT formation_date, security_id, '{FEATURE_RUNUP}',
+                           CASE WHEN runup_available_at <= cutoff THEN runup_m21_m2 END,
+                           CASE WHEN runup_available_at <= cutoff THEN runup_reason ELSE '{REASON_PENDING}' END,
+                           CASE WHEN runup_available_at <= cutoff THEN runup_available_at END,
+                           fiscal_period_end, event_session, announcement_basis
+                    FROM picked
+                    UNION ALL
+                    SELECT formation_date, security_id, '{FEATURE_DAYS_SINCE}',
+                           CAST(date_diff('day', event_session, formation_date) AS DOUBLE), '{VALID}',
+                           event_available_at, fiscal_period_end, event_session, announcement_basis
+                    FROM picked
+                    UNION ALL
+                    SELECT p.formation_date, p.security_id, '{FEATURE_SUE}',
+                           CASE WHEN s.state_reason='{VALID}' THEN s.value END,
+                           coalesce(s.state_reason, '{REASON_PENDING}'), s.clock,
+                           p.fiscal_period_end, p.event_session, p.announcement_basis
+                    FROM picked p LEFT JOIN sue s ON s.formation_date=p.formation_date AND s.security_id=p.security_id
                 ), grid AS (
                     SELECT l.formation_date, l.cutoff, l.security_id, l.owner_cik, f.feature_id
                     FROM lines l CROSS JOIN (SELECT unnest(?::VARCHAR[]) AS feature_id) f
                 )
-                SELECT ?, g.formation_date, g.security_id, g.owner_cik, g.feature_id,
-                       CASE WHEN p.feature_id IS NULL THEN NULL
-                            WHEN g.feature_id='{FEATURE_DAYS_SINCE}'
-                                THEN CAST(date_diff('day', p.event_session, g.formation_date) AS DOUBLE)
-                            ELSE p.value END,
-                       CASE WHEN p.feature_id IS NOT NULL THEN p.reason
+                SELECT ?, g.formation_date, g.security_id, g.owner_cik, g.feature_id, v.value,
+                       CASE WHEN v.feature_id IS NOT NULL THEN v.reason
                             WHEN NOT coalesce(fl.first_filing <= g.formation_date
                                               OR fl.first_event_at <= g.cutoff, false) THEN '{REASON_NO_FILER}'
-                            WHEN g.feature_id='{FEATURE_SUE}' THEN '{REASON_NO_RECENT_SUE}'
                             ELSE '{REASON_NO_RECENT}' END,
-                       p.clock, p.fiscal_period_end, p.event_session, p.announcement_basis
+                       v.clock, v.fiscal_period_end, v.event_session, v.announcement_basis
                 FROM grid g
-                LEFT JOIN picked p
-                  ON p.formation_date=g.formation_date AND p.security_id=g.security_id AND p.feature_id=g.feature_id
+                LEFT JOIN vals v
+                  ON v.formation_date=g.formation_date AND v.security_id=g.security_id AND v.feature_id=g.feature_id
                 LEFT JOIN _ev_filers fl ON fl.owner_cik=g.owner_cik
             """, [batch[0], batch[-1], options.max_age_days, list(EVENT_FEATURES), version])
     rows = con.execute("SELECT count(*) FROM research_event_features WHERE event_version=?", [version]).fetchone()
@@ -1267,6 +1329,15 @@ def _checks(con: Any, version: str, calendar: tuple[str, str] | None = None) -> 
         "feature_grain": ("""
             SELECT count(*) FROM (SELECT formation_date, security_id, feature_id FROM research_event_features
                                   WHERE event_version=? GROUP BY ALL HAVING count(*) > 1)""", [version]),
+        # N1: the market is bar-close clocked; no terminal (or late bar) clock may leak into it.
+        "market_clock_not_session_close": (f"""
+            SELECT count(*) FROM research_event_market WHERE event_version=?
+              AND available_at IS DISTINCT FROM CAST(trade_date AS TIMESTAMP) + INTERVAL {BAR_CLOCK_HOURS} HOUR""",
+                                           [version]),
+        # N5: an event-row SUE is valid while it is visible.
+        "sue_superseded_before_visible": ("""
+            SELECT count(*) FROM research_earnings_events WHERE event_version=? AND sue_available_at IS NOT NULL
+              AND sue_valid_to IS NOT NULL AND sue_valid_to <= sue_available_at""", [version]),
     }
     return {name: int(con.execute(sql, params).fetchone()[0]) for name, (sql, params) in checks.items()}
 
@@ -1274,11 +1345,14 @@ def _checks(con: Any, version: str, calendar: tuple[str, str] | None = None) -> 
 def validate_event_version(store: ResearchStore, event_version: str) -> dict[str, int]:
     """Re-run the seal invariants and recompute both content digests of a sealed version (M4)."""
     con = store.con
-    row = con.execute("SELECT status, events_sha256, features_sha256 FROM research_event_versions "
+    row = con.execute("SELECT status, events_sha256, features_sha256, query_version FROM research_event_versions "
                       "WHERE event_version=?", [event_version]).fetchone()
     if row is None:
         raise EventStoreError(f"event version {event_version} is absent")
-    status, events_sha, features_sha = row
+    status, events_sha, features_sha, query_version = row
+    if query_version != QUERY_VERSION:  # N4: legacy rows lack the v2 columns and feature ids
+        raise EventStoreError(f"event version {event_version} was built by {query_version!r}; only "
+                              f"{QUERY_VERSION!r} versions are valid (rebuild it)")
     if status not in SEALED_STATUSES:
         raise EventStoreError(f"event version {event_version} is {status!r}, not sealed")
     checks = _checks(con, event_version, _calendar_keys())
