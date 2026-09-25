@@ -1,10 +1,11 @@
 """R2b standardized feature store: oracle parity, PIT domain operands, size/universe gates, versions.
 
 The fixture is a sealed, validator-clean R2a-shaped panel (reconstructed basis, four
-month-ends, 300 issuers plus secondary class lines and an unlinked tail) in a research
-store attached to a small warehouse holding the derived states, standardized items and
-FF12 classifications that the feature store reads for domain operands, item legs and
-industry groups.
+month-ends, 300 issuers plus secondary class lines and an unlinked tail of losers, five
+of which delist after February) in a research store attached to a small warehouse
+holding the derived states, standardized items and FF12 classifications that the
+feature store reads for domain operands, item legs and industry groups. At the thin
+last formation half of the issuers lose their owner link (``missing_owner_link``).
 """
 
 from __future__ import annotations
@@ -34,7 +35,8 @@ THIN_FORMATION = FORMATIONS[3]
 N_ISSUERS = 300
 THIN_VALID = 150          # valid issuers at the thin formation (< 200)
 SECONDARY = 10            # issuers 0..9 also list a class-B line
-TAIL = 15                 # eligible lines without an owner link
+TAIL = 15                 # eligible lines without an owner link (losers: momentum below every issuer's)
+TAIL_DELISTED = 5         # tail lines 0..4 delist after FORMATIONS[1]
 VERIFIED = rp.SIZE_VERIFIED
 UNVERIFIED = rp.UNVERIFIED_VENDOR_SHARES
 Q3 = dt.date(2023, 9, 30)
@@ -127,8 +129,13 @@ def _warehouse(path: Path, values: dict[str, np.ndarray]) -> None:
                                         ("debt_to_equity", "q", values["debt"][i] / values["stockholders_equity"][i])):
                 derived.append((f"{code}-{i}-{period}", source, _owner(i), code, window, bucket, period, value, clock))
             if i % 29 != 2:  # no equity state at all: missing_book_operand
+                # i % 47 == 11: an older valid revision, then an explicit NULL (invalid) state at the
+                # roe state's own clock; the latest state is the NULL one (engine rule), never the older value.
                 derived.append((f"eq-{i}-{period}", source, _owner(i), "common_equity_avg2", "avg2", bucket, period,
-                                values["equity"][i], clock))
+                                values["equity"][i], clock - dt.timedelta(days=1) if i % 47 == 11 else clock))
+                if i % 47 == 11:
+                    derived.append((f"eq-void-{i}-{period}", source, _owner(i), "common_equity_avg2", "avg2",
+                                    bucket, period, 0.0, clock))
             if i % 19 == 4:  # a later revision of the same bucket, after the roe state's clock: ignored
                 derived.append((f"eq-late-{i}-{period}", source, _owner(i), "common_equity_avg2", "avg2", bucket,
                                 period, -values["equity"][i] if values["equity"][i] > 0 else 99.0,
@@ -150,6 +157,7 @@ def _warehouse(path: Path, values: dict[str, np.ndarray]) -> None:
     _bulk(con, "derived_metric_values", pd.DataFrame(derived, columns=[
         "derived_value_id", "source", "security_id", "metric_code", "metric_window", "target_bucket", "period_end",
         "value", "available_at"]))
+    con.execute("UPDATE derived_metric_values SET value = NULL WHERE derived_value_id LIKE 'eq-void-%'")
     _bulk(con, "fundamental_standardized", pd.DataFrame(items, columns=[
         "standardized_id", "source", "security_id", "cik", "canonical_code", "basis", "period_end", "value",
         "available_at", "rule_id"]))
@@ -172,9 +180,22 @@ def _members(day: dt.date) -> list[dict[str, Any]]:
         rows.append({"security_id": f"TBL-B-{i:03d}", "owner_cik": _cik(i), "issuer": i, "cohort_reason": "valid",
                      "primary_line": False, "issuer_lines": 2})
     for j in range(TAIL):
+        if j < TAIL_DELISTED and day not in FORMATIONS[:2]:
+            continue                 # delisted: no longer an eligible member
         rows.append({"security_id": f"TBL-TAIL-{j:03d}", "owner_cik": None, "issuer": None,
                      "cohort_reason": "missing_owner_link", "primary_line": None, "issuer_lines": None})
     return rows
+
+
+def _linked_lines(day: dt.date) -> set[str]:
+    return {_owner(i) for i in range(N_ISSUERS) if not (day == THIN_FORMATION and i >= THIN_VALID)}
+
+
+def _unlinked_lines(day: dt.date) -> set[str]:
+    """Eligible lines without an owner link at ``day``: the live tail plus, at the thin formation, the
+    issuers that lost their link."""
+    tail = {f"TBL-TAIL-{j:03d}" for j in range(TAIL) if not (j < TAIL_DELISTED and day not in FORMATIONS[:2])}
+    return tail | ({_owner(i) for i in range(THIN_VALID, N_ISSUERS)} if day == THIN_FORMATION else set())
 
 
 def _panel_values(day: dt.date, members: list[dict[str, Any]], values: dict[str, np.ndarray],
@@ -199,7 +220,9 @@ def _panel_values(day: dt.date, members: list[dict[str, Any]], values: dict[str,
                 else rp.FUNDAMENTAL_AVAILABILITY_BASIS, "feature_scope": scope, "shares_source": None,
                 "size_status": None}
             if scope == "price_line":
-                row.update(reason="valid", raw_value=float(0.05 + 0.3 * rng.standard_normal()),
+                draw = float(rng.standard_normal())
+                loser = member["security_id"].startswith("TBL-TAIL-")   # later-delisting losers
+                row.update(reason="valid", raw_value=-1.5 + 0.1 * draw if loser else 0.05 + 0.3 * draw,
                            available_at=cutoff, latest_input_clock=cutoff, value_origin="market_daily", age_days=0)
                 rows.append(row)
                 continue
@@ -416,14 +439,19 @@ def _dates(store: ResearchStore, version: str, feature: str) -> pd.DataFrame:
     return frame
 
 
-def _universe_raw(store: ResearchStore, feature: str, *, verified: bool) -> pd.DataFrame:
-    """Independent read of the ranked universe's valid panel values (the oracle's input)."""
+def _universe_raw(store: ResearchStore, feature: str, *, verified: bool, lines: bool = False) -> pd.DataFrame:
+    """Independent read of the ranked universe's valid panel values (the oracle's input).
+
+    ``lines``: the price-line universe, i.e. also every eligible line without an owner link.
+    """
+    unlinked = f"OR k.cohort_reason IN ({', '.join(repr(r) for r in rp.OWNER_LINK_FAILURES)})" if lines else ""
     frame = store.con.execute(f"""
         SELECT v.formation_date, v.security_id, v.raw_value FROM research_panel_values v
         JOIN research_panel_cohort k ON k.run_id=v.run_id AND k.formation_date=v.formation_date
                                     AND k.security_id=v.security_id
-        WHERE v.run_id='panel_recon' AND v.feature_id=? AND v.reason='valid' AND k.cohort_reason='valid'
-          AND k.primary_line {"AND v.size_status = '" + VERIFIED + "'" if verified else ""}
+        WHERE v.run_id='panel_recon' AND v.feature_id=? AND v.reason='valid' AND k.eligible
+          AND ((k.cohort_reason='valid' AND k.primary_line) {unlinked})
+          {"AND v.size_status = '" + VERIFIED + "'" if verified else ""}
         ORDER BY v.formation_date, v.security_id
     """, [feature]).df()
     frame["formation_date"] = pd.to_datetime(frame["formation_date"]).dt.date
@@ -473,9 +501,11 @@ def test_version_is_sealed_valid_and_lists_every_catalog_row(built: Any) -> None
 
 def test_winsor_zscore_and_rank_normal_equal_the_cross_section_oracle(built: Any) -> None:
     store, version = built["store"], built["result"].feature_version
-    for feature, sign, log in (("momentum_12_1", 1, False), ("market_cap", -1, True)):
-        raw = _universe_raw(store, feature, verified=feature == "market_cap")
-        raw = raw[raw["formation_date"] != THIN_FORMATION]
+    # momentum ranks every line (unlinked ones too), so even the last formation is formed for it.
+    for feature, sign, log, lines in (("momentum_12_1", 1, False, True), ("market_cap", -1, True, False)):
+        raw = _universe_raw(store, feature, verified=feature == "market_cap", lines=lines)
+        if not lines:
+            raw = raw[raw["formation_date"] != THIN_FORMATION]
         matrix = _matrix(store, version, feature).set_index(["formation_date", "security_id"])
         base = np.log(raw["raw_value"]) if log else raw["raw_value"]
         frame = pd.DataFrame({"as_of_date": raw["formation_date"], "value": sign * base,
@@ -499,9 +529,11 @@ def test_winsor_zscore_and_rank_normal_equal_the_cross_section_oracle(built: Any
             assert abs(part["zscore"].mean()) < 1e-12 and abs(part["zscore"].std(ddof=1) - 1) < 1e-12
 
 
-def test_industry_neutral_equals_signal_eval_neutralization(built: Any) -> None:
+def test_industry_neutral_is_the_unit_variance_signal_eval_neutralization(built: Any) -> None:
     store, version = built["store"], built["result"].feature_version
-    raw = _universe_raw(store, "momentum_12_1", verified=False)
+    # Oracle input: momentum's whole ranked universe (unlinked lines have no industry: the oracle
+    # drops them as unclassified). The last formation's coverage is below 80% (see the thin test).
+    raw = _universe_raw(store, "momentum_12_1", verified=False, lines=True)
     raw = raw[raw["formation_date"] != THIN_FORMATION]
     groups = {_owner(i): f"FF{i % 12 + 1:02d}" for i in range(N_ISSUERS) if i % 50 != 7}
     panel = pd.DataFrame({"security_id": raw["security_id"], "as_of_date": pd.to_datetime(raw["formation_date"]),
@@ -509,6 +541,9 @@ def test_industry_neutral_equals_signal_eval_neutralization(built: Any) -> None:
     classes = panel.loc[panel["security_id"].isin(groups), ["security_id", "as_of_date"]].assign(
         classification_group=lambda f: f["security_id"].map(groups))
     expected = signal_eval.neutralize_panel_by_industry(panel, classes, strict=False).panel
+    assert expected.groupby("as_of_date")["value"].std(ddof=1).max() < 0.35     # the raw centered rank (~0.29)
+    # Re-standardized per formation to unit variance (FM slopes comparable across variants).
+    expected["value"] = expected.groupby("as_of_date")["value"].transform(lambda s: (s - s.mean()) / s.std(ddof=1))
     matrix = _matrix(store, version, "momentum_12_1")
     stored = matrix.dropna(subset=["industry_neutral"])
     merged = expected.assign(formation_date=expected["as_of_date"].dt.date).merge(
@@ -517,9 +552,15 @@ def test_industry_neutral_equals_signal_eval_neutralization(built: Any) -> None:
     assert (merged["_merge"] == "both").all() and len(merged) > 2 * 200
     assert np.max(np.abs(merged["value"] - merged["industry_neutral"])) < 1e-12
     assert (merged["classification_group"] == merged["industry_group"]).all()
-    # Unclassified names carry no industry-neutral value; the date keeps its coverage.
+    for feature in ("momentum_12_1", "book_to_market", "roe"):
+        for _, part in _matrix(store, version, feature).dropna(subset=["industry_neutral"]).groupby("formation_date"):
+            assert abs(part["industry_neutral"].mean()) < 1e-12
+            assert abs(part["industry_neutral"].std(ddof=1) - 1.0) < 1e-12
+    # Unclassified names (and unlinked lines, which have no owner) carry no industry-neutral value.
     unclassified = matrix[matrix["security_id"].isin({_owner(i) for i in range(N_ISSUERS) if i % 50 == 7})]
     assert unclassified["industry_neutral"].isna().all() and unclassified["rank_normal"].notna().any()
+    tail = matrix[matrix["security_id"].str.startswith("TBL-TAIL-")]
+    assert len(tail) and tail["industry_neutral"].isna().all() and tail["rank_normal"].notna().all()
     dates = _dates(store, version, "momentum_12_1")
     industry = dates[(dates["variant"] == "industry_neutral") & (dates["formation_date"] != THIN_FORMATION)]
     assert (industry["date_status"] == rf.DATE_FORMED).all() and (industry["covariate_coverage"] >= 0.8).all()
@@ -543,7 +584,7 @@ def test_size_neutral_is_orthogonal_to_verified_log_size(built: Any) -> None:
 
 def test_thin_formation_is_flagged_and_never_standardized(built: Any) -> None:
     store, version = built["store"], built["result"].feature_version
-    for feature in ("momentum_12_1", "roe", "sales_to_price"):
+    for feature in ("roe", "sales_to_price", "market_cap"):     # owner features: 150 linked issuers left
         dates = _dates(store, version, feature)
         thin = dates[dates["formation_date"] == THIN_FORMATION]
         assert set(thin["date_status"]) == {rf.DATE_THIN}
@@ -556,19 +597,72 @@ def test_thin_formation_is_flagged_and_never_standardized(built: Any) -> None:
         assert (formed["date_status"] == rf.DATE_FORMED).all()
 
 
-def test_universe_is_valid_primary_lines_and_reasons_sum_to_eligible_members(built: Any) -> None:
-    store, version = built["store"], built["result"].feature_version
-    matrix = _matrix(store, version, "momentum_12_1")
-    assert not matrix["security_id"].str.startswith("TBL-").any()   # no secondary line, no unlinked tail
+def test_price_line_features_rank_unlinked_delisted_lines_and_fundamentals_do_not(built: Any) -> None:
+    """Controller ruling on R2b I1: identity-free price-line features rank every eligible member
+    (a linked issuer through its primary line, an unlinked line as its own name); fundamental and
+    size/valuation features stay on linked primary lines. Reasons still sum to eligible members."""
+    store, result = built["store"], built["result"]
+    version = result.feature_version
+    delisted = "TBL-TAIL-000"            # unlinked, delists after FORMATIONS[1]
+    momentum = _matrix(store, version, "momentum_12_1")
+    rows = momentum[momentum["security_id"] == delisted]
+    assert list(rows["formation_date"]) == FORMATIONS[:2]
+    assert (rows["owner_basis"] == rf.OWNER_BASIS_UNLINKED).all()
+    assert rows["rank_normal"].notna().all() and rows["zscore"].notna().all()
+    assert (rows["rank_normal"] < -1.5).all()                       # a loser: at the bottom of the ranking
+    assert not momentum["security_id"].str.startswith("TBL-B-").any()   # a secondary class: its issuer ranks once
+    for day in FORMATIONS:
+        part = momentum[momentum["formation_date"] == day]
+        assert set(part.loc[part["owner_basis"] == rf.OWNER_BASIS_LINKED, "security_id"]) == _linked_lines(day)
+        assert set(part.loc[part["owner_basis"] == rf.OWNER_BASIS_UNLINKED, "security_id"]) == _unlinked_lines(day)
+    for feature in ("roe", "market_cap", "sales_to_price", "book_to_market"):
+        matrix = _matrix(store, version, feature)
+        assert (matrix["owner_basis"] == rf.OWNER_BASIS_LINKED).all(), feature
+        for day, part in matrix.groupby("formation_date"):
+            assert not set(part["security_id"]) & _unlinked_lines(day), (feature, day)
+        assert delisted not in set(matrix["security_id"])
     for feature in ("momentum_12_1", "market_cap", "roe", "sales_to_price"):
-        dates = _dates(store, version, feature)
-        for _, row in dates[dates["variant"] == "signed_raw"].iterrows():
+        line = feature == "momentum_12_1"
+        for _, row in _dates(store, version, feature).iterrows():
+            day = row["formation_date"]
             reasons = json.loads(row["reasons_json"])
             assert sum(reasons.values()) == row["eligible_members"]
             assert reasons.get(rp.SECONDARY_LINE_REASON) == SECONDARY
-            assert reasons.get("cohort:missing_owner_link", 0) >= TAIL
+            unlinked = len(_unlinked_lines(day))
+            assert reasons.get("cohort:missing_owner_link", 0) == (0 if line else unlinked)
+            # The coverage denominator is the feature's ranked universe (M4).
+            assert row["universe_names"] == len(_linked_lines(day)) + (unlinked if line else 0)
+            assert row["coverage_fraction"] == pytest.approx(row["valid_names"] / row["universe_names"], abs=1e-15)
     reasons = json.loads(_dates(store, version, "roe").iloc[0]["reasons_json"])
     assert reasons["panel:stale_current_anchor"] == sum(1 for i in range(N_ISSUERS) if i % 43 == 5)
+    scopes = dict(store.con.execute("SELECT feature_id, universe_scope FROM research_feature_catalog "
+                                    "WHERE feature_version=?", [version]).fetchall())
+    assert scopes["momentum_12_1"] == rf.UNIVERSE_SCOPE_ALL_LINES
+    assert {scopes[f] for f in ("roe", "market_cap", "sales_to_price", "book_to_market", "assets_to_market",
+                                "gross_profit_to_ev")} == {rf.UNIVERSE_SCOPE_LINKED}
+    assert scopes["revenue_growth_qoq"] is None                       # blocked: never planned
+    # Context: unlinked lines carry no owner covariates; the long view labels every value.
+    context = store.con.execute("SELECT owner_basis, owner_cik, log_size, industry_group FROM research_feature_context "
+                                "WHERE feature_version=? AND security_id=?", [version, delisted]).fetchall()
+    assert context == [(rf.OWNER_BASIS_UNLINKED, None, None, None)] * 2
+    view = store.con.execute("SELECT DISTINCT owner_basis FROM research_feature_values WHERE feature_version=? "
+                             "AND feature_id='momentum_12_1' AND security_id=? AND value IS NOT NULL",
+                             [version, delisted]).fetchall()
+    assert view == [(rf.OWNER_BASIS_UNLINKED,)]
+    assert rf.UNLINKED_LINES_BLOCKER in result.blockers and result.status == rf.STATUS_SEALED
+    # Linked-vs-full diagnostic (price-line features only): the unlinked losers sit at the bottom, so a
+    # linked-only ranking would hide that the linked names' mean score is above the full cross-section's 0.
+    stats = store.con.execute("SELECT feature_id, owner_basis, names, ranked_names, rank_normal_mean "
+                              "FROM research_feature_owner_basis WHERE feature_version=? AND formation_date=?",
+                              [version, FORMATIONS[0]]).df().set_index("owner_basis")
+    assert set(stats["feature_id"]) == {"momentum_12_1"}
+    first = momentum[momentum["formation_date"] == FORMATIONS[0]]
+    for owner_basis, n in ((rf.OWNER_BASIS_LINKED, N_ISSUERS), (rf.OWNER_BASIS_UNLINKED, TAIL)):
+        part = first[first["owner_basis"] == owner_basis]
+        assert stats.loc[owner_basis, "names"] == stats.loc[owner_basis, "ranked_names"] == len(part) == n
+        assert stats.loc[owner_basis, "rank_normal_mean"] == pytest.approx(part["rank_normal"].mean(), abs=1e-12)
+    assert stats.loc[rf.OWNER_BASIS_UNLINKED, "rank_normal_mean"] < -1.5
+    assert stats.loc[rf.OWNER_BASIS_LINKED, "rank_normal_mean"] > 0.05
 
 
 def test_domain_rules_exclude_out_of_domain_values_before_any_transform(built: Any) -> None:
@@ -614,6 +708,10 @@ def test_same_state_operand_ignores_later_revisions_and_missing_operands_are_exc
             assert _owner(i) not in status          # stale anchor: no value row at all
         elif i % 29 == 2:
             assert status[_owner(i)] == "missing_book_operand"
+        elif i % 47 == 11:
+            # The latest equity state at the roe state's clock is an explicit NULL (invalid); the older
+            # valid revision is not used (plain arg_max would skip the NULL and pick it).
+            assert status[_owner(i)] == "missing_book_operand", i
         elif values["equity"][i] <= 0:
             assert status[_owner(i)] == "negative_book"
         else:
@@ -709,8 +807,8 @@ def test_validator_detects_tampering_and_contract_violations(built: Any, tmp_pat
         # A valued secondary class line (a second line of one issuer), consistently re-sealed.
         con.execute("""
             INSERT INTO research_feature_matrix (feature_version, formation_date, security_id, feature_id,
-                expected_sign, available_at, raw_value, domain_status, signed_raw)
-            VALUES (?, ?, 'TBL-B-000', 'momentum_12_1', 1, ?, 0.1, 'in_domain', 0.1)
+                owner_basis, expected_sign, available_at, raw_value, domain_status, signed_raw)
+            VALUES (?, ?, 'TBL-B-000', 'momentum_12_1', 'linked_primary', 1, ?, 0.1, 'in_domain', 0.1)
         """, [version, FORMATIONS[0], dt.datetime.combine(FORMATIONS[0], dt.time(22))])
         con.execute("UPDATE research_feature_catalog SET value_rows = value_rows + 1 WHERE feature_version=? "
                     "AND feature_id='momentum_12_1'", [version])
