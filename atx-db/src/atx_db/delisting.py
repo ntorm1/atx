@@ -1000,7 +1000,19 @@ POLICY_TERMINAL_RETURN_COLUMNS = [
     "return_observation_id",
 ]
 
-# The basis -> (required inputs, formula) contract. This dict is the ONLY place a
+# Per-share consideration (cash, successor shares, parent + child) is stated on the delisted
+# security's own raw share basis at the event, so the only comparable denominator is the
+# UNADJUSTED last pre-delist close of the same security. A vendor-adjusted close carries later
+# split/dividend factors and is not on that basis (cash 50 vs raw close 40 is +25%, not 50/38).
+# refresh_delisting_terminal_returns always supplies PRE_DELIST_PRICE_COLUMN from raw bars.
+# LEGACY_PRE_DELIST_PRICE_COLUMN is read only when a caller's frame does not carry
+# PRE_DELIST_PRICE_COLUMN at all (pure-function callers that pass their own same-basis price
+# under the historical name); a present-but-NULL raw price never falls back.
+PRE_DELIST_PRICE_COLUMN = "last_pre_delist_close"
+LEGACY_PRE_DELIST_PRICE_COLUMN = "last_pre_delist_adjusted_close"
+
+# The basis -> (required consideration inputs, per-share consideration value) contract; the
+# terminal return is value / pre-delist raw close - 1. This dict is the ONLY place a
 # terminal_return_basis name appears in code -- policy selection (see apply_terminal_return_policy)
 # never branches on policy_code, only on whether a candidate's basis has its required inputs.
 # final_distribution / observed_dlret / unresolved are intentionally absent: every
@@ -1008,20 +1020,16 @@ POLICY_TERMINAL_RETURN_COLUMNS = [
 # filtered out before this contract is ever consulted (R2 step 2).
 _TERMINAL_RETURN_BASIS_CONTRACT: dict[str, tuple[tuple[str, ...], Callable[[pd.Series], float]]] = {
     "cash_consideration": (
-        ("cash_amount", "last_pre_delist_adjusted_close"),
-        lambda row: float(row["cash_amount"]) / float(row["last_pre_delist_adjusted_close"]) - 1.0,
+        ("cash_amount",),
+        lambda row: float(row["cash_amount"]),
     ),
     "successor_reinvest": (
-        ("successor_security_id", "successor_value", "last_pre_delist_adjusted_close"),
-        lambda row: float(row["successor_value"]) / float(row["last_pre_delist_adjusted_close"]) - 1.0,
+        ("successor_security_id", "successor_value"),
+        lambda row: float(row["successor_value"]),
     ),
     "parent_plus_child": (
-        ("parent_value", "child_value", "last_pre_delist_adjusted_close"),
-        lambda row: (
-            (float(row["parent_value"]) + float(row["child_value"]))
-            / float(row["last_pre_delist_adjusted_close"])
-            - 1.0
-        ),
+        ("parent_value", "child_value"),
+        lambda row: float(row["parent_value"]) + float(row["child_value"]),
     ),
 }
 
@@ -1054,16 +1062,20 @@ def apply_terminal_return_policy(
     ``terminal_return_policy_dim.corporate_action_type``); the caller is responsible for attaching
     it (see :func:`compute_delisting_terminal_returns`). ``corporate_actions`` supplies the
     per-event financial inputs the matched policy's basis needs (``cash_amount``,
-    ``successor_security_id``/``successor_value``, ``parent_value``/``child_value``,
-    ``last_pre_delist_adjusted_close``, ``last_pre_delist_available_at``, ``available_at``),
-    joined on ``(security_id, delist_date == ex_date)``.
+    ``successor_security_id``/``successor_value``, ``parent_value``/``child_value``, the
+    UNADJUSTED ``last_pre_delist_close`` of the same security, ``last_pre_delist_available_at``,
+    ``available_at``), joined on ``(security_id, delist_date == ex_date)``. A frame without a
+    ``last_pre_delist_close`` column is read through the legacy ``last_pre_delist_adjusted_close``
+    name (see :data:`LEGACY_PRE_DELIST_PRICE_COLUMN`); a present-but-NULL raw price never falls
+    back.
 
     Selection (S4-1 brief R2): candidates are the ``policy_dim`` rows whose
     ``corporate_action_type`` matches the event, discarding any candidate with
     ``is_observed_required`` true. The remaining candidates are evaluated in ascending
     ``policy_code`` order; the first whose ``terminal_return_basis`` has every required input
-    present (and, uniformly, a strictly positive ``last_pre_delist_adjusted_close``) wins. No
-    candidate qualifying means no row for that event -- this function never invents a return.
+    present (and, uniformly, a strictly positive pre-delist raw close) wins; its return is the
+    per-share consideration value / that close - 1. No candidate qualifying means no row for
+    that event -- this function never invents a return.
 
     ``available_at`` (S4-1 brief R3) is ``max(corporate_action.available_at,
     last_pre_delist_available_at)``, never a fallback to ``delist_date``/``as_of_date``/``now()``;
@@ -1103,6 +1115,11 @@ def apply_terminal_return_policy(
     merged = merged.drop(columns=["_delist_date_key"])
     if merged.empty:
         return _empty_policy_terminal_return_frame()
+    price_column = (
+        PRE_DELIST_PRICE_COLUMN if PRE_DELIST_PRICE_COLUMN in merged.columns else LEGACY_PRE_DELIST_PRICE_COLUMN
+    )
+    if price_column not in merged.columns:
+        return _empty_policy_terminal_return_frame()
 
     # Deterministic candidate order: is_observed_required policies never yield a policy row
     # (R2 step 2), and the survivors are walked in ascending policy_code order (R2 step 3).
@@ -1137,13 +1154,13 @@ def apply_terminal_return_policy(
             contract = _TERMINAL_RETURN_BASIS_CONTRACT.get(basis)
             if contract is None:
                 continue
-            required_inputs, formula = contract
+            required_inputs, consideration_value = contract
             if not all(col in event_row.index and pd.notna(event_row[col]) for col in required_inputs):
                 continue
-            last_close = event_row.get("last_pre_delist_adjusted_close")
-            if pd.isna(last_close) or float(last_close) <= 0:
+            last_close = event_row.get(price_column)
+            if pd.isna(last_close) or not math.isfinite(float(last_close)) or float(last_close) <= 0:
                 continue
-            terminal_return = formula(event_row)
+            terminal_return = consideration_value(event_row) / float(last_close) - 1.0
             if not math.isfinite(terminal_return):
                 continue
 
@@ -1852,6 +1869,98 @@ def _load_terminal_return_events(store: DuckDBStore, *, resolve_exchange: bool) 
     ).df()
 
 
+# Corporate actions the policy branch can price: action types with a policy that does not
+# require an observed return. Each is joined to the UNADJUSTED close of the same security's
+# latest-revision bar strictly before ex_date (one bar per security-day, deterministic pick),
+# read from equity_daily_bars -- the base price input that always precedes this stage -- not
+# from equity_price_metrics, which activation may build later and which carries adjusted prices.
+_CORPORATE_ACTION_PRICE_SQL = """
+    WITH branch_actions AS (
+        SELECT ca.security_id, ca.action_type, ca.ex_date, ca.cash_amount, ca.available_at
+        FROM corporate_actions ca
+        WHERE ca.action_type IN (
+            SELECT corporate_action_type FROM terminal_return_policy_dim WHERE NOT is_observed_required
+        )
+    ),
+    raw_bars AS (
+        SELECT b.security_id, b.trade_date, b.close,
+               coalesce(b.available_at, CAST(b.trade_date AS TIMESTAMP) + INTERVAL 22 HOUR) AS price_available_at
+        FROM equity_daily_bars b
+        WHERE b.is_latest_revision = true
+          AND b.close > 0 AND isfinite(b.close)
+          AND b.security_id IN (SELECT security_id FROM branch_actions)
+        QUALIFY row_number() OVER (
+            PARTITION BY b.security_id, b.trade_date
+            ORDER BY coalesce(b.available_at, CAST(b.trade_date AS TIMESTAMP) + INTERVAL 22 HOUR) DESC,
+                     b.source ASC, b.vendor_security_id ASC NULLS LAST, b.symbol ASC,
+                     b.close DESC, b.source_loaded_at DESC
+        ) = 1
+    )
+    SELECT
+        a.security_id,
+        a.action_type,
+        a.ex_date AS delist_date,
+        a.cash_amount,
+        a.available_at,
+        p.close AS last_pre_delist_close,
+        p.trade_date AS last_pre_delist_trade_date,
+        p.price_available_at AS last_pre_delist_available_at,
+        (SELECT count(*) FROM raw_bars) AS price_input_rows
+    FROM branch_actions a
+    ASOF LEFT JOIN raw_bars p
+      ON a.security_id = p.security_id
+     AND a.ex_date > p.trade_date
+    ORDER BY a.security_id, a.ex_date, a.action_type
+"""
+
+POLICY_BIAS_EXPOSURE_CHECK_NAME = "policy_terminal_bias_exposure"
+CORPORATE_ACTION_PRICE_CHECK_NAME = "corporate_action_unadjusted_price_input"
+
+
+def _corporate_action_price_inputs(store: DuckDBStore) -> pd.DataFrame:
+    """Load policy-branch corporate actions with their unadjusted pre-delist price.
+
+    Fails loudly -- a failed diagnostic row, then ``RuntimeError`` -- when such actions exist
+    but the branch's price input is empty: that is the first-run ordering defect in which
+    every cash/successor consideration silently lost its denominator. Partial misses (an
+    action whose security has no earlier bar) are counted in a warning diagnostic and simply
+    yield no policy row.
+    """
+
+    frame = store.con.execute(_CORPORATE_ACTION_PRICE_SQL).df()
+    actions = len(frame)
+    if not actions:
+        return frame.drop(columns=["price_input_rows"])
+    price_rows = int(frame["price_input_rows"].iloc[0])
+    priced = int(frame[PRE_DELIST_PRICE_COLUMN].notna().sum())
+    details = {
+        "policy_branch_corporate_actions": actions,
+        "with_unadjusted_pre_delist_close": priced,
+        "missing_unadjusted_pre_delist_close": actions - priced,
+        "unadjusted_price_input_rows": price_rows,
+        "price_input": "equity_daily_bars.close (latest revision, strictly before ex_date)",
+    }
+    failed = price_rows == 0
+    quality_check(
+        store,
+        dataset_id="delisting_terminal_returns",
+        table_name="delisting_terminal_returns",
+        check_name=CORPORATE_ACTION_PRICE_CHECK_NAME,
+        status="failed" if failed else ("warning" if priced < actions else "passed"),
+        severity="error" if failed else "warning",
+        observed_value=float(actions - priced),
+        threshold_value=0.0,
+        details=details,
+    )
+    if failed:
+        raise RuntimeError(
+            "delisting terminal corporate-action branch has "
+            f"{actions} policy-eligible corporate action(s) but its unadjusted price input "
+            f"(equity_daily_bars) is empty for their securities: {details}"
+        )
+    return frame.drop(columns=["price_input_rows"])
+
+
 def refresh_delisting_terminal_returns(
     store: DuckDBStore,
     options: DelistingTerminalReturnOptions | None = None,
@@ -1860,14 +1969,13 @@ def refresh_delisting_terminal_returns(
     corporate-action tables via :func:`compute_delisting_terminal_returns`, replacing prior rows
     by source.
 
-    S4-1: ``corporate_actions`` is read alongside its last pre-delist bar from
-    ``equity_price_metrics`` -- the ``is_latest_revision``-filtered row with the greatest
-    ``trade_date`` strictly less than the action's ``ex_date`` -- via an ``ASOF LEFT JOIN``, so a
-    corporate action with no eligible prior bar simply carries a null
-    ``last_pre_delist_adjusted_close`` (the policy applier then correctly emits no row for it,
-    rather than the join silently dropping the corporate action). ``equity_price_metrics.
-    available_at`` is ``NOT NULL`` (unlike ``equity_daily_bars.available_at``), which is why it
-    -- not ``equity_daily_bars`` -- is the source here.
+    Corporate actions are priced against the UNADJUSTED close of the same security's last bar
+    strictly before ``ex_date`` from ``equity_daily_bars`` (modeled ``trade_date`` + 22h clock
+    when a bar carries none); see :func:`_corporate_action_price_inputs` for the loud failure
+    when that input is empty. The Shumway convention (RX2) applies only to unexplained or
+    performance cessations -- never to merger/voluntary-attributed events -- and its exposure
+    on CIK-less unknown cessations is published as the ``policy_terminal_bias_exposure``
+    quality check (see :func:`delisting_policy_bias_exposure`).
     """
 
     options = options or DelistingTerminalReturnOptions()
@@ -1903,26 +2011,7 @@ def refresh_delisting_terminal_returns(
         FROM terminal_return_policy_dim
         """
     ).df()
-    corporate_actions = store.con.execute(
-        """
-        SELECT
-            ca.security_id,
-            ca.action_type,
-            ca.ex_date AS delist_date,
-            ca.cash_amount,
-            ca.available_at,
-            epm.adjusted_close AS last_pre_delist_adjusted_close,
-            epm.available_at AS last_pre_delist_available_at
-        FROM corporate_actions ca
-        ASOF LEFT JOIN (
-            SELECT security_id, trade_date, adjusted_close, available_at
-            FROM equity_price_metrics
-            WHERE is_latest_revision = true
-        ) epm
-          ON ca.security_id = epm.security_id
-         AND ca.ex_date > epm.trade_date
-        """
-    ).df()
+    corporate_actions = _corporate_action_price_inputs(store)
 
     terminal_returns = compute_delisting_terminal_returns(
         observations,
@@ -1941,7 +2030,106 @@ def refresh_delisting_terminal_returns(
                 store, terminal_returns, "delisting_terminal_returns", "delisting_terminal_returns_insert"
             )
 
+    exposure = delisting_policy_bias_exposure(store)
+    violated = exposure["merger_or_voluntary_performance_policy_rows"] > 0
+    exposed = exposure["cik_less_unknown_performance_policy_rows"]
+    quality_check(
+        store,
+        dataset_id="delisting_terminal_returns",
+        table_name="delisting_terminal_returns",
+        check_name=POLICY_BIAS_EXPOSURE_CHECK_NAME,
+        status="failed" if violated else ("warning" if exposed else "passed"),
+        severity="error" if violated else "warning",
+        observed_value=float(exposed),
+        threshold_value=0.0,
+        details=exposure,
+    )
     return int(len(terminal_returns))
+
+
+def delisting_policy_bias_exposure(
+    store: DuckDBStore,
+    *,
+    cutoff: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """RX2 bias exposure of the terminal-return panel to the Shumway convention.
+
+    The headline, ``cik_less_unknown_performance_policy_rows``, counts selected terminal
+    returns that are the Shumway performance convention applied to an ``unknown`` cessation
+    whose security has no CIK link -- the CRSP code-500 analog no public filing can explain
+    and the population most exposed to identity-mapping gaps. Also reported: all policy rows,
+    all Shumway rows, and Shumway rows on merger/voluntary events (an invariant: must be 0).
+    The latest terminal revision per ``(security_id, delist_date)`` visible at ``cutoff`` is
+    joined to the latest visible event; counts, never a certification.
+    """
+
+    if cutoff is not None and cutoff.tzinfo is not None:
+        cutoff = cutoff.astimezone(dt.UTC).replace(tzinfo=None)
+    row = store.con.execute(
+        """
+        WITH terminals AS (
+            SELECT security_id, delist_date, terminal_return, terminal_return_source, terminal_return_policy
+            FROM delisting_terminal_returns
+            WHERE (?::TIMESTAMP IS NULL OR available_at <= ?)
+            QUALIFY row_number() OVER (
+                PARTITION BY security_id, delist_date
+                ORDER BY available_at DESC, source_loaded_at DESC, terminal_return_id DESC
+            ) = 1
+        ),
+        events AS (
+            SELECT security_id, delist_date, delist_reason,
+                   json_extract_string(details_json, '$.cik') AS cik
+            FROM delisting_events
+            WHERE security_id IS NOT NULL AND (?::TIMESTAMP IS NULL OR available_at <= ?)
+            QUALIFY row_number() OVER (
+                PARTITION BY security_id, delist_date ORDER BY available_at DESC, delisting_event_id
+            ) = 1
+        ),
+        joined AS (
+            SELECT t.*, e.delist_reason, e.cik,
+                   t.terminal_return_source = 'policy' AND t.terminal_return_policy IN (?, ?) AS shumway
+            FROM terminals t
+            LEFT JOIN events e ON e.security_id = t.security_id AND e.delist_date = t.delist_date
+        )
+        SELECT
+            count(*),
+            count(*) FILTER (WHERE terminal_return_source = 'observed'),
+            count(*) FILTER (WHERE terminal_return_source = 'policy'),
+            count(*) FILTER (WHERE shumway),
+            count(*) FILTER (WHERE shumway AND delist_reason = 'unknown'),
+            count(*) FILTER (WHERE shumway AND delist_reason = 'unknown' AND cik IS NULL),
+            count(*) FILTER (WHERE shumway AND delist_reason IN ('merger_acquisition', 'voluntary')),
+            avg(terminal_return) FILTER (WHERE shumway AND delist_reason = 'unknown' AND cik IS NULL)
+        FROM joined
+        """,
+        [
+            cutoff,
+            cutoff,
+            cutoff,
+            cutoff,
+            PERFORMANCE_TERMINAL_RETURN_POLICY_CODE,
+            PERFORMANCE_TERMINAL_RETURN_POLICY_CODE_NASDAQ,
+        ],
+    ).fetchone()
+    assert row is not None
+    total = int(row[0])
+    exposed = int(row[5])
+    return {
+        "observation_cutoff": None if cutoff is None else cutoff.isoformat(),
+        "terminal_rows": total,
+        "observed_rows": int(row[1]),
+        "policy_rows": int(row[2]),
+        "performance_policy_rows": int(row[3]),
+        "unknown_reason_performance_policy_rows": int(row[4]),
+        "cik_less_unknown_performance_policy_rows": exposed,
+        "cik_less_unknown_share_of_terminal_rows": (exposed / total) if total else None,
+        "merger_or_voluntary_performance_policy_rows": int(row[6]),
+        "cik_less_unknown_mean_policy_return": None if row[7] is None else float(row[7]),
+        "policy_basis": (
+            "Shumway default only for unexplained/performance cessations (RX2); "
+            "never merger_acquisition or voluntary"
+        ),
+    }
 
 
 def reconcile_delisting_codes(
@@ -2237,4 +2425,6 @@ def survivorship_forward_return_diagnostics(
         "rows": int(output[0]),
         "stitched_rows": int(output[1]),
         "uncovered_event_rows": int(uncovered),
+        # RX2: how much of the stitched outcome rests on Shumway returns for CIK-less unknowns.
+        "policy_bias_exposure": delisting_policy_bias_exposure(store, cutoff=cutoff),
     }

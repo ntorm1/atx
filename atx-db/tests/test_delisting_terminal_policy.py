@@ -384,3 +384,103 @@ def test_the_coverage_check_is_registered(tmp_store):
     assert float(row[1]) == 0.0
     assert row[2] == "le"
     assert bool(row[3]) is True
+
+
+# ---------------------------------------------------------------------------
+# A3: corporate-action consideration on the unadjusted close; loud empty-price failure; RX2.
+# ---------------------------------------------------------------------------
+
+
+def _seed_merger_event(store, *, security_id="SEC-1", delist_date="2024-01-15", reason="merger_acquisition"):
+    store.con.execute(
+        "INSERT INTO delisting_events (delisting_event_id, source, listing_status_source, "
+        "source_listing_status_id, security_id, symbol, delist_date, as_of_date, available_at, "
+        "delist_code, delist_reason, delisting_return_type, return_policy, return_confidence, "
+        "evidence_source, evidence_source_table, method, evidence_confidence) VALUES "
+        "(?, 'atx_delisting_public_evidence_v1', 'sec_form_25', 'e-1', ?, 'TGT', ?, ?, "
+        "TIMESTAMP '2024-01-16 22:00:00', 'SEC_FORM_25', ?, 'UNOBSERVED', 'none', 'none', "
+        "'public_evidence', 'sec_submissions', 'public_evidence_cessation_cluster', 'high')",
+        [f"ev-{security_id}", security_id, delist_date, delist_date, reason],
+    )
+
+
+def _seed_cash_merger(store, *, security_id="SEC-1", ex_date="2024-01-15", cash=50.0):
+    store.con.execute(
+        "INSERT INTO corporate_actions (source, security_id, action_type, ex_date, cash_amount, available_at) "
+        "VALUES ('test', ?, 'merger', ?, ?, TIMESTAMP '2024-01-16 09:00:00')",
+        [security_id, ex_date, cash],
+    )
+
+
+def _seed_raw_and_adjusted_bar(store, day, close, adjusted, *, security_id="SEC-1"):
+    store.con.execute(
+        "INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, close, adjusted_close, "
+        "available_at, as_of_date, is_latest_revision) VALUES ('test', ?, 'TGT', ?, ?, ?, ?, ?, true)",
+        [security_id, day, close, adjusted, f"{day} 22:00:00", day],
+    )
+
+
+def test_cash_consideration_uses_the_unadjusted_last_pre_delist_close(tmp_store):
+    from atx_db.delisting import refresh_delisting_terminal_returns
+
+    _seed_merger_event(tmp_store)
+    _seed_cash_merger(tmp_store)
+    _seed_raw_and_adjusted_bar(tmp_store, "2024-01-11", 39.0, 37.0)
+    _seed_raw_and_adjusted_bar(tmp_store, "2024-01-12", 40.0, 38.0)  # last trade, raw 40 / adjusted 38
+    assert refresh_delisting_terminal_returns(tmp_store) == 1
+    row = tmp_store.con.execute(
+        "SELECT terminal_return, terminal_return_source, terminal_return_policy, return_basis, available_at "
+        "FROM delisting_terminal_returns"
+    ).fetchone()
+    assert row[0] == pytest.approx(0.25)  # 50 / 40 - 1, not 50 / 38 - 1
+    assert row[1:4] == ("policy", "merger_cash", "cash_consideration")
+    assert row[4] == dt.datetime(2024, 1, 16, 9)  # max(action clock, last bar clock)
+    assert tmp_store.con.execute(
+        "SELECT status FROM data_quality_checks WHERE check_name = 'corporate_action_unadjusted_price_input'"
+    ).fetchall() == [("passed",)]
+
+
+def test_corporate_action_branch_fails_loudly_when_its_price_input_is_empty(tmp_store):
+    from atx_db.delisting import refresh_delisting_terminal_returns
+
+    _seed_merger_event(tmp_store)
+    _seed_cash_merger(tmp_store)
+    with pytest.raises(RuntimeError, match="price input"):
+        refresh_delisting_terminal_returns(tmp_store)
+    assert tmp_store.con.execute(
+        "SELECT status, severity, observed_value FROM data_quality_checks "
+        "WHERE check_name = 'corporate_action_unadjusted_price_input'"
+    ).fetchall() == [("failed", "error", 1.0)]
+    assert tmp_store.con.execute("SELECT count(*) FROM delisting_terminal_returns").fetchone()[0] == 0
+
+
+def test_a_missing_pre_delist_close_is_counted_not_back_filled_from_adjusted(tmp_store):
+    from atx_db.delisting import refresh_delisting_terminal_returns
+
+    _seed_merger_event(tmp_store)
+    _seed_merger_event(tmp_store, security_id="SEC-2")
+    _seed_cash_merger(tmp_store)
+    _seed_cash_merger(tmp_store, security_id="SEC-2")
+    _seed_raw_and_adjusted_bar(tmp_store, "2024-01-12", 40.0, 38.0)
+    _seed_raw_and_adjusted_bar(tmp_store, "2024-01-12", None, 38.0, security_id="SEC-2")  # adjusted only
+    assert refresh_delisting_terminal_returns(tmp_store) == 1
+    assert tmp_store.con.execute("SELECT security_id FROM delisting_terminal_returns").fetchall() == [("SEC-1",)]
+    assert tmp_store.con.execute(
+        "SELECT status, observed_value FROM data_quality_checks "
+        "WHERE check_name = 'corporate_action_unadjusted_price_input'"
+    ).fetchall() == [("warning", 1.0)]
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected_rows"),
+    [("merger_acquisition", 0), ("voluntary", 0), ("unknown", 1), ("exchange_delist", 1), ("bankruptcy", 1)],
+)
+def test_shumway_applies_only_to_unexplained_or_performance_cessations(tmp_store, reason, expected_rows):
+    from atx_db.delisting import delisting_policy_bias_exposure, refresh_delisting_terminal_returns
+
+    _seed_merger_event(tmp_store, reason=reason)
+    assert refresh_delisting_terminal_returns(tmp_store) == expected_rows
+    exposure = delisting_policy_bias_exposure(tmp_store)
+    assert exposure["merger_or_voluntary_performance_policy_rows"] == 0
+    # No details_json CIK on this hand-seeded event: an unknown one is CIK-less exposure.
+    assert exposure["cik_less_unknown_performance_policy_rows"] == (1 if reason == "unknown" else 0)

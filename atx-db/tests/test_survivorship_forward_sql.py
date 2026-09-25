@@ -44,10 +44,11 @@ def panel_store() -> Iterator[DuckDBStore]:
             security_id VARCHAR, delist_date DATE, terminal_return DOUBLE,
             terminal_return_source VARCHAR, return_observation_id VARCHAR,
             available_at TIMESTAMP, source_loaded_at TIMESTAMP,
-            is_latest_revision BOOLEAN
+            is_latest_revision BOOLEAN, terminal_return_policy VARCHAR
         );
         CREATE TABLE delisting_events (
-            security_id VARCHAR, delist_date DATE, available_at TIMESTAMP
+            security_id VARCHAR, delist_date DATE, available_at TIMESTAMP,
+            delisting_event_id VARCHAR, delist_reason VARCHAR, details_json VARCHAR
         );
         CREATE TABLE forward_returns_survivorship_safe (
             forward_return_id VARCHAR PRIMARY KEY, source VARCHAR NOT NULL,
@@ -58,7 +59,8 @@ def panel_store() -> Iterator[DuckDBStore]:
             is_stitched BOOLEAN NOT NULL, delist_date DATE,
             terminal_return_source VARCHAR, return_observation_id VARCHAR,
             is_latest_revision BOOLEAN, available_at TIMESTAMP NOT NULL,
-            run_id VARCHAR CHECK (run_id IS NULL OR run_id <> '__reject__')
+            run_id VARCHAR CHECK (run_id IS NULL OR run_id <> '__reject__'),
+            price_basis VARCHAR, calculation_version VARCHAR
         )
         """
     )
@@ -82,17 +84,21 @@ def _bar(store, security, day, adjusted, *, raw=None, available=None, source="ba
 
 
 def _terminal(store, *, identifier="terminal", day=4, value=-0.5,
-              available=dt.datetime(2024, 1, 9), latest=True):
+              available=dt.datetime(2024, 1, 9), latest=True, security="D",
+              source="observed", policy=None):
     store.con.execute(
-        "INSERT INTO delisting_terminal_returns VALUES "
-        "(?, 'terminal-source', 'D', ?, ?, 'observed', ?, ?, '2024-02-01', ?)",
-        [identifier, dt.date(2024, 1, day), value, f"obs-{identifier}", available, latest],
+        "INSERT INTO delisting_terminal_returns (terminal_return_id, source, security_id, delist_date, "
+        "terminal_return, terminal_return_source, return_observation_id, available_at, source_loaded_at, "
+        "is_latest_revision, terminal_return_policy) VALUES "
+        "(?, 'terminal-source', ?, ?, ?, ?, ?, ?, '2024-02-01', ?, ?)",
+        [identifier, security, dt.date(2024, 1, day), value, source, f"obs-{identifier}", available, latest,
+         policy],
     )
 
 
 def _row(store, security="D", day=1, horizon=5, source=DEFAULT_FORWARD_RETURN_SS_SOURCE):
     result = store.con.execute(
-        "SELECT * FROM forward_returns_survivorship_safe "
+        f"SELECT {', '.join(FORWARD_RETURN_SS_COLUMNS)} FROM forward_returns_survivorship_safe "
         "WHERE source = ? AND security_id = ? AND as_of_date = ? AND horizon_days = ?",
         [source, security, dt.date(2024, 1, day), horizon],
     ).fetchone()
@@ -259,7 +265,8 @@ def test_missing_adjustment_is_not_raw_fallback_or_vacuous_quality_pass(panel_st
     _bar(panel_store, "D", 1, None, raw=100)
     _terminal(panel_store)
     panel_store.con.execute(
-        "INSERT INTO delisting_events VALUES ('U', '2024-01-02', '2024-01-03')",
+        "INSERT INTO delisting_events (security_id, delist_date, available_at) "
+        "VALUES ('U', '2024-01-02', '2024-01-03')",
     )
     assert refresh_survivorship_safe_forward_returns(panel_store) == 0
     assert survivorship_forward_return_check(panel_store).status == "failed"
@@ -352,3 +359,49 @@ def test_invalid_selected_terminal_fails_quality_without_any_formation_input(pan
     assert refresh_survivorship_safe_forward_returns(panel_store) == 0
     result = survivorship_forward_return_check(panel_store)
     assert result.status == "failed" and result.observed_value == 1
+
+
+def test_last_observed_trade_basis_keeps_the_final_session_return(panel_store):
+    # A3 delist_date basis: the first session after the last observed trade. The pre-terminal
+    # leg ends at the last traded close, and a formation on the last trade day still earns
+    # the terminal return -- no final-session return is dropped from the label.
+    _bar(panel_store, "D", 1, 100)
+    _bar(panel_store, "D", 2, 110)
+    _bar(panel_store, "D", 3, 99)  # last observed trade
+    _terminal(panel_store, day=4, value=-0.3, available=dt.datetime(2024, 1, 4, 22))
+    refresh_survivorship_safe_forward_returns(panel_store)
+    last_day = _row(panel_store, day=3, horizon=1)
+    assert last_day["raw_forward_return"] == 0
+    assert last_day["forward_return"] == pytest.approx(-0.3)
+    assert last_day["delist_date"] == dt.date(2024, 1, 4)
+    full = _row(panel_store, day=1, horizon=5)
+    assert full["raw_forward_return"] == pytest.approx(-0.01)  # 99 / 100 - 1, through the last trade
+    assert full["forward_return"] == pytest.approx(0.99 * 0.7 - 1)
+    assert _row(panel_store, day=4, horizon=1) is None
+
+
+def test_diagnostics_publish_rx2_policy_bias_exposure(panel_store):
+    from atx_db.delisting import PERFORMANCE_TERMINAL_RETURN_POLICY_CODE
+
+    _terminal(panel_store, identifier="orphan", security="U", day=4, value=-0.3, source="policy",
+              policy=PERFORMANCE_TERMINAL_RETURN_POLICY_CODE, available=dt.datetime(2024, 1, 4, 22))
+    _terminal(panel_store, identifier="linked", security="L", day=4, value=-0.3, source="policy",
+              policy=PERFORMANCE_TERMINAL_RETURN_POLICY_CODE, available=dt.datetime(2024, 1, 4, 22))
+    _terminal(panel_store, identifier="late", security="Z", day=4, value=-0.3, source="policy",
+              policy=PERFORMANCE_TERMINAL_RETURN_POLICY_CODE, available=dt.datetime(2024, 1, 12))
+    panel_store.con.execute(
+        "INSERT INTO delisting_events (security_id, delist_date, available_at, delisting_event_id, "
+        "delist_reason, details_json) VALUES "
+        "('U', '2024-01-04', '2024-01-04 22:00', 'e-u', 'unknown', '{\"cik\": null}'),"
+        "('L', '2024-01-04', '2024-01-04 22:00', 'e-l', 'unknown', '{\"cik\": \"0000000001\"}'),"
+        "('Z', '2024-01-04', '2024-01-04 22:00', 'e-z', 'unknown', '{}')"
+    )
+    options = SurvivorshipSafeForwardReturnOptions(observation_cutoff=dt.datetime(2024, 1, 10, 22))
+    exposure = survivorship_forward_return_diagnostics(panel_store, options)["policy_bias_exposure"]
+    # Z's terminal is not yet visible at the cutoff; L is linked to a CIK.
+    assert exposure["performance_policy_rows"] == 2
+    assert exposure["cik_less_unknown_performance_policy_rows"] == 1
+    assert exposure["cik_less_unknown_share_of_terminal_rows"] == pytest.approx(0.5)
+    assert survivorship_forward_return_diagnostics(panel_store)["policy_bias_exposure"][
+        "cik_less_unknown_performance_policy_rows"
+    ] == 2
