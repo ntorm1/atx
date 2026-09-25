@@ -1367,6 +1367,16 @@ def test_survivorship_dqc_green_on_pre_delist_halt_not_in_own_formation(tmp_stor
         "INSERT INTO forward_returns_survivorship_safe (forward_return_id, source, security_id, as_of_date, "
         "horizon_days, forward_end_date, forward_return, is_delisted_in_horizon, is_stitched, available_at) "
         "VALUES ('f1','ss','Z', DATE '2024-01-05', 21, DATE '2024-01-31', 0.03, false, false, TIMESTAMP '2024-02-01 22:00')")
+    # R3a fix 1 (halt-gap rule): D's terminal is dated one absent session after its last
+    # trade, so the loss is realized on 2024-01-05 and D's OWN 1-session window from its last
+    # bar is legitimately demanded - exactly one row, as the writer publishes it.
+    assert survivorship_forward_return_check(tmp_store, source="ss", price_basis="close").observed_value == 1
+    con.execute(
+        "INSERT INTO forward_returns_survivorship_safe (forward_return_id, source, security_id, symbol, "
+        "as_of_date, horizon_days, forward_end_date, raw_forward_return, terminal_return, forward_return, "
+        "is_delisted_in_horizon, is_stitched, delist_date, terminal_return_source, available_at) "
+        "VALUES ('f-d','ss','D','D', DATE '2024-01-03', 1, DATE '2024-01-05', 0.0, -0.6, -0.6, true, true, "
+        "DATE '2024-01-05', 'observed', TIMESTAMP '2024-01-12 12:00')")
     result = survivorship_forward_return_check(tmp_store, source="ss", price_basis="close")
     # GREEN: no stitched row is demanded at a formation date the delisting name never traded on.
     # (Under the pre-fix security-independent grid this false-positives to failed/critical.)

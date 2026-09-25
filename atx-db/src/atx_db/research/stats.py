@@ -25,12 +25,19 @@ Conventions
   returns (R3a report): nominal-5% NW rejects 5.5% / 8.8% / 13.2% / 16.4% at h=1/3/6/12 and
   ``|t|>=3`` rejects 0.5% / 1.1% / 2.4% / 4.4% (nominal 0.27%), because Bartlett weights
   with ``L=h-1`` capture only about 2/3 of an overlap's long-run variance and the variance
-  estimate itself is noisy with ~T/h independent observations. EWC rejects
-  4.5-6.5% / 0.13-0.33% over the same grid. **Significance decisions (HLZ, BH) should use
-  the robust p-value / ``z_equivalent``.**
+  estimate itself is noisy with ~T/h independent observations. EWC rejects 4.4-7.7% at
+  nominal 5% and 0.13-0.57% at the HLZ tail (T in {100, 160}, AR(1) rho in {0, .3, .6});
+  the R3a reviewer's cross-sectional IC/FM panel null gives 3.8-6.0% / 0.10-0.50%.
+  **Significance decisions (HLZ, BH) use the robust p-value / ``z_equivalent``.**
+* **Small-T df collapse.** ``B <= floor(T/(2h))``: at h=12 a 36-formation holdout has B=1
+  (Cauchy) and a 48-formation subperiod B=2, so a raw ``robust_t`` means different
+  things at different T. Thresholds (holdout, subperiod, HLZ) must be written on
+  ``z_equivalent`` / ``robust_p_value``, never on ``robust_t``. HLZ at T=160 needs
+  ``|robust_t| >= 3.85`` (h<=6, B=11) or ``>= 4.90`` (h=12, B=6): honest, but the power
+  cost at 12 months is real.
 * **HLZ.** Harvey, Liu & Zhu (2016, RFS 29(1)) recommend ``|t| >= 3.0`` for a new factor.
-  For a small-df test the threshold is applied to the normal-equivalent z of its p-value
-  (two-sided ``p <= 0.0027``).
+  :func:`hlz_pass` accepts only a normal-equivalent z or a p-value (two-sided
+  ``p <= 0.0027``), never a raw small-df or NW t.
 """
 
 from __future__ import annotations
@@ -72,7 +79,8 @@ def normal_equivalent_z(p_value: float) -> float:
         raise ValueError("p_value must be within [0, 1]")
     if p_value == 0.0:
         return math.inf
-    return -_NORMAL.inv_cdf(p_value / 2.0)
+    # p/2 underflows to 0 below the smallest subnormal; clamp (|z| ~ 38.4 there).
+    return -_NORMAL.inv_cdf(max(p_value / 2.0, 5e-324))
 
 
 def _beta_continued_fraction(a: float, b: float, x: float) -> float:
@@ -164,7 +172,11 @@ def newey_west_lags(horizon_periods: int, n_obs: int) -> int:
 
 
 def ewc_degrees_of_freedom(n_obs: int, horizon_periods: int) -> int:
-    """EWC cosine terms ``B = min(floor(0.4 T^(2/3)), floor(T/(2h)))`` (0 = untestable)."""
+    """EWC cosine terms ``B = min(floor(0.4 T^(2/3)), floor(T/(2h)))`` (0 = untestable).
+
+    B is also the Student-t df. It collapses at small T for long horizons (h=12: T=36
+    gives 1, T=48 gives 2), so compare tests through ``z_equivalent``/p, not raw t.
+    """
     if int(horizon_periods) != horizon_periods or horizon_periods < 1:
         raise ValueError("horizon_periods must be a positive integer")
     if n_obs < 2:
@@ -176,9 +188,12 @@ def horizon_in_formation_units(formation_dates: Iterable[Any], horizon_sessions:
     """Convert a session horizon into formation units from the observed formation dates.
 
     Returns ``1 +`` the largest number of later formations that start inside one label's
-    window ``(d_i, d_i + h sessions)``; daily sessions give ``h``, month-end formations give
-    about ``ceil(h/21)``. Sessions are approximated by weekdays (``numpy.busday_count``):
-    an exchange holiday inside a window can undercount that window's overlap by one.
+    window ``(d_i, d_i + h sessions)``; month-end formations give about ``ceil(h/21)``.
+    Sessions are approximated by weekdays (``numpy.busday_count``), so each exchange
+    holiday inside a window undercounts that window's overlap by one: weekday-only daily
+    dates give ``h``, but on the real XNYS calendar every 63-session window contains a
+    holiday, so a daily h=63 series gets 62 units (61 NW lags), not 63 (measured on
+    2023-24 sessions). Research callers should pass ``horizon_periods`` directly.
     """
     if int(horizon_sessions) != horizon_sessions or horizon_sessions < 1:
         raise ValueError("horizon_sessions must be a positive integer")
@@ -317,7 +332,7 @@ def mean_inference(
         robust_df=df, robust_standard_error=robust_se, robust_t=robust_t,
         robust_p_value=robust_p, robust_ci95_low=low, robust_ci95_high=high,
         z_equivalent=z_equivalent,
-        hlz_pass=bool(not math.isnan(z_equivalent) and abs(z_equivalent) >= HLZ_T_THRESHOLD),
+        hlz_pass=hlz_pass(z_equivalent=z_equivalent),
     )
 
 
@@ -416,9 +431,20 @@ def benjamini_hochberg[K: Hashable](
     return {key: None if checked[index] is None else adjusted[index] for index, key in enumerate(keys)}
 
 
-def hlz_pass(statistic: float | None, threshold: float = HLZ_T_THRESHOLD) -> bool:
-    """Harvey-Liu-Zhu hurdle: ``|t| >= 3.0`` (use a normal-equivalent z for small-df tests)."""
-    return statistic is not None and not math.isnan(statistic) and abs(statistic) >= threshold
+def hlz_pass(*, z_equivalent: float | None = None, p_value: float | None = None) -> bool:
+    """Harvey-Liu-Zhu hurdle ``|z| >= 3.0`` on a normal-equivalent z OR a two-sided p-value.
+
+    Keyword-only by design: a raw t with small or overlap-distorted reference (EWC
+    ``robust_t`` with df 6-11, NW ``nw_t``) false-passes 0.6-4.8% of nulls against a
+    nominal 0.27%, so callers must pass ``MeanInference.z_equivalent`` or
+    ``robust_p_value``. Exactly one argument; NaN/None fail.
+    """
+    if (z_equivalent is None) == (p_value is None):
+        raise TypeError("pass exactly one of z_equivalent= or p_value=")
+    if p_value is not None:
+        return not math.isnan(p_value) and p_value <= HLZ_P_THRESHOLD
+    assert z_equivalent is not None
+    return not math.isnan(z_equivalent) and abs(z_equivalent) >= HLZ_T_THRESHOLD
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +550,21 @@ class DeflatedSharpe:
     deflated_sharpe_ratio: float
     n_obs: int
     n_trials: int
+    horizon_periods: int
+    effective_n_obs: int
+
+
+def effective_sample_size(n_obs: int, horizon_periods: int) -> int:
+    """Independent observations in ``n_obs`` formations of ``horizon_periods``-unit labels.
+
+    An h-period return sampled every period overlaps its next ``h-1`` neighbours, so only
+    ``floor(n_obs / h)`` of them are non-overlapping (independent under the null).
+    """
+    if int(horizon_periods) != horizon_periods or horizon_periods < 1:
+        raise ValueError("horizon_periods must be a positive integer")
+    if int(n_obs) != n_obs or n_obs < 0:
+        raise ValueError("n_obs must be a non-negative integer")
+    return int(n_obs) // int(horizon_periods)
 
 
 def sharpe_moments(returns: Iterable[float]) -> tuple[float, float, float, int]:
@@ -547,19 +588,31 @@ def sharpe_moments(returns: Iterable[float]) -> tuple[float, float, float, int]:
 
 def probabilistic_sharpe_ratio(
     sharpe: float, benchmark_sharpe: float, *, n_obs: int, skewness: float, kurtosis: float,
+    horizon_periods: int = 1,
 ) -> float:
-    """PSR = Phi[(SR - SR*) sqrt(T-1) / sqrt(1 - g3 SR + (g4-1)/4 SR^2)], per-period SR,
-    non-excess kurtosis ``g4`` (3 for normal returns)."""
-    return _normal_cdf(_psr_z(sharpe, benchmark_sharpe, n_obs, skewness, kurtosis))
+    """PSR = Phi[(SR - SR*) sqrt(T_eff-1) / sqrt(1 - g3 SR + (g4-1)/4 SR^2)].
+
+    ``sharpe`` is per return period of the series (for h-month labels: per h months),
+    non-excess kurtosis ``g4`` (3 for normal returns). The formula assumes independent
+    returns: for a series of **overlapping** ``horizon_periods``-unit returns sampled every
+    unit (e.g. monthly-sampled 12-month spreads) pass ``horizon_periods=h`` and
+    ``T_eff = floor(n_obs / h)`` is used; with ``horizon_periods=1`` (default) ``n_obs``
+    must count independent returns. Passing ``n_obs`` of an overlapping series with the
+    default overstates z by about sqrt(h) (R3a review I1: z 3.38 vs 0.93 at h=12, T=160).
+    """
+    return _normal_cdf(_psr_z(sharpe, benchmark_sharpe, n_obs, skewness, kurtosis, horizon_periods))
 
 
-def _psr_z(sharpe: float, benchmark: float, n_obs: int, skewness: float, kurtosis: float) -> float:
-    if n_obs < 2:
-        raise ValueError("n_obs must be at least 2")
+def _psr_z(sharpe: float, benchmark: float, n_obs: int, skewness: float, kurtosis: float,
+           horizon_periods: int = 1) -> float:
+    effective = effective_sample_size(n_obs, horizon_periods)
+    if effective < 2:
+        raise ValueError(f"need at least 2 independent returns; got {effective} "
+                         f"from n_obs={n_obs}, horizon_periods={horizon_periods}")
     denominator = 1.0 - skewness * sharpe + (kurtosis - 1.0) / 4.0 * sharpe * sharpe
     if not denominator > 0.0:
         raise ValueError("non-positive Sharpe-ratio variance term")
-    return (sharpe - benchmark) * math.sqrt(n_obs - 1.0) / math.sqrt(denominator)
+    return (sharpe - benchmark) * math.sqrt(effective - 1.0) / math.sqrt(denominator)
 
 
 def _normal_cdf(z: float) -> float:
@@ -583,15 +636,23 @@ def expected_maximum_sharpe(n_trials: int, sharpe_variance: float) -> float:
 
 def deflated_sharpe_ratio(
     sharpe: float, *, n_obs: int, skewness: float, kurtosis: float,
-    n_trials: int, sharpe_variance: float,
+    n_trials: int, sharpe_variance: float, horizon_periods: int = 1,
 ) -> DeflatedSharpe:
-    """DSR = PSR against the expected maximum Sharpe of ``n_trials`` null trials whose
-    estimated Sharpe ratios have cross-trial variance ``sharpe_variance`` (same period
-    units as ``sharpe``)."""
+    """DSR = PSR against the expected maximum Sharpe of ``n_trials`` null trials.
+
+    * ``n_trials`` is the **whole selection family**: every feature x variant x basis x
+      horizon cell that was eligible to be picked (not just the survivors of a screen).
+    * ``sharpe_variance`` is the cross-trial variance of those same trials' estimated
+      Sharpe ratios, in the same period units as ``sharpe``.
+    * Overlap: as in :func:`probabilistic_sharpe_ratio`, a series of overlapping
+      ``horizon_periods``-unit returns uses ``floor(n_obs / h)`` independent returns.
+    """
     benchmark = expected_maximum_sharpe(n_trials, sharpe_variance)
-    z = _psr_z(sharpe, benchmark, n_obs, skewness, kurtosis)
+    z = _psr_z(sharpe, benchmark, n_obs, skewness, kurtosis, horizon_periods)
     return DeflatedSharpe(sharpe=sharpe, benchmark_sharpe=benchmark, z=z,
-                          deflated_sharpe_ratio=_normal_cdf(z), n_obs=int(n_obs), n_trials=int(n_trials))
+                          deflated_sharpe_ratio=_normal_cdf(z), n_obs=int(n_obs), n_trials=int(n_trials),
+                          horizon_periods=int(horizon_periods),
+                          effective_n_obs=effective_sample_size(n_obs, horizon_periods))
 
 
 # ---------------------------------------------------------------------------
@@ -632,7 +693,10 @@ def circular_block_bootstrap_ci(
     (default) is the bootstrap-t: resample t* = (mean* - mean)/se*_EWC and invert around
     the original EWC standard error; it holds ~95% coverage for overlapping labels,
     where the plain ``percentile`` interval under-covers (T=160 simulation: 90% at h=3,
-    84% at h=12). Both intervals are returned. Missing values are dropped (compressed).
+    84% at h=12). Both intervals are returned. Missing values are dropped (compressed),
+    unlike :func:`mean_inference`, which keeps calendar positions: with many missing
+    formations (e.g. FM ``insufficient_obs`` dates) the CI and the robust test see
+    slightly different dependence; drop or fill gaps deliberately before comparing.
     """
     if method not in {"studentized", "percentile"}:
         raise ValueError("method must be studentized or percentile")

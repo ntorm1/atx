@@ -13,8 +13,9 @@ Two production checks over the survivorship-safe forward-return surface:
 Both checks are registered as data in ``quality_check_registry`` by migration 0188 and evaluated
 inside ``run_warehouse_quality_checks`` via :func:`survivorship_dqc_results` (mirroring the
 ``signal_eval_dqc_results`` lazy-hook precedent). This module is deliberately a **leaf** of the
-``db.quality`` package -- it imports only ``._types`` and ``..connection`` and never ``._checks``
-or ``._runner`` -- so it introduces no import cycle inside the package (enforced by
+``db.quality`` package -- it imports only ``._types``, ``..connection`` and the publisher's
+dependency-free ``effective_terminals_sql`` (one halt-gap dating rule for writer and gate), and
+never ``._checks`` or ``._runner`` -- so it introduces no import cycle inside the package (enforced by
 ``test_decomposed_package_import_graphs_are_acyclic``). The small evaluation/registry helpers below
 are therefore intentionally self-contained rather than reusing the private ``_checks`` runner
 internals.
@@ -25,6 +26,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Mapping
 
+from .._forward_return_publication import effective_terminals_sql
 from ..connection import DuckDBStore
 from ._types import Comparator, QualityRegistryEntry, QualityResult, Severity, SqlQualityCheck
 
@@ -101,18 +103,28 @@ def _survivorship_sql(
             WHERE calendar_id = 'XNYS' AND source = 'equity_daily_bars calendar' AND is_open
               AND ({cutoff_sql} IS NULL OR trade_date <= CAST({cutoff_sql} AS DATE))
         )
+    ), printed AS (
+        -- Last trade for halt-gap dating: any positive print (basis OR raw close), so a
+        -- missing adjusted input dates the gap later than the writer can and stays RED.
+        SELECT security_id, trade_date, price_available_at,
+               CASE WHEN {price_basis} > 0 AND isfinite({price_basis})
+                    THEN {price_basis} ELSE close END AS price
+        FROM bars
+        WHERE pick = 1 AND (({price_basis} > 0 AND isfinite({price_basis}))
+                            OR (close > 0 AND isfinite(close)))
+    ), effective AS ({effective_terminals_sql(terminals="terminals", bars="printed", calendar="cal")}
     ), horizons AS (SELECT unnest([{horizons}]) AS horizon_days), expected AS (
         SELECT b.security_id, b.trade_date AS as_of_date, h.horizon_days,
-               ending.trade_date AS forward_end_date, t.delist_date,
+               ending.trade_date AS forward_end_date, t.effective_delist_date AS delist_date,
                t.return_observation_id, t.terminal_return_source,
                t.terminal_valid,
                greatest(b.price_available_at, t.available_at) AS minimum_available_at
         FROM bars b
-        JOIN terminals t ON t.security_id = b.security_id AND b.trade_date < t.delist_date
+        JOIN effective t ON t.security_id = b.security_id AND b.trade_date < t.effective_delist_date
         JOIN cal anchor ON anchor.trade_date = b.trade_date
         CROSS JOIN horizons h
         JOIN cal ending ON ending.session_number = anchor.session_number + h.horizon_days
-        WHERE b.pick = 1 AND t.delist_date <= ending.trade_date
+        WHERE b.pick = 1 AND t.effective_delist_date <= ending.trade_date
           AND ((b.{price_basis} > 0 AND isfinite(b.{price_basis}))
                OR (b.close > 0 AND isfinite(b.close)))
     )

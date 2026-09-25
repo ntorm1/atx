@@ -243,7 +243,9 @@ def test_empty_output_fails_input_derived_gate_and_other_source_cannot_mask_it(p
     _bar(panel_store, "D", 1, 100)
     _terminal(panel_store)
     result = survivorship_forward_return_check(panel_store)
-    assert result.status == "failed" and result.observed_value == 2
+    # Last trade Jan 1, terminal dated Jan 4: the halt-gap rule realizes the loss on Jan 2,
+    # so the 1-, 5- and 10-session windows from Jan 1 all demand the stitch.
+    assert result.status == "failed" and result.observed_value == 3
     refresh_survivorship_safe_forward_returns(
         panel_store, SurvivorshipSafeForwardReturnOptions(source="other"),
     )
@@ -275,7 +277,8 @@ def test_missing_adjustment_is_not_raw_fallback_or_vacuous_quality_pass(panel_st
     assert report["stitched_rows"] == 0
     assert report["uncovered_event_rows"] == 1
     options = SurvivorshipSafeForwardReturnOptions(source="raw-compat", price_basis="close")
-    assert refresh_survivorship_safe_forward_returns(panel_store, options) == 2
+    # h=1/5/10 from Jan 1 (halt-gap terminal realized on Jan 2).
+    assert refresh_survivorship_safe_forward_returns(panel_store, options) == 3
     assert survivorship_forward_return_check(
         panel_store, source="raw-compat", price_basis="close",
     ).status == "passed"
@@ -405,3 +408,52 @@ def test_diagnostics_publish_rx2_policy_bias_exposure(panel_store):
     assert survivorship_forward_return_diagnostics(panel_store)["policy_bias_exposure"][
         "cik_less_unknown_performance_policy_rows"
     ] == 2
+
+
+def test_halt_gap_terminal_is_stitched_from_first_absent_session_and_gate_still_catches_a_drop(panel_store):
+    # D trades Jan 1-3, halts, and its -50% terminal is dated Jan 9 (5 absent sessions).
+    for day, price in ((1, 100), (2, 102), (3, 103)):
+        _bar(panel_store, "D", day, price)
+    _terminal(panel_store, day=9, available=dt.datetime(2024, 1, 10))
+    refresh_survivorship_safe_forward_returns(panel_store)
+    survivor = _row(panel_store, day=2, horizon=1)  # (Jan 2, Jan 3]: ends before the halt
+    assert not survivor["is_stitched"] and survivor["forward_return"] == pytest.approx(103 / 102 - 1)
+    inside = _row(panel_store, day=2, horizon=5)  # ends Jan 7, inside the halt: loss realized
+    assert inside["is_stitched"] and inside["delist_date"] == dt.date(2024, 1, 4)
+    assert inside["forward_end_date"] == dt.date(2024, 1, 7)
+    assert inside["forward_return"] == pytest.approx((103 / 102) * 0.5 - 1)
+    assert inside["available_at"] == dt.datetime(2024, 1, 10)
+    last_day = _row(panel_store, day=3, horizon=1)  # the session right after the last trade
+    assert last_day["is_stitched"] and last_day["forward_return"] == pytest.approx(-0.5)
+    result = survivorship_forward_return_check(panel_store)
+    assert result.status == "passed" and result.observed_value == 0
+    # A genuinely missing stitch (inside the halt window) still fails the critical gate.
+    panel_store.con.execute("DELETE FROM forward_returns_survivorship_safe WHERE forward_return_id = ?",
+                            [inside["forward_return_id"]])
+    result = survivorship_forward_return_check(panel_store)
+    assert result.status == "failed" and result.observed_value == 1
+
+
+def test_halt_gap_bound_is_31_absent_sessions(panel_store):
+    extra = [dt.date(2024, 1, 15) + dt.timedelta(days=offset) for offset in range(60)]
+    panel_store.con.executemany(
+        "INSERT INTO trading_calendar VALUES ('XNYS', ?, true, 'equity_daily_bars calendar')",
+        [(day,) for day in extra])
+    sessions = [dt.date(2024, 1, day) for day in range(1, 15)] + extra
+    for security, absent in (("IN", 31), ("OUT", 32)):
+        _bar(panel_store, security, 1, 100)
+        delist = sessions[1 + absent]  # sessions[1..absent] are absent
+        panel_store.con.execute(
+            "INSERT INTO delisting_terminal_returns (terminal_return_id, source, security_id, delist_date, "
+            "terminal_return, terminal_return_source, return_observation_id, available_at, source_loaded_at, "
+            "is_latest_revision) VALUES (?, 'terminal-source', ?, ?, -0.5, 'observed', ?, ?, '2024-04-01', true)",
+            [f"t-{security}", security, delist, f"obs-{security}", dt.datetime.combine(delist, dt.time(23))])
+    refresh_survivorship_safe_forward_returns(panel_store)
+    inside = _row(panel_store, "IN", day=1, horizon=1)
+    assert inside["is_stitched"] and inside["delist_date"] == dt.date(2024, 1, 2)
+    # One session past the bound: the terminal keeps its own date; the 1-session window is
+    # not stitched (no endpoint bar either), the 63-session window stitches at the delist date.
+    assert _row(panel_store, "OUT", day=1, horizon=1) is None
+    beyond = _row(panel_store, "OUT", day=1, horizon=63)
+    assert beyond["is_stitched"] and beyond["delist_date"] == sessions[33]
+    assert survivorship_forward_return_check(panel_store).status == "passed"

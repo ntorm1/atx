@@ -136,6 +136,17 @@ def test_overlap_lag_rule_is_in_formation_units():
     assert stats.horizon_in_formation_units(pd.bdate_range("2020-01-01", periods=300), 63) == 63
     weekly = pd.date_range("2020-01-01", periods=40, freq="7D")
     assert stats.horizon_in_formation_units(weekly, 63) == 13
+    # Real XNYS 2023-24 sessions: every 63-session window holds a holiday, so the weekday
+    # approximation gives 62 units / 61 lags (documented), while 21 sessions stay exact.
+    holidays = pd.to_datetime([
+        "2023-01-02", "2023-01-16", "2023-02-20", "2023-04-07", "2023-05-29", "2023-06-19",
+        "2023-07-04", "2023-09-04", "2023-11-23", "2023-12-25", "2024-01-01", "2024-01-15",
+        "2024-02-19", "2024-03-29", "2024-05-27", "2024-06-19", "2024-07-04", "2024-09-02",
+        "2024-11-28", "2024-12-25"])
+    xnys = pd.bdate_range("2023-01-03", "2024-12-31").difference(holidays)
+    assert stats.horizon_in_formation_units(xnys, 21) == 21
+    assert stats.horizon_in_formation_units(xnys, 63) == 62
+    assert stats.newey_west_lags(62, len(xnys)) == 61
     assert stats.ewc_degrees_of_freedom(160, 12) == 6
     assert stats.ewc_degrees_of_freedom(160, 1) == 11
 
@@ -210,9 +221,21 @@ def test_holm_equals_prior_holm_family_and_holm_eight_outputs():
         holm_family({"a": 1.5})
 
 
-def test_harvey_liu_zhu_hurdle():
-    assert stats.hlz_pass(3.0) and stats.hlz_pass(-3.2) and stats.hlz_pass(math.inf)
-    assert not stats.hlz_pass(2.99) and not stats.hlz_pass(None) and not stats.hlz_pass(float("nan"))
+def test_harvey_liu_zhu_hurdle_accepts_only_normal_equivalent_z_or_p():
+    assert stats.hlz_pass(z_equivalent=3.0) and stats.hlz_pass(z_equivalent=-3.2)
+    assert stats.hlz_pass(z_equivalent=math.inf) and stats.hlz_pass(p_value=0.0026)
+    assert not stats.hlz_pass(z_equivalent=2.99) and not stats.hlz_pass(p_value=0.0028)
+    assert not stats.hlz_pass(z_equivalent=float("nan")) and not stats.hlz_pass(p_value=float("nan"))
+    # A raw t (NW or small-df EWC) cannot be fed positionally, and exactly one input is required.
+    with pytest.raises(TypeError):
+        stats.hlz_pass(3.5)  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        stats.hlz_pass()
+    with pytest.raises(TypeError):
+        stats.hlz_pass(z_equivalent=3.1, p_value=0.001)
+    # The p threshold and the z threshold are the same hurdle.
+    assert stats.hlz_pass(p_value=stats.HLZ_P_THRESHOLD)
+    assert stats.normal_equivalent_z(5e-324) == pytest.approx(38.4674, abs=1e-3)  # no underflow
 
 
 # --- Fama-MacBeth ---------------------------------------------------------------------
@@ -304,6 +327,29 @@ def test_deflated_sharpe_matches_bailey_lopez_de_prado_worked_example():
     assert (sr, n) == (pytest.approx(array.mean() / array.std(ddof=1)), 6)
     assert kurt == pytest.approx(np.mean((array - array.mean()) ** 4) / np.var(array) ** 2)
     assert skew == pytest.approx(np.mean((array - array.mean()) ** 3) / np.var(array) ** 1.5)
+
+
+def test_deflated_sharpe_uses_non_overlapping_count_for_overlapping_returns():
+    # Review I1 probe: monthly-sampled 12-month spread returns (MA(11)), T=160.
+    rng = np.random.default_rng(12)
+    spread = np.convolve(rng.normal(0.004, 0.03, 171), np.ones(12), "valid")
+    sharpe, skew, kurt, n = stats.sharpe_moments(spread)
+    assert n == 160
+    naive = stats.deflated_sharpe_ratio(sharpe, n_obs=n, skewness=skew, kurtosis=kurt,
+                                        n_trials=1, sharpe_variance=0.0)
+    honest = stats.deflated_sharpe_ratio(sharpe, n_obs=n, skewness=skew, kurtosis=kurt,
+                                         n_trials=1, sharpe_variance=0.0, horizon_periods=12)
+    assert (honest.effective_n_obs, honest.horizon_periods) == (13, 12)
+    # Treating 160 overlapping returns as independent inflates z by sqrt(159/12) ~ 3.6.
+    assert naive.z / honest.z == pytest.approx(math.sqrt(159 / 12), rel=1e-12)
+    assert naive.z > 3 > honest.z
+    assert honest.deflated_sharpe_ratio == pytest.approx(stats.probabilistic_sharpe_ratio(
+        sharpe, 0.0, n_obs=13, skewness=skew, kurtosis=kurt), rel=1e-12)
+    assert stats.probabilistic_sharpe_ratio(sharpe, 0.0, n_obs=n, skewness=skew, kurtosis=kurt,
+                                            horizon_periods=12) == honest.deflated_sharpe_ratio
+    with pytest.raises(ValueError, match="independent returns"):
+        stats.deflated_sharpe_ratio(sharpe, n_obs=20, skewness=skew, kurtosis=kurt,
+                                    n_trials=10, sharpe_variance=0.01, horizon_periods=12)
 
 
 # --- block bootstrap ------------------------------------------------------------------

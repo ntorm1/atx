@@ -348,7 +348,8 @@ def _ic_hac_lags(as_of_dates: pd.Series, horizon: int, n_dates: int) -> int:
     The horizon is in sessions; the IC series is sampled at the panel's as-of dates
     (daily, weekly or month-end). Overlap is measured from those dates, then
     ``max(h-1, floor(4 (T/100)^(2/9)))`` applies. Replaces ``ceil(h/21)``, which was
-    only right for month-spaced panels (a daily 63-session IC got 3 lags, not 62).
+    only right for month-spaced panels (a daily 63-session IC got 3 lags; it now gets
+    61 on the real XNYS calendar - weekday overlap counting loses one per holiday).
     """
 
     units = research_stats.horizon_in_formation_units(as_of_dates, int(horizon))

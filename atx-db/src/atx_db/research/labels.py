@@ -16,13 +16,16 @@ stitching and the same ``calculation_version``. Only two things differ:
 * horizons are 21/63/126/252 observed sessions (~1/3/6/12 months; formation units
   1/3/6/12, see :data:`HORIZON_FORMATION_UNITS`).
 
-Row economics (inherited, unchanged): ``forward_return = P(E+h)/P(E) - 1``; when a
-selected terminal's ``delist_date`` lies in ``(E, E+h]`` the leg ends at the last
-positive price strictly before delisting and is compounded with the observed/policy
-terminal return; anchors on/after a known terminal are excluded. A label whose window
-spans a cessation WITHOUT a terminal row, or whose exact endpoint session has no bar,
-is not published: that attrition is measured by :func:`monthly_label_diagnostics`,
-never imputed here.
+Row economics (shared publisher, ``forward_return_publication_v2``):
+``forward_return = P(E+h)/P(E) - 1``; when a selected terminal's *effective* delist date
+lies in ``(E, E+h]`` the leg ends at the last positive price strictly before delisting and
+is compounded with the observed/policy terminal return; anchors on/after it are
+excluded. The effective date is the first session after the last trade when the terminal
+is dated 1..31 absent sessions later (a halt before a later-dated delisting: the loss is
+realized in every window that ends inside the halt), else the terminal's own date; the
+published ``delist_date`` is that effective date. A label whose window spans a cessation
+WITHOUT a usable terminal, or whose exact endpoint session has no bar, is not published:
+that attrition is classified by :func:`monthly_label_diagnostics`, never imputed here.
 
 The publisher rebuilds the whole physical table through a validated shadow (other
 sources are copied), so a monthly publication costs a full-table copy: heavy slot only.
@@ -35,7 +38,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .._forward_return_publication import CALCULATION_VERSION, refresh_forward_return_publication
+from .._forward_return_publication import (
+    CALCULATION_VERSION,
+    HALT_GAP_MAX_ABSENT_SESSIONS,
+    effective_terminals_sql,
+    refresh_forward_return_publication,
+    selected_bars_sql,
+    selected_terminals_sql,
+)
 from ..connection import DuckDBStore
 
 MONTHLY_LABEL_SOURCE = "atx_forward_returns_survivorship_safe_monthly_v1"
@@ -201,14 +211,32 @@ def monthly_label_diagnostics(
     price_basis: str = "adjusted_close",
     cutoff: dt.datetime | None = None,
 ) -> dict[str, Any]:
-    """Bounded per-horizon counts: published rows, terminal provenance and attrition.
+    """Bounded per-horizon counts: published rows, terminal provenance and classified attrition.
 
-    ``anchors_matured``: entry-session anchors with a selected positive price (the
-    publisher's bar pick, restricted to entry dates) whose ``h``-th session exists.
-    ``unlabeled_matured`` of those have no published label; ``..._spanning_event``
-    is the subset whose window ``(E, E+h]`` contains a visible ``delisting_events``
-    cessation - survivorship attrition from a missing terminal, reported not imputed.
-    Only aggregates leave DuckDB.
+    Uses the publisher's own fragments (bar pick, terminal selection, halt-gap dating),
+    so writer and diagnostics cannot disagree. Per horizon, over matured windows only
+    (the ``h``-th session after entry exists):
+
+    * **Decision denominator** - ``decision_names``: names with a selected positive bar on
+      the decision date D. ``no_entry_bar``: of those, no bar at the entry session E (they
+      can never carry a label); ``no_entry_bar_ceased``: never printed after D;
+      ``no_entry_bar_ceased_with_terminal``: ... and a terminal dated after D exists (a
+      delisting loss outside every monthly label because entry was impossible).
+    * **Anchors** (bar at E): ``excluded_post_terminal`` (E on/after the effective terminal
+      date - a correct exclusion, not attrition); ``anchors_matured`` (the rest);
+      ``unlabeled_matured`` split into ``unlabeled_invalid_terminal``,
+      ``unlabeled_terminal_beyond_halt_bound`` (stopped trading inside the window, terminal
+      dated more than ``HALT_GAP_MAX_ABSENT_SESSIONS`` absent sessions later),
+      ``unlabeled_ceased_event_without_terminal`` (a visible ``delisting_events`` cessation
+      after E, no terminal), ``unlabeled_ceased_unexplained`` (stopped trading, no event, no
+      terminal), ``unlabeled_endpoint_bar_missing`` (trades again later; no bar exactly at
+      the endpoint) and ``unlabeled_other``. ``survivorship_attrition`` = the four
+      cessation classes: delisting outcomes missing from the labels, reported not imputed.
+
+    ``terminal_gaps`` classifies every selected terminal by its last-trade to delist gap
+    (``next_session``, ``re_anchored`` 1..31, ``beyond_bound``, ``no_prior_bar``).
+    "Stopped trading" uses the last positive ``price_basis`` print (no revision pick).
+    Only aggregates leave DuckDB; the ``last_trade`` aggregate scans every bar once.
     """
     if price_basis not in {"adjusted_close", "close"}:
         raise ValueError("price_basis must be adjusted_close or close")
@@ -220,53 +248,104 @@ def monthly_label_diagnostics(
         "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'delisting_events' AND NOT temporary"
     ).fetchone()
     has_events = bool(found and found[0])
-    event_filter = """EXISTS (
-                SELECT 1 FROM delisting_events ev
-                WHERE ev.security_id = a.security_id
-                  AND ev.delist_date > a.entry_date AND ev.delist_date <= ending.trade_date
-                  AND (?::TIMESTAMP IS NULL OR ev.available_at <= ?))""" if has_events else "false"
-    params: list[Any] = [calendar_id, calendar_source, cutoff, cutoff, cutoff, cutoff,
-                         [int(h) for h in horizons], source, cutoff, cutoff]
-    if has_events:
-        params += [cutoff, cutoff]
+    events_sql = ("SELECT DISTINCT security_id, delist_date FROM delisting_events "
+                  "WHERE security_id IS NOT NULL AND (?::TIMESTAMP IS NULL OR available_at <= ?)"
+                  if has_events else "SELECT NULL::VARCHAR AS security_id, NULL::DATE AS delist_date WHERE false")
+    day_filter = ("trade_date IN (SELECT decision_date FROM entries) "
+                  "OR trade_date IN (SELECT entry_date FROM entries)")
+    prefix = f"""
+        WITH {_ENTRY_SESSIONS_SQL},
+        sel_terminals AS ({selected_terminals_sql()}),
+        terminal_bars AS ({selected_bars_sql(
+            price_basis, security_filter="security_id IN (SELECT security_id FROM sel_terminals)")}),
+        terminals AS ({effective_terminals_sql(
+            terminals="sel_terminals", bars="terminal_bars", calendar="calendar")}),
+        day_bars AS ({selected_bars_sql(price_basis, security_filter=day_filter)}),
+        last_trade AS (
+            SELECT security_id, max(trade_date) AS last_bar_date FROM equity_daily_bars
+            WHERE {price_basis} > 0 AND isfinite({price_basis})
+              AND (?::TIMESTAMP IS NULL OR coalesce(available_at,
+                  CAST(trade_date AS TIMESTAMP) + INTERVAL '22 hours') <= ?)
+            GROUP BY security_id
+        ), events AS ({events_sql})"""
+    prefix_params: list[Any] = [calendar_id, calendar_source, cutoff, cutoff, cutoff, cutoff,
+                                cutoff, cutoff, cutoff, cutoff, cutoff, cutoff,
+                                *([cutoff, cutoff] if has_events else [])]
+    gaps = store.con.execute(f"""
+        {prefix}
+        SELECT count(*), count(*) FILTER (WHERE last_price_date IS NULL),
+               count(*) FILTER (WHERE last_price_date IS NOT NULL AND halt_gap_sessions = 0),
+               count(*) FILTER (WHERE halt_gap_sessions BETWEEN 1 AND {HALT_GAP_MAX_ABSENT_SESSIONS}),
+               count(*) FILTER (WHERE halt_gap_sessions > {HALT_GAP_MAX_ABSENT_SESSIONS}),
+               max(halt_gap_sessions)
+        FROM terminals
+    """, prefix_params).fetchone()
+    assert gaps is not None
+    terminal_gaps = dict(zip(("terminals", "no_prior_bar", "next_session", "re_anchored",
+                              "beyond_bound", "max_gap_sessions"), gaps, strict=True))
+    params: list[Any] = [*prefix_params, [int(h) for h in horizons], source, cutoff, cutoff]
     rows = store.con.execute(f"""
-        WITH {_ENTRY_SESSIONS_SQL}, eligible AS (
-            SELECT b.*, coalesce(b.available_at,
-                CAST(b.trade_date AS TIMESTAMP) + INTERVAL '22 hours') AS price_available_at
-            FROM equity_daily_bars b JOIN entries en ON en.entry_date = b.trade_date
-            WHERE (?::TIMESTAMP IS NULL OR coalesce(b.available_at,
-                CAST(b.trade_date AS TIMESTAMP) + INTERVAL '22 hours') <= ?)
-        ), chosen AS (
-            SELECT security_id, trade_date, {price_basis} AS price,
-                   row_number() OVER (
-                       PARTITION BY security_id, trade_date
-                       ORDER BY price_available_at DESC, source ASC,
-                                vendor_security_id ASC NULLS LAST, symbol ASC,
-                                adjusted_close DESC NULLS LAST, close DESC NULLS LAST,
-                                source_loaded_at DESC
-                   ) AS pick
-            FROM eligible
-        ), anchors AS (
-            SELECT c.security_id, en.entry_date, en.session_number
-            FROM chosen c JOIN entries en ON en.entry_date = c.trade_date
-            WHERE c.pick = 1 AND c.price > 0 AND isfinite(c.price)
-        ), horizons AS (SELECT unnest(?::INTEGER[]) AS horizon_days
+        {prefix}, horizons AS (SELECT unnest(?::INTEGER[]) AS horizon_days
         ), labels AS (
             SELECT * FROM forward_returns_survivorship_safe
             WHERE source = ? AND (?::TIMESTAMP IS NULL OR available_at <= ?)
-        ), attrition AS (
-            SELECT h.horizon_days,
-                   count(*) FILTER (WHERE ending.trade_date IS NOT NULL) AS anchors_matured,
-                   count(*) FILTER (WHERE ending.trade_date IS NOT NULL
-                                    AND l.forward_return_id IS NULL) AS unlabeled_matured,
-                   count(*) FILTER (WHERE ending.trade_date IS NOT NULL
-                                    AND l.forward_return_id IS NULL AND {event_filter})
-                       AS unlabeled_matured_spanning_event
-            FROM anchors a CROSS JOIN horizons h
-            LEFT JOIN calendar ending ON ending.session_number = a.session_number + h.horizon_days
-            LEFT JOIN labels l ON l.security_id = a.security_id AND l.as_of_date = a.entry_date
-                              AND l.horizon_days = h.horizon_days
+        ), decisions AS (
+            SELECT d.security_id, en.decision_date, en.session_number AS entry_session,
+                   e.security_id IS NOT NULL AS has_entry_bar
+            FROM entries en
+            JOIN day_bars d ON d.trade_date = en.decision_date
+            LEFT JOIN day_bars e ON e.security_id = d.security_id AND e.trade_date = en.entry_date
+        ), decision_counts AS (
+            SELECT h.horizon_days, count(*) AS decision_names,
+                   count(*) FILTER (WHERE NOT x.has_entry_bar) AS no_entry_bar,
+                   count(*) FILTER (WHERE NOT x.has_entry_bar
+                                    AND lt.last_bar_date <= x.decision_date) AS no_entry_bar_ceased,
+                   count(*) FILTER (WHERE NOT x.has_entry_bar AND lt.last_bar_date <= x.decision_date
+                                    AND t.effective_delist_date > x.decision_date)
+                       AS no_entry_bar_ceased_with_terminal
+            FROM decisions x CROSS JOIN horizons h
+            JOIN calendar ending ON ending.session_number = x.entry_session + h.horizon_days
+            LEFT JOIN last_trade lt ON lt.security_id = x.security_id
+            LEFT JOIN terminals t ON t.security_id = x.security_id
             GROUP BY h.horizon_days
+        ), anchor_status AS (
+            SELECT h.horizon_days,
+                   coalesce(t.effective_delist_date <= a.trade_date, false) AS post_terminal,
+                   l.forward_return_id IS NOT NULL AS labeled,
+                   t.security_id IS NOT NULL AS has_terminal,
+                   coalesce(t.effective_delist_date <= ending.trade_date
+                            AND NOT coalesce(t.terminal_valid, false), false) AS invalid_terminal,
+                   coalesce(t.effective_delist_date > ending.trade_date, false) AS terminal_after_end,
+                   coalesce(lt.last_bar_date, a.trade_date) < ending.trade_date AS ceased_in_window,
+                   EXISTS (SELECT 1 FROM events ev WHERE ev.security_id = a.security_id
+                                                    AND ev.delist_date > a.trade_date) AS has_event
+            FROM entries en
+            JOIN day_bars a ON a.trade_date = en.entry_date
+            CROSS JOIN horizons h
+            JOIN calendar ending ON ending.session_number = en.session_number + h.horizon_days
+            LEFT JOIN terminals t ON t.security_id = a.security_id
+            LEFT JOIN last_trade lt ON lt.security_id = a.security_id
+            LEFT JOIN labels l ON l.security_id = a.security_id AND l.as_of_date = a.trade_date
+                              AND l.horizon_days = h.horizon_days
+        ), attrition AS (
+            SELECT horizon_days,
+                   count(*) FILTER (WHERE post_terminal) AS excluded_post_terminal,
+                   count(*) FILTER (WHERE NOT post_terminal) AS anchors_matured,
+                   count(*) FILTER (WHERE NOT post_terminal AND NOT labeled) AS unlabeled_matured,
+                   count(*) FILTER (WHERE NOT post_terminal AND NOT labeled AND invalid_terminal)
+                       AS unlabeled_invalid_terminal,
+                   count(*) FILTER (WHERE NOT post_terminal AND NOT labeled AND NOT invalid_terminal
+                                    AND ceased_in_window AND terminal_after_end)
+                       AS unlabeled_terminal_beyond_halt_bound,
+                   count(*) FILTER (WHERE NOT post_terminal AND NOT labeled AND ceased_in_window
+                                    AND NOT has_terminal AND has_event)
+                       AS unlabeled_ceased_event_without_terminal,
+                   count(*) FILTER (WHERE NOT post_terminal AND NOT labeled AND ceased_in_window
+                                    AND NOT has_terminal AND NOT has_event)
+                       AS unlabeled_ceased_unexplained,
+                   count(*) FILTER (WHERE NOT post_terminal AND NOT labeled AND NOT invalid_terminal
+                                    AND NOT ceased_in_window) AS unlabeled_endpoint_bar_missing
+            FROM anchor_status GROUP BY horizon_days
         ), published AS (
             SELECT horizon_days, count(*) AS rows, count(DISTINCT as_of_date) AS formations,
                    count(DISTINCT security_id) AS securities,
@@ -283,26 +362,42 @@ def monthly_label_diagnostics(
                coalesce(p.securities, 0), coalesce(p.observed_terminals, 0),
                coalesce(p.policy_terminals, 0), coalesce(p.other_terminals, 0),
                coalesce(p.off_contract_rows, 0), p.first_formation, p.last_formation,
-               coalesce(a.anchors_matured, 0), coalesce(a.unlabeled_matured, 0),
-               coalesce(a.unlabeled_matured_spanning_event, 0)
+               coalesce(d.decision_names, 0), coalesce(d.no_entry_bar, 0),
+               coalesce(d.no_entry_bar_ceased, 0), coalesce(d.no_entry_bar_ceased_with_terminal, 0),
+               coalesce(a.excluded_post_terminal, 0), coalesce(a.anchors_matured, 0),
+               coalesce(a.unlabeled_matured, 0), coalesce(a.unlabeled_invalid_terminal, 0),
+               coalesce(a.unlabeled_terminal_beyond_halt_bound, 0),
+               coalesce(a.unlabeled_ceased_event_without_terminal, 0),
+               coalesce(a.unlabeled_ceased_unexplained, 0),
+               coalesce(a.unlabeled_endpoint_bar_missing, 0)
         FROM horizons h
         LEFT JOIN published p USING (horizon_days)
+        LEFT JOIN decision_counts d USING (horizon_days)
         LEFT JOIN attrition a USING (horizon_days)
         ORDER BY h.horizon_days
     """, [*params, LABEL_CALCULATION_VERSION, price_basis]).fetchall()
     fields = ("horizon_days", "rows", "formations", "securities", "observed_terminals",
               "policy_terminals", "other_terminals", "off_contract_rows", "first_formation",
-              "last_formation", "anchors_matured", "unlabeled_matured",
-              "unlabeled_matured_spanning_event")
+              "last_formation", "decision_names", "no_entry_bar", "no_entry_bar_ceased",
+              "no_entry_bar_ceased_with_terminal", "excluded_post_terminal", "anchors_matured",
+              "unlabeled_matured", "unlabeled_invalid_terminal", "unlabeled_terminal_beyond_halt_bound",
+              "unlabeled_ceased_event_without_terminal", "unlabeled_ceased_unexplained",
+              "unlabeled_endpoint_bar_missing")
+    survivorship = ("unlabeled_invalid_terminal", "unlabeled_terminal_beyond_halt_bound",
+                    "unlabeled_ceased_event_without_terminal", "unlabeled_ceased_unexplained")
     by_horizon = []
     for row in rows:
         record = dict(zip(fields, row, strict=True))
         for key in ("first_formation", "last_formation"):
             record[key] = None if record[key] is None else record[key].isoformat()
         record["formation_units"] = HORIZON_FORMATION_UNITS.get(record["horizon_days"])
+        record["survivorship_attrition"] = sum(record[key] for key in survivorship)
+        record["unlabeled_other"] = (record["unlabeled_matured"] - record["survivorship_attrition"]
+                                     - record["unlabeled_endpoint_bar_missing"])
         matured = record["anchors_matured"]
         record["label_coverage"] = (matured - record["unlabeled_matured"]) / matured if matured else None
         by_horizon.append(record)
     return {"source": source, "price_basis": price_basis,
             "cutoff": None if cutoff is None else cutoff.isoformat(),
-            "formation_rule": MONTHLY_FORMATION_RULE, "horizons": by_horizon}
+            "formation_rule": MONTHLY_FORMATION_RULE, "terminal_gaps": terminal_gaps,
+            "horizons": by_horizon}

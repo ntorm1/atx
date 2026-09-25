@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from ._forward_return_publication import CALCULATION_VERSION
 from .connection import DuckDBStore
 from .fundamental_signal_research import validate_fundamental_signal_panel
 from .research.labels import label_revision_order_sql, label_status_sql
@@ -18,7 +19,8 @@ from .research.stats import holm as holm_family
 
 HORIZONS = (5, 21, 63)
 SPLITS = ("train", "validation", "holdout")
-LABEL_VERSION = "forward_return_publication_v1"
+# Accept exactly the publisher's current calculation (v2: halt-gap terminal dating).
+LABEL_VERSION = CALCULATION_VERSION
 _ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _BLOCKERS = (
     "issuer_cohort_has_no_verified_price_or_adv_screen",

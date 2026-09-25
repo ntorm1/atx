@@ -24,11 +24,50 @@ _CHECKPOINT_ROWS = 400_000
 # basis, terminal stitching, and observed trading-calendar endpoint rule. The
 # formation filter only selects WHICH anchor rows are computed; every published
 # row is the identical per-row calculation, so the version is shared.
-CALCULATION_VERSION = "forward_return_publication_v1"
+# v2 (R3a fix 1): terminals are dated by the halt-gap rule of effective_terminals_sql.
+CALCULATION_VERSION = "forward_return_publication_v2"
 # every_session: every positive selected bar is an anchor (the daily panel).
 # month_end_next_session: only the first observed session after the last observed
 # session of each closed calendar month (entry after a month-end decision).
 FORMATION_RULES = ("every_session", "month_end_next_session")
+# A3 dates a cessation at the first session after the last trade and establishes one
+# from absence alone at the 31st absent session (delisting_evidence.ARCHIVE_GAP_SESSIONS
+# + 1). A terminal dated up to this many absent sessions after the last trade belongs to
+# that cessation, so its loss is realized at the first session after the last trade.
+HALT_GAP_MAX_ABSENT_SESSIONS = 31
+
+
+def effective_terminals_sql(*, terminals: str, bars: str, calendar: str) -> str:
+    """SELECT adding the halt-gap dating of each selected terminal (single shared rule).
+
+    Inputs are relation names: ``terminals`` (one selected terminal per security, with
+    ``security_id, delist_date``), ``bars`` (``security_id, trade_date, price,
+    price_available_at``, valid positive prices only) and ``calendar`` (observed sessions,
+    ``trade_date``). Adds ``last_price_date/last_price/last_price_available_at`` (last bar
+    strictly before ``delist_date``), ``first_session_after_last``, ``halt_gap_sessions``
+    (observed sessions strictly between the last trade and ``delist_date``) and
+    ``effective_delist_date``: the first session after the last trade when
+    ``1 <= halt_gap_sessions <= HALT_GAP_MAX_ABSENT_SESSIONS`` (a halt before a later-dated
+    terminal: the loss must not vanish from windows ending inside the gap), otherwise
+    ``delist_date``. Labels stitch, exclude and publish on ``effective_delist_date``; the
+    publisher and the survivorship DQC both use this fragment.
+    """
+    return f"""
+        SELECT p.*,
+               CASE WHEN p.halt_gap_sessions BETWEEN 1 AND {HALT_GAP_MAX_ABSENT_SESSIONS}
+                    THEN p.first_session_after_last ELSE p.delist_date END AS effective_delist_date
+        FROM (
+            SELECT t.*, lp.trade_date AS last_price_date, lp.price AS last_price,
+                   lp.price_available_at AS last_price_available_at,
+                   (SELECT min(c.trade_date) FROM {calendar} c
+                    WHERE c.trade_date > lp.trade_date) AS first_session_after_last,
+                   (SELECT count(*) FROM {calendar} c
+                    WHERE c.trade_date > lp.trade_date AND c.trade_date < t.delist_date)
+                       AS halt_gap_sessions
+            FROM {terminals} t
+            ASOF LEFT JOIN {bars} lp
+              ON t.security_id = lp.security_id AND t.delist_date > lp.trade_date
+        ) p"""
 
 
 def _count(store: DuckDBStore, table: str) -> int:
@@ -206,16 +245,19 @@ def refresh_forward_return_publication(
         if not required.issubset({row[0] for row in described}):
             raise RuntimeError("forward-return publication requires migration 0325")
         insert_columns = ", ".join([*columns, "price_basis", "calculation_version", *metadata])
-        bars = build.create("bars", _BARS_SQL.format(name=build.name("bars"), price_basis=price_basis),
-                            [cutoff, cutoff])
+        bars = build.create("bars", f"""
+            CREATE TABLE {build.name('bars')} AS
+            SELECT *, row_number() OVER (ORDER BY security_id, trade_date) AS formation_number
+            FROM ({selected_bars_sql(price_basis)}) picked
+            ORDER BY security_id, trade_date
+        """, [cutoff, cutoff])
         calendar = build.create("calendar", _CALENDAR_SQL.format(name=build.name("calendar")),
                                 [calendar_id, calendar_source, cutoff, cutoff])
-        terminals = build.create("terminals", _TERMINALS_SQL.format(name=build.name("terminals")),
-                                 [cutoff, cutoff])
+        terminals = build.create("terminals", f"CREATE TABLE {build.name('terminals')} AS "
+                                 + selected_terminals_sql(), [cutoff, cutoff])
         terminal_prices = build.create(
-            "terminal_prices", _TERMINAL_PRICES_SQL.format(
-                name=build.name("terminal_prices"), terminals=terminals, bars=bars,
-            ),
+            "terminal_prices", f"CREATE TABLE {build.name('terminal_prices')} AS "
+            + effective_terminals_sql(terminals=terminals, bars=bars, calendar=calendar),
         )
         formations = bars if formation == "every_session" else build.create(
             "formations", _MONTH_END_FORMATIONS_SQL.format(
@@ -277,13 +319,21 @@ def refresh_forward_return_publication(
         build.cleanup()
 
 
-_BARS_SQL = """
-CREATE TABLE {name} AS
+def selected_bars_sql(price_basis: str, *, security_filter: str = "TRUE") -> str:
+    """SELECT of the publisher's bar pick: one row per (security, date), newest visible.
+
+    Columns ``security_id, symbol, trade_date, price, price_available_at``; only positive
+    finite ``price_basis`` prices. ``security_filter`` is a SQL predicate over
+    ``equity_daily_bars`` applied before the pick. Binds ``(cutoff, cutoff)``.
+    """
+    if price_basis not in {"adjusted_close", "close"}:
+        raise ValueError("price_basis must be adjusted_close or close")
+    return f"""
                 WITH eligible AS (
                     SELECT *, coalesce(available_at,
                         CAST(trade_date AS TIMESTAMP) + INTERVAL '22 hours') AS price_available_at
                     FROM equity_daily_bars
-                    WHERE (?::TIMESTAMP IS NULL OR coalesce(available_at,
+                    WHERE ({security_filter}) AND (?::TIMESTAMP IS NULL OR coalesce(available_at,
                         CAST(trade_date AS TIMESTAMP) + INTERVAL '22 hours') <= ?)
                 ), chosen AS (
                     SELECT security_id, symbol, trade_date,
@@ -297,11 +347,33 @@ CREATE TABLE {name} AS
                            ) AS pick
                     FROM eligible
                 )
-                SELECT security_id, symbol, trade_date, price, price_available_at,
-                       row_number() OVER (ORDER BY security_id, trade_date) AS formation_number
-                FROM chosen WHERE pick = 1 AND price > 0 AND isfinite(price)
-                ORDER BY security_id, trade_date
-"""
+                SELECT security_id, symbol, trade_date, price, price_available_at
+                FROM chosen WHERE pick = 1 AND price > 0 AND isfinite(price)"""
+
+
+def selected_terminals_sql() -> str:
+    """SELECT of the one terminal per security the publisher stitches. Binds ``(cutoff, cutoff)``.
+
+    Revisions are chosen per (security, delist_date) before validity; the earliest
+    cessation per security wins; ``terminal_valid`` keeps invalid rows as boundaries.
+    """
+    return """
+                WITH revisions AS (
+                    SELECT *, row_number() OVER (
+                        PARTITION BY security_id, delist_date
+                        ORDER BY available_at DESC, source_loaded_at DESC,
+                                 terminal_return_id DESC
+                    ) AS revision
+                    FROM delisting_terminal_returns
+                    WHERE (?::TIMESTAMP IS NULL OR available_at <= ?)
+                )
+                SELECT security_id, delist_date, terminal_return, terminal_return_source,
+                       return_observation_id, available_at AS terminal_available_at,
+                       isfinite(terminal_return) AND terminal_return >= -1 AS terminal_valid
+                FROM revisions WHERE revision = 1
+                QUALIFY row_number() OVER (
+                    PARTITION BY security_id ORDER BY delist_date, terminal_return_id
+                ) = 1"""
 
 _CALENDAR_SQL = """
 CREATE TABLE {name} AS
@@ -332,53 +404,26 @@ CREATE TABLE {name} AS
                 ORDER BY b.security_id, b.trade_date
 """
 
-_TERMINALS_SQL = """
-CREATE TABLE {name} AS
-                WITH revisions AS (
-                    SELECT *, row_number() OVER (
-                        PARTITION BY security_id, delist_date
-                        ORDER BY available_at DESC, source_loaded_at DESC,
-                                 terminal_return_id DESC
-                    ) AS revision
-                    FROM delisting_terminal_returns
-                    WHERE (?::TIMESTAMP IS NULL OR available_at <= ?)
-                )
-                SELECT security_id, delist_date, terminal_return, terminal_return_source,
-                       return_observation_id, available_at AS terminal_available_at,
-                       isfinite(terminal_return) AND terminal_return >= -1 AS terminal_valid
-                FROM revisions WHERE revision = 1
-                QUALIFY row_number() OVER (
-                    PARTITION BY security_id ORDER BY delist_date, terminal_return_id
-                ) = 1
-"""
-
-_TERMINAL_PRICES_SQL = """
-CREATE TABLE {name} AS
-                SELECT t.*, b.trade_date AS last_price_date, b.price AS last_price,
-                       b.price_available_at AS last_price_available_at
-                FROM {terminals} t
-                ASOF LEFT JOIN {bars} b
-                  ON t.security_id = b.security_id AND t.delist_date > b.trade_date
-"""
-
+# Every window/exclusion test and the published delist_date use the halt-gap
+# effective date (effective_terminals_sql); t.delist_date IS NULL = no terminal.
 _RESULT_SQL = """
 INSERT INTO {stage} ({insert_columns})
 WITH legs AS (
                         SELECT f.security_id, f.symbol, f.trade_date AS as_of_date,
                                ending.trade_date AS forward_end_date,
-                               CASE WHEN t.delist_date <= ending.trade_date
+                               CASE WHEN t.effective_delist_date <= ending.trade_date
                                     THEN t.last_price / f.price - 1
                                     ELSE e.price / f.price - 1 END AS raw_forward_return,
-                               CASE WHEN t.delist_date <= ending.trade_date
+                               CASE WHEN t.effective_delist_date <= ending.trade_date
                                     THEN t.terminal_return END AS terminal_return,
-                               CASE WHEN t.delist_date <= ending.trade_date
-                                    THEN t.delist_date END AS delist_date,
-                               CASE WHEN t.delist_date <= ending.trade_date
+                               CASE WHEN t.effective_delist_date <= ending.trade_date
+                                    THEN t.effective_delist_date END AS delist_date,
+                               CASE WHEN t.effective_delist_date <= ending.trade_date
                                     THEN t.terminal_return_source END AS terminal_return_source,
-                               CASE WHEN t.delist_date <= ending.trade_date
+                               CASE WHEN t.effective_delist_date <= ending.trade_date
                                     THEN t.return_observation_id END AS return_observation_id,
                                greatest(f.price_available_at,
-                                   CASE WHEN t.delist_date <= ending.trade_date
+                                   CASE WHEN t.effective_delist_date <= ending.trade_date
                                         THEN greatest(t.last_price_available_at,
                                                       t.terminal_available_at)
                                         ELSE e.price_available_at END) AS available_at
@@ -390,12 +435,12 @@ WITH legs AS (
                           ON e.security_id = f.security_id AND e.trade_date = ending.trade_date
                         LEFT JOIN {terminal_prices} t ON t.security_id = f.security_id
                         WHERE f.formation_number BETWEEN ? AND ?
-                          AND (t.delist_date IS NULL OR f.trade_date < t.delist_date)
+                          AND (t.delist_date IS NULL OR f.trade_date < t.effective_delist_date)
                           -- Retain invalid selected evidence as an event boundary: never
                           -- resurrect an older return or use a post-terminal survivor leg.
-                          AND (t.delist_date IS NULL OR t.delist_date > ending.trade_date
+                          AND (t.delist_date IS NULL OR t.effective_delist_date > ending.trade_date
                                OR coalesce(t.terminal_valid, false))
-                          AND ((t.delist_date <= ending.trade_date
+                          AND ((t.effective_delist_date <= ending.trade_date
                                 AND t.last_price_date >= f.trade_date) OR e.price IS NOT NULL)
                     ), returns AS (
                         SELECT *, CASE WHEN terminal_return IS NOT NULL
