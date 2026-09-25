@@ -7,9 +7,11 @@
 // (factor_model.hpp) no longer leaks them into its 42 dependents. PURE refactor —
 // the math is byte-identical to the pre-split header-only implementation (R10).
 
-#include <algorithm> // std::clamp (fixed factor-cov shrink override)
-#include <cmath>     // std::isnan (FactorModelBuilder: per-date return drop)
+#include <algorithm> // std::clamp, std::sort, std::minmax_element (W0-R0 D floor)
+#include <cmath>     // std::isnan, std::isfinite, std::log, std::exp, std::sqrt
+#include <span>      // std::span (PIT side inputs, residual counts)
 #include <utility>   // std::move
+#include <vector>    // std::vector (per-date designs, column maps)
 
 #include <Eigen/Dense> // Eigen::LLT, Eigen::Index, Eigen::Map
 
@@ -338,6 +340,183 @@ atx::core::linalg::MatX factor_covariance(atx::core::linalg::MatX fseries, atx::
   return f;
 }
 
+std::vector<atx::usize> map_columns(const std::vector<ColumnTag> &date_cols,
+                                    const std::vector<ColumnTag> &model_cols) {
+  std::vector<atx::usize> out(date_cols.size(), kNoColumn);
+  for (atx::usize c = 0U; c < date_cols.size(); ++c) {
+    const ColumnTag &dc = date_cols[c];
+    for (atx::usize j = 0U; j < model_cols.size(); ++j) { // K ≤ 256: linear scan is fine
+      const ColumnTag &mc = model_cols[j];
+      if (dc.kind != mc.kind) {
+        continue;
+      }
+      const bool same = (dc.kind == ColumnTag::Kind::Style) ? (dc.style == mc.style)
+                                                            : (dc.group_id == mc.group_id);
+      if (same) {
+        out[c] = j;
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+namespace {
+
+// Median of a copy of `v` (order-fixed: full sort; even length ⇒ mean of the middle
+// two). Empty ⇒ 0.0.
+[[nodiscard]] atx::f64 median_of(std::vector<atx::f64> v) {
+  if (v.empty()) {
+    return 0.0;
+  }
+  std::sort(v.begin(), v.end());
+  const atx::usize n = v.size();
+  return ((n % 2U) == 1U) ? v[n / 2U] : 0.5 * (v[n / 2U - 1U] + v[n / 2U]);
+}
+
+// cov.specific_floor_frac as applied: clamped to [0, 1]; a non-finite value (which
+// std::clamp would pass through, and `!(d >= NaN)` would then turn every D into NaN)
+// is treated as 0 = no global floor. The builder entry points reject it up front
+// (InvalidArgument); this is the defence for direct detail:: callers.
+[[nodiscard]] atx::f64 effective_floor_frac(atx::f64 frac) noexcept {
+  return std::isfinite(frac) ? std::clamp(frac, 0.0, 1.0) : 0.0;
+}
+
+// The R-05 global floor, IN PLACE: median over the finite entries of `d`, then every
+// entry below frac·median (or NaN) is raised to it. Fills st.median / st.floor /
+// st.n_floored. Shared by the fundamental (floor_specific_variances) and statistical
+// (build_stat_factor_model) builders so "no D < frac·median(D)" holds on both.
+void floor_at_median(atx::core::linalg::VecX &d, atx::f64 frac, SpecificFloorStats &st) {
+  const atx::usize m = static_cast<atx::usize>(d.size());
+  std::vector<atx::f64> all;
+  all.reserve(m);
+  for (atx::usize r = 0U; r < m; ++r) {
+    const atx::f64 dr = d[static_cast<Eigen::Index>(r)];
+    if (std::isfinite(dr)) {
+      all.push_back(dr);
+    }
+  }
+  st.median = median_of(std::move(all));
+  st.floor = (st.median > 0.0) ? effective_floor_frac(frac) * st.median : 0.0;
+  for (atx::usize r = 0U; r < m; ++r) {
+    const Eigen::Index ri = static_cast<Eigen::Index>(r);
+    if (!(d[ri] >= st.floor)) { // also lifts a NaN entry to the floor
+      d[ri] = st.floor;
+      ++st.n_floored;
+    }
+  }
+}
+
+} // namespace
+
+SpecificFloorStats floor_specific_variances(const ExposureMatrix &x0,
+                                            std::span<const atx::usize> obs,
+                                            const CovarianceConfig &cov,
+                                            atx::core::linalg::VecX &d) {
+  SpecificFloorStats st{};
+  const atx::usize m = static_cast<atx::usize>(d.size());
+  ATX_ASSERT(obs.size() == m);
+  ATX_ASSERT(x0.n_instruments() == m);
+  if (m == 0U) {
+    return st;
+  }
+  atx::usize full = 0U;
+  for (const atx::usize n : obs) {
+    full = std::max(full, n);
+  }
+  st.min_obs = std::min(cov.specific_min_obs, std::max<atx::usize>(2U, (full + 1U) / 2U));
+
+  // Thick anchor set: enough residuals and a usable (finite, positive) estimate.
+  std::vector<atx::usize> thick;
+  thick.reserve(m);
+  std::vector<atx::f64> thick_d;
+  thick_d.reserve(m);
+  for (atx::usize r = 0U; r < m; ++r) {
+    const atx::f64 dr = d[static_cast<Eigen::Index>(r)];
+    if (obs[r] >= st.min_obs && std::isfinite(dr) && dr > 0.0) {
+      thick.push_back(r);
+      thick_d.push_back(dr);
+    }
+  }
+  for (atx::usize r = 0U; r < m; ++r) {
+    st.n_thin += (obs[r] < st.min_obs) ? 1U : 0U;
+  }
+
+  if (st.n_thin > 0U && !thick.empty()) {
+    const atx::f64 med_thick = median_of(thick_d);
+    const auto [min_it, max_it] = std::minmax_element(thick_d.begin(), thick_d.end());
+    const atx::f64 d_lo = *min_it;
+    const atx::f64 d_hi = *max_it;
+    atx::core::linalg::VecX d_str =
+        atx::core::linalg::VecX::Constant(static_cast<Eigen::Index>(m), med_thick);
+
+    // Structural design: x0 columns with any non-zero entry on the thick set, plus an
+    // intercept when there is no sector column (style z-scores are centred, so without
+    // an intercept the fit would force the mean ln d to 0).
+    bool has_sector = false;
+    std::vector<Eigen::Index> cols;
+    for (atx::usize c = 0U; c < x0.columns.size(); ++c) {
+      const Eigen::Index ci = static_cast<Eigen::Index>(c);
+      bool nonzero = false;
+      for (const atx::usize r : thick) {
+        nonzero = nonzero || (x0.x(static_cast<Eigen::Index>(r), ci) != 0.0);
+      }
+      if (nonzero) {
+        cols.push_back(ci);
+        has_sector = has_sector || (x0.columns[c].kind == ColumnTag::Kind::Sector);
+      }
+    }
+    const Eigen::Index p =
+        static_cast<Eigen::Index>(cols.size()) + (has_sector ? Eigen::Index{0} : Eigen::Index{1});
+    const auto design_row = [&](atx::usize r, atx::core::linalg::MatX &z, Eigen::Index zr) {
+      Eigen::Index zc = 0;
+      if (!has_sector) {
+        z(zr, zc++) = 1.0;
+      }
+      for (const Eigen::Index ci : cols) {
+        z(zr, zc++) = x0.x(static_cast<Eigen::Index>(r), ci);
+      }
+    };
+    if (static_cast<Eigen::Index>(thick.size()) > p) {
+      atx::core::linalg::MatX z(static_cast<Eigen::Index>(thick.size()), p);
+      atx::core::linalg::VecX y(static_cast<Eigen::Index>(thick.size()));
+      for (atx::usize a = 0U; a < thick.size(); ++a) {
+        design_row(thick[a], z, static_cast<Eigen::Index>(a));
+        y[static_cast<Eigen::Index>(a)] = std::log(thick_d[a]);
+      }
+      const auto fit = atx::core::linalg::ols(z, y);
+      if (fit) {
+        atx::core::linalg::MatX zall(static_cast<Eigen::Index>(m), p);
+        for (atx::usize r = 0U; r < m; ++r) {
+          design_row(r, zall, static_cast<Eigen::Index>(r));
+        }
+        const atx::core::linalg::VecX pred = zall * fit->beta;
+        for (atx::usize r = 0U; r < m; ++r) {
+          d_str[static_cast<Eigen::Index>(r)] =
+              std::clamp(std::exp(pred[static_cast<Eigen::Index>(r)]), d_lo, d_hi);
+        }
+        st.structural = true;
+      }
+    }
+
+    const atx::f64 inv_min = 1.0 / static_cast<atx::f64>(st.min_obs); // min_obs >= 1 here
+    for (atx::usize r = 0U; r < m; ++r) {
+      if (obs[r] >= st.min_obs) {
+        continue;
+      }
+      const Eigen::Index ri = static_cast<Eigen::Index>(r);
+      const atx::f64 own = (std::isfinite(d[ri]) && d[ri] > 0.0) ? d[ri] : 0.0;
+      const atx::f64 gamma = std::clamp(static_cast<atx::f64>(obs[r]) * inv_min, 0.0, 1.0);
+      const atx::f64 sigma = gamma * std::sqrt(own) + (1.0 - gamma) * std::sqrt(d_str[ri]);
+      d[ri] = sigma * sigma;
+    }
+  }
+
+  // Global floor at frac · median(D) (median over finite entries, after the fallback).
+  floor_at_median(d, cov.specific_floor_frac, st);
+  return st;
+}
+
 } // namespace detail
 
 // ===========================================================================
@@ -347,6 +526,38 @@ atx::core::linalg::MatX factor_covariance(atx::core::linalg::MatX fseries, atx::
 atx::core::Result<FactorModel> FactorModelBuilder::build(const PanelView &panel, atx::usize window,
                                                          std::span<const atx::f64> market_cap,
                                                          std::span<const atx::u32> group_id) const {
+  return build(panel, window, PitSideInputs::broadcast(market_cap, group_id));
+}
+
+atx::core::Result<FactorComponents>
+FactorModelBuilder::build_components(const PanelView &panel, atx::usize window,
+                                     std::span<const atx::f64> market_cap,
+                                     std::span<const atx::u32> group_id) const {
+  return build_components(panel, window, PitSideInputs::broadcast(market_cap, group_id));
+}
+
+atx::core::Result<ExposureMatrix>
+FactorModelBuilder::regression_exposures(const PanelView &panel, atx::usize s,
+                                         const PitSideInputs &side) const {
+  return build_exposures(panel, cfg, detail::exposure_row(cfg.exposure_timing, s), side);
+}
+
+atx::core::Result<FactorReturnPanel>
+FactorModelBuilder::factor_returns(const PanelView &panel, atx::usize window,
+                                   const PitSideInputs &side) const {
+  ExposureMatrix x0;
+  atx::core::linalg::MatX fseries;
+  std::vector<std::vector<atx::f64>> u_by_inst;
+  std::vector<atx::usize> dates;
+  std::vector<atx::usize> missing;
+  ATX_TRY(atx::usize used, run_passes(panel, window, side, x0, fseries, u_by_inst, dates, missing));
+  return atx::core::Ok(FactorReturnPanel{fseries.topRows(static_cast<Eigen::Index>(used)),
+                                          std::move(x0.columns), std::move(dates),
+                                          std::move(missing)});
+}
+
+atx::core::Result<FactorModel> FactorModelBuilder::build(const PanelView &panel, atx::usize window,
+                                                         const PitSideInputs &side) const {
   // Rung dispatch (in the thin wrapper). The dead-alpha rung is STILL a deferred
   // residual (S7.3) → NotImplemented; the statistical (APCA) rung is WIRED (S8.6),
   // a DISTINCT model variant. Dead takes precedence so a (stat>0 AND dead>0) config
@@ -357,20 +568,23 @@ atx::core::Result<FactorModel> FactorModelBuilder::build(const PanelView &panel,
                           "residual"); // NOT a silent skip — an explicit deferral
   }
   if (cfg.n_stat_factors > 0U) {
-    return build_stat_factor_model(panel, window, market_cap, group_id, cfg, cfg.n_stat_factors,
+    return build_stat_factor_model(panel, window, side, cfg, cfg.n_stat_factors,
                                    cfg.cov.apca_gls_reweight, cfg.factor_cov_shrink);
   }
   // Fundamental path: estimate (X, F, D) in build_components (the S7-3 augmentation seam),
   // then assemble. build_components returns EXACTLY the (X, F, D, fit_end) create consumes.
-  ATX_TRY(FactorComponents comp, build_components(panel, window, market_cap, group_id));
+  ATX_TRY(FactorComponents comp, build_components(panel, window, side));
   return FactorModel::create(std::move(comp.X), std::move(comp.F), std::move(comp.D),
                              /*fit_begin=*/0U, /*fit_end=*/comp.fit_end);
 }
 
-atx::core::Result<FactorComponents>
-FactorModelBuilder::build_components(const PanelView &panel, atx::usize window,
-                                     std::span<const atx::f64> market_cap,
-                                     std::span<const atx::u32> group_id) const {
+atx::core::Result<atx::usize>
+FactorModelBuilder::run_passes(const PanelView &panel, atx::usize window,
+                               const PitSideInputs &side, ExposureMatrix &x0,
+                               atx::core::linalg::MatX &fseries,
+                               std::vector<std::vector<atx::f64>> &u_by_inst,
+                               std::vector<atx::usize> &dates,
+                               std::vector<atx::usize> &missing) const {
   if (cfg.n_stat_factors > 0U || cfg.n_dead_factors > 0U) {
     return atx::core::Err(atx::core::ErrorCode::NotImplemented,
                           "FactorModelBuilder::build_components: stat/dead rungs are dispatched "
@@ -380,8 +594,27 @@ FactorModelBuilder::build_components(const PanelView &panel, atx::usize window,
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "FactorModelBuilder::build_components: require window >= 2");
   }
+  if (!std::isfinite(cfg.cov.specific_floor_frac)) { // NaN/Inf would poison every D and d0
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "FactorModelBuilder::build_components: specific_floor_frac must be "
+                          "finite");
+  }
+  const atx::usize n_inst = panel.instruments();
+  ATX_TRY_VOID(side.validate(n_inst));
+  // Point-in-time side inputs must cover every exposure row the passes read: rows
+  // [0, exposure_row(window − 1)] clipped to the panel (R-06; never a silent reuse).
+  if (!side.is_static() && panel.rows() > 0U) {
+    const atx::usize last_row =
+        std::min(detail::exposure_row(cfg.exposure_timing, window - 1U), panel.rows() - 1U);
+    if (!side.covers(last_row)) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "FactorModelBuilder: point-in-time side inputs must cover every "
+                            "exposure row of the window");
+    }
+  }
   // X[0] (the CURRENT cross-section) defines M and the emitted factor count K.
-  ATX_TRY(ExposureMatrix x0, build_exposures(panel, cfg, /*row=*/0U, market_cap, group_id));
+  ATX_TRY(ExposureMatrix x0_built, build_exposures(panel, cfg, /*row=*/0U, side));
+  x0 = std::move(x0_built);
   const atx::usize k = x0.n_factors();
   if (k == 0U) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
@@ -393,29 +626,49 @@ FactorModelBuilder::build_components(const PanelView &panel, atx::usize window,
   }
 
   // Pass A (OLS) -> bootstrap specific variances d0; Pass B (WLS) -> f[s], u[s].
-  const atx::usize n_inst = panel.instruments();
   atx::core::linalg::VecX d0(static_cast<Eigen::Index>(n_inst));
-  ATX_TRY(atx::usize used_a, accumulate_ols(panel, window, market_cap, group_id, k, d0));
+  ATX_TRY(atx::usize used_a, accumulate_ols(panel, window, side, d0));
   if (used_a < 2U) {
     return atx::core::Err(
         atx::core::ErrorCode::InvalidArgument,
         "FactorModelBuilder::build_components: too few usable dates (M_s < K everywhere)");
   }
 
-  std::vector<std::vector<atx::f64>> u_by_inst(n_inst); // final residuals per universe inst
-  atx::core::linalg::MatX fseries(static_cast<Eigen::Index>(window), static_cast<Eigen::Index>(k));
+  u_by_inst.assign(n_inst, std::vector<atx::f64>{}); // final residuals per universe inst
+  fseries.setZero(static_cast<Eigen::Index>(window), static_cast<Eigen::Index>(k));
+  dates.clear();
+  missing.assign(k, 0U);
   // Pass B dispatch: robust root-cap + Huber IRLS when opted in (cfg.cov), else the
   // P4 plain inverse-specific-variance WLS. Both emit the SAME (window×K) factor-
   // return series + per-instrument residuals downstream; the default keeps P4 exactly.
   ATX_TRY(atx::usize used_b,
           cfg.cov.robust_regression
-              ? accumulate_robust(panel, window, market_cap, group_id, d0, fseries, u_by_inst)
-              : accumulate_wls(panel, window, market_cap, group_id, d0, fseries, u_by_inst));
+              ? accumulate_robust(panel, window, side, x0, d0, fseries, u_by_inst, dates, missing)
+              : accumulate_wls(panel, window, side, x0, d0, fseries, u_by_inst, dates, missing));
   if (used_b < 2U) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "FactorModelBuilder::build_components: too few usable WLS dates");
   }
+  return atx::core::Ok(used_b);
+}
+
+atx::core::Result<FactorComponents>
+FactorModelBuilder::build_components(const PanelView &panel, atx::usize window,
+                                     const PitSideInputs &side) const {
+  ExposureMatrix x0;
+  atx::core::linalg::MatX fseries;
+  std::vector<std::vector<atx::f64>> u_by_inst;
+  std::vector<atx::usize> dates;
+  std::vector<atx::usize> missing;
+  ATX_TRY(atx::usize used_b,
+          run_passes(panel, window, side, x0, fseries, u_by_inst, dates, missing));
+  const atx::usize k = x0.n_factors();
   // Compact fseries to the rows actually filled (under-determined dates skipped).
+  // KNOWN LIMITATION (W1 risk item, W0-R0 review minor 2): a model factor with no
+  // members on a date carries return 0 there (scatter_factor_returns; counted in
+  // `missing`), and those zeros enter the covariance below as observations, deflating
+  // that factor's variance by about its missing fraction. The fix (covariance over the
+  // observed dates only, pairwise, or a rescale) belongs with the W1 covariance work.
   const atx::core::linalg::MatX fkept = fseries.topRows(static_cast<Eigen::Index>(used_b));
   if (fkept.rows() < static_cast<Eigen::Index>(k)) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
@@ -465,6 +718,22 @@ FactorModelBuilder::build_components(const PanelView &panel, atx::usize window,
   // `fkept` and the FINALIZED (post-eigen-adjust) F, then rescales BOTH F ← λ²·F and
   // D ← λ²·D (PSD-preserving — λ² > 0). RNG-free.
   atx::core::linalg::VecX d = specific_variances(x0, u_by_inst, window);
+  // R-05 thin-name floor (DEFAULT StructuralMedianV2; NoneV1 = the pre-W0 D, which
+  // FactorModel::create only floors at kSpecificVarFloor). EXHAUSTIVE switch.
+  switch (cfg.cov.specific_floor) {
+  case SpecificFloorRule::NoneV1:
+    break;
+  case SpecificFloorRule::StructuralMedianV2: {
+    std::vector<atx::usize> obs(x0.n_instruments());
+    for (atx::usize r = 0U; r < obs.size(); ++r) {
+      obs[r] = u_by_inst[x0.instrument_rows[r]].size();
+    }
+    const detail::SpecificFloorStats st =
+        detail::floor_specific_variances(x0, std::span<const atx::usize>{obs}, cfg.cov, d);
+    ATX_UNUSED(st);
+    break;
+  }
+  }
   if (cfg.cov.vra_halflife > 0U) {
     const RegimeAdjust ra = vol_regime_multiplier(fkept, f, cfg.cov.vra_halflife);
     f *= ra.lambda2;
@@ -485,20 +754,26 @@ FactorModelBuilder::build_components(const PanelView &panel, atx::usize window,
 //    4. Pass 1 (equal-weight): Fhat = top-K of the T×T Gram; B, s_n from R.
 //    5. Pass 2 (GLS, when gls_reweight): re-extract Fhat from the 1/√s_n-reweighted
 //       Gram; recover the FINAL B, s_n from the UN-weighted R.
-//    6. X = B, F = factor_covariance(Fhat, factor_cov_shrink), D = s_n; create.
+//    6. X = B, F = factor_covariance(Fhat, factor_cov_shrink), D = s_n floored at
+//       specific_floor_frac·median(s_n) under SpecificFloorRule::StructuralMedianV2
+//       (W0-R0, R-05; NoneV1 = the raw s_n); create.
 //  PIT-structural; RNG-free, order-fixed ⇒ byte-identical on replay (Fhat sign-pinned).
 // ===========================================================================
 atx::core::Result<FactorModel> FactorModelBuilder::build_stat_factor_model(
-    const PanelView &panel, atx::usize window, std::span<const atx::f64> market_cap,
-    std::span<const atx::u32> group_id, const FactorModelConfig &cfg, atx::usize n_stat,
-    bool gls_reweight, atx::f64 factor_cov_shrink) {
+    const PanelView &panel, atx::usize window, const PitSideInputs &side,
+    const FactorModelConfig &cfg, atx::usize n_stat, bool gls_reweight,
+    atx::f64 factor_cov_shrink) {
   if (window < 2U) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "build_stat_factor_model: require window >= 2");
   }
+  if (!std::isfinite(cfg.cov.specific_floor_frac)) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "build_stat_factor_model: specific_floor_frac must be finite");
+  }
   // The current cross-section (row 0) defines the candidate instrument set — the SAME
   // survivors the fundamental X[0] would use, so M aligns across variants.
-  ATX_TRY(ExposureMatrix x0, build_exposures(panel, cfg, /*row=*/0U, market_cap, group_id));
+  ATX_TRY(ExposureMatrix x0, build_exposures(panel, cfg, /*row=*/0U, side));
 
   // Complete-case return panel R (N×T): an instrument survives only if all T trailing
   // returns are clean. Order-fixed (ascending cross-section row, then ascending date).
@@ -560,77 +835,229 @@ atx::core::Result<FactorModel> FactorModelBuilder::build_stat_factor_model(
     s = detail::specific_variances(r_panel, b, fhat);
   }
 
+  // R-05 on the statistical variant: every asset here has all T residuals (complete
+  // case), so there are no thin names, but a near-stale series can still produce a
+  // tiny s_n. Under StructuralMedianV2 apply the same global floor as the fundamental
+  // builder: s_n >= specific_floor_frac·median(s). NoneV1 keeps the pre-W0 s_n.
+  switch (cfg.cov.specific_floor) {
+  case SpecificFloorRule::NoneV1:
+    break;
+  case SpecificFloorRule::StructuralMedianV2: {
+    detail::SpecificFloorStats st{};
+    detail::floor_at_median(s, cfg.cov.specific_floor_frac, st);
+    break;
+  }
+  }
+
   // Assemble: X = B (N×K), F = LW-shrunk covariance of the factor-return series, D = s_n.
   atx::core::linalg::MatX f = detail::factor_covariance(fhat, factor_cov_shrink);
   return FactorModel::create(std::move(b), std::move(f), std::move(s), /*fit_begin=*/0U,
                              /*fit_end=*/window);
 }
 
+namespace {
+
+// One estimation date's regression inputs (W0-R0). `xs` is the exposure block that
+// explains r_s — built at detail::exposure_row(cfg.exposure_timing, s) with THAT row's
+// side inputs (R-03, R-06) — `r` the clean returns r_s over its rows, `keep` the kept
+// row indices into xs.instrument_rows, `xsr` the matching design rows, `cap` the
+// exposure date's cap slice (robust-path weights).
+struct DateDesign {
+  ExposureMatrix xs;
+  atx::core::linalg::VecX r;
+  std::vector<atx::usize> keep;
+  atx::core::linalg::MatX xsr;
+  std::span<const atx::f64> cap;
+};
+
+// Fill `out` for estimation date s. Ok(false) = the date is unusable (no close at s+1
+// for r_s, no exposure row inside the panel, no factor columns, or fewer clean rows
+// than the date's OWN column count K_s — R-04: never the model's K). Err propagates
+// build_exposures (malformed / non-covering side inputs).
+[[nodiscard]] atx::core::Result<bool> date_design(const PanelView &panel,
+                                                  const FactorModelConfig &cfg, atx::usize s,
+                                                  const PitSideInputs &side, DateDesign &out) {
+  if (s + 1U >= panel.rows()) {
+    return atx::core::Ok(false); // r_s = close(s)/close(s+1) − 1 needs row s+1
+  }
+  const atx::usize xrow = detail::exposure_row(cfg.exposure_timing, s);
+  if (xrow >= panel.rows()) {
+    return atx::core::Ok(false);
+  }
+  ATX_TRY(ExposureMatrix xs, build_exposures(panel, cfg, xrow, side));
+  out.xs = std::move(xs);
+  out.r = detail::date_returns(panel, s, out.xs, out.keep);
+  // A sector whose every member lost its return at s has an all-zero dummy on the kept
+  // rows: drop that column (it has no factor return this date) instead of letting the
+  // rank-deficient design skip the whole date (R-04). Style columns are kept as is.
+  std::vector<atx::usize> kept_cols;
+  kept_cols.reserve(out.xs.columns.size());
+  for (atx::usize c = 0U; c < out.xs.columns.size(); ++c) {
+    bool live = (out.xs.columns[c].kind != ColumnTag::Kind::Sector);
+    for (atx::usize j = 0U; j < out.keep.size() && !live; ++j) {
+      live = out.xs.x(static_cast<Eigen::Index>(out.keep[j]), static_cast<Eigen::Index>(c)) != 0.0;
+    }
+    if (live) {
+      kept_cols.push_back(c);
+    }
+  }
+  if (kept_cols.size() != out.xs.columns.size()) {
+    atx::core::linalg::MatX xc(out.xs.x.rows(), static_cast<Eigen::Index>(kept_cols.size()));
+    std::vector<ColumnTag> tags;
+    tags.reserve(kept_cols.size());
+    for (atx::usize c = 0U; c < kept_cols.size(); ++c) {
+      xc.col(static_cast<Eigen::Index>(c)) = out.xs.x.col(static_cast<Eigen::Index>(kept_cols[c]));
+      tags.push_back(out.xs.columns[kept_cols[c]]);
+    }
+    out.xs.x = std::move(xc);
+    out.xs.columns = std::move(tags);
+  }
+  const atx::usize ks = out.xs.n_factors();
+  if (ks == 0U || out.keep.size() < ks) {
+    return atx::core::Ok(false); // under-determined cross-section (M_s < K_s)
+  }
+  out.xsr = detail::select_rows(out.xs.x, out.keep);
+  out.cap = side.cap_at(xrow, panel.instruments());
+  return atx::core::Ok(true);
+}
+
+// Scatter one date's coefficient vector (length K_s, the DATE's column order) into
+// row `u` of the window×K factor-return series by column IDENTITY (R-04). Model
+// columns without a date column stay 0 and are counted in `missing`; date columns the
+// model lacks (a group absent today) are regressed on but not carried.
+template <class Coef>
+void scatter_factor_returns(const Coef &beta, const std::vector<atx::usize> &col_map,
+                            atx::core::linalg::MatX &fseries, atx::usize u,
+                            std::vector<atx::usize> &missing) {
+  const atx::usize k = static_cast<atx::usize>(fseries.cols());
+  std::vector<bool> hit(k, false);
+  for (atx::usize c = 0U; c < col_map.size(); ++c) {
+    const atx::usize j = col_map[c];
+    if (j == detail::kNoColumn) {
+      continue;
+    }
+    ATX_ASSERT(j < k);
+    fseries(static_cast<Eigen::Index>(u), static_cast<Eigen::Index>(j)) =
+        beta[static_cast<Eigen::Index>(c)];
+    hit[j] = true;
+  }
+  for (atx::usize j = 0U; j < k; ++j) {
+    if (!hit[j]) {
+      fseries(static_cast<Eigen::Index>(u), static_cast<Eigen::Index>(j)) = 0.0;
+      ++missing[j];
+    }
+  }
+}
+
+} // namespace
+
 atx::core::Result<atx::usize>
 FactorModelBuilder::accumulate_ols(const PanelView &panel, atx::usize window,
-                                   std::span<const atx::f64> market_cap,
-                                   std::span<const atx::u32> group_id, atx::usize k,
+                                   const PitSideInputs &side,
                                    atx::core::linalg::VecX &d0_out) const {
   const atx::usize n_inst = panel.instruments();
   std::vector<std::vector<atx::f64>> resid(n_inst); // OLS residual series per universe inst
-  std::vector<atx::usize> keep;
+  DateDesign dd;
   atx::usize used = 0U;
   for (atx::usize s = 0U; s < window; ++s) {
-    ATX_TRY(ExposureMatrix xs, build_exposures(panel, cfg, s, market_cap, group_id));
-    const atx::core::linalg::VecX r = detail::date_returns(panel, s, xs, keep);
-    if (keep.size() < k) {
-      continue; // under-determined cross-section (M_s < K) -> skip this date
+    ATX_TRY(bool usable, date_design(panel, cfg, s, side, dd));
+    if (!usable) {
+      continue; // no prior close / under-determined cross-section -> skip this date
     }
-    const atx::core::linalg::MatX xsr = detail::select_rows(xs.x, keep);
-    const auto fit = atx::core::linalg::ols(xsr, r);
+    const auto fit = atx::core::linalg::ols(dd.xsr, dd.r);
     if (!fit) {
       continue; // rank-deficient date -> skip (e.g. a degenerate sector block)
     }
     ++used;
-    for (atx::usize j = 0U; j < keep.size(); ++j) {
-      resid[xs.instrument_rows[keep[j]]].push_back(fit->residuals[static_cast<Eigen::Index>(j)]);
+    for (atx::usize j = 0U; j < dd.keep.size(); ++j) {
+      resid[dd.xs.instrument_rows[dd.keep[j]]].push_back(
+          fit->residuals[static_cast<Eigen::Index>(j)]);
     }
   }
   for (atx::usize i = 0U; i < n_inst; ++i) {
     const atx::f64 v = detail::pop_variance(resid[i]);
     d0_out[static_cast<Eigen::Index>(i)] = (v < kBootstrapVarFloor) ? kBootstrapVarFloor : v;
   }
+  // R-05 applies to the pass-B WEIGHTS too: a 0/1-residual name has d0 = 1e-12, i.e. a
+  // 1e12 WLS weight that lets it dictate its sector's factor return. Under
+  // StructuralMedianV2 thin names shrink toward the median d0 of the well-observed
+  // names and every d0 is floored at specific_floor_frac·median (same thresholds as D).
+  if (cfg.cov.specific_floor == SpecificFloorRule::StructuralMedianV2) {
+    atx::usize full = 0U;
+    for (const auto &series : resid) {
+      full = std::max(full, series.size());
+    }
+    const atx::usize min_obs =
+        std::min(cfg.cov.specific_min_obs, std::max<atx::usize>(2U, (full + 1U) / 2U));
+    std::vector<atx::f64> thick;
+    for (atx::usize i = 0U; i < n_inst; ++i) {
+      if (!resid[i].empty() && resid[i].size() >= min_obs) {
+        thick.push_back(d0_out[static_cast<Eigen::Index>(i)]);
+      }
+    }
+    if (!thick.empty() && min_obs > 0U) {
+      const atx::f64 med_thick = detail::median_of(std::move(thick));
+      for (atx::usize i = 0U; i < n_inst; ++i) {
+        const atx::usize n = resid[i].size();
+        if (n == 0U || n >= min_obs) {
+          continue;
+        }
+        const Eigen::Index ii = static_cast<Eigen::Index>(i);
+        const atx::f64 gamma = static_cast<atx::f64>(n) / static_cast<atx::f64>(min_obs);
+        const atx::f64 sigma = gamma * std::sqrt(d0_out[ii]) + (1.0 - gamma) * std::sqrt(med_thick);
+        d0_out[ii] = std::max(sigma * sigma, kBootstrapVarFloor);
+      }
+    }
+    std::vector<atx::f64> seen; // every weighted name's d0, after the thin fallback
+    for (atx::usize i = 0U; i < n_inst; ++i) {
+      if (!resid[i].empty()) { // never regressed -> never weighted
+        seen.push_back(d0_out[static_cast<Eigen::Index>(i)]);
+      }
+    }
+    const atx::f64 floor = detail::effective_floor_frac(cfg.cov.specific_floor_frac) *
+                           detail::median_of(std::move(seen));
+    for (atx::usize i = 0U; i < n_inst; ++i) {
+      const Eigen::Index ii = static_cast<Eigen::Index>(i);
+      if (!resid[i].empty() && d0_out[ii] < floor) {
+        d0_out[ii] = floor;
+      }
+    }
+  }
   return atx::core::Ok(used);
 }
 
 atx::core::Result<atx::usize>
 FactorModelBuilder::accumulate_wls(const PanelView &panel, atx::usize window,
-                                   std::span<const atx::f64> market_cap,
-                                   std::span<const atx::u32> group_id,
+                                   const PitSideInputs &side, const ExposureMatrix &x0,
                                    const atx::core::linalg::VecX &d0,
                                    atx::core::linalg::MatX &fseries,
-                                   std::vector<std::vector<atx::f64>> &u_by_inst) const {
-  const atx::usize k = static_cast<atx::usize>(fseries.cols());
-  std::vector<atx::usize> keep;
+                                   std::vector<std::vector<atx::f64>> &u_by_inst,
+                                   std::vector<atx::usize> &dates,
+                                   std::vector<atx::usize> &missing) const {
+  DateDesign dd;
   atx::usize used = 0U;
   for (atx::usize s = 0U; s < window; ++s) {
-    ATX_TRY(ExposureMatrix xs, build_exposures(panel, cfg, s, market_cap, group_id));
-    const atx::core::linalg::VecX r = detail::date_returns(panel, s, xs, keep);
-    if (keep.size() < k) {
+    ATX_TRY(bool usable, date_design(panel, cfg, s, side, dd));
+    if (!usable) {
       continue; // under-determined -> skip (matches Pass A's skip rule)
     }
-    const atx::core::linalg::MatX xsr = detail::select_rows(xs.x, keep);
-    atx::core::linalg::VecX w(static_cast<Eigen::Index>(keep.size())); // weight 1/d0_i (P4-2 IVW)
-    for (atx::usize j = 0U; j < keep.size(); ++j) {
+    atx::core::linalg::VecX w(static_cast<Eigen::Index>(dd.keep.size())); // 1/d0_i (P4-2 IVW)
+    for (atx::usize j = 0U; j < dd.keep.size(); ++j) {
       w[static_cast<Eigen::Index>(j)] =
-          1.0 / d0[static_cast<Eigen::Index>(xs.instrument_rows[keep[j]])];
+          1.0 / d0[static_cast<Eigen::Index>(dd.xs.instrument_rows[dd.keep[j]])];
     }
-    const auto fit = atx::core::linalg::wls(xsr, r, w);
+    const auto fit = atx::core::linalg::wls(dd.xsr, dd.r, w);
     if (!fit) {
       continue; // rank-deficient weighted date -> skip
     }
-    for (atx::usize c = 0U; c < k; ++c) {
-      fseries(static_cast<Eigen::Index>(used), static_cast<Eigen::Index>(c)) =
-          fit->beta[static_cast<Eigen::Index>(c)];
-    }
+    ATX_ASSERT(static_cast<atx::usize>(fit->beta.size()) == dd.xs.n_factors());
+    scatter_factor_returns(fit->beta, detail::map_columns(dd.xs.columns, x0.columns), fseries,
+                           used, missing);
+    dates.push_back(s);
     ++used;
-    for (atx::usize j = 0U; j < keep.size(); ++j) {
-      u_by_inst[xs.instrument_rows[keep[j]]].push_back(fit->residuals[static_cast<Eigen::Index>(j)]);
+    for (atx::usize j = 0U; j < dd.keep.size(); ++j) {
+      u_by_inst[dd.xs.instrument_rows[dd.keep[j]]].push_back(
+          fit->residuals[static_cast<Eigen::Index>(j)]);
     }
   }
   return atx::core::Ok(used);
@@ -638,43 +1065,41 @@ FactorModelBuilder::accumulate_wls(const PanelView &panel, atx::usize window,
 
 atx::core::Result<atx::usize>
 FactorModelBuilder::accumulate_robust(const PanelView &panel, atx::usize window,
-                                      std::span<const atx::f64> market_cap,
-                                      std::span<const atx::u32> group_id,
+                                      const PitSideInputs &side, const ExposureMatrix &x0,
                                       const atx::core::linalg::VecX &d0,
                                       atx::core::linalg::MatX &fseries,
-                                      std::vector<std::vector<atx::f64>> &u_by_inst) const {
-  const atx::usize k = static_cast<atx::usize>(fseries.cols());
+                                      std::vector<std::vector<atx::f64>> &u_by_inst,
+                                      std::vector<atx::usize> &dates,
+                                      std::vector<atx::usize> &missing) const {
   const cost::RobustCfg rcfg{/*huber_k=*/cfg.cov.huber_c, /*max_iter=*/cfg.cov.robust_iters,
                              /*tol=*/0.0};
-  std::vector<atx::usize> keep;
+  DateDesign dd;
   atx::usize used = 0U;
   for (atx::usize s = 0U; s < window; ++s) {
-    ATX_TRY(ExposureMatrix xs, build_exposures(panel, cfg, s, market_cap, group_id));
-    const atx::core::linalg::VecX r = detail::date_returns(panel, s, xs, keep);
-    if (keep.size() < k) {
+    ATX_TRY(bool usable, date_design(panel, cfg, s, side, dd));
+    if (!usable) {
       continue; // under-determined -> skip (matches the WLS pass's skip rule)
     }
-    atx::core::linalg::MatX xsr = detail::select_rows(xs.x, keep);
     if (cfg.cov.industry_sum_to_zero) {
-      detail::apply_industry_sum_to_zero(xsr, xs, keep, market_cap);
+      detail::apply_industry_sum_to_zero(dd.xsr, dd.xs, dd.keep, dd.cap);
     }
     // Rank probe: cost::irls_huber fails LOUD (ATX_CHECK) on a rank-deficient design,
     // but a degenerate date must be SKIPPED here (matching the WLS pass's `if (!fit)`
     // skip). An OLS solve on the post-constraint design is the same rank test wls/irls
     // would apply, run once up front so the IRLS only ever sees a full-rank system.
-    if (!atx::core::linalg::ols(xsr, r)) {
+    if (!atx::core::linalg::ols(dd.xsr, dd.r)) {
       continue; // rank-deficient (e.g. a collinear sector block) -> skip this date
     }
     const atx::core::linalg::VecX w0 =
-        detail::robust_prior_weight(xs, keep, d0, market_cap, cfg.cov.cap_weight);
-    const cost::RobustFit fit = cost::irls_huber(xsr, r, rcfg, &w0);
-    for (atx::usize c = 0U; c < k; ++c) {
-      fseries(static_cast<Eigen::Index>(used), static_cast<Eigen::Index>(c)) =
-          fit.beta[static_cast<Eigen::Index>(c)];
-    }
+        detail::robust_prior_weight(dd.xs, dd.keep, d0, dd.cap, cfg.cov.cap_weight);
+    const cost::RobustFit fit = cost::irls_huber(dd.xsr, dd.r, rcfg, &w0);
+    ATX_ASSERT(static_cast<atx::usize>(fit.beta.size()) == dd.xs.n_factors());
+    scatter_factor_returns(fit.beta, detail::map_columns(dd.xs.columns, x0.columns), fseries,
+                           used, missing);
+    dates.push_back(s);
     ++used;
-    for (atx::usize j = 0U; j < keep.size(); ++j) {
-      u_by_inst[xs.instrument_rows[keep[j]]].push_back(fit.residuals[j]);
+    for (atx::usize j = 0U; j < dd.keep.size(); ++j) {
+      u_by_inst[dd.xs.instrument_rows[dd.keep[j]]].push_back(fit.residuals[j]);
     }
   }
   return atx::core::Ok(used);
