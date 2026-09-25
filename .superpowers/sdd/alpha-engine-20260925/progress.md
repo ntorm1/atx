@@ -105,6 +105,21 @@ The old progress file lists provisional P1-P11: these are not owner waivers or a
   holdout.prior_reads=3. Corrected QUANT_PLATFORM_SWARM_STATUS.md (I-24).
 - No engine or economics acceptance claimed yet by this continuation.
 
+### G0 measured results so far (agent receipts; no final G0 gate yet)
+
+- Frozen baseline2013 @bc5cc646: exit1, 2.031s, peak0.146GiB, missing-price abort at
+  period6 / 2013-04-12 / security150340. Corrected replay rerun still required.
+- L7 @bc5cc646: exit0, 61.625s, peak0.105GiB. Of151 fields, only path separator
+  metadata and three tiny numeric changes (~1e-9/1e-10); headline verdict unchanged.
+- L10 @bc5cc646: exit0, harness1/1, 302.079s, peak1.201GiB. NO CANDIDATE remains:
+  no non-reference expression with positive nonoverlap t>2 in either universe.
+  qual_gpa t1000 IC .01652 -> .0166986 and t1.670 ->1.76392; t3000 IC .02324 ->
+  .0226574 and t1.816 ->1.65685. Full pooled deltas1098 cells,758 changed.
+- L9 is running under the shared heavy lock. Data dated2020+ remains unread.
+- G0 harness/progress/static-membership review commit1e048eac in pool3. Later import
+  reviewed replay+D12 repairs before corrected baseline; then archive unpinned binary and
+  pin cp21's original26 families only in its diagnostic branch. No tuning.
+
 ## Next sequence
 
 Finish G0/build audit and integration repairs; run focused post-implementation validation,
