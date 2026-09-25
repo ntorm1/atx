@@ -46,6 +46,7 @@ WITH p AS (
     GROUP BY x.month_start,x.horizon_sessions
 ), report AS (
     SELECT x.*,o.* EXCLUDE (month_start,horizon_sessions),b.panel_sha256,e.result_sha256,e.label_source,
+      json_extract_string(e.config_json,'$.label_version') AS label_version,
       b.blockers_json AS build_blockers,e.blockers_json AS evaluation_blockers,
       CASE WHEN x.month_start>x.cutoff::DATE THEN 'future_month'
            WHEN x.month_end>=x.cutoff::DATE THEN 'month_not_closed_at_cutoff'
@@ -57,8 +58,11 @@ WITH p AS (
            WHEN e.status<>'complete' OR e.build_run_id<>b.run_id
              OR e.build_sha256 IS DISTINCT FROM b.panel_sha256
              OR e.as_of_date>x.cutoff::DATE OR e.run_at>x.cutoff THEN 'evaluation_manifest_mismatch'
+           -- v2 labels realize a halt-gap delisting loss at the first absent session (R3a);
+           -- sealed v1 runs stay readable: their unstitched halt windows surface as label attrition.
            WHEN json_extract_string(e.config_json,'$.evaluation_version') IS DISTINCT FROM 'fq2_v2'
-             OR json_extract_string(e.config_json,'$.label_version') IS DISTINCT FROM 'forward_return_publication_v1'
+             OR coalesce(json_extract_string(e.config_json,'$.label_version'),'')
+                NOT IN ('forward_return_publication_v1','forward_return_publication_v2')
              THEN 'unsupported_evaluation_contract'
            WHEN x.decision_date IS NULL THEN 'observed_calendar_missing'
            -- Weekend+holiday leaves <=3 days (2015-2026 NYSE); more means the
