@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <span>
@@ -456,9 +457,94 @@ TEST(CombineInferenceConfig, HorizonChangesWeightedHaircutAndValidatesBoundary) 
   overlap.inference.label_horizon = 1U;
   overlap.inference.tstat_rule = hac::TStatRule::Unknown;
   EXPECT_FALSE(overlap.fit(store, {0U, 400U}).has_value());
+  overlap.inference.tstat_rule = hac::TStatRule::HorizonAwareV3;
+  overlap.inference.return_treatment = static_cast<cb::IcReturnTreatment>(255U);
+  EXPECT_FALSE(overlap.fit(store, {0U, 400U}).has_value());
   EXPECT_FALSE(cb::marginal_ic({store.signal(0U), 400U, 80U}, {},
       {store.forward_returns(), 400U, 80U}, 0U, 400U,
       hac::TStatRule::HorizonAwareV3, 0U).has_value());
+}
+
+TEST(CombineInferenceConfig, UnsupportedOverlapDoesNotCreateInfiniteSignificance) {
+  const std::array<double, 5> x{.037921444273233657, .0333917854612267,
+      .032102668894305145, .03600658924381094, .039304876836250696};
+  EXPECT_EQ(hac::mean_tstat(x, hac::TStatRule::HorizonAwareV3, 5U).defined, 0U);
+  EXPECT_EQ(hac::mean_tstat(x, hac::TStatRule::HorizonAwareV3, 99U).defined, 0U);
+}
+
+TEST(CombineInferenceConfig, UnequalDecayWeightsUseDirectSandwichVariance) {
+  constexpr std::size_t kT = 300U;
+  constexpr double kHalfLife = 17.0;
+  const auto store = overlapping_store(kT, 80U, 0.02, 517U, nullptr);
+  cb::IcirEwmaCombiner comb{kHalfLife, 0.0};
+  comb.inference.label_horizon = 21U;
+  const auto fit = comb.fit(store, {0U, kT});
+  ASSERT_TRUE(fit.has_value());
+  const auto ic = cb::ic_matrix(store, {0U, kT});
+  std::vector<double> w(kT);
+  double sw = 0.0;
+  double mean = 0.0;
+  for (std::size_t t = 0U; t < kT; ++t) {
+    w[t] = std::pow(0.5, static_cast<double>(kT - 1U - t) / kHalfLife);
+    sw += w[t];
+    mean += w[t] * ic[t];
+  }
+  mean /= sw;
+  double s0 = 0.0;
+  for (std::size_t t = 0U; t < kT; ++t) {
+    const double u = w[t] * (ic[t] - mean);
+    s0 += u * u;
+  }
+  const std::size_t lag = std::max(std::size_t{20U}, hac::newey_west_auto_lag(ic));
+  double sandwich = s0;
+  double bartlett = s0;
+  for (std::size_t j = 1U; j <= lag; ++j) {
+    double pair_sum = 0.0;
+    for (std::size_t t = j; t < kT; ++t) {
+      pair_sum += w[t] * (ic[t] - mean) * w[t-j] * (ic[t-j] - mean);
+    }
+    sandwich += 2.0 * pair_sum;
+    bartlett += 2.0 * (1.0 - static_cast<double>(j) / static_cast<double>(lag+1U)) * pair_sum;
+  }
+  if (!(sandwich > 0.0)) sandwich = bartlett;
+  ASSERT_GT(sandwich, 0.0);
+  EXPECT_NEAR(fit->tstat[0], mean * sw / std::sqrt(sandwich), 1e-11);
+}
+
+TEST(CombineInferenceConfig, LegacyRawTwoAlphaWeightsMatchClosedForm) {
+  constexpr std::size_t kT = 160U;
+  constexpr std::size_t kN = 40U;
+  auto store = overlapping_store(kT, kN, 0.02, 731U, nullptr);
+  atx::core::Xoshiro256pp rng{47U};
+  std::vector<double> second(kT * kN);
+  for (std::size_t i = 0U; i < second.size(); ++i) {
+    second[i] = 0.3 * store.signal(0U)[i] + rng.normal();
+  }
+  ASSERT_TRUE(store.add_signal(second).has_value());
+  cb::GrinoldKahnCombiner comb;
+  comb.target = cb::CovTarget::Sample;
+  comb.inference = {hac::TStatRule::IidV1, 21U, cb::IcReturnTreatment::RawV1};
+  const auto fit = comb.fit(store, {0U, kT});
+  ASSERT_TRUE(fit.has_value());
+  const auto ic = cb::ic_matrix(store, {0U, kT}, cb::IcReturnTreatment::RawV1);
+  double m0 = 0.0, m1 = 0.0;
+  for (std::size_t t = 0U; t < kT; ++t) {
+    m0 += ic[2U*t] / static_cast<double>(kT);
+    m1 += ic[2U*t+1U] / static_cast<double>(kT);
+  }
+  double c00 = 0.0, c01 = 0.0, c11 = 0.0;
+  for (std::size_t t = 0U; t < kT; ++t) {
+    const double a = ic[2U*t] - m0;
+    const double b = ic[2U*t+1U] - m1;
+    c00 += a*a; c01 += a*b; c11 += b*b;
+  }
+  const double b0 = c11*m0 - c01*m1;
+  const double b1 = c00*m1 - c01*m0;
+  const double gross = std::abs(b0) + std::abs(b1);
+  ASSERT_GT(gross, 0.0);
+  EXPECT_NEAR(fit->w[0], b0/gross, 1e-11);
+  EXPECT_NEAR(fit->w[1], b1/gross, 1e-11);
+  EXPECT_GT(std::abs(fit->w[1]), 1e-4);
 }
 
 } // namespace atx_test_w0_e0a_hac_tstat

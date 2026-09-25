@@ -61,6 +61,8 @@ namespace atx::engine::combine {
 struct SignalInferenceConfig {
   eval::hac::TStatRule tstat_rule = eval::hac::TStatRule::HorizonAwareV3;
   atx::usize label_horizon = 1U;
+  // IC construction only (GK/EWMA). FMB/Kakushadze consume return regressions;
+  // the store-free GK kernel receives an already constructed IC matrix.
   IcReturnTreatment return_treatment = IcReturnTreatment::WinsorizedV2;
 };
 

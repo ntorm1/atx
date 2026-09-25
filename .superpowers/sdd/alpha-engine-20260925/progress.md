@@ -56,6 +56,25 @@ The old progress file lists provisional P1-P11: these are not owner waivers or a
   .superpowers/sdd/w0/lane-inference-integration-report.md. Root configure in progress,
   compilation waits replay build slot. Every repair still needs fresh adversarial review.
 
+### Later progress
+
+- Root inference code committed 9caf9e85, then fresh review found undersampled HH
+  cancellation and unequal-weight HAC normalization issues. Fixes implemented, post-fix TU
+  check passed; combine/eval target build running (session33388). Root deps verified isolated.
+- Membership branch code af40186d/report39347e28, fresh static review by g0_evidence found
+  no blockers. Runtime approval pending. Pool5 may configure/build after G0 frozen Release
+  finishes, with one worker, freeRAM>4GB and <=3 total compiler workers.
+- Replay config + future-evidence fix expanded to avoid artificial short gains from unknown
+  price holes. Unknown-price haircut is adverse to each position, source5
+  AssumedMissingPriceAdverse, with assumed PnL/counts and unusable-for-alpha-evidence flag.
+  This explicitly deviates from the literal old B0 negative-return-on-every-missing-short
+  clause, whose economic flaw the independent reviewer found. Do not mark that literal
+  item met or imply an owner waiver. True due+available events retain table/Shumway returns.
+- G0 build reached263/266 with no errors. L7/L10/L9 can use archived bc5cc646 binaries,
+  since current repairs do not affect those paths. Baseline2013 needs replay fix rerun.
+  cp21 MUST wait for reviewed membership merge before the 13 expensive cells; no redundant
+  pre-mask run. Pin original26 families in the diagnostic branch only; never merge the pin.
+
 ## Acceptance gaps to resolve
 
 - Replay consumer forces Abort despite B0 engine TerminalReturn default. G0 baseline cannot

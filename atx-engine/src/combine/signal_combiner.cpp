@@ -253,6 +253,10 @@ atx::core::Result<CombineWeights> IcirEwmaCombiner::fit(const SignalStore &s, Fi
     if (n_eff < 2.0 - 1e-12 || mean == 0.0) {
       continue;
     }
+    if (inference.tstat_rule == eval::hac::TStatRule::HorizonAwareV3 &&
+        inference.label_horizon > 1U && inference.label_horizon >= xs.size()) {
+      continue; // Too few observations to estimate overlapping-label uncertainty.
+    }
     // A zero-dispersion IC series (a perfectly stable edge) is floored rather than
     // dropped, so it dominates the normalized blend instead of vanishing.
     const f64 sd = std::sqrt(std::max(swv / sw, 1e-24));

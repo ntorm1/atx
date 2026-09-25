@@ -47,7 +47,34 @@ CombineHacTstat/EvalHac suites, then touched-target integration gate.
 
 ## Evidence
 
-git diff --check exited zero. Build configuration is in progress; no numeric results yet.
+git diff --check exited zero. Isolated Debug configuration completed successfully with
+FETCHCONTENT_BASE_DIR=C:/atx-wt/pool-2/deps/equity-dev. Both the initial and reviewed-fix
+single-TU checks succeeded:
+
+```
+powershell -NoProfile -File scripts/atx-build.ps1 check -Preset equity-dev atx-engine/src/combine/signal_combiner.cpp
+[1/2] Building CXX object atx-engine/CMakeFiles/atx-engine.dir/src/combine/signal_combiner.cpp.obj
+exit=0
+```
+
+Targeted combine/eval build is running; no numeric test results yet.
+
+## Fresh review and fix pass
+
+Independent w0_gate_audit reviewed 9caf9e85 and requested changes:
+
+- H1: full-lag uniform-kernel cancellation could yield a huge t-stat with too few samples.
+  V3 now withholds inference when the overlap horizon reaches the sample count and uses
+  a relative cancellation guard. A concrete five-point reproduction and oversized horizon
+  are added to the regression checks. V1/V2 behavior is retained.
+- H2: legacy weighted VIF rescaling was approximate for unequal weights. V3 now normalizes
+  by the actual weighted IID variance so the result equals the direct weighted sandwich
+  S_w/(sum w)^2. A finite 17-date half-life is checked against an independent explicit
+  covariance sum. V1/V2 retain their arithmetic.
+- M1/M2: documented the IC-only return-treatment scope; added invalid-enum coverage and
+  a nontrivial two-alpha legacy-weight comparison against the two-dimensional closed form.
+
+Fix-only re-review and execution remain pending.
 
 ## Deviations and remaining limits
 
