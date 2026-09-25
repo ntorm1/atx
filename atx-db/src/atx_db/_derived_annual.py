@@ -130,7 +130,8 @@ class Span:
     annual: str = "false"
     coherent: str = "true"
     offset: int | None = None
-    #: The operand's value is per share (share-count denominated). Static, not SQL.
+    #: The operand's value is on a share basis (per share or a share count), so a
+    #: split between two quarters changes it. Static, not SQL.
     share_basis: bool = False
 
 
@@ -150,15 +151,26 @@ def _quarter_length(span: Span) -> str:
     return f"(date_diff('day', {span.start}, {span.end}) + 1 BETWEEN 70 AND 120)"
 
 
+#: Share-count items. ``unit_type='quantity'`` also covers non-share counts
+#: (leasable area, subscribers), so the share counts are named explicitly.
+SHARE_COUNT_CODES = WEIGHTED_SHARES | frozenset({
+    "shares_outstanding_period_end", "treasury_stock_shares", "entity_public_float_shares",
+    "class_a_common_shares_outstanding", "class_b_common_shares_outstanding",
+    "class_c_common_shares_outstanding", "class_d_common_shares_outstanding",
+})
+
+
 @lru_cache(maxsize=1)
 def share_basis_codes() -> frozenset[str]:
-    """Operand codes whose values are per share, from existing registry attributes.
+    """Operand codes whose values move with a split, from existing registry attributes.
 
-    Items with ``unit_type='per_share'`` plus derived metrics of family
-    ``per_share`` or ``rollup`` metrics over such operands (e.g. ``eps_diluted_ttm``).
-    Growth, margin and other ratio families are basis-free values.
+    Items with ``unit_type='per_share'`` and the share counts in
+    ``SHARE_COUNT_CODES``, plus derived metrics of family ``per_share`` or
+    ``rollup`` metrics over such operands (e.g. ``eps_diluted_ttm``). Growth,
+    margin and other ratio families are basis-free values.
     """
     codes = {row.canonical_code for row in read_fundamental_item_seed() if row.unit_type == "per_share"}
+    codes |= SHARE_COUNT_CODES
     for definition in topological_order(default_derived_definitions()):
         if definition.family == "per_share" or (
                 definition.family == "rollup" and codes.intersection(definition.bare_names)):
@@ -166,18 +178,51 @@ def share_basis_codes() -> frozenset[str]:
     return frozenset(codes)
 
 
-def _adjacent_quarters(newer: Span, older: Span) -> str:
-    """Prove consecutive fiscal quarters one bucket apart from their own spans.
+def _one_quarter_apart(newer: Span, older: Span) -> str:
+    """Prove that two operands one bucket apart are consecutive fiscal quarters.
 
-    Both spans must be complete 70-120 day quarters and the newer must start
-    1 to 1 + ADJACENT_QUARTER_MAX_GAP_DAYS days after the older ends. A missing
-    start (instant, legacy or absent operand), an overlap, a stub or a
-    fiscal-year-change gap proves nothing and stays incomparable.
+    The proof uses only the operands' own fiscal dates (a NULL start marks an
+    instant; incoherent flows with a missing start are rejected by their own
+    ``coherent`` term):
+
+    - flow after flow: both spans 70-120 days and the newer starts 1 to
+      1 + ADJACENT_QUARTER_MAX_GAP_DAYS days after the older ends;
+    - flow after a lagged instant (``NI_q / lag(equity, 1)``): the flow spans
+      70-120 days and the instant is dated within ADJACENT_QUARTER_MAX_GAP_DAYS
+      days of the day before the flow starts;
+    - instant after instant (quarterly average balances): 70-120 days apart.
+
+    An instant after a flow, an overlap, a stub, a fiscal-year-change gap or a
+    missing date proves nothing and stays incomparable.
     """
-    return (
-        f"coalesce({_quarter_length(newer)} AND {_quarter_length(older)} AND "
-        f"date_diff('day', {older.end}, {newer.start}) BETWEEN 1 AND {1 + ADJACENT_QUARTER_MAX_GAP_DAYS}, false)"
-    )
+    gap = ADJACENT_QUARTER_MAX_GAP_DAYS
+    flow_after_flow = (f"{_quarter_length(newer)} AND {_quarter_length(older)} AND "
+                       f"date_diff('day', {older.end}, {newer.start}) BETWEEN 1 AND {1 + gap}")
+    flow_after_instant = (f"{_quarter_length(newer)} AND "
+                          f"date_diff('day', {older.end}, {newer.start}) BETWEEN {1 - gap} AND {1 + gap}")
+    instant_after_instant = f"date_diff('day', {older.end}, {newer.end}) BETWEEN 70 AND 120"
+    return (f"coalesce(CASE WHEN ({newer.start}) IS NOT NULL AND ({older.start}) IS NOT NULL "
+            f"THEN {flow_after_flow} WHEN ({newer.start}) IS NOT NULL THEN {flow_after_instant} "
+            f"WHEN ({older.start}) IS NULL THEN {instant_after_instant} ELSE false END, false)")
+
+
+def _consecutive_window(inner: Span, frame: str, size: int) -> str:
+    """Prove a ``size``-bucket rolling window is one chain of consecutive quarters.
+
+    Every one of the ``size`` states must be present (end dates), coherent and of
+    one kind (all flows or all instants), and every consecutive pair must pass
+    the one-bucket proof of :func:`_one_quarter_apart`. Share-basis operands are
+    never proven: no split guard exists yet.
+    """
+    if inner.share_basis:
+        return "false"
+    states = f"list(struct_pack(s := {inner.start}, e := {inner.end})) OVER ({frame})"
+    pair = _one_quarter_apart(Span("q_pair[2].s", "q_pair[2].e"), Span("q_pair[1].s", "q_pair[1].e"))
+    return (f"coalesce(count({inner.end}) OVER ({frame}) = {size} "
+            f"AND count({inner.start}) OVER ({frame}) IN (0, {size}) "
+            f"AND bool_and({inner.coherent}) OVER ({frame}) "
+            f"AND list_bool_and(list_transform(list_zip(({states})[1:-2], ({states})[2:]), "
+            f"lambda q_pair: {pair})), false)")
 
 
 def _combine(left: Span, right: Span) -> Span:
@@ -194,9 +239,9 @@ def _combine(left: Span, right: Span) -> Span:
         )
     elif distance == 1:
         # A 10-Q restates its prior-year comparative, never the preceding quarter,
-        # so a per-share pair one quarter apart may straddle a split: span
+        # so a share-basis pair one quarter apart may straddle a split: span
         # adjacency is not a share-basis proof and the pair stays incomparable.
-        comparable = "false" if newer.share_basis or older.share_basis else _adjacent_quarters(newer, older)
+        comparable = "false" if newer.share_basis or older.share_basis else _one_quarter_apart(newer, older)
     elif distance % 4:
         comparable = "false"
     else:
@@ -272,8 +317,8 @@ def lower_span(node: Node, context: LowerContext, refs: dict[str, Span]) -> Span
             raise TypeError(f"{node.name} metadata requires a numeric literal period")
         size = int(period_argument.value)
         frame = window + f" ROWS BETWEEN {size - 1} PRECEDING AND CURRENT ROW"
-        return Span(inner.start, inner.end, f"bool_or({inner.annual}) OVER ({frame})", "false", 0,
-                    inner.share_basis)
+        return Span(inner.start, inner.end, f"bool_or({inner.annual}) OVER ({frame})",
+                    _consecutive_window(inner, frame, size), 0, inner.share_basis)
     periods = {"avg2": 4, "yoy": 4, "qoq": 1}.get(node.name)
     if node.name in ("lag", "cagr"):
         period_argument = node.args[1]
