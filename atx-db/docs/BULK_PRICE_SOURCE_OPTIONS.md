@@ -79,6 +79,14 @@ still need measured evidence. Its shares field is in thousands, and so is the
 format and checks the result against DEI (A8), so `equity_daily_bars` stores shares.
 The vendor starts each share run on the DEI cover date, before the filing is
 public, so bar-date share counts are not point-in-time without a filing clock.
+`market_daily` applies that clock (`market_daily.vendor_share_state_query` exposes
+it per bar) and withholds a count whose run spans a split
+(`split_pending_share_update`); `universe_us_listed` reads its `market_cap`.
+`equity_price_metrics` reads no share counts. Readers of the bar's own
+`shares_outstanding` / `market_cap_usd` without the run clock:
+`earnings_seasonality.py`, `thirteenf_backtest.py` and the opt-in
+`research/panel.py` `line_market_cap` (labeled unverified). Their size filters
+must be re-run after the thousands-to-shares correction.
 No companion archive has been downloaded or assumed
 available. [Reference dictionary](https://docs.spiderrockconnect.com/docs/next/HistoricalData/Data%20Dictionaries/TickerDefinitionHist/).
 

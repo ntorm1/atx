@@ -133,7 +133,8 @@ Every linked row then carries a ``share_basis`` the panel resolves per bar:
 * ``adr``: an ADR line (A2 directory type ``ADR``) never uses the ordinary-share
   DEI count: the vendor ADS-basis count, else NULL (``adr_ratio_unresolved``);
   ``adr_ratio`` is the ordinary shares per ADS parsed from the directory name
-  when it states one, used to reject a vendor count that is not ADS-basis.
+  when it states one, used to reject a vendor count that is not ADS-basis. A
+  line whose name states no ratio is withheld (``adr_ratio_unknown``).
 * ``withheld``: a non-common (preferred, warrant) or unverified line: its own
   vendor count, no DEI, no valuation (``non_common_line``,
   ``unverified_class_line``).

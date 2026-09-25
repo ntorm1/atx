@@ -55,6 +55,7 @@ from atx_db.market_daily import (
     _referenced_codes,
     owner_bridge_report,
     refresh_market_daily_metrics,
+    vendor_share_state_query,
 )
 from atx_db.market_owner_bridge import (
     IDENTITY_BASIS_CURRENT_TICKER,
@@ -867,6 +868,59 @@ def test_class_count_matched_to_a_per_class_dei_enters_the_class_sum_at_its_fili
         a_shares = 11_000_000 if row[0] >= _FILED.date() else 10_000_000
         assert (row[5], row[4]) == ("class_sum", a_shares)
         assert row[6] == pytest.approx(100.0 * a_shares + 50.0 * 30_000_000)
+
+
+@pytest.mark.parametrize("k", [2.0, 0.1])
+def test_a_vendor_share_run_never_spans_a_split_and_an_adr_without_ratio_is_withheld(tmp_store, k):
+    """A8 fix C1 (rv-a8 probe shape, forward 2:1 and reverse 1:10): vendor 100M, then an unmatched
+    104M run from 02-03, a split on 03-02 the vendor absorbs on 03-09 (104M x k). On a linked line
+    without DEI and on an unlinked line, the pre-split count never prices a post-split bar: the
+    window is NULL (split_pending_share_update), then the split-derived run prices the bar at its
+    own start. I1: an ADR line whose name states no ADS ratio is withheld (adr_ratio_unknown)."""
+    seed_derived_metric_definitions(tmp_store)
+    linked, unlinked, adr = "SEC-CIK-0000000501", "TBLTICKERHISTORY-601", "TBLTICKERHISTORY-502"
+    _ticker(tmp_store, "501", "SPLA")
+    _ticker(tmp_store, "502", "FOOB")
+    _directory(tmp_store, "FOOB", "Foob Holdings Limited American Depositary Shares")
+    split, absorbed = dt.date(2020, 3, 2), dt.date(2020, 3, 9)
+    for trade_date in _DATES:
+        close = 50.0 if trade_date < split else 50.0 / k
+        shares = 100_000_000 if trade_date < dt.date(2020, 2, 3) else 104_000_000
+        shares = round(104_000_000 * k) if trade_date >= absorbed else shares
+        for line, symbol in ((linked, "SPLA"), (unlinked, "SPLX")):
+            _bar(tmp_store, line, symbol, trade_date, close, shares=shares, adj=50.0 / k)
+        _bar(tmp_store, adr, "FOOB", trade_date, 20.0, shares=50_000_000)
+    refresh_derived_metrics(tmp_store, DerivedMetricsOptions())
+    refresh_market_daily_metrics(tmp_store, MarketDailyOptions())
+    for line in (linked, unlinked):
+        rows = _rows(tmp_store, line)
+        window = [row for row in rows if split <= row[0] < absorbed]
+        assert window and all(
+            (row[5], row[4], row[6]) == ("split_pending_share_update", None, None) for row in window
+        )
+        before = [row for row in rows if row[0] < split]
+        after = [row for row in rows if row[0] >= absorbed]
+        # The unmatched 104M run is not known yet before the split (modeled lag).
+        assert {(row[5], row[4]) for row in before} == {("archive", 100_000_000)}
+        assert {(row[5], row[4]) for row in after} == {("archive", round(104_000_000 * k))}
+        caps = [row[6] for row in rows if row[6] is not None]
+        assert all(abs(later / earlier - 1) < 0.05 for earlier, later in pairwise(caps))  # never x2 or x10
+    adr_rows = _rows(tmp_store, adr)
+    assert adr_rows and all((row[5], row[4], row[6], row[1]) == ("adr_ratio_unknown", None, None, None)
+                            for row in adr_rows)
+    report = owner_bridge_report(tmp_store)["share_basis"]
+    assert report["split_pending_share_update_rows"] == 2 * len([d for d in _DATES if split <= d < absorbed])
+    assert report["adr_ratio_unknown_rows"] == len(_DATES) and report["rows_by_share_clock"]["split_derived"] > 0
+    # The read relation other readers join (R2d) states the same clock and window per bar.
+    item_codes, metric_codes = _referenced_codes()
+    bridge = build_market_owner_bridge(
+        tmp_store, item_codes=item_codes, metric_codes=metric_codes, derived_source=DERIVED_SOURCE_NAME
+    )
+    sql, params = vendor_share_state_query(bridge, [linked, unlinked])
+    state = {(row[0], row[1]): row for row in tmp_store.con.execute(sql, params).fetchall()}
+    for line in (linked, unlinked):
+        assert all(state[(line, day)][9] for day in _DATES if split <= day < absorbed)  # split_pending
+        assert {state[(line, day)][3] for day in _DATES if day >= absorbed} == {"split_derived"}
 
 
 def _valuation_facts(store, owner, unit=None):
