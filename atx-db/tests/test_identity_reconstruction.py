@@ -67,6 +67,10 @@ def _run(lines, runs, facts, filings=()) -> ir.ReconstructionResult:
     return ir.reconstruct_issuer_links(con, lines, filings=filings, horizon=HORIZON, price_start=PRICE_START)
 
 
+def _at_cutoff(day: dt.date) -> dt.datetime:
+    return dt.datetime.combine(day, dt.time(22))
+
+
 def _load(rows: list[dict[str, object]]) -> duckdb.DuckDBPyConnection:
     """Insert rows into the 0327 DDL (its CHECK constraints apply) and return the connection."""
     con = _con()
@@ -84,7 +88,8 @@ def test_delisted_line_links_point_in_time_as_labelled_reconstructed_evidence():
     first, last = D(2015, 1, 2), D(2016, 12, 20)
     facts = _issuer(cik, _quarters(D(2015, 1, 20), 8), 50_123_456)
     runs = _runs(101, facts, last)
-    notice = [ir.IssuerFiling(cik, "25-NSE", D(2016, 12, 20), "25nse")]
+    # Form 25 accepted five days before the (Tuesday) last trade: usable only from the next session.
+    notice = [ir.IssuerFiling(cik, "25-NSE", D(2016, 12, 15), "25nse", ir._acceptance_utc("2016-12-15T21:05:00.000Z"))]
     line = _line(101, first, last, "OLDCO")
     result = _run([line], runs, facts, notice)
 
@@ -92,9 +97,15 @@ def test_delisted_line_links_point_in_time_as_labelled_reconstructed_evidence():
     assert (link.cik, link.valid_from, link.valid_to, link.tier) == (cik, first, last + dt.timedelta(days=1),
                                                                      ir.TIER_HIGH)
     # Knowable when the third distinct count's 10-Q was public (filed 2015-07-30 + 46h): not at the
-    # first bar, and the delisting notice (known only after the last trade) raises the tier, not the clock.
+    # first bar, and the delisting notice raises the tier, never the clock.
     assert link.available_at == dt.datetime(2015, 7, 31, 22, 0)
-    assert link.evidence_complete_at == dt.datetime(2016, 12, 21, 22, 0)
+    notice_clock = dt.datetime(2016, 12, 21, 22, 0)  # max(acceptance, next session after the last trade)
+    assert link.evidence_complete_at == notice_clock
+    # The tier is point in time: medium until the Form 25 is usable, high only from its clock.
+    assert link.tier_history == ((ir.TIER_MEDIUM, link.available_at), (ir.TIER_HIGH, notice_clock))
+    assert link.tier_attained_at == notice_clock
+    assert [link.tier_at(_at_cutoff(day)) for day in (D(2015, 7, 30), D(2016, 6, 30), last, D(2016, 12, 21))] == [
+        None, ir.TIER_MEDIUM, ir.TIER_MEDIUM, ir.TIER_HIGH]
     # An as-of re-run with only the filings public before that clock cannot link the line.
     assert _run([line], runs, [fact for fact in facts if fact.filed < D(2015, 7, 30)]).links == ()
     # Counts dated outside the line's trading window (same values, five years earlier) never match.
@@ -110,6 +121,9 @@ def test_delisted_line_links_point_in_time_as_labelled_reconstructed_evidence():
         "issuer_link", "reconstructed", "modeled", ir.METHOD)
     assert (payload["identity_basis"], payload["tier"], payload["corroborated_by"]) == (
         ir.IDENTITY_BASIS, ir.TIER_HIGH, [ir.EV_TERMINAL])
+    assert (payload["tier_at_available_at"], payload["tier_attained_at"], payload["tier_history"]) == (
+        ir.TIER_MEDIUM, notice_clock.isoformat(),
+        [[ir.TIER_MEDIUM, link.available_at.isoformat()], [ir.TIER_HIGH, notice_clock.isoformat()]])
     assert row["available_at"] == link.available_at and payload["vendor_shares_unit"] == "thousands"
     assert set(hi.audit_identity_evidence(_load(rows)).values()) == {0}
     # Strict (certification) mode refuses the reconstructed evidence.

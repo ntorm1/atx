@@ -119,10 +119,21 @@ LINK_SCHEMA = pa.schema(
         ("symbol", pa.string()),
         ("current_cik", pa.string()),
         ("competitors", pa.string()),
+        ("tier_attained_at", pa.timestamp("us")),
+        ("tier_at_available_at", pa.string()),
+        ("high_from", pa.timestamp("us")),
+        ("low_from", pa.timestamp("us")),
+        ("tier_history", pa.string()),
     ]
 )
 FILINGS_SCHEMA = pa.schema(
-    [("cik", pa.string()), ("form", pa.string()), ("filing_date", pa.date32()), ("accession", pa.string())]
+    [
+        ("cik", pa.string()),
+        ("form", pa.string()),
+        ("filing_date", pa.date32()),
+        ("accession", pa.string()),
+        ("accepted_at", pa.timestamp("us")),
+    ]
 )
 NAMES_SCHEMA = pa.schema([("cik", pa.string()), ("name", pa.string()), ("kind", pa.string())])
 META_SCHEMA = pa.schema(
@@ -390,7 +401,9 @@ def stage_filings(work: Path, memory: str, params: ir.ReconstructionParams) -> N
     _log(f"{candidates} candidate CIKs, {len(ciks)} with the currently linked ones")
     ordered = sorted(ciks)
     con.execute("DROP TABLE IF EXISTS ri_filings")
-    con.execute("CREATE TABLE ri_filings (cik VARCHAR, form VARCHAR, filing_date DATE, accession VARCHAR)")
+    con.execute(
+        "CREATE TABLE ri_filings (cik VARCHAR, form VARCHAR, filing_date DATE, accession VARCHAR, accepted_at TIMESTAMP)"
+    )
     for chunk in _chunks(ordered, 2500):
         filings = ir.read_lifecycle_filings(SUBMISSIONS, chunk, forms=(*ir.LIFECYCLE_FORMS, *PERIODIC_FORMS))
         _insert(
@@ -401,6 +414,7 @@ def stage_filings(work: Path, memory: str, params: ir.ReconstructionParams) -> N
                 "form": [filing.form for filing in filings],
                 "filing_date": [filing.filing_date for filing in filings],
                 "accession": [filing.accession for filing in filings],
+                "accepted_at": [filing.accepted_at for filing in filings],
             },
             FILINGS_SCHEMA,
         )
@@ -465,6 +479,11 @@ def _append_link(columns: dict[str, list[object]], link: ir.ReconstructedLink) -
         "symbol": link.symbol,
         "current_cik": link.current_cik,
         "competitors": json.dumps(link.competitors),
+        "tier_attained_at": link.tier_attained_at,
+        "tier_at_available_at": link.tier_history[0][0],
+        "high_from": next((since for tier, since in link.tier_history if tier == ir.TIER_HIGH), None),
+        "low_from": next((since for tier, since in link.tier_history if tier == ir.TIER_LOW), None),
+        "tier_history": json.dumps([[tier, since.isoformat()] for tier, since in link.tier_history]),
     }
     for key, value in values.items():
         columns[key].append(value)
@@ -483,9 +502,10 @@ def run_reconstruction(
         {int(vendor_id): str(cik) for vendor_id, _line_id, cik in line_meta if cik},
     )
     filings = [
-        ir.IssuerFiling(str(cik), str(form), filing_date, accession)
-        for cik, form, filing_date, accession in con.execute(
-            "SELECT cik, form, filing_date, accession FROM ri_filings WHERE form IN (SELECT unnest(?::VARCHAR[]))",
+        ir.IssuerFiling(str(cik), str(form), filing_date, accession, accepted_at)
+        for cik, form, filing_date, accession, accepted_at in con.execute(
+            "SELECT cik, form, filing_date, accession, accepted_at FROM ri_filings "
+            "WHERE form IN (SELECT unnest(?::VARCHAR[]))",
             [list(ir.LIFECYCLE_FORMS)],
         ).fetchall()
     ]
@@ -951,15 +971,24 @@ def measure(work: Path, memory: str) -> dict[str, object]:
     con.execute(
         """
         CREATE OR REPLACE TEMP TABLE formation AS
-        SELECT lm.vendor_id, lm.month, f.cur_cik IS NULL AS unlinked, f.earn,
-               coalesce(bool_or(k.valid_from <= lm.formation_bar AND lm.formation_bar < k.valid_to), false) AS hindsight,
-               min(k.tier_rank) FILTER (
-                   WHERE k.valid_from <= lm.formation_bar AND lm.formation_bar < k.valid_to
-                     AND k.available_at <= CAST(lm.formation_bar AS TIMESTAMP) + INTERVAL 22 HOUR) AS pit_rank
-        FROM ri_line_months lm JOIN line_facts f USING (vendor_id)
-        LEFT JOIN links k ON k.vendor_id = lm.vendor_id AND f.cur_cik IS NULL
-        WHERE lm.month > (SELECT min(month) FROM ri_line_months) AND lm.month < (SELECT max(month) FROM ri_line_months)
-        GROUP BY lm.vendor_id, lm.month, f.cur_cik, f.earn
+        WITH j AS (
+            SELECT lm.vendor_id, lm.month, f.cur_cik IS NULL AS unlinked, f.earn,
+                   k.valid_from <= lm.formation_bar AND lm.formation_bar < k.valid_to AS covers,
+                   CAST(lm.formation_bar AS TIMESTAMP) + INTERVAL 22 HOUR AS cutoff, k.available_at, k.high_from,
+                   k.low_from
+            FROM ri_line_months lm JOIN line_facts f USING (vendor_id)
+            LEFT JOIN links k ON k.vendor_id = lm.vendor_id AND f.cur_cik IS NULL
+            WHERE lm.month > (SELECT min(month) FROM ri_line_months)
+              AND lm.month < (SELECT max(month) FROM ri_line_months)
+        )
+        -- Tier filters use the tier in force at the formation cutoff (tier_history), never the final label.
+        SELECT vendor_id, month, unlinked, earn,
+               coalesce(bool_or(covers), false) AS hindsight,
+               CASE WHEN bool_or(covers AND available_at <= cutoff AND high_from <= cutoff
+                                 AND (low_from IS NULL OR low_from > cutoff)) THEN 0
+                    WHEN bool_or(covers AND available_at <= cutoff AND (low_from IS NULL OR low_from > cutoff)) THEN 1
+                    WHEN bool_or(covers AND available_at <= cutoff) THEN 2 END AS pit_rank
+        FROM j GROUP BY vendor_id, month, unlinked, earn
         """
     )
     monthly = _rows(
@@ -968,11 +997,34 @@ def measure(work: Path, memory: str) -> dict[str, object]:
         SELECT month, earn, count(*) AS eligible, count(*) FILTER (WHERE unlinked) AS unlinked,
                count(*) FILTER (WHERE unlinked AND pit_rank IS NOT NULL) AS pit_all,
                count(*) FILTER (WHERE unlinked AND pit_rank <= 1) AS pit_high_medium,
+               count(*) FILTER (WHERE unlinked AND pit_rank = 0) AS pit_high,
                count(*) FILTER (WHERE unlinked AND hindsight) AS hindsight
         FROM formation GROUP BY ALL ORDER BY month, earn
         """,
     )
     out["attrition_estimate"] = _attrition(monthly)
+    # I1: how much of the final tier is known when the link becomes available.
+    out["pit_tier"] = {
+        "by_tier_at_available_at": _rows(
+            con,
+            """
+            SELECT tier AS final_tier, tier_at_available_at, count(*) AS links,
+                   quantile_cont(date_diff('day', CAST(available_at AS DATE), CAST(tier_attained_at AS DATE)), 0.5)
+                       AS median_days_to_final_tier
+            FROM links WHERE current_cik IS NULL GROUP BY ALL ORDER BY 1, 2
+            """,
+        ),
+        "terminal_items_by_clock_basis": _rows(
+            con,
+            """
+            SELECT json_extract_string(j.value, '$.filing_clock_basis') AS basis, count(*) AS items
+            FROM evidence_rows e, json_each(json_extract(e.value_json, '$.items')) j
+            WHERE e.evidence_status = 'reconstructed'
+              AND json_extract_string(j.value, '$.kind') = 'terminal_filing_alignment'
+            GROUP BY 1 ORDER BY 2 DESC
+            """,
+        ),
+    }
     out["schema_audit"] = _schema_audit(work)
     out["memory"] = _peak_mb()
     con.close()
@@ -990,11 +1042,12 @@ def _attrition_summary(per_month: Mapping[dt.date, Counter[str]], months: Sequen
         rates["before"].append(bucket["unlinked"] / eligible)
         rates["after_pit_all_tiers"].append((bucket["unlinked"] - bucket["pit_all"]) / eligible)
         rates["after_pit_high_medium"].append((bucket["unlinked"] - bucket["pit_high_medium"]) / eligible)
+        rates["after_pit_high_only"].append((bucket["unlinked"] - bucket["pit_high"]) / eligible)
         rates["after_hindsight_no_pit"].append((bucket["unlinked"] - bucket["hindsight"]) / eligible)
-    means = {key: sum(values) / len(values) for key, values in rates.items()}
+    means = {key: math.fsum(values) / len(values) for key, values in rates.items()}
     summary: dict[str, object] = {"formations": len(months)}
     summary.update({f"mean_{key}": round(value, 4) for key, value in means.items()})
-    for key in ("after_pit_all_tiers", "after_pit_high_medium", "after_hindsight_no_pit"):
+    for key in ("after_pit_all_tiers", "after_pit_high_medium", "after_pit_high_only", "after_hindsight_no_pit"):
         before = means["before"]
         summary[f"relative_reduction_{key}"] = round((before - means[key]) / before, 4) if before else None
     return summary
@@ -1011,7 +1064,7 @@ def _attrition(monthly: Sequence[Mapping[str, object]]) -> dict[str, object]:
             if row["earn"] not in keep:
                 continue
             bucket = per_month[row["month"]]  # type: ignore[index]
-            for key in ("eligible", "unlinked", "pit_all", "pit_high_medium", "hindsight"):
+            for key in ("eligible", "unlinked", "pit_all", "pit_high_medium", "pit_high", "hindsight"):
                 bucket[key] += int(row[key])  # type: ignore[call-overload]
         months = sorted(per_month)
         scoped: dict[str, object] = {"all_formations": _attrition_summary(per_month, months)}

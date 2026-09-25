@@ -68,8 +68,11 @@ A candidate (line, CIK) is accepted when its share weight is at least
 weight at least ``accept_weight`` (a third count, or a lifecycle alignment),
 and its ``match_ratio`` at least ``min_match_ratio`` (or ``strong_min_ratio``
 at ``strong_share_weight``). Symbol matches alone never link. Calibration (RI1
-report): decoy runs with every issuer count scaled by 1.0137, 0.9871 or 1.05
-(the null: same value distribution, no true matches) accept no link.
+report): decoy runs with every issuer count scaled by 1.0137 and by 0.9871
+(the null: same value distribution, no true matches) accept no link. That
+bounds *coincidental* matches only -- scaling also removes structural pairs
+(co-registrants, holding-company comparatives), which the conflict rule and
+the name probe cover instead.
 
 Conflicts (two CIKs for one line-window) are never resolved silently. A
 *rival* is any other candidate of the line whose share weight reaches
@@ -103,6 +106,18 @@ the evidence that exists is:
 The A5 current-ticker backcast (``current_ticker_unverified``) is the
 ticker-only analogue and stays in the bridge; no name-only link is produced.
 
+**The tier is point in time.** ``tier`` (payload and
+:attr:`ReconstructedLink.tier`) is the *final* evaluation label, known only at
+``tier_attained_at``. Each link also publishes ``tier_history``: the
+``(tier, from)`` steps, where every step is judged only on the items known by
+its clock -- a terminal Form 25/15 counts from its own clock, the 2026 SEC
+ticker snapshot from its observation, and a rival demotes to ``low`` only once
+its own known evidence contests the link. ``tier_at_available_at`` is the
+first step. A point-in-time consumer filtering on tier at cutoff ``D`` must use
+the step in force at ``D`` (:meth:`ReconstructedLink.tier_at`), never
+``tier``: selecting ``tier='high'`` at a 2015 formation because a 2017 Form 25
+made the link ``high`` would select on a future delisting.
+
 One CIK per line-interval: accepted candidates of one line have disjoint
 evidence spans (a holding-company reorganization or redomicile gives two
 sequential CIKs). A segment covers its evidence span, extended by at most
@@ -116,8 +131,13 @@ Point-in-time honesty
 ---------------------
 Each evidence item has a clock: filing ``filed`` date + 46h (the fundamentals
 ``sec_filed_date_plus_46h_v1`` convention) and never before the vendor bar's
-22:00 cutoff; lifecycle items at their form's filing clock; the snapshot at its
-observation. A link's ``available_at`` is the earliest clock at which the
+22:00 cutoff; a listing item at its form's filing clock and never before the
+first bar's cutoff; a terminal item at the delisting filing's own acceptance
+clock when an exact (offset-bearing, not EDGAR-midnight) ``acceptanceDateTime``
+is retained, else ``filed`` + 46h (labelled ``filing_clock_basis``), and never
+before the cutoff of the session *after* the last trade -- knowing that a bar
+was the last one takes the next session, so a terminal alignment is never
+usable at the last bar; the snapshot at its observation. A link's ``available_at`` is the earliest clock at which the
 items known by then already pass the acceptance rule -- so a consumer that
 joins on ``available_at <= cutoff`` (the bridge's rule) never links a bar with
 evidence from its future. ``value_json.evidence_complete_at`` records the clock
@@ -157,6 +177,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import math
 import zipfile
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -374,6 +395,8 @@ class IssuerFiling:
     form: str
     filing_date: dt.date
     accession: str | None = None
+    #: Exact EDGAR acceptance clock (naive UTC) when retained; None for date-only/legacy stamps.
+    accepted_at: dt.datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -401,19 +424,18 @@ class Candidate:
 
     @property
     def share_weight(self) -> float:
-        return sum(item.weight for item in self.items if item.kind == EV_SHARES)
+        return _share_weight(self.items)
 
     @property
     def weight(self) -> float:
         # Lifecycle and symbol items only corroborate a share fingerprint.
         if self.share_weight <= 0:
             return 0.0
-        return sum(item.weight for item in self.items)
+        return math.fsum(item.weight for item in self.items)
 
     @property
     def span(self) -> tuple[dt.date, dt.date] | None:
-        dates = [item.line_date for item in self.items if item.kind == EV_SHARES and item.line_date]
-        return (min(dates), max(dates)) if dates else None
+        return _share_span(self.items)
 
     @property
     def share_quarters(self) -> int:
@@ -438,6 +460,18 @@ class ReconstructedLink:
     items: tuple[EvidenceItem, ...]
     competitors: tuple[tuple[str, float], ...] = ()
     current_cik: str | None = None
+    #: Point-in-time ``(tier, from)`` steps; the first starts at ``available_at``, the last is ``tier``.
+    tier_history: tuple[tuple[str, dt.datetime], ...] = ()
+
+    @property
+    def tier_attained_at(self) -> dt.datetime:
+        """When the final ``tier`` was reached (evaluation label before this clock is look-ahead)."""
+        return self.tier_history[-1][1] if self.tier_history else self.available_at
+
+    def tier_at(self, cutoff: dt.datetime) -> str | None:
+        """The tier in force at ``cutoff`` (None before the link is available)."""
+        in_force = [tier for tier, since in self.tier_history if since <= cutoff]
+        return in_force[-1] if in_force else None
 
     @property
     def owner_security_id(self) -> str:
@@ -460,6 +494,8 @@ class RejectedCandidate:
     share_weight: float
     span: tuple[dt.date, dt.date] | None
     competitors: tuple[tuple[str, float], ...] = ()
+    #: The candidate's own threshold outcome when it was relabelled as one side of a conflict.
+    own_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -570,8 +606,12 @@ class ReconstructionResult:
                 "share_class_symbol": link.symbol,
                 "method": METHOD,
                 "identity_basis": IDENTITY_BASIS,
+                # ``tier`` is the final evaluation label; PIT consumers use ``tier_history``.
                 "tier": link.tier,
                 "tier_rank": TIERS.index(link.tier),
+                "tier_attained_at": link.tier_attained_at.isoformat(),
+                "tier_at_available_at": link.tier_history[0][0] if link.tier_history else link.tier,
+                "tier_history": [[tier, since.isoformat()] for tier, since in link.tier_history],
                 "corroborated_by": sorted({item.kind for item in link.items} & set(_CORROBORATING)),
                 "evidence_weight": round(link.weight, 4),
                 "share_weight": round(link.share_weight, 4),
@@ -619,6 +659,7 @@ class ReconstructionResult:
                     "method": METHOD,
                     "identity_basis": IDENTITY_BASIS,
                     "rejection_reason": item.reason,
+                    "own_outcome": item.own_reason,
                     "evidence_weight": round(item.weight, 4),
                     "share_weight": round(item.share_weight, 4),
                     "competitors": [[cik, round(weight, 4)] for cik, weight in item.competitors],
@@ -978,6 +1019,7 @@ def read_lifecycle_filings(
                 forms_ = block.get("form") or []
                 dates = block.get("filingDate") or []
                 accessions = block.get("accessionNumber") or []
+                stamps = block.get("acceptanceDateTime") or []
                 for index, form in enumerate(forms_):
                     if form not in wanted or index >= len(dates):
                         continue
@@ -985,8 +1027,31 @@ def read_lifecycle_filings(
                     if filed is None or filed < since:
                         continue
                     accession = accessions[index] if index < len(accessions) else None
-                    out.append(IssuerFiling(cik=cik, form=form, filing_date=filed, accession=accession))
+                    accepted = _acceptance_utc(stamps[index]) if index < len(stamps) else None
+                    out.append(IssuerFiling(cik, form, filed, accession, accepted))
     return out
+
+
+def _acceptance_utc(raw: object) -> dt.datetime | None:
+    """Exact EDGAR acceptance clock as naive UTC, or None.
+
+    Only an offset-bearing stamp is a clock. A legacy stamp at EDGAR midnight
+    Eastern (04:00/05:00 UTC exactly) carries a date, not a time, and is not
+    publication evidence (same convention as the historical-identity sources).
+    """
+    text = str(raw).strip() if raw not in (None, "") else ""
+    if not text or not (text.endswith(("Z", "z")) or text[-6:-5] in ("+", "-")):
+        return None
+    try:
+        stamp = dt.datetime.fromisoformat(text[:-1] + "+00:00" if text[-1] in "Zz" else text)
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        return None
+    utc = stamp.astimezone(dt.UTC).replace(tzinfo=None)
+    if utc.time() in (dt.time(4), dt.time(5)):
+        return None
+    return utc
 
 
 def read_sec_ticker_snapshot(company_tickers_json: str | Path) -> list[tuple[str, str]]:
@@ -1206,14 +1271,21 @@ def _lifecycle_items(
                 best_listing = (offset, filing)
     if best_terminal is not None:
         offset, filing = best_terminal
+        filing_clock, basis = (
+            (filing.accepted_at, "acceptance")
+            if filing.accepted_at is not None
+            else (_at(filing.filing_date, _FILED_AVAILABILITY), "filed_plus_46h")
+        )
         items.append(
             EvidenceItem(
                 kind=EV_TERMINAL,
-                known_at=max(_at(filing.filing_date, _FILED_AVAILABILITY), _at(line.last_trade_date, _BAR_CUTOFF)),
+                # That the last bar *was* the last is known only at the next session's cutoff.
+                known_at=max(filing_clock, _at(_next_session(line.last_trade_date), _BAR_CUTOFF)),
                 line_date=line.last_trade_date,
                 weight=params.lifecycle_weight,
                 detail={"form": filing.form, "filing_date": filing.filing_date, "accession": filing.accession,
-                        "offset_days": offset},
+                        "offset_days": offset, "filing_clock_basis": basis,
+                        "line_end_clock": "last_trade_next_weekday_22h"},
             )
         )
     if best_listing is not None:
@@ -1231,9 +1303,29 @@ def _lifecycle_items(
     return items
 
 
+def _share_weight(items: Iterable[EvidenceItem]) -> float:
+    # fsum: correctly rounded, so thresholds never depend on summation order or interpreter.
+    return math.fsum(item.weight for item in items if item.kind == EV_SHARES)
+
+
+def _share_span(items: Iterable[EvidenceItem]) -> tuple[dt.date, dt.date] | None:
+    dates = [item.line_date for item in items if item.kind == EV_SHARES and item.line_date]
+    return (min(dates), max(dates)) if dates else None
+
+
+def _next_session(day: dt.date) -> dt.date:
+    """The next weekday (no holiday calendar: a holiday only makes the clock one session early)."""
+    following = day + _ONE_DAY
+    while following.weekday() >= 5:
+        following += _ONE_DAY
+    return following
+
+
 def _passes(items: Sequence[EvidenceItem], params: ReconstructionParams) -> bool:
-    share = sum(item.weight for item in items if item.kind == EV_SHARES)
-    return share >= params.min_share_weight and sum(item.weight for item in items) >= params.accept_weight
+    return (
+        _share_weight(items) >= params.min_share_weight
+        and math.fsum(item.weight for item in items) >= params.accept_weight
+    )
 
 
 def _pit_clock(items: Sequence[EvidenceItem], params: ReconstructionParams) -> dt.datetime | None:
@@ -1276,12 +1368,46 @@ def _overlaps(left: tuple[dt.date, dt.date] | None, right: tuple[dt.date, dt.dat
 
 
 def _tier(candidate: Candidate, competitors: Sequence[tuple[str, float]]) -> str:
-    """Confidence tier of an accepted candidate (see the module docstring)."""
+    """Final (evaluation) confidence tier of an accepted candidate (see the module docstring)."""
     if competitors:
         return TIER_LOW
     if any(item.kind in _CORROBORATING for item in candidate.items):
         return TIER_HIGH
     return TIER_MEDIUM
+
+
+def _tier_known(
+    candidate: Candidate, rivals: Sequence[Candidate], clock: dt.datetime, params: ReconstructionParams
+) -> str:
+    """The tier judged only on the items (own and rivals') known at ``clock``."""
+    own = [item for item in candidate.items if item.known_at <= clock]
+    own_span = _share_span(own)
+    for rival in rivals:
+        known = [item for item in rival.items if item.known_at <= clock]
+        if _share_weight(known) >= params.competitor_floor and _overlaps(
+            own_span, _share_span(known), params.overlap_tolerance_days
+        ):
+            return TIER_LOW
+    if any(item.kind in _CORROBORATING for item in own):
+        return TIER_HIGH
+    return TIER_MEDIUM
+
+
+def _tier_history(
+    candidate: Candidate, rivals: Sequence[Candidate], available_at: dt.datetime, params: ReconstructionParams
+) -> tuple[tuple[str, dt.datetime], ...]:
+    """Point-in-time ``(tier, from)`` steps from ``available_at`` on (only changes are recorded)."""
+    clocks = {available_at}
+    clocks.update(item.known_at for item in candidate.items if item.kind in _CORROBORATING)
+    if rivals:  # own and rival share evidence move the contest; without rivals only corroboration matters
+        clocks.update(item.known_at for item in candidate.items)
+        clocks.update(item.known_at for rival in rivals for item in rival.items)
+    steps: list[tuple[str, dt.datetime]] = []
+    for clock in sorted(clock for clock in clocks if clock >= available_at):
+        tier = _tier_known(candidate, rivals, clock, params)
+        if not steps or steps[-1][0] != tier:
+            steps.append((tier, clock))
+    return tuple(steps)
 
 
 def _symbol_in(line: VendorLine, segment: tuple[dt.date, dt.date]) -> str | None:
@@ -1346,15 +1472,17 @@ def reconstruct_issuer_links(
         line = by_vendor[vendor_id]
         found = sorted(candidates[vendor_id], key=lambda c: (-c.weight, c.cik))
         accepted: list[tuple[Candidate, tuple[tuple[str, float], ...]]] = []
+        rivals_of: dict[str, list[Candidate]] = {}
         line_rejected: list[RejectedCandidate] = []
         for candidate in found:
-            competitors = tuple(
-                (other.cik, other.weight)
+            rivals_of[candidate.cik] = [
+                other
                 for other in found
                 if other is not candidate
                 and _is_rival(other, params)
                 and _overlaps(candidate.span, other.span, params.overlap_tolerance_days)
-            )
+            ]
+            competitors = tuple((other.cik, other.weight) for other in rivals_of[candidate.cik])
             if candidate.weight < params.accept_weight or candidate.share_weight < params.min_share_weight:
                 reason = REJECT_BELOW_THRESHOLD
             elif not _ratio_acceptable(candidate, params):
@@ -1368,13 +1496,18 @@ def reconstruct_issuer_links(
                 RejectedCandidate(vendor_id, line.price_security_id, candidate.cik, reason, candidate.weight,
                                   candidate.share_weight, candidate.span, competitors)
             )
-        # A rival a link was preferred over (dominance rule) is the losing side of a
-        # resolved conflict: kept as such, whatever its own threshold outcome.
+        # Both sides of every conflict are kept as conflict rows, whatever a side's own
+        # threshold outcome: a rival a link was preferred over (dominance rule) is the
+        # losing side of a resolved conflict; a rival that blocks another candidate is one
+        # side of an unresolved one.
         dominated = {cik for _candidate, competitors in accepted for cik, _weight in competitors}
-        rejected.extend(
-            replace(item, reason=REJECT_CONFLICT_DOMINATED) if item.cik in dominated else item
-            for item in line_rejected
-        )
+        blocking = {cik for item in line_rejected if item.reason == REJECT_CONFLICTING for cik, _w in item.competitors}
+        for item in line_rejected:
+            if item.cik in dominated:
+                item = replace(item, reason=REJECT_CONFLICT_DOMINATED, own_reason=item.reason)
+            elif item.cik in blocking and item.reason not in CONFLICT_REASONS:
+                item = replace(item, reason=REJECT_CONFLICTING, own_reason=item.reason)
+            rejected.append(item)
         if not accepted:
             continue
         # Rejected rivals with real weight bound every segment's extension.
@@ -1395,6 +1528,8 @@ def reconstruct_issuer_links(
                 continue
             clock = _pit_clock(candidate.items, params)
             assert clock is not None
+            history = _tier_history(candidate, rivals_of[candidate.cik], clock, params)
+            assert history and history[-1][0] == _tier(candidate, competitors)
             links.append(
                 ReconstructedLink(
                     vendor_id=vendor_id,
@@ -1411,6 +1546,7 @@ def reconstruct_issuer_links(
                     items=candidate.items,
                     competitors=competitors,
                     current_cik=line.current_cik,
+                    tier_history=history,
                 )
             )
     return ReconstructionResult(params, tuple(links), tuple(rejected), lines_considered=len(lines))
