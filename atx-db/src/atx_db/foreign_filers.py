@@ -18,21 +18,38 @@ Evidence (retained and offline; nothing is fetched):
   10-K/10-Q. The warehouse table is still partial while the submissions load is being resumed, so
   :func:`scan_submissions_forms` produces the same shape from the retained ``submissions.zip``.
 
-Classification uses taxonomy evidence, not form. A 20-F/40-F filer that reports under US GAAP is
-standardized like any 10-K filer, so it keeps ``reporting_basis='us_gaap'`` and gets no reason.
-A filer whose Company Facts carry ``ifrs-full`` and no ``us-gaap`` facts is ``ifrs_only``. A
-filer whose latest financial filing is ``ifrs-full`` after earlier ``us-gaap`` filings is
-``ifrs_after_us_gaap``. Both get the reason. Form evidence is disclosed next to the label and
-never overrides it.
+Classification uses taxonomy evidence, not form, and is decided per filing. A filing's basis is its
+dominant financial taxonomy; stray facts of the other taxonomy do not change it. A US-GAAP basis
+counts as *decisive* only on a periodic annual/interim form (10-K/10-Q/20-F/40-F families) with at
+least :data:`US_GAAP_DECISIVE_MIN_FACTS` us-gaap facts. Proxies, 6-K/8-K and partially tagged
+filings cannot end an IFRS run. From the decisive filings:
 
-Point in time: :data:`INTERVALS_TABLE` holds one row per consecutive run of IFRS financial filings.
-``valid_from`` and ``valid_to`` follow the fundamentals clock (``filed`` + 46 h,
-:data:`~atx_db._fundamental_clock.FUNDAMENTAL_CLOCK_POLICY`). A consumer applies the reason at
-decision time ``t`` only when ``valid_from <= t < valid_to`` (:func:`ifrs_reason_predicate`), so a
-later switch to IFRS never labels earlier dates. The archive is one current snapshot and only
-carries its own ``filed`` dates. For filings before IFRS XBRL tagging (FPIs using IFRS tagged
-from fiscal 2017/2018) it has no taxonomy evidence, so those years get no IFRS interval. They are
-counted as foreign-form filings with no financial facts, and are never inferred to be IFRS.
+* only IFRS filings: ``ifrs_only`` (reason);
+* the latest decisive filing is IFRS, after an earlier US-GAAP one: ``ifrs_after_us_gaap`` (reason);
+* the latest is US-GAAP after IFRS: ``us_gaap_after_ifrs`` (closed historical IFRS interval);
+* no IFRS filing: ``us_gaap``. A 20-F/40-F filer reporting under US GAAP is standardized like any
+  10-K filer, so it is kept with no reason.
+
+Raw per-taxonomy fact counts stay as disclosed columns only. Form evidence is disclosed next to the
+label and never overrides it.
+
+Point in time: :data:`INTERVALS_TABLE` holds reason intervals. The fundamentals clock applies to
+``valid_from`` and ``valid_to`` (``filed`` + 46 h,
+:data:`~atx_db._fundamental_clock.FUNDAMENTAL_CLOCK_POLICY`). A consumer applies a reason at
+decision time ``t`` only when ``valid_from <= t < valid_to`` (:func:`reason_interval_predicate`),
+so a later switch to IFRS never labels earlier dates. There are two reasons, and a CIK can have
+both only in disjoint windows:
+
+* ``ifrs_reporter_not_standardized``: one row per run of consecutive decisive IFRS filings.
+* ``foreign_filer_no_xbrl_financials``: a foreign-form filer with no XBRL financial facts. It runs
+  from its first 20-F/40-F-family filing (submissions ``filing_date`` + 46 h). The window is
+  open-ended when the companyfacts archive has no financial facts for the CIK. For an IFRS-bearing
+  CIK it ends at its first decisive financial filing, which covers e.g. the pre-2018 years before
+  IFRS XBRL tagging. Those years are never inferred to be IFRS.
+
+US-GAAP-only members carry no per-filing detail, so their pre-XBRL years get no interval. Coverage
+(C7) counts them. The archive is one current snapshot and carries only its own ``filed`` dates
+(``evidence_basis='companyfacts_archive_snapshot'``).
 """
 
 from __future__ import annotations
@@ -59,8 +76,20 @@ from ._submissions_archive import SubmissionsArchive
 LOGGER = logging.getLogger(__name__)
 
 IFRS_REPORTER_REASON = "ifrs_reporter_not_standardized"
-DISCLOSURE_VERSION = "foreign_filer_disclosure_v1"
+NO_XBRL_FINANCIALS_REASON = "foreign_filer_no_xbrl_financials"
+DISCLOSURE_VERSION = "foreign_filer_disclosure_v2"
+# Bump whenever the scanner's output can change for the same archive bytes; it keys the parquet cache.
+# v1 missed taxonomy boundaries after an empty ``units`` object; v2 adds that separator, the structural
+# taxonomy-key cross-check and scope columns.
+SCANNER_VERSION = 2
 EVIDENCE_BASIS = "companyfacts_archive_snapshot"
+FULL_SCOPE = "full"
+# A US-GAAP basis is decisive (can end an IFRS run) only on a periodic financial form with at least this
+# many us-gaap facts. Measured on the retained archive: 1,481 of 1,492 periodic US-GAAP-dominant filings
+# in IFRS-bearing members carry >= 100 facts. The 5 below 50 are Part III 10-K/A amendments (3 and 7
+# facts), partially tagged IFRS 20-Fs (13 and 34 facts, e.g. CIK 0001445467), and one small filer's first
+# 10-Q (39 facts); that filer's next 10-Q (62 facts) is decisive.
+US_GAAP_DECISIVE_MIN_FACTS = 50
 REASON_CLOCK_POLICY = FUNDAMENTAL_CLOCK_POLICY
 REASON_CLOCK_HOURS = 46
 
@@ -80,17 +109,19 @@ DOMESTIC_PERIODIC_FORMS = (
     "10-Q", "10-Q/A", "10-QT", "10-QT/A",
 )
 EVIDENCE_FORMS = FOREIGN_ANNUAL_FORMS + FOREIGN_REGISTRATION_FORMS + FOREIGN_INTERIM_FORMS + DOMESTIC_PERIODIC_FORMS
+PERIODIC_FINANCIAL_FORMS = FOREIGN_ANNUAL_FORMS + DOMESTIC_PERIODIC_FORMS
 
 REPORTING_BASES = (
-    "ifrs_only",               # ifrs-full facts, no us-gaap facts -> reason
-    "ifrs_after_us_gaap",      # both; latest financial filing is ifrs-full -> reason
-    "us_gaap_after_ifrs",      # both; latest financial filing is us-gaap -> historical interval only
-    "mixed_taxonomies",        # both taxonomies, but no financial filing carries a filed date
-    "us_gaap",                 # us-gaap facts only -> standardized, kept
-    "no_financial_facts",      # companyfacts member without us-gaap/ifrs-full facts (or {} placeholder)
-    "no_companyfacts_member",  # foreign-form filer absent from the companyfacts archive
+    "ifrs_only",               # decisive filings all IFRS-dominant -> IFRS reason
+    "ifrs_after_us_gaap",      # latest decisive filing IFRS, an earlier one US-GAAP -> IFRS reason
+    "us_gaap_after_ifrs",      # latest decisive filing US-GAAP after IFRS -> closed historical interval
+    "ifrs_facts_undated",      # ifrs-full facts but no dated decisive filing -> disclosed, no reason
+    "us_gaap",                 # no IFRS-dominant filing -> standardized, kept
+    "no_financial_facts",      # companyfacts member without us-gaap/ifrs-full facts ({} placeholder) -> no-XBRL
+    "no_companyfacts_member",  # foreign-form filer absent from the companyfacts archive -> no-XBRL
 )
 REASON_BASES = ("ifrs_only", "ifrs_after_us_gaap")
+NO_XBRL_BASES = ("no_financial_facts", "no_companyfacts_member")
 
 DISCLOSURE_TABLE = "foreign_filer_disclosure"
 INTERVALS_TABLE = "foreign_filer_reason_intervals"
@@ -151,12 +182,17 @@ class CompanyFactsFilingBasis:
 
 @dataclass(frozen=True)
 class CompanyFactsTaxonomyScan:
+    """``scope`` is :data:`FULL_SCOPE` or ``ciks:<sha256 of the sorted requested CIK list>``."""
+
     source_path: str
     source_sha256: str
     source_bytes: int
     members: tuple[CompanyFactsMemberProfile, ...]
     filings: tuple[CompanyFactsFilingBasis, ...]
     requested_absent: tuple[str, ...]
+    scope: str = FULL_SCOPE
+    archive_member_count: int = 0
+    scanner_version: int = SCANNER_VERSION
 
 
 @dataclass(frozen=True)
@@ -281,7 +317,13 @@ def profile_companyfacts_member(
         counts[taxonomy] = counts.get(taxonomy, 0) + payload.count(_ACCN, begin, end)
     if payload.count(b'"accn"') != sum(counts.values()):
         raise ValueError(f"{member}: fact accessions outside the compact taxonomy structure")
-    others =sorted(name for name in counts if name not in (*FINANCIAL_TAXONOMIES, COVER_TAXONOMY))
+    # Structural cross-check: a ``"<taxonomy>":{`` literal has an interior quote, so it occurs only as a
+    # real key. A taxonomy absorbed into its neighbour's span (missed boundary) fails here, never silently.
+    names = [taxonomy for taxonomy, _, _ in blocks]
+    for name in {*names, *FINANCIAL_TAXONOMIES, COVER_TAXONOMY}:
+        if payload.count(b'"' + name.encode("ascii") + b'":{') != names.count(name):
+            raise ValueError(f"{member}: taxonomy key {name!r} does not match the parsed facts structure")
+    others = sorted(name for name in counts if name not in (*FINANCIAL_TAXONOMIES, COVER_TAXONOMY))
     ifrs_facts = counts.get(IFRS_TAXONOMY, 0)
     filings: list[CompanyFactsFilingBasis] = []
     if ifrs_facts:
@@ -322,8 +364,9 @@ def scan_companyfacts_taxonomies(
 ) -> CompanyFactsTaxonomyScan:
     """Taxonomy profile of the retained companyfacts archive, one member in memory at a time.
 
-    ``ciks`` bounds the read to those members (absent ones are returned in ``requested_absent``).
-    The source is SHA-256 identified and must not change while it is read.
+    ``ciks`` bounds the read to those members (absent ones are returned in ``requested_absent``) and
+    marks the scan's ``scope`` as a CIK subset, which :func:`write_taxonomy_artifacts` refuses to
+    publish under the canonical name. The source is SHA-256 identified and must not change while read.
     """
     path = Path(zip_path)
     before = _stat_identity(path)
@@ -331,12 +374,14 @@ def scan_companyfacts_taxonomies(
     members: list[CompanyFactsMemberProfile] = []
     filings: list[CompanyFactsFilingBasis] = []
     absent: list[str] = []
+    scope = FULL_SCOPE
     with zipfile.ZipFile(path) as archive:
         infos = {info.filename: info for info in archive.infolist() if _MEMBER.match(info.filename)}
         if ciks is None:
             names = sorted(infos)
         else:
             wanted = sorted({f"CIK{_cik(cik)}.json" for cik in ciks})
+            scope = "ciks:" + hashlib.sha256(",".join(wanted).encode("ascii")).hexdigest()
             absent = [name[3:13] for name in wanted if name not in infos]
             names = [name for name in wanted if name in infos]
         for index, name in enumerate(names, start=1):
@@ -349,7 +394,7 @@ def scan_companyfacts_taxonomies(
     if _stat_identity(path) != before:
         raise ValueError("companyfacts archive changed while it was scanned")
     return CompanyFactsTaxonomyScan(str(path), source_sha256, before[1], tuple(members), tuple(filings),
-                                    tuple(absent))
+                                    tuple(absent), scope, len(infos))
 
 
 def _columnar_rows(block: dict[str, Any], cik: str, wanted: frozenset[str], source_url: str,
@@ -411,9 +456,13 @@ def scan_submissions_forms(
 
 
 def taxonomy_scan_frames(scan: CompanyFactsTaxonomyScan) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Member and filing frames carrying the archive identity on every row."""
-    identity: dict[str, str | int] = {"source_sha256": scan.source_sha256, "source_bytes": scan.source_bytes,
-                                      "evidence_basis": EVIDENCE_BASIS}
+    """Member and filing frames carrying the archive identity and scan scope on every row."""
+    identity: dict[str, str | int] = {
+        "source_sha256": scan.source_sha256, "source_bytes": scan.source_bytes, "evidence_basis": EVIDENCE_BASIS,
+        "scope": scan.scope, "scanner_version": scan.scanner_version,
+        "archive_member_count": scan.archive_member_count, "scan_member_count": len(scan.members),
+        "scan_filing_rows": len(scan.filings),
+    }
     members = pd.DataFrame(
         [vars(profile) for profile in scan.members],
         columns=list(CompanyFactsMemberProfile.__dataclass_fields__),
@@ -425,6 +474,12 @@ def taxonomy_scan_frames(scan: CompanyFactsTaxonomyScan) -> tuple[pd.DataFrame, 
     return members, filings
 
 
+_IDENTITY_CASTS = """
+    CAST(source_sha256 AS VARCHAR) AS source_sha256, CAST(source_bytes AS BIGINT) AS source_bytes,
+    CAST(evidence_basis AS VARCHAR) AS evidence_basis, CAST(scope AS VARCHAR) AS scope,
+    CAST(scanner_version AS INTEGER) AS scanner_version, CAST(archive_member_count AS BIGINT) AS archive_member_count,
+    CAST(scan_member_count AS BIGINT) AS scan_member_count, CAST(scan_filing_rows AS BIGINT) AS scan_filing_rows
+"""
 _MEMBER_CASTS = """
     CAST(cik AS VARCHAR) AS cik, CAST(member AS VARCHAR) AS member, CAST(member_status AS VARCHAR) AS member_status,
     CAST(uncompressed_bytes AS BIGINT) AS uncompressed_bytes, CAST(us_gaap_facts AS BIGINT) AS us_gaap_facts,
@@ -432,15 +487,12 @@ _MEMBER_CASTS = """
     CAST(other_facts AS BIGINT) AS other_facts, CAST(other_taxonomies AS VARCHAR) AS other_taxonomies,
     CAST(foreign_form_facts AS BIGINT) AS foreign_form_facts,
     CAST(domestic_form_facts AS BIGINT) AS domestic_form_facts, CAST(filing_detail AS BOOLEAN) AS filing_detail,
-    CAST(source_sha256 AS VARCHAR) AS source_sha256, CAST(source_bytes AS BIGINT) AS source_bytes,
-    CAST(evidence_basis AS VARCHAR) AS evidence_basis
-"""
+""" + _IDENTITY_CASTS
 _FILING_CASTS = """
     CAST(cik AS VARCHAR) AS cik, CAST(accession_number AS VARCHAR) AS accession_number,
     CAST(form AS VARCHAR) AS form, CAST(filed AS DATE) AS filed, CAST(us_gaap_facts AS BIGINT) AS us_gaap_facts,
-    CAST(ifrs_facts AS BIGINT) AS ifrs_facts, CAST(source_sha256 AS VARCHAR) AS source_sha256,
-    CAST(source_bytes AS BIGINT) AS source_bytes, CAST(evidence_basis AS VARCHAR) AS evidence_basis
-"""
+    CAST(ifrs_facts AS BIGINT) AS ifrs_facts,
+""" + _IDENTITY_CASTS
 
 
 def materialize_taxonomy_scan(
@@ -466,20 +518,36 @@ def materialize_taxonomy_scan(
     return members_table, filings_table
 
 
-def taxonomy_artifact_paths(directory: str | Path, source_sha256: str) -> TaxonomyArtifacts:
+def taxonomy_artifact_paths(directory: str | Path, source_sha256: str, *, name: str | None = None) -> TaxonomyArtifacts:
+    """Canonical ``companyfacts.zip.taxonomy-v<SCANNER_VERSION>-<sha>`` pair, or ``…-<sha>-<name>`` for subsets."""
     if not re.fullmatch(r"[0-9a-f]{64}", source_sha256):
         raise ValueError("source_sha256 must be a lowercase SHA-256 hex digest")
-    base = Path(directory) / f"companyfacts.zip.taxonomy-v1-{source_sha256}"
+    if name is not None and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+        raise ValueError(f"invalid artifact name {name!r}")
+    stem = f"companyfacts.zip.taxonomy-v{SCANNER_VERSION}-{source_sha256}" + ("" if name is None else f"-{name}")
+    base = Path(directory) / stem
     return TaxonomyArtifacts(base.with_name(base.name + ".members.parquet"),
                              base.with_name(base.name + ".filings.parquet"))
 
 
-def write_taxonomy_artifacts(scan: CompanyFactsTaxonomyScan, directory: str | Path | None = None) -> TaxonomyArtifacts:
-    """Publish the scan as two SHA-keyed parquet files (atomic replace) next to the archive by default."""
+def write_taxonomy_artifacts(
+    scan: CompanyFactsTaxonomyScan, directory: str | Path | None = None, *, name: str | None = None,
+) -> TaxonomyArtifacts:
+    """Publish the scan as a SHA-keyed parquet pair next to the archive by default.
+
+    Only a full scan by the current scanner may take the canonical name that
+    :func:`resolve_taxonomy_artifacts` serves. A CIK-subset scan needs an explicit ``name``. Both files are
+    written to temporaries before either replaces its destination; the identity columns on every row
+    (scope, scanner version, member and filing-row counts) let the resolver reject a mismatched pair.
+    """
+    if name is None and (scan.scope != FULL_SCOPE or scan.scanner_version != SCANNER_VERSION):
+        raise ValueError(f"refusing to publish a {scan.scope!r} scan (scanner v{scan.scanner_version}) under the "
+                         "canonical archive-hash name; pass an explicit name")
     target = Path(directory) if directory is not None else Path(scan.source_path).parent
     target.mkdir(parents=True, exist_ok=True)
-    artifacts = taxonomy_artifact_paths(target, scan.source_sha256)
+    artifacts = taxonomy_artifact_paths(target, scan.source_sha256, name=name)
     con = duckdb.connect(":memory:")
+    partials: list[tuple[Path, Path]] = []
     try:
         con.execute("SET memory_limit='256MB'")
         con.execute("SET threads=1")
@@ -487,15 +555,60 @@ def write_taxonomy_artifacts(scan: CompanyFactsTaxonomyScan, directory: str | Pa
         for table, destination in ((members_table, artifacts.members_path), (filings_table, artifacts.filings_path)):
             fd, partial = tempfile.mkstemp(prefix=".foreign-filers-partial-", suffix=".parquet", dir=target)
             os.close(fd)
-            partial_path = Path(partial)
-            try:
-                literal = str(partial_path).replace("'", "''")
-                con.execute(f"COPY (SELECT * FROM {table} ORDER BY ALL) TO '{literal}' (FORMAT parquet)")
-                os.replace(partial_path, destination)
-            finally:
-                partial_path.unlink(missing_ok=True)
+            partials.append((Path(partial), destination))
+            literal = partial.replace("'", "''")
+            con.execute(f"COPY (SELECT * FROM {table} ORDER BY ALL) TO '{literal}' (FORMAT parquet)")
+        for partial_path, destination in partials:
+            os.replace(partial_path, destination)
     finally:
         con.close()
+        for partial_path, _ in partials:
+            partial_path.unlink(missing_ok=True)
+    return artifacts
+
+
+def resolve_taxonomy_artifacts(zip_path: str | Path, directory: str | Path | None = None) -> TaxonomyArtifacts:
+    """The verified canonical pair for the live archive, or an error; never a stale or partial scan.
+
+    Hashes the archive as it is now and counts its CIK members. Then checks that both files carry exactly
+    that SHA, the full scope and the current scanner version; that the members file has one row per
+    archive member; and that the filings file has the row count the scan recorded.
+    """
+    path = Path(zip_path)
+    expected_sha = _sha256(path)
+    artifacts = taxonomy_artifact_paths(Path(directory) if directory is not None else path.parent, expected_sha)
+    for artifact in (artifacts.members_path, artifacts.filings_path):
+        if not artifact.is_file():
+            raise FileNotFoundError(f"no current taxonomy artifact for this archive: {artifact}")
+    with zipfile.ZipFile(path) as archive:
+        archive_members = sum(1 for info in archive.infolist() if _MEMBER.match(info.filename))
+    con = duckdb.connect(":memory:")
+    try:
+        con.execute("SET memory_limit='128MB'")
+        con.execute("SET threads=1")
+        members = con.execute(f"""
+            SELECT count(*), count(DISTINCT cik), list(DISTINCT source_sha256), list(DISTINCT scope),
+                   list(DISTINCT scanner_version), list(DISTINCT archive_member_count),
+                   list(DISTINCT scan_filing_rows)
+            FROM {parquet_relation(artifacts.members_path)}""").fetchone()
+        filings = con.execute(f"""
+            SELECT count(*), list(DISTINCT source_sha256), list(DISTINCT scope), list(DISTINCT scanner_version)
+            FROM {parquet_relation(artifacts.filings_path)}""").fetchone()
+    finally:
+        con.close()
+    assert members is not None and filings is not None
+    rows, distinct_ciks, shas, scopes, versions, archive_counts, filing_rows = members
+    problems = []
+    if not (rows == distinct_ciks == archive_members and archive_counts == [archive_members]):
+        problems.append(f"members rows {rows}/{distinct_ciks} vs archive members {archive_members}")
+    if shas != [expected_sha] or scopes != [FULL_SCOPE] or versions != [SCANNER_VERSION]:
+        problems.append(f"members identity sha={shas} scope={scopes} scanner={versions}")
+    if filing_rows != [filings[0]]:
+        problems.append(f"filings rows {filings[0]} vs recorded {filing_rows}")
+    if filings[0] and (filings[1] != [expected_sha] or filings[2] != [FULL_SCOPE] or filings[3] != [SCANNER_VERSION]):
+        problems.append(f"filings identity sha={filings[1]} scope={filings[2]} scanner={filings[3]}")
+    if problems:
+        raise ValueError("taxonomy artifacts do not match the live archive: " + "; ".join(problems))
     return artifacts
 
 
@@ -507,10 +620,16 @@ def _filing_basis_sql(filings: str) -> str:
     # A filing's basis is its dominant financial taxonomy. Measured on the retained archive: 469 of 8,777
     # filings carry both, and 426 of them are >= 90 % ifrs-full with a median of 3 stray us-gaap facts.
     # Those facts cannot produce standardized statements, so they must not break an IFRS run.
+    # Decisive: may open/continue/close a basis run. Every IFRS-dominant filing (6-K interims included) is
+    # decisive; a US-GAAP-dominant one only on a periodic form with >= US_GAAP_DECISIVE_MIN_FACTS facts.
     return f"""
-        SELECT cik, accession_number, form, filed,
+        SELECT cik, accession_number, form, filed, source_sha256,
                CASE WHEN ifrs_facts > us_gaap_facts THEN 'ifrs' ELSE 'us_gaap' END AS basis,
-               ifrs_facts > 0 AND us_gaap_facts > 0 AS mixed
+               ifrs_facts > 0 AND us_gaap_facts > 0 AS mixed,
+               ifrs_facts > us_gaap_facts
+                   OR (coalesce(upper(trim(form)) IN ({_sql_list(PERIODIC_FINANCIAL_FORMS)}), false)
+                       AND us_gaap_facts >= {US_GAAP_DECISIVE_MIN_FACTS}) AS decisive,
+               strftime(filed, '%Y-%m-%d') || ' ' || accession_number AS order_key
         FROM {filings} AS f
         WHERE filed IS NOT NULL AND (ifrs_facts > 0 OR us_gaap_facts > 0)
     """
@@ -519,7 +638,7 @@ def _filing_basis_sql(filings: str) -> str:
 def _intervals_sql(filings: str) -> str:
     clock = f"INTERVAL {REASON_CLOCK_HOURS} HOUR"
     return f"""
-        WITH fin AS ({_filing_basis_sql(filings)}),
+        WITH fin AS (SELECT * FROM ({_filing_basis_sql(filings)}) AS b WHERE decisive),
         marked AS (
             SELECT *, CASE WHEN basis IS DISTINCT FROM lag(basis) OVER (
                 PARTITION BY cik ORDER BY filed, accession_number) THEN 1 ELSE 0 END AS run_start
@@ -535,7 +654,7 @@ def _intervals_sql(filings: str) -> str:
             SELECT cik, run_no, min(basis) AS basis, min(filed) AS first_filed, max(filed) AS last_filed,
                    first(accession_number ORDER BY filed, accession_number) AS first_accession,
                    last(accession_number ORDER BY filed, accession_number) AS last_accession,
-                   count(*) AS filings
+                   count(*) AS filings, any_value(source_sha256) AS source_sha256
             FROM runs GROUP BY cik, run_no
         ),
         chained AS (
@@ -548,16 +667,19 @@ def _intervals_sql(filings: str) -> str:
                CAST(first_filed AS TIMESTAMP) + {clock} AS valid_from,
                CAST(ended_by_filed AS TIMESTAMP) + {clock} AS valid_to,
                first_filed, last_filed, ended_by_filed, ended_by_basis,
-               first_accession, last_accession, filings AS ifrs_filings,
+               first_accession, last_accession, CAST(filings AS BIGINT) AS decisive_filings,
                CAST(row_number() OVER (PARTITION BY cik ORDER BY run_no) AS INTEGER) AS interval_no,
                '{REASON_CLOCK_POLICY}' AS clock_policy,
+               source_sha256 AS taxonomy_source_sha256,
+               '{EVIDENCE_BASIS}' AS evidence_basis,
                '{DISCLOSURE_VERSION}' AS disclosure_version
         FROM chained
         WHERE basis = 'ifrs' AND (ended_by_filed IS NULL OR ended_by_filed > first_filed)
     """
 
 
-def _submissions_sql(submissions: str | None) -> tuple[str, str]:
+def _submissions_sql(submissions: str | None) -> tuple[str, str, str]:
+    """(foreign-form CIKs, per-CIK aggregate scoped to the ``foreign_ciks`` CTE, any-rows CIKs in ``scope``)."""
     foreign = FOREIGN_ANNUAL_FORMS + FOREIGN_REGISTRATION_FORMS
     if submissions is None:
         empty = """SELECT CAST(NULL AS VARCHAR) AS cik, 0::BIGINT AS foreign_annual_filings,
@@ -565,7 +687,10 @@ def _submissions_sql(submissions: str | None) -> tuple[str, str]:
                    0::BIGINT AS domestic_periodic_filings, CAST(NULL AS DATE) AS first_foreign_form_filed,
                    CAST(NULL AS DATE) AS last_foreign_form_filed, CAST(NULL AS DATE) AS last_domestic_periodic_filed
                    WHERE false"""
-        return empty, "SELECT CAST(NULL AS VARCHAR) AS cik WHERE false"
+        none = "SELECT CAST(NULL AS VARCHAR) AS cik WHERE false"
+        return none, empty, none
+    foreign_ciks = f"SELECT DISTINCT cik FROM {submissions} AS s WHERE upper(trim(form)) IN ({_sql_list(foreign)})"
+    # Scoped before aggregating: domestic 10-K/10-Q counts only for foreign-evidence CIKs, never the universe.
     aggregate = f"""
         SELECT cik,
                count(DISTINCT accession_number) FILTER (WHERE form_key IN ({_sql_list(FOREIGN_ANNUAL_FORMS)}))
@@ -584,53 +709,63 @@ def _submissions_sql(submissions: str | None) -> tuple[str, str]:
             SELECT cik, accession_number, filing_date, upper(trim(form)) AS form_key
             FROM {submissions} AS s
             WHERE upper(trim(form)) IN ({_sql_list(EVIDENCE_FORMS)})
+              AND cik IN (SELECT cik FROM foreign_ciks)
         ) AS s
         GROUP BY cik
     """
-    return aggregate, f"SELECT cik FROM {submissions} AS s"
+    any_rows = f"SELECT DISTINCT cik FROM {submissions} AS s WHERE cik IN (SELECT cik FROM scope)"
+    return foreign_ciks, aggregate, any_rows
 
 
 def _disclosure_sql(members: str, filings: str, intervals: str, submissions: str | None) -> str:
-    aggregate, any_rows = _submissions_sql(submissions)
+    foreign_ciks, aggregate, any_rows = _submissions_sql(submissions)
     reason_bases = _sql_list(REASON_BASES)
+    no_xbrl_bases = _sql_list(NO_XBRL_BASES)
     not_supplied = "true" if submissions is None else "false"
+    clock = f"INTERVAL {REASON_CLOCK_HOURS} HOUR"
     return f"""
         WITH member AS (SELECT * FROM {members} AS m),
+        foreign_ciks AS (
+            {foreign_ciks}
+            UNION
+            SELECT cik FROM member WHERE ifrs_facts > 0 OR foreign_form_facts > 0
+        ),
         sub AS ({aggregate}),
         fin AS ({_filing_basis_sql(filings)}),
         fil AS (
             SELECT cik,
-                   count(*) FILTER (WHERE basis = 'ifrs') AS ifrs_filings,
-                   count(*) FILTER (WHERE basis = 'us_gaap') AS us_gaap_filings,
+                   count(*) FILTER (WHERE decisive AND basis = 'ifrs') AS ifrs_filings,
+                   count(*) FILTER (WHERE decisive AND basis = 'us_gaap') AS us_gaap_filings,
+                   count(*) FILTER (WHERE NOT decisive) AS nondecisive_filings,
                    count(*) FILTER (WHERE mixed) AS mixed_filings,
-                   min(filed) FILTER (WHERE basis = 'ifrs') AS ifrs_first_filed,
-                   max(filed) FILTER (WHERE basis = 'ifrs') AS ifrs_last_filed,
-                   min(filed) FILTER (WHERE basis = 'us_gaap') AS us_gaap_first_filed,
-                   max(filed) FILTER (WHERE basis = 'us_gaap') AS us_gaap_last_filed,
-                   last(basis ORDER BY filed, accession_number) AS latest_financial_basis,
-                   max(filed) AS latest_financial_filed
+                   min(filed) FILTER (WHERE decisive AND basis = 'ifrs') AS ifrs_first_filed,
+                   max(filed) FILTER (WHERE decisive AND basis = 'ifrs') AS ifrs_last_filed,
+                   min(filed) FILTER (WHERE decisive AND basis = 'us_gaap') AS us_gaap_first_filed,
+                   max(filed) FILTER (WHERE decisive AND basis = 'us_gaap') AS us_gaap_last_filed,
+                   min(filed) FILTER (WHERE decisive) AS first_decisive_filed,
+                   arg_min(basis, order_key) FILTER (WHERE decisive) AS first_decisive_basis,
+                   arg_max(basis, order_key) FILTER (WHERE decisive) AS latest_financial_basis,
+                   max(filed) FILTER (WHERE decisive) AS latest_financial_filed
             FROM fin GROUP BY cik
         ),
         iv AS (
             SELECT cik, count(*) AS ifrs_intervals,
                    max(valid_from) FILTER (WHERE valid_to IS NULL) AS open_valid_from
-            FROM {intervals} GROUP BY cik
+            FROM {intervals} WHERE reason_code = '{IFRS_REPORTER_REASON}' GROUP BY cik
         ),
-        scope AS (
-            SELECT cik FROM member WHERE ifrs_facts > 0 OR foreign_form_facts > 0
-            UNION
-            SELECT cik FROM sub WHERE foreign_annual_filings + foreign_registration_filings > 0
-        ),
-        sub_any AS (SELECT DISTINCT cik FROM ({any_rows}) AS a WHERE cik IN (SELECT cik FROM scope)),
+        scope AS (SELECT cik FROM foreign_ciks),
+        sub_any AS ({any_rows}),
         classified AS (
             SELECT scope.cik,
                    CASE
                        WHEN member.cik IS NULL THEN 'no_companyfacts_member'
-                       WHEN member.ifrs_facts > 0 AND member.us_gaap_facts = 0 THEN 'ifrs_only'
-                       WHEN member.ifrs_facts > 0 AND fil.latest_financial_basis = 'ifrs' THEN 'ifrs_after_us_gaap'
-                       WHEN member.ifrs_facts > 0 AND fil.latest_financial_basis = 'us_gaap' THEN 'us_gaap_after_ifrs'
-                       WHEN member.ifrs_facts > 0 THEN 'mixed_taxonomies'
+                       WHEN coalesce(fil.ifrs_filings, 0) > 0 AND coalesce(fil.us_gaap_filings, 0) = 0 THEN 'ifrs_only'
+                       WHEN coalesce(fil.ifrs_filings, 0) > 0 AND fil.latest_financial_basis = 'ifrs'
+                           THEN 'ifrs_after_us_gaap'
+                       WHEN coalesce(fil.ifrs_filings, 0) > 0 THEN 'us_gaap_after_ifrs'
+                       WHEN member.ifrs_facts > 0 AND fil.cik IS NULL THEN 'ifrs_facts_undated'
                        WHEN member.us_gaap_facts > 0 THEN 'us_gaap'
+                       WHEN member.ifrs_facts > 0 THEN 'ifrs_facts_undated'
                        ELSE 'no_financial_facts'
                    END AS reporting_basis,
                    coalesce(sub.foreign_annual_filings, 0) + coalesce(sub.foreign_registration_filings, 0) > 0
@@ -645,11 +780,13 @@ def _disclosure_sql(members: str, filings: str, intervals: str, submissions: str
                    coalesce(member.member_status, 'absent') AS companyfacts_member_status,
                    member.us_gaap_facts, member.ifrs_facts, member.dei_facts, member.other_taxonomies,
                    member.foreign_form_facts, member.domestic_form_facts,
-                   fil.ifrs_filings, fil.us_gaap_filings, fil.mixed_filings,
+                   fil.ifrs_filings, fil.us_gaap_filings, fil.nondecisive_filings, fil.mixed_filings,
                    fil.ifrs_first_filed, fil.ifrs_last_filed, fil.us_gaap_first_filed, fil.us_gaap_last_filed,
+                   fil.first_decisive_filed, fil.first_decisive_basis,
                    fil.latest_financial_basis, fil.latest_financial_filed,
                    coalesce(iv.ifrs_intervals, 0) AS ifrs_intervals, iv.open_valid_from,
-                   member.source_sha256 AS taxonomy_source_sha256
+                   -- scan-wide archive identity (single-SHA asserted): absence of a member is evidence too
+                   (SELECT any_value(source_sha256) FROM member) AS taxonomy_source_sha256
             FROM scope
             LEFT JOIN member ON member.cik = scope.cik
             LEFT JOIN sub ON sub.cik = scope.cik
@@ -658,8 +795,11 @@ def _disclosure_sql(members: str, filings: str, intervals: str, submissions: str
             LEFT JOIN sub_any ON sub_any.cik = scope.cik
         )
         SELECT cik, reporting_basis,
-               CASE WHEN reporting_basis IN ({reason_bases}) THEN '{IFRS_REPORTER_REASON}' END AS reason_code,
-               CASE WHEN reporting_basis IN ({reason_bases}) THEN open_valid_from END AS reason_valid_from,
+               CASE WHEN reporting_basis IN ({reason_bases}) THEN '{IFRS_REPORTER_REASON}'
+                    WHEN reporting_basis IN ({no_xbrl_bases}) THEN '{NO_XBRL_FINANCIALS_REASON}' END AS reason_code,
+               CASE WHEN reporting_basis IN ({reason_bases}) THEN open_valid_from
+                    WHEN reporting_basis IN ({no_xbrl_bases})
+                        THEN CAST(first_foreign_form_filed AS TIMESTAMP) + {clock} END AS reason_valid_from,
                submissions_foreign_form OR companyfacts_foreign_form AS foreign_form_filer,
                * EXCLUDE (cik, reporting_basis, open_valid_from),
                '{EVIDENCE_BASIS}' AS evidence_basis,
@@ -689,16 +829,51 @@ def build_foreign_filer_disclosure(
     kind = "TEMP TABLE" if temporary else "TABLE"
     intervals = _identifier(intervals_table)
     disclosure = _identifier(disclosure_table)
+    identity = con.execute(f"""
+        SELECT list(DISTINCT source_sha256), list(DISTINCT scanner_version)
+        FROM (SELECT source_sha256, scanner_version FROM {members}
+              UNION ALL SELECT source_sha256, scanner_version FROM {filings})""").fetchone()
+    assert identity is not None
+    if len(identity[0]) > 1 or len(identity[1]) > 1:
+        raise ValueError(f"members/filings mix archive scans: sha256={identity[0]} scanner={identity[1]}")
+    clock = f"INTERVAL {REASON_CLOCK_HOURS} HOUR"
     con.execute(f"CREATE OR REPLACE {kind} {intervals} AS {_intervals_sql(filings)}")
     con.execute(f"CREATE OR REPLACE {kind} {disclosure} AS {_disclosure_sql(members, filings, intervals, submissions)}")
+    # No-XBRL windows, from the first 20-F/40-F-family filing: open-ended when the archive holds no financial
+    # facts for the CIK; otherwise closed by its first decisive financial filing (pre-XBRL years).
+    con.execute(f"""
+        INSERT INTO {intervals} BY NAME
+        SELECT cik, '{NO_XBRL_FINANCIALS_REASON}' AS reason_code,
+               CAST(first_foreign_form_filed AS TIMESTAMP) + {clock} AS valid_from,
+               CASE WHEN reporting_basis NOT IN ({_sql_list(NO_XBRL_BASES)})
+                    THEN CAST(first_decisive_filed AS TIMESTAMP) + {clock} END AS valid_to,
+               first_foreign_form_filed AS first_filed,
+               CASE WHEN reporting_basis NOT IN ({_sql_list(NO_XBRL_BASES)}) THEN first_decisive_filed END
+                   AS ended_by_filed,
+               CASE WHEN reporting_basis NOT IN ({_sql_list(NO_XBRL_BASES)}) THEN first_decisive_basis END
+                   AS ended_by_basis,
+               CAST(0 AS BIGINT) AS decisive_filings, CAST(1 AS INTEGER) AS interval_no,
+               '{REASON_CLOCK_POLICY}' AS clock_policy, taxonomy_source_sha256,
+               '{EVIDENCE_BASIS}+submissions_forms' AS evidence_basis, '{DISCLOSURE_VERSION}' AS disclosure_version
+        FROM {disclosure}
+        WHERE first_foreign_form_filed IS NOT NULL
+          AND (reporting_basis IN ({_sql_list(NO_XBRL_BASES)})
+               OR first_decisive_filed > first_foreign_form_filed)
+    """)
     return summarize_disclosure(con, disclosure_table=disclosure, intervals_table=intervals)
 
 
-def ifrs_reason_predicate(interval_alias: str, cik_sql: str, decision_sql: str) -> str:
-    """Join predicate: the IFRS reason applies to ``cik_sql`` at decision time ``decision_sql``."""
+def reason_interval_predicate(interval_alias: str, cik_sql: str, decision_sql: str) -> str:
+    """Join predicate: the interval's reason applies to ``cik_sql`` at decision time ``decision_sql``.
+
+    A CIK's IFRS and no-XBRL windows are disjoint, so the join yields at most one row per (cik, t).
+    """
     alias = _identifier(interval_alias)
     return (f"({alias}.cik = {cik_sql} AND {alias}.valid_from <= {decision_sql} "
             f"AND ({alias}.valid_to IS NULL OR {decision_sql} < {alias}.valid_to))")
+
+
+ifrs_reason_predicate = reason_interval_predicate
 
 
 def summarize_disclosure(
@@ -716,22 +891,28 @@ def summarize_disclosure(
             f"SELECT reporting_basis, foreign_form_filer, count(*) FROM {disclosure} GROUP BY ALL ORDER BY ALL"
         ).fetchall()
     }
+    ifrs = f"reason_code = '{IFRS_REPORTER_REASON}'"
+    no_xbrl = f"reason_code = '{NO_XBRL_FINANCIALS_REASON}'"
     row = con.execute(f"""
         SELECT count(*),
-               count(*) FILTER (WHERE reason_code IS NOT NULL),
+               count(*) FILTER (WHERE {ifrs}),
                count(*) FILTER (WHERE foreign_form_filer),
                count(*) FILTER (WHERE foreign_form_filer AND coalesce(us_gaap_facts, 0) = 0),
                count(*) FILTER (WHERE foreign_form_filer AND reporting_basis = 'us_gaap'),
-               count(*) FILTER (WHERE foreign_form_filer AND reason_code IS NOT NULL),
-               count(*) FILTER (WHERE NOT foreign_form_filer AND reason_code IS NOT NULL),
-               count(*) FILTER (WHERE reason_code IS NOT NULL AND reason_valid_from IS NULL),
+               count(*) FILTER (WHERE foreign_form_filer AND {ifrs}),
+               count(*) FILTER (WHERE NOT foreign_form_filer AND {ifrs}),
+               count(*) FILTER (WHERE {ifrs} AND reason_valid_from IS NULL),
                count(*) FILTER (WHERE submissions_foreign_form),
-               count(*) FILTER (WHERE companyfacts_foreign_form)
+               count(*) FILTER (WHERE companyfacts_foreign_form),
+               count(*) FILTER (WHERE {no_xbrl}),
+               count(*) FILTER (WHERE {no_xbrl} AND reason_valid_from IS NULL)
         FROM {disclosure}
     """).fetchone()
     interval_row = con.execute(f"""
-        SELECT count(*), count(DISTINCT cik), count(*) FILTER (WHERE valid_to IS NULL),
-               (SELECT count(*) FROM (SELECT cik FROM {intervals} GROUP BY cik HAVING count(*) > 1))
+        SELECT count(*) FILTER (WHERE {ifrs}), count(DISTINCT cik) FILTER (WHERE {ifrs}),
+               count(*) FILTER (WHERE {ifrs} AND valid_to IS NULL),
+               (SELECT count(*) FROM (SELECT cik FROM {intervals} WHERE {ifrs} GROUP BY cik HAVING count(*) > 1)),
+               count(*) FILTER (WHERE {no_xbrl}), count(*) FILTER (WHERE {no_xbrl} AND valid_to IS NULL)
         FROM {intervals}
     """).fetchone()
     assert row is not None and interval_row is not None
@@ -746,9 +927,13 @@ def summarize_disclosure(
         "flagged_without_reason_interval": row[7],
         "submissions_foreign_form_filers": row[8],
         "companyfacts_foreign_form_filers": row[9],
+        "no_xbrl_reason_ciks": row[10],
+        "no_xbrl_reason_undated": row[11],
         "reporting_basis_by_form_evidence": by_basis,
         "reason_intervals": interval_row[0],
         "reason_interval_ciks": interval_row[1],
         "open_reason_intervals": interval_row[2],
         "ciks_with_multiple_ifrs_intervals": interval_row[3],
+        "no_xbrl_intervals": interval_row[4],
+        "open_no_xbrl_intervals": interval_row[5],
     }
