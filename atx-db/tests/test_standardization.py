@@ -728,13 +728,21 @@ def test_migrations_catalog_and_contract_include_standardization_tables(tmp_stor
         """
     ).fetchone()[0]
     assert contract_rows > 0
+    # Migration 0318 (bounded atomic publication) governs away the optional secondary
+    # indexes, including idx_fundamental_standardized_item, and keeps the PK contract.
+    assert 318 in versions
     indexes = {
         row[0]
         for row in tmp_store.con.execute(
             "SELECT index_name FROM duckdb_indexes() WHERE table_name = 'fundamental_standardized'"
         ).fetchall()
     }
-    assert "idx_fundamental_standardized_item" in indexes
+    assert "idx_fundamental_standardized_item" not in indexes
+    primary_key = tmp_store.con.execute(
+        "SELECT constraint_column_names FROM duckdb_constraints() "
+        "WHERE table_name = 'fundamental_standardized' AND constraint_type = 'PRIMARY KEY'"
+    ).fetchall()
+    assert primary_key == [(["standardized_id"],)]
 
 
 def test_standardization_quality_gates_fire_and_pass(tmp_store):

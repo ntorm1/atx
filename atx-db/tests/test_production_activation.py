@@ -173,4 +173,5 @@ def test_governed_migration_connections_are_capped_before_schema_work(tmp_store,
     monkeypatch.setattr(DuckDBStore, "_configure_session", configure)
     run_governed_migrations(tmp_store.path, backup_dir=tmp_path / "backup")
     assert len(captured) == 2
-    assert all(row == ("953.6 MiB", 1, False) for row in captured)
+    # 06ab073f lowered the governed-migration startup budget from 1GB to 512MB (= 488.2 MiB).
+    assert all(row == ("488.2 MiB", 1, False) for row in captured)

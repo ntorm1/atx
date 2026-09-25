@@ -271,6 +271,7 @@ def test_market_daily_schema_is_registered():
         assert name in schema.field_names
 
 
-def test_catalog_still_exposes_both_datasets():
+def test_catalog_still_exposes_every_dataset():
+    # 42883bff added the CIK-owned ATX.US.ISSUER_CONTENT dataset beside the two panel sources.
     codes = {dataset.code for dataset in DATASETS}
-    assert codes == {"ATX.US.FUNDAMENTALS", "ATX.US.EQUITIES"}
+    assert codes == {"ATX.US.FUNDAMENTALS", "ATX.US.EQUITIES", "ATX.US.ISSUER_CONTENT"}

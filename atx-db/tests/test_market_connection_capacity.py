@@ -27,6 +27,10 @@ TEMP_SQL = """SELECT EXISTS (
 def store(tmp_store):
     # Apply real SQL caps even to the unconfigured baseline, without recording
     # replay metadata until the individual test opts into the production path.
+    # conftest records its own test budget as replay metadata (7d0b7ee9); clear it
+    # so the baseline really is an unconfigured caller.
+    tmp_store.analytical_memory_limit = None
+    tmp_store.analytical_threads = None
     tmp_store.con.execute("SET memory_limit='512MB'")
     tmp_store.con.execute("SET threads=1")
     tmp_store.con.execute("SET preserve_insertion_order=false")

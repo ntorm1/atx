@@ -336,11 +336,20 @@ def test_a_derived_family_with_no_values_is_reported(tmp_store):
         "('payout_ratio','payout','item:dividends_paid / item:net_income_total','q','[]',"
         "false,'d','1',2)"
     )
+    # Only event-reconstructed PIT history is coverage (5519d1ac): a payout value that is a
+    # legacy latest-only row (the column default) leaves the payout family without values.
+    tmp_store.con.execute(
+        "INSERT INTO derived_metric_values (derived_value_id, source, security_id, metric_code, "
+        "metric_window, period_end, value, available_at, inputs_hash, as_of_date, history_status) VALUES "
+        "('v1','atx-db declarative derived metrics v1','SEC-1','gross_margin','q',"
+        "DATE '2024-03-31',0.4,TIMESTAMP '2024-05-01 22:00:00','h',DATE '2024-03-31',"
+        "'event_reconstructed')"
+    )
     tmp_store.con.execute(
         "INSERT INTO derived_metric_values (derived_value_id, source, security_id, metric_code, "
         "metric_window, period_end, value, available_at, inputs_hash, as_of_date) VALUES "
-        "('v1','atx-db declarative derived metrics v1','SEC-1','gross_margin','q',"
-        "DATE '2024-03-31',0.4,TIMESTAMP '2024-05-01 22:00:00','h',DATE '2024-03-31')"
+        "('v2','atx-db declarative derived metrics v1','SEC-1','payout_ratio','q',"
+        "DATE '2024-03-31',0.3,TIMESTAMP '2024-05-01 22:00:00','h',DATE '2024-03-31')"
     )
     assert _observed(tmp_store, "derived_metric_families_without_values") == 1.0
 

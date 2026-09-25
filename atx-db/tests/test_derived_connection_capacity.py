@@ -41,6 +41,14 @@ def small_catalog(monkeypatch):
     monkeypatch.setattr(engine, "default_derived_definitions", lambda: definitions)
 
 
+def _unconfigured(store):
+    # conftest records its test budget as replay metadata (7d0b7ee9); an
+    # unconfigured caller has none, so clear it for the unconfigured cases.
+    store.analytical_memory_limit = None
+    store.analytical_threads = None
+    return store
+
+
 @pytest.fixture
 def configured_store(tmp_store, small_catalog):
     _configure_analytical_session(tmp_store, memory_limit="256MB", threads=1)
@@ -291,7 +299,7 @@ def test_failure_after_reopen_keeps_earlier_commit_and_failing_scope(configured_
 
 @pytest.mark.parametrize("configured", [True, False])
 def test_early_iterator_close_removes_only_its_snapshot(tmp_store, small_catalog, configured):
-    store = tmp_store
+    store = _unconfigured(tmp_store)
     if configured:
         _configure_analytical_session(store, memory_limit="256MB", threads=1)
     caller_table = "_derived_security_ids_caller_owned"
@@ -315,7 +323,7 @@ def test_early_iterator_close_removes_only_its_snapshot(tmp_store, small_catalog
 
 @pytest.mark.parametrize("configured", [True, False])
 def test_snapshot_name_collision_preserves_caller_table(tmp_store, small_catalog, monkeypatch, configured):
-    store = tmp_store
+    store = _unconfigured(tmp_store)
     if configured:
         _configure_analytical_session(store, memory_limit="256MB", threads=1)
     identity = UUID("12345678-1234-1234-1234-123456789abc")
@@ -332,7 +340,7 @@ def test_snapshot_name_collision_preserves_caller_table(tmp_store, small_catalog
 
 
 def test_unconfigured_persistent_store_keeps_its_session(tmp_store, small_catalog, monkeypatch):
-    store = tmp_store
+    store = _unconfigured(tmp_store)
     store.con.execute("SET memory_limit='256MB'")
     store.con.execute("CREATE TEMP TABLE caller_state AS SELECT 99 AS value")
     expected_settings = store.con.execute(SETTINGS_SQL).fetchone()
