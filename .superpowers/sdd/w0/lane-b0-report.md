@@ -254,3 +254,37 @@ Shumway fallback) and D5's exchange into `ReplayConfig::listing_exchange`.
 1. W0-B0: replay defaults are now delay≥1 (0 needs `allow_same_close`), `DelistingPolicy::TerminalReturn` (table else flagged Shumway −30 % NYSE/AMEX, −55 % Nasdaq, adverse for unknown venue), `LocateBreach::ClipV2`, `ShortFinancing::FeeOnceV2`; V1 enums keep old numbers.
 2. W0-B0: legacy report V2 on a weekly book: per-rebalance return 0.0510 (compounded week) vs 0.0100 under V1; 0.5 short at 252 bps/yr charged 2.5e-4/week vs 1.26e-2 under V1.
 3. W0-B0: the identified report (`replay_report.cpp`) cannot yet opt into same-close fills or choose a delisting policy; 11 atx-impl tests stay red until I0b wires `allow_same_close` and the policy.
+
+## Post-merge sync
+
+Sync check on `2026-09-25`: `feat/w0-integration` (`1a304619`) was already an ancestor of
+`feat/w0-b0` HEAD (`git -C C:\atx-wt\pool-9 merge-base --is-ancestor feat/w0-integration HEAD`,
+exit 0) — the merge recorded above (`c957d6da`) already carries it, so no new merge was made. No
+"Post-merge sync" block existed yet for this exact head, so per the sync task the owning targets
+were rebuilt and every lane suite re-run on head `6381c3558f7560fd1f40372bde3980e63775ee31` to
+confirm reproducibility before review; working tree was clean (`git status --porcelain` empty), no
+`MERGE_HEAD`.
+
+Commands (from `C:\atx-wt\pool-9`, `CMAKE_BUILD_PARALLEL_LEVEL=2`, free RAM 3.2-4.1 GB observed,
+threshold 2.0 GB never hit):
+```
+scripts\atx-build.ps1 build -Preset equity-dev atx-engine-book-tests            exit=0 (relink only, no source changes)
+scripts\atx-build.ps1 build -Preset equity-dev atx-impl-tests atx-shm-worker    exit=0 (relink only, no source changes)
+scripts\atx-build.ps1 -Ctest -Preset equity-dev -R '^BookReplayDelay\.'        100% tests passed, 0 tests failed out of 4   exit=0
+scripts\atx-build.ps1 -Ctest -Preset equity-dev -R '^BookReplayDelist\.'       100% tests passed, 0 tests failed out of 9   exit=0
+scripts\atx-build.ps1 -Ctest -Preset equity-dev -R '^BookBorrowSingleCount\.'  100% tests passed, 0 tests failed out of 5   exit=0
+scripts\atx-build.ps1 -Ctest -Preset equity-dev -R '^BookLegacyReport\.'       100% tests passed, 0 tests failed out of 9   exit=0
+build-equity\bin\atx-engine-book-tests.exe --gtest_brief=1   [==========] 117 tests from 18 test suites ran.  [PASSED] 117 tests.   exit=0
+build-equity\bin\atx-impl-tests.exe --gtest_brief=1          [==========] 535 tests from 102 test suites ran. [PASSED] 514 tests. [SKIPPED] 5 tests.   exit=1 (16 failed)
+```
+
+The `atx-impl-tests` failure set is byte-identical, by name, to the 16 tests already classified in
+this report's Evidence/Outcome sections (groups 1-4: 8 B-02-consequence + 4 B-04-consequence + 3
+merge-arrived zoo/ic + 1 known CRLF ledger) — no new failure, no prior failure now passing, no
+regression introduced by re-syncing this exact head. Still UNMET pending W0-I0b's
+`allow_same_close`/delisting-policy wiring per Integration notes; no owned-file fix applies (the
+call sites are outside this lane's scope). Tree left clean; this file added with `git add -f` and
+committed at the head below.
+
+Result: **UP_TO_DATE / re-verified**, head `6381c3558f7560fd1f40372bde3980e63775ee31` plus this
+commit.
