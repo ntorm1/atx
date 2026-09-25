@@ -106,3 +106,53 @@ All commands were run by the reviewer in `C:\atx-wt\pool-5`. Free RAM was 5.15 G
 
 1. **MA(20) coverage vehicle.** The owner should confirm that the published HAC interval `ic_mean_hac` (94.5%) satisfies "95% CI coverage in [93%, 97%]". The default bootstrap `ic_mean_ci` measures about 92.5% at L = 2h, which follows the plan's own "≥ 2h" prescription.
 2. **Combiner-level V1 reproducibility.** The `IidV1` t-stat rule and the `RawV1` IC return treatment can be selected only at kernel level. Plumbing them into `IcirEwmaCombiner`, `GrinoldKahnCombiner`, `FamaMacBethRidge`, `KakushadzeRegression` and `marginal_ic` needs `signal_combiner.hpp` and `orthogonalize.hpp`, which this lane does not own. This is deferred to the owner of those headers.
+
+## Re-review 1
+
+Fresh fix-only re-review of lane head `a95df360c7cebd26bca2e9bc4972c402531dbc96`. The fix range is `1db2bb43..a95df360`: `c0a3a461` (review file) and `a95df360` (fix pass 1).
+
+### Verdict
+
+APPROVE. All five minor findings are fixed as required. There is no regression and no test was weakened. The only open item is waiver 1 (owner confirmation of the coverage vehicle), which no fixer can close.
+
+### Evidence (reviewer-run, pool-5, `equity-dev`, `CMAKE_BUILD_PARALLEL_LEVEL=2`, 5.56 GB free before the build)
+
+- `build -Preset equity-dev atx-engine-eval-tests atx-engine-combine-tests`: `[9/11] Linking ... atx-engine-eval-tests.exe`, `[10/11] Linking ... atx-engine-combine-tests.exe`, `build_exit=0`.
+- `atx-engine-eval-tests.exe --gtest_brief=1`: `223 tests from 29 test suites ran ... [  PASSED  ] 223 tests.` `eval_exit=0`. That is 222 plus the one new caps test.
+- `atx-engine-combine-tests.exe --gtest_brief=1`: `183 tests from 34 test suites ran ... [  PASSED  ] 183 tests.` `combine_exit=0`.
+- `--gtest_filter=EvalIcCaps.*:EvalCrossSectionIc.Config_*`: 14/14 OK. This includes `EvalIcCaps.StandalonePreflight_EnforcesHorizonCountAndDrawMaxima` and the pre-existing `EvalCrossSectionIc.Config_BoundedMaxima_RejectOversizedHorizonsQuantilesAndDraws`, which still returns the same codes.
+- The prints were reproduced verbatim:
+  - `[EvalIcCoverage] MA(20), n=1750, 2000 reps: HansenHodrickV1 0.9450  NeweyWestV1 0.9135  naive-IID 0.3145`
+  - `[EvalIcCoverage] CBB on MA(20), n=1000, B=199, 400 reps: HalfHorizonV1 (L=11) 0.8175  TwoHorizonV2 (L=42) 0.9300`
+  - `[CombineHacTstat] MA(20) null, T=500, 600 columns: |t|>1.96 rate NW-auto 0.1333, IID 0.6717`
+- `git diff 1db2bb43 HEAD -- atx-engine/tests` removes no lines. The two test edits only add assertions or a test. There is no `DISABLED_` or `GTEST_SKIP`.
+
+### Per finding
+
+1. **FIXED (the optional part); the owner confirmation is still open.**
+   - `BootstrapBlockRule_V2MovesMa20CoverageTowardNominal` now also asserts `EXPECT_GE(v2.rate(), 0.90)`. The measured value is 0.9300.
+   - The seeds are fixed (`Xoshiro256pp`, "no clock"), so the bound is deterministic, not flaky.
+   - Waiver 1 still needs the owner: is `ic_mean_hac` (0.9450) the vehicle for the [93%, 97%] item?
+2. **FIXED.**
+   - The `kMaxIcHorizons` check (InvalidArgument) and the `kMaxBootstrapDraws` check (OutOfRange) moved verbatim from `validate` into `preflight_cross_section_ic` (`cross_section_ic.cpp:980-991`), before the byte arithmetic. The codes and messages are unchanged.
+   - `validate` calls preflight at line 145, before the old check sites, so every plan and compute path is still guarded.
+   - The one observable change is ordering: an oversize config is now rejected before the span-shape checks. That is benign, and no test depends on it.
+   - The header's Errors list now names both checks. The new test pins both sides of each boundary with a 1 TiB budget.
+   - There are no other callers of `preflight_cross_section_ic` in the tree.
+3. **FIXED.**
+   - The report's Deviation 1 and Integration notes now state that the GK and ICIR-EWMA **weights** moved through the `WinsorizedV2` default of `ic_matrix`.
+   - They ask for an `IcReturnTreatment` field threaded to `signal_combiner.cpp:188,203`. Those line references are correct at HEAD.
+4. **FIXED (as required: recorded).**
+   - The report has a Known limitations section giving 13.3% against a nominal 5%, and IID at 67.2%.
+   - There is a comment at `kCombineTStatRule` (`signal_combiner.cpp:55-59`).
+   - The integration note asks for an h - 1 lag floor when `tstat_rule` lands.
+   - The test bound `< 0.15` is unchanged. The code is unchanged apart from the comment.
+5. **FIXED.**
+   - The `hac.hpp:339-343` doc now cites Politis-White (2004) and Patton-Politis-White (2009) only.
+   - It states explicitly that arch parity is NOT verified and gives the reason (the lag window differs by one).
+   - It says the test reference is an independent numpy transcription.
+   - This is a doc-only change.
+
+### New findings introduced by the fix
+
+None.
