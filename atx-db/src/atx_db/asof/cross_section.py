@@ -18,29 +18,36 @@ restated or listed after it can appear. At a month-end session with the cutoff a
 Reuse, not a fork
 -----------------
 Membership, identity, derived and market fields are computed by the R2a panel
-builder itself on a one-date calendar (``(screen session, cutoff)``): the shared
-FQ1/R2a cohort builder (``fundamental_signal_research.stage_cohort``), the
+builder itself through its public one-formation API
+(``research.panel.stage_formation`` / ``formation_batches``, R2e) on
+``(screen session, cutoff)``: the shared FQ1/R2a cohort builder, the
 reconstructed owner bridge, the primary-line rule, the FQ1 state selection, the
-set-based lineage prover and the panel's value and market rules. Those rows are
-therefore byte-identical to the R2a panel at the same formation (the per-field
-``r2a_field_digests`` equal the panel's ``research_panel_coverage.values_sha256``).
+set-based lineage prover and the panel's value and market rules (newest visible
+market revision wins per column, a NULL included). Those rows are therefore
+byte-identical to the R2a panel at the same formation: the per-field
+``r2a_field_digests`` equal the panel's ``research_panel_coverage.values_sha256``.
 The builder runs in a private scratch research store (:class:`ScreenStore`) that
 attaches the warehouse ``READ_ONLY``; the scratch file is deleted afterwards.
+There is no default database: the caller names it.
 
 Fields
 ------
 ``derived:<metric_code>`` (q/ttm/avg2 seed metrics) and ``market:<metric_code>``
-(daily ``market_daily_metrics`` columns) -- a bare metric code resolves through the
-seed registry -- follow R2a exactly, with one integrity guard: a market value is
-never revived from an older revision when the newest revision visible at the
-cutoff carries NULL (``market_null_revision_guard_rows``). ``item:<code>:<basis>``
-reads ``fundamental_standardized``: per owner CIK the latest visible period, then
-availability, then source/rule/basis/id (the derived engine's item order), ranked
-on the complete state, so a newer NULL state (e.g. ``reported_eps_conflict_v1``)
-is reported as ``null_state`` and never revives an earlier value.
+(daily ``market_daily_metrics`` columns, plus the opt-in native
+``line_market_cap``) -- a bare metric code resolves through the seed registry --
+follow R2a exactly. ``item:<code>:<basis>`` reads ``fundamental_standardized``: per owner CIK the
+latest visible period, then availability, then source/rule/basis/id (the derived
+engine's item order), ranked on the complete state, so a newer NULL state (e.g.
+``reported_eps_conflict_v1``) is reported as ``null_state`` and never revives an
+earlier value; annual states count only when they span 330-380 days (the derived
+engine's gate, so a transition-period stub is never the annual value).
 ``feature:<feature_id>[:<variant>]`` reads a sealed R2b feature version from a
 research store (attached ``READ_ONLY``): the latest feature formation whose 22:00
-UTC cutoff is at or before ``as_of_ts``; its age is the staleness.
+UTC cutoff is at or before ``as_of_ts``; its age is the staleness, and a formation
+more than ``FEATURE_MAX_LAG_DAYS`` before the screen session yields
+``stale_feature_formation`` (no value). Pre-R2e feature versions may carry R2b's
+older-value revival in item legs/operands (blocker
+``research_feature_newer_null_rule_unverified``).
 
 Grain and labels
 ----------------
@@ -58,11 +65,24 @@ value's ``reference_date`` (fiscal/period end, market session or feature
 formation) to the as-of date; ``stale_current_anchor`` rows keep their value for
 diagnostics only.
 
+Status
+------
+``complete`` only when every requested field has at least one ``valid`` value;
+``partial`` when some fields do (each empty field is named in a
+``field_without_valid_values:<field_id>`` blocker); ``blocked_empty`` when none
+do; ``empty_universe``, ``untestable_strict`` (strict basis without a valid
+cohort) and ``no_observed_session`` otherwise.
+
 Bounds
 ------
-At most 64 fields; members x fields may not exceed ``max_rows`` (checked before
-any value is computed); DuckDB runs at ``memory_limit`` (default 256MB) and 1-2
-threads with external access disabled after the attachments.
+At most 64 fields; members x fields may not exceed ``max_rows`` (default 300k,
+limit 1M; checked before any value is computed). The screen lives in DuckDB; at
+most ``frame_rows`` (default and limit 300k, about 220 MB of pandas) are
+materialized in ``rows`` and the rest streams through
+:meth:`ScreenStore.iter_screen_frames` while the store is open. DuckDB runs at
+``memory_limit`` (default 256MB), 1-2 threads and ``spill_limit`` (default 2GB),
+with external access disabled after the attachments and the configuration
+locked (``lock_configuration``).
 """
 
 from __future__ import annotations
@@ -73,16 +93,14 @@ import json
 import re
 import tempfile
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from ..connection import DEFAULT_DB_PATH
-
-QUERY_VERSION = "pit-cross-section-v1"
+QUERY_VERSION = "pit-cross-section-v2"
 SCREEN_RUN_ID = "pit_screen"
 BASIS_STRICT = "strict"
 BASIS_RECONSTRUCTED = "reconstructed"
@@ -101,9 +119,16 @@ FEATURE_SCOPE = "research_feature"
 ITEM_SCOPE = "owner"
 DECISION_HOUR = 22
 MAX_FIELDS = 64
-DEFAULT_MAX_ROWS = 1_000_000
-MAX_ROWS_LIMIT = 5_000_000
+DEFAULT_MAX_ROWS = 300_000
+MAX_ROWS_LIMIT = 1_000_000
+#: pandas rows per screen frame (~745 B/row at the output shape: 300k ~ 220 MB).
+MAX_FRAME_ROWS = 300_000
+STREAM_CHUNK_ROWS = 32_768
 DEFAULT_SESSION_LOOKBACK_DAYS = 10
+#: A feature formation older than this before the screen session is stale.
+FEATURE_MAX_LAG_DAYS = 35
+#: Feature store schema from which R2e's newest-NULL rule and survivor-conditioning labels are guaranteed.
+FEATURE_SCHEMA_R2E = 3
 WAREHOUSE_ALIAS = "wh"
 RESEARCH_ALIAS = "rs"
 # Reasons whose value is point-in-time safe to publish (R2a VALUE_BEARING_REASONS).
@@ -282,24 +307,30 @@ class ScreenStore:
     The warehouse is attached ``READ_ONLY`` (verified) and, when given, a
     research store too (for ``feature:`` fields). Builder writes -- the R2a
     staging tables and lineage proofs -- land in a scratch DuckDB file in a
-    private temporary directory that is removed on close. External access is
-    disabled once everything is attached; spill is capped by ``spill_limit``.
+    private temporary directory that is removed on close; DuckDB spills only
+    into that directory, capped by ``spill_limit``. External access is disabled
+    once everything is attached and the configuration is then locked, so no
+    later statement can lift memory, threads or spill. There is no default
+    warehouse: the caller names the file.
     """
 
-    def __init__(self, warehouse_path: Path | str = DEFAULT_DB_PATH, *, scratch_dir: Path | str | None = None,
-                 memory_limit: str = "256MB", threads: int = 1, spill_limit: str | None = None,
+    def __init__(self, warehouse_path: Path | str, *, scratch_dir: Path | str | None = None,
+                 memory_limit: str = "256MB", threads: int = 1, spill_limit: str = "2GB",
                  research_db_path: Path | str | None = None) -> None:
+        if not isinstance(warehouse_path, (str, Path)) or not str(warehouse_path):
+            raise ValueError("warehouse_path is required (no default warehouse)")
         if not isinstance(memory_limit, str) or not _MEMORY.fullmatch(memory_limit):
             raise ValueError("memory_limit must look like '256MB' or '1GB'")
         if isinstance(threads, bool) or not isinstance(threads, int) or not 1 <= threads <= 2:
             raise ValueError("threads must be 1 or 2")
-        if spill_limit is not None and not re.fullmatch(r"(0|[1-9][0-9]{0,5})(B|MB|GB)", spill_limit):
+        if not isinstance(spill_limit, str) or not re.fullmatch(r"(0|[1-9][0-9]{0,5})(B|MB|GB)", spill_limit):
             raise ValueError("spill_limit must look like '0B', '512MB' or '2GB'")
         self.warehouse_path = Path(warehouse_path).resolve()
         self.research_db_path = None if research_db_path is None else Path(research_db_path).resolve()
         self.scratch_dir = None if scratch_dir is None else Path(scratch_dir)
         self.memory_limit, self.threads, self.spill_limit = memory_limit, threads, spill_limit
         self.research: Any = None
+        self.spill_directory: str | None = None
         self._tmp: tempfile.TemporaryDirectory[str] | None = None
 
     @property
@@ -333,8 +364,7 @@ class ScreenStore:
             if self.research_db_path is not None:
                 literal = "'" + self.research_db_path.as_posix().replace("'", "''") + "'"
                 con.execute(f"ATTACH {literal} AS {RESEARCH_ALIAS} (READ_ONLY)")
-            if self.spill_limit is not None:
-                con.execute(f"SET max_temp_directory_size='{self.spill_limit}'")
+            con.execute(f"SET max_temp_directory_size='{self.spill_limit}'")
             con.execute("SET enable_external_access=false")
             attached = dict(con.execute(
                 "SELECT database_name, readonly FROM duckdb_databases() WHERE database_name IN (?, ?)",
@@ -342,6 +372,11 @@ class ScreenStore:
             expected = {WAREHOUSE_ALIAS} | ({RESEARCH_ALIAS} if self.research_db_path is not None else set())
             if set(attached) != expected or not all(attached.values()):
                 raise RuntimeError(f"screen inputs must be attached READ_ONLY, got {attached}")
+            spill = Path(str(con.execute("SELECT current_setting('temp_directory')").fetchone()[0])).resolve()
+            if not spill.is_relative_to(Path(self._tmp.name).resolve()):
+                raise RuntimeError(f"screen spill directory {spill} is outside its private directory")
+            self.spill_directory = str(spill)
+            con.execute("SET lock_configuration=true")
         except BaseException:
             self.__exit__(None, None, None)
             raise
@@ -362,8 +397,19 @@ class ScreenStore:
         return dict(self.con.execute("""
             SELECT name, value FROM duckdb_settings()
             WHERE name IN ('memory_limit','threads','max_temp_directory_size','enable_external_access',
-                           'preserve_insertion_order','TimeZone')
+                           'preserve_insertion_order','access_mode','TimeZone','temp_directory',
+                           'lock_configuration')
         """).fetchall())
+
+    def iter_screen_frames(self, chunk_rows: int = STREAM_CHUNK_ROWS) -> Iterator[pd.DataFrame]:
+        """The last screen's full output, in order, as bounded pandas chunks (store must still be open)."""
+        _bounded_int("chunk_rows", chunk_rows, 2048, 1_000_000)
+        cursor = self.con.execute("SELECT * FROM _xs_out ORDER BY field_order, security_id")
+        while True:
+            chunk = cursor.fetch_df_chunk(chunk_rows // 2048)
+            if chunk.empty:
+                return
+            yield _output_frame(chunk)
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +435,9 @@ class CrossSectionResult:
     screen_sha256: str
     blockers: tuple[str, ...]
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    #: Rows of the whole screen; ``rows`` holds the first ``frame_rows`` of them.
+    total_rows: int = 0
+    rows_truncated: bool = False
 
 
 def _canonical(value: Any) -> str:
@@ -436,15 +485,22 @@ def run_cross_section(
     annual_max_age_days: int = 400,
     session_lookback_days: int = DEFAULT_SESSION_LOOKBACK_DAYS,
     max_rows: int = DEFAULT_MAX_ROWS,
+    frame_rows: int | None = None,
     metric_batch_size: int = 16,
     unverified_vendor_shares: bool = False,
     include_unlisted_tail: bool = True,
 ) -> CrossSectionResult:
     """Screen every member of the tier-1 universe at ``as_of_ts`` inside an open :class:`ScreenStore`.
 
+    Membership, identity, derived and market fields come from the R2a panel's
+    public one-formation API (``stage_formation`` / ``formation_batches``).
     ``owner_links`` overrides the reconstructed owner bridge (A5 ``BridgeRow``
     shaped rows, as in the R2a panel); by default it is built from the warehouse.
+    ``frame_rows`` (default ``min(max_rows, MAX_FRAME_ROWS)``) bounds the rows
+    materialized in ``result.rows``; the full screen streams through
+    :meth:`ScreenStore.iter_screen_frames` while the store is open.
     """
+    from .. import fundamental_signal_research as fsr
     from ..market_daily import MARKET_DAILY_SOURCE_NAME
     from ..research import panel
 
@@ -454,6 +510,8 @@ def run_cross_section(
     basis, universe = resolve_basis(basis, universe_id)
     parsed = parse_screen_fields(fields)
     _bounded_int("max_rows", max_rows, 1, MAX_ROWS_LIMIT)
+    frame_rows = min(max_rows, MAX_FRAME_ROWS) if frame_rows is None else frame_rows
+    _bounded_int("frame_rows", frame_rows, 0, MAX_FRAME_ROWS)
     _bounded_int("session_lookback_days", session_lookback_days, 1, 31)
     if not isinstance(unverified_vendor_shares, bool):
         raise ValueError("unverified_vendor_shares must be a bool")
@@ -462,91 +520,49 @@ def run_cross_section(
                            or not re.fullmatch(r"[0-9a-f]{64}", feature_version)):
         raise ValueError("feature fields need a research store and a 64-hex feature_version")
     store, con = screen.research, screen.con
+    if not store.warehouse_has("market_daily_metrics"):
+        raise RuntimeError("warehouse is missing market_daily_metrics (screen sessions)")
     phases: dict[str, float] = {}
     started = time.perf_counter()
-
     panel_features = tuple(panel.PanelFeature(f.code, f.code, str(f.window)) for f in parsed
                            if f.kind in (FIELD_DERIVED, FIELD_MARKET))
-    checked = (panel.canonical_features(panel_features, unverified_vendor_shares=unverified_vendor_shares)
-               if panel_features else ())
-    panel._require_inputs(store, basis, checked, build_bridge=owner_links is None)
     as_of_date = cutoff.date()
     sessions = panel.observed_sessions(con, market_source=MARKET_DAILY_SOURCE_NAME,
                                        first_day=as_of_date - dt.timedelta(days=session_lookback_days),
                                        as_of_date=as_of_date, run_at=cutoff)
-    labels = panel._basis_labels(basis)
-    base = {"basis": basis, "universe": universe, "identity_basis": labels["identity_basis"], "fields": parsed,
-            "cutoff": cutoff}
+    identity = fsr.IDENTITY_BASIS_STRICT if basis == BASIS_STRICT else fsr.IDENTITY_BASIS_RECONSTRUCTED
+    base = {"basis": basis, "universe": universe, "identity_basis": identity, "fields": parsed, "cutoff": cutoff,
+            "frame_rows": frame_rows}
     if not sessions:
         return _result(con, base, "no_observed_session", None, {}, {}, {"session_lookback_days":
                                                                         session_lookback_days}, [])
     screen_date = sessions[-1]
-    month = screen_date.replace(day=1)
-    options = panel.ResearchPanelOptions(
-        run_id=SCREEN_RUN_ID, basis=basis, start_month=month, end_month=month, as_of_date=screen_date,
-        run_at=cutoff.replace(tzinfo=dt.UTC), features=panel_features or None, metric_batch_size=metric_batch_size,
-        max_age_days=max_age_days, annual_max_age_days=annual_max_age_days,
-        include_unlisted_tail=include_unlisted_tail, unverified_vendor_shares=unverified_vendor_shares)
-    _, features, spec = panel._validate(options)
-    features = features if panel_features else ()
-    scopes = {item[0]: item[3] for item in spec["features"]}
-    work_spec = {**spec, "scopes": scopes}
-
-    bridge: dict[str, Any] | None = None
-    if basis == BASIS_RECONSTRUCTED:
-        if owner_links is None:
-            link_rows, summary = panel._owner_bridge_rows(store)
-        else:
-            link_rows, summary = tuple(owner_links), None
-        bridge = {"staged": panel.stage_owner_links(con, link_rows), "bridge_summary": summary}
-    phases["owner_bridge"] = time.perf_counter() - started
-    started = time.perf_counter()
-    con.execute("CREATE OR REPLACE TEMP TABLE _rp_features (feature_id VARCHAR, metric_code VARCHAR, "
-                "metric_window VARCHAR)")
-    if features:
-        con.executemany("INSERT INTO _rp_features VALUES (?,?,?)",
-                        [[f.feature_id, f.metric_code, f.metric_window] for f in features])
-    row = panel.CalendarRow(month, screen_date, screen_date, screen_date, cutoff, None, panel.CALENDAR_FORMED)
-    panel._stage_run_calendar(con, [row])
-    cohort = panel._stage_cohorts(store, spec, labels["market_source"]).get(screen_date)
-    members = int(con.execute("SELECT count(*) FROM _rp_cohort_all").fetchone()[0])
-    if members * len(parsed) > max_rows:
-        raise ScreenBoundExceeded(f"{members} members x {len(parsed)} fields exceeds max_rows={max_rows}")
-    phases["cohort"] = time.perf_counter() - started
-    _stage_fields(con, parsed, scopes, max_age_days, annual_max_age_days)
+    staged = panel.stage_formation(
+        store, basis=basis, formation_date=screen_date, cutoff=cutoff.replace(tzinfo=dt.UTC),
+        features=panel_features, run_id=SCREEN_RUN_ID, max_age_days=max_age_days,
+        annual_max_age_days=annual_max_age_days, include_unlisted_tail=include_unlisted_tail,
+        unverified_vendor_shares=unverified_vendor_shares, metric_batch_size=metric_batch_size,
+        owner_links=owner_links)
+    base["identity_basis"] = staged.labels["identity_basis"]
+    if staged.members * len(parsed) > max_rows:
+        raise ScreenBoundExceeded(f"{staged.members} members x {len(parsed)} fields exceeds max_rows={max_rows}")
+    phases["owner_bridge_and_cohort"] = time.perf_counter() - started
+    _stage_fields(con, parsed, staged.scopes, max_age_days, annual_max_age_days)
     con.execute("CREATE OR REPLACE TEMP TABLE _xs_values ("
                 + ", ".join(f"{name} {kind}" for name, kind in _VALUE_TYPES) + ")")
-
     r2a_digests: dict[str, str] = {}
     diagnostics: dict[str, Any] = {"session_lookback_days": session_lookback_days,
-                                   "observed_sessions_in_lookback": len(sessions), "owner_bridge": bridge,
-                                   "cohort": cohort, "market_null_revision_guard_rows": 0, "batches": []}
-    eligible = int(cohort["eligible"]) if cohort else 0
+                                   "observed_sessions_in_lookback": len(sessions),
+                                   "owner_bridge": staged.owner_bridge, "cohort": staged.cohort,
+                                   "market_revision_rule": panel.MARKET_REVISION_RULE, "batches": []}
     started = time.perf_counter()
-    if features and eligible:
-        _, definitions_sha, hashes = panel._definitions(con, features)
-        diagnostics["definitions_sha256"] = definitions_sha
-        for batch in panel._batches(features, options.metric_batch_size):
-            stats: dict[str, Any] = {"batch": batch.ordinal, "features": [f.feature_id for f in batch.features]}
-            if batch.is_market:
-                panel._market_formation(store, batch, work_spec, labels["market_source"], row)
-                guarded = _guard_market_null_revisions(con, batch, labels["market_source"])
-                diagnostics["market_null_revision_guard_rows"] += guarded
-            else:
-                stats.update(panel._derived_selection(store, SCREEN_RUN_ID, batch, work_spec, hashes, 1,
-                                                      panel.DEFAULT_PROOF_CHUNK_ROOTS))
-                panel._derived_formations(store, SCREEN_RUN_ID, batch, work_spec, [row], [0])
-            leaks = con.execute(f"""
-                SELECT count(*) FROM _rp_batch_values v JOIN _rp_calendar c ON c.decision_date=v.formation_date
-                WHERE {panel._leak_predicate('c.cutoff', 'v.')}
-            """).fetchone()[0]
-            if leaks:
-                raise RuntimeError(f"{leaks} staged values are not visible at the screen cutoff")
-            r2a_digests.update(con.execute(panel._VALUE_DIGEST_SQL.format(
-                relation="_rp_batch_values", where="")).fetchall())
-            _append_panel_values(con)
-            diagnostics["batches"].append(stats)
+    for batch in panel.formation_batches(store, staged):
+        r2a_digests.update(batch.values_sha256)
+        diagnostics["definitions_sha256"] = batch.definitions_sha256
+        diagnostics["batches"].append({"batch": batch.ordinal, "features": list(batch.feature_ids), **batch.stats})
+        _append_panel_values(con, panel.FORMATION_VALUES_RELATION, panel.FORMATION_COHORT_RELATION)
     phases["panel_fields"] = time.perf_counter() - started
+    members = staged.members
     started = time.perf_counter()
     if any(f.kind == FIELD_ITEM for f in parsed) and members:
         diagnostics["item_states"] = _append_item_values(con, cutoff, screen_date, universe)
@@ -559,7 +575,7 @@ def run_cross_section(
     if members:
         _append_ineligible_values(con, universe)
     diagnostics["phase_seconds"] = {key: round(value, 3) for key, value in phases.items()}
-    return _result(con, base, "screened", screen_date, cohort or {}, r2a_digests, diagnostics, sessions)
+    return _result(con, base, "screened", screen_date, staged.cohort, r2a_digests, diagnostics, sessions)
 
 
 def _stage_fields(con: Any, parsed: Sequence[ScreenField], scopes: dict[str, str], max_age_days: int,
@@ -590,8 +606,10 @@ _COHORT_EXTRAS = ("k.symbol, k.security_type, k.exchange_code, k.membership_reas
                   "k.owner_link_reason, k.primary_line")
 
 
-def _append_panel_values(con: Any) -> None:
-    """Copy one R2a batch (``_rp_batch_values``) with the member's as-of attributes."""
+def _append_panel_values(con: Any, values_relation: str, cohort_relation: str) -> None:
+    """Copy one formation batch (the panel's value rows) with the member's as-of attributes."""
+    if cohort_relation != _COHORT_RELATION or not re.fullmatch(r"_[a-z][a-z0-9_]{0,62}", values_relation):
+        raise RuntimeError("the panel's formation relations changed; rebind the screen")
     con.execute(f"""
         INSERT INTO _xs_values BY NAME
         SELECT v.*, f.field_kind, f.field_order, {_COHORT_EXTRAS},
@@ -599,58 +617,15 @@ def _append_panel_values(con: Any) -> None:
                          CASE WHEN v.available_at IS NOT NULL THEN v.formation_date END
                     ELSE v.fiscal_period_end END AS reference_date,
                v.derived_value_id AS source_ref
-        FROM _rp_batch_values v
+        FROM {values_relation} v
         JOIN _xs_fields f ON f.field_id=v.feature_id
-        JOIN _rp_cohort_all k ON k.decision_date=v.formation_date AND k.security_id=v.security_id
+        JOIN {cohort_relation} k ON k.decision_date=v.formation_date AND k.security_id=v.security_id
     """)
 
 
-def _guard_market_null_revisions(con: Any, batch: Any, market_source: str) -> int:
-    """Never revive an older market revision: the newest visible revision's NULL wins.
-
-    The panel's market read takes ``arg_max(value, clock)`` per column, which
-    skips NULL arguments; when the newest revision visible at the cutoff carries
-    NULL for a column, that value is reported as ``invalid_current_state``.
-    """
-    codes = [f.metric_code for f in batch.features if f.metric_code in _market_columns(con)]
-    if not codes:
-        return 0
-    picks = ",\n".join(
-        f'struct_extract(arg_max(struct_pack(v := m."{code}"), (m.available_at, m.market_daily_id)), \'v\') '
-        f'AS "{code}"' for code in codes)
-    con.execute(f"""
-        CREATE OR REPLACE TEMP TABLE _xs_market_newest AS
-        SELECT m.security_id, {picks}
-        FROM market_daily_metrics m
-        JOIN _rp_calendar c ON m.trade_date=c.decision_date AND m.available_at<=c.cutoff
-                           AND m.as_of_date<=c.decision_date
-        JOIN _rp_cohort_all k ON k.decision_date=c.decision_date AND k.security_id=m.security_id AND k.eligible
-        WHERE m.source=?
-        GROUP BY m.security_id
-    """, [market_source])
-    guarded = 0
-    for feature in batch.features:
-        if feature.metric_code not in codes:
-            continue
-        flagged = int(con.execute(f"""
-            SELECT count(*) FROM _rp_batch_values v JOIN _xs_market_newest n ON n.security_id=v.security_id
-            WHERE v.feature_id=? AND v.raw_value IS NOT NULL AND n."{feature.metric_code}" IS NULL
-        """, [feature.feature_id]).fetchone()[0])
-        if flagged:
-            con.execute(f"""
-                UPDATE _rp_batch_values SET raw_value=NULL, reason='invalid_current_state'
-                WHERE feature_id=? AND raw_value IS NOT NULL AND security_id IN (
-                  SELECT security_id FROM _xs_market_newest WHERE "{feature.metric_code}" IS NULL)
-            """, [feature.feature_id])
-            guarded += flagged
-    return guarded
-
-
-def _market_columns(con: Any) -> frozenset[str]:
-    return frozenset(row[0] for row in con.execute("""
-        SELECT column_name FROM duckdb_columns()
-        WHERE database_name=? AND schema_name='main' AND table_name='market_daily_metrics'
-    """, [WAREHOUSE_ALIAS]).fetchall())
+#: The staged formation cohort (``research.panel.FORMATION_COHORT_RELATION``) the item,
+#: feature and ineligible-member SQL below reads.
+_COHORT_RELATION = "_rp_cohort_all"
 
 
 ITEM_STATE_SQL = """
@@ -665,6 +640,9 @@ ITEM_STATE_SQL = """
       FROM fundamental_standardized f
       JOIN _xs_fields q ON q.field_kind='item' AND q.code=f.canonical_code AND q.window_code=f.basis
       WHERE f.available_at IS NOT NULL AND f.available_at<=? AND f.period_end<=? AND f.as_of_date<=?
+        -- the derived engine's annual gate (_derived_pit.prepare_security): a
+        -- transition-period stub is never the annual value
+        AND (f.basis<>'annual' OR date_diff('day', f.period_start, f.period_end) + 1 BETWEEN 330 AND 380)
     )
     SELECT s.cik, s.field_id,
            arg_max(struct_pack(v := s.value, period_start := s.period_start, period_end := s.period_end,
@@ -745,6 +723,7 @@ FEATURE_VALUES_SQL = """
                   WHEN row_clock>? THEN 'invalid_input_clock'
                   WHEN domain_status<>'in_domain' THEN domain_status
                   WHEN value IS NULL OR NOT isfinite(value) THEN ?
+                  WHEN CAST(? AS VARCHAR) IS NOT NULL THEN CAST(? AS VARCHAR)
                   ELSE 'valid' END AS reason
       FROM grid
     )
@@ -790,17 +769,32 @@ def _append_feature_values(con: Any, fields: Sequence[ScreenField], version: str
         WHERE feature_version=?
     """, [version]).fetchall()}
     orders = {item[0]: item[1] for item in con.execute("SELECT field_id, field_order FROM _xs_fields").fetchall()}
-    detail: dict[str, Any] = {"feature_version": version, "formation_date": formation, "fields": {}}
+    date_columns = frozenset(item[0] for item in con.execute("""
+        SELECT column_name FROM duckdb_columns()
+        WHERE database_name=? AND schema_name='main' AND table_name='research_feature_dates'
+    """, [RESEARCH_ALIAS]).fetchall())
+    has_schema = con.execute("""
+        SELECT count(*) FROM duckdb_tables()
+        WHERE database_name=? AND schema_name='main' AND table_name='research_feature_schema'
+    """, [RESEARCH_ALIAS]).fetchone()[0]
+    schema = (con.execute(f"SELECT max(version) FROM {RESEARCH_ALIAS}.main.research_feature_schema").fetchone()[0]
+              if has_schema else None)
+    lag = None if formation is None else (screen_date - formation).days
+    stale = "stale_feature_formation" if lag is not None and lag > FEATURE_MAX_LAG_DAYS else None
+    detail: dict[str, Any] = {"feature_version": version, "formation_date": formation, "formation_lag_days": lag,
+                              "max_lag_days": FEATURE_MAX_LAG_DAYS, "feature_schema_version": schema, "fields": {}}
+    conditioning = ("sample_conditioning" if "sample_conditioning" in date_columns
+                    else "CAST(NULL AS VARCHAR)")
     for item in fields:
         status, preferred = catalog.get(item.code, (None, None))
         variant = item.window or preferred or DEFAULT_FEATURE_VARIANT
         if variant not in FEATURE_VARIANTS or variant not in columns:
             raise ValueError(f"feature variant {variant!r} is not a column of research_feature_matrix")
-        date_status = None if formation is None else con.execute(f"""
-            SELECT date_status FROM {RESEARCH_ALIAS}.main.research_feature_dates
+        date_row = None if formation is None else con.execute(f"""
+            SELECT date_status, {conditioning} FROM {RESEARCH_ALIAS}.main.research_feature_dates
             WHERE feature_version=? AND formation_date=? AND feature_id=? AND variant=?
         """, [version, formation, item.code, variant]).fetchone()
-        date_status = None if date_status is None else date_status[0]
+        date_status, sample = (None, None) if date_row is None else date_row
         blocked = ("no_feature_formation" if formation is None
                    else None if status == "built" else f"feature_not_built:{status or 'absent'}")
         missing = (f"feature_date:{date_status}" if date_status not in (None, "formed")
@@ -808,10 +802,29 @@ def _append_feature_values(con: Any, fields: Sequence[ScreenField], version: str
         sql = FEATURE_VALUES_SQL.format(
             alias=RESEARCH_ALIAS, variant=variant, availability=FEATURE_AVAILABILITY_BASIS, scope=FEATURE_SCOPE,
             kind=FIELD_FEATURE, owner_basis="m.owner_basis" if "owner_basis" in columns else "CAST(NULL AS VARCHAR)")
-        con.execute(sql, [version, formation, item.code, blocked, blocked, cutoff, missing, item.field_id, item.code,
-                          variant, universe, orders[item.field_id], formation, version])
-        detail["fields"][item.field_id] = {"variant": variant, "catalog_status": status, "date_status": date_status}
+        con.execute(sql, [version, formation, item.code, blocked, blocked, cutoff, missing, stale, stale,
+                          item.field_id, item.code, variant, universe, orders[item.field_id], formation, version])
+        detail["fields"][item.field_id] = {"variant": variant, "catalog_status": status, "date_status": date_status,
+                                           "sample_conditioning": sample}
     return detail
+
+
+def _feature_blockers(detail: dict[str, Any] | None) -> list[str]:
+    """Research-only feature rows: stale formations, pre-R2e stores, survivor-conditioned samples."""
+    if not detail:
+        return []
+    blockers = ["research_feature_values_research_only"]
+    lag = detail.get("formation_lag_days")
+    if lag is not None and lag > detail["max_lag_days"]:
+        blockers.append(f"feature_formation_lag_days:{lag}")
+    schema = detail.get("feature_schema_version")
+    if schema is None or int(schema) < FEATURE_SCHEMA_R2E:
+        # Before store schema v3 the newest-NULL rule for item legs/operands and the
+        # survivor-conditioning labels are not guaranteed (R2b M3 / R2e).
+        blockers.append(f"research_feature_newer_null_rule_unverified:schema_v{schema}")
+    blockers += [f"feature_survivor_conditioned:{field_id}" for field_id, info in sorted(detail["fields"].items())
+                 if info.get("sample_conditioning") == "survivor_conditioned_linked_only"]
+    return blockers
 
 
 INELIGIBLE_VALUES_SQL = """
@@ -836,16 +849,19 @@ def _result(con: Any, base: dict[str, Any], status: str, screen_date: dt.date | 
             sessions: Sequence[dt.date]) -> CrossSectionResult:
     cutoff: dt.datetime = base["cutoff"]
     parsed: tuple[ScreenField, ...] = base["fields"]
+    total = 0
     if screen_date is None:
         frame, digests, counts = _empty_frame(), {item.field_id: _sha("") for item in parsed}, {}
         members = eligible = valid = 0
     else:
-        con.execute("""
-            CREATE OR REPLACE TEMP TABLE _xs_out AS
-            SELECT CAST(? AS TIMESTAMP) AS as_of_ts, *,
-                   date_diff('day', reference_date, CAST(? AS DATE)) AS staleness_days
+        # A view: the screen is held once, in DuckDB (spillable); pandas sees at
+        # most frame_rows of it, the rest streams (ScreenStore.iter_screen_frames).
+        con.execute(f"""
+            CREATE OR REPLACE TEMP VIEW _xs_out AS
+            SELECT TIMESTAMP '{cutoff.isoformat(sep=" ")}' AS as_of_ts, *,
+                   date_diff('day', reference_date, DATE '{cutoff.date().isoformat()}') AS staleness_days
             FROM _xs_values
-        """, [cutoff, cutoff.date()])
+        """)
         grain = con.execute(
             "SELECT count(*), count(DISTINCT feature_id || chr(31) || security_id) FROM _xs_out").fetchone()
         if grain[0] != grain[1]:
@@ -867,9 +883,10 @@ def _result(con: Any, base: dict[str, Any], status: str, screen_date: dt.date | 
         for field_id, reason, n in con.execute(
                 "SELECT feature_id, reason, count(*) FROM _xs_out GROUP BY ALL ORDER BY ALL").fetchall():
             counts.setdefault(field_id, {})[reason] = int(n)
-        frame = con.execute("SELECT * FROM _xs_out ORDER BY field_order, security_id").df()
-        frame = frame.rename(columns=_OUTPUT_RENAMES)[list(OUTPUT_COLUMNS)]
-        members = int(con.execute("SELECT count(*) FROM _rp_cohort_all").fetchone()[0])
+        total = int(con.execute("SELECT count(*) FROM _xs_values").fetchone()[0])
+        frame = _output_frame(con.execute("SELECT * FROM _xs_out ORDER BY field_order, security_id LIMIT ?",
+                                          [base["frame_rows"]]).df())
+        members = int(con.execute(f"SELECT count(*) FROM {_COHORT_RELATION}").fetchone()[0])
         eligible = int(cohort.get("eligible", 0))
         valid = int(cohort.get("valid", 0))
     blockers = list(SCREEN_BLOCKERS)
@@ -878,29 +895,31 @@ def _result(con: Any, base: dict[str, Any], status: str, screen_date: dt.date | 
     if cohort.get("unlinked"):
         blockers.append(f"owner_link_attrition:{cohort['unlinked']}/{cohort['eligible']}")
     if screen_date is not None:
-        unverified = int(con.execute("SELECT count(*) FROM _xs_out WHERE size_status=?",
+        unverified = int(con.execute("SELECT count(*) FROM _xs_values WHERE size_status=?",
                                      ["unverified_vendor_shares"]).fetchone()[0])
         if unverified:
             blockers.append(f"unverified_vendor_share_size_rows:{unverified}")
         lag = (cutoff.date() - screen_date).days
         if lag > 4:
             blockers.append(f"screen_session_lag_days:{lag}")
-        if diagnostics.get("market_null_revision_guard_rows"):
-            blockers.append(f"market_null_revision_guard_rows:{diagnostics['market_null_revision_guard_rows']}")
+        if total > len(frame):
+            blockers.append(f"screen_frame_truncated:{len(frame)}/{total}")
     if any(item.kind == FIELD_FEATURE for item in parsed):
-        blockers.append("research_feature_values_research_only")
-    valid_values = sum(field_counts.get("valid", 0) for field_counts in counts.values())
+        blockers += _feature_blockers(diagnostics.get("research_features")) or ["research_feature_values_research_only"]
+    empty = [item.field_id for item in parsed if not counts.get(item.field_id, {}).get("valid")]
     if status == "screened":
         if not members:
             status = "empty_universe"
         elif base["basis"] == BASIS_STRICT and not valid:
             status = "untestable_strict"
-        elif not valid_values:
+        elif len(empty) == len(parsed):
             status = "blocked_empty"
         else:
-            status = "complete"
-    if screen_date is not None and not valid_values:
-        blockers.append("no_valid_values")
+            status = "partial" if empty else "complete"
+    if screen_date is not None:
+        blockers += [f"field_without_valid_values:{field_id}" for field_id in empty]
+        if len(empty) == len(parsed):
+            blockers.append("no_valid_values")
     diagnostics = {**diagnostics, "value_status_counts": counts,
                    "screen_session": None if screen_date is None else screen_date.isoformat(),
                    "last_observed_sessions": [day.isoformat() for day in sessions[-3:]]}
@@ -911,13 +930,17 @@ def _result(con: Any, base: dict[str, Any], status: str, screen_date: dt.date | 
         universe_id=base["universe"], identity_basis=base["identity_basis"], fields=parsed, members=members,
         eligible_members=eligible, valid_members=valid, rows=frame, field_digests=digests,
         r2a_field_digests=dict(sorted(r2a_digests.items())), screen_sha256=_sha(_canonical(manifest)),
-        blockers=tuple(blockers), diagnostics=diagnostics)
+        blockers=tuple(blockers), diagnostics=diagnostics, total_rows=total, rows_truncated=total > len(frame))
+
+
+def _output_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    return frame.rename(columns=_OUTPUT_RENAMES)[list(OUTPUT_COLUMNS)]
 
 
 def cross_section_asof(
     as_of_ts: dt.datetime,
     fields: Sequence[str | ScreenField],
-    db_path: Path | str = DEFAULT_DB_PATH,
+    db_path: Path | str,
     *,
     basis: str | None = None,
     universe_id: str | None = None,
@@ -930,9 +953,16 @@ def cross_section_asof(
 ) -> CrossSectionResult:
     """One row per (tier-1 universe member active at ``as_of_ts``, field); see the module docstring.
 
-    Opens a private :class:`ScreenStore` over ``db_path`` (attached read-only),
-    runs :func:`run_cross_section` and removes the scratch store.
+    ``db_path`` is required (there is no default warehouse). Opens a private
+    :class:`ScreenStore` over it (attached read-only), runs
+    :func:`run_cross_section` and removes the scratch store, so ``result.rows``
+    is the whole screen: ``max_rows`` may not exceed ``MAX_FRAME_ROWS`` here
+    (larger screens stream through a :class:`ScreenStore` and
+    :meth:`ScreenStore.iter_screen_frames`).
     """
+    if options.get("max_rows", DEFAULT_MAX_ROWS) > MAX_FRAME_ROWS or "frame_rows" in options:
+        raise ValueError(f"cross_section_asof returns the whole screen: max_rows <= {MAX_FRAME_ROWS}, "
+                         "no frame_rows; stream larger screens through ScreenStore")
     with ScreenStore(db_path, scratch_dir=scratch_dir, memory_limit=memory_limit, threads=threads,
                      research_db_path=research_db_path) as screen:
         return run_cross_section(screen, as_of_ts, fields, basis=basis, universe_id=universe_id,

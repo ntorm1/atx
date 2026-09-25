@@ -5,12 +5,16 @@ NULL restatement, a withheld market revision and standardized items) screened at
 several knowledge cutoffs: nothing known only after the cutoff appears, a member
 delisted after the cutoff is listed with its as-of state, a newer NULL state is
 never replaced by an older value, and a month-end screen equals the R2a panel
-formation byte for byte.
+formation byte for byte. A second test pins one governed-read refusal of the
+screen CLI (a hard-linked database, C1 re-review N1).
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import importlib.util
+import os
+from pathlib import Path
 
 from atx_db import fundamental_signal_research as fsr
 from atx_db.asof import cross_section_asof
@@ -20,8 +24,9 @@ from atx_db.research.store import ResearchStore
 from tests.test_research_panel import FUND, LINES, Warehouse, _at, _definitions, _options, _populate
 
 DDD = "SEC-CIK-0000000004"
-FIELDS = ("roa_q", "accruals_ttm", "market_cap", "momentum_12_1", "item:revenue:quarterly")
 REVENUE = "item:revenue:quarterly"
+ANNUAL = "item:revenue:annual"
+FIELDS = ("roa_q", "accruals_ttm", "market_cap", "momentum_12_1", REVENUE, ANNUAL)
 
 
 def _utc(*parts: int) -> dt.datetime:
@@ -33,15 +38,15 @@ def _rows(result) -> dict[tuple[str, str], object]:
 
 
 def _revenue(wh: Warehouse, state_id: str, cik: int, period_end: dt.date, value: float | None,
-             clock: dt.datetime) -> None:
+             clock: dt.datetime, *, basis: str = "quarterly", days: int = 91) -> None:
     wh.con.execute("""
         INSERT INTO fundamental_standardized BY NAME
         SELECT ? AS standardized_id, ? AS security_id, 'revenue' AS canonical_code, ? AS cik,
-               'quarterly' AS basis, 'companyfacts' AS source, CAST(? AS DATE) AS period_start,
+               ? AS basis, 'companyfacts' AS source, CAST(? AS DATE) AS period_start,
                CAST(? AS DATE) AS period_end, CAST(? AS TIMESTAMP) AS available_at, CAST(? AS DOUBLE) AS value,
                CAST(? AS DATE) AS as_of_date, 'rev_q' AS rule_id
-    """, [state_id, f"SEC-COMPANYFACTS-UNRESOLVED-CIK-{cik:010d}", f"{cik:010d}",
-          period_end - dt.timedelta(days=91), period_end, clock, value, clock.date()])
+    """, [state_id, f"SEC-COMPANYFACTS-UNRESOLVED-CIK-{cik:010d}", f"{cik:010d}", basis,
+          period_end - dt.timedelta(days=days - 1), period_end, clock, value, clock.date()])
 
 
 def _build(tmp_path, monkeypatch):
@@ -70,6 +75,10 @@ def _build(tmp_path, monkeypatch):
     # Filed 30 minutes after the January month-end cutoff.
     _revenue(wh, "rev_1_q4_late", 1, dt.date(2023, 12, 31), 7.0e9, _at("2024-01-31", 22, 30))
     _revenue(wh, "rev_2_q3", 2, dt.date(2023, 9, 30), 3.0e9, _at("2023-11-09"))
+    # Annual: a full fiscal year, then a later 92-day transition-period "annual"
+    # stub (10-KT) that the derived engine's 330-380 day gate never selects.
+    _revenue(wh, "rev_1_fy22", 1, dt.date(2022, 12, 31), 20.0e9, _at("2023-03-01"), basis="annual", days=365)
+    _revenue(wh, "rev_1_stub", 1, dt.date(2023, 12, 31), 5.5e9, _at("2024-01-15"), basis="annual", days=92)
     wh.close()
     return path, ids
 
@@ -104,6 +113,9 @@ def test_pit_screen_end_to_end(tmp_path, monkeypatch):
     assert revenue.value != revenue.value  # NaN: no value
     assert (rows[(REVENUE, bbb)].value, rows[(REVENUE, bbb)].value_status) == (3.0e9, "valid")
     assert rows[(REVENUE, bbb)].staleness_days == (january - dt.date(2023, 9, 30)).days
+    # The later 92-day "annual" stub never replaces the full fiscal year.
+    annual = rows[(ANNUAL, aaa)]
+    assert (annual.value, annual.value_status, annual.source_ref) == (20.0e9, "valid", "rev_1_fy22")
     # Bases are labeled on every row; the not-common fund keeps NULL rows.
     assert set(jan.rows.loc[jan.rows.eligible.astype(bool) & (jan.rows.field_id == "roa_q"), "identity_basis"]) \
         == {"current_ticker_unverified"}
@@ -132,11 +144,29 @@ def test_pit_screen_end_to_end(tmp_path, monkeypatch):
         "DDD", "XNAS", "member", "valid")
     assert (member.value, member.value_status) == (0.1, "valid")
     assert "valid_to" not in nov.rows.columns
-    # Newer NULL states win for derived and market fields too.
+    # Newer NULL states win for derived and market fields too (market: R2a's own
+    # rule since R2e, newest visible revision per column, a NULL included).
     restated = rows[("roa_q", ccc)]
     assert restated.derived_value_id == ids["q3_3_null"] and restated.value_status != "valid"
     assert restated.value != restated.value  # NaN: the earlier 0.05 is not revived
     withheld = rows[("market_cap", bbb)]
     assert withheld.value_status == "invalid_current_state" and withheld.value != withheld.value
-    assert nov.diagnostics["market_null_revision_guard_rows"] == 1
+    assert nov.diagnostics["market_revision_rule"] == rp.MARKET_REVISION_RULE
     assert rows[("market_cap", aaa)].value_status == "valid"
+
+
+def test_screen_cli_refuses_a_hard_linked_database_before_opening_it(tmp_path, capsys):
+    # A hard link placed outside atx-db/data may reach a file inside it (C1 re-review N1).
+    spec = importlib.util.spec_from_file_location(
+        "pit_screen_cli", Path(__file__).resolve().parents[1] / "scripts" / "read_pit_screen.py")
+    assert spec is not None and spec.loader is not None
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    target = tmp_path / "fixture.duckdb"
+    target.write_bytes(b"never opened")
+    os.link(target, tmp_path / "linked.duckdb")
+    output = tmp_path / "screen.json"
+    assert cli.main(["--db-path", str(tmp_path / "linked.duckdb"), "--as-of", "2024-01-31T22:00:00Z",
+                     "--field", "market_cap", "--output-json", str(output)]) == 2
+    assert not output.exists() and target.read_bytes() == b"never opened"
+    assert "refused" in (err := capsys.readouterr().err) and "hard-linked" in err
