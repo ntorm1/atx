@@ -1,6 +1,13 @@
 # OPS-A report — archive19 closure, rows=0 verdict, archive20 launch (2026-09-25)
 
-STATUS: DONE_WITH_CONCERNS (archive20 running and advancing; terminal acceptance pending by design)
+STATUS: BLOCKED — the fixed host physical-memory baseline keeps physical free below the 4 GiB
+source floor (§12).
+
+- **Archive19:** ledgers closed terminally; the rows=0 question is resolved (§1-3).
+- **Archive20:** launched detached and confirmed advancing. The host guard then stopped it at
+  11:23:17Z, and its ledgers were closed terminally at 11:59:28Z (§10-11).
+- **Archive21:** pinned to the c69ef10e export. It is not launched, because no 4/6 GiB window
+  appeared. The exact launch sequence is in §12.
 
 Paths below are relative to `C:\atx\.superpowers\sdd\tier1-parity\` unless absolute.
 Interpreter `C:\atx\atx-db\.venv\Scripts\python.exe` (`$py`). Log timestamps in `.err` files are
@@ -261,3 +268,217 @@ guard status is terminal.
    re-exercised just before 10,832.
 4. **finished_at values are operator recovery times.** For archive18 and archive19 they are not
    the actual stop times; the reason text says so.
+
+## 10. UPDATE 11:24Z+: archive20 stopped by the host guard; recovery pending (BLOCKED)
+
+**The stop**
+- The guard receipt went to `stopped_low_headroom` at physical 2.6175 / commit **2.9112 GiB**,
+  below the 3 GiB commit emergency floor.
+- `-launcher.log` ends `guard_exit=137 finished_utc=2026-09-25T11:23:25.755Z`.
+- All PIDs (11544, 16160, 9060, 14644, 19636) are gone. The warehouse mtime is 11:23:24Z and no
+  WAL is left.
+- Last progress: `processed=2275 loaded=1907 empty=345 unavailable=23 failed=0 rows=0`. This is
+  inside the verified prefix, so no fact writes were due; every replayed member commits on its own.
+
+**The cause.** Processes from other lanes, started 11:18-11:24Z, each 726-832 MB private (about
+3.9 GB together), while archive20 held about 1.2 GB:
+- focused pytest runs:
+  - `test_core_metric_breadth`/`derived_*`
+  - `test_standardization*`/`reported_eps_core`
+  - `test_activation_stages_a`
+  - `test_market_connection_capacity`
+  - `test_delisting_evidence`
+- a benchmark, `scratchpad\a2-work\bench.py 2000 1000 256MB 500000`
+
+More pytest runs kept starting afterwards (`test_activation_ladder`, `test_market_owner_bridge`,
+...). This is not a loader defect. I did not touch those processes.
+
+**Recovery is ready but not yet run**
+- `claude-ctl\archive20-process-check.ps1` + `claude-ctl\close_companyfacts_archive20_headroom_stop.py`:
+  the archive18 guard-stop pattern. It asserts guard status `stopped_low_headroom`, child 14644,
+  exit 137 and predecessor e27c8a4e.
+- Recovery windows at 3/5 GiB all came back `no_sustained_window`:
+
+  | Window | Time (UTC) | Physical GiB | Commit GiB | Best qualifying run |
+  |---|---|---|---|---:|
+  | 1 | 11:27-11:30 | — | — | 100 s |
+  | 2 | 11:30-11:33 | — | — | 30 s |
+  | 3 | 11:33-11:36 | 2.46-3.59 | 3.75-5.91 | 50 s |
+  | 4 | 11:36-11:39 | 2.45-3.43 | 3.68-5.90 | 20 s |
+  | 5 | 11:39-11:42 | 2.57-3.33 | 3.94-6.26 | 60 s |
+  | 6 | 11:50-11:53 | 2.30-3.56 | 3.97-6.25 | 50 s |
+  | 7 | 11:53-11:56 | 2.32-3.65 | 3.98-6.21 | 30 s |
+
+  Receipts: `archive20-recovery-window1..7.json`.
+
+**Controller action required**
+1. Pause all other pytest/benchmark lanes. Global rules allow exactly one heavy slot, and focused
+   tests at about 0.8 GB each, several at a time, are enough to trip the guard.
+2. Run the archive20 recovery commands in `production-resume-sequence-2026-09-21.md` (archive20
+   section).
+3. Launch archive21. It is the third and last relaunch allowed for this stage. It resumes from
+   archive20's dataset UUID (`actual_dataset_run_id` in `companyfacts-archive20-headroom-recovery.json`),
+   after a fresh 4/6 GiB window, and the lanes must stay paused for the whole run. That run is
+   about 9 minutes of proof, then about 25 minutes of verified prefix (~420 members/min), then many
+   hours of frontier writes for 9,558 members at an unmeasured rate.
+
+**Why I did not launch archive21 myself**
+- It would be the last allowed relaunch.
+- The same lanes were still active: at 11:43-11:49Z there were 1-2 concurrent test processes, and
+  physical free was 2.3-3.1 GiB.
+- It would very probably stop again in the same way.
+
+## 11. UPDATE 12:00Z+: archive20 recovered; RX3 archive21 prepared (controller directive)
+
+**Archive20 ledger recovery: DONE**
+- Window: `archive20-recovery-window8.json`, 3/5 GiB, ready 11:59:23Z, after windows 1-7 failed.
+- Evidence: `activation-companyfacts-archive20-process-check.json` at 11:59:25Z. It records 0
+  matching processes, 0 of the original PIDs (11544, 16160, 9060, 14644, 19636), launcher exit 137,
+  exclusive open OK and no WAL. Child 14644 was confirmed gone.
+- Helper: `claude-ctl\close_companyfacts_archive20_headroom_stop.py` (archive18 guard-stop pattern,
+  derived from the archive19 helper; diff reviewed).
+- Guard run: `archive20-recovery1-memory.json`, 0.5 GiB cap, rc 0, peak **0.326 GiB**.
+- Receipt: `companyfacts-archive20-headroom-recovery.json`.
+  - Dataset **4c69bc32-60a7-4354-adea-f1ee6c096eec** (`resume_from` e27c8a4e).
+  - Activation and dataset rows both went from `running` to `failed` at 11:59:28.111190Z, rows 0.
+    CHECKPOINT passed.
+  - Rows owned by the attempt: 0 facts, 0 points.
+  - Receipts: empty 346 and unavailable 23, fetched 11:17:53-11:23:17Z.
+  - Retained totals unchanged: 47,941,000 facts and points, 31,959,271 bars, 31,934,514 features,
+    schema 0326.
+- Known flaw: the process-check JSON (and the recovery receipt that embeds it) is 3.8 MB. The
+  launcher-log tail string carried PowerShell PSPath/PSDrive NoteProperties into `ConvertTo-Json`.
+  The data is correct, so I did not rewrite the committed evidence. The script is now fixed with a
+  `[string]` cast.
+
+**Archive20 row verification** (read-only inspector, `archive20-inspect1-memory.json`, peak
+0.328 GiB; receipt `companyfacts-archive20-terminal-inspection.json`):
+- attempt facts/points 0/0
+- facts_totals 47,941,000 / 12,959 CIKs; lineage-owned 39,457,715 / 9,462 CIKs
+- dispositions: loaded 9,462, empty 1,327, unavailable 43, none 9,558
+- `loaded_receipt_fact_count_mismatches` = 0
+- first member without a disposition = 10,832
+- archive20 changed no facts or points. Its only writes were receipts, verified-member candidate
+  transactions and ledger rows.
+
+**RX3 export**
+- Command: `git archive --format=tar c69ef10e atx-db | tar -x -C .superpowers/sdd/tier1-parity/exports/c69ef10e`.
+  The export is gitignored and was not committed.
+- Blob check: all 393 blobs under `atx-db/src`, plus `scripts/warehouse_activate.py` and
+  `pyproject.toml`, hash-equal the commit (SHA-1 git blob, LF-normalised).
+- `git diff 7080a478 c69ef10e -- atx-db/src atx-db/scripts/warehouse_activate.py` is empty.
+  c69ef10e only adds the desk-question SQL pack.
+- Import proof, under cwd `C:\atx\atx-db` with `PYTHONPATH=<export>\src` and the venv interpreter:
+  - `import atx_db` resolves to `...\exports\c69ef10e\atx-db\src\atx_db\__init__.py`.
+  - With the script's own `sys.path.insert(0, <script>/../src)`, activation, fundamentals,
+    _companyfacts_resume, connection, dataset and warehouse all resolve under the export.
+  - The launcher re-checks this and records it in `activation-companyfacts-archive21-launch.json`,
+    refusing to launch on mismatch.
+
+**One deviation from the directive: `--cache-dir` stays relative (default `data\cache`).**
+- `ActivationOptions.cache_dir` defaults to `Path("data/cache")`, and
+  `companyfacts_zip = cache_dir/"companyfacts.zip"`.
+- Every chain dataset's `params_json.companyfacts_zip` is the literal `data\cache\companyfacts.zip`,
+  and archive20's inspection shows it.
+- `_lineage` requires `params[key] == expected[key]` for `companyfacts_zip`, and
+  `verify_companyfacts_resume` selects receipts by `cache_path = str(options.companyfacts_zip)`.
+- An absolute `--cache-dir` would therefore fail the resume with "prior archive path ... does not
+  match".
+- What I did instead: `--db-path` is absolute (it is not part of the lineage identity), and the cwd
+  is pinned to `C:\atx\atx-db` so the relative cache dir resolves to the real cache.
+  `--staging-dir` is not used by this stage and keeps its default.
+- The predecessor is archive20's UUID **4c69bc32**, giving lineage 18. Flags are unchanged.
+
+**Assessment: archive20 imported atx_db from the live tree at 11:09Z**
+- Why: archive20 ran the live `scripts\warehouse_activate.py`, which puts `C:\atx\atx-db\src` first.
+- Uncommitted edits at that time: activation.py, listing_status.py, symbol_directory.py,
+  delisting*.py, universe_us_listed.py, _standardization_set_based.py, item_coverage.py and a
+  derived seeds CSV. These were committed later as ddf0cdad, 4ebfd784, 01f7f67c, 3003b8d9 and
+  12bfc755.
+- **CompanyFacts write-path modules were not edited.** fundamentals.py (normalisation, candidates,
+  `_replace_facts`, receipts), _companyfacts_resume.py, connection.py, dataset.py and warehouse.py
+  appear in none of those commits and are not in the current modified set.
+- **activation.py's committed change touches other code.** Ignoring whitespace, it changes other
+  stages (security_master, symbol_directory, listing_status), adds a stage-dependency map, and
+  changes SEC user-agent handling. `stage_companyfacts_load` and the `SecCompanyFactsOptions`
+  construction do not appear in the diff.
+- **Behaviour was identical to archive19.**
+  - Proof numbers match: receipts 9,462, verified rows 39,457,715, and fact/point identity groups
+    12,959/12,959. Lineage length went from 16 to 17, as expected.
+  - Progress counters are byte-identical at processed 1,000, 2,000 and 2,275: loaded/empty/unavailable
+    877/116/7, 1,694/288/18 and 1,907/345/23.
+- **Writes were unaffected.** Archive20 wrote 0 facts and 0 points. The inspector shows totals
+  unchanged and all 9,462 loaded receipts still exactly matching the retained per-CIK facts.
+- **Fail-closed check.** When archive21 starts, `_lineage` will re-check archive20's
+  `params_json` scope (zip path, symbol source, limits, as_of_date, universe, concepts). A divergence
+  would make archive21 refuse, not silently continue.
+- Residual: the exact bytes of activation.py at 11:09:10Z cannot be recovered.
+- **Conclusion: no plausible effect on archive20's writes. Archive21 removes the exposure by
+  running the pinned export.**
+
+## 12. FINAL (12:37Z): BLOCKED on the fixed host physical-memory baseline; archive21 is ready to launch
+
+**Windows for archive21** (4/6 GiB, 120 s):
+
+| Receipt | Time (UTC) | Physical GiB | Commit GiB | Qualifying seconds |
+|---|---|---|---|---:|
+| `source-archive21-lowmemory-window1.json` | 12:03-12:06 | 2.06-2.86 | 5.19-7.39 | 0 |
+| `...-window2.json` | 12:06-12:09 | 2.06-3.60 | 5.55-7.44 | 0 |
+| `...-window3.json` | 12:09-12:12 | 2.89-3.38 | 6.02-7.78 | 0 |
+
+**Sampling after window3**
+- 12:14-12:23Z, every 30 s in the foreground: physical 2.30-3.74 GiB.
+- 12:23-12:36Z, a background loop sampling every 30 s, set to observe and launch only once
+  physical reached 4.2 GiB: never triggered. I stopped it with TaskStop at 12:36Z, and no archive21
+  launch or receipt exists.
+
+**Why it's blocked**
+- At 12:35:43-12:36:04Z, with **0 pytest/bench processes**, physical was 2.48-2.71 GiB and commit
+  6.33-6.82 GiB.
+- The failing threshold is **physical ≥ 4 GiB**; commit is not the problem.
+- The baseline is fixed host load:
+
+  | Process | Count | Working set |
+  |---|---:|---:|
+  | VS Code | 19 | 4.3 GB |
+  | Claude | 6 | 1.9 GB |
+  | Chrome | 10 | 1.4 GB |
+  | svchost | 90 | 0.7 GB |
+  | Defender | 1 | 0.6 GB |
+
+- Windows Update (`wuaucltcore`) held 0.8 GB earlier.
+
+**Controller launch sequence** (run only once physical ≥ 4 GiB can hold):
+
+    Set-Location C:\atx\.superpowers\sdd\tier1-parity
+    & 'C:\atx\atx-db\.venv\Scripts\python.exe' observe_headroom_window.py --physical-gib 4 --commit-gib 6 --receipt 'C:\atx\.superpowers\sdd\tier1-parity\source-archive21-lowmemory-window4.json'
+    # exit 0 (ready) -> verify no writer, then launch detached:
+    @(Get-CimInstance Win32_Process -Filter "Name like 'python%'" | Where-Object { $_.CommandLine -match 'warehouse_activate|run_memory_guarded' }).Count   # must be 0
+    Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','C:\atx\.superpowers\sdd\tier1-parity\claude-ctl\launch-archive21.ps1'
+
+What the launcher does:
+- It runs the verified c69ef10e export at
+  `C:\atx\.superpowers\sdd\tier1-parity\exports\c69ef10e\atx-db`, re-proves the import path and
+  writes `activation-companyfacts-archive21-launch.json` (launcher PID and import proof).
+- The guard writes `activation-companyfacts-archive21-memory.json` (`child_pid`), `.log`, `.err`,
+  and `-launcher.log` (final `guard_exit=`).
+
+The effective command inside the launcher (cwd `C:\atx\atx-db`, `PYTHONPATH=<export>\src`):
+
+    C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py --job-gb 1.5 --disk-path C:\atx\atx-db\data --min-free-disk-gb 3 --receipt ...\activation-companyfacts-archive21-memory.json --stdout ...\activation-companyfacts-archive21.log --stderr ...\activation-companyfacts-archive21.err -- C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\exports\c69ef10e\atx-db\scripts\warehouse_activate.py --db-path C:\atx\atx-db\data\warehouse.duckdb --as-of-date 2026-09-20 --only companyfacts_load --companyfacts-symbol-source archive_members --companyfacts-replace-existing --companyfacts-resume-from-run-id 4c69bc32-60a7-4354-adea-f1ee6c096eec --memory-limit 512MB --threads 1 --backup-keep 100 --force --run-id activation-companyfacts-archive21 --sec-user-agent "atx-db/0.1 atx-research@example.com"
+
+**Healthy start**, within about 10 s of launch:
+- the `.err` log shows `receipts=9462 lineage_runs=18`
+- after about 8.5 minutes, `verified targets=9462 rows=39457715`
+- then `processed=` climbs by about 420 per minute to 10,832, after which `rows` must grow
+
+**Liveness and terminal inspection:** same as §7, with archive20 replaced by archive21. Take the
+PIDs from the launch JSON and the guard receipt.
+
+**Other notes**
+- Archive21 is the last allowed relaunch for this stage (19, 20, 21).
+- The physical-memory baseline has to come down before the source profile can be met. Options:
+  close editors and browsers, or make an explicit ruling on the 4/6 GiB observation profile. I did
+  not lower it, per the rules.
+- The guard's own emergency stops (1.5 GiB physical / 3 GiB commit) protect the host regardless of
+  the observation profile.

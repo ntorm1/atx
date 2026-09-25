@@ -9,7 +9,9 @@ $pids = 11544, 16160, 9060, 14644, 19636   # launcher, venv shim, guard, guard c
 $procs = @(Get-CimInstance Win32_Process -Filter "Name like 'python%'" | Select-Object ProcessId, ParentProcessId, CommandLine)
 $matching = @($procs | Where-Object { $_.CommandLine -match 'warehouse_activate|run_memory_guarded|close_companyfacts' })
 $original = @($pids | ForEach-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
-$launcherTail = (Get-Content "$ctl\activation-companyfacts-archive20-launcher.log" -Tail 1)
+# [string] cast: Get-Content returns a string carrying PSPath/PSDrive NoteProperties that ConvertTo-Json
+# would expand (~3.8 MB in the committed archive20 receipt; data correct, just bloated).
+$launcherTail = [string](Get-Content "$ctl\activation-companyfacts-archive20-launcher.log" -Tail 1)
 $exit = if ($launcherTail -match 'guard_exit=(-?\d+)') { [int]$Matches[1] } else { $null }
 $exclusive = $false; $exclusiveError = $null
 try { $fs = [System.IO.File]::Open($db, 'Open', 'Read', 'None'); $fs.Close(); $exclusive = $true } catch { $exclusiveError = $_.Exception.Message }
