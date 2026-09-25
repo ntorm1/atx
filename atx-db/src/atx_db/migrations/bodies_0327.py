@@ -18,6 +18,11 @@ One governed migration, applied by B0 while a backup is still cheap:
    A3 fold already stores in ``details_json``.
 5. ``v_delisting_return_coverage`` counts a halt-gap stitch at the terminal's
    effective date (R3a ``effective_terminals_sql``), not only the exact date.
+6. ``api_schema_coverage_slo`` rows for the six ``ATX.US.ISSUER_CONTENT`` schemas
+   (added by 0322 after 0307 seeded the others), from ``DEFAULT_PROVIDER_COVERAGE_SLOS``.
+7. Data correction: TickerHistory ``equity_daily_bars`` runs stored in vendor
+   thousands get ``shares_outstanding * 1000`` and a recomputed ``market_cap_usd``;
+   each run's decision is kept in the ``equity_bar_unit_corrections`` ledger.
 
 DuckDB 1.5.5 cannot replay a WAL containing ``ALTER TABLE`` on a table with a
 ``DEFAULT now()`` column ("GetDefaultDatabase with no default database set").
@@ -31,6 +36,7 @@ from __future__ import annotations
 import duckdb
 
 from .._forward_return_publication import effective_terminals_sql
+from ..provider_coverage import DEFAULT_PROVIDER_COVERAGE_SLOS
 from ._runner import Migration
 from .bodies_0001_0137 import _catalog_fields_for_tables
 from .bodies_0140_0143 import _refresh_schema_contract_v2_pin
@@ -57,6 +63,13 @@ EST_ACTUAL_LEGACY_COLUMNS = (
 )
 EST_ACTUAL_LEGACY_KEY = ("security_id", "measure_code", "fiscal_year", "fiscal_period", "accession_number")
 EST_ACTUAL_KEY = (*EST_ACTUAL_LEGACY_KEY, "period_end", "period_start")
+# ticker_history.SOURCE_NAME, frozen: the only source whose vendor `shares` field is in thousands.
+TICKER_HISTORY_SOURCE = "tbltickerhistory3_10y"
+SHARES_CORRECTION_ID = "tbltickerhistory3_10y:equity_daily_bars.shares_outstanding:thousands_to_shares"
+# Median shares_outstanding of the source: thousands put a US-listed median near 1e4-1e5
+# (10M-100M shares), whole shares near 1e7-1e8. At or above 1e6 the rows are already in shares.
+THOUSANDS_MEDIAN_CEILING = 1_000_000
+ISSUER_CONTENT_DATASET = "ATX.US.ISSUER_CONTENT"
 
 
 def create_historical_identity_tables(conn: duckdb.DuckDBPyConnection) -> None:
@@ -606,6 +619,172 @@ def _historical_identity_catalog(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _issuer_content_coverage_slos(conn: duckdb.DuckDBPyConnection) -> None:
+    """Seed the six ISSUER_CONTENT schema SLOs (0322 added the schemas, 0307 predates them)."""
+    rows = [slo for slo in DEFAULT_PROVIDER_COVERAGE_SLOS if slo.dataset_id == ISSUER_CONTENT_DATASET]
+    if len(rows) != 6:
+        raise RuntimeError(f"0327 expects six {ISSUER_CONTENT_DATASET} coverage SLOs, found {len(rows)}")
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO api_schema_coverage_slo (
+            dataset_id,schema_code,slo_version,expected_history_start,
+            minimum_history_years,minimum_security_count,minimum_item_count,
+            maximum_freshness_lag_days,citation,description,item_count_basis,is_active,
+            valid_from,valid_to,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,true,TIMESTAMP '1900-01-01',NULL,now())
+        """,
+        [
+            (slo.dataset_id, slo.schema_code, slo.slo_version, slo.expected_history_start,
+             slo.minimum_history_years, slo.minimum_security_count, slo.minimum_item_count,
+             slo.maximum_freshness_lag_days, slo.citation, slo.description, slo.item_count_basis)
+            for slo in rows
+        ],
+    )
+
+
+def _ticker_history_share_units(conn: duckdb.DuckDBPyConnection) -> None:
+    """Scale TickerHistory shares stored in vendor thousands to shares, once per load run.
+
+    Both TickerHistory files publish under one source name but differ in unit: the
+    parquet's ``shares`` is in thousands (AAPL 15,204,137 = 15.2B shares), the zip TSV
+    in shares. Rows of one ``run_id`` come from one file, so the unit is decided per run.
+    A run whose ``dataset_runs.params_json`` names a ``shares_unit`` was written by the
+    unit-aware bulk loader (A8), which always stores shares: it is recorded as
+    ``already_shares`` (basis ``loader_params``) and never rescaled. Any other run came
+    from the old loader and is decided from the data: a median positive
+    ``shares_outstanding`` below ``THOUSANDS_MEDIAN_CEILING`` means thousands (parquet
+    medians ~17.6K-29.5K), at or above means shares (TSV medians in the tens of
+    millions). Thousands runs get ``shares_outstanding * 1000`` and
+    ``market_cap_usd = scaled shares * close`` (the loaders' formula); every run
+    decision is written to ``equity_bar_unit_corrections``, and a run with a ledger row
+    is never scaled again. Other sources are never touched. One set-based UPDATE per
+    thousands run (no table rewrite, no ALTER).
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS equity_bar_unit_corrections (
+            correction_id VARCHAR NOT NULL PRIMARY KEY,
+            table_name VARCHAR NOT NULL,
+            source VARCHAR NOT NULL,
+            run_id VARCHAR,
+            column_name VARCHAR NOT NULL,
+            rows_in_run BIGINT NOT NULL,
+            median_positive_value DOUBLE,
+            loader_shares_unit VARCHAR,
+            decision_basis VARCHAR NOT NULL,
+            decision VARCHAR NOT NULL,
+            factor DOUBLE NOT NULL,
+            rows_corrected BIGINT NOT NULL,
+            recomputed_columns VARCHAR NOT NULL,
+            rule VARCHAR NOT NULL,
+            applied_by VARCHAR NOT NULL,
+            applied_at TIMESTAMP NOT NULL DEFAULT now(),
+            CHECK (decision IN ('scaled_thousands_to_shares', 'already_shares', 'undetermined_no_positive_shares')),
+            CHECK (decision_basis IN ('loader_params', 'median_rule')),
+            CHECK (decision_basis = 'median_rule'
+                   OR (decision = 'already_shares' AND loader_shares_unit IS NOT NULL AND rows_corrected = 0)),
+            CHECK (rows_corrected <= rows_in_run)
+        )
+    """)
+    runs = conn.execute(
+        """
+        WITH pending AS (
+            SELECT run_id, count(*) AS rows_in_run,
+                   approx_quantile(shares_outstanding, 0.5) FILTER (WHERE shares_outstanding > 0) AS median_shares
+            FROM equity_daily_bars
+            WHERE "source" = ? AND shares_outstanding IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM equity_bar_unit_corrections c
+                  WHERE c.source = equity_daily_bars."source"
+                    AND c.column_name = 'shares_outstanding'
+                    AND c.run_id IS NOT DISTINCT FROM equity_daily_bars.run_id
+              )
+            GROUP BY run_id
+        )
+        SELECT p.run_id, p.rows_in_run, p.median_shares,
+               (SELECT CASE WHEN json_valid(r.params_json)
+                            THEN json_extract_string(r.params_json, '$.shares_unit') END
+                FROM dataset_runs r
+                WHERE r.run_id = p.run_id) AS loader_shares_unit
+        FROM pending p
+        ORDER BY p.run_id NULLS FIRST
+        """,
+        [TICKER_HISTORY_SOURCE],
+    ).fetchall()
+    rule = (
+        "per run_id: dataset_runs.params_json shares_unit present => unit-aware loader stored shares, never "
+        f"rescaled; else median positive shares_outstanding < {THOUSANDS_MEDIAN_CEILING} => vendor thousands; "
+        "shares_outstanding *= 1000; market_cap_usd = shares_outstanding * close"
+    )
+    for run_id, rows_in_run, median_shares, loader_shares_unit in runs:
+        basis = "loader_params" if loader_shares_unit is not None else "median_rule"
+        thousands = (
+            basis == "median_rule"
+            and median_shares is not None
+            and float(median_shares) < THOUSANDS_MEDIAN_CEILING
+        )
+        decision = (
+            "scaled_thousands_to_shares" if thousands
+            else "already_shares" if basis == "loader_params"
+            else "undetermined_no_positive_shares" if median_shares is None
+            else "already_shares"
+        )
+        corrected = 0
+        if thousands:
+            result = conn.execute(
+                """
+                UPDATE equity_daily_bars
+                SET shares_outstanding = shares_outstanding * 1000,
+                    market_cap_usd = CAST(shares_outstanding * 1000 AS DOUBLE) * "close"
+                WHERE "source" = ? AND run_id IS NOT DISTINCT FROM ? AND shares_outstanding IS NOT NULL
+                """,
+                [TICKER_HISTORY_SOURCE, run_id],
+            ).fetchone()
+            corrected = int(result[0]) if result is not None else 0
+            if corrected != int(rows_in_run):
+                raise RuntimeError(
+                    f"0327 share-unit correction touched {corrected} rows, expected {rows_in_run} (run {run_id!r})"
+                )
+        conn.execute(
+            """
+            INSERT INTO equity_bar_unit_corrections (
+                correction_id, table_name, source, run_id, column_name, rows_in_run,
+                median_positive_value, loader_shares_unit, decision_basis, decision, factor,
+                rows_corrected, recomputed_columns, rule, applied_by
+            ) VALUES (?, 'equity_daily_bars', ?, ?, 'shares_outstanding', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'migration 0327')
+            """,
+            [
+                f"{SHARES_CORRECTION_ID}:{run_id if run_id is not None else '<null-run>'}",
+                TICKER_HISTORY_SOURCE, run_id, int(rows_in_run),
+                None if median_shares is None else float(median_shares),
+                loader_shares_unit, basis,
+                decision,
+                1000.0 if thousands else 1.0, corrected,
+                "market_cap_usd = shares_outstanding * close" if thousands else "none",
+                rule,
+            ],
+        )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog
+          (table_name, layer, entity, grain, description, natural_key_json, pit_notes, updated_at)
+        VALUES ('equity_bar_unit_corrections', 'control', 'equity_daily_bars', 'correction_id',
+                'Ledger of stored equity_daily_bars unit corrections: one row per source load run with the '
+                'measured median, the loader-recorded unit, the decision basis, the decision and the rows '
+                'corrected. A run with a row is never corrected again.',
+                '["correction_id"]',
+                'Control ledger; corrections change stored values in place (no new revision rows).', now())
+        """
+    )
+    _catalog_fields_for_tables(conn, ("equity_bar_unit_corrections",))
+    _describe_fields(conn, "equity_daily_bars", (
+        ("shares_outstanding",
+         "Shares outstanding in shares. TickerHistory parquet deliveries state thousands: the bulk loader "
+         "scales them and migration 0327 scaled rows loaded before (ledger equity_bar_unit_corrections)."),
+        ("market_cap_usd",
+         "shares_outstanding * close in USD, recomputed by migration 0327 for corrected TickerHistory runs."),
+    ))
+
+
 def _pre_run5_identity_bundle(conn: duckdb.DuckDBPyConnection) -> None:
     create_historical_identity_tables(conn)
     _historical_identity_catalog(conn)
@@ -613,6 +792,8 @@ def _pre_run5_identity_bundle(conn: duckdb.DuckDBPyConnection) -> None:
     _delisting_reason_revisions(conn)
     _est_actual_period_key(conn)
     _delisting_return_coverage_effective_view(conn)
+    _issuer_content_coverage_slos(conn)
+    _ticker_history_share_units(conn)
     _refresh_schema_contract_v2_pin(conn)
 
 

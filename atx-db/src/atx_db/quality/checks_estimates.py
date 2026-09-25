@@ -68,10 +68,12 @@ def estimate_check_specs(
             sql="""
                 SELECT count(*)::DOUBLE
                 FROM (
+                    -- 0327 key: a filing's quarter, YTD and comparative values are
+                    -- distinct rows that share fiscal labels and accession.
                     SELECT security_id, measure_code, fiscal_year, fiscal_period,
-                           accession_number, count(*) AS row_count
+                           accession_number, period_end, period_start, count(*) AS row_count
                     FROM est_actual
-                    GROUP BY 1, 2, 3, 4, 5
+                    GROUP BY 1, 2, 3, 4, 5, 6, 7
                     HAVING count(*) > 1
                 )
             """,

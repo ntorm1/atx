@@ -196,15 +196,19 @@ class EstimateActualsDataset(Dataset):
             )
 
         try:
-            # For REVENUE: if a security/fy/fp/accession has BOTH concepts, prefer "Revenues".
-            # Use row_number() to pick the preferred concept per PK group.
+            # One row per filing fact geometry (0327 key): a 10-Q's quarter, year-to-date and
+            # prior-period comparatives share the filing's fiscal labels and are told apart
+            # only by (period_start, period_end). For REVENUE, when the same geometry in the
+            # same filing has BOTH concepts, prefer "Revenues".
             sql = f"""
             SELECT
                 f.security_id,
                 m.measure_code,
                 f.fiscal_year,
                 f.fiscal_period,
+                f.period_start,
                 f.period_end,
+                date_diff('day', f.period_start, f.period_end) + 1 AS duration_days,
                 f.value,
                 f.unit,
                 'GAAP'          AS basis,
@@ -221,7 +225,7 @@ class EstimateActualsDataset(Dataset):
               AND f.value IS NOT NULL
               AND f.form IN ('10-Q','10-K','8-K','10-K/A','10-Q/A')
               -- For REVENUE: if a preferred concept "Revenues" exists for the same
-              -- (security, fiscal_year, fiscal_period, accession, period_end),
+              -- (security, fiscal_year, fiscal_period, accession, period_start, period_end),
               -- skip the fallback concept row so we don't double-count.
               AND NOT (
                   m.measure_code = 'REVENUE'
@@ -234,6 +238,7 @@ class EstimateActualsDataset(Dataset):
                         AND f2.fiscal_year      = f.fiscal_year
                         AND f2.fiscal_period    = f.fiscal_period
                         AND f2.accession_number = f.accession_number
+                        AND f2.period_start     = f.period_start
                         AND f2.period_end       = f.period_end
                   )
               )
@@ -244,12 +249,34 @@ class EstimateActualsDataset(Dataset):
             if options.security_ids:
                 store.con.execute("DROP TABLE IF EXISTS _tmp_est_security_filter")
 
+        # A duration fact without a valid start has no geometry: it cannot be keyed and would
+        # be indistinguishable from the filing's other windows. Counted, never guessed.
+        valid_geometry = result_df["period_start"].notna() & (result_df["duration_days"] >= 1)
+        rows_without_period_start = int((~valid_geometry).sum())
+        result_df = result_df[valid_geometry]
+        quality_check(
+            store,
+            dataset_id=self.dataset_id,
+            table_name="est_actual",
+            check_name="est_actual_facts_without_period_start",
+            status="failed" if rows_without_period_start else "passed",
+            observed_value=float(rows_without_period_start),
+            threshold_value=0.0,
+            details={
+                "source": self.source_name,
+                "rule": "mapped Company Facts rows without a valid period_start are not loaded",
+            },
+        )
+
         if result_df.empty:
             return DatasetLoadResult(
                 dataset_id=self.dataset_id,
                 rows_loaded=0,
                 source=self.source_name,
-                details={"reason": "no sec_company_facts rows matched"},
+                details={
+                    "reason": "no sec_company_facts rows matched",
+                    "rows_without_period_start": rows_without_period_start,
+                },
             )
 
         result_df["source"] = options.source
@@ -261,12 +288,14 @@ class EstimateActualsDataset(Dataset):
                 """
                 INSERT OR REPLACE INTO est_actual (
                     security_id, measure_code, fiscal_year, fiscal_period,
-                    period_end, value, unit, basis, form, accession_number,
+                    period_start, period_end, duration_days,
+                    value, unit, basis, form, accession_number,
                     announce_date, as_of_date, available_at, run_id, source
                 )
                 SELECT
                     security_id, measure_code, fiscal_year, fiscal_period,
-                    period_end, value, unit, basis, form, accession_number,
+                    CAST(period_start AS DATE), period_end, CAST(duration_days AS INTEGER),
+                    value, unit, basis, form, accession_number,
                     announce_date, as_of_date, available_at, run_id, source
                 FROM _est_actual_batch
                 """
@@ -289,5 +318,8 @@ class EstimateActualsDataset(Dataset):
             dataset_id=self.dataset_id,
             rows_loaded=rows_loaded,
             source=self.source_name,
-            details={"concepts_mapped": len(concept_map)},
+            details={
+                "concepts_mapped": len(concept_map),
+                "rows_without_period_start": rows_without_period_start,
+            },
         )

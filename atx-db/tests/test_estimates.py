@@ -83,8 +83,18 @@ def _insert_company_fact(
     filed_date: str | None = None,
     form: str = "10-Q",
     unit: str = "USD",
+    period_start: str | None = None,
 ) -> None:
-    """Insert a row into sec_company_facts for testing."""
+    """Insert a row into sec_company_facts for testing.
+
+    ``period_start`` defaults to the fact's own geometry: three months ending at
+    ``period_end`` for Q1-Q4, twelve months for FY (est_actual keys on it since 0327).
+    """
+    if period_start is None:
+        end = period_end if isinstance(period_end, dt.date) else dt.date.fromisoformat(period_end)
+        months_back = 11 if fiscal_period == "FY" else 2
+        month_index = end.year * 12 + end.month - 1 - months_back
+        period_start = dt.date(month_index // 12, month_index % 12 + 1, 1).isoformat()
     store.con.execute(
         """
         INSERT INTO sec_company_facts (
@@ -94,12 +104,12 @@ def _insert_company_fact(
         )
         VALUES (
             'test', ?, '0000000001', 'us-gaap', ?, '', '',
-            ?, NULL, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?,
             ?, ?, NULL, ?, ?, NULL, '', now()
         )
         """,
         [
-            security_id, concept, unit, period_end,
+            security_id, concept, unit, period_start, period_end,
             filed_date or period_end, fiscal_year, fiscal_period,
             form, accession_number, value, available_at,
         ],
@@ -1551,10 +1561,10 @@ class TestQualityChecks:
             """
             INSERT INTO est_actual (
                 security_id, measure_code, fiscal_year, fiscal_period,
-                period_end, value, as_of_date, available_at, source, accession_number
+                period_start, period_end, duration_days, value, as_of_date, available_at, source, accession_number
             )
             VALUES ('sec_bad', 'EPS_DILUTED', 2022, 'H1',
-                    '2022-06-30', 1.00, '2022-06-30', now(), 'test', 'acc-bad')
+                    '2022-01-01', '2022-06-30', 181, 1.00, '2022-06-30', now(), 'test', 'acc-bad')
             """
         )
         results = run_warehouse_quality_checks(
@@ -1575,10 +1585,10 @@ class TestQualityChecks:
             """
             INSERT INTO est_actual (
                 security_id, measure_code, fiscal_year, fiscal_period,
-                period_end, value, as_of_date, available_at, source, accession_number
+                period_start, period_end, duration_days, value, as_of_date, available_at, source, accession_number
             )
             VALUES ('sec_null', 'EPS_DILUTED', 2022, 'Q4',
-                    '2022-12-31', NULL, '2022-12-31', now(), 'test', 'acc-null')
+                    '2022-10-01', '2022-12-31', 92, NULL, '2022-12-31', now(), 'test', 'acc-null')
             """
         )
         results = run_warehouse_quality_checks(
@@ -1597,21 +1607,22 @@ class TestQualityChecks:
         empty table — that would only prove the check doesn't false-positive)."""
         EstimateMeasureSeedDataset().run(tmp_store, EstimateMeasureSeedOptions())
         # Populate real, valid actuals so the checks pass against actual data.
-        for fp, pe, val, acc in [
-            ("Q1", "2023-03-31", 1.00, "acc-q1"),
-            ("Q2", "2023-06-30", 1.10, "acc-q2"),
-            ("Q3", "2023-09-30", 1.20, "acc-q3"),
-            ("FY", "2023-12-31", 4.50, "acc-fy"),
+        for fp, ps, pe, days, val, acc in [
+            ("Q1", "2023-01-01", "2023-03-31", 90, 1.00, "acc-q1"),
+            ("Q2", "2023-04-01", "2023-06-30", 91, 1.10, "acc-q2"),
+            ("Q3", "2023-07-01", "2023-09-30", 92, 1.20, "acc-q3"),
+            ("FY", "2023-01-01", "2023-12-31", 365, 4.50, "acc-fy"),
         ]:
             tmp_store.con.execute(
                 """
                 INSERT INTO est_actual (
                     security_id, measure_code, fiscal_year, fiscal_period,
-                    period_end, value, as_of_date, available_at, source, accession_number
+                    period_start, period_end, duration_days, value, as_of_date, available_at, source,
+                    accession_number
                 )
-                VALUES ('sec_clean', 'EPS_DILUTED', 2023, ?, ?, ?, ?, now(), 'test', ?)
+                VALUES ('sec_clean', 'EPS_DILUTED', 2023, ?, ?, ?, ?, ?, ?, now(), 'test', ?)
                 """,
-                [fp, pe, val, pe, acc],
+                [fp, ps, pe, days, val, pe, acc],
             )
         results = run_warehouse_quality_checks(
             tmp_store,
@@ -1628,3 +1639,150 @@ class TestQualityChecks:
         assert null_check is not None
         assert fp_check.status == "passed"
         assert null_check.status == "passed"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. Period geometry (migration 0327): quarter vs YTD vs comparatives
+# ─────────────────────────────────────────────────────────────────────────────
+
+_GEO = "sec_geo"
+
+
+def _q2_2025_filing(store, *, accession: str = "q2-2025", ytd: float = 0.90,
+                    available_at: dt.datetime = dt.datetime(2025, 8, 3, 22), form: str = "10-Q") -> None:
+    """One Q2 10-Q: quarter, six-month YTD and both prior-year comparatives, all labelled (2025, Q2)."""
+    for start, end, value in (
+        ("2025-04-01", "2025-06-30", 0.50),
+        ("2025-01-01", "2025-06-30", ytd),
+        ("2024-04-01", "2024-06-30", 0.40),
+        ("2024-01-01", "2024-06-30", 0.70),
+    ):
+        _insert_company_fact(
+            store, security_id=_GEO, concept="EarningsPerShareDiluted", fiscal_year=2025,
+            fiscal_period="Q2", period_start=start, period_end=end, value=value,
+            accession_number=accession, available_at=available_at, form=form, unit="USD/shares",
+        )
+
+
+class TestPeriodGeometry:
+    def test_writer_keeps_quarter_ytd_and_comparatives_as_distinct_rows(self, tmp_store):
+        EstimateMeasureSeedDataset().run(tmp_store, EstimateMeasureSeedOptions())
+        _q2_2025_filing(tmp_store)
+        first = EstimateActualsDataset().run(tmp_store, EstimateActualsOptions())
+        EstimateActualsDataset().run(tmp_store, EstimateActualsOptions())
+
+        rows = tmp_store.con.execute("""
+            SELECT period_start, period_end, duration_days, value, fiscal_year, fiscal_period
+            FROM est_actual WHERE security_id = ? ORDER BY period_end, period_start
+        """, [_GEO]).fetchall()
+        assert rows == [
+            (dt.date(2024, 1, 1), dt.date(2024, 6, 30), 182, 0.70, 2025, "Q2"),
+            (dt.date(2024, 4, 1), dt.date(2024, 6, 30), 91, 0.40, 2025, "Q2"),
+            (dt.date(2025, 1, 1), dt.date(2025, 6, 30), 181, 0.90, 2025, "Q2"),
+            (dt.date(2025, 4, 1), dt.date(2025, 6, 30), 91, 0.50, 2025, "Q2"),
+        ]
+        assert first.rows_loaded == 4 and first.details["rows_without_period_start"] == 0
+        # The pre-0327 key would have collapsed all four into one arbitrary row.
+        assert tmp_store.con.execute("""
+            SELECT count(*) FROM est_actual WHERE security_id = ?
+            GROUP BY security_id, measure_code, fiscal_year, fiscal_period, accession_number
+        """, [_GEO]).fetchone() == (4,)
+        results = run_warehouse_quality_checks(
+            tmp_store, record=False, check_names=("est_actual_duplicate_key",)
+        )
+        assert [r.status for r in results if r.check_name == "est_actual_duplicate_key"] == ["passed"]
+
+    def test_writer_counts_and_flags_facts_without_a_period_start(self, tmp_store):
+        EstimateMeasureSeedDataset().run(tmp_store, EstimateMeasureSeedOptions())
+        for accession, value in (("no-start", 1.10), ("with-start", 1.20)):
+            _insert_company_fact(
+                tmp_store, security_id="sec_nostart", concept="EarningsPerShareDiluted", fiscal_year=2025,
+                fiscal_period="Q1", period_end="2025-03-31", value=value, accession_number=accession,
+                available_at=dt.datetime(2025, 5, 2, 22), unit="USD/shares",
+            )
+        tmp_store.con.execute("UPDATE sec_company_facts SET period_start = NULL WHERE accession_number = 'no-start'")
+
+        result = EstimateActualsDataset().run(tmp_store, EstimateActualsOptions())
+
+        assert result.rows_loaded == 1
+        assert result.details["rows_without_period_start"] == 1
+        assert tmp_store.con.execute(
+            "SELECT accession_number FROM est_actual WHERE security_id = 'sec_nostart'"
+        ).fetchall() == [("with-start",)]
+        assert tmp_store.con.execute("""
+            SELECT status, observed_value FROM data_quality_checks
+            WHERE check_name = 'est_actual_facts_without_period_start'
+        """).fetchall() == [("failed", 1.0)]
+
+    def test_asof_keeps_quarter_and_ytd_apart_and_revises_each_on_its_own(self, tmp_store):
+        EstimateMeasureSeedDataset().run(tmp_store, EstimateMeasureSeedOptions())
+        _q2_2025_filing(tmp_store)
+        # A 10-Q/A restates only the YTD window.
+        _insert_company_fact(
+            tmp_store, security_id=_GEO, concept="EarningsPerShareDiluted", fiscal_year=2025,
+            fiscal_period="Q2", period_start="2025-01-01", period_end="2025-06-30", value=0.95,
+            accession_number="q2-2025-a", available_at=dt.datetime(2025, 9, 15, 22), form="10-Q/A",
+            unit="USD/shares",
+        )
+        EstimateActualsDataset().run(tmp_store, EstimateActualsOptions())
+
+        def visible(as_of: dt.datetime) -> list[tuple]:
+            df = est_actual_asof(tmp_store, as_of_date=as_of.date(), as_of_ts=as_of, security_ids=(_GEO,))
+            current = df[df["period_end"] == pd.Timestamp("2025-06-30")]
+            return sorted(
+                (row.period_start.date(), int(row.duration_days), row.value) for row in current.itertuples()
+            )
+
+        assert visible(dt.datetime(2025, 9, 1)) == [
+            (dt.date(2025, 1, 1), 181, 0.90),
+            (dt.date(2025, 4, 1), 91, 0.50),
+        ]
+        assert visible(dt.datetime(2025, 9, 30)) == [
+            (dt.date(2025, 1, 1), 181, 0.95),
+            (dt.date(2025, 4, 1), 91, 0.50),
+        ]
+
+    def test_surprise_uses_the_filings_own_quarter_and_year_never_ytd_or_comparatives(self, tmp_store):
+        EstimateMeasureSeedDataset().run(tmp_store, EstimateMeasureSeedOptions())
+        quarters = dict((fy, value) for fy, _, _, value, _, _ in _SUE_ACTUALS)  # 2019..2024
+        for fy, quarter in quarters.items():
+            prior = quarters.get(fy - 1)
+            facts = [(f"{fy}-04-01", f"{fy}-06-30", quarter), (f"{fy}-01-01", f"{fy}-06-30", 2 * quarter + 0.3)]
+            if prior is not None:  # comparatives under this filing's (fy, Q2) labels
+                facts += [(f"{fy - 1}-04-01", f"{fy - 1}-06-30", prior),
+                          (f"{fy - 1}-01-01", f"{fy - 1}-06-30", 2 * prior + 0.3)]
+            for start, end, value in facts:
+                _insert_company_fact(
+                    tmp_store, security_id=_SUE_SECURITY, concept="EarningsPerShareDiluted", fiscal_year=fy,
+                    fiscal_period="Q2", period_start=start, period_end=end, value=value,
+                    accession_number=f"q2-{fy}", available_at=dt.datetime(fy, 8, 5, 22), unit="USD/shares",
+                )
+        # One 10-K: the year, two prior-year comparatives and a 3-month Q4 value, all labelled FY.
+        for start, end, value in (
+            ("2024-01-01", "2024-12-31", 10.0),
+            ("2023-01-01", "2023-12-31", 9.0),
+            ("2022-01-01", "2022-12-31", 8.0),
+            ("2024-10-01", "2024-12-31", 3.0),
+        ):
+            _insert_company_fact(
+                tmp_store, security_id=_SUE_SECURITY, concept="EarningsPerShareDiluted", fiscal_year=2024,
+                fiscal_period="FY", period_start=start, period_end=end, value=value,
+                accession_number="fy-2024", available_at=dt.datetime(2025, 2, 20, 22), form="10-K",
+                unit="USD/shares",
+            )
+        EstimateActualsDataset().run(tmp_store, EstimateActualsOptions())
+        EstimateSurpriseDataset().run(tmp_store, EstimateSurpriseOptions(min_obs=4))
+
+        rows = tmp_store.con.execute("""
+            SELECT fiscal_year, fiscal_period, period_end, actual, sue FROM est_surprise
+            WHERE security_id = ? ORDER BY fiscal_period, fiscal_year
+        """, [_SUE_SECURITY]).fetchall()
+        assert [(fy, fp, end, actual) for fy, fp, end, actual, _ in rows] == [
+            (2024, "FY", dt.date(2024, 12, 31), 10.0),
+            *[(fy, "Q2", dt.date(fy, 6, 30), quarters[fy]) for fy in sorted(quarters)],
+        ]
+        # Same hand-verified SUE as the Q4 fixture: the series is the quarter values only.
+        trailing = [0.20, 0.30, 0.40, 0.45]
+        drift = sum(trailing) / 4
+        sigma = math.sqrt(sum((x - drift) ** 2 for x in trailing) / 3)
+        assert rows[-1][4] == pytest.approx((2.85 - (2.35 + drift)) / sigma, abs=1e-4)

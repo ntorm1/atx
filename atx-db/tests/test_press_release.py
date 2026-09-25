@@ -88,18 +88,30 @@ def _companyfact(
 def _est_actual(
     store, *, security_id: str, measure_code: str, fiscal_year: int, fiscal_period: str,
     period_end: dt.date, value: float, unit: str, accession: str, available_at: dt.datetime,
-    basis: str = "GAAP", form: str = "10-Q",
+    basis: str = "GAAP", form: str = "10-Q", period_start: dt.date | None = None,
 ) -> None:
+    if period_start is None:
+        # An est_actual row copies one Company Facts fact: take that fact's own start (0327 key).
+        starts = store.con.execute(
+            """
+            SELECT DISTINCT period_start FROM sec_company_facts
+            WHERE security_id = ? AND accession_number = ? AND period_end = ? AND value = ? AND unit = ?
+            """,
+            [security_id, accession, period_end, value, unit],
+        ).fetchall()
+        assert len(starts) == 1, f"no unique Company Facts geometry for {accession}: {starts}"
+        period_start = starts[0][0]
     store.con.execute(
         """
         INSERT INTO est_actual (
             security_id, measure_code, fiscal_year, fiscal_period,
-            period_end, value, unit, basis, form, accession_number,
+            period_start, period_end, duration_days, value, unit, basis, form, accession_number,
             announce_date, as_of_date, available_at, source
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sec_company_facts')
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sec_company_facts')
         """,
-        [security_id, measure_code, fiscal_year, fiscal_period, period_end, value, unit, basis,
+        [security_id, measure_code, fiscal_year, fiscal_period, period_start, period_end,
+         (period_end - period_start).days + 1, value, unit, basis,
          form, accession, available_at.date(), period_end, available_at],
     )
 
@@ -394,18 +406,21 @@ def test_reconciliation_matches_period_geometry_not_fiscal_labels(tmp_store) -> 
 
 def _insert_sue_actual(store, fy: int, value: float) -> None:
     period_end = dt.date(fy, 12, 31)
+    # A fourth-quarter (3-month) actual: the assertions are about the Q4 surprise vs a Q4 consensus.
+    period_start = dt.date(fy, 10, 1)
     available_at = dt.datetime(fy + 1, 2, 10, 9, 0, 0)
     store.con.execute(
         """
         INSERT INTO est_actual (
             security_id, measure_code, fiscal_year, fiscal_period,
-            period_end, value, unit, basis, form, accession_number,
+            period_start, period_end, duration_days, value, unit, basis, form, accession_number,
             announce_date, as_of_date, available_at, source
         )
-        VALUES ('sec_basis_sue', 'EPS_DILUTED', ?, 'Q4', ?, ?, 'USD_PER_SHARE',
+        VALUES ('sec_basis_sue', 'EPS_DILUTED', ?, 'Q4', ?, ?, ?, ?, 'USD_PER_SHARE',
                 'GAAP', '10-K', ?, ?, ?, ?, 'sec_company_facts')
         """,
-        [fy, period_end, value, f"basis-sue-{fy}", available_at.date(), period_end, available_at],
+        [fy, period_start, period_end, (period_end - period_start).days + 1, value, f"basis-sue-{fy}",
+         available_at.date(), period_end, available_at],
     )
 
 
@@ -475,11 +490,11 @@ def test_est_actual_eps_basis_quality_gate(tmp_store) -> None:
         """
         INSERT INTO est_actual (
             security_id, measure_code, fiscal_year, fiscal_period,
-            period_end, value, unit, form, accession_number,
+            period_start, period_end, duration_days, value, unit, form, accession_number,
             announce_date, as_of_date, available_at, source
         )
         VALUES ('sec_missing_basis', 'EPS_DILUTED', 2025, 'Q1',
-                DATE '2025-03-31', 1.23, 'USD_PER_SHARE', '10-Q', 'missing-basis',
+                DATE '2025-01-01', DATE '2025-03-31', 90, 1.23, 'USD_PER_SHARE', '10-Q', 'missing-basis',
                 DATE '2025-05-01', DATE '2025-03-31', TIMESTAMP '2025-05-01 08:00:00',
                 'test')
         """

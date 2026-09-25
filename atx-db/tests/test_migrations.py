@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_migrations_recorded_after_bootstrap(tmp_store):
     """After bootstrap, schema_migrations records every registered migration."""
@@ -960,3 +962,68 @@ def test_migration_0015_delisting_return_observations_exist(tmp_store):
         "available_at",
         "return_basis",
     }.issubset(observation_columns)
+
+
+def _est_actual_primary_key(con) -> list[str]:
+    row = con.execute(
+        """
+        SELECT constraint_column_names FROM duckdb_constraints()
+        WHERE table_name = 'est_actual' AND constraint_type = 'PRIMARY KEY'
+        """
+    ).fetchone()
+    return list(row[0]) if row else []
+
+
+_EST_ACTUAL_0327_KEY = [
+    "security_id", "measure_code", "fiscal_year", "fiscal_period", "accession_number", "period_end", "period_start",
+]
+
+
+def test_migration_0327_is_the_registered_head_and_recorded_with_its_checksum(tmp_store):
+    """Pin: 0327 is the last registered migration and a fresh bootstrap records it."""
+    from atx_db.migrations import MIGRATIONS, _migration_source_checksum
+
+    head = MIGRATIONS[-1]
+    assert (head.version, head.name) == (327, "pre_run5_identity_bundle")
+    assert tmp_store.con.execute(
+        "SELECT description, checksum FROM schema_migrations WHERE version = '0327'"
+    ).fetchone() == ("pre_run5_identity_bundle", _migration_source_checksum(head))
+    tables = {row[0] for row in tmp_store.con.execute("SELECT table_name FROM duckdb_tables()").fetchall()}
+    assert {"security_identity_evidence", "historical_security_decisions"} <= tables
+    assert _est_actual_primary_key(tmp_store.con) == _EST_ACTUAL_0327_KEY
+
+
+@pytest.mark.slow
+def test_migration_0327_upgrades_a_0326_warehouse(tmp_path):
+    """Pin: a warehouse bootstrapped at 0326 reaches 0327 through the governed runner."""
+    import duckdb
+
+    import atx_db.migrations as migrations_pkg
+    from atx_db.connection import DuckDBStore
+    from atx_db.migration_admin import verify_schema
+    from atx_db.migrations import apply_pending_migrations, verify_migration_checksums
+
+    path = tmp_path / "w0326.duckdb"
+    full = migrations_pkg.MIGRATIONS
+    store = DuckDBStore(path)
+    store.connection = duckdb.connect(str(path), config={"memory_limit": "256MB", "threads": 1})
+    try:
+        store._configure_session(store.connection)
+        migrations_pkg.MIGRATIONS = [migration for migration in full if migration.version <= 326]
+        try:
+            store.initialize()
+        finally:
+            migrations_pkg.MIGRATIONS = full
+        con = store.connection
+        assert con.execute(
+            "SELECT max(CAST(version AS INTEGER)) FROM schema_migrations WHERE version ~ '^[0-9]+$'"
+        ).fetchone() == (326,)
+        assert _est_actual_primary_key(con) == _EST_ACTUAL_0327_KEY[:5]
+
+        assert apply_pending_migrations(con) == [327]
+        verify_migration_checksums(con)
+        assert verify_schema(con) == ()
+        assert _est_actual_primary_key(con) == _EST_ACTUAL_0327_KEY
+        assert apply_pending_migrations(con) == []
+    finally:
+        store.connection.close()

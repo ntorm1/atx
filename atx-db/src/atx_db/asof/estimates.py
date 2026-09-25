@@ -74,10 +74,13 @@ def est_actual_asof(
     measure_codes: tuple[str, ...] | list[str] | None = None,
     db_path: Path | str = DEFAULT_DB_PATH,
 ) -> pd.DataFrame:
-    """Return the latest revision of each (security_id, measure_code, period_end) as-of a PIT ts.
+    """Return the latest revision of each (security_id, measure_code, period geometry) as-of a PIT ts.
 
     Rows with available_at > as_of_ts are hidden (PIT semantics).
-    Latest revision = highest available_at <= as_of_ts per (security_id, measure_code, period_end).
+    Latest revision = highest available_at <= as_of_ts per
+    (security_id, measure_code, period_end, period_start): a quarter and a year-to-date
+    window ending on the same date are different periods, never revisions of each other.
+    Callers select the geometry they need via ``duration_days``.
     """
     from ..connection import DuckDBStore as _DuckDBStore
 
@@ -109,7 +112,7 @@ def est_actual_asof(
                 SELECT
                     a.*,
                     row_number() OVER (
-                        PARTITION BY a.security_id, a.measure_code, a.period_end
+                        PARTITION BY a.security_id, a.measure_code, a.period_end, a.period_start
                         ORDER BY a.available_at DESC NULLS LAST
                     ) AS rn
                 FROM est_actual a

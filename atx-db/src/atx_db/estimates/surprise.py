@@ -146,15 +146,48 @@ class EstimateSurpriseDataset(Dataset):
         store.initialize()
 
     def load(self, store: DuckDBStore, options: EstimateSurpriseOptions) -> DatasetLoadResult:
-        # Pull all originally-reported actuals from est_actual
+        # Pull originally-reported actuals from est_actual by period GEOMETRY, never by
+        # filing labels alone: one 10-Q carries the quarter, the year-to-date window and
+        # prior-year comparatives under the SAME fiscal_year/fiscal_period labels.
+        #   * quarterly series: Q1-Q4 labels with a 70-120 day duration (3 months, 13/14/16
+        #     week quarters); year-to-date windows are excluded.
+        #   * annual series:    FY label with a 330-380 day duration (52/53-week years);
+        #     short transition periods are excluded. A 3-month value labelled FY (a 10-K's
+        #     quarterly data) is in neither series: no Q4 is synthesized.
+        #   * a row is kept only as its filing's own period: the latest-ending window of its
+        #     geometry in that accession; earlier-ending rows are comparatives that carry the
+        #     later filing's labels.
         # "originally reported" = earliest available_at per (security_id, measure_code, fy, fp)
+        # among those rows; a later 10-Q/A or 10-K/A never replaces it.
         measure_filter = ""
         if options.measure_codes:
             placeholders = ",".join("?" * len(options.measure_codes))
             measure_filter = f"AND measure_code IN ({placeholders})"
 
         sql = f"""
-        WITH ranked AS (
+        WITH geometry AS (
+            SELECT
+                *,
+                CASE
+                    WHEN fiscal_period IN ('Q1', 'Q2', 'Q3', 'Q4') AND duration_days BETWEEN 70 AND 120
+                        THEN 'quarter'
+                    WHEN fiscal_period = 'FY' AND duration_days BETWEEN 330 AND 380
+                        THEN 'annual'
+                END AS series_geometry
+            FROM est_actual
+            WHERE value IS NOT NULL
+              AND period_end IS NOT NULL
+              {measure_filter}
+        ),
+        own_periods AS (
+            SELECT *
+            FROM geometry
+            WHERE series_geometry IS NOT NULL
+            QUALIFY period_end = max(period_end) OVER (
+                PARTITION BY security_id, measure_code, accession_number, series_geometry
+            )
+        ),
+        ranked AS (
             SELECT
                 security_id,
                 measure_code,
@@ -166,12 +199,9 @@ class EstimateSurpriseDataset(Dataset):
                 available_at,
                 row_number() OVER (
                     PARTITION BY security_id, measure_code, fiscal_year, fiscal_period
-                    ORDER BY available_at ASC NULLS LAST
+                    ORDER BY available_at ASC NULLS LAST, period_start DESC, accession_number
                 ) AS rn
-            FROM est_actual
-            WHERE value IS NOT NULL
-              AND period_end IS NOT NULL
-              {measure_filter}
+            FROM own_periods
         )
         SELECT security_id, measure_code, fiscal_year, fiscal_period,
                period_end, actual, basis, available_at

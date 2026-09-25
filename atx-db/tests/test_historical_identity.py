@@ -10,6 +10,7 @@ a 0326 bootstrap), otherwise a bootstrap with the registry truncated at 0326
 from __future__ import annotations
 
 import datetime as dt
+import json
 import shutil
 import types
 
@@ -26,7 +27,7 @@ from atx_db.quality import pit_column_presence_check
 from atx_db.schema_contract import build_contract_manifest
 
 SHA = "ab" * 32
-NEW_TABLES = {"security_identity_evidence", "historical_security_decisions"}
+NEW_TABLES = {"security_identity_evidence", "historical_security_decisions", "equity_bar_unit_corrections"}
 
 
 def _registered_0327() -> bool:
@@ -40,17 +41,17 @@ def _connect(path) -> duckdb.DuckDBPyConnection:
 
 
 @pytest.fixture(scope="module")
-def warehouse_0326(request, _schema_template, tmp_path_factory):
+def warehouse_0326(request, tmp_path_factory):
     path = tmp_path_factory.mktemp("w0326") / "w0326.duckdb"
     if not _registered_0327():
-        shutil.copyfile(_schema_template, path)
+        shutil.copyfile(request.getfixturevalue("_schema_template"), path)
         return path
     if not request.config.getoption("--run-slow"):
         pytest.skip("a 0326 warehouse needs a truncated bootstrap once 0327 is registered; pass --run-slow")
     full = migrations_pkg.MIGRATIONS
     migrations_pkg.MIGRATIONS = [migration for migration in full if migration.version <= 326]
     store = DuckDBStore(path)
-    store.connection = _connect(path)
+    store.connection = duckdb.connect(str(path), config={"memory_limit": "256MB", "threads": 1})
     try:
         store._configure_session(store.connection)
         store.initialize()
@@ -197,7 +198,7 @@ def test_0327_changes_exactly_the_bundle_schema_and_is_idempotent(con_0326):
     presence = pit_column_presence_check(types.SimpleNamespace(con=con_0326))
     assert presence.status == "passed", presence.details
     manifest = build_contract_manifest(con_0326)
-    for table in NEW_TABLES:
+    for table in NEW_TABLES - {"equity_bar_unit_corrections"}:  # the ledger is a control table
         assert all(spec.unit and spec.sign and spec.scale for spec in manifest[table]), table
 
 
@@ -850,6 +851,176 @@ def test_coverage_monitor_counts_a_reanchored_stitch_and_still_reports_a_real_dr
         (dt.date(2024, 5, 1), 1, 1, 0, 0, 0, 1),  # M: genuinely dropped
         (dt.date(2024, 6, 1), 1, 0, 1, 0, 1, 0),  # L: v1 exact-date stitch still counts
     ]
+
+
+# --------------------------------------------------------------------------- ISSUER_CONTENT coverage SLOs
+
+# Each ISSUER_CONTENT schema serves the same source table as its FUNDAMENTALS twin
+# (ttm is built from statement points; shares uses the filer population of reported).
+_SLO_TWINS = {
+    "statements": "reported",
+    "standardized": "standardized",
+    "ttm": "reported",
+    "ratios": "ratios",
+    "shares": "reported",
+    "derived-metrics": "derived-metrics",
+}
+
+
+def test_issuer_content_coverage_slos_are_seeded_and_never_weaker_than_their_twins(tmp_store):
+    con = tmp_store.con
+    con.execute("DELETE FROM api_schema_coverage_slo WHERE dataset_id = 'ATX.US.ISSUER_CONTENT'")
+    _in_transaction(con, b0327._issuer_content_coverage_slos)
+    _in_transaction(con, b0327._issuer_content_coverage_slos)  # idempotent reseed
+    columns = ("expected_history_start, minimum_history_years, minimum_security_count, minimum_item_count, "
+               "maximum_freshness_lag_days, item_count_basis")
+    issuer = {row[0]: row[1:] for row in con.execute(
+        f"SELECT schema_code, {columns} FROM api_schema_coverage_slo "
+        "WHERE dataset_id = 'ATX.US.ISSUER_CONTENT' AND is_active"
+    ).fetchall()}
+    twins = {row[0]: row[1:] for row in con.execute(
+        f"SELECT schema_code, {columns} FROM api_schema_coverage_slo "
+        "WHERE dataset_id = 'ATX.US.FUNDAMENTALS' AND is_active"
+    ).fetchall()}
+    assert set(issuer) == set(_SLO_TWINS)
+    for schema, twin_code in _SLO_TWINS.items():
+        start, years, securities, items, freshness, basis = issuer[schema]
+        t_start, t_years, t_securities, t_items, t_freshness, t_basis = twins[twin_code]
+        assert start <= t_start and years >= t_years and securities >= t_securities, schema
+        assert freshness <= t_freshness, schema
+        if schema == "shares":
+            assert items is None  # share-count types are a fixed vocabulary, not a metric catalog
+        else:
+            assert items is not None and items >= t_items and basis == t_basis, schema
+
+
+# --------------------------------------------------------------------------- TickerHistory share units (item 7)
+
+
+def _bar(con, *, source, run_id, security, shares, close=250.0, day=dt.date(2025, 1, 2)):
+    con.execute(
+        """
+        INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, "close", adjusted_close,
+            run_id, shares_outstanding, market_cap_usd)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [source, security, security, day, close, close, run_id, shares,
+         None if shares is None else shares * close],
+    )
+
+
+def _bars(con):
+    return con.execute("""
+        SELECT source, run_id, security_id, shares_outstanding, market_cap_usd
+        FROM equity_daily_bars ORDER BY source, run_id NULLS FIRST, security_id
+    """).fetchall()
+
+
+def test_ticker_history_thousands_runs_are_scaled_once_and_nothing_else_moves(tmp_store):
+    con = tmp_store.con
+    con.execute("DROP TABLE IF EXISTS equity_bar_unit_corrections")  # a pre-0327 warehouse state
+    th = b0327.TICKER_HISTORY_SOURCE
+    # Parquet delivery (vendor thousands): AAPL 15,204,137 = 15.2B shares.
+    _bar(con, source=th, run_id="parquet-run", security="AAPL", shares=15_204_137)
+    _bar(con, source=th, run_id="parquet-run", security="MID", shares=17_644, close=20.0)
+    _bar(con, source=th, run_id="parquet-run", security="SMALL", shares=29_464, close=5.0)
+    _bar(con, source=th, run_id="parquet-run", security="NOSHARES", shares=None)
+    # TSV delivery (shares) under the same source name: never scaled.
+    _bar(con, source=th, run_id="tsv-run", security="AAPL", shares=15_204_137_000)
+    _bar(con, source=th, run_id="tsv-run", security="NVDA", shares=24_598_341_970, close=120.0)
+    # Another vendor with small counts: other sources are never touched.
+    _bar(con, source="bulk_bars_2015plus", run_id="parquet-run", security="AAPL", shares=17_644)
+
+    _in_transaction(con, b0327._ticker_history_share_units)
+
+    assert _bars(con) == [
+        ("bulk_bars_2015plus", "parquet-run", "AAPL", 17_644, 17_644 * 250.0),
+        (th, "parquet-run", "AAPL", 15_204_137_000, 15_204_137_000 * 250.0),
+        (th, "parquet-run", "MID", 17_644_000, 17_644_000 * 20.0),
+        (th, "parquet-run", "NOSHARES", None, None),
+        (th, "parquet-run", "SMALL", 29_464_000, 29_464_000 * 5.0),
+        (th, "tsv-run", "AAPL", 15_204_137_000, 15_204_137_000 * 250.0),
+        (th, "tsv-run", "NVDA", 24_598_341_970, 24_598_341_970 * 120.0),
+    ]
+    ledger = con.execute("""
+        SELECT run_id, rows_in_run, median_positive_value, decision_basis, loader_shares_unit,
+               decision, factor, rows_corrected
+        FROM equity_bar_unit_corrections ORDER BY run_id
+    """).fetchall()
+    assert ledger == [
+        ("parquet-run", 3, 29_464.0, "median_rule", None, "scaled_thousands_to_shares", 1000.0, 3),
+        ("tsv-run", 2, pytest.approx(ledger[1][2]), "median_rule", None, "already_shares", 1.0, 0),
+    ]
+    assert ledger[1][2] >= b0327.THOUSANDS_MEDIAN_CEILING
+
+    # Re-running never double-scales; a later thousands run is corrected on its own.
+    _in_transaction(con, b0327._ticker_history_share_units)
+    for security, shares in (("MSFT", 8_390_771), ("TINY", 17_000), ("MIDB", 25_000)):
+        _bar(con, source=th, run_id="late-parquet", security=security, shares=shares, close=30.0)
+    _in_transaction(con, b0327._ticker_history_share_units)
+    assert con.execute(
+        "SELECT shares_outstanding FROM equity_daily_bars WHERE source = ? AND security_id = 'AAPL' "
+        "AND run_id = 'parquet-run'", [th]
+    ).fetchone() == (15_204_137_000,)
+    assert con.execute(
+        "SELECT shares_outstanding, market_cap_usd FROM equity_daily_bars WHERE run_id = 'late-parquet' "
+        "AND security_id = 'MSFT'"
+    ).fetchone() == (8_390_771_000, 8_390_771_000 * 30.0)
+    assert con.execute("SELECT count(*) FROM equity_bar_unit_corrections").fetchone() == (3,)
+
+
+def _run(con, run_id, params_json):
+    con.execute(
+        "INSERT INTO dataset_runs (run_id, dataset_id, status, started_at, source, params_json) "
+        "VALUES (?, 'tbltickerhistory_daily', 'succeeded', TIMESTAMP '2026-09-24 00:00:00', ?, ?)",
+        [run_id, b0327.TICKER_HISTORY_SOURCE, params_json],
+    )
+
+
+def test_ticker_history_runs_recorded_by_the_unit_aware_loader_are_never_rescaled(tmp_store):
+    con = tmp_store.con
+    con.execute("DROP TABLE IF EXISTS equity_bar_unit_corrections")
+    th = b0327.TICKER_HISTORY_SOURCE
+    # A8 loader run: stored shares already scaled from thousands; a micro-cap-only run
+    # has a median below the ceiling, so only the recorded unit keeps it from a 1000x error.
+    _run(con, "a8-run", json.dumps({"shares_unit": "thousands", "run_id": "a8-run"}))
+    for security, shares in (("MICRO1", 450_000), ("MICRO2", 820_000), ("MICRO3", 610_000)):
+        _bar(con, source=th, run_id="a8-run", security=security, shares=shares, close=2.0)
+    # Old-loader runs: params without shares_unit, or unparseable params, fall to the median rule.
+    _run(con, "old-run", json.dumps({"run_id": "old-run", "source": th}))
+    _run(con, "bad-json-run", "{not json")
+    for run_id in ("old-run", "bad-json-run"):
+        for security, shares in (("AAPL", 15_204_137), ("MID", 17_644), ("SMALL", 29_464)):
+            _bar(con, source=th, run_id=run_id, security=security, shares=shares)
+
+    _in_transaction(con, b0327._ticker_history_share_units)
+
+    stored = con.execute(
+        "SELECT run_id, security_id, shares_outstanding FROM equity_daily_bars ORDER BY run_id, security_id"
+    ).fetchall()
+    assert stored == [
+        ("a8-run", "MICRO1", 450_000), ("a8-run", "MICRO2", 820_000), ("a8-run", "MICRO3", 610_000),
+        ("bad-json-run", "AAPL", 15_204_137_000), ("bad-json-run", "MID", 17_644_000),
+        ("bad-json-run", "SMALL", 29_464_000),
+        ("old-run", "AAPL", 15_204_137_000), ("old-run", "MID", 17_644_000), ("old-run", "SMALL", 29_464_000),
+    ]
+    assert con.execute("""
+        SELECT run_id, decision_basis, loader_shares_unit, decision, factor, rows_corrected
+        FROM equity_bar_unit_corrections ORDER BY run_id
+    """).fetchall() == [
+        ("a8-run", "loader_params", "thousands", "already_shares", 1.0, 0),
+        ("bad-json-run", "median_rule", None, "scaled_thousands_to_shares", 1000.0, 3),
+        ("old-run", "median_rule", None, "scaled_thousands_to_shares", 1000.0, 3),
+    ]
+    # The ledger refuses a loader_params row that claims a rescale.
+    with pytest.raises(duckdb.ConstraintException):
+        con.execute("""
+            INSERT INTO equity_bar_unit_corrections (correction_id, table_name, source, run_id, column_name,
+                rows_in_run, loader_shares_unit, decision_basis, decision, factor, rows_corrected,
+                recomputed_columns, rule, applied_by)
+            VALUES ('x', 'equity_daily_bars', 'tbltickerhistory3_10y', 'x', 'shares_outstanding', 1,
+                'thousands', 'loader_params', 'scaled_thousands_to_shares', 1000.0, 1, 'market_cap_usd', 'r', 't')
+        """)
 
 
 # --------------------------------------------------------------------------- helpers

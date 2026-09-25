@@ -88,15 +88,17 @@ def test_provider_coverage_migration_seeds_every_public_schema(tmp_store: DuckDB
     # .superpowers/sdd/tier1-parity/program.md), so the pinned count moved 7 -> 9.
     # Tier1-S4 T7 registers three more public schemas -- security-master, universe,
     # delistings -- with their own SLO rows, moving the pinned count 9 -> 12.
-    assert len(actual) == 12
+    # A9 migration 0327 seeds the six ATX.US.ISSUER_CONTENT schemas added by 0322,
+    # moving the pinned count 12 -> 18.
+    assert len(actual) == 18
 
     snapshots = refresh_provider_coverage(
         tmp_store,
         ProviderCoverageOptions(observed_at=OBSERVED_AT, run_id="empty-coverage"),
     )
-    assert len(snapshots) == 12
+    assert len(snapshots) == 18
     assert {snapshot.condition for snapshot in snapshots} == {"pending"}
-    assert tmp_store.con.execute("SELECT count(*) FROM v_api_schema_coverage_current").fetchone() == (12,)
+    assert tmp_store.con.execute("SELECT count(*) FROM v_api_schema_coverage_current").fetchone() == (18,)
 
 
 def test_provider_coverage_measures_range_breadth_and_slo_failure(tmp_store: DuckDBStore) -> None:
@@ -287,10 +289,11 @@ def test_provider_coverage_cli_emits_condition_summary(
     ) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["run_id"] == "cli-coverage"
-    assert payload["schema_count"] == 12
+    # 18 = 12 + the six ATX.US.ISSUER_CONTENT schemas seeded by migration 0327 (A9).
+    assert payload["schema_count"] == 18
     assert payload["conditions"] == {
         "available": 0,
         "degraded": 0,
         "missing": 0,
-        "pending": 12,
+        "pending": 18,
     }
