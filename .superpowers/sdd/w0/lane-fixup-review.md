@@ -95,3 +95,64 @@ checked before each build (2.25 GB and 2.23 GB).
 7. **Causality harness.** Not applicable (W0).
 8. **Real work.** The fix is on the real test path, and the owning executables pass whole (see
    Evidence).
+
+## Re-review 1
+
+### Verdict
+
+**APPROVE** (0 blocker, 0 major, 0 minor open). All three original minors are FIXED, and the fix
+commits introduce no regression and weaken no test.
+
+### Reviewed SHA
+
+`a8eff5318a10b554107f23b886a947a56e5916c4` (`feat/w0-fixup`). Fix commits since `4d26defa`:
+`dfcb1721` (original review), `dc821303` (merge of `feat/w0-integration` @ `2170a259`, B0),
+`a8eff531` (fix pass 1: new test + report tables). `a8eff531` touches only
+`atx-impl/tests/fundamental_zoo_test.cpp` (+38, additions only) and `lane-fixup-report.md`.
+
+### Evidence
+
+All commands were run in `C:\atx-wt\pool-2` with `CMAKE_BUILD_PARALLEL_LEVEL=2`. Free RAM before
+the build was 3.34 GB.
+
+- Merge purity: `git merge-tree --write-tree dfcb1721 2170a259` = `a0f53aa1`, which equals
+  `dc821303^{tree}`. The merge has no hand edits. `2170a259` is an ancestor of HEAD. The working
+  tree is clean.
+- `atx-build.ps1 build -Preset equity-dev atx-impl-tests atx-shm-worker atx-engine-{alpha,factory,learn,data,eval,combine,risk,book}-tests`
+  exited 0 (/W4 /WX).
+- Eight engine executables, whole, `--gtest_brief=1`, all exit 0: alpha 704/704, factory 299/299,
+  learn 193/193, data 238 + 14 environmental skips, eval 251/251, combine 183/183, risk 470 + 1
+  nightly skip, book 122/122.
+- `atx-impl-tests.exe --gtest_brief=1` (whole, repo root) exited 1. 536 ran: 517 passed, 5
+  skipped, 14 failed. The failing set exactly matches the report's fix-pass-1 table:
+  - The 2 I0b failures that the orchestrator exempts (`StageEquityIc.TwoRuns...`,
+    `EquityMineCli.SmoothWindows...`).
+  - 12 failures that arrived with the B0 merge: 8 B-02 (`ReplayPolicyStage` x2, `ReplayReport` x5,
+    `StageEquityBaseline.ExplicitZeroCosts...`) and 4 B-04 (`ReplayReport.MissingHeldPrice...`,
+    `StageEquityBaseline` x3).
+
+  B0's own report (`lane-b0-report.md:75,270`) already records these 12 as UNMET pending I0b
+  wiring of `allow_same_close` and the delisting policy, and the orchestrator merged B0 into
+  `feat/w0-integration` with them present. They are not caused by this lane: its code delta against
+  integration is only `.gitattributes` plus test-fixture data and one new assertion-only test in
+  `fundamental_zoo_test.cpp`.
+- `atx-impl-tests.exe --gtest_filter=FundamentalZoo.*:TrialLedgerRepository.*` (repo root)
+  exited 0. Results: `FixtureParsesTypechecksAndEvaluates` OK, `FixtureAccrualsVaryOverTime` OK,
+  `EpochDayMatchesKnownDates` OK, `ExistingCp14Ledger_StillVerifies` OK, and `RealDataIcReport` an
+  opt-in skip.
+- `git ls-files --eol`: `trial-ledger.jsonl` is `i/lf w/lf attr/text eol=lf` and
+  `CMakePresets.json` is `i/lf w/crlf`, both unchanged.
+
+### Per-finding
+
+| # | Finding | Status | Evidence |
+|---|---|---|---|
+| 1 | No RULES Sec. 4 acceptance/defect tables | **FIXED** | `lane-fixup-report.md` "Acceptance table" has 5 rows, each with its test, a measured result and MET. Item 4 honestly lists the 14 `atx-impl-tests` failures, each attributed. "Defect table" has A-09 NOT REOPENED (guard correct; ResearchFast Welford path deferred to W1-A1) and CRLF CLOSED. |
+| 2 | No pre-merge of current `feat/w0-integration` | **FIXED** | `dc821303` merges `2170a259` with no conflicts and no hand edits (tree matches `merge-tree`). All ten targets rebuilt and every executable re-run whole on the merged tree. My re-run reproduces the report's numbers exactly (engine exes above; impl 536/517/5/14). |
+| 3 | Nothing pinned fixture non-degeneracy (optional) | **FIXED** | New `FundamentalZoo.FixtureAccrualsVaryOverTime` (`fundamental_zoo_test.cpp:388-424`). It requires `ts_std(accruals,252)` to have a finite cell and a cell > 0, the maximum `ts_std/|ts_mean|` to exceed 1e-3, and `ts_zscore(accruals,252)` to have a finite cell. It evaluates on the same `extended(synthetic_panel, ..., synthetic_records)` panel as the zoo test. It would fail on the degenerate fixture: the diagnostic in the original report shows `ts_std` there is exactly 0 in all 336 finite cells under the default policy, so `positive_sd` = 0. This agrees with the lane's recorded mutation run. `<algorithm>`/`<cmath>` are included, and it builds under /W4 /WX. |
+
+### Regression / weakening check
+
+The diff of `a8eff531` is additions only: one new TEST, with no existing assertion, tolerance or
+skip changed. The merge carries B0's already-reviewed and approved content (B0 re-review 1
+APPROVE) unchanged. No new findings.
