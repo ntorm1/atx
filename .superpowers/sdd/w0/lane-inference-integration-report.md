@@ -2,8 +2,8 @@
 
 ## Outcome
 
-Implementation, targeted build, and all 26 focused inference checks pass. Final independent
-review, scoped PCH-off compilation, and whole-target integration qualification remain pending.
+Implementation, targeted build, all 26 focused inference checks, independent review, and
+scoped PCH-off compilation pass. Whole-target integration qualification remains pending.
 
 ## Branch / frozen base / lease
 
@@ -111,6 +111,30 @@ Independent w0_gate_audit reviewed 9caf9e85 and requested changes:
 Fix-only static re-review at c8e7e990 found H1/H2 resolved and no remaining blocker.
 Runtime approval remains pending. Clarified weighted daily behavior and finite-row compaction
 per the reviewer; the five-point regression now also exercises the cancellation fallback.
+
+Final fix-only review of 52b8c6ea by w0_gate_audit independently ran all six public inference
+tests: 6/6 passed in 2.349 s, with the same paired calibration outputs. It also inspected
+the 26/26 focused log and approved the final changes. The earlier runtime-pending status
+above describes the pre-bandwidth-fix review only.
+
+Scoped PCH-off verification completed successfully using the hygiene preset:
+
+```
+atx-build.ps1 configure -Preset hygiene -Groups 'combine;eval' '-DATX_EQUITY_ONLY=ON' '-DFETCHCONTENT_BASE_DIR=C:/atx-wt/pool-2/deps/hygiene'
+ATX_USE_PCH:BOOL=OFF
+FETCHCONTENT_BASE_DIR:PATH=C:/atx-wt/pool-2/deps/hygiene
+exit=0
+atx-build.ps1 check -Preset hygiene atx-engine/src/combine/signal_combiner.cpp atx-engine/src/combine/orthogonalize.cpp atx-engine/src/eval/cross_section_ic.cpp
+[1/4] Building CXX object atx-engine\\CMakeFiles\\atx-engine.dir\\src\\eval\\cross_section_ic.cpp.obj
+[2/4] Building CXX object atx-engine\\CMakeFiles\\atx-engine.dir\\src\\combine\\orthogonalize.cpp.obj
+[3/4] Building CXX object atx-engine\\CMakeFiles\\atx-engine.dir\\src\\combine\\signal_combiner.cpp.obj
+exit=0
+```
+
+This verifies the three affected production consumers, not full-repository include hygiene.
+An initial configure invocation failed because PowerShell split an unquoted CMake drive-path
+argument; the quoted retry above is the successful command. The failure is retained in
+build-equity/codex-inference-hygiene-configure-failed.log.
 
 ## Deviations and remaining limits
 
