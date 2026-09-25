@@ -430,3 +430,47 @@ path, which .NET resolved against the process cwd `C:\atx`. It read `C:\atx\...\
 found no match, and wrote nothing. To confirm that, a read-only `git -C C:\atx status --short` was
 run on that one file. It showed only the other session's pre-existing modification. No file under
 `C:\atx` was written. The mutation was then redone with the absolute pool-9 path.
+
+## Post-merge sync (final, before orchestrator merge)
+
+- Base for this sync: `feat/w0-integration` had moved to `16a2ae35` ("w0: progress — R0 merged",
+  bringing in `atx-engine/{include,src}/risk/{exposures.hpp,factor_model.hpp,factor_model.cpp}`
+  and new `risk_w0r0_*` tests). Lane pre-sync head: `6d4e29e5`.
+- `git -C C:\atx-wt\pool-9 status --porcelain` was empty, no `MERGE_HEAD`. Since
+  `merge-base --is-ancestor feat/w0-integration HEAD` failed (integration had moved since the last
+  sync recorded above), performed the merge:
+  ```
+  git -C C:\atx-wt\pool-9 merge --no-ff feat/w0-integration -m "w0-b0: merge feat/w0-integration" -m "Co-Authored-By: ..."
+  ```
+  exit 0, no conflicts (`Merge made by the 'ort' strategy`; 11 files changed, all under
+  `atx-engine/{include,src,tests}/risk/` and `.superpowers/sdd/w0/` — none in this lane's owned
+  files). New head: `b701c8bf`.
+- Rebuild (RAM check: 2.9 GB free at time of build, `>= 2.0 GB` gate satisfied,
+  `CMAKE_BUILD_PARALLEL_LEVEL=2`):
+  ```
+  scripts\atx-build.ps1 build -Preset equity-dev atx-engine-book-tests            # exit 0
+  scripts\atx-build.ps1 build -Preset equity-dev atx-impl-tests atx-shm-worker    # exit 0
+  ```
+- Anchored suites (ctest `-R '^<Suite>\.'`, note the trailing dot — gtest suite names use `.`, not
+  `_`, contrary to the brief's literal `_*` spelling):
+  - `BookReplayDelay.*`: 4/4 passed.
+  - `BookReplayDelist.*`: 14/14 passed (includes `Pcs20130501FixtureRunsToTheEnd` and
+    `MissingCloseWithoutEvidenceIsShumwayFlaggedNeverZeroNeverAbort` — both Accept items MET).
+  - `BookBorrowSingleCount.*`: 5/5 passed.
+  - `BookLegacyReport.*`: 9/9 passed.
+- Whole owning executables (`--gtest_brief=1`):
+  - `atx-engine-book-tests.exe`: `[==========] 122 tests from 18 test suites ran.` `[  PASSED  ] 122 tests.`
+  - `atx-impl-tests.exe`: `[==========] 535 tests from 102 test suites ran.` `[  PASSED  ] 514 tests.`
+    `[  SKIPPED ] 5 tests.` 3 failures, none touching a file this lane owns or that the merge
+    changed (`git diff 6d4e29e5 HEAD -- <file>` is empty for all three test files below):
+    - `StageEquityIc.TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput`
+    - `EquityMineCli.SmoothWindowsAddDecayedVariantsAsTrials`
+    - `TrialLedgerRepository.ExistingCp14Ledger_StillVerifies`
+    All three match the pre-existing classification above (groups 3 and 4: "arrived with the
+    integration merge" / owner I0b-A0, and "known pre-existing" CRLF `trial-ledger.jsonl` checkout
+    issue) — the 12 group-1/group-2 (B-02/B-04 consequence) failures and `FundamentalZoo`
+    previously listed there are now green, i.e. fixed upstream by other lanes since the earlier
+    sync. No fix applied here: none of these 3 failures are caused by code this merge brought in
+    (the risk/factor_model files), and none touch owned files.
+- Tree clean and committed at `b701c8bf` (this block + the merge commit).
+- No new defect IDs opened; no golden-digest changes beyond the table above.
