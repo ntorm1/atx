@@ -3,9 +3,12 @@
 Each row of ``seeds/research_anomaly_catalog.csv`` maps one declarative derived
 metric ``(metric_code, window)`` or one formation-time market-scaled composition to
 a pre-registered hypothesis: anomaly class, expected sign (``+1`` means a higher
-value predicts higher forward returns) with a rationale and a literature reference,
-scale type, preferred cross-sectional transform, inherited availability clock,
-minimum history, research admission and the legacy factor ids it supersedes.
+value predicts higher forward returns; ``two_sided`` pre-registers no direction
+where the published evidence disagrees) with a rationale and a literature
+reference, the hypothesis family its near-duplicates share, scale type, preferred
+cross-sectional transform, the hypothesis domain the feature store enforces,
+inherited availability clock, minimum history, research admission with
+machine-readable caveat codes and the legacy factor ids it supersedes.
 Evaluation (R3b/R4) tests these hypotheses; it never chooses a sign from data.
 
 Clocks, minimum history and incomparable-by-construction status are *derived* from
@@ -13,6 +16,12 @@ the derived-metric seed and must equal the declared values, so the catalog canno
 drift from the metric engine silently. Every seed metric is either a catalog row or
 an explicit exclusion in :data:`EXCLUDED_SEED_METRICS`; adding a seed metric without
 a catalog decision fails validation.
+
+``domain`` is ``<rule>`` or ``<rule>:<operand>`` with a rule from
+:data:`DOMAIN_RULES`; the rule applies to the feature value itself unless it names a
+``metric:``/``item:`` operand of the same state. The feature store (R2b) enforces it
+before any transform: an out-of-domain value is excluded (or carried as the named
+separate indicator), never ranked as ``valid``.
 """
 
 from __future__ import annotations
@@ -42,7 +51,10 @@ __all__ = [
     "ANOMALY_CATALOG_PATH",
     "ANOMALY_CLASSES",
     "AVAILABILITY_CLOCKS",
+    "BLOCKED_ADMISSIONS",
+    "CAVEAT_CODES",
     "CONTROL_CLASSES",
+    "DOMAIN_RULES",
     "EXCLUDED_SEED_METRICS",
     "AnomalyCatalogEntry",
     "AnomalyCatalogError",
@@ -75,12 +87,15 @@ ANOMALY_CATALOG_COLUMNS = (
     "sign_rationale",
     "reference",
     "prior_evidence",
+    "hypothesis_family",
     "scale_type",
     "preferred_transform",
+    "domain",
     "availability_clock",
     "min_history_quarters",
     "min_history_sessions",
     "admission",
+    "caveat_code",
     "admission_note",
     "supersedes",
 )
@@ -108,7 +123,56 @@ PREFERRED_TRANSFORMS = frozenset({"winsor_z", "rank_normal", "log_winsor_z"})
 #: Strictly positive levels whose cross-section is log-normal-like.
 LOG_SCALE_TYPES = frozenset({"dollar_level", "volatility"})
 PRIOR_EVIDENCE = frozenset({"published_anomaly", "published_analogue", "economic_conjecture"})
-ADMISSIONS = frozenset({"eligible", "eligible_with_caveat", "blocked_incomparable_origin"})
+ADMISSIONS = frozenset({"eligible", "eligible_with_caveat", "blocked_incomparable_origin", "blocked_known_bias"})
+#: Admissions that keep a row out of research: the engine labels every quarterly
+#: value incomparable, or a known construction bias the span labels cannot see
+#: (the reason is noted and coded per row).
+BLOCKED_ADMISSIONS = frozenset({"blocked_incomparable_origin", "blocked_known_bias"})
+#: ``expected_sign`` text -> value; ``two_sided`` (0) pre-registers no direction.
+_SIGNS: Mapping[str, int] = {"+1": 1, "-1": -1, "two_sided": 0}
+
+#: Hypothesis domain rules the feature store (R2b) enforces before any transform.
+DOMAIN_RULES: Mapping[str, str] = {
+    "unrestricted": "every finite value is in the hypothesis domain",
+    "guarded_in_definition": "the definition itself yields no value outside the domain (a non-positive "
+                             "opening balance or endpoint has no value); nothing further to enforce",
+    "positive_value_required": "values at or below zero are out of the domain (log-scaled levels)",
+    "positive_denominator_required": "out of the domain when the named denominator is at or below zero or "
+                                     "missing: a non-positive denominator flips the ratio's meaning",
+    "negative_book_excluded": "out of the domain when book equity (the named operand, else the value) is at or "
+                              "below zero, the Fama-French convention",
+    "loss_firms_separate": "a value whose earnings or cash-flow numerator (the named operand, else the value) is "
+                           "at or below zero leaves the ranked domain and is carried as a separate loss "
+                           "indicator (Fama-French 1992 E(+)/P)",
+    "zero_payer_separate": "a zero value (a non-payer) leaves the ranked domain and is carried as a separate "
+                           "indicator; the zero-dividend puzzle makes the relation U-shaped",
+}
+_OPERAND_DOMAINS = frozenset({"positive_denominator_required", "negative_book_excluded", "loss_firms_separate"})
+_OPERAND_REQUIRED_DOMAINS = frozenset({"positive_denominator_required"})
+
+#: Machine-readable construction hazards; every non-eligible admission names one.
+CAVEAT_CODES: Mapping[str, str] = {
+    "sign_flip": "a non-positive denominator or book value inverts the ratio's meaning",
+    "fiscal_seasonality": "a single-quarter level or dispersion carries fiscal seasonality",
+    "sequential_quarter": "adjacent fiscal quarters differ in season and length",
+    "split_basis": "a per-share or share-count comparison or window: comparable only on one filing's clock or "
+                   "a split basis proven from daily bars (R1d), so the research gate admits it row by row",
+    "trailing_span_overlap": "trailing-twelve-month spans never form a single-quarter chain",
+    "non_monotone": "the published relation is U-shaped or holds only within a subgroup",
+    "mixed_evidence": "published evidence disagrees on the sign; the hypothesis is two-sided",
+    "coverage_bias": "an input is missing for a non-random group of filers",
+    "presence_rule": "a value can rest on a zero imputed from a concept's absence under a presence guard (the "
+                     "issuer tags the statement but never the concept throughout the window); a tag switch or "
+                     "skipped quarter has no value",
+    "construct_deviation": "the definition deviates from the published construction (see the note)",
+    "filing_clock_lag": "the filing clock trails the market's first information (the earnings release)",
+}
+#: A sign-flipping ratio names the operand to test; a non-monotone relation names
+#: the subgroup the feature store carries separately.
+_CAVEAT_DOMAINS: Mapping[str, frozenset[str]] = {
+    "sign_flip": frozenset({"positive_denominator_required", "negative_book_excluded"}),
+    "non_monotone": frozenset({"loss_firms_separate", "zero_payer_separate"}),
+}
 
 CLOCK_FILING = "conservative_filing_46h"
 CLOCK_BAR = "modeled_trade_date_22h"
@@ -131,8 +195,12 @@ _SUPERSEDES = re.compile(r"^factor:([a-z][a-z0-9_]{1,95})$")
 #: consumed by cataloged ratios), ``per_share_level`` (depends on share count and
 #: price level; its price-scaled form is cataloged), ``inverse_cataloged:<id>``
 #: (a price multiple whose sign-changing denominator breaks monotonicity; the
-#: monotone inverse ``<id>`` is cataloged) and ``component_of:<id>`` (a term of the
-#: cataloged composite ``<id>``).
+#: monotone inverse ``<id>`` is cataloged), ``component_of:<id>`` (a term of the
+#: cataloged composite ``<id>``), ``duplicate_of:<id>`` (equal to the cataloged
+#: ``<id>`` for every value in its domain), ``negation_of:<id>`` (exactly minus the
+#: cataloged ``<id>``) and ``conflicting_prior:<id>`` (a conjecture nearly identical
+#: to the cataloged ``<id>`` but argued with the opposite sign; one family member
+#: would be chosen by data, so it is dropped).
 EXCLUDED_SEED_METRICS: Mapping[str, str] = {
     **{code: "dollar_level_input" for code in (
         "gross_profit_q", "ebitda_q", "cash_st_investments_q", "common_equity_q", "total_debt_q",
@@ -172,7 +240,15 @@ EXCLUDED_SEED_METRICS: Mapping[str, str] = {
     )},
     "effective_tax_rate_ttm": "component_of:roic",
     "no_equity_issuance_ttm": "component_of:piotroski_f_cash_issuance",
+    # cagr(x, 1) = x / x_-4 - 1 = yoy(x) whenever both endpoints are positive.
+    "revenue_cagr_1y": "duplicate_of:revenue_growth_yoy",
+    # (repurchases - issuance) / avg assets = -net_equity_issuance.
+    "buyback_ratio": "negation_of:net_equity_issuance",
+    # ROE x retention ~ book-equity growth for non-issuers, argued +1 against -1.
+    "sustainable_growth": "conflicting_prior:book_value_growth_yoy",
 }
+_TARGETED_EXCLUSIONS = frozenset(
+    {"inverse_cataloged", "component_of", "duplicate_of", "negation_of", "conflicting_prior"})
 
 
 class AnomalyCatalogError(ValueError):
@@ -189,16 +265,20 @@ class AnomalyCatalogEntry:
     denominator: str | None
     anomaly_class: str
     economic_definition: str
+    #: +1 or -1; 0 when the hypothesis is pre-registered ``two_sided``.
     expected_sign: int
     sign_rationale: str
     reference: str
     prior_evidence: str
+    hypothesis_family: str
     scale_type: str
     preferred_transform: str
+    domain: str
     availability_clock: str
     min_history_quarters: int
     min_history_sessions: int
     admission: str
+    caveat_codes: tuple[str, ...]
     admission_note: str
     supersedes: tuple[str, ...]
 
@@ -207,9 +287,22 @@ class AnomalyCatalogEntry:
         return self.anomaly_class in CONTROL_CLASSES
 
     @property
+    def is_two_sided(self) -> bool:
+        return self.expected_sign == 0
+
+    @property
     def is_research_eligible(self) -> bool:
-        """False only when the engine labels every quarterly value ``incomparable``."""
-        return self.admission != "blocked_incomparable_origin"
+        """False for a blocked admission: engine-incomparable or a known construction bias."""
+        return self.admission not in BLOCKED_ADMISSIONS
+
+    @property
+    def domain_rule(self) -> str:
+        return self.domain.partition(":")[0]
+
+    @property
+    def domain_operand(self) -> str | None:
+        """The ``metric:``/``item:`` operand the domain rule tests; None tests the value itself."""
+        return self.domain.partition(":")[2] or None
 
     @property
     def operands(self) -> tuple[str, ...]:
@@ -227,6 +320,11 @@ def _blank(value: str | None) -> str | None:
     return text or None
 
 
+def _split(value: str | None) -> tuple[str, ...]:
+    """A ``|``-separated list cell (empty means none)."""
+    return tuple(part.strip() for part in (value or "").split("|") if part.strip())
+
+
 def read_anomaly_catalog(path: Path | str = ANOMALY_CATALOG_PATH) -> tuple[AnomalyCatalogEntry, ...]:
     """Parse the catalog CSV strictly (exact header, typed fields); no semantic checks."""
     catalog_path = Path(path)
@@ -242,8 +340,9 @@ def read_anomaly_catalog(path: Path | str = ANOMALY_CATALOG_PATH) -> tuple[Anoma
             if None in raw:
                 raise AnomalyCatalogError(f"{where}: more fields than the header")
             sign_text = (raw["expected_sign"] or "").strip()
-            if sign_text not in ("+1", "-1"):
-                raise AnomalyCatalogError(f"{where}: expected_sign must be '+1' or '-1', got {sign_text!r}")
+            if sign_text not in _SIGNS:
+                raise AnomalyCatalogError(
+                    f"{where}: expected_sign must be '+1', '-1' or 'two_sided', got {sign_text!r}")
             try:
                 quarters = int((raw["min_history_quarters"] or "").strip())
                 sessions = int((raw["min_history_sessions"] or "").strip())
@@ -259,19 +358,21 @@ def read_anomaly_catalog(path: Path | str = ANOMALY_CATALOG_PATH) -> tuple[Anoma
                     denominator=_blank(raw["denominator"]),
                     anomaly_class=(raw["anomaly_class"] or "").strip(),
                     economic_definition=(raw["economic_definition"] or "").strip(),
-                    expected_sign=1 if sign_text == "+1" else -1,
+                    expected_sign=_SIGNS[sign_text],
                     sign_rationale=(raw["sign_rationale"] or "").strip(),
                     reference=(raw["reference"] or "").strip(),
                     prior_evidence=(raw["prior_evidence"] or "").strip(),
+                    hypothesis_family=(raw["hypothesis_family"] or "").strip(),
                     scale_type=(raw["scale_type"] or "").strip(),
                     preferred_transform=(raw["preferred_transform"] or "").strip(),
+                    domain=(raw["domain"] or "").strip(),
                     availability_clock=(raw["availability_clock"] or "").strip(),
                     min_history_quarters=quarters,
                     min_history_sessions=sessions,
                     admission=(raw["admission"] or "").strip(),
+                    caveat_codes=_split(raw["caveat_code"]),
                     admission_note=(raw["admission_note"] or "").strip(),
-                    supersedes=tuple(part.strip() for part in (raw["supersedes"] or "").split("|")
-                                     if part.strip()),
+                    supersedes=_split(raw["supersedes"]),
                 )
             )
     return tuple(entries)
@@ -289,6 +390,13 @@ class MetricShape:
     availability_clock: str
     #: Set when every quarterly value is labeled ``value_origin='incomparable'``.
     incomparable_reason: str | None
+    #: A share-basis comparison or window (R1d): each value is comparable only on
+    #: one filing's clock or a split basis proven from daily bars, so the engine
+    #: labels it per row and research gates each row on ``value_origin``.
+    split_gated: bool = False
+    #: The value (or an input) applies a presence rule: a zero imputed from a
+    #: concept's absence (the DSL idiom ``x * 0``), never a reported zero.
+    reads_absence: bool = False
 
 
 @dataclass(frozen=True)
@@ -299,12 +407,14 @@ class _Span:
     fact of one quarter), ``instant`` (no period start), ``long`` (a trailing
     multi-quarter span) or ``mixed``. ``never`` names why comparability is false
     for every row, i.e. why the engine's origin label is always ``incomparable``.
+    ``split_gated`` marks a share-basis comparison or window anywhere below.
     """
 
     kind: str | None = None
     offset: int | None = None
     share_basis: bool = False
     never: str | None = None
+    split_gated: bool = False
 
 
 _QUARTER_POSSIBLE = frozenset({"quarter", "mixed"})
@@ -319,33 +429,30 @@ def _pair(left: _Span, right: _Span) -> _Span:
     newer, older = (left, right) if left.offset <= right.offset else (right, left)
     distance = abs(left.offset - right.offset)
     never: str | None = None
+    gated = left.split_gated or right.split_gated
     if distance == 0:
         # Both starts present and unequal (one quarter vs a trailing span) fails.
         kind = right.kind if left.kind == "instant" else left.kind
         if {left.kind, right.kind} == {"quarter", "long"}:
             never = "quarter_vs_trailing_span_same_bucket"
     else:
-        kind = newer.kind
-        # _derived_annual._combine: until a split guard exists, a split-sensitive
-        # comparison across periods is proven only between flows exactly four
-        # quarters apart (the prior-year comparative a filing restates for splits).
-        sensitive = newer.share_basis or older.share_basis
+        # A proven one-quarter pair spans that quarter: two balances one bucket
+        # apart get the older end + 1 day as their start in _combine.
+        kind = "quarter" if distance == 1 else newer.kind
+        # R1d: a split-sensitive comparison across periods is comparable when both
+        # values share one filing clock or both split bases are proven from daily
+        # bars (_split_epochs); that is decided per row, never statically.
+        gated = gated or newer.share_basis or older.share_basis
         if distance == 1:
             # _one_quarter_apart proves flow after flow, a flow after its opening
-            # balance and instant after instant. A trailing span, an instant after a
-            # flow and any split-sensitive pair never pass.
-            if sensitive:
-                never = "one_quarter_pair_per_share_without_split_guard"
-            elif "long" in (newer.kind, older.kind) or (newer.kind, older.kind) == ("instant", "quarter"):
+            # balance and instant after instant. A trailing span or an instant
+            # after a flow never passes.
+            if "long" in (newer.kind, older.kind) or (newer.kind, older.kind) == ("instant", "quarter"):
                 never = "one_quarter_pair_without_provable_quarter_spans"
         elif distance % 4:
             never = "lag_distance_off_the_annual_grid"
-        elif sensitive and distance != 4:
-            never = "multi_year_share_basis_pair_without_split_guard"
-        elif sensitive and "instant" in (newer.kind, older.kind):
-            never = "share_basis_balance_pair_without_split_guard"
     return _Span(kind, newer.offset, left.share_basis or right.share_basis,
-                 left.never or right.never or never)
+                 left.never or right.never or never, gated)
 
 
 def _numeric(node: Node) -> int:
@@ -383,30 +490,35 @@ def _span_rule(node: Node, refs: Mapping[str, _Span], exponent_of: Callable[[str
         spans = [child for child in children if child.offset is not None]
         kinds = {child.kind for child in spans}
         reasons = [child.never for child in children]
+        # A constant branch (the zero of a presence rule) selects no fiscal dates,
+        # so the selected span's kind is not known statically.
+        constant = len(spans) < len(children)
         return _Span(
-            kinds.pop() if len(kinds) == 1 else "mixed",
+            kinds.pop() if len(kinds) == 1 and not constant else "mixed",
             spans[0].offset if spans else None,
             any(child.share_basis for child in children),
             reasons[0] if all(reasons) else None,
+            any(child.split_gated for child in children),
         )
     if node.name in SCALAR_FUNCTIONS:
         result = inner
         for child in children[1:]:
             result = _pair(result, child)
         return result
+    # R1d _window_basis: a trailing sum or a stdev_q window over share-basis
+    # values is comparable only on one filing clock or proven split bases.
+    window_gated = inner.split_gated or inner.share_basis
     if node.name == "ttm":
         never = inner.never or (None if inner.kind in _QUARTER_POSSIBLE else "ttm_over_non_quarter_spans")
-        return _Span("long", 0, inner.share_basis, never)
+        return _Span("long", 0, inner.share_basis, never, window_gated)
     if node.name == "stdev_q":
         # _derived_annual._consecutive_window (R1c): coherent only for a chain of
-        # coherent single-quarter flows or quarter-end instants, never on a share
-        # basis. Consecutive trailing (365-day) spans never pass the quarter proof.
+        # coherent single-quarter flows or quarter-end instants. Consecutive
+        # trailing (365-day) spans never pass the quarter proof.
         never = inner.never
-        if never is None and inner.share_basis:
-            never = "stdev_q_over_share_basis_without_split_guard"
-        elif never is None and inner.kind == "long":
+        if never is None and inner.kind == "long":
             never = "stdev_q_over_trailing_spans"
-        return _Span(inner.kind, 0, inner.share_basis, never)
+        return _Span(inner.kind, 0, inner.share_basis, never, window_gated)
     periods = {"avg2": 4, "yoy": 4, "qoq": 1}.get(node.name)
     if node.name == "lag":
         periods = _numeric(node.args[1])
@@ -414,14 +526,33 @@ def _span_rule(node: Node, refs: Mapping[str, _Span], exponent_of: Callable[[str
         periods = 4 * _numeric(node.args[1])
     if periods is None:
         raise AnomalyCatalogError(f"no quarter-grid span rule for {node.name!r}")
-    previous = _Span(inner.kind, periods, inner.share_basis, inner.never)
+    previous = _Span(inner.kind, periods, inner.share_basis, inner.never, inner.split_gated)
     if node.name == "lag":
         return previous
     paired = _pair(inner, previous)
     if node.name == "avg2":
-        return _Span("instant", 0, inner.share_basis, paired.never)
-    # yoy/qoq/cagr publish a relative change: basis-free, keeps the newer span.
-    return _Span(inner.kind, 0, False, paired.never)
+        return _Span("instant", 0, inner.share_basis, paired.never, paired.split_gated)
+    # yoy/qoq/cagr publish a basis-free relative change over the pair's span
+    # (qoq of two balances spans the quarter between them, like B - lag(B, 1)).
+    return _Span(paired.kind, 0, False, paired.never, paired.split_gated)
+
+
+def _reads_absence(node: Node) -> bool:
+    """True for an expression holding ``x * 0``: the seed's presence-rule idiom.
+
+    Presence rules turn a concept's absence into a zero (``coalesce(x * 0, y * 0 + 1)``
+    is 1 exactly where ``x`` is untagged beside a tagged ``y``); no other seed
+    definition multiplies by a literal zero.
+    """
+    if isinstance(node, BinOp):
+        if node.op == "*" and any(isinstance(side, Number) and side.value == 0 for side in (node.left, node.right)):
+            return True
+        return _reads_absence(node.left) or _reads_absence(node.right)
+    if isinstance(node, Neg):
+        return _reads_absence(node.operand)
+    if isinstance(node, Call):
+        return any(_reads_absence(argument) for argument in node.args)
+    return False
 
 
 def _history(node: Node, quarters: Mapping[str, int], sessions: Mapping[str, int]) -> tuple[int, int]:
@@ -470,15 +601,17 @@ def derive_metric_shapes(
 
     Incomparability mirrors ``_derived_annual`` (span rules) and ``_derived_pit``
     (an ``incomparable`` input makes the output incomparable) for the cases that
-    are false for every row. Split sensitivity is the formula-derived share
-    exponent (per-share and share-count operands; ruling: no split guard yet): a
-    split-sensitive pair is never proven one quarter apart, across balances or
-    beyond four quarters, and a split-sensitive ``stdev_q`` window never is. Also
-    false: a one-quarter pair involving a trailing span or an instant after a
-    flow; ``stdev_q`` over trailing spans; off-grid lags; a quarter and a trailing
-    span of the same bucket. Daily-window metrics are not span-labeled.
+    are false for every row: a one-quarter pair involving a trailing span or an
+    instant after a flow; ``stdev_q`` over trailing spans; off-grid lags; a quarter
+    and a trailing span of the same bucket. Split sensitivity is the engine's own
+    formula-derived share exponent (per-share and share-count operands); since
+    R1d a split-sensitive pair or window is never false by construction but
+    ``split_gated``: comparable per row on one filing clock or proven split bases.
+    Daily-window metrics are not span-labeled. ``reads_absence`` marks a metric
+    whose expression or any input applies a presence rule (:func:`_reads_absence`).
     ``tests/test_research_metric_economics.py`` checks this mirror against the
-    real engine's ``value_origin`` on a fixture of consecutive quarters.
+    real engine's ``value_origin`` on a fixture of consecutive quarters, with and
+    without the daily bars that prove the split basis.
     """
     rows = default_derived_definitions() if definitions is None else tuple(definitions)
     item_exponents: dict[str, int] = {
@@ -514,8 +647,10 @@ def derive_metric_shapes(
             shape = shapes[name]
             quarters[name], sessions[name] = shape.min_history_quarters, shape.min_history_sessions
             span = metric_spans.get(name, _Span("mixed", 0))
+            # An incomparable input makes the output incomparable (_derived_pit).
             refs[name] = _Span(span.kind, 0, metric_exponents[name] != 0,
-                               f"incomparable_input:{name}" if shape.incomparable_reason else None)
+                               f"incomparable_input:{name}" if shape.incomparable_reason else None,
+                               shape.split_gated)
         for name in definition.market_inputs:
             quarters[name], sessions[name] = 0, 2 if name == "log_return" else 1
         history = _history(node, quarters, sessions)
@@ -524,28 +659,40 @@ def derive_metric_shapes(
         ) or any(name not in _BAR_ONLY_MARKET_COLUMNS for name in definition.market_inputs)
         if filing:
             filing_clocked.add(code)
+        absence = _reads_absence(node) or any(shapes[name].reads_absence for name in definition.metric_inputs)
         reason: str | None = None
+        gated = False
         if definition.window in QUARTER_GRID_WINDOWS:
             # A value lives on a fiscal-quarter bucket even when a constant
             # fallback (e.g. ``coalesce(debt, 0)``) needs no input history.
             history = (max(history[0], 1), history[1])
             span = _span(node, refs, exponent_of)
             metric_spans[code] = span
-            reason = span.never
+            reason, gated = span.never, span.split_gated
             clock = CLOCK_FILING
         else:
             clock = CLOCK_MAX if filing else CLOCK_BAR
-        shapes[code] = MetricShape(history[0], history[1], clock, reason)
+        shapes[code] = MetricShape(history[0], history[1], clock, reason, gated, absence)
     return shapes
 
 
 # ----------------------------------------------------------------------- validation
 
 
+#: A legacy factor module's declaration: ``FACTOR_ID = "<id>"`` or a
+#: ``FACTOR_IDS = ("<id>", ...)`` tuple at the start of a line.
+_LEGACY_FACTOR_DECLARATION = re.compile(r'^FACTOR_IDS?\b[^=\n]*=\s*(\([^)]*\)|"[^"\n]*")', re.MULTILINE)
+
+
 @lru_cache(maxsize=1)
-def _legacy_source_text() -> str:
+def _legacy_module_factor_ids() -> frozenset[str]:
+    """Factor ids declared by legacy factor modules (``FACTOR_ID``/``FACTOR_IDS``)."""
     paths = sorted(_PACKAGE.glob("*.py")) + sorted((_PACKAGE / "factors").glob("*.py"))
-    return "\n".join(path.read_text(encoding="utf-8") for path in paths)
+    ids: set[str] = set()
+    for path in paths:
+        for declaration in _LEGACY_FACTOR_DECLARATION.finditer(path.read_text(encoding="utf-8")):
+            ids.update(re.findall(r'"([a-z][a-z0-9_]*)"', declaration.group(1)))
+    return frozenset(ids)
 
 
 @lru_cache(maxsize=1)
@@ -558,8 +705,28 @@ def _seed_factor_ids() -> frozenset[str]:
 
 
 def _known_legacy_factor(factor_id: str) -> bool:
-    """A factor id from the factor seeds or a quoted id in a legacy factor module."""
-    return factor_id in _seed_factor_ids() or f'"{factor_id}"' in _legacy_source_text()
+    """A factor id from the factor seeds or declared by a legacy factor module.
+
+    Orientation is not restated here: the legacy seeds and modules carry each
+    factor's own direction, which a parity check pairs with ``expected_sign``.
+    """
+    return factor_id in _seed_factor_ids() or factor_id in _legacy_module_factor_ids()
+
+
+def _domain_errors(where: str, domain: str, metrics: Mapping[str, object], items: frozenset[str]) -> list[str]:
+    """``<rule>`` or ``<rule>:<metric|item>:<code>`` with a known rule and a resolvable operand."""
+    rule, _, operand = domain.partition(":")
+    if rule not in DOMAIN_RULES:
+        return [f"{where}: unknown domain rule {rule!r}"]
+    if operand and rule not in _OPERAND_DOMAINS:
+        return [f"{where}: domain rule {rule!r} takes no operand"]
+    if not operand:
+        return [f"{where}: domain rule {rule!r} requires an operand"] if rule in _OPERAND_REQUIRED_DOMAINS else []
+    match = _OPERAND.fullmatch(operand)
+    if match is None or (match.group(1) == "metric" and match.group(2) not in metrics) or (
+            match.group(1) == "item" and match.group(2) not in items):
+        return [f"{where}: domain operand {operand!r} is not a seed metric or fundamental item"]
+    return []
 
 
 def validate_anomaly_catalog(
@@ -634,8 +801,14 @@ def validate_anomaly_catalog(
                                + [leg.min_history_quarters for leg in leg_shapes])
                 sessions = max((leg.min_history_sessions for leg in leg_shapes), default=0)
                 reasons = [leg.incomparable_reason for leg in leg_shapes if leg.incomparable_reason]
-                shape = MetricShape(quarters, sessions, CLOCK_MAX,
-                                    f"incomparable_input:{reasons[0]}" if reasons else None)
+                # The latest input clock: bar-only legs keep the bar clock.
+                clocks = [CLOCK_FILING if kind == "item" else shapes[code].availability_clock
+                          for kind, code in legs]
+                clock = CLOCK_BAR if all(leg_clock == CLOCK_BAR for leg_clock in clocks) else CLOCK_MAX
+                shape = MetricShape(quarters, sessions, clock,
+                                    f"incomparable_input:{reasons[0]}" if reasons else None,
+                                    any(leg.split_gated for leg in leg_shapes),
+                                    any(leg.reads_absence for leg in leg_shapes))
         else:
             errors.append(f"{where}: source_kind must be one of {sorted(SOURCE_KINDS)}")
         if entry.anomaly_class not in ANOMALY_CLASSES + CONTROL_CLASSES:
@@ -643,10 +816,28 @@ def validate_anomaly_catalog(
         for field in ("economic_definition", "sign_rationale", "reference"):
             if not getattr(entry, field):
                 errors.append(f"{where}: {field} must be non-empty")
-        if entry.expected_sign not in (-1, 1):
-            errors.append(f"{where}: expected_sign must be -1 or +1")
+        if entry.expected_sign not in (-1, 0, 1):
+            errors.append(f"{where}: expected_sign must be -1, +1 or two_sided")
         if entry.prior_evidence not in PRIOR_EVIDENCE:
             errors.append(f"{where}: prior_evidence must be one of {sorted(PRIOR_EVIDENCE)}")
+        if entry.is_two_sided and entry.prior_evidence == "published_anomaly":
+            errors.append(f"{where}: a two_sided hypothesis cannot claim published_anomaly evidence")
+        if entry.is_two_sided != ("mixed_evidence" in entry.caveat_codes):
+            errors.append(f"{where}: expected_sign two_sided goes with caveat mixed_evidence and only with it")
+        if not _FEATURE_ID.fullmatch(entry.hypothesis_family):
+            errors.append(f"{where}: hypothesis_family must match {_FEATURE_ID.pattern}")
+        errors.extend(_domain_errors(where, entry.domain, by_code, item_codes))
+        # Domain rules and the caveats they answer come together.
+        for caveat, rules in _CAVEAT_DOMAINS.items():
+            if (caveat in entry.caveat_codes) != (entry.domain_rule in rules):
+                errors.append(f"{where}: caveat {caveat} goes with a domain rule in {sorted(rules)} and only with one")
+        if (entry.preferred_transform == "log_winsor_z") != (entry.domain_rule == "positive_value_required"):
+            errors.append(f"{where}: log_winsor_z goes with domain positive_value_required and only with it")
+        for code in entry.caveat_codes:
+            if code not in CAVEAT_CODES:
+                errors.append(f"{where}: unknown caveat_code {code!r}")
+        if len(set(entry.caveat_codes)) != len(entry.caveat_codes):
+            errors.append(f"{where}: duplicate caveat_code")
         if entry.scale_type not in SCALE_TYPES:
             errors.append(f"{where}: unknown scale_type {entry.scale_type!r}")
         if entry.preferred_transform not in PREFERRED_TRANSFORMS:
@@ -656,8 +847,12 @@ def validate_anomaly_catalog(
                           f"{sorted(LOG_SCALE_TYPES)}")
         if entry.admission not in ADMISSIONS:
             errors.append(f"{where}: admission must be one of {sorted(ADMISSIONS)}")
-        elif (entry.admission == "eligible") == bool(entry.admission_note):
-            errors.append(f"{where}: admission_note is required unless admission is 'eligible'")
+        else:
+            if (entry.admission == "eligible") == bool(entry.admission_note):
+                errors.append(f"{where}: admission_note is required unless admission is 'eligible'")
+            if (entry.admission == "eligible") == bool(entry.caveat_codes):
+                errors.append(f"{where}: caveat_code is required unless admission is 'eligible' "
+                              "(and an eligible row has none)")
         for token in entry.supersedes:
             match = _SUPERSEDES.fullmatch(token)
             if match is None or not _known_legacy_factor(match.group(1)):
@@ -676,6 +871,12 @@ def validate_anomaly_catalog(
             errors.append(f"{where}: min history ({entry.min_history_quarters}q, "
                           f"{entry.min_history_sessions}s) but the definition needs "
                           f"({shape.min_history_quarters}q, {shape.min_history_sessions}s)")
+        if ("split_basis" in entry.caveat_codes) != shape.split_gated:
+            errors.append(f"{where}: caveat split_basis goes with a share-basis comparison or window "
+                          "(labeled per row since R1d) and only with one")
+        if ("presence_rule" in entry.caveat_codes) != shape.reads_absence:
+            errors.append(f"{where}: caveat presence_rule goes with a definition that reads a zero from a "
+                          "concept's absence (itself or through an input) and only with one")
         blocked = entry.admission == "blocked_incomparable_origin"
         if shape.incomparable_reason and not blocked:
             errors.append(f"{where}: every quarterly value is labeled incomparable "
@@ -690,7 +891,7 @@ def validate_anomaly_catalog(
             errors.append(f"seed metric {code!r} is both cataloged and excluded")
         kind, _, target = reason.partition(":")
         if (kind in ("dollar_level_input", "per_share_level") and not target) or (
-                kind in ("inverse_cataloged", "component_of") and target in feature_ids):
+                kind in _TARGETED_EXCLUSIONS and target in feature_ids):
             continue
         errors.append(f"exclusion {code!r} has an invalid reason {reason!r}")
     for code in sorted(set(by_code) - cataloged - set(excluded)):
@@ -711,8 +912,13 @@ def default_anomaly_catalog() -> tuple[AnomalyCatalogEntry, ...]:
 
 
 def anomaly_catalog_sha256(path: Path | str = ANOMALY_CATALOG_PATH) -> str:
-    """Content digest for feature/evaluation manifests (R2b ``feature_version`` input)."""
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    """Content digest for feature/evaluation manifests (R2b ``feature_version`` input).
+
+    Line endings are normalized to LF first, so a CRLF checkout (``core.autocrlf``)
+    or ``git archive`` export hashes the same as the committed blob.
+    """
+    content = Path(path).read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(content).hexdigest()
 
 
 def anomaly_class_counts(
@@ -747,16 +953,26 @@ def render_anomaly_catalog_markdown(entries: Iterable[AnomalyCatalogEntry] | Non
         "Edit the CSV (and `EXCLUDED_SEED_METRICS`), never this file by hand.",
         "",
         "Every row is a pre-registered hypothesis: `expected_sign` +1 means a higher value "
-        "predicts higher 1-12 month forward returns. Evaluation tests the sign; it never "
-        "chooses it. `prior_evidence`: `published_anomaly` (the metric, or its standard "
+        "predicts higher 1-12 month forward returns; `two-sided` pre-registers no direction "
+        "where published evidence disagrees (always with caveat `mixed_evidence` and never "
+        "graded `published_anomaly`). Evaluation tests the sign; it never chooses it. "
+        "`prior_evidence`: `published_anomaly` (the metric, or its standard "
         "construction, is a published anomaly with this sign), `published_analogue` (a close "
         "published relative; the sign is carried over), `economic_conjecture` (the sign is "
         "argued, not published). Qualification should treat conjectures as exploratory.",
         "",
+        "`hypothesis_family` groups near-duplicates and same-construct variants (one "
+        "economic hypothesis); multiple-testing and deduplication work over families, not rows.",
+        "",
         "Admission: `eligible`; `eligible_with_caveat` (a known construction hazard, "
-        "noted per row); `blocked_incomparable_origin` (the derived engine labels every "
+        "coded and noted per row); `blocked_incomparable_origin` (the derived engine labels every "
         "quarterly value `value_origin='incomparable'`, which the research gate rejects; "
-        "not testable until the engine can prove comparability).",
+        "not testable until the engine can prove comparability); `blocked_known_bias` (the "
+        "engine can label values comparable but a known construction bias is noted per row).",
+        "",
+        "`domain` is enforced by the feature store before any transform: an out-of-domain "
+        "value is excluded or carried as the named separate indicator, never ranked as valid. "
+        "A rule without an operand tests the feature value itself.",
         "",
         "Clocks are inherited, never declared freely: "
         + "; ".join(f"`{key}` = {value}" for key, value in AVAILABILITY_CLOCKS.items())
@@ -783,9 +999,9 @@ def render_anomaly_catalog_markdown(entries: Iterable[AnomalyCatalogEntry] | Non
             "",
             f"## {name}",
             "",
-            "| feature | source | sign | definition | reference | evidence | transform | clock "
-            "| history | admission |",
-            "|---|---|:-:|---|---|---|---|---|---|---|",
+            "| feature | source | sign | definition | reference | evidence | family | transform | domain "
+            "| clock | history | admission |",
+            "|---|---|:-:|---|---|---|---|---|---|---|---|---|",
         ]
         for entry in members:
             if entry.source_kind == "seed_metric":
@@ -793,14 +1009,33 @@ def render_anomaly_catalog_markdown(entries: Iterable[AnomalyCatalogEntry] | Non
             else:
                 source = f"`{entry.numerator}` / `{entry.denominator}`"
             admission = entry.admission
+            if entry.caveat_codes:
+                admission += f" [{', '.join(entry.caveat_codes)}]"
             if entry.admission_note:
                 admission += f": {entry.admission_note}"
             lines.append(
-                f"| `{entry.feature_id}` | {source} | {'+1' if entry.expected_sign > 0 else '-1'} "
+                f"| `{entry.feature_id}` | {source} | {_SIGN_LABELS[entry.expected_sign]} "
                 f"| {_cell(entry.economic_definition)} | {_cell(entry.reference)} "
-                f"| {entry.prior_evidence} | {entry.preferred_transform} | {entry.availability_clock} "
+                f"| {entry.prior_evidence} | {entry.hypothesis_family} | {entry.preferred_transform} "
+                f"| {entry.domain} | {entry.availability_clock} "
                 f"| {entry.min_history_quarters}q/{entry.min_history_sessions}s | {_cell(admission)} |"
             )
+    families: dict[str, list[str]] = {}
+    for entry in rows:
+        families.setdefault(entry.hypothesis_family, []).append(entry.feature_id)
+    lines += [
+        "",
+        "## Hypothesis families with more than one member",
+        "",
+        "| family | members |",
+        "|---|---|",
+    ]
+    lines += [f"| {family} | {', '.join(f'`{member}`' for member in members)} |"
+              for family, members in sorted(families.items()) if len(members) > 1]
+    lines += ["", "## Domain rules", "", "| rule | meaning |", "|---|---|"]
+    lines += [f"| `{rule}` | {meaning} |" for rule, meaning in DOMAIN_RULES.items()]
+    lines += ["", "## Caveat codes", "", "| code | meaning |", "|---|---|"]
+    lines += [f"| `{code}` | {meaning} |" for code, meaning in CAVEAT_CODES.items()]
     lines += [
         "",
         "## Seed metrics that are not research features",
@@ -810,3 +1045,6 @@ def render_anomaly_catalog_markdown(entries: Iterable[AnomalyCatalogEntry] | Non
     ]
     lines += [f"| `{code}` | {reason} |" for code, reason in sorted(EXCLUDED_SEED_METRICS.items())]
     return "\n".join(lines) + "\n"
+
+
+_SIGN_LABELS: Mapping[int, str] = {1: "+1", -1: "-1", 0: "two-sided"}

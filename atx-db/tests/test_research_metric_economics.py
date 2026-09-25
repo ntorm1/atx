@@ -1,28 +1,34 @@
 """R1b anomaly-breadth metrics: hand-computed economics on the real derived engine.
 
 One synthetic issuer (S1) reports twenty contiguous calendar quarters of every
-item any quarter-grid seed metric reads, filed 40 days after each quarter end.
-The whole quarterly catalog is computed once on it. That gives two things:
+item any quarter-grid seed metric reads, filed 40 days after each quarter end,
+and trades on flat weekday bars (no split; every split basis proven, R1d). The
+whole quarterly catalog is computed once on it. That gives two things:
 
 * hand-computed values for the R1b definitions (numerator/denominator timing,
   lagged and average denominators, seasonal differences, eight-quarter scales);
 * a real-engine cross-check of the research catalog: every catalog row whose
   admission rests on the engine's span labels must be ``blocked_incomparable_origin``
   exactly when the engine labels its values ``value_origin='incomparable'``.
+  S10 is S1 without bars: there, only ``split_basis`` rows may be incomparable.
 
-Issuers S2-S6 carry the same values with specific buckets removed or made
+Issuers S2-S9 carry the same values with specific buckets removed or made
 non-positive, proving that a missing bucket yields no value rather than a
-row-lag substitution, that non-positive opening balances yield no value, and
-how an untagged or partly tagged equity-issuance concept is read.
+row-lag substitution, that non-positive opening balances yield no value, how an
+untagged or partly tagged equity-issuance concept is read, and that a missing
+debt, inventory or dividend concept is zero only for an issuer that tags none of
+it throughout its presence window (never a tag switch or a skipped quarter).
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import json
 import math
 import statistics
 from collections.abc import Callable, Iterator
 
+import pandas as pd
 import pytest
 
 from atx_db.derived_metrics import DerivedMetricsOptions, refresh_derived_metrics
@@ -33,7 +39,11 @@ from atx_db.derived_registry import (
 )
 from atx_db.item_registry import read_fundamental_item_seed
 from atx_db.research import default_anomaly_catalog
+from atx_db.research.catalog import derive_metric_shapes
+from atx_db.standardization import compute_standardized_rows, default_standardization_rules
 from tests.conftest import _close_store, _open_template_copy
+
+_DEBT = ("total_debt", "short_term_debt", "long_term_debt")
 
 _ENDS = tuple(
     dt.date(year, month, day)
@@ -112,6 +122,26 @@ def _seed(store, security_id: str, *, drop: frozenset[tuple[str, int]] = frozens
     )
 
 
+def _flat_bars(store, security_id: str) -> None:
+    """Weekday bars with a flat vendor factor over every filing clock: no split
+    happened and the split basis of every share-basis operand is proven (R1d)."""
+    store.con.execute(
+        """
+        INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, close, adjusted_close, available_at)
+        SELECT 'test', ?, ?, d::DATE, 10.0, 10.0, d::DATE + INTERVAL 22 HOUR
+        FROM generate_series(TIMESTAMP '2017-12-01', TIMESTAMP '2023-06-30', INTERVAL 1 DAY) t(d)
+        WHERE dayofweek(d) BETWEEN 1 AND 5
+        """,
+        [security_id, security_id],
+    )
+
+
+_QUARTER_GRID_CODES = tuple(
+    definition.metric_code for definition in default_derived_definitions()
+    if definition.window in QUARTER_GRID_WINDOWS
+)
+
+
 @pytest.fixture(scope="module")
 def engine_store(_schema_template, tmp_path_factory) -> Iterator[object]:
     store = _open_template_copy(_schema_template, tmp_path_factory.mktemp("r1b") / "warehouse.duckdb")
@@ -119,8 +149,13 @@ def engine_store(_schema_template, tmp_path_factory) -> Iterator[object]:
         store.con.execute("SET memory_limit = '256MB'")
         store.analytical_memory_limit = "256MB"
         seed_derived_metric_definitions(store)
+        # S1 has daily bars (split basis proven); S10 is the same issuer without
+        # bars, where every share-basis comparison stays unproven.
         _seed(store, "S1")
-        refresh_derived_metrics(store, DerivedMetricsOptions(security_ids=("S1",)))
+        _flat_bars(store, "S1")
+        _seed(store, "S10")
+        refresh_derived_metrics(store, DerivedMetricsOptions(
+            security_ids=("S1", "S10"), metric_codes=_QUARTER_GRID_CODES))
         _seed(store, "S2", drop=frozenset({("net_income_total", 6)}))
         # Both common-equity sources (common_equity_q falls back to stockholders
         # equity less preferred) are absent at bucket 3.
@@ -130,10 +165,23 @@ def engine_store(_schema_template, tmp_path_factory) -> Iterator[object]:
         # Equity-issuance proceeds never tagged (S5) or tagged for part of a year (S6).
         _seed(store, "S5", drop=frozenset(("stock_issuance", index) for index in range(len(_ENDS))))
         _seed(store, "S6", drop=frozenset({("stock_issuance", 17), ("stock_issuance", 18)}))
+        # S7 never reports debt, inventory or dividends; S8 reports long-term debt
+        # only; S9 stops tagging debt and inventory at bucket 16 and skips its
+        # common dividend at bucket 18 (tag switches, not genuine zeros).
+        _seed(store, "S7", drop=frozenset(
+            (code, index) for code in (*_DEBT, "inventory", "common_dividends_paid", "total_dividends_paid")
+            for index in range(len(_ENDS))))
+        _seed(store, "S8", drop=frozenset(
+            (code, index) for code in ("total_debt", "short_term_debt") for index in range(len(_ENDS))))
+        _seed(store, "S9", drop=frozenset(
+            {(code, index) for code in (*_DEBT, "inventory") for index in range(16, len(_ENDS))}
+            | {("common_dividends_paid", 18)}))
         refresh_derived_metrics(store, DerivedMetricsOptions(
-            security_ids=("S2", "S3", "S4", "S5", "S6"),
+            security_ids=("S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9"),
             metric_codes=("sue_ni", "roe_variability_8q", "investment_to_assets", "inventory_change_to_assets",
-                          "piotroski_f_cash_issuance"),
+                          "piotroski_f_cash_issuance", "debt_to_assets", "debt_to_assets_change_yoy",
+                          "net_debt_to_book_equity", "sustainable_growth", "long_term_debt_to_assets",
+                          "quick_ratio", "working_capital_accruals"),
         ))
         yield store
     finally:
@@ -201,7 +249,7 @@ def _noa_turnover(i: int) -> float:
     return _ttm("revenue", i) / _noa(i - 4)
 
 
-def _piotroski_cash_issuance(i: int, no_issuance: float) -> float:
+def _piotroski_cash_issuance(i: int, no_issuance: float, *, debt_free: bool = False) -> float:
     """Piotroski (2000) nine signals on trailing flows; EQ_OFFER supplied."""
     def roa(j: int) -> float:
         return _ttm("net_income_total", j) / _avg_assets(j)
@@ -210,7 +258,7 @@ def _piotroski_cash_issuance(i: int, no_issuance: float) -> float:
         return _ttm("cash_flow_from_operations", j) / _avg_assets(j)
 
     def leverage(j: int) -> float:
-        return _v("long_term_debt", j) / _v("total_assets", j)
+        return 0.0 if debt_free else _v("long_term_debt", j) / _v("total_assets", j)
 
     def liquidity(j: int) -> float:
         return _v("current_assets", j) / _v("current_liabilities", j)
@@ -249,11 +297,14 @@ _EXPECTED: dict[str, Callable[[int], float]] = {
     "sustainable_growth": lambda i: (
         (_ttm("net_income_to_common", i) - _ttm("common_dividends_paid", i))
         / ((_v("common_equity", i) + _v("common_equity", i - 4)) / 2.0)),
+    # RSST total accruals: change in NOA less change in debt (R1a M4: no second LTI term).
+    "rsst_accruals": lambda i: (
+        (_noa(i) - _noa(i - 4)) - _seasonal_change("total_debt", i)) / _avg_assets(i),
     "capex_growth_2y": lambda i: _capex_ttm(i) / _capex_ttm(i - 8) - 1.0,
     "capex_growth_3y": lambda i: _capex_ttm(i) / _capex_ttm(i - 12) - 1.0,
-    # Balance-sheet investment and inventory changes against lagged/average assets.
+    # Balance-sheet investment (net PP&E, R1b J2) and inventory changes against lagged/average assets.
     "investment_to_assets": lambda i: (
-        (_seasonal_change("pp_and_e_gross", i) + _seasonal_change("inventory", i)) / _v("total_assets", i - 4)),
+        (_seasonal_change("pp_and_e_net", i) + _seasonal_change("inventory", i)) / _v("total_assets", i - 4)),
     "inventory_change_to_assets": lambda i: _seasonal_change("inventory", i) / _avg_assets(i),
     # Issuance: split-consistent weighted shares (1y) and period-end shares (3y).
     "share_issuance_1y": lambda i: math.log(_v("weighted_avg_shares_basic", i) / _v("weighted_avg_shares_basic", i - 4)),
@@ -350,15 +401,126 @@ def test_a_missing_bucket_voids_every_window_that_contains_it(engine_store):
         statistics.stdev(_roe_q(j) for j in range(7, 15)), rel=1e-9)
 
 
-def test_investment_to_assets_falls_back_to_net_ppe_and_zero_inventory_change(engine_store):
-    # S4: gross PP&E missing at bucket 4, inventory missing at bucket 13.
-    assert _state(engine_store, "investment_to_assets", 8, "S4")[0] == pytest.approx(
-        (_seasonal_change("pp_and_e_net", 8) + _seasonal_change("inventory", 8)) / _v("total_assets", 4), rel=1e-12)
-    for index in (13, 17):
+def _net_ia(index: int) -> float:
+    return (_seasonal_change("pp_and_e_net", index) + _seasonal_change("inventory", index)) / _v(
+        "total_assets", index - 4)
+
+
+def test_investment_to_assets_keeps_one_ppe_basis_and_treats_missing_inventory_like_its_sibling(engine_store):
+    # R1b J2 on S4 (gross PP&E missing at bucket 4, inventory missing at bucket 13).
+    # Net PP&E is the only basis: the gross gap (an annual-note-only gross line)
+    # changes nothing, so no fiscal quarter switches basis and no issuer differs
+    # from another by its gross/net reporting choice.
+    for index in range(4, 13):
         assert _state(engine_store, "investment_to_assets", index, "S4")[0] == pytest.approx(
-            _seasonal_change("pp_and_e_gross", index) / _v("total_assets", index - 4), rel=1e-12)
-        assert _state(engine_store, "inventory_change_to_assets", index, "S4")[:2] == (
-            None, "missing_input_or_domain")
+            _net_ia(index), rel=1e-12), index
+    assert _state(engine_store, "investment_to_assets", 8, "S4")[0] != pytest.approx(
+        (_seasonal_change("pp_and_e_gross", 8) + _seasonal_change("inventory", 8)) / _v("total_assets", 4),
+        rel=1e-6)
+    # An issuer that reports inventory has no inventory change at a missing end, in
+    # both inventory features alike (never a zero).
+    for index in (13, 17):
+        for code in ("investment_to_assets", "inventory_change_to_assets"):
+            assert _state(engine_store, code, index, "S4")[0] is None, (code, index)
+
+
+def test_missing_debt_inventory_and_dividends_are_zero_only_for_issuers_that_never_report_them(engine_store):
+    # R1b J4 / R1a M5. S7 never reports any debt, inventory or dividend concept.
+    # Presence windows: five quarterly balance sheets for debt and inventory, the
+    # trailing four cash-flow statements for dividends.
+    i = _LAST
+    assert _state(engine_store, "debt_to_assets", i, "S7")[:2] == (0.0, "valid")
+    # The zeros keep the spans of their statements: comparable, not incomparable.
+    for code in ("debt_to_assets", "debt_to_assets_change_yoy", "net_debt_to_book_equity",
+                 "inventory_change_to_assets", "investment_to_assets", "sustainable_growth"):
+        assert _state(engine_store, code, i, "S7")[2] != "incomparable", code
+    assert _state(engine_store, "debt_to_assets", i, "S8")[2] != "incomparable"
+    # Too short a window is missing, not zero: bucket 3 has four balance sheets.
+    assert _state(engine_store, "debt_to_assets", 3, "S7")[0] is None
+    assert _state(engine_store, "debt_to_assets", 4, "S7")[:2] == (0.0, "valid")
+    assert _state(engine_store, "debt_to_assets_change_yoy", i, "S7")[:2] == (0.0, "valid")
+    assert _state(engine_store, "net_debt_to_book_equity", i, "S7")[0] == pytest.approx(
+        -_v("cash_and_st_investments", i) / _v("common_equity", i), rel=1e-12)
+    assert _state(engine_store, "inventory_change_to_assets", i, "S7")[:2] == (0.0, "valid")
+    assert _state(engine_store, "investment_to_assets", i, "S7")[0] == pytest.approx(
+        _seasonal_change("pp_and_e_net", i) / _v("total_assets", i - 4), rel=1e-12)
+    assert _state(engine_store, "sustainable_growth", i, "S7")[0] == pytest.approx(
+        _ttm("net_income_to_common", i) / ((_v("common_equity", i) + _v("common_equity", i - 4)) / 2.0),
+        rel=1e-12)
+    # The same rule for long-term debt (the Piotroski leverage signal), short-term
+    # debt in operating working capital and inventory in the quick ratio: a debt-free,
+    # inventory-free issuer keeps its leverage signal, F-score, accruals and quick ratio.
+    assert _state(engine_store, "long_term_debt_to_assets", i, "S7")[:2] == (0.0, "valid")
+    assert _state(engine_store, "long_term_debt_to_assets", 3, "S7")[0] is None
+    assert _state(engine_store, "quick_ratio", i, "S7")[0] == pytest.approx(
+        _v("current_assets", i) / _v("current_liabilities", i), rel=1e-12)
+
+    def owc(j: int) -> float:
+        return _v("current_assets", j) - _v("cash_and_st_investments", j) - _v("current_liabilities", j)
+
+    assert _state(engine_store, "working_capital_accruals", i, "S7")[0] == pytest.approx(
+        (owc(i) - owc(i - 4)) / _avg_assets(i), rel=1e-12)
+    assert _state(engine_store, "piotroski_f_cash_issuance", i, "S7")[0] == pytest.approx(
+        _piotroski_cash_issuance(i, 0.0, debt_free=True))
+    # S8 reports long-term debt only: a never-reported short-term component is zero.
+    assert _state(engine_store, "debt_to_assets", i, "S8")[0] == pytest.approx(
+        _v("long_term_debt", i) / _v("total_assets", i), rel=1e-12)
+    assert _state(engine_store, "long_term_debt_to_assets", i, "S8")[0] == pytest.approx(
+        _v("long_term_debt", i) / _v("total_assets", i), rel=1e-12)
+    assert _state(engine_store, "working_capital_accruals", i, "S8")[0] == pytest.approx(
+        (owc(i) - owc(i - 4)) / _avg_assets(i), rel=1e-12)
+    # S9 stops tagging debt and inventory at bucket 16: a tag switch is missing, not zero.
+    assert _state(engine_store, "debt_to_assets", 15, "S9")[0] == pytest.approx(
+        _v("total_debt", 15) / _v("total_assets", 15), rel=1e-12)
+    for index in range(16, len(_ENDS)):
+        for code in ("debt_to_assets", "debt_to_assets_change_yoy", "net_debt_to_book_equity",
+                     "investment_to_assets", "inventory_change_to_assets", "long_term_debt_to_assets",
+                     "quick_ratio", "working_capital_accruals", "piotroski_f_cash_issuance"):
+            assert _state(engine_store, code, index, "S9")[0] is None, (code, index)
+    # S9 skips its common dividend at bucket 18: the payer never reads as a non-payer.
+    assert _state(engine_store, "sustainable_growth", 17, "S9")[0] == pytest.approx(
+        _EXPECTED["sustainable_growth"](17), rel=1e-12)
+    for index in (18, 19):
+        assert _state(engine_store, "sustainable_growth", index, "S9")[0] is None, index
+
+
+def test_excluded_duplicate_and_negation_are_exact_identities(engine_store):
+    # R1a I3: the exclusions record identities, not approximations.
+    growth = _state(engine_store, "revenue_growth_yoy", _LAST)[0]
+    assert _state(engine_store, "revenue_cagr_1y", _LAST)[0] == pytest.approx(growth, rel=1e-12)
+    issuance = _state(engine_store, "net_equity_issuance", _LAST)[0]
+    assert _state(engine_store, "buyback_ratio", _LAST)[0] == pytest.approx(-issuance, rel=1e-12)
+
+
+def _sga_candidate(item_id: int, concept: str, value: float) -> dict:
+    return {
+        "upstream_source": "fixture", "source": "fixture", "security_id": "SEC-CIK-0000000001",
+        "symbol": "TST", "cik": "1", "item_id": item_id, "canonical_metric": concept, "concept": concept,
+        "taxonomy": "us-gaap", "unit": "USD", "unit_type": "monetary", "basis": "annual",
+        "period_start": dt.date(2025, 1, 1), "period_end": dt.date(2025, 12, 31), "fiscal_year": 2025,
+        "fiscal_period": "FY", "accession_number": "acc", "source_accession": "acc",
+        "filed_date": dt.date(2026, 2, 1), "value": value, "available_at": dt.datetime(2026, 2, 1, 22, 0),
+        "input_rank": 10,
+    }
+
+
+def test_sga_composes_selling_plus_general_and_administrative_when_no_total_is_tagged():
+    """R1b J3: filers that split SG&A (common in technology) keep the SG&A features."""
+    rules = tuple(rule for rule in default_standardization_rules() if rule.rule_id == "std_annual_1005")
+    split = [_sga_candidate(1006, "SellingAndMarketingExpense", 300.0),
+             _sga_candidate(1007, "GeneralAndAdministrativeExpense", 120.0)]
+
+    composed = compute_standardized_rows(pd.DataFrame(split), rules=rules)
+    assert list(composed["value"]) == [420.0]
+    # Labeled: the composite records its rule and both component items.
+    assert composed["combination_rule"].iloc[0] == "coalesce_or_sum"
+    assert json.loads(composed["input_item_ids_json"].iloc[0]) == [1006, 1007]
+
+    direct = compute_standardized_rows(pd.DataFrame(
+        [_sga_candidate(1005, "SellingGeneralAndAdministrativeExpense", 450.0), *split]), rules=rules)
+    assert list(direct["value"]) == [450.0]
+    # Both components are required; one alone is not SG&A.
+    assert compute_standardized_rows(pd.DataFrame(split[:1]), rules=rules).empty
 
 
 def test_cash_issuance_signal_distinguishes_untagged_years_from_partial_years(engine_store):
@@ -392,6 +554,7 @@ def _engine_labeled_operands() -> Iterator[tuple[str, str, bool]]:
 
 
 def test_catalog_admission_matches_the_engine_value_origin(engine_store):
+    admission_of = {entry.feature_id: entry.admission for entry in default_anomaly_catalog()}
     problems: list[str] = []
     checked = 0
     for feature, code, blocked in _engine_labeled_operands():
@@ -407,8 +570,41 @@ def test_catalog_admission_matches_the_engine_value_origin(engine_store):
             if origins != {"incomparable"}:
                 problems.append(f"{feature}/{code}: cataloged blocked but the engine labels {sorted(origins)}")
         elif origin == "incomparable":
-            problems.append(f"{feature}/{code}: cataloged eligible but the engine labels it incomparable")
+            problems.append(f"{feature}/{code}: cataloged {admission_of[feature]} but the engine labels it "
+                            "incomparable")
 
     assert problems == []
-    # Every quarter-grid seed row (144) plus five composition metric legs.
+    # Every quarter-grid seed row plus the composition metric legs (146 operands).
     assert checked >= 140
+
+
+def _incomparable_at_last_bucket(store, security_id: str) -> set[str]:
+    return {row[0] for row in store.con.execute(
+        """SELECT metric_code FROM derived_metric_values
+           WHERE security_id = ? AND period_end = ? AND value_status = 'valid'
+             AND value_origin = 'incomparable'""",
+        [security_id, _ENDS[_LAST]]).fetchall()}
+
+
+def test_split_basis_rows_are_the_only_ones_unproven_without_daily_bars(engine_store):
+    """R1d: S10 (S1 without bars) leaves exactly the mirror's share-basis metrics unproven."""
+    by_id = {entry.feature_id: entry for entry in default_anomaly_catalog()}
+    windows = {definition.metric_code: definition.window for definition in default_derived_definitions()}
+    shapes = derive_metric_shapes()
+    unproven = _incomparable_at_last_bucket(engine_store, "S10") - _incomparable_at_last_bucket(engine_store, "S1")
+
+    assert unproven == {
+        code for code, shape in shapes.items()
+        if shape.split_gated and shape.incomparable_reason is None and windows[code] in QUARTER_GRID_WINDOWS
+    }
+    # Every share-count and per-share comparison across filings, trailing EPS included.
+    assert {"eps_diluted_q_growth_yoy", "eps_basic_q_growth_yoy", "eps_diluted_q_growth_yoy_accel",
+            "eps_diluted_growth_yoy", "eps_diluted_ttm", "eps_basic_ttm", "share_issuance_1y",
+            "share_issuance_3y", "shares_growth_yoy", "eps_cagr_3y", "piotroski_f"} <= unproven
+    for code in unproven:
+        # Same value, only the label differs: bars prove the basis, they change nothing.
+        assert _state(engine_store, code, _LAST, "S10")[0] == pytest.approx(
+            _state(engine_store, code, _LAST)[0], rel=1e-12), code
+    for feature, code, blocked in _engine_labeled_operands():
+        if code in unproven and not blocked:
+            assert "split_basis" in by_id[feature].caveat_codes, (feature, code)

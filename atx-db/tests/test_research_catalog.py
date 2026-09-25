@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import re
+from collections import defaultdict
 from dataclasses import replace
 from pathlib import Path
 
@@ -14,11 +15,14 @@ from atx_db.research import ANOMALY_CLASSES, CONTROL_CLASSES, default_anomaly_ca
 from atx_db.research.catalog import (
     ANOMALY_CATALOG_COLUMNS,
     ANOMALY_CATALOG_PATH,
+    CAVEAT_CODES,
     CLOCK_BAR,
     CLOCK_FILING,
     CLOCK_MAX,
+    DOMAIN_RULES,
     EXCLUDED_SEED_METRICS,
     AnomalyCatalogError,
+    anomaly_catalog_sha256,
     anomaly_class_counts,
     derive_metric_shapes,
     load_anomaly_catalog,
@@ -31,20 +35,33 @@ DOC_PATH = Path(__file__).resolve().parents[1] / "docs" / "research" / "ANOMALY_
 
 #: Values the engine labels value_origin='incomparable' for every quarterly row.
 BLOCKED = {
-    "eps_diluted_q_growth_qoq": "one_quarter_pair_per_share_without_split_guard",
-    "eps_basic_q_growth_qoq": "one_quarter_pair_per_share_without_split_guard",
-    "eps_diluted_growth_qoq": "one_quarter_pair_per_share_without_split_guard",
+    # Two trailing-twelve-month sums one quarter apart overlap by three quarters.
     "revenue_growth_qoq": "one_quarter_pair_without_provable_quarter_spans",
+    "eps_diluted_growth_qoq": "one_quarter_pair_without_provable_quarter_spans",
     # Twelve trailing-twelve-month growth rates: 365-day spans never form a
     # single-quarter chain (R1c _consecutive_window).
     "earnings_variability": "stdev_q_over_trailing_spans",
-    # Split-sensitive comparisons other than flows exactly four quarters apart
-    # stay incomparable until a split guard exists (R1c fix, pending R1d).
-    "shares_growth_yoy": "share_basis_balance_pair_without_split_guard",
-    "share_issuance_3y": "multi_year_share_basis_pair_without_split_guard",
-    "eps_cagr_3y": "multi_year_share_basis_pair_without_split_guard",
-    "piotroski_f": "incomparable_input:shares_growth_yoy",
 }
+#: Share-basis comparisons and windows: since R1d (split epochs from daily bars)
+#: the engine labels them per row, comparable on one filing's clock or on a split
+#: basis proven from bars, so they are admitted with the split_basis caveat.
+SPLIT_GATED = {
+    "eps_diluted_growth_yoy", "eps_diluted_q_growth_yoy", "eps_basic_q_growth_yoy",
+    "eps_diluted_q_growth_qoq", "eps_basic_q_growth_qoq", "eps_diluted_q_growth_yoy_accel",
+    "eps_cagr_3y", "shares_growth_yoy", "share_issuance_1y", "share_issuance_3y", "piotroski_f",
+    # Blocked for their spans; the share basis is labeled per row as well.
+    "earnings_variability", "eps_diluted_growth_qoq",
+}
+#: Share-basis rows whose comparability rests only on R1d's cross-filing split
+#: rebasing (trailing EPS windows, balance and multi-year share pairs, per-share
+#: QoQ): blocked for a known bias until the R1d split guard passes review
+#: (controller ruling for eps_diluted_growth_yoy, R1a I2).
+KNOWN_BIAS = {
+    "eps_diluted_growth_yoy", "eps_cagr_3y", "eps_diluted_q_growth_qoq", "eps_basic_q_growth_qoq",
+    "shares_growth_yoy", "share_issuance_3y", "piotroski_f",
+}
+#: Contested signs pre-registered two-sided (R1a I3/I5, R1b J1).
+TWO_SIDED = {"revenue_growth_yoy", "debt_to_market", "assets_to_market", "sga_to_sales"}
 
 
 def _by_id() -> dict[str, object]:
@@ -70,10 +87,87 @@ def test_every_row_is_a_signed_referenced_hypothesis_and_all_classes_are_present
     counts = anomaly_class_counts(entries)
 
     assert len({entry.feature_id for entry in entries}) == len(entries)
-    assert all(entry.expected_sign in (-1, 1) for entry in entries)
+    assert all(entry.expected_sign in (-1, 0, 1) for entry in entries)
     assert all(entry.reference and entry.sign_rationale for entry in entries)
     assert all(counts[name] >= 1 for name in ANOMALY_CLASSES + CONTROL_CLASSES), counts
     assert {entry.anomaly_class for entry in entries if entry.is_control} <= set(CONTROL_CLASSES)
+    two_sided = {entry.feature_id for entry in entries if entry.is_two_sided}
+    assert two_sided == TWO_SIDED
+    for code in two_sided:
+        entry = _by_id()[code]
+        assert entry.prior_evidence != "published_anomaly"
+        assert "mixed_evidence" in entry.caveat_codes
+
+
+def test_domains_caveats_and_families_are_machine_readable():
+    entries = default_anomaly_catalog()
+    by_id = _by_id()
+
+    for entry in entries:
+        assert entry.domain_rule in DOMAIN_RULES, entry.feature_id
+        assert set(entry.caveat_codes) <= set(CAVEAT_CODES), entry.feature_id
+        assert bool(entry.caveat_codes) == (entry.admission != "eligible"), entry.feature_id
+        assert entry.hypothesis_family, entry.feature_id
+    # R1a I4: the published constructions' domains, enforced by the feature store (R2b).
+    assert (by_id["book_to_market"].domain_rule, by_id["book_to_market"].domain_operand) == (
+        "negative_book_excluded", None)
+    for code in ("earnings_yield", "fcf_yield", "cfo_to_price"):
+        assert by_id[code].domain == "loss_firms_separate", code
+    assert by_id["dividend_yield"].domain == "zero_payer_separate"
+    assert by_id["dividend_yield"].prior_evidence == "published_analogue"
+    for code in ("gross_profit_to_ev", "cfo_to_ev", "ebit_to_ev", "sales_to_ev", "ebitda_to_ev"):
+        assert by_id[code].domain == "positive_denominator_required:metric:enterprise_value", code
+    assert by_id["roe"].domain_operand == "metric:common_equity_avg2"
+    for code in ("market_cap", "dollar_volume_20d", "realized_vol_60d", "realized_vol_252d"):
+        assert by_id[code].domain == "positive_value_required", code
+    # R1b J1: near-duplicates and same-construct variants share one family.
+    families: dict[str, set[str]] = defaultdict(set)
+    for entry in entries:
+        families[entry.hypothesis_family].add(entry.feature_id)
+    assert {"net_income_q_growth_yoy", "sue_ni", "earnings_surprise_to_market"} <= families["earnings_surprise"]
+    assert families["asset_turnover_change"] == {"asset_turnover_change_yoy", "noa_turnover_change_yoy"}
+    assert families["capex_growth"] == {
+        "capex_growth_yoy", "capex_q_growth_yoy", "capex_q_growth_qoq", "capex_growth_2y", "capex_growth_3y"}
+    assert {"net_equity_issuance", "shares_growth_yoy", "share_issuance_1y", "share_issuance_3y",
+            "buyback_yield"} <= families["equity_issuance"]
+    assert {"sales_growth_less_gross_profit_growth", "gross_margin_q_change_yoy"} <= families["gross_margin_change"]
+
+
+def test_presence_rule_caveat_marks_exactly_the_rows_that_can_read_an_imputed_zero():
+    """R1b J4 / R1a M5: a zero read from a concept's absence is an imputation and is labeled."""
+    entries = default_anomaly_catalog()
+    shapes = derive_metric_shapes()
+    presence = {entry.feature_id for entry in entries if "presence_rule" in entry.caveat_codes}
+
+    # The presence rules themselves: debt, short-term debt, long-term debt, inventory
+    # (change and level) and cash-flow equity issuance.
+    for code in ("total_debt_q", "operating_working_capital_q", "long_term_debt_to_assets", "change_in_inventory_yoy",
+                 "quick_ratio", "no_equity_issuance_ttm"):
+        assert shapes[code].reads_absence, code
+    # Every catalog row reading them, directly or through debt in NOA, EV or invested capital.
+    assert {"debt_to_assets", "debt_to_assets_change_yoy", "long_term_debt_to_assets", "net_debt_to_book_equity",
+            "debt_to_market", "working_capital_accruals", "rsst_accruals", "delta_noa", "noa_to_assets", "rnoa_q",
+            "ebitda_to_ev", "gross_profit_to_ev", "roic", "quick_ratio", "investment_to_assets",
+            "inventory_change_to_assets", "cash_profitability", "piotroski_f_cash_issuance"} <= presence
+    # Rows on reported concepts only never carry it.
+    for code in ("roa", "current_ratio", "cash_ratio", "book_to_market", "market_cap", "net_equity_issuance",
+                 "dividend_yield"):
+        assert code not in presence, code
+        assert not shapes[code].reads_absence, code
+    assert "sales_to_price" not in presence
+
+
+def test_duplicates_negations_and_conflicting_priors_are_reasoned_exclusions():
+    # R1a I3 / R1b J1: one hypothesis is never tested twice or with both signs.
+    assert EXCLUDED_SEED_METRICS["revenue_cagr_1y"] == "duplicate_of:revenue_growth_yoy"
+    assert EXCLUDED_SEED_METRICS["buyback_ratio"] == "negation_of:net_equity_issuance"
+    assert EXCLUDED_SEED_METRICS["sustainable_growth"] == "conflicting_prior:book_value_growth_yoy"
+    by_id = _by_id()
+    for code in ("revenue_cagr_1y", "buyback_ratio", "sustainable_growth"):
+        assert code not in by_id
+    # I5 / m2: leverage evidence is mixed or an analogue, never asserted as settled.
+    for code in ("debt_to_market", "assets_to_market", "net_debt_to_book_equity"):
+        assert by_id[code].prior_evidence == "published_analogue", code
 
 
 def test_compositions_are_market_scaled_and_resolve_to_seed_operands():
@@ -94,15 +188,29 @@ def test_incomparable_by_construction_metrics_are_blocked_and_only_those():
     shapes = derive_metric_shapes()
     blocked = {entry.feature_id for entry in entries if not entry.is_research_eligible}
 
-    assert blocked == set(BLOCKED)
+    by_id = _by_id()
+    assert blocked == set(BLOCKED) | KNOWN_BIAS
     for code, reason in BLOCKED.items():
         assert shapes[code].incomparable_reason == reason
-    # A4 ruling: per-share QoQ stays incomparable until a split guard exists, while
-    # accelerations of basis-free growth can be labeled quarterly and stay testable.
-    by_id = _by_id()
-    for code in ("eps_diluted_q_growth_yoy_accel", "revenue_q_growth_yoy_accel", "revenue_q_growth_qoq"):
+        assert by_id[code].admission == "blocked_incomparable_origin"
+    # R1d: the share-basis rows (R1a I2's trailing EPS growth included) are labeled
+    # per row by the engine and carry a split_basis caveat. Those that only R1d's
+    # cross-filing rebasing makes comparable stay blocked until its split guard
+    # passes review; the rest were comparable on restated comparatives before R1d.
+    assert {entry.feature_id for entry in entries if "split_basis" in entry.caveat_codes} == SPLIT_GATED
+    assert KNOWN_BIAS.issubset(SPLIT_GATED - set(BLOCKED))
+    for code in SPLIT_GATED:
+        assert shapes[code].split_gated, code
+    for code in SPLIT_GATED - set(BLOCKED):
+        assert shapes[code].incomparable_reason is None, code
+        expected = "blocked_known_bias" if code in KNOWN_BIAS else "eligible_with_caveat"
+        assert by_id[code].admission == expected, code
+    assert {entry.feature_id for entry in entries if entry.admission == "blocked_known_bias"} == KNOWN_BIAS
+    # Accelerations of basis-free growth are labeled quarterly and stay testable.
+    for code in ("revenue_q_growth_yoy_accel", "revenue_q_growth_qoq"):
         assert by_id[code].is_research_eligible
         assert shapes[code].incomparable_reason is None
+        assert not shapes[code].split_gated
 
 
 @pytest.mark.parametrize(
@@ -149,14 +257,13 @@ def test_engine_mirror_follows_the_r1c_quarter_chain_proofs():
                ("item:net_income_total", "metric:common_equity_q")),
         _probe("sue_child_probe", "abs(sue_probe)", ("metric:sue_probe",)),
         _probe("asset_qoq_probe", "total_assets - lag(total_assets, 1)", ("item:total_assets",)),
-        # Share flows exactly four quarters apart; per-share x shares is basis-free.
-        _probe("wavg_yoy_probe", "yoy(weighted_avg_shares_basic)", ("item:weighted_avg_shares_basic",)),
+        # Per-share x shares within one bucket is basis-free.
         _probe("earnings_qoq_probe",
                "eps_diluted * weighted_avg_shares_diluted - lag(eps_diluted * weighted_avg_shares_diluted, 1)",
                ("item:eps_diluted", "item:weighted_avg_shares_diluted")),
-        # Never provable: trailing spans in a stdev_q chain; a split-sensitive chain,
-        # one-quarter pair, balance pair or multi-year pair; an instant after a flow.
-        _probe("ttm_vol_probe", "stdev_q(revenue_growth_yoy, 8)", ("metric:revenue_growth_yoy",)),
+        # Share-basis pairs and windows (R1d): span-comparable, labeled per row by
+        # one filing clock or a split basis proven from daily bars.
+        _probe("wavg_yoy_probe", "yoy(weighted_avg_shares_basic)", ("item:weighted_avg_shares_basic",)),
         _probe("eps_vol_probe", "stdev_q(eps_diluted, 8)", ("item:eps_diluted",)),
         _probe("share_qoq_probe", "weighted_avg_shares_basic - lag(weighted_avg_shares_basic, 1)",
                ("item:weighted_avg_shares_basic",)),
@@ -164,23 +271,39 @@ def test_engine_mirror_follows_the_r1c_quarter_chain_proofs():
                ("item:shares_outstanding_period_end",)),
         _probe("wavg_2y_probe", "weighted_avg_shares_basic - lag(weighted_avg_shares_basic, 8)",
                ("item:weighted_avg_shares_basic",)),
+        # Never provable: trailing spans in a stdev_q chain; an instant after a flow.
+        _probe("ttm_vol_probe", "stdev_q(revenue_growth_yoy, 8)", ("metric:revenue_growth_yoy",)),
         _probe("instant_after_flow_probe", "safe_div(total_assets, lag(net_income_total, 1))",
                ("item:total_assets", "item:net_income_total")),
+        # Two balances one quarter apart span that quarter (_combine), so against a
+        # trailing span of the same bucket the starts differ for every row.
+        _probe("balance_quarter_vs_ttm_probe", "revenue_ttm - (total_assets - lag(total_assets, 1))",
+               ("metric:revenue_ttm", "item:total_assets")),
+        # A constant coalesce branch (a presence-rule zero) has no dates: not "never".
+        _probe("constant_branch_probe", "safe_div(revenue_ttm, coalesce(revenue * 0, 1))",
+               ("metric:revenue_ttm", "item:revenue")),
+        # A change guarded by a five-quarter presence chain (the idiom of the
+        # missing-is-not-zero rules): comparable, five quarters of history.
+        _probe("presence_chain_probe",
+               "pp_and_e_gross - lag(pp_and_e_gross, 4) + 0 * stdev_q(pp_and_e_gross, 5)",
+               ("item:pp_and_e_gross",)),
     )
     shapes = derive_metric_shapes(seed + probes)
 
+    gated = ("wavg_yoy_probe", "eps_vol_probe", "share_qoq_probe", "share_balance_yoy_probe", "wavg_2y_probe")
     comparable = ("sue_probe", "roe_q_lag1_probe", "roe_q_lag4_probe", "sue_child_probe", "asset_qoq_probe",
-                  "wavg_yoy_probe", "earnings_qoq_probe")
+                  "earnings_qoq_probe", "constant_branch_probe", "presence_chain_probe", *gated)
     assert {code: shapes[code].incomparable_reason for code in comparable} == dict.fromkeys(comparable)
+    assert {code for code in comparable if shapes[code].split_gated} == set(gated)
     assert shapes["sue_probe"].min_history_quarters == 12  # 5-quarter yoy series, 8 of them
     assert shapes["roe_q_lag1_probe"].min_history_quarters == 2
     assert shapes["ttm_vol_probe"].incomparable_reason == "stdev_q_over_trailing_spans"
-    assert shapes["eps_vol_probe"].incomparable_reason == "stdev_q_over_share_basis_without_split_guard"
-    assert shapes["share_qoq_probe"].incomparable_reason == "one_quarter_pair_per_share_without_split_guard"
-    assert shapes["share_balance_yoy_probe"].incomparable_reason == "share_basis_balance_pair_without_split_guard"
-    assert shapes["wavg_2y_probe"].incomparable_reason == "multi_year_share_basis_pair_without_split_guard"
     assert shapes["instant_after_flow_probe"].incomparable_reason == (
         "one_quarter_pair_without_provable_quarter_spans")
+    assert shapes["balance_quarter_vs_ttm_probe"].incomparable_reason == "quarter_vs_trailing_span_same_bucket"
+    assert shapes["presence_chain_probe"].min_history_quarters == 5
+    assert shapes["presence_chain_probe"].reads_absence and shapes["constant_branch_probe"].reads_absence
+    assert not shapes["asset_qoq_probe"].reads_absence
 
     template = _by_id()["revenue_q_growth_yoy"]
     extra = tuple(
@@ -191,11 +314,13 @@ def test_engine_mirror_follows_the_r1c_quarter_chain_proofs():
     with pytest.raises(AnomalyCatalogError) as caught:
         validate_anomaly_catalog(default_anomaly_catalog() + extra, definitions=seed + probes)
     message = str(caught.value)
-    for code in ("ttm_vol_probe", "eps_vol_probe", "share_qoq_probe", "share_balance_yoy_probe", "wavg_2y_probe",
-                 "instant_after_flow_probe"):
+    for code in ("ttm_vol_probe", "instant_after_flow_probe", "balance_quarter_vs_ttm_probe"):
         assert f"feature {code!r}: every quarterly value is labeled incomparable" in message
     for code in comparable:
         assert f"feature {code!r}: every quarterly value" not in message
+    # An uncaveated share-basis row is rejected for its missing split_basis caveat.
+    for code in gated:
+        assert f"feature {code!r}: caveat split_basis goes with a share-basis comparison" in message
 
 
 def _rows() -> list[dict[str, str]]:
@@ -232,15 +357,43 @@ def _mutated(tmp_path: Path, target_id: str, changes: dict[str, str]) -> Path:
         ("roa", {"reference": ""}, "reference must be non-empty"),
         ("roa", {"anomaly_class": "alpha"}, "unknown anomaly_class 'alpha'"),
         ("roa", {"supersedes": "factor:no_such_legacy_factor"}, "not a known legacy factor id"),
+        # R1a M2: a quoted string in a legacy module is not a factor id unless declared as one.
+        ("roa", {"supersedes": "factor:revenue"}, "not a known legacy factor id"),
         ("roe", {"supersedes": "factor:profitability_roa"}, "already superseded by 'roa'"),
         ("roa", {"availability_clock": CLOCK_BAR}, "the inherited clock is 'conservative_filing_46h'"),
         ("momentum_12_1", {"min_history_sessions": "252"}, "needs (0q, 253s)"),
-        ("eps_basic_q_growth_qoq", {"admission": "eligible", "admission_note": ""},
+        ("revenue_growth_qoq", {"admission": "eligible", "admission_note": "", "caveat_code": ""},
          "admission must be blocked_incomparable_origin"),
         ("revenue_q_growth_qoq", {"admission": "blocked_incomparable_origin"},
          "the engine can label it comparable"),
         ("market_cap", {"preferred_transform": "winsor_z"}, "log_winsor_z is required"),
         ("roa", {"admission": "eligible_with_caveat"}, "admission_note is required"),
+        ("roa", {"domain": "positive_only"}, "unknown domain rule 'positive_only'"),
+        ("roa", {"domain": "positive_denominator_required"}, "requires an operand"),
+        ("roa", {"domain": "unrestricted:metric:total_assets_avg2"}, "takes no operand"),
+        ("roe", {"domain": "negative_book_excluded:metric:no_such_metric"},
+         "is not a seed metric or fundamental item"),
+        ("revenue_growth_yoy", {"prior_evidence": "published_anomaly"}, "cannot claim published_anomaly"),
+        ("roa", {"expected_sign": "two_sided"}, "two_sided goes with caveat mixed_evidence"),
+        ("roe", {"caveat_code": "sign_flip|made_up"}, "unknown caveat_code 'made_up'"),
+        ("roa", {"caveat_code": "fiscal_seasonality"}, "caveat_code is required unless admission is 'eligible'"),
+        ("roe", {"caveat_code": ""}, "caveat_code is required unless admission is 'eligible'"),
+        ("roe", {"domain": "unrestricted"}, "caveat sign_flip goes with a domain rule"),
+        ("earnings_yield", {"domain": "unrestricted"}, "caveat non_monotone goes with a domain rule"),
+        ("market_cap", {"domain": "unrestricted"}, "log_winsor_z goes with domain positive_value_required"),
+        ("roa", {"hypothesis_family": ""}, "hypothesis_family must match"),
+        ("revenue_growth_qoq", {"admission": "blocked_known_bias"},
+         "admission must be blocked_incomparable_origin"),
+        # R1d: the split_basis caveat marks exactly the share-basis rows.
+        ("eps_basic_q_growth_qoq", {"caveat_code": "sequential_quarter"},
+         "caveat split_basis goes with a share-basis comparison"),
+        ("roa", {"admission": "eligible_with_caveat", "caveat_code": "split_basis", "admission_note": "x"},
+         "caveat split_basis goes with a share-basis comparison"),
+        # R1b J4: an imputed zero is always labeled, and only an imputed zero.
+        ("debt_to_assets", {"admission": "eligible", "caveat_code": "", "admission_note": ""},
+         "caveat presence_rule goes with a definition that reads a zero"),
+        ("roa", {"admission": "eligible_with_caveat", "caveat_code": "presence_rule", "admission_note": "x"},
+         "caveat presence_rule goes with a definition that reads a zero"),
     ],
 )
 def test_loader_rejects_unknown_codes_and_engine_disagreements(tmp_path, feature_id, changes, fragment):
@@ -275,6 +428,30 @@ def test_exclusions_must_name_seed_metrics_and_cataloged_targets():
         validate_anomaly_catalog(entries, exclusions=broken)
     assert "exclusion 'pe_ttm' has an invalid reason" in str(caught.value)
     assert "exclusion 'not_a_metric' is not a seed metric" in str(caught.value)
+
+
+def test_composition_clock_is_the_latest_leg_clock():
+    """R1a M9: bar-only legs keep the bar clock; a fundamental leg makes it the max clock."""
+    template = _by_id()["sales_to_price"]
+    probe = replace(template, feature_id="reversal_to_volatility_probe", numerator="metric:total_return_1m",
+                    denominator="metric:realized_vol_60d", anomaly_class="reversal",
+                    hypothesis_family="reversal_to_volatility_probe", availability_clock=CLOCK_BAR,
+                    min_history_quarters=0, min_history_sessions=61)
+    validate_anomaly_catalog((*default_anomaly_catalog(), probe))
+
+    with pytest.raises(AnomalyCatalogError, match=re.escape("the inherited clock is 'modeled_trade_date_22h'")):
+        validate_anomaly_catalog((*default_anomaly_catalog(), replace(probe, availability_clock=CLOCK_MAX)))
+
+
+def test_catalog_digest_ignores_line_endings(tmp_path):
+    """R1a M1: a CRLF checkout or archive export hashes the same as the LF blob."""
+    content = ANOMALY_CATALOG_PATH.read_bytes().replace(b"\r\n", b"\n")
+    lf, crlf = tmp_path / "lf.csv", tmp_path / "crlf.csv"
+    lf.write_bytes(content)
+    crlf.write_bytes(content.replace(b"\n", b"\r\n"))
+
+    assert anomaly_catalog_sha256(crlf) == anomaly_catalog_sha256(lf) == anomaly_catalog_sha256()
+    assert anomaly_catalog_sha256(lf) != anomaly_catalog_sha256(_mutated(tmp_path, "roa", {"reference": "x"}))
 
 
 def test_anomaly_catalog_doc_is_generated_from_the_catalog():
