@@ -817,12 +817,13 @@ constexpr void umul_64_to_128(atx::u64 a, atx::u64 b, atx::u64 &hi, atx::u64 &lo
 //  session keys, a `stream_*` field above 255 — §3.10's key gives each field one
 //  byte, so a wider value would alias its neighbour and merge two streams,
 //  bootstrap_draws == 0 while a horizon would otherwise be reportable),
-//  OutOfRange (mis-sized span, horizon at or past `dates`, bootstrap_draws above
-//  kMaxBootstrapDraws, and — ruling RR-1 — `dates` above kMaxIcDates or
-//  `instruments` above kMaxIcInstruments, both checked BEFORE any sizing so no
-//  `.assign()` can reach a throwing size; the dates*instruments overflow guard
-//  is kept behind them because it is the branch that makes `cells` well-defined
-//  for the span-shape checks and it survives any later raise of the two maxima).
+//  OutOfRange (mis-sized span, horizon + execution_delay at or past `dates`,
+//  bootstrap_draws above kMaxBootstrapDraws, and — ruling RR-1 / E-08, via
+//  `preflight_cross_section_ic` — `dates` above kMaxIcDates, `instruments` above
+//  kMaxIcInstruments, an overflowing dates*instruments, or a working set above
+//  `cfg.max_working_bytes`, all checked BEFORE any sizing so no `.assign()` can
+//  reach a throwing size). InvalidArgument also covers an unknown BlockLenRule or
+//  IcHacRule, execution_delay above kMaxIcExecutionDelay and a zero byte budget.
 // ===========================================================================
 [[nodiscard]] atx::core::Result<CrossSectionIcScratch>
 plan_cross_section_ic(const CrossSectionIcInput &in, const CrossSectionIcConfig &cfg);
