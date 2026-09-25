@@ -62,6 +62,31 @@ pre-merges integration after O1 landed), then W0b lanes (R0 only after O1).
    stod fix site wherever it lies (its owners start after O1 merges).
 8. The goal prompt itself is committed beside the plan docs for resumability.
 
+## Provisional orchestrator rulings at resume (2026-09-25) — NOT owner waivers
+
+The owner's 2026-09-25 instruction is to complete the sprint series. These are the orchestrator's
+working assumptions on the hand-off §5 questions so work can continue. None of them is an owner
+waiver; each stays open for the owner to confirm or overturn (listed again at the pre-W5 stop).
+Format: assumption — why — cost if wrong.
+
+- P-1. E0a MA(20) coverage item treated as met by the HAC interval `ic_mean_hac` (94.5%) — the
+  item exists to force a HAC interval — if overturned: E0a/E2 rework of the bootstrap CI.
+- P-2. E0a combiner-level V1 reproducibility deferred to W2-E3 (owns `signal_combiner.hpp`,
+  `orthogonalize.hpp`) — ownership — cost: pre-W0 GK/ICIR-EWMA weights not reproducible until W2.
+- P-3. E0b DSR FPR item read as `AccountingDsrRule::MonteCarloMaxV2`; default stays the
+  conservative `ClusterMcFloorV2` — conservative gate bias — cost: flip one default.
+- P-4. D0 vwap stays adjusted-basis typical price tagged `adjusted_level` (flagged for owner
+  waiver) — vwap is a price, not dollar volume — cost: rework if the owner wants raw basis.
+- P-5. D0 real-data tests reading ≥ 2020 data stay excluded (data discipline, no reads ≥ 2020
+  before W5); pre-2020-only ones run in G0 — cost: none (conservative).
+- P-6. A0 `alpha/streaming_engine.hpp` edit accepted as Track-A scope (flagged for owner grant).
+- P-7. R0 sanitizer item: Debug checked iterators used as substitute (flagged for owner waiver).
+- P-8. Ledger lines go to `atx-engine/docs/LEDGER.md` (old path deleted on main).
+- P-9. G0 outputs under `C:\atx-wt\g0-data\<name>_20260925\` (keeps `C:\atx` untouched); cp21
+  re-run on a G0-only branch pinned to cp21's 26 families.
+- P-10. `atx-impl/src/trial_ledger.hpp:89-90` hunk assigned to I0b (no W0 owner).
+- P-11. Lane concurrency capped at 5 (2.65 GB free RAM at resume).
+
 ## Log
 
 - 2026-09-24 23:0xZ — setup: all 11 stale qps leases released (keepers dead); qps notes archived;
