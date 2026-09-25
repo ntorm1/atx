@@ -66,6 +66,11 @@ def test_bulk_publication_is_atomic_deduplicated_and_collision_safe(tmp_store, t
     assert tmp_store.con.execute(
         "SELECT status, rows_loaded FROM dataset_runs WHERE run_id = 'bulk-test'"
     ).fetchone() == ("succeeded", 2)
+    # A published run releases its session staging (the whole source projection); the
+    # activation ladder's next stage refuses a connection holding caller temporaries.
+    assert tmp_store.con.execute(
+        "SELECT table_name FROM duckdb_tables() WHERE temporary AND NOT internal"
+    ).fetchall() == []
 
 
 def test_bulk_publication_gate_preserves_live_table(tmp_store, tmp_path):
