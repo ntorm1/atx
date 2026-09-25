@@ -1,12 +1,13 @@
 #include "atx/engine/data/context.hpp"
 
 #include <functional> // std::reference_wrapper, std::cref
-#include <span>       // std::span
-#include <string>     // std::string
-#include <utility>    // std::move, std::exchange
-#include <vector>     // std::vector
+#include <span>        // std::span
+#include <string>      // std::string, std::to_string
+#include <string_view> // std::string_view
+#include <utility>     // std::move, std::exchange
+#include <vector>      // std::vector
 
-#include "atx/core/macro.hpp" // ATX_ASSERT (moved-from + as_of guards)
+#include "atx/core/error.hpp" // Err (moved-from + as_of guards)
 
 #include "atx/engine/data/adapt_factor.hpp"  // artifact_to_factor_model, reference_spans, RefSpans
 #include "atx/engine/data/adapt_feature.hpp" // merge_features_into_panel
@@ -15,6 +16,21 @@
 #include "atx/engine/data/dataset.hpp"       // Dataset
 
 namespace atx::engine::data {
+
+namespace {
+
+// A moved-from DataContext has a null catalog borrow. The old ATX_ASSERT guard was a
+// release no-op followed by a null dereference; every Result-returning accessor now
+// reports it as an error instead.
+// The deduced return type is the unexpected-error wrapper, which converts into
+// every Result<T> accessor type.
+[[nodiscard]] auto moved_from_error(std::string_view where) {
+  return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                        "DataContext::" + std::string{where} +
+                            ": used after move (moved-from DataContext)");
+}
+
+} // namespace
 
 // ===========================================================================
 //  Move ops — NULL the source's catalog_ borrow so a moved-from DataContext
@@ -71,7 +87,9 @@ void DataContext::set_factor_model(FactorModelArtifact artifact) {
 //  names_with_role — registered datasets of a given role, ascending (catalog order).
 // ===========================================================================
 atx::core::Result<std::vector<std::string>> DataContext::names_with_role(Role role) const {
-  ATX_ASSERT(catalog_ != nullptr); // moved-from DataContext must not be used
+  if (catalog_ == nullptr) {
+    return moved_from_error("names_with_role");
+  }
   std::vector<std::string> out;
   for (const std::string &name : catalog_->names()) {
     ATX_TRY(const Role r, catalog_->role_of(name)); // propagate, never silently skip
@@ -86,7 +104,9 @@ atx::core::Result<std::vector<std::string>> DataContext::names_with_role(Role ro
 //  price_panel — RAW lowering (default) + Feature merge. Lazy + cached.
 // ===========================================================================
 atx::core::Result<std::reference_wrapper<const alpha::Panel>> DataContext::price_panel() {
-  ATX_ASSERT(catalog_ != nullptr); // moved-from DataContext must not be used
+  if (catalog_ == nullptr) {
+    return moved_from_error("price_panel");
+  }
   if (panel_cache_.has_value()) {
     return atx::core::Ok(std::cref(*panel_cache_));
   }
@@ -155,12 +175,23 @@ DataContext::factor_model_override() {
 atx::core::Result<std::span<const library::AlphaCandidate>>
 DataContext::signal_admit_candidates(const exec::ExecutionSimulator &sim,
                                      const atx::engine::WeightPolicy &policy, atx::usize as_of) {
-  ATX_ASSERT(catalog_ != nullptr); // moved-from DataContext must not be used
+  if (catalog_ == nullptr) {
+    return moved_from_error("signal_admit_candidates");
+  }
   if (signals_built_) {
     // The cache is as_of-SPECIFIC (each candidate's pnl/positions were realized as-of
     // `cached_admit_as_of_`). A walk-forward harness reusing a DataContext across windows
-    // with a DIFFERENT as_of would otherwise get stale-epoch candidates — fail loudly.
-    ATX_ASSERT(as_of == cached_admit_as_of_);
+    // with a DIFFERENT as_of would otherwise get stale-epoch candidates. D-08: this was
+    // an ATX_ASSERT, a no-op in release builds, so an EARLIER as_of silently returned
+    // candidates realized over later (future) data. It is now a hard error in every
+    // build; the cache is left untouched so the original as_of keeps working.
+    if (as_of != cached_admit_as_of_) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "DataContext::signal_admit_candidates: as_of " +
+                                std::to_string(as_of) + " differs from the cached as_of " +
+                                std::to_string(cached_admit_as_of_) +
+                                " (candidates are as_of-specific; use a fresh DataContext)");
+    }
     return atx::core::Ok(std::span<const library::AlphaCandidate>{flat_candidates_});
   }
   ATX_TRY(const auto panel_ref, price_panel());
@@ -195,7 +226,9 @@ DataContext::signal_admit_candidates(const exec::ExecutionSimulator &sim,
 // ===========================================================================
 atx::core::Result<RefSpans> DataContext::reference_spans_at(DateKey as_of_date,
                                                             atx::u32 default_group) {
-  ATX_ASSERT(catalog_ != nullptr); // moved-from DataContext must not be used
+  if (catalog_ == nullptr) {
+    return moved_from_error("reference_spans_at");
+  }
   ATX_TRY(const std::vector<std::string> refs, names_with_role(Role::Reference));
   if (refs.empty()) {
     return atx::core::Err(atx::core::ErrorCode::NotFound,

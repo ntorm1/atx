@@ -11,8 +11,9 @@
 //  its history has no held-out judge: the final book has, transitively, seen
 //  every date it is scored on. The lockbox fixes this structurally. reserve_
 //  lockbox carves the TERMINAL contiguous most-recent `frac` of a panel's dates
-//  as a sealed lockbox, inserts an EMBARGO gap (cpcv.hpp width) immediately
-//  before it to defeat serial-correlation leakage across the boundary, and hands
+//  as a sealed lockbox, inserts an EMBARGO gap (max label horizon + delay via
+//  LockboxEmbargo, E-17; or the legacy cpcv.hpp width / an explicit length)
+//  immediately before it to defeat label leakage across the boundary, and hands
 //  back a SealedPanel that exposes — to every upstream stage — ONLY the visible
 //  region [0, lockbox_begin - embargo_len). Any read into the sealed region
 //  [lockbox_begin, T) is a contract violation: the Result accessor returns
@@ -42,6 +43,7 @@
 #include <cstdint> // (digest seed bytes)
 #include <cstring> // std::memcpy (StableHasher word loads)
 #include <filesystem>    // FileLockboxAudit
+#include <limits>        // std::numeric_limits (embargo overflow guard)
 #include <span>    // std::span
 #include <string>  // std::string (field-name re-enumeration)
 #include <unordered_set> // opened content addresses / date digests
@@ -66,8 +68,9 @@ namespace atx::engine::eval {
 //    instruments      : the panel's instrument count (unchanged by the carve).
 //    lockbox_begin    : first date of the sealed lockbox == T - floor(frac*T).
 //                       The lockbox is [lockbox_begin, T) (terminal, contiguous).
-//    embargo_len      : the embargo gap width (cpcv.hpp ceil(h*T) or an explicit
-//                       length); the dates [lockbox_begin - embargo_len,
+//    embargo_len      : the embargo gap width (max_label_horizon + delay, the
+//                       legacy cpcv.hpp ceil(h*T), or an explicit length); the
+//                       dates [lockbox_begin - embargo_len,
 //                       lockbox_begin) are ALSO sealed (the gap).
 //    visible_len      : the visible region length == lockbox_begin - embargo_len.
 //                       Upstream stages see dates [0, visible_len) ONLY.
@@ -402,11 +405,70 @@ reserve_lockbox(const alpha::Panel &panel, atx::f64 frac, const CpcvConfig &cfg)
 
 // ===========================================================================
 //  reserve_lockbox (default frac 0.20, default embargo from the CpcvConfig
-//  default §0.9). The plan-default reservation: hold out the terminal 20% with
-//  the standard CPCV embargo. PURE.
+//  default §0.9). LEGACY (EmbargoRule::CpcvFractionV1): hold out the terminal
+//  20% with the ⌈0.01·T⌉ CPCV embargo, which is not tied to any label horizon
+//  (E-17). Kept so frozen reservations re-derive; new code declares its label
+//  horizon via the LockboxEmbargo overloads below. PURE.
 // ===========================================================================
 [[nodiscard]] inline atx::core::Result<SealedPanel> reserve_lockbox(const alpha::Panel &panel) {
   return reserve_lockbox(panel, 0.20, CpcvConfig{});
+}
+
+// ===========================================================================
+//  Label-horizon embargo (E-17).
+//
+//  The embargo exists so that no label computed from the visible region reads
+//  a return inside the held-out region. A label with forward horizon h, formed
+//  from a signal at date t and traded `delay` dates later, reads returns up to
+//  t + delay + h; so the gap must hold at least max_label_horizon + delay
+//  dates — independent of the panel length. The V1 rule ⌈fraction·T⌉ is 18
+//  dates at T = 1750 (too wide for h = 1, too narrow for h = 63) and grows
+//  with the panel for no reason.
+//
+//    LabelHorizonV2 (default): embargo_len = max_label_horizon + delay.
+//      max_label_horizon must be >= 1 (the horizon must be declared).
+//    CpcvFractionV1: embargo_len = ⌈cpcv_fraction·T⌉ (the legacy width).
+// ===========================================================================
+enum class EmbargoRule : atx::u8 {
+  CpcvFractionV1 = 0, // legacy: ceil(cpcv_fraction * T)
+  LabelHorizonV2 = 1, // default: max_label_horizon + delay
+};
+
+struct LockboxEmbargo {
+  EmbargoRule rule{EmbargoRule::LabelHorizonV2};
+  atx::usize max_label_horizon{}; // longest forward-label horizon, in dates (V2, >= 1)
+  atx::usize delay{};             // signal-to-trade delay, in dates (V2)
+  atx::f64 cpcv_fraction{0.01};   // V1 only (the CpcvConfig default)
+};
+
+// The embargo width in dates for a panel of `dates` dates. Err(InvalidArgument)
+// for an undeclared horizon (V2, max_label_horizon == 0), a width that would
+// overflow, or an unknown rule. PURE.
+[[nodiscard]] inline atx::core::Result<atx::usize> lockbox_embargo_len(const LockboxEmbargo &e,
+                                                                       atx::usize dates) {
+  switch (e.rule) {
+  case EmbargoRule::CpcvFractionV1:
+    return detail::embargo_len_from_cpcv(e.cpcv_fraction, dates);
+  case EmbargoRule::LabelHorizonV2:
+    if (e.max_label_horizon == 0U) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "lockbox_embargo_len: declare max_label_horizon (>= 1)");
+    }
+    if (e.delay > std::numeric_limits<atx::usize>::max() - e.max_label_horizon) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "lockbox_embargo_len: horizon + delay overflows");
+    }
+    return e.max_label_horizon + e.delay;
+  }
+  return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                        "lockbox_embargo_len: unknown EmbargoRule");
+}
+
+// reserve_lockbox with the embargo derived from the label horizon (E-17).
+[[nodiscard]] inline atx::core::Result<SealedPanel>
+reserve_lockbox(const alpha::Panel &panel, atx::f64 frac, const LockboxEmbargo &embargo) {
+  ATX_TRY(const atx::usize embargo_len, lockbox_embargo_len(embargo, panel.dates()));
+  return reserve_lockbox(panel, frac, embargo_len);
 }
 
 // ===========================================================================
@@ -463,6 +525,14 @@ reserve_window(const alpha::Panel &panel, atx::usize holdout_begin, atx::usize h
   return atx::core::Ok(SealedPanel{std::move(visible), res});
 }
 
+// reserve_window with the embargo derived from the label horizon (E-17).
+[[nodiscard]] inline atx::core::Result<SealedPanel>
+reserve_window(const alpha::Panel &panel, atx::usize holdout_begin, atx::usize holdout_len,
+               const LockboxEmbargo &embargo) {
+  ATX_TRY(const atx::usize embargo_len, lockbox_embargo_len(embargo, panel.dates()));
+  return reserve_window(panel, holdout_begin, holdout_len, embargo_len);
+}
+
 // ===========================================================================
 //  open_lockbox — the SINGLE audited open of a sealed reservation (S8.2).
 //
@@ -492,10 +562,10 @@ reserve_window(const alpha::Panel &panel, atx::usize holdout_begin, atx::usize h
 //     field (date digests included) plus the previous receipt's hash (a hash
 //     chain), so EDITING any committed receipt — or any line of the durable
 //     log — is detectable (verify_receipt / FileLockboxAudit::open).
-//     LIMITATION: removing whole trailing receipts leaves a valid chain prefix
-//     and is NOT detected (the chain head is not anchored outside the log);
-//     protect the log file itself (permissions / backup / WORM storage) if
-//     that threat matters.
+//     Removing whole trailing receipts leaves a valid chain prefix, which the
+//     log alone cannot reveal: export lockbox_chain_head(sink) OUTSIDE the
+//     log (a run manifest) after every open and check a reopened log with
+//     verify_lockbox_chain_head(receipts, anchor) (bottom of this header).
 //   * Refusals consume nothing: the receipt is committed only after every
 //     check passes (the sink re-checks single-use atomically at commit), and
 //     the held-out slice is returned only after the commit succeeded.
@@ -678,8 +748,8 @@ private:
 // appends and flushes to stable storage (FlushFileBuffers / fsync). Two
 // handles on one path therefore cannot both open the same held-out dates, and
 // the chain never forks. A log that SHRANK under a handle is Err(ParseError).
-// Truncation of whole trailing lines between processes is not detectable
-// (see open_lockbox's LIMITATION note).
+// Truncation of whole trailing lines is not detectable from the log alone;
+// anchor it with lockbox_chain_head / verify_lockbox_chain_head.
 class FileLockboxAudit final : public LockboxAuditSink {
 public:
   [[nodiscard]] static atx::core::Result<FileLockboxAudit>
@@ -755,6 +825,46 @@ open_lockbox(SealedPanel &&sealed, const alpha::Panel &full, const OpenRequest &
   // The sink re-checks single-use atomically and chains the receipt.
   ATX_TRY(LockboxReceipt receipt, sink.commit(std::move(draft)));
   return atx::core::Ok(LockboxOpening{std::move(holdout), std::move(receipt)});
+}
+
+// ===========================================================================
+//  Chain head export (tamper evidence outside the log).
+//
+//  lockbox_chain_head(sink) = {receipts, head}: the number of committed
+//  receipts and the last receipt hash (0 when none). Store it OUTSIDE the
+//  audit log (a run manifest, a separate WORM location) after each open.
+//  verify_lockbox_chain_head(receipts, anchor) checks a (re)loaded receipt
+//  chain against it: fewer receipts than anchored (trailing receipts deleted)
+//  or a different hash at position anchor.receipts - 1 (a receipt replaced)
+//  is Err(ParseError); receipts committed after the anchor are accepted. The
+//  receipts themselves are chain-verified by FileLockboxAudit::open.
+// ===========================================================================
+struct LockboxChainHead {
+  atx::u64 receipts{}; // committed receipts the head covers
+  atx::u64 head{};     // receipt_hash of the last of them (0 when receipts == 0)
+  friend bool operator==(const LockboxChainHead &, const LockboxChainHead &) = default;
+};
+
+[[nodiscard]] inline LockboxChainHead lockbox_chain_head(const LockboxAuditSink &sink) {
+  return LockboxChainHead{sink.next_sequence(), sink.last_receipt_hash()};
+}
+
+[[nodiscard]] inline atx::core::Status
+verify_lockbox_chain_head(std::span<const LockboxReceipt> receipts,
+                          const LockboxChainHead &anchor) {
+  if (receipts.size() < anchor.receipts) {
+    return atx::core::Err(atx::core::ErrorCode::ParseError,
+                          "lockbox audit: fewer receipts than the anchored chain head "
+                          "(receipts were removed)");
+  }
+  const atx::u64 at = anchor.receipts == 0U
+                          ? 0U
+                          : receipts[static_cast<atx::usize>(anchor.receipts - 1U)].receipt_hash;
+  if (at != anchor.head) {
+    return atx::core::Err(atx::core::ErrorCode::ParseError,
+                          "lockbox audit: the receipt chain does not match its anchored head");
+  }
+  return atx::core::Ok();
 }
 
 } // namespace atx::engine::eval
