@@ -125,6 +125,37 @@ The old progress file lists provisional P1-P11: these are not owner waivers or a
 ### Current live jobs and repair status
 
 Latest checkpoint (supersedes pending statuses below): root has no active shell job.
+NEWER: root integratedrunner is ACTIVE session56041; source stamp b185d056440704e7ebcfe2b9395601d7e5264269.
+Configurepassed (8groups, isolatedequity-dev,PCHon), targetbuild394steps, mostrecent37/394,
+oneworker. It will automatically run9testexes sequentially after build; outputtails pertarget.
+Logs build-equity/w0-integrated-gate/{configure,build,results}.log (results is .txt), eachtestexe.log,
+source/exehashes. Do not change production sources while this build runs.
+
+Memberagent discovered directNinja testobject check dragged182orderdependencies and spawned
+manyworkers; stoppedONLYverifiedpool5/build-hygiene Ninja824 descendanttree. FreeRAMrecovered
+7.8GiB; onlyG0workerremained. Root+ASan eachgranted1worker, so regular3workerbudgetrestored.
+Membershipreportd988f7b8b9bedad24103f62dc9f63d8e7d5a860e is docs-only, notyetimported; production
+codealreadyinroot. Functional27/27+706/706 andG0independent1/1approved; two production-only
+PCHoffcheckcommands remainhelduntilslotfree. Agentverifiedexact2compilerdependencyclosure,
+no testobject/workerfanout. Newbenchmarkbaseline pool6 ownedbyauditagent:
+feat/w0-bench-baseline-codex-20260925 base3ccf012c40ef42c49ed21aaec96476455e06e049,
+run aes-w0-bench-baseline-codex-20260925,keeper23348; configuredisolatedequity-benchsuccessfully,
+Release/benchON/allgroups. NO BUILD YET. VerifiedCPUtopologyi7-1260P Pcoreslogical0-7,
+affinity0xFF forlaterquietmeasurements. Plan66cases,reps3; old/newmustsamecasekeys.
+
+ASanagentpool4 coldtarget52/65, oneworker. Exactly2instrumentedcompilecommands actualfactor_model.cpp
++existingsectorfixture, /MD /Od /DNDEBUG /fsanitize=address /WX/PCHoff. Rootfreshstaticreviewno
+blocker; runtimepositivecontrol and5testfixtures pending. AgentwillrestrictbuildPresetdefaulttarget
+aftercompile, commitcode, thenre-runfinalsmallgate oncommittedSHA. SourcechangeslimitedCMakePresets,
+engine/tests/CMakeLists,sectorfixtureandnew scripts/test-risk-sector-asan.ps1. OrdinaryDebug
+assertions retained; ASanbranchaddsexactoldOOBnegativecontrolonly. NoUBSanclaim.
+
+G0correctedRelease191/210 atlastreceipt; keepsworkerthroughdiagnostic26-familyrebuildthen
+notifiesaudit/replayofreeslot. Correctedbaseline+Abortseconds,13cp21cells~12minuteshistorically,
+frozenPythonscorecardmaybe15minutes. PinwillNEVERbecommitted: archiveunpinned@8ee78be4,
+applylocalpin, build/archiveexe+patch, restore2sourcefilesimmediately, runimmutablepinbinary.
+FinalG0report/harnesscommitcontainsNOdiagnosticsource. Remainingallpost-2019dataUNREAD.
+
 Root nowf390f6d2 mergesD12code+reviews9e6b. D12focused27/27 andwholealpha706/706passed;
 G0independent16CSopcodephysical-universe test1/1 passed14ms, reviewerAPPROVE. Rootintegrated
 runnerattemptexitedbeforeconfigure/build atfree2.39GiB; source treeclean. Rootmustretryafter
