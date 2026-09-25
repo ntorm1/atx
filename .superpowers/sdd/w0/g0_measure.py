@@ -20,6 +20,7 @@ OUT = Path('C:/atx-wt/g0-data/bc5cc646_20260925')
 DATA = Path('C:/atx/data')
 BIN = TREE / 'build-equity-rel/bin'
 SHA = 'bc5cc646'
+BASE_SHA = 'bc5cc646b46f6a7c23a60e87d28dfa9b972671ec'
 START = {2013:'2013-04-04', 2014:'2014-01-02', 2015:'2015-01-02',
          2016:'2016-01-04', 2017:'2017-01-03', 2018:'2018-01-02', 2019:'2019-01-02'}
 CELLS = [(year, cut) for year in range(2013, 2020) for cut in (1000,3000)
@@ -67,8 +68,13 @@ def run(name, exe, args, env=None, expected=0):
     source_diff=subprocess.run(['git','-C',str(TREE),'diff','--',
         'atx-impl/src/equity_baseline_views.hpp','atx-impl/src/stage_equity_ic.cpp'],
         capture_output=True,check=True).stdout
-    source_sha=SHA if Path(exe).parent==OUT/'bin/unpinned' else subprocess.run(
-        ['git','-C',str(TREE),'rev-parse','HEAD'],capture_output=True,text=True,check=True).stdout.strip()
+    if Path(exe).parent==OUT/'bin/unpinned':
+        source_sha=BASE_SHA
+    elif Path(exe).parent==OUT/'bin/corrected':
+        source_sha=(OUT/'bin/corrected-source-sha.txt').read_text(encoding='utf-8-sig').strip()
+    else:
+        source_sha=subprocess.run(['git','-C',str(TREE),'rev-parse','HEAD'],
+            capture_output=True,text=True,check=True).stdout.strip()
     record = dict(name=name, argv=argv, cwd=str(TREE), source_sha=source_sha,
                   cp21_source_diff_sha256=hashlib.sha256(source_diff).hexdigest(),
                   binary_sha256=digest(exe), env=env or {}, expected_exit=expected,
@@ -151,14 +157,24 @@ def l7():
         'ATX_L7_OUT_DIR':str(target)})
     assert (target/'l7_scorecards.json').is_file()
 
-def baseline():
-    run('base2013',BIN/'atx-impl.exe',[
+def baseline(mode='frozen'):
+    suffix='' if mode=='frozen' else '_'+mode
+    policy=[] if mode=='frozen' else ['--replay-delisting-policy',
+                                    'abort' if mode=='abort_control' else 'terminal-return']
+    run('base2013'+suffix,BIN/'atx-impl.exe',[
         'equity-baseline','--panel',DATA/'tickerhistory_training_native_20260919/context.bin',
-        '--out',OUT/f'data/equity_baseline_training_2013_g0_{SHA}',
+        '--out',OUT/f'data/equity_baseline_training_2013_g0_{SHA}{suffix}',
         '--evaluation-start','2013-04-04','--evaluation-end','2014-01-01',
         '--max-working-bytes',3000000000,'--report-aum',100000000,
         '--replay-execution-delay',1,'--replay-trade-bps',5,
-        '--replay-annual-borrow-bps',365,'--replay-day-basis',365],expected=1)
+        '--replay-annual-borrow-bps',365,'--replay-day-basis',365,*policy],
+        expected=0 if mode=='corrected' else 1)
+
+def baseline_corrected():
+    baseline('corrected')
+
+def baseline_abort_control():
+    baseline('abort_control')
 
 def cp21():
     membership=DATA/'equity_universe_pit_2013_2019_20260920/membership.bin'
@@ -186,6 +202,12 @@ def scorecard():
         '--title',f'G0 cp21 W0 {SHA}; as-of membership, delay 1'])
 
 def verify():
+    scripts=OUT/'scripts'
+    scripts.mkdir(exist_ok=True)
+    for name in ('g0_measure.py','g0_compare.py'):
+        shutil.copyfile(TREE/'.superpowers/sdd/w0'/name,scripts/name)
+    shutil.copyfile(TREE/'build-equity/audits/iteration16_equity_scorecard.py',
+                    scripts/'iteration16_equity_scorecard.py')
     verified=[]
     for manifest in sorted((OUT/'data').glob('*/manifest.json')):
         value=json.loads(manifest.read_text(encoding='utf-8-sig'))
@@ -207,7 +229,7 @@ def verify():
     artifact=OUT/'g0-artifact-manifest.json'
     files=[dict(path=str(path.relative_to(OUT)),size_bytes=path.stat().st_size,sha256=digest(path))
            for path in sorted(OUT.rglob('*')) if path.is_file() and path!=artifact]
-    record=dict(schema='atx.g0-truth-delta-evidence/v1',source_sha=SHA,
+    record=dict(schema='atx.g0-truth-delta-evidence/v1',frozen_source_sha=BASE_SHA,
                 created_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),
                 verified_engine_manifests=verified,files=files,
                 caveats=['same prebuilt contexts; D0 panel construction changes not measured',
@@ -219,9 +241,12 @@ def verify():
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
-    parser.add_argument('phase',choices=['preflight','l9','l10','l7','baseline','cp21','scorecard','verify'])
+    parser.add_argument('phase',choices=['preflight','l9','l10','l7','baseline',
+        'baseline_corrected','baseline_abort_control','cp21','scorecard','verify'])
     phase=parser.parse_args().phase
     frozen=OUT/'bin/unpinned'
-    if phase not in ('cp21','scorecard','preflight','verify') and frozen.exists():
+    if phase in ('baseline_corrected','baseline_abort_control'):
+        BIN=OUT/'bin/corrected'
+    elif phase not in ('cp21','scorecard','preflight','verify') and frozen.exists():
         BIN=frozen
     globals()[phase]()

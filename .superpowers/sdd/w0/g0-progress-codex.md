@@ -22,10 +22,11 @@ session axes strictly before 2020. Payload hashes and artifact IDs are stored in
 `input_contexts.json`. The required-mark audit was copied and SHA256 checked.
 Frozen scorecard script SHA256 matches `0e9cc6feb148cc8e52bc72f5a4956fbace62413abbf8dc947310247e45b542c8`.
 
-## Current execution
+## Current execution (updated after first three measurements)
 
-- Release `atx-impl atx-impl-tests atx-shm-worker atx-engine-bench` build running;
-  log: `logs/build-release.log`, tool session 51996.
+- Release `atx-impl atx-impl-tests atx-shm-worker atx-engine-bench` build completed
+  exit 0; log: `logs/build-release.log`. Configure session 56300 and build session
+  51996 completed and consumed. Frozen binaries archived in `bin/unpinned`.
 - Build started with 4.46 GiB free, CMAKE_BUILD_PARALLEL_LEVEL=2. `-Jobs 1` affects
   ctest only in this wrapper. Further builds use environment cap 1 per root.
 - Initial `configure.log` command passed isolated FetchContent directory but subsequent
@@ -33,7 +34,19 @@ Frozen scorecard script SHA256 matches `0e9cc6feb148cc8e52bc72f5a4956fbace62413a
   Root was notified and held other shared-dependency builds. No artifact validity claim
   depends on isolation. Root authorized retaining successful binaries without a solely
   cosmetic rebuild. Isolate and verify cache before a later cp21 pin rebuild.
-- Measurements pending. Do not infer success from script preparation.
+- Baseline complete, expected exit 1: same security 150340 abort, 2.031 s / 0.146 GiB.
+- L7 complete, exit 0: 61.625 s / 0.105 GiB; only three 1e-9/1e-10 numeric changes.
+- L10 complete, exit 0: 302.079 s / 1.201 GiB; no positive t>2 candidate.
+- L9 RUNNING from archive, tool session 79174; receipt/logs `logs/l9.*`.
+- `.heavy-run.lock` is acquired atomically per run with PID/start/token and only
+  removed for a matching owner. This coordination file is the sole authorized C:/atx write.
+- Root requires importing tested/reviewed replay and DSL-internal D12 repairs before
+  corrected baseline and cp21, to avoid rerunning the 13 expensive cells. Replay and
+  membership build/tests remain in their own lanes. Root's integration head may be
+  merged when both pass. Archive corrected unpinned binary and exact SHA, run native
+  baseline, then apply 26-family diagnostic pin and rebuild only atx-impl.
+- G0 cp21 build overlap grant: <=3 compiler workers total, >4 GiB free and verified
+  per-worktree isolated deps. Environment cap 1; no other shared deps builds.
 
 ## Known caveats and next actions
 

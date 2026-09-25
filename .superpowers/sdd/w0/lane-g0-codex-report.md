@@ -17,8 +17,8 @@ No warehouse was opened and no alpha setting was tuned.
 |---|---|---|---|
 | 2013 native baseline | Abort, period 6, security 150340 on 2013-04-12 | Same exact error, exit 1 | B-04 engine change was not wired into identified report; corrected replay follow-up required |
 | L7 PIT risk scorecard | Five configurations, old archived JSON | All headline metrics unchanged; three scalar differences at 1e-9 or 1e-10 | No material delta |
-| L10 fundamental zoo | Archived L10 v2 | Running | Pending |
-| L9 guarded mining | Archived guarded run | Pending | Pending |
+| L10 fundamental zoo | No candidate; 0 positive t>2 | No candidate; 0 positive t>2 | Completed, exit 0 |
+| L9 guarded mining | Archived guarded run | Running from frozen archive | Pending |
 | cp21 scorecard | 13 cells, 26 families | Awaiting reviewed DSL-internal D12 repair before pin/rebuild | Pending |
 
 Frozen native baseline receipt: `logs/base2013.receipt.json`, exit 1, 2.031 seconds,
@@ -40,6 +40,26 @@ Frozen L7 receipt: `logs/l7.receipt.json`, exit 0, 61.625 seconds, peak working 
 The fourth changed field is only the input path's slash convention. These are
 shared-host wall measurements; no speedup claim is made. Old native baseline timing
 was Debug; old L10 and L7 runs did not record peak RAM.
+
+L10 receipt: `logs/l10.receipt.json`, exit 0, 302.079 seconds, peak working set
+1.201 GiB; FundamentalZoo.RealDataIcReport passed 1/1 tests. The predicted direction
+remains unsupported: none of the 60 expressions has positive non-overlapping t>2
+on either cut. Selected horizon-21 changes (all metrics are in the sidecar CSVs):
+
+| Signal / cut | Old rank IC | New rank IC | Old non-overlap t | New t |
+|---|---:|---:|---:|---:|
+| qual_gpa / t1000 | 0.01652 | 0.0166986 | 1.670 | 1.76392 |
+| qual_gpa / t3000 | 0.02324 | 0.0226574 | 1.816 | 1.65685 |
+| inv_iss / t1000 | 0.01805 | 0.0183854 | 1.371 | 1.68415 |
+| inv_iss / t3000 | 0.01564 | 0.0158505 | 1.176 | 1.29324 |
+| pead_sue / t1000 | 0.01294 | 0.0129431 | 0.754 | 0.457558 |
+| pead_sue / t3000 | 0.00851 | 0.00846499 | 1.471 | 1.45926 |
+
+L10 comparison tables cover 1,098 pooled metrics (758 changed), 8,052 annual metrics
+(7,252 changed), 2,480 split metrics (1,437 changed), and all 253 alignment metadata
+leaves (none changed). Primary attribution is E-09's delayed return alignment; E-02
+changes interval estimates and A0 changes affected DSL operators. These effects were
+not separately isolated; the table does not claim a single-defect attribution.
 
 ## Reproduction and verification
 
