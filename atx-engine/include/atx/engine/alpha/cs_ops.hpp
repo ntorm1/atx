@@ -22,10 +22,14 @@
 //      folded the point-in-time universe into NaN upstream, so "non-NaN"
 //      captures universe + missing). Out-of-set cells -> NaN in `out`; EVERY
 //      output cell is written (scratch slots are recycled).
-//    * cs_rank_row: ORDINAL percentile in [0,1], sorted ascending by value
-//      with ties broken by ascending instrument index (a stable sort by value
-//      preserves the index order). Rank r (0-based) of n maps to r/(n-1); a
-//      singleton valid set -> 0.5. NOT average-rank (that is L6's policy).
+//    * cs_rank_row: percentile in [0,1], sorted ascending by value. W0-A0
+//      (A-01): ties take the AVERAGE of their ordinal ranks by default
+//      (RankTies::Average), matching ts_rank — so rank(sign(x)) or a tied
+//      fundamental is no longer an instrument-index proxy, and an all-tied row
+//      ranks 0.5 everywhere. RankTies::OrdinalV1 keeps the pre-W0 policy (ties
+//      broken by ascending instrument index) for re-deriving old digests. Rank
+//      r (0-based, half-integer for a tie run) of n maps to r/(n-1); a
+//      singleton valid set -> 0.5. The same policy drives CsRankG / CsQuantile.
 //    * cs_zscore_row: (x - mean) / SAMPLE std (ddof=1) over the valid set;
 //      fewer than 2 valid -> NaN (the NaN sd propagates).
 //    * cs_scale_row(x, a): rescale so the L1 norm Σ|x| over the valid set
@@ -237,33 +241,77 @@ struct CsScratch {
 };
 
 // ===========================================================================
-//  CsRank — ordinal percentile in [0,1] over `valid`, tie-broken by ascending
-//  instrument index. Rank r (0-based) of n maps to r/(n-1); a singleton set
-//  maps to 0.5 (centred — avoids a degenerate 0/0). NaNs already excluded.
+//  RankTies — the tie policy of the rank family (CsRank / CsRankG / CsQuantile).
+//
+//  A-01: the pre-W0 kernels broke ties by ascending instrument index, so a row
+//  of equal values (rank(sign(x)), rank(group_count(..)), a forward-filled
+//  fundamental) ranked by position — an index/size proxy that disagreed with
+//  ts_rank's average-rank policy. Average is now the default; OrdinalV1 is the
+//  versioned legacy policy, kept ONLY to re-derive pre-W0 digests bit-exactly.
+// ===========================================================================
+enum class RankTies : atx::u8 {
+  Average = 0,   // default: a run of equal values shares the mean of its ordinal ranks
+  OrdinalV1 = 1, // legacy (pre-W0): ties broken by ascending instrument index
+};
+
+// Walk `order` (sorted ascending by x, equal values adjacent) and call
+// emit(instrument, rank) once per position. `rank` is the 0-based ordinal
+// position r under OrdinalV1; under Average every member of a run [lo, hi] of
+// values comparing EQUAL (so -0.0 ties +0.0, as the argsort treats them) gets
+// (lo + hi) / 2. Both are exact in f64 (integers < 2^52 and their halves), and
+// OrdinalV1's (2r)*0.5 == r bit-for-bit, so the legacy path is unchanged.
+// Bounded: `lo` strictly advances past each run, `hi` never exceeds n-1.
+template <class Emit>
+inline void cs_for_each_rank(std::span<const atx::f64> x, std::span<const atx::usize> order,
+                             RankTies ties, Emit &&emit) {
+  const atx::usize n = order.size();
+  atx::usize lo = 0;
+  while (lo < n) {
+    atx::usize hi = lo;
+    if (ties == RankTies::Average) {
+      while (hi + 1 < n && x[order[hi + 1]] == x[order[lo]]) {
+        ++hi;
+      }
+    }
+    const atx::f64 rank = static_cast<atx::f64>(lo + hi) * 0.5;
+    for (atx::usize r = lo; r <= hi; ++r) {
+      emit(order[r], rank);
+    }
+    lo = hi + 1;
+  }
+}
+
+// ===========================================================================
+//  CsRank — percentile in [0,1] over `valid` under the `ties` policy (see
+//  RankTies). Rank r (0-based) of n maps to r/(n-1); a singleton set maps to
+//  0.5 (centred — avoids a degenerate 0/0); an all-tied row maps to 0.5 for
+//  every name under Average. NaNs already excluded.
 //
 //  INVARIANT (REQUIRED for AuditExact): `valid` MUST be in ascending instrument-
 //  index order. The stable sort below preserves the pre-sort order of equal
-//  values, so `valid`'s order IS the tie-break criterion — a non-ascending
-//  `valid` would silently reorder tied ranks. Callers (cs_one_date) build it via
-//  a forward scan; see the invariant block there.
+//  values, so `valid`'s order IS the OrdinalV1 tie-break criterion — a non-
+//  ascending `valid` would silently reorder tied ranks. Callers (cs_one_date)
+//  build it via a forward scan; see the invariant block there.
 // ===========================================================================
 inline void cs_rank_row(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,
-                        std::span<atx::f64> out, CsScratch &scratch) {
+                        std::span<atx::f64> out, CsScratch &scratch,
+                        RankTies ties = RankTies::Average) {
   const atx::usize n = valid.size();
   if (n == 0) {
     return;
   }
   std::vector<atx::usize> &order = scratch.order; // reused buffer (no per-date alloc)
   order.assign(valid.begin(), valid.end());       // already ascending in instrument index
-  // Stable sort by value; ties keep ascending-index order -> deterministic
-  // ordinal tie-break (identical to oracle.hpp's cs_rank).
+  // Stable sort by value; ties keep ascending-index order (the OrdinalV1
+  // tie-break; Average then pools each equal run).
   // Lane 1: radix above kCsRadixMinRow — the SAME permutation as the stable_sort
   // by `<` (ties keep this ascending-index order; -0.0 ties +0.0).
   cs_stable_argsort(x, std::span<atx::usize>{order}, scratch.radix);
-  for (atx::usize r = 0; r < n; ++r) {
-    const atx::f64 pct = (n == 1) ? 0.5 : static_cast<atx::f64>(r) / static_cast<atx::f64>(n - 1);
-    out[order[r]] = pct;
-  }
+  const atx::f64 denom = static_cast<atx::f64>(n - 1);
+  cs_for_each_rank(x, std::span<const atx::usize>{order}, ties,
+                   [&out, n, denom](atx::usize i, atx::f64 rank) noexcept {
+                     out[i] = (n == 1) ? 0.5 : rank / denom;
+                   });
 }
 
 // ===========================================================================
@@ -471,16 +519,17 @@ inline void cs_residualize_row(std::span<const atx::f64> x, std::span<const atx:
 
 // ===========================================================================
 //  CsQuantile (S3.3) — bucket the valid set into `n` quantiles (like CsRank but
-//  discretized). Ordinal-rank each valid cell (ascending value, tie-broken by
-//  ascending instrument index, exactly as cs_rank_row), map its percentile
-//  p in [0,1] to a bucket b = floor(p·n) clamped to [0, n-1], and emit
+//  discretized). Rank each valid cell exactly as cs_rank_row does under the
+//  same `ties` policy (so tied values land in ONE bucket under Average), map its
+//  percentile p in [0,1] to a bucket b = floor(p·n) clamped to [0, n-1], and emit
 //  b/(n-1) so the output spans [0,1] in n discrete levels. A singleton valid set
 //  ranks to p == 0.5 (centred), matching cs_rank_row. `n_real` is the scalar 2nd
 //  operand truncated toward zero; a degenerate n < 2 has no defined spacing
 //  (b/(n-1) would divide by zero) and yields NaN for every valid cell.
 // ===========================================================================
 inline void cs_quantile_row(std::span<const atx::f64> x, const std::vector<atx::usize> &valid,
-                            atx::f64 n_real, std::span<atx::f64> out, CsScratch &scratch) {
+                            atx::f64 n_real, std::span<atx::f64> out, CsScratch &scratch,
+                            RankTies ties = RankTies::Average) {
   const atx::usize m = valid.size();
   if (m == 0) {
     return;
@@ -498,14 +547,16 @@ inline void cs_quantile_row(std::span<const atx::f64> x, const std::vector<atx::
   // by `<` (ties keep this ascending-index order; -0.0 ties +0.0).
   cs_stable_argsort(x, std::span<atx::usize>{order}, scratch.radix);
   const atx::f64 denom = static_cast<atx::f64>(nb - 1);
-  for (atx::usize r = 0; r < m; ++r) {
-    const atx::f64 p = (m == 1) ? 0.5 : static_cast<atx::f64>(r) / static_cast<atx::f64>(m - 1);
-    int b = static_cast<int>(p * static_cast<atx::f64>(nb)); // p>=0 -> trunc == floor
-    if (b >= nb) {
-      b = nb - 1; // p == 1.0 -> floor lands on nb; clamp into [0, nb-1]
-    }
-    out[order[r]] = static_cast<atx::f64>(b) / denom;
-  }
+  const atx::f64 rdenom = static_cast<atx::f64>(m - 1);
+  cs_for_each_rank(x, std::span<const atx::usize>{order}, ties,
+                   [&out, m, nb, denom, rdenom](atx::usize i, atx::f64 rank) noexcept {
+                     const atx::f64 p = (m == 1) ? 0.5 : rank / rdenom;
+                     int b = static_cast<int>(p * static_cast<atx::f64>(nb)); // p>=0: trunc==floor
+                     if (b >= nb) {
+                       b = nb - 1; // p == 1.0 -> floor lands on nb; clamp into [0, nb-1]
+                     }
+                     out[i] = static_cast<atx::f64>(b) / denom;
+                   });
 }
 
 // ===========================================================================
@@ -531,14 +582,15 @@ inline void cs_vec_reduce_row(std::span<const atx::f64> x, const std::vector<atx
 }
 
 // ===========================================================================
-//  CsRankG / CsZscoreG — rank (ordinal percentile) or sample-zscore WITHIN each
-//  group of the valid set. `zscore` selects the variant. A cell with a NaN
-//  group label stays NaN. Mirrors oracle.hpp's `cs_group` exactly: per valid
-//  cell `i`, collect its group's members and apply the within-group op.
+//  CsRankG / CsZscoreG — rank (percentile under the `ties` policy, as
+//  cs_rank_row) or sample-zscore WITHIN each group of the valid set. `zscore`
+//  selects the variant. A cell with a NaN group label stays NaN. Mirrors
+//  oracle.hpp's `cs_group` exactly: per valid cell `i`, collect its group's
+//  members and apply the within-group op.
 // ===========================================================================
 inline void cs_group_row(std::span<const atx::f64> x, std::span<const atx::f64> g,
                          const std::vector<atx::usize> &valid, std::span<atx::f64> out, bool zscore,
-                         CsScratch &scratch) {
+                         CsScratch &scratch, RankTies ties = RankTies::Average) {
 #ifdef ATX_ALPHA_CS_REFERENCE
   for (const atx::usize i : valid) {
     if (cs_is_nan(g[i])) {
@@ -556,7 +608,7 @@ inline void cs_group_row(std::span<const atx::f64> x, std::span<const atx::f64> 
       const atx::f64 sd = cs_sample_std(v, mean);
       out[i] = (x[i] - mean) / sd;
     } else {
-      cs_rank_row(x, members, out, scratch); // writes ranks for the whole group (idempotent)
+      cs_rank_row(x, members, out, scratch, ties); // ranks the whole group (idempotent)
     }
   }
 #else
@@ -595,7 +647,7 @@ inline void cs_group_row(std::span<const atx::f64> x, std::span<const atx::f64> 
     return;
   }
   // Group rank: count members, lay out a CSR member array (ascending within
-  // each group), then ordinal-rank each group's slice ONCE. The per-group
+  // each group), then rank each group's slice ONCE under `ties`. The per-group
   // stable_sort over the same ascending members is bit-identical to the
   // reference's per-member cs_rank_row (which is idempotent over the group).
   for (const atx::usize i : valid) {
@@ -627,11 +679,11 @@ inline void cs_group_row(std::span<const atx::f64> x, std::span<const atx::f64> 
     const atx::usize e = scratch.goff[k + 1];
     const atx::usize cnt = e - b;
     cs_stable_argsort(x, std::span<atx::usize>{scratch.gmem.data() + b, cnt}, scratch.radix);
-    for (atx::usize r = 0; r < cnt; ++r) {
-      const atx::f64 pct =
-          (cnt == 1) ? 0.5 : static_cast<atx::f64>(r) / static_cast<atx::f64>(cnt - 1);
-      out[scratch.gmem[b + r]] = pct;
-    }
+    const atx::f64 denom = static_cast<atx::f64>(cnt - 1);
+    cs_for_each_rank(x, std::span<const atx::usize>{scratch.gmem.data() + b, cnt}, ties,
+                     [&out, cnt, denom](atx::usize i, atx::f64 rank) noexcept {
+                       out[i] = (cnt == 1) ? 0.5 : rank / denom;
+                     });
   }
 #endif
 }

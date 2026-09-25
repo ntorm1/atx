@@ -12,6 +12,9 @@
 //   3. enumerate the donor candidates in B — every node whose result type is
 //      `compatible(have, want)` (shape broadcastable on the lattice + EXACT DType)
 //      AND whose causal `lookback ≤ cfg.max_lookback` — in ascending-ExprId order;
+//      a cut in a scalar-literal slot (arg 2 of scale / winsorize / quantile /
+//      hump — alpha::detail::has_scalar_literal_slot) admits ONLY finite Literal
+//      donors (W0-A0 / A-03: a panel there would be read as its [0,0] cell);
 //   4. draw ONE donor uniformly;
 //   5. REBUILD A through the public builder, but when the post-order replay reaches
 //      `cut`, splice `clone_subtree(B.ast, donor, dst)` in place of A's subtree

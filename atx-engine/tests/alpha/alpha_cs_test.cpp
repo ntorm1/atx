@@ -253,8 +253,10 @@ TEST(AlphaCs_Rank, DistinctValues_ExactPercentiles) {
   EXPECT_DOUBLE_EQ(v[4], 0.75); // 40
 }
 
-// rank on an all-equal date (tie storm) -> deterministic ordinal output: the
-// stable sort keeps instrument order, so ranks are 0, .25, .5, .75, 1.
+// rank on an all-equal date (tie storm). W0-A0 (A-01) re-pin: the default
+// average-rank policy gives every tied name 0.5 (no instrument-index proxy). The
+// legacy RankTies::OrdinalV1 policy still reproduces the pre-W0 deterministic
+// ordinal output 0, .25, .5, .75, 1 (the stable sort keeps instrument order).
 TEST(AlphaCs_Rank, AllEqual_DeterministicOrdinal) {
   const atx::usize dates = 1;
   const atx::usize instruments = 5;
@@ -264,11 +266,21 @@ TEST(AlphaCs_Rank, AllEqual_DeterministicOrdinal) {
 
   const std::vector<atx::f64> v = vm_values("rank(close)", panel);
   ASSERT_EQ(v.size(), instruments);
-  EXPECT_DOUBLE_EQ(v[0], 0.00);
-  EXPECT_DOUBLE_EQ(v[1], 0.25);
-  EXPECT_DOUBLE_EQ(v[2], 0.50);
-  EXPECT_DOUBLE_EQ(v[3], 0.75);
-  EXPECT_DOUBLE_EQ(v[4], 1.00);
+  for (const atx::f64 r : v) {
+    EXPECT_DOUBLE_EQ(r, 0.50);
+  }
+  expect_vm_matches_oracle("rank(close)", panel);
+
+  Engine legacy{panel};
+  legacy.set_kernel_policy(atx::engine::alpha::KernelPolicy::legacy_v1());
+  auto out = legacy.evaluate(compile_ok("rank(close)"));
+  ASSERT_TRUE(out.has_value());
+  const std::vector<atx::f64> &o = out.value().alphas[0].values;
+  EXPECT_DOUBLE_EQ(o[0], 0.00);
+  EXPECT_DOUBLE_EQ(o[1], 0.25);
+  EXPECT_DOUBLE_EQ(o[2], 0.50);
+  EXPECT_DOUBLE_EQ(o[3], 0.75);
+  EXPECT_DOUBLE_EQ(o[4], 1.00);
 }
 
 // zscore over a known set -> the cross-sectional mean of the output is ~0 and

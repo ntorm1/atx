@@ -883,10 +883,14 @@ TEST(FactoryOos, R3b_PboDeterministic) {
 //  and this test fails — that is the report-only guard.
 // ---------------------------------------------------------------------------
 TEST(FactoryOos, R3b_DigestUnchangedByPbo) {
-  // Pinned constants (captured 2026-06-20, verified twice-run deterministic):
-  static constexpr atx::u64  kPinnedDigest    = 14354626274288095608ULL;
-  static constexpr atx::usize kPinnedAdmitted  = 29U;
-  static constexpr atx::u64  kPinnedVersionId  = 2670205213ULL;
+  // Pinned constants (captured 2026-06-20, verified twice-run deterministic).
+  // W0-A0 RE-BASELINE (A-01/A-02/A-09/A-13 kernel policies + A-03 scalar-literal
+  // rule): pre-W0 digest 14354626274288095608, admitted 29, version_id 2670205213.
+  // The PBO report-only property this test guards is unaffected: the new pin is
+  // the same run with PBO folded nowhere (see the lane-a0 report).
+  static constexpr atx::u64  kPinnedDigest    = 100871560902752353ULL;
+  static constexpr atx::usize kPinnedAdmitted  = 28U;
+  static constexpr atx::u64  kPinnedVersionId  = 4049056013ULL;
 
   GateConfig gc;
   gc.min_sharpe    = 0.0;
@@ -1487,8 +1491,13 @@ TEST(FactoryOos, SubwindowMetrics_SinglePass_BitIdentical) {
   cfg.search.seed_from_grammar = false;
 
   // Pinned digest from the PRE-CHANGE K-call path for this exact config. The
-  // single-pass path must reproduce it to the bit. NEVER re-baseline this.
-  constexpr u64 kPinnedSubwindowDigest = 6368737882721888739ULL;
+  // single-pass path must reproduce it to the bit. NEVER re-baseline this for a
+  // sub-window change.
+  // W0-A0 RE-BASELINE (A-01 + A-13, an alpha-kernel change, not a sub-window
+  // change): pre-W0 pin 6368737882721888739. Proof the sub-window path is still
+  // bit-identical: with only RankTies::OrdinalV1 + TsSumPath::OnlineV1 as the
+  // Engine defaults, this test reproduced the old pin exactly (lane-a0 report).
+  constexpr u64 kPinnedSubwindowDigest = 14814588614960253351ULL;
 
   Fixture fx1{big_panel};
   lib::Library lib1 = lib::Library::open(tmpdir("s2_sw_bit_a"), gc, {0xC0FFEEu});
@@ -1572,9 +1581,12 @@ TEST(FactoryOos, PriceScaleGate_InertWhenRawCloseAbsent) {
 TEST(FactoryOos, HoldoutEngineReuse_DigestUnchanged) {
   // Pinned constants (captured from the pre-hoist build; seed=17, oos=0.20,
   // default gate — the SAME config as OosDeterminism, which admits >= 1).
-  static constexpr atx::u64 kPinnedDigest = 10909738412604108776ULL;
+  // W0-A0 RE-BASELINE (A-01/A-02/A-09/A-13 kernel policies + A-03 scalar-literal
+  // rule): pre-W0 digest 10909738412604108776, version_id 3846488092 (admitted
+  // unchanged at 5). Run==run identity (prong a) still holds (lane-a0 report).
+  static constexpr atx::u64 kPinnedDigest = 5867665479471522971ULL;
   static constexpr atx::usize kPinnedAdmitted = 5U;
-  static constexpr atx::u64 kPinnedVersionId = 3846488092ULL;
+  static constexpr atx::u64 kPinnedVersionId = 703512706ULL;
 
   AlphaGate gate{default_gate_cfg()};
   FactoryConfig cfg = real_signal_cfg(/*seed*/ 17);

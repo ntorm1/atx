@@ -68,7 +68,13 @@ using atx::engine::factory::SearchResult;
 // DigestInvariantAcrossWorkers test below pins this at the SAME new value), and
 // (3) derived from an alpha eval proven within 1e-9 of the known-correct batch
 // oracle (alpha conformance suite). Old pre-Task-7 value: 0xa83f0d3e0b41a18d.
-constexpr atx::u64 kGoldenDigest = 0xff95ac12512e0e91ULL;
+//
+// W0-A0 RE-BASELINE (A-01 + A-13): rank(rev) sees an all-zero date-0 row (ties ->
+// average rank 0.5 instead of the index proxy) and ts_mean now takes the
+// oracle-exact AuditExact windowed recompute. Proven attribution: with ONLY
+// RankTies::OrdinalV1 + TsSumPath::OnlineV1 as the Engine defaults this test
+// reproduced the pre-W0 value 0xff95ac12512e0e91 bit-exactly (lane-a0 report).
+constexpr atx::u64 kGoldenDigest = 0x889874a3b9b29c55ULL;
 
 // Off-path MultiObjective determinism anchor (R4): the digest produced by
 // deflate_off_cfg(555) on the 96x6 fixture.  This equals the pre-R4 value
@@ -76,7 +82,13 @@ constexpr atx::u64 kGoldenDigest = 0xff95ac12512e0e91ULL;
 // (byte-identical by construction).  Guards against future drift in the
 // MultiObjective path that would otherwise go undetected (self-consistency
 // alone cannot catch a constant shift across all runs).
-constexpr atx::u64 kGoldenMultiObjectiveOffPath = 0x1763d356dfa4fbceULL;
+//
+// W0-A0 RE-BASELINE (A-01 + A-13 + A-03): pre-W0 value 0x1763d356dfa4fbce. The
+// kernel policies alone (every KernelPolicy enum at its V1 value) do not restore
+// it; the residual shift is the A-03 scalar-literal rule (typecheck now rejects,
+// and crossover no longer offers, a non-literal scalar slot), which changes which
+// candidates survive in this multi-objective run (lane-a0 report).
+constexpr atx::u64 kGoldenMultiObjectiveOffPath = 0x1968d9ad03e424b0ULL;
 
 // ===========================================================================
 //  Frozen fixture — lifted VERBATIM from zzz_golden_capture_test.cpp.
