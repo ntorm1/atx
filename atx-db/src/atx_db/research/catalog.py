@@ -161,10 +161,10 @@ CAVEAT_CODES: Mapping[str, str] = {
     "non_monotone": "the published relation is U-shaped or holds only within a subgroup",
     "mixed_evidence": "published evidence disagrees on the sign; the hypothesis is two-sided",
     "coverage_bias": "an input is missing for a non-random group of filers",
-    "presence_rule": "a value can rest on a zero imputed from a concept's absence under a presence guard: a "
-                     "balance (debt, inventory) only when the issuer has never tagged a mapped alias up to that "
-                     "quarter, a trailing flow only when no quarter of the year tags it while each reports operating "
-                     "cash flow; a switch to an unmapped alias or a partial year has no value",
+    "presence_rule": "a value can rest on a zero imputed from a balance's absence under a presence guard: debt or "
+                     "inventory only when the issuer has never tagged a mapped alias up to that quarter; a switch "
+                     "to an unmapped alias has no value (flows are never imputed: an absent discrete quarter "
+                     "cannot prove absence from a year-to-date or annual fact)",
     "unguarded_zero": "a missing optional balance (preferred stock, minority interest, goodwill, other "
                       "intangibles) is read as zero with no presence guard",
     "construct_deviation": "the definition deviates from the published construction (see the note)",

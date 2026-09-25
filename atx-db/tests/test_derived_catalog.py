@@ -16,7 +16,7 @@ from atx_db.derived_registry import (
     validate_definitions,
 )
 
-EXPECTED_METRIC_COUNT = 256
+EXPECTED_METRIC_COUNT = 264
 EXPECTED_DAILY_COUNT = 30
 
 # Every family named in the spec section "Derived metric catalog", plus the

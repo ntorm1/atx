@@ -59,8 +59,6 @@ SPLIT_GATED = {
 KNOWN_BIAS = {
     "eps_diluted_growth_yoy", "eps_cagr_3y", "eps_diluted_q_growth_qoq", "eps_basic_q_growth_qoq",
     "shares_growth_yoy", "share_issuance_3y", "piotroski_f",
-    # Re-review 1 n1: every share-basis row until the R1d fix re-review passes.
-    "eps_diluted_q_growth_yoy", "eps_basic_q_growth_yoy", "eps_diluted_q_growth_yoy_accel", "share_issuance_1y",
 }
 #: Contested signs pre-registered two-sided (R1a I3/I5, R1b J1).
 TWO_SIDED = {"revenue_growth_yoy", "debt_to_market", "assets_to_market", "sga_to_sales"}
@@ -141,22 +139,27 @@ def test_presence_rule_caveat_marks_exactly_the_rows_that_can_read_an_imputed_ze
     shapes = derive_metric_shapes()
     presence = {entry.feature_id for entry in entries if "presence_rule" in entry.caveat_codes}
 
-    # The presence rules themselves: debt, short-term debt, long-term debt, inventory
-    # (change and level) and cash-flow equity issuance.
+    # The presence rules themselves: debt, short-term debt, long-term debt and
+    # inventory (change and level), all balances.
     for code in ("total_debt_q", "operating_working_capital_q", "long_term_debt_to_assets", "change_in_inventory_yoy",
-                 "quick_ratio", "no_equity_issuance_ttm"):
+                 "quick_ratio"):
         assert shapes[code].reads_absence, code
     # Every catalog row reading them, directly or through debt in NOA, EV or invested capital.
     assert {"debt_to_assets", "debt_to_assets_change_yoy", "long_term_debt_to_assets", "net_debt_to_book_equity",
             "debt_to_market", "working_capital_accruals", "delta_noa", "noa_to_assets", "rnoa_q",
             "ebitda_to_ev", "gross_profit_to_ev", "roic", "quick_ratio", "investment_to_assets",
-            "inventory_change_to_assets", "cash_profitability", "piotroski_f_cash_issuance",
-            # Re-review 1 N2: presence-guarded trailing payout and issuance flows.
-            "net_equity_issuance", "external_financing", "net_payout_yield", "total_payout_yield",
-            "dividend_yield"} <= presence
-    # Rows on reported concepts only never carry it (rsst_accruals: debt cancels).
-    for code in ("roa", "current_ratio", "cash_ratio", "book_to_market", "market_cap", "rsst_accruals"):
+            "inventory_change_to_assets", "cash_profitability", "piotroski_f_cash_issuance"} <= presence
+    # Rows on reported concepts only never carry it (rsst_accruals: debt cancels). Flows
+    # are never imputed (Re-review 2 R2-I1: an absent discrete quarter cannot prove
+    # absence from a year-to-date or annual fact), so payout and issuance rows are
+    # strict NULL, and the trailing flows keep their top-level ttm (annual fallback).
+    for code in ("roa", "current_ratio", "cash_ratio", "book_to_market", "market_cap", "rsst_accruals",
+                 "net_equity_issuance", "external_financing", "net_payout_yield", "total_payout_yield",
+                 "dividend_yield", "payout_ratio"):
         assert code not in presence, code
+        assert not shapes[code].reads_absence, code
+    for code in ("common_dividends_ttm", "share_repurchase_ttm", "share_issuance_ttm", "debt_issuance_ttm",
+                 "debt_reduction_ttm", "no_equity_issuance_ttm", "sustainable_growth"):
         assert not shapes[code].reads_absence, code
     assert "sales_to_price" not in presence
 

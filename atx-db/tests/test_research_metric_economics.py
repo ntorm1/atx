@@ -12,12 +12,13 @@ whole quarterly catalog is computed once on it. That gives two things:
   exactly when the engine labels its values ``value_origin='incomparable'``.
   S10 is S1 without bars: there, only ``split_basis`` rows may be incomparable.
 
-Issuers S2-S9 carry the same values with specific buckets removed or made
+Issuers S2-S9 and S11 carry the same values with specific buckets removed or made
 non-positive, proving that a missing bucket yields no value rather than a
-row-lag substitution, that non-positive opening balances yield no value, how an
-untagged or partly tagged equity-issuance concept is read, and that a missing
-debt, inventory or dividend concept is zero only for an issuer that tags none of
-it throughout its presence window (never a tag switch or a skipped quarter).
+row-lag substitution, that non-positive opening balances yield no value, that a
+missing debt or inventory balance is zero only for an issuer that has never
+tagged a mapped alias (never a tag switch or a skipped quarter), and that a
+missing flow is never zero: S11 carries only year-to-date and annual facts
+(Re-review 2 R2-I1), read through the annual fallback or not at all.
 """
 
 from __future__ import annotations
@@ -122,6 +123,28 @@ def _seed(store, security_id: str, *, drop: frozenset[tuple[str, int]] = frozens
     )
 
 
+def _annual(store, security_id: str, code: str, index: int, value: float) -> None:
+    """A fiscal-year (10-K) flow fact ending at bucket ``index``, with no discrete quarter."""
+    store.con.execute(
+        """
+        INSERT INTO fundamental_standardized (
+            standardized_id, source, security_id, item_id, canonical_code, basis,
+            period_start, period_end, value, as_of_date, available_at, input_codes_json,
+            input_item_ids_json, rule_id, combination_rule, revision_sequence, is_latest_revision
+        ) VALUES (?, 'test', ?, 1, ?, 'annual', ?, ?, ?, ?, ?, '[]', '[]', 'r', 'direct', 1, true)
+        """,
+        [f"{security_id}|{code}|FY{_ENDS[index]}", security_id, code, _ENDS[index - 4] + dt.timedelta(days=1),
+         _ENDS[index], value, _available(index).date(), _available(index)],
+    )
+
+
+# S11 (R2-I1): an equity offering first tagged in a nine-month fact of fiscal 2021
+# (Q3 not derivable, Q4 = FY - 9M is) and one annual-only common dividend a year.
+_S11_ISSUANCE_FY = 120.0
+_S11_DIVIDEND_FY = 72.0
+_S11_DIVIDEND_YEARS = (3, 7, 11, 15, 19)
+
+
 def _flat_bars(store, security_id: str) -> None:
     """Weekday bars with a flat vendor factor over every filing clock: no split
     happened and the split basis of every share-basis operand is proven (R1d).
@@ -181,12 +204,19 @@ def engine_store(_schema_template, tmp_path_factory) -> Iterator[object]:
             {(code, index) for code in _DEBT for index in range(8, len(_ENDS))}
             | {("inventory", index) for index in range(16, len(_ENDS))}
             | {("common_dividends_paid", 18)}))
+        _seed(store, "S11", drop=frozenset(
+            {("stock_issuance", index) for index in range(len(_ENDS)) if index != 15}
+            | {(code, index) for code in ("common_dividends_paid", "total_dividends_paid")
+               for index in range(len(_ENDS))}))
+        _annual(store, "S11", "stock_issuance", 15, _S11_ISSUANCE_FY)
+        for index in _S11_DIVIDEND_YEARS:
+            _annual(store, "S11", "common_dividends_paid", index, _S11_DIVIDEND_FY)
         refresh_derived_metrics(store, DerivedMetricsOptions(
-            security_ids=("S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9"),
+            security_ids=("S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S11"),
             metric_codes=("sue_ni", "roe_variability_8q", "investment_to_assets", "inventory_change_to_assets",
                           "piotroski_f_cash_issuance", "debt_to_assets", "debt_to_assets_change_yoy",
                           "net_debt_to_book_equity", "sustainable_growth", "long_term_debt_to_assets",
-                          "quick_ratio", "working_capital_accruals", "net_equity_issuance"),
+                          "quick_ratio", "working_capital_accruals", "net_equity_issuance", "common_dividends_ttm"),
         ))
         yield store
     finally:
@@ -202,6 +232,17 @@ def _state(store, code: str, index: int, security_id: str = "S1") -> tuple:
     ).fetchone()
     assert row is not None, (security_id, code, index)
     return row
+
+
+def _value(store, code: str, index: int, security_id: str) -> float | None:
+    """The latest value, or None when the engine stored no row (no input at all)."""
+    row = store.con.execute(
+        """SELECT value FROM derived_metric_values
+           WHERE security_id = ? AND metric_code = ? AND period_end = ?
+           ORDER BY available_at DESC, derived_value_id DESC LIMIT 1""",
+        [security_id, code, _ENDS[index]],
+    ).fetchone()
+    return None if row is None else row[0]
 
 
 # ------------------------------------------------------------------ hand formulas
@@ -432,12 +473,12 @@ def test_investment_to_assets_keeps_one_ppe_basis_and_treats_missing_inventory_l
 def test_missing_debt_inventory_and_dividends_are_zero_only_for_issuers_that_never_report_them(engine_store):
     # R1b J4 / R1a M5. S7 never reports any debt, inventory or dividend concept.
     # Presence rules: debt and inventory never tagged up to the quarter (the
-    # ever-reported chains), dividends untagged in all trailing four cash-flow statements.
+    # ever-reported chains). Dividends, a flow, are never imputed (R2-I1).
     i = _LAST
     assert _state(engine_store, "debt_to_assets", i, "S7")[:2] == (0.0, "valid")
     # The zeros keep the spans of their statements: comparable, not incomparable.
     for code in ("debt_to_assets", "debt_to_assets_change_yoy", "net_debt_to_book_equity",
-                 "inventory_change_to_assets", "investment_to_assets", "sustainable_growth"):
+                 "inventory_change_to_assets", "investment_to_assets"):
         assert _state(engine_store, code, i, "S7")[2] != "incomparable", code
     assert _state(engine_store, "debt_to_assets", i, "S8")[2] != "incomparable"
     # An issuer that has never tagged a debt alias reads zero from its first balance sheet.
@@ -448,9 +489,8 @@ def test_missing_debt_inventory_and_dividends_are_zero_only_for_issuers_that_nev
     assert _state(engine_store, "inventory_change_to_assets", i, "S7")[:2] == (0.0, "valid")
     assert _state(engine_store, "investment_to_assets", i, "S7")[0] == pytest.approx(
         _seasonal_change("pp_and_e_net", i) / _v("total_assets", i - 4), rel=1e-12)
-    assert _state(engine_store, "sustainable_growth", i, "S7")[0] == pytest.approx(
-        _ttm("net_income_to_common", i) / ((_v("common_equity", i) + _v("common_equity", i - 4)) / 2.0),
-        rel=1e-12)
+    # A dividend concept never tagged in a discrete quarter proves no non-payment.
+    assert _value(engine_store, "sustainable_growth", i, "S7") is None
     # The same rule for long-term debt (the Piotroski leverage signal), short-term
     # debt in operating working capital and inventory in the quick ratio: a debt-free,
     # inventory-free issuer keeps its leverage signal, F-score, accruals and quick ratio.
@@ -529,20 +569,35 @@ def test_sga_composes_selling_plus_general_and_administrative_when_no_total_is_t
     assert compute_standardized_rows(pd.DataFrame(split[:1]), rules=rules).empty
 
 
-def test_cash_issuance_signal_distinguishes_untagged_years_from_partial_years(engine_store):
-    # S5 never tags equity proceeds but reports operating cash flow every quarter.
-    assert _state(engine_store, "no_equity_issuance_ttm", _LAST, "S5")[:2] == (1.0, "valid")
-    assert _state(engine_store, "piotroski_f_cash_issuance", _LAST, "S5")[0] == pytest.approx(
-        _piotroski_cash_issuance(_LAST, 1.0))
+def test_cash_issuance_signal_is_never_imputed_from_untagged_quarters(engine_store):
+    # Re-review 2 R2-I1: S5 never tags equity proceeds in a discrete quarter, which
+    # cannot prove no issuance (a year-to-date or annual fact may carry it): no value.
+    assert _value(engine_store, "no_equity_issuance_ttm", _LAST, "S5") is None
+    assert _state(engine_store, "piotroski_f_cash_issuance", _LAST, "S5")[0] is None
+    assert _state(engine_store, "net_equity_issuance", _LAST, "S5")[0] is None
     # S6 tags proceeds in buckets 16 and 19 only: a partial year has no value, not "no issuance".
     assert _state(engine_store, "no_equity_issuance_ttm", _LAST, "S6")[:2] == (None, "missing_input_or_domain")
     assert _state(engine_store, "piotroski_f_cash_issuance", _LAST, "S6")[0] is None
     assert _state(engine_store, "no_equity_issuance_ttm", 15, "S6")[:2] == (0.0, "valid")
-    # Re-review 1 N2: the same presence guard on the trailing flow itself. A never-
-    # issuer's issuance is an imputed zero; a partly tagged year has no value.
-    assert _state(engine_store, "net_equity_issuance", _LAST, "S5")[:2] == (
-        pytest.approx(-_ttm("stock_repurchases_buybacks", _LAST) / _avg_assets(_LAST), rel=1e-12), "valid")
     assert _state(engine_store, "net_equity_issuance", _LAST, "S6")[0] is None
+
+
+def test_year_to_date_and_annual_only_flows_never_read_as_zero(engine_store):
+    """Re-review 2 R2-I1: cash-flow facts are year-to-date, so a discrete quarter is
+    missing whenever the prior year-to-date is. S11 raises equity first in a nine-month
+    fact and pays one annual-only dividend a year."""
+    # The first bucket where the offering is visible has no value, never "no issuance".
+    for code in ("share_issuance_ttm", "no_equity_issuance_ttm", "net_equity_issuance"):
+        assert _value(engine_store, code, 14, "S11") is None, code
+    # The fiscal-year bucket reads the 10-K value through the annual fallback.
+    assert _state(engine_store, "share_issuance_ttm", 15, "S11") == (
+        pytest.approx(_S11_ISSUANCE_FY, rel=1e-12), "valid", "annual_fallback")
+    assert _state(engine_store, "no_equity_issuance_ttm", 15, "S11")[:2] == (0.0, "valid")
+    # An annual-only payer: the fiscal-year value, and no value (never a zero payer) between.
+    assert _state(engine_store, "common_dividends_ttm", 15, "S11") == (
+        pytest.approx(_S11_DIVIDEND_FY, rel=1e-12), "valid", "annual_fallback")
+    for index in (16, 17, 18):
+        assert _value(engine_store, "common_dividends_ttm", index, "S11") is None, index
 
 
 # ------------------------------------------------- catalog admission vs the engine
