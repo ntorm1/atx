@@ -111,6 +111,27 @@ def _configure(store: DuckDBStore, options: BulkTickerHistoryOptions) -> None:
     store.con.execute("SET temp_directory = ?", [str(temp_dir)])
 
 
+# Session-scoped staging this publisher creates. The source projection holds every source row.
+_SESSION_TEMPORARIES = (
+    "ticker_history_source_rows",
+    "ticker_history_source_keys",
+    "broad_symbol_map",
+    "broad_line_map",
+)
+
+
+def _drop_session_temporaries(store: DuckDBStore) -> None:
+    """Release this publisher's temporary tables once the bars are published.
+
+    Left behind, they pin the whole source projection in memory for the rest of the
+    session, and a later stage on the same connection (the activation ladder runs
+    ``companyfacts_load`` next) refuses to recycle a connection that still holds
+    caller-owned temporary objects.
+    """
+    for name in _SESSION_TEMPORARIES:
+        store.con.execute(f"DROP TABLE IF EXISTS temp.main.{name}")
+
+
 def _create_symbol_map(store: DuckDBStore) -> None:
     store.con.execute(
         """
@@ -528,6 +549,7 @@ def publish_bulk_ticker_history(
         # connection or hide the original failure; the next explicit run replaces it.
         _record_failed_publication(store, run_id, exc)
         raise
+    _drop_session_temporaries(store)
     rows, securities, latest_date, latest_securities, invalid_rows, duplicate_keys = metrics
     elapsed = time.perf_counter() - started
     store.con.execute(

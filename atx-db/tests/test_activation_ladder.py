@@ -19,7 +19,12 @@ from atx_db.activation import (
 )
 from atx_db.connection import DuckDBStore
 
-_HEADER = "tradingDate\tsecurityID\tticker_tk\ttodayTicker\topen\thigh\tlow\tclose\tclosePr\tvolume\tshares\treturnFactor"
+# The full tbltickerhistory3 source contract (ticker_history_quality._validate_source_columns):
+# dn is the vendor's per-security trading-day sequence, closeUnadjPr the prior unadjusted close.
+_HEADER = (
+    "tradingDate\tsecurityID\tticker_tk\ttodayTicker\topen\thigh\tlow\tclose\tclosePr\tvolume\tshares"
+    "\treturnFactor\tcumulReturnFactor\tdn\tcloseUnadjPr\ttotalReturn"
+)
 _MEMBER = "tbltickerhistory3_10y.txt"
 _SYMBOLS = ("AAA", "BBB", "CCC")
 _DATES = ("2024-01-02", "2024-01-03", "2024-01-04")
@@ -29,11 +34,13 @@ _CIK = "0000320193"
 
 @pytest.fixture
 def three_symbol_zip(tmp_path: Path) -> Path:
+    # Flat close, no distributions: daily and cumulative factors 1, total return 0.
     rows = [
         f"{day}\t{32950 + i}\t{sym}\t{sym}\t{10.0 * i}\t{10.0 * i + 0.5}\t{10.0 * i - 0.1}\t"
         f"{10.0 * i + 0.2}\t{10.0 * i + 0.2}\t{1000 * i}\t{1_000_000 * i}\t1.0"
+        f"\t1.0\t{dn}\t{10.0 * i + 0.2}\t0.0"
         for i, sym in enumerate(_SYMBOLS, start=1)
-        for day in _DATES
+        for dn, day in enumerate(_DATES, start=1)
     ]
     payload = ("\r\n".join([_HEADER, *rows]) + "\r\n").encode("utf-8")
     zip_path = tmp_path / "tbltickerhistory3_10y.zip"

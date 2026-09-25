@@ -16,7 +16,12 @@ from atx_db.activation import (
     stage_ticker_history_publish,
 )
 
-_HEADER = "tradingDate\tsecurityID\tticker_tk\ttodayTicker\topen\thigh\tlow\tclose\tclosePr\tvolume\tshares\treturnFactor"
+# The full tbltickerhistory3 source contract (ticker_history_quality._validate_source_columns):
+# dn is the vendor's per-security trading-day sequence, closeUnadjPr the prior unadjusted close.
+_HEADER = (
+    "tradingDate\tsecurityID\tticker_tk\ttodayTicker\topen\thigh\tlow\tclose\tclosePr\tvolume\tshares"
+    "\treturnFactor\tcumulReturnFactor\tdn\tcloseUnadjPr\ttotalReturn"
+)
 _MEMBER = "tbltickerhistory3_10y.txt"
 _SYMBOLS = ("AAA", "BBB", "CCC")
 _DATES = ("2024-01-02", "2024-01-03", "2024-01-04")
@@ -25,11 +30,13 @@ _DATES = ("2024-01-02", "2024-01-03", "2024-01-04")
 def _rows() -> list[str]:
     rows: list[str] = []
     for index, symbol in enumerate(_SYMBOLS, start=1):
-        for day in _DATES:
+        for dn, day in enumerate(_DATES, start=1):
             base = 10.0 * index
+            # Flat close, no distributions: daily and cumulative factors 1, total return 0.
             rows.append(
                 f"{day}\t{32950 + index}\t{symbol}\t{symbol}\t{base}\t{base + 0.5}\t"
                 f"{base - 0.1}\t{base + 0.2}\t{base + 0.2}\t{1000 * index}\t{1_000_000 * index}\t1.0"
+                f"\t1.0\t{dn}\t{base + 0.2}\t0.0"
             )
     return rows
 
