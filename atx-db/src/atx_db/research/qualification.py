@@ -28,9 +28,19 @@ their hash before any real-data evaluation. A policy file whose declared
 whose content hash differs from its pin in :data:`FROZEN_POLICY_SHA256` is refused,
 and the research store refuses to register a second hash under a registered version.
 Changing the policy therefore always means a new ``policy_version`` (and a new pin).
-An evaluation run is qualified only when its frozen split is the policy's split.
-Versions: ``r4-qualification-v1`` (kept in ``seeds/research_qualification_policy_v1.json``)
-and ``r4-qualification-v2`` (current, same split; created before any real-data result).
+Unknown keys in any policy section are refused.
+
+From v3 the policy also pins every gate-feeding R3b ``EvaluationSpec`` value
+(``evaluation_spec``: horizons, subperiod bounds, ``min_names``, ``min_bucket_names``,
+``nyse_min_names``, ``min_formations``, ``verify_panels``); build the RR4 spec with
+:func:`evaluation_spec_kwargs`. A run is qualified only when its sealed spec equals
+those values, its frozen split is the policy's split, it was evaluated under this
+policy *file* (the R3b CLI records the file's byte hash) and the policy was frozen in
+the research store (``research_qualify.py freeze``) before the run was created. Only an
+explicit ``allow_post_hoc_policy`` passes the last two, and it stamps the manifest,
+every feature row and the generated doc. Versions: v1 and v2 are kept as
+``seeds/research_qualification_policy_v1.json`` / ``_v2.json``; v3 is current (same
+split; every version predates any real-data result).
 
 Gates (controller R4 ruling; first failing tier sets the status)
 -----------------------------------------------------------------
@@ -62,28 +72,34 @@ the holdout).
    (``dsr_z > 0``: the EW decile long-short Sharpe beats the expected maximum of the
    whole family, ``horizon_periods = h``). Under v2 it is reported and flagged
    (``dsr_pass``), never gating.
-6. Otherwise ``qualified_strict`` on the strict basis with strict labels and
+6. Otherwise ``qualified_strict`` on the strict basis with strict labels (v3: exact
+   allowlists of identity basis, universe basis and universe scope) and
    ``qualified_reconstructed`` on any other basis. A reconstructed-basis pass is never
-   labeled strict (RX1); a strict-basis row whose identity/universe labels are not
-   strict counts as reconstructed evidence.
+   labeled strict (RX1); a strict-basis row whose labels are not strict counts as
+   reconstructed evidence.
 
 Decile spreads, monotonicity, net-of-cost spreads, Fama-MacBeth, neutral variants and
 the 1/6/12-month horizons are supporting evidence, reported, never gating.
 
-One status per feature: ``qualified_strict`` if a strict basis qualifies, else
-``qualified_reconstructed`` if another basis qualifies (unless a testable strict basis
-is ``sign_reversed``: then ``unstable``), else the status of the reference research
+One status per feature: ``unstable`` if one basis qualifies while another is
+``sign_reversed`` (symmetric veto), else ``qualified_strict`` if a strict basis
+qualifies, else ``qualified_reconstructed`` if another basis qualifies, else the status of the reference research
 basis (the reconstructed basis, RX1) when it is testable, else the strict basis status
 (``untestable_strict`` when the strict cohort is empty).
 
 Refusals
 --------
-Unproduced cells and partial family subsets are blockers, never a smaller family
-(R3b I1): a run that is not sealed, whose rows do not match its seal, has no frozen
-split or another split, is not ``family_complete``, carries a subset/not-produced
-blocker, has ``not_produced``/``excluded_by_subset`` cells, a DSR ``n_trials`` other
-than the whole family, or disagrees with the catalog raises
-:class:`QualificationRefused` and writes nothing.
+Unproduced cells, partial family subsets and catalog drift are blockers, never a
+smaller family (R3b I1): a run that is not sealed, whose rows do not match its seal or
+whose ``spec_json`` does not match its ``spec_sha256``, has no frozen split or another
+split, another evaluation spec, is not ``family_complete`` or lacks a basis in its
+sealed cells, carries a subset / not-produced / catalog-drift blocker
+(``*_feature_catalog_differs_from_committed_catalog``,
+``family_catalog_injected_not_the_feature_version_snapshot``), has
+``not_produced``/``excluded_by_subset`` cells, a DSR ``n_trials`` other than the whole
+family, disagrees with the catalog, or fails the RX7 order above raises
+:class:`QualificationRefused` and writes nothing. A ledger built without the catalog
+check or without re-hashing the run's seal is a stamped dry run and cannot be persisted.
 
 Outputs
 -------
@@ -103,6 +119,7 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import duckdb
@@ -110,20 +127,23 @@ import pandas as pd
 
 from . import stats
 from .catalog import CONTROL_CLASSES
-from .evaluation import FrozenSplit, load_frozen_split, results_digest
+from .evaluation import BASES, FrozenSplit, load_frozen_split, results_digest
 
-QUALIFICATION_VERSION = "research-qualification-v1"
-QUALIFICATION_SCHEMA_VERSION = 1
+#: Bumped whenever grading semantics change (M5); the manifest also records the code sha.
+QUALIFICATION_VERSION = "research-qualification-v2"
+QUALIFICATION_SCHEMA_VERSION = 2
 #: The current policy (the RR4 ``--split-file``); superseded versions stay in the seeds as history.
 POLICY_PATH = Path(__file__).resolve().parents[1] / "seeds" / "research_qualification_policy.json"
 POLICY_HISTORY_PATHS: Mapping[str, Path] = {
     "r4-qualification-v1": POLICY_PATH.with_name("research_qualification_policy_v1.json"),
+    "r4-qualification-v2": POLICY_PATH.with_name("research_qualification_policy_v2.json"),
 }
 #: Every committed policy version and its canonical content hash. Editing a frozen
 #: policy is refused; a changed policy needs a new version and a new pin here.
 FROZEN_POLICY_SHA256: Mapping[str, str] = {
     "r4-qualification-v1": "d33ac7044a5b67d656f37a4f9c0ef61afacc403b4e4ff65ae6eec595452f4f22",
     "r4-qualification-v2": "d517b6c8372ae8ee18d09418be5f400d6b797f1015098c37f0aab1b2813093c2",
+    "r4-qualification-v3": "3c26bfb68db4d98c3a25c20ac050cbb45bced1fabbe4bde07930ab18d48d7042",
 }
 
 QUALIFIED_STRICT = "qualified_strict"
@@ -144,10 +164,22 @@ REFERENCE_BASIS = "reconstructed"
 _CELL_TESTED = "tested"
 _CELL_UNTESTABLE = "untestable_strict"
 _CELL_MISSING = ("not_produced", "excluded_by_subset")
-#: Run blockers that make a run unqualifiable (exact, or ``{basis}_<suffix>:N``).
+#: Run blockers that make a run unqualifiable (exact, or ``{basis}_<suffix>:N``): subsets,
+#: unproduced cells and any catalog drift (a family built from another catalog snapshot).
 _REFUSING_BLOCKERS = frozenset({"partial_family_subset", "family_not_catalog_anchored",
-                                "no_frozen_split_selection_uses_all_formations"})
-_REFUSING_BLOCKER_SUFFIXES = ("_catalog_cells_not_produced", "_features_outside_catalog", "_features_absent")
+                                "no_frozen_split_selection_uses_all_formations",
+                                "family_catalog_injected_not_the_feature_version_snapshot"})
+_REFUSING_BLOCKER_SUFFIXES = ("_catalog_cells_not_produced", "_features_outside_catalog", "_features_absent",
+                              "_feature_catalog_differs_from_committed_catalog")
+#: Refusals that only an explicit post-hoc override may pass (RX7: policy frozen before the run).
+POST_HOC_REASONS = ("evaluation_policy_file_differs", "policy_not_registered_in_store",
+                    "policy_registered_after_evaluation")
+
+
+def qualification_code_sha256() -> str:
+    """EOL-normalized digest of this module (recorded in every ledger manifest, M5)."""
+    data = Path(__file__).read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()
 
 
 class QualificationError(ValueError):
@@ -223,7 +255,28 @@ def _g(value: float | None) -> str:
 _POLICY_KEYS = frozenset({"policy_version", "title", "frozen_on", "authority", "split", "primary", "significance",
                           "deflated_sharpe", "coverage", "holdout", "subperiods", "size_buckets", "strict_evidence",
                           "reported", "statuses", "policy_sha256"})
-_POLICY_OPTIONAL_KEYS = frozenset({"supersedes"})
+_POLICY_OPTIONAL_KEYS = frozenset({"supersedes", "evaluation_spec"})
+#: Exact keys per section (required, optional): an unknown key is refused (M4), so a policy
+#: can never look stricter than the code it runs.
+_SECTION_KEYS: Mapping[str, tuple[frozenset[str], frozenset[str]]] = {
+    "primary": (frozenset({"horizon_months", "variant", "reported_horizons_months"}), frozenset({"rationale"})),
+    "significance": (frozenset({"hlz_min_abs_z", "bh_max_q", "bh_min_abs_z"}), frozenset({"family", "inference"})),
+    "deflated_sharpe": (frozenset({"min_z", "n_trials", "series"}), frozenset({"gating", "meaning"})),
+    "coverage": (frozenset({"min_value_coverage", "min_formation_share", "min_observations"}), frozenset()),
+    "holdout": (frozenset({"slice_name", "min_signed_z"}), frozenset()),
+    "subperiods": (frozenset({"names", "min_same_sign"}), frozenset()),
+    "size_buckets": (frozenset({"slice_kind", "venue_basis", "buckets", "min_formations"}),
+                     frozenset({"fallback_slice_kind", "fallback_venue_basis", "min_venue_pit_share", "meaning"})),
+    "strict_evidence": (frozenset({"basis"}),
+                        frozenset({"non_strict_label_tokens", "identity_bases", "universe_bases", "universe_scopes"})),
+    "reported": (frozenset({"neutral_variants", "neutral_min_abs_z", "decile_monotonicity_min", "net_cost_bps",
+                            "psr_benchmark_sharpe"}), frozenset()),
+    "evaluation_spec": (frozenset({"horizons_months", "subperiods", "min_names", "min_bucket_names",
+                                   "nyse_min_names", "min_formations", "verify_panels"}), frozenset({"meaning"})),
+}
+#: The pinned R3b EvaluationSpec fields (v3+), compared with the run's sealed spec_json.
+EVALUATION_SPEC_FIELDS = ("horizons_months", "subperiods", "min_names", "min_bucket_names", "nyse_min_names",
+                          "min_formations", "verify_panels")
 
 
 @dataclass(frozen=True)
@@ -253,7 +306,11 @@ class QualificationPolicy:
     size_buckets: tuple[str, ...]
     size_min_formations: int
     strict_basis: str
+    #: v1/v2: a token denylist; v3: exact allowlists of strict labels (M1).
     non_strict_tokens: tuple[str, ...]
+    strict_identity_bases: tuple[str, ...] | None
+    strict_universe_bases: tuple[str, ...] | None
+    strict_universe_scopes: tuple[str, ...] | None
     neutral_variants: tuple[str, ...]
     neutral_min_abs_z: float
     monotonicity_min: float
@@ -264,9 +321,15 @@ class QualificationPolicy:
     #: v2: the size-bucket rule falls back to these labeled slices where NYSE-PIT buckets are too thin.
     size_fallback_kind: str | None
     size_fallback_venue: str | None
+    #: v3: NYSE-PIT buckets count only with this mean point-in-time venue share (M7).
+    size_min_venue_pit_share: float | None
+    #: v3: the pinned R3b EvaluationSpec values (``spec_payload`` form); None before v3.
+    evaluation_spec: Mapping[str, Any] | None
     #: sha256 of the policy file's bytes with LF and with CRLF line endings (what the
     #: R3b CLI records as the run's ``policy_sha256``); empty for a mapping.
     file_sha256s: frozenset[str] = field(default_factory=frozenset)
+    #: sha256 of the file's bytes as read (what to pass as the run's ``policy_sha256``).
+    file_sha256: str | None = None
 
 
 def policy_sha256(content: Mapping[str, Any]) -> str:
@@ -280,14 +343,42 @@ def policy_file_sha256s(path: Path | str) -> frozenset[str]:
     return frozenset({hashlib.sha256(data).hexdigest(), hashlib.sha256(data.replace(b"\n", b"\r\n")).hexdigest()})
 
 
-def _section(content: Mapping[str, Any], name: str, keys: Iterable[str]) -> Mapping[str, Any]:
+def _section(content: Mapping[str, Any], name: str) -> Mapping[str, Any]:
     section = content.get(name)
     if not isinstance(section, Mapping):
         raise PolicyError(f"policy section {name!r} must be an object")
-    required = set(keys)
-    if not required <= set(section):
-        raise PolicyError(f"policy section {name!r} lacks {sorted(required - set(section))}")
+    required, optional = _SECTION_KEYS[name]
+    if not required <= set(section) <= required | optional:
+        raise PolicyError(f"policy section {name!r}: missing {sorted(required - set(section))}, "
+                          f"unknown {sorted(set(section) - required - optional)}")
     return section
+
+
+def _evaluation_spec(section: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize the pinned evaluation spec to R3b's ``spec_payload`` form."""
+    horizons = section["horizons_months"]
+    if not isinstance(horizons, list) or sorted(set(horizons)) != horizons or \
+            any(isinstance(h, bool) or not isinstance(h, int) for h in horizons):
+        raise PolicyError("evaluation_spec.horizons_months must be ascending distinct integers")
+    subperiods = []
+    for item in section["subperiods"]:
+        if not isinstance(item, list) or len(item) != 3 or not all(isinstance(v, str) for v in item):
+            raise PolicyError("evaluation_spec.subperiods must be [name, start, end] triples")
+        try:
+            start, end = dt.date.fromisoformat(item[1]), dt.date.fromisoformat(item[2])
+        except ValueError as error:
+            raise PolicyError(f"evaluation_spec.subperiods {item[0]}: {error}") from error
+        if start > end:
+            raise PolicyError(f"evaluation_spec.subperiods {item[0]} starts after it ends")
+        subperiods.append([item[0], start.isoformat(), end.isoformat()])
+    if not isinstance(section["verify_panels"], bool):
+        raise PolicyError("evaluation_spec.verify_panels must be a boolean")
+    return {"horizons_months": list(horizons), "subperiods": subperiods,
+            "min_names": _count(section, "min_names", 3, 100_000),
+            "min_bucket_names": _count(section, "min_bucket_names", 5, 100_000),
+            "nyse_min_names": _count(section, "nyse_min_names", 1, 100_000),
+            "min_formations": _count(section, "min_formations", 2, 10_000),
+            "verify_panels": section["verify_panels"]}
 
 
 def _number(section: Mapping[str, Any], key: str, low: float, high: float) -> float:
@@ -320,13 +411,15 @@ def load_policy(source: Path | str | Mapping[str, Any] = POLICY_PATH, *,
     policy), a pinned version whose content hash differs from its pin (a frozen policy
     changed in place) and, unless ``allow_unpinned``, a version that is not pinned.
     """
+    file_sha: str | None = None
     if isinstance(source, Mapping):
         content: Any = dict(source)
         file_hashes: frozenset[str] = frozenset()
     else:
         path = Path(source)
-        content = json.loads(path.read_text(encoding="utf-8"))
-        file_hashes = policy_file_sha256s(path)
+        raw = path.read_bytes()
+        content = json.loads(raw.decode("utf-8"))
+        file_hashes, file_sha = policy_file_sha256s(path), hashlib.sha256(raw).hexdigest()
     if not isinstance(content, dict):
         raise PolicyError("policy must be a JSON object")
     if not _POLICY_KEYS <= set(content) <= _POLICY_KEYS | _POLICY_OPTIONAL_KEYS:
@@ -352,24 +445,35 @@ def load_policy(source: Path | str | Mapping[str, Any] = POLICY_PATH, *,
         split = load_frozen_split(content["split"])
     except ValueError as error:
         raise PolicyError(f"policy split: {error}") from error
-    primary = _section(content, "primary", ("horizon_months", "variant", "reported_horizons_months"))
-    significance = _section(content, "significance", ("hlz_min_abs_z", "bh_max_q", "bh_min_abs_z"))
-    dsr = _section(content, "deflated_sharpe", ("min_z", "n_trials", "series"))
-    coverage = _section(content, "coverage", ("min_value_coverage", "min_formation_share", "min_observations"))
-    holdout = _section(content, "holdout", ("slice_name", "min_signed_z"))
-    subperiods = _section(content, "subperiods", ("names", "min_same_sign"))
-    size = _section(content, "size_buckets", ("slice_kind", "venue_basis", "buckets", "min_formations"))
-    strict = _section(content, "strict_evidence", ("basis", "non_strict_label_tokens"))
-    reported = _section(content, "reported", ("neutral_variants", "neutral_min_abs_z", "decile_monotonicity_min",
-                                              "net_cost_bps", "psr_benchmark_sharpe"))
+    primary = _section(content, "primary")
+    significance = _section(content, "significance")
+    dsr = _section(content, "deflated_sharpe")
+    coverage = _section(content, "coverage")
+    holdout = _section(content, "holdout")
+    subperiods = _section(content, "subperiods")
+    size = _section(content, "size_buckets")
+    strict = _section(content, "strict_evidence")
+    reported = _section(content, "reported")
+    evaluation = _evaluation_spec(_section(content, "evaluation_spec")) if "evaluation_spec" in content else None
     if dsr["n_trials"] != "whole_family" or dsr["series"] != "ls_ew10":
         raise PolicyError("deflated_sharpe must use the whole family and the ls_ew10 series (R3b)")
+    if significance.get("family", "rank_ic") != "rank_ic" or \
+            significance.get("inference", "ewc_fixed_b_z_equivalent") != "ewc_fixed_b_z_equivalent":
+        raise PolicyError("significance is the rank-IC family under EWC fixed-b inference (the only one implemented)")
+    allowlists = [key for key in ("identity_bases", "universe_bases", "universe_scopes") if key in strict]
+    if ("non_strict_label_tokens" in strict) == bool(allowlists) or (allowlists and len(allowlists) != 3):
+        raise PolicyError("strict_evidence needs either non_strict_label_tokens or all three strict allowlists")
+    venue_floor = _number(size, "min_venue_pit_share", 0.0, 1.0) if "min_venue_pit_share" in size else None
     horizon = _count(primary, "horizon_months", 1, 12)
     reported_horizons = tuple(sorted(_count({"h": h}, "h", 1, 12) for h in primary["reported_horizons_months"]))
     net_bps = _count(reported, "net_cost_bps", 10, 50)
     if net_bps not in (10, 25, 50):
         raise PolicyError("reported.net_cost_bps must be one of the R3b costs 10/25/50")
     subperiod_names = _names(subperiods, "names")
+    if evaluation is not None:
+        pinned_names = [name for name, _, _ in evaluation["subperiods"]]
+        if not set(subperiod_names) <= set(pinned_names) or horizon not in evaluation["horizons_months"]:
+            raise PolicyError("subperiod names and the primary horizon must be pinned in evaluation_spec")
     gating = dsr.get("gating", True)
     fallback_kind, fallback_venue = size.get("fallback_slice_kind"), size.get("fallback_venue_basis")
     if not isinstance(gating, bool) or (fallback_kind is None) != (fallback_venue is None) \
@@ -392,14 +496,37 @@ def load_policy(source: Path | str | Mapping[str, Any] = POLICY_PATH, *,
         subperiod_min_same_sign=_count(subperiods, "min_same_sign", 1, len(subperiod_names)),
         size_slice_kind=str(size["slice_kind"]), size_venue_basis=str(size["venue_basis"]),
         size_buckets=_names(size, "buckets"), size_min_formations=_count(size, "min_formations", 1, 10_000),
-        strict_basis=str(strict["basis"]), non_strict_tokens=_names(strict, "non_strict_label_tokens"),
+        strict_basis=str(strict["basis"]),
+        non_strict_tokens=_names(strict, "non_strict_label_tokens") if "non_strict_label_tokens" in strict else (),
+        strict_identity_bases=_names(strict, "identity_bases") if allowlists else None,
+        strict_universe_bases=_names(strict, "universe_bases") if allowlists else None,
+        strict_universe_scopes=_names(strict, "universe_scopes") if allowlists else None,
         neutral_variants=_names(reported, "neutral_variants"),
         neutral_min_abs_z=_number(reported, "neutral_min_abs_z", 0.0, 10.0),
         monotonicity_min=_number(reported, "decile_monotonicity_min", -1.0, 1.0),
         net_cost_bps=net_bps, psr_benchmark=_number(reported, "psr_benchmark_sharpe", -10.0, 10.0),
         dsr_gating=gating, size_fallback_kind=fallback_kind, size_fallback_venue=fallback_venue,
-        file_sha256s=file_hashes,
+        size_min_venue_pit_share=venue_floor, evaluation_spec=evaluation,
+        file_sha256s=file_hashes, file_sha256=file_sha,
     )
+
+
+def evaluation_spec_kwargs(policy: QualificationPolicy) -> dict[str, Any]:
+    """The R3b ``EvaluationSpec`` keyword arguments this policy pins (split, subperiods,
+    thresholds, ``verify_panels``) plus ``policy_sha256`` = the policy file's byte hash.
+
+    RR4 must build its spec from these (``EvaluationSpec(run_id=..., feature_versions=...,
+    label_cutoff=..., **evaluation_spec_kwargs(policy))``); any other value is refused here.
+    """
+    if policy.evaluation_spec is None or policy.file_sha256 is None:
+        raise PolicyError(f"policy {policy.version} does not pin an evaluation spec, or was not loaded from a file")
+    spec = policy.evaluation_spec
+    return {"split": policy.split, "horizons_months": tuple(spec["horizons_months"]),
+            "subperiods": tuple((name, dt.date.fromisoformat(start), dt.date.fromisoformat(end))
+                                for name, start, end in spec["subperiods"]),
+            "min_names": spec["min_names"], "min_bucket_names": spec["min_bucket_names"],
+            "nyse_min_names": spec["nyse_min_names"], "min_formations": spec["min_formations"],
+            "verify_panels": spec["verify_panels"], "policy_sha256": policy.file_sha256}
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +545,8 @@ CELL_INPUT_COLUMNS = (
     "top_turnover_h", "bottom_turnover_h", "net10_mean", "net25_mean", "net50_mean", "family_member", "bh_q",
     "holm_p", "dsr_n_trials", "dsr_sharpe_variance", "sharpe", "sharpe_skew", "sharpe_kurt", "sharpe_n",
 )
-SLICE_INPUT_COLUMNS = (*_CELL_KEYS, "slice_kind", "slice_name", "formations", "ic_mean", "ic_z", "venue_basis")
+SLICE_INPUT_COLUMNS = (*_CELL_KEYS, "slice_kind", "slice_name", "formations", "ic_mean", "ic_z", "venue_basis",
+                       "venue_pit_share")
 SERIES_INPUT_COLUMNS = ("basis", "feature_id", "formation_date", "in_selection", "coverage")
 
 
@@ -441,6 +569,10 @@ class EvaluationResults:
     slices: pd.DataFrame
     #: Per-formation coverage of the primary variant at the primary horizon.
     coverage: pd.DataFrame
+    #: The run row's ``created_at`` (ISO, naive UTC): RX7 ordering against the policy freeze.
+    created_at: str | None = None
+    #: sha256(spec_json) == the run row's spec_sha256 (M6); None when not checked.
+    spec_sha256_ok: bool | None = None
 
 
 def _table_columns(con: duckdb.DuckDBPyConnection, table: str) -> set[str]:
@@ -466,10 +598,10 @@ def load_evaluation_results(con: duckdb.DuckDBPyConnection, run_id: str, policy:
     ``verify_seal`` re-hashes every stored result row (:func:`evaluation.results_digest`)
     so a ledger is never built from rows that differ from the run's sealed digest.
     """
-    _require(con, "research_eval_runs", ("run_id", "status", "spec_json", "results_sha256", "family_json",
-                                         "blockers_json", "family_complete"))
-    row = con.execute("SELECT status, spec_json, results_sha256, family_json, blockers_json, family_complete "
-                      "FROM research_eval_runs WHERE run_id = ?", [run_id]).fetchone()
+    _require(con, "research_eval_runs", ("run_id", "status", "spec_json", "spec_sha256", "results_sha256",
+                                         "family_json", "blockers_json", "family_complete", "created_at"))
+    row = con.execute("SELECT status, spec_json, results_sha256, family_json, blockers_json, family_complete, "
+                      "spec_sha256, created_at FROM research_eval_runs WHERE run_id = ?", [run_id]).fetchone()
     if row is None:
         raise QualificationError(f"evaluation run {run_id!r} is absent")
     _require(con, "research_eval_cells", CELL_INPUT_COLUMNS)
@@ -492,7 +624,9 @@ def load_evaluation_results(con: duckdb.DuckDBPyConnection, run_id: str, policy:
         run_id=run_id, status=str(row[0]), results_sha256=_s(row[2]), stored_rows_sha256=stored,
         spec=json.loads(row[1]) if row[1] else {}, family=json.loads(row[3]) if row[3] else {},
         blockers=tuple(json.loads(row[4])) if row[4] else (), family_complete=bool(row[5]),
-        cells=cells, slices=slices, coverage=coverage)
+        cells=cells, slices=slices, coverage=coverage,
+        created_at=None if row[7] is None else pd.Timestamp(row[7]).isoformat(),
+        spec_sha256_ok=bool(row[1]) and _sha(str(row[1])) == row[6])
 
 
 # ---------------------------------------------------------------------------
@@ -518,14 +652,41 @@ def _catalog_digest(rows: Mapping[str, Any] | None) -> str | None:
                             for fid, e in sorted(rows.items())]))
 
 
-def refusal_reasons(results: EvaluationResults, policy: QualificationPolicy,
-                    catalog: Iterable[Any] | None = None) -> list[str]:
-    """Every reason the run cannot be qualified (empty: qualifiable). Sorted, deterministic."""
+def _post_hoc_reasons(results: EvaluationResults, policy: QualificationPolicy,
+                      policy_registered_at: str | None) -> set[str]:
+    """RX7: the run must have been evaluated under this frozen policy file, frozen first."""
     reasons: set[str] = set()
+    if results.spec.get("policy_sha256") not in policy.file_sha256s:  # empty for an in-memory policy
+        reasons.add("evaluation_policy_file_differs")
+    if policy_registered_at is None:
+        reasons.add("policy_not_registered_in_store")
+    elif results.created_at is None or \
+            dt.datetime.fromisoformat(policy_registered_at) > dt.datetime.fromisoformat(results.created_at):
+        reasons.add("policy_registered_after_evaluation")
+    return reasons
+
+
+def refusal_reasons(results: EvaluationResults, policy: QualificationPolicy,
+                    catalog: Iterable[Any] | None = None, *, policy_registered_at: str | None = None) -> list[str]:
+    """Every reason the run cannot be qualified (empty: qualifiable). Sorted, deterministic.
+
+    ``policy_registered_at`` is the research store's freeze time of this policy version
+    (ISO, naive UTC); the post-hoc reasons (:data:`POST_HOC_REASONS`) need it.
+    """
+    reasons: set[str] = _post_hoc_reasons(results, policy, policy_registered_at)
     if results.status != "complete":
         reasons.add(f"evaluation_run_not_sealed:{results.status}")
     if results.stored_rows_sha256 is not None and results.stored_rows_sha256 != results.results_sha256:
         reasons.add("evaluation_rows_do_not_match_seal")
+    if results.spec_sha256_ok is False:
+        reasons.add("run_spec_json_does_not_match_its_spec_sha256")
+    if policy.evaluation_spec is not None:
+        for name in EVALUATION_SPEC_FIELDS:
+            run_value = results.spec.get(name)
+            if isinstance(run_value, list):
+                run_value = [list(item) if isinstance(item, (list, tuple)) else item for item in run_value]
+            if run_value != policy.evaluation_spec[name]:
+                reasons.add(f"evaluation_spec_differs:{name}")
     split = results.spec.get("split")
     if not isinstance(split, Mapping):
         reasons.add("no_frozen_split")
@@ -563,6 +724,10 @@ def refusal_reasons(results: EvaluationResults, policy: QualificationPolicy,
     want = set(zip(cells["basis"].astype(str), cells["feature_id"].astype(str), strict=True))
     if want - have:
         reasons.add(f"primary_cells_missing:{len(want - have)}")
+    # M6: completeness re-derived from the sealed cells, not only the run row's flag.
+    missing_bases = set(BASES) - set(cells["basis"].astype(str))
+    if missing_bases:
+        reasons.add("bases_missing_in_sealed_cells:" + ",".join(sorted(missing_bases)))
     rows = _catalog_rows(catalog)
     if rows is not None:
         evaluated = set(cells["feature_id"].astype(str))
@@ -625,6 +790,7 @@ FEATURE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("coverage_share", "DOUBLE"), ("ic_n", "INTEGER"),
     ("effective_n", "INTEGER"), ("ls_ew10_mean", "DOUBLE"), ("mono_ew10", "DOUBLE"), ("net_mean", "DOUBLE"),
     ("top_turnover_h", "DOUBLE"), ("bottom_turnover_h", "DOUBLE"), ("policy_terminal_share", "DOUBLE"),
+    ("post_hoc_policy", "BOOLEAN"),
 )
 _COPIED_FROM_BASIS = ("identity_basis", "universe_basis", "classification_basis", "availability_basis",
                       "label_basis", "ic_mean", "ic_z", "bh_q", "hlz", "dsr_z", "dsr_pass", "psr", "holdout_ic_z",
@@ -695,6 +861,10 @@ def _coverage_by_key(coverage: pd.DataFrame) -> dict[tuple[str, str], list[tuple
 def _is_strict_evidence(basis: str, cell: Mapping[str, Any], policy: QualificationPolicy) -> bool:
     if basis != policy.strict_basis:
         return False
+    if policy.strict_identity_bases is not None:  # v3: exact allowlists (M1)
+        return (_s(cell.get("identity_basis")) in policy.strict_identity_bases
+                and _s(cell.get("universe_basis")) in (policy.strict_universe_bases or ())
+                and _s(cell.get("universe_scope")) in (policy.strict_universe_scopes or ()))
     labels = " ".join(str(cell.get(name) or "") for name in ("identity_basis", "universe_basis")).lower()
     return not any(token in labels for token in policy.non_strict_tokens)
 
@@ -814,17 +984,19 @@ def _grade_basis(feature_id: str, basis: str, cells: Mapping[tuple[Any, ...], di
                 if (item := slices.get((basis, feature_id, h, kind, bucket))) is not None
                 and _s(item.get("venue_basis")) in (None, venue)}
 
-    def usable(found: Mapping[str, Mapping[str, Any]]) -> bool:
+    def usable(found: Mapping[str, Mapping[str, Any]], venue: str) -> bool:
+        floor = policy.size_min_venue_pit_share if venue == policy.size_venue_basis else None
         return all(_f(found.get(b, {}).get("ic_mean")) is not None
                    and (_i(found.get(b, {}).get("formations")) or 0) >= policy.size_min_formations
+                   and (floor is None or (_f(found.get(b, {}).get("venue_pit_share")) or 0.0) >= floor)
                    for b in policy.size_buckets)
 
     size_kind, size_venue = sources[0]
     chosen_slices = bucket_slices(size_kind, size_venue)
     for kind, venue in sources[1:]:
-        if not usable(chosen_slices):
+        if not usable(chosen_slices, size_venue):
             size_kind, size_venue, chosen_slices = kind, venue, bucket_slices(kind, venue)
-    size_ok = usable(chosen_slices)
+    size_ok = usable(chosen_slices, size_venue)
     if not size_ok:
         candidate.append(f"size_buckets_untestable({'/'.join(v for _, v in sources)})")
     for bucket in ("micro", "small", "large"):
@@ -918,13 +1090,14 @@ def _resolve(rows: Mapping[str, dict[str, Any]], policy: QualificationPolicy) ->
     """(status, status_basis, reasons) of one feature from its per-basis rows."""
     order = sorted(rows, key=lambda b: (b == policy.strict_basis, b != REFERENCE_BASIS, b))
     strict = rows.get(policy.strict_basis)
+    passes = [b for b in order if rows[b]["status"] in QUALIFIED_STATUSES]
+    reversed_bases = [b for b in order if rows[b]["status"] == SIGN_REVERSED]
+    if passes and reversed_bases:  # symmetric veto (M2): one basis qualifies, another reverses the sign
+        return UNSTABLE, reversed_bases[0], f"{reversed_bases[0]}_basis_sign_reversed"
     for basis in order:
         if rows[basis]["status"] == QUALIFIED_STRICT:
             return QUALIFIED_STRICT, basis, rows[basis]["status_reasons"]
-    passes = [b for b in order if rows[b]["status"] == QUALIFIED_RECONSTRUCTED]
     if passes:
-        if strict is not None and strict["status"] == SIGN_REVERSED:
-            return UNSTABLE, policy.strict_basis, "strict_basis_sign_reversed"
         return QUALIFIED_RECONSTRUCTED, passes[0], rows[passes[0]]["status_reasons"]
     for basis in order:
         if rows[basis]["status"] != UNTESTABLE_STRICT:
@@ -933,16 +1106,24 @@ def _resolve(rows: Mapping[str, dict[str, Any]], policy: QualificationPolicy) ->
     return UNTESTABLE_STRICT, basis, rows[basis]["status_reasons"]
 
 
-def qualify(results: EvaluationResults, policy: QualificationPolicy,
-            catalog: Iterable[Any] | None = None) -> QualificationLedger:
+def qualify(results: EvaluationResults, policy: QualificationPolicy, catalog: Iterable[Any] | None = None, *,
+            policy_registered_at: str | None = None, allow_post_hoc_policy: bool = False) -> QualificationLedger:
     """Grade every feature of a sealed run under a frozen policy (pure; no I/O).
 
     ``catalog`` (R1a entries; research-eligible rows are the family) is checked against
-    the run and annotates each feature. Raises :class:`QualificationRefused` for an
-    unqualifiable run.
+    the run and annotates each feature; without it the ledger is stamped
+    ``catalog_checked=false`` and cannot be persisted. ``policy_registered_at`` is the
+    store's freeze time of the policy. A run not evaluated under this frozen policy
+    file, or created before the freeze, is refused unless ``allow_post_hoc_policy``,
+    which stamps ``post_hoc_policy`` on the manifest, every feature row and the doc.
+    Raises :class:`QualificationRefused` for an unqualifiable run.
     """
     catalog_rows = _catalog_rows(catalog)
-    reasons = refusal_reasons(results, policy, None if catalog_rows is None else catalog_rows.values())
+    reasons = refusal_reasons(results, policy, None if catalog_rows is None else catalog_rows.values(),
+                              policy_registered_at=policy_registered_at)
+    post_hoc = sorted(set(reasons) & set(POST_HOC_REASONS))
+    if allow_post_hoc_policy:
+        reasons = [reason for reason in reasons if reason not in POST_HOC_REASONS]
     if reasons:
         raise QualificationRefused(reasons)
     cells = _index(results.cells, _CELL_KEYS)
@@ -981,9 +1162,14 @@ def qualify(results: EvaluationResults, policy: QualificationPolicy,
             "exploratory": None if prior is None else prior == "economic_conjecture",
             "admission": _s(getattr(entry, "admission", None)),
             "caveat_codes": "|".join(getattr(entry, "caveat_codes", ()) or ()) or None,
+            "post_hoc_policy": bool(post_hoc),
         })
         feature_rows.append(record)
     manifest = _manifest(results, policy, catalog_rows, feature_rows, basis_rows)
+    manifest.update({"post_hoc_policy": bool(post_hoc), "post_hoc_reasons": post_hoc,
+                     "policy_registered_at": policy_registered_at})
+    if post_hoc:
+        manifest["blockers"] = sorted({*manifest["blockers"], *(f"post_hoc_policy:{r}" for r in post_hoc)})
     features = tuple({name: _clean(row[name]) for name, _ in FEATURE_COLUMNS} for row in feature_rows)
     bases = tuple({name: _clean(row[name]) for name, _ in BASIS_COLUMNS} for row in basis_rows)
     ledger_id = f"{results.run_id}:{policy.version}"
@@ -1019,9 +1205,11 @@ def _manifest(results: EvaluationResults, policy: QualificationPolicy, catalog_r
         blockers.add("strict_basis_untestable_no_strict_qualification")
     if counts[QUALIFIED_RECONSTRUCTED]:
         blockers.add(f"qualified_on_reconstructed_evidence_only:{counts[QUALIFIED_RECONSTRUCTED]}")
+    if catalog_rows is None:
+        blockers.add("catalog_not_checked_dry_run_only")
+    if results.stored_rows_sha256 is None:
+        blockers.add("seal_not_verified_dry_run_only")
     run_policy_file = results.spec.get("policy_sha256")
-    if policy.file_sha256s and run_policy_file not in policy.file_sha256s:
-        blockers.add("evaluation_run_policy_file_differs")
     size_missing = sum(1 for row in bases if row["status"] != UNTESTABLE_STRICT and any(
         row.get(f"{bucket}_ic_mean") is None or (row.get(f"{bucket}_formations") or 0) < policy.size_min_formations
         for bucket in policy.size_buckets))
@@ -1034,10 +1222,15 @@ def _manifest(results: EvaluationResults, policy: QualificationPolicy, catalog_r
     family = results.family
     return {
         "qualification_version": QUALIFICATION_VERSION,
+        "qualification_code_sha256": qualification_code_sha256(),
+        "catalog_checked": catalog_rows is not None,
+        "seal_verified": results.stored_rows_sha256 is not None,
         "policy": {"version": policy.version, "sha256": policy.sha256, "split_sha256": policy.split.sha256,
                    "primary_horizon_months": policy.primary_horizon, "primary_variant": policy.primary_variant},
         "evaluation": {
             "run_id": results.run_id, "results_sha256": results.results_sha256,
+            "created_at": results.created_at,
+            "spec": {name: results.spec.get(name) for name in EVALUATION_SPEC_FIELDS},
             "evaluation_version": results.spec.get("evaluation_version"),
             "feature_versions": list(results.spec.get("feature_versions") or ()),
             "label_cutoff": results.spec.get("label_cutoff"), "split_sha256": (results.spec.get("split") or {}).get(
@@ -1075,18 +1268,26 @@ _SCHEMA_DDL = (
 )
 
 
+_SCHEMA_VERSIONS = {1: "policy_registry_and_ledgers", 2: "post_hoc_policy_stamp"}
+
+
 def ensure_qualification_schema(con: duckdb.DuckDBPyConnection) -> None:
-    """Create the ``research_qualification_*`` tables (module-owned, versioned)."""
+    """Create or upgrade the ``research_qualification_*`` tables (module-owned, versioned)."""
     con.execute(_SCHEMA_DDL[0])
     versions = {int(row[0]) for row in con.execute("SELECT version FROM research_qualification_schema").fetchall()}
-    if versions - {QUALIFICATION_SCHEMA_VERSION}:
+    if versions - set(_SCHEMA_VERSIONS):
         raise QualificationError(f"research qualification schema has unknown versions {sorted(versions)}")
     if QUALIFICATION_SCHEMA_VERSION in versions:
         return
     for ddl in _SCHEMA_DDL[1:]:
         con.execute(ddl)
-    con.execute("INSERT INTO research_qualification_schema VALUES (?, ?, ?)",
-                [QUALIFICATION_SCHEMA_VERSION, "policy_registry_and_ledgers", _now()])
+    for table, columns in (("research_qualification_features", FEATURE_COLUMNS),
+                           ("research_qualification_bases", BASIS_COLUMNS)):
+        for name, kind in columns:  # upgrade in place; writers name their columns
+            con.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {kind}")
+    for version, name in sorted(_SCHEMA_VERSIONS.items()):
+        if version not in versions:
+            con.execute("INSERT INTO research_qualification_schema VALUES (?, ?, ?)", [version, name, _now()])
 
 
 def _now() -> dt.datetime:
@@ -1143,7 +1344,12 @@ def persist_ledger(con: duckdb.DuckDBPyConnection, ledger: QualificationLedger) 
     """Store a ledger once: ``'stored'``, or ``'exists'`` for an identical ledger.
 
     A sealed ledger is immutable: different content under the same ledger id is refused.
+    Dry-run ledgers (built without the catalog check or without re-hashing the run's
+    seal) are refused (I1, M3).
     """
+    if not ledger.manifest.get("catalog_checked") or not ledger.manifest.get("seal_verified"):
+        raise QualificationError("only a ledger built with the catalog check and a verified run seal can be "
+                                 "persisted (--no-catalog / --no-verify-seal are dry-run only)")
     with _Transaction(con):
         ensure_qualification_schema(con)
         registered = con.execute("SELECT policy_sha256 FROM research_qualification_policies WHERE policy_version = ?",
@@ -1182,12 +1388,46 @@ def stored_ledger_sha256(con: duckdb.DuckDBPyConnection, ledger_id: str) -> str 
     return None if row is None else str(row[0])
 
 
+def policy_registered_at(con: duckdb.DuckDBPyConnection, policy: QualificationPolicy) -> str | None:
+    """When this policy version was frozen in the research store (ISO, naive UTC), or None.
+
+    A different hash registered under the version is refused.
+    """
+    if not _table_columns(con, "research_qualification_policies"):
+        return None
+    row = con.execute("SELECT policy_sha256, registered_at FROM research_qualification_policies "
+                      "WHERE policy_version = ?", [policy.version]).fetchone()
+    if row is None:
+        return None
+    if row[0] != policy.sha256:
+        raise PolicyError(f"policy {policy.version} is registered with sha256 {row[0]}, not {policy.sha256}")
+    return pd.Timestamp(row[1]).isoformat()
+
+
+def stored_catalog_snapshot(con: duckdb.DuckDBPyConnection, ledger_id: str) -> list[Any]:
+    """The catalog annotations a stored ledger was built with (``verify`` reproduces from it, M9)."""
+    rows = con.execute("SELECT feature_id, expected_sign, anomaly_class, hypothesis_family, prior_evidence, "
+                       "admission, caveat_codes FROM research_qualification_features WHERE ledger_id = ? "
+                       "ORDER BY feature_id", [ledger_id]).fetchall()
+    return [SimpleNamespace(feature_id=f, expected_sign=int(sign), anomaly_class=cls, hypothesis_family=family,
+                            prior_evidence=prior, admission=admission,
+                            caveat_codes=tuple(caveats.split("|")) if caveats else (), is_research_eligible=True)
+            for f, sign, cls, family, prior, admission, caveats in rows]
+
+
 def qualify_run(con: duckdb.DuckDBPyConnection, run_id: str, policy: QualificationPolicy, *,
-                catalog: Iterable[Any] | None = None, verify_seal: bool = True,
-                persist: bool = True) -> QualificationLedger:
-    """Load a sealed run, grade it, and (``persist``) register the policy and store the ledger."""
+                catalog: Iterable[Any] | None = None, verify_seal: bool = True, persist: bool = True,
+                allow_post_hoc_policy: bool = False) -> QualificationLedger:
+    """Load a sealed run, grade it, and (``persist``) store the ledger.
+
+    The policy must have been frozen in this store (``research_qualify.py freeze``) before
+    the run was created, and the run evaluated under its file; otherwise the run is
+    refused unless ``allow_post_hoc_policy`` (stamped). Persisting needs the catalog
+    check and a verified seal.
+    """
     results = load_evaluation_results(con, run_id, policy, verify_seal=verify_seal)
-    ledger = qualify(results, policy, catalog)
+    ledger = qualify(results, policy, catalog, policy_registered_at=policy_registered_at(con, policy),
+                     allow_post_hoc_policy=allow_post_hoc_policy)
     if persist:
         register_policy(con, policy)
         persist_ledger(con, ledger)
@@ -1217,7 +1457,7 @@ _STATUS_MEANING = {
     NOT_SIGNIFICANT: "fails the family-corrected rank-IC significance gate",
     SIGN_REVERSED: "significant against the pre-registered sign",
     UNSTABLE: "the sign flips in the holdout or in a small/large size bucket, fewer than 2 of 3 subperiods keep it, "
-              "or a testable strict basis reverses it",
+              "or one basis qualifies while another reverses it",
     INSUFFICIENT_COVERAGE: "too few observations or too little value coverage to test",
     UNTESTABLE_STRICT: "no testable basis (the strict cohort is empty and no other basis was testable)",
 }
@@ -1238,8 +1478,28 @@ def render_qualified_signals_markdown(policy: QualificationPolicy, ledger: Quali
     split = policy.split
     segments = "; ".join(f"{name} {start.isoformat()}..{end.isoformat()}" for name, start, end in split.segments)
     size_rule = f"`{policy.size_venue_basis}`" + (
+        "" if policy.size_min_venue_pit_share is None
+        else f" with point-in-time venue share >= {policy.size_min_venue_pit_share:g}") + (
         "" if policy.size_fallback_venue is None
         else f", else the labeled `{policy.size_fallback_venue}` fallback")
+    pinned: list[str] = []
+    if policy.evaluation_spec is not None:
+        spec = policy.evaluation_spec
+        pinned = [
+            f"- Pinned evaluation inputs (a run whose sealed spec differs is refused): horizons "
+            f"{', '.join(str(h) for h in spec['horizons_months'])} months; subperiods "
+            + "; ".join(f"`{name}` {start}..{end}" for name, start, end in spec["subperiods"])
+            + f"; min_names {spec['min_names']}, min_bucket_names {spec['min_bucket_names']}, nyse_min_names "
+            f"{spec['nyse_min_names']}, min_formations {spec['min_formations']}, verify_panels "
+            f"{str(spec['verify_panels']).lower()}. Build the RR4 spec with `evaluation_spec_kwargs(policy)`.",
+            "- RX7 order: `research_qualify.py freeze` records this policy in the research store before RR4; a run "
+            "created before the freeze, or evaluated under another policy file, is refused (an explicit post-hoc "
+            "override is stamped on the ledger, every row and this document).",
+        ]
+    if policy.strict_identity_bases is not None:
+        pinned.append(f"- Strict evidence only with identity basis {', '.join(policy.strict_identity_bases)}, "
+                      f"universe basis {', '.join(policy.strict_universe_bases or ())} and universe scope "
+                      f"{', '.join(policy.strict_universe_scopes or ())}.")
     lines = [
         "# Qualified research signals",
         "",
@@ -1255,6 +1515,7 @@ def render_qualified_signals_markdown(policy: QualificationPolicy, ledger: Quali
         "the holdout is never used for selection.",
         f"- Primary cell: {policy.primary_horizon}-month horizon, `{policy.primary_variant}` variant, selection "
         f"sample; reported horizons {', '.join(str(h) for h in policy.reported_horizons)} months.",
+        *pinned,
         "",
         "| order | gate | rule | failing status |",
         "|---:|---|---|---|",
@@ -1293,8 +1554,13 @@ def render_qualified_signals_markdown(policy: QualificationPolicy, ledger: Quali
         return "\n".join(lines)
     manifest = ledger.manifest
     evaluation = manifest["evaluation"]
+    if manifest.get("post_hoc_policy"):
+        lines += [f"**POST-HOC POLICY: this ledger was graded under a policy that was not frozen before the "
+                  f"evaluation run ({', '.join(manifest.get('post_hoc_reasons') or ())}). Its statuses are not "
+                  "a pre-registered test.**", ""]
     lines += [
-        f"- Ledger `{ledger.ledger_id}`, sha256 `{ledger.sha256}` ({manifest['qualification_version']}).",
+        f"- Ledger `{ledger.ledger_id}`, sha256 `{ledger.sha256}` ({manifest['qualification_version']}, code "
+        f"`{str(manifest.get('qualification_code_sha256'))[:12]}`).",
         f"- Evaluation run `{evaluation['run_id']}`, results sha256 `{evaluation['results_sha256']}`, family "
         f"n_trials {evaluation['n_trials']}, tested cells {evaluation['tested_cells']}.",
         f"- Blockers: {', '.join(f'`{b}`' for b in manifest['blockers']) or 'none'}.",
@@ -1329,11 +1595,14 @@ def render_qualified_signals_markdown(policy: QualificationPolicy, ledger: Quali
 __all__ = [
     "BASIS_COLUMNS",
     "CANDIDATE",
+    "EVALUATION_SPEC_FIELDS",
     "FEATURE_COLUMNS",
     "FROZEN_POLICY_SHA256",
     "INSUFFICIENT_COVERAGE",
     "NOT_SIGNIFICANT",
+    "POLICY_HISTORY_PATHS",
     "POLICY_PATH",
+    "POST_HOC_REASONS",
     "QUALIFICATION_VERSION",
     "QUALIFIED_RECONSTRUCTED",
     "QUALIFIED_STATUSES",
@@ -1349,16 +1618,20 @@ __all__ = [
     "QualificationPolicy",
     "QualificationRefused",
     "ensure_qualification_schema",
+    "evaluation_spec_kwargs",
     "load_evaluation_results",
     "load_policy",
     "persist_ledger",
     "policy_file_sha256s",
+    "policy_registered_at",
     "policy_sha256",
+    "qualification_code_sha256",
     "qualify",
     "qualify_run",
     "refusal_reasons",
     "register_policy",
     "render_qualified_signals_markdown",
+    "stored_catalog_snapshot",
     "stored_ledger_sha256",
     "write_artifacts",
 ]

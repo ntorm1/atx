@@ -1,9 +1,9 @@
 {
-  "policy_version": "r4-qualification-v3",
-  "supersedes": "r4-qualification-v2",
+  "policy_version": "r4-qualification-v2",
+  "supersedes": "r4-qualification-v1",
   "title": "Frozen qualification policy for standardized cross-sectional research metrics (R4)",
   "frozen_on": "2026-09-25",
-  "authority": "controller R4 brief 2026-09-25 (amends plan-s2 section 8.3 R4), rebind ruling (v2) and fix-round-1 rulings on R4-review I1-I3/M1/M3-M8 (v3: every gate-feeding evaluation input pinned, strict evidence by allowlist, point-in-time venue share floor); RX1 (labeled bases) and RX7 (frozen before real data: no real-data result existed under v1 or v2)",
+  "authority": "controller R4 brief 2026-09-25 (amends plan-s2 section 8.3 R4) and controller rebind ruling 2026-09-25 (v2: labeled cap-tercile size-bucket fallback; deflated Sharpe reported, not gating); rulings RX1 (labeled bases) and RX7 (frozen before real data: no real-data result existed under v1)",
   "split": {
     "split_version": "r4-split-v1",
     "segments": [
@@ -13,20 +13,6 @@
     ],
     "embargo_months": 0,
     "sha256": "b1271e3f38186897649ce8b327e4259e9df6934ec017d290d4708b994e286f26"
-  },
-  "evaluation_spec": {
-    "horizons_months": [1, 3, 6, 12],
-    "subperiods": [
-      ["sub_2013_2016", "2013-01-01", "2016-12-31"],
-      ["sub_2017_2020", "2017-01-01", "2020-12-31"],
-      ["sub_2021_2023", "2021-01-01", "2023-12-31"]
-    ],
-    "min_names": 200,
-    "min_bucket_names": 50,
-    "nyse_min_names": 20,
-    "min_formations": 36,
-    "verify_panels": true,
-    "meaning": "the R3b EvaluationSpec values that feed a gate; a run whose sealed spec differs on any of them is refused. Subperiods end where the selection sample ends (validation 2023-12-31; the holdout starts 2024-01-01), so each label matches its effective window. Build the RR4 spec with qualification.evaluation_spec_kwargs(policy)"
   },
   "primary": {
     "horizon_months": 3,
@@ -58,24 +44,21 @@
     "min_signed_z": 1.5
   },
   "subperiods": {
-    "names": ["sub_2013_2016", "sub_2017_2020", "sub_2021_2023"],
+    "names": ["sub_2013_2016", "sub_2017_2020", "sub_2021_2025"],
     "min_same_sign": 2
   },
   "size_buckets": {
     "slice_kind": "size_bucket",
     "venue_basis": "nyse_pit",
-    "min_venue_pit_share": 0.9,
     "fallback_slice_kind": "size_tercile",
     "fallback_venue_basis": "cap_terciles",
     "buckets": ["small", "large"],
     "min_formations": 36,
-    "meaning": "point-in-time NYSE 20/50 breakpoints where both buckets have >= min_formations formations and a mean point-in-time venue share >= min_venue_pit_share, else the verified-cap tercile slices R3b emits; the rule gates either way and the ledger row records which (size_venue_basis)"
+    "meaning": "point-in-time NYSE 20/50 breakpoints where both buckets have >= min_formations formations, else the verified-cap tercile slices R3b emits; the rule gates either way and the ledger row records which (size_venue_basis)"
   },
   "strict_evidence": {
     "basis": "strict",
-    "identity_bases": ["dated_identifier_history"],
-    "universe_bases": ["us_listed_v1"],
-    "universe_scopes": ["valid_primary_lines"]
+    "non_strict_label_tokens": ["reconstruct", "unverified", "backcast"]
   },
   "reported": {
     "neutral_variants": ["industry_neutral", "size_neutral"],
@@ -94,5 +77,5 @@
     "insufficient_coverage",
     "untestable_strict"
   ],
-  "policy_sha256": "3c26bfb68db4d98c3a25c20ac050cbb45bced1fabbe4bde07930ab18d48d7042"
+  "policy_sha256": "d517b6c8372ae8ee18d09418be5f400d6b797f1015098c37f0aab1b2813093c2"
 }

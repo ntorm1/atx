@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -114,7 +115,18 @@ MAIN_FEATURES = ("planted", "two_sided", "flipped", "size_split", "fades", "spar
 SIGNS = {"two_sided": 0}
 
 
-def _evaluated() -> tuple[ev.EvaluationTables, ev.EvaluationSpec, tuple[ev.CatalogFeature, ...]]:
+def _fixture_policy(path: Path) -> rq.QualificationPolicy:
+    """The v3 policy with the fixture's smaller cross-section pinned (a new, unpinned version file)."""
+    content = json.loads(json.dumps(dict(POLICY.content)))
+    content["policy_version"] = "r4-test-fixture"
+    content["evaluation_spec"].update({"min_names": 100, "min_bucket_names": 30, "min_formations": 24})
+    content["policy_sha256"] = rq.policy_sha256(content)
+    path.write_text(json.dumps(content, indent=2), encoding="utf-8")
+    return rq.load_policy(path, allow_unpinned=True)
+
+
+def _evaluated(policy: rq.QualificationPolicy) -> tuple[ev.EvaluationTables, ev.EvaluationSpec,
+                                                          tuple[ev.CatalogFeature, ...]]:
     rng = np.random.default_rng(20260925)
     periods = MONTHS + 12
     values = {name: _ar1(rng, periods, NAMES) for name in MAIN_FEATURES}
@@ -139,10 +151,8 @@ def _evaluated() -> tuple[ev.EvaluationTables, ev.EvaluationSpec, tuple[ev.Catal
                                      index[index % 2 == 0] if name == "sparse" else None) for name in MAIN_FEATURES}
     catalog = tuple(ev.CatalogFeature(name, SIGNS.get(name, 1), "value", variants[name])
                     for name in sorted(MAIN_FEATURES))
-    spec = ev.validate_spec(ev.EvaluationSpec(
-        run_id="r4_main", split=POLICY.split, min_names=100, min_bucket_names=30, fm_min_obs=100, min_formations=24,
-        nyse_min_names=20, bootstrap_resamples=0, policy_sha256=sorted(POLICY.file_sha256s)[0],
-        label_diagnostics=False))
+    spec = ev.validate_spec(ev.EvaluationSpec(run_id="r4_main", fm_min_obs=100, bootstrap_resamples=0,
+                                              label_diagnostics=False, **rq.evaluation_spec_kwargs(policy)))
     tables = ev.evaluate_bases([market.basis(features, variants), ev.empty_basis("strict")], spec, catalog=catalog)
     return tables, spec, catalog
 
@@ -173,28 +183,34 @@ def _persist(con: duckdb.DuckDBPyConnection, tables: ev.EvaluationTables, spec: 
         con.execute(f"INSERT INTO {table} (run_id, {names}) SELECT ?, {select} FROM _rows", [spec.run_id])
         con.unregister("_rows")
     assert ev.results_digest(con, spec.run_id)[0] == tables.results_sha256  # the store copy is the sealed run
-    now = dt.datetime(2026, 9, 25, 12, 0)
+    now = dt.datetime.now(dt.UTC).replace(tzinfo=None)  # after the policy freeze (RX7 order)
+    spec_json = json.dumps(ev.spec_payload(spec), sort_keys=True, separators=(",", ":"))
     con.execute("""
         INSERT INTO research_eval_runs (run_id, status, evaluation_version, spec_json, spec_sha256, code_sha256,
                                         results_sha256, family_json, blockers_json, created_at, finished_at,
                                         family_complete)
-        VALUES (?, 'complete', ?, ?, 'spec', 'code', ?, ?, ?, ?, ?, ?)
-    """, [spec.run_id, ev.EVALUATION_VERSION, json.dumps(ev.spec_payload(spec), sort_keys=True),
+        VALUES (?, 'complete', ?, ?, ?, 'code', ?, ?, ?, ?, ?, ?)
+    """, [spec.run_id, ev.EVALUATION_VERSION, spec_json, hashlib.sha256(spec_json.encode()).hexdigest(),
           tables.results_sha256, json.dumps(tables.family, sort_keys=True),
           json.dumps(["research_only_not_release_eligible", "strict_basis_untestable"]), now, now,
           bool(tables.family["family_complete"])])
 
 
 def test_ledger_end_to_end_statuses_refusals_and_reproducible_bytes(tmp_path: Path):
-    tables, spec, catalog = _evaluated()
+    policy = _fixture_policy(tmp_path / "policy.json")
+    tables, spec, catalog = _evaluated(policy)
     annotations = [SimpleNamespace(feature_id=item.feature_id, expected_sign=item.expected_sign,
                                    anomaly_class=item.anomaly_class, hypothesis_family=f"{item.feature_id}_family",
                                    prior_evidence="published_anomaly", admission="eligible", caveat_codes=(),
                                    is_research_eligible=True) for item in catalog]
     con = duckdb.connect(str(tmp_path / "research.duckdb"), config={"memory_limit": "256MB", "threads": 1})
     try:
+        assert rq.register_policy(con, policy) == "registered"  # `freeze` before the evaluation run (RX7)
         _persist(con, tables, spec)
-        ledger = rq.qualify_run(con, "r4_main", POLICY, catalog=annotations)
+        ledger = rq.qualify_run(con, "r4_main", policy, catalog=annotations)
+        assert not ledger.manifest["post_hoc_policy"] and ledger.manifest["catalog_checked"]
+        assert ledger.manifest["evaluation"]["spec"]["subperiods"][-1] == ["sub_2021_2023", "2021-01-01",
+                                                                          "2023-12-31"]
         rows = {(row["feature_id"], row["basis"]): row for row in ledger.bases}
         status = {row["feature_id"]: row["status"] for row in ledger.features}
         assert sorted(status) == sorted(MAIN_FEATURES)  # exactly one status per tested feature
@@ -240,29 +256,49 @@ def test_ledger_end_to_end_statuses_refusals_and_reproducible_bytes(tmp_path: Pa
         assert status["sparse"] == rq.INSUFFICIENT_COVERAGE  # significant, but half the universe
 
         # Pure function of (results, policy): identical bytes, and a sealed ledger is immutable.
-        again = rq.qualify(rq.load_evaluation_results(con, "r4_main", POLICY), POLICY, annotations)
+        again = rq.qualify_run(con, "r4_main", policy, catalog=annotations, persist=False)
         assert again.to_json_bytes() == ledger.to_json_bytes() and again.to_csv_bytes() == ledger.to_csv_bytes()
         assert rq.persist_ledger(con, again) == "exists"
         with pytest.raises(rq.QualificationError, match="sealed"):
             rq.persist_ledger(con, dataclasses.replace(again, sha256="0" * 64))
 
-        # Unproduced cells, or any run R3b does not call family_complete, are refused: never a smaller family.
-        results = rq.load_evaluation_results(con, "r4_main", POLICY)
+        # Refusals: never a smaller or different family, never another protocol.
+        results = rq.load_evaluation_results(con, "r4_main", policy)
+        frozen_at = rq.policy_registered_at(con, policy)
+
+        def refused(changed: rq.EvaluationResults, **kwargs) -> tuple[str, ...]:
+            with pytest.raises(rq.QualificationRefused) as caught:
+                rq.qualify(changed, policy, annotations, policy_registered_at=kwargs.pop("at", frozen_at), **kwargs)
+            return caught.value.reasons
+
         cells = results.cells.copy()
         cells.loc[(cells.feature_id == "noise_00") & (cells.basis == "reconstructed"), "status"] = "not_produced"
-        with pytest.raises(rq.QualificationRefused, match="cells_not_produced:4"):
-            rq.qualify(dataclasses.replace(results, cells=cells, family_complete=False), POLICY)
-        with pytest.raises(rq.QualificationRefused, match="family_not_complete"):
-            rq.qualify(dataclasses.replace(results, family_complete=False), POLICY)
+        assert "cells_not_produced:4" in refused(dataclasses.replace(results, cells=cells, family_complete=False))
+        assert "family_not_complete" in refused(dataclasses.replace(results, family_complete=False))
+        drift = "reconstructed_feature_catalog_differs_from_committed_catalog:1"  # a trimmed catalog snapshot
+        assert f"run_blocker:{drift}" in refused(dataclasses.replace(results, blockers=(*results.blockers, drift)))
+        thin = dataclasses.replace(results, spec={**results.spec, "min_names": 50})  # re-run with thinner formations
+        assert "evaluation_spec_differs:min_names" in refused(thin)
+        other_file = dataclasses.replace(results, spec={**results.spec, "policy_sha256": "0" * 64})
+        assert "evaluation_policy_file_differs" in refused(other_file)
+        late = (dt.datetime.fromisoformat(results.created_at) + dt.timedelta(seconds=1)).isoformat()
+        assert "policy_registered_after_evaluation" in refused(results, at=late)
+        # The explicit post-hoc override passes only the policy-order refusals, and stamps every row.
+        stamped = rq.qualify(other_file, policy, annotations, policy_registered_at=frozen_at,
+                             allow_post_hoc_policy=True)
+        assert stamped.manifest["post_hoc_policy"] and all(row["post_hoc_policy"] for row in stamped.features)
+        assert "evaluation_spec_differs:min_names" in refused(thin, allow_post_hoc_policy=True)
+        with pytest.raises(rq.QualificationError, match="dry-run"):  # no catalog check: never persisted
+            rq.persist_ledger(con, rq.qualify(results, policy, None, policy_registered_at=frozen_at))
 
-        # RX7: a frozen policy edited in place (even re-hashed) is refused; v1 stays loadable as history.
+        # RX7: a frozen policy edited in place (even re-hashed) is refused; v1/v2 stay loadable as history.
         edited = json.loads(json.dumps(dict(POLICY.content)))
         edited["coverage"]["min_observations"] = 60
         edited["policy_sha256"] = rq.policy_sha256(edited)
         with pytest.raises(rq.PolicyError, match="frozen with sha256"):
             rq.load_policy(edited)
-        v1 = rq.load_policy(rq.POLICY_HISTORY_PATHS["r4-qualification-v1"])
-        assert v1.sha256 == rq.FROZEN_POLICY_SHA256["r4-qualification-v1"] and v1.split == POLICY.split
+        for version, path in rq.POLICY_HISTORY_PATHS.items():
+            assert rq.load_policy(path).sha256 == rq.FROZEN_POLICY_SHA256[version]
         doc = (REPO / "docs" / "research" / "QUALIFIED_SIGNALS.md").read_text(encoding="utf-8")
         assert POLICY.sha256 in doc and POLICY.split.sha256 in doc  # the committed doc is current
     finally:
