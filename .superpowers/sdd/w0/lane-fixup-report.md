@@ -376,3 +376,65 @@ fundamental_zoo_test.cpp(422): error: ... ts_zscore(accruals, 252) produced no f
 
 The new test therefore fails exactly when the fixture turns degenerate. It gets there on its own
 path, not through the zoo expression.
+
+## Post-merge sync
+
+Final sync before the orchestrator merge. `feat/w0-integration` had moved past the `2170a259`
+(B0) tip recorded in "Fix pass 1" — it now includes lane I0B (`42503d8e` merge, `a8e4f2e5`
+progress). Working tree was clean, no merge in progress, at `6ab322a7` (the re-review commit);
+`feat/w0-integration` was not an ancestor of it, so a real merge was required.
+
+Commands, `C:\atx-wt\pool-2`, `$env:CMAKE_BUILD_PARALLEL_LEVEL='2'`, free RAM before each build
+2.05-2.31 GB:
+
+```
+git -C C:\atx-wt\pool-2 merge --no-ff feat/w0-integration -m "w0-fixup: merge feat/w0-integration" -m "Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
+Merge made by the 'ort' strategy. 29 files changed, 3977 insertions(+), 185 deletions(-)   exit=0 (no conflicts)
+```
+
+29 files came in from I0B: `atx-impl/src/{config,dispatch,equity_baseline_views,replay_report,
+stage_equity_baseline,stage_equity_book,stage_equity_ic,stage_equity_mine}.*`, four new
+`atx-impl/tests/w0i0b_*` test files, and I0B's own sdd report/review/progress files. None of them
+are files this lane owns; the merge was clean (no conflicts).
+
+Refreshed the LF checkout of the hash-chained ledgers per RULES: `Remove-Item
+C:\atx-wt\pool-2\atx-engine\reviews\*.jsonl; git -C C:\atx-wt\pool-2 checkout -- atx-engine/reviews`
+— tree stayed clean afterward (`git status --porcelain` empty).
+
+Rebuild (all ten targets, no-op re-check confirmed nothing stale):
+
+```
+atx-build.ps1 build -Preset equity-dev atx-impl-tests atx-shm-worker atx-engine-{alpha,factory,learn,data,eval,combine,risk,book}-tests
+[102/105] Linking CXX executable bin\atx-impl-tests.exe   exit=0
+```
+
+Every executable run whole with `--gtest_brief=1` (cwd = repo root):
+
+| Executable | Exit | Result |
+|---|---|---|
+| atx-engine-alpha-tests | 0 | `704 tests from 273 test suites ran. [  PASSED  ] 704 tests.` |
+| atx-engine-factory-tests | 0 | `299 tests from 57 test suites ran. [  PASSED  ] 299 tests.` |
+| atx-engine-learn-tests | 0 | `193 tests from 31 test suites ran. [  PASSED  ] 193 tests.` |
+| atx-engine-data-tests | 0 | `252 tests from 38 test suites ran. [  PASSED  ] 238 tests. [  SKIPPED ] 14 tests.` |
+| atx-engine-eval-tests | 0 | `251 tests from 43 test suites ran. [  PASSED  ] 251 tests.` |
+| atx-engine-combine-tests | 0 | `183 tests from 34 test suites ran. [  PASSED  ] 183 tests.` |
+| atx-engine-risk-tests | 0 | `471 tests from 62 test suites ran. [  PASSED  ] 470 tests. [  SKIPPED ] 1 test.` |
+| atx-engine-book-tests | 0 | `122 tests from 18 test suites ran. [  PASSED  ] 122 tests.` |
+| atx-impl-tests | **0** | `570 tests from 116 test suites ran. (249254 ms total) [  PASSED  ] 565 tests. [  SKIPPED ] 5 tests.` |
+
+All eight engine executables' counts are byte-identical to the pre-sync run (no regression from
+the I0B merge). **`atx-impl-tests` is now fully green** (34 more tests ran than before the sync —
+I0B added `w0i0b_config_test.cpp`, `w0i0b_ic_asof_membership_test.cpp`,
+`w0i0b_mine_membership_test.cpp`, `w0i0b_pending_order_test.cpp`). All 14 previously-failing
+tests now pass, including the two this lane had attributed to I0b
+(`StageEquityIc.TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput`,
+`EquityMineCli.SmoothWindowsAddDecayedVariantsAsTrials`) and the twelve B-02/B-04 failures — I0B's
+merge (`config.{hpp,cpp}` `allow_same_close`, delisting-policy pin at the I0b call sites) landed
+exactly the fix this lane's "Fix pass 1" section called for. Nothing required a fix in this lane's
+owned files.
+
+No test weakened, no assertion changed. Tree clean; the merge commit and this report update are
+the only changes made in this pass.
+
+Head after commit: see "Branch / SHA / base / pool" for the branch; the merge commit is
+`0c8b09f8`, this report's commit is on top of it.
