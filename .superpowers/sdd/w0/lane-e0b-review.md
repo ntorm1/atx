@@ -74,3 +74,70 @@ No blocker or major findings.
 - [x] No test weakened. The only edit to a pre-existing test file is the E-01 pin (22+/5−), which is tied to E-01. No DISABLED_ or GTEST_SKIP was added.
 - [x] Changed numeric defaults sit behind versioned enums (`SummaryDsrRule`, `EmbargoRule`, `TrialLogFormat`). No golden digest changed. The full-window `n_eff` / `registry_hash` computation is unchanged from the base (the `c = 1/(C−1)` path is identical).
 - [x] The owning executable passes whole (221/221), and the evidence in the report matches the reviewer's rerun.
+
+## Re-review 1
+
+Fresh fix-only re-review at lane head `e0d157ee1017bc60a4894c2a210e11405203fea1`, against the reviewed
+SHA `d6b6df2f`. Fix commit: `e0d157ee w0-e0b: fix pass 1`.
+
+**Verdict: APPROVE.** All three minor findings are FIXED. No blocker or major was open. The fix
+introduces no regression and weakens no test.
+
+### Scope of the fix diff
+
+- The three header edits are comments only. Every removed line in `atx-engine/` is a comment:
+  the old `kOncDefaultMaxK` comment and the old `keep_sketches` "O(d²)" comment. No production
+  code path changed.
+- The test edits are additions only, with no removed or relaxed assertions. There is one new
+  assertion block in `EquicorrelatedNullFalsePositiveRateIsFivePercent` (`fp_floor`,
+  `EXPECT_EQ(sr_star, mc.mean)`, `EXPECT_LE(fpr_floor, 0.05)`), plus two new tests. The existing
+  `EXPECT_NEAR(fpr_mc, 0.05, 0.01)`, `EXPECT_GT(fpr_v1, 0.25)` and `EXPECT_LE(fpr_v2, 0.05)` are
+  unchanged. There is no DISABLED_, no GTEST_SKIP and no CMake edit.
+
+### Per finding
+
+1. **`deflated_sharpe.hpp:257`, alpha gate and acceptance 1: FIXED.** The `AccountingDsrRule`
+   doc block now says an alpha-level selection gate must use `MonteCarloMaxV2` with
+   `dsr > 1 − α`, and that `ClusterV2` / `ClusterMcFloorV2` are conservative PSR rules for
+   ranking or haircut. The report's integration notes correct the earlier W1-I1 note ("default
+   overload" applies to reporting, not to the gate). They also raise the owner-reading question
+   explicitly.
+   - The new FPR bound is sound. `acct` has no clusters, and the test asserts
+     `sr_star == mc.mean` exactly. The default rule is `max(SR*_cluster, SR*_mc)`, and PSR is
+     decreasing in SR*, so PSR(SR*_mc) bounds the default rule's FPR from above for any partition.
+   - Rerun output: `FPR bound of the default ClusterMcFloorV2 (PSR at SR*_mc)=0.0141`, and
+     `MonteCarloMaxV2=0.0545`, which is unchanged.
+2. **`trial_registry.hpp:199`, memory now O(n·d): FIXED.**
+   - The header "Memory" bullet states O(d² + n·d) with sketches and O(d² + n) without, with the
+     10^6 × d=64 figures (~0.6 / ~0.1 GB).
+   - The misleading `keep_sketches` comment is corrected.
+   - The integration note sends the bench owner to `keep_sketches = false`, and ledger candidate 4
+     records the change.
+   - New test `EvalRegistryWindows_Memory.LeanRegistryKeepsTheSummaryBitForBit` proves a lean
+     registry keeps `summary()` (n_eff, n_eff_uncorrected, var_sr, registry_hash), the chain head
+     and `trials()` identical, and that only correlation and accounting refuse.
+   - Rerun output: `TrialInfo=72 ... ~0.58 GB with sketches, 0.07 GB without`. The dedup set adds
+     about 16-24 B per trial, which the report discloses and which is consistent with "~0.1 GB".
+3. **`trial_clusters.hpp:70`, ONC base-stage cap: FIXED (documented).** The cap is documented at
+   `kOncDefaultMaxK`, in the `ClusterV2` rule text and on `TrialAccountingConfig::onc`, with
+   `onc.max_k` as the remedy and a linear cost.
+   - The docs also correct the finding's premise with measured behaviour: a cap just below G gives
+     N = cap, and a cap far below G gives singletons, which is conservative.
+   - New test `EvalTrialClusters_Dsr.BaseStageCapBoundsClusterCountUntilRaised` pins every case.
+     Rerun output:
+     - `max_k=7 depth=0 -> N=7`
+     - `max_k=7 depth=2 -> N=8`
+     - `max_k=4 depth=0/2 -> N=79 (singletons)`
+     - `max_k=16 depth=0 -> N=8`
+   - The default SR* is at least SR*_mc and at least SR*_cluster in every case.
+   - The G=64+ regime is extrapolated from the scaled G=8 case. The docs say so ("scaled down"),
+     and the default rule is unaffected.
+
+### Reviewer rerun (pool-6, equity-dev, CMAKE_BUILD_PARALLEL_LEVEL=2, 5.48 GB free)
+
+- `scripts\atx-build.ps1 build -Preset equity-dev atx-engine-eval-tests` → exit 0.
+- `build-equity\bin\atx-engine-eval-tests.exe --gtest_brief=1` (whole owning executable) → exit 0:
+  `223 tests from 39 test suites ran ... [  PASSED  ] 223 tests.` That is 221 before plus 2 new
+  tests. The `CHECK failed` lines come from pre-existing death tests.
+
+No new findings.
