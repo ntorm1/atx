@@ -27,16 +27,24 @@ class's price with another class's or an issuer-total share count:
     The line's own vendor count (no eligible DEI; strict mode; non-common or
     unlinked lines).
 ``split_pending_share_update``
-    A vendor share run never spans a split. From a split ex-date (a split-like
-    daily price-adjustment factor jump, or the start of a split-derived run)
+    A vendor share run never spans a split. From a real split's ex-date (a
+    daily price-adjustment factor step of at least ``SPLIT_FACTOR_MIN`` that is
+    an exact split ratio by R1d's classifier, see :func:`_real_split_sql`)
     until the first vendor run that starts on or after it is known, a row
     priced by vendor counts (``archive``, ``archive_ads``, the class sum, and
     ``archive_split_adjusted``) has NULL shares, cap and valuation. The stale
     pre-split count is never multiplied by the post-split price, and it is
-    never rebased with an inferred factor.
+    never rebased with an inferred factor. A spin-off, special dividend or
+    other inexact factor step opens no window: the share count is unchanged.
 ``archive_run_pending``
     The bar carries a vendor count but no vendor run is known yet at its cutoff
     (for example a first run matched to a cover count filed later): NULL.
+``vendor_shares_zero``
+    The bar's vendor count is zero (no count, never a zero cap): NULL.
+``bar_price_invalid``
+    The session's newest bar revision has a NULL or non-positive close or
+    adjusted close: NULL shares and cap (an older revision's price is never
+    revived).
 ``archive_split_adjusted``
     Split guard. The price-adjustment factor between the DEI effective date and
     the bar, ``k = (close_e * adj_t) / (adj_e * close_t)`` (the line's own bar at
@@ -46,8 +54,8 @@ class's price with another class's or an issuer-total share count:
     ``DEI x k``): the vendor count prices the bar, so a split after the latest
     10-Q never halves or doubles the cap.
 ``split_unresolved``
-    Split-like ``k`` the vendor count has not (yet) absorbed -- vendor lag after
-    a split, or a spin-off / special dividend adjustment: NULL, not a
+    Split-like ``k`` with a real split ex-date after the anchor bar that the
+    vendor count has not (yet) absorbed (vendor lag after a split): NULL, not a
     halved/doubled cap, until a DEI dated after the event arrives.
 ``dei_archive_conflict``
     Basis guard (DEI/archive ratio): the DEI count differs from the line's own
@@ -237,7 +245,9 @@ ARCHIVE_RUN_COVER_WINDOW_DAYS = 7
 ARCHIVE_RUN_DEI_LEAD_DAYS = 1
 ARCHIVE_RUN_PUBLIC_LOOKBACK_DAYS = 90
 #: Filer family of a run's owner: any ``shares_outstanding_history`` row of one
-#: of these forms (or an ADR line) makes the owner a foreign filer.
+#: of these forms (or an ADR line) makes the owner a foreign filer. The family
+#: is "ever foreign" over the owner's whole history, not as-of: that hindsight
+#: only ever lengthens the lag.
 FOREIGN_FILER_FORMS = ("20-F", "20-F/A", "40-F", "40-F/A")
 #: An unmatched run is modeled (not verified) as known this many days after it
 #: starts: per filer family, max over the family's forms of max(measured p95
@@ -282,10 +292,12 @@ SHARES_SOURCES_WITHHELD = (
     "adr_ratio_unknown",
     "adr_ratio_unresolved",
     "archive_run_pending",
+    "bar_price_invalid",
     "dei_archive_conflict",
     "multiclass_unresolved",
     "split_pending_share_update",
     "split_unresolved",
+    "vendor_shares_zero",
 )
 
 #: Availability basis of each share-count source (stated in stage detail).
@@ -329,6 +341,9 @@ VENDOR_SHARE_STATE_COLUMNS = (
     "last_split_date",
     "run_pending",
     "split_pending",
+    "share_basis",
+    "adr_ratio",
+    "adr_ratio_reason",
 )
 
 #: Row-count (not calendar-day) lookback used to widen the ``bars`` CTE below
@@ -447,26 +462,38 @@ def _asof_joins(codes: tuple[str, ...]) -> tuple[str, str]:
 def _bars_by_session_sql(*, security_count: int, bars_extra_predicate: str, with_recent: bool) -> str:
     """One deduped row per ``(security_id, trade_date)`` of the batch's bars.
 
+    Revisions are ranked first and the price checked after: the newest physical
+    row wins even when its close or adjusted close is NULL or not positive (the
+    session is then ``price_valid = false`` with NULL prices, never an older
+    revision's price).
+
     Bind order: the effective start date (only ``with_recent``), the batch's
     security ids, then the ``bars_extra_predicate`` params.
     """
     # arg_max_null: the newest physical row's value, NULL included. Plain
     # arg_max skips a NULL and would revive an older revision's value (R2e).
     recent = ",\n           (trade_date >= ?) AS is_recent" if with_recent else ""
-    return f"""SELECT security_id, trade_date,
-           arg_max_null(symbol, (available_at, source)) AS symbol,
-           arg_max_null(close, (available_at, source)) AS close,
-           arg_max_null(adjusted_close, (available_at, source)) AS adj_close,
-           arg_max_null(volume, (available_at, source)) AS volume,
-           arg_max_null(shares_outstanding, (available_at, source)) AS archive_shares,
-           greatest(max(available_at),
-                    CAST(trade_date AS TIMESTAMP) + INTERVAL {END_OF_DAY_HOURS} HOUR) AS bar_at,
-           CAST(trade_date AS TIMESTAMP) + INTERVAL {END_OF_DAY_HOURS} HOUR AS cutoff{recent}
-    FROM equity_daily_bars
-    WHERE close > 0 AND adjusted_close > 0 AND trade_date IS NOT NULL
-      AND security_id IN ({", ".join(["?"] * security_count)})
-      {bars_extra_predicate}
-    GROUP BY security_id, trade_date"""
+    return f"""SELECT security_id, trade_date, symbol,
+           CASE WHEN close > 0 THEN close END AS close,
+           CASE WHEN adj_close > 0 THEN adj_close END AS adj_close,
+           volume, archive_shares, bar_at, cutoff,
+           coalesce(close > 0 AND adj_close > 0, false) AS price_valid{recent}
+    FROM (
+        SELECT security_id, trade_date,
+               arg_max_null(symbol, (available_at, source)) AS symbol,
+               arg_max_null(close, (available_at, source)) AS close,
+               arg_max_null(adjusted_close, (available_at, source)) AS adj_close,
+               arg_max_null(volume, (available_at, source)) AS volume,
+               arg_max_null(shares_outstanding, (available_at, source)) AS archive_shares,
+               greatest(max(available_at),
+                        CAST(trade_date AS TIMESTAMP) + INTERVAL {END_OF_DAY_HOURS} HOUR) AS bar_at,
+               CAST(trade_date AS TIMESTAMP) + INTERVAL {END_OF_DAY_HOURS} HOUR AS cutoff
+        FROM equity_daily_bars
+        WHERE trade_date IS NOT NULL
+          AND security_id IN ({", ".join(["?"] * security_count)})
+          {bars_extra_predicate}
+        GROUP BY security_id, trade_date
+    )"""
 
 
 #: The owner links the vendor share-run clock matches DEI cover counts through:
@@ -478,12 +505,33 @@ _VENDOR_SHARE_LINKS_SQL = f"""SELECT o.price_security_id, m.member_security_id, 
     JOIN owner_members m ON m.owner_key = o.owner_key"""
 
 
+def _real_split_sql(k: str) -> str:
+    """Whether the daily factor step ``k`` is a real split ex-date (A8 fix N1).
+
+    Split-like (``max(k, 1/k) >= SPLIT_FACTOR_MIN``) **and** an exact split
+    ratio by R1d's classifier (``_split_epochs``, read-only), so the panel and
+    the derived split guard agree on what a split is: in R1d's band
+    ``[SPLIT_MIN_RATIO, SPLIT_MAX_RATIO]`` (6:5, 5:4) a whole number of
+    half-percent stock-dividend steps, outside it ``p/q`` with ``q <= 10`` (2:1,
+    3:2, 1:10, ...), both within the vendor's rounding. An inexact step (spin-off,
+    special dividend, fund distribution) is not a split.
+    """
+    # Imported here: _split_epochs imports this module's lag constants.
+    from ._split_epochs import SPLIT_MAX_RATIO, SPLIT_MIN_RATIO, _simple_sql, _stock_dividend_sql
+
+    split_min = _sql_double(SPLIT_FACTOR_MIN)
+    return (
+        f"(greatest({k}, 1 / ({k})) >= {split_min} AND CASE WHEN {k} BETWEEN {SPLIT_MIN_RATIO} AND "
+        f"{SPLIT_MAX_RATIO} THEN {_stock_dividend_sql(k)} ELSE {_simple_sql(k)} END)"
+    )
+
+
 def vendor_share_state_ctes(*, bars: str, links: str, targets: str) -> str:
     """The A8 vendor share-run clock as ``WITH`` clauses (no leading ``WITH``).
 
-    ``bars`` names one row per ``(security_id, trade_date)`` with positive
-    ``close``/``adj_close`` and the columns ``security_id, trade_date, close,
-    adj_close, archive_shares`` (the vendor count in shares) -- the line's full
+    ``bars`` names one row per ``(security_id, trade_date)`` with the columns
+    ``security_id, trade_date, close, adj_close, archive_shares`` (the vendor
+    count in shares; a NULL price marks an invalid session) -- the line's full
     history, since runs and split ex-dates are found over it. ``links`` names
     ``(price_security_id, member_security_id, valid_from, valid_to, adr_line)``:
     the owner member ids whose DEI cover counts a run may match, and the filer
@@ -496,7 +544,8 @@ def vendor_share_state_ctes(*, bars: str, links: str, targets: str) -> str:
     latest-starting run known at the bar's cutoff (``pit_*``), the latest split
     ex-date at or before the bar, ``run_pending`` (no run known yet) and
     ``split_pending`` (the known run started before that ex-date: it spans a
-    split, so its count must not price the bar).
+    split, so its count must not price the bar). ``split_events`` holds the
+    real split ex-dates (see :func:`_real_split_sql`).
     """
     split_hi, split_lo = _sql_double(SPLIT_FACTOR_MIN), _sql_double(1.0 / SPLIT_FACTOR_MIN)
     run_split_tol = _sql_double(SPLIT_RUN_TOLERANCE)
@@ -598,20 +647,19 @@ def vendor_share_state_ctes(*, bars: str, links: str, targets: str) -> str:
     )
     WHERE rk = 1
 ), split_events AS (
-    -- Split ex-dates: a split-like daily price-adjustment factor jump (daily,
-    -- so ordinary dividends never accumulate into one), or a split-derived run
-    -- start (the vendor count absorbed a split).
+    -- Real split ex-dates only: a daily price-adjustment factor step (daily, so
+    -- ordinary dividends never accumulate into one, between valid-price
+    -- sessions) that R1d's classifier calls an exact split ratio. A spin-off,
+    -- special dividend or other inexact step leaves the share count valid.
     SELECT security_id, trade_date AS ex_date
     FROM (
         SELECT security_id, trade_date,
-               CASE WHEN lag(adj_close) OVER w > 0 AND close > 0
-                    THEN (lag(close) OVER w * adj_close) / (lag(adj_close) OVER w * close) END AS day_factor
+               (lag(close) OVER w * adj_close) / (lag(adj_close) OVER w * close) AS day_factor
         FROM {bars}
+        WHERE close > 0 AND adj_close > 0
         WINDOW w AS (PARTITION BY security_id ORDER BY trade_date)
     )
-    WHERE day_factor >= {split_hi} OR day_factor <= {split_lo}
-    UNION
-    SELECT security_id, run_start FROM run_clock WHERE run_clock = 'split_derived'
+    WHERE {_real_split_sql("day_factor")}
 ), vendor_share_state AS (
     SELECT t.security_id, t.trade_date, s.pit_shares, s.pit_clock, s.pit_lag_family, s.pit_run_start,
            s.pit_available_at, x.ex_date AS last_split_date,
@@ -648,9 +696,17 @@ def vendor_share_state_query(
     verified), ``pit_available_at`` when that run became known (fold it into
     the reader's input clock), and ``run_pending`` / ``split_pending`` mean the
     count must not be used (``archive_run_pending`` /
-    ``split_pending_share_update``). For a ``market_daily_metrics`` row the
-    share clock kind is ``'dei_filing'`` when ``shares_source = 'dei'``,
-    ``pit_clock`` when it is in :data:`SHARES_SOURCES_VENDOR`, else NULL.
+    ``split_pending_share_update``). ``share_basis`` / ``adr_ratio`` /
+    ``adr_ratio_reason`` come from the bridge row covering the bar (available
+    at its cutoff; NULL basis = unlinked): ``pit_shares`` alone is a line cap
+    only on a ``single``, ``withheld`` or unlinked line. On an ``adr`` line it is
+    an ADS count usable only with a known ratio (``adr_ratio_reason =
+    'adr_ratio_unknown'`` otherwise: withhold it). On a ``multi_class`` line it
+    is one class's count, never an issuer cap. The panel's full decision (DEI
+    guards, per-class DEI, class sums) is ``market_daily_metrics.shares_source``.
+    For a ``market_daily_metrics`` row the share clock kind is ``'dei_filing'``
+    when ``shares_source = 'dei'``, ``pit_clock`` when it is in
+    :data:`SHARES_SOURCES_VENDOR`, else NULL.
     """
     lines = tuple(dict.fromkeys(security_ids))
     if not lines:
@@ -678,9 +734,18 @@ WITH owner_bridge AS (
 ), vendor_share_links AS (
     {_VENDOR_SHARE_LINKS_SQL}
 ), {vendor_share_state_ctes(bars="bars_by_session", links="vendor_share_links", targets="bars_by_session")}
-SELECT {", ".join(VENDOR_SHARE_STATE_COLUMNS)}
-FROM vendor_share_state
-ORDER BY security_id, trade_date
+SELECT v.security_id, v.trade_date, v.pit_shares, v.pit_clock, v.pit_lag_family, v.pit_run_start,
+       v.pit_available_at, v.last_split_date, v.run_pending, v.split_pending,
+       o.share_basis, o.adr_ratio,
+       CASE WHEN o.share_basis = '{SHARE_BASIS_ADR}' AND NOT coalesce(o.adr_ratio > 0, false)
+            THEN 'adr_ratio_unknown' END AS adr_ratio_reason
+FROM vendor_share_state v
+LEFT JOIN owner_bridge o
+  ON o.price_security_id = v.security_id
+ AND o.valid_from <= v.trade_date
+ AND (o.valid_to IS NULL OR v.trade_date < o.valid_to)
+ AND o.available_at <= CAST(v.trade_date AS TIMESTAMP) + INTERVAL {END_OF_DAY_HOURS} HOUR
+ORDER BY v.security_id, v.trade_date
 """
     params = [*bridge_value_params(bridge_rows), *member_value_params(members), *lines, *extra_params]
     return sql, params
@@ -856,7 +921,7 @@ WITH owner_bridge AS (
     -- break same-trade_date ties on undefined physical/plan order).
     {bars_by_session}
 ), bars AS (
-    SELECT security_id, trade_date, symbol, close, adj_close, volume, archive_shares, bar_at, cutoff
+    SELECT security_id, trade_date, symbol, close, adj_close, volume, archive_shares, bar_at, cutoff, price_valid
     FROM (
         SELECT *,
                row_number() OVER (
@@ -875,9 +940,10 @@ WITH owner_bridge AS (
     -- (NULL while none is: archive_pending), flagged split_pending when that
     -- run started before a split ex-date at or before the bar. A zero vendor
     -- count is no count (4.7% of TickerHistory3 bars carry shares = 0), never
-    -- a zero cap.
+    -- a zero cap; such a bar is labeled vendor_shares_zero.
     SELECT b.* EXCLUDE (archive_shares),
            CASE WHEN b.archive_shares > 0 THEN v.pit_shares END AS archive_shares,
+           coalesce(b.archive_shares <= 0, false) AS vendor_zero,
            v.pit_clock AS archive_clock,
            v.pit_available_at AS archive_available_at,
            coalesce(v.run_pending, false) AS archive_pending,
@@ -994,7 +1060,7 @@ WITH owner_bridge AS (
 ), joined AS (
     SELECT b.security_id, b.trade_date, b.symbol, b.close, b.adj_close, b.volume,
            b.archive_shares, b.archive_clock, b.archive_available_at, b.archive_pending, b.split_pending,
-           b.bar_at, b.cutoff, b.owner_key, b.identity_basis,
+           b.vendor_zero, b.price_valid, b.bar_at, b.cutoff, b.owner_key, b.identity_basis,
            b.availability_basis, b.link_method,
            b.issuer_key, b.share_basis, b.adr_ratio, b.dei_shares_eligible, b.bridge_valuation_withheld,
            b.issuer_class_lines, b.sibling_lines,
@@ -1018,7 +1084,8 @@ WITH owner_bridge AS (
     -- The line's own bar at/before the anchor date (at most {ANCHOR_BAR_MAX_GAP_DAYS} days
     -- earlier, never after this bar): its vendor count as known at this bar's
     -- cutoff (the anchor run, else the run before it) and the price-adjustment
-    -- factor change k = (close_e * adj_t) / (adj_e * close_t) since then.
+    -- factor change k = (close_e * adj_t) / (adj_e * close_t) since then, and
+    -- whether a real split went ex after that anchor bar.
     SELECT j.*,
            CASE WHEN a.trade_date <= j.trade_date AND j.anchor_date - a.trade_date <= {ANCHOR_BAR_MAX_GAP_DAYS}
                      AND a.archive_shares > 0
@@ -1027,18 +1094,24 @@ WITH owner_bridge AS (
            END AS anchor_archive,
            CASE WHEN a.trade_date <= j.trade_date AND j.anchor_date - a.trade_date <= {ANCHOR_BAR_MAX_GAP_DAYS}
                      AND a.adj_close > 0 AND a.close > 0
-                THEN (a.close * j.adj_close) / (a.adj_close * j.close) END AS split_factor
+                THEN (a.close * j.adj_close) / (a.adj_close * j.close) END AS split_factor,
+           coalesce(x.ex_date > a.trade_date, false) AS split_since_anchor
     FROM joined j
     ASOF LEFT JOIN bars_by_session a
       ON a.security_id = j.security_id AND j.anchor_date >= a.trade_date
     ASOF LEFT JOIN run_anchor rc
       ON rc.security_id = j.security_id AND a.trade_date >= rc.run_start
+    ASOF LEFT JOIN split_events x
+      ON x.security_id = j.security_id AND j.trade_date >= x.ex_date
 ), classified AS (
     SELECT x.*,
            -- A per-class DEI state makes a single line multi-class.
            CASE WHEN x.share_basis = '{SHARE_BASIS_SINGLE}' AND x.dei_class_values > 1
                 THEN '{SHARE_BASIS_MULTI_CLASS}' ELSE x.share_basis END AS basis,
-           coalesce(x.split_factor >= {split_hi} OR x.split_factor <= {split_lo}, false) AS split_like,
+           -- Split-like since the anchor only when a real split went ex in
+           -- between (N1): a spin-off or special dividend never withholds the cap.
+           coalesce(x.split_since_anchor AND (x.split_factor >= {split_hi} OR x.split_factor <= {split_lo}),
+                    false) AS split_like,
            coalesce(abs(x.archive_shares / (x.anchor_archive * x.split_factor) - 1) <= {split_tol}, false)
                AS split_absorbed
     FROM anchored x
@@ -1056,15 +1129,18 @@ WITH owner_bridge AS (
            bool_and(NOT bridge_valuation_withheld) AS class_sum_allowed,
            count(*) FILTER (WHERE split_like AND NOT split_absorbed) AS stale_split_lines,
            count(*) FILTER (WHERE split_pending) AS split_pending_lines,
+           count(*) FILTER (WHERE NOT price_valid) AS invalid_price_lines,
+           max(archive_available_at) FILTER (WHERE archive_shares > 0) AS class_available_at,
            max(split_factor) FILTER (WHERE split_like) AS split_factor
     FROM classified
     WHERE basis = '{SHARE_BASIS_MULTI_CLASS}'
     GROUP BY issuer_key, trade_date
 ), resolved_groups AS (
-    SELECT issuer_key, trade_date, class_cap, split_pending_lines,
+    SELECT issuer_key, trade_date, class_cap, split_pending_lines, class_available_at,
            coalesce(class_sum_allowed AND sibling_lines = 0 AND lines_with_shares = lines_priced
                     AND lines_priced >= greatest(listed_classes, dei_class_values)
-                    AND stale_split_lines = 0 AND split_pending_lines = 0 AND issuer_total > 0
+                    AND stale_split_lines = 0 AND split_pending_lines = 0 AND invalid_price_lines = 0
+                    AND issuer_total > 0
                     AND abs(class_shares / (issuer_total * coalesce(split_factor, 1.0)) - 1) <= {class_tol},
                     false) AS resolved
     FROM class_groups
@@ -1074,6 +1150,8 @@ WITH owner_bridge AS (
     -- the split-adjusted count of a DEI line.
     SELECT c.*,
            CASE
+               -- The newest revision of the session has no valid price (N7).
+               WHEN NOT c.price_valid THEN 'bar_price_invalid'
                WHEN c.basis = '{SHARE_BASIS_MULTI_CLASS}' THEN
                    CASE WHEN coalesce(r.resolved, false) THEN 'class_sum'
                         WHEN coalesce(r.split_pending_lines > 0, false) THEN 'split_pending_share_update'
@@ -1082,6 +1160,7 @@ WITH owner_bridge AS (
                    CASE WHEN NOT coalesce(c.adr_ratio > 0, false) THEN 'adr_ratio_unknown'
                         WHEN c.split_pending THEN 'split_pending_share_update'
                         WHEN c.archive_pending THEN 'archive_run_pending'
+                        WHEN c.vendor_zero THEN 'vendor_shares_zero'
                         WHEN c.archive_shares > 0
                              AND NOT coalesce(c.dei_total > 0
                                               AND (c.archive_shares * c.adr_ratio / c.dei_total > {adr_hi}
@@ -1104,10 +1183,13 @@ WITH owner_bridge AS (
                         ELSE 'dei' END
                WHEN c.split_pending THEN 'split_pending_share_update'
                WHEN c.archive_pending THEN 'archive_run_pending'
+               WHEN c.vendor_zero THEN 'vendor_shares_zero'
                WHEN c.archive_shares IS NOT NULL THEN 'archive'
            END AS shares_source,
            CASE WHEN c.basis = '{SHARE_BASIS_MULTI_CLASS}' AND coalesce(r.resolved, false)
-                THEN r.class_cap END AS class_market_cap
+                THEN r.class_cap END AS class_market_cap,
+           CASE WHEN c.basis = '{SHARE_BASIS_MULTI_CLASS}' AND coalesce(r.resolved, false)
+                THEN r.class_available_at END AS class_available_at
     FROM classified c
     LEFT JOIN resolved_groups r
       ON c.basis = '{SHARE_BASIS_MULTI_CLASS}' AND r.issuer_key = c.issuer_key AND r.trade_date = c.trade_date
@@ -1119,10 +1201,12 @@ WITH owner_bridge AS (
                 WHEN j.shares_source IN ({vendor_sources})
                 THEN CAST(j.archive_shares AS DOUBLE) END AS "shares_outstanding",
            -- The row's share clock (I3): a DEI filing, or the vendor run clock
-           -- (a class-sum row carries its own line's run); NULL when withheld.
+           -- (a class-sum row carries its own line's run kind, and the latest
+           -- availability over the issuer-day's class lines); NULL when withheld.
            CASE WHEN j.shares_source = 'dei' THEN 'dei_filing'
                 WHEN j.shares_source IN ({vendor_sources}) THEN j.archive_clock END AS shares_clock,
            CASE WHEN j.shares_source = 'dei' THEN j.dei_state_at
+                WHEN j.shares_source = 'class_sum' THEN j.class_available_at
                 WHEN j.shares_source IN ({vendor_sources}) THEN j.archive_available_at END AS shares_available_at,
            CASE WHEN j.basis = '{SHARE_BASIS_SINGLE}' AND j.dei_shares_eligible AND j.dei_total IS NOT NULL
                      AND j.archive_shares IS NOT NULL AND j.archive_shares <> 0
@@ -1460,13 +1544,15 @@ GROUP BY ALL
 
 #: The only ``shares_source`` values a multi-class / ADR bridge row may take.
 _CLASS_SOURCES = {
-    SHARE_BASIS_MULTI_CLASS: ("class_sum", "multiclass_unresolved", "split_pending_share_update"),
+    SHARE_BASIS_MULTI_CLASS: ("class_sum", "multiclass_unresolved", "split_pending_share_update", "bar_price_invalid"),
     SHARE_BASIS_ADR: (
         "archive_ads",
         "adr_ratio_unknown",
         "adr_ratio_unresolved",
         "archive_run_pending",
+        "bar_price_invalid",
         "split_pending_share_update",
+        "vendor_shares_zero",
     ),
 }
 
@@ -1519,6 +1605,8 @@ class _ShareBasisCounts:
             "split_unresolved_rows": self.by_source.get("split_unresolved", 0),
             "split_pending_share_update_rows": self.by_source.get("split_pending_share_update", 0),
             "archive_run_pending_rows": self.by_source.get("archive_run_pending", 0),
+            "vendor_shares_zero_rows": self.by_source.get("vendor_shares_zero", 0),
+            "bar_price_invalid_rows": self.by_source.get("bar_price_invalid", 0),
             "dei_archive_conflict_rows": self.by_source.get("dei_archive_conflict", 0),
             # Rows by the owner's currency status (every status withholds the
             # valuation metrics; a row may also be withheld for a share reason).

@@ -33,6 +33,15 @@ A8 (market-cap share, class, ADR, split and currency basis):
   cover count it equals (AAPL shape: the run starts on the cover date, two
   weeks before the filing), at its start when derived from a split, else
   after the modeled lag (Celgene shape).
+
+P1 (RI1 reconstructed history -> bridge):
+* a delisted line with no current ticker takes its RI1 issuer in reconstructed
+  mode (``reconstructed_history``, tier in force, evidence id), is visible only
+  from bars whose cutoff reaches the RI1 evidence clock, and is never linked in
+  strict mode;
+* an RI1 conflict stays unlinked (``conflicting_reconstruction``); a link
+  contested later is linked only before the contest; one issuer is linked on
+  one line per day (the other line's overlap is trimmed and counted).
 """
 
 from __future__ import annotations
@@ -59,13 +68,16 @@ from atx_db.market_daily import (
 )
 from atx_db.market_owner_bridge import (
     IDENTITY_BASIS_CURRENT_TICKER,
+    RECONSTRUCTION_TIERS_HIGH_ONLY,
     CurrencyEvent,
     MarketOwnerBridge,
     OwnerLinkEvidence,
     PriceLine,
+    ReconstructedLinkEvidence,
     are_class_siblings,
     build_market_owner_bridge,
     classify_reconstructed,
+    classify_reconstructed_with_history,
     classify_sec_tickers,
     normalize_symbol,
     parse_ads_ratio,
@@ -870,13 +882,16 @@ def test_class_count_matched_to_a_per_class_dei_enters_the_class_sum_at_its_fili
         assert row[6] == pytest.approx(100.0 * a_shares + 50.0 * 30_000_000)
 
 
-@pytest.mark.parametrize("k", [2.0, 0.1])
+@pytest.mark.parametrize("k", [2.0, 0.1, 1.37])
 def test_a_vendor_share_run_never_spans_a_split_and_an_adr_without_ratio_is_withheld(tmp_store, k):
     """A8 fix C1 (rv-a8 probe shape, forward 2:1 and reverse 1:10): vendor 100M, then an unmatched
     104M run from 02-03, a split on 03-02 the vendor absorbs on 03-09 (104M x k). On a linked line
     without DEI and on an unlinked line, the pre-split count never prices a post-split bar: the
     window is NULL (split_pending_share_update), then the split-derived run prices the bar at its
-    own start. I1: an ADR line whose name states no ADS ratio is withheld (adr_ratio_unknown)."""
+    own start. N1: an inexact 1.37 factor step (spin-off / special dividend; the count does not
+    move) is no split and opens no window. I1: an ADR line whose name states no ADS ratio is
+    withheld (adr_ratio_unknown)."""
+    spin_off = k == 1.37
     seed_derived_metric_definitions(tmp_store)
     linked, unlinked, adr = "SEC-CIK-0000000501", "TBLTICKERHISTORY-601", "TBLTICKERHISTORY-502"
     _ticker(tmp_store, "501", "SPLA")
@@ -886,14 +901,18 @@ def test_a_vendor_share_run_never_spans_a_split_and_an_adr_without_ratio_is_with
     for trade_date in _DATES:
         close = 50.0 if trade_date < split else 50.0 / k
         shares = 100_000_000 if trade_date < dt.date(2020, 2, 3) else 104_000_000
-        shares = round(104_000_000 * k) if trade_date >= absorbed else shares
+        shares = round(104_000_000 * k) if trade_date >= absorbed and not spin_off else shares
         for line, symbol in ((linked, "SPLA"), (unlinked, "SPLX")):
             _bar(tmp_store, line, symbol, trade_date, close, shares=shares, adj=50.0 / k)
         _bar(tmp_store, adr, "FOOB", trade_date, 20.0, shares=50_000_000)
     refresh_derived_metrics(tmp_store, DerivedMetricsOptions())
     refresh_market_daily_metrics(tmp_store, MarketDailyOptions())
+    window_days = len([d for d in _DATES if split <= d < absorbed])
     for line in (linked, unlinked):
         rows = _rows(tmp_store, line)
+        if spin_off:  # the known count keeps pricing the line through the distribution
+            assert rows and {row[5] for row in rows} == {"archive"} and all(row[6] is not None for row in rows)
+            continue
         window = [row for row in rows if split <= row[0] < absorbed]
         assert window and all(
             (row[5], row[4], row[6]) == ("split_pending_share_update", None, None) for row in window
@@ -909,18 +928,21 @@ def test_a_vendor_share_run_never_spans_a_split_and_an_adr_without_ratio_is_with
     assert adr_rows and all((row[5], row[4], row[6], row[1]) == ("adr_ratio_unknown", None, None, None)
                             for row in adr_rows)
     report = owner_bridge_report(tmp_store)["share_basis"]
-    assert report["split_pending_share_update_rows"] == 2 * len([d for d in _DATES if split <= d < absorbed])
-    assert report["adr_ratio_unknown_rows"] == len(_DATES) and report["rows_by_share_clock"]["split_derived"] > 0
-    # The read relation other readers join (R2d) states the same clock and window per bar.
+    assert report["split_pending_share_update_rows"] == (0 if spin_off else 2 * window_days)
+    assert report["adr_ratio_unknown_rows"] == len(_DATES)
+    assert spin_off or report["rows_by_share_clock"]["split_derived"] > 0
+    # The read relation other readers join (R2d) states the same clock, window and basis per bar.
     item_codes, metric_codes = _referenced_codes()
     bridge = build_market_owner_bridge(
         tmp_store, item_codes=item_codes, metric_codes=metric_codes, derived_source=DERIVED_SOURCE_NAME
     )
-    sql, params = vendor_share_state_query(bridge, [linked, unlinked])
+    sql, params = vendor_share_state_query(bridge, [linked, unlinked, adr])
     state = {(row[0], row[1]): row for row in tmp_store.con.execute(sql, params).fetchall()}
+    assert state[(adr, _DATES[-1])][10:] == ("adr", None, "adr_ratio_unknown")
     for line in (linked, unlinked):
-        assert all(state[(line, day)][9] for day in _DATES if split <= day < absorbed)  # split_pending
-        assert {state[(line, day)][3] for day in _DATES if day >= absorbed} == {"split_derived"}
+        assert all(state[(line, day)][9] != spin_off for day in _DATES if split <= day < absorbed)  # split_pending
+        if not spin_off:
+            assert {state[(line, day)][3] for day in _DATES if day >= absorbed} == {"split_derived"}
 
 
 def _valuation_facts(store, owner, unit=None):
@@ -1142,3 +1164,141 @@ def test_no_wall_clock_in_the_bridge_source():
     source = inspect.getsource(module)
     for forbidden in ("date.today", "utcnow", "Timestamp.now", "time.time", "datetime.now", "current_date"):
         assert forbidden not in source, forbidden
+
+
+# ---------------------------------------------------------------------------
+# P1: RI1 reconstructed history -> bridge
+# ---------------------------------------------------------------------------
+
+OLD_LINE = "TBLTICKERHISTORY-901"
+OLD_CIK = "0000000501"
+OLD_OWNER = "SEC-CIK-0000000501"
+
+
+def _month_starts(first: dt.date, months: int) -> list[dt.date]:
+    """The first weekday of each month (a sparse bar calendar keeps the fixture small)."""
+    out = []
+    for index in range(months):
+        year, month = first.year + (first.month - 1 + index) // 12, (first.month - 1 + index) % 12 + 1
+        out.append(_weekdays(dt.date(year, month, 1), 1)[0])
+    return out
+
+
+def _ri1_rows(first: dt.date, last: dt.date):
+    """Genuine RI1 output for vendor line 901: 13 distinct quarterly cover counts the vendor count follows."""
+    import duckdb
+
+    from atx_db import identity_reconstruction as ir
+
+    as_ofs = [dt.date(2014 + (index * 3) // 12, (index * 3) % 12 + 1, 20) for index in range(13)]
+    facts = [
+        ir.IssuerShareFact(OLD_CIK, "dei:EntityCommonStockSharesOutstanding", as_of, float(50_123_456 + i * 111_111),
+                           f"a{i}", "10-Q", as_of + dt.timedelta(days=10))
+        for i, as_of in enumerate(as_ofs)
+    ]
+    runs = [
+        ir.VendorShareRun(901, int(fact.value // 1000), fact.as_of,
+                          as_ofs[i + 1] - dt.timedelta(days=1) if i + 1 < len(as_ofs) else last)
+        for i, fact in enumerate(facts)
+    ]
+    con = duckdb.connect(":memory:", config={"memory_limit": "128MB", "threads": 1})
+    ir.stage_share_runs(con, runs)
+    ir.stage_share_facts(con, facts)
+    line = ir.VendorLine(901, OLD_LINE, first, last, 42, "OLDCO", (("OLDCO", first, last),))
+    result = ir.reconstruct_issuer_links(con, [line], horizon=dt.date(2020, 12, 31), price_start=dt.date(2012, 3, 26))
+    return result, result.evidence_rows(observed_at=dt.datetime(2026, 9, 20), run_id="p1-test")
+
+
+def test_delisted_line_takes_its_reconstructed_owner_point_in_time_and_never_in_strict_mode(tmp_store):
+    from atx_db.historical_identity import EVIDENCE_COLUMNS
+
+    seed_derived_metric_definitions(tmp_store)
+    dates = _month_starts(dt.date(2014, 1, 1), 42)  # 2014-01 .. 2017-06, delisted
+    for trade_date in dates:
+        _bar(tmp_store, OLD_LINE, "OLDCO", trade_date, 10.0)
+    quarter_ends = [dt.date(2013, 12, 31)] + [
+        dt.date(year, month, 31 if month in (3, 12) else 30) for year in (2014, 2015, 2016) for month in (3, 6, 9, 12)
+    ]
+    for index, period_end in enumerate(quarter_ends):
+        available_at = dt.datetime.combine(period_end + dt.timedelta(days=40), dt.time(21))
+        _fact(tmp_store, OLD_OWNER, "revenue", "quarterly", period_end, 1_000_000.0 + index, available_at)
+        _fact(tmp_store, OLD_OWNER, "net_income_to_common", "quarterly", period_end, 100_000.0, available_at)
+    result, evidence_rows = _ri1_rows(dates[0], dates[-1])
+    (link,) = result.links
+    names = [name for name, _kind in EVIDENCE_COLUMNS]
+    tmp_store.con.executemany(
+        f"INSERT INTO security_identity_evidence ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
+        [[row[name] for name in names] for row in evidence_rows],
+    )
+
+    # Reconstructed mode reads the RI1 row from security_identity_evidence (rule 5).
+    bridge = _bridge(tmp_store)
+    (row,) = [row for row in bridge.rows if row.price_security_id == OLD_LINE]
+    assert (row.owner_security_id, row.identity_basis, row.availability_basis, row.link_method, row.tier) == (
+        OLD_OWNER, "reconstructed_history", "modeled", "reconstructed_history_medium", "medium")
+    assert (row.valid_from, row.valid_to, row.available_at, row.evidence_id) == (
+        link.valid_from, link.valid_to, link.available_at, evidence_rows[0]["evidence_id"])
+    detail = bridge.summary()
+    assert (detail["unlinked_lines"], detail["linked_by_identity_basis"]) == (0, {"reconstructed_history": 1})
+    assert (detail["reconstructed_history"]["linked_lines_by_tier"], detail["reconstructed_history"]["tier_filter"]) == (
+        {"medium": 1}, "high_medium")
+
+    # The link is never visible before its RI1 evidence clock (third count's 10-Q + 46h).
+    assert link.available_at == dt.datetime(2014, 7, 31, 22)
+    refresh_market_daily_metrics(tmp_store, MarketDailyOptions())
+    visible = [panel[0] for panel in _rows(tmp_store, OLD_LINE) if panel[3] is not None]
+    assert visible and min(visible) == dt.date(2014, 8, 1)
+    assert all(dt.datetime.combine(day, dt.time(22)) >= link.available_at for day in visible)
+
+    # Strict mode never consumes reconstructed evidence; the high-only sensitivity leaves it below tier.
+    item_codes, metric_codes = _referenced_codes()
+    strict = build_market_owner_bridge(tmp_store, mode="strict", evidence=result.owner_links(), item_codes=item_codes,
+                                       metric_codes=metric_codes, derived_source=DERIVED_SOURCE_NAME)
+    assert [row.unlinked_reason for row in strict.rows if row.price_security_id == OLD_LINE] == ["no_dated_evidence"]
+    assert strict.rejected_evidence == {"evidence_not_verified_dated": 1}
+    high_only = build_market_owner_bridge(tmp_store, item_codes=item_codes, metric_codes=metric_codes,
+                                          derived_source=DERIVED_SOURCE_NAME,
+                                          reconstruction_tiers=RECONSTRUCTION_TIERS_HIGH_ONLY)
+    assert [row.unlinked_reason for row in high_only.rows if row.price_security_id == OLD_LINE] == [
+        "reconstruction_below_tier"]
+
+
+def _ri1(line, cik, valid, available_at, history, status="reconstructed"):
+    return ReconstructedLinkEvidence(f"ev-{line}-{cik}", status, cik, None, line, valid[0], valid[1], available_at,
+                                     history)
+
+
+def test_reconstructed_conflicts_stay_unlinked_and_tiers_and_issuers_are_point_in_time():
+    a, b, c = "TBLTICKERHISTORY-11", "TBLTICKERHISTORY-12", "TBLTICKERHISTORY-13"
+    d = dt.date
+    lines = [
+        PriceLine(a, "AAA", d(2015, 1, 2), d(2016, 12, 30), 500),
+        PriceLine(b, "BBB", d(2015, 1, 2), d(2016, 12, 30), 500),
+        PriceLine(c, "CCC", d(2015, 6, 1), d(2016, 6, 29), 100),
+    ]
+    clock, c_clock = dt.datetime(2015, 7, 31, 22), dt.datetime(2015, 9, 1, 22)
+    evidence = [
+        # A: medium from its clock; a rival contests it from 2016-03-01 23:30 (after that day's cutoff).
+        _ri1(a, "0000000701", (d(2015, 1, 2), d(2016, 12, 31)), clock,
+             (("medium", clock), ("low", dt.datetime(2016, 3, 1, 23, 30)))),
+        # B: an unresolved RI1 conflict -- both sides are evidence, neither is picked.
+        _ri1(b, "0000000702", (d(2015, 1, 2), d(2016, 12, 31)), None, (), "conflicting"),
+        _ri1(b, "0000000703", (d(2015, 1, 2), d(2016, 12, 31)), None, (), "conflicting"),
+        # C: the same issuer as A on a second, shorter line overlapping A's link.
+        _ri1(c, "0000000701", (d(2015, 6, 1), d(2016, 6, 30)), c_clock, (("medium", c_clock),)),
+    ]
+    rows, _members, _ambiguous, stats = classify_reconstructed_with_history(lines, (), {}, reconstructed=evidence)
+
+    linked = [(row.price_security_id, row.valid_from, row.valid_to, row.tier, row.available_at, row.share_basis)
+              for row in rows if row.linked]
+    assert linked == [
+        # A is linked only while its tier in force is inside the filter (low is never auto-picked).
+        (a, d(2015, 1, 2), d(2016, 3, 2), "medium", clock, "single"),
+        # C keeps only the days A does not hold (A has more bars): one issuer, one line per day.
+        (c, d(2016, 3, 2), d(2016, 6, 30), "medium", c_clock, "single"),
+    ]
+    assert [row.unlinked_reason for row in rows if row.price_security_id == b] == ["conflicting_reconstruction"]
+    assert (stats["linked_lines_by_tier"], stats["segments_excluded_by_tier"], stats["unlinked_lines_by_reason"]) == (
+        {"medium": 2}, {"low": 1}, {"conflicting_reconstruction": 1})
+    assert stats["cik_day_dedupe"] == {"rule": "current_ticker_first_then_more_bars_then_smaller_id", "ciks": 1,
+                                       "segments_trimmed": 1, "days_removed": 275, "lines_removed": 0}
