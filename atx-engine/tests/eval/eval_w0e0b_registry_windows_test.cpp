@@ -592,4 +592,43 @@ TEST(EvalRegistryWindows_MultiWriter, ConcurrentThreadsProduceOneConsistentLog) 
   remove_file(path);
 }
 
+// Memory (review finding, fix pass 1): with keep_sketches (the default) a
+// registry retains 8·d sketch bytes plus one TrialInfo per trial. A 10^6-trial
+// caller sets keep_sketches = false and keeps the summary, the chain head and
+// trials() bit-for-bit; only correlation / mc_max_null / accounting need the
+// sketches.
+TEST(EvalRegistryWindows_Memory, LeanRegistryKeepsTheSummaryBitForBit) {
+  const usize t = 120U;
+  TrialRegistryConfig full_cfg;
+  full_cfg.pnl_len = t;
+  full_cfg.sketch_dim = 64U;
+  TrialRegistryConfig lean_cfg = full_cfg;
+  lean_cfg.keep_sketches = false;
+  auto full = TrialRegistry::in_memory(full_cfg);
+  auto lean = TrialRegistry::in_memory(lean_cfg);
+  ASSERT_TRUE(full.has_value() && lean.has_value());
+  for (u64 i = 0; i < 50U; ++i) {
+    const std::vector<f64> x = noise(t, 9000U + i);
+    ASSERT_TRUE(full->record(TrialKind::MinerExpr, i, x, sharpe_of(x)).has_value());
+    ASSERT_TRUE(lean->record(TrialKind::MinerExpr, i, x, sharpe_of(x)).has_value());
+  }
+  const TrialSummary a = full->summary();
+  const TrialSummary b = lean->summary();
+  EXPECT_EQ(a.n_raw, b.n_raw);
+  EXPECT_EQ(a.n_eff, b.n_eff);
+  EXPECT_EQ(a.n_eff_uncorrected, b.n_eff_uncorrected);
+  EXPECT_EQ(a.var_sr, b.var_sr);
+  EXPECT_EQ(a.registry_hash, b.registry_hash);
+  EXPECT_EQ(full->chain_head(), lean->chain_head());
+  ASSERT_EQ(full->trials().size(), lean->trials().size());
+  EXPECT_TRUE(full->correlation().has_value());
+  EXPECT_FALSE(lean->correlation().has_value());
+  EXPECT_FALSE(lean->accounting(TrialAccountingConfig{}).has_value());
+  std::printf("[w0e0b] per-trial retained bytes: TrialInfo=%zu, sketch=8*d (d=64 -> %zu); "
+              "10^6 trials at d=64 ~ %.2f GB with sketches, %.2f GB without\n",
+              sizeof(TrialInfo), static_cast<usize>(8U * 64U),
+              1e6 * static_cast<f64>(sizeof(TrialInfo) + 8U * 64U) / 1e9,
+              1e6 * static_cast<f64>(sizeof(TrialInfo)) / 1e9);
+}
+
 } // namespace atx_test_w0_e0b_registry_windows

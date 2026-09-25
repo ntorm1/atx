@@ -229,10 +229,29 @@ enum class SummaryDsrRule : atx::u8 {
 //      the selection, and the Monte-Carlo benchmark — which assumes nothing
 //      about independence — takes over. DSR = PSR(SR*).
 //    ClusterV2: SR* = SR*_cluster alone (the plan's rule without the floor).
+//      N is bounded by the ONC search: the base stage tries k <= onc.max_k
+//      (default min(n − 1, kOncDefaultMaxK = 64), trial_clusters.hpp), and
+//      only the depth-bounded refinement can split further. With somewhat
+//      more than 64 genuine families ClusterV2 alone can under-count N (and
+//      SR*_cluster can then move either way, since V_c changes too); far more
+//      families fail min_silhouette and fall back to singletons (N = n_raw,
+//      conservative). Raise TrialAccountingConfig::onc.max_k to the expected
+//      family count (cost grows linearly in max_k) or keep the default rule,
+//      whose Monte-Carlo floor does not depend on the partition
+//      (EvalTrialClusters_Dsr.BaseStageCapBoundsClusterCountUntilRaised).
 //    MonteCarloMaxV2: SR* = SR*_mc, and dsr = the Monte-Carlo null CDF of the
 //      maximum at `sr` (P_null(max_i SR_i <= sr)) — a selection test whose
 //      false-positive rate at dsr > 1−α is α by construction (psr still
 //      reports PSR(SR*_mc)).
+//
+//  Which rule for an α-level selection GATE: MonteCarloMaxV2, with the gate
+//  dsr > 1 − α. It is the only calibrated rule: on the equicorrelated null
+//  (ρ = 0.5, N = 2000, T = 252) its false-positive rate at α = 5% measured
+//  5.45%. ClusterV2 and ClusterMcFloorV2 are PSR-based (a PSR around the
+//  EXPECTED maximum), so they are conservative on a null, not calibrated: the
+//  default's FPR on the same null is at most that of PSR(SR*_mc), measured
+//  1.41% at α = 5% (EvalTrialClusters_Mc.EquicorrelatedNullFalsePositive-
+//  RateIsFivePercent). Use the default for ranking / haircut reporting.
 //
 //  haircut_sharpe = max(0, SR − SR*) in every rule. `n_used` / `v_used` are
 //  the (N, V) pair behind SR* (for MonteCarloMaxV2: n_raw and NaN).

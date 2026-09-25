@@ -64,6 +64,12 @@
 //    default) the unit sketches are also retained (8·d bytes per trial, the
 //    same as a durable record) so accounting() can cluster the trials and run
 //    the Monte-Carlo max-Sharpe null; accounting() itself is O(n²·d + n²·k).
+//  * Memory is O(d² + n·d) with keep_sketches and O(d² + n) without: every
+//    trial also keeps its TrialInfo (trials(), 72 B) and its id in the dedup
+//    set. The pre-W0 "O(d²) regardless of trial count" no longer holds by
+//    default: 10^6 trials at d = 64 retain ~0.6 GB with sketches, ~0.1 GB
+//    without. Registries of 10^5+ trials (benchmarks, bulk sweeps) set
+//    keep_sketches = false; accounting() is capped at max_trials anyway.
 //  * registry_hash chains (id, sharpe bits) of the distinct trials in append
 //    order (unchanged since V1): two registries with the same history have the
 //    same hash.
@@ -195,7 +201,9 @@ struct TrialRegistryConfig {
   // registries use it for the chain-head record encoding).
   TrialLogFormat format{TrialLogFormat::V2};
   // Retain the per-trial unit sketches (needed by accounting / correlation /
-  // mc_max_null). false keeps memory O(d²) for 10^6-trial registries.
+  // mc_max_null): 8·d bytes per trial on top of the per-trial TrialInfo.
+  // Set false for 10^5+-trial registries: memory is then O(d² + n) (header
+  // note); summary(), trials() and the chain head are unchanged.
   bool keep_sketches{true};
 };
 
@@ -233,6 +241,9 @@ struct TrialChainHead {
 [[nodiscard]] atx::core::Result<TrialChainHead> read_chain_head(const std::filesystem::path &path);
 
 struct TrialAccountingConfig {
+  // ONC search. onc.max_k == 0 caps the base stage at min(n - 1, 64) clusters
+  // (kOncDefaultMaxK); set it to at least the expected family count when a
+  // registry may hold more than 64 genuine families (see AccountingDsrRule).
   OncConfig onc{};
   atx::usize mc_draws{2000};    // Monte-Carlo draws of the max-Sharpe null (>= 1)
   atx::u64 mc_seed{0x6d63ULL};  // Monte-Carlo seed

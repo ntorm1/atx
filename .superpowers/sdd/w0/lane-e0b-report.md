@@ -283,3 +283,72 @@ All commands were run from `C:\atx-wt\pool-6` (each PowerShell call began with
    trial.
 3. On the same equicorrelated null, the pre-W0 registry DSR (N_eff + cross-trial V, E-01) rejects
    52% of the time; N = n_raw with the cross-trial V rejects 1.2%.
+
+## Fix pass 1
+
+Review: `.superpowers/sdd/w0/lane-e0b-review.md` (APPROVE at `d6b6df2f`, three minor findings, no
+blocker or major). All three are fixed in owned files: documentation where the finding asked for
+it, plus new tests that pin the documented behaviour with measured numbers. No existing test was
+changed or weakened. No production code path changed; the header edits are comments only.
+
+| Finding | What changed | Evidence |
+|---|---|---|
+| `deflated_sharpe.hpp:257`: acceptance 1 (FPR 5% ± 1%) holds only for opt-in `MonteCarloMaxV2`, and the default FPR was not measured | The `AccountingDsrRule` doc block now has a "Which rule for an α-level selection GATE" paragraph. A calibrated gate must use `MonteCarloMaxV2` with `dsr > 1 − α`. `ClusterV2` / `ClusterMcFloorV2` are PSR-based: conservative, not calibrated. Use them for ranking or haircut reporting. `EvalTrialClusters_Mc.EquicorrelatedNullFalsePositiveRateIsFivePercent` now also measures an upper bound on the default rule's FPR on the same 12,000 null experiments. It runs the default `ClusterMcFloorV2` with no clusters, so SR* = SR*_mc (asserted exactly). A real partition can only raise SR*, and PSR falls as SR* rises, so this bounds the default rule's FPR for every clustering outcome. The test asserts the bound is ≤ 0.05. Integration note below for W1-I1. | `[w0e0b] same null: FPR bound of the default ClusterMcFloorV2 (PSR at SR*_mc)=0.0141`. `MonteCarloMaxV2` is unchanged at 0.0545. |
+| `trial_registry.hpp:199`: memory is now O(n·d) by default, not O(d²) | `trial_registry.hpp` header note: new "Memory" bullet. Memory is O(d² + n·d) with sketches and O(d² + n) without; the TrialInfo (72 B) and the dedup-set entry are always kept. 10^6 trials at d = 64 take about 0.6 GB with sketches and about 0.1 GB without. 10^5+-trial registries should set `keep_sketches = false`. The `keep_sketches` field comment is corrected: the old text said "false keeps memory O(d²)". I did not change the default: `accounting()` is the E-01 path and needs the sketches. New test `EvalRegistryWindows_Memory.LeanRegistryKeepsTheSummaryBitForBit` shows that a lean registry keeps `summary()` (n_eff, n_eff_uncorrected, var_sr, registry_hash), the chain head and `trials()` bit-for-bit. Only `correlation` / `accounting` refuse. Ledger candidate 4 and an integration note for the bench owner are below. | `[w0e0b] per-trial retained bytes: TrialInfo=72, sketch=8*d (d=64 -> 512); 10^6 trials at d=64 ~ 0.58 GB with sketches, 0.07 GB without` (sketch and TrialInfo bytes only; the dedup set adds about 16-24 B per trial) |
+| `trial_clusters.hpp:70`: the ONC base-stage cap `kOncDefaultMaxK = 64` can under-count N under `ClusterV2` | The cap is documented at `kOncDefaultMaxK`, in the `ClusterV2` rule text in `deflated_sharpe.hpp`, and on `TrialAccountingConfig::onc`. The docs say how to raise it (`onc.max_k`) and what it costs (linear in max_k). I did not raise the default: the base stage costs O(max_k · n_init · max_iter · n²), and the default rule's Monte-Carlo floor does not depend on the partition. Measuring the behaviour refined the reviewer's premise. With a cap just below G, the base stage under-counts (N = cap). With a cap far below G, no capped partition passes `min_silhouette`, so ONC returns singletons (N = n_raw, the conservative direction). An under-count can move SR*_cluster either way, because V_c changes too. The docs say exactly this. New test `EvalTrialClusters_Dsr.BaseStageCapBoundsClusterCountUntilRaised` uses G = 8 blocks, n = 79, scaled down so it fits the debug preset. It pins every case, and asserts default SR* ≥ max(SR*_mc, SR*_cluster) for every partition. | `max_k=7 depth=0 -> N=7`; `max_k=7 depth=2 -> N=8`; `max_k=4 depth=0/2 -> N=79 (singletons)`; `max_k=16 depth=0 -> N=8`; SR*_mc = 0.14135, and default SR* ≥ SR*_mc in every case |
+
+### Fix pass 1 evidence
+
+Every call ran from `C:\atx-wt\pool-6` with `$env:CMAKE_BUILD_PARALLEL_LEVEL='2'`. Free RAM before
+the builds was 3.80, 5.85, 5.45 and 5.78 GB.
+
+The first run of the new cap test failed: it assumed that cap 4 gives N ≤ 4 and that ClusterV2
+under-deflates. The measured result was singletons, N = 79. A diagnostic sweep over caps 4-7 with
+depth 0 and 2 established the behaviour in the table above. I then rewrote the test to assert the
+measured behaviour and corrected the docs. The final results, on the final tree:
+
+1. `scripts\atx-build.ps1 build -Preset equity-dev atx-engine-eval-tests` → exit 0
+   (`[20/21] Linking CXX executable bin\atx-engine-eval-tests.exe`), clean under /W4 /WX.
+2. `scripts\atx-build.ps1 check -Preset equity-dev atx-impl\src\stage_equity_mine.cpp` → exit 0
+   (a consumer of the edited headers).
+3. Anchored suites (`-Ctest -Preset equity-dev -R ...`):
+   ```
+   ^EvalTrialClusters   100% tests passed, 0 tests failed out of 14   exit=0
+   ^EvalRegistryWindows 100% tests passed, 0 tests failed out of 10   exit=0
+   ^EvalLockboxEmbargo  100% tests passed, 0 tests failed out of 4    exit=0
+   ^EvalTrialRegistry   100% tests passed, 0 tests failed out of 13   exit=0
+   ```
+4. Whole owning executable, `build-equity\bin\atx-engine-eval-tests.exe --gtest_brief=1` → exit 0:
+   ```
+   [w0e0b] equicorrelated null rho=0.5 N=2000 (n_eff=3.77), 12000 experiments: FPR MonteCarloMaxV2=0.0545, summary NEffCrossVarV1 (pre-W0)=0.5248, summary RawNCrossVarV2=0.0123
+   [w0e0b] same null: FPR bound of the default ClusterMcFloorV2 (PSR at SR*_mc)=0.0141
+   [==========] 223 tests from 39 test suites ran. (40440 ms total)
+   [  PASSED  ] 223 tests.
+   ```
+   The count went from 221 to 223 because of the two new tests. The `CHECK failed` lines come from
+   pre-existing death tests.
+
+### Fix pass 1 integration notes (additions)
+
+- **W1-I1 and any selection gate at α.** Gate with
+  `deflated_sharpe(sr, acct, T, skew, kurt, AccountingDsrRule::MonteCarloMaxV2).result.dsr > 1 − α`.
+  It is the only calibrated rule: 5.45% at α = 5%. The default `ClusterMcFloorV2` is conservative,
+  at ≤ 1.41% on the same null. Keep it for ranking and for `haircut_sharpe` / SR* reporting. The
+  earlier note "DSR everywhere through the default overload" applies to reporting, not to the
+  α-gate. If the owner reads acceptance 1 as applying to the default rule, it is UNMET for the
+  default: that rule is conservative by construction, and only the owner can decide.
+- **Owner of `atx-engine/bench/eval_multiple_testing_bench.cpp`** (not owned by this lane): the
+  10^6-trial registry there (d = 64) now retains about 0.6 GB by default. Set
+  `TrialRegistryConfig::keep_sketches = false`. It uses only `summary()`, which a lean registry
+  keeps unchanged.
+- **Registries that may hold more than 64 genuine families**, if they use `ClusterV2` alone: set
+  `TrialAccountingConfig::onc.max_k` to at least the expected family count.
+
+### Ledger candidates (additions)
+
+4. By default the TrialRegistry now keeps 8·d + 72 B per trial for `accounting()`: about 0.6 GB for
+   10^6 trials at d = 64. Bulk or bench registries set `keep_sketches = false`, which is lossless
+   for `summary()`.
+5. On the ρ = 0.5, N = 2000 null, the PSR-based DSR rules are conservative: the default
+   accounting rule has FPR ≤ 1.41%. Only `MonteCarloMaxV2` (the null CDF of the max) is calibrated,
+   at 5.45%. An α-gate must use it.

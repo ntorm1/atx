@@ -66,7 +66,14 @@
 
 namespace atx::engine::eval {
 
-// Default upper bound on k when OncConfig::max_k == 0.
+// Default upper bound on k when OncConfig::max_k == 0. With more genuine
+// families than the cap, the base stage cannot return N above it: slightly
+// more families -> merged blocks that still pass min_silhouette (N = cap, an
+// under-count only the depth-bounded refinement can undo); far more -> no
+// capped partition passes and the result is SINGLETONS. So a cluster-only DSR
+// (AccountingDsrRule::ClusterV2) can under-count N. Raise max_k for such
+// registries; the base-stage cost is linear in max_k (O(max_k · n_init ·
+// max_iter · n²)).
 inline constexpr atx::usize kOncDefaultMaxK = 64U;
 
 struct OncConfig {

@@ -401,6 +401,7 @@ TEST(EvalTrialClusters_Mc, EquicorrelatedNullFalsePositiveRateIsFivePercent) {
   usize fp_mc = 0U;
   usize fp_v1 = 0U;
   usize fp_v2 = 0U;
+  usize fp_floor = 0U; // PSR(SR*_mc): an upper bound on the default rule's FPR
   f64 n_eff0 = 0.0;
   for (usize c = 0; c < calibrations; ++c) {
     Gauss g{5000U + c};
@@ -463,6 +464,13 @@ TEST(EvalTrialClusters_Mc, EquicorrelatedNullFalsePositiveRateIsFivePercent) {
       const RegistryDsr d =
           deflated_sharpe(mx, acct, t, 0.0, 0.0, AccountingDsrRule::MonteCarloMaxV2);
       fp_mc += d.result.dsr > 0.95 ? 1U : 0U;
+      // `acct` has no clusters (SR*_cluster = 0), so the default rule's SR*
+      // is exactly SR*_mc here. Any real partition can only raise SR* above
+      // SR*_mc, and PSR falls as SR* rises, so this rate bounds the default
+      // rule's FPR from above for every clustering outcome.
+      const RegistryDsr fl = deflated_sharpe(mx, acct, t, 0.0, 0.0);
+      EXPECT_EQ(fl.result.sr_star, acct.mc.mean);
+      fp_floor += fl.result.dsr > 0.95 ? 1U : 0U;
       const DsrResult v1 = deflated_sharpe(mx, sum, t, 0.0, 0.0, SummaryDsrRule::NEffCrossVarV1);
       const DsrResult v2 = deflated_sharpe(mx, sum, t, 0.0, 0.0, SummaryDsrRule::RawNCrossVarV2);
       fp_v1 += v1.dsr > 0.95 ? 1U : 0U;
@@ -473,15 +481,22 @@ TEST(EvalTrialClusters_Mc, EquicorrelatedNullFalsePositiveRateIsFivePercent) {
   const f64 fpr_mc = static_cast<f64>(fp_mc) / total;
   const f64 fpr_v1 = static_cast<f64>(fp_v1) / total;
   const f64 fpr_v2 = static_cast<f64>(fp_v2) / total;
+  const f64 fpr_floor = static_cast<f64>(fp_floor) / total;
   std::printf("[w0e0b] equicorrelated null rho=0.5 N=2000 (n_eff=%.2f), %zu experiments: FPR "
               "MonteCarloMaxV2=%.4f, summary NEffCrossVarV1 (pre-W0)=%.4f, summary "
               "RawNCrossVarV2=%.4f\n",
               n_eff0, calibrations * reps, fpr_mc, fpr_v1, fpr_v2);
+  std::printf("[w0e0b] same null: FPR bound of the default ClusterMcFloorV2 "
+              "(PSR at SR*_mc)=%.4f\n",
+              fpr_floor);
   EXPECT_NEAR(fpr_mc, 0.05, 0.01);
   // E-01: the pre-W0 rule double-discounts correlation and over-rejects.
   EXPECT_GT(fpr_v1, 0.25);
   // The corrected summary rule never over-rejects (PSR around E[max]).
   EXPECT_LE(fpr_v2, 0.05);
+  // The default accounting rule is PSR-based: conservative, not calibrated to
+  // alpha (a calibrated alpha-level selection gate uses MonteCarloMaxV2).
+  EXPECT_LE(fpr_floor, 0.05);
 }
 
 // ---------------------------------------------------------------------------
@@ -547,6 +562,59 @@ TEST(EvalTrialClusters_Dsr, FloorTakesOverWhereClustersCannotExpressSelection) {
   const RegistryDsr m = deflated_sharpe(sr, *acct, t, 0.0, 0.0, AccountingDsrRule::MonteCarloMaxV2);
   EXPECT_DOUBLE_EQ(m.result.dsr, acct->mc.cdf(sr));
   EXPECT_DOUBLE_EQ(m.result.sr_star, acct->mc.mean);
+}
+
+// The ONC base stage searches k <= max_k (default min(n - 1, 64)). With more
+// genuine families (G) than the cap, the partition it returns depends on how
+// far G exceeds the cap (scaled down here to G = 8 so it runs in the debug
+// preset):
+//   * cap just below G (7): the base stage merges blocks and still passes
+//     min_silhouette, so N = cap < G — the under-count. The default depth-2
+//     refinement splits the merged cluster again (N = G).
+//   * cap far below G (4): every capped partition mixes blocks, fails
+//     min_silhouette, and ONC falls back to singletons (N = n_raw, the
+//     conservative direction).
+//   * raising onc.max_k to >= G recovers N = G without the refinement.
+// The default rule is floored by SR*_mc whatever the partition.
+TEST(EvalTrialClusters_Dsr, BaseStageCapBoundsClusterCountUntilRaised) {
+  const usize t = 252U;
+  const usize g_blocks = 8U;
+  TrialRegistry reg = must_mem(t, 256U);
+  const usize n = record_blocks(reg, g_blocks, 10U, 0.5, t, 51U);
+  const f64 sr = reg.summary().max_sr;
+  struct Run {
+    usize max_k;
+    usize max_depth;
+  };
+  const Run runs[] = {{7U, 0U}, {7U, 2U}, {4U, 0U}, {4U, 2U}, {16U, 0U}};
+  std::vector<TrialAccounting> out;
+  for (const Run &r : runs) {
+    TrialAccountingConfig cfg;
+    cfg.onc.max_k = r.max_k;
+    cfg.onc.max_depth = r.max_depth;
+    auto acct = reg.accounting(cfg);
+    ASSERT_TRUE(acct.has_value()) << acct.error().to_string();
+    const RegistryDsr c = deflated_sharpe(sr, *acct, t, 0.0, 0.0, AccountingDsrRule::ClusterV2);
+    const RegistryDsr d = deflated_sharpe(sr, *acct, t, 0.0, 0.0);
+    std::printf("[w0e0b] ONC cap: G=%zu n=%zu max_k=%zu depth=%zu -> N=%zu (shape %d) "
+                "SR*_cluster=%.5f SR*_mc=%.5f default SR*=%.5f\n",
+                g_blocks, n, r.max_k, r.max_depth, acct->clusters.n_clusters,
+                static_cast<int>(acct->clusters.shape), c.sr_star_cluster, c.sr_star_mc,
+                d.result.sr_star);
+    EXPECT_GE(d.result.sr_star, c.sr_star_mc); // the floor binds for every partition
+    EXPECT_GE(d.result.sr_star, c.sr_star_cluster);
+    out.push_back(std::move(*acct));
+  }
+  // Cap just below G: base stage under-counts; the default refinement recovers.
+  EXPECT_EQ(out[0].clusters.shape, ClusterShape::Blocks);
+  EXPECT_LE(out[0].clusters.n_clusters, 7U);
+  EXPECT_EQ(out[1].clusters.n_clusters, g_blocks);
+  // Cap far below G: no capped partition passes min_silhouette -> singletons.
+  EXPECT_EQ(out[2].clusters.shape, ClusterShape::Singletons);
+  EXPECT_EQ(out[2].clusters.n_clusters, n);
+  EXPECT_EQ(out[3].clusters.n_clusters, n);
+  // Raised cap: N = G from the base stage alone.
+  EXPECT_EQ(out[4].clusters.n_clusters, g_blocks);
 }
 
 } // namespace atx_test_w0_e0b_trial_clusters
