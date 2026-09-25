@@ -215,3 +215,73 @@ def test_final_close_with_no_successor_is_still_open_ended():
     # extended = 4 + 5 - 1 = rank 8, within the 12-session grid -> a concrete close date,
     # not open (archive end is rank 12).
     assert second["valid_to"] == _rank_date(8)
+
+
+# --- A2: intervals split on every identity/listing change, and on availability regime. ---
+
+
+def test_cik_change_with_has_cik_unchanged_opens_a_new_interval_with_its_own_cik():
+    """L2 #4: a CIK A->B change with has_cik=true must not stay one interval that keeps
+    the opening CIK."""
+
+    decisions = pd.DataFrame(
+        [
+            _decision("SEC-1", 1, cik="0000000011"),
+            _decision("SEC-1", 2, cik="0000000011"),
+            _decision("SEC-1", 3, cik="0000000022"),
+            _decision("SEC-1", 4, cik="0000000022"),
+        ]
+    )
+    out = compute_universe_us_listed_intervals(decisions, _sessions(), _options(lookback_days=5))
+    assert list(out["cik"]) == ["0000000011", "0000000022"]
+    assert list(out["has_cik"]) == [True, True]
+    assert out.iloc[0]["valid_to"] == _rank_date(2)
+    assert out.iloc[1]["valid_from"] == _rank_date(3)
+    assert list(out["decision_count"]) == [2, 2]
+
+
+def test_symbol_change_opens_a_new_interval():
+    decisions = pd.DataFrame(
+        [
+            _decision("SEC-1", 1, symbol="OLD"),
+            _decision("SEC-1", 2, symbol="OLD"),
+            _decision("SEC-1", 3, symbol="NEW"),
+        ]
+    )
+    out = compute_universe_us_listed_intervals(decisions, _sessions(), _options(lookback_days=5))
+    assert list(out["symbol"]) == ["OLD", "NEW"]
+    assert out.iloc[0]["valid_to"] == _rank_date(2)
+
+
+def test_late_known_decisions_never_share_an_interval_clock_with_on_time_ones():
+    """Rank 1-2 decisions became known only on rank 3's session (late); rank 3-4 are on
+    time. Merging them would publish rank 1's membership at rank 3's clock but rank 3-4's
+    at rank 1's late clock (or vice versa) -- they must be separate intervals, each with
+    its own first-decision clock."""
+
+    late_clock = pd.Timestamp("2024-02-03 09:00:00")
+    decisions = pd.DataFrame(
+        [
+            _decision("SEC-1", 1, available_at=late_clock),
+            _decision("SEC-1", 2, available_at=late_clock),
+            _decision("SEC-1", 3),
+            _decision("SEC-1", 4),
+        ]
+    )
+    out = compute_universe_us_listed_intervals(decisions, _sessions(), _options(lookback_days=5))
+    assert len(out) == 2
+    assert pd.Timestamp(out.iloc[0]["available_at"]) == late_clock
+    assert pd.Timestamp(out.iloc[1]["available_at"]) == pd.Timestamp("2024-02-03 22:00:00")
+    assert out.iloc[0]["valid_to"] == _rank_date(2)
+    assert out.iloc[1]["valid_from"] == _rank_date(3)
+
+
+def test_reason_change_alone_opens_a_new_interval():
+    decisions = pd.DataFrame(
+        [
+            _decision("SEC-1", 1, has_cik=False, cik=None, reason="member_no_cik"),
+            _decision("SEC-1", 2, has_cik=False, cik=None, reason="member_conflicting_cik"),
+        ]
+    )
+    out = compute_universe_us_listed_intervals(decisions, _sessions(), _options(lookback_days=5))
+    assert list(out["reason"]) == ["member_no_cik", "member_conflicting_cik"]
