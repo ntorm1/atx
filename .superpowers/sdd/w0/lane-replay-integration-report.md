@@ -2,13 +2,17 @@
 
 ## Outcome
 
-IN PROGRESS: implementation complete, compiled verification pending.
+DONE for this scoped correction: 128/128 book tests, 32/32 focused impl tests, and
+all six changed production translation units compiled with PCH disabled. The whole
+impl qualification remains the root's integrated gate, not a pass claimed by this lane.
 
 - Branch: `feat/w0-replay-integration-codex-20260925`.
 - Frozen base: `bc5cc646b46f6a7c23a60e87d28dfa9b972671ec`.
 - Pool: `C:\atx-wt\pool-4`.
 - Lease run: `aes-w0-replay-codex-20260925`, independent heartbeat keeper.
-- Final SHA: see the commit adding this report.
+- Production SHA: `8ba15b0efeaff53587cc0ac36493cd159247b126`.
+- Fixture-only correction SHA: `4f257729d2949f082c818f53b42c2c7aca3b9cf9`.
+- Final report SHA: see the commit updating this report.
 
 ## Causal finding and implementation
 
@@ -66,13 +70,13 @@ its assumed stress PnL in portfolio-weight units and marks alpha evidence unusab
 
 | Acceptance | Verification | Result |
 |---|---|---|
-| Corrected default reaches identified report, baseline and constrained book | `ReplayReport.DefaultMissingHeldCloseCompletesWithIdentifiedFlaggedTerminalReturn`, `StageEquityBaseline.CorrectedDefaultCompletesOriginalWindowAndConstrainedBook` | PENDING |
-| Abort is explicitly selectable and keeps old failure/publication contracts | `ImplReplayPolicy.*`, existing four B-04 failure fixtures with `AbortV1` | PENDING |
-| Causal prefix unchanged by future prices, future events and late publication | `BookReplayCausal.FuturePricesAndFutureEventsCannotAlterMissingClosePrefix` | PENDING |
-| Terminal table evidence only applies at/after publication | `BookReplayCausal.SuppliedReturnOnlyAppliesWhenAvailableAtTheMissingValuation` | PENDING |
-| Legacy report does not use future prints and does not undo first-missing liquidation | `BookLegacyReportCausal.*` | PENDING |
-| Unknown missing marks never manufacture short gains, even with repeated re-entry | `BookReplayCausal.UnevidencedMissingPriceStressIsAdverseForEveryVenueAndPosition`, `.RepeatedMissingPricesAndShortReentryCannotManufactureAlpha`, `ReplayReport.DefaultMissingShortCloseSeparatelyDisclosesAssumedStressLoss` | PENDING |
-| Existing B0 delay, terminal fallback, borrow, and report accounting remain green | Whole `atx-engine-book-tests`; `BookLegacyReportStage.*` | PENDING |
+| Corrected default reaches identified report, baseline and constrained book | `ReplayReport.DefaultMissingHeldCloseCompletesWithIdentifiedFlaggedTerminalReturn`, `StageEquityBaseline.CorrectedDefaultCompletesOriginalWindowAndConstrainedBook` | MET: final NAV 72.5 on the one-name fixture; original seven baseline/book intervals complete |
+| Abort is explicitly selectable and keeps old failure/publication contracts | `ImplReplayPolicy.*`, existing four B-04 failure fixtures with `AbortV1` | MET: CLI/config precedence and original rejection/publication assertions pass |
+| Causal prefix unchanged by future prices, future events and late publication | `BookReplayCausal.FuturePricesAndFutureEventsCannotAlterMissingClosePrefix` | MET: bitwise comparison of all tested economic prefix fields for long and short |
+| Terminal table evidence only applies at/after publication | `BookReplayCausal.SuppliedReturnOnlyAppliesWhenAvailableAtTheMissingValuation` | MET: available-at-2 uses -90% table; available-at-3 uses -55% assumed stress at period 2 |
+| Legacy report does not use future prints and does not undo first-missing liquidation | `BookLegacyReportCausal.*` | MET: future prints leave first-window return -0.505; a short with interior missing print receives +0.43 mark return and loses |
+| Unknown missing marks never manufacture short gains, even with repeated re-entry | `BookReplayCausal.UnevidencedMissingPriceStressIsAdverseForEveryVenueAndPosition`, `.RepeatedMissingPricesAndShortReentryCannotManufactureAlpha`, `ReplayReport.DefaultMissingShortCloseSeparatelyDisclosesAssumedStressLoss` | MET: every side/venue loses; three short re-entries reduce NAV 1000 to 681.472; report fixture records -15 assumed PnL and ineligible evidence |
+| Existing B0 delay, terminal fallback, borrow, and report accounting remain green | Whole `atx-engine-book-tests`; `BookLegacyReportStage.*` | MET: 128/128 book, 32/32 focused impl |
 
 ## Defect table
 
@@ -104,12 +108,60 @@ $env:CMAKE_BUILD_PARALLEL_LEVEL='1'
 & C:\atx-wt\pool-4\scripts\atx-build.ps1 build -Preset equity-dev -Jobs 1 atx-engine-book-tests atx-impl-tests atx-shm-worker
 ```
 
-Build and test outcome pending. Logs are under `build-equity/w0-replay-*.log`.
+The cold build exited 0. Because the audit-driven refinement landed while earlier
+objects were already compiled, the exact owning-target build was run again before any
+tests. That synchronization build exited 0 and rebuilt replay/consumer objects before
+linking both test executables. Logs: `w0-replay-build.log`, `w0-replay-sync-build.log`.
+
+The first whole-book run passed 127/128. The sole failure was the newly added fixture
+`ReappearanceInsideHoldingWindowDoesNotUndoFirstMissingFallback`: one schedule row
+meant a one-session holding window, so its period-2 missing print was outside the
+requested window. Test-only commit `4f257729` supplies `{0,4}` and asserts four holding
+sessions. The production logic and expected economic result were unchanged.
+
+```powershell
+& C:\atx-wt\pool-4\scripts\atx-build.ps1 build -Preset equity-dev -Jobs 1 atx-engine-book-tests
+# exit=0
+& C:\atx-wt\pool-4\build-equity\bin\atx-engine-book-tests.exe --gtest_brief=1
+[==========] 128 tests from 20 test suites ran. (13048 ms total)
+[  PASSED  ] 128 tests.
+# exit=0
+& C:\atx-wt\pool-4\scripts\atx-build.ps1 -Ctest -Preset equity-dev -Jobs 1 -R '^(ReplayReport|StageEquityBaseline|BookLegacyReportStage|ImplReplayPolicy)'
+100% tests passed, 0 tests failed out of 32
+Total Test time (real) =  41.93 sec
+# exit=0
+```
+
+Final logs: `build-equity/w0-replay-book-final.log` and
+`build-equity/w0-replay-impl-focused.log`. Test-only fixture rebuild log:
+`build-equity/w0-replay-fixture-build.log`.
+
+Scoped include verification, after the tests, also passed:
+
+```powershell
+& C:\atx-wt\pool-4\scripts\atx-build.ps1 configure -Preset equity-dev -Jobs 1 -Groups book -DFETCHCONTENT_BASE_DIR=C:/atx-wt/pool-4/deps/equity-dev -DATX_USE_PCH=OFF
+# exit=0
+# ATX_USE_PCH:BOOL=OFF
+# FETCHCONTENT_BASE_DIR:PATH=C:/atx-wt/pool-4/deps/equity-dev
+# Free RAM before check: 4.73868179321289 GiB.
+& C:\atx-wt\pool-4\scripts\atx-build.ps1 check -Preset equity-dev -Jobs 1 atx-engine/src/book/replay.cpp atx-impl/src/config.cpp atx-impl/src/replay_report.cpp atx-impl/src/stage_report.cpp atx-impl/src/stage_equity_baseline.cpp atx-impl/src/stage_equity_book.cpp
+[1/7] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\config.cpp.obj
+[2/7] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\replay_report.cpp.obj
+[3/7] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_equity_book.cpp.obj
+[4/7] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_equity_baseline.cpp.obj
+[5/7] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_report.cpp.obj
+[6/7] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\replay.cpp.obj
+# exit=0
+```
+
+Logs: `build-equity/w0-replay-pch-off-configure.log` and
+`build-equity/w0-replay-pch-off-check.log`. This is a scoped compile of six production
+consumers, not a full hygiene build. No new test-only production hooks were added.
 
 Qualification boundary: per the orchestrator's explicit instruction, this lane runs
 the whole book executable and focused impl suites. The whole impl executable belongs
 to the final integrated root gate with D12 and inference fixes; it is neither claimed
-passed here nor waived. A scoped PCH-off compile will check the changed production
+passed here nor waived. The scoped PCH-off compile checked the changed production
 header consumers; no full hygiene build or sanitizer claim is made.
 
 ## Golden digests and existing expectations
