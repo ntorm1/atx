@@ -10,18 +10,23 @@
 #include "atx/engine/data/history_panel.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 
+#include "atx/engine/alpha/augment.hpp"    // DollarVolumeBasis
+#include "atx/engine/alpha/datafields.hpp" // parse_adv_field
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/segment_panel.hpp"
 
@@ -61,6 +66,66 @@ adjusted_history_prices(std::span<const atx::f64> prices,
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+//  history_field_level_basis (W0-D0, D-01)
+// ---------------------------------------------------------------------------
+
+std::optional<LevelBasis> history_field_level_basis(std::string_view name) noexcept {
+  // Research prices on the snapshot-factor basis (and the typical-price vwap proxy
+  // derived from them): their LEVEL contains future corporate actions.
+  static constexpr std::array<std::string_view, 5> kAdjusted{
+      kHistFieldClose, kHistFieldHigh, kHistFieldLow, kHistFieldOpen, "vwap"};
+  // As-traded / as-published levels, counts and category codes.
+  static constexpr std::array<std::string_view, 12> kRaw{
+      kHistFieldRawClose,   kHistFieldVolume,   kHistFieldMarketCap, kHistFieldSector,
+      kHistFieldEarnFlag,   kHistFieldEarnCnt5, "cap",               "IndClass.sector",
+      "IndClass.industry",  "IndClass.subindustry", "dollar_volume", "shares"};
+  // Dimensionless quantities.
+  static constexpr std::array<std::string_view, 10> kRatio{
+      kHistFieldAtmIv21, kHistFieldAtmIv126, "returns", "iv_term", "iv_vrp",
+      "iv_lo",           "illiq",            "si_dtc",  "si_util", "si_chg"};
+  for (const std::string_view n : kAdjusted) {
+    if (n == name) {
+      return LevelBasis::AdjustedLevel;
+    }
+  }
+  for (const std::string_view n : kRaw) {
+    if (n == name) {
+      return LevelBasis::Raw;
+    }
+  }
+  for (const std::string_view n : kRatio) {
+    if (n == name) {
+      return LevelBasis::Ratio;
+    }
+  }
+  atx::u16 window = 0;
+  if (alpha::datafields::parse_adv_field(name, window)) {
+    return LevelBasis::Raw; // ts_mean of the raw dollar_volume
+  }
+  constexpr std::string_view kRegimePrefix = "regime_";
+  if (name.size() > kRegimePrefix.size() && name.substr(0, kRegimePrefix.size()) == kRegimePrefix) {
+    return LevelBasis::Raw; // macro series broadcast as published
+  }
+  return std::nullopt;
+}
+
+std::optional<LevelBasis> history_field_level_basis(std::string_view name,
+                                                    alpha::DollarVolumeBasis dv_basis) noexcept {
+  const std::optional<LevelBasis> by_name = history_field_level_basis(name);
+  if (dv_basis == alpha::DollarVolumeBasis::RawCloseV2 || !by_name.has_value()) {
+    return by_name;
+  }
+  // CloseV1 (or an unknown enum value — fail closed): liquidity is close x volume,
+  // and close on a history panel carries the snapshot factor.
+  atx::u16 window = 0;
+  if (name == alpha::datafields::kDollarVolume ||
+      alpha::datafields::parse_adv_field(name, window)) {
+    return LevelBasis::AdjustedLevel;
+  }
+  return by_name;
+}
 
 // ---------------------------------------------------------------------------
 //  orats_total_return_close (S3-3)
@@ -391,6 +456,19 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
     original_instrument_indices = std::move(keep);
   }
 
+  // Level-basis tags, parallel to the field order (D-01 metadata for the A3 lint).
+  // Every assembled name is a kHistField* constant, so an untagged name is a bug.
+  std::vector<LevelBasis> field_basis;
+  field_basis.reserve(names.size());
+  for (const std::string &name : names) {
+    const std::optional<LevelBasis> basis = history_field_level_basis(name);
+    if (!basis.has_value()) {
+      return Err(ErrorCode::Internal,
+                 "build_history_panel: field '" + name + "' has no level-basis tag");
+    }
+    field_basis.push_back(*basis);
+  }
+
   ATX_TRY(auto final_panel,
           alpha::Panel::create(D, N_out, std::move(names), std::move(data), std::move(mask_out)));
 
@@ -432,7 +510,8 @@ atx::core::Result<HistoryPanel> build_history_panel(const HistoryDataConfig &cfg
   HistoryPanel result{std::move(final_panel), digest, catalog.names(),
                       std::move(indexed.session_keys), std::move(indexed.instrument_ids),
                       std::move(original_instrument_indices),
-                      std::move(indexed.source_segment_paths), allow_list_excluded_columns};
+                      std::move(indexed.source_segment_paths), allow_list_excluded_columns,
+                      std::move(field_basis)};
   return Ok(std::move(result));
 }
 

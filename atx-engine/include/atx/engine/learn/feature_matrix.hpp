@@ -100,8 +100,23 @@ struct FeatureMatrix {
   std::vector<std::vector<atx::f64>> Y; // Y[h] = [n_rows] fwd-return at H[h]; NaN where unknowable
   std::vector<atx::u8> row_valid;       // 1 iff all features finite at the row
 
+  // Label-horizon metadata (W0-L0, L-02). label_horizons[h] is the forward horizon, in
+  // dates, of Y[h]: the label at row r depends on prices through date row_date[r] +
+  // label_horizons[h], so it is only KNOWN at a decision date t once that date has
+  // passed (label_matured below). EMPTY == unannotated: a hand-built matrix whose label
+  // convention is unknown. Maturity-aware consumers (select_interactions) refuse to
+  // guess a horizon for an unannotated matrix. build_features should copy
+  // spec.horizons here (feature_matrix.cpp is owned by W1-L1; see the W0-L0 report).
+  std::vector<atx::u16> label_horizons;
+
   // Number of emitted rows (in-universe cells).
   [[nodiscard]] atx::usize n_rows() const noexcept { return row_date.size(); }
+
+  // True iff every label channel Y[h] carries its horizon (label_horizons is the same
+  // length as Y and Y is non-empty).
+  [[nodiscard]] bool has_label_horizons() const noexcept {
+    return !Y.empty() && label_horizons.size() == Y.size();
+  }
 
   // True iff (date, inst) was emitted as a row (i.e. was in-universe).
   [[nodiscard]] bool has_row(atx::usize date, atx::usize inst) const {
@@ -141,6 +156,30 @@ private:
 
   std::unordered_map<atx::u64, atx::usize> row_lookup_; // (date,inst)->row; built off the emit loop
 };
+
+// ===========================================================================
+//  label_matured — the label-maturity filter (W0-L0, L-02).
+//
+//  A horizon-H forward label anchored at date r is realized at the close of r + H.
+//  At a decision date t with an embargo e it may be used iff
+//      r + H <= t - e
+//  (a label ending exactly at t - e is admissible under the same-close convention).
+//  Overflow-safe: evaluated as r <= (t - e) - H with every subtraction bounds-checked,
+//  so no usize wrap is possible for any input. t < e or t - e < H -> false.
+// ===========================================================================
+[[nodiscard]] inline bool label_matured(atx::usize row_date, atx::u16 horizon, atx::usize t,
+                                        atx::u16 embargo) noexcept {
+  const atx::usize e = static_cast<atx::usize>(embargo);
+  const atx::usize h = static_cast<atx::usize>(horizon);
+  if (t < e) {
+    return false;
+  }
+  const atx::usize cutoff = t - e;
+  if (cutoff < h) {
+    return false;
+  }
+  return row_date <= cutoff - h;
+}
 
 namespace detail {
 

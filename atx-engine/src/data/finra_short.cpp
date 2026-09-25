@@ -4,8 +4,9 @@
 // projects three derived, CAUSALLY placed feature columns onto an externally
 // supplied research-panel axis. See finra_short.hpp for the contract; the
 // causality model is: a (symbol, settlement_day) observation becomes visible on
-// panel dates >= settlement_day + publication_lag_days (calendar days) and is
-// forward-filled until the next observation for that symbol becomes visible.
+// panel dates >= finra_first_usable_day(settlement_day, lag) (default: the 8th NYSE
+// session after settlement = 7th-business-day release + 1 for the after-close
+// publication) and is forward-filled until the next observation becomes visible.
 //
 // Parquet is read only through atx::core::io::read_parquet (PIMPL; no Arrow
 // headers here), mirroring atx-tsdb/src/load_parquet.cpp.
@@ -13,6 +14,7 @@
 #include "atx/engine/data/finra_short.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -23,6 +25,7 @@
 
 #include <filesystem>
 
+#include "atx/core/datetime.hpp" // Date, Calendar (NYSE rule holidays)
 #include "atx/core/error.hpp"
 #include "atx/core/io/parquet.hpp"
 #include "atx/core/types.hpp"
@@ -133,6 +136,51 @@ read_settlement_epoch_days(const atx::core::io::ParquetTable& table) {
              "finra: 'settlement_date' must be DATE32 or TIMESTAMP");
 }
 
+// Unscheduled full-day NYSE closures inside the supported calendar range. The rule
+// calendar in atx-core does not model these (datetime.hpp "NOT modelled").
+constexpr std::array<std::array<unsigned, 3>, 11> kNyseUnscheduledClosures{{
+    {1994U, 4U, 27U},  // President Nixon's funeral
+    {2001U, 9U, 11U},  // September 11 attacks
+    {2001U, 9U, 12U},
+    {2001U, 9U, 13U},
+    {2001U, 9U, 14U},
+    {2004U, 6U, 11U},  // President Reagan's funeral
+    {2007U, 1U, 2U},   // President Ford's day of mourning
+    {2012U, 10U, 29U}, // Hurricane Sandy
+    {2012U, 10U, 30U},
+    {2018U, 12U, 5U},  // President G.H.W. Bush's day of mourning
+    {2025U, 1U, 9U},   // President Carter's day of mourning
+}};
+
+[[nodiscard]] bool is_unscheduled_closure(const atx::core::time::Date& d) noexcept {
+  for (const auto& c : kNyseUnscheduledClosures) {
+    if (d.year == static_cast<atx::i32>(c[0]) && d.month == c[1] && d.day == c[2]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Session test without the range check (callers validate the range first).
+[[nodiscard]] bool nyse_session_unchecked(atx::i64 day) noexcept {
+  const atx::core::time::Date d = atx::core::time::Date::from_days(day);
+  if (atx::core::time::is_weekend(d) || is_unscheduled_closure(d)) {
+    return false;
+  }
+  // The NYSE first observed Martin Luther King Jr. Day in 1998; the atx-core rule
+  // calendar applies it to every year, so re-open that Monday before 1998.
+  if (d.year < 1998 &&
+      d == atx::core::time::nth_weekday_of_month(d.year, 1, atx::core::time::Weekday::Monday, 3)) {
+    return true;
+  }
+  const atx::core::time::Calendar nyse{};
+  return !nyse.is_holiday(d);
+}
+
+[[nodiscard]] bool in_nyse_range(atx::i64 day) noexcept {
+  return day >= kNyseCalendarFirstDay && day <= kNyseCalendarLastDay;
+}
+
 // One causal observation for an instrument column: visible from publish_day on.
 struct Obs {
   atx::i64 publish_day{};
@@ -144,12 +192,75 @@ struct Obs {
 
 } // namespace
 
+atx::core::Result<bool> nyse_is_session(atx::i64 day) {
+  if (!in_nyse_range(day)) {
+    return Err(ErrorCode::OutOfRange, "nyse_is_session: day outside the 1990-2040 calendar");
+  }
+  return Ok(nyse_session_unchecked(day));
+}
+
+atx::core::Result<atx::i64> nyse_add_sessions(atx::i64 day, int n) {
+  if (n < 0) {
+    return Err(ErrorCode::InvalidArgument, "nyse_add_sessions: n must be >= 0");
+  }
+  if (!in_nyse_range(day)) {
+    return Err(ErrorCode::OutOfRange, "nyse_add_sessions: day outside the 1990-2040 calendar");
+  }
+  atx::i64 cur = day;
+  int found = 0;
+  // Bounded: every step advances `cur` by one day and the range check stops the
+  // walk at the calendar's last day (at most ~19k iterations).
+  while (found < n) {
+    ++cur;
+    if (!in_nyse_range(cur)) {
+      return Err(ErrorCode::OutOfRange,
+                 "nyse_add_sessions: result falls after the 1990-2040 calendar");
+    }
+    if (nyse_session_unchecked(cur)) {
+      ++found;
+    }
+  }
+  return Ok(cur);
+}
+
+atx::core::Result<atx::i64> finra_first_usable_day(atx::i64 settlement_day,
+                                                   const FinraPublicationLag& lag) {
+  if (lag.lag < 0) {
+    return Err(ErrorCode::InvalidArgument, "finra_first_usable_day: lag must be >= 0");
+  }
+  switch (lag.rule) {
+  case FinraLagRule::CalendarDaysV1:
+    return Ok(settlement_day + static_cast<atx::i64>(lag.lag));
+  case FinraLagRule::NyseSessionsV2: {
+    // lag <= INT_MAX - 1 cannot overflow here: an int lag this large already fails
+    // the calendar range inside nyse_add_sessions long before the addition matters.
+    const int sessions = (lag.after_close && lag.lag < std::numeric_limits<int>::max())
+                             ? lag.lag + 1
+                             : lag.lag;
+    return nyse_add_sessions(settlement_day, sessions);
+  }
+  }
+  return Err(ErrorCode::InvalidArgument, "finra_first_usable_day: unknown FinraLagRule");
+}
+
 atx::core::Result<FinraFeatures> load_finra_features(
     const std::string& short_interest_root, std::span<const DateKey> panel_dates,
     const std::unordered_map<std::string, InstKey>& sym_to_inst, atx::usize instruments,
     std::span<const atx::f64> shares, int publication_lag_days) {
+  return load_finra_features(short_interest_root, panel_dates, sym_to_inst, instruments, shares,
+                             FinraPublicationLag{FinraLagRule::CalendarDaysV1,
+                                                 publication_lag_days, /*after_close=*/false});
+}
+
+atx::core::Result<FinraFeatures> load_finra_features(
+    const std::string& short_interest_root, std::span<const DateKey> panel_dates,
+    const std::unordered_map<std::string, InstKey>& sym_to_inst, atx::usize instruments,
+    std::span<const atx::f64> shares, const FinraPublicationLag& lag) {
   const atx::usize D = panel_dates.size();
   const atx::usize N = instruments;
+  if (lag.lag < 0) {
+    return Err(ErrorCode::InvalidArgument, "load_finra_features: publication lag must be >= 0");
+  }
 
   // ---- Validate the axis ------------------------------------------------
   for (atx::usize d = 1; d < D; ++d) {
@@ -210,7 +321,9 @@ atx::core::Result<FinraFeatures> load_finra_features(
   atx::usize rows_read = 0;
   atx::usize rows_placed = 0;
 
-  const atx::i64 lag = static_cast<atx::i64>(publication_lag_days);
+  // settlement_day -> first usable day, memoized (a partition shares one or two
+  // settlement dates across thousands of rows; the session walk runs once each).
+  std::unordered_map<atx::i64, atx::i64> usable_day_of;
 
   for (const std::string& path : parquet_paths) {
     ATX_TRY(auto table, atx::core::io::read_parquet(path));
@@ -239,7 +352,13 @@ atx::core::Result<FinraFeatures> load_finra_features(
       const atx::usize inst = static_cast<atx::usize>(it->second);
 
       Obs o;
-      o.publish_day = settle_days[r] + lag;
+      const atx::i64 settle = settle_days[r];
+      auto usable = usable_day_of.find(settle);
+      if (usable == usable_day_of.end()) {
+        ATX_TRY(const atx::i64 first_usable, finra_first_usable_day(settle, lag));
+        usable = usable_day_of.emplace(settle, first_usable).first;
+      }
+      o.publish_day = usable->second;
       o.dtc = dtc_col.present ? dtc_col.v[r] : kNaN;
       o.short_qty = short_col.present ? short_col.v[r] : kNaN;
       o.adv = adv_col.present ? adv_col.v[r] : kNaN;
