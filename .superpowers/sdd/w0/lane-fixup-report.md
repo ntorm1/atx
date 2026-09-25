@@ -46,6 +46,26 @@ correct (see below).
 | 3 | `EquityMineCli.SmoothWindowsAddDecayedVariantsAsTrials` | Yes (`n_raw` 9, expected 12, `stage_equity_mine_cli_test.cpp:221`) | A-01 average rank ties (A0). In the fixture, volume is constant, so `rank(volume)` is an all-tie cross-section. It becomes a constant 0.5, and it and its two decayed forms are degenerate, so 9 of 12 candidates register as trials. | **I0b** | Not touched. I0b already carries the re-pin commit `a28a6c1e` ("re-pin mine smooth-window trial count after A0 average rank ties (A-01)"). |
 | 4 | `FundamentalZoo.FixtureParsesTypechecksAndEvaluates` ("acc_ts produced no finite cell") | Yes | Degenerate fixture data. The A0 guard is not over-broad. `acc_ts: rank(-1 * ts_zscore(accruals, 252))`. `accruals = (NI - CFO) / mean(assets, assets_lag1y)` is scale-free, and the synthetic filings scale every raw field by one factor `s` (NI = 10·s·sign, CFO = 12·s, assets 100·s / 90·s). Accruals is therefore the constant (10·sign − 12)/95 per instrument every quarter, to within 1–2 ulp (measured relative spread ≤ 3.3e-15). Every 252-session window is flat. The A-09 guard (`tsv_is_flat`, relative tolerance 1e-10) makes `ts_zscore` NaN (0/0), and `rank` of an all-NaN row is NaN. | fixup (test data) | **FIXED in the fixture (option b):** CFO = `(12 + q)·s`, so accruals genuinely changes each quarter. The expectation is unchanged, and so is the pre-registered expression. |
 
+## Acceptance table (RULES §4; added in fix pass 1)
+
+Measured figures are from the fix-pass-1 runs on the merged tree (`dc821303` = this branch +
+`feat/w0-integration` @ `2170a259`); see "Fix pass 1" for commands and output.
+
+| # | Brief acceptance item | Test(s) | Measured result | Status |
+|---|---|---|---|---|
+| 1 | Ledger test passes from repo root with `core.autocrlf=true`; `*.jsonl` LF; no blob changes; `CMakePresets.json` keeps CRLF | `TrialLedgerRepository.ExistingCp14Ledger_StillVerifies` (exe from repo root); `git ls-files --eol` | `[ OK ]` (26 ms). `trial-ledger.jsonl` `i/lf w/lf attr/text eol=lf`; `CMakePresets.json` `i/lf w/crlf`; `git diff feat/w0-integration HEAD --stat` lists no `*.jsonl` | MET |
+| 2 | `FundamentalZoo.FixtureParsesTypechecksAndEvaluates` passes, root cause proven, fixture (not expectation) fixed with justification | `FundamentalZoo.FixtureParsesTypechecksAndEvaluates`; `FundamentalZoo.FixtureAccrualsVaryOverTime` (new, fix pass 1) | both `[ OK ]`; ctest `^FundamentalZoo` 4/4 (1 opt-in skip). Mutation check: with CFO = 12·s restored, both fail (`acc_ts produced no finite cell`; `positive_sd` 0, `max_rel` 0 vs 1e-3) | MET |
+| 3 | `StageEquityIc.*` / `EquityMineCli.*` failures confirmed and attributed to I0b, not touched | whole `atx-impl-tests` | both still fail with the root causes in the per-failure table (rows 2, 3); files untouched | MET |
+| 4 | Every other touched executable green, or each failure attributed with root cause | 8 engine exes + `atx-impl-tests`, whole | 8 engine exes exit 0 (alpha 704, factory 299, learn 193, data 238+14 skip, eval 251, combine 183, risk 470+1 skip, book 122). `atx-impl-tests` 536 ran: 517 passed, 5 skipped, 14 failed = 2 I0b (rows 2, 3) + 12 arriving with the B0 merge (B-02 ×8, B-04 ×4; I0b-owned call sites, attributed in "Fix pass 1") | MET (all failures attributed) |
+| 5 | No test weakened; report at `.superpowers/sdd/w0/lane-fixup-report.md` | diff review | No assertion, tolerance or skip changed; one assertion-only test added | MET |
+
+## Defect table (RULES §4; added in fix pass 1)
+
+| ID | Disposition |
+|---|---|
+| A-09 | NOT REOPENED: the guard is correct. The `acc_ts` NaN is the true 0/0 on a degenerate fixture (item 4 below). The fixture now varies, and `FundamentalZoo.FixtureAccrualsVaryOverTime` pins that. The ResearchFast Welford path, which has no guard, is DEFERRED to W1-A1 (integration notes). |
+| (none cited) | The CRLF ledger failure is an environment defect with no register ID. CLOSED by `.gitattributes` (`9f1d2003`). |
+
 ## Item 4: A-09 decision, based on the evidence
 
 The question was whether the A0 guard is over-broad, returning NaN for operators that are
@@ -255,3 +275,104 @@ weakening).
   up to 1.289; the guard gives NaN (0/0). With varying CFO, default and NoneV1 agree bit-exactly.
 - `TrialLedgerRepository.ExistingCp14Ledger_StillVerifies` self-skips under ctest (cwd
   `build-equity\`). Only the exe run from the repo root exercises it.
+
+## Fix pass 1
+
+This pass answers the three minor findings in `lane-fixup-review.md` (0 blocker, 0 major). All
+commands were run from `C:\atx-wt\pool-2` with `$env:CMAKE_BUILD_PARALLEL_LEVEL='2'`. Free RAM
+before each build was 2.55, 3.26 and 2.36 GB. `ATX_TEST_GROUPS` already listed the eight groups,
+so no reconfigure was needed.
+
+### Finding 1 (minor): no acceptance or defect table
+
+**Changed.** Added the "Acceptance table" (items 1 to 5, each with test, measured result and
+MET/UNMET) and the "Defect table" (A-09 not reopened because the guard is correct; the ResearchFast
+path is deferred to W1-A1; the CRLF defect is closed) above the "Item 4" section. All five items
+are MET.
+
+### Finding 2 (minor): no pre-merge of the current `feat/w0-integration`
+
+**Changed.** `git -C C:\atx-wt\pool-2 merge --no-ff feat/w0-integration` merged `2170a259` (B0)
+as `dc821303`. There were no conflicts, and 20 B0 files came in, none of them owned by this lane.
+Rebuilt all ten targets on the merged tree:
+
+```
+atx-build.ps1 build -Preset equity-dev atx-impl-tests atx-shm-worker atx-engine-{alpha,factory,learn,data,eval,combine,risk,book}-tests
+[17/83] Linking CXX static library lib\atx-engine.lib ... [79/83] ...book-tests.exe  [80/83] ...atx-impl-tests.exe
+exit=0
+```
+
+Then every executable was run whole with `build-equity\bin\<exe>.exe --gtest_brief=1` (cwd = repo
+root), after the final rebuild with the new test:
+
+| Executable | Exit | Result |
+|---|---|---|
+| atx-engine-alpha-tests | 0 | `704 tests from 273 test suites ran. [  PASSED  ] 704 tests.` |
+| atx-engine-factory-tests | 0 | `299 tests from 57 test suites ran. [  PASSED  ] 299 tests.` |
+| atx-engine-learn-tests | 0 | `193 tests from 31 test suites ran. [  PASSED  ] 193 tests.` |
+| atx-engine-data-tests | 0 | `252 tests from 38 test suites ran. [  PASSED  ] 238 tests. [  SKIPPED ] 14 tests.` |
+| atx-engine-eval-tests | 0 | `251 tests from 43 test suites ran. [  PASSED  ] 251 tests.` |
+| atx-engine-combine-tests | 0 | `183 tests from 34 test suites ran. [  PASSED  ] 183 tests.` |
+| atx-engine-risk-tests | 0 | `471 tests from 62 test suites ran. [  PASSED  ] 470 tests. [  SKIPPED ] 1 test.` |
+| atx-engine-book-tests | 0 | `122 tests from 18 test suites ran. [  PASSED  ] 122 tests.` (B0 added 32) |
+| atx-impl-tests | 1 | `536 tests from 102 test suites ran. [  PASSED  ] 517 tests. [  SKIPPED ] 5 tests.` 14 FAILED (below) |
+
+**The merge brings in 12 `atx-impl-tests` failures that are new to this branch.** B0's own report
+(`lane-b0-report.md` lines 6-10, 75, 171-183 and 227ff) already records them, and the
+orchestrator merged B0 knowing about them. Their root cause is B0's plan-required engine defaults
+reaching atx-impl call sites that I0b owns:
+
+| Failing tests | Count | Root cause (verbatim evidence) | Owner |
+|---|---|---|---|
+| `ReplayPolicyStage.BoundedIdentifiedWrapperRetainsScheduleAndExplicitFeeValidation`, `.CoherentReplacementGraphMustMatchEveryAdmittedArtifactIdentity`; `ReplayReport.WeeklyCoverageDriftExactAxesAndDeterministicManifest`, `.DollarTradeFeesAndActualCalendarBorrowReconcileCashAndAssets`, `.PolicyAllocationsBindActualDollarRowsAndModelProvenance`, `.ExplicitIntentReportBindsHoldCloseAndActualCashFlows`, `.LaterPolicyFailurePublishesNoAcceptedAllocationOrCompleteManifest`; `StageEquityBaseline.ExplicitZeroCostsDelayAndGlobalDefaultAumArePreserved` | 8 | B-02. `replay.cpp` `validate_inputs` now refuses delay 0 without the opt-in: `"replay: execution_delay_periods=0 fills at the decision close; set allow_same_close to opt in"` (`replay_report_test.cpp:559`). The other tests fail at `accepted/result.has_value()` → false. `replay_report.cpp:394` has no way to pass `allow_same_close`, and `config.hpp` has no `--allow-same-close` flag yet. | I0b (`config.{hpp,cpp}`, `replay_report.cpp` I-11 site, `stage_equity_baseline.cpp`) |
+| `ReplayReport.MissingHeldPriceMapsExactSecurityAndDateWithoutCompletePublication`; `StageEquityBaseline.MissingHeldMarkPreservesBoundFailureAndNoCompleteManifest`, `.ConstrainedBookPreservesMissingHeldMarkFailureOnOriginalWindow`, `.ObservedCloseEntryConstraintBindsAvailabilityWithoutShrinkingUnion` | 4 | B-04. By default a missing held close is now liquidated (`DelistingPolicy::TerminalReturn`) instead of aborting, so these tests get `has_value()` true where they expect false. | I0b |
+| `StageEquityIc.TwoRunsProduceByteIdenticalStatisticsAndPublishEveryOutput`, `EquityMineCli.SmoothWindowsAddDecayedVariantsAsTrials` | 2 | Rows 2 and 3 of the per-failure table (unchanged) | I0b |
+
+This lane does not touch them. The fix sites are I0b-owned files, and I0b is in flight, so this
+lane may not edit them. The fix is B0's integration note 1 for I0b: add `allow_same_close` to
+`RunConfig`, add the CLI flag, and set the delisting policy at the I0b call sites. Nothing else
+regressed on the merged tree. The fixture and ledger fixes still hold.
+
+### Finding 3 (minor, optional): nothing pinned the fixture's non-degeneracy
+
+**Changed.** Added the test `FundamentalZoo.FixtureAccrualsVaryOverTime`
+(`atx-impl/tests/fundamental_zoo_test.cpp`). It is assertion-only and uses the same synthetic
+panel and records as the zoo test. It requires:
+
+- `ts_std(accruals, 252)` has at least one finite cell and at least one cell greater than 0;
+- the maximum `ts_std / |ts_mean|` is above 1e-3. That is about 11 orders of magnitude above the
+  degenerate fixture's ulp noise (≤ 3.3e-15), 7 above the guard tolerance (1e-10), and well below
+  the corrected fixture's 0.322;
+- `ts_zscore(accruals, 252)` has a finite cell.
+
+No existing assertion changed.
+
+Evidence:
+
+```
+atx-build.ps1 -Ctest -Preset equity-dev -R '^FundamentalZoo'
+2/4 Test #2684: FundamentalZoo.FixtureAccrualsVaryOverTime ...........   Passed    0.14 sec
+100% tests passed, 0 tests failed out of 4        (RealDataIcReport: opt-in skip)   exit=0
+
+atx-impl-tests.exe --gtest_filter=FundamentalZoo.*:TrialLedgerRepository.*   (repo root)
+[       OK ] FundamentalZoo.FixtureParsesTypechecksAndEvaluates (269 ms)
+[       OK ] FundamentalZoo.FixtureAccrualsVaryOverTime (23 ms)
+[       OK ] TrialLedgerRepository.ExistingCp14Ledger_StillVerifies (26 ms)
+[  PASSED  ] 4 tests.  [  SKIPPED ] 1 test (RealDataIcReport)   exit=0
+```
+
+Mutation check. The degenerate fixture was temporarily restored (CFO = `(12 + 0·q)·s`), rebuilt
+and run, then reverted before any commit (`git diff --stat` afterwards showed only the new test):
+
+```
+fundamental_zoo_test.cpp(383): error: ... acc_ts produced no finite cell
+[  FAILED  ] FundamentalZoo.FixtureParsesTypechecksAndEvaluates
+fundamental_zoo_test.cpp(417): error: Expected: (positive_sd) > (0U), actual: 0 vs 0
+  every accruals window is flat (fixture degenerate)
+fundamental_zoo_test.cpp(418): error: Expected: (max_rel) > (1.0e-3), actual: 0 vs 0.001
+fundamental_zoo_test.cpp(422): error: ... ts_zscore(accruals, 252) produced no finite cell
+[  FAILED  ] FundamentalZoo.FixtureAccrualsVaryOverTime        exit=1
+```
+
+The new test therefore fails exactly when the fixture turns degenerate. It gets there on its own
+path, not through the zoo expression.
