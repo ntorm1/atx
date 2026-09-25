@@ -107,6 +107,9 @@ CROSS_SECTION_SHARES_FROM = 5_000_000
 # unit that puts that median outside any real line's share count; the format then decides.
 PLAUSIBLE_SHARES_MIN = 10_000  # new ETFs launch at 25K-50K shares
 PLAUSIBLE_SHARES_MAX = 100_000_000_000  # ~4x NVDA's 24.6B, the largest US share count
+# Per-row check of a run decided thousands: a stored value above this would exceed
+# PLAUSIBLE_SHARES_MAX after x1000, so the row is already in shares (mixed-unit run) => abort.
+THOUSANDS_ROW_CEILING = PLAUSIBLE_SHARES_MAX // 1000
 # Without format evidence the median alone decides only a full-universe run
 # (>= this many rows AND >= CROSS_SECTION_MIN_SECURITIES securities).
 NO_EVIDENCE_MIN_ROWS = 1_000_000
@@ -794,6 +797,11 @@ def ticker_history_unit_inventory(conn: duckdb.DuckDBPyConnection) -> list[dict[
     loader's recorded ``shares_unit`` or the old loader's input path and format, the
     median verdict, the decided stored unit and ``action``: ``scale_x1000``, ``none``,
     ``abort`` (0327 would raise; ``reason`` says why) or ``already_ledgered``.
+
+    A run decided thousands is also checked row by row: rows already above
+    ``THOUSANDS_ROW_CEILING`` (in shares, so x1000 would exceed ``PLAUSIBLE_SHARES_MAX``)
+    make it a mixed-unit run => ``abort``, with up to five of the largest such rows in
+    ``mixed_unit_examples``.
     """
     ledger = conn.execute(
         """
@@ -813,12 +821,13 @@ def ticker_history_unit_inventory(conn: duckdb.DuckDBPyConnection) -> list[dict[
         WITH runs AS (
             SELECT run_id, count(*) AS rows_in_run,
                    count(DISTINCT security_id) AS distinct_securities,
-                   approx_quantile(shares_outstanding, 0.5) FILTER (WHERE shares_outstanding > 0) AS median_shares
+                   approx_quantile(shares_outstanding, 0.5) FILTER (WHERE shares_outstanding > 0) AS median_shares,
+                   count(*) FILTER (WHERE shares_outstanding > {int(THOUSANDS_ROW_CEILING)}) AS rows_above_ceiling
             FROM equity_daily_bars
             WHERE "source" = ? AND shares_outstanding IS NOT NULL
             GROUP BY run_id
         ), ledger AS ({ledger_sql})
-        SELECT r.run_id, r.rows_in_run, r.distinct_securities, r.median_shares,
+        SELECT r.run_id, r.rows_in_run, r.distinct_securities, r.median_shares, r.rows_above_ceiling,
                d.params_json, d.run_id IS NOT NULL AS has_dataset_run, l.decision
         FROM runs r
         LEFT JOIN dataset_runs d ON d.run_id = r.run_id
@@ -828,13 +837,35 @@ def ticker_history_unit_inventory(conn: duckdb.DuckDBPyConnection) -> list[dict[
         [TICKER_HISTORY_SOURCE, *([TICKER_HISTORY_SOURCE] if "?" in ledger_sql else [])],
     ).fetchall()
     inventory = []
-    for run_id, rows_in_run, securities, median, params_json, has_dataset_run, ledgered in rows:
+    for run_id, rows_in_run, securities, median, above, params_json, has_dataset_run, ledgered in rows:
         median = None if median is None else float(median)
         decision = _share_unit_decision(int(rows_in_run), int(securities), median, params_json, bool(has_dataset_run))
+        examples: list[dict[str, object]] = []
         if ledgered is not None:
             decision = {**decision, "action": "already_ledgered", "reason": f"0327 ledger decision: {ledgered}"}
+        elif decision["action"] == "scale_x1000" and above:
+            examples = [
+                {"security_id": security_id, "trade_date": str(trade_date), "shares_outstanding": int(shares)}
+                for security_id, trade_date, shares in conn.execute(
+                    f"""
+                    SELECT security_id, trade_date, shares_outstanding FROM equity_daily_bars
+                    WHERE "source" = ? AND run_id IS NOT DISTINCT FROM ?
+                      AND shares_outstanding > {int(THOUSANDS_ROW_CEILING)}
+                    ORDER BY shares_outstanding DESC, security_id, trade_date
+                    LIMIT 5
+                    """,
+                    [TICKER_HISTORY_SOURCE, run_id],
+                ).fetchall()
+            ]
+            decision = {
+                **decision, "decision_basis": None, "stored_unit": None, "decision": None, "action": "abort",
+                "reason": f"mixed units: {int(above):,} rows of this run decided thousands ({decision['reason']}) "
+                          f"already exceed {THOUSANDS_ROW_CEILING:,} stored, so x1000 would put them above "
+                          f"{PLAUSIBLE_SHARES_MAX:,} shares",
+            }
         inventory.append({"run_id": run_id, "rows_in_run": int(rows_in_run), "distinct_securities": int(securities),
-                          "median_positive_shares": median, "has_dataset_run": bool(has_dataset_run), **decision})
+                          "median_positive_shares": median, "rows_above_thousands_ceiling": int(above),
+                          "has_dataset_run": bool(has_dataset_run), **decision, "mixed_unit_examples": examples})
     return inventory
 
 
@@ -856,8 +887,9 @@ def _ticker_history_share_units(conn: duckdb.DuckDBPyConnection) -> None:
     * Without format evidence only a full-universe run is decided, by its median alone
       (basis ``median_full_universe``).
 
-    Disagreement, conflicting paths, an ambiguous or implausible median, or a small run
-    without format evidence raise before anything is written: the governed migrate rolls
+    Disagreement, conflicting paths, an ambiguous or implausible median, a small run
+    without format evidence, or a thousands run holding rows already in shares (above
+    ``THOUSANDS_ROW_CEILING``) raise before anything is written: the governed migrate rolls
     back and restores, and B0 stops for a manual unit ruling (read the same decisions
     beforehand with :func:`ticker_history_unit_inventory`). Thousands runs get
     ``shares_outstanding * 1000`` and ``market_cap_usd = scaled shares * close`` (the
@@ -912,6 +944,7 @@ def _ticker_history_share_units(conn: duckdb.DuckDBPyConnection) -> None:
             + "; ".join(
                 f"run_id={run['run_id']!r} ({run['rows_in_run']:,} rows, {run['distinct_securities']:,} "
                 f"securities, median {run['median_positive_shares']}): {run['reason']}"
+                + (f" e.g. {run['mixed_unit_examples']}" if run["mixed_unit_examples"] else "")
                 for run in refused
             )
         )
@@ -923,7 +956,8 @@ def _ticker_history_share_units(conn: duckdb.DuckDBPyConnection) -> None:
         f"{CROSS_SECTION_SHARES_FROM} shares, between ambiguous; fewer securities: median x unit within "
         f"[{PLAUSIBLE_SHARES_MIN}, {PLAUSIBLE_SHARES_MAX}] shares); without a known path only a run of >= "
         f"{NO_EVIDENCE_MIN_ROWS} rows and >= {CROSS_SECTION_MIN_SECURITIES} securities is decided by its "
-        "median; anything else aborts 0327. thousands => shares_outstanding *= 1000; "
+        f"median; anything else, or a thousands run with any row above {THOUSANDS_ROW_CEILING} stored "
+        "(mixed units), aborts 0327. thousands => shares_outstanding *= 1000; "
         "market_cap_usd = shares_outstanding * close"
     )
     for run in inventory:

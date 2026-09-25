@@ -1014,6 +1014,9 @@ def test_ticker_history_thousands_runs_are_scaled_once_and_nothing_else_moves(tm
         pytest.param("{not json", [15_204_137, 17_644, 29_464], ("abort", "no format evidence"),
                      id="small-run-without-format-evidence-raises"),
         pytest.param(_PARQUET, 1_000_000, ("abort", "ambiguous band"), id="ambiguous-median-band-raises"),
+        # rv-a9 N1: a thousands run holding a row already in shares (5e9) would become 5e12 shares.
+        pytest.param(_PARQUET, [15_204_137, 7_433_982, 5_000_000_000], ("abort", "mixed units"),
+                     id="thousands-run-with-rows-already-in-shares-raises"),
     ],
 )
 def test_ticker_history_unit_needs_format_evidence_and_median_to_agree(
