@@ -220,6 +220,16 @@ book_capacity_curve(std::span<const atx::f64> book, std::span<const atx::f64> ra
 
 namespace {
 
+// W0-B0 (B-03): the legacy (unidentified) report's return/borrow/annualization
+// rule. OnePeriodV1 reproduces the pre-W0 numbers exactly; no CLI flag selects
+// it yet (config.hpp is outside this lane -- see the lane report).
+constexpr book::LegacyReportRule kLegacyReportRule = book::LegacyReportRule::HoldingIntervalV2;
+
+constexpr std::string_view legacy_rule_name() noexcept {
+    return kLegacyReportRule == book::LegacyReportRule::OnePeriodV1 ? "one_period_v1"
+                                                                    : "holding_interval_v2";
+}
+
 bool report_hash_valid(std::string_view text) {
     return text.size() == 64 && std::all_of(text.begin(), text.end(), [](char value) {
         return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f');
@@ -438,12 +448,17 @@ atx::core::Result<StageResult> run_report_impl(const RunConfig& cfg,
                               "report: replay options require identified date/security axes");
     }
 
-    // 4. Build forward-returns panel (1 field "ret") from research TRI close.
+    // 4. Build the per-rebalance returns panel (1 field "ret") from research TRI close.
     //
-    // NOTE: the report charges each rebalance's book against the 1-PERIOD-FORWARD
-    // TRI return at its as-of date — a simplification; full holding-interval
-    // compounding is a future enhancement (matches accumulate_report's
-    // one-cross-section-per-period design).
+    // W0-B0 (B-03): under book::LegacyReportRule::HoldingIntervalV2 each
+    // rebalance's book is charged the TRI return compounded over its WHOLE
+    // holding window (to the next rebalance; the final book holds the previous
+    // spacing, capped at the panel end), a held name that stops printing takes
+    // its last print times (1 + Shumway fallback, flagged) instead of 0, borrow
+    // accrues as an annual rate over the sessions held, and the Sharpe is
+    // annualized by the mean holding length. OnePeriodV1 reproduces the pre-W0
+    // report (1-session-forward return, NaN -> 0, flat borrow per rebalance,
+    // spacing-based annualization) exactly.
     {
         const atx::usize D = research.dates();
         ATX_TRY(const auto close_id, research.field_id("close"));
@@ -475,24 +490,23 @@ atx::core::Result<StageResult> run_report_impl(const RunConfig& cfg,
             ? research.field_all(volume_id)
             : std::span<const atx::f64>{};  // empty span; never dereferenced when !has_volume
 
-        std::vector<atx::f64> ret(D * M, std::numeric_limits<atx::f64>::quiet_NaN());
-        for (atx::usize d = 0; d + 1 < D; ++d) {
+        // Row-indexed returns panel: row s holds rebalance s's holding-window
+        // returns and the research universe at its as-of date, so two schedule
+        // rows can never collide on one research date.
+        ATX_TRY(auto holding, book::holding_interval_returns(
+                    close, D, M, std::span<const atx::usize>{sched.periods},
+                    std::span<const std::vector<atx::f64>>{mpr.books}, kLegacyReportRule));
+        std::vector<std::uint8_t> uni(S * M);
+        for (atx::usize s = 0; s < S; ++s) {
             for (atx::usize i = 0; i < M; ++i) {
-                const atx::f64 p0 = close[d * M + i];
-                const atx::f64 p1 = close[(d + 1) * M + i];
-                if (!std::isnan(p0) && !std::isnan(p1) && p0 != 0.0) {
-                    ret[d * M + i] = p1 / p0 - 1.0;
-                }
+                uni[s * M + i] = research.in_universe(sched.periods[s], i) ? 1 : 0;
             }
         }
-        std::vector<std::uint8_t> uni(D * M);
-        for (atx::usize d = 0; d < D; ++d) {
-            for (atx::usize i = 0; i < M; ++i) {
-                uni[d * M + i] = research.in_universe(d, i) ? 1 : 0;
-            }
-        }
+        risk::RebalanceSchedule row_sched;
+        row_sched.periods.resize(S);
+        std::iota(row_sched.periods.begin(), row_sched.periods.end(), atx::usize{0});
         ATX_TRY(auto retpanel,
-                alpha::Panel::create(D, M, {"ret"}, {ret}, uni));
+                alpha::Panel::create(S, M, {"ret"}, {holding.returns}, uni));
         ATX_TRY(const auto ret_fid, retpanel.field_id("ret"));
 
         // 5. Rebuild the same diagonal FactorModel S5 used.
@@ -524,9 +538,15 @@ atx::core::Result<StageResult> run_report_impl(const RunConfig& cfg,
             std::vector<atx::u64>{0});
 
         const atx::f64 capacity_gross = 1e9;
+        book::ReportAccrual accrual;
+        accrual.borrow_bps = cfg.borrow_bps;
+        accrual.borrow_rule = kLegacyReportRule == book::LegacyReportRule::OnePeriodV1
+            ? book::ReportBorrowAccrual::FlatPerRebalanceV1
+            : book::ReportBorrowAccrual::AnnualBySessionsV2;
+        accrual.holding_sessions = holding.holding_sessions;
         ATX_TRY(auto rep,
-                book::accumulate_report(mpr, retpanel, ret_fid, sched, V,
-                                        capacity_gross, libr, 0, cfg.borrow_bps));
+                book::accumulate_report(mpr, retpanel, ret_fid, row_sched, V,
+                                        capacity_gross, libr, 0, accrual));
 
         // 6b. (A2b) Locate + parse combo.meta to recover the IS/OOS boundary.
         //
@@ -590,12 +610,31 @@ atx::core::Result<StageResult> run_report_impl(const RunConfig& cfg,
         //     `ann` is a schedule-uniform property (rebalance spacing), computed
         //     once and intentionally reused for the full / IS / OOS subsets — a
         //     contiguous terminal OOS sub-span shares the same periods-per-year.
+        //     W0-B0 (B-03): under HoldingIntervalV2 each pnl_net[s] is a
+        //     holding-window return, so periods-per-year is 252 over the mean
+        //     holding length of the books that were held at all. OnePeriodV1
+        //     keeps the pre-W0 spacing formula (which mis-annualized the
+        //     1-session returns of a weekly book).
         double ann = std::sqrt(252.0);
-        if (S > 1 && sched.periods.back() > sched.periods.front()) {
-            const double span =
-                static_cast<double>(sched.periods.back() - sched.periods.front());
-            ann = std::sqrt(252.0 * static_cast<double>(S - 1) / span);
+        if (kLegacyReportRule == book::LegacyReportRule::OnePeriodV1) {
+            if (S > 1 && sched.periods.back() > sched.periods.front()) {
+                const double span =
+                    static_cast<double>(sched.periods.back() - sched.periods.front());
+                ann = std::sqrt(252.0 * static_cast<double>(S - 1) / span);
+            }
+        } else {
+            atx::usize held_periods = 0;
+            atx::usize held_sessions = 0;
+            for (const atx::usize h : holding.holding_sessions) {
+                held_periods += h > 0U ? 1U : 0U;
+                held_sessions += h;
+            }
+            if (held_sessions > 0U) {
+                ann = std::sqrt(book::kReportSessionsPerYear * static_cast<double>(held_periods) /
+                                static_cast<double>(held_sessions));
+            }
         }
+        const atx::usize terminal_returns = holding.terminals.size();
         auto sharpe_of = [&](const std::vector<atx::usize>& idx) -> double {
             if (idx.size() < 2) return std::numeric_limits<double>::quiet_NaN();
             double mean = 0.0;
@@ -896,6 +935,15 @@ atx::core::Result<StageResult> run_report_impl(const RunConfig& cfg,
                         << (research_input.identity ? research_input.artifact_id : "unknown") << '\n';
                 sm_file << "books_artifact_id="
                         << (books_input.identity ? books_input.artifact_id : "unknown") << '\n';
+                // (W0-B0, B-03) Report rule and terminal-return disclosure
+                // (additive; after every existing line). Every terminal return
+                // here is a flagged Shumway fallback: the legacy report has no
+                // delisting table or exchange list.
+                sm_file << "legacy_report_rule=" << legacy_rule_name() << '\n';
+                sm_file << "annualization_factor=" << std::to_string(ann) << '\n';
+                sm_file << "terminal_returns_flagged=" << std::to_string(terminal_returns)
+                        << '\n';
+                sm_file << "interior_gap_marks=" << std::to_string(holding.gap_marks) << '\n';
             }
         }
 
@@ -938,6 +986,10 @@ atx::core::Result<StageResult> run_report_impl(const RunConfig& cfg,
             // (S5-4) total realized borrow debit -- additive, same digest exemption
             // (rep.pnl_net already reflects it; this kv is a convenience readback).
             {"total_pnl_borrow",      std::to_string(total_pnl_borrow)},
+            // (W0-B0, B-03) additive disclosure, same digest exemption.
+            {"legacy_report_rule",       std::string{legacy_rule_name()}},
+            {"terminal_returns_flagged", std::to_string(terminal_returns)},
+            {"interior_gap_marks",       std::to_string(holding.gap_marks)},
         };
         return atx::core::Ok(std::move(sr));
     }

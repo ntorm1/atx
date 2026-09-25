@@ -34,6 +34,10 @@ book::ReplayConfig immediate() {
   book::ReplayConfig cfg;
   cfg.initial_nav = 100.0;
   cfg.execution_delay_periods = 0;
+  cfg.allow_same_close = true; // B-02: same-close fills are an explicit opt-in.
+  // B-04: these cases pin the pre-W0 fail-closed contract for a missing held
+  // close, now reachable only as the explicit Abort policy.
+  cfg.delisting_policy = book::DelistingPolicy::Abort;
   return cfg;
 }
 

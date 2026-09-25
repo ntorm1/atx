@@ -21,15 +21,79 @@ enum class ReplayDayBasis : atx::u16 { D360 = 360, D365 = 365 };
 struct BorrowSchedule;
 
 // What the replay does when a HELD name has no valid close at a valuation.
-//   Abort              the historical behaviour: the replay fails.
+//   Abort              the pre-W0 default: the replay fails.
 //   CrspDelistReturn   the name is liquidated into cash at its last accounted
 //                      value times (1 + delist_return) of its DelistingEvent;
 //                      a NaN return rejects (fill it explicitly, e.g. with a
 //                      Shumway-style replacement, in the event builder).
 //   LastMarkZeroReturn liquidated at its last accounted value (return 0).
-// Only names with a DelistingEvent whose last_valid_period precedes the missing
-// valuation are liquidated; any other missing held close still fails.
-enum class DelistingPolicy : atx::u8 { Abort = 0, CrspDelistReturn = 1, LastMarkZeroReturn = 2 };
+//   TerminalReturn     THE DEFAULT (W0-B0, closes B-04). EVERY held name with no
+//                      valid close is liquidated at its last accounted value
+//                      times (1 + r), never aborting and never assuming r = 0:
+//                        * r = the supplied DelistingEvent's delist_return when
+//                          the name has an event whose last_valid_period precedes
+//                          the valuation and whose return is finite (source
+//                          Table, not flagged);
+//                        * otherwise the Shumway fallback, FLAGGED: -30 %
+//                          (Shumway 1997, NYSE/AMEX) or -55 % (Shumway & Warther
+//                          1999, Nasdaq) by ReplayConfig::listing_exchange; an
+//                          Unknown exchange takes the ADVERSE of the two for the
+//                          position's side (a long gets -55 %, a short -30 %).
+//                      A TargetWeight on an unheld name with no valid close at
+//                      its execution is unfillable: it stays in cash and is
+//                      reported in ReplayResult::unfilled_targets.
+// Under CrspDelistReturn / LastMarkZeroReturn only names with a DelistingEvent
+// whose last_valid_period precedes the missing valuation are liquidated; any
+// other missing held close still fails (their historical contract).
+enum class DelistingPolicy : atx::u8 {
+  Abort = 0, CrspDelistReturn = 1, LastMarkZeroReturn = 2, TerminalReturn = 3
+};
+
+// Primary listing venue, only for the Shumway fallback. Empty span == all Unknown.
+enum class ListingExchange : atx::u8 { Unknown = 0, NyseAmex = 1, Nasdaq = 2 };
+
+// Shumway (1997, JF 52(1)) performance-delisting replacement return for
+// NYSE/AMEX; Shumway & Warther (1999, JF 54(6)) for Nasdaq.
+inline constexpr atx::f64 kShumwayNyseAmexReturn = -0.30;
+inline constexpr atx::f64 kShumwayNasdaqReturn = -0.55;
+
+// Where a liquidation's terminal return came from. Every Shumway* source is a
+// fallback and is flagged; Table and LastMarkZero are not.
+enum class TerminalReturnSource : atx::u8 {
+  Table = 0, LastMarkZero = 1, ShumwayNyseAmex = 2, ShumwayNasdaq = 3,
+  ShumwayUnknownAdverse = 4
+};
+
+struct TerminalReturn {
+  atx::f64 value{};
+  TerminalReturnSource source{TerminalReturnSource::Table};
+};
+
+// The Shumway fallback for a position of the given side. Pure; shared with the
+// legacy weight report (book/report.hpp) so both paths apply the same numbers.
+[[nodiscard]] constexpr TerminalReturn shumway_terminal_return(ListingExchange exchange,
+                                                               bool is_short) noexcept {
+  switch (exchange) {
+  case ListingExchange::NyseAmex:
+    return {kShumwayNyseAmexReturn, TerminalReturnSource::ShumwayNyseAmex};
+  case ListingExchange::Nasdaq:
+    return {kShumwayNasdaqReturn, TerminalReturnSource::ShumwayNasdaq};
+  default:
+    break;
+  }
+  // Adverse for the side: the more negative return hurts a long, the less
+  // negative one hurts a short.
+  return {is_short ? kShumwayNyseAmexReturn : kShumwayNasdaqReturn,
+          TerminalReturnSource::ShumwayUnknownAdverse};
+}
+
+// What a trade that would grow a short beyond its locate does (B-04).
+//   AbortV1  the pre-W0 behaviour: the replay fails.
+//   ClipV2   THE DEFAULT: the post-trade short is clipped to the locate (or,
+//            when the carried short already exceeds a shrunken locate, to the
+//            carried position), the clip is reported in
+//            ReplayResult::locate_clips, and the replay continues.
+enum class LocateBreach : atx::u8 { AbortV1 = 1, ClipV2 = 2 };
 
 // One terminal delisting. last_valid_period is the name's final valid close;
 // the first held valuation after it with a missing close liquidates the name,
@@ -49,14 +113,43 @@ struct ReplayDelisting {
   atx::f64 last_value{};    // Last accounted marked dollars (at period - 1).
   atx::f64 delist_return{}; // Return applied.
   atx::f64 proceeds{};      // Signed cash credited (negative buys back a short).
+  TerminalReturnSource source{TerminalReturnSource::Table};
+  bool flagged{};           // True for every Shumway fallback.
 };
 
-// Every field added after borrow_day_basis is opt-in: with its default the
-// replay is bit-identical to the historical accounting. None of them is
-// supported on the claims-aware entry point, which rejects a non-default value.
+// A trade clipped to its locate (LocateBreach::ClipV2). Dollars are marked at
+// the execution close; requested_value is the post-trade value the target (or
+// working order) asked for, allowed_value the post-trade value actually sought.
+struct ReplayLocateClip {
+  atx::usize period{};
+  atx::usize instrument{};
+  atx::f64 requested_value{};
+  atx::f64 allowed_value{};
+  atx::f64 locate{};
+};
+
+// A nonzero TargetWeight that could not trade because the name had no valid
+// close at the execution period (DelistingPolicy::TerminalReturn only). The
+// intended dollars stay in cash.
+struct ReplayUnfilledTarget {
+  atx::usize period{};
+  atx::usize decision_period{};
+  atx::usize instrument{};
+  atx::f64 weight{};
+};
+
+// Fields after borrow_day_basis are extensions. The cost model, liquidity,
+// borrow schedule and delisting table are opt-in; with them unset and a
+// nonzero delay the replay is bit-identical to the historical accounting on any
+// panel whose held names all keep a valid close. The claims-aware entry point
+// rejects every extension except the default TerminalReturn policy, which it
+// runs with Abort semantics (see replay_scheduled_intents_with_events).
 struct ReplayConfig {
   atx::f64 initial_nav{1.0};
+  // B-02: 0 fills at the decision close (look-ahead for any signal computed
+  // from that close) and is rejected unless allow_same_close is set explicitly.
   atx::usize execution_delay_periods{1};
+  bool allow_same_close{false};
   atx::f64 trade_bps{0.0};             // Per absolute dollar traded, each direction.
   atx::f64 annual_borrow_bps{0.0};     // Simple annual fee on post-trade short dollars.
   ReplayDayBasis borrow_day_basis{ReplayDayBasis::D365};
@@ -69,8 +162,11 @@ struct ReplayConfig {
   // Per-name fee/locate/rebate/cash schedule (exclusive with a nonzero
   // annual_borrow_bps). Borrowed; must outlive the call.
   const BorrowSchedule *borrow_schedule{nullptr};
-  DelistingPolicy delisting_policy{DelistingPolicy::Abort};
+  DelistingPolicy delisting_policy{DelistingPolicy::TerminalReturn};
   std::span<const DelistingEvent> delistings{}; // At most one per instrument.
+  // Empty, or one venue per canonical instrument (TerminalReturn fallback only).
+  std::span<const ListingExchange> listing_exchange{};
+  LocateBreach locate_breach{LocateBreach::ClipV2}; // Only with a borrow_schedule.
 };
 
 // One observed interval. cash/assets/nav are END valuations after financing;
@@ -139,6 +235,9 @@ struct ReplayResult {
   std::vector<ReplayDelisting> delistings; // Empty unless a delisting policy fired.
   // Working orders still open after the final valuation (cost-model cap only).
   atx::usize open_working_orders{};
+  std::vector<ReplayLocateClip> locate_clips;         // LocateBreach::ClipV2 only.
+  std::vector<ReplayUnfilledTarget> unfilled_targets; // TerminalReturn only.
+  atx::usize flagged_delistings{}; // Count of `delistings` rows with flagged == true.
 };
 
 // Borrowed only for the duration of the policy call. Instrument spans have the
@@ -259,11 +358,15 @@ struct ReplayPolicyResult {
 // changes never suppress existing holdings' subsequent marks or P&L.
 //
 // Validates positive shape/NAV, strictly ordered schedule/times, finite targets,
-// nonnegative finite cost rates, D360/D365 and checked index/duration arithmetic.
+// nonnegative finite cost rates, D360/D365, a nonzero execution delay unless
+// allow_same_close is set (B-02), and checked index/duration arithmetic.
 // At least one observation is allowed; final observation is valuation-only, with
 // no trade/fee/liquidation. All D-1 intervals are recorded, including initial cash.
-// Missing/nonpositive/nonfinite required marks and invalid resulting NAV fail with
-// an error; missing unused marks are ignored. Inputs are never mutated and failures
+// Under the default DelistingPolicy::TerminalReturn a held name whose required
+// mark is missing/nonpositive/nonfinite is liquidated at a terminal return
+// (never an abort); under Abort (and for names outside the CrspDelistReturn /
+// LastMarkZeroReturn tables) it fails with an error. Invalid resulting NAV always
+// fails; missing unused marks are ignored. Inputs are never mutated and failures
 // return no partial result. Allocation failure may throw. Durations must fit i64 ns.
 // Instrument-specific errors end with " at period=<index> instrument=<index>";
 // callers can map those zero-based indices to their externally verified axes.
@@ -416,7 +519,11 @@ struct ReplayClaimsResult {
 //   8. borrow on post-trade, post-settlement marked short equity dollars.
 // With an empty batch at every observation the result is bit-identical to
 // replay_scheduled_intents on the same inputs; that equivalence is a required
-// regression test. Both callbacks must be nonempty. The claims ledger is owned
+// regression test. Both callbacks must be nonempty. No ReplayConfig extension is
+// supported; the default DelistingPolicy::TerminalReturn is admitted (with no
+// table and no exchanges) and run with Abort semantics, because this path is
+// synthetic-fixture only and its terminal mechanism is the admitted mandatory
+// event, not a missing close. The claims ledger is owned
 // by this call: it is sized in kilobytes, so the result is moved, not copied.
 [[nodiscard]] atx::core::Result<ReplayClaimsResult> replay_scheduled_intents_with_events(
     const alpha::Panel &research, std::span<const atx::i64> session_keys,
