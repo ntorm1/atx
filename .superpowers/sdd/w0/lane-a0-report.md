@@ -353,3 +353,51 @@ and minors 2, 3, 5 and 6 by this report. The build was then re-run with free RAM
 atx-engine-factory-tests.exe`). Alpha was 704/704 (exit 0) and factory 299/299 (exit 0), with
 the same crossover-stress line. All six anchored suites passed again with the counts above
 (7/4/6/5/5/4, each exit 0).
+
+## Post-merge sync
+
+`feat/w0-integration` had moved (D0, E0A, E0B, L0, O1 merged in) and was not yet an ancestor of
+`feat/w0-a0`. Lane tree was clean (no leftover work, no MERGE_HEAD) at `58a5b8fd` before syncing.
+
+```
+git -C C:\atx-wt\pool-2 merge --no-ff feat/w0-integration -m "w0-a0: merge feat/w0-integration" ...
+  Merge made by the 'ort' strategy.  113 files changed, 22975 insertions(+), 671 deletions(-)
+  No conflicts (integration's changes touch data/eval/learn/risk files outside this lane's
+  owned scope: alpha/cs_ops.hpp, alpha/state_ops.hpp, typecheck.cpp, alpha/oracle.{hpp,cpp},
+  factory/crossover.hpp, factory/canonical.hpp; diffstat confirmed zero overlap before merging).
+  head=6512ead8
+```
+
+Rebuild (`CMAKE_BUILD_PARALLEL_LEVEL=2`, free RAM 2.87 GB before the build, preset `equity-dev`):
+
+```
+atx-build.ps1 build -Preset equity-dev atx-engine-alpha-tests atx-engine-factory-tests atx-shm-worker
+  [49/52] Linking CXX executable bin\atx-engine-factory-tests.exe
+  exit=0   (/W4 /WX)
+```
+
+Whole owning executables:
+
+```
+build-equity\bin\atx-engine-alpha-tests.exe --gtest_brief=1
+  [==========] 704 tests from 273 test suites ran. (69970 ms total)
+  [  PASSED  ] 704 tests.                                  alpha exit=0
+build-equity\bin\atx-engine-factory-tests.exe --gtest_brief=1
+  [w0a0] crossover stress: children=10000 attempts=12045 scalar_slots=13591 non_literal=0 scalar_rejects=0
+  [==========] 299 tests from 57 test suites ran. (110803 ms total)
+  [  PASSED  ] 299 tests.                                  factory exit=0
+```
+
+Anchored suites (each `atx-build.ps1 -Ctest -Preset equity-dev -R '^<Suite>'`, exit=0):
+
+```
+^AlphaCsRankTies_              100% tests passed, 0 tests failed out of 7
+^AlphaHumpWarmup_              100% tests passed, 0 tests failed out of 4
+^AlphaTypecheckScalarLiteral_  100% tests passed, 0 tests failed out of 6
+^AlphaFlatWindow_              100% tests passed, 0 tests failed out of 5
+^AlphaAuditExactParity_        100% tests passed, 0 tests failed out of 5
+^FactoryCanonCollision_        100% tests passed, 0 tests failed out of 4
+```
+
+Same counts as the pre-sync run (7/4/6/5/5/4). Nothing regressed from the merge; no fixes were
+needed. Head after this report commit is the tip of `feat/w0-a0`.
