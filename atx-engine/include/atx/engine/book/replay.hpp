@@ -27,7 +27,17 @@ struct BorrowSchedule;
 //                      a NaN return rejects (fill it explicitly, e.g. with a
 //                      Shumway-style replacement, in the event builder).
 //   LastMarkZeroReturn liquidated at its last accounted value (return 0).
-//   TerminalReturn     THE DEFAULT (W0-B0, closes B-04). A held name with no
+//   TerminalReturn     THE DEFAULT: liquidate at the first missing held close,
+//                      using an available due table return, or Shumway if that
+//                      evidenced event has an unknown return. Without a due event,
+//                      an explicit adverse missing-price stress haircut is used:
+//                      negative for longs, positive for shorts, always a loss.
+//                      This is an assumption, never observed delisting evidence.
+//                      Future prints and future events
+//                      never determine today's holdings, cash, or NAV.
+//   TerminalReturnExPostV1  Legacy W0 diagnostic, NOT a causal trading replay:
+//                      preserves the hindsight gap classification below.
+//                      A held name with no
 //                      valid close at a valuation never aborts the replay. It is
 //                      either CARRIED over an interior gap or LIQUIDATED:
 //                        * carried (fix pass 1) when no DelistingEvent is due for
@@ -67,7 +77,8 @@ struct BorrowSchedule;
 // whose last_valid_period precedes the missing valuation are liquidated; any
 // other missing held close still fails (their historical contract).
 enum class DelistingPolicy : atx::u8 {
-  Abort = 0, CrspDelistReturn = 1, LastMarkZeroReturn = 2, TerminalReturn = 3
+  Abort = 0, CrspDelistReturn = 1, LastMarkZeroReturn = 2, TerminalReturn = 3,
+  TerminalReturnExPostV1 = 4
 };
 
 // Primary listing venue, only for the Shumway fallback. Empty span == all Unknown.
@@ -78,11 +89,11 @@ enum class ListingExchange : atx::u8 { Unknown = 0, NyseAmex = 1, Nasdaq = 2 };
 inline constexpr atx::f64 kShumwayNyseAmexReturn = -0.30;
 inline constexpr atx::f64 kShumwayNasdaqReturn = -0.55;
 
-// Where a liquidation's terminal return came from. Every Shumway* source is a
-// fallback and is flagged; Table and LastMarkZero are not.
+// Where a liquidation's return came from. Every Shumway* and AssumedMissingPrice*
+// source is flagged; Table and LastMarkZero are not.
 enum class TerminalReturnSource : atx::u8 {
   Table = 0, LastMarkZero = 1, ShumwayNyseAmex = 2, ShumwayNasdaq = 3,
-  ShumwayUnknownAdverse = 4
+  ShumwayUnknownAdverse = 4, AssumedMissingPriceAdverse = 5
 };
 
 struct TerminalReturn {
@@ -108,6 +119,15 @@ struct TerminalReturn {
           TerminalReturnSource::ShumwayUnknownAdverse};
 }
 
+// No terminal evidence exists: a stress valuation adverse to the position,
+// not a delisting-return estimate. The venue determines only haircut magnitude.
+[[nodiscard]] constexpr TerminalReturn assumed_missing_price_return(ListingExchange exchange,
+                                                                     bool is_short) noexcept {
+  const auto reference = shumway_terminal_return(exchange, is_short);
+  return {is_short ? -reference.value : reference.value,
+          TerminalReturnSource::AssumedMissingPriceAdverse};
+}
+
 // What a trade that would grow a short beyond its locate does (B-04).
 //   AbortV1  the pre-W0 behaviour: the replay fails.
 //   ClipV2   THE DEFAULT: the post-trade short is clipped to the locate (or,
@@ -124,6 +144,10 @@ struct DelistingEvent {
   atx::usize instrument{};
   atx::usize last_valid_period{};
   atx::f64 delist_return{}; // Fraction; NaN == unknown.
+  // First observation at which this table row is available to the replay.
+  // Zero asserts it is supplied before the replay begins; later evidence must
+  // name its actual availability. Future availability never changes prior NAV.
+  atx::usize available_period{};
 };
 
 // A liquidation the replay performed. Not a trade: no trade cost, no fill.
@@ -150,7 +174,7 @@ struct ReplayLocateClip {
 };
 
 // A nonzero TargetWeight that could not trade because the name had no valid
-// close at the execution period (DelistingPolicy::TerminalReturn only). The
+// close at the execution period (the TerminalReturn policies). The
 // intended dollars stay in cash.
 struct ReplayUnfilledTarget {
   atx::usize period{};
@@ -160,7 +184,7 @@ struct ReplayUnfilledTarget {
 };
 
 // A held name carried over an interior gap at one valuation
-// (DelistingPolicy::TerminalReturn only): it had no valid close at `period` but
+// (DelistingPolicy::TerminalReturnExPostV1 only): no valid close at `period` but
 // prints again later, or its DelistingEvent says it is still listed. One row
 // per carried valuation, in period/instrument order.
 struct ReplayGapCarry {
@@ -270,23 +294,23 @@ struct ReplayResult {
   // Working orders still open after the final valuation (cost-model cap only).
   atx::usize open_working_orders{};
   std::vector<ReplayLocateClip> locate_clips;         // LocateBreach::ClipV2 only.
-  std::vector<ReplayUnfilledTarget> unfilled_targets; // TerminalReturn only.
+  std::vector<ReplayUnfilledTarget> unfilled_targets; // TerminalReturn policies.
   atx::usize flagged_delistings{}; // Count of `delistings` rows with flagged == true.
-  // The flagged rows whose position was SHORT: a Shumway fallback credits a
-  // short with -r of its value, which is P&L no evidence supports (many
-  // unexplained disappearances are mergers, on which a short loses). Reported
-  // apart so a gate can size it. pnl == sum(proceeds - last_value) over those
-  // rows; positive is a gain to the book.
+  // The flagged rows whose position was SHORT. P&L is signed sum(proceeds -
+  // last_value): a due-event Shumway estimate can credit a gain; an unevidenced
+  // missing-price stress always debits a loss. The source distinguishes them.
   atx::usize flagged_short_delistings{};
   atx::f64 flagged_short_pnl{};
-  std::vector<ReplayGapCarry> gap_carries; // TerminalReturn only.
+  atx::usize assumed_liquidations{}; // No due/available evidence; adverse stress only.
+  atx::f64 assumed_liquidation_pnl{}; // Signed sum(proceeds - last_value), never positive.
+  std::vector<ReplayGapCarry> gap_carries; // TerminalReturnExPostV1 only.
 };
 
 // Borrowed only for the duration of the policy call. Instrument spans have the
 // panel's canonical order and full instrument count; the policy receives no panel
 // or future rows. Every held position has a valid current mark before this view
 // is constructed, except a name carried over an interior gap
-// (DelistingPolicy::TerminalReturn): its current mark is missing, its
+// (DelistingPolicy::TerminalReturnExPostV1): its current mark is missing, its
 // marked_dollars is the carried value, and whatever the policy returns for it
 // is not executed (see ReplayResult::gap_carries). Unused current marks may be
 // missing/nonpositive/nonfinite.

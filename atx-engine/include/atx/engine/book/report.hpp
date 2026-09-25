@@ -144,13 +144,18 @@ struct BookReport {
 //  (holding_interval_returns below):
 //    OnePeriodV1 (pre-W0): the 1-session-forward TRI return at each rebalance,
 //      whatever the rebalance spacing, and a missing close is 0 (NaN → 0).
-//    HoldingIntervalV2 (THE DEFAULT): the TRI return compounded over the whole
+//    HoldingIntervalV2 (legacy ex-post): the TRI return compounded over the whole
 //      holding window [periods[s], periods[s] + holding_sessions[s]]; a held name
 //      that stops printing inside the window and never prints again takes its
 //      last print times (1 + Shumway fallback), flagged (see replay.hpp's
 //      TerminalReturn policy); an interior gap marks at the last print.
+//    HoldingIntervalV3 (THE DEFAULT): the full holding interval, liquidating at
+//      its first missing close with a flagged adverse missing-price stress. No close
+//      after that valuation can alter the liquidation or its marked proceeds.
 //  ReportBorrowAccrual picks the borrow accrual (see pnl_borrow above).
-enum class LegacyReportRule : atx::u8 { OnePeriodV1 = 1, HoldingIntervalV2 = 2 };
+enum class LegacyReportRule : atx::u8 {
+  OnePeriodV1 = 1, HoldingIntervalV2 = 2, HoldingIntervalV3 = 3
+};
 enum class ReportBorrowAccrual : atx::u8 { FlatPerRebalanceV1 = 1, AnnualBySessionsV2 = 2 };
 inline constexpr atx::f64 kReportSessionsPerYear = 252.0;
 
@@ -197,6 +202,7 @@ struct HoldingReturns {
   std::vector<atx::usize> holding_sessions; // S.
   std::vector<ReportTerminal> terminals;   // One per held (s, i) that delisted (all flagged).
   atx::usize gap_marks{};                  // Held (s, i) marked at an interior last print.
+  atx::f64 assumed_liquidation_pnl{};      // V3 stress loss in portfolio-weight units.
 };
 
 // Per-name returns for each rebalance of a weight book, built from a
@@ -218,7 +224,8 @@ holding_interval_returns(std::span<const atx::f64> close, atx::usize dates,
       (!exchange.empty() && exchange.size() != instruments)) {
     return Err(ErrorCode::InvalidArgument, "holding_interval_returns: shape mismatch");
   }
-  if (rule != LegacyReportRule::OnePeriodV1 && rule != LegacyReportRule::HoldingIntervalV2) {
+  if (rule != LegacyReportRule::OnePeriodV1 && rule != LegacyReportRule::HoldingIntervalV2 &&
+      rule != LegacyReportRule::HoldingIntervalV3) {
     return Err(ErrorCode::InvalidArgument, "holding_interval_returns: unrecognized rule");
   }
   for (atx::usize s = 0; s < n; ++s) {
@@ -249,9 +256,11 @@ holding_interval_returns(std::span<const atx::f64> close, atx::usize dates,
   const auto valid = [](atx::f64 price) noexcept { return std::isfinite(price) && price > 0.0; };
   // Final valid print per name (the "last bar" evidence); dates == never printed.
   std::vector<atx::usize> last_print(instruments, dates);
-  for (atx::usize t = 0; t < dates; ++t) {
-    for (atx::usize i = 0; i < instruments; ++i) {
-      if (valid(close[t * instruments + i])) last_print[i] = t;
+  if (rule == LegacyReportRule::HoldingIntervalV2) {
+    for (atx::usize t = 0; t < dates; ++t) {
+      for (atx::usize i = 0; i < instruments; ++i) {
+        if (valid(close[t * instruments + i])) last_print[i] = t;
+      }
     }
   }
   out.holding_sessions = report_holding_sessions(periods, dates);
@@ -265,6 +274,27 @@ holding_interval_returns(std::span<const atx::f64> close, atx::usize dates,
       if (!valid(p0)) continue; // No entry mark: the name cannot be charged.
       const atx::f64 p1 = close[end * instruments + i];
       atx::f64 &r = out.returns[s * instruments + i];
+      if (rule == LegacyReportRule::HoldingIntervalV3) {
+        atx::usize last = d;
+        for (atx::usize t = d + 1; t <= end; ++t) {
+          if (!valid(close[t * instruments + i])) break;
+          last = t;
+        }
+        const auto partial = close[last * instruments + i] / p0;
+        if (last == end) {
+          r = partial - 1.0;
+        } else {
+          const auto weight = books[s][i];
+          const auto venue = exchange.empty() ? ListingExchange::Unknown : exchange[i];
+          const auto terminal = assumed_missing_price_return(venue, weight < 0.0);
+          r = partial * (1.0 + terminal.value) - 1.0;
+          if (std::isfinite(weight) && weight != 0.0) {
+            out.terminals.push_back(ReportTerminal{s, i, last, terminal.value, terminal.source});
+            out.assumed_liquidation_pnl += weight * partial * terminal.value;
+          }
+        }
+        continue;
+      }
       if (valid(p1)) {
         r = p1 / p0 - 1.0;
         continue;

@@ -201,6 +201,8 @@ TEST_F(StageEquityBaseline, CommonReadinessGatesBothStreamsBeforeRanking) {
 TEST_F(StageEquityBaseline, MissingHeldMarkPreservesBoundFailureAndNoCompleteManifest) {
     auto cfg = input(true);
     ASSERT_TRUE(cfg.has_value());
+    cfg->replay_delisting_policy = impl::ReplayDelistingPolicy::AbortV1;
+    cfg->set_flags.insert("replay-delisting-policy");
     auto result = impl::run_equity_baseline(*cfg);
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().message().find("required close"), std::string::npos);
@@ -213,6 +215,32 @@ TEST_F(StageEquityBaseline, MissingHeldMarkPreservesBoundFailureAndNoCompleteMan
     EXPECT_EQ(failure["source_context_artifact_id"].get<std::string>().size(), 64U);
     EXPECT_EQ(failure["recipe"]["evaluation_end_exclusive"], "2013-04-12");
     EXPECT_TRUE(fs::exists(root / "baseline/books.bin.manifest.json"));
+}
+
+TEST_F(StageEquityBaseline, CorrectedDefaultCompletesOriginalWindowAndConstrainedBook) {
+    auto baseline = input(true);
+    ASSERT_TRUE(baseline);
+    baseline->set_flags.insert("replay-delisting-policy");
+    const auto result = impl::run_equity_baseline(*baseline);
+    ASSERT_TRUE(result) << result.error().message();
+    const auto summary = json_file(root / "baseline/report/summary.json");
+    EXPECT_EQ(summary["full"]["observed_intervals"], 7);
+    EXPECT_EQ(summary["flagged_delistings"], 1);
+    EXPECT_EQ(summary["gap_carry_count"], 0);
+    EXPECT_EQ(json_file(root / "baseline/manifest.json")["recipe"]["replay_delisting_policy"],
+              "terminal-return");
+    impl::RunConfig cfg;
+    cfg.panel = baseline->panel;
+    cfg.equity_baseline_dir = baseline->out;
+    cfg.out = (root / "book_causal").string();
+    cfg.set_flags.insert("replay-delisting-policy");
+    const auto constrained = impl::run_equity_book(cfg);
+    ASSERT_TRUE(constrained) << constrained.error().message();
+    const auto book_summary = json_file(root / "book_causal/report/summary.json");
+    EXPECT_EQ(book_summary["full"]["observed_intervals"], 7);
+    EXPECT_EQ(book_summary["flagged_delistings"], 1);
+    EXPECT_EQ(json_file(root / "book_causal/report/manifest.json")
+        ["recipe"]["replay_delisting_policy"], "terminal-return");
 }
 
 TEST_F(StageEquityBaseline, RejectsUnsupportedModesSealedDatesCoverageAndMemoryFloor) {
@@ -350,8 +378,9 @@ TEST_F(StageEquityBaseline, ConstrainedBookPublishesActualAllocationsAndContextA
 }
 
 TEST_F(StageEquityBaseline, ConstrainedBookPreservesMissingHeldMarkFailureOnOriginalWindow) {
-    const auto baseline = input(true);
+    auto baseline = input(true);
     ASSERT_TRUE(baseline.has_value());
+    baseline->replay_delisting_policy = impl::ReplayDelistingPolicy::AbortV1;
     ASSERT_FALSE(impl::run_equity_baseline(*baseline).has_value());
     ASSERT_TRUE(fs::exists(root / "baseline/evaluation.bin.manifest.json"));
     ASSERT_TRUE(fs::exists(root / "baseline/combo.bin.manifest.json"));
@@ -387,8 +416,9 @@ TEST_F(StageEquityBaseline, ConstrainedBookPreservesMissingHeldMarkFailureOnOrig
 }
 
 TEST_F(StageEquityBaseline, ObservedCloseEntryConstraintBindsAvailabilityWithoutShrinkingUnion) {
-    const auto baseline = input(false, false, false, true);
+    auto baseline = input(false, false, false, true);
     ASSERT_TRUE(baseline.has_value());
+    baseline->replay_delisting_policy = impl::ReplayDelistingPolicy::AbortV1;
     // Strict fixed-weight replay cannot price the first entry, but its frozen
     // evaluation/preferences remain valid input to a separately identified book.
     const auto strict = impl::run_equity_baseline(*baseline);

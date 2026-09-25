@@ -223,11 +223,15 @@ namespace {
 // W0-B0 (B-03): the legacy (unidentified) report's return/borrow/annualization
 // rule. OnePeriodV1 reproduces the pre-W0 numbers exactly; no CLI flag selects
 // it yet (config.hpp is outside this lane -- see the lane report).
-constexpr book::LegacyReportRule kLegacyReportRule = book::LegacyReportRule::HoldingIntervalV2;
+constexpr book::LegacyReportRule kLegacyReportRule = book::LegacyReportRule::HoldingIntervalV3;
 
 constexpr std::string_view legacy_rule_name() noexcept {
-    return kLegacyReportRule == book::LegacyReportRule::OnePeriodV1 ? "one_period_v1"
-                                                                    : "holding_interval_v2";
+    switch (kLegacyReportRule) {
+    case book::LegacyReportRule::OnePeriodV1: return "one_period_v1";
+    case book::LegacyReportRule::HoldingIntervalV2: return "holding_interval_v2_ex_post";
+    case book::LegacyReportRule::HoldingIntervalV3: return "holding_interval_v3_first_missing";
+    }
+    return "invalid";
 }
 
 bool report_hash_valid(std::string_view text) {
@@ -440,10 +444,12 @@ atx::core::Result<StageResult> run_report_impl(const RunConfig& cfg,
     }
     if (cfg.replay_execution_delay != 1 || cfg.replay_trade_bps != 0.0 ||
         cfg.replay_annual_borrow_bps != 0.0 || cfg.replay_day_basis != 365 ||
+        cfg.replay_delisting_policy != ReplayDelistingPolicy::TerminalReturnV2 ||
         cfg.set_flags.count("replay-execution-delay") != 0 ||
         cfg.set_flags.count("replay-trade-bps") != 0 ||
         cfg.set_flags.count("replay-annual-borrow-bps") != 0 ||
-        cfg.set_flags.count("replay-day-basis") != 0) {
+        cfg.set_flags.count("replay-day-basis") != 0 ||
+        cfg.set_flags.count("replay-delisting-policy") != 0) {
         return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                               "report: replay options require identified date/security axes");
     }
@@ -942,13 +948,16 @@ atx::core::Result<StageResult> run_report_impl(const RunConfig& cfg,
                         << (books_input.identity ? books_input.artifact_id : "unknown") << '\n';
                 // (W0-B0, B-03) Report rule and terminal-return disclosure
                 // (additive; after every existing line). Every terminal return
-                // here is a flagged Shumway fallback: the legacy report has no
+                // here is a flagged adverse price stress: the legacy report has no
                 // delisting table or exchange list.
                 sm_file << "legacy_report_rule=" << legacy_rule_name() << '\n';
                 sm_file << "annualization_factor=" << std::to_string(ann) << '\n';
                 sm_file << "terminal_returns_flagged=" << std::to_string(terminal_returns)
                         << '\n';
                 sm_file << "interior_gap_marks=" << std::to_string(holding.gap_marks) << '\n';
+                sm_file << "assumed_missing_price_pnl="
+                        << std::to_string(holding.assumed_liquidation_pnl) << '\n';
+                sm_file << "usable_for_alpha_evidence=false\n";
             }
         }
 
@@ -992,11 +1001,13 @@ atx::core::Result<StageResult> run_report_impl(const RunConfig& cfg,
             // (rep.pnl_net already reflects it; this kv is a convenience readback).
             {"total_pnl_borrow",      std::to_string(total_pnl_borrow)},
             // (W0-B0, B-03) additive disclosure, same digest exemption. Report
-            // kvs stay numeric: the rule is its LegacyReportRule value (1 or 2).
+            // kvs stay numeric: the rule is its LegacyReportRule version.
             {"legacy_report_rule",
              std::to_string(static_cast<unsigned>(kLegacyReportRule))},
             {"terminal_returns_flagged", std::to_string(terminal_returns)},
             {"interior_gap_marks",       std::to_string(holding.gap_marks)},
+            {"assumed_missing_price_pnl", std::to_string(holding.assumed_liquidation_pnl)},
+            {"usable_for_alpha_evidence", "0"},
         };
         return atx::core::Ok(std::move(sr));
     }

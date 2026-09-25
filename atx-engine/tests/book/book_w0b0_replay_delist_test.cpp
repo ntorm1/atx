@@ -119,7 +119,7 @@ TEST(BookReplayDelist, Pcs20130501FixtureRunsToTheEnd) {
   EXPECT_EQ(gone.period, PcsFixture::kPcsGone);
   EXPECT_EQ(gone.instrument, 0U);
   EXPECT_DOUBLE_EQ(gone.delist_return, -0.30);
-  EXPECT_EQ(gone.source, book::TerminalReturnSource::ShumwayNyseAmex);
+  EXPECT_EQ(gone.source, book::TerminalReturnSource::AssumedMissingPriceAdverse);
   EXPECT_TRUE(gone.flagged);
   EXPECT_EQ(result->flagged_delistings, 1U);
   EXPECT_GT(gone.last_value, 0.0);
@@ -157,7 +157,8 @@ TEST(BookReplayDelist, Pcs20130501FixtureRunsToTheEnd) {
 
 // One held name that vanishes after period 1; `short_side` flips the book.
 book::ReplayResult vanish(book::ListingExchange venue, bool short_side,
-                          std::span<const book::DelistingEvent> table = {}) {
+                          std::span<const book::DelistingEvent> table = {},
+                          book::DelistingPolicy policy = book::DelistingPolicy::TerminalReturn) {
   const std::vector<atx::f64> close{100, 50, 100, 50, 100, kNaN, 100, kNaN};
   const auto panel = Panel::create(4, 2, {"close"}, {close}, {}).value();
   std::vector<atx::i64> keys{0, kDay, 2 * kDay, 3 * kDay};
@@ -168,12 +169,13 @@ book::ReplayResult vanish(book::ListingExchange venue, bool short_side,
   cfg.initial_nav = 1000.0;
   cfg.listing_exchange = venues;
   cfg.delistings = table;
+  cfg.delisting_policy = policy;
   auto result = book::replay_scheduled_targets(panel, keys, decisions, targets, cfg);
   EXPECT_TRUE(result.has_value()) << result.error().message();
   return result.has_value() ? std::move(*result) : book::ReplayResult{};
 }
 
-TEST(BookReplayDelist, MissingCloseWithoutEvidenceIsShumwayFlaggedNeverZeroNeverAbort) {
+TEST(BookReplayDelist, LegacyMissingCloseWithoutEvidenceIsShumwayFlaggedNeverZeroNeverAbort) {
   struct Case {
     book::ListingExchange venue;
     bool short_side;
@@ -191,7 +193,8 @@ TEST(BookReplayDelist, MissingCloseWithoutEvidenceIsShumwayFlaggedNeverZeroNever
        book::TerminalReturnSource::ShumwayUnknownAdverse},
   }};
   for (const auto &c : cases) {
-    const auto result = vanish(c.venue, c.short_side);
+    const auto result = vanish(c.venue, c.short_side, {},
+                               book::DelistingPolicy::TerminalReturnExPostV1);
     ASSERT_EQ(result.intervals.size(), 3U); // Never an abort: every interval exists.
     ASSERT_EQ(result.delistings.size(), 1U);
     const auto &gone = result.delistings[0];
@@ -229,12 +232,14 @@ TEST(BookReplayDelist, SuppliedTerminalReturnTableWinsAndIsNotFlagged) {
 }
 
 TEST(BookReplayDelist, FlaggedShortProceedsAreReportedApart) {
-  // A flagged Shumway liquidation credits a short with -r of its value; the
-  // replay reports those rows apart so a gate can size unsupported short P&L.
+  // Without terminal evidence the explicit stress must debit a short, never
+  // invent a profit. The assumed P&L remains separately attributable.
   const auto shorted = vanish(book::ListingExchange::NyseAmex, true);
   ASSERT_EQ(shorted.delistings.size(), 1U);
   EXPECT_EQ(shorted.flagged_short_delistings, 1U);
-  EXPECT_NEAR(shorted.flagged_short_pnl, 120.0, 1.0e-9); // -400 * (0.70 - 1).
+  EXPECT_NEAR(shorted.flagged_short_pnl, -120.0, 1.0e-9); // -400 * (1.30 - 1).
+  EXPECT_EQ(shorted.assumed_liquidations, 1U);
+  EXPECT_NEAR(shorted.assumed_liquidation_pnl, -120.0, 1.0e-9);
   EXPECT_NEAR(shorted.flagged_short_pnl,
               shorted.delistings[0].proceeds - shorted.delistings[0].last_value, 1.0e-12);
   const auto longed = vanish(book::ListingExchange::NyseAmex, false);
@@ -275,6 +280,7 @@ TEST(BookReplayDelist, InteriorGapCarriesAHeldLongAndShortAtTheLastPrint) {
     book::ReplayConfig cfg;
     cfg.initial_nav = 1000.0;
     ASSERT_EQ(cfg.delisting_policy, book::DelistingPolicy::TerminalReturn);
+    cfg.delisting_policy = book::DelistingPolicy::TerminalReturnExPostV1;
     const auto result =
         book::replay_scheduled_targets(panel, day_axis(5), decisions, targets, cfg);
     ASSERT_TRUE(result.has_value()) << result.error().message();
@@ -324,6 +330,7 @@ TEST(BookReplayDelist, GapCarryBlocksTradesUntilThePrintAndSpansSessions) {
   const std::vector<atx::f64> targets{0.5, 0.4, 0.5, 0.2, 0.5, -0.1, 0.5, 0.2};
   book::ReplayConfig cfg;
   cfg.initial_nav = 1000.0;
+  cfg.delisting_policy = book::DelistingPolicy::TerminalReturnExPostV1;
   const auto result = book::replay_scheduled_targets(panel, day_axis(6), decisions, targets, cfg);
   ASSERT_TRUE(result.has_value()) << result.error().message();
   EXPECT_TRUE(result->delistings.empty());
@@ -362,6 +369,7 @@ TEST(BookReplayDelist, TableStillListedCarriesThenLiquidatesAtTheTableReturn) {
   const std::vector<atx::f64> targets{0.5, 0.4};
   book::ReplayConfig cfg;
   cfg.initial_nav = 1000.0;
+  cfg.delisting_policy = book::DelistingPolicy::TerminalReturnExPostV1;
   cfg.delistings = table;
   cfg.listing_exchange = venues;
   const auto result = book::replay_scheduled_targets(panel, day_axis(5), decisions, targets, cfg);
@@ -403,6 +411,7 @@ TEST(BookReplayDelist, IntentOnAGapCarriedNameIsNotExecuted) {
     };
     book::ReplayConfig cfg;
     cfg.initial_nav = 1000.0;
+    cfg.delisting_policy = book::DelistingPolicy::TerminalReturnExPostV1;
     const auto result =
         book::replay_scheduled_intents(panel, day_axis(5), decisions, preference, intents, cfg);
     ASSERT_TRUE(result.has_value()) << result.error().message();

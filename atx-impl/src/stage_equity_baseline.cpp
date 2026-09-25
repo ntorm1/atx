@@ -70,7 +70,7 @@ Result<Profile> resolve(const RunConfig &cfg) {
         "max-working-bytes", "report-aum", "replay-execution-delay", "replay-trade-bps",
         "replay-annual-borrow-bps", "replay-day-basis", "quiet", "digest-only", "config",
         "min-dollar-adv", "dollar-adv-window", "membership", "membership-rule",
-        "allow-same-close"};
+        "allow-same-close", "replay-delisting-policy"};
     for (const auto &flag : cfg.set_flags) {
         if (!allowed.contains(flag)) {
             return Err(ErrorCode::InvalidArgument, "equity baseline: unsupported flag --" + flag);
@@ -124,6 +124,7 @@ Result<Profile> resolve(const RunConfig &cfg) {
     profile.replay.replay_annual_borrow_bps = cfg.set_flags.contains("replay-annual-borrow-bps") ||
         cfg.replay_annual_borrow_bps != 0 ? cfg.replay_annual_borrow_bps : 365;
     profile.replay.replay_day_basis = cfg.replay_day_basis;
+    profile.replay.replay_delisting_policy = cfg.replay_delisting_policy;
     // B-02: a same-close fill must be requested explicitly.
     profile.replay.allow_same_close = cfg.allow_same_close;
     if (profile.replay.replay_execution_delay < 1 && !cfg.allow_same_close) {
@@ -173,7 +174,12 @@ Result<Profile> resolve(const RunConfig &cfg) {
         {"annual_borrow_bps", profile.replay.replay_annual_borrow_bps},
         {"borrow_day_basis", profile.replay.replay_day_basis},
         {"execution_timing", "hypothetical-observation-close-not-publication-certification"},
-        {"held_missing_price_policy", "reject-entire-run-no-window-shortening"},
+        {"replay_delisting_policy",
+            replay_delisting_policy_name(profile.replay.replay_delisting_policy)},
+        {"held_missing_price_policy",
+            profile.replay.replay_delisting_policy == ReplayDelistingPolicy::AbortV1
+                ? "reject-entire-run-no-window-shortening"
+                : "first-missing-held-close-terminal-return-no-window-shortening"},
         {"terminal_policy", "valuation-only-no-trade-no-liquidation"},
         {"legacy_post_fit_boundary", "zero-is-unfit-constant-weights-never-heldout-selection"},
         {"replay_liquidity_context", "evaluation-only-prior-21-observations-first-21-trade-ADV-may-be-unknown"},

@@ -13,6 +13,15 @@
 
 namespace atx::impl {
 
+// B-04: keep the pre-W0 rejection available only as an explicit legacy policy.
+enum class ReplayDelistingPolicy : atx::u8 { AbortV1 = 1, TerminalReturnV2 = 2 };
+
+// Canonical CLI/recipe spelling; an invalid programmatic enum returns "invalid".
+[[nodiscard]] const char *replay_delisting_policy_name(ReplayDelistingPolicy policy) noexcept;
+// Accept only terminal-return or abort; invalid text returns InvalidArgument.
+[[nodiscard]] atx::core::Result<ReplayDelistingPolicy>
+parse_replay_delisting_policy(std::string_view value);
+
 // The single source of truth for valid subcommand names. parse_args validates
 // against this; dispatch's routing if-chain consumes the same names.
 inline constexpr std::array<std::string_view, 14> kSubcommands = {
@@ -464,6 +473,8 @@ struct RunConfig {
     // the replay, equity IC and equity-mine delays. Default false: delay < 1 is refused.
     bool allow_same_close = false;         // --allow-same-close [true|false]
     int replay_day_basis = 365;            // --replay-day-basis 360|365 calendar days
+    ReplayDelistingPolicy replay_delisting_policy = ReplayDelistingPolicy::TerminalReturnV2;
+                                          // --replay-delisting-policy terminal-return|abort
     // Fixed equity-baseline recipe: explicit scored window, separate from the
     // source panel's feature warmup. Dates are validated by the baseline stage.
     std::string equity_evaluation_start; // --evaluation-start, inclusive
