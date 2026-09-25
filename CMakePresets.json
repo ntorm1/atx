@@ -54,6 +54,18 @@
       }
     },
     {
+      "name": "equity-bench",
+      "inherits": "equity-rel",
+      "displayName": "equity-bench: equity-rel + benchmarks + every test group (bench measurement tree)",
+      "description": "Release equity tree with ATX_BUILD_BENCH=ON (atx-engine-bench, incl. the lane-6 optimizer_production_bench) and ATX_TEST_GROUPS=all, in its own build-equity-bench/ so it never disturbs the Debug build-equity/ lane trees or build-equity-rel/. FETCHCONTENT_BASE_DIR is per-worktree (deps/equity-bench, gitignored): a Release tree sharing the machine-wide C:/atx-cache/deps spdlog-build with the Debug lane trees races on _ITERATOR_DEBUG_LEVEL (see rel-avx2 and scripts/atx-build.ps1 DEPS ISOLATION). Numbers are citable only on a quiet host with the P-cores leased to one bench at a time.",
+      "binaryDir": "${sourceDir}/build-equity-bench",
+      "cacheVariables": {
+        "ATX_BUILD_BENCH": "ON",
+        "ATX_TEST_GROUPS": "all",
+        "FETCHCONTENT_BASE_DIR": "${sourceDir}/deps/equity-bench"
+      }
+    },
+    {
       "name": "equity-dev",
       "inherits": "dev",
       "displayName": "equity-dev: equity engine and pipeline without optional modules",
@@ -140,6 +152,7 @@
     { "name": "dev", "configurePreset": "dev" },
     { "name": "equity-dev", "configurePreset": "equity-dev" },
     { "name": "equity-rel", "configurePreset": "equity-rel" },
+    { "name": "equity-bench", "configurePreset": "equity-bench" },
     { "name": "dev-counters", "configurePreset": "dev-counters" },
     { "name": "dev-shared", "configurePreset": "dev-shared" },
     { "name": "dev-lakehouse-off", "configurePreset": "dev-lakehouse-off" },
