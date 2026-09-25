@@ -27,18 +27,39 @@ struct BorrowSchedule;
 //                      a NaN return rejects (fill it explicitly, e.g. with a
 //                      Shumway-style replacement, in the event builder).
 //   LastMarkZeroReturn liquidated at its last accounted value (return 0).
-//   TerminalReturn     THE DEFAULT (W0-B0, closes B-04). EVERY held name with no
-//                      valid close is liquidated at its last accounted value
-//                      times (1 + r), never aborting and never assuming r = 0:
-//                        * r = the supplied DelistingEvent's delist_return when
-//                          the name has an event whose last_valid_period precedes
-//                          the valuation and whose return is finite (source
-//                          Table, not flagged);
-//                        * otherwise the Shumway fallback, FLAGGED: -30 %
-//                          (Shumway 1997, NYSE/AMEX) or -55 % (Shumway & Warther
-//                          1999, Nasdaq) by ReplayConfig::listing_exchange; an
-//                          Unknown exchange takes the ADVERSE of the two for the
-//                          position's side (a long gets -55 %, a short -30 %).
+//   TerminalReturn     THE DEFAULT (W0-B0, closes B-04). A held name with no
+//                      valid close at a valuation never aborts the replay. It is
+//                      either CARRIED over an interior gap or LIQUIDATED:
+//                        * carried (fix pass 1) when no DelistingEvent is due for
+//                          it and either the panel prints a valid close for it at
+//                          a LATER period (the "last bar" rule shared with the
+//                          legacy report's holding_interval_returns) or its
+//                          DelistingEvent says it is still listed
+//                          (last_valid_period >= the valuation). The name keeps
+//                          its units and is valued at its last valid close at
+//                          both the start and end valuations (zero P&L over the
+//                          gap; the whole move lands when it prints again). It
+//                          cannot trade until it prints again: a decision that
+//                          executes on it is not filled, its working order is
+//                          cancelled, and each carried valuation is recorded in
+//                          ReplayResult::gap_carries. Knowing that a name prints
+//                          again is the same ex-post evidence a delisting table
+//                          is; it never sizes a trade.
+//                        * otherwise liquidated at its last accounted value
+//                          times (1 + r), never assuming r = 0:
+//                          - r = the supplied DelistingEvent's delist_return when
+//                            the name has an event whose last_valid_period
+//                            precedes the valuation and whose return is finite
+//                            (source Table, not flagged);
+//                          - otherwise the Shumway fallback, FLAGGED: -30 %
+//                            (Shumway 1997, NYSE/AMEX) or -55 % (Shumway &
+//                            Warther 1999, Nasdaq) by
+//                            ReplayConfig::listing_exchange; an Unknown exchange
+//                            takes the ADVERSE of the two for the position's side
+//                            (a long gets -55 %, a short -30 %). A flagged SHORT
+//                            liquidation books a gain; its count and dollars are
+//                            reported separately (ReplayResult::
+//                            flagged_short_delistings / flagged_short_pnl).
 //                      A TargetWeight on an unheld name with no valid close at
 //                      its execution is unfillable: it stays in cash and is
 //                      reported in ReplayResult::unfilled_targets.
@@ -136,6 +157,19 @@ struct ReplayUnfilledTarget {
   atx::usize decision_period{};
   atx::usize instrument{};
   atx::f64 weight{};
+};
+
+// A held name carried over an interior gap at one valuation
+// (DelistingPolicy::TerminalReturn only): it had no valid close at `period` but
+// prints again later, or its DelistingEvent says it is still listed. One row
+// per carried valuation, in period/instrument order.
+struct ReplayGapCarry {
+  atx::usize period{};       // Valuation with no valid close.
+  atx::usize instrument{};
+  atx::usize mark_period{};  // Period of the last valid close it is valued at.
+  atx::f64 tri_units{};      // Units carried (unchanged across the gap).
+  atx::f64 carried_value{};  // tri_units * close[mark_period], signed.
+  bool trade_blocked{};      // A decision executing at `period` could not trade it.
 };
 
 // Fields after borrow_day_basis are extensions. The cost model, liquidity,
@@ -238,12 +272,24 @@ struct ReplayResult {
   std::vector<ReplayLocateClip> locate_clips;         // LocateBreach::ClipV2 only.
   std::vector<ReplayUnfilledTarget> unfilled_targets; // TerminalReturn only.
   atx::usize flagged_delistings{}; // Count of `delistings` rows with flagged == true.
+  // The flagged rows whose position was SHORT: a Shumway fallback credits a
+  // short with -r of its value, which is P&L no evidence supports (many
+  // unexplained disappearances are mergers, on which a short loses). Reported
+  // apart so a gate can size it. pnl == sum(proceeds - last_value) over those
+  // rows; positive is a gain to the book.
+  atx::usize flagged_short_delistings{};
+  atx::f64 flagged_short_pnl{};
+  std::vector<ReplayGapCarry> gap_carries; // TerminalReturn only.
 };
 
 // Borrowed only for the duration of the policy call. Instrument spans have the
 // panel's canonical order and full instrument count; the policy receives no panel
 // or future rows. Every held position has a valid current mark before this view
-// is constructed. Unused current marks may be missing/nonpositive/nonfinite.
+// is constructed, except a name carried over an interior gap
+// (DelistingPolicy::TerminalReturn): its current mark is missing, its
+// marked_dollars is the carried value, and whatever the policy returns for it
+// is not executed (see ReplayResult::gap_carries). Unused current marks may be
+// missing/nonpositive/nonfinite.
 struct ReplayAllocationState {
   atx::usize schedule_index{};
   atx::usize decision_period{};
@@ -363,9 +409,9 @@ struct ReplayPolicyResult {
 // At least one observation is allowed; final observation is valuation-only, with
 // no trade/fee/liquidation. All D-1 intervals are recorded, including initial cash.
 // Under the default DelistingPolicy::TerminalReturn a held name whose required
-// mark is missing/nonpositive/nonfinite is liquidated at a terminal return
-// (never an abort); under Abort (and for names outside the CrspDelistReturn /
-// LastMarkZeroReturn tables) it fails with an error. Invalid resulting NAV always
+// mark is missing/nonpositive/nonfinite is carried over an interior gap or
+// liquidated at a terminal return (never an abort); under Abort (and for names
+// outside the CrspDelistReturn / LastMarkZeroReturn tables) it fails with an error. Invalid resulting NAV always
 // fails; missing unused marks are ignored. Inputs are never mutated and failures
 // return no partial result. Allocation failure may throw. Durations must fit i64 ns.
 // Instrument-specific errors end with " at period=<index> instrument=<index>";

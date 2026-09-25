@@ -228,6 +228,197 @@ TEST(BookReplayDelist, SuppliedTerminalReturnTableWinsAndIsNotFlagged) {
   EXPECT_TRUE(fallback.delistings[0].flagged);
 }
 
+TEST(BookReplayDelist, FlaggedShortProceedsAreReportedApart) {
+  // A flagged Shumway liquidation credits a short with -r of its value; the
+  // replay reports those rows apart so a gate can size unsupported short P&L.
+  const auto shorted = vanish(book::ListingExchange::NyseAmex, true);
+  ASSERT_EQ(shorted.delistings.size(), 1U);
+  EXPECT_EQ(shorted.flagged_short_delistings, 1U);
+  EXPECT_NEAR(shorted.flagged_short_pnl, 120.0, 1.0e-9); // -400 * (0.70 - 1).
+  EXPECT_NEAR(shorted.flagged_short_pnl,
+              shorted.delistings[0].proceeds - shorted.delistings[0].last_value, 1.0e-12);
+  const auto longed = vanish(book::ListingExchange::NyseAmex, false);
+  EXPECT_EQ(longed.flagged_short_delistings, 0U);
+  EXPECT_EQ(longed.flagged_short_pnl, 0.0);
+  // A table-sourced short liquidation is evidence, not a fallback: not counted.
+  const std::vector<book::DelistingEvent> known{{1, 1, -0.9}};
+  const auto table = vanish(book::ListingExchange::NyseAmex, true, known);
+  ASSERT_EQ(table.delistings.size(), 1U);
+  EXPECT_EQ(table.flagged_short_delistings, 0U);
+  EXPECT_EQ(table.flagged_short_pnl, 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Interior gaps (fix pass 1): a held name that misses a close but prints again
+// later is carried at its last valid close, never liquidated at a terminal
+// return (which would book a -30/-55 % loss on a long and a windfall on a short).
+// Name 0 is flat at 100; name 1 is the gapped name.
+// ---------------------------------------------------------------------------
+std::vector<atx::i64> day_axis(atx::usize count) {
+  std::vector<atx::i64> keys;
+  for (atx::usize i = 0; i < count; ++i) keys.push_back(static_cast<atx::i64>(i) * kDay);
+  return keys;
+}
+
+Panel gap_panel(const std::vector<atx::f64> &name1, const std::vector<atx::u8> &universe = {}) {
+  std::vector<atx::f64> close;
+  for (const auto price : name1) close.insert(close.end(), {100.0, price});
+  return Panel::create(name1.size(), 2, {"close"}, {close}, universe).value();
+}
+
+TEST(BookReplayDelist, InteriorGapCarriesAHeldLongAndShortAtTheLastPrint) {
+  const auto panel = gap_panel({50, 50, kNaN, 60, 60});
+  const std::vector<atx::usize> decisions{0};
+  for (const bool short_side : {false, true}) {
+    const atx::f64 sign = short_side ? -1.0 : 1.0;
+    const std::vector<atx::f64> targets{0.5, 0.4 * sign};
+    book::ReplayConfig cfg;
+    cfg.initial_nav = 1000.0;
+    ASSERT_EQ(cfg.delisting_policy, book::DelistingPolicy::TerminalReturn);
+    const auto result =
+        book::replay_scheduled_targets(panel, day_axis(5), decisions, targets, cfg);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    ASSERT_EQ(result->intervals.size(), 4U);
+    EXPECT_TRUE(result->delistings.empty()); // No liquidation, flagged or not.
+    EXPECT_EQ(result->flagged_delistings, 0U);
+    EXPECT_EQ(result->flagged_short_delistings, 0U);
+    ASSERT_EQ(result->gap_carries.size(), 1U);
+    const auto &carry = result->gap_carries[0];
+    EXPECT_EQ(carry.period, 2U);
+    EXPECT_EQ(carry.instrument, 1U);
+    EXPECT_EQ(carry.mark_period, 1U);
+    EXPECT_DOUBLE_EQ(carry.tri_units, 8.0 * sign);    // Bought at 50 with 400 $.
+    EXPECT_DOUBLE_EQ(carry.carried_value, 400.0 * sign);
+    EXPECT_FALSE(carry.trade_blocked);
+    EXPECT_DOUBLE_EQ(result->final_tri_units[1], 8.0 * sign);
+    // Over the gap (1 -> 2) the carried name contributes zero P&L; the NAV holds.
+    const auto &gap = result->intervals[1];
+    EXPECT_DOUBLE_EQ(gap.gross_pnl, 0.0);
+    EXPECT_NEAR(gap.nav, 1000.0, 1.0e-9);
+    EXPECT_NEAR(gap.assets, 500.0 + 400.0 * sign, 1.0e-9); // Carried NAV, not cash.
+    // The whole 50 -> 60 move lands when it prints again (2 -> 3).
+    const auto &reprint = result->intervals[2];
+    EXPECT_NEAR(reprint.pretrade_nav, 1000.0, 1.0e-9);
+    EXPECT_NEAR(reprint.start_gross, 900.0, 1.0e-9);
+    EXPECT_NEAR(reprint.gross_pnl, 80.0 * sign, 1.0e-9);
+    EXPECT_NEAR(result->final_nav, 1000.0 + 80.0 * sign, 1.0e-9);
+    expect_identity(*result);
+    // Pre-fix the unknown-venue name was liquidated at period 2: a long at
+    // -55 % (NAV 780), a short at -30 % (a +120 windfall, NAV 1120).
+    std::printf("[measured] gap short=%d carried=%.2f final_nav=%.4f (pre-fix final_nav %.4f)\n",
+                short_side ? 1 : 0, carry.carried_value, result->final_nav,
+                short_side ? 1000.0 + 400.0 * 0.30 : 1000.0 - 400.0 * 0.55);
+
+    // The pre-W0 contract, still reachable explicitly, aborts at the gap.
+    cfg.delisting_policy = book::DelistingPolicy::Abort;
+    const auto aborted =
+        book::replay_scheduled_targets(panel, day_axis(5), decisions, targets, cfg);
+    ASSERT_FALSE(aborted.has_value());
+    EXPECT_NE(aborted.error().message().find("period=2 instrument=1"), std::string::npos);
+  }
+}
+
+TEST(BookReplayDelist, GapCarryBlocksTradesUntilThePrintAndSpansSessions) {
+  const auto panel = gap_panel({50, 50, kNaN, kNaN, 60, 66});
+  const std::vector<atx::usize> decisions{0, 1, 2, 3};
+  const std::vector<atx::f64> targets{0.5, 0.4, 0.5, 0.2, 0.5, -0.1, 0.5, 0.2};
+  book::ReplayConfig cfg;
+  cfg.initial_nav = 1000.0;
+  const auto result = book::replay_scheduled_targets(panel, day_axis(6), decisions, targets, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_TRUE(result->delistings.empty());
+  // Two carried valuations, both at the period-1 close, both with a blocked trade.
+  ASSERT_EQ(result->gap_carries.size(), 2U);
+  for (atx::usize k = 0; k < 2; ++k) {
+    EXPECT_EQ(result->gap_carries[k].period, 2U + k);
+    EXPECT_EQ(result->gap_carries[k].mark_period, 1U);
+    EXPECT_DOUBLE_EQ(result->gap_carries[k].carried_value, 400.0);
+    EXPECT_TRUE(result->gap_carries[k].trade_blocked);
+  }
+  // Name 1 trades only at periods 1 and 4, never inside the gap.
+  std::vector<atx::usize> name1_trades;
+  for (const auto &trade : result->trades) {
+    if (trade.instrument == 1) name1_trades.push_back(trade.period);
+  }
+  EXPECT_EQ(name1_trades, (std::vector<atx::usize>{1, 4}));
+  EXPECT_NEAR(result->intervals[1].nav, 1000.0, 1.0e-9);
+  EXPECT_NEAR(result->intervals[2].nav, 1000.0, 1.0e-9);
+  EXPECT_NEAR(result->intervals[3].gross_pnl, 80.0, 1.0e-9); // 8 units, 50 -> 60.
+  // At 4 the reprinted name resizes to 20 % of 1080 at 60 (3.6 units).
+  EXPECT_NEAR(result->final_tri_units[1], 3.6, 1.0e-12);
+  EXPECT_NEAR(result->final_nav, 324.0 + 540.0 + 3.6 * 66.0, 1.0e-9);
+  expect_identity(*result);
+}
+
+TEST(BookReplayDelist, TableStillListedCarriesThenLiquidatesAtTheTableReturn) {
+  // The table says the name is listed through period 3 although the panel has
+  // no close from 2 on: carried at 2 and 3, liquidated at the table's -90 % at 4
+  // from its last accounted (carried) value. Pre-fix, period 2 took Shumway.
+  const auto panel = gap_panel({50, 50, kNaN, kNaN, kNaN});
+  const std::vector<book::DelistingEvent> table{{1, 3, -0.9}};
+  const std::vector<book::ListingExchange> venues{book::ListingExchange::NyseAmex,
+                                                  book::ListingExchange::Nasdaq};
+  const std::vector<atx::usize> decisions{0};
+  const std::vector<atx::f64> targets{0.5, 0.4};
+  book::ReplayConfig cfg;
+  cfg.initial_nav = 1000.0;
+  cfg.delistings = table;
+  cfg.listing_exchange = venues;
+  const auto result = book::replay_scheduled_targets(panel, day_axis(5), decisions, targets, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  ASSERT_EQ(result->gap_carries.size(), 2U);
+  EXPECT_EQ(result->gap_carries[0].period, 2U);
+  EXPECT_EQ(result->gap_carries[1].period, 3U);
+  EXPECT_EQ(result->gap_carries[1].mark_period, 1U);
+  ASSERT_EQ(result->delistings.size(), 1U);
+  const auto &gone = result->delistings[0];
+  EXPECT_EQ(gone.period, 4U);
+  EXPECT_EQ(gone.source, book::TerminalReturnSource::Table);
+  EXPECT_FALSE(gone.flagged);
+  EXPECT_DOUBLE_EQ(gone.delist_return, -0.9);
+  EXPECT_NEAR(gone.last_value, 400.0, 1.0e-9);
+  EXPECT_NEAR(gone.proceeds, 40.0, 1.0e-9);
+  EXPECT_EQ(result->flagged_delistings, 0U);
+  EXPECT_NEAR(result->final_nav, 100.0 + 500.0 + 40.0, 1.0e-9);
+  expect_identity(*result);
+}
+
+TEST(BookReplayDelist, IntentOnAGapCarriedNameIsNotExecuted) {
+  // Name 1 leaves the decision universe on its gap days; a Hold there must not
+  // abort (nothing executes), and a Close is recorded as blocked.
+  const std::vector<atx::u8> universe{1, 1, 1, 1, 1, 0, 1, 0, 1, 1};
+  const auto panel = gap_panel({50, 50, kNaN, kNaN, 60}, universe);
+  const std::vector<atx::usize> decisions{0, 2};
+  const std::vector<atx::f64> preference{0.5, 0.4, 0.5, 0.0};
+  for (const auto second : {book::ReplayTargetAction::HoldCurrent,
+                            book::ReplayTargetAction::Close}) {
+    const book::ReplayIntentPolicy intents = [second](const book::ReplayAllocationState &state) {
+      using Intents = std::vector<book::ReplayTargetIntent>;
+      if (state.schedule_index == 0) {
+        return atx::core::Result<Intents>(Intents{{book::ReplayTargetAction::TargetWeight, 0.5},
+                                                  {book::ReplayTargetAction::TargetWeight, 0.4}});
+      }
+      return atx::core::Result<Intents>(
+          Intents{{book::ReplayTargetAction::TargetWeight, 0.5}, {second, 0.0}});
+    };
+    book::ReplayConfig cfg;
+    cfg.initial_nav = 1000.0;
+    const auto result =
+        book::replay_scheduled_intents(panel, day_axis(5), decisions, preference, intents, cfg);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    ASSERT_EQ(result->allocations.size(), 2U);
+    EXPECT_EQ(result->allocations[1].execution_period, 3U);
+    EXPECT_NEAR(result->allocations[1].target_weights[1], 0.4, 1.0e-12); // Carried / NAV.
+    ASSERT_EQ(result->replay.gap_carries.size(), 2U);
+    const bool blocked = second == book::ReplayTargetAction::Close;
+    EXPECT_FALSE(result->replay.gap_carries[0].trade_blocked); // No decision at 2.
+    EXPECT_EQ(result->replay.gap_carries[1].trade_blocked, blocked);
+    EXPECT_DOUBLE_EQ(result->replay.final_tri_units[1], 8.0); // Still held.
+    EXPECT_NEAR(result->replay.final_nav, 1080.0, 1.0e-9);
+    expect_identity(result->replay);
+  }
+}
+
 TEST(BookReplayDelist, TableAndExchangeInputsAreValidated) {
   const std::vector<atx::f64> close{100, 50, 100, 50, 100, kNaN, 100, kNaN};
   const auto panel = Panel::create(4, 2, {"close"}, {close}, {}).value();
@@ -282,12 +473,6 @@ Panel flat(atx::usize dates, atx::usize names) {
   return Panel::create(dates, names, {"close"},
                        {std::vector<atx::f64>(dates * names, 100.0)}, {})
       .value();
-}
-
-std::vector<atx::i64> day_axis(atx::usize count) {
-  std::vector<atx::i64> keys;
-  for (atx::usize i = 0; i < count; ++i) keys.push_back(static_cast<atx::i64>(i) * kDay);
-  return keys;
 }
 
 TEST(BookReplayDelist, LocateBreachClipsToTheLocateAndReports) {

@@ -3,8 +3,8 @@
 ## Outcome
 
 DONE for every Build item and both plan Accept items, with one open gate. The book target is
-fully green (117/117). The atx-impl target is **not** fully green: 11 existing atx-impl tests now
-fail because the engine defaults changed exactly as the plan requires (B-02: delay 0 is rejected;
+fully green (122/122 after fix pass 1; 117/117 before it). The atx-impl target is **not** fully
+green: 12 existing atx-impl tests (8 B-02, 4 B-04) now fail because the engine defaults changed exactly as the plan requires (B-02: delay 0 is rejected;
 B-04: a missing held close is liquidated instead of aborting), and the only call site that could
 opt out or disclose the new behaviour, `atx-impl/src/replay_report.cpp` (plus `config.hpp` for the
 CLI flag), belongs to W0-I0b, not to this lane. The exact fix for I0b is in "Integration notes".
@@ -72,7 +72,7 @@ through its explicit versioned enum.
 | **Accept: the PCS 2013-05-01 fixture runs to the end** | `BookReplayDelist.Pcs20130501FixtureRunsToTheEnd` | synthetic NYSE sessions 2013-04-24..2013-05-07, PCS stops printing after 04-30 with no delisting record; default config runs all 9 intervals; PCS liquidated at 05-01 with r=−0.30 (ShumwayNyseAmex, flagged): last_value=309613.47, proceeds=216729.43, interval P&L −86691.77, final NAV 992931.34; the 04-30 PCS order is reported as unfilled (stays in cash); explicit Abort fails at `period=5 instrument=0` | MET |
 | **Accept: missing close without evidence yields −30 %/−55 % (flagged), never 0 and never an abort** | `BookReplayDelist.MissingCloseWithoutEvidenceIsShumwayFlaggedNeverZeroNeverAbort` (6 venue × side cases), `.IntentPolicyTargetOnAVanishedNameIsUnfilledNotFatal` | every case completes all intervals, r ∈ {−0.30, −0.55}, r ≠ 0, flagged; proceeds = last value × (1 + r) (e.g. 400 $ long Nasdaq → 180 $) | MET |
 | Must stay green: whole book target | `atx-engine-book-tests.exe --gtest_brief=1` | 117/117 passed | MET |
-| Must stay green: atx-impl-tests | `atx-impl-tests.exe --gtest_brief=1` | 535 ran: 514 passed, 5 skipped (real-data only), 16 failed: 11 caused by the plan-required engine defaults at I0b-owned call sites, 1 known CRLF, 3 arrived with the integration merge (see Evidence) | UNMET (needs I0b wiring) |
+| Must stay green: atx-impl-tests | `atx-impl-tests.exe --gtest_brief=1` | 535 ran: 514 passed, 5 skipped (real-data only), 16 failed: 12 (8 B-02, 4 B-04) caused by the plan-required engine defaults at I0b-owned call sites, 1 known CRLF, 3 arrived with the integration merge (see Evidence) | UNMET (needs I0b wiring) |
 
 ## Defect table
 
@@ -165,7 +165,7 @@ build-equity\bin\atx-impl-tests.exe --gtest_brief=1
 (535 ran = 514 passed + 5 skipped real-data cases + 16 failed.)
 
 Classification of the 16 failures:
-1. **B-02 consequence, 7 tests** (`ReplayPolicyStage` ×2, `ReplayReport` Weekly/Dollar/Policy/
+1. **B-02 consequence, 8 tests** (`ReplayPolicyStage` ×2, `ReplayReport` Weekly/Dollar/Policy/
    ExplicitIntent/LaterPolicy, `StageEquityBaseline.ExplicitZeroCostsDelay...`): these fixtures
    run the identified report with `replay_execution_delay = 0`; the engine now answers
    `replay: execution_delay_periods=0 fills at the decision close; set allow_same_close to opt in`.
@@ -230,7 +230,7 @@ For **W0-I0b** (owns `config.hpp`/`config.cpp`, `dispatch.cpp`, the `replay_repo
 `stage_equity_baseline.cpp`):
 1. Add `bool allow_same_close = false;` to `RunConfig` and the `--allow-same-close` flag, and in
    `replay_report.cpp` `replay_config()` (line ~394) set
-   `result.allow_same_close = cfg.allow_same_close;`. Then the 7 group-1 tests above need
+   `result.allow_same_close = cfg.allow_same_close;`. Then the 8 group-1 tests above need
    `cfg.allow_same_close = true` (or the flag in `set_flags`) next to their
    `replay_execution_delay = 0` line; with that alone their existing numbers hold.
 2. Decide the identified report's missing-close policy: either forward an explicit policy
@@ -238,11 +238,25 @@ For **W0-I0b** (owns `config.hpp`/`config.cpp`, `dispatch.cpp`, the `replay_repo
    `book::DelistingPolicy::Abort/TerminalReturn`) so the 4 group-2 tests can select `Abort`, or
    keep the new default and update those tests to expect a completed run. In the second case
    `replay_report.cpp` should also publish `ReplayResult::delistings` (with `source`/`flagged`),
-   `unfilled_targets`, `locate_clips` and `flagged_delistings` in its manifest so the liquidation
-   is disclosed, and pass `listing_exchange` once W2-D5 supplies venues.
+   `unfilled_targets`, `locate_clips`, `flagged_delistings`, `flagged_short_delistings`,
+   `flagged_short_pnl` and `gap_carries` (fix pass 1) in its manifest so every liquidation and
+   carry is disclosed, and pass `listing_exchange` once W2-D5 supplies venues.
 3. Update the `--borrow-bps` help text (`config.hpp:444-446`, `dispatch.cpp`) to "annual rate on
-   short weight, accrued over the sessions each book is held (legacy report)". Optionally expose
-   `--legacy-report-rule 1|2` and pass it to `stage_report.cpp`'s constant (make it a parameter).
+   short weight, accrued over the sessions each book is held (legacy report)".
+4. (Review minor 4, RULES §2 reproducibility at stage level.) Add
+   `RunConfig::legacy_report_rule` (default 2) and `--legacy-report-rule 1|2`, and pass it to
+   `stage_report.cpp` in place of the file-local `kLegacyReportRule` constant (`stage_report.cpp`
+   is this lane's file, so the stage side is a one-line swap once the field exists; it is not
+   done here because `RunConfig`/`config.cpp` are I0b's).
+
+For the **owner / G0** (review minor 3, Shumway fallback on shorts): the plan's numbers are kept
+(−30 % NYSE/AMEX, −55 % Nasdaq, adverse-for-the-side only for an Unknown venue), so on a known
+venue a flagged fallback still credits a short +30 %/+55 % of its value, although many
+unexplained disappearances are mergers on which a short loses. Fix pass 1 takes the reporting
+option: `ReplayResult::flagged_short_delistings` (count) and `flagged_short_pnl` (dollars, sum of
+proceeds − last value over flagged short rows) size that P&L apart. G0 should read them; if they
+are material the owner should rule on applying adverse-for-the-side to every flagged fallback
+(a one-line change in `shumway_terminal_return`, which would need a new versioned enum value).
 
 For **W1-B1 / W2-B2** (Track B follow-ups): `BorrowSchedule` is now fee-quoted or rebate-quoted,
 never both (B-06's annual-fraction adapter should target the fee form). W2-D2's terminal-return
@@ -253,7 +267,7 @@ Shumway fallback) and D5's exchange into `ReplayConfig::listing_exchange`.
 
 1. W0-B0: replay defaults are now delay≥1 (0 needs `allow_same_close`), `DelistingPolicy::TerminalReturn` (table else flagged Shumway −30 % NYSE/AMEX, −55 % Nasdaq, adverse for unknown venue), `LocateBreach::ClipV2`, `ShortFinancing::FeeOnceV2`; V1 enums keep old numbers.
 2. W0-B0: legacy report V2 on a weekly book: per-rebalance return 0.0510 (compounded week) vs 0.0100 under V1; 0.5 short at 252 bps/yr charged 2.5e-4/week vs 1.26e-2 under V1.
-3. W0-B0: the identified report (`replay_report.cpp`) cannot yet opt into same-close fills or choose a delisting policy; 11 atx-impl tests stay red until I0b wires `allow_same_close` and the policy.
+3. W0-B0: the identified report (`replay_report.cpp`) cannot yet opt into same-close fills or choose a delisting policy; 12 atx-impl tests (8 B-02, 4 B-04) stay red until I0b wires `allow_same_close` and the policy.
 
 ## Post-merge sync
 
@@ -288,3 +302,131 @@ committed at the head below.
 
 Result: **UP_TO_DATE / re-verified**, head `6381c3558f7560fd1f40372bde3980e63775ee31` plus this
 commit.
+
+## Fix pass 1
+
+Addresses `.superpowers/sdd/w0/lane-b0-review.md` (BLOCK: 1 major, 3 minor). Owned files only:
+`book/replay.{hpp,cpp}`, `book_w0b0_replay_delist_test.cpp`, and this report.
+
+### Major 1: interior gap liquidated under `TerminalReturn` — FIXED
+
+What changed (`replay.cpp` `ReplayExtensions`, `mark_holdings`, `apply_target`; `replay.hpp`):
+- Under `TerminalReturn`, a held name with no valid close at a valuation is **carried** and not
+  liquidated when no `DelistingEvent` is due for it and either (a) the panel prints it again
+  later (`last_print[i] > period`, where `last_print` is scanned once at init; this is the same
+  "last bar" rule as `holding_interval_returns` / `gap_marks`) or (b) its table event says it is
+  still listed (`last_valid_period >= period`, the related case the reviewer raised). Only a name
+  that never prints again, or whose event is due, is liquidated (table, else flagged Shumway),
+  as before.
+- A carried name keeps its units and is valued at its **last valid close** at both the start and
+  the end valuations. The carried seam is generalized to a per-name period (`carry_from`, passed
+  to `mark_holdings`), so a gap of several sessions stays at the same close. The whole move lands
+  in the interval where the name prints again. A pending liquidation uses the same per-name seam,
+  so a table-listed name that is carried and then delisted is liquidated from its carried value.
+- No trade executes on a carried name. A decision executing on it is not filled, and its
+  resolved weight is carried value / NAV. Its working order is cancelled, because a new decision
+  replaces every open order. A non-Hold instruction sets `trade_blocked` on the carry row. The
+  payload is still validated. Eligibility is not checked, because nothing executes: a gap day
+  commonly drops the name from the decision universe, and a Hold there must not abort.
+- Each carried valuation is recorded in the new `ReplayResult::gap_carries`
+  (`ReplayGapCarry{period, instrument, mark_period, tri_units, carried_value, trade_blocked}`).
+  The `ReplayAllocationState` contract documents the carried name's missing current mark.
+- `CrspDelistReturn` / `LastMarkZeroReturn` / `Abort` behave exactly as before: a gap under those
+  policies still fails. The claims path still runs as `Abort`. With no gap, every path is
+  bit-identical, and every pre-existing book test passes unchanged.
+
+New tests (`BookReplayDelist`):
+- `InteriorGapCarriesAHeldLongAndShortAtTheLastPrint`: a held long and a held short across a
+  one-session gap (50, 50, NaN, 60, 60) produce no liquidation and no flag, and one carry row
+  {period 2, mark_period 1, ±8 units, ±400}. The gap interval's P&L is 0 with NAV 1000 and
+  assets 500 ± 400. The re-print interval books ±80. Final NAV is 1080 (long) / 920 (short). The
+  identity holds, and explicit `Abort` fails at `period=2 instrument=1`.
+- `GapCarryBlocksTradesUntilThePrintAndSpansSessions`: a two-session gap has two carry rows,
+  both at mark_period 1 and both `trade_blocked`. Name 1 trades only at periods 1 and 4. At the
+  re-print the name resizes to 3.6 units, and final NAV = 324 + 540 + 3.6×66.
+- `TableStillListedCarriesThenLiquidatesAtTheTableReturn`: with table `{1, lvp 3, -0.9}` and no
+  close from 2 on, the name is carried at 2 and 3, then liquidated at 4 at −0.9 (Table, not
+  flagged) from the carried 400 → proceeds 40. Before the fix, period 2 took a flagged −55 %.
+- `IntentOnAGapCarriedNameIsNotExecuted`: the name is ineligible on its gap days. A Hold does
+  not abort and is not blocked, a Close is recorded as blocked, the resolved weight is 0.4 (the
+  carried weight), the units stay 8, and final NAV is 1080.
+
+Non-vacuity (mutation): forcing `gap_carried()` to return false restores the pre-fix
+liquidate-at-first-gap behaviour. Under that mutation all 4 new gap tests fail and the other 10
+pass. The source was restored and rebuilt afterwards.
+```
+build-equity\bin\atx-engine-book-tests.exe --gtest_filter=BookReplayDelist.* --gtest_brief=1   (mutant)
+[  FAILED  ] BookReplayDelist.InteriorGapCarriesAHeldLongAndShortAtTheLastPrint
+[  FAILED  ] BookReplayDelist.GapCarryBlocksTradesUntilThePrintAndSpansSessions
+[  FAILED  ] BookReplayDelist.TableStillListedCarriesThenLiquidatesAtTheTableReturn
+[  FAILED  ] BookReplayDelist.IntentOnAGapCarriedNameIsNotExecuted
+[  PASSED  ] 10 tests.
+```
+Measured (verbatim):
+```
+[measured] gap short=0 carried=400.00 final_nav=1080.0000 (pre-fix final_nav 780.0000)
+[measured] gap short=1 carried=-400.00 final_nav=920.0000 (pre-fix final_nav 1120.0000)
+```
+The short case is the reviewer's scenario. Before the fix, a short carried over a one-day halt
+booked a spurious +120 (+12 % of NAV) windfall. It now ends at 920, which is the true −80 move.
+
+### Minor 2: inconsistent failure counts — FIXED
+
+The Outcome, the acceptance row, Evidence group 1 ("8 tests"), Integration note 1 and Ledger
+candidate 3 now all say 12 (8 B-02 + 4 B-04). This matches the Post-merge sync section and the
+reviewer's count.
+
+### Minor 3: Shumway fallback credits shorts on known venues — reporting option implemented; rule is an owner decision
+
+The plan's numbers are unchanged. New fields: `ReplayResult::flagged_short_delistings` (the count
+of flagged rows whose position was short) and `flagged_short_pnl` (the sum of proceeds −
+last_value over those rows; positive means a gain to the book). G0 can size this P&L separately.
+Test `BookReplayDelist.FlaggedShortProceedsAreReportedApart`: a NYSE short gives count 1 and
+pnl +120 (= proceeds − last_value); a long gives 0/0; a table-sourced short gives 0/0. The
+owner decision (whether to apply adverse-for-the-side to every flagged fallback) is recorded in
+Integration notes ("For the owner / G0"). Publishing these fields in the identified report is
+I0b's (Integration note 2).
+
+### Minor 4: stage-level V1 legacy report reachable only by recompiling — NOT FIXED (out of scope), Integration note kept
+
+`RunConfig` and `--legacy-report-rule` live in I0b's `config.hpp`/`config.cpp`. The lane cannot
+add the field, so `stage_report.cpp` keeps `kLegacyReportRule`. Integration note 4 now states the
+exact I0b change (`RunConfig::legacy_report_rule` default 2 plus `--legacy-report-rule 1|2`,
+passed instead of the constant). With it, the stage side is a one-line swap in this lane's file.
+
+### Evidence (fix pass 1)
+
+All commands ran from `C:\atx-wt\pool-9` with `CMAKE_BUILD_PARALLEL_LEVEL=2`. Free RAM was 2.76–3.54
+GB, never below 2.0.
+```
+scripts\atx-build.ps1 check -Preset equity-dev atx-engine\src\book\replay.cpp
+  [1/2] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\replay.cpp.obj   exit=0 (/W4 /WX)
+scripts\atx-build.ps1 build -Preset equity-dev atx-engine-book-tests atx-impl-tests atx-shm-worker
+  [14/40] Linking CXX executable bin\atx-shm-worker.exe
+  [38/40] Linking CXX executable bin\atx-impl-tests.exe
+  [39/40] Linking CXX executable bin\atx-engine-book-tests.exe                              exit=0
+scripts\atx-build.ps1 -Ctest -Preset equity-dev -R '^BookReplayDelay'        100% tests passed, 0 tests failed out of 4    exit=0
+scripts\atx-build.ps1 -Ctest -Preset equity-dev -R '^BookReplayDelist'       100% tests passed, 0 tests failed out of 14   exit=0
+scripts\atx-build.ps1 -Ctest -Preset equity-dev -R '^BookBorrowSingleCount'  100% tests passed, 0 tests failed out of 5    exit=0
+scripts\atx-build.ps1 -Ctest -Preset equity-dev -R '^BookLegacyReport'       100% tests passed, 0 tests failed out of 11   exit=0
+build-equity\bin\atx-engine-book-tests.exe --gtest_brief=1
+  [==========] 122 tests from 18 test suites ran.   [  PASSED  ] 122 tests.                 exit=0
+build-equity\bin\atx-impl-tests.exe --gtest_brief=1
+  [==========] 535 tests from 102 test suites ran. (306130 ms total)
+  [  PASSED  ] 514 tests.  (5 skipped, 16 failed)                                           exit=1
+```
+The atx-impl failure set is identical by name to the 16 classified above: 8 B-02, 4 B-04, 3 that
+arrived with the merge, and 1 CRLF. The 4 B-04 tests still assert a pre-W0 abort, which I0b owns
+(Integration note 2). That whole-executable run was made on the fix source before one final
+comment-only rewrap in `replay.hpp`. After the rewrap, both targets were rebuilt and relinked
+(exit 0), and the book executable and all 4 anchored suites were re-run green on the final
+source.
+
+Book target: 117 → 122 tests, all passing (+5 `BookReplayDelist`: 4 gap tests and 1
+flagged-short test). No existing test was changed.
+
+Safety disclosure: during the mutation step, one `[IO.File]` call was first given a relative
+path, which .NET resolved against the process cwd `C:\atx`. It read `C:\atx\...\replay.cpp`,
+found no match, and wrote nothing. To confirm that, a read-only `git -C C:\atx status --short` was
+run on that one file. It showed only the other session's pre-existing modification. No file under
+`C:\atx` was written. The mutation was then redone with the absolute pool-9 path.
