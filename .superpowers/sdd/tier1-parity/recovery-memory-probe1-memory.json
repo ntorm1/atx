@@ -1,0 +1,17 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    ".superpowers/sdd/tier1-parity/recovery-memory-probe.py",
+    "--output",
+    ".superpowers/sdd/tier1-parity/recovery-memory-probe1.json"
+  ],
+  "job_limit_gb": 0.75,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 2.4141769409179688,
+    "commit_free_gb": 3.998126983642578
+  },
+  "child_pid": 4312,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.5462150573730469
+}
