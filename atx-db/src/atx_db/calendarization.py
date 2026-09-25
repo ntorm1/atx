@@ -329,12 +329,20 @@ def refresh_fundamental_calendar_map(
     The SQL input snapshot includes every issuer's annual periods before batching,
     so an issuer crossing a batch boundary keeps the same fiscal-year inference.
     Both full-sized staging tables remain inside DuckDB's memory/spill budget.
+
+    ``fiscal_scheme_*`` are the standardized build-time fiscal labels
+    (``create_fiscal_calendar_labels``): anchored on every filing in the warehouse, so
+    around a fiscal-year-end change a row's label can reflect a calendar first filed
+    after its ``available_at``. They name periods; they are not point-in-time selectors
+    (select by ``period_start``/``period_end``/``available_at``; calendar TTM uses the
+    ``greatest_overlap_*`` columns).
     """
 
     from ._standardization_set_based import (
         FISCAL_ANCHOR_EVIDENCE_TABLES,
         create_fiscal_calendar_labels,
         fiscal_anchor_candidates_sql,
+        fiscal_year_end_form_filings_sql,
     )
 
     options = options or CalendarizationOptions()
@@ -365,6 +373,9 @@ def refresh_fundamental_calendar_map(
                     candidates="_calendar_fiscal_candidates",
                     periods="fundamental_periods",
                     prefix="_calendar_fiscal",
+                    annual_form_filings=(
+                        fiscal_year_end_form_filings_sql() if "fundamental_statement_points" in evidence else None
+                    ),
                 )
             _create_calendar_map_input(store, labeled=bool(evidence))
         finally:

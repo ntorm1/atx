@@ -641,12 +641,35 @@ def fiscal_period_label_sql(basis: str, upstream_source: str, fiscal_quarter: st
 def _create_fiscal_labels(store: DuckDBStore) -> None:
     """Label every standardized (security, period_end) by its own fiscal period."""
 
+    has_points = store.con.execute(
+        "SELECT count(*) > 0 FROM duckdb_tables() WHERE table_name = 'fundamental_statement_points'"
+    ).fetchone()
     create_fiscal_calendar_labels(
-        store, candidates="_std_candidates_all", periods="_std_output_raw", prefix="_std_fiscal"
+        store,
+        candidates="_std_candidates_all",
+        periods="_std_output_raw",
+        prefix="_std_fiscal",
+        annual_form_filings=fiscal_year_end_form_filings_sql() if has_points and has_points[0] else None,
     )
 
 
 FISCAL_ANCHOR_EVIDENCE_TABLES = ("fundamental_statement_points", "fundamental_xbrl_metric")
+
+# Annual-report forms: the filing's own (latest-ending) annual period is its fiscal year,
+# whatever fp its facts carry (a 10-K whose facts have a blank fp still declares its year).
+FISCAL_YEAR_END_FORMS = tuple("10-K 10-K/A 10-K405 10-K405/A 10-KT 10-KT/A 20-F 20-F/A 40-F 40-F/A".split())
+
+
+def fiscal_year_end_form_filings_sql() -> str:
+    """SELECT ``(security_id, accession_number)`` of the statement-point filings on an annual-report form."""
+
+    forms = ", ".join(f"'{form}'" for form in FISCAL_YEAR_END_FORMS)
+    return f"""
+            SELECT DISTINCT security_id, accession_number
+            FROM fundamental_statement_points
+            WHERE security_id IS NOT NULL
+              AND accession_number IS NOT NULL
+              AND upper(trim(form)) IN ({forms})"""
 
 
 def fiscal_evidence_basis_sql(instant: str, period_start: str, period_end: str) -> str:
@@ -697,25 +720,37 @@ def fiscal_anchor_candidates_sql(tables: Sequence[str] = FISCAL_ANCHOR_EVIDENCE_
     )
 
 
-def create_fiscal_calendar_labels(store: DuckDBStore, *, candidates: str, periods: str, prefix: str) -> None:
+def create_fiscal_calendar_labels(
+    store: DuckDBStore,
+    *,
+    candidates: str,
+    periods: str,
+    prefix: str,
+    annual_form_filings: str | None = None,
+) -> None:
     """Label every (security, period_end) of ``periods`` by its own fiscal period.
 
     ``candidates`` is a relation of fiscal-calendar evidence rows shaped like
     ``_std_candidates_all`` (see :func:`fiscal_anchor_candidates_sql`); ``periods`` any
-    relation with ``security_id``/``period_end``.  Builds the temp tables
-    ``{prefix}_anchor_candidates``, ``{prefix}_anchors`` and ``{prefix}_labels`` (keyed by
-    ``(security_id, period_end)``: ``fiscal_year``, ``fiscal_quarter``,
-    ``fiscal_year_end_month`` of the reference calendar, ``reference_kind``).
+    relation with ``security_id``/``period_end``; ``annual_form_filings`` an optional
+    SELECT of the ``(security_id, accession_number)`` filed on an annual-report form
+    (:func:`fiscal_year_end_form_filings_sql`; without it only fp tags identify them).
+    Builds the temp tables ``{prefix}_anchor_candidates``, ``{prefix}_anchors`` and
+    ``{prefix}_labels`` (keyed by ``(security_id, period_end)``: ``fiscal_year``,
+    ``fiscal_quarter``, ``fiscal_year_end_month`` of the reference calendar,
+    ``reference_kind``).
 
     Fiscal-year anchors are, first, the fiscal years the issuer itself declared: the
-    latest-ending annual (330-380 day) period of each annual filing (every fact
-    carrying fp=FY: 10-K, 10-KT, 20-F), ended by its filing date.  Comparative,
-    recast and "twelve months ended" columns are never a filing's own year, so
-    they cannot become declared anchors.  Every other observed annual period is a
-    candidate too, ranked after every declared one: in the one greedy pass it
-    survives only where it overlaps no kept anchor, so a year seen only as a
-    comparative (its own 10-K untagged or mis-tagged) still anchors, while recast
-    and "twelve months ended" columns, which overlap a declared year, never do.
+    latest-ending annual (330-380 day) period of each annual filing (an annual-report
+    form -- 10-K, 10-KT, 20-F, 40-F -- or every fact carrying fp=FY), ended by its
+    filing date.  Comparative, recast and "twelve months ended" columns are never a
+    filing's own year, so they cannot become declared anchors.  Every other annual
+    period a year-end filing reports is a candidate too (every observed annual period
+    for an issuer with no declared year), ranked after every declared one: in the one
+    greedy pass it survives only where it overlaps no kept anchor, so a year seen only
+    as a comparative (its own 10-K untagged or mis-tagged) still anchors, while recast
+    and "twelve months ended" columns, which overlap a declared year, never do -- nor
+    does a 10-Q "twelve months ended" column in a year whose 10-K is missing.
     Overlapping candidates (> FISCAL_ANCHOR_OVERLAP_DAYS) are resolved greedily by
     (declared before observed, breadth of support, the primary period of a filing
     declaring the fiscal year end -- all facts fp FY/Q4, which a 10-Q never is --
@@ -745,10 +780,15 @@ def create_fiscal_calendar_labels(store: DuckDBStore, *, candidates: str, period
     anchor_candidates = f"{prefix}_anchor_candidates"
     anchors = f"{prefix}_anchors"
     labels = f"{prefix}_labels"
+    form_filings = annual_form_filings or (
+        "SELECT CAST(NULL AS VARCHAR) AS security_id, CAST(NULL AS VARCHAR) AS accession_number WHERE false"
+    )
     store.con.execute(
         f"""
         CREATE OR REPLACE TEMP TABLE {anchor_candidates} AS
-        WITH annual_periods AS (
+        WITH annual_form_filings AS ({form_filings}
+        ),
+        annual_periods AS (
             SELECT
                 security_id,
                 period_start,
@@ -764,20 +804,31 @@ def create_fiscal_calendar_labels(store: DuckDBStore, *, candidates: str, period
               AND period_end IS NOT NULL
             GROUP BY security_id, period_start, period_end
         ),
-        year_end_filings AS (
-            -- Filings declaring the fiscal year end: every fact fp=FY (a declared annual
-            -- filing: 10-K, 10-KT, 20-F) or, failing that, fp FY/Q4 (an annual filing whose
-            -- facts are tagged by quarter).  A 10-Q never declares Q4.
+        filing_tags AS (
             SELECT
                 security_id,
                 accession_number,
-                count(*) FILTER (WHERE upper(coalesce(fiscal_period, '')) <> 'FY') = 0 AS declares_fy
+                count(*) FILTER (WHERE upper(coalesce(fiscal_period, '')) <> 'FY') = 0 AS all_fy,
+                count(*) FILTER (WHERE upper(coalesce(fiscal_period, '')) NOT IN ('FY', 'Q4')) = 0 AS all_fy_q4
             FROM {candidates}
             WHERE upstream_source = 'fundamental_statement_points'
               AND security_id IS NOT NULL
               AND accession_number IS NOT NULL
             GROUP BY security_id, accession_number
-            HAVING count(*) FILTER (WHERE upper(coalesce(fiscal_period, '')) NOT IN ('FY', 'Q4')) = 0
+        ),
+        year_end_filings AS (
+            -- Filings declaring the fiscal year end: an annual-report form (10-K, 10-KT, 20-F,
+            -- 40-F, whatever fp its facts carry) or every fact fp=FY; failing both, fp FY/Q4
+            -- (an annual filing whose facts are tagged by quarter).  A 10-Q never declares Q4.
+            SELECT
+                t.security_id,
+                t.accession_number,
+                f.accession_number IS NOT NULL OR t.all_fy AS declares_fy
+            FROM filing_tags t
+            LEFT JOIN annual_form_filings f
+              ON f.security_id = t.security_id
+             AND f.accession_number = t.accession_number
+            WHERE f.accession_number IS NOT NULL OR t.all_fy_q4
         ),
         filing_periods AS (
             SELECT
@@ -830,9 +881,19 @@ def create_fiscal_calendar_labels(store: DuckDBStore, *, candidates: str, period
             SELECT DISTINCT security_id, period_start, period_end
             FROM filing_primaries
         ),
+        year_end_periods AS (
+            SELECT DISTINCT security_id, period_start, period_end
+            FROM filing_periods
+        ),
+        declaring_issuers AS (
+            SELECT DISTINCT security_id
+            FROM declared_annual
+        ),
         observed_annual AS (
-            -- Every other observed annual period, ranked after every declared anchor: it
-            -- survives the greedy pass only where it overlaps no kept anchor.
+            -- Every other annual period a year-end filing reports (any observed annual period
+            -- for an issuer that declared no year), ranked after every declared anchor: it
+            -- survives the greedy pass only where it overlaps no kept anchor.  A period only
+            -- 10-Qs report ("twelve months ended") never anchors an issuer with declared years.
             SELECT
                 a.security_id,
                 a.period_start,
@@ -855,6 +916,16 @@ def create_fiscal_calendar_labels(store: DuckDBStore, *, candidates: str, period
                   AND d.period_start = a.period_start
                   AND d.period_end = a.period_end
             )
+              AND (
+                    EXISTS (
+                        SELECT 1
+                        FROM year_end_periods r
+                        WHERE r.security_id = a.security_id
+                          AND r.period_start = a.period_start
+                          AND r.period_end = a.period_end
+                    )
+                 OR NOT EXISTS (SELECT 1 FROM declaring_issuers i WHERE i.security_id = a.security_id)
+              )
         )
         SELECT
             *,
