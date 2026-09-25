@@ -65,7 +65,9 @@ inline std::string encode_membership(std::uint32_t top_n, std::uint32_t band_bp,
         put_i64(out, r.effective_key);
         put_u32(out, static_cast<std::uint32_t>(r.ids.size()));
         for (const auto id : r.ids) put_i64(out, id);
-        for (std::size_t i = 0; i < r.ids.size(); ++i) put_u32(out, static_cast<std::uint32_t>(i + 1));
+        for (std::size_t i = 0; i < r.ids.size(); ++i) {
+            put_u32(out, static_cast<std::uint32_t>(i + 1));
+        }
     }
     put_u64(out, atx::engine::data::pit_fnv1a64(out));
     return out;

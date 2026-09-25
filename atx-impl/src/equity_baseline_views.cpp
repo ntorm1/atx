@@ -170,7 +170,8 @@ struct Prepared {
     ATX_TRY_VOID(add_bytes(plan.additional_array_bytes, program.fields.size(), sizeof(alpha::FieldId)));
     if (config.membership) {
         // D-12 as-of flags (one byte per evaluation cell) and the parsed id column.
-        ATX_TRY_VOID(add_bytes(plan.additional_array_bytes, plan.evaluation_cells, sizeof(atx::u8)));
+        ATX_TRY_VOID(add_bytes(plan.additional_array_bytes, plan.evaluation_cells,
+                               sizeof(atx::u8)));
         ATX_TRY_VOID(add_bytes(plan.additional_array_bytes, context.panel.instruments(),
                                sizeof(atx::i64)));
     }

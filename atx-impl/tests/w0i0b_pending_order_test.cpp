@@ -137,7 +137,8 @@ TEST_F(ImplPendingOrder_Stages, AFailedManifestWriteLeavesThePendingMarker) {
     const auto dir = root / "pub";
     fs::create_directories(dir / ".pending");
     bool called = false;
-    const auto failed = impl::publish_manifest_then_release_pending(dir, [&]() -> atx::core::Status {
+    const auto failed = impl::publish_manifest_then_release_pending(dir,
+                                                                    [&]() -> atx::core::Status {
         called = true;
         return Err(ErrorCode::IoError, "injected manifest failure");
     });

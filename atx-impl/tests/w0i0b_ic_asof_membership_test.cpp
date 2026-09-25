@@ -81,7 +81,9 @@ impl::PanelArtifact small_context(atx::usize dates, atx::usize names) {
     identity.instrument_namespace = "synthetic.securityID";
     identity.recipe = "fixture: synthetic ramps";
     identity.parents = {{"fixture", std::string(64, 'a')}};
-    for (atx::usize d = 0; d < dates; ++d) identity.session_keys.push_back(static_cast<atx::i64>(d) * kDay);
+    for (atx::usize d = 0; d < dates; ++d) {
+        identity.session_keys.push_back(static_cast<atx::i64>(d) * kDay);
+    }
     for (atx::usize i = 0; i < names; ++i) {
         identity.instrument_ids.push_back(std::to_string(id_of(i)));
         identity.original_instrument_indices.push_back(i);
@@ -394,7 +396,8 @@ TEST_F(ImplIcAsOfMembership_Stage, ConstantMembershipOutputIsIdenticalToTheYearU
         baseline_cfg("ctx.bin", "base_asof", "constant.bin", "as-of-v2"));
     ASSERT_TRUE(asof_base.has_value()) << asof_base.error().message();
 
-    const auto union_eval = impl::read_panel_artifact((root / "base_union/evaluation.bin").string());
+    const auto union_eval =
+        impl::read_panel_artifact((root / "base_union/evaluation.bin").string());
     const auto asof_eval = impl::read_panel_artifact((root / "base_asof/evaluation.bin").string());
     ASSERT_TRUE(union_eval.has_value() && asof_eval.has_value());
     EXPECT_EQ(union_eval->payload_sha256, asof_eval->payload_sha256)
@@ -542,8 +545,8 @@ TEST_F(ImplIcAsOfMembership_Stage, IcKnobsMinNamesDelayEmbargoAndOptionalAudit) 
     const auto strict_manifest = Json::parse(contents(root / "ic_min50/manifest.json"));
     EXPECT_EQ(strict_manifest.at("recipe").at("min_names_per_date"), 50);
     // Every emitted date is below the floor on every block, so nothing is reportable.
-    EXPECT_GT(strict_manifest.at("predictions_confirmed").at("dates_below_min_names_max_over_blocks")
-                  .get<int>(), 0);
+    const auto &confirmed = strict_manifest.at("predictions_confirmed");
+    EXPECT_GT(confirmed.at("dates_below_min_names_max_over_blocks").get<int>(), 0);
     const auto strict_summary = Json::parse(contents(root / "ic_min50/ic_summary.json"));
     for (const auto &row : strict_summary.at("series")) {
         EXPECT_EQ(row.at("full").at("dates_emitted"), 0);
