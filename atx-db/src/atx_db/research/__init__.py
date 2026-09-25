@@ -31,3 +31,34 @@ __all__ += [
     "default_anomaly_catalog",
     "load_anomaly_catalog",
 ]
+
+# R2a: research store and monthly point-in-time panel.
+from .panel import (  # noqa: E402
+    BASIS_RECONSTRUCTED,
+    BASIS_STRICT,
+    PanelFeature,
+    ResearchPanelOptions,
+    ResearchPanelResult,
+    ResearchPanelValidation,
+    build_research_panel,
+    default_panel_features,
+    expected_month_end_session,
+    validate_research_panel,
+)
+from .store import ResearchStore, default_research_db_path, open_research_store  # noqa: E402
+
+__all__ += [
+    "BASIS_RECONSTRUCTED",
+    "BASIS_STRICT",
+    "PanelFeature",
+    "ResearchPanelOptions",
+    "ResearchPanelResult",
+    "ResearchPanelValidation",
+    "ResearchStore",
+    "build_research_panel",
+    "default_panel_features",
+    "default_research_db_path",
+    "expected_month_end_session",
+    "open_research_store",
+    "validate_research_panel",
+]

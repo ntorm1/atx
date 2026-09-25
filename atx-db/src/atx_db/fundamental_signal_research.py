@@ -2,6 +2,13 @@
 
 The builder publishes one observed market session at a time. A consumer must
 filter the manifest to status='complete' before reading any run-scoped rows.
+
+The state-selection, owner-association, lineage and rejection rules are a
+shared builder over calendar, cohort and metric relations
+(:func:`stage_calendar`, :func:`stage_cohort`, :func:`stage_metric_legs`,
+:func:`stage_selected_states`). FQ1 runs it with one session and one metric
+at a time (strict basis, unchanged output); the monthly research panel
+(``atx_db.research.panel``) runs it with a month-end and a metric batch.
 """
 
 from __future__ import annotations
@@ -196,8 +203,20 @@ def _validate_options(options: FundamentalSignalResearchOptions) -> tuple[dt.dat
 
 
 def _definitions(con: Any, specs: tuple[dict[str, Any], ...]) -> tuple[str, str, dict[tuple[str, str], str]]:
-    roots = {(term["metric_code"], term["metric_window"])
-             for spec in specs for term in spec["terms"]}
+    return resolve_definitions(con, {(term["metric_code"], term["metric_window"])
+                                     for spec in specs for term in spec["terms"]})
+
+
+def resolve_definitions(
+    con: Any, roots: Iterable[tuple[str, str]],
+) -> tuple[str, str, dict[tuple[str, str], str]]:
+    """Resolve roots and dependencies against the seed and the stored registry.
+
+    Returns the canonical definitions manifest, its SHA-256 and the expected
+    definition hash per (metric_code, metric_window). A stored definition that
+    differs from the seed fails the run instead of mixing definition vintages.
+    """
+    roots = set(roots)
     registry = {row.metric_code: row for row in default_derived_definitions()}
     needed: set[tuple[str, str]] = set()
     pending = list(roots)
@@ -537,24 +556,128 @@ def _qualify_proof_batch(con: Any, ids: list[str],
     return answer
 
 
-def _resolve_new_proofs(con: Any, run_id: str,
-                        expected_hashes: dict[tuple[str, str], str],
-                        source_table: str = "_fs_selected") -> None:
-    """Resolve selected roots once per run, in fixed-size on-disk batches."""
+# ---------------------------------------------------------------------------
+# Shared PIT state-selection builder.
+#
+# FQ1 stages one observed decision session at a time; the monthly research
+# panel (research.panel) stages one month-end formation and a batch of
+# metrics at a time. Both run the same SQL over a calendar relation
+# (decision_date, cutoff), a dated cohort relation and a metric relation, so
+# the selection, owner association, lineage and rejection rules exist once.
+# ---------------------------------------------------------------------------
+
+STRICT_UNIVERSE_ID = SOURCE_IDS["universe_id"]
+# Same value as universe_us_listed.RECONSTRUCTED_US_LISTED_UNIVERSE_ID (RX1).
+RECONSTRUCTED_UNIVERSE_ID = "us_listed_reconstructed_v1"
+IDENTITY_BASIS_STRICT = "dated_identifier_history"
+IDENTITY_BASIS_RECONSTRUCTED = "current_ticker_unverified"
+IDENTITY_BASES = (IDENTITY_BASIS_STRICT, IDENTITY_BASIS_RECONSTRUCTED)
+LISTED_EXCHANGE_CODES = ("XNAS", "XNYS", "XASE", "ARCX", "BATS")
+RECONSTRUCTED_ELIGIBLE_TYPES = ("common", "common_unverified")
+# Values whose selected operand is a fiscal year may be older than a quarter.
+ANNUAL_VALUE_ORIGINS = ("annual_fallback", "annual_dependency")
+PROOF_TABLES = frozenset({"fundamental_signal_proofs", "research_panel_proofs"})
+_PROOF_SOURCES = frozenset({"_fs_selected", "_fs_prior_candidates"})
+_PROOF_COLUMNS_SQL = ",".join(f"unnest(CAST(? AS {kind}[]))" for kind in (
+    "VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR", "TIMESTAMP", "VARCHAR", "VARCHAR",
+    "VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR", "DATE", "DATE",
+    "TIMESTAMP", "TIMESTAMP"))
+_RELATION = re.compile(r"^_[a-z][a-z0-9_]{0,62}$")
+
+
+@dataclass(frozen=True)
+class MetricLeg:
+    """One derived metric staged by :func:`stage_selected_states`.
+
+    ``max_age_days`` bounds quarterly/instant anchors; ``annual_max_age_days``
+    bounds values whose ``value_origin`` is an annual fallback or dependency.
+    ``quarterly_origin_required`` rejects any non-quarterly arithmetic origin.
+    """
+
+    metric_code: str
+    metric_window: str
+    expected_hash: str
+    max_age_days: int
+    annual_max_age_days: int
+    quarterly_origin_required: bool = False
+
+
+def _relation(name: str) -> str:
+    if not isinstance(name, str) or not _RELATION.fullmatch(name):
+        raise ValueError(f"unsupported staging relation: {name!r}")
+    return name
+
+
+def _sql_text_list(values: Iterable[str]) -> str:
+    return ",".join("'" + str(value).replace("'", "''") + "'" for value in values)
+
+
+def stage_calendar(con: Any, rows: Iterable[tuple[dt.date, dt.datetime]],
+                   table: str = "_fs_calendar") -> None:
+    """Stage decision dates with their naive-UTC decision cutoffs."""
+    table = _relation(table)
+    payload = [(day, cutoff) for day, cutoff in rows]
+    if any(type(day) is not dt.date or not isinstance(cutoff, dt.datetime)
+           or cutoff.tzinfo is not None for day, cutoff in payload):
+        raise ValueError("calendar rows need a date and a naive UTC cutoff")
+    if len({day for day, _ in payload}) != len(payload):
+        raise ValueError("calendar decision dates must be unique")
+    con.execute(f"CREATE OR REPLACE TEMP TABLE {table} (decision_date DATE, cutoff TIMESTAMP)")
+    if payload:
+        con.executemany(f"INSERT INTO {table} VALUES (?, ?)", [list(row) for row in payload])
+
+
+def stage_metric_legs(con: Any, legs: Iterable[MetricLeg], table: str = "_fs_metrics") -> None:
+    """Stage the metric relation (code, window, expected hash and age policy)."""
+    table = _relation(table)
+    payload = list(legs)
+    keys = [(leg.metric_code, leg.metric_window) for leg in payload]
+    if not payload or len(set(keys)) != len(keys):
+        raise ValueError("metric legs must be non-empty and unique")
+    for leg in payload:
+        if (not _SHA.fullmatch(str(leg.expected_hash))
+                or any(isinstance(age, bool) or not isinstance(age, int) or not 1 <= age <= 3650
+                       for age in (leg.max_age_days, leg.annual_max_age_days))):
+            raise ValueError(f"invalid metric leg: {leg}")
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE {table} (
+          metric_code VARCHAR, metric_window VARCHAR, expected_hash VARCHAR,
+          max_age_days INTEGER, annual_max_age_days INTEGER,
+          quarterly_origin_required BOOLEAN)
+    """)
+    con.executemany(f"INSERT INTO {table} VALUES (?,?,?,?,?,?)", [
+        [leg.metric_code, leg.metric_window, leg.expected_hash, leg.max_age_days,
+         leg.annual_max_age_days, bool(leg.quarterly_origin_required)] for leg in payload
+    ])
+
+
+def resolve_lineage_proofs(con: Any, run_id: str,
+                           expected_hashes: dict[tuple[str, str], str], *,
+                           source_table: str = "_fs_selected",
+                           proof_table: str = "fundamental_signal_proofs") -> None:
+    """Resolve each not-yet-proved selected root once per run, in fixed batches.
+
+    The proof table is the run's cache: a root selected on many decision dates
+    is qualified exactly once.
+    """
     from .derived_lineage import qualify_selected_lineage
 
-    if source_table not in ("_fs_selected", "_fs_prior_candidates"):
+    if source_table not in _PROOF_SOURCES:
         raise ValueError("unsupported proof staging relation")
+    if proof_table not in PROOF_TABLES:
+        raise ValueError("unsupported proof table")
 
     con.execute("""
         CREATE OR REPLACE TEMP TABLE _fs_unproved AS
         SELECT row_number() OVER (ORDER BY s.derived_value_id) AS proof_number,
                s.derived_value_id,s.security_id,s.metric_code,s.metric_window,
                s.available_at,s.selected_input_refs_hash
-        FROM {source_table} s LEFT JOIN fundamental_signal_proofs p
+        FROM (SELECT DISTINCT derived_value_id,security_id,metric_code,metric_window,
+                     available_at,selected_input_refs_hash
+              FROM {source_table}) s LEFT JOIN {proof_table} p
           ON p.run_id=? AND p.derived_value_id=s.derived_value_id
         WHERE p.derived_value_id IS NULL
-    """.replace("{source_table}", source_table), [run_id])
+    """.replace("{source_table}", source_table).replace("{proof_table}", proof_table), [run_id])
     total = int(con.execute("SELECT count(*) FROM _fs_unproved").fetchone()[0])
     for start in range(1, total + 1, 256):
         batch = con.execute("""
@@ -579,148 +702,332 @@ def _resolve_new_proofs(con: Any, run_id: str,
                             _canonical(_json_safe(ends)), proof.digest,
                             min(ends) if ends else None, max(ends) if ends else None,
                             max(clocks) if clocks else None, event_at))
-        con.executemany("""
-            INSERT INTO fundamental_signal_proofs
+        if not payload:
+            continue
+        # One statement per batch: each column is bound as one typed list and
+        # unnested in lockstep (18 parameters, not one per value).
+        con.execute("""
+            INSERT INTO {proof_table}
             (run_id,derived_value_id,derived_owner_security_id,metric_code,
              metric_window,root_available_at,selected_input_refs_hash,selected_cik,
              status,reason,leaf_ids_json,input_clocks_json,fiscal_ends_json,
              proof_digest,oldest_fiscal_end,newest_fiscal_end,latest_input_clock,
              proof_cutoff)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, payload)
+            SELECT {columns}
+        """.replace("{proof_table}", proof_table).replace("{columns}", _PROOF_COLUMNS_SQL),
+            [list(column) for column in zip(*payload, strict=True)])
+
+
+def stage_cohort(
+    con: Any, *, calendar_table: str = "_fs_calendar",
+    universe_id: str = STRICT_UNIVERSE_ID,
+    identity_basis: str = IDENTITY_BASIS_STRICT,
+    universe_source: str = SOURCE_IDS["universe_source"],
+    owner_links_table: str | None = None,
+    eligible_security_types: tuple[str, ...] = RECONSTRUCTED_ELIGIBLE_TYPES,
+    include_unlisted_tail: bool = True,
+    membership_detail: bool = False,
+) -> dict[dt.date, tuple[int, int, int, int]]:
+    """Stage the dated cohort ``_fs_cohort_cal`` for every calendar decision.
+
+    ``identity_basis='dated_identifier_history'`` (strict, FQ1 default): common
+    stock on a listed venue whose CIK comes only from dated identifier history
+    visible at the decision cutoff. ``'current_ticker_unverified'`` (RX1 labeled
+    reconstruction): ``eligible_security_types`` on a listed venue, plus, with
+    ``include_unlisted_tail``, retained names without listing evidence (the
+    delisted tail), whose owner CIK comes from the reconstructed price-line ->
+    owner bridge staged in ``owner_links_table`` (a link counts only when its
+    interval covers the date and its modeled clock is at or before the cutoff).
+
+    Returns (visible, eligible, overlapping, valid) member counts per date.
+    """
+    calendar_table = _relation(calendar_table)
+    if identity_basis not in IDENTITY_BASES:
+        raise ValueError(f"unsupported identity basis: {identity_basis!r}")
+    reconstructed = identity_basis == IDENTITY_BASIS_RECONSTRUCTED
+    if reconstructed and owner_links_table is None:
+        raise ValueError("the reconstructed identity basis needs an owner-link relation")
+    detail = membership_detail or reconstructed
+    detail_columns = ("max(u.reason) AS membership_reason, max(u.symbol) AS symbol" if detail else
+                      "CAST(NULL AS VARCHAR) AS membership_reason, CAST(NULL AS VARCHAR) AS symbol")
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _fs_members AS
+        SELECT c.decision_date, u.security_id, count(*) AS visible_count,
+               max(u.security_type) AS security_type,
+               max(u.exchange_code) AS exchange_code,
+               max(u.cik) AS membership_cik, {detail_columns}
+        FROM universe_us_listed_membership u JOIN {calendar_table} c
+          ON u.valid_from<=c.decision_date
+         AND (u.valid_to IS NULL OR u.valid_to>=c.decision_date)
+         AND u.available_at<=c.cutoff AND u.as_of_date<=c.decision_date
+        WHERE u.universe_id=? AND u.source=?
+        GROUP BY c.decision_date, u.security_id
+    """, [universe_id, universe_source])
+    venues = _sql_text_list(LISTED_EXCHANGE_CODES)
+    if not reconstructed:
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE _fs_cik AS
+            SELECT m.decision_date, h.security_id,
+                   count(DISTINCT CASE WHEN regexp_full_match(h.id_value, '[0-9]{{1,10}}')
+                     THEN lpad(h.id_value,10,'0') ELSE h.id_value END) AS cik_count,
+                   max(CASE WHEN regexp_full_match(h.id_value, '[0-9]{{1,10}}')
+                     THEN lpad(h.id_value,10,'0') END) AS cik,
+                   count(*) FILTER (WHERE NOT regexp_full_match(h.id_value, '[0-9]{{1,10}}')) AS invalid_count
+            FROM security_identifier_history h JOIN _fs_members m USING (security_id)
+            JOIN {calendar_table} c ON c.decision_date=m.decision_date
+            WHERE h.id_type='CIK' AND h.id_value IS NOT NULL
+              AND h.valid_from<=c.decision_date
+              AND (h.valid_to IS NULL OR h.valid_to>c.decision_date)
+              AND h.available_at IS NOT NULL AND h.available_at<=c.cutoff
+              AND h.as_of_date<=c.decision_date
+            GROUP BY m.decision_date, h.security_id
+        """)
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE _fs_cohort_cal AS
+            SELECT m.decision_date, m.security_id, c.cik,
+                   (m.security_type='common' AND m.exchange_code IN ({venues})) AS is_common,
+                   CASE WHEN m.visible_count>1 THEN 'overlapping_membership'
+                        WHEN m.security_type<>'common' OR m.exchange_code NOT IN
+                             ({venues}) THEN 'not_common'
+                        WHEN c.cik_count IS NULL THEN 'missing_dated_cik'
+                        WHEN c.invalid_count>0 THEN 'invalid_dated_cik'
+                        WHEN c.cik_count<>1 THEN 'ambiguous_dated_cik'
+                        WHEN m.membership_cik IS NOT NULL AND
+                             (NOT regexp_full_match(m.membership_cik,'[0-9]{{1,10}}') OR
+                              lpad(m.membership_cik,10,'0') IS DISTINCT FROM c.cik)
+                             THEN 'membership_cik_mismatch'
+                        ELSE 'valid' END AS cohort_reason,
+                   m.symbol, m.security_type, m.exchange_code, m.membership_reason,
+                   m.membership_cik, '{IDENTITY_BASIS_STRICT}' AS identity_basis,
+                   CASE WHEN c.cik_count=1 THEN 'dated_identifier_history' END AS owner_link_method,
+                   CASE WHEN c.cik_count IS NULL THEN 'no_dated_cik_at_cutoff' END AS owner_link_reason
+            FROM _fs_members m LEFT JOIN _fs_cik c
+              ON c.decision_date=m.decision_date AND c.security_id=m.security_id
+        """)
+    else:
+        links = _relation(owner_links_table)
+        types = _sql_text_list(eligible_security_types) or "''"
+        tail = "true" if include_unlisted_tail else "false"
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE _fs_link_state AS
+            WITH links AS (
+              SELECT m.decision_date, m.security_id, l.cik AS raw_cik, l.link_method,
+                     l.identity_basis, l.unlinked_reason,
+                     coalesce(l.cik IS NOT NULL AND l.valid_from<=c.decision_date
+                              AND (l.valid_to IS NULL OR l.valid_to>c.decision_date), false) AS covers,
+                     coalesce(l.available_at<=c.cutoff, false) AS known
+              FROM _fs_members m JOIN {calendar_table} c ON c.decision_date=m.decision_date
+              JOIN {links} l ON l.price_security_id=m.security_id
+            )
+            SELECT decision_date, security_id,
+                   count(DISTINCT CASE WHEN regexp_full_match(raw_cik,'[0-9]{{1,10}}')
+                     THEN lpad(raw_cik,10,'0') ELSE raw_cik END) FILTER (WHERE covers AND known) AS link_count,
+                   max(CASE WHEN regexp_full_match(raw_cik,'[0-9]{{1,10}}')
+                     THEN lpad(raw_cik,10,'0') END) FILTER (WHERE covers AND known) AS cik,
+                   count(*) FILTER (WHERE covers AND known
+                                    AND NOT regexp_full_match(raw_cik,'[0-9]{{1,10}}')) AS invalid_count,
+                   min(link_method) FILTER (WHERE covers AND known) AS link_method,
+                   min(identity_basis) FILTER (WHERE covers AND known) AS identity_basis,
+                   count(*) FILTER (WHERE covers AND NOT known) AS late_links,
+                   min(unlinked_reason) AS unlinked_reason
+            FROM links GROUP BY decision_date, security_id
+        """)
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE _fs_cohort_cal AS
+            WITH typed AS (
+              SELECT *, coalesce((security_type IN ({types}) AND exchange_code IN ({venues}))
+                        OR ({tail} AND membership_reason='reconstructed_no_listing_evidence'),
+                        false) AS eligible
+              FROM _fs_members
+            )
+            SELECT m.decision_date, m.security_id, k.cik, m.eligible AS is_common,
+                   CASE WHEN m.visible_count>1 THEN 'overlapping_membership'
+                        WHEN NOT m.eligible THEN 'not_common'
+                        WHEN m.membership_reason='member_conflicting_cik'
+                             THEN 'membership_conflicting_cik'
+                        WHEN coalesce(k.link_count,0)=0 THEN 'missing_owner_link'
+                        WHEN k.invalid_count>0 THEN 'invalid_owner_link_cik'
+                        WHEN k.link_count<>1 THEN 'ambiguous_owner_link'
+                        WHEN m.membership_cik IS NOT NULL AND
+                             (NOT regexp_full_match(m.membership_cik,'[0-9]{{1,10}}') OR
+                              lpad(m.membership_cik,10,'0') IS DISTINCT FROM k.cik)
+                             THEN 'membership_cik_mismatch'
+                        ELSE 'valid' END AS cohort_reason,
+                   m.symbol, m.security_type, m.exchange_code, m.membership_reason,
+                   m.membership_cik,
+                   coalesce(k.identity_basis, '{IDENTITY_BASIS_RECONSTRUCTED}') AS identity_basis,
+                   k.link_method AS owner_link_method,
+                   CASE WHEN coalesce(k.link_count,0)>0 THEN NULL
+                        WHEN coalesce(k.late_links,0)>0 THEN 'owner_link_after_cutoff'
+                        ELSE coalesce(k.unlinked_reason,'no_owner_link_interval') END AS owner_link_reason
+            FROM typed m LEFT JOIN _fs_link_state k
+              ON k.decision_date=m.decision_date AND k.security_id=m.security_id
+        """)
+    return {row[0]: (int(row[1]), int(row[2]), int(row[3]), int(row[4])) for row in con.execute("""
+        SELECT decision_date, count(*), count(*) FILTER (WHERE is_common),
+               count(*) FILTER (WHERE cohort_reason='overlapping_membership'),
+               count(*) FILTER (WHERE cohort_reason='valid')
+        FROM _fs_cohort_cal GROUP BY decision_date
+    """).fetchall()}
 
 
 def _stage_cohort(con: Any, day: dt.date, cutoff: dt.datetime,
-                  as_of_date: dt.date) -> tuple[int, int, int, int]:
-    con.execute("""
-        CREATE OR REPLACE TEMP TABLE _fs_members AS
-        SELECT security_id, count(*) AS visible_count,
-               max(security_type) AS security_type,
-               max(exchange_code) AS exchange_code,
-               max(cik) AS membership_cik
-        FROM universe_us_listed_membership
-        WHERE universe_id=? AND source=? AND valid_from<=?
-          AND (valid_to IS NULL OR valid_to>=?)
-          AND available_at<=? AND as_of_date<=?
-        GROUP BY security_id
-    """, [SOURCE_IDS["universe_id"], SOURCE_IDS["universe_source"],
-          day, day, cutoff, day])
-    con.execute("""
-        CREATE OR REPLACE TEMP TABLE _fs_cik AS
-        SELECT h.security_id,
-               count(DISTINCT CASE WHEN regexp_full_match(h.id_value, '[0-9]{1,10}')
-                 THEN lpad(h.id_value,10,'0') ELSE h.id_value END) AS cik_count,
-               max(CASE WHEN regexp_full_match(h.id_value, '[0-9]{1,10}')
-                 THEN lpad(h.id_value,10,'0') END) AS cik,
-               count(*) FILTER (WHERE NOT regexp_full_match(h.id_value, '[0-9]{1,10}')) AS invalid_count
-        FROM security_identifier_history h JOIN _fs_members m USING (security_id)
-        WHERE h.id_type='CIK' AND h.id_value IS NOT NULL
-          AND h.valid_from<=? AND (h.valid_to IS NULL OR h.valid_to>?)
-          AND h.available_at IS NOT NULL AND h.available_at<=? AND h.as_of_date<=?
-        GROUP BY h.security_id
-    """, [day, day, cutoff, day])
+                  as_of_date: dt.date, *, universe_id: str = STRICT_UNIVERSE_ID,
+                  identity_basis: str = IDENTITY_BASIS_STRICT,
+                  owner_links_table: str | None = None) -> tuple[int, int, int, int]:
+    """FQ1 single-session cohort (strict by default) staged as ``_fs_cohort``."""
+    stage_calendar(con, [(day, cutoff)])
+    counts = stage_cohort(con, universe_id=universe_id, identity_basis=identity_basis,
+                          owner_links_table=owner_links_table)
     con.execute("""
         CREATE OR REPLACE TEMP TABLE _fs_cohort AS
-        SELECT m.security_id, c.cik,
-               (m.security_type='common' AND m.exchange_code IN
-                 ('XNAS','XNYS','XASE','ARCX','BATS')) AS is_common,
-               CASE WHEN m.visible_count>1 THEN 'overlapping_membership'
-                    WHEN m.security_type<>'common' OR m.exchange_code NOT IN
-                         ('XNAS','XNYS','XASE','ARCX','BATS') THEN 'not_common'
-                    WHEN c.cik_count IS NULL THEN 'missing_dated_cik'
-                    WHEN c.invalid_count>0 THEN 'invalid_dated_cik'
-                    WHEN c.cik_count<>1 THEN 'ambiguous_dated_cik'
-                    WHEN m.membership_cik IS NOT NULL AND
-                         (NOT regexp_full_match(m.membership_cik,'[0-9]{1,10}') OR
-                          lpad(m.membership_cik,10,'0') IS DISTINCT FROM c.cik)
-                         THEN 'membership_cik_mismatch'
-                    ELSE 'valid' END AS cohort_reason
-        FROM _fs_members m LEFT JOIN _fs_cik c USING (security_id)
+        SELECT security_id, cik, is_common, cohort_reason FROM _fs_cohort_cal
     """)
-    return tuple(int(x) for x in con.execute("""
-        SELECT count(*), count(*) FILTER (WHERE is_common),
-               count(*) FILTER (WHERE cohort_reason='overlapping_membership'),
-               count(*) FILTER (WHERE cohort_reason='valid') FROM _fs_cohort
-    """).fetchone())
+    return counts.get(day, (0, 0, 0, 0))
 
 
 def _stage_leg(con: Any, run_id: str, code: str, window: str,
                expected_hash: str, all_hashes: dict[tuple[str, str], str],
                day: dt.date, cutoff: dt.datetime, max_age_days: int) -> None:
+    """FQ1 single-session, single-metric leg over the staged ``_fs_cohort``."""
+    stage_calendar(con, [(day, cutoff)])
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE _fs_leg_cohort AS
+        SELECT CAST(? AS DATE) AS decision_date, security_id, cik, cohort_reason FROM _fs_cohort
+    """, [day])
+    stage_metric_legs(con, [MetricLeg(code, window, expected_hash, max_age_days, max_age_days,
+                                      code == "eps_diluted_q_growth_yoy")])
+    stage_selected_states(con, run_id=run_id, all_hashes=all_hashes)
+
+
+def stage_selected_states(
+    con: Any, *, run_id: str, all_hashes: dict[tuple[str, str], str],
+    calendar_table: str = "_fs_calendar", cohort_table: str = "_fs_leg_cohort",
+    metrics_table: str = "_fs_metrics", proof_table: str = "fundamental_signal_proofs",
+    metric_source: str = SOURCE_IDS["metric_source"],
+    max_selected_states: int = 100_000, max_prior_states: int = 100_000,
+) -> None:
+    """Stage ``_fs_leg``: one selected state and reason per (date, member, metric).
+
+    Inputs are relations: ``calendar_table`` (decision_date, cutoff),
+    ``cohort_table`` (decision_date, security_id, cik, cohort_reason) and
+    ``metrics_table`` (see :func:`stage_metric_legs`). Every derived state is
+    selected as visible at its own decision cutoff; lineage proofs are cached in
+    ``proof_table`` per run and resolved once per ``derived_value_id``.
+    """
+    calendar_table = _relation(calendar_table)
+    cohort_table = _relation(cohort_table)
+    metrics_table = _relation(metrics_table)
+    if proof_table not in PROOF_TABLES:
+        raise ValueError("unsupported proof table")
+
+    def sql(text: str) -> str:
+        return (text.replace("{calendar}", calendar_table).replace("{cohort}", cohort_table)
+                .replace("{metrics}", metrics_table).replace("{proofs}", proof_table))
+
     # Select complete visible publisher states by owner before testing status.
     # An issuer-owned state may have a different security_id than the listed
     # security; exact selected leaf CIK proof supplies the joining identity.
-    con.execute("""
-        CREATE OR REPLACE TEMP TABLE _fs_selected AS
+    # The two rankings sort only narrow keys (the wide state row is joined
+    # back by its primary key): identical selection, ~4x less sort volume.
+    con.execute(sql("""
+        CREATE OR REPLACE TEMP TABLE _fs_selected_keys AS
         WITH bucket_states AS (
-          SELECT d.derived_value_id,d.source,d.security_id,d.metric_code,
-                 d.metric_window,d.target_bucket,d.period_end,d.value,
-                 d.available_at,d.as_of_date,d.valid_to,d.inputs_hash,
-                 d.definition_hash,d.history_status,d.value_status,
-                 d.selected_input_refs_hash,d.fiscal_period_start,
-                 d.fiscal_period_end,d.value_origin,
+          SELECT c.decision_date,d.metric_code,d.metric_window,d.security_id,
+                 d.period_end,d.available_at,d.derived_value_id,
                  row_number() OVER (
-                   PARTITION BY d.security_id,coalesce(d.target_bucket,
+                   PARTITION BY c.decision_date,d.metric_code,d.metric_window,
+                     d.security_id,coalesce(d.target_bucket,
                      CAST(floor((year(d.period_end)*12+month(d.period_end)-1+
                        CASE WHEN day(d.period_end)>=15 THEN 1 ELSE 0 END)/3.0) AS BIGINT))
                    ORDER BY d.available_at DESC,d.derived_value_id DESC) AS bucket_rank
           FROM derived_metric_values d
-          WHERE d.source=? AND d.metric_code=? AND d.metric_window=?
-            AND d.period_end<=? AND d.available_at<=? AND d.as_of_date<=?
+          JOIN {metrics} m ON m.metric_code=d.metric_code AND m.metric_window=d.metric_window
+          JOIN {calendar} c ON d.period_end<=c.decision_date AND d.available_at<=c.cutoff
+                           AND d.as_of_date<=c.decision_date
+          WHERE d.source=?
         ), selected AS (
           SELECT *,row_number() OVER (
-            PARTITION BY security_id ORDER BY period_end DESC,available_at DESC,derived_value_id DESC
+            PARTITION BY decision_date,metric_code,metric_window,security_id
+            ORDER BY period_end DESC,available_at DESC,derived_value_id DESC
           ) AS period_rank FROM bucket_states WHERE bucket_rank=1
         )
-        SELECT * FROM selected WHERE period_rank=1
-    """, [SOURCE_IDS["metric_source"], code, window, day, cutoff, day])
+        SELECT decision_date,metric_code,metric_window,security_id,derived_value_id
+        FROM selected WHERE period_rank=1
+    """), [metric_source])
+    con.execute(sql("""
+        CREATE OR REPLACE TEMP TABLE _fs_selected AS
+        SELECT k.decision_date,c.cutoff,d.derived_value_id,d.source,d.security_id,
+               d.metric_code,d.metric_window,d.target_bucket,d.period_end,d.value,
+               d.available_at,d.as_of_date,d.valid_to,d.inputs_hash,
+               d.definition_hash,d.history_status,d.value_status,
+               d.selected_input_refs_hash,d.fiscal_period_start,
+               d.fiscal_period_end,d.value_origin
+        FROM _fs_selected_keys k JOIN {calendar} c ON c.decision_date=k.decision_date
+        JOIN derived_metric_values d ON d.derived_value_id=k.derived_value_id
+         AND d.security_id=k.security_id AND d.metric_code=k.metric_code
+         AND d.metric_window=k.metric_window
+        WHERE d.source=?
+    """), [metric_source])
     candidate_count = int(con.execute("SELECT count(*) FROM _fs_selected").fetchone()[0])
-    if candidate_count > 100_000:
-        raise RuntimeError(f"selected owner bound exceeded: {candidate_count} > 100000")
-    _resolve_new_proofs(con, run_id, all_hashes)
+    if candidate_count > max_selected_states:
+        raise RuntimeError(
+            f"selected owner bound exceeded: {candidate_count} > {max_selected_states}")
+    resolve_lineage_proofs(con, run_id, all_hashes, proof_table=proof_table)
     # An invalid current state may have no identifiable leaves. Count the full
     # prior history before staging, then resolve every prior event under a
     # fixed partition cap. A cap breach fails the run; it never silently drops
-    # old issuer evidence and lets a different owner win.
-    prior_count = int(con.execute("""
+    # old issuer evidence and lets a different owner win. When every selected
+    # state already has a proven CIK the prior history cannot matter, so the
+    # history scan is skipped (the staged candidate set is empty either way).
+    unowned = int(con.execute(sql("""
+        SELECT count(*) FROM _fs_selected s JOIN {proofs} current_proof
+          ON current_proof.run_id=? AND current_proof.derived_value_id=s.derived_value_id
+        WHERE current_proof.selected_cik IS NULL
+    """), [run_id]).fetchone()[0])
+    prior_count = 0 if not unowned else int(con.execute(sql("""
         SELECT count(*)
-        FROM _fs_selected s JOIN fundamental_signal_proofs current_proof
+        FROM _fs_selected s JOIN {proofs} current_proof
           ON current_proof.run_id=? AND current_proof.derived_value_id=s.derived_value_id
         JOIN derived_metric_values d ON d.security_id=s.security_id
           AND d.metric_code=s.metric_code AND d.metric_window=s.metric_window
           AND d.source=s.source AND d.available_at<s.available_at
-          AND d.available_at<=? AND d.as_of_date<=?
+          AND d.available_at<=s.cutoff AND d.as_of_date<=s.decision_date
         WHERE current_proof.selected_cik IS NULL
-    """, [run_id, cutoff, day]).fetchone()[0])
-    if prior_count > 100_000:
-        raise RuntimeError(f"prior owner proof bound exceeded: {prior_count} > 100000")
-    con.execute("""
+    """), [run_id]).fetchone()[0])
+    if prior_count > max_prior_states:
+        raise RuntimeError(
+            f"prior owner proof bound exceeded: {prior_count} > {max_prior_states}")
+    history = "" if unowned else "AND false"
+    con.execute(sql("""
         CREATE OR REPLACE TEMP TABLE _fs_prior_candidates AS
         SELECT DISTINCT d.derived_value_id,d.security_id,d.metric_code,d.metric_window,
                d.available_at,d.selected_input_refs_hash
-        FROM _fs_selected s JOIN fundamental_signal_proofs current_proof
+        FROM _fs_selected s JOIN {proofs} current_proof
           ON current_proof.run_id=? AND current_proof.derived_value_id=s.derived_value_id
         JOIN derived_metric_values d ON d.security_id=s.security_id
           AND d.metric_code=s.metric_code AND d.metric_window=s.metric_window
           AND d.source=s.source AND d.available_at<s.available_at
-          AND d.available_at<=? AND d.as_of_date<=?
-        WHERE current_proof.selected_cik IS NULL
-    """, [run_id, cutoff, day])
-    _resolve_new_proofs(con, run_id, all_hashes, "_fs_prior_candidates")
-    con.execute("""
+          AND d.available_at<=s.cutoff AND d.as_of_date<=s.decision_date
+        WHERE current_proof.selected_cik IS NULL {history}
+    """).replace("{history}", history), [run_id])
+    resolve_lineage_proofs(con, run_id, all_hashes, source_table="_fs_prior_candidates",
+                           proof_table=proof_table)
+    con.execute(sql("""
         CREATE OR REPLACE TEMP TABLE _fs_prior_owner_cik AS
-        SELECT s.derived_value_id,
+        SELECT s.decision_date,s.derived_value_id,
                arg_max(p.selected_cik,(p.root_available_at,p.derived_value_id)) AS prior_cik
-        FROM _fs_selected s JOIN fundamental_signal_proofs p
+        FROM _fs_selected s JOIN {proofs} p
           ON p.run_id=? AND p.derived_owner_security_id=s.security_id
-         AND p.metric_code=? AND p.metric_window=?
-         AND p.root_available_at<s.available_at AND p.root_available_at<=?
+         AND p.metric_code=s.metric_code AND p.metric_window=s.metric_window
+         AND p.root_available_at<s.available_at AND p.root_available_at<=s.cutoff
          AND p.status='qualified' AND p.selected_cik IS NOT NULL
-        GROUP BY s.derived_value_id
-    """, [run_id, code, window, cutoff])
-    con.execute("""
+        GROUP BY s.decision_date,s.derived_value_id
+    """), [run_id])
+    con.execute(sql("""
         CREATE OR REPLACE TEMP TABLE _fs_owner_state AS
-        SELECT s.security_id AS derived_owner_security_id,s.derived_value_id,
+        SELECT s.decision_date,s.metric_code,s.metric_window,
+               s.security_id AS derived_owner_security_id,s.derived_value_id,
                s.definition_hash,s.inputs_hash,s.selected_input_refs_hash,
                s.period_end,s.fiscal_period_start,s.fiscal_period_end,
                s.available_at,s.value_origin,s.history_status,s.value_status,
@@ -729,70 +1036,76 @@ def _stage_leg(con: Any, run_id: str, code: str, window: str,
                p.status AS lineage_status,p.reason AS lineage_reason,
                p.proof_digest AS lineage_digest,p.leaf_ids_json AS lineage_leaf_ids_json,
                p.oldest_fiscal_end,p.newest_fiscal_end,p.latest_input_clock
-        FROM _fs_selected s JOIN fundamental_signal_proofs p
+        FROM _fs_selected s JOIN {proofs} p
           ON p.run_id=? AND p.derived_value_id=s.derived_value_id
-        LEFT JOIN _fs_prior_owner_cik a ON a.derived_value_id=s.derived_value_id
-    """, [run_id])
-    con.execute("""
+        LEFT JOIN _fs_prior_owner_cik a
+          ON a.decision_date=s.decision_date AND a.derived_value_id=s.derived_value_id
+    """), [run_id])
+    state = """struct_pack(
+                 derived_owner_security_id := s.derived_owner_security_id,
+                 derived_value_id := s.derived_value_id,
+                 definition_hash := s.definition_hash,inputs_hash := s.inputs_hash,
+                 selected_input_refs_hash := s.selected_input_refs_hash,
+                 period_end := s.period_end,fiscal_period_start := s.fiscal_period_start,
+                 fiscal_period_end := s.fiscal_period_end,available_at := s.available_at,
+                 value_origin := s.value_origin,history_status := s.history_status,
+                 value_status := s.value_status,raw_value := s.raw_value,
+                 valid_to := s.valid_to,selected_cik := s.selected_cik,
+                 lineage_status := s.lineage_status,lineage_reason := s.lineage_reason,
+                 lineage_digest := s.lineage_digest,lineage_leaf_ids_json := s.lineage_leaf_ids_json,
+                 oldest_fiscal_end := s.oldest_fiscal_end,newest_fiscal_end := s.newest_fiscal_end,
+                 latest_input_clock := s.latest_input_clock)"""
+    con.execute(sql("""
         CREATE OR REPLACE TEMP TABLE _fs_owner_matches AS
-        SELECT c.security_id,count(*) AS owner_count,
-               arg_max(struct_pack(
-                 derived_owner_security_id := s.derived_owner_security_id,
-                 derived_value_id := s.derived_value_id,
-                 definition_hash := s.definition_hash,inputs_hash := s.inputs_hash,
-                 selected_input_refs_hash := s.selected_input_refs_hash,
-                 period_end := s.period_end,fiscal_period_start := s.fiscal_period_start,
-                 fiscal_period_end := s.fiscal_period_end,available_at := s.available_at,
-                 value_origin := s.value_origin,history_status := s.history_status,
-                 value_status := s.value_status,raw_value := s.raw_value,
-                 valid_to := s.valid_to,selected_cik := s.selected_cik,
-                 lineage_status := s.lineage_status,lineage_reason := s.lineage_reason,
-                 lineage_digest := s.lineage_digest,lineage_leaf_ids_json := s.lineage_leaf_ids_json,
-                 oldest_fiscal_end := s.oldest_fiscal_end,newest_fiscal_end := s.newest_fiscal_end,
-                 latest_input_clock := s.latest_input_clock),
-                 (s.period_end,s.available_at,s.derived_value_id)) AS state
-        FROM _fs_cohort c JOIN _fs_owner_state s ON s.association_cik=c.cik
+        SELECT c.decision_date,c.security_id,s.metric_code,s.metric_window,
+               count(*) AS owner_count,
+               arg_max({state},(s.period_end,s.available_at,s.derived_value_id)) AS state
+        FROM {cohort} c JOIN _fs_owner_state s
+          ON s.decision_date=c.decision_date AND s.association_cik=c.cik
         WHERE c.cohort_reason='valid' AND s.association_cik IS NOT NULL
-        GROUP BY c.security_id
-    """)
-    con.execute("""
+        GROUP BY c.decision_date,c.security_id,s.metric_code,s.metric_window
+    """).replace("{state}", state))
+    con.execute(sql("""
         CREATE OR REPLACE TEMP TABLE _fs_direct_state AS
-        SELECT c.security_id,
-               arg_max(struct_pack(
-                 derived_owner_security_id := s.derived_owner_security_id,
-                 derived_value_id := s.derived_value_id,
-                 definition_hash := s.definition_hash,inputs_hash := s.inputs_hash,
-                 selected_input_refs_hash := s.selected_input_refs_hash,
-                 period_end := s.period_end,fiscal_period_start := s.fiscal_period_start,
-                 fiscal_period_end := s.fiscal_period_end,available_at := s.available_at,
-                 value_origin := s.value_origin,history_status := s.history_status,
-                 value_status := s.value_status,raw_value := s.raw_value,
-                 valid_to := s.valid_to,selected_cik := s.selected_cik,
-                 lineage_status := s.lineage_status,lineage_reason := s.lineage_reason,
-                 lineage_digest := s.lineage_digest,lineage_leaf_ids_json := s.lineage_leaf_ids_json,
-                 oldest_fiscal_end := s.oldest_fiscal_end,newest_fiscal_end := s.newest_fiscal_end,
-                 latest_input_clock := s.latest_input_clock),
-                 (s.period_end,s.available_at,s.derived_value_id)) AS state
-        FROM _fs_cohort c JOIN _fs_owner_state s
-          ON s.derived_owner_security_id=c.security_id
-        GROUP BY c.security_id
-    """)
-    con.execute("""
+        SELECT c.decision_date,c.security_id,s.metric_code,s.metric_window,
+               arg_max({state},(s.period_end,s.available_at,s.derived_value_id)) AS state
+        FROM {cohort} c JOIN _fs_owner_state s
+          ON s.decision_date=c.decision_date AND s.derived_owner_security_id=c.security_id
+        GROUP BY c.decision_date,c.security_id,s.metric_code,s.metric_window
+    """).replace("{state}", state))
+    # One row per (decision, cohort member, metric). The first failing rule is
+    # the row's reason; staleness is judged per value origin (annual operands
+    # may legitimately be older than quarterly ones).
+    con.execute(sql("""
         CREATE OR REPLACE TEMP TABLE _fs_leg AS
         WITH joined AS (
-          SELECT c.security_id,c.cik,c.cohort_reason,m.owner_count,
-                 coalesce(m.state,d.state) AS s
-          FROM _fs_cohort c LEFT JOIN _fs_owner_matches m USING (security_id)
-          LEFT JOIN _fs_direct_state d USING (security_id)
+          SELECT c.decision_date,cal.cutoff,c.security_id,c.cik,c.cohort_reason,
+                 m.metric_code,m.metric_window,m.expected_hash,
+                 m.quarterly_origin_required,o.owner_count,
+                 coalesce(o.state,d.state) AS s,
+                 CASE WHEN struct_extract(coalesce(o.state,d.state),'value_origin')
+                           IN ({annual_origins})
+                      THEN m.annual_max_age_days ELSE m.max_age_days END AS max_age_days
+          FROM {cohort} c JOIN {calendar} cal ON cal.decision_date=c.decision_date
+          CROSS JOIN {metrics} m
+          LEFT JOIN _fs_owner_matches o
+            ON o.decision_date=c.decision_date AND o.security_id=c.security_id
+           AND o.metric_code=m.metric_code AND o.metric_window=m.metric_window
+          LEFT JOIN _fs_direct_state d
+            ON d.decision_date=c.decision_date AND d.security_id=c.security_id
+           AND d.metric_code=m.metric_code AND d.metric_window=m.metric_window
         )
-        SELECT security_id,cik,cohort_reason,s.derived_value_id,
+        SELECT decision_date,cutoff,security_id,cik,cohort_reason,metric_code,metric_window,
+               owner_count,s.derived_value_id,
                s.derived_owner_security_id,s.definition_hash,s.inputs_hash,
                s.selected_input_refs_hash,s.lineage_digest,s.selected_cik AS selected_input_cik,
-               s.lineage_status,s.lineage_leaf_ids_json,
+               s.lineage_status,s.lineage_reason,s.lineage_leaf_ids_json,
                s.oldest_fiscal_end AS selected_leaf_oldest_end,
                s.newest_fiscal_end AS selected_leaf_newest_end,
                s.period_end,s.fiscal_period_start,s.fiscal_period_end,s.available_at,
                s.value_origin,s.history_status,s.value_status,s.raw_value,
+               s.latest_input_clock,s.valid_to AS state_valid_to,
+               date_diff('day',s.fiscal_period_end,decision_date) AS age_days,max_age_days,
                CASE WHEN cohort_reason<>'valid' THEN cohort_reason
                     WHEN owner_count>1 THEN 'ambiguous_derived_owner'
                     WHEN s.derived_value_id IS NULL THEN 'missing_metric_state'
@@ -800,7 +1113,7 @@ def _stage_leg(con: Any, run_id: str, code: str, window: str,
                          coalesce(s.lineage_reason,'selected_lineage_unqualified')
                     WHEN s.selected_cik IS DISTINCT FROM cik THEN 'selected_input_cik_mismatch'
                     WHEN s.history_status IS DISTINCT FROM 'event_reconstructed' THEN 'uncertified_history'
-                    WHEN s.definition_hash IS DISTINCT FROM ? THEN 'definition_hash_mismatch'
+                    WHEN s.definition_hash IS DISTINCT FROM expected_hash THEN 'definition_hash_mismatch'
                     WHEN s.inputs_hash IS NULL OR NOT regexp_full_match(s.inputs_hash,'[0-9a-f]{64}')
                          THEN 'invalid_inputs_hash'
                     WHEN s.selected_input_refs_hash IS NULL OR
@@ -810,24 +1123,23 @@ def _stage_leg(con: Any, run_id: str, code: str, window: str,
                          OR NOT isfinite(s.raw_value) THEN 'invalid_current_state'
                     WHEN s.value_origin IS NULL OR s.value_origin IN
                          ('legacy_unspecified','unavailable','incomparable') THEN 'invalid_value_origin'
-                    WHEN ?='eps_diluted_q_growth_yoy' AND s.value_origin<>'quarterly'
+                    WHEN quarterly_origin_required AND s.value_origin<>'quarterly'
                          THEN 'nonquarterly_eps_origin'
-                    WHEN s.fiscal_period_end IS NULL OR s.fiscal_period_end>?
-                         OR s.newest_fiscal_end IS NULL OR s.newest_fiscal_end>?
-                         OR (s.oldest_fiscal_end IS NOT NULL AND s.oldest_fiscal_end>?)
-                         OR (s.fiscal_period_start IS NOT NULL AND s.fiscal_period_start>?)
+                    WHEN s.fiscal_period_end IS NULL OR s.fiscal_period_end>decision_date
+                         OR s.newest_fiscal_end IS NULL OR s.newest_fiscal_end>decision_date
+                         OR (s.oldest_fiscal_end IS NOT NULL AND s.oldest_fiscal_end>decision_date)
+                         OR (s.fiscal_period_start IS NOT NULL AND s.fiscal_period_start>decision_date)
                          THEN 'future_or_missing_operand_period'
-                    WHEN date_diff('day',s.fiscal_period_end,?)>?
-                         OR date_diff('day',s.newest_fiscal_end,?)>?
+                    WHEN date_diff('day',s.fiscal_period_end,decision_date)>max_age_days
+                         OR date_diff('day',s.newest_fiscal_end,decision_date)>max_age_days
                          THEN 'stale_current_anchor'
-                    WHEN s.latest_input_clock IS NULL OR s.latest_input_clock>?
+                    WHEN s.latest_input_clock IS NULL OR s.latest_input_clock>cutoff
                          OR s.latest_input_clock>s.available_at THEN 'invalid_input_clock'
-                    WHEN s.valid_to IS NOT NULL AND s.valid_to<=?
+                    WHEN s.valid_to IS NOT NULL AND s.valid_to<=cutoff
                          THEN 'expired_state_without_successor'
                     ELSE 'valid' END AS reason
         FROM joined
-    """, [expected_hash, code, day, day, day, day,
-          day, max_age_days, day, max_age_days, cutoff, cutoff])
+    """).replace("{annual_origins}", _sql_text_list(ANNUAL_VALUE_ORIGINS)))
 
 
 def _publish_signal(con: Any, run_id: str, spec: dict[str, Any],

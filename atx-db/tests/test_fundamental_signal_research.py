@@ -447,6 +447,186 @@ def test_failed_partial_run_remains_unsealed(tiny_panel_store, monkeypatch):
     """).fetchone()[0] == 5
 
 
+# Content digests of the tiny fixture captured on the pre-refactor module
+# (HEAD 80878e3e) before the shared calendar builder existed. panel_sha256 also
+# hashes this file's bytes, so it changes with any edit; these components must not.
+_FQ1_PINNED = {
+    "first": {
+        "spec": "8cc0d4e3d6c57bd5db0dd4e617d1b817233f89336e72d6495cee6ac723002a04",
+        "definitions": "c370acee5cc4e30c72acd5ba33e8e0c83eb2cfd6bdae886eac2013dc9098bcd1",
+        "calendar": "fec8f9864dfa96dcd4ca42bfdf9d630a01d54838f208cd7dc28d0d79a7b93625",
+        "values": "f7d832b14a56f78e8c974938addbbb3f26ff31d33a4a6fadea024b661551eb6b",
+        "inputs": "5f01178c19a0235f4c9e01f747b8c63300e842b1e289dc789f1e4138efc4f680",
+        "coverage": "95fb5b347b42b7b0c22b53a74ae638247ec2059561dea70419f89dec415337c3",
+        "proofs": "9bb0ba5bcfd347e1e4729ff659663964e49955baa16575041116c471e0905ab2",
+    },
+    "empty": {
+        "spec": "8cc0d4e3d6c57bd5db0dd4e617d1b817233f89336e72d6495cee6ac723002a04",
+        "definitions": "c370acee5cc4e30c72acd5ba33e8e0c83eb2cfd6bdae886eac2013dc9098bcd1",
+        "calendar": "fec8f9864dfa96dcd4ca42bfdf9d630a01d54838f208cd7dc28d0d79a7b93625",
+        "values": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "inputs": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "coverage": "681612c80fdc16a759206be7ada2d4586cb4d705fe905ecfe00a5a2e6e5c55aa",
+        "proofs": "9bb0ba5bcfd347e1e4729ff659663964e49955baa16575041116c471e0905ab2",
+    },
+}
+_FQ1_COMPONENT_QUERIES = {
+    "values": """SELECT signal_id,decision_date,security_id,decision_at,entry_date,score,
+        eligible,reason,input_end,input_available_at,cohort_size
+        FROM fundamental_signal_values WHERE run_id=? ORDER BY signal_id,decision_date,security_id""",
+    "inputs": """SELECT signal_id,decision_date,security_id,term_ordinal,metric_code,metric_window,
+        weight,derived_value_id,derived_owner_security_id,definition_hash,inputs_hash,
+        selected_input_refs_hash,lineage_digest,selected_input_cik,lineage_status,
+        lineage_leaf_ids_json,selected_leaf_oldest_end,selected_leaf_newest_end,period_end,
+        fiscal_period_start,fiscal_period_end,available_at,value_origin,history_status,
+        value_status,raw_value,reason
+        FROM fundamental_signal_inputs WHERE run_id=?
+        ORDER BY signal_id,decision_date,security_id,term_ordinal""",
+    "coverage": """SELECT signal_id,decision_date,decision_at,entry_date,status,visible_members,
+        common_members,overlap_members,qualified_cik,unmatched_owner_states,eligible_scores,
+        excluded_scores,constant_scores,reasons_json
+        FROM fundamental_signal_coverage WHERE run_id=? ORDER BY signal_id,decision_date""",
+    "proofs": """SELECT derived_value_id,derived_owner_security_id,metric_code,metric_window,
+        root_available_at,selected_input_refs_hash,selected_cik,status,reason,leaf_ids_json,
+        input_clocks_json,fiscal_ends_json,proof_digest,oldest_fiscal_end,newest_fiscal_end,
+        latest_input_clock,proof_cutoff
+        FROM fundamental_signal_proofs WHERE run_id=? ORDER BY derived_value_id""",
+}
+
+
+def _fq1_components(con, run_id):
+    spec, definitions, calendar = con.execute("""
+        SELECT spec_sha256, definitions_sha256, calendar_sha256
+        FROM fundamental_signal_runs WHERE run_id=?
+    """, [run_id]).fetchone()
+    return {"spec": spec, "definitions": definitions, "calendar": calendar,
+            **{name: fs._stream_digest(con, query, [run_id])
+               for name, query in _FQ1_COMPONENT_QUERIES.items()}}
+
+
+def test_shared_builder_keeps_fq1_panel_content_byte_identical(tiny_panel_store):
+    con = tiny_panel_store.con
+    assert build_fundamental_signal_panel(tiny_panel_store, _options("first")).status == "complete"
+    assert _fq1_components(con, "first") == _FQ1_PINNED["first"]
+    con.execute("DELETE FROM universe_us_listed_membership")
+    assert build_fundamental_signal_panel(tiny_panel_store, _options("empty")).status == "blocked_empty"
+    assert _fq1_components(con, "empty") == _FQ1_PINNED["empty"]
+
+
+def test_calendar_and_metric_batch_selection_equals_single_session_legs(tiny_panel_store):
+    con = tiny_panel_store.con
+    _, _, hashes = fs._definitions(con, canonical_signals(None))
+    days = [(dt.date(2024, 1, 2), dt.datetime(2024, 1, 2, 22)),
+            (dt.date(2024, 1, 3), dt.datetime(2024, 1, 3, 22))]
+    metrics = [("eps_diluted_q_growth_yoy", "q"), ("total_accruals", "ttm")]
+    single = []
+    for day, cutoff in days:
+        fs._stage_cohort(con, day, cutoff, day)
+        for code, window in metrics:
+            _stage_leg(con, "single", code, window, hashes[(code, window)], hashes, day, cutoff, 200)
+            single += con.execute("""
+                SELECT ?, ?, security_id, cohort_reason, derived_value_id, raw_value, reason,
+                       lineage_digest, selected_input_cik, age_days, max_age_days
+                FROM _fs_leg
+            """, [day, code]).fetchall()
+    fs.stage_calendar(con, days, table="_t_calendar")
+    counts = fs.stage_cohort(con, calendar_table="_t_calendar")
+    assert counts == {day: (3, 3, 0, 3) for day, _ in days}
+    fs.stage_metric_legs(con, [fs.MetricLeg(code, window, hashes[(code, window)], 200, 200,
+                                            code == "eps_diluted_q_growth_yoy")
+                               for code, window in metrics], table="_t_metrics")
+    fs.stage_selected_states(con, run_id="multi", all_hashes=hashes, calendar_table="_t_calendar",
+                             cohort_table="_fs_cohort_cal", metrics_table="_t_metrics")
+    multi = con.execute("""
+        SELECT decision_date, metric_code, security_id, cohort_reason, derived_value_id, raw_value,
+               reason, lineage_digest, selected_input_cik, age_days, max_age_days
+        FROM _fs_leg
+    """).fetchall()
+    assert sorted(multi, key=repr) == sorted(single, key=repr)
+    assert {row[6] for row in multi} >= {"valid", "stale_current_anchor"}
+    # One proof per selected state across both sessions and both metrics.
+    assert con.execute("""
+        SELECT count(*), count(DISTINCT derived_value_id) FROM fundamental_signal_proofs
+        WHERE run_id='multi'
+    """).fetchone() == con.execute("""
+        SELECT count(*), count(*) FROM fundamental_signal_proofs WHERE run_id='single'
+    """).fetchone()
+
+
+def test_reconstructed_cohort_uses_owner_links_visible_at_the_cutoff():
+    con = duckdb.connect(":memory:")
+    con.execute("""
+        CREATE TABLE universe_us_listed_membership (
+          universe_id VARCHAR, source VARCHAR, security_id VARCHAR, symbol VARCHAR,
+          security_type VARCHAR, exchange_code VARCHAR, cik VARCHAR, reason VARCHAR,
+          valid_from DATE, valid_to DATE, available_at TIMESTAMP, as_of_date DATE);
+        CREATE TABLE security_identifier_history (
+          security_id VARCHAR, id_type VARCHAR, id_value VARCHAR, valid_from DATE,
+          valid_to DATE, available_at TIMESTAMP, as_of_date DATE);
+        CREATE TEMP TABLE _links (
+          price_security_id VARCHAR, cik VARCHAR, valid_from DATE, valid_to DATE,
+          available_at TIMESTAMP, identity_basis VARCHAR, link_method VARCHAR,
+          unlinked_reason VARCHAR);
+    """)
+    members = [
+        ("p1", "common", "XNAS", "0000000001", "member"),
+        ("p2", "common_unverified", "XNYS", None, "member_no_cik"),
+        ("p3", "unknown", "UNKNOWN", None, "reconstructed_no_listing_evidence"),
+        ("p4", "common", "XNAS", "0000000009", "member"),
+        ("p5", "ADR", "XNYS", "0000000005", "member"),
+        ("p6", "common", "XNAS", "0000000006", "member"),
+        ("p7", "common", "XNAS", None, "member"),
+        ("p8", "common", "XNAS", None, "member"),
+        ("p9", "unknown", "UNKNOWN", None, "reconstructed_no_listing_evidence"),
+    ]
+    for security, kind, venue, cik, reason in members:
+        con.execute("""
+            INSERT INTO universe_us_listed_membership VALUES
+            ('us_listed_reconstructed_v1','atx-db us-listed universe builder',?,?,?,?,?,?,
+             '2020-01-02',NULL,'2020-01-02 22:00:00','2020-01-02')
+        """, [security, security.upper(), kind, venue, cik, reason])
+    linked = "current_ticker_unverified"
+    for row in [
+        ("p1", "0000000001", "2020-01-02", None, "2020-01-02 22:00:00", linked, "current_sec_ticker", None),
+        ("p2", "0000000002", "2020-01-02", None, "2020-01-02 22:00:00", linked, "current_sec_ticker", None),
+        ("p3", None, None, None, None, None, None, "no_current_ticker"),
+        ("p4", "0000000004", "2020-01-02", None, "2020-01-02 22:00:00", linked, "current_sec_ticker", None),
+        ("p5", "0000000005", "2020-01-02", None, "2020-01-02 22:00:00", linked, "current_sec_ticker", None),
+        # Link interval covers the day but its modeled clock is after the cutoff.
+        ("p6", "0000000006", "2021-06-30", None, "2021-07-01 22:00:00", linked, "current_sec_ticker", None),
+        ("p7", "0000000007", "2020-01-02", None, "2020-01-02 22:00:00", linked, "current_sec_ticker", None),
+        ("p7", "0000000077", "2020-01-02", None, "2020-01-02 22:00:00", linked, "cik_security_id", None),
+        ("p9", "0000000019", "2020-01-02", None, "2020-01-02 22:00:00", linked, "cik_security_id", None),
+    ]:
+        con.execute("INSERT INTO _links VALUES (?,?,?,?,?,?,?,?)", list(row))
+    day, cutoff = dt.date(2021, 6, 30), dt.datetime(2021, 6, 30, 22)
+    counts = fs._stage_cohort(con, day, cutoff, day,
+                              universe_id=fs.RECONSTRUCTED_UNIVERSE_ID,
+                              identity_basis=fs.IDENTITY_BASIS_RECONSTRUCTED,
+                              owner_links_table="_links")
+    reasons = dict(con.execute("""
+        SELECT security_id, cohort_reason || ':' || coalesce(owner_link_reason, cik)
+        FROM _fs_cohort_cal
+    """).fetchall())
+    assert reasons == {
+        "p1": "valid:0000000001",
+        "p2": "valid:0000000002",
+        "p3": "missing_owner_link:no_current_ticker",
+        "p4": "membership_cik_mismatch:0000000004",
+        "p5": "not_common:0000000005",
+        "p6": "missing_owner_link:owner_link_after_cutoff",
+        "p7": "ambiguous_owner_link:0000000077",
+        "p8": "missing_owner_link:no_owner_link_interval",
+        "p9": "valid:0000000019",
+    }
+    assert counts == (9, 8, 0, 3)
+    assert con.execute("SELECT DISTINCT identity_basis FROM _fs_cohort_cal").fetchall() == [(linked,)]
+    # The strict default never reads the reconstructed universe or the links.
+    assert fs._stage_cohort(con, day, cutoff, day) == (0, 0, 0, 0)
+    with pytest.raises(ValueError, match="owner-link relation"):
+        fs.stage_cohort(con, identity_basis=fs.IDENTITY_BASIS_RECONSTRUCTED)
+
+
 def test_absent_historical_cohort_has_per_date_diagnostics(tiny_panel_store):
     tiny_panel_store.con.execute("DELETE FROM universe_us_listed_membership")
     result = build_fundamental_signal_panel(tiny_panel_store, _options("empty"))
