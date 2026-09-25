@@ -15,7 +15,10 @@ formation thresholds and ``verify_panels`` come from the policy, and the policy 
 byte hash is recorded as the run's ``policy_sha256``. It is the qualifying (RR4) form: R4
 refuses a run whose sealed spec differs from its policy. The flags the policy pins
 (``--split-file``, ``--allow-unsplit``, ``--horizons``, ``--min-names``,
-``--min-formations``, ``--skip-panel-validation``) cannot be combined with it.
+``--min-formations``, ``--skip-panel-validation``) cannot be combined with it. Before any
+work the run exits 2 unless the policy is frozen, current (not superseded, pins an
+``evaluation_spec``) and registered in the target research store (``research_qualify.py
+freeze``, RX7).
 
 ``run`` refuses to start without a frozen split (RX7) unless ``--allow-unsplit`` marks the
 run as exploratory (recorded as a blocker). The family is the R1a catalog's expected
@@ -102,6 +105,41 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def policy_preflight(store: Any, path: Path) -> str | None:
+    """Why a ``--policy`` run must not start (None: it may), checked before any evaluation work.
+
+    The policy must load frozen and pinned, be current (not superseded, pins an
+    ``evaluation_spec``) and be registered (``research_qualify.py freeze``) in this research
+    store before the run: R4 refuses a run evaluated before its policy was frozen (RX7).
+    Uses R4's read-only helpers (``current_policy_problem`` when present, else the same
+    checks directly, and ``policy_registered_at``).
+    """
+    from atx_db.research import qualification as rq
+
+    try:
+        policy = rq.load_policy(path)
+        current = getattr(rq, "current_policy_problem", None)
+        problem = current(policy) if current is not None else _policy_problem(rq, policy)
+        if problem is not None:
+            return problem
+        registered = rq.policy_registered_at(store.con, policy)
+    except (ValueError, OSError) as error:  # PolicyError is a ValueError: edited, unpinned or re-registered
+        return f"policy_invalid:{error}"
+    if registered is None:
+        return f"policy_not_registered_in_store:{policy.version} (run research_qualify.py freeze first, RX7)"
+    return None
+
+
+def _policy_problem(rq: Any, policy: Any) -> str | None:
+    """Fallback for R4's ``current_policy_problem``: superseded by a committed policy, or no evaluation_spec."""
+    for committed in (rq.POLICY_PATH, *rq.POLICY_HISTORY_PATHS.values()):
+        if json.loads(Path(committed).read_bytes().decode("utf-8")).get("supersedes") == policy.version:
+            return f"policy_superseded:{policy.version}"
+    if policy.evaluation_spec is None:
+        return f"policy_pins_no_evaluation_spec:{policy.version}"
+    return None
+
+
 def build_spec(args: argparse.Namespace) -> EvaluationSpec:
     """The run's EvaluationSpec: from the policy (``evaluation_spec_kwargs``) or from the flags."""
     common: dict[str, Any] = {
@@ -134,6 +172,11 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("run needs at least one --feature-version")
         if args.label_cutoff is None:
             raise SystemExit("run needs --label-cutoff (the observation vintage of the labels)")
+        if args.policy is not None:
+            problem = policy_preflight(store, args.policy)
+            if problem is not None:  # fail fast: never start a multi-hour run R4 would refuse
+                print(f"research_evaluate: error: --policy {args.policy}: {problem}", file=sys.stderr)
+                return 2
         result = run_evaluation(store, build_spec(args), resume=args.resume)
         print(json.dumps({"run_id": result.run_id, "status": result.status, "cells": result.cells,
                           "results_sha256": result.results_sha256, "inputs_sha256": result.inputs_sha256,
