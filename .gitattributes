@@ -2,3 +2,7 @@
 scripts/tests/workflow-contracts.test.mjs text eol=lf
 scripts/workflow-determinism-contract.mjs text eol=lf
 scripts/bootstrap-structured-output-contract.mjs text eol=lf
+# Hash-chained ledgers (trial_ledger.hpp) verify raw line bytes: never CRLF on checkout.
+*.jsonl text eol=lf
+# Exception: these two were committed with CRLF blobs; keep their bytes exactly as committed.
+.superpowers/sdd/tier1-parity/*-headroom-observations.jsonl -text
