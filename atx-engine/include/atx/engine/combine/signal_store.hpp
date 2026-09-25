@@ -46,20 +46,41 @@ struct FitWindow {
 };
 
 // Insert-time normalization of a raw forecast panel.
+//
+// W0-E0a / E-15: `ZScore` now WINSORIZES AFTER STANDARDIZING and stops there, so every
+// stored value lies in [-winsor, +winsor]. The pre-W0 behaviour re-standardized the
+// clipped row, which pushed clipped cells back past the limit (a 3-sigma clip could store
+// 3.4); it is kept, bit for bit, as `ZScoreRestandardizeV1`. Appended last so the two
+// existing enumerators keep their values.
 enum class SignalNormalize : atx::u8 {
-  None,   // store verbatim (caller already produced a z-score)
-  ZScore, // per-date cross-sectional z-score, winsorized at ±winsor σ, re-standardized
+  None,                  // store verbatim (caller already produced a z-score)
+  ZScore,                // per-date cross-sectional z-score, then clipped to ±winsor
+  ZScoreRestandardizeV1, // pre-W0: z-score, clip to ±winsor, re-standardize (E-15)
+};
+
+// Treatment of the forward returns inside the per-date Pearson IC of `ic_matrix`
+// (W0-E0a / E-15). Frozen integer values.
+enum class IcReturnTreatment : atx::u8 {
+  RawV1 = 1,        // pre-W0: raw forward returns (one outlier can dominate a date's IC)
+  WinsorizedV2 = 2, // default: returns clipped per date at mean ± winsor·sd (population sd
+                    // over the row's finite cells) before the correlation
 };
 
 inline constexpr atx::f64 kSignalNaN = std::numeric_limits<atx::f64>::quiet_NaN();
 
 namespace signal_detail {
 
-// Per-row cross-sectional z-score in place: z = (x − mean)/sd over finite cells, clip
-// to ±winsor, then re-center / re-scale the clipped values (so the stored row has mean
-// 0 and unit population sd over its finite cells). A row with < 2 finite cells or
-// zero dispersion carries no cross-sectional information → its finite cells become 0.
-inline void zscore_row(std::span<atx::f64> row, atx::f64 winsor) noexcept {
+// Per-row cross-sectional z-score in place: z = (x − mean)/sd over finite cells, then
+// clip to ±winsor. Under `ZScoreRestandardizeV1` the clipped values are re-centered /
+// re-scaled (mean 0, unit population sd — and no longer bounded by ±winsor, E-15). A
+// row with < 2 finite cells or zero dispersion carries no cross-sectional information →
+// its finite cells become 0. `mode == None` leaves the row untouched.
+inline void zscore_row(std::span<atx::f64> row, atx::f64 winsor,
+                       SignalNormalize mode = SignalNormalize::ZScore) noexcept {
+  if (mode == SignalNormalize::None) {
+    return;
+  }
+  const int passes = (mode == SignalNormalize::ZScoreRestandardizeV1) ? 2 : 1;
   const auto moments = [&row]() noexcept {
     atx::f64 sum = 0.0;
     atx::usize n = 0U;
@@ -79,7 +100,7 @@ inline void zscore_row(std::span<atx::f64> row, atx::f64 winsor) noexcept {
     const atx::f64 sd = (n < 2U) ? 0.0 : std::sqrt(ss / static_cast<atx::f64>(n));
     return std::pair<atx::f64, atx::f64>{mean, sd};
   };
-  for (int pass = 0; pass < 2; ++pass) { // pass 0: z + clip; pass 1: re-standardize
+  for (int pass = 0; pass < passes; ++pass) { // pass 0: z + clip; pass 1 (V1): re-standardize
     const auto [mean, sd] = moments();
     for (atx::f64 &x : row) {
       if (!std::isfinite(x)) {
@@ -93,6 +114,35 @@ inline void zscore_row(std::span<atx::f64> row, atx::f64 winsor) noexcept {
       const atx::f64 z = (x - mean) / sd;
       x = (pass == 0) ? std::clamp(z, -winsor, winsor) : z;
     }
+  }
+}
+
+// Copy `src` into `dst`, clipping each finite cell to mean ± winsor·sd of the row's finite
+// cells (population sd); NaN cells stay NaN. A row with < 2 finite cells or zero
+// dispersion is copied unchanged. Preconditions: dst.size() == src.size(), winsor > 0.
+inline void winsorize_row_copy(std::span<const atx::f64> src, std::span<atx::f64> dst,
+                               atx::f64 winsor) noexcept {
+  atx::f64 sum = 0.0;
+  atx::usize n = 0U;
+  for (const atx::f64 x : src) {
+    if (std::isfinite(x)) {
+      sum += x;
+      ++n;
+    }
+  }
+  const atx::f64 mean = (n == 0U) ? 0.0 : sum / static_cast<atx::f64>(n);
+  atx::f64 ss = 0.0;
+  for (const atx::f64 x : src) {
+    if (std::isfinite(x)) {
+      ss += (x - mean) * (x - mean);
+    }
+  }
+  const atx::f64 sd = (n < 2U) ? 0.0 : std::sqrt(ss / static_cast<atx::f64>(n));
+  const atx::f64 lo = mean - winsor * sd;
+  const atx::f64 hi = mean + winsor * sd;
+  for (atx::usize i = 0U; i < src.size() && i < dst.size(); ++i) {
+    const atx::f64 x = src[i];
+    dst[i] = (std::isfinite(x) && sd > 0.0) ? std::clamp(x, lo, hi) : x;
   }
 }
 
@@ -136,10 +186,10 @@ public:
     }
     const atx::usize base = signals_.size();
     signals_.insert(signals_.end(), panel.begin(), panel.end());
-    if (mode == SignalNormalize::ZScore) {
+    if (mode != SignalNormalize::None) {
       for (atx::usize t = 0U; t < n_dates_; ++t) {
         signal_detail::zscore_row(std::span<atx::f64>(signals_.data() + base + t * n_inst_, n_inst_),
-                                  winsor);
+                                  winsor, mode);
       }
     }
     // SAFETY: bounded by the u32-max guard above.
@@ -246,11 +296,25 @@ private:
 
 // Window IC matrix, row-major (window.size() × n_alphas): ic[r·K + a] = IC of alpha a
 // at date window.begin + r. NaN where undefined. Precondition: window within store.
-[[nodiscard]] inline std::vector<atx::f64> ic_matrix(const SignalStore &s, FitWindow w) {
+//
+// W0-E0a / E-15: the Pearson IC is taken against forward returns winsorized per date at
+// mean ± `winsor`·sd (default 3, the signal clip) — the same treatment the signal side
+// gets — so a single extreme return cannot dominate a date's IC. `IcReturnTreatment::RawV1`
+// reproduces the pre-W0 raw-return IC bit for bit. `winsor` must be > 0 under
+// WinsorizedV2 (a non-positive value falls back to RawV1 rather than clipping to a point).
+[[nodiscard]] inline std::vector<atx::f64>
+ic_matrix(const SignalStore &s, FitWindow w,
+          IcReturnTreatment returns = IcReturnTreatment::WinsorizedV2, atx::f64 winsor = 3.0) {
   const atx::usize k = s.n_alphas();
   std::vector<atx::f64> out(w.size() * k, kSignalNaN);
+  const bool clip = (returns == IcReturnTreatment::WinsorizedV2) && (winsor > 0.0);
+  std::vector<atx::f64> clipped(clip ? s.n_instruments() : 0U);
   for (atx::usize r = 0U; r < w.size(); ++r) {
-    const auto fwd = s.fwd_row(w.begin + r);
+    std::span<const atx::f64> fwd = s.fwd_row(w.begin + r);
+    if (clip) {
+      signal_detail::winsorize_row_copy(fwd, clipped, winsor);
+      fwd = clipped;
+    }
     for (atx::usize a = 0U; a < k; ++a) {
       out[r * k + a] = cross_section_corr(s.signal_row(a, w.begin + r), fwd);
     }

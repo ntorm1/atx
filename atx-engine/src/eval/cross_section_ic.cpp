@@ -1,7 +1,8 @@
 #include "atx/engine/eval/cross_section_ic.hpp"
 
 #include <algorithm> // std::sort
-#include <cmath>     // std::isfinite, std::sqrt, std::fabs
+#include <cmath>     // std::isfinite, std::sqrt, std::fabs, std::ceil
+#include <cstddef>   // std::ptrdiff_t
 #include <limits>    // std::numeric_limits (the dates*instruments overflow guard)
 #include <numeric>   // std::iota
 #include <string>    // std::to_string (counts carried in error messages)
@@ -99,39 +100,50 @@ template <class T>
   case IcTieHandling::AverageRanksV1:
     break;
   }
-
-  // --- extents ---------------------------------------------------------------
-  if (in.dates == 0U || in.instruments == 0U) {
+  // W0-E0a: the two versioned numeric rules. A value outside the named enumerators (a
+  // cast from a wider integer) matches no case and is rejected exactly like `Unknown`.
+  bool block_rule_ok = false;
+  switch (cfg.block_len_rule) {
+  case BlockLenRule::HalfHorizonV1:
+  case BlockLenRule::TwoHorizonV2:
+  case BlockLenRule::PolitisWhiteV2:
+    block_rule_ok = true;
+    break;
+  case BlockLenRule::Unknown:
+    break;
+  }
+  if (!block_rule_ok) {
     return Err(ErrorCode::InvalidArgument,
-               "cross_section_ic: dates and instruments must both be non-zero (got " +
-                   std::to_string(in.dates) + " x " + std::to_string(in.instruments) + ")");
+               "cross_section_ic: block_len_rule must be HalfHorizonV1, TwoHorizonV2 or "
+               "PolitisWhiteV2");
   }
-  // Ruling RR-1 (design §11.5): both extents carry a compile-time maximum, so
-  // §6.1's "every loop bound validated against a compile-time maximum at entry"
-  // is true of all five bounds, and `plan_cross_section_ic`'s `.assign()` calls
-  // cannot reach a size that would throw `std::bad_alloc` in a unit whose
-  // contract is that no path throws. Checked BEFORE any sizing, and before the
-  // overflow guard, which these two bounds subsume.
-  if (in.dates > kMaxIcDates) {
-    return Err(ErrorCode::OutOfRange, "cross_section_ic: dates " + std::to_string(in.dates) +
-                                          " exceeds kMaxIcDates " + std::to_string(kMaxIcDates));
+  bool hac_rule_ok = false;
+  switch (cfg.hac_rule) {
+  case IcHacRule::HansenHodrickV1:
+  case IcHacRule::NeweyWestV1:
+    hac_rule_ok = true;
+    break;
+  case IcHacRule::Unknown:
+    break;
   }
-  if (in.instruments > kMaxIcInstruments) {
-    return Err(ErrorCode::OutOfRange,
-               "cross_section_ic: instruments " + std::to_string(in.instruments) +
-                   " exceeds kMaxIcInstruments " + std::to_string(kMaxIcInstruments));
+  if (!hac_rule_ok) {
+    return Err(ErrorCode::InvalidArgument,
+               "cross_section_ic: hac_rule must be HansenHodrickV1 or NeweyWestV1");
   }
-  // RETAINED even though the two RR-1 maxima subsume it at their current values
-  // (4,096 x 4,096 = 2^24 cells): it is the branch that makes `cells` below a
-  // defined quantity, and it is the one guard that still holds if a later
-  // checkpoint raises kMaxIcDates / kMaxIcInstruments — which RR-1 explicitly
-  // anticipates as "a header constant and two error messages".
-  if (in.dates > (std::numeric_limits<atx::usize>::max)() / in.instruments) {
-    return Err(ErrorCode::OutOfRange,
-               "cross_section_ic: dates * instruments overflows usize (" +
-                   std::to_string(in.dates) + " x " + std::to_string(in.instruments) + ")");
+  if (cfg.execution_delay > kMaxIcExecutionDelay) {
+    return Err(ErrorCode::InvalidArgument,
+               "cross_section_ic: execution_delay " + std::to_string(cfg.execution_delay) +
+                   " exceeds kMaxIcExecutionDelay " + std::to_string(kMaxIcExecutionDelay));
   }
-  const atx::usize cells = in.dates * in.instruments;
+
+  // --- extents and the E-08 runtime budget ----------------------------------------
+  // Ruling RR-1 still holds — every extent is bounded before any sizing, so no
+  // `.assign()` in `plan_cross_section_ic` can reach a throwing size — but the binding
+  // limit is now the runtime working-set budget, not a 4,096 constant (E-08). The
+  // preflight also carries the dates*instruments overflow guard that makes `cells`
+  // below a defined quantity.
+  ATX_TRY(const IcSizing sizing, preflight_cross_section_ic(in.dates, in.instruments, cfg));
+  const atx::usize cells = sizing.cells;
 
   // --- span shapes -----------------------------------------------------------
   ATX_TRY_VOID(check_cell_span<atx::f64>(in.signal, cells, "signal"));
@@ -159,11 +171,7 @@ template <class T>
   if (cfg.horizons.empty()) {
     return Err(ErrorCode::InvalidArgument, "cross_section_ic: horizons is empty");
   }
-  if (cfg.horizons.size() > kMaxIcHorizons) {
-    return Err(ErrorCode::InvalidArgument,
-               "cross_section_ic: " + std::to_string(cfg.horizons.size()) +
-                   " horizons exceeds kMaxIcHorizons " + std::to_string(kMaxIcHorizons));
-  }
+  // horizons.size() <= kMaxIcHorizons was enforced by the preflight above.
   if (cfg.horizons.front() == 0U) {
     return Err(ErrorCode::InvalidArgument,
                "cross_section_ic: horizon 0 is not a forward return; each horizon must be >= 1");
@@ -172,11 +180,14 @@ template <class T>
     return Err(ErrorCode::InvalidArgument,
                "cross_section_ic: horizons must be strictly increasing");
   }
-  // horizons.back() >= dates leaves no date with a forward mark at all; the
-  // series would be empty rather than short, so it is a shape error.
-  if (cfg.horizons.back() >= in.dates) {
+  // horizons.back() + execution_delay >= dates leaves no date with a forward mark at
+  // all; the series would be empty rather than short, so it is a shape error. Both
+  // terms are bounded (kMaxIcDates, kMaxIcExecutionDelay), so the sum cannot wrap.
+  if (cfg.horizons.back() >= in.dates ||
+      cfg.horizons.back() + cfg.execution_delay >= in.dates) {
     return Err(ErrorCode::OutOfRange,
                "cross_section_ic: horizon " + std::to_string(cfg.horizons.back()) +
+                   " plus execution_delay " + std::to_string(cfg.execution_delay) +
                    " is at or past dates " + std::to_string(in.dates));
   }
 
@@ -194,11 +205,7 @@ template <class T>
   if (cfg.block_len_floor == 0U) {
     return Err(ErrorCode::InvalidArgument, "cross_section_ic: block_len_floor must be >= 1");
   }
-  if (cfg.bootstrap_draws > kMaxBootstrapDraws) {
-    return Err(ErrorCode::OutOfRange,
-               "cross_section_ic: bootstrap_draws " + std::to_string(cfg.bootstrap_draws) +
-                   " exceeds kMaxBootstrapDraws " + std::to_string(kMaxBootstrapDraws));
-  }
+  // bootstrap_draws <= kMaxBootstrapDraws was enforced by the preflight above.
   if (!finite_non_negative(cfg.trade_bps)) {
     return Err(ErrorCode::InvalidArgument,
                "cross_section_ic: trade_bps must be finite and non-negative");
@@ -243,10 +250,14 @@ template <class T>
   // emits). If ANY horizon would clear the n >= 20 and floor(n/L) >= 10 bars but
   // for draws == 0, the caller has disabled intervals it was about to be given;
   // reject rather than emit a run whose unreportable_reason is 1 everywhere.
+  // Under PolitisWhiteV2 the rule's lower bound is used: the data-driven term can only
+  // lengthen L, so a horizon this bound calls unreportable stays unreportable.
   if (cfg.bootstrap_draws == 0U) {
     for (const atx::usize h : cfg.horizons) {
-      const atx::usize n = in.dates - h; // safe: horizons.back() < dates, checked above
-      if (detail::series_reportable(n, detail::block_len(h, cfg.block_len_floor), 1U)) {
+      // safe: horizons.back() + execution_delay < dates, checked above
+      const atx::usize n = in.dates - h - cfg.execution_delay;
+      if (detail::series_reportable(
+              n, detail::block_len_for_rule(cfg.block_len_rule, h, cfg.block_len_floor), 1U)) {
         return Err(ErrorCode::InvalidArgument,
                    "cross_section_ic: bootstrap_draws == 0 while horizon " + std::to_string(h) +
                        " would otherwise be reportable; disabling intervals must be an explicit "
@@ -297,7 +308,8 @@ struct DateGather {
 //  last_valid_mark — §3.8's `t_last`, searched in the HALF-OPEN window (t, t+h]
 //  only (M-8), scanning backwards so the first hit is the last mark. Returns the
 //  absolute row index, or 0 for "none" — 0 can never be a valid answer because
-//  every candidate satisfies u > t >= 0.
+//  every candidate satisfies u > t >= 0. Under an execution delay `t` here is the
+//  ENTRY row (signal row + delay), so the window is the one the position is held over.
 // ---------------------------------------------------------------------------
 [[nodiscard]] atx::usize last_valid_mark(const CrossSectionIcInput &in, atx::usize t,
                                          atx::usize h, atx::usize i) noexcept {
@@ -313,6 +325,11 @@ struct DateGather {
 //  gather_date — one cross-section: §3.1 admission, §3.3 forward returns with
 //  §3.8's two variants and ruling A-6's precedence, and every §3.7 counter.
 //
+//  E-09: admission (mask, _ex34) and the signal are read at the signal row t; the
+//  forward return runs from the ENTRY row e = t + execution_delay to e + h, and the
+//  terminal triple is read at e (it describes the window (e, e + h]). At delay 0 every
+//  read is the pre-W0 one.
+//
 //  Writes the used set into scratch.x (signal), scratch.r (forward return) and
 //  scratch.perm (instrument index), in ASCENDING instrument index — the fixed
 //  accumulation order §3.4 requires for bit-reproducibility, and the order that
@@ -327,10 +344,14 @@ struct DateGather {
   const bool restrict_ex34 = (cfg.stream_restriction_id != 0U);
   const bool variant_b = (cfg.forward_variant == ForwardReturnVariant::IncludeAuditedTerminalV1);
   const atx::usize base = t * inst;
-  const atx::usize fwd = (t + h) * inst;
+  // Validation guarantees t + execution_delay + h < dates for every evaluated t.
+  const atx::usize entry_row = t + cfg.execution_delay;
+  const atx::usize entry = entry_row * inst;
+  const atx::usize fwd = (entry_row + h) * inst;
 
   for (atx::usize i = 0; i < inst; ++i) {
     const atx::usize cell = base + i;
+    const atx::usize entry_cell = entry + i;
     const bool audited = (in.excluded_audited[cell] != 0U);
     if (restrict_ex34 && audited) {
       continue; // §3.8 / AR-7: the _ex34 sub-universe, applied before eligibility
@@ -348,7 +369,7 @@ struct DateGather {
     }
     ++g.n_signal_finite;
 
-    const atx::f64 p0 = in.price[cell];
+    const atx::f64 p0 = in.price[entry_cell];
     const atx::f64 p1 = in.price[fwd + i];
     atx::f64 rv = 0.0;
     bool used = false;
@@ -368,19 +389,19 @@ struct DateGather {
         ++g.n_with_forward;
         used = true;
       }
-    } else if (in.terminal[cell] != 0U) {
-      if (in.terminal_evidenced[cell] == 0U) {
+    } else if (in.terminal[entry_cell] != 0U) {
+      if (in.terminal_evidenced[entry_cell] == 0U) {
         // §2.3 / ruling AR-1: the PCS shape. Dropped and counted; the engine
         // never derives a terminal return from an unevidenced gap.
         ++g.n_terminal_unevidenced;
       } else if (variant_b && priced(p0)) {
-        const atx::usize u_last = last_valid_mark(in, t, h, i);
+        const atx::usize u_last = last_valid_mark(in, entry_row, h, i);
         if (u_last != 0U) {
           const atx::f64 raw_last = in.raw_price[u_last * inst + i];
           if (priced(raw_last)) {
             // The leg is priced against the RAW close: the consideration is a
             // cash amount per as-traded share (§3.8).
-            const atx::f64 leg = in.terminal_value[cell] / raw_last - 1.0;
+            const atx::f64 leg = in.terminal_value[entry_cell] / raw_last - 1.0;
             const atx::f64 candidate = (in.price[u_last * inst + i] / p0) * (1.0 + leg) - 1.0;
             if (std::isfinite(candidate)) {
               rv = candidate;
@@ -674,6 +695,29 @@ enum class DrawStatistic : atx::u8 { Mean, InfoRatio };
 }
 
 // ---------------------------------------------------------------------------
+//  draw_percentiles — the §3.10 draw loop and percentile step for one interval,
+//  shared by `make_interval` and the public `bootstrap_mean_interval`.
+//
+//  splitmix64_next advances the key FIRST and returns the mixed value of the advanced
+//  state; the RETURN VALUE seeds the generator and the mutated state is discarded
+//  (§3.10). `draw_stats` has exactly `draws` elements.
+// ---------------------------------------------------------------------------
+void draw_percentiles(BootstrapInterval &iv, atx::u64 key, std::span<const atx::f64> s,
+                      atx::usize len, DrawStatistic kind, atx::usize draws,
+                      std::span<atx::f64> draw_stats) {
+  atx::u64 state = key;
+  const atx::u64 seed_x = detail::splitmix64_next(state);
+  atx::core::Xoshiro256pp rng{seed_x};
+  for (atx::usize d = 0; d < draws; ++d) {
+    draw_stats[d] = resample_statistic(rng, s, len, kind, iv.modulo_fallbacks);
+  }
+  std::sort(draw_stats.begin(), draw_stats.begin() + static_cast<std::ptrdiff_t>(draws));
+  const std::span<const atx::f64> sorted{draw_stats.data(), draws};
+  iv.lo = detail::quantile_sorted_asc(sorted, 0.025);
+  iv.hi = detail::quantile_sorted_asc(sorted, 0.975);
+}
+
+// ---------------------------------------------------------------------------
 //  make_interval — §3.10's percentile interval, or a well-defined unreportable
 //  shell. The reason is the LOWEST NONZERO code that applies (ruling A-3); when
 //  it is nonzero `lo`/`hi` are left at 0.0 and MUST serialize as null / "".
@@ -699,25 +743,70 @@ enum class DrawStatistic : atx::u8 { Mean, InfoRatio };
   }
   iv.reportable = atx::u8{1};
 
-  atx::u64 state = detail::bootstrap_stream_key(statistic, static_cast<atx::u64>(horizon_index),
-                                                cfg.stream_signal_index, cfg.stream_variant_id,
-                                                cfg.stream_restriction_id, sample_id,
-                                                cfg.bootstrap_seed);
-  // splitmix64_next advances `state` FIRST and returns the mixed value of the
-  // advanced state; the RETURN VALUE seeds the generator and the mutated state
-  // is discarded (§3.10).
-  const atx::u64 seed_x = detail::splitmix64_next(state);
-  atx::core::Xoshiro256pp rng{seed_x};
-  for (atx::usize d = 0; d < cfg.bootstrap_draws; ++d) {
-    draw_stats[d] = resample_statistic(rng, s, len, kind, iv.modulo_fallbacks);
-  }
-  std::sort(draw_stats.begin(),
-            draw_stats.begin() +
-                static_cast<std::vector<atx::f64>::difference_type>(cfg.bootstrap_draws));
-  const std::span<const atx::f64> sorted{draw_stats.data(), cfg.bootstrap_draws};
-  iv.lo = detail::quantile_sorted_asc(sorted, 0.025);
-  iv.hi = detail::quantile_sorted_asc(sorted, 0.975);
+  const atx::u64 key = detail::bootstrap_stream_key(
+      statistic, static_cast<atx::u64>(horizon_index), cfg.stream_signal_index,
+      cfg.stream_variant_id, cfg.stream_restriction_id, sample_id, cfg.bootstrap_seed);
+  draw_percentiles(iv, key, s, len, kind, cfg.bootstrap_draws,
+                   std::span<atx::f64>{draw_stats.data(), cfg.bootstrap_draws});
   return iv;
+}
+
+// ---------------------------------------------------------------------------
+//  make_hac — the W0-E0a HAC inference of one IC-family mean (E-03).
+//
+//  The lag covers the MA(h-1) overlap of an h-day forward return and never drops below
+//  the Newey-West rule of thumb (so h = 1 still gets a serial-correlation allowance):
+//    HansenHodrickV1  uniform kernel, L = max(h - 1, floor(4 (n/100)^(2/9)))
+//    NeweyWestV1      Bartlett kernel, L = max(h - 1, Newey-West 1994 automatic lag)
+//  No small-sample correction (statsmodels' OLS default). On a common-prefix gap the
+//  block is void, exactly like the summary means (§3.13 / NEW-1).
+// ---------------------------------------------------------------------------
+[[nodiscard]] HacInterval make_hac(std::span<const atx::f64> s, IcHacRule rule,
+                                   atx::usize horizon, bool common_prefix_gap) noexcept {
+  HacInterval out{};
+  out.n = s.size();
+  const atx::usize overlap = horizon - 1U; // horizon >= 1 is validated
+  hac::Kernel kernel = hac::Kernel::UniformV1;
+  atx::usize lag = overlap;
+  if (rule == IcHacRule::NeweyWestV1) {
+    kernel = hac::Kernel::BartlettV1;
+    const atx::usize auto_lag = hac::newey_west_auto_lag(s);
+    lag = (auto_lag > overlap) ? auto_lag : overlap;
+  } else {
+    const atx::usize thumb = hac::newey_west_rule_of_thumb_lag(out.n);
+    lag = (thumb > overlap) ? thumb : overlap;
+  }
+  out.kernel = kernel;
+  out.lag = lag;
+  if (common_prefix_gap) {
+    out.unreportable_reason = (out.n < 20U) ? atx::u8{1} : atx::u8{2};
+    return out;
+  }
+  const hac::MeanInference mi = hac::mean_inference(s, kernel, lag, false);
+  out.point = mi.mean;
+  out.kernel = mi.kernel;
+  out.fell_back = mi.fell_back;
+  if (out.n >= 2U) {
+    out.lag = mi.lag;
+  }
+  atx::u8 reason = 0;
+  if (out.n < 20U) {
+    reason = atx::u8{1};
+  } else if ((out.n / (out.lag + 1U)) < 10U) {
+    reason = atx::u8{3};
+  } else if (mi.defined == 0U) {
+    reason = atx::u8{5};
+  }
+  out.unreportable_reason = reason;
+  if (reason != 0U) {
+    return out;
+  }
+  out.se = mi.se;
+  out.t = mi.t;
+  out.lo = mi.mean - kHacZ975 * mi.se;
+  out.hi = mi.mean + kHacZ975 * mi.se;
+  out.reportable = atx::u8{1};
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -732,7 +821,7 @@ enum class DrawStatistic : atx::u8 { Mean, InfoRatio };
 // ---------------------------------------------------------------------------
 void fill_sample(IcSampleStats &s, bool common, atx::usize gaps,
                  const std::vector<IcDatePoint> &series, atx::usize block,
-                 const CrossSectionIcConfig &cfg, atx::usize horizon_index,
+                 const CrossSectionIcConfig &cfg, atx::usize horizon_index, atx::usize horizon,
                  CrossSectionIcScratch &scratch, atx::u8 &spread_reason_out) {
   s = IcSampleStats{};
   s.common_prefix_gaps = common ? gaps : 0U;
@@ -762,6 +851,7 @@ void fill_sample(IcSampleStats &s, bool common, atx::usize gaps,
     s.ic_sd = st.sd;
     s.icir = st.ir;
     s.naive_t = st.naive_t;
+    s.ic_mean_hac = make_hac(ic, cfg.hac_rule, horizon, gap);
     s.ic_mean_ci = make_interval(BootstrapStatisticId::IcMean, DrawStatistic::Mean, ic, block, cfg,
                                  horizon_index, sample_id, gap, st.mean, scratch.stat);
     s.icir_ci = make_interval(BootstrapStatisticId::Icir, DrawStatistic::InfoRatio, ic, block, cfg,
@@ -775,6 +865,7 @@ void fill_sample(IcSampleStats &s, bool common, atx::usize gaps,
     s.rank_ic_sd = st.sd;
     s.rank_icir = st.ir;
     s.rank_naive_t = st.naive_t;
+    s.rank_ic_mean_hac = make_hac(rk, cfg.hac_rule, horizon, gap);
     s.rank_ic_mean_ci = make_interval(BootstrapStatisticId::RankIcMean, DrawStatistic::Mean, rk,
                                       block, cfg, horizon_index, sample_id, gap, st.mean,
                                       scratch.stat);
@@ -838,6 +929,151 @@ Result<CrossSectionIcScratch> plan_cross_section_ic(const CrossSectionIcInput &i
 }
 
 // ===========================================================================
+//  preflight_cross_section_ic (E-08)
+// ===========================================================================
+namespace {
+
+// Overflow-checked u64 arithmetic for the byte budget; false on wrap.
+[[nodiscard]] bool mul_ok(atx::u64 a, atx::u64 b, atx::u64 &out) noexcept {
+  if (a != 0U && b > (std::numeric_limits<atx::u64>::max)() / a) {
+    return false;
+  }
+  out = a * b;
+  return true;
+}
+
+[[nodiscard]] bool add_ok(atx::u64 a, atx::u64 b, atx::u64 &out) noexcept {
+  if (b > (std::numeric_limits<atx::u64>::max)() - a) {
+    return false;
+  }
+  out = a + b;
+  return true;
+}
+
+} // namespace
+
+Result<IcSizing> preflight_cross_section_ic(atx::usize dates, atx::usize instruments,
+                                            const CrossSectionIcConfig &cfg) {
+  if (dates == 0U || instruments == 0U) {
+    return Err(ErrorCode::InvalidArgument,
+               "cross_section_ic: dates and instruments must both be non-zero (got " +
+                   std::to_string(dates) + " x " + std::to_string(instruments) + ")");
+  }
+  // Sanity bounds (RR-1): they keep every loop bound statically obvious; the budget
+  // below is the binding limit (E-08).
+  if (dates > kMaxIcDates) {
+    return Err(ErrorCode::OutOfRange, "cross_section_ic: dates " + std::to_string(dates) +
+                                          " exceeds kMaxIcDates " + std::to_string(kMaxIcDates));
+  }
+  if (instruments > kMaxIcInstruments) {
+    return Err(ErrorCode::OutOfRange,
+               "cross_section_ic: instruments " + std::to_string(instruments) +
+                   " exceeds kMaxIcInstruments " + std::to_string(kMaxIcInstruments));
+  }
+  // Subsumed by the two bounds on a 64-bit usize, and kept because it is the branch
+  // that makes `cells` defined whatever the bounds become.
+  if (dates > (std::numeric_limits<atx::usize>::max)() / instruments) {
+    return Err(ErrorCode::OutOfRange,
+               "cross_section_ic: dates * instruments overflows usize (" +
+                   std::to_string(dates) + " x " + std::to_string(instruments) + ")");
+  }
+  // The two config maxima the byte count below multiplies by. `validate` reaches them
+  // only through this call, so a standalone preflight enforces the same bounds.
+  if (cfg.horizons.size() > kMaxIcHorizons) {
+    return Err(ErrorCode::InvalidArgument,
+               "cross_section_ic: " + std::to_string(cfg.horizons.size()) +
+                   " horizons exceeds kMaxIcHorizons " + std::to_string(kMaxIcHorizons));
+  }
+  if (cfg.bootstrap_draws > kMaxBootstrapDraws) {
+    return Err(ErrorCode::OutOfRange,
+               "cross_section_ic: bootstrap_draws " + std::to_string(cfg.bootstrap_draws) +
+                   " exceeds kMaxBootstrapDraws " + std::to_string(kMaxBootstrapDraws));
+  }
+  if (cfg.max_working_bytes == 0U) {
+    return Err(ErrorCode::InvalidArgument, "cross_section_ic: max_working_bytes must be > 0");
+  }
+
+  IcSizing out{};
+  out.cells = dates * instruments;
+  const atx::u64 d = dates;
+  const atx::u64 inst = instruments;
+  bool ok = true;
+  // Caller-owned spans: signal, price, raw_price, terminal_value (f64); mask, terminal,
+  // terminal_evidenced, excluded_audited (u8); session_keys (i64 per date).
+  atx::u64 per_cell = 4U * sizeof(atx::f64) + 4U * sizeof(atx::u8);
+  atx::u64 cell_bytes = 0;
+  atx::u64 key_bytes = 0;
+  ok = ok && mul_ok(static_cast<atx::u64>(out.cells), per_cell, cell_bytes);
+  ok = ok && mul_ok(d, sizeof(atx::i64), key_bytes);
+  ok = ok && add_ok(cell_bytes, key_bytes, out.input_bytes);
+  // Scratch, exactly as plan_cross_section_ic sizes it: seven f64 and two usize vectors
+  // of `instruments`, `draw` of `dates` f64 and `stat` of `bootstrap_draws` f64.
+  per_cell = 7U * sizeof(atx::f64) + 2U * sizeof(atx::usize);
+  atx::u64 inst_bytes = 0;
+  atx::u64 draw_bytes = 0;
+  atx::u64 stat_bytes = 0;
+  ok = ok && mul_ok(inst, per_cell, inst_bytes);
+  ok = ok && mul_ok(d, sizeof(atx::f64), draw_bytes);
+  ok = ok && mul_ok(static_cast<atx::u64>(cfg.bootstrap_draws), sizeof(atx::f64), stat_bytes);
+  ok = ok && add_ok(inst_bytes, draw_bytes, out.scratch_bytes);
+  ok = ok && add_ok(out.scratch_bytes, stat_bytes, out.scratch_bytes);
+  // Result: per horizon one summary, a series reserved to `dates` points and Q buckets.
+  atx::u64 series_bytes = 0;
+  atx::u64 bucket_bytes = 0;
+  atx::u64 per_horizon = sizeof(IcHorizonSummary);
+  ok = ok && mul_ok(d, sizeof(IcDatePoint), series_bytes);
+  ok = ok && mul_ok(static_cast<atx::u64>(cfg.quantiles), sizeof(QuantileBucketStat),
+                    bucket_bytes);
+  ok = ok && add_ok(per_horizon, series_bytes, per_horizon);
+  ok = ok && add_ok(per_horizon, bucket_bytes, per_horizon);
+  ok = ok && mul_ok(static_cast<atx::u64>(cfg.horizons.size()), per_horizon, out.result_bytes);
+  ok = ok && add_ok(out.result_bytes, sizeof(CrossSectionIcResult), out.result_bytes);
+  ok = ok && add_ok(out.scratch_bytes, out.result_bytes, out.working_bytes);
+  if (!ok) {
+    return Err(ErrorCode::OutOfRange, "cross_section_ic: working-set byte count overflows u64");
+  }
+  if (out.working_bytes > cfg.max_working_bytes) {
+    return Err(ErrorCode::OutOfRange,
+               "cross_section_ic: working set " + std::to_string(out.working_bytes) +
+                   " bytes exceeds max_working_bytes " + std::to_string(cfg.max_working_bytes));
+  }
+  return Ok(out);
+}
+
+// ===========================================================================
+//  bootstrap_mean_interval
+// ===========================================================================
+Result<BootstrapInterval> bootstrap_mean_interval(std::span<const atx::f64> series,
+                                                  atx::usize block_len, atx::usize draws,
+                                                  atx::u64 stream_key,
+                                                  std::span<atx::f64> draw_stats) {
+  if (draws > kMaxBootstrapDraws) {
+    return Err(ErrorCode::InvalidArgument,
+               "bootstrap_mean_interval: draws " + std::to_string(draws) +
+                   " exceeds kMaxBootstrapDraws " + std::to_string(kMaxBootstrapDraws));
+  }
+  if (draw_stats.size() < draws) {
+    return Err(ErrorCode::InvalidArgument,
+               "bootstrap_mean_interval: draw_stats is smaller than draws");
+  }
+  BootstrapInterval iv{};
+  const atx::usize n = series.size();
+  iv.point = series_stats(series).mean;
+  iv.draws = draws;
+  iv.block_len = block_len;
+  iv.blocks = (block_len == 0U || n == 0U) ? 0U : ((n + block_len - 1U) / block_len);
+  iv.series_len = n;
+  iv.unreportable_reason = series_reason(n, block_len, draws, false);
+  if (iv.unreportable_reason != 0U) {
+    return Ok(iv);
+  }
+  iv.reportable = atx::u8{1};
+  draw_percentiles(iv, stream_key, series, block_len, DrawStatistic::Mean, draws,
+                   draw_stats.first(draws));
+  return Ok(iv);
+}
+
+// ===========================================================================
 //  compute_cross_section_ic
 //
 //  Every §6.2 branch is re-checked here rather than assumed: the function is
@@ -858,7 +1094,11 @@ Result<CrossSectionIcResult> compute_cross_section_ic(const CrossSectionIcInput 
     const atx::usize h = cfg.horizons[hi];
     IcHorizonSummary &sum = out.horizons[hi];
     sum.horizon = h;
-    sum.block_len = detail::block_len(h, cfg.block_len_floor);
+    sum.execution_delay = cfg.execution_delay;
+    sum.embargo = label_embargo(h, cfg.execution_delay);
+    sum.block_len_rule = cfg.block_len_rule;
+    // PolitisWhiteV2 may lengthen this after the IC series exists (below).
+    sum.block_len = detail::block_len_for_rule(cfg.block_len_rule, h, cfg.block_len_floor);
 
     // The only success-path allocation, and it happens ONCE per horizon, before
     // the date loop: the per-date body below touches scratch only (§6.1).
@@ -869,9 +1109,11 @@ Result<CrossSectionIcResult> compute_cross_section_ic(const CrossSectionIcInput 
     sum.series.clear();
     sum.series.reserve(in.dates);
 
-    // `horizons.back() < dates` is validated, so this cannot underflow and every
-    // t below has a forward row at t + h.
-    const atx::usize evaluable = in.dates - h;
+    // `horizons.back() + execution_delay < dates` is validated, so this cannot
+    // underflow and every t below has an entry row t + delay and a forward row
+    // t + delay + h (E-09).
+    const atx::usize delay = cfg.execution_delay;
+    const atx::usize evaluable = in.dates - h - delay;
 
     for (atx::usize t = 0; t < evaluable; ++t) {
       IcDatePoint p{};
@@ -879,8 +1121,10 @@ Result<CrossSectionIcResult> compute_cross_section_ic(const CrossSectionIcInput 
       p.session_key = in.session_keys[t];
       p.in_common_sample = (t < cfg.common_sample_dates) ? atx::u8{1} : atx::u8{0};
       // §3.12: ACTUAL calendar days from the panel's own session keys, integer
-      // division. Strictly increasing keys are validated, so this is positive.
-      p.days_forward = (in.session_keys[t + h] - in.session_keys[t]) / kNanosPerDay;
+      // division, over the HOLDING window (entry to exit). Strictly increasing keys
+      // are validated, so this is positive.
+      p.days_forward =
+          (in.session_keys[t + delay + h] - in.session_keys[t + delay]) / kNanosPerDay;
       const atx::f64 year_fraction =
           static_cast<atx::f64>(p.days_forward) / static_cast<atx::f64>(cfg.day_basis);
       p.borrow_drag = (cfg.annual_borrow_bps / 1e4) * year_fraction * cfg.short_leg_gross;
@@ -1010,10 +1254,29 @@ Result<CrossSectionIcResult> compute_cross_section_ic(const CrossSectionIcInput 
     // Ruling I-6 / design §11.8: the horizon-level spread reportability is the
     // FULL sample's, measured on the spread series' own emitted-date count. The
     // common block gates its own means internally (adding code 2 on a gap).
+    // E-02 / BlockLenRule::PolitisWhiteV2: raise L to the Politis-White automatic
+    // circular block length of this horizon's full-sample IC series when that is longer
+    // than max(floor, 2h). One L per horizon, shared by every family and both samples,
+    // so all intervals of a horizon are drawn under the same dependence allowance.
+    if (cfg.block_len_rule == BlockLenRule::PolitisWhiteV2) {
+      const atx::usize n_ic = gather_series(sum.series, SeriesField::PearsonIc, false,
+                                            scratch.draw);
+      const hac::BlockLength pw =
+          hac::politis_white(std::span<const atx::f64>{scratch.draw.data(), n_ic});
+      if (pw.defined != 0U) {
+        // circular <= ceil(min(3 sqrt(n), n / 3)) < dates, so the cast is exact.
+        const auto pw_len = static_cast<atx::usize>(std::ceil(pw.circular));
+        if (pw_len > sum.block_len) {
+          sum.block_len = pw_len;
+        }
+      }
+    }
+
     atx::u8 spread_reason = 0;
     atx::u8 common_spread_reason = 0;
-    fill_sample(sum.full, false, 0U, sum.series, sum.block_len, cfg, hi, scratch, spread_reason);
-    fill_sample(sum.common, true, gaps, sum.series, sum.block_len, cfg, hi, scratch,
+    fill_sample(sum.full, false, 0U, sum.series, sum.block_len, cfg, hi, h, scratch,
+                spread_reason);
+    fill_sample(sum.common, true, gaps, sum.series, sum.block_len, cfg, hi, h, scratch,
                 common_spread_reason);
     sum.spread_unreportable_reason = spread_reason;
     sum.spread_reportable = (spread_reason == 0U) ? atx::u8{1} : atx::u8{0};

@@ -54,7 +54,7 @@ constexpr atx::f64 kNaN = std::numeric_limits<atx::f64>::quiet_NaN();
 
 AdjustedSeries adjust_total_return(std::span<const atx::f64> raw_close,
                                    std::span<const atx::f64> cum_adj_factor,
-                                   std::span<const atx::f64> cash_dividend) {
+                                   std::span<const atx::f64> cash_dividend, TriGapRule gap_rule) {
   AdjustedSeries out{};
   const atx::usize n = raw_close.size();
   // Guard: the three parallel arrays must align index-for-index. A mismatch is a
@@ -69,27 +69,71 @@ AdjustedSeries adjust_total_return(std::span<const atx::f64> raw_close,
 
   // Running state for the geometric chain. `prev_s` is the split-adjusted close
   // of the immediately-preceding cell (NaN after a gap); `prev_tri` is the last
-  // finite TRI level. When `prev_s` is NaN (the first valid cell, or the first
-  // valid cell after a gap) we ANCHOR: r=0, TRI=S — there is no defined return to
-  // chain across a gap. Otherwise we extend the chain by (1 + r_t).
+  // finite TRI level and `last_s` the split-adjusted close it was set on (with
+  // `last_factor` its split factor). The first valid cell ANCHORS (r=0, TRI=S). A
+  // valid cell after a gap has no defined one-day return (r=0, as before), and its
+  // TRI level depends on `gap_rule`:
+  //   ReanchorV1   — TRI=S (legacy): drops every dividend accumulated so far (D-04).
+  //   RatioChainV2 — TRI=prev_tri·(S_t + ΣD_adj)/S_last: the gap's price move is
+  //                  carried, the accumulated dividends are kept, and every dividend
+  //                  whose ex-date falls inside the gap or on the resumption cell is
+  //                  reinvested at the resumption (default; W0-D0 fix pass 1).
+  // Otherwise we extend the chain by (1 + r_t).
   atx::f64 prev_s = kNaN;
   atx::f64 prev_tri = kNaN;
+  atx::f64 last_s = kNaN;
+  atx::f64 last_factor = kNaN;
+  // Dividends seen on gap cells since the last valid cell. `gap_div_adj` is the
+  // sum already on the split basis (the gap cell's factor was finite and > 0);
+  // `gap_div_raw` is the sum whose cell had no usable factor, converted at the
+  // resumption only when the factor did not change across the gap.
+  atx::f64 gap_div_adj = 0.0;
+  atx::f64 gap_div_raw = 0.0;
 
   for (atx::usize t = 0; t < n; ++t) {
     const atx::f64 s = split_adjusted(raw_close[t], cum_adj_factor[t]);
     out.split_adj_close[t] = s;
 
     if (!is_valid_close(s)) {
-      // Gap: NaN r and TRI for this cell; the next valid cell re-anchors.
+      // Gap: NaN r and TRI for this cell; the next valid cell resumes the index.
+      // A dividend on this session still belongs to the holder: remember it on
+      // the split basis of its own ex-date (D-05 puts each dividend on one session).
+      const atx::f64 f = cum_adj_factor[t];
+      if (std::isfinite(f) && f > 0.0) {
+        gap_div_adj += dividend_on_basis(cash_dividend[t], f);
+      } else {
+        gap_div_raw += std::isfinite(cash_dividend[t]) ? cash_dividend[t] : 0.0;
+      }
       prev_s = kNaN;
       continue;
     }
 
     if (!is_valid_close(prev_s)) {
-      // First valid close, or resumption after a gap: anchor the index here.
+      // First valid close, or resumption after a gap.
       out.total_return[t] = 0.0;
-      out.total_return_index[t] = s;
-      prev_tri = s;
+      const bool chain = gap_rule == TriGapRule::RatioChainV2 && is_valid_close(last_s) &&
+                         std::isfinite(prev_tri);
+      atx::f64 tri = s;
+      if (chain) {
+        // Dividends to reinvest at the resumption: the gap's (on their own split
+        // basis) plus the resumption cell's own. A gap dividend with no usable
+        // factor is put on this cell's basis only if the factor is unchanged across
+        // the gap (no split inside it); otherwise its basis is unknown and it is
+        // dropped rather than scaled by a guessed factor.
+        const atx::f64 f = cum_adj_factor[t];
+        atx::f64 carried = gap_div_adj + dividend_on_basis(cash_dividend[t], f);
+        if (gap_div_raw != 0.0 && last_factor == f) {
+          carried += gap_div_raw * f;
+        }
+        if (!std::isfinite(carried)) {
+          carried = 0.0;
+        }
+        // prev_tri * ((s + carried) / last_s): an unchanged price with no dividend
+        // (s == last_s, carried == 0) leaves the level bit-identical.
+        tri = prev_tri * ((s + carried) / last_s);
+      }
+      out.total_return_index[t] = tri;
+      prev_tri = tri;
     } else {
       const atx::f64 d_adj = dividend_on_basis(cash_dividend[t], cum_adj_factor[t]);
       const atx::f64 r = (s + d_adj) / prev_s - 1.0;
@@ -98,6 +142,10 @@ AdjustedSeries adjust_total_return(std::span<const atx::f64> raw_close,
       out.total_return_index[t] = prev_tri;
     }
     prev_s = s;
+    last_s = s;
+    last_factor = cum_adj_factor[t];
+    gap_div_adj = 0.0;
+    gap_div_raw = 0.0;
   }
 
   return out;
