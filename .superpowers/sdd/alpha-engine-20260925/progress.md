@@ -42,7 +42,7 @@ Reuse existing pools, -MaxPool11; do not create more. Four agent slots including
 
 Root session56041 runs .superpowers/sdd/w0/run-integrated-gate.ps1. Configure passed with
 isolated pool-2/deps/equity-dev, PCH ON and groups alpha/factory/learn/data/eval/combine/risk/book.
-The 394-step build was at173/394 at last inspection. It then automatically runs nine whole
+The 394-step build was at345/394 at last inspection. It then automatically runs nine whole
 test executables sequentially, with data exclusions and cleared opt-ins. Source compiled is
 b185d056440704e7ebcfe2b9395601d7e5264269; later root commits change documentation only.
 Do not modify root production sources during the build. Logs/hashes are under
@@ -82,7 +82,7 @@ other builds, tests, or G0 runs are active.
   Family masks cover warmup and evaluation. Focused27/27 (96.01s), whole alpha706/706
   (33.190s), independent physical reduced-universe oracle1/1 (14ms) pass. G0 reviewer APPROVE.
   Two production-only hygiene checks passed sequentially. Final report b09f45ce includes
-  functional report d988f7b8 and benchmark preparation224be5f7; not yet imported.
+  functional report d988f7b8 and benchmark preparation224be5f7; imported at1db7fdb0.
 
 ## Active ASan and reporting follow-up (pool-4)
 
@@ -109,15 +109,17 @@ suppression is allowed, with explicit exclusion of logical size-within-capacity 
 Raw allocation bounds remain instrumented and must be proven by the negative-control read.
 A getenv warning was fixed with getenv_s, without weakening /WX.
 
-G0 found an additional real presentation defect: nested replay summary flags assumptions,
-but top-level baseline summary copied performance without eligibility fields. Replay owner
-is authorized to propagate eligibility, reasons, counts and PnL into BOTH baseline/book
-summaries, implement first then extend focused tests. Keep this production commit separate
-from ASan wiring so G0 can import it for a tiny Release rebuild and seconds-long rerun.
-Both summary production TUs passed sequential PCH-off checks. Pool-4 restored equity-dev
-PCH ON and is building impl-tests+worker at one worker for the focused gate. Root static
-review found no blocker; audit agent performs an additional fresh review during its build.
-No metric/math changes are intended. New summary code is not committed yet.
+G0 found a real presentation defect: nested replay summaries flagged assumptions, but outer
+baseline/book summaries copied naked performance. Production1bdeed388b8819d539175df65c202fd33b6f2d51
+and reportd4b86cd23581e5d4bba92b02181001cd0dce36f7 fix both consumers, copy all10 fields,
+fail qualification on assumed liquidations and hash-bind the book summary. Numerical replay.full
+is unchanged. Both production TUs passed PCH-off checks. Focused32/32 passed40.32s.
+Independent review766bac4a approved exact code and ran2/2 changed fixtures in1.820s.
+Root imported that review as6e2a3c4e, path review-replay-disclosure-codex.md.
+ASan+summary production remain unmerged pending the running root build; pool-4 head
+edbcb2063ac517e3122c8c45c95192996b005d23 also contains W1-B1 preparation docs.
+Merge these only after root's build stops, then qualify changed impl/risk closures.
+G0 imported only summary production; its final disclosed binary is built already.
 
 ## G0 evidence (all pre-2020, no tuning)
 
@@ -142,29 +144,50 @@ L7/L9/L10 do not use the later repair paths; no duplicate rerun solely for those
   p.9503335211679915, not the previously claimed positive figure; reused2019 netSR1.7296874867
   with3 prior reads. Source SHA256cd8ac431e797d902fd93a558184a26d919f809336c95b6f906b1ed7e27b15824.
 
-G0 finished the7-step diagnostic26-family rebuild and released its compiler slot. It is
-running13 serial cp21 cells (~12min historically), followed by the frozen Python scorecard
-(perhaps15min). First cell passed;29 signals =3 baselines+26 frozen families. Metadata has
-legacy iteration22 prose/trial-ID prefix despite checkpoint21 and numerictrial_count80;
-agent records this diagnostic erratum alongside the frozen scorecard's stale year-union
-label. Do not rerun unchanged math just for that prose. Pin is NEVER committed: archive
-unpinned source/exe, apply local pin, archive pin patch/exe, restore both source files, then
-run immutable diagnostic binary. Final report/harness commit must contain no pin sources.
-Heavy lock is atomic token/PID-owned and removed only by its matching owner. Publish final
-hash-bound manifest last. G0 will release its compiler slot to the audit agent after pin build.
+G0 completed all13 baseline+13IC cp21 processes: exit0,608.406s combined,peak0.862GiB.
+All13 family/cost recipes match historical manifests: numeric checkpoint21,29 streams
+(3 baselines+26 frozen families),declaredN80. Legacy iteration22 trial-ID/prose remains;
+recorded as erratum alongside frozen Python scorer's stale year-union label. No numerical
+rerun solely for prose. Diagnostic source pin was never committed; both files are restored.
+Patch and diagnostic exe are archived. Production diff is empty.
+
+Frozen Python scorecard remains active session74687, ~10min elapsed at18:09ET, no stderr.
+Compiler slot is released. Final disclosed sourcec32df9512075879827b75f5e465f2640c579d4c8
+is built and archived under bin/corrected-disclosed (14 files); atx-impl SHA256
+2edbf4f5177ca3f9a8169ff6ee8ba3e4e939ceaf98e9b450a0bad77ee2f0870e.
+After scorecard, rerun the two seconds-scale corrected/Abort controls to validate outer flags
+and unchanged numbers. Then finish all35 receipts/comparisons; publish recursive hash-bound
+manifest LAST. Heavy lock is atomic token/PID-owned; only matching owner removes it.
 
 ## Benchmark preparation (audit agent)
 
 Pool-6 baseline at O1 configured equity-bench successfully: Release, equity-only, bench ON,
-groups all, isolated deps/equity-bench. Baseline build running (29/235 at last receipt),
-one worker; no measurements yet. Current pool-5 configure/build waits for baseline. Current may
-freeze b185d056 production, provided later ASan edits change no engine/benchmark behavior;
-top-level reporting follow-up changes must be disclosed and inspected for benchmark relevance.
-Build bench+worker serially. Complete66-case filter:
+groups all, isolated deps/equity-bench. Build completed235/235 exit0 (~20min).
+Baseline exe SHA2568bd72411065d71edbdd62eb37ffc2230aee0bf050681aa2096d85b5f04eea966.
+Registry verified exactly81 cases (66 earlier was wrong:15 SearchThroughput also match).
+Current pool-5 configure/build waits for >4GiB free; recent host free2.13GiB. No processes
+belonging to other sessions may be killed. Current sourceb185d056 has only a later review doc.
+ASan target defaults OFF and summary impl changes do not affect engine benchmark links.
+Build bench+worker serially. Full filter (never narrow):
 ^BM_Kernel|^Wq101_|^BM_Search|^BM_OptimizerProduction/M:(1000|3000|5000)/mode:(4|6|7)/
-Verify actual registration names, same keys, repetitions3, no AllowMissing or Update bypass.
-Windows CPU-set API verified i7-1260P P-core logical0-7, affinity0xFF; topology archived.
-Measure only after G0 and root tests/builds are quiet. Gate threshold20% stays fixed.
+81 cases:33 kernels,20 WQ,19 search,9 optimizer. Repetitions3, exact same keys, no skips/errors,
+finite positive timings; gate threshold0.20, no AllowMissing or Update bypass.
+Pin ATX_WQ101_INSTRUMENTS=500 and throughput756dates x500names x6generations identically.
+P-core logical0-7, affinity0xFF; CPU-set topology archived. Measure after G0/root tests/builds
+and all compiler work are quiet. No performance measurements yet.
+
+## W1 preparation only
+
+Root19c03e3d adds lane0-preparation.md with source stubs and precision/label-clock contracts.
+Pool-4 edbcb206 adds lane-b1-preparation-brief.md: one-way units, causal ADV, actual holdings
+deltas, modeled borrow provenance, and primary FIM/EDGE sources. Not yet imported.
+Pool-4 is preparing D1/D5 read-only: pinned tier1 already owns historical_identity,
+market_owner_bridge and identity_reconstruction plus migrations0326/0327; avoid those files.
+Current export load_id_bridge is dict[sr_id->cik] and main duplicates all CIK snapshots to
+all mapped IDs. Correct interval joins require a narrow exporter caller/output contract
+extension plus later D3 consumer interval support; no owner permission needed for routine
+correctness scope. The referenced82 recycled-ticker IDs and19-date corrupt-session manifest
+are evidence prerequisites not yet located. No warehouse connections or real rows opened.
 
 ## Remaining wave gate and next sequence
 
