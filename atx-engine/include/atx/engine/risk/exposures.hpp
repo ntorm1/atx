@@ -154,8 +154,16 @@ enum class SpecificRiskMethod : atx::u8 { PopVariance /*P4 default*/, EwmaNeweyW
 
 // ===========================================================================
 //  W0-R0 versioned numeric rules (plan §5 "Correctness first"). Each V1 enumerator
-//  reproduces the pre-W0 arithmetic bit-for-bit so frozen artifacts can be
-//  re-derived; the DEFAULTS are the corrected V2 behaviour. Append-only.
+//  restores the pre-W0 arithmetic OF ITS OWN RULE; the DEFAULTS are the corrected V2
+//  behaviour. Append-only. An all-V1 config is NOT a full pre-W0 replay: three R-04 /
+//  R-06 changes are unversioned because the pre-W0 behaviour was a defect —
+//    (a) a date whose sector has no member with a clean return drops that empty
+//        column and is estimated (pre-W0 skipped it as rank-deficient);
+//    (b) a date whose column set differs from X[0] is mapped by column identity
+//        (pre-W0 wrote by position and could read past the coefficient vector, UB);
+//    (c) an instrument with group id kNoGroup is dropped from that date.
+//  Pre-W0 output is therefore reproduced only on panels where every date has the same
+//  sector set as X[0] with at least one clean member per sector and no kNoGroup id.
 // ===========================================================================
 
 // R-03: which panel row's exposures explain the return r_s = close(s)/close(s+1) − 1.
@@ -171,10 +179,10 @@ enum class ExposureTiming : atx::u8 { ContemporaneousV1, LaggedV2 };
 // R-06: cross-sectional standardization of a style column.
 //   EqualWeightV1       — (v − equal-weight mean) / population std, no winsorizing.
 //   CapWeightedWinsorV2 — iterative ±kZScoreWinsor·σ winsorizing of the raw values
-//                         (equal-weight centre), then cap-weighted mean, equal-weighted
-//                         population std, and a final clip of z to ±kZScoreWinsor
-//                         (Barra USE4 convention). Without caps the mean is
-//                         equal-weighted (still winsorized).
+//                         (equal-weight centre), then cap-weighted mean and
+//                         equal-weighted population std (Barra USE4 convention: trim the
+//                         raw descriptor, do NOT clip after cap-weighted centring). Without
+//                         caps the mean is equal-weighted (still winsorized).
 enum class ZScoreRule : atx::u8 { EqualWeightV1, CapWeightedWinsorV2 };
 
 // R-05: specific-variance floor for names with too little residual history.
@@ -222,7 +230,9 @@ struct CovarianceConfig {
   // `full` = the deepest residual count in the current cross-section (so a short test
   // window does not mark every name thin). 21 ≈ one trading month.
   atx::usize specific_min_obs = 21;
-  atx::f64 specific_floor_frac = 0.1; // D_i >= frac · median(D) for EVERY name (V2)
+  // D_i >= frac · median(D) for EVERY name (V2), on both the fundamental and the
+  // statistical (APCA) builder. Clamped to [0, 1]; non-finite ⇒ InvalidArgument.
+  atx::f64 specific_floor_frac = 0.1;
 };
 
 struct FactorModelConfig {
@@ -638,7 +648,7 @@ inline void zscore_column(atx::core::linalg::MatX &x, Eigen::Index col) noexcept
 inline constexpr atx::f64 kZScoreWinsor = 3.0;
 // Upper bound on the iterative winsorizing passes (each pass clips at μ ± 3σ and
 // re-estimates μ, σ; clipping only ever shrinks σ, so the loop converges quickly —
-// the bound keeps it provably finite; a final clip of z enforces the ±3 contract).
+// the bound keeps it provably finite).
 inline constexpr atx::usize kZScoreWinsorPasses = 16U;
 
 // ZScoreRule::CapWeightedWinsorV2 standardization of one column IN PLACE (R-06).
@@ -650,11 +660,17 @@ inline constexpr atx::usize kZScoreWinsorPasses = 16U;
 //         centre is owned by the few largest names, so one mega-cap outlier would
 //         capture it and push every other name to the bound.
 //   Standardize: z = (x − μ_w)/σ on the winsorized values, μ_w = Σ w x / Σ w (the
-//         cap-weighted mean, Barra USE4), σ the equal-weight population std; then z is
-//         clipped to ±3.
-// The cap-weighted mean of z is exactly 0 unless the final clip binds (a name whose
-// winsorized value is > 3σ from the CAP-weighted mean, e.g. the smallest names of a
-// Size column). DEGENERATE (≤ 1 row or σ == 0) ⇒ the column is 0, same as V1.
+//         cap-weighted mean, Barra USE4), σ the equal-weight population std.
+// Contract: the cap-weighted mean of z is 0 and its equal-weight population std is 1
+// (up to rounding), and every |z − mean_eq(z)| ≤ 3 + δ, where δ is the residual of the
+// bounded winsorizing iteration: 0 when it stops with nothing clipped; it converges
+// geometrically, so an extreme outlier can leave δ > 0 after kZScoreWinsorPasses
+// (4.4e-8 for a planted 40-log-point ln-adv outlier among 40 names).
+// There is deliberately NO clip of z itself after cap-weighted centring (W0-R0 fix 1,
+// reviewer minor 3): μ_w sits about σ_ln above μ_eq for a lognormal cap spread, so a
+// ±3 clip of z would pin the whole small-cap tail of Size (≈16% of names at ln-cap
+// sd 2) at −3 and erase its ordering. |z| can therefore exceed 3 by |μ_eq − μ_w|/σ.
+// DEGENERATE (≤ 1 row or σ == 0) ⇒ the column is 0, same as V1.
 // Order-fixed (ascending row). All inputs non-NaN.
 inline void zscore_column_v2(atx::core::linalg::MatX &x, Eigen::Index col,
                              std::span<const atx::f64> weights) noexcept {
@@ -730,7 +746,7 @@ inline void zscore_column_v2(atx::core::linalg::MatX &x, Eigen::Index col,
   }
   const atx::f64 inv_sigma = 1.0 / sigma;
   for (Eigen::Index r = 0; r < m; ++r) {
-    x(r, col) = std::clamp((x(r, col) - mu_w) * inv_sigma, -kZScoreWinsor, kZScoreWinsor);
+    x(r, col) = (x(r, col) - mu_w) * inv_sigma; // no post-centring clip (see contract)
   }
 }
 

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -302,6 +303,134 @@ TEST(RiskThinNameFloor, GlobalFloorAndDegenerateCases) {
   VecX de(0);
   const SpecificFloorStats se = floor_specific_variances(empty, {}, cov, de);
   EXPECT_EQ(se.n_thin, 0U);
+}
+
+// ===========================================================================
+//  Fix pass 1 (reviewer minor 4): the statistical (APCA) variant built by the SAME
+//  FactorModelBuilder::build honours "no D < 0.1·median(D)" too. A near-stale name
+//  (returns 1e-4 × a normal name's) gets a tiny s_n; NoneV1 keeps it (the defect),
+//  StructuralMedianV2 raises exactly that name to 0.1·median and leaves the rest.
+// ===========================================================================
+// A complete-case APCA panel: 60 names, 30 dates, two latent factors (σ 1%) plus 2%
+// idiosyncratic noise; name `stale` has every return scaled by 1e-4.
+inline constexpr usize kStatInst = 60U;
+inline constexpr usize kStatWindow = 30U;
+[[nodiscard]] StorePanel stat_panel(usize stale) {
+  const usize n_inst = kStatInst;
+  const usize window = kStatWindow;
+  Rng rng{2718U};
+  std::vector<f64> f1(window);
+  std::vector<f64> f2(window);
+  for (usize s = 0; s < window; ++s) {
+    f1[s] = 0.01 * rng.normal();
+    f2[s] = 0.01 * rng.normal();
+  }
+  Grid ret(window, std::vector<f64>(n_inst));
+  for (usize i = 0; i < n_inst; ++i) {
+    const f64 b1 = rng.normal();
+    const f64 b2 = rng.normal();
+    for (usize s = 0; s < window; ++s) {
+      const f64 r = b1 * f1[s] + b2 * f2[s] + 0.02 * rng.normal();
+      ret[s][i] = (i == stale) ? 1.0e-4 * r : r;
+    }
+  }
+  return StorePanel{closes_from_returns(ret), Grid(window + 1U, std::vector<f64>(n_inst, 1.0e4))};
+}
+
+TEST(RiskThinNameFloor, StatisticalModelIsFlooredToo) {
+  const usize n_inst = kStatInst;
+  const usize window = kStatWindow;
+  const usize stale = 17U;
+  const StorePanel sp = stat_panel(stale);
+  const std::vector<u32> group(n_inst, 1U);
+  FactorModelConfig cfg;
+  cfg.style_mask = 0U;
+  cfg.n_stat_factors = 2U;
+  FactorModelConfig cfg1 = cfg;
+  cfg1.cov.specific_floor = SpecificFloorRule::NoneV1;
+  const auto m2 = FactorModelBuilder{cfg}.build(sp.view(), window, std::span<const f64>{},
+                                                std::span<const u32>{group});
+  const auto m1 = FactorModelBuilder{cfg1}.build(sp.view(), window, std::span<const f64>{},
+                                                 std::span<const u32>{group});
+  ASSERT_TRUE(m2.has_value()) << m2.error().to_string();
+  ASSERT_TRUE(m1.has_value()) << m1.error().to_string();
+  ASSERT_EQ(m2->n_instruments(), n_inst); // complete case: asset row == instrument
+  const VecX &d2 = m2->specific_var();
+  const VecX &d1 = m1->specific_var();
+  const f64 med1 = median(std::vector<f64>(d1.data(), d1.data() + d1.size()));
+  const f64 med2 = median(std::vector<f64>(d2.data(), d2.data() + d2.size()));
+  const Eigen::Index si = static_cast<Eigen::Index>(stale);
+  EXPECT_LT(d1[si], 1.0e-3 * med1); // NoneV1: the stale name looks (almost) riskless
+  EXPECT_EQ(med2, med1);            // raising values below the median keeps it
+  usize below = 0U;
+  usize changed = 0U;
+  for (Eigen::Index r = 0; r < d2.size(); ++r) {
+    below += (d2[r] < 0.1 * med2) ? 1U : 0U;
+    changed += (d2[r] != d1[r]) ? 1U : 0U;
+  }
+  EXPECT_EQ(below, 0U);   // acceptance invariant on the APCA path
+  EXPECT_EQ(changed, 1U); // only the stale name moved
+  EXPECT_NEAR(d2[si], 0.1 * med1, 1e-15);
+  std::printf("[W0-R0 evidence] APCA floor: stale-name D NoneV1=%.3e V2=%.3e (median %.3e)\n",
+              d1[si], d2[si], med2);
+}
+
+// ===========================================================================
+//  Fix pass 1 (reviewer minor 5): a non-finite specific_floor_frac is rejected by both
+//  builders (std::clamp would pass NaN through and `!(d >= NaN)` would set every D and
+//  d0 to NaN), and the detail kernel treats it as 0 (no global floor) for direct callers.
+// ===========================================================================
+TEST(RiskThinNameFloor, NonFiniteFloorFracIsRejected) {
+  const usize window = 40U;
+  const ThinPanel tp = thin_panel(window, /*thin_rows=*/3U, 11U);
+  const PitSideInputs side = PitSideInputs::broadcast({}, std::span<const u32>{tp.group});
+  const StorePanel sp = stat_panel(/*stale=*/17U);
+  const std::vector<u32> stat_group(kStatInst, 1U);
+  const PitSideInputs stat_side = PitSideInputs::broadcast({}, std::span<const u32>{stat_group});
+  for (const f64 bad : {kNaN, std::numeric_limits<f64>::infinity(),
+                        -std::numeric_limits<f64>::infinity()}) {
+    FactorModelConfig cfg = sectors_cfg(SpecificFloorRule::StructuralMedianV2);
+    cfg.cov.specific_floor_frac = bad;
+    const auto c = FactorModelBuilder{cfg}.build_components(tp.panel.view(), window, side);
+    ASSERT_FALSE(c.has_value());
+    EXPECT_EQ(c.error().code(), atx::core::ErrorCode::InvalidArgument);
+    const auto fr = FactorModelBuilder{cfg}.factor_returns(tp.panel.view(), window, side);
+    ASSERT_FALSE(fr.has_value());
+    EXPECT_EQ(fr.error().code(), atx::core::ErrorCode::InvalidArgument);
+    FactorModelConfig stat = cfg;
+    stat.n_stat_factors = 2U;
+    const auto ms = FactorModelBuilder{stat}.build(sp.view(), kStatWindow, stat_side);
+    ASSERT_FALSE(ms.has_value());
+    EXPECT_EQ(ms.error().code(), atx::core::ErrorCode::InvalidArgument);
+  }
+  // Finite controls: the same configs with the default frac build (so the errors above
+  // come from the frac check, not from the panels).
+  const auto ok = FactorModelBuilder{sectors_cfg(SpecificFloorRule::StructuralMedianV2)}
+                      .build_components(tp.panel.view(), window, side);
+  ASSERT_TRUE(ok.has_value()) << ok.error().to_string();
+  for (Eigen::Index r = 0; r < ok->D.size(); ++r) {
+    EXPECT_TRUE(std::isfinite(ok->D[r]));
+  }
+  FactorModelConfig stat_ok = sectors_cfg(SpecificFloorRule::StructuralMedianV2);
+  stat_ok.n_stat_factors = 2U;
+  const auto ms_ok = FactorModelBuilder{stat_ok}.build(sp.view(), kStatWindow, stat_side);
+  ASSERT_TRUE(ms_ok.has_value()) << ms_ok.error().to_string();
+
+  // Direct kernel call: NaN frac ⇒ floor 0, nothing floored, D untouched and finite.
+  const usize m = 9U;
+  const ExposureMatrix x0 = two_sector_with_style(std::vector<f64>(m, 0.0),
+                                                  std::vector<u32>(m, 1U));
+  VecX d(9);
+  d << 4e-4, 5e-4, 3e-4, 6e-4, 4.5e-4, 5.5e-4, 1e-8, 3.5e-4, 4e-4;
+  CovarianceConfig cov;
+  cov.specific_floor_frac = kNaN;
+  VecX out = d;
+  const SpecificFloorStats st = floor_specific_variances(x0, std::vector<usize>(m, 100U), cov, out);
+  EXPECT_EQ(st.floor, 0.0);
+  EXPECT_EQ(st.n_floored, 0U);
+  for (Eigen::Index r = 0; r < 9; ++r) {
+    EXPECT_EQ(out[r], d[r]);
+  }
 }
 
 } // namespace atx_test_w0_r0_thin_floor

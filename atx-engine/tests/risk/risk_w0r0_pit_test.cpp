@@ -177,10 +177,14 @@ TEST(RiskFactorModelPit, RegressionExposuresInvariantToFuturePerturbation) {
 }
 
 // ===========================================================================
-//  Acceptance "future-perturbation invariance of the model built at t" (causality
-//  harness form). One storage buffer holds 12 rows NEWER than t; the model at t is
-//  built from the live view at t. Perturbing every future close, volume, cap and
-//  group leaves (X, F, D) byte-identical.
+//  HARNESS-SHAPE SMOKE TEST (not the R-03 discriminator — reviewer minor 1). The
+//  causality-harness form of "future-perturbation invariance of the model built at t":
+//  one storage buffer holds 12 rows NEWER than t; the model at t is built from the live
+//  view at t. Perturbing every future close, volume, cap and group leaves (X, F, D)
+//  byte-identical. PanelView cannot address rows newer than its row 0 and the side
+//  inputs are sliced here, so this passes on the pre-W0 estimator too; it pins the
+//  harness plumbing only. The R-03 proofs are RegressionExposuresInvariantToFuture-
+//  Perturbation (per date) and PassBSeriesInvariantToInteriorPerturbation (model level).
 // ===========================================================================
 TEST(RiskFactorModelPit, ModelBuiltAtTInvariantToFuturePerturbation) {
   const usize future = 12U;
@@ -454,7 +458,30 @@ TEST(RiskFactorModelPit, ZScoreIsCapWeightedAndWinsorized) {
   std::printf("[W0-R0 evidence] planted ln-adv outlier: V1 outlier z=%.3f, spread of the other "
               "39 names sd=%.3f; V2 outlier z=%.3f, others sd=%.3f, max|z|=%.3f\n",
               x1->x(7, 0), sd_rest1, x2->x(7, 0), sd_rest2, max_abs2);
-  EXPECT_LE(max_abs2, 3.0 + 1e-12); // ±3 bound holds
+  // The ±3σ winsorizing bound, in the equal-weight frame it is defined in (fix pass 1:
+  // no post-centring clip, so |z| itself may exceed 3 by |μ_eq − μ_w|/σ), and the
+  // cap-weighted mean of z is exactly 0 (it held only when the old clip did not bind).
+  f64 eq_mean2 = 0.0;
+  f64 cap_sum = 0.0;
+  f64 cap_z2 = 0.0;
+  for (usize i = 0; i < n; ++i) {
+    eq_mean2 += x2->x(static_cast<Eigen::Index>(i), 0);
+    cap_sum += cap[i];
+    cap_z2 += cap[i] * x2->x(static_cast<Eigen::Index>(i), 0);
+  }
+  eq_mean2 /= static_cast<f64>(n);
+  f64 max_dev2 = 0.0;
+  for (usize i = 0; i < n; ++i) {
+    max_dev2 = std::max(max_dev2, std::fabs(x2->x(static_cast<Eigen::Index>(i), 0) - eq_mean2));
+  }
+  // Winsorizing bound: the 16-pass iteration converges geometrically, so the planted
+  // 40-log-point outlier ends 4.4e-8 σ past the bound (measured); 1e-6 bounds that
+  // residual. (Pre-fix, |z| ≤ 3 held exactly only because z itself was clipped.)
+  EXPECT_LE(max_dev2, 3.0 + 1e-6);
+  std::printf("[W0-R0 evidence] V2 winsor bound: max|z - mean_eq(z)| = %.12f, cap-weighted "
+              "mean of z = %.3e\n",
+              max_dev2, cap_z2 / cap_sum);
+  EXPECT_NEAR(cap_z2 / cap_sum, 0.0, 1e-12);  // cap-weighted mean exactly 0
   EXPECT_GE(x2->x(7, 0), 2.0);      // the outlier stays the top name, at the bound region
   EXPECT_GT(x1->x(7, 0), 5.0);      // V1 keeps the outlier extreme ...
   EXPECT_LT(sd_rest1, 0.35);        // ... and crushes everyone else
@@ -480,16 +507,195 @@ TEST(RiskFactorModelPit, ZScoreIsCapWeightedAndWinsorized) {
     const f64 d = x3->x(static_cast<Eigen::Index>(i), 0) - ez;
     ss += d * d;
   }
-  f64 max_abs3 = 0.0;
+  // Exact contract unconditionally (fix pass 1: no post-centring clip can break it).
+  EXPECT_NEAR(wz / wsum, 0.0, 1e-12);
+  EXPECT_NEAR(std::sqrt(ss / static_cast<f64>(n)), 1.0, 1e-12);
+}
+
+// ===========================================================================
+//  Fix pass 1 (reviewer minor 3): Size = ln cap standardized with a CAP-weighted mean
+//  sits ≈ σ_ln above the equal-weight mean for a lognormal cap spread, so a ±3 clip of
+//  z after centring would pin the whole small-cap tail at −3. The decision (USE4: trim
+//  the raw descriptor, never clip after cap-weighted centring) keeps that tail ordered.
+//  400 names, ln-cap sd 2 (roughly a listed-universe spread).
+// ===========================================================================
+TEST(RiskFactorModelPit, SizeSmallCapTailKeepsItsOrder) {
+  const usize n = 400U;
+  Rng rng{515U};
+  std::vector<f64> cap(n);
+  for (f64 &c : cap) {
+    c = 1.0e9 * std::exp(2.0 * rng.normal());
+  }
+  const StorePanel sp{Grid(1U, std::vector<f64>(n, 50.0)), Grid(1U, std::vector<f64>(n, 1.0e4))};
+  FactorModelConfig cfg;
+  cfg.style_mask = bit(StyleFactor::Size);
+  const auto x = build_exposures(sp.view(), cfg, 0U, std::span<const f64>{cap}, {});
+  ASSERT_TRUE(x.has_value());
+  ASSERT_EQ(x->n_instruments(), n);
+  ASSERT_EQ(x->n_factors(), 1U);
+  std::vector<f64> z(n);
+  for (usize r = 0; r < n; ++r) {
+    z[x->instrument_rows[r]] = x->x(static_cast<Eigen::Index>(r), 0);
+  }
+  f64 wsum = 0.0;
+  f64 wz = 0.0;
+  f64 ez = 0.0;
   for (usize i = 0; i < n; ++i) {
-    max_abs3 = std::max(max_abs3, std::fabs(x3->x(static_cast<Eigen::Index>(i), 0)));
+    wsum += cap[i];
+    wz += cap[i] * z[i];
+    ez += z[i];
   }
-  if (max_abs3 < 3.0) { // nothing clipped -> exact contract
-    EXPECT_NEAR(wz / wsum, 0.0, 1e-12);
-    EXPECT_NEAR(std::sqrt(ss / static_cast<f64>(n)), 1.0, 1e-12);
-  } else {
-    EXPECT_NEAR(wz / wsum, 0.0, 0.05);
+  ez /= static_cast<f64>(n);
+  f64 ss = 0.0;
+  f64 max_dev = 0.0;
+  usize below3 = 0U; // names a post-centring ±3 clip would have pinned at −3
+  const f64 zmin = *std::min_element(z.begin(), z.end());
+  usize at_min = 0U;
+  for (usize i = 0; i < n; ++i) {
+    ss += (z[i] - ez) * (z[i] - ez);
+    max_dev = std::max(max_dev, std::fabs(z[i] - ez));
+    below3 += (z[i] < -3.0) ? 1U : 0U;
+    at_min += (z[i] == zmin) ? 1U : 0U;
   }
+  EXPECT_NEAR(wz / wsum, 0.0, 1e-12);                          // cap-weighted mean 0
+  EXPECT_NEAR(std::sqrt(ss / static_cast<f64>(n)), 1.0, 1e-12); // equal-weight std 1
+  EXPECT_LE(max_dev, 3.0 + 1e-12);                             // winsorizing bound
+  // z is non-decreasing in cap (standardization is monotone; only raw-winsorized
+  // names tie, at the bound).
+  std::vector<usize> order(n);
+  for (usize i = 0; i < n; ++i) {
+    order[i] = i;
+  }
+  std::sort(order.begin(), order.end(), [&](usize a, usize b) { return cap[a] < cap[b]; });
+  usize ties = 0U;
+  for (usize k = 1U; k < n; ++k) {
+    EXPECT_LE(z[order[k - 1U]], z[order[k]]) << "k=" << k;
+    ties += (z[order[k - 1U]] == z[order[k]]) ? 1U : 0U;
+  }
+  EXPECT_GT(below3, n / 20U); // the old clip would have flattened > 5% of the universe
+  EXPECT_LE(at_min, n / 100U); // now only the raw-winsorized extreme(s) share the minimum
+  std::printf("[W0-R0 evidence] Size z (ln-cap sd 2, n=%zu): min z=%.3f, names below -3 "
+              "(pinned by a post-centring clip)=%zu, names at the minimum=%zu, adjacent ties=%zu\n",
+              n, zmin, below3, at_min, ties);
+}
+
+// ===========================================================================
+//  R-03 at the MODEL level (fix pass 1, reviewer minor 1): perturb the data at an
+//  INTERIOR row s0 of the window and compare the pass-B factor-return series.
+//  DGP: r_s = f_s · z_{s+1} EXACTLY, where z_{s+1} is the Liquidity z-score at row
+//  s+1. Dollar volume is set directly (volume = dollar / close), so ln adv20 does not
+//  depend on the closes and z can be computed before the closes exist. Every date is
+//  then an exact fit under LaggedV2, so its WLS solution does not depend on the
+//  cross-date pass-A weights d0, which the perturbation DOES move.
+//  Perturb every close at rows 0..s0−1 and every volume at rows 0..s0. Returns r_s for
+//  s ≥ s0 are unchanged, and so is every LaggedV2 regressor row s+1 ≥ s0+1, so the
+//  factor return at EVERY s ≥ s0 must be unchanged (to rounding) and equal the planted
+//  f_s. ContemporaneousV1 (pre-W0) regresses r_s0 on row s0, which holds the perturbed
+//  volume, so its f_s0 moves — this test fails on the pre-W0 estimator.
+// ===========================================================================
+TEST(RiskFactorModelPit, PassBSeriesInvariantToInteriorPerturbation) {
+  const usize n_inst = 16U;
+  const usize window = 40U;
+  const usize rows = window + 1U + 20U + 1U; // adv20 lookback at row `window` + slack
+  const usize s0 = 12U;
+  FactorModelConfig cfg;
+  cfg.style_mask = bit(StyleFactor::Liquidity);
+  cfg.sector_factors = false;
+  const PitSideInputs side{};
+  Rng rng{9001U};
+  Grid dollar(rows, std::vector<f64>(n_inst));
+  for (auto &row : dollar) {
+    for (f64 &v : row) {
+      v = 1.0e6 * std::exp(0.8 * rng.normal());
+    }
+  }
+  // z[q] = the Liquidity z-scores at row q from the dollar volumes alone (close ≡ 100).
+  Grid unit_vol(rows, std::vector<f64>(n_inst));
+  for (usize r = 0; r < rows; ++r) {
+    for (usize i = 0; i < n_inst; ++i) {
+      unit_vol[r][i] = dollar[r][i] / 100.0;
+    }
+  }
+  const StorePanel zp{Grid(rows, std::vector<f64>(n_inst, 100.0)), unit_vol};
+  Grid z(window + 1U, std::vector<f64>(n_inst, 0.0));
+  for (usize q = 1U; q <= window; ++q) {
+    const auto xq = build_exposures(zp.view(), cfg, q, side);
+    ASSERT_TRUE(xq.has_value());
+    ASSERT_EQ(xq->n_instruments(), n_inst);
+    ASSERT_EQ(xq->n_factors(), 1U);
+    for (usize r = 0; r < n_inst; ++r) {
+      z[q][xq->instrument_rows[r]] = xq->x(static_cast<Eigen::Index>(r), 0);
+    }
+  }
+  std::vector<f64> planted(window);
+  Grid ret(rows - 1U, std::vector<f64>(n_inst));
+  for (usize s = 0; s < rows - 1U; ++s) {
+    const f64 fs = 0.01 * rng.normal();
+    for (usize i = 0; i < n_inst; ++i) {
+      ret[s][i] = (s < window) ? fs * z[s + 1U][i] : 0.01 * rng.normal();
+    }
+    if (s < window) {
+      planted[s] = fs;
+    }
+  }
+  const Grid close = closes_from_returns(ret);
+  Grid volume(rows, std::vector<f64>(n_inst));
+  for (usize r = 0; r < rows; ++r) {
+    for (usize i = 0; i < n_inst; ++i) {
+      volume[r][i] = dollar[r][i] / close[r][i];
+    }
+  }
+  Grid close_p = close;
+  Grid volume_p = volume;
+  Rng rp{9002U};
+  for (usize r = 0; r <= s0; ++r) {
+    for (usize i = 0; i < n_inst; ++i) {
+      if (r < s0) {
+        close_p[r][i] *= std::exp(0.2 * rp.normal());
+      }
+      volume_p[r][i] *= std::exp(0.6 * rp.normal());
+    }
+  }
+  // Pass-B factor return by estimation date s (NaN = the date was not usable).
+  const auto series = [&](const Grid &c, const Grid &v, ExposureTiming timing) {
+    FactorModelConfig k = cfg;
+    k.exposure_timing = timing;
+    const StorePanel sp{c, v};
+    const auto fr = FactorModelBuilder{k}.factor_returns(sp.view(), window, side);
+    std::vector<f64> by_date(window, atx_test_w0_r0_fixture::kNaN);
+    EXPECT_TRUE(fr.has_value());
+    if (fr.has_value()) {
+      for (usize u = 0; u < fr->dates.size(); ++u) {
+        by_date[fr->dates[u]] = fr->f(static_cast<Eigen::Index>(u), 0);
+      }
+    }
+    return by_date;
+  };
+  const std::vector<f64> a2 = series(close, volume, ExposureTiming::LaggedV2);
+  const std::vector<f64> b2 = series(close_p, volume_p, ExposureTiming::LaggedV2);
+  const std::vector<f64> a1 = series(close, volume, ExposureTiming::ContemporaneousV1);
+  const std::vector<f64> b1 = series(close_p, volume_p, ExposureTiming::ContemporaneousV1);
+
+  f64 max_recover = 0.0; // LaggedV2 recovers the planted series on the base panel
+  f64 max_move_old = 0.0; // LaggedV2 change at dates s >= s0 (must be ~0)
+  for (usize s = 0; s < window; ++s) {
+    ASSERT_FALSE(std::isnan(a2[s]) || std::isnan(b2[s])) << "s=" << s;
+    max_recover = std::max(max_recover, std::fabs(a2[s] - planted[s]));
+    if (s >= s0) {
+      max_move_old = std::max(max_move_old, std::fabs(b2[s] - a2[s]));
+    }
+  }
+  const f64 lag_move_new = std::fabs(b2[s0 - 1U] - a2[s0 - 1U]); // r_{s0-1} itself changed
+  ASSERT_FALSE(std::isnan(a1[s0]) || std::isnan(b1[s0]));
+  const f64 v1_move = std::fabs(b1[s0] - a1[s0]);
+  EXPECT_LT(max_recover, 1e-10);
+  EXPECT_LT(max_move_old, 1e-12); // R-03: nothing at/before s0's realization moves
+  EXPECT_GT(lag_move_new, 1e-6);  // sanity: the perturbation is live in the window
+  EXPECT_GT(v1_move, 1e-6);       // pre-W0 timing leaks the perturbed volume into f_s0
+  std::printf("[W0-R0 evidence] interior perturbation (s0=%zu): LaggedV2 max|df| over s>=s0 "
+              "= %.3e, |f - planted| max = %.3e, |df(s0-1)| = %.3e; ContemporaneousV1 "
+              "|df(s0)| = %.3e\n",
+              s0, max_move_old, max_recover, lag_move_new, v1_move);
 }
 
 } // namespace atx_test_w0_r0_pit

@@ -249,3 +249,101 @@ integration note 2).
   `ATX_RISK_NIGHTLY`, correctly not run here), 0 failed. Exit 0.
 - No code changes were needed post-merge; the risk lane's files were untouched by the merge.
 - Head after this sync + report commit: see structured result `head_sha`.
+
+## Fix pass 1 (review `lane-r0-review.md`, verdict APPROVE, 6 minor)
+
+The review had no blockers and no majors. Four minors are fixed in code, one is recorded as a
+W1 item (with an in-code note), and one is fixed as a documentation change. The owner-waiver
+item (UBSan/ASan, MET-substitute) is unchanged.
+
+Files touched: `risk/exposures.hpp`, `risk/factor_model.hpp`, `src/risk/factor_model.cpp`
+(owned); `tests/risk/risk_w0r0_pit_test.cpp` and `tests/risk/risk_w0r0_thin_floor_test.cpp`
+(lane test files). There are no CMake edits and no new `src/` files.
+
+| # | Finding | Action | Evidence |
+|---|---|---|---|
+| 1 | `ModelBuiltAtTInvariantToFuturePerturbation` cannot fail on pre-W0 code | **Relabelled** as a harness-shape smoke test in its header comment. It does not count as an R-03 proof. **Added** the discriminating model-level test `RiskFactorModelPit.PassBSeriesInvariantToInteriorPerturbation` (details below). | `interior perturbation (s0=12): LaggedV2 max\|df\| over s>=s0 = 2.429e-17, \|f - planted\| max = 3.123e-17, \|df(s0-1)\| = 2.428e-02; ContemporaneousV1 \|df(s0)\| = 8.188e-04` |
+| 2 | A factor with no members on a date gets return 0, and that 0 enters `factor_covariance` | **Tracked as a W1 risk item** (not fixed here; the reviewer asked for tracking). There is a `KNOWN LIMITATION (W1 risk item)` comment at the `fkept` compaction in `build_components`. It is recorded below under "Integration notes (fix pass 1)" as item 5, and in the ledger candidates. | code comment, `factor_model.cpp` `build_components` |
+| 3 | The final ±3 clip of z after cap-weighted centring pins the small-cap tail | **Decided and implemented now**, before W3-R4 wires caps: the post-centring clip is **removed**. This follows USE4: trim (winsorize) the raw descriptor at ±3σ around the equal-weight mean, then standardize with the cap-weighted mean and the equal-weight σ, and never clip z itself. As a result, the cap-weighted mean of z is now exactly 0 and the equal-weight std is exactly 1 in every case. Before, both held only when the clip did not bind. \|z\| can exceed 3 by \|μ_eq−μ_w\|/σ, which is intended. The header contract and the `ZScoreRule` doc were rewritten. New test `RiskFactorModelPit.SizeSmallCapTailKeepsItsOrder`. | `Size z (ln-cap sd 2, n=400): min z=-4.432, names below -3 (pinned by a post-centring clip)=26, names at the minimum=1, adjacent ties=0` |
+| 4 | The APCA variant does not apply the 0.1·median floor | **Fixed.** `build_stat_factor_model` applies the same global floor to s_n under `StructuralMedianV2`, and `NoneV1` keeps the raw s_n. The floor code is factored into `detail::floor_at_median`, which both builders share, so "no D < 0.1·median" now holds on both paths. New test `RiskThinNameFloor.StatisticalModelIsFlooredToo`: exactly one name changes, the median is unchanged, and 0 names are below the floor. | `APCA floor: stale-name D NoneV1=4.289e-12 V2=3.491e-05 (median 3.491e-04)` |
+| 5 | A NaN `specific_floor_frac` turns every D and d0 into NaN | **Fixed.** `run_passes` (which serves `build_components`, `factor_returns` and `build`) and `build_stat_factor_model` return `Err(InvalidArgument)` for a non-finite frac. The detail kernel treats a non-finite frac as 0 (`effective_floor_frac`), which protects direct callers, and the pass-A d0 floor uses the same helper. New test `RiskThinNameFloor.NonFiniteFloorFracIsRejected` covers NaN and ±Inf on all three entry points, with finite controls that build, plus the kernel behaviour. | test passes (below) |
+| 6 | The claim that V1 enumerators reproduce pre-W0 "bit-for-bit" overclaims | **Comment softened** (`exposures.hpp` §W0-R0 rules). Each V1 enumerator restores its own rule. An all-V1 config is not a full pre-W0 replay because of three unversioned defect fixes: (a) the empty-sector-column drop, (b) identity column mapping, (c) the `kNoGroup` drop. The comment names the panels on which pre-W0 output is reproduced. The optional all-V1 digest pin was **not added**: no pre-W0 digest exists in the tree, and making one means building and running the base commit's code, which is outside this lane's single-target loop. | comment |
+
+### Details
+
+**`PassBSeriesInvariantToInteriorPerturbation` (finding 1).** The DGP is r_s = f_s·z_{s+1} exactly, where z_{s+1} is the Liquidity z-score at row s+1. Dollar volume is set directly, so ln adv20 does not depend on the closes. Every LaggedV2 date is therefore an exact fit, and its WLS solution does not depend on the pass-A d0 weights. That matters because the perturbation does move those weights through the newer dates.
+
+The test perturbs the closes at rows 0..s0−1 and the volumes at rows 0..s0, with s0 = 12 inside a 40-date window. Every LaggedV2 factor return at s ≥ s0 must then stay the same and must equal the planted f_s. ContemporaneousV1 regresses r_s0 on row s0, which carries the perturbed volume, so its f_s0 moves. The test would therefore fail on the pre-W0 estimator. It also checks that f_{s0−1} moves, to show the perturbation is live inside the window.
+
+### Existing test expectations changed in fix pass 1
+
+- `RiskFactorModelPit.ZScoreIsCapWeightedAndWinsorized` is this lane's own test. It pinned the removed post-centring clip (finding 3).
+  - (b) `EXPECT_LE(max|z|, 3+1e-12)` is replaced by the bound in the frame where the winsorizing is defined, `max|z − mean_eq(z)| ≤ 3 + 1e-6`, plus a new `cap-weighted mean of z == 0 (1e-12)`. The 1e-6 allowance is for the residual of the bounded 16-pass winsorizing iteration, which converges geometrically. Measured: `max|z - mean_eq(z)| = 3.000000044155`, `cap-weighted mean of z = -1.823e-15`. Before the fix, the ±3 bound on |z| was exact only because z itself was clipped. The header contract states this residual (δ).
+  - (c) The `if (max|z| < 3) exact else 0.05` branch is replaced by the exact contract, applied unconditionally (strengthened).
+- No other existing test changed. No test was skipped, disabled or deleted.
+
+### Golden digests (fix pass 1)
+None changed. The APCA floor and the clip removal do not touch any pinned digest in the risk target. The whole executable is green, as shown below.
+
+### Evidence (fix pass 1)
+All commands were run from `C:\atx-wt\pool-8` with `CMAKE_BUILD_PARALLEL_LEVEL=2`. Free RAM before the builds was 2.62, 4.72 and 3.43 GB.
+
+- `scripts\atx-build.ps1 check -Preset equity-dev atx-engine\src\risk\factor_model.cpp` → exit 0.
+- `scripts\atx-build.ps1 build -Preset equity-dev atx-engine-risk-tests` → `[73/74] Linking CXX executable bin\atx-engine-risk-tests.exe`, exit 0 (/W4 /WX clean).
+- The first run of the new tests failed `ZScoreIsCapWeightedAndWinsorized` with `max_dev2 = 3.0000000441548011 vs 3.0000000000010001`. That run exposed the non-converged winsorizing residual that the old z-clip had been hiding. The fix was to document δ in the contract and bound it at 1e-6 in the test, as described above. After that the target was rebuilt (exit 0) and the runs below were made.
+- Anchored ctest runs (`scripts\atx-build.ps1 -Ctest -Preset equity-dev -R '^<Suite>\.'`):
+  ```
+  === RiskFactorModelPit     100% tests passed, 0 tests failed out of 9   exit=0
+  === RiskSectorColumnsById  100% tests passed, 0 tests failed out of 5   exit=0
+  === RiskThinNameFloor      100% tests passed, 0 tests failed out of 6   exit=0
+  ```
+- Whole owning executable `build-equity\bin\atx-engine-risk-tests.exe --gtest_brief=1`:
+  ```
+  [W0-R0 evidence] future-perturbation: LaggedV2 X identical at 3/3 dates; ContemporaneousV1 X moved at 3/3 dates
+  [W0-R0 evidence] pure-noise Liquidity factor return: ContemporaneousV1 mean=0.005818 t=22.62 (n=150); LaggedV2 mean=0.000251 t=0.95 (n=150)
+  [W0-R0 evidence] planted ln-adv outlier: V1 outlier z=6.189, spread of the other 39 names sd=0.136; V2 outlier z=2.681, others sd=0.888, max|z|=2.681
+  [W0-R0 evidence] V2 winsor bound: max|z - mean_eq(z)| = 3.000000044155, cap-weighted mean of z = -1.823e-15
+  [W0-R0 evidence] Size z (ln-cap sd 2, n=400): min z=-4.432, names below -3 (pinned by a post-centring clip)=26, names at the minimum=1, adjacent ties=0
+  [W0-R0 evidence] interior perturbation (s0=12): LaggedV2 max|df| over s>=s0 = 2.429e-17, |f - planted| max = 3.123e-17, |df(s0-1)| = 2.428e-02; ContemporaneousV1 |df(s0)| = 8.188e-04
+  [W0-R0 evidence] group-missing build: K=3, dates=30, group-3 missing on 20 dates, max|f - planted| checked at 1e-10
+  [W0-R0 evidence] sector switch: max |f - planted| PIT groups=1.648e-16, static (today's) groups=6.757e-04
+  [W0-R0 evidence] thin name (1 residual): D V1=0.000e+00 V2=2.380e-04 (median 3.436e-04, thick range 7.510e-05..9.553e-04); min-variance weight V1=0.3782 V2=0.0292 (max other name V2 0.1002)
+  [W0-R0 evidence] sector-3 return on the thin name's first date: thin r=-0.07823, V1 f=-0.07823, V2 f=-0.01314
+  [W0-R0 evidence] APCA floor: stale-name D NoneV1=4.289e-12 V2=3.491e-05 (median 3.491e-04)
+  ..\atx-engine\tests\risk_qp_augment_test.cpp(528): Skipped   (Nightly-gated, pre-existing)
+  [==========] 471 tests from 62 test suites ran. (195193 ms total)
+  [  PASSED  ] 470 tests.
+  [  SKIPPED ] 1 test.
+  exit=0
+  ```
+  Every pre-existing evidence number is identical to the review run. There are 4 new tests (467 → 471).
+
+### Updated acceptance rows
+| Item | Test(s) | Result | Status |
+|---|---|---|---|
+| Future-perturbation invariance of the model built at t | `RegressionExposuresInvariantToFuturePerturbation` (per date), **`PassBSeriesInvariantToInteriorPerturbation` (model level, discriminating)**; `ModelBuiltAtTInvariantToFuturePerturbation` is a harness-shape smoke test only | LaggedV2 max\|Δf\| over s≥s0 = 2.4e-17; V1 \|Δf_s0\| = 8.2e-4 | MET |
+| Group missing at s>0, no OOB (UBSan/ASan) | unchanged | unchanged | MET-substitute (owner waiver) |
+| No D < 0.1·median | `ThinNameNoLongerLooksRiskless`, `GlobalFloorAndDegenerateCases`, **`StatisticalModelIsFlooredToo`** | 0 names below the floor on both the fundamental and the APCA builder | MET (both builders) |
+
+### Integration notes (fix pass 1)
+5. **W1 risk item (W1-R2 or the W1 covariance owner). Missing-factor zeros in F.** A model
+   factor with no members on a date carries return 0, which is counted in
+   `FactorReturnPanel::missing`, and that 0 enters `factor_covariance` / the EWMA covariance as
+   an observation. This deflates that factor's variance roughly in proportion to its missing
+   fraction (20/30 dates in the `RiskSectorColumnsById` fixture). Possible fixes: estimate F
+   over the observed dates only (pairwise, or EWMA with weights that skip missing dates), or
+   rescale by observed/used. `missing` is already computed and returned for this purpose.
+   There is no production impact until PIT groups are wired (W3-R4), because today's static
+   group map gives every model sector members on every date.
+6. **W3-R4 (caps wiring).** Once caps are passed, Size and every other style z can go past ±3
+   on the small-cap side by \|μ_eq − μ_w\|/σ. This is by design (USE4). Downstream consumers
+   must not assume \|z\| ≤ 3. No code outside `exposures.hpp` references `kZScoreWinsor`
+   (grep). The whole risk target is green with the change. Out-of-group consumers are
+   already on the integration-gate list (integration note 2).
+
+### Ledger candidates (fix pass 1)
+- W0-R0 fix 1: cap-weighted centring shifts z by about σ_ln for lognormal caps. A ±3 clip after
+  centring would pin the small-cap tail (26 of 400 names at ln-cap sd 2). Trim the raw descriptor
+  only (USE4).
+- W0-R0 fix 1: the missing-factor return 0 enters F as an observation. This is a W1 covariance
+  item, and `FactorReturnPanel::missing` carries the counts.

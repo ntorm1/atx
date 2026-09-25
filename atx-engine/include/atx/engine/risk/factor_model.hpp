@@ -296,6 +296,8 @@ struct SpecificFloorStats {
 //      γ = obs/min_obs (a name with 0/1 residuals is ~all structural).
 //   4. floor = clamp(cov.specific_floor_frac, 0, 1) · median(d); d_i ← max(d_i, floor)
 //      for EVERY row, so no D is below frac·median(D) (median unchanged by the floor).
+//      A non-finite frac is treated as 0 here (no global floor); the builder entry
+//      points reject it with InvalidArgument before any estimation.
 // No thick rows ⇒ step 2-3 skipped (nothing to anchor on); step 4 still applies.
 [[nodiscard]] SpecificFloorStats floor_specific_variances(const ExposureMatrix &x0,
                                                           std::span<const atx::usize> obs,

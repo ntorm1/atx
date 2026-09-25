@@ -374,6 +374,39 @@ namespace {
   return ((n % 2U) == 1U) ? v[n / 2U] : 0.5 * (v[n / 2U - 1U] + v[n / 2U]);
 }
 
+// cov.specific_floor_frac as applied: clamped to [0, 1]; a non-finite value (which
+// std::clamp would pass through, and `!(d >= NaN)` would then turn every D into NaN)
+// is treated as 0 = no global floor. The builder entry points reject it up front
+// (InvalidArgument); this is the defence for direct detail:: callers.
+[[nodiscard]] atx::f64 effective_floor_frac(atx::f64 frac) noexcept {
+  return std::isfinite(frac) ? std::clamp(frac, 0.0, 1.0) : 0.0;
+}
+
+// The R-05 global floor, IN PLACE: median over the finite entries of `d`, then every
+// entry below frac·median (or NaN) is raised to it. Fills st.median / st.floor /
+// st.n_floored. Shared by the fundamental (floor_specific_variances) and statistical
+// (build_stat_factor_model) builders so "no D < frac·median(D)" holds on both.
+void floor_at_median(atx::core::linalg::VecX &d, atx::f64 frac, SpecificFloorStats &st) {
+  const atx::usize m = static_cast<atx::usize>(d.size());
+  std::vector<atx::f64> all;
+  all.reserve(m);
+  for (atx::usize r = 0U; r < m; ++r) {
+    const atx::f64 dr = d[static_cast<Eigen::Index>(r)];
+    if (std::isfinite(dr)) {
+      all.push_back(dr);
+    }
+  }
+  st.median = median_of(std::move(all));
+  st.floor = (st.median > 0.0) ? effective_floor_frac(frac) * st.median : 0.0;
+  for (atx::usize r = 0U; r < m; ++r) {
+    const Eigen::Index ri = static_cast<Eigen::Index>(r);
+    if (!(d[ri] >= st.floor)) { // also lifts a NaN entry to the floor
+      d[ri] = st.floor;
+      ++st.n_floored;
+    }
+  }
+}
+
 } // namespace
 
 SpecificFloorStats floor_specific_variances(const ExposureMatrix &x0,
@@ -480,24 +513,7 @@ SpecificFloorStats floor_specific_variances(const ExposureMatrix &x0,
   }
 
   // Global floor at frac · median(D) (median over finite entries, after the fallback).
-  std::vector<atx::f64> all;
-  all.reserve(m);
-  for (atx::usize r = 0U; r < m; ++r) {
-    const atx::f64 dr = d[static_cast<Eigen::Index>(r)];
-    if (std::isfinite(dr)) {
-      all.push_back(dr);
-    }
-  }
-  st.median = median_of(std::move(all));
-  const atx::f64 frac = std::clamp(cov.specific_floor_frac, 0.0, 1.0);
-  st.floor = (st.median > 0.0) ? frac * st.median : 0.0;
-  for (atx::usize r = 0U; r < m; ++r) {
-    const Eigen::Index ri = static_cast<Eigen::Index>(r);
-    if (!(d[ri] >= st.floor)) { // also lifts a NaN entry to the floor
-      d[ri] = st.floor;
-      ++st.n_floored;
-    }
-  }
+  floor_at_median(d, cov.specific_floor_frac, st);
   return st;
 }
 
@@ -578,6 +594,11 @@ FactorModelBuilder::run_passes(const PanelView &panel, atx::usize window,
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "FactorModelBuilder::build_components: require window >= 2");
   }
+  if (!std::isfinite(cfg.cov.specific_floor_frac)) { // NaN/Inf would poison every D and d0
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "FactorModelBuilder::build_components: specific_floor_frac must be "
+                          "finite");
+  }
   const atx::usize n_inst = panel.instruments();
   ATX_TRY_VOID(side.validate(n_inst));
   // Point-in-time side inputs must cover every exposure row the passes read: rows
@@ -643,6 +664,11 @@ FactorModelBuilder::build_components(const PanelView &panel, atx::usize window,
           run_passes(panel, window, side, x0, fseries, u_by_inst, dates, missing));
   const atx::usize k = x0.n_factors();
   // Compact fseries to the rows actually filled (under-determined dates skipped).
+  // KNOWN LIMITATION (W1 risk item, W0-R0 review minor 2): a model factor with no
+  // members on a date carries return 0 there (scatter_factor_returns; counted in
+  // `missing`), and those zeros enter the covariance below as observations, deflating
+  // that factor's variance by about its missing fraction. The fix (covariance over the
+  // observed dates only, pairwise, or a rescale) belongs with the W1 covariance work.
   const atx::core::linalg::MatX fkept = fseries.topRows(static_cast<Eigen::Index>(used_b));
   if (fkept.rows() < static_cast<Eigen::Index>(k)) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
@@ -728,7 +754,9 @@ FactorModelBuilder::build_components(const PanelView &panel, atx::usize window,
 //    4. Pass 1 (equal-weight): Fhat = top-K of the T×T Gram; B, s_n from R.
 //    5. Pass 2 (GLS, when gls_reweight): re-extract Fhat from the 1/√s_n-reweighted
 //       Gram; recover the FINAL B, s_n from the UN-weighted R.
-//    6. X = B, F = factor_covariance(Fhat, factor_cov_shrink), D = s_n; create.
+//    6. X = B, F = factor_covariance(Fhat, factor_cov_shrink), D = s_n floored at
+//       specific_floor_frac·median(s_n) under SpecificFloorRule::StructuralMedianV2
+//       (W0-R0, R-05; NoneV1 = the raw s_n); create.
 //  PIT-structural; RNG-free, order-fixed ⇒ byte-identical on replay (Fhat sign-pinned).
 // ===========================================================================
 atx::core::Result<FactorModel> FactorModelBuilder::build_stat_factor_model(
@@ -738,6 +766,10 @@ atx::core::Result<FactorModel> FactorModelBuilder::build_stat_factor_model(
   if (window < 2U) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
                           "build_stat_factor_model: require window >= 2");
+  }
+  if (!std::isfinite(cfg.cov.specific_floor_frac)) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "build_stat_factor_model: specific_floor_frac must be finite");
   }
   // The current cross-section (row 0) defines the candidate instrument set — the SAME
   // survivors the fundamental X[0] would use, so M aligns across variants.
@@ -801,6 +833,20 @@ atx::core::Result<FactorModel> FactorModelBuilder::build_stat_factor_model(
     ATX_TRY(atx::core::linalg::MatX b_gls, detail::exposures(r_panel, fhat));
     b = std::move(b_gls);
     s = detail::specific_variances(r_panel, b, fhat);
+  }
+
+  // R-05 on the statistical variant: every asset here has all T residuals (complete
+  // case), so there are no thin names, but a near-stale series can still produce a
+  // tiny s_n. Under StructuralMedianV2 apply the same global floor as the fundamental
+  // builder: s_n >= specific_floor_frac·median(s). NoneV1 keeps the pre-W0 s_n.
+  switch (cfg.cov.specific_floor) {
+  case SpecificFloorRule::NoneV1:
+    break;
+  case SpecificFloorRule::StructuralMedianV2: {
+    detail::SpecificFloorStats st{};
+    detail::floor_at_median(s, cfg.cov.specific_floor_frac, st);
+    break;
+  }
   }
 
   // Assemble: X = B (N×K), F = LW-shrunk covariance of the factor-return series, D = s_n.
@@ -968,8 +1014,8 @@ FactorModelBuilder::accumulate_ols(const PanelView &panel, atx::usize window,
         seen.push_back(d0_out[static_cast<Eigen::Index>(i)]);
       }
     }
-    const atx::f64 floor =
-        std::clamp(cfg.cov.specific_floor_frac, 0.0, 1.0) * detail::median_of(std::move(seen));
+    const atx::f64 floor = detail::effective_floor_frac(cfg.cov.specific_floor_frac) *
+                           detail::median_of(std::move(seen));
     for (atx::usize i = 0U; i < n_inst; ++i) {
       const Eigen::Index ii = static_cast<Eigen::Index>(i);
       if (!resid[i].empty() && d0_out[ii] < floor) {
