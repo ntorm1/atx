@@ -125,6 +125,15 @@ The old progress file lists provisional P1-P11: these are not owner waivers or a
 ### Current live jobs and repair status
 
 Latest checkpoint (supersedes pending statuses below): root has no active shell job.
+Root nowf390f6d2 mergesD12code+reviews9e6b. D12focused27/27 andwholealpha706/706passed;
+G0independent16CSopcodephysical-universe test1/1 passed14ms, reviewerAPPROVE. Rootintegrated
+runnerattemptexitedbeforeconfigure/build atfree2.39GiB; source treeclean. Rootmustretryafter
+free>4GiB andworkerbudgetallows. Member4TUhygiene plusG0compile exposed wrappercheck directNinja
+fanout (envCMAKE_BUILD_PARALLEL_LEVEL doesnotcapcheck). Allagentsnotified:no newcompileuntil
+checksfinish; subsequentcheck oneTUpercall sequential. Fiveclangworkersobserved,nonekilled.
+ReplayagentpreparingASanCMake changes; memberbenchmarkfollowup authorizedafterfinalreport,
+baselineprepacquisition/config permitted but no compile/measurement whilememorylimited.
+
 Inference52b8c6ea passed26/26 focused tests and independent6/6 rerun; corrected MA20
 rejection126/2000=6.3%, obsoletekernel-bandwidth141/2000=7.05%,zero fallback,averageoldlag30.98
 versusHH20. Scoped hygiene3TUs passed with isolateddeps/PCHoff. Replay fully reviewed and
