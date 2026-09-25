@@ -98,9 +98,9 @@ def _at(day: dt.date) -> dt.datetime:
     return dt.datetime.combine(day, dt.time(22))
 
 
-def _window_close(ex_date: dt.date) -> dt.date:
+def _window_close(ex_date: dt.date, bars: int = split_epochs.SHARE_WINDOW_BARS) -> dt.date:
     """The last bar of the share window opened on ``ex_date`` (fixture calendar: every weekday)."""
-    return list(_weekdays(ex_date, ex_date + dt.timedelta(days=200)))[split_epochs.SHARE_WINDOW_BARS]
+    return list(_weekdays(ex_date, ex_date + dt.timedelta(days=500)))[bars]
 
 
 # --- detection -------------------------------------------------------------------------------
@@ -145,10 +145,11 @@ EX = dt.date(2021, 3, 15)
     (dict(dividends=((EX, 0.07),), price_moves=((EX, 0.93),), shares=(1000, 1000, 0),
           share_steps=((dt.date(2021, 4, 12), 1060),)),
      [("distribution", EX, _at(EX), 1.075269, "distribution")], []),
-    # N2: an exact 6:5 whose count only drifts 6 % (issuance, not the ratio) is a distribution.
+    # N2: an exact 6:5 whose count only drifts 6 % (issuance, not the ratio) is a distribution once
+    # its (year-long) window closes.
     (dict(split=(EX, 1.2), shares=(1000, 1000, 0), share_steps=((dt.date(2021, 4, 1), 1060),)),
-     [("distribution", EX, _at(_window_close(EX)), 1.2, "distribution")],
-     [(EX, _at(EX), _at(_window_close(EX)), 1.2, "pending_confirmation")]),
+     [("distribution", EX, _at(_window_close(EX, split_epochs.LATE_SHARE_WINDOW_BARS)), 1.2, "distribution")],
+     [(EX, _at(EX), _at(_window_close(EX, split_epochs.LATE_SHARE_WINDOW_BARS)), 1.2, "pending_confirmation")]),
 ], ids=["n1_count_lags", "n1_count_stale", "n1_reverse_1_30_lags", "n2_distribution_and_issuance",
         "n2_exact_ratio_issuance_drift"])
 def test_exact_ratios_wait_for_shares_and_inexact_in_band_steps_are_distributions(bars, events, hazards):

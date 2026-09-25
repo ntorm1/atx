@@ -49,9 +49,9 @@ no rows, 150 days) after its first bar.
   ``distribution`` when the window closes;
 - in-band and simple (21:20, 11:10, 6:5, 5:4 ...): a stock split or dividend
   only if the count makes one discrete jump by k (within
-  STOCK_DIVIDEND_SHARE_TOLERANCE x |k - 1|) within SHARE_WINDOW_BARS sessions,
-  so routine issuance never confirms; else a ``distribution`` when the window
-  closes;
+  STOCK_DIVIDEND_SHARE_TOLERANCE x |k - 1|) within LATE_SHARE_WINDOW_BARS
+  sessions (counts lag stock dividends like splits), so routine issuance never
+  confirms; pending until then, else a ``distribution`` when the window closes;
 - in-band and not simple: a ``distribution`` (special dividend, spin-off, fund
   distribution; per-share fundamentals are not restated), known at once;
 - a simple candidate without any share data: the permanent hazard ``no_share_data``.
@@ -322,8 +322,12 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
                    END AS cls
             FROM measured
         )
-        SELECT *, CASE WHEN cls IN ('simple_out', 'signature') THEN late_end_date ELSE short_end_date END
-                      AS search_end_date
+        -- Exact splits, exact stock dividends and signatures wait up to a year for a lagging count.
+        SELECT *,
+               CASE WHEN cls IN ('simple_out', 'simple_in', 'signature') THEN late_end_date ELSE short_end_date END
+                   AS search_end_date,
+               CASE WHEN cls = 'simple_in' THEN late_complete ELSE short_complete END AS window_complete,
+               CASE WHEN cls = 'simple_in' THEN late_end_at ELSE short_end_at END AS window_end_at
         FROM classed WHERE cls IS NOT NULL
     """)
     # Corroboration: the earliest availability of share evidence for each candidate.
@@ -365,7 +369,7 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
                         THEN 'no_share_data'
                     WHEN s.cls = 'simple_out' THEN
                         CASE WHEN s.late_complete THEN 'split_unconfirmed' ELSE 'split_pending_share_confirmation' END
-                    WHEN s.short_complete THEN 'distribution'
+                    WHEN s.window_complete THEN 'distribution'
                     ELSE 'pending_confirmation' END AS outcome
         FROM _split_stage_steps s
         LEFT JOIN confirmed c USING (security_id, series, ex_date)
@@ -399,7 +403,7 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
         ), open_hazards AS (
             SELECT security_id, series, ex_date, ex_at AS from_at,
                    CASE WHEN outcome = 'split' THEN greatest(ex_at, confirm_at)
-                        WHEN outcome = 'distribution' THEN short_end_at
+                        WHEN outcome = 'distribution' THEN window_end_at
                         WHEN outcome = 'signature_unconfirmed' THEN late_end_at END AS until_at,
                    CASE WHEN cls = 'signature' THEN 1 / price_ratio ELSE coalesce(split_field, k) END AS ratio,
                    CASE WHEN outcome = 'split' AND cls = 'simple_out' THEN 'split_pending_share_confirmation'
@@ -437,7 +441,7 @@ def _stage_chunk(con: Any, relation: str, columns: set[str], series: str, scope:
                NULL::TIMESTAMP AS until_at, ratio, evidence FROM splits
         UNION ALL
         SELECT security_id, 'distribution', series, ex_date, ex_at,
-               CASE WHEN cls = 'inexact_in' THEN ex_at ELSE short_end_at END, NULL, k, 'distribution'
+               CASE WHEN cls = 'inexact_in' THEN ex_at ELSE window_end_at END, NULL, k, 'distribution'
         FROM _split_stage_classified WHERE outcome = 'distribution'
         UNION ALL
         SELECT security_id, 'hazard', series, ex_date, from_at, NULL,
