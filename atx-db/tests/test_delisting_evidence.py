@@ -110,11 +110,18 @@ def test_form_25_after_a_merger_filing_is_a_merger(tmp_store):
         "('SEC-GONE','0000000002','0000000002-24-000001',DATE '2024-01-16','25',"
         "TIMESTAMP '2024-01-16 17:00:00','file://t')"
     )
-    refresh_delisting_evidence(tmp_store, DelistingEvidenceOptions(run_id="t"))
-    reason = tmp_store.con.execute(
-        "SELECT reason_category FROM delisting_evidence WHERE evidence_kind = 'sec_form_25'"
-    ).fetchone()[0]
-    assert reason == "merger_acquisition"
+    from atx_db.delisting_evidence import fold_evidence_into_delisting_events
+
+    options = DelistingEvidenceOptions(run_id="t")
+    refresh_delisting_evidence(tmp_store, options)
+    # The notice says only what it says (a bare 25); the merger is a fact about the cessation
+    # (target-side DEFM14A 72 days before the last trade) and is attributed at the event.
+    assert tmp_store.con.execute(
+        "SELECT reason_category, json_extract_string(details_json, '$.merger_evidence.form') "
+        "FROM delisting_evidence WHERE evidence_kind = 'sec_form_25'"
+    ).fetchone() == ("unknown", "DEFM14A")
+    fold_evidence_into_delisting_events(tmp_store, options)
+    assert tmp_store.con.execute("SELECT delist_reason FROM delisting_events").fetchone()[0] == "merger_acquisition"
 
 
 def test_a_bare_form_25_with_no_merger_evidence_is_unexplained(tmp_store):
@@ -395,24 +402,34 @@ def test_delete_and_directory_ignore_superseded_revisions(tmp_store):
     ]
 
 
-def test_as_of_bounds_merger_reason_and_carries_its_availability(tmp_store):
-    from atx_db.delisting_evidence import DelistingEvidenceOptions, refresh_delisting_evidence
+def test_as_of_bounds_merger_reason_and_it_never_delays_existence(tmp_store):
+    from atx_db.delisting_evidence import (
+        DelistingEvidenceOptions,
+        fold_evidence_into_delisting_events,
+        refresh_delisting_evidence,
+    )
 
+    # SEC-GONE last trades Fri 2024-01-12; the cessation is observable at the Mon 01-15
+    # session. The Form 25 corroborates; the DEFM14A (filed 01-10) is accepted only on 01-17.
     _seed_two_securities(tmp_store)
     tmp_store.con.execute(
         "INSERT INTO sec_submissions (security_id, cik, accession_number, filing_date, "
         "form, acceptance_datetime, source_url) VALUES "
         "('SEC-GONE','0000000002','FORM25',DATE '2024-01-12','25',TIMESTAMP '2024-01-12 17:00:00','file://t'),"
-        "('SEC-GONE','0000000002','MERGER',DATE '2024-01-10','DEFM14A',TIMESTAMP '2024-01-13 17:00:00','file://t')"
+        "('SEC-GONE','0000000002','MERGER',DATE '2024-01-10','DEFM14A',TIMESTAMP '2024-01-17 17:00:00','file://t')"
     )
-    for day, expected in [(12, "unknown"), (13, "merger_acquisition")]:
-        refresh_delisting_evidence(
-            tmp_store, DelistingEvidenceOptions(as_of_date=dt.date(2024, 1, day), include_archive_inference=False)
-        )
-        assert tmp_store.con.execute("SELECT reason_category, available_at FROM delisting_evidence").fetchone() == (
-            expected,
-            dt.datetime(2024, 1, day, 17),
-        )
+    existence = dt.datetime(2024, 1, 15, 22)
+    for day, expected in [(16, "unknown"), (17, "merger_acquisition")]:
+        options = DelistingEvidenceOptions(as_of_date=dt.date(2024, 1, day), include_archive_inference=False)
+        refresh_delisting_evidence(tmp_store, options)
+        assert fold_evidence_into_delisting_events(tmp_store, options) == 1
+        row = tmp_store.con.execute(
+            "SELECT delist_reason, available_at, json_extract_string(details_json, '$.reason_at_existence'), "
+            "CAST(json_extract_string(details_json, '$.reason_available_at') AS TIMESTAMP) FROM delisting_events"
+        ).fetchone()
+        # Existence never waits for the reason; the merger is a revision with its own clock.
+        assert row[0] == expected and row[1] == existence and row[2] == "unknown"
+        assert row[3] == (existence if day == 16 else dt.datetime(2024, 1, 17, 17))
 
 
 def test_as_of_bounds_bankruptcy_reason_and_carries_its_availability(tmp_store):
@@ -608,9 +625,9 @@ def test_cash_merger_target_is_one_merger_event_without_policy_terminal(tmp_stor
         True,
     )
     assert delist_date == dt.date.fromisoformat(LONG_SESSIONS[last + 1])
-    # Available once the 31st absent session is observed -- neither at the Form 25 filing nor
-    # stamped with the (much later) archive end.
-    assert available_at == dt.datetime.fromisoformat(LONG_SESSIONS[last + 31]) + dt.timedelta(hours=22)
+    # Exists at the first absent session (the Form 25 corroborates the cessation) -- neither at
+    # the filing, nor after the 30-session gap, nor stamped with the (much later) archive end.
+    assert available_at == dt.datetime.fromisoformat(LONG_SESSIONS[last + 1]) + dt.timedelta(hours=22)
     duplicates = tmp_store.con.execute(
         "SELECT count(*) FROM (SELECT 1 FROM delisting_events GROUP BY security_id, delist_date HAVING count(*) > 1)"
     ).fetchone()[0]
@@ -764,3 +781,78 @@ def test_notices_outside_the_archive_are_ranked_by_extrapolated_sessions(tmp_sto
     assert tmp_store.con.execute(
         "SELECT listing_status_source, source_event_id, inferred_from_absence FROM delisting_events"
     ).fetchall() == [("sec_form_25", "EDGE-25", False)]
+
+
+# ---------------------------------------------------------------------------
+# A3 fix round 1: merger window [cessation - 365d, cessation + 30d], target-side forms only;
+# Nasdaq availability is the receipt clock.
+# ---------------------------------------------------------------------------
+
+
+def _plus_days(day: str, days: int) -> str:
+    return (dt.date.fromisoformat(day) + dt.timedelta(days=days)).isoformat()
+
+
+def _failing_filer(store):
+    security = "SEC-CIK-0000000040"
+    _seed_priced_bars(store, "SEC-LIVE", "LIVE", LONG_SESSIONS)
+    _seed_priced_bars(store, security, "FAIL", LONG_SESSIONS[:100])
+    _file(store, security, "0000000040", "TENK", LONG_SESSIONS[10], "10-K")
+    return security
+
+
+def test_post_cessation_s4_never_relabels_a_performance_failure(tmp_store):
+    # Review probe P1: the same CIK files an S-4 200 days after its last trade. That is a
+    # still-filing company doing a deal, not a merger that ended trading.
+    from atx_db.delisting import refresh_delisting_terminal_returns
+
+    security = _failing_filer(tmp_store)
+    _file(tmp_store, security, "0000000040", "LATE-S4", _plus_days(LONG_SESSIONS[99], 200), "S-4")
+    assert _build(tmp_store) == 1
+    reason, available_at = tmp_store.con.execute("SELECT delist_reason, available_at FROM delisting_events").fetchone()
+    assert reason == "unknown"
+    # Exists when the gap is established (31st absent session), not at the S-4 clock.
+    assert available_at == dt.datetime.fromisoformat(LONG_SESSIONS[99 + 31]) + dt.timedelta(hours=22)
+    assert refresh_delisting_terminal_returns(tmp_store) == 1
+    assert tmp_store.con.execute(
+        "SELECT terminal_return, terminal_return_policy FROM delisting_terminal_returns"
+    ).fetchone() == (-0.30, "performance_unknown")
+
+
+@pytest.mark.parametrize(
+    ("filings", "expected"),
+    [
+        ([("S-4", -100)], "unknown"),  # acquirer / exchange-offer registration alone
+        ([("S-4", -100), ("425", -60)], "merger_acquisition"),  # with a target-side form
+        ([("DEFM14A", -366)], "unknown"),  # before the look-back
+        ([("SC 14D9", -365)], "merger_acquisition"),
+        ([("425", 30)], "merger_acquisition"),  # closing-window filing
+        ([("425", 31)], "unknown"),  # after the look-ahead
+    ],
+)
+def test_merger_window_is_one_year_back_and_thirty_days_forward_target_side_only(tmp_store, filings, expected):
+    security = _failing_filer(tmp_store)
+    for number, (form, offset) in enumerate(filings):
+        _file(tmp_store, security, "0000000040", f"M-{number}", _plus_days(LONG_SESSIONS[99], offset), form)
+    assert _build(tmp_store) == 1
+    assert tmp_store.con.execute("SELECT delist_reason FROM delisting_events").fetchone()[0] == expected
+
+
+def test_nasdaq_delete_availability_is_the_receipt_clock_not_file_creation(tmp_store):
+    from atx_db.delisting_evidence import DelistingEvidenceOptions, refresh_delisting_evidence
+
+    _seed_two_securities(tmp_store)
+    tmp_store.con.execute(
+        "INSERT INTO nasdaq_listing_events (event_id, symbol, security_id, nasdaq_action, effective_date, "
+        "as_of_date, source_file_created_at, available_at, source_url, is_latest_revision) VALUES "
+        "('EV-1','GONE','SEC-GONE','Delete',DATE '2024-01-12',DATE '2024-01-12',"
+        "TIMESTAMP '2024-01-12 21:31:00',TIMESTAMP '2024-01-20 10:00:00','file://t',true)"
+    )
+    options = DelistingEvidenceOptions(include_archive_inference=False)
+    refresh_delisting_evidence(tmp_store, options)
+    assert tmp_store.con.execute("SELECT available_at FROM delisting_evidence").fetchone()[0] == dt.datetime(
+        2024, 1, 20, 10
+    )
+    # Before receipt the file does not exist for the warehouse, whatever its footer says.
+    before_receipt = DelistingEvidenceOptions(as_of_date=dt.date(2024, 1, 19), include_archive_inference=False)
+    assert refresh_delisting_evidence(tmp_store, before_receipt) == 0

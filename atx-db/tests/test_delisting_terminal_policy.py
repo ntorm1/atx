@@ -484,3 +484,130 @@ def test_shumway_applies_only_to_unexplained_or_performance_cessations(tmp_store
     assert exposure["merger_or_voluntary_performance_policy_rows"] == 0
     # No details_json CIK on this hand-seeded event: an unknown one is CIK-less exposure.
     assert exposure["cik_less_unknown_performance_policy_rows"] == (1 if reason == "unknown" else 0)
+
+
+# ---------------------------------------------------------------------------
+# A3 fix round 1 (review I2): observed DLRET on the CRSP DLSTDT basis (last price date) is
+# moved onto the event basis (first session after the last trade): one terminal per
+# cessation, and the last traded session's return stays in the stitched label.
+# ---------------------------------------------------------------------------
+
+
+def _obs_sessions(count=140):
+    day, out = dt.date(2023, 1, 2), []
+    while len(out) < count:
+        if day.weekday() < 5:
+            out.append(day)
+        day += dt.timedelta(days=1)
+    return out
+
+
+OBS_SESSIONS = _obs_sessions()
+LAST = 99  # index of the observed security's last trade
+
+
+def _seed_observed_cessation(store):
+    from atx_db.delisting_evidence import (
+        DelistingEvidenceOptions,
+        fold_evidence_into_delisting_events,
+        refresh_delisting_evidence,
+    )
+
+    rows = [("SEC-LIVE", "LIVE", day, 10.0) for day in OBS_SESSIONS]
+    # Flat at 10, then +20% on the last traded session.
+    rows += [("SEC-OBS", "OBS", day, 12.0 if i == LAST else 10.0) for i, day in enumerate(OBS_SESSIONS[: LAST + 1])]
+    store.con.executemany(
+        "INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, close, adjusted_close, "
+        "volume, available_at, as_of_date, is_latest_revision) VALUES ('test', ?, ?, ?, ?, ?, 1000, ?, ?, true)",
+        [(sid, sym, day, px, px, dt.datetime.combine(day, dt.time(22)), day) for sid, sym, day, px in rows],
+    )
+    options = DelistingEvidenceOptions(run_id="p2")
+    refresh_delisting_evidence(store, options)
+    assert fold_evidence_into_delisting_events(store, options) == 1
+
+
+def _terminals(store):
+    return store.con.execute(
+        "SELECT delist_date, terminal_return, terminal_return_source FROM delisting_terminal_returns ORDER BY 1"
+    ).fetchall()
+
+
+def test_observed_dlret_on_dlstdt_basis_is_one_terminal_that_keeps_the_last_session(tmp_store):
+    # Review probe P2: a CRSP-style row keyed on DLSTDT = last trade date, landed directly.
+    from atx_db.calendar import TradingCalendarDataset, TradingCalendarOptions
+    from atx_db.delisting import refresh_delisting_terminal_returns, refresh_survivorship_safe_forward_returns
+
+    _seed_observed_cessation(tmp_store)
+    tmp_store.con.execute(
+        "INSERT INTO delisting_return_observations (delisting_return_observation_id, source, provider, "
+        "security_id, symbol, delist_date, as_of_date, available_at, delisting_return, return_basis) VALUES "
+        "('obs-1','crsp','CRSP','SEC-OBS','OBS',?,?,?,-0.9,'CRSP_DLRET')",
+        [OBS_SESSIONS[LAST], OBS_SESSIONS[LAST], dt.datetime.combine(OBS_SESSIONS[LAST + 5], dt.time(12))],
+    )
+    assert refresh_delisting_terminal_returns(tmp_store) == 1
+    assert _terminals(tmp_store) == [(OBS_SESSIONS[LAST + 1], -0.9, "observed")]
+
+    TradingCalendarDataset().load(tmp_store, TradingCalendarOptions())
+    refresh_survivorship_safe_forward_returns(tmp_store)
+
+    def label(index, horizon):
+        return tmp_store.con.execute(
+            "SELECT raw_forward_return, forward_return, is_stitched FROM forward_returns_survivorship_safe "
+            "WHERE security_id = 'SEC-OBS' AND as_of_date = ? AND horizon_days = ?",
+            [OBS_SESSIONS[index], horizon],
+        ).fetchone()
+
+    # A window spanning the delisting keeps the +20% final session: (12 / 10) * (1 - 0.9) - 1.
+    # (On the DLSTDT basis the leg ended at the prior close: raw 0, label -0.9.)
+    assert label(LAST - 1, 5)[0] == pytest.approx(0.2)
+    assert label(LAST - 1, 5)[1] == pytest.approx(1.2 * 0.1 - 1)
+    assert label(LAST - 1, 1) == pytest.approx((0.2, 0.2, False))  # ends on the last trade: a survivor
+    assert label(LAST, 1)[1] == pytest.approx(-0.9)  # formation on the last trade day: pure terminal
+
+
+def test_observation_load_moves_dlstdt_to_the_next_observed_session(tmp_store, tmp_path):
+    from atx_db.delisting import (
+        DelistingReturnObservationOptions,
+        load_delisting_return_observations,
+        refresh_delisting_terminal_returns,
+    )
+
+    _seed_observed_cessation(tmp_store)
+    csv_path = tmp_path / "dlret.csv"
+    csv_path.write_text(
+        "PERMNO,security_id,TICKER,DLSTDT,DLSTCD,DLRET,available_at\n"
+        f"77,SEC-OBS,OBS,{OBS_SESSIONS[LAST].isoformat()},560,-0.9,{OBS_SESSIONS[LAST + 5].isoformat()}T12:00:00\n",
+        encoding="utf-8",
+    )
+    load_delisting_return_observations(
+        tmp_store, DelistingReturnObservationOptions(source_file=csv_path, provider="CRSP_SAMPLE")
+    )
+    stored, raw = tmp_store.con.execute(
+        "SELECT delist_date, json_extract_string(raw_payload_json, '$.delist_date') FROM delisting_return_observations"
+    ).fetchone()
+    assert stored == OBS_SESSIONS[LAST + 1]
+    assert raw == OBS_SESSIONS[LAST].isoformat()  # the vendor's DLSTDT is retained
+    assert refresh_delisting_terminal_returns(tmp_store) == 1
+    assert _terminals(tmp_store) == [(OBS_SESSIONS[LAST + 1], -0.9, "observed")]
+    assert (
+        tmp_store.con.execute(
+            "SELECT count(*) FROM delisting_events e JOIN delisting_terminal_returns t "
+            "ON t.security_id = e.security_id AND t.delist_date = e.delist_date"
+        ).fetchone()[0]
+        == 1
+    )
+
+
+def test_vendor_and_archive_last_trade_disagreement_still_yields_one_terminal(tmp_store):
+    from atx_db.delisting import refresh_delisting_terminal_returns
+
+    _seed_observed_cessation(tmp_store)
+    # Vendor says the exchange price ended two sessions before the archive's last bar.
+    tmp_store.con.execute(
+        "INSERT INTO delisting_return_observations (delisting_return_observation_id, source, provider, "
+        "security_id, symbol, delist_date, as_of_date, available_at, delisting_return, return_basis) VALUES "
+        "('obs-2','crsp','CRSP','SEC-OBS','OBS',?,?,?,-0.8,'CRSP_DLRET')",
+        [OBS_SESSIONS[LAST - 1], OBS_SESSIONS[LAST - 1], dt.datetime.combine(OBS_SESSIONS[LAST + 5], dt.time(12))],
+    )
+    assert refresh_delisting_terminal_returns(tmp_store) == 1  # no Shumway row beside the observed one
+    assert _terminals(tmp_store) == [(OBS_SESSIONS[LAST - 1], -0.8, "observed")]

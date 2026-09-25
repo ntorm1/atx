@@ -485,6 +485,52 @@ def _resolve_observation_security_ids(store: DuckDBStore, observations: pd.DataF
     return out[OBSERVATION_COLUMNS]
 
 
+def _effective_observation_delist_dates(store: DuckDBStore, observations: pd.DataFrame) -> pd.DataFrame:
+    """Move vendor DLSTDT onto the warehouse's delisting-date basis.
+
+    CRSP-style DLSTDT is the date of the security's last exchange price. ``delisting_events``
+    (A3) dates a cessation at the first observed session AFTER the last observed trade, and the
+    forward stitcher prices the pre-terminal leg strictly before ``delist_date`` -- so an
+    observation left on DLSTDT would both miss its event and drop the final session's return.
+    Each DLSTDT maps to the next latest-revision bar session of the archive. With no later
+    observed session the native date is kept; :func:`compute_delisting_terminal_returns` still
+    re-keys such a row against an event's ``last_observed_trade_date``. The vendor's DLSTDT stays
+    in ``raw_payload_json``. Identifier resolution runs before this, on DLSTDT, when the id was live.
+    """
+
+    if observations.empty or "delist_date" not in observations.columns:
+        return observations
+    out = observations.copy().reset_index(drop=True)
+    dlstdt = pd.to_datetime(out["delist_date"], errors="coerce")
+    dates = pd.DataFrame({"dlstdt": sorted({value.date() for value in dlstdt.dropna()})})
+    if dates.empty:
+        return observations
+    relation_name = "delisting_return_observation_dlstdt"
+    store.con.register(relation_name, dates)
+    try:
+        mapped = store.con.execute(
+            f"""
+            WITH sessions AS (
+                SELECT DISTINCT trade_date
+                FROM equity_daily_bars
+                WHERE is_latest_revision = true
+                  AND trade_date > (SELECT min(dlstdt) FROM {relation_name})
+            )
+            SELECT d.dlstdt, s.trade_date
+            FROM {relation_name} d
+            ASOF LEFT JOIN sessions s ON d.dlstdt < s.trade_date
+            """
+        ).fetchall()
+    finally:
+        store.con.unregister(relation_name)
+    next_session = {row[0]: row[1] for row in mapped if row[1] is not None}
+    out["delist_date"] = [
+        next_session.get(value.date(), original) if pd.notna(value) else original
+        for value, original in zip(dlstdt, out["delist_date"], strict=True)
+    ]
+    return out[OBSERVATION_COLUMNS]
+
+
 def load_delisting_return_observations(
     store: DuckDBStore,
     options: DelistingReturnObservationOptions,
@@ -502,6 +548,7 @@ def load_delisting_return_observations(
         source_file=source_file,
     )
     normalized = _resolve_observation_security_ids(store, normalized)
+    normalized = _effective_observation_delist_dates(store, normalized)
     record_source_file(
         store,
         dataset_id="delisting_return_observations",
@@ -1331,6 +1378,89 @@ def _stable_terminal_return_id(row: pd.Series) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+# An observed terminal return for the same security within this many calendar days of an
+# event's delist_date is that cessation (vendor and archive can disagree on the last trade by a
+# few sessions); no policy row is added next to it, so one cessation keeps one terminal.
+OBSERVED_TERMINAL_MATCH_DAYS = 31
+
+
+def _same_type_date(value: object, like: pd.Series) -> object:
+    """Return ``value`` in the representation already used by ``like`` (datetime64 or date)."""
+
+    stamp = pd.Timestamp(value)
+    return stamp if pd.api.types.is_datetime64_any_dtype(like) else stamp.date()
+
+
+def _align_observations_to_events(obs: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
+    """Re-key observations still on the vendor DLSTDT basis onto their event's delist_date.
+
+    An observation of the same security (or, lacking a security_id, the same symbol) dated on
+    an event's ``last_observed_trade_date`` is that cessation seen on the CRSP basis: it takes
+    the event's ``delist_date`` (first session after the last trade), so the pair joins exactly
+    and the stitched leg ends at the last traded close. Loads normalize on the way in (see
+    :func:`_effective_observation_delist_dates`); this covers rows landed without it.
+    """
+
+    needed = {"security_id", "delist_date", "last_observed_trade_date"}
+    if obs.empty or events is None or events.empty or not needed.issubset(events.columns):
+        return obs
+    anchors = events.dropna(subset=["delist_date", "last_observed_trade_date"])
+    if anchors.empty:
+        return obs
+    trade_keys = pd.to_datetime(anchors["last_observed_trade_date"], errors="coerce")
+    by_security = {
+        (security, key): delist
+        for security, key, delist in zip(anchors["security_id"], trade_keys, anchors["delist_date"], strict=True)
+        if pd.notna(security) and pd.notna(key)
+    }
+    by_symbol: dict[tuple[object, object], tuple[object, object]] = {}
+    if "symbol" in anchors.columns:
+        for symbol, key, security, delist in zip(
+            anchors["symbol"], trade_keys, anchors["security_id"], anchors["delist_date"], strict=True
+        ):
+            if pd.notna(symbol) and pd.notna(key) and pd.notna(security):
+                by_symbol.setdefault((symbol, key), (security, delist))
+    out = obs.copy()
+    obs_keys = pd.to_datetime(out["delist_date"], errors="coerce")
+    has_symbol = "symbol" in out.columns
+    for index, key in zip(out.index, obs_keys, strict=True):
+        if pd.isna(key):
+            continue
+        delist = None
+        security = out.at[index, "security_id"]
+        if pd.notna(security):
+            delist = by_security.get((security, key))
+        elif has_symbol and pd.notna(out.at[index, "symbol"]):
+            match = by_symbol.get((out.at[index, "symbol"], key))
+            if match is not None:
+                out.at[index, "security_id"], delist = match
+        if delist is not None:
+            out.at[index, "delist_date"] = _same_type_date(delist, out["delist_date"])
+    return out
+
+
+def _drop_events_covered_by_observed(events: pd.DataFrame, observed: pd.DataFrame) -> pd.DataFrame:
+    """Drop events whose security already has an observed terminal for the same cessation.
+
+    ``events`` carries ``_delist_date_key``; an observed row of the same security within
+    :data:`OBSERVED_TERMINAL_MATCH_DAYS` of it covers the event.
+    """
+
+    events = events.reset_index(drop=True)
+    if events.empty or observed.empty:
+        return events
+    observed_keys = observed[["security_id"]].assign(
+        _observed_key=pd.to_datetime(observed["delist_date"], errors="coerce")
+    )
+    candidates = events[["security_id", "_delist_date_key"]].assign(_event_row=range(len(events)))
+    pairs = candidates.merge(observed_keys, on="security_id", how="inner")
+    near = (pairs["_observed_key"] - pairs["_delist_date_key"]).abs() <= pd.Timedelta(
+        days=OBSERVED_TERMINAL_MATCH_DAYS
+    )
+    covered = set(pairs.loc[near, "_event_row"])
+    return events[[row not in covered for row in range(len(events))]].reset_index(drop=True)
+
+
 def compute_delisting_terminal_returns(
     observations: pd.DataFrame,
     events: pd.DataFrame,
@@ -1403,6 +1533,7 @@ def compute_delisting_terminal_returns(
                 )
                 obs.loc[missing, "security_id"] = backfilled["security_id"].to_numpy()
 
+        obs = _align_observations_to_events(obs, events)
         obs = obs[
             obs["security_id"].notna() & obs["delist_date"].notna() & obs["delisting_return"].notna()
         ].copy()
@@ -1487,12 +1618,7 @@ def compute_delisting_terminal_returns(
     if can_apply_corporate_action_policy:
         ev = events.copy().reset_index(drop=True)
         ev = ev.assign(_delist_date_key=pd.to_datetime(ev["delist_date"], errors="coerce"))
-        observed_pairs = _covered_pairs(result)
-        if not observed_pairs.empty:
-            ev = ev.merge(observed_pairs, on=["security_id", "_delist_date_key"], how="left")
-            uncovered = ev[ev["_covered"].isna()].drop(columns=["_covered"]).reset_index(drop=True)
-        else:
-            uncovered = ev
+        uncovered = _drop_events_covered_by_observed(ev, result)
 
         if not uncovered.empty:
             ca = corporate_actions.copy().reset_index(drop=True)
@@ -1543,12 +1669,10 @@ def compute_delisting_terminal_returns(
     if can_apply_performance_policy:
         ev2 = events.copy().reset_index(drop=True)
         ev2 = ev2.assign(_delist_date_key=pd.to_datetime(ev2["delist_date"], errors="coerce"))
-        # Filter out empty pieces before concatenating (mirrors _concat_terminal_return_frames):
-        # an empty _covered_pairs frame has no real dtype for _delist_date_key, and concatenating
-        # it with a non-empty datetime64 piece can silently upcast the result to object, which
-        # then raises a merge dtype error against ev2's datetime64 _delist_date_key below.
-        covered_parts = [p for p in (_covered_pairs(result), _covered_pairs(policy_result)) if not p.empty]
-        already_covered = pd.concat(covered_parts, ignore_index=True) if covered_parts else pd.DataFrame()
+        # Observed terminals cover their cessation within a date tolerance; corporate-action
+        # policy rows share the event's exact (security_id, delist_date).
+        ev2 = _drop_events_covered_by_observed(ev2, result)
+        already_covered = _covered_pairs(policy_result)
         if not already_covered.empty:
             already_covered = already_covered.drop_duplicates(subset=["security_id", "_delist_date_key"])
             ev2 = ev2.merge(already_covered, on=["security_id", "_delist_date_key"], how="left")
@@ -1817,7 +1941,9 @@ def _load_terminal_return_events(store: DuckDBStore, *, resolve_exchange: bool) 
 
     event_sql = """
         SELECT delisting_event_id, security_id, symbol, delist_date, as_of_date, available_at,
-               delist_code, delist_reason
+               delist_code, delist_reason,
+               TRY_CAST(json_extract_string(details_json, '$.last_observed_trade_date') AS DATE)
+                   AS last_observed_trade_date
         FROM delisting_events
     """
     if not resolve_exchange:

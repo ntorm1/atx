@@ -20,16 +20,20 @@ One event per cessation cluster per security. Its ``delist_date`` is the first o
 session after the last observed trade (``details_json.effective_date_basis =
 'last_observed_trade'``); filing / acceptance / file clocks are retained on the evidence rows
 and listed in the event's ``details_json.evidence``. Reason attribution uses only the
-corroborating cluster, in fixed precedence: bankruptcy overlay > same-CIK merger form
-(+/- ``merger_lookback_days`` around the Form 25 or the cessation) > 25-NSE exchange delist >
-Form 15 voluntary > unknown. A bare Form 25 or a Nasdaq delete explains *that* the security
-left, not *why*: both stay ``unknown``.
+corroborating cluster, in fixed precedence: bankruptcy overlay > merger (a same-CIK
+*target-side* merger form -- DEFM14A, SC 14D9, SC TO-T, 425 -- filed within
+[last trade - 365 days, last trade + 30 days]; an S-4/S-4/A never qualifies on its own) >
+25-NSE exchange delist > Form 15 voluntary > unknown. A bare Form 25 or a Nasdaq delete
+explains *that* the security left, not *why*: both stay ``unknown``.
 
-Every timestamp is sourced: SEC acceptance datetimes, Nasdaq publication times, or
-``trade_date`` + 22 hours (the archive's own end-of-day convention). Derived evidence carries
-the latest availability of its inputs, including the sessions establishing a cessation, and
-an event carries the latest availability of its whole corroborating cluster. Nothing here
-reads a wall clock.
+Clocks. Every timestamp is sourced: SEC acceptance datetimes, Nasdaq publication times, or
+``trade_date`` + 22 hours (the archive's own end-of-day convention); nothing reads a wall
+clock. An evidence row's ``available_at`` covers everything that row asserts. An event's
+``available_at`` is its *existence* clock -- the earliest moment the cessation qualified
+(the gap-establishing session, or a corroborating notice together with the first absent
+session). Reason evidence never delays existence: a reason first known later is a reason
+revision, recorded as ``details_json.reason_available_at`` / ``reason_at_existence`` (the
+single-row table carries the latest visible reason).
 """
 
 from __future__ import annotations
@@ -46,9 +50,12 @@ from .warehouse import quality_check
 DELISTING_EVIDENCE_SOURCE = "atx_delisting_evidence_v1"
 DELISTING_EVENT_SOURCE = "atx_delisting_public_evidence_v1"
 ARCHIVE_GAP_SESSIONS = 30
-# Symmetric window (days) around a Form 25 filing, or around an archive cessation, in which a
-# same-CIK merger form attributes the delisting to a merger/acquisition.
+# Merger window around the security's last observed trade, in calendar days: target-side
+# merger forms precede closing, so the window looks back a year and forward only far enough
+# to catch closing-day filings. Post-cessation M&A by a still-filing CIK (acquirer deals,
+# shell reverse mergers, sales out of distress) is not evidence that a merger ended trading.
 MERGER_LOOKBACK_DAYS = 365
+MERGER_LOOKAHEAD_DAYS = 30
 # Declared corroboration window, in observed archive sessions, around a notice: the
 # security's own last bar must lie in [notice - BEFORE, notice + AFTER] sessions.
 NOTICE_WINDOW_SESSIONS_BEFORE = 10
@@ -87,9 +94,21 @@ EVENT_REASON_PRECEDENCE: tuple[str, ...] = (
     "voluntary",
     "unknown",
 )
+_REASON_CONFIDENCE = {
+    "bankruptcy": "high",
+    "merger_acquisition": "medium",
+    "exchange_delist": "high",
+    "voluntary": "medium",
+    "unknown": "low",
+}
 
-# Forms whose presence near a Form 25 / cessation makes the delist a merger/acquisition.
-MERGER_FORMS: tuple[str, ...] = ("425", "DEFM14A", "S-4", "S-4/A", "SC 14D9", "SC TO-T")
+# Target-side merger forms establish a merger on their own. S-4/S-4/A are also filed by
+# acquirers, 144A exchange offers, distressed debt exchanges and holdco reorganizations, so
+# they only count alongside a target-side form in the window -- which then qualifies by
+# itself; S-4s are therefore recorded as supporting evidence and never change the outcome.
+TARGET_SIDE_MERGER_FORMS: tuple[str, ...] = ("425", "DEFM14A", "SC 14D9", "SC TO-T")
+SUPPORTING_MERGER_FORMS: tuple[str, ...] = ("S-4", "S-4/A")
+MERGER_FORMS: tuple[str, ...] = (*TARGET_SIDE_MERGER_FORMS, *SUPPORTING_MERGER_FORMS)
 
 # Nasdaq Trader action spellings (A1 normalizes to add/delete; legacy files carry A/D).
 NASDAQ_DELETE_ACTIONS: tuple[str, ...] = ("D", "DELETE")
@@ -138,20 +157,31 @@ class DelistingEvidenceOptions:
     run_id: str | None = None
     notice_window_sessions_before: int = NOTICE_WINDOW_SESSIONS_BEFORE
     notice_window_sessions_after: int = NOTICE_WINDOW_SESSIONS_AFTER
+    merger_lookahead_days: int = MERGER_LOOKAHEAD_DAYS
 
 
-def _validated_counts(options: DelistingEvidenceOptions) -> tuple[int, int, int, int]:
+@dataclass(frozen=True)
+class _Counts:
+    gap: int
+    merger_lookback: int
+    merger_lookahead: int
+    before: int
+    after: int
+
+
+def _validated_counts(options: DelistingEvidenceOptions) -> _Counts:
     values = (
         options.archive_gap_sessions,
         options.merger_lookback_days,
+        options.merger_lookahead_days,
         options.notice_window_sessions_before,
         options.notice_window_sessions_after,
     )
     if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in values):
         raise ValueError(
-            "archive_gap_sessions, merger_lookback_days and notice window sessions must be non-negative integers"
+            "archive_gap_sessions, merger window days and notice window sessions must be non-negative integers"
         )
-    return values  # type: ignore[return-value]
+    return _Counts(*values)
 
 
 def _evidence_id_expression(kind_literal: str) -> str:
@@ -168,16 +198,29 @@ def _evidence_id_expression(kind_literal: str) -> str:
     )
 
 
+def _cutoff(as_of_date: dt.date) -> dt.datetime:
+    return dt.datetime.combine(as_of_date, dt.time(END_OF_DAY_HOURS))
+
+
 def _as_of_filter(date_sql: str, available_sql: str, as_of_date: dt.date | None) -> str:
     """Render a typed date cutoff without changing the builders' bound parameters."""
 
     if as_of_date is None:
         return "true"
-    cutoff = dt.datetime.combine(as_of_date, dt.time(END_OF_DAY_HOURS))
     return (
         f"({date_sql}) <= DATE '{as_of_date.isoformat()}' "
-        f"AND ({available_sql}) <= TIMESTAMP '{cutoff.isoformat(sep=' ')}'"
+        f"AND ({available_sql}) <= TIMESTAMP '{_cutoff(as_of_date).isoformat(sep=' ')}'"
     )
+
+
+def _date_filter(date_sql: str, as_of_date: dt.date | None) -> str:
+    return "true" if as_of_date is None else f"({date_sql}) <= DATE '{as_of_date.isoformat()}'"
+
+
+def _clock_filter(available_sql: str, as_of_date: dt.date | None) -> str:
+    if as_of_date is None:
+        return "true"
+    return f"({available_sql}) <= TIMESTAMP '{_cutoff(as_of_date).isoformat(sep=' ')}'"
 
 
 def _bar_available_sql(alias: str = "b") -> str:
@@ -192,8 +235,8 @@ def _sec_available_sql(alias: str) -> str:
     return f"coalesce({alias}.acceptance_datetime, CAST({alias}.filing_date AS TIMESTAMP) + INTERVAL 22 HOUR)"
 
 
-def _merger_forms_sql() -> str:
-    return ", ".join(f"'{form}'" for form in MERGER_FORMS)
+def _forms_sql(forms: tuple[str, ...]) -> str:
+    return ", ".join(f"'{form}'" for form in forms)
 
 
 def _action_in(column: str, actions: tuple[str, ...]) -> str:
@@ -231,17 +274,20 @@ def build_cessations_sql(*, sessions: str, as_of_date: dt.date | None = None) ->
     security still trades at the archive end). ``gap_session_available_at`` is the clock of
     the session that first makes the absence exceed ``archive_gap_sessions`` -- the absence is
     established then, not at the (much later) archive end. The bar scan is inlined (``NOT
-    MATERIALIZED``) so the two aggregate passes never buffer the full bar history. CIK links come from the
-    security's own SEC filings and dated CIK identifier rows visible at the cutoff; merger
-    evidence is the earliest-visible same-CIK merger form within +/- the merger window of
-    the last trade.
+    MATERIALIZED``) so the two aggregate passes never buffer the full bar history.
 
-    Placeholder order: ``[archive_gap_sessions, merger_lookback_days, merger_lookback_days]``.
+    CIK links come from the security's own SEC filings and CIK identifier rows visible at the
+    cutoff. Merger evidence is the earliest-visible same-CIK *target-side* merger form filed in
+    [last trade - lookback, last trade + lookahead] days; supporting S-4/S-4/A filings in the
+    window are counted but never qualify alone.
+
+    Placeholder order: ``[archive_gap_sessions, merger_lookback_days, merger_lookahead_days]``.
     """
 
     available = _bar_available_sql("b")
     merger_date = _sec_date_sql("m")
     merger_available = _sec_available_sql("m")
+    target_forms = _forms_sql(TARGET_SIDE_MERGER_FORMS)
     return f"""
         WITH eligible_bars AS NOT MATERIALIZED (
             SELECT b.security_id, b.symbol, b.trade_date, {available} AS input_available_at
@@ -304,24 +350,32 @@ def build_cessations_sql(*, sessions: str, as_of_date: dt.date | None = None) ->
             FROM security_ciks
             GROUP BY security_id
         ),
-        merger_hits AS (
-            SELECT c.security_id,
-                   min(struct_pack(
-                       available_at := {merger_available},
-                       accession_number := m.accession_number,
-                       form := m.form,
-                       filing_date := {merger_date}
-                   )) AS evidence
+        merger_window AS (
+            SELECT c.security_id, m.form, m.accession_number,
+                   {merger_date} AS filing_date, {merger_available} AS available_at
             FROM base c
             JOIN security_ciks sc ON sc.security_id = c.security_id
             JOIN sec_submissions m
               ON lpad(trim(m.cik), 10, '0') = sc.cik
-             AND m.form IN ({_merger_forms_sql()})
+             AND m.form IN ({_forms_sql(MERGER_FORMS)})
              AND {merger_date} >= c.last_trade_date - CAST(? AS INTEGER)
              AND {merger_date} <= c.last_trade_date + CAST(? AS INTEGER)
              AND {_as_of_filter(merger_date, merger_available, as_of_date)}
             WHERE c.last_rank < c.archive_last_rank
-            GROUP BY c.security_id
+        ),
+        merger_hits AS (
+            SELECT security_id,
+                   min(struct_pack(
+                       available_at := available_at,
+                       accession_number := accession_number,
+                       form := form,
+                       filing_date := filing_date
+                   )) FILTER (WHERE form IN ({target_forms})) AS evidence,
+                   count(*) FILTER (WHERE form IN ({target_forms})) AS target_forms,
+                   count(*) FILTER (WHERE form NOT IN ({target_forms})) AS supporting_forms
+            FROM merger_window
+            GROUP BY security_id
+            HAVING count(*) FILTER (WHERE form IN ({target_forms})) > 0
         )
         SELECT base.*,
                cik_summary.cik,
@@ -329,7 +383,9 @@ def build_cessations_sql(*, sessions: str, as_of_date: dt.date | None = None) ->
                merger_hits.evidence.accession_number AS merger_accession,
                merger_hits.evidence.form AS merger_form,
                merger_hits.evidence.filing_date AS merger_filing_date,
-               merger_hits.evidence.available_at AS merger_available_at
+               merger_hits.evidence.available_at AS merger_available_at,
+               merger_hits.target_forms AS merger_target_forms,
+               merger_hits.supporting_forms AS merger_supporting_forms
         FROM base
         LEFT JOIN cik_summary ON cik_summary.security_id = base.security_id
         LEFT JOIN merger_hits ON merger_hits.security_id = base.security_id
@@ -341,9 +397,17 @@ def build_nasdaq_delete_sql(*, as_of_date: dt.date | None = None) -> str:
 
     A row that also *adds* the symbol on another venue is a venue move, not a removal, and
     is excluded. Output columns follow the notice contract (see :func:`_notice_insert_sql`).
+
+    Availability is the row's receipt clock (``available_at``; A1 stamps pinned snapshots with
+    the retained file's original receipt time). The file's ``File Creation Time`` precedes
+    receipt, so it is never used as availability -- only as a floor, with the modeled
+    ``as_of_date`` 22:00, when a legacy row carries no receipt clock at all.
     """
 
-    available = "coalesce(e.source_file_created_at, e.available_at, CAST(e.as_of_date AS TIMESTAMP) + INTERVAL 22 HOUR)"
+    available = (
+        "coalesce(e.available_at, greatest(e.source_file_created_at, "
+        "CAST(e.as_of_date AS TIMESTAMP) + INTERVAL 22 HOUR))"
+    )
     columns = ("e.nasdaq_action", "e.bx_action", "e.psx_action")
     any_delete = " OR ".join(_action_in(column, NASDAQ_DELETE_ACTIONS) for column in columns)
     any_add = " OR ".join(_action_in(column, NASDAQ_ADD_ACTIONS) for column in columns)
@@ -358,11 +422,7 @@ def build_nasdaq_delete_sql(*, as_of_date: dt.date | None = None) -> str:
             'unknown' AS reason_category,
             'low' AS reason_confidence,
             CAST(NULL AS VARCHAR) AS cik,
-            CAST(NULL AS VARCHAR) AS form,
-            CAST(NULL AS VARCHAR) AS merger_accession,
-            CAST(NULL AS VARCHAR) AS merger_form,
-            CAST(NULL AS DATE) AS merger_filing_date,
-            CAST(NULL AS TIMESTAMP) AS merger_available_at
+            CAST(NULL AS VARCHAR) AS form
         FROM nasdaq_listing_events e
         WHERE coalesce(e.effective_date, e.as_of_date) IS NOT NULL
           AND e.is_latest_revision = true
@@ -373,13 +433,12 @@ def build_nasdaq_delete_sql(*, as_of_date: dt.date | None = None) -> str:
 
 
 def build_sec_form_sql(*, form_kind: str, as_of_date: dt.date | None = None) -> str:
-    """SEC Form 25/25-NSE or Form 15 notices, in the notice contract.
+    """SEC Form 25/25-NSE or Form 15 notices, in the notice contract. No placeholders.
 
-    ``form_kind`` is ``"form_25"`` or ``"form_15"``. For ``form_25`` the placeholder order is
-    ``[merger_lookback_days, merger_lookback_days]`` (the symmetric merger window around the
-    filing); ``form_15`` takes none. Reasons: 25 or 25-NSE with a same-CIK merger form in the
-    window -> merger_acquisition; else 25-NSE -> exchange_delist; a bare 25 -> unknown
-    (issuer-requested removal says that, not why); 15-* -> voluntary.
+    ``form_kind`` is ``"form_25"`` or ``"form_15"``. A notice carries only what it says:
+    25-NSE -> exchange_delist; a bare 25 -> unknown (issuer-requested removal says that, not
+    why); 15-* -> voluntary. Merger attribution is a fact about the *cessation* (see
+    :func:`build_cessations_sql`), attached to corroborated notices and resolved at the event.
     """
 
     if form_kind not in {"form_25", "form_15"}:
@@ -387,87 +446,30 @@ def build_sec_form_sql(*, form_kind: str, as_of_date: dt.date | None = None) -> 
     available = _sec_available_sql("s")
     date_sql = _sec_date_sql("s")
     if form_kind == "form_15":
-        return f"""
-            SELECT
-                s.security_id,
-                coalesce(sec.primary_symbol, s.security_id) AS symbol,
-                {date_sql} AS notice_date,
-                {available} AS available_at,
-                'sec_submissions' AS evidence_source_table,
-                s.accession_number AS source_event_id,
-                'voluntary' AS reason_category,
-                'medium' AS reason_confidence,
-                lpad(trim(s.cik), 10, '0') AS cik,
-                s.form,
-                CAST(NULL AS VARCHAR) AS merger_accession,
-                CAST(NULL AS VARCHAR) AS merger_form,
-                CAST(NULL AS DATE) AS merger_filing_date,
-                CAST(NULL AS TIMESTAMP) AS merger_available_at
-            FROM sec_submissions s
-            LEFT JOIN securities sec ON sec.security_id = s.security_id
-            WHERE s.form LIKE '15-%'
-              AND {date_sql} IS NOT NULL
-              AND {_as_of_filter(date_sql, available, as_of_date)}
-        """
-    merger_date = _sec_date_sql("m")
-    merger_available = _sec_available_sql("m")
+        forms = "s.form LIKE '15-%'"
+        reason = "'voluntary'"
+        confidence = "'medium'"
+    else:
+        forms = "s.form IN ('25', '25-NSE')"
+        reason = "CASE WHEN s.form = '25-NSE' THEN 'exchange_delist' ELSE 'unknown' END"
+        confidence = "CASE WHEN s.form = '25-NSE' THEN 'high' ELSE 'low' END"
     return f"""
-        WITH form25 AS (
-            SELECT
-                s.security_id,
-                s.cik,
-                s.form,
-                {date_sql} AS notice_date,
-                {available} AS available_at,
-                s.accession_number
-            FROM sec_submissions s
-            WHERE s.form IN ('25', '25-NSE')
-              AND {date_sql} IS NOT NULL
-              AND {_as_of_filter(date_sql, available, as_of_date)}
-        ),
-        merger_evidence AS (
-            SELECT f.accession_number,
-                   min(struct_pack(
-                       available_at := {merger_available},
-                       accession_number := m.accession_number,
-                       form := m.form,
-                       filing_date := {merger_date}
-                   )) AS evidence
-            FROM form25 f
-            JOIN sec_submissions m
-              ON m.cik = f.cik
-             AND m.form IN ({_merger_forms_sql()})
-             AND {merger_date} >= f.notice_date - CAST(? AS INTEGER)
-             AND {merger_date} <= f.notice_date + CAST(? AS INTEGER)
-             AND {_as_of_filter(merger_date, merger_available, as_of_date)}
-            GROUP BY f.accession_number
-        )
         SELECT
-            form25.security_id,
-            coalesce(sec.primary_symbol, form25.security_id) AS symbol,
-            form25.notice_date,
-            greatest(form25.available_at, me.evidence.available_at) AS available_at,
+            s.security_id,
+            coalesce(sec.primary_symbol, s.security_id) AS symbol,
+            {date_sql} AS notice_date,
+            {available} AS available_at,
             'sec_submissions' AS evidence_source_table,
-            form25.accession_number AS source_event_id,
-            CASE
-                WHEN me.evidence IS NOT NULL THEN 'merger_acquisition'
-                WHEN form25.form = '25-NSE' THEN 'exchange_delist'
-                ELSE 'unknown'
-            END AS reason_category,
-            CASE
-                WHEN me.evidence IS NOT NULL THEN 'medium'
-                WHEN form25.form = '25-NSE' THEN 'high'
-                ELSE 'low'
-            END AS reason_confidence,
-            lpad(trim(form25.cik), 10, '0') AS cik,
-            form25.form,
-            me.evidence.accession_number AS merger_accession,
-            me.evidence.form AS merger_form,
-            me.evidence.filing_date AS merger_filing_date,
-            me.evidence.available_at AS merger_available_at
-        FROM form25
-        LEFT JOIN securities sec ON sec.security_id = form25.security_id
-        LEFT JOIN merger_evidence me ON me.accession_number = form25.accession_number
+            s.accession_number AS source_event_id,
+            {reason} AS reason_category,
+            {confidence} AS reason_confidence,
+            lpad(trim(s.cik), 10, '0') AS cik,
+            s.form
+        FROM sec_submissions s
+        LEFT JOIN securities sec ON sec.security_id = s.security_id
+        WHERE {forms}
+          AND {date_sql} IS NOT NULL
+          AND {_as_of_filter(date_sql, available, as_of_date)}
     """
 
 
@@ -509,13 +511,15 @@ def build_bankruptcy_overlay_sql(*, as_of_date: dt.date | None = None) -> str:
 def _params_json_fields(options: DelistingEvidenceOptions) -> str:
     """Build parameters as literal JSON fields (validated integers / fixed vocabulary)."""
 
-    gap, merger_days, before, after = _validated_counts(options)
+    counts = _validated_counts(options)
     as_of = f"DATE '{options.as_of_date.isoformat()}'" if options.as_of_date is not None else "NULL::DATE"
-    forms = ", ".join(f"'{form}'" for form in MERGER_FORMS)
     return (
-        f"'archive_gap_sessions', {gap}, 'merger_lookback_days', {merger_days}, "
-        f"'merger_window', 'symmetric_days', 'merger_forms', [{forms}], "
-        f"'notice_window_sessions', [{-before}, {after}], 'as_of_date', {as_of}, "
+        f"'archive_gap_sessions', {counts.gap}, "
+        f"'merger_window_days', [{-counts.merger_lookback}, {counts.merger_lookahead}], "
+        f"'merger_window_anchor', 'last_observed_trade', "
+        f"'target_side_merger_forms', [{_forms_sql(TARGET_SIDE_MERGER_FORMS)}], "
+        f"'supporting_merger_forms', [{_forms_sql(SUPPORTING_MERGER_FORMS)}], "
+        f"'notice_window_sessions', [{-counts.before}, {counts.after}], 'as_of_date', {as_of}, "
         f"'effective_date_basis', '{EFFECTIVE_DATE_BASIS}', 'identity_basis', '{IDENTITY_BASIS}'"
     )
 
@@ -524,7 +528,9 @@ def _merger_json(prefix: str) -> str:
     return (
         f"CASE WHEN {prefix}merger_accession IS NULL THEN NULL ELSE json_object("
         f"'accession_number', {prefix}merger_accession, 'form', {prefix}merger_form, "
-        f"'filing_date', {prefix}merger_filing_date, 'available_at', {prefix}merger_available_at) END"
+        f"'filing_date', {prefix}merger_filing_date, 'available_at', {prefix}merger_available_at, "
+        f"'target_side_forms_in_window', {prefix}merger_target_forms, "
+        f"'supporting_forms_in_window', {prefix}merger_supporting_forms) END"
     )
 
 
@@ -541,15 +547,17 @@ def _notice_insert_sql(
     """Insert one notice stream, classifying each notice against the security's cessation.
 
     ``body`` yields ``security_id, symbol, notice_date, available_at, evidence_source_table,
-    source_event_id, reason_category, reason_confidence, cik, form, merger_*``. The notice's
-    session rank is the number of observed sessions on or before its date; outside the
-    archive's session range it is extrapolated at 5 sessions per 7 calendar days, so a 1990s
-    Form 25 can never corroborate a cessation early in a 2012-start archive. The notice
-    corroborates only if the security's last bar lies in the declared window and precedes
-    the archive end; the evidence row keeps the notice's own date and clocks either way.
+    source_event_id, reason_category, reason_confidence, cik, form``. The notice's session
+    rank is the number of observed sessions on or before its date; outside the archive's
+    session range it is extrapolated at 5 sessions per 7 calendar days, so a 1990s Form 25
+    can never corroborate a cessation early in a 2012-start archive. The notice corroborates
+    only if the security's last bar lies in the declared window and precedes the archive
+    end; the evidence row keeps the notice's own date and clocks either way. A corroborating
+    notice establishes existence at max(notice clock, first-absent-session clock) and carries
+    the cessation's merger evidence for event-level attribution.
     """
 
-    _gap, _merger_days, before, after = _validated_counts(options)
+    counts = _validated_counts(options)
     return f"""
         INSERT OR REPLACE INTO delisting_evidence (
             {", ".join(EVIDENCE_COLUMNS)}, source_loaded_at
@@ -587,11 +595,17 @@ def _notice_insert_sql(
                 c.archive_last_rank,
                 c.delist_date AS cessation_delist_date,
                 greatest(c.last_trade_available_at, c.delist_session_available_at) AS cessation_available_at,
+                c.merger_accession,
+                c.merger_form,
+                c.merger_filing_date,
+                c.merger_available_at,
+                c.merger_target_forms,
+                c.merger_supporting_forms,
                 CASE
                     WHEN c.security_id IS NULL THEN 'absent'
                     WHEN c.last_rank >= c.archive_last_rank THEN 'trading_at_archive_end'
-                    WHEN c.last_rank > r.notice_rank + {after} THEN 'traded_past_notice_window'
-                    WHEN c.last_rank < r.notice_rank - {before} THEN 'ended_before_notice_window'
+                    WHEN c.last_rank > r.notice_rank + {counts.after} THEN 'traded_past_notice_window'
+                    WHEN c.last_rank < r.notice_rank - {counts.before} THEN 'ended_before_notice_window'
                     ELSE 'ceased_in_notice_window'
                 END AS price_series_status
             FROM ranked r
@@ -601,6 +615,7 @@ def _notice_insert_sql(
             SELECT
                 *,
                 notice_date AS delist_date,
+                price_series_status = 'ceased_in_notice_window' AS corroborates,
                 CASE price_series_status
                     WHEN 'ceased_in_notice_window' THEN '{DISPOSITION_CORROBORATED}'
                     WHEN 'absent' THEN '{DISPOSITION_WITHOUT_PRICE_SERIES}'
@@ -634,16 +649,16 @@ def _notice_insert_sql(
                 'notice_session_rank_basis', body.notice_rank_basis,
                 'form', body.form,
                 'cik', body.cik,
-                'merger_evidence', {_merger_json("body.")},
                 'last_observed_trade_date', body.last_trade_date,
                 'last_observed_symbol', body.last_observed_symbol,
                 'last_trade_session_rank', body.last_rank,
                 'archive_last_session_rank', body.archive_last_rank,
                 'gap_qualified', false,
-                'cessation_delist_date',
-                    CASE WHEN body.disposition = '{DISPOSITION_CORROBORATED}' THEN body.cessation_delist_date END,
-                'cessation_available_at',
-                    CASE WHEN body.disposition = '{DISPOSITION_CORROBORATED}' THEN body.cessation_available_at END
+                'cessation_delist_date', CASE WHEN body.corroborates THEN body.cessation_delist_date END,
+                'cessation_available_at', CASE WHEN body.corroborates THEN body.cessation_available_at END,
+                'existence_available_at',
+                    CASE WHEN body.corroborates THEN greatest(body.available_at, body.cessation_available_at) END,
+                'merger_evidence', CASE WHEN body.corroborates THEN {_merger_json("body.")} END
             )::VARCHAR AS details_json,
             ? AS run_id,
             now()
@@ -657,15 +672,17 @@ def _archive_insert_sql(*, cessations: str, options: DelistingEvidenceOptions) -
     """The cessation base row: the security's last observed trade, emitted when the absence
     exceeds the gap threshold or when a notice corroborates it.
 
-    ``delist_date`` is the first observed session after the last trade. Availability is the
-    last-bar clock plus the session establishing the absence (the gap-qualifying session, or
-    for a notice-only cessation the delist session), plus the merger form when it supplies
-    the reason. Placeholders: ``[source, source, source, run_id]``.
+    ``delist_date`` is the first observed session after the last trade. The row's
+    ``available_at`` covers what it asserts: the last-bar clock, the session establishing the
+    absence (the gap-qualifying session, or for a notice-only cessation the delist session),
+    and the merger form when it supplies the reason. ``existence_available_at`` (gap-qualified
+    rows only) excludes the merger clock: reason evidence never delays existence.
+    Placeholders: ``[source, source, source, run_id]``.
     """
 
-    gap, _merger_days, _before, _after = _validated_counts(options)
+    counts = _validated_counts(options)
     kind, rank, code, _reason, _confidence = next(row for row in EVIDENCE_PRECEDENCE if row[0] == "archive_last_trade")
-    gap_qualified = f"(c.gap_sessions > {gap})"
+    gap_qualified = f"(c.gap_sessions > {counts.gap})"
     return f"""
         INSERT OR REPLACE INTO delisting_evidence (
             {", ".join(EVIDENCE_COLUMNS)}, source_loaded_at
@@ -724,7 +741,10 @@ def _archive_insert_sql(*, cessations: str, options: DelistingEvidenceOptions) -
                 'last_trade_session_rank', body.last_rank,
                 'archive_last_session_rank', body.archive_last_rank,
                 'cessation_delist_date', body.delist_date,
-                'cessation_available_at', body.cessation_available_at
+                'cessation_available_at', body.cessation_available_at,
+                'existence_available_at',
+                    CASE WHEN body.gap_qualified
+                         THEN greatest(body.last_trade_available_at, body.gap_session_available_at) END
             )::VARCHAR AS details_json,
             ? AS run_id,
             now()
@@ -745,7 +765,7 @@ def refresh_delisting_evidence(
     """
 
     options = options or DelistingEvidenceOptions()
-    gap, merger_days, _before, _after = _validated_counts(options)
+    counts = _validated_counts(options)
     store.initialize()
     seed_delist_code_dim(store)
     by_kind = {row[0]: row for row in EVIDENCE_PRECEDENCE}
@@ -760,25 +780,21 @@ def refresh_delisting_evidence(
             store.con.execute(
                 f"CREATE TEMP TABLE {cessations} AS "
                 f"{build_cessations_sql(sessions=sessions, as_of_date=options.as_of_date)}",
-                [gap, merger_days, merger_days],
+                [counts.gap, counts.merger_lookback, counts.merger_lookahead],
             )
 
             streams = (
-                (
-                    "sec_form_25",
-                    build_sec_form_sql(form_kind="form_25", as_of_date=options.as_of_date),
-                    [merger_days, merger_days],
-                ),
-                ("nasdaq_delete", build_nasdaq_delete_sql(as_of_date=options.as_of_date), []),
-                ("sec_form_15", build_sec_form_sql(form_kind="form_15", as_of_date=options.as_of_date), []),
+                ("sec_form_25", build_sec_form_sql(form_kind="form_25", as_of_date=options.as_of_date)),
+                ("nasdaq_delete", build_nasdaq_delete_sql(as_of_date=options.as_of_date)),
+                ("sec_form_15", build_sec_form_sql(form_kind="form_15", as_of_date=options.as_of_date)),
             )
-            for kind, body, body_params in streams:
+            for kind, body in streams:
                 _kind, rank, code, _reason, _confidence = by_kind[kind]
                 store.con.execute(
                     _notice_insert_sql(
                         kind, rank, code, body=body, sessions=sessions, cessations=cessations, options=options
                     ),
-                    [*body_params, options.source, options.source, options.run_id],
+                    [options.source, options.source, options.run_id],
                 )
 
             if options.include_archive_inference:
@@ -824,6 +840,15 @@ def refresh_delisting_evidence(
             [options.source],
         ).fetchall()
     }
+    merger_forms = {
+        str(row[0]): int(row[1])
+        for row in store.con.execute(
+            "SELECT json_extract_string(details_json, '$.merger_evidence.form'), count(*) "
+            "FROM delisting_evidence WHERE source = ? AND evidence_kind = 'archive_last_trade' "
+            "AND json_extract_string(details_json, '$.merger_evidence.form') IS NOT NULL GROUP BY 1 ORDER BY 1",
+            [options.source],
+        ).fetchall()
+    }
     quality_check(
         store,
         dataset_id="delisting_evidence",
@@ -836,7 +861,9 @@ def refresh_delisting_evidence(
             "source": options.source,
             "by_reason_category": by_reason,
             "by_kind_disposition": by_disposition,
-            "notice_window_sessions": [-options.notice_window_sessions_before, options.notice_window_sessions_after],
+            "merger_attribution_first_form": merger_forms,
+            "notice_window_sessions": [-counts.before, counts.after],
+            "merger_window_days": [-counts.merger_lookback, counts.merger_lookahead],
         },
     )
     return rows
@@ -847,6 +874,19 @@ def _reason_rank_sql(column: str) -> str:
     return f"CASE {column} {cases} ELSE {len(EVENT_REASON_PRECEDENCE)} END"
 
 
+def _reason_text_sql(rank_sql: str) -> str:
+    cases = " ".join(f"WHEN {rank} THEN '{reason}'" for rank, reason in enumerate(EVENT_REASON_PRECEDENCE, start=1))
+    return f"CASE {rank_sql} {cases} END"
+
+
+def _reason_confidence_sql(rank_sql: str) -> str:
+    cases = " ".join(
+        f"WHEN {rank} THEN '{_REASON_CONFIDENCE[reason]}'"
+        for rank, reason in enumerate(EVENT_REASON_PRECEDENCE, start=1)
+    )
+    return f"CASE {rank_sql} {cases} END"
+
+
 def fold_evidence_into_delisting_events(
     store: DuckDBStore,
     options: DelistingEvidenceOptions | None = None,
@@ -854,13 +894,21 @@ def fold_evidence_into_delisting_events(
     """Materialize one ``delisting_events`` row per security cessation cluster.
 
     A cluster is the security's visible cessation evidence: its archive cessation row and
-    every corroborated notice. It becomes an event only if the absence passed the gap
-    threshold or at least one corroborated notice is visible; uncorroborated notices never
-    do. ``delist_date`` is the first session after the last observed trade; the reason is
-    the first of :data:`EVENT_REASON_PRECEDENCE` present in the cluster; ``available_at`` is
-    the latest clock of every cluster member and of the cessation itself. The primary row
-    (``source_listing_status_id`` / ``delist_code`` / ``source_event_id``) is the
-    reason-carrying member with the best ``evidence_rank``.
+    every corroborated notice. It becomes an event only once it *exists*: the absence passed
+    the gap threshold, or a corroborated notice is visible together with the first absent
+    session. Uncorroborated notices never form events.
+
+    * ``delist_date``: the first session after the last observed trade.
+    * ``available_at``: the existence clock -- the earliest qualifying member's clock
+      (gap-establishing session, or max(notice, first absent session)). Reason evidence and
+      additional notices never delay it.
+    * ``delist_reason``: the first of :data:`EVENT_REASON_PRECEDENCE` among visible members
+      and the cessation's visible merger evidence. When that reason became known only after
+      existence it is a reason *revision*: ``details_json.reason_available_at`` gives its
+      clock and ``reason_at_existence`` what was known at ``available_at`` (this single-row
+      table carries the latest visible reason; see the A3 report for the revision chain).
+    * Primary row (``source_listing_status_id`` / ``delist_code`` / ``source_event_id``): the
+      best-reason member with the best ``evidence_rank``.
 
     Rows written by ``delisting.refresh_delisting_events`` are never touched: the DELETE is
     scoped to ``options.event_source``. The optional as-of bound also applies when folding
@@ -870,9 +918,34 @@ def fold_evidence_into_delisting_events(
 
     options = options or DelistingEvidenceOptions()
     store.initialize()
-    as_of = options.as_of_date.isoformat() if options.as_of_date is not None else None
+    as_of = options.as_of_date
+    as_of_text = as_of.isoformat() if as_of is not None else None
     event_dispositions = ", ".join(f"'{value}'" for value in EVENT_DISPOSITIONS)
     precedence = ", ".join(f"'{reason}'" for reason in EVENT_REASON_PRECEDENCE)
+    unknown_rank = len(EVENT_REASON_PRECEDENCE)
+    merger_rank = EVENT_REASON_PRECEDENCE.index("merger_acquisition") + 1
+    rank_at_existence = (
+        "CASE "
+        + " ".join(f"WHEN c.reason_{rank}_at <= c.existence_at THEN {rank}" for rank in range(1, unknown_rank))
+        + f" ELSE {unknown_rank} END"
+    )
+    reason_available_at = (
+        "greatest(c.existence_at, CASE c.reason_rank "
+        + " ".join(f"WHEN {rank} THEN c.reason_{rank}_at" for rank in range(1, unknown_rank))
+        + " ELSE c.existence_at END)"
+    )
+    per_rank_clocks = ",\n".join(
+        f"min(available_at) FILTER (WHERE row_visible AND member_rank = {rank}) AS member_reason_{rank}_at"
+        for rank in range(1, unknown_rank)
+    )
+    reason_clock_columns = ",\n".join(
+        (
+            f"least(member_reason_{rank}_at, merger_at) AS reason_{rank}_at"
+            if rank == merger_rank
+            else f"member_reason_{rank}_at AS reason_{rank}_at"
+        )
+        for rank in range(1, unknown_rank)
+    )
     with store.transaction():
         store.con.execute("DELETE FROM delisting_events WHERE source = ?", [options.event_source])
         store.con.execute(
@@ -893,34 +966,57 @@ def fold_evidence_into_delisting_events(
                         AS cessation_delist_date,
                     TRY_CAST(json_extract_string(e.details_json, '$.cessation_available_at') AS TIMESTAMP)
                         AS cessation_available_at,
+                    TRY_CAST(json_extract_string(e.details_json, '$.existence_available_at') AS TIMESTAMP)
+                        AS existence_clock,
+                    TRY_CAST(json_extract_string(e.details_json, '$.merger_evidence.available_at') AS TIMESTAMP)
+                        AS merger_clock,
+                    json_extract_string(e.details_json, '$.merger_evidence') AS merger_evidence,
                     TRY_CAST(json_extract_string(e.details_json, '$.last_observed_trade_date') AS DATE)
                         AS last_observed_trade_date,
                     json_extract_string(e.details_json, '$.last_observed_symbol') AS last_observed_symbol,
                     coalesce(TRY_CAST(json_extract(e.details_json, '$.gap_qualified') AS BOOLEAN), false)
                         AS gap_qualified,
-                    json_extract_string(e.details_json, '$.cik') AS cik,
-                    {_reason_rank_sql("e.reason_category")} AS reason_rank
+                    json_extract_string(e.details_json, '$.cik') AS cik
                 FROM delisting_evidence e
                 WHERE e.source = ? AND e.is_latest_revision = true
                   AND e.security_id IS NOT NULL
-                  AND {_as_of_filter("e.delist_date", "e.available_at", options.as_of_date)}
+                  AND json_extract_string(e.details_json, '$.disposition') IN ({event_dispositions})
+                  AND {_date_filter("e.delist_date", as_of)}
             ),
-            cluster_members AS (
-                SELECT *
+            flagged AS (
+                SELECT
+                    *,
+                    existence_clock IS NOT NULL AND {_clock_filter("existence_clock", as_of)} AS existence_visible,
+                    {_clock_filter("available_at", as_of)} AS row_visible,
+                    merger_clock IS NOT NULL AND {_clock_filter("merger_clock", as_of)} AS merger_visible
                 FROM members
-                WHERE disposition IN ({event_dispositions})
-                  AND cessation_delist_date IS NOT NULL
+                WHERE cessation_delist_date IS NOT NULL
                   AND cessation_available_at IS NOT NULL
-                  AND {_as_of_filter("cessation_delist_date", "cessation_available_at", options.as_of_date)}
+                  AND {_as_of_filter("cessation_delist_date", "cessation_available_at", as_of)}
             ),
-            clusters AS (
+            visible AS (
+                SELECT
+                    *,
+                    -- A member whose own row is not yet visible can still establish existence,
+                    -- but it asserts no reason yet.
+                    CASE WHEN row_visible THEN {_reason_rank_sql("reason_category")} ELSE {unknown_rank} END
+                        AS member_rank
+                FROM flagged
+                WHERE existence_visible OR row_visible
+            ),
+            cluster_facts AS (
                 SELECT
                     security_id,
                     cessation_delist_date AS delist_date,
-                    bool_or(evidence_kind <> 'archive_last_trade') AS notice_corroborated,
-                    bool_or(evidence_kind = 'archive_last_trade' AND gap_qualified) AS gap_qualified,
-                    greatest(max(available_at), max(cessation_available_at)) AS available_at,
-                    greatest(max(as_of_date), cessation_delist_date) AS as_of_date,
+                    min(existence_clock) FILTER (WHERE existence_visible) AS existence_at,
+                    min(merger_clock) FILTER (WHERE merger_visible) AS merger_at,
+                    min(merger_evidence) FILTER (WHERE merger_visible) AS merger_evidence,
+                    least(min(member_rank), CASE WHEN bool_or(merger_visible) THEN {merger_rank} END) AS reason_rank,
+                    {per_rank_clocks},
+                    coalesce(bool_or(evidence_kind <> 'archive_last_trade' AND existence_visible), false)
+                        AS notice_corroborated,
+                    coalesce(bool_or(evidence_kind = 'archive_last_trade' AND gap_qualified AND existence_visible), false)
+                        AS gap_qualified,
                     max(cessation_available_at) AS cessation_available_at,
                     max(last_observed_trade_date) AS last_observed_trade_date,
                     max(last_observed_symbol) AS last_observed_symbol,
@@ -932,22 +1028,26 @@ def fold_evidence_into_delisting_events(
                         source_event_id := source_event_id,
                         evidence_date := delist_date,
                         available_at := available_at,
+                        existence_available_at := existence_clock,
                         reason_category := reason_category,
                         disposition := disposition
                     ) ORDER BY evidence_rank, evidence_id) AS evidence
-                FROM cluster_members
+                FROM visible
                 GROUP BY security_id, cessation_delist_date
-                HAVING bool_or(evidence_kind <> 'archive_last_trade')
-                    OR bool_or(evidence_kind = 'archive_last_trade' AND gap_qualified)
+                HAVING min(existence_clock) FILTER (WHERE existence_visible) IS NOT NULL
+            ),
+            clusters AS (
+                SELECT *, {reason_clock_columns}
+                FROM cluster_facts
             ),
             primary_members AS (
                 SELECT
-                    m.*,
+                    v.*,
                     row_number() OVER (
-                        PARTITION BY m.security_id, m.cessation_delist_date
-                        ORDER BY m.reason_rank, m.evidence_rank, m.evidence_id
+                        PARTITION BY v.security_id, v.cessation_delist_date
+                        ORDER BY v.member_rank, v.evidence_rank, v.evidence_id
                     ) AS rn
-                FROM cluster_members m
+                FROM visible v
             )
             SELECT
                 sha256(concat_ws('|', ?, c.security_id, CAST(c.delist_date AS VARCHAR))),
@@ -957,10 +1057,10 @@ def fold_evidence_into_delisting_events(
                 c.security_id,
                 coalesce(c.last_observed_symbol, p.symbol) AS symbol,
                 c.delist_date,
-                c.as_of_date,
-                c.available_at,
+                greatest(c.delist_date, CAST(c.existence_at AS DATE)) AS as_of_date,
+                c.existence_at AS available_at,
                 p.delist_code,
-                p.reason_category AS delist_reason,
+                {_reason_text_sql("c.reason_rank")} AS delist_reason,
                 CAST(NULL AS DOUBLE) AS delisting_return,
                 'UNOBSERVED' AS delisting_return_type,
                 false AS is_return_imputed,
@@ -978,11 +1078,17 @@ def fold_evidence_into_delisting_events(
                     'last_observed_trade_date', c.last_observed_trade_date,
                     'last_observed_symbol', c.last_observed_symbol,
                     'cessation_available_at', c.cessation_available_at,
+                    'existence_available_at', c.existence_at,
                     'gap_qualified', c.gap_qualified,
                     'notice_corroborated', c.notice_corroborated,
-                    'reason_basis', p.evidence_kind,
-                    'reason_confidence', p.reason_confidence,
+                    'reason_basis', CASE WHEN p.member_rank = c.reason_rank THEN p.evidence_kind
+                                         ELSE 'cessation_merger_evidence' END,
+                    'reason_confidence', {_reason_confidence_sql("c.reason_rank")},
+                    'reason_available_at', {reason_available_at},
+                    'reason_at_existence', {_reason_text_sql(rank_at_existence)},
+                    'reason_revised_after_existence', ({rank_at_existence}) <> c.reason_rank,
                     'reason_precedence', [{precedence}],
+                    'merger_evidence', json(c.merger_evidence),
                     'cik', c.cik,
                     'cik_linked', c.cik IS NOT NULL,
                     'evidence_count', c.evidence_count,
@@ -997,7 +1103,7 @@ def fold_evidence_into_delisting_events(
              AND p.rn = 1
             ORDER BY c.security_id, c.delist_date
             """,
-            [options.source, options.event_source, options.event_source, as_of, options.run_id],
+            [options.source, options.event_source, options.event_source, as_of_text, options.run_id],
         )
         event_count_row = store.con.execute(
             "SELECT count(*) FROM delisting_events WHERE source = ?", [options.event_source]
