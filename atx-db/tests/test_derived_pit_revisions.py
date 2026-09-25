@@ -374,6 +374,11 @@ def test_candidate_and_local_frame_growth_is_linear_in_input_events(store):
     assert sizes[1] < 3 * sizes[0]
 
 
+# A from-scratch bootstrap to an old migration state (conftest: such tests "stay
+# @pytest.mark.slow"): ~3.5 min and ~360 MB for the 0314 schema build alone, which no
+# DuckDB budget brings under the ~300 MB non-slow per-process cap (256 MB -> 357 MB,
+# 160 MB -> 342 MB, 128 MB -> out of memory). It runs in the release gate (--run-slow).
+@pytest.mark.slow
 def test_populated_0314_upgrade_preserves_legacy_contract_and_reentry(tmp_path, monkeypatch):
     """Upgrade two legacy rows from the real 0314 bootstrap through current HEAD."""
     import duckdb
