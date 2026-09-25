@@ -76,21 +76,30 @@ SEC_FILING_DATE_CLOCK_POLICY = "sec_filed_date_plus_46h_v1"
 # document under one receipt; each measure keeps the same duration proof.
 REPORTED_EPS_EXTRACTOR_VERSION = "reported_gaap_eps_basic_diluted_v2"
 REPORTED_EPS_MEASURE_CODES = {"diluted": DILUTED_EPS.measure_code, "basic": BASIC_EPS.measure_code}
-# Rows that are not total GAAP EPS: non-GAAP/adjusted measures and per-share
-# components (continuing or discontinued operations).
-_NON_TOTAL_GAAP_EPS_RE = re.compile(
+# Rows that are not total GAAP EPS. Non-GAAP context words mark a non-GAAP
+# figure wherever they appear in the row's lineage, including a section
+# heading (pre-A7 contract): adjusted, non-GAAP, core, pro forma, excluding,
+# REIT funds from operations, and the continuing-operations component.
+_NON_GAAP_CONTEXT_RE = re.compile(
     r"continuing|adjusted|non-gaap|non gaap"
-    r"|\b(?:discontinued|core|pro[- ]?forma|excluding|operating|cash)\b"
+    r"|\b(?:core|pro[- ]?forma|excluding|funds\s+from\s+operations|ffo|affo)\b"
 )
+# Words that also title ordinary GAAP sections ("Operating results") only
+# disqualify the row itself and headings up to its nearest per-share label.
+_NON_TOTAL_ROW_RE = re.compile(r"\b(?:discontinued|operating|cash)\b")
 # "per share", "per common share", "per diluted share", "per basic and diluted share" ...
 _PER_SHARE_RE = re.compile(r"\bper\s+(?:(?:basic|diluted|common|ordinary|and)\s+)*share\b")
 # Share-count rows ("Weighted average shares used in computing ... per share,
 # basic and diluted", "Shares used in computing diluted net income per share").
+# Only count words before a label's per-share phrase count: "Net income per
+# share (based on weighted average shares outstanding)" is an EPS label.
 _SHARE_COUNT_RE = re.compile(r"\b(?:shares|weighted|denominator|share\s+count)\b")
 # A reported EPS amount is a decimal with 1-4 fraction digits and magnitude
-# below $1,000. Integers and thousands-separated numbers (share counts, dollar
-# amounts) never qualify. Per-share amounts of $1,000 or more (e.g. some
-# Class A shares) are rejected by design rather than risk a share count.
+# below $1,000. Integers (including a bare "$1") and thousands-separated
+# numbers (share counts, dollar amounts) never qualify. Per-share amounts of
+# $1,000 or more (e.g. some Class A shares) are rejected by design rather than
+# risk a share count. Parentheses must balance, within the cell or across the
+# adjacent cells (``_cell_eps_value``).
 _EPS_VALUE_RE = re.compile(r"\d{0,3}\.\d{1,4}")
 _EPS_VALUE_BOUND = 1000.0
 # Under GAAP, dilution never raises EPS: diluted EPS above basic EPS (beyond
@@ -566,6 +575,8 @@ def _parse_eps_value(value: str) -> float | None:
     if "," in token:
         return None
     negative = token.startswith("(") and token.endswith(")")
+    if token.count("(") != int(negative) or token.count(")") != int(negative):
+        return None  # An unbalanced parenthesis never flips to a positive amount.
     token = token.strip("() ")
     if token.startswith("-") and not negative:
         negative, token = True, token[1:].strip()
@@ -575,6 +586,43 @@ def _parse_eps_value(value: str) -> float | None:
     if abs(result) >= _EPS_VALUE_BOUND:
         return None
     return -result if negative else result
+
+
+def _adjacent_cell(row: list[str], column: int, step: int) -> str:
+    """Nearest non-empty neighbour, skipping span copies of the cell itself."""
+
+    own = row[column].strip()
+    index = column + step
+    while 0 <= index < len(row):
+        text = row[index].strip()
+        if text and text != own:
+            return text
+        index += step
+    return ""
+
+
+def _cell_eps_value(row: list[str], column: int) -> float | None:
+    """EPS amount of one grid cell, completing parentheses split across cells.
+
+    EDGAR (e.g. Workiva) HTML routinely prints a loss as ``(0.25`` with the
+    closing ``)`` in the next cell, or ``$ (`` before the number.  The sign is
+    taken only when both halves are present; any other unbalanced parenthesis
+    rejects the cell instead of reading a loss as a profit.
+    """
+
+    text = row[column].strip()
+    opens, closes = text.count("("), text.count(")")
+    before, after = _adjacent_cell(row, column, -1), _adjacent_cell(row, column, 1)
+    if opens == closes == 0:
+        opened, closed = before.endswith("("), after.startswith(")")
+        if opened and closed:
+            return _parse_eps_value(f"({text})")
+        return None if opened or closed else _parse_eps_value(text)
+    if opens == 1 and closes == 0:
+        return _parse_eps_value(f"{text})") if after.startswith(")") else None
+    if opens == 0 and closes == 1:
+        return _parse_eps_value(f"({text}") if before.endswith("(") else None
+    return _parse_eps_value(text)
 
 
 def _duration_evidence(header_text: str) -> str | None:
@@ -694,6 +742,12 @@ def _header_columns(grid: list[list[str]], period_end: dt.date) -> tuple[dict[in
     return {}, "ambiguous_qualified_quarter_column"
 
 
+def _is_value_decoration(cell: str) -> bool:
+    """Empty, currency-symbol or parenthesis-only cells are never labels."""
+
+    return re.fullmatch(r"[\s$€£()]*", cell) is not None
+
+
 def _label_lineage(grid: list[list[str]], row_number: int, column: int) -> tuple[str, ...]:
     """Recover inherited labels for indented/exhibit rows such as ``- Diluted``.
 
@@ -705,7 +759,7 @@ def _label_lineage(grid: list[list[str]], row_number: int, column: int) -> tuple
 
     row = grid[row_number]
     own = " ".join(dict.fromkeys(
-        cell for cell in row[:column] if cell.strip() and cell.strip() not in {"$", "€", "£"}
+        cell for cell in row[:column] if not _is_value_decoration(cell)
         and _parse_eps_number(cell) is None
     )).strip()
     if not own:
@@ -718,13 +772,14 @@ def _label_lineage(grid: list[list[str]], row_number: int, column: int) -> tuple
     for prior in range(row_number - 1, max(-1, row_number - 9), -1):
         row = grid[prior]
         leading = " ".join(dict.fromkeys(
-            cell for cell in row[:column] if cell.strip() and cell.strip() not in {"$", "€", "£"}
+            cell for cell in row[:column] if not _is_value_decoration(cell)
             and _parse_eps_number(cell) is None
         )).strip()
         if not leading:
             continue
-        selected = row[column] if column < len(row) else ""
-        if _parse_eps_number(selected) is not None:
+        # A sibling's number may sit right of this column when the column is
+        # its currency or parenthesis cell; the whole value area decides.
+        if any(_parse_eps_number(cell) is not None for cell in row[column:]):
             if re.match(r"^[-\u2013\u2014\u2022]\s*", leading):
                 continue
             break
@@ -855,19 +910,34 @@ def _eps_row_semantics(lineage: tuple[str, ...]) -> str | None:
     return None
 
 
-def _share_count_context(lineage: tuple[str, ...]) -> bool:
-    """True when the row, or its nearest per-share heading, counts shares.
+def _row_scope(lineage: tuple[str, ...]) -> tuple[str, ...]:
+    """The row's own label and its headings up to the nearest per-share label.
 
-    Only the row itself and the headings up to the nearest per-share label
-    describe the row; an earlier share-count section above an EPS heading does not.
+    Only these describe the row; a section heading above the per-share label
+    (e.g. an "Operating results" or share-count section) does not.
     """
 
+    scope: list[str] = []
     for part in reversed(lineage):
         text = _normalized_cell(part)
-        if _SHARE_COUNT_RE.search(text):
-            return True
+        scope.append(text)
         if _PER_SHARE_RE.search(text):
-            return False
+            break
+    return tuple(scope)
+
+
+def _share_count_context(lineage: tuple[str, ...]) -> bool:
+    """True when the row, or a heading in its row scope, counts shares.
+
+    A count word only counts before a label's per-share phrase: "Shares used in
+    computing net income per share" counts shares, while "Net income per share
+    (based on weighted average shares)" is an EPS label.
+    """
+
+    for text in _row_scope(lineage):
+        per_share = _PER_SHARE_RE.search(text)
+        if _SHARE_COUNT_RE.search(text[:per_share.start()] if per_share else text):
+            return True
     return False
 
 
@@ -909,9 +979,10 @@ def extract_reported_gaap_eps(
     """Extract one reported GAAP basic or diluted quarter EPS or reject.
 
     The parser deliberately needs a table row and aligned current-period column;
-    a nearby narrative number, adjusted/core/non-GAAP EPS and continuing- or
+    a nearby narrative number, adjusted/core/non-GAAP/FFO EPS and continuing- or
     discontinued-operations components never qualify.  Share-count rows never
-    qualify, and the value must be EPS-shaped (``_parse_eps_value``).  A
+    qualify, and the value must be EPS-shaped (``_cell_eps_value``: a decimal
+    below $1,000 with balanced parentheses, possibly split across cells).  A
     missing/ambiguous period is a rejection rather than a synthetic fiscal
     boundary.  Diluted rows must not mention basic EPS.  Basic rows must state
     basic EPS explicitly; a combined ``basic and diluted`` line is basic EPS
@@ -952,7 +1023,7 @@ def extract_reported_gaap_eps(
         prior_columns, _ = _header_columns(table, prior_end) if prior_end else ({}, None)
         for row_number, row in enumerate(table):
             prior_values = [value for prior_column in prior_columns if prior_column < len(row)
-                            if (value := _parse_eps_value(row[prior_column])) is not None]
+                            if (value := _cell_eps_value(row, prior_column)) is not None]
             prior_value = prior_values[0] if len(prior_values) == 1 else None
             for column in columns:
                 if column >= len(row):
@@ -961,7 +1032,9 @@ def extract_reported_gaap_eps(
                 label = _normalized_cell(" | ".join(lineage))
                 if measure not in label or not _PER_SHARE_RE.search(label) or _share_count_context(lineage):
                     continue
-                if _NON_TOTAL_GAAP_EPS_RE.search(label):
+                if _NON_GAAP_CONTEXT_RE.search(label) or any(
+                    _NON_TOTAL_ROW_RE.search(text) for text in _row_scope(lineage)
+                ):
                     rejected_semantics = True
                     continue
                 if measure == "diluted":
@@ -973,7 +1046,7 @@ def extract_reported_gaap_eps(
                     row_semantics = _eps_row_semantics(lineage)
                     if row_semantics not in ("basic", "basic_and_diluted"):
                         continue
-                value = _parse_eps_value(row[column])
+                value = _cell_eps_value(row, column)
                 if value is None:
                     continue
                 candidates.append({

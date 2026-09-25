@@ -748,3 +748,118 @@ def test_diluted_above_basic_income_is_flagged_and_withheld(tmp_store, tmp_path,
         assert (result["accepted"], receipts, facts) == (1, [("accepted", None)], 2)
     else:
         assert (result["rejected"], receipts, facts) == (1, [("rejected", reason)], 0)
+
+
+def _workiva_loss_table(current: tuple[str, str, str], prior: tuple[str, str, str]) -> str:
+    """Workiva-style cells: currency, number and a closing parenthesis split apart."""
+
+    def cells(values: tuple[str, str, str]) -> str:
+        return "".join(f"<td>{value}</td>" for value in values)
+
+    return f"""
+    <p>Fourth Quarter 2025</p>
+    <table>
+      <tr><th></th><th colspan="7">Three Months Ended December 31,</th></tr>
+      <tr><th></th><th colspan="3">2025</th><th></th><th colspan="3">2024</th></tr>
+      <tr><td colspan="8">Net loss per share:</td></tr>
+      <tr><td>- Basic</td>{cells(current)}<td></td>{cells(prior)}</tr>
+      <tr><td>- Diluted</td>{cells(current)}<td></td>{cells(prior)}</tr>
+    </table>
+    """
+
+
+@pytest.mark.parametrize(("current", "value"), [
+    (("$", "(0.25", ")"), -0.25),
+    (("$ (", "0.25", ")"), -0.25),
+    (("$ (0.25", ")", ""), -0.25),
+    (("$", "(0.25)", ""), -0.25),
+    (("$", "0.25", ""), 0.25),
+])
+def test_workiva_split_parenthesis_loss_quarter_is_negative_for_both_measures(current, value) -> None:
+    """Review probe G / P1: a split ')' must never turn a loss into a profit."""
+
+    document = _workiva_loss_table(current, ("$", "(0.10", ")"))
+    for measure in ("basic", "diluted"):
+        fact, reason = extract_reported_gaap_eps(document, measure=measure, period_end=dt.date(2025, 12, 31))
+        assert reason is None
+        assert fact is not None
+        assert (fact["value"], fact["prior_year_quarter_value"]) == (value, -0.10)
+
+
+@pytest.mark.parametrize("current", [
+    ("$", "(0.25", ""),       # opening parenthesis never closed
+    ("$", "0.25)", ""),       # closing parenthesis never opened
+    ("$ (", "0.25", ""),      # opened in the currency cell, never closed
+])
+def test_unbalanced_parenthesis_is_rejected_not_read_as_profit(current) -> None:
+    document = _workiva_loss_table(current, ("$", "(0.10", ")"))
+    for measure in ("basic", "diluted"):
+        fact, reason = extract_reported_gaap_eps(document, measure=measure, period_end=dt.date(2025, 12, 31))
+        assert fact is None
+        assert reason == f"reported_gaap_{measure}_eps_not_found"
+
+
+def test_workiva_loss_quarter_is_stored_negative_under_one_receipt(tmp_store, tmp_path) -> None:
+    tmp_store.con.execute(
+        """INSERT INTO sec_submissions (
+               security_id, cik, accession_number, filing_date, report_date,
+               acceptance_datetime_raw, form, items, source_url
+           ) VALUES ('SEC-CIK-0000093410', '0000093410', '0000093410-26-000019',
+                     DATE '2026-01-30', DATE '2025-12-31', '2026-01-30T18:17:00-05:00',
+                     '8-K', '2.02', 'bulk-fixture')"""
+    )
+    document = _workiva_loss_table(("$", "(0.25", ")"), ("$", "(0.10", ")")).encode()
+    options = SecEarningsReleaseOptions(cache_dir=tmp_path / "cache", run_id="workiva-loss")
+    result = refresh_sec_earnings_release_facts(
+        tmp_store, options, session=_Session([COMPACT_FILING_INDEX.encode(), document])
+    )
+
+    assert result["accepted"] == 1
+    assert tmp_store.con.execute(
+        "SELECT measure_code, value, CAST(json_extract(raw_payload_json, '$.prior_year_quarter_value') AS DOUBLE) "
+        "FROM press_release_facts ORDER BY measure_code"
+    ).fetchall() == [("EPS_BASIC", -0.25, -0.10), ("EPS_DILUTED", -0.25, -0.10)]
+
+
+def _headed_eps_table(*headings: str, basic: str = "1.21", diluted: str = "1.18") -> str:
+    heading_rows = "".join(f'<tr><td colspan="2">{heading}</td></tr>' for heading in headings)
+    return f"""
+    <table><tr><th></th><th>Three Months Ended December 31,</th></tr>
+    <tr><th></th><th>2025</th></tr>{heading_rows}
+    <tr><td>- Basic</td><td>{basic}</td></tr>
+    <tr><td>- Diluted</td><td>{diluted}</td></tr></table>
+    """
+
+
+@pytest.mark.parametrize("headings", [
+    # Review probe J: a GAAP section heading above the per-share heading.
+    ("Operating results", "Earnings per share:"),
+    ("Cash flow and operating data", "Net income per common share:"),
+    # Review probes H/I: count words after the per-share phrase describe EPS.
+    ("Net income per share (based on weighted average shares outstanding):",),
+    ("Net income per share attributable to Class A common shares:",),
+])
+def test_gaap_eps_under_section_or_basis_wording_is_accepted(headings) -> None:
+    assert _both(_headed_eps_table(*headings)) == {"basic": (1.21, None), "diluted": (1.18, None)}
+
+
+@pytest.mark.parametrize("headings", [
+    ("Operating earnings per share:",),
+    ("Funds from operations per share:",),
+    ("FFO per share:",),
+    ("AFFO per share:",),
+    ("Non-GAAP results", "Earnings per share:"),
+    ("Core results", "Earnings per share:"),
+    ("Earnings per share:", "Discontinued operations:"),
+])
+def test_non_gaap_or_component_headings_still_reject_both_measures(headings) -> None:
+    assert _both(_headed_eps_table(*headings)) == {
+        "basic": (None, "rejected_non_gaap_or_adjusted"), "diluted": (None, "rejected_non_gaap_or_adjusted"),
+    }
+
+
+def test_ffo_row_is_never_gaap_diluted_eps() -> None:
+    """Review probe L (REIT): funds from operations per share is not GAAP EPS."""
+
+    for label in ("FFO per share - diluted", "Funds from operations per share - diluted"):
+        assert _both(_rows_table([(label, "0.85")]))["diluted"] == (None, "rejected_non_gaap_or_adjusted")
