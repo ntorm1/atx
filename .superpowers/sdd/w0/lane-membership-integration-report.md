@@ -96,7 +96,7 @@ test (1/1 passed). Receipt:
 `C:/atx-wt/g0-data/bc5cc646_20260925/logs/membership-independent.receipt.json`.
 Root authorized the corrected G0 run after these results; release was sent.
 
-## Hygiene incident and remaining verification
+## Hygiene incident and final verification
 
 The separate `hygiene` configure succeeded with `ATX_EQUITY_ONLY=ON`, PCH off,
 and isolated `pool-5/deps/hygiene`. A four-TU wrapper `check` unexpectedly pulled
@@ -113,6 +113,21 @@ wait for a compiler slot, then verify only the two production TUs individually,
 after checking their dependency dry-runs. No source or tested Debug binary was
 changed by the interrupted hygiene attempt. Functional acceptance above remains
 valid; no include-clean claim is made until the serial checks finish.
+
+The subsequent production-only dependency query confirmed exactly two compiler
+commands, without worker/test dependencies. After G0 released its compiler slot,
+both were invoked individually and passed with exit 0 at 5.40 GiB available RAM:
+
+```powershell
+& C:\atx-wt\pool-5\scripts\atx-build.ps1 check -Preset hygiene atx-impl/src/equity_baseline_views.cpp
+& C:\atx-wt\pool-5\scripts\atx-build.ps1 check -Preset hygiene atx-impl/src/stage_equity_ic.cpp
+```
+
+`build-equity/w0-membership-hygiene-serial.log` records the two completed objects.
+The completed hygiene cache verifies PCH off, equity only and isolated deps.
+**Lane verification is complete:** implementation unchanged, functional gates
+passed, independent review approved, and the touched production includes compile
+without PCH. Whole-impl qualification remains root's integrated gate.
 
 ## Scope
 
