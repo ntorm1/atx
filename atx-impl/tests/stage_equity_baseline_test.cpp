@@ -171,7 +171,9 @@ TEST_F(StageEquityBaseline, ExplicitZeroCostsDelayAndGlobalDefaultAumArePreserve
     cfg->replay_trade_bps = 0;
     cfg->replay_annual_borrow_bps = 0;
     cfg->report_aum = 1e9;
-    cfg->set_flags = {"replay-execution-delay", "replay-trade-bps", "replay-annual-borrow-bps", "report-aum"};
+    cfg->allow_same_close = true; // W0-I0b / B-02: delay 0 is an explicit opt-in now
+    cfg->set_flags = {"replay-execution-delay", "replay-trade-bps", "replay-annual-borrow-bps",
+                      "report-aum", "allow-same-close"};
     auto result = impl::run_equity_baseline(*cfg);
     ASSERT_TRUE(result.has_value()) << result.error().message();
     const auto manifest = json_file(root / "baseline/manifest.json");

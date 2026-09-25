@@ -94,6 +94,11 @@ protected:
         result.config.report_out = path("report");
         result.config.report_aum = 100;
         result.config.replay_execution_delay = 0;
+        // W0-I0b: this analytical fixture replays at the decision close (B-02) and
+        // frictionlessly (I-11) BY EXPLICIT CHOICE; both must now be stated.
+        result.config.allow_same_close = true;
+        result.config.set_flags.insert("replay-annual-borrow-bps");
+        if (planning_cost == 0) result.config.set_flags.insert("replay-trade-bps");
         result.policy.callback = [](const atx::engine::book::ReplayAllocationState &state) {
             return Ok(std::vector<double>(state.preference_weights.begin(),
                                            state.preference_weights.end()));

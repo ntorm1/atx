@@ -139,6 +139,11 @@ protected:
         cfg.books = path("books.bin");
         cfg.report_out = path("report");
         cfg.report_aum = 100.0;
+        // W0-I0b: analytical replays are frictionless and may fill at the decision
+        // close BY EXPLICIT CHOICE: I-11 made both rates mandatory, B-02 made delay 0
+        // an opt-in. Tests that probe the implicit-fee refusal clear these flags.
+        cfg.set_flags = {"replay-trade-bps", "replay-annual-borrow-bps"};
+        cfg.allow_same_close = true;
         if (fit_boundary) cfg.combo = path("combo.bin");
         return Ok(std::move(cfg));
     }
@@ -227,6 +232,7 @@ TEST_F(ReplayReport, RejectsIgnoredLegacyRatesAndRequiresExplicitFeeForCostlyBoo
     auto input = inputs({100, 100, 100}, {0}, {0.5}, 5.0);
     ASSERT_TRUE(input.has_value());
     auto cfg = *input;
+    cfg.set_flags.erase("replay-trade-bps"); // W0-I0b: probe the implicit fee explicitly
     auto implicit_zero = impl::run_report(cfg);
     ASSERT_FALSE(implicit_zero.has_value());
     EXPECT_NE(implicit_zero.error().message().find("choose --replay-trade-bps explicitly"), std::string::npos);
