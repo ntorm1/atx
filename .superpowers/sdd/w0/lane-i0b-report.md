@@ -411,3 +411,89 @@ exit=1
 The whole executable has 4 more tests than before (563 → 567), all passing. The 2 failures are
 the same pre-existing, non-lane failures recorded above: the CRLF ledger checkout and the A0
 A-09 FundamentalZoo fixture.
+
+## Post-merge sync 2 (final sync before the orchestrator merge)
+
+- **Status:** `git merge-base --is-ancestor feat/w0-integration HEAD` succeeded before this pass
+  started — the lane already contained `feat/w0-integration` at its current tip (`2170a259`,
+  which itself is `feat/w0-integration` after the R0 and B0 lane merges), via merge commit
+  `9edf837c` ("w0-i0b: merge feat/w0-integration"). That merge had been made by an earlier
+  final-sync agent that was cut off while `atx-impl-tests` built in the background: its build had
+  never finished and the lane suites had never run on `9edf837c` (the report's last "Post-merge
+  sync" block above is pinned to the older head `f8bdb167`, not `9edf837c`), so this pass rebuilt
+  and re-ran everything on `9edf837c` per the sync brief rather than returning UP_TO_DATE.
+- **Head SHA (pre-fix, as merged):** `9edf837c25ee05c02b6757e699c9f78843637d8b`
+- **Regression found and fixed.** The first full run on `9edf837c` (`atx-impl-tests.exe
+  --gtest_brief=1`) surfaced 4 failures beyond the two known out-of-scope ones (FundamentalZoo,
+  TrialLedgerRepository CRLF):
+  - `ReplayReport.MissingHeldPriceMapsExactSecurityAndDateWithoutCompletePublication`
+  - `StageEquityBaseline.MissingHeldMarkPreservesBoundFailureAndNoCompleteManifest`
+  - `StageEquityBaseline.ConstrainedBookPreservesMissingHeldMarkFailureOnOriginalWindow`
+  - `StageEquityBaseline.ObservedCloseEntryConstraintBindsAvailabilityWithoutShrinkingUnion`
+
+  Root cause: `feat/w0-integration` carries lane B0 (merged at `79c120ed`), whose engine change
+  makes `book::ReplayConfig::delisting_policy` default to `DelistingPolicy::TerminalReturn`
+  instead of the pre-B0 `Abort`. Under `TerminalReturn`, a held name with a missing close and no
+  registered `DelistingEvent` is treated as "still listed" and is either gap-carried or
+  Shumway-liquidated instead of failing the run — so a genuinely missing/bad mark (what these 4
+  tests inject) silently completes instead of refusing. `lane-b0-report.md` names this explicitly
+  as an I0b handoff item ("the identified report ... cannot yet opt into ... a delisting policy;
+  12 atx-impl tests ... stay red until I0b wires ... the policy") and offers two options: add a
+  `--replay-delisting-policy` selector and update the tests to expect a completed run, or pin
+  `Abort` at the identified-report's only `book::ReplayConfig` construction site.
+
+  Fix (owned file, in scope — `replay_report.cpp` "no other W0 owner"): `replay_config()` in
+  `atx-impl/src/replay_report.cpp` now sets `result.delisting_policy =
+  book::DelistingPolicy::Abort;` explicitly, restoring the pre-B0 fail-fast behavior at this call
+  site. This is the only `book::ReplayConfig` construction site in `atx-impl/src`, so the change
+  is local and total; grepping `atx-impl/tests/` for `TerminalReturn`/`Shumway`/
+  `DelistingPolicy`/`flagged_delisting`/`locate_clip`/`unfilled_target` finds no test that expects
+  the new gap-carry/liquidation behavior to succeed, so nothing else regresses. The identified
+  report has no delisting table, exchange list, or locate schedule wired in yet, so a missing
+  close here is a data defect, not a real delisting to price — `Abort` is the correct choice
+  without that wiring. A future lane can add `--replay-delisting-policy abort|terminal-return`
+  plus the delisting/exchange inputs if the identified report needs to price real delistings
+  (deferred; not required by any Accept item in this lane's brief).
+- **Head SHA (post-fix commit):** `794d88da6d170587d490eefc28a7c5db072d0e1d` ("w0-i0b: post-merge
+  sync fix - pin delisting_policy=Abort in replay_config")
+- **Commands and evidence.** Free RAM was ≥ 2.7 GB before every build, and every build used
+  `CMAKE_BUILD_PARALLEL_LEVEL=2`.
+  ```powershell
+  Set-Location C:\atx-wt\pool-11; $env:CMAKE_BUILD_PARALLEL_LEVEL='2'; powershell -NoProfile -File scripts\atx-build.ps1 build -Preset equity-dev atx-impl-tests atx-shm-worker
+  [24/25] Linking CXX executable bin/atx-impl-tests.exe
+  exit=0
+
+  # First full run, on 9edf837c (pre-fix) — surfaces the 4 regressions above
+  build-equity\bin\atx-impl-tests.exe --gtest_brief=1
+  [  FAILED  ] StageEquityBaseline.MissingHeldMarkPreservesBoundFailureAndNoCompleteManifest
+  [  FAILED  ] StageEquityBaseline.ConstrainedBookPreservesMissingHeldMarkFailureOnOriginalWindow
+  [  FAILED  ] StageEquityBaseline.ObservedCloseEntryConstraintBindsAvailabilityWithoutShrinkingUnion
+  [  FAILED  ] FundamentalZoo.FixtureParsesTypechecksAndEvaluates
+  [  FAILED  ] ReplayReport.MissingHeldPriceMapsExactSecurityAndDateWithoutCompletePublication
+  [  FAILED  ] TrialLedgerRepository.ExistingCp14Ledger_StillVerifies
+  [==========] 569 tests from 116 test suites ran. (660199 ms total)
+  [  PASSED  ] 558 tests.  [  SKIPPED ] 5 tests.
+  exit=1
+
+  # Fix applied (replay_report.cpp), rebuilt:
+  powershell -NoProfile -File scripts\atx-build.ps1 build -Preset equity-dev atx-impl-tests atx-shm-worker
+  [12/13] Linking CXX executable bin/atx-impl-tests.exe
+  exit=0
+
+  # Anchored run, widened to include the touched suites:
+  powershell -NoProfile -File scripts\atx-build.ps1 -Ctest -Preset equity-dev -R '^(ImplConfigBool_|ImplConfigFinite_|ImplIcAsOfMembership_|ImplMineRequiresMembership_|ImplPendingOrder_|ImplDelayGuard_|StageEquityIc|StageEquityBaseline|ReplayReport)'
+  100% tests passed, 0 tests failed out of 60
+  Total Test time (real) = 387.97 sec
+  exit=0
+
+  # Whole owning executable, post-fix:
+  build-equity\bin\atx-impl-tests.exe --gtest_brief=1
+  [  FAILED  ] FundamentalZoo.FixtureParsesTypechecksAndEvaluates (A0 A-09; out of scope)
+  [  FAILED  ] TrialLedgerRepository.ExistingCp14Ledger_StillVerifies (CRLF; out of scope)
+  [==========] 569 tests from 116 test suites ran. (596353 ms total)
+  [  PASSED  ] 562 tests.  [  SKIPPED ] 5 tests.
+  exit=1
+  ```
+  562 passed (up from 558), the 4 regressions fixed, and only the 2 known out-of-scope failures
+  remain — matching the orchestrator note's list exactly. `atx-shm-worker` builds clean throughout
+  (unaffected by the fix). Tree clean and committed at `794d88da` before this report commit.
