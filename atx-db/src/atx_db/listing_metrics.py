@@ -18,9 +18,11 @@ deep fundamentals coverage.
 
 The transform is offline and point-in-time safe: each derived row is grained by
 ``(source, security_id, as_of_date)`` (the directory snapshot date) and carries
-the later of the listing-spine and directory availability timestamps, so a
+the directory file's receipt time (``nasdaq_symbol_directory.available_at``; a
+reload of a retained file does not make it newly known), so a
 ``financial_status`` flip between snapshots (e.g. ``D`` -> ``N`` recovery) shows
-up as a new, later-dated reference row rather than mutating history.
+up as a new, later-dated reference row rather than mutating history. The listing
+spine supplies only the current symbol->security_id identity.
 """
 
 from __future__ import annotations
@@ -278,7 +280,7 @@ def _load_listing_inputs(store: DuckDBStore, options: SecurityListingMetricsOpti
                 SELECT
                     symbol, as_of_date, directory, market_category, exchange,
                     security_name, financial_status, etf, test_issue, next_shares,
-                    round_lot_size, source_loaded_at,
+                    round_lot_size, source_loaded_at, available_at,
                     row_number() OVER (
                         PARTITION BY symbol, as_of_date
                         ORDER BY source_loaded_at DESC
@@ -315,9 +317,11 @@ def _load_listing_inputs(store: DuckDBStore, options: SecurityListingMetricsOpti
                 l.listing_venue_name,
                 l.listing_exchange_code,
                 -- The reference signal (financial_status, tier, ETF flag) is
-                -- knowable at the directory snapshot ingest time; the listing
-                -- spine only supplies the stable symbol->security_id identity.
-                d.source_loaded_at AS available_at
+                -- knowable when the directory file was received (A1 contract:
+                -- a retained file keeps its receipt; a reload only moves
+                -- source_loaded_at). The listing spine only supplies the
+                -- stable symbol->security_id identity.
+                coalesce(d.available_at, d.source_loaded_at) AS available_at
             FROM dir d
             JOIN listing l ON l.symbol = d.symbol AND l.rn = 1
             WHERE d.rn = 1

@@ -163,3 +163,25 @@ def test_superseded_listing_rows_are_invisible_to_current_state_consumers(tmp_st
     assert tmp_store.con.execute(
         "SELECT as_of_date, financial_status_code FROM security_listing_metrics WHERE is_latest_revision"
     ).fetchall() == [(SOURCE_DATED, "N")]
+
+
+def test_listing_metrics_are_visible_from_the_directory_receipt_not_the_reload(tmp_store):
+    """A retained directory file received 2026-09-20 00:06 and reloaded 2026-09-25 is
+    knowable from its receipt: an as-of reader between receipt and reload sees the
+    deficiency flag, and one before the receipt sees nothing."""
+    from atx_db.asof.ownership import security_listing_metrics_asof
+    from atx_db.listing_metrics import SecurityListingMetricsOptions, refresh_security_listing_metrics
+
+    _directory(tmp_store, "AAA", SOURCE_DATED, latest=True, financial_status="D")
+    _listing_interval(tmp_store, "AAA")
+    assert refresh_security_listing_metrics(tmp_store, SecurityListingMetricsOptions(source="fixture")) == 1
+    assert tmp_store.con.execute("SELECT available_at FROM security_listing_metrics").fetchall() == [(RECEIVED,)]
+
+    between = security_listing_metrics_asof(
+        tmp_store, as_of_date=dt.date(2026, 9, 21), as_of_ts=dt.datetime(2026, 9, 21, 22, 0)
+    )
+    assert between[["symbol", "financial_status_code", "is_deficient"]].values.tolist() == [["AAA", "D", True]]
+    before_receipt = security_listing_metrics_asof(
+        tmp_store, as_of_date=dt.date(2026, 9, 19), as_of_ts=dt.datetime(2026, 9, 19, 22, 0)
+    )
+    assert before_receipt.empty
