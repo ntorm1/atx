@@ -12,6 +12,7 @@ from atx_db.derived_registry import seed_derived_metric_definitions
 from atx_db.market_daily import (
     END_OF_DAY_HOURS,
     MarketDailyOptions,
+    owner_bridge_report,
     refresh_market_daily_metrics,
     shares_reconciliation_report,
 )
@@ -608,6 +609,18 @@ def test_a_correction_one_session_before_the_windows_left_edge_still_raises_avai
     available_at, realized_vol = row
     assert realized_vol is not None
     assert available_at >= corrected_at
+
+
+def test_single_class_fixture_links_through_the_owner_bridge(panel):
+    """A5 regression: the legacy equal-id case is an explicit, counted bridge link."""
+    refresh_market_daily_metrics(panel, MarketDailyOptions())
+    report = owner_bridge_report(panel)
+    assert report is not None
+    assert (report["lines"], report["linked_lines"], report["unlinked_lines"]) == (1, 1, 0)
+    assert report["linked_by_method"] == {"shared_security_id": 1}
+    assert report["identity_basis"] == "current_ticker_unverified"
+    assert report["dei_shares_withheld_lines"] == 0
+    assert report["rows"] == panel.con.execute("SELECT count(*) FROM market_daily_metrics").fetchone()[0]
 
 
 def test_no_wall_clock_in_the_module_source():

@@ -6,11 +6,23 @@ running latest-known standardized fact and quarterly derived metric available
 as of the bar's end-of-day availability (``trade_date + 22h``, never
 ``period_end``), then chaining the declarative ``daily``-window derived
 metrics (market cap, valuation multiples, total returns, realized vol) on top.
+
+A5: a bar's ``security_id`` is a *price line*; fundamentals, derived metrics
+and DEI shares belong to an *accounting owner*. The two are joined only
+through the explicit ``market_owner_bridge`` (price line -> owner, valid
+interval, link availability, identity basis) -- never by equal ids. The mode
+(``MarketDailyOptions.owner_mode``) selects the ``strict`` dated-evidence
+bridge or the labeled ``reconstructed`` current-ticker backcast (RX1 default);
+every refresh records its linked/unlinked accounting as a
+``data_quality_checks`` row (``owner_bridge_linkage``) and returns it in the
+dataset details.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,20 +35,45 @@ from .derived_registry import (
     default_derived_definitions,
     topological_order,
 )
+from .market_owner_bridge import (
+    BRIDGE_VALUE_COLUMNS,
+    MEMBER_VALUE_COLUMNS,
+    OWNER_MODE_RECONSTRUCTED,
+    OWNER_MODE_STRICT,
+    OWNER_MODES,
+    OwnerLinkEvidence,
+    bridge_value_params,
+    build_market_owner_bridge,
+    member_value_params,
+    values_relation_sql,
+)
+from .warehouse import quality_check
 
 __all__ = [
     "END_OF_DAY_HOURS",
     "MARKET_DAILY_SOURCE_NAME",
+    "MARKET_DAILY_STRICT_SOURCE_NAME",
+    "OWNER_BRIDGE_CHECK_NAME",
     "MarketDailyDataset",
     "MarketDailyOptions",
     "build_market_daily_sql",
     "daily_context",
+    "owner_bridge_report",
     "refresh_market_daily_metrics",
     "shares_reconciliation_report",
 ]
 
-#: Stable provenance tag for rows this engine writes.
+#: Stable provenance tag for rows this engine writes (reconstructed-identity
+#: owner bridge, the run5 default per RX1). Imported by A2 -- do not rename.
 MARKET_DAILY_SOURCE_NAME = "atx-db daily market panel v1"
+
+#: Distinct label for a panel built on the strict (dated identity evidence)
+#: owner bridge, so a strict variant can never overwrite or be mistaken for the
+#: reconstructed panel.
+MARKET_DAILY_STRICT_SOURCE_NAME = "atx-db daily market panel v1 strict identity"
+
+#: ``data_quality_checks.check_name`` of the per-refresh bridge accounting row.
+OWNER_BRIDGE_CHECK_NAME = "owner_bridge_linkage"
 
 #: The end-of-day availability convention stamped onto every bar by
 #: ``ticker_history.py`` (``trading_date + 22 hours``), named once so every
@@ -82,6 +119,21 @@ class MarketDailyOptions:
     batch_size: int = 200
     shares_tolerance: float = 0.05
     run_id: str | None = None
+    #: Price-line -> accounting-owner bridge mode (see ``market_owner_bridge``).
+    owner_mode: str = OWNER_MODE_RECONSTRUCTED
+
+    def __post_init__(self) -> None:
+        if self.owner_mode not in OWNER_MODES:
+            raise ValueError(f"owner_mode must be one of {OWNER_MODES}, got {self.owner_mode!r}")
+        # Each identity basis writes its own labeled source; neither may
+        # silently replace the other's panel.
+        if self.owner_mode == OWNER_MODE_STRICT and self.source == MARKET_DAILY_SOURCE_NAME:
+            raise ValueError(
+                "strict owner mode must write a distinct labeled source "
+                f"(e.g. {MARKET_DAILY_STRICT_SOURCE_NAME!r}), not the reconstructed panel's"
+            )
+        if self.owner_mode == OWNER_MODE_RECONSTRUCTED and self.source == MARKET_DAILY_STRICT_SOURCE_NAME:
+            raise ValueError("the strict-identity panel source cannot hold reconstructed-identity rows")
 
 
 def daily_context(*, names: tuple[str, ...]) -> LowerContext:
@@ -119,6 +171,8 @@ def _asof_joins(codes: tuple[str, ...]) -> tuple[str, str]:
     Each code gets its own ``latest_by_code``-filtered subquery so the ASOF
     predicate (``b.cutoff >= alias.available_at``) picks, independently per
     code, the running latest-known value as of the bar's end-of-day cutoff.
+    The equality key is the bar's bridged ``owner_key`` (NULL for an unlinked
+    line or a link not yet available, which therefore matches nothing).
     """
     joins: list[str] = []
     projections: list[str] = []
@@ -127,7 +181,7 @@ def _asof_joins(codes: tuple[str, ...]) -> tuple[str, str]:
         joins.append(
             f"ASOF LEFT JOIN (SELECT security_id, available_at, value, state_lineage FROM latest_by_code "
             f"WHERE code = {_quote(code)}) {alias} "
-            f"ON {alias}.security_id = b.security_id AND b.cutoff >= {alias}.available_at"
+            f"ON {alias}.security_id = b.owner_key AND b.cutoff >= {alias}.available_at"
         )
         projections.append(f'{alias}.value AS "{code}"')
         projections.append(f'{alias}.available_at AS "{code}__at"')
@@ -143,6 +197,8 @@ def build_market_daily_sql(
     security_count: int,
     bars_extra_predicate: str,
     output_date_predicate: str,
+    bridge_row_count: int = 0,
+    member_row_count: int = 0,
 ) -> str:
     """Return the full ``INSERT`` statement for one batch of securities.
 
@@ -171,8 +227,19 @@ def build_market_daily_sql(
     emitted rows (``f.trade_date``) -- it is what actually scopes what gets
     inserted, matching the DELETE's scope.
 
+    Owner bridge (A5): the batch's linked ``owner_bridge`` rows
+    (``BRIDGE_VALUE_COLUMNS``) and ``owner_members`` rows
+    (``MEMBER_VALUE_COLUMNS``) are bound as two leading VALUES CTEs. Each bar
+    takes the bridge row whose ``[valid_from, valid_to)`` contains its
+    ``trade_date`` and whose link ``available_at`` is at or before its cutoff;
+    fundamentals, derived metrics and DEI shares are read from every member id
+    of that owner and re-keyed to ``owner_key`` before the ASOF joins. DEI
+    shares join only when the row is ``dei_shares_eligible``.
+
     Bind order, matching the placeholders in the query text left to right:
-    the effective start date first (the ``is_recent`` computation -- it's in
+    the bridge rows then the member rows (7 and 2 values per row, in
+    ``BRIDGE_VALUE_COLUMNS``/``MEMBER_VALUE_COLUMNS`` order), then
+    the effective start date (the ``is_recent`` computation -- it's in
     the ``SELECT`` list, textually *before* the ``security_id IN (...)``
     predicate in the ``WHERE`` clause below it, even though ``WHERE`` filters
     first logically; DuckDB numbers ``?`` placeholders by their left-to-right
@@ -241,7 +308,11 @@ INSERT INTO market_daily_metrics (
     {metric_columns},
     fundamental_available_at, available_at, inputs_hash, as_of_date, is_latest_revision, run_id
 )
-WITH bars_by_session AS (
+WITH owner_bridge AS (
+    {values_relation_sql(BRIDGE_VALUE_COLUMNS, bridge_row_count)}
+), owner_members AS (
+    {values_relation_sql(MEMBER_VALUE_COLUMNS, member_row_count)}
+), bars_by_session AS (
     -- One row per (security_id, trade_date) -- the physical-row dedup happens
     -- here, BEFORE the lookback rank below, so a corrected/duplicate physical
     -- row for the same session can never split a session's rank from its
@@ -272,23 +343,36 @@ WITH bars_by_session AS (
         FROM bars_by_session
     )
     WHERE is_recent OR lookback_rank <= {_LOOKBACK_ROW_LIMIT}
+), bars_owned AS (
+    -- The bridge rows of one price line are disjoint intervals (validated in
+    -- market_owner_bridge), so at most one matches a bar; a link not yet
+    -- available at the bar's cutoff leaves owner_key NULL.
+    SELECT b.*, o.owner_key, o.identity_basis,
+           CASE WHEN o.dei_shares_eligible THEN o.owner_key END AS dei_owner_key
+    FROM bars b
+    LEFT JOIN owner_bridge o
+      ON o.price_security_id = b.security_id
+     AND o.valid_from <= b.trade_date
+     AND (o.valid_to IS NULL OR b.trade_date < o.valid_to)
+     AND o.available_at <= b.cutoff
 ), fund_long AS (
-    SELECT security_id, canonical_code AS code, period_end, value, available_at,
-           source AS source_rank, rule_id AS rule_rank, basis AS basis_rank, standardized_id AS state_id,
-           to_json(struct_pack(state_id := standardized_id, source := source, rule_id := rule_id,
-                               basis := basis, value := value, available_at := available_at)) AS state_lineage
-    FROM fundamental_standardized
-    WHERE basis IN ('quarterly', 'instant') AND available_at IS NOT NULL
-      AND canonical_code IN ({_in_list(item_codes)})
-      AND security_id IN (SELECT DISTINCT security_id FROM bars)
+    SELECT m.owner_key AS security_id, f.canonical_code AS code, f.period_end, f.value, f.available_at,
+           f.source AS source_rank, f.rule_id AS rule_rank, f.basis AS basis_rank, f.standardized_id AS state_id,
+           to_json(struct_pack(state_id := f.standardized_id, source := f.source, rule_id := f.rule_id,
+                               basis := f.basis, value := f.value, available_at := f.available_at)) AS state_lineage
+    FROM fundamental_standardized f
+    JOIN owner_members m ON m.member_security_id = f.security_id
+    WHERE f.basis IN ('quarterly', 'instant') AND f.available_at IS NOT NULL
+      AND f.canonical_code IN ({_in_list(item_codes)})
     UNION ALL
-    SELECT security_id, metric_code AS code, period_end, value, available_at, '', '', '', derived_value_id,
-           to_json(struct_pack(state_id := derived_value_id, inputs_hash := inputs_hash, value_status := value_status,
-               value_origin := value_origin, fiscal_period_start := fiscal_period_start, fiscal_period_end := fiscal_period_end))
-    FROM derived_metric_values
-    WHERE source = ?
-      AND metric_code IN ({_in_list(metric_codes)})
-      AND security_id IN (SELECT DISTINCT security_id FROM bars)
+    SELECT m.owner_key, d.metric_code AS code, d.period_end, d.value, d.available_at, '', '', '', d.derived_value_id,
+           to_json(struct_pack(state_id := d.derived_value_id, inputs_hash := d.inputs_hash,
+               value_status := d.value_status, value_origin := d.value_origin,
+               fiscal_period_start := d.fiscal_period_start, fiscal_period_end := d.fiscal_period_end))
+    FROM derived_metric_values d
+    JOIN owner_members m ON m.member_security_id = d.security_id
+    WHERE d.source = ?
+      AND d.metric_code IN ({_in_list(metric_codes)})
 ), latest_by_code AS (
     -- Rank whole states, including NULL invalidations, before exposing value.
     -- RANGE sees every equal-time event; stable IDs break ties without load time.
@@ -311,28 +395,28 @@ WITH bars_by_session AS (
            state.state_id AS state_id,
            CASE WHEN state.share_count > 0 THEN state.share_count END AS share_count
     FROM (
-        SELECT security_id, available_at,
-               arg_max(struct_pack(share_count := share_count, state_id := share_history_id),
-                       (effective_date, available_at, share_history_id)) OVER w AS state,
-               row_number() OVER (PARTITION BY security_id, available_at
-                                  ORDER BY effective_date DESC, share_history_id DESC) AS rk
-        FROM shares_outstanding_history
-        WHERE share_count_type = 'shares_outstanding' AND taxonomy = 'dei'
-          AND available_at IS NOT NULL
-          AND security_id IN (SELECT DISTINCT security_id FROM bars)
-        WINDOW w AS (PARTITION BY security_id ORDER BY available_at
+        SELECT m.owner_key AS security_id, h.available_at,
+               arg_max(struct_pack(share_count := h.share_count, state_id := h.share_history_id),
+                       (h.effective_date, h.available_at, h.share_history_id)) OVER w AS state,
+               row_number() OVER (PARTITION BY m.owner_key, h.available_at
+                                  ORDER BY h.effective_date DESC, h.share_history_id DESC) AS rk
+        FROM shares_outstanding_history h
+        JOIN owner_members m ON m.member_security_id = h.security_id
+        WHERE h.share_count_type = 'shares_outstanding' AND h.taxonomy = 'dei'
+          AND h.available_at IS NOT NULL
+        WINDOW w AS (PARTITION BY m.owner_key ORDER BY h.available_at
                      RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
     )
     WHERE rk = 1), joined AS (
     SELECT b.security_id, b.trade_date, b.symbol, b.close, b.adj_close, b.volume,
-           b.archive_shares, b.bar_at, b.cutoff,
+           b.archive_shares, b.bar_at, b.cutoff, b.owner_key, b.identity_basis,
            s.share_count AS dei_shares,
            s.state_id AS dei_state_id,
            {projections}
            {"," if projections else ""}{fundamental_at} AS fundamental_available_at
-    FROM bars b
+    FROM bars_owned b
     ASOF LEFT JOIN shares_state s
-      ON s.security_id = b.security_id AND b.cutoff >= s.available_at
+      ON s.security_id = b.dei_owner_key AND b.cutoff >= s.available_at
     {joins}
 ), panel AS (
     SELECT j.security_id, j.trade_date, j.symbol, j.close, j.adj_close, j.volume,
@@ -372,6 +456,7 @@ SELECT sha256(? || '|' || f.security_id || '|' || CAST(f.trade_date AS VARCHAR))
        sha256(to_json(struct_pack(security_id := f.security_id, trade_date := f.trade_date,
               close := f.close, adj_close := f.adj_close, shares := f."shares_outstanding",
               shares_source := f.shares_source, dei_state_id := f.dei_state_id,
+              owner_key := f.owner_key, identity_basis := f.identity_basis,
               fundamental_available_at := f.fundamental_available_at, states := {state_lineage}))),
        f.trade_date, true, ?
 FROM final f
@@ -422,24 +507,43 @@ def _market_connection_recycling(store: DuckDBStore) -> bool:
 def refresh_market_daily_metrics(
     store: DuckDBStore,
     options: MarketDailyOptions | None = None,
+    *,
+    owner_evidence: Sequence[OwnerLinkEvidence] | None = None,
 ) -> int:
-    options = options or MarketDailyOptions()
+    """Rebuild the panel rows in scope; returns the inserted row count.
+
+    ``owner_evidence`` feeds the strict owner bridge only (no qualified
+    evidence source is wired yet, so strict mode links nothing without it).
+    The bridge's linked/unlinked accounting is recorded as an
+    ``owner_bridge_linkage`` quality row (see :func:`owner_bridge_report`).
+    """
+    total, _summary = _refresh_market_daily(store, options or MarketDailyOptions(), owner_evidence)
+    return total
+
+
+def _refresh_market_daily(
+    store: DuckDBStore,
+    options: MarketDailyOptions,
+    owner_evidence: Sequence[OwnerLinkEvidence] | None,
+) -> tuple[int, dict[str, object]]:
     recycle_connection = _market_connection_recycling(store)
     store.initialize()
     item_codes, metric_codes = _referenced_codes()
     daily = _daily_definitions()
 
-    if options.security_ids is not None:
-        identifiers = sorted(options.security_ids)
-    else:
-        identifiers = [
-            str(row[0])
-            for row in store.con.execute(
-                "SELECT DISTINCT security_id FROM equity_daily_bars WHERE close > 0 ORDER BY security_id"
-            ).fetchall()
-        ]
-    size = max(1, int(options.batch_size))
-    batches = [tuple(identifiers[i : i + size]) for i in range(0, len(identifiers), size)]
+    # One bounded pass per input (a row per price line, the current ticker
+    # snapshot, a row per accounting-content id) resolves every line's owner
+    # before any batch runs; batches then bind only their own bridge rows.
+    bridge = build_market_owner_bridge(
+        store,
+        mode=options.owner_mode,
+        evidence=owner_evidence,
+        item_codes=item_codes,
+        metric_codes=metric_codes,
+        derived_source=options.derived_source,
+    )
+    identifiers = sorted(options.security_ids) if options.security_ids is not None else bridge.line_ids()
+    batches = bridge.owner_aligned_batches(identifiers, options.batch_size)
 
     # Critical fix (row-based per fix round 2): the bars CTE never truncates
     # trailing-window metrics for a scoped/incremental refresh. The row-rank
@@ -474,6 +578,8 @@ def refresh_market_daily_metrics(
 
     total = 0
     for batch in batches:
+        bridge_rows = bridge.linked_rows(batch)
+        members = bridge.members_for(bridge_rows)
         sql = build_market_daily_sql(
             item_codes=item_codes,
             metric_codes=metric_codes,
@@ -481,8 +587,12 @@ def refresh_market_daily_metrics(
             security_count=len(batch),
             bars_extra_predicate=bars_extra_predicate,
             output_date_predicate=output_date_predicate,
+            bridge_row_count=len(bridge_rows),
+            member_row_count=len(members),
         )
         bind: list[Any] = [
+            *bridge_value_params(bridge_rows),
+            *member_value_params(members),
             effective_start,
             *batch,
             *bars_extra_params,
@@ -511,7 +621,47 @@ def refresh_market_daily_metrics(
             # reopen() replays the existing recorded resource settings.
             store.close()
             store.reopen()
-    return total
+    summary = {"source": options.source, "rows": total, **bridge.summary(identifiers)}
+    _record_owner_bridge(store, summary)
+    return total, summary
+
+
+def _record_owner_bridge(store: DuckDBStore, summary: dict[str, object]) -> None:
+    """Persist the refresh's bridge accounting (skipped on DDL-only fixtures)."""
+    exists = store.con.execute(
+        "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'data_quality_checks' AND NOT temporary"
+    ).fetchone()
+    if not exists or not exists[0]:
+        return
+    unlinked = int(summary.get("unlinked_lines", 0) or 0)  # type: ignore[call-overload]
+    quality_check(
+        store,
+        dataset_id=MarketDailyDataset.dataset_id,
+        table_name="market_daily_metrics",
+        check_name=OWNER_BRIDGE_CHECK_NAME,
+        # Unlinked lines are expected (delisted/renamed names) and counted, not
+        # a failure; the row makes their volume and the identity basis durable.
+        status="warning" if unlinked else "passed",
+        severity="warning",
+        observed_value=float(summary.get("linked_lines", 0) or 0),  # type: ignore[arg-type]
+        threshold_value=float(summary.get("lines", 0) or 0),  # type: ignore[arg-type]
+        details=summary,
+    )
+
+
+def owner_bridge_report(store: DuckDBStore, *, source: str = MARKET_DAILY_SOURCE_NAME) -> dict[str, object] | None:
+    """The latest recorded owner-bridge accounting for ``source`` (or ``None``)."""
+    row = store.con.execute(
+        """
+        SELECT details_json FROM data_quality_checks
+        WHERE dataset_id = ? AND check_name = ?
+          AND json_extract_string(details_json, '$.source') = ?
+        ORDER BY checked_at DESC, check_id DESC
+        LIMIT 1
+        """,
+        [MarketDailyDataset.dataset_id, OWNER_BRIDGE_CHECK_NAME, source],
+    ).fetchone()
+    return None if row is None else dict(json.loads(row[0]))
 
 
 def shares_reconciliation_report(
@@ -573,10 +723,14 @@ class MarketDailyDataset(Dataset):
 
     def load(self, store: DuckDBStore, options: Any) -> DatasetLoadResult:
         resolved = options if isinstance(options, MarketDailyOptions) else MarketDailyOptions()
-        rows = refresh_market_daily_metrics(store, resolved)
+        rows, bridge_summary = _refresh_market_daily(store, resolved, None)
+        details: dict[str, Any] = dict(
+            shares_reconciliation_report(store, source=resolved.source, tolerance=resolved.shares_tolerance)
+        )
+        details["owner_bridge"] = bridge_summary
         return DatasetLoadResult(
             dataset_id=self.dataset_id,
             rows_loaded=rows,
             source=resolved.source,
-            details=shares_reconciliation_report(store, source=resolved.source, tolerance=resolved.shares_tolerance),
+            details=details,
         )
