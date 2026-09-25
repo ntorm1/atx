@@ -352,3 +352,35 @@ measured behaviour and corrected the docs. The final results, on the final tree:
 5. On the ρ = 0.5, N = 2000 null, the PSR-based DSR rules are conservative: the default
    accounting rule has FPR ≤ 1.41%. Only `MonteCarloMaxV2` (the null CDF of the max) is calibrated,
    at 5.45%. An α-gate must use it.
+
+## Post-merge sync (2026-09-25)
+
+Final sync before orchestrator merge. Note: a stale MERGE_HEAD had been cleared earlier with
+`merge --quit`; the post-merge suites had never been run on that head (35198851), so this sync
+merges again (integration had moved) and runs the full suite set below.
+
+- Pre-sync head: `35198851f9c139c0f439b4bf2fb4f4055b1fd7ae` (was already a merge of
+  `feat/w0-integration`, but integration had advanced two more commits since).
+- `git -C C:\atx-wt\pool-6 status --porcelain` -> empty; no `MERGE_HEAD` present.
+- `git -C C:\atx-wt\pool-6 merge-base --is-ancestor feat/w0-integration HEAD` -> failed (not an
+  ancestor), so proceeded to merge.
+- `git -C C:\atx-wt\pool-6 merge --no-ff feat/w0-integration -m "w0-e0b: merge feat/w0-integration" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"`
+  -> exit 0, merge made by the 'ort' strategy, no conflicts. Only orchestration/docs files
+  changed (`.superpowers/sdd/aes-wave-workflow.js`, `.superpowers/sdd/w0/aes-w0a-workflow.js`,
+  `.superpowers/sdd/w0/g0-runbook.md`, `.superpowers/sdd/w0/gen_briefs.py`,
+  `.superpowers/sdd/w0/progress.md`, `.superpowers/sdd/w0/w0b-integration-notes.md`,
+  `docs/superpowers/handoffs/2026-09-24-alpha-engine-w0-handoff.md`) — none in this lane's owned
+  scope (`atx-engine/include/atx/engine/eval/*`, `atx-engine/src/eval/trial_registry.cpp`).
+- Merge commit sha: `76b9d135e64c349aba4a6abc14172e87dbe5714a`.
+- Rebuild: `Set-Location C:\atx-wt\pool-6; $env:CMAKE_BUILD_PARALLEL_LEVEL='2'; powershell -NoProfile -File scripts\atx-build.ps1 build -Preset equity-dev atx-engine-eval-tests`
+  -> exit 0. Free RAM checked first: 2.35 GB (>= 2.0 GB gate, proceeded without waiting).
+- Anchored suites (`-Ctest -Preset equity-dev -R '^<Suite>'`):
+  - `EvalTrialClusters_` -> 14/14 passed (47.66 s).
+  - `EvalRegistryWindows_` -> 10/10 passed (1.05 s).
+  - `EvalLockboxEmbargo_` -> 4/4 passed (0.34 s).
+- Whole owning executable: `.\build-equity\bin\atx-engine-eval-tests.exe --gtest_brief=1` ->
+  `[==========] 223 tests from 39 test suites ran. (56626 ms total)` / `[  PASSED  ] 223 tests.`
+  (same 223-test count as the last fix pass; no regressions from the merged integration docs).
+- No code changes were required by the merge — merged content was orchestration/docs only, no
+  owned source file was touched.
+- Tree clean after sync; report committed with `git add -f`.
