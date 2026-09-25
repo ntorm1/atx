@@ -20,7 +20,7 @@ names). Goal prompt: `docs/plans/2026-09-24-alpha-engine-swarm-goal-prompt.md`; 
 
 | Lane | Batch | Pool | Branch | Run id | Owns (summary; exact list in brief) | Cited IDs | Suites | State |
 |---|---|---|---|---|---|---|---|---|
-| O1 | W0a | pool-7 | feat/w0-o1-l6 | aes-w0-o1 | lane-6 merge, `CMakePresets.json` equity-bench, Nightly gate, stod fix site | R-14 (ledger) | risk + atx-impl whole targets | leased |
+| O1 | W0a | pool-7 | feat/w0-o1-l6 | aes-w0-o1 | lane-6 merge, `CMakePresets.json` equity-bench, Nightly gate, stod fix site | R-14 (ledger) | risk + atx-impl whole targets | merged @ 14ce9172; review APPROVE after 1 fix round(s) |
 | A0 | W0a | pool-2 | feat/w0-a0 | aes-w0-a0 | alpha cs/state/typecheck/oracle, factory crossover/canonical, ts_ops (guard+AuditExact), vm.hpp (A-02/03/13 sites) | A-01 A-02 A-03 A-09 A-13 A-18 | AlphaCsRankTies AlphaHumpWarmup AlphaTypecheckScalarLiteral AlphaFlatWindow AlphaAuditExactParity FactoryCanonCollision | leased |
 | L0 | W0a | pool-3 | feat/w0-l0 | aes-w0-l0 | learn tcn/trainer/loss/latent, linear_alpha+gbt (aug + count sites), feature_matrix.hpp (label meta) | L-01 L-02 L-03 L-07 L-08 | LearnLabelMutationInvariance LearnLabelMaturity LearnFoldLocalAug LearnIcLossPerDate | leased |
 | D0 | W0a | pool-4 | feat/w0-d0 | aes-w0-d0 | data history_panel/finra/adjust/align/corp_actions/context/universe/real_panel, augment.hpp (dollar_volume) | D-01 D-02 D-03 D-04 D-05 D-06 D-08 D-09 | DataLevelBasis DataFinraLag DataAdjustGap DataAlignEvent DataCorpActRebase DataContextAsOf | leased |
@@ -66,3 +66,4 @@ pre-merges integration after O1 landed), then W0b lanes (R0 only after O1).
 
 - 2026-09-24 23:0xZ — setup: all 11 stale qps leases released (keepers dead); qps notes archived;
   pool-1 leased as `feat/w0-integration` (run `aes-w0-integ`).
+- 2026-09-25T01:05:47Z — O1 merged @ 14ce9172 (lane head 3ccf012c): lane 6 + equity-bench preset + red stage_run smoke test integrated conflict-free (28 files); quiet-host bench baselines deferred to gate.
