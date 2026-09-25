@@ -425,6 +425,9 @@ TEST(CombineInferenceConfig, DeclaredHorizonCalibratesOverlappingNull) {
   cb::SignalInferenceConfig cfg;
   cfg.label_horizon = kH;
   std::size_t rejected = 0U;
+  std::size_t old_rejected = 0U;
+  std::size_t old_fallbacks = 0U;
+  std::size_t old_lag_sum = 0U;
   for (std::size_t rep = 0U; rep < kReps; ++rep) {
     const auto series = ma20(rng, kT, 0.0, 0.01);
     MatX ic(static_cast<Eigen::Index>(kT), 1);
@@ -434,10 +437,20 @@ TEST(CombineInferenceConfig, DeclaredHorizonCalibratesOverlappingNull) {
     const auto fit = cb::grinold_kahn_weights(ic, cb::CovTarget::Sample, cfg);
     ASSERT_TRUE(fit.has_value());
     rejected += std::abs(fit->tstat[0]) > 1.96 ? 1U : 0U;
+    const auto old_lag = std::max(kH - 1U, hac::newey_west_auto_lag(series));
+    const auto old_fit = hac::mean_inference(series, hac::Kernel::UniformV1,
+                                            old_lag, true, true);
+    old_rejected += std::abs(old_fit.t) > 1.96 ? 1U : 0U;
+    old_fallbacks += old_fit.fell_back;
+    old_lag_sum += old_lag;
   }
   const double rate = static_cast<double>(rejected) / static_cast<double>(kReps);
   std::printf("[CombineInferenceConfig] MA(20) null, n=%zu, reps=%zu, rejection=%.4f\n",
               kT, kReps, rate);
+  std::printf("[CombineInferenceConfig] paired obsolete Uniform/NW-plugin: rejected=%zu, "
+              "fallbacks=%zu, average lag=%.2f; HH lag=%zu\n", old_rejected,
+              old_fallbacks, static_cast<double>(old_lag_sum) / kReps,
+              std::max(kH - 1U, hac::newey_west_rule_of_thumb_lag(kT)));
   EXPECT_GE(rate, 0.03);
   EXPECT_LE(rate, 0.07);
 }
@@ -474,6 +487,20 @@ TEST(CombineInferenceConfig, UnsupportedOverlapDoesNotCreateInfiniteSignificance
   EXPECT_EQ(guarded.defined, 1U);
   EXPECT_EQ(guarded.fell_back, 1U);
   EXPECT_EQ(guarded.kernel, hac::Kernel::BartlettV1);
+  const auto supported = hac::mean_tstat(x, hac::TStatRule::HorizonAwareV3, 2U);
+  EXPECT_EQ(supported.defined, 1U);
+  EXPECT_EQ(supported.lag, 2U);
+  EXPECT_TRUE(std::isfinite(supported.t));
+  const auto expected = hac::mean_inference(x, hac::Kernel::UniformV1, 2U, true, true);
+  EXPECT_EQ(supported.t, expected.t);
+  std::array<double, 5> small_variance = x;
+  for (double &v : small_variance) v = 0.03 + (v - 0.035) * 1e-10;
+  const auto scaled = hac::mean_inference(small_variance, hac::Kernel::UniformV1,
+                                         4U, true, true);
+  const auto tapered = hac::mean_inference(small_variance, hac::Kernel::BartlettV1, 4U, true);
+  EXPECT_EQ(scaled.defined, 1U);
+  EXPECT_EQ(scaled.fell_back, 1U);
+  EXPECT_EQ(scaled.t, tapered.t);
 }
 
 TEST(CombineInferenceConfig, UnequalDecayWeightsUseDirectSandwichVariance) {
@@ -499,7 +526,7 @@ TEST(CombineInferenceConfig, UnequalDecayWeightsUseDirectSandwichVariance) {
     const double u = w[t] * (ic[t] - mean);
     s0 += u * u;
   }
-  const std::size_t lag = std::max(std::size_t{20U}, hac::newey_west_auto_lag(ic));
+  const std::size_t lag = std::max(std::size_t{20U}, hac::newey_west_rule_of_thumb_lag(kT));
   double sandwich = s0;
   double bartlett = s0;
   for (std::size_t j = 1U; j <= lag; ++j) {

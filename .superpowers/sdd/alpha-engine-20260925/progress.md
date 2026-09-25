@@ -122,6 +122,25 @@ The old progress file lists provisional P1-P11: these are not owner waivers or a
 
 ## Next sequence
 
+### Current live jobs and repair status
+
+- Root pool2 session60207: inference bandwidth rebuild plus focused26 tests. Earlier
+  sync build passed, first test run25/26: MA20 rejection141/2000=7.05% above unchanged7%
+  ceiling. Fixed actual kernel mismatch by matching existing cross_section_ic HH
+  max(h-1, rule-of-thumb) rule, with paired obsolete-rule diagnostics; result pending.
+- Replay production8ba15b0efeaff53587cc0ac36493cd159247b126 passed wholebook128/128,
+  focusedimpl32/32. Test-fixture correction4f257729d2949f082c818f53b42c2c7aca3b9cf9
+  expands holding-window fixture to4days. Independent reviewer verified logs; PCH-off
+  check/report pending. Replay agent will then scope native ASan risk acceptance gate.
+- D12 report39347e28 build near completion inpool5; focusedimpl/wholealpha pending.
+- G0 pool3 merged D12+replay provisionally at8ee78be46c0cfc01d0c892e77fd4a2671ce942f7,
+  isolated Release rebuild underway, worker1. Corrected baseline authorized after D12
+  runtime gate; replay gate passed. Frozen L9 still runs from archivedbc5 binary.
+- Final wholeimpl belongs only to integrated root correctness gate (not duplicated across
+  repair lanes). Data exclusions and environment clearing remain mandatory.
+- Benchmark follow-up assigned to audit agent after current tasks: oldO1 3ccf012c vs
+  final integrated equity-bench, identical filtered repetitions3, quiet host. Not started.
+
 Finish G0/build audit and integration repairs; run focused post-implementation validation,
 fresh adversarial review, and the W0 integrated gates. Record honest old/new metrics and
 benchmark evidence. Then scaffold W1, begin D1/D5 data foundations with new modules avoiding

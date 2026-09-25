@@ -182,8 +182,9 @@ namespace detail {
   out.lag = (lag < out.n) ? lag : (out.n - 1U);
   atx::f64 s = long_run_sum(x, out.mean, kernel, out.lag);
   const bool cancelled = guard_cancellation && kernel == Kernel::UniformV1 &&
-      s <= 64.0 * std::numeric_limits<atx::f64>::epsilon() *
-               long_run_sum(x, out.mean, Kernel::BartlettV1, 0U);
+      (out.lag == out.n - 1U ||
+       s <= 64.0 * std::numeric_limits<atx::f64>::epsilon() *
+                long_run_sum(x, out.mean, Kernel::BartlettV1, 0U));
   if ((!(s > 0.0) || cancelled) && kernel == Kernel::UniformV1) {
     s = long_run_sum(x, out.mean, Kernel::BartlettV1, out.lag);
     out.kernel = Kernel::BartlettV1;
@@ -261,8 +262,10 @@ namespace detail {
 //  IidV1 reproduces the pre-W0 spelling term for term (ascending sum, sample sd):
 //      mean / (sd / sqrt(n)),   defined iff n >= 2 and sd > 0.
 //  NeweyWestAutoV2 is `mean_inference(x, BartlettV1, newey_west_auto_lag(x), true)`.
-//  HorizonAwareV3 requires more observations than the overlap horizon and guards
-//  uniform-kernel cancellation. `Unknown` returns an undefined result.
+//  HorizonAwareV3 uses the horizon/rule-of-thumb bandwidth for the uniform kernel,
+//  as cross_section_ic does. The NW plug-in bandwidth is derived for Bartlett.
+//  It requires more observations than the overlap horizon and guards uniform-kernel
+//  cancellation. `Unknown` returns an undefined result.
 // ---------------------------------------------------------------------------
 [[nodiscard]] inline MeanInference mean_tstat(std::span<const atx::f64> x,
                                               TStatRule rule,
@@ -302,8 +305,12 @@ namespace detail {
     if (label_horizon == 0U || (label_horizon > 1U && label_horizon >= x.size())) {
       return MeanInference{};
     }
-    return mean_inference(x, label_horizon > 1U ? Kernel::UniformV1 : Kernel::BartlettV1,
-                          std::max(label_horizon - 1U, newey_west_auto_lag(x)), true, true);
+    if (label_horizon == 1U) {
+      return mean_inference(x, Kernel::BartlettV1, newey_west_auto_lag(x), true);
+    }
+    return mean_inference(x, Kernel::UniformV1,
+                          std::max(label_horizon - 1U,
+                                   newey_west_rule_of_thumb_lag(x.size())), true, true);
   case TStatRule::Unknown:
     break;
   }
@@ -322,7 +329,9 @@ namespace detail {
 //  VIF >= 0. L = newey_west_auto_lag(x) on the unweighted series. Under IidV1 the result
 //  is exactly 1.0, so a caller's pre-W0 t is reproduced bit for bit. HorizonAwareV3
 //  instead divides the direct weighted sandwich variance by the caller's weighted
-//  IID variance; this distinction matters for unequal weights. Unsupported overlap
+//  IID variance; this distinction matters for unequal weights. Overlapping labels
+//  use UniformV1 with max(horizon - 1, rule-of-thumb lag), as mean_tstat does.
+//  Unsupported overlap
 //  horizons return NaN under V3. Returns 1.0 when
 //  sum u^2 == 0 or the spans disagree in size (no information to correct with).
 // ---------------------------------------------------------------------------
@@ -342,8 +351,9 @@ namespace detail {
   }
   const atx::usize n = x.size();
   const bool overlap = rule == TStatRule::HorizonAwareV3 && label_horizon > 1U;
-  const atx::usize lag = std::min(n - 1U,
-      std::max(overlap ? label_horizon - 1U : 0U, newey_west_auto_lag(x)));
+  const atx::usize lag = std::min(n - 1U, overlap
+      ? std::max(label_horizon - 1U, newey_west_rule_of_thumb_lag(n))
+      : newey_west_auto_lag(x));
   const auto u = [&](atx::usize r) noexcept { return w[r] * (x[r] - weighted_mean); };
   atx::f64 s0 = 0.0;
   atx::f64 sw = 0.0;
@@ -374,7 +384,8 @@ namespace detail {
     bartlett += tapered;
     s += overlap ? 2.0 * c : tapered;
   }
-  if (overlap && (!(s > 64.0 * std::numeric_limits<atx::f64>::epsilon() * s0) ||
+  if (overlap && (lag == n - 1U ||
+                  !(s > 64.0 * std::numeric_limits<atx::f64>::epsilon() * s0) ||
                   !std::isfinite(s))) {
     s = bartlett;
   }

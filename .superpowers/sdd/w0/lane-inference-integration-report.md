@@ -2,8 +2,8 @@
 
 ## Outcome
 
-Implementation and post-implementation regression checks written; build, execution, and fresh
-adversarial review pending. No acceptance pass claimed.
+Implementation, targeted build, and all 26 focused inference checks pass. Final independent
+review, scoped PCH-off compilation, and whole-target integration qualification remain pending.
 
 ## Branch / frozen base / lease
 
@@ -58,7 +58,40 @@ powershell -NoProfile -File scripts/atx-build.ps1 check -Preset equity-dev atx-e
 exit=0
 ```
 
-Targeted combine/eval build is running; no numeric test results yet.
+Initial targeted combine/eval build and the synchronization rebuild both exited zero.
+The first focused test run passed 25/26. The overlapping MA(20) null calibration
+rejected 141/2000 (7.05%), exceeding the unchanged 3%-7% acceptance band. This failed
+run is diagnostic evidence, not acceptance. The seed and rejection bounds remain fixed.
+
+Inspection identified a kernel mismatch: the NW1994 automatic bandwidth is derived for
+Bartlett, while the new overlapping-label path used it with Uniform. The existing
+cross_section_ic Hansen-Hodrick path already uses max(horizon-1, rule-of-thumb lag).
+V3 mean and EWMA now use that same kernel-appropriate rule. Daily and V1/V2 paths are
+unchanged. A paired diagnostic on the same fixed 2000 streams reports the obsolete rule's
+rejections, fallback count, and mean lag. The independent weighted sandwich comparison
+uses the declared HH bandwidth. Rebuild and rerun both exited zero:
+
+```
+atx-build.ps1 -Preset equity-dev build atx-engine-combine-tests atx-engine-eval-tests
+[18/19] Linking CXX executable bin\\atx-engine-combine-tests.exe
+exit=0
+atx-build.ps1 -Preset equity-dev -Ctest -R '^(CombineInferenceConfig|CombineHacTstat|CombineHacTstatStoreWinsor|EvalHac)\.'
+100% tests passed, 0 tests failed out of 26
+Total Test time (real) = 5.65 sec
+exit=0
+[CombineInferenceConfig] MA(20) null, n=1750, reps=2000, rejection=0.0630
+[CombineInferenceConfig] paired obsolete Uniform/NW-plugin: rejected=141, fallbacks=0, average lag=30.98; HH lag=20
+```
+
+The paired diagnostic rules out fallback as the mechanism on these fixed streams. The
+HH result is 126/2000 (6.3%), within the predeclared band, not an assertion of exact 5%
+finite-sample size or universal calibration. Logs are
+build-equity/codex-inference-bandwidth-{build,tests}.log and
+build-equity/Testing/Temporary/LastTest.log.
+
+The five-point public horizon-two regression now checks lag two, as required by the HH
+bandwidth. The original and scaled fixtures still directly exercise the full-lag Uniform
+cancellation guard; no full-lag fallback assertion was silently discarded.
 
 ## Fresh review and fix pass
 
