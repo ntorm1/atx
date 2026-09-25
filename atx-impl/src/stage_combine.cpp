@@ -1057,8 +1057,16 @@ static std::vector<atx::f64> capacity_vector(const ShipInputs& in, ShippedWeight
             out.capacity_max_participation = std::max(out.capacity_max_participation, c.max_part);
         }
     }
-    out.capacity_aum = capacity;
+    out.capacity_aum = capacity; // telemetry keeps +inf ("unbounded")
     out.capacity_on = true;
+    // decorrelate_weights requires finite capacities (crowding.cpp CHECK). An unbounded
+    // capacity scales exactly like any capacity >= the floor (cap_scale clamps to 1), so
+    // +inf maps to the largest finite double -- same weights, no abort.
+    for (atx::f64& c : capacity) {
+        if (std::isinf(c)) {
+            c = std::numeric_limits<atx::f64>::max();
+        }
+    }
     return capacity;
 }
 
@@ -1684,6 +1692,11 @@ atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
         {"breadth_realized_ir", std::to_string(realized_ir)},
         {"breadth_implied_ic",  std::to_string(implied_ic)},
     };
+    // W0-I0a (I-01): the final-test ledger guard verdict -- present only when a library
+    // source had a final test to check ("checked", or "unrecorded" for a legacy library).
+    if (!final_test_guard.empty()) {
+        sr.kvs.emplace_back("final_test_guard", final_test_guard);
+    }
     // D3b: additive WF telemetry — only present when --walk-forward >= 1.
     // Absent from the default (k==0) path so default kvs is byte-identical.
     if (cfg.walk_forward >= 1) {

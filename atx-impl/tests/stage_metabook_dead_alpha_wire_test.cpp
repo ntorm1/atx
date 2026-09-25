@@ -31,6 +31,8 @@
 
 #include <gtest/gtest.h>
 
+#include "dead_alpha_wire.hpp" // W0-I0a split-range ledger
+
 #include "atx/core/types.hpp"
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/combine/gate.hpp"
@@ -129,7 +131,8 @@ using atx::usize;
 // `center` (rank-1 overlap -- the SAME fixture shape S1's stage_optimize_dead_alpha_wire_
 // test.cpp uses), then flush + let it go out of scope so a later independent Library::open
 // (the one the metabook wire performs) sees every admit on disk.
-void seed_crowded_library(const fs::path &dir, usize n_dead, usize m, usize center) {
+void seed_crowded_library(const fs::path &dir, usize n_dead, usize m, usize center,
+                          usize panel_dates) {
   std::error_code ec;
   fs::remove_all(dir, ec);
   fs::create_directories(dir);
@@ -137,6 +140,7 @@ void seed_crowded_library(const fs::path &dir, usize n_dead, usize m, usize cent
   const atx::engine::combine::AlphaGate gate{permissive_gate_cfg()};
   constexpr usize kT = 2U;
   std::vector<std::vector<f64>> pnls(n_dead), positions(n_dead);
+  std::vector<lib::AlphaId> ids;
   for (usize k = 0; k < n_dead; ++k) {
     pnls[k].assign(kT, 0.0);
     pnls[k][1] = 0.01 + 0.0001 * static_cast<f64>(k);
@@ -150,8 +154,22 @@ void seed_crowded_library(const fs::path &dir, usize n_dead, usize m, usize cent
                                    0U, nullptr};
     const auto v = library.admit(cand, gate);
     ASSERT_EQ(v.kind, lib::AdmitKind::Accept);
+    ids.push_back(v.id);
+  }
+  // W0-I0a (I-06): the wire now reads alphas that are Dead/Decaying AS OF EACH STEP (the
+  // old "every admitted alpha" pool was the LIVE set, read from the end of the sample). So
+  // the fixture retires its alphas at library period 1 and records the library's period
+  // axis (its holdout [0, kT) on the panel's date axis) in the split-range ledger.
+  for (const lib::AlphaId id : ids) {
+    ASSERT_TRUE(library.mark(id, lib::LifecycleState::Live, 1U).has_value());
+    ASSERT_TRUE(library.mark(id, lib::LifecycleState::Decaying, 1U).has_value());
+    ASSERT_TRUE(library.mark(id, lib::LifecycleState::Dead, 1U).has_value());
   }
   ASSERT_TRUE(library.flush_all().has_value());
+  auto holdout = atx::impl::make_split_range(atx::impl::SplitRole::DiscoverHoldout, 0U, kT,
+                                             panel_dates, {});
+  ASSERT_TRUE(holdout.has_value());
+  ASSERT_TRUE(atx::impl::append_split_range(dir.string(), *holdout).has_value());
 }
 
 [[nodiscard]] std::string tmp_dir(const std::string &tag) {
@@ -188,7 +206,7 @@ TEST(MetabookDeadAlphaWire, CrowdingDeleversMegaBook) {
   ASSERT_TRUE(make_correlated_research(research_path, M, D).has_value());
   ASSERT_TRUE(make_pair_combo(combo_path, M, D).has_value());
   const fs::path lib_dir = fs::path(dir) / "crowded_lib";
-  seed_crowded_library(lib_dir, /*n_dead=*/3U, M, center);
+  seed_crowded_library(lib_dir, /*n_dead=*/3U, M, center, D);
 
   const MetaBookStageConfig scfg;
 

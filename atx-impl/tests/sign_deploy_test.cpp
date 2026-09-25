@@ -48,6 +48,7 @@
 #include "atx/engine/alpha/panel.hpp"
 
 #include "config.hpp"
+#include "diag_risk.hpp" // DeployPitConfig / DiagRiskRule (W0-I0a V1 reproduction)
 #include "serialize_panel.hpp"
 #include "stages.hpp"
 
@@ -297,11 +298,31 @@ TEST_F(SignDeployTest, DefaultPathByteIdentityDigest)
 
     // Pinned digest of the default path (captured pre-fix). A regression that
     // alters the default optimize book changes this digest and fails here.
-    static constexpr atx::u64 kPinnedDefaultDigest = 5744281451106956152ULL;
+    // W0-I0a re-baseline (I-04): the default Diagonal risk lens is now fitted per
+    // rebalance step on rows [0, period+1) instead of on the whole panel, which moves
+    // the default MVO book. Old pin 5744281451106956152 (whole-panel lens, still
+    // reproducible via DeployPitConfig{.diag = DiagRiskRule::WholePanelV1}).
+    static constexpr atx::u64 kPinnedDefaultDigest = 4943992197170640678ULL;
     EXPECT_EQ(a->books_digest, kPinnedDefaultDigest)
         << "default MVO deployed-book digest changed; the sign-correct fix must "
            "be opt-in and leave the default path byte-identical. Update the pin "
            "ONLY if the default path was intentionally changed.";
+
+    // W0-I0a: the pre-W0 whole-panel lens stays reproducible byte-for-byte.
+    atx::impl::RunConfig v1_cfg;
+    v1_cfg.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
+    v1_cfg.panel     = research_path_;
+    v1_cfg.combo     = combo_path_;
+    v1_cfg.books_out = (work_dir_ / "pin_v1_books.bin").string();
+    v1_cfg.gross     = 1.0;
+    v1_cfg.name_cap  = 1.0;
+    v1_cfg.rebalance = "weekly";
+    atx::impl::DeployPitConfig v1_pit;
+    v1_pit.diag = atx::impl::DiagRiskRule::WholePanelV1;
+    auto v1 = atx::impl::run_optimize(v1_cfg, atx::engine::risk::RiskModelConfig{}, v1_pit);
+    ASSERT_TRUE(v1.has_value()) << v1.error().message();
+    EXPECT_EQ(v1->digest, 5744281451106956152ULL)
+        << "DiagRiskRule::WholePanelV1 must reproduce the pre-W0 default book";
 }
 
 } // namespace atx_impl_sign_deploy

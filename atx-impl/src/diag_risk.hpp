@@ -201,6 +201,34 @@ enum class ParticipationAdvRule : atx::u8 {
     LastDateV1 = 1,
 };
 
+// R-12 (TrailingPitPerRebalanceV2): the participation reference at rebalance date d --
+// mean non-NaN volume over rows [d-19, d] (date-major `vol_all`, M names per row) and the
+// close at d, 0 when unpriced (a name not yet listed or already delisted cannot be traded
+// at d, so its cap is 0 at d only). Reads rows <= d only. Writes `adv`/`price` (length M)
+// IN PLACE, so the risk::CapacityRef spans that alias them stay valid between rebalances.
+// Precondition (caller-checked): d < rows of vol_all/cls_all, adv/price hold M entries.
+inline constexpr atx::usize kParticipationAdvWindow = 20U;
+
+inline void trailing_participation_reference(std::span<const atx::f64> vol_all,
+                                             std::span<const atx::f64> cls_all, atx::usize M,
+                                             atx::usize d, std::span<atx::f64> adv,
+                                             std::span<atx::f64> price) noexcept
+{
+    const atx::usize win_begin =
+        (d + 1U > kParticipationAdvWindow) ? (d + 1U - kParticipationAdvWindow) : 0U;
+    for (atx::usize i = 0; i < M; ++i) {
+        atx::f64 sum = 0.0;
+        atx::usize n = 0;
+        for (atx::usize t = win_begin; t <= d; ++t) {
+            const atx::f64 v = vol_all[t * M + i];
+            if (!std::isnan(v)) { sum += v; ++n; }
+        }
+        adv[i] = (n > 0) ? sum / static_cast<atx::f64>(n) : 0.0;
+        const atx::f64 px = cls_all[d * M + i];
+        price[i] = std::isnan(px) ? 0.0 : px;
+    }
+}
+
 // Stage-private knobs (no RunConfig field: config.* is not this lane's to edit).
 // Every default is the corrected, point-in-time behaviour.
 struct DeployPitConfig {

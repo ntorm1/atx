@@ -32,6 +32,7 @@
 
 #include "config.hpp"
 #include "serialize_panel.hpp"
+#include "stage_combine.hpp" // W0-I0a nested split
 #include "stages.hpp"
 #include "w0o1_report_kv.hpp"
 
@@ -124,7 +125,14 @@ run_reachable_graph(const atx::impl::RunConfig &cfg, const std::string &panel_pa
     c_disc.alpha_out = (work / "alphas").string();
     c_disc.gated = true;
     c_disc.library_dir = (work / "_library").string();
-    ATX_TRY(auto d_disc, atx::impl::run_discover(c_disc));
+    // W0-I0a (I-01): mirror run_all's NESTED split -- discover sees only
+    // [0, discover_end), the combiner fits on the fresh [fit_begin, fit_end), and the
+    // final test [test_begin, n) is read by no selection or fitting step.
+    atx::impl::NestedSplitConfig ns;
+    if (cfg.set_flags.count("holdout-frac") != 0) ns.test_frac = cfg.combine_holdout_frac;
+    ns.embargo = 1U + cfg.replay_execution_delay;
+    ATX_TRY(const auto split, atx::impl::resolve_nested_split(kDates, ns));
+    ATX_TRY(auto d_disc, atx::impl::run_discover_window(c_disc, split.discover_end));
 
     atx::impl::RunConfig c_comb = cfg;
     c_comb.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.
@@ -132,7 +140,13 @@ run_reachable_graph(const atx::impl::RunConfig &cfg, const std::string &panel_pa
     c_comb.alphas = (work / "alphas").string();
     c_comb.combo_out = (work / "combo.bin").string();
     c_comb.library_dir = c_disc.library_dir;
-    ATX_TRY(auto d_comb, atx::impl::run_combine(c_comb));
+    c_comb.fit_begin = static_cast<long>(split.fit_begin);
+    c_comb.fit_end = static_cast<long>(split.fit_end);
+    c_comb.set_flags.insert("fit-end");
+    atx::impl::CombinePitConfig comb_pit;
+    comb_pit.test_begin = split.test_begin;
+    comb_pit.execution_delay = cfg.replay_execution_delay;
+    ATX_TRY(auto d_comb, atx::impl::run_combine(c_comb, comb_pit));
 
     atx::impl::RunConfig c_opt = cfg;
     c_opt.allow_unidentified_panels = true; // Legacy numeric fixture: explicit diagnostic mode.

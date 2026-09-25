@@ -145,32 +145,6 @@ build_step_models(const alpha::Panel& research, const risk::RiskModelConfig& ris
     return atx::core::Ok(std::move(out));
 }
 
-// R-12 (TrailingPitPerRebalanceV2): the participation reference at rebalance date d --
-// mean non-NaN volume over [d-19, d] and the close at d (0 when unpriced: a name not
-// yet listed or already delisted cannot be traded at d, so its cap is 0 at d only).
-// Rewrites `adv`/`price` IN PLACE so the CapacityRef spans that alias them stay valid.
-constexpr atx::usize kParticipationAdvWindow = 20U;
-
-void fill_trailing_participation_ref(std::span<const atx::f64> vol_all,
-                                     std::span<const atx::f64> cls_all, atx::usize M,
-                                     atx::usize d, std::span<atx::f64> adv,
-                                     std::span<atx::f64> price) noexcept
-{
-    const atx::usize win_begin =
-        (d + 1U > kParticipationAdvWindow) ? (d + 1U - kParticipationAdvWindow) : 0U;
-    for (atx::usize i = 0; i < M; ++i) {
-        atx::f64 sum = 0.0;
-        atx::usize n = 0;
-        for (atx::usize t = win_begin; t <= d; ++t) {
-            const atx::f64 v = vol_all[t * M + i];
-            if (!std::isnan(v)) { sum += v; ++n; }
-        }
-        adv[i] = (n > 0) ? sum / static_cast<atx::f64>(n) : 0.0;
-        const atx::f64 px = cls_all[d * M + i];
-        price[i] = std::isnan(px) ? 0.0 : px;
-    }
-}
-
 // risk::MultiPeriodOptimizer::run (multi_period.hpp) step for step -- same inner
 // optimizer construction, same trade-rate blend, same turnover/cost accounting --
 // except that `refresh_ref(date)` rewrites the participation reference buffers before
@@ -225,7 +199,8 @@ run_multi_period_step_ref(const risk::MultiPeriodConfig& mc, const risk::Rebalan
 
 } // namespace
 
-atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::RiskModelConfig& risk_cfg,
+atx::core::Result<StageResult> run_optimize(const RunConfig& cfg,
+                                            const risk::RiskModelConfig& risk_cfg,
                                             const DeployPitConfig& pit)
 {
     // 1. Validate required flags.
@@ -544,8 +519,9 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
     std::optional<library::Library> dead_lib_opt = maybe_open_dead_lib(cfg, risk_cfg);
     const library::Library* dead_lib_ptr = dead_lib_opt.has_value() ? &*dead_lib_opt : nullptr;
     const LibraryPeriodAxis dead_axis =
-        (dead_lib_ptr != nullptr) ? library_period_axis(resolve_dead_alpha_lib_dir(cfg), *dead_lib_ptr)
-                                  : LibraryPeriodAxis{};
+        (dead_lib_ptr != nullptr)
+            ? library_period_axis(resolve_dead_alpha_lib_dir(cfg), *dead_lib_ptr)
+            : LibraryPeriodAxis{};
     ATX_TRY(const StepModels models,
             build_step_models(research, risk_cfg, pit, sched, dead_lib_ptr, dead_axis));
 
@@ -679,11 +655,12 @@ atx::core::Result<StageResult> run_optimize(const RunConfig& cfg, const risk::Ri
     risk::MultiPeriodResult result;
     if (part_per_step) {
         const auto refresh_ref = [&](atx::usize d) {
-            fill_trailing_participation_ref(part_vol_all, part_cls_all, M, d,
+            trailing_participation_reference(part_vol_all, part_cls_all, M, d,
                                             std::span<atx::f64>{part_adv},
                                             std::span<atx::f64>{part_price});
         };
-        ATX_TRY(result, run_multi_period_step_ref(mc, sched, alpha_at, model_at, cost, refresh_ref));
+        ATX_TRY(result,
+                run_multi_period_step_ref(mc, sched, alpha_at, model_at, cost, refresh_ref));
     } else {
         ATX_TRY(result, mpo.run(sched, alpha_at, model_at, cost));
     }
