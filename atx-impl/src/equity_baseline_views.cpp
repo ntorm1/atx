@@ -237,11 +237,13 @@ struct FeatureView {
     return Ok(FeatureView{std::move(view), observed_count});
 }
 
-// D-12: one as-of membership flag per (evaluation row, instrument), date-major.
+// D-12: one as-of membership flag per (row, instrument), date-major. The family
+// VM needs the feature window too: rolling CS features must use the membership
+// that was effective at each historical observation, not today's member list.
 // Empty when the rule does not apply (no membership, or ContextYearUnionV1).
 [[nodiscard]] Result<std::vector<atx::u8>>
 asof_member_cells(const PanelArtifact &context, const EquityBaselineConfig &config,
-                  const EquityBaselinePlan &plan) {
+                  atx::usize begin, atx::usize end) {
     if (!config.membership) return Ok(std::vector<atx::u8>{});
     if (config.membership_rule != EquityMembershipRule::AsOfV2) {
         return Err(ErrorCode::InvalidArgument,
@@ -257,10 +259,10 @@ asof_member_cells(const PanelArtifact &context, const EquityBaselineConfig &conf
                        "equity baseline: as-of membership needs integer instrument ids");
         }
     }
-    const auto rows = plan.evaluation_end - plan.evaluation_begin;
-    std::vector<atx::u8> member(plan.evaluation_cells, 0);
+    const auto rows = end - begin;
+    std::vector<atx::u8> member(rows * instruments, 0);
     for (atx::usize row = 0; row < rows; ++row) {
-        const auto key = context.identity.session_keys[plan.evaluation_begin + row];
+        const auto key = context.identity.session_keys[begin + row];
         for (atx::usize i = 0; i < instruments; ++i) {
             member[row * instruments + i] = config.membership->member(key, ids[i]) ? 1U : 0U;
         }
@@ -451,7 +453,8 @@ Result<EquityBaselineEvaluation> evaluate_equity_baseline(const PanelArtifact &c
                                                         const EquityBaselineConfig &config) {
     ATX_TRY(auto prepared, prepare(context, config));
     const auto &plan = prepared.plan;
-    ATX_TRY(const auto asof_member, asof_member_cells(context, config, plan));
+    ATX_TRY(const auto asof_member, asof_member_cells(context, config,
+        plan.evaluation_begin, plan.evaluation_end));
     ATX_TRY(auto feature, feature_view(context, plan));
     alpha::SignalSet full_signals;
     {
@@ -599,6 +602,10 @@ Result<EquityFamilyEvaluation> evaluate_equity_families(const PanelArtifact &con
     ATX_TRY_VOID(add_bytes(budget, plan.evaluation_cells, dsl.size() * sizeof(atx::f64)));
     ATX_TRY_VOID(add_bytes(budget, plan.feature_cells, sizeof(atx::u8)));
     ATX_TRY_VOID(add_bytes(budget, warmup + 1, 2 * sizeof(atx::f64)));
+    if (config.membership) {
+        ATX_TRY_VOID(add_bytes(budget, plan.feature_cells, sizeof(atx::u8)));
+        ATX_TRY_VOID(add_bytes(budget, instruments, sizeof(atx::i64)));
+    }
     if (budget > config.max_additional_bytes || slot_cells > std::numeric_limits<atx::usize>::max()) {
         return Err(ErrorCode::OutOfRange, "equity families: additional array budget exceeded");
     }
@@ -606,6 +613,9 @@ Result<EquityFamilyEvaluation> evaluate_equity_families(const PanelArtifact &con
     alpha::SignalSet full_signals;
     {
         alpha::Engine engine(feature.panel);
+        ATX_TRY(auto cs_members, asof_member_cells(context, config,
+            plan.feature_begin, plan.evaluation_end));
+        ATX_TRY_VOID(engine.set_cross_section_mask(std::move(cs_members)));
         ATX_TRY(full_signals, engine.evaluate(program));
     }
     if (full_signals.dates != feature.panel.dates() ||

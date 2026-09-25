@@ -413,6 +413,24 @@ public:
   void set_kernel_policy(KernelPolicy policy) noexcept { policy_ = policy; }
   [[nodiscard]] KernelPolicy kernel_policy() const noexcept { return policy_; }
 
+  // Optional date-major eligibility for cross-sectional operations ONLY. Field
+  // loads retain the Panel's observation mask, so a newly eligible name can use
+  // its observed price history in a trailing time-series window. Every Cs* op
+  // excludes ineligible names from its reductions and emits NaN for them.
+  // Call before evaluation (never concurrently). Takes ownership; empty restores
+  // the default valid-set behavior. A nonempty mask must contain cells() values
+  // in {0,1}; invalid input returns Err without changing the current mask.
+  // Subtree caching is bypassed while masked: its key has no eligibility field.
+  [[nodiscard]] atx::core::Status set_cross_section_mask(std::vector<atx::u8> mask) {
+    if ((!mask.empty() && mask.size() != panel_.cells()) ||
+        std::any_of(mask.begin(), mask.end(), [](atx::u8 v) { return v > 1U; })) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "Engine: cross-section mask must be empty or cells() binary flags");
+    }
+    cs_mask_ = std::move(mask);
+    return atx::core::Ok();
+  }
+
   // Cross-instrument column parallelism (p7 S3-3). When a non-null DetPool is set,
   // the BATCH Ts path (eval_time_series's column-extract loop) dispatches its
   // instrument columns across the pool's workers; each column is independent
@@ -602,8 +620,8 @@ public:
 
   [[nodiscard]] atx::core::Result<SignalSet>
   evaluate_nodes(const Program &prog, std::span<const atx::u32> roots, SubtreeCache *cache) {
-    if (!policy_.is_default()) {
-      cache = nullptr; // W0-A0: SubtreeKey does not carry the KernelPolicy
+    if (!policy_.is_default() || !cs_mask_.empty()) {
+      cache = nullptr; // SubtreeKey carries neither KernelPolicy nor CS eligibility.
     }
     const atx::usize dates = panel_.dates();
     const atx::usize instruments = panel_.instruments();
@@ -1336,7 +1354,8 @@ private:
     // clear()s it before each rebuild, so no stale entry is ever read -> byte-identical
     // to the previous fresh-per-call vector. The Engine is single-owner per worker, so
     // this member is touched by exactly one thread at a time (no cross-worker sharing).
-    const CsRowsCtx ctx{in.op, x, g, z, out, scale_a, instruments, grouped, policy_.rank_ties};
+    const CsRowsCtx ctx{in.op, x, g, z, out, scale_a, instruments, grouped,
+                        policy_.rank_ties, cs_mask_};
     // Lane 2: date-band parallelism. Each band is a contiguous date range run by
     // ONE worker with ITS private valid/scratch, so every row executes the exact
     // serial row kernel — bit-identical for any band split or pool size.
@@ -1366,6 +1385,7 @@ private:
     atx::usize instruments;
     bool grouped;
     RankTies ties; // W0-A0 (A-01): rank-family tie policy
+    std::span<const atx::u8> mask;
   };
 
   // Run the Cs row kernel for dates [d0, d1) with the caller's scratch.
@@ -1380,7 +1400,9 @@ private:
           c.grouped ? c.g.subspan(d * instruments, instruments) : std::span<const atx::f64>{};
       const std::span<const atx::f64> zrow =
           c.z.empty() ? std::span<const atx::f64>{} : c.z.subspan(d * instruments, instruments);
-      cs_one_date(c.op, xr, grow, zrow, c.scale_a, orow, valid, scratch, c.ties);
+      const auto mask = c.mask.empty() ? std::span<const atx::u8>{}
+                                       : c.mask.subspan(d * instruments, instruments);
+      cs_one_date(c.op, xr, grow, zrow, c.scale_a, orow, valid, scratch, c.ties, mask);
     }
   }
 
@@ -1390,7 +1412,7 @@ private:
   static void cs_one_date(OpCode op, std::span<const atx::f64> x, std::span<const atx::f64> g,
                           std::span<const atx::f64> z, atx::f64 scale_a, std::span<atx::f64> out,
                           std::vector<atx::usize> &valid, detail::CsScratch &scratch,
-                          RankTies ties) {
+                          RankTies ties, std::span<const atx::u8> mask) {
     // INVARIANT (REQUIRED — not accidental): the forward scan produces `valid`
     // in strictly ascending instrument-index order, and every downstream kernel
     // depends on it for AuditExact-determinism:
@@ -1404,7 +1426,7 @@ private:
     valid.clear();
     for (atx::usize i = 0; i < x.size(); ++i) {
       out[i] = detail::kVmNaN; // default every cell (out-of-set stays NaN)
-      if (!detail::cs_is_nan(x[i])) {
+      if (!detail::cs_is_nan(x[i]) && (mask.empty() || mask[i] != 0U)) {
         valid.push_back(i);
       }
     }
@@ -1842,6 +1864,7 @@ private:
   const Panel &panel_;
   EvalMode mode_{EvalMode::AuditExact}; // determinism tier (p7 S3-1); default inert
   KernelPolicy policy_{};               // W0-A0 versioned kernel policies; default corrected
+  std::vector<atx::u8> cs_mask_;        // owned Cs* eligibility; empty preserves the default
   SlotPool pool_{1, 1};                // reused across calls; grown on demand
   std::vector<FieldId> field_remap_;   // program field id -> Panel FieldId scratch
   std::vector<atx::f64> ts_scratch_a_; // Ts* window scratch (sort/corr/cov); grown on demand
