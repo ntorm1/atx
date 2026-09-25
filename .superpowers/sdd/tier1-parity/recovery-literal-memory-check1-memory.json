@@ -1,0 +1,17 @@
+{
+  "command": [
+    "C:/atx/atx-db/.venv/Scripts/python.exe",
+    ".superpowers/sdd/tier1-parity/recovery-literal-memory-check.py",
+    "--output",
+    ".superpowers/sdd/tier1-parity/recovery-literal-memory-check1.json"
+  ],
+  "job_limit_gb": 0.5,
+  "status": "completed",
+  "headroom": {
+    "physical_free_gb": 4.3153839111328125,
+    "commit_free_gb": 6.46295166015625
+  },
+  "child_pid": 12612,
+  "returncode": 0,
+  "native_peak_job_memory_gb": 0.041278839111328125
+}

@@ -1,5 +1,16 @@
 # Bounded efficiency experiment — 2026-09-24
 
+LR2 short ledger-recovery trial: the first Python scalar binding was measured
+to import pandas/NumPy and add 548,102,144 private bytes. The recovery script now
+uses validated internal scalar SQL literals while retaining every full source
+count, receipt outcome, precise ledger predicate, transaction and checkpoint.
+Its actual helper contract passed at 0.041279GiB without those imports. Run the
+short recovery at 256MB/one thread under a 0.5GiB native cap with the existing
+guard's cap-plus-2GiB preflight, unchanged 1.5/3GiB host emergency stops and a
+3GiB data-disk floor. Actual full recovery peak is still unqualified until the
+live receipt succeeds. This does not lower the sustained requirements for long
+source/operator jobs or change the full CompanyFacts 4/6GiB,1.5GiB profile.
+
 Operator-only profile refinement: CC1 rebuilds only the small candidate index,
 with 256MB/one-thread connections and a streamed table-specific Parquet backup.
 SA1's retained-directory probe uses an 8MiB SQLite cache, streamed names and at
