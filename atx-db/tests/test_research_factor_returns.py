@@ -19,6 +19,7 @@ import pandas as pd
 
 from atx_db.connection import DuckDBStore
 from atx_db.market_daily import MARKET_DAILY_SOURCE_NAME
+from atx_db.research import evaluation as ev
 from atx_db.research import factor_returns as fr
 from atx_db.research import features as rf
 from atx_db.research.labels import MONTHLY_LABEL_SOURCE, MonthlyForwardLabelOptions, refresh_monthly_forward_labels
@@ -198,8 +199,9 @@ def _research(tmp_path, caps, rng):
             classification_basis, values_sha256, query_version, universe_rule, spec_json, spec_sha256, code_sha256,
             catalog_sha256, inputs_json, inputs_sha256, blockers_json, created_at, finished_at)
         VALUES ('fv_recon', 'sealed', 'reconstructed', 'panel_recon', ?, 'current_sic_backcast:FAMA_FRENCH_12', 'v',
-                '{rf.QUERY_VERSION}', '{rf.UNIVERSE_RULE}', '{{}}', 'x', 'x', ?, '{{}}', 'x', '[]', ?, ?)
-    """, ["a" * 64, "c" * 64, dt.datetime(2023, 7, 2), dt.datetime(2023, 7, 2)])
+                '{rf.QUERY_VERSION}', '{rf.UNIVERSE_RULE}', ?, 'x', 'x', ?, '{{}}', 'x', '[]', ?, ?)
+    """, ["a" * 64, json.dumps({"store_schema": ev.MIN_FEATURE_STORE_SCHEMA}), "c" * 64, dt.datetime(2023, 7, 2),
+          dt.datetime(2023, 7, 2)])
     _bulk(con, """INSERT INTO research_feature_matrix (feature_version, formation_date, security_id, feature_id,
                       owner_basis, expected_sign, available_at, raw_value, domain_status)
                   SELECT * FROM _rows""",
@@ -238,8 +240,8 @@ def test_factor_layer_end_to_end_on_a_planted_fixture(tmp_path):
         assert unlabeled == 0, table
 
     # Daily VW market: prior-session verified caps only (planted identity VW == M).
-    daily = con.execute("""SELECT period_date, window_start, factor_id, value, n_names, n_weighted,
-                                  n_excluded_unverified, n_excluded_no_weight, rf_basis
+    daily = con.execute("""SELECT period_date, window_start, factor_id, value, n_held, n_names, n_weighted,
+                                  n_excluded_unverified, n_excluded_no_weight, excluded_cap_share, rf_basis
                            FROM research_factor_returns WHERE run_id='p4_fixture' AND frequency='daily'""").df()
     daily["period_date"] = pd.to_datetime(daily["period_date"]).dt.date
     vw = daily[daily["factor_id"] == "mkt_vw"].set_index("period_date")
@@ -254,7 +256,10 @@ def test_factor_layer_end_to_end_on_a_planted_fixture(tmp_path):
     same_day = _vw(spiked, returns[SESSIONS.index(SPIKE_DAY)], VERIFIED_LINKED)
     assert abs(vw.loc[SPIKE_DAY, "value"] - same_day) > 1e-5      # same-session weights would have differed
     before = vw.loc[dt.date(2022, 5, 2)]
-    assert (before["n_weighted"], before["n_excluded_unverified"], before["n_excluded_no_weight"]) == (41, 5, 2)
+    assert (before["n_held"], before["n_names"], before["n_weighted"], before["n_excluded_unverified"],
+            before["n_excluded_no_weight"]) == (48, 48, 41, 5, 2)
+    linked_names = [i for i in range(N) if i not in UNLINKED]
+    assert abs(before["excluded_cap_share"] - caps[sorted(UNVERIFIED)].sum() / caps[linked_names].sum()) < 1e-12
 
     # The delisting's terminal return is the name's return on its effective session (EW includes it).
     ew = daily[daily["factor_id"] == "mkt_ew"].set_index("period_date")
@@ -264,11 +269,13 @@ def test_factor_layer_end_to_end_on_a_planted_fixture(tmp_path):
     assert ew.loc[SESSIONS[t_star + 1], "n_names"] == N - 1
     assert vw.loc[SESSIONS[t_star + 1], "n_excluded_unverified"] == 4
 
-    # Risk-free: the latest DTB3 observation dated before the period start; mkt_rf = VW - rf.
+    # Risk-free: the latest DTB3 discount rate dated before the period start, as a 91-day
+    # bond-equivalent yield y = 365 d / (360 - 91 d); mkt_rf = VW - rf.
     rfd = daily[daily["factor_id"] == "rf"].set_index("window_start")
     rfd.index = pd.to_datetime(rfd.index).date
-    assert abs(rfd.loc[dt.date(2022, 6, 1), "value"] - (1.05 ** (1 / 252) - 1)) < 1e-15
-    assert abs(rfd.loc[dt.date(2022, 6, 2), "value"] - (1.02 ** (1 / 252) - 1)) < 1e-15
+    for start, discount in ((dt.date(2022, 6, 1), 0.05), (dt.date(2022, 6, 2), 0.02)):
+        bey = 365 * discount / (360 - 91 * discount)
+        assert abs(rfd.loc[start, "value"] - ((1 + bey) ** (1 / 252) - 1)) < 1e-15
     excess = daily[daily["factor_id"] == "mkt_rf"].set_index("period_date")["value"]
     rf_by_day = daily[daily["factor_id"] == "rf"].set_index("period_date")["value"]
     assert float((excess - (vw["value"] - rf_by_day)).abs().max()) < 1e-15
@@ -288,7 +295,7 @@ def test_factor_layer_end_to_end_on_a_planted_fixture(tmp_path):
     ret = np.array([label[_sid(i)] for i in names])
     nyse = np.array([i in NYSE for i in names])
     size_cut = np.percentile(cap[nyse], 50)
-    small = cap <= size_cut
+    small = cap < size_cut        # a cap equal to the NYSE median is big (R3b size-bucket rule)
 
     def factor(feature, long_group, short_group):
         x = np.array([chars[(day, i)][feature] if not (feature == "book_to_market" and i == NEGATIVE_BOOK)
@@ -345,7 +352,24 @@ def test_factor_layer_end_to_end_on_a_planted_fixture(tmp_path):
     alpha = fr.span_test(spanned + 0.004, factors)
     assert null.alpha_robust_p > 0.05 and abs(null.betas["hml"] - 0.5) < 0.05
     assert alpha.alpha_robust_p < 1e-3 and abs(alpha.alpha - null.alpha - 0.004) < 1e-12
-    run_span = fr.span_test_against_run(research, "p4_fixture", fr.load_factor_returns(research, "p4_fixture")["umd"],
-                                        factors=("mkt_rf", "hml"))
+    wide = fr.load_factor_returns(research, "p4_fixture")
+    run_span = fr.span_test_against_run(research, "p4_fixture", wide["umd"], factors=("mkt_rf", "hml"))
     assert run_span.n_obs == int(monthly[(monthly["factor_id"] == "umd") & monthly["value"].notna()].shape[0])
+
+    # h > 1: a 3-month series spanned by UMD is tested on UMD compounded over the same three
+    # formations: no alpha (store path). On 1-month factors (the old path) a spanned series
+    # shows a spurious alpha, compounded it does not (the reviewer's T=600 case).
+    umd3 = fr.compound_factor_windows(wide, 3, factors=("umd",))["umd"]
+    spanned3 = (umd3 + np.random.default_rng(5).normal(0.0, 0.002, len(umd3))).dropna()
+    spanned3.index = spanned3.index.to_timestamp(how="end").normalize()
+    res3 = fr.span_test_against_run(research, "p4_fixture", spanned3, factors=("umd",), horizon_periods=3)
+    assert res3.n_obs == len(spanned3) == 27
+    assert abs(res3.betas["umd"] - 1.0) < 0.05 and res3.alpha_robust_p > 0.05
+    gen3 = np.random.default_rng(13)
+    umd = pd.DataFrame({"umd": gen3.normal(0.008, 0.04, 600)}, index=pd.date_range("1970-01-31", periods=600, freq="ME"))
+    target = fr.compound_factor_windows(umd, 3)["umd"]
+    target = target + gen3.normal(0.0, 0.01, len(target))
+    aligned = fr.span_test(target, fr.compound_factor_windows(umd, 3), horizon_periods=3)
+    misaligned = fr.span_test(target, fr.compound_factor_windows(umd, 1), horizon_periods=3)
+    assert aligned.alpha_robust_p > 0.05 and misaligned.alpha_robust_p < 1e-3
     research.close()

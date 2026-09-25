@@ -9,12 +9,19 @@ in the research store (RX6, never the warehouse):
   stays in: controller ruling on R2b I1) and value-weighted over valid primary lines with
   a **verified** (DEI) market cap only. Unverified vendor/archive caps never weight;
   every exclusion is counted per row. ``mkt_rf`` = VW market minus the risk-free rate.
-* **Style factors** SMB / HML / RMW / CMA (Fama-French 2015 2x3 sorts) and UMD (2x3 on
-  size and ``momentum_12_1``, Carhart 1997 / Fama-French), value-weighted, from R2b
-  **raw** features (``research_feature_matrix.raw_value``, in-domain rows only: e.g.
+* **Style factors** SMB / HML / RMW / CMA and UMD, built with the Fama-French 2015 2x3
+  *sort mechanics* (NYSE median size x NYSE 30/70 characteristic, value-weighted), from
+  R2b **raw** features (``research_feature_matrix.raw_value``, in-domain rows only: e.g.
   negative book is out of the B/M sort) and the R2a verified formation cap. ``smb`` is
   the FF5 average of the size legs of the B/M, OP and INV sorts (NULL unless all three
-  sorts form); ``smb_ff3`` is the size leg of the B/M sort alone.
+  sorts form); ``smb_ff3`` is the size leg of the B/M sort alone. **These are not Ken
+  French series** (:data:`FACTOR_CONSTRUCTS`, recorded in the run spec and on every style
+  row): every sort rebalances *monthly* on the current point-in-time characteristics
+  (FF rebalance in June on fiscal-year data); B/M divides the latest book equity by the
+  *current* market cap (Asness-Frazzini "HML devil" timing, not FF's December ME); OP is
+  TTM operating income over average total assets (Ball et al. 2015), not FF's
+  (revenue - COGS - SG&A - interest) / book equity; INV is the latest year-over-year
+  total-asset growth (FF: annual).
 * **Industry returns**: value-weighted per industry group of every taxonomy the R2b
   context carries (FF12 today: ``classification_basis`` of the version labels how the
   group was assigned). FF49 appears when an R2b version built with a FF49 taxonomy is
@@ -29,11 +36,13 @@ in the research store (RX6, never the warehouse):
   the daily VW market (``beta_mkt_252d`` / ``ivol_252d``: Frazzini-Pedersen 2014 and Ang
   et al. 2006 style inputs, plain OLS), and six-factor betas (``mkt_rf``, SMB, HML, UMD,
   RMW, CMA) with OLS standard errors from the trailing 36 monthly windows (at least 24).
-* :func:`span_test`: time-series regression of a long-short series on factor returns;
-  the alpha and every beta are tested with the R3a EWC fixed-b robust test
-  (:func:`atx_db.research.stats.mean_inference` on the regression influence series,
-  i.e. the EWC sandwich variance with a Student-t(B) reference; the Newey-West t is
-  reported beside it). ``horizon_periods`` handles overlapping h-month R3b series.
+* :func:`span_test`: time-series regression of a long-short series on factor returns
+  *over the same windows*; the alpha and every beta are tested with the R3a EWC fixed-b
+  robust test (:func:`atx_db.research.stats.mean_inference` on the regression influence
+  series, i.e. the EWC sandwich variance with a Student-t(B) reference; the Newey-West t
+  is reported beside it). For an overlapping h-month R3b series,
+  :func:`span_test_against_run` compounds each factor over the same h consecutive
+  formations (:func:`compound_factor_windows`) and tests with ``horizon_periods = h``.
 
 Breakpoints and venue (the R3b rule, reused)
 --------------------------------------------
@@ -43,9 +52,22 @@ valid cohort (valid primary lines with a verified cap). Breakpoints are percenti
 (numpy linear interpolation) of the point-in-time NYSE names of that universe when at
 least ``nyse_min_names`` of them have the variable (``venue_basis='nyse_pit'``), else of
 all names of the universe (``'all_names_fallback'``, controller ruling for R4 policy v2),
-else none. A value equal to a breakpoint goes to the lower group (the Fama-French rule of
-:func:`atx_db.research.evaluation.breakpoint_quantiles`). Every factor row, breakpoint,
-segment and exposure row carries ``basis``, ``venue_basis`` and ``rf_basis``.
+else none. Ties: a characteristic equal to a 30/70 breakpoint goes to the lower group
+(the rule of :func:`atx_db.research.evaluation.breakpoint_quantiles`); a cap equal to a
+size breakpoint (the 2x3 median split and the 20/50 segments) goes to the *upper* group,
+as R3b's size buckets do (the NYSE median of an odd reference set is the middle name's
+cap). Every factor row, breakpoint, segment and exposure row carries ``basis``,
+``venue_basis`` and ``rf_basis``.
+
+Counts on a return row
+----------------------
+``n_held``: names of the row's universe held for the period (all lines of the formation
+universe for market rows, the sort members for a style row, the group for an industry);
+``n_names``: those with a return for the period (a valid label; a return that day);
+``n_weighted``: those carrying weight (all of ``n_names`` for EW); ``n_excluded_unverified``
+and ``n_excluded_no_weight`` partition ``n_names - n_weighted``; ``n_unlabeled`` =
+``n_held - n_names``; ``excluded_cap_share`` = unverified (vendor/archive/class-sum) cap
+over all known cap of the linked names with a return (measurement only, never a weight).
 
 Return windows and clocks
 -------------------------
@@ -60,9 +82,12 @@ Return windows and clocks
   are the verified formation-date cap (a lagged cap: returns start at the entry close).
 * **Daily** rows are close-to-close returns of the selected bars (the label publisher's
   pick, ``adjusted_close``) of the names held from the formation close to the last
-  session of the next calendar month (a missing month never extends a hold). A return
-  after a halt is attributed to the day of the next trade (CRSP convention; counted as a
-  gap return). A delisting terminal return (R3a halt-gap dating,
+  session of the next calendar month, capped at the next formation (a missing month never
+  extends a hold, holds never overlap and a trade date appears once). A return after a
+  halt is attributed to the day of the next trade (CRSP convention; counted as a gap
+  return) when its start price lies within ``lookback_calendar_days`` before the
+  formation (a per-hold bound, so the result never depends on ``formation_chunk``). A
+  delisting terminal return (R3a halt-gap dating,
   ``effective_terminals_sql``) is the name's return on its effective delisting session
   (from the last trade price); prints after it are dropped. **VW weights are the
   verified market cap at the return's start-price session** (the prior session on a
@@ -82,13 +107,16 @@ Risk-free rate (ruling RX10)
 ----------------------------
 FRED ``DTB3`` (3-month T-bill, secondary market, discount basis, percent per year) from
 the graph CSV, fetched once into ``<data dir>/cache/P4-fred-dtb3/DTB3.csv``
-(:func:`fetch_fred_dtb3`). A period starting at session ``s`` earns
-``(1 + y/100)^(sessions/252) - 1`` with ``y`` the latest observation dated strictly
-before ``s`` (H.15 publishes a day's rate the next business day at 16:15 ET, before the
-22:00 UTC decision clock): ``rf_basis='fred_dtb3_prior_observation'``. The discount
-basis is used as an annual yield (a few basis points below the investment yield) and the
-FRED current vintage is used, not ALFRED. Without the cache every row says
-``rf_basis='none'`` and the excess returns equal the raw returns.
+(:func:`fetch_fred_dtb3`). The discount rate ``d`` is first converted to the 91-day
+bond-equivalent (investment) yield ``y = 365 d / (360 - 91 d)`` (a 5.2% discount rate is
+a 5.34% yield; at 15% it is 15.81%); a period starting at session ``s`` then earns
+``(1 + y)^(sessions/252) - 1`` with ``d`` the latest observation dated strictly before
+``s`` (H.15 publishes a day's rate the next business day at 16:15 ET, before the 22:00
+UTC decision clock): ``rf_basis='fred_dtb3_bey_prior_observation'``. Compounding the
+simple bond-equivalent yield annually understates the effective annual rate slightly
+(5.34% vs 5.45% at d = 5.2%). The FRED current vintage is used, not ALFRED. Without the
+cache every row says ``rf_basis='none'``: ``rf`` rows are NULL (status ``rf_basis_none``)
+and ``mkt_rf`` equals the raw VW market.
 """
 
 from __future__ import annotations
@@ -98,6 +126,7 @@ import contextlib
 import datetime as dt
 import hashlib
 import io
+import itertools
 import json
 import math
 import re
@@ -122,8 +151,8 @@ from .labels import _calendar_keys as _label_calendar_keys  # the label calendar
 from .panel import CALENDAR_FORMED, OWNER_LINK_FAILURES, VERIFIED_SHARES_SOURCES
 from .store import ResearchStore
 
-FACTOR_VERSION = "research-factor-returns-v1"
-FACTOR_SCHEMA_VERSION = 1
+FACTOR_VERSION = "research-factor-returns-v2"
+FACTOR_SCHEMA_VERSION = 2
 BASES = ("strict", "reconstructed")
 #: market_daily source of each basis (the R2a panel's own mapping).
 MARKET_SOURCES = {"strict": MARKET_DAILY_STRICT_SOURCE_NAME, "reconstructed": MARKET_DAILY_SOURCE_NAME}
@@ -133,8 +162,9 @@ VENUE_ALL_NAMES = "all_names_fallback"
 VENUE_NONE = "none"
 VENUE_NOT_APPLICABLE = "not_applicable"
 RF_NONE = "none"
-RF_DTB3 = "fred_dtb3_prior_observation"
-RF_CONVERSION = "(1 + DTB3/100)^(sessions/252) - 1, latest observation dated before the period start"
+RF_DTB3 = "fred_dtb3_bey_prior_observation"
+RF_CONVERSION = ("d = DTB3/100 (discount basis) of the latest observation dated before the period start; "
+                 "y = 365 d / (360 - 91 d) (91-day bond-equivalent yield); (1 + y)^(sessions/252) - 1")
 FRED_DTB3_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DTB3"
 #: Ruling RX10: the fetch is cached under a P4-prefixed cache directory.
 RF_CACHE_DIRNAME = "P4-fred-dtb3"
@@ -169,6 +199,28 @@ SIZE_PERCENTILE = 50.0
 SEGMENT_PERCENTILES = (20.0, 50.0)
 SIZE_SEGMENTS = ("micro", "small", "large")
 EXPOSURE_ESTIMATED = "estimated"
+STATUS_RF_NONE = "rf_basis_none"
+STATUS_NO_RF = "no_risk_free_observation"
+REBALANCE = "monthly"
+#: What each style factor is, and how it deviates from the Ken French series (M7).
+FACTOR_CONSTRUCTS: dict[str, dict[str, str]] = {
+    "hml": {"construct": "2x3 NYSE median size x NYSE 30/70 book_to_market, VW, monthly rebalance",
+            "construct_deviation": "B/M = latest common book equity (filing clock) / current market cap at each "
+                                   "monthly formation (HML-devil timing); FF: June rebalance, December ME"},
+    "rmw": {"construct": "2x3 NYSE median size x NYSE 30/70 operating_profitability, VW, monthly rebalance",
+            "construct_deviation": "OP = TTM operating income / average total assets (Ball et al. 2015); "
+                                   "FF: (revenue - COGS - SG&A - interest) / book equity, annual"},
+    "cma": {"construct": "2x3 NYSE median size x NYSE 30/70 asset_growth (long low growth), VW, monthly rebalance",
+            "construct_deviation": "INV = latest year-over-year total-asset growth (quarterly states); FF: annual "
+                                   "total-asset growth, June rebalance"},
+    "umd": {"construct": "2x3 NYSE median size x NYSE 30/70 momentum_12_1, VW, monthly rebalance",
+            "construct_deviation": "momentum = return from 252 to 21 sessions before formation (FF/French UMD: "
+                                   "months t-12..t-2); otherwise the French construction"},
+    "smb": {"construct": "FF5 SMB: mean of the size legs of the monthly B/M, OP and INV 2x3 sorts",
+            "construct_deviation": "inherits the monthly rebalance and characteristic deviations of hml/rmw/cma"},
+    "smb_ff3": {"construct": "size leg of the monthly B/M 2x3 sort",
+                "construct_deviation": "inherits the hml deviations"},
+}
 
 _ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -294,13 +346,20 @@ class RiskFreeSeries:
         position = np.searchsorted(self.observation_dates, query, side="left") - 1
         return np.where(position >= 0, self.annual_percent[np.maximum(position, 0)], _NAN)
 
+    def bond_equivalent_yield_before(self, days: Any) -> np.ndarray:
+        """91-day bond-equivalent yield ``365 d / (360 - 91 d)`` of the discount rate ``d`` dated
+        strictly before each day (decimal; NaN without an observation)."""
+        discount = self.annual_rate_before(days) / 100.0
+        return 365.0 * discount / (360.0 - 91.0 * discount)
+
     def period_returns(self, starts: Any, sessions: int | np.ndarray) -> np.ndarray:
-        """Return over ``sessions`` sessions of a period starting at each date (0 without a source)."""
+        """Return over ``sessions`` sessions of a period starting at each date: ``(1 + y)^(sessions/252)
+        - 1`` with ``y`` the bond-equivalent yield (0 without a source, NaN without an observation)."""
         query = np.asarray(starts, dtype="datetime64[D]")
         if self.basis == RF_NONE:
             return np.zeros(query.shape)
-        rate = self.annual_rate_before(query)
-        return np.power(1.0 + rate / 100.0, np.asarray(sessions, dtype=float) / SESSIONS_PER_YEAR) - 1.0
+        return np.power(1.0 + self.bond_equivalent_yield_before(query),
+                        np.asarray(sessions, dtype=float) / SESSIONS_PER_YEAR) - 1.0
 
     def manifest(self) -> dict[str, Any]:
         first = str(self.observation_dates[0]) if len(self.observation_dates) else None
@@ -444,7 +503,10 @@ def spec_payload(spec: FactorSpec) -> dict[str, Any]:
                    sort_percentiles=list(SORT_PERCENTILES), size_percentile=SIZE_PERCENTILE,
                    segment_percentiles=list(SEGMENT_PERCENTILES),
                    verified_shares_sources=list(VERIFIED_SHARES_SOURCES),
-                   breakpoint_rule="numpy linear percentile; value <= breakpoint -> lower group")
+                   breakpoint_rule=("numpy linear percentile; characteristic <= breakpoint -> lower group; "
+                                    "cap == size breakpoint -> upper group (R3b size buckets)"),
+                   rebalance=REBALANCE, factor_constructs=FACTOR_CONSTRUCTS, rf_conversion=RF_CONVERSION,
+                   hold_rule="formation close to the last session of the next month, capped at the next formation")
     return payload
 
 
@@ -466,7 +528,11 @@ _RETURN_COLUMNS = (
     ("n_names", "BIGINT"), ("n_weighted", "BIGINT"), ("n_excluded_unverified", "BIGINT"),
     ("n_excluded_no_weight", "BIGINT"), ("n_unlabeled", "BIGINT"), ("available_at", "TIMESTAMP"),
     ("basis", "VARCHAR"), ("venue_basis", "VARCHAR"), ("rf_basis", "VARCHAR"), ("weighting", "VARCHAR"),
-    ("universe_scope", "VARCHAR"), ("status", "VARCHAR"), ("detail_json", "VARCHAR"))
+    ("universe_scope", "VARCHAR"), ("status", "VARCHAR"), ("detail_json", "VARCHAR"),
+    ("n_held", "BIGINT"), ("excluded_cap_share", "DOUBLE"))
+#: Schema v1 -> v2 (P4 fix 1, M5): columns added in place to a v1 store.
+_V2_COLUMNS = (("research_factor_returns", "n_held", "BIGINT"),
+               ("research_factor_returns", "excluded_cap_share", "DOUBLE"))
 _BREAKPOINT_COLUMNS = (
     ("run_id", "VARCHAR"), ("formation_date", "DATE"), ("variable", "VARCHAR"), ("venue_basis", "VARCHAR"),
     ("reference_names", "BIGINT"), ("universe_names", "BIGINT"), ("p20", "DOUBLE"), ("p30", "DOUBLE"),
@@ -495,19 +561,22 @@ _ORDER = {"returns": "frequency, period_date, factor_id", "breakpoints": "format
 
 
 def ensure_factor_schema(con: duckdb.DuckDBPyConnection) -> None:
-    """Create the ``research_factor_*`` tables (schema v1). Result tables have no primary
-    key (an index over every exposure row is not worth its memory); runs replace by run_id."""
+    """Create or migrate the ``research_factor_*`` tables (schema v2; a v1 store gains the v2
+    columns in place). Result tables have no primary key (an index over every exposure row
+    is not worth its memory); runs replace by run_id. Inserts name their columns."""
     con.execute("CREATE TABLE IF NOT EXISTS research_factor_schema (version INTEGER PRIMARY KEY, "
                 "name VARCHAR NOT NULL, applied_at TIMESTAMP NOT NULL)")
     versions = {int(row[0]) for row in con.execute("SELECT version FROM research_factor_schema").fetchall()}
-    if versions - {FACTOR_SCHEMA_VERSION}:
+    if versions - {1, FACTOR_SCHEMA_VERSION}:
         raise RuntimeError(f"research factor schema has unknown versions {sorted(versions)}; code is older")
     if FACTOR_SCHEMA_VERSION in versions:
         return
     for table, columns in _TABLES.values():
         con.execute(f"CREATE TABLE IF NOT EXISTS {table} ({', '.join(f'{c} {t}' for c, t in columns)})")
+    for table, column, kind in _V2_COLUMNS:  # a no-op on a fresh store
+        con.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {kind}")
     con.execute("INSERT INTO research_factor_schema VALUES (?, ?, ?)",
-                [FACTOR_SCHEMA_VERSION, "factor_returns_v1", _now()])
+                [FACTOR_SCHEMA_VERSION, "factor_returns_v2_held_and_cap_share", _now()])
 
 
 _NUMERIC = ("DOUBLE", "BIGINT", "INTEGER")
@@ -551,7 +620,8 @@ def _stage_frame(con: duckdb.DuckDBPyConnection, name: str, frame: pd.DataFrame,
         return 0
     con.register("_p4_frame", _normalized(frame, columns))
     try:
-        con.execute(f"INSERT INTO {into or name} SELECT {_select(columns)} FROM _p4_frame")
+        con.execute(f"INSERT INTO {into or name} ({', '.join(c for c, _ in columns)}) "
+                    f"SELECT {_select(columns)} FROM _p4_frame")
     finally:
         con.unregister("_p4_frame")
     return len(frame)
@@ -580,9 +650,15 @@ def reference_names(values: np.ndarray, universe: np.ndarray, nyse: np.ndarray,
     return None, VENUE_NONE
 
 
-def assign_groups(values: np.ndarray, breaks: np.ndarray, member: np.ndarray) -> np.ndarray:
-    """Group 1..len(breaks)+1 (a value equal to a breakpoint goes to the lower group); 0 outside."""
-    groups = np.searchsorted(np.asarray(breaks, dtype=float), np.nan_to_num(values), side="left") + 1
+def assign_groups(values: np.ndarray, breaks: np.ndarray, member: np.ndarray, *, ties: str = "lower"
+                  ) -> np.ndarray:
+    """Group 1..len(breaks)+1; 0 outside. A value equal to a breakpoint goes to the lower
+    group (``ties='lower'``: characteristic sorts, R3b ``breakpoint_quantiles``) or to the
+    upper group (``ties='upper'``: size, R3b ``_size_buckets``)."""
+    if ties not in ("lower", "upper"):
+        raise ValueError("ties must be 'lower' or 'upper'")
+    side = "left" if ties == "lower" else "right"
+    groups = np.searchsorted(np.asarray(breaks, dtype=float), np.nan_to_num(values), side=side) + 1
     return np.where(member & np.isfinite(values), groups, 0).astype(np.int8)
 
 
@@ -674,20 +750,31 @@ def span_test(ls_returns: pd.Series | Sequence[float], factors: pd.DataFrame | M
               horizon_periods: int = 1) -> SpanTestResult:
     """Alpha of a long-short series beyond known factors, EWC fixed-b robust (R3a).
 
-    ``ls_returns`` and ``factors`` are aligned on the series index (formation dates when
-    both come from the store; positions otherwise); the series' order is the calendar, a
-    formation missing from either side keeps its position as a gap in every HAC sum.
-    Each coefficient is tested by :func:`stats.mean_inference` on its OLS influence series
-    ``b_j + [(X'X/n)^-1 x_t e_t]_j`` (mean ``b_j``, long-run variance = the sandwich), so
-    ``robust_p_value`` / ``z_equivalent`` / ``hlz_pass`` are the EWC Student-t(B) test and
-    ``nw_*`` the Newey-West comparison, with ``horizon_periods = h`` for overlapping
-    h-month series.
+    **The factors must cover the same window as each series value**: an overlapping
+    h-month series needs h-month compounded factors (:func:`compound_factor_windows`;
+    :func:`span_test_against_run` does this), else beta captures about 1/h of the
+    co-movement and alpha absorbs the rest of the premia. ``ls_returns`` and ``factors``
+    are aligned on the series index (a date or period index is sorted first; positions
+    otherwise). The calendar is the series' index: a period missing from the factors keeps
+    its position as a gap in every HAC sum, but a period *absent from the series index* is
+    not a gap, so pass a complete calendar with NaN rows (the run helper reindexes onto the
+    monthly calendar). Each coefficient is tested by :func:`stats.mean_inference` on its
+    OLS influence series ``b_j + [(X'X/n)^-1 x_t e_t]_j`` (mean ``b_j``, long-run variance
+    = the sandwich), so ``robust_p_value`` / ``z_equivalent`` / ``hlz_pass`` are the EWC
+    Student-t(B) test and ``nw_*`` the Newey-West comparison, with ``horizon_periods = h``
+    for overlapping h-month series.
     """
     y = ls_returns if isinstance(ls_returns, pd.Series) else pd.Series(list(ls_returns), dtype=float)
     frame = factors if isinstance(factors, pd.DataFrame) else pd.DataFrame(dict(factors))
     if not len(frame.columns):
         raise FactorInputError("span_test needs at least one factor")
+    if isinstance(y.index, (pd.DatetimeIndex, pd.PeriodIndex)):
+        if y.index.has_duplicates:
+            raise FactorInputError("span_test: duplicate periods in the long-short series")
+        y = y.sort_index()
     if isinstance(ls_returns, pd.Series) and isinstance(factors, pd.DataFrame):
+        if frame.index.has_duplicates:
+            raise FactorInputError("span_test: duplicate periods in the factors")
         frame = frame.reindex(y.index)
     elif len(frame) != len(y):
         raise FactorInputError("unindexed ls_returns and factors must have equal length")
@@ -793,6 +880,10 @@ def _stage(store: ResearchStore, spec: FactorSpec, table: _evaluation.FeatureTab
     for day in sessions:
         month_last[(day.year, day.month)] = day
     formations = []
+    formed_days = [pd.Timestamp(value).date() for value in formed["formation_date"]]
+    if any(later <= earlier for earlier, later in itertools.pairwise(formed_days)):
+        raise FactorInputError("panel formations are not strictly increasing in date")
+    next_formed = dict(zip(formed_days, [*formed_days[1:], None], strict=True))
     for row in formed.itertuples(index=False):
         day = pd.Timestamp(row.formation_date).date()
         entry = pd.Timestamp(row.entry_date).date()
@@ -804,6 +895,9 @@ def _stage(store: ResearchStore, spec: FactorSpec, table: _evaluation.FeatureTab
                                              + dt.timedelta(days=1, hours=12)) <= spec.label_cutoff
         following = (day.year + day.month // 12, day.month % 12 + 1)
         hold_end = month_last.get(following)
+        following_formation = next_formed[day]
+        if hold_end is not None and following_formation is not None:
+            hold_end = min(hold_end, following_formation)   # holds never overlap (M10)
         formations.append(_Formation(int(row.month_index), day, pd.Timestamp(row.cutoff).to_pydatetime(), entry,
                                      session, aligned, label_end, matured,
                                      hold_end if hold_end is not None and hold_end > day else None))
@@ -815,7 +909,8 @@ def _stage(store: ResearchStore, spec: FactorSpec, table: _evaluation.FeatureTab
         WITH cap AS (
             SELECT formation_date, security_id,
                    max(raw_value) FILTER (WHERE size_status = ?) AS market_cap,
-                   bool_or(size_status IS DISTINCT FROM ?) AS unverified_cap
+                   bool_or(size_status IS DISTINCT FROM ?) AS unverified_cap,
+                   max(raw_value) FILTER (WHERE size_status IS DISTINCT FROM ?) AS unverified_value
             FROM research_panel_values
             WHERE run_id=? AND metric_code='market_cap' AND metric_window='daily' AND reason='valid'
               AND raw_value > 0 AND isfinite(raw_value)
@@ -826,6 +921,7 @@ def _stage(store: ResearchStore, spec: FactorSpec, table: _evaluation.FeatureTab
                    bool_or(coalesce(c.primary_line, false)) AS primary_line,
                    bool_or(coalesce(c.eligible, false) AND list_contains(?::VARCHAR[], c.cohort_reason)) AS unlinked,
                    max(cap.market_cap) AS market_cap, coalesce(bool_or(cap.unverified_cap), false) AS unverified_cap,
+                   max(cap.unverified_value) AS unverified_value,
                    bool_or(p.security IS NOT NULL) AS venue_pit,
                    bool_or(coalesce(p.exchange_code = ?, false)) AS nyse
             FROM research_panel_cohort c
@@ -840,9 +936,12 @@ def _stage(store: ResearchStore, spec: FactorSpec, table: _evaluation.FeatureTab
                unlinked AND NOT (valid_member AND primary_line) AS unlinked,
                CASE WHEN valid_member AND primary_line THEN market_cap END AS market_cap,
                valid_member AND primary_line AND market_cap IS NULL AND unverified_cap AS unverified_cap,
+               -- measurement only (excluded_cap_share), never a weight
+               CASE WHEN valid_member AND primary_line AND market_cap IS NULL THEN unverified_value END
+                 AS unverified_value,
                venue_pit, nyse
         FROM members WHERE (valid_member AND primary_line) OR unlinked
-    """, [verified, verified, table.panel_run_id, list(OWNER_LINK_FAILURES), NYSE_EXCHANGE_CODE,
+    """, [verified, verified, verified, table.panel_run_id, list(OWNER_LINK_FAILURES), NYSE_EXCHANGE_CODE,
           table.panel_run_id])
     diag: dict[str, Any] = {"size_verified_status": verified}
 
@@ -957,7 +1056,8 @@ def _monthly_labels(con: duckdb.DuckDBPyConnection, spec: FactorSpec, formations
 def _chunk_frame(con: duckdb.DuckDBPyConnection, months: list[int], labels: pd.DataFrame,
                  work: _Work) -> pd.DataFrame:
     frame = con.execute("""
-        SELECT month_index, security, security_id, linked, unlinked, market_cap, unverified_cap, venue_pit, nyse
+        SELECT month_index, security, security_id, linked, unlinked, market_cap, unverified_cap, unverified_value,
+               venue_pit, nyse
         FROM _p4_context WHERE list_contains(?::BIGINT[], month_index) ORDER BY month_index, security
     """, [months]).df()
     chars = con.execute("SELECT month_index, security, feature_id, value FROM _p4_chars "
@@ -1004,34 +1104,49 @@ def _monthly_formation(f: _Formation, part: pd.DataFrame, spec: FactorSpec, work
             "window_start": f.entry_date, "window_end": f.label_end, "basis": work.basis, "rf_basis": rf_basis}
     out: dict[str, list[dict[str, Any]]] = {"returns": [], "breakpoints": [], "segments": [], "mf": []}
     matured = f.label_matured
+    unverified_value = _floats(part, "unverified_value")
+    excluded_cap = np.where(unverified & np.isfinite(unverified_value), unverified_value, 0.0)
+    known_cap = np.where(verified, cap, excluded_cap)
+
+    def counts(held: np.ndarray, weighted: np.ndarray | None) -> dict[str, Any]:
+        """The module's count semantics (docstring "Counts on a return row")."""
+        names = held & labeled
+        used = names if weighted is None else names & weighted
+        total = float(known_cap[names & linked].sum())
+        share = float(excluded_cap[names & linked].sum() / total) if weighted is not None and total > 0 else None
+        return {"n_held": int(held.sum()), "n_names": int(names.sum()), "n_weighted": int(used.sum()),
+                "n_excluded_unverified": int((names & ~used & unverified).sum()),
+                "n_excluded_no_weight": int((names & ~used & ~unverified).sum()),
+                "n_unlabeled": int((held & ~labeled).sum()), "excluded_cap_share": share}
 
     if matured:
-        ew_mask = universe & labeled
-        vw_mask = verified & labeled
         common = {"venue_basis": VENUE_NOT_APPLICABLE}
+        ew_mask = universe & labeled
         ew = float(ret[ew_mask].mean()) if ew_mask.any() else _NAN
-        vw = _vw(ret, weight, vw_mask)
-        vw_counts = {"n_names": int((verified).sum()), "n_weighted": int(vw_mask.sum()),
-                     "n_excluded_unverified": int((unverified & labeled).sum()),
-                     "n_excluded_no_weight": int((universe & labeled & ~verified & ~unverified).sum()),
-                     "n_unlabeled": int((verified & ~labeled).sum()),
-                     "available_at": _max_stamp(ret_at, vw_mask), "weighting": WEIGHT_FORMATION_CAP,
-                     "universe_scope": SCOPE_VERIFIED, **common}
-        out["returns"].append(_market_row(base, "mkt_ew", ew, n_names=int(universe.sum()),
-                                          n_weighted=int(ew_mask.sum()), n_unlabeled=int((universe & ~labeled).sum()),
+        vw = _vw(ret, weight, verified & labeled)
+        vw_counts = {**counts(universe, verified), "available_at": _max_stamp(ret_at, verified & labeled),
+                     "weighting": WEIGHT_FORMATION_CAP, "universe_scope": SCOPE_VERIFIED, **common}
+        out["returns"].append(_market_row(base, "mkt_ew", ew, **counts(universe, None),
                                           available_at=_max_stamp(ret_at, ew_mask), weighting=WEIGHT_EQUAL,
                                           universe_scope=SCOPE_ALL_LINES, **common))
-        out["returns"].append(_market_row(base, "mkt_vw", vw, **vw_counts))
-        rf_row = _market_row(base, "rf", rf_m, n_names=0, n_weighted=0, available_at=f.cutoff, weighting="none",
-                             universe_scope=VENUE_NOT_APPLICABLE, **common)
-        rf_row["status"] = STATUS_COMPUTED if _float(rf_m) is not None else "no_risk_free_observation"
+        mkt_vw = _market_row(base, "mkt_vw", vw, **vw_counts)
+        if mkt_vw["value"] is None:
+            mkt_vw["status"] = "no_weighted_names"
+        out["returns"].append(mkt_vw)
+        rf_value = None if rf_basis == RF_NONE else _float(rf_m)
+        rf_row = _market_row(base, "rf", _NAN if rf_value is None else rf_value, n_held=0, n_names=0, n_weighted=0,
+                             available_at=f.cutoff, weighting="none", universe_scope=VENUE_NOT_APPLICABLE, **common)
+        rf_row["status"] = (STATUS_RF_NONE if rf_basis == RF_NONE else
+                            STATUS_COMPUTED if rf_value is not None else STATUS_NO_RF)
         out["returns"].append(rf_row)
         excess = vw - rf_m if math.isfinite(vw) and math.isfinite(rf_m) else _NAN
-        out["returns"].append(_market_row(base, "mkt_rf", excess, **vw_counts))
-        at_mkt = vw_counts["available_at"]
-        out["mf"] += [{"factor_id": "rf", "value": _float(rf_m), "available_at": f.cutoff,
+        mkt_rf = _market_row(base, "mkt_rf", excess, **vw_counts)
+        if mkt_rf["value"] is None:
+            mkt_rf["status"] = "no_weighted_names" if not math.isfinite(vw) else STATUS_NO_RF
+        out["returns"].append(mkt_rf)
+        out["mf"] += [{"factor_id": "rf", "value": rf_value, "available_at": f.cutoff,
                        "venue_basis": VENUE_NOT_APPLICABLE},
-                      {"factor_id": "mkt_rf", "value": _float(excess), "available_at": at_mkt,
+                      {"factor_id": "mkt_rf", "value": _float(excess), "available_at": vw_counts["available_at"],
                        "venue_basis": VENUE_NOT_APPLICABLE}]
 
     # Breakpoints on the valid cohort with a verified cap (sorts) and the A3 segments.
@@ -1055,7 +1170,7 @@ def _monthly_formation(f: _Formation, part: pd.DataFrame, spec: FactorSpec, work
     top, total = spec.rank_segments
     segment = np.full(len(part), "unknown", dtype=object)
     if size_ref is not None:
-        groups = assign_groups(cap, np.percentile(cap[size_ref], list(SEGMENT_PERCENTILES)), verified)
+        groups = assign_groups(cap, np.percentile(cap[size_ref], list(SEGMENT_PERCENTILES)), verified, ties="upper")
         segment[groups > 0] = np.array(SIZE_SEGMENTS, dtype=object)[groups[groups > 0] - 1]
     order = np.lexsort((security_id.astype(str), -np.where(verified, cap, -np.inf)))
     rank = np.zeros(len(part), dtype=np.int64)
@@ -1075,7 +1190,7 @@ def _monthly_formation(f: _Formation, part: pd.DataFrame, spec: FactorSpec, work
         return out
 
     # 2x3 sorts: size (NYSE median) x characteristic (NYSE 30/70), value-weighted by verified cap.
-    size_group = (assign_groups(cap, np.percentile(cap[size_ref], [SIZE_PERCENTILE]), verified)
+    size_group = (assign_groups(cap, np.percentile(cap[size_ref], [SIZE_PERCENTILE]), verified, ties="upper")
                   if size_ref is not None else np.zeros(len(part), dtype=np.int8))
     smb_legs: dict[str, float] = {}
     style_at: dict[str, dt.datetime | None] = {}
@@ -1084,15 +1199,13 @@ def _monthly_formation(f: _Formation, part: pd.DataFrame, spec: FactorSpec, work
         values, reference, char_venue = variables[feature]
         venue = _combine_venues(size_venue, char_venue)
         venues[factor] = venue
-        has = verified & np.isfinite(values)
         detail: dict[str, Any] = {"characteristic": feature, "size_venue": size_venue, "char_venue": char_venue,
-                                  "long_group": long_group, "short_group": short_group}
+                                  "long_group": long_group, "short_group": short_group, "rebalance": REBALANCE,
+                                  **FACTOR_CONSTRUCTS[factor]}
+        # Held: linked lines with the characteristic; weighted: those with a verified cap.
         row = dict(base, factor_family=FAMILY_STYLE, factor_id=factor, venue_basis=venue,
-                   weighting=WEIGHT_FORMATION_CAP, universe_scope=SCOPE_VERIFIED,
-                   n_names=int(has.sum()), n_weighted=int((has & labeled).sum()),
-                   n_excluded_unverified=int((unverified & np.isfinite(values)).sum()),
-                   n_excluded_no_weight=int((universe & ~verified & ~unverified & np.isfinite(values)).sum()),
-                   n_unlabeled=int((has & ~labeled).sum()), value=None)
+                   weighting=WEIGHT_FORMATION_CAP, universe_scope=SCOPE_VERIFIED, value=None,
+                   **counts(linked & np.isfinite(values), verified))
         if feature not in work.characteristics:
             row["status"] = "characteristic_not_in_feature_version"
         elif reference is None or size_ref is None:
@@ -1100,7 +1213,7 @@ def _monthly_formation(f: _Formation, part: pd.DataFrame, spec: FactorSpec, work
         else:
             char_group = assign_groups(values, np.percentile(values[reference], list(SORT_PERCENTILES)), verified)
             portfolio: dict[tuple[int, int], float] = {}
-            counts: dict[str, list[Any]] = {}
+            portfolio_legs: dict[str, list[Any]] = {}
             members_all = np.zeros(len(part), dtype=bool)
             for size in (1, 2):
                 for group in (1, 2, 3):
@@ -1108,10 +1221,10 @@ def _monthly_formation(f: _Formation, part: pd.DataFrame, spec: FactorSpec, work
                     used = members & labeled
                     members_all |= used
                     portfolio[(size, group)] = _vw(ret, weight, used)
-                    counts[f"{'SB'[size - 1]}{group}"] = [int(members.sum()), int(used.sum()),
+                    portfolio_legs[f"{'SB'[size - 1]}{group}"] = [int(members.sum()), int(used.sum()),
                                                           _float(portfolio[(size, group)])]
-            detail["portfolios"] = counts
-            thin = [key for key, (_, used, _) in counts.items() if used < spec.min_portfolio_names]
+            detail["portfolios"] = portfolio_legs
+            thin = [key for key, (_, used, _) in portfolio_legs.items() if used < spec.min_portfolio_names]
             if thin:
                 row["status"] = "thin_portfolio:" + ",".join(thin)
             else:
@@ -1135,7 +1248,8 @@ def _monthly_formation(f: _Formation, part: pd.DataFrame, spec: FactorSpec, work
             base, factor_family=FAMILY_STYLE, factor_id=factor, value=_float(value), venue_basis=venue,
             weighting=WEIGHT_FORMATION_CAP, universe_scope=SCOPE_VERIFIED, available_at=at,
             status=STATUS_COMPUTED if value is not None else "component_sort_not_formed",
-            detail_json=_canonical({"size_legs_of": list(legs)})))
+            detail_json=_canonical({"size_legs_of": list(legs), "rebalance": REBALANCE,
+                                    **FACTOR_CONSTRUCTS[factor]})))
     for row in out["returns"]:
         if row["factor_family"] == FAMILY_STYLE and row["factor_id"] in EXPOSURE_FACTORS:
             out["mf"].append({"factor_id": row["factor_id"], "value": row["value"],
@@ -1153,10 +1267,7 @@ def _monthly_formation(f: _Formation, part: pd.DataFrame, spec: FactorSpec, work
             value = _vw(ret, weight, used)
             out["returns"].append(dict(
                 base, factor_family=FAMILY_INDUSTRY, factor_id=f"ind_{_slug(taxonomy)}_{_slug(group)}",
-                value=_float(value), n_names=int(members.sum()), n_weighted=int(used.sum()),
-                n_excluded_unverified=int((members & unverified & labeled).sum()),
-                n_excluded_no_weight=int((members & ~verified & ~unverified & labeled).sum()),
-                n_unlabeled=int((members & verified & ~labeled).sum()), available_at=_max_stamp(ret_at, used),
+                value=_float(value), **counts(members, verified), available_at=_max_stamp(ret_at, used),
                 venue_basis=VENUE_NOT_APPLICABLE, weighting=WEIGHT_FORMATION_CAP, universe_scope=SCOPE_VERIFIED,
                 status=STATUS_COMPUTED if _float(value) is not None else "no_weighted_names",
                 detail_json=_canonical({"taxonomy": taxonomy, "classification_basis": classification,
@@ -1207,8 +1318,12 @@ def _daily_chunk(store: ResearchStore, spec: FactorSpec, work: _Work, chunk: Seq
     low = min(f.formation_date for f in holds) - dt.timedelta(days=spec.lookback_calendar_days)
     high = max(f.hold_end for f in holds if f.hold_end is not None)
     _stage_bars(con, "_p4_bars", "_p4_hold_ids", low, high, spec.label_cutoff)
+    held = dict(con.execute("SELECT month_index, count(*) FROM _p4_hold GROUP BY month_index").fetchall())
     # Bar returns (prints on/after a terminal's effective date are dropped) and terminal returns.
-    con.execute("""
+    # A bar return counts only when its start price lies within the lookback before the hold's own
+    # formation (a per-hold bound, so the chunking never changes a result, M4); a terminal row's
+    # start is the run-level last trade before delisting and is exempt (a delisting loss never drops).
+    con.execute(f"""
         CREATE OR REPLACE TEMP TABLE _p4_held_ret AS
         WITH ret AS (
             SELECT b.security_id, b.trade_date, b.session_number, b.start_date, b.start_session,
@@ -1228,22 +1343,26 @@ def _daily_chunk(store: ResearchStore, spec: FactorSpec, work: _Work, chunk: Seq
         SELECT h.month_index, h.linked, r.*
         FROM ret r JOIN _p4_hold h
           ON h.security_id = r.security_id AND r.trade_date > h.formation_date AND r.trade_date <= h.hold_end
+         AND (r.terminal OR r.start_date >= h.formation_date - INTERVAL {int(spec.lookback_calendar_days)} DAY)
     """)
-    if work.has_market_daily:
+    starts = con.execute("SELECT min(start_date), max(start_date) FROM _p4_held_ret").fetchone()
+    if work.has_market_daily and starts is not None and starts[0] is not None:
+        # The cap at exactly each return's start-price session (the date range only prunes).
         con.execute("""
             CREATE OR REPLACE TEMP TABLE _p4_caps AS
-            SELECT security_id, trade_date,
-                   arg_max(struct_pack(cap := market_cap, src := shares_source, clock := available_at),
-                           (available_at, market_daily_id)) AS pick
-            FROM market_daily_metrics
-            WHERE source = ? AND security_id IN (SELECT security_id FROM _p4_hold_ids)
-              AND trade_date BETWEEN ? AND ?
-              AND available_at <= CAST(trade_date AS TIMESTAMP) + INTERVAL 22 HOUR AND as_of_date <= trade_date
+            SELECT m.security_id, m.trade_date,
+                   arg_max(struct_pack(cap := m.market_cap, src := m.shares_source, clock := m.available_at),
+                           (m.available_at, m.market_daily_id)) AS pick
+            FROM market_daily_metrics m
+            JOIN (SELECT DISTINCT security_id, start_date FROM _p4_held_ret WHERE start_date IS NOT NULL) k
+              ON k.security_id = m.security_id AND k.start_date = m.trade_date
+            WHERE m.source = ? AND m.trade_date BETWEEN ? AND ?
+              AND m.available_at <= CAST(m.trade_date AS TIMESTAMP) + INTERVAL 22 HOUR AND m.as_of_date <= m.trade_date
             GROUP BY ALL
-        """, [work.market_source, low, high])
+        """, [work.market_source, starts[0], starts[1]])
     else:
         con.execute("CREATE OR REPLACE TEMP TABLE _p4_caps (security_id VARCHAR, trade_date DATE, "
-                    "pick STRUCT(cap DOUBLE, src VARCHAR, at TIMESTAMP))")
+                    "pick STRUCT(cap DOUBLE, src VARCHAR, clock TIMESTAMP))")
     days = con.execute("""
         WITH joined AS (
             SELECT r.*, struct_extract(c.pick, 'cap') AS cap, struct_extract(c.pick, 'clock') AS cap_at,
@@ -1254,11 +1373,16 @@ def _daily_chunk(store: ResearchStore, spec: FactorSpec, work: _Work, chunk: Seq
             LEFT JOIN _p4_caps c ON c.security_id = r.security_id AND c.trade_date = r.start_date
         ), flagged AS (SELECT *, linked AND has_cap AND dei AS weighted FROM joined)
         SELECT trade_date, any_value(session_number) AS session_number, min(month_index) AS month_index,
-               count(*) AS n_names, avg(ret) AS ew,
+               count(DISTINCT month_index) AS n_formations, count(DISTINCT security_id) AS n_securities,
+               -- ordered sums: floating-point results never depend on staging row order (chunking)
+               count(*) AS n_names, avg(ret ORDER BY security_id) AS ew,
                count(*) FILTER (WHERE weighted) AS n_weighted,
-               sum(cap * ret) FILTER (WHERE weighted) / sum(cap) FILTER (WHERE weighted) AS vw,
+               sum(cap * ret ORDER BY security_id) FILTER (WHERE weighted)
+                 / sum(cap ORDER BY security_id) FILTER (WHERE weighted) AS vw,
                count(*) FILTER (WHERE linked AND has_cap AND NOT dei) AS n_unverified,
                count(*) FILTER (WHERE NOT weighted AND NOT (linked AND has_cap AND NOT dei)) AS n_no_weight,
+               sum(cap ORDER BY security_id) FILTER (WHERE linked AND has_cap AND NOT dei) AS cap_unverified,
+               sum(cap ORDER BY security_id) FILTER (WHERE linked AND has_cap) AS cap_known,
                count(*) FILTER (WHERE terminal) AS n_terminal,
                count(*) FILTER (WHERE start_session IS DISTINCT FROM session_number - 1) AS n_gap,
                max(available_at) AS ew_at,
@@ -1268,44 +1392,57 @@ def _daily_chunk(store: ResearchStore, spec: FactorSpec, work: _Work, chunk: Seq
     rows: list[dict[str, Any]] = []
     if not len(days):
         return rows
+    if (days["n_formations"] > 1).any() or (days["n_securities"] != days["n_names"]).any():
+        raise FactorInputError("overlapping holds: a trade date belongs to more than one formation or a name "
+                               "has two returns on one day")
     session = days["session_number"].to_numpy(dtype=np.int64)
     prior = np.array([work.sessions[s - 2] if s >= 2 else work.sessions[0] for s in session], dtype="datetime64[D]")
     rf_d = rf.period_returns(prior, 1)
     mkt_rows = []
     for i, day in enumerate(days.itertuples(index=False)):
         trade_date = pd.Timestamp(day.trade_date).date()
+        n_held = int(held.get(int(day.month_index), 0))
+        cap_known = _float(day.cap_known)
+        share = (float(_float(day.cap_unverified) or 0.0) / cap_known) if cap_known else None
         base = {"run_id": spec.run_id, "frequency": FREQ_DAILY, "period_date": trade_date,
                 "window_start": pd.Timestamp(prior[i]).date(), "window_end": trade_date, "factor_family": FAMILY_MARKET,
-                "basis": work.basis, "rf_basis": rf.basis, "venue_basis": VENUE_NOT_APPLICABLE, "n_unlabeled": 0,
+                "basis": work.basis, "rf_basis": rf.basis, "venue_basis": VENUE_NOT_APPLICABLE,
+                "n_held": n_held, "n_names": int(day.n_names), "n_unlabeled": n_held - int(day.n_names),
                 "detail_json": _canonical({"n_terminal_returns": int(day.n_terminal), "n_gap_returns": int(day.n_gap),
                                            "formation_month_index": int(day.month_index)})}
         vw = _float(day.vw)
-        weighted = {"n_names": int(day.n_names), "n_weighted": int(day.n_weighted),
+        weighted = {"n_weighted": int(day.n_weighted), "excluded_cap_share": share,
                     "n_excluded_unverified": int(day.n_unverified), "n_excluded_no_weight": int(day.n_no_weight),
                     "weighting": WEIGHT_PRIOR_DAY_CAP, "universe_scope": SCOPE_VERIFIED,
                     "available_at": _stamp(day.vw_at)}
         ew = _float(day.ew)
-        rows.append(dict(base, factor_id="mkt_ew", value=ew, n_names=int(day.n_names), n_weighted=int(day.n_names),
+        rows.append(dict(base, factor_id="mkt_ew", value=ew, n_weighted=int(day.n_names),
                          n_excluded_unverified=0, n_excluded_no_weight=0, weighting=WEIGHT_EQUAL,
                          universe_scope=SCOPE_ALL_LINES, available_at=_stamp(day.ew_at),
                          status=STATUS_COMPUTED if ew is not None else "no_names"))
         rows.append(dict(base, factor_id="mkt_vw", value=vw, status=STATUS_COMPUTED if vw is not None
                          else "no_weighted_names", **weighted))
-        rf_value = _float(rf_d[i])
+        rf_value = None if rf.basis == RF_NONE else _float(rf_d[i])
         rf_at = dt.datetime.combine(pd.Timestamp(prior[i]).date(), dt.time(22))
-        rows.append(dict(base, factor_id="rf", value=rf_value, n_names=0, n_weighted=0, n_excluded_unverified=0,
-                         n_excluded_no_weight=0, weighting="none", universe_scope=VENUE_NOT_APPLICABLE,
-                         available_at=rf_at, status=STATUS_COMPUTED if rf_value is not None
-                         else "no_risk_free_observation"))
-        excess = vw - rf_value if vw is not None and rf_value is not None else None
+        rows.append(dict(base, factor_id="rf", value=rf_value, n_held=0, n_names=0, n_unlabeled=0, n_weighted=0,
+                         n_excluded_unverified=0, n_excluded_no_weight=0, weighting="none",
+                         universe_scope=VENUE_NOT_APPLICABLE, available_at=rf_at,
+                         status=(STATUS_RF_NONE if rf.basis == RF_NONE else
+                                 STATUS_COMPUTED if rf_value is not None else STATUS_NO_RF)))
+        # rf_basis 'none': the excess return is the raw VW return (labeled on the row).
+        rf_used = 0.0 if rf.basis == RF_NONE else rf_value
+        excess = vw - rf_used if vw is not None and rf_used is not None else None
         rows.append(dict(base, factor_id="mkt_rf", value=excess, status=STATUS_COMPUTED if excess is not None
-                         else "no_weighted_names", **weighted))
+                         else "no_weighted_names" if vw is None else STATUS_NO_RF, **weighted))
         mkt_rows.append({"trade_date": trade_date, "session_number": int(session[i]), "mkt_rf": excess,
-                         "rf": rf_value if rf_value is not None else 0.0,
+                         "rf": rf_used if rf_used is not None else 0.0,
                          "available_at": _stamp(day.vw_at)})
     _stage_frame(con, "_p4_unused", pd.DataFrame(mkt_rows), (
         ("trade_date", "DATE"), ("session_number", "BIGINT"), ("mkt_rf", "DOUBLE"), ("rf", "DOUBLE"),
         ("available_at", "TIMESTAMP")), into="_p4_mkt_daily")
+    duplicated = con.execute("SELECT count(*) - count(DISTINCT trade_date) FROM _p4_mkt_daily").fetchone()
+    if duplicated and duplicated[0]:
+        raise FactorInputError(f"overlapping holds across chunks: {duplicated[0]} repeated daily market dates")
     diag = work.diag.setdefault("daily", {"days": 0, "terminal_returns": 0, "gap_returns": 0,
                                           "unverified_exclusions": 0, "no_weight_exclusions": 0})
     diag["days"] += len(days)
@@ -1348,7 +1485,7 @@ def _exposures_chunk(store: ResearchStore, spec: FactorSpec, work: _Work, chunk:
         if f.session is not None and spec.daily:
             daily = con.execute("""
                 WITH obs AS (
-                    SELECT b.security_id, b.price / b.start_price - 1 - m.rf AS y, m.mkt_rf AS x,
+                    SELECT b.security_id, b.session_number, b.price / b.start_price - 1 - m.rf AS y, m.mkt_rf AS x,
                            greatest(b.price_available_at, b.start_at, m.available_at) AS clock
                     FROM _p4_xbars b
                     JOIN _p4_mkt_daily m ON m.session_number = b.session_number
@@ -1357,9 +1494,11 @@ def _exposures_chunk(store: ResearchStore, spec: FactorSpec, work: _Work, chunk:
                     WHERE b.session_number BETWEEN ? AND ? AND b.start_session = b.session_number - 1
                       AND b.price_available_at <= ? AND m.available_at <= ? AND m.mkt_rf IS NOT NULL
                 )
-                SELECT security_id, regr_count(y, x) AS n, regr_slope(y, x) AS beta, regr_intercept(y, x) AS alpha,
-                       regr_r2(y, x) AS r2, regr_sxx(y, x) AS sxx, regr_syy(y, x) AS syy, regr_sxy(y, x) AS sxy,
-                       max(clock) AS clock
+                SELECT security_id, regr_count(y, x) AS n, regr_slope(y, x ORDER BY session_number) AS beta,
+                       regr_intercept(y, x ORDER BY session_number) AS alpha,
+                       regr_r2(y, x ORDER BY session_number) AS r2, regr_sxx(y, x ORDER BY session_number) AS sxx,
+                       regr_syy(y, x ORDER BY session_number) AS syy,
+                       regr_sxy(y, x ORDER BY session_number) AS sxy, max(clock) AS clock
                 FROM obs GROUP BY security_id
             """, [f.month_index, f.session - window + 1, f.session, f.cutoff, f.cutoff]).df()
         if len(daily):
@@ -1645,13 +1784,68 @@ def load_factor_returns(store: ResearchStore, run_id: str, *, frequency: str = F
     return wide.astype(float)
 
 
+def _month_periods(index: Any, label: str) -> pd.PeriodIndex:
+    periods = pd.PeriodIndex(pd.to_datetime(pd.Index(index)).to_period("M"))
+    if periods.has_duplicates:
+        raise FactorInputError(f"{label}: more than one formation in a calendar month")
+    return periods
+
+
+def compound_factor_windows(monthly: pd.DataFrame, horizon_periods: int, *,
+                            factors: Sequence[str] | None = None) -> pd.DataFrame:
+    """Monthly factor rows compounded over ``h`` consecutive formations, on the full monthly
+    calendar (a ``PeriodIndex``; a month without a formation is a NaN row).
+
+    Row ``p`` covers formations ``p .. p+h-1``: the windows an h-month R3b label formed at
+    ``p`` spans (formation -> formation + h). A long-short factor compounds as
+    ``prod(1 + f) - 1``; ``mkt_rf`` as ``prod(1 + mkt_vw) - prod(1 + rf)`` (the raw VW
+    compounding when the run has no risk-free rate). NaN unless all ``h`` formations are
+    present with a value. ``h = 1`` returns the monthly rows themselves on the calendar.
+    """
+    h = int(horizon_periods)
+    if h != horizon_periods or h < 1:
+        raise FactorInputError("horizon_periods must be a positive integer")
+    names = list(monthly.columns) if factors is None else list(factors)
+    missing = sorted(set(names) - set(monthly.columns))
+    if missing:
+        raise FactorInputError(f"no monthly factors {missing}")
+    frame = monthly.copy()
+    frame.index = _month_periods(frame.index, "factors")
+    grid = pd.period_range(frame.index.min(), frame.index.max(), freq="M")
+    frame = frame.reindex(grid)
+
+    def gross(column: str) -> np.ndarray:
+        growth = 1.0 + frame[column].to_numpy(dtype=float)
+        result = np.full(len(growth), _NAN)
+        for p in range(len(growth) - h + 1):
+            window = growth[p:p + h]
+            if np.isfinite(window).all():
+                result[p] = float(np.prod(window))
+        return result
+
+    out: dict[str, np.ndarray] = {}
+    for name in names:
+        if name == "mkt_rf" and "mkt_vw" in frame.columns:
+            has_rf = "rf" in frame.columns and bool(frame["rf"].notna().any())
+            out[name] = gross("mkt_vw") - (gross("rf") if has_rf else 1.0)
+        else:
+            out[name] = gross(name) - 1.0
+    return pd.DataFrame(out, index=grid)
+
+
 def span_test_against_run(store: ResearchStore, run_id: str, ls_returns: pd.Series, *,
                           factors: Sequence[str] = EXPOSURE_FACTORS, horizon_periods: int = 1) -> SpanTestResult:
-    """:func:`span_test` of a series indexed by formation date on a run's monthly factors."""
-    wide = load_factor_returns(store, run_id, factors=factors)
-    series = ls_returns.copy()
-    series.index = pd.to_datetime(series.index)
-    return span_test(series, wide.reindex(series.index), horizon_periods=horizon_periods)
+    """:func:`span_test` of an R3b-style series (indexed by formation date; ``horizon_periods``
+    = its label horizon in months) on a run's monthly factors compounded over the same h
+    formations (:func:`compound_factor_windows`), both reindexed onto the full monthly
+    calendar so a missing formation is a gap in the HAC sums."""
+    wide = load_factor_returns(store, run_id)
+    compounded = compound_factor_windows(wide, horizon_periods, factors=factors)
+    series = pd.Series(ls_returns, dtype=float).copy()
+    series.index = _month_periods(series.index, "ls_returns")
+    grid = pd.period_range(min(series.index.min(), compounded.index.min()),
+                           max(series.index.max(), compounded.index.max()), freq="M")
+    return span_test(series.reindex(grid), compounded.reindex(grid), horizon_periods=horizon_periods)
 
 
 # ---------------------------------------------------------------------------
@@ -1698,6 +1892,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "EXPOSURE_FACTORS",
+    "FACTOR_CONSTRUCTS",
     "FACTOR_VERSION",
     "RF_DTB3",
     "RF_NONE",
@@ -1711,6 +1906,7 @@ __all__ = [
     "SpanTestResult",
     "assign_groups",
     "build_factor_returns",
+    "compound_factor_windows",
     "default_rf_path",
     "ensure_factor_schema",
     "fetch_fred_dtb3",
