@@ -851,9 +851,33 @@ def test_gaap_eps_under_section_or_basis_wording_is_accepted(headings) -> None:
     ("Non-GAAP results", "Earnings per share:"),
     ("Core results", "Earnings per share:"),
     ("Earnings per share:", "Discontinued operations:"),
+    # A7 re-review 2 V1: a discontinued-operations SECTION heading above its own per-share label.
+    ("Discontinued operations:", "Earnings per share:"),
 ])
 def test_non_gaap_or_component_headings_still_reject_both_measures(headings) -> None:
     assert _both(_headed_eps_table(*headings)) == {
+        "basic": (None, "rejected_non_gaap_or_adjusted"), "diluted": (None, "rejected_non_gaap_or_adjusted"),
+    }
+
+
+def test_discontinued_operations_block_is_never_total_gaap_eps() -> None:
+    """A7 re-review 2 V1: continuing and discontinued EPS blocks, each under its own
+    "Earnings per share:" label. Neither component is total EPS; admitting the
+    discontinued 0.10 would publish a wrong Q4 value that no 10-Q conflict corrects."""
+
+    document = """
+    <table><tr><th></th><th>Three Months Ended December 31,</th></tr>
+    <tr><th></th><th>2025</th></tr>
+    <tr><td colspan="2">Continuing operations:</td></tr>
+    <tr><td colspan="2">Earnings per share:</td></tr>
+    <tr><td>- Basic</td><td>1.00</td></tr>
+    <tr><td>- Diluted</td><td>0.99</td></tr>
+    <tr><td colspan="2">Discontinued operations:</td></tr>
+    <tr><td colspan="2">Earnings per share:</td></tr>
+    <tr><td>- Basic</td><td>0.10</td></tr>
+    <tr><td>- Diluted</td><td>0.10</td></tr></table>
+    """
+    assert _both(document) == {
         "basic": (None, "rejected_non_gaap_or_adjusted"), "diluted": (None, "rejected_non_gaap_or_adjusted"),
     }
 

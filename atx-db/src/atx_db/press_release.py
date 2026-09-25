@@ -79,14 +79,19 @@ REPORTED_EPS_MEASURE_CODES = {"diluted": DILUTED_EPS.measure_code, "basic": BASI
 # Rows that are not total GAAP EPS. Non-GAAP context words mark a non-GAAP
 # figure wherever they appear in the row's lineage, including a section
 # heading (pre-A7 contract): adjusted, non-GAAP, core, pro forma, excluding,
-# REIT funds from operations, and the continuing-operations component.
+# REIT funds from operations, and the continuing- and discontinued-operations
+# components. "Discontinued" never titles a GAAP-total section, and a
+# "Discontinued operations:" section heading sits above its own "Earnings per
+# share:" label, so it must be seen beyond the row scope (else 0.10 of
+# discontinued EPS is published as total GAAP EPS once the continuing block is
+# rejected).
 _NON_GAAP_CONTEXT_RE = re.compile(
     r"continuing|adjusted|non-gaap|non gaap"
-    r"|\b(?:core|pro[- ]?forma|excluding|funds\s+from\s+operations|ffo|affo)\b"
+    r"|\b(?:discontinued|core|pro[- ]?forma|excluding|funds\s+from\s+operations|ffo|affo)\b"
 )
 # Words that also title ordinary GAAP sections ("Operating results") only
 # disqualify the row itself and headings up to its nearest per-share label.
-_NON_TOTAL_ROW_RE = re.compile(r"\b(?:discontinued|operating|cash)\b")
+_NON_TOTAL_ROW_RE = re.compile(r"\b(?:operating|cash)\b")
 # "per share", "per common share", "per diluted share", "per basic and diluted share" ...
 _PER_SHARE_RE = re.compile(r"\bper\s+(?:(?:basic|diluted|common|ordinary|and)\s+)*share\b")
 # Share-count rows ("Weighted average shares used in computing ... per share,
