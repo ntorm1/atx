@@ -9,7 +9,7 @@ import pandas as pd
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
-from .symbol_directory import IDENTITY_BASIS_CURRENT_TICKER, normalize_nasdaq_action
+from .symbol_directory import IDENTITY_BASIS_CURRENT_TICKER, cutoff_end, normalize_nasdaq_action
 from .warehouse import insert_frame, json_dumps, quality_check, symbol_key
 
 SOURCE_NAME = "ATX listing status interval builder"
@@ -151,7 +151,13 @@ def _identity_details(security_id: Any) -> dict[str, Any]:
 
 
 def _cutoff_sql(cutoff: dt.date | None) -> tuple[str, list[Any]]:
-    return ("AND as_of_date <= ?", [cutoff]) if cutoff is not None else ("", [])
+    """Evidence dated, and known, by the cutoff day (``as_of_date`` and ``available_at``)."""
+    if cutoff is None:
+        return "", []
+    return (
+        "AND as_of_date <= ? AND coalesce(available_at, source_loaded_at) <= ?",
+        [cutoff, cutoff_end(cutoff)],
+    )
 
 
 def _snapshot_intervals(
@@ -437,9 +443,9 @@ def build_listing_status(
     snapshot_frame = _snapshot_intervals(store, source=source, run_id=run_id, cutoff=cutoff)
     event_frame = _event_intervals(store, source=source, run_id=run_id, cutoff=cutoff, outcomes=outcomes)
     frames = [frame for frame in (snapshot_frame, event_frame) if not frame.empty]
-    if not frames:
-        return ListingStatusBuild(0, 0, 0, outcomes)
-    frame = pd.concat(frames, ignore_index=True)
+    frame = pd.concat(frames, ignore_index=True) if frames else _blank_frame()
+    # The table is derived: an empty rebuild must still retire the prior build of
+    # ``source`` so stale (e.g. post-cutoff) intervals never survive it.
     with store.transaction():
         store.con.execute("DELETE FROM listing_status_intervals WHERE source = ?", [source])
         insert_frame(store, frame, "listing_status_intervals", "listing_status_intervals_insert")

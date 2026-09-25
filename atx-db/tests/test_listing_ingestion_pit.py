@@ -28,6 +28,7 @@ from atx_db.activation import (
     stage_symbol_directory,
     validate_stage_dependencies,
 )
+from atx_db.clock import utc_today
 from atx_db.listing_status import event_action_outcome
 from atx_db.symbol_directory import (
     APPROVED_USER_AGENT,
@@ -222,7 +223,6 @@ def test_redated_directory_reload_uses_file_creation_date_and_retains_prior_rows
         """
     ).fetchone()
     assert available == [RECEIVED_0920]
-    assert dt.datetime.combine(operator_date, dt.time(22)) >= RECEIVED_0920
     assert loaded > RECEIVED_0920 and load_started > RECEIVED_0920  # reloaded later than received
     assert {file["receipt_basis"] for file in result.detail["files"]} == {"file_mtime"}
     superseded = tmp_store.con.execute(
@@ -256,7 +256,7 @@ def test_network_refresh_archives_the_retained_file_instead_of_overwriting_it(tm
     _retain(cache_dir, "otherlisted.txt", OTHER_LISTED_TXT)
     newer = NASDAQ_LISTED_TXT.replace("0918202621:31", "0921202621:31")
     downloader = RecordingDownloader({NASDAQ_LISTED_URL: newer, OTHER_LISTED_URL: OTHER_LISTED_TXT})
-    options = _options(tmp_path, as_of=dt.date(2026, 9, 21), downloader=downloader, allow_network_refresh=True)
+    options = _options(tmp_path, as_of=utc_today(), downloader=downloader, allow_network_refresh=True)
 
     result = stage_symbol_directory(tmp_store, options)
 
@@ -295,6 +295,72 @@ def test_cache_receipt_takes_precedence_over_mtime_unless_stale(tmp_store, tmp_p
         "cache_receipt", recorded.isoformat())
     assert (by_name["otherlisted.txt"]["receipt_basis"], by_name["otherlisted.txt"]["available_at"]) == (
         "file_mtime", dt.datetime(2026, 9, 24, 12, 0).isoformat())
+
+
+# --- receipt-vs-cutoff guard ----------------------------------------------------------
+
+
+RECEIVED_0921 = dt.datetime(2026, 9, 21, 3, 0)
+
+
+def test_directory_received_after_the_cutoff_day_fails_loudly(tmp_store, tmp_path):
+    # Created 2026-09-18 (before the cutoff) but received 2026-09-21: cannot evidence 09-20.
+    _retain(tmp_path / "cache", "nasdaqlisted.txt", NASDAQ_LISTED_TXT, received_at=RECEIVED_0921)
+    _retain(tmp_path / "cache", "otherlisted.txt", OTHER_LISTED_TXT, received_at=RECEIVED_0921)
+    downloader = RecordingDownloader()
+    with pytest.raises(SnapshotAfterCutoffError, match=r"received 2026-09-21T03:00:00 \(receipt_basis=file_mtime\)"):
+        stage_symbol_directory(tmp_store, _options(tmp_path, as_of=dt.date(2026, 9, 20), downloader=downloader))
+    assert downloader.calls == []
+    assert tmp_store.con.execute("SELECT count(*) FROM nasdaq_symbol_directory").fetchone()[0] == 0
+    # The same files are valid evidence for a cutoff on/after their receipt day.
+    ok = stage_symbol_directory(tmp_store, _options(tmp_path, as_of=dt.date(2026, 9, 21), downloader=downloader))
+    assert ok.rows == 3 and ok.detail["as_of_dates"] == ["2026-09-18"]
+
+
+def test_adds_deletes_received_after_the_cutoff_day_is_unavailable(tmp_store, tmp_path):
+    _retain(tmp_path / "cache", "TradingSystemAddsDeletes.txt",
+            _adds_deletes(["AAA|AAA Corp|Delete|||09/18/2026|Q"]), received_at=RECEIVED_0921)
+    result = stage_listing_events(tmp_store, _options(tmp_path, as_of=dt.date(2026, 9, 20),
+                                                      downloader=RecordingDownloader()))
+    assert result.rows == 0
+    assert (result.detail["source_status"], result.detail["reason"]) == (
+        "source_unavailable_for_snapshot", "received_after_cutoff")
+    assert tmp_store.con.execute("SELECT count(*) FROM nasdaq_listing_events").fetchone()[0] == 0
+
+
+def test_listing_status_ignores_evidence_known_after_the_cutoff_and_retires_stale_builds(tmp_store, tmp_path):
+    for symbol, available in (("KNOWN", "2026-09-20 00:06:00"), ("LATE", "2026-09-21 03:00:00")):
+        tmp_store.con.execute(
+            f"""
+            INSERT INTO nasdaq_symbol_directory (directory, symbol, security_name, market_category, exchange,
+                as_of_date, source_url, available_at, is_latest_revision)
+            VALUES ('nasdaqlisted', '{symbol}', '{symbol} Corp', 'Q', 'NASDAQ', DATE '2026-09-18', 'u',
+                    TIMESTAMP '{available}', true)
+            """
+        )
+    stage_listing_status(tmp_store, _options(tmp_path, as_of=dt.date(2026, 9, 21)))
+    assert tmp_store.con.execute("SELECT count(*) FROM listing_status_intervals").fetchone()[0] == 2
+    result = stage_listing_status(tmp_store, _options(tmp_path, as_of=dt.date(2026, 9, 20)))
+    symbols = [row[0] for row in tmp_store.con.execute("SELECT symbol FROM listing_status_intervals").fetchall()]
+    assert symbols == ["KNOWN"] and result.rows == 1
+    # No evidence known by an earlier cutoff: the prior build must not survive.
+    empty = stage_listing_status(tmp_store, _options(tmp_path, as_of=dt.date(2026, 9, 17)))
+    assert empty.rows == 0
+    assert tmp_store.con.execute("SELECT count(*) FROM listing_status_intervals").fetchone()[0] == 0
+
+
+def test_network_refresh_for_a_past_cutoff_is_refused_before_any_request(tmp_store, tmp_path):
+    retained = _retain(tmp_path / "cache", "nasdaqlisted.txt", NASDAQ_LISTED_TXT)
+    _retain(tmp_path / "cache", "otherlisted.txt", OTHER_LISTED_TXT)
+    downloader = RecordingDownloader({NASDAQ_LISTED_URL: "newer", OTHER_LISTED_URL: "newer"})
+    options = _options(tmp_path, as_of=dt.date(2026, 9, 20), downloader=downloader, allow_network_refresh=True)
+    with pytest.raises(ValueError, match="past cutoff 2026-09-20"):
+        stage_symbol_directory(tmp_store, options)
+    with pytest.raises(ValueError, match="past cutoff 2026-09-20"):
+        stage_listing_events(tmp_store, options)
+    assert downloader.calls == []
+    assert retained.read_text(encoding="utf-8") == NASDAQ_LISTED_TXT
+    assert not (tmp_path / "cache" / "superseded").exists()
 
 
 # --- Adds/Deletes: pinned run, actions, identity basis ------------------------------------

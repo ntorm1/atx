@@ -470,8 +470,9 @@ def _acquire_snapshot_file(
     A retained file is loaded as-is and never overwritten unless
     ``options.allow_network_refresh``. Without a retained file, prefix stages whose
     input is mandatory (``allow_initial_download``) acquire one; others report
-    ``missing`` without any network request. Downloads write a cache receipt so a
-    later pinned reload keeps the original receipt time.
+    ``missing`` without any network request. ``--allow-network-refresh`` is refused
+    before any request when the cutoff day is already over. Downloads write a cache
+    receipt so a later pinned reload keeps the original receipt time.
     """
     from .symbol_directory import RECEIPT_BASIS_NETWORK_DOWNLOAD
 
@@ -482,6 +483,17 @@ def _acquire_snapshot_file(
         return SnapshotAcquisition(dest, "retained", 0, sha256=sha, received_at=received_at, receipt_basis=basis)
     if not retained and not (options.allow_network_refresh or allow_initial_download):
         return SnapshotAcquisition(dest, "missing", 0)
+    if options.allow_network_refresh and options.as_of_date is not None:
+        from .symbol_directory import cutoff_end
+
+        if now_utc_naive() > cutoff_end(options.as_of_date):
+            # Refuse before any request or file swap: bytes received now are after the
+            # cutoff day and cannot evidence that snapshot; the retained file stays put.
+            raise ValueError(
+                f"--allow-network-refresh cannot refresh {dest.name} for the past cutoff "
+                f"{options.as_of_date.isoformat()}: a download now would be received after the cutoff day. "
+                "Use --as-of-date on/after the current UTC date, or omit the flag to load the retained file"
+            )
     agent = user_agent()  # fail fast on a missing SEC user agent before any request
     download = _require_downloader(options)
     if not retained:
@@ -570,7 +582,8 @@ def stage_symbol_directory(store: DuckDBStore, options: ActivationOptions) -> St
     """Load the retained Nasdaq Trader directory files as source-dated snapshots.
 
     Each file is dated by its own ``File Creation Time`` trailer; ``--as-of-date``
-    only bounds the cutoff (a later file fails the stage). ``available_at`` is the
+    only bounds the cutoff (a file created, or received, after the cutoff day fails
+    the stage). ``available_at`` is the
     file's ORIGINAL receipt time (cache receipt, else file mtime; a fresh download's
     own time), never this reload's time, and a re-dated reload supersedes (never
     deletes) earlier rows.
@@ -638,8 +651,8 @@ def stage_symbol_directory(store: DuckDBStore, options: ActivationOptions) -> St
 def stage_listing_events(store: DuckDBStore, options: ActivationOptions) -> StageResult:
     """Load the retained Nasdaq Trading System Adds/Deletes file (no network by default).
 
-    Without a retained file, or with one created after the cutoff, the stage
-    completes with 0 rows and ``source_status='source_unavailable_for_snapshot'``
+    Without a retained file, or with one created or received after the cutoff day,
+    the stage completes with 0 rows and ``source_status='source_unavailable_for_snapshot'``
     and makes no request. ``--allow-network-refresh`` acquires/refreshes the file.
     """
     from .symbol_directory import (

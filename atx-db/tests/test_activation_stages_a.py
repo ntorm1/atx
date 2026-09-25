@@ -187,8 +187,12 @@ def test_symbol_directory_stage_records_source_files_with_sha256(tmp_store, tmp_
         dest.write_text(payloads[url], encoding="utf-8")
         return dest.stat().st_size
 
+    from atx_db.clock import utc_today
+
+    # First acquisition happens now, so the cutoff must not be a past day (A1 receipt guard).
     options = ActivationOptions(
-        **{**_options(tmp_path, three_symbol_zip).as_dict(), "downloader": fake_downloader}
+        **{**_options(tmp_path, three_symbol_zip).as_dict(), "downloader": fake_downloader,
+           "as_of_date": utc_today()}
     )
     result = stage_symbol_directory(tmp_store, options)
     assert result.rows == 2

@@ -81,7 +81,12 @@ class NasdaqListingEventsOptions:
 
 
 class SnapshotAfterCutoffError(ValueError):
-    """A pinned snapshot file was created after the requested report cutoff."""
+    """A pinned snapshot file was created, or received, after the requested report cutoff."""
+
+
+def cutoff_end(cutoff: dt.date) -> dt.datetime:
+    """Last instant of the cutoff day: the knowledge bound for ``available_at``."""
+    return dt.datetime.combine(cutoff, dt.time.max)
 
 
 RECEIPT_BASIS_NETWORK_DOWNLOAD = "network_download"
@@ -504,7 +509,8 @@ def load_directory_snapshot(
     """Load one directory file as a dated, non-destructive snapshot revision.
 
     Caller owns the transaction. Rows are dated by the file's creation time; a file
-    created after ``cutoff`` raises :class:`SnapshotAfterCutoffError`. Existing latest
+    created after ``cutoff``, or received after the end of the cutoff day (its
+    ``available_at``), raises :class:`SnapshotAfterCutoffError`. Existing latest
     rows of this source at the same snapshot date, or at any date previously stamped
     on byte-identical content (an operator re-dating), are marked
     ``is_latest_revision = false`` -- never deleted. Reloading the exact file already
@@ -517,12 +523,19 @@ def load_directory_snapshot(
             f"{source_url} snapshot was created {dating.as_of_date.isoformat()}, after the report cutoff "
             f"{cutoff.isoformat()}; supply an older retained file or a later --as-of-date"
         )
+    available_at, floored = _snapshot_available_at(receipt, dating)
+    if cutoff is not None and available_at > cutoff_end(cutoff):
+        raise SnapshotAfterCutoffError(
+            f"{source_url} ({cache_path or 'fetched payload'}) was received {available_at.isoformat()} "
+            f"(receipt_basis={receipt.basis}), after the report cutoff day {cutoff.isoformat()}; a file acquired "
+            "after the cutoff cannot evidence that snapshot. Restore the file's original receipt "
+            "(<file>.receipt.json or preserved mtime) or use a later --as-of-date"
+        )
     size = len(text.encode("utf-8")) if byte_count is None else byte_count
     frame = normalizer(_read_directory_text(text), as_of_date=dating.as_of_date, source_url=source_url, run_id=run_id)
     if frame.empty:
         return SnapshotLoad(source_url, SOURCE_STATUS_EMPTY, dating.as_of_date, dating.source_file_created_at,
                             dating.as_of_basis)
-    available_at, floored = _snapshot_available_at(receipt, dating)
     frame["available_at"] = available_at
     frame["is_latest_revision"] = True
 
@@ -613,8 +626,9 @@ def load_listing_events_snapshot(
 ) -> SnapshotLoad:
     """Load one Trading System Adds/Deletes file as a dated, non-destructive revision.
 
-    Caller owns the transaction. A file created after ``cutoff`` is not loaded
-    (``source_unavailable_for_snapshot``). Actions are stored canonically
+    Caller owns the transaction. A file created after ``cutoff`` or received after
+    the end of the cutoff day is not loaded (``source_unavailable_for_snapshot`` with
+    ``reason`` ``created_after_cutoff`` / ``received_after_cutoff``). Actions are stored canonically
     (``add``/``delete``); security ids are current-ticker resolutions
     (``current_ticker_unverified``). Latest rows of this source from the same file
     (same creation time), the same snapshot date, or a date previously stamped on
@@ -626,8 +640,15 @@ def load_listing_events_snapshot(
     if cutoff is not None and dating.as_of_date > cutoff:
         return SnapshotLoad(
             source_url, SOURCE_STATUS_UNAVAILABLE, dating.as_of_date, dating.source_file_created_at,
+            dating.as_of_basis, detail={**base_detail, "reason": "created_after_cutoff"},
+        )
+    available_at, floored = _snapshot_available_at(receipt, dating)
+    if cutoff is not None and available_at > cutoff_end(cutoff):
+        return SnapshotLoad(
+            source_url, SOURCE_STATUS_UNAVAILABLE, dating.as_of_date, dating.source_file_created_at,
             dating.as_of_basis,
-            detail={**base_detail, "reason": "retained Adds/Deletes file was created after the report cutoff"},
+            detail={**base_detail, "reason": "received_after_cutoff",
+                    **_receipt_detail(receipt, available_at, floored)},
         )
     size = len(text.encode("utf-8")) if byte_count is None else byte_count
     frame = normalize_listing_events(
@@ -641,7 +662,6 @@ def load_listing_events_snapshot(
         return SnapshotLoad(source_url, SOURCE_STATUS_EMPTY, dating.as_of_date, dating.source_file_created_at,
                             dating.as_of_basis, detail=base_detail)
     frame = _attach_security_ids(store, frame)
-    available_at, floored = _snapshot_available_at(receipt, dating)
     frame["available_at"] = available_at
     frame["is_latest_revision"] = True
     columns = [

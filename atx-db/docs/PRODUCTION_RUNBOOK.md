@@ -293,6 +293,12 @@ source-document requests in `earnings_release_facts`, and first acquisition or
 explicit refresh of pinned-snapshot sources (below). Archive-member CompanyFacts
 and submissions loading use the retained local archives. `sec_bulk_download`
 resumes a partial transfer and records each archive's sha256 in `raw_source_files`.
+`reconciliation` shells out to `scripts/refresh_reconciliation_sharded.py`, which
+runs the sixteen shards **sequentially, with one shard child active at a time**.
+Each shard gets a fresh interpreter; sixteen partitions are not sixteen workers.
+The controller guard covers the supervisor and its descendants and refuses a
+launch with insufficient headroom. Its reviewed code is versioned at `0e6737fa`;
+see [current memory evidence](TIER1_ACTIVATION_STATUS.md#memory-and-pending-gates).
 
 #### Pinned-snapshot source policy
 
@@ -303,21 +309,35 @@ never overwrite them with a later download:
 
 - A retained file is loaded as-is with no request. Only `--allow-network-refresh`
   re-downloads over it. A changed prior file is moved to
-  `<cache-dir>/superseded/<name>.<sha16><ext>`, not deleted.
+  `<cache-dir>/superseded/<name>.<sha16><ext>`, not deleted. The flag is refused,
+  before any request, when the `--as-of-date` day is already over: bytes received
+  now cannot evidence a past snapshot.
 - With no retained file, `security_master` and `symbol_directory` acquire one,
   because their input is mandatory for a from-scratch build. `listing_events`
   makes no request. It completes with 0 rows and
   `detail.source_status='source_unavailable_for_snapshot'`, as it also does when
-  the retained file was created after the cutoff. run5 therefore makes zero
-  network requests.
+  the retained file was created or received after the cutoff day
+  (`detail.reason` is `created_after_cutoff` or `received_after_cutoff`). run5
+  therefore makes zero network requests.
 - Snapshot dating: Nasdaq directory and event rows take `as_of_date` from the
   file's own `File Creation Time:` trailer (e.g. `0918202621:31` gives
-  2026-09-18). `--as-of-date` only bounds the cutoff. A directory file created
-  after it fails the stage, and an events file created after it is reported
-  unavailable. The operator date is used only for a file with no trailer
-  (`as_of_basis='operator_cutoff_no_file_creation_time'`). `available_at` is
-  the load (receipt) time. `company_tickers.json` has no date of its own, so it
-  keeps the operator cutoff (`as_of_basis='operator_cutoff'`).
+  2026-09-18). `--as-of-date` only bounds the cutoff. The operator date is used
+  only for a file with no trailer
+  (`as_of_basis='operator_cutoff_no_file_creation_time'`). `company_tickers.json`
+  has no date of its own, so it keeps the operator cutoff
+  (`as_of_basis='operator_cutoff'`).
+- `available_at` is the file's ORIGINAL receipt time, never the reload time.
+  It comes from `<file>.receipt.json` when that receipt's sha256 matches
+  (`receipt_basis='cache_receipt'`); otherwise from the file mtime in UTC
+  (`file_mtime`). A fresh download uses its own time (`network_download`) and
+  writes the receipt. `source_loaded_at` records the reload. Copy or restore
+  cache files only with their mtime preserved (or with their receipts).
+- Cutoff guard: a directory file created after the cutoff, or received after the
+  end of the cutoff day (`available_at > <as-of-date> 23:59:59.999999`), fails
+  the stage with `SnapshotAfterCutoffError`. An events file in either case is
+  reported unavailable. `listing_status` reads only evidence with
+  `as_of_date <= cutoff` and `available_at` within the cutoff day. An empty
+  rebuild still retires the prior build.
 - Reloads never delete evidence. Rows from an earlier load of the same source
   are marked `is_latest_revision = false`, and the new rows are inserted. This
   covers the same snapshot date, a date previously stamped on byte-identical
@@ -338,15 +358,42 @@ never overwrite them with a later download:
   `details_json`). Status is never extended before the snapshot that evidences it.
 - The Nasdaq user agent defaults to the approved `atx-db/0.1 atx-research@example.com`.
 
-The optional run5 pre-step `--only symbol_directory --force` reloads the retained
-directory files with source dating. The pre-A1 rows, stamped with the operator
-date, stay in the table as non-latest rows.
-`reconciliation` shells out to `scripts/refresh_reconciliation_sharded.py`, which
-runs the sixteen shards **sequentially, with one shard child active at a time**.
-Each shard gets a fresh interpreter; sixteen partitions are not sixteen workers.
-The controller guard covers the supervisor and its descendants and refuses a
-launch with insufficient headroom. Its reviewed code is versioned at `0e6737fa`;
-see [current memory evidence](TIER1_ACTIVATION_STATUS.md#memory-and-pending-gates).
+#### Mandatory run5 pre-step: source-date the directory before B3
+
+The run5 suffix never runs `symbol_directory`. The directory rows loaded before
+A1 are stamped with the operator date 2026-09-20, not the source date. Left as
+latest rows, they give `listing_status` `valid_from = 2026-09-20`, and they give
+the strict universe join (`as_of_date <= trade_date`, last bar 2026-09-18) no
+matches. B3 would only show that after the long heavy run. Before
+`--start-stage listing_events`, reload the retained files with source dating. No
+network is used; do not pass `--allow-network-refresh`:
+
+```powershell
+& $activationPython $memoryGuard --job-gb 2 `
+  --receipt "$guardReceipts\activation-run5-symbol-directory-memory.json" -- `
+  $activationPython scripts/warehouse_activate.py --db-path $env:ATX_DB_PATH `
+  --only symbol_directory --force --cache-dir C:\atx\atx-db\data\cache `
+  --as-of-date $activationDate --memory-limit 1GB --threads 1 --backup-keep 100 `
+  --run-id activation-run5-directory
+```
+
+Post-check, read-only, before launching B3:
+
+```sql
+-- Must be 0. Non-zero means the retained file's sha256 did not match the
+-- production raw_source_files receipt of the 2026-09-20 load, so the old rows
+-- were not recognized as a re-dating and are still latest. STOP; do not launch B3.
+SELECT count(*) FROM nasdaq_symbol_directory
+WHERE coalesce(is_latest_revision, true) AND as_of_date = DATE '2026-09-20';
+-- Must return exactly one row: 2026-09-18.
+SELECT DISTINCT as_of_date FROM nasdaq_symbol_directory WHERE coalesce(is_latest_revision, true);
+-- Must be within the cutoff day (file receipt 2026-09-20 00:06 UTC, receipt_basis file_mtime).
+SELECT max(available_at) FROM nasdaq_symbol_directory WHERE coalesce(is_latest_revision, true);
+```
+
+The superseded operator-dated rows stay in the table as non-latest rows. The
+stage fails loudly if a retained file was created or received after the cutoff
+day. Restore the file's mtime or receipt; do not move the cutoff backward.
 
 ### Determinism
 
