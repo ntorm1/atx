@@ -136,13 +136,16 @@ TEST(BookLegacyReportStage, WeeklyBookWithADelistingIsChargedTheTruth) {
     std::printf("[measured] pnl_gross week 1: V2 %.6f (delisting priced) vs V1 %.6f\n", gross[1],
                 v1_week1);
 
-    EXPECT_EQ(kv(*result, "legacy_report_rule"), "2"); // LegacyReportRule::HoldingIntervalV2
+    EXPECT_EQ(kv(*result, "legacy_report_rule"), "3"); // LegacyReportRule::HoldingIntervalV3
     EXPECT_EQ(kv(*result, "terminal_returns_flagged"), "1");
     EXPECT_EQ(kv(*result, "interior_gap_marks"), "0");
+    EXPECT_NEAR(std::stod(kv(*result, "assumed_missing_price_pnl")),
+                0.3 * (at(6, 1) / at(5, 1)) * -0.55, 1e-6);
+    EXPECT_EQ(kv(*result, "usable_for_alpha_evidence"), "0");
     // 0.2 short * 25.2 %/yr * (5 + 5) sessions / 252 = 0.002.
     EXPECT_NEAR(std::stod(kv(*result, "total_pnl_borrow")), 0.002, 1.0e-12);
     const fs::path summary = fs::path{cfg.report_out} / "summary.txt";
-    EXPECT_EQ(summary_value(summary, "legacy_report_rule"), "holding_interval_v2");
+    EXPECT_EQ(summary_value(summary, "legacy_report_rule"), "holding_interval_v3_first_missing");
     EXPECT_EQ(summary_value(summary, "terminal_returns_flagged"), "1");
     // Two weekly books held 5 sessions each: sqrt(252 / 5).
     EXPECT_NEAR(std::stod(summary_value(summary, "annualization_factor")),

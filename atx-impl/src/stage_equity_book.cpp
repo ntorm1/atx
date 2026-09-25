@@ -99,7 +99,8 @@ Result<atx::i64> integer(const Json &value) {
 Status arguments(const RunConfig &cfg) {
     const std::set<std::string> allowed{"panel", "baseline-dir", "out", "max-working-bytes",
         "report-aum", "replay-execution-delay", "replay-trade-bps", "replay-annual-borrow-bps",
-        "replay-day-basis", "quiet", "digest-only", "config", "allow-same-close"};
+        "replay-day-basis", "quiet", "digest-only", "config", "allow-same-close",
+        "replay-delisting-policy"};
     for (const auto &flag : cfg.set_flags) if (!allowed.contains(flag))
         return Err(ErrorCode::InvalidArgument, "equity book: unsupported flag --" + flag);
     if (cfg.panel.empty() || cfg.equity_baseline_dir.empty() || cfg.out.empty() ||
@@ -376,6 +377,11 @@ Result<StageResult> execute(const RunConfig &cfg, const fs::path &directory, Jso
         return Err(ErrorCode::InvalidArgument, "equity book: invalid inherited borrow day basis");
     report.replay_day_basis = cfg.set_flags.contains("replay-day-basis") || cfg.replay_day_basis != 365
         ? cfg.replay_day_basis : base.at("borrow_day_basis").get<int>();
+    ATX_TRY(auto inherited_delisting, parse_replay_delisting_policy(
+        base.value("replay_delisting_policy", std::string("terminal-return"))));
+    report.replay_delisting_policy = cfg.set_flags.contains("replay-delisting-policy") ||
+        cfg.replay_delisting_policy != ReplayDelistingPolicy::TerminalReturnV2
+        ? cfg.replay_delisting_policy : inherited_delisting;
     report.set_flags = {"replay-trade-bps", "replay-annual-borrow-bps"};
     report.panel = (fs::path(cfg.equity_baseline_dir) / "evaluation.bin").string();
     report.combo = (fs::path(cfg.equity_baseline_dir) / "combo.bin").string();
@@ -393,6 +399,8 @@ Result<StageResult> execute(const RunConfig &cfg, const fs::path &directory, Jso
         {"execution_delay_observations", std::to_string(report.replay_execution_delay)},
         {"trade_bps_per_absolute_dollar", report.replay_trade_bps},
         {"annual_borrow_bps", report.replay_annual_borrow_bps}, {"borrow_day_basis", report.replay_day_basis},
+        {"replay_delisting_policy",
+            replay_delisting_policy_name(report.replay_delisting_policy)},
         {"objective", "0.5*sum((weight-preference)^2)+lambda*sum(variance*weight^2)"},
         {"preference_interpretation", "rank-position-preference-not-expected-return"},
         {"risk_return_count", 63}, {"risk_estimator", "population-variance-adjacent-TRI-returns-no-gap-bridging"},

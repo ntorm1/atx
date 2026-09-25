@@ -131,7 +131,8 @@ Status validate_delistings(const ReplayConfig &cfg, atx::usize dates, atx::usize
   if (cfg.delisting_policy != DelistingPolicy::Abort &&
       cfg.delisting_policy != DelistingPolicy::CrspDelistReturn &&
       cfg.delisting_policy != DelistingPolicy::LastMarkZeroReturn &&
-      cfg.delisting_policy != DelistingPolicy::TerminalReturn) {
+      cfg.delisting_policy != DelistingPolicy::TerminalReturn &&
+      cfg.delisting_policy != DelistingPolicy::TerminalReturnExPostV1) {
     return Err(ErrorCode::InvalidArgument, "replay: unrecognized delisting policy");
   }
   ATX_TRY_VOID(validate_listing_exchange(cfg, instruments));
@@ -144,12 +145,13 @@ Status validate_delistings(const ReplayConfig &cfg, atx::usize dates, atx::usize
     seen[event.instrument] = 1;
     // TerminalReturn reads NaN as "unknown" (the flagged Shumway fallback);
     // every policy rejects an infinite return or one below -100 %.
-    const bool unknown_ok = cfg.delisting_policy == DelistingPolicy::TerminalReturn &&
+    const bool terminal = cfg.delisting_policy == DelistingPolicy::TerminalReturn ||
+                          cfg.delisting_policy == DelistingPolicy::TerminalReturnExPostV1;
+    const bool unknown_ok = terminal &&
                             std::isnan(event.delist_return);
     const bool invalid = !unknown_ok && (!std::isfinite(event.delist_return) ||
                                          event.delist_return < -1.0);
-    const bool checked = cfg.delisting_policy == DelistingPolicy::CrspDelistReturn ||
-                         cfg.delisting_policy == DelistingPolicy::TerminalReturn;
+    const bool checked = cfg.delisting_policy == DelistingPolicy::CrspDelistReturn || terminal;
     if (checked && invalid) {
       return Err(ErrorCode::InvalidArgument,
                  "replay: missing or invalid delisting return for instrument=" +
@@ -963,7 +965,8 @@ struct ReplayExtensions {
         working.assign(n, kNoWorkingOrder);
       }
     }
-    terminal_policy = cfg.delisting_policy == DelistingPolicy::TerminalReturn;
+    terminal_policy = cfg.delisting_policy == DelistingPolicy::TerminalReturn ||
+                      cfg.delisting_policy == DelistingPolicy::TerminalReturnExPostV1;
     if (terminal_policy ||
         (cfg.delisting_policy != DelistingPolicy::Abort && !cfg.delistings.empty())) {
       delist_event.assign(n, kNoEvent);
@@ -981,7 +984,9 @@ struct ReplayExtensions {
       unfilled = &result.unfilled_targets;
       gaps = &result.gap_carries;
       gap_record.assign(n, kNoCarry);
-      scan_last_print(close, dates);
+      if (cfg.delisting_policy == DelistingPolicy::TerminalReturnExPostV1) {
+        scan_last_print(close, dates);
+      }
     }
   }
 
@@ -1035,17 +1040,21 @@ struct ReplayExtensions {
     }
     const auto exchange = config->listing_exchange.empty() ? ListingExchange::Unknown
                                                            : config->listing_exchange[i];
+    if (!event_due && config->delisting_policy == DelistingPolicy::TerminalReturn) {
+      return assumed_missing_price_return(exchange, is_short);
+    }
     return shumway_terminal_return(exchange, is_short);
   }
 
   // Per-name last-close periods for mark_holdings; empty when no policy is active.
   [[nodiscard]] std::span<const atx::usize> carry_view() const noexcept { return carry_from; }
 
-  // TerminalReturn: a held name with no valid close at `period` that no due
-  // event retires is carried when the panel prints it again later or its event
-  // says it is still listed (the "last bar" rule of holding_interval_returns).
+  // Only the explicit ex-post diagnostic may use future print/event evidence.
+  // The default liquidates conservatively at the first missing held valuation.
   [[nodiscard]] bool gap_carried(atx::usize i, atx::usize period, bool event_due) const noexcept {
-    if (!terminal_policy || event_due) return false;
+    if (config->delisting_policy != DelistingPolicy::TerminalReturnExPostV1 || event_due) {
+      return false;
+    }
     const bool listed_by_table = delist_event[i] != kNoEvent; // Not due == still listed.
     const bool prints_again = last_print[i] != kNoCarry && last_print[i] > period;
     return listed_by_table || prints_again;
@@ -1065,7 +1074,8 @@ struct ReplayExtensions {
       if (!gap_record.empty()) gap_record[i] = kNoCarry;
       const auto event = delist_event[i];
       const bool event_due =
-          event != kNoEvent && config->delistings[event].last_valid_period < period;
+          event != kNoEvent && config->delistings[event].last_valid_period < period &&
+          config->delistings[event].available_period <= period;
       if (!event_due && !terminal_policy) continue;
       // A delisted name can never fill again: cancel its working order even when
       // nothing is held yet, so the order cannot stay open silently for good.
@@ -1120,7 +1130,13 @@ struct ReplayExtensions {
       const auto source = terminal[i].source;
       const bool flagged = source == TerminalReturnSource::ShumwayNyseAmex ||
                            source == TerminalReturnSource::ShumwayNasdaq ||
-                           source == TerminalReturnSource::ShumwayUnknownAdverse;
+                           source == TerminalReturnSource::ShumwayUnknownAdverse ||
+                           source == TerminalReturnSource::AssumedMissingPriceAdverse;
+      if (source == TerminalReturnSource::AssumedMissingPriceAdverse) {
+        ++result.assumed_liquidations;
+        result.assumed_liquidation_pnl += proceeds - last_values[i];
+        ATX_TRY_VOID(require_finite(result.assumed_liquidation_pnl, "assumed liquidation P&L"));
+      }
       result.flagged_delistings += flagged ? 1U : 0U;
       if (flagged && units[i] < 0.0) {
         ++result.flagged_short_delistings;

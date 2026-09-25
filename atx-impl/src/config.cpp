@@ -13,6 +13,22 @@
 
 namespace atx::impl {
 
+const char *replay_delisting_policy_name(ReplayDelistingPolicy policy) noexcept {
+    switch (policy) {
+    case ReplayDelistingPolicy::AbortV1: return "abort";
+    case ReplayDelistingPolicy::TerminalReturnV2: return "terminal-return";
+    }
+    return "invalid";
+}
+
+atx::core::Result<ReplayDelistingPolicy>
+parse_replay_delisting_policy(std::string_view value) {
+    if (value == "terminal-return") return atx::core::Ok(ReplayDelistingPolicy::TerminalReturnV2);
+    if (value == "abort") return atx::core::Ok(ReplayDelistingPolicy::AbortV1);
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+        "--replay-delisting-policy requires terminal-return or abort");
+}
+
 namespace {
 
 // W0-I0b / I-10: every boolean flag in one table. A boolean's value is PARSED
@@ -597,6 +613,11 @@ static atx::core::Result<void> apply_flag_value(RunConfig& cfg,
                 "--replay-execution-delay requires a nonnegative observation count");
         }
         cfg.replay_execution_delay = parsed;
+        return atx::core::Ok();
+    }
+    if (flag == "replay-delisting-policy") {
+        ATX_TRY(auto parsed, parse_replay_delisting_policy(value));
+        cfg.replay_delisting_policy = parsed;
         return atx::core::Ok();
     }
     if (flag == "replay-day-basis") {

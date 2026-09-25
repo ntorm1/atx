@@ -428,15 +428,16 @@ Result<book::ReplayConfig> replay_config(const RunConfig &cfg,
     result.annual_borrow_bps = cfg.replay_annual_borrow_bps;
     result.borrow_day_basis = cfg.replay_day_basis == 360
         ? book::ReplayDayBasis::D360 : book::ReplayDayBasis::D365;
-    // W0-B0/I0b integration handoff (lane-b0-report.md "Major 1" / "3."): the engine's
-    // TerminalReturn default silently carries or liquidates a held name with a missing
-    // close instead of failing. The identified report has no delisting table, exchange
-    // list, or locate schedule to feed that policy, so a missing close here is a data
-    // defect, not a real delisting; ask the engine to keep failing fast on it (its
-    // pre-B0 behavior, and what every existing identified-report test still expects).
-    // A future lane can add `--replay-delisting-policy abort|terminal-return` plus the
-    // delisting/exchange inputs if the identified report needs to price real delistings.
-    result.delisting_policy = book::DelistingPolicy::Abort;
+    switch (cfg.replay_delisting_policy) {
+    case ReplayDelistingPolicy::AbortV1:
+        result.delisting_policy = book::DelistingPolicy::Abort;
+        break;
+    case ReplayDelistingPolicy::TerminalReturnV2:
+        result.delisting_policy = book::DelistingPolicy::TerminalReturn;
+        break;
+    default:
+        return Err(ErrorCode::InvalidArgument, "identified report: invalid delisting policy");
+    }
     return Ok(result);
 }
 
@@ -499,6 +500,23 @@ Result<StageResult> run_identified_replay_report(
             return write_trades(out, replay, *research.identity, diagnostics);
         }));
         files.push_back(std::move(trade_file));
+        ATX_TRY(auto delisting_file, write_companion(directory, "terminal_returns.csv",
+            [&](std::ostream &out) -> Status {
+                out << "period,session_key_ns,instrument_index,security_id,last_value,"
+                       "terminal_return,proceeds,source,flagged\n";
+                for (const auto &event : replay.delistings) {
+                    out << number(event.period) << ','
+                        << number(research.identity->session_keys[event.period]) << ','
+                        << number(event.instrument) << ','
+                        << research.identity->instrument_ids[event.instrument] << ','
+                        << number(event.last_value) << ',' << number(event.delist_return) << ','
+                        << number(event.proceeds) << ','
+                        << number(static_cast<atx::u8>(event.source)) << ','
+                        << (event.flagged ? "true" : "false") << '\n';
+                }
+                return out ? Ok() : Err(ErrorCode::IoError, "replay: terminal return write failed");
+            }));
+        files.push_back(std::move(delisting_file));
         ATX_TRY(auto units_file, write_companion(directory, "final_tri_units.csv",
             [&](std::ostream &out) -> Status {
                 out << "instrument_index,security_id,tri_units\n";
@@ -526,6 +544,20 @@ Result<StageResult> run_identified_replay_report(
                       {"effective_rebalances", replay.effective_rebalances},
                       {"unexecuted_decisions", replay.unexecuted_decisions},
                       {"actual_trade_count", replay.trades.size()},
+                      {"terminal_liquidation_count", replay.delistings.size()},
+                      {"evidenced_delisting_count",
+                          replay.delistings.size() - replay.assumed_liquidations},
+                      {"flagged_delistings", replay.flagged_delistings},
+                      {"flagged_short_delistings", replay.flagged_short_delistings},
+                      {"flagged_short_pnl_dollars", replay.flagged_short_pnl},
+                      {"assumed_liquidation_count", replay.assumed_liquidations},
+                      {"assumed_liquidation_pnl_dollars", replay.assumed_liquidation_pnl},
+                      {"usable_for_alpha_evidence", false},
+                      {"performance_evidence_eligibility", replay.assumed_liquidations != 0
+                          ? "ineligible-assumed-missing-price-liquidation"
+                          : "unverified-research-diagnostic"},
+                      {"gap_carry_count", replay.gap_carries.size()},
+                      {"unfilled_target_count", replay.unfilled_targets.size()},
                       {"final_cash", replay.final_cash}, {"final_assets", replay.final_assets},
                       {"first_post_fit_effective_observation",
                           diagnostics.first_post_fit_effective_observation
@@ -567,6 +599,12 @@ Result<StageResult> run_identified_replay_report(
                     << "Covered intervals: " << number(replay.intervals.size()) << '\n'
                     << "Effective rebalances: " << number(replay.effective_rebalances) << '\n'
                     << "Unexecuted decisions: " << number(replay.unexecuted_decisions) << '\n'
+                    << "Delisting policy: "
+                    << replay_delisting_policy_name(cfg.replay_delisting_policy) << '\n'
+                    << "Flagged terminal returns: " << number(replay.flagged_delistings) << '\n'
+                    << "Flagged short PnL dollars: " << number(replay.flagged_short_pnl) << '\n'
+                    << "Assumed missing-price liquidation PnL dollars: "
+                    << number(replay.assumed_liquidation_pnl) << '\n'
                     << "Strategy capacity: unavailable\n"
                     << "Historical availability, instrument types and executable fills: unverified\n";
                 if (allocation_policy) {
@@ -593,7 +631,17 @@ Result<StageResult> run_identified_replay_report(
                      {"intermediate_policy", "hold-TRI-units-no-implicit-rebalance"},
                      {"cash_interest", 0.0}, {"dividends", "already-in-total-return-prices"},
                      {"terminal_policy", "valuation-only-no-trade-no-liquidation"},
-                     {"held_missing_price_policy", "reject"},
+                     {"replay_delisting_policy",
+                         replay_delisting_policy_name(cfg.replay_delisting_policy)},
+                     {"held_missing_price_policy",
+                         cfg.replay_delisting_policy == ReplayDelistingPolicy::AbortV1
+                             ? "reject" : "first-missing-held-close-terminal-return"},
+                     {"terminal_return_evidence", "no-table-unknown-exchange-adverse-price-stress"},
+                     {"terminal_return_interpretation", "flagged-assumption-not-proven-delisting"},
+                     {"terminal_return_source_codes", {{"0", "table"}, {"1", "last-mark-zero"},
+                         {"2", "Shumway-NYSE-AMEX"}, {"3", "Shumway-Nasdaq"},
+                         {"4", "Shumway-unknown-adverse"},
+                         {"5", "assumed-missing-price-adverse-stress"}}},
                      {"eligibility_policy", "decision-target-gate-never-mask-held-PnL"},
                      {"stored_cost_bps_nonzero", planning_nonzero},
                      {"stored_cost_bps_role", "planning-telemetry-not-realized-debits"},
