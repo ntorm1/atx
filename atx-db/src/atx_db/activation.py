@@ -20,9 +20,7 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Protocol
-
-import pandas as pd
+from typing import TYPE_CHECKING, Protocol
 
 from .clock import resolve_as_of_date, utc_today
 from .connection import DEFAULT_DB_PATH, DuckDBStore
@@ -35,6 +33,9 @@ from .ticker_history_extract import (
 )
 from .warehouse import file_sha256, now_utc_naive, record_source_file
 
+if TYPE_CHECKING:
+    from .symbol_directory import SnapshotReceipt
+
 LOGGER = logging.getLogger(__name__)
 
 COMPANYFACTS_ZIP_URL = "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip"
@@ -42,6 +43,9 @@ SUBMISSIONS_ZIP_URL = "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/s
 NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
 OTHER_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
 DEFAULT_TICKER_HISTORY_ZIP = Path.home() / "Downloads" / "tbltickerhistory3_10y.zip"
+
+TRADING_SYSTEM_ADDS_DELETES_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/TradingSystemAddsDeletes.txt"
+TRADING_SYSTEM_ADDS_DELETES_FILE = "TradingSystemAddsDeletes.txt"
 
 STAGE_ORDER: tuple[str, ...] = (
     "migrate",
@@ -62,6 +66,9 @@ STAGE_ORDER: tuple[str, ...] = (
     "reconciliation",
     "derived_metrics",
     "market_daily",
+    "equity_price_metrics",
+    "listing_events",
+    "listing_status",
     "legacy_liquid_universe",
     "factor_projections",
     "delisting_evidence",
@@ -71,9 +78,80 @@ STAGE_ORDER: tuple[str, ...] = (
     "survivorship_forward_returns",
     "item_coverage",
     "provider_coverage",
-    "equity_price_metrics",
     "quality",
 )
+
+# Declared inputs of every stage (the stages whose published tables it reads).
+# Validated at import: every stage must run after all of its inputs.
+STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    "migrate": (),
+    "security_master": ("migrate",),
+    "symbol_directory": ("migrate",),
+    "ticker_history_extract": (),
+    "ticker_history_publish": ("migrate", "security_master", "ticker_history_extract"),
+    "sec_bulk_download": ("migrate",),
+    "submissions_load": ("security_master", "sec_bulk_download"),
+    "earnings_release_facts": ("submissions_load",),
+    "companyfacts_load": ("security_master", "sec_bulk_download"),
+    "statement_points": ("companyfacts_load",),
+    "periods": ("statement_points",),
+    "ttm": ("periods",),
+    "calendarization": ("periods", "ttm"),
+    "standardized": ("statement_points", "periods", "ttm", "calendarization"),
+    "industry_templates": ("standardized",),
+    "reconciliation": ("standardized",),
+    "derived_metrics": ("standardized", "reconciliation"),
+    "market_daily": ("ticker_history_publish", "statement_points", "derived_metrics"),
+    "equity_price_metrics": ("ticker_history_publish",),
+    "listing_events": ("security_master",),
+    "listing_status": ("security_master", "symbol_directory", "listing_events"),
+    "legacy_liquid_universe": ("ticker_history_publish", "listing_status"),
+    "factor_projections": ("legacy_liquid_universe", "derived_metrics", "market_daily"),
+    "delisting_evidence": (
+        "symbol_directory", "ticker_history_publish", "submissions_load", "listing_events",
+    ),
+    "universe_us_listed": ("security_master", "symbol_directory", "ticker_history_publish", "market_daily"),
+    "delisting_terminal_returns": (
+        "symbol_directory", "ticker_history_publish", "equity_price_metrics", "delisting_evidence",
+        "universe_us_listed",
+    ),
+    "trading_calendar": ("ticker_history_publish",),
+    "survivorship_forward_returns": ("ticker_history_publish", "delisting_terminal_returns", "trading_calendar"),
+    "item_coverage": ("standardized", "market_daily", "universe_us_listed"),
+    "provider_coverage": (
+        "ticker_history_publish", "standardized", "reconciliation", "derived_metrics", "market_daily",
+        "equity_price_metrics", "listing_status", "delisting_terminal_returns", "survivorship_forward_returns",
+        "item_coverage",
+    ),
+    # Final warehouse checks read every published surface.
+    "quality": tuple(stage for stage in STAGE_ORDER if stage != "quality"),
+}
+
+
+def validate_stage_dependencies(
+    order: tuple[str, ...] = STAGE_ORDER,
+    dependencies: dict[str, tuple[str, ...]] = STAGE_DEPENDENCIES,
+) -> None:
+    """Fail unless ``order`` is duplicate-free and runs every stage after its declared inputs."""
+    position = {stage: index for index, stage in enumerate(order)}
+    if len(position) != len(order):
+        raise RuntimeError(f"activation STAGE_ORDER has duplicate stages: {order}")
+    if set(dependencies) != set(order):
+        raise RuntimeError(
+            "STAGE_DEPENDENCIES must declare exactly the STAGE_ORDER stages; "
+            f"missing={sorted(set(order) - set(dependencies))} extra={sorted(set(dependencies) - set(order))}"
+        )
+    violations = [
+        f"{stage} <- {dependency}"
+        for stage, inputs in dependencies.items()
+        for dependency in inputs
+        if dependency not in position or position[dependency] >= position[stage]
+    ]
+    if violations:
+        raise RuntimeError(f"activation stages run before their declared inputs: {violations}")
+
+
+validate_stage_dependencies()
 
 
 @dataclass(frozen=True)
@@ -231,6 +309,10 @@ class ActivationOptions:
     earnings_release_candidate_batch_size: int = 250
     companyfacts_symbol_source: str = "sec_company_tickers"
     skip_loaded_companyfacts: bool | None = None
+    # Pinned-snapshot sources (security_master, symbol_directory, listing_events)
+    # load their retained cache files; only this flag lets a stage re-download
+    # (and archive, never delete) an existing retained file.
+    allow_network_refresh: bool = False
     dry_run: bool = False
     force: bool = False
     run_id: str = "warehouse-activate"
@@ -303,12 +385,158 @@ def stage_migrate(store: DuckDBStore, options: ActivationOptions) -> StageResult
     )
 
 
-def stage_security_master(store: DuckDBStore, options: ActivationOptions) -> StageResult:
-    """Load SEC ``company_tickers.json`` into ``sec_company_tickers`` (network)."""
-    user_agent = require_sec_user_agent(options)
+CACHE_RECEIPT_SUFFIX = ".receipt.json"
+
+
+def _cache_receipt_path(path: Path) -> Path:
+    return path.with_name(path.name + CACHE_RECEIPT_SUFFIX)
+
+
+def _write_cache_receipt(path: Path, *, source_url: str, received_at: dt.datetime, sha256: str) -> None:
+    """Record when a downloaded snapshot's bytes were received, next to the cached file."""
+    _cache_receipt_path(path).write_text(json.dumps({
+        "source_url": source_url,
+        "received_at": received_at.isoformat(),
+        "sha256": sha256,
+        "bytes": path.stat().st_size,
+    }, sort_keys=True), encoding="utf-8")
+
+
+def _read_cache_receipt(path: Path, sha256: str) -> tuple[dt.datetime, str]:
+    """Original receipt time of a retained file: its cache receipt, else its file mtime.
+
+    A receipt whose sha256 does not match the file's current bytes is stale and ignored.
+    """
+    from .symbol_directory import RECEIPT_BASIS_CACHE_RECEIPT, RECEIPT_BASIS_FILE_MTIME
+
+    try:
+        payload = json.loads(_cache_receipt_path(path).read_text(encoding="utf-8"))
+        if payload.get("sha256") == sha256:
+            return dt.datetime.fromisoformat(str(payload["received_at"])), RECEIPT_BASIS_CACHE_RECEIPT
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass
+    mtime = dt.datetime.fromtimestamp(path.stat().st_mtime, tz=dt.UTC).replace(tzinfo=None)
+    return mtime, RECEIPT_BASIS_FILE_MTIME
+
+
+@dataclass(frozen=True)
+class SnapshotAcquisition:
+    """How a pinned-snapshot stage obtained its cache file, and when its bytes arrived.
+
+    ``status``: ``retained`` (existing file, no network), ``downloaded`` (no file was
+    retained; first acquisition), ``refreshed`` / ``refreshed_unchanged``
+    (``--allow-network-refresh`` re-download; a changed prior file is archived under
+    ``superseded/``, never deleted) or ``missing`` (nothing retained, no download).
+    ``received_at`` is the ORIGINAL receipt time of the bytes (``receipt_basis``):
+    a fresh download's own time (``network_download``), a retained file's cache
+    receipt (``cache_receipt``) or, failing that, its mtime (``file_mtime``).
+    """
+
+    path: Path
+    status: str
+    network_requests: int
+    superseded_path: Path | None = None
+    sha256: str | None = None
+    received_at: dt.datetime | None = None
+    receipt_basis: str | None = None
+
+    def as_detail(self) -> dict[str, object]:
+        return {
+            "cache_path": str(self.path),
+            "acquisition": self.status,
+            "network_requests": self.network_requests,
+            "superseded_path": None if self.superseded_path is None else str(self.superseded_path),
+            "received_at": None if self.received_at is None else self.received_at.isoformat(),
+            "receipt_basis": self.receipt_basis,
+        }
+
+    def receipt(self, loaded_at: dt.datetime) -> SnapshotReceipt:
+        from .symbol_directory import SnapshotReceipt
+
+        assert self.received_at is not None and self.receipt_basis is not None
+        return SnapshotReceipt(self.received_at, self.receipt_basis, loaded_at)
+
+
+def _acquire_snapshot_file(
+    options: ActivationOptions,
+    *,
+    url: str,
+    dest: Path,
+    user_agent: Callable[[], str],
+    allow_initial_download: bool,
+) -> SnapshotAcquisition:
+    """Resolve a pinned-snapshot cache file under the retained-source policy.
+
+    A retained file is loaded as-is and never overwritten unless
+    ``options.allow_network_refresh``. Without a retained file, prefix stages whose
+    input is mandatory (``allow_initial_download``) acquire one; others report
+    ``missing`` without any network request. Downloads write a cache receipt so a
+    later pinned reload keeps the original receipt time.
+    """
+    from .symbol_directory import RECEIPT_BASIS_NETWORK_DOWNLOAD
+
+    retained = dest.is_file() and dest.stat().st_size > 0
+    if retained and not options.allow_network_refresh:
+        sha = sha256_file(dest)
+        received_at, basis = _read_cache_receipt(dest, sha)
+        return SnapshotAcquisition(dest, "retained", 0, sha256=sha, received_at=received_at, receipt_basis=basis)
+    if not retained and not (options.allow_network_refresh or allow_initial_download):
+        return SnapshotAcquisition(dest, "missing", 0)
+    agent = user_agent()  # fail fast on a missing SEC user agent before any request
     download = _require_downloader(options)
+    if not retained:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        download(url, dest, user_agent=agent)
+        received_at = now_utc_naive()
+        sha = sha256_file(dest)
+        _write_cache_receipt(dest, source_url=url, received_at=received_at, sha256=sha)
+        return SnapshotAcquisition(dest, "downloaded", 1, sha256=sha, received_at=received_at,
+                                   receipt_basis=RECEIPT_BASIS_NETWORK_DOWNLOAD)
+    staged = dest.with_name(f"{dest.name}.refresh")
+    download(url, staged, user_agent=agent)
+    received_at = now_utc_naive()
+    prior_sha = sha256_file(dest)
+    new_sha = sha256_file(staged)
+    if new_sha == prior_sha:
+        # Identical bytes were already held: keep the original receipt time.
+        staged.unlink()
+        prior_received_at, basis = _read_cache_receipt(dest, prior_sha)
+        return SnapshotAcquisition(dest, "refreshed_unchanged", 1, sha256=prior_sha,
+                                   received_at=prior_received_at, receipt_basis=basis)
+    archive = dest.parent / "superseded" / f"{dest.stem}.{prior_sha[:16]}{dest.suffix}"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    prior_receipt = _cache_receipt_path(dest)
+    if prior_receipt.is_file():
+        os.replace(prior_receipt, _cache_receipt_path(archive))
+    os.replace(dest, archive)
+    os.replace(staged, dest)
+    _write_cache_receipt(dest, source_url=url, received_at=received_at, sha256=new_sha)
+    return SnapshotAcquisition(dest, "refreshed", 1, archive, sha256=new_sha, received_at=received_at,
+                               receipt_basis=RECEIPT_BASIS_NETWORK_DOWNLOAD)
+
+
+def _nasdaq_user_agent(options: ActivationOptions) -> str:
+    from .symbol_directory import APPROVED_USER_AGENT
+
+    agent = options.sec_user_agent or os.environ.get("ATX_SEC_USER_AGENT") or APPROVED_USER_AGENT
+    return agent.strip()
+
+
+def stage_security_master(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Load SEC ``company_tickers.json`` into ``sec_company_tickers``.
+
+    Uses the retained cache file; network only for a first acquisition or with
+    ``--allow-network-refresh``. The file carries no date of its own, so rows are
+    stamped with the operator cutoff (``as_of_basis='operator_cutoff'``).
+    """
     cache_path = Path(options.cache_dir) / "company_tickers.json"
-    byte_count = download(SEC_COMPANY_TICKERS_URL, cache_path, user_agent=user_agent)
+    acquisition = _acquire_snapshot_file(
+        options,
+        url=SEC_COMPANY_TICKERS_URL,
+        dest=cache_path,
+        user_agent=lambda: require_sec_user_agent(options),
+        allow_initial_download=True,
+    )
     frame = normalize_company_tickers(json.loads(cache_path.read_text(encoding="utf-8")))
     as_of_date = resolve_as_of_date(options.as_of_date, source_max_date=None)
     upsert_security_master_from_frame(
@@ -318,7 +546,8 @@ def stage_security_master(store: DuckDBStore, options: ActivationOptions) -> Sta
         as_of_date=as_of_date,
         run_id=f"{options.run_id}-security-master",
     )
-    checksum = sha256_file(cache_path)
+    checksum = acquisition.sha256 or sha256_file(cache_path)
+    byte_count = cache_path.stat().st_size
     record_source_file(
         store,
         dataset_id="sec_security_master",
@@ -326,68 +555,138 @@ def stage_security_master(store: DuckDBStore, options: ActivationOptions) -> Sta
         cache_path=cache_path,
         status="available",
         sha256=checksum,
-        metadata={"as_of_date": as_of_date.isoformat(), "bytes": byte_count, "sha256": checksum},
+        metadata={"as_of_date": as_of_date.isoformat(), "as_of_basis": "operator_cutoff", "bytes": byte_count,
+                  "sha256": checksum, **acquisition.as_detail()},
     )
     count = store.con.execute("SELECT count(*) FROM sec_company_tickers").fetchone()
     return StageResult(
         rows=0 if count is None else int(count[0]),
-        detail={"as_of_date": as_of_date.isoformat(), "bytes": byte_count},
+        detail={"as_of_date": as_of_date.isoformat(), "as_of_basis": "operator_cutoff", "bytes": byte_count,
+                "sha256": checksum, **acquisition.as_detail()},
     )
 
 
 def stage_symbol_directory(store: DuckDBStore, options: ActivationOptions) -> StageResult:
-    """Load the Nasdaq Trader symbol directory snapshot (network)."""
-    from .symbol_directory import (
-        NasdaqSymbolDirectoryOptions,
-        _read_directory_text,
-        normalize_nasdaq_listed,
-        normalize_other_listed,
-        resolve_directory_as_of_date,
-    )
-    from .warehouse import insert_frame
+    """Load the retained Nasdaq Trader directory files as source-dated snapshots.
 
-    download = _require_downloader(options)
-    user_agent = require_sec_user_agent(options)
-    directory_options = NasdaqSymbolDirectoryOptions(as_of_date=options.as_of_date)
-    texts: list[tuple[str, str, Callable[..., pd.DataFrame]]] = []
-    fetched: list[tuple[str, Path]] = []
-    for url, normalizer, name in (
-        (NASDAQ_LISTED_URL, normalize_nasdaq_listed, "nasdaqlisted.txt"),
-        (OTHER_LISTED_URL, normalize_other_listed, "otherlisted.txt"),
+    Each file is dated by its own ``File Creation Time`` trailer; ``--as-of-date``
+    only bounds the cutoff (a later file fails the stage). ``available_at`` is the
+    file's ORIGINAL receipt time (cache receipt, else file mtime; a fresh download's
+    own time), never this reload's time, and a re-dated reload supersedes (never
+    deletes) earlier rows.
+    """
+    from .symbol_directory import load_directory_snapshot
+
+    loaded_at = now_utc_naive()
+    acquired: list[tuple[str, str, SnapshotAcquisition]] = []
+    for directory, url, name in (
+        ("nasdaqlisted", NASDAQ_LISTED_URL, "nasdaqlisted.txt"),
+        ("otherlisted", OTHER_LISTED_URL, "otherlisted.txt"),
     ):
-        dest = Path(options.cache_dir) / name
-        download(url, dest, user_agent=user_agent)
-        texts.append((url, dest.read_text(encoding="utf-8"), normalizer))
-        fetched.append((url, dest))
-    as_of_date = resolve_directory_as_of_date(directory_options, texts[0][1])
-    for url, dest in fetched:
-        checksum = sha256_file(dest)
-        record_source_file(
-            store,
-            dataset_id="nasdaq_symbol_directory",
-            source_url=url,
-            cache_path=dest,
-            status="available",
-            sha256=checksum,
-            metadata={"as_of_date": as_of_date.isoformat(), "bytes": dest.stat().st_size, "sha256": checksum},
-        )
-    frames = [
-        normalizer(
-            _read_directory_text(text),
-            as_of_date=as_of_date,
-            source_url=url,
-            run_id=f"{options.run_id}-symbol-directory",
-        )
-        for url, text, normalizer in texts
-    ]
-    frame = pd.concat([f for f in frames if not f.empty], ignore_index=True)
+        acquired.append((directory, url, _acquire_snapshot_file(
+            options,
+            url=url,
+            dest=Path(options.cache_dir) / name,
+            user_agent=lambda: _nasdaq_user_agent(options),
+            allow_initial_download=True,
+        )))
     with store.transaction():
-        store.con.execute("DELETE FROM nasdaq_symbol_directory WHERE as_of_date = ?", [as_of_date])
-        insert_frame(store, frame, "nasdaq_symbol_directory", "activation_symbol_directory_insert")
+        loads = [
+            load_directory_snapshot(
+                store,
+                directory=directory,
+                source_url=url,
+                text=acquisition.path.read_text(encoding="utf-8"),
+                sha256=acquisition.sha256 or sha256_file(acquisition.path),
+                cutoff=options.as_of_date,
+                run_id=f"{options.run_id}-symbol-directory",
+                receipt=acquisition.receipt(loaded_at),
+                cache_path=acquisition.path,
+                byte_count=acquisition.path.stat().st_size,
+            )
+            for directory, url, acquisition in acquired
+        ]
+    files = [
+        {**load.as_detail(), **acquisition.as_detail()}
+        for load, (_, _, acquisition) in zip(loads, acquired, strict=True)
+    ]
+    as_of_dates = sorted({load.as_of_date.isoformat() for load in loads if load.as_of_date})
+    symbols = store.con.execute(
+        f"""
+        SELECT count(DISTINCT symbol) FROM nasdaq_symbol_directory
+        WHERE coalesce(is_latest_revision, true)
+          AND ({" OR ".join("(source_url = ? AND as_of_date = ?)" for _ in loads)})
+        """,
+        [value for load in loads for value in (load.source_url, load.as_of_date)],
+    ).fetchone()
     return StageResult(
-        rows=len(frame),
-        detail={"as_of_date": as_of_date.isoformat(), "symbols": int(frame["symbol"].nunique())},
+        rows=sum(load.latest_rows for load in loads),
+        detail={
+            "as_of_date": as_of_dates[-1] if as_of_dates else None,
+            "as_of_dates": as_of_dates,
+            "cutoff": options.as_of_date,
+            "loaded_at": loaded_at,
+            "symbols": 0 if symbols is None else int(symbols[0]),
+            "rows_inserted": sum(load.rows_inserted for load in loads),
+            "superseded_rows": sum(load.superseded_rows for load in loads),
+            "network_requests": sum(acquisition.network_requests for _, _, acquisition in acquired),
+            "files": files,
+        },
     )
+
+
+def stage_listing_events(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Load the retained Nasdaq Trading System Adds/Deletes file (no network by default).
+
+    Without a retained file, or with one created after the cutoff, the stage
+    completes with 0 rows and ``source_status='source_unavailable_for_snapshot'``
+    and makes no request. ``--allow-network-refresh`` acquires/refreshes the file.
+    """
+    from .symbol_directory import (
+        IDENTITY_BASIS_CURRENT_TICKER,
+        SOURCE_STATUS_UNAVAILABLE,
+        load_listing_events_snapshot,
+    )
+
+    acquisition = _acquire_snapshot_file(
+        options,
+        url=TRADING_SYSTEM_ADDS_DELETES_URL,
+        dest=Path(options.cache_dir) / TRADING_SYSTEM_ADDS_DELETES_FILE,
+        user_agent=lambda: _nasdaq_user_agent(options),
+        allow_initial_download=False,
+    )
+    if acquisition.status == "missing":
+        return StageResult(0, {
+            "source_status": SOURCE_STATUS_UNAVAILABLE,
+            "reason": "no retained Trading System Adds/Deletes file; pass --allow-network-refresh to acquire one",
+            "source_url": TRADING_SYSTEM_ADDS_DELETES_URL,
+            "cutoff": options.as_of_date,
+            "identity_basis": IDENTITY_BASIS_CURRENT_TICKER,
+            **acquisition.as_detail(),
+        })
+    with store.transaction():
+        load = load_listing_events_snapshot(
+            store,
+            source_url=TRADING_SYSTEM_ADDS_DELETES_URL,
+            text=acquisition.path.read_text(encoding="utf-8"),
+            sha256=acquisition.sha256 or sha256_file(acquisition.path),
+            cutoff=options.as_of_date,
+            run_id=f"{options.run_id}-listing-events",
+            receipt=acquisition.receipt(now_utc_naive()),
+            cache_path=acquisition.path,
+            byte_count=acquisition.path.stat().st_size,
+        )
+    return StageResult(load.latest_rows, {**load.as_detail(), **acquisition.as_detail()})
+
+
+def stage_listing_status(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Rebuild ``listing_status_intervals`` from latest directory snapshots and listing events."""
+    from .listing_status import ListingStatusIntervalDataset, ListingStatusIntervalOptions
+
+    result = ListingStatusIntervalDataset().load(store, ListingStatusIntervalOptions(
+        run_id=f"{options.run_id}-listing-status", as_of_date=options.as_of_date,
+    ))
+    return StageResult(result.rows_loaded, dict(result.details))
 
 
 def stage_ticker_history_extract(store: DuckDBStore, options: ActivationOptions) -> StageResult:
@@ -896,8 +1195,8 @@ def listing_input_diagnostics(store: DuckDBStore, options: ActivationOptions) ->
     row = store.con.execute("""
         SELECT (SELECT min(trade_date) FROM equity_daily_bars),
                (SELECT max(trade_date) FROM equity_daily_bars),
-               (SELECT min(as_of_date) FROM nasdaq_symbol_directory),
-               (SELECT max(as_of_date) FROM nasdaq_symbol_directory),
+               (SELECT min(as_of_date) FROM nasdaq_symbol_directory WHERE coalesce(is_latest_revision, true)),
+               (SELECT max(as_of_date) FROM nasdaq_symbol_directory WHERE coalesce(is_latest_revision, true)),
                (SELECT count(*) FROM exchange_listings
                  WHERE (nullif(trim(exchange_code),'') IS NOT NULL OR nullif(trim(mic),'') IS NOT NULL)
                    AND available_at<=?),
@@ -963,7 +1262,11 @@ def stage_item_coverage(store: DuckDBStore, options: ActivationOptions) -> Stage
 
 
 def stage_equity_price_metrics(store: DuckDBStore, options: ActivationOptions) -> StageResult:
-    """Publish bounded daily risk metrics before the final warehouse checks."""
+    """Publish bounded daily risk metrics right after ``market_daily``.
+
+    Runs before ``delisting_terminal_returns``, whose corporate-action branch reads
+    the unadjusted last close from ``equity_price_metrics`` on a first run.
+    """
     from .equity_price_metrics import EquityPriceMetricsOptions, refresh_equity_price_metrics
 
     rows = refresh_equity_price_metrics(store, EquityPriceMetricsOptions(
@@ -1033,6 +1336,8 @@ STAGES.update(
         "reconciliation": stage_reconciliation,
         "derived_metrics": stage_derived_metrics,
         "market_daily": stage_market_daily,
+        "listing_events": stage_listing_events,
+        "listing_status": stage_listing_status,
         "legacy_liquid_universe": stage_legacy_liquid_universe,
         "factor_projections": stage_factor_projections,
         "delisting_evidence": stage_delisting_evidence,
@@ -1046,6 +1351,12 @@ STAGES.update(
         "quality": stage_quality,
     }
 )
+
+if set(STAGES) != set(STAGE_ORDER):
+    raise RuntimeError(
+        f"activation STAGES/STAGE_ORDER mismatch: unregistered={sorted(set(STAGE_ORDER) - set(STAGES))} "
+        f"unordered={sorted(set(STAGES) - set(STAGE_ORDER))}"
+    )
 
 
 def print_json(payload: dict[str, object]) -> None:
@@ -1248,6 +1559,9 @@ def add_activation_arguments(parser: argparse.ArgumentParser) -> None:
                                     help="Skip CIKs with any facts; NOT archive/allowlist completion evidence.")
     companyfacts_policy.add_argument("--companyfacts-replace-existing", dest="skip_loaded_companyfacts",
                                     action="store_false", help="Replace selected CIKs (default for archive_members).")
+    parser.add_argument("--allow-network-refresh", action="store_true",
+                        help="Let security_master/symbol_directory/listing_events re-download over a retained "
+                             "snapshot (the prior file is archived under superseded/). Default: retained files only.")
     parser.add_argument("--start-stage", choices=STAGE_ORDER, default=None)
     parser.add_argument("--stop-stage", choices=STAGE_ORDER, default=None)
     parser.add_argument("--only", action="append", choices=STAGE_ORDER, default=None)
@@ -1298,6 +1612,7 @@ def activation_options_from_args(args: argparse.Namespace) -> ActivationOptions:
         earnings_release_candidate_batch_size=args.earnings_release_candidate_batch_size,
         companyfacts_symbol_source=args.companyfacts_symbol_source,
         skip_loaded_companyfacts=args.skip_loaded_companyfacts,
+        allow_network_refresh=bool(getattr(args, "allow_network_refresh", False)),
         dry_run=args.dry_run,
         force=args.force,
         run_id=run_id,

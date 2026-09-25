@@ -206,11 +206,22 @@ migrates without the activation retention option.
 -> `ticker_history_publish` -> `sec_bulk_download` -> `submissions_load` ->
 `earnings_release_facts` -> `companyfacts_load` -> `statement_points` -> `periods` -> `ttm` ->
 `calendarization` -> `standardized` -> `industry_templates` -> `reconciliation`
--> `derived_metrics` -> `market_daily` -> `legacy_liquid_universe`
+-> `derived_metrics` -> `market_daily` -> `equity_price_metrics`
+-> `listing_events` -> `listing_status` -> `legacy_liquid_universe`
 -> `factor_projections` -> `delisting_evidence`
 -> `universe_us_listed` -> `delisting_terminal_returns` -> `trading_calendar`
 -> `survivorship_forward_returns` -> `item_coverage` -> `provider_coverage`
--> `equity_price_metrics` -> `quality`.
+-> `quality`.
+
+Each stage's inputs are declared in `activation.STAGE_DEPENDENCIES` and the
+order is validated when `atx_db.activation` is imported, so a misordered ladder
+fails before any work starts. `equity_price_metrics` runs directly after
+`market_daily` because the corporate-action branch of
+`delisting_terminal_returns` reads it on a first run. `listing_events` and
+`listing_status` build `nasdaq_listing_events` and `listing_status_intervals`
+before their consumers (`legacy_liquid_universe`, `delisting_evidence`). The
+run5 suffix, `--start-stage statement_points`, is 22 stages:
+`statement_points` through `quality`.
 
 The cohort uses the original price/liquidity rules, with dated inputs only;
 unclassified bar candidates are not proof of historical US common-equity listing.
@@ -277,11 +288,59 @@ does not build omitted prerequisites. LEI/FIGI activation is deferred and has
 no active stage or vendor-file flags. The existing `industry_templates` stage
 remains; expanded industry templates and their fixture corpus are deferred.
 
-Network stages include `security_master`, `symbol_directory`,
-`sec_bulk_download`, and the source-document requests in `earnings_release_facts`.
-Archive-member CompanyFacts and submissions loading use the retained local
-archives. `sec_bulk_download` resumes a
-partial transfer and records each archive's sha256 in `raw_source_files`.
+Network I/O is limited to `sec_bulk_download` (missing archives only), the
+source-document requests in `earnings_release_facts`, and first acquisition or
+explicit refresh of pinned-snapshot sources (below). Archive-member CompanyFacts
+and submissions loading use the retained local archives. `sec_bulk_download`
+resumes a partial transfer and records each archive's sha256 in `raw_source_files`.
+
+#### Pinned-snapshot source policy
+
+`security_master` (`company_tickers.json`), `symbol_directory`
+(`nasdaqlisted.txt`, `otherlisted.txt`) and `listing_events`
+(`TradingSystemAddsDeletes.txt`) load the retained files in `--cache-dir` and
+never overwrite them with a later download:
+
+- A retained file is loaded as-is with no request. Only `--allow-network-refresh`
+  re-downloads over it. A changed prior file is moved to
+  `<cache-dir>/superseded/<name>.<sha16><ext>`, not deleted.
+- With no retained file, `security_master` and `symbol_directory` acquire one,
+  because their input is mandatory for a from-scratch build. `listing_events`
+  makes no request. It completes with 0 rows and
+  `detail.source_status='source_unavailable_for_snapshot'`, as it also does when
+  the retained file was created after the cutoff. run5 therefore makes zero
+  network requests.
+- Snapshot dating: Nasdaq directory and event rows take `as_of_date` from the
+  file's own `File Creation Time:` trailer (e.g. `0918202621:31` gives
+  2026-09-18). `--as-of-date` only bounds the cutoff. A directory file created
+  after it fails the stage, and an events file created after it is reported
+  unavailable. The operator date is used only for a file with no trailer
+  (`as_of_basis='operator_cutoff_no_file_creation_time'`). `available_at` is
+  the load (receipt) time. `company_tickers.json` has no date of its own, so it
+  keeps the operator cutoff (`as_of_basis='operator_cutoff'`).
+- Reloads never delete evidence. Rows from an earlier load of the same source
+  are marked `is_latest_revision = false`, and the new rows are inserted. This
+  covers the same snapshot date, a date previously stamped on byte-identical
+  content (an operator re-dating, matched through the `raw_source_files`
+  sha256 receipt), and, for events, the same file creation time. Reloading the
+  exact file already loaded at the same date is a no-op (`source_status='unchanged'`).
+  Consumers must read `is_latest_revision` rows only.
+- Nasdaq actions are stored canonically: `A`/`Add` become `add` and `D`/`Delete`
+  become `delete`, case-insensitively. `listing_status` accepts the canonical and
+  legacy spellings. A row with both add and delete across venues produces no
+  status and is counted (`event_action_outcomes.mixed`).
+- Symbols resolve to securities through the current ticker maps. Every listing
+  status row carries `details_json.identity_basis='current_ticker_unverified'`,
+  and the listing-events stage detail carries the same label. Snapshot intervals
+  start at their first snapshot date. An event whose published effective date
+  precedes its file's snapshot date starts at the snapshot date
+  (`valid_from_basis='snapshot_date_floor'`, original `effective_date` kept in
+  `details_json`). Status is never extended before the snapshot that evidences it.
+- The Nasdaq user agent defaults to the approved `atx-db/0.1 atx-research@example.com`.
+
+The optional run5 pre-step `--only symbol_directory --force` reloads the retained
+directory files with source dating. The pre-A1 rows, stamped with the operator
+date, stay in the table as non-latest rows.
 `reconciliation` shells out to `scripts/refresh_reconciliation_sharded.py`, which
 runs the sixteen shards **sequentially, with one shard child active at a time**.
 Each shard gets a fresh interpreter; sixteen partitions are not sixteen workers.

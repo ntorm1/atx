@@ -171,8 +171,10 @@ def test_every_stage_in_stage_order_is_registered():
     assert tuple(sorted(STAGES)) == tuple(sorted(STAGE_ORDER))
 
 
-def test_price_metrics_runs_immediately_before_final_quality():
-    assert STAGE_ORDER[STAGE_ORDER.index("equity_price_metrics") + 1] == "quality"
+def test_price_metrics_runs_after_market_daily_and_before_terminal_returns():
+    assert STAGE_ORDER[STAGE_ORDER.index("market_daily") + 1] == "equity_price_metrics"
+    assert STAGE_ORDER.index("equity_price_metrics") < STAGE_ORDER.index("delisting_terminal_returns")
+    assert STAGE_ORDER[-1] == "quality"
 
 
 def test_every_stage_function_has_the_uniform_signature():
