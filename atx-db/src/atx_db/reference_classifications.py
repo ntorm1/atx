@@ -1,14 +1,23 @@
-"""Reference classification layer — S1.
+"""Reference classification layer — S1 (+ P6: FF49 and the activation-ladder snapshot stage).
 
 Implements:
 - SicTaxonomyDataset     — SIC divisions + 2-digit major groups (embedded static)
-- FamaFrenchTaxonomyDataset — FF12 industries + SIC-range taxonomy_mapping rows
+- FamaFrenchTaxonomyDataset — FF12 and FF49 industries + SIC-range taxonomy_mapping rows
 - NaicsTaxonomyDataset   — NAICS 2022 2-digit sectors + partial SIC→NAICS mapping
-- EntityClassificationDataset — per-security PIT classifications (SIC primary,
-  FAMA_FRENCH_12 and NAICS_2022 derived)
+- EntityClassificationDataset — per-security classifications (SIC primary,
+  FAMA_FRENCH_12, FAMA_FRENCH_49 and NAICS_2022 derived) for the legacy jobs path
+- refresh_entity_classification_snapshot — the set-based activation-ladder writer
+  (``entity_classification`` stage) over the retained SEC ``submissions.zip``
 
-Pure helper exported for tests and downstream use:
+Pure helpers exported for tests and downstream use:
 - fama_french_12_for_sic(sic: int) -> str
+- fama_french_49_for_sic(sic: int) -> str | None
+
+Classification basis (P6): SEC ``submissions`` carry only each filer's CURRENT SIC.
+Rows written from a snapshot are labeled ``classification_basis='current_sic_snapshot'``
+and are valid from the snapshot's receipt date, never earlier. Applying today's SIC to
+earlier dates (the research ``current_sic_backcast``) is a known bias and is labeled
+as such by its consumers; it is never point-in-time SIC history.
 
 All tests are offline; the SEC fetcher is injectable via Options.
 
@@ -23,7 +32,8 @@ import logging
 import time
 import uuid
 import zipfile
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -175,9 +185,9 @@ SIC_MAJOR_GROUPS: list[tuple[str, str]] = [
 # Fama-French 12 industries + SIC range table
 # ---------------------------------------------------------------------------
 
-# The canonical Ken French FF12 industries. Exactly 12 codes; #5 is "BusEq"
-# (Business Equipment). "HiTec" is an FF5/FF48 label, NOT an FF12 industry, so it
-# is deliberately absent.
+# The canonical Ken French FF12 industries. Exactly 12 codes (#6 in French's file is
+# "BusEq", Business Equipment; this list's order is only the node sort order).
+# "HiTec" is an FF5 label, NOT an FF12 industry, so it is deliberately absent.
 FF12_INDUSTRIES: list[tuple[str, str]] = [
     ("NoDur",  "Consumer NonDurables — Food, Tobacco, Textiles, Apparel, Leather, Toys"),
     ("Durbl",  "Consumer Durables — Cars, TVs, Furniture, Household Appliances"),
@@ -193,127 +203,306 @@ FF12_INDUSTRIES: list[tuple[str, str]] = [
     ("Other",  "Other — Mines, Constr, BldMt, Trans, Hotels, Bus Serv, Entertainment"),
 ]
 
-# Canonical Ken French FF12 SIC ranges.
-# Each entry: (ff12_code, [(lo, hi), ...])  inclusive 4-digit SIC ranges.
-# Source: https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/det_12_ind_port.html
+# Ken French FF12 SIC ranges, verbatim from "Detail for 12 Industry Portfolios"
+# (Siccodes12), Ken French Data Library:
+# https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/det_12_ind_port.html
+# Each entry: (ff12_code, [(lo, hi), ...]) inclusive 4-digit SIC ranges. The ranges are
+# disjoint (validated at import); industry 12 "Other" is the residual — every SIC not
+# listed ("everything else"), so it has no ranges of its own here.
+#
+# P6 (2026-09-25): this table replaced an earlier hand-built, overlapping
+# "first range wins" table that disagreed with French's definition on 1,644 of the
+# 9,900 SIC code points 0100-9999 (e.g. electronic components 3670-3679 -> Durbl,
+# chemicals 2800-2829 -> NoDur, coal 1200-1299 -> Other, wholesale 5000-5099 -> Durbl,
+# retail 5200-5299/5600-5699/5900-5999 -> NoDur, 4950-4991 -> Utils). The
+# mapping version below changes with it so every consumer digest changes honestly.
+FF12_MAPPING_VERSION = "french_siccodes12_v2"
+FF12_OTHER = "Other"
 FF12_SIC_RANGES: list[tuple[str, list[tuple[int, int]]]] = [
-    ("NoDur", [
-        (100, 199), (200, 299), (700, 799), (900, 999),
-        (2000, 2099), (2100, 2199), (2200, 2299), (2300, 2399),
-        (2700, 2749), (2750, 2799), (2800, 2829), (2840, 2844),
-        (3100, 3199), (3940, 3989), (2080, 2085),
-        (2086, 2099), (2090, 2099),
-        (5140, 5149), (5150, 5159), (5180, 5182), (5190, 5199),
-        (5200, 5299), (5600, 5699), (5900, 5999), (3630, 3639),
-        (3640, 3649), (3650, 3651), (3652, 3652),
-        (3860, 3861), (3870, 3879), (3990, 3999),
-        (2047, 2047), (2048, 2048),
-    ]),
+    ("NoDur", [(100, 999), (2000, 2399), (2700, 2749), (2770, 2799), (3100, 3199), (3940, 3989)]),
     ("Durbl", [
-        (2510, 2519), (2590, 2599),
-        (3630, 3639), (3640, 3649), (3650, 3651), (3652, 3652),
-        (3710, 3711), (3714, 3716), (3750, 3751), (3792, 3792),
-        (3900, 3939), (3990, 3999),
-        (2590, 2599), (3585, 3585), (3589, 3589), (3600, 3629),
-        (3670, 3679), (3690, 3699),
-        (5000, 5099), (5700, 5736),
+        (2500, 2519), (2590, 2599), (3630, 3659), (3710, 3711), (3714, 3714), (3716, 3716),
+        (3750, 3751), (3792, 3792), (3900, 3939), (3990, 3999),
     ]),
     ("Manuf", [
-        (2520, 2589), (2600, 2699), (2750, 2769), (2770, 2799),
-        (3000, 3099), (3200, 3569), (3580, 3584), (3586, 3588),
-        (3590, 3599), (3700, 3709), (3712, 3713), (3720, 3749),
-        (3752, 3791), (3793, 3799), (3830, 3839), (3860, 3869),
-        (3870, 3899), (3900, 3989),
+        (2520, 2589), (2600, 2699), (2750, 2769), (3000, 3099), (3200, 3569), (3580, 3629),
+        (3700, 3709), (3712, 3713), (3715, 3715), (3717, 3749), (3752, 3791), (3793, 3799),
+        (3830, 3839), (3860, 3899),
     ]),
-    ("Enrgy", [
-        (1300, 1399), (2900, 2999),
-        (1310, 1389), (2910, 2911), (2990, 2999),
-        (5170, 5172),
-    ]),
-    # Canonical FF12 Chemicals. The lookup is "first range wins"; NoDur (above)
-    # already claims 2800-2829 and 2840-2844, so Chems owns the remaining
-    # chemical codes (paints, industrial/agricultural chemicals, etc.). These do
-    # not collide with the Hlth drug codes (2830-2836) or NoDur's 2840-2844.
-    ("Chems", [
-        (2850, 2879), (2890, 2899),
-    ]),
-    ("Hlth", [
-        (2830, 2836), (3693, 3693), (3840, 3849), (3850, 3851),
-        (5047, 5047), (5122, 5122), (8000, 8099),
-        (2833, 2836), (3841, 3851),
-    ]),
-    ("BusEq", [
-        (3570, 3579), (3660, 3669), (3672, 3679), (3812, 3812),
-        (3820, 3829), (3840, 3842), (7370, 7379),
-        (3571, 3577), (3661, 3661), (3663, 3665), (3669, 3669),
-        (3674, 3674), (3812, 3812), (3821, 3827),
-        (3829, 3829), (7372, 7372), (7371, 7379),
-        (3576, 3576), (3578, 3578),
-    ]),
-    ("Telcm", [
-        (4800, 4899), (4812, 4813), (4899, 4899),
-    ]),
-    ("Shops", [
-        (5000, 5199), (5200, 5999), (7200, 7299), (7600, 7699),
-        (5210, 5211), (5251, 5261), (5270, 5271), (5300, 5399),
-        (5400, 5411), (5412, 5412), (5500, 5599), (5600, 5699),
-        (5700, 5736), (5900, 5940), (5945, 5945), (5960, 5963),
-        (5990, 5995), (5999, 5999),
-        (7000, 7019), (7040, 7049), (7212, 7219), (7215, 7217),
-        (7219, 7219), (7220, 7221), (7230, 7231), (7240, 7241),
-        (7250, 7251), (7260, 7269), (7290, 7299),
-    ]),
-    ("Money", [
-        (6000, 6199), (6200, 6299), (6300, 6399), (6400, 6499),
-        (6500, 6599), (6700, 6799),
-        (6020, 6022), (6025, 6026), (6035, 6036), (6099, 6099),
-        (6110, 6111), (6141, 6141), (6153, 6159), (6160, 6163),
-        (6020, 6099), (6110, 6199), (6200, 6289), (6311, 6321),
-        (6324, 6331), (6351, 6361), (6411, 6411), (6500, 6553),
-        (6700, 6726), (6792, 6792), (6794, 6798), (6726, 6726),
-    ]),
-    ("Utils", [
-        (4900, 4949), (4911, 4911), (4931, 4941), (4950, 4959),
-        (4961, 4971), (4991, 4991),
-    ]),
-    ("Other", [
-        (100, 999), (1500, 1799), (2000, 3999), (4000, 4799),
-        (5000, 5199), (5200, 5999), (6000, 6999), (7000, 8999),
-        (9000, 9999),
-    ]),
+    ("Enrgy", [(1200, 1399), (2900, 2999)]),
+    ("Chems", [(2800, 2829), (2840, 2899)]),
+    ("BusEq", [(3570, 3579), (3660, 3692), (3694, 3699), (3810, 3829), (7370, 7379)]),
+    ("Telcm", [(4800, 4899)]),
+    ("Utils", [(4900, 4949)]),
+    ("Shops", [(5000, 5999), (7200, 7299), (7600, 7699)]),
+    ("Hlth", [(2830, 2839), (3693, 3693), (3840, 3859), (8000, 8099)]),
+    ("Money", [(6000, 6999)]),
 ]
 
-# Build a fast lookup dict: sic_4digit -> ff12_code
-# We process in order so earlier (more specific) ranges win.
-# The "Other" range at the end catches anything not yet matched.
-_FF12_LOOKUP: dict[int, str] = {}
+SIC_MIN, SIC_MAX = 100, 9999
 
 
-def _build_ff12_lookup() -> dict[int, str]:
+def _build_disjoint_lookup(
+    table: Iterable[tuple[str, Iterable[tuple[int, int]]]], name: str,
+) -> dict[int, str]:
+    """SIC -> code over a disjoint range table; fails loudly on any overlap (encoding error)."""
     lookup: dict[int, str] = {}
-    # Process all industries except Other first, in the order listed
-    for code, ranges in FF12_SIC_RANGES[:-1]:  # skip Other
+    for code, ranges in table:
         for lo, hi in ranges:
+            if not SIC_MIN <= lo <= hi <= SIC_MAX:
+                raise ValueError(f"{name}: invalid SIC range {lo}-{hi} for {code}")
             for sic in range(lo, hi + 1):
-                if sic not in lookup:
-                    lookup[sic] = code
-    # Fill remaining with Other
-    for sic in range(100, 10000):
-        if sic not in lookup:
-            lookup[sic] = "Other"
+                prior = lookup.setdefault(sic, code)
+                if prior != code:
+                    raise ValueError(f"{name}: SIC {sic} is listed under both {prior} and {code}")
     return lookup
 
 
-_FF12_LOOKUP = _build_ff12_lookup()
+def _complement_ranges(covered: Iterable[int]) -> list[tuple[int, int]]:
+    """Inclusive SIC ranges in [SIC_MIN, SIC_MAX] not in ``covered`` (the residual industry)."""
+    taken = set(covered)
+    ranges: list[tuple[int, int]] = []
+    start: int | None = None
+    for sic in range(SIC_MIN, SIC_MAX + 2):
+        free = sic <= SIC_MAX and sic not in taken
+        if free and start is None:
+            start = sic
+        elif not free and start is not None:
+            ranges.append((start, sic - 1))
+            start = None
+    return ranges
+
+
+_FF12_NAMED = _build_disjoint_lookup(FF12_SIC_RANGES, "FF12")
+_FF12_LOOKUP: dict[int, str] = {
+    sic: _FF12_NAMED.get(sic, FF12_OTHER) for sic in range(SIC_MIN, SIC_MAX + 1)
+}
 
 
 def fama_french_12_for_sic(sic: int) -> str:
     """Return the Fama-French 12-industry code for a 4-digit SIC code.
 
-    Uses the canonical Ken French SIC-range table embedded in this module.
-    Returns 'Other' for any SIC not matched by a named industry range.
+    Uses French's Siccodes12 table embedded in this module. Returns 'Other' for any
+    SIC not listed under a named industry (French's industry 12 is "everything else").
     """
-    return _FF12_LOOKUP.get(sic, "Other")
+    return _FF12_LOOKUP.get(sic, FF12_OTHER)
+
+
+# ---------------------------------------------------------------------------
+# Fama-French 49 industries (P6)
+# ---------------------------------------------------------------------------
+
+# Ken French FF49 industry definitions, verbatim from "Detail for 49 Industry
+# Portfolios" (Siccodes49), Ken French Data Library:
+# https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/det_49_ind_port.html
+# Each entry: (number, code, label, ranges); one (lo, hi) tuple per line of French's
+# file, inclusive 4-digit SIC. Ranges are disjoint (validated at import). Unlike FF12,
+# industry 49 "Other" ("Almost Nothing") is defined by its own four ranges, so a SIC
+# listed under no industry has NO FF49 industry: fama_french_49_for_sic returns None,
+# the ladder writes no FF49 row and counts it (never assigned to Other by default).
+FF49_MAPPING_VERSION = "french_siccodes49_v1"
+FF49_INDUSTRIES: list[tuple[int, str, str, tuple[tuple[int, int], ...]]] = [
+    (1, "Agric", "Agriculture", ((100, 199), (200, 299), (700, 799), (910, 919), (2048, 2048))),
+    (2, "Food", "Food Products", (
+        (2000, 2009), (2010, 2019), (2020, 2029), (2030, 2039), (2040, 2046), (2050, 2059),
+        (2060, 2063), (2070, 2079), (2090, 2092), (2095, 2095), (2098, 2099),
+    )),
+    (3, "Soda", "Candy & Soda", ((2064, 2068), (2086, 2086), (2087, 2087), (2096, 2096), (2097, 2097))),
+    (4, "Beer", "Beer & Liquor", ((2080, 2080), (2082, 2082), (2083, 2083), (2084, 2084), (2085, 2085))),
+    (5, "Smoke", "Tobacco Products", ((2100, 2199),)),
+    (6, "Toys", "Recreation", (
+        (920, 999), (3650, 3651), (3652, 3652), (3732, 3732), (3930, 3931), (3940, 3949),
+    )),
+    (7, "Fun", "Entertainment", (
+        (7800, 7829), (7830, 7833), (7840, 7841), (7900, 7900), (7910, 7911), (7920, 7929),
+        (7930, 7933), (7940, 7949), (7980, 7980), (7990, 7999),
+    )),
+    (8, "Books", "Printing and Publishing", (
+        (2700, 2709), (2710, 2719), (2720, 2729), (2730, 2739), (2740, 2749), (2770, 2771),
+        (2780, 2789), (2790, 2799),
+    )),
+    (9, "Hshld", "Consumer Goods", (
+        (2047, 2047), (2391, 2392), (2510, 2519), (2590, 2599), (2840, 2843), (2844, 2844),
+        (3160, 3161), (3170, 3171), (3172, 3172), (3190, 3199), (3229, 3229), (3260, 3260),
+        (3262, 3263), (3269, 3269), (3230, 3231), (3630, 3639), (3750, 3751), (3800, 3800),
+        (3860, 3861), (3870, 3873), (3910, 3911), (3914, 3914), (3915, 3915), (3960, 3962),
+        (3991, 3991), (3995, 3995),
+    )),
+    (10, "Clths", "Apparel", (
+        (2300, 2390), (3020, 3021), (3100, 3111), (3130, 3131), (3140, 3149), (3150, 3151),
+        (3963, 3965),
+    )),
+    (11, "Hlth", "Healthcare", ((8000, 8099),)),
+    (12, "MedEq", "Medical Equipment", ((3693, 3693), (3840, 3849), (3850, 3851))),
+    (13, "Drugs", "Pharmaceutical Products", (
+        (2830, 2830), (2831, 2831), (2833, 2833), (2834, 2834), (2835, 2835), (2836, 2836),
+    )),
+    (14, "Chems", "Chemicals", (
+        (2800, 2809), (2810, 2819), (2820, 2829), (2850, 2859), (2860, 2869), (2870, 2879),
+        (2890, 2899),
+    )),
+    (15, "Rubbr", "Rubber and Plastic Products", (
+        (3031, 3031), (3041, 3041), (3050, 3053), (3060, 3069), (3070, 3079), (3080, 3089),
+        (3090, 3099),
+    )),
+    (16, "Txtls", "Textiles", (
+        (2200, 2269), (2270, 2279), (2280, 2284), (2290, 2295), (2297, 2297), (2298, 2298),
+        (2299, 2299), (2393, 2395), (2397, 2399),
+    )),
+    (17, "BldMt", "Construction Materials", (
+        (800, 899), (2400, 2439), (2450, 2459), (2490, 2499), (2660, 2661), (2950, 2952),
+        (3200, 3200), (3210, 3211), (3240, 3241), (3250, 3259), (3261, 3261), (3264, 3264),
+        (3270, 3275), (3280, 3281), (3290, 3293), (3295, 3299), (3420, 3429), (3430, 3433),
+        (3440, 3441), (3442, 3442), (3446, 3446), (3448, 3448), (3449, 3449), (3450, 3451),
+        (3452, 3452), (3490, 3499), (3996, 3996),
+    )),
+    (18, "Cnstr", "Construction", (
+        (1500, 1511), (1520, 1529), (1530, 1539), (1540, 1549), (1600, 1699), (1700, 1799),
+    )),
+    (19, "Steel", "Steel Works Etc", (
+        (3300, 3300), (3310, 3317), (3320, 3325), (3330, 3339), (3340, 3341), (3350, 3357),
+        (3360, 3369), (3370, 3379), (3390, 3399),
+    )),
+    (20, "FabPr", "Fabricated Products", ((3400, 3400), (3443, 3443), (3444, 3444), (3460, 3469), (3470, 3479))),
+    (21, "Mach", "Machinery", (
+        (3510, 3519), (3520, 3529), (3530, 3530), (3531, 3531), (3532, 3532), (3533, 3533),
+        (3534, 3534), (3535, 3535), (3536, 3536), (3538, 3538), (3540, 3549), (3550, 3559),
+        (3560, 3569), (3580, 3580), (3581, 3581), (3582, 3582), (3585, 3585), (3586, 3586),
+        (3589, 3589), (3590, 3599),
+    )),
+    (22, "ElcEq", "Electrical Equipment", (
+        (3600, 3600), (3610, 3613), (3620, 3621), (3623, 3629), (3640, 3644), (3645, 3645),
+        (3646, 3646), (3648, 3649), (3660, 3660), (3690, 3690), (3691, 3692), (3699, 3699),
+    )),
+    (23, "Autos", "Automobiles and Trucks", (
+        (2296, 2296), (2396, 2396), (3010, 3011), (3537, 3537), (3647, 3647), (3694, 3694),
+        (3700, 3700), (3710, 3710), (3711, 3711), (3713, 3713), (3714, 3714), (3715, 3715),
+        (3716, 3716), (3792, 3792), (3790, 3791), (3799, 3799),
+    )),
+    (24, "Aero", "Aircraft", ((3720, 3720), (3721, 3721), (3723, 3724), (3725, 3725), (3728, 3729))),
+    (25, "Ships", "Shipbuilding, Railroad Equipment", ((3730, 3731), (3740, 3743))),
+    (26, "Guns", "Defense", ((3760, 3769), (3795, 3795), (3480, 3489))),
+    (27, "Gold", "Precious Metals", ((1040, 1049),)),
+    (28, "Mines", "Non-Metallic and Industrial Metal Mining", (
+        (1000, 1009), (1010, 1019), (1020, 1029), (1030, 1039), (1050, 1059), (1060, 1069),
+        (1070, 1079), (1080, 1089), (1090, 1099), (1100, 1119), (1400, 1499),
+    )),
+    (29, "Coal", "Coal", ((1200, 1299),)),
+    (30, "Oil", "Petroleum and Natural Gas", (
+        (1300, 1300), (1310, 1319), (1320, 1329), (1330, 1339), (1370, 1379), (1380, 1380),
+        (1381, 1381), (1382, 1382), (1389, 1389), (2900, 2912), (2990, 2999),
+    )),
+    (31, "Util", "Utilities", (
+        (4900, 4900), (4910, 4911), (4920, 4922), (4923, 4923), (4924, 4925), (4930, 4931),
+        (4932, 4932), (4939, 4939), (4940, 4942),
+    )),
+    (32, "Telcm", "Communication", (
+        (4800, 4800), (4810, 4813), (4820, 4822), (4830, 4839), (4840, 4841), (4880, 4889),
+        (4890, 4890), (4891, 4891), (4892, 4892), (4899, 4899),
+    )),
+    (33, "PerSv", "Personal Services", (
+        (7020, 7021), (7030, 7033), (7200, 7200), (7210, 7212), (7214, 7214), (7215, 7216),
+        (7217, 7217), (7219, 7219), (7220, 7221), (7230, 7231), (7240, 7241), (7250, 7251),
+        (7260, 7269), (7270, 7290), (7291, 7291), (7292, 7299), (7395, 7395), (7500, 7500),
+        (7520, 7529), (7530, 7539), (7540, 7549), (7600, 7600), (7620, 7620), (7622, 7622),
+        (7623, 7623), (7629, 7629), (7630, 7631), (7640, 7641), (7690, 7699), (8100, 8199),
+        (8200, 8299), (8300, 8399), (8400, 8499), (8600, 8699), (8800, 8899), (7510, 7515),
+    )),
+    (34, "BusSv", "Business Services", (
+        (2750, 2759), (3993, 3993), (7218, 7218), (7300, 7300), (7310, 7319), (7320, 7329),
+        (7330, 7339), (7340, 7342), (7349, 7349), (7350, 7351), (7352, 7352), (7353, 7353),
+        (7359, 7359), (7360, 7369), (7374, 7374), (7376, 7376), (7377, 7377), (7378, 7378),
+        (7379, 7379), (7380, 7380), (7381, 7382), (7383, 7383), (7384, 7384), (7385, 7385),
+        (7389, 7390), (7391, 7391), (7392, 7392), (7393, 7393), (7394, 7394), (7396, 7396),
+        (7397, 7397), (7399, 7399), (7519, 7519), (8700, 8700), (8710, 8713), (8720, 8721),
+        (8730, 8734), (8740, 8748), (8900, 8910), (8911, 8911), (8920, 8999), (4220, 4229),
+    )),
+    (35, "Hardw", "Computers", (
+        (3570, 3579), (3680, 3680), (3681, 3681), (3682, 3682), (3683, 3683), (3684, 3684),
+        (3685, 3685), (3686, 3686), (3687, 3687), (3688, 3688), (3689, 3689), (3695, 3695),
+    )),
+    (36, "Softw", "Computer Software", ((7370, 7372), (7375, 7375), (7373, 7373))),
+    (37, "Chips", "Electronic Equipment", (
+        (3622, 3622), (3661, 3661), (3662, 3662), (3663, 3663), (3664, 3664), (3665, 3665),
+        (3666, 3666), (3669, 3669), (3670, 3679), (3810, 3810), (3812, 3812),
+    )),
+    (38, "LabEq", "Measuring and Control Equipment", (
+        (3811, 3811), (3820, 3820), (3821, 3821), (3822, 3822), (3823, 3823), (3824, 3824),
+        (3825, 3825), (3826, 3826), (3827, 3827), (3829, 3829), (3830, 3839),
+    )),
+    (39, "Paper", "Business Supplies", ((2520, 2549), (2600, 2639), (2670, 2699), (2760, 2761), (3950, 3955))),
+    (40, "Boxes", "Shipping Containers", ((2440, 2449), (2640, 2659), (3220, 3221), (3410, 3412))),
+    (41, "Trans", "Transportation", (
+        (4000, 4013), (4040, 4049), (4100, 4100), (4110, 4119), (4120, 4121), (4130, 4131),
+        (4140, 4142), (4150, 4151), (4170, 4173), (4190, 4199), (4200, 4200), (4210, 4219),
+        (4230, 4231), (4240, 4249), (4400, 4499), (4500, 4599), (4600, 4699), (4700, 4700),
+        (4710, 4712), (4720, 4729), (4730, 4739), (4740, 4749), (4780, 4780), (4782, 4782),
+        (4783, 4783), (4784, 4784), (4785, 4785), (4789, 4789),
+    )),
+    (42, "Whlsl", "Wholesale", (
+        (5000, 5000), (5010, 5015), (5020, 5023), (5030, 5039), (5040, 5042), (5043, 5043),
+        (5044, 5044), (5045, 5045), (5046, 5046), (5047, 5047), (5048, 5048), (5049, 5049),
+        (5050, 5059), (5060, 5060), (5063, 5063), (5064, 5064), (5065, 5065), (5070, 5078),
+        (5080, 5080), (5081, 5081), (5082, 5082), (5083, 5083), (5084, 5084), (5085, 5085),
+        (5086, 5087), (5088, 5088), (5090, 5090), (5091, 5092), (5093, 5093), (5094, 5094),
+        (5099, 5099), (5100, 5100), (5110, 5113), (5120, 5122), (5130, 5139), (5140, 5149),
+        (5150, 5159), (5160, 5169), (5170, 5172), (5180, 5182), (5190, 5199),
+    )),
+    (43, "Rtail", "Retail", (
+        (5200, 5200), (5210, 5219), (5220, 5229), (5230, 5231), (5250, 5251), (5260, 5261),
+        (5270, 5271), (5300, 5300), (5310, 5311), (5320, 5320), (5330, 5331), (5334, 5334),
+        (5340, 5349), (5390, 5399), (5400, 5400), (5410, 5411), (5412, 5412), (5420, 5429),
+        (5430, 5439), (5440, 5449), (5450, 5459), (5460, 5469), (5490, 5499), (5500, 5500),
+        (5510, 5529), (5530, 5539), (5540, 5549), (5550, 5559), (5560, 5569), (5570, 5579),
+        (5590, 5599), (5600, 5699), (5700, 5700), (5710, 5719), (5720, 5722), (5730, 5733),
+        (5734, 5734), (5735, 5735), (5736, 5736), (5750, 5799), (5900, 5900), (5910, 5912),
+        (5920, 5929), (5930, 5932), (5940, 5940), (5941, 5941), (5942, 5942), (5943, 5943),
+        (5944, 5944), (5945, 5945), (5946, 5946), (5947, 5947), (5948, 5948), (5949, 5949),
+        (5950, 5959), (5960, 5969), (5970, 5979), (5980, 5989), (5990, 5990), (5992, 5992),
+        (5993, 5993), (5994, 5994), (5995, 5995), (5999, 5999),
+    )),
+    (44, "Meals", "Restaraunts, Hotels, Motels", (
+        (5800, 5819), (5820, 5829), (5890, 5899), (7000, 7000), (7010, 7019), (7040, 7049),
+        (7213, 7213),
+    )),
+    (45, "Banks", "Banking", (
+        (6000, 6000), (6010, 6019), (6020, 6020), (6021, 6021), (6022, 6022), (6023, 6024),
+        (6025, 6025), (6026, 6026), (6027, 6027), (6028, 6029), (6030, 6036), (6040, 6059),
+        (6060, 6062), (6080, 6082), (6090, 6099), (6100, 6100), (6110, 6111), (6112, 6113),
+        (6120, 6129), (6130, 6139), (6140, 6149), (6150, 6159), (6160, 6169), (6170, 6179),
+        (6190, 6199),
+    )),
+    (46, "Insur", "Insurance", (
+        (6300, 6300), (6310, 6319), (6320, 6329), (6330, 6331), (6350, 6351), (6360, 6361),
+        (6370, 6379), (6390, 6399), (6400, 6411),
+    )),
+    (47, "RlEst", "Real Estate", (
+        (6500, 6500), (6510, 6510), (6512, 6512), (6513, 6513), (6514, 6514), (6515, 6515),
+        (6517, 6519), (6520, 6529), (6530, 6531), (6532, 6532), (6540, 6541), (6550, 6553),
+        (6590, 6599), (6610, 6611),
+    )),
+    (48, "Fin", "Trading", (
+        (6200, 6299), (6700, 6700), (6710, 6719), (6720, 6722), (6723, 6723), (6724, 6724),
+        (6725, 6725), (6726, 6726), (6730, 6733), (6740, 6779), (6790, 6791), (6792, 6792),
+        (6793, 6793), (6794, 6795), (6798, 6798), (6799, 6799),
+    )),
+    (49, "Other", "Almost Nothing", ((4950, 4959), (4960, 4961), (4970, 4971), (4990, 4991))),
+]
+_FF49_LOOKUP: dict[int, str] = _build_disjoint_lookup(
+    ((code, ranges) for _, code, _, ranges in FF49_INDUSTRIES), "FF49",
+)
+if [number for number, *_ in FF49_INDUSTRIES] != list(range(1, 50)):
+    raise ValueError("FF49_INDUSTRIES must list French's industries 1..49 in order")
+
+
+def fama_french_49_for_sic(sic: int) -> str | None:
+    """Return the Fama-French 49-industry code for a 4-digit SIC, or None when unlisted.
+
+    Uses French's Siccodes49 table embedded in this module. A SIC listed under no
+    industry (e.g. 9995, 9999, 2049) has no FF49 industry; it is never defaulted to
+    49 "Other", which French defines by its own four ranges.
+    """
+    return _FF49_LOOKUP.get(sic)
 
 
 # ---------------------------------------------------------------------------
@@ -632,11 +821,109 @@ class FamaFrenchTaxonomyOptions:
     run_id: str | None = None
 
 
-class FamaFrenchTaxonomyDataset(Dataset):
-    """Seed FAMA_FRENCH_12 taxonomy nodes and SIC-range taxonomy_mapping rows.
+def _ensure_taxonomy_version(
+    store: DuckDBStore, *, code: str, version: str, description: str,
+) -> str:
+    """Upsert a taxonomy and move an existing row to ``version`` (mapping-version bump)."""
+    taxonomy_id = _upsert_taxonomy(
+        store,
+        code=code,
+        name={"FAMA_FRENCH_12": "Fama-French 12 Industries",
+              "FAMA_FRENCH_49": "Fama-French 49 Industries"}.get(code, code),
+        provider="Ken French Data Library",
+        version=version,
+        is_hierarchical=False,
+        description=description,
+        source=SOURCE_FF,
+    )
+    store.con.execute(
+        """
+        UPDATE taxonomy SET version = ?, description = ?, source_loaded_at = now()
+        WHERE taxonomy_id = ? AND (version IS DISTINCT FROM ? OR description IS DISTINCT FROM ?)
+        """,
+        [version, description, taxonomy_id, version, description],
+    )
+    return taxonomy_id
 
-    Uses the canonical Ken French SIC-range definitions (public).
-    Idempotent — safe to run multiple times.
+
+def _seed_ff_taxonomy(
+    store: DuckDBStore,
+    *,
+    code: str,
+    tag: str,
+    version: str,
+    description: str,
+    nodes: list[tuple[str, str]],
+    ranges: list[tuple[str, list[tuple[int, int]]]],
+) -> tuple[int, int]:
+    """Seed one Fama-French taxonomy: nodes + the EXACT SIC-range crosswalk.
+
+    The crosswalk is replaced as a set (stale ranges from an earlier mapping version
+    are deleted), so ``taxonomy_mapping`` always equals the embedded table.
+    """
+    taxonomy_id = _ensure_taxonomy_version(store, code=code, version=version, description=description)
+    node_df = pd.DataFrame(
+        [
+            (str(uuid.uuid5(uuid.NAMESPACE_DNS, f"node:{taxonomy_id}:{node}")), taxonomy_id, node, label,
+             None, 1, sort)
+            for sort, (node, label) in enumerate(nodes)
+        ],
+        columns=["node_id", "taxonomy_id", "node_code", "node_label", "parent_node_id", "level", "sort_order"],
+    )
+    store.con.register("_ff_node_seed", node_df)
+    try:
+        store.con.execute(
+            """
+            INSERT OR REPLACE INTO taxonomy_node
+                (node_id, taxonomy_id, node_code, node_label, parent_node_id, level, sort_order)
+            SELECT node_id, taxonomy_id, node_code, node_label, parent_node_id, level, sort_order
+            FROM _ff_node_seed
+            """
+        )
+    finally:
+        store.con.unregister("_ff_node_seed")
+
+    sic_taxonomy_id = _taxonomy_id_for(store, "SIC")
+    if not sic_taxonomy_id:
+        return len(node_df), 0
+    map_df = pd.DataFrame(
+        [
+            (str(uuid.uuid5(uuid.NAMESPACE_DNS, f"mapping:SIC:{lo}-{hi}:{tag}:{node}")), sic_taxonomy_id,
+             f"{lo}-{hi}", taxonomy_id, node, "many_to_one", 1.0, f"{SOURCE_FF} ({version})")
+            for node, node_ranges in ranges
+            for lo, hi in node_ranges
+        ],
+        columns=["mapping_id", "from_taxonomy_id", "from_node_code", "to_taxonomy_id", "to_node_code",
+                 "relationship", "confidence", "source"],
+    )
+    store.con.execute(
+        "DELETE FROM taxonomy_mapping WHERE from_taxonomy_id = ? AND to_taxonomy_id = ?",
+        [sic_taxonomy_id, taxonomy_id],
+    )
+    store.con.register("_ff_mapping_seed", map_df)
+    try:
+        store.con.execute(
+            """
+            INSERT OR REPLACE INTO taxonomy_mapping
+                (mapping_id, from_taxonomy_id, from_node_code, to_taxonomy_id, to_node_code,
+                 relationship, confidence, source)
+            SELECT mapping_id, from_taxonomy_id, from_node_code, to_taxonomy_id, to_node_code,
+                   relationship, confidence, source
+            FROM _ff_mapping_seed
+            """
+        )
+    finally:
+        store.con.unregister("_ff_mapping_seed")
+    return len(node_df), len(map_df)
+
+
+class FamaFrenchTaxonomyDataset(Dataset):
+    """Seed FAMA_FRENCH_12 and FAMA_FRENCH_49 nodes and their SIC-range crosswalks.
+
+    Uses French's Siccodes12 / Siccodes49 definitions (Ken French Data Library,
+    public). FF12 "Other" is mapped from the residual SIC ranges (everything not
+    listed); FF49 maps only French's listed ranges. Idempotent — safe to rerun; a
+    mapping-version change replaces the crosswalk and bumps ``taxonomy.version``.
     """
 
     dataset_id = "fama_french_taxonomy"
@@ -646,106 +933,45 @@ class FamaFrenchTaxonomyDataset(Dataset):
         store.initialize()
 
     def load(self, store: DuckDBStore, options: FamaFrenchTaxonomyOptions) -> DatasetLoadResult:
-        taxonomy_id = _upsert_taxonomy(
+        _ = options
+        ff12_nodes, ff12_ranges = _seed_ff_taxonomy(
             store,
             code="FAMA_FRENCH_12",
-            name="Fama-French 12 Industries",
-            provider="Ken French Data Library",
-            version="canonical",
-            is_hierarchical=False,
+            tag="FF12",
+            version=FF12_MAPPING_VERSION,
             description=(
-                "12-industry Fama-French classification mapped from 4-digit SIC ranges. "
+                "12-industry Fama-French classification mapped from 4-digit SIC ranges "
+                "(French Siccodes12; industry 12 Other = every unlisted SIC). "
                 "Source: https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/"
+                "Data_Library/det_12_ind_port.html"
             ),
-            source=SOURCE_FF,
+            nodes=FF12_INDUSTRIES,
+            ranges=[*FF12_SIC_RANGES, (FF12_OTHER, _complement_ranges(_FF12_NAMED))],
         )
-
-        # --- Bulk insert: 12 industry nodes (de-duplicate BusEq) ---
-        seen_codes: set[str] = set()
-        node_rows = []
-        node_ids: dict[str, str] = {}
-        for sort, (code, label) in enumerate(FF12_INDUSTRIES):
-            nid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"node:{taxonomy_id}:{code}"))
-            node_ids[code] = nid
-            if code not in seen_codes:
-                seen_codes.add(code)
-                node_rows.append((nid, taxonomy_id, code, label, None, 1, sort))
-
-        node_df = pd.DataFrame(
-            node_rows,
-            columns=["node_id", "taxonomy_id", "node_code", "node_label",
-                     "parent_node_id", "level", "sort_order"],
+        ff49_nodes, ff49_ranges = _seed_ff_taxonomy(
+            store,
+            code="FAMA_FRENCH_49",
+            tag="FF49",
+            version=FF49_MAPPING_VERSION,
+            description=(
+                "49-industry Fama-French classification mapped from 4-digit SIC ranges "
+                "(French Siccodes49; SIC codes listed under no industry have no FF49 industry). "
+                "Source: https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/"
+                "Data_Library/det_49_ind_port.html"
+            ),
+            nodes=[(code, label) for _, code, label, _ in FF49_INDUSTRIES],
+            ranges=[(code, list(ranges)) for _, code, _, ranges in FF49_INDUSTRIES],
         )
-        store.con.register("_ff12_node_seed", node_df)
-        try:
-            store.con.execute(
-                """
-                INSERT OR REPLACE INTO taxonomy_node
-                    (node_id, taxonomy_id, node_code, node_label,
-                     parent_node_id, level, sort_order)
-                SELECT node_id, taxonomy_id, node_code, node_label,
-                       parent_node_id, level, sort_order
-                FROM _ff12_node_seed
-                """
-            )
-        finally:
-            store.con.unregister("_ff12_node_seed")
-
-        node_count = len(node_rows)
-
-        # --- Bulk insert: taxonomy_mapping rows (SIC ranges → FF12) ---
-        sic_taxonomy_id = _taxonomy_id_for(store, "SIC")
-        mapping_count = 0
-        if sic_taxonomy_id:
-            mapping_rows = []
-            for ff_code, ranges in FF12_SIC_RANGES:
-                if ff_code not in node_ids:
-                    continue
-                for lo, hi in ranges:
-                    mapping_id = str(uuid.uuid5(
-                        uuid.NAMESPACE_DNS,
-                        f"mapping:SIC:{lo}-{hi}:FF12:{ff_code}",
-                    ))
-                    mapping_rows.append((
-                        mapping_id,
-                        sic_taxonomy_id,
-                        f"{lo}-{hi}",
-                        taxonomy_id,
-                        ff_code,
-                        "many_to_one",
-                        1.0,
-                        SOURCE_FF,
-                    ))
-            if mapping_rows:
-                map_df = pd.DataFrame(
-                    mapping_rows,
-                    columns=["mapping_id", "from_taxonomy_id", "from_node_code",
-                             "to_taxonomy_id", "to_node_code", "relationship",
-                             "confidence", "source"],
-                )
-                store.con.register("_ff12_mapping_seed", map_df)
-                try:
-                    store.con.execute(
-                        """
-                        INSERT OR REPLACE INTO taxonomy_mapping
-                            (mapping_id, from_taxonomy_id, from_node_code,
-                             to_taxonomy_id, to_node_code, relationship,
-                             confidence, source)
-                        SELECT mapping_id, from_taxonomy_id, from_node_code,
-                               to_taxonomy_id, to_node_code, relationship,
-                               confidence, source
-                        FROM _ff12_mapping_seed
-                        """
-                    )
-                finally:
-                    store.con.unregister("_ff12_mapping_seed")
-                mapping_count = len(mapping_rows)
-
         return DatasetLoadResult(
             dataset_id=self.dataset_id,
-            rows_loaded=node_count + mapping_count,
+            rows_loaded=ff12_nodes + ff12_ranges + ff49_nodes + ff49_ranges,
             source=SOURCE_FF,
-            details={"ff12_nodes": node_count, "mapping_ranges": mapping_count},
+            details={
+                "ff12_nodes": ff12_nodes, "mapping_ranges": ff12_ranges,
+                "ff49_nodes": ff49_nodes, "ff49_mapping_ranges": ff49_ranges,
+                "mapping_versions": {"FAMA_FRENCH_12": FF12_MAPPING_VERSION,
+                                     "FAMA_FRENCH_49": FF49_MAPPING_VERSION},
+            },
         )
 
 
@@ -1054,6 +1280,7 @@ class EntityClassificationDataset(Dataset):
         # Resolve taxonomy IDs (must already be seeded)
         sic_taxonomy_id = _taxonomy_id_for(store, "SIC")
         ff12_taxonomy_id = _taxonomy_id_for(store, "FAMA_FRENCH_12")
+        ff49_taxonomy_id = _taxonomy_id_for(store, "FAMA_FRENCH_49")
         naics_taxonomy_id = _taxonomy_id_for(store, "NAICS_2022")
 
         if sic_taxonomy_id is None:
@@ -1142,6 +1369,7 @@ class EntityClassificationDataset(Dataset):
                         sic4=sic4,
                         ff12_taxonomy_id=ff12_taxonomy_id,
                         naics_taxonomy_id=naics_taxonomy_id,
+                        ff49_taxonomy_id=ff49_taxonomy_id,
                         today=today,
                         now_ts=now_ts,
                         run_id=options.run_id,
@@ -1187,6 +1415,7 @@ class EntityClassificationDataset(Dataset):
                 sic4=sic4,
                 ff12_taxonomy_id=ff12_taxonomy_id,
                 naics_taxonomy_id=naics_taxonomy_id,
+                ff49_taxonomy_id=ff49_taxonomy_id,
                 today=today,
                 now_ts=now_ts,
                 run_id=options.run_id,
@@ -1212,14 +1441,25 @@ def _write_derived_rows(
     now_ts: dt.datetime,
     run_id: str | None,
     source: str,
+    ff49_taxonomy_id: str | None = None,
 ) -> int:
-    """Write derived FF12 and NAICS classification rows (is_primary=False).
+    """Write derived FF12, FF49 and NAICS classification rows (is_primary=False).
 
     Skips if the row already exists with an open interval and same node_code.
     Returns the number of new rows written.
     """
     written = 0
     sic2 = str(sic4 // 100).zfill(2)
+
+    # FF49 derived row (none for a SIC French lists under no FF49 industry)
+    ff49_code = fama_french_49_for_sic(sic4)
+    if ff49_taxonomy_id and ff49_code is not None:
+        ff49_node_id = _node_id_for(store, ff49_taxonomy_id, ff49_code)
+        if ff49_node_id:
+            written += _write_open_derived_row(
+                store, security_id=security_id, taxonomy_id=ff49_taxonomy_id, node_id=ff49_node_id,
+                node_code=ff49_code, today=today, now_ts=now_ts, run_id=run_id, source=source,
+            )
 
     # FF12 derived row
     if ff12_taxonomy_id:
@@ -1334,3 +1574,399 @@ def _write_derived_rows(
                     written += 1
 
     return written
+
+
+def _write_open_derived_row(
+    store: DuckDBStore,
+    *,
+    security_id: str,
+    taxonomy_id: str,
+    node_id: str,
+    node_code: str,
+    today: dt.date,
+    now_ts: dt.datetime,
+    run_id: str | None,
+    source: str,
+) -> int:
+    """Close a differing open derived interval and open ``node_code`` unless already open."""
+    store.con.execute(
+        """
+        UPDATE entity_classification SET valid_to = ?
+        WHERE security_id = ? AND taxonomy_id = ? AND is_primary = false
+          AND valid_to IS NULL AND node_code <> ?
+        """,
+        [today, security_id, taxonomy_id, node_code],
+    )
+    existing = store.con.execute(
+        """
+        SELECT classification_id FROM entity_classification
+        WHERE security_id = ? AND taxonomy_id = ? AND node_code = ?
+          AND is_primary = false AND valid_to IS NULL
+        """,
+        [security_id, taxonomy_id, node_code],
+    ).fetchone()
+    if existing is not None:
+        return 0
+    store.con.execute(
+        """
+        INSERT INTO entity_classification
+            (classification_id, security_id, taxonomy_id, node_id, node_code,
+             is_primary, valid_from, valid_to, as_of_date, available_at,
+             source_loaded_at, run_id, source)
+        VALUES (?, ?, ?, ?, ?, false, ?, NULL, ?, ?, now(), ?, ?)
+        """,
+        [str(uuid.uuid4()), security_id, taxonomy_id, node_id, node_code, today, today, now_ts, run_id, source],
+    )
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# P6: activation-ladder writer over the retained SEC submissions snapshot
+# ---------------------------------------------------------------------------
+
+CLASSIFICATION_BASIS_CURRENT_SIC_SNAPSHOT = "current_sic_snapshot"
+CLASSIFICATION_BASIS_NOTE = (
+    "each filer's CURRENT SIC from the retained SEC submissions snapshot; valid from the snapshot "
+    "receipt date, never earlier. Not point-in-time SIC history: applying it to earlier dates "
+    "(research current_sic_backcast) is a known, labeled bias."
+)
+SOURCE_SIC_SNAPSHOT = f"SEC submissions.zip SIC [{CLASSIFICATION_BASIS_CURRENT_SIC_SNAPSHOT}]"
+NAICS_MAPPING_VERSION = "sic2_partial_approximate_v1"
+CLASSIFICATION_MAPPING_VERSIONS: dict[str, str] = {
+    "FAMA_FRENCH_12": FF12_MAPPING_VERSION,
+    "FAMA_FRENCH_49": FF49_MAPPING_VERSION,
+    "NAICS_2022": NAICS_MAPPING_VERSION,
+}
+_OWNER_CIK_PATTERN = "CIK-([0-9]{1,10})$"
+
+
+@dataclass(frozen=True)
+class SicSnapshot:
+    """The retained submissions archive a ladder run classifies from.
+
+    ``received_at`` (UTC-naive) is when the archive bytes were received -- its cache
+    receipt, else its file mtime (``receipt_basis``). It is every written row's
+    ``available_at``; its date is the rows' ``valid_from`` and ``as_of_date``.
+    """
+
+    path: Path
+    sha256: str
+    received_at: dt.datetime
+    receipt_basis: str
+
+    @property
+    def valid_from(self) -> dt.date:
+        return self.received_at.date()
+
+    def as_detail(self) -> dict[str, object]:
+        return {
+            "path": str(self.path),
+            "sha256": self.sha256,
+            "received_at": self.received_at.isoformat(),
+            "receipt_basis": self.receipt_basis,
+            "valid_from": self.valid_from.isoformat(),
+        }
+
+
+def _has_table(store: DuckDBStore, table: str) -> bool:
+    row = store.con.execute(
+        "SELECT count(*) FROM information_schema.tables WHERE table_name = ?", [table]
+    ).fetchone()
+    return bool(row and row[0])
+
+
+def classification_targets(store: DuckDBStore) -> pd.DataFrame:
+    """Every ``security_id`` the ladder classifies, with its 10-digit CIK.
+
+    Union of (a) ids carrying a CIK identifier (security master; the newest open
+    interval wins) and (b) Company Facts accounting owners, whose ids embed the CIK
+    (``SEC-CIK-##########`` and ``SEC-COMPANYFACTS-UNRESOLVED-CIK-##########``) --
+    the latter reach delisted issuers that no longer appear in the current ticker
+    map. One row per security_id; an embedded CIK wins over a differing identifier
+    CIK (counted as ``cik_conflict``).
+    """
+    owners = (
+        f"""SELECT security_id, lpad(regexp_extract(security_id, '{_OWNER_CIK_PATTERN}', 1), 10, '0') AS cik
+            FROM (SELECT DISTINCT security_id FROM sec_company_facts)
+            WHERE regexp_matches(security_id, '{_OWNER_CIK_PATTERN}')"""
+        if _has_table(store, "sec_company_facts")
+        else "SELECT CAST(NULL AS VARCHAR) AS security_id, CAST(NULL AS VARCHAR) AS cik WHERE false"
+    )
+    return store.con.execute(f"""
+        WITH idh AS (
+            SELECT security_id,
+                   arg_max(lpad(CAST(try_cast(trim(id_value) AS BIGINT) AS VARCHAR), 10, '0'),
+                           (valid_to IS NULL, valid_from, available_at)) AS cik
+            FROM security_identifier_history
+            WHERE id_type = 'CIK' AND try_cast(trim(id_value) AS BIGINT) > 0
+            GROUP BY security_id
+        ), owners AS ({owners})
+        SELECT coalesce(o.security_id, i.security_id) AS security_id,
+               coalesce(o.cik, i.cik) AS cik,
+               i.security_id IS NOT NULL AS from_identifier_history,
+               o.security_id IS NOT NULL AS from_company_facts,
+               coalesce(i.cik <> o.cik, false) AS cik_conflict,
+               NOT EXISTS (SELECT 1 FROM securities s
+                           WHERE s.security_id = coalesce(o.security_id, i.security_id)) AS outside_securities
+        FROM idh i FULL OUTER JOIN owners o ON o.security_id = i.security_id
+        WHERE coalesce(o.cik, i.cik) IS NOT NULL
+        ORDER BY 1
+    """).df()
+
+
+def read_snapshot_sic(
+    read_member: Callable[[str], bytes | None], ciks: Iterable[str],
+) -> tuple[dict[str, int], Counter[str]]:
+    """Read each CIK's current SIC from ``CIK##########.json`` members (bounded: one at a time).
+
+    ``read_member`` returns the member bytes or None when the archive has no such
+    member. Missing members, blank and invalid SIC values are counted, never guessed.
+    """
+    sics: dict[str, int] = {}
+    stats: Counter[str] = Counter()
+    for cik in sorted(set(ciks)):
+        payload = read_member(f"CIK{cik}.json")
+        if payload is None:
+            stats["cik_member_missing"] += 1
+            continue
+        try:
+            data = json.loads(payload)
+        except ValueError:
+            stats["member_unreadable"] += 1
+            continue
+        raw = str((data.get("sic") if isinstance(data, dict) else None) or "").strip()
+        if not raw:
+            stats["sic_blank"] += 1
+            continue
+        try:
+            sic = int(raw)
+        except ValueError:
+            stats["sic_invalid"] += 1
+            continue
+        if sic == 0:  # SEC's "0000" = no SIC assigned
+            stats["sic_blank"] += 1
+            continue
+        if not SIC_MIN <= sic <= SIC_MAX:
+            stats["sic_invalid"] += 1
+            continue
+        sics[cik] = sic
+        stats["sic_read"] += 1
+    return sics, stats
+
+
+def _ensure_sic_leaves(store: DuckDBStore, sic_taxonomy_id: str, sics: Iterable[int]) -> dict[str, str]:
+    """Create missing level-3 SIC leaves set-based; return SIC node_code -> node_id."""
+    nodes = dict(store.con.execute(
+        "SELECT node_code, node_id FROM taxonomy_node WHERE taxonomy_id = ?", [sic_taxonomy_id]
+    ).fetchall())
+    leaves = [
+        (str(uuid.uuid5(uuid.NAMESPACE_DNS, f"node:{sic_taxonomy_id}:{sic:04d}")), sic_taxonomy_id,
+         f"{sic:04d}", f"SIC {sic:04d}", nodes.get(f"{sic // 100:02d}"), 3, 0)
+        for sic in sorted(set(sics)) if f"{sic:04d}" not in nodes
+    ]
+    if leaves:
+        frame = pd.DataFrame(leaves, columns=["node_id", "taxonomy_id", "node_code", "node_label",
+                                              "parent_node_id", "level", "sort_order"])
+        store.con.register("_ec_sic_leaves", frame)
+        try:
+            store.con.execute("""
+                INSERT OR IGNORE INTO taxonomy_node
+                    (node_id, taxonomy_id, node_code, node_label, parent_node_id, level, sort_order)
+                SELECT node_id, taxonomy_id, node_code, node_label, parent_node_id, level, sort_order
+                FROM _ec_sic_leaves
+            """)
+        finally:
+            store.con.unregister("_ec_sic_leaves")
+        nodes = dict(store.con.execute(
+            "SELECT node_code, node_id FROM taxonomy_node WHERE taxonomy_id = ?", [sic_taxonomy_id]
+        ).fetchall())
+    return nodes
+
+
+def refresh_entity_classification_snapshot(
+    store: DuckDBStore,
+    *,
+    snapshot: SicSnapshot,
+    read_member: Callable[[str], bytes | None],
+    run_id: str | None = None,
+) -> dict[str, object]:
+    """Classify every target id from one retained submissions snapshot (set-based, no network).
+
+    Writes, per target whose CIK carries a SIC in the snapshot: the primary SIC row
+    and derived FAMA_FRENCH_12, FAMA_FRENCH_49 (when French lists the SIC) and
+    NAICS_2022 (partial, approximate) rows. Every new row has ``valid_from`` =
+    ``as_of_date`` = the snapshot's receipt date and ``available_at`` = its receipt
+    time; the ``source`` label carries ``classification_basis=current_sic_snapshot``
+    and, for derived rows, the mapping version. Per (security, taxonomy, primary):
+    the same open code is kept (idempotent rerun); a differing open interval is
+    closed at the snapshot date and the new code opened; an open interval that
+    starts AFTER this snapshot is never overwritten by it (``stale_snapshot_skipped``).
+    Nothing is backdated and no absent SIC is inferred.
+    """
+    SicTaxonomyDataset().load(store, SicTaxonomyOptions())
+    FamaFrenchTaxonomyDataset().load(store, FamaFrenchTaxonomyOptions())
+    NaicsTaxonomyDataset().load(store, NaicsTaxonomyOptions())
+    taxonomy_ids = {code: _taxonomy_id_for(store, code) for code in ("SIC", *CLASSIFICATION_MAPPING_VERSIONS)}
+    missing = sorted(code for code, taxonomy_id in taxonomy_ids.items() if taxonomy_id is None)
+    if missing:
+        raise RuntimeError(f"classification taxonomies not seeded: {missing}")
+
+    targets = classification_targets(store)
+    sics, sic_stats = read_snapshot_sic(read_member, targets["cik"].tolist())
+    sic_nodes = _ensure_sic_leaves(store, str(taxonomy_ids["SIC"]), sics.values())
+    derived_nodes = {
+        code: dict(store.con.execute(
+            "SELECT node_code, node_id FROM taxonomy_node WHERE taxonomy_id = ?", [taxonomy_ids[code]]
+        ).fetchall())
+        for code in CLASSIFICATION_MAPPING_VERSIONS
+    }
+    naics_for_sic2 = dict(SIC_TO_NAICS_PARTIAL)
+
+    rows: list[tuple[str, str, str, str, bool, str]] = []
+    ff49_unlisted = naics_unmapped = 0
+    for security_id, cik in zip(targets["security_id"], targets["cik"], strict=True):
+        sic = sics.get(cik)
+        if sic is None:
+            continue
+        sic_code = f"{sic:04d}"
+        rows.append((security_id, str(taxonomy_ids["SIC"]), sic_nodes[sic_code], sic_code, True,
+                     SOURCE_SIC_SNAPSHOT))
+        derived = {
+            "FAMA_FRENCH_12": fama_french_12_for_sic(sic),
+            "FAMA_FRENCH_49": fama_french_49_for_sic(sic),
+            "NAICS_2022": naics_for_sic2.get(f"{sic // 100:02d}"),
+        }
+        ff49_unlisted += derived["FAMA_FRENCH_49"] is None
+        naics_unmapped += derived["NAICS_2022"] is None
+        for code, node_code in derived.items():
+            if node_code is None:
+                continue
+            rows.append((security_id, str(taxonomy_ids[code]), derived_nodes[code][node_code], node_code, False,
+                         f"{SOURCE_SIC_SNAPSHOT}; {CLASSIFICATION_MAPPING_VERSIONS[code]}"))
+    candidates = pd.DataFrame(rows, columns=["security_id", "taxonomy_id", "node_id", "node_code", "is_primary",
+                                             "source"])
+    snap = snapshot.valid_from
+    con = store.con
+    con.register("_ec_candidates_df", candidates)
+    try:
+        con.execute("""
+            CREATE OR REPLACE TEMP TABLE _ec_candidates AS
+            SELECT CAST(security_id AS VARCHAR) AS security_id, CAST(taxonomy_id AS VARCHAR) AS taxonomy_id,
+                   CAST(node_id AS VARCHAR) AS node_id, CAST(node_code AS VARCHAR) AS node_code,
+                   CAST(is_primary AS BOOLEAN) AS is_primary, CAST(source AS VARCHAR) AS source
+            FROM _ec_candidates_df
+        """)
+    finally:
+        con.unregister("_ec_candidates_df")
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE _ec_plan AS
+        WITH open_rows AS (
+            SELECT e.security_id, e.taxonomy_id, e.is_primary, e.node_code, e.valid_from
+            FROM entity_classification e
+            WHERE e.valid_to IS NULL AND e.security_id IN (SELECT security_id FROM _ec_candidates)
+        ), flags AS (
+            SELECT c.security_id, c.taxonomy_id, c.is_primary,
+                   coalesce(bool_or(o.valid_from > ?), false) AS newer_open,
+                   coalesce(bool_or(o.node_code = c.node_code), false) AS same_open
+            FROM _ec_candidates c
+            LEFT JOIN open_rows o
+              ON o.security_id = c.security_id AND o.taxonomy_id = c.taxonomy_id AND o.is_primary = c.is_primary
+            GROUP BY c.security_id, c.taxonomy_id, c.is_primary
+        )
+        SELECT c.*, f.newer_open, f.same_open,
+               sha256(concat_ws('|', 'entity_classification', ?, c.security_id, c.taxonomy_id, c.node_code,
+                                CAST(c.is_primary AS VARCHAR), c.source)) AS classification_id
+        FROM _ec_candidates c
+        JOIN flags f USING (security_id, taxonomy_id, is_primary)
+    """, [snap, snapshot.sha256])
+    close_row = con.execute("""
+        SELECT count(*), count(*) FILTER (WHERE e.valid_from = ?)
+        FROM entity_classification e
+        JOIN _ec_plan p ON p.security_id = e.security_id AND p.taxonomy_id = e.taxonomy_id
+         AND p.is_primary = e.is_primary
+        WHERE NOT p.newer_open AND e.valid_to IS NULL AND e.node_code <> p.node_code
+    """, [snap]).fetchone()
+    closed, superseded_same_day = (int(close_row[0]), int(close_row[1])) if close_row else (0, 0)
+    con.execute("""
+        UPDATE entity_classification SET valid_to = ?
+        FROM _ec_plan p
+        WHERE entity_classification.security_id = p.security_id
+          AND entity_classification.taxonomy_id = p.taxonomy_id
+          AND entity_classification.is_primary = p.is_primary
+          AND NOT p.newer_open
+          AND entity_classification.valid_to IS NULL
+          AND entity_classification.node_code <> p.node_code
+    """, [snap])
+    plan_counts = con.execute("""
+        SELECT t.code,
+               count(*) FILTER (WHERE p.newer_open) AS stale,
+               count(*) FILTER (WHERE NOT p.newer_open AND p.same_open) AS unchanged,
+               count(*) FILTER (WHERE NOT p.newer_open AND NOT p.same_open
+                                  AND e.classification_id IS NULL) AS inserted,
+               count(*) FILTER (WHERE NOT p.newer_open AND NOT p.same_open
+                                  AND e.classification_id IS NOT NULL) AS id_collision
+        FROM _ec_plan p JOIN taxonomy t ON t.taxonomy_id = p.taxonomy_id
+        LEFT JOIN entity_classification e ON e.classification_id = p.classification_id
+        GROUP BY t.code ORDER BY t.code
+    """).fetchall()
+    con.execute("""
+        INSERT INTO entity_classification
+            (classification_id, security_id, taxonomy_id, node_id, node_code, is_primary,
+             valid_from, valid_to, as_of_date, available_at, run_id, source)
+        SELECT p.classification_id, p.security_id, p.taxonomy_id, p.node_id, p.node_code, p.is_primary,
+               ?, NULL, ?, ?, ?, p.source
+        FROM _ec_plan p
+        WHERE NOT p.newer_open AND NOT p.same_open
+          AND NOT EXISTS (SELECT 1 FROM entity_classification e WHERE e.classification_id = p.classification_id)
+    """, [snap, snap, snapshot.received_at, run_id])
+    open_counts = dict(con.execute("""
+        SELECT t.code, count(DISTINCT e.security_id)
+        FROM entity_classification e JOIN taxonomy t ON t.taxonomy_id = e.taxonomy_id
+        WHERE e.valid_to IS NULL AND e.security_id IN (SELECT security_id FROM _ec_candidates)
+        GROUP BY t.code
+    """).fetchall())
+    con.execute("DROP TABLE IF EXISTS _ec_plan")
+    con.execute("DROP TABLE IF EXISTS _ec_candidates")
+
+    record_source_file(
+        store,
+        dataset_id="entity_classification",
+        source_url=SEC_BULK_SUBMISSIONS_URL,
+        cache_path=snapshot.path,
+        status="cached",
+        sha256=snapshot.sha256,
+        metadata={"source_kind": "SEC nightly bulk submissions archive (retained)",
+                  "classification_basis": CLASSIFICATION_BASIS_CURRENT_SIC_SNAPSHOT, **snapshot.as_detail()},
+    )
+    by_taxonomy = {
+        code: {"inserted": int(inserted), "unchanged": int(unchanged), "stale_snapshot_skipped": int(stale),
+               "id_collision": int(collision), "open_ids": int(open_counts.get(code, 0))}
+        for code, stale, unchanged, inserted, collision in plan_counts
+    }
+    classified_ids = int(targets["cik"].isin(list(sics)).sum())
+    return {
+        "classification_basis": CLASSIFICATION_BASIS_CURRENT_SIC_SNAPSHOT,
+        "basis_note": CLASSIFICATION_BASIS_NOTE,
+        "source": SOURCE_SIC_SNAPSHOT,
+        "snapshot": snapshot.as_detail(),
+        "mapping_versions": dict(CLASSIFICATION_MAPPING_VERSIONS),
+        "targets": {
+            "ids": len(targets),
+            "ciks": int(targets["cik"].nunique()),
+            "from_identifier_history": int(targets["from_identifier_history"].sum()),
+            "from_company_facts": int(targets["from_company_facts"].sum()),
+            "cik_conflict": int(targets["cik_conflict"].sum()),
+            # Company Facts owners (e.g. SEC-COMPANYFACTS-UNRESOLVED-CIK-*, delisted issuers) have no
+            # `securities` row; the legacy orphan_entity_classification_security_ids check counts them.
+            "outside_securities": int(targets["outside_securities"].sum()),
+            "classified_ids": classified_ids,
+            "unclassified_ids": len(targets) - classified_ids,
+        },
+        "sic_read": {key: int(value) for key, value in sorted(sic_stats.items())},
+        "ff49_unlisted_sic_ids": int(ff49_unlisted),
+        "naics_unmapped_ids": int(naics_unmapped),
+        "rows_inserted": sum(item["inserted"] for item in by_taxonomy.values()),
+        "intervals_closed": closed,
+        "superseded_same_day": superseded_same_day,
+        "by_taxonomy": by_taxonomy,
+    }

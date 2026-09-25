@@ -205,8 +205,8 @@ migrates without the activation retention option.
 `migrate` -> `security_master` -> `symbol_directory` -> `ticker_history_extract`
 -> `ticker_history_publish` -> `sec_bulk_download` -> `submissions_load` ->
 `earnings_release_facts` -> `companyfacts_load` -> `statement_points` -> `periods` -> `ttm` ->
-`calendarization` -> `standardized` -> `industry_templates` -> `reconciliation`
--> `derived_metrics` -> `market_daily` -> `equity_price_metrics`
+`calendarization` -> `standardized` -> `entity_classification` -> `industry_templates`
+-> `reconciliation` -> `derived_metrics` -> `market_daily` -> `equity_price_metrics`
 -> `listing_events` -> `listing_status` -> `legacy_liquid_universe`
 -> `factor_projections` -> `delisting_evidence`
 -> `universe_us_listed` -> `delisting_terminal_returns` -> `trading_calendar`
@@ -220,8 +220,22 @@ fails before any work starts. `equity_price_metrics` runs directly after
 `delisting_terminal_returns` reads it on a first run. `listing_events` and
 `listing_status` build `nasdaq_listing_events` and `listing_status_intervals`
 before their consumers (`legacy_liquid_universe`, `delisting_evidence`). The
-run5 suffix, `--start-stage statement_points`, is 22 stages:
+run5 suffix, `--start-stage statement_points`, is 23 stages:
 `statement_points` through `quality`.
+
+`entity_classification` (P6) classifies every security-master CIK id and every
+Company Facts accounting owner (`SEC-CIK-*`, `SEC-COMPANYFACTS-UNRESOLVED-CIK-*`,
+which reaches delisted issuers) from the retained `data/cache/submissions.zip`; it
+makes no network request and fails if the archive is missing or was received after
+the cutoff day. It writes the primary SIC plus derived FF12 (French Siccodes12,
+`french_siccodes12_v2`), FF49 (Siccodes49, `french_siccodes49_v1`; a SIC French lists
+under no industry gets no FF49 row and is counted) and approximate NAICS-2 rows.
+SEC submissions carry only today's SIC, so rows are labeled
+`classification_basis=current_sic_snapshot` in their `source` and stage detail, and
+are valid from the archive's original receipt date (cache receipt, else mtime) --
+never backdated. Treating them as historical SIC (the research `current_sic_backcast`)
+is a known, labeled bias. It runs before `industry_templates`, which routes
+bank/insurer/REIT/utility/broker templates from these SIC rows.
 
 The cohort uses the original price/liquidity rules, with dated inputs only;
 unclassified bar candidates are not proof of historical US common-equity listing.
@@ -291,7 +305,7 @@ remains; expanded industry templates and their fixture corpus are deferred.
 Network I/O is limited to `sec_bulk_download` (missing archives only), the
 source-document requests in `earnings_release_facts`, and first acquisition or
 explicit refresh of pinned-snapshot sources (below). Archive-member CompanyFacts
-and submissions loading use the retained local archives. `sec_bulk_download`
+and submissions loading, and `entity_classification`, use the retained local archives. `sec_bulk_download`
 resumes a partial transfer and records each archive's sha256 in `raw_source_files`.
 `reconciliation` shells out to `scripts/refresh_reconciliation_sharded.py`, which
 runs the sixteen shards **sequentially, with one shard child active at a time**.

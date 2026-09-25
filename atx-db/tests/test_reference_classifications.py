@@ -8,10 +8,8 @@ Run from atx-db/: python -m pytest db/tests/test_reference_classifications.py
 from __future__ import annotations
 
 import datetime as dt
-from typing import Callable
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helper: build a minimal fake SEC submission response
@@ -649,3 +647,112 @@ class TestSecBulkSubmissionsZipFetcher:
         assert len(source_file[0]) == 64
         assert source_file[1] > 0
         assert source_file[2] == "cached"
+
+
+# ===========================================================================
+# P6: French Siccodes49 / Siccodes12 boundaries and the ladder snapshot stage
+# ===========================================================================
+
+# (SIC, FF49 per French Siccodes49 or None when listed under no industry, FF12 per Siccodes12)
+_FRENCH_BOUNDARIES = [
+    (100, "Agric", "NoDur"), (2046, "Food", "NoDur"), (2047, "Hshld", "NoDur"), (2048, "Agric", "NoDur"),
+    (2049, None, "NoDur"), (2063, "Food", "NoDur"), (2064, "Soda", "NoDur"), (2080, "Beer", "NoDur"),
+    (2081, None, "NoDur"), (2086, "Soda", "NoDur"), (2830, "Drugs", "Hlth"), (2832, None, "Hlth"),
+    (2836, "Drugs", "Hlth"), (2821, "Chems", "Chems"), (2844, "Hshld", "Chems"), (1040, "Gold", "Other"),
+    (1221, "Coal", "Enrgy"), (1311, "Oil", "Enrgy"), (3570, "Hardw", "BusEq"), (3580, "Mach", "Manuf"),
+    (3622, "Chips", "Manuf"), (3660, "ElcEq", "BusEq"), (3661, "Chips", "BusEq"), (3674, "Chips", "BusEq"),
+    (3693, "MedEq", "Hlth"), (3694, "Autos", "BusEq"), (3695, "Hardw", "BusEq"), (3811, "LabEq", "BusEq"),
+    (3812, "Chips", "BusEq"), (3845, "MedEq", "Hlth"), (4213, "Trans", "Other"), (4220, "BusSv", "Other"),
+    (4911, "Util", "Utils"), (4949, None, "Utils"), (4950, "Other", "Other"), (4991, "Other", "Other"),
+    (5047, "Whlsl", "Shops"), (5065, "Whlsl", "Shops"), (5812, "Meals", "Shops"), (5912, "Rtail", "Shops"),
+    (6022, "Banks", "Money"), (6199, "Banks", "Money"), (6200, "Fin", "Money"), (6411, "Insur", "Money"),
+    (6412, None, "Money"), (6770, "Fin", "Money"), (6798, "Fin", "Money"), (7011, "Meals", "Other"),
+    (7370, "Softw", "BusEq"), (7372, "Softw", "BusEq"), (7373, "Softw", "BusEq"), (7374, "BusSv", "BusEq"),
+    (7375, "Softw", "BusEq"), (7379, "BusSv", "BusEq"), (8000, "Hlth", "Hlth"), (9995, None, "Other"),
+]
+
+
+@pytest.mark.parametrize(("sic", "ff49", "ff12"), _FRENCH_BOUNDARIES)
+def test_french_boundary_sics_match_siccodes49_and_siccodes12(sic, ff49, ff12):
+    from atx_db.reference_classifications import fama_french_12_for_sic, fama_french_49_for_sic
+    assert fama_french_49_for_sic(sic) == ff49
+    assert fama_french_12_for_sic(sic) == ff12
+
+
+def test_entity_classification_stage_is_offline_receipt_dated_and_bitemporal(tmp_store, tmp_path):
+    """Retained submissions.zip only (fake downloader must never run); every row is valid
+    from the archive's receipt date; a differing older open SIC closes there; rerun no-op."""
+    import hashlib
+    import json
+    import zipfile
+
+    from atx_db.activation import ActivationOptions, stage_entity_classification
+    from atx_db.reference_classifications import ensure_sic_leaf_node
+    from atx_db.symbol_directory import SnapshotAfterCutoffError
+
+    received = dt.datetime(2026, 9, 20, 0, 7, 35)
+    archive = tmp_path / "submissions.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        for cik, sic in (("0000789019", "7372"), ("0000019617", "6022"), ("0000000555", "9995")):
+            zf.writestr(f"CIK{cik}.json", json.dumps({"cik": cik, "sic": sic, "filings": {"recent": {}}}))
+    sha = hashlib.sha256(archive.read_bytes()).hexdigest()
+    (tmp_path / "submissions.zip.receipt.json").write_text(
+        json.dumps({"received_at": received.isoformat(), "sha256": sha}), encoding="utf-8")
+
+    _seed_all_taxonomies(tmp_store)
+    _insert_security(tmp_store, "SEC-CIK-0000789019", "789019", "MSFT")
+    _insert_security(tmp_store, "SEC-CIK-0000000555", "555", "SHEL")
+    _insert_security(tmp_store, "SEC-CIK-0000000777", "777", "GONE")  # no member in the archive
+    # A delisted issuer reachable only as a Company Facts owner (not in the ticker map).
+    tmp_store.con.execute("""
+        INSERT INTO sec_company_facts (source, security_id, cik, taxonomy, concept, unit, filed_date, source_url)
+        VALUES ('test', 'SEC-COMPANYFACTS-UNRESOLVED-CIK-0000019617', '19617', 'us-gaap', 'Assets', 'USD',
+                DATE '2015-02-01', 'test')
+    """)
+    sic_tax, old_leaf = ensure_sic_leaf_node(tmp_store, 3674)
+    tmp_store.con.execute("""
+        INSERT INTO entity_classification (classification_id, security_id, taxonomy_id, node_id, node_code,
+            is_primary, valid_from, as_of_date, available_at, source)
+        VALUES ('legacy-1', 'SEC-CIK-0000789019', ?, ?, '3674', true, DATE '2026-01-02', DATE '2026-01-02',
+                TIMESTAMP '2026-01-02 12:00:00', 'legacy')
+    """, [sic_tax, old_leaf])
+
+    def no_network(url, dest, *, user_agent):
+        raise AssertionError(f"entity_classification must not download {url}")
+
+    options = ActivationOptions(cache_dir=tmp_path, as_of_date=dt.date(2026, 9, 20), downloader=no_network)
+    result = stage_entity_classification(tmp_store, options)
+
+    detail = result.detail
+    assert detail["classification_basis"] == "current_sic_snapshot" and detail["network_requests"] == 0
+    assert detail["snapshot"]["receipt_basis"] == "cache_receipt"
+    assert detail["sic_read"] == {"cik_member_missing": 1, "sic_read": 3}
+    assert detail["ff49_unlisted_sic_ids"] == 1 and detail["superseded_same_day"] == 0
+    assert detail["targets"]["outside_securities"] == 1  # the Company Facts-only (delisted) owner
+    rows = tmp_store.con.execute("""
+        SELECT ec.security_id, t.code, ec.node_code, ec.valid_from, ec.as_of_date, ec.available_at
+        FROM entity_classification ec JOIN taxonomy t USING (taxonomy_id)
+        WHERE ec.valid_to IS NULL ORDER BY 1, 2
+    """).fetchall()
+    assert {(r[0], r[1]): r[2] for r in rows} == {
+        ("SEC-CIK-0000000555", "FAMA_FRENCH_12"): "Other", ("SEC-CIK-0000000555", "NAICS_2022"): "92",
+        ("SEC-CIK-0000000555", "SIC"): "9995",
+        ("SEC-CIK-0000789019", "FAMA_FRENCH_12"): "BusEq", ("SEC-CIK-0000789019", "FAMA_FRENCH_49"): "Softw",
+        ("SEC-CIK-0000789019", "NAICS_2022"): "54", ("SEC-CIK-0000789019", "SIC"): "7372",
+        ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000019617", "FAMA_FRENCH_12"): "Money",
+        ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000019617", "FAMA_FRENCH_49"): "Banks",
+        ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000019617", "NAICS_2022"): "52",
+        ("SEC-COMPANYFACTS-UNRESOLVED-CIK-0000019617", "SIC"): "6022",
+    }
+    # Never backdated: every snapshot row is valid from (and known at) the receipt, no earlier.
+    assert {(r[3], r[4], r[5]) for r in rows} == {(received.date(), received.date(), received)}
+    assert tmp_store.con.execute(
+        "SELECT valid_to FROM entity_classification WHERE classification_id = 'legacy-1'"
+    ).fetchone() == (received.date(),)
+
+    rerun = stage_entity_classification(tmp_store, options)
+    assert rerun.rows == 0 and rerun.detail["intervals_closed"] == 0
+
+    with pytest.raises(SnapshotAfterCutoffError):
+        stage_entity_classification(tmp_store, ActivationOptions(
+            cache_dir=tmp_path, as_of_date=dt.date(2026, 9, 19), downloader=no_network))

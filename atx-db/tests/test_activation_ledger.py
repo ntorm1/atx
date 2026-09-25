@@ -32,6 +32,7 @@ def test_stage_order_is_the_documented_dependency_order():
         "ttm",
         "calendarization",
         "standardized",
+        "entity_classification",
         "industry_templates",
         "reconciliation",
         "derived_metrics",

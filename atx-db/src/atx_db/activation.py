@@ -62,6 +62,7 @@ STAGE_ORDER: tuple[str, ...] = (
     "ttm",
     "calendarization",
     "standardized",
+    "entity_classification",
     "industry_templates",
     "reconciliation",
     "derived_metrics",
@@ -98,7 +99,12 @@ STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "ttm": ("periods",),
     "calendarization": ("periods", "ttm"),
     "standardized": ("statement_points", "periods", "ttm", "calendarization"),
-    "industry_templates": ("standardized",),
+    # Current-SIC snapshot classification of security-master CIK ids and Company Facts
+    # owners, read from the retained submissions.zip (0 network). It runs before
+    # industry_templates, which routes bank/insurer/REIT/utility/broker templates from
+    # entity_classification SIC rows.
+    "entity_classification": ("security_master", "sec_bulk_download", "companyfacts_load"),
+    "industry_templates": ("standardized", "entity_classification"),
     "reconciliation": ("standardized",),
     "derived_metrics": ("standardized", "reconciliation"),
     "market_daily": ("ticker_history_publish", "statement_points", "derived_metrics"),
@@ -1041,6 +1047,50 @@ def stage_standardized(store: DuckDBStore, options: ActivationOptions) -> StageR
     )
 
 
+def stage_entity_classification(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    """Classify CIK ids from the retained ``submissions.zip`` SIC snapshot (offline, 0 network).
+
+    SEC submissions carry each filer's CURRENT SIC only, so every row is labeled
+    ``classification_basis='current_sic_snapshot'`` and is valid from the archive's
+    ORIGINAL receipt date (cache receipt, else file mtime) -- never backdated. A missing
+    archive fails the stage (it is the same mandatory input as ``submissions_load``);
+    an archive received after the cutoff day fails before anything is written, as for
+    the other pinned snapshots. Writes SIC (primary) plus derived FF12 (French
+    Siccodes12), FF49 (Siccodes49; unlisted SIC -> no row, counted) and NAICS-2
+    (partial, approximate) rows; see ``refresh_entity_classification_snapshot``.
+    """
+    from ._submissions_archive import SubmissionsArchive
+    from .reference_classifications import SicSnapshot, refresh_entity_classification_snapshot
+    from .security_master import guard_snapshot_received_by_cutoff
+
+    path = Path(options.submissions_zip)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{path}: entity_classification reads the retained SEC submissions.zip (no network); "
+            "it is the same archive submissions_load requires"
+        )
+    with SubmissionsArchive(path) as archive:
+        received_at, receipt_basis = _read_cache_receipt(path, archive.sha256)
+        if options.as_of_date is not None:
+            guard_snapshot_received_by_cutoff(
+                received_at, options.as_of_date, source_url=SUBMISSIONS_ZIP_URL, receipt_basis=receipt_basis,
+            )
+
+        def read_member(name: str) -> bytes | None:
+            return archive.read(name) if name in archive else None
+
+        with store.transaction():
+            detail = refresh_entity_classification_snapshot(
+                store,
+                snapshot=SicSnapshot(path.resolve(), archive.sha256, received_at, receipt_basis),
+                read_member=read_member,
+                run_id=f"{options.run_id}-entity-classification",
+            )
+    rows = detail["rows_inserted"]
+    assert isinstance(rows, int)
+    return StageResult(rows, {**detail, "cutoff": options.as_of_date, "network_requests": 0})
+
+
 def stage_industry_templates(store: DuckDBStore, options: ActivationOptions) -> StageResult:
     from .industry_templates import IndustryTemplateOptions, run_industry_template_refresh
 
@@ -1365,6 +1415,7 @@ STAGES.update(
         "ttm": stage_ttm,
         "calendarization": stage_calendarization,
         "standardized": stage_standardized,
+        "entity_classification": stage_entity_classification,
         "industry_templates": stage_industry_templates,
         "reconciliation": stage_reconciliation,
         "derived_metrics": stage_derived_metrics,
