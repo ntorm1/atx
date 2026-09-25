@@ -145,6 +145,9 @@ def _warehouse(path: Path, values: dict[str, np.ndarray]) -> None:
             if i % 31 != 9:
                 items.append((f"ta-{i}-{period}", "sec", _owner(i), str(1000 + i), "total_assets", "instant",
                               period, values["total_assets"][i] * (1.0 if period == Q4 else 0.9), clock, "r1"))
+            if i % 53 == 20 and period == Q3:  # a later explicit NULL restatement of the Q3 balance (R2e)
+                items.append((f"ta-void-{i}", "sec", _owner(i), str(1000 + i), "total_assets", "instant", Q3, 0.0,
+                              Q3_AT + dt.timedelta(days=1), "r1"))
         if i % 31 == 9:  # only a stale balance: numerator:stale_item
             items.append((f"ta-old-{i}", "sec", _owner(i), str(1000 + i), "total_assets", "instant",
                           dt.date(2022, 12, 31), values["total_assets"][i], dt.datetime(2023, 2, 20, 22), "r1"))
@@ -161,6 +164,7 @@ def _warehouse(path: Path, values: dict[str, np.ndarray]) -> None:
     _bulk(con, "fundamental_standardized", pd.DataFrame(items, columns=[
         "standardized_id", "source", "security_id", "cik", "canonical_code", "basis", "period_end", "value",
         "available_at", "rule_id"]))
+    con.execute("UPDATE fundamental_standardized SET value = NULL WHERE standardized_id LIKE 'ta-void-%'")
     con.execute("INSERT INTO taxonomy VALUES ('ff12', 'FAMA_FRENCH_12', 'FF12')")
     _bulk(con, "entity_classification", pd.DataFrame(classes, columns=[
         "classification_id", "security_id", "taxonomy_id", "node_id", "node_code", "is_primary", "valid_from",
@@ -650,6 +654,12 @@ def test_price_line_features_rank_unlinked_delisted_lines_and_fundamentals_do_no
                              [version, delisted]).fetchall()
     assert view == [(rf.OWNER_BASIS_UNLINKED,)]
     assert rf.UNLINKED_LINES_BLOCKER in result.blockers and result.status == rf.STATUS_SEALED
+    # N1 (R2e): a formed neutral variant ranks linked names only; the date row labels it.
+    labels = _dates(store, version, "momentum_12_1").set_index(["formation_date", "variant"])
+    assert labels.loc[(FORMATIONS[0], "industry_neutral"), "sample_conditioning"] == rf.CONDITIONING_LINKED_ONLY
+    assert labels.loc[(FORMATIONS[0], "industry_neutral"), "unlinked_excluded"] == TAIL
+    assert labels.loc[(FORMATIONS[0], "rank_normal"), "unlinked_excluded"] == 0
+    assert any(b.startswith(f"{rf.NEUTRAL_CONDITIONING_BLOCKER}:") for b in result.blockers)
     # Linked-vs-full diagnostic (price-line features only): the unlinked losers sit at the bottom, so a
     # linked-only ranking would hide that the linked names' mean score is above the full cross-section's 0.
     stats = store.con.execute("SELECT feature_id, owner_basis, names, ranked_names, rank_normal_mean "
@@ -748,6 +758,22 @@ def test_size_gate_and_compositions_use_verified_size_and_the_latest_input_clock
                                                  rel=1e-12)   # Q4 not yet filed in January: Q3 balance
     stale = json.loads(_dates(store, version, "assets_to_market").iloc[0]["reasons_json"])
     assert stale["numerator:stale_item"] == len([i for i in range(N_ISSUERS) if i % 31 == 9])
+
+
+def test_newest_null_item_state_is_invalid_and_never_revives_an_older_value(built: Any) -> None:
+    """R2e: the latest item state visible at the cutoff is an explicit NULL restatement of Q3; the
+    item leg is invalid there, never the older finite Q3 balance (plain arg_max skips the NULL)."""
+    store, version, values = built["store"], built["result"].feature_version, built["values"]
+    voided = [i for i in range(N_ISSUERS) if i % 53 == 20]
+    assets = _matrix(store, version, "assets_to_market")
+    january = assets[assets["formation_date"] == FORMATIONS[0]]
+    assert len(january) and not set(january["security_id"]) & {_owner(i) for i in voided}
+    reasons = json.loads(_dates(store, version, "assets_to_market").iloc[0]["reasons_json"])
+    assert reasons["numerator:invalid_item"] == len(voided)
+    # The void covers Q3 only: once Q4 is filed, the later period's state is selected again.
+    march = assets[(assets["formation_date"] == FORMATIONS[2]) & (assets["security_id"] == _owner(20))].iloc[0]
+    assert march["raw_value"] == pytest.approx(values["total_assets"][20] / (values["market_cap"][20] * 1.04),
+                                               rel=1e-12)
 
 
 def test_versions_are_content_addressed_immutable_and_reproducible(built: Any, tmp_path: Path) -> None:

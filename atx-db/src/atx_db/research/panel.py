@@ -68,6 +68,19 @@ match a member (their leaves' CIK would have to differ from their owner CIK)
 and are not proved; the count is reported. There is no state-count abort:
 selection and prior-owner history sizes are counted in ``diagnostic_json``.
 
+Market revisions (R2e). A market feature is the newest ``market_daily_metrics``
+revision of the formation session visible at the cutoff, column by column, even
+when that revision withholds the value (NULL: ``split_unresolved``, a DEI
+conflict, the currency guard). The row is then ``invalid_current_state``. An
+older revision's value is never revived under the newer revision's clock:
+DuckDB's ``arg_max`` skips NULL arguments, so every pick uses ``arg_max_null``.
+The same rule applies to ``shares_source``, the fundamental clock, the trailing
+dollar volume of the primary-line rule and the opt-in vendor share count.
+
+One formation (public). :func:`stage_formation` and :func:`formation_batches`
+run this builder for a single (session, cutoff) and yield per-batch values and
+digests equal to a panel run's for that formation (the P7 cross-section screen).
+
 ``raw_value`` is kept only for ``valid`` and ``stale_current_anchor`` rows (both
 point-in-time safe); every other reason carries NULL. Consumers read
 ``reason='valid'`` (stale anchors carry a value for diagnostics only), and only
@@ -85,7 +98,7 @@ import json
 import math
 import re
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -101,7 +114,11 @@ from . import lineage as _lineage
 from . import store as _store
 from .store import ResearchStore
 
-QUERY_VERSION = "research-monthly-pit-panel-v3"
+# v4 (R2e): the newest visible market revision wins even when NULL. Pre-v4 runs can
+# carry an older revision's value under a newer clock; the validator refuses them.
+QUERY_VERSION = "research-monthly-pit-panel-v4"
+MARKET_REVISION_RULE = ("newest market_daily revision visible at the cutoff wins per column, "
+                        "a NULL included (arg_max_null)")
 BASIS_STRICT = "strict"
 BASIS_RECONSTRUCTED = "reconstructed"
 BASES = (BASIS_STRICT, BASIS_RECONSTRUCTED)
@@ -609,6 +626,7 @@ def _validate(options: ResearchPanelOptions) -> tuple[dt.datetime, tuple[PanelFe
         "grain": "dense over eligible members; owner features on one primary line per issuer",
         "primary_line_policy": [PRIMARY_RULE_DOLLAR_VOLUME, TRAILING_DOLLAR_VOLUME_DAYS, PRIMARY_RULE_TIEBREAK],
         "owner_link_failures": list(OWNER_LINK_FAILURES),
+        "market_revision_rule": MARKET_REVISION_RULE,
     }
     return run_at, features, spec
 
@@ -829,8 +847,8 @@ def _stage_cohorts(store: ResearchStore, spec: dict[str, Any], market_source: st
           WHERE k.cohort_reason='valid'
         ), sessions AS (
           SELECT l.decision_date, l.security_id, m.trade_date,
-                 arg_max(CAST(m.close AS DOUBLE)*CAST(m.volume AS DOUBLE),
-                         (m.available_at, m.market_daily_id)) AS dollar_volume
+                 arg_max_null(CAST(m.close AS DOUBLE)*CAST(m.volume AS DOUBLE),
+                              (m.available_at, m.market_daily_id)) AS dollar_volume
           FROM lines l JOIN market_daily_metrics m ON m.security_id=l.security_id
            AND m.trade_date BETWEEN l.decision_date-{TRAILING_DOLLAR_VOLUME_DAYS} AND l.decision_date
            AND m.available_at<=l.cutoff AND m.as_of_date<=l.decision_date
@@ -903,6 +921,13 @@ def _stage_cohorts(store: ResearchStore, spec: dict[str, Any], market_source: st
     return stats
 
 
+def _empty_cohort_stats() -> dict[str, Any]:
+    """The statistics of a formation with no visible member."""
+    return {"visible": 0, "eligible": 0, "valid": 0, "unlinked": 0, "multi_line_issuers": 0, "attrition": None,
+            "reasons": {"cohort_reason": {}, "owner_link_reason": {}, "primary_line_rule": {},
+                        "eligible_cohort_reason": {}}}
+
+
 def _persist_cohorts(store: ResearchStore, run_id: str, formed: Sequence[CalendarRow],
                      stats: dict[dt.date, dict[str, Any]]) -> None:
     con = store.con
@@ -912,10 +937,7 @@ def _persist_cohorts(store: ResearchStore, run_id: str, formed: Sequence[Calenda
     """, [run_id]).fetchall())
     for row in formed:
         day = row.formation_date
-        cohort = stats.setdefault(day, {  # type: ignore[arg-type]
-            "visible": 0, "eligible": 0, "valid": 0, "unlinked": 0, "multi_line_issuers": 0,
-            "attrition": None, "reasons": {"cohort_reason": {}, "owner_link_reason": {},
-                                           "primary_line_rule": {}, "eligible_cohort_reason": {}}})
+        cohort = stats.setdefault(day, _empty_cohort_stats())  # type: ignore[arg-type]
         cohort["digest"] = con.execute(_COHORT_DIGEST_SQL.format(
             relation="_rp_cohort_all", where="WHERE decision_date=?"), [day]).fetchone()[0]
         stored = done.get(day)
@@ -1227,17 +1249,20 @@ def _market_formation(store: ResearchStore, batch: _Batch, spec: dict[str, Any],
     sized = set(spec["size_policy"]["size_features"])
     long_parts = []
     if columns:
-        picks = ",\n".join(f'arg_max(m."{code}", (m.available_at, m.market_daily_id)) AS "{code}"'
+        # The newest visible revision wins per column even when it withholds the
+        # value (arg_max_null); plain arg_max would skip its NULL and revive an
+        # older revision's value under the newer clock (``max(available_at)``).
+        picks = ",\n".join(f'arg_max_null(m."{code}", (m.available_at, m.market_daily_id)) AS "{code}"'
                            for code in columns)
         # The share basis of the row's size (market_cap and what reads it):
         # only a DEI count is verified; vendor ('archive*', 'class_sum') is not.
-        shares = ("arg_max(m.shares_source, (m.available_at, m.market_daily_id))"
+        shares = ("arg_max_null(m.shares_source, (m.available_at, m.market_daily_id))"
                   if any(f.feature_id in sized for f in batch.features if f.metric_code in columns)
                   else "CAST(NULL AS VARCHAR)")
         con.execute(f"""
             CREATE OR REPLACE TEMP TABLE _rp_market AS
             SELECT m.security_id, max(m.available_at) AS available_at,
-                   arg_max(m.fundamental_available_at, (m.available_at, m.market_daily_id))
+                   arg_max_null(m.fundamental_available_at, (m.available_at, m.market_daily_id))
                      AS fundamental_available_at,
                    {shares} AS shares_source,
                    {picks}
@@ -1259,12 +1284,15 @@ def _market_formation(store: ResearchStore, batch: _Batch, spec: dict[str, Any],
         # UNVERIFIED (opt-in only): the line's own close x its own vendor share
         # count, deduped and clocked as market_daily does a bar. The vendor
         # count is in vendor units and dated from the cover as-of date, which
-        # precedes the filing; R2d replaces it with the A8 share relation.
+        # precedes the filing; R2d replaces it with the A8 share relation. A bar
+        # row is a positive-price row (market_daily's bar rule); of those the
+        # newest row wins whole: its NULL share count is never filled from an
+        # older row (arg_max_null).
         con.execute(f"""
             CREATE OR REPLACE TEMP TABLE _rp_line_cap AS
             SELECT b.security_id,
-                   CAST(arg_max(b.close, (b.available_at, b.source)) AS DOUBLE)
-                   * CAST(arg_max(b.shares_outstanding, (b.available_at, b.source)) AS DOUBLE) AS value,
+                   CAST(arg_max_null(b.close, (b.available_at, b.source)) AS DOUBLE)
+                   * CAST(arg_max_null(b.shares_outstanding, (b.available_at, b.source)) AS DOUBLE) AS value,
                    greatest(max(b.available_at), CAST(b.trade_date AS TIMESTAMP) + INTERVAL {DECISION_HOUR} HOUR)
                      AS available_at
             FROM equity_daily_bars b
@@ -1611,6 +1639,180 @@ def _finalize(store: ResearchStore, run_id: str, basis: str, calendar_rows: Sequ
 
 
 # ---------------------------------------------------------------------------
+# One formation through the same builder (public; the P7 cross-section screen)
+# ---------------------------------------------------------------------------
+
+#: Temp relations a staged formation fills on the store's connection: the cohort
+#: (one row per visible member, keyed by ``decision_date``, with ``eligible``,
+#: ``cohort_reason``, ``leg_reason``, ``primary_line`` ...) and, for the batch
+#: :func:`formation_batches` last yielded, the value rows (the panel's value columns).
+FORMATION_COHORT_RELATION = "_rp_cohort_all"
+FORMATION_VALUES_RELATION = "_rp_batch_values"
+
+
+@dataclass(frozen=True)
+class StagedFormation:
+    """One formation staged by :func:`stage_formation`.
+
+    ``cohort`` is the formation's statistics (``visible``, ``eligible``, ``valid``,
+    ``unlinked``, ``multi_line_issuers``, ``attrition``, ``reasons``), as the panel
+    stores them in ``research_panel_calendar``; ``spec`` is the panel spec and
+    ``scopes`` maps each feature to ``price_line`` / ``owner``. ``cutoff`` is naive UTC.
+    """
+
+    run_id: str
+    basis: str
+    formation_date: dt.date
+    cutoff: dt.datetime
+    features: tuple[PanelFeature, ...]
+    scopes: dict[str, str]
+    spec: dict[str, Any]
+    labels: dict[str, str]
+    cohort: dict[str, Any]
+    owner_bridge: dict[str, Any] | None
+    metric_batch_size: int
+
+    @property
+    def members(self) -> int:
+        return int(self.cohort["visible"])
+
+    @property
+    def eligible(self) -> int:
+        return int(self.cohort["eligible"])
+
+    @property
+    def calendar_row(self) -> CalendarRow:
+        return CalendarRow(self.formation_date.replace(day=1), self.formation_date, self.formation_date,
+                           self.formation_date, self.cutoff, None, CALENDAR_FORMED)
+
+
+@dataclass(frozen=True)
+class FormationBatch:
+    """One metric batch of a staged formation.
+
+    Its rows are in :data:`FORMATION_VALUES_RELATION` until the generator resumes.
+    ``values_sha256`` is the per-feature value digest, the same as a panel run's
+    ``research_panel_coverage.values_sha256`` for that formation.
+    """
+
+    ordinal: int
+    feature_ids: tuple[str, ...]
+    is_market: bool
+    values_sha256: dict[str, str]
+    definitions_sha256: str
+    stats: dict[str, Any]
+
+
+def stage_formation(store: ResearchStore, *, basis: str, formation_date: dt.date, cutoff: dt.datetime,
+                    features: Sequence[PanelFeature | dict[str, Any]] | None = None,
+                    run_id: str = "formation_one", max_age_days: int = DEFAULT_MAX_AGE_DAYS,
+                    annual_max_age_days: int = DEFAULT_ANNUAL_MAX_AGE_DAYS,
+                    eligible_security_types: tuple[str, ...] = fsr.RECONSTRUCTED_ELIGIBLE_TYPES,
+                    include_unlisted_tail: bool = True, unverified_vendor_shares: bool = False,
+                    metric_batch_size: int = 16, owner_links: Sequence[Any] | None = None) -> StagedFormation:
+    """Stage one formation's owner links, calendar and cohort with the panel's own rules.
+
+    ``formation_date`` is the session the market features read (normally an
+    observed session, :func:`observed_sessions`). ``cutoff`` is the timezone-aware
+    UTC knowledge cutoff for every input, on or after that session. The spec,
+    cohort, primary lines and, through :func:`formation_batches`, the values and
+    digests are what :func:`build_research_panel` produces for a formation with
+    this session and cutoff. ``features=None`` is the default panel feature set;
+    ``()`` stages the cohort only. ``owner_links`` overrides the reconstructed
+    bridge, as in the panel.
+
+    Derived batches prove lineage into the store's ``research_lineage_proofs``
+    under ``run_id``. Proofs do not depend on the cutoff and are reused.
+    ``run_id`` must not name a panel run of the store, so a real run's proofs are
+    never touched; screens should use a scratch store.
+    """
+    if type(formation_date) is not dt.date:
+        raise ValueError("formation_date must be a date")
+    if _utc_naive(cutoff, "cutoff").date() < formation_date:
+        raise ValueError("cutoff precedes the formation session")
+    requested = None if features is None else tuple(features)
+    cohort_only = requested == ()
+    month = formation_date.replace(day=1)
+    options = ResearchPanelOptions(
+        run_id=run_id, basis=basis, start_month=month, end_month=month, as_of_date=formation_date,
+        run_at=cutoff, features=None if cohort_only else requested, metric_batch_size=metric_batch_size,
+        max_age_days=max_age_days, annual_max_age_days=annual_max_age_days,
+        eligible_security_types=tuple(eligible_security_types), include_unlisted_tail=include_unlisted_tail,
+        unverified_vendor_shares=unverified_vendor_shares)
+    run_at, checked, spec = _validate(options)
+    staged_features: tuple[PanelFeature, ...] = () if cohort_only else checked
+    if cohort_only:
+        spec = {**spec, "features": [], "size_policy": {**spec["size_policy"], "size_features": []}}
+    con = store.con
+    if con.execute("SELECT count(*) FROM research_panel_runs WHERE run_id=?", [run_id]).fetchone()[0]:
+        raise ValueError(f"run_id {run_id!r} names a panel run of this store; use a formation-only id")
+    _require_inputs(store, basis, staged_features, build_bridge=owner_links is None)
+    labels = _basis_labels(basis)
+    bridge = None
+    if basis == BASIS_RECONSTRUCTED:
+        if owner_links is None:
+            rows, summary = _owner_bridge_rows(store)
+        else:
+            rows, summary = tuple(owner_links), None
+        bridge = {"staged": stage_owner_links(con, rows), "bridge_summary": summary}
+    _stage_run_calendar(con, [CalendarRow(month, formation_date, formation_date, formation_date, run_at, None,
+                                          CALENDAR_FORMED)])
+    cohort = _stage_cohorts(store, spec, labels["market_source"]).get(formation_date) or _empty_cohort_stats()
+    return StagedFormation(
+        run_id=run_id, basis=basis, formation_date=formation_date, cutoff=run_at, features=staged_features,
+        scopes={item[0]: item[3] for item in spec["features"]}, spec=spec, labels=labels, cohort=cohort,
+        owner_bridge=bridge, metric_batch_size=metric_batch_size)
+
+
+def formation_batches(store: ResearchStore, staged: StagedFormation, *,
+                      proof_chunk_roots: int = DEFAULT_PROOF_CHUNK_ROOTS) -> Iterator[FormationBatch]:
+    """Compute a staged formation's values batch by batch, with the panel's batches and SQL.
+
+    Each yielded batch's rows are in :data:`FORMATION_VALUES_RELATION` until the
+    generator resumes. Every row is checked against the cutoff, and a row knowable
+    only later raises. Nothing is yielded without features or eligible members.
+    """
+    if isinstance(proof_chunk_roots, bool) or not isinstance(proof_chunk_roots, int) \
+            or not 1 <= proof_chunk_roots <= 1_000_000:
+        raise ValueError("proof_chunk_roots must be 1..1000000")
+    if not staged.features or not staged.eligible:
+        return
+    con = store.con
+    visible, first, last = con.execute(
+        f"SELECT count(*), min(decision_date), max(decision_date) FROM {FORMATION_COHORT_RELATION}").fetchone()
+    if (int(visible), first, last) != (staged.members, staged.formation_date, staged.formation_date):
+        raise RuntimeError("the staged cohort was replaced on this connection; stage the formation again")
+    row = staged.calendar_row
+    _stage_run_calendar(con, [row])
+    con.execute("CREATE OR REPLACE TEMP TABLE _rp_features "
+                "(feature_id VARCHAR, metric_code VARCHAR, metric_window VARCHAR)")
+    con.executemany("INSERT INTO _rp_features VALUES (?,?,?)",
+                    [[f.feature_id, f.metric_code, f.metric_window] for f in staged.features])
+    _, definitions_sha, hashes = _definitions(con, staged.features)
+    work_spec = {**staged.spec, "scopes": staged.scopes}
+    for batch in _batches(staged.features, staged.metric_batch_size):
+        started = time.perf_counter()
+        stats: dict[str, Any] = {}
+        if batch.is_market:
+            _market_formation(store, batch, work_spec, staged.labels["market_source"], row)
+        else:
+            stats.update(_derived_selection(store, staged.run_id, batch, work_spec, hashes, 1, proof_chunk_roots))
+            _derived_formations(store, staged.run_id, batch, work_spec, [row], [0])
+        leaks = con.execute(f"""
+            SELECT count(*) FROM {FORMATION_VALUES_RELATION} v
+            JOIN _rp_calendar c ON c.decision_date=v.formation_date
+            WHERE {_leak_predicate('c.cutoff', 'v.')}
+        """).fetchone()[0]
+        if leaks:
+            raise RuntimeError(f"{leaks} staged values are not visible at the formation cutoff")
+        digests = dict(con.execute(_VALUE_DIGEST_SQL.format(relation=FORMATION_VALUES_RELATION, where="")).fetchall())
+        stats["seconds"] = round(time.perf_counter() - started, 3)
+        yield FormationBatch(batch.ordinal, tuple(f.feature_id for f in batch.features), batch.is_market,
+                             {f.feature_id: digests.get(f.feature_id, _EMPTY_SHA) for f in batch.features},
+                             definitions_sha, stats)
+
+
+# ---------------------------------------------------------------------------
 # Validator
 # ---------------------------------------------------------------------------
 
@@ -1713,8 +1915,11 @@ __all__ = [
     "CALENDAR_MISSING_MONTH_END",
     "CALENDAR_MISSING_NEXT_SESSION",
     "CALENDAR_RULE_CONFLICT",
+    "FORMATION_COHORT_RELATION",
+    "FORMATION_VALUES_RELATION",
     "FUNDAMENTAL_AVAILABILITY_BASIS",
     "MARKET_AVAILABILITY_BASIS",
+    "MARKET_REVISION_RULE",
     "NATIVE_FEATURES",
     "OWNER_LINK_FAILURES",
     "PRICE_LINE_IDENTITY_BASIS",
@@ -1727,20 +1932,24 @@ __all__ = [
     "VENDOR_SHARES_AVAILABILITY_BASIS",
     "VERIFIED_SHARES_SOURCES",
     "CalendarRow",
+    "FormationBatch",
     "PanelFeature",
     "ResearchPanelOptions",
     "ResearchPanelResult",
     "ResearchPanelValidation",
+    "StagedFormation",
     "build_research_panel",
     "canonical_features",
     "default_panel_features",
     "expected_month_end_session",
     "feature_scopes",
+    "formation_batches",
     "month_end_calendar",
     "nyse_full_day_closures",
     "observed_sessions",
     "price_line_codes",
     "size_codes",
+    "stage_formation",
     "stage_owner_links",
     "validate_research_panel",
 ]

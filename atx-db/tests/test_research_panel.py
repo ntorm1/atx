@@ -403,6 +403,51 @@ def test_reconstructed_panel_is_point_in_time_and_labeled(tmp_path, warehouse):
             rp.validate_research_panel(store, "recon")
 
 
+def test_newest_market_revision_wins_even_when_null_and_one_formation_equals_the_panel(tmp_path, warehouse):
+    """R2e: a newer market revision that withholds market_cap (NULL, split unresolved) is the value at
+    the cutoff; the older revision's value is never revived under the newer clock. The public
+    one-formation API reproduces the panel's value digests for the same formation."""
+    wh_path, _ = warehouse
+    bbb, november = LINES[2][0], dt.date(2023, 11, 30)
+    con = duckdb.connect(str(wh_path))
+    con.execute("INSERT INTO market_daily_metrics VALUES (?,?,?,?,?,?,100.0,1000,NULL,NULL,0.2,'split_unresolved')",
+                [f"{bbb}|{november}|rev", MARKET_DAILY_SOURCE_NAME, bbb, november,
+                 dt.datetime(2023, 11, 30, 21, 30), november])
+    con.close()
+    with ResearchStore(tmp_path / "research.duckdb", warehouse_path=wh_path) as store:
+        rp.build_research_panel(store, _options("newest"))
+        con = store.con
+        cap = con.execute("""
+            SELECT raw_value, reason, available_at, shares_source, size_status FROM research_panel_values
+            WHERE run_id='newest' AND formation_date=? AND security_id=? AND feature_id='market_cap'
+        """, [november, bbb]).fetchone()
+        assert cap == (None, "invalid_current_state", dt.datetime(2023, 11, 30, 21, 30), "split_unresolved",
+                       rp.UNVERIFIED_VENDOR_SHARES)
+        assert _value(con, "newest", november, bbb, "momentum_12_1")[:3] == (
+            0.2, "valid", dt.datetime(2023, 11, 30, 21, 30))
+        assert _value(con, "newest", dt.date(2023, 10, 31), bbb, "market_cap")[1] == "valid"
+        rp.validate_research_panel(store, "newest")
+        coverage = dict(con.execute("""
+            SELECT feature_id, values_sha256 FROM research_panel_coverage WHERE run_id='newest' AND formation_date=?
+        """, [november]).fetchall())
+        staged = rp.stage_formation(store, basis=rp.BASIS_RECONSTRUCTED, formation_date=november,
+                                    cutoff=dt.datetime(2023, 11, 30, 22, tzinfo=dt.UTC), run_id="one_formation")
+        assert staged.eligible == con.execute("SELECT eligible_members FROM research_panel_calendar "
+                                              "WHERE run_id='newest' AND formation_date=?", [november]).fetchone()[0]
+        digests = {}
+        for batch in rp.formation_batches(store, staged):
+            digests.update(batch.values_sha256)
+            if batch.is_market:
+                assert con.execute(f"""
+                    SELECT raw_value, reason FROM {rp.FORMATION_VALUES_RELATION}
+                    WHERE security_id=? AND feature_id='market_cap'""", [bbb]).fetchone() == (
+                    None, "invalid_current_state")
+        assert digests == coverage and len(digests) == 4
+        with pytest.raises(ValueError, match="names a panel run"):
+            rp.stage_formation(store, basis=rp.BASIS_RECONSTRUCTED, formation_date=november,
+                               cutoff=dt.datetime(2023, 11, 30, 22, tzinfo=dt.UTC), run_id="newest")
+
+
 def test_missing_month_end_gets_no_formation_rows(tmp_path, registry):
     missing = (dt.date(2024, 2, 29),)
     wh = Warehouse(tmp_path / "wh.duckdb", missing_sessions=missing)

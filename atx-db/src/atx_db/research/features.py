@@ -141,7 +141,8 @@ The spec records the numpy/pandas/DuckDB versions (the arithmetic depends on the
 Nothing is deleted automatically: :func:`prune_feature_versions` is the explicit
 command that removes failed/abandoned versions (and, when asked, sealed versions
 superseded within their basis); it is a dry run by default and never deletes the
-latest sealed version of a basis.
+latest sealed version of a basis (by registration order) or a version that an
+evaluation run (R3b) or a qualification ledger (R4) of the store references.
 
 Tables (research store, RX6; schema owned here until registered as a store migration)
 ------------------------------------------------------------------------------------
@@ -154,12 +155,18 @@ columns; inserted feature by feature, so clustered by feature),
 CIK, the verified ln market cap regressor and the industry group, shared by every
 feature; unlinked lines have no owner covariates), ``research_feature_dates``
 (formation x feature x variant: status, counts, ``universe_names`` and coverage
-against it, the R2a ``eligible_members``, covariate coverage and the reason counts),
+against it, the R2a ``eligible_members``, covariate coverage, the reason counts and,
+for price-line features, ``unlinked_excluded`` = ranked unlinked lines without a
+value in the variant plus the label ``sample_conditioning =
+survivor_conditioned_linked_only`` on a formed variant that excluded any: a
+neutral variant there is computed on linked names only),
 ``research_feature_owner_basis`` (price-line features: formation x owner basis
 diagnostic) and the contract view ``research_feature_values`` (long: the matrix
 unpivoted, NULLs included, one row per formation x security x feature x variant with
 its ``owner_basis``; a variant a feature does not produce is NULL and has no date
-rows). Schema version 2 (v1 stores are migrated in place by adding the columns).
+rows). Schema version 3 (v1/v2 stores are migrated in place by adding the columns;
+versions built under an older schema are refused by the validator and can only be
+pruned).
 """
 
 from __future__ import annotations
@@ -189,9 +196,12 @@ from . import panel as _panel
 from .catalog import AnomalyCatalogEntry
 from .store import ResearchStore
 
+# The query version stays v2 (R3b's adapter accepts v1/v2 only). R2e bumps the store
+# schema instead: v3 versions record ``store_schema`` in their spec (so their ids never
+# collide with pre-R2e versions) and the validator refuses any other store schema.
 QUERY_VERSION = "research-feature-store-v2"
-FEATURE_SCHEMA_VERSION = 2
-KNOWN_SCHEMA_VERSIONS = (1, 2)
+FEATURE_SCHEMA_VERSION = 3
+KNOWN_SCHEMA_VERSIONS = (1, 2, 3)
 VARIANTS = ("signed_raw", "winsor", "zscore", "rank_normal", "industry_neutral", "size_neutral")
 STANDARDIZED_VARIANTS = VARIANTS[1:]
 #: Owner/size features on valid primary lines; identity-free price-line features also
@@ -206,6 +216,12 @@ OWNER_BASES = (OWNER_BASIS_LINKED, OWNER_BASIS_UNLINKED)
 #: R2a cohort reasons of an eligible line without a usable owner link.
 UNLINKED_COHORT_REASONS = tuple(_panel.OWNER_LINK_FAILURES)
 UNLINKED_LINES_BLOCKER = "price_line_features_rank_unlinked_lines_unlinked_share_classes_may_double_count_issuers"
+#: R2b N1: a formed variant of a price-line feature that leaves out unlinked lines the
+#: raw variants rank (the neutral variants: unlinked lines have no owner covariates) is
+#: survivor-conditioned. Compare it with the raw variant only on ``owner_basis =
+#: linked_primary`` rows and on formations where both are formed.
+CONDITIONING_LINKED_ONLY = "survivor_conditioned_linked_only"
+NEUTRAL_CONDITIONING_BLOCKER = "price_line_neutral_variants_linked_only_survivor_conditioned"
 DEFAULT_CONTROLS = ("market_cap", "book_to_market", "momentum_12_1")
 SIZE_FEATURE_ID = "market_cap"
 SIZE_CLASS = "size"
@@ -308,7 +324,8 @@ _DIGEST_COLUMNS = tuple(name for name, _ in _MATRIX_COLUMNS if name not in ("fea
 _CONTEXT_COLUMNS = ("formation_date", "security_id", "owner_basis", "owner_cik", "log_size", "industry_group")
 _DATE_COLUMNS = ("feature_version", "formation_date", "feature_id", "variant", "date_status", "eligible_members",
                  "universe_names", "valid_names", "coverage_fraction", "candidate_names", "in_domain_names",
-                 "covariate_names", "covariate_coverage", "reasons_json")
+                 "covariate_names", "covariate_coverage", "reasons_json", "unlinked_excluded",
+                 "sample_conditioning")
 _CATALOG_COLUMNS = ("feature_version", "feature_id", "source_kind", "anomaly_class", "hypothesis_family",
                     "expected_sign", "orientation_sign", "preferred_transform", "preferred_variant", "domain",
                     "caveat_codes", "admission", "is_control", "universe_scope", "inputs_json", "status",
@@ -321,6 +338,9 @@ _V2_COLUMNS = (("research_feature_matrix", "owner_basis", "VARCHAR"),
                ("research_feature_context", "owner_basis", "VARCHAR"),
                ("research_feature_dates", "universe_names", "BIGINT"),
                ("research_feature_catalog", "universe_scope", "VARCHAR"))
+#: Schema v2 -> v3 (R2e): the survivor-conditioning label of price-line variants (R2b N1).
+_V3_COLUMNS = (("research_feature_dates", "unlinked_excluded", "BIGINT"),
+               ("research_feature_dates", "sample_conditioning", "VARCHAR"))
 #: Every table holding rows of one version (pruning deletes from all of them).
 _VERSION_TABLES = ("research_feature_matrix", "research_feature_dates", "research_feature_owner_basis",
                    "research_feature_context", "research_feature_catalog", "research_feature_versions")
@@ -342,14 +362,14 @@ def _require_feature_schema(con: Any) -> None:
 
 
 def ensure_feature_schema(con: Any) -> None:
-    """Create or migrate the ``research_feature_*`` tables and the contract view (schema v2).
+    """Create or migrate the ``research_feature_*`` tables and the contract view (schema v3).
 
     Kept in this module until the research-store owner registers it as a store
-    migration; the version table refuses a newer, unknown schema. A v1 store gains
-    the v2 columns in place (legacy v1 rows keep NULL there; their versions carry
-    the v1 query version, which the v2 validator refuses, so they can only be
-    pruned). The contract view is (re)created as a VIEW; an existing TABLE of that
-    name is an error, never silently kept.
+    migration; the version table refuses a newer, unknown schema. A v1/v2 store
+    gains the later columns in place (legacy rows keep NULL there; their versions
+    carry an older query version or store schema, which the validator refuses, so
+    they can only be pruned). The contract view is (re)created as a VIEW; an
+    existing TABLE of that name is an error, never silently kept.
     """
     con.execute("""
         CREATE TABLE IF NOT EXISTS research_feature_schema (
@@ -434,10 +454,12 @@ def ensure_feature_schema(con: Any) -> None:
             covariate_names BIGINT,
             covariate_coverage DOUBLE,
             reasons_json VARCHAR NOT NULL,
+            unlinked_excluded BIGINT,
+            sample_conditioning VARCHAR,
             PRIMARY KEY (feature_version, formation_date, feature_id, variant)
         );
     """)
-    for table, column, kind in _V2_COLUMNS:  # v1 -> v2 in place (a no-op on a fresh v2 store)
+    for table, column, kind in (*_V2_COLUMNS, *_V3_COLUMNS):  # in place; a no-op on a fresh store
         con.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {kind}")
     con.execute(f"""
         CREATE TABLE IF NOT EXISTS research_feature_owner_basis (
@@ -460,7 +482,7 @@ def ensure_feature_schema(con: Any) -> None:
         UNPIVOT INCLUDE NULLS (value FOR variant IN ({", ".join(VARIANTS)}));
     """)
     con.execute("INSERT INTO research_feature_schema VALUES (?, ?, ?)",
-                [FEATURE_SCHEMA_VERSION, "feature_store_v2_owner_basis", _now()])
+                [FEATURE_SCHEMA_VERSION, "feature_store_v3_survivor_conditioning", _now()])
 
 
 # ---------------------------------------------------------------------------
@@ -835,6 +857,7 @@ def _stage_classification(store: ResearchStore, basis: str, taxonomy: str) -> di
                        ec.source_loaded_at, ec.classification_id
                 FROM entity_classification ec JOIN taxonomy t ON t.taxonomy_id = ec.taxonomy_id AND t.code = ?
             ), mapped AS ({mapped})
+            -- node_code is NOT NULL (entity_classification DDL): plain arg_max cannot skip the newest row.
             SELECT u.formation_date, u.security_id,
                    arg_max(m.node_code, (m.available_at, m.as_of_date, m.valid_from, m.source_loaded_at,
                                          m.classification_id))
@@ -1368,6 +1391,9 @@ def _spec_payload(options: FeatureStoreOptions, context: _PanelContext, plans: S
                   catalog_source: str) -> dict[str, Any]:
     return {
         "query_version": QUERY_VERSION,
+        "store_schema": FEATURE_SCHEMA_VERSION,
+        "survivor_conditioning": f"{CONDITIONING_LINKED_ONLY} on formed price-line variants that leave out "
+                                 "ranked unlinked lines (the neutral variants; no owner covariates)",
         "panel_run_id": context.run_id,
         "basis": context.basis,
         "universe_rule": UNIVERSE_RULE,
@@ -1436,6 +1462,8 @@ _DATE_CASTS = {
     "covariate_names": "TRY_CAST(covariate_names AS BIGINT)",
     "covariate_coverage": "CAST(covariate_coverage AS DOUBLE)",
     "coverage_fraction": "CAST(coverage_fraction AS DOUBLE)",
+    "unlinked_excluded": "TRY_CAST(unlinked_excluded AS BIGINT)",
+    "sample_conditioning": "CAST(sample_conditioning AS VARCHAR)",
 }
 _OWNER_MOMENTS = ("signed_raw_mean", "signed_raw_sd", "rank_normal_mean", "rank_normal_sd")
 _OWNER_BASIS_CASTS = {
@@ -1485,6 +1513,23 @@ def _owner_basis_stats(frame: pd.DataFrame) -> dict[tuple[dt.date, str], tuple[A
     return stats
 
 
+def _unlinked_excluded(frame: pd.DataFrame, variants: Sequence[str]) -> dict[tuple[dt.date, str], int]:
+    """Per (formation, variant): ranked unlinked lines (``rank_normal`` valued) without a value.
+
+    Non-zero only for the neutral variants of a price-line feature, whose formed
+    cross-sections are then linked-only (survivor-conditioned, R2b N1).
+    """
+    days = pd.to_datetime(frame["formation_date"]).dt.date.to_numpy()
+    ranked = ((frame["owner_basis"].to_numpy(dtype=object) == OWNER_BASIS_UNLINKED)
+              & np.isfinite(frame["rank_normal"].to_numpy(dtype=float)))
+    counts: dict[tuple[dt.date, str], int] = {}
+    for day in sorted(set(days.tolist())):
+        on_day = ranked & (days == day)
+        for variant in variants:
+            counts[(day, variant)] = int((on_day & ~np.isfinite(frame[variant].to_numpy(dtype=float))).sum())
+    return counts
+
+
 def _build_feature(store: ResearchStore, version: str, plan: _Plan, context: _PanelContext,
                    options: FeatureStoreOptions, policy: StandardizationPolicy,
                    universe: Mapping[dt.date, Mapping[str, int]]) -> dict[str, Any]:
@@ -1512,6 +1557,7 @@ def _build_feature(store: ResearchStore, version: str, plan: _Plan, context: _Pa
                                 "cutoff")
     stats: dict[tuple[dt.date, str], dict[str, Any]] = {}
     owner_stats: dict[tuple[dt.date, str], tuple[Any, ...]] = {}
+    excluded: dict[tuple[dt.date, str], int] = {}
     candidates: dict[dt.date, int] = {}
     total_rows = in_domain_rows = 0
     formations = context.formations
@@ -1540,6 +1586,7 @@ def _build_feature(store: ResearchStore, version: str, plan: _Plan, context: _Pa
         in_domain_rows += int((standardized["domain_status"] == IN_DOMAIN).sum())
         if plan.price_line:
             owner_stats.update(_owner_basis_stats(standardized))
+            excluded.update(_unlinked_excluded(standardized, plan.variants))
         matrix = pd.DataFrame({
             "feature_version": version,
             "formation_date": standardized["formation_date"],
@@ -1555,6 +1602,7 @@ def _build_feature(store: ResearchStore, version: str, plan: _Plan, context: _Pa
         })
         _insert_frame(con, "research_feature_matrix", matrix, _MATRIX_CASTS)
     date_rows = []
+    conditioned: dict[str, int] = {}
     for day in formations:
         counts_of_day = universe.get(day, {})
         members = int(counts_of_day.get("eligible", 0))
@@ -1566,6 +1614,10 @@ def _build_feature(store: ResearchStore, version: str, plan: _Plan, context: _Pa
             if item is None:  # no candidate row at all: nothing to standardize
                 item = {"date_status": DATE_THIN, "valid_names": 0, "in_domain_names": 0,
                         "covariate_names": None, "covariate_coverage": None}
+            left_out = excluded.get((day, variant), 0) if plan.price_line else None
+            label = CONDITIONING_LINKED_ONLY if left_out and item["date_status"] == DATE_FORMED else None
+            if label:
+                conditioned[variant] = conditioned.get(variant, 0) + 1
             date_rows.append({
                 "feature_version": version, "formation_date": day, "feature_id": plan.feature_id,
                 "variant": variant, "date_status": item["date_status"], "eligible_members": members,
@@ -1573,7 +1625,8 @@ def _build_feature(store: ResearchStore, version: str, plan: _Plan, context: _Pa
                 "coverage_fraction": (item["valid_names"] / names) if names else None,
                 "candidate_names": int(candidates.get(day, 0)), "in_domain_names": int(item["in_domain_names"]),
                 "covariate_names": item["covariate_names"], "covariate_coverage": item["covariate_coverage"],
-                "reasons_json": _canonical(dict(sorted(counts.items())))})
+                "reasons_json": _canonical(dict(sorted(counts.items()))), "unlinked_excluded": left_out,
+                "sample_conditioning": label})
     _insert_frame(con, "research_feature_dates", pd.DataFrame(date_rows, columns=list(_DATE_COLUMNS)), _DATE_CASTS)
     ranked_by_basis: dict[str, int] = {}
     if plan.price_line:
@@ -1600,6 +1653,7 @@ def _build_feature(store: ResearchStore, version: str, plan: _Plan, context: _Pa
                               "not_formed_dates": thin}
     if plan.price_line:
         result["ranked_rows_by_owner_basis"] = ranked_by_basis
+        result["survivor_conditioned_dates"] = dict(sorted(conditioned.items()))
     return result
 
 
@@ -1760,7 +1814,8 @@ def build_feature_version(store: ResearchStore, options: FeatureStoreOptions) ->
                          "variant": variant, "date_status": DATE_EMPTY,
                          "eligible_members": universe.get(day, {}).get("eligible", 0), "universe_names": 0,
                          "valid_names": 0, "coverage_fraction": None, "candidate_names": 0, "in_domain_names": 0,
-                         "covariate_names": None, "covariate_coverage": None, "reasons_json": _canonical({})}
+                         "covariate_names": None, "covariate_coverage": None, "reasons_json": _canonical({}),
+                         "unlinked_excluded": None, "sample_conditioning": None}
                         for p in buildable if p.feature_id not in done for day in context.formations
                         for variant in p.variants]
                 _insert_frame(con, "research_feature_dates", pd.DataFrame(rows, columns=list(_DATE_COLUMNS)),
@@ -1824,12 +1879,20 @@ def _finalize(store: ResearchStore, version: str, context: _PanelContext, plans:
     for (reasons_json,) in con.execute("SELECT reasons_json FROM research_feature_catalog WHERE feature_version=? "
                                        "AND reasons_json IS NOT NULL", [version]).fetchall():
         unverified += int(json.loads(reasons_json).get("unverified_size", 0))
+    # R2b N1: survivor-conditioned (linked-only) formed variants are labeled per date
+    # row; the version carries the count as a blocker so no consumer misses it.
+    conditioned = int(con.execute("SELECT count(*) FROM research_feature_dates WHERE feature_version=? "
+                                  "AND sample_conditioning IS NOT NULL", [version]).fetchone()[0])
+    blockers = [b for b in blockers if not b.startswith(f"{NEUTRAL_CONDITIONING_BLOCKER}:")]
+    if conditioned:
+        blockers.append(f"{NEUTRAL_CONDITIONING_BLOCKER}:{conditioned}")
     diagnostic = {
         "formations": len(context.formations),
         "features_by_status": dict(sorted(by_status.items())),
         "matrix_rows": value_rows,
         "matrix_rows_by_domain_status": domain_totals,
         "unverified_size_rows_excluded": unverified,
+        "survivor_conditioned_date_rows": conditioned,
         "staged": {k: v for k, v in staged.items() if k != "panel_blockers"},
         "phase_seconds": {k: round(v, 3) for k, v in phases.items()},
         "features": feature_stats,
@@ -1838,9 +1901,10 @@ def _finalize(store: ResearchStore, version: str, context: _PanelContext, plans:
     con.execute("CHECKPOINT")
     with store.transaction():
         con.execute("""
-            UPDATE research_feature_versions SET status=?, values_sha256=?, diagnostic_json=?, finished_at=?
+            UPDATE research_feature_versions SET status=?, values_sha256=?, diagnostic_json=?, blockers_json=?,
+                   finished_at=?
             WHERE feature_version=? AND status='building'
-        """, [status, values_sha, _canonical(diagnostic), _now(), version])
+        """, [status, values_sha, _canonical(diagnostic), _canonical(blockers), _now(), version])
     return FeatureVersionResult(version, status, context.basis, context.run_id, built, len(plans) - built,
                                 value_rows, values_sha, tuple(blockers))
 
@@ -1898,6 +1962,10 @@ def validate_feature_version(store: ResearchStore, feature_version: str, *,
     spec = json.loads(spec_json)
     if spec.get("query_version") != QUERY_VERSION:
         raise FeatureStoreError("unsupported feature store query version")
+    if spec.get("store_schema") != FEATURE_SCHEMA_VERSION:
+        raise FeatureStoreError(f"feature version was built under store schema {spec.get('store_schema', 2)} "
+                                f"(before R2e: revived market values, unlabeled survivor conditioning); "
+                                f"rebuild it under schema {FEATURE_SCHEMA_VERSION}")
     panel_row = con.execute("SELECT panel_sha256, status FROM research_panel_runs WHERE run_id=?",
                             [run_id]).fetchone()
     if panel_row is None or panel_row[0] != panel_sha:
@@ -1977,12 +2045,24 @@ def validate_feature_version(store: ResearchStore, feature_version: str, *,
                 f"{feature_id}: contract violated (rows={rows}/{value_rows}, duplicates={duplicates}, "
                 f"outside_universe={outside}, owner_basis_mismatch={basis}, after_cutoff={late}, "
                 f"valued_out_of_domain={domain}, valued_unformed={unformed}, sign_mismatch={signs})")
-        date_rows = con.execute("SELECT formation_date, eligible_members, universe_names, reasons_json "
+        date_rows = con.execute("SELECT formation_date, eligible_members, universe_names, reasons_json, variant, "
+                                "date_status, unlinked_excluded, sample_conditioning "
                                 "FROM research_feature_dates WHERE feature_version=? AND feature_id=?",
                                 [feature_version, feature_id]).fetchall()
         if len(date_rows) != len(formations) * len(variants):
             raise FeatureStoreError(f"{feature_id}: {len(date_rows)} date rows, expected formations x variants")
-        for day, members, names, reasons_json in date_rows:
+        # Survivor conditioning (R2b N1), re-derived from the matrix: ranked unlinked
+        # lines without a value in the variant, and the label on formed variants.
+        left_out: dict[tuple[dt.date, str], int] = {}
+        if all_lines and status == STATUS_SEALED:
+            missing = ", ".join(f"count(*) FILTER (WHERE owner_basis = '{OWNER_BASIS_UNLINKED}' "
+                                f"AND rank_normal IS NOT NULL AND {v} IS NULL)" for v in VARIANTS)
+            for day, *per_variant in con.execute(f"""
+                SELECT formation_date, {missing} FROM research_feature_matrix
+                WHERE feature_version=? AND feature_id=? GROUP BY formation_date
+            """, [feature_version, feature_id]).fetchall():
+                left_out.update({(day, v): int(n) for v, n in zip(VARIANTS, per_variant, strict=True)})
+        for day, members, names, reasons_json, variant, date_status, excluded, label in date_rows:
             eligible, linked, unlinked = universe.get(day, (0, 0, 0))
             expected_names = (linked + unlinked if all_lines else linked) if status == STATUS_SEALED else 0
             if sum(json.loads(reasons_json).values()) != (members if status == STATUS_SEALED else 0) \
@@ -1991,6 +2071,12 @@ def validate_feature_version(store: ResearchStore, feature_version: str, *,
                     f"{feature_id} {day}: date row accounting broken (reasons sum "
                     f"{sum(json.loads(reasons_json).values())}, eligible_members {members}/{eligible}, "
                     f"universe_names {names}/{expected_names})")
+            want = left_out.get((day, variant), 0) if all_lines and status == STATUS_SEALED else None
+            want_label = CONDITIONING_LINKED_ONLY if want and date_status == DATE_FORMED else None
+            if excluded != want or label != want_label:
+                raise FeatureStoreError(
+                    f"{feature_id} {day} {variant}: survivor-conditioning label broken (unlinked_excluded "
+                    f"{excluded}/{want}, sample_conditioning {label!r}/{want_label!r})")
         owner_rows, owner_bad = (int(v) for v in con.execute("""
             WITH m AS (
                 SELECT formation_date, owner_basis, count(signed_raw) AS names, count(rank_normal) AS ranked
@@ -2041,10 +2127,63 @@ class FeaturePruneResult:
     dry_run: bool
     #: Versions deleted (or, in a dry run, that would be deleted) with their status.
     pruned: dict[str, str]
-    #: The latest sealed version of each basis: never pruned.
+    #: The latest sealed version of each basis (registration order): never pruned.
     protected: dict[str, str]
     #: Rows per table deleted (or that would be).
     rows: dict[str, int]
+    #: Versions referenced from outside the feature store, with their referrers: never pruned.
+    referenced: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+
+def _version_references(store: ResearchStore) -> dict[str, tuple[str, ...]]:
+    """Feature versions the research store references outside the feature store tables.
+
+    The references are:
+    - an evaluation run's ``spec_json`` ``feature_versions`` (R3b; its result rows,
+      e.g. ``research_eval_series``, belong to the run);
+    - a qualification ledger's ``manifest_json`` ``evaluation.feature_versions`` (R4);
+    - any other base table of the research catalog with a ``feature_version`` column.
+    An unreadable reference refuses the prune (fail closed).
+    """
+    con = store.con
+    columns: dict[str, set[str]] = {}
+    for table, column in con.execute("""
+        SELECT c.table_name, c.column_name FROM duckdb_columns() c
+        JOIN duckdb_tables() t ON t.database_name = c.database_name AND t.schema_name = c.schema_name
+                              AND t.table_name = c.table_name
+        WHERE c.database_name = ? AND c.schema_name = 'main' AND NOT t.temporary
+    """, [store.catalog]).fetchall():
+        columns.setdefault(str(table), set()).add(str(column))
+    refs: dict[str, set[str]] = {}
+
+    def add(version: Any, referrer: str) -> None:
+        if not isinstance(version, str):
+            raise FeatureStoreError(f"{referrer}: unreadable feature version reference {version!r}; not pruning")
+        refs.setdefault(version, set()).add(referrer)
+
+    json_refs = (("research_eval_runs", "run_id", "spec_json", ("feature_versions",)),
+                 ("research_qualification_ledgers", "ledger_id", "manifest_json", ("evaluation", "feature_versions")))
+    for table, key, payload, path in json_refs:
+        if not {key, payload} <= columns.get(table, set()):
+            continue
+        for ident, text in con.execute(f"SELECT {key}, {payload} FROM {table}").fetchall():
+            try:
+                node: Any = json.loads(text) if text is not None else {}
+                for step in path:
+                    node = node.get(step) if isinstance(node, dict) else None
+            except ValueError as exc:
+                raise FeatureStoreError(f"{table}:{ident}: unreadable {payload}; not pruning") from exc
+            if node is not None and not isinstance(node, list):
+                raise FeatureStoreError(f"{table}:{ident}: {'.'.join(path)} is not a list; not pruning")
+            for version in node or ():
+                add(version, f"{table}:{ident}")
+    for table, names in sorted(columns.items()):
+        if table in _VERSION_TABLES or "feature_version" not in names:
+            continue
+        for (version,) in con.execute(f"SELECT DISTINCT feature_version FROM {table} "
+                                      "WHERE feature_version IS NOT NULL").fetchall():
+            add(version, table)
+    return {version: tuple(sorted(referrers)) for version, referrers in sorted(refs.items())}
 
 
 def prune_feature_versions(store: ResearchStore, *, versions: Sequence[str] | None = None,
@@ -2056,26 +2195,31 @@ def prune_feature_versions(store: ResearchStore, *, versions: Sequence[str] | No
     (``failed``, or ``building`` left by an interrupted build: rebuilding identical
     inputs would resume it, so prune it only when it is abandoned) and, with
     ``superseded=True``, every sealed version that is not the latest sealed version
-    of its basis (latest ``finished_at``, then ``created_at``, then id). The latest
-    sealed version of a basis is never deleted, even when named. ``versions``
-    restricts the candidates to the named ones (each must exist and be a candidate).
-    Every row of a pruned version goes (matrix, dates, owner-basis diagnostic,
-    context, catalog, version row), one transaction per version.
+    of its basis. "Latest" is registration order (``created_at``, then id), not
+    ``finished_at``, which a resumed build moves. Never deleted, even when named:
+    - the latest sealed version of a basis;
+    - any version an evaluation run (R3b), a qualification ledger (R4) or another
+      research table references (:func:`_version_references`; listed in
+      ``referenced``).
+    ``versions`` restricts the candidates to the named ones (each must exist and be
+    a candidate). Every row of a pruned version goes (matrix, dates, owner-basis
+    diagnostic, context, catalog, version row), one transaction per version.
     """
     con = store.con
     ensure_feature_schema(con)
     rows = con.execute("""
         SELECT feature_version, status, basis,
                row_number() OVER (PARTITION BY basis, status IN (?, ?)
-                                  ORDER BY finished_at DESC NULLS LAST, created_at DESC, feature_version DESC)
-                 AS recency
+                                  ORDER BY created_at DESC, feature_version DESC) AS recency
         FROM research_feature_versions ORDER BY feature_version
     """, list(SEALED_STATUSES)).fetchall()
+    referenced = _version_references(store)
     status_of = {str(version): str(state) for version, state, _, _ in rows}
     protected = {str(version): str(basis) for version, state, basis, recency in rows
                  if state in SEALED_STATUSES and recency == 1}
     candidates = {str(version): str(state) for version, state, _, _ in rows
-                  if state not in SEALED_STATUSES or (superseded and str(version) not in protected)}
+                  if str(version) not in referenced
+                  and (state not in SEALED_STATUSES or (superseded and str(version) not in protected))}
     if versions is not None:
         named = list(dict.fromkeys(versions))
         for version in named:
@@ -2084,6 +2228,9 @@ def prune_feature_versions(store: ResearchStore, *, versions: Sequence[str] | No
             if version in protected:
                 raise FeatureStoreError(f"feature version {version} is the latest sealed version of basis "
                                         f"{protected[version]!r}; it is never pruned")
+            if version in referenced:
+                raise FeatureStoreError(f"feature version {version} is referenced by {list(referenced[version])}; "
+                                        "it is never pruned")
             if version not in candidates:
                 raise FeatureStoreError(f"feature version {version} is {status_of[version]!r}; pass superseded=True "
                                         "to prune a sealed version")
@@ -2099,10 +2246,12 @@ def prune_feature_versions(store: ResearchStore, *, versions: Sequence[str] | No
                     con.execute(f"DELETE FROM {table} WHERE feature_version=?", [version])
     if candidates and not dry_run:
         con.execute("CHECKPOINT")
-    return FeaturePruneResult(dry_run, dict(sorted(candidates.items())), dict(sorted(protected.items())), counts)
+    return FeaturePruneResult(dry_run, dict(sorted(candidates.items())), dict(sorted(protected.items())), counts,
+                              {version: refs for version, refs in referenced.items() if version in status_of})
 
 
 __all__ = [
+    "CONDITIONING_LINKED_ONLY",
     "DATE_DEGENERATE",
     "DATE_EMPTY",
     "DATE_FORMED",
@@ -2117,6 +2266,7 @@ __all__ = [
     "FEATURE_OPERAND_MISSING",
     "FEATURE_SCHEMA_VERSION",
     "IN_DOMAIN",
+    "NEUTRAL_CONDITIONING_BLOCKER",
     "OWNER_BASES",
     "OWNER_BASIS_LINKED",
     "OWNER_BASIS_UNLINKED",
