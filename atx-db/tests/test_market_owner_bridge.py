@@ -202,6 +202,8 @@ def test_delisted_line_without_current_ticker_is_unlinked_and_counted(multiclass
     assert bridge["linked_by_identity_basis"] == {"current_ticker_unverified": 2}
     assert bridge["multi_line_issuers"] == 1
     assert bridge["dei_shares_withheld_lines"] == 2 and bridge["valuation_withheld_lines"] == 2
+    assert bridge["withheld_multi_common_class"] == 2 and bridge["withheld_non_common_line"] == 0
+    assert bridge["non_common_tickers_ignored"] == 0
     assert bridge["ticker_snapshot_observed_at"] == "2026-09-20T12:00:00"
     # Every run is labeled with its identity basis at the top level of the details ...
     assert (result.details["owner_mode"], result.details["identity_basis"], result.details["availability_basis"]) == (
@@ -254,6 +256,83 @@ def test_per_class_dei_filing_is_never_used_as_an_issuer_count(tmp_store):
     after = rows[dt.date(2020, 4, 16)]
     assert after[5] == "archive" and after[4] == 4_900_000
     assert after[1] is None and after[2] is None and after[6] == pytest.approx(after[7] * 4_900_000)
+    report = owner_bridge_report(tmp_store)
+    assert report["valuation_withheld_lines"] == 0 and report["withheld_per_class_dei"] == 1
+
+
+def _directory(store, symbol, name):
+    store.con.execute(
+        "INSERT INTO nasdaq_symbol_directory (directory, symbol, security_name, exchange, etf, test_issue, "
+        "as_of_date, source_url) VALUES ('otherlisted', ?, ?, 'N', false, false, DATE '2026-09-18', 'test')",
+        [symbol, name],
+    )
+
+
+def test_listed_preferred_ticker_does_not_withhold_the_common_line(tmp_store):
+    """Probe 5 (JPM/BAC pattern): one common line; the SEC map also lists a preferred ticker."""
+    seed_derived_metric_definitions(tmp_store)
+    _ticker(tmp_store, X_CIK, "XA")
+    _ticker(tmp_store, X_CIK, "XA-PB")
+    _issuer_facts(tmp_store, X_OWNER)
+    for offset, trade_date in enumerate(_DATES):
+        _bar(tmp_store, X_OWNER, "XA", trade_date, 100.0 + offset / 100, shares=10_000_000)
+    _dei(tmp_store, X_OWNER, X_CIK, 10_000_000, dt.datetime(2020, 1, 15, 21), "x-dei")
+    refresh_derived_metrics(tmp_store, DerivedMetricsOptions())
+    refresh_market_daily_metrics(tmp_store, MarketDailyOptions())
+    visible = [row for row in _rows(tmp_store, X_OWNER) if row[0] >= _FUNDAMENTALS_VISIBLE]
+    assert visible and all(row[1] is not None and row[2] is not None and row[8] is not None for row in visible)
+    assert {row[5] for row in visible} == {"dei"}
+    report = owner_bridge_report(tmp_store)
+    assert report["valuation_withheld_lines"] == 0 and report["dei_shares_withheld_lines"] == 0
+    assert report["non_common_tickers_ignored"] == 1
+    assert report["non_common_tickers_by_basis"] == {"ticker_suffix": 1}
+    assert report["non_common_tickers_by_class"] == {"preferred": 1}
+
+
+def test_directory_classes_keep_common_valuation_and_withhold_true_dual_class(tmp_store):
+    """X: common plus warrant/ETN/note/preferred tickers, an unlisted ticker and a traded preferred
+    line; G: a true dual-class issuer (two common classes, both traded)."""
+    seed_derived_metric_definitions(tmp_store)
+    for ticker in ("XA", "XAW", "XETN", "XBND", "XA-PB", "XOTC"):
+        _ticker(tmp_store, X_CIK, ticker)
+    _directory(tmp_store, "XA", "X Corp Common Stock")
+    _directory(tmp_store, "XAW", "X Corp Warrants")
+    _directory(tmp_store, "XETN", "X Corp Exchange Traded Notes due 2030")
+    _directory(tmp_store, "XBND", "X Corp 5.00% Senior Notes due 2031")
+    for ticker in ("GA", "GC"):
+        _ticker(tmp_store, "77", ticker)
+    _directory(tmp_store, "GA", "G Inc Class A Common Stock")
+    _directory(tmp_store, "GC", "G Inc Class C Capital Stock")
+    _issuer_facts(tmp_store, X_OWNER)
+    _issuer_facts(tmp_store, "SEC-CIK-0000000077")
+    for offset, trade_date in enumerate(_DATES):
+        _bar(tmp_store, X_OWNER, "XA", trade_date, 100.0 + offset / 100, shares=10_000_000)
+        _bar(tmp_store, "TBLTICKERHISTORY-50", "XA-PB", trade_date, 25.0, shares=4_000_000)
+        _bar(tmp_store, "SEC-CIK-0000000077", "GA", trade_date, 70.0 + offset / 100, shares=5_000_000)
+        _bar(tmp_store, "TBLTICKERHISTORY-51", "GC", trade_date, 69.0 + offset / 100, shares=6_000_000)
+    _dei(tmp_store, X_OWNER, X_CIK, 10_000_000, dt.datetime(2020, 1, 15, 21), "x-dei")
+    _dei(tmp_store, "SEC-CIK-0000000077", "77", 11_000_000, dt.datetime(2020, 1, 15, 21), "g-dei")
+    refresh_derived_metrics(tmp_store, DerivedMetricsOptions())
+    refresh_market_daily_metrics(tmp_store, MarketDailyOptions())
+
+    def visible(line):
+        return [row for row in _rows(tmp_store, line) if row[0] >= _FUNDAMENTALS_VISIBLE]
+
+    # X's common line keeps DEI and every multiple; its preferred line is linked but never valued.
+    common = visible(X_OWNER)
+    assert {row[5] for row in common} == {"dei"} and all(row[1] is not None and row[8] is not None for row in common)
+    preferred = visible("TBLTICKERHISTORY-50")
+    assert preferred and all(row[3] is not None and row[1] is None and row[5] == "archive" for row in preferred)
+    # G's two common classes: issuer DEI never paired with one class's price, no issuer multiples.
+    for line in ("SEC-CIK-0000000077", "TBLTICKERHISTORY-51"):
+        rows = visible(line)
+        assert rows and all(row[3] is not None and row[1] is None and row[5] == "archive" for row in rows)
+    report = owner_bridge_report(tmp_store)
+    assert report["withheld_multi_common_class"] == 2 and report["withheld_non_common_line"] == 1
+    assert report["multi_line_issuers"] == 1
+    assert report["non_common_tickers_by_class"] == {"ETN": 1, "note": 1, "preferred": 1, "warrant": 1}
+    assert report["non_common_tickers_by_basis"] == {"directory_name": 3, "ticker_suffix": 1}
+    assert report["unlisted_untraded_tickers_ignored"] == 1  # XOTC: issuer is listed, XOTC is not traded
 
 
 def test_reused_symbol_former_holder_is_not_linked_to_current_issuer(tmp_store):

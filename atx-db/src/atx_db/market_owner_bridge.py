@@ -76,18 +76,40 @@ under the same ticker is common) but are counted (``stale_links``).
 Share class guard (until A8 defines a class share basis)
 -------------------------------------------------------
 A DEI count is issuer-level (or an arbitrary per-class pick). An issuer (CIK)
-is *multi-line* when it has more than one current SEC ticker -- linked or not
--- or more than one concurrently trading linked line (strict owner-key splits
-included). For every line of a multi-line issuer the bridge withholds DEI
-shares **and** marks ``valuation_eligible=False``: the panel then NULLs every
-daily metric that combines market value with fundamentals, instead of pairing
-one class line's price with issuer-total or other-class counts. Strict mode
-assigns no DEI shares at all (no class basis exists yet). The panel adds a
-data-side guard: a DEI state whose filing carries more than one count or
+is *multi-line* when it has more than one **common-equity-class** current SEC
+ticker -- linked or not -- or more than one concurrently trading common linked
+line (strict owner-key splits included). Every current SEC ticker of the CIK
+is classified first:
+
+* ``directory_name``: A2's ``universe_us_listed.classify_security_type`` over
+  the newest Nasdaq symbol-directory security name (reused, not forked);
+  A2's strict eligible types common/ADR/REIT/LP are common-equity classes;
+  preferred, warrant, right, unit, note, ETN, fund, ETF and test are not;
+  ``common_unverified`` (no common-share evidence in the name: ZONES,
+  capital-trust, agency securities, a few class shares) is not counted, and
+  such a *line* keeps DEI/valuation only when it is the issuer's only line
+  and the issuer has no common ticker (else ``unverified_class_line``);
+* ``ticker_suffix`` (no directory row): SEC suffix conventions ``-P*``/``-PR*``
+  preferred, ``-W``/``-WS``/``-WT`` warrant, ``-U``/``-UN`` unit, ``-R``/``-RT``
+  right, and a 5th letter W/U/R/P (or ``WS``) on another ticker of the same CIK;
+* ``unclassified``: counted as a common class when a price line carries it or
+  when the CIK has no directory row at all (conservative); an unclassified,
+  untraded ticker of a directory-covered CIK is an unlisted (OTC-style) line
+  and is ignored (``unlisted_untraded``).
+
+Non-common tickers never withhold the common line's DEI or valuation. A linked
+line that is itself non-common (a preferred or warrant line) gets no DEI and
+no valuation (``non_common_line``). For every line of a multi-common-class
+issuer the bridge withholds DEI shares **and** marks
+``valuation_eligible=False`` (``multi_common_class``): the panel then NULLs
+every daily metric that combines market value with fundamentals, instead of
+pairing one class line's price with issuer-total or other-class counts. Strict
+mode assigns no DEI shares at all (no class basis exists yet). The panel adds
+a data-side guard: a DEI state whose filing carries more than one count or
 share class (per-class DEI) is never used and withholds valuation too.
-Known residual for A8: a multi-class issuer with only one current SEC ticker,
-one linked line and a single issuer-total DEI count is indistinguishable here
-from a single-class issuer.
+Known residual for A8: a multi-class issuer with only one listed common
+ticker, one linked line and a single issuer-total DEI count is
+indistinguishable here from a single-class issuer.
 """
 
 from __future__ import annotations
@@ -120,13 +142,18 @@ __all__ = [
     "OWNER_MODE_RECONSTRUCTED",
     "OWNER_MODE_STRICT",
     "STALE_LINK_DAYS",
+    "WITHHELD_MULTI_COMMON_CLASS",
+    "WITHHELD_NON_COMMON_LINE",
+    "WITHHELD_UNVERIFIED_CLASS_LINE",
     "BridgeRow",
     "MarketOwnerBridge",
     "OwnerLinkEvidence",
     "PriceLine",
+    "TickerClass",
     "bridge_value_params",
     "build_market_owner_bridge",
     "classify_reconstructed",
+    "classify_sec_tickers",
     "classify_strict",
     "member_value_params",
     "normalize_cik",
@@ -159,6 +186,45 @@ UNLINKED_SUPERSEDED_CIK_LINE = "superseded_cik_line"
 #: A line whose last bar is more than this many calendar days before the bar
 #: horizon (latest last bar of any line) is *stale* for the reuse checks.
 STALE_LINK_DAYS = 30
+
+#: How a current SEC ticker's security class was determined.
+CLASS_BASIS_DIRECTORY = "directory_name"
+CLASS_BASIS_SUFFIX = "ticker_suffix"
+CLASS_BASIS_UNCLASSIFIED = "unclassified"
+CLASS_BASIS_UNLISTED = "unlisted_untraded"
+
+#: Why a linked line's DEI shares / valuation metrics are withheld.
+WITHHELD_MULTI_COMMON_CLASS = "multi_common_class"
+WITHHELD_NON_COMMON_LINE = "non_common_line"
+WITHHELD_UNVERIFIED_CLASS_LINE = "unverified_class_line"
+WITHHELD_STRICT_NO_DEI = "strict_no_dei_basis"
+_UNVERIFIED_COMMON = "common_unverified"
+
+#: SEC ``company_tickers`` suffix conventions for non-common lines, applied to a
+#: normalized ticker (separators folded to ``-``) only when the symbol
+#: directory has no row for it.
+_SUFFIX_CLASS_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("preferred", re.compile(r"-P(?:R)?-?[A-Z]?$")),
+    ("warrant", re.compile(r"-W(?:S|T)?-?[A-Z]?$")),
+    ("unit", re.compile(r"-U(?:N)?$")),
+    ("right", re.compile(r"-R(?:T)?$")),
+)
+#: Nasdaq/FINRA fifth-letter codes on a 5-letter ticker whose 4-letter base is
+#: another ticker of the same CIK (``WS`` on any longer ticker): warrants,
+#: units, rights, preferred series (M-P) and convertible debt (G-I).
+_SIBLING_SUFFIX_CLASSES: tuple[tuple[str, str], ...] = (
+    ("WS", "warrant"),
+    ("W", "warrant"),
+    ("U", "unit"),
+    ("R", "right"),
+    ("P", "preferred"),
+    ("O", "preferred"),
+    ("N", "preferred"),
+    ("M", "preferred"),
+    ("G", "note"),
+    ("H", "note"),
+    ("I", "note"),
+)
 
 #: Modeled reconstructed-link availability: the first bar's end-of-day cutoff
 #: (same ``trade_date + 22h`` convention as ``market_daily.END_OF_DAY_HOURS``).
@@ -260,16 +326,35 @@ class BridgeRow:
     unlinked_reason: str | None = None
     evidence_observed_at: dt.datetime | None = None
     dei_shares_eligible: bool = False
-    #: False for every line of a multi-line issuer until A8's class basis.
+    #: False for every line of a multi-common-class issuer (and for a
+    #: non-common line) until A8's class basis.
     valuation_eligible: bool = False
-    #: Linked lines of the same issuer (CIK) trading concurrently with this one.
+    #: Common linked lines of the same issuer (CIK) trading concurrently with this one.
     concurrent_owner_lines: int = 0
-    #: max(concurrent linked lines, current SEC tickers) of the issuer.
+    #: max(concurrent common linked lines, common-class SEC tickers) of the issuer.
     issuer_class_lines: int = 0
+    #: This line's own security class and how it was determined (see TickerClass).
+    security_class: str | None = None
+    class_basis: str | None = None
+    #: Why DEI/valuation is withheld (``multi_common_class``, ``non_common_line``,
+    #: ``strict_no_dei_basis``), or None.
+    withheld_reason: str | None = None
 
     @property
     def linked(self) -> bool:
         return self.owner_security_id is not None
+
+
+@dataclass(frozen=True)
+class TickerClass:
+    """Security class of one current SEC ticker of a CIK."""
+
+    cik: str
+    ticker: str
+    security_class: str
+    basis: str
+    #: True when the ticker counts as a common-equity class of the issuer.
+    counted_common: bool
 
 
 @dataclass(frozen=True)
@@ -288,6 +373,11 @@ class MarketOwnerBridge:
     #: Every accounting-content id seen (lets summary() flag owners with no
     #: content without another warehouse scan).
     content_ids: frozenset[str] = frozenset()
+    #: Content ids with at least one per-class DEI filing (panel withholds
+    #: valuation from that filing on; counted as ``withheld_per_class_dei``).
+    per_class_dei_ids: frozenset[str] = frozenset()
+    #: Classification of every current SEC ticker (for the reason counters).
+    ticker_classes: tuple[TickerClass, ...] = ()
 
     @property
     def identity_basis(self) -> str:
@@ -377,7 +467,8 @@ class MarketOwnerBridge:
         unlinked_by_reason: dict[str, int] = defaultdict(int)
         linked_by_basis: dict[str, int] = defaultdict(int)
         linked_lines = unlinked_lines = linked_bar_rows = unlinked_bar_rows = 0
-        secondary = dei_withheld = valuation_withheld = id_disagreements = stale = 0
+        secondary = dei_withheld = valuation_withheld = id_disagreements = stale = per_class_dei = 0
+        withheld_by_reason: dict[str, int] = defaultdict(int)
         owners: set[str] = set()
         multi_line_issuers: set[str] = set()
         horizon = self.bar_horizon
@@ -393,7 +484,7 @@ class MarketOwnerBridge:
                 linked_by_basis[str(linked[0].identity_basis)] += 1
                 for row in linked:
                     owners.add(str(row.owner_security_id))
-                    if row.issuer_class_lines > 1:
+                    if row.withheld_reason == WITHHELD_MULTI_COMMON_CLASS:
                         multi_line_issuers.add(_issuer_key(row))
                 if any(row.owner_security_id != price_id for row in linked):
                     secondary += 1
@@ -401,6 +492,16 @@ class MarketOwnerBridge:
                     dei_withheld += 1
                 if not any(row.valuation_eligible for row in linked):
                     valuation_withheld += 1
+                    reason = next((row.withheld_reason for row in linked if row.withheld_reason), None)
+                    withheld_by_reason[str(reason)] += 1
+                elif any(
+                    member in self.per_class_dei_ids
+                    for row in linked
+                    for member in self.owner_members.get(str(row.owner_security_id), ())
+                ):
+                    # Bridge-eligible, but the panel withholds DEI and valuation
+                    # from the first per-class DEI filing of the owner onward.
+                    per_class_dei += 1
                 if line is not None and horizon is not None and _is_stale(line, horizon):
                     stale += 1
                 match = _SEC_CIK_ID.fullmatch(price_id)
@@ -433,6 +534,32 @@ class MarketOwnerBridge:
             "owners_without_accounting_content": without_content,
             "dei_shares_withheld_lines": dei_withheld,
             "valuation_withheld_lines": valuation_withheld,
+            # Reason counters (N1/N2): lines withheld at the bridge, by reason,
+            # and bridge-eligible lines the per-class DEI guard withholds later.
+            "withheld_multi_common_class": withheld_by_reason.get(WITHHELD_MULTI_COMMON_CLASS, 0),
+            "withheld_non_common_line": withheld_by_reason.get(WITHHELD_NON_COMMON_LINE, 0),
+            "withheld_unverified_class_line": withheld_by_reason.get(WITHHELD_UNVERIFIED_CLASS_LINE, 0),
+            "withheld_per_class_dei": per_class_dei,
+            # Current SEC tickers (whole snapshot) by class decision.
+            "non_common_tickers_ignored": sum(
+                1 for item in self.ticker_classes if item.basis != CLASS_BASIS_UNLISTED and not item.counted_common
+            ),
+            "non_common_tickers_by_basis": _count(
+                item.basis
+                for item in self.ticker_classes
+                if item.basis != CLASS_BASIS_UNLISTED and not item.counted_common
+            ),
+            "non_common_tickers_by_class": _count(
+                item.security_class
+                for item in self.ticker_classes
+                if item.basis != CLASS_BASIS_UNLISTED and not item.counted_common
+            ),
+            "unlisted_untraded_tickers_ignored": sum(
+                1 for item in self.ticker_classes if item.basis == CLASS_BASIS_UNLISTED
+            ),
+            "unclassified_tickers_counted_common": sum(
+                1 for item in self.ticker_classes if item.basis == CLASS_BASIS_UNCLASSIFIED and item.counted_common
+            ),
             "stale_links": stale,
             "stale_link_days": STALE_LINK_DAYS,
             "bar_horizon": horizon.isoformat() if horizon is not None else None,
@@ -534,45 +661,196 @@ def _ticker_index(
     return dict(index), {cik: len(keys) for cik, keys in per_cik.items()}
 
 
+def _count(values: Iterable[str]) -> dict[str, int]:
+    counts: dict[str, int] = defaultdict(int)
+    for value in values:
+        counts[value] += 1
+    return dict(sorted(counts.items()))
+
+
+def _common_equity_types() -> frozenset[str]:
+    """A2's strict eligible equity types (common/ADR/REIT/LP with positive evidence).
+
+    A2's ``common_unverified`` (a name surviving every exclusion without
+    common-share evidence -- e.g. exchangeable ZONES, capital-trust securities,
+    agency bonds) is *not* counted as a common class; see ``_with_class_guards``
+    for how such a line itself is treated. Imported lazily:
+    ``universe_us_listed`` imports ``market_daily``, which imports this module.
+    """
+    from .universe_us_listed import ELIGIBLE_SECURITY_TYPES
+
+    return frozenset(ELIGIBLE_SECURITY_TYPES)
+
+
+def _directory_type(directory: dict[str, str], ticker: str) -> str | None:
+    """Directory security type of an SEC ticker, or None when not listed there.
+
+    SEC writes share classes with ``-`` (``BRK-B``) while the Nasdaq directory
+    writes them with ``.`` (``BRK.B``) and uses ``-`` for preferreds, so the
+    ``.`` form is tried first.
+    """
+    candidates = [ticker.replace("-", "."), ticker] if "-" in ticker else [ticker]
+    for candidate in candidates:
+        kind = directory.get(candidate)
+        if kind is not None and kind != "unknown":
+            return kind
+    return None
+
+
+def _suffix_class(key: str, cik_keys: set[str]) -> str | None:
+    """Non-common class implied by an SEC ticker suffix, or None."""
+    for label, pattern in _SUFFIX_CLASS_RULES:
+        if pattern.search(key):
+            return label
+    if "-" not in key:
+        for suffix, label in _SIBLING_SUFFIX_CLASSES:
+            base = key[: -len(suffix)]
+            fifth_letter = len(suffix) == 1 and len(key) == 5
+            if key.endswith(suffix) and (fifth_letter or len(suffix) > 1) and base in cik_keys:
+                return label
+    return None
+
+
+def classify_sec_tickers(
+    tickers: Sequence[tuple[str, str, dt.datetime | None]],
+    directory: dict[str, str] | None = None,
+    carried_symbols: Iterable[str | None] = (),
+) -> tuple[TickerClass, ...]:
+    """Classify every current SEC ticker (newest snapshot row) of every CIK.
+
+    ``directory`` maps a Nasdaq symbol-directory symbol (upper case, ``.`` class
+    separator) to A2's ``classify_security_type`` label; ``carried_symbols``
+    are the last symbols of the price lines in bars. See the module docstring
+    for the ``directory_name`` / ``ticker_suffix`` / ``unclassified`` /
+    ``unlisted_untraded`` decisions.
+    """
+    common_types = _common_equity_types()
+    directory = directory or {}
+    carried = {key for key in (normalize_symbol(symbol) for symbol in carried_symbols) if key}
+    index, _counts = _ticker_index(tickers)
+    per_cik: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for key, owners in index.items():
+        for cik, (ticker, _observed) in owners.items():
+            per_cik[cik].append((key, ticker))
+    classes: list[TickerClass] = []
+    for cik, items in sorted(per_cik.items()):
+        cik_keys = {key for key, _ticker in items}
+        covered = any(_directory_type(directory, ticker) is not None for _key, ticker in items)
+        for key, ticker in sorted(items):
+            kind = _directory_type(directory, ticker)
+            if kind is not None:
+                classes.append(TickerClass(cik, ticker, kind, CLASS_BASIS_DIRECTORY, kind in common_types))
+                continue
+            suffix = _suffix_class(key, cik_keys)
+            if suffix is not None:
+                classes.append(TickerClass(cik, ticker, suffix, CLASS_BASIS_SUFFIX, False))
+            elif key in carried or not covered:
+                classes.append(TickerClass(cik, ticker, "unclassified", CLASS_BASIS_UNCLASSIFIED, True))
+            else:
+                # Not in the exchange directory although the issuer is, and no
+                # price line trades it: an unlisted (OTC-style) line.
+                classes.append(TickerClass(cik, ticker, "unclassified", CLASS_BASIS_UNLISTED, False))
+    return tuple(classes)
+
+
 def _with_class_guards(
     rows: list[BridgeRow],
     lines: dict[str, PriceLine],
-    cik_tickers: dict[str, int],
+    classes: Sequence[TickerClass],
     *,
     strict: bool,
 ) -> tuple[BridgeRow, ...]:
-    """Mark multi-line issuers: no DEI, no valuation until A8's class basis.
+    """Mark multi-common-class issuers and non-common lines: no DEI, no valuation.
 
     An issuer (CIK, else owner id) is multi-line when it has more than one
-    current SEC ticker -- counted whether or not those lines are linked -- or
-    more than one concurrently trading linked line. Strict mode never assigns
-    DEI shares (no class basis exists yet).
+    common-equity-class current SEC ticker (see :func:`classify_sec_tickers`)
+    or more than one concurrently trading common linked line. Non-common
+    tickers never count. A linked line that is itself non-common gets neither
+    DEI nor valuation. Strict mode never assigns DEI shares (no class basis).
     """
+    common_types = _common_equity_types()
+    by_key = {(item.cik, normalize_symbol(item.ticker)): item for item in classes}
+    common_counts: dict[str, int] = defaultdict(int)
+    for item in classes:
+        if item.counted_common:
+            common_counts[item.cik] += 1
+
+    def line_class(row: BridgeRow) -> tuple[str, str, str]:
+        """(class, basis, category): category is common / unverified / non_common."""
+        key = normalize_symbol(row.share_class_symbol)
+        item = by_key.get((row.cik or "", key or ""))
+        if item is not None:
+            kind, basis = item.security_class, item.basis
+        else:
+            suffix = _suffix_class(key, set()) if key else None
+            kind, basis = (suffix, CLASS_BASIS_SUFFIX) if suffix else ("unclassified", CLASS_BASIS_UNCLASSIFIED)
+        if kind in common_types or kind == "unclassified":
+            return kind, basis, "common"
+        return kind, basis, "unverified" if kind == _UNVERIFIED_COMMON else "non_common"
+
+    kinds = {id(row): line_class(row) for row in rows if row.owner_security_id is not None}
     issuer_lines: dict[str, set[str]] = defaultdict(set)
     for row in rows:
-        if row.owner_security_id is not None:
+        if row.owner_security_id is not None and kinds[id(row)][2] != "non_common":
             issuer_lines[_issuer_key(row)].add(row.price_security_id)
+
+    line_category = {row.price_security_id: kinds[id(row)][2] for row in rows if row.owner_security_id is not None}
+
+    def concurrent_lines(row: BridgeRow, category: str | None = None) -> int:
+        """Linked (non-non-common) lines of the issuer trading concurrently, optionally one category."""
+        line = lines[row.price_security_id]
+        return sum(
+            1
+            for other_id in issuer_lines[_issuer_key(row)]
+            if lines[other_id].first_trade_date <= line.last_trade_date
+            and line.first_trade_date <= lines[other_id].last_trade_date
+            and (category is None or other_id == row.price_security_id or line_category.get(other_id) == category)
+        )
+
     resolved: list[BridgeRow] = []
     for row in rows:
         if row.owner_security_id is None:
             resolved.append(row)
             continue
-        line = lines[row.price_security_id]
-        concurrent = sum(
-            1
-            for other_id in issuer_lines[_issuer_key(row)]
-            if lines[other_id].first_trade_date <= line.last_trade_date
-            and line.first_trade_date <= lines[other_id].last_trade_date
-        )
-        class_lines = max(concurrent, cik_tickers.get(row.cik, 0) if row.cik else 0)
-        single = class_lines <= 1
+        security_class, basis, category = kinds[id(row)]
+        if category == "non_common":
+            resolved.append(
+                replace(
+                    row,
+                    security_class=security_class,
+                    class_basis=basis,
+                    dei_shares_eligible=False,
+                    valuation_eligible=False,
+                    withheld_reason=WITHHELD_NON_COMMON_LINE,
+                )
+            )
+            continue
+        listed = common_counts.get(row.cik, 0) if row.cik else 0
+        if category == "unverified":
+            # A name without common-share evidence (ZONES, capital-trust or
+            # agency securities, some class shares): it is the issuer's equity
+            # line only when nothing else is -- no common ticker, no other line.
+            concurrent = concurrent_lines(row)
+            class_lines = max(concurrent, listed + 1)
+            single = listed == 0 and concurrent == 1
+            reason = None if single else WITHHELD_UNVERIFIED_CLASS_LINE
+        else:
+            concurrent = concurrent_lines(row, "common")
+            class_lines = max(concurrent, listed)
+            single = class_lines <= 1
+            reason = None if single else WITHHELD_MULTI_COMMON_CLASS
+        if single and strict:
+            reason = WITHHELD_STRICT_NO_DEI
         resolved.append(
             replace(
                 row,
                 concurrent_owner_lines=concurrent,
                 issuer_class_lines=class_lines,
+                security_class=security_class,
+                class_basis=basis,
                 dei_shares_eligible=single and not strict,
                 valuation_eligible=single,
+                withheld_reason=reason,
             )
         )
     return tuple(sorted(resolved, key=lambda row: (row.price_security_id, row.valid_from or dt.date.min)))
@@ -582,12 +860,15 @@ def classify_reconstructed(
     lines: Sequence[PriceLine],
     tickers: Sequence[tuple[str, str, dt.datetime | None]],
     content: dict[str, frozenset[str]],
+    directory: dict[str, str] | None = None,
 ) -> tuple[tuple[BridgeRow, ...], dict[str, tuple[str, ...]], int]:
     """Current-ticker backcast bridge. ``tickers`` rows are ``(cik, ticker, observed_at)``.
 
+    ``directory`` (symbol -> A2 security type) feeds only the class guard.
     Returns ``(rows, owner_members, ambiguous_content_ids)``.
     """
-    index, cik_tickers = _ticker_index(tickers)
+    index, _counts = _ticker_index(tickers)
+    classes = classify_sec_tickers(tickers, directory, (line.last_symbol for line in lines))
     horizon = max((line.last_trade_date for line in lines), default=None)
 
     def symbol_keyed(line: PriceLine) -> bool:
@@ -679,7 +960,7 @@ def classify_reconstructed(
             rows.append(BridgeRow(**unlinked, unlinked_reason=UNLINKED_NO_CURRENT_TICKER))
 
     by_id = {line.price_security_id: line for line in lines}
-    resolved = _with_class_guards(rows, by_id, cik_tickers, strict=False)
+    resolved = _with_class_guards(rows, by_id, classes, strict=False)
     members, ambiguous = _owner_members(resolved, content)
     return resolved, members, ambiguous
 
@@ -777,6 +1058,7 @@ def classify_strict(
     evidence: Sequence[OwnerLinkEvidence],
     content: dict[str, frozenset[str]],
     tickers: Sequence[tuple[str, str, dt.datetime | None]] = (),
+    directory: dict[str, str] | None = None,
 ) -> tuple[tuple[BridgeRow, ...], dict[str, tuple[str, ...]], int, dict[str, int]]:
     """Dated-evidence bridge. Returns ``(rows, members, ambiguous_content_ids, rejected)``.
 
@@ -830,7 +1112,8 @@ def classify_strict(
                     unlinked_reason=UNLINKED_NO_DATED_EVIDENCE,
                 )
             )
-    resolved = _with_class_guards(rows, by_id, _ticker_index(tickers)[1], strict=True)
+    classes = classify_sec_tickers(tickers, directory, (line.last_symbol for line in lines))
+    resolved = _with_class_guards(rows, by_id, classes, strict=True)
     members, ambiguous = _owner_members(resolved, content)
     return resolved, members, ambiguous, dict(sorted(rejected.items()))
 
@@ -880,6 +1163,59 @@ def _read_tickers(store: DuckDBStore) -> list[tuple[str, str, dt.datetime | None
             "SELECT cik, ticker, source_loaded_at FROM sec_company_tickers WHERE cik IS NOT NULL AND ticker IS NOT NULL"
         ).fetchall()
     ]
+
+
+def _read_directory(store: DuckDBStore) -> dict[str, str]:
+    """Newest Nasdaq symbol-directory row per symbol, typed by A2's classifier.
+
+    Keys are upper-case symbols with blank/``/`` class separators folded to
+    ``.`` (the directory's class convention; ``-`` stays, it marks preferreds
+    there). Only the distinct (name, etf, test) tuples are classified.
+    """
+    if not _table_exists(store, "nasdaq_symbol_directory"):
+        return {}
+    from .universe_us_listed import classify_security_type
+
+    rows = store.con.execute(
+        """
+        SELECT upper(trim(symbol)) AS symbol,
+               arg_max(security_name, (as_of_date, source_loaded_at)) AS security_name,
+               arg_max(etf, (as_of_date, source_loaded_at)) AS etf,
+               arg_max(test_issue, (as_of_date, source_loaded_at)) AS test_issue
+        FROM nasdaq_symbol_directory
+        WHERE nullif(trim(symbol), '') IS NOT NULL
+        GROUP BY upper(trim(symbol))
+        """
+    ).fetchall()
+    kinds: dict[tuple[object, object, object], str] = {}
+    directory: dict[str, str] = {}
+    for symbol, name, etf, test_issue in rows:
+        signature = (name, etf, test_issue)
+        if signature not in kinds:
+            kinds[signature] = classify_security_type(name, etf=etf, test_issue=test_issue)
+        key = re.sub(r"[\s/]+", ".", str(symbol))
+        directory[key] = kinds[signature]
+    return directory
+
+
+def _read_per_class_dei_ids(store: DuckDBStore) -> frozenset[str]:
+    """Content ids with a DEI filing carrying several counts or classes (per-class DEI).
+
+    Same partition as the panel's ``shares_filings`` guard; one aggregate.
+    """
+    rows = store.con.execute(
+        """
+        SELECT DISTINCT security_id FROM (
+            SELECT security_id
+            FROM shares_outstanding_history
+            WHERE share_count_type = 'shares_outstanding' AND taxonomy = 'dei' AND available_at IS NOT NULL
+            GROUP BY security_id, coalesce(accession_number, share_history_id), effective_date, available_at
+            HAVING min(share_count) IS DISTINCT FROM max(share_count)
+                OR min(coalesce(share_class, '')) <> max(coalesce(share_class, ''))
+        )
+        """
+    ).fetchall()
+    return frozenset(str(row[0]) for row in rows)
 
 
 def _quoted_list(codes: Sequence[str]) -> str:
@@ -945,11 +1281,12 @@ def build_market_owner_bridge(
     lines = _read_lines(store)
     content = _read_content(store, item_codes=item_codes, metric_codes=metric_codes, derived_source=derived_source)
     tickers = _read_tickers(store)
+    directory = _read_directory(store)
     observed = [loaded for _cik, _ticker, loaded in tickers if loaded is not None]
     by_id = {line.price_security_id: line for line in lines}
     if mode == OWNER_MODE_STRICT:
         supplied = tuple(evidence or ())
-        rows, members, ambiguous, rejected = classify_strict(lines, supplied, content, tickers)
+        rows, members, ambiguous, rejected = classify_strict(lines, supplied, content, tickers, directory)
         bridge = MarketOwnerBridge(
             mode=mode,
             lines=by_id,
@@ -960,7 +1297,7 @@ def build_market_owner_bridge(
             ambiguous_content_ids=ambiguous,
         )
     else:
-        rows, members, ambiguous = classify_reconstructed(lines, tickers, content)
+        rows, members, ambiguous = classify_reconstructed(lines, tickers, content, directory)
         bridge = MarketOwnerBridge(
             mode=mode,
             lines=by_id,
@@ -970,7 +1307,12 @@ def build_market_owner_bridge(
             ticker_snapshot_oldest_observed_at=min(observed) if observed else None,
             ambiguous_content_ids=ambiguous,
         )
-    return replace(bridge, content_ids=frozenset(content))
+    return replace(
+        bridge,
+        content_ids=frozenset(content),
+        per_class_dei_ids=_read_per_class_dei_ids(store),
+        ticker_classes=classify_sec_tickers(tickers, directory, (line.last_symbol for line in lines)),
+    )
 
 
 # ---------------------------------------------------------------------------
