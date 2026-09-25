@@ -108,8 +108,10 @@ void grouped_layout(const GroupIndex &gi, atx::usize batch_size, atx::u64 seed,
   }
 }
 
-// One full-pass training epoch over the minibatch slices `batches` of `order`. When
-// `groups` is non-empty the loss receives each batch's row-group labels first.
+// One full-pass training epoch over the minibatch slices `batches` of `order`. Before
+// every batch the loss receives that batch's row-group labels when `groups` is
+// non-empty, and an explicit "no groups" otherwise — never labels left over from the
+// validation pass (whose length is n_val, not the batch's).
 void run_epoch(Module &model, Optimizer &opt, Loss &loss, const lin::MatX &x_train,
                const lin::MatX &y_train, const std::vector<atx::usize> &order,
                const std::vector<Batch> &batches, std::span<const atx::u32> groups,
@@ -124,6 +126,8 @@ void run_epoch(Module &model, Optimizer &opt, Loss &loss, const lin::MatX &x_tra
         batch_groups.push_back(groups[order[k]]);
       }
       loss.set_row_groups(std::span<const atx::u32>{batch_groups});
+    } else {
+      loss.set_row_groups({});
     }
     // Zero grads, then accumulate this minibatch's gradient (R1: caller-zeroed).
     std::span<atx::f64> g = model.grads();
@@ -217,6 +221,12 @@ train(const ModelFactory &make_model, Optimizer &opt, Loss &loss, const lin::Mat
   }
   if (!groups.val.empty() && groups.val.size() != static_cast<atx::usize>(x_val.rows())) {
     return Err(ErrorCode::InvalidArgument, "train: groups.val length != x_val rows");
+  }
+  if (!groups.train.empty() && groups.val.empty() && x_val.rows() > 0) {
+    // Date-grouped training with a pooled, mixed-date checkpoint criterion is the L-08
+    // pooled-IC trap moved to checkpoint selection: refuse it rather than select silently.
+    return Err(ErrorCode::InvalidArgument,
+               "train: groups.train set but groups.val empty with a validation design");
   }
   loss.set_row_groups({}); // no stale labels from an earlier caller
   const GroupsGuard clear_on_exit{loss};

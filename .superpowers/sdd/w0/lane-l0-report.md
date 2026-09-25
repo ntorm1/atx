@@ -260,3 +260,34 @@ setting the V1 enum on `cfg.protocol`.
    `LabelMaturityRule::FiniteLabelV1`.
 3. `select_interactions` selects nothing on a `FeatureMatrix` without
    `label_horizons`, and `build_features` does not set that field yet (W1-L1).
+
+## Fix pass 1
+
+Addresses `.superpowers/sdd/w0/lane-l0-review.md` (reviewed SHA `1a241884`). Fixer base:
+`9c1d05f2`. All three findings fixed; no existing test changed, weakened or skipped.
+
+| Finding | Severity | Change | Evidence |
+|---|---|---|---|
+| `nn::train(..., RowGroups{{}, gv})` aborts on stale validation labels | major | `trainer.cpp` `run_epoch`: every training batch now sets the loss's groups explicitly — the batch's labels when `groups.train` is non-empty, `set_row_groups({})` otherwise. Leftover epoch-0/checkpoint `groups.val` labels can no longer reach a training batch. The `RowGroups` contract in `trainer.hpp` now lists all four combinations. | New `LearnIcLossPerDate_Trainer.UngroupedTrainWithGroupedValDoesNotAbort` runs a real `IcLoss` with batch 8 != n_val 6, then runs a spy with batch 6 (== n_val, the silent mis-grouping case) and batch 8. Every training batch sees no groups, and all 2 x (1 + 4) validation passes see `gv`. New `...UngroupedTrainWithGroupedValSelectsOnPerDateLoss` runs a real `IcLoss` with batch 5 != n_val 12. The kept state's per-date validation loss equals the minimum recorded checkpoint loss, and its pooled loss differs by more than 1e-3, so selection was grouped by date. **Mutation check:** with the `else` branch disabled, both tests fail with `[loss.cpp:255] CHECK failed: groups_.size() == static_cast<std::size_t>(B)` (SEH 0xc000001d). They pass with the fix restored. |
+| `RowGroups{g, {}}` with a non-empty `x_val` selects on a pooled mixed-date IC | minor | `trainer.cpp` `train()`: this combination is rejected with `InvalidArgument` and a message ("groups.train set but groups.val empty with a validation design"). An empty `x_val` stays allowed, because the checkpoint then scores train with `g`. Documented in `trainer.hpp`. No production caller passes `RowGroups`, so only tests are affected. | New `LearnIcLossPerDate_Trainer.RejectsGroupedTrainWithUngroupedVal` checks two cases: (a) a 5-row `x_val` returns `InvalidArgument`; (b) a 0-row `x_val` succeeds, and every checkpoint `value()` sees `g`. `RejectsMismatchedGroupLengths` is unchanged and still fails on its length check first. |
+| Hand-built non-clique pair list treated as a top-m recipe | minor | `latent.cpp`: new `detail::is_selected_clique(pairs)` is true only for the exact canonical output of `select_interactions_on_rows`: every C(m,2) pair `(F[i], F[j])` with i < j, in ascending order, m >= 2. `fit_fold_augmentation` refits only when `!interactions_fixed && is_selected_clique`. Any other list is reused verbatim in every fold. Documented in `latent.hpp` on `LatentAugmentation` and `fit_fold_augmentation`. Empty lists behave as before, and so does every existing caller: all existing fixtures and `select_interactions` outputs are canonical cliques. | New `LearnFoldLocalAug_Fit.OnlyCompleteCanonicalCliqueIsASelection` covers positive cases, `{(0,1),(2,3)}`, a missing pair, the wrong order, a > b, a self pair, duplicates, and real `select_interactions` output for m = 2..5. New `LearnFoldLocalAug_Fit.NonCliquePairsAreReusedVerbatimNotRefit` checks that `{(0,1),(2,3)}` is kept and that the complete 4-clique IS re-selected and differs (non-vacuous). New `LearnFoldLocalAug_Linear.NonCliquePairsReachEveryFoldUnchanged` checks that all 4 `fit_linear` fold artifacts carry the deployed pairs byte for byte. |
+
+Evidence (from `C:\atx-wt\pool-3`, `CMAKE_BUILD_PARALLEL_LEVEL=2`, >= 4.5 GB free RAM):
+
+```
+scripts\atx-build.ps1 build -Preset equity-dev atx-engine-learn-tests
+[11/12] Linking CXX executable bin\atx-engine-learn-tests.exe          build exit=0 (/W4 /WX clean)
+
+scripts\atx-build.ps1 -Ctest -Preset equity-dev -R <suite>
+^LearnIcLossPerDate_           -> 100% tests passed, 0 tests failed out of 17   exit=0   (was 14)
+^LearnFoldLocalAug_            -> 100% tests passed, 0 tests failed out of 11   exit=0   (was 8)
+^LearnLabelMutationInvariance_ -> 100% tests passed, 0 tests failed out of 9    exit=0
+^LearnLabelMaturity_           -> 100% tests passed, 0 tests failed out of 7    exit=0
+^Latent\.                      -> 100% tests passed, 0 tests failed out of 5    exit=0
+
+build-equity\bin\atx-engine-learn-tests.exe --gtest_brief=1
+[==========] 193 tests from 31 test suites ran. (72733 ms total)
+[  PASSED  ] 193 tests.                                                   exit=0   (was 187)
+```
+
+The acceptance measurements are unchanged. The mutation-invariance lines are identical to the review: tcn V2 `identical=1`, tcn V1 `max|dpred|=1.45626`, gru V1 `1.25447`, linear V2 `identical=1`, linear V1 `0.0562598`, gbt V1 `0.119193`. Golden-digest table: none.

@@ -115,6 +115,16 @@ train(const ModelFactory &make_model, Optimizer &opt, Loss &loss, const lin::Mat
 //  the loss receives the batch's labels via Loss::set_row_groups, so a per-date loss
 //  (IcLoss::PerGroupMeanV2) never mixes dates; the validation pass receives val (or
 //  train when there is no validation design). The groups are cleared on return.
+//
+//  Combinations (x_val non-empty unless stated):
+//    train {}, val {}  : legacy, byte-identical to train().
+//    train g,  val gv  : whole-date batches; per-date validation criterion.
+//    train {}, val gv  : legacy fixed-size row batches, each handed an explicit "no
+//                        groups" (so a per-date loss reduces them pooled); the checkpoint
+//                        criterion is per-date over val.
+//    train g,  val {}  : REJECTED (InvalidArgument) — whole-date training selected on a
+//                        pooled mixed-date validation IC is the L-08 trap. With x_val
+//                        empty it is allowed: the checkpoint scores train with g.
 // ===========================================================================
 struct RowGroups {
   std::span<const atx::u32> train;
@@ -122,7 +132,8 @@ struct RowGroups {
 };
 
 // train() with date-grouped minibatches. Errors: as train(), plus a non-empty
-// groups.train / groups.val whose length differs from x_train / x_val rows ->
+// groups.train / groups.val whose length differs from x_train / x_val rows, or a
+// non-empty groups.train with an empty groups.val while x_val has rows ->
 // InvalidArgument. With both spans empty it is byte-identical to train().
 [[nodiscard]] atx::core::Result<std::vector<std::vector<atx::f64>>>
 train(const ModelFactory &make_model, Optimizer &opt, Loss &loss, const lin::MatX &x_train,

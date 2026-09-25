@@ -123,6 +123,35 @@ atx::u32 interaction_top_m(const std::vector<std::pair<atx::u32, atx::u32>> &pai
   return static_cast<atx::u32>(feats.size());
 }
 
+bool is_selected_clique(const std::vector<std::pair<atx::u32, atx::u32>> &pairs) {
+  std::vector<atx::u32> feats;
+  feats.reserve(2U * pairs.size());
+  for (const auto &[a, b] : pairs) {
+    feats.push_back(a);
+    feats.push_back(b);
+  }
+  std::sort(feats.begin(), feats.end());
+  feats.erase(std::unique(feats.begin(), feats.end()), feats.end());
+  if (feats.size() < 2U) {
+    return false; // empty, or a degenerate self-pair: no selection emits it
+  }
+  // select_interactions_on_rows emits every (feats[i], feats[j]), i < j, in this order.
+  const atx::usize m = feats.size();
+  if (pairs.size() != m * (m - 1U) / 2U) {
+    return false;
+  }
+  atx::usize k = 0U;
+  for (atx::usize i = 0; i + 1U < m; ++i) {
+    for (atx::usize j = i + 1U; j < m; ++j) {
+      if (pairs[k].first != feats[i] || pairs[k].second != feats[j]) {
+        return false;
+      }
+      ++k;
+    }
+  }
+  return true;
+}
+
 void append_augmentation(const LatentAugmentation &aug, std::vector<atx::f64> &out) {
   const bool has_pca = aug.pca.has_value();
   out.push_back(has_pca ? static_cast<atx::f64>(aug.pca->k) : -1.0);
@@ -204,9 +233,12 @@ LatentAugmentation fit_fold_augmentation(const FeatureMatrix &fm,
   if (deployed.pca.has_value() && deployed.pca->k > 0U) {
     out.pca = detail::fit_latent_on_rows(fm, train_rows, deployed.pca->k, last_date);
   }
-  if (deployed.interactions_fixed) {
-    out.interactions = deployed.interactions; // explicit label-free pairs: no refit
-  } else if (!deployed.interactions.empty()) {
+  if (deployed.interactions_fixed || !detail::is_selected_clique(deployed.interactions)) {
+    // Explicit label-free pairs, or a pair list no selection could have produced (not a
+    // complete canonical C(m,2) set): reuse verbatim, so every fold evaluates the SAME
+    // structure the deployed model uses.
+    out.interactions = deployed.interactions;
+  } else {
     const atx::u32 m = detail::interaction_top_m(deployed.interactions);
     out.interactions = detail::select_interactions_on_rows(fm, train_rows, label_idx, m);
   }

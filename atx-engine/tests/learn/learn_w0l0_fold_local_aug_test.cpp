@@ -154,6 +154,50 @@ TEST(LearnFoldLocalAug_Fit, FixedInteractionsAreReusedVerbatim) {
   EXPECT_TRUE(a.interactions_fixed);
 }
 
+// Fix pass 1 (review minor): only a complete canonical C(m,2) set is a selection recipe.
+TEST(LearnFoldLocalAug_Fit, OnlyCompleteCanonicalCliqueIsASelection) {
+  EXPECT_TRUE(learn::detail::is_selected_clique(Pairs{{0U, 1U}}));
+  EXPECT_TRUE(learn::detail::is_selected_clique(Pairs{{0U, 1U}, {0U, 2U}, {1U, 2U}}));
+  EXPECT_TRUE(learn::detail::is_selected_clique(Pairs{{1U, 3U}, {1U, 4U}, {3U, 4U}}));
+  EXPECT_FALSE(learn::detail::is_selected_clique(Pairs{}));
+  EXPECT_FALSE(learn::detail::is_selected_clique(Pairs{{0U, 1U}, {2U, 3U}})) << "m=4, 2 pairs";
+  EXPECT_FALSE(learn::detail::is_selected_clique(Pairs{{0U, 1U}, {0U, 2U}})) << "missing (1,2)";
+  EXPECT_FALSE(learn::detail::is_selected_clique(Pairs{{0U, 2U}, {0U, 1U}, {1U, 2U}}))
+      << "not in selection order";
+  EXPECT_FALSE(learn::detail::is_selected_clique(Pairs{{1U, 0U}})) << "a > b";
+  EXPECT_FALSE(learn::detail::is_selected_clique(Pairs{{2U, 2U}})) << "self pair";
+  EXPECT_FALSE(learn::detail::is_selected_clique(Pairs{{0U, 1U}, {0U, 1U}, {0U, 1U}}))
+      << "duplicates";
+  // Every real selection output qualifies.
+  const learn::FeatureMatrix fm = make_fm(3);
+  for (u32 m = 2U; m <= 5U; ++m) {
+    EXPECT_TRUE(learn::detail::is_selected_clique(learn::select_interactions(fm, fm.n_dates - 1U,
+                                                                             0U, m)))
+        << "m=" << m;
+  }
+}
+
+TEST(LearnFoldLocalAug_Fit, NonCliquePairsAreReusedVerbatimNotRefit) {
+  const learn::FeatureMatrix fm = make_fm(3);
+  learn::LatentAugmentation deployed;
+  deployed.interactions = {{0U, 1U}, {2U, 3U}}; // hand-built, interactions_fixed left false
+  ASSERT_FALSE(deployed.interactions_fixed);
+  const std::vector<usize> train = rows_where(fm, /*early=*/true);
+  const learn::LatentAugmentation a =
+      learn::fit_fold_augmentation(fm, deployed, std::span<const usize>{train}, 0U);
+  EXPECT_EQ(a.interactions, deployed.interactions)
+      << "the fold must evaluate the deployed structure, not a refit top-4 clique";
+  // Non-vacuous: the same four features as a complete clique ARE re-selected (top-4 of
+  // the train rows gives 6 pairs, not the 2 the hand-built list carries).
+  learn::LatentAugmentation clique;
+  clique.interactions = {{0U, 1U}, {0U, 2U}, {0U, 3U}, {1U, 2U}, {1U, 3U}, {2U, 3U}};
+  const learn::LatentAugmentation c =
+      learn::fit_fold_augmentation(fm, clique, std::span<const usize>{train}, 0U);
+  EXPECT_EQ(c.interactions,
+            learn::detail::select_interactions_on_rows(fm, std::span<const usize>{train}, 0U, 4U));
+  EXPECT_NE(c.interactions, clique.interactions) << "the train rows' top-4 differ";
+}
+
 TEST(LearnFoldLocalAug_Fit, PcaBasisIsTheFoldTrainRowsBasis) {
   const learn::FeatureMatrix fm = make_fm(3);
   learn::LatentAugmentation deployed;
@@ -284,6 +328,27 @@ TEST(LearnFoldLocalAug_Gbt, PassedSelectionDoesNotReachFolds) {
   static_cast<void>(learn::fit_gbt(fm, a, cfg, &la));
   static_cast<void>(learn::fit_gbt(fm, b, cfg, &lb));
   EXPECT_FALSE(bytes_equal(all_artifacts(la), all_artifacts(lb))) << "legacy V1 leaks it";
+}
+
+// Fix pass 1 (review minor): a hand-built non-clique list is the structure every fold
+// evaluates (it used to be read as a top-4 recipe and refit to 6 pairs per fold).
+TEST(LearnFoldLocalAug_Linear, NonCliquePairsReachEveryFoldUnchanged) {
+  const learn::FeatureMatrix fm = make_fm(5);
+  learn::LatentAugmentation a;
+  a.interactions = {{0U, 1U}, {2U, 3U}};
+  const learn::LinearAlphaCfg cfg = linear_cfg();
+  learn::LearnFitTrace t;
+  const learn::LearnedModel m = learn::fit_linear(fm, a, cfg, &t);
+  EXPECT_EQ(m.aug.interactions, a.interactions);
+  const std::vector<f64> want = flat(a);
+  ASSERT_EQ(t.folds.size(), 4U);
+  for (const learn::LearnFoldRecord &r : t.folds) {
+    // artifact = feat_mean (5) + feat_sd (5) + aug + coeff.
+    ASSERT_GE(r.artifact.size(), 10U + want.size());
+    const std::vector<f64> got(r.artifact.begin() + 10,
+                               r.artifact.begin() + 10 + static_cast<std::ptrdiff_t>(want.size()));
+    EXPECT_TRUE(bytes_equal(got, want)) << "fold structure == deployed structure";
+  }
 }
 
 } // namespace atx_test_w0_l0_fold_local_aug

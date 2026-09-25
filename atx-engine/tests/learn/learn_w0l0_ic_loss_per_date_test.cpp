@@ -8,6 +8,7 @@
 //   * nn::train(..., RowGroups) builds minibatches of WHOLE dates and hands the loss the
 //     batch's date labels; without groups it is byte-identical to the legacy trainer.
 
+#include <algorithm> // std::min_element, std::max_element
 #include <cmath>
 #include <cstring> // std::memcmp
 #include <map>
@@ -303,6 +304,166 @@ TEST(LearnIcLossPerDate_Trainer, RejectsMismatchedGroupLengths) {
   EXPECT_FALSE(nn::train(linear_factory(2), opt, loss, x, y, x, y, cfg,
                          nn::RowGroups{{}, std::span<const u32>{short_g}})
                    .has_value());
+}
+
+// Fix pass 1 (review major): RowGroups{train = {}, val = gv} used to leave the epoch-0
+// validation labels (length n_val) on the loss for every training batch, so IcLoss's
+// ATX_CHECK(groups.size() == B) aborted — or, when a batch had exactly n_val rows,
+// silently grouped it by the validation dates.
+[[nodiscard]] nn::TrainConfig small_cfg(usize batch_size) {
+  nn::TrainConfig cfg;
+  cfg.epochs = 4;
+  cfg.batch_size = batch_size;
+  cfg.ckpt_every = 1;
+  cfg.ensemble_size = 2;
+  cfg.master_seed = 17;
+  return cfg;
+}
+
+TEST(LearnIcLossPerDate_Trainer, UngroupedTrainWithGroupedValDoesNotAbort) {
+  atx::core::Xoshiro256pp rng{23};
+  lin::MatX x(20, 2);
+  lin::MatX y(20, 1);
+  for (Eigen::Index r = 0; r < 20; ++r) {
+    x(r, 0) = rng.normal();
+    x(r, 1) = rng.normal();
+    y(r, 0) = 0.5 * x(r, 0) + rng.normal();
+  }
+  const std::vector<u32> gv{4, 4, 4, 9, 9, 9};
+  const lin::MatX xv = x.bottomRows(6);
+  const lin::MatX yv = y.bottomRows(6);
+  const nn::RowGroups rg{{}, std::span<const u32>{gv}};
+
+  // Real IcLoss, batch_size (8) != n_val (6), n_train 20 -> batches 8, 8, 4.
+  nn::Sgd o1{0.05, 0.0};
+  nn::IcLoss ic;
+  const auto st = nn::train(linear_factory(2), o1, ic, x, y, xv, yv, small_cfg(8), rg);
+  ASSERT_TRUE(st.has_value());
+  EXPECT_EQ(st->size(), 2U);
+
+  // Spy: every training batch sees "no groups"; every validation pass sees gv. Run with
+  // batch_size == n_val too (the silent mis-grouping case) and != n_val.
+  for (const usize bs : {usize{6}, usize{8}}) {
+    nn::Sgd o2{0.05, 0.0};
+    SpyLoss spy;
+    const auto s2 = nn::train(linear_factory(2), o2, spy, x, y, xv, yv, small_cfg(bs), rg);
+    ASSERT_TRUE(s2.has_value());
+    ASSERT_FALSE(spy.grad_groups.empty());
+    for (usize b = 0; b < spy.grad_groups.size(); ++b) {
+      EXPECT_TRUE(spy.grad_groups[b].empty()) << "bs=" << bs << " batch " << b
+                                              << " saw stale validation labels";
+    }
+    // 2 members x (1 baseline + 4 checkpoints) validation passes, all grouped by gv.
+    ASSERT_EQ(spy.value_groups.size(), 2U * (1U + 4U));
+    for (const std::vector<u32> &vg : spy.value_groups) {
+      EXPECT_EQ(vg, gv);
+    }
+  }
+}
+
+// A real IcLoss (per-date by default) that records every value() it returns. The
+// trainer only calls value() for checkpoint passes, so `values` is the sequence of
+// validation losses the checkpoint was selected on.
+class RecordingIcLoss final : public nn::Loss {
+public:
+  [[nodiscard]] f64 value(const lin::MatX &pred, const lin::MatX &target) override {
+    const f64 v = ic_.value(pred, target);
+    values.push_back(v);
+    return v;
+  }
+  [[nodiscard]] lin::MatX grad(const lin::MatX &pred, const lin::MatX &target) override {
+    return ic_.grad(pred, target);
+  }
+  void set_row_groups(std::span<const u32> groups) override { ic_.set_row_groups(groups); }
+  std::vector<f64> values;
+
+private:
+  nn::IcLoss ic_;
+};
+
+TEST(LearnIcLossPerDate_Trainer, UngroupedTrainWithGroupedValSelectsOnPerDateLoss) {
+  // Validation: 3 dates x 4 names with a large date-level offset in BOTH features and
+  // the target, so the pooled and per-date IC of a prediction differ.
+  atx::core::Xoshiro256pp rng{57};
+  lin::MatX xv(12, 2);
+  lin::MatX yv(12, 1);
+  std::vector<u32> gv;
+  for (Eigen::Index r = 0; r < 12; ++r) {
+    const f64 level = 4.0 * static_cast<f64>(r / 4);
+    xv(r, 0) = level + rng.normal();
+    xv(r, 1) = level + rng.normal();
+    yv(r, 0) = level + xv(r, 0) - xv(r, 1) + 0.3 * rng.normal();
+    gv.push_back(static_cast<u32>(r / 4));
+  }
+  lin::MatX x(24, 2);
+  lin::MatX y(24, 1);
+  for (Eigen::Index r = 0; r < 24; ++r) {
+    x(r, 0) = rng.normal();
+    x(r, 1) = rng.normal();
+    y(r, 0) = x(r, 0) - x(r, 1) + 0.5 * rng.normal();
+  }
+  nn::TrainConfig cfg = small_cfg(5); // batch 5 != n_val 12
+  cfg.epochs = 10;
+  cfg.ensemble_size = 1;
+  nn::Sgd opt{0.2, 0.0};
+  RecordingIcLoss loss;
+  const auto st = nn::train(linear_factory(2), opt, loss, x, y, xv, yv, cfg,
+                            nn::RowGroups{{}, std::span<const u32>{gv}});
+  ASSERT_TRUE(st.has_value());
+  ASSERT_EQ(loss.values.size(), 1U + cfg.epochs) << "baseline + one pass per epoch";
+  const f64 lo = *std::min_element(loss.values.begin(), loss.values.end());
+  const f64 hi = *std::max_element(loss.values.begin(), loss.values.end());
+  EXPECT_GT(hi - lo, 1e-6) << "training moved the validation loss (non-vacuous)";
+
+  // Re-score the kept state: its PER-DATE validation loss is the recorded minimum, and
+  // its pooled loss is different, so the recorded criterion was grouped by gv.
+  std::unique_ptr<nn::Module> m = linear_factory(2)(0U);
+  m->state_from((*st)[0]);
+  m->train(false);
+  const lin::MatX pred = m->forward(xv);
+  nn::IcLoss per_date;
+  per_date.set_row_groups(std::span<const u32>{gv});
+  nn::IcLoss pooled{1e-12, nn::IcReduction::PooledV1};
+  const f64 kept_per_date = per_date.value(pred, yv);
+  const f64 kept_pooled = pooled.value(pred, yv);
+  EXPECT_EQ(kept_per_date, lo);
+  EXPECT_GT(std::fabs(kept_pooled - kept_per_date), 1e-3);
+}
+
+TEST(LearnIcLossPerDate_Trainer, RejectsGroupedTrainWithUngroupedVal) {
+  const std::vector<u32> g = ragged_groups();
+  atx::core::Xoshiro256pp rng{31};
+  lin::MatX x(21, 2);
+  lin::MatX y(21, 1);
+  for (Eigen::Index r = 0; r < 21; ++r) {
+    x(r, 0) = rng.normal();
+    x(r, 1) = rng.normal();
+    y(r, 0) = rng.normal();
+  }
+  const nn::TrainConfig cfg = small_cfg(7);
+  const nn::RowGroups rg{std::span<const u32>{g}, {}};
+  {
+    // A validation design without its dates: the checkpoint would pool mixed dates.
+    nn::Sgd opt{0.05, 0.0};
+    nn::IcLoss loss;
+    const auto st = nn::train(linear_factory(2), opt, loss, x, y, x.topRows(5), y.topRows(5),
+                              cfg, rg);
+    ASSERT_FALSE(st.has_value());
+    EXPECT_EQ(st.error().code(), atx::core::ErrorCode::InvalidArgument);
+  }
+  {
+    // No validation design: the checkpoint scores train, grouped by g — allowed.
+    nn::Sgd opt{0.05, 0.0};
+    SpyLoss spy;
+    const lin::MatX x0(0, 2);
+    const lin::MatX y0(0, 1);
+    const auto st = nn::train(linear_factory(2), opt, spy, x, y, x0, y0, cfg, rg);
+    ASSERT_TRUE(st.has_value());
+    ASSERT_FALSE(spy.value_groups.empty());
+    for (const std::vector<u32> &vg : spy.value_groups) {
+      EXPECT_EQ(vg, g);
+    }
+  }
 }
 
 // The market-timing trap. Feature 0 is constant within a date and equals the date's

@@ -107,6 +107,11 @@ enum class FoldAugRule : atx::u8 { FullWindowV1 = 0, FoldLocalV2 = 1 };
 //                 the number of distinct features in the pair set (select_interactions
 //                 emits every pair of its chosen set). true == explicit, label-free
 //                 pairs that need no statistical refit and are reused in every fold.
+//                 A pair list that is NOT a complete canonical C(m,2) set (see
+//                 detail::is_selected_clique, e.g. {(0,1),(2,3)}) cannot be a selection
+//                 output, so it is reused verbatim like a fixed list even when the flag
+//                 is false — a fold never refits a different structure than the deployed
+//                 model uses (W0-L0 fix pass 1).
 // ===========================================================================
 struct LatentAugmentation {
   std::optional<LatentBasis> pca;
@@ -404,6 +409,11 @@ select_interactions_on_rows(const FeatureMatrix &fm, std::span<const atx::usize>
 // appear in it (select_interactions emits all C(m,2) pairs of its m chosen features).
 [[nodiscard]] atx::u32 interaction_top_m(const std::vector<std::pair<atx::u32, atx::u32>> &pairs);
 
+// True iff `pairs` is exactly what select_interactions_on_rows emits for its distinct
+// feature set F (|F| = m >= 2): all C(m,2) pairs (F[i], F[j]), i < j, ascending. Only
+// such a set is treated as a re-selectable top-m recipe by fit_fold_augmentation.
+[[nodiscard]] bool is_selected_clique(const std::vector<std::pair<atx::u32, atx::u32>> &pairs);
+
 // Append a fitted augmentation to an f64 artifact buffer (PCA k, mean, components,
 // then the interaction pairs) — used by LearnFitTrace fold artifacts.
 void append_augmentation(const LatentAugmentation &aug, std::vector<atx::f64> &out);
@@ -416,9 +426,11 @@ void append_augmentation(const LatentAugmentation &aug, std::vector<atx::f64> &o
 //
 //  `deployed` is the caller's fitted augmentation; only its recipe is read:
 //    * PCA      : deployed.pca->k components refit on `train_rows` (valid rows).
-//    * selected : interactions (interactions_fixed == false) are re-selected on
-//                 `train_rows` against Y[label_idx] with top-m = interaction_top_m.
-//    * fixed    : explicit label-free pairs are copied unchanged.
+//    * selected : interactions (interactions_fixed == false AND is_selected_clique) are
+//                 re-selected on `train_rows` against Y[label_idx] with top-m =
+//                 interaction_top_m.
+//    * fixed    : explicit label-free pairs, and any pair list that is not a complete
+//                 canonical clique, are copied unchanged.
 //  Nothing outside `train_rows` is read, so a held-out row's features or labels can
 //  never change the result (the LearnFoldLocalAug tests pin this). The caller picks a
 //  label channel whose span the fold's CPCV purge already covers.
