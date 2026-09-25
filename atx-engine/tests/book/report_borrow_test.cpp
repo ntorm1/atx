@@ -121,8 +121,13 @@ namespace lib = atx::engine::library;
                                        const FactorModel &V, f64 capacity_gross,
                                        const lib::Library &library, usize as_of,
                                        f64 borrow_bps = 0.0) {
-  auto res =
-      accumulate_report(books, panel, ret, sched, V, capacity_gross, library, as_of, borrow_bps);
+  // B-03: these cases pin the pre-W0 flat per-rebalance borrow charge, now the
+  // explicit ReportBorrowAccrual::FlatPerRebalanceV1 (the default accrues an
+  // annual rate over holding sessions; see book_w0b0_legacy_report_test.cpp).
+  atx::engine::book::ReportAccrual accrual;
+  accrual.borrow_bps = borrow_bps;
+  accrual.borrow_rule = atx::engine::book::ReportBorrowAccrual::FlatPerRebalanceV1;
+  auto res = accumulate_report(books, panel, ret, sched, V, capacity_gross, library, as_of, accrual);
   EXPECT_TRUE(res.has_value()) << (res ? "" : res.error().to_string());
   return std::move(*res);
 }
