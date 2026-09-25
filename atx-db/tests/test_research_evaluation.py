@@ -740,7 +740,8 @@ def _research_fixture(tmp_path):
         INSERT INTO research_feature_versions (feature_version, status, basis, panel_run_id, panel_sha256,
             classification_basis, values_sha256, query_version, universe_rule, spec_json, spec_sha256, code_sha256,
             catalog_sha256, inputs_json, inputs_sha256, blockers_json, created_at, finished_at)
-        VALUES (?, ?, ?, ?, ?, 'current_sic_backcast', 'v', '{rf.QUERY_VERSION}', '{rf.UNIVERSE_RULE}', '{{}}',
+        VALUES (?, ?, ?, ?, ?, 'current_sic_backcast', 'v', '{rf.QUERY_VERSION}', '{rf.UNIVERSE_RULE}',
+                '{{"store_schema": {ev.MIN_FEATURE_STORE_SCHEMA}}}',
                 'x', 'x', '{FIXTURE_CATALOG_SHA}', '{{}}', 'x', ?, ?, ?)
     """, [("fv_recon", "sealed", "reconstructed", "panel_recon", panel_sha,
            '["classification_current_sic_backcast"]', now, now),

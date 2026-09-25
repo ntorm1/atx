@@ -136,7 +136,9 @@ the version first). It reads, in the research store:
     ``classification_basis`` (RX1 label), ``values_sha256``, ``query_version`` (one of
     :data:`FEATURE_QUERY_VERSIONS`), ``universe_rule`` (one of
     :data:`FEATURE_UNIVERSE_RULES`), ``catalog_sha256`` (compared with the committed
-    catalog's file digest) and ``blockers_json`` (carried into the run blockers).
+    catalog's file digest), ``blockers_json`` (carried into the run blockers) and
+    ``spec_json.store_schema`` (>= :data:`MIN_FEATURE_STORE_SCHEMA`, i.e. built after R2e;
+    checked even when the validators are skipped).
 ``research_feature_catalog`` (version x catalog row: the catalog snapshot)
     ``feature_id``, ``anomaly_class``, ``hypothesis_family``, ``expected_sign``,
     ``status``, ``status_reason``. Every row not ``blocked_admission`` is a hypothesis of
@@ -207,6 +209,10 @@ FEATURE_CONTRACT = "r2b-research-feature-store-v1"
 #: R2b query versions whose tables this adapter reads (a new R2b version needs review here);
 #: v2 is R2b fix round 1 (identity-free price-line features also rank unlinked lines).
 FEATURE_QUERY_VERSIONS = ("research-feature-store-v1", "research-feature-store-v2")
+#: R2e kept the query version at v2 and bumped the feature store schema instead (recorded as
+#: ``spec_json.store_schema``); versions below it revive stale market values and leave survivor
+#: conditioning unlabeled, so they are refused even when validators are skipped.
+MIN_FEATURE_STORE_SCHEMA = 3
 FEATURE_VERSION_STATUSES = ("sealed", "untestable_strict")
 FEATURE_VARIANTS = ("signed_raw", "winsor", "zscore", "rank_normal", "industry_neutral", "size_neutral")
 #: Variants on a standardized scale (FM slopes comparable across features); the others are raw units.
@@ -2491,7 +2497,7 @@ def evaluate_bases(bases: Iterable[BasisInputs], spec: EvaluationSpec, *,
 _FEATURE_CONTRACT_COLUMNS: dict[str, tuple[str, ...]] = {
     "research_feature_versions": ("feature_version", "status", "basis", "panel_run_id", "panel_sha256",
                                   "classification_basis", "values_sha256", "query_version", "universe_rule",
-                                  "catalog_sha256", "blockers_json"),
+                                  "catalog_sha256", "blockers_json", "spec_json"),
     "research_feature_catalog": ("feature_version", "feature_id", "anomaly_class", "hypothesis_family",
                                  "expected_sign", "status", "status_reason"),
     "research_feature_values": ("feature_version", "formation_date", "security_id", "feature_id", "variant",
@@ -2585,13 +2591,22 @@ def load_feature_table(store: ResearchStore, feature_version: str) -> FeatureTab
              if "owner_basis" in _research_columns(con, "research_feature_values") else "false")
     row = con.execute("""
         SELECT status, basis, panel_run_id, panel_sha256, classification_basis, values_sha256, query_version,
-               universe_rule, catalog_sha256, blockers_json
+               universe_rule, catalog_sha256, blockers_json, spec_json
         FROM research_feature_versions WHERE feature_version=?
     """, [feature_version]).fetchall()
     if len(row) != 1:
         raise EvaluationInputError(f"feature version {feature_version!r} is absent or duplicated")
     (status, basis, panel_run_id, panel_sha, classification, values_sha, query_version, universe_rule,
-     catalog_sha, blockers_json) = row[0]
+     catalog_sha, blockers_json, version_spec) = row[0]
+    try:
+        store_schema = json.loads(version_spec or "{}").get("store_schema")
+    except (AttributeError, ValueError) as error:
+        raise EvaluationInputError(f"feature version {feature_version}: unreadable spec_json") from error
+    if isinstance(store_schema, bool) or not isinstance(store_schema, int) or store_schema < MIN_FEATURE_STORE_SCHEMA:
+        raise EvaluationInputError(
+            f"R2b feature contract: version {feature_version} was built under feature store schema "
+            f"{store_schema if store_schema is not None else '<3 (none recorded)'}, before R2e (revived market "
+            f"values, unlabeled survivor conditioning); rebuild it under schema >= {MIN_FEATURE_STORE_SCHEMA}")
     if status not in FEATURE_VERSION_STATUSES:
         raise EvaluationInputError(f"feature version {feature_version} is {status!r}; only {FEATURE_VERSION_STATUSES}"
                                    " versions are evaluated")
@@ -3190,6 +3205,7 @@ __all__ = [
     "FEATURE_UNIVERSE_RULES",
     "FEATURE_VARIANTS",
     "HORIZON_SESSIONS",
+    "MIN_FEATURE_STORE_SCHEMA",
     "OWNER_BASIS_UNLINKED",
     "SIZE_BUCKETS",
     "SIZE_SLICE_KINDS",
