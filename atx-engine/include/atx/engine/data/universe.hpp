@@ -95,7 +95,9 @@ namespace atx::engine::data {
 //                           disabled floor of 0, so "floor 0 disables" was false for
 //                           names with no shares or an unfilled ADV window.
 //   DisabledFloorPassesV2 — a floor <= 0 is no screen (every cell passes, NaN
-//                           included); an enabled floor (> 0) still fails NaN. Default.
+//                           included); an enabled floor (> 0) still fails NaN. A cell
+//                           with no traded price (NaN / non-positive raw close) is
+//                           never a member. Default.
 // In both rules a NaN ADV that survives into the top-N cap ranks after every finite
 // ADV (it can only get there when the ADV floor is disabled).
 enum class NanFloorRule : std::uint8_t {

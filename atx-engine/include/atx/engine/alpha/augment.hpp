@@ -190,61 +190,73 @@ with_alpha101_fields(const Panel &base, std::span<const atx::u16> adv_windows,
   // This guarantees the derived columns are bit-for-bit identical to what every
   // other engine caller (stage_panel, etc.) would produce from the same inputs.
   //
-  // D-01: remember which liquidity columns are DERIVED here (not caller-supplied)
-  // and whether a raw_close basis exists, BEFORE the vectors move into the delegate.
+  // D-01: with a raw_close basis, pre-derive dollar_volume / vwap / adv{d} HERE, in
+  // exactly the order and with exactly the formulas the delegate uses, except that
+  // dollar_volume (and so every adv{d}) is raw_close x volume. The delegate then
+  // sees them as caller-supplied and only builds the Panel — no extra panel copy.
+  // When an input the delegate requires is missing, fall through so the delegate
+  // reports it with its own error.
+  const auto npos = static_cast<atx::usize>(-1);
   const atx::usize raw_i = datafields::detail::field_index(names, "raw_close");
+  const atx::usize vol_i = datafields::detail::field_index(names, datafields::kVolume);
+  const atx::usize high_i = datafields::detail::field_index(names, datafields::kHigh);
+  const atx::usize low_i = datafields::detail::field_index(names, datafields::kLow);
+  const bool derive_vwap = !datafields::detail::has_field(names, datafields::kVwap);
+  const bool vwap_inputs = !derive_vwap || (high_i != npos && low_i != npos);
   const bool rebase_liquidity =
-      dv_basis == DollarVolumeBasis::RawCloseV2 && raw_i != static_cast<atx::usize>(-1);
-  if (!rebase_liquidity) {
-    return datafields::with_datafields(
-        D, I, std::move(names), std::move(data), std::move(universe), adv_windows);
-  }
-  const bool derive_dvol = !datafields::detail::has_field(names, datafields::kDollarVolume);
-  std::vector<std::string> derived_adv;
-  for (const atx::u16 d : adv_windows) {
-    std::string adv_name = std::string{datafields::kAdvPrefix} + std::to_string(d);
-    if (!datafields::detail::has_field(names, adv_name) &&
-        !datafields::detail::has_field(derived_adv, adv_name)) {
-      derived_adv.push_back(std::move(adv_name));
+      dv_basis == DollarVolumeBasis::RawCloseV2 && raw_i != npos && vol_i != npos && vwap_inputs;
+  if (rebase_liquidity) {
+    const std::vector<atx::f64> &raw_close = data[raw_i];
+    const std::vector<atx::f64> &volume = data[vol_i];
+    const std::vector<atx::f64> &close = data[close_i];
+    // dollar_volume = raw_close · volume, masked to the universe (NaN out-of-universe).
+    std::vector<atx::f64> raw_dvol(cells, kAugNaN);
+    for (atx::usize i = 0; i < cells; ++i) {
+      if (universe[i] != 0) {
+        raw_dvol[i] = raw_close[i] * volume[i]; // NaN inputs propagate
+      }
+    }
+    // vwap: the delegate's typical-price proxy on the close basis, unchanged.
+    std::vector<atx::f64> vwap;
+    if (derive_vwap) {
+      const std::vector<atx::f64> &high = data[high_i];
+      const std::vector<atx::f64> &low = data[low_i];
+      vwap.assign(cells, kAugNaN);
+      for (atx::usize i = 0; i < cells; ++i) {
+        if (universe[i] != 0) {
+          vwap[i] = (high[i] + low[i] + close[i]) / 3.0;
+        }
+      }
+    }
+    // adv{d} = ts_mean(raw dollar_volume, d), skipping supplied / duplicate windows.
+    std::vector<std::pair<std::string, std::vector<atx::f64>>> adv_cols;
+    for (const atx::u16 d : adv_windows) {
+      std::string adv_name = std::string{datafields::kAdvPrefix} + std::to_string(d);
+      bool already = datafields::detail::has_field(names, adv_name);
+      for (const auto &c : adv_cols) {
+        already = already || c.first == adv_name;
+      }
+      if (!already) {
+        adv_cols.emplace_back(std::move(adv_name),
+                              datafields::detail::rolling_mean(raw_dvol, D, I, d));
+      }
+    }
+    // Append in the delegate's order: dollar_volume, vwap, adv{d}...
+    if (!datafields::detail::has_field(names, datafields::kDollarVolume)) {
+      names.emplace_back(datafields::kDollarVolume);
+      data.push_back(std::move(raw_dvol));
+    }
+    if (derive_vwap) {
+      names.emplace_back(datafields::kVwap);
+      data.push_back(std::move(vwap));
+    }
+    for (auto &c : adv_cols) {
+      names.push_back(std::move(c.first));
+      data.push_back(std::move(c.second));
     }
   }
-  const std::vector<atx::f64> raw_close = data[raw_i]; // copy: `data` moves below
-  const std::vector<std::uint8_t> univ_copy = universe;
-  ATX_TRY(Panel legacy, datafields::with_datafields(D, I, std::move(names), std::move(data),
-                                                    std::move(universe), adv_windows));
-  if (!derive_dvol && derived_adv.empty()) {
-    return atx::core::Ok(std::move(legacy));
-  }
-  // with_datafields succeeded, so `volume` exists; same NaN / universe policy as the
-  // delegate: out-of-universe -> NaN, NaN inputs propagate.
-  const std::span<const atx::f64> volume =
-      legacy.field_all(legacy.field_id(datafields::kVolume).value());
-  std::vector<atx::f64> raw_dvol(cells, kAugNaN);
-  for (atx::usize i = 0; i < cells; ++i) {
-    if (univ_copy[i] != 0) {
-      raw_dvol[i] = raw_close[i] * volume[i];
-    }
-  }
-  std::vector<std::string> out_names;
-  std::vector<std::vector<atx::f64>> out_data;
-  out_names.reserve(legacy.num_fields());
-  out_data.reserve(legacy.num_fields());
-  for (atx::usize f = 0; f < legacy.num_fields(); ++f) {
-    const std::string_view fname = legacy.field_name(static_cast<FieldId>(f));
-    out_names.emplace_back(fname);
-    atx::u16 window = 0;
-    if (derive_dvol && fname == datafields::kDollarVolume) {
-      out_data.push_back(raw_dvol);
-    } else if (datafields::detail::has_field(derived_adv, fname) &&
-               datafields::parse_adv_field(fname, window)) {
-      out_data.push_back(datafields::detail::rolling_mean(raw_dvol, D, I, window));
-    } else {
-      const std::span<const atx::f64> col = legacy.field_all(static_cast<FieldId>(f));
-      out_data.emplace_back(col.begin(), col.end());
-    }
-  }
-  return Panel::create(D, I, std::move(out_names), std::move(out_data),
-                       std::vector<std::uint8_t>(univ_copy));
+  return datafields::with_datafields(D, I, std::move(names), std::move(data), std::move(universe),
+                                     adv_windows);
 }
 
 // ===========================================================================

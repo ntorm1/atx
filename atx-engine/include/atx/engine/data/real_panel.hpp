@@ -96,6 +96,17 @@ enum class RealPanelPriceBasis : std::uint8_t {
   TriScaledV2 = 2,
 };
 
+// Restate raw candle prices on the TRI basis, cell by cell:
+//   out[k] = raw_price[k] · total_return_index[k] / raw_close[k]
+// NaN where the TRI or raw close is missing, non-finite or non-positive (a price is
+// never fabricated where close itself is a gap). Returns an empty vector when the
+// three spans differ in length. build_real_panel applies it to open/high/low/vwap
+// under TriScaledV2, so a candle's ratios to close are the raw-bar ratios.
+[[nodiscard]] std::vector<atx::f64>
+restate_on_tri_basis(std::span<const atx::f64> raw_price,
+                     std::span<const atx::f64> total_return_index,
+                     std::span<const atx::f64> raw_close);
+
 // Level basis of a real-data panel field (see LevelBasis in history_panel.hpp).
 // Same tags as history_field_level_basis, except that under MixedV1 the raw candle
 // (open/high/low/vwap) is Raw. Unknown names return nullopt.

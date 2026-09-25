@@ -73,7 +73,7 @@ struct AlignedView {
 // them, and a split factor forward-filled past the plug's last row freezes. A
 // column rule caps how stale the joined row may be, counted in CANONICAL sessions:
 //
-//   staleness(d) = number of canonical dates in (row availability, canonical_date[d]]
+//   staleness(d) = number of canonical dates in [row availability, canonical_date[d])
 //
 // so staleness 0 means the row is available exactly on the canonical session (or,
 // when its date is not on the canonical axis, on the first canonical session after

@@ -336,22 +336,27 @@ void put_field(std::vector<std::string> &names, std::vector<std::vector<atx::f64
   return name == kFieldOpen || name == kFieldHigh || name == kFieldLow || name == "vwap";
 }
 
-// Per-cell TRI / raw_close, the factor that restates a raw price of that cell on
-// the TRI basis. NaN where either side is missing, non-finite or non-positive, so a
-// scaled price is never fabricated where close itself is a gap.
-[[nodiscard]] std::vector<atx::f64> tri_to_raw_ratio(const AdjustedFields &adj) {
-  std::vector<atx::f64> ratio(adj.raw_close.size(), kNaN);
-  for (atx::usize k = 0; k < ratio.size(); ++k) {
-    const atx::f64 tri = adj.total_return_index[k];
-    const atx::f64 raw = adj.raw_close[k];
+} // namespace
+
+// ---------------------------------------------------------------------------
+//  restate_on_tri_basis — D-03 candle restatement (see real_panel.hpp).
+// ---------------------------------------------------------------------------
+std::vector<atx::f64> restate_on_tri_basis(std::span<const atx::f64> raw_price,
+                                           std::span<const atx::f64> total_return_index,
+                                           std::span<const atx::f64> raw_close) {
+  if (raw_price.size() != total_return_index.size() || raw_price.size() != raw_close.size()) {
+    return {};
+  }
+  std::vector<atx::f64> out(raw_price.size(), kNaN);
+  for (atx::usize k = 0; k < out.size(); ++k) {
+    const atx::f64 tri = total_return_index[k];
+    const atx::f64 raw = raw_close[k];
     if (std::isfinite(tri) && tri > 0.0 && std::isfinite(raw) && raw > 0.0) {
-      ratio[k] = tri / raw;
+      out[k] = raw_price[k] * (tri / raw); // NaN raw price stays NaN
     }
   }
-  return ratio;
+  return out;
 }
-
-} // namespace
 
 // ---------------------------------------------------------------------------
 //  real_panel_field_level_basis — the D-01 metadata for a real-data field.
@@ -429,8 +434,6 @@ Result<RealPanel> build_real_panel(const RealDataConfig &cfg) {
   // D-03: the research candle must share close's basis. Under TriScaledV2 each
   // open/high/low/vwap cell is scaled by that cell's TRI / raw_close.
   const bool scale_candle = cfg.price_basis == RealPanelPriceBasis::TriScaledV2;
-  const std::vector<atx::f64> tri_ratio =
-      scale_candle ? tri_to_raw_ratio(adj) : std::vector<atx::f64>{};
   // Carry every base/derived field EXCEPT the raw `close` (replaced by the TRI).
   for (atx::usize f = 0; f < base_panel.num_fields(); ++f) {
     const std::string_view fn = base_panel.field_name(static_cast<alpha::FieldId>(f));
@@ -438,13 +441,13 @@ Result<RealPanel> build_real_panel(const RealDataConfig &cfg) {
       continue; // raw close already retained as raw_close
     }
     const std::span<const atx::f64> col = base_panel.field_all(static_cast<alpha::FieldId>(f));
-    std::vector<atx::f64> values(col.begin(), col.end());
     if (scale_candle && is_candle_price_field(fn)) {
-      for (atx::usize k = 0; k < values.size(); ++k) {
-        values[k] *= tri_ratio[k]; // NaN ratio (no TRI / no raw close) -> NaN price
-      }
+      // Same axis and length as the TRI / raw_close (all nd*ni date-major).
+      put_field(names, data, fn,
+                restate_on_tri_basis(col, adj.total_return_index, adj.raw_close));
+    } else {
+      put_field(names, data, fn, std::vector<atx::f64>(col.begin(), col.end()));
     }
-    put_field(names, data, fn, std::move(values));
   }
   // Universe fields: market_cap + sector (widened to f64). adv/dollar_volume already
   // present from price_to_panel; in_universe becomes the mask, not a field.

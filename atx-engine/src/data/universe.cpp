@@ -216,6 +216,10 @@ void apply_top_n(std::span<atx::u8> mask_row, std::span<const atx::f64> adv_row,
       // floor" and passes every cell, NaN included (D-09); NanFailsV1 keeps the
       // legacy `value >= floor` test, where a NaN failed even a disabled floor.
       const bool floors_v2 = cfg.nan_floor_rule == NanFloorRule::DisabledFloorPassesV2;
+      // V2: a cell without a traded price (NaN / non-positive raw close) is never a
+      // member, whatever the floors — the legacy rule excluded it only through the
+      // NaN market cap, which a disabled cap floor no longer tests.
+      const bool traded = !floors_v2 || (std::isfinite(raw_close[flat]) && raw_close[flat] > 0.0);
       const bool cap_ok = (floors_v2 && cfg.min_mktcap_usd <= 0.0) ||
                           market_cap[flat] >= cfg.min_mktcap_usd;
       const bool adv_ok =
@@ -227,7 +231,8 @@ void apply_top_n(std::span<atx::u8> mask_row, std::span<const atx::f64> adv_row,
       // carry no GICS, so sector_code == kNoSectorCode excludes them. Off by default.
       const bool sector_ok = !cfg.require_sector || (sector_code[flat] != kNoSectorCode);
       mask[flat] =
-          (present && cap_ok && adv_ok && price_ok && sector_ok) ? atx::u8{1} : atx::u8{0};
+          (present && traded && cap_ok && adv_ok && price_ok && sector_ok) ? atx::u8{1}
+                                                                            : atx::u8{0};
     }
     if (cfg.top_n_by_adv > 0) {
       apply_top_n(std::span<atx::u8>{mask}.subspan(t * instruments, instruments),

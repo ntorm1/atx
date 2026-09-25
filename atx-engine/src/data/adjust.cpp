@@ -95,9 +95,9 @@ AdjustedSeries adjust_total_return(std::span<const atx::f64> raw_close,
       out.total_return[t] = 0.0;
       const bool chain = gap_rule == TriGapRule::RatioChainV2 && is_valid_close(last_s) &&
                          std::isfinite(prev_tri);
-      // (prev_tri * s) / last_s: both factors are finite and positive, so the
-      // result is finite unless it overflows, which a real price series cannot do.
-      const atx::f64 tri = chain ? (prev_tri * s) / last_s : s;
+      // prev_tri * (s / last_s): every operand is finite and positive, and an
+      // unchanged price (s == last_s) leaves the level bit-identical.
+      const atx::f64 tri = chain ? prev_tri * (s / last_s) : s;
       out.total_return_index[t] = tri;
       prev_tri = tri;
     } else {

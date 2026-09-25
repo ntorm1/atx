@@ -7,6 +7,7 @@
 
 #include "atx/engine/data/align.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <optional>
 #include <span>
@@ -130,10 +131,16 @@ atx::core::Result<AlignedView> align_onto(const Dataset &canonical_price, const 
       continue; // no plug row on/before this date — whole row stays NaN
     }
     // Staleness in CANONICAL sessions: the number of canonical dates in
-    // (availability, canonical_dates[d]]. A row available before the first
+    // [availability, canonical_dates[d]) — 0 on the row's own session, or on the
+    // first session after an off-axis row. A row available before the first
     // canonical date has unknown (unbounded) staleness.
-    const std::optional<atx::usize> row_session = as_of_index(canonical_dates, plug_available[*pd]);
-    const atx::usize staleness = row_session ? d - *row_session : kAlignUnboundedStaleness;
+    const DateKey available = plug_available[*pd];
+    const atx::usize first_session = static_cast<atx::usize>(
+        std::lower_bound(canonical_dates.begin(), canonical_dates.end(), available) -
+        canonical_dates.begin());
+    const atx::usize staleness = (available < canonical_dates.front())
+                                     ? kAlignUnboundedStaleness
+                                     : d - first_session;
     const atx::usize pd_base = *pd * plug_ni;
     for (atx::usize i = 0; i < ni; ++i) {
       const auto found = plug_index.find(canonical_instruments[i]);
