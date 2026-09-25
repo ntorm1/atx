@@ -280,6 +280,145 @@ def test_issuer_without_annual_period_positions_by_declared_primary_period(tmp_s
     }
 
 
+def test_recast_comparative_after_fye_change_is_not_a_fiscal_year_anchor(tmp_store):
+    """Dec -> Sep change; the first Sep-year 10-K also presents a recast Oct18-Sep19 twelve months.
+
+    The recast column ties FY2018 on support and ends later; it must not displace the
+    December calendar the issuer actually filed (review A6 I1).
+    """
+    sid = "SEC-CIK-RECAST"
+    d = dt.date
+    _point(tmp_store, security_id=sid, accession="10k-2017", fy=2017, fp="FY", filed=d(2018, 2, 20),
+           start=d(2017, 1, 1), end=d(2017, 12, 31), value=380.0, form="10-K")
+    _point(tmp_store, security_id=sid, accession="10k-2018", fy=2018, fp="FY", filed=d(2019, 2, 20),
+           start=d(2018, 1, 1), end=d(2018, 12, 31), value=400.0, form="10-K")
+    _point(tmp_store, security_id=sid, accession="10q-2018q3", fy=2018, fp="Q3", filed=d(2018, 11, 1),
+           start=d(2018, 7, 1), end=d(2018, 9, 30), value=98.0)
+    _point(tmp_store, security_id=sid, accession="10k-2020", fy=2020, fp="FY", filed=d(2020, 11, 20),
+           start=d(2019, 10, 1), end=d(2020, 9, 30), value=440.0, form="10-K")
+    _point(tmp_store, security_id=sid, accession="10k-2020", fy=2020, fp="FY", filed=d(2020, 11, 20),
+           start=d(2018, 10, 1), end=d(2019, 9, 30), value=410.0, form="10-K")  # recast comparative
+
+    refresh_fundamental_standardized(tmp_store)
+
+    assert _labels(tmp_store, sid, "annual") == {
+        (d(2017, 12, 31), 380.0): (2017, "FY"),
+        (d(2018, 12, 31), 400.0): (2018, "FY"),
+        # The recast twelve months is fiscal 2019 on the new September calendar.
+        (d(2019, 9, 30), 410.0): (2019, "FY"),
+        (d(2020, 9, 30), 440.0): (2020, "FY"),
+    }
+    assert _labels(tmp_store, sid, "quarterly") == {(d(2018, 9, 30), 98.0): (2018, "Q3")}
+
+
+def test_ten_q_twelve_months_ended_column_is_not_a_fiscal_year(tmp_store):
+    """A utility-style 12-months-ended-June column in a 10-Q is labelled by its end quarter."""
+
+    sid = "SEC-CIK-UTIL"
+    d = dt.date
+    for year in (2020, 2021):
+        _point(tmp_store, security_id=sid, accession=f"10k-{year}", fy=year, fp="FY", filed=d(year + 1, 2, 15),
+               start=d(year, 1, 1), end=d(year, 12, 31), value=100.0 + year - 2020, form="10-K")
+    # The 10-K's own three-month fourth quarter carries the filing's fp=FY.
+    _point(tmp_store, security_id=sid, accession="10k-2021", fy=2021, fp="FY", filed=d(2022, 2, 15),
+           start=d(2021, 10, 1), end=d(2021, 12, 31), value=26.0, form="10-K")
+    _point(tmp_store, security_id=sid, accession="q2-2021", fy=2021, fp="Q2", filed=d(2021, 8, 1),
+           start=d(2021, 4, 1), end=d(2021, 6, 30), value=25.0)
+    _point(tmp_store, security_id=sid, accession="q2-2021", fy=2021, fp="Q2", filed=d(2021, 8, 1),
+           start=d(2020, 7, 1), end=d(2021, 6, 30), value=99.0)
+
+    refresh_fundamental_standardized(tmp_store)
+
+    assert _labels(tmp_store, sid, "annual") == {
+        (d(2020, 12, 31), 100.0): (2020, "FY"),
+        (d(2021, 6, 30), 99.0): (2021, "Q2"),
+        (d(2021, 12, 31), 101.0): (2021, "FY"),
+    }
+    assert _labels(tmp_store, sid, "quarterly") == {
+        (d(2021, 6, 30), 25.0): (2021, "Q2"),
+        (d(2021, 12, 31), 26.0): (2021, "Q4"),
+    }
+
+
+def test_twelve_months_ended_column_cannot_stand_in_for_missing_fiscal_year_coverage(tmp_store):
+    sid = "SEC-CIK-UTILCOV"
+    d = dt.date
+    _member(tmp_store, sid)
+    _point(tmp_store, security_id=sid, accession="10k-2020", fy=2020, fp="FY", filed=d(2021, 2, 15),
+           start=d(2020, 1, 1), end=d(2020, 12, 31), value=100.0, form="10-K")
+    _point(tmp_store, security_id=sid, accession="q2-2021", fy=2021, fp="Q2", filed=d(2021, 8, 1),
+           start=d(2020, 7, 1), end=d(2021, 6, 30), value=99.0)  # no FY2021 10-K in the build
+
+    refresh_fundamental_standardized(tmp_store)
+
+    coverage = _coverage_by_year(tmp_store)
+    assert {year: coverage[("revenue", year)] for year in range(2019, 2023)} == {
+        2019: (1, 0),
+        2020: (1, 1),
+        2021: (1, 0),
+        2022: (1, 0),
+    }
+
+
+def test_anchor_elimination_is_greedy_over_surviving_anchors():
+    """Fallback tier (no fp=FY filing): an eliminated rival must not knock out a real year.
+
+    Priority C (FY2021) > B (Jul20-Jun21 column) > A (FY2020).  B loses to C, so A,
+    which only B overlaps, survives.
+    """
+    import types
+
+    import duckdb
+
+    from atx_db._standardization_set_based import _create_fiscal_labels
+
+    con = duckdb.connect()
+    con.execute("SET threads=1")
+    rows = []
+    for start, end, concepts in (
+        ("2020-01-01", "2020-12-31", 3),
+        ("2020-07-01", "2021-06-30", 4),
+        ("2021-01-01", "2021-12-31", 5),
+    ):
+        rows += [(start, end, f"C{index}") for index in range(concepts)]
+    con.execute(
+        """
+        CREATE TEMP TABLE _std_candidates_all AS
+        SELECT 'fundamental_xbrl_metric' AS upstream_source, 'S1' AS security_id, 'vendor' AS taxonomy,
+               concept, 'annual' AS basis, CAST(period_start AS DATE) AS period_start,
+               CAST(period_end AS DATE) AS period_end, TIMESTAMP '2022-03-01' AS available_at,
+               'acc' AS accession_number, CAST(NULL AS VARCHAR) AS fiscal_period,
+               CAST(NULL AS DATE) AS filed_date
+        FROM (VALUES """ + ",".join(f"('{s}','{e}','{c}')" for s, e, c in rows) + """) v(period_start, period_end, concept)
+        """
+    )
+    con.execute(
+        "CREATE TEMP TABLE _std_output_raw AS SELECT DISTINCT security_id, period_end FROM _std_candidates_all"
+    )
+    _create_fiscal_labels(types.SimpleNamespace(con=con))
+    anchors = con.execute(
+        "SELECT period_start, period_end, anchor_basis, fiscal_year FROM _std_fiscal_anchors ORDER BY 1"
+    ).fetchall()
+    assert anchors == [
+        (dt.date(2020, 1, 1), dt.date(2020, 12, 31), "observed_annual_period", 2020),
+        (dt.date(2021, 1, 1), dt.date(2021, 12, 31), "observed_annual_period", 2021),
+    ]
+    con.close()
+
+
+def _member(store, security_id: str) -> None:
+    store.con.execute(
+        """
+        INSERT INTO universe_membership
+            (universe_id,security_id,symbol,valid_from,valid_to,as_of_date,available_at,reason,
+             rules_json,decision_count,is_latest_revision,source,is_member)
+        VALUES ('a6_fixture_members',?,'M',DATE '2019-01-01',NULL,DATE '2019-01-01',
+                TIMESTAMP '2019-01-01','member','{}',1,true,'test',true)
+        """,
+        [security_id],
+    )
+
+
 def _coverage_by_year(store) -> dict:
     options = ItemCoverageOptions(
         as_of_date=dt.date(2023, 6, 1),

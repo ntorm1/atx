@@ -116,6 +116,8 @@ def compute_item_coverage_rows(
         facts = _selected_states(facts)
         facts = facts.merge(members, on=["security_id", "fiscal_year"], how="inner")
         facts = facts[facts["basis"].isin(options.bases) & facts["value"].notna()]
+        if "fiscal_period" in facts:
+            facts = facts[facts["basis"].ne("annual") | facts["fiscal_period"].eq("FY")]
     evidence = {} if cohort_years is None else {int(row["fiscal_year"]): row for row in cohort_years.to_dict("records")}
     records = []
     for basis in sorted(set(options.bases)):
@@ -212,7 +214,7 @@ def measure_item_coverage(store: DuckDBStore, options: ItemCoverageOptions) -> p
             SELECT fiscal_year,count(DISTINCT security_id) AS n,max(available_at) AS available_at
             FROM members GROUP BY fiscal_year
         ), visible_states AS (
-            SELECT f.security_id,f.item_id,f.basis,f.fiscal_year,f.value,f.available_at,
+            SELECT f.security_id,f.item_id,f.basis,f.fiscal_year,f.fiscal_period,f.value,f.available_at,
                    row_number() OVER (
                        -- State selection precedes attribution and usability
                        -- filtering.  A later NULL reported-EPS conflict shares
@@ -237,6 +239,9 @@ def measure_item_coverage(store: DuckDBStore, options: ItemCoverageOptions) -> p
             JOIN (SELECT DISTINCT security_id,fiscal_year FROM members) u
               ON s.security_id=u.security_id AND s.fiscal_year=u.fiscal_year
             WHERE s.revision_rank=1
+              -- Annual coverage is the fiscal year itself, never an off-cycle
+              -- twelve-months-ended column labelled by its end quarter.
+              AND (s.basis<>'annual' OR s.fiscal_period='FY')
         ), numerators AS (
             SELECT item_id,basis,fiscal_year,count(DISTINCT security_id) AS k,
                    max(available_at) AS available_at

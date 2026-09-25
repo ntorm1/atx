@@ -624,11 +624,16 @@ def _create_discrete_quarters(store: DuckDBStore, *, symbols: tuple[str, ...]) -
 def _create_fiscal_labels(store: DuckDBStore) -> None:
     """Label every standardized (security, period_end) by its own fiscal period.
 
-    Fiscal-year anchors are the issuer's observed annual (330-380 day) reported
-    periods; an anchor rivalled by a broader-supported overlapping annual period
-    (a trailing-twelve-month disclosure, an off-by-one start) is dropped.  Each
-    anchor is named by ``fiscal_year_end_label``.  A period is positioned at
-    ``period_end - FISCAL_POSITION_LAG_DAYS`` and takes, in order:
+    Fiscal-year anchors are the fiscal years the issuer itself declared: the
+    latest-ending annual (330-380 day) period of each annual filing (every fact
+    carrying fp=FY: 10-K, 10-KT, 20-F), ended by its filing date.  Comparative,
+    recast and "twelve months ended" columns are never a filing's own year, so
+    they cannot become anchors.  Only an issuer without any declared annual
+    period falls back to all of its observed annual periods.  Overlapping
+    candidates (> FISCAL_ANCHOR_OVERLAP_DAYS) are resolved greedily by breadth of
+    support, then earliest availability -- only a surviving anchor eliminates
+    another.  Each anchor is named by ``fiscal_year_end_label``.  A period is
+    positioned at ``period_end - FISCAL_POSITION_LAG_DAYS`` and takes, in order:
 
     0. the anchor containing that position (quarter = position within the anchor);
     1. else the nearest *following* anchor projected backward whole fiscal years
@@ -640,21 +645,26 @@ def _create_fiscal_labels(store: DuckDBStore) -> None:
     An issuer with no annual period at all falls back to its latest filing whose
     declared fiscal period positions that filing's own primary (latest-ending)
     period; with neither, labels stay NULL rather than inherit filing labels.
-    Across a fiscal-year-end change (fy, fp) need not be unique -- as with
-    Compustat duplicates at FYR changes, ``period_end`` is the identity.
+
+    These are build-time period labels: the anchors are every filing in the
+    build, so around a fiscal-year-end change a label can reflect a calendar
+    first filed after the row's ``available_at``.  They are not point-in-time
+    selectors -- select by period_start/period_end/available_at.  (fy, fp) is
+    not unique across a fiscal-year-end change; ``period_end`` is the identity.
     """
 
     anchor_label = _fiscal_year_end_label_sql("period_end")
     store.con.execute(
-        f"""
-        CREATE OR REPLACE TEMP TABLE _std_fiscal_anchors AS
+        """
+        CREATE OR REPLACE TEMP TABLE _std_fiscal_anchor_candidates AS
         WITH annual_periods AS (
             SELECT
                 security_id,
                 period_start,
                 period_end,
                 count(DISTINCT concat_ws(':', taxonomy, concept)) AS concept_support,
-                count(*) AS row_support
+                count(*) AS row_support,
+                min(available_at) AS first_seen_at
             FROM _std_candidates_all
             WHERE basis = 'annual'
               AND upstream_source IN ('fundamental_statement_points', 'fundamental_xbrl_metric')
@@ -663,18 +673,147 @@ def _create_fiscal_labels(store: DuckDBStore) -> None:
               AND period_end IS NOT NULL
             GROUP BY security_id, period_start, period_end
         ),
-        observed AS (
-            SELECT a.security_id, a.period_start, a.period_end, 'observed_annual_period' AS anchor_basis
+        annual_filings AS (
+            SELECT security_id, accession_number
+            FROM _std_candidates_all
+            WHERE upstream_source = 'fundamental_statement_points'
+              AND security_id IS NOT NULL
+              AND accession_number IS NOT NULL
+            GROUP BY security_id, accession_number
+            HAVING count(*) FILTER (WHERE upper(coalesce(fiscal_period, '')) <> 'FY') = 0
+        ),
+        filing_periods AS (
+            SELECT
+                c.security_id,
+                c.accession_number,
+                c.period_start,
+                c.period_end,
+                count(DISTINCT concat_ws(':', c.taxonomy, c.concept)) AS filing_concepts,
+                min(c.available_at) AS declared_at
+            FROM _std_candidates_all c
+            JOIN annual_filings f
+              ON f.security_id = c.security_id
+             AND f.accession_number = c.accession_number
+            WHERE c.upstream_source = 'fundamental_statement_points'
+              AND c.basis = 'annual'
+              AND c.period_start IS NOT NULL
+              AND c.period_end IS NOT NULL
+              AND (c.filed_date IS NULL OR c.period_end <= c.filed_date)
+            GROUP BY c.security_id, c.accession_number, c.period_start, c.period_end
+        ),
+        filing_primaries AS (
+            SELECT *
+            FROM filing_periods
+            QUALIFY row_number() OVER (
+                PARTITION BY security_id, accession_number
+                ORDER BY period_end DESC, filing_concepts DESC, period_start
+            ) = 1
+        ),
+        declared_annual AS (
+            SELECT
+                p.security_id,
+                p.period_start,
+                p.period_end,
+                'declared_annual_period' AS anchor_basis,
+                any_value(a.concept_support) AS concept_support,
+                count(*) AS filing_support,
+                min(p.declared_at) AS first_seen_at
+            FROM filing_primaries p
+            JOIN annual_periods a
+              ON a.security_id = p.security_id
+             AND a.period_start = p.period_start
+             AND a.period_end = p.period_end
+            GROUP BY p.security_id, p.period_start, p.period_end
+        ),
+        observed_annual AS (
+            SELECT
+                a.security_id,
+                a.period_start,
+                a.period_end,
+                'observed_annual_period' AS anchor_basis,
+                a.concept_support,
+                a.row_support AS filing_support,
+                a.first_seen_at
             FROM annual_periods a
-            WHERE NOT EXISTS (
+            WHERE NOT EXISTS (SELECT 1 FROM declared_annual d WHERE d.security_id = a.security_id)
+        )
+        SELECT
+            *,
+            row_number() OVER (
+                PARTITION BY security_id
+                ORDER BY concept_support DESC, filing_support DESC, first_seen_at,
+                         period_end, period_start
+            ) AS priority
+        FROM (SELECT * FROM declared_annual UNION ALL SELECT * FROM observed_annual)
+        """
+    )
+    store.con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE _std_fiscal_anchors AS
+        WITH RECURSIVE conflicted AS (
+            -- Only candidates with an overlapping rival need the greedy pass.
+            SELECT
+                c.security_id,
+                c.period_start,
+                c.period_end,
+                row_number() OVER (PARTITION BY c.security_id ORDER BY c.priority) AS step
+            FROM _std_fiscal_anchor_candidates c
+            WHERE EXISTS (
                 SELECT 1
-                FROM annual_periods b
-                WHERE b.security_id = a.security_id
-                  AND date_diff('day', greatest(a.period_start, b.period_start),
-                                least(a.period_end, b.period_end)) + 1 > {FISCAL_ANCHOR_OVERLAP_DAYS}
-                  AND (b.concept_support, b.row_support, b.period_end, b.period_start)
-                      > (a.concept_support, a.row_support, a.period_end, a.period_start)
+                FROM _std_fiscal_anchor_candidates r
+                WHERE r.security_id = c.security_id
+                  AND r.priority <> c.priority
+                  AND date_diff('day', greatest(c.period_start, r.period_start),
+                                least(c.period_end, r.period_end)) + 1 > {FISCAL_ANCHOR_OVERLAP_DAYS}
             )
+        ),
+        greedy AS (
+            -- Walk each issuer's conflicted candidates in priority order; a candidate
+            -- survives only if it does not overlap an already-surviving anchor.
+            SELECT security_id, 0 AS step, CAST([] AS STRUCT(s DATE, e DATE)[]) AS kept
+            FROM (SELECT DISTINCT security_id FROM conflicted)
+            UNION ALL
+            SELECT
+                g.security_id,
+                c.step,
+                CASE
+                    WHEN len(list_filter(
+                        g.kept,
+                        k -> date_diff('day', greatest(k.s, c.period_start),
+                                       least(k.e, c.period_end)) + 1 > {FISCAL_ANCHOR_OVERLAP_DAYS}
+                    )) > 0 THEN g.kept
+                    ELSE list_append(g.kept, {{'s': c.period_start, 'e': c.period_end}})
+                END
+            FROM greedy g
+            JOIN conflicted c
+              ON c.security_id = g.security_id
+             AND c.step = g.step + 1
+        ),
+        greedy_kept AS (
+            SELECT security_id, kept_period.s AS period_start, kept_period.e AS period_end
+            FROM (
+                SELECT security_id, unnest(kept) AS kept_period
+                FROM greedy
+                QUALIFY step = max(step) OVER (PARTITION BY security_id)
+            )
+        ),
+        kept AS (
+            SELECT c.security_id, c.period_start, c.period_end, c.anchor_basis
+            FROM _std_fiscal_anchor_candidates c
+            WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM conflicted x
+                    WHERE x.security_id = c.security_id
+                      AND x.period_start = c.period_start
+                      AND x.period_end = c.period_end
+                )
+               OR EXISTS (
+                    SELECT 1
+                    FROM greedy_kept k
+                    WHERE k.security_id = c.security_id
+                      AND k.period_start = c.period_start
+                      AND k.period_end = c.period_end
+                )
         ),
         declared_filings AS (
             SELECT
@@ -688,7 +827,9 @@ def _create_fiscal_labels(store: DuckDBStore) -> None:
               AND c.security_id IS NOT NULL
               AND c.accession_number IS NOT NULL
               AND c.period_end IS NOT NULL
-              AND NOT EXISTS (SELECT 1 FROM annual_periods a WHERE a.security_id = c.security_id)
+              AND NOT EXISTS (
+                    SELECT 1 FROM _std_fiscal_anchor_candidates a WHERE a.security_id = c.security_id
+              )
             GROUP BY c.security_id, c.accession_number
             HAVING count(DISTINCT upper(c.fiscal_period)) = 1
                AND count(c.fiscal_period) = count(*)
@@ -712,7 +853,7 @@ def _create_fiscal_labels(store: DuckDBStore) -> None:
             ) = 1
         )
         SELECT security_id, period_start, period_end, anchor_basis, {anchor_label} AS fiscal_year
-        FROM (SELECT * FROM observed UNION ALL SELECT * FROM declared)
+        FROM (SELECT * FROM kept UNION ALL SELECT * FROM declared)
         """
     )
     store.con.execute(
@@ -1061,8 +1202,9 @@ def _create_output(store: DuckDBStore, *, symbols: tuple[str, ...]) -> None:
                 label.fiscal_year,
                 CASE
                     WHEN label.fiscal_quarter IS NULL THEN NULL
-                    WHEN raw.basis = 'annual' THEN 'FY'
-                    WHEN raw.basis = 'instant' AND label.fiscal_quarter = 4 THEN 'FY'
+                    -- Only a period ending in fiscal Q4 is a fiscal year; an off-cycle
+                    -- twelve-months-ended column is labelled by its end quarter, like TTM.
+                    WHEN raw.basis IN ('annual', 'instant') AND label.fiscal_quarter = 4 THEN 'FY'
                     WHEN raw.basis = 'quarterly'
                      AND raw.upstream_source LIKE '%fundamental_statement_points_derived_quarter%'
                         THEN 'Q' || label.fiscal_quarter || '_DERIVED'
@@ -1200,6 +1342,7 @@ def _drop_temporary_relations(store: DuckDBStore) -> None:
         "_std_output",
         "_std_fiscal_labels",
         "_std_fiscal_anchors",
+        "_std_fiscal_anchor_candidates",
         "_std_output_raw",
         "_std_combinations",
         "_std_combination_candidates",
@@ -1316,6 +1459,7 @@ def refresh_standardized_set_based(
             replace_params=(options.source,),
             owned_registrations=(
                 "_std_exceptions", "_std_output", "_std_fiscal_labels", "_std_fiscal_anchors",
+                "_std_fiscal_anchor_candidates",
                 "_std_output_raw", "_std_combinations",
                 "_std_combination_candidates", "_std_derived_quarters", "_std_direct",
                 "_std_quarter_inputs", "_std_candidates", "_std_candidates_all",

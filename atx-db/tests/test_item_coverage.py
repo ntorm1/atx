@@ -63,9 +63,9 @@ def _fact(store, security, year, *, item=1001, value=10.0, available=None, key=N
     store.con.execute(
         """INSERT INTO fundamental_standardized
         (standardized_id,source,upstream_source,security_id,cik,item_id,canonical_code,basis,
-         period_end,fiscal_year,value,available_at,as_of_date,input_codes_json,input_item_ids_json,
-         rule_id,combination_rule,is_latest_revision,source_accession)
-        VALUES (?,?,'test',?,'1',?,?,'annual',make_date(?,12,31),?,?,?,make_date(?,12,31),
+         period_end,fiscal_year,fiscal_period,value,available_at,as_of_date,input_codes_json,
+         input_item_ids_json,rule_id,combination_rule,is_latest_revision,source_accession)
+        VALUES (?,?,'test',?,'1',?,?,'annual',make_date(?,12,31),?,'FY',?,?,make_date(?,12,31),
                 '[]','[]','r','identity',?,'accession')""",
         [
             key or f"{security}-{year}-{item}",
