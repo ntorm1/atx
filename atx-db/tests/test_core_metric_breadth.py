@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import datetime as dt
 
+import duckdb
 import pytest
 
+from atx_db import _derived_annual as annual
 from atx_db.derived_metrics import DerivedMetricsOptions, refresh_derived_metrics
 from atx_db.derived_registry import (
     RECLAIMED_ITEM_CODES,
@@ -259,7 +261,7 @@ def _refresh_quarterly_family(store) -> None:
     seed_derived_metric_definitions(store)
     refresh_derived_metrics(store, DerivedMetricsOptions(
         metric_codes=(*_QUARTERLY_MARGIN_AND_ACCELERATION, "gross_margin_change_yoy",
-                      "revenue_q_growth_qoq", "revenue_growth_qoq"),
+                      "revenue_q_growth_qoq", "revenue_growth_qoq", "eps_diluted_q_growth_qoq"),
     ))
 
 
@@ -289,7 +291,7 @@ def test_single_quarter_margins_and_their_yoy_changes_differ_from_trailing_margi
     assert quarterly_change == pytest.approx(_ratio("gross_profit__1004", 11) - _ratio("gross_profit__1004", 7))
     assert trailing_change == pytest.approx(
         _ttm_margin("gross_profit__1004", 11) - _ttm_margin("gross_profit__1004", 7))
-    # 180/300 - 150/260 = +0.0231 versus a trailing +0.0056: not interchangeable.
+    # 180/300 - 150/260 = +0.0231 versus a trailing 382/780 - 312/650 = +0.0097: not interchangeable.
     assert abs(quarterly_change - trailing_change) > 0.01
 
 
@@ -385,9 +387,12 @@ def test_fifty_three_week_year_compares_the_same_fiscal_quarter_bucket(tmp_store
 
 
 _ONE_QUARTER_APART = (
-    "eps_basic_q_growth_qoq", "revenue_q_growth_qoq", "revenue_q_growth_yoy_accel",
+    "revenue_q_growth_qoq", "revenue_q_growth_yoy_accel",
     "eps_diluted_q_growth_yoy_accel", "gross_margin_q_change_yoy_accel", "operating_margin_q_change_yoy_accel",
 )
+# Share-count-denominated one-quarter comparisons: a 10-Q never restates the
+# preceding quarter, so span adjacency cannot prove a common share basis.
+_PER_SHARE_QOQ = ("eps_basic_q_growth_qoq", "eps_diluted_q_growth_qoq")
 
 
 def test_one_quarter_comparisons_are_quarterly_only_when_fiscal_spans_prove_adjacency(tmp_store):
@@ -405,6 +410,9 @@ def test_one_quarter_comparisons_are_quarterly_only_when_fiscal_spans_prove_adja
             assert _latest_state(tmp_store, code, _QUARTERS[index])[1] == "valid", code
             assert _origin(tmp_store, code, _QUARTERS[index]) == "quarterly", code
             assert _origin(tmp_store, code, _QUARTERS[index], "S4") == "quarterly", code
+        for code in _PER_SHARE_QOQ:
+            assert _latest_state(tmp_store, code, _QUARTERS[index])[1] == "valid", code
+            assert _origin(tmp_store, code, _QUARTERS[index]) == "incomparable", code
     for code in ("eps_basic_q_growth_yoy", "gross_margin_q_change_yoy", "revenue_q_growth_yoy"):
         assert _origin(tmp_store, code, _QUARTERS[9], "S5") == "quarterly", code
     # Overlapping trailing windows are never adjacent quarters.
@@ -419,3 +427,83 @@ def test_one_quarter_comparisons_are_quarterly_only_when_fiscal_spans_prove_adja
         for period_end in stub_calendar[9:11]:
             assert _origin(tmp_store, code, period_end, "S6") == "incomparable", (code, period_end)
         assert _origin(tmp_store, code, stub_calendar[11], "S6") == "quarterly", code
+
+
+def test_per_share_qoq_across_a_reverse_split_is_never_labeled_comparable(tmp_store):
+    # 1:10 reverse split between the second and third quarters: the third 10-Q
+    # does not restate the second quarter, so its unadjusted EPS base is pre-split.
+    quarters = _QUARTERS[:3]
+    for index, (eps, revenue) in enumerate(((-0.04, 100.0), (-0.05, 110.0), (-0.50, 121.0))):
+        period_start = quarters[index - 1] + dt.timedelta(days=1) if index else dt.date(2019, 1, 1)
+        available_at = _available(quarters[index])
+        for code, value in (("eps_diluted", eps), ("eps_basic__1034", eps), ("revenue", revenue)):
+            tmp_store.con.execute(
+                """
+                INSERT INTO fundamental_standardized (
+                    standardized_id, source, security_id, item_id, canonical_code, basis,
+                    period_start, period_end, value, as_of_date, available_at, input_codes_json,
+                    input_item_ids_json, rule_id, combination_rule, revision_sequence,
+                    is_latest_revision
+                ) VALUES (?, 'test', 'S7', 1, ?, 'quarterly', ?, ?, ?, ?, ?, '[]', '[]', 'r', 'direct', 1, true)
+                """,
+                [f"S7|{code}|{quarters[index]}", code, period_start, quarters[index], value,
+                 available_at.date(), available_at],
+            )
+    seed_derived_metric_definitions(tmp_store)
+    refresh_derived_metrics(tmp_store, DerivedMetricsOptions(
+        metric_codes=(*_PER_SHARE_QOQ, "revenue_q_growth_qoq")))
+
+    for code in _PER_SHARE_QOQ:
+        # The arithmetic is published (-9.0), but never as a comparable quarterly pair.
+        assert _latest_state(tmp_store, code, quarters[2], "S7")[:2] == (pytest.approx(-9.0), "valid")
+        assert _origin(tmp_store, code, quarters[2], "S7") == "incomparable"
+    assert _origin(tmp_store, "revenue_q_growth_qoq", quarters[2], "S7") == "quarterly"
+
+
+def _quarter(start: dt.date | None, end: dt.date) -> tuple[dt.date | None, dt.date]:
+    return start, end
+
+
+def _days(start: dt.date, days: int) -> tuple[dt.date, dt.date]:
+    return start, start + dt.timedelta(days=days - 1)
+
+
+_Q1_2024 = _days(dt.date(2024, 1, 1), 91)
+
+
+@pytest.mark.parametrize(("older", "newer", "comparable"), [
+    (_Q1_2024, _days(dt.date(2024, 4, 1), 91), True),
+    (_days(dt.date(2024, 1, 1), 70), _days(dt.date(2024, 3, 11), 70), True),
+    (_Q1_2024, _days(dt.date(2024, 4, 1), 69), False),
+    (_days(dt.date(2024, 1, 1), 120), _days(dt.date(2024, 4, 30), 120), True),
+    (_Q1_2024, _days(dt.date(2024, 4, 1), 121), False),
+    (_days(dt.date(2024, 1, 1), 69), _days(dt.date(2024, 3, 10), 91), False),
+    (_Q1_2024, _days(dt.date(2024, 3, 31), 91), False),  # starts on the prior quarter's end
+    (_Q1_2024, _days(dt.date(2024, 3, 15), 91), False),  # overlap
+    (_Q1_2024, _days(dt.date(2024, 4, 8), 91), True),  # 7-day gap
+    (_Q1_2024, _days(dt.date(2024, 4, 9), 91), False),  # 8-day gap
+    (_Q1_2024, _quarter(None, dt.date(2024, 6, 30)), False),  # no fiscal start
+])
+def test_one_bucket_adjacency_limits(older, newer, comparable):
+    assert _one_bucket_apart_comparable(older, newer) is comparable
+
+
+def test_one_bucket_adjacency_never_certifies_a_per_share_pair():
+    newer = _days(dt.date(2024, 4, 1), 91)
+    assert _one_bucket_apart_comparable(_Q1_2024, newer) is True
+    assert _one_bucket_apart_comparable(_Q1_2024, newer, share_basis=True) is False
+    basis = annual.share_basis_codes()
+    assert {"eps_diluted", "eps_basic__1034", "eps_diluted_ttm", "eps_basic_ttm", "eps_ttm"} <= basis
+    # Growth rates and margins are basis-free: accelerations keep their span proof.
+    assert not {"eps_diluted_q_growth_yoy", "revenue_q_growth_yoy", "gross_margin_q_change_yoy",
+                "revenue", "gross_margin_q"} & basis
+
+
+def _one_bucket_apart_comparable(older, newer, *, share_basis: bool = False) -> bool:
+    def span(dates, offset):
+        start, end = (f"DATE '{value}'" if value is not None else "NULL::DATE" for value in dates)
+        return annual.Span(start, end, "false", "true", offset, share_basis and offset == 0)
+
+    combined = annual._combine(span(newer, 0), span(older, 1))
+    with duckdb.connect(config={"memory_limit": "64MB", "threads": 1}) as con:
+        return con.execute(f"SELECT {combined.coherent}").fetchone()[0]

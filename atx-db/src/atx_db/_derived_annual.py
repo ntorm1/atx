@@ -7,7 +7,8 @@ values under their quarterly codes. The arithmetic DSL remains unchanged.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import Any
 
 from .derived_dsl import (
@@ -23,7 +24,8 @@ from .derived_dsl import (
     lower,
     parse_expression,
 )
-from .derived_registry import DerivedMetricDefinition
+from .derived_registry import DerivedMetricDefinition, default_derived_definitions, topological_order
+from .item_registry import read_fundamental_item_seed
 
 WEIGHTED_SHARES = frozenset({"weighted_avg_shares_basic", "weighted_avg_shares_diluted"})
 
@@ -128,6 +130,8 @@ class Span:
     annual: str = "false"
     coherent: str = "true"
     offset: int | None = None
+    #: The operand's value is per share (share-count denominated). Static, not SQL.
+    share_basis: bool = False
 
 
 def _case(condition: str, yes: str, no: str) -> str:
@@ -144,6 +148,22 @@ ADJACENT_QUARTER_MAX_GAP_DAYS = 7
 
 def _quarter_length(span: Span) -> str:
     return f"(date_diff('day', {span.start}, {span.end}) + 1 BETWEEN 70 AND 120)"
+
+
+@lru_cache(maxsize=1)
+def share_basis_codes() -> frozenset[str]:
+    """Operand codes whose values are per share, from existing registry attributes.
+
+    Items with ``unit_type='per_share'`` plus derived metrics of family
+    ``per_share`` or ``rollup`` metrics over such operands (e.g. ``eps_diluted_ttm``).
+    Growth, margin and other ratio families are basis-free values.
+    """
+    codes = {row.canonical_code for row in read_fundamental_item_seed() if row.unit_type == "per_share"}
+    for definition in topological_order(default_derived_definitions()):
+        if definition.family == "per_share" or (
+                definition.family == "rollup" and codes.intersection(definition.bare_names)):
+            codes.add(definition.metric_code)
+    return frozenset(codes)
 
 
 def _adjacent_quarters(newer: Span, older: Span) -> str:
@@ -173,7 +193,10 @@ def _combine(left: Span, right: Span) -> Span:
             f"(({left.start}) IS NULL OR ({right.start}) IS NULL OR ({left.start}) = ({right.start}))"
         )
     elif distance == 1:
-        comparable = _adjacent_quarters(newer, older)
+        # A 10-Q restates its prior-year comparative, never the preceding quarter,
+        # so a per-share pair one quarter apart may straddle a split: span
+        # adjacency is not a share-basis proof and the pair stays incomparable.
+        comparable = "false" if newer.share_basis or older.share_basis else _adjacent_quarters(newer, older)
     elif distance % 4:
         comparable = "false"
     else:
@@ -188,6 +211,7 @@ def _combine(left: Span, right: Span) -> Span:
         f"(({left.annual}) OR ({right.annual}))",
         f"(({left.coherent}) AND ({right.coherent}) AND ({comparable}))",
         newer.offset,
+        left.share_basis or right.share_basis,
     )
 
 
@@ -200,7 +224,8 @@ def lower_span(node: Node, context: LowerContext, refs: dict[str, Span]) -> Span
     if isinstance(node, Number):
         return Span()
     if isinstance(node, Ref):
-        return refs[node.name]
+        span = refs[node.name]
+        return replace(span, share_basis=True) if node.name in share_basis_codes() else span
     if isinstance(node, Neg):
         return lower_span(node.operand, context, refs)
     if isinstance(node, BinOp):
@@ -219,6 +244,7 @@ def lower_span(node: Node, context: LowerContext, refs: dict[str, Span]) -> Span
                 annual=_case(condition, child.annual, result.annual),
                 coherent=_case(condition, child.coherent, result.coherent),
                 offset=child.offset if child.offset is not None else result.offset,
+                share_basis=child.share_basis or result.share_basis,
             )
         return result
     if node.name in SCALAR_FUNCTIONS:
@@ -239,14 +265,15 @@ def lower_span(node: Node, context: LowerContext, refs: dict[str, Span]) -> Span
             if index < 4:
                 coherent.append(f"({ends})[{index}] + INTERVAL 1 DAY = ({starts})[{index + 1}]")
         return Span(f"({starts})[1]", f"({ends})[4]",
-                    f"bool_or({inner.annual}) OVER ({frame})", " AND ".join(coherent), 0)
+                    f"bool_or({inner.annual}) OVER ({frame})", " AND ".join(coherent), 0, inner.share_basis)
     if node.name == "stdev_q":
         period_argument = node.args[1]
         if not isinstance(period_argument, Number):
             raise TypeError(f"{node.name} metadata requires a numeric literal period")
         size = int(period_argument.value)
         frame = window + f" ROWS BETWEEN {size - 1} PRECEDING AND CURRENT ROW"
-        return Span(inner.start, inner.end, f"bool_or({inner.annual}) OVER ({frame})", "false", 0)
+        return Span(inner.start, inner.end, f"bool_or({inner.annual}) OVER ({frame})", "false", 0,
+                    inner.share_basis)
     periods = {"avg2": 4, "yoy": 4, "qoq": 1}.get(node.name)
     if node.name in ("lag", "cagr"):
         period_argument = node.args[1]
@@ -261,12 +288,14 @@ def lower_span(node: Node, context: LowerContext, refs: dict[str, Span]) -> Span
         annual=f"lag({inner.annual}, {periods}) OVER ({window})",
         coherent=f"lag({inner.coherent}, {periods}) OVER ({window})",
         offset=periods,
+        share_basis=inner.share_basis,
     )
     if node.name == "lag":
         return previous
     paired = _combine(inner, previous)
     if node.name == "avg2":
-        return Span("NULL::DATE", inner.end, paired.annual, paired.coherent, 0)
+        return Span("NULL::DATE", inner.end, paired.annual, paired.coherent, 0, inner.share_basis)
+    # yoy/qoq/cagr publish a relative change: a basis-free value.
     return Span(inner.start, inner.end, paired.annual, paired.coherent, 0)
 
 
