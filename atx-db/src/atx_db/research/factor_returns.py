@@ -41,8 +41,10 @@ in the research store (RX6, never the warehouse):
   robust test (:func:`atx_db.research.stats.mean_inference` on the regression influence
   series, i.e. the EWC sandwich variance with a Student-t(B) reference; the Newey-West t
   is reported beside it). For an overlapping h-month R3b series,
-  :func:`span_test_against_run` compounds each factor over the same h consecutive
-  formations (:func:`compound_factor_windows`) and tests with ``horizon_periods = h``.
+  :func:`span_test_against_run` uses the run's exact h-month rows (below) and tests with
+  ``horizon_periods = h``; without them it compounds the monthly rows over h consecutive
+  formations (:func:`compound_factor_windows`, labeled ``compounded_21_session_windows``,
+  no significance claim at h >= 6: ``significance_claimable``).
 
 Breakpoints and venue (the R3b rule, reused)
 --------------------------------------------
@@ -80,6 +82,13 @@ Return windows and clocks
   on every name with a verified cap (and the characteristic) at the formation; returns
   average over names with a valid label, the rest are counted (``n_unlabeled``). Weights
   are the verified formation-date cap (a lagged cap: returns start at the entry close).
+* **Exact h-month** rows (``frequency='monthly_h3'/'monthly_h6'/'monthly_h12'``,
+  ``FactorSpec.horizons_months``): the same formation portfolios (members, groups and
+  weights) over the R3a h-month label window, entry -> entry + 21h sessions (63/126/252
+  labels, same revision and FQ2 rules), with ``rf`` over those sessions; only matured
+  windows are written. They span an h-month R3b series exactly, where compounding h
+  monthly rows gaps or double-counts sessions (a month has 19-23 sessions, a monthly
+  label 21) and rebalances monthly instead of holding.
 * **Daily** rows are close-to-close returns of the selected bars (the label publisher's
   pick, ``adjusted_close``) of the names held from the formation close to the last
   session of the next calendar month, capped at the next formation (a missing month never
@@ -146,12 +155,18 @@ from ..market_daily import MARKET_DAILY_SOURCE_NAME, MARKET_DAILY_STRICT_SOURCE_
 from . import evaluation as _evaluation
 from . import stats
 from .features import IN_DOMAIN, OWNER_BASIS_LINKED, OWNER_BASIS_UNLINKED
-from .labels import LABEL_CALCULATION_VERSION, MONTHLY_LABEL_SOURCE, label_revision_order_sql, label_status_sql
+from .labels import (
+    HORIZON_FORMATION_UNITS,
+    LABEL_CALCULATION_VERSION,
+    MONTHLY_LABEL_SOURCE,
+    label_revision_order_sql,
+    label_status_sql,
+)
 from .labels import _calendar_keys as _label_calendar_keys  # the label calendar identity (same package)
 from .panel import CALENDAR_FORMED, OWNER_LINK_FAILURES, VERIFIED_SHARES_SOURCES
 from .store import ResearchStore
 
-FACTOR_VERSION = "research-factor-returns-v2"
+FACTOR_VERSION = "research-factor-returns-v3"
 FACTOR_SCHEMA_VERSION = 2
 BASES = ("strict", "reconstructed")
 #: market_daily source of each basis (the R2a panel's own mapping).
@@ -199,6 +214,15 @@ SIZE_PERCENTILE = 50.0
 SEGMENT_PERCENTILES = (20.0, 50.0)
 SIZE_SEGMENTS = ("micro", "small", "large")
 EXPOSURE_ESTIMATED = "estimated"
+#: Multi-month horizons with published R3a labels (63/126/252 sessions): exact h-month factor rows.
+LABEL_HORIZON_MONTHS = tuple(sorted(units for units in HORIZON_FORMATION_UNITS.values() if units > 1))
+#: How a span test's factor windows relate to the series' windows.
+WINDOW_EXACT = "exact_label_window"
+WINDOW_COMPOUNDED = "compounded_21_session_windows"
+WINDOW_CALLER = "caller_supplied"
+#: Compounded 21-session windows carry a turn-of-month bias at long horizons (P4 re-review N1):
+#: no significance claim is made from them at or beyond this horizon.
+COMPOUNDED_CLAIM_MAX_MONTHS = 5
 STATUS_RF_NONE = "rf_basis_none"
 STATUS_NO_RF = "no_risk_free_observation"
 REBALANCE = "monthly"
@@ -449,6 +473,8 @@ class FactorSpec:
     factor_window_months: int = 36
     factor_min_months: int = 24
     rank_segments: tuple[int, int] = (1000, 3000)
+    #: Exact h-month factor rows (``frequency='monthly_h{h}'``) from the R3a h-month labels.
+    horizons_months: tuple[int, ...] = LABEL_HORIZON_MONTHS
     daily: bool = True
     exposures: bool = True
     verify_panels: bool = True
@@ -489,7 +515,10 @@ def validate_factor_spec(spec: FactorSpec) -> FactorSpec:
     for name in ("daily", "exposures", "verify_panels"):
         if not isinstance(getattr(spec, name), bool):
             raise FactorInputError(f"{name} must be a bool")
-    return replace(spec, label_cutoff=cutoff, industry_versions=industry)
+    horizons = tuple(spec.horizons_months)
+    if len(set(horizons)) != len(horizons) or any(h not in LABEL_HORIZON_MONTHS for h in horizons):
+        raise FactorInputError(f"horizons_months must be distinct values from {LABEL_HORIZON_MONTHS}")
+    return replace(spec, label_cutoff=cutoff, industry_versions=industry, horizons_months=tuple(sorted(horizons)))
 
 
 def spec_payload(spec: FactorSpec) -> dict[str, Any]:
@@ -497,7 +526,10 @@ def spec_payload(spec: FactorSpec) -> dict[str, Any]:
     payload["label_cutoff"] = spec.label_cutoff.isoformat()
     payload["industry_versions"] = list(spec.industry_versions)
     payload["rank_segments"] = list(spec.rank_segments)
-    payload.update(factor_version=FACTOR_VERSION, label_calculation_version=LABEL_CALCULATION_VERSION,
+    payload["horizons_months"] = list(spec.horizons_months)
+    payload.update(horizon_rule=("monthly_h{h}: the formation's monthly portfolios (same members and weights) "
+                                 "over the R3a label window entry -> entry + 21h sessions; matured windows only"),
+                   factor_version=FACTOR_VERSION, label_calculation_version=LABEL_CALCULATION_VERSION,
                    label_sessions=MONTHLY_LABEL_SESSIONS, sorts={k: list(v) for k, v in SORTS.items()},
                    smb_sorts=list(SMB_SORTS), exposure_factors=list(EXPOSURE_FACTORS),
                    sort_percentiles=list(SORT_PERCENTILES), size_percentile=SIZE_PERCENTILE,
@@ -729,6 +761,13 @@ class SpanTestResult:
     beta_inference: dict[str, stats.MeanInference]
     r2: float
     residual_sd: float
+    #: How the factor windows were built (:data:`WINDOW_EXACT`, :data:`WINDOW_COMPOUNDED`,
+    #: :data:`WINDOW_CALLER`).
+    factor_window_basis: str = WINDOW_CALLER
+    #: False for compounded 21-session windows at ``horizon_periods >= 6``: the windows then
+    #: miss the label window by up to ~h sessions, so no significance claim may be made (P5
+    #: must report such a result as descriptive only).
+    significance_claimable: bool = True
 
     @property
     def alpha_robust_p(self) -> float:
@@ -743,11 +782,17 @@ class SpanTestResult:
                 "horizon_periods": self.horizon_periods, "alpha": self.alpha,
                 "alpha_inference": self.alpha_inference.as_dict(), "betas": dict(self.betas),
                 "beta_inference": {k: v.as_dict() for k, v in self.beta_inference.items()},
-                "r2": self.r2, "residual_sd": self.residual_sd}
+                "r2": self.r2, "residual_sd": self.residual_sd,
+                "factor_window_basis": self.factor_window_basis,
+                "significance_claimable": self.significance_claimable}
+
+
+def _claimable(factor_window_basis: str, horizon_periods: int) -> bool:
+    return not (factor_window_basis == WINDOW_COMPOUNDED and horizon_periods > COMPOUNDED_CLAIM_MAX_MONTHS)
 
 
 def span_test(ls_returns: pd.Series | Sequence[float], factors: pd.DataFrame | Mapping[str, Sequence[float]], *,
-              horizon_periods: int = 1) -> SpanTestResult:
+              horizon_periods: int = 1, factor_window_basis: str = WINDOW_CALLER) -> SpanTestResult:
     """Alpha of a long-short series beyond known factors, EWC fixed-b robust (R3a).
 
     **The factors must cover the same window as each series value**: an overlapping
@@ -762,8 +807,12 @@ def span_test(ls_returns: pd.Series | Sequence[float], factors: pd.DataFrame | M
     OLS influence series ``b_j + [(X'X/n)^-1 x_t e_t]_j`` (mean ``b_j``, long-run variance
     = the sandwich), so ``robust_p_value`` / ``z_equivalent`` / ``hlz_pass`` are the EWC
     Student-t(B) test and ``nw_*`` the Newey-West comparison, with ``horizon_periods = h``
-    for overlapping h-month series.
+    for overlapping h-month series. ``factor_window_basis`` labels the factor windows;
+    :data:`WINDOW_COMPOUNDED` at ``horizon_periods >= 6`` sets ``significance_claimable``
+    False.
     """
+    if factor_window_basis not in (WINDOW_EXACT, WINDOW_COMPOUNDED, WINDOW_CALLER):
+        raise FactorInputError(f"unknown factor_window_basis {factor_window_basis!r}")
     y = ls_returns if isinstance(ls_returns, pd.Series) else pd.Series(list(ls_returns), dtype=float)
     frame = factors if isinstance(factors, pd.DataFrame) else pd.DataFrame(dict(factors))
     if not len(frame.columns):
@@ -807,7 +856,8 @@ def span_test(ls_returns: pd.Series | Sequence[float], factors: pd.DataFrame | M
     return SpanTestResult(names, n, inferences[0].span, int(horizon_periods), float(coefficients[0]), inferences[0],
                           {name: float(coefficients[j + 1]) for j, name in enumerate(names)},
                           {name: inferences[j + 1] for j, name in enumerate(names)},
-                          1.0 - rss / tss if tss > 0 else _NAN, math.sqrt(rss / max(n - k, 1)))
+                          1.0 - rss / tss if tss > 0 else _NAN, math.sqrt(rss / max(n - k, 1)),
+                          factor_window_basis, _claimable(factor_window_basis, int(horizon_periods)))
 
 
 # ---------------------------------------------------------------------------
@@ -1018,10 +1068,22 @@ def _stage(store: ResearchStore, spec: FactorSpec, table: _evaluation.FeatureTab
 # Monthly: market, 2x3 style factors, industries, breakpoints, segments
 # ---------------------------------------------------------------------------
 
-def _monthly_labels(con: duckdb.DuckDBPyConnection, spec: FactorSpec, formations: Sequence[_Formation]
-                    ) -> pd.DataFrame:
-    """R3a 21-session labels of every cohort security at each formation, as R3b reads them
-    (revision first, then the FQ2 validity fragment at the observation cutoff)."""
+def _horizon_window(f: _Formation, horizon_months: int, work: _Work, spec: FactorSpec) -> _Formation:
+    """``f`` with the R3a h-month label window: entry + 21h sessions, matured by the cutoff rule."""
+    if not f.entry_aligned or f.session is None:
+        return replace(f, label_end=None, label_matured=False)
+    end_index = f.session + MONTHLY_LABEL_SESSIONS * int(horizon_months)
+    end = work.sessions[end_index] if end_index < len(work.sessions) else None
+    matured = end is not None and (dt.datetime.combine(end, dt.time()) + dt.timedelta(days=1, hours=12)
+                                   ) <= spec.label_cutoff
+    return replace(f, label_end=end, label_matured=matured)
+
+
+def _monthly_labels(con: duckdb.DuckDBPyConnection, spec: FactorSpec, formations: Sequence[_Formation],
+                    horizon_sessions: int = MONTHLY_LABEL_SESSIONS) -> pd.DataFrame:
+    """R3a labels (21 sessions, or ``horizon_sessions`` with each formation's ``label_end`` at
+    that horizon) of every cohort security at each formation, as R3b reads them (revision
+    first, then the FQ2 validity fragment at the observation cutoff)."""
     windows = [f for f in formations if f.entry_aligned and f.label_end is not None]
     if not windows:
         return pd.DataFrame({"month_index": pd.Series(dtype="int64"), "security": pd.Series(dtype="int64"),
@@ -1049,7 +1111,7 @@ def _monthly_labels(con: duckdb.DuckDBPyConnection, spec: FactorSpec, formations
         JOIN _p4_lwin w ON w.entry_date = l.as_of_date
         JOIN _ev_securities s ON s.security_id = l.security_id
         WHERE l.revision = 1
-    """, [spec.label_source, MONTHLY_LABEL_SESSIONS, spec.label_cutoff, LABEL_CALCULATION_VERSION,
+    """, [spec.label_source, int(horizon_sessions), spec.label_cutoff, LABEL_CALCULATION_VERSION,
           spec.label_cutoff]).df()
 
 
@@ -1073,9 +1135,19 @@ def _chunk_frame(con: duckdb.DuckDBPyConnection, months: list[int], labels: pd.D
         part = part.drop_duplicates(["month_index", "security"]).rename(
             columns={"industry_group": f"ind::{taxonomy}"})[["month_index", "security", f"ind::{taxonomy}"]]
         frame = frame.merge(part, on=["month_index", "security"], how="left")
+    return _with_returns(frame, labels)
+
+
+def _with_returns(frame: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
+    """``frame`` with ``ret``/``ret_at`` from the valid rows of ``labels`` (replacing any)."""
+    frame = frame.drop(columns=[c for c in ("ret", "ret_at") if c in frame.columns])
     valid = labels[labels["status"] == "valid"][["month_index", "security", "ret", "available_at"]]
-    frame = frame.merge(valid.rename(columns={"available_at": "ret_at"}), on=["month_index", "security"], how="left")
-    return frame
+    return frame.merge(valid.rename(columns={"available_at": "ret_at"}), on=["month_index", "security"], how="left")
+
+
+def horizon_frequency(horizon_months: int) -> str:
+    """``frequency`` of the exact h-month factor rows (R3a h-month label windows)."""
+    return FREQ_MONTHLY if horizon_months == 1 else f"{FREQ_MONTHLY}_h{int(horizon_months)}"
 
 
 def _market_row(base: dict[str, Any], factor: str, value: float, **extra: Any) -> dict[str, Any]:
@@ -1087,8 +1159,15 @@ def _market_row(base: dict[str, Any], factor: str, value: float, **extra: Any) -
 
 
 def _monthly_formation(f: _Formation, part: pd.DataFrame, spec: FactorSpec, work: _Work, rf_m: float,
-                       rf_basis: str) -> dict[str, list[dict[str, Any]]]:
-    """Every monthly row of one formation (numpy over the formation's context rows)."""
+                       rf_basis: str, *, frequency: str = FREQ_MONTHLY, structural: bool = True
+                       ) -> dict[str, list[dict[str, Any]]]:
+    """Every monthly row of one formation (numpy over the formation's context rows).
+
+    With ``frequency`` = an h-month frequency, ``f`` carries the h-month label window and
+    ``part`` the h-month label returns: the same formation portfolios (they depend only on
+    caps and characteristics) earn their exact h-month returns. ``structural=False`` skips
+    the breakpoint and segment rows (written once, by the 1-month pass).
+    """
     security_id = part["security_id"].to_numpy(dtype=object)
     linked, unlinked = _bools(part, "linked"), _bools(part, "unlinked")
     universe = linked | unlinked
@@ -1100,7 +1179,7 @@ def _monthly_formation(f: _Formation, part: pd.DataFrame, spec: FactorSpec, work
     ret_at = _stamps(part, "ret_at")
     labeled = np.isfinite(ret)
     weight = np.where(verified, cap, 0.0)
-    base = {"run_id": spec.run_id, "frequency": FREQ_MONTHLY, "period_date": f.formation_date,
+    base = {"run_id": spec.run_id, "frequency": frequency, "period_date": f.formation_date,
             "window_start": f.entry_date, "window_end": f.label_end, "basis": work.basis, "rf_basis": rf_basis}
     out: dict[str, list[dict[str, Any]]] = {"returns": [], "breakpoints": [], "segments": [], "mf": []}
     matured = f.label_matured
@@ -1156,7 +1235,7 @@ def _monthly_formation(f: _Formation, part: pd.DataFrame, spec: FactorSpec, work
         values = _floats(part, feature) if feature in part.columns else np.full(len(part), _NAN)
         reference, venue = reference_names(values, verified, nyse, spec.nyse_min_names)
         variables[feature] = (values, reference, venue)
-    for name, (values, reference, venue) in variables.items():
+    for name, (values, reference, venue) in (variables.items() if structural else ()):
         cuts = (np.percentile(values[reference], [20.0, 30.0, 50.0, 70.0]) if reference is not None
                 else np.full(4, _NAN))
         out["breakpoints"].append({
@@ -1178,7 +1257,7 @@ def _monthly_formation(f: _Formation, part: pd.DataFrame, spec: FactorSpec, work
     rank[ranked] = np.arange(1, len(ranked) + 1)
     rank_segment = np.where(~verified, "unknown", np.where(rank <= top, f"top_{top}", np.where(
         rank <= total, f"next_{total - top}", f"beyond_{total}")))
-    for i in np.flatnonzero(universe):
+    for i in (np.flatnonzero(universe) if structural else ()):
         out["segments"].append({
             "run_id": spec.run_id, "formation_date": f.formation_date, "security_id": security_id[i],
             "owner_basis": OWNER_BASIS_LINKED if linked[i] else OWNER_BASIS_UNLINKED,
@@ -1686,6 +1765,7 @@ def build_factor_returns(store: ResearchStore, spec: FactorSpec, *, risk_free: R
         if not any("49" in taxonomy for _, taxonomy, _ in work.taxonomies):
             blockers.append("ff49_industry_returns_not_built_needs_ff49_classification_version")
         venue_counts: dict[str, int] = {}
+        horizon_counts: dict[int, int] = {}
         not_matured = 0
         for start in range(0, len(work.formations), spec.formation_chunk):
             chunk = work.formations[start:start + spec.formation_chunk]
@@ -1722,6 +1802,19 @@ def build_factor_returns(store: ResearchStore, spec: FactorSpec, *, risk_free: R
                 _stage_frame(con, "_p4_unused", pd.DataFrame(mf_rows), (
                     ("month_index", "BIGINT"), ("window_end", "DATE"), ("factor_id", "VARCHAR"), ("value", "DOUBLE"),
                     ("available_at", "TIMESTAMP"), ("venue_basis", "VARCHAR")), into="_p4_mf")
+            # Exact h-month factor rows: the same formation portfolios over the R3a h-month label
+            # windows (entry + 21h sessions), so an h-month R3b series is spanned like for like.
+            for h in spec.horizons_months:
+                horizon_chunk = [_horizon_window(f, h, work, spec) for f in chunk]
+                sessions = MONTHLY_LABEL_SESSIONS * h
+                horizon_frame = _with_returns(frame, _monthly_labels(con, spec, horizon_chunk, sessions))
+                rf_h = rf.period_returns(np.array([f.formation_date for f in chunk], dtype="datetime64[D]"), sessions)
+                for i, f in enumerate(horizon_chunk):
+                    if f.label_matured:
+                        rows["returns"] += _monthly_formation(
+                            f, horizon_frame[horizon_frame["month_index"] == f.month_index], spec, work,
+                            float(rf_h[i]), rf.basis, frequency=horizon_frequency(h), structural=False)["returns"]
+                        horizon_counts[h] = horizon_counts.get(h, 0) + 1
             if spec.daily:
                 rows["returns"] += _daily_chunk(store, spec, work, chunk, rf)
             exposures = _exposures_chunk(store, spec, work, chunk, rf.basis) if spec.exposures else pd.DataFrame()
@@ -1730,7 +1823,9 @@ def build_factor_returns(store: ResearchStore, spec: FactorSpec, *, risk_free: R
                     counts[key] += _insert(con, key, rows[key])
                 counts["exposures"] += _insert(con, "exposures", exposures)
         diagnostic.update(style_venue_formations=venue_counts, label_windows_not_matured=not_matured,
-                          daily=work.diag.get("daily"))
+                          daily=work.diag.get("daily"),
+                          horizon_formations={horizon_frequency(h): horizon_counts.get(h, 0)
+                                              for h in spec.horizons_months})
         fallback = sum(n for venue, n in venue_counts.items() if venue != VENUE_NYSE_PIT)
         if fallback:
             blockers.append(f"{table.basis}_style_formations_without_pit_nyse_breakpoints:{fallback}")
@@ -1765,13 +1860,17 @@ def _finish(store: ResearchStore, spec: FactorSpec, basis: str, rf_basis: str, s
 
 def load_factor_returns(store: ResearchStore, run_id: str, *, frequency: str = FREQ_MONTHLY,
                         factors: Sequence[str] | None = None) -> pd.DataFrame:
-    """Wide factor returns of a complete run: index ``period_date``, one column per factor."""
+    """Wide factor returns of a complete run: index ``period_date``, one column per factor.
+
+    ``frequency`` is ``daily``, ``monthly`` or ``monthly_h{h}`` (:func:`horizon_frequency`,
+    the exact h-month label-window rows; ``period_date`` is the formation date)."""
     con = store.con
     row = con.execute("SELECT status FROM research_factor_runs WHERE run_id=?", [run_id]).fetchone()
     if row is None or row[0] != "complete":
         raise FactorInputError(f"factor run {run_id} is absent or not complete")
-    if frequency not in (FREQ_DAILY, FREQ_MONTHLY):
-        raise FactorInputError("frequency must be daily or monthly")
+    allowed = (FREQ_DAILY, FREQ_MONTHLY, *(horizon_frequency(h) for h in LABEL_HORIZON_MONTHS))
+    if frequency not in allowed:
+        raise FactorInputError(f"frequency must be one of {allowed}")
     long = con.execute("SELECT period_date, factor_id, value FROM research_factor_returns "
                        "WHERE run_id=? AND frequency=? ORDER BY period_date, factor_id", [run_id, frequency]).df()
     wide = long.pivot(index="period_date", columns="factor_id", values="value")
@@ -1785,7 +1884,10 @@ def load_factor_returns(store: ResearchStore, run_id: str, *, frequency: str = F
 
 
 def _month_periods(index: Any, label: str) -> pd.PeriodIndex:
-    periods = pd.PeriodIndex(pd.to_datetime(pd.Index(index)).to_period("M"))
+    if isinstance(index, pd.PeriodIndex):
+        periods = index.asfreq("M")
+    else:
+        periods = pd.PeriodIndex(pd.to_datetime(pd.Index(index)).to_period("M"))
     if periods.has_duplicates:
         raise FactorInputError(f"{label}: more than one formation in a calendar month")
     return periods
@@ -1835,17 +1937,34 @@ def compound_factor_windows(monthly: pd.DataFrame, horizon_periods: int, *,
 
 def span_test_against_run(store: ResearchStore, run_id: str, ls_returns: pd.Series, *,
                           factors: Sequence[str] = EXPOSURE_FACTORS, horizon_periods: int = 1) -> SpanTestResult:
-    """:func:`span_test` of an R3b-style series (indexed by formation date; ``horizon_periods``
-    = its label horizon in months) on a run's monthly factors compounded over the same h
-    formations (:func:`compound_factor_windows`), both reindexed onto the full monthly
-    calendar so a missing formation is a gap in the HAC sums."""
-    wide = load_factor_returns(store, run_id)
-    compounded = compound_factor_windows(wide, horizon_periods, factors=factors)
+    """:func:`span_test` of an R3b-style series (indexed by formation date or month period;
+    ``horizon_periods`` = its label horizon in months) on the run's factors over the same
+    windows, both reindexed onto the full monthly calendar so a missing formation is a gap
+    in the HAC sums.
+
+    ``h = 1`` uses the monthly rows; ``h > 1`` the run's exact ``monthly_h{h}`` rows (the
+    R3a h-month label windows, ``factor_window_basis='exact_label_window'``) when it has
+    them, else the monthly rows compounded over h formations (:func:`compound_factor_windows`,
+    ``'compounded_21_session_windows'``; ``significance_claimable`` is False at h >= 6)."""
+    h = int(horizon_periods)
+    if h != horizon_periods or h < 1:
+        raise FactorInputError("horizon_periods must be a positive integer")
+    frequency = horizon_frequency(h)
+    has_exact = h == 1 or (h in LABEL_HORIZON_MONTHS and store.con.execute(
+        "SELECT count(*) FROM research_factor_returns WHERE run_id=? AND frequency=?",
+        [run_id, frequency]).fetchone()[0] > 0)
+    if has_exact:
+        windows = load_factor_returns(store, run_id, frequency=frequency, factors=factors)
+        windows.index = _month_periods(windows.index, "factors")
+        basis = WINDOW_EXACT
+    else:
+        windows = compound_factor_windows(load_factor_returns(store, run_id), h, factors=factors)
+        basis = WINDOW_COMPOUNDED
     series = pd.Series(ls_returns, dtype=float).copy()
     series.index = _month_periods(series.index, "ls_returns")
-    grid = pd.period_range(min(series.index.min(), compounded.index.min()),
-                           max(series.index.max(), compounded.index.max()), freq="M")
-    return span_test(series.reindex(grid), compounded.reindex(grid), horizon_periods=horizon_periods)
+    grid = pd.period_range(min(series.index.min(), windows.index.min()),
+                           max(series.index.max(), windows.index.max()), freq="M")
+    return span_test(series.reindex(grid), windows.reindex(grid), horizon_periods=h, factor_window_basis=basis)
 
 
 # ---------------------------------------------------------------------------
@@ -1894,10 +2013,13 @@ __all__ = [
     "EXPOSURE_FACTORS",
     "FACTOR_CONSTRUCTS",
     "FACTOR_VERSION",
+    "LABEL_HORIZON_MONTHS",
     "RF_DTB3",
     "RF_NONE",
     "SORTS",
     "STYLE_FACTORS",
+    "WINDOW_COMPOUNDED",
+    "WINDOW_EXACT",
     "FactorInputError",
     "FactorLookaheadError",
     "FactorRunResult",
@@ -1911,6 +2033,7 @@ __all__ = [
     "ensure_factor_schema",
     "fetch_fred_dtb3",
     "grouped_ols",
+    "horizon_frequency",
     "load_factor_returns",
     "load_risk_free",
     "parse_fred_series",

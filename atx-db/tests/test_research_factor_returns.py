@@ -356,14 +356,16 @@ def test_factor_layer_end_to_end_on_a_planted_fixture(tmp_path):
     run_span = fr.span_test_against_run(research, "p4_fixture", wide["umd"], factors=("mkt_rf", "hml"))
     assert run_span.n_obs == int(monthly[(monthly["factor_id"] == "umd") & monthly["value"].notna()].shape[0])
 
-    # h > 1: a 3-month series spanned by UMD is tested on UMD compounded over the same three
-    # formations: no alpha (store path). On 1-month factors (the old path) a spanned series
-    # shows a spurious alpha, compounded it does not (the reviewer's T=600 case).
-    umd3 = fr.compound_factor_windows(wide, 3, factors=("umd",))["umd"]
-    spanned3 = (umd3 + np.random.default_rng(5).normal(0.0, 0.002, len(umd3))).dropna()
-    spanned3.index = spanned3.index.to_timestamp(how="end").normalize()
+    # h > 1: a 3-month series spanned by UMD is tested on the run's exact 3-month label-window
+    # rows (monthly_h3): no alpha (store path; a PeriodIndex series is accepted). On 1-month
+    # factors (the old path) a spanned series shows a spurious alpha, on h-month windows it
+    # does not (the reviewer's T=600 case).
+    umd3 = fr.load_factor_returns(research, "p4_fixture", frequency="monthly_h3", factors=("umd",))["umd"].dropna()
+    spanned3 = umd3 + np.random.default_rng(5).normal(0.0, 0.002, len(umd3))
+    spanned3.index = spanned3.index.to_period("M")
     res3 = fr.span_test_against_run(research, "p4_fixture", spanned3, factors=("umd",), horizon_periods=3)
-    assert res3.n_obs == len(spanned3) == 27
+    assert res3.n_obs == len(spanned3) >= 24
+    assert res3.factor_window_basis == fr.WINDOW_EXACT and res3.significance_claimable
     assert abs(res3.betas["umd"] - 1.0) < 0.05 and res3.alpha_robust_p > 0.05
     gen3 = np.random.default_rng(13)
     umd = pd.DataFrame({"umd": gen3.normal(0.008, 0.04, 600)}, index=pd.date_range("1970-01-31", periods=600, freq="ME"))
