@@ -1,200 +1,159 @@
-# Production resume sequence — updated 2026-09-24
+# Production resume sequence — current 2026-09-25 11:20UTC (OPS-A)
 
-**CURRENT,2026-09-25 00:19UTC:** archive18 recovery is complete; both stale
-ledgers closed and checkpoint passed at0.315971375GiB native peak/cap0.5GiB.
-Its actual dataset UUID is a4942a4b-9d16-46ef-9dc6-d1e8ada7d16a. Do not repeat
-recovery. All older commands/statuses below are historical. The only next
-CompanyFacts command is archive19 below, after source-archive19-lowmemory-window2
-passes120seconds at4/6GiB and no other heavy process is present:
+The snapshot stays **2026-09-20**. Execute from `C:\atx\atx-db`, one guarded
+process tree at a time. Use fresh artifact/run names; inspect actual process,
+terminal ledgers and receipts before proceeding. Never infer completion from
+an empty stage or infer an active process from a running ledger. Preserve all
+12 backups, unrelated work and **stash@{0}**. Do not merge without approval.
+
+Completed prerequisites: UM1 populated upgrade, SM1 source recycling, SI1
+migration0326, MM1 governed migration, CC1 live target-index repair, SA1 bounded
+submissions directory, LR2 live archive18 recovery, SM2 bounded unresolved-issuer
+summary (committed `7080a478`, reviewed, 5 focused passes) and the archive19
+session-kill ledger recovery (`da06924b`). Their accepted reviews and checks
+stand. Schema326 is verified; do not repeat migrations or recoveries (archive18
+and archive19 recoveries are both DONE). Prior commands are retained in Git
+history and the dated program/run ledgers.
+
+Archive18 recovery completed at0.315971375GiB peak under0.5GiB, with all original
+scans and CHECKPOINT. Both stale ledgers are failed; no new attempt rows.
+Raw counts (unchanged through archive19): 47,941,000 facts/points each,
+31,959,271 bars, 31,934,514 features. These counts do not qualify canonical
+fundamentals, provider coverage or release eligibility.
+
+**ACTIVE since 2026-09-25T11:09:07Z: archive20** (sole warehouse writer, launched
+detached by OPS-A; see the archive20 section below for PIDs, liveness checks and
+terminal inspection). Do NOT start any other warehouse job while it is alive.
+
+Resource profiles: CompanyFacts and the accepted SA1 submissions experiment use
+512MB/one thread,1.5GiB native cap,120s sustained4GiB physical/6GiB commit.
+Other production stages retain1GB/one thread,2GiB cap and120s sustained6/8GiB
+until separately measured. Guard preflight and1.5/3GiB host emergency stops
+remain unchanged. Use the data-path3GiB disk floor for every runtime workload.
+A failed capacity trial requires diagnosis; keep scope and proof unchanged.
+
+## CompanyFacts archive19 — TERMINAL failed (session kill), ledgers recovered
+
+Launched 2026-09-25T00:53:55Z (window4 ready), predecessor a4942a4b. Full
+retained proof passed (receipts 9,462 / lineage 16 / verified rows 39,457,715).
+Killed ~01:11:43Z when controller session 1 closed (guard + child PID 10272
+killed; guard receipt stayed stale `running`; not a guard stop, not a source
+failure). Last progress 6350/20390 loaded=5398 empty=923 unavailable=29
+failed=0 rows=0. Dataset UUID **e27c8a4e-2d29-47bb-b657-fc1855ea4cec**.
+
+Recovery (OPS-A, `claude-ctl\close_companyfacts_archive19_session_kill.py`, LR2
+pattern, guarded 0.5GiB, peak 0.344GiB, window `archive19-recovery-window1`
+3/5GiB ready): activation row and dataset row both `failed`, finished_at
+2026-09-25 10:35:44.937122 (operator recovery time), rows 0, CHECKPOINT passed
+(the 81,056B WAL was absorbed). Receipt `companyfacts-archive19-session-kill-recovery.json`;
+liveness proof `activation-companyfacts-archive19-process-check.json`.
+
+`rows=0` verdict (read-only `claude-ctl\archive19_rows_verdict.py`, receipt
+`companyfacts-archive19-rows-verdict.json`): the counter is correct, not a
+flush-time artifact and not a defect. `rows` counts only facts written by the
+replay path (`_replace_facts`); verified members skip facts and only increment
+`loaded`. Archive19's processed prefix 0..6349 was 5,398 verified loaded + 923
+empty + 29 unavailable + **0 unreceipted**; archive19 owns 0 facts / 0 points and
+committed 925 empty + 29 unavailable receipts through 01:11:42.74Z. Targets are
+CIK-ascending; the lineage-receipted prefix is contiguous through position
+10,831 (CIK 0001496383). **First unwritten member = position 10,832, CIK
+0001496443.** Remaining: 4,064 verified skips, 404 empty and 14 unavailable
+replays, then **9,558 members to write** (3,497 of them replace legacy
+non-lineage facts owned by run c6bfbb1e, 8,483,285 rows). The last real fact write
+was archive12 (2026-09-23 00:26Z); archive13 (OOM, old index design) and
+archive17 (FATAL candidate index at CIK 0001495229, repaired by CC1) failed at
+or just before that frontier. Archive20 is the first attempt to reach it since
+CC1.
+
+## Full CompanyFacts archive20 — RUNNING (launched 2026-09-25T11:09:07Z)
+
+Resume semantics (verified in `_companyfacts_resume._lineage`): the predecessor
+must be a terminal failed/source-incomplete **dataset UUID**; lineage follows
+`params_json.resume_from_run_id` (max 32) and requires each ancestor's
+finished_at <= its successor's started_at. Archive20 resumes from archive19's
+UUID (same pattern as archive19 → archive18's UUID); lineage length 17, accepted
+at start (`receipts=9462 lineage_runs=17`). Window `source-archive20-lowmemory-window4`
+ready 11:08:51Z (windows 1–3 failed: physical 2.8–3.9GiB).
+
+Launched DETACHED: `Start-Process powershell -WindowStyle Hidden -PassThru
+-ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',
+'C:\atx\.superpowers\sdd\tier1-parity\claude-ctl\launch-archive20.ps1'`.
+Launcher powershell PID **11544** (orphaned from its tool parent; alive), venv
+shim 16160 → guard interpreter **9060**, guard `child_pid` **14644** (venv shim)
+→ worker interpreter **19636**. Launch receipt
+`activation-companyfacts-archive20-launch.json`; guard stdout + final
+`guard_exit=` line in `activation-companyfacts-archive20-launcher.log`.
+Executed command (inside the launcher):
 
 ```powershell
 C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
   --job-gb 1.5 --disk-path C:\atx\atx-db\data --min-free-disk-gb 3 `
-  --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive19-memory.json `
-  --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive19.log `
-  --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive19.err `
+  --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive20-memory.json `
+  --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive20.log `
+  --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive20.err `
   -- C:\atx\atx-db\.venv\Scripts\python.exe scripts\warehouse_activate.py `
   --db-path data\warehouse.duckdb --as-of-date 2026-09-20 --only companyfacts_load `
   --companyfacts-symbol-source archive_members --companyfacts-replace-existing `
-  --companyfacts-resume-from-run-id a4942a4b-9d16-46ef-9dc6-d1e8ada7d16a `
+  --companyfacts-resume-from-run-id e27c8a4e-2d29-47bb-b657-fc1855ea4cec `
   --memory-limit 512MB --threads 1 --backup-keep 100 --force `
-  --run-id activation-companyfacts-archive19 `
+  --run-id activation-companyfacts-archive20 `
   --sec-user-agent "atx-db/0.1 atx-research@example.com"
 ```
 
-Execute from C:\atx\atx-db. Preserve full proof and scope. Inspect actual
-terminal artifacts before full submissions, CVX source and full run5. The
-latest disk free sample was34.538GiB at00:18UTC; it is not reserved capacity.
-
-**2026-09-25 00:01UTC:** recovery-window1 is terminal no_sustained_window after
-180seconds at3/5GiB operator floors. No process remains; recovery SQL has not
-run. Preserve prior process evidence, refresh its current file (under5minutes),
-then invoke close_companyfacts_archive18_headroom_stop.py with fresh recovery3
-guard artifacts,256MB internal/one thread,1GiB job cap and3GiB data-disk floor.
-Only its completed receipt/checkpoint and actual dataset UUID authorize building
-the future archive19 command. No source or ledger completion is claimed now.
-
-**23:58UTC STOPPED:** archive18's guard terminated its owned process tree at
-physical1.330GiB/commit3.548GiB during retained-fact proof. No new source writes
-were reached. Session55700 is terminal exit1; all original warehouse PIDs are
-absent. CR18 recovery helper is ready but two guarded preflights refused low
-headroom. Recovery is still due; obtain actual dataset UUID from its result
-before constructing archive19. Commands below are historical, not a fresh
-resume instruction. Never repeat archive18 or skip pending ledger recovery.
-
-**23:53UTC ACTIVE:** archive18 command below is already running, root
-session55700, guard child1492/source child9152. It is the sole heavy workload;
-do not run the command again. Source window2 passed120.032seconds at4/6GiB.
-9,462receipts/15lineage runs inventoried and retained fact fingerprints started.
-First inspect its process, guard, logs and terminal ledgers. No source completion
-or new source writes have yet been established for this attempt.
-
-**23:48UTC prerequisites complete:** CC1 live target-index repair is durably
-verified, all 12,959 candidate rows/constraints/index definitions unchanged;
-native peak 0.829GiB/cap 1GiB. SA1 9a7a3ea8 passed actual full retained-directory
-measurement at 0.592GiB and affected focused/integration checks. No repeat of
-either task is due. Source archive18 below is next after sustained headroom;
-predecessor dd52e571-5786-42c5-bfaa-d7122b033912, 512MB/one thread, 1.5GiB cap,
-full archive_members/replacement/force. All source and release gates remain.
-
-**23:16UTC terminal:** archive17 passed full retained fact/point proof, then
-failed candidate COMMIT on a persisted nonunique target-index inconsistency.
-Native peak 1.223964691GiB at 512MB/one thread under 1.5GiB; no new raw facts.
-Both ledgers terminal failed; no operator recovery due. CC1 physical index
-repair must pass its backup/data/catalog/index verification before source
-resume. Next actual predecessor is `dd52e571-5786-42c5-bfaa-d7122b033912`.
-Use fresh **archive18** artifacts/run ID; do NOT execute the historical
-archive17 command below again. Preserve full scope, replacement and proof.
-SA1 bounded ZIP integration checks/retained-directory probe are also pending.
-
-Next source command, ONLY after CC1 live repair is durably verified and the
-120second 4/6GiB headroom window holds. DG1 adds a 3GiB disk floor without
-changing memory stops or source scope. Execute from `C:\atx\atx-db`:
+**Liveness (light, poll >= 5 min apart; never open the warehouse while alive):**
 
 ```powershell
-C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
-  --job-gb 1.5 --disk-path C:\atx\atx-db\data --min-free-disk-gb 3 `
-  --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive18-memory.json `
-  --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive18.log `
-  --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive18.err `
-  -- C:\atx\atx-db\.venv\Scripts\python.exe scripts\warehouse_activate.py `
-  --db-path data\warehouse.duckdb --as-of-date 2026-09-20 --only companyfacts_load `
-  --companyfacts-symbol-source archive_members --companyfacts-replace-existing `
-  --companyfacts-resume-from-run-id dd52e571-5786-42c5-bfaa-d7122b033912 `
-  --memory-limit 512MB --threads 1 --backup-keep 100 --force `
-  --run-id activation-companyfacts-archive18 `
-  --sec-user-agent "atx-db/0.1 atx-research@example.com"
+$ctl='C:\atx\.superpowers\sdd\tier1-parity'
+Get-Process -Id 11544,9060,14644,19636 -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,StartTime
+Get-Content "$ctl\activation-companyfacts-archive20-memory.json" | Select-String 'status|returncode|peak|physical|commit'
+Get-Content "$ctl\activation-companyfacts-archive20.err" -Tail 2
+Get-Content "$ctl\activation-companyfacts-archive20-launcher.log" -Tail 1   # 'guard_exit=N' once finished
 ```
 
-The archive17 command farther below is retained historical evidence only.
+A progress line whose `rows=` stays 0 is expected until processed passes
+10,832; after that `rows` and `loaded` must grow. Watch the first ~50 members
+past 10,832 (first new writes since archive12) and CIK 0001495229 (~10,8xx,
+archive17's FATAL candidate-index point, now in the verified path).
 
-**22:54UTC ACTIVE:** archive17 command below has started. Root session89002,
-guard child7860; sole heavy job.9462receipts/14lineage runs inventoried and
-full fact fingerprints running. Do not launch that command again or overlap
-another heavy database/test workload. First inspect its actual process and
-terminal artifacts. No source completion or new writes claimed yet.
+**Terminal inspection (only after all four PIDs are gone and the guard receipt
+status is `completed`/`failed`/`stopped_*`):**
 
-**22:52UTC completed:** MM1 is06ab073f. Governed migrate0326b SUCCEEDED at512MB,
-native peak1.209381104GiB under1.5GiB. migration0326-verify1 confirms applied
-323..326, removed optional indexes, unchanged source constraints, cleared lock
-and a matching retained backup SHA256. Do not run the migration command again.
-All12backups remain. CVX desk2 now reaches the actual query but has unresolved
-qualified ownership and zero numeric states; full materialization is still due.
-Next command is full CompanyFacts archive17 below, after current headroom check.
-
-**22:48UTC correction:** first migrate0326 failed at its final checkpoint under
-the1.5GiB process cap; governed restore returned the warehouse to322. Catalog,
-checksum and estimated-count equivalence/cleared lock plus backup hash verified
-in migration0326-restore-proof2. MM1's512MB governed/restore startup budget passed
-four focused real success/failure cases. After its commit, use migrate0326b
-below with the SAME1.5GiB process cap. Archive17 has not started.
-
-**2026-09-24 22:38UTC reconciliation:** both head6 failures are repaired and
-accepted. UM1's populated0314 upgrade passed at256MB/one thread,1GiB cap,
-0.859GiB peak. SM1 source-phase recycling/open-time budgets and SI1 optional
-source-index migration0326 passed9isolated and17integration checks; root single
-reviews are clean. Live catalog confirms schema322 and all3optional indexes.
-After committing these accepted changes, governed migrate323..326 and full
-archive17 are next. Do not repeat the prior passing batch or branch review.
-
-User explicitly allows lower launch requirements after efficiency changes.
-Use `low-memory-resume-profile-2026-09-24.md`: sustained4GiB physical/6GiB
-commit120seconds,1.5GiB process cap for the next migration and source trials.
-Migration and archive17 use512MB/one thread after MM1. These are
-measured experiments pending actual new source commits, not release proof.
-
-Static source/dispatch audit only. The production snapshot remains **as of
-2026-09-20**. Run one guarded process tree at a time from `C:\atx\atx-db`.
-Every guarded invocation needs a fresh receipt, stdout, and stderr filename.
-The next-stage commands below use DuckDB at `1GB` and one thread; retain `--backup-keep 100`, and use the
-dummy SEC User-Agent `atx-db/0.1 atx-research@example.com`.
-
-## Current source position and guard prerequisite
-
-Archive16 is terminal after the22:16UTC host headroom stop. Both stale ledgers
-were recovered22:19:32UTC and CHECKPOINT passed; no new attempt rows, facts and
-points remain47,941,000, schema0322. Do not repeat that completed recovery.
-Next actual predecessor: `513cfbbc-096a-4186-9666-b6cc5170c4ad`.
-Use fresh archive17 receipt/log/error files for a later full-source attempt.
-
-No warehouse writer is live. User directs platform work while backfill awaits
-host capacity: OPS1 pipeline-status is committed b814f4c1 and live-read verified
-in8291fc44. DL1 selected-input lineage (0323,1fa721c7), FQ1 signal panel
-(0324,fbba7bf2), and FQ2 decile evaluation/label basis (0325,d82f9eca) are
-committed and focused-tested. Wider HEAD/schema checks remain pending after host
-guard stops/refusal. All runtime/registry locks returned to root. Do not launch production over
-unreviewed/uncommitted shared edits or overlap root's focused tests. Recheck
-pending migrations after these tasks, using governed backup-keep100.
-
-Archive17 uses the scoped low-memory profile above,fullarchive_members,
-replacement,force,snapshot2026-09-20 and dummySECcontact. Other stages still
-require their recorded capacity profile until separately measured. Runtime host stops
-are1.5GiB physical/3GiB commit. A passed window does not guarantee future host
-capacity; record any terminal state before another resume. The256MB/1GiB-cap
-operator recovery was bookkeeping only, not a source-write capacity claim.
-
-Full CompanyFacts->fullsubmissions->scopedCVXsource->fulluniverse run5 remains
-the materialization sequence. Never infer a live process from a running ledger.
-
-## Pending migration and full CompanyFacts resume
-
-After the required schema/numeric checks pass, inspect free disk before the
-governed migration. The last measured warehouse file was11.999GiB and free
-C: space was34.494GiB on2026-09-23; these are dated observations, not reserved
-capacity. Preserve all existing backups and retain --backup-keep100. Apply
-0323..0326 under the experimental1.5GiB guard with fresh artifacts:
+1. Read `activation-companyfacts-archive20-memory.json` (status, returncode,
+   native_peak_job_memory_gb), `-launcher.log` last line, `.err` tail and the
+   stage JSON payload in `.log` (loader details: outcome, completed/replayed/
+   resumed targets, empty/unavailable/failed counts, facts, fundamental_points).
+2. Observe a 3/5GiB window with a new receipt, then run the read-only inspector
+   under the 0.5GiB guard with new receipt names:
 
 ```powershell
-C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
-  --job-gb 1.5 `
-  --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0326b-memory.json `
-  --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0326b.log `
-  --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-migrate0326b.err `
-  -- C:\atx\atx-db\.venv\Scripts\python.exe scripts\warehouse_activate.py `
-  --db-path data\warehouse.duckdb --as-of-date 2026-09-20 --only migrate `
-  --memory-limit 512MB --threads 1 --backup-keep 100 --run-id activation-migrate0326b `
-  --sec-user-agent "atx-db/0.1 atx-research@example.com"
+Set-Location C:\atx\atx-db; $ctl='C:\atx\.superpowers\sdd\tier1-parity'; $py='C:\atx\atx-db\.venv\Scripts\python.exe'
+& $py "$ctl\observe_headroom_window.py" --physical-gib 3 --commit-gib 5 --receipt "$ctl\archive20-inspect-window1.json"
+& $py "$ctl\run_memory_guarded.py" --job-gb 0.5 --disk-path C:\atx\atx-db\data --min-free-disk-gb 3 `
+  --receipt "$ctl\archive20-inspect1-memory.json" --stdout "$ctl\archive20-inspect1.log" --stderr "$ctl\archive20-inspect1.err" `
+  -- $py "$ctl\claude-ctl\inspect_companyfacts_terminal.py" --activation-run activation-companyfacts-archive20 `
+  --out "$ctl\companyfacts-archive20-terminal-inspection.json"
 ```
 
-Inspect the terminal migration receipt and actual applied versions. Only after
-that job is terminal and the sustained source memory window is met, resume
-the entire retained CompanyFacts archive. The argument is the actual failed
-dataset UUID, not an activation label. Do not repeat archive16 recovery.
+   Outcome-1 acceptance = its `acceptance` block all true: activation
+   `completed`, dataset `succeeded`, `members_without_disposition` 0 of 20,390,
+   `loaded_receipt_fact_count_mismatches` 0, no `error` dispositions, and
+   `fact_ciks_without_lineage_loaded_receipt` 0 (legacy c6bfbb1e rows replaced);
+   plus guard exit 0 and nonzero `attempt_facts`/`attempt_points` with CIK and
+   period ranges. Empty/unavailable members count as dispositions only with
+   their explicit reasons (`non_loaded_reasons`). Smoke-tested on archive19
+   (0.328GiB peak): 9,462 loaded receipts match retained facts exactly.
+3. If archive20 stops (guard stop, session kill, or source failure): prove
+   process absence, close its ledgers with a copy of
+   `claude-ctl\close_companyfacts_archive19_session_kill.py` adapted to the
+   actual stop evidence (archive18 script for guard stops), then launch
+   archive21 resuming from **archive20's dataset UUID**. Max 3 relaunches for
+   this stage (archive19 was the first under OPS-1/OPS-A; archive20 second).
+   A DuckDB FATAL/INTERNAL or loader exception at the frontier is a code
+   defect: stop and report, do not patch src/.
 
-```powershell
-C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
-  --job-gb 1.5 `
-  --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive17-memory.json `
-  --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive17.log `
-  --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-companyfacts-archive17.err `
-  -- C:\atx\atx-db\.venv\Scripts\python.exe scripts\warehouse_activate.py `
-  --db-path data\warehouse.duckdb --as-of-date 2026-09-20 --only companyfacts_load `
-  --companyfacts-symbol-source archive_members --companyfacts-replace-existing `
-  --companyfacts-resume-from-run-id 513cfbbc-096a-4186-9666-b6cc5170c4ad `
-  --memory-limit 512MB --threads 1 --backup-keep 100 --force `
-  --run-id activation-companyfacts-archive17 `
-  --sec-user-agent "atx-db/0.1 atx-research@example.com"
-```
+Require actual complete source coverage/dispositions before advancing through
+full submissions, scoped CVX source and full-universe run5. A source error or
+host kill leaves an explicit dependency and a terminal-state inspection task.
 
 ## Submissions verified resume
 
@@ -202,7 +161,7 @@ Run only after the source resume is terminal and inspected:
 
 ```powershell
 C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
-  --job-gb 2 `
+  --job-gb 1.5 --disk-path C:\atx\atx-db\data --min-free-disk-gb 3 `
   --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-submissions-resume-memory.json `
   --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-submissions-resume.log `
   --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-submissions-resume.err `
@@ -210,7 +169,7 @@ C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_
   --db-path data\warehouse.duckdb --as-of-date 2026-09-20 `
   --only submissions_load --submissions-batch-size 50 `
   --submissions-resume-from-run-id 04cf947d-53bb-49b7-a276-b3c74a2a52c8 `
-  --memory-limit 1GB --threads 1 --backup-keep 100 --force `
+  --memory-limit 512MB --threads 1 --backup-keep 100 --force `
   --run-id activation-submissions-resume `
   --sec-user-agent "atx-db/0.1 atx-research@example.com"
 ```
@@ -231,7 +190,7 @@ for this source acceptance wave. It must not be carried into run5.
 
 ```powershell
 C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
-  --job-gb 2 `
+  --job-gb 2 --disk-path C:\atx\atx-db\data --min-free-disk-gb 3 `
   --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-cvx-earnings-source1-memory.json `
   --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-cvx-earnings-source1.log `
   --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-cvx-earnings-source1.err `
@@ -261,7 +220,7 @@ metrics, and final quality.
 
 ```powershell
 C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
-  --job-gb 2 `
+  --job-gb 2 --disk-path C:\atx\atx-db\data --min-free-disk-gb 3 `
   --receipt C:\atx\.superpowers\sdd\tier1-parity\activation-run5-memory.json `
   --stdout C:\atx\.superpowers\sdd\tier1-parity\activation-run5.log `
   --stderr C:\atx\.superpowers\sdd\tier1-parity\activation-run5.err `
@@ -294,7 +253,7 @@ Replace the two date placeholders with that reviewed range. These are command
 templates, not executed results. Wrap each invocation in run_memory_guarded.py
 with its own fresh receipt/stdout/stderr, the existing2GiB process cap and host
 thresholds. The256MB DuckDB setting is the research builder's default, not a
-change to the1GB source-load budget. Run serially after the warehouse writer
+qualification of a production-stage budget. Run serially after the warehouse writer
 is terminal. IDs must match `[a-z][a-z0-9_]{0,63}` and be unused; update the
 prepared acceptance SQL if using different IDs.
 
@@ -379,22 +338,22 @@ September20 report date and keeps missing next-session research eligibility
 separate from qualified accounting inputs. It does not invent a later entry
 bar or include weekend filings in Friday's information set.
 
-The ED1 CVX read was executed before materialization as cvx-eps-desk1 and
-correctly returned schema_prerequisite_missing/exit2 with no numeric rows:
-schema322 lacks migration323's selected_input_refs_hash/json. The next run
-must use a fresh output tuple after migration and source/materialization:
+The ED1 CVX reader has already run twice. Desk1 exposed the now-repaired
+schema prerequisite; desk2 reached schema326 but returned
+issuer_ownership_unresolved, zero qualified/numeric observations, exit2.
+Run desk3 below only after source and downstream materialization:
 
 ```powershell
 C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
-  --job-gb 2 `
-  --receipt C:\atx\.superpowers\sdd\tier1-parity\cvx-eps-desk2-memory.json `
-  --stdout C:\atx\.superpowers\sdd\tier1-parity\cvx-eps-desk2.log `
-  --stderr C:\atx\.superpowers\sdd\tier1-parity\cvx-eps-desk2.err `
+  --job-gb 2 --disk-path C:\atx\atx-db\data --min-free-disk-gb 3 `
+  --receipt C:\atx\.superpowers\sdd\tier1-parity\cvx-eps-desk3-memory.json `
+  --stdout C:\atx\.superpowers\sdd\tier1-parity\cvx-eps-desk3.log `
+  --stderr C:\atx\.superpowers\sdd\tier1-parity\cvx-eps-desk3.err `
   -- C:\atx\atx-db\.venv\Scripts\python.exe scripts\read_quarterly_eps_growth.py `
   --db-path data\warehouse.duckdb --cik 0000093410 `
   --content-as-of 2026-09-20T22:00:00Z `
   --start 2025-10-01 --end 2026-07-01 --latest 3 `
-  --output-json C:\atx\.superpowers\sdd\tier1-parity\cvx-eps-desk2.json
+  --output-json C:\atx\.superpowers\sdd\tier1-parity\cvx-eps-desk3.json
 ```
 
 Exit0 means the requested count of qualified numerical observations, not
@@ -406,7 +365,7 @@ by subtracting cumulative EPS.
 
 ```powershell
 C:\atx\atx-db\.venv\Scripts\python.exe C:\atx\.superpowers\sdd\tier1-parity\run_memory_guarded.py `
-  --job-gb 2 `
+  --job-gb 2 --disk-path C:\atx\atx-db\data --min-free-disk-gb 3 `
   --receipt C:\atx\.superpowers\sdd\tier1-parity\fundamental-desk-screen1-memory.json `
   --stdout C:\atx\.superpowers\sdd\tier1-parity\fundamental-desk-screen1.log `
   --stderr C:\atx\.superpowers\sdd\tier1-parity\fundamental-desk-screen1.err `
