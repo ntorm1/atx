@@ -26,8 +26,9 @@ ledger is continued in atx-engine/docs/LEDGER.md. Only root appends ledger facts
 - g0_evidence: pool-3, feat/w0-g0-codex-20260925; lease aes-w0-g0-codex-20260925.
 - w0_replay_integration: pool-4, feat/w0-replay-integration-codex-20260925;
   lease aes-w0-replay-codex-20260925. Now also owns scoped ASan and summary disclosure fixes.
-- w0_gate_audit: pool-5, feat/w0-membership-integration-codex-20260925;
-  lease aes-w0-membership-codex-20260925. Also leases pool-6 for the benchmark baseline:
+- w0_gate_audit: completed membership branch at b09f45cee1f45091d8922b26763cec936031d5b4,
+  released its pool-5 membership lease, then re-leased pool-5 for current benchmarks at
+  b185d056 (run aes-w0-bench-current-codex-20260925, keeper460). Also leases pool-6 baseline:
   feat/w0-bench-baseline-codex-20260925, run aes-w0-bench-baseline-codex-20260925,
   keeper23348, base3ccf012c40ef42c49ed21aaec96476455e06e049.
 - Prior pool-1 feat/w0-integration at bc5cc646 has a live old heartbeat; leave it untouched.
@@ -41,7 +42,7 @@ Reuse existing pools, -MaxPool11; do not create more. Four agent slots including
 
 Root session56041 runs .superpowers/sdd/w0/run-integrated-gate.ps1. Configure passed with
 isolated pool-2/deps/equity-dev, PCH ON and groups alpha/factory/learn/data/eval/combine/risk/book.
-The 394-step build was at102/394 at last inspection. It then automatically runs nine whole
+The 394-step build was at173/394 at last inspection. It then automatically runs nine whole
 test executables sequentially, with data exclusions and cleared opt-ins. Source compiled is
 b185d056440704e7ebcfe2b9395601d7e5264269; later root commits change documentation only.
 Do not modify root production sources during the build. Logs/hashes are under
@@ -80,8 +81,8 @@ other builds, tests, or G0 runs are active.
   raw time-series history is preserved. Masked panels bypass the old subtree cache.
   Family masks cover warmup and evaluation. Focused27/27 (96.01s), whole alpha706/706
   (33.190s), independent physical reduced-universe oracle1/1 (14ms) pass. G0 reviewer APPROVE.
-  Two production-only hygiene checks remain; their dependency closure is exactly2 compiles.
-  Reports d988f7b8 and benchmark preparation224be5f7 are docs-only and not yet imported.
+  Two production-only hygiene checks passed sequentially. Final report b09f45ce includes
+  functional report d988f7b8 and benchmark preparation224be5f7; not yet imported.
 
 ## Active ASan and reporting follow-up (pool-4)
 
@@ -89,13 +90,20 @@ The concrete R04 out-of-bounds defect triggers cpp instruction section8's explic
 of its earlier sanitizer decline. Native LLVM18 ASan is installed. Debug CRT /MDd fails;
 scoped equity-asan uses Release CRT /MD, /Od, NDEBUG, PCH OFF, static libs, isolated deps.
 The dedicated target instruments actual factor_model.cpp and the existing sector fixture.
-Root's independent static review has no blocker so far; actual runtime proof remains pending.
+The native gate PASSED and root independently approved code370f7af4. Report3e6886ce awaits
+import. Root review is .superpowers/sdd/w0/review-sector-asan-codex.md (commit1ce85d53).
+Independent run5/5 passed in199ms, binary SHA256
+4B4F892532390B2794B184911E8930161E2F926B51C9B39B62117B23D5B45533.
+The forced old read emitted native heap-buffer-overflow at zero bytes beyond a16-byte
+allocation, exit1. All corrected tests passed, with zero skipped. This is ASan, not UBSan.
 
 Files: CMakePresets.json, atx-engine/tests/CMakeLists.txt, sector-columns fixture,
 and scripts/test-risk-sector-asan.ps1. Build preset defaults to the scoped target. Runtime
 components and symbolizer are discovered and validated. Exact old beta[2] read must emit
 ASan heap-buffer-overflow in a positive detection control; corrected five-test suite must pass.
 No UBSan or whole-engine instrumentation claim. Support/vcpkg dependencies are uninstrumented.
+Bundled LLVM18 runtime failed startup; the final preset selects coherent MSVC14.42 runtime,
+import library and thunk from vcvars (not an unmatched DLL substitution).
 Mixed STL annotations initially failed linking; target-private string/vector annotation
 suppression is allowed, with explicit exclusion of logical size-within-capacity checks.
 Raw allocation bounds remain instrumented and must be proven by the negative-control read.
@@ -106,8 +114,10 @@ but top-level baseline summary copied performance without eligibility fields. Re
 is authorized to propagate eligibility, reasons, counts and PnL into BOTH baseline/book
 summaries, implement first then extend focused tests. Keep this production commit separate
 from ASan wiring so G0 can import it for a tiny Release rebuild and seconds-long rerun.
-Restore pool-4 equity-dev PCH ON before its regular impl target build; use sequential checks.
-Root will review the new summary patch; no metric/math changes are intended.
+Both summary production TUs passed sequential PCH-off checks. Pool-4 restored equity-dev
+PCH ON and is building impl-tests+worker at one worker for the focused gate. Root static
+review found no blocker; audit agent performs an additional fresh review during its build.
+No metric/math changes are intended. New summary code is not committed yet.
 
 ## G0 evidence (all pre-2020, no tuning)
 
@@ -132,8 +142,12 @@ L7/L9/L10 do not use the later repair paths; no duplicate rerun solely for those
   p.9503335211679915, not the previously claimed positive figure; reused2019 netSR1.7296874867
   with3 prior reads. Source SHA256cd8ac431e797d902fd93a558184a26d919f809336c95b6f906b1ed7e27b15824.
 
-G0 is finishing the7-step diagnostic26-family rebuild, then13 serial cp21 cells (~12min
-historically) and frozen Python scorecard (perhaps15min). Pin is NEVER committed: archive
+G0 finished the7-step diagnostic26-family rebuild and released its compiler slot. It is
+running13 serial cp21 cells (~12min historically), followed by the frozen Python scorecard
+(perhaps15min). First cell passed;29 signals =3 baselines+26 frozen families. Metadata has
+legacy iteration22 prose/trial-ID prefix despite checkpoint21 and numerictrial_count80;
+agent records this diagnostic erratum alongside the frozen scorecard's stale year-union
+label. Do not rerun unchanged math just for that prose. Pin is NEVER committed: archive
 unpinned source/exe, apply local pin, archive pin patch/exe, restore both source files, then
 run immutable diagnostic binary. Final report/harness commit must contain no pin sources.
 Heavy lock is atomic token/PID-owned and removed only by its matching owner. Publish final
@@ -142,7 +156,8 @@ hash-bound manifest last. G0 will release its compiler slot to the audit agent a
 ## Benchmark preparation (audit agent)
 
 Pool-6 baseline at O1 configured equity-bench successfully: Release, equity-only, bench ON,
-groups all, isolated deps/equity-bench. No baseline build or measurements yet. Current may
+groups all, isolated deps/equity-bench. Baseline build running (29/235 at last receipt),
+one worker; no measurements yet. Current pool-5 configure/build waits for baseline. Current may
 freeze b185d056 production, provided later ASan edits change no engine/benchmark behavior;
 top-level reporting follow-up changes must be disclosed and inspected for benchmark relevance.
 Build bench+worker serially. Complete66-case filter:
