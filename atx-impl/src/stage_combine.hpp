@@ -97,4 +97,93 @@ fit_stack_combo(const atx::engine::combine::AlphaStore& pool, std::span<const at
 fit_shrinkage_mv_cleaned_cov(const atx::engine::combine::AlphaStore& pool,
                              atx::usize fit_begin, atx::usize fit_end);
 
+// ===========================================================================
+//  W0-I0a — combine-stage point-in-time rules (I-01, I-02, I-03, I-08).
+// ===========================================================================
+//  Every numeric change keeps the pre-W0 behaviour reachable behind a versioned
+//  enumerator (the *V1 values); the defaults are the corrected behaviour. None of
+//  these is a RunConfig field (config.* is not this lane's to edit): run_combine(cfg)
+//  and the two existing overloads forward CombinePitConfig{}.
+//
+//  ConvictionWindowRule (I-02): the conviction DSR/stability score of each alpha is
+//    measured on the fit window [fit_begin, fit_end) (FitWindowV2) instead of the whole
+//    stream including the holdout (FullStreamV1).
+//  CapacityRule (I-03): the per-alpha capacity AUM behind --capacity-floor uses the fit
+//    window only -- mean realized PnL over [fit_begin, fit_end) as the edge, and the
+//    square-root impact of the TRADES (|w_t - w_{t-1}|) at each date t, sized with the
+//    trailing 20-day dollar ADV and 60-day volatility ending at t (TrailingPitTradesV2).
+//    FullPeriodHoldingsV1 used the full-period mean PnL, the LAST book's holdings and
+//    the last-date ADV (look-ahead, and biased against low-turnover alphas).
+//  WalkForwardRule (I-08): walk-forward folds live inside [fit_begin, fit_end), refit
+//    through the SAME weight dispatch as the shipped book (method + stacking/regime +
+//    cleaned covariance + conviction + Kelly + crowding/capacity), and each fold's test
+//    window starts h + delay dates after its train window ends (h = stack_horizon for
+//    Stack/RegimeStack, else 1). LinearNoEmbargoV1 is the pre-W0 fold loop (plain
+//    AlphaCombiner with only the method copied -- which errs for Stack/RegimeStack -- no
+//    embargo, folds running into the holdout).
+//  HoldoutGuardRule (I-01): with a library source and a final test [test_begin, n), the
+//    test must not overlap any discover train/holdout range recorded in the library's
+//    split-range ledger (dead_alpha_wire.hpp); the test range is then recorded so a
+//    later discover run refuses to read it. NoCheckV1 skips both.
+enum class ConvictionWindowRule : atx::u8 { FitWindowV2 = 0, FullStreamV1 = 1 };
+enum class CapacityRule : atx::u8 { TrailingPitTradesV2 = 0, FullPeriodHoldingsV1 = 1 };
+enum class WalkForwardRule : atx::u8 { ShippedFitEmbargoedV2 = 0, LinearNoEmbargoV1 = 1 };
+enum class HoldoutGuardRule : atx::u8 { RefuseOverlapV2 = 0, NoCheckV1 = 1 };
+
+struct CombinePitConfig {
+  ConvictionWindowRule conviction = ConvictionWindowRule::FitWindowV2;
+  CapacityRule capacity = CapacityRule::TrailingPitTradesV2;
+  WalkForwardRule walk_forward = WalkForwardRule::ShippedFitEmbargoedV2;
+  HoldoutGuardRule holdout_guard = HoldoutGuardRule::RefuseOverlapV2;
+  // First date of the final test. 0 = fit_end (the test starts right after the fit
+  // window). A nested split sets it to fit_end + embargo; must lie in [fit_end, n].
+  atx::usize test_begin = 0;
+  // The "delay" of the walk-forward h + delay embargo (execution delay in dates).
+  atx::usize execution_delay = 1;
+};
+
+[[nodiscard]] atx::core::Result<StageResult>
+run_combine(const RunConfig& cfg, const atx::engine::combine::CombinerConfig& combiner_cfg,
+            const atx::engine::risk::RiskModelConfig& risk_cfg, const CombinePitConfig& pit);
+
+// cfg.method / cfg.risk_model parsed exactly as run_combine(cfg), plus explicit PIT rules.
+[[nodiscard]] atx::core::Result<StageResult> run_combine(const RunConfig& cfg,
+                                                         const CombinePitConfig& pit);
+
+// ===========================================================================
+//  W0-I0a (I-01) — nested splits: discover < combine fit < final test.
+// ===========================================================================
+//  Carves n_dates into three consecutive windows separated by `embargo` dates:
+//    discover  [0, discover_end)          -- search + admission (its own lockbox inside)
+//    fit       [fit_begin, fit_end)       -- the combiner weights (fresh to discover)
+//    test      [test_begin, n_dates)      -- the final out-of-sample test
+//  test_begin = n - floor(test_frac*n); fit_end = test_begin - embargo;
+//  fit_begin = fit_end - floor(combine_frac*n); discover_end = fit_begin - embargo.
+//  Err(InvalidArgument) when a fraction is outside (0, 1), their sum is >= 1, or any
+//  window would hold fewer than 2 dates.
+struct NestedSplitConfig {
+  atx::f64 test_frac = 0.25;
+  atx::f64 combine_frac = 0.25;
+  atx::usize embargo = 2; // h + delay (1-day labels, 1-day execution delay)
+};
+
+struct NestedSplit {
+  atx::usize n_dates = 0;
+  atx::usize discover_end = 0;
+  atx::usize fit_begin = 0;
+  atx::usize fit_end = 0;
+  atx::usize test_begin = 0;
+};
+
+[[nodiscard]] atx::core::Result<NestedSplit> resolve_nested_split(atx::usize n_dates,
+                                                                  const NestedSplitConfig& cfg);
+
+// run_discover restricted to the panel prefix [0, discover_end) (defined in
+// stage_discover.cpp). Every discover read -- search, admission lockbox, capacity screen,
+// robustness panels -- sees only that prefix, and the gated library path records the
+// train/holdout ranges it used in the library's split-range ledger. discover_end == 0
+// means the whole panel (== run_discover(cfg)).
+[[nodiscard]] atx::core::Result<StageResult> run_discover_window(const RunConfig& cfg,
+                                                                 atx::usize discover_end);
+
 } // namespace atx::impl

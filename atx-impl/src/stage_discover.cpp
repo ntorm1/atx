@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <locale>    // std::locale::classic (S6 fix: pin config_json formatting locale)
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -40,8 +41,10 @@
 
 #include "artifacts.hpp"
 #include "config.hpp"
+#include "dead_alpha_wire.hpp"  // split-range ledger (W0-I0a, I-01)
 #include "research_sim.hpp"
 #include "serialize_genome.hpp"
+#include "stage_combine.hpp"    // run_discover_window (W0-I0a nested splits)
 #include "serialize_panel.hpp"
 #include "panel_pipeline.hpp"
 #include "stage_discover_detail.hpp"             // atx::impl::detail::apply_capacity_screen (Fix 1: testable)
@@ -506,6 +509,99 @@ atx::impl::detail::build_robust_holdout_panel(const atx::engine::alpha::Panel& p
 // ---------------------------------------------------------------------------
 namespace {
 
+// ---------------------------------------------------------------------------
+// W0-I0a (I-01) — the discover window's train/holdout geometry, mirroring
+// factory::Factory::mine_into_oos's own carve (factory.cpp): with OOS off the whole
+// window [0, T) is both searched and admitted on (the library then stores [0, T));
+// otherwise the train (visible) region ends `embargo_len` dates before the holdout.
+// ---------------------------------------------------------------------------
+struct DiscoverGeometry {
+    atx::usize train_end = 0;     // train (search/selection) window [0, train_end)
+    atx::usize holdout_begin = 0; // admission window [holdout_begin, holdout_end)
+    atx::usize holdout_end = 0;   //   == the library's period axis
+};
+
+[[nodiscard]] DiscoverGeometry discover_geometry(const RunConfig& cfg, atx::f64 eff_oos_fraction,
+                                                 atx::usize T) {
+    namespace eval = atx::engine::eval;
+    DiscoverGeometry g;
+    if (!(eff_oos_fraction > 0.0)) {
+        g.train_end = T;
+        g.holdout_begin = 0;
+        g.holdout_end = T;
+        return g;
+    }
+    const atx::usize embargo_len =
+        (cfg.oos_embargo > 0.0)
+            ? eval::detail::embargo_len_from_cpcv(cfg.oos_embargo, T)
+            : eval::detail::embargo_len_from_cpcv(eval::CpcvConfig{}.embargo, T);
+    const auto w = static_cast<atx::usize>(static_cast<atx::f64>(T) * eff_oos_fraction);
+    const auto n_windows = static_cast<atx::usize>(std::max<long>(cfg.oos_windows, 0));
+    const auto window = static_cast<atx::usize>(std::max<long>(cfg.oos_window, 0));
+    if (n_windows == 0U || window >= n_windows || n_windows * w > T) {
+        g.holdout_begin = T - w;
+    } else {
+        g.holdout_begin = T - (n_windows - window) * w;
+    }
+    g.holdout_end = g.holdout_begin + w;
+    g.train_end = (g.holdout_begin > embargo_len) ? g.holdout_begin - embargo_len : 0U;
+    return g;
+}
+
+// Check this discover window against the library's split-range ledger, then record the
+// train and holdout ranges it is about to use (recorded BEFORE mining: evaluating
+// candidates on the holdout spends it whether or not anything is admitted).
+//   * refuse when the window [0, T) shares a date with a recorded final test (a
+//     combine/report test must never be searched or admitted on);
+//   * refuse when a recorded holdout of the SAME length sits at a different place (the
+//     library's period axis would silently mix two date ranges; a different length is
+//     already refused by Library::try_admit's geometry guard).
+[[nodiscard]] atx::core::Status guard_and_record_discover_ranges(
+    const std::string& lib_dir, const DiscoverGeometry& g, atx::usize T, atx::usize full_dates,
+    std::span<const atx::i64> session_keys)
+{
+    ATX_TRY(const SplitRange window,
+            make_split_range(SplitRole::DiscoverTrain, 0, T, full_dates, session_keys));
+    ATX_TRY(const SplitRange holdout, make_split_range(SplitRole::DiscoverHoldout, g.holdout_begin,
+                                                       g.holdout_end, full_dates, session_keys));
+    ATX_TRY(const auto ranges, read_split_ranges(lib_dir));
+    for (const SplitRange& r : ranges) {
+        if (r.role == SplitRole::FinalTest) {
+            ATX_TRY(const bool overlap, split_ranges_overlap(window, r));
+            if (overlap) {
+                return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                    "discover: the panel window [0," + std::to_string(T) +
+                    ") overlaps the final test [" + std::to_string(r.begin) + "," +
+                    std::to_string(r.end) + ") recorded in library " + lib_dir +
+                    " -- a final test must never be searched or admitted on");
+            }
+        } else if (r.role == SplitRole::DiscoverHoldout && r.end - r.begin == g.holdout_end -
+                   g.holdout_begin) {
+            ATX_TRY(const bool overlap, split_ranges_overlap(holdout, r)); // Err: other axis
+            const bool same = overlap && (holdout.session_keyed
+                                              ? (r.begin_key == holdout.begin_key &&
+                                                 r.last_key == holdout.last_key)
+                                              : (r.begin == holdout.begin && r.end == holdout.end));
+            if (!same) {
+                return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                    "discover: this run's admission holdout [" +
+                    std::to_string(g.holdout_begin) + "," + std::to_string(g.holdout_end) +
+                    ") differs from the holdout [" + std::to_string(r.begin) + "," +
+                    std::to_string(r.end) + ") the library's period axis is fixed to");
+            }
+        }
+    }
+    if (g.holdout_begin > 0U) {
+        // The recorded train range runs to the holdout begin: it covers the search window
+        // [0, train_end) AND the embargo gap, so no later final test can sit in the gap.
+        ATX_TRY(const SplitRange train, make_split_range(SplitRole::DiscoverTrain, 0,
+                                                         g.holdout_begin, full_dates,
+                                                         session_keys));
+        ATX_TRY_VOID(append_split_range(lib_dir, train));
+    }
+    return append_split_range(lib_dir, holdout);
+}
+
 atx::core::Result<StageResult> run_discover_gated(
     const RunConfig& cfg,
     const atx::engine::alpha::Panel& panel,
@@ -517,7 +613,9 @@ atx::core::Result<StageResult> run_discover_gated(
     const atx::engine::alpha::Panel* weak_panel, // W4a: §0.8 weak sub-universe (nullptr = off)
     const std::vector<std::string>& numeric_excluded_fields, // R1: typed-fields exclusion list
     const std::vector<std::string>& extra_group_fields,
-    const std::string& source_artifact_id)
+    const std::string& source_artifact_id,
+    std::span<const atx::i64> session_keys, // W0-I0a: the FULL panel's key axis (may be empty)
+    atx::usize full_dates)                   // W0-I0a: the FULL panel's date count
 {
     namespace fs      = std::filesystem;
     namespace combine = atx::engine::combine;
@@ -646,6 +744,13 @@ atx::core::Result<StageResult> run_discover_gated(
                 sealed_r.error().message() + ")");
         }
     }
+
+    // W0-I0a (I-01): the library's split-range ledger. Refuse a window that overlaps a
+    // recorded final test or re-anchors the library's holdout, then record this run's
+    // train/holdout ranges (on the FULL panel's axis: `panel` may be a prefix).
+    const DiscoverGeometry geometry = discover_geometry(cfg, eff_oos_fraction, panel.dates());
+    ATX_TRY_VOID(guard_and_record_discover_ranges(lib_dir, geometry, panel.dates(), full_dates,
+                                                  session_keys));
 
     // Mine -> deflate -> gate -> admit into the persistent library.
     factory::Factory fac{lib, panel, sim, policy};
@@ -953,6 +1058,11 @@ atx::core::Result<StageResult> run_discover_gated(
 // ---------------------------------------------------------------------------
 atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
 {
+    return run_discover_window(cfg, 0U);
+}
+
+atx::core::Result<StageResult> run_discover_window(const RunConfig& cfg, atx::usize discover_end)
+{
     namespace alpha   = atx::engine::alpha;
     namespace combine = atx::engine::combine;
     namespace factory = atx::engine::factory;
@@ -971,6 +1081,26 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
     // 2. Load the research panel.
     ATX_TRY(auto panel_input, read_pipeline_panel(cfg.panel, cfg.allow_unidentified_panels));
     auto& panel = panel_input.panel;
+    const atx::usize full_dates = panel.dates();
+    const std::span<const atx::i64> session_keys =
+        panel_input.identity ? std::span<const atx::i64>{panel_input.identity->session_keys}
+                             : std::span<const atx::i64>{};
+
+    // 2-. W0-I0a (I-01): a nested split restricts discover to the prefix [0, discover_end)
+    // BEFORE anything reads the panel -- the search, the admission lockbox, the capacity
+    // screen and the robustness panels all see only dates the combine fit and the final
+    // test come after. discover_end == 0 keeps the whole panel (byte-identical).
+    if (discover_end > 0U) {
+        if (discover_end < 2U || discover_end > full_dates) {
+            return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                "discover: window end " + std::to_string(discover_end) + " must lie in [2, " +
+                std::to_string(full_dates) + "]");
+        }
+        if (discover_end < full_dates) {
+            ATX_TRY(auto prefix, atx::engine::eval::detail::slice_panel(panel, 0U, discover_end));
+            panel = std::move(prefix);
+        }
+    }
 
     // 2a. W2 capacity screen (opt-in): build a derived Panel whose universe_ is
     // original_universe ∧ (close>min_price) ∧ (adv{W}>=min_adv). NaN propagation
@@ -1117,9 +1247,13 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
     //     (a durable alpha database) and are also written as .dsl for `combine`.
     if (cfg.gated) {
         ATX_TRY(auto result, run_discover_gated(cfg, panel, lib, policy, sim, sc, fields, weak_panel,
-            numeric_excluded_fields, extra_group_fields, panel_input.artifact_id));
+            numeric_excluded_fields, extra_group_fields, panel_input.artifact_id, session_keys,
+            full_dates));
         result.kvs.emplace_back("source_artifact_id",
             panel_input.identity ? panel_input.artifact_id : "unknown");
+        if (discover_end > 0U) {
+            result.kvs.emplace_back("discover_end", std::to_string(panel.dates()));
+        }
         return atx::core::Ok(std::move(result));
     }
 
@@ -1205,6 +1339,9 @@ atx::core::Result<StageResult> run_discover(const RunConfig& cfg)
         {"population",    std::to_string(sc.population)},
         {"generations",   std::to_string(sc.generations)},
     };
+    if (discover_end > 0U) {
+        sr.kvs.emplace_back("discover_end", std::to_string(panel.dates()));
+    }
     return atx::core::Ok(std::move(sr));
 }
 

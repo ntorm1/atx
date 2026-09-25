@@ -509,8 +509,13 @@ atx::core::Result<StageResult> run_report_impl(const RunConfig& cfg,
                 alpha::Panel::create(S, M, {"ret"}, {holding.returns}, uni));
         ATX_TRY(const auto ret_fid, retpanel.field_id("ret"));
 
-        // 5. Rebuild the same diagonal FactorModel S5 used.
-        ATX_TRY(auto V, diagonal_risk_model(research));
+        // 5. The report's risk lens. accumulate_report reads ONLY V's exposures (the
+        //    per-period X^T w factor-exposure rows) and its instrument count -- never
+        //    its specific variances -- and the diagonal model's X is all zeros. W0-I0a
+        //    (I-04): the lens is therefore fitted on row 0 only (no returns, the 1e-4
+        //    floor) so no future row can reach the report through V; the output is
+        //    unchanged (zero exposures either way).
+        ATX_TRY(auto V, diagonal_risk_model(research, research.dates() > 0 ? 1U : 0U));
 
         // 6. Construct an empty Library (nothing admitted; census all zeros).
         //    master_seeds must be non-empty — open() reads front().

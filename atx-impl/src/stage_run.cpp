@@ -1,14 +1,17 @@
 #include "stages.hpp"
 
+#include <charconv>
 #include <cmath>
 #include <filesystem>
 #include <string>
+#include <system_error>
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 
 #include "artifacts.hpp"
 #include "config.hpp"
+#include "stage_combine.hpp"  // W0-I0a: resolve_nested_split, run_discover_window, CombinePitConfig
 #include "stage_metabook.hpp" // S5-4: MetaBookStageConfig, run_metabook(cfg, scfg) (S2-owned body)
 
 namespace atx::impl {
@@ -104,7 +107,39 @@ atx::core::Result<StageResult> run_all(const RunConfig& cfg)
     // needed; an explicit user --oos-fraction still overrides the 0.25 default.
     c_disc.gated       = true;
     c_disc.library_dir = (work / "_library").string();
-    ATX_TRY(auto d_disc, run_discover(c_disc));
+
+    // W0-I0a (I-01) — NESTED SPLITS: discover < combine fit < final test. Before W0,
+    // discover admitted on the last 25% of the panel and combine then reported that
+    // SAME 25% as "OOS". Now the panel is carved into three consecutive windows with an
+    // h+delay embargo between them (resolve_nested_split): discover sees only
+    // [0, discover_end) (its own admission lockbox lies inside it), the combiner fits on
+    // the fresh [fit_begin, fit_end), and the final test [test_begin, n) is read by no
+    // selection or fitting step. The test fraction is --holdout-frac when given (default
+    // 0.25). An explicit --holdout-frac 0 or --fit-end keeps the caller's own windows
+    // (no final test is reported then; combine's ledger guard still applies).
+    const bool nested = !(cfg.set_flags.count("holdout-frac") != 0 &&
+                          cfg.combine_holdout_frac <= 0.0) &&
+                        cfg.set_flags.count("fit-end") == 0;
+    NestedSplit split{};
+    if (nested) {
+        atx::usize n_dates = 0;
+        bool have_dates = false;
+        for (const auto& [k, v] : d_panel.kvs) {
+            if (k == "dates") {
+                const auto [ptr, ec] = std::from_chars(v.data(), v.data() + v.size(), n_dates);
+                have_dates = ec == std::errc{} && ptr == v.data() + v.size();
+            }
+        }
+        if (!have_dates) {
+            return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                                  "run: panel stage reported no date count");
+        }
+        NestedSplitConfig ns;
+        if (cfg.set_flags.count("holdout-frac") != 0) ns.test_frac = cfg.combine_holdout_frac;
+        ns.embargo = 1U + cfg.replay_execution_delay; // h (1-day labels) + execution delay
+        ATX_TRY(split, resolve_nested_split(n_dates, ns));
+    }
+    ATX_TRY(auto d_disc, run_discover_window(c_disc, nested ? split.discover_end : 0U));
 
     // 4. combine
     RunConfig c_comb = cfg;
@@ -116,10 +151,16 @@ atx::core::Result<StageResult> run_all(const RunConfig& cfg)
     // enumerating admitted records by AlphaId; the loose c_comb.alphas above
     // becomes an ignored harmless fallback (left as-is intentionally).
     c_comb.library_dir = c_disc.library_dir;
-    // A2a — default the combine holdout ON so the pipeline emits an out-of-sample
-    // portfolio Sharpe. Respects an explicit user --holdout-frac (incl. an explicit 0).
-    if (cfg.set_flags.count("holdout-frac") == 0) c_comb.combine_holdout_frac = 0.25;
-    ATX_TRY(auto d_comb, run_combine(c_comb));
+    CombinePitConfig comb_pit;
+    comb_pit.execution_delay = cfg.replay_execution_delay;
+    if (nested) {
+        // Fit on the nested fit window; the final test starts after the embargo.
+        c_comb.fit_begin = static_cast<long>(split.fit_begin);
+        c_comb.fit_end = static_cast<long>(split.fit_end);
+        c_comb.set_flags.insert("fit-end");
+        comb_pit.test_begin = split.test_begin;
+    }
+    ATX_TRY(auto d_comb, run_combine(c_comb, comb_pit));
 
     // 5. optimize (or, S5-4, --metabook: the sleeve-aware fund book substitutes
     // for the single-blend optimize stage — both write books.bin in the SAME

@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
+#include <system_error>
 #include <fstream>
 #include <limits>
 #include <optional>
@@ -32,6 +34,7 @@
 #include "dead_alpha_wire.hpp" // maybe_open_dead_lib / collect_dead_alpha_ids (S1, shared via S2-0)
 #include "diag_risk.hpp"      // diagonal_risk_model (the shared S5/S6 diagonal model)
 #include "research_sim.hpp"   // frictionless_sim (shared atx-impl helper)
+#include "sector_groups.hpp"  // sector_group_map (I-07: stage_combine's sector-neutral policy)
 #include "serialize_panel.hpp" // read_panel / write_panel
 #include "panel_pipeline.hpp"
 #include "atx/core/sha256.hpp"
@@ -367,6 +370,158 @@ evaluate_sleeve_signal(const library::Library &lib, const std::vector<AlphaId> &
   return atx::core::Ok(std::move(out));
 }
 
+// ===========================================================================
+//  W0-I0a (I-07) — sleeve signals from the fitted combo weights.
+// ===========================================================================
+
+// One fitted weight per distinct DSL source, keyed by the SHA-256 the combine stage wrote
+// into each weights-sidecar label ("... dsl_sha256=<hex>"). Two combo alphas with the same
+// source hold identical positions, so their weights add.
+struct ComboWeight {
+  std::string dsl_sha256;
+  atx::f64 w = 0.0;
+};
+
+// Parse `<combo>.weights.txt` (stage_combine.cpp step 11). The file is hash-checked against
+// the combo artifact's "weights" parent first when the combo is identified, so an edited or
+// swapped sidecar can never steer the book. Err on a missing/malformed file.
+atx::core::Result<std::vector<ComboWeight>> load_combo_weights(const PipelinePanel &combo_input,
+                                                               const std::string &combo_path) {
+  const std::string path = combo_path + ".weights.txt";
+  ATX_TRY_VOID(require_pipeline_file(combo_input, "weights", path));
+  std::ifstream in{path};
+  if (!in.is_open()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "metabook: sleeve signals need the combo weights sidecar: " + path);
+  }
+  std::vector<ComboWeight> out;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.rfind("w[", 0) != 0) {
+      continue;
+    }
+    const auto eq = line.find('=');
+    const auto sp = (eq == std::string::npos) ? std::string::npos : line.find(' ', eq);
+    const auto key = line.find("dsl_sha256=");
+    if (sp == std::string::npos || key == std::string::npos) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "metabook: malformed combo weights line: " + line);
+    }
+    const std::string value = line.substr(eq + 1, sp - eq - 1);
+    atx::f64 w = 0.0;
+    const auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), w);
+    if (ec != std::errc{} || ptr != value.data() + value.size() || !std::isfinite(w)) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "metabook: non-numeric combo weight: " + line);
+    }
+    const std::string sha = line.substr(key + 11U, line.find(' ', key) == std::string::npos
+                                                       ? std::string::npos
+                                                       : line.find(' ', key) - key - 11U);
+    auto it = std::find_if(out.begin(), out.end(),
+                           [&](const ComboWeight &c) { return c.dsl_sha256 == sha; });
+    if (it == out.end()) {
+      out.push_back(ComboWeight{sha, w});
+    } else {
+      it->w += w;
+    }
+  }
+  if (out.empty()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "metabook: combo weights sidecar lists no weights: " + path);
+  }
+  return atx::core::Ok(std::move(out));
+}
+
+// The fitted combo weight each LIBRARY alpha carries under SleeveSignalRule::ComboWeightsV2,
+// indexed by AlphaId value (nullopt: the combo never weighted this DSL). The combo sidecar is
+// keyed by DSL SHA-256 and load_combo_weights sums the combo's weights per DSL, so W(sha) is
+// the combo's total exposure to that expression (identical DSL -> identical positions). When
+// the library holds k > 1 members with the same DSL, each carries W(sha) / k: the members of
+// a one-sleeve partition then sum back to exactly W(sha) -- never k * W(sha) -- whichever
+// sleeves the duplicates land in.
+atx::core::Result<std::vector<std::optional<atx::f64>>>
+member_combo_weights(const library::Library &lib, const std::vector<ComboWeight> &weights) {
+  const atx::usize n = static_cast<atx::usize>(lib.n_alphas());
+  std::vector<std::string> sha(n);
+  for (atx::usize a = 0; a < n; ++a) {
+    ATX_TRY(sha[a], atx::core::sha256_hex(
+                        lib.get(AlphaId{static_cast<atx::u32>(a)}).provenance.expr_source));
+  }
+  std::vector<std::optional<atx::f64>> out(n);
+  for (atx::usize a = 0; a < n; ++a) {
+    const auto it = std::find_if(weights.begin(), weights.end(),
+                                 [&](const ComboWeight &c) { return c.dsl_sha256 == sha[a]; });
+    if (it == weights.end()) {
+      continue;
+    }
+    const auto k = static_cast<atx::usize>(std::count(sha.begin(), sha.end(), sha[a]));
+    out[a] = it->w / static_cast<atx::f64>(k); // k >= 1: sha[a] itself is counted
+  }
+  return atx::core::Ok(std::move(out));
+}
+
+// The sleeve's signal under SleeveSignalRule::ComboWeightsV2: sum_j w_j * position_j(t, i)
+// over the sleeve members, w_j the member's share of the fitted combo weight on its DSL
+// (member_combo_weights), NaN outside the research universe -- stage_combine's own blend
+// (step 9), restricted to the sleeve. The members' positions are extracted with the SAME
+// WeightPolicy / sector map stage_combine used (cfg.sector_neutral), so a one-sleeve
+// partition reproduces the combo.
+atx::core::Result<std::vector<atx::f64>>
+combo_weighted_sleeve_signal(const library::Library &lib, const std::vector<AlphaId> &members,
+                             const alpha::Panel &research,
+                             const std::vector<std::optional<atx::f64>> &member_w,
+                             bool sector_neutral) {
+  if (members.empty()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "combo_weighted_sleeve_signal: sleeve has no members");
+  }
+  std::vector<std::string> dsl;
+  std::vector<atx::f64> w;
+  dsl.reserve(members.size());
+  w.reserve(members.size());
+  for (const AlphaId id : members) {
+    if (id.value >= member_w.size() || !member_w[id.value].has_value()) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "metabook: library alpha " + std::to_string(id.value) +
+                                " has no fitted combo weight (the combo was built from a "
+                                "different pool)");
+    }
+    dsl.push_back(lib.get(id).provenance.expr_source);
+    w.push_back(*member_w[id.value]);
+  }
+  alpha::Library dsl_lib{};
+  const std::vector<std::string_view> views(dsl.begin(), dsl.end());
+  ATX_TRY(auto program, alpha::compile_batch(std::span<const std::string_view>{views}, dsl_lib));
+  alpha::Engine engine{research};
+  ATX_TRY(auto signals, engine.evaluate(program));
+  std::vector<atx::u32> group_map;
+  if (sector_neutral) {
+    group_map = sector_group_map(research);
+  }
+  WeightPolicy policy{};
+  policy.industry_neutral = !group_map.empty();
+  const auto sim = frictionless_sim();
+  ATX_TRY(auto streams, alpha::extract_streams(signals, policy, research, sim,
+                                               std::span<const atx::u32>{group_map}));
+
+  const atx::usize D = streams.n_periods();
+  const atx::usize M = streams.n_instruments();
+  std::vector<atx::f64> out(D * M, std::numeric_limits<atx::f64>::quiet_NaN());
+  for (atx::usize t = 0; t < D; ++t) {
+    for (atx::usize i = 0; i < M; ++i) {
+      if (!research.in_universe(t, i)) {
+        continue; // NaN: not a tradable name on this date (stage_combine step 9)
+      }
+      atx::f64 acc = 0.0;
+      for (atx::usize j = 0; j < w.size(); ++j) {
+        acc += w[j] * streams.positions(j, t)[i];
+      }
+      out[t * M + i] = acc;
+    }
+  }
+  return atx::core::Ok(std::move(out));
+}
+
 } // namespace
 
 atx::core::Result<std::vector<fund::SleeveConfig>>
@@ -517,9 +672,18 @@ build_metabook_from_inputs(const RunConfig &cfg, const MetaBookStageConfig &scfg
       std::copy(cs.begin(), cs.end(),
                sleeve_signal[0].begin() + static_cast<std::ptrdiff_t>(t * M));
     }
-  } else {
+  } else if (scfg.sleeve_signal == SleeveSignalRule::EqualWeightV1) {
     for (atx::usize j = 0; j < n_sleeves; ++j) {
       ATX_TRY(auto sig, evaluate_sleeve_signal(*lib_holder, sleeve_cfgs[j].members, research));
+      sleeve_signal[j] = std::move(sig);
+    }
+  } else {
+    // I-07: each sleeve blends its members with the FITTED combo weights.
+    ATX_TRY(const auto weights, load_combo_weights(combo_input, cfg.combo));
+    ATX_TRY(const auto member_w, member_combo_weights(*lib_holder, weights));
+    for (atx::usize j = 0; j < n_sleeves; ++j) {
+      ATX_TRY(auto sig, combo_weighted_sleeve_signal(*lib_holder, sleeve_cfgs[j].members,
+                                                     research, member_w, cfg.sector_neutral));
       sleeve_signal[j] = std::move(sig);
     }
   }
@@ -530,12 +694,24 @@ build_metabook_from_inputs(const RunConfig &cfg, const MetaBookStageConfig &scfg
   // stage_optimize.cpp's Factor branch exactly (including its diagonal warm-up fallback for a
   // step too early for a genuine Factor fit). build_risk_model/artifact_to_factor_model are
   // S1's frozen producer -- not re-derived here.
-  std::optional<risk::FactorModel> single_model;   // Diagonal path only
-  std::vector<risk::FactorModel> step_models;      // Factor path only; one per sched.periods[s]
+  //
+  // W0-I0a (I-04): kind==Diagonal now fits ONE diagonal model PER STEP on rows
+  // [0, period+1) (DiagRiskRule::PerStepPitV2, one expanding pass); the whole-panel
+  // model above is DiagRiskRule::WholePanelV1. (I-06): the Factor loop resolves the dead
+  // set PER STEP (DeadAlphaRule::DeadOrDecayingPerStepV2) through the split-range ledger.
+  std::optional<risk::FactorModel> single_model;   // Diagonal WholePanelV1 only
+  std::vector<risk::FactorModel> step_models;      // one per sched.periods[s] otherwise
 
-  if (risk_cfg.kind == risk::RiskModelKind::Diagonal) {
+  if (risk_cfg.kind == risk::RiskModelKind::Diagonal &&
+      scfg.pit.diag == DiagRiskRule::WholePanelV1) {
     ATX_TRY(auto model, diagonal_risk_model(research));
     single_model.emplace(std::move(model));
+  } else if (risk_cfg.kind == risk::RiskModelKind::Diagonal) {
+    std::vector<atx::usize> fit_ends(sched.periods.size());
+    for (atx::usize s = 0; s < sched.periods.size(); ++s) {
+      fit_ends[s] = sched.periods[s] + 1U; // PIT: through `period` inclusive
+    }
+    ATX_TRY(step_models, diagonal_risk_models_expanding(research, fit_ends));
   } else {
     const risk::RiskModelConfig diag_fallback_cfg; // kind==Diagonal -- warm-up fallback only
     const atx::usize n_steps = sched.periods.size();
@@ -544,20 +720,27 @@ build_metabook_from_inputs(const RunConfig &cfg, const MetaBookStageConfig &scfg
     // R3/R4 (p9): reach the mega-book with S1's crowding defense. The metabook path
     // SUBSTITUTES run_optimize (stage_run.cpp:127), so this is the mega-book's only
     // build_risk_model site -- resolve the dead-alpha library ONCE (Library::open does
-    // sqlite I/O; the triple is identical for every step) via the SAME shared helpers
-    // stage_optimize uses. Fail-open: dead_alpha_factors=false / no dir / missing dir /
-    // empty pool all yield nullptr/{}, byte-identical to the pre-amendment nullptr calls.
+    // sqlite I/O) via the SAME shared helpers stage_optimize uses. Fail-open:
+    // dead_alpha_factors=false / no dir / missing dir / empty pool all yield nullptr/{}.
     std::optional<library::Library> dead_lib_opt = maybe_open_dead_lib(cfg, risk_cfg);
     const library::Library *dead_lib_ptr = dead_lib_opt.has_value() ? &*dead_lib_opt : nullptr;
-    std::vector<combine::AlphaId> dead_ids;
-    atx::usize dead_as_of = 0;
-    if (dead_lib_ptr != nullptr) {
-      dead_as_of = dead_lib_ptr->n_periods() > 0 ? dead_lib_ptr->n_periods() - 1 : 0;
-      dead_ids = collect_dead_alpha_ids(*dead_lib_ptr, dead_as_of);
-    }
+    const LibraryPeriodAxis dead_axis =
+        (dead_lib_ptr != nullptr)
+            ? library_period_axis(resolve_dead_alpha_lib_dir(cfg), *dead_lib_ptr, D,
+                                  research_input.identity
+                                      ? std::span<const atx::i64>{research_input.identity
+                                                                      ->session_keys}
+                                      : std::span<const atx::i64>{})
+            : LibraryPeriodAxis{};
 
     for (atx::usize s = 0; s < n_steps; ++s) {
       const atx::usize fit_end = sched.periods[s] + 1U; // PIT: through `period` inclusive
+      const DeadSet ds = (dead_lib_ptr == nullptr)
+                             ? DeadSet{}
+                             : dead_set_at(*dead_lib_ptr, dead_axis, scfg.pit.dead,
+                                           sched.periods[s]);
+      const std::vector<combine::AlphaId> &dead_ids = ds.ids;
+      const atx::usize dead_as_of = ds.as_of;
       auto factor_artifact =
           build_risk_model(research, risk_cfg, {}, dead_lib_ptr, dead_ids, dead_as_of, fit_end);
       if (factor_artifact.has_value()) {
@@ -624,7 +807,7 @@ build_metabook_from_inputs(const RunConfig &cfg, const MetaBookStageConfig &scfg
     return hs;
   };
   const auto model_at = [&](atx::usize period) -> const risk::FactorModel & {
-    if (risk_cfg.kind == risk::RiskModelKind::Diagonal) {
+    if (single_model.has_value()) {
       return *single_model;
     }
     return step_models[period / step]; // `step` in scope above; forward-filled between dates

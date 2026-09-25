@@ -754,6 +754,10 @@ TEST(MetabookCloseBattery, MultiSleeveByCorrClusterReachesTheStageEndToEnd) {
   MetaBookStageConfig scfg;
   scfg.assignment = SleeveAssignment::ByCorrCluster;
   scfg.max_sleeves = 8U;
+  // W0-I0a (I-07): this fixture's combo panel is hand-built (no fitted weights sidecar),
+  // so it pins the pre-W0 equal-weight sleeve signal explicitly. The fitted-weight
+  // default is exercised by w0i0a_metabook_uses_combo_test.cpp.
+  scfg.sleeve_signal = atx::impl::SleeveSignalRule::EqualWeightV1;
 
   auto result = atx::impl::run_metabook(cfg, scfg);
   ASSERT_TRUE(result.has_value()) << (result ? "" : result.error().message());

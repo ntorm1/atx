@@ -51,8 +51,9 @@
 #include "atx/engine/library/fwd.hpp"    // library::Library (fwd decl; assign_sleeves takes a ref)
 #include "atx/engine/risk/factor_model.hpp" // risk::RiskModelConfig (S2-2 3-arg overload param)
 
-#include "config.hpp" // RunConfig
-#include "stages.hpp" // StageResult
+#include "config.hpp"    // RunConfig
+#include "diag_risk.hpp" // DeployPitConfig (W0-I0a)
+#include "stages.hpp"    // StageResult
 
 namespace atx::impl {
 
@@ -77,6 +78,24 @@ static_assert(static_cast<atx::u8>(SleeveAssignment::SingleSleeve) == 0U,
               "SleeveAssignment::SingleSleeve must be 0 -- the inert R7-pin default");
 
 // ===========================================================================
+//  SleeveSignalRule — how a library-backed sleeve turns its members into ONE signal
+//  (W0-I0a, I-07).
+// ===========================================================================
+//  ComboWeightsV2 (default): the sleeve signal is the FITTED combiner blend restricted to
+//  the sleeve's members -- sum_a w_a * position_a(t, i), with w_a read from the combo's
+//  full-precision weights sidecar (`<combo>.weights.txt`, hash-checked against the combo
+//  artifact when it is identified) and matched to each library member by the SHA-256 of
+//  its DSL source; NaN outside the research universe, exactly like stage_combine's blend.
+//  A member the combo did not weight is an error (the combo was built from a different
+//  pool). With one sleeve this reproduces the combo's own "alpha" field.
+//  EqualWeightV1: the pre-W0 unweighted cross-sectional mean of the members' positions --
+//  it ignored the fitted combiner entirely. Kept only to re-derive frozen artifacts.
+enum class SleeveSignalRule : atx::u8 {
+  ComboWeightsV2 = 0,
+  EqualWeightV1 = 1,
+};
+
+// ===========================================================================
 //  MetaBookStageConfig — the stage's own config seam (pure configuration; S2-0).
 // ===========================================================================
 struct MetaBookStageConfig {
@@ -93,6 +112,10 @@ struct MetaBookStageConfig {
   atx::f64 gross = 1.0;         // --gross          (dollar-neutral gross leverage ceiling)
   atx::f64 name_cap = 1.0;      // --name-cap       (per-name position cap)
   atx::f64 risk_aversion = 1.0; // --risk-aversion  (lambda; MultiHorizonConfig::risk_aversion)
+
+  // W0-I0a point-in-time rules (defaults = corrected behaviour; V1 = pre-W0 reproduction).
+  SleeveSignalRule sleeve_signal = SleeveSignalRule::ComboWeightsV2; // I-07
+  DeployPitConfig pit{}; // I-04 diagonal lens per step, I-06 dead set per step
 };
 
 // ===========================================================================
@@ -135,17 +158,15 @@ assign_sleeves(const library::Library &lib, const MetaBookStageConfig &cfg);
 //  Any other invocation (multi-sleeve assignment, OR SingleSleeve WITH an explicit
 //  `--library-dir`) requires `cfg.library_dir`: each resolved sleeve's own member
 //  subset is re-evaluated from its DSL (compile_batch -> Engine::evaluate ->
-//  extract_streams, restricted to the sleeve's members) and locally combined via an
-//  UNWEIGHTED cross-sectional mean of the members' position streams -- a documented,
-//  distinct "mega-alpha per sleeve" seam, NOT the calibrated stage_combine::AlphaCombiner
-//  fit (Sprint-3-owned; not re-derived). This path does NOT claim byte-identity to
-//  stage_optimize's book (a different, undocumented-elsewhere alpha input) -- it is the
-//  on-path RED->GREEN multi-sleeve case (measured netting/diversification win).
+//  extract_streams, restricted to the sleeve's members) and combined per
+//  `scfg.sleeve_signal`: W0-I0a's ComboWeightsV2 default blends the members with the
+//  FITTED combo weights (`<combo>.weights.txt`, I-07), so one sleeve reproduces the combo
+//  signal; EqualWeightV1 is the pre-W0 unweighted mean that ignored the combiner.
 //
-//  model_at defaults to diag_risk.hpp's diagonal_risk_model (the SAME model
-//  stage_optimize's Diagonal path uses) -- no Factor-model variant is wired by S2
-//  (recorded as an S1/S5 seam in the ledger). returns_at is the realized per-instrument
-//  simple return from research's "close" field (diag_risk.hpp's TRI-return convention).
+//  model_at: kind==Diagonal fits one diagonal model per rebalance step on rows
+//  [0, period+1) (scfg.pit.diag == PerStepPitV2, I-04); WholePanelV1 is the pre-W0 single
+//  whole-panel diag_risk.hpp model. returns_at is the realized per-instrument simple
+//  return from research's "close" field (diag_risk.hpp's TRI-return convention).
 //
 //  build_metabook_result is the direct-call engine-facing entry point (what tests
 //  call); run_metabook wraps it into the StageResult shape (digest + kvs) and writes
