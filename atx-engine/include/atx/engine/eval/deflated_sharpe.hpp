@@ -46,7 +46,7 @@
 
 #include "atx/core/types.hpp"            // atx::f64, atx::usize
 #include "atx/engine/eval/stats_ext.hpp" // norm_cdf, norm_ppf, mean_std_pop, skewness, excess_kurtosis
-#include "atx/engine/eval/trial_registry.hpp" // TrialSummary (registry-fed DSR)
+#include "atx/engine/eval/trial_registry.hpp" // TrialSummary, TrialAccounting (registry-fed DSR)
 
 namespace atx::engine::eval {
 
@@ -170,26 +170,114 @@ struct DsrResult {
 }
 
 // ===========================================================================
-//  deflated_sharpe (registry-fed) — DSR with N and V taken from the global
-//  TrialRegistry summary instead of a hand-counted N.
+//  deflated_sharpe (registry-fed, TrialSummary) — DSR with N and V taken from
+//  the global TrialRegistry summary instead of a hand-counted N.
 //
-//  N = summary.n_eff (effective INDEPENDENT trials, real-valued), and
-//  V = summary.var_sr (cross-trial variance of the per-period Sharpe) when at
-//  least two trials are registered; otherwise the single-stream estimator
-//  V̂ = (1 − γ3·SR + ((κ+2)/4)·SR²)/T. On correlated trial sets N_eff < n_raw,
-//  so the benchmark SR*_N is lower and the DSR is never more deflated than the
-//  raw-N form with the same V.
+//  E-01: the cross-trial variance V = summary.var_sr has ALREADY removed the
+//  component the trials share (under a common factor, the dispersion of the
+//  Sharpes across trials is only the idiosyncratic part), so the idiosyncratic
+//  draws must be counted at their raw number. Pairing V with the participation
+//  ratio N_eff = N²/Σρ² discounts the correlation a second time and
+//  understates SR* (≈2.7× for the L9 registry: N 2065 raw vs N_eff 5.71).
+//
+//    RawNCrossVarV2 (default): N = n_raw, V = var_sr. SR* = √V·E[max of N].
+//      Exact for identical (V = 0 -> SR* = 0), independent and equicorrelated
+//      trials; conservative (over-deflates) for block structures, where the
+//      cluster rule (TrialAccounting overload below) is the precise one.
+//    NEffCrossVarV1: the pre-W0 rule (N = n_eff, V = var_sr), kept only so
+//      frozen artifacts can be re-derived. It double-discounts (E-01).
+//
+//  With fewer than two trials V is the single-stream estimator
+//  V̂ = (1 − γ3·SR + ((κ+2)/4)·SR²)/T (and N <= 1 gives SR* = 0: DSR = PSR(0)).
 // ===========================================================================
-[[nodiscard]] inline DsrResult deflated_sharpe(atx::f64 sr, const TrialSummary &trials,
-                                               atx::usize T, atx::f64 skew,
-                                               atx::f64 exkurt) noexcept {
+enum class SummaryDsrRule : atx::u8 {
+  NEffCrossVarV1 = 0, // E-01 defect, reproducible: N = n_eff, V = var_sr
+  RawNCrossVarV2 = 1, // default: N = n_raw, V = var_sr (correlation discounted once)
+};
+
+[[nodiscard]] inline DsrResult deflated_sharpe(
+    atx::f64 sr, const TrialSummary &trials, atx::usize T, atx::f64 skew, atx::f64 exkurt,
+    SummaryDsrRule rule = SummaryDsrRule::RawNCrossVarV2) noexcept {
   const atx::f64 var_term = 1.0 - skew * sr + ((exkurt + 2.0) / 4.0) * sr * sr;
   const atx::f64 v =
       trials.n_raw >= 2U ? trials.var_sr : var_term / static_cast<atx::f64>(T);
-  const atx::f64 sr_star = expected_max_sharpe_eff(trials.n_eff, v);
+  const atx::f64 sr_star =
+      rule == SummaryDsrRule::NEffCrossVarV1
+          ? expected_max_sharpe_eff(trials.n_eff, v)
+          : expected_max_sharpe_eff(static_cast<atx::f64>(trials.n_raw), v);
   const atx::f64 psr = probabilistic_sharpe(sr, sr_star, T, skew, exkurt);
   const atx::f64 haircut = std::max(0.0, sr - sr_star);
   return DsrResult{psr, sr_star, psr, haircut};
+}
+
+// ===========================================================================
+//  deflated_sharpe (registry-fed, TrialAccounting) — the cluster-N DSR of the
+//  plan (W0-E0b), with the Monte-Carlo E[max] cross-check.
+//
+//  Inputs come from TrialRegistry::accounting(): the ONC clusters, their
+//  representative Sharpes, and the Monte-Carlo null of max_i SR_i under the
+//  estimated trial correlation (trial_clusters.hpp).
+//
+//    SR*_cluster = expected_max_sharpe(K, V_c): K = number of clusters,
+//      V_c = variance of the cluster-representative Sharpes (K >= 2; else the
+//      single-stream V̂, and K <= 1 gives 0).
+//    SR*_mc = E[max_i SR_i] under the estimated correlation (Monte-Carlo).
+//
+//    ClusterMcFloorV2 (default): SR* = max(SR*_cluster, SR*_mc). The cross-
+//      check can only raise the bar: where ONC finds no clean block structure
+//      (equicorrelated or mixed trial sets) the cluster count cannot express
+//      the selection, and the Monte-Carlo benchmark — which assumes nothing
+//      about independence — takes over. DSR = PSR(SR*).
+//    ClusterV2: SR* = SR*_cluster alone (the plan's rule without the floor).
+//    MonteCarloMaxV2: SR* = SR*_mc, and dsr = the Monte-Carlo null CDF of the
+//      maximum at `sr` (P_null(max_i SR_i <= sr)) — a selection test whose
+//      false-positive rate at dsr > 1−α is α by construction (psr still
+//      reports PSR(SR*_mc)).
+//
+//  haircut_sharpe = max(0, SR − SR*) in every rule. `n_used` / `v_used` are
+//  the (N, V) pair behind SR* (for MonteCarloMaxV2: n_raw and NaN).
+// ===========================================================================
+enum class AccountingDsrRule : atx::u8 {
+  ClusterV2 = 0,        // N = clusters, V = var(cluster representatives)
+  ClusterMcFloorV2 = 1, // default: cluster benchmark floored by the Monte-Carlo E[max]
+  MonteCarloMaxV2 = 2,  // Monte-Carlo max-Sharpe null CDF
+};
+
+struct RegistryDsr {
+  DsrResult result{};
+  atx::f64 sr_star_cluster{};
+  atx::f64 sr_star_mc{};
+  atx::f64 n_used{};
+  atx::f64 v_used{};
+  AccountingDsrRule rule{AccountingDsrRule::ClusterMcFloorV2};
+};
+
+[[nodiscard]] inline RegistryDsr deflated_sharpe(
+    atx::f64 sr, const TrialAccounting &acct, atx::usize T, atx::f64 skew, atx::f64 exkurt,
+    AccountingDsrRule rule = AccountingDsrRule::ClusterMcFloorV2) noexcept {
+  const atx::f64 var_term = 1.0 - skew * sr + ((exkurt + 2.0) / 4.0) * sr * sr;
+  const atx::usize k = acct.clusters.n_clusters;
+  const atx::f64 v_c = k >= 2U ? acct.var_sr_clusters : var_term / static_cast<atx::f64>(T);
+  RegistryDsr out;
+  out.rule = rule;
+  out.sr_star_cluster = expected_max_sharpe(k, v_c);
+  out.sr_star_mc = acct.mc.sorted_max.empty() ? 0.0 : acct.mc.mean;
+  atx::f64 sr_star = out.sr_star_cluster;
+  out.n_used = static_cast<atx::f64>(k);
+  out.v_used = v_c;
+  if (rule == AccountingDsrRule::ClusterMcFloorV2 && out.sr_star_mc > sr_star) {
+    sr_star = out.sr_star_mc;
+    out.n_used = static_cast<atx::f64>(acct.n_raw);
+    out.v_used = std::numeric_limits<atx::f64>::quiet_NaN();
+  } else if (rule == AccountingDsrRule::MonteCarloMaxV2) {
+    sr_star = out.sr_star_mc;
+    out.n_used = static_cast<atx::f64>(acct.n_raw);
+    out.v_used = std::numeric_limits<atx::f64>::quiet_NaN();
+  }
+  const atx::f64 psr = probabilistic_sharpe(sr, sr_star, T, skew, exkurt);
+  const atx::f64 dsr = rule == AccountingDsrRule::MonteCarloMaxV2 ? acct.mc.cdf(sr) : psr;
+  out.result = DsrResult{psr, sr_star, dsr, std::max(0.0, sr - sr_star)};
+  return out;
 }
 
 // ===========================================================================
